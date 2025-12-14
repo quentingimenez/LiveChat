@@ -1,0 +1,55 @@
+name: Build & Release (nightly)
+
+on:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-release
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build EXE (electron-builder)
+        run: npm run dist
+
+      - name: Verify dist output
+        shell: pwsh
+        run: |
+          if (!(Test-Path "dist")) { throw "dist/ folder not found" }
+          Get-ChildItem -Path "dist" -Recurse | Select-Object FullName, Length
+
+      - name: Create/Update nightly release + upload asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = "nightly"
+
+          # 1) Ensure release exists
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "Nightly" --prerelease --notes "Automated build from main"
+          }
+
+          # 2) Upload/overwrite assets
+          # electron-builder portable usually outputs an .exe in dist/
+          gh release upload $tag "dist/*.exe" --clobber

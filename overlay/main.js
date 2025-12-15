@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, Tray, Menu, nativeImage, globalShortcut } = require('electron');
+const { app, BrowserWindow, screen, Tray, Menu, nativeImage, globalShortcut, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
@@ -282,6 +282,9 @@ function stopKeepOnTopLoop() {
   }
 }
 
+
+
+
 // -------- WINDOW LIFECYCLE --------
 
 async function createWindowAsync() {
@@ -312,8 +315,9 @@ async function createWindowAsync() {
     hasShadow: false,
     skipTaskbar: true,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
       backgroundThrottling: false,
       webSecurity: false,
       allowRunningInsecureContent: true
@@ -355,7 +359,7 @@ async function createWindowAsync() {
     `);
   });
 
-  mainWindow.loadURL('https://livechat.singesupreme.fr/client?guildId=942211187079282688');
+  mainWindow.loadURL('http://localhost:3333/client?guildId=942211187079282688');
   mainWindow.setIgnoreMouseEvents(true, { forward: true });
 
   mainWindow.once('ready-to-show', () => mainWindow.show());
@@ -366,7 +370,6 @@ async function createWindowAsync() {
     if (tray) updateTrayMenu();
   });
 }
-
 function destroyWindow() {
   stopKeepOnTopLoop();
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();

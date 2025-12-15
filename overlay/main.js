@@ -359,7 +359,7 @@ async function createWindowAsync() {
     `);
   });
 
-  mainWindow.loadURL('http://localhost:3333/client?guildId=942211187079282688');
+  mainWindow.loadURL('https://livechat.singesupreme.fr/client?guildId=942211187079282688');
   mainWindow.setIgnoreMouseEvents(true, { forward: true });
 
   mainWindow.once('ready-to-show', () => mainWindow.show());

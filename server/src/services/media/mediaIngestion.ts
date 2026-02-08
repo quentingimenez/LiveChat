@@ -1,5 +1,7 @@
 import { execFile } from 'child_process';
+import { createWriteStream } from 'fs';
 import { promises as fsPromises } from 'fs';
+import { once } from 'events';
 import path from 'path';
 import os from 'os';
 import { promisify } from 'util';
@@ -18,6 +20,28 @@ import { normalizeDownloadedMedia } from './mediaTranscode';
 import { buildSourceHash, canonicalizeSourceUrl, resolveMediaSource } from './mediaSourceResolver';
 
 const execFileAsync = promisify(execFile);
+const BYTES_PER_MEGABYTE = 1024 * 1024;
+
+const getMaxMediaSizeBytes = () => Math.max(1, env.MEDIA_MAX_SIZE_MB) * BYTES_PER_MEGABYTE;
+
+const newFileTooLargeError = (sourceUrl: string, details?: string) => {
+  return new MediaIngestionError(
+    'FILE_TOO_LARGE',
+    `Media exceeds max size of ${Math.max(1, env.MEDIA_MAX_SIZE_MB)} MB`,
+    details || `Media exceeds configured max size for ${sourceUrl}`,
+  );
+};
+
+const ensureFileSizeWithinLimit = async (filePath: string, sourceUrl: string) => {
+  const fileStats = await fsPromises.stat(filePath);
+
+  if (fileStats.size > getMaxMediaSizeBytes()) {
+    throw newFileTooLargeError(
+      sourceUrl,
+      `Downloaded file is too large (${fileStats.size} bytes) for ${sourceUrl}`,
+    );
+  }
+};
 
 const defaultAssetCreateData = {
   kind: MediaAssetKind.VIDEO,
@@ -89,7 +113,17 @@ const downloadWithYtDlp = async (sourceUrl: string, tmpDir: string): Promise<str
   try {
     const result = await execFileAsync(
       env.YTDLP_BINARY,
-      ['--no-playlist', '--no-progress', '--no-warnings', '--print-json', '-o', outputTemplate, sourceUrl],
+      [
+        '--no-playlist',
+        '--no-progress',
+        '--no-warnings',
+        '--print-json',
+        '--max-filesize',
+        `${Math.max(1, env.MEDIA_MAX_SIZE_MB)}M`,
+        '-o',
+        outputTemplate,
+        sourceUrl,
+      ],
       {
         timeout: env.MEDIA_DOWNLOAD_TIMEOUT_MS,
         maxBuffer: 10 * 1024 * 1024,
@@ -103,6 +137,7 @@ const downloadWithYtDlp = async (sourceUrl: string, tmpDir: string): Promise<str
   const filenameFromStdout = parseYtdlpFilename(stdout);
 
   if (filenameFromStdout) {
+    await ensureFileSizeWithinLimit(filenameFromStdout, sourceUrl);
     return filenameFromStdout;
   }
 
@@ -116,6 +151,7 @@ const downloadWithYtDlp = async (sourceUrl: string, tmpDir: string): Promise<str
     );
   }
 
+  await ensureFileSizeWithinLimit(downloadedFile, sourceUrl);
   return downloadedFile;
 };
 
@@ -132,12 +168,56 @@ const downloadWithHttp = async (sourceUrl: string, tmpDir: string): Promise<stri
     );
   }
 
+  const maxSizeBytes = getMaxMediaSizeBytes();
+  const contentLength = Number.parseInt(response.headers.get('content-length') || '', 10);
+
+  if (Number.isFinite(contentLength) && contentLength > maxSizeBytes) {
+    throw newFileTooLargeError(sourceUrl, `HTTP content-length is too large (${contentLength} bytes) for ${sourceUrl}`);
+  }
+
   const contentType = response.headers.get('content-type') || 'application/octet-stream';
   const extension = mime.extension(contentType) || 'bin';
   const outputPath = path.join(tmpDir, `download-direct.${extension}`);
+  const stream = response.body;
 
-  const arrayBuffer = await response.arrayBuffer();
-  await fsPromises.writeFile(outputPath, Buffer.from(arrayBuffer));
+  if (!stream) {
+    throw new MediaIngestionError('DOWNLOAD_FAILED', 'Unable to read media stream', `Empty HTTP body for ${sourceUrl}`);
+  }
+
+  let downloadedBytes = 0;
+  const outputFile = createWriteStream(outputPath);
+
+  try {
+    for await (const chunk of stream as AsyncIterable<Buffer>) {
+      const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      downloadedBytes += bufferChunk.length;
+
+      if (downloadedBytes > maxSizeBytes) {
+        throw newFileTooLargeError(sourceUrl, `HTTP streamed media is too large (${downloadedBytes} bytes) for ${sourceUrl}`);
+      }
+
+      if (!outputFile.write(bufferChunk)) {
+        await once(outputFile, 'drain');
+      }
+    }
+
+    outputFile.end();
+    await once(outputFile, 'close');
+  } catch (error) {
+    if (typeof (stream as { destroy?: () => void }).destroy === 'function') {
+      (stream as { destroy: () => void }).destroy();
+    }
+    outputFile.destroy();
+    await fsPromises.rm(outputPath, { force: true }).catch(() => undefined);
+
+    if (error instanceof MediaIngestionError) {
+      throw error;
+    }
+
+    throw toMediaIngestionError(error, 'DOWNLOAD_FAILED');
+  }
+
+  await ensureFileSizeWithinLimit(outputPath, sourceUrl);
 
   return outputPath;
 };
@@ -150,6 +230,9 @@ const downloadSourceToTempFile = async (sourceUrl: string, tmpDir: string): Prom
   } catch (error) {
     ytdlpError = error;
     const normalized = toMediaIngestionError(error);
+    if (normalized.code === 'FILE_TOO_LARGE') {
+      throw normalized;
+    }
     logger.warn(`[MEDIA] yt-dlp fallback for ${sourceUrl} (${normalized.code})`);
   }
 

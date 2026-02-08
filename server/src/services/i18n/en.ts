@@ -42,7 +42,7 @@ export const enLang = {
   sendCommandMediaErrorDrm: 'This media seems DRM-protected and cannot be downloaded by the bot.',
   sendCommandMediaErrorNotFound: 'Media not found (link removed, expired, or invalid).',
   sendCommandMediaErrorTimeout: 'The media download timed out. Please retry in a moment.',
-  sendCommandMediaErrorTooLarge: 'The media is too large for current processing limits.',
+  sendCommandMediaErrorTooLarge: 'The media is too large (current limit: {{maxSizeMb}} MB).',
   sendCommandMediaErrorInvalidMedia: 'The downloaded file is invalid or corrupted.',
   sendCommandMediaErrorTranscode: 'Media conversion failed (codec/format issue).',
   sendCommandMediaErrorDownload: 'The media could not be downloaded from this source.',

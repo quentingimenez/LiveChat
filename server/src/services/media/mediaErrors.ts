@@ -1,3 +1,5 @@
+import { env } from '../env';
+
 export type MediaIngestionErrorCode =
   | 'UNSUPPORTED_SOURCE'
   | 'PRIVATE_OR_AUTH_REQUIRED'
@@ -211,6 +213,7 @@ export const pickMostRelevantMediaError = (first: unknown, second: unknown): Med
 
 export const getLocalizedMediaErrorMessage = (error: unknown): string => {
   const normalized = toMediaIngestionError(error);
+  const maxSizeMb = Math.max(1, env.MEDIA_MAX_SIZE_MB);
 
   switch (normalized.code) {
     case 'UNSUPPORTED_SOURCE':
@@ -224,7 +227,9 @@ export const getLocalizedMediaErrorMessage = (error: unknown): string => {
     case 'DOWNLOAD_TIMEOUT':
       return rosetty.t('sendCommandMediaErrorTimeout')!;
     case 'FILE_TOO_LARGE':
-      return rosetty.t('sendCommandMediaErrorTooLarge')!;
+      return rosetty.t('sendCommandMediaErrorTooLarge', {
+        maxSizeMb,
+      })!;
     case 'INVALID_MEDIA':
       return rosetty.t('sendCommandMediaErrorInvalidMedia')!;
     case 'TRANSCODE_FAILED':

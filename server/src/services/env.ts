@@ -35,6 +35,10 @@ export const env = createEnv({
       .string()
       .default('180000')
       .transform((s) => parseInt(s, 10)),
+    MEDIA_MAX_SIZE_MB: z
+      .string()
+      .default('2048')
+      .transform((s) => parseInt(s, 10)),
     PAIRING_CODE_TTL_MINUTES: z
       .string()
       .default('5')

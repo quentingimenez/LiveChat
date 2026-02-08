@@ -63,7 +63,7 @@ jobs:
         env:
           ELECTRON_CACHE: ${{ github.workspace }}\.cache\electron
           ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\.cache\electron-builder
-        run: npm run dist -- --win portable
+        run: npm run dist -- --win portable --publish never
 
       - name: List dist outputs
         shell: pwsh
@@ -110,7 +110,7 @@ jobs:
         env:
           ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
           ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
-        run: npm run dist -- --mac
+        run: npm run dist -- --mac --publish never
 
       - name: List dist outputs
         shell: bash

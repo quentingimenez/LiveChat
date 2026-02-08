@@ -32,27 +32,77 @@
     clearTimer();
     releaseObjectUrl();
     mediaLayer.innerHTML = '';
-    textLayer.textContent = '';
+    textLayer.innerHTML = '';
     textLayer.style.display = 'none';
   };
 
-  const applyText = (payload) => {
+  const createAvatarNode = (authorName, authorImage) => {
+    if (authorImage) {
+      const avatarImage = document.createElement('img');
+      avatarImage.className = 'overlay-author-avatar';
+      avatarImage.src = authorImage;
+      avatarImage.alt = authorName;
+      avatarImage.referrerPolicy = 'no-referrer';
+      avatarImage.addEventListener('error', () => {
+        avatarImage.replaceWith(createAvatarNode(authorName, null));
+      });
+      return avatarImage;
+    }
+
+    const fallback = document.createElement('div');
+    fallback.className = 'overlay-author-avatar-fallback';
+    fallback.textContent = (authorName || '?').trim().charAt(0).toUpperCase() || '?';
+    return fallback;
+  };
+
+  const applyOverlayInfo = (payload) => {
     if (!overlayConfig.showText) {
-      textLayer.textContent = '';
+      textLayer.innerHTML = '';
       textLayer.style.display = 'none';
       return;
     }
 
-    const textEnabled = payload?.text?.enabled;
-    const value = (payload?.text?.value || '').trim();
+    const textEnabled = payload?.text?.enabled === true;
+    const textValue = (payload?.text?.value || '').trim();
+    const authorEnabled = payload?.author?.enabled === true;
+    const authorName = (payload?.author?.name || '').trim();
+    const authorImage = typeof payload?.author?.image === 'string' ? payload.author.image.trim() : null;
+    const showAuthor = authorEnabled && authorName !== '';
+    const showText = textEnabled && textValue !== '';
 
-    if (!textEnabled || !value) {
-      textLayer.textContent = '';
+    if (!showAuthor && !showText) {
+      textLayer.innerHTML = '';
       textLayer.style.display = 'none';
       return;
     }
 
-    textLayer.textContent = value;
+    textLayer.innerHTML = '';
+
+    const metaNode = document.createElement('div');
+    metaNode.className = 'overlay-meta';
+
+    if (showAuthor) {
+      const authorNode = document.createElement('div');
+      authorNode.className = 'overlay-author';
+
+      authorNode.appendChild(createAvatarNode(authorName, authorImage));
+
+      const authorNameNode = document.createElement('div');
+      authorNameNode.className = 'overlay-author-name';
+      authorNameNode.textContent = authorName;
+      authorNode.appendChild(authorNameNode);
+
+      metaNode.appendChild(authorNode);
+    }
+
+    if (showText) {
+      const textNode = document.createElement('div');
+      textNode.className = 'overlay-text-value';
+      textNode.textContent = textValue;
+      metaNode.appendChild(textNode);
+    }
+
+    textLayer.appendChild(metaNode);
     textLayer.style.display = 'block';
   };
 
@@ -134,7 +184,7 @@
   const onPlay = async (payload) => {
     clearOverlay();
 
-    applyText(payload);
+    applyOverlayInfo(payload);
 
     try {
       await renderMedia(payload);
@@ -163,7 +213,7 @@
     };
 
     if (!overlayConfig.showText) {
-      textLayer.textContent = '';
+      textLayer.innerHTML = '';
       textLayer.style.display = 'none';
     }
 

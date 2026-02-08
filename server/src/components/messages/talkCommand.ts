@@ -25,6 +25,7 @@ export const talkCommand = () => ({
     const voice = interaction.options.get(rosetty.t('talkCommandOptionVoice')!)?.value as string;
 
     let filePath: string | null = null;
+    await interaction.deferReply();
 
     try {
       filePath = await promisedGtts(voice, rosetty.getCurrentLang());
@@ -44,7 +45,7 @@ export const talkCommand = () => ({
         authorImage: interaction.user.avatarURL(),
       });
 
-      await interaction.reply({
+      await interaction.editReply({
         embeds: [
           new EmbedBuilder()
             .setTitle(rosetty.t('success')!)
@@ -64,14 +65,13 @@ export const talkCommand = () => ({
         ? rosetty.t('talkCommandVoiceError')!
         : getLocalizedMediaErrorMessage(toMediaIngestionError(error, 'TRANSCODE_FAILED'));
 
-      await interaction.reply({
+      await interaction.editReply({
         embeds: [
           new EmbedBuilder()
             .setTitle(rosetty.t('error')!)
             .setDescription(message)
             .setColor(0xe74c3c),
         ],
-        ephemeral: true,
       });
     } finally {
       if (filePath) {

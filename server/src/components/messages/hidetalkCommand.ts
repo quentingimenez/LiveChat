@@ -25,6 +25,9 @@ export const hideTalkCommand = () => ({
     const voice = interaction.options.get(rosetty.t('hideTalkCommandOptionVoice')!)?.value as string;
 
     let filePath: string | null = null;
+    await interaction.deferReply({
+      ephemeral: true,
+    });
 
     try {
       filePath = await promisedGtts(voice, rosetty.getCurrentLang());
@@ -42,14 +45,13 @@ export const hideTalkCommand = () => ({
         showText: !!text,
       });
 
-      await interaction.reply({
+      await interaction.editReply({
         embeds: [
           new EmbedBuilder()
             .setTitle(rosetty.t('success')!)
             .setDescription(rosetty.t('hideTalkCommandAnswer')!)
             .setColor(0x2ecc71),
         ],
-        ephemeral: true,
       });
     } catch (error) {
       if (!filePath) {
@@ -63,14 +65,13 @@ export const hideTalkCommand = () => ({
         ? rosetty.t('talkCommandVoiceError')!
         : getLocalizedMediaErrorMessage(toMediaIngestionError(error, 'TRANSCODE_FAILED'));
 
-      await interaction.reply({
+      await interaction.editReply({
         embeds: [
           new EmbedBuilder()
             .setTitle(rosetty.t('error')!)
             .setDescription(message)
             .setColor(0xe74c3c),
         ],
-        ephemeral: true,
       });
     } finally {
       if (filePath) {

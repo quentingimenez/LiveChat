@@ -1,6 +1,7 @@
 import { addMilliseconds, addSeconds } from 'date-fns';
 import { OVERLAY_SOCKET_EVENTS, type OverlayPlayPayload } from '@livechat/overlay-protocol';
 import { MediaAssetStatus, PlaybackJobStatus } from '../../services/prisma/prismaEnums';
+import { decodeRichOverlayPayload } from '../../services/messages/richOverlayPayload';
 
 const buildOverlayPlayPayload = (params: {
   job: {
@@ -11,6 +12,7 @@ const buildOverlayPlayPayload = (params: {
     authorImage: string | null;
     durationSec: number;
   };
+  richPayload: ReturnType<typeof decodeRichOverlayPayload>;
   mediaAsset:
     | {
         id: string;
@@ -21,6 +23,13 @@ const buildOverlayPlayPayload = (params: {
       }
     | null;
 }): OverlayPlayPayload => {
+  const tweetCard = params.richPayload?.type === 'tweet' ? params.richPayload.tweetCard : null;
+  const tweetCaption = params.richPayload?.type === 'tweet' ? (params.richPayload.caption || '').trim() : '';
+  const hasTweetCard = !!tweetCard;
+  const textValue = hasTweetCard ? tweetCaption : params.job.text || '';
+  const textEnabled = hasTweetCard ? tweetCaption.length > 0 : params.job.showText;
+  const authorEnabled = hasTweetCard ? false : !!params.job.authorName;
+
   const media = params.mediaAsset
     ? {
         assetId: params.mediaAsset.id,
@@ -36,14 +45,20 @@ const buildOverlayPlayPayload = (params: {
     jobId: params.job.id,
     media,
     text: {
-      value: params.job.text || '',
-      enabled: params.job.showText,
+      value: textValue,
+      enabled: textEnabled,
     },
     author: {
       name: params.job.authorName || '',
       image: params.job.authorImage || null,
-      enabled: !!params.job.authorName,
+      enabled: authorEnabled,
     },
+    tweetCard: tweetCard
+      ? {
+          ...tweetCard,
+          caption: tweetCaption || null,
+        }
+      : null,
     durationSec: params.job.durationSec,
   };
 };
@@ -152,6 +167,7 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
     },
   });
 
+  const richPayload = decodeRichOverlayPayload(nextJob.text);
   const payload = buildOverlayPlayPayload({
     job: {
       id: nextJob.id,
@@ -161,6 +177,7 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
       authorImage: nextJob.authorImage,
       durationSec: nextJob.durationSec,
     },
+    richPayload,
     mediaAsset,
   });
 

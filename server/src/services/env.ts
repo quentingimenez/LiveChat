@@ -44,6 +44,11 @@ export const env = createEnv({
       .default('1080')
       .transform((s) => parseInt(s, 10)),
     MEDIA_VIDEO_PRESET: z.string().default('superfast'),
+    TWITTER_OEMBED_ENDPOINT: z.string().url().default('https://publish.twitter.com/oembed'),
+    TWITTER_CARD_DURATION_SEC: z
+      .string()
+      .default('15')
+      .transform((s) => parseInt(s, 10)),
     PAIRING_CODE_TTL_MINUTES: z
       .string()
       .default('5')

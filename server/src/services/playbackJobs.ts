@@ -8,10 +8,11 @@ interface CreatePlaybackJobParams {
   authorName?: string | null;
   authorImage?: string | null;
   showText?: boolean;
+  durationSec?: number | null;
 }
 
 export const createPlaybackJob = async (params: CreatePlaybackJobParams) => {
-  const durationSec = await getDurationFromGuildId(params.mediaAsset?.durationSec, params.guildId);
+  const durationSec = await getDurationFromGuildId(params.durationSec ?? params.mediaAsset?.durationSec, params.guildId);
 
   return prisma.playbackJob.create({
     data: {

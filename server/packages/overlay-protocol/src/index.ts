@@ -1,4 +1,4 @@
-export const OVERLAY_PROTOCOL_VERSION = '1.0.0';
+export const OVERLAY_PROTOCOL_VERSION = '1.1.0';
 
 export const OVERLAY_SOCKET_EVENTS = {
   PLAY: 'overlay:play',
@@ -10,6 +10,14 @@ export const OVERLAY_SOCKET_EVENTS = {
 export type OverlaySocketEventName = (typeof OVERLAY_SOCKET_EVENTS)[keyof typeof OVERLAY_SOCKET_EVENTS];
 
 export type OverlayMediaKind = 'image' | 'audio' | 'video';
+
+export interface OverlayTweetCard {
+  url: string;
+  html: string;
+  authorName: string;
+  authorUrl: string | null;
+  caption?: string | null;
+}
 
 export interface OverlayPlayPayload {
   jobId: string;
@@ -30,6 +38,7 @@ export interface OverlayPlayPayload {
     image: string | null;
     enabled: boolean;
   };
+  tweetCard?: OverlayTweetCard | null;
   durationSec: number;
 }
 

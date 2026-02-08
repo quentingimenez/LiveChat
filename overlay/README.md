@@ -38,3 +38,17 @@ npm run dist -- --mac dmg zip
 Le workflow GitHub `nightly.yml` build et publie automatiquement:
 - Windows: `.exe`
 - macOS: `.dmg` et `.zip`
+
+## macOS: blocage "application endommagée"
+
+Si tu télécharges une nightly non signée/non notarized, Gatekeeper peut afficher
+`"Overlay-Client est endommagé..."`.
+
+Déblocage local (temporaire):
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Overlay-Client.app"
+```
+
+Pour un build qui s'ouvre sans cette manipulation, configure les secrets GitHub:
+`CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`.

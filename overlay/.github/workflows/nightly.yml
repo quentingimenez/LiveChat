@@ -36,13 +36,13 @@ jobs:
             ${{ runner.os }}-electron-
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
-      - name: Build EXE (electron-builder)
+      - name: Build Windows EXE (electron-builder)
         env:
           ELECTRON_CACHE: ${{ github.workspace }}\.cache\electron
           ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\.cache\electron-builder
-        run: npm run dist
+        run: npm run dist -- --win portable
 
       - name: List dist outputs
         shell: pwsh
@@ -50,18 +50,69 @@ jobs:
           if (!(Test-Path "dist")) { throw "dist/ folder not found" }
           Get-ChildItem -Path "dist" -Recurse | Select-Object FullName, Length
 
-      - name: Create/Update nightly release + upload assets
+      - name: Create/Update nightly release + upload Windows assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
           $tag = "nightly"
 
-          # Ensure release exists
           gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
             gh release create $tag --title "Nightly" --prerelease --notes "Automated build from main"
           }
 
-          # Upload/overwrite assets
           gh release upload $tag "dist/*.exe" --clobber
+
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Cache Electron + electron-builder
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build macOS binaries (electron-builder)
+        env:
+          ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+        run: npm run dist -- --mac dmg zip
+
+      - name: List dist outputs
+        run: |
+          test -d dist || (echo "dist/ folder not found" && exit 1)
+          ls -la dist
+
+      - name: Create/Update nightly release + upload macOS assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="nightly"
+
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Nightly" --prerelease --notes "Automated build from main"
+
+          shopt -s nullglob
+          files=(dist/*.dmg dist/*.zip)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No macOS assets found in dist/"
+            exit 1
+          fi
+          gh release upload "$tag" "${files[@]}" --clobber

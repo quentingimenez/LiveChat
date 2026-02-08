@@ -7,6 +7,8 @@ const buildOverlayPlayPayload = (params: {
     id: string;
     text: string | null;
     showText: boolean;
+    authorName: string | null;
+    authorImage: string | null;
     durationSec: number;
   };
   mediaAsset:
@@ -36,6 +38,11 @@ const buildOverlayPlayPayload = (params: {
     text: {
       value: params.job.text || '',
       enabled: params.job.showText,
+    },
+    author: {
+      name: params.job.authorName || '',
+      image: params.job.authorImage || null,
+      enabled: !!params.job.authorName,
     },
     durationSec: params.job.durationSec,
   };
@@ -150,6 +157,8 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
       id: nextJob.id,
       text: nextJob.text,
       showText: nextJob.showText,
+      authorName: nextJob.authorName,
+      authorImage: nextJob.authorImage,
       durationSec: nextJob.durationSec,
     },
     mediaAsset,

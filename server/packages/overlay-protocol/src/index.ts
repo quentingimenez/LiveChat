@@ -25,6 +25,11 @@ export interface OverlayPlayPayload {
     value: string;
     enabled: boolean;
   };
+  author: {
+    name: string;
+    image: string | null;
+    enabled: boolean;
+  };
   durationSec: number;
 }
 

@@ -44,7 +44,7 @@ export const frLang: typeof enLang = {
   sendCommandMediaErrorDrm: 'Ce média semble protégé par DRM et ne peut pas être téléchargé par le bot.',
   sendCommandMediaErrorNotFound: 'Média introuvable (lien supprimé, expiré ou invalide).',
   sendCommandMediaErrorTimeout: 'Le téléchargement a expiré (timeout). Réessayez dans quelques instants.',
-  sendCommandMediaErrorTooLarge: 'Le média est trop volumineux pour les limites de traitement actuelles.',
+  sendCommandMediaErrorTooLarge: 'Le média est trop volumineux (limite actuelle: {{maxSizeMb}} MB).',
   sendCommandMediaErrorInvalidMedia: 'Le fichier téléchargé est invalide ou corrompu.',
   sendCommandMediaErrorTranscode: 'La conversion du média a échoué (codec/format).',
   sendCommandMediaErrorDownload: 'Le média n’a pas pu être téléchargé depuis cette source.',

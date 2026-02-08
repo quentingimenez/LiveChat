@@ -1,6 +1,8 @@
 const { app, BrowserWindow, screen, Tray, Menu, nativeImage, globalShortcut, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
+const https = require('https');
 const { io } = require('socket.io-client');
 const { OVERLAY_SOCKET_EVENTS } = require('./protocol');
 
@@ -67,6 +69,98 @@ function hasPairingConfig(config = loadConfig()) {
 
 function normalizeServerUrl(serverUrl) {
   return serverUrl.trim().replace(/\/+$/, '');
+}
+
+const TLS_ERROR_CODES = new Set([
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'CERT_HAS_EXPIRED',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+]);
+
+function isLikelyTlsError(error) {
+  if (!error) {
+    return false;
+  }
+
+  const code = `${error.code || ''}`.toUpperCase();
+  const message = `${error.message || ''}`.toLowerCase();
+
+  return TLS_ERROR_CODES.has(code) || message.includes('certificate') || message.includes('tls');
+}
+
+function formatNetworkError(error, endpoint) {
+  const code = `${error?.code || ''}`.toUpperCase();
+  const message = error?.message || 'unknown network error';
+
+  if (code === 'ENOTFOUND') {
+    return `dns_unreachable (${endpoint})`;
+  }
+
+  if (code === 'ECONNREFUSED') {
+    return `connection_refused (${endpoint})`;
+  }
+
+  if (code === 'ETIMEDOUT' || code === 'ECONNABORTED') {
+    return `request_timeout (${endpoint})`;
+  }
+
+  if (isLikelyTlsError(error)) {
+    return `tls_error (${message})`;
+  }
+
+  return `network_error (${code || 'UNKNOWN'}: ${message})`;
+}
+
+function httpRequestJson(url, payload, options = {}) {
+  const target = new URL(url);
+  const isHttps = target.protocol === 'https:';
+  const client = isHttps ? https : http;
+  const requestBody = JSON.stringify(payload);
+
+  return new Promise((resolve, reject) => {
+    const req = client.request(
+      {
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || (isHttps ? 443 : 80),
+        path: `${target.pathname}${target.search}`,
+        method: 'POST',
+        rejectUnauthorized: options.rejectUnauthorized !== false,
+        timeout: options.timeoutMs || 10000,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(requestBody),
+        },
+      },
+      (res) => {
+        let responseBody = '';
+
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => {
+          responseBody += chunk;
+        });
+        res.on('end', () => {
+          resolve({
+            statusCode: res.statusCode || 0,
+            body: responseBody,
+          });
+        });
+      },
+    );
+
+    req.on('timeout', () => {
+      req.destroy(Object.assign(new Error('request_timeout'), { code: 'ETIMEDOUT' }));
+    });
+
+    req.on('error', (error) => {
+      reject(error);
+    });
+
+    req.write(requestBody);
+    req.end();
+  });
 }
 
 function getTargetDisplay() {
@@ -258,6 +352,8 @@ function connectOverlaySocket() {
     reconnection: true,
     reconnectionDelay: 1000,
     reconnectionDelayMax: 3000,
+    timeout: 10000,
+    rejectUnauthorized: false,
     auth: {
       token: cfg.clientToken,
     },
@@ -502,21 +598,41 @@ ipcMain.handle('pairing:consume', async (_event, payload) => {
     throw new Error('missing_required_fields');
   }
 
-  const response = await fetch(`${serverUrl}/overlay/pair/consume`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      code,
-      deviceName,
-    }),
-  });
+  const endpoint = `${serverUrl}/overlay/pair/consume`;
+  let pairingResponse;
 
-  const payloadText = await response.text();
+  try {
+    pairingResponse = await httpRequestJson(
+      endpoint,
+      {
+        code,
+        deviceName,
+      },
+      {
+        rejectUnauthorized: true,
+      },
+    );
+  } catch (error) {
+    if (endpoint.startsWith('https://') && isLikelyTlsError(error)) {
+      pairingResponse = await httpRequestJson(
+        endpoint,
+        {
+          code,
+          deviceName,
+        },
+        {
+          rejectUnauthorized: false,
+        },
+      );
+    } else {
+      throw new Error(formatNetworkError(error, endpoint));
+    }
+  }
 
-  if (!response.ok) {
-    throw new Error(payloadText || `pairing_failed_${response.status}`);
+  const payloadText = pairingResponse.body || '';
+
+  if (pairingResponse.statusCode < 200 || pairingResponse.statusCode >= 300) {
+    throw new Error(payloadText || `pairing_failed_${pairingResponse.statusCode}`);
   }
 
   let parsed;

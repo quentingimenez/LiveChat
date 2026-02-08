@@ -35,9 +35,6 @@
     },
     "dmg": {
       "artifactName": "LiveChat-macOS-${arch}.${ext}"
-    },
-    "zip": {
-      "artifactName": "LiveChat-macOS-${arch}.${ext}"
     }
   },
   "dependencies": {

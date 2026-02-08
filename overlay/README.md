@@ -39,16 +39,14 @@ Le workflow GitHub `nightly.yml` build et publie automatiquement:
 - Windows: `.exe`
 - macOS: `.dmg` et `.zip`
 
-## macOS: blocage "application endommagée"
+## macOS: warning de sécurité
 
-Si tu télécharges une nightly non signée/non notarized, Gatekeeper peut afficher
-`"Overlay-Client est endommagé..."`.
+Les nightlies macOS sont distribuées sans certificat Apple (pas de secrets requis).
+Le comportement attendu est un warning Gatekeeper, puis ouverture manuelle:
+clic droit sur l'app -> `Ouvrir` -> confirmer.
 
-Déblocage local (temporaire):
+Si macOS affiche quand même `"Overlay-Client est endommagé..."`, retire la quarantaine:
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/Overlay-Client.app"
 ```
-
-Pour un build qui s'ouvre sans cette manipulation, configure les secrets GitHub:
-`CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`.

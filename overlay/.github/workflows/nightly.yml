@@ -19,6 +19,7 @@ jobs:
       - name: Ensure nightly release exists
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
@@ -73,6 +74,7 @@ jobs:
       - name: Upload Windows assets to nightly
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         shell: pwsh
         run: |
           gh release upload nightly "dist/*.exe" --clobber
@@ -120,6 +122,7 @@ jobs:
       - name: Upload macOS assets to nightly
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail

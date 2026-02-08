@@ -20,3 +20,18 @@ cp .env.example .env
 pnpm install
 pnpm dev
 ```
+
+## Docker Hub (GitHub Actions)
+
+Le workflow `/.github/workflows/docker.yml` build et pousse l'image sur Docker Hub:
+- sur push vers `main`
+- sur tag `v*`
+- en exécution manuelle (`workflow_dispatch`)
+
+Secrets GitHub requis:
+- `DOCKERHUB_USERNAME`
+- `DOCKERHUB_TOKEN` (token d'accès Docker Hub)
+
+Image publiée:
+- `${DOCKERHUB_USERNAME}/livechat-bot:latest`
+- `${DOCKERHUB_USERNAME}/livechat-bot:sha-<commit>`

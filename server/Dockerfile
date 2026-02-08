@@ -8,21 +8,24 @@ RUN apk update \
 WORKDIR /app
 
 ENV PORT=3000
-ENV DATABASE_URL="file:/app/LiveChatCaCaBox/sqlite.db"
+ENV DATABASE_URL="file:/app/data/sqlite.db"
+ENV MEDIA_STORAGE_DIR="/app/data/media"
 
 LABEL maintainer="Quentin Laffont <contact@qlaffont.com>"
 
 RUN npm install -g pnpm
 
-# Monorepo workspace files
-COPY package.json pnpm-workspace.yaml ./
+# Standalone repo files
+COPY package.json pnpm-lock.yaml .npmrc ./
 COPY packages ./packages
-COPY LiveChatCaCaBox ./LiveChatCaCaBox
 
-# Install only backend workspace dependencies
-RUN pnpm install --filter livechat-ccb... --no-frozen-lockfile
+RUN pnpm install --no-frozen-lockfile
 
-WORKDIR /app/LiveChatCaCaBox
+COPY prisma ./prisma
+COPY src ./src
+COPY tsconfig.json ./
+COPY commitlint.config.js ./
+COPY README.md ./
 
 RUN pnpm generate
 

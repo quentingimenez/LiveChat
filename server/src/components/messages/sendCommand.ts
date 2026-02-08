@@ -40,47 +40,47 @@ export const sendCommand = () => ({
       return;
     }
 
-    let mediaAsset = null;
+    await interaction.deferReply();
 
-    if (url || media) {
-      try {
+    try {
+      let mediaAsset = null;
+
+      if (url || media) {
         mediaAsset = await ingestMediaFromSource({
           url,
           media,
         });
-      } catch (error) {
-        const mediaError = toMediaIngestionError(error);
-        logger.error(mediaError, `[MEDIA] send command failed (${mediaError.code})`);
-
-        await interaction.reply({
-          embeds: [
-            new EmbedBuilder()
-              .setTitle(rosetty.t('error')!)
-              .setDescription(getLocalizedMediaErrorMessage(mediaError))
-              .setColor(0xe74c3c),
-          ],
-          ephemeral: true,
-        });
-        return;
       }
+
+      await createPlaybackJob({
+        guildId: interaction.guildId!,
+        mediaAsset,
+        text,
+        showText: !!text,
+        authorName: interaction.user.username,
+        authorImage: interaction.user.avatarURL(),
+      });
+
+      await interaction.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle(rosetty.t('success')!)
+            .setDescription(rosetty.t('sendCommandAnswer')!)
+            .setColor(0x2ecc71),
+        ],
+      });
+    } catch (error) {
+      const mediaError = toMediaIngestionError(error);
+      logger.error(mediaError, `[MEDIA] send command failed (${mediaError.code})`);
+
+      await interaction.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle(rosetty.t('error')!)
+            .setDescription(getLocalizedMediaErrorMessage(mediaError))
+            .setColor(0xe74c3c),
+        ],
+      });
     }
-
-    await createPlaybackJob({
-      guildId: interaction.guildId!,
-      mediaAsset,
-      text,
-      showText: !!text,
-      authorName: interaction.user.username,
-      authorImage: interaction.user.avatarURL(),
-    });
-
-    await interaction.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle(rosetty.t('success')!)
-          .setDescription(rosetty.t('sendCommandAnswer')!)
-          .setColor(0x2ecc71),
-      ],
-    });
   },
 });

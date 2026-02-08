@@ -42,46 +42,47 @@ export const hideSendCommand = () => ({
       return;
     }
 
-    let mediaAsset = null;
+    await interaction.deferReply({
+      ephemeral: true,
+    });
 
-    if (url || media) {
-      try {
+    try {
+      let mediaAsset = null;
+
+      if (url || media) {
         mediaAsset = await ingestMediaFromSource({
           url,
           media,
         });
-      } catch (error) {
-        const mediaError = toMediaIngestionError(error);
-        logger.error(mediaError, `[MEDIA] hide send command failed (${mediaError.code})`);
-
-        await interaction.reply({
-          embeds: [
-            new EmbedBuilder()
-              .setTitle(rosetty.t('error')!)
-              .setDescription(getLocalizedMediaErrorMessage(mediaError))
-              .setColor(0xe74c3c),
-          ],
-          ephemeral: true,
-        });
-        return;
       }
+
+      await createPlaybackJob({
+        guildId: interaction.guildId!,
+        mediaAsset,
+        text,
+        showText: !!text,
+      });
+
+      await interaction.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle(rosetty.t('success')!)
+            .setDescription(rosetty.t('hideSendCommandAnswer')!)
+            .setColor(0x2ecc71),
+        ],
+      });
+    } catch (error) {
+      const mediaError = toMediaIngestionError(error);
+      logger.error(mediaError, `[MEDIA] hide send command failed (${mediaError.code})`);
+
+      await interaction.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle(rosetty.t('error')!)
+            .setDescription(getLocalizedMediaErrorMessage(mediaError))
+            .setColor(0xe74c3c),
+        ],
+      });
     }
-
-    await createPlaybackJob({
-      guildId: interaction.guildId!,
-      mediaAsset,
-      text,
-      showText: !!text,
-    });
-
-    await interaction.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle(rosetty.t('success')!)
-          .setDescription(rosetty.t('hideSendCommandAnswer')!)
-          .setColor(0x2ecc71),
-      ],
-      ephemeral: true,
-    });
   },
 });

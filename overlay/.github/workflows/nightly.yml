@@ -2,7 +2,8 @@ name: Build & Release (nightly)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -12,8 +13,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  ensure-nightly-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure nightly release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="nightly"
+
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --title "Nightly" \
+              --prerelease \
+              --notes "Automated build from main"
+          fi
+
   build-windows:
     runs-on: windows-latest
+    needs: ensure-nightly-release
 
     steps:
       - name: Checkout
@@ -50,22 +70,16 @@ jobs:
           if (!(Test-Path "dist")) { throw "dist/ folder not found" }
           Get-ChildItem -Path "dist" -Recurse | Select-Object FullName, Length
 
-      - name: Create/Update nightly release + upload Windows assets
+      - name: Upload Windows assets to nightly
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          $tag = "nightly"
-
-          gh release view $tag *> $null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --title "Nightly" --prerelease --notes "Automated build from main"
-          }
-
-          gh release upload $tag "dist/*.exe" --clobber
+          gh release upload nightly "dist/*.exe" --clobber
 
   build-macos:
     runs-on: macos-latest
+    needs: ensure-nightly-release
 
     steps:
       - name: Checkout
@@ -94,25 +108,27 @@ jobs:
         env:
           ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
           ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
-        run: npm run dist -- --mac dmg zip
+        run: npm run dist -- --mac
 
       - name: List dist outputs
+        shell: bash
         run: |
+          set -euo pipefail
           test -d dist || (echo "dist/ folder not found" && exit 1)
           ls -la dist
 
-      - name: Create/Update nightly release + upload macOS assets
+      - name: Upload macOS assets to nightly
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
-          tag="nightly"
-
-          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Nightly" --prerelease --notes "Automated build from main"
-
+          set -euo pipefail
           shopt -s nullglob
           files=(dist/*.dmg dist/*.zip)
+
           if [ ${#files[@]} -eq 0 ]; then
             echo "No macOS assets found in dist/"
             exit 1
           fi
-          gh release upload "$tag" "${files[@]}" --clobber
+
+          gh release upload nightly "${files[@]}" --clobber

@@ -14,6 +14,13 @@ interface ProbedMetadata {
   height: number | null;
 }
 
+interface ProbedMediaDetails extends ProbedMetadata {
+  formatName: string | null;
+  videoCodec: string | null;
+  audioCodec: string | null;
+  pixelFormat: string | null;
+}
+
 export interface NormalizedMedia {
   kind: OverlayMediaKind;
   mime: string;
@@ -32,10 +39,18 @@ const runFfmpeg = async (args: string[]) => {
   });
 };
 
-const probeMedia = async (filePath: string): Promise<ProbedMetadata> => {
+const probeMediaDetails = async (filePath: string): Promise<ProbedMediaDetails> => {
   const { stdout } = await execFileAsync(
     env.FFPROBE_BINARY,
-    ['-v', 'error', '-show_entries', 'stream=width,height:format=duration', '-of', 'json', filePath],
+    [
+      '-v',
+      'error',
+      '-show_entries',
+      'stream=codec_type,codec_name,width,height,pix_fmt:format=duration,format_name',
+      '-of',
+      'json',
+      filePath,
+    ],
     {
       timeout: env.MEDIA_DOWNLOAD_TIMEOUT_MS,
       maxBuffer: 10 * 1024 * 1024,
@@ -44,7 +59,10 @@ const probeMedia = async (filePath: string): Promise<ProbedMetadata> => {
 
   const parsed = JSON.parse(stdout || '{}');
   const streams = Array.isArray(parsed.streams) ? parsed.streams : [];
-  const firstVideo = streams.find((stream) => typeof stream?.width === 'number' && typeof stream?.height === 'number');
+  const firstVideo = streams.find(
+    (stream) => stream?.codec_type === 'video' || (typeof stream?.width === 'number' && typeof stream?.height === 'number'),
+  );
+  const firstAudio = streams.find((stream) => stream?.codec_type === 'audio');
 
   const width = firstVideo?.width ?? null;
   const height = firstVideo?.height ?? null;
@@ -60,6 +78,20 @@ const probeMedia = async (filePath: string): Promise<ProbedMetadata> => {
     durationSec,
     width,
     height,
+    formatName: typeof parsed?.format?.format_name === 'string' ? parsed.format.format_name : null,
+    videoCodec: typeof firstVideo?.codec_name === 'string' ? firstVideo.codec_name : null,
+    audioCodec: typeof firstAudio?.codec_name === 'string' ? firstAudio.codec_name : null,
+    pixelFormat: typeof firstVideo?.pix_fmt === 'string' ? firstVideo.pix_fmt : null,
+  };
+};
+
+const probeMedia = async (filePath: string): Promise<ProbedMetadata> => {
+  const details = await probeMediaDetails(filePath);
+
+  return {
+    durationSec: details.durationSec,
+    width: details.width,
+    height: details.height,
   };
 };
 
@@ -125,15 +157,33 @@ const normalizeAudio = async (inputPath: string, outputBasePath: string): Promis
 
 const normalizeVideo = async (inputPath: string, outputBasePath: string): Promise<NormalizedMedia> => {
   const outputPath = `${outputBasePath}.mp4`;
+  const maxHeight = Math.max(0, env.MEDIA_VIDEO_MAX_HEIGHT);
+  const details = await probeMediaDetails(inputPath).catch(() => null);
+  const isWithinTargetHeight = maxHeight === 0 || details?.height === null || (details?.height ?? 0) <= maxHeight;
+  const isMp4Container =
+    typeof details?.formatName === 'string' &&
+    (details.formatName.includes('mp4') || details.formatName.includes('mov') || details.formatName.includes('m4a'));
+  const canCopyWithoutTranscode =
+    !!details &&
+    isMp4Container &&
+    isWithinTargetHeight &&
+    details.videoCodec === 'h264' &&
+    (details.audioCodec === null || details.audioCodec === 'aac') &&
+    (details.pixelFormat === null || details.pixelFormat === 'yuv420p');
 
-  await runFfmpeg([
+  if (canCopyWithoutTranscode) {
+    await copyFile(inputPath, outputPath);
+    return finalizeFile(outputPath, 'video', 'video/mp4');
+  }
+
+  const ffmpegArgs = [
     '-y',
     '-i',
     inputPath,
     '-c:v',
     'libx264',
     '-preset',
-    'veryfast',
+    (env.MEDIA_VIDEO_PRESET || 'superfast').trim() || 'superfast',
     '-pix_fmt',
     'yuv420p',
     '-movflags',
@@ -142,8 +192,15 @@ const normalizeVideo = async (inputPath: string, outputBasePath: string): Promis
     'aac',
     '-b:a',
     '192k',
-    outputPath,
-  ]);
+  ];
+
+  if (maxHeight > 0) {
+    ffmpegArgs.push('-vf', `scale=-2:${maxHeight}:force_original_aspect_ratio=decrease`);
+  }
+
+  ffmpegArgs.push(outputPath);
+
+  await runFfmpeg(ffmpegArgs);
 
   return finalizeFile(outputPath, 'video', 'video/mp4');
 };

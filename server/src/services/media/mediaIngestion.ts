@@ -108,27 +108,28 @@ const findDownloadedFile = async (tmpDir: string) => {
 
 const downloadWithYtDlp = async (sourceUrl: string, tmpDir: string): Promise<string> => {
   const outputTemplate = path.join(tmpDir, 'download.%(ext)s');
+  const formatSelector = (env.YTDLP_FORMAT || '').trim();
+  const args = [
+    '--no-playlist',
+    '--no-progress',
+    '--no-warnings',
+    '--print-json',
+    '--max-filesize',
+    `${Math.max(1, env.MEDIA_MAX_SIZE_MB)}M`,
+  ];
+
+  if (formatSelector.length > 0) {
+    args.push('--format', formatSelector);
+  }
+
+  args.push('-o', outputTemplate, sourceUrl);
 
   let stdout = '';
   try {
-    const result = await execFileAsync(
-      env.YTDLP_BINARY,
-      [
-        '--no-playlist',
-        '--no-progress',
-        '--no-warnings',
-        '--print-json',
-        '--max-filesize',
-        `${Math.max(1, env.MEDIA_MAX_SIZE_MB)}M`,
-        '-o',
-        outputTemplate,
-        sourceUrl,
-      ],
-      {
-        timeout: env.MEDIA_DOWNLOAD_TIMEOUT_MS,
-        maxBuffer: 10 * 1024 * 1024,
-      },
-    );
+    const result = await execFileAsync(env.YTDLP_BINARY, args, {
+      timeout: env.MEDIA_DOWNLOAD_TIMEOUT_MS,
+      maxBuffer: 10 * 1024 * 1024,
+    });
     stdout = result.stdout || '';
   } catch (error) {
     throw toMediaIngestionError(error);

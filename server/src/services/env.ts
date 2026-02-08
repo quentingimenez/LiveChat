@@ -39,11 +39,17 @@ export const env = createEnv({
       .string()
       .default('2048')
       .transform((s) => parseInt(s, 10)),
+    MEDIA_VIDEO_MAX_HEIGHT: z
+      .string()
+      .default('1080')
+      .transform((s) => parseInt(s, 10)),
+    MEDIA_VIDEO_PRESET: z.string().default('superfast'),
     PAIRING_CODE_TTL_MINUTES: z
       .string()
       .default('5')
       .transform((s) => parseInt(s, 10)),
     YTDLP_BINARY: z.string().default('yt-dlp'),
+    YTDLP_FORMAT: z.string().default('bv*[height<=1080]+ba/b[height<=1080]/best'),
     FFMPEG_BINARY: z.string().default('ffmpeg'),
     FFPROBE_BINARY: z.string().default('ffprobe'),
   },

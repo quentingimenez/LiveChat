@@ -1,6 +1,6 @@
 import { addMilliseconds, addSeconds } from 'date-fns';
-import { MediaAssetStatus, PlaybackJobStatus } from '@prisma/client';
 import { OVERLAY_SOCKET_EVENTS, type OverlayPlayPayload } from '@livechat/overlay-protocol';
+import { MediaAssetStatus, PlaybackJobStatus } from '../../services/prisma/prismaEnums';
 
 const buildOverlayPlayPayload = (params: {
   job: {
@@ -13,7 +13,7 @@ const buildOverlayPlayPayload = (params: {
     | {
         id: string;
         mime: string;
-        kind: 'IMAGE' | 'AUDIO' | 'VIDEO';
+        kind: string;
         durationSec: number | null;
         isVertical: boolean;
       }
@@ -99,7 +99,7 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
   let mediaAsset: {
     id: string;
     mime: string;
-    kind: 'IMAGE' | 'AUDIO' | 'VIDEO';
+    kind: string;
     durationSec: number | null;
     isVertical: boolean;
   } | null = null;

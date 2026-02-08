@@ -6,8 +6,8 @@ import { promisify } from 'util';
 import fetch from 'node-fetch';
 import mime from 'mime-types';
 import { addHours } from 'date-fns';
-import { MediaAssetKind, MediaAssetStatus } from '@prisma/client';
 import { buildMediaOutputBasePath, ensureMediaStorageDir, getReadyCachedMediaAsset, touchMediaAsset } from './mediaCache';
+import { MediaAssetKind, MediaAssetStatus } from '../prisma/prismaEnums';
 import {
   MediaIngestionError,
   getMediaErrorCodeFromHttpStatus,

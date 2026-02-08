@@ -2,7 +2,7 @@ import fs from 'fs';
 import { mkdir, rm } from 'fs/promises';
 import path from 'path';
 import { addHours, subHours } from 'date-fns';
-import { MediaAssetStatus } from '@prisma/client';
+import { MediaAssetStatus } from '../prisma/prismaEnums';
 
 const getCacheTtlHours = () => {
   return Math.max(1, env.MEDIA_CACHE_TTL_HOURS);

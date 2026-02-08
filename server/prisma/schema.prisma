@@ -7,30 +7,11 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum MediaAssetKind {
-  IMAGE
-  AUDIO
-  VIDEO
-}
-
-enum MediaAssetStatus {
-  PROCESSING
-  READY
-  FAILED
-}
-
-enum PlaybackJobStatus {
-  PENDING
-  PLAYING
-  DONE
-  FAILED
-}
-
 model MediaAsset {
-  id             String           @id @default(uuid())
+  id             String   @id @default(uuid())
   sourceHash     String           @unique
   sourceUrl      String
-  kind           MediaAssetKind
+  kind           String
   mime           String
   durationSec    Int?
   width          Int?
@@ -38,7 +19,7 @@ model MediaAsset {
   isVertical     Boolean          @default(false)
   storagePath    String
   sizeBytes      Int              @default(0)
-  status         MediaAssetStatus @default(PROCESSING)
+  status         String           @default("PROCESSING")
   error          String?
   lastAccessedAt DateTime         @default(now())
   expiresAt      DateTime
@@ -51,7 +32,7 @@ model MediaAsset {
 }
 
 model PlaybackJob {
-  id         String            @id @default(uuid())
+  id         String  @id @default(uuid())
   guildId    String
   mediaAssetId String?
   mediaAsset MediaAsset?       @relation(fields: [mediaAssetId], references: [id], onDelete: SetNull)
@@ -62,7 +43,7 @@ model PlaybackJob {
   authorImage String?
 
   durationSec  Int
-  status       PlaybackJobStatus @default(PENDING)
+  status       String   @default("PENDING")
 
   submissionDate DateTime @default(now())
   executionDate  DateTime @default(now())

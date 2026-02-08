@@ -38,7 +38,7 @@
   },
   "dependencies": {
     "@gquittet/graceful-server": "^4.0.8",
-    "@livechat/overlay-protocol": "workspace:*",
+    "@livechat/overlay-protocol": "file:packages/overlay-protocol",
     "@prisma/client": "^5.10.2",
     "@socket.io/postgres-emitter": "^0.1.0",
     "@t3-oss/env-core": "^0.8.0",

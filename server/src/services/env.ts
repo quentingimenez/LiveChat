@@ -1,6 +1,4 @@
 import 'dotenv/config';
-//@ts-ignore
-// eslint-disable-next-line import/no-unresolved
 import { createEnv } from '@t3-oss/env-core';
 import { z } from 'zod';
 
@@ -11,7 +9,7 @@ export const env = createEnv({
     PORT: z
       .string()
       .default('3000')
-      .transform((s) => parseInt(s)),
+      .transform((s) => parseInt(s, 10)),
 
     I18N: z.string().default('fr'),
 
@@ -20,13 +18,30 @@ export const env = createEnv({
     DISCORD_TOKEN: z.string(),
     DISCORD_CLIENT_ID: z.string(),
 
-    DATABASE_URL: z.string().url(),
+    DATABASE_URL: z.string(),
 
     HIDE_COMMANDS_DISABLED: z.string().default('false'),
     DEFAULT_DURATION: z
       .string()
       .default('5')
-      .transform((s) => parseInt(s)),
+      .transform((s) => parseInt(s, 10)),
+
+    MEDIA_STORAGE_DIR: z.string().default('./data/media'),
+    MEDIA_CACHE_TTL_HOURS: z
+      .string()
+      .default('12')
+      .transform((s) => parseInt(s, 10)),
+    MEDIA_DOWNLOAD_TIMEOUT_MS: z
+      .string()
+      .default('180000')
+      .transform((s) => parseInt(s, 10)),
+    PAIRING_CODE_TTL_MINUTES: z
+      .string()
+      .default('5')
+      .transform((s) => parseInt(s, 10)),
+    YTDLP_BINARY: z.string().default('yt-dlp'),
+    FFMPEG_BINARY: z.string().default('ffmpeg'),
+    FFPROBE_BINARY: z.string().default('ffprobe'),
   },
   runtimeEnv: process.env,
 });

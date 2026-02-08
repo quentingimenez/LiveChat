@@ -1,8 +1,9 @@
+import crypto from 'crypto';
 import { CommandInteraction, EmbedBuilder, SlashCommandBuilder } from 'discord.js';
-import { QueueType } from '../../services/prisma/loadPrisma';
-import { getContentInformationsFromUrl } from '../../services/content-utils';
-import { deleteGtts, promisedGtts, readGttsAsStream } from '../../services/gtts';
-import { getDurationFromGuildId } from '../../services/utils';
+import { deleteGtts, promisedGtts } from '../../services/gtts';
+import { ingestMediaFromLocalFile } from '../../services/media/mediaIngestion';
+import { getLocalizedMediaErrorMessage, toMediaIngestionError } from '../../services/media/mediaErrors';
+import { createPlaybackJob } from '../../services/playbackJobs';
 
 export const hideTalkCommand = () => ({
   data: new SlashCommandBuilder()
@@ -20,46 +21,61 @@ export const hideTalkCommand = () => ({
         .setDescription(rosetty.t('hideTalkCommandOptionTextDescription')!),
     ),
   handler: async (interaction: CommandInteraction) => {
-    const text = interaction.options.get(rosetty.t('hideTalkCommandOptionText')!)?.value;
-    const voice = interaction.options.get(rosetty.t('hideTalkCommandOptionVoice')!)?.value;
+    const text = interaction.options.get(rosetty.t('hideTalkCommandOptionText')!)?.value as string | null;
+    const voice = interaction.options.get(rosetty.t('hideTalkCommandOptionVoice')!)?.value as string;
 
-    const filePath = await promisedGtts(voice, rosetty.getCurrentLang());
+    let filePath: string | null = null;
 
-    const fileStream = readGttsAsStream(filePath);
+    try {
+      filePath = await promisedGtts(voice, rosetty.getCurrentLang());
+      const sourceHash = crypto
+        .createHash('sha1')
+        .update(`${rosetty.getCurrentLang()}:${voice}`)
+        .digest('hex');
 
-    const interactionReply = await interaction.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle(rosetty.t('success')!)
-          .setDescription(rosetty.t('hideTalkCommandAnswer')!)
-          .setColor(0x2ecc71),
-      ],
-      files: [fileStream],
-      ephemeral: true,
-    });
+      const mediaAsset = await ingestMediaFromLocalFile(filePath, `gtts:${rosetty.getCurrentLang()}:${sourceHash}`);
 
-    const message = await interactionReply.fetch();
-    const media = message.attachments.first()?.proxyURL;
+      await createPlaybackJob({
+        guildId: interaction.guildId!,
+        mediaAsset,
+        text,
+        showText: !!text,
+      });
 
-    const additionalContent = await getContentInformationsFromUrl(media as string);
+      await interaction.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle(rosetty.t('success')!)
+            .setDescription(rosetty.t('hideTalkCommandAnswer')!)
+            .setColor(0x2ecc71),
+        ],
+        ephemeral: true,
+      });
+    } catch (error) {
+      if (!filePath) {
+        logger.error(error, '[MEDIA] hide talk command failed (voice generation)');
+      } else {
+        const mediaError = toMediaIngestionError(error, 'TRANSCODE_FAILED');
+        logger.error(mediaError, `[MEDIA] hide talk command failed (${mediaError.code})`);
+      }
 
-    await deleteGtts(filePath);
+      const message = !filePath
+        ? rosetty.t('talkCommandVoiceError')!
+        : getLocalizedMediaErrorMessage(toMediaIngestionError(error, 'TRANSCODE_FAILED'));
 
-    await prisma.queue.create({
-      data: {
-        content: JSON.stringify({
-          text,
-          media,
-          mediaContentType: 'audio/mpeg',
-          mediaDuration: Math.ceil(additionalContent.mediaDuration),
-        }),
-        type: QueueType.VOCAL,
-        discordGuildId: interaction.guildId!,
-        duration: await getDurationFromGuildId(
-          additionalContent.mediaDuration ? Math.ceil(additionalContent.mediaDuration) : undefined,
-          interaction.guildId!,
-        ),
-      },
-    });
+      await interaction.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle(rosetty.t('error')!)
+            .setDescription(message)
+            .setColor(0xe74c3c),
+        ],
+        ephemeral: true,
+      });
+    } finally {
+      if (filePath) {
+        await deleteGtts(filePath).catch(() => undefined);
+      }
+    }
   },
 });

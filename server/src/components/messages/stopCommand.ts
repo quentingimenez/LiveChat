@@ -1,17 +1,22 @@
 import { CommandInteraction, EmbedBuilder, SlashCommandBuilder } from 'discord.js';
+import { OVERLAY_SOCKET_EVENTS } from '@livechat/overlay-protocol';
 
 export const stopCommand = (fastify: FastifyCustomInstance) => ({
   data: new SlashCommandBuilder()
     .setName(rosetty.t('stopCommand')!)
     .setDescription(rosetty.t('stopCommandDescription')!),
   handler: async (interaction: CommandInteraction) => {
-    fastify.io.to(`messages-${interaction.guildId!}`).emit('stop');
+    fastify.io.to(`overlay-guild-${interaction.guildId!}`).emit(OVERLAY_SOCKET_EVENTS.STOP, { jobId: 'manual-stop' });
 
-    await prisma.guild.update({
+    await prisma.guild.upsert({
       where: {
         id: interaction.guildId!,
       },
-      data: {
+      create: {
+        id: interaction.guildId!,
+        busyUntil: null,
+      },
+      update: {
         busyUntil: null,
       },
     });

@@ -7,8 +7,3 @@ export const loadPrismaClient = async () => {
 
   await prisma.$connect();
 };
-
-export enum QueueType {
-  MESSAGE = 'message',
-  VOCAL = 'vocal',
-}

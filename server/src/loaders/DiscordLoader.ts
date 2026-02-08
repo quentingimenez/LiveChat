@@ -15,7 +15,7 @@ import { hideSendCommand } from '../components/messages/hidesendCommand';
 import { loadMessagesWorker } from '../components/messages/messagesWorker';
 import { talkCommand } from '../components/messages/talkCommand';
 import { hideTalkCommand } from '../components/messages/hidetalkCommand';
-import { clientCommand } from '../components/discord/clientCommand';
+import { overlayCodeCommand } from '../components/discord/clientCommand';
 import { helpCommand } from '../components/discord/helpCommand';
 import { infoCommand } from '../components/discord/infoCommand';
 import { setDefaultTimeCommand } from '../components/discord/setDefaultTimeCommand';
@@ -80,7 +80,7 @@ const loadDiscordCommands = async (fastify: FastifyCustomInstance) => {
       aliveCommand(),
       sendCommand(),
       talkCommand(),
-      clientCommand(),
+      overlayCodeCommand(),
       helpCommand(),
       infoCommand(),
       setDefaultTimeCommand(),

@@ -1,17 +1,16 @@
 import { startCase } from 'lodash';
-import { ClientRoutes } from '../components/client/clientRoutes';
+import { OverlayRoutes } from '../components/overlay/overlayRoutes';
 
 export const loadRoutes = (fastify: FastifyCustomInstance) => {
   const routes = [
     {
-      '/client': ClientRoutes,
+      '/overlay': OverlayRoutes,
     },
   ];
 
   for (const route of routes) {
     const [[prefix, fastifyRoutes]] = Object.entries(route);
-    //@ts-ignore
-    fastify.register(fastifyRoutes(fastify.io), { prefix });
+    fastify.register(fastifyRoutes(), { prefix });
     const routeName = startCase(prefix.substring(1).replaceAll('/', ' '));
     logger.info(`[REST] ${routeName} Routes loaded (${prefix})`);
   }

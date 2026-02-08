@@ -15,15 +15,17 @@ export const frLang: typeof enLang = {
 
   howToUseTitle: "Comment m'utiliser ?",
   howToUseDescription:
-    "Pour m'utiliser, vous devez d'abord faire un `/client` pour avoir le lien à intégrer sur votre OBS ou XSplit.\n\nAprès, vous pouvez faire un `/help` pour obtenir toutes les commandes que vous pouvez utiliser pour envoyer du contenu sur le stream.",
+    'Utilisez `/overlay-code` pour générer un code d’appairage à usage unique pour l’Overlay EXE, puis saisissez-le dans l’application desktop. Ensuite utilisez `/msg`, `/cmsg`, `/dire`, `/cdire` pour envoyer des médias.',
 
   aliveCommand: 'dispo',
   aliveCommandDescription: 'Vérifiez si le bot est vivant',
   aliveCommandsAnswer: '{{username}}, Je suis en vie !',
 
-  clientCommand: 'client',
-  clientCommandDescription: 'Obtenez un lien OBS pour intégrer LiveChat',
-  clientCommandsAnswer: 'Voici le lien : {{link}}',
+  overlayCodeCommand: 'overlay-code',
+  overlayCodeCommandDescription: 'Générer un code d’appairage à usage unique pour Overlay EXE',
+  overlayCodeCommandAnswerTitle: 'Code d’appairage Overlay',
+  overlayCodeCommandAnswerDescription:
+    'Utilisez ce code dans Overlay EXE : `{{code}}`\nExpire dans {{expiresIn}} minute(s).\nURL du serveur : {{apiUrl}}',
 
   sendCommand: 'msg',
   sendCommandDescription: 'Envoyer du contenu sur le stream',
@@ -34,6 +36,18 @@ export const frLang: typeof enLang = {
   sendCommandOptionMedia: 'média',
   sendCommandOptionMediaDescription: 'Média à afficher',
   sendCommandAnswer: 'Contenu reçu ! Il sera bientôt joué !',
+  sendCommandMissingContent: 'Veuillez fournir au moins un texte, un média ou un lien.',
+  sendCommandMediaError: 'Le média n’a pas pu être téléchargé ou normalisé.',
+  sendCommandMediaErrorUnsupportedSource: 'Ce lien/source n’est pas supporté par le bot.',
+  sendCommandMediaErrorPrivate:
+    'Ce média est privé, restreint ou nécessite une authentification (cookies/compte) pour être récupéré.',
+  sendCommandMediaErrorDrm: 'Ce média semble protégé par DRM et ne peut pas être téléchargé par le bot.',
+  sendCommandMediaErrorNotFound: 'Média introuvable (lien supprimé, expiré ou invalide).',
+  sendCommandMediaErrorTimeout: 'Le téléchargement a expiré (timeout). Réessayez dans quelques instants.',
+  sendCommandMediaErrorTooLarge: 'Le média est trop volumineux pour les limites de traitement actuelles.',
+  sendCommandMediaErrorInvalidMedia: 'Le fichier téléchargé est invalide ou corrompu.',
+  sendCommandMediaErrorTranscode: 'La conversion du média a échoué (codec/format).',
+  sendCommandMediaErrorDownload: 'Le média n’a pas pu être téléchargé depuis cette source.',
 
   hideSendCommand: 'cmsg',
   hideSendCommandDescription: 'Envoyer du contenu sur le stream (mais caché 😈)',
@@ -52,6 +66,7 @@ export const frLang: typeof enLang = {
   talkCommandOptionVoice: 'dire',
   talkCommandOptionVoiceDescription: 'Texte à dire',
   talkCommandAnswer: 'Contenu reçu ! Il sera bientôt joué !',
+  talkCommandVoiceError: 'La génération vocale a échoué. Réessayez avec un texte plus court ou plus tard.',
 
   hideTalkCommand: 'cdire',
   hideTalkCommandDescription: 'Demandez à un bot de dire quelque chose (mais caché 😈)',
@@ -63,25 +78,25 @@ export const frLang: typeof enLang = {
 
   setDefaultTimeCommand: 'config-defaut',
   setDefaultTimeCommandDescription:
-    "Définir le temps par défaut pour l'affichage (Par défaut : 5 seconds) (En secondes)",
+    "Définir le temps par défaut pour l'affichage (Par défaut : 5 secondes) (En secondes)",
   setDefaultTimeCommandOptionText: 'nombre',
-  setDefaultTimeCommandOptionTextDescription: 'Nombre de seconds',
-  setDefaultTimeCommandAnswer: 'Le temps par défaut défini !',
+  setDefaultTimeCommandOptionTextDescription: 'Nombre de secondes',
+  setDefaultTimeCommandAnswer: 'Le temps par défaut est défini !',
 
   setMaxTimeCommand: 'config-max',
   setMaxTimeCommandDescription:
     "Définir le temps maximal pour l'affichage (En secondes) | 0 remet la valeur par défaut",
   setMaxTimeCommandOptionText: 'nombre',
-  setMaxTimeCommandOptionTextDescription: 'Nombre de seconds',
+  setMaxTimeCommandOptionTextDescription: 'Nombre de secondes',
   setMaxTimeCommandAnswer: 'Temps maximum défini !',
 
   setDisplayMediaFullCommand: 'config-displayfull',
-  setDisplayMediaFullCommandDescription: 'Définir si les médias doivent être affichés en plein écran',
+  setDisplayMediaFullCommandDescription: 'Option legacy (conservée pour compatibilité)',
   setDisplayMediaFullCommandOptionText: 'value',
-  setDisplayMediaFullCommandOptionTextDescription: 'Oui  / Non',
-  setDisplayMediaFullCommandAnswer: 'Valeur défini !',
+  setDisplayMediaFullCommandOptionTextDescription: 'Oui / Non',
+  setDisplayMediaFullCommandAnswer: 'Valeur définie !',
 
   stopCommand: 'stop',
-  stopCommandDescription: 'Supprime le média',
-  stopCommandAnswer: 'Média interrompu !',
+  stopCommandDescription: 'Interrompre la lecture en cours',
+  stopCommandAnswer: 'Lecture interrompue !',
 };

@@ -10,6 +10,7 @@ import { isProductionEnv, isPreProductionEnv } from './services/env';
 import { loadDiscord } from './loaders/DiscordLoader';
 import { loadRosetty } from './services/i18n/loader';
 import { loadPrismaClient } from './services/prisma/loadPrisma';
+import { ensureMediaStorageDir, startMediaCachePurgeWorker } from './services/media/mediaCache';
 
 export const runServer = async () => {
   const logLevel = env.LOG || 'info';
@@ -39,6 +40,8 @@ export const runServer = async () => {
   try {
     logger.info('[DB] Connected to database');
     await loadPrismaClient();
+    await ensureMediaStorageDir();
+    startMediaCachePurgeWorker();
   } catch (e) {
     logger.fatal('[DB] Impossible to connect to database', e);
     process.exit(1);

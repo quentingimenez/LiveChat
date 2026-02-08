@@ -1,7 +1,7 @@
 import { CommandInteraction, EmbedBuilder, SlashCommandBuilder } from 'discord.js';
-import { QueueType } from '../../services/prisma/loadPrisma';
-import { getContentInformationsFromUrl } from '../../services/content-utils';
-import { getDisplayMediaFullFromGuildId, getDurationFromGuildId } from '../../services/utils';
+import { ingestMediaFromSource } from '../../services/media/mediaIngestion';
+import { getLocalizedMediaErrorMessage, toMediaIngestionError } from '../../services/media/mediaErrors';
+import { createPlaybackJob } from '../../services/playbackJobs';
 
 export const sendCommand = () => ({
   data: new SlashCommandBuilder()
@@ -22,53 +22,56 @@ export const sendCommand = () => ({
         .setRequired(false),
     ),
   handler: async (interaction: CommandInteraction) => {
-    const url = interaction.options.get(rosetty.t('sendCommandOptionURL')!)?.value;
-    const text = interaction.options.get(rosetty.t('sendCommandOptionText')!)?.value;
-    const media = interaction.options.get(rosetty.t('sendCommandOptionMedia')!)?.attachment?.proxyURL;
-    let mediaContentType = interaction.options.get(rosetty.t('sendCommandOptionMedia')!)?.attachment?.contentType;
-    let mediaDuration = interaction.options.get(rosetty.t('sendCommandOptionMedia')!)?.attachment?.duration;
-    let mediaIsShort = false;
+    const url = interaction.options.get(rosetty.t('sendCommandOptionURL')!)?.value as string | null;
+    const text = interaction.options.get(rosetty.t('sendCommandOptionText')!)?.value as string | null;
+    const attachment = interaction.options.get(rosetty.t('sendCommandOptionMedia')!)?.attachment;
+    const media = attachment?.url || attachment?.proxyURL;
 
-    let additionalContent;
-    if ((!mediaContentType || !mediaDuration) && (media || url)) {
-      additionalContent = await getContentInformationsFromUrl((media || url) as string);
+    if (!url && !media && !text) {
+      await interaction.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle(rosetty.t('error')!)
+            .setDescription(rosetty.t('sendCommandMissingContent')!)
+            .setColor(0xe74c3c),
+        ],
+        ephemeral: true,
+      });
+      return;
     }
 
-    if ((mediaContentType === undefined || mediaContentType === null) && additionalContent?.contentType) {
-      mediaContentType = additionalContent.contentType;
-    }
+    let mediaAsset = null;
 
-    if ((mediaDuration === undefined || mediaDuration === null) && additionalContent?.mediaDuration) {
-      mediaDuration = additionalContent.mediaDuration;
-    }
-
-    if (additionalContent?.mediaIsShort) {
-      mediaIsShort = additionalContent.mediaIsShort || false;
-    }
-
-    await prisma.queue.create({
-      data: {
-        content: JSON.stringify({
+    if (url || media) {
+      try {
+        mediaAsset = await ingestMediaFromSource({
           url,
-          text,
           media,
-          mediaContentType,
-          mediaDuration: await getDurationFromGuildId(
-            mediaDuration ? Math.ceil(mediaDuration) : undefined,
-            interaction.guildId!,
-          ),
-          displayFull: await getDisplayMediaFullFromGuildId(interaction.guildId!),
-          mediaIsShort,
-        }),
-        type: QueueType.MESSAGE,
-        author: interaction.user.username,
-        authorImage: interaction.user.avatarURL(),
-        discordGuildId: interaction.guildId!,
-        duration: await getDurationFromGuildId(
-          mediaDuration ? Math.ceil(mediaDuration) : undefined,
-          interaction.guildId!,
-        ),
-      },
+        });
+      } catch (error) {
+        const mediaError = toMediaIngestionError(error);
+        logger.error(mediaError, `[MEDIA] send command failed (${mediaError.code})`);
+
+        await interaction.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle(rosetty.t('error')!)
+              .setDescription(getLocalizedMediaErrorMessage(mediaError))
+              .setColor(0xe74c3c),
+          ],
+          ephemeral: true,
+        });
+        return;
+      }
+    }
+
+    await createPlaybackJob({
+      guildId: interaction.guildId!,
+      mediaAsset,
+      text,
+      showText: !!text,
+      authorName: interaction.user.username,
+      authorImage: interaction.user.avatarURL(),
     });
 
     await interaction.reply({

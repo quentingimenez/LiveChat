@@ -7,21 +7,71 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Queue {
-  id String @id @default(uuid())
+enum MediaAssetKind {
+  IMAGE
+  AUDIO
+  VIDEO
+}
 
-  type    String
-  content String
+enum MediaAssetStatus {
+  PROCESSING
+  READY
+  FAILED
+}
 
-  author      String?
+enum PlaybackJobStatus {
+  PENDING
+  PLAYING
+  DONE
+  FAILED
+}
+
+model MediaAsset {
+  id             String           @id @default(uuid())
+  sourceHash     String           @unique
+  sourceUrl      String
+  kind           MediaAssetKind
+  mime           String
+  durationSec    Int?
+  width          Int?
+  height         Int?
+  isVertical     Boolean          @default(false)
+  storagePath    String
+  sizeBytes      Int              @default(0)
+  status         MediaAssetStatus @default(PROCESSING)
+  error          String?
+  lastAccessedAt DateTime         @default(now())
+  expiresAt      DateTime
+  createdAt      DateTime         @default(now())
+
+  playbackJobs PlaybackJob[]
+
+  @@index([expiresAt])
+  @@index([status])
+}
+
+model PlaybackJob {
+  id         String            @id @default(uuid())
+  guildId    String
+  mediaAssetId String?
+  mediaAsset MediaAsset?       @relation(fields: [mediaAssetId], references: [id], onDelete: SetNull)
+
+  text      String?
+  showText  Boolean            @default(false)
+  authorName  String?
   authorImage String?
+
+  durationSec  Int
+  status       PlaybackJobStatus @default(PENDING)
 
   submissionDate DateTime @default(now())
   executionDate  DateTime @default(now())
-  duration       Int
-  discordGuildId String
+  scheduledAt    DateTime @default(now())
+  startedAt      DateTime?
+  finishedAt     DateTime?
 
-  @@index([type])
+  @@index([guildId, executionDate])
+  @@index([status, executionDate])
 }
 
 model Guild {
@@ -30,4 +80,28 @@ model Guild {
   defaultMediaTime Int?
   maxMediaTime     Int?
   displayMediaFull Boolean   @default(false)
+}
+
+model OverlayClient {
+  id         String   @id @default(uuid())
+  guildId    String
+  label      String
+  tokenHash  String   @unique
+  lastSeenAt DateTime?
+  createdAt  DateTime @default(now())
+  revokedAt  DateTime?
+
+  @@index([guildId])
+}
+
+model PairingCode {
+  code                   String   @id
+  guildId                String
+  createdByDiscordUserId String
+  expiresAt              DateTime
+  usedAt                 DateTime?
+  createdAt              DateTime @default(now())
+
+  @@index([guildId, expiresAt])
+  @@index([expiresAt])
 }

@@ -1,7 +1,7 @@
 import { CommandInteraction, EmbedBuilder, SlashCommandBuilder } from 'discord.js';
-import { QueueType } from '../../services/prisma/loadPrisma';
-import { getContentInformationsFromUrl } from '../../services/content-utils';
-import { getDisplayMediaFullFromGuildId, getDurationFromGuildId } from '../../services/utils';
+import { ingestMediaFromSource } from '../../services/media/mediaIngestion';
+import { getLocalizedMediaErrorMessage, toMediaIngestionError } from '../../services/media/mediaErrors';
+import { createPlaybackJob } from '../../services/playbackJobs';
 
 export const hideSendCommand = () => ({
   data: new SlashCommandBuilder()
@@ -24,59 +24,54 @@ export const hideSendCommand = () => ({
         .setRequired(false),
     ),
   handler: async (interaction: CommandInteraction) => {
-    const url = interaction.options.get(rosetty.t('hideSendCommandOptionURL')!)?.value;
-    const text = interaction.options.get(rosetty.t('hideSendCommandOptionText')!)?.value;
-    const media = interaction.options.get(rosetty.t('hideSendCommandOptionMedia')!)?.attachment?.proxyURL;
-    let mediaContentType = interaction.options.get(rosetty.t('sendCommandOptionMedia')!)?.attachment?.contentType;
-    let mediaDuration = interaction.options.get(rosetty.t('sendCommandOptionMedia')!)?.attachment?.duration;
-    let mediaIsShort = false;
+    const url = interaction.options.get(rosetty.t('hideSendCommandOptionURL')!)?.value as string | null;
+    const text = interaction.options.get(rosetty.t('hideSendCommandOptionText')!)?.value as string | null;
+    const attachment = interaction.options.get(rosetty.t('hideSendCommandOptionMedia')!)?.attachment;
+    const media = attachment?.url || attachment?.proxyURL;
 
-    let additionalContent;
-    if ((!mediaContentType || !mediaDuration) && (media || url)) {
-      additionalContent = await getContentInformationsFromUrl((media || url) as string);
+    if (!url && !media && !text) {
+      await interaction.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle(rosetty.t('error')!)
+            .setDescription(rosetty.t('sendCommandMissingContent')!)
+            .setColor(0xe74c3c),
+        ],
+        ephemeral: true,
+      });
+      return;
     }
 
-    if ((mediaContentType === undefined || mediaContentType === null) && additionalContent?.contentType) {
-      mediaContentType = additionalContent.contentType;
-    }
+    let mediaAsset = null;
 
-    if (mediaContentType?.startsWith('video/')) {
-      const height = interaction.options.get(rosetty.t('sendCommandOptionMedia')!)?.attachment?.height;
-      const width = interaction.options.get(rosetty.t('sendCommandOptionMedia')!)?.attachment?.width;
-      if (height && width) {
-        mediaIsShort = height > width;
+    if (url || media) {
+      try {
+        mediaAsset = await ingestMediaFromSource({
+          url,
+          media,
+        });
+      } catch (error) {
+        const mediaError = toMediaIngestionError(error);
+        logger.error(mediaError, `[MEDIA] hide send command failed (${mediaError.code})`);
+
+        await interaction.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle(rosetty.t('error')!)
+              .setDescription(getLocalizedMediaErrorMessage(mediaError))
+              .setColor(0xe74c3c),
+          ],
+          ephemeral: true,
+        });
+        return;
       }
     }
 
-    if ((mediaDuration === undefined || mediaDuration === null) && additionalContent?.mediaDuration) {
-      mediaDuration = additionalContent.mediaDuration;
-    }
-
-    if (additionalContent?.mediaIsShort) {
-      mediaIsShort = additionalContent.mediaIsShort || false;
-    }
-
-    await prisma.queue.create({
-      data: {
-        content: JSON.stringify({
-          url,
-          text,
-          media,
-          mediaContentType,
-          mediaDuration: await getDurationFromGuildId(
-            mediaDuration ? Math.ceil(mediaDuration) : undefined,
-            interaction.guildId!,
-          ),
-          displayFull: await getDisplayMediaFullFromGuildId(interaction.guildId!),
-          mediaIsShort,
-        }),
-        type: QueueType.MESSAGE,
-        discordGuildId: interaction.guildId!,
-        duration: await getDurationFromGuildId(
-          mediaDuration ? Math.ceil(mediaDuration) : undefined,
-          interaction.guildId!,
-        ),
-      },
+    await createPlaybackJob({
+      guildId: interaction.guildId!,
+      mediaAsset,
+      text,
+      showText: !!text,
     });
 
     await interaction.reply({

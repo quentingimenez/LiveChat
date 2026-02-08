@@ -5,11 +5,9 @@ export const infoCommand = () => ({
   handler: async (interaction: CommandInteraction) => {
     await interaction.reply({
       embeds: [
-        new EmbedBuilder().setTitle(`Developed by Quentin Laffont - ${new Date().getFullYear()}`).setDescription(`
-          [LeStudio - Broadcast Software](https://lestudio.qlaffont.com)
-          [GitHub](https://github.com/qlaffont)
-          [Personal Website](https://qlaffont.com)
-          `),
+        new EmbedBuilder()
+          .setTitle(`LiveChat Bot - ${new Date().getFullYear()}`)
+          .setDescription('[GitHub Repository](https://github.com/WardenPro/LiveChat-Bot)'),
       ],
       ephemeral: true,
     });

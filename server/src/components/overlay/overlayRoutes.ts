@@ -1,0 +1,143 @@
+import fs from 'fs';
+import { createReadStream } from 'fs';
+import { addMinutes } from 'date-fns';
+import { OVERLAY_PROTOCOL_VERSION } from '@livechat/overlay-protocol';
+import { createOverlayClientToken, resolveOverlayClientFromRequest } from '../../services/overlayAuth';
+import { touchMediaAsset } from '../../services/media/mediaCache';
+
+interface ConsumePairingBody {
+  code: string;
+  deviceName: string;
+}
+
+export const OverlayRoutes = () =>
+  async function (fastify: FastifyCustomInstance) {
+    fastify.post<{ Body: ConsumePairingBody }>('/pair/consume', async (request, reply) => {
+      const rawCode = request.body?.code?.toUpperCase()?.trim();
+      const deviceName = request.body?.deviceName?.trim();
+
+      if (!rawCode || !deviceName) {
+        return reply.code(400).send({
+          error: 'invalid_payload',
+        });
+      }
+
+      await prisma.pairingCode.deleteMany({
+        where: {
+          expiresAt: {
+            lte: new Date(),
+          },
+        },
+      });
+
+      const pairingCode = await prisma.pairingCode.findFirst({
+        where: {
+          code: rawCode,
+          usedAt: null,
+          expiresAt: {
+            gt: new Date(),
+          },
+        },
+      });
+
+      if (!pairingCode) {
+        return reply.code(404).send({
+          error: 'pairing_code_invalid_or_expired',
+        });
+      }
+
+      await prisma.pairingCode.update({
+        where: {
+          code: pairingCode.code,
+        },
+        data: {
+          usedAt: new Date(),
+          expiresAt: addMinutes(new Date(), -1),
+        },
+      });
+
+      const { client, rawToken } = await createOverlayClientToken({
+        guildId: pairingCode.guildId,
+        label: deviceName,
+      });
+
+      return reply.send({
+        clientToken: rawToken,
+        clientId: client.id,
+        guildId: pairingCode.guildId,
+        apiBaseUrl: env.API_URL,
+      });
+    });
+
+    fastify.get('/config', async (request, reply) => {
+      const authResult = await resolveOverlayClientFromRequest(request);
+
+      if (!authResult) {
+        return reply.code(401).send({
+          error: 'unauthorized',
+        });
+      }
+
+      const guild = await prisma.guild.findFirst({
+        where: {
+          id: authResult.client.guildId,
+        },
+      });
+
+      return reply.send({
+        guildId: authResult.client.guildId,
+        protocolVersion: OVERLAY_PROTOCOL_VERSION,
+        showTextDefault: true,
+        defaultMediaTime: guild?.defaultMediaTime ?? env.DEFAULT_DURATION,
+        maxMediaTime: guild?.maxMediaTime ?? null,
+      });
+    });
+
+    fastify.get<{ Params: { assetId: string } }>('/media/:assetId', async (request, reply) => {
+      const authResult = await resolveOverlayClientFromRequest(request);
+
+      if (!authResult) {
+        return reply.code(401).send({
+          error: 'unauthorized',
+        });
+      }
+
+      const asset = await prisma.mediaAsset.findFirst({
+        where: {
+          id: request.params.assetId,
+        },
+      });
+
+      if (!asset || asset.status !== 'READY' || asset.expiresAt <= new Date()) {
+        return reply.code(404).send({
+          error: 'media_not_found',
+        });
+      }
+
+      if (!fs.existsSync(asset.storagePath)) {
+        return reply.code(404).send({
+          error: 'media_not_found_on_disk',
+        });
+      }
+
+      const access = await prisma.playbackJob.findFirst({
+        where: {
+          mediaAssetId: asset.id,
+          guildId: authResult.client.guildId,
+        },
+      });
+
+      if (!access) {
+        return reply.code(403).send({
+          error: 'forbidden',
+        });
+      }
+
+      await touchMediaAsset(asset.id);
+
+      reply.header('Cache-Control', 'no-store');
+      reply.type(asset.mime);
+
+      return createReadStream(asset.storagePath);
+    });
+  };

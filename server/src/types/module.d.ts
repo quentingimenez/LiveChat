@@ -15,6 +15,13 @@ import { Server as ServerSocketIo } from 'socket.io';
 import { REST, Client } from 'discord.js';
 import { env as ENV } from '../services/env';
 import { RosettyI18n } from '../services/i18n/loader';
+import type {
+  OverlayErrorPayload,
+  OverlayHeartbeatPayload,
+  OverlayPlayPayload,
+  OverlayStopPayload,
+} from '@livechat/overlay-protocol';
+
 declare global {
   namespace globalThis {
     var logger: FastifyLoggerInstance;
@@ -23,6 +30,24 @@ declare global {
     var discordClient: Client;
     var rosetty: RosettyI18n;
     var prisma: PrismaClient;
+    var commandsLoaded: string[];
+  }
+
+  interface ClientToServerEvents {
+    'overlay:heartbeat': (payload: OverlayHeartbeatPayload) => void;
+    'overlay:error': (payload: OverlayErrorPayload) => void;
+  }
+
+  interface ServerToClientEvents {
+    'overlay:play': (payload: OverlayPlayPayload) => void;
+    'overlay:stop': (payload: OverlayStopPayload) => void;
+  }
+
+  interface InterServerEvents {}
+
+  interface SocketData {
+    guildId?: string;
+    overlayClientId?: string;
   }
 
   type FastifyICustom = FastifyInstance<

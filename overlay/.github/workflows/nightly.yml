@@ -110,7 +110,18 @@ jobs:
         env:
           ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
           ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npm run dist -- --mac --publish never
+
+      - name: Warn if macOS artifacts are unsigned
+        if: ${{ secrets.CSC_LINK == '' || secrets.CSC_KEY_PASSWORD == '' || secrets.APPLE_ID == '' || secrets.APPLE_APP_SPECIFIC_PASSWORD == '' || secrets.APPLE_TEAM_ID == '' }}
+        shell: bash
+        run: |
+          echo "::warning::macOS build is unsigned/unnotarized. Configure CSC_LINK, CSC_KEY_PASSWORD, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID to avoid Gatekeeper blocking."
 
       - name: List dist outputs
         shell: bash

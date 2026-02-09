@@ -58,12 +58,12 @@ export const env = createEnv({
     YTDLP_BINARY: z.string().default('yt-dlp'),
     YTDLP_CONCURRENT_FRAGMENTS: z
       .string()
-      .default('8')
+      .default('1')
       .transform((s) => parseInt(s, 10)),
     YTDLP_FORMAT: z
       .string()
       .default(
-        'b[ext=mp4][height<=1080]/bv*[vcodec^=avc1][ext=mp4][height<=1080]+ba[ext=m4a]/b[vcodec^=avc1][ext=mp4][height<=1080]/bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best',
+        'bv*[vcodec^=avc1][ext=mp4][height<=1080]+ba[ext=m4a]/b[vcodec^=avc1][ext=mp4][height<=1080]/bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best',
       ),
     FFMPEG_BINARY: z.string().default('ffmpeg'),
     FFPROBE_BINARY: z.string().default('ffprobe'),

@@ -28,10 +28,10 @@ const BYTES_PER_MEGABYTE = 1024 * 1024;
 const LEGACY_YTDLP_FORMAT = 'bv*[height<=1080]+ba/b[height<=1080]/best';
 const PREVIOUS_COMPAT_YTDLP_FORMAT =
   'bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best';
-const PREVIOUS_AVC1_FIRST_COMPAT_YTDLP_FORMAT =
-  'bv*[vcodec^=avc1][ext=mp4][height<=1080]+ba[ext=m4a]/b[vcodec^=avc1][ext=mp4][height<=1080]/bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best';
-const COMPAT_YTDLP_FORMAT =
+const PREVIOUS_PROGRESSIVE_FIRST_COMPAT_YTDLP_FORMAT =
   'b[ext=mp4][height<=1080]/bv*[vcodec^=avc1][ext=mp4][height<=1080]+ba[ext=m4a]/b[vcodec^=avc1][ext=mp4][height<=1080]/bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best';
+const COMPAT_YTDLP_FORMAT =
+  'bv*[vcodec^=avc1][ext=mp4][height<=1080]+ba[ext=m4a]/b[vcodec^=avc1][ext=mp4][height<=1080]/bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best';
 
 const getMaxMediaSizeBytes = () => Math.max(1, env.MEDIA_MAX_SIZE_MB) * BYTES_PER_MEGABYTE;
 
@@ -41,7 +41,7 @@ const resolveYtdlpFormatSelector = () => {
   if (
     formatSelector === LEGACY_YTDLP_FORMAT ||
     formatSelector === PREVIOUS_COMPAT_YTDLP_FORMAT ||
-    formatSelector === PREVIOUS_AVC1_FIRST_COMPAT_YTDLP_FORMAT
+    formatSelector === PREVIOUS_PROGRESSIVE_FIRST_COMPAT_YTDLP_FORMAT
   ) {
     return COMPAT_YTDLP_FORMAT;
   }

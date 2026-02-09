@@ -1,6 +1,5 @@
 import { execFile } from 'child_process';
-import { createWriteStream } from 'fs';
-import { promises as fsPromises } from 'fs';
+import { createWriteStream, promises as fsPromises } from 'fs';
 import { once } from 'events';
 import path from 'path';
 import os from 'os';
@@ -8,8 +7,13 @@ import { promisify } from 'util';
 import fetch from 'node-fetch';
 import mime from 'mime-types';
 import { addHours } from 'date-fns';
-import { buildMediaOutputBasePath, ensureMediaStorageDir, getReadyCachedMediaAsset, touchMediaAsset } from './mediaCache';
 import { MediaAssetKind, MediaAssetStatus } from '../prisma/prismaEnums';
+import {
+  buildMediaOutputBasePath,
+  ensureMediaStorageDir,
+  getReadyCachedMediaAsset,
+  touchMediaAsset,
+} from './mediaCache';
 import {
   MediaIngestionError,
   getMediaErrorCodeFromHttpStatus,
@@ -21,8 +25,21 @@ import { buildSourceHash, canonicalizeSourceUrl, resolveMediaSource } from './me
 
 const execFileAsync = promisify(execFile);
 const BYTES_PER_MEGABYTE = 1024 * 1024;
+const LEGACY_YTDLP_FORMAT = 'bv*[height<=1080]+ba/b[height<=1080]/best';
+const COMPAT_YTDLP_FORMAT =
+  'bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best';
 
 const getMaxMediaSizeBytes = () => Math.max(1, env.MEDIA_MAX_SIZE_MB) * BYTES_PER_MEGABYTE;
+
+const resolveYtdlpFormatSelector = () => {
+  const formatSelector = (env.YTDLP_FORMAT || '').trim();
+
+  if (formatSelector === LEGACY_YTDLP_FORMAT) {
+    return COMPAT_YTDLP_FORMAT;
+  }
+
+  return formatSelector;
+};
 
 const newFileTooLargeError = (sourceUrl: string, details?: string) => {
   return new MediaIngestionError(
@@ -36,10 +53,7 @@ const ensureFileSizeWithinLimit = async (filePath: string, sourceUrl: string) =>
   const fileStats = await fsPromises.stat(filePath);
 
   if (fileStats.size > getMaxMediaSizeBytes()) {
-    throw newFileTooLargeError(
-      sourceUrl,
-      `Downloaded file is too large (${fileStats.size} bytes) for ${sourceUrl}`,
-    );
+    throw newFileTooLargeError(sourceUrl, `Downloaded file is too large (${fileStats.size} bytes) for ${sourceUrl}`);
   }
 };
 
@@ -108,12 +122,14 @@ const findDownloadedFile = async (tmpDir: string) => {
 
 const downloadWithYtDlp = async (sourceUrl: string, tmpDir: string): Promise<string> => {
   const outputTemplate = path.join(tmpDir, 'download.%(ext)s');
-  const formatSelector = (env.YTDLP_FORMAT || '').trim();
+  const formatSelector = resolveYtdlpFormatSelector();
   const args = [
     '--no-playlist',
     '--no-progress',
     '--no-warnings',
     '--print-json',
+    '--merge-output-format',
+    'mp4',
     '--max-filesize',
     `${Math.max(1, env.MEDIA_MAX_SIZE_MB)}M`,
   ];
@@ -194,7 +210,10 @@ const downloadWithHttp = async (sourceUrl: string, tmpDir: string): Promise<stri
       downloadedBytes += bufferChunk.length;
 
       if (downloadedBytes > maxSizeBytes) {
-        throw newFileTooLargeError(sourceUrl, `HTTP streamed media is too large (${downloadedBytes} bytes) for ${sourceUrl}`);
+        throw newFileTooLargeError(
+          sourceUrl,
+          `HTTP streamed media is too large (${downloadedBytes} bytes) for ${sourceUrl}`,
+        );
       }
 
       if (!outputFile.write(bufferChunk)) {
@@ -205,8 +224,9 @@ const downloadWithHttp = async (sourceUrl: string, tmpDir: string): Promise<stri
     outputFile.end();
     await once(outputFile, 'close');
   } catch (error) {
-    if (typeof (stream as { destroy?: () => void }).destroy === 'function') {
-      (stream as { destroy: () => void }).destroy();
+    const abortableStream = stream as unknown as { destroy?: () => void };
+    if (typeof abortableStream.destroy === 'function') {
+      abortableStream.destroy();
     }
     outputFile.destroy();
     await fsPromises.rm(outputPath, { force: true }).catch(() => undefined);
@@ -309,11 +329,7 @@ const toMediaKind = (kind: 'image' | 'audio' | 'video'): MediaAssetKind => {
   return MediaAssetKind.VIDEO;
 };
 
-const normalizeAndPersistAsset = async (params: {
-  sourceHash: string;
-  sourceUrl: string;
-  inputFilePath: string;
-}) => {
+const normalizeAndPersistAsset = async (params: { sourceHash: string; sourceUrl: string; inputFilePath: string }) => {
   await ensureMediaStorageDir();
 
   const outputBasePath = buildMediaOutputBasePath(params.sourceHash);
@@ -354,15 +370,24 @@ const ingestFromSourceUrlInternal = async (sourceUrl: string, sourceHash: string
   await upsertProcessingAsset(sourceHash, sourceUrl);
 
   const tmpDir = await createTempDir();
+  const startedAtMs = Date.now();
 
   try {
     const downloadedFilePath = await downloadSourceToTempFile(sourceUrl, tmpDir);
+    const downloadedAtMs = Date.now();
 
     const normalizedAsset = await normalizeAndPersistAsset({
       sourceHash,
       sourceUrl,
       inputFilePath: downloadedFilePath,
     });
+    const finishedAtMs = Date.now();
+
+    logger.info(
+      `[MEDIA] Ingested ${sourceHash.slice(0, 8)} in ${finishedAtMs - startedAtMs}ms (download ${
+        downloadedAtMs - startedAtMs
+      }ms, normalize ${finishedAtMs - downloadedAtMs}ms)`,
+    );
 
     return normalizedAsset;
   } catch (error) {

@@ -28,15 +28,21 @@ const BYTES_PER_MEGABYTE = 1024 * 1024;
 const LEGACY_YTDLP_FORMAT = 'bv*[height<=1080]+ba/b[height<=1080]/best';
 const PREVIOUS_COMPAT_YTDLP_FORMAT =
   'bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best';
-const COMPAT_YTDLP_FORMAT =
+const PREVIOUS_AVC1_FIRST_COMPAT_YTDLP_FORMAT =
   'bv*[vcodec^=avc1][ext=mp4][height<=1080]+ba[ext=m4a]/b[vcodec^=avc1][ext=mp4][height<=1080]/bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best';
+const COMPAT_YTDLP_FORMAT =
+  'b[ext=mp4][height<=1080]/bv*[vcodec^=avc1][ext=mp4][height<=1080]+ba[ext=m4a]/b[vcodec^=avc1][ext=mp4][height<=1080]/bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best';
 
 const getMaxMediaSizeBytes = () => Math.max(1, env.MEDIA_MAX_SIZE_MB) * BYTES_PER_MEGABYTE;
 
 const resolveYtdlpFormatSelector = () => {
   const formatSelector = (env.YTDLP_FORMAT || '').trim();
 
-  if (formatSelector === LEGACY_YTDLP_FORMAT || formatSelector === PREVIOUS_COMPAT_YTDLP_FORMAT) {
+  if (
+    formatSelector === LEGACY_YTDLP_FORMAT ||
+    formatSelector === PREVIOUS_COMPAT_YTDLP_FORMAT ||
+    formatSelector === PREVIOUS_AVC1_FIRST_COMPAT_YTDLP_FORMAT
+  ) {
     return COMPAT_YTDLP_FORMAT;
   }
 
@@ -125,6 +131,7 @@ const findDownloadedFile = async (tmpDir: string) => {
 const downloadWithYtDlp = async (sourceUrl: string, tmpDir: string): Promise<string> => {
   const outputTemplate = path.join(tmpDir, 'download.%(ext)s');
   const formatSelector = resolveYtdlpFormatSelector();
+  const concurrentFragments = Math.max(1, env.YTDLP_CONCURRENT_FRAGMENTS);
   const args = [
     '--no-playlist',
     '--no-progress',
@@ -135,6 +142,10 @@ const downloadWithYtDlp = async (sourceUrl: string, tmpDir: string): Promise<str
     '--max-filesize',
     `${Math.max(1, env.MEDIA_MAX_SIZE_MB)}M`,
   ];
+
+  if (concurrentFragments > 1) {
+    args.push('--concurrent-fragments', `${concurrentFragments}`);
+  }
 
   if (formatSelector.length > 0) {
     args.push('--format', formatSelector);

@@ -26,15 +26,17 @@ import { buildSourceHash, canonicalizeSourceUrl, resolveMediaSource } from './me
 const execFileAsync = promisify(execFile);
 const BYTES_PER_MEGABYTE = 1024 * 1024;
 const LEGACY_YTDLP_FORMAT = 'bv*[height<=1080]+ba/b[height<=1080]/best';
-const COMPAT_YTDLP_FORMAT =
+const PREVIOUS_COMPAT_YTDLP_FORMAT =
   'bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best';
+const COMPAT_YTDLP_FORMAT =
+  'bv*[vcodec^=avc1][ext=mp4][height<=1080]+ba[ext=m4a]/b[vcodec^=avc1][ext=mp4][height<=1080]/bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best';
 
 const getMaxMediaSizeBytes = () => Math.max(1, env.MEDIA_MAX_SIZE_MB) * BYTES_PER_MEGABYTE;
 
 const resolveYtdlpFormatSelector = () => {
   const formatSelector = (env.YTDLP_FORMAT || '').trim();
 
-  if (formatSelector === LEGACY_YTDLP_FORMAT) {
+  if (formatSelector === LEGACY_YTDLP_FORMAT || formatSelector === PREVIOUS_COMPAT_YTDLP_FORMAT) {
     return COMPAT_YTDLP_FORMAT;
   }
 

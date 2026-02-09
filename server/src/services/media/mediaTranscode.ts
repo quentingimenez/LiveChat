@@ -60,7 +60,8 @@ const probeMediaDetails = async (filePath: string): Promise<ProbedMediaDetails> 
   const parsed = JSON.parse(stdout || '{}');
   const streams = Array.isArray(parsed.streams) ? parsed.streams : [];
   const firstVideo = streams.find(
-    (stream) => stream?.codec_type === 'video' || (typeof stream?.width === 'number' && typeof stream?.height === 'number'),
+    (stream) =>
+      stream?.codec_type === 'video' || (typeof stream?.width === 'number' && typeof stream?.height === 'number'),
   );
   const firstAudio = streams.find((stream) => stream?.codec_type === 'audio');
 
@@ -121,7 +122,11 @@ const deriveKindFromMime = (mimeType: string): OverlayMediaKind => {
   return 'video';
 };
 
-const finalizeFile = async (storagePath: string, kind: OverlayMediaKind, mimeType: string): Promise<NormalizedMedia> => {
+const finalizeFile = async (
+  storagePath: string,
+  kind: OverlayMediaKind,
+  mimeType: string,
+): Promise<NormalizedMedia> => {
   const fileStats = await stat(storagePath);
   const metadata = await probeMedia(storagePath).catch(() => ({ durationSec: null, width: null, height: null }));
 
@@ -132,13 +137,19 @@ const finalizeFile = async (storagePath: string, kind: OverlayMediaKind, mimeTyp
     width: metadata.width,
     height: metadata.height,
     isVertical:
-      metadata.height !== null && metadata.width !== null && metadata.width > 0 ? metadata.height > metadata.width : false,
+      metadata.height !== null && metadata.width !== null && metadata.width > 0
+        ? metadata.height > metadata.width
+        : false,
     storagePath,
     sizeBytes: fileStats.size,
   };
 };
 
-const normalizeImage = async (inputPath: string, outputBasePath: string, mimeType: string): Promise<NormalizedMedia> => {
+const normalizeImage = async (
+  inputPath: string,
+  outputBasePath: string,
+  mimeType: string,
+): Promise<NormalizedMedia> => {
   const ext = mime.extension(mimeType) || path.extname(inputPath).replace('.', '') || 'png';
   const outputPath = `${outputBasePath}.${ext}`;
 
@@ -158,22 +169,36 @@ const normalizeAudio = async (inputPath: string, outputBasePath: string): Promis
 const normalizeVideo = async (inputPath: string, outputBasePath: string): Promise<NormalizedMedia> => {
   const outputPath = `${outputBasePath}.mp4`;
   const maxHeight = Math.max(0, env.MEDIA_VIDEO_MAX_HEIGHT);
+  const configuredPreset = (env.MEDIA_VIDEO_PRESET || '').trim();
+  const selectedPreset = configuredPreset && configuredPreset !== 'superfast' ? configuredPreset : 'ultrafast';
   const details = await probeMediaDetails(inputPath).catch(() => null);
   const isWithinTargetHeight = maxHeight === 0 || details?.height === null || (details?.height ?? 0) <= maxHeight;
   const isMp4Container =
     typeof details?.formatName === 'string' &&
     (details.formatName.includes('mp4') || details.formatName.includes('mov') || details.formatName.includes('m4a'));
+  const hasCompatiblePixelFormat =
+    details?.pixelFormat === null || details?.pixelFormat === 'yuv420p' || details?.pixelFormat === 'yuvj420p';
   const canCopyWithoutTranscode =
     !!details &&
     isMp4Container &&
     isWithinTargetHeight &&
     details.videoCodec === 'h264' &&
     (details.audioCodec === null || details.audioCodec === 'aac') &&
-    (details.pixelFormat === null || details.pixelFormat === 'yuv420p');
+    hasCompatiblePixelFormat;
 
   if (canCopyWithoutTranscode) {
     await copyFile(inputPath, outputPath);
     return finalizeFile(outputPath, 'video', 'video/mp4');
+  }
+
+  if (details) {
+    logger.info(
+      `[MEDIA] Transcode required (codec=${details.videoCodec || 'unknown'}/${details.audioCodec || 'none'}, pix=${
+        details.pixelFormat || 'unknown'
+      }, format=${details.formatName || 'unknown'}, height=${details.height ?? 'unknown'}, maxHeight=${maxHeight})`,
+    );
+  } else {
+    logger.info('[MEDIA] Transcode required (ffprobe details unavailable)');
   }
 
   const ffmpegArgs = [
@@ -183,7 +208,7 @@ const normalizeVideo = async (inputPath: string, outputBasePath: string): Promis
     '-c:v',
     'libx264',
     '-preset',
-    (env.MEDIA_VIDEO_PRESET || 'superfast').trim() || 'superfast',
+    selectedPreset,
     '-pix_fmt',
     'yuv420p',
     '-movflags',

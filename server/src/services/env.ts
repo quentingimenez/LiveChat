@@ -43,7 +43,7 @@ export const env = createEnv({
       .string()
       .default('1080')
       .transform((s) => parseInt(s, 10)),
-    MEDIA_VIDEO_PRESET: z.string().default('superfast'),
+    MEDIA_VIDEO_PRESET: z.string().default('ultrafast'),
     TWITTER_OEMBED_ENDPOINT: z.string().url().default('https://publish.twitter.com/oembed'),
     TWITTER_CARD_DURATION_SEC: z
       .string()
@@ -57,7 +57,7 @@ export const env = createEnv({
     YTDLP_FORMAT: z
       .string()
       .default(
-        'bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best',
+        'bv*[vcodec^=avc1][ext=mp4][height<=1080]+ba[ext=m4a]/b[vcodec^=avc1][ext=mp4][height<=1080]/bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best',
       ),
     FFMPEG_BINARY: z.string().default('ffmpeg'),
     FFPROBE_BINARY: z.string().default('ffprobe'),

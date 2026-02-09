@@ -54,7 +54,11 @@ export const env = createEnv({
       .default('5')
       .transform((s) => parseInt(s, 10)),
     YTDLP_BINARY: z.string().default('yt-dlp'),
-    YTDLP_FORMAT: z.string().default('bv*[height<=1080]+ba/b[height<=1080]/best'),
+    YTDLP_FORMAT: z
+      .string()
+      .default(
+        'bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best',
+      ),
     FFMPEG_BINARY: z.string().default('ffmpeg'),
     FFPROBE_BINARY: z.string().default('ffprobe'),
   },

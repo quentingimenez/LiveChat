@@ -1,12 +1,15 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { copyFile, stat } from 'fs/promises';
+import { copyFile, rm, stat } from 'fs/promises';
 import path from 'path';
 import mime from 'mime-types';
 import { fileTypeFromFile } from 'file-type';
 import type { OverlayMediaKind } from '@livechat/overlay-protocol';
 
 const execFileAsync = promisify(execFile);
+const CPU_VIDEO_ENCODER = 'libx264';
+const GPU_VIDEO_ENCODER = 'h264_nvenc';
+let hasNvencEncoderPromise: Promise<boolean> | null = null;
 
 interface ProbedMetadata {
   durationSec: number | null;
@@ -37,6 +40,74 @@ const runFfmpeg = async (args: string[]) => {
     timeout: env.MEDIA_DOWNLOAD_TIMEOUT_MS,
     maxBuffer: 10 * 1024 * 1024,
   });
+};
+
+const hasNvencEncoder = async () => {
+  if (hasNvencEncoderPromise) {
+    return hasNvencEncoderPromise;
+  }
+
+  hasNvencEncoderPromise = execFileAsync(env.FFMPEG_BINARY, ['-hide_banner', '-encoders'], {
+    timeout: env.MEDIA_DOWNLOAD_TIMEOUT_MS,
+    maxBuffer: 10 * 1024 * 1024,
+  })
+    .then(({ stdout }) => {
+      return /\bh264_nvenc\b/.test(stdout || '');
+    })
+    .catch((error) => {
+      logger.warn(error, '[MEDIA] Unable to probe ffmpeg encoders, fallback to CPU');
+      return false;
+    });
+
+  return hasNvencEncoderPromise;
+};
+
+const resolveVideoEncoder = async (): Promise<typeof CPU_VIDEO_ENCODER | typeof GPU_VIDEO_ENCODER> => {
+  if (env.MEDIA_VIDEO_ENCODER === CPU_VIDEO_ENCODER) {
+    return CPU_VIDEO_ENCODER;
+  }
+
+  const nvencAvailable = await hasNvencEncoder();
+
+  if (!nvencAvailable) {
+    if (env.MEDIA_VIDEO_ENCODER === GPU_VIDEO_ENCODER) {
+      logger.warn('[MEDIA] MEDIA_VIDEO_ENCODER=h264_nvenc but encoder is unavailable, fallback to libx264');
+    }
+    return CPU_VIDEO_ENCODER;
+  }
+
+  if (env.MEDIA_VIDEO_ENCODER === 'auto') {
+    return GPU_VIDEO_ENCODER;
+  }
+
+  return GPU_VIDEO_ENCODER;
+};
+
+const buildVideoTranscodeArgs = (params: {
+  inputPath: string;
+  outputPath: string;
+  maxHeight: number;
+  videoEncoder: typeof CPU_VIDEO_ENCODER | typeof GPU_VIDEO_ENCODER;
+  cpuPreset: string;
+  nvencPreset: string;
+}) => {
+  const ffmpegArgs = ['-y', '-i', params.inputPath, '-c:v', params.videoEncoder];
+
+  if (params.videoEncoder === GPU_VIDEO_ENCODER) {
+    ffmpegArgs.push('-preset', params.nvencPreset);
+  } else {
+    ffmpegArgs.push('-preset', params.cpuPreset);
+  }
+
+  ffmpegArgs.push('-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-c:a', 'aac', '-b:a', '192k');
+
+  if (params.maxHeight > 0) {
+    ffmpegArgs.push('-vf', `scale=-2:${params.maxHeight}:force_original_aspect_ratio=decrease`);
+  }
+
+  ffmpegArgs.push(params.outputPath);
+
+  return ffmpegArgs;
 };
 
 const probeMediaDetails = async (filePath: string): Promise<ProbedMediaDetails> => {
@@ -169,8 +240,10 @@ const normalizeAudio = async (inputPath: string, outputBasePath: string): Promis
 const normalizeVideo = async (inputPath: string, outputBasePath: string): Promise<NormalizedMedia> => {
   const outputPath = `${outputBasePath}.mp4`;
   const maxHeight = Math.max(0, env.MEDIA_VIDEO_MAX_HEIGHT);
-  const configuredPreset = (env.MEDIA_VIDEO_PRESET || '').trim();
-  const selectedPreset = configuredPreset && configuredPreset !== 'superfast' ? configuredPreset : 'ultrafast';
+  const configuredCpuPreset = (env.MEDIA_VIDEO_PRESET || '').trim();
+  const selectedCpuPreset =
+    configuredCpuPreset && configuredCpuPreset !== 'superfast' ? configuredCpuPreset : 'ultrafast';
+  const selectedNvencPreset = (env.MEDIA_VIDEO_NVENC_PRESET || '').trim() || 'p4';
   const details = await probeMediaDetails(inputPath).catch(() => null);
   const isWithinTargetHeight = maxHeight === 0 || details?.height === null || (details?.height ?? 0) <= maxHeight;
   const isMp4Container =
@@ -201,31 +274,41 @@ const normalizeVideo = async (inputPath: string, outputBasePath: string): Promis
     logger.info('[MEDIA] Transcode required (ffprobe details unavailable)');
   }
 
-  const ffmpegArgs = [
-    '-y',
-    '-i',
-    inputPath,
-    '-c:v',
-    'libx264',
-    '-preset',
-    selectedPreset,
-    '-pix_fmt',
-    'yuv420p',
-    '-movflags',
-    '+faststart',
-    '-c:a',
-    'aac',
-    '-b:a',
-    '192k',
-  ];
+  let selectedEncoder = await resolveVideoEncoder();
+  logger.info(`[MEDIA] Video encoder selected: ${selectedEncoder}`);
 
-  if (maxHeight > 0) {
-    ffmpegArgs.push('-vf', `scale=-2:${maxHeight}:force_original_aspect_ratio=decrease`);
+  try {
+    await runFfmpeg(
+      buildVideoTranscodeArgs({
+        inputPath,
+        outputPath,
+        maxHeight,
+        videoEncoder: selectedEncoder,
+        cpuPreset: selectedCpuPreset,
+        nvencPreset: selectedNvencPreset,
+      }),
+    );
+  } catch (error) {
+    if (selectedEncoder !== GPU_VIDEO_ENCODER) {
+      throw error;
+    }
+
+    logger.warn(error, '[MEDIA] NVENC transcode failed, retry with libx264');
+    selectedEncoder = CPU_VIDEO_ENCODER;
+
+    await rm(outputPath, { force: true }).catch(() => undefined);
+
+    await runFfmpeg(
+      buildVideoTranscodeArgs({
+        inputPath,
+        outputPath,
+        maxHeight,
+        videoEncoder: selectedEncoder,
+        cpuPreset: selectedCpuPreset,
+        nvencPreset: selectedNvencPreset,
+      }),
+    );
   }
-
-  ffmpegArgs.push(outputPath);
-
-  await runFfmpeg(ffmpegArgs);
 
   return finalizeFile(outputPath, 'video', 'video/mp4');
 };

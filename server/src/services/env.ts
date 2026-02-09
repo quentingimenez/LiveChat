@@ -43,6 +43,8 @@ export const env = createEnv({
       .string()
       .default('1080')
       .transform((s) => parseInt(s, 10)),
+    MEDIA_VIDEO_ENCODER: z.enum(['auto', 'libx264', 'h264_nvenc']).default('auto'),
+    MEDIA_VIDEO_NVENC_PRESET: z.string().default('p4'),
     MEDIA_VIDEO_PRESET: z.string().default('ultrafast'),
     TWITTER_OEMBED_ENDPOINT: z.string().url().default('https://publish.twitter.com/oembed'),
     TWITTER_CARD_DURATION_SEC: z

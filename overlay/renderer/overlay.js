@@ -128,29 +128,6 @@
     return video;
   };
 
-  const extractTweetTextFromHtml = (html) => {
-    const node = document.createElement('div');
-    node.innerHTML = html;
-
-    const paragraphs = Array.from(node.querySelectorAll('p'))
-      .map((paragraph) => (paragraph.innerText || paragraph.textContent || '').replace(/\u00a0/g, ' ').replace(/\r/g, '').trim())
-      .filter((value) => value.length > 0);
-
-    return paragraphs.join('\n\n');
-  };
-
-  const extractTweetDateFromHtml = (html) => {
-    const node = document.createElement('div');
-    node.innerHTML = html;
-    const links = Array.from(node.querySelectorAll('a'));
-    if (links.length === 0) {
-      return '';
-    }
-
-    const rawDate = (links[links.length - 1]?.textContent || '').replace(/\s+/g, ' ').trim();
-    return rawDate;
-  };
-
   const ensureTwitterWidgets = () => {
     if (window.twttr?.widgets?.load) {
       return Promise.resolve(window.twttr);
@@ -209,41 +186,24 @@
 
     if (typeof tweetCard.videoUrl === 'string' && tweetCard.videoUrl.trim() !== '') {
       const container = document.createElement('div');
-      container.className = 'overlay-tweet-card';
+      container.className = 'overlay-tweet-card overlay-tweet-card-with-video';
 
-      const content = document.createElement('div');
-      content.className = 'overlay-tweet-card-content overlay-tweet-card-content-custom';
+      const widgetContent = document.createElement('div');
+      widgetContent.className = 'overlay-tweet-card-content overlay-tweet-widget';
+      widgetContent.innerHTML = tweetCard.html.trim();
 
-      const header = document.createElement('div');
-      header.className = 'overlay-tweet-custom-header';
+      const links = widgetContent.querySelectorAll('a[href]');
+      links.forEach((link) => {
+        link.setAttribute('target', '_blank');
+        link.setAttribute('rel', 'noopener noreferrer');
+      });
 
-      const authorNode = document.createElement('div');
-      authorNode.className = 'overlay-tweet-custom-author';
-      authorNode.textContent = tweetCard.authorName || 'Tweet';
-      header.appendChild(authorNode);
+      container.appendChild(widgetContent);
 
-      if (typeof tweetCard.url === 'string' && tweetCard.url.trim() !== '') {
-        const sourceLink = document.createElement('a');
-        sourceLink.className = 'overlay-tweet-custom-link';
-        sourceLink.href = tweetCard.url;
-        sourceLink.target = '_blank';
-        sourceLink.rel = 'noopener noreferrer';
-        sourceLink.textContent = 'Voir sur X';
-        header.appendChild(sourceLink);
-      }
-
-      content.appendChild(header);
-
-      const tweetText = extractTweetTextFromHtml(tweetCard.html);
-      if (tweetText) {
-        const textNode = document.createElement('div');
-        textNode.className = 'overlay-tweet-custom-text';
-        textNode.textContent = tweetText;
-        content.appendChild(textNode);
-      }
-
+      const inlineMedia = document.createElement('div');
+      inlineMedia.className = 'overlay-tweet-inline-media';
       const video = document.createElement('video');
-      video.className = 'overlay-tweet-custom-video';
+      video.className = 'overlay-tweet-inline-video';
       video.autoplay = true;
       video.controls = false;
       video.playsInline = true;
@@ -253,19 +213,18 @@
       if (typeof tweetCard.videoIsVertical === 'boolean') {
         video.dataset.vertical = tweetCard.videoIsVertical ? '1' : '0';
       }
+      inlineMedia.appendChild(video);
+      container.appendChild(inlineMedia);
 
-      content.appendChild(video);
-
-      const dateLabel = extractTweetDateFromHtml(tweetCard.html);
-      if (dateLabel) {
-        const dateNode = document.createElement('div');
-        dateNode.className = 'overlay-tweet-custom-date';
-        dateNode.textContent = dateLabel;
-        content.appendChild(dateNode);
-      }
-
-      container.appendChild(content);
       mediaLayer.appendChild(container);
+
+      ensureTwitterWidgets()
+        .then((twitter) => {
+          twitter.widgets.load(widgetContent);
+        })
+        .catch((error) => {
+          console.warn('Twitter widgets fallback to raw HTML:', error?.message || error);
+        });
 
       applyVolume();
       video

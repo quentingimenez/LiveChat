@@ -2,7 +2,7 @@ import fetch from 'node-fetch';
 import mime from 'mime-types';
 import { normalizeTweetStatusUrl } from './twitterOEmbed';
 
-interface ResolvedTweetVideoMedia {
+export interface ResolvedTweetVideoMedia {
   url: string;
   mime: string;
   isVertical: boolean;
@@ -185,6 +185,20 @@ const asNonEmptyString = (value: unknown) => {
 const resolveLanguage = () => {
   const normalized = (env.I18N || 'en').toLowerCase().trim();
   return normalized.startsWith('fr') ? 'fr' : 'en';
+};
+
+const buildSyndicationEndpoint = (statusId: string) => {
+  const endpoint = new URL('https://cdn.syndication.twimg.com/tweet-result');
+  endpoint.searchParams.set('id', statusId);
+  endpoint.searchParams.set('lang', resolveLanguage());
+  endpoint.searchParams.set('token', '1');
+  return endpoint.toString();
+};
+
+const fetchSyndicationPayload = async (statusId: string) => {
+  return await fetchJsonWithTimeout<SyndicationTweetPayload & Record<string, unknown>>(
+    buildSyndicationEndpoint(statusId),
+  );
 };
 
 const collectSyndicationVariants = (payload: SyndicationTweetPayload) => {
@@ -473,12 +487,7 @@ const resolveViaSyndication = async (
 
   options.visited.add(statusId);
 
-  const endpoint = new URL('https://cdn.syndication.twimg.com/tweet-result');
-  endpoint.searchParams.set('id', statusId);
-  endpoint.searchParams.set('lang', resolveLanguage());
-  endpoint.searchParams.set('token', '1');
-
-  const payload = await fetchJsonWithTimeout<SyndicationTweetPayload & Record<string, unknown>>(endpoint.toString());
+  const payload = await fetchSyndicationPayload(statusId);
 
   if (!payload || typeof payload !== 'object') {
     return null;
@@ -561,24 +570,57 @@ const extractVideoUrlFromHtml = (html: string) => {
   return null;
 };
 
-export const resolveTweetVideoMediaFromUrl = async (
-  rawUrl?: string | null,
-): Promise<ResolvedTweetVideoMedia | null> => {
+const dedupeResolvedTweetMedia = (medias: ResolvedTweetVideoMedia[]) => {
+  const deduped = new Map<string, ResolvedTweetVideoMedia>();
+
+  for (const media of medias) {
+    const sourcePart = media.sourceStatusId || 'unknown-source';
+    const key = `${sourcePart}:${media.url}`;
+
+    if (!deduped.has(key)) {
+      deduped.set(key, media);
+    }
+  }
+
+  return Array.from(deduped.values());
+};
+
+export const resolveTweetVideoMediasFromUrl = async (rawUrl?: string | null): Promise<ResolvedTweetVideoMedia[]> => {
   if (!rawUrl) {
-    return null;
+    return [];
   }
 
   const normalizedTweetUrl = normalizeTweetStatusUrl(rawUrl);
 
   if (!normalizedTweetUrl) {
-    return null;
+    return [];
   }
 
   const statusId = extractTweetStatusId(normalizedTweetUrl);
   if (statusId) {
+    const resolvedMedias: ResolvedTweetVideoMedia[] = [];
     const syndicationMedia = await resolveViaSyndication(statusId);
     if (syndicationMedia) {
-      return syndicationMedia;
+      resolvedMedias.push(syndicationMedia);
+    }
+
+    const payload = await fetchSyndicationPayload(statusId);
+    if (payload && typeof payload === 'object') {
+      const referencedStatusIds = collectReferencedStatusIds(payload)
+        .filter((id) => id !== statusId)
+        .slice(0, 3);
+
+      for (const referencedStatusId of referencedStatusIds) {
+        const referencedMedia = await resolveViaSyndication(referencedStatusId);
+        if (referencedMedia) {
+          resolvedMedias.push(referencedMedia);
+        }
+      }
+    }
+
+    const deduped = dedupeResolvedTweetMedia(resolvedMedias);
+    if (deduped.length > 0) {
+      return deduped;
     }
   }
 
@@ -586,20 +628,20 @@ export const resolveTweetVideoMediaFromUrl = async (
   try {
     tweetUrl = new URL(normalizedTweetUrl);
   } catch {
-    return null;
+    return [];
   }
 
   let resolverUrl: URL;
   try {
     resolverUrl = new URL(tweetUrl.pathname, env.TWITTER_VIDEO_RESOLVER_BASE_URL);
   } catch {
-    return null;
+    return [];
   }
 
   const html = await fetchTextWithTimeout(resolverUrl.toString());
 
   if (!html) {
-    return null;
+    return [];
   }
 
   const videoCandidate =
@@ -610,13 +652,13 @@ export const resolveTweetVideoMediaFromUrl = async (
     extractVideoUrlFromHtml(html);
 
   if (!videoCandidate) {
-    return null;
+    return [];
   }
 
   const mediaUrl = toAbsoluteUrl(videoCandidate, resolverUrl.toString());
 
   if (!mediaUrl) {
-    return null;
+    return [];
   }
 
   const widthValue = extractMetaContent(html, 'og:video:width');
@@ -624,10 +666,19 @@ export const resolveTweetVideoMediaFromUrl = async (
   const width = widthValue ? parseInt(widthValue, 10) : 0;
   const height = heightValue ? parseInt(heightValue, 10) : 0;
 
-  return {
-    url: mediaUrl,
-    mime: inferMime(mediaUrl),
-    isVertical: width > 0 && height > width,
-    sourceStatusId: statusId,
-  };
+  return [
+    {
+      url: mediaUrl,
+      mime: inferMime(mediaUrl),
+      isVertical: width > 0 && height > width,
+      sourceStatusId: statusId,
+    },
+  ];
+};
+
+export const resolveTweetVideoMediaFromUrl = async (
+  rawUrl?: string | null,
+): Promise<ResolvedTweetVideoMedia | null> => {
+  const medias = await resolveTweetVideoMediasFromUrl(rawUrl);
+  return medias[0] || null;
 };

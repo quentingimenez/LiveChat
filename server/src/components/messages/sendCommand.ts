@@ -46,33 +46,6 @@ export const sendCommand = () => ({
     await interaction.deferReply();
 
     try {
-      const tweetVideoMedia = !media ? await resolveTweetVideoMediaFromUrl(url || text) : null;
-
-      if (tweetVideoMedia) {
-        const mediaAsset = await ingestMediaFromSource({
-          media: tweetVideoMedia.url,
-        });
-
-        await createPlaybackJob({
-          guildId: interaction.guildId!,
-          mediaAsset,
-          text,
-          showText: !!text,
-          authorName: interaction.user.username,
-          authorImage: interaction.user.avatarURL(),
-        });
-
-        await interaction.editReply({
-          embeds: [
-            new EmbedBuilder()
-              .setTitle(rosetty.t('success')!)
-              .setDescription(rosetty.t('sendCommandAnswer')!)
-              .setColor(0x2ecc71),
-          ],
-        });
-        return;
-      }
-
       const tweetCard = !media ? await resolveTweetCardFromUrl(url || text) : null;
 
       if (tweetCard) {
@@ -87,6 +60,33 @@ export const sendCommand = () => ({
           authorName: null,
           authorImage: null,
           durationSec: env.TWITTER_CARD_DURATION_SEC,
+        });
+
+        await interaction.editReply({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle(rosetty.t('success')!)
+              .setDescription(rosetty.t('sendCommandAnswer')!)
+              .setColor(0x2ecc71),
+          ],
+        });
+        return;
+      }
+
+      const tweetVideoMedia = !media ? await resolveTweetVideoMediaFromUrl(url || text) : null;
+
+      if (tweetVideoMedia) {
+        const mediaAsset = await ingestMediaFromSource({
+          media: tweetVideoMedia.url,
+        });
+
+        await createPlaybackJob({
+          guildId: interaction.guildId!,
+          mediaAsset,
+          text,
+          showText: !!text,
+          authorName: interaction.user.username,
+          authorImage: interaction.user.avatarURL(),
         });
 
         await interaction.editReply({

@@ -4,7 +4,7 @@ import { getLocalizedMediaErrorMessage, toMediaIngestionError } from '../../serv
 import { createPlaybackJob } from '../../services/playbackJobs';
 import { encodeRichOverlayPayload } from '../../services/messages/richOverlayPayload';
 import { resolveTweetCardFromUrl, resolveTweetCardFromUrlWithOptions } from '../../services/social/twitterOEmbed';
-import { resolveTweetVideoMediaFromUrl } from '../../services/social/twitterVideoResolver';
+import { extractTweetStatusIdFromUrl, resolveTweetVideoMediaFromUrl } from '../../services/social/twitterVideoResolver';
 
 export const hideSendCommand = () => ({
   data: new SlashCommandBuilder()
@@ -54,8 +54,12 @@ export const hideSendCommand = () => ({
 
       if (tweetCard) {
         const tweetVideoMedia = await resolveTweetVideoMediaFromUrl(url || text);
-        const tweetCardHasPictureLink = /pic\.(x|twitter)\.com/i.test(tweetCard.html);
-        const shouldHideCardMedia = !!tweetVideoMedia && !media && !tweetCardHasPictureLink;
+        const currentTweetStatusId = extractTweetStatusIdFromUrl(url || text);
+        const inlineTweetVideoMedia =
+          tweetVideoMedia && currentTweetStatusId && tweetVideoMedia.sourceStatusId === currentTweetStatusId
+            ? tweetVideoMedia
+            : null;
+        const shouldHideCardMedia = !!inlineTweetVideoMedia && !media;
         const tweetCardForOverlay = shouldHideCardMedia
           ? (await resolveTweetCardFromUrlWithOptions(url || text, {
               hideMedia: true,
@@ -68,9 +72,9 @@ export const hideSendCommand = () => ({
             type: 'tweet',
             tweetCard: {
               ...tweetCardForOverlay,
-              videoUrl: tweetVideoMedia?.url || null,
-              videoMime: tweetVideoMedia?.mime || null,
-              videoIsVertical: tweetVideoMedia?.isVertical ?? null,
+              videoUrl: inlineTweetVideoMedia?.url || null,
+              videoMime: inlineTweetVideoMedia?.mime || null,
+              videoIsVertical: inlineTweetVideoMedia?.isVertical ?? null,
             },
             caption: text || null,
           }),

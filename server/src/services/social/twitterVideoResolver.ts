@@ -23,6 +23,8 @@ interface SyndicationVariant {
 }
 
 interface SyndicationMediaDetails {
+  expanded_url?: unknown;
+  url?: unknown;
   original_info?: {
     width?: unknown;
     height?: unknown;
@@ -186,9 +188,9 @@ const resolveLanguage = () => {
 };
 
 const collectSyndicationVariants = (payload: SyndicationTweetPayload) => {
-  const variants: Array<{ url: string; contentType: string; bitrate: number }> = [];
+  const variants: Array<{ url: string; contentType: string; bitrate: number; sourceStatusId: string | null }> = [];
 
-  const appendVariant = (variant: SyndicationVariant) => {
+  const appendVariant = (variant: SyndicationVariant, sourceStatusId: string | null) => {
     const url = asNonEmptyString(variant.url) || asNonEmptyString(variant.src);
     if (!url) {
       return;
@@ -201,24 +203,82 @@ const collectSyndicationVariants = (payload: SyndicationTweetPayload) => {
       url,
       contentType,
       bitrate,
+      sourceStatusId,
     });
   };
 
-  if (Array.isArray(payload.video?.variants)) {
-    for (const entry of payload.video.variants as SyndicationVariant[]) {
-      appendVariant(entry);
-    }
-  }
-
   if (Array.isArray(payload.mediaDetails)) {
+    const variantsFromCurrentStatus: Array<{
+      url: string;
+      contentType: string;
+      bitrate: number;
+      sourceStatusId: string | null;
+    }> = [];
+    const variantsFromAllStatuses: Array<{
+      url: string;
+      contentType: string;
+      bitrate: number;
+      sourceStatusId: string | null;
+    }> = [];
+
+    const pushVariant = (
+      target: typeof variantsFromCurrentStatus,
+      variant: SyndicationVariant,
+      sourceStatusId: string | null,
+    ) => {
+      const url = asNonEmptyString(variant.url) || asNonEmptyString(variant.src);
+      if (!url) {
+        return;
+      }
+
+      const contentType = (
+        asNonEmptyString(variant.content_type) ||
+        asNonEmptyString(variant.type) ||
+        ''
+      ).toLowerCase();
+      const bitrate = toNumber(variant.bitrate) || 0;
+      target.push({
+        url,
+        contentType,
+        bitrate,
+        sourceStatusId,
+      });
+    };
+
     for (const media of payload.mediaDetails as SyndicationMediaDetails[]) {
+      const expandedUrl = asNonEmptyString(media.expanded_url) || asNonEmptyString(media.url);
+      const mediaStatusId = expandedUrl ? extractTweetStatusId(expandedUrl) : null;
+
       if (!Array.isArray(media.video_info?.variants)) {
         continue;
       }
 
       for (const entry of media.video_info.variants as SyndicationVariant[]) {
-        appendVariant(entry);
+        pushVariant(variantsFromAllStatuses, entry, mediaStatusId);
       }
+    }
+
+    const statusIdValue = `${(payload as Record<string, unknown>).id_str || ''}`.trim();
+    const hasCurrentStatusId = /^\d+$/.test(statusIdValue);
+
+    if (hasCurrentStatusId) {
+      for (const variant of variantsFromAllStatuses) {
+        if (variant.sourceStatusId === statusIdValue) {
+          variantsFromCurrentStatus.push(variant);
+        }
+      }
+    }
+
+    if (variantsFromCurrentStatus.length > 0) {
+      variants.push(...variantsFromCurrentStatus);
+    } else {
+      variants.push(...variantsFromAllStatuses);
+    }
+  }
+
+  if (variants.length === 0 && Array.isArray(payload.video?.variants)) {
+    for (const entry of payload.video.variants as SyndicationVariant[]) {
+      appendVariant(entry, null);
     }
   }
 
@@ -226,7 +286,7 @@ const collectSyndicationVariants = (payload: SyndicationTweetPayload) => {
 };
 
 const collectVariantsRecursively = (value: unknown, maxDepth = 6) => {
-  const variants: Array<{ url: string; contentType: string; bitrate: number }> = [];
+  const variants: Array<{ url: string; contentType: string; bitrate: number; sourceStatusId: string | null }> = [];
   const visited = new Set<unknown>();
 
   const walk = (node: unknown, depth: number) => {
@@ -262,6 +322,7 @@ const collectVariantsRecursively = (value: unknown, maxDepth = 6) => {
           url,
           contentType,
           bitrate,
+          sourceStatusId: null,
         });
       }
     }
@@ -275,14 +336,23 @@ const collectVariantsRecursively = (value: unknown, maxDepth = 6) => {
   return variants;
 };
 
-const dedupeVariants = (variants: Array<{ url: string; contentType: string; bitrate: number }>) => {
-  const deduped = new Map<string, { url: string; contentType: string; bitrate: number }>();
+const dedupeVariants = (
+  variants: Array<{ url: string; contentType: string; bitrate: number; sourceStatusId: string | null }>,
+) => {
+  const deduped = new Map<
+    string,
+    { url: string; contentType: string; bitrate: number; sourceStatusId: string | null }
+  >();
 
   for (const variant of variants) {
     const key = variant.url.trim();
     const existing = deduped.get(key);
 
-    if (!existing || variant.bitrate > existing.bitrate) {
+    if (
+      !existing ||
+      variant.bitrate > existing.bitrate ||
+      (variant.bitrate === existing.bitrate && variant.sourceStatusId && !existing.sourceStatusId)
+    ) {
       deduped.set(key, variant);
     }
   }
@@ -452,7 +522,7 @@ const resolveViaSyndication = async (
       url: fallbackPicked.url,
       mime: fallbackPicked.contentType || inferMime(fallbackPicked.url),
       isVertical: resolveVerticalFromSyndication(payload),
-      sourceStatusId: statusId,
+      sourceStatusId: fallbackPicked.sourceStatusId || statusId,
     };
   }
 
@@ -470,7 +540,7 @@ const resolveViaSyndication = async (
     url: picked.url,
     mime: picked.contentType || inferMime(picked.url),
     isVertical: resolveVerticalFromSyndication(payload),
-    sourceStatusId: statusId,
+    sourceStatusId: picked.sourceStatusId || statusId,
   };
 };
 

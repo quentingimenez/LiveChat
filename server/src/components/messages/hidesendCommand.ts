@@ -55,11 +55,11 @@ export const hideSendCommand = () => ({
       if (tweetCard) {
         const tweetVideoMedia = await resolveTweetVideoMediaFromUrl(url || text);
         const currentTweetStatusId = extractTweetStatusIdFromUrl(url || text);
-        const inlineTweetVideoMedia =
-          tweetVideoMedia && currentTweetStatusId && tweetVideoMedia.sourceStatusId === currentTweetStatusId
-            ? tweetVideoMedia
-            : null;
-        const shouldHideCardMedia = !!inlineTweetVideoMedia && !media;
+        const shouldHideCardMedia =
+          !!tweetVideoMedia &&
+          !media &&
+          !!currentTweetStatusId &&
+          tweetVideoMedia.sourceStatusId === currentTweetStatusId;
         const tweetCardForOverlay = shouldHideCardMedia
           ? (await resolveTweetCardFromUrlWithOptions(url || text, {
               hideMedia: true,
@@ -72,9 +72,9 @@ export const hideSendCommand = () => ({
             type: 'tweet',
             tweetCard: {
               ...tweetCardForOverlay,
-              videoUrl: inlineTweetVideoMedia?.url || null,
-              videoMime: inlineTweetVideoMedia?.mime || null,
-              videoIsVertical: inlineTweetVideoMedia?.isVertical ?? null,
+              videoUrl: tweetVideoMedia?.url || null,
+              videoMime: tweetVideoMedia?.mime || null,
+              videoIsVertical: tweetVideoMedia?.isVertical ?? null,
             },
             caption: text || null,
           }),

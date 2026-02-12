@@ -184,9 +184,53 @@
       return false;
     }
 
-    if (typeof tweetCard.videoUrl === 'string' && tweetCard.videoUrl.trim() !== '') {
+    const inlineVideos = [];
+    const inlineVideoSeen = new Set();
+
+    const pushInlineVideo = (candidate) => {
+      if (!candidate || typeof candidate !== 'object') {
+        return;
+      }
+
+      const rawUrl = typeof candidate.url === 'string' ? candidate.url.trim() : '';
+      if (!rawUrl) {
+        return;
+      }
+
+      const key = `${typeof candidate.sourceStatusId === 'string' ? candidate.sourceStatusId : 'source-unknown'}:${rawUrl}`;
+      if (inlineVideoSeen.has(key)) {
+        return;
+      }
+
+      inlineVideoSeen.add(key);
+      inlineVideos.push({
+        url: rawUrl,
+        isVertical: typeof candidate.isVertical === 'boolean' ? candidate.isVertical : null,
+      });
+    };
+
+    if (Array.isArray(tweetCard.videos)) {
+      tweetCard.videos.forEach((video) => {
+        pushInlineVideo(video);
+      });
+    }
+
+    if (inlineVideos.length === 0 && typeof tweetCard.videoUrl === 'string' && tweetCard.videoUrl.trim() !== '') {
+      pushInlineVideo({
+        url: tweetCard.videoUrl,
+        isVertical: typeof tweetCard.videoIsVertical === 'boolean' ? tweetCard.videoIsVertical : null,
+        sourceStatusId: null,
+      });
+    }
+
+    const videosToRender = inlineVideos.slice(0, 2);
+
+    if (videosToRender.length > 0) {
       const container = document.createElement('div');
       container.className = 'overlay-tweet-card overlay-tweet-card-with-video';
+      if (videosToRender.length > 1) {
+        container.classList.add('overlay-tweet-card-with-multi-video');
+      }
 
       const widgetContent = document.createElement('div');
       widgetContent.className = 'overlay-tweet-card-content overlay-tweet-widget';
@@ -202,18 +246,23 @@
 
       const inlineMedia = document.createElement('div');
       inlineMedia.className = 'overlay-tweet-inline-media';
-      const video = document.createElement('video');
-      video.className = 'overlay-tweet-inline-video';
-      video.autoplay = true;
-      video.controls = false;
-      video.playsInline = true;
-      video.preload = 'auto';
-      video.muted = false;
-      video.src = tweetCard.videoUrl;
-      if (typeof tweetCard.videoIsVertical === 'boolean') {
-        video.dataset.vertical = tweetCard.videoIsVertical ? '1' : '0';
-      }
-      inlineMedia.appendChild(video);
+      inlineMedia.dataset.count = `${videosToRender.length}`;
+
+      videosToRender.forEach((inlineVideo, index) => {
+        const video = document.createElement('video');
+        video.className = 'overlay-tweet-inline-video';
+        video.autoplay = true;
+        video.controls = false;
+        video.playsInline = true;
+        video.preload = 'auto';
+        video.muted = index > 0;
+        video.dataset.forceMuted = index > 0 ? '1' : '0';
+        video.src = inlineVideo.url;
+        if (typeof inlineVideo.isVertical === 'boolean') {
+          video.dataset.vertical = inlineVideo.isVertical ? '1' : '0';
+        }
+        inlineMedia.appendChild(video);
+      });
       container.appendChild(inlineMedia);
 
       mediaLayer.appendChild(container);
@@ -227,11 +276,12 @@
         });
 
       applyVolume();
-      video
-        .play()
-        .catch((error) => {
+      const inlineVideoElements = inlineMedia.querySelectorAll('video');
+      inlineVideoElements.forEach((video) => {
+        video.play().catch((error) => {
           console.warn('Tweet inline video autoplay failed:', error?.message || error);
         });
+      });
 
       return true;
     }
@@ -266,6 +316,13 @@
   const applyVolume = () => {
     const mediaElements = mediaLayer.querySelectorAll('audio,video');
     mediaElements.forEach((element) => {
+      const forceMuted = element.dataset?.forceMuted === '1';
+      if (forceMuted) {
+        element.volume = 0;
+        element.muted = true;
+        return;
+      }
+
       element.volume = overlayConfig.volume;
       element.muted = false;
     });

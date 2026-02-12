@@ -78,6 +78,10 @@ body {
   max-width: min(94vw, 1240px);
 }
 
+.overlay-tweet-card-with-multi-video {
+  grid-template-columns: minmax(360px, 620px) minmax(320px, 620px);
+}
+
 .overlay-tweet-card-with-video .overlay-tweet-card-content {
   justify-content: flex-start;
 }
@@ -86,6 +90,15 @@ body {
   width: auto;
   display: flex;
   justify-content: center;
+}
+
+.overlay-tweet-inline-media[data-count='2'] {
+  width: min(44vw, 560px);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  justify-items: center;
+  align-items: center;
 }
 
 .overlay-tweet-inline-video {
@@ -100,6 +113,15 @@ body {
   max-height: min(66vh, 820px);
 }
 
+.overlay-tweet-inline-media[data-count='2'] .overlay-tweet-inline-video {
+  width: min(18vw, 240px);
+  max-height: min(58vh, 660px);
+}
+
+.overlay-tweet-inline-media[data-count='2'] .overlay-tweet-inline-video[data-vertical='1'] {
+  max-height: min(60vh, 700px);
+}
+
 @media (max-width: 1100px) {
   .overlay-tweet-card-with-video {
     grid-template-columns: 1fr;
@@ -112,6 +134,20 @@ body {
 
   .overlay-tweet-inline-video[data-vertical='1'] {
     max-height: min(50vh, 640px);
+  }
+
+  .overlay-tweet-inline-media[data-count='2'] {
+    width: min(72vw, 520px);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .overlay-tweet-inline-media[data-count='2'] .overlay-tweet-inline-video {
+    width: min(32vw, 220px);
+    max-height: min(44vh, 520px);
+  }
+
+  .overlay-tweet-inline-media[data-count='2'] .overlay-tweet-inline-video[data-vertical='1'] {
+    max-height: min(48vh, 580px);
   }
 }
 

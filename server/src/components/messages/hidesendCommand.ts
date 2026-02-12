@@ -54,12 +54,13 @@ export const hideSendCommand = () => ({
 
       if (tweetCard) {
         const tweetVideoMedia = await resolveTweetVideoMediaFromUrl(url || text);
-        const tweetCardForOverlay =
-          tweetVideoMedia && !media
-            ? (await resolveTweetCardFromUrlWithOptions(url || text, {
-                hideMedia: true,
-              })) || tweetCard
-            : tweetCard;
+        const tweetCardHasPictureLink = /pic\.(x|twitter)\.com/i.test(tweetCard.html);
+        const shouldHideCardMedia = !!tweetVideoMedia && !media && !tweetCardHasPictureLink;
+        const tweetCardForOverlay = shouldHideCardMedia
+          ? (await resolveTweetCardFromUrlWithOptions(url || text, {
+              hideMedia: true,
+            })) || tweetCard
+          : tweetCard;
 
         await createPlaybackJob({
           guildId: interaction.guildId!,

@@ -81,6 +81,7 @@ export const hideSendCommand = () => ({
             type: 'tweet',
             tweetCard: {
               ...tweetCardForOverlay,
+              currentStatusId: currentTweetStatusId,
               videoUrl: tweetVideoMedia?.url || null,
               videoMime: tweetVideoMedia?.mime || null,
               videoIsVertical: tweetVideoMedia?.isVertical ?? null,

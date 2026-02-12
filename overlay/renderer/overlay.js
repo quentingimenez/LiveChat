@@ -340,7 +340,6 @@
         const video = document.createElement('video');
         video.className = 'overlay-tweet-inline-video';
         video.autoplay = true;
-        video.loop = true;
         video.controls = false;
         video.playsInline = true;
         video.preload = 'auto';

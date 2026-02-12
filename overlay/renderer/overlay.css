@@ -59,8 +59,14 @@ body {
 }
 
 .overlay-tweet-card-content {
-  font-size: clamp(20px, 2.1vw, 34px);
+  display: flex;
+  justify-content: center;
+  font-size: clamp(16px, 1.4vw, 24px);
   line-height: 1.35;
+}
+
+.overlay-tweet-card-content > * {
+  max-width: min(92vw, 620px);
 }
 
 .overlay-tweet-card-content blockquote {

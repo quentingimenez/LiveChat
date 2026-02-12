@@ -131,9 +131,12 @@
   const extractTweetTextFromHtml = (html) => {
     const node = document.createElement('div');
     node.innerHTML = html;
-    const textNode = node.querySelector('p');
-    const rawText = (textNode?.textContent || '').replace(/\s+/g, ' ').trim();
-    return rawText;
+
+    const paragraphs = Array.from(node.querySelectorAll('p'))
+      .map((paragraph) => (paragraph.innerText || paragraph.textContent || '').replace(/\u00a0/g, ' ').replace(/\r/g, '').trim())
+      .filter((value) => value.length > 0);
+
+    return paragraphs.join('\n\n');
   };
 
   const extractTweetDateFromHtml = (html) => {

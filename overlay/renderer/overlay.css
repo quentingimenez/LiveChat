@@ -108,11 +108,12 @@ body {
 }
 
 .overlay-tweet-custom-video {
-  width: 100%;
+  width: 70%;
   max-height: min(58vh, 920px);
   border-radius: 12px;
   background: #000;
   object-fit: contain;
+  align-self: center;
 }
 
 .overlay-tweet-custom-video[data-vertical='1'] {

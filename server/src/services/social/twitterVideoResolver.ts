@@ -6,6 +6,7 @@ interface ResolvedTweetVideoMedia {
   url: string;
   mime: string;
   isVertical: boolean;
+  sourceStatusId: string | null;
 }
 
 interface ResolveViaSyndicationOptions {
@@ -150,6 +151,19 @@ const toAbsoluteUrl = (rawUrl: string, baseUrl: string) => {
 const extractTweetStatusId = (tweetUrl: string) => {
   const match = tweetUrl.match(/\/status\/(\d+)/i);
   return match?.[1] || null;
+};
+
+export const extractTweetStatusIdFromUrl = (rawUrl?: string | null) => {
+  if (!rawUrl) {
+    return null;
+  }
+
+  const normalizedTweetUrl = normalizeTweetStatusUrl(rawUrl);
+  if (!normalizedTweetUrl) {
+    return null;
+  }
+
+  return extractTweetStatusId(normalizedTweetUrl);
 };
 
 const toNumber = (value: unknown) => {
@@ -400,7 +414,7 @@ const resolveViaSyndication = async (
     return null;
   }
 
-  const variants = dedupeVariants([...collectSyndicationVariants(payload), ...collectVariantsRecursively(payload)]);
+  const variants = dedupeVariants(collectSyndicationVariants(payload));
 
   if (variants.length === 0) {
     const referencedIds = collectReferencedStatusIds(payload).filter((id) => id !== statusId);
@@ -416,7 +430,30 @@ const resolveViaSyndication = async (
       }
     }
 
-    return null;
+    const fallbackVariants = dedupeVariants(collectVariantsRecursively(payload));
+    if (fallbackVariants.length === 0) {
+      return null;
+    }
+
+    const fallbackMp4Variants = fallbackVariants
+      .filter((variant) => variant.contentType.includes('video/mp4'))
+      .sort((a, b) => b.bitrate - a.bitrate);
+
+    const fallbackPicked =
+      fallbackMp4Variants[0] ||
+      fallbackVariants.find((variant) => variant.contentType.includes('mpegurl')) ||
+      fallbackVariants[0];
+
+    if (!fallbackPicked?.url) {
+      return null;
+    }
+
+    return {
+      url: fallbackPicked.url,
+      mime: fallbackPicked.contentType || inferMime(fallbackPicked.url),
+      isVertical: resolveVerticalFromSyndication(payload),
+      sourceStatusId: statusId,
+    };
   }
 
   const mp4Variants = variants
@@ -433,6 +470,7 @@ const resolveViaSyndication = async (
     url: picked.url,
     mime: picked.contentType || inferMime(picked.url),
     isVertical: resolveVerticalFromSyndication(payload),
+    sourceStatusId: statusId,
   };
 };
 
@@ -520,5 +558,6 @@ export const resolveTweetVideoMediaFromUrl = async (
     url: mediaUrl,
     mime: inferMime(mediaUrl),
     isVertical: width > 0 && height > width,
+    sourceStatusId: statusId,
   };
 };

@@ -128,6 +128,26 @@
     return video;
   };
 
+  const extractTweetTextFromHtml = (html) => {
+    const node = document.createElement('div');
+    node.innerHTML = html;
+    const textNode = node.querySelector('p');
+    const rawText = (textNode?.textContent || '').replace(/\s+/g, ' ').trim();
+    return rawText;
+  };
+
+  const extractTweetDateFromHtml = (html) => {
+    const node = document.createElement('div');
+    node.innerHTML = html;
+    const links = Array.from(node.querySelectorAll('a'));
+    if (links.length === 0) {
+      return '';
+    }
+
+    const rawDate = (links[links.length - 1]?.textContent || '').replace(/\s+/g, ' ').trim();
+    return rawDate;
+  };
+
   const ensureTwitterWidgets = () => {
     if (window.twttr?.widgets?.load) {
       return Promise.resolve(window.twttr);
@@ -182,6 +202,76 @@
 
     if (!tweetCard || typeof tweetCard.html !== 'string' || tweetCard.html.trim() === '') {
       return false;
+    }
+
+    if (typeof tweetCard.videoUrl === 'string' && tweetCard.videoUrl.trim() !== '') {
+      const container = document.createElement('div');
+      container.className = 'overlay-tweet-card';
+
+      const content = document.createElement('div');
+      content.className = 'overlay-tweet-card-content overlay-tweet-card-content-custom';
+
+      const header = document.createElement('div');
+      header.className = 'overlay-tweet-custom-header';
+
+      const authorNode = document.createElement('div');
+      authorNode.className = 'overlay-tweet-custom-author';
+      authorNode.textContent = tweetCard.authorName || 'Tweet';
+      header.appendChild(authorNode);
+
+      if (typeof tweetCard.url === 'string' && tweetCard.url.trim() !== '') {
+        const sourceLink = document.createElement('a');
+        sourceLink.className = 'overlay-tweet-custom-link';
+        sourceLink.href = tweetCard.url;
+        sourceLink.target = '_blank';
+        sourceLink.rel = 'noopener noreferrer';
+        sourceLink.textContent = 'Voir sur X';
+        header.appendChild(sourceLink);
+      }
+
+      content.appendChild(header);
+
+      const tweetText = extractTweetTextFromHtml(tweetCard.html);
+      if (tweetText) {
+        const textNode = document.createElement('div');
+        textNode.className = 'overlay-tweet-custom-text';
+        textNode.textContent = tweetText;
+        content.appendChild(textNode);
+      }
+
+      const video = document.createElement('video');
+      video.className = 'overlay-tweet-custom-video';
+      video.autoplay = true;
+      video.controls = false;
+      video.playsInline = true;
+      video.preload = 'auto';
+      video.muted = false;
+      video.src = tweetCard.videoUrl;
+      if (typeof tweetCard.videoIsVertical === 'boolean') {
+        video.dataset.vertical = tweetCard.videoIsVertical ? '1' : '0';
+      }
+
+      content.appendChild(video);
+
+      const dateLabel = extractTweetDateFromHtml(tweetCard.html);
+      if (dateLabel) {
+        const dateNode = document.createElement('div');
+        dateNode.className = 'overlay-tweet-custom-date';
+        dateNode.textContent = dateLabel;
+        content.appendChild(dateNode);
+      }
+
+      container.appendChild(content);
+      mediaLayer.appendChild(container);
+
+      applyVolume();
+      video
+        .play()
+        .catch((error) => {
+          console.warn('Tweet inline video autoplay failed:', error?.message || error);
+        });
+
+      return true;
     }
 
     const container = document.createElement('div');

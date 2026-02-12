@@ -4,7 +4,8 @@ import type { TweetCardPayload } from '../messages/richOverlayPayload';
 
 const TWITTER_HOSTS = new Set(['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com', 'mobile.twitter.com']);
 const TWEET_STATUS_PATH_REGEX = /^\/([a-zA-Z0-9_]{1,25})\/status\/(\d+)/;
-const TWEET_URL_REGEX = /https?:\/\/(?:www\.)?(?:x\.com|twitter\.com|mobile\.twitter\.com)\/[a-zA-Z0-9_]{1,25}\/status\/\d+/i;
+const TWEET_URL_REGEX =
+  /https?:\/\/(?:www\.)?(?:x\.com|twitter\.com|mobile\.twitter\.com)\/[a-zA-Z0-9_]{1,25}\/status\/\d+/i;
 
 const sanitizeEmbedHtml = (rawHtml: string) => {
   return rawHtml
@@ -20,9 +21,12 @@ const resolveLanguage = () => {
 
 const fetchJsonWithTimeout = async (url: string) => {
   const controller = new AbortController();
-  const timeout = setTimeout(() => {
-    controller.abort();
-  }, Math.max(5000, env.MEDIA_DOWNLOAD_TIMEOUT_MS));
+  const timeout = setTimeout(
+    () => {
+      controller.abort();
+    },
+    Math.max(5000, env.MEDIA_DOWNLOAD_TIMEOUT_MS),
+  );
 
   try {
     const response = await fetch(url, {
@@ -87,6 +91,17 @@ export const normalizeTweetStatusUrl = (rawUrl: string): string | null => {
 };
 
 export const resolveTweetCardFromUrl = async (rawUrl?: string | null): Promise<TweetCardPayload | null> => {
+  return resolveTweetCardFromUrlWithOptions(rawUrl, {
+    hideMedia: false,
+  });
+};
+
+export const resolveTweetCardFromUrlWithOptions = async (
+  rawUrl?: string | null,
+  options?: {
+    hideMedia?: boolean;
+  },
+): Promise<TweetCardPayload | null> => {
   if (!rawUrl) {
     return null;
   }
@@ -103,7 +118,7 @@ export const resolveTweetCardFromUrl = async (rawUrl?: string | null): Promise<T
   oEmbedUrl.searchParams.set('dnt', 'true');
   oEmbedUrl.searchParams.set('align', 'center');
   oEmbedUrl.searchParams.set('hide_thread', 'false');
-  oEmbedUrl.searchParams.set('hide_media', 'false');
+  oEmbedUrl.searchParams.set('hide_media', options?.hideMedia ? 'true' : 'false');
   oEmbedUrl.searchParams.set('lang', resolveLanguage());
 
   const payload = (await fetchJsonWithTimeout(oEmbedUrl.toString())) as {

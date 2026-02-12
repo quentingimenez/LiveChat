@@ -8,6 +8,11 @@ interface ResolvedTweetVideoMedia {
   isVertical: boolean;
 }
 
+interface ResolveViaSyndicationOptions {
+  depth: number;
+  visited: Set<string>;
+}
+
 interface SyndicationVariant {
   url?: unknown;
   src?: unknown;
@@ -206,6 +211,139 @@ const collectSyndicationVariants = (payload: SyndicationTweetPayload) => {
   return variants;
 };
 
+const collectVariantsRecursively = (value: unknown, maxDepth = 6) => {
+  const variants: Array<{ url: string; contentType: string; bitrate: number }> = [];
+  const visited = new Set<unknown>();
+
+  const walk = (node: unknown, depth: number) => {
+    if (depth > maxDepth || node === null || node === undefined || visited.has(node)) {
+      return;
+    }
+
+    if (typeof node !== 'object') {
+      return;
+    }
+
+    visited.add(node);
+
+    if (Array.isArray(node)) {
+      for (const entry of node) {
+        walk(entry, depth + 1);
+      }
+      return;
+    }
+
+    const record = node as Record<string, unknown>;
+
+    if (Array.isArray(record.variants)) {
+      for (const entry of record.variants as SyndicationVariant[]) {
+        const url = asNonEmptyString(entry.url) || asNonEmptyString(entry.src);
+        if (!url) {
+          continue;
+        }
+
+        const contentType = (asNonEmptyString(entry.content_type) || asNonEmptyString(entry.type) || '').toLowerCase();
+        const bitrate = toNumber(entry.bitrate) || 0;
+        variants.push({
+          url,
+          contentType,
+          bitrate,
+        });
+      }
+    }
+
+    for (const child of Object.values(record)) {
+      walk(child, depth + 1);
+    }
+  };
+
+  walk(value, 0);
+  return variants;
+};
+
+const dedupeVariants = (variants: Array<{ url: string; contentType: string; bitrate: number }>) => {
+  const deduped = new Map<string, { url: string; contentType: string; bitrate: number }>();
+
+  for (const variant of variants) {
+    const key = variant.url.trim();
+    const existing = deduped.get(key);
+
+    if (!existing || variant.bitrate > existing.bitrate) {
+      deduped.set(key, variant);
+    }
+  }
+
+  return Array.from(deduped.values());
+};
+
+const collectReferencedStatusIds = (payload: Record<string, unknown>) => {
+  const refs: string[] = [];
+  const add = (candidate: unknown) => {
+    const value = `${candidate || ''}`.trim();
+    if (!/^\d+$/.test(value)) {
+      return;
+    }
+    if (!refs.includes(value)) {
+      refs.push(value);
+    }
+  };
+
+  add(payload.in_reply_to_status_id_str);
+  add(payload.in_reply_to_status_id);
+  add(payload.quoted_status_id_str);
+  add(payload.quoted_status_id);
+
+  const referencedTweets = payload.referenced_tweets;
+  if (Array.isArray(referencedTweets)) {
+    for (const entry of referencedTweets) {
+      if (entry && typeof entry === 'object') {
+        add((entry as Record<string, unknown>).id_str);
+        add((entry as Record<string, unknown>).id);
+      }
+    }
+  }
+
+  const quotedTweet = payload.quoted_tweet;
+  if (quotedTweet && typeof quotedTweet === 'object') {
+    const quotedRecord = quotedTweet as Record<string, unknown>;
+    add(quotedRecord.id_str);
+    add(quotedRecord.id);
+  }
+
+  const collectFromStrings = (node: unknown, depth = 0) => {
+    if (depth > 5) {
+      return;
+    }
+
+    if (typeof node === 'string') {
+      const match = node.match(/\/status\/(\d+)/i);
+      if (match?.[1]) {
+        add(match[1]);
+      }
+      return;
+    }
+
+    if (!node || typeof node !== 'object') {
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      for (const entry of node) {
+        collectFromStrings(entry, depth + 1);
+      }
+      return;
+    }
+
+    for (const value of Object.values(node as Record<string, unknown>)) {
+      collectFromStrings(value, depth + 1);
+    }
+  };
+
+  collectFromStrings(payload);
+
+  return refs;
+};
+
 const resolveVerticalFromSyndication = (payload: SyndicationTweetPayload) => {
   if (Array.isArray(payload.mediaDetails)) {
     for (const media of payload.mediaDetails as SyndicationMediaDetails[]) {
@@ -238,21 +376,46 @@ const resolveVerticalFromSyndication = (payload: SyndicationTweetPayload) => {
   return false;
 };
 
-const resolveViaSyndication = async (statusId: string): Promise<ResolvedTweetVideoMedia | null> => {
+const resolveViaSyndication = async (
+  statusId: string,
+  options: ResolveViaSyndicationOptions = {
+    depth: 0,
+    visited: new Set<string>(),
+  },
+): Promise<ResolvedTweetVideoMedia | null> => {
+  if (options.depth > 2 || options.visited.has(statusId)) {
+    return null;
+  }
+
+  options.visited.add(statusId);
+
   const endpoint = new URL('https://cdn.syndication.twimg.com/tweet-result');
   endpoint.searchParams.set('id', statusId);
   endpoint.searchParams.set('lang', resolveLanguage());
   endpoint.searchParams.set('token', '1');
 
-  const payload = await fetchJsonWithTimeout<SyndicationTweetPayload>(endpoint.toString());
+  const payload = await fetchJsonWithTimeout<SyndicationTweetPayload & Record<string, unknown>>(endpoint.toString());
 
   if (!payload || typeof payload !== 'object') {
     return null;
   }
 
-  const variants = collectSyndicationVariants(payload);
+  const variants = dedupeVariants([...collectSyndicationVariants(payload), ...collectVariantsRecursively(payload)]);
 
   if (variants.length === 0) {
+    const referencedIds = collectReferencedStatusIds(payload).filter((id) => id !== statusId);
+
+    for (const referencedId of referencedIds) {
+      const resolvedFromReference = await resolveViaSyndication(referencedId, {
+        depth: options.depth + 1,
+        visited: options.visited,
+      });
+
+      if (resolvedFromReference) {
+        return resolvedFromReference;
+      }
+    }
+
     return null;
   }
 
@@ -271,6 +434,23 @@ const resolveViaSyndication = async (statusId: string): Promise<ResolvedTweetVid
     mime: picked.contentType || inferMime(picked.url),
     isVertical: resolveVerticalFromSyndication(payload),
   };
+};
+
+const extractVideoUrlFromHtml = (html: string) => {
+  const candidates = html.match(/https:\/\/video\.twimg\.com\/[^"'\\\s<>()]+/gi) || [];
+
+  for (const candidate of candidates) {
+    const cleaned = decodeHtmlAttribute(candidate);
+    if (!cleaned) {
+      continue;
+    }
+
+    if (cleaned.includes('.mp4') || cleaned.includes('.m3u8')) {
+      return cleaned;
+    }
+  }
+
+  return null;
 };
 
 export const resolveTweetVideoMediaFromUrl = async (
@@ -318,7 +498,8 @@ export const resolveTweetVideoMediaFromUrl = async (
     extractMetaContent(html, 'og:video:secure_url') ||
     extractMetaContent(html, 'og:video:url') ||
     extractMetaContent(html, 'og:video') ||
-    extractMetaContent(html, 'twitter:player:stream');
+    extractMetaContent(html, 'twitter:player:stream') ||
+    extractVideoUrlFromHtml(html);
 
   if (!videoCandidate) {
     return null;

@@ -49,11 +49,18 @@ export const sendCommand = () => ({
       const tweetCard = !media ? await resolveTweetCardFromUrl(url || text) : null;
 
       if (tweetCard) {
+        const tweetVideoMedia = await resolveTweetVideoMediaFromUrl(url || text);
+
         await createPlaybackJob({
           guildId: interaction.guildId!,
           text: encodeRichOverlayPayload({
             type: 'tweet',
-            tweetCard,
+            tweetCard: {
+              ...tweetCard,
+              videoUrl: tweetVideoMedia?.url || null,
+              videoMime: tweetVideoMedia?.mime || null,
+              videoIsVertical: tweetVideoMedia?.isVertical ?? null,
+            },
             caption: text || null,
           }),
           showText: false,

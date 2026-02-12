@@ -69,6 +69,61 @@ body {
   max-width: min(92vw, 620px);
 }
 
+.overlay-tweet-card-content-custom {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.overlay-tweet-custom-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.overlay-tweet-custom-author {
+  font-size: clamp(20px, 1.8vw, 28px);
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.overlay-tweet-custom-link {
+  font-size: clamp(14px, 1vw, 16px);
+  color: #7cc7ff;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.overlay-tweet-custom-link:hover {
+  text-decoration: underline;
+}
+
+.overlay-tweet-custom-text {
+  font-size: clamp(22px, 1.6vw, 30px);
+  line-height: 1.35;
+  color: #ffffff;
+  white-space: pre-wrap;
+}
+
+.overlay-tweet-custom-video {
+  width: 100%;
+  max-height: min(58vh, 920px);
+  border-radius: 12px;
+  background: #000;
+  object-fit: contain;
+}
+
+.overlay-tweet-custom-video[data-vertical='1'] {
+  max-height: min(66vh, 980px);
+}
+
+.overlay-tweet-custom-date {
+  font-size: clamp(14px, 1vw, 18px);
+  color: #9fb2c6;
+}
+
 .overlay-tweet-card-content blockquote {
   margin: 0;
   padding: 0;

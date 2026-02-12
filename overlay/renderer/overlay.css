@@ -70,28 +70,49 @@ body {
 }
 
 .overlay-tweet-card-with-video {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: minmax(360px, 620px) minmax(280px, 520px);
+  gap: 18px;
   align-items: center;
+  justify-content: center;
+  max-width: min(94vw, 1240px);
+}
+
+.overlay-tweet-card-with-video .overlay-tweet-card-content {
+  justify-content: flex-start;
 }
 
 .overlay-tweet-inline-media {
-  width: 100%;
+  width: auto;
   display: flex;
   justify-content: center;
 }
 
 .overlay-tweet-inline-video {
-  width: 70%;
-  max-height: min(58vh, 920px);
+  width: min(36vw, 420px);
+  max-height: min(64vh, 760px);
   border-radius: 12px;
   background: #000;
   object-fit: contain;
 }
 
 .overlay-tweet-inline-video[data-vertical='1'] {
-  max-height: min(66vh, 980px);
+  max-height: min(66vh, 820px);
+}
+
+@media (max-width: 1100px) {
+  .overlay-tweet-card-with-video {
+    grid-template-columns: 1fr;
+  }
+
+  .overlay-tweet-inline-video {
+    width: min(62vw, 420px);
+    max-height: min(42vh, 560px);
+  }
+
+  .overlay-tweet-inline-video[data-vertical='1'] {
+    max-height: min(50vh, 640px);
+  }
 }
 
 .overlay-tweet-card-content blockquote {

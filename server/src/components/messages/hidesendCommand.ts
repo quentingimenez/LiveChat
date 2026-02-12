@@ -3,7 +3,7 @@ import { ingestMediaFromSource } from '../../services/media/mediaIngestion';
 import { getLocalizedMediaErrorMessage, toMediaIngestionError } from '../../services/media/mediaErrors';
 import { createPlaybackJob } from '../../services/playbackJobs';
 import { encodeRichOverlayPayload } from '../../services/messages/richOverlayPayload';
-import { resolveTweetCardFromUrl } from '../../services/social/twitterOEmbed';
+import { resolveTweetCardFromUrl, resolveTweetCardFromUrlWithOptions } from '../../services/social/twitterOEmbed';
 import { resolveTweetVideoMediaFromUrl } from '../../services/social/twitterVideoResolver';
 
 export const hideSendCommand = () => ({
@@ -54,13 +54,19 @@ export const hideSendCommand = () => ({
 
       if (tweetCard) {
         const tweetVideoMedia = await resolveTweetVideoMediaFromUrl(url || text);
+        const tweetCardForOverlay =
+          tweetVideoMedia && !media
+            ? (await resolveTweetCardFromUrlWithOptions(url || text, {
+                hideMedia: true,
+              })) || tweetCard
+            : tweetCard;
 
         await createPlaybackJob({
           guildId: interaction.guildId!,
           text: encodeRichOverlayPayload({
             type: 'tweet',
             tweetCard: {
-              ...tweetCard,
+              ...tweetCardForOverlay,
               videoUrl: tweetVideoMedia?.url || null,
               videoMime: tweetVideoMedia?.mime || null,
               videoIsVertical: tweetVideoMedia?.isVertical ?? null,

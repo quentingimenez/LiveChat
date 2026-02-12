@@ -146,6 +146,21 @@
     return false;
   };
 
+  const playVideoWithRetry = (video, attempts = 4, delayMs = 250) => {
+    const attemptPlay = (remainingAttempts) => {
+      video.play().catch((error) => {
+        if (remainingAttempts <= 0) {
+          console.warn('Tweet inline video autoplay failed:', error?.message || error);
+          return;
+        }
+
+        setTimeout(() => attemptPlay(remainingAttempts - 1), delayMs);
+      });
+    };
+
+    attemptPlay(attempts);
+  };
+
   const ensureInlineVideoAudioFallback = (videos) => {
     if (!Array.isArray(videos) || videos.length < 2) {
       return;
@@ -157,7 +172,7 @@
     }
 
     const tryPromoteAudibleVideo = () => {
-      if (videoHasAudioTrack(primary) || (!primary.paused && primary.readyState >= 2)) {
+      if (videoHasAudioTrack(primary)) {
         return;
       }
 
@@ -166,7 +181,7 @@
           return false;
         }
 
-        return videoHasAudioTrack(video) || (!video.paused && video.readyState >= 2);
+        return videoHasAudioTrack(video);
       });
 
       if (!replacement) {
@@ -260,6 +275,7 @@
       inlineVideos.push({
         url: rawUrl,
         isVertical: typeof candidate.isVertical === 'boolean' ? candidate.isVertical : null,
+        sourceStatusId: typeof candidate.sourceStatusId === 'string' ? candidate.sourceStatusId : null,
       });
     };
 
@@ -301,21 +317,41 @@
       const inlineMedia = document.createElement('div');
       inlineMedia.className = 'overlay-tweet-inline-media';
       inlineMedia.dataset.count = `${videosToRender.length}`;
+      const currentStatusId =
+        typeof tweetCard.currentStatusId === 'string' && tweetCard.currentStatusId.trim() !== ''
+          ? tweetCard.currentStatusId.trim()
+          : null;
 
       videosToRender.forEach((inlineVideo, index) => {
+        const inlineItem = document.createElement('div');
+        inlineItem.className = 'overlay-tweet-inline-item';
+
+        const roleLabel = document.createElement('div');
+        roleLabel.className = 'overlay-tweet-inline-label';
+        if (currentStatusId && inlineVideo.sourceStatusId) {
+          roleLabel.textContent = inlineVideo.sourceStatusId === currentStatusId ? 'Reponse' : 'Tweet original';
+        } else if (index === 0) {
+          roleLabel.textContent = 'Video 1';
+        } else {
+          roleLabel.textContent = 'Video 2';
+        }
+        inlineItem.appendChild(roleLabel);
+
         const video = document.createElement('video');
         video.className = 'overlay-tweet-inline-video';
         video.autoplay = true;
+        video.loop = true;
         video.controls = false;
         video.playsInline = true;
         video.preload = 'auto';
-        video.muted = index > 0;
+        video.muted = true;
         video.dataset.forceMuted = index > 0 ? '1' : '0';
         video.src = inlineVideo.url;
         if (typeof inlineVideo.isVertical === 'boolean') {
           video.dataset.vertical = inlineVideo.isVertical ? '1' : '0';
         }
-        inlineMedia.appendChild(video);
+        inlineItem.appendChild(video);
+        inlineMedia.appendChild(inlineItem);
       });
       container.appendChild(inlineMedia);
 
@@ -329,13 +365,13 @@
           console.warn('Twitter widgets fallback to raw HTML:', error?.message || error);
         });
 
-      applyVolume();
       const inlineVideoElements = inlineMedia.querySelectorAll('video');
       inlineVideoElements.forEach((video) => {
-        video.play().catch((error) => {
-          console.warn('Tweet inline video autoplay failed:', error?.message || error);
-        });
+        playVideoWithRetry(video);
       });
+      setTimeout(() => {
+        applyVolume();
+      }, 220);
       ensureInlineVideoAudioFallback(Array.from(inlineVideoElements));
 
       return true;

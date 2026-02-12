@@ -13,6 +13,7 @@
 
   let resetTimer = null;
   let activeObjectUrl = null;
+  let twitterWidgetsPromise = null;
 
   const clearTimer = () => {
     if (resetTimer) {
@@ -127,6 +128,55 @@
     return video;
   };
 
+  const ensureTwitterWidgets = () => {
+    if (window.twttr?.widgets?.load) {
+      return Promise.resolve(window.twttr);
+    }
+
+    if (twitterWidgetsPromise) {
+      return twitterWidgetsPromise;
+    }
+
+    twitterWidgetsPromise = new Promise((resolve, reject) => {
+      const finish = () => {
+        if (window.twttr?.widgets?.load) {
+          resolve(window.twttr);
+          return;
+        }
+
+        reject(new Error('twitter_widgets_unavailable'));
+      };
+
+      const existingScript = document.getElementById('twitter-widgets-js');
+
+      if (existingScript) {
+        setTimeout(finish, 0);
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.id = 'twitter-widgets-js';
+      script.async = true;
+      script.src = 'https://platform.twitter.com/widgets.js';
+      script.referrerPolicy = 'no-referrer-when-downgrade';
+      script.onload = () => {
+        if (window.twttr?.ready) {
+          window.twttr.ready(() => finish());
+          return;
+        }
+
+        setTimeout(finish, 0);
+      };
+      script.onerror = () => reject(new Error('twitter_widgets_load_failed'));
+      document.head.appendChild(script);
+    }).catch((error) => {
+      twitterWidgetsPromise = null;
+      throw error;
+    });
+
+    return twitterWidgetsPromise;
+  };
+
   const renderTweetCard = (payload) => {
     const tweetCard = payload?.tweetCard;
 
@@ -149,6 +199,15 @@
 
     container.appendChild(content);
     mediaLayer.appendChild(container);
+
+    ensureTwitterWidgets()
+      .then((twitter) => {
+        twitter.widgets.load(content);
+      })
+      .catch((error) => {
+        console.warn('Twitter widgets fallback to raw HTML:', error?.message || error);
+      });
+
     return true;
   };
 
@@ -247,6 +306,8 @@
     window.livechatOverlay.onPlay(onPlay);
     window.livechatOverlay.onStop(() => clearOverlay());
     window.livechatOverlay.onSettings((settings) => onSettings(settings));
+
+    ensureTwitterWidgets().catch(() => undefined);
 
     window.livechatOverlay.rendererReady();
   };

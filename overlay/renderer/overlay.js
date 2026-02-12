@@ -127,6 +127,31 @@
     return video;
   };
 
+  const renderTweetCard = (payload) => {
+    const tweetCard = payload?.tweetCard;
+
+    if (!tweetCard || typeof tweetCard.html !== 'string' || tweetCard.html.trim() === '') {
+      return false;
+    }
+
+    const container = document.createElement('div');
+    container.className = 'overlay-tweet-card';
+
+    const content = document.createElement('div');
+    content.className = 'overlay-tweet-card-content';
+    content.innerHTML = tweetCard.html.trim();
+
+    const links = content.querySelectorAll('a[href]');
+    links.forEach((link) => {
+      link.setAttribute('target', '_blank');
+      link.setAttribute('rel', 'noopener noreferrer');
+    });
+
+    container.appendChild(content);
+    mediaLayer.appendChild(container);
+    return true;
+  };
+
   const applyVolume = () => {
     const mediaElements = mediaLayer.querySelectorAll('audio,video');
     mediaElements.forEach((element) => {
@@ -178,7 +203,9 @@
     applyOverlayInfo(payload);
 
     try {
-      await renderMedia(payload);
+      if (!renderTweetCard(payload)) {
+        await renderMedia(payload);
+      }
     } catch (error) {
       console.error('Media render failed:', error);
       window.livechatOverlay.reportError({

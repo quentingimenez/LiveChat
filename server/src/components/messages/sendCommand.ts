@@ -9,6 +9,24 @@ import {
   resolveTweetVideoMediasFromUrl,
 } from '../../services/social/twitterVideoResolver';
 
+const getTweetCardDurationSec = (
+  medias: Array<{
+    durationSec: number | null;
+  }>,
+) => {
+  const knownDurations = medias
+    .map((media) =>
+      typeof media.durationSec === 'number' && Number.isFinite(media.durationSec) ? media.durationSec : 0,
+    )
+    .filter((durationSec) => durationSec > 0);
+
+  if (knownDurations.length === 0) {
+    return 15;
+  }
+
+  return Math.max(1, Math.ceil(Math.max(...knownDurations)));
+};
+
 export const sendCommand = () => ({
   data: new SlashCommandBuilder()
     .setName(rosetty.t('sendCommand')!)
@@ -88,7 +106,7 @@ export const sendCommand = () => ({
           showText: false,
           authorName: null,
           authorImage: null,
-          durationSec: env.TWITTER_CARD_DURATION_SEC,
+          durationSec: getTweetCardDurationSec(tweetVideoMedias),
         });
 
         await interaction.editReply({

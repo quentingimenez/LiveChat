@@ -7,6 +7,7 @@ export interface ResolvedTweetVideoMedia {
   mime: string;
   isVertical: boolean;
   sourceStatusId: string | null;
+  durationSec: number | null;
 }
 
 interface ResolveViaSyndicationOptions {
@@ -32,6 +33,12 @@ interface SyndicationMediaDetails {
   video_info?: {
     variants?: unknown;
     aspect_ratio?: unknown;
+    duration_millis?: unknown;
+    durationMillis?: unknown;
+    durationMs?: unknown;
+    duration?: unknown;
+    duration_sec?: unknown;
+    durationSec?: unknown;
   };
 }
 
@@ -40,6 +47,12 @@ interface SyndicationTweetPayload {
   video?: {
     aspectRatio?: unknown;
     variants?: unknown;
+    duration_millis?: unknown;
+    durationMillis?: unknown;
+    durationMs?: unknown;
+    duration?: unknown;
+    duration_sec?: unknown;
+    durationSec?: unknown;
   };
 }
 
@@ -201,10 +214,37 @@ const fetchSyndicationPayload = async (statusId: string) => {
   );
 };
 
-const collectSyndicationVariants = (payload: SyndicationTweetPayload) => {
-  const variants: Array<{ url: string; contentType: string; bitrate: number; sourceStatusId: string | null }> = [];
+const resolveDurationSecFromRecord = (value: unknown) => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
 
-  const appendVariant = (variant: SyndicationVariant, sourceStatusId: string | null) => {
+  const record = value as Record<string, unknown>;
+  const durationMillis =
+    toNumber(record.duration_millis) || toNumber(record.durationMillis) || toNumber(record.durationMs) || null;
+  if (durationMillis && durationMillis > 0) {
+    return durationMillis / 1000;
+  }
+
+  const durationSeconds =
+    toNumber(record.duration_sec) || toNumber(record.durationSec) || toNumber(record.duration) || null;
+  if (durationSeconds && durationSeconds > 0) {
+    return durationSeconds;
+  }
+
+  return null;
+};
+
+const collectSyndicationVariants = (payload: SyndicationTweetPayload) => {
+  const variants: Array<{
+    url: string;
+    contentType: string;
+    bitrate: number;
+    sourceStatusId: string | null;
+    durationSec: number | null;
+  }> = [];
+
+  const appendVariant = (variant: SyndicationVariant, sourceStatusId: string | null, durationSec: number | null) => {
     const url = asNonEmptyString(variant.url) || asNonEmptyString(variant.src);
     if (!url) {
       return;
@@ -218,6 +258,7 @@ const collectSyndicationVariants = (payload: SyndicationTweetPayload) => {
       contentType,
       bitrate,
       sourceStatusId,
+      durationSec,
     });
   };
 
@@ -227,18 +268,21 @@ const collectSyndicationVariants = (payload: SyndicationTweetPayload) => {
       contentType: string;
       bitrate: number;
       sourceStatusId: string | null;
+      durationSec: number | null;
     }> = [];
     const variantsFromAllStatuses: Array<{
       url: string;
       contentType: string;
       bitrate: number;
       sourceStatusId: string | null;
+      durationSec: number | null;
     }> = [];
 
     const pushVariant = (
       target: typeof variantsFromCurrentStatus,
       variant: SyndicationVariant,
       sourceStatusId: string | null,
+      durationSec: number | null,
     ) => {
       const url = asNonEmptyString(variant.url) || asNonEmptyString(variant.src);
       if (!url) {
@@ -256,19 +300,21 @@ const collectSyndicationVariants = (payload: SyndicationTweetPayload) => {
         contentType,
         bitrate,
         sourceStatusId,
+        durationSec,
       });
     };
 
     for (const media of payload.mediaDetails as SyndicationMediaDetails[]) {
       const expandedUrl = asNonEmptyString(media.expanded_url) || asNonEmptyString(media.url);
       const mediaStatusId = expandedUrl ? extractTweetStatusId(expandedUrl) : null;
+      const mediaDurationSec = resolveDurationSecFromRecord(media.video_info);
 
       if (!Array.isArray(media.video_info?.variants)) {
         continue;
       }
 
       for (const entry of media.video_info.variants as SyndicationVariant[]) {
-        pushVariant(variantsFromAllStatuses, entry, mediaStatusId);
+        pushVariant(variantsFromAllStatuses, entry, mediaStatusId, mediaDurationSec);
       }
     }
 
@@ -291,8 +337,9 @@ const collectSyndicationVariants = (payload: SyndicationTweetPayload) => {
   }
 
   if (variants.length === 0 && Array.isArray(payload.video?.variants)) {
+    const payloadVideoDurationSec = resolveDurationSecFromRecord(payload.video);
     for (const entry of payload.video.variants as SyndicationVariant[]) {
-      appendVariant(entry, null);
+      appendVariant(entry, null, payloadVideoDurationSec);
     }
   }
 
@@ -300,7 +347,13 @@ const collectSyndicationVariants = (payload: SyndicationTweetPayload) => {
 };
 
 const collectVariantsRecursively = (value: unknown, maxDepth = 6) => {
-  const variants: Array<{ url: string; contentType: string; bitrate: number; sourceStatusId: string | null }> = [];
+  const variants: Array<{
+    url: string;
+    contentType: string;
+    bitrate: number;
+    sourceStatusId: string | null;
+    durationSec: number | null;
+  }> = [];
   const visited = new Set<unknown>();
 
   const walk = (node: unknown, depth: number) => {
@@ -337,6 +390,7 @@ const collectVariantsRecursively = (value: unknown, maxDepth = 6) => {
           contentType,
           bitrate,
           sourceStatusId: null,
+          durationSec: null,
         });
       }
     }
@@ -351,11 +405,17 @@ const collectVariantsRecursively = (value: unknown, maxDepth = 6) => {
 };
 
 const dedupeVariants = (
-  variants: Array<{ url: string; contentType: string; bitrate: number; sourceStatusId: string | null }>,
+  variants: Array<{
+    url: string;
+    contentType: string;
+    bitrate: number;
+    sourceStatusId: string | null;
+    durationSec: number | null;
+  }>,
 ) => {
   const deduped = new Map<
     string,
-    { url: string; contentType: string; bitrate: number; sourceStatusId: string | null }
+    { url: string; contentType: string; bitrate: number; sourceStatusId: string | null; durationSec: number | null }
   >();
 
   for (const variant of variants) {
@@ -368,6 +428,14 @@ const dedupeVariants = (
       (variant.bitrate === existing.bitrate && variant.sourceStatusId && !existing.sourceStatusId)
     ) {
       deduped.set(key, variant);
+      continue;
+    }
+
+    if (existing.durationSec === null && variant.durationSec !== null) {
+      deduped.set(key, {
+        ...existing,
+        durationSec: variant.durationSec,
+      });
     }
   }
 
@@ -532,6 +600,7 @@ const resolveViaSyndication = async (
       mime: fallbackPicked.contentType || inferMime(fallbackPicked.url),
       isVertical: resolveVerticalFromSyndication(payload),
       sourceStatusId: fallbackPicked.sourceStatusId || statusId,
+      durationSec: fallbackPicked.durationSec,
     };
   }
 
@@ -550,6 +619,7 @@ const resolveViaSyndication = async (
     mime: picked.contentType || inferMime(picked.url),
     isVertical: resolveVerticalFromSyndication(payload),
     sourceStatusId: picked.sourceStatusId || statusId,
+    durationSec: picked.durationSec,
   };
 };
 
@@ -577,8 +647,17 @@ const dedupeResolvedTweetMedia = (medias: ResolvedTweetVideoMedia[]) => {
     const sourcePart = media.sourceStatusId || 'unknown-source';
     const key = `${sourcePart}:${media.url}`;
 
-    if (!deduped.has(key)) {
+    const existing = deduped.get(key);
+    if (!existing) {
       deduped.set(key, media);
+      continue;
+    }
+
+    if (existing.durationSec === null && media.durationSec !== null) {
+      deduped.set(key, {
+        ...existing,
+        durationSec: media.durationSec,
+      });
     }
   }
 
@@ -672,6 +751,7 @@ export const resolveTweetVideoMediasFromUrl = async (rawUrl?: string | null): Pr
       mime: inferMime(mediaUrl),
       isVertical: width > 0 && height > width,
       sourceStatusId: statusId,
+      durationSec: null,
     },
   ];
 };

@@ -50,18 +50,18 @@ export const hideSendCommand = () => ({
     });
 
     try {
-      const tweetVideoMedia = !media ? await resolveTweetVideoMediaFromUrl(url || text) : null;
+      const tweetCard = !media ? await resolveTweetCardFromUrl(url || text) : null;
 
-      if (tweetVideoMedia) {
-        const mediaAsset = await ingestMediaFromSource({
-          media: tweetVideoMedia.url,
-        });
-
+      if (tweetCard) {
         await createPlaybackJob({
           guildId: interaction.guildId!,
-          mediaAsset,
-          text,
-          showText: !!text,
+          text: encodeRichOverlayPayload({
+            type: 'tweet',
+            tweetCard,
+            caption: text || null,
+          }),
+          showText: false,
+          durationSec: env.TWITTER_CARD_DURATION_SEC,
         });
 
         await interaction.editReply({
@@ -75,18 +75,18 @@ export const hideSendCommand = () => ({
         return;
       }
 
-      const tweetCard = !media ? await resolveTweetCardFromUrl(url || text) : null;
+      const tweetVideoMedia = !media ? await resolveTweetVideoMediaFromUrl(url || text) : null;
 
-      if (tweetCard) {
+      if (tweetVideoMedia) {
+        const mediaAsset = await ingestMediaFromSource({
+          media: tweetVideoMedia.url,
+        });
+
         await createPlaybackJob({
           guildId: interaction.guildId!,
-          text: encodeRichOverlayPayload({
-            type: 'tweet',
-            tweetCard,
-            caption: text || null,
-          }),
-          showText: false,
-          durationSec: env.TWITTER_CARD_DURATION_SEC,
+          mediaAsset,
+          text,
+          showText: !!text,
         });
 
         await interaction.editReply({

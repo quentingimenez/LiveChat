@@ -5,6 +5,9 @@ export interface TweetCardPayload {
   html: string;
   authorName: string;
   authorUrl: string | null;
+  videoUrl?: string | null;
+  videoMime?: string | null;
+  videoIsVertical?: boolean | null;
 }
 
 export interface OverlayRichPayload {
@@ -38,6 +41,9 @@ const normalizeRichPayload = (value: unknown): OverlayRichPayload | null => {
       html?: unknown;
       authorName?: unknown;
       authorUrl?: unknown;
+      videoUrl?: unknown;
+      videoMime?: unknown;
+      videoIsVertical?: unknown;
     };
   };
 
@@ -62,6 +68,10 @@ const normalizeRichPayload = (value: unknown): OverlayRichPayload | null => {
       html: payload.tweetCard.html.trim(),
       authorName,
       authorUrl: toStringOrNull(payload.tweetCard.authorUrl),
+      videoUrl: toStringOrNull(payload.tweetCard.videoUrl),
+      videoMime: toStringOrNull(payload.tweetCard.videoMime),
+      videoIsVertical:
+        typeof payload.tweetCard.videoIsVertical === 'boolean' ? payload.tweetCard.videoIsVertical : null,
     },
     caption: toStringOrNull(payload.caption),
   };
@@ -92,4 +102,3 @@ export const decodeRichOverlayPayload = (value?: string | null): OverlayRichPayl
     return null;
   }
 };
-

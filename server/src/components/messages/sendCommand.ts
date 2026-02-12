@@ -4,7 +4,10 @@ import { getLocalizedMediaErrorMessage, toMediaIngestionError } from '../../serv
 import { createPlaybackJob } from '../../services/playbackJobs';
 import { encodeRichOverlayPayload } from '../../services/messages/richOverlayPayload';
 import { resolveTweetCardFromUrl, resolveTweetCardFromUrlWithOptions } from '../../services/social/twitterOEmbed';
-import { extractTweetStatusIdFromUrl, resolveTweetVideoMediaFromUrl } from '../../services/social/twitterVideoResolver';
+import {
+  extractTweetStatusIdFromUrl,
+  resolveTweetVideoMediasFromUrl,
+} from '../../services/social/twitterVideoResolver';
 
 export const sendCommand = () => ({
   data: new SlashCommandBuilder()
@@ -49,13 +52,19 @@ export const sendCommand = () => ({
       const tweetCard = !media ? await resolveTweetCardFromUrl(url || text) : null;
 
       if (tweetCard) {
-        const tweetVideoMedia = await resolveTweetVideoMediaFromUrl(url || text);
+        const tweetVideoMedias = await resolveTweetVideoMediasFromUrl(url || text);
+        const tweetVideoMedia = tweetVideoMedias[0] || null;
+        const tweetVideosForOverlay = tweetVideoMedias.slice(0, 2).map((video) => ({
+          url: video.url,
+          mime: video.mime,
+          isVertical: video.isVertical,
+          sourceStatusId: video.sourceStatusId,
+        }));
         const currentTweetStatusId = extractTweetStatusIdFromUrl(url || text);
         const shouldHideCardMedia =
-          !!tweetVideoMedia &&
           !media &&
           !!currentTweetStatusId &&
-          tweetVideoMedia.sourceStatusId === currentTweetStatusId;
+          tweetVideosForOverlay.some((video) => video.sourceStatusId === currentTweetStatusId);
         const tweetCardForOverlay = shouldHideCardMedia
           ? (await resolveTweetCardFromUrlWithOptions(url || text, {
               hideMedia: true,
@@ -71,6 +80,7 @@ export const sendCommand = () => ({
               videoUrl: tweetVideoMedia?.url || null,
               videoMime: tweetVideoMedia?.mime || null,
               videoIsVertical: tweetVideoMedia?.isVertical ?? null,
+              videos: tweetVideosForOverlay,
             },
             caption: text || null,
           }),
@@ -91,7 +101,8 @@ export const sendCommand = () => ({
         return;
       }
 
-      const tweetVideoMedia = !media ? await resolveTweetVideoMediaFromUrl(url || text) : null;
+      const tweetVideoMedias = !media ? await resolveTweetVideoMediasFromUrl(url || text) : [];
+      const tweetVideoMedia = tweetVideoMedias[0] || null;
 
       if (tweetVideoMedia) {
         const mediaAsset = await ingestMediaFromSource({

@@ -8,6 +8,12 @@ export interface TweetCardPayload {
   videoUrl?: string | null;
   videoMime?: string | null;
   videoIsVertical?: boolean | null;
+  videos?: Array<{
+    url: string;
+    mime: string | null;
+    isVertical: boolean | null;
+    sourceStatusId: string | null;
+  }>;
 }
 
 export interface OverlayRichPayload {
@@ -44,6 +50,7 @@ const normalizeRichPayload = (value: unknown): OverlayRichPayload | null => {
       videoUrl?: unknown;
       videoMime?: unknown;
       videoIsVertical?: unknown;
+      videos?: unknown;
     };
   };
 
@@ -60,6 +67,38 @@ const normalizeRichPayload = (value: unknown): OverlayRichPayload | null => {
   }
 
   const authorName = isNonEmptyString(payload.tweetCard.authorName) ? payload.tweetCard.authorName.trim() : 'Tweet';
+  const videos = Array.isArray(payload.tweetCard.videos)
+    ? payload.tweetCard.videos
+        .map((video) => {
+          if (!video || typeof video !== 'object') {
+            return null;
+          }
+
+          const candidate = video as {
+            url?: unknown;
+            mime?: unknown;
+            isVertical?: unknown;
+            sourceStatusId?: unknown;
+          };
+
+          if (!isNonEmptyString(candidate.url)) {
+            return null;
+          }
+
+          return {
+            url: candidate.url.trim(),
+            mime: toStringOrNull(candidate.mime),
+            isVertical: typeof candidate.isVertical === 'boolean' ? candidate.isVertical : null,
+            sourceStatusId: toStringOrNull(candidate.sourceStatusId),
+          };
+        })
+        .filter(
+          (
+            video,
+          ): video is { url: string; mime: string | null; isVertical: boolean | null; sourceStatusId: string | null } =>
+            !!video,
+        )
+    : [];
 
   return {
     type: 'tweet',
@@ -72,6 +111,7 @@ const normalizeRichPayload = (value: unknown): OverlayRichPayload | null => {
       videoMime: toStringOrNull(payload.tweetCard.videoMime),
       videoIsVertical:
         typeof payload.tweetCard.videoIsVertical === 'boolean' ? payload.tweetCard.videoIsVertical : null,
+      videos,
     },
     caption: toStringOrNull(payload.caption),
   };

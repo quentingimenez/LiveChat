@@ -47,6 +47,7 @@ export const env = createEnv({
     MEDIA_VIDEO_NVENC_PRESET: z.string().default('p4'),
     MEDIA_VIDEO_PRESET: z.string().default('ultrafast'),
     TWITTER_OEMBED_ENDPOINT: z.string().url().default('https://publish.twitter.com/oembed'),
+    TWITTER_VIDEO_RESOLVER_BASE_URL: z.string().url().default('https://vxtwitter.com'),
     TWITTER_CARD_DURATION_SEC: z
       .string()
       .default('15')

@@ -4,6 +4,7 @@ import { getLocalizedMediaErrorMessage, toMediaIngestionError } from '../../serv
 import { createPlaybackJob } from '../../services/playbackJobs';
 import { encodeRichOverlayPayload } from '../../services/messages/richOverlayPayload';
 import { resolveTweetCardFromUrl } from '../../services/social/twitterOEmbed';
+import { resolveTweetVideoMediaFromUrl } from '../../services/social/twitterVideoResolver';
 
 export const hideSendCommand = () => ({
   data: new SlashCommandBuilder()
@@ -49,6 +50,31 @@ export const hideSendCommand = () => ({
     });
 
     try {
+      const tweetVideoMedia = !media ? await resolveTweetVideoMediaFromUrl(url || text) : null;
+
+      if (tweetVideoMedia) {
+        const mediaAsset = await ingestMediaFromSource({
+          media: tweetVideoMedia.url,
+        });
+
+        await createPlaybackJob({
+          guildId: interaction.guildId!,
+          mediaAsset,
+          text,
+          showText: !!text,
+        });
+
+        await interaction.editReply({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle(rosetty.t('success')!)
+              .setDescription(rosetty.t('hideSendCommandAnswer')!)
+              .setColor(0x2ecc71),
+          ],
+        });
+        return;
+      }
+
       const tweetCard = !media ? await resolveTweetCardFromUrl(url || text) : null;
 
       if (tweetCard) {

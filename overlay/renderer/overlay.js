@@ -128,6 +128,60 @@
     return video;
   };
 
+  const videoHasAudioTrack = (video) => {
+    const candidate = video;
+
+    if (typeof candidate.mozHasAudio === 'boolean') {
+      return candidate.mozHasAudio;
+    }
+
+    if (candidate.audioTracks && typeof candidate.audioTracks.length === 'number') {
+      return candidate.audioTracks.length > 0;
+    }
+
+    if (typeof candidate.webkitAudioDecodedByteCount === 'number') {
+      return candidate.webkitAudioDecodedByteCount > 0;
+    }
+
+    return false;
+  };
+
+  const ensureInlineVideoAudioFallback = (videos) => {
+    if (!Array.isArray(videos) || videos.length < 2) {
+      return;
+    }
+
+    const primary = videos[0];
+    if (!(primary instanceof HTMLVideoElement)) {
+      return;
+    }
+
+    const tryPromoteAudibleVideo = () => {
+      if (videoHasAudioTrack(primary) || (!primary.paused && primary.readyState >= 2)) {
+        return;
+      }
+
+      const replacement = videos.slice(1).find((video) => {
+        if (!(video instanceof HTMLVideoElement)) {
+          return false;
+        }
+
+        return videoHasAudioTrack(video) || (!video.paused && video.readyState >= 2);
+      });
+
+      if (!replacement) {
+        return;
+      }
+
+      primary.dataset.forceMuted = '1';
+      replacement.dataset.forceMuted = '0';
+      applyVolume();
+    };
+
+    setTimeout(tryPromoteAudibleVideo, 1000);
+    setTimeout(tryPromoteAudibleVideo, 2200);
+  };
+
   const ensureTwitterWidgets = () => {
     if (window.twttr?.widgets?.load) {
       return Promise.resolve(window.twttr);
@@ -282,6 +336,7 @@
           console.warn('Tweet inline video autoplay failed:', error?.message || error);
         });
       });
+      ensureInlineVideoAudioFallback(Array.from(inlineVideoElements));
 
       return true;
     }

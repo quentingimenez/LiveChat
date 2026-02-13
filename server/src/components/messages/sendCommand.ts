@@ -77,6 +77,7 @@ export const sendCommand = () => ({
           mime: video.mime,
           isVertical: video.isVertical,
           sourceStatusId: video.sourceStatusId,
+          durationSec: video.durationSec,
         }));
         const currentTweetStatusId = extractTweetStatusIdFromUrl(url || text);
         const shouldHideCardMedia =

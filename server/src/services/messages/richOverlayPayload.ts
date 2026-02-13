@@ -14,6 +14,7 @@ export interface TweetCardPayload {
     mime: string | null;
     isVertical: boolean | null;
     sourceStatusId: string | null;
+    durationSec: number | null;
   }>;
 }
 
@@ -81,24 +82,36 @@ const normalizeRichPayload = (value: unknown): OverlayRichPayload | null => {
             mime?: unknown;
             isVertical?: unknown;
             sourceStatusId?: unknown;
+            durationSec?: unknown;
           };
 
           if (!isNonEmptyString(candidate.url)) {
             return null;
           }
 
+          const rawDuration =
+            typeof candidate.durationSec === 'number' && Number.isFinite(candidate.durationSec)
+              ? candidate.durationSec
+              : null;
+
           return {
             url: candidate.url.trim(),
             mime: toStringOrNull(candidate.mime),
             isVertical: typeof candidate.isVertical === 'boolean' ? candidate.isVertical : null,
             sourceStatusId: toStringOrNull(candidate.sourceStatusId),
+            durationSec: rawDuration && rawDuration > 0 ? rawDuration : null,
           };
         })
         .filter(
           (
             video,
-          ): video is { url: string; mime: string | null; isVertical: boolean | null; sourceStatusId: string | null } =>
-            !!video,
+          ): video is {
+            url: string;
+            mime: string | null;
+            isVertical: boolean | null;
+            sourceStatusId: string | null;
+            durationSec: number | null;
+          } => !!video,
         )
     : [];
 

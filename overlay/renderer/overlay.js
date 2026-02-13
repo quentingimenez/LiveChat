@@ -161,6 +161,68 @@
     attemptPlay(attempts);
   };
 
+  const getDurationSec = (value) => {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+      return null;
+    }
+
+    return value;
+  };
+
+  const configureInlineVideoLooping = (videos) => {
+    if (!Array.isArray(videos) || videos.length < 2) {
+      return;
+    }
+
+    const configuredDurations = videos.map((video) => {
+      const raw = Number.parseFloat(video.dataset.configDurationSec || '');
+      return getDurationSec(raw);
+    });
+
+    const applyLoopPolicy = () => {
+      const measuredDurations = videos.map((video, index) => {
+        const measured = getDurationSec(video.duration);
+        return measured ?? configuredDurations[index] ?? null;
+      });
+
+      const knownDurations = measuredDurations.filter((durationSec) => typeof durationSec === 'number');
+      let longestIndex = 0;
+
+      if (knownDurations.length > 0) {
+        const longestDuration = Math.max(...knownDurations);
+        longestIndex = measuredDurations.findIndex((durationSec) => durationSec === longestDuration);
+        if (longestIndex < 0) {
+          longestIndex = 0;
+        }
+      }
+
+      videos.forEach((video, index) => {
+        const durationSec = measuredDurations[index];
+        const shouldLoop =
+          knownDurations.length === 0
+            ? index > 0
+            : index !== longestIndex && (durationSec === null || durationSec + 0.25 < measuredDurations[longestIndex]);
+
+        video.loop = shouldLoop;
+        video.dataset.loopWanted = shouldLoop ? '1' : '0';
+      });
+    };
+
+    videos.forEach((video) => {
+      video.addEventListener('loadedmetadata', applyLoopPolicy);
+      video.addEventListener('ended', () => {
+        if (video.dataset.loopWanted !== '1') {
+          return;
+        }
+
+        video.currentTime = 0;
+        playVideoWithRetry(video, 2, 120);
+      });
+    });
+
+    applyLoopPolicy();
+  };
+
   const ensureInlineVideoAudioFallback = (videos) => {
     if (!Array.isArray(videos) || videos.length < 2) {
       return;
@@ -325,10 +387,6 @@
         typeof tweetCard.currentStatusId === 'string' && tweetCard.currentStatusId.trim() !== ''
           ? tweetCard.currentStatusId.trim()
           : null;
-      const knownDurations = videosToRender
-        .map((video) => (typeof video.durationSec === 'number' && Number.isFinite(video.durationSec) ? video.durationSec : 0))
-        .filter((durationSec) => durationSec > 0);
-      const longestDurationSec = knownDurations.length > 0 ? Math.max(...knownDurations) : 0;
 
       videosToRender.forEach((inlineVideo, index) => {
         const inlineItem = document.createElement('div');
@@ -351,12 +409,10 @@
         video.controls = false;
         video.playsInline = true;
         video.preload = 'auto';
-        const shouldLoop =
-          longestDurationSec > 0 &&
-          typeof inlineVideo.durationSec === 'number' &&
-          inlineVideo.durationSec > 0 &&
-          inlineVideo.durationSec + 0.25 < longestDurationSec;
-        video.loop = shouldLoop;
+        video.dataset.configDurationSec =
+          typeof inlineVideo.durationSec === 'number' && Number.isFinite(inlineVideo.durationSec) && inlineVideo.durationSec > 0
+            ? `${inlineVideo.durationSec}`
+            : '';
         video.muted = true;
         video.dataset.forceMuted = index > 0 ? '1' : '0';
         video.src = inlineVideo.url;
@@ -379,6 +435,7 @@
         });
 
       const inlineVideoElements = inlineMedia.querySelectorAll('video');
+      configureInlineVideoLooping(Array.from(inlineVideoElements));
       inlineVideoElements.forEach((video) => {
         playVideoWithRetry(video);
       });

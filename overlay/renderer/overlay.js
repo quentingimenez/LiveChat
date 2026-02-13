@@ -276,6 +276,10 @@
         url: rawUrl,
         isVertical: typeof candidate.isVertical === 'boolean' ? candidate.isVertical : null,
         sourceStatusId: typeof candidate.sourceStatusId === 'string' ? candidate.sourceStatusId : null,
+        durationSec:
+          typeof candidate.durationSec === 'number' && Number.isFinite(candidate.durationSec) && candidate.durationSec > 0
+            ? candidate.durationSec
+            : null,
       });
     };
 
@@ -321,6 +325,10 @@
         typeof tweetCard.currentStatusId === 'string' && tweetCard.currentStatusId.trim() !== ''
           ? tweetCard.currentStatusId.trim()
           : null;
+      const knownDurations = videosToRender
+        .map((video) => (typeof video.durationSec === 'number' && Number.isFinite(video.durationSec) ? video.durationSec : 0))
+        .filter((durationSec) => durationSec > 0);
+      const longestDurationSec = knownDurations.length > 0 ? Math.max(...knownDurations) : 0;
 
       videosToRender.forEach((inlineVideo, index) => {
         const inlineItem = document.createElement('div');
@@ -343,6 +351,12 @@
         video.controls = false;
         video.playsInline = true;
         video.preload = 'auto';
+        const shouldLoop =
+          longestDurationSec > 0 &&
+          typeof inlineVideo.durationSec === 'number' &&
+          inlineVideo.durationSec > 0 &&
+          inlineVideo.durationSec + 0.25 < longestDurationSec;
+        video.loop = shouldLoop;
         video.muted = true;
         video.dataset.forceMuted = index > 0 ? '1' : '0';
         video.src = inlineVideo.url;

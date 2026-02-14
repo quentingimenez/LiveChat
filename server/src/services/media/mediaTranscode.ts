@@ -42,6 +42,31 @@ const runFfmpeg = async (args: string[]) => {
   });
 };
 
+const getExecFailureDetails = (error: unknown) => {
+  const asText = (value: unknown): string => {
+    return typeof value === 'string' ? value.trim() : '';
+  };
+
+  const errorRecord = (error || {}) as {
+    message?: unknown;
+    code?: unknown;
+    signal?: unknown;
+    stderr?: unknown;
+    stdout?: unknown;
+  };
+
+  const stderrText = asText(errorRecord.stderr);
+  const stdoutText = asText(errorRecord.stdout);
+
+  return {
+    message: asText(errorRecord.message),
+    code: typeof errorRecord.code === 'string' || typeof errorRecord.code === 'number' ? errorRecord.code : undefined,
+    signal: typeof errorRecord.signal === 'string' ? errorRecord.signal : undefined,
+    stderrTail: stderrText ? stderrText.split('\n').slice(-20).join('\n').slice(-2000) : undefined,
+    stdoutTail: stdoutText ? stdoutText.split('\n').slice(-20).join('\n').slice(-1000) : undefined,
+  };
+};
+
 const hasNvencEncoder = async () => {
   if (hasNvencEncoderPromise) {
     return hasNvencEncoderPromise;
@@ -277,37 +302,72 @@ const normalizeVideo = async (inputPath: string, outputBasePath: string): Promis
   let selectedEncoder = await resolveVideoEncoder();
   logger.info(`[MEDIA] Video encoder selected: ${selectedEncoder}`);
 
+  let ffmpegArgs = buildVideoTranscodeArgs({
+    inputPath,
+    outputPath,
+    maxHeight,
+    videoEncoder: selectedEncoder,
+    cpuPreset: selectedCpuPreset,
+    nvencPreset: selectedNvencPreset,
+  });
+
   try {
-    await runFfmpeg(
-      buildVideoTranscodeArgs({
-        inputPath,
-        outputPath,
-        maxHeight,
-        videoEncoder: selectedEncoder,
-        cpuPreset: selectedCpuPreset,
-        nvencPreset: selectedNvencPreset,
-      }),
-    );
+    await runFfmpeg(ffmpegArgs);
   } catch (error) {
     if (selectedEncoder !== GPU_VIDEO_ENCODER) {
+      logger.error(
+        {
+          ...getExecFailureDetails(error),
+          inputPath,
+          outputPath,
+          selectedEncoder,
+          maxHeight,
+          ffmpegArgs,
+        },
+        '[MEDIA] ffmpeg transcode failed',
+      );
       throw error;
     }
 
-    logger.warn(error, '[MEDIA] NVENC transcode failed, retry with libx264');
+    logger.warn(
+      {
+        ...getExecFailureDetails(error),
+        inputPath,
+        outputPath,
+        selectedEncoder,
+        maxHeight,
+        ffmpegArgs,
+      },
+      '[MEDIA] NVENC transcode failed, retry with libx264',
+    );
     selectedEncoder = CPU_VIDEO_ENCODER;
+    ffmpegArgs = buildVideoTranscodeArgs({
+      inputPath,
+      outputPath,
+      maxHeight,
+      videoEncoder: selectedEncoder,
+      cpuPreset: selectedCpuPreset,
+      nvencPreset: selectedNvencPreset,
+    });
 
     await rm(outputPath, { force: true }).catch(() => undefined);
 
-    await runFfmpeg(
-      buildVideoTranscodeArgs({
-        inputPath,
-        outputPath,
-        maxHeight,
-        videoEncoder: selectedEncoder,
-        cpuPreset: selectedCpuPreset,
-        nvencPreset: selectedNvencPreset,
-      }),
-    );
+    try {
+      await runFfmpeg(ffmpegArgs);
+    } catch (retryError) {
+      logger.error(
+        {
+          ...getExecFailureDetails(retryError),
+          inputPath,
+          outputPath,
+          selectedEncoder,
+          maxHeight,
+          ffmpegArgs,
+        },
+        '[MEDIA] ffmpeg transcode failed after CPU retry',
+      );
+      throw retryError;
+    }
   }
 
   return finalizeFile(outputPath, 'video', 'video/mp4');

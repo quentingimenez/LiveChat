@@ -138,6 +138,7 @@ const TIKTOK_CAROUSEL_FPS = 30;
 interface TikTokEmbedMediaCandidates {
   videoUrls: string[];
   imageUrls: string[];
+  audioUrls: string[];
   photoSlides: string[][];
 }
 
@@ -185,7 +186,10 @@ const toEvenNumber = (value: number): number => {
 };
 
 const decodeTikTokEscapedUrl = (value: string): string => {
-  return value.replace(/\\u0026/gi, '&').replace(/\\\//g, '/');
+  return value
+    .replace(/\\u0026/gi, '&')
+    .replace(/&amp;/gi, '&')
+    .replace(/\\\//g, '/');
 };
 
 const extractTikTokPhotoAssetKey = (mediaUrl: string): string | null => {
@@ -483,6 +487,7 @@ const extractTikTokEmbedMediaCandidatesFromHtml = (html: string): TikTokEmbedMed
     return {
       videoUrls: [],
       imageUrls: [],
+      audioUrls: [],
       photoSlides: [],
     };
   }
@@ -494,6 +499,7 @@ const extractTikTokEmbedMediaCandidatesFromHtml = (html: string): TikTokEmbedMed
     return {
       videoUrls: [],
       imageUrls: [],
+      audioUrls: [],
       photoSlides: [],
     };
   }
@@ -506,6 +512,7 @@ const extractTikTokEmbedMediaCandidatesFromHtml = (html: string): TikTokEmbedMed
     return {
       videoUrls: [],
       imageUrls: [],
+      audioUrls: [],
       photoSlides: [],
     };
   }
@@ -517,6 +524,7 @@ const extractTikTokEmbedMediaCandidatesFromHtml = (html: string): TikTokEmbedMed
     return {
       videoUrls: [],
       imageUrls: [],
+      audioUrls: [],
       photoSlides: [],
     };
   }
@@ -529,6 +537,7 @@ const extractTikTokEmbedMediaCandidatesFromHtml = (html: string): TikTokEmbedMed
     return {
       videoUrls: [],
       imageUrls: [],
+      audioUrls: [],
       photoSlides: [],
     };
   }
@@ -537,6 +546,8 @@ const extractTikTokEmbedMediaCandidatesFromHtml = (html: string): TikTokEmbedMed
   const videoUrlsSet = new Set<string>();
   const imageUrls: string[] = [];
   const imageUrlsSet = new Set<string>();
+  const audioUrls: string[] = [];
+  const audioUrlsSet = new Set<string>();
   const photoSlides: string[][] = [];
 
   const appendUrl = (target: string[], dedupeSet: Set<string>, candidate: unknown) => {
@@ -563,6 +574,12 @@ const extractTikTokEmbedMediaCandidatesFromHtml = (html: string): TikTokEmbedMed
 
   const videoRecord = asRecord(itemInfos.video);
   appendFromStringArray(videoUrls, videoUrlsSet, videoRecord?.urls);
+  appendFromStringArray(videoUrls, videoUrlsSet, asRecord(videoRecord?.playAddr)?.urlList);
+
+  const videoMusicInfos = asRecord(videoData?.musicInfos);
+  const itemMusicInfos = asRecord(itemInfos.musicInfos);
+  appendFromStringArray(audioUrls, audioUrlsSet, videoMusicInfos?.playUrl);
+  appendFromStringArray(audioUrls, audioUrlsSet, itemMusicInfos?.playUrl);
 
   const imagePostRecord = asRecord(itemInfos.imagePostInfo) || asRecord(itemInfos.imagePost);
   const displayImages = Array.isArray(imagePostRecord?.displayImages) ? imagePostRecord?.displayImages : [];
@@ -603,6 +620,7 @@ const extractTikTokEmbedMediaCandidatesFromHtml = (html: string): TikTokEmbedMed
   return {
     videoUrls,
     imageUrls,
+    audioUrls,
     photoSlides,
   };
 };
@@ -614,6 +632,7 @@ const isSupportedTikTokContentType = (contentType: string): boolean => {
     !normalized ||
     normalized.includes('video/') ||
     normalized.includes('image/') ||
+    normalized.includes('audio/') ||
     normalized.includes('application/octet-stream')
   );
 };
@@ -624,12 +643,12 @@ const downloadTikTokMediaCandidate = async (params: {
   tmpDir: string;
   cookieHeader: string;
   outputBasename: string;
-  expectedKind: 'video' | 'image' | 'any';
+  expectedKind: 'video' | 'image' | 'audio' | 'any';
 }) => {
   const requestHeaders: Record<string, string> = {
     'user-agent': TIKTOK_PAGE_USER_AGENT,
     referer: params.sourceUrl,
-    accept: 'video/*,image/*,*/*;q=0.8',
+    accept: 'video/*,image/*,audio/*,*/*;q=0.8',
   };
 
   if (params.cookieHeader) {
@@ -683,6 +702,19 @@ const downloadTikTokMediaCandidate = async (params: {
       'DOWNLOAD_FAILED',
       'Unexpected TikTok media type',
       `Expected image content-type for ${params.mediaUrl}, got "${mediaContentType}"`,
+    );
+  }
+
+  if (
+    params.expectedKind === 'audio' &&
+    mediaContentType &&
+    !mediaContentType.includes('audio/') &&
+    !mediaContentType.includes('application/octet-stream')
+  ) {
+    throw new MediaIngestionError(
+      'DOWNLOAD_FAILED',
+      'Unexpected TikTok media type',
+      `Expected audio content-type for ${params.mediaUrl}, got "${mediaContentType}"`,
     );
   }
 
@@ -751,6 +783,47 @@ const downloadTikTokCarouselSlides = async (params: {
   return downloadedSlides;
 };
 
+const downloadTikTokCarouselAudio = async (params: {
+  sourceUrl: string;
+  tmpDir: string;
+  cookieHeader: string;
+  audioCandidates: string[];
+}) => {
+  let lastAudioError: unknown = null;
+
+  for (const [candidateIndex, candidateUrl] of params.audioCandidates.entries()) {
+    try {
+      return await downloadTikTokMediaCandidate({
+        sourceUrl: params.sourceUrl,
+        mediaUrl: candidateUrl,
+        tmpDir: params.tmpDir,
+        cookieHeader: params.cookieHeader,
+        outputBasename: `download-tiktok-audio-${candidateIndex + 1}`,
+        expectedKind: 'audio',
+      });
+    } catch (audioCandidateError) {
+      lastAudioError = audioCandidateError;
+      const normalized = toMediaIngestionError(audioCandidateError, 'DOWNLOAD_FAILED');
+      logger.warn(
+        {
+          sourceUrl: sanitizeUrlForLog(params.sourceUrl),
+          candidateIndex: candidateIndex + 1,
+          totalCandidates: params.audioCandidates.length,
+          candidateUrl: sanitizeUrlForLog(candidateUrl),
+          code: normalized.code,
+        },
+        '[MEDIA] TikTok carousel audio candidate failed',
+      );
+    }
+  }
+
+  if (lastAudioError) {
+    throw lastAudioError;
+  }
+
+  return null;
+};
+
 const probeMediaDimensionsFromFile = async (filePath: string): Promise<{ width: number; height: number }> => {
   const { stdout } = await execFileAsync(
     env.FFPROBE_BINARY,
@@ -789,11 +862,12 @@ const probeMediaDimensionsFromFile = async (filePath: string): Promise<{ width: 
   };
 };
 
-const escapeFfmpegConcatPath = (filePath: string): string => {
-  return filePath.replace(/'/g, "'\\''");
-};
-
-const createTikTokCarouselVideo = async (params: { sourceUrl: string; tmpDir: string; imagePaths: string[] }) => {
+const createTikTokCarouselVideo = async (params: {
+  sourceUrl: string;
+  tmpDir: string;
+  imagePaths: string[];
+  audioPath: string | null;
+}) => {
   if (params.imagePaths.length < 2) {
     throw new MediaIngestionError(
       'DOWNLOAD_FAILED',
@@ -802,20 +876,7 @@ const createTikTokCarouselVideo = async (params: { sourceUrl: string; tmpDir: st
     );
   }
 
-  const concatFilePath = path.join(params.tmpDir, 'download-tiktok-carousel.txt');
   const outputVideoPath = path.join(params.tmpDir, 'download-tiktok-carousel.mp4');
-
-  const concatLines: string[] = [];
-  for (const imagePath of params.imagePaths) {
-    concatLines.push(`file '${escapeFfmpegConcatPath(imagePath)}'`);
-    concatLines.push(`duration ${TIKTOK_CAROUSEL_IMAGE_DURATION_SEC}`);
-  }
-
-  const lastImagePath = params.imagePaths[params.imagePaths.length - 1];
-  concatLines.push(`file '${escapeFfmpegConcatPath(lastImagePath)}'`);
-
-  await fsPromises.writeFile(concatFilePath, `${concatLines.join('\n')}\n`, 'utf8');
-
   const firstImageDimensions = await probeMediaDimensionsFromFile(params.imagePaths[0]);
   const configuredMaxHeight = env.MEDIA_VIDEO_MAX_HEIGHT > 0 ? env.MEDIA_VIDEO_MAX_HEIGHT : 1080;
   const portraitWidth = toEvenNumber((configuredMaxHeight * 9) / 16);
@@ -825,36 +886,53 @@ const createTikTokCarouselVideo = async (params: { sourceUrl: string; tmpDir: st
   const targetHeight = isPortrait ? toEvenNumber(configuredMaxHeight) : landscapeHeight;
   const configuredPreset = (env.MEDIA_VIDEO_PRESET || '').trim();
   const selectedPreset = configuredPreset && configuredPreset !== 'superfast' ? configuredPreset : 'ultrafast';
-  const filterGraph = `fps=${TIKTOK_CAROUSEL_FPS},scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2`;
+  const inputArgs: string[] = [];
+  const filterParts: string[] = [];
 
-  await execFileAsync(
-    env.FFMPEG_BINARY,
-    [
-      '-y',
-      '-f',
-      'concat',
-      '-safe',
-      '0',
-      '-i',
-      concatFilePath,
-      '-vf',
-      filterGraph,
-      '-c:v',
-      'libx264',
-      '-preset',
-      selectedPreset,
-      '-pix_fmt',
-      'yuv420p',
-      '-movflags',
-      '+faststart',
-      '-an',
-      outputVideoPath,
-    ],
-    {
-      timeout: env.MEDIA_DOWNLOAD_TIMEOUT_MS,
-      maxBuffer: 10 * 1024 * 1024,
-    },
-  );
+  params.imagePaths.forEach((imagePath, index) => {
+    inputArgs.push('-loop', '1', '-t', `${TIKTOK_CAROUSEL_IMAGE_DURATION_SEC}`, '-i', imagePath);
+    filterParts.push(
+      `[${index}:v]fps=${TIKTOK_CAROUSEL_FPS},scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v${index}]`,
+    );
+  });
+
+  const concatenatedInputs = params.imagePaths.map((_, index) => `[v${index}]`).join('');
+  filterParts.push(`${concatenatedInputs}concat=n=${params.imagePaths.length}:v=1:a=0[vout]`);
+
+  if (params.audioPath) {
+    inputArgs.push('-i', params.audioPath);
+  }
+
+  const ffmpegArgs = [
+    '-y',
+    ...inputArgs,
+    '-filter_complex',
+    filterParts.join(';'),
+    '-map',
+    '[vout]',
+    '-c:v',
+    'libx264',
+    '-preset',
+    selectedPreset,
+    '-pix_fmt',
+    'yuv420p',
+    '-movflags',
+    '+faststart',
+  ];
+
+  if (params.audioPath) {
+    const audioInputIndex = params.imagePaths.length;
+    ffmpegArgs.push('-map', `${audioInputIndex}:a:0?`, '-c:a', 'aac', '-b:a', '192k', '-shortest');
+  } else {
+    ffmpegArgs.push('-an');
+  }
+
+  ffmpegArgs.push(outputVideoPath);
+
+  await execFileAsync(env.FFMPEG_BINARY, ffmpegArgs, {
+    timeout: env.MEDIA_DOWNLOAD_TIMEOUT_MS,
+    maxBuffer: 10 * 1024 * 1024,
+  });
 
   await ensureFileSizeWithinLimit(outputVideoPath, params.sourceUrl);
 
@@ -885,6 +963,7 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
 
   const videoCandidates = new Set<string>(extractTikTokMediaUrlsFromHtml(pageHtml));
   const imageCandidates = new Set<string>();
+  const audioCandidates = new Set<string>();
   const canonicalUrl = extractTikTokCanonicalUrlFromHtml(pageHtml);
   const candidateItemIds = new Set<string>();
   let photoSlides: string[][] = [];
@@ -921,6 +1000,7 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
       const embedCandidates = extractTikTokEmbedMediaCandidatesFromHtml(embedHtml);
       embedCandidates.videoUrls.forEach((candidateUrl) => videoCandidates.add(candidateUrl));
       embedCandidates.imageUrls.forEach((candidateUrl) => imageCandidates.add(candidateUrl));
+      embedCandidates.audioUrls.forEach((candidateUrl) => audioCandidates.add(candidateUrl));
 
       if (embedCandidates.photoSlides.length > photoSlides.length) {
         photoSlides = embedCandidates.photoSlides;
@@ -937,12 +1017,13 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
       itemIds: [...candidateItemIds],
       videoCandidates: videoCandidates.size,
       imageCandidates: imageCandidates.size,
+      audioCandidates: audioCandidates.size,
       photoSlides: photoSlides.length,
     },
     '[MEDIA] TikTok candidates extracted',
   );
 
-  if (videoCandidates.size === 0 && imageCandidates.size === 0) {
+  if (videoCandidates.size === 0 && imageCandidates.size === 0 && audioCandidates.size === 0) {
     throw new MediaIngestionError(
       'DOWNLOAD_FAILED',
       'Unable to resolve TikTok media URL',
@@ -962,6 +1043,9 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
         .slice(0, TIKTOK_MAX_CAROUSEL_CANDIDATES_PER_SLIDE),
     )
     .filter((slide) => slide.length > 0);
+  const resolvedAudioCandidates = [...audioCandidates]
+    .filter((audioUrl) => audioUrl.startsWith('http://') || audioUrl.startsWith('https://'))
+    .slice(0, 5);
 
   if (resolvedPhotoSlides.length > 1) {
     try {
@@ -971,17 +1055,41 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
         cookieHeader,
         photoSlides: resolvedPhotoSlides,
       });
+      let downloadedAudioPath: string | null = null;
+
+      if (resolvedAudioCandidates.length > 0) {
+        try {
+          downloadedAudioPath = await downloadTikTokCarouselAudio({
+            sourceUrl,
+            tmpDir,
+            cookieHeader,
+            audioCandidates: resolvedAudioCandidates,
+          });
+        } catch (audioError) {
+          const normalizedAudioError = toMediaIngestionError(audioError, 'DOWNLOAD_FAILED');
+          logger.warn(
+            {
+              sourceUrl: sanitizeUrlForLog(sourceUrl),
+              code: normalizedAudioError.code,
+              message: normalizedAudioError.message,
+            },
+            '[MEDIA] TikTok carousel audio download failed, continuing without audio',
+          );
+        }
+      }
 
       const carouselVideoPath = await createTikTokCarouselVideo({
         sourceUrl,
         tmpDir,
         imagePaths: downloadedSlides,
+        audioPath: downloadedAudioPath,
       });
 
       logger.info(
         {
           sourceUrl: sanitizeUrlForLog(sourceUrl),
           slideCount: downloadedSlides.length,
+          hasAudio: !!downloadedAudioPath,
         },
         '[MEDIA] TikTok carousel converted to slideshow video',
       );
@@ -1004,10 +1112,10 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
 
   const resolvedMediaCandidates: Array<{
     mediaUrl: string;
-    kind: 'video' | 'image';
+    kind: 'video' | 'image' | 'audio';
   }> = [];
   const seenCandidateUrls = new Set<string>();
-  const appendCandidate = (candidateUrl: string, kind: 'video' | 'image') => {
+  const appendCandidate = (candidateUrl: string, kind: 'video' | 'image' | 'audio') => {
     if (seenCandidateUrls.has(candidateUrl)) {
       return;
     }
@@ -1021,6 +1129,7 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
 
   videoCandidates.forEach((candidateUrl) => appendCandidate(candidateUrl, 'video'));
   imageCandidates.forEach((candidateUrl) => appendCandidate(candidateUrl, 'image'));
+  audioCandidates.forEach((candidateUrl) => appendCandidate(candidateUrl, 'audio'));
 
   for (const [candidateIndex, candidate] of resolvedMediaCandidates.entries()) {
     try {

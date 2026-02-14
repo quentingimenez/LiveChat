@@ -117,6 +117,7 @@ const buildVideoTranscodeArgs = (params: {
   nvencPreset: string;
 }) => {
   const ffmpegArgs = ['-y', '-i', params.inputPath, '-c:v', params.videoEncoder];
+  const evenDimensionsFilter = 'scale=trunc(iw/2)*2:trunc(ih/2)*2';
 
   if (params.videoEncoder === GPU_VIDEO_ENCODER) {
     ffmpegArgs.push('-preset', params.nvencPreset);
@@ -127,7 +128,9 @@ const buildVideoTranscodeArgs = (params: {
   ffmpegArgs.push('-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-c:a', 'aac', '-b:a', '192k');
 
   if (params.maxHeight > 0) {
-    ffmpegArgs.push('-vf', `scale=-2:${params.maxHeight}:force_original_aspect_ratio=decrease`);
+    ffmpegArgs.push('-vf', `scale=-2:${params.maxHeight}:force_original_aspect_ratio=decrease,${evenDimensionsFilter}`);
+  } else {
+    ffmpegArgs.push('-vf', evenDimensionsFilter);
   }
 
   ffmpegArgs.push(params.outputPath);

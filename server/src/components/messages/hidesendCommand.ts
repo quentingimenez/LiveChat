@@ -175,7 +175,14 @@ export const hideSendCommand = () => ({
       });
     } catch (error) {
       const mediaError = toMediaIngestionError(error);
-      logger.error(mediaError, `[MEDIA] hide send command failed (${mediaError.code})`);
+      logger.error(
+        {
+          err: mediaError,
+          sourceUrl: url || null,
+          sourceMedia: media || null,
+        },
+        `[MEDIA] hide send command failed (${mediaError.code})`,
+      );
 
       await interaction.editReply({
         embeds: [

@@ -130,6 +130,16 @@ const findDownloadedFile = async (tmpDir: string) => {
 
 const TIKTOK_PAGE_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36';
+const TIKTOK_CAROUSEL_IMAGE_DURATION_SEC = 3;
+const TIKTOK_MAX_CAROUSEL_IMAGES = 35;
+const TIKTOK_MAX_CAROUSEL_CANDIDATES_PER_SLIDE = 3;
+const TIKTOK_CAROUSEL_FPS = 30;
+
+interface TikTokEmbedMediaCandidates {
+  videoUrls: string[];
+  imageUrls: string[];
+  photoSlides: string[][];
+}
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (!value || typeof value !== 'object') {
@@ -151,6 +161,89 @@ const asNonEmptyString = (value: unknown): string | null => {
   }
 
   return normalized;
+};
+
+const sanitizeUrlForLog = (rawUrl: string): string => {
+  const normalized = rawUrl.trim();
+  if (!normalized) {
+    return normalized;
+  }
+
+  try {
+    const parsed = new URL(normalized);
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return normalized.slice(0, 240);
+  }
+};
+
+const toEvenNumber = (value: number): number => {
+  const rounded = Math.max(2, Math.round(value));
+  return rounded % 2 === 0 ? rounded : rounded - 1;
+};
+
+const decodeTikTokEscapedUrl = (value: string): string => {
+  return value.replace(/\\u0026/gi, '&').replace(/\\\//g, '/');
+};
+
+const extractTikTokPhotoAssetKey = (mediaUrl: string): string | null => {
+  try {
+    const parsed = new URL(mediaUrl);
+    const match = parsed.pathname.match(/\/([^/?#]+)~tplv-photomode-image\./i);
+    return asNonEmptyString(match?.[1]);
+  } catch {
+    return null;
+  }
+};
+
+const buildTikTokPhotoSlidesFromUrls = (urls: string[]): string[][] => {
+  const groupedSlides = new Map<string, string[]>();
+
+  for (const mediaUrl of urls) {
+    const groupKey = extractTikTokPhotoAssetKey(mediaUrl) || mediaUrl;
+    const existingUrls = groupedSlides.get(groupKey);
+
+    if (!existingUrls) {
+      groupedSlides.set(groupKey, [mediaUrl]);
+      continue;
+    }
+
+    if (!existingUrls.includes(mediaUrl)) {
+      existingUrls.push(mediaUrl);
+    }
+  }
+
+  return [...groupedSlides.values()].filter((slide) => slide.length > 0);
+};
+
+const extractTikTokPhotoUrlsFromRawHtml = (html: string): string[] => {
+  const escapedMatches =
+    html.match(/https?:\\\/\\\/[^"'<>\s]+~tplv-photomode-image\.(?:jpeg|jpg|png)[^"'<>\s]*/gi) || [];
+  const plainMatches = html.match(/https?:\/\/[^"'<>\s]+~tplv-photomode-image\.(?:jpeg|jpg|png)[^"'<>\s]*/gi) || [];
+  const dedupeSet = new Set<string>();
+  const urls: string[] = [];
+
+  for (const rawCandidate of [...escapedMatches, ...plainMatches]) {
+    const decodedCandidate = decodeTikTokEscapedUrl(rawCandidate);
+    const normalized = asNonEmptyString(decodedCandidate);
+
+    if (!normalized) {
+      continue;
+    }
+
+    if (!normalized.startsWith('http://') && !normalized.startsWith('https://')) {
+      continue;
+    }
+
+    if (!dedupeSet.has(normalized)) {
+      dedupeSet.add(normalized);
+      urls.push(normalized);
+    }
+  }
+
+  return urls;
 };
 
 const isTikTokUrl = (sourceUrl: string): boolean => {
@@ -383,18 +476,26 @@ const extractTikTokMediaUrlsFromHtml = (html: string): string[] => {
   return [...candidateUrls];
 };
 
-const extractTikTokEmbedMediaUrlsFromHtml = (html: string): string[] => {
+const extractTikTokEmbedMediaCandidatesFromHtml = (html: string): TikTokEmbedMediaCandidates => {
   const scriptMatch = html.match(/<script[^>]+id="__FRONTITY_CONNECT_STATE__"[^>]*>([\s\S]*?)<\/script>/i);
 
   if (!scriptMatch || !scriptMatch[1]) {
-    return [];
+    return {
+      videoUrls: [],
+      imageUrls: [],
+      photoSlides: [],
+    };
   }
 
   let parsedPayload: unknown = null;
   try {
     parsedPayload = JSON.parse(scriptMatch[1]);
   } catch {
-    return [];
+    return {
+      videoUrls: [],
+      imageUrls: [],
+      photoSlides: [],
+    };
   }
 
   const payloadRecord = asRecord(parsedPayload);
@@ -402,14 +503,22 @@ const extractTikTokEmbedMediaUrlsFromHtml = (html: string): string[] => {
   const sourceData = asRecord(sourceRecord?.data);
 
   if (!sourceData) {
-    return [];
+    return {
+      videoUrls: [],
+      imageUrls: [],
+      photoSlides: [],
+    };
   }
 
   const entryKeys = Object.keys(sourceData);
   const mediaEntryKey = entryKeys.find((entryKey) => entryKey.startsWith('/embed/v2/'));
 
   if (!mediaEntryKey) {
-    return [];
+    return {
+      videoUrls: [],
+      imageUrls: [],
+      photoSlides: [],
+    };
   }
 
   const mediaEntry = asRecord(sourceData[mediaEntryKey]);
@@ -417,31 +526,43 @@ const extractTikTokEmbedMediaUrlsFromHtml = (html: string): string[] => {
   const itemInfos = asRecord(videoData?.itemInfos);
 
   if (!itemInfos) {
-    return [];
+    return {
+      videoUrls: [],
+      imageUrls: [],
+      photoSlides: [],
+    };
   }
 
-  const candidateUrls = new Set<string>();
-  const addCandidate = (candidate: unknown) => {
+  const videoUrls: string[] = [];
+  const videoUrlsSet = new Set<string>();
+  const imageUrls: string[] = [];
+  const imageUrlsSet = new Set<string>();
+  const photoSlides: string[][] = [];
+
+  const appendUrl = (target: string[], dedupeSet: Set<string>, candidate: unknown) => {
     const normalized = asNonEmptyString(candidate);
     if (!normalized) {
       return;
     }
 
     if (normalized.startsWith('http://') || normalized.startsWith('https://')) {
-      candidateUrls.add(normalized);
+      if (!dedupeSet.has(normalized)) {
+        dedupeSet.add(normalized);
+        target.push(normalized);
+      }
     }
   };
 
-  const addFromStringArray = (candidate: unknown) => {
+  const appendFromStringArray = (target: string[], dedupeSet: Set<string>, candidate: unknown) => {
     if (!Array.isArray(candidate)) {
       return;
     }
 
-    candidate.forEach((entry) => addCandidate(entry));
+    candidate.forEach((entry) => appendUrl(target, dedupeSet, entry));
   };
 
   const videoRecord = asRecord(itemInfos.video);
-  addFromStringArray(videoRecord?.urls);
+  appendFromStringArray(videoUrls, videoUrlsSet, videoRecord?.urls);
 
   const imagePostRecord = asRecord(itemInfos.imagePostInfo) || asRecord(itemInfos.imagePost);
   const displayImages = Array.isArray(imagePostRecord?.displayImages) ? imagePostRecord?.displayImages : [];
@@ -451,16 +572,293 @@ const extractTikTokEmbedMediaUrlsFromHtml = (html: string): string[] => {
     if (!imageRecord) {
       continue;
     }
-    addFromStringArray(imageRecord.urlList);
-    addFromStringArray(asRecord(imageRecord.imageURL)?.urlList);
-    addFromStringArray(asRecord(imageRecord.displayImage)?.urlList);
+
+    const slideUrls: string[] = [];
+    const slideUrlsSet = new Set<string>();
+    appendFromStringArray(slideUrls, slideUrlsSet, imageRecord.urlList);
+    appendFromStringArray(slideUrls, slideUrlsSet, asRecord(imageRecord.imageURL)?.urlList);
+    appendFromStringArray(slideUrls, slideUrlsSet, asRecord(imageRecord.displayImage)?.urlList);
+
+    if (slideUrls.length > 0) {
+      photoSlides.push(slideUrls);
+      slideUrls.forEach((slideUrl) => appendUrl(imageUrls, imageUrlsSet, slideUrl));
+    }
   }
 
-  addFromStringArray(itemInfos.coversOrigin);
-  addFromStringArray(itemInfos.covers);
-  addFromStringArray(itemInfos.coversDynamic);
+  appendFromStringArray(imageUrls, imageUrlsSet, itemInfos.coversOrigin);
+  appendFromStringArray(imageUrls, imageUrlsSet, itemInfos.covers);
+  appendFromStringArray(imageUrls, imageUrlsSet, itemInfos.coversDynamic);
 
-  return [...candidateUrls];
+  const photoUrlsFromRawHtml = extractTikTokPhotoUrlsFromRawHtml(html);
+  photoUrlsFromRawHtml.forEach((photoUrl) => appendUrl(imageUrls, imageUrlsSet, photoUrl));
+
+  if (photoSlides.length <= 1 && photoUrlsFromRawHtml.length > 1) {
+    const groupedSlides = buildTikTokPhotoSlidesFromUrls(photoUrlsFromRawHtml);
+    if (groupedSlides.length > photoSlides.length) {
+      photoSlides.length = 0;
+      groupedSlides.forEach((slide) => photoSlides.push(slide));
+    }
+  }
+
+  return {
+    videoUrls,
+    imageUrls,
+    photoSlides,
+  };
+};
+
+const isSupportedTikTokContentType = (contentType: string): boolean => {
+  const normalized = (contentType || '').toLowerCase();
+
+  return (
+    !normalized ||
+    normalized.includes('video/') ||
+    normalized.includes('image/') ||
+    normalized.includes('application/octet-stream')
+  );
+};
+
+const downloadTikTokMediaCandidate = async (params: {
+  sourceUrl: string;
+  mediaUrl: string;
+  tmpDir: string;
+  cookieHeader: string;
+  outputBasename: string;
+  expectedKind: 'video' | 'image' | 'any';
+}) => {
+  const requestHeaders: Record<string, string> = {
+    'user-agent': TIKTOK_PAGE_USER_AGENT,
+    referer: params.sourceUrl,
+    accept: 'video/*,image/*,*/*;q=0.8',
+  };
+
+  if (params.cookieHeader) {
+    requestHeaders.cookie = params.cookieHeader;
+  }
+
+  const mediaResponse = await fetch(params.mediaUrl, {
+    headers: requestHeaders,
+  }).catch((error) => {
+    throw toMediaIngestionError(error, 'DOWNLOAD_FAILED');
+  });
+
+  if (!mediaResponse.ok) {
+    throw new MediaIngestionError(
+      getMediaErrorCodeFromHttpStatus(mediaResponse.status),
+      `Unable to download media (${mediaResponse.status})`,
+      `TikTok media request failed with status ${mediaResponse.status} for ${params.mediaUrl}`,
+    );
+  }
+
+  const mediaContentType = (mediaResponse.headers.get('content-type') || '').toLowerCase();
+
+  if (!isSupportedTikTokContentType(mediaContentType)) {
+    throw new MediaIngestionError(
+      'DOWNLOAD_FAILED',
+      'Unsupported TikTok media type',
+      `TikTok candidate returned unsupported content-type "${mediaContentType}" for ${params.mediaUrl}`,
+    );
+  }
+
+  if (
+    params.expectedKind === 'video' &&
+    mediaContentType &&
+    !mediaContentType.includes('video/') &&
+    !mediaContentType.includes('application/octet-stream')
+  ) {
+    throw new MediaIngestionError(
+      'DOWNLOAD_FAILED',
+      'Unexpected TikTok media type',
+      `Expected video content-type for ${params.mediaUrl}, got "${mediaContentType}"`,
+    );
+  }
+
+  if (
+    params.expectedKind === 'image' &&
+    mediaContentType &&
+    !mediaContentType.includes('image/') &&
+    !mediaContentType.includes('application/octet-stream')
+  ) {
+    throw new MediaIngestionError(
+      'DOWNLOAD_FAILED',
+      'Unexpected TikTok media type',
+      `Expected image content-type for ${params.mediaUrl}, got "${mediaContentType}"`,
+    );
+  }
+
+  return downloadHttpResponseToTempFile({
+    response: mediaResponse,
+    tmpDir: params.tmpDir,
+    sourceUrl: params.sourceUrl,
+    outputBasename: params.outputBasename,
+  });
+};
+
+const downloadTikTokCarouselSlides = async (params: {
+  sourceUrl: string;
+  tmpDir: string;
+  cookieHeader: string;
+  photoSlides: string[][];
+}) => {
+  const downloadedSlides: string[] = [];
+
+  for (const [slideIndex, slideCandidates] of params.photoSlides.entries()) {
+    let downloadedSlidePath: string | null = null;
+    let lastSlideError: unknown = null;
+
+    for (const [candidateIndex, candidateUrl] of slideCandidates.entries()) {
+      try {
+        downloadedSlidePath = await downloadTikTokMediaCandidate({
+          sourceUrl: params.sourceUrl,
+          mediaUrl: candidateUrl,
+          tmpDir: params.tmpDir,
+          cookieHeader: params.cookieHeader,
+          outputBasename: `download-tiktok-slide-${String(slideIndex + 1).padStart(2, '0')}-${candidateIndex + 1}`,
+          expectedKind: 'image',
+        });
+        break;
+      } catch (slideCandidateError) {
+        lastSlideError = slideCandidateError;
+        const normalized = toMediaIngestionError(slideCandidateError, 'DOWNLOAD_FAILED');
+        logger.warn(
+          {
+            sourceUrl: sanitizeUrlForLog(params.sourceUrl),
+            slideIndex: slideIndex + 1,
+            candidateIndex: candidateIndex + 1,
+            candidateUrl: sanitizeUrlForLog(candidateUrl),
+            code: normalized.code,
+          },
+          '[MEDIA] TikTok carousel slide candidate failed',
+        );
+      }
+    }
+
+    if (!downloadedSlidePath) {
+      if (lastSlideError) {
+        throw lastSlideError;
+      }
+
+      throw new MediaIngestionError(
+        'DOWNLOAD_FAILED',
+        'Unable to download TikTok carousel slide',
+        `No valid image candidate for TikTok slide #${slideIndex + 1} (${params.sourceUrl})`,
+      );
+    }
+
+    downloadedSlides.push(downloadedSlidePath);
+  }
+
+  return downloadedSlides;
+};
+
+const probeMediaDimensionsFromFile = async (filePath: string): Promise<{ width: number; height: number }> => {
+  const { stdout } = await execFileAsync(
+    env.FFPROBE_BINARY,
+    ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0:s=x', filePath],
+    {
+      timeout: env.MEDIA_DOWNLOAD_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
+    },
+  );
+
+  const dimensionsText = (stdout || '').trim();
+  const match = dimensionsText.match(/^(\d+)x(\d+)$/);
+
+  if (!match) {
+    throw new MediaIngestionError(
+      'INVALID_MEDIA',
+      'Unable to parse media dimensions',
+      `ffprobe returned "${dimensionsText}" for ${filePath}`,
+    );
+  }
+
+  const width = Number.parseInt(match[1] || '0', 10);
+  const height = Number.parseInt(match[2] || '0', 10);
+
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    throw new MediaIngestionError(
+      'INVALID_MEDIA',
+      'Invalid media dimensions',
+      `Invalid ffprobe dimensions "${dimensionsText}" for ${filePath}`,
+    );
+  }
+
+  return {
+    width,
+    height,
+  };
+};
+
+const escapeFfmpegConcatPath = (filePath: string): string => {
+  return filePath.replace(/'/g, "'\\''");
+};
+
+const createTikTokCarouselVideo = async (params: { sourceUrl: string; tmpDir: string; imagePaths: string[] }) => {
+  if (params.imagePaths.length < 2) {
+    throw new MediaIngestionError(
+      'DOWNLOAD_FAILED',
+      'Unable to build TikTok carousel',
+      `Expected at least 2 images to build carousel for ${params.sourceUrl}`,
+    );
+  }
+
+  const concatFilePath = path.join(params.tmpDir, 'download-tiktok-carousel.txt');
+  const outputVideoPath = path.join(params.tmpDir, 'download-tiktok-carousel.mp4');
+
+  const concatLines: string[] = [];
+  for (const imagePath of params.imagePaths) {
+    concatLines.push(`file '${escapeFfmpegConcatPath(imagePath)}'`);
+    concatLines.push(`duration ${TIKTOK_CAROUSEL_IMAGE_DURATION_SEC}`);
+  }
+
+  const lastImagePath = params.imagePaths[params.imagePaths.length - 1];
+  concatLines.push(`file '${escapeFfmpegConcatPath(lastImagePath)}'`);
+
+  await fsPromises.writeFile(concatFilePath, `${concatLines.join('\n')}\n`, 'utf8');
+
+  const firstImageDimensions = await probeMediaDimensionsFromFile(params.imagePaths[0]);
+  const configuredMaxHeight = env.MEDIA_VIDEO_MAX_HEIGHT > 0 ? env.MEDIA_VIDEO_MAX_HEIGHT : 1080;
+  const portraitWidth = toEvenNumber((configuredMaxHeight * 9) / 16);
+  const landscapeHeight = toEvenNumber((configuredMaxHeight * 9) / 16);
+  const isPortrait = firstImageDimensions.height >= firstImageDimensions.width;
+  const targetWidth = isPortrait ? portraitWidth : toEvenNumber(configuredMaxHeight);
+  const targetHeight = isPortrait ? toEvenNumber(configuredMaxHeight) : landscapeHeight;
+  const configuredPreset = (env.MEDIA_VIDEO_PRESET || '').trim();
+  const selectedPreset = configuredPreset && configuredPreset !== 'superfast' ? configuredPreset : 'ultrafast';
+  const filterGraph = `fps=${TIKTOK_CAROUSEL_FPS},scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2`;
+
+  await execFileAsync(
+    env.FFMPEG_BINARY,
+    [
+      '-y',
+      '-f',
+      'concat',
+      '-safe',
+      '0',
+      '-i',
+      concatFilePath,
+      '-vf',
+      filterGraph,
+      '-c:v',
+      'libx264',
+      '-preset',
+      selectedPreset,
+      '-pix_fmt',
+      'yuv420p',
+      '-movflags',
+      '+faststart',
+      '-an',
+      outputVideoPath,
+    ],
+    {
+      timeout: env.MEDIA_DOWNLOAD_TIMEOUT_MS,
+      maxBuffer: 10 * 1024 * 1024,
+    },
+  );
+
+  await ensureFileSizeWithinLimit(outputVideoPath, params.sourceUrl);
+
+  return outputVideoPath;
 };
 
 const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: string): Promise<string> => {
@@ -485,9 +883,11 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
     throw toMediaIngestionError(error, 'DOWNLOAD_FAILED');
   });
 
-  const mediaCandidates = new Set<string>(extractTikTokMediaUrlsFromHtml(pageHtml));
+  const videoCandidates = new Set<string>(extractTikTokMediaUrlsFromHtml(pageHtml));
+  const imageCandidates = new Set<string>();
   const canonicalUrl = extractTikTokCanonicalUrlFromHtml(pageHtml);
   const candidateItemIds = new Set<string>();
+  let photoSlides: string[][] = [];
 
   [sourceUrl, pageResponse.url, canonicalUrl].forEach((candidateUrl) => {
     const normalizedCandidateUrl = asNonEmptyString(candidateUrl);
@@ -518,16 +918,31 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
       }
 
       const embedHtml = await embedResponse.text().catch(() => '');
-      const embedCandidates = extractTikTokEmbedMediaUrlsFromHtml(embedHtml);
-      embedCandidates.forEach((candidateUrl) => mediaCandidates.add(candidateUrl));
+      const embedCandidates = extractTikTokEmbedMediaCandidatesFromHtml(embedHtml);
+      embedCandidates.videoUrls.forEach((candidateUrl) => videoCandidates.add(candidateUrl));
+      embedCandidates.imageUrls.forEach((candidateUrl) => imageCandidates.add(candidateUrl));
+
+      if (embedCandidates.photoSlides.length > photoSlides.length) {
+        photoSlides = embedCandidates.photoSlides;
+      }
     } catch {
       // Keep existing candidates and continue trying other item ids.
     }
   }
 
-  const resolvedMediaCandidates = [...mediaCandidates];
+  logger.info(
+    {
+      sourceUrl: sanitizeUrlForLog(sourceUrl),
+      resolvedUrl: sanitizeUrlForLog(pageResponse.url),
+      itemIds: [...candidateItemIds],
+      videoCandidates: videoCandidates.size,
+      imageCandidates: imageCandidates.size,
+      photoSlides: photoSlides.length,
+    },
+    '[MEDIA] TikTok candidates extracted',
+  );
 
-  if (resolvedMediaCandidates.length === 0) {
+  if (videoCandidates.size === 0 && imageCandidates.size === 0) {
     throw new MediaIngestionError(
       'DOWNLOAD_FAILED',
       'Unable to resolve TikTok media URL',
@@ -539,53 +954,112 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
 
   let lastError: unknown = null;
 
-  for (const mediaUrl of resolvedMediaCandidates) {
+  const resolvedPhotoSlides = photoSlides
+    .slice(0, TIKTOK_MAX_CAROUSEL_IMAGES)
+    .map((slide) =>
+      slide
+        .filter((slideUrl) => slideUrl.startsWith('http://') || slideUrl.startsWith('https://'))
+        .slice(0, TIKTOK_MAX_CAROUSEL_CANDIDATES_PER_SLIDE),
+    )
+    .filter((slide) => slide.length > 0);
+
+  if (resolvedPhotoSlides.length > 1) {
     try {
-      const requestHeaders: Record<string, string> = {
-        'user-agent': TIKTOK_PAGE_USER_AGENT,
-        referer: sourceUrl,
-      };
-
-      if (cookieHeader) {
-        requestHeaders.cookie = cookieHeader;
-      }
-
-      const mediaResponse = await fetch(mediaUrl, {
-        headers: requestHeaders,
-      }).catch((error) => {
-        throw toMediaIngestionError(error, 'DOWNLOAD_FAILED');
-      });
-
-      if (!mediaResponse.ok) {
-        throw new MediaIngestionError(
-          getMediaErrorCodeFromHttpStatus(mediaResponse.status),
-          `Unable to download media (${mediaResponse.status})`,
-          `TikTok media request failed with status ${mediaResponse.status} for ${mediaUrl}`,
-        );
-      }
-
-      const mediaContentType = (mediaResponse.headers.get('content-type') || '').toLowerCase();
-      if (
-        mediaContentType &&
-        !mediaContentType.includes('video/') &&
-        !mediaContentType.includes('image/') &&
-        !mediaContentType.includes('application/octet-stream')
-      ) {
-        throw new MediaIngestionError(
-          'DOWNLOAD_FAILED',
-          'Unsupported TikTok media type',
-          `TikTok candidate returned unsupported content-type "${mediaContentType}" for ${mediaUrl}`,
-        );
-      }
-
-      return await downloadHttpResponseToTempFile({
-        response: mediaResponse,
-        tmpDir,
+      const downloadedSlides = await downloadTikTokCarouselSlides({
         sourceUrl,
-        outputBasename: 'download-tiktok',
+        tmpDir,
+        cookieHeader,
+        photoSlides: resolvedPhotoSlides,
       });
+
+      const carouselVideoPath = await createTikTokCarouselVideo({
+        sourceUrl,
+        tmpDir,
+        imagePaths: downloadedSlides,
+      });
+
+      logger.info(
+        {
+          sourceUrl: sanitizeUrlForLog(sourceUrl),
+          slideCount: downloadedSlides.length,
+        },
+        '[MEDIA] TikTok carousel converted to slideshow video',
+      );
+
+      return carouselVideoPath;
+    } catch (carouselError) {
+      lastError = carouselError;
+      const normalized = toMediaIngestionError(carouselError, 'DOWNLOAD_FAILED');
+      logger.warn(
+        {
+          sourceUrl: sanitizeUrlForLog(sourceUrl),
+          slideCount: resolvedPhotoSlides.length,
+          code: normalized.code,
+          message: normalized.message,
+        },
+        '[MEDIA] TikTok carousel conversion failed, fallback to single media candidate',
+      );
+    }
+  }
+
+  const resolvedMediaCandidates: Array<{
+    mediaUrl: string;
+    kind: 'video' | 'image';
+  }> = [];
+  const seenCandidateUrls = new Set<string>();
+  const appendCandidate = (candidateUrl: string, kind: 'video' | 'image') => {
+    if (seenCandidateUrls.has(candidateUrl)) {
+      return;
+    }
+
+    seenCandidateUrls.add(candidateUrl);
+    resolvedMediaCandidates.push({
+      mediaUrl: candidateUrl,
+      kind,
+    });
+  };
+
+  videoCandidates.forEach((candidateUrl) => appendCandidate(candidateUrl, 'video'));
+  imageCandidates.forEach((candidateUrl) => appendCandidate(candidateUrl, 'image'));
+
+  for (const [candidateIndex, candidate] of resolvedMediaCandidates.entries()) {
+    try {
+      const downloadedPath = await downloadTikTokMediaCandidate({
+        sourceUrl,
+        mediaUrl: candidate.mediaUrl,
+        tmpDir,
+        cookieHeader,
+        outputBasename: 'download-tiktok',
+        expectedKind: candidate.kind,
+      });
+
+      logger.info(
+        {
+          sourceUrl: sanitizeUrlForLog(sourceUrl),
+          candidateIndex: candidateIndex + 1,
+          totalCandidates: resolvedMediaCandidates.length,
+          candidateKind: candidate.kind,
+          candidateUrl: sanitizeUrlForLog(candidate.mediaUrl),
+        },
+        '[MEDIA] TikTok media candidate selected',
+      );
+
+      return downloadedPath;
     } catch (candidateError) {
       lastError = candidateError;
+      const normalized = toMediaIngestionError(candidateError, 'DOWNLOAD_FAILED');
+      logger.warn(
+        {
+          sourceUrl: sanitizeUrlForLog(sourceUrl),
+          candidateIndex: candidateIndex + 1,
+          totalCandidates: resolvedMediaCandidates.length,
+          candidateKind: candidate.kind,
+          candidateUrl: sanitizeUrlForLog(candidate.mediaUrl),
+          code: normalized.code,
+          message: normalized.message,
+        },
+        '[MEDIA] TikTok media candidate failed',
+      );
     }
   }
 
@@ -689,7 +1163,14 @@ const downloadSourceToTempFile = async (sourceUrl: string, tmpDir: string): Prom
     if (normalized.code === 'FILE_TOO_LARGE') {
       throw normalized;
     }
-    logger.warn(`[MEDIA] yt-dlp fallback for ${sourceUrl} (${normalized.code})`);
+    logger.warn(
+      {
+        sourceUrl: sanitizeUrlForLog(sourceUrl),
+        code: normalized.code,
+        message: normalized.message,
+      },
+      '[MEDIA] yt-dlp fallback',
+    );
   }
 
   if (isTikTokUrl(sourceUrl)) {
@@ -700,7 +1181,14 @@ const downloadSourceToTempFile = async (sourceUrl: string, tmpDir: string): Prom
       if (normalizedTikTokError.code === 'FILE_TOO_LARGE') {
         throw normalizedTikTokError;
       }
-      logger.warn(`[MEDIA] TikTok extraction fallback for ${sourceUrl} (${normalizedTikTokError.code})`);
+      logger.warn(
+        {
+          sourceUrl: sanitizeUrlForLog(sourceUrl),
+          code: normalizedTikTokError.code,
+          message: normalizedTikTokError.message,
+        },
+        '[MEDIA] TikTok extraction fallback',
+      );
     }
   }
 
@@ -783,7 +1271,9 @@ const normalizeAndPersistAsset = async (params: { sourceHash: string; sourceUrl:
 
   await removeExistingOutputVariants(outputBasePath);
 
-  const normalized = await normalizeDownloadedMedia(params.inputFilePath, outputBasePath);
+  const normalized = await normalizeDownloadedMedia(params.inputFilePath, outputBasePath).catch((error) => {
+    throw toMediaIngestionError(error, 'TRANSCODE_FAILED');
+  });
 
   return prisma.mediaAsset.update({
     where: {

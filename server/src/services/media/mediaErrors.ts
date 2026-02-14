@@ -83,15 +83,25 @@ const buildRawErrorText = (error: unknown) => {
 };
 
 const extractHttpStatus = (rawText: string): number | null => {
-  const matches = rawText.match(/\b([45]\d{2})\b/g);
+  const explicitStatusMatch = rawText.match(
+    /\b(?:http(?:\s+error)?|status|response(?:\s+status)?)(?:\s+code)?\s*[:=]?\s*(4\d{2}|5\d{2})\b/i,
+  );
 
-  if (!matches || matches.length === 0) {
-    return null;
+  if (explicitStatusMatch?.[1]) {
+    const parsedStatus = parseInt(explicitStatusMatch[1], 10);
+    return Number.isFinite(parsedStatus) ? parsedStatus : null;
   }
 
-  const status = parseInt(matches[0], 10);
+  const statusBeforeReasonMatch = rawText.match(
+    /\b(4\d{2}|5\d{2})\b(?=\s*(?:forbidden|not found|unauthorized|bad gateway|gateway timeout|service unavailable|too many requests|payload too large))/i,
+  );
 
-  return Number.isFinite(status) ? status : null;
+  if (statusBeforeReasonMatch?.[1]) {
+    const parsedStatus = parseInt(statusBeforeReasonMatch[1], 10);
+    return Number.isFinite(parsedStatus) ? parsedStatus : null;
+  }
+
+  return null;
 };
 
 export const getMediaErrorCodeFromHttpStatus = (status: number): MediaIngestionErrorCode => {
@@ -195,7 +205,11 @@ export const toMediaIngestionError = (
   const rawText = buildRawErrorText(error);
   const code = classifyMediaErrorCode(rawText, fallbackCode);
 
-  const message = rawText.split('\n').map((line) => line.trim()).find(Boolean) || 'Media ingestion failed';
+  const message =
+    rawText
+      .split('\n')
+      .map((line) => line.trim())
+      .find(Boolean) || 'Media ingestion failed';
 
   return new MediaIngestionError(code, message, rawText);
 };

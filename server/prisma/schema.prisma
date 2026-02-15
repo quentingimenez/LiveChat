@@ -53,6 +53,8 @@ model PlaybackJob {
 
   @@index([guildId, executionDate])
   @@index([status, executionDate])
+  @@index([guildId, mediaAssetId])
+  @@index([status, finishedAt])
 }
 
 model Guild {

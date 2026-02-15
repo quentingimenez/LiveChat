@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LiveChat Extension</title>
+  </head>
+  <body>
+    <main class="popup-shell">
+      <section class="popup-card">
+        <header class="popup-header">
+          <div class="brand-row">
+            <img class="brand-logo" src="icon.png" alt="LiveChat" />
+            <p class="popup-kicker">LiveChat Extension</p>
+          </div>
+          <h1>Envoyer avec texte</h1>
+        </header>
+
+        <p id="settings-warning" class="status status-warning hidden"></p>
+
+        <form id="compose-form" class="compose-form">
+          <label class="field-label" for="compose-url">URL média</label>
+          <input id="compose-url" name="url" class="field-input" type="url" placeholder="https://..." required />
+
+          <label class="field-label" for="compose-text">Texte (optionnel)</label>
+          <textarea
+            id="compose-text"
+            name="text"
+            class="field-textarea"
+            placeholder="Ton message LiveChat"
+            rows="4"
+          ></textarea>
+
+          <label class="field-checkbox">
+            <input id="compose-force-refresh" name="forceRefresh" type="checkbox" />
+            Ignorer le cache serveur (`forceRefresh`)
+          </label>
+
+          <div class="actions-row">
+            <button id="send-button" class="btn btn-primary" type="submit">Envoyer</button>
+            <button id="open-options" class="btn btn-ghost" type="button">Configurer</button>
+          </div>
+        </form>
+
+        <p id="popup-status" class="status status-info hidden"></p>
+      </section>
+    </main>
+
+    <script type="module" src="/src/popup/popup.ts"></script>
+  </body>
+</html>

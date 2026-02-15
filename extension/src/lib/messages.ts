@@ -1,0 +1,105 @@
+export type ToastLevel = 'success' | 'error' | 'info';
+export type SendSource = 'youtube' | 'tiktok' | 'twitter' | 'context-menu' | 'popup';
+
+export const MESSAGE_TYPES = {
+  SEND_QUICK: 'lce/send-quick',
+  SEND_COMPOSE: 'lce/send-compose',
+  GET_COMPOSE_STATE: 'lce/get-compose-state',
+  SHOW_TOAST: 'lce/show-toast'
+} as const;
+
+export interface SendQuickRequestMessage {
+  type: (typeof MESSAGE_TYPES)['SEND_QUICK'];
+  url: string;
+  source: SendSource;
+}
+
+export interface SendComposeRequestMessage {
+  type: (typeof MESSAGE_TYPES)['SEND_COMPOSE'];
+  url: string;
+  text?: string;
+  forceRefresh?: boolean;
+}
+
+export interface GetComposeStateRequestMessage {
+  type: (typeof MESSAGE_TYPES)['GET_COMPOSE_STATE'];
+}
+
+export interface ShowToastMessage {
+  type: (typeof MESSAGE_TYPES)['SHOW_TOAST'];
+  level: ToastLevel;
+  message: string;
+}
+
+export type BackgroundRequestMessage =
+  | SendQuickRequestMessage
+  | SendComposeRequestMessage
+  | GetComposeStateRequestMessage;
+
+export interface ActionResponse {
+  ok: boolean;
+  message: string;
+  jobId: string | null;
+  errorCode?: string;
+}
+
+export interface ComposeStateResponse {
+  ok: boolean;
+  message?: string;
+  url: string;
+  text: string;
+  forceRefresh: boolean;
+  hasSettings: boolean;
+  settingsError: string | null;
+  draftSource: string | null;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === 'object' && value !== null;
+};
+
+const asTrimmedString = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+};
+
+export const isSendQuickRequest = (value: unknown): value is SendQuickRequestMessage => {
+  if (!isRecord(value) || value.type !== MESSAGE_TYPES.SEND_QUICK) {
+    return false;
+  }
+
+  return !!asTrimmedString(value.url);
+};
+
+export const isSendComposeRequest = (value: unknown): value is SendComposeRequestMessage => {
+  if (!isRecord(value) || value.type !== MESSAGE_TYPES.SEND_COMPOSE) {
+    return false;
+  }
+
+  return !!asTrimmedString(value.url);
+};
+
+export const isGetComposeStateRequest = (value: unknown): value is GetComposeStateRequestMessage => {
+  return isRecord(value) && value.type === MESSAGE_TYPES.GET_COMPOSE_STATE;
+};
+
+export const isBackgroundRequestMessage = (value: unknown): value is BackgroundRequestMessage => {
+  return isSendQuickRequest(value) || isSendComposeRequest(value) || isGetComposeStateRequest(value);
+};
+
+export const isShowToastMessage = (value: unknown): value is ShowToastMessage => {
+  if (!isRecord(value) || value.type !== MESSAGE_TYPES.SHOW_TOAST) {
+    return false;
+  }
+
+  const message = asTrimmedString(value.message);
+  if (!message) {
+    return false;
+  }
+
+  return value.level === 'success' || value.level === 'error' || value.level === 'info';
+};

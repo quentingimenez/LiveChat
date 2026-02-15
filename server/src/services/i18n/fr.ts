@@ -35,6 +35,8 @@ export const frLang: typeof enLang = {
   sendCommandOptionTextDescription: 'Texte à afficher',
   sendCommandOptionMedia: 'média',
   sendCommandOptionMediaDescription: 'Média à afficher',
+  sendCommandOptionForceRefresh: 'refresh',
+  sendCommandOptionForceRefreshDescription: 'Ignorer le cache média et re-télécharger/re-transcoder la source',
   sendCommandAnswer: 'Contenu reçu ! Il sera bientôt joué !',
   sendCommandMissingContent: 'Veuillez fournir au moins un texte, un média ou un lien.',
   sendCommandMediaError: 'Le média n’a pas pu être téléchargé ou normalisé.',
@@ -57,6 +59,8 @@ export const frLang: typeof enLang = {
   hideSendCommandOptionTextDescription: 'Texte à afficher',
   hideSendCommandOptionMedia: 'média',
   hideSendCommandOptionMediaDescription: 'Média à afficher',
+  hideSendCommandOptionForceRefresh: 'refresh',
+  hideSendCommandOptionForceRefreshDescription: 'Ignorer le cache média et re-télécharger/re-transcoder la source',
   hideSendCommandAnswer: 'Contenu reçu ! Il sera bientôt joué !',
 
   talkCommand: 'dire',

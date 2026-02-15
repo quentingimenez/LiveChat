@@ -1520,12 +1520,23 @@ const normalizeAndPersistAsset = async (params: { sourceHash: string; sourceUrl:
   });
 };
 
-const ingestFromSourceUrlInternal = async (sourceUrl: string, sourceHash: string) => {
-  const cached = await getReadyCachedMediaAsset(sourceHash);
+const ingestFromSourceUrlInternal = async (
+  sourceUrl: string,
+  sourceHash: string,
+  options?: {
+    forceRefresh?: boolean;
+  },
+) => {
+  const forceRefresh = options?.forceRefresh === true;
+  const cached = forceRefresh ? null : await getReadyCachedMediaAsset(sourceHash);
 
   if (cached) {
     logger.info(`[MEDIA] Cache hit ${sourceHash.slice(0, 8)} (${sanitizeUrlForLog(sourceUrl)})`);
     return touchMediaAsset(cached.id);
+  }
+
+  if (forceRefresh) {
+    logger.info(`[MEDIA] Cache bypass ${sourceHash.slice(0, 8)} (${sanitizeUrlForLog(sourceUrl)})`);
   }
 
   await upsertProcessingAsset(sourceHash, sourceUrl);
@@ -1596,14 +1607,20 @@ const ingestFromLocalFileInternal = async (filePath: string, virtualSource: stri
   }
 };
 
-export const ingestMediaFromSource = async (params: { url?: string | null; media?: string | null }) => {
+export const ingestMediaFromSource = async (params: {
+  url?: string | null;
+  media?: string | null;
+  forceRefresh?: boolean;
+}) => {
   const resolvedSource = await resolveMediaSource(params);
 
   if (!resolvedSource) {
     return null;
   }
 
-  return ingestFromSourceUrlInternal(resolvedSource.sourceUrl, resolvedSource.sourceHash);
+  return ingestFromSourceUrlInternal(resolvedSource.sourceUrl, resolvedSource.sourceHash, {
+    forceRefresh: params.forceRefresh === true,
+  });
 };
 
 export const ingestMediaFromLocalFile = async (filePath: string, virtualSource: string) => {

@@ -48,11 +48,18 @@ export const sendCommand = () => ({
         .setName(rosetty.t('sendCommandOptionText')!)
         .setDescription(rosetty.t('sendCommandOptionTextDescription')!)
         .setRequired(false),
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName(rosetty.t('sendCommandOptionForceRefresh')!)
+        .setDescription(rosetty.t('sendCommandOptionForceRefreshDescription')!)
+        .setRequired(false),
     ),
   handler: async (interaction: CommandInteraction) => {
     const url = interaction.options.get(rosetty.t('sendCommandOptionURL')!)?.value as string | null;
     const text = interaction.options.get(rosetty.t('sendCommandOptionText')!)?.value as string | null;
     const attachment = interaction.options.get(rosetty.t('sendCommandOptionMedia')!)?.attachment;
+    const forceRefresh = interaction.options.get(rosetty.t('sendCommandOptionForceRefresh')!)?.value === true;
     const media = attachment?.url || attachment?.proxyURL;
 
     if (!url && !media && !text) {
@@ -192,6 +199,7 @@ export const sendCommand = () => ({
       if (tweetVideoMedia) {
         const mediaAsset = await ingestMediaFromSource({
           media: tweetVideoMedia.url,
+          forceRefresh,
         });
 
         await createPlaybackJob({
@@ -221,6 +229,7 @@ export const sendCommand = () => ({
         mediaAsset = await ingestMediaFromSource({
           url,
           media,
+          forceRefresh,
         });
       }
 

@@ -33,13 +33,15 @@ curl -X POST "$API_URL/ingest" \
   -d '{
     "guildId": "123456789012345678",
     "url": "https://vm.tiktok.com/ZNRfPWMaF/",
-    "text": "hello depuis iOS"
+    "text": "hello depuis iOS",
+    "forceRefresh": true
   }'
 ```
 
 Payload minimal:
 - `guildId` obligatoire
 - au moins un de `url`, `media`, `text`
+- `forceRefresh` optionnel (`true` pour ignorer le cache média et forcer re-download/re-transcode)
 
 ## Normalisation du volume
 

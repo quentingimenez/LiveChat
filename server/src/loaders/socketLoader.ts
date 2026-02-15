@@ -51,6 +51,7 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
 
       socket.data.guildId = client.guildId;
       socket.data.overlayClientId = client.id;
+      socket.data.overlayClientLabel = client.label;
 
       await prisma.overlayClient.update({
         where: {
@@ -79,10 +80,15 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
     socket.join(`overlay-guild-${guildId}`);
     const roomName = `overlay-guild-${guildId}`;
     const roomSize = fastify.io.sockets.adapter.rooms.get(roomName)?.size ?? 0;
-    logger.info(`[OVERLAY] Connected: ${socket.id} (guild: ${guildId}, roomSize: ${roomSize})`);
+    const clientLabel = socket.data.overlayClientLabel || 'unknown-device';
+    logger.info(
+      `[OVERLAY] Connected: ${clientLabel} (clientId: ${socket.data.overlayClientId}, socket: ${socket.id}, guild: ${guildId}, roomSize: ${roomSize})`,
+    );
 
     socket.on(OVERLAY_SOCKET_EVENTS.HEARTBEAT, async (payload: OverlayHeartbeatPayload) => {
-      logger.debug(`Heartbeat from client ${payload?.clientId || socket.data.overlayClientId} (${socket.id})`);
+      logger.debug(
+        `Heartbeat from ${socket.data.overlayClientLabel || 'unknown-device'} (${payload?.clientId || socket.data.overlayClientId}, socket: ${socket.id})`,
+      );
 
       await prisma.overlayClient.updateMany({
         where: {
@@ -98,12 +104,18 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
 
     socket.on(OVERLAY_SOCKET_EVENTS.ERROR, (payload: OverlayErrorPayload) => {
       logger.warn(
-        `[OVERLAY] Error from client ${socket.data.overlayClientId} on job ${payload?.jobId}: ${payload?.code} ${payload?.message}`,
+        `[OVERLAY] Error from ${socket.data.overlayClientLabel || 'unknown-device'} (${socket.data.overlayClientId}) on job ${
+          payload?.jobId
+        }: ${payload?.code} ${payload?.message}`,
       );
     });
 
     socket.on('disconnecting', () => {
-      logger.info(`[OVERLAY] Disconnected: ${socket.id} (guild: ${guildId})`);
+      logger.info(
+        `[OVERLAY] Disconnected: ${socket.data.overlayClientLabel || 'unknown-device'} (clientId: ${
+          socket.data.overlayClientId
+        }, socket: ${socket.id}, guild: ${guildId})`,
+      );
     });
   });
 };

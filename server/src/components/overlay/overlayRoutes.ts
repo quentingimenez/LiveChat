@@ -1,9 +1,8 @@
-import fs from 'fs';
-import { createReadStream } from 'fs';
+import fs, { createReadStream } from 'fs';
 import { addMinutes } from 'date-fns';
-import { OVERLAY_PROTOCOL_VERSION } from '@livechat/overlay-protocol';
 import { createOverlayClientToken, resolveOverlayClientFromRequest } from '../../services/overlayAuth';
 import { touchMediaAsset } from '../../services/media/mediaCache';
+import { OVERLAY_PROTOCOL_VERSION } from '@livechat/overlay-protocol';
 
 interface ConsumePairingBody {
   code: string;
@@ -53,6 +52,17 @@ export const OverlayRoutes = () =>
         data: {
           usedAt: new Date(),
           expiresAt: addMinutes(new Date(), -1),
+        },
+      });
+
+      await prisma.overlayClient.updateMany({
+        where: {
+          guildId: pairingCode.guildId,
+          label: deviceName,
+          revokedAt: null,
+        },
+        data: {
+          revokedAt: new Date(),
         },
       });
 

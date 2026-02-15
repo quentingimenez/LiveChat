@@ -34,9 +34,20 @@ const normalizeYoutubeUrl = (url: URL): URL => {
     }
   }
 
-  const videoId = normalized.searchParams.get('v');
+  const pathnameSegments = normalized.pathname
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  const pathVideoId =
+    pathnameSegments.length >= 2 && (pathnameSegments[0] === 'shorts' || pathnameSegments[0] === 'embed')
+      ? pathnameSegments[1]
+      : null;
+  const videoId = normalized.searchParams.get('v') || pathVideoId;
   const startAt = normalized.searchParams.get('t');
 
+  if (videoId) {
+    normalized.pathname = '/watch';
+  }
   normalized.search = '';
 
   if (videoId) {

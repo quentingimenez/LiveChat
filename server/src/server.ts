@@ -8,6 +8,7 @@ import { loadRoutes } from './loaders/RESTLoader';
 import { loadSocket } from './loaders/socketLoader';
 import { loadDiscord } from './loaders/DiscordLoader';
 import { loadRosetty } from './services/i18n/loader';
+import { isPreProductionEnv, isProductionEnv } from './services/env';
 import { loadPrismaClient } from './services/prisma/loadPrisma';
 import { ensureMediaStorageDir, startMediaCachePurgeWorker } from './services/media/mediaCache';
 
@@ -24,7 +25,7 @@ export const runServer = async () => {
   global.logger = logger;
 
   await fastify.register(unifyFastifyPlugin, {
-    disableDetails: true,
+    disableDetails: isProductionEnv() || isPreProductionEnv(),
   });
 
   //LOAD SENDIM

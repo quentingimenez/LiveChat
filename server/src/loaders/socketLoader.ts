@@ -9,6 +9,8 @@ import {
   type OverlayStopPayload,
 } from '@livechat/overlay-protocol';
 
+const MIN_PAUSED_BUSY_LOCK_MS = 5_000;
+
 const getTokenFromSocketHandshake = (socket) => {
   const authToken = socket.handshake?.auth?.token;
 
@@ -165,6 +167,26 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
             playbackJobId || 'unknown'
           }, releasedJobs: ${releasedJobs.count})`,
         );
+        return;
+      }
+
+      if (playbackState === 'paused') {
+        const lockMs = Math.max(remainingMs ?? 0, MIN_PAUSED_BUSY_LOCK_MS);
+        const busyUntil = addMilliseconds(new Date(), lockMs + 250);
+
+        await prisma.guild.upsert({
+          where: {
+            id: guildId,
+          },
+          create: {
+            id: guildId,
+            busyUntil,
+          },
+          update: {
+            busyUntil,
+          },
+        });
+
         return;
       }
 

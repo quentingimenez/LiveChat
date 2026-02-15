@@ -206,6 +206,24 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
     return 100;
   }
 
+  const autoReleasedPlaying = await prisma.playbackJob.updateMany({
+    where: {
+      guildId: nextJob.guildId,
+      status: PlaybackJobStatus.PLAYING,
+      finishedAt: null,
+    },
+    data: {
+      status: PlaybackJobStatus.DONE,
+      finishedAt: new Date(),
+    },
+  });
+
+  if (autoReleasedPlaying.count > 0) {
+    logger.warn(
+      `[SOCKET] Released ${autoReleasedPlaying.count} lingering PLAYING job(s) before dispatch in guild ${nextJob.guildId}`,
+    );
+  }
+
   let busyUntil = addSeconds(new Date(), nextJob.durationSec);
   busyUntil = addMilliseconds(busyUntil, 250);
 
@@ -253,22 +271,7 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
   );
 
   fastify.io.to(roomName).emit(OVERLAY_SOCKET_EVENTS.PLAY, payload);
-
-  await prisma.playbackJob.update({
-    where: {
-      id: nextJob.id,
-    },
-    data: {
-      status: PlaybackJobStatus.DONE,
-      finishedAt: new Date(),
-    },
-  });
-
-  logger.info(
-    `[SOCKET] Playback job ${nextJob.id} marked as DONE for guild ${nextJob.guildId} (durationSec: ${nextJob.durationSec})`,
-  );
-
-  return nextJob.durationSec * 1000 || 5000;
+  return 100;
 };
 
 export const loadMessagesWorker = async (fastify: FastifyCustomInstance) => {

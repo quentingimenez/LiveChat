@@ -11,6 +11,7 @@ PRD: `../PRD.md`
 - Télécharge et normalise les médias (yt-dlp + ffmpeg).
 - Met en cache les assets (TTL 12h).
 - Expose les routes `/overlay/*`.
+- Expose la route `/ingest` (API simple pour raccourcis iOS).
 - Diffuse les événements socket vers les overlays appairés.
 
 ## Démarrage rapide
@@ -20,6 +21,25 @@ cp .env.example .env
 pnpm install
 pnpm dev
 ```
+
+## API iOS (`/ingest`)
+
+Configurer `INGEST_API_TOKEN` dans `.env`, puis appeler:
+
+```bash
+curl -X POST "$API_URL/ingest" \
+  -H "Authorization: Bearer $INGEST_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "guildId": "123456789012345678",
+    "url": "https://vm.tiktok.com/ZNRfPWMaF/",
+    "text": "hello depuis iOS"
+  }'
+```
+
+Payload minimal:
+- `guildId` obligatoire
+- au moins un de `url`, `media`, `text`
 
 ## Docker Hub (GitHub Actions)
 

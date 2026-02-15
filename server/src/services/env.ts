@@ -53,7 +53,7 @@ export const env = createEnv({
       .transform((s) => s === 'true'),
     MEDIA_AUDIO_LOUDNORM_I: z
       .string()
-      .default('-16')
+      .default('-18')
       .transform((s) => parseFloat(s)),
     MEDIA_AUDIO_LOUDNORM_LRA: z
       .string()

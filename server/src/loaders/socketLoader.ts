@@ -215,12 +215,22 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
         },
       });
 
+      const shouldTargetSingleJob = stopJobId !== 'unknown' && stopJobId !== 'manual-stop';
+      const where = shouldTargetSingleJob
+        ? {
+            guildId,
+            id: stopJobId,
+            status: PlaybackJobStatus.PLAYING,
+            finishedAt: null,
+          }
+        : {
+            guildId,
+            status: PlaybackJobStatus.PLAYING,
+            finishedAt: null,
+          };
+
       const releasedJobs = await prisma.playbackJob.updateMany({
-        where: {
-          guildId,
-          status: PlaybackJobStatus.PLAYING,
-          finishedAt: null,
-        },
+        where,
         data: {
           status: PlaybackJobStatus.DONE,
           finishedAt: new Date(),

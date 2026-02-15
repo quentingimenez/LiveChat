@@ -185,7 +185,9 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
   if (roomSize === 0) {
     logger.warn(`[SOCKET] No overlay connected for guild ${nextJob.guildId} while dispatching job ${nextJob.id}`);
   } else {
-    logger.info(`[SOCKET] Dispatching job ${nextJob.id} to guild ${nextJob.guildId} (clients: ${roomSize})`);
+    logger.info(
+      `[SOCKET] Dispatching job ${nextJob.id} to guild ${nextJob.guildId} (clients: ${roomSize}, durationSec: ${nextJob.durationSec})`,
+    );
   }
 
   fastify.io.to(roomName).emit(OVERLAY_SOCKET_EVENTS.PLAY, payload);
@@ -200,7 +202,9 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
     },
   });
 
-  logger.info(`[SOCKET] Playback job ${nextJob.id} marked as DONE for guild ${nextJob.guildId}`);
+  logger.info(
+    `[SOCKET] Playback job ${nextJob.id} marked as DONE for guild ${nextJob.guildId} (durationSec: ${nextJob.durationSec})`,
+  );
 
   return nextJob.durationSec * 1000 || 5000;
 };

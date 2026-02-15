@@ -108,6 +108,7 @@ export const sendCommand = () => ({
           authorName: null,
           authorImage: null,
           durationSec: getTweetCardDurationSec(tweetVideoMedias),
+          source: 'discord_send_command',
         });
 
         await interaction.editReply({
@@ -136,6 +137,7 @@ export const sendCommand = () => ({
           showText: !!text,
           authorName: interaction.user.username,
           authorImage: interaction.user.avatarURL(),
+          source: 'discord_send_command',
         });
 
         await interaction.editReply({
@@ -165,6 +167,7 @@ export const sendCommand = () => ({
         showText: !!text,
         authorName: interaction.user.username,
         authorImage: interaction.user.avatarURL(),
+        source: 'discord_send_command',
       });
 
       await interaction.editReply({

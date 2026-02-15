@@ -110,6 +110,7 @@ export const hideSendCommand = () => ({
           }),
           showText: false,
           durationSec: getTweetCardDurationSec(tweetVideoMedias),
+          source: 'discord_hidesend_command',
         });
 
         await interaction.editReply({
@@ -136,6 +137,7 @@ export const hideSendCommand = () => ({
           mediaAsset,
           text,
           showText: !!text,
+          source: 'discord_hidesend_command',
         });
 
         await interaction.editReply({
@@ -163,6 +165,7 @@ export const hideSendCommand = () => ({
         mediaAsset,
         text,
         showText: !!text,
+        source: 'discord_hidesend_command',
       });
 
       await interaction.editReply({

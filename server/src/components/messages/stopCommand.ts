@@ -1,4 +1,5 @@
 import { CommandInteraction, EmbedBuilder, SlashCommandBuilder } from 'discord.js';
+import { PlaybackJobStatus } from '../../services/prisma/prismaEnums';
 import { OVERLAY_SOCKET_EVENTS } from '@livechat/overlay-protocol';
 
 export const stopCommand = (fastify: FastifyCustomInstance) => ({
@@ -20,6 +21,22 @@ export const stopCommand = (fastify: FastifyCustomInstance) => ({
         busyUntil: null,
       },
     });
+
+    const releasedJobs = await prisma.playbackJob.updateMany({
+      where: {
+        guildId: interaction.guildId!,
+        status: PlaybackJobStatus.PLAYING,
+        finishedAt: null,
+      },
+      data: {
+        status: PlaybackJobStatus.DONE,
+        finishedAt: new Date(),
+      },
+    });
+
+    logger.info(
+      `[PLAYBACK] Stop command released ${releasedJobs.count} playing job(s) for guild ${interaction.guildId!}`,
+    );
 
     await interaction.reply({
       embeds: [

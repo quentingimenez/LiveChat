@@ -64,7 +64,15 @@ export const loadDiscord = async (fastify: FastifyCustomInstance) => {
     }
   });
 
-  await client.login(env.DISCORD_TOKEN);
+  client.on(Events.Error, (error) => {
+    logger.error(error, '[DISCORD] Client error');
+  });
+
+  try {
+    await client.login(env.DISCORD_TOKEN);
+  } catch (error) {
+    logger.error(error, '[DISCORD] Login failed');
+  }
 };
 
 const loadDiscordCommands = async (fastify: FastifyCustomInstance) => {

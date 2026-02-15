@@ -71,11 +71,26 @@ export const hideSendCommand = () => ({
     });
 
     try {
-      const tweetCard = !media ? await resolveTweetCardFromUrl(url || text) : null;
+      const tweetInput = url || text;
+      const tweetVideoMedias = !media ? await resolveTweetVideoMediasFromUrl(tweetInput) : [];
+      const tweetVideoMedia = tweetVideoMedias[0] || null;
+      let tweetCard = null;
+
+      if (!media && tweetVideoMedias.length > 0) {
+        try {
+          tweetCard = await resolveTweetCardFromUrl(tweetInput);
+        } catch (error) {
+          logger.warn(
+            {
+              err: toMediaIngestionError(error),
+              sourceUrl: tweetInput || null,
+            },
+            '[MEDIA] Tweet card resolution failed, continuing with media-only playback',
+          );
+        }
+      }
 
       if (tweetCard) {
-        const tweetVideoMedias = await resolveTweetVideoMediasFromUrl(url || text);
-        const tweetVideoMedia = tweetVideoMedias[0] || null;
         const tweetVideosForOverlay = tweetVideoMedias.slice(0, 2).map((video) => ({
           url: video.url,
           mime: video.mime,
@@ -83,13 +98,13 @@ export const hideSendCommand = () => ({
           sourceStatusId: video.sourceStatusId,
           durationSec: video.durationSec,
         }));
-        const currentTweetStatusId = extractTweetStatusIdFromUrl(url || text);
+        const currentTweetStatusId = extractTweetStatusIdFromUrl(tweetInput);
         const shouldHideCardMedia =
           !media &&
           !!currentTweetStatusId &&
           tweetVideosForOverlay.some((video) => video.sourceStatusId === currentTweetStatusId);
         const tweetCardForOverlay = shouldHideCardMedia
-          ? (await resolveTweetCardFromUrlWithOptions(url || text, {
+          ? (await resolveTweetCardFromUrlWithOptions(tweetInput, {
               hideMedia: true,
             })) || tweetCard
           : tweetCard;
@@ -123,9 +138,6 @@ export const hideSendCommand = () => ({
         });
         return;
       }
-
-      const tweetVideoMedias = !media ? await resolveTweetVideoMediasFromUrl(url || text) : [];
-      const tweetVideoMedia = tweetVideoMedias[0] || null;
 
       if (tweetVideoMedia) {
         const mediaAsset = await ingestMediaFromSource({

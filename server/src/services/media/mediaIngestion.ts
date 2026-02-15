@@ -1538,7 +1538,7 @@ const ingestFromLocalFileInternal = async (filePath: string, virtualSource: stri
 };
 
 export const ingestMediaFromSource = async (params: { url?: string | null; media?: string | null }) => {
-  const resolvedSource = resolveMediaSource(params);
+  const resolvedSource = await resolveMediaSource(params);
 
   if (!resolvedSource) {
     return null;

@@ -10,6 +10,7 @@ import { loadDiscord } from './loaders/DiscordLoader';
 import { loadRosetty } from './services/i18n/loader';
 import { loadPrismaClient } from './services/prisma/loadPrisma';
 import { ensureMediaStorageDir, startMediaCachePurgeWorker } from './services/media/mediaCache';
+import { startPlaybackJobPurgeWorker } from './services/playbackJobs';
 
 export const runServer = async () => {
   const logLevel = env.LOG || 'info';
@@ -44,6 +45,8 @@ export const runServer = async () => {
     logger.info('[BOOT] Media storage ready');
     startMediaCachePurgeWorker();
     logger.info('[BOOT] Media cache worker started');
+    startPlaybackJobPurgeWorker();
+    logger.info('[BOOT] Playback job purge worker started');
   } catch (e) {
     logger.fatal('[DB] Impossible to connect to database', e);
     process.exit(1);

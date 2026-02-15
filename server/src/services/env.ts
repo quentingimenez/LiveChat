@@ -26,6 +26,10 @@ export const env = createEnv({
       .string()
       .default('5')
       .transform((s) => parseInt(s, 10)),
+    PLAYBACK_JOB_RETENTION_HOURS: z
+      .string()
+      .default('72')
+      .transform((s) => parseInt(s, 10)),
 
     MEDIA_STORAGE_DIR: z.string().default('./data/media'),
     MEDIA_CACHE_TTL_HOURS: z

@@ -93,6 +93,11 @@ export const enLang = {
   setDisplayMediaFullCommandOptionTextDescription: 'True / False',
   setDisplayMediaFullCommandAnswer: 'Display full set!',
 
+  overlaysCommand: 'overlays',
+  overlaysCommandDescription: 'List currently connected overlays',
+  overlaysCommandAnswerTitle: 'Connected overlays ({{count}})',
+  overlaysCommandAnswerEmpty: 'No overlay is currently connected to this server.',
+
   stopCommand: 'stop',
   stopCommandDescription: 'Stop current playback',
   stopCommandAnswer: 'Playback stopped',

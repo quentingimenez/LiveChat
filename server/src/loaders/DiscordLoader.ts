@@ -21,6 +21,7 @@ import { infoCommand } from '../components/discord/infoCommand';
 import { setDefaultTimeCommand } from '../components/discord/setDefaultTimeCommand';
 import { setDisplayMediaFullCommand } from '../components/discord/setDisplayFullCommand';
 import { setMaxTimeCommand } from '../components/discord/setMaxTimeCommand';
+import { overlaysCommand } from '../components/discord/overlaysCommand';
 import { stopCommand } from '../components/messages/stopCommand';
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -94,6 +95,7 @@ const loadDiscordCommands = async (fastify: FastifyCustomInstance) => {
       setDefaultTimeCommand(),
       setDisplayMediaFullCommand(),
       setMaxTimeCommand(),
+      overlaysCommand(fastify),
       stopCommand(fastify),
     ];
     const hideCommands = [hideSendCommand(), hideTalkCommand()];

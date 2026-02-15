@@ -1,7 +1,26 @@
 import { runServer } from './server';
 import { env } from './services/env';
 
-(async () => {
+const logBootError = (message: string, error: unknown) => {
+  if (global.logger) {
+    logger.fatal({ err: error }, message);
+    return;
+  }
+
+  // eslint-disable-next-line no-console
+  console.error(message, error);
+};
+
+process.on('unhandledRejection', (reason) => {
+  logBootError('[BOOT] Unhandled rejection', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  logBootError('[BOOT] Uncaught exception', error);
+  process.exit(1);
+});
+
+const bootstrap = async () => {
   global.env = env;
   //@ts-ignore
   process.env = env;
@@ -10,11 +29,14 @@ import { env } from './services/env';
 
   const fastify = await runServer();
 
-  fastify.ready(async () => {});
-  fastify.listen({ port, host: '::', listenTextResolver: () => `[SERVER] ${rosetty.t('serverStarted')!}` }, (err) => {
-    if (err) {
-      logger.fatal(`${err}`);
-      process.exit(1);
-    }
+  await fastify.listen({
+    port,
+    host: '::',
+    listenTextResolver: (address) => `[SERVER] Listening on ${address}`,
   });
-})();
+};
+
+void bootstrap().catch((error) => {
+  logBootError('[BOOT] Startup failed', error);
+  process.exit(1);
+});

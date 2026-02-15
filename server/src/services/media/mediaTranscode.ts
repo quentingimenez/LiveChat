@@ -220,16 +220,6 @@ const probeMediaDetails = async (filePath: string): Promise<ProbedMediaDetails> 
   };
 };
 
-const probeMedia = async (filePath: string): Promise<ProbedMetadata> => {
-  const details = await probeMediaDetails(filePath);
-
-  return {
-    durationSec: details.durationSec,
-    width: details.width,
-    height: details.height,
-  };
-};
-
 const detectMime = async (filePath: string) => {
   const fileType = await fileTypeFromFile(filePath);
 
@@ -262,7 +252,10 @@ const finalizeFile = async (
   mimeType: string,
 ): Promise<NormalizedMedia> => {
   const fileStats = await stat(storagePath);
-  const metadata = await probeMedia(storagePath).catch(() => ({ durationSec: null, width: null, height: null }));
+  const details = await probeMediaDetails(storagePath).catch(() => null);
+  const metadata = details
+    ? { durationSec: details.durationSec, width: details.width, height: details.height }
+    : { durationSec: null, width: null, height: null };
 
   if (fileStats.size <= 1024) {
     throw new MediaIngestionError(
@@ -278,6 +271,24 @@ const finalizeFile = async (
       'Normalized media has invalid duration',
       `Normalized media duration is ${metadata.durationSec} seconds: ${storagePath}`,
     );
+  }
+
+  if (kind === 'video') {
+    if (!details?.videoCodec) {
+      throw new MediaIngestionError(
+        'INVALID_MEDIA',
+        'Normalized media has no video stream',
+        `Normalized video has no video codec: ${storagePath}`,
+      );
+    }
+
+    if (metadata.durationSec === null || metadata.durationSec <= 0) {
+      throw new MediaIngestionError(
+        'INVALID_MEDIA',
+        'Normalized video has invalid duration',
+        `Normalized video duration is ${metadata.durationSec}: ${storagePath}`,
+      );
+    }
   }
 
   return {

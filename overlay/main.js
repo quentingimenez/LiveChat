@@ -729,6 +729,14 @@ ipcMain.on('overlay:error', (_event, payload) => {
   overlaySocket.emit(OVERLAY_SOCKET_EVENTS.ERROR, payload);
 });
 
+ipcMain.on('overlay:playback-state', (_event, payload) => {
+  if (!overlaySocket || !overlaySocket.connected) {
+    return;
+  }
+
+  overlaySocket.emit(OVERLAY_SOCKET_EVENTS.PLAYBACK_STATE, payload);
+});
+
 ipcMain.handle('pairing:consume', async (_event, payload) => {
   const serverUrl = normalizeServerUrl(`${payload?.serverUrl || ''}`);
   const code = `${payload?.code || ''}`.toUpperCase().trim();

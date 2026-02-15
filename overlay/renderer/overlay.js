@@ -20,6 +20,7 @@
   let countdownPaused = false;
   let countdownAutoClear = false;
   let playbackSyncTimer = null;
+  let playbackHardStopTimer = null;
   let activePlayback = null;
   let activeObjectUrl = null;
   let twitterWidgetsPromise = null;
@@ -45,6 +46,13 @@
     }
   };
 
+  const clearPlaybackHardStopTimer = () => {
+    if (playbackHardStopTimer) {
+      clearTimeout(playbackHardStopTimer);
+      playbackHardStopTimer = null;
+    }
+  };
+
   const formatRemainingTime = (remainingMs) => {
     const remainingSec = Math.max(0, Math.ceil(remainingMs / 1000));
     const minutes = Math.floor(remainingSec / 60);
@@ -65,11 +73,18 @@
       return;
     }
 
-    window.livechatOverlay.reportPlaybackState({
+    const payload = {
       jobId: activePlayback.jobId,
       state,
       remainingMs: getRemainingCountdownMs(),
-    });
+    };
+
+    window.livechatOverlay.reportPlaybackState(payload);
+    console.debug(
+      `[OVERLAY] playback-state sent (jobId: ${payload.jobId}, state: ${payload.state}, remainingMs: ${
+        payload.remainingMs === null ? 'null' : payload.remainingMs
+      })`,
+    );
   };
 
   const setPlaybackState = (state) => {
@@ -115,6 +130,28 @@
     emitPlaybackState('ended');
     activePlayback = null;
     clearPlaybackSyncTimer();
+    clearPlaybackHardStopTimer();
+  };
+
+  const schedulePlaybackHardStop = (jobId, durationSec) => {
+    clearPlaybackHardStopTimer();
+
+    if (typeof durationSec !== 'number' || !Number.isFinite(durationSec) || durationSec <= 0) {
+      return;
+    }
+
+    const timeoutMs = Math.round(durationSec * 1000 + 3000);
+
+    playbackHardStopTimer = setTimeout(() => {
+      if (!activePlayback || activePlayback.jobId !== jobId) {
+        return;
+      }
+
+      console.warn(
+        `[OVERLAY] Hard-stop release triggered (jobId: ${jobId}, durationSec: ${durationSec}, timeoutMs: ${timeoutMs})`,
+      );
+      clearOverlay();
+    }, timeoutMs);
   };
 
   const renderCountdown = () => {
@@ -212,6 +249,7 @@
     endPlaybackSession();
     clearTimer();
     clearCountdown();
+    clearPlaybackHardStopTimer();
     releaseObjectUrl();
     mediaLayer.innerHTML = '';
     textLayer.innerHTML = '';
@@ -754,6 +792,7 @@
   const onPlay = async (payload) => {
     clearOverlay();
     startPlaybackSession(payload?.jobId || null);
+    schedulePlaybackHardStop(payload?.jobId || null, getDurationSec(payload?.durationSec));
 
     applyOverlayInfo(payload);
 

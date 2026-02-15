@@ -17,6 +17,7 @@ export const env = createEnv({
 
     DISCORD_TOKEN: z.string(),
     DISCORD_CLIENT_ID: z.string(),
+    INGEST_API_TOKEN: z.string().default(''),
 
     DATABASE_URL: z.string(),
 

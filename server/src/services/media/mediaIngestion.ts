@@ -1247,7 +1247,7 @@ const runYtDlpDownload = async (params: {
   tmpDir: string;
   extraArgs?: string[];
 }): Promise<string> => {
-  const outputTemplate = path.join(tmpDir, 'download.%(ext)s');
+  const outputTemplate = path.join(params.tmpDir, 'download.%(ext)s');
   const formatSelector = resolveYtdlpFormatSelector();
   const concurrentFragments = Math.max(1, env.YTDLP_CONCURRENT_FRAGMENTS);
   const args = [

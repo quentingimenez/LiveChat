@@ -1,5 +1,7 @@
 import type { MediaAsset } from '@prisma/client';
+import { subHours } from 'date-fns';
 import { getDurationFromGuildId } from './utils';
+import { PlaybackJobStatus } from './prisma/prismaEnums';
 
 interface CreatePlaybackJobParams {
   guildId: string;
@@ -13,10 +15,12 @@ interface CreatePlaybackJobParams {
 }
 
 export const createPlaybackJob = async (params: CreatePlaybackJobParams) => {
+  const startedAtMs = Date.now();
   const durationSec = await getDurationFromGuildId(
     params.durationSec ?? params.mediaAsset?.durationSec,
     params.guildId,
   );
+  const afterDurationResolveMs = Date.now();
   const job = await prisma.playbackJob.create({
     data: {
       guildId: params.guildId,
@@ -30,6 +34,24 @@ export const createPlaybackJob = async (params: CreatePlaybackJobParams) => {
       scheduledAt: new Date(),
     },
   });
+  const finishedAtMs = Date.now();
+  const resolveDurationMs = afterDurationResolveMs - startedAtMs;
+  const insertDurationMs = finishedAtMs - afterDurationResolveMs;
+  const totalDurationMs = finishedAtMs - startedAtMs;
+
+  if (totalDurationMs >= 500) {
+    logger.warn(
+      {
+        source: params.source || 'unknown',
+        guildId: params.guildId,
+        jobId: job.id,
+        resolveDurationMs,
+        insertDurationMs,
+        totalDurationMs,
+      },
+      '[PLAYBACK] Slow job creation',
+    );
+  }
 
   logger.info(
     {
@@ -45,4 +67,40 @@ export const createPlaybackJob = async (params: CreatePlaybackJobParams) => {
   );
 
   return job;
+};
+
+const getPlaybackJobRetentionHours = () => {
+  return Math.max(1, env.PLAYBACK_JOB_RETENTION_HOURS);
+};
+
+export const purgeOldPlaybackJobs = async () => {
+  const retentionCutoff = subHours(new Date(), getPlaybackJobRetentionHours());
+
+  const deleteResult = await prisma.playbackJob.deleteMany({
+    where: {
+      status: {
+        in: [PlaybackJobStatus.DONE, PlaybackJobStatus.FAILED],
+      },
+      finishedAt: {
+        lte: retentionCutoff,
+      },
+    },
+  });
+
+  if (deleteResult.count > 0) {
+    logger.info(`[PLAYBACK] Purged ${deleteResult.count} playback jobs older than ${getPlaybackJobRetentionHours()}h`);
+  }
+};
+
+export const startPlaybackJobPurgeWorker = () => {
+  setInterval(
+    async () => {
+      try {
+        await purgeOldPlaybackJobs();
+      } catch (error) {
+        logger.error(error, '[PLAYBACK] Job purge failed');
+      }
+    },
+    10 * 60 * 1000,
+  );
 };

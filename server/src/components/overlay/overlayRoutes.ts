@@ -112,7 +112,7 @@ export const OverlayRoutes = () =>
         });
       }
 
-      const asset = await prisma.mediaAsset.findFirst({
+      const asset = await prisma.mediaAsset.findUnique({
         where: {
           id: request.params.assetId,
         },
@@ -130,12 +130,28 @@ export const OverlayRoutes = () =>
         });
       }
 
+      const accessLookupStartedAtMs = Date.now();
       const access = await prisma.playbackJob.findFirst({
         where: {
           mediaAssetId: asset.id,
           guildId: authResult.client.guildId,
         },
+        select: {
+          id: true,
+        },
       });
+      const accessLookupDurationMs = Date.now() - accessLookupStartedAtMs;
+
+      if (accessLookupDurationMs >= 250) {
+        logger.warn(
+          {
+            guildId: authResult.client.guildId,
+            assetId: asset.id,
+            accessLookupDurationMs,
+          },
+          '[OVERLAY] Slow playback access lookup',
+        );
+      }
 
       if (!access) {
         return reply.code(403).send({

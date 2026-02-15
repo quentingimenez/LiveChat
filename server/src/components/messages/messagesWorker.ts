@@ -62,6 +62,7 @@ const buildOverlayPlayPayload = (params: {
 };
 
 export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
+  const lookupStartedAtMs = Date.now();
   const nextJob = await prisma.playbackJob.findFirst({
     where: {
       status: PlaybackJobStatus.PENDING,
@@ -73,6 +74,15 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
       executionDate: 'asc',
     },
   });
+  const lookupDurationMs = Date.now() - lookupStartedAtMs;
+  if (lookupDurationMs >= 500) {
+    logger.warn(
+      {
+        lookupDurationMs,
+      },
+      '[SOCKET] Slow playback queue lookup',
+    );
+  }
 
   if (nextJob === null) {
     logger.debug(`[SOCKET] No new message`);

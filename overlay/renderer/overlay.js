@@ -11,6 +11,7 @@
     volume: 1,
     showText: true,
   };
+  const VOLUME_CURVE_GAMMA = 2.2;
 
   let resetTimer = null;
   let countdownTimer = null;
@@ -221,6 +222,19 @@
     }
 
     return value;
+  };
+
+  const clamp01 = (value) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return 1;
+    }
+
+    return Math.min(1, Math.max(0, value));
+  };
+
+  const toPerceptualGain = (linearVolume) => {
+    const normalized = clamp01(linearVolume);
+    return Math.pow(normalized, VOLUME_CURVE_GAMMA);
   };
 
   const configureInlineVideoLooping = (videos) => {
@@ -543,6 +557,7 @@
   };
 
   const applyVolume = () => {
+    const perceptualGain = toPerceptualGain(overlayConfig.volume);
     const mediaElements = mediaLayer.querySelectorAll('audio,video');
     mediaElements.forEach((element) => {
       const forceMuted = element.dataset?.forceMuted === '1';
@@ -552,7 +567,7 @@
         return;
       }
 
-      element.volume = overlayConfig.volume;
+      element.volume = perceptualGain;
       element.muted = false;
     });
   };

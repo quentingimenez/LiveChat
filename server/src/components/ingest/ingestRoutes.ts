@@ -20,6 +20,7 @@ interface IngestBody {
   media?: unknown;
   text?: unknown;
   showText?: unknown;
+  forceRefresh?: unknown;
   authorName?: unknown;
   authorImage?: unknown;
   durationSec?: unknown;
@@ -59,6 +60,23 @@ const toOptionalBoolean = (value: unknown): boolean | undefined => {
   }
 
   return undefined;
+};
+
+const toBooleanFlag = (value: unknown): boolean => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  if (typeof value === 'number') {
+    return value === 1;
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+  }
+
+  return false;
 };
 
 const toOptionalDurationSec = (value: unknown): number | null => {
@@ -107,6 +125,7 @@ export const IngestRoutes = () =>
       const media = toNonEmptyString(request.body?.media);
       const text = toNonEmptyString(request.body?.text);
       const showText = toOptionalBoolean(request.body?.showText);
+      const forceRefresh = toBooleanFlag(request.body?.forceRefresh);
       const authorName = toNonEmptyString(request.body?.authorName);
       const authorImage = toNonEmptyString(request.body?.authorImage);
       const durationSec = toOptionalDurationSec(request.body?.durationSec);
@@ -209,6 +228,7 @@ export const IngestRoutes = () =>
           try {
             mediaAsset = await ingestMediaFromSource({
               media: tweetVideoMedias[0].url,
+              forceRefresh,
             });
           } catch (error) {
             const mediaError = toMediaIngestionError(error);
@@ -234,7 +254,7 @@ export const IngestRoutes = () =>
 
       if (!jobText && !mediaAsset && (url || media)) {
         try {
-          mediaAsset = await ingestMediaFromSource({ url, media });
+          mediaAsset = await ingestMediaFromSource({ url, media, forceRefresh });
         } catch (error) {
           const mediaError = toMediaIngestionError(error);
 
@@ -283,6 +303,7 @@ export const IngestRoutes = () =>
             showText: jobShowText,
             requestedDurationSec: durationSec ?? null,
             resolvedDurationSec: job.durationSec,
+            forceRefresh,
           },
           '[INGEST] Job accepted',
         );

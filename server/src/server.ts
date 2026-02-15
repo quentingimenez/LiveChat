@@ -141,7 +141,9 @@ export const runServer = async () => {
   loadRosetty();
   await loadSocket(fastify);
   await loadRoutes(fastify);
-  await loadDiscord(fastify);
+  void loadDiscord(fastify).catch((error) => {
+    logger.error(error, '[DISCORD] Initialization failed');
+  });
   gracefulServer.setReady();
 
   return fastify;

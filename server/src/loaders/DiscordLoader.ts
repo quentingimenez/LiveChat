@@ -15,6 +15,7 @@ import { hideSendCommand } from '../components/messages/hidesendCommand';
 import { loadMessagesWorker } from '../components/messages/messagesWorker';
 import { talkCommand } from '../components/messages/talkCommand';
 import { hideTalkCommand } from '../components/messages/hidetalkCommand';
+import { loadWebhookMessagesListener } from '../components/messages/webhookMessagesListener';
 import { overlayCodeCommand } from '../components/discord/clientCommand';
 import { helpCommand } from '../components/discord/helpCommand';
 import { infoCommand } from '../components/discord/infoCommand';
@@ -28,12 +29,15 @@ export const loadDiscord = async (fastify: FastifyCustomInstance) => {
   const rest = new REST({ version: '10' }).setToken(env.DISCORD_TOKEN);
   global.discordRest = rest;
 
-  const client = new Client({ intents: [IntentsBitField.Flags.Guilds] });
+  const client = new Client({
+    intents: [IntentsBitField.Flags.Guilds, IntentsBitField.Flags.GuildMessages, IntentsBitField.Flags.MessageContent],
+  });
   global.discordClient = client;
 
   // Load all discord commands
   await loadDiscordCommands(fastify);
   loadDiscordCommandsHandler();
+  loadWebhookMessagesListener();
   loadMessagesWorker(fastify);
 
   client.once(Events.ClientReady, (readyClient) => {

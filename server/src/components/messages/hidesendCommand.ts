@@ -72,23 +72,52 @@ export const hideSendCommand = () => ({
 
     try {
       const tweetInput = url || text;
-      const tweetVideoMedias = !media ? await resolveTweetVideoMediasFromUrl(tweetInput) : [];
-      const tweetVideoMedia = tweetVideoMedias[0] || null;
+      let tweetVideoMedias: Awaited<ReturnType<typeof resolveTweetVideoMediasFromUrl>> = [];
       let tweetCard = null;
+      const tweetResolveStartedAt = Date.now();
 
-      if (!media && tweetVideoMedias.length > 0) {
-        try {
-          tweetCard = await resolveTweetCardFromUrl(tweetInput);
-        } catch (error) {
+      if (!media && tweetInput) {
+        const [videoResult, cardResult] = await Promise.allSettled([
+          resolveTweetVideoMediasFromUrl(tweetInput),
+          resolveTweetCardFromUrl(tweetInput),
+        ]);
+
+        if (videoResult.status === 'fulfilled') {
+          tweetVideoMedias = videoResult.value;
+        } else {
           logger.warn(
             {
-              err: toMediaIngestionError(error),
-              sourceUrl: tweetInput || null,
+              err: toMediaIngestionError(videoResult.reason),
+              sourceUrl: tweetInput,
+            },
+            '[MEDIA] Tweet video resolution failed, continuing with fallback',
+          );
+        }
+
+        if (cardResult.status === 'fulfilled') {
+          tweetCard = cardResult.value;
+        } else {
+          logger.warn(
+            {
+              err: toMediaIngestionError(cardResult.reason),
+              sourceUrl: tweetInput,
             },
             '[MEDIA] Tweet card resolution failed, continuing with media-only playback',
           );
         }
+
+        logger.info(
+          {
+            sourceUrl: tweetInput,
+            elapsedMs: Date.now() - tweetResolveStartedAt,
+            videoCandidates: tweetVideoMedias.length,
+            hasTweetCard: !!tweetCard,
+          },
+          '[MEDIA] Tweet metadata resolved',
+        );
       }
+
+      const tweetVideoMedia = tweetVideoMedias[0] || null;
 
       if (tweetCard) {
         const tweetVideosForOverlay = tweetVideoMedias.slice(0, 2).map((video) => ({
@@ -103,11 +132,24 @@ export const hideSendCommand = () => ({
           !media &&
           !!currentTweetStatusId &&
           tweetVideosForOverlay.some((video) => video.sourceStatusId === currentTweetStatusId);
-        const tweetCardForOverlay = shouldHideCardMedia
-          ? (await resolveTweetCardFromUrlWithOptions(tweetInput, {
-              hideMedia: true,
-            })) || tweetCard
-          : tweetCard;
+        let tweetCardForOverlay = tweetCard;
+
+        if (shouldHideCardMedia) {
+          try {
+            tweetCardForOverlay =
+              (await resolveTweetCardFromUrlWithOptions(tweetInput, {
+                hideMedia: true,
+              })) || tweetCard;
+          } catch (error) {
+            logger.warn(
+              {
+                err: toMediaIngestionError(error),
+                sourceUrl: tweetInput || null,
+              },
+              '[MEDIA] Tweet card hide-media resolution failed, keeping original card',
+            );
+          }
+        }
 
         await createPlaybackJob({
           guildId: interaction.guildId!,

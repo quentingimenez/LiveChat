@@ -6,6 +6,7 @@ const TWITTER_HOSTS = new Set(['x.com', 'www.x.com', 'twitter.com', 'www.twitter
 const TWEET_STATUS_PATH_REGEX = /^\/([a-zA-Z0-9_]{1,25})\/status\/(\d+)/;
 const TWEET_URL_REGEX =
   /https?:\/\/(?:www\.)?(?:x\.com|twitter\.com|mobile\.twitter\.com)\/[a-zA-Z0-9_]{1,25}\/status\/\d+/i;
+const TWITTER_OEMBED_TIMEOUT_MS = Math.min(12000, Math.max(5000, env.MEDIA_DOWNLOAD_TIMEOUT_MS));
 
 const sanitizeEmbedHtml = (rawHtml: string) => {
   return rawHtml
@@ -21,12 +22,9 @@ const resolveLanguage = () => {
 
 const fetchJsonWithTimeout = async (url: string) => {
   const controller = new AbortController();
-  const timeout = setTimeout(
-    () => {
-      controller.abort();
-    },
-    Math.max(5000, env.MEDIA_DOWNLOAD_TIMEOUT_MS),
-  );
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, TWITTER_OEMBED_TIMEOUT_MS);
 
   try {
     const response = await fetch(url, {

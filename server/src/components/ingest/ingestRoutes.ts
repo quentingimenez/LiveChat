@@ -132,6 +132,18 @@ export const IngestRoutes = () =>
           durationSec,
         });
 
+        logger.info(
+          {
+            guildId,
+            jobId: job.id,
+            hasMedia: !!mediaAsset,
+            hasText: !!text,
+            showText: showText ?? !!text,
+            durationSec: durationSec ?? null,
+          },
+          '[INGEST] Job accepted',
+        );
+
         return reply.code(201).send({
           accepted: true,
           jobId: job.id,

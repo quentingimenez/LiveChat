@@ -1,5 +1,9 @@
-import { OVERLAY_SOCKET_EVENTS, type OverlayErrorPayload, type OverlayHeartbeatPayload } from '@livechat/overlay-protocol';
 import { hashOverlayToken } from '../services/overlayAuth';
+import {
+  OVERLAY_SOCKET_EVENTS,
+  type OverlayErrorPayload,
+  type OverlayHeartbeatPayload,
+} from '@livechat/overlay-protocol';
 
 const getTokenFromSocketHandshake = (socket) => {
   const authToken = socket.handshake?.auth?.token;
@@ -25,6 +29,7 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
       const token = getTokenFromSocketHandshake(socket);
 
       if (!token) {
+        logger.warn({ socketId: socket.id }, '[OVERLAY] Socket auth failed: missing token');
         next(new Error('missing_token'));
         return;
       }
@@ -39,6 +44,7 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
       });
 
       if (!client) {
+        logger.warn({ socketId: socket.id }, '[OVERLAY] Socket auth failed: invalid token');
         next(new Error('invalid_token'));
         return;
       }
@@ -57,6 +63,7 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
 
       next();
     } catch (error) {
+      logger.error({ err: error, socketId: socket.id }, '[OVERLAY] Socket auth error');
       next(new Error('auth_error'));
     }
   });
@@ -70,8 +77,9 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
     }
 
     socket.join(`overlay-guild-${guildId}`);
-
-    logger.debug(`Overlay connected: ${socket.id} (guild: ${guildId})`);
+    const roomName = `overlay-guild-${guildId}`;
+    const roomSize = fastify.io.sockets.adapter.rooms.get(roomName)?.size ?? 0;
+    logger.info(`[OVERLAY] Connected: ${socket.id} (guild: ${guildId}, roomSize: ${roomSize})`);
 
     socket.on(OVERLAY_SOCKET_EVENTS.HEARTBEAT, async (payload: OverlayHeartbeatPayload) => {
       logger.debug(`Heartbeat from client ${payload?.clientId || socket.data.overlayClientId} (${socket.id})`);
@@ -95,7 +103,7 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
     });
 
     socket.on('disconnecting', () => {
-      logger.debug(`Overlay disconnected: ${socket.id}`);
+      logger.info(`[OVERLAY] Disconnected: ${socket.id} (guild: ${guildId})`);
     });
   });
 };

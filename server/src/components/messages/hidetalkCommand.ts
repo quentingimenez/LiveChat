@@ -31,10 +31,7 @@ export const hideTalkCommand = () => ({
 
     try {
       filePath = await promisedGtts(voice, rosetty.getCurrentLang());
-      const sourceHash = crypto
-        .createHash('sha1')
-        .update(`${rosetty.getCurrentLang()}:${voice}`)
-        .digest('hex');
+      const sourceHash = crypto.createHash('sha1').update(`${rosetty.getCurrentLang()}:${voice}`).digest('hex');
 
       const mediaAsset = await ingestMediaFromLocalFile(filePath, `gtts:${rosetty.getCurrentLang()}:${sourceHash}`);
 
@@ -43,6 +40,7 @@ export const hideTalkCommand = () => ({
         mediaAsset,
         text,
         showText: !!text,
+        source: 'discord_hidetalk_command',
       });
 
       await interaction.editReply({
@@ -66,12 +64,7 @@ export const hideTalkCommand = () => ({
         : getLocalizedMediaErrorMessage(toMediaIngestionError(error, 'TRANSCODE_FAILED'));
 
       await interaction.editReply({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle(rosetty.t('error')!)
-            .setDescription(message)
-            .setColor(0xe74c3c),
-        ],
+        embeds: [new EmbedBuilder().setTitle(rosetty.t('error')!).setDescription(message).setColor(0xe74c3c)],
       });
     } finally {
       if (filePath) {

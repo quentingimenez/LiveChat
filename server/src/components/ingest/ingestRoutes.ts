@@ -130,6 +130,7 @@ export const IngestRoutes = () =>
           authorName: authorName || 'iOS Shortcut',
           authorImage,
           durationSec,
+          source: 'ingest_api',
         });
 
         logger.info(

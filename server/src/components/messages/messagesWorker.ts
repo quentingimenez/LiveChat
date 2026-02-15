@@ -99,26 +99,54 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
   });
 
   if (guild) {
-    const now = new Date();
-    const busyUntilMs = guild.busyUntil?.getTime() || now.getTime();
-    const remainingMs = Math.max(0, busyUntilMs - now.getTime());
-    const postponeMs = Math.max(250, Math.min(5000, remainingMs));
-
-    if (remainingMs > 1000) {
-      logger.info(
-        `[SOCKET] Job ${nextJob.id} deferred for guild ${nextJob.guildId} (remainingMs: ${remainingMs}, nextTryInMs: ${postponeMs})`,
-      );
-    }
-
-    await prisma.playbackJob.update({
+    const activePlayingJob = await prisma.playbackJob.findFirst({
       where: {
-        id: nextJob.id,
+        guildId: nextJob.guildId,
+        status: PlaybackJobStatus.PLAYING,
+        finishedAt: null,
       },
-      data: {
-        executionDate: addMilliseconds(now, postponeMs),
+      select: {
+        id: true,
       },
     });
-    return;
+
+    if (!activePlayingJob) {
+      await prisma.guild.upsert({
+        where: {
+          id: nextJob.guildId,
+        },
+        create: {
+          id: nextJob.guildId,
+          busyUntil: null,
+        },
+        update: {
+          busyUntil: null,
+        },
+      });
+
+      logger.warn(`[SOCKET] Released stale busy lock for guild ${nextJob.guildId} while scheduling job ${nextJob.id}`);
+    } else {
+      const now = new Date();
+      const busyUntilMs = guild.busyUntil?.getTime() || now.getTime();
+      const remainingMs = Math.max(0, busyUntilMs - now.getTime());
+      const postponeMs = Math.max(250, Math.min(5000, remainingMs));
+
+      if (remainingMs > 1000) {
+        logger.info(
+          `[SOCKET] Job ${nextJob.id} deferred for guild ${nextJob.guildId} (remainingMs: ${remainingMs}, nextTryInMs: ${postponeMs}, activeJobId: ${activePlayingJob.id})`,
+        );
+      }
+
+      await prisma.playbackJob.update({
+        where: {
+          id: nextJob.id,
+        },
+        data: {
+          executionDate: addMilliseconds(now, postponeMs),
+        },
+      });
+      return;
+    }
   }
 
   let mediaAsset: {

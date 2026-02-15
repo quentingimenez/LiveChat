@@ -3,6 +3,9 @@ import { MediaAssetStatus, PlaybackJobStatus } from '../../services/prisma/prism
 import { decodeRichOverlayPayload } from '../../services/messages/richOverlayPayload';
 import { OVERLAY_SOCKET_EVENTS, type OverlayPlayPayload } from '@livechat/overlay-protocol';
 
+const STALE_PLAYING_RELEASE_GRACE_MS = 10_000;
+const STALE_PLAYING_FALLBACK_LOCK_MS = 5_000;
+
 const buildOverlayPlayPayload = (params: {
   job: {
     id: string;
@@ -108,18 +111,70 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
       },
       select: {
         id: true,
+        startedAt: true,
+        durationSec: true,
       },
     }),
   ]);
 
-  if (activePlayingJob) {
+  let currentPlayingJob = activePlayingJob;
+
+  if (currentPlayingJob) {
     const busyUntilMs = guild?.busyUntil?.getTime() || now.getTime();
     const remainingMs = Math.max(0, busyUntilMs - now.getTime());
-    const fallbackLockMs = 5000;
-    const postponeMs = Math.max(250, Math.min(5000, remainingMs > 0 ? remainingMs : fallbackLockMs));
+    const startedAtMs = currentPlayingJob.startedAt?.getTime() || null;
+    const expectedEndAtMs =
+      startedAtMs !== null
+        ? startedAtMs + Math.max(1, currentPlayingJob.durationSec) * 1000 + STALE_PLAYING_RELEASE_GRACE_MS
+        : null;
+    const shouldAutoReleaseStale = remainingMs <= 0 && expectedEndAtMs !== null && now.getTime() >= expectedEndAtMs;
+
+    if (shouldAutoReleaseStale) {
+      const releasedJobs = await prisma.playbackJob.updateMany({
+        where: {
+          id: currentPlayingJob.id,
+          guildId: nextJob.guildId,
+          status: PlaybackJobStatus.PLAYING,
+          finishedAt: null,
+        },
+        data: {
+          status: PlaybackJobStatus.DONE,
+          finishedAt: now,
+        },
+      });
+
+      if (releasedJobs.count > 0) {
+        await prisma.guild.upsert({
+          where: {
+            id: nextJob.guildId,
+          },
+          create: {
+            id: nextJob.guildId,
+            busyUntil: null,
+          },
+          update: {
+            busyUntil: null,
+          },
+        });
+
+        logger.warn(
+          `[SOCKET] Auto-released stale PLAYING job ${currentPlayingJob.id} in guild ${nextJob.guildId} (durationSec: ${
+            currentPlayingJob.durationSec
+          }, startedAt: ${currentPlayingJob.startedAt?.toISOString() || 'unknown'})`,
+        );
+
+        currentPlayingJob = null;
+      }
+    }
+  }
+
+  if (currentPlayingJob) {
+    const busyUntilMs = guild?.busyUntil?.getTime() || now.getTime();
+    const remainingMs = Math.max(0, busyUntilMs - now.getTime());
+    const postponeMs = Math.max(250, Math.min(5000, remainingMs > 0 ? remainingMs : STALE_PLAYING_FALLBACK_LOCK_MS));
 
     if (remainingMs <= 0) {
-      const nextBusyUntil = addMilliseconds(now, fallbackLockMs + 250);
+      const nextBusyUntil = addMilliseconds(now, STALE_PLAYING_FALLBACK_LOCK_MS + 250);
 
       await prisma.guild.upsert({
         where: {
@@ -135,11 +190,11 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
       });
 
       logger.warn(
-        `[SOCKET] Active PLAYING job ${activePlayingJob.id} has no valid busy lock in guild ${nextJob.guildId}; extending lock by ${fallbackLockMs}ms`,
+        `[SOCKET] Active PLAYING job ${currentPlayingJob.id} has no valid busy lock in guild ${nextJob.guildId}; extending lock by ${STALE_PLAYING_FALLBACK_LOCK_MS}ms`,
       );
     } else if (remainingMs > 1000) {
       logger.info(
-        `[SOCKET] Job ${nextJob.id} deferred for guild ${nextJob.guildId} (remainingMs: ${remainingMs}, nextTryInMs: ${postponeMs}, activeJobId: ${activePlayingJob.id})`,
+        `[SOCKET] Job ${nextJob.id} deferred for guild ${nextJob.guildId} (remainingMs: ${remainingMs}, nextTryInMs: ${postponeMs}, activeJobId: ${currentPlayingJob.id})`,
       );
     }
 

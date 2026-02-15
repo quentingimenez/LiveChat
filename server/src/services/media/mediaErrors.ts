@@ -141,7 +141,16 @@ const classifyMediaErrorCode = (rawText: string, fallbackCode: MediaIngestionErr
     return 'UNSUPPORTED_SOURCE';
   }
 
-  if (text.includes('drm')) {
+  const hasExplicitDrmSignal =
+    text.includes('drm protected') ||
+    text.includes('drm-protected') ||
+    text.includes('widevine') ||
+    text.includes('playready') ||
+    text.includes('fairplay') ||
+    text.includes('encrypted media') ||
+    text.includes('content is encrypted');
+
+  if (hasExplicitDrmSignal && !text.includes('enable-libdrm') && !text.includes('libdrm')) {
     return 'DRM_PROTECTED';
   }
 

@@ -1,5 +1,7 @@
 import crypto from 'crypto';
 import fetch from 'node-fetch';
+import { resolveTweetVideoMediaFromUrl } from '../social/twitterVideoResolver';
+import { normalizeTweetStatusUrl } from '../social/twitterOEmbed';
 
 export interface ResolvedMediaSource {
   sourceUrl: string;
@@ -167,7 +169,19 @@ export const resolveMediaSource = async (params: {
   }
 
   const redirectedSource = await resolveShortTikTokUrl(sourceUrl);
-  const canonicalSource = canonicalizeSourceUrl(redirectedSource);
+  let canonicalSource = canonicalizeSourceUrl(redirectedSource);
+
+  const normalizedTweetStatusUrl = normalizeTweetStatusUrl(canonicalSource);
+
+  if (normalizedTweetStatusUrl) {
+    const resolvedTweetMedia = await resolveTweetVideoMediaFromUrl(normalizedTweetStatusUrl);
+
+    if (resolvedTweetMedia?.url) {
+      canonicalSource = canonicalizeSourceUrl(resolvedTweetMedia.url);
+    } else {
+      canonicalSource = normalizedTweetStatusUrl;
+    }
+  }
 
   return {
     sourceUrl: canonicalSource,

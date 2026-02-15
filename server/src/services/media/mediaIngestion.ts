@@ -1303,6 +1303,15 @@ const downloadWithHttp = async (sourceUrl: string, tmpDir: string): Promise<stri
     );
   }
 
+  const responseContentType = (response.headers.get('content-type') || '').toLowerCase();
+  if (responseContentType.includes('text/html') || responseContentType.includes('application/xhtml+xml')) {
+    throw new MediaIngestionError(
+      'UNSUPPORTED_SOURCE',
+      'URL points to an HTML page, not a direct media file',
+      `HTTP response is HTML (${responseContentType}) for ${sourceUrl}`,
+    );
+  }
+
   return downloadHttpResponseToTempFile({
     response,
     tmpDir,

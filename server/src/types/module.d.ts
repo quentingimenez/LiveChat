@@ -48,6 +48,7 @@ declare global {
   interface SocketData {
     guildId?: string;
     overlayClientId?: string;
+    overlayClientLabel?: string;
   }
 
   type FastifyICustom = FastifyInstance<

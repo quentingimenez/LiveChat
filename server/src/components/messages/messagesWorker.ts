@@ -1,7 +1,7 @@
 import { addMilliseconds, addSeconds } from 'date-fns';
-import { OVERLAY_SOCKET_EVENTS, type OverlayPlayPayload } from '@livechat/overlay-protocol';
 import { MediaAssetStatus, PlaybackJobStatus } from '../../services/prisma/prismaEnums';
 import { decodeRichOverlayPayload } from '../../services/messages/richOverlayPayload';
+import { OVERLAY_SOCKET_EVENTS, type OverlayPlayPayload } from '@livechat/overlay-protocol';
 
 const buildOverlayPlayPayload = (params: {
   job: {
@@ -13,15 +13,13 @@ const buildOverlayPlayPayload = (params: {
     durationSec: number;
   };
   richPayload: ReturnType<typeof decodeRichOverlayPayload>;
-  mediaAsset:
-    | {
-        id: string;
-        mime: string;
-        kind: string;
-        durationSec: number | null;
-        isVertical: boolean;
-      }
-    | null;
+  mediaAsset: {
+    id: string;
+    mime: string;
+    kind: string;
+    durationSec: number | null;
+    isVertical: boolean;
+  } | null;
 }): OverlayPlayPayload => {
   const tweetCard = params.richPayload?.type === 'tweet' ? params.richPayload.tweetCard : null;
   const tweetCaption = params.richPayload?.type === 'tweet' ? (params.richPayload.caption || '').trim() : '';
@@ -181,7 +179,16 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
     mediaAsset,
   });
 
-  fastify.io.to(`overlay-guild-${nextJob.guildId}`).emit(OVERLAY_SOCKET_EVENTS.PLAY, payload);
+  const roomName = `overlay-guild-${nextJob.guildId}`;
+  const roomSize = fastify.io.sockets.adapter.rooms.get(roomName)?.size ?? 0;
+
+  if (roomSize === 0) {
+    logger.warn(`[SOCKET] No overlay connected for guild ${nextJob.guildId} while dispatching job ${nextJob.id}`);
+  } else {
+    logger.info(`[SOCKET] Dispatching job ${nextJob.id} to guild ${nextJob.guildId} (clients: ${roomSize})`);
+  }
+
+  fastify.io.to(roomName).emit(OVERLAY_SOCKET_EVENTS.PLAY, payload);
 
   await prisma.playbackJob.update({
     where: {
@@ -193,7 +200,7 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
     },
   });
 
-  logger.debug(`[SOCKET] Playback job ${nextJob.id} sent to guild ${nextJob.guildId}`);
+  logger.info(`[SOCKET] Playback job ${nextJob.id} marked as DONE for guild ${nextJob.guildId}`);
 
   return nextJob.durationSec * 1000 || 5000;
 };

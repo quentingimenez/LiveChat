@@ -150,9 +150,10 @@
 
     if (countdownRemainingMs <= 0) {
       clearCountdownTimer();
-      if (countdownAutoClear) {
-        clearOverlay();
-      }
+      // Always release playback when declared duration is fully elapsed.
+      // This guarantees the bot receives `ended` even if native media `ended`
+      // does not fire for some sources.
+      clearOverlay();
     }
   };
 

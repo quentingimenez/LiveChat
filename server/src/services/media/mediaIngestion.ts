@@ -259,6 +259,15 @@ const isTikTokUrl = (sourceUrl: string): boolean => {
   }
 };
 
+const isYouTubeUrl = (sourceUrl: string): boolean => {
+  try {
+    const parsed = new URL(sourceUrl);
+    return parsed.hostname === 'youtu.be' || parsed.hostname.includes('youtube.com');
+  } catch {
+    return false;
+  }
+};
+
 const downloadHttpResponseToTempFile = async (params: {
   response: Awaited<ReturnType<typeof fetch>>;
   tmpDir: string;
@@ -1233,7 +1242,11 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
   );
 };
 
-const downloadWithYtDlp = async (sourceUrl: string, tmpDir: string): Promise<string> => {
+const runYtDlpDownload = async (params: {
+  sourceUrl: string;
+  tmpDir: string;
+  extraArgs?: string[];
+}): Promise<string> => {
   const outputTemplate = path.join(tmpDir, 'download.%(ext)s');
   const formatSelector = resolveYtdlpFormatSelector();
   const concurrentFragments = Math.max(1, env.YTDLP_CONCURRENT_FRAGMENTS);
@@ -1256,7 +1269,11 @@ const downloadWithYtDlp = async (sourceUrl: string, tmpDir: string): Promise<str
     args.push('--format', formatSelector);
   }
 
-  args.push('-o', outputTemplate, sourceUrl);
+  if (Array.isArray(params.extraArgs) && params.extraArgs.length > 0) {
+    args.push(...params.extraArgs);
+  }
+
+  args.push('-o', outputTemplate, params.sourceUrl);
 
   let stdout = '';
   try {
@@ -1272,7 +1289,7 @@ const downloadWithYtDlp = async (sourceUrl: string, tmpDir: string): Promise<str
   const filenameFromStdout = parseYtdlpFilename(stdout);
 
   if (filenameFromStdout) {
-    await ensureFileSizeWithinLimit(filenameFromStdout, sourceUrl);
+    await ensureFileSizeWithinLimit(filenameFromStdout, params.sourceUrl);
     return filenameFromStdout;
   }
 
@@ -1282,12 +1299,51 @@ const downloadWithYtDlp = async (sourceUrl: string, tmpDir: string): Promise<str
     throw new MediaIngestionError(
       'DOWNLOAD_FAILED',
       'yt-dlp completed but no file was produced',
-      `yt-dlp completed but no file was produced for ${sourceUrl}`,
+      `yt-dlp completed but no file was produced for ${params.sourceUrl}`,
     );
   }
 
-  await ensureFileSizeWithinLimit(downloadedFile, sourceUrl);
+  await ensureFileSizeWithinLimit(downloadedFile, params.sourceUrl);
   return downloadedFile;
+};
+
+const downloadWithYtDlp = async (sourceUrl: string, tmpDir: string): Promise<string> => {
+  try {
+    return await runYtDlpDownload({
+      sourceUrl,
+      tmpDir,
+    });
+  } catch (error) {
+    const normalized = toMediaIngestionError(error);
+
+    const shouldRetryForYoutube =
+      isYouTubeUrl(sourceUrl) &&
+      (normalized.code === 'PRIVATE_OR_AUTH_REQUIRED' ||
+        normalized.rawMessage.toLowerCase().includes('sign in') ||
+        normalized.rawMessage.toLowerCase().includes('confirm you\u2019re not a bot') ||
+        normalized.rawMessage.toLowerCase().includes("confirm you're not a bot"));
+
+    if (!shouldRetryForYoutube) {
+      throw normalized;
+    }
+
+    logger.warn(
+      {
+        sourceUrl: sanitizeUrlForLog(sourceUrl),
+      },
+      '[MEDIA] yt-dlp retry with youtube android client',
+    );
+
+    try {
+      return await runYtDlpDownload({
+        sourceUrl,
+        tmpDir,
+        extraArgs: ['--extractor-args', 'youtube:player_client=android'],
+      });
+    } catch (retryError) {
+      throw pickMostRelevantMediaError(retryError, normalized);
+    }
+  }
 };
 
 const downloadWithHttp = async (sourceUrl: string, tmpDir: string): Promise<string> => {
@@ -1413,6 +1469,10 @@ const downloadSourceToTempFile = async (sourceUrl: string, tmpDir: string): Prom
 
   if (ytdlpDownloadedPath) {
     return ytdlpDownloadedPath;
+  }
+
+  if (isYouTubeUrl(sourceUrl) && ytdlpError) {
+    throw toMediaIngestionError(ytdlpError);
   }
 
   try {

@@ -24,6 +24,10 @@ const pickSource = (url?: string | null, media?: string | null) => {
 const normalizeYoutubeUrl = (url: URL): URL => {
   const normalized = new URL(url.toString());
 
+  if (normalized.hostname.endsWith('youtube.com')) {
+    normalized.hostname = 'www.youtube.com';
+  }
+
   if (normalized.hostname === 'youtu.be') {
     const videoId = normalized.pathname.replace('/', '').trim();
     normalized.hostname = 'www.youtube.com';

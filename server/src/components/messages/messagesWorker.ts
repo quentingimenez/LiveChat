@@ -89,17 +89,18 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
     return;
   }
 
-  const guild = await prisma.guild.findFirst({
-    where: {
-      id: nextJob.guildId,
-      busyUntil: {
-        gte: new Date(),
+  const now = new Date();
+  const [guild, activePlayingJob] = await Promise.all([
+    prisma.guild.findFirst({
+      where: {
+        id: nextJob.guildId,
       },
-    },
-  });
-
-  if (guild) {
-    const activePlayingJob = await prisma.playbackJob.findFirst({
+      select: {
+        id: true,
+        busyUntil: true,
+      },
+    }),
+    prisma.playbackJob.findFirst({
       where: {
         guildId: nextJob.guildId,
         status: PlaybackJobStatus.PLAYING,
@@ -108,45 +109,66 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
       select: {
         id: true,
       },
-    });
+    }),
+  ]);
 
-    if (!activePlayingJob) {
+  if (activePlayingJob) {
+    const busyUntilMs = guild?.busyUntil?.getTime() || now.getTime();
+    const remainingMs = Math.max(0, busyUntilMs - now.getTime());
+    const fallbackLockMs = 5000;
+    const postponeMs = Math.max(250, Math.min(5000, remainingMs > 0 ? remainingMs : fallbackLockMs));
+
+    if (remainingMs <= 0) {
+      const nextBusyUntil = addMilliseconds(now, fallbackLockMs + 250);
+
       await prisma.guild.upsert({
         where: {
           id: nextJob.guildId,
         },
         create: {
           id: nextJob.guildId,
-          busyUntil: null,
+          busyUntil: nextBusyUntil,
         },
         update: {
-          busyUntil: null,
+          busyUntil: nextBusyUntil,
         },
       });
 
-      logger.warn(`[SOCKET] Released stale busy lock for guild ${nextJob.guildId} while scheduling job ${nextJob.id}`);
-    } else {
-      const now = new Date();
-      const busyUntilMs = guild.busyUntil?.getTime() || now.getTime();
-      const remainingMs = Math.max(0, busyUntilMs - now.getTime());
-      const postponeMs = Math.max(250, Math.min(5000, remainingMs));
-
-      if (remainingMs > 1000) {
-        logger.info(
-          `[SOCKET] Job ${nextJob.id} deferred for guild ${nextJob.guildId} (remainingMs: ${remainingMs}, nextTryInMs: ${postponeMs}, activeJobId: ${activePlayingJob.id})`,
-        );
-      }
-
-      await prisma.playbackJob.update({
-        where: {
-          id: nextJob.id,
-        },
-        data: {
-          executionDate: addMilliseconds(now, postponeMs),
-        },
-      });
-      return;
+      logger.warn(
+        `[SOCKET] Active PLAYING job ${activePlayingJob.id} has no valid busy lock in guild ${nextJob.guildId}; extending lock by ${fallbackLockMs}ms`,
+      );
+    } else if (remainingMs > 1000) {
+      logger.info(
+        `[SOCKET] Job ${nextJob.id} deferred for guild ${nextJob.guildId} (remainingMs: ${remainingMs}, nextTryInMs: ${postponeMs}, activeJobId: ${activePlayingJob.id})`,
+      );
     }
+
+    await prisma.playbackJob.update({
+      where: {
+        id: nextJob.id,
+      },
+      data: {
+        executionDate: addMilliseconds(now, postponeMs),
+      },
+    });
+    return;
+  }
+
+  if (guild && guild.busyUntil && guild.busyUntil >= now) {
+    await prisma.guild.upsert({
+      where: {
+        id: nextJob.guildId,
+      },
+      create: {
+        id: nextJob.guildId,
+        busyUntil: null,
+      },
+      update: {
+        busyUntil: null,
+      },
+    });
+
+    logger.warn(`[SOCKET] Released stale busy lock for guild ${nextJob.guildId} while scheduling job ${nextJob.id}`);
   }
 
   let mediaAsset: {
@@ -204,24 +226,6 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
 
     logger.warn(`[SOCKET] Job ${nextJob.id} skipped because no overlay is connected for guild ${nextJob.guildId}`);
     return 100;
-  }
-
-  const autoReleasedPlaying = await prisma.playbackJob.updateMany({
-    where: {
-      guildId: nextJob.guildId,
-      status: PlaybackJobStatus.PLAYING,
-      finishedAt: null,
-    },
-    data: {
-      status: PlaybackJobStatus.DONE,
-      finishedAt: new Date(),
-    },
-  });
-
-  if (autoReleasedPlaying.count > 0) {
-    logger.warn(
-      `[SOCKET] Released ${autoReleasedPlaying.count} lingering PLAYING job(s) before dispatch in guild ${nextJob.guildId}`,
-    );
   }
 
   let busyUntil = addSeconds(new Date(), nextJob.durationSec);

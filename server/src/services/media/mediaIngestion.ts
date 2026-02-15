@@ -1613,6 +1613,15 @@ const ingestFromSourceUrlInternal = async (
       sourceUrl,
       inputFilePath: downloadedFilePath,
     });
+
+    if (isYouTubeUrl(sourceUrl) && normalizedAsset.kind === MediaAssetKind.AUDIO) {
+      throw new MediaIngestionError(
+        'INVALID_MEDIA',
+        'YouTube source resolved to audio-only media',
+        `YouTube source produced audio-only media for ${sourceUrl}`,
+      );
+    }
+
     const finishedAtMs = Date.now();
 
     logger.info(

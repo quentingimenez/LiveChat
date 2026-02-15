@@ -104,6 +104,12 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
     const remainingMs = Math.max(0, busyUntilMs - now.getTime());
     const postponeMs = Math.max(250, Math.min(5000, remainingMs));
 
+    if (remainingMs > 1000) {
+      logger.info(
+        `[SOCKET] Job ${nextJob.id} deferred for guild ${nextJob.guildId} (remainingMs: ${remainingMs}, nextTryInMs: ${postponeMs})`,
+      );
+    }
+
     await prisma.playbackJob.update({
       where: {
         id: nextJob.id,
@@ -213,7 +219,9 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
   });
   const queueDelayMs = Math.max(0, Date.now() - nextJob.submissionDate.getTime());
   logger.info(
-    `[SOCKET] Dispatching job ${nextJob.id} to guild ${nextJob.guildId} (clients: ${roomSize}, durationSec: ${nextJob.durationSec}, queueDelayMs: ${queueDelayMs})`,
+    `[SOCKET] Dispatching job ${nextJob.id} to guild ${nextJob.guildId} (clients: ${roomSize}, durationSec: ${nextJob.durationSec}, queueDelayMs: ${queueDelayMs}, mediaKind: ${
+      mediaAsset?.kind || 'none'
+    }, mediaDurationSec: ${mediaAsset?.durationSec ?? 'n/a'})`,
   );
 
   fastify.io.to(roomName).emit(OVERLAY_SOCKET_EVENTS.PLAY, payload);

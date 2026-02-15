@@ -40,8 +40,11 @@ export const runServer = async () => {
   try {
     logger.info('[DB] Connected to database');
     await loadPrismaClient();
+    logger.info('[BOOT] Prisma connected');
     await ensureMediaStorageDir();
+    logger.info('[BOOT] Media storage ready');
     startMediaCachePurgeWorker();
+    logger.info('[BOOT] Media cache worker started');
   } catch (e) {
     logger.fatal('[DB] Impossible to connect to database', e);
     process.exit(1);
@@ -74,6 +77,7 @@ export const runServer = async () => {
       await fastify.io.close();
       logger.debug('Server is shutting down');
     });
+    logger.info('[BOOT] Socket.IO plugin registered');
   } catch (error) {
     logger.fatal('Impossible to disconnect to db');
   }
@@ -95,6 +99,7 @@ export const runServer = async () => {
     origin: true,
     credentials: true,
   });
+  logger.info('[BOOT] CORS registered');
 
   fastify.get('/', async () => {
     return {
@@ -140,12 +145,17 @@ export const runServer = async () => {
   });
 
   loadRosetty();
+  logger.info('[BOOT] I18N loaded');
   await loadSocket(fastify);
+  logger.info('[BOOT] Socket loader ready');
   await loadRoutes(fastify);
+  logger.info('[BOOT] REST routes ready');
   void loadDiscord(fastify).catch((error) => {
     logger.error(error, '[DISCORD] Initialization failed');
   });
+  logger.info('[BOOT] Discord bootstrap started');
   gracefulServer.setReady();
+  logger.info('[BOOT] Server bootstrap completed');
 
   return fastify;
 };

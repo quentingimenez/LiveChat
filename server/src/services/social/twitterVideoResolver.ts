@@ -56,6 +56,8 @@ interface SyndicationTweetPayload {
   };
 }
 
+const TWITTER_RESOLVE_TIMEOUT_MS = Math.min(12000, Math.max(5000, env.MEDIA_DOWNLOAD_TIMEOUT_MS));
+
 const decodeHtmlAttribute = (value: string) => {
   return value
     .replace(/&amp;/g, '&')
@@ -82,12 +84,9 @@ const extractMetaContent = (html: string, key: string) => {
 
 const fetchTextWithTimeout = async (url: string) => {
   const controller = new AbortController();
-  const timeout = setTimeout(
-    () => {
-      controller.abort();
-    },
-    Math.max(5000, env.MEDIA_DOWNLOAD_TIMEOUT_MS),
-  );
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, TWITTER_RESOLVE_TIMEOUT_MS);
 
   try {
     const response = await fetch(url, {
@@ -111,12 +110,9 @@ const fetchTextWithTimeout = async (url: string) => {
 
 const fetchJsonWithTimeout = async <T>(url: string): Promise<T | null> => {
   const controller = new AbortController();
-  const timeout = setTimeout(
-    () => {
-      controller.abort();
-    },
-    Math.max(5000, env.MEDIA_DOWNLOAD_TIMEOUT_MS),
-  );
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, TWITTER_RESOLVE_TIMEOUT_MS);
 
   try {
     const response = await fetch(url, {

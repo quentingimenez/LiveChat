@@ -3,7 +3,11 @@ import { ingestMediaFromSource } from '../../services/media/mediaIngestion';
 import { getLocalizedMediaErrorMessage, toMediaIngestionError } from '../../services/media/mediaErrors';
 import { createPlaybackJob } from '../../services/playbackJobs';
 import { encodeRichOverlayPayload } from '../../services/messages/richOverlayPayload';
-import { resolveTweetCardFromUrl, resolveTweetCardFromUrlWithOptions } from '../../services/social/twitterOEmbed';
+import {
+  normalizeTweetStatusUrl,
+  resolveTweetCardFromUrl,
+  resolveTweetCardFromUrlWithOptions,
+} from '../../services/social/twitterOEmbed';
 import {
   extractTweetStatusIdFromUrl,
   resolveTweetVideoMediasFromUrl,
@@ -68,14 +72,15 @@ export const sendCommand = () => ({
 
     try {
       const tweetInput = url || text;
+      const normalizedTweetInput = !media && tweetInput ? normalizeTweetStatusUrl(tweetInput) : null;
       let tweetVideoMedias: Awaited<ReturnType<typeof resolveTweetVideoMediasFromUrl>> = [];
       let tweetCard = null;
       const tweetResolveStartedAt = Date.now();
 
-      if (!media && tweetInput) {
+      if (normalizedTweetInput) {
         const [videoResult, cardResult] = await Promise.allSettled([
-          resolveTweetVideoMediasFromUrl(tweetInput),
-          resolveTweetCardFromUrl(tweetInput),
+          resolveTweetVideoMediasFromUrl(normalizedTweetInput),
+          resolveTweetCardFromUrl(normalizedTweetInput),
         ]);
 
         if (videoResult.status === 'fulfilled') {
@@ -84,7 +89,7 @@ export const sendCommand = () => ({
           logger.warn(
             {
               err: toMediaIngestionError(videoResult.reason),
-              sourceUrl: tweetInput,
+              sourceUrl: normalizedTweetInput,
             },
             '[MEDIA] Tweet video resolution failed, continuing with fallback',
           );
@@ -96,7 +101,7 @@ export const sendCommand = () => ({
           logger.warn(
             {
               err: toMediaIngestionError(cardResult.reason),
-              sourceUrl: tweetInput,
+              sourceUrl: normalizedTweetInput,
             },
             '[MEDIA] Tweet card resolution failed, continuing with media-only playback',
           );
@@ -104,7 +109,7 @@ export const sendCommand = () => ({
 
         logger.info(
           {
-            sourceUrl: tweetInput,
+            sourceUrl: normalizedTweetInput,
             elapsedMs: Date.now() - tweetResolveStartedAt,
             videoCandidates: tweetVideoMedias.length,
             hasTweetCard: !!tweetCard,
@@ -123,7 +128,7 @@ export const sendCommand = () => ({
           sourceStatusId: video.sourceStatusId,
           durationSec: video.durationSec,
         }));
-        const currentTweetStatusId = extractTweetStatusIdFromUrl(tweetInput);
+        const currentTweetStatusId = extractTweetStatusIdFromUrl(normalizedTweetInput);
         const hasCurrentTweetVideo =
           !!currentTweetStatusId &&
           tweetVideosForOverlay.some((video) => video.sourceStatusId === currentTweetStatusId);
@@ -145,7 +150,7 @@ export const sendCommand = () => ({
             logger.warn(
               {
                 err: toMediaIngestionError(error),
-                sourceUrl: tweetInput || null,
+                sourceUrl: normalizedTweetInput,
               },
               '[MEDIA] Tweet card hide-media resolution failed, keeping original card',
             );

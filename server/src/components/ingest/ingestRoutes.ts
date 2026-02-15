@@ -4,7 +4,11 @@ import { toMediaIngestionError } from '../../services/media/mediaErrors';
 import { getBearerTokenFromRequest } from '../../services/overlayAuth';
 import { createPlaybackJob } from '../../services/playbackJobs';
 import { encodeRichOverlayPayload } from '../../services/messages/richOverlayPayload';
-import { resolveTweetCardFromUrl, resolveTweetCardFromUrlWithOptions } from '../../services/social/twitterOEmbed';
+import {
+  normalizeTweetStatusUrl,
+  resolveTweetCardFromUrl,
+  resolveTweetCardFromUrlWithOptions,
+} from '../../services/social/twitterOEmbed';
 import {
   extractTweetStatusIdFromUrl,
   resolveTweetVideoMediasFromUrl,
@@ -119,11 +123,12 @@ export const IngestRoutes = () =>
       let jobAuthorName = authorName || 'iOS Shortcut';
       let jobAuthorImage = authorImage;
       let jobDurationSec = durationSec;
+      const normalizedTweetUrl = !media && url ? normalizeTweetStatusUrl(url) : null;
 
-      if (!media && url) {
+      if (normalizedTweetUrl) {
         const [tweetVideoResult, tweetCardResult] = await Promise.allSettled([
-          resolveTweetVideoMediasFromUrl(url),
-          resolveTweetCardFromUrl(url),
+          resolveTweetVideoMediasFromUrl(normalizedTweetUrl),
+          resolveTweetCardFromUrl(normalizedTweetUrl),
         ]);
         const tweetVideoMedias = tweetVideoResult.status === 'fulfilled' ? tweetVideoResult.value : [];
         let tweetCard = tweetCardResult.status === 'fulfilled' ? tweetCardResult.value : null;
@@ -132,7 +137,7 @@ export const IngestRoutes = () =>
           logger.warn(
             {
               err: toMediaIngestionError(tweetVideoResult.reason),
-              sourceUrl: url,
+              sourceUrl: normalizedTweetUrl,
             },
             '[MEDIA] ingest tweet video resolution failed, continuing with fallback',
           );
@@ -142,7 +147,7 @@ export const IngestRoutes = () =>
           logger.warn(
             {
               err: toMediaIngestionError(tweetCardResult.reason),
-              sourceUrl: url,
+              sourceUrl: normalizedTweetUrl,
             },
             '[MEDIA] ingest tweet card resolution failed, continuing with fallback',
           );
@@ -156,7 +161,7 @@ export const IngestRoutes = () =>
             sourceStatusId: video.sourceStatusId,
             durationSec: video.durationSec,
           }));
-          const currentTweetStatusId = extractTweetStatusIdFromUrl(url);
+          const currentTweetStatusId = extractTweetStatusIdFromUrl(normalizedTweetUrl);
           const hasCurrentTweetVideo =
             !!currentTweetStatusId &&
             tweetVideosForOverlay.some((video) => video.sourceStatusId === currentTweetStatusId);
@@ -169,12 +174,15 @@ export const IngestRoutes = () =>
 
           if (shouldHideCardMedia) {
             try {
-              tweetCard = (await resolveTweetCardFromUrlWithOptions(url, { hideMedia: true })) || tweetCard;
+              tweetCard =
+                (await resolveTweetCardFromUrlWithOptions(normalizedTweetUrl, {
+                  hideMedia: true,
+                })) || tweetCard;
             } catch (error) {
               logger.warn(
                 {
                   err: toMediaIngestionError(error),
-                  sourceUrl: url,
+                  sourceUrl: normalizedTweetUrl,
                 },
                 '[MEDIA] ingest tweet card hide-media resolution failed, keeping original card',
               );
@@ -209,7 +217,7 @@ export const IngestRoutes = () =>
               {
                 err: mediaError,
                 guildId,
-                sourceUrl: url,
+                sourceUrl: normalizedTweetUrl,
                 sourceMedia: tweetVideoMedias[0].url,
               },
               `[MEDIA] ingest API failed (${mediaError.code})`,

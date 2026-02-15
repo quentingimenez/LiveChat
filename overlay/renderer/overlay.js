@@ -441,6 +441,18 @@
         typeof tweetCard.currentStatusId === 'string' && tweetCard.currentStatusId.trim() !== ''
           ? tweetCard.currentStatusId.trim()
           : null;
+      const hasCurrentTweetVideo =
+        !!currentStatusId &&
+        videosToRender.some((video) => typeof video.sourceStatusId === 'string' && video.sourceStatusId === currentStatusId);
+      const hasOriginalTweetVideo =
+        !!currentStatusId &&
+        videosToRender.some(
+          (video) =>
+            typeof video.sourceStatusId === 'string' &&
+            video.sourceStatusId.trim() !== '' &&
+            video.sourceStatusId !== currentStatusId,
+        );
+      const hasReplyContext = hasCurrentTweetVideo && hasOriginalTweetVideo;
 
       videosToRender.forEach((inlineVideo, index) => {
         const inlineItem = document.createElement('div');
@@ -448,8 +460,10 @@
 
         const roleLabel = document.createElement('div');
         roleLabel.className = 'overlay-tweet-inline-label';
-        if (currentStatusId && inlineVideo.sourceStatusId) {
+        if (hasReplyContext && currentStatusId && inlineVideo.sourceStatusId) {
           roleLabel.textContent = inlineVideo.sourceStatusId === currentStatusId ? 'Reponse' : 'Tweet original';
+        } else if (videosToRender.length === 1) {
+          roleLabel.textContent = 'Video';
         } else if (index === 0) {
           roleLabel.textContent = 'Video 1';
         } else {

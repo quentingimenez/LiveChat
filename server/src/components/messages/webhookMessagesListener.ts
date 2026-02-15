@@ -4,6 +4,8 @@ import { toMediaIngestionError } from '../../services/media/mediaErrors';
 import { createPlaybackJob } from '../../services/playbackJobs';
 
 const URL_IN_TEXT_REGEX = /https?:\/\/\S+/i;
+const SHORTCUT_MSG_PREFIX_REGEX = /^\/msg\b/i;
+const SHORTCUT_LABELED_URL_REGEX = /(?:^|\s)(?:lien|url)\s*:\s*(https?:\/\/\S+)/i;
 const ATTACHMENT_MEDIA_EXTENSION_REGEX =
   /\.(apng|avif|bmp|flac|gif|jpeg|jpg|m4a|m4v|mov|mp3|mp4|ogg|opus|png|wav|webm|webp)(\?|#|$)/i;
 
@@ -66,7 +68,36 @@ const getFirstUrlFromText = (content: string | null): string | null => {
   return match[0].trim().replace(/^<|>$/g, '');
 };
 
-const resolveWebhookSource = (message: Message<boolean>) => {
+const parseShortcutMessage = (content: string) => {
+  const withoutPrefix = content.replace(SHORTCUT_MSG_PREFIX_REGEX, '').trim();
+
+  if (!withoutPrefix) {
+    return {
+      text: null as string | null,
+      url: null as string | null,
+    };
+  }
+
+  const labeledUrlMatch = withoutPrefix.match(SHORTCUT_LABELED_URL_REGEX);
+  const labeledUrl = labeledUrlMatch?.[1]?.trim().replace(/^<|>$/g, '') || null;
+  const url = labeledUrl || getFirstUrlFromText(withoutPrefix);
+
+  let text = withoutPrefix;
+  if (labeledUrlMatch?.[0]) {
+    text = text.replace(labeledUrlMatch[0], ' ').trim();
+  }
+
+  if (url && text === url) {
+    text = '';
+  }
+
+  return {
+    text: text || null,
+    url,
+  };
+};
+
+const resolveSource = (message: Message<boolean>, fallbackUrl?: string | null) => {
   const attachmentUrl = getAttachmentMediaUrl(message);
   if (attachmentUrl) {
     return {
@@ -88,6 +119,12 @@ const resolveWebhookSource = (message: Message<boolean>) => {
     };
   }
 
+  if (fallbackUrl) {
+    return {
+      url: fallbackUrl,
+    };
+  }
+
   const urlFromText = getFirstUrlFromText(message.content);
   if (urlFromText) {
     return {
@@ -104,12 +141,16 @@ export const loadWebhookMessagesListener = () => {
       return;
     }
 
-    if (!message.webhookId) {
+    const content = (message.content || '').trim();
+    const isShortcutMessage = SHORTCUT_MSG_PREFIX_REGEX.test(content);
+
+    if (!message.webhookId && !isShortcutMessage) {
       return;
     }
 
-    const text = (message.content || '').trim() || null;
-    const source = resolveWebhookSource(message);
+    const shortcutPayload = isShortcutMessage ? parseShortcutMessage(content) : null;
+    const text = (shortcutPayload?.text ?? content) || null;
+    const source = resolveSource(message, shortcutPayload?.url);
 
     let mediaAsset = null;
 

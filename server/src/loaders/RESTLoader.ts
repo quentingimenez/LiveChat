@@ -1,10 +1,14 @@
 import { startCase } from 'lodash';
 import { OverlayRoutes } from '../components/overlay/overlayRoutes';
+import { IngestRoutes } from '../components/ingest/ingestRoutes';
 
 export const loadRoutes = (fastify: FastifyCustomInstance) => {
   const routes = [
     {
       '/overlay': OverlayRoutes,
+    },
+    {
+      '/ingest': IngestRoutes,
     },
   ];
 

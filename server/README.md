@@ -41,6 +41,13 @@ Payload minimal:
 - `guildId` obligatoire
 - au moins un de `url`, `media`, `text`
 
+## Endpoints publics
+
+- `GET /` -> statut service minimal
+- `GET /health` -> healthcheck
+
+Les erreurs HTTP sont volontairement normalisées (`not_found`, `request_error`, `internal_error`) sans stack trace exposée.
+
 ## Docker Hub (GitHub Actions)
 
 Le workflow `/.github/workflows/docker.yml` build et pousse l'image sur Docker Hub:

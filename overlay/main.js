@@ -15,6 +15,8 @@ let tray;
 let overlaySocket;
 let keepOnTopInterval;
 let heartbeatInterval;
+let overlayConnectionState = 'disconnected';
+let overlayConnectionReason = '';
 
 const configPath = path.join(app.getPath('userData'), 'config.json');
 
@@ -28,6 +30,17 @@ const defaultConfig = {
   clientToken: null,
   clientId: null,
   guildId: null,
+  deviceName: null,
+};
+
+const CONNECTION_STATE_LABELS = {
+  disabled: 'Désactivé',
+  not_paired: 'Non appairé',
+  connecting: 'Connexion...',
+  reconnecting: 'Reconnexion...',
+  connected: 'Connecté',
+  disconnected: 'Déconnecté',
+  error: 'Erreur',
 };
 
 function loadConfig() {
@@ -65,6 +78,23 @@ function saveConfig(nextValues) {
 
 function hasPairingConfig(config = loadConfig()) {
   return !!(config.serverUrl && config.clientToken && config.guildId);
+}
+
+function getConnectionStateLabel() {
+  return CONNECTION_STATE_LABELS[overlayConnectionState] || overlayConnectionState;
+}
+
+function setOverlayConnectionState(nextState, reason = '') {
+  overlayConnectionState = nextState;
+  overlayConnectionReason = typeof reason === 'string' ? reason.trim() : '';
+
+  if (tray) {
+    const cfg = loadConfig();
+    const suffix = cfg.deviceName ? ` (${cfg.deviceName})` : '';
+    tray.setToolTip(`Overlay ${getConnectionStateLabel()}${suffix}`);
+  }
+
+  updateTrayMenu();
 }
 
 function normalizeServerUrl(serverUrl) {
@@ -329,23 +359,34 @@ function startHeartbeatLoop() {
   }, 15000);
 }
 
-function disconnectOverlaySocket() {
+function disconnectOverlaySocket(options = {}) {
+  const nextState = options.nextState || 'disconnected';
+  const reason = options.reason || '';
+  const keepStatus = options.keepStatus === true;
+
   stopHeartbeatLoop();
 
   if (overlaySocket) {
     overlaySocket.disconnect();
     overlaySocket = null;
   }
+
+  if (!keepStatus) {
+    setOverlayConnectionState(nextState, reason);
+  }
 }
 
 function connectOverlaySocket() {
   const cfg = loadConfig();
 
-  disconnectOverlaySocket();
+  disconnectOverlaySocket({ keepStatus: true });
 
   if (!cfg.enabled || !hasPairingConfig(cfg)) {
+    setOverlayConnectionState(cfg.enabled ? 'not_paired' : 'disabled');
     return;
   }
+
+  setOverlayConnectionState('connecting');
 
   overlaySocket = io(cfg.serverUrl, {
     transports: ['websocket'],
@@ -361,6 +402,7 @@ function connectOverlaySocket() {
 
   overlaySocket.on('connect', () => {
     startHeartbeatLoop();
+    setOverlayConnectionState('connected');
     overlaySocket.emit(OVERLAY_SOCKET_EVENTS.HEARTBEAT, {
       clientId: cfg.clientId || 'unknown-client',
       guildId: cfg.guildId || 'unknown-guild',
@@ -384,34 +426,57 @@ function connectOverlaySocket() {
     overlayWindow.webContents.send('overlay:stop', payload);
   });
 
-  overlaySocket.on('disconnect', () => {
+  overlaySocket.on('disconnect', (reason) => {
     stopHeartbeatLoop();
+    const current = loadConfig();
+
+    if (!current.enabled) {
+      setOverlayConnectionState('disabled', reason);
+      return;
+    }
+
+    if (!hasPairingConfig(current)) {
+      setOverlayConnectionState('not_paired', reason);
+      return;
+    }
+
+    if (reason === 'io client disconnect') {
+      setOverlayConnectionState('disconnected', reason);
+      return;
+    }
+
+    setOverlayConnectionState('reconnecting', reason);
   });
 
   overlaySocket.on('connect_error', (error) => {
     console.error('Overlay socket connection failed:', error?.message || error);
+    setOverlayConnectionState('error', error?.message || 'connect_error');
   });
+
+  if (overlaySocket.io) {
+    overlaySocket.io.on('reconnect_attempt', () => {
+      setOverlayConnectionState('reconnecting');
+    });
+  }
 }
 
 async function setEnabledAsync(enabled) {
   saveConfig({ enabled });
 
   if (!enabled) {
-    disconnectOverlaySocket();
+    disconnectOverlaySocket({ nextState: 'disabled' });
     destroyOverlayWindow();
-    updateTrayMenu();
     return;
   }
 
   if (!hasPairingConfig()) {
+    setOverlayConnectionState('not_paired');
     createPairingWindow();
-    updateTrayMenu();
     return;
   }
 
   createOverlayWindow();
   connectOverlaySocket();
-  updateTrayMenu();
 }
 
 function changeVolume(level) {
@@ -450,16 +515,15 @@ function resetPairing() {
     clientToken: null,
     guildId: null,
     clientId: null,
+    deviceName: null,
   });
 
-  disconnectOverlaySocket();
+  disconnectOverlaySocket({ nextState: 'not_paired' });
   destroyOverlayWindow();
 
   if (loadConfig().enabled) {
     createPairingWindow();
   }
-
-  updateTrayMenu();
 }
 
 function updateTrayMenu() {
@@ -469,8 +533,23 @@ function updateTrayMenu() {
 
   const cfg = loadConfig();
   const displays = screen.getAllDisplays();
+  const suffix = cfg.deviceName ? ` (${cfg.deviceName})` : '';
+  tray.setToolTip(`Overlay ${getConnectionStateLabel()}${suffix}`);
 
   const template = [
+    {
+      label: `Statut connexion: ${getConnectionStateLabel()}`,
+      enabled: false,
+    },
+    ...(overlayConnectionReason
+      ? [
+          {
+            label: `Raison: ${overlayConnectionReason}`,
+            enabled: false,
+          },
+        ]
+      : []),
+    { type: 'separator' },
     {
       label: 'Overlay activé',
       type: 'checkbox',
@@ -545,7 +624,6 @@ function updateTrayMenu() {
 function createTray() {
   const icon = nativeImage.createFromPath(path.join(__dirname, 'icon.png'));
   tray = new Tray(icon);
-  tray.setToolTip('Overlay Audio/Video');
 
   updateTrayMenu();
 
@@ -648,6 +726,7 @@ ipcMain.handle('pairing:consume', async (_event, payload) => {
     clientToken: parsed.clientToken,
     clientId: parsed.clientId,
     guildId: parsed.guildId,
+    deviceName,
   });
 
   if (loadConfig().enabled) {
@@ -668,6 +747,14 @@ app.whenReady().then(async () => {
   registerShortcuts();
 
   const cfg = loadConfig();
+
+  if (!cfg.enabled) {
+    setOverlayConnectionState('disabled');
+  } else if (!hasPairingConfig(cfg)) {
+    setOverlayConnectionState('not_paired');
+  } else {
+    setOverlayConnectionState('connecting');
+  }
 
   if (cfg.enabled) {
     if (hasPairingConfig(cfg)) {

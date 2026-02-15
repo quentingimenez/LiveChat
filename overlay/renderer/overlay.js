@@ -15,7 +15,12 @@
 
   let resetTimer = null;
   let countdownTimer = null;
-  let countdownDeadlineMs = null;
+  let countdownRemainingMs = null;
+  let countdownLastTickAtMs = null;
+  let countdownPaused = false;
+  let countdownAutoClear = false;
+  let playbackSyncTimer = null;
+  let activePlayback = null;
   let activeObjectUrl = null;
   let twitterWidgetsPromise = null;
 
@@ -33,6 +38,13 @@
     }
   };
 
+  const clearPlaybackSyncTimer = () => {
+    if (playbackSyncTimer) {
+      clearInterval(playbackSyncTimer);
+      playbackSyncTimer = null;
+    }
+  };
+
   const formatRemainingTime = (remainingMs) => {
     const remainingSec = Math.max(0, Math.ceil(remainingMs / 1000));
     const minutes = Math.floor(remainingSec / 60);
@@ -40,36 +52,148 @@
     return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   };
 
-  const renderCountdown = () => {
-    if (!countdownLayer || typeof countdownDeadlineMs !== 'number') {
+  const getRemainingCountdownMs = () => {
+    if (typeof countdownRemainingMs !== 'number' || !Number.isFinite(countdownRemainingMs)) {
+      return null;
+    }
+
+    return Math.max(0, Math.round(countdownRemainingMs));
+  };
+
+  const emitPlaybackState = (state) => {
+    if (!activePlayback || !window.livechatOverlay?.reportPlaybackState) {
       return;
     }
 
-    const remainingMs = countdownDeadlineMs - Date.now();
+    window.livechatOverlay.reportPlaybackState({
+      jobId: activePlayback.jobId,
+      state,
+      remainingMs: getRemainingCountdownMs(),
+    });
+  };
+
+  const setPlaybackState = (state) => {
+    if (!activePlayback) {
+      return;
+    }
+
+    if (activePlayback.state !== state) {
+      activePlayback.state = state;
+    }
+
+    emitPlaybackState(activePlayback.state);
+  };
+
+  const startPlaybackSession = (jobId) => {
+    if (typeof jobId !== 'string' || !jobId.trim()) {
+      activePlayback = null;
+      clearPlaybackSyncTimer();
+      return;
+    }
+
+    activePlayback = {
+      jobId: jobId.trim(),
+      state: 'playing',
+    };
+
+    emitPlaybackState('playing');
+    clearPlaybackSyncTimer();
+    playbackSyncTimer = setInterval(() => {
+      if (!activePlayback) {
+        return;
+      }
+
+      emitPlaybackState(activePlayback.state);
+    }, 1000);
+  };
+
+  const endPlaybackSession = () => {
+    if (!activePlayback) {
+      return;
+    }
+
+    emitPlaybackState('ended');
+    activePlayback = null;
+    clearPlaybackSyncTimer();
+  };
+
+  const renderCountdown = () => {
+    if (!countdownLayer) {
+      return;
+    }
+
+    const remainingMs = getRemainingCountdownMs();
+    if (remainingMs === null) {
+      countdownLayer.textContent = '';
+      countdownLayer.style.display = 'none';
+      return;
+    }
+
     const remainingDisplay = formatRemainingTime(remainingMs);
 
     countdownLayer.textContent = remainingDisplay;
     countdownLayer.style.display = 'flex';
+  };
 
-    if (remainingMs <= 0) {
+  const updateCountdown = () => {
+    if (typeof countdownRemainingMs !== 'number' || !Number.isFinite(countdownRemainingMs)) {
+      return;
+    }
+
+    const nowMs = Date.now();
+    if (!countdownPaused && typeof countdownLastTickAtMs === 'number') {
+      const elapsedMs = Math.max(0, nowMs - countdownLastTickAtMs);
+      countdownRemainingMs = Math.max(0, countdownRemainingMs - elapsedMs);
+    }
+    countdownLastTickAtMs = nowMs;
+    renderCountdown();
+
+    if (countdownRemainingMs <= 0) {
       clearCountdownTimer();
+      if (countdownAutoClear) {
+        clearOverlay();
+      }
     }
   };
 
-  const startCountdown = (durationSec) => {
+  const startCountdown = (durationSec, options = {}) => {
     if (!countdownLayer || typeof durationSec !== 'number' || !Number.isFinite(durationSec) || durationSec <= 0) {
       return;
     }
 
     clearCountdownTimer();
-    countdownDeadlineMs = Date.now() + durationSec * 1000;
+    countdownRemainingMs = durationSec * 1000;
+    countdownLastTickAtMs = Date.now();
+    countdownPaused = false;
+    countdownAutoClear = options.autoClear === true;
     renderCountdown();
-    countdownTimer = setInterval(renderCountdown, 200);
+    countdownTimer = setInterval(updateCountdown, 200);
+  };
+
+  const pauseCountdown = () => {
+    if (typeof countdownRemainingMs !== 'number' || countdownPaused) {
+      return;
+    }
+
+    updateCountdown();
+    countdownPaused = true;
+  };
+
+  const resumeCountdown = () => {
+    if (typeof countdownRemainingMs !== 'number' || !countdownPaused) {
+      return;
+    }
+
+    countdownPaused = false;
+    countdownLastTickAtMs = Date.now();
   };
 
   const clearCountdown = () => {
     clearCountdownTimer();
-    countdownDeadlineMs = null;
+    countdownRemainingMs = null;
+    countdownLastTickAtMs = null;
+    countdownPaused = false;
+    countdownAutoClear = false;
     if (countdownLayer) {
       countdownLayer.textContent = '';
       countdownLayer.style.display = 'none';
@@ -84,6 +208,7 @@
   };
 
   const clearOverlay = () => {
+    endPlaybackSession();
     clearTimer();
     clearCountdown();
     releaseObjectUrl();
@@ -593,10 +718,26 @@
     applyVolume();
 
     if (payload.media.kind !== 'image') {
+      element.addEventListener('playing', () => {
+        resumeCountdown();
+        setPlaybackState('playing');
+      });
+
+      element.addEventListener('pause', () => {
+        if (element.ended) {
+          return;
+        }
+
+        pauseCountdown();
+        setPlaybackState('paused');
+      });
+
       try {
         await element.play();
       } catch (error) {
         console.error('Autoplay failed:', error);
+        pauseCountdown();
+        setPlaybackState('paused');
       }
 
       element.addEventListener(
@@ -611,8 +752,12 @@
 
   const onPlay = async (payload) => {
     clearOverlay();
+    startPlaybackSession(payload?.jobId || null);
 
     applyOverlayInfo(payload);
+
+    const hasStandaloneMedia = !!payload?.media;
+    const shouldAutoClearByTimer = !hasStandaloneMedia || payload.media.kind === 'image';
 
     try {
       if (!renderTweetCard(payload)) {
@@ -630,10 +775,13 @@
     }
 
     if (payload?.durationSec) {
-      startCountdown(payload.durationSec);
-      resetTimer = setTimeout(() => {
-        clearOverlay();
-      }, payload.durationSec * 1000 + 100);
+      startCountdown(payload.durationSec, { autoClear: shouldAutoClearByTimer });
+
+      if (shouldAutoClearByTimer) {
+        resetTimer = setTimeout(() => {
+          clearOverlay();
+        }, payload.durationSec * 1000 + 100);
+      }
     } else {
       clearCountdown();
     }

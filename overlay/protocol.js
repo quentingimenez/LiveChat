@@ -3,6 +3,7 @@ const OVERLAY_SOCKET_EVENTS = {
   STOP: 'overlay:stop',
   HEARTBEAT: 'overlay:heartbeat',
   ERROR: 'overlay:error',
+  PLAYBACK_STATE: 'overlay:playback-state',
 };
 
 module.exports = {

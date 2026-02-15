@@ -20,5 +20,6 @@ contextBridge.exposeInMainWorld('livechatOverlay', {
   onSettings: (callback) => wrapListener('overlay:settings', callback),
   reportError: (payload) => ipcRenderer.send('overlay:error', payload),
   reportPlaybackState: (payload) => ipcRenderer.send('overlay:playback-state', payload),
+  reportPlaybackStop: (payload) => ipcRenderer.send('overlay:playback-stop', payload),
   consumePairing: (payload) => ipcRenderer.invoke('pairing:consume', payload),
 });

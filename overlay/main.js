@@ -18,6 +18,7 @@ let heartbeatInterval;
 let overlayConnectionState = 'disconnected';
 let overlayConnectionReason = '';
 let pendingPlaybackStatePayload = null;
+let pendingPlaybackStopPayload = null;
 
 const configPath = path.join(app.getPath('userData'), 'config.json');
 
@@ -471,6 +472,14 @@ function connectOverlaySocket() {
       );
       pendingPlaybackStatePayload = null;
     }
+
+    if (pendingPlaybackStopPayload) {
+      overlaySocket.emit(OVERLAY_SOCKET_EVENTS.STOP, pendingPlaybackStopPayload);
+      console.info(
+        `[OVERLAY] Flushed buffered playback-stop (jobId: ${pendingPlaybackStopPayload.jobId || 'unknown'})`,
+      );
+      pendingPlaybackStopPayload = null;
+    }
   });
 
   overlaySocket.on(OVERLAY_SOCKET_EVENTS.PLAY, (payload) => {
@@ -757,6 +766,21 @@ ipcMain.on('overlay:playback-state', (_event, payload) => {
       payload?.state || 'unknown'
     }, remainingMs: ${typeof payload?.remainingMs === 'number' ? payload.remainingMs : 'null'})`,
   );
+});
+
+ipcMain.on('overlay:playback-stop', (_event, payload) => {
+  const normalizedPayload = {
+    jobId: typeof payload?.jobId === 'string' && payload.jobId.trim() ? payload.jobId.trim() : 'unknown',
+  };
+
+  if (!overlaySocket || !overlaySocket.connected) {
+    pendingPlaybackStopPayload = normalizedPayload;
+    console.warn(`[OVERLAY] Buffered playback-stop while socket offline (jobId: ${normalizedPayload.jobId})`);
+    return;
+  }
+
+  overlaySocket.emit(OVERLAY_SOCKET_EVENTS.STOP, normalizedPayload);
+  console.info(`[OVERLAY] Forwarded playback-stop to bot (jobId: ${normalizedPayload.jobId})`);
 });
 
 ipcMain.handle('pairing:consume', async (_event, payload) => {

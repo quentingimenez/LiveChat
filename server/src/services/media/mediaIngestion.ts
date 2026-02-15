@@ -868,11 +868,11 @@ const createTikTokCarouselVideo = async (params: {
   imagePaths: string[];
   audioPath: string | null;
 }) => {
-  if (params.imagePaths.length < 2) {
+  if (params.imagePaths.length < 1) {
     throw new MediaIngestionError(
       'DOWNLOAD_FAILED',
       'Unable to build TikTok carousel',
-      `Expected at least 2 images to build carousel for ${params.sourceUrl}`,
+      `Expected at least 1 image to build carousel for ${params.sourceUrl}`,
     );
   }
 
@@ -886,6 +886,53 @@ const createTikTokCarouselVideo = async (params: {
   const targetHeight = isPortrait ? toEvenNumber(configuredMaxHeight) : landscapeHeight;
   const configuredPreset = (env.MEDIA_VIDEO_PRESET || '').trim();
   const selectedPreset = configuredPreset && configuredPreset !== 'superfast' ? configuredPreset : 'ultrafast';
+  const isSingleImage = params.imagePaths.length === 1;
+
+  if (isSingleImage) {
+    const inputArgs = ['-loop', '1', '-i', params.imagePaths[0]];
+    const filterParts = [
+      `[0:v]fps=${TIKTOK_CAROUSEL_FPS},scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[vout]`,
+    ];
+
+    if (params.audioPath) {
+      inputArgs.push('-i', params.audioPath);
+    }
+
+    const ffmpegArgs = [
+      '-y',
+      ...inputArgs,
+      '-filter_complex',
+      filterParts.join(';'),
+      '-map',
+      '[vout]',
+      '-c:v',
+      'libx264',
+      '-preset',
+      selectedPreset,
+      '-pix_fmt',
+      'yuv420p',
+      '-movflags',
+      '+faststart',
+    ];
+
+    if (params.audioPath) {
+      ffmpegArgs.push('-map', '1:a:0?', '-c:a', 'aac', '-b:a', '192k', '-shortest');
+    } else {
+      ffmpegArgs.push('-t', `${TIKTOK_CAROUSEL_IMAGE_DURATION_SEC}`, '-an');
+    }
+
+    ffmpegArgs.push(outputVideoPath);
+
+    await execFileAsync(env.FFMPEG_BINARY, ffmpegArgs, {
+      timeout: env.MEDIA_DOWNLOAD_TIMEOUT_MS,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    await ensureFileSizeWithinLimit(outputVideoPath, params.sourceUrl);
+
+    return outputVideoPath;
+  }
+
   const inputArgs: string[] = [];
   const filterParts: string[] = [];
 
@@ -1047,7 +1094,10 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
     .filter((audioUrl) => audioUrl.startsWith('http://') || audioUrl.startsWith('https://'))
     .slice(0, 5);
 
-  if (resolvedPhotoSlides.length > 1) {
+  const shouldBuildPhotoModeVideo =
+    resolvedPhotoSlides.length > 1 || (resolvedPhotoSlides.length === 1 && resolvedAudioCandidates.length > 0);
+
+  if (shouldBuildPhotoModeVideo) {
     try {
       const downloadedSlides = await downloadTikTokCarouselSlides({
         sourceUrl,
@@ -1073,7 +1123,7 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
               code: normalizedAudioError.code,
               message: normalizedAudioError.message,
             },
-            '[MEDIA] TikTok carousel audio download failed, continuing without audio',
+            '[MEDIA] TikTok photo mode audio download failed, continuing without audio',
           );
         }
       }
@@ -1091,7 +1141,7 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
           slideCount: downloadedSlides.length,
           hasAudio: !!downloadedAudioPath,
         },
-        '[MEDIA] TikTok carousel converted to slideshow video',
+        '[MEDIA] TikTok photo mode converted to slideshow video',
       );
 
       return carouselVideoPath;
@@ -1105,7 +1155,7 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
           code: normalized.code,
           message: normalized.message,
         },
-        '[MEDIA] TikTok carousel conversion failed, fallback to single media candidate',
+        '[MEDIA] TikTok photo mode conversion failed, fallback to single media candidate',
       );
     }
   }

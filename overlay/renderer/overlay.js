@@ -20,7 +20,6 @@
   let countdownPaused = false;
   let countdownAutoClear = false;
   let playbackSyncTimer = null;
-  let playbackHardStopTimer = null;
   let activePlayback = null;
   let activeObjectUrl = null;
   let twitterWidgetsPromise = null;
@@ -43,13 +42,6 @@
     if (playbackSyncTimer) {
       clearInterval(playbackSyncTimer);
       playbackSyncTimer = null;
-    }
-  };
-
-  const clearPlaybackHardStopTimer = () => {
-    if (playbackHardStopTimer) {
-      clearTimeout(playbackHardStopTimer);
-      playbackHardStopTimer = null;
     }
   };
 
@@ -127,31 +119,16 @@
       return;
     }
 
+    const endedJobId = activePlayback.jobId;
     emitPlaybackState('ended');
+    if (window.livechatOverlay?.reportPlaybackStop) {
+      window.livechatOverlay.reportPlaybackStop({
+        jobId: endedJobId,
+      });
+      console.debug(`[OVERLAY] playback-stop sent (jobId: ${endedJobId})`);
+    }
     activePlayback = null;
     clearPlaybackSyncTimer();
-    clearPlaybackHardStopTimer();
-  };
-
-  const schedulePlaybackHardStop = (jobId, durationSec) => {
-    clearPlaybackHardStopTimer();
-
-    if (typeof durationSec !== 'number' || !Number.isFinite(durationSec) || durationSec <= 0) {
-      return;
-    }
-
-    const timeoutMs = Math.round(durationSec * 1000 + 3000);
-
-    playbackHardStopTimer = setTimeout(() => {
-      if (!activePlayback || activePlayback.jobId !== jobId) {
-        return;
-      }
-
-      console.warn(
-        `[OVERLAY] Hard-stop release triggered (jobId: ${jobId}, durationSec: ${durationSec}, timeoutMs: ${timeoutMs})`,
-      );
-      clearOverlay();
-    }, timeoutMs);
   };
 
   const renderCountdown = () => {
@@ -249,7 +226,6 @@
     endPlaybackSession();
     clearTimer();
     clearCountdown();
-    clearPlaybackHardStopTimer();
     releaseObjectUrl();
     mediaLayer.innerHTML = '';
     textLayer.innerHTML = '';
@@ -792,7 +768,6 @@
   const onPlay = async (payload) => {
     clearOverlay();
     startPlaybackSession(payload?.jobId || null);
-    schedulePlaybackHardStop(payload?.jobId || null, getDurationSec(payload?.durationSec));
 
     applyOverlayInfo(payload);
 

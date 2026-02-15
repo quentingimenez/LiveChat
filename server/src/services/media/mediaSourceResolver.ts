@@ -1,9 +1,13 @@
 import crypto from 'crypto';
+import fetch from 'node-fetch';
 
 export interface ResolvedMediaSource {
   sourceUrl: string;
   sourceHash: string;
 }
+
+const SHORT_URL_RESOLVE_TIMEOUT_MS = 8000;
+const TIKTOK_SHORT_HOSTS = new Set(['vm.tiktok.com', 'www.vm.tiktok.com', 'vt.tiktok.com', 'www.vt.tiktok.com']);
 
 const pickSource = (url?: string | null, media?: string | null) => {
   const candidate = (media || url || '').toString().trim();
@@ -55,6 +59,69 @@ const normalizeTikTokUrl = (url: URL): URL => {
   return normalized;
 };
 
+const isTikTokShortHost = (hostname: string): boolean => {
+  return TIKTOK_SHORT_HOSTS.has(hostname.toLowerCase());
+};
+
+const resolveUrlWithTimeout = async (rawUrl: string, method: 'HEAD' | 'GET') => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, SHORT_URL_RESOLVE_TIMEOUT_MS);
+
+  try {
+    return await fetch(rawUrl, {
+      method,
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'user-agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+      },
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
+
+const resolveShortTikTokUrl = async (rawSource: string): Promise<string> => {
+  try {
+    const parsed = new URL(rawSource);
+
+    if (!isTikTokShortHost(parsed.hostname)) {
+      return rawSource;
+    }
+
+    try {
+      const headResponse = await resolveUrlWithTimeout(rawSource, 'HEAD');
+      if (headResponse.url) {
+        try {
+          // @ts-ignore Node stream compatibility
+          headResponse.body?.destroy?.();
+        } catch {
+          // ignore cleanup failure
+        }
+        return headResponse.url;
+      }
+    } catch {
+      // Some origins reject HEAD; fallback to GET
+    }
+
+    const getResponse = await resolveUrlWithTimeout(rawSource, 'GET');
+    const resolved = getResponse.url || rawSource;
+    try {
+      // @ts-ignore Node stream compatibility
+      getResponse.body?.destroy?.();
+    } catch {
+      // ignore cleanup failure
+    }
+
+    return resolved;
+  } catch {
+    return rawSource;
+  }
+};
+
 export const canonicalizeSourceUrl = (rawSource: string): string => {
   const source = rawSource.trim();
 
@@ -89,17 +156,18 @@ export const buildSourceHash = (source: string): string => {
   return crypto.createHash('sha256').update(source).digest('hex');
 };
 
-export const resolveMediaSource = (params: {
+export const resolveMediaSource = async (params: {
   url?: string | null;
   media?: string | null;
-}): ResolvedMediaSource | null => {
+}): Promise<ResolvedMediaSource | null> => {
   const sourceUrl = pickSource(params.url, params.media);
 
   if (!sourceUrl) {
     return null;
   }
 
-  const canonicalSource = canonicalizeSourceUrl(sourceUrl);
+  const redirectedSource = await resolveShortTikTokUrl(sourceUrl);
+  const canonicalSource = canonicalizeSourceUrl(redirectedSource);
 
   return {
     sourceUrl: canonicalSource,

@@ -9,12 +9,15 @@ interface CreatePlaybackJobParams {
   authorImage?: string | null;
   showText?: boolean;
   durationSec?: number | null;
+  source?: string;
 }
 
 export const createPlaybackJob = async (params: CreatePlaybackJobParams) => {
-  const durationSec = await getDurationFromGuildId(params.durationSec ?? params.mediaAsset?.durationSec, params.guildId);
-
-  return prisma.playbackJob.create({
+  const durationSec = await getDurationFromGuildId(
+    params.durationSec ?? params.mediaAsset?.durationSec,
+    params.guildId,
+  );
+  const job = await prisma.playbackJob.create({
     data: {
       guildId: params.guildId,
       mediaAssetId: params.mediaAsset?.id,
@@ -27,4 +30,19 @@ export const createPlaybackJob = async (params: CreatePlaybackJobParams) => {
       scheduledAt: new Date(),
     },
   });
+
+  logger.info(
+    {
+      source: params.source || 'unknown',
+      guildId: params.guildId,
+      jobId: job.id,
+      hasMedia: !!params.mediaAsset,
+      hasText: !!params.text,
+      showText: params.showText ?? !!params.text,
+      durationSec: job.durationSec,
+    },
+    '[PLAYBACK] Job created',
+  );
+
+  return job;
 };

@@ -29,10 +29,7 @@ export const talkCommand = () => ({
 
     try {
       filePath = await promisedGtts(voice, rosetty.getCurrentLang());
-      const sourceHash = crypto
-        .createHash('sha1')
-        .update(`${rosetty.getCurrentLang()}:${voice}`)
-        .digest('hex');
+      const sourceHash = crypto.createHash('sha1').update(`${rosetty.getCurrentLang()}:${voice}`).digest('hex');
 
       const mediaAsset = await ingestMediaFromLocalFile(filePath, `gtts:${rosetty.getCurrentLang()}:${sourceHash}`);
 
@@ -43,6 +40,7 @@ export const talkCommand = () => ({
         showText: !!text,
         authorName: interaction.user.username,
         authorImage: interaction.user.avatarURL(),
+        source: 'discord_talk_command',
       });
 
       await interaction.editReply({
@@ -66,12 +64,7 @@ export const talkCommand = () => ({
         : getLocalizedMediaErrorMessage(toMediaIngestionError(error, 'TRANSCODE_FAILED'));
 
       await interaction.editReply({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle(rosetty.t('error')!)
-            .setDescription(message)
-            .setColor(0xe74c3c),
-        ],
+        embeds: [new EmbedBuilder().setTitle(rosetty.t('error')!).setDescription(message).setColor(0xe74c3c)],
       });
     } finally {
       if (filePath) {

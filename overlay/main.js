@@ -17,6 +17,7 @@ let keepOnTopInterval;
 let heartbeatInterval;
 let overlayConnectionState = 'disconnected';
 let overlayConnectionReason = '';
+let pendingPlaybackStatePayload = null;
 
 const configPath = path.join(app.getPath('userData'), 'config.json');
 
@@ -460,6 +461,16 @@ function connectOverlaySocket() {
       guildId: cfg.guildId || 'unknown-guild',
       appVersion: app.getVersion(),
     });
+
+    if (pendingPlaybackStatePayload) {
+      overlaySocket.emit(OVERLAY_SOCKET_EVENTS.PLAYBACK_STATE, pendingPlaybackStatePayload);
+      console.info(
+        `[OVERLAY] Flushed buffered playback-state (jobId: ${
+          pendingPlaybackStatePayload.jobId || 'unknown'
+        }, state: ${pendingPlaybackStatePayload.state || 'unknown'})`,
+      );
+      pendingPlaybackStatePayload = null;
+    }
   });
 
   overlaySocket.on(OVERLAY_SOCKET_EVENTS.PLAY, (payload) => {
@@ -731,10 +742,21 @@ ipcMain.on('overlay:error', (_event, payload) => {
 
 ipcMain.on('overlay:playback-state', (_event, payload) => {
   if (!overlaySocket || !overlaySocket.connected) {
+    pendingPlaybackStatePayload = payload || null;
+    console.warn(
+      `[OVERLAY] Buffered playback-state while socket offline (jobId: ${
+        payload?.jobId || 'unknown'
+      }, state: ${payload?.state || 'unknown'})`,
+    );
     return;
   }
 
   overlaySocket.emit(OVERLAY_SOCKET_EVENTS.PLAYBACK_STATE, payload);
+  console.info(
+    `[OVERLAY] Forwarded playback-state to bot (jobId: ${payload?.jobId || 'unknown'}, state: ${
+      payload?.state || 'unknown'
+    }, remainingMs: ${typeof payload?.remainingMs === 'number' ? payload.remainingMs : 'null'})`,
+  );
 });
 
 ipcMain.handle('pairing:consume', async (_event, payload) => {

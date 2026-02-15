@@ -43,6 +43,52 @@ const CONNECTION_STATE_LABELS = {
   error: 'Erreur',
 };
 
+const VOLUME_PRESETS = Object.freeze([
+  { label: 'Muet (0%)', value: 0 },
+  { label: '10%', value: 0.1 },
+  { label: '15%', value: 0.15 },
+  { label: '20%', value: 0.2 },
+  { label: '25%', value: 0.25 },
+  { label: '35%', value: 0.35 },
+  { label: '50%', value: 0.5 },
+  { label: '65%', value: 0.65 },
+  { label: '75%', value: 0.75 },
+  { label: '85%', value: 0.85 },
+  { label: '100%', value: 1 },
+]);
+
+function normalizeVolume(volume) {
+  if (typeof volume !== 'number' || !Number.isFinite(volume)) {
+    return defaultConfig.volume;
+  }
+
+  return Math.min(1, Math.max(0, volume));
+}
+
+function getClosestVolumePreset(volume) {
+  const normalizedVolume = normalizeVolume(volume);
+  let selectedPreset = VOLUME_PRESETS[0];
+
+  for (const preset of VOLUME_PRESETS) {
+    if (Math.abs(preset.value - normalizedVolume) < Math.abs(selectedPreset.value - normalizedVolume)) {
+      selectedPreset = preset;
+    }
+  }
+
+  return selectedPreset;
+}
+
+function buildVolumeMenuItems(currentVolume) {
+  const selectedPreset = getClosestVolumePreset(currentVolume);
+
+  return VOLUME_PRESETS.map((preset) => ({
+    label: preset.label,
+    type: 'radio',
+    checked: preset.value === selectedPreset.value,
+    click: () => changeVolume(preset.value),
+  }));
+}
+
 function loadConfig() {
   try {
     if (!fs.existsSync(configPath)) {
@@ -54,6 +100,7 @@ function loadConfig() {
     return {
       ...defaultConfig,
       ...parsed,
+      volume: normalizeVolume(parsed.volume),
     };
   } catch (error) {
     console.error('Unable to read config:', error);
@@ -68,8 +115,13 @@ function saveConfig(nextValues) {
       ...nextValues,
     };
 
-    fs.writeFileSync(configPath, JSON.stringify(merged, null, 2));
-    return merged;
+    const normalizedMerged = {
+      ...merged,
+      volume: normalizeVolume(merged.volume),
+    };
+
+    fs.writeFileSync(configPath, JSON.stringify(normalizedMerged, null, 2));
+    return normalizedMerged;
   } catch (error) {
     console.error('Unable to save config:', error);
     return loadConfig();
@@ -480,7 +532,7 @@ async function setEnabledAsync(enabled) {
 }
 
 function changeVolume(level) {
-  saveConfig({ volume: level });
+  saveConfig({ volume: normalizeVolume(level) });
   sendOverlaySettingsToRenderer();
   updateTrayMenu();
 }
@@ -591,13 +643,7 @@ function updateTrayMenu() {
 
   template.push({
     label: 'Volume Audio',
-    submenu: [
-      { label: 'Muet (0%)', type: 'radio', checked: cfg.volume === 0, click: () => changeVolume(0) },
-      { label: '25%', type: 'radio', checked: cfg.volume === 0.25, click: () => changeVolume(0.25) },
-      { label: '50%', type: 'radio', checked: cfg.volume === 0.5, click: () => changeVolume(0.5) },
-      { label: '75%', type: 'radio', checked: cfg.volume === 0.75, click: () => changeVolume(0.75) },
-      { label: '100%', type: 'radio', checked: cfg.volume === 1, click: () => changeVolume(1) },
-    ],
+    submenu: buildVolumeMenuItems(cfg.volume),
   });
 
   template.push({ type: 'separator' });

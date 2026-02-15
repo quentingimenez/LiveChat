@@ -1261,11 +1261,49 @@ const downloadWithHttp = async (sourceUrl: string, tmpDir: string): Promise<stri
   });
 };
 
+const hasAudioStream = async (filePath: string): Promise<boolean | null> => {
+  try {
+    const { stdout } = await execFileAsync(
+      env.FFPROBE_BINARY,
+      ['-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'json', filePath],
+      {
+        timeout: env.MEDIA_DOWNLOAD_TIMEOUT_MS,
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    );
+
+    const parsed = JSON.parse(stdout || '{}');
+    const streams = Array.isArray(parsed?.streams) ? parsed.streams : [];
+
+    return streams.some((stream: { codec_type?: unknown }) => stream?.codec_type === 'audio');
+  } catch {
+    return null;
+  }
+};
+
 const downloadSourceToTempFile = async (sourceUrl: string, tmpDir: string): Promise<string> => {
   let ytdlpError: unknown = null;
+  let ytdlpDownloadedPath: string | null = null;
 
   try {
-    return await downloadWithYtDlp(sourceUrl, tmpDir);
+    ytdlpDownloadedPath = await downloadWithYtDlp(sourceUrl, tmpDir);
+
+    if (!isTikTokUrl(sourceUrl)) {
+      return ytdlpDownloadedPath;
+    }
+
+    const ytdlpHasAudio = await hasAudioStream(ytdlpDownloadedPath);
+
+    if (ytdlpHasAudio !== false) {
+      return ytdlpDownloadedPath;
+    }
+
+    logger.warn(
+      {
+        sourceUrl: sanitizeUrlForLog(sourceUrl),
+      },
+      '[MEDIA] yt-dlp TikTok download has no audio, trying extraction fallback',
+    );
   } catch (error) {
     ytdlpError = error;
     const normalized = toMediaIngestionError(error);
@@ -1284,7 +1322,20 @@ const downloadSourceToTempFile = async (sourceUrl: string, tmpDir: string): Prom
 
   if (isTikTokUrl(sourceUrl)) {
     try {
-      return await downloadTikTokWithPageExtraction(sourceUrl, tmpDir);
+      const tiktokDownloadedPath = await downloadTikTokWithPageExtraction(sourceUrl, tmpDir);
+      const tiktokHasAudio = await hasAudioStream(tiktokDownloadedPath);
+
+      if (tiktokHasAudio === false && ytdlpDownloadedPath) {
+        logger.warn(
+          {
+            sourceUrl: sanitizeUrlForLog(sourceUrl),
+          },
+          '[MEDIA] TikTok extraction fallback also has no audio, keeping yt-dlp output',
+        );
+        return ytdlpDownloadedPath;
+      }
+
+      return tiktokDownloadedPath;
     } catch (tiktokError) {
       const normalizedTikTokError = toMediaIngestionError(tiktokError);
       if (normalizedTikTokError.code === 'FILE_TOO_LARGE') {
@@ -1299,6 +1350,10 @@ const downloadSourceToTempFile = async (sourceUrl: string, tmpDir: string): Prom
         '[MEDIA] TikTok extraction fallback',
       );
     }
+  }
+
+  if (ytdlpDownloadedPath) {
+    return ytdlpDownloadedPath;
   }
 
   try {
@@ -1410,6 +1465,7 @@ const ingestFromSourceUrlInternal = async (sourceUrl: string, sourceHash: string
   const cached = await getReadyCachedMediaAsset(sourceHash);
 
   if (cached) {
+    logger.info(`[MEDIA] Cache hit ${sourceHash.slice(0, 8)} (${sanitizeUrlForLog(sourceUrl)})`);
     return touchMediaAsset(cached.id);
   }
 

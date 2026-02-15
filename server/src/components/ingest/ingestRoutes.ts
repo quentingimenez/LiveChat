@@ -139,7 +139,8 @@ export const IngestRoutes = () =>
             hasMedia: !!mediaAsset,
             hasText: !!text,
             showText: showText ?? !!text,
-            durationSec: durationSec ?? null,
+            requestedDurationSec: durationSec ?? null,
+            resolvedDurationSec: job.durationSec,
           },
           '[INGEST] Job accepted',
         );

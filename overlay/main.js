@@ -543,6 +543,16 @@ function toggleShowText(checked) {
   updateTrayMenu();
 }
 
+function emitManualStopSignal() {
+  if (!overlaySocket || !overlaySocket.connected) {
+    return;
+  }
+
+  overlaySocket.emit(OVERLAY_SOCKET_EVENTS.STOP, {
+    jobId: 'manual-stop',
+  });
+}
+
 function moveOverlayToDisplay(display, index) {
   saveConfig({
     displayId: display.id,
@@ -651,7 +661,12 @@ function updateTrayMenu() {
   template.push({
     label: 'Recharger (Shift+Echap)',
     enabled: cfg.enabled && !!overlayWindow && !overlayWindow.isDestroyed(),
-    click: () => overlayWindow && overlayWindow.reload(),
+    click: () => {
+      if (overlayWindow && !overlayWindow.isDestroyed()) {
+        emitManualStopSignal();
+        overlayWindow.reload();
+      }
+    },
   });
 
   template.push({
@@ -683,6 +698,7 @@ function registerShortcuts() {
     const cfg = loadConfig();
 
     if (cfg.enabled && overlayWindow && !overlayWindow.isDestroyed()) {
+      emitManualStopSignal();
       overlayWindow.reload();
     }
   });

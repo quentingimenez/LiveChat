@@ -1,9 +1,11 @@
+import { addMilliseconds } from 'date-fns';
 import { hashOverlayToken } from '../services/overlayAuth';
 import { PlaybackJobStatus } from '../services/prisma/prismaEnums';
 import {
   OVERLAY_SOCKET_EVENTS,
   type OverlayErrorPayload,
   type OverlayHeartbeatPayload,
+  type OverlayPlaybackStatePayload,
   type OverlayStopPayload,
 } from '@livechat/overlay-protocol';
 
@@ -110,6 +112,78 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
           payload?.jobId
         }: ${payload?.code} ${payload?.message}`,
       );
+    });
+
+    socket.on(OVERLAY_SOCKET_EVENTS.PLAYBACK_STATE, async (payload: OverlayPlaybackStatePayload) => {
+      const playbackJobId = typeof payload?.jobId === 'string' && payload.jobId.trim() ? payload.jobId.trim() : null;
+      const playbackState =
+        payload?.state === 'paused' || payload?.state === 'ended' || payload?.state === 'playing'
+          ? payload.state
+          : 'playing';
+      const remainingMs =
+        typeof payload?.remainingMs === 'number' && Number.isFinite(payload.remainingMs)
+          ? Math.max(0, Math.min(payload.remainingMs, 24 * 60 * 60 * 1000))
+          : null;
+
+      if (playbackState === 'ended') {
+        await prisma.guild.upsert({
+          where: {
+            id: guildId,
+          },
+          create: {
+            id: guildId,
+            busyUntil: null,
+          },
+          update: {
+            busyUntil: null,
+          },
+        });
+
+        const where = playbackJobId
+          ? {
+              guildId,
+              id: playbackJobId,
+              status: PlaybackJobStatus.PLAYING,
+              finishedAt: null,
+            }
+          : {
+              guildId,
+              status: PlaybackJobStatus.PLAYING,
+              finishedAt: null,
+            };
+
+        const releasedJobs = await prisma.playbackJob.updateMany({
+          where,
+          data: {
+            status: PlaybackJobStatus.DONE,
+            finishedAt: new Date(),
+          },
+        });
+
+        logger.info(
+          `[OVERLAY] Playback ended from ${socket.data.overlayClientLabel || 'unknown-device'} (${socket.data.overlayClientId}, guild: ${guildId}, jobId: ${
+            playbackJobId || 'unknown'
+          }, releasedJobs: ${releasedJobs.count})`,
+        );
+        return;
+      }
+
+      if (remainingMs !== null && remainingMs > 0) {
+        const busyUntil = addMilliseconds(new Date(), remainingMs + 250);
+
+        await prisma.guild.upsert({
+          where: {
+            id: guildId,
+          },
+          create: {
+            id: guildId,
+            busyUntil,
+          },
+          update: {
+            busyUntil,
+          },
+        });
+      }
     });
 
     socket.on(OVERLAY_SOCKET_EVENTS.STOP, async (payload: OverlayStopPayload) => {

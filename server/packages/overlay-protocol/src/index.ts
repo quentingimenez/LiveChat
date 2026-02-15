@@ -5,6 +5,7 @@ export const OVERLAY_SOCKET_EVENTS = {
   STOP: 'overlay:stop',
   HEARTBEAT: 'overlay:heartbeat',
   ERROR: 'overlay:error',
+  PLAYBACK_STATE: 'overlay:playback-state',
 } as const;
 
 export type OverlaySocketEventName = (typeof OVERLAY_SOCKET_EVENTS)[keyof typeof OVERLAY_SOCKET_EVENTS];
@@ -56,6 +57,12 @@ export interface OverlayErrorPayload {
   jobId: string;
   code: string;
   message: string;
+}
+
+export interface OverlayPlaybackStatePayload {
+  jobId: string;
+  state: 'playing' | 'paused' | 'ended';
+  remainingMs: number | null;
 }
 
 export interface OverlayPairConsumeRequest {

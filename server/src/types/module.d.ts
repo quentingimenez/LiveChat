@@ -18,6 +18,7 @@ import { RosettyI18n } from '../services/i18n/loader';
 import type {
   OverlayErrorPayload,
   OverlayHeartbeatPayload,
+  OverlayPlaybackStatePayload,
   OverlayPlayPayload,
   OverlayStopPayload,
 } from '@livechat/overlay-protocol';
@@ -36,6 +37,7 @@ declare global {
   interface ClientToServerEvents {
     'overlay:heartbeat': (payload: OverlayHeartbeatPayload) => void;
     'overlay:error': (payload: OverlayErrorPayload) => void;
+    'overlay:playback-state': (payload: OverlayPlaybackStatePayload) => void;
   }
 
   interface ServerToClientEvents {

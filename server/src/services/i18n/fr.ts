@@ -96,6 +96,11 @@ export const frLang: typeof enLang = {
   setDisplayMediaFullCommandOptionTextDescription: 'Oui / Non',
   setDisplayMediaFullCommandAnswer: 'Valeur définie !',
 
+  overlaysCommand: 'overlays',
+  overlaysCommandDescription: 'Lister les overlays actuellement connectés',
+  overlaysCommandAnswerTitle: 'Overlays connectés ({{count}})',
+  overlaysCommandAnswerEmpty: "Aucun overlay n'est actuellement connecté sur ce serveur.",
+
   stopCommand: 'stop',
   stopCommandDescription: 'Interrompre la lecture en cours',
   stopCommandAnswer: 'Lecture interrompue !',

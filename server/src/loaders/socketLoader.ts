@@ -202,19 +202,6 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
     socket.on(OVERLAY_SOCKET_EVENTS.STOP, async (payload: OverlayStopPayload) => {
       const stopJobId = typeof payload?.jobId === 'string' && payload.jobId.trim() ? payload.jobId.trim() : 'unknown';
 
-      await prisma.guild.upsert({
-        where: {
-          id: guildId,
-        },
-        create: {
-          id: guildId,
-          busyUntil: null,
-        },
-        update: {
-          busyUntil: null,
-        },
-      });
-
       const shouldTargetSingleJob = stopJobId !== 'unknown' && stopJobId !== 'manual-stop';
       const where = shouldTargetSingleJob
         ? {
@@ -236,6 +223,23 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
           finishedAt: new Date(),
         },
       });
+
+      const shouldClearBusyLock = !shouldTargetSingleJob || releasedJobs.count > 0;
+
+      if (shouldClearBusyLock) {
+        await prisma.guild.upsert({
+          where: {
+            id: guildId,
+          },
+          create: {
+            id: guildId,
+            busyUntil: null,
+          },
+          update: {
+            busyUntil: null,
+          },
+        });
+      }
 
       logger.info(
         `[OVERLAY] Stop received from ${socket.data.overlayClientLabel || 'unknown-device'} (${

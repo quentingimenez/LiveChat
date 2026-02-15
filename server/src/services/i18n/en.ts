@@ -33,6 +33,8 @@ export const enLang = {
   sendCommandOptionTextDescription: 'Text to display',
   sendCommandOptionMedia: 'media',
   sendCommandOptionMediaDescription: 'Media to display',
+  sendCommandOptionForceRefresh: 'refresh',
+  sendCommandOptionForceRefreshDescription: 'Bypass media cache and re-download/re-transcode this source',
   sendCommandAnswer: 'Content received! It will be played soon!',
   sendCommandMissingContent: 'Please provide at least text, media, or link.',
   sendCommandMediaError: 'The media could not be downloaded or normalized.',
@@ -55,6 +57,8 @@ export const enLang = {
   hideSendCommandOptionTextDescription: 'Text to display',
   hideSendCommandOptionMedia: 'media',
   hideSendCommandOptionMediaDescription: 'Media to display',
+  hideSendCommandOptionForceRefresh: 'refresh',
+  hideSendCommandOptionForceRefreshDescription: 'Bypass media cache and re-download/re-transcode this source',
   hideSendCommandAnswer: 'Content received! It will be played soon!',
 
   talkCommand: 'talk',

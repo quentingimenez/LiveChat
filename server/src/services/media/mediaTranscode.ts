@@ -4,6 +4,7 @@ import { copyFile, rm, stat } from 'fs/promises';
 import path from 'path';
 import mime from 'mime-types';
 import { fileTypeFromFile } from 'file-type';
+import { MediaIngestionError } from './mediaErrors';
 import type { OverlayMediaKind } from '@livechat/overlay-protocol';
 
 const execFileAsync = promisify(execFile);
@@ -263,6 +264,22 @@ const finalizeFile = async (
   const fileStats = await stat(storagePath);
   const metadata = await probeMedia(storagePath).catch(() => ({ durationSec: null, width: null, height: null }));
 
+  if (fileStats.size <= 1024) {
+    throw new MediaIngestionError(
+      'INVALID_MEDIA',
+      'Normalized media output is empty',
+      `Normalized file is too small (${fileStats.size} bytes): ${storagePath}`,
+    );
+  }
+
+  if (kind !== 'image' && metadata.durationSec !== null && metadata.durationSec <= 0) {
+    throw new MediaIngestionError(
+      'INVALID_MEDIA',
+      'Normalized media has invalid duration',
+      `Normalized media duration is ${metadata.durationSec} seconds: ${storagePath}`,
+    );
+  }
+
   return {
     kind,
     mime: mimeType,
@@ -431,7 +448,17 @@ const normalizeVideo = async (inputPath: string, outputBasePath: string): Promis
 
 export const normalizeDownloadedMedia = async (inputPath: string, outputBasePath: string): Promise<NormalizedMedia> => {
   const mimeType = await detectMime(inputPath);
-  const kind = deriveKindFromMime(mimeType);
+  let kind = deriveKindFromMime(mimeType);
+
+  if (kind === 'video') {
+    const details = await probeMediaDetails(inputPath).catch(() => null);
+    const isAudioOnlyContainer = !!details && !details.videoCodec && !!details.audioCodec;
+
+    if (isAudioOnlyContainer) {
+      logger.warn('[MEDIA] Input media is audio-only inside a video container, normalizing as audio');
+      kind = 'audio';
+    }
+  }
 
   if (kind === 'image') {
     return normalizeImage(inputPath, outputBasePath, mimeType);

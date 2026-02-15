@@ -20,6 +20,7 @@
   let countdownPaused = false;
   let countdownAutoClear = false;
   let playbackSyncTimer = null;
+  let activePlayableElement = null;
   let activePlayback = null;
   let activeObjectUrl = null;
   let twitterWidgetsPromise = null;
@@ -79,6 +80,22 @@
     );
   };
 
+  const getDerivedPlaybackState = () => {
+    if (!activePlayback) {
+      return null;
+    }
+
+    if (countdownPaused) {
+      return 'paused';
+    }
+
+    if (activePlayableElement && typeof activePlayableElement.paused === 'boolean' && !activePlayableElement.ended) {
+      return activePlayableElement.paused ? 'paused' : 'playing';
+    }
+
+    return activePlayback.state;
+  };
+
   const setPlaybackState = (state) => {
     if (!activePlayback) {
       return;
@@ -108,6 +125,11 @@
     playbackSyncTimer = setInterval(() => {
       if (!activePlayback) {
         return;
+      }
+
+      const derivedState = getDerivedPlaybackState();
+      if (derivedState && activePlayback.state !== derivedState) {
+        activePlayback.state = derivedState;
       }
 
       emitPlaybackState(activePlayback.state);
@@ -226,6 +248,7 @@
     endPlaybackSession();
     clearTimer();
     clearCountdown();
+    activePlayableElement = null;
     releaseObjectUrl();
     mediaLayer.innerHTML = '';
     textLayer.innerHTML = '';
@@ -733,6 +756,8 @@
     applyVolume();
 
     if (payload.media.kind !== 'image') {
+      activePlayableElement = element;
+
       element.addEventListener('playing', () => {
         resumeCountdown();
         setPlaybackState('playing');

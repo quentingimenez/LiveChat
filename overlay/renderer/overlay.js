@@ -1,5 +1,6 @@
 (() => {
   const mediaLayer = document.getElementById('media-layer');
+  const countdownLayer = document.getElementById('countdown-layer');
   const textLayer = document.getElementById('text-layer');
 
   let overlayConfig = {
@@ -12,6 +13,8 @@
   };
 
   let resetTimer = null;
+  let countdownTimer = null;
+  let countdownDeadlineMs = null;
   let activeObjectUrl = null;
   let twitterWidgetsPromise = null;
 
@@ -19,6 +22,56 @@
     if (resetTimer) {
       clearTimeout(resetTimer);
       resetTimer = null;
+    }
+  };
+
+  const clearCountdownTimer = () => {
+    if (countdownTimer) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+    }
+  };
+
+  const formatRemainingTime = (remainingMs) => {
+    const remainingSec = Math.max(0, Math.ceil(remainingMs / 1000));
+    const minutes = Math.floor(remainingSec / 60);
+    const seconds = remainingSec % 60;
+    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  };
+
+  const renderCountdown = () => {
+    if (!countdownLayer || typeof countdownDeadlineMs !== 'number') {
+      return;
+    }
+
+    const remainingMs = countdownDeadlineMs - Date.now();
+    const remainingDisplay = formatRemainingTime(remainingMs);
+
+    countdownLayer.textContent = remainingDisplay;
+    countdownLayer.style.display = 'flex';
+
+    if (remainingMs <= 0) {
+      clearCountdownTimer();
+    }
+  };
+
+  const startCountdown = (durationSec) => {
+    if (!countdownLayer || typeof durationSec !== 'number' || !Number.isFinite(durationSec) || durationSec <= 0) {
+      return;
+    }
+
+    clearCountdownTimer();
+    countdownDeadlineMs = Date.now() + durationSec * 1000;
+    renderCountdown();
+    countdownTimer = setInterval(renderCountdown, 200);
+  };
+
+  const clearCountdown = () => {
+    clearCountdownTimer();
+    countdownDeadlineMs = null;
+    if (countdownLayer) {
+      countdownLayer.textContent = '';
+      countdownLayer.style.display = 'none';
     }
   };
 
@@ -31,6 +84,7 @@
 
   const clearOverlay = () => {
     clearTimer();
+    clearCountdown();
     releaseObjectUrl();
     mediaLayer.innerHTML = '';
     textLayer.innerHTML = '';
@@ -547,9 +601,12 @@
     }
 
     if (payload?.durationSec) {
+      startCountdown(payload.durationSec);
       resetTimer = setTimeout(() => {
         clearOverlay();
       }, payload.durationSec * 1000 + 100);
+    } else {
+      clearCountdown();
     }
   };
 

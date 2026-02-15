@@ -3,6 +3,12 @@ import { ingestMediaFromSource } from '../../services/media/mediaIngestion';
 import { toMediaIngestionError } from '../../services/media/mediaErrors';
 import { getBearerTokenFromRequest } from '../../services/overlayAuth';
 import { createPlaybackJob } from '../../services/playbackJobs';
+import { encodeRichOverlayPayload } from '../../services/messages/richOverlayPayload';
+import { resolveTweetCardFromUrl, resolveTweetCardFromUrlWithOptions } from '../../services/social/twitterOEmbed';
+import {
+  extractTweetStatusIdFromUrl,
+  resolveTweetVideoMediasFromUrl,
+} from '../../services/social/twitterVideoResolver';
 
 interface IngestBody {
   guildId?: unknown;
@@ -14,6 +20,24 @@ interface IngestBody {
   authorImage?: unknown;
   durationSec?: unknown;
 }
+
+const getTweetCardDurationSec = (
+  medias: Array<{
+    durationSec: number | null;
+  }>,
+) => {
+  const knownDurations = medias
+    .map((media) =>
+      typeof media.durationSec === 'number' && Number.isFinite(media.durationSec) ? media.durationSec : 0,
+    )
+    .filter((candidateDurationSec) => candidateDurationSec > 0);
+
+  if (knownDurations.length === 0) {
+    return 15;
+  }
+
+  return Math.max(1, Math.ceil(Math.max(...knownDurations)));
+};
 
 const toNonEmptyString = (value: unknown): string | null => {
   if (typeof value !== 'string') {
@@ -90,8 +114,117 @@ export const IngestRoutes = () =>
       }
 
       let mediaAsset = null;
+      let jobText = text;
+      let jobShowText = showText ?? !!text;
+      let jobAuthorName = authorName || 'iOS Shortcut';
+      let jobAuthorImage = authorImage;
+      let jobDurationSec = durationSec;
 
-      if (url || media) {
+      if (!media && url) {
+        const [tweetVideoResult, tweetCardResult] = await Promise.allSettled([
+          resolveTweetVideoMediasFromUrl(url),
+          resolveTweetCardFromUrl(url),
+        ]);
+        const tweetVideoMedias = tweetVideoResult.status === 'fulfilled' ? tweetVideoResult.value : [];
+        let tweetCard = tweetCardResult.status === 'fulfilled' ? tweetCardResult.value : null;
+
+        if (tweetVideoResult.status === 'rejected') {
+          logger.warn(
+            {
+              err: toMediaIngestionError(tweetVideoResult.reason),
+              sourceUrl: url,
+            },
+            '[MEDIA] ingest tweet video resolution failed, continuing with fallback',
+          );
+        }
+
+        if (tweetCardResult.status === 'rejected') {
+          logger.warn(
+            {
+              err: toMediaIngestionError(tweetCardResult.reason),
+              sourceUrl: url,
+            },
+            '[MEDIA] ingest tweet card resolution failed, continuing with fallback',
+          );
+        }
+
+        if (tweetCard) {
+          const tweetVideosForOverlay = tweetVideoMedias.slice(0, 2).map((video) => ({
+            url: video.url,
+            mime: video.mime,
+            isVertical: video.isVertical,
+            sourceStatusId: video.sourceStatusId,
+            durationSec: video.durationSec,
+          }));
+          const currentTweetStatusId = extractTweetStatusIdFromUrl(url);
+          const hasCurrentTweetVideo =
+            !!currentTweetStatusId &&
+            tweetVideosForOverlay.some((video) => video.sourceStatusId === currentTweetStatusId);
+          const hasOtherTweetVideo =
+            !!currentTweetStatusId &&
+            tweetVideosForOverlay.some(
+              (video) => !!video.sourceStatusId && video.sourceStatusId !== currentTweetStatusId,
+            );
+          const shouldHideCardMedia = !!currentTweetStatusId && hasCurrentTweetVideo && hasOtherTweetVideo;
+
+          if (shouldHideCardMedia) {
+            try {
+              tweetCard = (await resolveTweetCardFromUrlWithOptions(url, { hideMedia: true })) || tweetCard;
+            } catch (error) {
+              logger.warn(
+                {
+                  err: toMediaIngestionError(error),
+                  sourceUrl: url,
+                },
+                '[MEDIA] ingest tweet card hide-media resolution failed, keeping original card',
+              );
+            }
+          }
+
+          jobText = encodeRichOverlayPayload({
+            type: 'tweet',
+            tweetCard: {
+              ...tweetCard,
+              currentStatusId: currentTweetStatusId,
+              videoUrl: tweetVideosForOverlay[0]?.url || null,
+              videoMime: tweetVideosForOverlay[0]?.mime || null,
+              videoIsVertical: tweetVideosForOverlay[0]?.isVertical ?? null,
+              videos: tweetVideosForOverlay,
+            },
+            caption: text || null,
+          });
+          jobShowText = false;
+          jobAuthorName = null;
+          jobAuthorImage = null;
+          jobDurationSec = durationSec ?? getTweetCardDurationSec(tweetVideoMedias);
+        } else if (tweetVideoMedias[0]) {
+          try {
+            mediaAsset = await ingestMediaFromSource({
+              media: tweetVideoMedias[0].url,
+            });
+          } catch (error) {
+            const mediaError = toMediaIngestionError(error);
+
+            logger.error(
+              {
+                err: mediaError,
+                guildId,
+                sourceUrl: url,
+                sourceMedia: tweetVideoMedias[0].url,
+              },
+              `[MEDIA] ingest API failed (${mediaError.code})`,
+            );
+
+            return reply.code(422).send({
+              error: 'media_ingestion_failed',
+              code: mediaError.code,
+              message: mediaError.message,
+            });
+          }
+        }
+      }
+
+      if (!jobText && !mediaAsset && (url || media)) {
         try {
           mediaAsset = await ingestMediaFromSource({ url, media });
         } catch (error) {
@@ -115,7 +248,7 @@ export const IngestRoutes = () =>
         }
       }
 
-      if (!mediaAsset && !text) {
+      if (!mediaAsset && !jobText) {
         return reply.code(400).send({
           error: 'invalid_payload',
         });
@@ -125,11 +258,11 @@ export const IngestRoutes = () =>
         const job = await createPlaybackJob({
           guildId,
           mediaAsset,
-          text,
-          showText: showText ?? !!text,
-          authorName: authorName || 'iOS Shortcut',
-          authorImage,
-          durationSec,
+          text: jobText,
+          showText: jobShowText,
+          authorName: jobAuthorName,
+          authorImage: jobAuthorImage,
+          durationSec: jobDurationSec,
           source: 'ingest_api',
         });
 
@@ -138,8 +271,8 @@ export const IngestRoutes = () =>
             guildId,
             jobId: job.id,
             hasMedia: !!mediaAsset,
-            hasText: !!text,
-            showText: showText ?? !!text,
+            hasText: !!jobText,
+            showText: jobShowText,
             requestedDurationSec: durationSec ?? null,
             resolvedDurationSec: job.durationSec,
           },
@@ -151,7 +284,7 @@ export const IngestRoutes = () =>
           jobId: job.id,
           guildId,
           hasMedia: !!mediaAsset,
-          hasText: !!text,
+          hasText: !!jobText,
         });
       } catch (error) {
         logger.error(
@@ -159,7 +292,7 @@ export const IngestRoutes = () =>
             err: error,
             guildId,
             hasMedia: !!mediaAsset,
-            hasText: !!text,
+            hasText: !!jobText,
           },
           '[INGEST] Failed to create playback job',
         );

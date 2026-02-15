@@ -124,10 +124,15 @@ export const sendCommand = () => ({
           durationSec: video.durationSec,
         }));
         const currentTweetStatusId = extractTweetStatusIdFromUrl(tweetInput);
-        const shouldHideCardMedia =
-          !media &&
+        const hasCurrentTweetVideo =
           !!currentTweetStatusId &&
           tweetVideosForOverlay.some((video) => video.sourceStatusId === currentTweetStatusId);
+        const hasOtherTweetVideo =
+          !!currentTweetStatusId &&
+          tweetVideosForOverlay.some(
+            (video) => !!video.sourceStatusId && video.sourceStatusId !== currentTweetStatusId,
+          );
+        const shouldHideCardMedia = !media && !!currentTweetStatusId && hasCurrentTweetVideo && hasOtherTweetVideo;
         let tweetCardForOverlay = tweetCard;
 
         if (shouldHideCardMedia) {

@@ -45,7 +45,7 @@ Payload minimal:
 
 La normalisation loudness est activée par défaut pendant la transcode:
 - `MEDIA_AUDIO_NORMALIZE_ENABLED=true`
-- `MEDIA_AUDIO_LOUDNORM_I=-16`
+- `MEDIA_AUDIO_LOUDNORM_I=-18`
 - `MEDIA_AUDIO_LOUDNORM_LRA=11`
 - `MEDIA_AUDIO_LOUDNORM_TP=-1.5`
 

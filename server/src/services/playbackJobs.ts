@@ -16,10 +16,22 @@ interface CreatePlaybackJobParams {
 
 export const createPlaybackJob = async (params: CreatePlaybackJobParams) => {
   const startedAtMs = Date.now();
-  const durationSec = await getDurationFromGuildId(
-    params.durationSec ?? params.mediaAsset?.durationSec,
-    params.guildId,
-  );
+  const hasMedia = !!params.mediaAsset;
+  const durationCandidate =
+    params.durationSec ?? params.mediaAsset?.durationSec ?? (hasMedia ? Math.max(1, env.DEFAULT_DURATION) : null);
+
+  if (hasMedia && params.durationSec == null && params.mediaAsset?.durationSec == null) {
+    logger.warn(
+      {
+        source: params.source || 'unknown',
+        guildId: params.guildId,
+        fallbackDurationSec: Math.max(1, env.DEFAULT_DURATION),
+      },
+      '[PLAYBACK] Media duration unknown, using fallback default duration',
+    );
+  }
+
+  const durationSec = await getDurationFromGuildId(durationCandidate, params.guildId);
   const afterDurationResolveMs = Date.now();
   const job = await prisma.playbackJob.create({
     data: {
@@ -58,7 +70,7 @@ export const createPlaybackJob = async (params: CreatePlaybackJobParams) => {
       source: params.source || 'unknown',
       guildId: params.guildId,
       jobId: job.id,
-      hasMedia: !!params.mediaAsset,
+      hasMedia,
       hasText: !!params.text,
       showText: params.showText ?? !!params.text,
       durationSec: job.durationSec,

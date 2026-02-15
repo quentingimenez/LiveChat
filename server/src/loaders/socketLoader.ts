@@ -1,8 +1,10 @@
 import { hashOverlayToken } from '../services/overlayAuth';
+import { PlaybackJobStatus } from '../services/prisma/prismaEnums';
 import {
   OVERLAY_SOCKET_EVENTS,
   type OverlayErrorPayload,
   type OverlayHeartbeatPayload,
+  type OverlayStopPayload,
 } from '@livechat/overlay-protocol';
 
 const getTokenFromSocketHandshake = (socket) => {
@@ -110,11 +112,72 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
       );
     });
 
+    socket.on(OVERLAY_SOCKET_EVENTS.STOP, async (payload: OverlayStopPayload) => {
+      const stopJobId = typeof payload?.jobId === 'string' && payload.jobId.trim() ? payload.jobId.trim() : 'unknown';
+
+      await prisma.guild.upsert({
+        where: {
+          id: guildId,
+        },
+        create: {
+          id: guildId,
+          busyUntil: null,
+        },
+        update: {
+          busyUntil: null,
+        },
+      });
+
+      const releasedJobs = await prisma.playbackJob.updateMany({
+        where: {
+          guildId,
+          status: PlaybackJobStatus.PLAYING,
+          finishedAt: null,
+        },
+        data: {
+          status: PlaybackJobStatus.DONE,
+          finishedAt: new Date(),
+        },
+      });
+
+      logger.info(
+        `[OVERLAY] Stop received from ${socket.data.overlayClientLabel || 'unknown-device'} (${
+          socket.data.overlayClientId
+        }, guild: ${guildId}, jobId: ${stopJobId}, releasedJobs: ${releasedJobs.count})`,
+      );
+    });
+
     socket.on('disconnecting', () => {
       logger.info(
         `[OVERLAY] Disconnected: ${socket.data.overlayClientLabel || 'unknown-device'} (clientId: ${
           socket.data.overlayClientId
         }, socket: ${socket.id}, guild: ${guildId})`,
+      );
+    });
+
+    socket.on('disconnect', async (reason) => {
+      const roomNameAfterDisconnect = `overlay-guild-${guildId}`;
+      const remainingClients = fastify.io.sockets.adapter.rooms.get(roomNameAfterDisconnect)?.size ?? 0;
+
+      if (remainingClients > 0) {
+        return;
+      }
+
+      await prisma.guild.upsert({
+        where: {
+          id: guildId,
+        },
+        create: {
+          id: guildId,
+          busyUntil: null,
+        },
+        update: {
+          busyUntil: null,
+        },
+      });
+
+      logger.info(
+        `[OVERLAY] Cleared busyUntil after disconnect (guild: ${guildId}, reason: ${reason}, remainingClients: ${remainingClients})`,
       );
     });
   });

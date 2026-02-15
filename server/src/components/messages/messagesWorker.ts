@@ -89,32 +89,21 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
   });
 
   if (guild) {
+    const now = new Date();
+    const busyUntilMs = guild.busyUntil?.getTime() || now.getTime();
+    const remainingMs = Math.max(0, busyUntilMs - now.getTime());
+    const postponeMs = Math.max(250, Math.min(5000, remainingMs));
+
     await prisma.playbackJob.update({
       where: {
         id: nextJob.id,
       },
       data: {
-        executionDate: addMilliseconds(new Date(), 250),
+        executionDate: addMilliseconds(now, postponeMs),
       },
     });
     return;
   }
-
-  let busyUntil = addSeconds(new Date(), nextJob.durationSec);
-  busyUntil = addMilliseconds(busyUntil, 250);
-
-  await prisma.guild.upsert({
-    where: {
-      id: nextJob.guildId,
-    },
-    create: {
-      id: nextJob.guildId,
-      busyUntil,
-    },
-    update: {
-      busyUntil,
-    },
-  });
 
   let mediaAsset: {
     id: string;
@@ -155,6 +144,40 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
     };
   }
 
+  const roomName = `overlay-guild-${nextJob.guildId}`;
+  const roomSize = fastify.io.sockets.adapter.rooms.get(roomName)?.size ?? 0;
+
+  if (roomSize === 0) {
+    await prisma.playbackJob.update({
+      where: {
+        id: nextJob.id,
+      },
+      data: {
+        status: PlaybackJobStatus.FAILED,
+        finishedAt: new Date(),
+      },
+    });
+
+    logger.warn(`[SOCKET] Job ${nextJob.id} skipped because no overlay is connected for guild ${nextJob.guildId}`);
+    return 100;
+  }
+
+  let busyUntil = addSeconds(new Date(), nextJob.durationSec);
+  busyUntil = addMilliseconds(busyUntil, 250);
+
+  await prisma.guild.upsert({
+    where: {
+      id: nextJob.guildId,
+    },
+    create: {
+      id: nextJob.guildId,
+      busyUntil,
+    },
+    update: {
+      busyUntil,
+    },
+  });
+
   await prisma.playbackJob.update({
     where: {
       id: nextJob.id,
@@ -178,17 +201,10 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
     richPayload,
     mediaAsset,
   });
-
-  const roomName = `overlay-guild-${nextJob.guildId}`;
-  const roomSize = fastify.io.sockets.adapter.rooms.get(roomName)?.size ?? 0;
-
-  if (roomSize === 0) {
-    logger.warn(`[SOCKET] No overlay connected for guild ${nextJob.guildId} while dispatching job ${nextJob.id}`);
-  } else {
-    logger.info(
-      `[SOCKET] Dispatching job ${nextJob.id} to guild ${nextJob.guildId} (clients: ${roomSize}, durationSec: ${nextJob.durationSec})`,
-    );
-  }
+  const queueDelayMs = Math.max(0, Date.now() - nextJob.submissionDate.getTime());
+  logger.info(
+    `[SOCKET] Dispatching job ${nextJob.id} to guild ${nextJob.guildId} (clients: ${roomSize}, durationSec: ${nextJob.durationSec}, queueDelayMs: ${queueDelayMs})`,
+  );
 
   fastify.io.to(roomName).emit(OVERLAY_SOCKET_EVENTS.PLAY, payload);
 
@@ -210,9 +226,13 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
 };
 
 export const loadMessagesWorker = async (fastify: FastifyCustomInstance) => {
-  await executeMessagesWorker(fastify);
+  try {
+    await executeMessagesWorker(fastify);
+  } catch (error) {
+    logger.error({ err: error }, '[SOCKET] Messages worker iteration failed');
+  }
 
   setTimeout(() => {
-    loadMessagesWorker(fastify);
+    void loadMessagesWorker(fastify);
   }, 100);
 };

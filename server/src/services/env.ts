@@ -47,6 +47,22 @@ export const env = createEnv({
     MEDIA_VIDEO_ENCODER: z.enum(['auto', 'libx264', 'h264_nvenc']).default('auto'),
     MEDIA_VIDEO_NVENC_PRESET: z.string().default('p4'),
     MEDIA_VIDEO_PRESET: z.string().default('ultrafast'),
+    MEDIA_AUDIO_NORMALIZE_ENABLED: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((s) => s === 'true'),
+    MEDIA_AUDIO_LOUDNORM_I: z
+      .string()
+      .default('-16')
+      .transform((s) => parseFloat(s)),
+    MEDIA_AUDIO_LOUDNORM_LRA: z
+      .string()
+      .default('11')
+      .transform((s) => parseFloat(s)),
+    MEDIA_AUDIO_LOUDNORM_TP: z
+      .string()
+      .default('-1.5')
+      .transform((s) => parseFloat(s)),
     TWITTER_OEMBED_ENDPOINT: z.string().url().default('https://publish.twitter.com/oembed'),
     TWITTER_VIDEO_RESOLVER_BASE_URL: z.string().url().default('https://vxtwitter.com'),
     TWITTER_CARD_DURATION_SEC: z

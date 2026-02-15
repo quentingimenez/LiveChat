@@ -11,6 +11,35 @@ const CPU_VIDEO_ENCODER = 'libx264';
 const GPU_VIDEO_ENCODER = 'h264_nvenc';
 let hasNvencEncoderPromise: Promise<boolean> | null = null;
 
+const isAudioNormalizationEnabled = () => {
+  return !!env.MEDIA_AUDIO_NORMALIZE_ENABLED;
+};
+
+const toSafeNumber = (value: unknown, fallbackValue: number) => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallbackValue;
+  }
+
+  return value;
+};
+
+const resolveLoudnormTargets = () => {
+  const integratedLoudness = toSafeNumber(env.MEDIA_AUDIO_LOUDNORM_I, -16);
+  const loudnessRange = toSafeNumber(env.MEDIA_AUDIO_LOUDNORM_LRA, 11);
+  const truePeak = toSafeNumber(env.MEDIA_AUDIO_LOUDNORM_TP, -1.5);
+
+  return {
+    integratedLoudness,
+    loudnessRange,
+    truePeak,
+  };
+};
+
+const buildLoudnormFilter = () => {
+  const targets = resolveLoudnormTargets();
+  return `loudnorm=I=${targets.integratedLoudness}:LRA=${targets.loudnessRange}:TP=${targets.truePeak}`;
+};
+
 interface ProbedMetadata {
   durationSec: number | null;
   width: number | null;
@@ -115,6 +144,7 @@ const buildVideoTranscodeArgs = (params: {
   videoEncoder: typeof CPU_VIDEO_ENCODER | typeof GPU_VIDEO_ENCODER;
   cpuPreset: string;
   nvencPreset: string;
+  applyAudioNormalization: boolean;
 }) => {
   const ffmpegArgs = ['-y', '-i', params.inputPath, '-c:v', params.videoEncoder];
   const evenDimensionsFilter = 'scale=trunc(iw/2)*2:trunc(ih/2)*2';
@@ -126,6 +156,10 @@ const buildVideoTranscodeArgs = (params: {
   }
 
   ffmpegArgs.push('-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-c:a', 'aac', '-b:a', '192k');
+
+  if (params.applyAudioNormalization) {
+    ffmpegArgs.push('-af', buildLoudnormFilter());
+  }
 
   if (params.maxHeight > 0) {
     ffmpegArgs.push('-vf', `scale=-2:${params.maxHeight}:force_original_aspect_ratio=decrease,${evenDimensionsFilter}`);
@@ -259,8 +293,15 @@ const normalizeImage = async (
 
 const normalizeAudio = async (inputPath: string, outputBasePath: string): Promise<NormalizedMedia> => {
   const outputPath = `${outputBasePath}.mp3`;
+  const ffmpegArgs = ['-y', '-i', inputPath, '-vn', '-acodec', 'libmp3lame', '-b:a', '192k'];
 
-  await runFfmpeg(['-y', '-i', inputPath, '-vn', '-acodec', 'libmp3lame', '-b:a', '192k', outputPath]);
+  if (isAudioNormalizationEnabled()) {
+    ffmpegArgs.push('-af', buildLoudnormFilter());
+  }
+
+  ffmpegArgs.push(outputPath);
+
+  await runFfmpeg(ffmpegArgs);
 
   return finalizeFile(outputPath, 'audio', 'audio/mpeg');
 };
@@ -273,6 +314,8 @@ const normalizeVideo = async (inputPath: string, outputBasePath: string): Promis
     configuredCpuPreset && configuredCpuPreset !== 'superfast' ? configuredCpuPreset : 'ultrafast';
   const selectedNvencPreset = (env.MEDIA_VIDEO_NVENC_PRESET || '').trim() || 'p4';
   const details = await probeMediaDetails(inputPath).catch(() => null);
+  const audioNormalizationEnabled = isAudioNormalizationEnabled();
+  const applyAudioNormalization = audioNormalizationEnabled && details?.audioCodec !== null;
   const isWithinTargetHeight = maxHeight === 0 || details?.height === null || (details?.height ?? 0) <= maxHeight;
   const isMp4Container =
     typeof details?.formatName === 'string' &&
@@ -285,7 +328,8 @@ const normalizeVideo = async (inputPath: string, outputBasePath: string): Promis
     isWithinTargetHeight &&
     details.videoCodec === 'h264' &&
     (details.audioCodec === null || details.audioCodec === 'aac') &&
-    hasCompatiblePixelFormat;
+    hasCompatiblePixelFormat &&
+    !applyAudioNormalization;
 
   if (canCopyWithoutTranscode) {
     await copyFile(inputPath, outputPath);
@@ -302,6 +346,13 @@ const normalizeVideo = async (inputPath: string, outputBasePath: string): Promis
     logger.info('[MEDIA] Transcode required (ffprobe details unavailable)');
   }
 
+  if (applyAudioNormalization) {
+    const targets = resolveLoudnormTargets();
+    logger.info(
+      `[MEDIA] Audio loudness normalization enabled (I=${targets.integratedLoudness}, LRA=${targets.loudnessRange}, TP=${targets.truePeak})`,
+    );
+  }
+
   let selectedEncoder = await resolveVideoEncoder();
   logger.info(`[MEDIA] Video encoder selected: ${selectedEncoder}`);
 
@@ -312,6 +363,7 @@ const normalizeVideo = async (inputPath: string, outputBasePath: string): Promis
     videoEncoder: selectedEncoder,
     cpuPreset: selectedCpuPreset,
     nvencPreset: selectedNvencPreset,
+    applyAudioNormalization,
   });
 
   try {
@@ -351,6 +403,7 @@ const normalizeVideo = async (inputPath: string, outputBasePath: string): Promis
       videoEncoder: selectedEncoder,
       cpuPreset: selectedCpuPreset,
       nvencPreset: selectedNvencPreset,
+      applyAudioNormalization,
     });
 
     await rm(outputPath, { force: true }).catch(() => undefined);

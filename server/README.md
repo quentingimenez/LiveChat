@@ -41,6 +41,14 @@ Payload minimal:
 - `guildId` obligatoire
 - au moins un de `url`, `media`, `text`
 
+## Normalisation du volume
+
+La normalisation loudness est activée par défaut pendant la transcode:
+- `MEDIA_AUDIO_NORMALIZE_ENABLED=true`
+- `MEDIA_AUDIO_LOUDNORM_I=-16`
+- `MEDIA_AUDIO_LOUDNORM_LRA=11`
+- `MEDIA_AUDIO_LOUDNORM_TP=-1.5`
+
 ## Endpoints publics
 
 - `GET /` -> statut service minimal

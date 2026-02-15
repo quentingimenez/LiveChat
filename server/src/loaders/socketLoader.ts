@@ -127,6 +127,14 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
           ? Math.max(0, Math.min(payload.remainingMs, 24 * 60 * 60 * 1000))
           : null;
 
+      logger.debug(
+        `[OVERLAY] Playback state received from ${socket.data.overlayClientLabel || 'unknown-device'} (${
+          socket.data.overlayClientId
+        }, guild: ${guildId}, jobId: ${playbackJobId || 'unknown'}, state: ${playbackState}, remainingMs: ${
+          remainingMs === null ? 'null' : remainingMs
+        })`,
+      );
+
       if (playbackState === 'ended') {
         await prisma.guild.upsert({
           where: {

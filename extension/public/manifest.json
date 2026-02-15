@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "LiveChat Extension",
+  "version": "0.1.0",
+  "description": "Envoi rapide de liens media vers LiveChat /ingest.",
+  "icons": {
+    "16": "icon.png",
+    "32": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "permissions": ["storage", "contextMenus", "tabs", "activeTab", "scripting"],
+  "host_permissions": [
+    "https://youtube.com/*",
+    "https://*.youtube.com/*",
+    "https://youtu.be/*",
+    "https://tiktok.com/*",
+    "https://*.tiktok.com/*",
+    "https://x.com/*",
+    "https://*.x.com/*",
+    "https://twitter.com/*",
+    "https://*.twitter.com/*"
+  ],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "background": {
+    "service_worker": "assets/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "LiveChat Extension",
+    "default_icon": {
+      "16": "icon.png",
+      "24": "icon.png",
+      "32": "icon.png"
+    },
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["https://youtube.com/*", "https://*.youtube.com/*", "https://youtu.be/*"],
+      "js": ["assets/youtube-content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://tiktok.com/*", "https://*.tiktok.com/*"],
+      "js": ["assets/tiktok-content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://x.com/*", "https://*.x.com/*", "https://twitter.com/*", "https://*.twitter.com/*"],
+      "js": ["assets/twitter-content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

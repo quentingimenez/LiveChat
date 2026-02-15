@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LiveChat Extension - Options</title>
+  </head>
+  <body>
+    <main class="options-shell">
+      <section class="options-card">
+        <header class="options-header">
+          <div class="brand-row">
+            <img class="brand-logo" src="icon.png" alt="LiveChat" />
+            <p class="options-kicker">LiveChat Extension</p>
+          </div>
+          <h1>Configuration</h1>
+          <p class="options-subtitle">Paramètres d’envoi vers `/ingest`.</p>
+        </header>
+
+        <form id="options-form" class="options-form">
+          <label class="field-label" for="api-url">API_URL</label>
+          <input id="api-url" class="field-input" type="url" placeholder="https://bot.exemple.com" required />
+
+          <label class="field-label" for="ingest-token">INGEST_API_TOKEN</label>
+          <input id="ingest-token" class="field-input" type="password" placeholder="token" required />
+
+          <label class="field-label" for="guild-id">guildId</label>
+          <input id="guild-id" class="field-input" type="text" placeholder="123456789012345678" required />
+
+          <label class="field-label" for="author-name">authorName</label>
+          <input id="author-name" class="field-input" type="text" placeholder="LiveChat Extension" />
+
+          <p id="permission-state" class="permission-state">Autorisation domaine: non configuré.</p>
+
+          <div class="actions-row">
+            <button id="save-button" class="btn btn-primary" type="submit">Sauvegarder</button>
+            <button id="test-button" class="btn btn-ghost" type="button">Tester la config</button>
+          </div>
+        </form>
+
+        <p id="options-status" class="status status-info hidden"></p>
+      </section>
+    </main>
+
+    <script type="module" src="/src/options/options.ts"></script>
+  </body>
+</html>

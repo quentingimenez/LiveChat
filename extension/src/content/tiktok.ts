@@ -607,6 +607,11 @@ const upsertFloatingButton = (targetUrl: string | null): void => {
   floatingButton.title = DEFAULT_BUTTON_TITLE;
 };
 
+const isTikTokHomeFeedPath = (): boolean => {
+  const path = window.location.pathname.trim();
+  return path === '' || path === '/';
+};
+
 const scanTikTokTargets = (): void => {
   const actionColumns = collectActionColumns();
   const globalAnchors = collectMediaAnchors(document);
@@ -623,6 +628,11 @@ const scanTikTokTargets = (): void => {
 
     upsertActionButton(actionColumn, targetUrl);
     hasInlineButton = true;
+  }
+
+  if (isTikTokHomeFeedPath()) {
+    upsertFloatingButton(fallbackUrl);
+    return;
   }
 
   if (!hasInlineButton) {

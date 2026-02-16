@@ -6,6 +6,8 @@ import {
   isGetComposeStateRequest,
   isSendComposeRequest,
   isSendQuickRequest,
+  isTikTokGetCapturedUrlRequest,
+  isTikTokSyncActiveItemRequest,
   isShowToastMessage,
 } from './messages';
 
@@ -42,6 +44,24 @@ describe('message guards', () => {
     expect(
       isGetActiveMediaUrlRequest({
         type: MESSAGE_TYPES.GET_ACTIVE_MEDIA_URL,
+      }),
+    ).toBe(true);
+  });
+
+  it('valide un message de sync item TikTok', () => {
+    expect(
+      isTikTokSyncActiveItemRequest({
+        type: MESSAGE_TYPES.TIKTOK_SYNC_ACTIVE_ITEM,
+        itemId: '7591173294007651598',
+        url: 'https://www.tiktok.com/video/7591173294007651598',
+      }),
+    ).toBe(true);
+  });
+
+  it('valide un message get captured URL TikTok', () => {
+    expect(
+      isTikTokGetCapturedUrlRequest({
+        type: MESSAGE_TYPES.TIKTOK_GET_CAPTURED_URL,
       }),
     ).toBe(true);
   });

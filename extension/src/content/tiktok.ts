@@ -1,9 +1,10 @@
+import { MESSAGE_TYPES } from '../lib/messages';
+
 const STYLE_ID = 'lce-tiktok-style';
 const BUTTON_ATTRIBUTE = 'data-lce-tiktok-button';
 const ACTION_ITEM_ATTRIBUTE = 'data-lce-tiktok-action-item';
 const FLOATING_BUTTON_ID = 'lce-tiktok-floating-button';
 const DEFAULT_BUTTON_TITLE = 'Envoyer ce TikTok vers LiveChat';
-const GET_ACTIVE_MEDIA_URL_TYPE = 'lce/get-active-media-url';
 const MEDIA_LINK_SELECTOR = 'a[href*="/video/"], a[href*="/photo/"]';
 const LIKE_ICON_SELECTOR = [
   '[data-e2e="browse-like-icon"]',
@@ -18,6 +19,7 @@ const COMMENT_ICON_SELECTOR = ['[data-e2e*="comment-icon"]', '[class*="comment-i
 const SHARE_ICON_SELECTOR = ['[data-e2e*="share-icon"]', '[class*="share-icon"]', '[class*="share-count"]'].join(', ');
 const ACTION_ICON_SELECTOR = `${LIKE_ICON_SELECTOR}, ${COMMENT_ICON_SELECTOR}, ${SHARE_ICON_SELECTOR}`;
 const ACTION_INTERACTIVE_SELECTOR = 'button, [role="button"]';
+const ACTIVE_SYNC_HEARTBEAT_MS = 5000;
 
 type ButtonState = 'idle' | 'loading' | 'success' | 'error';
 const BUTTON_TEXT_BY_STATE: Record<ButtonState, string> = {
@@ -34,6 +36,9 @@ interface MediaAnchor {
 }
 
 const buttonResetTimers = new WeakMap<HTMLButtonElement, number>();
+let lastSyncedItemId: string | null = null;
+let lastSyncedUrl: string | null = null;
+let lastSyncAt = 0;
 
 const inpageStyles = `
 .lce-tiktok-action-item {
@@ -156,6 +161,57 @@ const normalizeTikTokMediaUrl = (rawUrl: string, base?: string): string | null =
   }
 
   return null;
+};
+
+const extractMediaItemId = (url: string | null | undefined): string | null => {
+  if (!url) {
+    return null;
+  }
+
+  const match = url.match(/\/(?:video|photo)\/(\d{6,24})/i);
+  return match?.[1] || null;
+};
+
+const resolveCapturedTikTokUrl = async (): Promise<string | null> => {
+  try {
+    const response = (await chrome.runtime.sendMessage({
+      type: MESSAGE_TYPES.TIKTOK_GET_CAPTURED_URL,
+    })) as { ok?: unknown; url?: unknown };
+
+    if (!response || response.ok !== true || typeof response.url !== 'string' || !response.url.trim()) {
+      return null;
+    }
+
+    const normalized = normalizeTikTokMediaUrl(response.url, window.location.href);
+    return normalized || response.url;
+  } catch {
+    return null;
+  }
+};
+
+const syncActiveMediaToBackground = (url: string | null): void => {
+  const itemId = extractMediaItemId(url);
+  const now = Date.now();
+  const hasChanged = itemId !== lastSyncedItemId || (url || null) !== lastSyncedUrl;
+  const heartbeatElapsed = now - lastSyncAt >= ACTIVE_SYNC_HEARTBEAT_MS;
+
+  if (!hasChanged && !heartbeatElapsed) {
+    return;
+  }
+
+  lastSyncedItemId = itemId;
+  lastSyncedUrl = url || null;
+  lastSyncAt = now;
+
+  void chrome.runtime
+    .sendMessage({
+      type: MESSAGE_TYPES.TIKTOK_SYNC_ACTIVE_ITEM,
+      itemId,
+      url: url || null,
+    })
+    .catch(() => {
+      // Ignore sync errors when the service worker is restarting.
+    });
 };
 
 const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }> => {
@@ -451,7 +507,7 @@ const createActionButton = (floating = false): HTMLButtonElement => {
           actionColumn instanceof HTMLElement
             ? resolveMediaUrlForActionColumn(actionColumn, collectMediaAnchors(document))
             : resolveCurrentMediaUrl();
-        const targetUrl = button.dataset.targetUrl || runtimeUrl;
+        const targetUrl = runtimeUrl || button.dataset.targetUrl || (await resolveCapturedTikTokUrl());
 
         if (!targetUrl) {
           setButtonState(button, 'error', 'Impossible de détecter une URL TikTok valide.');
@@ -536,7 +592,7 @@ const removeFloatingButton = (): void => {
   }
 };
 
-const upsertFloatingButton = (targetUrl: string): void => {
+const upsertFloatingButton = (targetUrl: string | null): void => {
   let floatingButton = document.getElementById(FLOATING_BUTTON_ID) as HTMLButtonElement | null;
 
   if (!floatingButton) {
@@ -546,7 +602,7 @@ const upsertFloatingButton = (targetUrl: string): void => {
     document.body.appendChild(floatingButton);
   }
 
-  floatingButton.dataset.targetUrl = targetUrl;
+  floatingButton.dataset.targetUrl = targetUrl || '';
   floatingButton.title = DEFAULT_BUTTON_TITLE;
 };
 
@@ -554,6 +610,7 @@ const scanTikTokTargets = (): void => {
   const actionColumns = collectActionColumns();
   const globalAnchors = collectMediaAnchors(document);
   const fallbackUrl = resolveCurrentMediaUrl(globalAnchors);
+  syncActiveMediaToBackground(fallbackUrl);
   let hasInlineButton = false;
 
   for (const actionColumn of actionColumns) {
@@ -567,7 +624,7 @@ const scanTikTokTargets = (): void => {
     hasInlineButton = true;
   }
 
-  if (!hasInlineButton && fallbackUrl) {
+  if (!hasInlineButton) {
     upsertFloatingButton(fallbackUrl);
     return;
   }
@@ -581,7 +638,7 @@ const isGetActiveMediaUrlMessage = (value: unknown): value is { type: string } =
   }
 
   const payload = value as { type?: unknown };
-  return payload.type === GET_ACTIVE_MEDIA_URL_TYPE;
+  return payload.type === MESSAGE_TYPES.GET_ACTIVE_MEDIA_URL;
 };
 
 const registerActiveMediaUrlListener = (): void => {

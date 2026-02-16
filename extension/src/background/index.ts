@@ -427,28 +427,6 @@ const resolveTikTokCapturedUrlForTab = async (
   return null;
 };
 
-const isTikTokTabUrl = (value: string | undefined): boolean => {
-  if (!value) {
-    return false;
-  }
-
-  try {
-    const parsed = new URL(value);
-    return parsed.hostname.toLowerCase().includes('tiktok.com');
-  } catch {
-    return false;
-  }
-};
-
-const isTikTokMediaPath = (value: string): boolean => {
-  try {
-    const parsed = new URL(value);
-    return /\/(?:video|photo)\/\d+/i.test(parsed.pathname);
-  } catch {
-    return false;
-  }
-};
-
 const captureTikTokWebRequest = (details: chrome.webRequest.WebResponseCacheDetails): void => {
   if (details.tabId < 0) {
     return;
@@ -592,8 +570,7 @@ const resolveActiveMediaUrlFromTab = async (activeTab: chrome.tabs.Tab | null): 
 
   const tabUrl = `${activeTab.url || ''}`;
   const resolvedTabUrl = resolveIngestTargetUrl(tabUrl) || '';
-  const tiktokTab = isTikTokTabUrl(tabUrl);
-  const fallbackUrl = tiktokTab && !isTikTokMediaPath(resolvedTabUrl) ? '' : resolvedTabUrl;
+  const fallbackUrl = resolvedTabUrl;
 
   if (typeof activeTab.id !== 'number') {
     return fallbackUrl;
@@ -611,16 +588,6 @@ const resolveActiveMediaUrlFromTab = async (activeTab: chrome.tabs.Tab | null): 
     }
   } catch {
     // Ignore, content script may not be injected on the active tab.
-  }
-
-  if (tiktokTab) {
-    const capturedTikTokUrl = await resolveTikTokCapturedUrlForTab(activeTab.id, contentCandidate);
-
-    if (capturedTikTokUrl) {
-      return resolveIngestTargetUrl(capturedTikTokUrl) || contentCandidate || fallbackUrl;
-    }
-
-    return contentCandidate || fallbackUrl;
   }
 
   return contentCandidate || fallbackUrl;
@@ -720,7 +687,6 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
   void (async () => {
     if (isSendQuickRequest(message)) {
       if (message.source === 'tiktok') {
-        const senderTabId = typeof sender?.tab?.id === 'number' ? sender.tab.id : null;
         const normalizedTikTokPageUrl = normalizeTikTokPageUrl(message.url);
 
         if (normalizedTikTokPageUrl) {
@@ -728,19 +694,10 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
           return;
         }
 
-        if (senderTabId !== null) {
-          const resolvedFromCapture = await resolveTikTokCapturedUrlForTab(senderTabId, message.url);
-
-          if (resolvedFromCapture) {
-            sendResponse(await sendQuickAction(resolvedFromCapture));
-            return;
-          }
-        }
-
         sendResponse({
           ok: false,
           jobId: null,
-          message: 'Impossible de résoudre un lien TikTok partageable. Fais défiler jusqu’à une vidéo puis réessaie.',
+          message: 'URL TikTok invalide. Ouvre directement une URL /video ou /photo puis réessaie.',
           errorCode: 'INVALID_PAYLOAD',
         } satisfies ActionResponse);
         return;

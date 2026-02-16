@@ -37,7 +37,7 @@ interface ConsumeIngestPairingBody {
 }
 
 const DEFAULT_INGEST_AUTHOR_NAME = 'LiveChat Extension';
-const DEFAULT_INGEST_DEVICE_NAME = 'LiveChat Extension';
+const DEFAULT_INGEST_DEVICE_PREFIX = 'Extension';
 
 const getTweetCardDurationSec = (
   medias: Array<{
@@ -104,7 +104,7 @@ export const IngestRoutes = () =>
   async function (fastify: FastifyCustomInstance) {
     fastify.post<{ Body: ConsumeIngestPairingBody }>('/pair/consume', async (request, reply) => {
       const rawCode = toNonEmptyString(request.body?.code)?.toUpperCase() || null;
-      const deviceName = toNonEmptyString(request.body?.deviceName) || DEFAULT_INGEST_DEVICE_NAME;
+      const requestedDeviceName = toNonEmptyString(request.body?.deviceName);
       const codePrefix = rawCode ? rawCode.slice(0, 3) : null;
 
       logger.info(
@@ -112,7 +112,7 @@ export const IngestRoutes = () =>
           ip: request.ip,
           hasCode: !!rawCode,
           codePrefix,
-          deviceName,
+          requestedDeviceName,
         },
         '[INGEST] Pairing consume request received',
       );
@@ -121,7 +121,7 @@ export const IngestRoutes = () =>
         logger.warn(
           {
             ip: request.ip,
-            deviceName,
+            requestedDeviceName,
           },
           '[INGEST] Pairing consume rejected: invalid payload',
         );
@@ -154,7 +154,7 @@ export const IngestRoutes = () =>
           {
             ip: request.ip,
             codePrefix,
-            deviceName,
+            requestedDeviceName,
           },
           '[INGEST] Pairing consume rejected: code invalid or expired',
         );
@@ -174,11 +174,12 @@ export const IngestRoutes = () =>
         },
       });
 
-      await revokeIngestClientsForGuildLabel(pairingCode.guildId, deviceName);
-
       const authorName =
         toNonEmptyString((pairingCode as { authorName?: unknown }).authorName) || DEFAULT_INGEST_AUTHOR_NAME;
       const authorImage = toNonEmptyString((pairingCode as { authorImage?: unknown }).authorImage);
+      const deviceName = requestedDeviceName || `${DEFAULT_INGEST_DEVICE_PREFIX}-${authorName}`;
+
+      await revokeIngestClientsForGuildLabel(pairingCode.guildId, deviceName);
 
       const { client, rawToken } = await createIngestClientToken({
         guildId: pairingCode.guildId,
@@ -204,6 +205,7 @@ export const IngestRoutes = () =>
         ingestApiToken: rawToken,
         ingestClientId: client.id,
         guildId: client.guildId,
+        deviceName: client.label,
         authorName: client.defaultAuthorName,
         authorImage: client.defaultAuthorImage,
       });

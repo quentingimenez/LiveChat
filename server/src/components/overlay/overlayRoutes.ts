@@ -5,17 +5,28 @@ import { touchMediaAsset } from '../../services/media/mediaCache';
 import { OVERLAY_PROTOCOL_VERSION } from '@livechat/overlay-protocol';
 
 interface ConsumePairingBody {
-  code: string;
-  deviceName: string;
+  code?: unknown;
+  deviceName?: unknown;
 }
+
+const DEFAULT_OVERLAY_DEVICE_PREFIX = 'Overlay';
+
+const toNonEmptyString = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim();
+  return normalized || null;
+};
 
 export const OverlayRoutes = () =>
   async function (fastify: FastifyCustomInstance) {
     fastify.post<{ Body: ConsumePairingBody }>('/pair/consume', async (request, reply) => {
-      const rawCode = request.body?.code?.toUpperCase()?.trim();
-      const deviceName = request.body?.deviceName?.trim();
+      const rawCode = toNonEmptyString(request.body?.code)?.toUpperCase() || null;
+      const requestedDeviceName = toNonEmptyString(request.body?.deviceName);
 
-      if (!rawCode || !deviceName) {
+      if (!rawCode) {
         return reply.code(400).send({
           error: 'invalid_payload',
         });
@@ -55,6 +66,9 @@ export const OverlayRoutes = () =>
         },
       });
 
+      const authorName = toNonEmptyString((pairingCode as { authorName?: unknown }).authorName);
+      const deviceName = requestedDeviceName || `${DEFAULT_OVERLAY_DEVICE_PREFIX}-${authorName || 'User'}`;
+
       await prisma.overlayClient.updateMany({
         where: {
           guildId: pairingCode.guildId,
@@ -76,6 +90,7 @@ export const OverlayRoutes = () =>
         clientId: client.id,
         guildId: pairingCode.guildId,
         apiBaseUrl: env.API_URL,
+        deviceName: client.label,
       });
     });
 

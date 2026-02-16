@@ -293,6 +293,88 @@ const extractFirstMediaUrlFromScope = (root: ParentNode): string | null => {
   return null;
 };
 
+const computeVisibleArea = (rect: DOMRect): number => {
+  const visibleWidth = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+  const visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+  return visibleWidth * visibleHeight;
+};
+
+const pickNearestMediaUrlToPoint = (anchors: MediaAnchor[], x: number, y: number): string | null => {
+  if (anchors.length === 0) {
+    return null;
+  }
+
+  let bestMatch: { url: string; score: number } | null = null;
+
+  for (const anchor of anchors) {
+    const deltaX = Math.abs(anchor.centerX - x);
+    const deltaY = Math.abs(anchor.centerY - y);
+    const outOfViewportPenalty =
+      anchor.centerX < -120 || anchor.centerX > window.innerWidth + 120 || anchor.centerY < -120 || anchor.centerY > window.innerHeight + 120
+        ? 24_000
+        : 0;
+    const score = deltaY * 3 + deltaX + outOfViewportPenalty;
+
+    if (!bestMatch || score < bestMatch.score) {
+      bestMatch = { url: anchor.url, score };
+    }
+  }
+
+  return bestMatch?.url || null;
+};
+
+const resolveMediaUrlFromActiveVideo = (): string | null => {
+  const videos = Array.from(document.querySelectorAll<HTMLVideoElement>('video'));
+
+  let bestVideo: { element: HTMLVideoElement; score: number } | null = null;
+
+  for (const video of videos) {
+    const rect = video.getBoundingClientRect();
+
+    if (rect.width < 180 || rect.height < 240) {
+      continue;
+    }
+
+    const visibleArea = computeVisibleArea(rect);
+
+    if (visibleArea < 35_000) {
+      continue;
+    }
+
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const distanceToViewportCenter = Math.abs(centerX - window.innerWidth / 2) + Math.abs(centerY - window.innerHeight / 2);
+    const playingBonus = !video.paused && !video.ended ? 85_000 : 0;
+    const score = visibleArea + playingBonus - distanceToViewportCenter * 35;
+
+    if (!bestVideo || score > bestVideo.score) {
+      bestVideo = { element: video, score };
+    }
+  }
+
+  if (!bestVideo) {
+    return null;
+  }
+
+  const videoRect = bestVideo.element.getBoundingClientRect();
+  const videoCenterX = videoRect.left + videoRect.width / 2;
+  const videoCenterY = videoRect.top + videoRect.height / 2;
+  let scope: HTMLElement | null = bestVideo.element;
+
+  for (let depth = 0; depth < 8 && scope; depth += 1) {
+    const scopedAnchors = collectMediaAnchors(scope);
+    const scopedUrl = pickNearestMediaUrlToPoint(scopedAnchors, videoCenterX, videoCenterY);
+
+    if (scopedUrl) {
+      return scopedUrl;
+    }
+
+    scope = scope.parentElement;
+  }
+
+  return null;
+};
+
 const resolveMediaUrlFromViewportCenter = (): string | null => {
   const probePoints: Array<{ xRatio: number; yRatio: number }> = [
     { xRatio: 0.5, yRatio: 0.45 },
@@ -428,6 +510,12 @@ const resolveDocumentMediaFallback = (): string | null => {
 };
 
 const resolveCurrentMediaUrl = (anchors: MediaAnchor[] = collectMediaAnchors(document)): string | null => {
+  const activeVideoMediaUrl = resolveMediaUrlFromActiveVideo();
+
+  if (activeVideoMediaUrl) {
+    return activeVideoMediaUrl;
+  }
+
   const viewportCenterMediaUrl = resolveMediaUrlFromViewportCenter();
 
   if (viewportCenterMediaUrl) {

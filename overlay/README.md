@@ -7,7 +7,7 @@ PRD: `../PRD.md`
 
 ## Rôle
 
-- Appairage via code one-shot (`/overlay-code`).
+- Appairage via code one-shot (`/pair-code`).
 - Connexion socket authentifiée.
 - Lecture média locale sans contrôles visibles.
 - Options tray: écran, volume, affichage texte, reset pairing.

@@ -21,9 +21,13 @@ interface PairingConsumeSuccessResponse {
 
 interface PairingConsumeErrorResponse {
   error?: unknown;
+  message?: unknown;
 }
 
-const form = document.getElementById('options-form') as HTMLFormElement;
+type PairingConsumeResponse = PairingConsumeSuccessResponse & PairingConsumeErrorResponse;
+
+const pairingForm = document.getElementById('pairing-form') as HTMLFormElement;
+const manualForm = document.getElementById('options-form') as HTMLFormElement;
 const pairingCodeInput = document.getElementById('pairing-code') as HTMLInputElement;
 const deviceNameInput = document.getElementById('device-name') as HTMLInputElement;
 const pairButton = document.getElementById('pair-button') as HTMLButtonElement;
@@ -51,6 +55,20 @@ const asNonEmptyString = (value: unknown): string | null => {
 
   const normalized = value.trim();
   return normalized || null;
+};
+
+const parseJsonBody = <T>(rawBody: string): T | null => {
+  const normalized = rawBody.trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(normalized) as T;
+  } catch {
+    return null;
+  }
 };
 
 const setStatus = (message: string, variant: keyof typeof STATUS_CLASS_MAP): void => {
@@ -114,21 +132,14 @@ const refreshPermissionState = async (): Promise<void> => {
     : `Autorisation domaine: manquante (${new URL(normalizedApiUrl).origin})`;
 };
 
-const resolvePairingApiUrl = async (): Promise<string> => {
-  const rawApiUrl = apiUrlInput.value.trim();
+const resolvePairingApiUrl = (): string => {
+  const rawApiUrl = asNonEmptyString(apiUrlInput.value);
 
-  if (rawApiUrl) {
-    return normalizeApiUrl(rawApiUrl);
+  if (!rawApiUrl) {
+    throw new Error('API_URL obligatoire avant appairage (URL racine du bot).');
   }
 
-  const existingSettings = await getSettings();
-
-  if (existingSettings?.apiUrl) {
-    apiUrlInput.value = existingSettings.apiUrl;
-    return existingSettings.apiUrl;
-  }
-
-  throw new Error('API_URL est requis pour récupérer la configuration avec un code.');
+  return normalizeApiUrl(rawApiUrl);
 };
 
 const ensureApiPermission = async (apiUrl: string): Promise<boolean> => {
@@ -149,7 +160,44 @@ const loadExistingSettings = async (): Promise<void> => {
   await refreshPermissionState();
 };
 
-pairButton.addEventListener('click', () => {
+const getPairingFailureMessage = (params: {
+  status: number;
+  endpoint: string;
+  body: PairingConsumeResponse | null;
+}) => {
+  const { status, endpoint, body } = params;
+  const remoteError = asNonEmptyString(body?.error) || asNonEmptyString(body?.message);
+
+  if (status === 404 && body?.error === 'pairing_code_invalid_or_expired') {
+    return 'Code invalide ou expiré. Regénère un code avec /overlay-code.';
+  }
+
+  if (status === 404) {
+    return `Endpoint introuvable (${endpoint}). Vérifie que le bot est à jour et que API_URL est la racine (sans /overlay ni /ingest).`;
+  }
+
+  if (status === 403) {
+    return `Échec appairage (403): requête refusée avant le bot ou par un proxy. Vérifie API_URL racine et autorise POST ${endpoint}.`;
+  }
+
+  if (status === 401) {
+    return `Échec appairage (401): accès non autorisé sur ${endpoint}. Vérifie la route exposée côté reverse-proxy.`;
+  }
+
+  if (status === 400 && body?.error === 'invalid_payload') {
+    return 'Payload d’appairage invalide. Vérifie le code saisi.';
+  }
+
+  if (remoteError) {
+    return `Échec de l’appairage (${status}): ${remoteError}`;
+  }
+
+  return `Échec de l’appairage (${status}) sur ${endpoint}.`;
+};
+
+pairingForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+
   void (async () => {
     clearStatus();
     withBusyState(true, 'pair');
@@ -163,7 +211,8 @@ pairButton.addEventListener('click', () => {
       }
 
       const previousSettings = await getSettings();
-      const apiUrl = await resolvePairingApiUrl();
+      const apiUrl = resolvePairingApiUrl();
+      const endpoint = `${apiUrl}/ingest/pair/consume`;
       const permissionGranted = await ensureApiPermission(apiUrl);
 
       if (!permissionGranted) {
@@ -171,7 +220,7 @@ pairButton.addEventListener('click', () => {
         return;
       }
 
-      const response = await fetch(`${apiUrl}/ingest/pair/consume`, {
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -182,22 +231,18 @@ pairButton.addEventListener('click', () => {
         }),
       });
 
-      const body = (await response.json().catch(() => null)) as
-        | (PairingConsumeSuccessResponse & PairingConsumeErrorResponse)
-        | null;
+      const rawBody = await response.text();
+      const body = parseJsonBody<PairingConsumeResponse>(rawBody);
 
       if (!response.ok) {
-        if (response.status === 404 && body?.error === 'pairing_code_invalid_or_expired') {
-          setStatus('Code invalide ou expiré. Regénère un code avec /overlay-code.', 'error');
-          return;
-        }
-
-        if (response.status === 400 && body?.error === 'invalid_payload') {
-          setStatus('Payload d’appairage invalide. Vérifie le code saisi.', 'error');
-          return;
-        }
-
-        setStatus(`Échec de l’appairage (${response.status}).`, 'error');
+        setStatus(
+          getPairingFailureMessage({
+            status: response.status,
+            endpoint,
+            body,
+          }),
+          'error',
+        );
         return;
       }
 
@@ -234,7 +279,7 @@ pairButton.addEventListener('click', () => {
   })();
 });
 
-form.addEventListener('submit', (event) => {
+manualForm.addEventListener('submit', (event) => {
   event.preventDefault();
 
   void (async () => {

@@ -65,11 +65,12 @@ Commandes utiles:
 ## Configuration
 
 1. Ouvrir la page d’options de l’extension.
-2. Saisir `API_URL`, puis un code généré par `/overlay-code`.
-3. Cliquer `Récupérer la configuration`.
-4. Vérifier les champs récupérés (`INGEST_API_TOKEN`, `guildId`, `authorName`, `authorImage`) puis sauvegarder si besoin.
-5. Accepter la permission domaine demandée pour l’URL API.
-6. (Optionnel) Cliquer `Tester la config`.
+2. Saisir **obligatoirement** `API_URL` (URL racine du bot), par exemple `https://bot.exemple.com`.
+3. Ne pas mettre `/overlay` ni `/ingest` dans `API_URL`.
+4. Générer un code avec `/overlay-code`, puis cliquer `Récupérer la configuration`.
+5. Vérifier les champs récupérés (`INGEST_API_TOKEN`, `guildId`, `authorName`, `authorImage`) puis sauvegarder si besoin.
+6. Accepter la permission domaine demandée pour l’URL API.
+7. (Optionnel) Cliquer `Tester la config`.
 
 ## Contrat `/ingest` utilisé
 

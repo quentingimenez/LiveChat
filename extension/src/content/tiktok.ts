@@ -41,6 +41,14 @@ let lastSyncedItemId: string | null = null;
 let lastSyncedUrl: string | null = null;
 let lastSyncAt = 0;
 
+const isRuntimeAvailable = (): boolean => {
+  try {
+    return typeof chrome !== 'undefined' && !!chrome.runtime && typeof chrome.runtime.id === 'string';
+  } catch {
+    return false;
+  }
+};
+
 const inpageStyles = `
 .lce-tiktok-action-item {
   display: flex;
@@ -174,6 +182,10 @@ const extractMediaItemId = (url: string | null | undefined): string | null => {
 };
 
 const resolveCapturedTikTokUrl = async (): Promise<string | null> => {
+  if (!isRuntimeAvailable()) {
+    return null;
+  }
+
   try {
     const response = (await chrome.runtime.sendMessage({
       type: TIKTOK_GET_CAPTURED_URL_TYPE,
@@ -191,6 +203,10 @@ const resolveCapturedTikTokUrl = async (): Promise<string | null> => {
 };
 
 const syncActiveMediaToBackground = (url: string | null): void => {
+  if (!isRuntimeAvailable()) {
+    return;
+  }
+
   const itemId = extractMediaItemId(url);
   const now = Date.now();
   const hasChanged = itemId !== lastSyncedItemId || (url || null) !== lastSyncedUrl;
@@ -204,18 +220,29 @@ const syncActiveMediaToBackground = (url: string | null): void => {
   lastSyncedUrl = url || null;
   lastSyncAt = now;
 
-  void chrome.runtime
-    .sendMessage({
-      type: TIKTOK_SYNC_ACTIVE_ITEM_TYPE,
-      itemId,
-      url: url || null,
-    })
-    .catch(() => {
-      // Ignore sync errors when the service worker is restarting.
-    });
+  try {
+    void chrome.runtime
+      .sendMessage({
+        type: TIKTOK_SYNC_ACTIVE_ITEM_TYPE,
+        itemId,
+        url: url || null,
+      })
+      .catch(() => {
+        // Ignore sync errors when the service worker is restarting.
+      });
+  } catch {
+    // Ignore synchronous runtime invalidation errors.
+  }
 };
 
 const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }> => {
+  if (!isRuntimeAvailable()) {
+    return {
+      ok: false,
+      message: 'Contexte extension invalide. Recharge la page TikTok puis réessaie.',
+    };
+  }
+
   try {
     const response = (await chrome.runtime.sendMessage({
       type: 'lce/send-quick',
@@ -278,28 +305,18 @@ const resetButtonStateLater = (button: HTMLButtonElement, delayMs = 2200): void 
   buttonResetTimers.set(button, timer);
 };
 
-const extractFirstMediaUrlFromScope = (root: ParentNode): string | null => {
-  const anchors = Array.from(root.querySelectorAll<HTMLAnchorElement>(MEDIA_LINK_SELECTOR));
-
-  for (const anchor of anchors) {
-    const rawHref = anchor.getAttribute('href') || anchor.href;
-    const normalized = normalizeTikTokMediaUrl(rawHref, window.location.href);
-
-    if (normalized) {
-      return normalized;
-    }
-  }
-
-  return null;
-};
-
 const computeVisibleArea = (rect: DOMRect): number => {
   const visibleWidth = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
   const visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
   return visibleWidth * visibleHeight;
 };
 
-const pickNearestMediaUrlToPoint = (anchors: MediaAnchor[], x: number, y: number): string | null => {
+const pickNearestMediaUrlToPoint = (
+  anchors: MediaAnchor[],
+  x: number,
+  y: number,
+  maxScore = Number.POSITIVE_INFINITY,
+): string | null => {
   if (anchors.length === 0) {
     return null;
   }
@@ -320,7 +337,23 @@ const pickNearestMediaUrlToPoint = (anchors: MediaAnchor[], x: number, y: number
     }
   }
 
-  return bestMatch?.url || null;
+  if (!bestMatch || bestMatch.score > maxScore) {
+    return null;
+  }
+
+  return bestMatch.url;
+};
+
+const isAnchorNearVideoRect = (anchor: MediaAnchor, rect: DOMRect): boolean => {
+  const paddingX = Math.max(220, rect.width * 0.42);
+  const paddingY = Math.max(180, rect.height * 0.38);
+
+  return (
+    anchor.centerX >= rect.left - paddingX &&
+    anchor.centerX <= rect.right + paddingX &&
+    anchor.centerY >= rect.top - paddingY &&
+    anchor.centerY <= rect.bottom + paddingY
+  );
 };
 
 const resolveMediaUrlFromActiveVideo = (): string | null => {
@@ -362,14 +395,21 @@ const resolveMediaUrlFromActiveVideo = (): string | null => {
   let scope: HTMLElement | null = bestVideo.element;
 
   for (let depth = 0; depth < 8 && scope; depth += 1) {
-    const scopedAnchors = collectMediaAnchors(scope);
-    const scopedUrl = pickNearestMediaUrlToPoint(scopedAnchors, videoCenterX, videoCenterY);
+    const scopedAnchors = collectMediaAnchors(scope).filter((anchor) => isAnchorNearVideoRect(anchor, videoRect));
+    const scopedUrl = pickNearestMediaUrlToPoint(scopedAnchors, videoCenterX, videoCenterY, 2_200);
 
     if (scopedUrl) {
       return scopedUrl;
     }
 
     scope = scope.parentElement;
+  }
+
+  const globalNearbyAnchors = collectMediaAnchors(document).filter((anchor) => isAnchorNearVideoRect(anchor, videoRect));
+  const globalNearbyUrl = pickNearestMediaUrlToPoint(globalNearbyAnchors, videoCenterX, videoCenterY, 2_400);
+
+  if (globalNearbyUrl) {
+    return globalNearbyUrl;
   }
 
   return null;
@@ -384,16 +424,16 @@ const resolveMediaUrlFromViewportCenter = (): string | null => {
   ];
 
   for (const point of probePoints) {
-    const startNode = document.elementFromPoint(
-      Math.round(window.innerWidth * point.xRatio),
-      Math.round(window.innerHeight * point.yRatio),
-    );
+    const probeX = Math.round(window.innerWidth * point.xRatio);
+    const probeY = Math.round(window.innerHeight * point.yRatio);
+    const startNode = document.elementFromPoint(probeX, probeY);
 
     let scope: HTMLElement | null =
       startNode instanceof HTMLElement ? startNode : startNode instanceof Element ? startNode.parentElement : null;
 
     for (let depth = 0; depth < 12 && scope; depth += 1) {
-      const scopedUrl = extractFirstMediaUrlFromScope(scope);
+      const scopedAnchors = collectMediaAnchors(scope);
+      const scopedUrl = pickNearestMediaUrlToPoint(scopedAnchors, probeX, probeY, 2_200);
 
       if (scopedUrl) {
         return scopedUrl;
@@ -793,16 +833,24 @@ const isGetActiveMediaUrlMessage = (value: unknown): value is { type: string } =
 };
 
 const registerActiveMediaUrlListener = (): void => {
-  chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
-    if (!isGetActiveMediaUrlMessage(message)) {
-      return;
-    }
+  if (!isRuntimeAvailable()) {
+    return;
+  }
 
-    sendResponse({
-      ok: true,
-      url: resolveCurrentMediaUrl(),
+  try {
+    chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+      if (!isGetActiveMediaUrlMessage(message)) {
+        return;
+      }
+
+      sendResponse({
+        ok: true,
+        url: resolveCurrentMediaUrl(),
+      });
     });
-  });
+  } catch {
+    // Ignore runtime invalidation while the extension is reloading.
+  }
 };
 
 const startObservedScanner = (scan: () => void): void => {

@@ -77,10 +77,27 @@ model OverlayClient {
   @@index([guildId])
 }
 
+model IngestClient {
+  id                    String   @id @default(uuid())
+  guildId               String
+  label                 String
+  tokenHash             String   @unique
+  defaultAuthorName     String
+  defaultAuthorImage    String?
+  createdByDiscordUserId String
+  lastSeenAt            DateTime?
+  createdAt             DateTime @default(now())
+  revokedAt             DateTime?
+
+  @@index([guildId])
+}
+
 model PairingCode {
   code                   String   @id
   guildId                String
   createdByDiscordUserId String
+  authorName             String?
+  authorImage            String?
   expiresAt              DateTime
   usedAt                 DateTime?
   createdAt              DateTime @default(now())

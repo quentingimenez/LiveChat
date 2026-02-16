@@ -75,4 +75,7 @@ jobs:
           prerelease: true
           make_latest: false
           files: release/*.zip
-          generate_release_notes: true
+          generate_release_notes: false
+          append_body: false
+          body: |
+            Automatic latest build from `main`.

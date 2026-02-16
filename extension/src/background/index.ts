@@ -4,6 +4,7 @@ import {
   isGetComposeStateRequest,
   isSendComposeRequest,
   isSendQuickRequest,
+  type ActiveMediaUrlResponse,
   type ActionResponse,
   type ComposeStateResponse,
   type ShowToastMessage,
@@ -133,13 +134,43 @@ const sendComposeAction = async (params: {
   return responseFromIngestResult(result);
 };
 
-const getActiveTabUrl = async (): Promise<string> => {
+const getActiveTab = async (): Promise<chrome.tabs.Tab | null> => {
   const [activeTab] = await chrome.tabs.query({
     active: true,
     lastFocusedWindow: true,
   });
 
-  return resolveIngestTargetUrl(`${activeTab?.url || ''}`) || '';
+  return activeTab || null;
+};
+
+const resolveActiveMediaUrlFromTab = async (activeTab: chrome.tabs.Tab | null): Promise<string> => {
+  if (!activeTab) {
+    return '';
+  }
+
+  const fallbackUrl = resolveIngestTargetUrl(`${activeTab.url || ''}`) || '';
+
+  if (typeof activeTab.id !== 'number') {
+    return fallbackUrl;
+  }
+
+  try {
+    const response = (await chrome.tabs.sendMessage(activeTab.id, {
+      type: MESSAGE_TYPES.GET_ACTIVE_MEDIA_URL,
+    })) as ActiveMediaUrlResponse;
+
+    if (!response?.ok || typeof response.url !== 'string' || !response.url.trim()) {
+      return fallbackUrl;
+    }
+
+    return resolveIngestTargetUrl(response.url) || fallbackUrl;
+  } catch {
+    return fallbackUrl;
+  }
+};
+
+const getActiveTabUrl = async (): Promise<string> => {
+  return resolveActiveMediaUrlFromTab(await getActiveTab());
 };
 
 const getComposeState = async (): Promise<ComposeStateResponse> => {

@@ -5,6 +5,7 @@ export const MESSAGE_TYPES = {
   SEND_QUICK: 'lce/send-quick',
   SEND_COMPOSE: 'lce/send-compose',
   GET_COMPOSE_STATE: 'lce/get-compose-state',
+  GET_ACTIVE_MEDIA_URL: 'lce/get-active-media-url',
   SHOW_TOAST: 'lce/show-toast'
 } as const;
 
@@ -25,6 +26,10 @@ export interface GetComposeStateRequestMessage {
   type: (typeof MESSAGE_TYPES)['GET_COMPOSE_STATE'];
 }
 
+export interface GetActiveMediaUrlRequestMessage {
+  type: (typeof MESSAGE_TYPES)['GET_ACTIVE_MEDIA_URL'];
+}
+
 export interface ShowToastMessage {
   type: (typeof MESSAGE_TYPES)['SHOW_TOAST'];
   level: ToastLevel;
@@ -34,7 +39,8 @@ export interface ShowToastMessage {
 export type BackgroundRequestMessage =
   | SendQuickRequestMessage
   | SendComposeRequestMessage
-  | GetComposeStateRequestMessage;
+  | GetComposeStateRequestMessage
+  | GetActiveMediaUrlRequestMessage;
 
 export interface ActionResponse {
   ok: boolean;
@@ -52,6 +58,11 @@ export interface ComposeStateResponse {
   hasSettings: boolean;
   settingsError: string | null;
   draftSource: string | null;
+}
+
+export interface ActiveMediaUrlResponse {
+  ok: boolean;
+  url: string | null;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
@@ -87,8 +98,17 @@ export const isGetComposeStateRequest = (value: unknown): value is GetComposeSta
   return isRecord(value) && value.type === MESSAGE_TYPES.GET_COMPOSE_STATE;
 };
 
+export const isGetActiveMediaUrlRequest = (value: unknown): value is GetActiveMediaUrlRequestMessage => {
+  return isRecord(value) && value.type === MESSAGE_TYPES.GET_ACTIVE_MEDIA_URL;
+};
+
 export const isBackgroundRequestMessage = (value: unknown): value is BackgroundRequestMessage => {
-  return isSendQuickRequest(value) || isSendComposeRequest(value) || isGetComposeStateRequest(value);
+  return (
+    isSendQuickRequest(value) ||
+    isSendComposeRequest(value) ||
+    isGetComposeStateRequest(value) ||
+    isGetActiveMediaUrlRequest(value)
+  );
 };
 
 export const isShowToastMessage = (value: unknown): value is ShowToastMessage => {

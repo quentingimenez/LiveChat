@@ -1,12 +1,21 @@
 const STYLE_ID = 'lce-tiktok-style';
 const BUTTON_ATTRIBUTE = 'data-lce-tiktok-button';
 const ACTION_ITEM_ATTRIBUTE = 'data-lce-tiktok-action-item';
-const LEGACY_FLOATING_BUTTON_ID = 'lce-tiktok-floating-button';
+const FLOATING_BUTTON_ID = 'lce-tiktok-floating-button';
 const DEFAULT_BUTTON_TITLE = 'Envoyer ce TikTok vers LiveChat';
+const GET_ACTIVE_MEDIA_URL_TYPE = 'lce/get-active-media-url';
 const MEDIA_LINK_SELECTOR = 'a[href*="/video/"], a[href*="/photo/"]';
-const LIKE_ICON_SELECTOR = '[data-e2e="browse-like-icon"], [data-e2e="like-icon"], [data-e2e="video-like-icon"]';
-const COMMENT_ICON_SELECTOR = '[data-e2e*="comment-icon"]';
-const SHARE_ICON_SELECTOR = '[data-e2e*="share-icon"]';
+const LIKE_ICON_SELECTOR = [
+  '[data-e2e="browse-like-icon"]',
+  '[data-e2e="like-icon"]',
+  '[data-e2e="video-like-icon"]',
+  '[class*="like-icon"]',
+  '[class*="like-count"]',
+].join(', ');
+const COMMENT_ICON_SELECTOR = ['[data-e2e*="comment-icon"]', '[class*="comment-icon"]', '[class*="comment-count"]'].join(
+  ', ',
+);
+const SHARE_ICON_SELECTOR = ['[data-e2e*="share-icon"]', '[class*="share-icon"]', '[class*="share-count"]'].join(', ');
 const ACTION_ICON_SELECTOR = `${LIKE_ICON_SELECTOR}, ${COMMENT_ICON_SELECTOR}, ${SHARE_ICON_SELECTOR}`;
 const ACTION_INTERACTIVE_SELECTOR = 'button, [role="button"]';
 
@@ -48,6 +57,16 @@ const inpageStyles = `
   letter-spacing: 0.02em;
   cursor: pointer;
   transition: transform 120ms ease, background-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
+}
+.lce-button-tiktok-floating {
+  position: fixed;
+  right: 22px;
+  bottom: 24px;
+  width: 56px;
+  height: 56px;
+  z-index: 2147483646;
+  border-width: 2px;
+  pointer-events: auto;
 }
 .lce-button-tiktok:hover {
   background: rgba(22, 24, 35, 1);
@@ -263,6 +282,30 @@ const pickNearestMediaUrl = (actionColumn: HTMLElement, anchors: MediaAnchor[]):
   return bestMatch?.url || null;
 };
 
+const pickViewportMediaUrl = (anchors: MediaAnchor[]): string | null => {
+  if (anchors.length === 0) {
+    return null;
+  }
+
+  const viewportCenterX = window.innerWidth / 2;
+  const viewportCenterY = window.innerHeight / 2;
+  let bestMatch: { url: string; score: number } | null = null;
+
+  for (const anchor of anchors) {
+    const deltaX = Math.abs(anchor.centerX - viewportCenterX);
+    const deltaY = Math.abs(anchor.centerY - viewportCenterY);
+    const outOfViewportXPenalty = anchor.centerX < -120 || anchor.centerX > window.innerWidth + 120 ? 12_000 : 0;
+    const outOfViewportYPenalty = anchor.centerY < -120 || anchor.centerY > window.innerHeight + 120 ? 18_000 : 0;
+    const score = deltaY * 2 + deltaX + outOfViewportXPenalty + outOfViewportYPenalty;
+
+    if (!bestMatch || score < bestMatch.score) {
+      bestMatch = { url: anchor.url, score };
+    }
+  }
+
+  return bestMatch?.url || null;
+};
+
 const resolveDocumentMediaFallback = (): string | null => {
   const canonical = document.querySelector<HTMLLinkElement>('link[rel="canonical"]')?.href;
   const normalizedCanonical = canonical ? normalizeTikTokMediaUrl(canonical, window.location.href) : null;
@@ -279,6 +322,16 @@ const resolveDocumentMediaFallback = (): string | null => {
   }
 
   return normalizeTikTokMediaUrl(window.location.href);
+};
+
+const resolveCurrentMediaUrl = (anchors: MediaAnchor[] = collectMediaAnchors(document)): string | null => {
+  const viewportMediaUrl = pickViewportMediaUrl(anchors);
+
+  if (viewportMediaUrl) {
+    return viewportMediaUrl;
+  }
+
+  return resolveDocumentMediaFallback();
 };
 
 const resolveMediaUrlForActionColumn = (actionColumn: HTMLElement, globalAnchors: MediaAnchor[]): string | null => {
@@ -300,7 +353,7 @@ const resolveMediaUrlForActionColumn = (actionColumn: HTMLElement, globalAnchors
     return nearestGlobalUrl;
   }
 
-  return resolveDocumentMediaFallback();
+  return resolveCurrentMediaUrl(globalAnchors);
 };
 
 const isActionColumnCandidate = (candidate: HTMLElement): boolean => {
@@ -311,6 +364,10 @@ const isActionColumnCandidate = (candidate: HTMLElement): boolean => {
   const rect = candidate.getBoundingClientRect();
 
   if (rect.width < 20 || rect.width > 260 || rect.height < 72) {
+    return false;
+  }
+
+  if (rect.bottom < -120 || rect.top > window.innerHeight + 120) {
     return false;
   }
 
@@ -363,12 +420,15 @@ const collectActionColumns = (): HTMLElement[] => {
   return [...uniqueColumns];
 };
 
-const createActionButton = (): HTMLButtonElement => {
+const createActionButton = (floating = false): HTMLButtonElement => {
   ensureStyles();
 
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'lce-button-tiktok';
+  if (floating) {
+    button.classList.add('lce-button-tiktok-floating');
+  }
   button.textContent = BUTTON_TEXT_BY_STATE.idle;
   button.title = DEFAULT_BUTTON_TITLE;
 
@@ -390,7 +450,7 @@ const createActionButton = (): HTMLButtonElement => {
         const runtimeUrl =
           actionColumn instanceof HTMLElement
             ? resolveMediaUrlForActionColumn(actionColumn, collectMediaAnchors(document))
-            : normalizeTikTokMediaUrl(window.location.href);
+            : resolveCurrentMediaUrl();
         const targetUrl = button.dataset.targetUrl || runtimeUrl;
 
         if (!targetUrl) {
@@ -468,24 +528,33 @@ const upsertActionButton = (actionColumn: HTMLElement, targetUrl: string): void 
   }
 };
 
-const removeLegacyFloatingButton = (): void => {
-  const legacyFloatingButton = document.getElementById(LEGACY_FLOATING_BUTTON_ID);
+const removeFloatingButton = (): void => {
+  const floatingButton = document.getElementById(FLOATING_BUTTON_ID);
 
-  if (legacyFloatingButton) {
-    legacyFloatingButton.remove();
+  if (floatingButton) {
+    floatingButton.remove();
   }
 };
 
-const scanTikTokTargets = (): void => {
-  removeLegacyFloatingButton();
+const upsertFloatingButton = (targetUrl: string): void => {
+  let floatingButton = document.getElementById(FLOATING_BUTTON_ID) as HTMLButtonElement | null;
 
-  const actionColumns = collectActionColumns();
-
-  if (actionColumns.length === 0) {
-    return;
+  if (!floatingButton) {
+    floatingButton = createActionButton(true);
+    floatingButton.id = FLOATING_BUTTON_ID;
+    floatingButton.setAttribute(BUTTON_ATTRIBUTE, '1');
+    document.body.appendChild(floatingButton);
   }
 
+  floatingButton.dataset.targetUrl = targetUrl;
+  floatingButton.title = DEFAULT_BUTTON_TITLE;
+};
+
+const scanTikTokTargets = (): void => {
+  const actionColumns = collectActionColumns();
   const globalAnchors = collectMediaAnchors(document);
+  const fallbackUrl = resolveCurrentMediaUrl(globalAnchors);
+  let hasInlineButton = false;
 
   for (const actionColumn of actionColumns) {
     const targetUrl = resolveMediaUrlForActionColumn(actionColumn, globalAnchors);
@@ -495,7 +564,37 @@ const scanTikTokTargets = (): void => {
     }
 
     upsertActionButton(actionColumn, targetUrl);
+    hasInlineButton = true;
   }
+
+  if (!hasInlineButton && fallbackUrl) {
+    upsertFloatingButton(fallbackUrl);
+    return;
+  }
+
+  removeFloatingButton();
+};
+
+const isGetActiveMediaUrlMessage = (value: unknown): value is { type: string } => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const payload = value as { type?: unknown };
+  return payload.type === GET_ACTIVE_MEDIA_URL_TYPE;
+};
+
+const registerActiveMediaUrlListener = (): void => {
+  chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+    if (!isGetActiveMediaUrlMessage(message)) {
+      return;
+    }
+
+    sendResponse({
+      ok: true,
+      url: resolveCurrentMediaUrl(),
+    });
+  });
 };
 
 const startObservedScanner = (scan: () => void): void => {
@@ -535,4 +634,5 @@ const startObservedScanner = (scan: () => void): void => {
   queueScan();
 };
 
+registerActiveMediaUrlListener();
 startObservedScanner(scanTikTokTargets);

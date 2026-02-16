@@ -169,7 +169,7 @@ const getPairingFailureMessage = (params: {
   const remoteError = asNonEmptyString(body?.error) || asNonEmptyString(body?.message);
 
   if (status === 404 && body?.error === 'pairing_code_invalid_or_expired') {
-    return 'Code invalide ou expiré. Regénère un code avec /overlay-code.';
+    return 'Code invalide ou expiré. Regénère un code avec /pair-code.';
   }
 
   if (status === 404) {

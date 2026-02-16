@@ -7,6 +7,7 @@ const settings: ExtensionSettings = {
   ingestToken: 'ingest-token',
   guildId: '1234567890',
   authorName: 'LiveChat Extension',
+  authorImage: 'https://cdn.example.com/avatar.png',
 };
 
 describe('ingest client', () => {
@@ -27,6 +28,7 @@ describe('ingest client', () => {
       guildId: '1234567890',
       url: 'https://www.youtube.com/watch?v=abc123',
       authorName: 'LiveChat Extension',
+      authorImage: 'https://cdn.example.com/avatar.png',
     });
   });
 
@@ -47,6 +49,7 @@ describe('ingest client', () => {
       text: 'hello',
       forceRefresh: true,
       authorName: 'LiveChat Extension',
+      authorImage: 'https://cdn.example.com/avatar.png',
     });
   });
 

@@ -10,6 +10,7 @@ export interface ExtensionSettings {
   ingestToken: string;
   guildId: string;
   authorName: string;
+  authorImage: string | null;
 }
 
 export interface ComposeDraft {
@@ -88,6 +89,7 @@ export const normalizeSettingsInput = (input: Partial<ExtensionSettings>): Setti
   }
 
   const authorName = asNonEmptyString(input.authorName) || DEFAULT_AUTHOR_NAME;
+  const authorImage = asNonEmptyString(input.authorImage) || null;
 
   return {
     ok: true,
@@ -95,7 +97,8 @@ export const normalizeSettingsInput = (input: Partial<ExtensionSettings>): Setti
       apiUrl,
       ingestToken,
       guildId,
-      authorName
+      authorName,
+      authorImage
     }
   };
 };

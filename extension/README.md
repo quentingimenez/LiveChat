@@ -13,10 +13,12 @@ Extension MV3 pour envoyer rapidement des liens média vers `POST /ingest` du bo
   - `Envoyer vers LiveChat avec texte`
 - Popup d’envoi avec texte (`url`, `text`, `forceRefresh`)
 - Page d’options:
+  - appairage via code Discord (`/overlay-code`)
   - `API_URL`
   - `INGEST_API_TOKEN`
   - `guildId`
   - `authorName`
+  - `authorImage`
 - Permissions domaine API dynamiques (`chrome.permissions`).
 
 ## Pré-requis
@@ -63,17 +65,18 @@ Commandes utiles:
 ## Configuration
 
 1. Ouvrir la page d’options de l’extension.
-2. Renseigner `API_URL`, `INGEST_API_TOKEN`, `guildId`, `authorName`.
-3. Sauvegarder.
-4. Accepter la permission domaine demandée pour l’URL API.
-5. (Optionnel) Cliquer `Tester la config`.
+2. Saisir `API_URL`, puis un code généré par `/overlay-code`.
+3. Cliquer `Récupérer la configuration`.
+4. Vérifier les champs récupérés (`INGEST_API_TOKEN`, `guildId`, `authorName`, `authorImage`) puis sauvegarder si besoin.
+5. Accepter la permission domaine demandée pour l’URL API.
+6. (Optionnel) Cliquer `Tester la config`.
 
 ## Contrat `/ingest` utilisé
 
 - `POST ${API_URL}/ingest`
 - Header: `Authorization: Bearer <INGEST_API_TOKEN>`
-- Payload rapide: `{ guildId, url, authorName }`
-- Payload compose: `{ guildId, url, text, forceRefresh, authorName }`
+- Payload rapide: `{ guildId, url, authorName, authorImage? }`
+- Payload compose: `{ guildId, url, text, forceRefresh, authorName, authorImage? }`
 
 ## Limites connues
 

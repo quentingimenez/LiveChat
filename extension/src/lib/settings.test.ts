@@ -8,6 +8,7 @@ describe('settings validation', () => {
       ingestToken: ' abc ',
       guildId: '123',
       authorName: 'Mon extension',
+      authorImage: 'https://cdn.example.com/avatar.png',
     });
 
     expect(result.ok).toBe(true);
@@ -17,6 +18,7 @@ describe('settings validation', () => {
       expect(result.value.ingestToken).toBe('abc');
       expect(result.value.guildId).toBe('123');
       expect(result.value.authorName).toBe('Mon extension');
+      expect(result.value.authorImage).toBe('https://cdn.example.com/avatar.png');
     }
   });
 
@@ -32,6 +34,7 @@ describe('settings validation', () => {
 
     if (result.ok) {
       expect(result.value.authorName).toBe(DEFAULT_AUTHOR_NAME);
+      expect(result.value.authorImage).toBeNull();
     }
   });
 

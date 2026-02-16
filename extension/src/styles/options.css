@@ -76,6 +76,28 @@ body {
   gap: 10px;
 }
 
+.pairing-card {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(116, 177, 255, 0.42);
+  background: linear-gradient(160deg, rgba(60, 95, 176, 0.24) 0%, rgba(33, 51, 94, 0.24) 100%);
+}
+
+.pairing-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.pairing-subtitle {
+  margin: 0;
+  font-size: 12px;
+  color: #d7defa;
+}
+
 .field-label {
   font-size: 13px;
   font-weight: 700;

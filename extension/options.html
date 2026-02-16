@@ -14,10 +14,23 @@
             <p class="options-kicker">LiveChat Extension</p>
           </div>
           <h1>Configuration</h1>
-          <p class="options-subtitle">Paramètres d’envoi vers `/ingest`.</p>
+          <p class="options-subtitle">Paramètres d’envoi vers `/ingest` et appairage via `/overlay-code`.</p>
         </header>
 
         <form id="options-form" class="options-form">
+          <section class="pairing-card">
+            <h2 class="pairing-title">Appairage par code</h2>
+            <p class="pairing-subtitle">Génère un code Discord avec <code>/overlay-code</code>, puis colle-le ici.</p>
+
+            <label class="field-label" for="pairing-code">Code unique</label>
+            <input id="pairing-code" class="field-input" type="text" placeholder="AB12CD34" />
+
+            <label class="field-label" for="device-name">Nom de l’extension (optionnel)</label>
+            <input id="device-name" class="field-input" type="text" placeholder="LiveChat Extension" />
+
+            <button id="pair-button" class="btn btn-primary" type="button">Récupérer la configuration</button>
+          </section>
+
           <label class="field-label" for="api-url">API_URL</label>
           <input id="api-url" class="field-input" type="url" placeholder="https://bot.exemple.com" required />
 
@@ -29,6 +42,9 @@
 
           <label class="field-label" for="author-name">authorName</label>
           <input id="author-name" class="field-input" type="text" placeholder="LiveChat Extension" />
+
+          <label class="field-label" for="author-image">authorImage (avatar URL)</label>
+          <input id="author-image" class="field-input" type="url" placeholder="https://cdn.discordapp.com/..." />
 
           <p id="permission-state" class="permission-state">Autorisation domaine: non configuré.</p>
 

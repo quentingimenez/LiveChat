@@ -36,6 +36,7 @@ type IngestPayload = {
   guildId: string;
   url: string;
   authorName: string;
+  authorImage?: string;
   text?: string;
   forceRefresh?: boolean;
 };
@@ -88,6 +89,10 @@ export const buildIngestPayload = (request: IngestRequest, settings: ExtensionSe
     url: normalizedUrl,
     authorName: settings.authorName || DEFAULT_AUTHOR_NAME
   };
+
+  if (settings.authorImage) {
+    payload.authorImage = settings.authorImage;
+  }
 
   if (request.mode === 'compose') {
     const text = toNonEmptyString(request.text);

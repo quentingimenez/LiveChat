@@ -88,7 +88,7 @@ const normalizeTikTokItemId = (value: unknown): string | null => {
     return null;
   }
 
-  return /^\d{6,24}$/.test(normalized) ? normalized : null;
+  return /^\d{15,22}$/.test(normalized) ? normalized : null;
 };
 
 const normalizeTikTokPageUrl = (value: unknown): string | null => {
@@ -166,7 +166,7 @@ const extractTikTokItemIdFromUrl = (value: unknown): string | null => {
 
   try {
     const parsed = new URL(candidate);
-    const pathMatch = parsed.pathname.match(/\/(?:video|photo)\/(\d{6,24})/i);
+    const pathMatch = parsed.pathname.match(/\/(?:video|photo)\/(\d{15,22})/i);
     const pathItemId = normalizeTikTokItemId(pathMatch?.[1]);
 
     if (pathItemId) {
@@ -182,7 +182,7 @@ const extractTikTokItemIdFromUrl = (value: unknown): string | null => {
     // Ignore malformed URLs.
   }
 
-  const fallbackMatch = candidate.match(/\b(\d{6,24})\b/);
+  const fallbackMatch = candidate.match(/\b(\d{15,22})\b/);
   return normalizeTikTokItemId(fallbackMatch?.[1]);
 };
 

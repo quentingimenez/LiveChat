@@ -278,6 +278,52 @@ const resetButtonStateLater = (button: HTMLButtonElement, delayMs = 2200): void 
   buttonResetTimers.set(button, timer);
 };
 
+const extractFirstMediaUrlFromScope = (root: ParentNode): string | null => {
+  const anchors = Array.from(root.querySelectorAll<HTMLAnchorElement>(MEDIA_LINK_SELECTOR));
+
+  for (const anchor of anchors) {
+    const rawHref = anchor.getAttribute('href') || anchor.href;
+    const normalized = normalizeTikTokMediaUrl(rawHref, window.location.href);
+
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+};
+
+const resolveMediaUrlFromViewportCenter = (): string | null => {
+  const probePoints: Array<{ xRatio: number; yRatio: number }> = [
+    { xRatio: 0.5, yRatio: 0.45 },
+    { xRatio: 0.5, yRatio: 0.55 },
+    { xRatio: 0.5, yRatio: 0.35 },
+    { xRatio: 0.5, yRatio: 0.65 },
+  ];
+
+  for (const point of probePoints) {
+    const startNode = document.elementFromPoint(
+      Math.round(window.innerWidth * point.xRatio),
+      Math.round(window.innerHeight * point.yRatio),
+    );
+
+    let scope: HTMLElement | null =
+      startNode instanceof HTMLElement ? startNode : startNode instanceof Element ? startNode.parentElement : null;
+
+    for (let depth = 0; depth < 12 && scope; depth += 1) {
+      const scopedUrl = extractFirstMediaUrlFromScope(scope);
+
+      if (scopedUrl) {
+        return scopedUrl;
+      }
+
+      scope = scope.parentElement;
+    }
+  }
+
+  return null;
+};
+
 const collectMediaAnchors = (root: ParentNode = document): MediaAnchor[] => {
   const anchors = Array.from(root.querySelectorAll<HTMLAnchorElement>(MEDIA_LINK_SELECTOR));
   const mediaAnchors: MediaAnchor[] = [];
@@ -382,6 +428,12 @@ const resolveDocumentMediaFallback = (): string | null => {
 };
 
 const resolveCurrentMediaUrl = (anchors: MediaAnchor[] = collectMediaAnchors(document)): string | null => {
+  const viewportCenterMediaUrl = resolveMediaUrlFromViewportCenter();
+
+  if (viewportCenterMediaUrl) {
+    return viewportCenterMediaUrl;
+  }
+
   const viewportMediaUrl = pickViewportMediaUrl(anchors);
 
   if (viewportMediaUrl) {

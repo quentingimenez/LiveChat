@@ -551,8 +551,27 @@ const removeLegacyFloatingButton = (): void => {
   }
 };
 
+const isYoutubeFullscreenActive = (): boolean => {
+  if (document.fullscreenElement) {
+    return true;
+  }
+
+  if (document.querySelector('.html5-video-player.ytp-fullscreen')) {
+    return true;
+  }
+
+  return Boolean(document.querySelector('ytd-player[fullscreen]'));
+};
+
 const scanYoutubeTargets = (): void => {
   removeLegacyFloatingButton();
+
+  if (isYoutubeFullscreenActive()) {
+    removeShortsFloatingButton();
+    removeWatchFloatingButton();
+    removeInlineWatchButtons();
+    return;
+  }
 
   const currentUrl = getCurrentYoutubeUrl();
 
@@ -617,6 +636,9 @@ const startObservedScanner = (scan: () => void): void => {
       queueScan();
     }
   }, 700);
+
+  document.addEventListener('fullscreenchange', queueScan);
+  window.addEventListener('resize', queueScan);
 
   queueScan();
 };

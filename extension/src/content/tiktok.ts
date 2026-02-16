@@ -7,6 +7,8 @@ const MEDIA_LINK_SELECTOR = 'a[href*="/video/"], a[href*="/photo/"]';
 const LIKE_ICON_SELECTOR = '[data-e2e="browse-like-icon"], [data-e2e="like-icon"], [data-e2e="video-like-icon"]';
 const COMMENT_ICON_SELECTOR = '[data-e2e*="comment-icon"]';
 const SHARE_ICON_SELECTOR = '[data-e2e*="share-icon"]';
+const ACTION_ICON_SELECTOR = `${LIKE_ICON_SELECTOR}, ${COMMENT_ICON_SELECTOR}, ${SHARE_ICON_SELECTOR}`;
+const ACTION_INTERACTIVE_SELECTOR = 'button, [role="button"]';
 
 type ButtonState = 'idle' | 'loading' | 'success' | 'error';
 const BUTTON_TEXT_BY_STATE: Record<ButtonState, string> = {
@@ -249,7 +251,9 @@ const pickNearestMediaUrl = (actionColumn: HTMLElement, anchors: MediaAnchor[]):
   for (const anchor of anchors) {
     const deltaX = Math.abs(anchor.centerX - centerX);
     const deltaY = Math.abs(anchor.centerY - centerY);
-    const score = deltaY * 3 + deltaX;
+    const isLikelyVisible = anchor.centerY >= -160 && anchor.centerY <= window.innerHeight + 160;
+    const visibilityPenalty = isLikelyVisible ? 0 : 10_000;
+    const score = deltaY * 3 + deltaX + visibilityPenalty;
 
     if (!bestMatch || score < bestMatch.score) {
       bestMatch = { url: anchor.url, score };
@@ -306,7 +310,7 @@ const isActionColumnCandidate = (candidate: HTMLElement): boolean => {
 
   const rect = candidate.getBoundingClientRect();
 
-  if (rect.width < 24 || rect.width > 160 || rect.height < 120) {
+  if (rect.width < 20 || rect.width > 260 || rect.height < 72) {
     return false;
   }
 
@@ -318,13 +322,14 @@ const isActionColumnCandidate = (candidate: HTMLElement): boolean => {
     return false;
   }
 
-  return candidate.querySelectorAll('button').length >= 2;
+  const actionButtonsCount = candidate.querySelectorAll(ACTION_INTERACTIVE_SELECTOR).length;
+  return actionButtonsCount >= 2;
 };
 
-const findActionColumnFromButton = (button: HTMLButtonElement): HTMLElement | null => {
-  let current: HTMLElement | null = button;
+const findActionColumnFromNode = (node: HTMLElement): HTMLElement | null => {
+  let current: HTMLElement | null = node;
 
-  for (let depth = 0; depth < 8 && current; depth += 1) {
+  for (let depth = 0; depth < 10 && current; depth += 1) {
     const nextParent: HTMLElement | null = current.parentElement;
 
     if (!nextParent) {
@@ -342,17 +347,11 @@ const findActionColumnFromButton = (button: HTMLButtonElement): HTMLElement | nu
 };
 
 const collectActionColumns = (): HTMLElement[] => {
-  const likeNodes = Array.from(document.querySelectorAll<HTMLElement>(LIKE_ICON_SELECTOR));
+  const actionIconNodes = Array.from(document.querySelectorAll<HTMLElement>(ACTION_ICON_SELECTOR));
   const uniqueColumns = new Set<HTMLElement>();
 
-  for (const likeNode of likeNodes) {
-    const button = likeNode.closest('button');
-
-    if (!(button instanceof HTMLButtonElement)) {
-      continue;
-    }
-
-    const actionColumn = findActionColumnFromButton(button);
+  for (const iconNode of actionIconNodes) {
+    const actionColumn = findActionColumnFromNode(iconNode);
 
     if (!actionColumn) {
       continue;
@@ -426,7 +425,7 @@ const findInsertionPoint = (actionColumn: HTMLElement): Element | null => {
       continue;
     }
 
-    if (child.querySelector('button')) {
+    if (child.querySelector(ACTION_INTERACTIVE_SELECTOR)) {
       return child;
     }
   }

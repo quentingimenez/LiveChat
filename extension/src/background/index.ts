@@ -186,8 +186,6 @@ const extractTikTokItemIdFromUrl = (value: unknown): string | null => {
   return normalizeTikTokItemId(fallbackMatch?.[1]);
 };
 
-const toTikTokCanonicalUrl = (itemId: string): string => `https://www.tiktok.com/video/${itemId}`;
-
 const getTikTokCaptureStorageKey = (tabId: number): string => `${TIKTOK_CAPTURE_STORAGE_PREFIX}${tabId}`;
 
 const createEmptyTikTokCaptureState = (): TikTokCaptureState => ({
@@ -394,7 +392,7 @@ const resolveTikTokCapturedUrlForTab = async (
     const domRecord = state.byItemId[domItemId];
 
     if (domRecord) {
-      return domRecord.pageUrl || (domRecord.itemId ? toTikTokCanonicalUrl(domRecord.itemId) : null) || domRecord.mediaUrl;
+      return domRecord.pageUrl || domRecord.mediaUrl || normalizedDomUrl;
     }
   }
 
@@ -402,11 +400,7 @@ const resolveTikTokCapturedUrlForTab = async (
     const activeRecord = state.byItemId[state.activeItemId];
 
     if (activeRecord) {
-      return (
-        activeRecord.pageUrl ||
-        (activeRecord.itemId ? toTikTokCanonicalUrl(activeRecord.itemId) : null) ||
-        activeRecord.mediaUrl
-      );
+      return activeRecord.pageUrl || activeRecord.mediaUrl || normalizedDomUrl;
     }
   }
 
@@ -415,7 +409,7 @@ const resolveTikTokCapturedUrlForTab = async (
   }
 
   if (state.latest) {
-    return state.latest.pageUrl || (state.latest.itemId ? toTikTokCanonicalUrl(state.latest.itemId) : null) || state.latest.mediaUrl;
+    return state.latest.pageUrl || state.latest.mediaUrl || normalizedDomUrl;
   }
 
   return null;
@@ -456,11 +450,9 @@ const captureTikTokWebRequest = (details: chrome.webRequest.WebResponseCacheDeta
   }
 
   const itemId = extractTikTokItemIdFromUrl(details.url);
-  const canonicalUrl = itemId ? toTikTokCanonicalUrl(itemId) : null;
 
   void upsertTikTokCapture(details.tabId, {
     itemId,
-    pageUrl: canonicalUrl || undefined,
     playUrl: isPlayRequest ? details.url : undefined,
     mediaUrl: isMediaRequest ? details.url : undefined,
   });
@@ -479,11 +471,9 @@ const captureTikTokRedirect = (details: chrome.webRequest.WebRedirectionResponse
   }
 
   const itemId = extractTikTokItemIdFromUrl(details.url) || extractTikTokItemIdFromUrl(details.redirectUrl);
-  const canonicalUrl = itemId ? toTikTokCanonicalUrl(itemId) : null;
 
   void upsertTikTokCapture(details.tabId, {
     itemId,
-    pageUrl: canonicalUrl || undefined,
     playUrl: playUrl || undefined,
     mediaUrl: redirectMediaUrl || undefined,
   });

@@ -88,7 +88,10 @@
   <body>
     <form id="pairing-form" class="panel">
       <h1>Appairage Overlay</h1>
-      <p>Saisis l'URL du serveur LiveChat et le code généré avec la commande Discord <code>/pair-code</code>.</p>
+      <p>
+        Saisis l'URL du serveur LiveChat et le code généré avec la commande Discord <code>/pair-code</code>.
+        Le nom est généré automatiquement au format <code>Overlay-&lt;nom&gt;</code>.
+      </p>
 
       <label>
         URL du serveur
@@ -98,11 +101,6 @@
       <label>
         Code d'appairage
         <input id="pairing-code" type="text" maxlength="16" placeholder="AB12CD" required />
-      </label>
-
-      <label>
-        Nom du PC
-        <input id="device-name" type="text" placeholder="PC Stream" required />
       </label>
 
       <button id="submit-button" type="submit">Appairer</button>

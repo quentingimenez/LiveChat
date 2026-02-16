@@ -105,8 +105,27 @@ export const IngestRoutes = () =>
     fastify.post<{ Body: ConsumeIngestPairingBody }>('/pair/consume', async (request, reply) => {
       const rawCode = toNonEmptyString(request.body?.code)?.toUpperCase() || null;
       const deviceName = toNonEmptyString(request.body?.deviceName) || DEFAULT_INGEST_DEVICE_NAME;
+      const codePrefix = rawCode ? rawCode.slice(0, 3) : null;
+
+      logger.info(
+        {
+          ip: request.ip,
+          hasCode: !!rawCode,
+          codePrefix,
+          deviceName,
+        },
+        '[INGEST] Pairing consume request received',
+      );
 
       if (!rawCode) {
+        logger.warn(
+          {
+            ip: request.ip,
+            deviceName,
+          },
+          '[INGEST] Pairing consume rejected: invalid payload',
+        );
+
         return reply.code(400).send({
           error: 'invalid_payload',
         });
@@ -131,6 +150,15 @@ export const IngestRoutes = () =>
       });
 
       if (!pairingCode) {
+        logger.warn(
+          {
+            ip: request.ip,
+            codePrefix,
+            deviceName,
+          },
+          '[INGEST] Pairing consume rejected: code invalid or expired',
+        );
+
         return reply.code(404).send({
           error: 'pairing_code_invalid_or_expired',
         });
@@ -159,6 +187,17 @@ export const IngestRoutes = () =>
         defaultAuthorImage: authorImage,
         createdByDiscordUserId: pairingCode.createdByDiscordUserId,
       });
+
+      logger.info(
+        {
+          ip: request.ip,
+          codePrefix,
+          guildId: pairingCode.guildId,
+          deviceName,
+          ingestClientId: client.id,
+        },
+        '[INGEST] Pairing consume succeeded',
+      );
 
       return reply.send({
         apiBaseUrl: env.API_URL,

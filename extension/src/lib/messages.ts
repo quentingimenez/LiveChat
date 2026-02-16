@@ -6,6 +6,8 @@ export const MESSAGE_TYPES = {
   SEND_COMPOSE: 'lce/send-compose',
   GET_COMPOSE_STATE: 'lce/get-compose-state',
   GET_ACTIVE_MEDIA_URL: 'lce/get-active-media-url',
+  TIKTOK_SYNC_ACTIVE_ITEM: 'lce/tiktok-sync-active-item',
+  TIKTOK_GET_CAPTURED_URL: 'lce/tiktok-get-captured-url',
   SHOW_TOAST: 'lce/show-toast'
 } as const;
 
@@ -30,6 +32,16 @@ export interface GetActiveMediaUrlRequestMessage {
   type: (typeof MESSAGE_TYPES)['GET_ACTIVE_MEDIA_URL'];
 }
 
+export interface TikTokSyncActiveItemRequestMessage {
+  type: (typeof MESSAGE_TYPES)['TIKTOK_SYNC_ACTIVE_ITEM'];
+  itemId: string | null;
+  url: string | null;
+}
+
+export interface TikTokGetCapturedUrlRequestMessage {
+  type: (typeof MESSAGE_TYPES)['TIKTOK_GET_CAPTURED_URL'];
+}
+
 export interface ShowToastMessage {
   type: (typeof MESSAGE_TYPES)['SHOW_TOAST'];
   level: ToastLevel;
@@ -40,7 +52,9 @@ export type BackgroundRequestMessage =
   | SendQuickRequestMessage
   | SendComposeRequestMessage
   | GetComposeStateRequestMessage
-  | GetActiveMediaUrlRequestMessage;
+  | GetActiveMediaUrlRequestMessage
+  | TikTokSyncActiveItemRequestMessage
+  | TikTokGetCapturedUrlRequestMessage;
 
 export interface ActionResponse {
   ok: boolean;
@@ -78,6 +92,14 @@ const asTrimmedString = (value: unknown): string | null => {
   return normalized.length > 0 ? normalized : null;
 };
 
+const asNullableTrimmedString = (value: unknown): string | null => {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  return asTrimmedString(value);
+};
+
 export const isSendQuickRequest = (value: unknown): value is SendQuickRequestMessage => {
   if (!isRecord(value) || value.type !== MESSAGE_TYPES.SEND_QUICK) {
     return false;
@@ -102,12 +124,32 @@ export const isGetActiveMediaUrlRequest = (value: unknown): value is GetActiveMe
   return isRecord(value) && value.type === MESSAGE_TYPES.GET_ACTIVE_MEDIA_URL;
 };
 
+export const isTikTokSyncActiveItemRequest = (value: unknown): value is TikTokSyncActiveItemRequestMessage => {
+  if (!isRecord(value) || value.type !== MESSAGE_TYPES.TIKTOK_SYNC_ACTIVE_ITEM) {
+    return false;
+  }
+
+  const itemId = asNullableTrimmedString(value.itemId);
+  const url = asNullableTrimmedString(value.url);
+
+  return (
+    (itemId === null || typeof itemId === 'string') &&
+    (url === null || typeof url === 'string')
+  );
+};
+
+export const isTikTokGetCapturedUrlRequest = (value: unknown): value is TikTokGetCapturedUrlRequestMessage => {
+  return isRecord(value) && value.type === MESSAGE_TYPES.TIKTOK_GET_CAPTURED_URL;
+};
+
 export const isBackgroundRequestMessage = (value: unknown): value is BackgroundRequestMessage => {
   return (
     isSendQuickRequest(value) ||
     isSendComposeRequest(value) ||
     isGetComposeStateRequest(value) ||
-    isGetActiveMediaUrlRequest(value)
+    isGetActiveMediaUrlRequest(value) ||
+    isTikTokSyncActiveItemRequest(value) ||
+    isTikTokGetCapturedUrlRequest(value)
   );
 };
 

@@ -50,7 +50,7 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name != 'pull_request'
 
     steps:
       - name: Download package artifact
@@ -59,8 +59,20 @@ jobs:
           name: livechat-extension-package
           path: release
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release (version tag)
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          files: release/*.zip
+          generate_release_notes: true
+
+      - name: Create/Update GitHub Release (latest)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: LiveChat Extension (latest)
+          prerelease: true
+          make_latest: false
           files: release/*.zip
           generate_release_notes: true

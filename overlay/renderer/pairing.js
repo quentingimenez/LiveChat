@@ -5,7 +5,6 @@
 
   const serverUrlInput = document.getElementById('server-url');
   const pairingCodeInput = document.getElementById('pairing-code');
-  const deviceNameInput = document.getElementById('device-name');
 
   const setStatus = (message, kind) => {
     statusNode.textContent = message;
@@ -17,10 +16,6 @@
 
     if (config?.serverUrl) {
       serverUrlInput.value = config.serverUrl;
-    }
-
-    if (!deviceNameInput.value) {
-      deviceNameInput.value = `Overlay-${Math.floor(Math.random() * 1000)}`;
     }
   };
 
@@ -34,7 +29,6 @@
       await window.livechatOverlay.consumePairing({
         serverUrl: serverUrlInput.value.trim(),
         code: pairingCodeInput.value.trim(),
-        deviceName: deviceNameInput.value.trim(),
       });
 
       setStatus('Appairage réussi. Fermeture de la fenêtre...', 'success');

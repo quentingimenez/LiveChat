@@ -786,9 +786,9 @@ ipcMain.on('overlay:playback-stop', (_event, payload) => {
 ipcMain.handle('pairing:consume', async (_event, payload) => {
   const serverUrl = normalizeServerUrl(`${payload?.serverUrl || ''}`);
   const code = `${payload?.code || ''}`.toUpperCase().trim();
-  const deviceName = `${payload?.deviceName || ''}`.trim();
+  const requestedDeviceName = `${payload?.deviceName || ''}`.trim();
 
-  if (!serverUrl || !code || !deviceName) {
+  if (!serverUrl || !code) {
     throw new Error('missing_required_fields');
   }
 
@@ -800,7 +800,7 @@ ipcMain.handle('pairing:consume', async (_event, payload) => {
       endpoint,
       {
         code,
-        deviceName,
+        deviceName: requestedDeviceName || undefined,
       },
       {
         rejectUnauthorized: true,
@@ -812,7 +812,7 @@ ipcMain.handle('pairing:consume', async (_event, payload) => {
         endpoint,
         {
           code,
-          deviceName,
+          deviceName: requestedDeviceName || undefined,
         },
         {
           rejectUnauthorized: false,
@@ -837,12 +837,14 @@ ipcMain.handle('pairing:consume', async (_event, payload) => {
     throw new Error('invalid_pairing_response');
   }
 
+  const resolvedDeviceName = `${parsed?.deviceName || requestedDeviceName || ''}`.trim() || null;
+
   saveConfig({
     serverUrl: normalizeServerUrl(parsed.apiBaseUrl || serverUrl),
     clientToken: parsed.clientToken,
     clientId: parsed.clientId,
     guildId: parsed.guildId,
-    deviceName,
+    deviceName: resolvedDeviceName,
   });
 
   if (loadConfig().enabled) {

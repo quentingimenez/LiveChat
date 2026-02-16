@@ -9,7 +9,7 @@
     "48": "icon.png",
     "128": "icon.png"
   },
-  "permissions": ["storage", "contextMenus", "tabs", "activeTab", "scripting"],
+  "permissions": ["storage", "contextMenus", "tabs", "activeTab", "scripting", "webRequest"],
   "host_permissions": [
     "https://youtube.com/*",
     "https://*.youtube.com/*",

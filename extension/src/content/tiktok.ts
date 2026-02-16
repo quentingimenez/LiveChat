@@ -1,10 +1,11 @@
-import { MESSAGE_TYPES } from '../lib/messages';
-
 const STYLE_ID = 'lce-tiktok-style';
 const BUTTON_ATTRIBUTE = 'data-lce-tiktok-button';
 const ACTION_ITEM_ATTRIBUTE = 'data-lce-tiktok-action-item';
 const FLOATING_BUTTON_ID = 'lce-tiktok-floating-button';
 const DEFAULT_BUTTON_TITLE = 'Envoyer ce TikTok vers LiveChat';
+const GET_ACTIVE_MEDIA_URL_TYPE = 'lce/get-active-media-url';
+const TIKTOK_SYNC_ACTIVE_ITEM_TYPE = 'lce/tiktok-sync-active-item';
+const TIKTOK_GET_CAPTURED_URL_TYPE = 'lce/tiktok-get-captured-url';
 const MEDIA_LINK_SELECTOR = 'a[href*="/video/"], a[href*="/photo/"]';
 const LIKE_ICON_SELECTOR = [
   '[data-e2e="browse-like-icon"]',
@@ -168,14 +169,14 @@ const extractMediaItemId = (url: string | null | undefined): string | null => {
     return null;
   }
 
-  const match = url.match(/\/(?:video|photo)\/(\d{6,24})/i);
+  const match = url.match(/\/(?:video|photo)\/(\d{15,22})/i);
   return match?.[1] || null;
 };
 
 const resolveCapturedTikTokUrl = async (): Promise<string | null> => {
   try {
     const response = (await chrome.runtime.sendMessage({
-      type: MESSAGE_TYPES.TIKTOK_GET_CAPTURED_URL,
+      type: TIKTOK_GET_CAPTURED_URL_TYPE,
     })) as { ok?: unknown; url?: unknown };
 
     if (!response || response.ok !== true || typeof response.url !== 'string' || !response.url.trim()) {
@@ -205,7 +206,7 @@ const syncActiveMediaToBackground = (url: string | null): void => {
 
   void chrome.runtime
     .sendMessage({
-      type: MESSAGE_TYPES.TIKTOK_SYNC_ACTIVE_ITEM,
+      type: TIKTOK_SYNC_ACTIVE_ITEM_TYPE,
       itemId,
       url: url || null,
     })
@@ -638,7 +639,7 @@ const isGetActiveMediaUrlMessage = (value: unknown): value is { type: string } =
   }
 
   const payload = value as { type?: unknown };
-  return payload.type === MESSAGE_TYPES.GET_ACTIVE_MEDIA_URL;
+  return payload.type === GET_ACTIVE_MEDIA_URL_TYPE;
 };
 
 const registerActiveMediaUrlListener = (): void => {

@@ -2,6 +2,15 @@ import crypto from 'crypto';
 import { addMinutes } from 'date-fns';
 import { CommandInteraction, EmbedBuilder, SlashCommandBuilder } from 'discord.js';
 
+const toNonEmptyString = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim();
+  return normalized || null;
+};
+
 const randomPairingCode = () => {
   const charset = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const bytes = crypto.randomBytes(6);
@@ -32,6 +41,36 @@ const generateUniquePairingCode = async () => {
   throw new Error('unable_to_generate_pairing_code');
 };
 
+const resolvePairingAuthorName = (interaction: CommandInteraction): string => {
+  const memberNick = toNonEmptyString((interaction.member as { nick?: unknown } | null)?.nick);
+
+  if (memberNick) {
+    return memberNick;
+  }
+
+  const globalName = toNonEmptyString(interaction.user.globalName);
+
+  if (globalName) {
+    return globalName;
+  }
+
+  return interaction.user.username;
+};
+
+const resolvePairingAuthorImage = (interaction: CommandInteraction): string => {
+  const memberAvatarHash = toNonEmptyString((interaction.member as { avatar?: unknown } | null)?.avatar);
+
+  if (interaction.guildId && memberAvatarHash) {
+    const extension = memberAvatarHash.startsWith('a_') ? 'gif' : 'png';
+    return `https://cdn.discordapp.com/guilds/${interaction.guildId}/users/${interaction.user.id}/avatars/${memberAvatarHash}.${extension}?size=256`;
+  }
+
+  return interaction.user.displayAvatarURL({
+    extension: 'png',
+    size: 256,
+  });
+};
+
 export const overlayCodeCommand = () => ({
   data: new SlashCommandBuilder()
     .setName(rosetty.t('overlayCodeCommand')!)
@@ -39,14 +78,18 @@ export const overlayCodeCommand = () => ({
   handler: async (interaction: CommandInteraction) => {
     const code = await generateUniquePairingCode();
     const expiresAt = addMinutes(new Date(), Math.max(1, env.PAIRING_CODE_TTL_MINUTES));
+    const authorName = resolvePairingAuthorName(interaction);
+    const authorImage = resolvePairingAuthorImage(interaction);
 
     await prisma.pairingCode.create({
       data: {
         code,
         guildId: interaction.guildId!,
         createdByDiscordUserId: interaction.user.id,
+        authorName,
+        authorImage,
         expiresAt,
-      },
+      } as any,
     });
 
     await interaction.reply({

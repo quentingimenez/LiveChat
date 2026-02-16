@@ -15,17 +15,17 @@ export const frLang: typeof enLang = {
 
   howToUseTitle: "Comment m'utiliser ?",
   howToUseDescription:
-    'Utilisez `/overlay-code` pour générer un code d’appairage à usage unique pour l’Overlay EXE, puis saisissez-le dans l’application desktop. Ensuite utilisez `/msg`, `/cmsg`, `/dire`, `/cdire` pour envoyer des médias.',
+    'Utilisez `/overlay-code` pour générer un code d’appairage à usage unique pour l’Overlay EXE ou la LiveChat Extension, puis saisissez-le dans l’application/extension. Ensuite utilisez `/msg`, `/cmsg`, `/dire`, `/cdire` pour envoyer des médias.',
 
   aliveCommand: 'dispo',
   aliveCommandDescription: 'Vérifiez si le bot est vivant',
   aliveCommandsAnswer: '{{username}}, Je suis en vie !',
 
   overlayCodeCommand: 'overlay-code',
-  overlayCodeCommandDescription: 'Générer un code d’appairage à usage unique pour Overlay EXE',
+  overlayCodeCommandDescription: 'Générer un code d’appairage à usage unique pour Overlay EXE ou LiveChat Extension',
   overlayCodeCommandAnswerTitle: 'Code d’appairage Overlay',
   overlayCodeCommandAnswerDescription:
-    'Utilisez ce code dans Overlay EXE : `{{code}}`\nExpire dans {{expiresIn}} minute(s).\nURL du serveur : {{apiUrl}}',
+    'Utilisez ce code dans Overlay EXE ou LiveChat Extension : `{{code}}`\nExpire dans {{expiresIn}} minute(s).\nURL du serveur : {{apiUrl}}',
 
   sendCommand: 'msg',
   sendCommandDescription: 'Envoyer du contenu sur le stream',

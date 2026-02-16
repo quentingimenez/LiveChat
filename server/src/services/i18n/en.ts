@@ -13,17 +13,17 @@ export const enLang = {
 
   howToUseTitle: 'How to use it?',
   howToUseDescription:
-    'Use `/overlay-code` to generate a one-time pairing code for the desktop Overlay EXE, then enter it in the app. After pairing, use `/send`, `/hsend`, `/talk`, `/htalk` to queue media playback.',
+    'Use `/overlay-code` to generate a one-time pairing code for the desktop Overlay EXE or LiveChat Extension, then enter it in the app/extension. After pairing, use `/send`, `/hsend`, `/talk`, `/htalk` to queue media playback.',
 
   aliveCommand: 'alive',
   aliveCommandDescription: 'Check if bot is alive',
   aliveCommandsAnswer: "{{username}}, I'm alive!",
 
   overlayCodeCommand: 'overlay-code',
-  overlayCodeCommandDescription: 'Generate a one-time pairing code for Overlay EXE',
+  overlayCodeCommandDescription: 'Generate a one-time pairing code for Overlay EXE or LiveChat Extension',
   overlayCodeCommandAnswerTitle: 'Overlay pairing code',
   overlayCodeCommandAnswerDescription:
-    'Use this code in Overlay EXE: `{{code}}`\nExpires in {{expiresIn}} minute(s).\nServer URL: {{apiUrl}}',
+    'Use this code in Overlay EXE or LiveChat Extension: `{{code}}`\nExpires in {{expiresIn}} minute(s).\nServer URL: {{apiUrl}}',
 
   sendCommand: 'send',
   sendCommandDescription: 'Send content to stream',

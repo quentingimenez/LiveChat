@@ -1,7 +1,12 @@
-import { timingSafeEqual } from 'crypto';
+import { addMinutes } from 'date-fns';
+import {
+  createIngestClientToken,
+  isIngestApiEnabled,
+  resolveIngestAuthFromRequest,
+  revokeIngestClientsForGuildLabel,
+} from '../../services/ingestAuth';
 import { ingestMediaFromSource } from '../../services/media/mediaIngestion';
 import { toMediaIngestionError } from '../../services/media/mediaErrors';
-import { getBearerTokenFromRequest } from '../../services/overlayAuth';
 import { createPlaybackJob } from '../../services/playbackJobs';
 import { encodeRichOverlayPayload } from '../../services/messages/richOverlayPayload';
 import {
@@ -25,6 +30,14 @@ interface IngestBody {
   authorImage?: unknown;
   durationSec?: unknown;
 }
+
+interface ConsumeIngestPairingBody {
+  code?: unknown;
+  deviceName?: unknown;
+}
+
+const DEFAULT_INGEST_AUTHOR_NAME = 'LiveChat Extension';
+const DEFAULT_INGEST_DEVICE_NAME = 'LiveChat Extension';
 
 const getTweetCardDurationSec = (
   medias: Array<{
@@ -87,40 +100,93 @@ const toOptionalDurationSec = (value: unknown): number | null => {
   return Math.ceil(value);
 };
 
-const isAuthorized = (rawToken: string | null): boolean => {
-  const expectedToken = env.INGEST_API_TOKEN.trim();
-  const providedToken = rawToken?.trim() || '';
-
-  if (!expectedToken || !providedToken) {
-    return false;
-  }
-
-  const expectedBuffer = Buffer.from(expectedToken);
-  const providedBuffer = Buffer.from(providedToken);
-
-  if (expectedBuffer.length !== providedBuffer.length) {
-    return false;
-  }
-
-  return timingSafeEqual(expectedBuffer, providedBuffer);
-};
-
 export const IngestRoutes = () =>
   async function (fastify: FastifyCustomInstance) {
-    fastify.post<{ Body: IngestBody }>('/', async (request, reply) => {
-      if (!env.INGEST_API_TOKEN.trim()) {
-        return reply.code(503).send({
-          error: 'ingest_api_disabled',
+    fastify.post<{ Body: ConsumeIngestPairingBody }>('/pair/consume', async (request, reply) => {
+      const rawCode = toNonEmptyString(request.body?.code)?.toUpperCase() || null;
+      const deviceName = toNonEmptyString(request.body?.deviceName) || DEFAULT_INGEST_DEVICE_NAME;
+
+      if (!rawCode) {
+        return reply.code(400).send({
+          error: 'invalid_payload',
         });
       }
 
-      if (!isAuthorized(getBearerTokenFromRequest(request))) {
+      await prisma.pairingCode.deleteMany({
+        where: {
+          expiresAt: {
+            lte: new Date(),
+          },
+        },
+      });
+
+      const pairingCode = await prisma.pairingCode.findFirst({
+        where: {
+          code: rawCode,
+          usedAt: null,
+          expiresAt: {
+            gt: new Date(),
+          },
+        },
+      });
+
+      if (!pairingCode) {
+        return reply.code(404).send({
+          error: 'pairing_code_invalid_or_expired',
+        });
+      }
+
+      await prisma.pairingCode.update({
+        where: {
+          code: pairingCode.code,
+        },
+        data: {
+          usedAt: new Date(),
+          expiresAt: addMinutes(new Date(), -1),
+        },
+      });
+
+      await revokeIngestClientsForGuildLabel(pairingCode.guildId, deviceName);
+
+      const authorName =
+        toNonEmptyString((pairingCode as { authorName?: unknown }).authorName) || DEFAULT_INGEST_AUTHOR_NAME;
+      const authorImage = toNonEmptyString((pairingCode as { authorImage?: unknown }).authorImage);
+
+      const { client, rawToken } = await createIngestClientToken({
+        guildId: pairingCode.guildId,
+        label: deviceName,
+        defaultAuthorName: authorName,
+        defaultAuthorImage: authorImage,
+        createdByDiscordUserId: pairingCode.createdByDiscordUserId,
+      });
+
+      return reply.send({
+        apiBaseUrl: env.API_URL,
+        ingestApiToken: rawToken,
+        ingestClientId: client.id,
+        guildId: client.guildId,
+        authorName: client.defaultAuthorName,
+        authorImage: client.defaultAuthorImage,
+      });
+    });
+
+    fastify.post<{ Body: IngestBody }>('/', async (request, reply) => {
+      const authResult = await resolveIngestAuthFromRequest(request);
+      if (!authResult) {
+        const enabled = await isIngestApiEnabled();
+
+        if (!enabled) {
+          return reply.code(503).send({
+            error: 'ingest_api_disabled',
+          });
+        }
+
         return reply.code(401).send({
           error: 'unauthorized',
         });
       }
 
-      const guildId = toNonEmptyString(request.body?.guildId);
+      const requestedGuildId = toNonEmptyString(request.body?.guildId);
       const url = toNonEmptyString(request.body?.url);
       const media = toNonEmptyString(request.body?.media);
       const text = toNonEmptyString(request.body?.text);
@@ -129,6 +195,14 @@ export const IngestRoutes = () =>
       const authorName = toNonEmptyString(request.body?.authorName);
       const authorImage = toNonEmptyString(request.body?.authorImage);
       const durationSec = toOptionalDurationSec(request.body?.durationSec);
+
+      if (authResult.kind === 'client' && requestedGuildId && requestedGuildId !== authResult.client.guildId) {
+        return reply.code(403).send({
+          error: 'guild_mismatch',
+        });
+      }
+
+      const guildId = authResult.kind === 'client' ? authResult.client.guildId : requestedGuildId;
 
       if (!guildId || (!url && !media && !text)) {
         return reply.code(400).send({
@@ -139,8 +213,13 @@ export const IngestRoutes = () =>
       let mediaAsset = null;
       let jobText = text;
       let jobShowText = showText ?? !!text;
-      let jobAuthorName = authorName || 'iOS Shortcut';
-      let jobAuthorImage = authorImage;
+      let jobAuthorName: string | null =
+        authorName ||
+        (authResult.kind === 'client'
+          ? toNonEmptyString(authResult.client.defaultAuthorName) || DEFAULT_INGEST_AUTHOR_NAME
+          : 'iOS Shortcut');
+      let jobAuthorImage =
+        authorImage || (authResult.kind === 'client' ? toNonEmptyString(authResult.client.defaultAuthorImage) : null);
       let jobDurationSec = durationSec;
       const normalizedTweetUrl = !media && url ? normalizeTweetStatusUrl(url) : null;
 

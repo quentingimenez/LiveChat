@@ -41,11 +41,47 @@ let lastSyncedItemId: string | null = null;
 let lastSyncedUrl: string | null = null;
 let lastSyncAt = 0;
 
-const isRuntimeAvailable = (): boolean => {
+const RUNTIME_INVALIDATED_ERROR_FRAGMENT = 'extension context invalidated';
+
+const readRuntime = (): typeof chrome.runtime | null => {
   try {
-    return typeof chrome !== 'undefined' && !!chrome.runtime && typeof chrome.runtime.id === 'string';
+    if (typeof chrome === 'undefined') {
+      return null;
+    }
+
+    return chrome.runtime || null;
   } catch {
+    return null;
+  }
+};
+
+const isRuntimeInvalidatedError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) {
     return false;
+  }
+
+  return error.message.toLowerCase().includes(RUNTIME_INVALIDATED_ERROR_FRAGMENT);
+};
+
+const readErrorMessage = (error: unknown): string => {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+
+  return 'Erreur de communication avec le service worker.';
+};
+
+const sendRuntimeMessage = async <T>(payload: unknown): Promise<T | null> => {
+  const runtime = readRuntime();
+
+  if (!runtime || typeof runtime.sendMessage !== 'function') {
+    return null;
+  }
+
+  try {
+    return (await runtime.sendMessage(payload)) as T;
+  } catch {
+    return null;
   }
 };
 
@@ -182,31 +218,19 @@ const extractMediaItemId = (url: string | null | undefined): string | null => {
 };
 
 const resolveCapturedTikTokUrl = async (): Promise<string | null> => {
-  if (!isRuntimeAvailable()) {
+  const response = await sendRuntimeMessage<{ ok?: unknown; url?: unknown }>({
+    type: TIKTOK_GET_CAPTURED_URL_TYPE,
+  });
+
+  if (!response || response.ok !== true || typeof response.url !== 'string' || !response.url.trim()) {
     return null;
   }
 
-  try {
-    const response = (await chrome.runtime.sendMessage({
-      type: TIKTOK_GET_CAPTURED_URL_TYPE,
-    })) as { ok?: unknown; url?: unknown };
-
-    if (!response || response.ok !== true || typeof response.url !== 'string' || !response.url.trim()) {
-      return null;
-    }
-
-    const normalized = normalizeTikTokMediaUrl(response.url, window.location.href);
-    return normalized || response.url;
-  } catch {
-    return null;
-  }
+  const normalized = normalizeTikTokMediaUrl(response.url, window.location.href);
+  return normalized || response.url;
 };
 
 const syncActiveMediaToBackground = (url: string | null): void => {
-  if (!isRuntimeAvailable()) {
-    return;
-  }
-
   const itemId = extractMediaItemId(url);
   const now = Date.now();
   const hasChanged = itemId !== lastSyncedItemId || (url || null) !== lastSyncedUrl;
@@ -220,53 +244,38 @@ const syncActiveMediaToBackground = (url: string | null): void => {
   lastSyncedUrl = url || null;
   lastSyncAt = now;
 
-  try {
-    void chrome.runtime
-      .sendMessage({
-        type: TIKTOK_SYNC_ACTIVE_ITEM_TYPE,
-        itemId,
-        url: url || null,
-      })
-      .catch(() => {
-        // Ignore sync errors when the service worker is restarting.
-      });
-  } catch {
-    // Ignore synchronous runtime invalidation errors.
-  }
+  void sendRuntimeMessage({
+    type: TIKTOK_SYNC_ACTIVE_ITEM_TYPE,
+    itemId,
+    url: url || null,
+  });
 };
 
 const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }> => {
-  if (!isRuntimeAvailable()) {
+  const response = await sendRuntimeMessage<{ ok?: unknown; message?: unknown }>({
+    type: 'lce/send-quick',
+    url,
+    source: 'tiktok',
+  });
+
+  if (!response) {
     return {
       ok: false,
       message: 'Contexte extension invalide. Recharge la page TikTok puis réessaie.',
     };
   }
 
-  try {
-    const response = (await chrome.runtime.sendMessage({
-      type: 'lce/send-quick',
-      url,
-      source: 'tiktok',
-    })) as { ok?: unknown; message?: unknown };
-
-    if (!response || typeof response.ok !== 'boolean' || typeof response.message !== 'string') {
-      return {
-        ok: false,
-        message: 'Réponse invalide du service worker.',
-      };
-    }
-
-    return {
-      ok: response.ok,
-      message: response.message,
-    };
-  } catch (error) {
+  if (typeof response.ok !== 'boolean' || typeof response.message !== 'string') {
     return {
       ok: false,
-      message: error instanceof Error ? error.message : 'Erreur de communication avec le service worker.',
+      message: 'Réponse invalide du service worker.',
     };
   }
+
+  return {
+    ok: response.ok,
+    message: response.message,
+  };
 };
 
 const clearButtonResetTimer = (button: HTMLButtonElement): void => {
@@ -699,6 +708,12 @@ const createActionButton = (floating = false): HTMLButtonElement => {
         const response = await sendQuick(targetUrl);
         setButtonState(button, response.ok ? 'success' : 'error', response.message);
         resetButtonStateLater(button);
+      } catch (error) {
+        const runtimeErrorMessage = isRuntimeInvalidatedError(error)
+          ? 'Contexte extension invalide. Recharge la page TikTok puis réessaie.'
+          : readErrorMessage(error);
+        setButtonState(button, 'error', runtimeErrorMessage);
+        resetButtonStateLater(button);
       } finally {
         window.setTimeout(() => {
           button.disabled = false;
@@ -833,12 +848,15 @@ const isGetActiveMediaUrlMessage = (value: unknown): value is { type: string } =
 };
 
 const registerActiveMediaUrlListener = (): void => {
-  if (!isRuntimeAvailable()) {
+  const runtime = readRuntime();
+
+  if (!runtime || !runtime.onMessage || typeof runtime.onMessage.addListener !== 'function') {
     return;
   }
 
   try {
-    chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+    runtime.onMessage.addListener(
+      (message: unknown, _sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => {
       if (!isGetActiveMediaUrlMessage(message)) {
         return;
       }
@@ -847,7 +865,8 @@ const registerActiveMediaUrlListener = (): void => {
         ok: true,
         url: resolveCurrentMediaUrl(),
       });
-    });
+      },
+    );
   } catch {
     // Ignore runtime invalidation while the extension is reloading.
   }

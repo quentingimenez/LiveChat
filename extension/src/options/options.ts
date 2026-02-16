@@ -29,7 +29,6 @@ type PairingConsumeResponse = PairingConsumeSuccessResponse & PairingConsumeErro
 const pairingForm = document.getElementById('pairing-form') as HTMLFormElement;
 const manualForm = document.getElementById('options-form') as HTMLFormElement;
 const pairingCodeInput = document.getElementById('pairing-code') as HTMLInputElement;
-const deviceNameInput = document.getElementById('device-name') as HTMLInputElement;
 const pairButton = document.getElementById('pair-button') as HTMLButtonElement;
 const apiUrlInput = document.getElementById('api-url') as HTMLInputElement;
 const ingestTokenInput = document.getElementById('ingest-token') as HTMLInputElement;
@@ -227,7 +226,6 @@ pairingForm.addEventListener('submit', (event) => {
         },
         body: JSON.stringify({
           code: pairingCode,
-          deviceName: asNonEmptyString(deviceNameInput.value) || undefined,
         }),
       });
 

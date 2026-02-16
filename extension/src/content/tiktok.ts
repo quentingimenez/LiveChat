@@ -21,6 +21,9 @@ const SHARE_ICON_SELECTOR = ['[data-e2e*="share-icon"]', '[class*="share-icon"]'
 const ACTION_ICON_SELECTOR = `${LIKE_ICON_SELECTOR}, ${COMMENT_ICON_SELECTOR}, ${SHARE_ICON_SELECTOR}`;
 const ACTION_INTERACTIVE_SELECTOR = 'button, [role="button"]';
 const ACTIVE_SYNC_HEARTBEAT_MS = 5000;
+const HOME_FEED_PATH_PATTERN = /^\/(?:[a-z]{2}(?:-[a-z]{2})?)?\/?$/i;
+const HOME_FEED_SECTION_PATH_PATTERN = /^\/(?:foryou|following)\/?$/i;
+const FEED_CARD_SELECTOR = 'article';
 
 type ButtonState = 'idle' | 'loading' | 'success' | 'error';
 const BUTTON_TEXT_BY_STATE: Record<ButtonState, string> = {
@@ -365,6 +368,89 @@ const isAnchorNearVideoRect = (anchor: MediaAnchor, rect: DOMRect): boolean => {
   );
 };
 
+const findMostVisibleFeedCard = (): HTMLElement | null => {
+  const cards = Array.from(document.querySelectorAll<HTMLElement>(FEED_CARD_SELECTOR));
+  let bestMatch: { element: HTMLElement; score: number } | null = null;
+
+  for (const card of cards) {
+    const rect = card.getBoundingClientRect();
+
+    if (rect.width < 220 || rect.height < 260) {
+      continue;
+    }
+
+    const visibleArea = computeVisibleArea(rect);
+
+    if (visibleArea < 45_000) {
+      continue;
+    }
+
+    const visibleRatio = visibleArea / Math.max(1, rect.width * rect.height);
+
+    if (visibleRatio < 0.15) {
+      continue;
+    }
+
+    const cardCenterX = rect.left + rect.width / 2;
+    const cardCenterY = rect.top + rect.height / 2;
+    const distanceToViewportCenter = Math.abs(cardCenterX - window.innerWidth / 2) + Math.abs(cardCenterY - window.innerHeight / 2);
+    const score = visibleRatio * 150_000 + visibleArea - distanceToViewportCenter * 24;
+
+    if (!bestMatch || score > bestMatch.score) {
+      bestMatch = {
+        element: card,
+        score,
+      };
+    }
+  }
+
+  return bestMatch?.element || null;
+};
+
+const resolveMediaUrlFromVisibleFeedCard = (): string | null => {
+  const feedCard = findMostVisibleFeedCard();
+
+  if (!feedCard) {
+    return null;
+  }
+
+  const cardAnchors = collectMediaAnchors(feedCard);
+
+  if (cardAnchors.length === 0) {
+    return null;
+  }
+
+  const cardVideo = feedCard.querySelector<HTMLVideoElement>('video');
+
+  if (cardVideo) {
+    const videoRect = cardVideo.getBoundingClientRect();
+    const mediaFromVideoCenter = pickNearestMediaUrlToPoint(
+      cardAnchors,
+      videoRect.left + videoRect.width / 2,
+      videoRect.top + videoRect.height / 2,
+      2_600,
+    );
+
+    if (mediaFromVideoCenter) {
+      return mediaFromVideoCenter;
+    }
+  }
+
+  const cardRect = feedCard.getBoundingClientRect();
+  const mediaFromCardCenter = pickNearestMediaUrlToPoint(
+    cardAnchors,
+    cardRect.left + cardRect.width / 2,
+    cardRect.top + cardRect.height / 2,
+    2_600,
+  );
+
+  if (mediaFromCardCenter) {
+    return mediaFromCardCenter;
+  }
+
+  return pickViewportMediaUrl(cardAnchors);
+};
+
 const resolveMediaUrlFromActiveVideo = (): string | null => {
   const videos = Array.from(document.querySelectorAll<HTMLVideoElement>('video'));
 
@@ -559,6 +645,14 @@ const resolveDocumentMediaFallback = (): string | null => {
 };
 
 const resolveCurrentMediaUrl = (anchors: MediaAnchor[] = collectMediaAnchors(document)): string | null => {
+  if (isTikTokHomeFeedPath()) {
+    const feedCardMediaUrl = resolveMediaUrlFromVisibleFeedCard();
+
+    if (feedCardMediaUrl) {
+      return feedCardMediaUrl;
+    }
+  }
+
   const activeVideoMediaUrl = resolveMediaUrlFromActiveVideo();
 
   if (activeVideoMediaUrl) {
@@ -581,6 +675,16 @@ const resolveCurrentMediaUrl = (anchors: MediaAnchor[] = collectMediaAnchors(doc
 };
 
 const resolveMediaUrlForActionColumn = (actionColumn: HTMLElement, globalAnchors: MediaAnchor[]): string | null => {
+  const feedCard = actionColumn.closest<HTMLElement>(FEED_CARD_SELECTOR);
+
+  if (feedCard) {
+    const feedCardMediaUrl = pickNearestMediaUrl(actionColumn, collectMediaAnchors(feedCard));
+
+    if (feedCardMediaUrl) {
+      return feedCardMediaUrl;
+    }
+  }
+
   let scope: HTMLElement | null = actionColumn;
 
   for (let depth = 0; depth < 5 && scope; depth += 1) {
@@ -697,7 +801,8 @@ const createActionButton = (floating = false): HTMLButtonElement => {
           actionColumn instanceof HTMLElement
             ? resolveMediaUrlForActionColumn(actionColumn, collectMediaAnchors(document))
             : resolveCurrentMediaUrl();
-        const targetUrl = runtimeUrl || button.dataset.targetUrl || (await resolveCapturedTikTokUrl());
+        const datasetTargetUrl = isTikTokHomeFeedPath() ? null : button.dataset.targetUrl || null;
+        const targetUrl = runtimeUrl || datasetTargetUrl || (await resolveCapturedTikTokUrl());
 
         if (!targetUrl) {
           setButtonState(button, 'error', 'Impossible de détecter une URL TikTok valide.');
@@ -803,8 +908,8 @@ const upsertFloatingButton = (targetUrl: string | null): void => {
 };
 
 const isTikTokHomeFeedPath = (): boolean => {
-  const path = window.location.pathname.trim();
-  return path === '' || path === '/';
+  const path = window.location.pathname.trim().toLowerCase();
+  return HOME_FEED_PATH_PATTERN.test(path) || HOME_FEED_SECTION_PATH_PATTERN.test(path);
 };
 
 const scanTikTokTargets = (): void => {

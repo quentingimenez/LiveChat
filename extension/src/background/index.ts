@@ -392,7 +392,11 @@ const resolveTikTokCapturedUrlForTab = async (
     const domRecord = state.byItemId[domItemId];
 
     if (domRecord) {
-      return domRecord.pageUrl || domRecord.mediaUrl || normalizedDomUrl;
+      const normalizedDomRecordPageUrl = normalizeTikTokPageUrl(domRecord.pageUrl);
+
+      if (normalizedDomRecordPageUrl) {
+        return normalizedDomRecordPageUrl;
+      }
     }
   }
 
@@ -400,7 +404,11 @@ const resolveTikTokCapturedUrlForTab = async (
     const activeRecord = state.byItemId[state.activeItemId];
 
     if (activeRecord) {
-      return activeRecord.pageUrl || activeRecord.mediaUrl || normalizedDomUrl;
+      const normalizedActiveRecordPageUrl = normalizeTikTokPageUrl(activeRecord.pageUrl);
+
+      if (normalizedActiveRecordPageUrl) {
+        return normalizedActiveRecordPageUrl;
+      }
     }
   }
 
@@ -409,7 +417,11 @@ const resolveTikTokCapturedUrlForTab = async (
   }
 
   if (state.latest) {
-    return state.latest.pageUrl || state.latest.mediaUrl || normalizedDomUrl;
+    const normalizedLatestPageUrl = normalizeTikTokPageUrl(state.latest.pageUrl);
+
+    if (normalizedLatestPageUrl) {
+      return normalizedLatestPageUrl;
+    }
   }
 
   return null;
@@ -707,6 +719,33 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   void (async () => {
     if (isSendQuickRequest(message)) {
+      if (message.source === 'tiktok') {
+        const senderTabId = typeof sender?.tab?.id === 'number' ? sender.tab.id : null;
+        const normalizedTikTokPageUrl = normalizeTikTokPageUrl(message.url);
+
+        if (normalizedTikTokPageUrl) {
+          sendResponse(await sendQuickAction(normalizedTikTokPageUrl));
+          return;
+        }
+
+        if (senderTabId !== null) {
+          const resolvedFromCapture = await resolveTikTokCapturedUrlForTab(senderTabId, message.url);
+
+          if (resolvedFromCapture) {
+            sendResponse(await sendQuickAction(resolvedFromCapture));
+            return;
+          }
+        }
+
+        sendResponse({
+          ok: false,
+          jobId: null,
+          message: 'Impossible de résoudre un lien TikTok partageable. Fais défiler jusqu’à une vidéo puis réessaie.',
+          errorCode: 'INVALID_PAYLOAD',
+        } satisfies ActionResponse);
+        return;
+      }
+
       sendResponse(await sendQuickAction(message.url));
       return;
     }

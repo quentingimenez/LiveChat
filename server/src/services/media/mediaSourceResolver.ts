@@ -47,7 +47,7 @@ const normalizeYoutubeUrl = (url: URL): URL => {
       ? pathnameSegments[1]
       : null;
   const videoId = normalized.searchParams.get('v') || pathVideoId;
-  const startAt = normalized.searchParams.get('t');
+  const startAt = normalized.searchParams.get('t') || normalized.searchParams.get('start');
 
   if (videoId) {
     normalized.pathname = '/watch';

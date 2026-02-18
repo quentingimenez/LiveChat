@@ -32,6 +32,7 @@ const PREVIOUS_PROGRESSIVE_FIRST_COMPAT_YTDLP_FORMAT =
   'b[ext=mp4][height<=1080]/bv*[vcodec^=avc1][ext=mp4][height<=1080]+ba[ext=m4a]/b[vcodec^=avc1][ext=mp4][height<=1080]/bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best';
 const COMPAT_YTDLP_FORMAT =
   'bv*[vcodec^=avc1][ext=mp4][height<=1080]+ba[ext=m4a]/b[vcodec^=avc1][ext=mp4][height<=1080]/bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best';
+const YOUTUBE_RELAXED_YTDLP_FORMAT = 'b/bv*+ba/best';
 
 const getMaxMediaSizeBytes = () => Math.max(1, env.MEDIA_MAX_SIZE_MB) * BYTES_PER_MEGABYTE;
 
@@ -76,7 +77,7 @@ const createTempDir = async () => {
   return fsPromises.mkdtemp(path.join(os.tmpdir(), 'livechat-media-'));
 };
 
-const parseYtdlpFilename = (stdout: string): string | null => {
+const parseYtdlpOutputPath = (stdout: string): string | null => {
   const lines = stdout
     .split('\n')
     .map((line) => line.trim())
@@ -86,6 +87,10 @@ const parseYtdlpFilename = (stdout: string): string | null => {
     const line = lines[index];
 
     if (!line.startsWith('{') || !line.endsWith('}')) {
+      if (path.isAbsolute(line) && !line.startsWith('http://') && !line.startsWith('https://')) {
+        return line;
+      }
+
       continue;
     }
 
@@ -265,6 +270,87 @@ const isYouTubeUrl = (sourceUrl: string): boolean => {
     return parsed.hostname === 'youtu.be' || parsed.hostname.includes('youtube.com');
   } catch {
     return false;
+  }
+};
+
+const isYouTubeAuthOrBotError = (rawMessage: string): boolean => {
+  const lowered = rawMessage.toLowerCase();
+  return (
+    lowered.includes('sign in') ||
+    lowered.includes("confirm you're not a bot") ||
+    lowered.includes('confirm you\u2019re not a bot')
+  );
+};
+
+const isYouTubeFormatSelectionError = (rawMessage: string): boolean => {
+  const lowered = rawMessage.toLowerCase();
+  return (
+    lowered.includes('requested format is not available') ||
+    lowered.includes('format is not available') ||
+    lowered.includes('no video formats found') ||
+    lowered.includes('requested format not available')
+  );
+};
+
+const parseYouTubeTimestampToSeconds = (rawValue: string): number | null => {
+  const value = rawValue.trim().toLowerCase();
+
+  if (!value) {
+    return null;
+  }
+
+  if (/^\d+$/.test(value)) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  }
+
+  if (/^\d+s$/.test(value)) {
+    const parsed = Number.parseInt(value.slice(0, -1), 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  }
+
+  const hmsMatch = value.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/);
+  if (hmsMatch && (hmsMatch[1] || hmsMatch[2] || hmsMatch[3])) {
+    const hours = Number.parseInt(hmsMatch[1] || '0', 10);
+    const minutes = Number.parseInt(hmsMatch[2] || '0', 10);
+    const seconds = Number.parseInt(hmsMatch[3] || '0', 10);
+    const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+    return Number.isFinite(totalSeconds) && totalSeconds >= 0 ? totalSeconds : null;
+  }
+
+  const colonParts = value.split(':').map((part) => part.trim());
+  if ((colonParts.length === 2 || colonParts.length === 3) && colonParts.every((part) => /^\d+$/.test(part))) {
+    const numericParts = colonParts.map((part) => Number.parseInt(part, 10));
+    const [hours, minutes, seconds] = numericParts.length === 3 ? numericParts : [0, numericParts[0], numericParts[1]];
+    const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+    return Number.isFinite(totalSeconds) && totalSeconds >= 0 ? totalSeconds : null;
+  }
+
+  return null;
+};
+
+const getYouTubeStartOffsetSeconds = (sourceUrl: string): number | null => {
+  if (!isYouTubeUrl(sourceUrl)) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(sourceUrl);
+    const rawOffset = parsed.searchParams.get('t') || parsed.searchParams.get('start');
+
+    if (!rawOffset) {
+      return null;
+    }
+
+    const parsedOffset = parseYouTubeTimestampToSeconds(rawOffset);
+
+    if (parsedOffset === null || parsedOffset <= 0) {
+      return null;
+    }
+
+    return parsedOffset;
+  } catch {
+    return null;
   }
 };
 
@@ -1245,21 +1331,26 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
 const runYtDlpDownload = async (params: {
   sourceUrl: string;
   tmpDir: string;
+  formatOverride?: string;
+  mergeOutputFormat?: boolean;
   extraArgs?: string[];
 }): Promise<string> => {
   const outputTemplate = path.join(params.tmpDir, 'download.%(ext)s');
-  const formatSelector = resolveYtdlpFormatSelector();
+  const formatSelector = (params.formatOverride || resolveYtdlpFormatSelector()).trim();
   const concurrentFragments = Math.max(1, env.YTDLP_CONCURRENT_FRAGMENTS);
   const args = [
     '--no-playlist',
     '--no-progress',
     '--no-warnings',
-    '--print-json',
-    '--merge-output-format',
-    'mp4',
+    '--print',
+    'after_move:filepath',
     '--max-filesize',
     `${Math.max(1, env.MEDIA_MAX_SIZE_MB)}M`,
   ];
+
+  if (params.mergeOutputFormat !== false) {
+    args.push('--merge-output-format', 'mp4');
+  }
 
   if (concurrentFragments > 1) {
     args.push('--concurrent-fragments', `${concurrentFragments}`);
@@ -1267,6 +1358,11 @@ const runYtDlpDownload = async (params: {
 
   if (formatSelector.length > 0) {
     args.push('--format', formatSelector);
+  }
+
+  const youtubeStartOffsetSeconds = getYouTubeStartOffsetSeconds(params.sourceUrl);
+  if (youtubeStartOffsetSeconds !== null) {
+    args.push('--download-sections', `*${youtubeStartOffsetSeconds}-`);
   }
 
   if (Array.isArray(params.extraArgs) && params.extraArgs.length > 0) {
@@ -1286,14 +1382,14 @@ const runYtDlpDownload = async (params: {
     throw toMediaIngestionError(error);
   }
 
-  const filenameFromStdout = parseYtdlpFilename(stdout);
+  const filenameFromStdout = parseYtdlpOutputPath(stdout);
 
   if (filenameFromStdout) {
     await ensureFileSizeWithinLimit(filenameFromStdout, params.sourceUrl);
     return filenameFromStdout;
   }
 
-  const downloadedFile = await findDownloadedFile(tmpDir);
+  const downloadedFile = await findDownloadedFile(params.tmpDir);
 
   if (!downloadedFile) {
     throw new MediaIngestionError(
@@ -1316,32 +1412,59 @@ const downloadWithYtDlp = async (sourceUrl: string, tmpDir: string): Promise<str
   } catch (error) {
     const normalized = toMediaIngestionError(error);
 
-    const shouldRetryForYoutube =
-      isYouTubeUrl(sourceUrl) &&
-      (normalized.code === 'PRIVATE_OR_AUTH_REQUIRED' ||
-        normalized.rawMessage.toLowerCase().includes('sign in') ||
-        normalized.rawMessage.toLowerCase().includes('confirm you\u2019re not a bot') ||
-        normalized.rawMessage.toLowerCase().includes("confirm you're not a bot"));
+    const isYoutubeSource = isYouTubeUrl(sourceUrl);
 
-    if (!shouldRetryForYoutube) {
+    if (!isYoutubeSource) {
       throw normalized;
+    }
+
+    const shouldRetryWithAndroidClient =
+      normalized.code === 'PRIVATE_OR_AUTH_REQUIRED' || isYouTubeAuthOrBotError(normalized.rawMessage);
+    const shouldRetryWithRelaxedFormat =
+      normalized.code === 'DOWNLOAD_FAILED' || isYouTubeFormatSelectionError(normalized.rawMessage);
+
+    let bestError: unknown = normalized;
+
+    if (shouldRetryWithAndroidClient) {
+      logger.warn(
+        {
+          sourceUrl: sanitizeUrlForLog(sourceUrl),
+        },
+        '[MEDIA] yt-dlp retry with youtube android client',
+      );
+
+      try {
+        return await runYtDlpDownload({
+          sourceUrl,
+          tmpDir,
+          extraArgs: ['--extractor-args', 'youtube:player_client=android'],
+        });
+      } catch (retryError) {
+        bestError = pickMostRelevantMediaError(retryError, bestError);
+      }
+    }
+
+    if (!shouldRetryWithRelaxedFormat) {
+      throw toMediaIngestionError(bestError, 'DOWNLOAD_FAILED');
     }
 
     logger.warn(
       {
         sourceUrl: sanitizeUrlForLog(sourceUrl),
       },
-      '[MEDIA] yt-dlp retry with youtube android client',
+      '[MEDIA] yt-dlp retry with youtube relaxed format',
     );
 
     try {
       return await runYtDlpDownload({
         sourceUrl,
         tmpDir,
-        extraArgs: ['--extractor-args', 'youtube:player_client=android'],
+        formatOverride: YOUTUBE_RELAXED_YTDLP_FORMAT,
+        mergeOutputFormat: false,
+        extraArgs: shouldRetryWithAndroidClient ? ['--extractor-args', 'youtube:player_client=android'] : undefined,
       });
     } catch (retryError) {
-      throw pickMostRelevantMediaError(retryError, normalized);
+      throw pickMostRelevantMediaError(retryError, bestError);
     }
   }
 };

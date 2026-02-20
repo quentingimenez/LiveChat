@@ -31,6 +31,7 @@ const manualForm = document.getElementById('options-form') as HTMLFormElement;
 const pairingCodeInput = document.getElementById('pairing-code') as HTMLInputElement;
 const pairButton = document.getElementById('pair-button') as HTMLButtonElement;
 const apiUrlInput = document.getElementById('api-url') as HTMLInputElement;
+const manualApiUrlInput = document.getElementById('api-url-manual') as HTMLInputElement;
 const ingestTokenInput = document.getElementById('ingest-token') as HTMLInputElement;
 const guildIdInput = document.getElementById('guild-id') as HTMLInputElement;
 const authorNameInput = document.getElementById('author-name') as HTMLInputElement;
@@ -90,8 +91,21 @@ const withBusyState = (busy: boolean, action: 'save' | 'test' | 'pair' = 'save')
   pairButton.textContent = busy && action === 'pair' ? 'Appairage...' : 'Récupérer la configuration';
 };
 
+const getApiUrlFromInputs = (preferred: 'pairing' | 'manual'): string => {
+  if (preferred === 'pairing') {
+    return asNonEmptyString(apiUrlInput.value) || asNonEmptyString(manualApiUrlInput.value) || '';
+  }
+
+  return asNonEmptyString(manualApiUrlInput.value) || asNonEmptyString(apiUrlInput.value) || '';
+};
+
+const setApiUrlInputs = (value: string): void => {
+  apiUrlInput.value = value;
+  manualApiUrlInput.value = value;
+};
+
 const applySettingsToForm = (settings: ExtensionSettings): void => {
-  apiUrlInput.value = settings.apiUrl;
+  setApiUrlInputs(settings.apiUrl);
   ingestTokenInput.value = settings.ingestToken;
   guildIdInput.value = settings.guildId;
   authorNameInput.value = settings.authorName;
@@ -100,7 +114,7 @@ const applySettingsToForm = (settings: ExtensionSettings): void => {
 
 const collectSettingsFromForm = (): Partial<ExtensionSettings> => {
   return {
-    apiUrl: apiUrlInput.value,
+    apiUrl: getApiUrlFromInputs('manual'),
     ingestToken: ingestTokenInput.value,
     guildId: guildIdInput.value,
     authorName: authorNameInput.value,
@@ -109,7 +123,7 @@ const collectSettingsFromForm = (): Partial<ExtensionSettings> => {
 };
 
 const refreshPermissionState = async (): Promise<void> => {
-  const rawApiUrl = apiUrlInput.value.trim();
+  const rawApiUrl = getApiUrlFromInputs('pairing').trim();
 
   if (!rawApiUrl) {
     permissionStateNode.textContent = 'Autorisation domaine: non configuré.';
@@ -132,7 +146,7 @@ const refreshPermissionState = async (): Promise<void> => {
 };
 
 const resolvePairingApiUrl = (): string => {
-  const rawApiUrl = asNonEmptyString(apiUrlInput.value);
+  const rawApiUrl = asNonEmptyString(getApiUrlFromInputs('pairing'));
 
   if (!rawApiUrl) {
     throw new Error('API_URL obligatoire avant appairage (URL racine du bot).');
@@ -372,6 +386,12 @@ testButton.addEventListener('click', () => {
 });
 
 apiUrlInput.addEventListener('input', () => {
+  manualApiUrlInput.value = apiUrlInput.value;
+  void refreshPermissionState();
+});
+
+manualApiUrlInput.addEventListener('input', () => {
+  apiUrlInput.value = manualApiUrlInput.value;
   void refreshPermissionState();
 });
 

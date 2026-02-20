@@ -528,6 +528,7 @@ const sendComposeAction = async (params: {
   url: string;
   text?: string;
   forceRefresh?: boolean;
+  saveToBoard?: boolean;
 }): Promise<ActionResponse> => {
   const normalizedUrl = resolveIngestTargetUrl(params.url);
 
@@ -545,6 +546,7 @@ const sendComposeAction = async (params: {
     url: normalizedUrl,
     text: params.text,
     forceRefresh: !!params.forceRefresh,
+    saveToBoard: !!params.saveToBoard,
   });
 
   if (result.ok) {
@@ -606,6 +608,7 @@ const getComposeState = async (): Promise<ComposeStateResponse> => {
     url: draft?.url || activeTabUrl,
     text: draft?.text || '',
     forceRefresh: draft?.forceRefresh || false,
+    saveToBoard: draft?.saveToBoard || false,
     hasSettings,
     settingsError: hasSettings ? null : 'Configuration incomplète. Ouvre les options de l’extension.',
     draftSource: draft?.source || null,
@@ -673,6 +676,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
         url: targetUrl,
         text: '',
         forceRefresh: false,
+        saveToBoard: false,
         source: 'context-menu',
         createdAt: Date.now(),
       };
@@ -713,6 +717,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
           url: message.url,
           text: message.text,
           forceRefresh: message.forceRefresh,
+          saveToBoard: message.saveToBoard,
         }),
       );
       return;

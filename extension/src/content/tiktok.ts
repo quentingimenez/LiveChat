@@ -30,9 +30,9 @@ const inpageStyles = `
 .lce-button-tiktok {
   width: 48px;
   height: 48px;
-  border: 2px solid rgba(255, 255, 255, 0.18);
+  border: none;
   border-radius: 999px;
-  background: rgba(22, 24, 35, 0.92);
+  background: #1F1F1F;
   color: #fff;
   font-family: "TikTokDisplayFont", "ProximaNova", "Segoe UI", sans-serif;
   font-size: 11px;

@@ -3,7 +3,6 @@ import 'reflect-metadata';
 import Fastify from 'fastify';
 import FastifyCORS from '@fastify/cors';
 import GracefulServer from '@gquittet/graceful-server';
-import unifyFastifyPlugin from 'unify-fastify';
 import { Server as SocketIoServer } from 'socket.io';
 import { loadRoutes } from './loaders/RESTLoader';
 import { loadSocket } from './loaders/socketLoader';
@@ -36,10 +35,6 @@ export const runServer = async () => {
 
   const logger = fastify.log;
   global.logger = logger;
-
-  await fastify.register(unifyFastifyPlugin, {
-    disableDetails: true,
-  });
 
   //LOAD SENDIM
   const gracefulServer = GracefulServer(fastify.server);
@@ -121,8 +116,9 @@ export const runServer = async () => {
     if (statusCode >= 500) {
       logger.error({ err: error, method: request.method, path: request.url }, '[HTTP] Internal error');
     } else {
+      const message = error instanceof Error ? error.message : String(error);
       logger.warn(
-        { method: request.method, path: request.url, statusCode, message: error.message },
+        { method: request.method, path: request.url, statusCode, message },
         '[HTTP] Request error',
       );
     }

@@ -11,7 +11,7 @@ Last update: 2026-02-20
 ## Open Exceptions
 
 1. Fastify advisory chain (`GHSA-jx2c-rxcm-jvmq`, `GHSA-mrq3-vjjr-p77c`)
-- Migration status: codebase prepared for `fastify@5` and Socket.IO initialization moved to native `socket.io` server wiring.
+- Migration status: `fastify@5` migration applied, `fastify-socket.io` removed, and `unify-fastify` removed to avoid transitive `fastify@4`.
 - Pending action: run install + runtime smoke test + `pnpm audit --prod` in deployment-like environment to confirm closure.
 - Mitigation until verification:
   - keep strict `Content-Type` handling at API boundary,

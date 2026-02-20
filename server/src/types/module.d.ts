@@ -63,7 +63,7 @@ declare global {
     FastifyBaseLogger
   >;
 
-  interface FastifyCustomInstance extends FastifyICustom, fastifySensible {
+  interface FastifyCustomInstance extends FastifyICustom {
     io: ServerSocketIo<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
   }
 }

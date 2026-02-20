@@ -5,6 +5,12 @@ Backend Discord/API pour l'architecture LiveChat **EXE-only**.
 Documentation projet: `../README.md`
 PRD: `../PRD.md`
 
+## Projets liés (sources)
+
+- Bot (ce dépôt): https://github.com/WardenPro/LiveChat-Bot
+- Overlay desktop (Electron): https://github.com/SuperKn4cky/LiveChat-Overlay
+- Extension navigateur (MV3): https://github.com/SuperKn4cky/LiveChat-Extension
+
 ## Rôle
 
 - Reçoit les commandes Discord.

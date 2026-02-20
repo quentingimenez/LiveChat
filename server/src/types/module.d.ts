@@ -10,7 +10,7 @@ import {
 } from 'fastify';
 
 import { Server as ServerSocketIo } from 'socket.io';
-import { REST, Client, CacheType } from 'discord.js';
+import { REST, Client } from 'discord.js';
 import { env as ENV } from '../services/env';
 import { RosettyI18n } from '../services/i18n/loader';
 import type {
@@ -69,7 +69,7 @@ declare global {
 }
 
 declare module 'discord.js' {
-  interface CommandInteraction<Cached extends CacheType = CacheType> {
+  interface CommandInteraction {
     options: any;
   }
 }

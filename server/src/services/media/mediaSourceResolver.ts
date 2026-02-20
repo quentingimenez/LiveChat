@@ -21,6 +21,63 @@ const pickSource = (url?: string | null, media?: string | null) => {
   return candidate;
 };
 
+const parseYouTubeTimestampToSeconds = (rawValue: string): number | null => {
+  const value = rawValue.trim().toLowerCase();
+
+  if (!value) {
+    return null;
+  }
+
+  if (/^\d+$/.test(value)) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  }
+
+  if (/^\d+s$/.test(value)) {
+    const parsed = Number.parseInt(value.slice(0, -1), 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  }
+
+  const hmsMatch = value.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/);
+  if (hmsMatch && (hmsMatch[1] || hmsMatch[2] || hmsMatch[3])) {
+    const hours = Number.parseInt(hmsMatch[1] || '0', 10);
+    const minutes = Number.parseInt(hmsMatch[2] || '0', 10);
+    const seconds = Number.parseInt(hmsMatch[3] || '0', 10);
+    const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+    return Number.isFinite(totalSeconds) && totalSeconds >= 0 ? totalSeconds : null;
+  }
+
+  const colonParts = value.split(':').map((part) => part.trim());
+  if ((colonParts.length === 2 || colonParts.length === 3) && colonParts.every((part) => /^\d+$/.test(part))) {
+    const numericParts = colonParts.map((part) => Number.parseInt(part, 10));
+    const [hours, minutes, seconds] = numericParts.length === 3 ? numericParts : [0, numericParts[0], numericParts[1]];
+    const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+    return Number.isFinite(totalSeconds) && totalSeconds >= 0 ? totalSeconds : null;
+  }
+
+  return null;
+};
+
+const getYouTubeStartOffsetSecondsFromUrl = (url: URL): number | null => {
+  const rawOffset = url.searchParams.get('t') || url.searchParams.get('start');
+  const parsedOffsetFromQuery = rawOffset ? parseYouTubeTimestampToSeconds(rawOffset) : null;
+
+  if (parsedOffsetFromQuery !== null && parsedOffsetFromQuery > 0) {
+    return parsedOffsetFromQuery;
+  }
+
+  if (url.hash) {
+    const hashParams = new URLSearchParams(url.hash.replace(/^#/, ''));
+    const rawOffsetFromHash = hashParams.get('t') || hashParams.get('start');
+    const parsedOffsetFromHash = rawOffsetFromHash ? parseYouTubeTimestampToSeconds(rawOffsetFromHash) : null;
+    if (parsedOffsetFromHash !== null && parsedOffsetFromHash > 0) {
+      return parsedOffsetFromHash;
+    }
+  }
+
+  return null;
+};
+
 const normalizeYoutubeUrl = (url: URL): URL => {
   const normalized = new URL(url.toString());
 
@@ -47,7 +104,6 @@ const normalizeYoutubeUrl = (url: URL): URL => {
       ? pathnameSegments[1]
       : null;
   const videoId = normalized.searchParams.get('v') || pathVideoId;
-  const startAt = normalized.searchParams.get('t') || normalized.searchParams.get('start');
 
   if (videoId) {
     normalized.pathname = '/watch';
@@ -56,10 +112,6 @@ const normalizeYoutubeUrl = (url: URL): URL => {
 
   if (videoId) {
     normalized.searchParams.set('v', videoId);
-  }
-
-  if (startAt) {
-    normalized.searchParams.set('t', startAt);
   }
 
   normalized.hash = '';
@@ -171,6 +223,27 @@ export const canonicalizeSourceUrl = (rawSource: string): string => {
 
 export const buildSourceHash = (source: string): string => {
   return crypto.createHash('sha256').update(source).digest('hex');
+};
+
+export const extractMediaStartOffsetSec = (params: { url?: string | null; media?: string | null }): number | null => {
+  const sourceUrl = pickSource(params.url, params.media);
+
+  if (!sourceUrl) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(sourceUrl);
+    const isYouTubeSource = parsed.hostname.includes('youtube.com') || parsed.hostname === 'youtu.be';
+
+    if (!isYouTubeSource) {
+      return null;
+    }
+
+    return getYouTubeStartOffsetSecondsFromUrl(parsed);
+  } catch {
+    return null;
+  }
 };
 
 export const resolveMediaSource = async (params: {

@@ -4,6 +4,7 @@ import Fastify from 'fastify';
 import FastifyCORS from '@fastify/cors';
 import GracefulServer from '@gquittet/graceful-server';
 import unifyFastifyPlugin from 'unify-fastify';
+import { Server as SocketIoServer } from 'socket.io';
 import { loadRoutes } from './loaders/RESTLoader';
 import { loadSocket } from './loaders/socketLoader';
 import { loadDiscord } from './loaders/DiscordLoader';
@@ -11,6 +12,18 @@ import { loadRosetty } from './services/i18n/loader';
 import { loadPrismaClient } from './services/prisma/loadPrisma';
 import { ensureMediaStorageDir, startMediaCachePurgeWorker } from './services/media/mediaCache';
 import { startPlaybackJobPurgeWorker } from './services/playbackJobs';
+
+const corsAllowedHeaders = [
+  'Origin',
+  'X-Requested-With',
+  'Content-Type',
+  'Accept',
+  'Authorization',
+  'forest-context-url',
+  'Set-Cookie',
+  'set-cookie',
+  'Cookie',
+];
 
 export const runServer = async () => {
   const logLevel = env.LOG || 'info';
@@ -53,51 +66,33 @@ export const runServer = async () => {
   }
 
   try {
-    await fastify.register(require('fastify-socket.io'), {
-      cors: {
-        allowedHeaders: [
-          'Origin',
-          'X-Requested-With',
-          'Content-Type',
-          'Accept',
-          'Authorization',
-          'forest-context-url',
-          'Set-Cookie',
-          'set-cookie',
-          'Cookie',
-        ],
-        origin: true,
-        credentials: true,
+    const io = new SocketIoServer<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>(
+      fastify.server,
+      {
+        cors: {
+          allowedHeaders: corsAllowedHeaders,
+          origin: true,
+          credentials: true,
+        },
       },
-    });
+    );
 
-    fastify.addHook('onClose', async (err) => {
-      if (err) {
-        logger.debug(err);
-      }
+    fastify.decorate('io', io);
+
+    fastify.addHook('onClose', async () => {
       await global.prisma.$disconnect();
-      await fastify.io.close();
+      await io.close();
       logger.debug('Server is shutting down');
     });
-    logger.info('[BOOT] Socket.IO plugin registered');
+    logger.info('[BOOT] Socket.IO server initialized');
   } catch (error) {
-    logger.fatal('Impossible to disconnect to db');
+    logger.fatal({ err: error }, 'Impossible to initialize socket server');
   }
 
   // SERVER CONFIGURATION
   await fastify.register(FastifyCORS, {
     methods: ['GET', 'PUT', 'DELETE', 'POST', 'OPTIONS', 'PATCH'],
-    allowedHeaders: [
-      'Origin',
-      'X-Requested-With',
-      'Content-Type',
-      'Accept',
-      'Authorization',
-      'forest-context-url',
-      'Set-Cookie',
-      'set-cookie',
-      'Cookie',
-    ],
+    allowedHeaders: corsAllowedHeaders,
     origin: true,
     credentials: true,
   });

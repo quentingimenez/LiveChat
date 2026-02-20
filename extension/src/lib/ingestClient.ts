@@ -14,6 +14,7 @@ export interface ComposeIngestRequest {
   url: string;
   text?: string;
   forceRefresh?: boolean;
+  saveToBoard?: boolean;
 }
 
 export type IngestRequest = QuickIngestRequest | ComposeIngestRequest;
@@ -39,6 +40,7 @@ type IngestPayload = {
   authorImage?: string;
   text?: string;
   forceRefresh?: boolean;
+  saveToBoard?: boolean;
 };
 
 const toNonEmptyString = (value: unknown): string | null => {
@@ -102,6 +104,7 @@ export const buildIngestPayload = (request: IngestRequest, settings: ExtensionSe
     }
 
     payload.forceRefresh = !!request.forceRefresh;
+    payload.saveToBoard = !!request.saveToBoard;
   }
 
   return payload;

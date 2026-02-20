@@ -53,6 +53,36 @@
       </div>
     </div>
 
+    <div id="rename-overlay" class="dialog-overlay hidden">
+      <form id="rename-form" class="dialog-card">
+        <h3>Nommer le meme</h3>
+        <p>Laisser vide pour supprimer le nom personnalise.</p>
+        <input
+          id="rename-input"
+          type="text"
+          maxlength="240"
+          placeholder="Nom du meme"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <div class="dialog-actions">
+          <button id="rename-cancel" type="button" class="ghost">Annuler</button>
+          <button id="rename-submit" type="submit">Enregistrer</button>
+        </div>
+      </form>
+    </div>
+
+    <div id="delete-overlay" class="dialog-overlay hidden">
+      <div class="dialog-card dialog-danger">
+        <h3>Supprimer ce meme ?</h3>
+        <p id="delete-message">Cette action est irreversible.</p>
+        <div class="dialog-actions">
+          <button id="delete-cancel" type="button" class="ghost">Annuler</button>
+          <button id="delete-confirm" type="button" class="danger">Supprimer</button>
+        </div>
+      </div>
+    </div>
+
     <script src="./board.js"></script>
   </body>
 </html>

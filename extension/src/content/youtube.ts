@@ -90,6 +90,10 @@ const inpageStyles = `
 .lce-youtube-watch-slot {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  margin-left: 8px;
+  margin-right: 8px;
+  flex: 0 0 auto;
   pointer-events: auto !important;
 }
 .lce-button-youtube.is-loading {
@@ -363,9 +367,13 @@ const scoreWatchContainer = (container: HTMLElement): number => {
   }
 
   const hitTestableCount = buttons.filter((button) => isHitTestableButton(button)).length;
+  if (hitTestableCount === 0) {
+    return -1;
+  }
+
   const rect = container.getBoundingClientRect();
-  const areaScore = rect.width * rect.height;
-  return hitTestableCount * 10_000 + areaScore;
+  const areaPenalty = rect.width * rect.height;
+  return hitTestableCount * 1_000_000 - areaPenalty;
 };
 
 const resolveTargetContainer = (variant: ButtonVariant): HTMLElement | null => {
@@ -530,38 +538,47 @@ const upsertShortsFloatingButton = (targetUrl: string, container: HTMLElement | 
   button.style.top = `${clamp(originTop, 8, window.innerHeight - 56)}px`;
 };
 
-const upsertWatchFloatingButton = (targetUrl: string, container: HTMLElement): void => {
-  let button = document.getElementById(WATCH_FLOATING_BUTTON_ID) as HTMLButtonElement | null;
+const upsertInlineWatchButton = (targetUrl: string, container: HTMLElement): void => {
+  const existingSlots = Array.from(document.querySelectorAll<HTMLElement>(`[${WATCH_SLOT_ATTRIBUTE}]`));
+  let slot =
+    existingSlots.find((candidate) => candidate.parentElement === container) || existingSlots[0] || null;
+  let button =
+    slot?.querySelector<HTMLButtonElement>(`button[${BUTTON_ATTRIBUTE}].lce-button-youtube-watch`) || null;
+
+  for (const staleSlot of existingSlots) {
+    if (staleSlot !== slot) {
+      staleSlot.remove();
+    }
+  }
+
+  if (!slot) {
+    slot = document.createElement('div');
+    slot.setAttribute(WATCH_SLOT_ATTRIBUTE, '1');
+    slot.className = 'lce-youtube-watch-slot';
+  }
 
   if (!button) {
     button = createActionButton('watch');
-    button.id = WATCH_FLOATING_BUTTON_ID;
     button.setAttribute(BUTTON_ATTRIBUTE, '1');
-    document.body.appendChild(button);
   }
 
+  button.removeAttribute('id');
   button.dataset.targetUrl = targetUrl;
   applyVariantClass(button, 'watch');
-  button.classList.add('lce-button-youtube-watch-floating');
+  button.classList.remove('lce-button-youtube-watch-floating');
 
   if (!isStateClass(button)) {
     button.textContent = BUTTON_TEXT_BY_STATE.idle;
     button.title = DEFAULT_BUTTON_TITLE;
   }
 
-  const actionButtons = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).filter((candidate) => {
-    if (candidate.id === WATCH_FLOATING_BUTTON_ID || candidate.id === SHORTS_FLOATING_BUTTON_ID) {
-      return false;
-    }
+  if (!slot.contains(button)) {
+    slot.appendChild(button);
+  }
 
-    return isHitTestableButton(candidate);
-  });
-  const anchorRect = actionButtons.length > 0 ? actionButtons[0].getBoundingClientRect() : container.getBoundingClientRect();
-  const left = anchorRect.left - 70;
-  const top = anchorRect.top + Math.max(0, (anchorRect.height - 42) / 2);
-
-  button.style.left = `${clamp(left, 8, window.innerWidth - 64)}px`;
-  button.style.top = `${clamp(top, 8, window.innerHeight - 56)}px`;
+  if (slot.parentElement !== container) {
+    container.insertBefore(slot, container.firstElementChild);
+  }
 };
 
 const removeLegacyFloatingButton = (): void => {
@@ -613,15 +630,16 @@ const scanYoutubeTargets = (): void => {
   }
 
   removeShortsFloatingButton();
-  removeInlineWatchButtons();
+  removeWatchFloatingButton();
 
   const watchContainer = resolveTargetContainer('watch');
 
   if (!watchContainer) {
-    removeWatchFloatingButton();
+    removeInlineWatchButtons();
     return;
   }
-  upsertWatchFloatingButton(currentUrl, watchContainer);
+
+  upsertInlineWatchButton(currentUrl, watchContainer);
 };
 
 const startObservedScanner = (scan: () => void): void => {

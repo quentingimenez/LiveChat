@@ -24,6 +24,18 @@ describe('url helpers', () => {
     );
   });
 
+  it('normalise une URL YouTube youtu.be en conservant le timestamp', () => {
+    expect(normalizeYoutubeUrl('https://youtu.be/abc123?si=test&t=108')).toBe(
+      'https://www.youtube.com/watch?v=abc123&t=108',
+    );
+  });
+
+  it('normalise une URL YouTube watch avec start', () => {
+    expect(normalizeYoutubeUrl('https://www.youtube.com/watch?v=abc123&start=42')).toBe(
+      'https://www.youtube.com/watch?v=abc123&t=42',
+    );
+  });
+
   it('normalise une URL YouTube shorts', () => {
     expect(normalizeYoutubeUrl('https://www.youtube.com/shorts/XYZ987?feature=share')).toBe(
       'https://www.youtube.com/shorts/XYZ987',
@@ -68,6 +80,10 @@ describe('url helpers', () => {
 
   it('résout une URL ingest prioritaire', () => {
     expect(resolveIngestTargetUrl('https://youtu.be/abc123')).toBe('https://www.youtube.com/watch?v=abc123');
+  });
+
+  it('résout une URL ingest YouTube avec timestamp', () => {
+    expect(resolveIngestTargetUrl('https://youtu.be/abc123?t=90')).toBe('https://www.youtube.com/watch?v=abc123&t=90');
   });
 
   it('résout le contexte dans l’ordre link > src > page > tab', () => {

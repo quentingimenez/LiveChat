@@ -400,6 +400,53 @@
     return normalized > 0 ? normalized : null;
   };
 
+  const parseStartOffsetFromMediaUrl = (rawUrl) => {
+    if (typeof rawUrl !== 'string' || !rawUrl.trim()) {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(rawUrl);
+      const queryValue = parsed.searchParams.get('startOffsetSec');
+      if (queryValue && /^\d+$/.test(queryValue)) {
+        const parsedQueryValue = Number.parseInt(queryValue, 10);
+        if (Number.isFinite(parsedQueryValue) && parsedQueryValue > 0) {
+          return parsedQueryValue;
+        }
+      }
+
+      const hash = parsed.hash.replace(/^#/, '').trim().toLowerCase();
+      if (!hash) {
+        return null;
+      }
+
+      if (/^\d+$/.test(hash)) {
+        const parsedHashValue = Number.parseInt(hash, 10);
+        return Number.isFinite(parsedHashValue) && parsedHashValue > 0 ? parsedHashValue : null;
+      }
+
+      const hashParams = new URLSearchParams(hash);
+      const hashTValue = hashParams.get('t') || hashParams.get('start');
+      if (hashTValue && /^\d+$/.test(hashTValue)) {
+        const parsedHashTValue = Number.parseInt(hashTValue, 10);
+        return Number.isFinite(parsedHashTValue) && parsedHashTValue > 0 ? parsedHashTValue : null;
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
+  const resolveStartOffsetSec = (mediaPayload) => {
+    const directOffset = getStartOffsetSec(mediaPayload?.startOffsetSec);
+    if (directOffset !== null) {
+      return directOffset;
+    }
+
+    return parseStartOffsetFromMediaUrl(mediaPayload?.url);
+  };
+
   const clamp01 = (value) => {
     if (typeof value !== 'number' || !Number.isFinite(value)) {
       return 1;
@@ -804,7 +851,7 @@
 
     if (payload.media.kind !== 'image') {
       activePlayableElement = element;
-      applyMediaStartOffset(element, payload.media.startOffsetSec);
+      applyMediaStartOffset(element, resolveStartOffsetSec(payload.media));
 
       element.addEventListener('playing', () => {
         resumeCountdown();

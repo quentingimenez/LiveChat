@@ -42,6 +42,20 @@ describe('url helpers', () => {
     );
   });
 
+  it('normalise une URL TikTok générique', () => {
+    expect(normalizeTikTokVideoUrl('https://www.tiktok.com/video/7591173294007651598?foo=bar')).toBe(
+      'https://www.tiktok.com/video/7591173294007651598',
+    );
+  });
+
+  it('rejette une URL TikTok avec un id trop court', () => {
+    expect(normalizeTikTokVideoUrl('https://www.tiktok.com/video/12345')).toBeNull();
+  });
+
+  it('rejette un faux domaine TikTok', () => {
+    expect(normalizeTikTokVideoUrl('https://eviltiktok.com/video/7591173294007651598')).toBeNull();
+  });
+
   it('normalise une URL Twitter/X status', () => {
     expect(normalizeTwitterStatusUrl('https://x.com/livechat/status/2020921090097164393?s=20')).toBe(
       'https://x.com/livechat/status/2020921090097164393',

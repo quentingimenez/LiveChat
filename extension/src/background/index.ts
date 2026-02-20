@@ -81,6 +81,11 @@ const trimToNonEmpty = (value: unknown): string | null => {
   return normalized.length > 0 ? normalized : null;
 };
 
+const isTikTokHostname = (hostname: string): boolean => {
+  const normalizedHost = hostname.toLowerCase();
+  return normalizedHost === 'tiktok.com' || normalizedHost.endsWith('.tiktok.com');
+};
+
 const normalizeTikTokItemId = (value: unknown): string | null => {
   const normalized = trimToNonEmpty(value);
 
@@ -107,11 +112,11 @@ const normalizeTikTokPageUrl = (value: unknown): string | null => {
   try {
     const parsed = new URL(normalized);
 
-    if (!parsed.hostname.toLowerCase().includes('tiktok.com')) {
+    if (!isTikTokHostname(parsed.hostname)) {
       return null;
     }
 
-    return /\/(?:video|photo)\/\d+/i.test(parsed.pathname) ? normalized : null;
+    return /\/(?:video|photo)\/\d{15,22}/i.test(parsed.pathname) ? normalized : null;
   } catch {
     return null;
   }
@@ -757,7 +762,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
         return;
       }
 
-      const capturedUrl = await resolveTikTokCapturedUrlForTab(senderTabId);
+      const capturedUrl = await resolveTikTokCapturedUrlForTab(senderTabId, message.domUrl ?? null);
 
       sendResponse({
         ok: !!capturedUrl,

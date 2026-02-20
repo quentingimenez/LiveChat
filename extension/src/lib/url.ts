@@ -157,7 +157,7 @@ export const resolveIngestTargetUrl = (rawUrl: string, base?: string): string | 
   }
 
   if (TWITTER_HOSTS.has(hostname)) {
-    return normalizeTwitterStatusUrl(parsed.toString(), base) || normalizeGenericHttpUrl(parsed.toString());
+    return normalizeTwitterStatusUrl(parsed.toString(), base);
   }
 
   return normalizeGenericHttpUrl(parsed.toString());

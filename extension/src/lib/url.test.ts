@@ -62,6 +62,10 @@ describe('url helpers', () => {
     );
   });
 
+  it('rejette une URL Twitter/X non status', () => {
+    expect(resolveIngestTargetUrl('https://x.com/home')).toBeNull();
+  });
+
   it('résout une URL ingest prioritaire', () => {
     expect(resolveIngestTargetUrl('https://youtu.be/abc123')).toBe('https://www.youtube.com/watch?v=abc123');
   });
@@ -74,5 +78,14 @@ describe('url helpers', () => {
     });
 
     expect(resolved).toBe('https://x.com/livechat/status/2020921090097164393');
+  });
+
+  it('retourne null si le contexte ne contient pas d’URL media supportée', () => {
+    const resolved = resolveUrlFromContextCandidates({
+      pageUrl: 'https://x.com/home',
+      tabUrl: 'https://x.com/home',
+    });
+
+    expect(resolved).toBeNull();
   });
 });

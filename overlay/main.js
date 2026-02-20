@@ -11,6 +11,10 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 if (process.platform === 'win32') {
   app.setAppUserModelId('com.overlay.client');
 }
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.exit(0);
+}
 
 let overlayWindow;
 let pairingWindow;
@@ -24,6 +28,43 @@ let overlayConnectionReason = '';
 let pendingPlaybackStatePayload = null;
 let pendingPlaybackStopPayload = null;
 let activeMemeBindings = {};
+
+if (hasSingleInstanceLock) {
+  app.on('second-instance', () => {
+    if (boardWindow && !boardWindow.isDestroyed()) {
+      if (typeof boardWindow.isMinimized === 'function' && boardWindow.isMinimized()) {
+        boardWindow.restore();
+      }
+      boardWindow.focus();
+      return;
+    }
+
+    if (pairingWindow && !pairingWindow.isDestroyed()) {
+      if (typeof pairingWindow.isMinimized === 'function' && pairingWindow.isMinimized()) {
+        pairingWindow.restore();
+      }
+      pairingWindow.focus();
+      return;
+    }
+
+    if (overlayWindow && !overlayWindow.isDestroyed()) {
+      overlayWindow.show();
+      return;
+    }
+
+    const cfg = loadConfig();
+    if (!cfg.enabled) {
+      return;
+    }
+
+    if (!hasPairingConfig(cfg)) {
+      createPairingWindow();
+      return;
+    }
+
+    createBoardWindow();
+  });
+}
 
 const configPath = path.join(app.getPath('userData'), 'config.json');
 const appIconPath = path.join(__dirname, 'icon.png');

@@ -22,4 +22,7 @@ contextBridge.exposeInMainWorld('livechatOverlay', {
   reportPlaybackState: (payload) => ipcRenderer.send('overlay:playback-state', payload),
   reportPlaybackStop: (payload) => ipcRenderer.send('overlay:playback-stop', payload),
   consumePairing: (payload) => ipcRenderer.invoke('pairing:consume', payload),
+  getMemeBindings: () => ipcRenderer.invoke('meme-board:get-bindings'),
+  setMemeBindings: (payload) => ipcRenderer.invoke('meme-board:set-bindings', payload),
+  triggerMeme: (payload) => ipcRenderer.invoke('meme-board:trigger', payload),
 });

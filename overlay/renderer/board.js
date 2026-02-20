@@ -8,6 +8,14 @@
   const searchInput = document.getElementById('search-input');
   const refreshButton = document.getElementById('refresh-button');
   const captureOverlay = document.getElementById('capture-overlay');
+  const renameOverlay = document.getElementById('rename-overlay');
+  const renameForm = document.getElementById('rename-form');
+  const renameInput = document.getElementById('rename-input');
+  const renameCancelButton = document.getElementById('rename-cancel');
+  const deleteOverlay = document.getElementById('delete-overlay');
+  const deleteMessage = document.getElementById('delete-message');
+  const deleteCancelButton = document.getElementById('delete-cancel');
+  const deleteConfirmButton = document.getElementById('delete-confirm');
 
   const state = {
     config: null,
@@ -16,6 +24,8 @@
     total: 0,
     selectedId: null,
     captureItemId: null,
+    resolveRenameDialog: null,
+    resolveDeleteDialog: null,
     search: '',
   };
 
@@ -94,6 +104,94 @@
 
   const findSelectedItem = () => {
     return state.items.find((item) => item.id === state.selectedId) || null;
+  };
+
+  const isDeleteDialogReady = () => {
+    return (
+      deleteOverlay instanceof HTMLElement &&
+      deleteMessage instanceof HTMLElement &&
+      deleteCancelButton instanceof HTMLElement &&
+      deleteConfirmButton instanceof HTMLElement
+    );
+  };
+
+  const hideDeleteDialog = () => {
+    if (deleteOverlay instanceof HTMLElement) {
+      deleteOverlay.classList.add('hidden');
+    }
+  };
+
+  const closeDeleteDialog = (value) => {
+    hideDeleteDialog();
+
+    if (typeof state.resolveDeleteDialog !== 'function') {
+      return;
+    }
+
+    const resolver = state.resolveDeleteDialog;
+    state.resolveDeleteDialog = null;
+    resolver(value);
+  };
+
+  const openDeleteDialog = (item) => {
+    const title = toCardTitle(item);
+
+    if (!isDeleteDialogReady()) {
+      return Promise.resolve(window.confirm(`Supprimer "${title}" de la meme board ?`));
+    }
+
+    closeDeleteDialog(false);
+    deleteMessage.textContent = `Tu vas supprimer "${title}" de la meme board. Cette action est irreversible.`;
+    deleteOverlay.classList.remove('hidden');
+    deleteConfirmButton.focus();
+
+    return new Promise((resolve) => {
+      state.resolveDeleteDialog = resolve;
+    });
+  };
+
+  const isRenameDialogReady = () => {
+    return (
+      renameOverlay instanceof HTMLElement &&
+      renameForm instanceof HTMLFormElement &&
+      renameInput instanceof HTMLInputElement &&
+      renameCancelButton instanceof HTMLElement
+    );
+  };
+
+  const hideRenameDialog = () => {
+    if (renameOverlay instanceof HTMLElement) {
+      renameOverlay.classList.add('hidden');
+    }
+  };
+
+  const closeRenameDialog = (value) => {
+    hideRenameDialog();
+
+    if (typeof state.resolveRenameDialog !== 'function') {
+      return;
+    }
+
+    const resolver = state.resolveRenameDialog;
+    state.resolveRenameDialog = null;
+    resolver(value);
+  };
+
+  const openRenameDialog = (title) => {
+    if (!isRenameDialogReady()) {
+      return Promise.resolve(window.prompt('Nom du meme (laisser vide pour enlever le nom):', title));
+    }
+
+    closeRenameDialog(null);
+
+    renameInput.value = title;
+    renameOverlay.classList.remove('hidden');
+    renameInput.focus();
+    renameInput.select();
+
+    return new Promise((resolve) => {
+      state.resolveRenameDialog = resolve;
+    });
   };
 
   const getItemShortcuts = (itemId) => {
@@ -185,7 +283,7 @@
     const deleteButton = document.createElement('button');
     deleteButton.type = 'button';
     deleteButton.className = 'danger';
-    deleteButton.textContent = 'Supprimer ce meme';
+    deleteButton.textContent = 'Supprimer';
     deleteButton.addEventListener('click', () => {
       void deleteItem(selectedItem);
     });
@@ -391,7 +489,7 @@
 
   const renameItem = async (item) => {
     const currentTitle = `${item?.title || ''}`.trim();
-    const rawTitle = window.prompt('Nom du meme (laisser vide pour enlever le nom):', currentTitle);
+    const rawTitle = await openRenameDialog(currentTitle);
 
     if (rawTitle === null) {
       return;
@@ -424,7 +522,7 @@
   };
 
   const deleteItem = async (item) => {
-    const confirmed = window.confirm(`Supprimer "${toCardTitle(item)}" de la meme board ?`);
+    const confirmed = await openDeleteDialog(item);
 
     if (!confirmed) {
       return;
@@ -547,6 +645,27 @@
   };
 
   window.addEventListener('keydown', (event) => {
+    if (state.resolveRenameDialog) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeRenameDialog(null);
+      }
+
+      return;
+    }
+
+    if (state.resolveDeleteDialog) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeDeleteDialog(false);
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        closeDeleteDialog(true);
+      }
+
+      return;
+    }
+
     if (!state.captureItemId) {
       return;
     }
@@ -589,6 +708,39 @@
       }
     })();
   });
+
+  if (isRenameDialogReady()) {
+    renameForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      closeRenameDialog(renameInput.value);
+    });
+
+    renameCancelButton.addEventListener('click', () => {
+      closeRenameDialog(null);
+    });
+
+    renameOverlay.addEventListener('click', (event) => {
+      if (event.target === renameOverlay) {
+        closeRenameDialog(null);
+      }
+    });
+  }
+
+  if (isDeleteDialogReady()) {
+    deleteCancelButton.addEventListener('click', () => {
+      closeDeleteDialog(false);
+    });
+
+    deleteConfirmButton.addEventListener('click', () => {
+      closeDeleteDialog(true);
+    });
+
+    deleteOverlay.addEventListener('click', (event) => {
+      if (event.target === deleteOverlay) {
+        closeDeleteDialog(false);
+      }
+    });
+  }
 
   searchForm.addEventListener('submit', (event) => {
     event.preventDefault();

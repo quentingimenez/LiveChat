@@ -177,6 +177,8 @@ button:disabled {
   padding: 10px;
   display: grid;
   gap: 10px;
+  align-content: start;
+  grid-auto-rows: max-content;
 }
 
 .item-card {
@@ -186,6 +188,9 @@ button:disabled {
   background: rgba(255, 255, 255, 0.03);
   display: grid;
   gap: 6px;
+  align-content: start;
+  align-items: start;
+  height: fit-content;
 }
 
 .item-card.selected {
@@ -235,6 +240,8 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
+  align-items: start;
+  align-content: start;
 }
 
 .item-actions button {
@@ -299,6 +306,67 @@ button:disabled {
 
 .capture-overlay.hidden {
   display: none;
+}
+
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.62);
+  display: grid;
+  place-items: center;
+  z-index: 1000;
+}
+
+.dialog-overlay.hidden {
+  display: none;
+}
+
+.dialog-card {
+  width: min(480px, 92vw);
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  padding: 16px;
+  background: linear-gradient(170deg, rgba(17, 31, 56, 0.98), rgba(12, 20, 38, 0.98));
+  display: grid;
+  gap: 10px;
+}
+
+.dialog-card h3 {
+  margin: 0;
+}
+
+.dialog-card p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.dialog-card input {
+  width: 100%;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  padding: 10px 12px;
+}
+
+.dialog-card.dialog-danger {
+  border-color: rgba(255, 118, 118, 0.38);
+  box-shadow: 0 0 0 1px rgba(255, 118, 118, 0.15) inset;
+}
+
+.dialog-card.dialog-danger h3 {
+  color: #ffd4d4;
+}
+
+.dialog-card.dialog-danger p {
+  color: #ffc9c9;
+}
+
+.dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 .capture-card {

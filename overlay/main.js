@@ -11,6 +11,7 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 let overlayWindow;
 let pairingWindow;
+let boardWindow;
 let tray;
 let overlaySocket;
 let keepOnTopInterval;
@@ -19,6 +20,7 @@ let overlayConnectionState = 'disconnected';
 let overlayConnectionReason = '';
 let pendingPlaybackStatePayload = null;
 let pendingPlaybackStopPayload = null;
+let activeMemeBindings = {};
 
 const configPath = path.join(app.getPath('userData'), 'config.json');
 
@@ -33,7 +35,10 @@ const defaultConfig = {
   clientId: null,
   guildId: null,
   deviceName: null,
+  memeBindings: {},
 };
+
+const MANUAL_RELOAD_SHORTCUT = 'Shift+Escape';
 
 const CONNECTION_STATE_LABELS = {
   disabled: 'Désactivé',
@@ -65,6 +70,27 @@ function normalizeVolume(volume) {
   }
 
   return Math.min(1, Math.max(0, volume));
+}
+
+function normalizeMemeBindings(candidate) {
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    return {};
+  }
+
+  const normalized = {};
+
+  for (const [rawAccelerator, rawItemId] of Object.entries(candidate)) {
+    const accelerator = `${rawAccelerator || ''}`.trim();
+    const itemId = `${rawItemId || ''}`.trim();
+
+    if (!accelerator || !itemId) {
+      continue;
+    }
+
+    normalized[accelerator] = itemId;
+  }
+
+  return normalized;
 }
 
 function getClosestVolumePreset(volume) {
@@ -103,6 +129,7 @@ function loadConfig() {
       ...defaultConfig,
       ...parsed,
       volume: normalizeVolume(parsed.volume),
+      memeBindings: normalizeMemeBindings(parsed.memeBindings),
     };
   } catch (error) {
     console.error('Unable to read config:', error);
@@ -120,6 +147,7 @@ function saveConfig(nextValues) {
     const normalizedMerged = {
       ...merged,
       volume: normalizeVolume(merged.volume),
+      memeBindings: normalizeMemeBindings(merged.memeBindings),
     };
 
     fs.writeFileSync(configPath, JSON.stringify(normalizedMerged, null, 2));
@@ -388,6 +416,45 @@ function closePairingWindow() {
   }
 }
 
+function createBoardWindow() {
+  if (!hasPairingConfig()) {
+    createPairingWindow();
+    return;
+  }
+
+  if (boardWindow && !boardWindow.isDestroyed()) {
+    boardWindow.focus();
+    return;
+  }
+
+  boardWindow = new BrowserWindow({
+    width: 1180,
+    height: 780,
+    minWidth: 960,
+    minHeight: 640,
+    autoHideMenuBar: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  });
+
+  boardWindow.loadFile(path.join(__dirname, 'renderer/board.html'));
+
+  boardWindow.on('closed', () => {
+    boardWindow = null;
+  });
+}
+
+function destroyBoardWindow() {
+  if (boardWindow && !boardWindow.isDestroyed()) {
+    boardWindow.destroy();
+  }
+
+  boardWindow = null;
+}
+
 function stopHeartbeatLoop() {
   if (heartbeatInterval) {
     clearInterval(heartbeatInterval);
@@ -538,6 +605,7 @@ async function setEnabledAsync(enabled) {
   if (!enabled) {
     disconnectOverlaySocket({ nextState: 'disabled' });
     destroyOverlayWindow();
+    destroyBoardWindow();
     return;
   }
 
@@ -573,6 +641,102 @@ function emitManualStopSignal() {
   });
 }
 
+function emitMemeTriggerSignal(itemId, trigger = 'shortcut') {
+  const normalizedItemId = `${itemId || ''}`.trim();
+  const normalizedTrigger = trigger === 'ui' ? 'ui' : 'shortcut';
+
+  if (!normalizedItemId) {
+    return {
+      ok: false,
+      reason: 'invalid_item_id',
+    };
+  }
+
+  if (!overlaySocket || !overlaySocket.connected) {
+    return {
+      ok: false,
+      reason: 'socket_offline',
+    };
+  }
+
+  overlaySocket.emit(OVERLAY_SOCKET_EVENTS.MEME_TRIGGER, {
+    itemId: normalizedItemId,
+    trigger: normalizedTrigger,
+  });
+  console.info(`[OVERLAY] Forwarded meme trigger to bot (itemId: ${normalizedItemId}, trigger: ${normalizedTrigger})`);
+
+  return {
+    ok: true,
+  };
+}
+
+function unregisterMemeShortcuts() {
+  for (const accelerator of Object.keys(activeMemeBindings)) {
+    globalShortcut.unregister(accelerator);
+  }
+
+  activeMemeBindings = {};
+}
+
+function tryRegisterMemeBindings(bindings) {
+  const normalizedBindings = normalizeMemeBindings(bindings);
+  const failures = [];
+  const registered = {};
+
+  for (const [accelerator, itemId] of Object.entries(normalizedBindings)) {
+    const registeredOk = globalShortcut.register(accelerator, () => {
+      emitMemeTriggerSignal(itemId, 'shortcut');
+    });
+
+    if (!registeredOk) {
+      failures.push(accelerator);
+      continue;
+    }
+
+    registered[accelerator] = itemId;
+  }
+
+  return {
+    registered,
+    failures,
+  };
+}
+
+function applyMemeBindings(nextBindings, options = {}) {
+  const strict = options.strict !== false;
+  const persist = options.persist !== false;
+  const previousBindings = { ...activeMemeBindings };
+
+  unregisterMemeShortcuts();
+  const registrationResult = tryRegisterMemeBindings(nextBindings);
+
+  if (strict && registrationResult.failures.length > 0) {
+    unregisterMemeShortcuts();
+    const rollbackResult = tryRegisterMemeBindings(previousBindings);
+    activeMemeBindings = rollbackResult.registered;
+
+    return {
+      ok: false,
+      appliedBindings: { ...activeMemeBindings },
+      failedAccelerators: registrationResult.failures,
+    };
+  }
+
+  activeMemeBindings = registrationResult.registered;
+
+  if (persist) {
+    saveConfig({
+      memeBindings: activeMemeBindings,
+    });
+  }
+
+  return {
+    ok: registrationResult.failures.length === 0,
+    appliedBindings: { ...activeMemeBindings },
+    failedAccelerators: registrationResult.failures,
+  };
+}
+
 function moveOverlayToDisplay(display, index) {
   saveConfig({
     displayId: display.id,
@@ -602,6 +766,7 @@ function resetPairing() {
 
   disconnectOverlaySocket({ nextState: 'not_paired' });
   destroyOverlayWindow();
+  destroyBoardWindow();
 
   if (loadConfig().enabled) {
     createPairingWindow();
@@ -653,6 +818,11 @@ function updateTrayMenu() {
       label: 'Réinitialiser appairage',
       click: () => resetPairing(),
     },
+    {
+      label: 'Ouvrir Meme Board',
+      enabled: cfg.enabled && hasPairingConfig(cfg),
+      click: () => createBoardWindow(),
+    },
     { type: 'separator' },
     { label: 'CONFIGURATION ÉCRAN', enabled: false },
     { type: 'separator' },
@@ -694,6 +864,7 @@ function updateTrayMenu() {
     click: () => {
       disconnectOverlaySocket();
       destroyOverlayWindow();
+      destroyBoardWindow();
       closePairingWindow();
       app.quit();
     },
@@ -714,13 +885,18 @@ function createTray() {
 }
 
 function registerShortcuts() {
-  globalShortcut.register('Shift+Escape', () => {
+  globalShortcut.register(MANUAL_RELOAD_SHORTCUT, () => {
     const cfg = loadConfig();
 
     if (cfg.enabled && overlayWindow && !overlayWindow.isDestroyed()) {
       emitManualStopSignal();
       overlayWindow.reload();
     }
+  });
+
+  applyMemeBindings(loadConfig().memeBindings, {
+    strict: false,
+    persist: false,
   });
 }
 
@@ -734,7 +910,34 @@ ipcMain.handle('overlay:get-config', () => {
     clientId: cfg.clientId,
     showText: cfg.showText,
     volume: cfg.volume,
+    memeBindings: normalizeMemeBindings(cfg.memeBindings),
   };
+});
+
+ipcMain.handle('meme-board:get-bindings', () => {
+  const cfg = loadConfig();
+
+  return {
+    bindings: normalizeMemeBindings(cfg.memeBindings),
+  };
+});
+
+ipcMain.handle('meme-board:set-bindings', (_event, payload) => {
+  const nextBindings = normalizeMemeBindings(payload?.bindings);
+  const applyResult = applyMemeBindings(nextBindings, {
+    strict: true,
+    persist: true,
+  });
+
+  return {
+    ok: applyResult.ok,
+    bindings: applyResult.appliedBindings,
+    failedAccelerators: applyResult.failedAccelerators,
+  };
+});
+
+ipcMain.handle('meme-board:trigger', (_event, payload) => {
+  return emitMemeTriggerSignal(payload?.itemId, payload?.trigger);
 });
 
 ipcMain.on('overlay:renderer-ready', () => {
@@ -909,5 +1112,6 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => {
   disconnectOverlaySocket();
   stopKeepOnTopLoop();
+  destroyBoardWindow();
   globalShortcut.unregisterAll();
 });

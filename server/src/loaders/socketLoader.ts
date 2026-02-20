@@ -13,13 +13,13 @@ import {
 
 const MIN_ACTIVE_PLAYBACK_BUSY_LOCK_MS = 5_000;
 
-const toNonEmptyString = (value: unknown): string | null => {
+const toNonEmptyString = (value: unknown): string | undefined => {
   if (typeof value !== 'string') {
-    return null;
+    return undefined;
   }
 
   const normalized = value.trim();
-  return normalized.length > 0 ? normalized : null;
+  return normalized.length > 0 ? normalized : undefined;
 };
 
 const getTokenFromSocketHandshake = (socket) => {

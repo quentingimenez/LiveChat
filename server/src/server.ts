@@ -48,7 +48,7 @@ export const runServer = async () => {
     startPlaybackJobPurgeWorker();
     logger.info('[BOOT] Playback job purge worker started');
   } catch (e) {
-    logger.fatal('[DB] Impossible to connect to database', e);
+    logger.fatal({ err: e }, '[DB] Impossible to connect to database');
     process.exit(1);
   }
 

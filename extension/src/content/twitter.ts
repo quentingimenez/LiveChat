@@ -1,42 +1,59 @@
 const STYLE_ID = 'lce-twitter-style';
-const TOAST_CONTAINER_ID = 'lce-twitter-toast-container';
 const BUTTON_ATTRIBUTE = 'data-lce-twitter-button';
 const SLOT_ATTRIBUTE = 'data-lce-twitter-slot';
 const FLOATING_BUTTON_ID = 'lce-twitter-floating-button';
 
-let toastHideTimeout: number | null = null;
-let toastListenerRegistered = false;
+type ButtonState = 'idle' | 'loading' | 'success' | 'error';
+
+const BUTTON_TEXT_BY_STATE: Record<ButtonState, string> = {
+  idle: 'LC',
+  loading: '...',
+  success: 'OK',
+  error: 'ER',
+};
+
+const buttonResetTimers = new WeakMap<HTMLButtonElement, number>();
 
 const inpageStyles = `
 .lce-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 36px;
+  width: 34px;
+  height: 34px;
   border: none;
   border-radius: 999px;
-  padding: 0 16px;
+  padding: 0;
   font-family: "Segoe UI", "Helvetica Neue", sans-serif;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 700;
   cursor: pointer;
   background: transparent;
   color: #72767B;
-  transition: background-color 140ms ease, color 140ms ease;
+  transition: background-color 140ms ease, color 140ms ease, transform 120ms ease;
 }
 .lce-button:hover { background: rgba(29, 155, 240, 0.1); color: #1d9bf0; }
+.lce-button:disabled { opacity: 1; }
+.lce-button.is-loading {
+  background: rgba(29, 155, 240, 0.1);
+  color: #1d9bf0;
+}
+.lce-button.is-success {
+  background: #30d158;
+  color: #0f0f0f;
+}
+.lce-button.is-error {
+  background: #ff453a;
+  color: #fff;
+}
 .lce-button-floating { position: fixed; right: 20px; bottom: 24px; z-index: 2147483646; }
 .lce-twitter-action-slot {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-left: 6px;
+  margin-left: 4px;
   flex: 0 0 auto;
 }
-.lce-toast-container { position: fixed; right: 16px; bottom: 16px; z-index: 2147483647; }
-.lce-toast { border-radius: 10px; padding: 10px 12px; font-family: "Segoe UI", sans-serif; font-size: 13px; font-weight: 600; color: #fff; }
-.lce-toast-success { background: linear-gradient(135deg, #2e7d32, #43a047); }
-.lce-toast-error { background: linear-gradient(135deg, #b71c1c, #e53935); }
 `;
 
 const ensureStyles = (): void => {
@@ -47,6 +64,50 @@ const ensureStyles = (): void => {
   const styleNode = document.createElement('style');
   styleNode.id = STYLE_ID;
   styleNode.textContent = inpageStyles;
+  document.head.appendChild(styleNode);
+};
+
+type ToastLevel = 'success' | 'error' | 'info';
+
+const TOAST_STYLE_ID = 'lce-toast-shared-style';
+const TOAST_CONTAINER_ID = 'lce-toast-container';
+
+let toastHideTimeout: number | null = null;
+let toastListenerRegistered = false;
+
+const ensureToastStyles = (): void => {
+  if (document.getElementById(TOAST_STYLE_ID)) {
+    return;
+  }
+
+  const styleNode = document.createElement('style');
+  styleNode.id = TOAST_STYLE_ID;
+  styleNode.textContent = `
+.lce-toast-container {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2147483647;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.lce-toast {
+  min-width: 200px;
+  max-width: 360px;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.3);
+}
+.lce-toast-success { background: linear-gradient(135deg, #2e7d32, #43a047); }
+.lce-toast-error { background: linear-gradient(135deg, #b71c1c, #e53935); }
+.lce-toast-info { background: linear-gradient(135deg, #1565c0, #1e88e5); }
+`;
   document.head.appendChild(styleNode);
 };
 
@@ -63,8 +124,12 @@ const getToastContainer = (): HTMLDivElement => {
   return container;
 };
 
-const showToast = (level: 'success' | 'error', message: string): void => {
-  ensureStyles();
+const showToast = (level: ToastLevel, message: string): void => {
+  if (!message || !message.trim()) {
+    return;
+  }
+
+  ensureToastStyles();
 
   const container = getToastContainer();
   const toastNode = document.createElement('div');
@@ -81,31 +146,56 @@ const showToast = (level: 'success' | 'error', message: string): void => {
   }, 3500);
 };
 
+const isShowToastPayload = (value: unknown): value is { type: string; level?: unknown; message?: unknown } => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  return (value as { type?: unknown }).type === 'lce/show-toast';
+};
+
+const readRuntime = (): typeof chrome.runtime | null => {
+  try {
+    if (typeof chrome === 'undefined') {
+      return null;
+    }
+
+    return chrome.runtime || null;
+  } catch {
+    return null;
+  }
+};
+
 const registerToastListener = (): void => {
   if (toastListenerRegistered) {
     return;
   }
 
-  chrome.runtime.onMessage.addListener((message: unknown) => {
-    if (!message || typeof message !== 'object') {
-      return;
-    }
+  const runtime = readRuntime();
 
-    const payload = message as { type?: unknown; level?: unknown; message?: unknown };
+  if (!runtime || !runtime.onMessage || typeof runtime.onMessage.addListener !== 'function') {
+    return;
+  }
 
-    if (payload.type !== 'lce/show-toast') {
-      return;
-    }
+  try {
+    runtime.onMessage.addListener((message: unknown) => {
+      if (!isShowToastPayload(message)) {
+        return;
+      }
 
-    if (typeof payload.message !== 'string' || !payload.message.trim()) {
-      return;
-    }
+      if (typeof message.message !== 'string' || !message.message.trim()) {
+        return;
+      }
 
-    const level = payload.level === 'success' ? 'success' : payload.level === 'error' ? 'error' : 'success';
-    showToast(level, payload.message);
-  });
+      const level: ToastLevel =
+        message.level === 'success' ? 'success' : message.level === 'info' ? 'info' : 'error';
+      showToast(level, message.message);
+    });
 
-  toastListenerRegistered = true;
+    toastListenerRegistered = true;
+  } catch {
+    // Ignore runtime invalidation while extension reloads.
+  }
 };
 
 const normalizeTwitterStatusUrl = (rawUrl: string, base?: string): string | null => {
@@ -139,8 +229,17 @@ const normalizeTwitterStatusUrl = (rawUrl: string, base?: string): string | null
 };
 
 const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }> => {
+  const runtime = readRuntime();
+
+  if (!runtime || typeof runtime.sendMessage !== 'function') {
+    return {
+      ok: false,
+      message: 'Contexte extension invalide. Recharge la page puis réessaie.',
+    };
+  }
+
   try {
-    const response = (await chrome.runtime.sendMessage({
+    const response = (await runtime.sendMessage({
       type: 'lce/send-quick',
       url,
       source: 'twitter',
@@ -165,6 +264,42 @@ const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }>
   }
 };
 
+const clearButtonResetTimer = (button: HTMLButtonElement): void => {
+  const activeTimer = buttonResetTimers.get(button);
+
+  if (typeof activeTimer === 'number') {
+    window.clearTimeout(activeTimer);
+    buttonResetTimers.delete(button);
+  }
+};
+
+const setButtonState = (button: HTMLButtonElement, state: ButtonState, title?: string): void => {
+  clearButtonResetTimer(button);
+  button.classList.remove('is-loading', 'is-success', 'is-error');
+  button.textContent = BUTTON_TEXT_BY_STATE[state];
+
+  if (state === 'loading') {
+    button.classList.add('is-loading');
+  } else if (state === 'success') {
+    button.classList.add('is-success');
+  } else if (state === 'error') {
+    button.classList.add('is-error');
+  }
+
+  button.title = title || 'Envoyer ce tweet vers LiveChat';
+};
+
+const resetButtonStateLater = (button: HTMLButtonElement, delayMs = 2200): void => {
+  clearButtonResetTimer(button);
+
+  const timer = window.setTimeout(() => {
+    buttonResetTimers.delete(button);
+    setButtonState(button, 'idle');
+  }, delayMs);
+
+  buttonResetTimers.set(button, timer);
+};
+
 const resolveTweetStatusUrl = (article: HTMLElement): string | null => {
   const links = Array.from(article.querySelectorAll<HTMLAnchorElement>('a[href*="/status/"]'));
 
@@ -186,8 +321,7 @@ const createActionButton = (article: HTMLElement): HTMLButtonElement => {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'lce-button';
-  button.textContent = 'LiveChat';
-  button.title = 'Envoyer ce tweet vers LiveChat';
+  setButtonState(button, 'idle');
 
   button.addEventListener('click', (event) => {
     event.preventDefault();
@@ -199,21 +333,29 @@ const createActionButton = (article: HTMLElement): HTMLButtonElement => {
       }
 
       button.disabled = true;
+      setButtonState(button, 'loading', 'Envoi en cours...');
 
       try {
         const targetUrl = button.dataset.targetUrl || resolveTweetStatusUrl(article);
 
         if (!targetUrl) {
-          showToast('error', 'Impossible de détecter l’URL du tweet.');
+          const message = 'Impossible de détecter l’URL du tweet.';
+          setButtonState(button, 'error', message);
+          showToast('error', message);
+          resetButtonStateLater(button);
           return;
         }
 
         const response = await sendQuick(targetUrl);
-        showToast(response.ok ? 'success' : 'error', response.message);
+        setButtonState(button, response.ok ? 'success' : 'error', response.message);
+        if (!response.ok) {
+          showToast('error', response.message);
+        }
+        resetButtonStateLater(button);
       } finally {
         window.setTimeout(() => {
           button.disabled = false;
-        }, 250);
+        }, 300);
       }
     })();
   });
@@ -227,8 +369,7 @@ const createFloatingButton = (): HTMLButtonElement => {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'lce-button lce-button-floating';
-  button.textContent = 'LiveChat';
-  button.title = 'Envoyer ce tweet vers LiveChat';
+  setButtonState(button, 'idle');
 
   button.addEventListener('click', (event) => {
     event.preventDefault();
@@ -240,21 +381,29 @@ const createFloatingButton = (): HTMLButtonElement => {
       }
 
       button.disabled = true;
+      setButtonState(button, 'loading', 'Envoi en cours...');
 
       try {
         const targetUrl = button.dataset.targetUrl || normalizeTwitterStatusUrl(window.location.href, window.location.origin);
 
         if (!targetUrl) {
-          showToast('error', 'Impossible de détecter l’URL du tweet.');
+          const message = 'Impossible de détecter l’URL du tweet.';
+          setButtonState(button, 'error', message);
+          showToast('error', message);
+          resetButtonStateLater(button);
           return;
         }
 
         const response = await sendQuick(targetUrl);
-        showToast(response.ok ? 'success' : 'error', response.message);
+        setButtonState(button, response.ok ? 'success' : 'error', response.message);
+        if (!response.ok) {
+          showToast('error', response.message);
+        }
+        resetButtonStateLater(button);
       } finally {
         window.setTimeout(() => {
           button.disabled = false;
-        }, 250);
+        }, 300);
       }
     })();
   });

@@ -139,6 +139,125 @@ const ensureStyles = (): void => {
   document.head.appendChild(styleNode);
 };
 
+type ToastLevel = 'success' | 'error' | 'info';
+
+const TOAST_STYLE_ID = 'lce-toast-shared-style';
+const TOAST_CONTAINER_ID = 'lce-toast-container';
+
+let toastHideTimeout: number | null = null;
+let toastListenerRegistered = false;
+
+const ensureToastStyles = (): void => {
+  if (document.getElementById(TOAST_STYLE_ID)) {
+    return;
+  }
+
+  const styleNode = document.createElement('style');
+  styleNode.id = TOAST_STYLE_ID;
+  styleNode.textContent = `
+.lce-toast-container {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2147483647;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.lce-toast {
+  min-width: 200px;
+  max-width: 360px;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.3);
+}
+.lce-toast-success { background: linear-gradient(135deg, #2e7d32, #43a047); }
+.lce-toast-error { background: linear-gradient(135deg, #b71c1c, #e53935); }
+.lce-toast-info { background: linear-gradient(135deg, #1565c0, #1e88e5); }
+`;
+  document.head.appendChild(styleNode);
+};
+
+const getToastContainer = (): HTMLDivElement => {
+  let container = document.getElementById(TOAST_CONTAINER_ID) as HTMLDivElement | null;
+
+  if (!container) {
+    container = document.createElement('div');
+    container.id = TOAST_CONTAINER_ID;
+    container.className = 'lce-toast-container';
+    document.body.appendChild(container);
+  }
+
+  return container;
+};
+
+const showToast = (level: ToastLevel, message: string): void => {
+  if (!message || !message.trim()) {
+    return;
+  }
+
+  ensureToastStyles();
+
+  const container = getToastContainer();
+  const toastNode = document.createElement('div');
+  toastNode.className = `lce-toast lce-toast-${level}`;
+  toastNode.textContent = message;
+  container.replaceChildren(toastNode);
+
+  if (toastHideTimeout !== null) {
+    window.clearTimeout(toastHideTimeout);
+  }
+
+  toastHideTimeout = window.setTimeout(() => {
+    toastNode.remove();
+  }, 3500);
+};
+
+const isShowToastPayload = (value: unknown): value is { type: string; level?: unknown; message?: unknown } => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  return (value as { type?: unknown }).type === 'lce/show-toast';
+};
+
+const registerToastListener = (): void => {
+  if (toastListenerRegistered) {
+    return;
+  }
+
+  const runtime = readRuntime();
+
+  if (!runtime || !runtime.onMessage || typeof runtime.onMessage.addListener !== 'function') {
+    return;
+  }
+
+  try {
+    runtime.onMessage.addListener((message: unknown) => {
+      if (!isShowToastPayload(message)) {
+        return;
+      }
+
+      if (typeof message.message !== 'string' || !message.message.trim()) {
+        return;
+      }
+
+      const level: ToastLevel =
+        message.level === 'success' ? 'success' : message.level === 'info' ? 'info' : 'error';
+      showToast(level, message.message);
+    });
+
+    toastListenerRegistered = true;
+  } catch {
+    // Ignore runtime invalidation while extension reloads.
+  }
+};
+
 const normalizeYoutubeUrl = (rawUrl: string): string | null => {
   let parsed: URL;
 
@@ -293,13 +412,18 @@ const createActionButton = (variant: ButtonVariant): HTMLButtonElement => {
         const targetUrl = button.dataset.targetUrl || getCurrentYoutubeUrl();
 
         if (!targetUrl) {
-          setButtonState(button, 'error', 'Impossible de détecter l’URL YouTube courante.');
+          const message = 'Impossible de détecter l’URL YouTube courante.';
+          setButtonState(button, 'error', message);
+          showToast('error', message);
           resetButtonStateLater(button);
           return;
         }
 
         const response = await sendQuick(targetUrl);
         setButtonState(button, response.ok ? 'success' : 'error', response.message);
+        if (!response.ok) {
+          showToast('error', response.message);
+        }
         resetButtonStateLater(button);
       } finally {
         window.setTimeout(() => {
@@ -715,4 +839,5 @@ const startObservedScanner = (scan: () => void): void => {
   queueScan();
 };
 
+registerToastListener();
 startObservedScanner(scanYoutubeTargets);

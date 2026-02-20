@@ -39,7 +39,7 @@ const inpageStyles = `
   justify-content: center;
   width: 42px;
   height: 42px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
+  border: none;
   border-radius: 999px;
   padding: 0;
   font-family: "Roboto", "Arial", sans-serif;
@@ -48,7 +48,7 @@ const inpageStyles = `
   letter-spacing: 0.02em;
   cursor: pointer;
   pointer-events: auto;
-  background: #0f0f0f;
+  background: #272727;
   color: #fff;
   transition: transform 120ms ease, background-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
 }
@@ -59,8 +59,8 @@ const inpageStyles = `
   opacity: 1;
 }
 .lce-button-youtube-watch {
-  margin-left: 18px;
-  margin-right: 14px;
+  margin-left: 9px;
+  margin-right: 7px;
   flex: 0 0 auto;
   position: relative;
   z-index: 2;
@@ -91,8 +91,8 @@ const inpageStyles = `
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-left: 8px;
-  margin-right: 8px;
+  margin-left: 4px;
+  margin-right: 4px;
   flex: 0 0 auto;
   pointer-events: auto !important;
 }
@@ -373,7 +373,9 @@ const scoreWatchContainer = (container: HTMLElement): number => {
 
   const rect = container.getBoundingClientRect();
   const areaPenalty = rect.width * rect.height;
-  return hitTestableCount * 1_000_000 - areaPenalty;
+  const isTopLevelButtons = container.id === 'top-level-buttons-computed' || container.classList.contains('top-level-buttons');
+  const topLevelBonus = isTopLevelButtons ? 5_000_000 : 0;
+  return topLevelBonus + hitTestableCount * 1_000_000 - areaPenalty;
 };
 
 const resolveTargetContainer = (variant: ButtonVariant): HTMLElement | null => {
@@ -506,6 +508,31 @@ const removeInlineWatchButtons = (): void => {
   }
 };
 
+const resolveWatchInlineMountContainer = (candidate: HTMLElement): HTMLElement | null => {
+  if (candidate.id === 'top-level-buttons-computed' || candidate.classList.contains('top-level-buttons')) {
+    return candidate;
+  }
+
+  const nestedTopLevel = candidate.querySelector<HTMLElement>('#top-level-buttons-computed, .top-level-buttons');
+  if (nestedTopLevel) {
+    return nestedTopLevel;
+  }
+
+  const watchMetadataRoot = candidate.closest<HTMLElement>('ytd-watch-metadata');
+
+  if (watchMetadataRoot) {
+    const scopedTopLevel = watchMetadataRoot.querySelector<HTMLElement>(
+      '#menu ytd-menu-renderer #top-level-buttons-computed, #menu #top-level-buttons-computed, ytd-menu-renderer #top-level-buttons-computed',
+    );
+
+    if (scopedTopLevel) {
+      return scopedTopLevel;
+    }
+  }
+
+  return candidate;
+};
+
 const upsertShortsFloatingButton = (targetUrl: string, container: HTMLElement | null): void => {
   let button = document.getElementById(SHORTS_FLOATING_BUTTON_ID) as HTMLButtonElement | null;
 
@@ -539,9 +566,15 @@ const upsertShortsFloatingButton = (targetUrl: string, container: HTMLElement | 
 };
 
 const upsertInlineWatchButton = (targetUrl: string, container: HTMLElement): void => {
+  const mountContainer = resolveWatchInlineMountContainer(container);
+
+  if (!mountContainer) {
+    return;
+  }
+
   const existingSlots = Array.from(document.querySelectorAll<HTMLElement>(`[${WATCH_SLOT_ATTRIBUTE}]`));
   let slot =
-    existingSlots.find((candidate) => candidate.parentElement === container) || existingSlots[0] || null;
+    existingSlots.find((candidate) => candidate.parentElement === mountContainer) || existingSlots[0] || null;
   let button =
     slot?.querySelector<HTMLButtonElement>(`button[${BUTTON_ATTRIBUTE}].lce-button-youtube-watch`) || null;
 
@@ -576,8 +609,8 @@ const upsertInlineWatchButton = (targetUrl: string, container: HTMLElement): voi
     slot.appendChild(button);
   }
 
-  if (slot.parentElement !== container) {
-    container.insertBefore(slot, container.firstElementChild);
+  if (slot.parentElement !== mountContainer) {
+    mountContainer.appendChild(slot);
   }
 };
 

@@ -3,7 +3,7 @@ import type { FastifyReply } from 'fastify';
 import { addMinutes } from 'date-fns';
 import { createOverlayClientToken, resolveOverlayClientFromRequest } from '../../services/overlayAuth';
 import { touchMediaAsset } from '../../services/media/mediaCache';
-import { listMemeBoardItems, removeMemeBoardItem } from '../../services/memeBoard';
+import { listMemeBoardItems, removeMemeBoardItem, updateMemeBoardItemTitle } from '../../services/memeBoard';
 import { OVERLAY_PROTOCOL_VERSION } from '@livechat/overlay-protocol';
 
 interface ConsumePairingBody {
@@ -15,6 +15,10 @@ interface MemeBoardItemsQuery {
   q?: unknown;
   limit?: unknown;
   offset?: unknown;
+}
+
+interface MemeBoardItemUpdateBody {
+  title?: unknown;
 }
 
 const DEFAULT_OVERLAY_DEVICE_PREFIX = 'Overlay';
@@ -308,4 +312,37 @@ export const OverlayRoutes = () =>
         deleted: result.deleted,
       });
     });
+
+    fastify.patch<{ Params: { itemId: string }; Body: MemeBoardItemUpdateBody }>(
+      '/meme-board/items/:itemId',
+      async (request, reply) => {
+        const authResult = await resolveOverlayClientFromRequest(request);
+
+        if (!authResult) {
+          return reply.code(401).send({
+            error: 'unauthorized',
+          });
+        }
+
+        const updated = await updateMemeBoardItemTitle({
+          guildId: authResult.client.guildId,
+          itemId: request.params.itemId,
+          title: toNonEmptyString(request.body?.title),
+        });
+
+        if (!updated) {
+          return reply.code(404).send({
+            error: 'item_not_found',
+          });
+        }
+
+        return reply.send({
+          updated: true,
+          item: {
+            id: updated.id,
+            title: updated.title,
+          },
+        });
+      },
+    );
   };

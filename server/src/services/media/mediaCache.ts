@@ -103,7 +103,7 @@ export const purgeExpiredMediaAssets = async () => {
           status: {
             in: [MediaAssetStatus.FAILED, MediaAssetStatus.PROCESSING],
           },
-          createdAt: {
+          lastAccessedAt: {
             lte: subHours(now, 2),
           },
         },

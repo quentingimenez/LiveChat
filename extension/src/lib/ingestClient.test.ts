@@ -48,6 +48,7 @@ describe('ingest client', () => {
       url: 'https://x.com/livechat/status/2020921090097164393',
       text: 'hello',
       forceRefresh: true,
+      saveToBoard: false,
       authorName: 'LiveChat Extension',
       authorImage: 'https://cdn.example.com/avatar.png',
     });

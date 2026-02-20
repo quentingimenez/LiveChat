@@ -5,6 +5,7 @@ const form = document.getElementById('compose-form') as HTMLFormElement;
 const urlInput = document.getElementById('compose-url') as HTMLInputElement;
 const textInput = document.getElementById('compose-text') as HTMLTextAreaElement;
 const forceRefreshInput = document.getElementById('compose-force-refresh') as HTMLInputElement;
+const saveToBoardInput = document.getElementById('compose-save-to-board') as HTMLInputElement;
 const sendButton = document.getElementById('send-button') as HTMLButtonElement;
 const settingsWarning = document.getElementById('settings-warning') as HTMLParagraphElement;
 const statusNode = document.getElementById('popup-status') as HTMLParagraphElement;
@@ -70,6 +71,7 @@ const loadComposeState = async (): Promise<void> => {
     urlInput.value = state.url;
     textInput.value = state.text;
     forceRefreshInput.checked = state.forceRefresh;
+    saveToBoardInput.checked = state.saveToBoard;
 
     if (!state.hasSettings) {
       updateSettingsWarning(state.settingsError || 'Configuration incomplète. Ouvre les options.');
@@ -105,6 +107,7 @@ form.addEventListener('submit', (event) => {
         url,
         text: textInput.value,
         forceRefresh: forceRefreshInput.checked,
+        saveToBoard: saveToBoardInput.checked,
       })) as ActionResponse;
 
       if (!response || typeof response.ok !== 'boolean') {
@@ -116,6 +119,7 @@ form.addEventListener('submit', (event) => {
         setStatus(response.message, 'success');
         textInput.value = '';
         forceRefreshInput.checked = false;
+        saveToBoardInput.checked = false;
       } else {
         setStatus(response.message, 'error');
       }

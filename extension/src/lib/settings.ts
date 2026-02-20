@@ -17,6 +17,7 @@ export interface ComposeDraft {
   url: string;
   text: string;
   forceRefresh: boolean;
+  saveToBoard: boolean;
   source: string;
   createdAt: number;
 }
@@ -155,6 +156,7 @@ export const getComposeDraft = async (): Promise<ComposeDraft | null> => {
     url: normalizedUrl,
     text: `${candidate.text || ''}`,
     forceRefresh: !!candidate.forceRefresh,
+    saveToBoard: !!candidate.saveToBoard,
     source: asNonEmptyString(candidate.source) || 'unknown',
     createdAt:
       typeof candidate.createdAt === 'number' && Number.isFinite(candidate.createdAt)

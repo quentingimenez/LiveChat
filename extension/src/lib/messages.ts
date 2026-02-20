@@ -22,6 +22,7 @@ export interface SendComposeRequestMessage {
   url: string;
   text?: string;
   forceRefresh?: boolean;
+  saveToBoard?: boolean;
 }
 
 export interface GetComposeStateRequestMessage {
@@ -69,6 +70,7 @@ export interface ComposeStateResponse {
   url: string;
   text: string;
   forceRefresh: boolean;
+  saveToBoard: boolean;
   hasSettings: boolean;
   settingsError: string | null;
   draftSource: string | null;
@@ -113,7 +115,15 @@ export const isSendComposeRequest = (value: unknown): value is SendComposeReques
     return false;
   }
 
-  return !!asTrimmedString(value.url);
+  if (!asTrimmedString(value.url)) {
+    return false;
+  }
+
+  if (value.saveToBoard !== undefined && typeof value.saveToBoard !== 'boolean') {
+    return false;
+  }
+
+  return true;
 };
 
 export const isGetComposeStateRequest = (value: unknown): value is GetComposeStateRequestMessage => {

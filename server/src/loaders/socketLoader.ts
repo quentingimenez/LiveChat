@@ -282,12 +282,15 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
         return;
       }
 
+      const itemAuthorName =
+        typeof item.createdByName === 'string' && item.createdByName.trim() !== '' ? item.createdByName.trim() : null;
+
       const job = await createPlaybackJob({
         guildId,
         mediaAsset: item.mediaAsset,
         text: null,
         showText: false,
-        authorName: null,
+        authorName: itemAuthorName,
         authorImage: null,
         source: `overlay_meme_trigger_${triggerKind}`,
       });

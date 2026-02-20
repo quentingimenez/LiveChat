@@ -19,6 +19,30 @@ const normalizeOriginBase = (url: URL): string => {
   return `${url.origin}${path}${url.search}`;
 };
 
+const extractYouTubeTimestamp = (url: URL): string | null => {
+  const fromQuery = url.searchParams.get('t') || url.searchParams.get('start');
+  if (fromQuery && fromQuery.trim()) {
+    return fromQuery.trim();
+  }
+
+  const hash = url.hash.replace(/^#/, '').trim();
+  if (!hash) {
+    return null;
+  }
+
+  if (/^\d+$/.test(hash)) {
+    return hash;
+  }
+
+  const hashParams = new URLSearchParams(hash);
+  const fromHash = hashParams.get('t') || hashParams.get('start');
+  if (fromHash && fromHash.trim()) {
+    return fromHash.trim();
+  }
+
+  return null;
+};
+
 export const normalizeApiUrl = (rawUrl: string): string => {
   const candidate = trimAndNormalize(rawUrl);
   const parsed = toUrl(candidate);
@@ -55,6 +79,8 @@ export const normalizeYoutubeUrl = (rawUrl: string, base?: string): string | nul
     return null;
   }
 
+  const timestamp = extractYouTubeTimestamp(parsed);
+
   if (parsed.hostname.toLowerCase() === 'youtu.be') {
     const shortId = parsed.pathname.replace(/^\//, '').trim();
 
@@ -64,6 +90,9 @@ export const normalizeYoutubeUrl = (rawUrl: string, base?: string): string | nul
 
     const watchUrl = new URL('https://www.youtube.com/watch');
     watchUrl.searchParams.set('v', shortId);
+    if (timestamp) {
+      watchUrl.searchParams.set('t', timestamp);
+    }
     return watchUrl.toString();
   }
 
@@ -74,7 +103,11 @@ export const normalizeYoutubeUrl = (rawUrl: string, base?: string): string | nul
       return null;
     }
 
-    return `https://www.youtube.com/shorts/${shortId}`;
+    const shortsUrl = new URL(`https://www.youtube.com/shorts/${shortId}`);
+    if (timestamp) {
+      shortsUrl.searchParams.set('t', timestamp);
+    }
+    return shortsUrl.toString();
   }
 
   const videoId = parsed.searchParams.get('v');
@@ -86,7 +119,6 @@ export const normalizeYoutubeUrl = (rawUrl: string, base?: string): string | nul
   const watchUrl = new URL('https://www.youtube.com/watch');
   watchUrl.searchParams.set('v', videoId);
 
-  const timestamp = parsed.searchParams.get('t');
   if (timestamp) {
     watchUrl.searchParams.set('t', timestamp);
   }

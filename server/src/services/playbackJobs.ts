@@ -1,11 +1,15 @@
-import type { MediaAsset } from '@prisma/client';
 import { subHours } from 'date-fns';
 import { getDurationFromGuildId } from './utils';
 import { PlaybackJobStatus } from './prisma/prismaEnums';
 
+interface MediaAssetLike {
+  id: string;
+  durationSec?: number | null;
+}
+
 interface CreatePlaybackJobParams {
   guildId: string;
-  mediaAsset?: MediaAsset | null;
+  mediaAsset?: MediaAssetLike | null;
   text?: string | null;
   authorName?: string | null;
   authorImage?: string | null;

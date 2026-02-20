@@ -49,8 +49,12 @@
     <div id="capture-overlay" class="capture-overlay hidden">
       <div class="capture-card">
         <h3>Assigner un raccourci</h3>
-        <p>Appuie sur la combinaison clavier voulue (avec au moins un modificateur, ex: Ctrl+Shift+1).</p>
-        <p>Esc pour annuler.</p>
+        <p>Appuie sur les touches de ta combinaison (ex: Ctrl+Shift+1).</p>
+        <p id="capture-current" class="capture-current">Aucune combinaison detectee.</p>
+        <div class="capture-actions">
+          <button id="capture-cancel" type="button" class="ghost">Annuler</button>
+          <button id="capture-save" type="button">Arreter et enregistrer</button>
+        </div>
       </div>
     </div>
 

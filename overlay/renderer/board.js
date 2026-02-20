@@ -9,6 +9,9 @@
   const refreshButton = document.getElementById('refresh-button');
   const addLinkButton = document.getElementById('add-link-button');
   const captureOverlay = document.getElementById('capture-overlay');
+  const captureCurrentNode = document.getElementById('capture-current');
+  const captureCancelButton = document.getElementById('capture-cancel');
+  const captureSaveButton = document.getElementById('capture-save');
   const addOverlay = document.getElementById('add-overlay');
   const addForm = document.getElementById('add-form');
   const addUrlInput = document.getElementById('add-url-input');
@@ -31,6 +34,8 @@
     total: 0,
     selectedId: null,
     captureItemId: null,
+    capturePendingAccelerator: null,
+    capturePendingDisplay: '',
     resolveAddDialog: null,
     resolveRenameDialog: null,
     resolveDeleteDialog: null,
@@ -674,14 +679,144 @@
     }
   };
 
+  const isCaptureUiReady = () => {
+    return (
+      captureOverlay instanceof HTMLElement &&
+      captureCurrentNode instanceof HTMLElement &&
+      captureCancelButton instanceof HTMLElement &&
+      captureSaveButton instanceof HTMLButtonElement
+    );
+  };
+
+  const acceleratorTokenToLabel = (value) => {
+    const token = `${value || ''}`.trim();
+    const lowered = token.toLowerCase();
+
+    if (lowered === 'commandorcontrol') {
+      return 'Ctrl/Cmd';
+    }
+
+    if (lowered === 'super') {
+      return 'Super';
+    }
+
+    if (lowered === 'alt') {
+      return 'Alt';
+    }
+
+    if (lowered === 'shift') {
+      return 'Shift';
+    }
+
+    if (token.startsWith('num')) {
+      return `Num${token.slice(3)}`;
+    }
+
+    return token;
+  };
+
+  const formatAcceleratorDisplay = (accelerator) => {
+    const raw = `${accelerator || ''}`.trim();
+
+    if (!raw) {
+      return '';
+    }
+
+    return raw
+      .split('+')
+      .map((token) => acceleratorTokenToLabel(token))
+      .filter(Boolean)
+      .join(' + ');
+  };
+
+  const keyEventToDisplay = (event) => {
+    const parts = [];
+
+    if (event.ctrlKey) {
+      parts.push('Ctrl/Cmd');
+    }
+
+    if (event.altKey) {
+      parts.push('Alt');
+    }
+
+    if (event.shiftKey) {
+      parts.push('Shift');
+    }
+
+    if (event.metaKey) {
+      parts.push('Super');
+    }
+
+    const key = normalizeKey(event.key, event.code);
+
+    if (key) {
+      parts.push(acceleratorTokenToLabel(key));
+    }
+
+    return parts.join(' + ');
+  };
+
+  const refreshCaptureUi = () => {
+    if (!isCaptureUiReady()) {
+      return;
+    }
+
+    captureCurrentNode.textContent = state.capturePendingDisplay || 'Aucune combinaison detectee.';
+    captureSaveButton.disabled = !state.capturePendingAccelerator;
+  };
+
+  const commitCapturedShortcut = async () => {
+    const itemId = state.captureItemId;
+    const accelerator = `${state.capturePendingAccelerator || ''}`.trim();
+
+    if (!itemId) {
+      setStatus('Aucun meme cible pour ce raccourci.', 'error');
+      return;
+    }
+
+    if (!accelerator) {
+      setStatus('Aucune combinaison valide detectee.', 'error');
+      return;
+    }
+
+    const nextBindings = { ...state.bindings };
+
+    for (const [existingAccelerator, mappedItemId] of Object.entries(nextBindings)) {
+      if (mappedItemId === itemId || existingAccelerator === accelerator) {
+        delete nextBindings[existingAccelerator];
+      }
+    }
+
+    nextBindings[accelerator] = itemId;
+
+    try {
+      await persistBindings(nextBindings);
+      endCapture();
+      renderList();
+      setStatus(`Raccourci assigne: ${formatAcceleratorDisplay(accelerator)}`, 'success');
+    } catch (error) {
+      setStatus(error?.message || 'Impossible d assigner ce raccourci.', 'error');
+    }
+  };
+
   const beginCaptureForItem = (itemId) => {
     state.captureItemId = itemId;
+    state.capturePendingAccelerator = null;
+    state.capturePendingDisplay = '';
+    refreshCaptureUi();
     captureOverlay.classList.remove('hidden');
-    setStatus('Capture clavier active: appuie sur un raccourci (Esc pour annuler).', 'success');
+    setStatus(
+      'Capture clavier active: fais la combinaison puis clique "Arreter et enregistrer" (Esc pour annuler).',
+      'success',
+    );
   };
 
   const endCapture = () => {
     state.captureItemId = null;
+    state.capturePendingAccelerator = null;
+    state.capturePendingDisplay = '';
+    refreshCaptureUi();
     captureOverlay.classList.add('hidden');
   };
 
@@ -874,34 +1009,36 @@
     }
 
     const accelerator = keyEventToAccelerator(event);
+    const display = keyEventToDisplay(event);
 
     if (!accelerator) {
-      setStatus('Combinaison invalide. Utilise au moins un modificateur (Ctrl/Alt/Shift/Super).', 'error');
+      if (!state.capturePendingAccelerator) {
+        state.capturePendingDisplay = display || state.capturePendingDisplay;
+      }
+
+      refreshCaptureUi();
+      setStatus('Combinaison en cours... ajoute une touche non-modificateur pour valider.', 'success');
       return;
     }
 
-    void (async () => {
-      const itemId = state.captureItemId;
-      const nextBindings = { ...state.bindings };
-
-      for (const [existingAccelerator, mappedItemId] of Object.entries(nextBindings)) {
-        if (mappedItemId === itemId || existingAccelerator === accelerator) {
-          delete nextBindings[existingAccelerator];
-        }
-      }
-
-      nextBindings[accelerator] = itemId;
-
-      try {
-        await persistBindings(nextBindings);
-        endCapture();
-        renderList();
-        setStatus(`Raccourci assigne: ${accelerator}`, 'success');
-      } catch (error) {
-        setStatus(error?.message || 'Impossible d assigner ce raccourci.', 'error');
-      }
-    })();
+    state.capturePendingAccelerator = accelerator;
+    state.capturePendingDisplay = formatAcceleratorDisplay(accelerator);
+    refreshCaptureUi();
+    setStatus(`Combinaison detectee: ${formatAcceleratorDisplay(accelerator)}. Clique "Arreter et enregistrer".`, 'success');
   });
+
+  if (isCaptureUiReady()) {
+    captureCancelButton.addEventListener('click', () => {
+      endCapture();
+      clearStatus();
+    });
+
+    captureSaveButton.addEventListener('click', () => {
+      void commitCapturedShortcut();
+    });
+
+    refreshCaptureUi();
+  }
 
   if (isAddDialogReady()) {
     addForm.addEventListener('submit', (event) => {

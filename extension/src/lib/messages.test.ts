@@ -66,6 +66,24 @@ describe('message guards', () => {
     ).toBe(true);
   });
 
+  it('valide un message get captured URL TikTok avec domUrl', () => {
+    expect(
+      isTikTokGetCapturedUrlRequest({
+        type: MESSAGE_TYPES.TIKTOK_GET_CAPTURED_URL,
+        domUrl: 'https://www.tiktok.com/video/7591173294007651598',
+      }),
+    ).toBe(true);
+  });
+
+  it('rejette un message get captured URL TikTok avec domUrl invalide', () => {
+    expect(
+      isTikTokGetCapturedUrlRequest({
+        type: MESSAGE_TYPES.TIKTOK_GET_CAPTURED_URL,
+        domUrl: 123,
+      }),
+    ).toBe(false);
+  });
+
   it('rejette un message inconnu', () => {
     expect(isBackgroundRequestMessage({ type: 'lce/other' })).toBe(false);
   });

@@ -41,6 +41,7 @@ export interface TikTokSyncActiveItemRequestMessage {
 
 export interface TikTokGetCapturedUrlRequestMessage {
   type: (typeof MESSAGE_TYPES)['TIKTOK_GET_CAPTURED_URL'];
+  domUrl?: string | null;
 }
 
 export interface ShowToastMessage {
@@ -149,7 +150,13 @@ export const isTikTokSyncActiveItemRequest = (value: unknown): value is TikTokSy
 };
 
 export const isTikTokGetCapturedUrlRequest = (value: unknown): value is TikTokGetCapturedUrlRequestMessage => {
-  return isRecord(value) && value.type === MESSAGE_TYPES.TIKTOK_GET_CAPTURED_URL;
+  if (!isRecord(value) || value.type !== MESSAGE_TYPES.TIKTOK_GET_CAPTURED_URL) {
+    return false;
+  }
+
+  const domUrlRaw = value.domUrl;
+
+  return domUrlRaw === undefined || domUrlRaw === null || typeof domUrlRaw === 'string';
 };
 
 export const isBackgroundRequestMessage = (value: unknown): value is BackgroundRequestMessage => {

@@ -2,6 +2,12 @@
 
 Extension MV3 pour envoyer rapidement des liens média vers `POST /ingest` du bot LiveChat.
 
+## Projets liés (sources)
+
+- Extension navigateur (ce dépôt): https://github.com/SuperKn4cky/LiveChat-Extension
+- Bot/API: https://github.com/WardenPro/LiveChat-Bot
+- Overlay desktop (Electron): https://github.com/SuperKn4cky/LiveChat-Overlay
+
 ## Fonctionnalités V1
 
 - Bouton in-page d’envoi rapide:

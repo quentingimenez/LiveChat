@@ -45,10 +45,17 @@ const buildOverlayPlayPayload = (params: {
   const textEnabled = hasTweetCard ? tweetCaption.length > 0 : params.job.showText;
   const authorEnabled = hasTweetCard ? false : !!params.job.authorName;
 
+  const mediaUrl = params.mediaAsset ? new URL(`${env.API_URL}/overlay/media/${params.mediaAsset.id}`) : null;
+
+  if (mediaUrl && mediaStartOffsetSec !== null) {
+    mediaUrl.searchParams.set('startOffsetSec', `${mediaStartOffsetSec}`);
+    mediaUrl.hash = `t=${mediaStartOffsetSec}`;
+  }
+
   const media = params.mediaAsset
     ? {
         assetId: params.mediaAsset.id,
-        url: `${env.API_URL}/overlay/media/${params.mediaAsset.id}`,
+        url: mediaUrl ? mediaUrl.toString() : `${env.API_URL}/overlay/media/${params.mediaAsset.id}`,
         mime: params.mediaAsset.mime,
         kind: params.mediaAsset.kind.toLowerCase() as 'image' | 'audio' | 'video',
         durationSec: params.mediaAsset.durationSec,

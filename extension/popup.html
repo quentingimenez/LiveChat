@@ -8,46 +8,58 @@
   <body>
     <main class="popup-shell">
       <section class="popup-card">
-        <header class="popup-header">
-          <div class="brand-row">
+        <section id="setup-view" class="setup-view hidden" aria-live="polite">
+          <div class="setup-brand">
             <img class="brand-logo" src="icon.png" alt="LiveChat" />
             <p class="popup-kicker">LiveChat Extension</p>
           </div>
-          <h1>Envoyer avec texte</h1>
-        </header>
+          <h1 class="setup-title">Configuration requise</h1>
+          <p id="setup-message" class="setup-message">Configuration incomplète. Ouvre les options de l’extension.</p>
+          <button id="setup-open-options" class="btn btn-primary setup-button" type="button">Ouvrir la configuration</button>
+        </section>
 
-        <p id="settings-warning" class="status status-warning hidden"></p>
+        <div id="compose-view">
+          <header class="popup-header">
+            <div class="brand-row">
+              <img class="brand-logo" src="icon.png" alt="LiveChat" />
+              <p class="popup-kicker">LiveChat Extension</p>
+            </div>
+            <h1>Envoyer avec texte</h1>
+          </header>
 
-        <form id="compose-form" class="compose-form">
-          <label class="field-label" for="compose-url">URL média</label>
-          <input id="compose-url" name="url" class="field-input" type="url" placeholder="https://..." required />
+          <p id="settings-warning" class="status status-warning hidden"></p>
 
-          <label class="field-label" for="compose-text">Texte (optionnel)</label>
-          <textarea
-            id="compose-text"
-            name="text"
-            class="field-textarea"
-            placeholder="Ton message LiveChat"
-            rows="4"
-          ></textarea>
+          <form id="compose-form" class="compose-form">
+            <label class="field-label" for="compose-url">URL média</label>
+            <input id="compose-url" name="url" class="field-input" type="url" placeholder="https://..." required />
 
-          <label class="field-checkbox">
-            <input id="compose-force-refresh" name="forceRefresh" type="checkbox" />
-            Ignorer le cache serveur (`forceRefresh`)
-          </label>
+            <label class="field-label" for="compose-text">Texte (optionnel)</label>
+            <textarea
+              id="compose-text"
+              name="text"
+              class="field-textarea"
+              placeholder="Ton message LiveChat"
+              rows="4"
+            ></textarea>
 
-          <label class="field-checkbox">
-            <input id="compose-save-to-board" name="saveToBoard" type="checkbox" />
-            Sauvegarder dans la Meme Board (`saveToBoard`)
-          </label>
+            <label class="field-checkbox">
+              <input id="compose-force-refresh" name="forceRefresh" type="checkbox" />
+              Ignorer le cache serveur (`forceRefresh`)
+            </label>
 
-          <div class="actions-row">
-            <button id="send-button" class="btn btn-primary" type="submit">Envoyer</button>
-            <button id="open-options" class="btn btn-ghost" type="button">Configurer</button>
-          </div>
-        </form>
+            <label class="field-checkbox">
+              <input id="compose-save-to-board" name="saveToBoard" type="checkbox" />
+              Sauvegarder dans la Meme Board (`saveToBoard`)
+            </label>
 
-        <p id="popup-status" class="status status-info hidden"></p>
+            <div class="actions-row">
+              <button id="send-button" class="btn btn-primary" type="submit">Envoyer</button>
+              <button id="open-options" class="btn btn-ghost" type="button">Configurer</button>
+            </div>
+          </form>
+
+          <p id="popup-status" class="status status-info hidden"></p>
+        </div>
       </section>
     </main>
 

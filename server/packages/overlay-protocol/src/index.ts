@@ -1,4 +1,4 @@
-export const OVERLAY_PROTOCOL_VERSION = '1.1.0';
+export const OVERLAY_PROTOCOL_VERSION = '1.2.0';
 
 export const OVERLAY_SOCKET_EVENTS = {
   PLAY: 'overlay:play',
@@ -6,6 +6,7 @@ export const OVERLAY_SOCKET_EVENTS = {
   HEARTBEAT: 'overlay:heartbeat',
   ERROR: 'overlay:error',
   PLAYBACK_STATE: 'overlay:playback-state',
+  MEME_TRIGGER: 'overlay:meme-trigger',
 } as const;
 
 export type OverlaySocketEventName = (typeof OVERLAY_SOCKET_EVENTS)[keyof typeof OVERLAY_SOCKET_EVENTS];
@@ -63,6 +64,11 @@ export interface OverlayPlaybackStatePayload {
   jobId: string;
   state: 'playing' | 'paused' | 'ended';
   remainingMs: number | null;
+}
+
+export interface OverlayMemeTriggerPayload {
+  itemId: string;
+  trigger: 'shortcut' | 'ui';
 }
 
 export interface OverlayPairConsumeRequest {

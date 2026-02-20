@@ -23,6 +23,7 @@ import { setDisplayMediaFullCommand } from '../components/discord/setDisplayFull
 import { setMaxTimeCommand } from '../components/discord/setMaxTimeCommand';
 import { overlaysCommand } from '../components/discord/overlaysCommand';
 import { stopCommand } from '../components/messages/stopCommand';
+import { memeAddCommand } from '../components/discord/memeAddCommand';
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export const loadDiscord = async (fastify: FastifyCustomInstance) => {
@@ -97,6 +98,7 @@ const loadDiscordCommands = async (fastify: FastifyCustomInstance) => {
       setMaxTimeCommand(),
       overlaysCommand(fastify),
       stopCommand(fastify),
+      memeAddCommand(),
     ];
     const hideCommands = [hideSendCommand(), hideTalkCommand()];
 

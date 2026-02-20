@@ -9,6 +9,7 @@ import { ingestMediaFromSource } from '../../services/media/mediaIngestion';
 import { toMediaIngestionError } from '../../services/media/mediaErrors';
 import { createPlaybackJob } from '../../services/playbackJobs';
 import { encodeRichOverlayPayload } from '../../services/messages/richOverlayPayload';
+import { addToMemeBoard } from '../../services/memeBoard';
 import {
   normalizeTweetStatusUrl,
   resolveTweetCardFromUrl,
@@ -29,6 +30,7 @@ interface IngestBody {
   authorName?: unknown;
   authorImage?: unknown;
   durationSec?: unknown;
+  saveToBoard?: unknown;
 }
 
 interface ConsumeIngestPairingBody {
@@ -233,6 +235,7 @@ export const IngestRoutes = () =>
       const text = toNonEmptyString(request.body?.text);
       const showText = toOptionalBoolean(request.body?.showText);
       const forceRefresh = toBooleanFlag(request.body?.forceRefresh);
+      const saveToBoard = toBooleanFlag(request.body?.saveToBoard);
       const authorName = toNonEmptyString(request.body?.authorName);
       const authorImage = toNonEmptyString(request.body?.authorImage);
       const durationSec = toOptionalDurationSec(request.body?.durationSec);
@@ -251,7 +254,14 @@ export const IngestRoutes = () =>
         });
       }
 
-      let mediaAsset = null;
+      if (saveToBoard && !url && !media) {
+        return reply.code(400).send({
+          error: 'invalid_payload',
+          message: 'saveToBoard requires a resolvable media source',
+        });
+      }
+
+      let mediaAsset: any = null;
       let jobText = text;
       let jobShowText = showText ?? !!text;
       let jobAuthorName: string | null =
@@ -262,7 +272,7 @@ export const IngestRoutes = () =>
       let jobAuthorImage =
         authorImage || (authResult.kind === 'client' ? toNonEmptyString(authResult.client.defaultAuthorImage) : null);
       let jobDurationSec = durationSec;
-      const normalizedTweetUrl = !media && url ? normalizeTweetStatusUrl(url) : null;
+      const normalizedTweetUrl = !saveToBoard && !media && url ? normalizeTweetStatusUrl(url) : null;
 
       if (normalizedTweetUrl) {
         const [tweetVideoResult, tweetCardResult] = await Promise.allSettled([
@@ -400,6 +410,59 @@ export const IngestRoutes = () =>
         return reply.code(400).send({
           error: 'invalid_payload',
         });
+      }
+
+      if (saveToBoard) {
+        if (!mediaAsset) {
+          return reply.code(400).send({
+            error: 'invalid_payload',
+            message: 'saveToBoard requires media',
+          });
+        }
+
+        try {
+          const result = await addToMemeBoard({
+            guildId,
+            mediaAssetId: mediaAsset.id,
+            title: text,
+            createdByDiscordUserId:
+              authResult.kind === 'client' ? toNonEmptyString(authResult.client.createdByDiscordUserId) : null,
+            createdByName: jobAuthorName,
+          });
+
+          logger.info(
+            {
+              guildId,
+              mediaAssetId: mediaAsset.id,
+              memeBoardItemId: result.item?.id || null,
+              created: result.created,
+              forceRefresh,
+            },
+            '[INGEST] Meme board item saved',
+          );
+
+          return reply.code(201).send({
+            accepted: true,
+            savedToBoard: true,
+            created: result.created,
+            guildId,
+            memeBoardItemId: result.item?.id || null,
+            mediaAssetId: mediaAsset.id,
+          });
+        } catch (error) {
+          logger.error(
+            {
+              err: error,
+              guildId,
+              mediaAssetId: mediaAsset.id,
+            },
+            '[INGEST] Failed to save meme board item',
+          );
+
+          return reply.code(500).send({
+            error: 'internal_error',
+          });
+        }
       }
 
       try {

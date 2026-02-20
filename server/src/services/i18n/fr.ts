@@ -27,6 +27,20 @@ export const frLang: typeof enLang = {
   overlayCodeCommandAnswerDescription:
     'Code d’appairage :\n```{{code}}```\nAPI_URL :\n```{{apiUrl}}```\nExpire dans {{expiresIn}} minute(s).',
 
+  memeAddCommand: 'meme-add',
+  memeAddCommandDescription: 'Ajouter un media a la meme board persistante',
+  memeAddCommandOptionURL: 'lien',
+  memeAddCommandOptionURLDescription: 'Lien du media a enregistrer dans la meme board',
+  memeAddCommandOptionMedia: 'media',
+  memeAddCommandOptionMediaDescription: 'Media en piece jointe a enregistrer dans la meme board',
+  memeAddCommandOptionTitle: 'titre',
+  memeAddCommandOptionTitleDescription: 'Titre optionnel pour la meme board',
+  memeAddCommandOptionForceRefresh: 'refresh',
+  memeAddCommandOptionForceRefreshDescription: 'Ignorer le cache media et re-telecharger/re-transcoder la source',
+  memeAddCommandMissingMedia: 'Veuillez fournir au moins une source media (lien ou piece jointe).',
+  memeAddCommandAnswerCreated: 'Meme ajoute a la board.',
+  memeAddCommandAnswerExists: 'Ce media est deja present dans la meme board.',
+
   sendCommand: 'msg',
   sendCommandDescription: 'Envoyer du contenu sur le stream',
   sendCommandOptionURL: 'lien',

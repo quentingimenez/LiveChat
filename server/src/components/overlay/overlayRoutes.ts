@@ -3,7 +3,14 @@ import type { FastifyReply } from 'fastify';
 import { addMinutes } from 'date-fns';
 import { createOverlayClientToken, resolveOverlayClientFromRequest } from '../../services/overlayAuth';
 import { touchMediaAsset } from '../../services/media/mediaCache';
-import { listMemeBoardItems, removeMemeBoardItem, updateMemeBoardItemTitle } from '../../services/memeBoard';
+import { ingestMediaFromSource } from '../../services/media/mediaIngestion';
+import { toMediaIngestionError } from '../../services/media/mediaErrors';
+import {
+  addToMemeBoard,
+  listMemeBoardItems,
+  removeMemeBoardItem,
+  updateMemeBoardItemTitle,
+} from '../../services/memeBoard';
 import { OVERLAY_PROTOCOL_VERSION } from '@livechat/overlay-protocol';
 
 interface ConsumePairingBody {
@@ -15,6 +22,12 @@ interface MemeBoardItemsQuery {
   q?: unknown;
   limit?: unknown;
   offset?: unknown;
+}
+
+interface MemeBoardItemCreateBody {
+  url?: unknown;
+  title?: unknown;
+  forceRefresh?: unknown;
 }
 
 interface MemeBoardItemUpdateBody {
@@ -43,6 +56,47 @@ const toOptionalInt = (value: unknown): number | null => {
   }
 
   return null;
+};
+
+const toBooleanFlag = (value: unknown): boolean => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  if (typeof value === 'number') {
+    return value === 1;
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+  }
+
+  return false;
+};
+
+type MemeBoardListItem = Awaited<ReturnType<typeof listMemeBoardItems>>['items'][number];
+
+const toOverlayMemeBoardItemPayload = (item: MemeBoardListItem) => {
+  return {
+    id: item.id,
+    guildId: item.guildId,
+    mediaAssetId: item.mediaAssetId,
+    title: item.title,
+    createdByName: item.createdByName,
+    createdAt: item.createdAt,
+    media: {
+      id: item.mediaAsset.id,
+      kind: item.mediaAsset.kind,
+      mime: item.mediaAsset.mime,
+      durationSec: item.mediaAsset.durationSec,
+      width: item.mediaAsset.width,
+      height: item.mediaAsset.height,
+      isVertical: item.mediaAsset.isVertical,
+      sizeBytes: item.mediaAsset.sizeBytes,
+      sourceUrl: item.mediaAsset.sourceUrl,
+    },
+  };
 };
 
 const streamAssetToReply = async (
@@ -244,25 +298,64 @@ export const OverlayRoutes = () =>
         total: list.total,
         limit: list.limit,
         offset: list.offset,
-        items: list.items.map((item) => ({
-          id: item.id,
-          guildId: item.guildId,
-          mediaAssetId: item.mediaAssetId,
-          title: item.title,
-          createdByName: item.createdByName,
-          createdAt: item.createdAt,
-          media: {
-            id: item.mediaAsset.id,
-            kind: item.mediaAsset.kind,
-            mime: item.mediaAsset.mime,
-            durationSec: item.mediaAsset.durationSec,
-            width: item.mediaAsset.width,
-            height: item.mediaAsset.height,
-            isVertical: item.mediaAsset.isVertical,
-            sizeBytes: item.mediaAsset.sizeBytes,
-            sourceUrl: item.mediaAsset.sourceUrl,
-          },
-        })),
+        items: list.items.map(toOverlayMemeBoardItemPayload),
+      });
+    });
+
+    fastify.post<{ Body: MemeBoardItemCreateBody }>('/meme-board/items', async (request, reply) => {
+      const authResult = await resolveOverlayClientFromRequest(request);
+
+      if (!authResult) {
+        return reply.code(401).send({
+          error: 'unauthorized',
+        });
+      }
+
+      const url = toNonEmptyString(request.body?.url);
+      const title = toNonEmptyString(request.body?.title);
+      const forceRefresh = toBooleanFlag(request.body?.forceRefresh);
+
+      if (!url) {
+        return reply.code(400).send({
+          error: 'invalid_payload',
+          message: 'url is required',
+        });
+      }
+
+      let mediaAsset: {
+        id: string;
+      };
+
+      try {
+        mediaAsset = await ingestMediaFromSource({
+          url,
+          forceRefresh,
+        });
+      } catch (error) {
+        const mediaError = toMediaIngestionError(error);
+        return reply.code(422).send({
+          error: 'media_ingestion_failed',
+          code: mediaError.code,
+          message: mediaError.message,
+        });
+      }
+
+      const result = await addToMemeBoard({
+        guildId: authResult.client.guildId,
+        mediaAssetId: mediaAsset.id,
+        title,
+        createdByName: authResult.client.label,
+      });
+
+      if (!result.item) {
+        return reply.code(500).send({
+          error: 'meme_board_item_not_found_after_upsert',
+        });
+      }
+
+      return reply.send({
+        created: result.created,
+        item: toOverlayMemeBoardItemPayload(result.item as MemeBoardListItem),
       });
     });
 

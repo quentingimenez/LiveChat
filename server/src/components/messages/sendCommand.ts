@@ -1,8 +1,13 @@
 import { CommandInteraction, EmbedBuilder, SlashCommandBuilder } from 'discord.js';
 import { ingestMediaFromSource } from '../../services/media/mediaIngestion';
 import { getLocalizedMediaErrorMessage, toMediaIngestionError } from '../../services/media/mediaErrors';
+import { extractMediaStartOffsetSec } from '../../services/media/mediaSourceResolver';
 import { createPlaybackJob } from '../../services/playbackJobs';
-import { encodeRichOverlayPayload, type TweetCardPayload } from '../../services/messages/richOverlayPayload';
+import {
+  buildMediaOverlayTextPayload,
+  encodeRichOverlayPayload,
+  type TweetCardPayload,
+} from '../../services/messages/richOverlayPayload';
 import {
   normalizeTweetStatusUrl,
   resolveTweetCardFromUrl,
@@ -78,6 +83,7 @@ export const sendCommand = () => ({
     await interaction.deferReply();
 
     try {
+      const mediaStartOffsetSec = extractMediaStartOffsetSec({ url, media });
       const tweetInput = url || text;
       const normalizedTweetInput = !media && tweetInput ? normalizeTweetStatusUrl(tweetInput) : null;
       let tweetVideoMedias: Awaited<ReturnType<typeof resolveTweetVideoMediasFromUrl>> = [];
@@ -236,7 +242,10 @@ export const sendCommand = () => ({
       await createPlaybackJob({
         guildId: interaction.guildId!,
         mediaAsset,
-        text,
+        text: buildMediaOverlayTextPayload({
+          text,
+          startOffsetSec: mediaStartOffsetSec,
+        }),
         showText: !!text,
         authorName: interaction.user.username,
         authorImage: interaction.user.avatarURL(),

@@ -33,6 +33,7 @@ const defaultConfig = {
   displayIndex: null,
   volume: 1.0,
   enabled: true,
+  autoStart: false,
   showText: true,
   serverUrl: null,
   clientToken: null,
@@ -74,6 +75,10 @@ function normalizeVolume(volume) {
   }
 
   return Math.min(1, Math.max(0, volume));
+}
+
+function normalizeAutoStart(value) {
+  return value === true;
 }
 
 function normalizeMemeBindings(candidate) {
@@ -133,6 +138,7 @@ function loadConfig() {
       ...defaultConfig,
       ...parsed,
       volume: normalizeVolume(parsed.volume),
+      autoStart: normalizeAutoStart(parsed.autoStart),
       memeBindings: normalizeMemeBindings(parsed.memeBindings),
     };
   } catch (error) {
@@ -151,6 +157,7 @@ function saveConfig(nextValues) {
     const normalizedMerged = {
       ...merged,
       volume: normalizeVolume(merged.volume),
+      autoStart: normalizeAutoStart(merged.autoStart),
       memeBindings: normalizeMemeBindings(merged.memeBindings),
     };
 
@@ -185,6 +192,60 @@ function setOverlayConnectionState(nextState, reason = '') {
 
 function normalizeServerUrl(serverUrl) {
   return serverUrl.trim().replace(/\/+$/, '');
+}
+
+function supportsAutoStart() {
+  if (typeof app.getLoginItemSettings !== 'function' || typeof app.setLoginItemSettings !== 'function') {
+    return false;
+  }
+
+  return process.platform === 'win32' || process.platform === 'darwin';
+}
+
+function getSystemAutoStartEnabled() {
+  if (!supportsAutoStart()) {
+    return false;
+  }
+
+  try {
+    return app.getLoginItemSettings().openAtLogin === true;
+  } catch (error) {
+    console.error('Unable to read auto-start setting:', error);
+    return false;
+  }
+}
+
+function applyAutoStartSetting(enabled) {
+  const nextEnabled = enabled === true;
+
+  if (!supportsAutoStart()) {
+    saveConfig({ autoStart: false });
+    return false;
+  }
+
+  try {
+    const loginItemSettings = {
+      openAtLogin: nextEnabled,
+    };
+
+    if (process.platform === 'darwin') {
+      loginItemSettings.openAsHidden = true;
+    }
+
+    if (process.platform === 'win32') {
+      loginItemSettings.path = process.execPath;
+      loginItemSettings.args = [];
+    }
+
+    app.setLoginItemSettings(loginItemSettings);
+  } catch (error) {
+    console.error('Unable to update auto-start setting:', error);
+  }
+
+  const systemEnabled = getSystemAutoStartEnabled();
+  saveConfig({ autoStart: systemEnabled });
+  updateTrayMenu();
+  return systemEnabled;
 }
 
 const TLS_ERROR_CODES = new Set([
@@ -638,6 +699,10 @@ function toggleShowText(checked) {
   updateTrayMenu();
 }
 
+function toggleAutoStart(checked) {
+  applyAutoStartSetting(checked);
+}
+
 function emitManualStopSignal() {
   if (!overlaySocket || !overlaySocket.connected) {
     return;
@@ -787,6 +852,7 @@ function updateTrayMenu() {
 
   const cfg = loadConfig();
   const displays = screen.getAllDisplays();
+  const autoStartSupported = supportsAutoStart();
   const suffix = cfg.deviceName ? ` (${cfg.deviceName})` : '';
   tray.setToolTip(`Overlay ${getConnectionStateLabel()}${suffix}`);
 
@@ -809,6 +875,13 @@ function updateTrayMenu() {
       type: 'checkbox',
       checked: cfg.enabled,
       click: ({ checked }) => setEnabledAsync(checked),
+    },
+    {
+      label: autoStartSupported ? 'Lancer au démarrage' : 'Lancer au démarrage (non supporté)',
+      type: 'checkbox',
+      checked: autoStartSupported && cfg.autoStart === true,
+      enabled: autoStartSupported,
+      click: ({ checked }) => toggleAutoStart(checked),
     },
     {
       label: 'Afficher le texte',
@@ -1074,6 +1147,28 @@ ipcMain.handle('pairing:consume', async (_event, payload) => {
 });
 
 app.whenReady().then(async () => {
+  const cfgBeforeAutoStart = loadConfig();
+  let hasPersistedAutoStart = false;
+
+  try {
+    if (fs.existsSync(configPath)) {
+      const rawConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      hasPersistedAutoStart = typeof rawConfig?.autoStart === 'boolean';
+    }
+  } catch (error) {
+    console.error('Unable to inspect persisted auto-start preference:', error);
+  }
+
+  if (supportsAutoStart()) {
+    if (hasPersistedAutoStart) {
+      applyAutoStartSetting(cfgBeforeAutoStart.autoStart === true);
+    } else {
+      saveConfig({ autoStart: getSystemAutoStartEnabled() });
+    }
+  } else if (cfgBeforeAutoStart.autoStart) {
+    saveConfig({ autoStart: false });
+  }
+
   createTray();
   registerShortcuts();
 

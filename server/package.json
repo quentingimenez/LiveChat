@@ -65,7 +65,8 @@
   },
   "pnpm": {
     "overrides": {
-      "undici": "^6.23.0"
+      "undici": "^6.23.0",
+      "minimatch": "^10.2.2"
     },
     "onlyBuiltDependencies": [
       "@prisma/client",

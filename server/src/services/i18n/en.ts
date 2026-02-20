@@ -25,6 +25,20 @@ export const enLang = {
   overlayCodeCommandAnswerDescription:
     'Pairing code:\n```{{code}}```\nAPI_URL:\n```{{apiUrl}}```\nExpires in {{expiresIn}} minute(s).',
 
+  memeAddCommand: 'meme-add',
+  memeAddCommandDescription: 'Add media to the persistent meme board',
+  memeAddCommandOptionURL: 'link',
+  memeAddCommandOptionURLDescription: 'Link to media to store in meme board',
+  memeAddCommandOptionMedia: 'media',
+  memeAddCommandOptionMediaDescription: 'Attachment media to store in meme board',
+  memeAddCommandOptionTitle: 'title',
+  memeAddCommandOptionTitleDescription: 'Optional display title for meme board',
+  memeAddCommandOptionForceRefresh: 'refresh',
+  memeAddCommandOptionForceRefreshDescription: 'Bypass media cache and re-download/re-transcode this source',
+  memeAddCommandMissingMedia: 'Please provide at least one media source (link or attachment).',
+  memeAddCommandAnswerCreated: 'Meme added to board.',
+  memeAddCommandAnswerExists: 'This media is already in the meme board.',
+
   sendCommand: 'send',
   sendCommandDescription: 'Send content to stream',
   sendCommandOptionURL: 'link',

@@ -168,6 +168,10 @@ export const OverlayRoutes = () =>
       });
 
       const authorName = toNonEmptyString((pairingCode as { authorName?: unknown }).authorName);
+      const authorImage = toNonEmptyString((pairingCode as { authorImage?: unknown }).authorImage);
+      const createdByDiscordUserId = toNonEmptyString(
+        (pairingCode as { createdByDiscordUserId?: unknown }).createdByDiscordUserId,
+      );
       const deviceName = requestedDeviceName || `${DEFAULT_OVERLAY_DEVICE_PREFIX}-${authorName || 'User'}`;
 
       await prisma.overlayClient.updateMany({
@@ -184,6 +188,9 @@ export const OverlayRoutes = () =>
       const { client, rawToken } = await createOverlayClientToken({
         guildId: pairingCode.guildId,
         label: deviceName,
+        defaultAuthorName: authorName,
+        defaultAuthorImage: authorImage,
+        createdByDiscordUserId,
       });
 
       return reply.send({
@@ -344,7 +351,12 @@ export const OverlayRoutes = () =>
         guildId: authResult.client.guildId,
         mediaAssetId: mediaAsset.id,
         title,
-        createdByName: authResult.client.label,
+        createdByDiscordUserId: toNonEmptyString(
+          (authResult.client as { createdByDiscordUserId?: unknown }).createdByDiscordUserId,
+        ),
+        createdByName:
+          toNonEmptyString((authResult.client as { defaultAuthorName?: unknown }).defaultAuthorName) ||
+          authResult.client.label,
       });
 
       if (!result.item) {

@@ -523,6 +523,7 @@
   const loadItemsAndRender = async () => {
     try {
       await fetchItems();
+      await syncBindingsWithBoardItems();
       renderList();
       clearStatus();
     } catch (error) {
@@ -598,13 +599,54 @@
     }
   };
 
-  const clearShortcutForItem = async (itemId) => {
+  const removeBindingsForItem = (itemId) => {
     const nextBindings = { ...state.bindings };
+    let removedCount = 0;
 
     for (const [accelerator, mappedItemId] of Object.entries(nextBindings)) {
       if (mappedItemId === itemId) {
         delete nextBindings[accelerator];
+        removedCount += 1;
       }
+    }
+
+    return {
+      nextBindings,
+      removedCount,
+    };
+  };
+
+  const syncBindingsWithBoardItems = async () => {
+    const validItemIds = new Set(
+      (Array.isArray(state.items) ? state.items : [])
+        .map((item) => `${item?.id || ''}`.trim())
+        .filter(Boolean),
+    );
+    const nextBindings = {};
+    let removedCount = 0;
+
+    for (const [accelerator, mappedItemId] of Object.entries(state.bindings || {})) {
+      if (validItemIds.has(mappedItemId)) {
+        nextBindings[accelerator] = mappedItemId;
+        continue;
+      }
+
+      removedCount += 1;
+    }
+
+    if (removedCount === 0) {
+      return;
+    }
+
+    await persistBindings(nextBindings);
+  };
+
+  const clearShortcutForItem = async (itemId) => {
+    const { nextBindings, removedCount } = removeBindingsForItem(itemId);
+
+    if (removedCount === 0) {
+      setStatus('Aucun raccourci a retirer pour ce meme.', 'success');
+      return;
     }
 
     try {
@@ -672,8 +714,28 @@
         state.selectedId = null;
       }
 
+      const { nextBindings, removedCount } = removeBindingsForItem(item.id);
+      let shortcutCleanupError = null;
+
+      if (removedCount > 0) {
+        try {
+          await persistBindings(nextBindings);
+        } catch (error) {
+          shortcutCleanupError = error;
+        }
+      }
+
       await loadItemsAndRender();
-      setStatus('Meme supprime.', 'success');
+
+      if (shortcutCleanupError) {
+        setStatus(
+          `Meme supprime, mais liberation du raccourci impossible: ${shortcutCleanupError?.message || shortcutCleanupError}`,
+          'error',
+        );
+        return;
+      }
+
+      setStatus(removedCount > 0 ? 'Meme supprime. Raccourci libere.' : 'Meme supprime.', 'success');
     } catch (error) {
       setStatus(`Suppression impossible: ${error?.message || error}`, 'error');
     }

@@ -895,10 +895,6 @@ function updateTrayMenu() {
       click: () => createPairingWindow(),
     },
     {
-      label: 'Réinitialiser appairage',
-      click: () => resetPairing(),
-    },
-    {
       label: 'Ouvrir Meme Board',
       enabled: cfg.enabled && hasPairingConfig(cfg),
       click: () => createBoardWindow(),
@@ -927,17 +923,6 @@ function updateTrayMenu() {
   });
 
   template.push({ type: 'separator' });
-
-  template.push({
-    label: 'Recharger (Shift+Echap)',
-    enabled: cfg.enabled && !!overlayWindow && !overlayWindow.isDestroyed(),
-    click: () => {
-      if (overlayWindow && !overlayWindow.isDestroyed()) {
-        emitManualStopSignal();
-        overlayWindow.reload();
-      }
-    },
-  });
 
   template.push({
     label: 'Quitter',

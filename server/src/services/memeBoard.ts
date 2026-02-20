@@ -232,3 +232,37 @@ export const removeMemeBoardItem = async (params: { guildId: string; itemId: str
     releasedPinnedExpiry,
   };
 };
+
+export const updateMemeBoardItemTitle = async (params: {
+  guildId: string;
+  itemId: string;
+  title?: string | null;
+}) => {
+  const existing = await prisma.memeBoardItem.findFirst({
+    where: {
+      id: params.itemId,
+      guildId: params.guildId,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!existing) {
+    return null;
+  }
+
+  const title = toNonEmptyString(params.title)?.slice(0, 240) || null;
+
+  return prisma.memeBoardItem.update({
+    where: {
+      id: existing.id,
+    },
+    data: {
+      title,
+    },
+    include: {
+      mediaAsset: true,
+    },
+  });
+};

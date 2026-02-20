@@ -186,10 +186,14 @@
 
     if (countdownRemainingMs <= 0) {
       clearCountdownTimer();
-      // Always release playback when declared duration is fully elapsed.
-      // This guarantees the bot receives `ended` even if native media `ended`
-      // does not fire for some sources.
-      clearOverlay();
+      const isActiveMediaStillRunning =
+        activePlayableElement &&
+        typeof activePlayableElement.ended === 'boolean' &&
+        !activePlayableElement.ended;
+
+      if (countdownAutoClear || !isActiveMediaStillRunning) {
+        clearOverlay();
+      }
     }
   };
 

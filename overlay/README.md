@@ -5,6 +5,12 @@ Client desktop Electron pour recevoir et afficher les médias LiveChat.
 Documentation projet: `../README.md`
 PRD: `../PRD.md`
 
+## Projets liés (sources)
+
+- Overlay desktop (ce dépôt): https://github.com/SuperKn4cky/LiveChat-Overlay
+- Bot/API: https://github.com/WardenPro/LiveChat-Bot
+- Extension navigateur (MV3): https://github.com/SuperKn4cky/LiveChat-Extension
+
 ## Rôle
 
 - Appairage via code one-shot (`/pair-code`).

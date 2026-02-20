@@ -21,9 +21,6 @@ importers:
       '@prisma/client':
         specifier: ^5.10.2
         version: 5.22.0(prisma@5.22.0)
-      '@socket.io/postgres-emitter':
-        specifier: ^0.1.0
-        version: 0.1.1
       '@t3-oss/env-core':
         specifier: ^0.8.0
         version: 0.8.0(typescript@5.3.3)(zod@3.25.76)
@@ -42,9 +39,6 @@ importers:
       file-type:
         specifier: ^19.0.0
         version: 19.6.0
-      get-video-duration:
-        specifier: ^4.1.0
-        version: 4.1.0
       lodash:
         specifier: ^4.17.21
         version: 4.17.23
@@ -60,30 +54,18 @@ importers:
       reflect-metadata:
         specifier: ^0.2.1
         version: 0.2.2
-      regenerator-runtime:
-        specifier: ^0.14.1
-        version: 0.14.1
       rosetty:
         specifier: ^3.0.22
         version: 3.1.32
       socket.io:
         specifier: ^4.7.4
         version: 4.8.3(bufferutil@4.1.0)(utf-8-validate@6.0.6)
-      tslib:
-        specifier: ^2.6.2
-        version: 2.8.1
-      unify-errors:
-        specifier: ^1.2.202
-        version: 1.3.90
       zlib-sync:
         specifier: ^0.1.9
         version: 0.1.10
       zod:
         specifier: ^3.22.4
         version: 3.25.76
-      zod-validation-error:
-        specifier: ^3.0.1
-        version: 3.5.4(zod@3.25.76)
     devDependencies:
       '@commitlint/cli':
         specifier: 18.6.1
@@ -455,49 +437,6 @@ packages:
   '@fastify/proxy-addr@5.1.0':
     resolution: {integrity: sha512-INS+6gh91cLUjB+PVHfu1UqcB76Sqtpyp7bnL+FYojhjygvOPA9ctiD/JDKsyD9Xgu4hUhCSJBPig/w7duNajw==}
 
-  '@ffprobe-installer/darwin-arm64@5.0.1':
-    resolution: {integrity: sha512-vwNCNjokH8hfkbl6m95zICHwkSzhEvDC3GVBcUp5HX8+4wsX10SP3B+bGur7XUzTIZ4cQpgJmEIAx6TUwRepMg==}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@ffprobe-installer/darwin-x64@5.0.0':
-    resolution: {integrity: sha512-Zl0UkZ+wW/eyMKBPLTUCcNQch2VDnZz/cBn1DXv3YtCBVbYd9aYzGj4MImdxgWcoE0+GpbfbO6mKGwMq5HCm6A==}
-    cpu: [x64]
-    os: [darwin]
-
-  '@ffprobe-installer/ffprobe@1.4.1':
-    resolution: {integrity: sha512-3WJvxU0f4d7IOZdzoVCAj9fYtiQNC6E0521FJFe9iP5Ej8auTXU7TsrUzIAG1CydeQI+BnM3vGog92SCcF9KtA==}
-
-  '@ffprobe-installer/linux-arm64@5.0.0':
-    resolution: {integrity: sha512-IwFbzhe1UydR849YXLPP0RMpHgHXSuPO1kznaCHcU5FscFBV5gOZLkdD8e/xrcC8g/nhKqy0xMjn5kv6KkFQlQ==}
-    cpu: [arm64]
-    os: [linux]
-
-  '@ffprobe-installer/linux-arm@5.0.0':
-    resolution: {integrity: sha512-mM1PPxP2UX5SUvhy0urcj5U8UolwbYgmnXA/eBWbW78k6N2Wk1COvcHYzOPs6c5yXXL6oshS2rZHU1kowigw7g==}
-    cpu: [arm]
-    os: [linux]
-
-  '@ffprobe-installer/linux-ia32@5.0.0':
-    resolution: {integrity: sha512-c3bWlWEDMST59SAZycVh0oyc2eNS/CxxeRjoNryGRgqcZX3EJWJJQL1rAXbpQOMLMi8to1RqnmMuwPJgLLjjUA==}
-    cpu: [ia32]
-    os: [linux]
-
-  '@ffprobe-installer/linux-x64@5.0.0':
-    resolution: {integrity: sha512-zgLnWJFvMGCaw1txGtz84sMEQt6mQUzdw86ih9S/kZOWnp06Gj/ams/EXxEkAxgAACCVM6/O0mkDe/6biY5tgA==}
-    cpu: [x64]
-    os: [linux]
-
-  '@ffprobe-installer/win32-ia32@5.0.0':
-    resolution: {integrity: sha512-NnDdAZD6ShFXzJeCkAFl2ZjAv7GcJWYudLA+0T/vjZwvskBop+sq1PGfdmVltfFDcdQiomoThRhn9Xiy9ZC71g==}
-    cpu: [ia32]
-    os: [win32]
-
-  '@ffprobe-installer/win32-x64@5.0.0':
-    resolution: {integrity: sha512-P4ZMRFxVMnfMsOyTfBM/+nkTodLeOUfXNPo+X1bKEWBiZxRErqX/IHS5sLA0yAH8XmtKZcL7Cu6M26ztGcQYxw==}
-    cpu: [x64]
-    os: [win32]
-
   '@gquittet/graceful-server@4.0.9':
     resolution: {integrity: sha512-v0s6HHR30ZaX8bskkGT5vTwpxk6ltFYiWn+h+epMo5RxjbbBjkzVNvG7DSdDogqrWGxwhjoYLzUAj5RE1eydUg==}
     engines: {node: '>=14.0.0'}
@@ -517,10 +456,6 @@ packages:
 
   '@livechat/overlay-protocol@file:packages/overlay-protocol':
     resolution: {directory: packages/overlay-protocol, type: directory}
-
-  '@msgpack/msgpack@2.8.0':
-    resolution: {integrity: sha512-h9u4u/jiIRKbq25PM+zymTyW6bhTzELvOoUd+AvYriWOAKpLGnIamaET3pnHYoI5iYphAHBI4ayx0MehR+VVPQ==}
-    engines: {node: '>= 10'}
 
   '@napi-rs/wasm-runtime@0.2.12':
     resolution: {integrity: sha512-ZVWUcfwY4E/yPitQJl481FjFo3K22D6qF0DuFH6Y/nbnE11GY5uguDxZMGXPQ8WQ0128MXQD7TnfHyK4oWoIJQ==}
@@ -589,9 +524,6 @@ packages:
 
   '@socket.io/component-emitter@3.1.2':
     resolution: {integrity: sha512-9BCxFwvbGg/RsZK9tjXd8s4UcwR0MWeFQ1XEKIQVVvAGJyINdrqKMcTRyLoK8Rse1GjzLV9cwjWV1olXRWEXVA==}
-
-  '@socket.io/postgres-emitter@0.1.1':
-    resolution: {integrity: sha512-9XYfp871EWLXoeJtzC9t+h9JIEVPKX1RhFsZlFagrAaaiFFhLcJKTi7e1lgWSY8jCZb4VGoboAG1RR7kCpZKCQ==}
 
   '@t3-oss/env-core@0.8.0':
     resolution: {integrity: sha512-Tc1pg0KH/tJeI0Z1s/Isp1VsGDj1N03ZAYFV8GjWgMxytF/ve0Dv+opjmTapHICRv8qiB1Y/fsTjkWNMpKPRCQ==}
@@ -1054,15 +986,6 @@ packages:
       supports-color:
         optional: true
 
-  debug@4.3.7:
-    resolution: {integrity: sha512-Er2nc/H7RrMXZBFCEim6TCmMk02Z8vLC2Rbi1KEBggpo0fS6l0S1nnapwmIi3yW/+GOJap1Krg4w0Hg80oCqgQ==}
-    engines: {node: '>=6.0'}
-    peerDependencies:
-      supports-color: '*'
-    peerDependenciesMeta:
-      supports-color:
-        optional: true
-
   debug@4.4.3:
     resolution: {integrity: sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==}
     engines: {node: '>=6.0'}
@@ -1443,9 +1366,6 @@ packages:
 
   get-tsconfig@4.13.6:
     resolution: {integrity: sha512-shZT/QMiSHc/YBLxxOkMtgSid5HFoauqCE3/exfsEcwg1WkeqjG+V40yBbBrsD+jW2HDXcs28xOfcbm2jI8Ddw==}
-
-  get-video-duration@4.1.0:
-    resolution: {integrity: sha512-kDmnD/C/WFHmZx7eV2duUNCwAH6w9YwpigiUHmq7cRNmxuTvcJ/otvcxa4A5GDus2iSZ+CZEA5e0va/r5ZWumw==}
 
   git-raw-commits@2.0.11:
     resolution: {integrity: sha512-VnctFhw+xfj8Va1xtfEqCUD2XDrbAPSJx+hSrE5K7fGdjZruW7XV+QOrN7LF/RJyvspRiD2I0asWsxFp0ya26A==}
@@ -2126,9 +2046,6 @@ packages:
     resolution: {integrity: sha512-00o4I+DVrefhv+nX0ulyi3biSHCPDe+yLv5o/p6d/UVlirijB8E16FtfwSAi4g3tcqrQ4lRAqQSoFEZJehYEcw==}
     engines: {node: '>= 0.4'}
 
-  regenerator-runtime@0.14.1:
-    resolution: {integrity: sha512-dYnhHh0nJoMfnkZs6GmmhFknAGRrLznOu5nc9ML+EJxGvrx6H7teuevqVqCuPcPK//3eDrrjQhehXVx9cnkGdw==}
-
   regexp.prototype.flags@1.5.4:
     resolution: {integrity: sha512-dYqgNSZbDwkaJ2ceRd9ojCGjBq+mOm9LmtXnAnEGyHhN/5R7iDW2TRw3h+o/jCFxus3P2LfWIIiwowAjANm7IA==}
     engines: {node: '>= 0.4'}
@@ -2494,10 +2411,6 @@ packages:
     resolution: {integrity: sha512-VfQPToRA5FZs/qJxLIinmU59u0r7LXqoJkCzinq3ckNJp3vKEh7jTWN589YQ5+aoAC/TGRLyJLCPKcLQbM8r9g==}
     engines: {node: '>=18.17'}
 
-  unify-errors@1.3.90:
-    resolution: {integrity: sha512-LN8uGGod++pRQQL1QIyDPRUquY6ed7pEOyJj4W7SjwtLiXDjqLeoh4YeIsMNQ65TVcWbBTiEk8GpylEs4KvCSg==}
-    engines: {node: '>=10'}
-
   unrs-resolver@1.11.1:
     resolution: {integrity: sha512-bSjt9pjaEBnNiGgc9rUiHGKv5l4/TGzDmYw3RhnkJGtLhbnnA/5qJj7x3dNDCRx/PJxu774LlH8lCOlB4hEfKg==}
 
@@ -2603,12 +2516,6 @@ packages:
 
   zlib-sync@0.1.10:
     resolution: {integrity: sha512-t7/pYg5tLBznL1RuhmbAt8rNp5tbhr+TSrJFnMkRtrGIaPJZ6Dc0uR4u3OoQI2d6cGlVI62E3Gy6gwkxyIqr/w==}
-
-  zod-validation-error@3.5.4:
-    resolution: {integrity: sha512-+hEiRIiPobgyuFlEojnqjJnhFvg4r/i3cqgcm67eehZf/WBaK3g6cD02YU9mtdVxZjv8CzCA9n/Rhrs3yAAvAw==}
-    engines: {node: '>=18.0.0'}
-    peerDependencies:
-      zod: ^3.24.4
 
   zod@3.25.76:
     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
@@ -2932,41 +2839,6 @@ snapshots:
       '@fastify/forwarded': 3.0.1
       ipaddr.js: 2.3.0
 
-  '@ffprobe-installer/darwin-arm64@5.0.1':
-    optional: true
-
-  '@ffprobe-installer/darwin-x64@5.0.0':
-    optional: true
-
-  '@ffprobe-installer/ffprobe@1.4.1':
-    optionalDependencies:
-      '@ffprobe-installer/darwin-arm64': 5.0.1
-      '@ffprobe-installer/darwin-x64': 5.0.0
-      '@ffprobe-installer/linux-arm': 5.0.0
-      '@ffprobe-installer/linux-arm64': 5.0.0
-      '@ffprobe-installer/linux-ia32': 5.0.0
-      '@ffprobe-installer/linux-x64': 5.0.0
-      '@ffprobe-installer/win32-ia32': 5.0.0
-      '@ffprobe-installer/win32-x64': 5.0.0
-
-  '@ffprobe-installer/linux-arm64@5.0.0':
-    optional: true
-
-  '@ffprobe-installer/linux-arm@5.0.0':
-    optional: true
-
-  '@ffprobe-installer/linux-ia32@5.0.0':
-    optional: true
-
-  '@ffprobe-installer/linux-x64@5.0.0':
-    optional: true
-
-  '@ffprobe-installer/win32-ia32@5.0.0':
-    optional: true
-
-  '@ffprobe-installer/win32-x64@5.0.0':
-    optional: true
-
   '@gquittet/graceful-server@4.0.9':
     optionalDependencies:
       fsevents: 2.3.3
@@ -2984,8 +2856,6 @@ snapshots:
   '@humanwhocodes/object-schema@2.0.3': {}
 
   '@livechat/overlay-protocol@file:packages/overlay-protocol': {}
-
-  '@msgpack/msgpack@2.8.0': {}
 
   '@napi-rs/wasm-runtime@0.2.12':
     dependencies:
@@ -3049,13 +2919,6 @@ snapshots:
   '@sec-ant/readable-stream@0.4.1': {}
 
   '@socket.io/component-emitter@3.1.2': {}
-
-  '@socket.io/postgres-emitter@0.1.1':
-    dependencies:
-      '@msgpack/msgpack': 2.8.0
-      debug: 4.3.7
-    transitivePeerDependencies:
-      - supports-color
 
   '@t3-oss/env-core@0.8.0(typescript@5.3.3)(zod@3.25.76)':
     dependencies:
@@ -3508,10 +3371,6 @@ snapshots:
   dateformat@4.6.3: {}
 
   debug@3.2.7:
-    dependencies:
-      ms: 2.1.3
-
-  debug@4.3.7:
     dependencies:
       ms: 2.1.3
 
@@ -4063,12 +3922,6 @@ snapshots:
   get-tsconfig@4.13.6:
     dependencies:
       resolve-pkg-maps: 1.0.0
-
-  get-video-duration@4.1.0:
-    dependencies:
-      '@ffprobe-installer/ffprobe': 1.4.1
-      execa: 5.1.1
-      is-stream: 2.0.1
 
   git-raw-commits@2.0.11:
     dependencies:
@@ -4729,8 +4582,6 @@ snapshots:
       get-proto: 1.0.1
       which-builtin-type: 1.2.1
 
-  regenerator-runtime@0.14.1: {}
-
   regexp.prototype.flags@1.5.4:
     dependencies:
       call-bind: 1.0.8
@@ -5132,8 +4983,6 @@ snapshots:
 
   undici@6.23.0: {}
 
-  unify-errors@1.3.90: {}
-
   unrs-resolver@1.11.1:
     dependencies:
       napi-postinstall: 0.3.4
@@ -5266,9 +5115,5 @@ snapshots:
   zlib-sync@0.1.10:
     dependencies:
       nan: 2.25.0
-
-  zod-validation-error@3.5.4(zod@3.25.76):
-    dependencies:
-      zod: 3.25.76
 
   zod@3.25.76: {}

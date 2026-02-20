@@ -391,6 +391,15 @@
     return value;
   };
 
+  const getStartOffsetSec = (value) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return null;
+    }
+
+    const normalized = Math.floor(value);
+    return normalized > 0 ? normalized : null;
+  };
+
   const clamp01 = (value) => {
     if (typeof value !== 'number' || !Number.isFinite(value)) {
       return 1;
@@ -745,6 +754,40 @@
     return mediaUrl.toString();
   };
 
+  const applyMediaStartOffset = (element, startOffsetSec) => {
+    if (!element || typeof element.currentTime !== 'number') {
+      return;
+    }
+
+    const resolvedOffset = getStartOffsetSec(startOffsetSec);
+    if (resolvedOffset === null) {
+      return;
+    }
+
+    const seekToOffset = () => {
+      const durationSec = Number.isFinite(element.duration) && element.duration > 0 ? element.duration : null;
+      const targetSec =
+        durationSec === null ? resolvedOffset : Math.min(resolvedOffset, Math.max(0, durationSec - 0.05));
+
+      if (!Number.isFinite(targetSec) || targetSec <= 0) {
+        return;
+      }
+
+      try {
+        element.currentTime = targetSec;
+      } catch (error) {
+        console.warn('Media offset seek failed:', error?.message || error);
+      }
+    };
+
+    if (typeof element.readyState === 'number' && element.readyState >= 1) {
+      seekToOffset();
+      return;
+    }
+
+    element.addEventListener('loadedmetadata', seekToOffset, { once: true });
+  };
+
   const renderMedia = async (payload) => {
     if (!payload?.media) {
       return;
@@ -761,6 +804,7 @@
 
     if (payload.media.kind !== 'image') {
       activePlayableElement = element;
+      applyMediaStartOffset(element, payload.media.startOffsetSec);
 
       element.addEventListener('playing', () => {
         resumeCountdown();

@@ -403,6 +403,24 @@ button:disabled {
   color: var(--muted);
 }
 
+.capture-current {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.05);
+  color: #dff6ff;
+  font-weight: 700;
+}
+
+.capture-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
 @media (max-width: 1080px) {
   .board-grid {
     grid-template-columns: 1fr;

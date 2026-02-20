@@ -47,15 +47,27 @@ export const getReadyCachedMediaAsset = async (sourceHash: string) => {
 };
 
 export const touchMediaAsset = async (assetId: string) => {
-  const nextExpiry = addHours(new Date(), getCacheTtlHours());
+  const now = new Date();
+  const nextExpiry = addHours(now, getCacheTtlHours());
+  const current = await prisma.mediaAsset.findUnique({
+    where: {
+      id: assetId,
+    },
+  });
+
+  if (!current) {
+    return null;
+  }
+
+  const preservedExpiry = current.expiresAt > nextExpiry ? current.expiresAt : nextExpiry;
 
   return prisma.mediaAsset.update({
     where: {
       id: assetId,
     },
     data: {
-      lastAccessedAt: new Date(),
-      expiresAt: nextExpiry,
+      lastAccessedAt: now,
+      expiresAt: preservedExpiry,
     },
   });
 };

@@ -25,7 +25,7 @@ export const frLang: typeof enLang = {
   overlayCodeCommandDescription: 'Générer un code d’appairage à usage unique pour Overlay EXE ou LiveChat Extension',
   overlayCodeCommandAnswerTitle: 'Code d’appairage Overlay',
   overlayCodeCommandAnswerDescription:
-    'Code d’appairage :\n```{{code}}```\nAPI_URL :\n```{{apiUrl}}```\nExpire dans {{expiresIn}} minute(s).',
+    'API_URL :\n```{{apiUrl}}```\nCode d’appairage :\n```{{code}}```\nExpire dans {{expiresIn}} minute(s).',
 
   memeAddCommand: 'meme-add',
   memeAddCommandDescription: 'Ajouter un media a la meme board persistante',

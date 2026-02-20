@@ -885,6 +885,9 @@ function createTray() {
   tray = new Tray(icon);
 
   updateTrayMenu();
+  tray.on('double-click', () => {
+    createBoardWindow();
+  });
 
   screen.on('display-added', updateTrayMenu);
   screen.on('display-removed', updateTrayMenu);

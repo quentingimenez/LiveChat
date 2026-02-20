@@ -1,6 +1,7 @@
 const STYLE_ID = 'lce-twitter-style';
 const TOAST_CONTAINER_ID = 'lce-twitter-toast-container';
 const BUTTON_ATTRIBUTE = 'data-lce-twitter-button';
+const SLOT_ATTRIBUTE = 'data-lce-twitter-slot';
 const FLOATING_BUTTON_ID = 'lce-twitter-floating-button';
 
 let toastHideTimeout: number | null = null;
@@ -19,11 +20,19 @@ const inpageStyles = `
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  background: #0f0f0f;
-  color: #fff;
+  background: transparent;
+  color: #72767B;
+  transition: background-color 140ms ease, color 140ms ease;
 }
-.lce-button:hover { background: #272727; }
+.lce-button:hover { background: rgba(29, 155, 240, 0.1); color: #1d9bf0; }
 .lce-button-floating { position: fixed; right: 20px; bottom: 24px; z-index: 2147483646; }
+.lce-twitter-action-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 6px;
+  flex: 0 0 auto;
+}
 .lce-toast-container { position: fixed; right: 16px; bottom: 16px; z-index: 2147483647; }
 .lce-toast { border-radius: 10px; padding: 10px 12px; font-family: "Segoe UI", sans-serif; font-size: 13px; font-weight: 600; color: #fff; }
 .lce-toast-success { background: linear-gradient(135deg, #2e7d32, #43a047); }
@@ -266,12 +275,26 @@ const upsertTweetButton = (article: HTMLElement): boolean => {
     return false;
   }
 
+  let slot = actionGroup.querySelector<HTMLElement>(`[${SLOT_ATTRIBUTE}]`);
   let button = actionGroup.querySelector<HTMLButtonElement>(`button[${BUTTON_ATTRIBUTE}]`);
+
+  if (!slot) {
+    slot = document.createElement('div');
+    slot.className = 'lce-twitter-action-slot';
+    slot.setAttribute(SLOT_ATTRIBUTE, '1');
+  }
 
   if (!button) {
     button = createActionButton(article);
     button.setAttribute(BUTTON_ATTRIBUTE, '1');
-    actionGroup.appendChild(button);
+  }
+
+  if (!slot.contains(button)) {
+    slot.appendChild(button);
+  }
+
+  if (slot.parentElement !== actionGroup) {
+    actionGroup.appendChild(slot);
   }
 
   button.dataset.targetUrl = statusUrl;

@@ -14,51 +14,70 @@
             <p class="options-kicker">LiveChat Extension</p>
           </div>
           <h1>Configuration</h1>
-          <p class="options-subtitle">Renseigne d’abord API_URL, puis appaire avec `/pair-code`.</p>
+          <p class="options-subtitle">
+            Deux chemins possibles: appairage rapide à gauche, réglage manuel à droite.
+          </p>
         </header>
 
-        <section class="api-card">
-          <h2 class="section-title">1) Connexion API (obligatoire)</h2>
-          <p class="section-subtitle">Utilise l’URL racine du bot, par exemple <code>https://bot.exemple.com</code>.</p>
-          <label class="field-label" for="api-url">API_URL</label>
-          <input id="api-url" class="field-input" type="url" placeholder="https://bot.exemple.com" />
-          <p class="api-note">Ne pas mettre <code>/overlay</code> ou <code>/ingest</code> dans l’URL.</p>
-          <p id="permission-state" class="permission-state">Autorisation domaine: non configuré.</p>
-        </section>
+        <section class="panels-grid">
+          <form id="pairing-form" class="options-form options-panel pairing-panel">
+            <div class="panel-head">
+              <p class="panel-tag">Rapide</p>
+              <h2 class="section-title">Connexion API + Pair code</h2>
+              <p class="section-subtitle">
+                Renseigne l’URL racine du bot puis colle le code généré par <code>/pair-code</code>.
+              </p>
+            </div>
 
-        <form id="pairing-form" class="options-form">
-          <section class="pairing-card">
-            <h2 class="section-title">2) Appairage par code</h2>
-            <p class="section-subtitle">Génère un code Discord avec <code>/pair-code</code>, puis colle-le ici.</p>
+            <div class="field-group">
+              <label class="field-label" for="api-url">API_URL</label>
+              <input id="api-url" class="field-input" type="url" placeholder="https://bot.exemple.com" />
+              <p class="api-note">Ne pas mettre <code>/overlay</code> ou <code>/ingest</code> dans l’URL.</p>
+              <p id="permission-state" class="permission-state">Autorisation domaine: non configuré.</p>
+            </div>
 
-            <label class="field-label" for="pairing-code">Code unique</label>
-            <input id="pairing-code" class="field-input" type="text" placeholder="AB12CD34" required />
-            <p class="section-subtitle">Le nom est généré automatiquement au format <code>Extension-&lt;nom&gt;</code>.</p>
+            <div class="field-group">
+              <label class="field-label" for="pairing-code">Pair code</label>
+              <input id="pairing-code" class="field-input" type="text" placeholder="AB12CD34" required />
+              <p class="field-hint">Le nom est généré automatiquement au format <code>Extension-&lt;nom&gt;</code>.</p>
+            </div>
 
             <button id="pair-button" class="btn btn-primary" type="submit">Récupérer la configuration</button>
-          </section>
-        </form>
+          </form>
 
-        <form id="options-form" class="options-form">
-          <h2 class="section-title">3) Configuration manuelle (optionnel)</h2>
-          <p class="section-subtitle">Utile pour corriger/ajuster les valeurs après appairage.</p>
-          <label class="field-label" for="ingest-token">INGEST_API_TOKEN</label>
-          <input id="ingest-token" class="field-input" type="password" placeholder="token" required />
+          <form id="options-form" class="options-form options-panel manual-panel">
+            <div class="panel-head">
+              <p class="panel-tag">Avancé</p>
+              <h2 class="section-title">Configuration manuelle</h2>
+              <p class="section-subtitle">
+                Modifie les champs directement puis sauvegarde.
+              </p>
+            </div>
 
-          <label class="field-label" for="guild-id">guildId</label>
-          <input id="guild-id" class="field-input" type="text" placeholder="123456789012345678" required />
+            <div class="field-group">
+              <label class="field-label" for="api-url-manual">API_URL</label>
+              <input id="api-url-manual" class="field-input" type="url" placeholder="https://bot.exemple.com" />
+              <p class="field-hint">Ce champ est synchronisé automatiquement avec celui du formulaire de gauche.</p>
+            </div>
 
-          <label class="field-label" for="author-name">authorName</label>
-          <input id="author-name" class="field-input" type="text" placeholder="LiveChat Extension" />
+            <label class="field-label" for="ingest-token">INGEST_API_TOKEN</label>
+            <input id="ingest-token" class="field-input" type="password" placeholder="token" required />
 
-          <label class="field-label" for="author-image">authorImage (avatar URL)</label>
-          <input id="author-image" class="field-input" type="url" placeholder="https://cdn.discordapp.com/..." />
+            <label class="field-label" for="guild-id">guildId</label>
+            <input id="guild-id" class="field-input" type="text" placeholder="123456789012345678" required />
 
-          <div class="actions-row">
-            <button id="save-button" class="btn btn-primary" type="submit">Sauvegarder</button>
-            <button id="test-button" class="btn btn-ghost" type="button">Tester la config</button>
-          </div>
-        </form>
+            <label class="field-label" for="author-name">authorName</label>
+            <input id="author-name" class="field-input" type="text" placeholder="LiveChat Extension" />
+
+            <label class="field-label" for="author-image">authorImage (avatar URL)</label>
+            <input id="author-image" class="field-input" type="url" placeholder="https://cdn.discordapp.com/..." />
+
+            <div class="actions-row">
+              <button id="save-button" class="btn btn-primary" type="submit">Sauvegarder</button>
+              <button id="test-button" class="btn btn-ghost" type="button">Tester la config</button>
+            </div>
+          </form>
+        </section>
 
         <p id="options-status" class="status status-info hidden"></p>
       </section>

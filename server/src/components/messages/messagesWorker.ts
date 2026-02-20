@@ -348,7 +348,7 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
   logger.info(
     `[SOCKET] Dispatching job ${nextJob.id} to guild ${nextJob.guildId} (clients: ${roomSize}, durationSec: ${nextJob.durationSec}, queueDelayMs: ${queueDelayMs}, mediaKind: ${
       mediaAsset?.kind || 'none'
-    }, mediaDurationSec: ${mediaAsset?.durationSec ?? 'n/a'})`,
+    }, mediaDurationSec: ${mediaAsset?.durationSec ?? 'n/a'}, mediaStartOffsetSec: ${payload.media?.startOffsetSec ?? 'n/a'})`,
   );
 
   fastify.io.to(roomName).emit(OVERLAY_SOCKET_EVENTS.PLAY, payload);

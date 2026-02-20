@@ -1,6 +1,7 @@
 import fs, { createReadStream } from 'fs';
-import type { FastifyReply } from 'fastify';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import { addMinutes } from 'date-fns';
+import { OVERLAY_PROTOCOL_VERSION } from '@livechat/overlay-protocol';
 import { createOverlayClientToken, resolveOverlayClientFromRequest } from '../../services/overlayAuth';
 import { touchMediaAsset } from '../../services/media/mediaCache';
 import { ingestMediaFromSource } from '../../services/media/mediaIngestion';
@@ -11,7 +12,6 @@ import {
   removeMemeBoardItem,
   updateMemeBoardItemTitle,
 } from '../../services/memeBoard';
-import { OVERLAY_PROTOCOL_VERSION } from '@livechat/overlay-protocol';
 
 interface ConsumePairingBody {
   code?: unknown;
@@ -99,7 +99,73 @@ const toOverlayMemeBoardItemPayload = (item: MemeBoardListItem) => {
   };
 };
 
+const parseByteRange = (
+  rawRangeHeader: string,
+  totalSize: number,
+): { start: number; end: number } | 'invalid' | null => {
+  const trimmed = rawRangeHeader.trim();
+
+  if (!trimmed) {
+    return null;
+  }
+
+  if (!trimmed.toLowerCase().startsWith('bytes=')) {
+    return 'invalid';
+  }
+
+  const firstRange = trimmed.slice(6).split(',')[0]?.trim() || '';
+  if (!firstRange) {
+    return 'invalid';
+  }
+
+  const [rawStart, rawEnd] = firstRange.split('-').map((part) => part.trim());
+
+  if (!rawStart && !rawEnd) {
+    return 'invalid';
+  }
+
+  if (!rawStart) {
+    const suffixLength = Number.parseInt(rawEnd || '', 10);
+
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) {
+      return 'invalid';
+    }
+
+    const start = suffixLength >= totalSize ? 0 : totalSize - suffixLength;
+    const end = totalSize - 1;
+    return {
+      start,
+      end,
+    };
+  }
+
+  const start = Number.parseInt(rawStart, 10);
+
+  if (!Number.isFinite(start) || start < 0 || start >= totalSize) {
+    return 'invalid';
+  }
+
+  if (!rawEnd) {
+    return {
+      start,
+      end: totalSize - 1,
+    };
+  }
+
+  const parsedEnd = Number.parseInt(rawEnd, 10);
+
+  if (!Number.isFinite(parsedEnd) || parsedEnd < start) {
+    return 'invalid';
+  }
+
+  return {
+    start,
+    end: Math.min(parsedEnd, totalSize - 1),
+  };
+};
+
 const streamAssetToReply = async (
+  request: FastifyRequest,
   reply: FastifyReply,
   asset: {
     id: string;
@@ -113,11 +179,41 @@ const streamAssetToReply = async (
     });
   }
 
+  const fileStat = await fs.promises.stat(asset.storagePath).catch(() => null);
+
+  if (!fileStat || !fileStat.isFile()) {
+    return reply.code(404).send({
+      error: 'media_not_found_on_disk',
+    });
+  }
+
   await touchMediaAsset(asset.id);
 
+  const totalSize = fileStat.size;
+  const rawRangeHeader = typeof request.headers.range === 'string' ? request.headers.range : '';
+  const byteRange = parseByteRange(rawRangeHeader, totalSize);
+
   reply.header('Cache-Control', 'no-store');
+  reply.header('Accept-Ranges', 'bytes');
   reply.type(asset.mime);
 
+  if (byteRange === 'invalid') {
+    reply.header('Content-Range', `bytes */${totalSize}`);
+    return reply.code(416).send();
+  }
+
+  if (byteRange) {
+    const chunkSize = byteRange.end - byteRange.start + 1;
+    reply.code(206);
+    reply.header('Content-Range', `bytes ${byteRange.start}-${byteRange.end}/${totalSize}`);
+    reply.header('Content-Length', `${chunkSize}`);
+    return createReadStream(asset.storagePath, {
+      start: byteRange.start,
+      end: byteRange.end,
+    });
+  }
+
+  reply.header('Content-Length', `${totalSize}`);
   return createReadStream(asset.storagePath);
 };
 
@@ -282,7 +378,7 @@ export const OverlayRoutes = () =>
         });
       }
 
-      return streamAssetToReply(reply, asset);
+      return streamAssetToReply(request, reply, asset);
     });
 
     fastify.get<{ Querystring: MemeBoardItemsQuery }>('/meme-board/items', async (request, reply) => {
@@ -396,7 +492,7 @@ export const OverlayRoutes = () =>
         });
       }
 
-      return streamAssetToReply(reply, item.mediaAsset);
+      return streamAssetToReply(request, reply, item.mediaAsset);
     });
 
     fastify.delete<{ Params: { itemId: string } }>('/meme-board/items/:itemId', async (request, reply) => {

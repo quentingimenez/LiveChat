@@ -264,6 +264,7 @@ export const IngestRoutes = () =>
       let mediaAsset: any = null;
       let jobText = text;
       let jobShowText = showText ?? !!text;
+      let hasRichTweetCardPayload = false;
       let jobAuthorName: string | null =
         authorName ||
         (authResult.kind === 'client'
@@ -354,6 +355,7 @@ export const IngestRoutes = () =>
           jobAuthorName = null;
           jobAuthorImage = null;
           jobDurationSec = durationSec ?? getTweetCardDurationSec(tweetVideoMedias);
+          hasRichTweetCardPayload = true;
         } else if (tweetVideoMedias[0]) {
           try {
             mediaAsset = await ingestMediaFromSource({
@@ -382,7 +384,7 @@ export const IngestRoutes = () =>
         }
       }
 
-      if (!jobText && !mediaAsset && (url || media)) {
+      if (!hasRichTweetCardPayload && !mediaAsset && (url || media)) {
         try {
           mediaAsset = await ingestMediaFromSource({ url, media, forceRefresh });
         } catch (error) {

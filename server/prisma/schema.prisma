@@ -26,9 +26,25 @@ model MediaAsset {
   createdAt      DateTime         @default(now())
 
   playbackJobs PlaybackJob[]
+  memeBoardItems MemeBoardItem[]
 
   @@index([expiresAt])
   @@index([status])
+}
+
+model MemeBoardItem {
+  id                    String   @id @default(uuid())
+  guildId               String
+  mediaAssetId          String
+  mediaAsset            MediaAsset @relation(fields: [mediaAssetId], references: [id], onDelete: Cascade)
+  title                 String?
+  createdByDiscordUserId String?
+  createdByName         String?
+  createdAt             DateTime @default(now())
+
+  @@unique([guildId, mediaAssetId])
+  @@index([guildId, createdAt])
+  @@index([mediaAssetId])
 }
 
 model PlaybackJob {

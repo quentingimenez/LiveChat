@@ -18,6 +18,7 @@ import { RosettyI18n } from '../services/i18n/loader';
 import type {
   OverlayErrorPayload,
   OverlayHeartbeatPayload,
+  OverlayMemeTriggerPayload,
   OverlayPlaybackStatePayload,
   OverlayPlayPayload,
   OverlayStopPayload,
@@ -38,6 +39,8 @@ declare global {
     'overlay:heartbeat': (payload: OverlayHeartbeatPayload) => void;
     'overlay:error': (payload: OverlayErrorPayload) => void;
     'overlay:playback-state': (payload: OverlayPlaybackStatePayload) => void;
+    'overlay:stop': (payload: OverlayStopPayload) => void;
+    'overlay:meme-trigger': (payload: OverlayMemeTriggerPayload) => void;
   }
 
   interface ServerToClientEvents {

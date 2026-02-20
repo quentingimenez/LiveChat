@@ -1,13 +1,15 @@
 import { addMilliseconds } from 'date-fns';
 import { hashOverlayToken } from '../services/overlayAuth';
-import { PlaybackJobStatus } from '../services/prisma/prismaEnums';
+import { MediaAssetStatus, PlaybackJobStatus } from '../services/prisma/prismaEnums';
 import {
   OVERLAY_SOCKET_EVENTS,
   type OverlayErrorPayload,
   type OverlayHeartbeatPayload,
+  type OverlayMemeTriggerPayload,
   type OverlayPlaybackStatePayload,
   type OverlayStopPayload,
 } from '@livechat/overlay-protocol';
+import { createPlaybackJob } from '../services/playbackJobs';
 
 const MIN_ACTIVE_PLAYBACK_BUSY_LOCK_MS = 5_000;
 
@@ -245,6 +247,55 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
         `[OVERLAY] Stop received from ${socket.data.overlayClientLabel || 'unknown-device'} (${
           socket.data.overlayClientId
         }, guild: ${guildId}, jobId: ${stopJobId}, releasedJobs: ${releasedJobs.count})`,
+      );
+    });
+
+    socket.on(OVERLAY_SOCKET_EVENTS.MEME_TRIGGER, async (payload: OverlayMemeTriggerPayload) => {
+      const rawItemId = typeof payload?.itemId === 'string' ? payload.itemId.trim() : '';
+      const triggerKind = payload?.trigger === 'ui' ? 'ui' : 'shortcut';
+
+      if (!rawItemId) {
+        logger.warn(
+          `[OVERLAY] Meme trigger ignored from ${socket.data.overlayClientLabel || 'unknown-device'} (${
+            socket.data.overlayClientId
+          }, guild: ${guildId}): missing itemId`,
+        );
+        return;
+      }
+
+      const item = await prisma.memeBoardItem.findFirst({
+        where: {
+          id: rawItemId,
+          guildId,
+        },
+        include: {
+          mediaAsset: true,
+        },
+      });
+
+      if (!item || !item.mediaAsset || item.mediaAsset.status !== MediaAssetStatus.READY) {
+        logger.warn(
+          `[OVERLAY] Meme trigger ignored from ${socket.data.overlayClientLabel || 'unknown-device'} (${
+            socket.data.overlayClientId
+          }, guild: ${guildId}, itemId: ${rawItemId}): unavailable media`,
+        );
+        return;
+      }
+
+      const job = await createPlaybackJob({
+        guildId,
+        mediaAsset: item.mediaAsset,
+        text: null,
+        showText: false,
+        authorName: null,
+        authorImage: null,
+        source: `overlay_meme_trigger_${triggerKind}`,
+      });
+
+      logger.info(
+        `[OVERLAY] Meme trigger accepted from ${socket.data.overlayClientLabel || 'unknown-device'} (${
+          socket.data.overlayClientId
+        }, guild: ${guildId}, itemId: ${rawItemId}, trigger: ${triggerKind}, jobId: ${job.id})`,
       );
     });
 

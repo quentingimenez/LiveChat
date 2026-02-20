@@ -54,6 +54,8 @@ declare global {
     guildId?: string;
     overlayClientId?: string;
     overlayClientLabel?: string;
+    overlayAuthorName?: string;
+    overlayAuthorImage?: string;
   }
 
   type FastifyICustom = FastifyInstance<

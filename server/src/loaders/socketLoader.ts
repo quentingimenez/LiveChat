@@ -1,5 +1,6 @@
 import { addMilliseconds } from 'date-fns';
 import { hashOverlayToken } from '../services/overlayAuth';
+import { createPlaybackJob } from '../services/playbackJobs';
 import { MediaAssetStatus, PlaybackJobStatus } from '../services/prisma/prismaEnums';
 import {
   OVERLAY_SOCKET_EVENTS,
@@ -9,9 +10,17 @@ import {
   type OverlayPlaybackStatePayload,
   type OverlayStopPayload,
 } from '@livechat/overlay-protocol';
-import { createPlaybackJob } from '../services/playbackJobs';
 
 const MIN_ACTIVE_PLAYBACK_BUSY_LOCK_MS = 5_000;
+
+const toNonEmptyString = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+};
 
 const getTokenFromSocketHandshake = (socket) => {
   const authToken = socket.handshake?.auth?.token;
@@ -60,6 +69,10 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
       socket.data.guildId = client.guildId;
       socket.data.overlayClientId = client.id;
       socket.data.overlayClientLabel = client.label;
+      socket.data.overlayAuthorName = toNonEmptyString((client as { defaultAuthorName?: unknown }).defaultAuthorName);
+      socket.data.overlayAuthorImage = toNonEmptyString(
+        (client as { defaultAuthorImage?: unknown }).defaultAuthorImage,
+      );
 
       await prisma.overlayClient.update({
         where: {
@@ -284,14 +297,16 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
 
       const itemAuthorName =
         typeof item.createdByName === 'string' && item.createdByName.trim() !== '' ? item.createdByName.trim() : null;
+      const triggerAuthorName = toNonEmptyString(socket.data.overlayAuthorName) || itemAuthorName;
+      const triggerAuthorImage = toNonEmptyString(socket.data.overlayAuthorImage);
 
       const job = await createPlaybackJob({
         guildId,
         mediaAsset: item.mediaAsset,
         text: null,
         showText: false,
-        authorName: itemAuthorName,
-        authorImage: null,
+        authorName: triggerAuthorName,
+        authorImage: triggerAuthorImage,
         source: `overlay_meme_trigger_${triggerKind}`,
       });
 

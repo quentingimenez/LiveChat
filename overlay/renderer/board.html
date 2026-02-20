@@ -19,6 +19,7 @@
             <button type="submit">Rechercher</button>
           </form>
           <button id="refresh-button" type="button" class="ghost">Rafraichir</button>
+          <button id="add-link-button" type="button">Ajouter lien</button>
         </div>
       </header>
 
@@ -48,9 +49,33 @@
     <div id="capture-overlay" class="capture-overlay hidden">
       <div class="capture-card">
         <h3>Assigner un raccourci</h3>
-        <p>Appuie sur la combinaison clavier voulue (avec au moins un modificateur).</p>
+        <p>Appuie sur la combinaison clavier voulue (avec au moins un modificateur, ex: Ctrl+Shift+1).</p>
         <p>Esc pour annuler.</p>
       </div>
+    </div>
+
+    <div id="add-overlay" class="dialog-overlay hidden">
+      <form id="add-form" class="dialog-card">
+        <h3>Ajouter un meme par lien</h3>
+        <p>Colle un lien media (TikTok, X, image, video...) pour l'ajouter a la board.</p>
+        <input id="add-url-input" type="url" required placeholder="https://..." autocomplete="off" spellcheck="false" />
+        <input
+          id="add-title-input"
+          type="text"
+          maxlength="240"
+          placeholder="Nom du meme (optionnel)"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <label class="dialog-checkbox">
+          <input id="add-refresh-input" type="checkbox" />
+          Forcer le refresh du media
+        </label>
+        <div class="dialog-actions">
+          <button id="add-cancel" type="button" class="ghost">Annuler</button>
+          <button id="add-submit" type="submit">Ajouter</button>
+        </div>
+      </form>
     </div>
 
     <div id="rename-overlay" class="dialog-overlay hidden">

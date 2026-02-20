@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Meme Board</title>
+    <link rel="stylesheet" href="./board.css" />
+  </head>
+  <body>
+    <main class="board-shell">
+      <header class="board-header">
+        <div>
+          <p class="board-kicker">LiveChat Overlay</p>
+          <h1>Meme Board</h1>
+        </div>
+        <div class="board-actions">
+          <form id="search-form" class="search-form">
+            <input id="search-input" type="search" placeholder="Recherche titre, auteur, source..." />
+            <button type="submit">Rechercher</button>
+          </form>
+          <button id="refresh-button" type="button" class="ghost">Rafraichir</button>
+        </div>
+      </header>
+
+      <p id="status" class="status hidden"></p>
+
+      <section class="board-grid">
+        <aside class="list-panel">
+          <div class="list-head">
+            <h2>Memes disponibles</h2>
+            <span id="count-pill" class="pill">0</span>
+          </div>
+          <div id="items-list" class="items-list"></div>
+        </aside>
+
+        <section class="preview-panel">
+          <div class="preview-head">
+            <h2>Apercu</h2>
+            <p id="selected-meta" class="selected-meta">Aucun element selectionne.</p>
+          </div>
+          <div id="preview-stage" class="preview-stage">
+            <p class="preview-empty">Selectionne un meme pour voir son media et gerer son raccourci.</p>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div id="capture-overlay" class="capture-overlay hidden">
+      <div class="capture-card">
+        <h3>Assigner un raccourci</h3>
+        <p>Appuie sur la combinaison clavier voulue (avec au moins un modificateur).</p>
+        <p>Esc pour annuler.</p>
+      </div>
+    </div>
+
+    <script src="./board.js"></script>
+  </body>
+</html>

@@ -4,6 +4,7 @@ const OVERLAY_SOCKET_EVENTS = {
   HEARTBEAT: 'overlay:heartbeat',
   ERROR: 'overlay:error',
   PLAYBACK_STATE: 'overlay:playback-state',
+  MEME_TRIGGER: 'overlay:meme-trigger',
 };
 
 module.exports = {

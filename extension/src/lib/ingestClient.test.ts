@@ -32,6 +32,23 @@ describe('ingest client', () => {
     });
   });
 
+  it('construit le payload quick en conservant le timestamp YouTube', () => {
+    const payload = buildIngestPayload(
+      {
+        mode: 'quick',
+        url: 'https://youtu.be/abc123?si=foo&t=108',
+      },
+      settings,
+    );
+
+    expect(payload).toEqual({
+      guildId: '1234567890',
+      url: 'https://www.youtube.com/watch?v=abc123&t=108',
+      authorName: 'LiveChat Extension',
+      authorImage: 'https://cdn.example.com/avatar.png',
+    });
+  });
+
   it('construit le payload compose avec forceRefresh', () => {
     const payload = buildIngestPayload(
       {

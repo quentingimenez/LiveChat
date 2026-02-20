@@ -274,10 +274,36 @@ const normalizeYoutubeUrl = (rawUrl: string): string | null => {
   }
 
   const host = parsed.hostname.toLowerCase();
+  const timestampFromQuery = parsed.searchParams.get('t') || parsed.searchParams.get('start');
+  let timestamp = timestampFromQuery && timestampFromQuery.trim() ? timestampFromQuery.trim() : null;
+
+  if (!timestamp) {
+    const hash = parsed.hash.replace(/^#/, '').trim();
+
+    if (/^\d+$/.test(hash)) {
+      timestamp = hash;
+    } else if (hash) {
+      const hashParams = new URLSearchParams(hash);
+      const timestampFromHash = hashParams.get('t') || hashParams.get('start');
+      timestamp = timestampFromHash && timestampFromHash.trim() ? timestampFromHash.trim() : null;
+    }
+  }
 
   if (host === 'youtu.be') {
     const shortId = parsed.pathname.replace(/^\//, '').trim();
-    return shortId ? `https://www.youtube.com/watch?v=${shortId}` : null;
+
+    if (!shortId) {
+      return null;
+    }
+
+    const output = new URL('https://www.youtube.com/watch');
+    output.searchParams.set('v', shortId);
+
+    if (timestamp) {
+      output.searchParams.set('t', timestamp);
+    }
+
+    return output.toString();
   }
 
   if (!['www.youtube.com', 'youtube.com', 'm.youtube.com'].includes(host)) {
@@ -286,7 +312,18 @@ const normalizeYoutubeUrl = (rawUrl: string): string | null => {
 
   if (parsed.pathname.startsWith('/shorts/')) {
     const shortId = parsed.pathname.split('/').filter(Boolean)[1];
-    return shortId ? `https://www.youtube.com/shorts/${shortId}` : null;
+
+    if (!shortId) {
+      return null;
+    }
+
+    const output = new URL(`https://www.youtube.com/shorts/${shortId}`);
+
+    if (timestamp) {
+      output.searchParams.set('t', timestamp);
+    }
+
+    return output.toString();
   }
 
   const videoId = parsed.searchParams.get('v');
@@ -297,8 +334,6 @@ const normalizeYoutubeUrl = (rawUrl: string): string | null => {
 
   const output = new URL('https://www.youtube.com/watch');
   output.searchParams.set('v', videoId);
-
-  const timestamp = parsed.searchParams.get('t');
 
   if (timestamp) {
     output.searchParams.set('t', timestamp);

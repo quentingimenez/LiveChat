@@ -1,10 +1,19 @@
 import { addMilliseconds, addSeconds } from 'date-fns';
+import { OVERLAY_SOCKET_EVENTS, type OverlayPlayPayload } from '@livechat/overlay-protocol';
 import { MediaAssetStatus, PlaybackJobStatus } from '../../services/prisma/prismaEnums';
 import { decodeRichOverlayPayload } from '../../services/messages/richOverlayPayload';
-import { OVERLAY_SOCKET_EVENTS, type OverlayPlayPayload } from '@livechat/overlay-protocol';
 
 const STALE_PLAYING_RELEASE_GRACE_MS = 10_000;
 const STALE_PLAYING_FALLBACK_LOCK_MS = 5_000;
+
+const toOptionalPositiveInt = (value: unknown): number | null => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null;
+  }
+
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : null;
+};
 
 const buildOverlayPlayPayload = (params: {
   job: {
@@ -24,10 +33,15 @@ const buildOverlayPlayPayload = (params: {
     isVertical: boolean;
   } | null;
 }): OverlayPlayPayload => {
-  const tweetCard = params.richPayload?.type === 'tweet' ? params.richPayload.tweetCard : null;
-  const tweetCaption = params.richPayload?.type === 'tweet' ? (params.richPayload.caption || '').trim() : '';
+  const richPayload = params.richPayload;
+  const isTweetRichPayload = !!richPayload && richPayload.type === 'tweet';
+  const isMediaRichPayload = !!richPayload && richPayload.type === 'media';
+  const tweetCard = isTweetRichPayload ? richPayload.tweetCard : null;
+  const tweetCaption = isTweetRichPayload ? (richPayload.caption || '').trim() : '';
+  const mediaCaption = isMediaRichPayload ? (richPayload.caption || '').trim() : '';
+  const mediaStartOffsetSec = isMediaRichPayload ? toOptionalPositiveInt(richPayload.startOffsetSec) : null;
   const hasTweetCard = !!tweetCard;
-  const textValue = hasTweetCard ? tweetCaption : params.job.text || '';
+  const textValue = hasTweetCard ? tweetCaption : isMediaRichPayload ? mediaCaption : params.job.text || '';
   const textEnabled = hasTweetCard ? tweetCaption.length > 0 : params.job.showText;
   const authorEnabled = hasTweetCard ? false : !!params.job.authorName;
 
@@ -39,6 +53,7 @@ const buildOverlayPlayPayload = (params: {
         kind: params.mediaAsset.kind.toLowerCase() as 'image' | 'audio' | 'video',
         durationSec: params.mediaAsset.durationSec,
         isVertical: params.mediaAsset.isVertical,
+        startOffsetSec: mediaStartOffsetSec,
       }
     : null;
 

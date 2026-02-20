@@ -18,11 +18,19 @@ export interface TweetCardPayload {
   }>;
 }
 
-export interface OverlayRichPayload {
+export interface TweetOverlayRichPayload {
   type: 'tweet';
   tweetCard: TweetCardPayload;
   caption?: string | null;
 }
+
+export interface MediaOverlayRichPayload {
+  type: 'media';
+  caption?: string | null;
+  startOffsetSec?: number | null;
+}
+
+export type OverlayRichPayload = TweetOverlayRichPayload | MediaOverlayRichPayload;
 
 const isNonEmptyString = (value: unknown): value is string => {
   return typeof value === 'string' && value.trim().length > 0;
@@ -36,6 +44,15 @@ const toStringOrNull = (value: unknown): string | null => {
   return value.trim();
 };
 
+const toOptionalPositiveInt = (value: unknown): number | null => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null;
+  }
+
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : null;
+};
+
 const normalizeRichPayload = (value: unknown): OverlayRichPayload | null => {
   if (!value || typeof value !== 'object') {
     return null;
@@ -44,6 +61,7 @@ const normalizeRichPayload = (value: unknown): OverlayRichPayload | null => {
   const payload = value as {
     type?: unknown;
     caption?: unknown;
+    startOffsetSec?: unknown;
     tweetCard?: {
       url?: unknown;
       html?: unknown;
@@ -56,6 +74,21 @@ const normalizeRichPayload = (value: unknown): OverlayRichPayload | null => {
       videos?: unknown;
     };
   };
+
+  if (payload.type === 'media') {
+    const caption = toStringOrNull(payload.caption);
+    const startOffsetSec = toOptionalPositiveInt(payload.startOffsetSec);
+
+    if (!caption && startOffsetSec === null) {
+      return null;
+    }
+
+    return {
+      type: 'media',
+      caption,
+      startOffsetSec,
+    };
+  }
 
   if (payload.type !== 'tweet') {
     return null;
@@ -137,6 +170,26 @@ export const encodeRichOverlayPayload = (payload: OverlayRichPayload): string =>
   const rawPayload = JSON.stringify(payload);
   const encoded = Buffer.from(rawPayload, 'utf8').toString('base64');
   return `${RICH_PAYLOAD_PREFIX}${encoded}`;
+};
+
+export const buildMediaOverlayTextPayload = (params: {
+  text?: string | null;
+  startOffsetSec?: number | null;
+}): string | null => {
+  const rawText = typeof params.text === 'string' ? params.text : null;
+  const startOffsetSec = toOptionalPositiveInt(params.startOffsetSec);
+
+  if (startOffsetSec === null) {
+    return rawText;
+  }
+
+  const caption = toStringOrNull(rawText);
+
+  return encodeRichOverlayPayload({
+    type: 'media',
+    caption,
+    startOffsetSec,
+  });
 };
 
 export const decodeRichOverlayPayload = (value?: string | null): OverlayRichPayload | null => {

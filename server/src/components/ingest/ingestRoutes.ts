@@ -7,8 +7,9 @@ import {
 } from '../../services/ingestAuth';
 import { ingestMediaFromSource } from '../../services/media/mediaIngestion';
 import { toMediaIngestionError } from '../../services/media/mediaErrors';
+import { extractMediaStartOffsetSec } from '../../services/media/mediaSourceResolver';
 import { createPlaybackJob } from '../../services/playbackJobs';
-import { encodeRichOverlayPayload } from '../../services/messages/richOverlayPayload';
+import { buildMediaOverlayTextPayload, encodeRichOverlayPayload } from '../../services/messages/richOverlayPayload';
 import { addToMemeBoard } from '../../services/memeBoard';
 import {
   normalizeTweetStatusUrl,
@@ -239,6 +240,7 @@ export const IngestRoutes = () =>
       const authorName = toNonEmptyString(request.body?.authorName);
       const authorImage = toNonEmptyString(request.body?.authorImage);
       const durationSec = toOptionalDurationSec(request.body?.durationSec);
+      const mediaStartOffsetSec = extractMediaStartOffsetSec({ url, media });
 
       if (authResult.kind === 'client' && requestedGuildId && requestedGuildId !== authResult.client.guildId) {
         return reply.code(403).send({
@@ -262,7 +264,10 @@ export const IngestRoutes = () =>
       }
 
       let mediaAsset: any = null;
-      let jobText = text;
+      let jobText = buildMediaOverlayTextPayload({
+        text,
+        startOffsetSec: mediaStartOffsetSec,
+      });
       let jobShowText = showText ?? !!text;
       let hasRichTweetCardPayload = false;
       let jobAuthorName: string | null =

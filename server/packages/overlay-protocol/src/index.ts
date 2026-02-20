@@ -30,6 +30,7 @@ export interface OverlayPlayPayload {
     kind: OverlayMediaKind;
     durationSec: number | null;
     isVertical: boolean;
+    startOffsetSec?: number | null;
   } | null;
   text: {
     value: string;

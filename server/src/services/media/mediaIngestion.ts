@@ -292,68 +292,6 @@ const isYouTubeFormatSelectionError = (rawMessage: string): boolean => {
   );
 };
 
-const parseYouTubeTimestampToSeconds = (rawValue: string): number | null => {
-  const value = rawValue.trim().toLowerCase();
-
-  if (!value) {
-    return null;
-  }
-
-  if (/^\d+$/.test(value)) {
-    const parsed = Number.parseInt(value, 10);
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
-  }
-
-  if (/^\d+s$/.test(value)) {
-    const parsed = Number.parseInt(value.slice(0, -1), 10);
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
-  }
-
-  const hmsMatch = value.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/);
-  if (hmsMatch && (hmsMatch[1] || hmsMatch[2] || hmsMatch[3])) {
-    const hours = Number.parseInt(hmsMatch[1] || '0', 10);
-    const minutes = Number.parseInt(hmsMatch[2] || '0', 10);
-    const seconds = Number.parseInt(hmsMatch[3] || '0', 10);
-    const totalSeconds = hours * 3600 + minutes * 60 + seconds;
-    return Number.isFinite(totalSeconds) && totalSeconds >= 0 ? totalSeconds : null;
-  }
-
-  const colonParts = value.split(':').map((part) => part.trim());
-  if ((colonParts.length === 2 || colonParts.length === 3) && colonParts.every((part) => /^\d+$/.test(part))) {
-    const numericParts = colonParts.map((part) => Number.parseInt(part, 10));
-    const [hours, minutes, seconds] = numericParts.length === 3 ? numericParts : [0, numericParts[0], numericParts[1]];
-    const totalSeconds = hours * 3600 + minutes * 60 + seconds;
-    return Number.isFinite(totalSeconds) && totalSeconds >= 0 ? totalSeconds : null;
-  }
-
-  return null;
-};
-
-const getYouTubeStartOffsetSeconds = (sourceUrl: string): number | null => {
-  if (!isYouTubeUrl(sourceUrl)) {
-    return null;
-  }
-
-  try {
-    const parsed = new URL(sourceUrl);
-    const rawOffset = parsed.searchParams.get('t') || parsed.searchParams.get('start');
-
-    if (!rawOffset) {
-      return null;
-    }
-
-    const parsedOffset = parseYouTubeTimestampToSeconds(rawOffset);
-
-    if (parsedOffset === null || parsedOffset <= 0) {
-      return null;
-    }
-
-    return parsedOffset;
-  } catch {
-    return null;
-  }
-};
-
 const downloadHttpResponseToTempFile = async (params: {
   response: Awaited<ReturnType<typeof fetch>>;
   tmpDir: string;
@@ -1358,11 +1296,6 @@ const runYtDlpDownload = async (params: {
 
   if (formatSelector.length > 0) {
     args.push('--format', formatSelector);
-  }
-
-  const youtubeStartOffsetSeconds = getYouTubeStartOffsetSeconds(params.sourceUrl);
-  if (youtubeStartOffsetSeconds !== null) {
-    args.push('--download-sections', `*${youtubeStartOffsetSeconds}-`);
   }
 
   if (Array.isArray(params.extraArgs) && params.extraArgs.length > 0) {

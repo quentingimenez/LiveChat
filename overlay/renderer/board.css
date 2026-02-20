@@ -59,6 +59,8 @@ body {
   display: flex;
   gap: 8px;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 .search-form {
@@ -341,13 +343,28 @@ button:disabled {
   color: var(--muted);
 }
 
-.dialog-card input {
+.dialog-card input[type='text'],
+.dialog-card input[type='url'],
+.dialog-card input[type='search'] {
   width: 100%;
   border-radius: 9px;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.06);
   color: var(--text);
   padding: 10px 12px;
+}
+
+.dialog-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.dialog-checkbox input[type='checkbox'] {
+  margin: 0;
+  accent-color: var(--accent);
 }
 
 .dialog-card.dialog-danger {

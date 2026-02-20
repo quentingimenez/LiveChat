@@ -7,7 +7,14 @@
   const searchForm = document.getElementById('search-form');
   const searchInput = document.getElementById('search-input');
   const refreshButton = document.getElementById('refresh-button');
+  const addLinkButton = document.getElementById('add-link-button');
   const captureOverlay = document.getElementById('capture-overlay');
+  const addOverlay = document.getElementById('add-overlay');
+  const addForm = document.getElementById('add-form');
+  const addUrlInput = document.getElementById('add-url-input');
+  const addTitleInput = document.getElementById('add-title-input');
+  const addRefreshInput = document.getElementById('add-refresh-input');
+  const addCancelButton = document.getElementById('add-cancel');
   const renameOverlay = document.getElementById('rename-overlay');
   const renameForm = document.getElementById('rename-form');
   const renameInput = document.getElementById('rename-input');
@@ -24,6 +31,7 @@
     total: 0,
     selectedId: null,
     captureItemId: null,
+    resolveAddDialog: null,
     resolveRenameDialog: null,
     resolveDeleteDialog: null,
     search: '',
@@ -104,6 +112,87 @@
 
   const findSelectedItem = () => {
     return state.items.find((item) => item.id === state.selectedId) || null;
+  };
+
+  const isHttpUrl = (value) => {
+    const raw = `${value || ''}`.trim();
+
+    if (!raw) {
+      return false;
+    }
+
+    try {
+      const parsed = new URL(raw);
+      return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+    } catch {
+      return false;
+    }
+  };
+
+  const isAddDialogReady = () => {
+    return (
+      addLinkButton instanceof HTMLElement &&
+      addOverlay instanceof HTMLElement &&
+      addForm instanceof HTMLFormElement &&
+      addUrlInput instanceof HTMLInputElement &&
+      addTitleInput instanceof HTMLInputElement &&
+      addRefreshInput instanceof HTMLInputElement &&
+      addCancelButton instanceof HTMLElement
+    );
+  };
+
+  const hideAddDialog = () => {
+    if (addOverlay instanceof HTMLElement) {
+      addOverlay.classList.add('hidden');
+    }
+  };
+
+  const closeAddDialog = (value) => {
+    hideAddDialog();
+
+    if (typeof state.resolveAddDialog !== 'function') {
+      return;
+    }
+
+    const resolver = state.resolveAddDialog;
+    state.resolveAddDialog = null;
+    resolver(value);
+  };
+
+  const openAddDialog = () => {
+    if (!isAddDialogReady()) {
+      const fallbackUrl = window.prompt('Lien du meme:');
+
+      if (fallbackUrl === null) {
+        return Promise.resolve(null);
+      }
+
+      const normalizedFallbackUrl = fallbackUrl.trim();
+
+      if (!isHttpUrl(normalizedFallbackUrl)) {
+        setStatus('Lien invalide. Utilise une URL complete en http(s).', 'error');
+        return Promise.resolve(null);
+      }
+
+      const fallbackTitle = window.prompt('Nom du meme (optionnel):', '') || '';
+
+      return Promise.resolve({
+        url: normalizedFallbackUrl,
+        title: fallbackTitle.trim(),
+        forceRefresh: false,
+      });
+    }
+
+    closeAddDialog(null);
+    addUrlInput.value = '';
+    addTitleInput.value = '';
+    addRefreshInput.checked = false;
+    addOverlay.classList.remove('hidden');
+    addUrlInput.focus();
+
+    return new Promise((resolve) => {
+      state.resolveAddDialog = resolve;
+    });
   };
 
   const isDeleteDialogReady = () => {
@@ -436,6 +525,41 @@
     }
   };
 
+  const addItemFromLink = async (payload) => {
+    try {
+      setStatus('Ajout du meme en cours...', 'success');
+
+      const endpoint = buildAuthedUrl('/overlay/meme-board/items');
+      const response = await fetch(endpoint.toString(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          url: payload.url,
+          title: payload.title,
+          forceRefresh: payload.forceRefresh,
+        }),
+      });
+
+      const body = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        const reason = body?.message || body?.error || `HTTP_${response.status}`;
+        throw new Error(reason);
+      }
+
+      if (body?.item?.id) {
+        state.selectedId = body.item.id;
+      }
+
+      await loadItemsAndRender();
+      setStatus(body?.created === false ? 'Meme deja present dans la board.' : 'Meme ajoute dans la board.', 'success');
+    } catch (error) {
+      setStatus(`Ajout impossible: ${error?.message || error}`, 'error');
+    }
+  };
+
   const persistBindings = async (nextBindings) => {
     const result = await window.livechatOverlay.setMemeBindings({
       bindings: nextBindings,
@@ -561,7 +685,68 @@
     captureOverlay.classList.add('hidden');
   };
 
-  const normalizeKey = (eventKey) => {
+  const normalizeKeyFromCode = (eventCode) => {
+    const code = `${eventCode || ''}`;
+
+    if (!code) {
+      return null;
+    }
+
+    if (/^Key[A-Z]$/.test(code)) {
+      return code.slice(3);
+    }
+
+    if (/^Digit[0-9]$/.test(code)) {
+      return code.slice(5);
+    }
+
+    if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) {
+      return code;
+    }
+
+    if (/^Numpad[0-9]$/.test(code)) {
+      return `num${code.slice(6)}`;
+    }
+
+    const map = {
+      Space: 'Space',
+      Enter: 'Enter',
+      Tab: 'Tab',
+      Escape: 'Escape',
+      Backspace: 'Backspace',
+      Delete: 'Delete',
+      Insert: 'Insert',
+      Home: 'Home',
+      End: 'End',
+      PageUp: 'PageUp',
+      PageDown: 'PageDown',
+      ArrowUp: 'Up',
+      ArrowDown: 'Down',
+      ArrowLeft: 'Left',
+      ArrowRight: 'Right',
+      Minus: '-',
+      Equal: '=',
+      Comma: ',',
+      Period: '.',
+      Slash: '/',
+      Semicolon: ';',
+      Quote: "'",
+      BracketLeft: '[',
+      BracketRight: ']',
+      Backslash: '\\',
+      Backquote: '`',
+    };
+
+    return map[code] || null;
+  };
+
+  const normalizeKey = (eventKey, eventCode) => {
+    const codeCandidate = normalizeKeyFromCode(eventCode);
+
+    if (codeCandidate) {
+      return codeCandidate;
+    }
+
     const key = `${eventKey || ''}`;
 
     if (!key) {
@@ -613,7 +798,7 @@
   };
 
   const keyEventToAccelerator = (event) => {
-    const key = normalizeKey(event.key);
+    const key = normalizeKey(event.key, event.code);
 
     if (!key) {
       return null;
@@ -645,6 +830,15 @@
   };
 
   window.addEventListener('keydown', (event) => {
+    if (state.resolveAddDialog) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeAddDialog(null);
+      }
+
+      return;
+    }
+
     if (state.resolveRenameDialog) {
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -709,6 +903,52 @@
     })();
   });
 
+  if (isAddDialogReady()) {
+    addForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+
+      const url = `${addUrlInput.value || ''}`.trim();
+      const title = `${addTitleInput.value || ''}`.trim();
+      const forceRefresh = !!addRefreshInput.checked;
+
+      if (!isHttpUrl(url)) {
+        setStatus('Lien invalide. Utilise une URL complete en http(s).', 'error');
+        addUrlInput.focus();
+        return;
+      }
+
+      closeAddDialog({
+        url,
+        title,
+        forceRefresh,
+      });
+    });
+
+    addCancelButton.addEventListener('click', () => {
+      closeAddDialog(null);
+    });
+
+    addOverlay.addEventListener('click', (event) => {
+      if (event.target === addOverlay) {
+        closeAddDialog(null);
+      }
+    });
+  }
+
+  if (addLinkButton instanceof HTMLElement) {
+    addLinkButton.addEventListener('click', () => {
+      void (async () => {
+        const payload = await openAddDialog();
+
+        if (!payload) {
+          return;
+        }
+
+        await addItemFromLink(payload);
+      })();
+    });
+  }
+
   if (isRenameDialogReady()) {
     renameForm.addEventListener('submit', (event) => {
       event.preventDefault();
@@ -760,6 +1000,9 @@
       setStatus('Overlay non appaire. Ouvre la fenetre d appairage puis reconnecte.', 'error');
       refreshButton.disabled = true;
       searchInput.disabled = true;
+      if (addLinkButton instanceof HTMLButtonElement) {
+        addLinkButton.disabled = true;
+      }
       return;
     }
 

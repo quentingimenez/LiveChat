@@ -15,6 +15,32 @@ const toOptionalPositiveInt = (value: unknown): number | null => {
   return normalized > 0 ? normalized : null;
 };
 
+const getMediaStartOffsetSec = (richPayload: ReturnType<typeof decodeRichOverlayPayload>): number | null => {
+  if (!richPayload || richPayload.type !== 'media') {
+    return null;
+  }
+
+  return toOptionalPositiveInt(richPayload.startOffsetSec);
+};
+
+const getEffectivePlaybackDurationSec = (params: {
+  durationSec: number;
+  mediaAsset: {
+    kind: string;
+  } | null;
+  startOffsetSec: number | null;
+}): number => {
+  if (params.startOffsetSec === null || !params.mediaAsset) {
+    return params.durationSec;
+  }
+
+  if (params.mediaAsset.kind === 'IMAGE') {
+    return params.durationSec;
+  }
+
+  return Math.max(1, params.durationSec - params.startOffsetSec);
+};
+
 const buildOverlayPlayPayload = (params: {
   job: {
     id: string;
@@ -305,7 +331,15 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
     return 100;
   }
 
-  let busyUntil = addSeconds(new Date(), nextJob.durationSec);
+  const richPayload = decodeRichOverlayPayload(nextJob.text);
+  const mediaStartOffsetSec = getMediaStartOffsetSec(richPayload);
+  const effectiveDurationSec = getEffectivePlaybackDurationSec({
+    durationSec: nextJob.durationSec,
+    mediaAsset,
+    startOffsetSec: mediaStartOffsetSec,
+  });
+
+  let busyUntil = addSeconds(new Date(), effectiveDurationSec);
   busyUntil = addMilliseconds(busyUntil, 250);
 
   await prisma.guild.upsert({
@@ -331,7 +365,6 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
     },
   });
 
-  const richPayload = decodeRichOverlayPayload(nextJob.text);
   const payload = buildOverlayPlayPayload({
     job: {
       id: nextJob.id,
@@ -339,14 +372,14 @@ export const executeMessagesWorker = async (fastify: FastifyCustomInstance) => {
       showText: nextJob.showText,
       authorName: nextJob.authorName,
       authorImage: nextJob.authorImage,
-      durationSec: nextJob.durationSec,
+      durationSec: effectiveDurationSec,
     },
     richPayload,
     mediaAsset,
   });
   const queueDelayMs = Math.max(0, Date.now() - nextJob.submissionDate.getTime());
   logger.info(
-    `[SOCKET] Dispatching job ${nextJob.id} to guild ${nextJob.guildId} (clients: ${roomSize}, durationSec: ${nextJob.durationSec}, queueDelayMs: ${queueDelayMs}, mediaKind: ${
+    `[SOCKET] Dispatching job ${nextJob.id} to guild ${nextJob.guildId} (clients: ${roomSize}, durationSec: ${effectiveDurationSec}, rawDurationSec: ${nextJob.durationSec}, queueDelayMs: ${queueDelayMs}, mediaKind: ${
       mediaAsset?.kind || 'none'
     }, mediaDurationSec: ${mediaAsset?.durationSec ?? 'n/a'}, mediaStartOffsetSec: ${payload.media?.startOffsetSec ?? 'n/a'})`,
   );

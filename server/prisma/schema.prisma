@@ -86,6 +86,9 @@ model OverlayClient {
   guildId    String
   label      String
   tokenHash  String   @unique
+  defaultAuthorName     String?
+  defaultAuthorImage    String?
+  createdByDiscordUserId String?
   lastSeenAt DateTime?
   createdAt  DateTime @default(now())
   revokedAt  DateTime?

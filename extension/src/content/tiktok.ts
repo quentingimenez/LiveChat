@@ -3,6 +3,8 @@ const INLINE_BUTTON_ID = 'lce-tiktok-inline-button';
 const INLINE_SLOT_ID = 'lce-tiktok-inline-slot';
 const DEFAULT_BUTTON_TITLE = 'Envoyer ce TikTok vers LiveChat';
 const GET_ACTIVE_MEDIA_URL_TYPE = 'lce/get-active-media-url';
+const TIKTOK_GET_CAPTURED_URL_TYPE = 'lce/tiktok-get-captured-url';
+const TIKTOK_SYNC_ACTIVE_ITEM_TYPE = 'lce/tiktok-sync-active-item';
 const ACTION_ANCHOR_SELECTORS = [
   '[data-e2e="browse-share-icon"]',
   '[data-e2e="share-icon"]',
@@ -14,6 +16,14 @@ const ACTION_ANCHOR_SELECTORS = [
   '[data-e2e="like-icon"]',
   '[data-e2e*="like-icon"]',
 ] as const;
+
+interface TikTokActiveTarget {
+  itemId: string | null;
+  url: string | null;
+}
+
+let latestActionContainer: HTMLElement | null = null;
+let lastSyncedActiveTargetKey: string | null = null;
 
 type ButtonState = 'idle' | 'loading' | 'success' | 'error';
 
@@ -210,6 +220,35 @@ const registerToastListener = (): void => {
   }
 };
 
+const isTikTokHostname = (hostname: string): boolean => {
+  const normalizedHost = hostname.toLowerCase();
+  return normalizedHost === 'tiktok.com' || normalizedHost.endsWith('.tiktok.com');
+};
+
+const extractTikTokItemIdFromText = (value: string | null | undefined): string | null => {
+  if (!value) {
+    return null;
+  }
+
+  const match = value.match(/\b(\d{15,22})\b/);
+  return match?.[1] || null;
+};
+
+const extractTikTokItemIdFromUrl = (rawUrl: string, base?: string): string | null => {
+  try {
+    const parsed = new URL(rawUrl, base);
+    const mediaMatch = parsed.pathname.match(/^\/(?:@[^/]+\/)?(?:video|photo)\/(\d{15,22})(?:\/|$)/i);
+
+    if (mediaMatch) {
+      return mediaMatch[1];
+    }
+
+    return extractTikTokItemIdFromText(parsed.searchParams.get('item_id'));
+  } catch {
+    return extractTikTokItemIdFromText(rawUrl);
+  }
+};
+
 const normalizeTikTokMediaUrl = (rawUrl: string, base?: string): string | null => {
   let parsed: URL;
 
@@ -219,11 +258,11 @@ const normalizeTikTokMediaUrl = (rawUrl: string, base?: string): string | null =
     return null;
   }
 
-  if (!parsed.hostname.toLowerCase().includes('tiktok.com')) {
+  if (!isTikTokHostname(parsed.hostname)) {
     return null;
   }
 
-  const namedMediaMatch = parsed.pathname.match(/^\/@([^/]+)\/(video|photo)\/(\d+)/i);
+  const namedMediaMatch = parsed.pathname.match(/^\/@([^/]+)\/(video|photo)\/(\d{15,22})(?:\/|$)/i);
 
   if (namedMediaMatch) {
     const handle = namedMediaMatch[1];
@@ -232,7 +271,7 @@ const normalizeTikTokMediaUrl = (rawUrl: string, base?: string): string | null =
     return `https://www.tiktok.com/@${handle}/${mediaType}/${mediaId}`;
   }
 
-  const genericMediaMatch = parsed.pathname.match(/\/(video|photo)\/(\d+)/i);
+  const genericMediaMatch = parsed.pathname.match(/^\/(video|photo)\/(\d{15,22})(?:\/|$)/i);
 
   if (genericMediaMatch) {
     const mediaType = genericMediaMatch[1].toLowerCase();
@@ -243,8 +282,362 @@ const normalizeTikTokMediaUrl = (rawUrl: string, base?: string): string | null =
   return null;
 };
 
-const getCurrentTikTokMediaUrl = (): string | null => {
-  return normalizeTikTokMediaUrl(window.location.href, window.location.href);
+const toTikTokActiveTargetFromUrl = (rawUrl: string | null | undefined): TikTokActiveTarget => {
+  if (!rawUrl) {
+    return {
+      itemId: null,
+      url: null,
+    };
+  }
+
+  const normalizedUrl = normalizeTikTokMediaUrl(rawUrl, window.location.href);
+  const itemId = extractTikTokItemIdFromUrl(normalizedUrl || rawUrl, window.location.href);
+
+  return {
+    itemId,
+    url: normalizedUrl,
+  };
+};
+
+const buildGenericTikTokVideoUrl = (itemId: string): string => `https://www.tiktok.com/video/${itemId}`;
+
+const findNormalizedTikTokUrlInAnchors = (root: ParentNode, onlyVisible: boolean): string | null => {
+  const anchors = Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href]')).slice(0, 200);
+
+  for (const anchor of anchors) {
+    if (onlyVisible && !isElementVisible(anchor)) {
+      continue;
+    }
+
+    const href = anchor.getAttribute('href') || anchor.href;
+    const normalized = normalizeTikTokMediaUrl(href, window.location.href);
+
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+};
+
+const extractTikTokItemIdFromElement = (element: Element): string | null => {
+  const prioritizedAttributes = [
+    'data-item-id',
+    'data-video-id',
+    'data-aweme-id',
+    'aweme-id',
+    'data-e2e',
+    'href',
+    'src',
+    'poster',
+    'id',
+  ] as const;
+
+  for (const attributeName of prioritizedAttributes) {
+    const attributeValue = element.getAttribute(attributeName);
+
+    if (!attributeValue) {
+      continue;
+    }
+
+    const fromUrl = extractTikTokItemIdFromUrl(attributeValue, window.location.href);
+
+    if (fromUrl) {
+      return fromUrl;
+    }
+
+    const fromText = extractTikTokItemIdFromText(attributeValue);
+
+    if (fromText) {
+      return fromText;
+    }
+  }
+
+  if (element instanceof HTMLAnchorElement) {
+    const fromHref = extractTikTokItemIdFromUrl(element.getAttribute('href') || element.href, window.location.href);
+
+    if (fromHref) {
+      return fromHref;
+    }
+  }
+
+  if (element instanceof HTMLVideoElement) {
+    const fromVideoSources =
+      extractTikTokItemIdFromUrl(element.currentSrc || '', window.location.href) ||
+      extractTikTokItemIdFromUrl(element.src || '', window.location.href) ||
+      extractTikTokItemIdFromUrl(element.poster || '', window.location.href);
+
+    if (fromVideoSources) {
+      return fromVideoSources;
+    }
+  }
+
+  return null;
+};
+
+const findTikTokItemIdInRoot = (root: ParentNode, deepSearch = true): string | null => {
+  if (root instanceof Element) {
+    const fromRoot = extractTikTokItemIdFromElement(root);
+
+    if (fromRoot) {
+      return fromRoot;
+    }
+  }
+
+  if (!deepSearch) {
+    return null;
+  }
+
+  const candidates = Array.from(
+    root.querySelectorAll<HTMLElement>(
+      '[data-item-id], [data-video-id], [data-aweme-id], [aweme-id], a[href*="/video/"], a[href*="/photo/"], video[src], video[poster]',
+    ),
+  ).slice(0, 220);
+
+  for (const candidate of candidates) {
+    const fromCandidate = extractTikTokItemIdFromElement(candidate);
+
+    if (fromCandidate) {
+      return fromCandidate;
+    }
+  }
+
+  return null;
+};
+
+const resolveTikTokTargetAroundElement = (startElement: HTMLElement | null, maxDepth = 8): TikTokActiveTarget => {
+  if (!startElement) {
+    return {
+      itemId: null,
+      url: null,
+    };
+  }
+
+  let node: HTMLElement | null = startElement;
+  let depth = 0;
+
+  while (node && node !== document.body && depth < maxDepth) {
+    const nodeRect = node.getBoundingClientRect();
+    const viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
+    const nodeArea = Math.max(0, nodeRect.width) * Math.max(0, nodeRect.height);
+    const allowDeepSearch = nodeArea <= viewportArea * 0.72;
+
+    const itemId = findTikTokItemIdInRoot(node, allowDeepSearch);
+
+    if (itemId) {
+      return {
+        itemId,
+        url: buildGenericTikTokVideoUrl(itemId),
+      };
+    }
+
+    if (allowDeepSearch) {
+      const fromVisibleAnchors = findNormalizedTikTokUrlInAnchors(node, true);
+
+      if (fromVisibleAnchors) {
+        return toTikTokActiveTargetFromUrl(fromVisibleAnchors);
+      }
+
+      const fromAnchors = findNormalizedTikTokUrlInAnchors(node, false);
+
+      if (fromAnchors) {
+        return toTikTokActiveTargetFromUrl(fromAnchors);
+      }
+    }
+
+    node = node.parentElement;
+    depth += 1;
+  }
+
+  return {
+    itemId: null,
+    url: null,
+  };
+};
+
+const resolveMostVisibleVideoElement = (): HTMLVideoElement | null => {
+  const visibleVideos = Array.from(document.querySelectorAll<HTMLVideoElement>('video')).filter((video) =>
+    isElementVisible(video),
+  );
+
+  if (visibleVideos.length === 0) {
+    return null;
+  }
+
+  let bestVideo: HTMLVideoElement | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (const video of visibleVideos) {
+    const rect = video.getBoundingClientRect();
+    const visibleWidth = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+    const visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+    const visibleArea = visibleWidth * visibleHeight;
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const distanceFromViewportCenter = Math.abs(centerX - window.innerWidth / 2) + Math.abs(centerY - window.innerHeight / 2);
+    const playbackBonus = video.paused ? 0 : 5_000_000;
+    const readyBonus = video.readyState >= 2 ? 100_000 : 0;
+    const score = visibleArea - distanceFromViewportCenter * 16 + playbackBonus + readyBonus;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestVideo = video;
+    }
+  }
+
+  return bestVideo;
+};
+
+const resolveActiveVideoTarget = (): TikTokActiveTarget => {
+  const visibleVideo = resolveMostVisibleVideoElement();
+
+  if (!visibleVideo) {
+    return {
+      itemId: null,
+      url: null,
+    };
+  }
+
+  const directItemId =
+    extractTikTokItemIdFromUrl(visibleVideo.currentSrc || '', window.location.href) ||
+    extractTikTokItemIdFromUrl(visibleVideo.src || '', window.location.href) ||
+    extractTikTokItemIdFromUrl(visibleVideo.poster || '', window.location.href) ||
+    findTikTokItemIdInRoot(visibleVideo);
+
+  if (directItemId) {
+    return {
+      itemId: directItemId,
+      url: buildGenericTikTokVideoUrl(directItemId),
+    };
+  }
+
+  return resolveTikTokTargetAroundElement(visibleVideo, 4);
+};
+
+const resolveDomTikTokTarget = (preferredContainer: HTMLElement | null, deepSearch: boolean): TikTokActiveTarget => {
+  const fromLocation = toTikTokActiveTargetFromUrl(window.location.href);
+
+  if (fromLocation.url) {
+    return fromLocation;
+  }
+
+  const fromActiveVideo = resolveActiveVideoTarget();
+
+  if (fromActiveVideo.url) {
+    return fromActiveVideo;
+  }
+
+  if (preferredContainer && document.contains(preferredContainer)) {
+    const fromContainer = resolveTikTokTargetAroundElement(preferredContainer, 8);
+
+    if (fromContainer.url) {
+      return fromContainer;
+    }
+  }
+
+  if (deepSearch) {
+    const fromVisibleAnchors = findNormalizedTikTokUrlInAnchors(document, true);
+
+    if (fromVisibleAnchors) {
+      return toTikTokActiveTargetFromUrl(fromVisibleAnchors);
+    }
+
+    const fromAnchors = findNormalizedTikTokUrlInAnchors(document, false);
+
+    if (fromAnchors) {
+      return toTikTokActiveTargetFromUrl(fromAnchors);
+    }
+  }
+
+  return {
+    itemId: null,
+    url: null,
+  };
+};
+
+const syncActiveTikTokTarget = (target: TikTokActiveTarget): void => {
+  const runtime = readRuntime();
+
+  if (!runtime || typeof runtime.sendMessage !== 'function') {
+    return;
+  }
+
+  const normalizedUrl = normalizeTikTokMediaUrl(target.url || '', window.location.href);
+  const key = `${target.itemId || ''}|${normalizedUrl || ''}`;
+
+  if (key === lastSyncedActiveTargetKey) {
+    return;
+  }
+
+  lastSyncedActiveTargetKey = key;
+
+  void runtime
+    .sendMessage({
+      type: TIKTOK_SYNC_ACTIVE_ITEM_TYPE,
+      itemId: target.itemId || null,
+      url: normalizedUrl,
+    })
+    .catch(() => {
+      // Ignore runtime invalidation while extension reloads.
+    });
+};
+
+const getPreferredActionContainer = (): HTMLElement | null => {
+  if (latestActionContainer && document.contains(latestActionContainer)) {
+    return latestActionContainer;
+  }
+
+  return resolveActionContainer();
+};
+
+const requestCapturedTikTokUrl = async (domUrlCandidate: string | null): Promise<string | null> => {
+  const runtime = readRuntime();
+
+  if (!runtime || typeof runtime.sendMessage !== 'function') {
+    return null;
+  }
+
+  try {
+    const response = (await runtime.sendMessage({
+      type: TIKTOK_GET_CAPTURED_URL_TYPE,
+      domUrl: domUrlCandidate,
+    })) as { ok?: unknown; url?: unknown };
+
+    if (!response || response.ok !== true || typeof response.url !== 'string') {
+      return null;
+    }
+
+    return normalizeTikTokMediaUrl(response.url, window.location.href);
+  } catch {
+    return null;
+  }
+};
+
+const resolveCurrentTikTokMediaUrl = async (): Promise<string | null> => {
+  const preferredContainer = getPreferredActionContainer();
+  const domTarget = resolveDomTikTokTarget(preferredContainer, false);
+
+  if (domTarget.url) {
+    syncActiveTikTokTarget(domTarget);
+    return domTarget.url;
+  }
+
+  const capturedUrl = await requestCapturedTikTokUrl(domTarget.url || null);
+
+  if (capturedUrl) {
+    const capturedTarget = toTikTokActiveTargetFromUrl(capturedUrl);
+    syncActiveTikTokTarget(capturedTarget);
+    return capturedUrl;
+  }
+
+  const deepDomTarget = resolveDomTikTokTarget(preferredContainer, true);
+
+  if (deepDomTarget.url) {
+    syncActiveTikTokTarget(deepDomTarget);
+    return deepDomTarget.url;
+  }
+
+  return null;
 };
 
 const readRuntime = (): typeof chrome.runtime | null => {
@@ -353,10 +746,10 @@ const createActionButton = (): HTMLButtonElement => {
       setButtonState(button, 'loading', 'Envoi en cours...');
 
       try {
-        const targetUrl = getCurrentTikTokMediaUrl();
+        const targetUrl = await resolveCurrentTikTokMediaUrl();
 
         if (!targetUrl) {
-          const message = 'Ouvre une URL TikTok vidéo/photo pour envoyer.';
+          const message = 'Impossible de détecter la vidéo TikTok active. Fais défiler puis réessaie.';
           setButtonState(button, 'error', message);
           showToast('error', message);
           resetButtonStateLater(button);
@@ -501,15 +894,11 @@ const upsertInlineButton = (container: HTMLElement): void => {
 
 const scanTikTokPage = (): void => {
   removeLegacyFloatingButton();
-
-  const mediaUrl = getCurrentTikTokMediaUrl();
-
-  if (!mediaUrl) {
-    removeInlineButton();
-    return;
-  }
-
   const actionContainer = resolveActionContainer();
+  latestActionContainer = actionContainer;
+
+  const domTarget = resolveDomTikTokTarget(actionContainer, false);
+  syncActiveTikTokTarget(domTarget);
 
   if (!actionContainer) {
     removeInlineButton();
@@ -542,10 +931,23 @@ const registerActiveMediaUrlListener = (): void => {
           return;
         }
 
-        sendResponse({
-          ok: true,
-          url: getCurrentTikTokMediaUrl(),
-        });
+        void (async () => {
+          try {
+            const url = await resolveCurrentTikTokMediaUrl();
+
+            sendResponse({
+              ok: true,
+              url,
+            });
+          } catch {
+            sendResponse({
+              ok: false,
+              url: null,
+            });
+          }
+        })();
+
+        return true;
       },
     );
   } catch {

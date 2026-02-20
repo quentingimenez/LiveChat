@@ -23,7 +23,7 @@ export const enLang = {
   overlayCodeCommandDescription: 'Generate a one-time pairing code for Overlay EXE or LiveChat Extension',
   overlayCodeCommandAnswerTitle: 'Overlay pairing code',
   overlayCodeCommandAnswerDescription:
-    'Pairing code:\n```{{code}}```\nAPI_URL:\n```{{apiUrl}}```\nExpires in {{expiresIn}} minute(s).',
+    'API_URL:\n```{{apiUrl}}```\nPairing code:\n```{{code}}```\nExpires in {{expiresIn}} minute(s).',
 
   memeAddCommand: 'meme-add',
   memeAddCommandDescription: 'Add media to the persistent meme board',

@@ -23,15 +23,16 @@ export const talkCommand = () => ({
   handler: async (interaction: CommandInteraction) => {
     const text = interaction.options.get(rosetty.t('talkCommandOptionText')!)?.value as string | null;
     const voice = interaction.options.get(rosetty.t('talkCommandOptionVoice')!)?.value as string;
+    const lang = rosetty.getCurrentLang() || 'en';
 
     let filePath: string | null = null;
     await interaction.deferReply();
 
     try {
-      filePath = await promisedGtts(voice, rosetty.getCurrentLang());
-      const sourceHash = crypto.createHash('sha1').update(`${rosetty.getCurrentLang()}:${voice}`).digest('hex');
+      filePath = await promisedGtts(voice, lang);
+      const sourceHash = crypto.createHash('sha1').update(`${lang}:${voice}`).digest('hex');
 
-      const mediaAsset = await ingestMediaFromLocalFile(filePath, `gtts:${rosetty.getCurrentLang()}:${sourceHash}`);
+      const mediaAsset = await ingestMediaFromLocalFile(filePath, `gtts:${lang}:${sourceHash}`);
 
       await createPlaybackJob({
         guildId: interaction.guildId!,

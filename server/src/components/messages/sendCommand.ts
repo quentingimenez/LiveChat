@@ -2,7 +2,7 @@ import { CommandInteraction, EmbedBuilder, SlashCommandBuilder } from 'discord.j
 import { ingestMediaFromSource } from '../../services/media/mediaIngestion';
 import { getLocalizedMediaErrorMessage, toMediaIngestionError } from '../../services/media/mediaErrors';
 import { createPlaybackJob } from '../../services/playbackJobs';
-import { encodeRichOverlayPayload } from '../../services/messages/richOverlayPayload';
+import { encodeRichOverlayPayload, type TweetCardPayload } from '../../services/messages/richOverlayPayload';
 import {
   normalizeTweetStatusUrl,
   resolveTweetCardFromUrl,
@@ -81,7 +81,7 @@ export const sendCommand = () => ({
       const tweetInput = url || text;
       const normalizedTweetInput = !media && tweetInput ? normalizeTweetStatusUrl(tweetInput) : null;
       let tweetVideoMedias: Awaited<ReturnType<typeof resolveTweetVideoMediasFromUrl>> = [];
-      let tweetCard = null;
+      let tweetCard: TweetCardPayload | null = null;
       const tweetResolveStartedAt = Date.now();
 
       if (normalizedTweetInput) {
@@ -145,7 +145,7 @@ export const sendCommand = () => ({
             (video) => !!video.sourceStatusId && video.sourceStatusId !== currentTweetStatusId,
           );
         const shouldHideCardMedia = !media && !!currentTweetStatusId && hasCurrentTweetVideo && hasOtherTweetVideo;
-        let tweetCardForOverlay = tweetCard;
+        let tweetCardForOverlay: TweetCardPayload = tweetCard;
 
         if (shouldHideCardMedia) {
           try {

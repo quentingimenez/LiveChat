@@ -1,7 +1,19 @@
 const STYLE_ID = 'lce-tiktok-style';
-const FLOATING_BUTTON_ID = 'lce-tiktok-floating-button';
+const INLINE_BUTTON_ID = 'lce-tiktok-inline-button';
+const INLINE_SLOT_ID = 'lce-tiktok-inline-slot';
 const DEFAULT_BUTTON_TITLE = 'Envoyer ce TikTok vers LiveChat';
 const GET_ACTIVE_MEDIA_URL_TYPE = 'lce/get-active-media-url';
+const ACTION_ANCHOR_SELECTORS = [
+  '[data-e2e="browse-share-icon"]',
+  '[data-e2e="share-icon"]',
+  '[data-e2e*="share-icon"]',
+  '[data-e2e="browse-comment-icon"]',
+  '[data-e2e="comment-icon"]',
+  '[data-e2e*="comment-icon"]',
+  '[data-e2e="browse-like-icon"]',
+  '[data-e2e="like-icon"]',
+  '[data-e2e*="like-icon"]',
+] as const;
 
 type ButtonState = 'idle' | 'loading' | 'success' | 'error';
 
@@ -16,11 +28,8 @@ const buttonResetTimers = new WeakMap<HTMLButtonElement, number>();
 
 const inpageStyles = `
 .lce-button-tiktok {
-  position: fixed;
-  right: 22px;
-  bottom: 24px;
-  width: 56px;
-  height: 56px;
+  width: 48px;
+  height: 48px;
   border: 2px solid rgba(255, 255, 255, 0.18);
   border-radius: 999px;
   background: rgba(22, 24, 35, 0.92);
@@ -30,7 +39,6 @@ const inpageStyles = `
   font-weight: 700;
   letter-spacing: 0.02em;
   cursor: pointer;
-  z-index: 2147483646;
   pointer-events: auto;
   transition: transform 120ms ease, background-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
 }
@@ -51,6 +59,24 @@ const inpageStyles = `
 .lce-button-tiktok.is-error {
   background: #fe2c55;
   color: #fff;
+}
+.lce-tiktok-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  margin-top: 10px;
+  pointer-events: auto;
+}
+.lce-tiktok-slot-label {
+  color: rgba(255, 255, 255, 0.9);
+  font-family: "TikTokDisplayFont", "ProximaNova", "Segoe UI", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  text-align: center;
+  user-select: none;
 }
 `;
 
@@ -186,7 +212,7 @@ const resetButtonStateLater = (button: HTMLButtonElement, delayMs = 2200): void 
   buttonResetTimers.set(button, timer);
 };
 
-const createFloatingButton = (): HTMLButtonElement => {
+const createActionButton = (): HTMLButtonElement => {
   ensureStyles();
 
   const button = document.createElement('button');
@@ -230,35 +256,143 @@ const createFloatingButton = (): HTMLButtonElement => {
   return button;
 };
 
-const removeFloatingButton = (): void => {
-  const floatingButton = document.getElementById(FLOATING_BUTTON_ID);
+const removeLegacyFloatingButton = (): void => {
+  const floatingButton = document.getElementById('lce-tiktok-floating-button');
 
   if (floatingButton) {
     floatingButton.remove();
   }
 };
 
-const upsertFloatingButton = (): void => {
-  let floatingButton = document.getElementById(FLOATING_BUTTON_ID) as HTMLButtonElement | null;
+const removeInlineButton = (): void => {
+  const slot = document.getElementById(INLINE_SLOT_ID);
 
-  if (!floatingButton) {
-    floatingButton = createFloatingButton();
-    floatingButton.id = FLOATING_BUTTON_ID;
-    document.body.appendChild(floatingButton);
+  if (slot) {
+    slot.remove();
+  }
+};
+
+const isElementVisible = (element: HTMLElement): boolean => {
+  const rect = element.getBoundingClientRect();
+  return rect.width >= 8 && rect.height >= 8 && rect.bottom > 0 && rect.top < window.innerHeight;
+};
+
+const getAnchorsInRoot = (root: ParentNode): HTMLElement[] => {
+  const seen = new Set<HTMLElement>();
+  const anchors: HTMLElement[] = [];
+
+  for (const selector of ACTION_ANCHOR_SELECTORS) {
+    for (const node of Array.from(root.querySelectorAll<HTMLElement>(selector))) {
+      if (seen.has(node)) {
+        continue;
+      }
+
+      seen.add(node);
+      anchors.push(node);
+    }
   }
 
-  floatingButton.title = DEFAULT_BUTTON_TITLE;
+  return anchors;
+};
+
+const scoreContainer = (container: HTMLElement, anchorCount: number): number => {
+  const rect = container.getBoundingClientRect();
+  const rightBias = rect.left > window.innerWidth * 0.52 ? 1 : 0;
+  const sizePenalty = rect.width * rect.height;
+  return anchorCount * 100_000 + rightBias * 10_000 - sizePenalty;
+};
+
+const resolveActionContainer = (): HTMLElement | null => {
+  const anchors = getAnchorsInRoot(document).filter((node) => isElementVisible(node));
+
+  if (anchors.length === 0) {
+    return null;
+  }
+
+  const candidates = new Map<HTMLElement, number>();
+
+  for (const anchor of anchors) {
+    let node: HTMLElement | null = anchor;
+
+    while (node && node !== document.body) {
+      const rect = node.getBoundingClientRect();
+
+      if (rect.width >= 40 && rect.height >= 80 && rect.width <= 480 && rect.height <= window.innerHeight) {
+        const anchorCount = getAnchorsInRoot(node).filter((candidate) => isElementVisible(candidate)).length;
+
+        if (anchorCount >= 2) {
+          const score = scoreContainer(node, anchorCount);
+          const prev = candidates.get(node);
+
+          if (typeof prev !== 'number' || score > prev) {
+            candidates.set(node, score);
+          }
+        }
+      }
+
+      node = node.parentElement;
+    }
+  }
+
+  const sorted = [...candidates.entries()].sort((a, b) => b[1] - a[1]);
+  return sorted[0]?.[0] || null;
+};
+
+const upsertInlineButton = (container: HTMLElement): void => {
+  ensureStyles();
+  let slot = document.getElementById(INLINE_SLOT_ID) as HTMLDivElement | null;
+  let button = document.getElementById(INLINE_BUTTON_ID) as HTMLButtonElement | null;
+
+  if (!slot) {
+    slot = document.createElement('div');
+    slot.id = INLINE_SLOT_ID;
+    slot.className = 'lce-tiktok-slot';
+  }
+
+  if (!button) {
+    button = createActionButton();
+    button.id = INLINE_BUTTON_ID;
+    slot.prepend(button);
+  }
+
+  if (!slot.contains(button)) {
+    slot.prepend(button);
+  }
+
+  let label = slot.querySelector<HTMLSpanElement>('.lce-tiktok-slot-label');
+
+  if (!label) {
+    label = document.createElement('span');
+    label.className = 'lce-tiktok-slot-label';
+    label.textContent = 'LiveChat';
+    slot.appendChild(label);
+  }
+
+  if (slot.parentElement !== container) {
+    container.appendChild(slot);
+  }
+
+  button.title = DEFAULT_BUTTON_TITLE;
 };
 
 const scanTikTokPage = (): void => {
+  removeLegacyFloatingButton();
+
   const mediaUrl = getCurrentTikTokMediaUrl();
 
   if (!mediaUrl) {
-    removeFloatingButton();
+    removeInlineButton();
     return;
   }
 
-  upsertFloatingButton();
+  const actionContainer = resolveActionContainer();
+
+  if (!actionContainer) {
+    removeInlineButton();
+    return;
+  }
+
+  upsertInlineButton(actionContainer);
 };
 
 const isGetActiveMediaUrlMessage = (value: unknown): value is { type: string } => {

@@ -178,9 +178,30 @@ const normalizeYoutubeUrl = (rawUrl: string): string | null => {
   return output.toString();
 };
 
-const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }> => {
+const readRuntime = (): typeof chrome.runtime | null => {
   try {
-    const response = (await chrome.runtime.sendMessage({
+    if (typeof chrome === 'undefined') {
+      return null;
+    }
+
+    return chrome.runtime || null;
+  } catch {
+    return null;
+  }
+};
+
+const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }> => {
+  const runtime = readRuntime();
+
+  if (!runtime || typeof runtime.sendMessage !== 'function') {
+    return {
+      ok: false,
+      message: 'Contexte extension invalide. Recharge la page puis réessaie.',
+    };
+  }
+
+  try {
+    const response = (await runtime.sendMessage({
       type: 'lce/send-quick',
       url,
       source: 'youtube',

@@ -16,7 +16,7 @@ PRD: `../PRD.md`
 - Appairage via code one-shot (`/pair-code`).
 - Connexion socket authentifiée.
 - Lecture média locale sans contrôles visibles.
-- Options tray: activation overlay, lancement au démarrage, écran, volume, affichage texte, reset pairing.
+- Options tray: activation overlay, lancement au démarrage, appairage overlay, écran, volume, affichage texte.
 
 ## Démarrage rapide
 

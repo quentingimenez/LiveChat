@@ -158,6 +158,14 @@
       void triggerItem(selectedItem.id);
     });
 
+    const renameButton = document.createElement('button');
+    renameButton.type = 'button';
+    renameButton.className = 'ghost';
+    renameButton.textContent = 'Nommer';
+    renameButton.addEventListener('click', () => {
+      void renameItem(selectedItem);
+    });
+
     const bindButton = document.createElement('button');
     bindButton.type = 'button';
     bindButton.className = 'ghost';
@@ -183,6 +191,7 @@
     });
 
     controlsNode.appendChild(triggerButton);
+    controlsNode.appendChild(renameButton);
     controlsNode.appendChild(bindButton);
     controlsNode.appendChild(clearButton);
     controlsNode.appendChild(deleteButton);
@@ -229,7 +238,12 @@
 
       const subNode = document.createElement('p');
       subNode.className = 'item-subline';
-      subNode.textContent = `${item.media?.kind || 'MEDIA'} | ${item.createdByName || 'Auteur inconnu'} | ${toSafeDateLabel(item.createdAt)}`;
+      subNode.textContent = `${item.media?.kind || 'MEDIA'} | ${toSafeDateLabel(item.createdAt)}`;
+
+      const authorNode = document.createElement('p');
+      authorNode.className = 'item-author';
+      authorNode.textContent = `${item.createdByName || 'Auteur inconnu'}`;
+      authorNode.title = `${item.createdByName || 'Auteur inconnu'}`;
 
       const shortcutNode = document.createElement('p');
       shortcutNode.className = 'item-shortcut';
@@ -246,37 +260,38 @@
         void triggerItem(item.id);
       });
 
+      const renameButton = document.createElement('button');
+      renameButton.type = 'button';
+      renameButton.className = 'ghost';
+      renameButton.textContent = 'Nommer';
+      renameButton.addEventListener('click', () => {
+        void renameItem(item);
+      });
+
       const bindButton = document.createElement('button');
       bindButton.type = 'button';
       bindButton.className = 'ghost';
-      bindButton.textContent = 'Assigner';
+      bindButton.textContent = 'Macro';
       bindButton.addEventListener('click', () => {
         beginCaptureForItem(item.id);
-      });
-
-      const clearButton = document.createElement('button');
-      clearButton.type = 'button';
-      clearButton.className = 'ghost';
-      clearButton.textContent = 'Retirer raccourci';
-      clearButton.addEventListener('click', () => {
-        void clearShortcutForItem(item.id);
       });
 
       const deleteButton = document.createElement('button');
       deleteButton.type = 'button';
       deleteButton.className = 'danger';
-      deleteButton.textContent = 'Supprimer';
+      deleteButton.textContent = 'Suppr.';
       deleteButton.addEventListener('click', () => {
         void deleteItem(item);
       });
 
       actionsNode.appendChild(playButton);
+      actionsNode.appendChild(renameButton);
       actionsNode.appendChild(bindButton);
-      actionsNode.appendChild(clearButton);
       actionsNode.appendChild(deleteButton);
 
       card.appendChild(titleNode);
       card.appendChild(subNode);
+      card.appendChild(authorNode);
       card.appendChild(shortcutNode);
       card.appendChild(actionsNode);
 
@@ -371,6 +386,40 @@
       setStatus('Raccourci retire.', 'success');
     } catch (error) {
       setStatus(error?.message || 'Impossible de retirer le raccourci.', 'error');
+    }
+  };
+
+  const renameItem = async (item) => {
+    const currentTitle = `${item?.title || ''}`.trim();
+    const rawTitle = window.prompt('Nom du meme (laisser vide pour enlever le nom):', currentTitle);
+
+    if (rawTitle === null) {
+      return;
+    }
+
+    const nextTitle = rawTitle.trim();
+
+    try {
+      const endpoint = buildAuthedUrl(`/overlay/meme-board/items/${item.id}`);
+      const response = await fetch(endpoint.toString(), {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          title: nextTitle,
+        }),
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.error || `HTTP_${response.status}`);
+      }
+
+      await loadItemsAndRender();
+      setStatus(nextTitle ? 'Nom du meme mis a jour.' : 'Nom du meme supprime.', 'success');
+    } catch (error) {
+      setStatus(`Renommage impossible: ${error?.message || error}`, 'error');
     }
   };
 

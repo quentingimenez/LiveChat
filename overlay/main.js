@@ -8,6 +8,9 @@ const { OVERLAY_SOCKET_EVENTS } = require('./protocol');
 
 app.commandLine.appendSwitch('ignore-certificate-errors');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.overlay.client');
+}
 
 let overlayWindow;
 let pairingWindow;
@@ -23,6 +26,7 @@ let pendingPlaybackStopPayload = null;
 let activeMemeBindings = {};
 
 const configPath = path.join(app.getPath('userData'), 'config.json');
+const appIconPath = path.join(__dirname, 'icon.png');
 
 const defaultConfig = {
   displayId: null,
@@ -350,6 +354,7 @@ function createOverlayWindow() {
     focusable: false,
     hasShadow: false,
     skipTaskbar: true,
+    icon: appIconPath,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -396,6 +401,7 @@ function createPairingWindow() {
     height: 540,
     resizable: false,
     autoHideMenuBar: true,
+    icon: appIconPath,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -433,6 +439,7 @@ function createBoardWindow() {
     minWidth: 960,
     minHeight: 640,
     autoHideMenuBar: true,
+    icon: appIconPath,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -874,7 +881,7 @@ function updateTrayMenu() {
 }
 
 function createTray() {
-  const icon = nativeImage.createFromPath(path.join(__dirname, 'icon.png'));
+  const icon = nativeImage.createFromPath(appIconPath);
   tray = new Tray(icon);
 
   updateTrayMenu();

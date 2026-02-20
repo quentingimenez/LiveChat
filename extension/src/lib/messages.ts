@@ -5,6 +5,7 @@ export const MESSAGE_TYPES = {
   SEND_QUICK: 'lce/send-quick',
   SEND_COMPOSE: 'lce/send-compose',
   GET_COMPOSE_STATE: 'lce/get-compose-state',
+  GET_AUTH_STATE: 'lce/get-auth-state',
   GET_ACTIVE_MEDIA_URL: 'lce/get-active-media-url',
   TIKTOK_SYNC_ACTIVE_ITEM: 'lce/tiktok-sync-active-item',
   TIKTOK_GET_CAPTURED_URL: 'lce/tiktok-get-captured-url',
@@ -27,6 +28,10 @@ export interface SendComposeRequestMessage {
 
 export interface GetComposeStateRequestMessage {
   type: (typeof MESSAGE_TYPES)['GET_COMPOSE_STATE'];
+}
+
+export interface GetAuthStateRequestMessage {
+  type: (typeof MESSAGE_TYPES)['GET_AUTH_STATE'];
 }
 
 export interface GetActiveMediaUrlRequestMessage {
@@ -54,6 +59,7 @@ export type BackgroundRequestMessage =
   | SendQuickRequestMessage
   | SendComposeRequestMessage
   | GetComposeStateRequestMessage
+  | GetAuthStateRequestMessage
   | GetActiveMediaUrlRequestMessage
   | TikTokSyncActiveItemRequestMessage
   | TikTokGetCapturedUrlRequestMessage;
@@ -131,6 +137,10 @@ export const isGetComposeStateRequest = (value: unknown): value is GetComposeSta
   return isRecord(value) && value.type === MESSAGE_TYPES.GET_COMPOSE_STATE;
 };
 
+export const isGetAuthStateRequest = (value: unknown): value is GetAuthStateRequestMessage => {
+  return isRecord(value) && value.type === MESSAGE_TYPES.GET_AUTH_STATE;
+};
+
 export const isGetActiveMediaUrlRequest = (value: unknown): value is GetActiveMediaUrlRequestMessage => {
   return isRecord(value) && value.type === MESSAGE_TYPES.GET_ACTIVE_MEDIA_URL;
 };
@@ -164,6 +174,7 @@ export const isBackgroundRequestMessage = (value: unknown): value is BackgroundR
     isSendQuickRequest(value) ||
     isSendComposeRequest(value) ||
     isGetComposeStateRequest(value) ||
+    isGetAuthStateRequest(value) ||
     isGetActiveMediaUrlRequest(value) ||
     isTikTokSyncActiveItemRequest(value) ||
     isTikTokGetCapturedUrlRequest(value)

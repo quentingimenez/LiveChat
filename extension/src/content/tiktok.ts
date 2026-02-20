@@ -3,8 +3,10 @@ const INLINE_BUTTON_ID = 'lce-tiktok-inline-button';
 const INLINE_SLOT_ID = 'lce-tiktok-inline-slot';
 const DEFAULT_BUTTON_TITLE = 'Envoyer ce TikTok vers LiveChat';
 const GET_ACTIVE_MEDIA_URL_TYPE = 'lce/get-active-media-url';
+const GET_AUTH_STATE_TYPE = 'lce/get-auth-state';
 const TIKTOK_GET_CAPTURED_URL_TYPE = 'lce/tiktok-get-captured-url';
 const TIKTOK_SYNC_ACTIVE_ITEM_TYPE = 'lce/tiktok-sync-active-item';
+const AUTH_STATUS_CACHE_MS = 1500;
 const ACTION_ANCHOR_SELECTORS = [
   '[data-e2e="browse-share-icon"]',
   '[data-e2e="share-icon"]',
@@ -75,18 +77,21 @@ const inpageStyles = `
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
-  gap: 6px;
-  margin-top: 10px;
+  margin-top: 0;
   pointer-events: auto;
 }
-.lce-tiktok-slot-label {
-  color: rgba(255, 255, 255, 0.9);
-  font-family: "TikTokDisplayFont", "ProximaNova", "Segoe UI", sans-serif;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1;
-  text-align: center;
-  user-select: none;
+.lce-tiktok-slot.is-vertical {
+  margin-top: 10px;
+  margin-bottom: 14px;
+}
+.lce-tiktok-slot.is-horizontal {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+.lce-tiktok-slot.is-horizontal .lce-button-tiktok {
+  width: 40px;
+  height: 40px;
+  font-size: 10px;
 }
 `;
 
@@ -108,6 +113,37 @@ const TOAST_CONTAINER_ID = 'lce-toast-container';
 
 let toastHideTimeout: number | null = null;
 let toastListenerRegistered = false;
+let runtimeContextInvalidated = false;
+let authStateKnown = false;
+let authStateHasSettings = false;
+let authStateCheckedAt = 0;
+let authStatePromise: Promise<boolean> | null = null;
+
+const isExtensionContextInvalidatedError = (error: unknown): boolean => {
+  if (error instanceof Error) {
+    return /extension context invalidated/i.test(error.message);
+  }
+
+  if (typeof error === 'string') {
+    return /extension context invalidated/i.test(error);
+  }
+
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+
+    if (typeof message === 'string') {
+      return /extension context invalidated/i.test(message);
+    }
+  }
+
+  return false;
+};
+
+const markRuntimeContextInvalidatedIfNeeded = (error: unknown): void => {
+  if (isExtensionContextInvalidatedError(error)) {
+    runtimeContextInvalidated = true;
+  }
+};
 
 const ensureToastStyles = (): void => {
   if (document.getElementById(TOAST_STYLE_ID)) {
@@ -215,7 +251,8 @@ const registerToastListener = (): void => {
     });
 
     toastListenerRegistered = true;
-  } catch {
+  } catch (error) {
+    markRuntimeContextInvalidatedIfNeeded(error);
     // Ignore runtime invalidation while extension reloads.
   }
 };
@@ -571,15 +608,21 @@ const syncActiveTikTokTarget = (target: TikTokActiveTarget): void => {
 
   lastSyncedActiveTargetKey = key;
 
-  void runtime
-    .sendMessage({
+  try {
+    const maybePromise = runtime.sendMessage({
       type: TIKTOK_SYNC_ACTIVE_ITEM_TYPE,
       itemId: target.itemId || null,
       url: normalizedUrl,
-    })
-    .catch(() => {
-      // Ignore runtime invalidation while extension reloads.
     });
+
+    if (maybePromise && typeof (maybePromise as Promise<unknown>).catch === 'function') {
+      void (maybePromise as Promise<unknown>).catch((error) => {
+        markRuntimeContextInvalidatedIfNeeded(error);
+      });
+    }
+  } catch (error) {
+    markRuntimeContextInvalidatedIfNeeded(error);
+  }
 };
 
 const getPreferredActionContainer = (): HTMLElement | null => {
@@ -608,7 +651,8 @@ const requestCapturedTikTokUrl = async (domUrlCandidate: string | null): Promise
     }
 
     return normalizeTikTokMediaUrl(response.url, window.location.href);
-  } catch {
+  } catch (error) {
+    markRuntimeContextInvalidatedIfNeeded(error);
     return null;
   }
 };
@@ -641,15 +685,75 @@ const resolveCurrentTikTokMediaUrl = async (): Promise<string | null> => {
 };
 
 const readRuntime = (): typeof chrome.runtime | null => {
+  if (runtimeContextInvalidated) {
+    return null;
+  }
+
   try {
     if (typeof chrome === 'undefined') {
       return null;
     }
 
     return chrome.runtime || null;
-  } catch {
+  } catch (error) {
+    markRuntimeContextInvalidatedIfNeeded(error);
     return null;
   }
+};
+
+const isAuthStateResponse = (value: unknown): value is { ok: boolean; hasSettings: boolean } => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const payload = value as Record<string, unknown>;
+  return typeof payload.ok === 'boolean' && typeof payload.hasSettings === 'boolean';
+};
+
+const hasExtensionAuth = async (): Promise<boolean> => {
+  const now = Date.now();
+
+  if (authStateKnown && now - authStateCheckedAt < AUTH_STATUS_CACHE_MS) {
+    return authStateHasSettings;
+  }
+
+  if (authStatePromise) {
+    return authStatePromise;
+  }
+
+  const runtime = readRuntime();
+
+  if (!runtime || typeof runtime.sendMessage !== 'function') {
+    authStateKnown = true;
+    authStateHasSettings = false;
+    authStateCheckedAt = now;
+    return false;
+  }
+
+  authStatePromise = (async () => {
+    try {
+      const response = (await runtime.sendMessage({
+        type: GET_AUTH_STATE_TYPE,
+      })) as unknown;
+
+      const isReady = isAuthStateResponse(response) && response.ok && response.hasSettings;
+
+      authStateKnown = true;
+      authStateHasSettings = isReady;
+      authStateCheckedAt = Date.now();
+      return isReady;
+    } catch (error) {
+      markRuntimeContextInvalidatedIfNeeded(error);
+      authStateKnown = true;
+      authStateHasSettings = false;
+      authStateCheckedAt = Date.now();
+      return false;
+    } finally {
+      authStatePromise = null;
+    }
+  })();
+
+  return authStatePromise;
 };
 
 const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }> => {
@@ -681,6 +785,7 @@ const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }>
       message: response.message,
     };
   } catch (error) {
+    markRuntimeContextInvalidatedIfNeeded(error);
     return {
       ok: false,
       message: error instanceof Error ? error.message : 'Erreur de communication avec le service worker.',
@@ -855,6 +960,55 @@ const resolveActionContainer = (): HTMLElement | null => {
   return sorted[0]?.[0] || null;
 };
 
+type ActionLayout = 'vertical' | 'horizontal';
+
+const detectActionLayout = (container: HTMLElement): ActionLayout => {
+  const actionAnchors = getAnchorsInRoot(container).filter((node) => isElementVisible(node)).slice(0, 8);
+
+  if (actionAnchors.length >= 2) {
+    let minX = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+
+    for (const anchor of actionAnchors) {
+      const rect = anchor.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+
+      minX = Math.min(minX, centerX);
+      maxX = Math.max(maxX, centerX);
+      minY = Math.min(minY, centerY);
+      maxY = Math.max(maxY, centerY);
+    }
+
+    const spreadX = maxX - minX;
+    const spreadY = maxY - minY;
+
+    if (spreadY > spreadX * 1.2) {
+      return 'vertical';
+    }
+
+    if (spreadX > spreadY * 1.2) {
+      return 'horizontal';
+    }
+  }
+
+  const containerStyle = window.getComputedStyle(container);
+  const containerFlexDirection = containerStyle.flexDirection.toLowerCase();
+
+  if (containerFlexDirection.includes('column')) {
+    return 'vertical';
+  }
+
+  if (containerFlexDirection.includes('row')) {
+    return 'horizontal';
+  }
+
+  const containerRect = container.getBoundingClientRect();
+  return containerRect.height > containerRect.width ? 'vertical' : 'horizontal';
+};
+
 const upsertInlineButton = (container: HTMLElement): void => {
   ensureStyles();
   let slot = document.getElementById(INLINE_SLOT_ID) as HTMLDivElement | null;
@@ -876,24 +1030,49 @@ const upsertInlineButton = (container: HTMLElement): void => {
     slot.prepend(button);
   }
 
-  let label = slot.querySelector<HTMLSpanElement>('.lce-tiktok-slot-label');
-
-  if (!label) {
-    label = document.createElement('span');
-    label.className = 'lce-tiktok-slot-label';
-    label.textContent = 'LiveChat';
-    slot.appendChild(label);
+  const legacyLabel = slot.querySelector<HTMLElement>('.lce-tiktok-slot-label');
+  if (legacyLabel) {
+    legacyLabel.remove();
   }
 
-  if (slot.parentElement !== container) {
-    container.appendChild(slot);
+  const horizontalHost = container.firstElementChild instanceof HTMLDivElement ? container.firstElementChild : container;
+  const actionLayout = detectActionLayout(container);
+  slot.classList.remove('is-vertical', 'is-horizontal');
+  slot.classList.add(actionLayout === 'vertical' ? 'is-vertical' : 'is-horizontal');
+
+  if (actionLayout === 'horizontal') {
+    if (slot.parentElement !== horizontalHost) {
+      horizontalHost.prepend(slot);
+    } else if (horizontalHost.firstElementChild !== slot) {
+      horizontalHost.prepend(slot);
+    }
+  } else {
+    const containerChildrenWithoutSlot = Array.from(container.children).filter((child) => child !== slot);
+    const firstContainerChild = containerChildrenWithoutSlot[0] || null;
+    const insertionPoint = firstContainerChild ? firstContainerChild.nextElementSibling : container.firstElementChild;
+
+    if (slot.parentElement !== container) {
+      container.insertBefore(slot, insertionPoint);
+    } else if (firstContainerChild && slot.previousElementSibling !== firstContainerChild) {
+      container.insertBefore(slot, insertionPoint);
+    } else if (!firstContainerChild && container.firstElementChild !== slot) {
+      container.prepend(slot);
+    }
   }
 
   button.title = DEFAULT_BUTTON_TITLE;
 };
 
-const scanTikTokPage = (): void => {
+const scanTikTokPage = async (): Promise<void> => {
   removeLegacyFloatingButton();
+
+  const isReady = await hasExtensionAuth();
+
+  if (!isReady) {
+    removeInlineButton();
+    return;
+  }
+
   const actionContainer = resolveActionContainer();
   latestActionContainer = actionContainer;
 
@@ -950,18 +1129,21 @@ const registerActiveMediaUrlListener = (): void => {
         return true;
       },
     );
-  } catch {
+  } catch (error) {
+    markRuntimeContextInvalidatedIfNeeded(error);
     // Ignore runtime invalidation while the extension is reloading.
   }
 };
 
-const startObservedScanner = (scan: () => void): void => {
+const startObservedScanner = (scan: () => void | Promise<void>): void => {
   let scanQueued = false;
   let lastUrl = window.location.href;
 
   const runScan = () => {
     scanQueued = false;
-    scan();
+    void Promise.resolve(scan()).catch(() => {
+      // Ignore scanner errors to keep observer alive.
+    });
   };
 
   const queueScan = () => {

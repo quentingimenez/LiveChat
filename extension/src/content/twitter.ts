@@ -2,6 +2,8 @@ const STYLE_ID = 'lce-twitter-style';
 const BUTTON_ATTRIBUTE = 'data-lce-twitter-button';
 const SLOT_ATTRIBUTE = 'data-lce-twitter-slot';
 const FLOATING_BUTTON_ID = 'lce-twitter-floating-button';
+const GET_AUTH_STATE_TYPE = 'lce/get-auth-state';
+const AUTH_STATUS_CACHE_MS = 1500;
 
 type ButtonState = 'idle' | 'loading' | 'success' | 'error';
 
@@ -74,6 +76,10 @@ const TOAST_CONTAINER_ID = 'lce-toast-container';
 
 let toastHideTimeout: number | null = null;
 let toastListenerRegistered = false;
+let authStateKnown = false;
+let authStateHasSettings = false;
+let authStateCheckedAt = 0;
+let authStatePromise: Promise<boolean> | null = null;
 
 const ensureToastStyles = (): void => {
   if (document.getElementById(TOAST_STYLE_ID)) {
@@ -164,6 +170,60 @@ const readRuntime = (): typeof chrome.runtime | null => {
   } catch {
     return null;
   }
+};
+
+const isAuthStateResponse = (value: unknown): value is { ok: boolean; hasSettings: boolean } => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const payload = value as Record<string, unknown>;
+  return typeof payload.ok === 'boolean' && typeof payload.hasSettings === 'boolean';
+};
+
+const hasExtensionAuth = async (): Promise<boolean> => {
+  const now = Date.now();
+
+  if (authStateKnown && now - authStateCheckedAt < AUTH_STATUS_CACHE_MS) {
+    return authStateHasSettings;
+  }
+
+  if (authStatePromise) {
+    return authStatePromise;
+  }
+
+  const runtime = readRuntime();
+
+  if (!runtime || typeof runtime.sendMessage !== 'function') {
+    authStateKnown = true;
+    authStateHasSettings = false;
+    authStateCheckedAt = now;
+    return false;
+  }
+
+  authStatePromise = (async () => {
+    try {
+      const response = (await runtime.sendMessage({
+        type: GET_AUTH_STATE_TYPE,
+      })) as unknown;
+
+      const isReady = isAuthStateResponse(response) && response.ok && response.hasSettings;
+
+      authStateKnown = true;
+      authStateHasSettings = isReady;
+      authStateCheckedAt = Date.now();
+      return isReady;
+    } catch {
+      authStateKnown = true;
+      authStateHasSettings = false;
+      authStateCheckedAt = Date.now();
+      return false;
+    } finally {
+      authStatePromise = null;
+    }
+  })();
+
+  return authStatePromise;
 };
 
 const registerToastListener = (): void => {
@@ -462,7 +522,28 @@ const upsertFloatingButton = (targetUrl: string): void => {
   floatingButton.dataset.targetUrl = targetUrl;
 };
 
-const scanTweets = (): void => {
+const removeAllTwitterButtons = (): void => {
+  const inlineButtons = Array.from(document.querySelectorAll<HTMLElement>(`[${BUTTON_ATTRIBUTE}]`));
+  inlineButtons.forEach((node) => node.remove());
+
+  const inlineSlots = Array.from(document.querySelectorAll<HTMLElement>(`[${SLOT_ATTRIBUTE}]`));
+  inlineSlots.forEach((node) => node.remove());
+
+  const floatingButton = document.getElementById(FLOATING_BUTTON_ID);
+
+  if (floatingButton) {
+    floatingButton.remove();
+  }
+};
+
+const scanTweets = async (): Promise<void> => {
+  const isReady = await hasExtensionAuth();
+
+  if (!isReady) {
+    removeAllTwitterButtons();
+    return;
+  }
+
   const tweetArticles = Array.from(document.querySelectorAll<HTMLElement>('article[data-testid="tweet"]'));
   let firstStatusUrl: string | null = normalizeTwitterStatusUrl(window.location.href, window.location.origin);
   let hasInlineButton = false;
@@ -488,13 +569,15 @@ const scanTweets = (): void => {
   }
 };
 
-const startObservedScanner = (scan: () => void): void => {
+const startObservedScanner = (scan: () => void | Promise<void>): void => {
   let scanQueued = false;
   let lastUrl = window.location.href;
 
   const runScan = () => {
     scanQueued = false;
-    scan();
+    void Promise.resolve(scan()).catch(() => {
+      // Ignore scanner errors to keep observer alive.
+    });
   };
 
   const queueScan = () => {

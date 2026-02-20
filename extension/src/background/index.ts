@@ -2,6 +2,7 @@ import { sendToIngest } from '../lib/ingestClient';
 import {
   MESSAGE_TYPES,
   isGetComposeStateRequest,
+  isGetAuthStateRequest,
   isSendComposeRequest,
   isSendQuickRequest,
   isTikTokGetCapturedUrlRequest,
@@ -730,6 +731,15 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
 
     if (isGetComposeStateRequest(message)) {
       sendResponse(await getComposeState());
+      return;
+    }
+
+    if (isGetAuthStateRequest(message)) {
+      const settings = await getSettings();
+      sendResponse({
+        ok: true,
+        hasSettings: isSettingsComplete(settings),
+      });
       return;
     }
 

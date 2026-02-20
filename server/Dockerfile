@@ -24,7 +24,6 @@ RUN pnpm install --no-frozen-lockfile
 COPY prisma ./prisma
 COPY src ./src
 COPY tsconfig.json ./
-COPY commitlint.config.js ./
 COPY README.md ./
 
 RUN pnpm generate

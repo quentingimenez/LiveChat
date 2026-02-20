@@ -2,6 +2,10 @@ import { MESSAGE_TYPES, type ActionResponse, type ComposeStateResponse } from '.
 import '../styles/popup.css';
 
 const form = document.getElementById('compose-form') as HTMLFormElement;
+const composeView = document.getElementById('compose-view') as HTMLDivElement;
+const setupView = document.getElementById('setup-view') as HTMLElement;
+const setupMessage = document.getElementById('setup-message') as HTMLParagraphElement;
+const setupOpenOptionsButton = document.getElementById('setup-open-options') as HTMLButtonElement;
 const urlInput = document.getElementById('compose-url') as HTMLInputElement;
 const textInput = document.getElementById('compose-text') as HTMLTextAreaElement;
 const forceRefreshInput = document.getElementById('compose-force-refresh') as HTMLInputElement;
@@ -38,6 +42,20 @@ const clearStatus = (): void => {
   statusNode.classList.add('hidden');
 };
 
+const showSetupView = (message: string): void => {
+  composeView.classList.add('hidden');
+  setupView.classList.remove('hidden');
+  setupMessage.textContent = message;
+  clearStatus();
+  updateSettingsWarning(null);
+  sendButton.disabled = true;
+};
+
+const showComposeView = (): void => {
+  setupView.classList.add('hidden');
+  composeView.classList.remove('hidden');
+};
+
 const setBusy = (busy: boolean): void => {
   sendButton.disabled = busy;
   sendButton.textContent = busy ? 'Envoi...' : 'Envoyer';
@@ -63,8 +81,7 @@ const loadComposeState = async (): Promise<void> => {
     })) as ComposeStateResponse;
 
     if (!isComposeStateResponse(state)) {
-      updateSettingsWarning('Impossible de charger l’état initial du formulaire.');
-      sendButton.disabled = true;
+      showSetupView('Impossible de charger l’état initial du formulaire.');
       return;
     }
 
@@ -74,16 +91,15 @@ const loadComposeState = async (): Promise<void> => {
     saveToBoardInput.checked = state.saveToBoard;
 
     if (!state.hasSettings) {
-      updateSettingsWarning(state.settingsError || 'Configuration incomplète. Ouvre les options.');
-      sendButton.disabled = true;
+      showSetupView(state.settingsError || 'Configuration incomplète. Ouvre les options.');
       return;
     }
 
+    showComposeView();
     sendButton.disabled = false;
     updateSettingsWarning(null);
   } catch (error) {
-    updateSettingsWarning(error instanceof Error ? error.message : 'Erreur de communication avec le service worker.');
-    sendButton.disabled = true;
+    showSetupView(error instanceof Error ? error.message : 'Erreur de communication avec le service worker.');
   }
 };
 
@@ -131,8 +147,11 @@ form.addEventListener('submit', (event) => {
   })();
 });
 
-openOptionsButton.addEventListener('click', () => {
+const openOptions = (): void => {
   void chrome.runtime.openOptionsPage();
-});
+};
+
+openOptionsButton.addEventListener('click', openOptions);
+setupOpenOptionsButton.addEventListener('click', openOptions);
 
 void loadComposeState();

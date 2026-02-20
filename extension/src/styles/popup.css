@@ -33,6 +33,41 @@ body {
   padding: 14px;
 }
 
+.setup-view {
+  min-height: 210px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+}
+
+.setup-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.setup-title {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.setup-message {
+  margin: 0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  background: rgba(164, 132, 35, 0.2);
+  border: 1px solid rgba(239, 197, 74, 0.35);
+  color: #ffe9b2;
+}
+
+.setup-button {
+  width: 100%;
+}
+
 .popup-header {
   margin-bottom: 10px;
 }

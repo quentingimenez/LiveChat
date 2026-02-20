@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MESSAGE_TYPES,
   isGetActiveMediaUrlRequest,
+  isGetAuthStateRequest,
   isBackgroundRequestMessage,
   isGetComposeStateRequest,
   isSendComposeRequest,
@@ -36,6 +37,14 @@ describe('message guards', () => {
     expect(
       isGetComposeStateRequest({
         type: MESSAGE_TYPES.GET_COMPOSE_STATE,
+      }),
+    ).toBe(true);
+  });
+
+  it('valide un message get auth state', () => {
+    expect(
+      isGetAuthStateRequest({
+        type: MESSAGE_TYPES.GET_AUTH_STATE,
       }),
     ).toBe(true);
   });

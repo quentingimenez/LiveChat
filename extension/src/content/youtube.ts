@@ -5,6 +5,8 @@ const SHORTS_FLOATING_BUTTON_ID = 'lce-youtube-shorts-floating-button';
 const WATCH_FLOATING_BUTTON_ID = 'lce-youtube-watch-floating-button';
 const WATCH_SLOT_ATTRIBUTE = 'data-lce-youtube-watch-slot';
 const DEFAULT_BUTTON_TITLE = 'Envoyer la vidéo YouTube vers LiveChat';
+const GET_AUTH_STATE_TYPE = 'lce/get-auth-state';
+const AUTH_STATUS_CACHE_MS = 1500;
 
 const WATCH_TARGET_SELECTORS = [
   'ytd-watch-metadata #top-level-buttons-computed',
@@ -146,6 +148,10 @@ const TOAST_CONTAINER_ID = 'lce-toast-container';
 
 let toastHideTimeout: number | null = null;
 let toastListenerRegistered = false;
+let authStateKnown = false;
+let authStateHasSettings = false;
+let authStateCheckedAt = 0;
+let authStatePromise: Promise<boolean> | null = null;
 
 const ensureToastStyles = (): void => {
   if (document.getElementById(TOAST_STYLE_ID)) {
@@ -311,6 +317,60 @@ const readRuntime = (): typeof chrome.runtime | null => {
   } catch {
     return null;
   }
+};
+
+const isAuthStateResponse = (value: unknown): value is { ok: boolean; hasSettings: boolean } => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const payload = value as Record<string, unknown>;
+  return typeof payload.ok === 'boolean' && typeof payload.hasSettings === 'boolean';
+};
+
+const hasExtensionAuth = async (): Promise<boolean> => {
+  const now = Date.now();
+
+  if (authStateKnown && now - authStateCheckedAt < AUTH_STATUS_CACHE_MS) {
+    return authStateHasSettings;
+  }
+
+  if (authStatePromise) {
+    return authStatePromise;
+  }
+
+  const runtime = readRuntime();
+
+  if (!runtime || typeof runtime.sendMessage !== 'function') {
+    authStateKnown = true;
+    authStateHasSettings = false;
+    authStateCheckedAt = now;
+    return false;
+  }
+
+  authStatePromise = (async () => {
+    try {
+      const response = (await runtime.sendMessage({
+        type: GET_AUTH_STATE_TYPE,
+      })) as unknown;
+
+      const isReady = isAuthStateResponse(response) && response.ok && response.hasSettings;
+
+      authStateKnown = true;
+      authStateHasSettings = isReady;
+      authStateCheckedAt = Date.now();
+      return isReady;
+    } catch {
+      authStateKnown = true;
+      authStateHasSettings = false;
+      authStateCheckedAt = Date.now();
+      return false;
+    } finally {
+      authStatePromise = null;
+    }
+  })();
+
+  return authStatePromise;
 };
 
 const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }> => {
@@ -758,8 +818,17 @@ const isYoutubeFullscreenActive = (): boolean => {
   return Boolean(document.querySelector('ytd-player[fullscreen]'));
 };
 
-const scanYoutubeTargets = (): void => {
+const scanYoutubeTargets = async (): Promise<void> => {
   removeLegacyFloatingButton();
+
+  const isReady = await hasExtensionAuth();
+
+  if (!isReady) {
+    removeShortsFloatingButton();
+    removeWatchFloatingButton();
+    removeInlineWatchButtons();
+    return;
+  }
 
   if (isYoutubeFullscreenActive()) {
     removeShortsFloatingButton();
@@ -799,13 +868,15 @@ const scanYoutubeTargets = (): void => {
   upsertInlineWatchButton(currentUrl, watchContainer);
 };
 
-const startObservedScanner = (scan: () => void): void => {
+const startObservedScanner = (scan: () => void | Promise<void>): void => {
   let scanQueued = false;
   let lastUrl = window.location.href;
 
   const runScan = () => {
     scanQueued = false;
-    scan();
+    void Promise.resolve(scan()).catch(() => {
+      // Ignore scanner errors to keep observer alive.
+    });
   };
 
   const queueScan = () => {

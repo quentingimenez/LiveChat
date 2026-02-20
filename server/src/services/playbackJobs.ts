@@ -5,6 +5,7 @@ import { PlaybackJobStatus } from './prisma/prismaEnums';
 interface MediaAssetLike {
   id: string;
   durationSec?: number | null;
+  kind?: string | null;
 }
 
 interface CreatePlaybackJobParams {
@@ -21,10 +22,14 @@ interface CreatePlaybackJobParams {
 export const createPlaybackJob = async (params: CreatePlaybackJobParams) => {
   const startedAtMs = Date.now();
   const hasMedia = !!params.mediaAsset;
+  const mediaKind = typeof params.mediaAsset?.kind === 'string' ? params.mediaAsset.kind.trim().toUpperCase() : null;
+  const isImageMedia = mediaKind === 'IMAGE';
   const durationCandidate =
-    params.durationSec ?? params.mediaAsset?.durationSec ?? (hasMedia ? Math.max(1, env.DEFAULT_DURATION) : null);
+    params.durationSec ??
+    (!isImageMedia ? params.mediaAsset?.durationSec ?? null : null) ??
+    (hasMedia ? Math.max(1, env.DEFAULT_DURATION) : null);
 
-  if (hasMedia && params.durationSec == null && params.mediaAsset?.durationSec == null) {
+  if (hasMedia && !isImageMedia && params.durationSec == null && params.mediaAsset?.durationSec == null) {
     logger.warn(
       {
         source: params.source || 'unknown',

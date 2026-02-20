@@ -294,7 +294,7 @@ const finalizeFile = async (
   return {
     kind,
     mime: mimeType,
-    durationSec: metadata.durationSec,
+    durationSec: kind === 'image' ? null : metadata.durationSec,
     width: metadata.width,
     height: metadata.height,
     isVertical:

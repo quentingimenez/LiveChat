@@ -1614,11 +1614,31 @@ const normalizeAndPersistAsset = async (params: { sourceHash: string; sourceUrl:
     throw toMediaIngestionError(error, 'TRANSCODE_FAILED');
   });
 
-  return prisma.mediaAsset.update({
+  const persistedData = {
+    sourceUrl: params.sourceUrl,
+    kind: toMediaKind(normalized.kind),
+    mime: normalized.mime,
+    durationSec: normalized.durationSec,
+    width: normalized.width,
+    height: normalized.height,
+    isVertical: normalized.isVertical,
+    storagePath: normalized.storagePath,
+    sizeBytes: normalized.sizeBytes,
+    status: MediaAssetStatus.READY,
+    error: null,
+    lastAccessedAt: new Date(),
+    expiresAt: addHours(new Date(), Math.max(1, env.MEDIA_CACHE_TTL_HOURS)),
+  };
+
+  return prisma.mediaAsset.upsert({
     where: {
       sourceHash: params.sourceHash,
     },
-    data: {
+    create: {
+      sourceHash: params.sourceHash,
+      ...persistedData,
+    },
+    update: {
       sourceUrl: params.sourceUrl,
       kind: toMediaKind(normalized.kind),
       mime: normalized.mime,

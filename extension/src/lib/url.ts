@@ -1,6 +1,7 @@
 const HTTP_PROTOCOLS = new Set(['http:', 'https:']);
 const YOUTUBE_HOSTS = new Set(['www.youtube.com', 'youtube.com', 'm.youtube.com', 'youtu.be']);
 const TWITTER_HOSTS = new Set(['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com']);
+const isTikTokHost = (hostname: string): boolean => hostname === 'tiktok.com' || hostname.endsWith('.tiktok.com');
 
 const toUrl = (raw: string, base?: string): URL | null => {
   try {
@@ -96,16 +97,16 @@ export const normalizeYoutubeUrl = (rawUrl: string, base?: string): string | nul
 export const normalizeTikTokVideoUrl = (rawUrl: string, base?: string): string | null => {
   const parsed = toUrl(rawUrl.trim(), base);
 
-  if (!parsed || !parsed.hostname.toLowerCase().includes('tiktok.com')) {
+  if (!parsed || !isTikTokHost(parsed.hostname.toLowerCase())) {
     return null;
   }
 
-  const namedMediaMatch = parsed.pathname.match(/^\/@([^/]+)\/(video|photo)\/(\d+)/i);
+  const namedMediaMatch = parsed.pathname.match(/^\/@([^/]+)\/(video|photo)\/(\d{15,22})(?:\/|$)/i);
   if (namedMediaMatch) {
     return `https://www.tiktok.com/@${namedMediaMatch[1]}/${namedMediaMatch[2].toLowerCase()}/${namedMediaMatch[3]}`;
   }
 
-  const genericMediaMatch = parsed.pathname.match(/\/(video|photo)\/(\d+)/i);
+  const genericMediaMatch = parsed.pathname.match(/^\/(video|photo)\/(\d{15,22})(?:\/|$)/i);
   if (genericMediaMatch) {
     return `https://www.tiktok.com/${genericMediaMatch[1].toLowerCase()}/${genericMediaMatch[2]}`;
   }
@@ -151,7 +152,7 @@ export const resolveIngestTargetUrl = (rawUrl: string, base?: string): string | 
     return normalizeYoutubeUrl(parsed.toString(), base);
   }
 
-  if (hostname.includes('tiktok.com')) {
+  if (isTikTokHost(hostname)) {
     return normalizeTikTokVideoUrl(parsed.toString(), base) || normalizeGenericHttpUrl(parsed.toString());
   }
 

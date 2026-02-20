@@ -295,6 +295,30 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
         return;
       }
 
+      const activeDuplicate = await prisma.playbackJob.findFirst({
+        where: {
+          guildId,
+          mediaAssetId: item.mediaAsset.id,
+          status: {
+            in: [PlaybackJobStatus.PENDING, PlaybackJobStatus.PLAYING],
+          },
+          finishedAt: null,
+        },
+        select: {
+          id: true,
+          status: true,
+        },
+      });
+
+      if (activeDuplicate) {
+        logger.info(
+          `[OVERLAY] Meme trigger deduplicated from ${socket.data.overlayClientLabel || 'unknown-device'} (${
+            socket.data.overlayClientId
+          }, guild: ${guildId}, itemId: ${rawItemId}, trigger: ${triggerKind}, activeJobId: ${activeDuplicate.id}, activeJobStatus: ${activeDuplicate.status})`,
+        );
+        return;
+      }
+
       const itemAuthorName =
         typeof item.createdByName === 'string' && item.createdByName.trim() !== '' ? item.createdByName.trim() : null;
       const triggerAuthorName = toNonEmptyString(socket.data.overlayAuthorName) || itemAuthorName;

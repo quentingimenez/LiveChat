@@ -658,16 +658,19 @@ function stopKeepOnTopLoop() {
 }
 
 function sendOverlaySettingsToRenderer() {
-  if (!overlayWindow || overlayWindow.isDestroyed()) {
-    return;
-  }
-
   const cfg = loadConfig();
-
-  overlayWindow.webContents.send('overlay:settings', {
+  const settingsPayload = {
     volume: cfg.volume,
     showText: cfg.showText,
-  });
+  };
+
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('overlay:settings', settingsPayload);
+  }
+
+  if (boardWindow && !boardWindow.isDestroyed()) {
+    boardWindow.webContents.send('overlay:settings', settingsPayload);
+  }
 }
 
 function createOverlayWindow() {
@@ -788,6 +791,9 @@ function createBoardWindow() {
   });
 
   boardWindow.loadFile(path.join(__dirname, 'renderer/board.html'));
+  boardWindow.once('ready-to-show', () => {
+    sendOverlaySettingsToRenderer();
+  });
 
   boardWindow.on('closed', () => {
     boardWindow = null;

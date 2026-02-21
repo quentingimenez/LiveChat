@@ -95,7 +95,7 @@ const defaultConfig = {
 
 const MANUAL_RELOAD_SHORTCUT = 'Shift+Escape';
 const MAX_OTHER_ACTIVE_OVERLAYS_IN_MENU = 8;
-const SINGLE_LEFT_CLICK_MENU_DELAY_MS = 240;
+const SINGLE_LEFT_CLICK_MENU_DELAY_MS = 180;
 
 const CONNECTION_STATE_LABELS = {
   disabled: 'Désactivé',
@@ -397,6 +397,19 @@ function showTrayMainMenu() {
   popUpTrayMenu(trayMainMenu);
 }
 
+function closeTrayContextMenu() {
+  trayStatusMenuVisible = false;
+  if (tray && typeof tray.closeContextMenu === 'function') {
+    tray.closeContextMenu();
+  }
+}
+
+function openBoardFromTray() {
+  clearTraySingleLeftClickTimer();
+  closeTrayContextMenu();
+  createBoardWindow();
+}
+
 function handleTrayLeftClick(event) {
   if (event && typeof event.button === 'number' && event.button !== 0) {
     return;
@@ -404,22 +417,11 @@ function handleTrayLeftClick(event) {
 
   if (traySingleLeftClickTimer) {
     clearTraySingleLeftClickTimer();
-    trayStatusMenuVisible = false;
-    if (tray && typeof tray.closeContextMenu === 'function') {
-      tray.closeContextMenu();
-    }
-    createBoardWindow();
     return;
   }
 
   if (trayStatusMenuVisible) {
-    trayStatusMenuVisible = false;
-    if (tray && typeof tray.closeContextMenu === 'function') {
-      tray.closeContextMenu();
-    }
-    traySingleLeftClickTimer = setTimeout(() => {
-      traySingleLeftClickTimer = null;
-    }, SINGLE_LEFT_CLICK_MENU_DELAY_MS);
+    closeTrayContextMenu();
     return;
   }
 
@@ -1312,13 +1314,13 @@ function createTray() {
 
   updateTrayMenu();
   tray.on('click', handleTrayLeftClick);
+  tray.on('double-click', () => {
+    openBoardFromTray();
+  });
 
   tray.on('right-click', () => {
     clearTraySingleLeftClickTimer();
-    trayStatusMenuVisible = false;
-    if (tray && typeof tray.closeContextMenu === 'function') {
-      tray.closeContextMenu();
-    }
+    closeTrayContextMenu();
     showTrayMainMenu();
   });
 

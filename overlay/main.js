@@ -6,10 +6,13 @@ const https = require('https');
 const { io } = require('socket.io-client');
 const { OVERLAY_SOCKET_EVENTS } = require('./protocol');
 
+const WINDOWS_APP_USER_MODEL_ID = 'com.livechat';
+const LEGACY_WINDOWS_APP_USER_MODEL_ID = 'com.overlay.client';
+
 app.commandLine.appendSwitch('ignore-certificate-errors');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 if (process.platform === 'win32') {
-  app.setAppUserModelId('com.overlay.client');
+  app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
 }
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
@@ -272,6 +275,13 @@ function getWindowsAutoStartLoginItemOptions() {
   };
 }
 
+function normalizeWindowsExecutablePath(value) {
+  return `${value || ''}`
+    .trim()
+    .replace(/^"+|"+$/g, '')
+    .toLowerCase();
+}
+
 function getSystemAutoStartEnabled() {
   if (!supportsAutoStart()) {
     return false;
@@ -281,8 +291,23 @@ function getSystemAutoStartEnabled() {
     if (process.platform === 'win32') {
       const winOptions = getWindowsAutoStartLoginItemOptions();
       const settings = app.getLoginItemSettings(winOptions || undefined);
+      const expectedExecutablePath = normalizeWindowsExecutablePath(winOptions?.path);
+      const hasLegacyEnabledEntry =
+        settings.executableWillLaunchAtLogin !== true &&
+        Array.isArray(settings.launchItems) &&
+        settings.launchItems.some((item) => {
+          if (!item || item.name !== LEGACY_WINDOWS_APP_USER_MODEL_ID || item.enabled !== true) {
+            return false;
+          }
 
-      return settings.executableWillLaunchAtLogin === true || settings.openAtLogin === true;
+          if (!expectedExecutablePath) {
+            return true;
+          }
+
+          return normalizeWindowsExecutablePath(item.path) === expectedExecutablePath;
+        });
+
+      return settings.executableWillLaunchAtLogin === true || settings.openAtLogin === true || hasLegacyEnabledEntry;
     }
 
     return app.getLoginItemSettings().openAtLogin === true;
@@ -315,10 +340,27 @@ function applyAutoStartSetting(enabled) {
         loginItemSettings.path = winOptions.path;
         loginItemSettings.args = winOptions.args;
       }
+      loginItemSettings.name = WINDOWS_APP_USER_MODEL_ID;
       loginItemSettings.enabled = nextEnabled;
     }
 
     app.setLoginItemSettings(loginItemSettings);
+
+    if (process.platform === 'win32' && WINDOWS_APP_USER_MODEL_ID !== LEGACY_WINDOWS_APP_USER_MODEL_ID) {
+      const winOptions = getWindowsAutoStartLoginItemOptions();
+      const legacyLoginItemSettings = {
+        openAtLogin: false,
+        enabled: false,
+        name: LEGACY_WINDOWS_APP_USER_MODEL_ID,
+      };
+
+      if (winOptions) {
+        legacyLoginItemSettings.path = winOptions.path;
+        legacyLoginItemSettings.args = winOptions.args;
+      }
+
+      app.setLoginItemSettings(legacyLoginItemSettings);
+    }
   } catch (error) {
     console.error('Unable to update auto-start setting:', error);
   }

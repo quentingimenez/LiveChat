@@ -1,6 +1,6 @@
 {
   "name": "livechat",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "main": "main.js",
   "description": "LiveChat Desktop App",
   "author": "Babz",
@@ -20,11 +20,16 @@
       "package.json"
     ],
     "win": {
-      "target": "portable",
+      "target": [
+        "nsis"
+      ],
       "icon": "icon.png"
     },
-    "portable": {
-      "artifactName": "LiveChat.exe"
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "artifactName": "LiveChat-Setup-${version}.${ext}"
     },
     "mac": {
       "target": [
@@ -36,9 +41,18 @@
     },
     "dmg": {
       "artifactName": "LiveChat-macOS-${arch}.${ext}"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "SuperKn4cky",
+        "repo": "LiveChat-Overlay",
+        "releaseType": "release"
+      }
+    ]
   },
   "dependencies": {
+    "electron-updater": "^6.8.3",
     "socket.io-client": "^4.8.1"
   },
   "devDependencies": {

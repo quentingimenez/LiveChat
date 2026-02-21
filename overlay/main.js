@@ -513,8 +513,7 @@ function getDisplayConfigUpdate(display, index) {
 function formatDisplayMenuLabel(display, index) {
   const label = getDisplayLabel(display);
   const nameSuffix = label ? ` - ${label}` : '';
-  const { width, height, x, y } = display.bounds;
-  return `Écran ${index + 1}${nameSuffix} (${width}x${height} @ ${x},${y})`;
+  return `Écran ${index + 1}${nameSuffix}`;
 }
 
 function startKeepOnTopLoop() {

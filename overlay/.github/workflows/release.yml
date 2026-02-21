@@ -1,0 +1,105 @@
+name: Build & Release (stable)
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stable-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Cache Electron + electron-builder
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/electron
+            .cache/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
+      - name: Install dependencies (with retry)
+        shell: pwsh
+        env:
+          ELECTRON_CACHE: ${{ github.workspace }}\.cache\electron
+          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\.cache\electron-builder
+          npm_config_fetch_retries: 5
+          npm_config_fetch_retry_mintimeout: 20000
+          npm_config_fetch_retry_maxtimeout: 120000
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            try {
+              npm ci
+              break
+            } catch {
+              if ($attempt -eq $maxAttempts) {
+                throw
+              }
+              Write-Host "Install failed (attempt $attempt/$maxAttempts), retrying in 20s..."
+              Start-Sleep -Seconds 20
+            }
+          }
+
+      - name: Build Windows installer (electron-builder)
+        env:
+          ELECTRON_CACHE: ${{ github.workspace }}\.cache\electron
+          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\.cache\electron-builder
+        run: npm run dist -- --win --publish never
+
+      - name: List dist outputs
+        shell: pwsh
+        run: |
+          if (!(Test-Path "dist")) { throw "dist/ folder not found" }
+          Get-ChildItem -Path "dist" -Recurse | Select-Object FullName, Length
+
+      - name: Ensure stable release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "${{ github.ref_name }}"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title $tag --notes "Automated release from tag $tag"
+          }
+
+      - name: Upload Windows assets to stable release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "${{ github.ref_name }}"
+          $files = @()
+          $installerFiles = Get-ChildItem -Path "dist" -Filter "*.exe" -File
+          if ($installerFiles.Count -eq 0) { throw "No Windows installer found in dist/" }
+          $files += $installerFiles | ForEach-Object { $_.FullName }
+
+          if (!(Test-Path "dist/latest.yml")) { throw "latest.yml not found in dist/" }
+          $files += (Resolve-Path "dist/latest.yml").Path
+          $files += Get-ChildItem -Path "dist" -Filter "*.blockmap" -File | ForEach-Object { $_.FullName }
+
+          gh release upload $tag $files --clobber

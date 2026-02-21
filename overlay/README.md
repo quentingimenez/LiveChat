@@ -27,10 +27,10 @@ npm start
 
 ## Build
 
-### Windows (.exe portable)
+### Windows (.exe installable NSIS)
 
 ```bash
-npm run dist -- --win portable
+npm run dist -- --win
 ```
 
 ### macOS (.dmg + .zip)
@@ -39,10 +39,16 @@ npm run dist -- --win portable
 npm run dist -- --mac dmg zip
 ```
 
+## CI/CD stable (auto-update)
+
+Le workflow GitHub `release.yml` build et publie automatiquement sur les tags `v*.*.*`:
+- Windows: installateur `.exe`
+- Métadonnées update: `latest.yml` (+ `*.blockmap` si généré)
+
 ## CI/CD nightly
 
 Le workflow GitHub `nightly.yml` build et publie automatiquement:
-- Windows: `.exe`
+- Windows: `.exe` (+ `latest.yml` pour validation technique)
 - macOS: `.dmg` et `.zip`
 
 ## macOS: warning de sécurité

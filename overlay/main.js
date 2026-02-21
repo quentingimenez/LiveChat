@@ -282,17 +282,30 @@ function truncateTooltipSegment(value, maxLength = 18) {
   return `${normalized.slice(0, Math.max(1, maxLength - 1))}…`;
 }
 
+function stripOverlayAutoPrefix(value) {
+  const normalized = `${value || ''}`.trim();
+  if (!normalized) {
+    return '';
+  }
+
+  const stripped = normalized.replace(/^overlay[-_\s]+/i, '').trim();
+  return stripped || normalized;
+}
+
 function getOtherActiveOverlays(config = loadConfig()) {
   const selfClientId = typeof config.clientId === 'string' ? config.clientId.trim() : '';
   return connectedOverlayPeers.filter((peer) => peer.clientId !== selfClientId);
 }
 
 function buildTrayTooltip(config = loadConfig()) {
-  const suffix = config.deviceName ? ` (${config.deviceName})` : '';
+  const suffixLabel = stripOverlayAutoPrefix(config.deviceName);
+  const suffix = suffixLabel ? ` (${suffixLabel})` : '';
   const status = `Overlay ${getConnectionStateLabel()}${suffix}`;
   const otherActiveOverlays = getOtherActiveOverlays(config);
   const visible = otherActiveOverlays.slice(0, MAX_OTHER_ACTIVE_OVERLAYS_IN_TOOLTIP);
-  const visibleNames = visible.map((peer) => truncateTooltipSegment(peer.label)).filter((label) => label !== '');
+  const visibleNames = visible
+    .map((peer) => truncateTooltipSegment(stripOverlayAutoPrefix(peer.label)))
+    .filter((label) => label !== '');
   const extraCount = Math.max(0, otherActiveOverlays.length - visible.length);
   const namesPart = visibleNames.length > 0 ? `: ${visibleNames.join(', ')}` : ': aucun';
   const extraPart = extraCount > 0 ? ` +${extraCount}` : '';

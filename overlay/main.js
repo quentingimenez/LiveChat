@@ -30,6 +30,7 @@ let overlayConnectionState = 'disconnected';
 let overlayConnectionReason = '';
 let connectedOverlayPeers = [];
 let traySingleLeftClickTimer = null;
+let trayStatusMenuVisible = false;
 let pendingPlaybackStatePayload = null;
 let pendingPlaybackStopPayload = null;
 let activeMemeBindings = {};
@@ -338,7 +339,45 @@ function showTrayStatusMenu() {
     return;
   }
 
-  tray.popUpContextMenu(buildTrayStatusMenu());
+  const statusMenu = buildTrayStatusMenu();
+  trayStatusMenuVisible = true;
+  statusMenu.once('menu-will-close', () => {
+    trayStatusMenuVisible = false;
+  });
+  tray.popUpContextMenu(statusMenu);
+}
+
+function handleTrayLeftClick(event) {
+  if (event && typeof event.button === 'number' && event.button !== 0) {
+    return;
+  }
+
+  if (traySingleLeftClickTimer) {
+    clearTraySingleLeftClickTimer();
+    trayStatusMenuVisible = false;
+    if (tray && typeof tray.closeContextMenu === 'function') {
+      tray.closeContextMenu();
+    }
+    createBoardWindow();
+    return;
+  }
+
+  if (trayStatusMenuVisible) {
+    trayStatusMenuVisible = false;
+    if (tray && typeof tray.closeContextMenu === 'function') {
+      tray.closeContextMenu();
+    }
+    traySingleLeftClickTimer = setTimeout(() => {
+      traySingleLeftClickTimer = null;
+    }, SINGLE_LEFT_CLICK_MENU_DELAY_MS);
+    return;
+  }
+
+  clearTraySingleLeftClickTimer();
+  traySingleLeftClickTimer = setTimeout(() => {
+    traySingleLeftClickTimer = null;
+    showTrayStatusMenu();
+  }, SINGLE_LEFT_CLICK_MENU_DELAY_MS);
 }
 
 function normalizeServerUrl(serverUrl) {
@@ -1221,25 +1260,11 @@ function createTray() {
   tray = new Tray(icon);
 
   updateTrayMenu();
-  tray.on('click', (event) => {
-    if (event && typeof event.button === 'number' && event.button !== 0) {
-      return;
-    }
-
-    clearTraySingleLeftClickTimer();
-    traySingleLeftClickTimer = setTimeout(() => {
-      traySingleLeftClickTimer = null;
-      showTrayStatusMenu();
-    }, SINGLE_LEFT_CLICK_MENU_DELAY_MS);
-  });
+  tray.on('click', handleTrayLeftClick);
 
   tray.on('right-click', () => {
     clearTraySingleLeftClickTimer();
-  });
-
-  tray.on('double-click', () => {
-    clearTraySingleLeftClickTimer();
-    createBoardWindow();
+    trayStatusMenuVisible = false;
   });
 
   screen.on('display-added', updateTrayMenu);

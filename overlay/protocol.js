@@ -5,6 +5,7 @@ const OVERLAY_SOCKET_EVENTS = {
   ERROR: 'overlay:error',
   PLAYBACK_STATE: 'overlay:playback-state',
   MEME_TRIGGER: 'overlay:meme-trigger',
+  PEERS: 'overlay:peers',
 };
 
 module.exports = {

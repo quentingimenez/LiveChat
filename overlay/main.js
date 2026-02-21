@@ -31,6 +31,7 @@ let overlayConnectionReason = '';
 let connectedOverlayPeers = [];
 let traySingleLeftClickTimer = null;
 let trayStatusMenuVisible = false;
+let trayMainMenu = null;
 let pendingPlaybackStatePayload = null;
 let pendingPlaybackStopPayload = null;
 let activeMemeBindings = {};
@@ -286,6 +287,43 @@ function clearTraySingleLeftClickTimer() {
   traySingleLeftClickTimer = null;
 }
 
+function getTrayPopupPosition() {
+  if (!tray || typeof tray.getBounds !== 'function') {
+    return null;
+  }
+
+  const bounds = tray.getBounds();
+  if (!bounds) {
+    return null;
+  }
+
+  const x = Number.isFinite(bounds.x) && Number.isFinite(bounds.width) ? Math.round(bounds.x + bounds.width / 2) : null;
+  const y = Number.isFinite(bounds.y) ? Math.max(0, Math.round(bounds.y - 2)) : null;
+
+  if (x === null || y === null) {
+    return null;
+  }
+
+  return {
+    x,
+    y,
+  };
+}
+
+function popUpTrayMenu(menu) {
+  if (!tray || !menu) {
+    return;
+  }
+
+  const position = getTrayPopupPosition();
+  if (position) {
+    tray.popUpContextMenu(menu, position);
+    return;
+  }
+
+  tray.popUpContextMenu(menu);
+}
+
 function buildTrayStatusMenu() {
   const cfg = loadConfig();
   const selfClientId = typeof cfg.clientId === 'string' ? cfg.clientId.trim() : '';
@@ -344,7 +382,19 @@ function showTrayStatusMenu() {
   statusMenu.once('menu-will-close', () => {
     trayStatusMenuVisible = false;
   });
-  tray.popUpContextMenu(statusMenu);
+  popUpTrayMenu(statusMenu);
+}
+
+function showTrayMainMenu() {
+  if (!trayMainMenu) {
+    updateTrayMenu();
+  }
+
+  if (!trayMainMenu) {
+    return;
+  }
+
+  popUpTrayMenu(trayMainMenu);
 }
 
 function handleTrayLeftClick(event) {
@@ -1252,7 +1302,8 @@ function updateTrayMenu() {
     },
   });
 
-  tray.setContextMenu(Menu.buildFromTemplate(template));
+  trayMainMenu = Menu.buildFromTemplate(template);
+  tray.setContextMenu(null);
 }
 
 function createTray() {
@@ -1265,6 +1316,10 @@ function createTray() {
   tray.on('right-click', () => {
     clearTraySingleLeftClickTimer();
     trayStatusMenuVisible = false;
+    if (tray && typeof tray.closeContextMenu === 'function') {
+      tray.closeContextMenu();
+    }
+    showTrayMainMenu();
   });
 
   screen.on('display-added', updateTrayMenu);

@@ -1341,6 +1341,10 @@ function updateTrayMenu() {
           },
         ]
       : []),
+    {
+      label: `Version: v${app.getVersion()}`,
+      enabled: false,
+    },
     { type: 'separator' },
     {
       label: 'Overlay activé',

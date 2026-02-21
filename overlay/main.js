@@ -75,6 +75,8 @@ const appIconPath = path.join(__dirname, 'icon.png');
 const defaultConfig = {
   displayId: null,
   displayIndex: null,
+  displayKey: null,
+  displayLabel: null,
   volume: 1.0,
   enabled: true,
   autoStart: false,
@@ -474,11 +476,45 @@ function getTargetDisplay() {
     }
   }
 
+  if (typeof cfg.displayKey === 'string' && cfg.displayKey.trim()) {
+    const byKey = displays.find((display, index) => buildDisplayKey(display, index) === cfg.displayKey);
+    if (byKey) {
+      return byKey;
+    }
+  }
+
   if (Number.isInteger(cfg.displayIndex) && displays[cfg.displayIndex]) {
     return displays[cfg.displayIndex];
   }
 
   return screen.getPrimaryDisplay();
+}
+
+function buildDisplayKey(display, index) {
+  const safeIndex = Number.isInteger(index) ? index : -1;
+  const { x, y, width, height } = display.bounds;
+  return `${x},${y},${width},${height},${safeIndex}`;
+}
+
+function getDisplayLabel(display) {
+  const label = `${display?.label || ''}`.trim();
+  return label || null;
+}
+
+function getDisplayConfigUpdate(display, index) {
+  return {
+    displayId: display.id,
+    displayIndex: index,
+    displayKey: buildDisplayKey(display, index),
+    displayLabel: getDisplayLabel(display),
+  };
+}
+
+function formatDisplayMenuLabel(display, index) {
+  const label = getDisplayLabel(display);
+  const nameSuffix = label ? ` - ${label}` : '';
+  const { width, height, x, y } = display.bounds;
+  return `Écran ${index + 1}${nameSuffix} (${width}x${height} @ ${x},${y})`;
 }
 
 function startKeepOnTopLoop() {
@@ -520,10 +556,7 @@ function createOverlayWindow() {
   const displays = screen.getAllDisplays();
   const displayIndex = displays.findIndex((display) => display.id === targetDisplay.id);
 
-  saveConfig({
-    displayId: targetDisplay.id,
-    displayIndex,
-  });
+  saveConfig(getDisplayConfigUpdate(targetDisplay, displayIndex));
 
   const { width, height, x, y } = targetDisplay.bounds;
 
@@ -933,10 +966,7 @@ function applyMemeBindings(nextBindings, options = {}) {
 }
 
 function moveOverlayToDisplay(display, index) {
-  saveConfig({
-    displayId: display.id,
-    displayIndex: index,
-  });
+  saveConfig(getDisplayConfigUpdate(display, index));
 
   if (overlayWindow && !overlayWindow.isDestroyed()) {
     overlayWindow.setBounds({
@@ -975,6 +1005,8 @@ function updateTrayMenu() {
 
   const cfg = loadConfig();
   const displays = screen.getAllDisplays();
+  const selectedDisplay = getTargetDisplay();
+  const selectedDisplayIndex = displays.findIndex((display) => display.id === selectedDisplay.id);
   const autoStartSupported = supportsAutoStart();
   const suffix = cfg.deviceName ? ` (${cfg.deviceName})` : '';
   tray.setToolTip(`Overlay ${getConnectionStateLabel()}${suffix}`);
@@ -1024,16 +1056,21 @@ function updateTrayMenu() {
     },
     { type: 'separator' },
     { label: 'CONFIGURATION ÉCRAN', enabled: false },
+    {
+      label:
+        selectedDisplayIndex >= 0
+          ? `Écran sélectionné: ${formatDisplayMenuLabel(selectedDisplay, selectedDisplayIndex)}`
+          : 'Écran sélectionné: inconnu',
+      enabled: false,
+    },
     { type: 'separator' },
   ];
 
   displays.forEach((display, index) => {
     template.push({
-      label: `Écran ${index + 1} (${display.bounds.width}x${display.bounds.height})`,
+      label: formatDisplayMenuLabel(display, index),
       type: 'radio',
-      checked:
-        (cfg.displayId !== null && display.id === cfg.displayId) ||
-        (cfg.displayId === null && Number.isInteger(cfg.displayIndex) && cfg.displayIndex === index),
+      checked: selectedDisplay.id === display.id,
       click: () => moveOverlayToDisplay(display, index),
     });
   });

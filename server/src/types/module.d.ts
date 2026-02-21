@@ -17,6 +17,7 @@ import type {
   OverlayErrorPayload,
   OverlayHeartbeatPayload,
   OverlayMemeTriggerPayload,
+  OverlayPeersPayload,
   OverlayPlaybackStatePayload,
   OverlayPlayPayload,
   OverlayStopPayload,
@@ -44,6 +45,7 @@ declare global {
   interface ServerToClientEvents {
     'overlay:play': (payload: OverlayPlayPayload) => void;
     'overlay:stop': (payload: OverlayStopPayload) => void;
+    'overlay:peers': (payload: OverlayPeersPayload) => void;
   }
 
   interface InterServerEvents {}

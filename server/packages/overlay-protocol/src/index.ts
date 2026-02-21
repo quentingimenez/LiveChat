@@ -7,6 +7,7 @@ export const OVERLAY_SOCKET_EVENTS = {
   ERROR: 'overlay:error',
   PLAYBACK_STATE: 'overlay:playback-state',
   MEME_TRIGGER: 'overlay:meme-trigger',
+  PEERS: 'overlay:peers',
 } as const;
 
 export type OverlaySocketEventName = (typeof OVERLAY_SOCKET_EVENTS)[keyof typeof OVERLAY_SOCKET_EVENTS];
@@ -70,6 +71,16 @@ export interface OverlayPlaybackStatePayload {
 export interface OverlayMemeTriggerPayload {
   itemId: string;
   trigger: 'shortcut' | 'ui';
+}
+
+export interface OverlayPeerInfo {
+  clientId: string;
+  label: string;
+}
+
+export interface OverlayPeersPayload {
+  guildId: string;
+  peers: OverlayPeerInfo[];
 }
 
 export interface OverlayPairConsumeRequest {

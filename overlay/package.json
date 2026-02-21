@@ -1,16 +1,16 @@
 {
-  "name": "overlay-client",
+  "name": "livechat",
   "version": "1.0.0",
   "main": "main.js",
-  "description": "Overlay Client LiveChat",
+  "description": "LiveChat Desktop App",
   "author": "Babz",
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder"
   },
   "build": {
-    "appId": "com.overlay.client",
-    "productName": "Overlay-Client",
+    "appId": "com.livechat",
+    "productName": "LiveChat",
     "files": [
       "main.js",
       "preload.js",

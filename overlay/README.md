@@ -51,8 +51,8 @@ Les nightlies macOS sont distribuées sans certificat Apple (pas de secrets requ
 Le comportement attendu est un warning Gatekeeper, puis ouverture manuelle:
 clic droit sur l'app -> `Ouvrir` -> confirmer.
 
-Si macOS affiche quand même `"Overlay-Client est endommagé..."`, retire la quarantaine:
+Si macOS affiche quand même `"LiveChat est endommagé..."`, retire la quarantaine:
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/Overlay-Client.app"
+xattr -dr com.apple.quarantine "/Applications/LiveChat.app"
 ```

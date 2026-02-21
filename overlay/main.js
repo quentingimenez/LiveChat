@@ -243,12 +243,48 @@ function supportsAutoStart() {
   return process.platform === 'win32' || process.platform === 'darwin';
 }
 
+function getWindowsAutoStartExecutablePath() {
+  if (process.platform !== 'win32') {
+    return null;
+  }
+
+  const portableExecutableFile = `${process.env.PORTABLE_EXECUTABLE_FILE || ''}`.trim();
+  if (portableExecutableFile) {
+    return portableExecutableFile;
+  }
+
+  return process.execPath;
+}
+
+function getWindowsAutoStartLoginItemOptions() {
+  if (process.platform !== 'win32') {
+    return null;
+  }
+
+  const executablePath = getWindowsAutoStartExecutablePath();
+  if (!executablePath) {
+    return null;
+  }
+
+  return {
+    path: executablePath,
+    args: [],
+  };
+}
+
 function getSystemAutoStartEnabled() {
   if (!supportsAutoStart()) {
     return false;
   }
 
   try {
+    if (process.platform === 'win32') {
+      const winOptions = getWindowsAutoStartLoginItemOptions();
+      const settings = app.getLoginItemSettings(winOptions || undefined);
+
+      return settings.executableWillLaunchAtLogin === true || settings.openAtLogin === true;
+    }
+
     return app.getLoginItemSettings().openAtLogin === true;
   } catch (error) {
     console.error('Unable to read auto-start setting:', error);
@@ -274,8 +310,12 @@ function applyAutoStartSetting(enabled) {
     }
 
     if (process.platform === 'win32') {
-      loginItemSettings.path = process.execPath;
-      loginItemSettings.args = [];
+      const winOptions = getWindowsAutoStartLoginItemOptions();
+      if (winOptions) {
+        loginItemSettings.path = winOptions.path;
+        loginItemSettings.args = winOptions.args;
+      }
+      loginItemSettings.enabled = nextEnabled;
     }
 
     app.setLoginItemSettings(loginItemSettings);

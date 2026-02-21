@@ -41,6 +41,7 @@
     resolveDeleteDialog: null,
     search: '',
   };
+  const VOLUME_CURVE_GAMMA = 2.2;
 
   const setStatus = (message, variant = 'success') => {
     statusNode.textContent = message;
@@ -113,6 +114,32 @@
     }
 
     return url;
+  };
+
+  const clamp01 = (value) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return 1;
+    }
+
+    return Math.min(1, Math.max(0, value));
+  };
+
+  const toPerceptualGain = (linearVolume) => {
+    const normalized = clamp01(linearVolume);
+    return Math.pow(normalized, VOLUME_CURVE_GAMMA);
+  };
+
+  const applyPreviewVolume = (root = previewStageNode) => {
+    if (!root) {
+      return;
+    }
+
+    const gain = toPerceptualGain(state.config?.volume);
+    const mediaElements = root.querySelectorAll('audio,video');
+    mediaElements.forEach((element) => {
+      element.volume = gain;
+      element.muted = false;
+    });
   };
 
   const findSelectedItem = () => {
@@ -390,6 +417,7 @@
 
     previewStageNode.appendChild(mediaNode);
     previewStageNode.appendChild(controlsNode);
+    applyPreviewVolume();
 
     const shortcuts = getItemShortcuts(selectedItem.id);
     selectedMetaNode.textContent = `${toCardTitle(selectedItem)} | ${selectedItem.media?.kind || 'MEDIA'} | Raccourci: ${
@@ -1207,6 +1235,14 @@
 
     const bindingsResult = await window.livechatOverlay.getMemeBindings();
     state.bindings = bindingsResult?.bindings || {};
+
+    window.livechatOverlay.onSettings((nextSettings) => {
+      state.config = {
+        ...(state.config || {}),
+        ...(nextSettings || {}),
+      };
+      applyPreviewVolume();
+    });
 
     await loadItemsAndRender();
   };

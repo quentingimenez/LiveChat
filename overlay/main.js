@@ -31,6 +31,7 @@ let overlayConnectionReason = '';
 let connectedOverlayPeers = [];
 let traySingleLeftClickTimer = null;
 let trayStatusMenuVisible = false;
+let trayMainMenuVisible = false;
 let trayMainMenu = null;
 let pendingPlaybackStatePayload = null;
 let pendingPlaybackStopPayload = null;
@@ -378,6 +379,7 @@ function showTrayStatusMenu() {
   }
 
   const statusMenu = buildTrayStatusMenu();
+  trayMainMenuVisible = false;
   trayStatusMenuVisible = true;
   statusMenu.once('menu-will-close', () => {
     trayStatusMenuVisible = false;
@@ -394,11 +396,17 @@ function showTrayMainMenu() {
     return;
   }
 
+  trayStatusMenuVisible = false;
+  trayMainMenuVisible = true;
+  trayMainMenu.once('menu-will-close', () => {
+    trayMainMenuVisible = false;
+  });
   popUpTrayMenu(trayMainMenu);
 }
 
 function closeTrayContextMenu() {
   trayStatusMenuVisible = false;
+  trayMainMenuVisible = false;
   if (tray && typeof tray.closeContextMenu === 'function') {
     tray.closeContextMenu();
   }
@@ -415,13 +423,19 @@ function handleTrayLeftClick(event) {
     return;
   }
 
+  const hasVisibleMenu = trayStatusMenuVisible || trayMainMenuVisible;
+
   if (traySingleLeftClickTimer) {
     clearTraySingleLeftClickTimer();
     return;
   }
 
-  if (trayStatusMenuVisible) {
+  if (hasVisibleMenu) {
     closeTrayContextMenu();
+    traySingleLeftClickTimer = setTimeout(() => {
+      traySingleLeftClickTimer = null;
+      showTrayStatusMenu();
+    }, 25);
     return;
   }
 

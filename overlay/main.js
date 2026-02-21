@@ -28,6 +28,8 @@ let keepOnTopInterval;
 let heartbeatInterval;
 let overlayConnectionState = 'disconnected';
 let overlayConnectionReason = '';
+let connectedOverlayPeers = [];
+let traySingleLeftClickTimer = null;
 let pendingPlaybackStatePayload = null;
 let pendingPlaybackStopPayload = null;
 let activeMemeBindings = {};
@@ -90,6 +92,8 @@ const defaultConfig = {
 };
 
 const MANUAL_RELOAD_SHORTCUT = 'Shift+Escape';
+const MAX_OTHER_ACTIVE_OVERLAYS_IN_MENU = 8;
+const SINGLE_LEFT_CLICK_MENU_DELAY_MS = 240;
 
 const CONNECTION_STATE_LABELS = {
   disabled: 'Désactivé',
@@ -234,6 +238,107 @@ function setOverlayConnectionState(nextState, reason = '') {
   }
 
   updateTrayMenu();
+}
+
+function normalizeOverlayPeers(peers) {
+  if (!Array.isArray(peers)) {
+    return [];
+  }
+
+  const peersByClientId = new Map();
+
+  for (const rawPeer of peers) {
+    const clientId = `${rawPeer?.clientId || ''}`.trim();
+    const label = `${rawPeer?.label || ''}`.trim() || 'unknown-device';
+
+    if (!clientId || peersByClientId.has(clientId)) {
+      continue;
+    }
+
+    peersByClientId.set(clientId, {
+      clientId,
+      label,
+    });
+  }
+
+  return Array.from(peersByClientId.values()).sort((a, b) => {
+    const labelOrder = a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
+    if (labelOrder !== 0) {
+      return labelOrder;
+    }
+
+    return a.clientId.localeCompare(b.clientId, undefined, { sensitivity: 'base' });
+  });
+}
+
+function setConnectedOverlayPeers(peers) {
+  connectedOverlayPeers = normalizeOverlayPeers(peers);
+  updateTrayMenu();
+}
+
+function clearTraySingleLeftClickTimer() {
+  if (!traySingleLeftClickTimer) {
+    return;
+  }
+
+  clearTimeout(traySingleLeftClickTimer);
+  traySingleLeftClickTimer = null;
+}
+
+function buildTrayStatusMenu() {
+  const cfg = loadConfig();
+  const selfClientId = typeof cfg.clientId === 'string' ? cfg.clientId.trim() : '';
+  const otherActiveOverlays = connectedOverlayPeers.filter((peer) => peer.clientId !== selfClientId);
+  const visibleOtherActiveOverlays = otherActiveOverlays.slice(0, MAX_OTHER_ACTIVE_OVERLAYS_IN_MENU);
+
+  const template = [
+    {
+      label: `Statut connexion: ${getConnectionStateLabel()}`,
+      enabled: false,
+    },
+    ...(overlayConnectionReason
+      ? [
+          {
+            label: `Raison: ${overlayConnectionReason}`,
+            enabled: false,
+          },
+        ]
+      : []),
+    { type: 'separator' },
+    {
+      label: `Autres overlays actifs: ${otherActiveOverlays.length}`,
+      enabled: false,
+    },
+    ...(visibleOtherActiveOverlays.length > 0
+      ? visibleOtherActiveOverlays.map((peer) => ({
+          label: `- ${peer.label}`,
+          enabled: false,
+        }))
+      : [
+          {
+            label: '- Aucun',
+            enabled: false,
+          },
+        ]),
+    ...(otherActiveOverlays.length > visibleOtherActiveOverlays.length
+      ? [
+          {
+            label: `- +${otherActiveOverlays.length - visibleOtherActiveOverlays.length} autre(s)`,
+            enabled: false,
+          },
+        ]
+      : []),
+  ];
+
+  return Menu.buildFromTemplate(template);
+}
+
+function showTrayStatusMenu() {
+  if (!tray) {
+    return;
+  }
+
+  tray.popUpContextMenu(buildTrayStatusMenu());
 }
 
 function normalizeServerUrl(serverUrl) {
@@ -709,6 +814,7 @@ function disconnectOverlaySocket(options = {}) {
   const keepStatus = options.keepStatus === true;
 
   stopHeartbeatLoop();
+  setConnectedOverlayPeers([]);
 
   if (overlaySocket) {
     overlaySocket.disconnect();
@@ -788,8 +894,20 @@ function connectOverlaySocket() {
     overlayWindow.webContents.send('overlay:stop', payload);
   });
 
+  overlaySocket.on(OVERLAY_SOCKET_EVENTS.PEERS, (payload) => {
+    const payloadGuildId = `${payload?.guildId || ''}`.trim();
+    const currentGuildId = `${loadConfig().guildId || ''}`.trim();
+
+    if (payloadGuildId && currentGuildId && payloadGuildId !== currentGuildId) {
+      return;
+    }
+
+    setConnectedOverlayPeers(payload?.peers);
+  });
+
   overlaySocket.on('disconnect', (reason) => {
     stopHeartbeatLoop();
+    setConnectedOverlayPeers([]);
     const current = loadConfig();
 
     if (!current.enabled) {
@@ -811,6 +929,7 @@ function connectOverlaySocket() {
   });
 
   overlaySocket.on('connect_error', (error) => {
+    setConnectedOverlayPeers([]);
     console.error('Overlay socket connection failed:', error?.message || error);
     setOverlayConnectionState('error', error?.message || 'connect_error');
   });
@@ -1102,7 +1221,24 @@ function createTray() {
   tray = new Tray(icon);
 
   updateTrayMenu();
+  tray.on('click', (event) => {
+    if (event && typeof event.button === 'number' && event.button !== 0) {
+      return;
+    }
+
+    clearTraySingleLeftClickTimer();
+    traySingleLeftClickTimer = setTimeout(() => {
+      traySingleLeftClickTimer = null;
+      showTrayStatusMenu();
+    }, SINGLE_LEFT_CLICK_MENU_DELAY_MS);
+  });
+
+  tray.on('right-click', () => {
+    clearTraySingleLeftClickTimer();
+  });
+
   tray.on('double-click', () => {
+    clearTraySingleLeftClickTimer();
     createBoardWindow();
   });
 

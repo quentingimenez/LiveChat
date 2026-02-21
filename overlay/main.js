@@ -4,6 +4,7 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const { io } = require('socket.io-client');
+const { autoUpdater } = require('electron-updater');
 const { OVERLAY_SOCKET_EVENTS } = require('./protocol');
 
 const WINDOWS_APP_USER_MODEL_ID = 'com.livechat';
@@ -33,6 +34,10 @@ let trayMainMenu = null;
 let pendingPlaybackStatePayload = null;
 let pendingPlaybackStopPayload = null;
 let activeMemeBindings = {};
+let autoUpdateState = 'idle';
+let autoUpdateReason = '';
+let autoUpdaterInitialized = false;
+let isQuittingForUpdate = false;
 
 if (hasSingleInstanceLock) {
   app.on('second-instance', () => {
@@ -93,6 +98,7 @@ const defaultConfig = {
 
 const MANUAL_RELOAD_SHORTCUT = 'Shift+Escape';
 const MAX_OTHER_ACTIVE_OVERLAYS_IN_TOOLTIP = 2;
+const STARTUP_AUTO_UPDATE_TIMEOUT_MS = 30000;
 
 const CONNECTION_STATE_LABELS = {
   disabled: 'Désactivé',
@@ -101,6 +107,17 @@ const CONNECTION_STATE_LABELS = {
   reconnecting: 'Reconnexion...',
   connected: 'Connecté',
   disconnected: 'Déconnecté',
+  error: 'Erreur',
+};
+
+const AUTO_UPDATE_STATE_LABELS = {
+  disabled: 'Désactivée',
+  idle: 'Inactif',
+  checking: 'Vérification...',
+  downloading: 'Téléchargement...',
+  downloaded: 'Téléchargée (au prochain redémarrage)',
+  installing: 'Installation...',
+  up_to_date: 'À jour',
   error: 'Erreur',
 };
 
@@ -375,6 +392,139 @@ function openBoardFromTray() {
 
 function normalizeServerUrl(serverUrl) {
   return serverUrl.trim().replace(/\/+$/, '');
+}
+
+function normalizeAutoUpdateReason(reason, maxLength = 90) {
+  const normalized = `${reason || ''}`.trim().replace(/\s+/g, ' ');
+  if (!normalized) {
+    return '';
+  }
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, Math.max(1, maxLength - 1))}…`;
+}
+
+function getAutoUpdateStateLabel() {
+  return AUTO_UPDATE_STATE_LABELS[autoUpdateState] || autoUpdateState;
+}
+
+function setAutoUpdateState(nextState, reason = '') {
+  autoUpdateState = nextState;
+  autoUpdateReason = normalizeAutoUpdateReason(reason);
+  updateTrayMenu();
+}
+
+function supportsStartupAutoUpdate() {
+  return process.platform === 'win32' && app.isPackaged;
+}
+
+function initializeAutoUpdater() {
+  if (autoUpdaterInitialized) {
+    return;
+  }
+
+  autoUpdaterInitialized = true;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on('checking-for-update', () => {
+    setAutoUpdateState('checking');
+  });
+
+  autoUpdater.on('update-available', (info) => {
+    const nextVersion = `${info?.version || ''}`.trim();
+    const reason = nextVersion ? `Nouvelle version: ${nextVersion}` : '';
+    setAutoUpdateState('downloading', reason);
+  });
+
+  autoUpdater.on('update-not-available', () => {
+    setAutoUpdateState('up_to_date');
+  });
+
+  autoUpdater.on('download-progress', () => {
+    if (autoUpdateState !== 'downloading') {
+      setAutoUpdateState('downloading');
+    }
+  });
+
+  autoUpdater.on('update-downloaded', (info) => {
+    const nextVersion = `${info?.version || ''}`.trim();
+    const reason = nextVersion ? `Prête: ${nextVersion}` : '';
+    setAutoUpdateState('downloaded', reason);
+  });
+
+  autoUpdater.on('error', (error) => {
+    const message = `${error?.message || error || 'unknown_update_error'}`.trim();
+    console.error('Auto-update failed:', error);
+    setAutoUpdateState('error', message || 'check_failed');
+  });
+}
+
+async function runStartupAutoUpdateCheck() {
+  if (!supportsStartupAutoUpdate()) {
+    const reason = app.isPackaged ? 'plateforme non supportée' : 'mode développement';
+    setAutoUpdateState('disabled', reason);
+    return;
+  }
+
+  initializeAutoUpdater();
+  setAutoUpdateState('idle');
+
+  await new Promise((resolve) => {
+    let settled = false;
+    let timeoutHandle = null;
+
+    function cleanup() {
+      autoUpdater.removeListener('update-not-available', onUpdateNotAvailable);
+      autoUpdater.removeListener('error', onUpdateError);
+      autoUpdater.removeListener('update-downloaded', onUpdateDownloaded);
+    }
+
+    function finalize() {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timeoutHandle);
+      cleanup();
+      resolve();
+    }
+
+    function onUpdateNotAvailable() {
+      finalize();
+    }
+
+    function onUpdateError() {
+      finalize();
+    }
+
+    function onUpdateDownloaded() {
+      setAutoUpdateState('installing');
+      isQuittingForUpdate = true;
+      autoUpdater.quitAndInstall(false, true);
+      finalize();
+    }
+
+    timeoutHandle = setTimeout(() => {
+      if (autoUpdateState === 'checking' || autoUpdateState === 'downloading') {
+        setAutoUpdateState(autoUpdateState, 'délai dépassé au démarrage');
+      }
+      finalize();
+    }, STARTUP_AUTO_UPDATE_TIMEOUT_MS);
+
+    autoUpdater.on('update-not-available', onUpdateNotAvailable);
+    autoUpdater.on('error', onUpdateError);
+    autoUpdater.on('update-downloaded', onUpdateDownloaded);
+
+    autoUpdater.checkForUpdates().catch((error) => {
+      console.error('Unable to check updates on startup:', error);
+      finalize();
+    });
+  });
 }
 
 function supportsAutoStart() {
@@ -1179,6 +1329,18 @@ function updateTrayMenu() {
           },
         ]
       : []),
+    {
+      label: `Mise à jour: ${getAutoUpdateStateLabel()}`,
+      enabled: false,
+    },
+    ...(autoUpdateReason
+      ? [
+          {
+            label: `Info MAJ: ${autoUpdateReason}`,
+            enabled: false,
+          },
+        ]
+      : []),
     { type: 'separator' },
     {
       label: 'Overlay activé',
@@ -1477,6 +1639,11 @@ app.whenReady().then(async () => {
 
   createTray();
   registerShortcuts();
+  await runStartupAutoUpdateCheck();
+
+  if (isQuittingForUpdate) {
+    return;
+  }
 
   const cfg = loadConfig();
 
@@ -1518,6 +1685,10 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   // Keep app running in tray.
+});
+
+app.on('before-quit-for-update', () => {
+  isQuittingForUpdate = true;
 });
 
 app.on('will-quit', () => {

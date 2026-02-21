@@ -80,11 +80,11 @@ jobs:
             }
           }
 
-      - name: Build Windows EXE (electron-builder)
+      - name: Build Windows installer (electron-builder)
         env:
           ELECTRON_CACHE: ${{ github.workspace }}\.cache\electron
           ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\.cache\electron-builder
-        run: npm run dist -- --win portable --publish never
+        run: npm run dist -- --win --publish never
 
       - name: List dist outputs
         shell: pwsh
@@ -98,7 +98,16 @@ jobs:
           GH_REPO: ${{ github.repository }}
         shell: pwsh
         run: |
-          gh release upload nightly "dist/*.exe" --clobber
+          $ErrorActionPreference = 'Stop'
+          $files = @()
+          $files += Get-ChildItem -Path "dist" -Filter "*.exe" -File | ForEach-Object { $_.FullName }
+          if (Test-Path "dist/latest.yml") {
+            $files += (Resolve-Path "dist/latest.yml").Path
+          }
+          $files += Get-ChildItem -Path "dist" -Filter "*.blockmap" -File | ForEach-Object { $_.FullName }
+
+          if ($files.Count -eq 0) { throw "No Windows assets found in dist/" }
+          gh release upload nightly $files --clobber
 
   build-macos:
     runs-on: macos-latest

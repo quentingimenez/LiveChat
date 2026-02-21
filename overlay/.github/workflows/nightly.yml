@@ -43,7 +43,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Cache Electron + electron-builder
@@ -56,8 +56,29 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-electron-
 
-      - name: Install dependencies
-        run: npm install
+      - name: Install dependencies (with retry)
+        shell: pwsh
+        env:
+          ELECTRON_CACHE: ${{ github.workspace }}\.cache\electron
+          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\.cache\electron-builder
+          npm_config_fetch_retries: 5
+          npm_config_fetch_retry_mintimeout: 20000
+          npm_config_fetch_retry_maxtimeout: 120000
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            try {
+              npm ci
+              break
+            } catch {
+              if ($attempt -eq $maxAttempts) {
+                throw
+              }
+              Write-Host "Install failed (attempt $attempt/$maxAttempts), retrying in 20s..."
+              Start-Sleep -Seconds 20
+            }
+          }
 
       - name: Build Windows EXE (electron-builder)
         env:
@@ -90,7 +111,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Cache Electron + electron-builder
@@ -103,8 +124,27 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-electron-
 
-      - name: Install dependencies
-        run: npm install
+      - name: Install dependencies (with retry)
+        shell: bash
+        env:
+          ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+          npm_config_fetch_retries: 5
+          npm_config_fetch_retry_mintimeout: 20000
+          npm_config_fetch_retry_maxtimeout: 120000
+        run: |
+          set -euo pipefail
+          attempts=3
+          for attempt in $(seq 1 "$attempts"); do
+            if npm ci; then
+              break
+            fi
+            if [ "$attempt" -eq "$attempts" ]; then
+              exit 1
+            fi
+            echo "Install failed (attempt $attempt/$attempts), retrying in 20s..."
+            sleep 20
+          done
 
       - name: Build macOS binaries (electron-builder)
         env:

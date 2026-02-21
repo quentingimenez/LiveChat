@@ -29,9 +29,6 @@ let heartbeatInterval;
 let overlayConnectionState = 'disconnected';
 let overlayConnectionReason = '';
 let connectedOverlayPeers = [];
-let traySingleLeftClickTimer = null;
-let trayStatusMenuVisible = false;
-let trayMainMenuVisible = false;
 let trayMainMenu = null;
 let pendingPlaybackStatePayload = null;
 let pendingPlaybackStopPayload = null;
@@ -95,8 +92,7 @@ const defaultConfig = {
 };
 
 const MANUAL_RELOAD_SHORTCUT = 'Shift+Escape';
-const MAX_OTHER_ACTIVE_OVERLAYS_IN_MENU = 8;
-const SINGLE_LEFT_CLICK_MENU_DELAY_MS = 180;
+const MAX_OTHER_ACTIVE_OVERLAYS_IN_TOOLTIP = 2;
 
 const CONNECTION_STATE_LABELS = {
   disabled: 'Désactivé',
@@ -234,12 +230,6 @@ function setOverlayConnectionState(nextState, reason = '') {
   overlayConnectionState = nextState;
   overlayConnectionReason = typeof reason === 'string' ? reason.trim() : '';
 
-  if (tray) {
-    const cfg = loadConfig();
-    const suffix = cfg.deviceName ? ` (${cfg.deviceName})` : '';
-    tray.setToolTip(`Overlay ${getConnectionStateLabel()}${suffix}`);
-  }
-
   updateTrayMenu();
 }
 
@@ -279,13 +269,35 @@ function setConnectedOverlayPeers(peers) {
   updateTrayMenu();
 }
 
-function clearTraySingleLeftClickTimer() {
-  if (!traySingleLeftClickTimer) {
-    return;
+function truncateTooltipSegment(value, maxLength = 18) {
+  const normalized = `${value || ''}`.trim();
+  if (!normalized) {
+    return '';
   }
 
-  clearTimeout(traySingleLeftClickTimer);
-  traySingleLeftClickTimer = null;
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, Math.max(1, maxLength - 1))}…`;
+}
+
+function getOtherActiveOverlays(config = loadConfig()) {
+  const selfClientId = typeof config.clientId === 'string' ? config.clientId.trim() : '';
+  return connectedOverlayPeers.filter((peer) => peer.clientId !== selfClientId);
+}
+
+function buildTrayTooltip(config = loadConfig()) {
+  const suffix = config.deviceName ? ` (${config.deviceName})` : '';
+  const status = `Overlay ${getConnectionStateLabel()}${suffix}`;
+  const otherActiveOverlays = getOtherActiveOverlays(config);
+  const visible = otherActiveOverlays.slice(0, MAX_OTHER_ACTIVE_OVERLAYS_IN_TOOLTIP);
+  const visibleNames = visible.map((peer) => truncateTooltipSegment(peer.label)).filter((label) => label !== '');
+  const extraCount = Math.max(0, otherActiveOverlays.length - visible.length);
+  const namesPart = visibleNames.length > 0 ? `: ${visibleNames.join(', ')}` : ': aucun';
+  const extraPart = extraCount > 0 ? ` +${extraCount}` : '';
+
+  return `${status} | Autres: ${otherActiveOverlays.length}${namesPart}${extraPart}`;
 }
 
 function getTrayPopupPosition() {
@@ -325,68 +337,6 @@ function popUpTrayMenu(menu) {
   tray.popUpContextMenu(menu);
 }
 
-function buildTrayStatusMenu() {
-  const cfg = loadConfig();
-  const selfClientId = typeof cfg.clientId === 'string' ? cfg.clientId.trim() : '';
-  const otherActiveOverlays = connectedOverlayPeers.filter((peer) => peer.clientId !== selfClientId);
-  const visibleOtherActiveOverlays = otherActiveOverlays.slice(0, MAX_OTHER_ACTIVE_OVERLAYS_IN_MENU);
-
-  const template = [
-    {
-      label: `Statut connexion: ${getConnectionStateLabel()}`,
-      enabled: false,
-    },
-    ...(overlayConnectionReason
-      ? [
-          {
-            label: `Raison: ${overlayConnectionReason}`,
-            enabled: false,
-          },
-        ]
-      : []),
-    { type: 'separator' },
-    {
-      label: `Autres overlays actifs: ${otherActiveOverlays.length}`,
-      enabled: false,
-    },
-    ...(visibleOtherActiveOverlays.length > 0
-      ? visibleOtherActiveOverlays.map((peer) => ({
-          label: `- ${peer.label}`,
-          enabled: false,
-        }))
-      : [
-          {
-            label: '- Aucun',
-            enabled: false,
-          },
-        ]),
-    ...(otherActiveOverlays.length > visibleOtherActiveOverlays.length
-      ? [
-          {
-            label: `- +${otherActiveOverlays.length - visibleOtherActiveOverlays.length} autre(s)`,
-            enabled: false,
-          },
-        ]
-      : []),
-  ];
-
-  return Menu.buildFromTemplate(template);
-}
-
-function showTrayStatusMenu() {
-  if (!tray) {
-    return;
-  }
-
-  const statusMenu = buildTrayStatusMenu();
-  trayMainMenuVisible = false;
-  trayStatusMenuVisible = true;
-  statusMenu.once('menu-will-close', () => {
-    trayStatusMenuVisible = false;
-  });
-  popUpTrayMenu(statusMenu);
-}
-
 function showTrayMainMenu() {
   if (!trayMainMenu) {
     updateTrayMenu();
@@ -396,54 +346,18 @@ function showTrayMainMenu() {
     return;
   }
 
-  trayStatusMenuVisible = false;
-  trayMainMenuVisible = true;
-  trayMainMenu.once('menu-will-close', () => {
-    trayMainMenuVisible = false;
-  });
   popUpTrayMenu(trayMainMenu);
 }
 
 function closeTrayContextMenu() {
-  trayStatusMenuVisible = false;
-  trayMainMenuVisible = false;
   if (tray && typeof tray.closeContextMenu === 'function') {
     tray.closeContextMenu();
   }
 }
 
 function openBoardFromTray() {
-  clearTraySingleLeftClickTimer();
   closeTrayContextMenu();
   createBoardWindow();
-}
-
-function handleTrayLeftClick(event) {
-  if (event && typeof event.button === 'number' && event.button !== 0) {
-    return;
-  }
-
-  const hasVisibleMenu = trayStatusMenuVisible || trayMainMenuVisible;
-
-  if (traySingleLeftClickTimer) {
-    clearTraySingleLeftClickTimer();
-    return;
-  }
-
-  if (hasVisibleMenu) {
-    closeTrayContextMenu();
-    traySingleLeftClickTimer = setTimeout(() => {
-      traySingleLeftClickTimer = null;
-      showTrayStatusMenu();
-    }, 25);
-    return;
-  }
-
-  clearTraySingleLeftClickTimer();
-  traySingleLeftClickTimer = setTimeout(() => {
-    traySingleLeftClickTimer = null;
-    showTrayStatusMenu();
-  }, SINGLE_LEFT_CLICK_MENU_DELAY_MS);
 }
 
 function normalizeServerUrl(serverUrl) {
@@ -1231,8 +1145,7 @@ function updateTrayMenu() {
   const selectedDisplay = getTargetDisplay();
   const selectedDisplayIndex = displays.findIndex((display) => display.id === selectedDisplay.id);
   const autoStartSupported = supportsAutoStart();
-  const suffix = cfg.deviceName ? ` (${cfg.deviceName})` : '';
-  tray.setToolTip(`Overlay ${getConnectionStateLabel()}${suffix}`);
+  tray.setToolTip(buildTrayTooltip(cfg));
 
   const template = [
     {
@@ -1327,13 +1240,11 @@ function createTray() {
   tray = new Tray(icon);
 
   updateTrayMenu();
-  tray.on('click', handleTrayLeftClick);
   tray.on('double-click', () => {
     openBoardFromTray();
   });
 
   tray.on('right-click', () => {
-    clearTraySingleLeftClickTimer();
     closeTrayContextMenu();
     showTrayMainMenu();
   });

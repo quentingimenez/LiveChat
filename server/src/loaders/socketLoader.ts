@@ -38,6 +38,53 @@ const getTokenFromSocketHandshake = (socket) => {
   return null;
 };
 
+const listConnectedOverlayPeers = async (fastify: FastifyCustomInstance, guildId: string) => {
+  const roomName = `overlay-guild-${guildId}`;
+  const sockets = await fastify.io.in(roomName).fetchSockets();
+  const peersByClientId = new Map<string, { clientId: string; label: string }>();
+
+  for (const roomSocket of sockets) {
+    const clientId =
+      typeof roomSocket.data?.overlayClientId === 'string' && roomSocket.data.overlayClientId.trim() !== ''
+        ? roomSocket.data.overlayClientId.trim()
+        : '';
+    const label =
+      typeof roomSocket.data?.overlayClientLabel === 'string' && roomSocket.data.overlayClientLabel.trim() !== ''
+        ? roomSocket.data.overlayClientLabel.trim()
+        : 'unknown-device';
+
+    if (!clientId || peersByClientId.has(clientId)) {
+      continue;
+    }
+
+    peersByClientId.set(clientId, {
+      clientId,
+      label,
+    });
+  }
+
+  return Array.from(peersByClientId.values()).sort((a, b) => {
+    const labelOrder = a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
+    if (labelOrder !== 0) {
+      return labelOrder;
+    }
+
+    return a.clientId.localeCompare(b.clientId, undefined, { sensitivity: 'base' });
+  });
+};
+
+const broadcastOverlayPeers = async (fastify: FastifyCustomInstance, guildId: string) => {
+  const peers = await listConnectedOverlayPeers(fastify, guildId);
+  const roomName = `overlay-guild-${guildId}`;
+
+  fastify.io.to(roomName).emit(OVERLAY_SOCKET_EVENTS.PEERS, {
+    guildId,
+    peers,
+  });
+
+  logger.debug(`[OVERLAY] Peers updated for guild ${guildId} (count: ${peers.length})`);
+};
+
 export const loadSocket = (fastify: FastifyCustomInstance) => {
   logger.info(`[Socket] Socket loaded`);
 
@@ -105,6 +152,9 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
     logger.info(
       `[OVERLAY] Connected: ${clientLabel} (clientId: ${socket.data.overlayClientId}, socket: ${socket.id}, guild: ${guildId}, roomSize: ${roomSize})`,
     );
+    void broadcastOverlayPeers(fastify, guildId).catch((error) => {
+      logger.warn({ err: error, guildId }, '[OVERLAY] Failed to broadcast peers after connect');
+    });
 
     socket.on(OVERLAY_SOCKET_EVENTS.HEARTBEAT, async (payload: OverlayHeartbeatPayload) => {
       logger.debug(
@@ -352,6 +402,9 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
     socket.on('disconnect', async (reason) => {
       const roomNameAfterDisconnect = `overlay-guild-${guildId}`;
       const remainingClients = fastify.io.sockets.adapter.rooms.get(roomNameAfterDisconnect)?.size ?? 0;
+      await broadcastOverlayPeers(fastify, guildId).catch((error) => {
+        logger.warn({ err: error, guildId }, '[OVERLAY] Failed to broadcast peers after disconnect');
+      });
 
       if (remainingClients > 0) {
         return;

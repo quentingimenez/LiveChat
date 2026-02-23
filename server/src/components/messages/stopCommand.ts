@@ -1,6 +1,7 @@
 import { CommandInteraction, EmbedBuilder, SlashCommandBuilder } from 'discord.js';
 import { PlaybackJobStatus } from '../../services/prisma/prismaEnums';
 import { OVERLAY_SOCKET_EVENTS } from '@livechat/overlay-protocol';
+import { getPlaybackScheduler } from '../../services/playbackScheduler';
 
 export const stopCommand = (fastify: FastifyCustomInstance) => ({
   data: new SlashCommandBuilder()
@@ -37,6 +38,11 @@ export const stopCommand = (fastify: FastifyCustomInstance) => ({
     logger.info(
       `[PLAYBACK] Stop command released ${releasedJobs.count} playing job(s) for guild ${interaction.guildId!}`,
     );
+
+    const playbackScheduler = getPlaybackScheduler();
+    if (playbackScheduler) {
+      await playbackScheduler.onManualStop(interaction.guildId!);
+    }
 
     await interaction.reply({
       embeds: [

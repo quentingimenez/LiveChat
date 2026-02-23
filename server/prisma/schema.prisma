@@ -59,7 +59,12 @@ model PlaybackJob {
   authorImage String?
 
   durationSec  Int
+  priority     Int      @default(0)
   status       String   @default("PENDING")
+  resumesAfterJobId String?
+  resumeOffsetSec Int? @default(0)
+  remainingMsSnapshot Int?
+  lastPlaybackStateAt DateTime?
 
   submissionDate DateTime @default(now())
   executionDate  DateTime @default(now())
@@ -71,6 +76,8 @@ model PlaybackJob {
   @@index([status, executionDate])
   @@index([guildId, mediaAssetId])
   @@index([status, finishedAt])
+  @@index([guildId, status, priority, submissionDate])
+  @@index([guildId, status, resumesAfterJobId])
 }
 
 model Guild {

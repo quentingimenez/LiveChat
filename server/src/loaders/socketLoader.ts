@@ -1,7 +1,6 @@
-import { addMilliseconds } from 'date-fns';
 import { hashOverlayToken } from '../services/overlayAuth';
 import { createPlaybackJob } from '../services/playbackJobs';
-import { MediaAssetStatus, PlaybackJobStatus } from '../services/prisma/prismaEnums';
+import { MediaAssetStatus } from '../services/prisma/prismaEnums';
 import {
   OVERLAY_SOCKET_EVENTS,
   type OverlayErrorPayload,
@@ -10,8 +9,7 @@ import {
   type OverlayPlaybackStatePayload,
   type OverlayStopPayload,
 } from '@livechat/overlay-protocol';
-
-const MIN_ACTIVE_PLAYBACK_BUSY_LOCK_MS = 5_000;
+import { getPlaybackScheduler, MEME_JOB_PRIORITY } from '../services/playbackScheduler';
 
 const toNonEmptyString = (value: unknown): string | undefined => {
   if (typeof value !== 'string') {
@@ -87,6 +85,11 @@ const broadcastOverlayPeers = async (fastify: FastifyCustomInstance, guildId: st
 
 export const loadSocket = (fastify: FastifyCustomInstance) => {
   logger.info(`[Socket] Socket loaded`);
+  const playbackScheduler = getPlaybackScheduler();
+
+  if (!playbackScheduler) {
+    throw new Error('playback_scheduler_not_initialized');
+  }
 
   fastify.io.use(async (socket, next) => {
     try {
@@ -152,6 +155,11 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
     logger.info(
       `[OVERLAY] Connected: ${clientLabel} (clientId: ${socket.data.overlayClientId}, socket: ${socket.id}, guild: ${guildId}, roomSize: ${roomSize})`,
     );
+
+    void playbackScheduler.onJobEnqueued(guildId).catch((error) => {
+      logger.warn({ err: error, guildId }, '[PLAYBACK] Failed to run scheduler after overlay connect');
+    });
+
     void broadcastOverlayPeers(fastify, guildId).catch((error) => {
       logger.warn({ err: error, guildId }, '[OVERLAY] Failed to broadcast peers after connect');
     });
@@ -200,116 +208,26 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
         })`,
       );
 
-      if (playbackState === 'ended') {
-        await prisma.guild.upsert({
-          where: {
-            id: guildId,
-          },
-          create: {
-            id: guildId,
-            busyUntil: null,
-          },
-          update: {
-            busyUntil: null,
-          },
-        });
-
-        const where = playbackJobId
-          ? {
-              guildId,
-              id: playbackJobId,
-              status: PlaybackJobStatus.PLAYING,
-              finishedAt: null,
-            }
-          : {
-              guildId,
-              status: PlaybackJobStatus.PLAYING,
-              finishedAt: null,
-            };
-
-        const releasedJobs = await prisma.playbackJob.updateMany({
-          where,
-          data: {
-            status: PlaybackJobStatus.DONE,
-            finishedAt: new Date(),
-          },
-        });
-
-        logger.info(
-          `[OVERLAY] Playback ended from ${socket.data.overlayClientLabel || 'unknown-device'} (${socket.data.overlayClientId}, guild: ${guildId}, jobId: ${
-            playbackJobId || 'unknown'
-          }, releasedJobs: ${releasedJobs.count})`,
-        );
-        return;
-      }
-
-      if (playbackState === 'paused' || playbackState === 'playing') {
-        const lockMs = Math.max(remainingMs ?? 0, MIN_ACTIVE_PLAYBACK_BUSY_LOCK_MS);
-        const busyUntil = addMilliseconds(new Date(), lockMs + 250);
-
-        await prisma.guild.upsert({
-          where: {
-            id: guildId,
-          },
-          create: {
-            id: guildId,
-            busyUntil,
-          },
-          update: {
-            busyUntil,
-          },
-        });
-
-        return;
-      }
+      await playbackScheduler.onPlaybackState({
+        guildId,
+        jobId: playbackJobId,
+        state: playbackState,
+        remainingMs,
+      });
     });
 
     socket.on(OVERLAY_SOCKET_EVENTS.STOP, async (payload: OverlayStopPayload) => {
       const stopJobId = typeof payload?.jobId === 'string' && payload.jobId.trim() ? payload.jobId.trim() : 'unknown';
 
-      const shouldTargetSingleJob = stopJobId !== 'unknown' && stopJobId !== 'manual-stop';
-      const where = shouldTargetSingleJob
-        ? {
-            guildId,
-            id: stopJobId,
-            status: PlaybackJobStatus.PLAYING,
-            finishedAt: null,
-          }
-        : {
-            guildId,
-            status: PlaybackJobStatus.PLAYING,
-            finishedAt: null,
-          };
-
-      const releasedJobs = await prisma.playbackJob.updateMany({
-        where,
-        data: {
-          status: PlaybackJobStatus.DONE,
-          finishedAt: new Date(),
-        },
+      await playbackScheduler.onPlaybackStopped({
+        guildId,
+        jobId: stopJobId,
       });
-
-      const shouldClearBusyLock = !shouldTargetSingleJob || releasedJobs.count > 0;
-
-      if (shouldClearBusyLock) {
-        await prisma.guild.upsert({
-          where: {
-            id: guildId,
-          },
-          create: {
-            id: guildId,
-            busyUntil: null,
-          },
-          update: {
-            busyUntil: null,
-          },
-        });
-      }
 
       logger.info(
         `[OVERLAY] Stop received from ${socket.data.overlayClientLabel || 'unknown-device'} (${
           socket.data.overlayClientId
-        }, guild: ${guildId}, jobId: ${stopJobId}, releasedJobs: ${releasedJobs.count})`,
+        }, guild: ${guildId}, jobId: ${stopJobId})`,
       );
     });
 
@@ -345,30 +263,6 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
         return;
       }
 
-      const activeDuplicate = await prisma.playbackJob.findFirst({
-        where: {
-          guildId,
-          mediaAssetId: item.mediaAsset.id,
-          status: {
-            in: [PlaybackJobStatus.PENDING, PlaybackJobStatus.PLAYING],
-          },
-          finishedAt: null,
-        },
-        select: {
-          id: true,
-          status: true,
-        },
-      });
-
-      if (activeDuplicate) {
-        logger.info(
-          `[OVERLAY] Meme trigger deduplicated from ${socket.data.overlayClientLabel || 'unknown-device'} (${
-            socket.data.overlayClientId
-          }, guild: ${guildId}, itemId: ${rawItemId}, trigger: ${triggerKind}, activeJobId: ${activeDuplicate.id}, activeJobStatus: ${activeDuplicate.status})`,
-        );
-        return;
-      }
-
       const itemAuthorName =
         typeof item.createdByName === 'string' && item.createdByName.trim() !== '' ? item.createdByName.trim() : null;
       const triggerAuthorName = toNonEmptyString(socket.data.overlayAuthorName) || itemAuthorName;
@@ -381,7 +275,14 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
         showText: false,
         authorName: triggerAuthorName,
         authorImage: triggerAuthorImage,
+        priority: MEME_JOB_PRIORITY,
+        skipScheduleNotify: true,
         source: `overlay_meme_trigger_${triggerKind}`,
+      });
+
+      await playbackScheduler.preemptWithJob({
+        guildId,
+        preemptingJobId: job.id,
       });
 
       logger.info(

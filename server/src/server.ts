@@ -11,6 +11,7 @@ import { loadRosetty } from './services/i18n/loader';
 import { loadPrismaClient } from './services/prisma/loadPrisma';
 import { ensureMediaStorageDir, startMediaCachePurgeWorker } from './services/media/mediaCache';
 import { startPlaybackJobPurgeWorker } from './services/playbackJobs';
+import { initializePlaybackScheduler } from './services/playbackScheduler';
 
 const corsAllowedHeaders = [
   'Origin',
@@ -133,6 +134,8 @@ export const runServer = async () => {
 
   loadRosetty();
   logger.info('[BOOT] I18N loaded');
+  await initializePlaybackScheduler(fastify);
+  logger.info('[BOOT] Playback scheduler initialized');
   await loadSocket(fastify);
   logger.info('[BOOT] Socket loader ready');
   await loadRoutes(fastify);

@@ -1,6 +1,8 @@
 import { subHours } from 'date-fns';
 import { getDurationFromGuildId } from './utils';
 import { PlaybackJobStatus } from './prisma/prismaEnums';
+import { decodeRichOverlayPayload } from './messages/richOverlayPayload';
+import { notifyPlaybackSchedulerJobEnqueued } from './playbackScheduler';
 
 interface MediaAssetLike {
   id: string;
@@ -16,14 +18,56 @@ interface CreatePlaybackJobParams {
   authorImage?: string | null;
   showText?: boolean;
   durationSec?: number | null;
+  priority?: number | null;
+  resumesAfterJobId?: string | null;
+  resumeOffsetSec?: number | null;
+  skipScheduleNotify?: boolean;
   source?: string;
 }
+
+const toOptionalPositiveInt = (value: unknown): number | null => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null;
+  }
+
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : null;
+};
+
+const toNonNegativeInt = (value: unknown): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 0;
+  }
+
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : 0;
+};
+
+const toNormalizedPriority = (value: unknown): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.floor(value);
+};
+
+const getMediaStartOffsetSecFromText = (value: string | null | undefined): number | null => {
+  const richPayload = decodeRichOverlayPayload(value);
+  if (!richPayload || richPayload.type !== 'media') {
+    return null;
+  }
+
+  return toOptionalPositiveInt(richPayload.startOffsetSec);
+};
 
 export const createPlaybackJob = async (params: CreatePlaybackJobParams) => {
   const startedAtMs = Date.now();
   const hasMedia = !!params.mediaAsset;
   const mediaKind = typeof params.mediaAsset?.kind === 'string' ? params.mediaAsset.kind.trim().toUpperCase() : null;
   const isImageMedia = mediaKind === 'IMAGE';
+  const requestedResumeOffsetSec = toNonNegativeInt(params.resumeOffsetSec);
+  const embeddedStartOffsetSec =
+    hasMedia && !isImageMedia && requestedResumeOffsetSec === 0 ? getMediaStartOffsetSecFromText(params.text) : null;
   const durationCandidate =
     params.durationSec ??
     (!isImageMedia ? params.mediaAsset?.durationSec ?? null : null) ??
@@ -40,8 +84,16 @@ export const createPlaybackJob = async (params: CreatePlaybackJobParams) => {
     );
   }
 
-  const durationSec = await getDurationFromGuildId(durationCandidate, params.guildId);
+  const baseDurationSec = await getDurationFromGuildId(durationCandidate, params.guildId);
+  const effectiveStartOffsetSec = embeddedStartOffsetSec ?? 0;
+  const normalizedDurationSec =
+    hasMedia && !isImageMedia && effectiveStartOffsetSec > 0
+      ? Math.max(1, baseDurationSec - effectiveStartOffsetSec)
+      : baseDurationSec;
+  const normalizedResumeOffsetSec = requestedResumeOffsetSec + effectiveStartOffsetSec;
+  const normalizedPriority = toNormalizedPriority(params.priority);
   const afterDurationResolveMs = Date.now();
+  const now = new Date();
   const job = await prisma.playbackJob.create({
     data: {
       guildId: params.guildId,
@@ -50,9 +102,12 @@ export const createPlaybackJob = async (params: CreatePlaybackJobParams) => {
       showText: params.showText ?? !!params.text,
       authorName: params.authorName || null,
       authorImage: params.authorImage || null,
-      durationSec,
-      executionDate: new Date(),
-      scheduledAt: new Date(),
+      durationSec: normalizedDurationSec,
+      priority: normalizedPriority,
+      resumesAfterJobId: params.resumesAfterJobId || null,
+      resumeOffsetSec: normalizedResumeOffsetSec,
+      executionDate: now,
+      scheduledAt: now,
     },
   });
   const finishedAtMs = Date.now();
@@ -83,9 +138,16 @@ export const createPlaybackJob = async (params: CreatePlaybackJobParams) => {
       hasText: !!params.text,
       showText: params.showText ?? !!params.text,
       durationSec: job.durationSec,
+      priority: normalizedPriority,
+      resumeOffsetSec: normalizedResumeOffsetSec,
+      resumesAfterJobId: params.resumesAfterJobId || null,
     },
     '[PLAYBACK] Job created',
   );
+
+  if (params.skipScheduleNotify !== true) {
+    notifyPlaybackSchedulerJobEnqueued(params.guildId);
+  }
 
   return job;
 };

@@ -12,7 +12,6 @@ import {
 import { aliveCommand } from '../components/discord/aliveCommand';
 import { sendCommand } from '../components/messages/sendCommand';
 import { hideSendCommand } from '../components/messages/hidesendCommand';
-import { loadMessagesWorker } from '../components/messages/messagesWorker';
 import { talkCommand } from '../components/messages/talkCommand';
 import { hideTalkCommand } from '../components/messages/hidetalkCommand';
 import { overlayCodeCommand } from '../components/discord/clientCommand';
@@ -36,7 +35,6 @@ export const loadDiscord = async (fastify: FastifyCustomInstance) => {
   // Load all discord commands
   await loadDiscordCommands(fastify);
   loadDiscordCommandsHandler();
-  loadMessagesWorker(fastify);
 
   client.once(Events.ClientReady, (readyClient) => {
     logger.info(`[DISCORD] ${rosetty.t('discordBotReady', { username: readyClient.user.tag })}`);

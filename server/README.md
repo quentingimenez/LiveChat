@@ -28,6 +28,9 @@ pnpm install
 pnpm dev
 ```
 
+Option TikTok restreint (login requis):
+- `TIKTOK_COOKIE` peut contenir un header cookie TikTok (`name=value; name2=value2`) pour tenter l'extraction avec un compte autorisé.
+
 ## API iOS (`/ingest`)
 
 Configurer `INGEST_API_TOKEN` dans `.env`, puis appeler:

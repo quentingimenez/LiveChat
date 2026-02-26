@@ -158,6 +158,10 @@ const classifyMediaErrorCode = (rawText: string, fallbackCode: MediaIngestionErr
     text.includes('private') ||
     text.includes('login required') ||
     text.includes('sign in') ||
+    text.includes('log in to tiktok') ||
+    text.includes('connecte-toi à tiktok') ||
+    text.includes('audience control') ||
+    text.includes('contrôle du public') ||
     text.includes('age-restricted') ||
     text.includes('members only') ||
     text.includes('forbidden')

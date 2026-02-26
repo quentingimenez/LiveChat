@@ -392,6 +392,90 @@ const buildCookieHeader = (setCookieHeaders: string[]) => {
     .join('; ');
 };
 
+const parseCookiePairs = (rawCookieHeader: string) => {
+  return rawCookieHeader
+    .split(';')
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .map((segment) => {
+      const separatorIndex = segment.indexOf('=');
+
+      if (separatorIndex <= 0) {
+        return null;
+      }
+
+      const name = segment.slice(0, separatorIndex).trim();
+      const value = segment.slice(separatorIndex + 1).trim();
+
+      if (!name || !value) {
+        return null;
+      }
+
+      return {
+        name,
+        value,
+      };
+    })
+    .filter((pair): pair is { name: string; value: string } => pair !== null);
+};
+
+const mergeCookieHeaders = (...cookieHeaders: Array<string | null | undefined>) => {
+  const mergedByName = new Map<string, string>();
+
+  cookieHeaders.forEach((cookieHeader) => {
+    if (!cookieHeader) {
+      return;
+    }
+
+    parseCookiePairs(cookieHeader).forEach((pair) => {
+      mergedByName.set(pair.name, `${pair.name}=${pair.value}`);
+    });
+  });
+
+  return [...mergedByName.values()].join('; ');
+};
+
+const getTikTokCookieHeaderFromEnv = () => {
+  const rawCookieValue = asNonEmptyString(env.TIKTOK_COOKIE);
+
+  if (!rawCookieValue) {
+    return '';
+  }
+
+  return rawCookieValue.replace(/^cookie:\s*/i, '').trim();
+};
+
+const writeTikTokYtDlpCookieFile = async (tmpDir: string): Promise<string | null> => {
+  const authCookieHeader = getTikTokCookieHeaderFromEnv();
+
+  if (!authCookieHeader) {
+    return null;
+  }
+
+  const cookiePairs = parseCookiePairs(authCookieHeader);
+
+  if (cookiePairs.length === 0) {
+    return null;
+  }
+
+  const cookieFilePath = path.join(tmpDir, 'tiktok.cookies.txt');
+  const cookieLines = ['# Netscape HTTP Cookie File'];
+
+  cookiePairs.forEach((pair) => {
+    const sanitizedName = pair.name.replace(/[\r\n\t]/g, '');
+    const sanitizedValue = pair.value.replace(/[\r\n\t]/g, '');
+
+    if (!sanitizedName || !sanitizedValue) {
+      return;
+    }
+
+    cookieLines.push(`.tiktok.com\tTRUE\t/\tTRUE\t2147483647\t${sanitizedName}\t${sanitizedValue}`);
+  });
+
+  await fsPromises.writeFile(cookieFilePath, `${cookieLines.join('\n')}\n`, 'utf8');
+  return cookieFilePath;
+};
+
 const parseTikTokUniversalData = (html: string) => {
   const scriptMatch = html.match(/<script[^>]+id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>([\s\S]*?)<\/script>/i);
 
@@ -405,6 +489,103 @@ const parseTikTokUniversalData = (html: string) => {
   } catch {
     return null;
   }
+};
+
+const parseTikTokEmbedState = (html: string) => {
+  const scriptMatch = html.match(/<script[^>]+id="__FRONTITY_CONNECT_STATE__"[^>]*>([\s\S]*?)<\/script>/i);
+
+  if (!scriptMatch || !scriptMatch[1]) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(scriptMatch[1]);
+    return asRecord(parsed);
+  } catch {
+    return null;
+  }
+};
+
+const hasTikTokAuthWallTextHints = (html: string): boolean => {
+  const normalized = html.toLowerCase();
+
+  return (
+    normalized.includes('log in to tiktok') ||
+    normalized.includes('connecte-toi à tiktok') ||
+    normalized.includes('this creator has set audience controls') ||
+    normalized.includes('a activé le contrôle du public')
+  );
+};
+
+const isLikelyTikTokAuthRequiredFromPageHtml = (html: string): boolean => {
+  const universalData = parseTikTokUniversalData(html);
+
+  if (!universalData) {
+    return false;
+  }
+
+  const defaultScope = asRecord(universalData['__DEFAULT_SCOPE__']);
+  const videoDetail = asRecord(defaultScope?.['webapp.video-detail']);
+  const itemInfo = asRecord(videoDetail?.itemInfo);
+  const primaryItemStruct = asRecord(itemInfo?.itemStruct);
+  const fallbackItemStruct = asRecord(asRecord(itemInfo?.itemInfo)?.itemStruct);
+  const itemStruct = primaryItemStruct || fallbackItemStruct;
+
+  if (!itemStruct) {
+    return false;
+  }
+
+  const videoRecord = asRecord(itemStruct.video);
+  const hasEmptyVideoPayload = !!videoRecord && Object.keys(videoRecord).length === 0;
+  const createTime = asNonEmptyString(itemStruct.createTime);
+  const isPrivate = itemStruct.privateItem === true || itemStruct.secret === true || itemStruct.forFriend === true;
+  const isClassified = itemStruct.isContentClassified === true || asNonEmptyString(itemStruct.ContentClassificationReason);
+
+  if (isPrivate) {
+    return true;
+  }
+
+  return (hasEmptyVideoPayload && createTime === '0' && !!isClassified) || (hasEmptyVideoPayload && hasTikTokAuthWallTextHints(html));
+};
+
+const isLikelyTikTokAuthRequiredFromEmbedHtml = (html: string): boolean => {
+  const embedState = parseTikTokEmbedState(html);
+
+  if (!embedState) {
+    return false;
+  }
+
+  const sourceRecord = asRecord(embedState.source);
+  const sourceData = asRecord(sourceRecord?.data);
+
+  if (!sourceData) {
+    return false;
+  }
+
+  const mediaEntryKey = Object.keys(sourceData).find((entryKey) => entryKey.startsWith('/embed/v2/'));
+
+  if (!mediaEntryKey) {
+    return false;
+  }
+
+  const mediaEntry = asRecord(sourceData[mediaEntryKey]);
+  const videoData = asRecord(mediaEntry?.videoData);
+  const itemInfos = asRecord(videoData?.itemInfos);
+
+  if (!itemInfos) {
+    return false;
+  }
+
+  const createTime = asNonEmptyString(itemInfos.createTime);
+  const videoRecord = asRecord(itemInfos.video);
+  const videoUrls = Array.isArray(videoRecord?.urls) ? videoRecord?.urls : [];
+  const authorInfos = asRecord(videoData?.authorInfos);
+  const authorMissing =
+    !asNonEmptyString(authorInfos?.uniqueId) &&
+    !asNonEmptyString(authorInfos?.userId) &&
+    !asNonEmptyString(authorInfos?.secUid);
+
+  return createTime === '0' && videoUrls.length === 0 && authorMissing;
 };
 
 const extractTikTokItemIdFromUrl = (rawUrl: string): string | null => {
@@ -1020,11 +1201,18 @@ const createTikTokCarouselVideo = async (params: {
 };
 
 const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: string): Promise<string> => {
+  const configuredTikTokCookieHeader = getTikTokCookieHeaderFromEnv();
+  const pageHeaders: Record<string, string> = {
+    'user-agent': TIKTOK_PAGE_USER_AGENT,
+    accept: 'text/html,application/xhtml+xml',
+  };
+
+  if (configuredTikTokCookieHeader) {
+    pageHeaders.cookie = configuredTikTokCookieHeader;
+  }
+
   const pageResponse = await fetch(sourceUrl, {
-    headers: {
-      'user-agent': TIKTOK_PAGE_USER_AGENT,
-      accept: 'text/html,application/xhtml+xml',
-    },
+    headers: pageHeaders,
   }).catch((error) => {
     throw toMediaIngestionError(error, 'DOWNLOAD_FAILED');
   });
@@ -1046,6 +1234,8 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
   const audioCandidates = new Set<string>();
   const canonicalUrl = extractTikTokCanonicalUrlFromHtml(pageHtml);
   const candidateItemIds = new Set<string>();
+  const pageLooksAuthRestricted = isLikelyTikTokAuthRequiredFromPageHtml(pageHtml);
+  let embedLooksAuthRestricted = false;
   let photoSlides: string[][] = [];
 
   [sourceUrl, pageResponse.url, canonicalUrl].forEach((candidateUrl) => {
@@ -1067,6 +1257,7 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
         headers: {
           'user-agent': TIKTOK_PAGE_USER_AGENT,
           accept: 'text/html,application/xhtml+xml',
+          ...(configuredTikTokCookieHeader ? { cookie: configuredTikTokCookieHeader } : {}),
         },
       }).catch((error) => {
         throw toMediaIngestionError(error, 'DOWNLOAD_FAILED');
@@ -1077,6 +1268,9 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
       }
 
       const embedHtml = await embedResponse.text().catch(() => '');
+      if (isLikelyTikTokAuthRequiredFromEmbedHtml(embedHtml)) {
+        embedLooksAuthRestricted = true;
+      }
       const embedCandidates = extractTikTokEmbedMediaCandidatesFromHtml(embedHtml);
       embedCandidates.videoUrls.forEach((candidateUrl) => videoCandidates.add(candidateUrl));
       embedCandidates.imageUrls.forEach((candidateUrl) => imageCandidates.add(candidateUrl));
@@ -1104,6 +1298,14 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
   );
 
   if (videoCandidates.size === 0 && imageCandidates.size === 0 && audioCandidates.size === 0) {
+    if (pageLooksAuthRestricted || embedLooksAuthRestricted) {
+      throw new MediaIngestionError(
+        'PRIVATE_OR_AUTH_REQUIRED',
+        'TikTok post requires login or an authorized account',
+        `TikTok page payload is access-restricted (auth wall) for ${sourceUrl}`,
+      );
+    }
+
     throw new MediaIngestionError(
       'DOWNLOAD_FAILED',
       'Unable to resolve TikTok media URL',
@@ -1111,7 +1313,8 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
     );
   }
 
-  const cookieHeader = buildCookieHeader(extractTikTokSetCookieHeaders(pageResponse));
+  const responseCookieHeader = buildCookieHeader(extractTikTokSetCookieHeaders(pageResponse));
+  const cookieHeader = mergeCookieHeaders(responseCookieHeader, configuredTikTokCookieHeader);
 
   let lastError: unknown = null;
 
@@ -1302,6 +1505,14 @@ const runYtDlpDownload = async (params: {
     args.push(...params.extraArgs);
   }
 
+  if (isTikTokUrl(params.sourceUrl)) {
+    const tiktokCookieFilePath = await writeTikTokYtDlpCookieFile(params.tmpDir);
+
+    if (tiktokCookieFilePath) {
+      args.push('--cookies', tiktokCookieFilePath);
+    }
+  }
+
   args.push('-o', outputTemplate, params.sourceUrl);
 
   let stdout = '';
@@ -1403,7 +1614,19 @@ const downloadWithYtDlp = async (sourceUrl: string, tmpDir: string): Promise<str
 };
 
 const downloadWithHttp = async (sourceUrl: string, tmpDir: string): Promise<string> => {
-  const response = await fetch(sourceUrl).catch((error) => {
+  const requestHeaders: Record<string, string> = {};
+
+  if (isTikTokUrl(sourceUrl)) {
+    requestHeaders['user-agent'] = TIKTOK_PAGE_USER_AGENT;
+    const configuredTikTokCookieHeader = getTikTokCookieHeaderFromEnv();
+    if (configuredTikTokCookieHeader) {
+      requestHeaders.cookie = configuredTikTokCookieHeader;
+    }
+  }
+
+  const response = await fetch(sourceUrl, {
+    headers: requestHeaders,
+  }).catch((error) => {
     throw toMediaIngestionError(error, 'DOWNLOAD_FAILED');
   });
 
@@ -1417,6 +1640,22 @@ const downloadWithHttp = async (sourceUrl: string, tmpDir: string): Promise<stri
 
   const responseContentType = (response.headers.get('content-type') || '').toLowerCase();
   if (responseContentType.includes('text/html') || responseContentType.includes('application/xhtml+xml')) {
+    if (isTikTokUrl(sourceUrl)) {
+      const responseHtml = await response.text().catch(() => '');
+      const looksAuthRestricted =
+        isLikelyTikTokAuthRequiredFromPageHtml(responseHtml) ||
+        isLikelyTikTokAuthRequiredFromEmbedHtml(responseHtml) ||
+        hasTikTokAuthWallTextHints(responseHtml);
+
+      if (looksAuthRestricted) {
+        throw new MediaIngestionError(
+          'PRIVATE_OR_AUTH_REQUIRED',
+          'TikTok post requires login or an authorized account',
+          `TikTok auth wall detected for ${sourceUrl}`,
+        );
+      }
+    }
+
     throw new MediaIngestionError(
       'UNSUPPORTED_SOURCE',
       'URL points to an HTML page, not a direct media file',
@@ -1510,6 +1749,9 @@ const downloadSourceToTempFile = async (sourceUrl: string, tmpDir: string): Prom
     } catch (tiktokError) {
       const normalizedTikTokError = toMediaIngestionError(tiktokError);
       if (normalizedTikTokError.code === 'FILE_TOO_LARGE') {
+        throw normalizedTikTokError;
+      }
+      if (normalizedTikTokError.code === 'PRIVATE_OR_AUTH_REQUIRED') {
         throw normalizedTikTokError;
       }
       logger.warn(

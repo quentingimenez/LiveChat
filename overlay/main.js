@@ -417,8 +417,41 @@ function setAutoUpdateState(nextState, reason = '') {
   updateTrayMenu();
 }
 
+function isFlagEnabled(value) {
+  const normalized = `${value || ''}`.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+function isPortableRuntime() {
+  if (process.platform !== 'win32') {
+    return false;
+  }
+
+  return `${process.env.PORTABLE_EXECUTABLE_FILE || ''}`.trim() !== '';
+}
+
+function getAutoUpdateDisabledReason() {
+  if (process.platform !== 'win32') {
+    return 'plateforme non supportée';
+  }
+
+  if (!app.isPackaged) {
+    return 'mode développement';
+  }
+
+  if (isPortableRuntime()) {
+    return 'désactivée (portable)';
+  }
+
+  if (isFlagEnabled(process.env.LIVECHAT_DISABLE_AUTO_UPDATE)) {
+    return 'désactivée (env)';
+  }
+
+  return null;
+}
+
 function supportsStartupAutoUpdate() {
-  return process.platform === 'win32' && app.isPackaged;
+  return getAutoUpdateDisabledReason() === null;
 }
 
 function initializeAutoUpdater() {
@@ -465,7 +498,7 @@ function initializeAutoUpdater() {
 
 async function runStartupAutoUpdateCheck() {
   if (!supportsStartupAutoUpdate()) {
-    const reason = app.isPackaged ? 'plateforme non supportée' : 'mode développement';
+    const reason = getAutoUpdateDisabledReason() || 'désactivée';
     setAutoUpdateState('disabled', reason);
     return;
   }

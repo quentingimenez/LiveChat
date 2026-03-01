@@ -265,14 +265,16 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
 
       const itemAuthorName =
         typeof item.createdByName === 'string' && item.createdByName.trim() !== '' ? item.createdByName.trim() : null;
+      const itemMessage =
+        typeof item.message === 'string' && item.message.trim() !== '' ? item.message.trim().slice(0, 500) : null;
       const triggerAuthorName = toNonEmptyString(socket.data.overlayAuthorName) || itemAuthorName;
       const triggerAuthorImage = toNonEmptyString(socket.data.overlayAuthorImage);
 
       const job = await createPlaybackJob({
         guildId,
         mediaAsset: item.mediaAsset,
-        text: null,
-        showText: false,
+        text: itemMessage,
+        showText: !!itemMessage,
         authorName: triggerAuthorName,
         authorImage: triggerAuthorImage,
         priority: MEME_JOB_PRIORITY,

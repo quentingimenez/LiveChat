@@ -30,6 +30,63 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: visible;
+}
+
+.overlay-media-frame {
+  position: relative;
+  display: inline-grid;
+  grid-template-rows: auto auto;
+  justify-items: center;
+  align-items: center;
+  --header-left-shift: 0px;
+  --header-right-shift: 0px;
+}
+
+.overlay-media-header {
+  position: relative;
+  width: 100%;
+  min-height: 54px;
+  margin-bottom: 10px;
+  overflow: visible;
+}
+
+.overlay-media-header-left,
+.overlay-media-header-right {
+  position: absolute;
+  top: 0;
+  max-width: max-content;
+  display: flex;
+  align-items: center;
+}
+
+.overlay-media-header-left {
+  left: 0;
+  transform: translateX(calc(-1 * var(--header-left-shift, 0px)));
+}
+
+.overlay-media-header-right {
+  right: 0;
+  transform: translateX(var(--header-right-shift, 0px));
+}
+
+.overlay-media-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.overlay-media-footer {
+  width: 100%;
+  margin-top: 10px;
+  display: none;
+  justify-content: center;
+  overflow: visible;
+}
+
+.overlay-media-footer-meta {
+  width: fit-content;
+  max-width: min(92vw, 1100px);
 }
 
 #countdown-layer {
@@ -39,11 +96,10 @@ body {
   display: none;
   align-items: center;
   justify-content: center;
-  min-width: 82px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.32);
-  background: rgba(0, 0, 0, 0.62);
+  padding: 0.55rem 0.9rem;
+  border-radius: 10px;
+  border: 0;
+  background: rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(2px);
   color: #ffffff;
   font-size: 20px;
@@ -51,6 +107,12 @@ body {
   line-height: 1;
   letter-spacing: 0.02em;
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.9);
+}
+
+.overlay-media-header-right > #countdown-layer {
+  position: static;
+  top: auto;
+  right: auto;
 }
 
 #media-layer img,
@@ -256,6 +318,26 @@ body {
   align-items: center;
   justify-content: flex-start;
   gap: 10px;
+}
+
+.overlay-media-header-left .overlay-author {
+  padding: 0.55rem 0.9rem;
+  border-radius: 10px;
+  border: 0;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+  max-width: min(68vw, 920px);
+}
+
+.overlay-media-header-left .overlay-author-name {
+  font-size: clamp(16px, 1.7vw, 24px);
+  white-space: nowrap;
+}
+
+.overlay-media-header-left .overlay-author-avatar,
+.overlay-media-header-left .overlay-author-avatar-fallback {
+  width: 34px;
+  height: 34px;
 }
 
 .overlay-author-avatar,

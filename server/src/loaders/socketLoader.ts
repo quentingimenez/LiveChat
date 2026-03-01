@@ -10,6 +10,7 @@ import {
   type OverlayStopPayload,
 } from '@livechat/overlay-protocol';
 import { getPlaybackScheduler, MEME_JOB_PRIORITY } from '../services/playbackScheduler';
+import { executeManualStopForGuild } from '../services/manualStop';
 
 const toNonEmptyString = (value: unknown): string | undefined => {
   if (typeof value !== 'string') {
@@ -219,10 +220,16 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
     socket.on(OVERLAY_SOCKET_EVENTS.STOP, async (payload: OverlayStopPayload) => {
       const stopJobId = typeof payload?.jobId === 'string' && payload.jobId.trim() ? payload.jobId.trim() : 'unknown';
 
-      await playbackScheduler.onPlaybackStopped({
-        guildId,
-        jobId: stopJobId,
-      });
+      if (stopJobId === 'manual-stop') {
+        await executeManualStopForGuild(fastify, guildId, {
+          logLabel: 'Stop command',
+        });
+      } else {
+        await playbackScheduler.onPlaybackStopped({
+          guildId,
+          jobId: stopJobId,
+        });
+      }
 
       logger.info(
         `[OVERLAY] Stop received from ${socket.data.overlayClientLabel || 'unknown-device'} (${

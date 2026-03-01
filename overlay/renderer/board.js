@@ -270,7 +270,7 @@
 
   const openAddDialog = () => {
     if (!isAddDialogReady()) {
-      const fallbackUrl = window.prompt('Lien du meme:');
+      const fallbackUrl = window.prompt('Lien du mème :');
 
       if (fallbackUrl === null) {
         return Promise.resolve(null);
@@ -279,11 +279,11 @@
       const normalizedFallbackUrl = fallbackUrl.trim();
 
       if (!isHttpUrl(normalizedFallbackUrl)) {
-        setStatus('Lien invalide. Utilise une URL complete en http(s).', 'error');
+        setStatus('Lien invalide. Utilise une URL complète en http(s).', 'error');
         return Promise.resolve(null);
       }
 
-      const fallbackTitle = window.prompt('Nom du meme (optionnel):', '') || '';
+      const fallbackTitle = window.prompt('Nom du mème (optionnel) :', '') || '';
       const fallbackMessage = window.prompt('Message overlay (optionnel):', '') || '';
 
       return Promise.resolve({
@@ -338,11 +338,11 @@
     const title = toCardTitle(item);
 
     if (!isDeleteDialogReady()) {
-      return Promise.resolve(window.confirm(`Supprimer "${title}" de la meme board ?`));
+      return Promise.resolve(window.confirm(`Supprimer "${title}" de la mème board ?`));
     }
 
     closeDeleteDialog(false);
-    deleteMessage.textContent = `Tu vas supprimer "${title}" de la meme board. Cette action est irreversible.`;
+    deleteMessage.textContent = `Tu vas supprimer "${title}" de la mème board. Cette action est irréversible.`;
     deleteOverlay.classList.remove('hidden');
     deleteConfirmButton.focus();
 
@@ -381,7 +381,7 @@
 
   const openRenameDialog = (title, message) => {
     if (!isRenameDialogReady()) {
-      const fallbackTitle = window.prompt('Nom du meme (laisser vide pour enlever le nom):', title);
+      const fallbackTitle = window.prompt('Nom du mème (laisser vide pour enlever le nom) :', title);
 
       if (fallbackTitle === null) {
         return Promise.resolve(null);
@@ -457,10 +457,10 @@
     if (!selectedItem) {
       state.previewMediaKey = null;
       previewStageNode.innerHTML = '';
-      selectedMetaNode.textContent = 'Aucun element selectionne.';
+      selectedMetaNode.textContent = 'Aucun élément sélectionné.';
       const emptyNode = document.createElement('p');
       emptyNode.className = 'preview-empty';
-      emptyNode.textContent = 'Selectionne un meme pour voir son media et gerer son raccourci.';
+      emptyNode.textContent = 'Sélectionne un mème pour voir son média et gérer son raccourci.';
       previewStageNode.appendChild(emptyNode);
       return;
     }
@@ -511,7 +511,7 @@
       const renameButton = document.createElement('button');
       renameButton.type = 'button';
       renameButton.className = 'ghost';
-      renameButton.textContent = 'Editer';
+      renameButton.textContent = 'Éditer';
       renameButton.addEventListener('click', () => {
         const currentSelectedItem = findSelectedItem();
         if (!currentSelectedItem) {
@@ -581,7 +581,7 @@
     if (!Array.isArray(state.items) || state.items.length === 0) {
       const emptyNode = document.createElement('p');
       emptyNode.className = 'preview-empty';
-      emptyNode.textContent = 'Aucun meme dans la board pour cette recherche.';
+      emptyNode.textContent = 'Aucun mème dans la board pour cette recherche.';
       itemsListNode.appendChild(emptyNode);
       renderPreview();
       return;
@@ -640,7 +640,7 @@
       const renameButton = document.createElement('button');
       renameButton.type = 'button';
       renameButton.className = 'ghost';
-      renameButton.textContent = 'Editer';
+      renameButton.textContent = 'Éditer';
       renameButton.addEventListener('click', () => {
         void renameItem(item);
       });
@@ -740,7 +740,7 @@
       renderList();
       clearStatus();
     } catch (error) {
-      setStatus(error?.message || 'Erreur de chargement de la meme board.', 'error');
+      setStatus(error?.message || 'Erreur de chargement de la mème board.', 'error');
     }
   };
 
@@ -762,7 +762,7 @@
 
   const addItemFromLink = async (payload) => {
     try {
-      setStatus('Ajout du meme en cours...', 'success');
+      setStatus('Ajout du mème en cours...', 'success');
 
       const endpoint = buildAuthedUrl('/overlay/meme-board/items');
       const response = await fetch(endpoint.toString(), {
@@ -791,7 +791,7 @@
       }
 
       await loadItemsAndRender();
-      setStatus(body?.created === false ? 'Meme deja present dans la board.' : 'Meme ajoute dans la board.', 'success');
+      setStatus(body?.created === false ? 'Mème déjà présent dans la board.' : 'Mème ajouté dans la board.', 'success');
     } catch (error) {
       setStatus(`Ajout impossible: ${error?.message || error}`, 'error');
     }
@@ -824,9 +824,9 @@
         throw new Error(result?.reason || 'socket_offline');
       }
 
-      setStatus('Meme envoye dans la file.', 'success');
+      setStatus('Mème envoyé dans la file.', 'success');
     } catch (error) {
-      setStatus(`Echec trigger: ${error?.message || error}`, 'error');
+      setStatus(`Échec trigger : ${error?.message || error}`, 'error');
     }
   };
 
@@ -838,7 +838,7 @@
         throw new Error(result?.reason || 'socket_offline');
       }
 
-      setStatus('Lecture en cours stoppee.', 'success');
+      setStatus('Lecture en cours stoppée.', 'success');
     } catch (error) {
       setStatus(`Stop impossible: ${error?.message || error}`, 'error');
     }
@@ -890,14 +890,14 @@
     const { nextBindings, removedCount } = removeBindingsForItem(itemId);
 
     if (removedCount === 0) {
-      setStatus('Aucun raccourci a retirer pour ce meme.', 'success');
+      setStatus('Aucun raccourci à retirer pour ce mème.', 'success');
       return;
     }
 
     try {
       await persistBindings(nextBindings);
       renderList();
-      setStatus('Raccourci retire.', 'success');
+      setStatus('Raccourci retiré.', 'success');
     } catch (error) {
       setStatus(error?.message || 'Impossible de retirer le raccourci.', 'error');
     }
@@ -938,8 +938,8 @@
       const hasMessage = nextMessage.length > 0;
       setStatus(
         hasTitle || hasMessage
-          ? `Meme mis a jour (${hasTitle ? 'nom' : 'sans nom'} / ${hasMessage ? 'message' : 'sans message'}).`
-          : 'Nom et message supprimes.',
+          ? `Mème mis à jour (${hasTitle ? 'nom' : 'sans nom'} / ${hasMessage ? 'message' : 'sans message'}).`
+          : 'Nom et message supprimés.',
         'success',
       );
     } catch (error) {
@@ -986,13 +986,15 @@
 
       if (shortcutCleanupError) {
         setStatus(
-          `Meme supprime, mais liberation du raccourci impossible: ${shortcutCleanupError?.message || shortcutCleanupError}`,
+          `Mème supprimé, mais libération du raccourci impossible : ${
+            shortcutCleanupError?.message || shortcutCleanupError
+          }`,
           'error',
         );
         return;
       }
 
-      setStatus(removedCount > 0 ? 'Meme supprime. Raccourci libere.' : 'Meme supprime.', 'success');
+      setStatus(removedCount > 0 ? 'Mème supprimé. Raccourci libéré.' : 'Mème supprimé.', 'success');
     } catch (error) {
       setStatus(`Suppression impossible: ${error?.message || error}`, 'error');
     }
@@ -1081,7 +1083,7 @@
       return;
     }
 
-    captureCurrentNode.textContent = state.capturePendingDisplay || 'Aucune combinaison detectee.';
+    captureCurrentNode.textContent = state.capturePendingDisplay || 'Aucune combinaison détectée.';
     captureSaveButton.disabled = !state.capturePendingAccelerator;
   };
 
@@ -1090,12 +1092,12 @@
     const accelerator = `${state.capturePendingAccelerator || ''}`.trim();
 
     if (!itemId) {
-      setStatus('Aucun meme cible pour ce raccourci.', 'error');
+      setStatus('Aucun mème cible pour ce raccourci.', 'error');
       return;
     }
 
     if (!accelerator) {
-      setStatus('Aucune combinaison valide detectee.', 'error');
+      setStatus('Aucune combinaison valide détectée.', 'error');
       return;
     }
 
@@ -1113,9 +1115,9 @@
       await persistBindings(nextBindings);
       endCapture();
       renderList();
-      setStatus(`Raccourci assigne: ${formatAcceleratorDisplay(accelerator)}`, 'success');
+      setStatus(`Raccourci assigné : ${formatAcceleratorDisplay(accelerator)}`, 'success');
     } catch (error) {
-      setStatus(error?.message || 'Impossible d assigner ce raccourci.', 'error');
+      setStatus(error?.message || "Impossible d'assigner ce raccourci.", 'error');
     }
   };
 
@@ -1126,7 +1128,7 @@
     refreshCaptureUi();
     captureOverlay.classList.remove('hidden');
     setStatus(
-      'Capture clavier active: fais la combinaison puis clique "Arreter et enregistrer" (Esc pour annuler).',
+      'Capture clavier active : fais la combinaison puis clique "Arrêter et enregistrer" (Esc pour annuler).',
       'success',
     );
   };
@@ -1336,14 +1338,14 @@
       }
 
       refreshCaptureUi();
-      setStatus('Combinaison en cours... ajoute une touche non-modificateur pour valider.', 'success');
+      setStatus('Combinaison en cours... ajoute une touche non-modificatrice pour valider.', 'success');
       return;
     }
 
     state.capturePendingAccelerator = accelerator;
     state.capturePendingDisplay = formatAcceleratorDisplay(accelerator);
     refreshCaptureUi();
-    setStatus(`Combinaison detectee: ${formatAcceleratorDisplay(accelerator)}. Clique "Arreter et enregistrer".`, 'success');
+    setStatus(`Combinaison détectée : ${formatAcceleratorDisplay(accelerator)}. Clique "Arrêter et enregistrer".`, 'success');
   });
 
   if (isCaptureUiReady()) {
@@ -1369,7 +1371,7 @@
       const forceRefresh = !!addRefreshInput.checked;
 
       if (!isHttpUrl(url)) {
-        setStatus('Lien invalide. Utilise une URL complete en http(s).', 'error');
+        setStatus('Lien invalide. Utilise une URL complète en http(s).', 'error');
         addUrlInput.focus();
         return;
       }
@@ -1460,7 +1462,7 @@
     state.config = await window.livechatOverlay.getConfig();
 
     if (!state.config?.serverUrl || !state.config?.clientToken || !state.config?.guildId) {
-      setStatus('Overlay non appaire. Ouvre la fenetre d appairage puis reconnecte.', 'error');
+      setStatus("Overlay non appairé. Ouvre la fenêtre d'appairage puis reconnecte.", 'error');
       refreshButton.disabled = true;
       searchInput.disabled = true;
       if (stopPlaybackButton instanceof HTMLButtonElement) {
@@ -1487,6 +1489,6 @@
   };
 
   bootstrap().catch((error) => {
-    setStatus(error?.message || 'Initialisation meme board impossible.', 'error');
+    setStatus(error?.message || 'Initialisation mème board impossible.', 'error');
   });
 })();

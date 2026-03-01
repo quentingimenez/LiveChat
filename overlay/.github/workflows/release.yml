@@ -20,6 +20,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Validate tag matches package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "${{ github.ref_name }}"
+          $tagVersion = $tag.TrimStart('v')
+          $packageVersion = node -p "require('./package.json').version"
+
+          Write-Host "Tag version: $tagVersion"
+          Write-Host "package.json version: $packageVersion"
+
+          if ($tagVersion -ne $packageVersion) {
+            throw "Version mismatch: git tag '$tag' must match package.json version '$packageVersion'."
+          }
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:

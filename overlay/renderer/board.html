@@ -15,7 +15,7 @@
         </div>
         <div class="board-actions">
           <form id="search-form" class="search-form">
-            <input id="search-input" type="search" placeholder="Recherche titre, auteur, source..." />
+            <input id="search-input" type="search" placeholder="Recherche titre, message, auteur, source..." />
             <button type="submit">Rechercher</button>
           </form>
           <button id="refresh-button" type="button" class="ghost">Rafraichir</button>
@@ -71,6 +71,13 @@
           autocomplete="off"
           spellcheck="false"
         />
+        <textarea
+          id="add-message-input"
+          maxlength="500"
+          placeholder="Message overlay (optionnel)"
+          rows="3"
+          spellcheck="true"
+        ></textarea>
         <label class="dialog-checkbox">
           <input id="add-refresh-input" type="checkbox" />
           Forcer le refresh du media
@@ -84,8 +91,8 @@
 
     <div id="rename-overlay" class="dialog-overlay hidden">
       <form id="rename-form" class="dialog-card">
-        <h3>Nommer le meme</h3>
-        <p>Laisser vide pour supprimer le nom personnalise.</p>
+        <h3>Modifier le meme</h3>
+        <p>Laisser vide pour supprimer le nom personnalise et/ou le message.</p>
         <input
           id="rename-input"
           type="text"
@@ -94,6 +101,13 @@
           autocomplete="off"
           spellcheck="false"
         />
+        <textarea
+          id="rename-message-input"
+          maxlength="500"
+          placeholder="Message overlay (optionnel)"
+          rows="4"
+          spellcheck="true"
+        ></textarea>
         <div class="dialog-actions">
           <button id="rename-cancel" type="button" class="ghost">Annuler</button>
           <button id="rename-submit" type="submit">Enregistrer</button>

@@ -38,6 +38,7 @@ model MemeBoardItem {
   mediaAssetId          String
   mediaAsset            MediaAsset @relation(fields: [mediaAssetId], references: [id], onDelete: Cascade)
   title                 String?
+  message               String?
   createdByDiscordUserId String?
   createdByName         String?
   createdAt             DateTime @default(now())

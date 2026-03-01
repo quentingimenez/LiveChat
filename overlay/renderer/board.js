@@ -3,6 +3,7 @@
   const countPillNode = document.getElementById('count-pill');
   const itemsListNode = document.getElementById('items-list');
   const previewStageNode = document.getElementById('preview-stage');
+  const selectedTitleNode = document.getElementById('selected-title');
   const selectedMetaNode = document.getElementById('selected-meta');
   const searchForm = document.getElementById('search-form');
   const searchInput = document.getElementById('search-input');
@@ -48,9 +49,12 @@
     searchDebounceTimeoutId: null,
     itemsLoadRequestId: 0,
     previewMediaKey: null,
+    previewMessageAutosaveTimeoutId: null,
+    previewMessageEditor: null,
   };
   const VOLUME_CURVE_GAMMA = 2.2;
   const INSTANT_SEARCH_DEBOUNCE_MS = 180;
+  const PREVIEW_MESSAGE_AUTOSAVE_DEBOUNCE_MS = 700;
 
   const clearStatusTimer = () => {
     if (state.statusTimeoutId === null) {
@@ -99,6 +103,20 @@
 
     clearTimeout(state.searchDebounceTimeoutId);
     state.searchDebounceTimeoutId = null;
+  };
+
+  const clearPreviewMessageAutosave = () => {
+    if (state.previewMessageAutosaveTimeoutId === null) {
+      return;
+    }
+
+    clearTimeout(state.previewMessageAutosaveTimeoutId);
+    state.previewMessageAutosaveTimeoutId = null;
+  };
+
+  const resetPreviewMessageEditor = () => {
+    clearPreviewMessageAutosave();
+    state.previewMessageEditor = null;
   };
 
   const normalizeMediaKind = (value) => {
@@ -451,18 +469,185 @@
     return shortcuts;
   };
 
+  const hasPendingPreviewMessageChanges = (editor = state.previewMessageEditor) => {
+    if (!editor || !(editor.inputNode instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+
+    const draftValue = `${editor.inputNode.value || ''}`.trim();
+    const savedValue = `${editor.lastSavedMessage || ''}`.trim();
+    return draftValue !== savedValue;
+  };
+
+  const schedulePreviewMessageAutosave = (delayMs = PREVIEW_MESSAGE_AUTOSAVE_DEBOUNCE_MS) => {
+    clearPreviewMessageAutosave();
+
+    const editor = state.previewMessageEditor;
+    if (!editor) {
+      return;
+    }
+
+    state.previewMessageAutosaveTimeoutId = setTimeout(() => {
+      state.previewMessageAutosaveTimeoutId = null;
+      void savePreviewMessage();
+    }, Math.max(0, Math.floor(delayMs)));
+  };
+
+  const savePreviewMessage = async (options = {}) => {
+    const editor = options?.editor || state.previewMessageEditor;
+    const waitForInFlight = options?.waitForInFlight !== false;
+    const keepalive = options?.keepalive === true;
+    const silent = options?.silent === true;
+
+    if (!editor || !(editor.inputNode instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+
+    const itemId = `${editor.itemId || ''}`.trim();
+    if (!itemId) {
+      return false;
+    }
+
+    if (editor.saving) {
+      if (waitForInFlight && editor.inFlightSavePromise) {
+        try {
+          await editor.inFlightSavePromise;
+        } catch {
+          // Ignore: the save call already reported the error.
+        }
+      } else {
+        return !hasPendingPreviewMessageChanges(editor);
+      }
+    }
+
+    const nextMessage = `${editor.inputNode.value || ''}`.trim();
+    const previousSavedMessage = `${editor.lastSavedMessage || ''}`.trim();
+
+    if (nextMessage === previousSavedMessage) {
+      return true;
+    }
+
+    let nextTitle = '';
+    const selected = findSelectedItem();
+    if (selected && `${selected.id || ''}` === itemId) {
+      nextTitle = `${selected?.title || ''}`.trim();
+    } else {
+      const inList = (Array.isArray(state.items) ? state.items : []).find((entry) => `${entry?.id || ''}` === itemId);
+      nextTitle = `${inList?.title || ''}`.trim();
+    }
+
+    editor.saving = true;
+    const savePromise = (async () => {
+      try {
+        await patchItemMetadata(
+          itemId,
+          {
+            title: nextTitle,
+            message: nextMessage,
+          },
+          { keepalive },
+        );
+
+        editor.lastSavedMessage = nextMessage;
+        applyLocalItemMetadata(itemId, nextTitle, nextMessage);
+        renderList();
+        return true;
+      } catch (error) {
+        if (!silent) {
+          setStatus(`Enregistrement du message impossible: ${error?.message || error}`, 'error');
+        }
+        return false;
+      }
+    })();
+
+    editor.inFlightSavePromise = savePromise;
+
+    try {
+      return await savePromise;
+    } finally {
+      if (editor.inFlightSavePromise === savePromise) {
+        editor.inFlightSavePromise = null;
+      }
+      editor.saving = false;
+
+      if (state.previewMessageEditor === editor && hasPendingPreviewMessageChanges(editor)) {
+        schedulePreviewMessageAutosave(280);
+      }
+    }
+  };
+
+  const flushPreviewMessageChanges = async (options = {}) => {
+    clearPreviewMessageAutosave();
+
+    const editor = options?.editor || state.previewMessageEditor;
+    if (!editor || !(editor.inputNode instanceof HTMLTextAreaElement)) {
+      return true;
+    }
+
+    // Handle race: save in progress + user typed again while request was pending.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const saved = await savePreviewMessage({
+        editor,
+        waitForInFlight: true,
+        keepalive: options?.keepalive === true,
+        silent: options?.silent === true,
+      });
+
+      if (!hasPendingPreviewMessageChanges(editor)) {
+        return saved;
+      }
+
+      if (!saved) {
+        return false;
+      }
+    }
+
+    if (!options?.silent) {
+      setStatus("Le message n'a pas pu être sauvegardé, action annulée.", 'error');
+    }
+    return false;
+  };
+
   const renderPreview = () => {
     const selectedItem = findSelectedItem();
 
     if (!selectedItem) {
+      if (hasPendingPreviewMessageChanges()) {
+        const detachedEditor = state.previewMessageEditor;
+        clearPreviewMessageAutosave();
+        void savePreviewMessage({
+          editor: detachedEditor,
+          waitForInFlight: false,
+          keepalive: true,
+          silent: true,
+        });
+      }
+      resetPreviewMessageEditor();
       state.previewMediaKey = null;
       previewStageNode.innerHTML = '';
+      if (selectedTitleNode instanceof HTMLElement) {
+        selectedTitleNode.textContent = '';
+      }
       selectedMetaNode.textContent = 'Aucun élément sélectionné.';
       const emptyNode = document.createElement('p');
       emptyNode.className = 'preview-empty';
       emptyNode.textContent = 'Sélectionne un mème pour voir son média et gérer son raccourci.';
       previewStageNode.appendChild(emptyNode);
       return;
+    }
+
+    if (state.previewMessageEditor && `${state.previewMessageEditor.itemId || ''}` !== `${selectedItem.id || ''}`) {
+      const detachedEditor = state.previewMessageEditor;
+      if (hasPendingPreviewMessageChanges(detachedEditor)) {
+        clearPreviewMessageAutosave();
+        void savePreviewMessage({
+          editor: detachedEditor,
+          waitForInFlight: false,
+          keepalive: true,
+          silent: true,
+        });
+      }
+      resetPreviewMessageEditor();
     }
 
     const mediaKind = normalizeMediaKind(selectedItem.media?.kind);
@@ -494,6 +679,50 @@
 
       mediaNode.className = 'preview-media';
 
+      const messageEditorNode = document.createElement('div');
+      messageEditorNode.className = 'preview-message-editor';
+
+      const messageLabelNode = document.createElement('label');
+      messageLabelNode.className = 'preview-message-label';
+      messageLabelNode.textContent = 'Message du mème';
+
+      const messageInputNode = document.createElement('textarea');
+      messageInputNode.className = 'preview-message-input';
+      messageInputNode.rows = 2;
+      messageInputNode.maxLength = 500;
+      messageInputNode.placeholder = 'Message overlay (optionnel)';
+      messageInputNode.spellcheck = true;
+      messageInputNode.value = `${selectedItem?.message || ''}`.trim();
+
+      const messageRowNode = document.createElement('div');
+      messageRowNode.className = 'preview-message-row';
+
+      messageRowNode.appendChild(messageInputNode);
+
+      messageEditorNode.appendChild(messageLabelNode);
+      messageEditorNode.appendChild(messageRowNode);
+
+      state.previewMessageEditor = {
+        itemId: `${selectedItem.id || ''}`.trim(),
+        inputNode: messageInputNode,
+        lastSavedMessage: `${messageInputNode.value || ''}`.trim(),
+        saving: false,
+        inFlightSavePromise: null,
+      };
+
+      messageInputNode.addEventListener('input', () => {
+        const editor = state.previewMessageEditor;
+        if (!editor || editor.inputNode !== messageInputNode) {
+          return;
+        }
+
+        schedulePreviewMessageAutosave();
+      });
+
+      messageInputNode.addEventListener('blur', () => {
+        schedulePreviewMessageAutosave(220);
+      });
+
       const controlsNode = document.createElement('div');
       controlsNode.className = 'preview-controls';
 
@@ -501,11 +730,13 @@
       triggerButton.type = 'button';
       triggerButton.textContent = 'Jouer';
       triggerButton.addEventListener('click', () => {
-        const currentSelectedItem = findSelectedItem();
-        if (!currentSelectedItem) {
-          return;
-        }
-        void triggerItem(currentSelectedItem.id);
+        void (async () => {
+          const currentSelectedItem = findSelectedItem();
+          if (!currentSelectedItem) {
+            return;
+          }
+          await triggerItem(currentSelectedItem.id);
+        })();
       });
 
       const renameButton = document.createElement('button');
@@ -513,11 +744,13 @@
       renameButton.className = 'ghost';
       renameButton.textContent = 'Éditer';
       renameButton.addEventListener('click', () => {
-        const currentSelectedItem = findSelectedItem();
-        if (!currentSelectedItem) {
-          return;
-        }
-        void renameItem(currentSelectedItem);
+        void (async () => {
+          const currentSelectedItem = findSelectedItem();
+          if (!currentSelectedItem) {
+            return;
+          }
+          await renameItem(currentSelectedItem);
+        })();
       });
 
       const bindButton = document.createElement('button');
@@ -525,11 +758,17 @@
       bindButton.className = 'ghost';
       bindButton.textContent = 'Assigner un raccourci';
       bindButton.addEventListener('click', () => {
-        const currentSelectedItem = findSelectedItem();
-        if (!currentSelectedItem) {
-          return;
-        }
-        beginCaptureForItem(currentSelectedItem.id);
+        void (async () => {
+          const currentSelectedItem = findSelectedItem();
+          if (!currentSelectedItem) {
+            return;
+          }
+          const flushed = await flushPreviewMessageChanges();
+          if (!flushed) {
+            return;
+          }
+          beginCaptureForItem(currentSelectedItem.id);
+        })();
       });
 
       const clearButton = document.createElement('button');
@@ -537,11 +776,13 @@
       clearButton.className = 'ghost';
       clearButton.textContent = 'Supprimer raccourci';
       clearButton.addEventListener('click', () => {
-        const currentSelectedItem = findSelectedItem();
-        if (!currentSelectedItem) {
-          return;
-        }
-        void clearShortcutForItem(currentSelectedItem.id);
+        void (async () => {
+          const currentSelectedItem = findSelectedItem();
+          if (!currentSelectedItem) {
+            return;
+          }
+          await clearShortcutForItem(currentSelectedItem.id);
+        })();
       });
 
       const deleteButton = document.createElement('button');
@@ -549,11 +790,13 @@
       deleteButton.className = 'danger';
       deleteButton.textContent = 'Supprimer';
       deleteButton.addEventListener('click', () => {
-        const currentSelectedItem = findSelectedItem();
-        if (!currentSelectedItem) {
-          return;
-        }
-        void deleteItem(currentSelectedItem);
+        void (async () => {
+          const currentSelectedItem = findSelectedItem();
+          if (!currentSelectedItem) {
+            return;
+          }
+          await deleteItem(currentSelectedItem);
+        })();
       });
 
       controlsNode.appendChild(triggerButton);
@@ -563,15 +806,19 @@
       controlsNode.appendChild(deleteButton);
 
       previewStageNode.appendChild(mediaNode);
+      previewStageNode.appendChild(messageEditorNode);
       previewStageNode.appendChild(controlsNode);
     }
     applyPreviewVolume();
 
     const shortcuts = getItemShortcuts(selectedItem.id);
     const hasMessage = toMessagePreview(selectedItem?.message).length > 0;
-    selectedMetaNode.textContent = `${toCardTitle(selectedItem)} | ${
-      selectedItem.media?.kind || 'MEDIA'
-    } | Message: ${hasMessage ? 'oui' : 'non'} | Raccourci: ${shortcuts.length > 0 ? shortcuts.join(', ') : 'aucun'}`;
+    if (selectedTitleNode instanceof HTMLElement) {
+      selectedTitleNode.textContent = `${toCardTitle(selectedItem)}`;
+    }
+    selectedMetaNode.textContent = `${selectedItem.media?.kind || 'MEDIA'} | Message: ${
+      hasMessage ? 'oui' : 'non'
+    } | Raccourci: ${shortcuts.length > 0 ? shortcuts.join(', ') : 'aucun'}`;
   };
 
   const renderList = () => {
@@ -597,12 +844,19 @@
           return;
         }
 
-        if (state.selectedId !== item.id) {
-          clearStatus();
-        }
-        state.selectedId = item.id;
-        state.selectedItem = item;
-        renderList();
+        void (async () => {
+          if (`${state.selectedId || ''}` !== `${item.id}`) {
+            const flushed = await flushPreviewMessageChanges();
+            if (!flushed) {
+              return;
+            }
+            clearStatus();
+          }
+
+          state.selectedId = item.id;
+          state.selectedItem = item;
+          renderList();
+        })();
       });
 
       const titleNode = document.createElement('h3');
@@ -650,7 +904,13 @@
       bindButton.className = 'ghost';
       bindButton.textContent = 'Macro';
       bindButton.addEventListener('click', () => {
-        beginCaptureForItem(item.id);
+        void (async () => {
+          const flushed = await flushPreviewMessageChanges();
+          if (!flushed) {
+            return;
+          }
+          beginCaptureForItem(item.id);
+        })();
       });
 
       const deleteButton = document.createElement('button');
@@ -707,6 +967,51 @@
     };
   };
 
+  const patchItemMetadata = async (itemId, payload, options = {}) => {
+    const endpoint = buildAuthedUrl(`/overlay/meme-board/items/${itemId}`);
+    const response = await fetch(endpoint.toString(), {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+      keepalive: options?.keepalive === true,
+    });
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new Error(body?.error || `HTTP_${response.status}`);
+    }
+  };
+
+  const applyLocalItemMetadata = (itemId, nextTitle, nextMessage) => {
+    let updated = false;
+
+    state.items = (Array.isArray(state.items) ? state.items : []).map((entry) => {
+      if (`${entry?.id || ''}` !== itemId) {
+        return entry;
+      }
+
+      updated = true;
+      return {
+        ...entry,
+        title: nextTitle,
+        message: nextMessage,
+      };
+    });
+
+    if (state.selectedItem && `${state.selectedItem.id || ''}` === itemId) {
+      state.selectedItem = {
+        ...state.selectedItem,
+        title: nextTitle,
+        message: nextMessage,
+      };
+      updated = true;
+    }
+
+    return updated;
+  };
+
   const loadItemsAndRender = async () => {
     const requestId = state.itemsLoadRequestId + 1;
     state.itemsLoadRequestId = requestId;
@@ -744,10 +1049,14 @@
     }
   };
 
-  const runSearchNow = () => {
+  const runSearchNow = async () => {
     clearSearchDebounce();
+    const flushed = await flushPreviewMessageChanges();
+    if (!flushed) {
+      return;
+    }
     state.search = `${searchInput.value || ''}`.trim();
-    void loadItemsAndRender();
+    await loadItemsAndRender();
   };
 
   const scheduleInstantSearch = () => {
@@ -755,13 +1064,25 @@
 
     state.searchDebounceTimeoutId = setTimeout(() => {
       state.searchDebounceTimeoutId = null;
-      state.search = `${searchInput.value || ''}`.trim();
-      void loadItemsAndRender();
+      void (async () => {
+        const flushed = await flushPreviewMessageChanges();
+        if (!flushed) {
+          return;
+        }
+
+        state.search = `${searchInput.value || ''}`.trim();
+        await loadItemsAndRender();
+      })();
     }, INSTANT_SEARCH_DEBOUNCE_MS);
   };
 
   const addItemFromLink = async (payload) => {
     try {
+      const flushed = await flushPreviewMessageChanges();
+      if (!flushed) {
+        return;
+      }
+
       setStatus('Ajout du mème en cours...', 'success');
 
       const endpoint = buildAuthedUrl('/overlay/meme-board/items');
@@ -815,6 +1136,11 @@
 
   const triggerItem = async (itemId) => {
     try {
+      const flushed = await flushPreviewMessageChanges();
+      if (!flushed) {
+        return;
+      }
+
       const result = await window.livechatOverlay.triggerMeme({
         itemId,
         trigger: 'ui',
@@ -887,6 +1213,11 @@
   };
 
   const clearShortcutForItem = async (itemId) => {
+    const flushed = await flushPreviewMessageChanges();
+    if (!flushed) {
+      return;
+    }
+
     const { nextBindings, removedCount } = removeBindingsForItem(itemId);
 
     if (removedCount === 0) {
@@ -904,6 +1235,11 @@
   };
 
   const renameItem = async (item) => {
+    const flushed = await flushPreviewMessageChanges();
+    if (!flushed) {
+      return;
+    }
+
     const currentTitle = `${item?.title || ''}`.trim();
     const currentMessage = `${item?.message || ''}`.trim();
     const nextMetadata = await openRenameDialog(currentTitle, currentMessage);
@@ -948,6 +1284,11 @@
   };
 
   const deleteItem = async (item) => {
+    const flushed = await flushPreviewMessageChanges();
+    if (!flushed) {
+      return;
+    }
+
     const confirmed = await openDeleteDialog(item);
 
     if (!confirmed) {
@@ -1285,6 +1626,19 @@
     return [...modifiers, key].join('+');
   };
 
+  const flushPreviewMessageOnLifecycleExit = () => {
+    const editor = state.previewMessageEditor;
+    if (!hasPendingPreviewMessageChanges(editor)) {
+      return;
+    }
+
+    void flushPreviewMessageChanges({
+      editor,
+      keepalive: true,
+      silent: true,
+    });
+  };
+
   window.addEventListener('keydown', (event) => {
     if (state.resolveAddDialog) {
       if (event.key === 'Escape') {
@@ -1346,6 +1700,20 @@
     state.capturePendingDisplay = formatAcceleratorDisplay(accelerator);
     refreshCaptureUi();
     setStatus(`Combinaison détectée : ${formatAcceleratorDisplay(accelerator)}. Clique "Arrêter et enregistrer".`, 'success');
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      flushPreviewMessageOnLifecycleExit();
+    }
+  });
+
+  window.addEventListener('pagehide', () => {
+    flushPreviewMessageOnLifecycleExit();
+  });
+
+  window.addEventListener('beforeunload', () => {
+    flushPreviewMessageOnLifecycleExit();
   });
 
   if (isCaptureUiReady()) {
@@ -1441,7 +1809,7 @@
 
   searchForm.addEventListener('submit', (event) => {
     event.preventDefault();
-    runSearchNow();
+    void runSearchNow();
   });
 
   searchInput.addEventListener('input', () => {
@@ -1449,7 +1817,13 @@
   });
 
   refreshButton.addEventListener('click', () => {
-    void loadItemsAndRender();
+    void (async () => {
+      const flushed = await flushPreviewMessageChanges();
+      if (!flushed) {
+        return;
+      }
+      await loadItemsAndRender();
+    })();
   });
 
   if (stopPlaybackButton instanceof HTMLElement) {

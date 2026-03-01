@@ -35,6 +35,7 @@
     items: [],
     total: 0,
     selectedId: null,
+    selectedItem: null,
     captureItemId: null,
     capturePendingAccelerator: null,
     capturePendingDisplay: '',
@@ -42,19 +43,61 @@
     resolveRenameDialog: null,
     resolveDeleteDialog: null,
     search: '',
+    statusTimeoutId: null,
+    searchDebounceTimeoutId: null,
+    itemsLoadRequestId: 0,
+    previewMediaKey: null,
   };
   const VOLUME_CURVE_GAMMA = 2.2;
+  const INSTANT_SEARCH_DEBOUNCE_MS = 180;
 
-  const setStatus = (message, variant = 'success') => {
+  const clearStatusTimer = () => {
+    if (state.statusTimeoutId === null) {
+      return;
+    }
+
+    clearTimeout(state.statusTimeoutId);
+    state.statusTimeoutId = null;
+  };
+
+  const setStatus = (message, variant = 'success', options = {}) => {
+    const autoDismissMs =
+      typeof options?.autoDismissMs === 'number' && Number.isFinite(options.autoDismissMs)
+        ? Math.max(0, Math.floor(options.autoDismissMs))
+        : 5000;
+
+    clearStatusTimer();
+
+    // Force a hide/show cycle so a repeated toast still appears as a new one.
+    statusNode.classList.add('hidden');
+    statusNode.classList.remove('error', 'success');
+    void statusNode.offsetWidth;
+
     statusNode.textContent = message;
-    statusNode.classList.remove('hidden', 'error', 'success');
+    statusNode.classList.remove('hidden');
     statusNode.classList.add(variant);
+
+    if (autoDismissMs > 0) {
+      state.statusTimeoutId = setTimeout(() => {
+        clearStatus();
+      }, autoDismissMs);
+    }
   };
 
   const clearStatus = () => {
+    clearStatusTimer();
     statusNode.textContent = '';
     statusNode.classList.add('hidden');
     statusNode.classList.remove('error', 'success');
+  };
+
+  const clearSearchDebounce = () => {
+    if (state.searchDebounceTimeoutId === null) {
+      return;
+    }
+
+    clearTimeout(state.searchDebounceTimeoutId);
+    state.searchDebounceTimeoutId = null;
   };
 
   const normalizeMediaKind = (value) => {
@@ -159,7 +202,23 @@
   };
 
   const findSelectedItem = () => {
-    return state.items.find((item) => item.id === state.selectedId) || null;
+    if (typeof state.selectedId === 'string' && state.selectedId.trim() !== '') {
+      const fromList = state.items.find((item) => item.id === state.selectedId) || null;
+      if (fromList) {
+        state.selectedItem = fromList;
+        return fromList;
+      }
+    }
+
+    if (
+      state.selectedItem &&
+      typeof state.selectedItem.id === 'string' &&
+      (!state.selectedId || state.selectedItem.id === state.selectedId)
+    ) {
+      return state.selectedItem;
+    }
+
+    return null;
   };
 
   const isHttpUrl = (value) => {
@@ -355,6 +414,28 @@
     });
   };
 
+  const bindBackdropClose = (overlayNode, closeDialog) => {
+    if (!(overlayNode instanceof HTMLElement) || typeof closeDialog !== 'function') {
+      return;
+    }
+
+    let pointerStartedOnBackdrop = false;
+
+    overlayNode.addEventListener('mousedown', (event) => {
+      pointerStartedOnBackdrop = event.target === overlayNode;
+    });
+
+    overlayNode.addEventListener('click', (event) => {
+      const clickedBackdrop = event.target === overlayNode;
+
+      if (clickedBackdrop && pointerStartedOnBackdrop) {
+        closeDialog();
+      }
+
+      pointerStartedOnBackdrop = false;
+    });
+  };
+
   const getItemShortcuts = (itemId) => {
     const shortcuts = [];
 
@@ -370,11 +451,11 @@
   };
 
   const renderPreview = () => {
-    previewStageNode.innerHTML = '';
-
     const selectedItem = findSelectedItem();
 
     if (!selectedItem) {
+      state.previewMediaKey = null;
+      previewStageNode.innerHTML = '';
       selectedMetaNode.textContent = 'Aucun element selectionne.';
       const emptyNode = document.createElement('p');
       emptyNode.className = 'preview-empty';
@@ -385,78 +466,104 @@
 
     const mediaKind = normalizeMediaKind(selectedItem.media?.kind);
     const mediaUrl = buildAuthedUrl(`/overlay/meme-board/media/${selectedItem.mediaAssetId}`).toString();
+    const mediaKey = `${selectedItem.id}|${selectedItem.mediaAssetId}|${mediaKind}|${mediaUrl}`;
 
-    let mediaNode;
+    if (state.previewMediaKey !== mediaKey) {
+      state.previewMediaKey = mediaKey;
+      previewStageNode.innerHTML = '';
 
-    if (mediaKind === 'image') {
-      mediaNode = document.createElement('img');
-      mediaNode.src = mediaUrl;
-      mediaNode.alt = toCardTitle(selectedItem);
-      mediaNode.loading = 'lazy';
-    } else if (mediaKind === 'audio') {
-      mediaNode = document.createElement('audio');
-      mediaNode.src = mediaUrl;
-      mediaNode.controls = true;
-      mediaNode.preload = 'metadata';
-    } else {
-      mediaNode = document.createElement('video');
-      mediaNode.src = mediaUrl;
-      mediaNode.controls = true;
-      mediaNode.preload = 'metadata';
+      let mediaNode;
+
+      if (mediaKind === 'image') {
+        mediaNode = document.createElement('img');
+        mediaNode.src = mediaUrl;
+        mediaNode.alt = toCardTitle(selectedItem);
+        mediaNode.loading = 'lazy';
+      } else if (mediaKind === 'audio') {
+        mediaNode = document.createElement('audio');
+        mediaNode.src = mediaUrl;
+        mediaNode.controls = true;
+        mediaNode.preload = 'metadata';
+      } else {
+        mediaNode = document.createElement('video');
+        mediaNode.src = mediaUrl;
+        mediaNode.controls = true;
+        mediaNode.preload = 'metadata';
+      }
+
+      mediaNode.className = 'preview-media';
+
+      const controlsNode = document.createElement('div');
+      controlsNode.className = 'preview-controls';
+
+      const triggerButton = document.createElement('button');
+      triggerButton.type = 'button';
+      triggerButton.textContent = 'Jouer';
+      triggerButton.addEventListener('click', () => {
+        const currentSelectedItem = findSelectedItem();
+        if (!currentSelectedItem) {
+          return;
+        }
+        void triggerItem(currentSelectedItem.id);
+      });
+
+      const renameButton = document.createElement('button');
+      renameButton.type = 'button';
+      renameButton.className = 'ghost';
+      renameButton.textContent = 'Editer';
+      renameButton.addEventListener('click', () => {
+        const currentSelectedItem = findSelectedItem();
+        if (!currentSelectedItem) {
+          return;
+        }
+        void renameItem(currentSelectedItem);
+      });
+
+      const bindButton = document.createElement('button');
+      bindButton.type = 'button';
+      bindButton.className = 'ghost';
+      bindButton.textContent = 'Assigner un raccourci';
+      bindButton.addEventListener('click', () => {
+        const currentSelectedItem = findSelectedItem();
+        if (!currentSelectedItem) {
+          return;
+        }
+        beginCaptureForItem(currentSelectedItem.id);
+      });
+
+      const clearButton = document.createElement('button');
+      clearButton.type = 'button';
+      clearButton.className = 'ghost';
+      clearButton.textContent = 'Supprimer raccourci';
+      clearButton.addEventListener('click', () => {
+        const currentSelectedItem = findSelectedItem();
+        if (!currentSelectedItem) {
+          return;
+        }
+        void clearShortcutForItem(currentSelectedItem.id);
+      });
+
+      const deleteButton = document.createElement('button');
+      deleteButton.type = 'button';
+      deleteButton.className = 'danger';
+      deleteButton.textContent = 'Supprimer';
+      deleteButton.addEventListener('click', () => {
+        const currentSelectedItem = findSelectedItem();
+        if (!currentSelectedItem) {
+          return;
+        }
+        void deleteItem(currentSelectedItem);
+      });
+
+      controlsNode.appendChild(triggerButton);
+      controlsNode.appendChild(renameButton);
+      controlsNode.appendChild(bindButton);
+      controlsNode.appendChild(clearButton);
+      controlsNode.appendChild(deleteButton);
+
+      previewStageNode.appendChild(mediaNode);
+      previewStageNode.appendChild(controlsNode);
     }
-
-    mediaNode.className = 'preview-media';
-
-    const controlsNode = document.createElement('div');
-    controlsNode.className = 'preview-controls';
-
-    const triggerButton = document.createElement('button');
-    triggerButton.type = 'button';
-    triggerButton.textContent = 'Jouer';
-    triggerButton.addEventListener('click', () => {
-      void triggerItem(selectedItem.id);
-    });
-
-    const renameButton = document.createElement('button');
-    renameButton.type = 'button';
-    renameButton.className = 'ghost';
-    renameButton.textContent = 'Editer';
-    renameButton.addEventListener('click', () => {
-      void renameItem(selectedItem);
-    });
-
-    const bindButton = document.createElement('button');
-    bindButton.type = 'button';
-    bindButton.className = 'ghost';
-    bindButton.textContent = 'Assigner un raccourci';
-    bindButton.addEventListener('click', () => {
-      beginCaptureForItem(selectedItem.id);
-    });
-
-    const clearButton = document.createElement('button');
-    clearButton.type = 'button';
-    clearButton.className = 'ghost';
-    clearButton.textContent = 'Supprimer raccourci';
-    clearButton.addEventListener('click', () => {
-      void clearShortcutForItem(selectedItem.id);
-    });
-
-    const deleteButton = document.createElement('button');
-    deleteButton.type = 'button';
-    deleteButton.className = 'danger';
-    deleteButton.textContent = 'Supprimer';
-    deleteButton.addEventListener('click', () => {
-      void deleteItem(selectedItem);
-    });
-
-    controlsNode.appendChild(triggerButton);
-    controlsNode.appendChild(renameButton);
-    controlsNode.appendChild(bindButton);
-    controlsNode.appendChild(clearButton);
-    controlsNode.appendChild(deleteButton);
-
-    previewStageNode.appendChild(mediaNode);
-    previewStageNode.appendChild(controlsNode);
     applyPreviewVolume();
 
     const shortcuts = getItemShortcuts(selectedItem.id);
@@ -489,7 +596,11 @@
           return;
         }
 
+        if (state.selectedId !== item.id) {
+          clearStatus();
+        }
         state.selectedId = item.id;
+        state.selectedItem = item;
         renderList();
       });
 
@@ -504,13 +615,11 @@
       const authorNode = document.createElement('p');
       authorNode.className = 'item-author';
       authorNode.textContent = `${item.createdByName || 'Auteur inconnu'}`;
-      authorNode.title = `${item.createdByName || 'Auteur inconnu'}`;
 
       const messageNode = document.createElement('p');
       messageNode.className = 'item-message';
       const messagePreview = toMessagePreview(item?.message);
       messageNode.textContent = messagePreview ? `Message: ${messagePreview}` : 'Message: aucun';
-      messageNode.title = messagePreview || 'Aucun message';
 
       const shortcutNode = document.createElement('p');
       shortcutNode.className = 'item-shortcut';
@@ -569,11 +678,11 @@
     renderPreview();
   };
 
-  const fetchItems = async () => {
+  const fetchItems = async (searchQuery) => {
     const endpoint = buildAuthedUrl('/overlay/meme-board/items', {
       limit: 150,
       offset: 0,
-      q: state.search,
+      q: searchQuery,
     });
 
     const response = await fetch(endpoint.toString(), {
@@ -588,23 +697,66 @@
       throw new Error(message);
     }
 
-    state.items = Array.isArray(payload?.items) ? payload.items : [];
-    state.total = typeof payload?.total === 'number' ? payload.total : state.items.length;
+    const items = Array.isArray(payload?.items) ? payload.items : [];
+    const total = typeof payload?.total === 'number' ? payload.total : items.length;
 
-    if (!state.selectedId || !state.items.find((item) => item.id === state.selectedId)) {
-      state.selectedId = state.items[0]?.id || null;
-    }
+    return {
+      items,
+      total,
+    };
   };
 
   const loadItemsAndRender = async () => {
+    const requestId = state.itemsLoadRequestId + 1;
+    state.itemsLoadRequestId = requestId;
+
     try {
-      await fetchItems();
+      const fetched = await fetchItems(state.search);
+      if (requestId !== state.itemsLoadRequestId) {
+        return;
+      }
+
+      state.items = fetched.items;
+      state.total = fetched.total;
+
+      const selectedInList =
+        typeof state.selectedId === 'string' && state.selectedId.trim() !== ''
+          ? state.items.find((item) => item.id === state.selectedId) || null
+          : null;
+
+      if (selectedInList) {
+        state.selectedItem = selectedInList;
+      } else if (!state.selectedId && !state.selectedItem && state.items.length > 0) {
+        state.selectedId = state.items[0].id;
+        state.selectedItem = state.items[0];
+      }
+
       await syncBindingsWithBoardItems();
+      if (requestId !== state.itemsLoadRequestId) {
+        return;
+      }
+
       renderList();
       clearStatus();
     } catch (error) {
       setStatus(error?.message || 'Erreur de chargement de la meme board.', 'error');
     }
+  };
+
+  const runSearchNow = () => {
+    clearSearchDebounce();
+    state.search = `${searchInput.value || ''}`.trim();
+    void loadItemsAndRender();
+  };
+
+  const scheduleInstantSearch = () => {
+    clearSearchDebounce();
+
+    state.searchDebounceTimeoutId = setTimeout(() => {
+      state.searchDebounceTimeoutId = null;
+      state.search = `${searchInput.value || ''}`.trim();
+      void loadItemsAndRender();
+    }, INSTANT_SEARCH_DEBOUNCE_MS);
   };
 
   const addItemFromLink = async (payload) => {
@@ -634,6 +786,7 @@
 
       if (body?.item?.id) {
         state.selectedId = body.item.id;
+        state.selectedItem = body.item;
       }
 
       await loadItemsAndRender();
@@ -799,6 +952,8 @@
 
       if (state.selectedId === item.id) {
         state.selectedId = null;
+        state.selectedItem = null;
+        state.previewMediaKey = null;
       }
 
       const { nextBindings, removedCount } = removeBindingsForItem(item.id);
@@ -1216,10 +1371,8 @@
       closeAddDialog(null);
     });
 
-    addOverlay.addEventListener('click', (event) => {
-      if (event.target === addOverlay) {
-        closeAddDialog(null);
-      }
+    bindBackdropClose(addOverlay, () => {
+      closeAddDialog(null);
     });
   }
 
@@ -1250,10 +1403,8 @@
       closeRenameDialog(null);
     });
 
-    renameOverlay.addEventListener('click', (event) => {
-      if (event.target === renameOverlay) {
-        closeRenameDialog(null);
-      }
+    bindBackdropClose(renameOverlay, () => {
+      closeRenameDialog(null);
     });
   }
 
@@ -1266,18 +1417,18 @@
       closeDeleteDialog(true);
     });
 
-    deleteOverlay.addEventListener('click', (event) => {
-      if (event.target === deleteOverlay) {
-        closeDeleteDialog(false);
-      }
+    bindBackdropClose(deleteOverlay, () => {
+      closeDeleteDialog(false);
     });
   }
 
   searchForm.addEventListener('submit', (event) => {
     event.preventDefault();
+    runSearchNow();
+  });
 
-    state.search = `${searchInput.value || ''}`.trim();
-    void loadItemsAndRender();
+  searchInput.addEventListener('input', () => {
+    scheduleInstantSearch();
   });
 
   refreshButton.addEventListener('click', () => {

@@ -87,12 +87,14 @@ export const addToMemeBoard = async (params: {
   guildId: string;
   mediaAssetId: string;
   title?: string | null;
+  message?: string | null;
   createdByDiscordUserId?: string | null;
   createdByName?: string | null;
 }) => {
   await ensurePinnedExpiry(params.mediaAssetId);
 
   const title = toNonEmptyString(params.title)?.slice(0, 240) || null;
+  const message = toNonEmptyString(params.message)?.slice(0, 500) || null;
   const createdByDiscordUserId = toNonEmptyString(params.createdByDiscordUserId);
   const createdByName = toNonEmptyString(params.createdByName)?.slice(0, 120) || null;
 
@@ -102,6 +104,7 @@ export const addToMemeBoard = async (params: {
         guildId: params.guildId,
         mediaAssetId: params.mediaAssetId,
         title,
+        message,
         createdByDiscordUserId,
         createdByName,
       },
@@ -155,6 +158,11 @@ export const listMemeBoardItems = async (params: {
           OR: [
             {
               title: {
+                contains: q,
+              },
+            },
+            {
+              message: {
                 contains: q,
               },
             },
@@ -233,10 +241,11 @@ export const removeMemeBoardItem = async (params: { guildId: string; itemId: str
   };
 };
 
-export const updateMemeBoardItemTitle = async (params: {
+export const updateMemeBoardItem = async (params: {
   guildId: string;
   itemId: string;
-  title?: string | null;
+  title?: string | null | undefined;
+  message?: string | null | undefined;
 }) => {
   const existing = await prisma.memeBoardItem.findFirst({
     where: {
@@ -252,15 +261,35 @@ export const updateMemeBoardItemTitle = async (params: {
     return null;
   }
 
-  const title = toNonEmptyString(params.title)?.slice(0, 240) || null;
+  const data: {
+    title?: string | null;
+    message?: string | null;
+  } = {};
+
+  if (params.title !== undefined) {
+    data.title = toNonEmptyString(params.title)?.slice(0, 240) || null;
+  }
+
+  if (params.message !== undefined) {
+    data.message = toNonEmptyString(params.message)?.slice(0, 500) || null;
+  }
+
+  if (Object.keys(data).length === 0) {
+    return prisma.memeBoardItem.findFirst({
+      where: {
+        id: existing.id,
+      },
+      include: {
+        mediaAsset: true,
+      },
+    });
+  }
 
   return prisma.memeBoardItem.update({
     where: {
       id: existing.id,
     },
-    data: {
-      title,
-    },
+    data,
     include: {
       mediaAsset: true,
     },

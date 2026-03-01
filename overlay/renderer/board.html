@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Meme Board</title>
+    <title>Mème Board</title>
     <link rel="stylesheet" href="./board.css" />
   </head>
   <body>
@@ -11,7 +11,7 @@
       <header class="board-header">
         <div>
           <p class="board-kicker">LiveChat Overlay</p>
-          <h1>Meme Board</h1>
+          <h1>Mème Board</h1>
         </div>
         <div class="board-actions">
           <form id="search-form" class="search-form">
@@ -19,7 +19,7 @@
             <button type="submit">Rechercher</button>
           </form>
           <button id="stop-playback-button" type="button" class="danger">Stop lecture</button>
-          <button id="refresh-button" type="button" class="ghost">Rafraichir</button>
+          <button id="refresh-button" type="button" class="ghost">Rafraîchir</button>
           <button id="add-link-button" type="button">Ajouter lien</button>
         </div>
       </header>
@@ -29,7 +29,7 @@
       <section class="board-grid">
         <aside class="list-panel">
           <div class="list-head">
-            <h2>Memes disponibles</h2>
+            <h2>Mèmes disponibles</h2>
             <span id="count-pill" class="pill">0</span>
           </div>
           <div id="items-list" class="items-list"></div>
@@ -37,11 +37,11 @@
 
         <section class="preview-panel">
           <div class="preview-head">
-            <h2>Apercu</h2>
-            <p id="selected-meta" class="selected-meta">Aucun element selectionne.</p>
+            <h2>Aperçu</h2>
+            <p id="selected-meta" class="selected-meta">Aucun élément sélectionné.</p>
           </div>
           <div id="preview-stage" class="preview-stage">
-            <p class="preview-empty">Selectionne un meme pour voir son media et gerer son raccourci.</p>
+            <p class="preview-empty">Sélectionne un mème pour voir son média et gérer son raccourci.</p>
           </div>
         </section>
       </section>
@@ -51,24 +51,24 @@
       <div class="capture-card">
         <h3>Assigner un raccourci</h3>
         <p>Appuie sur les touches de ta combinaison (ex: Ctrl+Shift+1).</p>
-        <p id="capture-current" class="capture-current">Aucune combinaison detectee.</p>
+        <p id="capture-current" class="capture-current">Aucune combinaison détectée.</p>
         <div class="capture-actions">
           <button id="capture-cancel" type="button" class="ghost">Annuler</button>
-          <button id="capture-save" type="button">Arreter et enregistrer</button>
+          <button id="capture-save" type="button">Arrêter et enregistrer</button>
         </div>
       </div>
     </div>
 
     <div id="add-overlay" class="dialog-overlay hidden">
       <form id="add-form" class="dialog-card">
-        <h3>Ajouter un meme par lien</h3>
-        <p>Colle un lien media (TikTok, X, image, video...) pour l'ajouter a la board.</p>
+        <h3>Ajouter un mème par lien</h3>
+        <p>Colle un lien média (TikTok, X, image, vidéo...) pour l'ajouter à la board.</p>
         <input id="add-url-input" type="url" required placeholder="https://..." autocomplete="off" spellcheck="false" />
         <input
           id="add-title-input"
           type="text"
           maxlength="240"
-          placeholder="Nom du meme (optionnel)"
+          placeholder="Nom du mème (optionnel)"
           autocomplete="off"
           spellcheck="false"
         />
@@ -81,7 +81,7 @@
         ></textarea>
         <label class="dialog-checkbox">
           <input id="add-refresh-input" type="checkbox" />
-          Forcer le refresh du media
+          Forcer le refresh du média
         </label>
         <div class="dialog-actions">
           <button id="add-cancel" type="button" class="ghost">Annuler</button>
@@ -92,13 +92,13 @@
 
     <div id="rename-overlay" class="dialog-overlay hidden">
       <form id="rename-form" class="dialog-card">
-        <h3>Modifier le meme</h3>
-        <p>Laisser vide pour supprimer le nom personnalise et/ou le message.</p>
+        <h3>Modifier le mème</h3>
+        <p>Laisser vide pour supprimer le nom personnalisé et/ou le message.</p>
         <input
           id="rename-input"
           type="text"
           maxlength="240"
-          placeholder="Nom du meme"
+          placeholder="Nom du mème"
           autocomplete="off"
           spellcheck="false"
         />
@@ -118,8 +118,8 @@
 
     <div id="delete-overlay" class="dialog-overlay hidden">
       <div class="dialog-card dialog-danger">
-        <h3>Supprimer ce meme ?</h3>
-        <p id="delete-message">Cette action est irreversible.</p>
+        <h3>Supprimer ce mème ?</h3>
+        <p id="delete-message">Cette action est irréversible.</p>
         <div class="dialog-actions">
           <button id="delete-cancel" type="button" class="ghost">Annuler</button>
           <button id="delete-confirm" type="button" class="danger">Supprimer</button>

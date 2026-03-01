@@ -16,11 +16,13 @@
   const addForm = document.getElementById('add-form');
   const addUrlInput = document.getElementById('add-url-input');
   const addTitleInput = document.getElementById('add-title-input');
+  const addMessageInput = document.getElementById('add-message-input');
   const addRefreshInput = document.getElementById('add-refresh-input');
   const addCancelButton = document.getElementById('add-cancel');
   const renameOverlay = document.getElementById('rename-overlay');
   const renameForm = document.getElementById('rename-form');
   const renameInput = document.getElementById('rename-input');
+  const renameMessageInput = document.getElementById('rename-message-input');
   const renameCancelButton = document.getElementById('rename-cancel');
   const deleteOverlay = document.getElementById('delete-overlay');
   const deleteMessage = document.getElementById('delete-message');
@@ -93,6 +95,20 @@
     } catch {
       return source;
     }
+  };
+
+  const toMessagePreview = (value, maxLength = 120) => {
+    const normalized = `${value || ''}`.trim().replace(/\s+/g, ' ');
+
+    if (!normalized) {
+      return '';
+    }
+
+    if (normalized.length <= maxLength) {
+      return normalized;
+    }
+
+    return `${normalized.slice(0, Math.max(1, maxLength - 1))}…`;
   };
 
   const buildAuthedUrl = (pathname, options = {}) => {
@@ -168,6 +184,7 @@
       addForm instanceof HTMLFormElement &&
       addUrlInput instanceof HTMLInputElement &&
       addTitleInput instanceof HTMLInputElement &&
+      addMessageInput instanceof HTMLTextAreaElement &&
       addRefreshInput instanceof HTMLInputElement &&
       addCancelButton instanceof HTMLElement
     );
@@ -207,10 +224,12 @@
       }
 
       const fallbackTitle = window.prompt('Nom du meme (optionnel):', '') || '';
+      const fallbackMessage = window.prompt('Message overlay (optionnel):', '') || '';
 
       return Promise.resolve({
         url: normalizedFallbackUrl,
         title: fallbackTitle.trim(),
+        message: fallbackMessage.trim(),
         forceRefresh: false,
       });
     }
@@ -218,6 +237,7 @@
     closeAddDialog(null);
     addUrlInput.value = '';
     addTitleInput.value = '';
+    addMessageInput.value = '';
     addRefreshInput.checked = false;
     addOverlay.classList.remove('hidden');
     addUrlInput.focus();
@@ -276,6 +296,7 @@
       renameOverlay instanceof HTMLElement &&
       renameForm instanceof HTMLFormElement &&
       renameInput instanceof HTMLInputElement &&
+      renameMessageInput instanceof HTMLTextAreaElement &&
       renameCancelButton instanceof HTMLElement
     );
   };
@@ -298,14 +319,33 @@
     resolver(value);
   };
 
-  const openRenameDialog = (title) => {
+  const openRenameDialog = (title, message) => {
     if (!isRenameDialogReady()) {
-      return Promise.resolve(window.prompt('Nom du meme (laisser vide pour enlever le nom):', title));
+      const fallbackTitle = window.prompt('Nom du meme (laisser vide pour enlever le nom):', title);
+
+      if (fallbackTitle === null) {
+        return Promise.resolve(null);
+      }
+
+      const fallbackMessage = window.prompt(
+        'Message overlay (laisser vide pour enlever le message):',
+        `${message || ''}`.trim(),
+      );
+
+      if (fallbackMessage === null) {
+        return Promise.resolve(null);
+      }
+
+      return Promise.resolve({
+        title: fallbackTitle,
+        message: fallbackMessage,
+      });
     }
 
     closeRenameDialog(null);
 
     renameInput.value = title;
+    renameMessageInput.value = `${message || ''}`.trim();
     renameOverlay.classList.remove('hidden');
     renameInput.focus();
     renameInput.select();
@@ -380,7 +420,7 @@
     const renameButton = document.createElement('button');
     renameButton.type = 'button';
     renameButton.className = 'ghost';
-    renameButton.textContent = 'Nommer';
+    renameButton.textContent = 'Editer';
     renameButton.addEventListener('click', () => {
       void renameItem(selectedItem);
     });
@@ -420,9 +460,10 @@
     applyPreviewVolume();
 
     const shortcuts = getItemShortcuts(selectedItem.id);
-    selectedMetaNode.textContent = `${toCardTitle(selectedItem)} | ${selectedItem.media?.kind || 'MEDIA'} | Raccourci: ${
-      shortcuts.length > 0 ? shortcuts.join(', ') : 'aucun'
-    }`;
+    const hasMessage = toMessagePreview(selectedItem?.message).length > 0;
+    selectedMetaNode.textContent = `${toCardTitle(selectedItem)} | ${
+      selectedItem.media?.kind || 'MEDIA'
+    } | Message: ${hasMessage ? 'oui' : 'non'} | Raccourci: ${shortcuts.length > 0 ? shortcuts.join(', ') : 'aucun'}`;
   };
 
   const renderList = () => {
@@ -465,6 +506,12 @@
       authorNode.textContent = `${item.createdByName || 'Auteur inconnu'}`;
       authorNode.title = `${item.createdByName || 'Auteur inconnu'}`;
 
+      const messageNode = document.createElement('p');
+      messageNode.className = 'item-message';
+      const messagePreview = toMessagePreview(item?.message);
+      messageNode.textContent = messagePreview ? `Message: ${messagePreview}` : 'Message: aucun';
+      messageNode.title = messagePreview || 'Aucun message';
+
       const shortcutNode = document.createElement('p');
       shortcutNode.className = 'item-shortcut';
       const shortcuts = getItemShortcuts(item.id);
@@ -483,7 +530,7 @@
       const renameButton = document.createElement('button');
       renameButton.type = 'button';
       renameButton.className = 'ghost';
-      renameButton.textContent = 'Nommer';
+      renameButton.textContent = 'Editer';
       renameButton.addEventListener('click', () => {
         void renameItem(item);
       });
@@ -512,6 +559,7 @@
       card.appendChild(titleNode);
       card.appendChild(subNode);
       card.appendChild(authorNode);
+      card.appendChild(messageNode);
       card.appendChild(shortcutNode);
       card.appendChild(actionsNode);
 
@@ -572,6 +620,7 @@
         body: JSON.stringify({
           url: payload.url,
           title: payload.title,
+          message: payload.message,
           forceRefresh: payload.forceRefresh,
         }),
       });
@@ -688,13 +737,15 @@
 
   const renameItem = async (item) => {
     const currentTitle = `${item?.title || ''}`.trim();
-    const rawTitle = await openRenameDialog(currentTitle);
+    const currentMessage = `${item?.message || ''}`.trim();
+    const nextMetadata = await openRenameDialog(currentTitle, currentMessage);
 
-    if (rawTitle === null) {
+    if (nextMetadata === null) {
       return;
     }
 
-    const nextTitle = rawTitle.trim();
+    const nextTitle = `${nextMetadata?.title || ''}`.trim();
+    const nextMessage = `${nextMetadata?.message || ''}`.trim();
 
     try {
       const endpoint = buildAuthedUrl(`/overlay/meme-board/items/${item.id}`);
@@ -705,6 +756,7 @@
         },
         body: JSON.stringify({
           title: nextTitle,
+          message: nextMessage,
         }),
       });
 
@@ -714,7 +766,14 @@
       }
 
       await loadItemsAndRender();
-      setStatus(nextTitle ? 'Nom du meme mis a jour.' : 'Nom du meme supprime.', 'success');
+      const hasTitle = nextTitle.length > 0;
+      const hasMessage = nextMessage.length > 0;
+      setStatus(
+        hasTitle || hasMessage
+          ? `Meme mis a jour (${hasTitle ? 'nom' : 'sans nom'} / ${hasMessage ? 'message' : 'sans message'}).`
+          : 'Nom et message supprimes.',
+        'success',
+      );
     } catch (error) {
       setStatus(`Renommage impossible: ${error?.message || error}`, 'error');
     }
@@ -1136,6 +1195,7 @@
 
       const url = `${addUrlInput.value || ''}`.trim();
       const title = `${addTitleInput.value || ''}`.trim();
+      const message = `${addMessageInput.value || ''}`.trim();
       const forceRefresh = !!addRefreshInput.checked;
 
       if (!isHttpUrl(url)) {
@@ -1147,6 +1207,7 @@
       closeAddDialog({
         url,
         title,
+        message,
         forceRefresh,
       });
     });
@@ -1179,7 +1240,10 @@
   if (isRenameDialogReady()) {
     renameForm.addEventListener('submit', (event) => {
       event.preventDefault();
-      closeRenameDialog(renameInput.value);
+      closeRenameDialog({
+        title: renameInput.value,
+        message: renameMessageInput.value,
+      });
     });
 
     renameCancelButton.addEventListener('click', () => {

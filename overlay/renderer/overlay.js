@@ -1,4 +1,5 @@
 (() => {
+  const overlayRoot = document.getElementById('overlay-root');
   const mediaLayer = document.getElementById('media-layer');
   const countdownLayer = document.getElementById('countdown-layer');
   const textLayer = document.getElementById('text-layer');
@@ -24,6 +25,12 @@
   let activePlayback = null;
   let activeObjectUrl = null;
   let twitterWidgetsPromise = null;
+  let activeMediaFrame = null;
+  let activeMediaContent = null;
+  let activeMediaHeaderLeft = null;
+  let activeMediaHeaderRight = null;
+  let activeMediaFooter = null;
+  let mediaHeaderLayoutRaf = null;
 
   const clearTimer = () => {
     if (resetTimer) {
@@ -44,6 +51,128 @@
       clearInterval(playbackSyncTimer);
       playbackSyncTimer = null;
     }
+  };
+
+  const clearMediaHeaderLayoutRaf = () => {
+    if (mediaHeaderLayoutRaf === null) {
+      return;
+    }
+
+    if (typeof window.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(mediaHeaderLayoutRaf);
+    } else {
+      clearTimeout(mediaHeaderLayoutRaf);
+    }
+    mediaHeaderLayoutRaf = null;
+  };
+
+  const syncMediaHeaderLayout = () => {
+    if (
+      !(activeMediaFrame instanceof HTMLElement) ||
+      !(activeMediaHeaderLeft instanceof HTMLElement) ||
+      !(activeMediaHeaderRight instanceof HTMLElement)
+    ) {
+      return;
+    }
+
+    const mediaNode = activeMediaContent?.firstElementChild;
+    const mediaWidth =
+      mediaNode instanceof HTMLElement
+        ? Math.max(0, Math.round(mediaNode.getBoundingClientRect().width))
+        : Math.max(0, Math.round(activeMediaFrame.getBoundingClientRect().width));
+
+    const leftWidth = activeMediaHeaderLeft.scrollWidth;
+    const rightWidth = activeMediaHeaderRight.scrollWidth;
+    const minGapPx = 14;
+    const overflowPx = mediaWidth > 0 ? leftWidth + rightWidth + minGapPx - mediaWidth : 0;
+
+    if (overflowPx > 0) {
+      const leftShiftPx = Math.ceil(overflowPx / 2);
+      const rightShiftPx = Math.floor(overflowPx / 2);
+      activeMediaFrame.style.setProperty('--header-left-shift', `${leftShiftPx}px`);
+      activeMediaFrame.style.setProperty('--header-right-shift', `${rightShiftPx}px`);
+      return;
+    }
+
+    activeMediaFrame.style.setProperty('--header-left-shift', '0px');
+    activeMediaFrame.style.setProperty('--header-right-shift', '0px');
+  };
+
+  const scheduleMediaHeaderLayout = () => {
+    if (mediaHeaderLayoutRaf !== null) {
+      return;
+    }
+
+    if (typeof window.requestAnimationFrame === 'function') {
+      mediaHeaderLayoutRaf = window.requestAnimationFrame(() => {
+        mediaHeaderLayoutRaf = null;
+        syncMediaHeaderLayout();
+      });
+      return;
+    }
+
+    mediaHeaderLayoutRaf = setTimeout(() => {
+      mediaHeaderLayoutRaf = null;
+      syncMediaHeaderLayout();
+    }, 0);
+  };
+
+  const ensureMediaFrame = () => {
+    if (!(mediaLayer instanceof HTMLElement)) {
+      return null;
+    }
+
+    if (
+      activeMediaFrame instanceof HTMLElement &&
+      activeMediaContent instanceof HTMLElement &&
+      activeMediaHeaderLeft instanceof HTMLElement &&
+      activeMediaHeaderRight instanceof HTMLElement
+    ) {
+      if (countdownLayer instanceof HTMLElement && countdownLayer.parentElement !== activeMediaHeaderRight) {
+        activeMediaHeaderRight.appendChild(countdownLayer);
+      }
+      return activeMediaContent;
+    }
+
+    const frame = document.createElement('div');
+    frame.className = 'overlay-media-frame';
+    frame.style.setProperty('--header-left-shift', '0px');
+    frame.style.setProperty('--header-right-shift', '0px');
+
+    const header = document.createElement('div');
+    header.className = 'overlay-media-header';
+
+    const headerLeft = document.createElement('div');
+    headerLeft.className = 'overlay-media-header-left';
+    const headerRight = document.createElement('div');
+    headerRight.className = 'overlay-media-header-right';
+
+    header.appendChild(headerLeft);
+    header.appendChild(headerRight);
+
+    const content = document.createElement('div');
+    content.className = 'overlay-media-content';
+    const footer = document.createElement('div');
+    footer.className = 'overlay-media-footer';
+    footer.style.display = 'none';
+
+    frame.appendChild(header);
+    frame.appendChild(content);
+    frame.appendChild(footer);
+    mediaLayer.appendChild(frame);
+
+    activeMediaFrame = frame;
+    activeMediaContent = content;
+    activeMediaHeaderLeft = headerLeft;
+    activeMediaHeaderRight = headerRight;
+    activeMediaFooter = footer;
+
+    if (countdownLayer instanceof HTMLElement) {
+      headerRight.appendChild(countdownLayer);
+    }
+
+    scheduleMediaHeaderLayout();
+    return content;
   };
 
   const formatRemainingTime = (remainingMs) => {
@@ -162,6 +291,7 @@
     if (remainingMs === null) {
       countdownLayer.textContent = '';
       countdownLayer.style.display = 'none';
+      scheduleMediaHeaderLayout();
       return;
     }
 
@@ -169,6 +299,7 @@
 
     countdownLayer.textContent = remainingDisplay;
     countdownLayer.style.display = 'flex';
+    scheduleMediaHeaderLayout();
   };
 
   const updateCountdown = () => {
@@ -239,6 +370,7 @@
       countdownLayer.textContent = '';
       countdownLayer.style.display = 'none';
     }
+    scheduleMediaHeaderLayout();
   };
 
   const releaseObjectUrl = () => {
@@ -252,9 +384,22 @@
     endPlaybackSession();
     clearTimer();
     clearCountdown();
+    clearMediaHeaderLayoutRaf();
     activePlayableElement = null;
     releaseObjectUrl();
     mediaLayer.innerHTML = '';
+    activeMediaFrame = null;
+    activeMediaContent = null;
+    activeMediaHeaderLeft = null;
+    activeMediaHeaderRight = null;
+    activeMediaFooter = null;
+    if (
+      overlayRoot instanceof HTMLElement &&
+      countdownLayer instanceof HTMLElement &&
+      countdownLayer.parentElement !== overlayRoot
+    ) {
+      overlayRoot.appendChild(countdownLayer);
+    }
     textLayer.innerHTML = '';
     textLayer.style.display = 'none';
   };
@@ -278,22 +423,100 @@
     return fallback;
   };
 
-  const applyOverlayInfo = (payload) => {
+  const resolveAuthorInfo = (payload) => {
+    const authorEnabled = payload?.author?.enabled === true;
+    const authorName = (payload?.author?.name || '').trim();
+    const authorImage = typeof payload?.author?.image === 'string' ? payload.author.image.trim() : null;
+    const showAuthor = authorEnabled && authorName !== '';
+
+    return {
+      showAuthor,
+      authorName,
+      authorImage,
+    };
+  };
+
+  const applyMediaHeaderAuthor = (payload, options = {}) => {
+    if (!(activeMediaHeaderLeft instanceof HTMLElement)) {
+      return;
+    }
+
+    activeMediaHeaderLeft.innerHTML = '';
+
+    if (!overlayConfig.showText || options.enabled !== true) {
+      scheduleMediaHeaderLayout();
+      return;
+    }
+
+    const authorInfo = resolveAuthorInfo(payload);
+    if (!authorInfo.showAuthor) {
+      scheduleMediaHeaderLayout();
+      return;
+    }
+
+    const authorNode = document.createElement('div');
+    authorNode.className = 'overlay-author';
+
+    authorNode.appendChild(createAvatarNode(authorInfo.authorName, authorInfo.authorImage));
+
+    const authorNameNode = document.createElement('div');
+    authorNameNode.className = 'overlay-author-name';
+    authorNameNode.textContent = authorInfo.authorName;
+    authorNode.appendChild(authorNameNode);
+
+    activeMediaHeaderLeft.appendChild(authorNode);
+    scheduleMediaHeaderLayout();
+  };
+
+  const applyMediaFooterText = (payload, options = {}) => {
+    if (!(activeMediaFooter instanceof HTMLElement)) {
+      return;
+    }
+
+    activeMediaFooter.innerHTML = '';
+
+    if (!overlayConfig.showText || options.enabled !== true) {
+      activeMediaFooter.style.display = 'none';
+      return;
+    }
+
+    const textEnabled = payload?.text?.enabled === true;
+    const textValue = (payload?.text?.value || '').trim();
+    const showText = textEnabled && textValue !== '';
+
+    if (!showText) {
+      activeMediaFooter.style.display = 'none';
+      return;
+    }
+
+    const metaNode = document.createElement('div');
+    metaNode.className = 'overlay-meta overlay-media-footer-meta';
+
+    const textNode = document.createElement('div');
+    textNode.className = 'overlay-text-value';
+    textNode.textContent = textValue;
+    metaNode.appendChild(textNode);
+
+    activeMediaFooter.appendChild(metaNode);
+    activeMediaFooter.style.display = 'flex';
+  };
+
+  const applyOverlayInfo = (payload, options = {}) => {
     if (!overlayConfig.showText) {
       textLayer.innerHTML = '';
       textLayer.style.display = 'none';
       return;
     }
 
+    const showAuthorInline = options.showAuthorInline === true;
+    const attachTextToMedia = options.attachTextToMedia === true;
     const textEnabled = payload?.text?.enabled === true;
     const textValue = (payload?.text?.value || '').trim();
-    const authorEnabled = payload?.author?.enabled === true;
-    const authorName = (payload?.author?.name || '').trim();
-    const authorImage = typeof payload?.author?.image === 'string' ? payload.author.image.trim() : null;
-    const showAuthor = authorEnabled && authorName !== '';
+    const authorInfo = resolveAuthorInfo(payload);
     const showText = textEnabled && textValue !== '';
+    const showTextInOverlayLayer = showText && !attachTextToMedia;
 
-    if (!showAuthor && !showText) {
+    if (!(showAuthorInline && authorInfo.showAuthor) && !showTextInOverlayLayer) {
       textLayer.innerHTML = '';
       textLayer.style.display = 'none';
       return;
@@ -304,21 +527,21 @@
     const metaNode = document.createElement('div');
     metaNode.className = 'overlay-meta';
 
-    if (showAuthor) {
+    if (showAuthorInline && authorInfo.showAuthor) {
       const authorNode = document.createElement('div');
       authorNode.className = 'overlay-author';
 
-      authorNode.appendChild(createAvatarNode(authorName, authorImage));
+      authorNode.appendChild(createAvatarNode(authorInfo.authorName, authorInfo.authorImage));
 
       const authorNameNode = document.createElement('div');
       authorNameNode.className = 'overlay-author-name';
-      authorNameNode.textContent = authorName;
+      authorNameNode.textContent = authorInfo.authorName;
       authorNode.appendChild(authorNameNode);
 
       metaNode.appendChild(authorNode);
     }
 
-    if (showText) {
+    if (showTextInOverlayLayer) {
       const textNode = document.createElement('div');
       textNode.className = 'overlay-text-value';
       textNode.textContent = textValue;
@@ -729,7 +952,13 @@
       });
       container.appendChild(inlineMedia);
 
-      mediaLayer.appendChild(container);
+      const targetContainer = ensureMediaFrame() || mediaLayer;
+      if (!(targetContainer instanceof HTMLElement)) {
+        return false;
+      }
+
+      targetContainer.appendChild(container);
+      scheduleMediaHeaderLayout();
 
       ensureTwitterWidgets()
         .then((twitter) => {
@@ -741,6 +970,11 @@
 
       const inlineVideoElements = inlineMedia.querySelectorAll('video');
       configureInlineVideoLooping(Array.from(inlineVideoElements));
+      inlineVideoElements.forEach((video) => {
+        video.addEventListener('loadedmetadata', () => {
+          scheduleMediaHeaderLayout();
+        });
+      });
       inlineVideoElements.forEach((video) => {
         playVideoWithRetry(video);
       });
@@ -766,7 +1000,13 @@
     });
 
     container.appendChild(content);
-    mediaLayer.appendChild(container);
+    const targetContainer = ensureMediaFrame() || mediaLayer;
+    if (!(targetContainer instanceof HTMLElement)) {
+      return false;
+    }
+
+    targetContainer.appendChild(container);
+    scheduleMediaHeaderLayout();
 
     ensureTwitterWidgets()
       .then((twitter) => {
@@ -845,7 +1085,26 @@
 
     const element = createMediaElement(payload.media.kind);
     element.src = mediaUrl;
-    mediaLayer.appendChild(element);
+    const targetContainer = ensureMediaFrame() || mediaLayer;
+    if (!(targetContainer instanceof HTMLElement)) {
+      return;
+    }
+
+    targetContainer.appendChild(element);
+    scheduleMediaHeaderLayout();
+    if (payload.media.kind === 'image') {
+      element.addEventListener(
+        'load',
+        () => {
+          scheduleMediaHeaderLayout();
+        },
+        { once: true },
+      );
+    } else {
+      element.addEventListener('loadedmetadata', () => {
+        scheduleMediaHeaderLayout();
+      });
+    }
 
     applyVolume();
 
@@ -889,14 +1148,33 @@
     clearOverlay();
     startPlaybackSession(payload?.jobId || null);
 
-    applyOverlayInfo(payload);
-
     const hasStandaloneMedia = !!payload?.media;
+    if (!hasStandaloneMedia) {
+      applyOverlayInfo(payload, {
+        showAuthorInline: true,
+        attachTextToMedia: false,
+      });
+    }
     const shouldAutoClearByTimer = !hasStandaloneMedia || payload.media.kind === 'image';
 
     try {
       if (!renderTweetCard(payload)) {
         await renderMedia(payload);
+      }
+
+      applyMediaHeaderAuthor(payload, {
+        enabled: hasStandaloneMedia,
+      });
+
+      applyMediaFooterText(payload, {
+        enabled: hasStandaloneMedia,
+      });
+
+      if (hasStandaloneMedia) {
+        applyOverlayInfo(payload, {
+          showAuthorInline: false,
+          attachTextToMedia: true,
+        });
       }
     } catch (error) {
       console.error('Media render failed:', error);
@@ -931,6 +1209,12 @@
     if (!overlayConfig.showText) {
       textLayer.innerHTML = '';
       textLayer.style.display = 'none';
+      applyMediaHeaderAuthor(null, {
+        enabled: false,
+      });
+      applyMediaFooterText(null, {
+        enabled: false,
+      });
     }
 
     applyVolume();
@@ -945,6 +1229,9 @@
     window.livechatOverlay.onPlay(onPlay);
     window.livechatOverlay.onStop(() => clearOverlay());
     window.livechatOverlay.onSettings((settings) => onSettings(settings));
+    window.addEventListener('resize', () => {
+      scheduleMediaHeaderLayout();
+    });
 
     ensureTwitterWidgets().catch(() => undefined);
 

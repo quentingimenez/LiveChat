@@ -10,7 +10,7 @@ import {
   addToMemeBoard,
   listMemeBoardItems,
   removeMemeBoardItem,
-  updateMemeBoardItemTitle,
+  updateMemeBoardItem,
 } from '../../services/memeBoard';
 
 interface ConsumePairingBody {
@@ -27,11 +27,13 @@ interface MemeBoardItemsQuery {
 interface MemeBoardItemCreateBody {
   url?: unknown;
   title?: unknown;
+  message?: unknown;
   forceRefresh?: unknown;
 }
 
 interface MemeBoardItemUpdateBody {
   title?: unknown;
+  message?: unknown;
 }
 
 const DEFAULT_OVERLAY_DEVICE_PREFIX = 'Overlay';
@@ -83,6 +85,7 @@ const toOverlayMemeBoardItemPayload = (item: MemeBoardListItem) => {
     guildId: item.guildId,
     mediaAssetId: item.mediaAssetId,
     title: item.title,
+    message: item.message,
     createdByName: item.createdByName,
     createdAt: item.createdAt,
     media: {
@@ -416,6 +419,7 @@ export const OverlayRoutes = () =>
 
       const url = toNonEmptyString(request.body?.url);
       const title = toNonEmptyString(request.body?.title);
+      const message = toNonEmptyString(request.body?.message);
       const forceRefresh = toBooleanFlag(request.body?.forceRefresh);
 
       if (!url) {
@@ -447,6 +451,7 @@ export const OverlayRoutes = () =>
         guildId: authResult.client.guildId,
         mediaAssetId: mediaAsset.id,
         title,
+        message,
         createdByDiscordUserId: toNonEmptyString(
           (authResult.client as { createdByDiscordUserId?: unknown }).createdByDiscordUserId,
         ),
@@ -525,10 +530,21 @@ export const OverlayRoutes = () =>
           });
         }
 
-        const updated = await updateMemeBoardItemTitle({
+        const hasTitle = Object.prototype.hasOwnProperty.call(request.body || {}, 'title');
+        const hasMessage = Object.prototype.hasOwnProperty.call(request.body || {}, 'message');
+
+        if (!hasTitle && !hasMessage) {
+          return reply.code(400).send({
+            error: 'invalid_payload',
+            message: 'title or message is required',
+          });
+        }
+
+        const updated = await updateMemeBoardItem({
           guildId: authResult.client.guildId,
           itemId: request.params.itemId,
-          title: toNonEmptyString(request.body?.title),
+          title: hasTitle ? toNonEmptyString(request.body?.title) : undefined,
+          message: hasMessage ? toNonEmptyString(request.body?.message) : undefined,
         });
 
         if (!updated) {
@@ -542,6 +558,7 @@ export const OverlayRoutes = () =>
           item: {
             id: updated.id,
             title: updated.title,
+            message: updated.message,
           },
         });
       },

@@ -1199,13 +1199,22 @@ function toggleAutoStart(checked) {
 }
 
 function emitManualStopSignal() {
+  const stopPayload = {
+    jobId: 'manual-stop',
+  };
+
   if (!overlaySocket || !overlaySocket.connected) {
-    return;
+    return {
+      ok: false,
+      reason: 'socket_offline',
+    };
   }
 
-  overlaySocket.emit(OVERLAY_SOCKET_EVENTS.STOP, {
-    jobId: 'manual-stop',
-  });
+  overlaySocket.emit(OVERLAY_SOCKET_EVENTS.STOP, stopPayload);
+
+  return {
+    ok: true,
+  };
 }
 
 function emitMemeTriggerSignal(itemId, trigger = 'shortcut') {
@@ -1526,6 +1535,10 @@ ipcMain.handle('meme-board:set-bindings', (_event, payload) => {
 
 ipcMain.handle('meme-board:trigger', (_event, payload) => {
   return emitMemeTriggerSignal(payload?.itemId, payload?.trigger);
+});
+
+ipcMain.handle('meme-board:stop', () => {
+  return emitManualStopSignal();
 });
 
 ipcMain.on('overlay:renderer-ready', () => {

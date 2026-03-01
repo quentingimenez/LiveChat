@@ -6,6 +6,7 @@
   const selectedMetaNode = document.getElementById('selected-meta');
   const searchForm = document.getElementById('search-form');
   const searchInput = document.getElementById('search-input');
+  const stopPlaybackButton = document.getElementById('stop-playback-button');
   const refreshButton = document.getElementById('refresh-button');
   const addLinkButton = document.getElementById('add-link-button');
   const captureOverlay = document.getElementById('capture-overlay');
@@ -829,6 +830,20 @@
     }
   };
 
+  const stopCurrentPlayback = async () => {
+    try {
+      const result = await window.livechatOverlay.stopMemePlayback();
+
+      if (!result?.ok) {
+        throw new Error(result?.reason || 'socket_offline');
+      }
+
+      setStatus('Lecture en cours stoppee.', 'success');
+    } catch (error) {
+      setStatus(`Stop impossible: ${error?.message || error}`, 'error');
+    }
+  };
+
   const removeBindingsForItem = (itemId) => {
     const nextBindings = { ...state.bindings };
     let removedCount = 0;
@@ -1435,6 +1450,12 @@
     void loadItemsAndRender();
   });
 
+  if (stopPlaybackButton instanceof HTMLElement) {
+    stopPlaybackButton.addEventListener('click', () => {
+      void stopCurrentPlayback();
+    });
+  }
+
   const bootstrap = async () => {
     state.config = await window.livechatOverlay.getConfig();
 
@@ -1442,6 +1463,9 @@
       setStatus('Overlay non appaire. Ouvre la fenetre d appairage puis reconnecte.', 'error');
       refreshButton.disabled = true;
       searchInput.disabled = true;
+      if (stopPlaybackButton instanceof HTMLButtonElement) {
+        stopPlaybackButton.disabled = true;
+      }
       if (addLinkButton instanceof HTMLButtonElement) {
         addLinkButton.disabled = true;
       }

@@ -33,12 +33,21 @@
     }
   };
 
-  const consumePairing = async ({ guestMode }) => {
+  const consumePairing = async () => {
     await window.livechatOverlay.consumePairing({
       serverUrl: serverUrlInput.value.trim(),
       code: pairingCodeInput.value.trim(),
-      guestMode: guestMode === true,
+      guestMode: false,
     });
+  };
+
+  const validateGuestServerUrl = () => {
+    serverUrlInput.setCustomValidity('');
+    if (!serverUrlInput.reportValidity()) {
+      return null;
+    }
+
+    return normalizeServerUrl(serverUrlInput.value);
   };
 
   form.addEventListener('submit', async (event) => {
@@ -48,7 +57,7 @@
     setStatus('Appairage en cours...', '');
 
     try {
-      await consumePairing({ guestMode: false });
+      await consumePairing();
 
       setStatus('Appairage réussi. Fermeture de la fenêtre...', 'success');
     } catch (error) {
@@ -63,26 +72,29 @@
     setStatus('Connexion invité en cours...', '');
 
     try {
-      const config = cachedConfig || (await window.livechatOverlay.getConfig());
-      const hasPairing = hasStoredPairing(config);
-      const inputServerUrl = normalizeServerUrl(serverUrlInput.value);
-      const storedServerUrl = normalizeServerUrl(config?.serverUrl);
-      const canReuseStoredPairing = hasPairing && (!inputServerUrl || inputServerUrl === storedServerUrl);
-
-      if (canReuseStoredPairing) {
-        await window.livechatOverlay.setGuestMode({ enabled: true });
-        setStatus('Mode invité activé. Fermeture de la fenêtre...', 'success');
-        return;
-      }
-
-      if (!form.reportValidity()) {
-        setStatus('URL serveur et code requis pour rejoindre en invité sans appairage existant.', 'error');
+      const inputServerUrl = validateGuestServerUrl();
+      if (!inputServerUrl) {
         setBusy(false);
         return;
       }
 
-      await consumePairing({ guestMode: true });
-      setStatus('Connexion invité réussie. Fermeture de la fenêtre...', 'success');
+      const config = cachedConfig || (await window.livechatOverlay.getConfig());
+      const hasPairing = hasStoredPairing(config);
+      const storedServerUrl = normalizeServerUrl(config?.serverUrl);
+      if (!hasPairing) {
+        setStatus("Mode invité indisponible: fais d'abord un appairage normal sur ce PC.", 'error');
+        setBusy(false);
+        return;
+      }
+
+      if (!storedServerUrl || inputServerUrl !== storedServerUrl) {
+        setStatus(`Mode invité indisponible: utilise l'URL appairée (${storedServerUrl || 'inconnue'}).`, 'error');
+        setBusy(false);
+        return;
+      }
+
+      await window.livechatOverlay.setGuestMode({ enabled: true });
+      setStatus('Mode invité activé. Fermeture de la fenêtre...', 'success');
     } catch (error) {
       const reason = error?.message || 'Erreur inconnue';
       setStatus(`Échec de la connexion invité: ${reason}`, 'error');

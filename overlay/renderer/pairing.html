@@ -65,6 +65,17 @@
         cursor: pointer;
       }
 
+      .button-row {
+        display: grid;
+        gap: 10px;
+      }
+
+      .button-secondary {
+        background: #3a3a3a;
+        color: #f3f3f3;
+        border: 1px solid rgba(255, 255, 255, 0.22);
+      }
+
       button:disabled {
         opacity: 0.6;
         cursor: wait;
@@ -90,7 +101,8 @@
       <h1>Appairage Overlay</h1>
       <p>
         Saisis l'URL du serveur LiveChat et le code généré avec la commande Discord <code>/pair-code</code>.
-        Le nom est généré automatiquement au format <code>Overlay-&lt;nom&gt;</code>.
+        Le nom est généré automatiquement au format <code>Overlay-&lt;nom&gt;</code>. Le mode invité est en lecture
+        seule.
       </p>
 
       <label>
@@ -103,7 +115,10 @@
         <input id="pairing-code" type="text" maxlength="16" placeholder="AB12CD" required />
       </label>
 
-      <button id="submit-button" type="submit">Appairer</button>
+      <div class="button-row">
+        <button id="submit-button" type="submit">Appairer</button>
+        <button id="guest-button" class="button-secondary" type="button">Rejoindre en invité</button>
+      </div>
       <div id="status"></div>
     </form>
 

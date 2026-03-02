@@ -1,6 +1,7 @@
 const { app, BrowserWindow, screen, Tray, Menu, nativeImage, globalShortcut, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const http = require('http');
 const https = require('https');
 const { io } = require('socket.io-client');
@@ -87,6 +88,7 @@ const defaultConfig = {
   volume: 1.0,
   enabled: true,
   autoStart: false,
+  guestMode: false,
   showText: true,
   serverUrl: null,
   clientToken: null,
@@ -144,6 +146,10 @@ function normalizeVolume(volume) {
 }
 
 function normalizeAutoStart(value) {
+  return value === true;
+}
+
+function normalizeGuestMode(value) {
   return value === true;
 }
 
@@ -205,6 +211,7 @@ function loadConfig() {
       ...parsed,
       volume: normalizeVolume(parsed.volume),
       autoStart: normalizeAutoStart(parsed.autoStart),
+      guestMode: normalizeGuestMode(parsed.guestMode),
       memeBindings: normalizeMemeBindings(parsed.memeBindings),
     };
   } catch (error) {
@@ -224,6 +231,7 @@ function saveConfig(nextValues) {
       ...merged,
       volume: normalizeVolume(merged.volume),
       autoStart: normalizeAutoStart(merged.autoStart),
+      guestMode: normalizeGuestMode(merged.guestMode),
       memeBindings: normalizeMemeBindings(merged.memeBindings),
     };
 
@@ -237,6 +245,10 @@ function saveConfig(nextValues) {
 
 function hasPairingConfig(config = loadConfig()) {
   return !!(config.serverUrl && config.clientToken && config.guildId);
+}
+
+function isGuestModeEnabled(config = loadConfig()) {
+  return normalizeGuestMode(config.guestMode);
 }
 
 function getConnectionStateLabel() {
@@ -317,7 +329,8 @@ function getOtherActiveOverlays(config = loadConfig()) {
 function buildTrayTooltip(config = loadConfig()) {
   const suffixLabel = stripOverlayAutoPrefix(config.deviceName);
   const suffix = suffixLabel ? ` (${suffixLabel})` : '';
-  const status = `Overlay ${getConnectionStateLabel()}${suffix}`;
+  const modeSuffix = isGuestModeEnabled(config) ? ' [Invité]' : '';
+  const status = `Overlay ${getConnectionStateLabel()}${suffix}${modeSuffix}`;
   const otherActiveOverlays = getOtherActiveOverlays(config);
   const visible = otherActiveOverlays.slice(0, MAX_OTHER_ACTIVE_OVERLAYS_IN_TOOLTIP);
   const visibleNames = visible
@@ -937,7 +950,7 @@ function createPairingWindow() {
 
   pairingWindow = new BrowserWindow({
     width: 460,
-    height: 540,
+    height: 580,
     resizable: false,
     autoHideMenuBar: true,
     icon: appIconPath,
@@ -962,7 +975,13 @@ function closePairingWindow() {
 }
 
 function createBoardWindow() {
-  if (!hasPairingConfig()) {
+  const cfg = loadConfig();
+
+  if (isGuestModeEnabled(cfg)) {
+    return;
+  }
+
+  if (!hasPairingConfig(cfg)) {
     createPairingWindow();
     return;
   }
@@ -1198,7 +1217,42 @@ function toggleAutoStart(checked) {
   applyAutoStartSetting(checked);
 }
 
+function setGuestMode(checked) {
+  const cfg = saveConfig({
+    guestMode: normalizeGuestMode(checked),
+  });
+
+  if (isGuestModeEnabled(cfg)) {
+    destroyBoardWindow();
+    pendingPlaybackStatePayload = null;
+    pendingPlaybackStopPayload = null;
+    unregisterMemeShortcuts();
+  } else {
+    applyMemeBindings(cfg.memeBindings, {
+      strict: false,
+      persist: false,
+    });
+  }
+
+  updateTrayMenu();
+  return cfg;
+}
+
+function buildDefaultDeviceName(isGuestMode) {
+  const host = `${os.hostname() || ''}`.trim().replace(/\s+/g, '-');
+  const suffix = host || 'Desktop';
+  const prefix = isGuestMode ? 'Overlay-Invite' : 'Overlay';
+  return `${prefix}-${suffix}`;
+}
+
 function emitManualStopSignal() {
+  if (isGuestModeEnabled()) {
+    return {
+      ok: false,
+      reason: 'guest_mode',
+    };
+  }
+
   const stopPayload = {
     jobId: 'manual-stop',
   };
@@ -1220,6 +1274,13 @@ function emitManualStopSignal() {
 function emitMemeTriggerSignal(itemId, trigger = 'shortcut') {
   const normalizedItemId = `${itemId || ''}`.trim();
   const normalizedTrigger = trigger === 'ui' ? 'ui' : 'shortcut';
+
+  if (isGuestModeEnabled()) {
+    return {
+      ok: false,
+      reason: 'guest_mode',
+    };
+  }
 
   if (!normalizedItemId) {
     return {
@@ -1281,10 +1342,28 @@ function tryRegisterMemeBindings(bindings) {
 function applyMemeBindings(nextBindings, options = {}) {
   const strict = options.strict !== false;
   const persist = options.persist !== false;
+  const normalizedBindings = normalizeMemeBindings(nextBindings);
+
+  if (isGuestModeEnabled()) {
+    unregisterMemeShortcuts();
+
+    if (persist) {
+      saveConfig({
+        memeBindings: normalizedBindings,
+      });
+    }
+
+    return {
+      ok: true,
+      appliedBindings: {},
+      failedAccelerators: [],
+    };
+  }
+
   const previousBindings = { ...activeMemeBindings };
 
   unregisterMemeShortcuts();
-  const registrationResult = tryRegisterMemeBindings(nextBindings);
+  const registrationResult = tryRegisterMemeBindings(normalizedBindings);
 
   if (strict && registrationResult.failures.length > 0) {
     unregisterMemeShortcuts();
@@ -1335,6 +1414,7 @@ function resetPairing() {
     guildId: null,
     clientId: null,
     deviceName: null,
+    guestMode: false,
   });
 
   disconnectOverlaySocket({ nextState: 'not_paired' });
@@ -1407,6 +1487,12 @@ function updateTrayMenu() {
       checked: cfg.showText,
       click: ({ checked }) => toggleShowText(checked),
     },
+    {
+      label: 'Mode invité (lecture seule)',
+      type: 'checkbox',
+      checked: isGuestModeEnabled(cfg),
+      click: ({ checked }) => setGuestMode(checked),
+    },
     { type: 'separator' },
     {
       label: 'Appairer Overlay',
@@ -1414,7 +1500,7 @@ function updateTrayMenu() {
     },
     {
       label: 'Ouvrir Meme Board',
-      enabled: cfg.enabled && hasPairingConfig(cfg),
+      enabled: cfg.enabled && hasPairingConfig(cfg) && !isGuestModeEnabled(cfg),
       click: () => createBoardWindow(),
     },
     { type: 'separator' },
@@ -1491,7 +1577,8 @@ function registerShortcuts() {
     }
   });
 
-  applyMemeBindings(loadConfig().memeBindings, {
+  const cfg = loadConfig();
+  applyMemeBindings(isGuestModeEnabled(cfg) ? {} : cfg.memeBindings, {
     strict: false,
     persist: false,
   });
@@ -1505,9 +1592,24 @@ ipcMain.handle('overlay:get-config', () => {
     clientToken: cfg.clientToken,
     guildId: cfg.guildId,
     clientId: cfg.clientId,
+    guestMode: isGuestModeEnabled(cfg),
     showText: cfg.showText,
     volume: cfg.volume,
     memeBindings: normalizeMemeBindings(cfg.memeBindings),
+  };
+});
+
+ipcMain.handle('overlay:set-guest-mode', (_event, payload) => {
+  const cfg = setGuestMode(payload?.enabled === true);
+
+  if (cfg.enabled && hasPairingConfig(cfg)) {
+    createOverlayWindow();
+    connectOverlaySocket();
+  }
+
+  return {
+    ok: true,
+    guestMode: isGuestModeEnabled(cfg),
   };
 });
 
@@ -1546,6 +1648,10 @@ ipcMain.on('overlay:renderer-ready', () => {
 });
 
 ipcMain.on('overlay:error', (_event, payload) => {
+  if (isGuestModeEnabled()) {
+    return;
+  }
+
   if (!overlaySocket || !overlaySocket.connected) {
     return;
   }
@@ -1554,6 +1660,10 @@ ipcMain.on('overlay:error', (_event, payload) => {
 });
 
 ipcMain.on('overlay:playback-state', (_event, payload) => {
+  if (isGuestModeEnabled()) {
+    return;
+  }
+
   if (!overlaySocket || !overlaySocket.connected) {
     pendingPlaybackStatePayload = payload || null;
     console.warn(
@@ -1573,6 +1683,10 @@ ipcMain.on('overlay:playback-state', (_event, payload) => {
 });
 
 ipcMain.on('overlay:playback-stop', (_event, payload) => {
+  if (isGuestModeEnabled()) {
+    return;
+  }
+
   const normalizedPayload = {
     jobId: typeof payload?.jobId === 'string' && payload.jobId.trim() ? payload.jobId.trim() : 'unknown',
   };
@@ -1590,7 +1704,9 @@ ipcMain.on('overlay:playback-stop', (_event, payload) => {
 ipcMain.handle('pairing:consume', async (_event, payload) => {
   const serverUrl = normalizeServerUrl(`${payload?.serverUrl || ''}`);
   const code = `${payload?.code || ''}`.toUpperCase().trim();
+  const requestedGuestMode = payload?.guestMode === true;
   const requestedDeviceName = `${payload?.deviceName || ''}`.trim();
+  const resolvedRequestedDeviceName = requestedDeviceName || buildDefaultDeviceName(requestedGuestMode);
 
   if (!serverUrl || !code) {
     throw new Error('missing_required_fields');
@@ -1604,7 +1720,7 @@ ipcMain.handle('pairing:consume', async (_event, payload) => {
       endpoint,
       {
         code,
-        deviceName: requestedDeviceName || undefined,
+        deviceName: resolvedRequestedDeviceName,
       },
       {
         rejectUnauthorized: true,
@@ -1616,7 +1732,7 @@ ipcMain.handle('pairing:consume', async (_event, payload) => {
         endpoint,
         {
           code,
-          deviceName: requestedDeviceName || undefined,
+          deviceName: resolvedRequestedDeviceName,
         },
         {
           rejectUnauthorized: false,
@@ -1641,7 +1757,7 @@ ipcMain.handle('pairing:consume', async (_event, payload) => {
     throw new Error('invalid_pairing_response');
   }
 
-  const resolvedDeviceName = `${parsed?.deviceName || requestedDeviceName || ''}`.trim() || null;
+  const resolvedDeviceName = `${parsed?.deviceName || resolvedRequestedDeviceName || ''}`.trim() || null;
 
   saveConfig({
     serverUrl: normalizeServerUrl(parsed.apiBaseUrl || serverUrl),
@@ -1649,9 +1765,12 @@ ipcMain.handle('pairing:consume', async (_event, payload) => {
     clientId: parsed.clientId,
     guildId: parsed.guildId,
     deviceName: resolvedDeviceName,
+    guestMode: requestedGuestMode,
   });
 
-  if (loadConfig().enabled) {
+  const cfg = setGuestMode(requestedGuestMode);
+
+  if (cfg.enabled) {
     createOverlayWindow();
     connectOverlaySocket();
   }

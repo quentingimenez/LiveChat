@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, Tray, Menu, nativeImage, globalShortcut, ipcMain } = require('electron');
+const { app, BrowserWindow, screen, Tray, Menu, nativeImage, globalShortcut, ipcMain, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -1245,6 +1245,41 @@ function buildDefaultDeviceName(isGuestMode) {
   return `${prefix}-${suffix}`;
 }
 
+function buildGuestInviteUrl(config = loadConfig()) {
+  if (!hasPairingConfig(config)) {
+    return null;
+  }
+
+  try {
+    const inviteUrl = new URL(normalizeServerUrl(config.serverUrl));
+    const hashParams = new URLSearchParams();
+    hashParams.set('overlayGuestToken', `${config.clientToken || ''}`.trim());
+    hashParams.set('overlayGuestGuild', `${config.guildId || ''}`.trim());
+
+    const clientId = `${config.clientId || ''}`.trim();
+    if (clientId) {
+      hashParams.set('overlayGuestClient', clientId);
+    }
+
+    inviteUrl.search = '';
+    inviteUrl.hash = hashParams.toString();
+    return inviteUrl.toString();
+  } catch (error) {
+    console.error('Unable to build guest invite URL:', error);
+    return null;
+  }
+}
+
+function copyGuestInviteUrl() {
+  const guestInviteUrl = buildGuestInviteUrl();
+  if (!guestInviteUrl) {
+    return false;
+  }
+
+  clipboard.writeText(guestInviteUrl);
+  return true;
+}
+
 function emitManualStopSignal() {
   if (isGuestModeEnabled()) {
     return {
@@ -1499,6 +1534,13 @@ function updateTrayMenu() {
       click: () => createPairingWindow(),
     },
     {
+      label: 'Copier URL invité',
+      enabled: hasPairingConfig(cfg),
+      click: () => {
+        copyGuestInviteUrl();
+      },
+    },
+    {
       label: 'Ouvrir Meme Board',
       enabled: cfg.enabled && hasPairingConfig(cfg) && !isGuestModeEnabled(cfg),
       click: () => createBoardWindow(),
@@ -1610,6 +1652,130 @@ ipcMain.handle('overlay:set-guest-mode', (_event, payload) => {
   return {
     ok: true,
     guestMode: isGuestModeEnabled(cfg),
+  };
+});
+
+ipcMain.handle('pairing:guest-connect', async (_event, payload) => {
+  const serverUrl = normalizeServerUrl(`${payload?.serverUrl || ''}`);
+  const preferredGuildId = `${payload?.guildId || ''}`.trim();
+  const requestedDeviceName = `${payload?.deviceName || ''}`.trim() || buildDefaultDeviceName(true);
+
+  if (!serverUrl) {
+    throw new Error('missing_server_url');
+  }
+
+  const endpoint = `${serverUrl}/overlay/guest/connect`;
+  let guestConnectResponse;
+
+  try {
+    guestConnectResponse = await httpRequestJson(
+      endpoint,
+      {
+        guildId: preferredGuildId || undefined,
+        deviceName: requestedDeviceName,
+      },
+      {
+        rejectUnauthorized: true,
+      },
+    );
+  } catch (error) {
+    if (endpoint.startsWith('https://') && isLikelyTlsError(error)) {
+      guestConnectResponse = await httpRequestJson(
+        endpoint,
+        {
+          guildId: preferredGuildId || undefined,
+          deviceName: requestedDeviceName,
+        },
+        {
+          rejectUnauthorized: false,
+        },
+      );
+    } else {
+      throw new Error(formatNetworkError(error, endpoint));
+    }
+  }
+
+  const payloadText = guestConnectResponse.body || '';
+
+  if (guestConnectResponse.statusCode < 200 || guestConnectResponse.statusCode >= 300) {
+    throw new Error(payloadText || `guest_connect_failed_${guestConnectResponse.statusCode}`);
+  }
+
+  let parsed;
+
+  try {
+    parsed = JSON.parse(payloadText);
+  } catch {
+    throw new Error('invalid_guest_connect_response');
+  }
+
+  const clientToken = `${parsed?.clientToken || ''}`.trim();
+  const clientId = `${parsed?.clientId || ''}`.trim();
+  const guildId = `${parsed?.guildId || ''}`.trim();
+
+  if (!clientToken || !clientId || !guildId) {
+    throw new Error('invalid_guest_connect_response');
+  }
+
+  const resolvedDeviceName = `${parsed?.deviceName || requestedDeviceName || ''}`.trim() || null;
+
+  saveConfig({
+    serverUrl: normalizeServerUrl(parsed.apiBaseUrl || serverUrl),
+    clientToken,
+    clientId,
+    guildId,
+    deviceName: resolvedDeviceName,
+    guestMode: true,
+  });
+
+  const cfg = setGuestMode(true);
+
+  if (cfg.enabled) {
+    createOverlayWindow();
+    connectOverlaySocket();
+  }
+
+  closePairingWindow();
+  updateTrayMenu();
+
+  return {
+    ok: true,
+  };
+});
+
+ipcMain.handle('pairing:apply-guest-config', async (_event, payload) => {
+  const serverUrl = normalizeServerUrl(`${payload?.serverUrl || ''}`);
+  const clientToken = `${payload?.clientToken || ''}`.trim();
+  const guildId = `${payload?.guildId || ''}`.trim();
+  const fallbackClientId = `guest-${Date.now()}`;
+  const clientId = `${payload?.clientId || fallbackClientId}`.trim() || fallbackClientId;
+  const requestedDeviceName = `${payload?.deviceName || ''}`.trim() || buildDefaultDeviceName(true);
+
+  if (!serverUrl || !clientToken || !guildId) {
+    throw new Error('missing_guest_config_fields');
+  }
+
+  saveConfig({
+    serverUrl,
+    clientToken,
+    clientId,
+    guildId,
+    deviceName: requestedDeviceName,
+    guestMode: true,
+  });
+
+  const cfg = setGuestMode(true);
+
+  if (cfg.enabled) {
+    createOverlayWindow();
+    connectOverlaySocket();
+  }
+
+  closePairingWindow();
+  updateTrayMenu();
+
+  return {
+    ok: true,
   };
 });
 

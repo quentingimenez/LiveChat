@@ -15,6 +15,10 @@ export const env = createEnv({
 
     API_URL: z.string().url(),
     ADMIN_UI_TOKEN: z.string().default(''),
+    ADMIN_UI_LOCAL_ONLY: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((s) => s === 'true'),
 
     DISCORD_TOKEN: z.string(),
     DISCORD_CLIENT_ID: z.string(),

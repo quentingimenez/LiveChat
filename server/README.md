@@ -69,12 +69,13 @@ La normalisation loudness est activée par défaut pendant la transcode:
 
 - `GET /` -> statut service minimal
 - `GET /health` -> healthcheck
-- `GET /admin?token=<ADMIN_UI_TOKEN>` -> panel admin local (localhost uniquement)
+- `GET /admin?token=<ADMIN_UI_TOKEN>` -> panel admin local (token requis)
 
 ## Admin panel local (`/admin`)
 
 - Activer avec `ADMIN_UI_TOKEN` dans `.env`.
-- Accès refusé hors loopback (`127.0.0.1` / `::1`).
+- `ADMIN_UI_LOCAL_ONLY=true` (défaut): accès limité loopback (`127.0.0.1` / `::1`).
+- `ADMIN_UI_LOCAL_ONLY=false`: accès LAN autorisé (token toujours requis).
 - Le panel expose:
   - guilds connues + nom Discord (si disponible)
   - overlays connectés/hors ligne

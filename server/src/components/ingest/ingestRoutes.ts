@@ -41,6 +41,7 @@ interface ConsumeIngestPairingBody {
 
 const DEFAULT_INGEST_AUTHOR_NAME = 'LiveChat Extension';
 const DEFAULT_INGEST_DEVICE_PREFIX = 'Extension';
+const INVITE_READ_ONLY_PAIRING_MODE = 'INVITE_READ_ONLY';
 
 const getTweetCardDurationSec = (
   medias: Array<{
@@ -146,9 +147,16 @@ export const IngestRoutes = () =>
         where: {
           code: rawCode,
           usedAt: null,
-          expiresAt: {
-            gt: new Date(),
-          },
+          OR: [
+            {
+              expiresAt: null,
+            },
+            {
+              expiresAt: {
+                gt: new Date(),
+              },
+            },
+          ],
         },
       });
 
@@ -164,6 +172,22 @@ export const IngestRoutes = () =>
 
         return reply.code(404).send({
           error: 'pairing_code_invalid_or_expired',
+        });
+      }
+
+      const pairingMode = toNonEmptyString((pairingCode as { mode?: unknown }).mode) || 'NORMAL';
+      if (pairingMode === INVITE_READ_ONLY_PAIRING_MODE) {
+        logger.warn(
+          {
+            ip: request.ip,
+            codePrefix,
+            requestedDeviceName,
+          },
+          '[INGEST] Pairing consume rejected: code scope mismatch (overlay invite-only)',
+        );
+
+        return reply.code(403).send({
+          error: 'pairing_code_scope_mismatch',
         });
       }
 

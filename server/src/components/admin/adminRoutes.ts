@@ -947,6 +947,16 @@ const buildAdminPanelHtml = () => {
               .join('');
 
             const boardPercent = Number.isFinite(board.usedPercent) ? board.usedPercent : 0;
+            const settings = guild.settings || {};
+            const settingOverrides = settings.overrides || {};
+            const defaultEffectiveRaw = settings.defaultMediaTime == null ? '' : String(settings.defaultMediaTime);
+            const maxEffectiveRaw = settings.maxMediaTime == null ? '' : String(settings.maxMediaTime);
+            const displayEffective = !!settings.displayMediaFull;
+            const defaultOverrideRaw =
+              settingOverrides.defaultMediaTime == null ? '' : String(settingOverrides.defaultMediaTime);
+            const maxOverrideRaw = settingOverrides.maxMediaTime == null ? '' : String(settingOverrides.maxMediaTime);
+            const displayOverrideRaw =
+              typeof settingOverrides.displayMediaFull === 'boolean' ? String(settingOverrides.displayMediaFull) : '';
 
             return (
               '<article class="guild-card" data-guild-id="' +
@@ -1004,15 +1014,27 @@ const buildAdminPanelHtml = () => {
               '</div>' +
               '<form class="guild-settings" data-action="save-settings" data-guild-id="' +
               escapeHtml(guild.id) +
+              '" data-default-effective="' +
+              escapeHtml(defaultEffectiveRaw) +
+              '" data-default-override="' +
+              escapeHtml(defaultOverrideRaw) +
+              '" data-max-effective="' +
+              escapeHtml(maxEffectiveRaw) +
+              '" data-max-override="' +
+              escapeHtml(maxOverrideRaw) +
+              '" data-display-effective="' +
+              escapeHtml(displayEffective ? 'true' : 'false') +
+              '" data-display-override="' +
+              escapeHtml(displayOverrideRaw) +
               '">' +
               '<label>Default media time (sec)<input type="number" min="1" name="defaultMediaTime" value="' +
-              escapeHtml(guild.settings.defaultMediaTime == null ? '' : String(guild.settings.defaultMediaTime)) +
+              escapeHtml(defaultEffectiveRaw) +
               '" /></label>' +
               '<label>Max media time (sec)<input type="number" min="1" name="maxMediaTime" value="' +
-              escapeHtml(guild.settings.maxMediaTime == null ? '' : String(guild.settings.maxMediaTime)) +
+              escapeHtml(maxEffectiveRaw) +
               '" /></label>' +
               '<label class="check"><input type="checkbox" name="displayMediaFull" ' +
-              (guild.settings.displayMediaFull ? 'checked' : '') +
+              (displayEffective ? 'checked' : '') +
               ' /> Display media full</label>' +
               '<button class="action-btn" type="submit">Sauvegarder réglages</button>' +
               '</form>' +
@@ -1147,15 +1169,77 @@ const buildAdminPanelHtml = () => {
         }
 
         const data = new FormData(form);
+        const toOptionalNumber = (value) => {
+          const normalized = String(value || '').trim();
+          if (!normalized) {
+            return null;
+          }
+
+          const parsed = Number(normalized);
+          return Number.isFinite(parsed) ? parsed : null;
+        };
+        const toOptionalBool = (value) => {
+          const normalized = String(value || '').trim().toLowerCase();
+          if (normalized === 'true') {
+            return true;
+          }
+
+          if (normalized === 'false') {
+            return false;
+          }
+
+          return null;
+        };
 
         const defaultMediaTimeRaw = String(data.get('defaultMediaTime') || '').trim();
         const maxMediaTimeRaw = String(data.get('maxMediaTime') || '').trim();
+        const defaultEffective = toOptionalNumber(form.getAttribute('data-default-effective'));
+        const maxEffective = toOptionalNumber(form.getAttribute('data-max-effective'));
+        const currentDefaultOverride = toOptionalNumber(form.getAttribute('data-default-override'));
+        const currentMaxOverride = toOptionalNumber(form.getAttribute('data-max-override'));
+        const displayEffective = toOptionalBool(form.getAttribute('data-display-effective')) === true;
+        const currentDisplayOverride = toOptionalBool(form.getAttribute('data-display-override'));
+        const selectedDisplayValue = data.get('displayMediaFull') === 'on';
 
-        const payload = {
-          defaultMediaTime: defaultMediaTimeRaw ? Number(defaultMediaTimeRaw) : null,
-          maxMediaTime: maxMediaTimeRaw ? Number(maxMediaTimeRaw) : null,
-          displayMediaFull: data.get('displayMediaFull') === 'on',
-        };
+        let nextDefaultOverride = defaultMediaTimeRaw ? Number(defaultMediaTimeRaw) : null;
+        let nextMaxOverride = maxMediaTimeRaw ? Number(maxMediaTimeRaw) : null;
+
+        if (
+          currentDefaultOverride === null &&
+          nextDefaultOverride !== null &&
+          defaultEffective !== null &&
+          nextDefaultOverride === defaultEffective
+        ) {
+          nextDefaultOverride = null;
+        }
+
+        if (currentMaxOverride === null && nextMaxOverride !== null && maxEffective !== null && nextMaxOverride === maxEffective) {
+          nextMaxOverride = null;
+        }
+
+        let nextDisplayOverride = selectedDisplayValue;
+        if (currentDisplayOverride === null && selectedDisplayValue === displayEffective) {
+          nextDisplayOverride = null;
+        }
+
+        const payload = {};
+
+        if (nextDefaultOverride !== currentDefaultOverride) {
+          payload.defaultMediaTime = nextDefaultOverride;
+        }
+
+        if (nextMaxOverride !== currentMaxOverride) {
+          payload.maxMediaTime = nextMaxOverride;
+        }
+
+        if (nextDisplayOverride !== null && nextDisplayOverride !== currentDisplayOverride) {
+          payload.displayMediaFull = nextDisplayOverride;
+        }
+
+        if (Object.keys(payload).length === 0) {
+          setStatus('Aucun changement de réglages.', 'muted');
+          return;
+        }
 
         await api('/admin/api/guilds/' + encodeURIComponent(guildId) + '/settings', {
           method: 'PATCH',
@@ -1608,15 +1692,24 @@ export const AdminRoutes = () =>
           failed: 0,
           done: 0,
         };
+        const hasGuildOverride = !!guildRecord;
+        const effectiveDefaultMediaTime = guildRecord?.defaultMediaTime ?? env.DEFAULT_DURATION;
+        const effectiveMaxMediaTime = guildRecord?.maxMediaTime ?? null;
+        const effectiveDisplayMediaFull = guildRecord?.displayMediaFull ?? false;
 
         return {
           id: guildId,
           name: guildName || `Guild ${guildId}`,
           busyUntil: guildRecord?.busyUntil || null,
           settings: {
-            defaultMediaTime: guildRecord?.defaultMediaTime ?? null,
-            maxMediaTime: guildRecord?.maxMediaTime ?? null,
-            displayMediaFull: guildRecord?.displayMediaFull ?? false,
+            defaultMediaTime: effectiveDefaultMediaTime,
+            maxMediaTime: effectiveMaxMediaTime,
+            displayMediaFull: effectiveDisplayMediaFull,
+            overrides: {
+              defaultMediaTime: guildRecord?.defaultMediaTime ?? null,
+              maxMediaTime: guildRecord?.maxMediaTime ?? null,
+              displayMediaFull: hasGuildOverride ? guildRecord.displayMediaFull : null,
+            },
           },
           overlays: {
             total: guildOverlays.length,

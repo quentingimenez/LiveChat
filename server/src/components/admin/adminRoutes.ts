@@ -1,4 +1,5 @@
 import { timingSafeEqual } from 'crypto';
+import { rm } from 'fs/promises';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { createIngestClientToken } from '../../services/ingestAuth';
 import { executeManualStopForGuild } from '../../services/manualStop';
@@ -15,6 +16,11 @@ interface AdminGuildSettingsBody {
 
 interface AdminGuildNameBody {
   name?: unknown;
+}
+
+interface AdminGuildPurgeBody {
+  confirmGuildId?: unknown;
+  removeOrphanMedia?: unknown;
 }
 
 interface AdminRuntimeSettingsBody {
@@ -225,6 +231,7 @@ const getIngestClientDelegate = (): {
   findMany: (args: unknown) => Promise<unknown>;
   updateMany: (args: unknown) => Promise<unknown>;
   findFirst: (args: unknown) => Promise<unknown>;
+  deleteMany: (args: unknown) => Promise<unknown>;
 } | null => {
   const delegate = (prisma as unknown as { ingestClient?: unknown }).ingestClient;
 
@@ -236,6 +243,7 @@ const getIngestClientDelegate = (): {
     findMany: (args: unknown) => Promise<unknown>;
     updateMany: (args: unknown) => Promise<unknown>;
     findFirst: (args: unknown) => Promise<unknown>;
+    deleteMany: (args: unknown) => Promise<unknown>;
   };
 };
 
@@ -466,6 +474,130 @@ const resolveDiscordGuildName = async (guildId: string): Promise<string | null> 
   } catch {
     return null;
   }
+};
+
+const toDeleteManyCount = (value: unknown): number => {
+  if (!value || typeof value !== 'object') {
+    return 0;
+  }
+
+  const count = (value as { count?: unknown }).count;
+  if (typeof count !== 'number' || !Number.isFinite(count) || count < 0) {
+    return 0;
+  }
+
+  return Math.floor(count);
+};
+
+const listGuildReferencedMediaAssetIds = async (guildId: string): Promise<string[]> => {
+  const [boardRows, jobRows] = await Promise.all([
+    prisma.memeBoardItem.findMany({
+      where: {
+        guildId,
+      },
+      select: {
+        mediaAssetId: true,
+      },
+    }),
+    prisma.playbackJob.findMany({
+      where: {
+        guildId,
+        mediaAssetId: {
+          not: null,
+        },
+      },
+      select: {
+        mediaAssetId: true,
+      },
+    }),
+  ]);
+
+  const mediaAssetIds = new Set<string>();
+
+  for (const row of boardRows) {
+    const mediaAssetId = toNonEmptyString(row.mediaAssetId);
+    if (mediaAssetId) {
+      mediaAssetIds.add(mediaAssetId);
+    }
+  }
+
+  for (const row of jobRows) {
+    const mediaAssetId = toNonEmptyString(row.mediaAssetId);
+    if (mediaAssetId) {
+      mediaAssetIds.add(mediaAssetId);
+    }
+  }
+
+  return Array.from(mediaAssetIds.values());
+};
+
+const purgeOrphanMediaAssets = async (mediaAssetIds: string[]): Promise<{ deletedCount: number; fileDeleteErrors: number }> => {
+  const normalizedIds = Array.from(new Set(mediaAssetIds.map((id) => toNonEmptyString(id)).filter((id): id is string => !!id)));
+
+  if (normalizedIds.length === 0) {
+    return {
+      deletedCount: 0,
+      fileDeleteErrors: 0,
+    };
+  }
+
+  const candidates = await prisma.mediaAsset.findMany({
+    where: {
+      id: {
+        in: normalizedIds,
+      },
+      memeBoardItems: {
+        none: {},
+      },
+      playbackJobs: {
+        none: {},
+      },
+    },
+    select: {
+      id: true,
+      storagePath: true,
+    },
+  });
+
+  let deletedCount = 0;
+  let fileDeleteErrors = 0;
+
+  for (const candidate of candidates) {
+    if (candidate.storagePath) {
+      try {
+        await rm(candidate.storagePath, { force: true });
+      } catch (error) {
+        fileDeleteErrors += 1;
+        logger.warn(
+          { err: error, mediaAssetId: candidate.id, storagePath: candidate.storagePath },
+          '[ADMIN] Failed to delete media file while purging guild',
+        );
+      }
+    }
+
+    const deleteResult = await prisma.mediaAsset.deleteMany({
+      where: {
+        id: candidate.id,
+      },
+    });
+    deletedCount += deleteResult.count;
+  }
+
+  return {
+    deletedCount,
+    fileDeleteErrors,
+  };
+};
+
+const disconnectOverlaySocketsForGuild = async (fastify: FastifyCustomInstance, guildId: string): Promise<number> => {
+  const roomName = `overlay-guild-${guildId}`;
+  const sockets = await fastify.io.in(roomName).fetchSockets();
+
+  for (const socket of sockets) {
+    socket.disconnect(true);
+  }
+
+  return sockets.length;
 };
 
 const collectConnectedOverlayClientIds = async (
@@ -1288,6 +1420,9 @@ const buildAdminPanelHtml = () => {
               '<button class="action-btn" data-action="pairing-select" data-guild-id="' +
               escapeHtml(guild.id) +
               '">Filtrer pairing codes</button>' +
+              '<button class="action-btn danger" data-action="purge-guild" data-guild-id="' +
+              escapeHtml(guild.id) +
+              '">Purger guild</button>' +
               '</div>' +
               '<div class="guild-grid guild-grid-clients">' +
               '<div class="list-block"><strong>Overlay clients</strong><ul>' +
@@ -1690,6 +1825,50 @@ const buildAdminPanelHtml = () => {
           guildSelect.value = guildId;
           await loadPairingCodes();
           setStatus('Filtre pairing positionné sur la guild ' + guildId + '.', 'ok');
+          return;
+        }
+
+        if (action === 'purge-guild') {
+          const guildId = button.getAttribute('data-guild-id');
+          if (!guildId) {
+            return;
+          }
+
+          const typedGuildId = window.prompt(
+            'Action irréversible. Tapez l\\'ID exact de la guild pour confirmer la purge complète.',
+            '',
+          );
+          if (typedGuildId !== guildId) {
+            setStatus('Purge annulée (confirmation invalide).', 'warn');
+            return;
+          }
+
+          const result = await api('/admin/api/guilds/' + encodeURIComponent(guildId) + '/purge', {
+            method: 'POST',
+            body: {
+              confirmGuildId: typedGuildId,
+              removeOrphanMedia: true,
+            },
+          });
+
+          const deleted = result && typeof result === 'object' ? result.deleted || {} : {};
+          const summary =
+            'Guild purgée ' +
+            guildId +
+            ' | overlays=' +
+            String(deleted.overlayClients || 0) +
+            ', ingest=' +
+            String(deleted.ingestClients || 0) +
+            ', pairing=' +
+            String(deleted.pairingCodes || 0) +
+            ', jobs=' +
+            String(deleted.playbackJobs || 0) +
+            ', board=' +
+            String(deleted.memeBoardItems || 0) +
+            ', assets=' +
+            String(deleted.orphanMediaAssets || 0);
+          setStatus(summary, 'warn');
+          await refreshAll();
           return;
         }
       };
@@ -2530,6 +2709,111 @@ export const AdminRoutes = () =>
         releasedCount: result.releasedCount,
       });
     });
+
+    fastify.post<{ Params: { guildId: string }; Body: AdminGuildPurgeBody }>(
+      '/api/guilds/:guildId/purge',
+      async (request, reply) => {
+        if (!(await assertAdminAccess(request, reply))) {
+          return;
+        }
+
+        const guildId = toNonEmptyString(request.params.guildId);
+        if (!guildId) {
+          return reply.code(400).send({
+            error: 'invalid_guild_id',
+          });
+        }
+
+        const confirmGuildId = toNonEmptyString(request.body?.confirmGuildId);
+        if (!confirmGuildId || confirmGuildId !== guildId) {
+          return reply.code(400).send({
+            error: 'confirm_guild_id_mismatch',
+          });
+        }
+
+        const removeOrphanMediaRaw = request.body?.removeOrphanMedia;
+        if (removeOrphanMediaRaw !== undefined && typeof removeOrphanMediaRaw !== 'boolean') {
+          return reply.code(400).send({
+            error: 'invalid_payload',
+          });
+        }
+        const removeOrphanMedia = removeOrphanMediaRaw !== false;
+
+        const candidateMediaAssetIds = removeOrphanMedia ? await listGuildReferencedMediaAssetIds(guildId) : [];
+        const stopResult = await executeManualStopForGuild(fastify, guildId, {
+          logLabel: 'Admin panel purge',
+        });
+
+        const disconnectedOverlaySockets = await disconnectOverlaySocketsForGuild(fastify, guildId);
+        const ingestDelegate = getIngestClientDelegate();
+        let ingestDeleteCount = 0;
+        if (ingestDelegate) {
+          try {
+            const ingestDeleteRaw = await ingestDelegate.deleteMany({
+              where: {
+                guildId,
+              },
+            });
+            ingestDeleteCount = toDeleteManyCount(ingestDeleteRaw);
+          } catch (error) {
+            logger.warn({ err: error, guildId }, '[ADMIN] Unable to delete ingest clients while purging guild');
+          }
+        }
+
+        const [overlayDeleteResult, pairingDeleteResult, playbackDeleteResult, boardDeleteResult, guildDeleteResult] = await Promise.all([
+          prisma.overlayClient.deleteMany({
+            where: {
+              guildId,
+            },
+          }),
+          prisma.pairingCode.deleteMany({
+            where: {
+              guildId,
+            },
+          }),
+          prisma.playbackJob.deleteMany({
+            where: {
+              guildId,
+            },
+          }),
+          prisma.memeBoardItem.deleteMany({
+            where: {
+              guildId,
+            },
+          }),
+          prisma.guild.deleteMany({
+            where: {
+              id: guildId,
+            },
+          }),
+        ]);
+        const orphanMediaResult = removeOrphanMedia
+          ? await purgeOrphanMediaAssets(candidateMediaAssetIds)
+          : {
+              deletedCount: 0,
+              fileDeleteErrors: 0,
+            };
+
+        return reply.send({
+          purged: true,
+          guildId,
+          stop: {
+            releasedPlayingJobs: stopResult.releasedCount,
+            disconnectedOverlaySockets,
+          },
+          deleted: {
+            guildSettings: guildDeleteResult.count,
+            overlayClients: overlayDeleteResult.count,
+            ingestClients: ingestDeleteCount,
+            pairingCodes: pairingDeleteResult.count,
+            playbackJobs: playbackDeleteResult.count,
+            memeBoardItems: boardDeleteResult.count,
+            orphanMediaAssets: orphanMediaResult.deletedCount,
+            orphanMediaFileDeleteErrors: orphanMediaResult.fileDeleteErrors,
+          },
+        });
+      },
+    );
 
     fastify.post<{ Params: { clientId: string } }>('/api/overlay-clients/:clientId/revoke', async (request, reply) => {
       if (!(await assertAdminAccess(request, reply))) {

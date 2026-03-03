@@ -1130,7 +1130,7 @@ const buildAdminPanelHtml = () => {
           }
 
           const inputType = String(node.type || '').toLowerCase();
-          const nonEditableTypes = ['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'hidden', 'range', 'color'];
+          const nonEditableTypes = ['button', 'submit', 'reset', 'file', 'hidden'];
           return nonEditableTypes.indexOf(inputType) === -1;
         }
 
@@ -1995,6 +1995,16 @@ const buildAdminPanelHtml = () => {
 
       document.addEventListener(
         'input',
+        (event) => {
+          if (isEditableControl(event.target)) {
+            blockAutoRefresh(4000);
+          }
+        },
+        true,
+      );
+
+      document.addEventListener(
+        'change',
         (event) => {
           if (isEditableControl(event.target)) {
             blockAutoRefresh(4000);

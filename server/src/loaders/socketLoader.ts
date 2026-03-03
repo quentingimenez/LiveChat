@@ -56,10 +56,16 @@ const listConnectedOverlayPeers = async (fastify: FastifyCustomInstance, guildId
       typeof roomSocket.data?.overlayClientId === 'string' && roomSocket.data.overlayClientId.trim() !== ''
         ? roomSocket.data.overlayClientId.trim()
         : '';
-    const label =
+    const authorLabel =
+      typeof roomSocket.data?.overlayAuthorName === 'string' && roomSocket.data.overlayAuthorName.trim() !== ''
+        ? roomSocket.data.overlayAuthorName.trim()
+        : '';
+    const deviceLabel =
       typeof roomSocket.data?.overlayClientLabel === 'string' && roomSocket.data.overlayClientLabel.trim() !== ''
         ? roomSocket.data.overlayClientLabel.trim()
-        : 'unknown-device';
+        : '';
+    const label =
+      authorLabel || deviceLabel || 'unknown-device';
 
     if (!clientId || peersByClientId.has(clientId)) {
       continue;

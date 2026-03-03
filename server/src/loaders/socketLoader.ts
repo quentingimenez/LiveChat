@@ -39,7 +39,11 @@ const getTokenFromSocketHandshake = (socket) => {
 };
 
 const normalizeOverlaySessionMode = (value: unknown): OverlaySessionMode => {
-  return value === 'invite_read_only' ? 'invite_read_only' : 'normal';
+  if (typeof value === 'string' && value.trim().toLowerCase() === 'invite_read_only') {
+    return 'invite_read_only';
+  }
+
+  return 'normal';
 };
 
 const listConnectedOverlayPeers = async (fastify: FastifyCustomInstance, guildId: string) => {
@@ -125,7 +129,9 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
       socket.data.guildId = client.guildId;
       socket.data.overlayClientId = client.id;
       socket.data.overlayClientLabel = client.label;
-      socket.data.overlaySessionMode = normalizeOverlaySessionMode(socket.handshake?.auth?.sessionMode);
+      const sessionModeFromHandshake = toNonEmptyString(socket.handshake?.auth?.sessionMode);
+      const sessionModeFromClient = (client as { sessionMode?: unknown }).sessionMode;
+      socket.data.overlaySessionMode = normalizeOverlaySessionMode(sessionModeFromHandshake || sessionModeFromClient);
       socket.data.overlayAuthorName = toNonEmptyString((client as { defaultAuthorName?: unknown }).defaultAuthorName);
       socket.data.overlayAuthorImage = toNonEmptyString(
         (client as { defaultAuthorImage?: unknown }).defaultAuthorImage,
@@ -172,7 +178,11 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
     });
 
     socket.on(OVERLAY_SOCKET_EVENTS.HEARTBEAT, async (payload: OverlayHeartbeatPayload) => {
-      socket.data.overlaySessionMode = normalizeOverlaySessionMode(payload?.sessionMode);
+      const sessionModeFromHeartbeat = toNonEmptyString(payload?.sessionMode);
+      if (sessionModeFromHeartbeat) {
+        socket.data.overlaySessionMode = normalizeOverlaySessionMode(sessionModeFromHeartbeat);
+      }
+
       logger.debug(
         `Heartbeat from ${socket.data.overlayClientLabel || 'unknown-device'} (${payload?.clientId || socket.data.overlayClientId}, socket: ${socket.id}, mode: ${socket.data.overlaySessionMode || 'normal'})`,
       );

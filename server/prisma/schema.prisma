@@ -95,6 +95,7 @@ model OverlayClient {
   guildId    String
   label      String
   tokenHash  String   @unique
+  sessionMode String  @default("NORMAL")
   defaultAuthorName     String?
   defaultAuthorImage    String?
   createdByDiscordUserId String?

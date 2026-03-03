@@ -297,6 +297,7 @@ export const OverlayRoutes = () =>
       const { client, rawToken } = await createOverlayClientToken({
         guildId: pairingCode.guildId,
         label: deviceName,
+        sessionMode: isInviteReadOnly ? 'INVITE_READ_ONLY' : 'NORMAL',
         defaultAuthorName: authorName,
         defaultAuthorImage: authorImage,
         createdByDiscordUserId,

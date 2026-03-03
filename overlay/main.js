@@ -1046,6 +1046,7 @@ function startHeartbeatLoop() {
       clientId: cfg.clientId || 'unknown-client',
       guildId: cfg.guildId || 'unknown-guild',
       appVersion: app.getVersion(),
+      sessionMode: isGuestModeEnabled(cfg) ? 'invite_read_only' : 'normal',
     });
   }, 15000);
 }
@@ -1089,6 +1090,7 @@ function connectOverlaySocket() {
     rejectUnauthorized: false,
     auth: {
       token: cfg.clientToken,
+      sessionMode: isGuestModeEnabled(cfg) ? 'invite_read_only' : 'normal',
     },
   });
 
@@ -1099,6 +1101,7 @@ function connectOverlaySocket() {
       clientId: cfg.clientId || 'unknown-client',
       guildId: cfg.guildId || 'unknown-guild',
       appVersion: app.getVersion(),
+      sessionMode: isGuestModeEnabled(cfg) ? 'invite_read_only' : 'normal',
     });
 
     if (pendingPlaybackStatePayload) {

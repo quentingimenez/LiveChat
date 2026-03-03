@@ -1,3 +1,5 @@
+import { attachLongPressCompose } from './composeLongPress';
+
 const STYLE_ID = 'lce-twitter-style';
 const BUTTON_ATTRIBUTE = 'data-lce-twitter-button';
 const SLOT_ATTRIBUTE = 'data-lce-twitter-slot';
@@ -324,6 +326,42 @@ const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }>
   }
 };
 
+const sendCompose = async (url: string, text: string): Promise<{ ok: boolean; message: string }> => {
+  const runtime = readRuntime();
+
+  if (!runtime || typeof runtime.sendMessage !== 'function') {
+    return {
+      ok: false,
+      message: 'Contexte extension invalide. Recharge la page puis réessaie.',
+    };
+  }
+
+  try {
+    const response = (await runtime.sendMessage({
+      type: 'lce/send-compose',
+      url,
+      text,
+    })) as { ok?: unknown; message?: unknown };
+
+    if (!response || typeof response.ok !== 'boolean' || typeof response.message !== 'string') {
+      return {
+        ok: false,
+        message: 'Réponse invalide du service worker.',
+      };
+    }
+
+    return {
+      ok: response.ok,
+      message: response.message,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : 'Erreur de communication avec le service worker.',
+    };
+  }
+};
+
 const clearButtonResetTimer = (button: HTMLButtonElement): void => {
   const activeTimer = buttonResetTimers.get(button);
 
@@ -383,9 +421,56 @@ const createActionButton = (article: HTMLElement): HTMLButtonElement => {
   button.className = 'lce-button';
   setButtonState(button, 'idle');
 
+  const longPressCompose = attachLongPressCompose({
+    button,
+    title: 'Envoyer vers LiveChat avec texte',
+    placeholder: 'Ajouter un texte (optionnel)',
+    onSubmit: async (text) => {
+      if (button.disabled) {
+        throw new Error('Envoi déjà en cours...');
+      }
+
+      button.disabled = true;
+      setButtonState(button, 'loading', 'Envoi en cours...');
+
+      try {
+        const targetUrl = button.dataset.targetUrl || resolveTweetStatusUrl(article);
+
+        if (!targetUrl) {
+          const message = 'Impossible de détecter l’URL du tweet.';
+          setButtonState(button, 'error', message);
+          showToast('error', message);
+          resetButtonStateLater(button);
+          throw new Error(message);
+        }
+
+        const response = await sendCompose(targetUrl, text);
+        setButtonState(button, response.ok ? 'success' : 'error', response.message);
+        if (!response.ok) {
+          showToast('error', response.message);
+        }
+        resetButtonStateLater(button);
+
+        if (!response.ok) {
+          throw new Error(response.message);
+        }
+      } finally {
+        window.setTimeout(() => {
+          button.disabled = false;
+        }, 300);
+      }
+    },
+  });
+
   button.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
+
+    if (longPressCompose.consumeSuppressedClick()) {
+      return;
+    }
+
+    longPressCompose.closePopover();
 
     void (async () => {
       if (button.disabled) {
@@ -431,9 +516,56 @@ const createFloatingButton = (): HTMLButtonElement => {
   button.className = 'lce-button lce-button-floating';
   setButtonState(button, 'idle');
 
+  const longPressCompose = attachLongPressCompose({
+    button,
+    title: 'Envoyer vers LiveChat avec texte',
+    placeholder: 'Ajouter un texte (optionnel)',
+    onSubmit: async (text) => {
+      if (button.disabled) {
+        throw new Error('Envoi déjà en cours...');
+      }
+
+      button.disabled = true;
+      setButtonState(button, 'loading', 'Envoi en cours...');
+
+      try {
+        const targetUrl = button.dataset.targetUrl || normalizeTwitterStatusUrl(window.location.href, window.location.origin);
+
+        if (!targetUrl) {
+          const message = 'Impossible de détecter l’URL du tweet.';
+          setButtonState(button, 'error', message);
+          showToast('error', message);
+          resetButtonStateLater(button);
+          throw new Error(message);
+        }
+
+        const response = await sendCompose(targetUrl, text);
+        setButtonState(button, response.ok ? 'success' : 'error', response.message);
+        if (!response.ok) {
+          showToast('error', response.message);
+        }
+        resetButtonStateLater(button);
+
+        if (!response.ok) {
+          throw new Error(response.message);
+        }
+      } finally {
+        window.setTimeout(() => {
+          button.disabled = false;
+        }, 300);
+      }
+    },
+  });
+
   button.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
+
+    if (longPressCompose.consumeSuppressedClick()) {
+      return;
+    }
+
+    longPressCompose.closePopover();
 
     void (async () => {
       if (button.disabled) {

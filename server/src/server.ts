@@ -11,6 +11,7 @@ import { loadRosetty } from './services/i18n/loader';
 import { loadPrismaClient } from './services/prisma/loadPrisma';
 import { ensureMediaStorageDir, startMediaCachePurgeWorker } from './services/media/mediaCache';
 import { startPlaybackJobPurgeWorker } from './services/playbackJobs';
+import { startPairingCodePurgeWorker } from './services/pairingCodes';
 import { initializePlaybackScheduler } from './services/playbackScheduler';
 
 const corsAllowedHeaders = [
@@ -56,6 +57,8 @@ export const runServer = async () => {
     logger.info('[BOOT] Media cache worker started');
     startPlaybackJobPurgeWorker();
     logger.info('[BOOT] Playback job purge worker started');
+    startPairingCodePurgeWorker();
+    logger.info('[BOOT] Pairing code purge worker started');
   } catch (e) {
     logger.fatal({ err: e }, '[DB] Impossible to connect to database');
     process.exit(1);

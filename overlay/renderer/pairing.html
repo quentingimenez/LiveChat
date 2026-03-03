@@ -101,23 +101,21 @@
       <h1>Appairage Overlay</h1>
       <p>
         Saisis l'URL du serveur LiveChat et le code généré avec la commande Discord <code>/pair-code</code>.
-        Le nom est généré automatiquement au format <code>Overlay-&lt;nom&gt;</code>. En mode invité, seule l'URL est
-        nécessaire et l'overlay reste en lecture seule.
+        Le nom est généré automatiquement au format <code>Overlay-&lt;nom&gt;</code>.
       </p>
 
       <label>
-        URL du serveur (ou URL invité)
+        URL du serveur
         <input id="server-url" type="url" placeholder="https://livechat.example.com" required />
       </label>
 
       <label>
-        Code d'appairage (mode normal)
+        Code d'appairage
         <input id="pairing-code" type="text" maxlength="16" placeholder="AB12CD" required />
       </label>
 
       <div class="button-row">
         <button id="submit-button" type="submit">Appairer</button>
-        <button id="guest-button" class="button-secondary" type="button">Rejoindre en invité</button>
       </div>
       <div id="status"></div>
     </form>

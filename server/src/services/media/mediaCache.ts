@@ -2,10 +2,24 @@ import fs from 'fs';
 import { mkdir, rm } from 'fs/promises';
 import path from 'path';
 import { addHours, subHours } from 'date-fns';
-import { MediaAssetStatus } from '../prisma/prismaEnums';
+import { MediaAssetStatus, PlaybackJobStatus } from '../prisma/prismaEnums';
+
+const BYTES_PER_MEGABYTE = 1024 * 1024;
 
 const getCacheTtlHours = () => {
   return Math.max(1, env.MEDIA_CACHE_TTL_HOURS);
+};
+
+const getNonPersistentCacheMaxTotalBytes = () => {
+  return Math.max(1, env.MEDIA_CACHE_MAX_TOTAL_MB) * BYTES_PER_MEGABYTE;
+};
+
+const toSafeSizeBytes = (value: unknown) => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+
+  return Math.floor(value);
 };
 
 export const getMediaStorageDir = () => {
@@ -86,6 +100,113 @@ const purgeOneAsset = async (asset: { id: string; storagePath: string }) => {
       id: asset.id,
     },
   });
+};
+
+export const enforceNonPersistentCacheBudget = async (params: { requiredBytes: number; excludeAssetId?: string | null }) => {
+  const requiredBytes = toSafeSizeBytes(params.requiredBytes);
+  const maxTotalBytes = getNonPersistentCacheMaxTotalBytes();
+
+  const totalAggregate = await prisma.mediaAsset.aggregate({
+    where: {
+      status: MediaAssetStatus.READY,
+      memeBoardItems: {
+        none: {},
+      },
+    },
+    _sum: {
+      sizeBytes: true,
+    },
+  });
+
+  const totalBeforeBytes = toSafeSizeBytes(totalAggregate._sum.sizeBytes);
+  let totalAfterBytes = totalBeforeBytes;
+  let evictedAssetsCount = 0;
+  let evictedBytes = 0;
+
+  if (totalAfterBytes + requiredBytes <= maxTotalBytes) {
+    return {
+      hasCapacity: true,
+      requiredBytes,
+      maxTotalBytes,
+      totalBeforeBytes,
+      totalAfterBytes,
+      evictedAssetsCount,
+      evictedBytes,
+    };
+  }
+
+  const evictionCandidates = await prisma.mediaAsset.findMany({
+    where: {
+      status: MediaAssetStatus.READY,
+      memeBoardItems: {
+        none: {},
+      },
+      playbackJobs: {
+        none: {
+          status: {
+            in: [PlaybackJobStatus.PENDING, PlaybackJobStatus.PLAYING],
+          },
+        },
+      },
+      ...(params.excludeAssetId
+        ? {
+            id: {
+              not: params.excludeAssetId,
+            },
+          }
+        : {}),
+    },
+    orderBy: [
+      {
+        lastAccessedAt: 'asc',
+      },
+      {
+        createdAt: 'asc',
+      },
+    ],
+    select: {
+      id: true,
+      storagePath: true,
+      sizeBytes: true,
+    },
+  });
+
+  for (const candidate of evictionCandidates) {
+    if (totalAfterBytes + requiredBytes <= maxTotalBytes) {
+      break;
+    }
+
+    await purgeOneAsset(candidate);
+
+    const candidateSizeBytes = toSafeSizeBytes(candidate.sizeBytes);
+    evictedAssetsCount += 1;
+    evictedBytes += candidateSizeBytes;
+    totalAfterBytes = Math.max(0, totalAfterBytes - candidateSizeBytes);
+  }
+
+  if (evictedAssetsCount > 0) {
+    logger.info(
+      {
+        requiredBytes,
+        maxTotalBytes,
+        totalBeforeBytes,
+        totalAfterBytes,
+        evictedAssetsCount,
+        evictedBytes,
+      },
+      '[MEDIA] Non-persistent cache eviction executed',
+    );
+  }
+
+  return {
+    hasCapacity: totalAfterBytes + requiredBytes <= maxTotalBytes,
+    requiredBytes,
+    maxTotalBytes,
+    totalBeforeBytes,
+    totalAfterBytes,
+    evictedAssetsCount,
+    evictedBytes,
+  };
 };
 
 export const purgeExpiredMediaAssets = async () => {

@@ -6,7 +6,7 @@ import {
   revokeIngestClientsForGuildLabel,
 } from '../../services/ingestAuth';
 import { ingestMediaFromSource } from '../../services/media/mediaIngestion';
-import { toMediaIngestionError } from '../../services/media/mediaErrors';
+import { MediaIngestionError, toMediaIngestionError } from '../../services/media/mediaErrors';
 import { extractMediaStartOffsetSec } from '../../services/media/mediaSourceResolver';
 import { createPlaybackJob } from '../../services/playbackJobs';
 import { buildMediaOverlayTextPayload, encodeRichOverlayPayload } from '../../services/messages/richOverlayPayload';
@@ -457,6 +457,14 @@ export const IngestRoutes = () =>
             mediaAssetId: mediaAsset.id,
           });
         } catch (error) {
+          if (error instanceof MediaIngestionError) {
+            return reply.code(422).send({
+              error: 'media_ingestion_failed',
+              code: error.code,
+              message: error.message,
+            });
+          }
+
           logger.error(
             {
               err: error,

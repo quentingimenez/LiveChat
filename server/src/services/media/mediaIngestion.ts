@@ -833,6 +833,8 @@ const extractTikTokEmbedMediaCandidatesFromHtml = (html: string): TikTokEmbedMed
 
   const imagePostRecord = asRecord(itemInfos.imagePostInfo) || asRecord(itemInfos.imagePost);
   const displayImages = Array.isArray(imagePostRecord?.displayImages) ? imagePostRecord?.displayImages : [];
+  const photoUrlsFromRawHtml = extractTikTokPhotoUrlsFromRawHtml(html);
+  const hasPhotoModeMetadata = !!imagePostRecord || photoUrlsFromRawHtml.length > 1;
 
   for (const imageEntry of displayImages) {
     const imageRecord = asRecord(imageEntry);
@@ -852,11 +854,12 @@ const extractTikTokEmbedMediaCandidatesFromHtml = (html: string): TikTokEmbedMed
     }
   }
 
-  appendFromStringArray(imageUrls, imageUrlsSet, itemInfos.coversOrigin);
-  appendFromStringArray(imageUrls, imageUrlsSet, itemInfos.covers);
-  appendFromStringArray(imageUrls, imageUrlsSet, itemInfos.coversDynamic);
+  if (hasPhotoModeMetadata) {
+    appendFromStringArray(imageUrls, imageUrlsSet, itemInfos.coversOrigin);
+    appendFromStringArray(imageUrls, imageUrlsSet, itemInfos.covers);
+    appendFromStringArray(imageUrls, imageUrlsSet, itemInfos.coversDynamic);
+  }
 
-  const photoUrlsFromRawHtml = extractTikTokPhotoUrlsFromRawHtml(html);
   photoUrlsFromRawHtml.forEach((photoUrl) => appendUrl(imageUrls, imageUrlsSet, photoUrl));
 
   if (photoSlides.length <= 1 && photoUrlsFromRawHtml.length > 1) {
@@ -1436,6 +1439,7 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
     mediaUrl: string;
     kind: 'video' | 'image' | 'audio';
   }> = [];
+  const shouldSkipNonVideoCandidates = videoCandidates.size > 0 && resolvedPhotoSlides.length === 0;
   const seenCandidateUrls = new Set<string>();
   const appendCandidate = (candidateUrl: string, kind: 'video' | 'image' | 'audio') => {
     if (seenCandidateUrls.has(candidateUrl)) {
@@ -1450,8 +1454,19 @@ const downloadTikTokWithPageExtraction = async (sourceUrl: string, tmpDir: strin
   };
 
   videoCandidates.forEach((candidateUrl) => appendCandidate(candidateUrl, 'video'));
-  imageCandidates.forEach((candidateUrl) => appendCandidate(candidateUrl, 'image'));
-  audioCandidates.forEach((candidateUrl) => appendCandidate(candidateUrl, 'audio'));
+  if (!shouldSkipNonVideoCandidates) {
+    imageCandidates.forEach((candidateUrl) => appendCandidate(candidateUrl, 'image'));
+    audioCandidates.forEach((candidateUrl) => appendCandidate(candidateUrl, 'audio'));
+  } else if (imageCandidates.size > 0 || audioCandidates.size > 0) {
+    logger.info(
+      {
+        sourceUrl: sanitizeUrlForLog(sourceUrl),
+        skippedImageCandidates: imageCandidates.size,
+        skippedAudioCandidates: audioCandidates.size,
+      },
+      '[MEDIA] TikTok non-video fallback candidates skipped for video post',
+    );
+  }
 
   for (const [candidateIndex, candidate] of resolvedMediaCandidates.entries()) {
     try {

@@ -176,7 +176,13 @@ button:disabled {
   display: grid;
   grid-template-rows: auto 1fr;
   min-height: 0;
+  min-width: 0;
   height: 100%;
+  overflow: hidden;
+}
+
+.preview-panel {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .list-head,
@@ -308,12 +314,16 @@ button:disabled {
   align-items: stretch;
   justify-content: flex-start;
   gap: 6px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .preview-head-main {
   display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
   min-width: 0;
 }
 
@@ -345,6 +355,8 @@ button:disabled {
   color: var(--muted);
   font-size: 12px;
   text-align: left;
+  min-width: 0;
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -356,8 +368,15 @@ button:disabled {
   align-content: start;
   justify-items: center;
   gap: 8px;
+  width: 100%;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.preview-stage > * {
+  min-width: 0;
 }
 
 .preview-empty {
@@ -367,11 +386,13 @@ button:disabled {
 }
 
 .preview-media {
+  display: block;
   max-width: 100%;
   max-height: 54vh;
   border-radius: 10px;
   border: 1px solid var(--line);
   background: #060b15;
+  object-fit: contain;
 }
 
 .preview-message-editor {
@@ -419,10 +440,12 @@ button:disabled {
 
 .preview-controls button {
   width: auto;
-  flex: 1 1 max-content;
-  min-width: max-content;
+  flex: 1 1 168px;
+  min-width: 0;
   max-width: 100%;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 @media (max-width: 860px) {
@@ -597,6 +620,34 @@ button:disabled {
   .board-actions > button {
     flex: 0 0 auto;
     width: auto;
+  }
+
+  .preview-stage.preview-stage-visual {
+    grid-template-columns: minmax(200px, 0.92fr) minmax(0, 1.08fr);
+    align-items: start;
+    justify-items: stretch;
+    column-gap: 10px;
+    row-gap: 8px;
+  }
+
+  .preview-stage.preview-stage-visual .preview-media {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    width: 100%;
+    justify-self: center;
+    align-self: start;
+  }
+
+  .preview-stage.preview-stage-visual .preview-message-editor {
+    grid-column: 2;
+    grid-row: 1;
+    width: 100%;
+  }
+
+  .preview-stage.preview-stage-visual .preview-controls {
+    grid-column: 2;
+    grid-row: 2;
+    width: 100%;
   }
 }
 

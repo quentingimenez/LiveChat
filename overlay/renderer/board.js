@@ -51,10 +51,14 @@
     previewMediaKey: null,
     previewMessageAutosaveTimeoutId: null,
     previewMessageEditor: null,
+    previewLayoutRafId: null,
+    previewLayoutObserver: null,
   };
   const VOLUME_CURVE_GAMMA = 2.2;
   const INSTANT_SEARCH_DEBOUNCE_MS = 180;
   const PREVIEW_MESSAGE_AUTOSAVE_DEBOUNCE_MS = 700;
+  const PREVIEW_MEDIA_MIN_HEIGHT_PX = 160;
+  const PREVIEW_SIDE_LAYOUT_BREAKPOINT_PX = 1093;
 
   const clearStatusTimer = () => {
     if (state.statusTimeoutId === null) {
@@ -112,6 +116,89 @@
 
     clearTimeout(state.previewMessageAutosaveTimeoutId);
     state.previewMessageAutosaveTimeoutId = null;
+  };
+
+  const fitPreviewMediaToStage = () => {
+    if (!(previewStageNode instanceof HTMLElement)) {
+      return;
+    }
+
+    const mediaNode = previewStageNode.querySelector('.preview-media');
+    if (!(mediaNode instanceof HTMLElement)) {
+      return;
+    }
+
+    if (mediaNode instanceof HTMLAudioElement) {
+      mediaNode.style.removeProperty('max-height');
+      return;
+    }
+
+    const stageHeight = previewStageNode.clientHeight;
+    if (!Number.isFinite(stageHeight) || stageHeight <= 0) {
+      return;
+    }
+
+    const children = Array.from(previewStageNode.children).filter((node) => node instanceof HTMLElement);
+    const computedStyle = window.getComputedStyle(previewStageNode);
+    const parsedGap = Number.parseFloat(computedStyle.rowGap || computedStyle.gap || '0');
+    const rowGap = Number.isFinite(parsedGap) ? parsedGap : 0;
+    const parsedPaddingTop = Number.parseFloat(computedStyle.paddingTop || '0');
+    const parsedPaddingBottom = Number.parseFloat(computedStyle.paddingBottom || '0');
+    const verticalPadding =
+      (Number.isFinite(parsedPaddingTop) ? parsedPaddingTop : 0) + (Number.isFinite(parsedPaddingBottom) ? parsedPaddingBottom : 0);
+    const isSideLayout = window.matchMedia(`(max-width: ${PREVIEW_SIDE_LAYOUT_BREAKPOINT_PX}px)`).matches;
+
+    let nonMediaHeight = 0;
+    for (const childNode of children) {
+      if (childNode === mediaNode) {
+        continue;
+      }
+
+      nonMediaHeight += childNode.getBoundingClientRect().height;
+    }
+
+    const totalGaps = rowGap * Math.max(0, children.length - 1);
+    const rawAvailableHeight = isSideLayout
+      ? Math.floor(stageHeight - verticalPadding)
+      : Math.floor(stageHeight - nonMediaHeight - totalGaps - verticalPadding);
+    const availableHeight = Math.max(0, rawAvailableHeight);
+    const effectiveMaxHeight = availableHeight >= PREVIEW_MEDIA_MIN_HEIGHT_PX ? availableHeight : PREVIEW_MEDIA_MIN_HEIGHT_PX;
+    const nextMaxHeight = `${effectiveMaxHeight}px`;
+
+    if (mediaNode.style.maxHeight !== nextMaxHeight) {
+      mediaNode.style.maxHeight = nextMaxHeight;
+    }
+  };
+
+  const schedulePreviewLayoutRefresh = () => {
+    if (state.previewLayoutRafId !== null) {
+      return;
+    }
+
+    state.previewLayoutRafId = window.requestAnimationFrame(() => {
+      state.previewLayoutRafId = null;
+      fitPreviewMediaToStage();
+    });
+  };
+
+  const refreshPreviewLayoutObserverTargets = () => {
+    if (
+      typeof ResizeObserver !== 'function' ||
+      !(state.previewLayoutObserver instanceof ResizeObserver) ||
+      !(previewStageNode instanceof HTMLElement)
+    ) {
+      return;
+    }
+
+    state.previewLayoutObserver.disconnect();
+    state.previewLayoutObserver.observe(previewStageNode);
+
+    const trackedChildren = previewStageNode.querySelectorAll('.preview-media, .preview-message-editor, .preview-controls');
+    trackedChildren.forEach((node) => {
+      if (node instanceof HTMLElement) {
+        state.previewLayoutObserver.observe(node);
+      }
+    });
   };
 
   const resetPreviewMessageEditor = () => {
@@ -625,6 +712,7 @@
       resetPreviewMessageEditor();
       state.previewMediaKey = null;
       previewStageNode.innerHTML = '';
+      previewStageNode.classList.remove('preview-stage-visual');
       if (selectedTitleNode instanceof HTMLElement) {
         selectedTitleNode.textContent = '';
       }
@@ -633,6 +721,7 @@
       emptyNode.className = 'preview-empty';
       emptyNode.textContent = 'Sélectionne un mème pour voir son média et gérer son raccourci.';
       previewStageNode.appendChild(emptyNode);
+      refreshPreviewLayoutObserverTargets();
       return;
     }
 
@@ -657,6 +746,7 @@
     if (state.previewMediaKey !== mediaKey) {
       state.previewMediaKey = mediaKey;
       previewStageNode.innerHTML = '';
+      previewStageNode.classList.toggle('preview-stage-visual', mediaKind !== 'audio');
 
       let mediaNode;
 
@@ -665,6 +755,9 @@
         mediaNode.src = mediaUrl;
         mediaNode.alt = toCardTitle(selectedItem);
         mediaNode.loading = 'lazy';
+        mediaNode.addEventListener('load', () => {
+          schedulePreviewLayoutRefresh();
+        });
       } else if (mediaKind === 'audio') {
         mediaNode = document.createElement('audio');
         mediaNode.src = mediaUrl;
@@ -675,6 +768,9 @@
         mediaNode.src = mediaUrl;
         mediaNode.controls = true;
         mediaNode.preload = 'metadata';
+        mediaNode.addEventListener('loadedmetadata', () => {
+          schedulePreviewLayoutRefresh();
+        });
       }
 
       mediaNode.className = 'preview-media';
@@ -810,6 +906,8 @@
       previewStageNode.appendChild(controlsNode);
     }
     applyPreviewVolume();
+    refreshPreviewLayoutObserverTargets();
+    schedulePreviewLayoutRefresh();
 
     const shortcuts = getItemShortcuts(selectedItem.id);
     const hasMessage = toMessagePreview(selectedItem?.message).length > 0;
@@ -1716,6 +1814,10 @@
     flushPreviewMessageOnLifecycleExit();
   });
 
+  window.addEventListener('resize', () => {
+    schedulePreviewLayoutRefresh();
+  });
+
   if (isCaptureUiReady()) {
     captureCancelButton.addEventListener('click', () => {
       endCapture();
@@ -1858,6 +1960,13 @@
       };
       applyPreviewVolume();
     });
+
+    if (typeof ResizeObserver === 'function' && previewStageNode instanceof HTMLElement) {
+      state.previewLayoutObserver = new ResizeObserver(() => {
+        schedulePreviewLayoutRefresh();
+      });
+      refreshPreviewLayoutObserverTargets();
+    }
 
     await loadItemsAndRender();
   };

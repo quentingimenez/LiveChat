@@ -482,12 +482,17 @@ button:disabled {
 
 .dialog-card {
   width: min(480px, 92vw);
+  min-width: 0;
   border-radius: 14px;
   border: 1px solid var(--line);
   padding: 16px;
   background: linear-gradient(170deg, rgba(17, 31, 56, 0.98), rgba(12, 20, 38, 0.98));
   display: grid;
   gap: 10px;
+}
+
+.dialog-card > * {
+  min-width: 0;
 }
 
 .dialog-card h3 {
@@ -543,10 +548,20 @@ button:disabled {
   color: #ffc9c9;
 }
 
+#delete-message {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .dialog-actions {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.dialog-actions button {
+  min-width: 0;
 }
 
 .capture-card {

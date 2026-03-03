@@ -47,6 +47,8 @@ interface OverlayClientRecord {
   guildId: string;
   label: string;
   sessionMode: string;
+  defaultAuthorName: string | null;
+  defaultAuthorImage: string | null;
   createdAt: Date;
   lastSeenAt: Date | null;
   revokedAt: Date | null;
@@ -984,6 +986,20 @@ const buildAdminPanelHtml = () => {
         gap: 4px;
       }
 
+      .overlay-client-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .overlay-avatar {
+        width: 24px;
+        height: 24px;
+        border-radius: 999px;
+        object-fit: cover;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+      }
+
       .list-item.empty {
         border-style: dashed;
         text-align: center;
@@ -1372,17 +1388,36 @@ const buildAdminPanelHtml = () => {
                   client.connected && client.sessionMode === 'invite_read_only'
                     ? ' <span class="badge info">invité</span>'
                     : '';
+                const hasAuthorName = typeof client.authorName === 'string' && client.authorName.trim() !== '';
+                const displayName = hasAuthorName ? client.authorName.trim() : client.label;
+                const authorImage =
+                  typeof client.authorImage === 'string' && client.authorImage.trim() !== ''
+                    ? client.authorImage.trim()
+                    : null;
+                const avatar =
+                  authorImage !== null
+                    ? '<img class="overlay-avatar" src="' +
+                      escapeHtml(authorImage) +
+                      '" alt="Avatar" referrerpolicy="no-referrer" loading="lazy" />'
+                    : '';
+                const deviceLine =
+                  hasAuthorName && client.authorName.trim() !== client.label
+                    ? '<div class="muted">device: ' + escapeHtml(client.label) + '</div>'
+                    : '';
                 return (
                   '<li class="list-item">' +
+                  '<div class="overlay-client-head">' +
+                  avatar +
                   '<div><strong>' +
-                  escapeHtml(client.label) +
+                  escapeHtml(displayName) +
                   '</strong>' +
                   modeBadge +
                   ' <span class="badge ' +
                   badgeClass +
                   '">' +
                   badgeText +
-                  '</span></div>' +
+                  '</span></div></div>' +
+                  deviceLine +
                   '<div class="muted">id: ' +
                   escapeHtml(client.id) +
                   '</div>' +
@@ -2541,6 +2576,8 @@ export const AdminRoutes = () =>
               return {
                 id: client.id,
                 label: client.label,
+                authorName: toNonEmptyString(client.defaultAuthorName),
+                authorImage: toNonEmptyString(client.defaultAuthorImage),
                 lastSeenAt: client.lastSeenAt,
                 createdAt: client.createdAt,
                 connected: connectedClients.has(client.id),

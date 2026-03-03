@@ -18,7 +18,10 @@ if (process.platform === 'win32') {
 }
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
-  app.exit(0);
+  // Hard-stop secondary instances before any app initialization.
+  // This prevents hidden/background duplicates from interfering with the primary process.
+  app.quit();
+  process.exit(0);
 }
 
 let overlayWindow;

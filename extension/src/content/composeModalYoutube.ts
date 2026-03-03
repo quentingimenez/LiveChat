@@ -240,12 +240,12 @@ const isVisible = (): boolean => {
   return !modalRefs.overlay.classList.contains('is-hidden');
 };
 
-const closeModal = (): void => {
+const closeModal = (force = false): void => {
   if (!modalRefs) {
     return;
   }
 
-  if (modalBusy) {
+  if (modalBusy && !force) {
     return;
   }
 
@@ -276,6 +276,7 @@ const onSubmit = (): void => {
 
   clearStatus();
   setBusy(true);
+  closeModal(true);
 
   void (async () => {
     try {
@@ -283,23 +284,18 @@ const onSubmit = (): void => {
 
       if (!response || typeof response.ok !== 'boolean' || typeof response.message !== 'string') {
         const message = 'Réponse invalide du service worker.';
-        setErrorStatus(message);
         onError?.(message);
         return;
       }
 
       if (!response.ok) {
-        setErrorStatus(response.message);
         onError?.(response.message);
         return;
       }
 
-      setBusy(false);
-      closeModal();
       onSuccess?.(response.message);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Erreur de communication avec le service worker.';
-      setErrorStatus(message);
       onError?.(message);
     } finally {
       setBusy(false);

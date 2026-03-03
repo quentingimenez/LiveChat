@@ -1,7 +1,6 @@
 const { app, BrowserWindow, screen, Tray, Menu, nativeImage, globalShortcut, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const os = require('os');
 const http = require('http');
 const https = require('https');
 const { io } = require('socket.io-client');
@@ -97,6 +96,7 @@ const defaultConfig = {
   clientToken: null,
   clientId: null,
   guildId: null,
+  authorName: null,
   deviceName: null,
   memeBindings: {},
 };
@@ -329,8 +329,18 @@ function getOtherActiveOverlays(config = loadConfig()) {
   return connectedOverlayPeers.filter((peer) => peer.clientId !== selfClientId);
 }
 
+function getSelfOverlayPeer(config = loadConfig()) {
+  const selfClientId = typeof config.clientId === 'string' ? config.clientId.trim() : '';
+  if (!selfClientId) {
+    return null;
+  }
+
+  return connectedOverlayPeers.find((peer) => peer.clientId === selfClientId) || null;
+}
+
 function buildTrayTooltip(config = loadConfig()) {
-  const suffixLabel = stripOverlayAutoPrefix(config.deviceName);
+  const selfPeer = getSelfOverlayPeer(config);
+  const suffixLabel = `${config.authorName || selfPeer?.label || ''}`.trim();
   const suffix = suffixLabel ? ` (${suffixLabel})` : '';
   const status = `Overlay ${getConnectionStateLabel()}${suffix}`;
   const otherActiveOverlays = getOtherActiveOverlays(config);
@@ -1249,12 +1259,6 @@ function setGuestMode(checked) {
   return cfg;
 }
 
-function buildDefaultDeviceName() {
-  const host = `${os.hostname() || ''}`.trim().replace(/\s+/g, '-');
-  const suffix = host || 'Desktop';
-  return `Overlay-${suffix}`;
-}
-
 function emitManualStopSignal() {
   if (isGuestModeEnabled()) {
     return {
@@ -1423,6 +1427,7 @@ function resetPairing() {
     clientToken: null,
     guildId: null,
     clientId: null,
+    authorName: null,
     deviceName: null,
     guestMode: false,
   });
@@ -1695,7 +1700,7 @@ ipcMain.handle('pairing:consume', async (_event, payload) => {
   const serverUrl = normalizeServerUrl(`${payload?.serverUrl || ''}`);
   const code = `${payload?.code || ''}`.toUpperCase().trim();
   const requestedDeviceName = `${payload?.deviceName || ''}`.trim();
-  const resolvedRequestedDeviceName = requestedDeviceName || buildDefaultDeviceName();
+  const resolvedRequestedDeviceName = requestedDeviceName;
 
   if (!serverUrl || !code) {
     throw new Error('missing_required_fields');
@@ -1709,7 +1714,7 @@ ipcMain.handle('pairing:consume', async (_event, payload) => {
       endpoint,
       {
         code,
-        deviceName: resolvedRequestedDeviceName,
+        deviceName: resolvedRequestedDeviceName || undefined,
       },
       {
         rejectUnauthorized: true,
@@ -1721,7 +1726,7 @@ ipcMain.handle('pairing:consume', async (_event, payload) => {
         endpoint,
         {
           code,
-          deviceName: resolvedRequestedDeviceName,
+          deviceName: resolvedRequestedDeviceName || undefined,
         },
         {
           rejectUnauthorized: false,
@@ -1747,6 +1752,7 @@ ipcMain.handle('pairing:consume', async (_event, payload) => {
   }
 
   const resolvedDeviceName = `${parsed?.deviceName || resolvedRequestedDeviceName || ''}`.trim() || null;
+  const resolvedAuthorName = `${parsed?.authorName || ''}`.trim() || null;
   const sessionMode = `${parsed?.sessionMode || 'normal'}`.trim().toLowerCase();
   const isInviteReadOnlySession = sessionMode === 'invite_read_only';
 
@@ -1755,6 +1761,7 @@ ipcMain.handle('pairing:consume', async (_event, payload) => {
     clientToken: parsed.clientToken,
     clientId: parsed.clientId,
     guildId: parsed.guildId,
+    authorName: resolvedAuthorName,
     deviceName: resolvedDeviceName,
     guestMode: isInviteReadOnlySession,
   });

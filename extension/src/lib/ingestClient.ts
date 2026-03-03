@@ -1,5 +1,5 @@
 import { mapHttpFailure, mapNetworkFailure, type IngestFailure } from './errors';
-import { DEFAULT_AUTHOR_NAME, getSettings, isSettingsComplete, type ExtensionSettings } from './settings';
+import { getSettings, isSettingsComplete, type ExtensionSettings } from './settings';
 import { resolveIngestTargetUrl } from './url';
 
 const DEFAULT_TIMEOUT_MS = 300000;
@@ -36,8 +36,6 @@ export type IngestResult = IngestSuccessResult | IngestFailureResult;
 type IngestPayload = {
   guildId: string;
   url: string;
-  authorName: string;
-  authorImage?: string;
   text?: string;
   forceRefresh?: boolean;
   saveToBoard?: boolean;
@@ -89,12 +87,7 @@ export const buildIngestPayload = (request: IngestRequest, settings: ExtensionSe
   const payload: IngestPayload = {
     guildId: settings.guildId,
     url: normalizedUrl,
-    authorName: settings.authorName || DEFAULT_AUTHOR_NAME
   };
-
-  if (settings.authorImage) {
-    payload.authorImage = settings.authorImage;
-  }
 
   if (request.mode === 'compose') {
     const text = toNonEmptyString(request.text);

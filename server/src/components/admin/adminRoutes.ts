@@ -46,6 +46,7 @@ interface OverlayClientRecord {
   id: string;
   guildId: string;
   label: string;
+  sessionMode: string;
   createdAt: Date;
   lastSeenAt: Date | null;
   revokedAt: Date | null;
@@ -115,7 +116,11 @@ const toNonEmptyString = (value: unknown): string | null => {
 };
 
 const normalizeOverlaySessionMode = (value: unknown): OverlaySessionMode => {
-  return value === 'invite_read_only' ? 'invite_read_only' : 'normal';
+  if (typeof value === 'string' && value.trim().toLowerCase() === 'invite_read_only') {
+    return 'invite_read_only';
+  }
+
+  return 'normal';
 };
 
 const isPairingCodeActive = (
@@ -2531,14 +2536,17 @@ export const AdminRoutes = () =>
           overlays: {
             total: guildOverlays.length,
             connectedCount: connectedClients.size,
-            clients: guildOverlays.map((client) => ({
-              id: client.id,
-              label: client.label,
-              lastSeenAt: client.lastSeenAt,
-              createdAt: client.createdAt,
-              connected: connectedClients.has(client.id),
-              sessionMode: connectedClients.get(client.id)?.sessionMode || null,
-            })),
+            clients: guildOverlays.map((client) => {
+              const persistedSessionMode = normalizeOverlaySessionMode(client.sessionMode);
+              return {
+                id: client.id,
+                label: client.label,
+                lastSeenAt: client.lastSeenAt,
+                createdAt: client.createdAt,
+                connected: connectedClients.has(client.id),
+                sessionMode: connectedClients.get(client.id)?.sessionMode || persistedSessionMode,
+              };
+            }),
           },
           ingest: {
             total: guildIngest.length,

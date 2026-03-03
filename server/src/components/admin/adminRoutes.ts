@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'crypto';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { executeManualStopForGuild } from '../../services/manualStop';
 import { MediaAssetStatus, PlaybackJobStatus } from '../../services/prisma/prismaEnums';
+import { getRuntimeTikTokCookie, persistRuntimeTikTokCookieToEnvFile } from '../../services/runtimeSettings';
 
 const BYTES_PER_MEGABYTE = 1024 * 1024;
 
@@ -9,6 +10,10 @@ interface AdminGuildSettingsBody {
   defaultMediaTime?: unknown;
   maxMediaTime?: unknown;
   displayMediaFull?: unknown;
+}
+
+interface AdminRuntimeSettingsBody {
+  tiktokCookie?: unknown;
 }
 
 interface PairingCodesQuery {
@@ -686,6 +691,17 @@ const buildAdminPanelHtml = () => {
       </section>
 
       <section class="panel">
+        <h2>Runtime Settings</h2>
+        <div class="muted">Appliqué immédiatement et persisté dans le fichier .env.</div>
+        <div class="token-row" style="margin-top: 8px">
+          <input id="tiktok-cookie-input" type="password" placeholder="TIKTOK_COOKIE (header Cookie TikTok)" />
+          <button id="save-tiktok-cookie">Enregistrer TIKTOK_COOKIE</button>
+          <button id="clear-tiktok-cookie" class="action-btn warn">Vider</button>
+        </div>
+        <div id="tiktok-cookie-status" class="status muted" style="margin-top: 8px">TIKTOK_COOKIE non chargé.</div>
+      </section>
+
+      <section class="panel">
         <h2>Guilds</h2>
         <div class="muted">Vue globale des guilds, overlays, ingest, files et réglages.</div>
         <div id="guilds" class="guilds" style="margin-top: 10px"></div>
@@ -1162,6 +1178,19 @@ const buildAdminPanelHtml = () => {
           ')';
       };
 
+      const loadRuntimeSettings = async () => {
+        const payload = await api('/admin/api/runtime-settings');
+        const input = document.getElementById('tiktok-cookie-input');
+        const runtimeStatus = document.getElementById('tiktok-cookie-status');
+        const tiktokCookie = typeof payload.tiktokCookie === 'string' ? payload.tiktokCookie : '';
+
+        input.value = tiktokCookie;
+        runtimeStatus.className = 'status muted';
+        runtimeStatus.textContent = tiktokCookie
+          ? 'TIKTOK_COOKIE configuré (' + String(tiktokCookie.length) + ' caractères).'
+          : 'TIKTOK_COOKIE vide.';
+      };
+
       const submitGuildSettings = async (form) => {
         const guildId = form.getAttribute('data-guild-id');
         if (!guildId) {
@@ -1332,6 +1361,7 @@ const buildAdminPanelHtml = () => {
           setStatus('Chargement des données admin...', 'muted');
           await loadOverview();
           await loadPairingCodes();
+          await loadRuntimeSettings();
           setStatus('Données à jour. Dernière synchro: ' + new Date().toLocaleTimeString('fr-FR'), 'ok');
         } catch (error) {
           const code = error instanceof Error ? error.message : 'request_failed';
@@ -1396,6 +1426,41 @@ const buildAdminPanelHtml = () => {
 
       document.getElementById('refresh-overview').addEventListener('click', async () => {
         await refreshAll();
+      });
+
+      document.getElementById('save-tiktok-cookie').addEventListener('click', async () => {
+        try {
+          const input = document.getElementById('tiktok-cookie-input');
+          const tiktokCookie = String(input.value || '');
+
+          await api('/admin/api/runtime-settings', {
+            method: 'PATCH',
+            body: {
+              tiktokCookie,
+            },
+          });
+
+          await loadRuntimeSettings();
+          setStatus('TIKTOK_COOKIE mis à jour.', 'ok');
+        } catch (error) {
+          setStatus('Erreur TIKTOK_COOKIE: ' + (error instanceof Error ? error.message : 'request_failed'), 'error');
+        }
+      });
+
+      document.getElementById('clear-tiktok-cookie').addEventListener('click', async () => {
+        try {
+          await api('/admin/api/runtime-settings', {
+            method: 'PATCH',
+            body: {
+              tiktokCookie: '',
+            },
+          });
+
+          await loadRuntimeSettings();
+          setStatus('TIKTOK_COOKIE vidé.', 'warn');
+        } catch (error) {
+          setStatus('Erreur TIKTOK_COOKIE: ' + (error instanceof Error ? error.message : 'request_failed'), 'error');
+        }
       });
 
       document.getElementById('pairing-load').addEventListener('click', async () => {
@@ -1765,6 +1830,38 @@ export const AdminRoutes = () =>
           total: pairingCodes.length,
         },
         guilds: guildsPayload,
+      });
+    });
+
+    fastify.get('/api/runtime-settings', async (request, reply) => {
+      if (!(await assertAdminAccess(request, reply))) {
+        return;
+      }
+
+      const tiktokCookie = getRuntimeTikTokCookie();
+      return reply.send({
+        tiktokCookie,
+        hasTikTokCookie: tiktokCookie.length > 0,
+      });
+    });
+
+    fastify.patch<{ Body: AdminRuntimeSettingsBody }>('/api/runtime-settings', async (request, reply) => {
+      if (!(await assertAdminAccess(request, reply))) {
+        return;
+      }
+
+      if (request.body?.tiktokCookie === undefined || typeof request.body?.tiktokCookie !== 'string') {
+        return reply.code(400).send({
+          error: 'invalid_payload',
+        });
+      }
+
+      const tiktokCookie = await persistRuntimeTikTokCookieToEnvFile(request.body.tiktokCookie);
+
+      return reply.send({
+        updated: true,
+        tiktokCookie,
+        hasTikTokCookie: tiktokCookie.length > 0,
       });
     });
 

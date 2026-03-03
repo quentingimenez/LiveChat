@@ -21,6 +21,7 @@ import {
   pickMostRelevantMediaError,
   toMediaIngestionError,
 } from './mediaErrors';
+import { getRuntimeTikTokCookie } from '../runtimeSettings';
 import { normalizeDownloadedMedia } from './mediaTranscode';
 import { buildSourceHash, canonicalizeSourceUrl, resolveMediaSource } from './mediaSourceResolver';
 
@@ -471,7 +472,7 @@ const mergeCookieHeaders = (...cookieHeaders: Array<string | null | undefined>) 
 };
 
 const getTikTokCookieHeaderFromEnv = () => {
-  const rawCookieValue = asNonEmptyString(env.TIKTOK_COOKIE);
+  const rawCookieValue = asNonEmptyString(getRuntimeTikTokCookie());
 
   if (!rawCookieValue) {
     return '';

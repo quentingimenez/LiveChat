@@ -15,7 +15,7 @@ export const frLang: typeof enLang = {
 
   howToUseTitle: "Comment m'utiliser ?",
   howToUseDescription:
-    'Utilisez `/pair-code` pour générer un code d’appairage à usage unique pour l’Overlay EXE ou la LiveChat Extension, puis saisissez-le dans l’application/extension. Ensuite utilisez `/msg`, `/cmsg`, `/dire`, `/cdire` pour envoyer des médias.',
+    'Utilisez `/pair-code` pour générer un code d’appairage à usage unique pour l’Overlay EXE ou la LiveChat Extension, puis saisissez-le dans l’application/extension. Vous pouvez utiliser `mode:invite` pour un code overlay en lecture seule. Ensuite utilisez `/msg`, `/cmsg`, `/dire`, `/cdire` pour envoyer des médias.',
 
   aliveCommand: 'dispo',
   aliveCommandDescription: 'Vérifiez si le bot est vivant',
@@ -23,9 +23,15 @@ export const frLang: typeof enLang = {
 
   overlayCodeCommand: 'pair-code',
   overlayCodeCommandDescription: 'Générer un code d’appairage à usage unique pour Overlay EXE ou LiveChat Extension',
+  overlayCodeCommandOptionMode: 'mode',
+  overlayCodeCommandOptionModeDescription: 'Mode d’appairage (normal ou invité lecture seule)',
+  overlayCodeCommandOptionModeChoiceNormal: 'normal',
+  overlayCodeCommandOptionModeChoiceInvite: 'invité (overlay lecture seule)',
   overlayCodeCommandAnswerTitle: 'Code d’appairage Overlay',
   overlayCodeCommandAnswerDescription:
     'API_URL :\n```{{apiUrl}}```\nCode d’appairage :\n```{{code}}```\nExpire dans {{expiresIn}} minute(s).',
+  overlayCodeCommandAnswerDescriptionInvite:
+    'API_URL :\n```{{apiUrl}}```\nCode d’appairage :\n```{{code}}```\nMode : invité lecture seule (Overlay EXE uniquement).\nCode à usage unique sans expiration.',
 
   memeAddCommand: 'meme-add',
   memeAddCommandDescription: 'Ajouter un media a la meme board persistante',

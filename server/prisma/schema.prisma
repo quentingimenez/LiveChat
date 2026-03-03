@@ -123,10 +123,11 @@ model IngestClient {
 model PairingCode {
   code                   String   @id
   guildId                String
+  mode                   String   @default("NORMAL")
   createdByDiscordUserId String
   authorName             String?
   authorImage            String?
-  expiresAt              DateTime
+  expiresAt              DateTime?
   usedAt                 DateTime?
   createdAt              DateTime @default(now())
 

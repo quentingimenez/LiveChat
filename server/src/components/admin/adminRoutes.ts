@@ -76,7 +76,7 @@ interface PairingCodeRecord {
   guildId: string;
   createdByDiscordUserId: string;
   authorName: string | null;
-  expiresAt: Date;
+  expiresAt: Date | null;
   usedAt: Date | null;
   createdAt: Date;
 }
@@ -105,6 +105,24 @@ const toNonEmptyString = (value: unknown): string | null => {
 
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
+};
+
+const isPairingCodeActive = (
+  pairingCode: {
+    usedAt: Date | null;
+    expiresAt: Date | null;
+  },
+  now: Date,
+) => {
+  if (pairingCode.usedAt) {
+    return false;
+  }
+
+  if (!pairingCode.expiresAt) {
+    return true;
+  }
+
+  return pairingCode.expiresAt > now;
 };
 
 const toOptionalGuildSettingInt = (value: unknown): number | null | undefined => {
@@ -2426,7 +2444,7 @@ export const AdminRoutes = () =>
       let pairingExpiredCount = 0;
 
       for (const pairingCode of pairingCodes) {
-        const isActive = !pairingCode.usedAt && pairingCode.expiresAt > now;
+        const isActive = isPairingCodeActive(pairingCode, now);
         if (isActive) {
           pairingActiveCount += 1;
         } else {
@@ -3013,7 +3031,7 @@ export const AdminRoutes = () =>
 
       const items = records
         .map((record) => {
-          const isActive = !record.usedAt && record.expiresAt > now;
+          const isActive = isPairingCodeActive(record, now);
           return {
             code: record.code,
             guildId: record.guildId,
@@ -3119,9 +3137,16 @@ export const AdminRoutes = () =>
         where: {
           code,
           usedAt: null,
-          expiresAt: {
-            gt: now,
-          },
+          OR: [
+            {
+              expiresAt: null,
+            },
+            {
+              expiresAt: {
+                gt: now,
+              },
+            },
+          ],
         },
         data: {
           usedAt: now,

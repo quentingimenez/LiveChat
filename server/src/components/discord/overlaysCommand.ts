@@ -34,16 +34,24 @@ export const overlaysCommand = (fastify: FastifyCustomInstance) => ({
     }
 
     const connectedOverlays = sockets
-      .map((socket) => ({
-        label:
+      .map((socket) => {
+        const authorLabel =
+          typeof socket.data?.overlayAuthorName === 'string' && socket.data.overlayAuthorName.trim()
+            ? socket.data.overlayAuthorName.trim()
+            : '';
+        const deviceLabel =
           typeof socket.data?.overlayClientLabel === 'string' && socket.data.overlayClientLabel.trim()
             ? socket.data.overlayClientLabel.trim()
-            : 'unknown-device',
-        clientId:
-          typeof socket.data?.overlayClientId === 'string' && socket.data.overlayClientId.trim()
-            ? socket.data.overlayClientId.trim()
-            : 'unknown-client',
-      }))
+            : '';
+
+        return {
+          label: authorLabel || deviceLabel || 'unknown-device',
+          clientId:
+            typeof socket.data?.overlayClientId === 'string' && socket.data.overlayClientId.trim()
+              ? socket.data.overlayClientId.trim()
+              : 'unknown-client',
+        };
+      })
       .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
 
     const description = connectedOverlays

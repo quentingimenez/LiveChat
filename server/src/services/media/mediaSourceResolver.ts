@@ -121,6 +121,15 @@ const normalizeYoutubeUrl = (url: URL): URL => {
 
 const normalizeTikTokUrl = (url: URL): URL => {
   const normalized = new URL(url.toString());
+  const pathnameMatch = normalized.pathname.match(/^\/(video|photo)\/(\d+)(?:\/)?$/i);
+
+  if (pathnameMatch?.[1] && pathnameMatch?.[2]) {
+    const kind = pathnameMatch[1].toLowerCase();
+    const itemId = pathnameMatch[2];
+    // Some shared TikTok links omit the author segment and redirect to /404.
+    // /@_/video|photo/<id> keeps the route resolvable without knowing the username.
+    normalized.pathname = `/@_/${kind}/${itemId}`;
+  }
 
   normalized.search = '';
   normalized.hash = '';

@@ -38,14 +38,13 @@ Option TikTok restreint (login requis):
 
 ## API iOS (`/ingest`)
 
-Configurer `INGEST_API_TOKEN` dans `.env`, puis appeler:
+Créer d'abord un **ingest client token** dans `/admin` (section `Create Ingest Client`), puis appeler:
 
 ```bash
 curl -X POST "$API_URL/ingest" \
-  -H "Authorization: Bearer $INGEST_API_TOKEN" \
+  -H "Authorization: Bearer $INGEST_CLIENT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "guildId": "123456789012345678",
     "url": "https://vm.tiktok.com/ZNRfPWMaF/",
     "text": "hello depuis iOS",
     "forceRefresh": true
@@ -53,9 +52,9 @@ curl -X POST "$API_URL/ingest" \
 ```
 
 Payload minimal:
-- `guildId` obligatoire
 - au moins un de `url`, `media`, `text`
 - `forceRefresh` optionnel (`true` pour ignorer le cache média et forcer re-download/re-transcode)
+- `guildId`, `authorName`, `authorImage` sont liés au token ingest client et ne doivent pas être envoyés.
 
 ## Normalisation du volume
 
@@ -80,7 +79,7 @@ La normalisation loudness est activée par défaut pendant la transcode:
   - guilds connues + nom Discord (si disponible)
   - overlays connectés/hors ligne
   - usage cache global et meme board par guild
-  - actions admin: réglages guild, stop playback, révocation clients overlay/ingest, gestion pairing codes
+  - actions admin: réglages guild, stop playback, création/révocation clients ingest, révocation clients overlay, gestion pairing codes
 
 Les erreurs HTTP sont volontairement normalisées (`not_found`, `request_error`, `internal_error`) sans stack trace exposée.
 

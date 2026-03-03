@@ -71,20 +71,44 @@ const resolvePairingAuthorImage = (interaction: CommandInteraction): string => {
   });
 };
 
+const PAIRING_MODE_NORMAL = 'normal';
+const PAIRING_MODE_INVITE = 'invite';
+
 export const overlayCodeCommand = () => ({
   data: new SlashCommandBuilder()
     .setName(rosetty.t('overlayCodeCommand')!)
-    .setDescription(rosetty.t('overlayCodeCommandDescription')!),
+    .setDescription(rosetty.t('overlayCodeCommandDescription')!)
+    .addStringOption((option) =>
+      option
+        .setName(rosetty.t('overlayCodeCommandOptionMode')!)
+        .setDescription(rosetty.t('overlayCodeCommandOptionModeDescription')!)
+        .setRequired(false)
+        .addChoices(
+          {
+            name: rosetty.t('overlayCodeCommandOptionModeChoiceNormal')!,
+            value: PAIRING_MODE_NORMAL,
+          },
+          {
+            name: rosetty.t('overlayCodeCommandOptionModeChoiceInvite')!,
+            value: PAIRING_MODE_INVITE,
+          },
+        ),
+    ),
   handler: async (interaction: CommandInteraction) => {
+    const selectedModeRaw = interaction.options.get(rosetty.t('overlayCodeCommandOptionMode')!)?.value;
+    const selectedMode = selectedModeRaw === PAIRING_MODE_INVITE ? PAIRING_MODE_INVITE : PAIRING_MODE_NORMAL;
+    const isInviteMode = selectedMode === PAIRING_MODE_INVITE;
     const code = await generateUniquePairingCode();
-    const expiresAt = addMinutes(new Date(), Math.max(1, env.PAIRING_CODE_TTL_MINUTES));
+    const expiresAt = isInviteMode ? null : addMinutes(new Date(), Math.max(1, env.PAIRING_CODE_TTL_MINUTES));
     const authorName = resolvePairingAuthorName(interaction);
     const authorImage = resolvePairingAuthorImage(interaction);
+    const pairingCodeMode = isInviteMode ? 'INVITE_READ_ONLY' : 'NORMAL';
 
     await prisma.pairingCode.create({
       data: {
         code,
         guildId: interaction.guildId!,
+        mode: pairingCodeMode,
         createdByDiscordUserId: interaction.user.id,
         authorName,
         authorImage,
@@ -97,11 +121,16 @@ export const overlayCodeCommand = () => ({
         new EmbedBuilder()
           .setTitle(rosetty.t('overlayCodeCommandAnswerTitle')!)
           .setDescription(
-            rosetty.t('overlayCodeCommandAnswerDescription', {
-              code,
-              expiresIn: env.PAIRING_CODE_TTL_MINUTES,
-              apiUrl: env.API_URL,
-            })!,
+            isInviteMode
+              ? rosetty.t('overlayCodeCommandAnswerDescriptionInvite', {
+                  code,
+                  apiUrl: env.API_URL,
+                })!
+              : rosetty.t('overlayCodeCommandAnswerDescription', {
+                  code,
+                  expiresIn: env.PAIRING_CODE_TTL_MINUTES,
+                  apiUrl: env.API_URL,
+                })!,
           )
           .setColor(0x3498db),
       ],

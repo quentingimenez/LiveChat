@@ -13,7 +13,7 @@ export const enLang = {
 
   howToUseTitle: 'How to use it?',
   howToUseDescription:
-    'Use `/pair-code` to generate a one-time pairing code for the desktop Overlay EXE or LiveChat Extension, then enter it in the app/extension. After pairing, use `/send`, `/hsend`, `/talk`, `/htalk` to queue media playback.',
+    'Use `/pair-code` to generate a one-time pairing code for the desktop Overlay EXE or LiveChat Extension, then enter it in the app/extension. You can use `mode:invite` for a read-only overlay pairing code. After pairing, use `/send`, `/hsend`, `/talk`, `/htalk` to queue media playback.',
 
   aliveCommand: 'alive',
   aliveCommandDescription: 'Check if bot is alive',
@@ -21,9 +21,15 @@ export const enLang = {
 
   overlayCodeCommand: 'pair-code',
   overlayCodeCommandDescription: 'Generate a one-time pairing code for Overlay EXE or LiveChat Extension',
+  overlayCodeCommandOptionMode: 'mode',
+  overlayCodeCommandOptionModeDescription: 'Pairing mode (normal or read-only invite)',
+  overlayCodeCommandOptionModeChoiceNormal: 'normal',
+  overlayCodeCommandOptionModeChoiceInvite: 'invite (overlay read-only)',
   overlayCodeCommandAnswerTitle: 'Overlay pairing code',
   overlayCodeCommandAnswerDescription:
     'API_URL:\n```{{apiUrl}}```\nPairing code:\n```{{code}}```\nExpires in {{expiresIn}} minute(s).',
+  overlayCodeCommandAnswerDescriptionInvite:
+    'API_URL:\n```{{apiUrl}}```\nPairing code:\n```{{code}}```\nMode: invite read-only (Overlay EXE only).\nOne-time code without expiration.',
 
   memeAddCommand: 'meme-add',
   memeAddCommandDescription: 'Add media to the persistent meme board',

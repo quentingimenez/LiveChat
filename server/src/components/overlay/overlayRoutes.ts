@@ -24,13 +24,6 @@ interface MemeBoardItemsQuery {
   offset?: unknown;
 }
 
-interface GuestConnectBody {
-  guildId?: string;
-  deviceName?: string;
-}
-
-const DEFAULT_GUEST_DEVICE_NAME = 'Overlay-Invite-Guest';
-
 interface MemeBoardItemCreateBody {
   url?: unknown;
   title?: unknown;
@@ -44,6 +37,7 @@ interface MemeBoardItemUpdateBody {
 }
 
 const DEFAULT_OVERLAY_DEVICE_PREFIX = 'Overlay';
+const INVITE_READ_ONLY_PAIRING_MODE = 'INVITE_READ_ONLY';
 
 const toNonEmptyString = (value: unknown): string | null => {
   if (typeof value !== 'string') {
@@ -227,94 +221,8 @@ const streamAssetToReply = async (
   return createReadStream(asset.storagePath);
 };
 
-const resolveGuestGuildId = async (requestedGuildId?: string): Promise<string | null> => {
-  const preferredGuildId = `${requestedGuildId || ''}`.trim();
-
-  if (preferredGuildId) {
-    const guild = await prisma.guild.findFirst({
-      where: {
-        id: preferredGuildId,
-      },
-      select: {
-        id: true,
-      },
-    });
-
-    if (guild?.id) {
-      return guild.id;
-    }
-
-    return null;
-  }
-
-  const latestPlaybackGuild = await prisma.playbackJob.findFirst({
-    orderBy: {
-      executionDate: 'desc',
-    },
-    select: {
-      guildId: true,
-    },
-  });
-
-  if (latestPlaybackGuild?.guildId) {
-    return latestPlaybackGuild.guildId;
-  }
-
-  const latestKnownOverlayGuild = await prisma.overlayClient.findFirst({
-    where: {
-      revokedAt: null,
-    },
-    orderBy: {
-      createdAt: 'desc',
-    },
-    select: {
-      guildId: true,
-    },
-  });
-
-  if (latestKnownOverlayGuild?.guildId) {
-    return latestKnownOverlayGuild.guildId;
-  }
-
-  const fallbackGuild = await prisma.guild.findFirst({
-    orderBy: {
-      id: 'asc',
-    },
-    select: {
-      id: true,
-    },
-  });
-
-  return fallbackGuild?.id || null;
-};
-
 export const OverlayRoutes = () =>
   async function (fastify: FastifyCustomInstance) {
-    fastify.post<{ Body: GuestConnectBody }>('/guest/connect', async (request, reply) => {
-      const requestedGuildId = `${request.body?.guildId || ''}`.trim();
-      const requestedDeviceName = `${request.body?.deviceName || ''}`.trim();
-      const guildId = await resolveGuestGuildId(requestedGuildId);
-
-      if (!guildId) {
-        return reply.code(404).send({
-          error: requestedGuildId ? 'guest_guild_not_found' : 'guest_no_guild_available',
-        });
-      }
-
-      const { client, rawToken } = await createOverlayClientToken({
-        guildId,
-        label: requestedDeviceName || DEFAULT_GUEST_DEVICE_NAME,
-      });
-
-      return reply.send({
-        clientToken: rawToken,
-        clientId: client.id,
-        guildId: client.guildId,
-        deviceName: client.label,
-        apiBaseUrl: env.API_URL,
-      });
-    });
-
     fastify.post<{ Body: ConsumePairingBody }>('/pair/consume', async (request, reply) => {
       const rawCode = toNonEmptyString(request.body?.code)?.toUpperCase() || null;
       const requestedDeviceName = toNonEmptyString(request.body?.deviceName);
@@ -337,9 +245,16 @@ export const OverlayRoutes = () =>
         where: {
           code: rawCode,
           usedAt: null,
-          expiresAt: {
-            gt: new Date(),
-          },
+          OR: [
+            {
+              expiresAt: null,
+            },
+            {
+              expiresAt: {
+                gt: new Date(),
+              },
+            },
+          ],
         },
       });
 
@@ -364,6 +279,8 @@ export const OverlayRoutes = () =>
       const createdByDiscordUserId = toNonEmptyString(
         (pairingCode as { createdByDiscordUserId?: unknown }).createdByDiscordUserId,
       );
+      const pairingMode = toNonEmptyString((pairingCode as { mode?: unknown }).mode) || 'NORMAL';
+      const isInviteReadOnly = pairingMode === INVITE_READ_ONLY_PAIRING_MODE;
       const deviceName = requestedDeviceName || `${DEFAULT_OVERLAY_DEVICE_PREFIX}-${authorName || 'User'}`;
 
       await prisma.overlayClient.updateMany({
@@ -391,6 +308,7 @@ export const OverlayRoutes = () =>
         guildId: pairingCode.guildId,
         apiBaseUrl: env.API_URL,
         deviceName: client.label,
+        sessionMode: isInviteReadOnly ? 'invite_read_only' : 'normal',
       });
     });
 

@@ -860,7 +860,7 @@ const buildAdminPanelHtml = () => {
         <div class="pairing-controls" style="margin-top: 8px">
           <select id="ingest-create-guild"></select>
           <select id="ingest-create-author"></select>
-          <input id="ingest-create-label" type="text" placeholder="Label appareil (optionnel)" />
+          <input id="ingest-create-label" type="text" placeholder="Label appareil (obligatoire)" />
           <button id="ingest-create-submit">Créer client ingest</button>
         </div>
         <div class="token-row" style="margin-top: 8px">
@@ -1421,6 +1421,30 @@ const buildAdminPanelHtml = () => {
           : 'TIKTOK_COOKIE vide.';
       };
 
+      const copyTextToClipboard = async (value) => {
+        const normalized = String(value || '').trim();
+        if (!normalized) {
+          return false;
+        }
+
+        if (navigator.clipboard && window.isSecureContext) {
+          try {
+            await navigator.clipboard.writeText(normalized);
+            return true;
+          } catch {
+            // fallback below
+          }
+        }
+
+        const tokenInput = document.getElementById('ingest-create-token');
+        tokenInput.focus();
+        tokenInput.select();
+        tokenInput.setSelectionRange(0, tokenInput.value.length);
+        const copied = document.execCommand('copy');
+        window.getSelection()?.removeAllRanges();
+        return copied;
+      };
+
       const submitGuildSettings = async (form) => {
         const guildId = form.getAttribute('data-guild-id');
         if (!guildId) {
@@ -1708,10 +1732,15 @@ const buildAdminPanelHtml = () => {
             return;
           }
 
+          if (!label) {
+            setStatus('Le label ingest est obligatoire.', 'warn');
+            return;
+          }
+
           const payload = {
             guildId,
             authorDiscordUserId,
-            ...(label ? { label } : {}),
+            label,
           };
 
           const created = await api('/admin/api/ingest-clients', {
@@ -1749,7 +1778,12 @@ const buildAdminPanelHtml = () => {
             return;
           }
 
-          await navigator.clipboard.writeText(value);
+          const copied = await copyTextToClipboard(value);
+          if (!copied) {
+            setStatus('Impossible de copier le token ingest.', 'error');
+            return;
+          }
+
           setStatus('Token ingest copié dans le presse-papiers.', 'ok');
         } catch (error) {
           setStatus('Impossible de copier le token ingest.', 'error');
@@ -2198,6 +2232,12 @@ export const AdminRoutes = () =>
         });
       }
 
+      if (!label) {
+        return reply.code(400).send({
+          error: 'invalid_label',
+        });
+      }
+
       const knownAuthors = await listKnownIngestAuthors();
       const selectedAuthor = knownAuthors.find((author) => author.discordUserId === authorDiscordUserId);
 
@@ -2207,7 +2247,8 @@ export const AdminRoutes = () =>
         });
       }
 
-      const deviceLabel = label || `iOS-${selectedAuthor.displayName}`;
+      const authorSuffix = toNonEmptyString(selectedAuthor.displayName) || selectedAuthor.discordUserId;
+      const deviceLabel = `${label}-${authorSuffix}`;
       const { client, rawToken } = await createIngestClientToken({
         guildId,
         label: deviceLabel,

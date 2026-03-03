@@ -4,6 +4,7 @@ import type { FastifyRequest } from 'fastify';
 interface CreateOverlayClientTokenParams {
   guildId: string;
   label: string;
+  sessionMode?: 'NORMAL' | 'INVITE_READ_ONLY' | null;
   defaultAuthorName?: string | null;
   defaultAuthorImage?: string | null;
   createdByDiscordUserId?: string | null;
@@ -14,6 +15,7 @@ export interface OverlayClientRecord {
   guildId: string;
   label: string;
   tokenHash: string;
+  sessionMode: string;
   defaultAuthorName: string | null;
   defaultAuthorImage: string | null;
   createdByDiscordUserId: string | null;
@@ -37,6 +39,7 @@ export const createOverlayClientToken = async (params: CreateOverlayClientTokenP
     guildId: params.guildId,
     label: params.label,
     tokenHash,
+    sessionMode: params.sessionMode === 'INVITE_READ_ONLY' ? 'INVITE_READ_ONLY' : 'NORMAL',
   };
 
   if (params.defaultAuthorName && params.defaultAuthorName.trim() !== '') {
@@ -60,7 +63,10 @@ export const createOverlayClientToken = async (params: CreateOverlayClientTokenP
   } catch (error) {
     const errorMessage = `${(error as Error)?.message || ''}`;
     const hasAuthorMetadata =
-      !!createData.defaultAuthorName || !!createData.defaultAuthorImage || !!createData.createdByDiscordUserId;
+      !!createData.defaultAuthorName ||
+      !!createData.defaultAuthorImage ||
+      !!createData.createdByDiscordUserId ||
+      !!createData.sessionMode;
     const shouldRetryLegacyCreate = hasAuthorMetadata && errorMessage.includes('Unknown argument');
 
     if (!shouldRetryLegacyCreate) {

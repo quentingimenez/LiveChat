@@ -174,7 +174,7 @@ const assertAdminAccess = async (request: FastifyRequest, reply: FastifyReply): 
     return false;
   }
 
-  if (!isLoopbackIp(request.ip)) {
+  if (env.ADMIN_UI_LOCAL_ONLY && !isLoopbackIp(request.ip)) {
     await reply.code(403).send({
       error: 'admin_local_only',
     });

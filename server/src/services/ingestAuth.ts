@@ -1,6 +1,4 @@
-import { timingSafeEqual } from 'crypto';
 import type { FastifyRequest } from 'fastify';
-import { env } from './env';
 import { generateOverlayToken, getBearerTokenFromRequest, hashOverlayToken } from './overlayAuth';
 
 export interface CreateIngestClientTokenParams {
@@ -40,24 +38,6 @@ const getIngestClientDelegate = (): {
     findFirst: (args: unknown) => Promise<unknown>;
     updateMany: (args: unknown) => Promise<unknown>;
   };
-};
-
-const isLegacyIngestToken = (rawToken: string): boolean => {
-  const expectedToken = env.INGEST_API_TOKEN.trim();
-  const providedToken = rawToken.trim();
-
-  if (!expectedToken || !providedToken) {
-    return false;
-  }
-
-  const expectedBuffer = Buffer.from(expectedToken);
-  const providedBuffer = Buffer.from(providedToken);
-
-  if (expectedBuffer.length !== providedBuffer.length) {
-    return false;
-  }
-
-  return timingSafeEqual(expectedBuffer, providedBuffer);
 };
 
 export const createIngestClientToken = async (params: CreateIngestClientTokenParams) => {
@@ -144,28 +124,12 @@ export const resolveIngestClientFromRequest = async (
   };
 };
 
-export type IngestAuthResult =
-  | {
-      kind: 'legacy';
-    }
-  | {
-      kind: 'client';
-      client: IngestClientRecord;
-    };
+export type IngestAuthResult = {
+  kind: 'client';
+  client: IngestClientRecord;
+};
 
 export const resolveIngestAuthFromRequest = async (request: FastifyRequest): Promise<IngestAuthResult | null> => {
-  const token = getBearerTokenFromRequest(request);
-
-  if (!token) {
-    return null;
-  }
-
-  if (isLegacyIngestToken(token)) {
-    return {
-      kind: 'legacy',
-    };
-  }
-
   const clientResult = await resolveIngestClientFromRequest(request);
 
   if (!clientResult) {
@@ -179,10 +143,6 @@ export const resolveIngestAuthFromRequest = async (request: FastifyRequest): Pro
 };
 
 export const isIngestApiEnabled = async (): Promise<boolean> => {
-  if (env.INGEST_API_TOKEN.trim()) {
-    return true;
-  }
-
   const delegate = getIngestClientDelegate();
 
   if (!delegate) {

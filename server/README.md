@@ -31,6 +31,11 @@ pnpm dev
 Option TikTok restreint (login requis):
 - `TIKTOK_COOKIE` peut contenir un header cookie TikTok (`name=value; name2=value2`) pour tenter l'extraction avec un compte autorisé.
 
+## Quotas stockage média
+
+- `MEDIA_CACHE_MAX_TOTAL_MB=5120` (5 Go): limite totale du cache **non persistant**.
+- `MEDIA_BOARD_MAX_TOTAL_MB=15360` (15 Go): limite par serveur Discord pour la meme board persistante.
+
 ## API iOS (`/ingest`)
 
 Configurer `INGEST_API_TOKEN` dans `.env`, puis appeler:

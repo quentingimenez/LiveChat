@@ -36,6 +36,14 @@ export const env = createEnv({
       .string()
       .default('12')
       .transform((s) => parseInt(s, 10)),
+    MEDIA_CACHE_MAX_TOTAL_MB: z
+      .string()
+      .default('5120')
+      .transform((s) => parseInt(s, 10)),
+    MEDIA_BOARD_MAX_TOTAL_MB: z
+      .string()
+      .default('15360')
+      .transform((s) => parseInt(s, 10)),
     MEDIA_DOWNLOAD_TIMEOUT_MS: z
       .string()
       .default('180000')

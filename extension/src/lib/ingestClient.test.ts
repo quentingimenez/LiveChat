@@ -27,8 +27,6 @@ describe('ingest client', () => {
     expect(payload).toEqual({
       guildId: '1234567890',
       url: 'https://www.youtube.com/watch?v=abc123',
-      authorName: 'LiveChat Extension',
-      authorImage: 'https://cdn.example.com/avatar.png',
     });
   });
 
@@ -44,8 +42,6 @@ describe('ingest client', () => {
     expect(payload).toEqual({
       guildId: '1234567890',
       url: 'https://www.youtube.com/watch?v=abc123&t=108',
-      authorName: 'LiveChat Extension',
-      authorImage: 'https://cdn.example.com/avatar.png',
     });
   });
 
@@ -66,8 +62,6 @@ describe('ingest client', () => {
       text: 'hello',
       forceRefresh: true,
       saveToBoard: false,
-      authorName: 'LiveChat Extension',
-      authorImage: 'https://cdn.example.com/avatar.png',
     });
   });
 

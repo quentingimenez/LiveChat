@@ -97,6 +97,7 @@ Workflow: `.github/workflows/extension-release.yml`
 
 - Sur `pull_request` et `push` sur `main`: checks + build + artifact zip.
 - Sur tag `v*` (ex: `v0.1.0`): création automatique d’une GitHub Release avec le zip.
+- Sur tag `v*` (ex: `v0.1.0`): publication automatique sur Chrome Web Store (upload + publish) si les secrets sont configurés.
 
 Exemple publication:
 
@@ -104,3 +105,32 @@ Exemple publication:
 git tag v0.1.0
 git push origin v0.1.0
 ```
+
+## Auto-update via Chrome Web Store (basé sur GitHub)
+
+L’auto-update des utilisateurs finaux passe par le Chrome Web Store.
+Ce dépôt publie automatiquement l’extension lors d’un push de tag `v*`.
+
+### Secrets GitHub requis
+
+Configurer ces secrets dans `Settings > Secrets and variables > Actions`:
+
+- `CWS_EXTENSION_ID`: ID de l’extension Chrome Web Store.
+- `CWS_CLIENT_ID`: OAuth Client ID Google Cloud.
+- `CWS_CLIENT_SECRET`: OAuth Client Secret Google Cloud.
+- `CWS_REFRESH_TOKEN`: refresh token OAuth avec scope Chrome Web Store.
+
+### Préparation Google Cloud / Web Store
+
+1. Créer un projet Google Cloud.
+2. Activer l’API Chrome Web Store.
+3. Créer des credentials OAuth 2.0 (type Desktop ou Web).
+4. Générer un refresh token OAuth avec le scope:
+   `https://www.googleapis.com/auth/chromewebstore`
+5. Renseigner les secrets dans GitHub.
+
+Ensuite, chaque tag `v*` poussé sur GitHub déclenche:
+- build + zip,
+- upload GitHub Release,
+- upload vers Chrome Web Store,
+- publish de la nouvelle version.

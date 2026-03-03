@@ -727,6 +727,11 @@ const buildAdminPanelHtml = () => {
         pairingItems: [],
       };
 
+      const OVERVIEW_AUTO_REFRESH_MS = 2000;
+      const PAIRING_AUTO_REFRESH_MS = 12000;
+      let isOverviewAutoRefreshRunning = false;
+      let isPairingAutoRefreshRunning = false;
+
       const escapeHtml = (value) => {
         return String(value || '')
           .replace(/&/g, '&amp;')
@@ -1254,6 +1259,42 @@ const buildAdminPanelHtml = () => {
         }
       };
 
+      const autoRefreshOverview = async () => {
+        if (isOverviewAutoRefreshRunning) {
+          return;
+        }
+
+        isOverviewAutoRefreshRunning = true;
+        try {
+          await loadOverview();
+        } catch (error) {
+          const code = error instanceof Error ? error.message : 'request_failed';
+          if (code !== 'token_missing') {
+            setStatus('Erreur refresh overview: ' + code, 'error');
+          }
+        } finally {
+          isOverviewAutoRefreshRunning = false;
+        }
+      };
+
+      const autoRefreshPairingCodes = async () => {
+        if (isPairingAutoRefreshRunning) {
+          return;
+        }
+
+        isPairingAutoRefreshRunning = true;
+        try {
+          await loadPairingCodes();
+        } catch (error) {
+          const code = error instanceof Error ? error.message : 'request_failed';
+          if (code !== 'token_missing') {
+            setStatus('Erreur refresh pairing: ' + code, 'error');
+          }
+        } finally {
+          isPairingAutoRefreshRunning = false;
+        }
+      };
+
       document.getElementById('save-token').addEventListener('click', async () => {
         const tokenInput = document.getElementById('token-input');
         const token = String(tokenInput.value || '').trim();
@@ -1357,7 +1398,8 @@ const buildAdminPanelHtml = () => {
         }
 
         await refreshAll();
-        setInterval(refreshAll, 10000);
+        setInterval(autoRefreshOverview, OVERVIEW_AUTO_REFRESH_MS);
+        setInterval(autoRefreshPairingCodes, PAIRING_AUTO_REFRESH_MS);
       };
 
       boot();

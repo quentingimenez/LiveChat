@@ -649,7 +649,7 @@ const buildAdminPanelHtml = () => {
 
       .guilds {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+        grid-template-columns: 1fr;
         gap: 10px;
       }
 
@@ -657,9 +657,9 @@ const buildAdminPanelHtml = () => {
         border-radius: 12px;
         border: 1px solid rgba(255, 255, 255, 0.14);
         background: rgba(7, 12, 24, 0.58);
-        padding: 10px;
+        padding: 9px;
         display: grid;
-        gap: 9px;
+        gap: 8px;
       }
 
       .guild-head {
@@ -689,8 +689,16 @@ const buildAdminPanelHtml = () => {
 
       .guild-grid {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 8px;
+      }
+
+      .guild-grid-meta {
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      }
+
+      .guild-grid-clients {
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        align-items: start;
       }
 
       .guild-meta,
@@ -751,9 +759,9 @@ const buildAdminPanelHtml = () => {
       .list-block ul {
         list-style: none;
         padding: 0;
-        margin: 8px 0 0;
+        margin: 6px 0 0;
         display: grid;
-        gap: 6px;
+        gap: 5px;
       }
 
       .list-item {
@@ -763,6 +771,15 @@ const buildAdminPanelHtml = () => {
         font-size: 12px;
         display: grid;
         gap: 4px;
+      }
+
+      .list-item.empty {
+        border-style: dashed;
+        text-align: center;
+        display: block;
+        padding: 7px;
+        color: var(--muted);
+        background: rgba(6, 10, 22, 0.46);
       }
 
       .pairing-controls {
@@ -1160,7 +1177,7 @@ const buildAdminPanelHtml = () => {
                 : '<span class="badge warn">Aucun overlay connecté</span>') +
               '</div>' +
               '</div>' +
-              '<div class="guild-grid">' +
+              '<div class="guild-grid guild-grid-meta">' +
               '<div class="guild-meta">' +
               '<div><strong>Busy Until</strong>: ' +
               escapeHtml(toDateTime(guild.busyUntil)) +
@@ -1232,12 +1249,12 @@ const buildAdminPanelHtml = () => {
               escapeHtml(guild.id) +
               '">Filtrer pairing codes</button>' +
               '</div>' +
-              '<div class="guild-grid">' +
+              '<div class="guild-grid guild-grid-clients">' +
               '<div class="list-block"><strong>Overlay clients</strong><ul>' +
-              (overlayItems || '<li class="list-item muted">Aucun client</li>') +
+              (overlayItems || '<li class="list-item empty">Aucun client</li>') +
               '</ul></div>' +
               '<div class="list-block"><strong>Ingest clients</strong><ul>' +
-              (ingestItems || '<li class="list-item muted">Aucun client</li>') +
+              (ingestItems || '<li class="list-item empty">Aucun client</li>') +
               '</ul></div>' +
               '</div>' +
               '</article>'

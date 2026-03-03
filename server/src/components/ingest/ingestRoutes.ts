@@ -242,13 +242,20 @@ export const IngestRoutes = () =>
       const durationSec = toOptionalDurationSec(request.body?.durationSec);
       const mediaStartOffsetSec = extractMediaStartOffsetSec({ url, media });
 
-      if (authResult.kind === 'client' && requestedGuildId && requestedGuildId !== authResult.client.guildId) {
+      if (requestedGuildId && requestedGuildId !== authResult.client.guildId) {
         return reply.code(403).send({
           error: 'guild_mismatch',
         });
       }
 
-      const guildId = authResult.kind === 'client' ? authResult.client.guildId : requestedGuildId;
+      if (authorName || authorImage) {
+        return reply.code(400).send({
+          error: 'invalid_payload',
+          message: 'authorName/authorImage are token-bound for ingest clients',
+        });
+      }
+
+      const guildId = authResult.client.guildId;
 
       if (!guildId || (!url && !media && !text)) {
         return reply.code(400).send({
@@ -270,13 +277,8 @@ export const IngestRoutes = () =>
       });
       let jobShowText = showText ?? !!text;
       let hasRichTweetCardPayload = false;
-      let jobAuthorName: string | null =
-        authorName ||
-        (authResult.kind === 'client'
-          ? toNonEmptyString(authResult.client.defaultAuthorName) || DEFAULT_INGEST_AUTHOR_NAME
-          : 'iOS Shortcut');
-      let jobAuthorImage =
-        authorImage || (authResult.kind === 'client' ? toNonEmptyString(authResult.client.defaultAuthorImage) : null);
+      let jobAuthorName: string | null = toNonEmptyString(authResult.client.defaultAuthorName) || DEFAULT_INGEST_AUTHOR_NAME;
+      let jobAuthorImage = toNonEmptyString(authResult.client.defaultAuthorImage);
       let jobDurationSec = durationSec;
       const normalizedTweetUrl = !saveToBoard && !media && url ? normalizeTweetStatusUrl(url) : null;
 
@@ -432,8 +434,7 @@ export const IngestRoutes = () =>
             guildId,
             mediaAssetId: mediaAsset.id,
             title: text,
-            createdByDiscordUserId:
-              authResult.kind === 'client' ? toNonEmptyString(authResult.client.createdByDiscordUserId) : null,
+            createdByDiscordUserId: toNonEmptyString(authResult.client.createdByDiscordUserId),
             createdByName: jobAuthorName,
           });
 

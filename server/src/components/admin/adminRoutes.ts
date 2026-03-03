@@ -1,5 +1,6 @@
 import { timingSafeEqual } from 'crypto';
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { createIngestClientToken } from '../../services/ingestAuth';
 import { executeManualStopForGuild } from '../../services/manualStop';
 import { MediaAssetStatus, PlaybackJobStatus } from '../../services/prisma/prismaEnums';
 import { getRuntimeTikTokCookie, persistRuntimeTikTokCookieToEnvFile } from '../../services/runtimeSettings';
@@ -14,6 +15,12 @@ interface AdminGuildSettingsBody {
 
 interface AdminRuntimeSettingsBody {
   tiktokCookie?: unknown;
+}
+
+interface AdminCreateIngestClientBody {
+  guildId?: unknown;
+  authorDiscordUserId?: unknown;
+  label?: unknown;
 }
 
 interface PairingCodesQuery {
@@ -38,9 +45,20 @@ interface IngestClientRecord {
   id: string;
   guildId: string;
   label: string;
+  createdByDiscordUserId: string;
+  defaultAuthorName: string;
+  defaultAuthorImage: string | null;
   createdAt: Date;
   lastSeenAt: Date | null;
   revokedAt: Date | null;
+}
+
+interface KnownIngestAuthor {
+  discordUserId: string;
+  displayName: string;
+  image: string | null;
+  lastSeenAt: Date | null;
+  source: 'pairing' | 'ingest' | 'mixed';
 }
 
 interface PairingCodeRecord {
@@ -242,6 +260,141 @@ const listIngestClients = async (): Promise<IngestClientRecord[]> => {
     logger.warn({ err: error }, '[ADMIN] Unable to list ingest clients');
     return [];
   }
+};
+
+const mergeAuthorSource = (
+  current: KnownIngestAuthor['source'],
+  incoming: KnownIngestAuthor['source'],
+): KnownIngestAuthor['source'] => {
+  if (current === incoming) {
+    return current;
+  }
+
+  return 'mixed';
+};
+
+const listKnownIngestAuthors = async (): Promise<KnownIngestAuthor[]> => {
+  const delegate = getIngestClientDelegate();
+  const [pairingRecords, ingestRecords] = await Promise.all([
+    prisma.pairingCode.findMany({
+      select: {
+        createdByDiscordUserId: true,
+        authorName: true,
+        authorImage: true,
+        createdAt: true,
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    }) as Promise<Array<{ createdByDiscordUserId: string; authorName: string | null; authorImage: string | null; createdAt: Date }>>,
+    delegate
+      ? (delegate.findMany({
+          select: {
+            createdByDiscordUserId: true,
+            defaultAuthorName: true,
+            defaultAuthorImage: true,
+            createdAt: true,
+          },
+          orderBy: {
+            createdAt: 'desc',
+          },
+        }) as Promise<
+          Array<{
+            createdByDiscordUserId: string;
+            defaultAuthorName: string;
+            defaultAuthorImage: string | null;
+            createdAt: Date;
+          }>
+        >)
+      : Promise.resolve([]),
+  ]);
+
+  const byDiscordUserId = new Map<string, KnownIngestAuthor>();
+
+  const upsertKnownAuthor = (params: {
+    discordUserId: string;
+    displayName: string | null;
+    image: string | null;
+    createdAt: Date;
+    source: 'pairing' | 'ingest';
+  }) => {
+    const existing = byDiscordUserId.get(params.discordUserId);
+    const normalizedName = toNonEmptyString(params.displayName) || null;
+    const normalizedImage = toNonEmptyString(params.image) || null;
+    const safeDate = params.createdAt instanceof Date ? params.createdAt : new Date(0);
+
+    if (!existing) {
+      byDiscordUserId.set(params.discordUserId, {
+        discordUserId: params.discordUserId,
+        displayName: normalizedName || params.discordUserId,
+        image: normalizedImage,
+        lastSeenAt: safeDate,
+        source: params.source,
+      });
+      return;
+    }
+
+    existing.source = mergeAuthorSource(existing.source, params.source);
+
+    if (!existing.lastSeenAt || safeDate > existing.lastSeenAt) {
+      existing.lastSeenAt = safeDate;
+      existing.displayName = normalizedName || existing.displayName || params.discordUserId;
+      existing.image = normalizedImage || existing.image || null;
+      return;
+    }
+
+    if ((!existing.displayName || existing.displayName === params.discordUserId) && normalizedName) {
+      existing.displayName = normalizedName;
+    }
+
+    if (!existing.image && normalizedImage) {
+      existing.image = normalizedImage;
+    }
+  };
+
+  pairingRecords.forEach((record) => {
+    const discordUserId = toNonEmptyString(record.createdByDiscordUserId);
+    if (!discordUserId) {
+      return;
+    }
+
+    upsertKnownAuthor({
+      discordUserId,
+      displayName: toNonEmptyString(record.authorName),
+      image: toNonEmptyString(record.authorImage),
+      createdAt: record.createdAt,
+      source: 'pairing',
+    });
+  });
+
+  ingestRecords.forEach((record) => {
+    const discordUserId = toNonEmptyString(record.createdByDiscordUserId);
+    if (!discordUserId) {
+      return;
+    }
+
+    upsertKnownAuthor({
+      discordUserId,
+      displayName: toNonEmptyString(record.defaultAuthorName),
+      image: toNonEmptyString(record.defaultAuthorImage),
+      createdAt: record.createdAt,
+      source: 'ingest',
+    });
+  });
+
+  return Array.from(byDiscordUserId.values())
+    .sort((left, right) => {
+      const byName = left.displayName.localeCompare(right.displayName, undefined, {
+        sensitivity: 'base',
+      });
+      if (byName !== 0) {
+        return byName;
+      }
+
+      return left.discordUserId.localeCompare(right.discordUserId, undefined, {
+        sensitivity: 'base',
+      });
+    });
 };
 
 const revokeIngestClient = async (clientId: string) => {
@@ -702,6 +855,22 @@ const buildAdminPanelHtml = () => {
       </section>
 
       <section class="panel">
+        <h2>Create Ingest Client</h2>
+        <div class="muted">Créer un token ingest lié à une guild et un auteur déjà présent en DB.</div>
+        <div class="pairing-controls" style="margin-top: 8px">
+          <select id="ingest-create-guild"></select>
+          <select id="ingest-create-author"></select>
+          <input id="ingest-create-label" type="text" placeholder="Label appareil (optionnel)" />
+          <button id="ingest-create-submit">Créer client ingest</button>
+        </div>
+        <div class="token-row" style="margin-top: 8px">
+          <input id="ingest-create-token" type="text" readonly placeholder="Nouveau token ingest (copiez-le et stockez-le)." />
+          <button id="ingest-create-copy-token">Copier token</button>
+        </div>
+        <div id="ingest-create-status" class="status muted" style="margin-top: 8px">Aucun client créé.</div>
+      </section>
+
+      <section class="panel">
         <h2>Guilds</h2>
         <div class="muted">Vue globale des guilds, overlays, ingest, files et réglages.</div>
         <div id="guilds" class="guilds" style="margin-top: 10px"></div>
@@ -741,6 +910,7 @@ const buildAdminPanelHtml = () => {
         token: '',
         overview: null,
         pairingItems: [],
+        ingestAuthors: [],
       };
 
       const OVERVIEW_AUTO_REFRESH_MS = 2000;
@@ -1101,6 +1271,59 @@ const buildAdminPanelHtml = () => {
         }
       };
 
+      const renderIngestCreateGuildFilter = () => {
+        const select = document.getElementById('ingest-create-guild');
+        const overview = state.overview;
+
+        if (!overview || !Array.isArray(overview.guilds) || overview.guilds.length === 0) {
+          select.innerHTML = '<option value="">Aucune guild disponible</option>';
+          return;
+        }
+
+        const options = overview.guilds
+          .map((guild) => {
+            return '<option value="' + escapeHtml(guild.id) + '">' + escapeHtml(guild.name + ' (' + guild.id + ')') + '</option>';
+          })
+          .join('');
+
+        const current = select.value;
+        select.innerHTML = options;
+
+        if (current) {
+          select.value = current;
+        }
+      };
+
+      const renderIngestCreateAuthorFilter = () => {
+        const select = document.getElementById('ingest-create-author');
+        const items = Array.isArray(state.ingestAuthors) ? state.ingestAuthors : [];
+
+        if (items.length === 0) {
+          select.innerHTML = '<option value="">Aucun auteur en DB</option>';
+          return;
+        }
+
+        const options = items
+          .map((author) => {
+            const suffix = author.source === 'mixed' ? 'pairing+ingest' : author.source;
+            return (
+              '<option value="' +
+              escapeHtml(author.discordUserId) +
+              '">' +
+              escapeHtml(author.displayName + ' (' + author.discordUserId + ') [' + suffix + ']') +
+              '</option>'
+            );
+          })
+          .join('');
+
+        const current = select.value;
+        select.innerHTML = options;
+
+        if (current) {
+          select.value = current;
+        }
+      };
+
       const renderPairingRows = () => {
         const container = document.getElementById('pairing-rows');
 
@@ -1147,6 +1370,7 @@ const buildAdminPanelHtml = () => {
         renderMetrics();
         renderGuilds();
         renderPairingGuildFilter();
+        renderIngestCreateGuildFilter();
       };
 
       const loadPairingCodes = async () => {
@@ -1176,6 +1400,12 @@ const buildAdminPanelHtml = () => {
           ', expirés/utilisés: ' +
           String(payload.counts.expired) +
           ')';
+      };
+
+      const loadIngestAuthors = async () => {
+        const payload = await api('/admin/api/ingest-authors');
+        state.ingestAuthors = Array.isArray(payload.items) ? payload.items : [];
+        renderIngestCreateAuthorFilter();
       };
 
       const loadRuntimeSettings = async () => {
@@ -1360,6 +1590,7 @@ const buildAdminPanelHtml = () => {
         try {
           setStatus('Chargement des données admin...', 'muted');
           await loadOverview();
+          await loadIngestAuthors();
           await loadPairingCodes();
           await loadRuntimeSettings();
           setStatus('Données à jour. Dernière synchro: ' + new Date().toLocaleTimeString('fr-FR'), 'ok');
@@ -1460,6 +1691,68 @@ const buildAdminPanelHtml = () => {
           setStatus('TIKTOK_COOKIE vidé.', 'warn');
         } catch (error) {
           setStatus('Erreur TIKTOK_COOKIE: ' + (error instanceof Error ? error.message : 'request_failed'), 'error');
+        }
+      });
+
+      document.getElementById('ingest-create-submit').addEventListener('click', async () => {
+        try {
+          const guildSelect = document.getElementById('ingest-create-guild');
+          const authorSelect = document.getElementById('ingest-create-author');
+          const labelInput = document.getElementById('ingest-create-label');
+          const guildId = String(guildSelect.value || '').trim();
+          const authorDiscordUserId = String(authorSelect.value || '').trim();
+          const label = String(labelInput.value || '').trim();
+
+          if (!guildId || !authorDiscordUserId) {
+            setStatus('Sélectionnez une guild et un auteur.', 'warn');
+            return;
+          }
+
+          const payload = {
+            guildId,
+            authorDiscordUserId,
+            ...(label ? { label } : {}),
+          };
+
+          const created = await api('/admin/api/ingest-clients', {
+            method: 'POST',
+            body: payload,
+          });
+
+          const tokenInput = document.getElementById('ingest-create-token');
+          tokenInput.value = typeof created.ingestApiToken === 'string' ? created.ingestApiToken : '';
+
+          const ingestStatus = document.getElementById('ingest-create-status');
+          ingestStatus.className = 'status ok';
+          ingestStatus.textContent =
+            'Client ingest créé: ' +
+            String(created?.client?.label || '-') +
+            ' (' +
+            String(created?.client?.id || '-') +
+            ')';
+
+          await loadOverview();
+          await loadIngestAuthors();
+          setStatus('Client ingest créé et token généré.', 'ok');
+        } catch (error) {
+          setStatus('Erreur création ingest client: ' + (error instanceof Error ? error.message : 'request_failed'), 'error');
+        }
+      });
+
+      document.getElementById('ingest-create-copy-token').addEventListener('click', async () => {
+        try {
+          const tokenInput = document.getElementById('ingest-create-token');
+          const value = String(tokenInput.value || '').trim();
+
+          if (!value) {
+            setStatus('Aucun token à copier.', 'warn');
+            return;
+          }
+
+          await navigator.clipboard.writeText(value);
+          setStatus('Token ingest copié dans le presse-papiers.', 'ok');
+        } catch (error) {
+          setStatus('Impossible de copier le token ingest.', 'error');
         }
       });
 
@@ -1862,6 +2155,79 @@ export const AdminRoutes = () =>
         updated: true,
         tiktokCookie,
         hasTikTokCookie: tiktokCookie.length > 0,
+      });
+    });
+
+    fastify.get('/api/ingest-authors', async (request, reply) => {
+      if (!(await assertAdminAccess(request, reply))) {
+        return;
+      }
+
+      const items = await listKnownIngestAuthors();
+
+      return reply.send({
+        items: items.map((item) => ({
+          discordUserId: item.discordUserId,
+          displayName: item.displayName,
+          image: item.image,
+          lastSeenAt: item.lastSeenAt,
+          source: item.source,
+        })),
+        count: items.length,
+      });
+    });
+
+    fastify.post<{ Body: AdminCreateIngestClientBody }>('/api/ingest-clients', async (request, reply) => {
+      if (!(await assertAdminAccess(request, reply))) {
+        return;
+      }
+
+      const guildId = toNonEmptyString(request.body?.guildId);
+      const authorDiscordUserId = toNonEmptyString(request.body?.authorDiscordUserId);
+      const label = toNonEmptyString(request.body?.label);
+
+      if (!guildId) {
+        return reply.code(400).send({
+          error: 'invalid_guild_id',
+        });
+      }
+
+      if (!authorDiscordUserId) {
+        return reply.code(400).send({
+          error: 'invalid_author_discord_user_id',
+        });
+      }
+
+      const knownAuthors = await listKnownIngestAuthors();
+      const selectedAuthor = knownAuthors.find((author) => author.discordUserId === authorDiscordUserId);
+
+      if (!selectedAuthor) {
+        return reply.code(400).send({
+          error: 'author_not_found',
+        });
+      }
+
+      const deviceLabel = label || `iOS-${selectedAuthor.displayName}`;
+      const { client, rawToken } = await createIngestClientToken({
+        guildId,
+        label: deviceLabel,
+        defaultAuthorName: selectedAuthor.displayName,
+        defaultAuthorImage: selectedAuthor.image,
+        createdByDiscordUserId: selectedAuthor.discordUserId,
+      });
+
+      return reply.send({
+        created: true,
+        ingestApiToken: rawToken,
+        client: {
+          id: client.id,
+          guildId: client.guildId,
+          label: client.label,
+          defaultAuthorName: client.defaultAuthorName,
+          defaultAuthorImage: client.defaultAuthorImage,
+          createdByDiscordUserId: client.createdByDiscordUserId,
+          createdAt: client.createdAt,
+        },
       });
     });
 

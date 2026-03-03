@@ -309,6 +309,7 @@ export const OverlayRoutes = () =>
         guildId: pairingCode.guildId,
         apiBaseUrl: env.API_URL,
         deviceName: client.label,
+        authorName: authorName || null,
         sessionMode: isInviteReadOnly ? 'invite_read_only' : 'normal',
       });
     });

@@ -87,7 +87,7 @@ export interface OverlayPeersPayload {
 
 export interface OverlayPairConsumeRequest {
   code: string;
-  deviceName: string;
+  deviceName?: string;
 }
 
 export interface OverlayPairConsumeResponse {
@@ -95,6 +95,7 @@ export interface OverlayPairConsumeResponse {
   clientId: string;
   guildId: string;
   apiBaseUrl: string;
+  authorName?: string | null;
   sessionMode?: OverlaySessionMode;
 }
 

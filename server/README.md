@@ -69,6 +69,17 @@ La normalisation loudness est activée par défaut pendant la transcode:
 
 - `GET /` -> statut service minimal
 - `GET /health` -> healthcheck
+- `GET /admin?token=<ADMIN_UI_TOKEN>` -> panel admin local (localhost uniquement)
+
+## Admin panel local (`/admin`)
+
+- Activer avec `ADMIN_UI_TOKEN` dans `.env`.
+- Accès refusé hors loopback (`127.0.0.1` / `::1`).
+- Le panel expose:
+  - guilds connues + nom Discord (si disponible)
+  - overlays connectés/hors ligne
+  - usage cache global et meme board par guild
+  - actions admin: réglages guild, stop playback, révocation clients overlay/ingest, gestion pairing codes
 
 Les erreurs HTTP sont volontairement normalisées (`not_found`, `request_error`, `internal_error`) sans stack trace exposée.
 

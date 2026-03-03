@@ -1,9 +1,13 @@
 import { startCase } from 'lodash';
 import { OverlayRoutes } from '../components/overlay/overlayRoutes';
 import { IngestRoutes } from '../components/ingest/ingestRoutes';
+import { AdminRoutes } from '../components/admin/adminRoutes';
 
 export const loadRoutes = (fastify: FastifyCustomInstance) => {
   const routes = [
+    {
+      '/admin': AdminRoutes,
+    },
     {
       '/overlay': OverlayRoutes,
     },

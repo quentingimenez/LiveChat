@@ -14,6 +14,7 @@ export const env = createEnv({
     I18N: z.string().default('fr'),
 
     API_URL: z.string().url(),
+    ADMIN_UI_TOKEN: z.string().default(''),
 
     DISCORD_TOKEN: z.string(),
     DISCORD_CLIENT_ID: z.string(),

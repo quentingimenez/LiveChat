@@ -1,5 +1,6 @@
 import { promises as fsPromises } from 'fs';
 import path from 'path';
+import { env } from './env';
 
 const normalizeTikTokCookie = (value: unknown): string => {
   if (typeof value !== 'string') {

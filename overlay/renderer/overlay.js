@@ -1041,6 +1041,157 @@
     return mediaUrl.toString();
   };
 
+  const toRedactedMediaUrl = (value) => {
+    if (typeof value !== 'string' || value.trim() === '') {
+      return 'unknown-url';
+    }
+
+    try {
+      const parsed = new URL(value);
+      if (parsed.searchParams.has('token')) {
+        parsed.searchParams.set('token', '***');
+      }
+      return parsed.toString();
+    } catch {
+      return value;
+    }
+  };
+
+  const hasTokenInMediaUrl = (value) => {
+    if (typeof value !== 'string' || value.trim() === '') {
+      return false;
+    }
+
+    try {
+      const parsed = new URL(value);
+      const token = parsed.searchParams.get('token');
+      return typeof token === 'string' && token.trim() !== '';
+    } catch {
+      return false;
+    }
+  };
+
+  const getHtmlMediaErrorLabel = (code) => {
+    switch (code) {
+      case 1:
+        return 'MEDIA_ERR_ABORTED';
+      case 2:
+        return 'MEDIA_ERR_NETWORK';
+      case 3:
+        return 'MEDIA_ERR_DECODE';
+      case 4:
+        return 'MEDIA_ERR_SRC_NOT_SUPPORTED';
+      default:
+        return 'MEDIA_ERR_UNKNOWN';
+    }
+  };
+
+  const probeMediaHttpStatus = async (params) => {
+    const mediaUrl = typeof params?.mediaUrl === 'string' ? params.mediaUrl : '';
+    const mediaKind = typeof params?.mediaKind === 'string' ? params.mediaKind : 'unknown';
+    const reason = typeof params?.reason === 'string' ? params.reason : 'unknown';
+    const jobId = typeof params?.jobId === 'string' && params.jobId.trim() ? params.jobId.trim() : 'unknown-job';
+    const redactedUrl = toRedactedMediaUrl(mediaUrl);
+
+    if (!mediaUrl) {
+      return;
+    }
+
+    const abortController = typeof AbortController === 'function' ? new AbortController() : null;
+    const probeTimeout = setTimeout(() => {
+      abortController?.abort();
+    }, 6000);
+
+    try {
+      const response = await fetch(mediaUrl, {
+        method: 'GET',
+        headers: {
+          Range: 'bytes=0-0',
+        },
+        cache: 'no-store',
+        signal: abortController?.signal,
+      });
+      const statusCode = response.status;
+      const statusHint = statusCode === 401 || statusCode === 403 ? 'auth_failed' : 'non_auth_error';
+
+      console.warn(
+        `[OVERLAY] Media probe (${reason}) jobId=${jobId} kind=${mediaKind} status=${statusCode} hint=${statusHint} url=${redactedUrl}`,
+      );
+
+      if (response.body && typeof response.body.cancel === 'function') {
+        response.body.cancel().catch(() => undefined);
+      }
+    } catch (error) {
+      const message =
+        error && typeof error === 'object' && error.name === 'AbortError'
+          ? 'probe_timeout'
+          : error?.message || 'probe_request_failed';
+
+      console.warn(`[OVERLAY] Media probe failed (${reason}) jobId=${jobId} kind=${mediaKind} error=${message} url=${redactedUrl}`);
+    } finally {
+      clearTimeout(probeTimeout);
+    }
+  };
+
+  const attachMediaDiagnostics = (element, params) => {
+    if (!(element instanceof HTMLElement)) {
+      return;
+    }
+
+    const mediaUrl = typeof params?.mediaUrl === 'string' ? params.mediaUrl : '';
+    const mediaKind = typeof params?.mediaKind === 'string' ? params.mediaKind : 'unknown';
+    const jobId = typeof params?.jobId === 'string' && params.jobId.trim() ? params.jobId.trim() : 'unknown-job';
+    const redactedUrl = toRedactedMediaUrl(mediaUrl);
+    const tokenPresent = hasTokenInMediaUrl(mediaUrl);
+    let hasProbedStatus = false;
+
+    const probeOnce = (reason) => {
+      if (hasProbedStatus) {
+        return;
+      }
+
+      hasProbedStatus = true;
+      void probeMediaHttpStatus({
+        mediaUrl,
+        mediaKind,
+        reason,
+        jobId,
+      });
+    };
+
+    element.addEventListener('error', () => {
+      if (element instanceof HTMLMediaElement) {
+        const mediaErrorCode = typeof element.error?.code === 'number' ? element.error.code : 0;
+        const mediaError = getHtmlMediaErrorLabel(mediaErrorCode);
+
+        console.warn(
+          `[OVERLAY] Media element error jobId=${jobId} kind=${mediaKind} error=${mediaError} tokenPresent=${
+            tokenPresent ? 'yes' : 'no'
+          } url=${redactedUrl}`,
+        );
+      } else {
+        console.warn(
+          `[OVERLAY] Image element error jobId=${jobId} kind=${mediaKind} tokenPresent=${
+            tokenPresent ? 'yes' : 'no'
+          } url=${redactedUrl}`,
+        );
+      }
+
+      probeOnce('error');
+    });
+
+    if (element instanceof HTMLMediaElement) {
+      element.addEventListener('stalled', () => {
+        console.warn(
+          `[OVERLAY] Media element stalled jobId=${jobId} kind=${mediaKind} readyState=${element.readyState} networkState=${element.networkState} tokenPresent=${
+            tokenPresent ? 'yes' : 'no'
+          } url=${redactedUrl}`,
+        );
+        probeOnce('stalled');
+      });
+    }
+  };
+
   const applyMediaStartOffset = (element, startOffsetSec) => {
     if (!element || typeof element.currentTime !== 'number') {
       return;
@@ -1084,6 +1235,11 @@
     activeObjectUrl = null;
 
     const element = createMediaElement(payload.media.kind);
+    attachMediaDiagnostics(element, {
+      mediaUrl,
+      mediaKind: payload.media.kind,
+      jobId: payload?.jobId || 'unknown-job',
+    });
     element.src = mediaUrl;
     const targetContainer = ensureMediaFrame() || mediaLayer;
     if (!(targetContainer instanceof HTMLElement)) {

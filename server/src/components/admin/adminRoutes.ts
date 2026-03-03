@@ -776,18 +776,33 @@ const buildAdminPanelHtml = () => {
         element.textContent = message;
       };
 
+      const syncTokenInUrl = (token) => {
+        const url = new URL(window.location.href);
+        const normalized = String(token || '').trim();
+
+        if (normalized) {
+          url.searchParams.set('token', normalized);
+        } else {
+          url.searchParams.delete('token');
+        }
+
+        window.history.replaceState({}, '', url.toString());
+      };
+
       const readToken = () => {
         const queryToken = new URLSearchParams(window.location.search).get('token') || '';
 
         if (queryToken) {
           localStorage.setItem('livechat_admin_token', queryToken);
-          const url = new URL(window.location.href);
-          url.searchParams.delete('token');
-          window.history.replaceState({}, '', url.toString());
+          syncTokenInUrl(queryToken);
           return queryToken;
         }
 
-        return localStorage.getItem('livechat_admin_token') || '';
+        const storedToken = localStorage.getItem('livechat_admin_token') || '';
+        if (storedToken) {
+          syncTokenInUrl(storedToken);
+        }
+        return storedToken;
       };
 
       const writeToken = (token) => {
@@ -795,13 +810,12 @@ const buildAdminPanelHtml = () => {
 
         if (!normalized) {
           localStorage.removeItem('livechat_admin_token');
-          const url = new URL(window.location.href);
-          url.searchParams.delete('token');
-          window.history.replaceState({}, '', url.toString());
+          syncTokenInUrl('');
           return;
         }
 
         localStorage.setItem('livechat_admin_token', normalized);
+        syncTokenInUrl(normalized);
       };
 
       const api = async (path, options = {}) => {
@@ -811,16 +825,20 @@ const buildAdminPanelHtml = () => {
           throw new Error('token_missing');
         }
 
+        const hasBody = options.body !== undefined;
         const headers = {
-          'Content-Type': 'application/json',
           Authorization: 'Bearer ' + token,
           ...(options.headers || {}),
         };
 
+        if (hasBody) {
+          headers['Content-Type'] = 'application/json';
+        }
+
         const response = await fetch(path, {
           method: options.method || 'GET',
           headers,
-          body: options.body ? JSON.stringify(options.body) : undefined,
+          body: hasBody ? JSON.stringify(options.body) : undefined,
         });
 
         let payload = null;

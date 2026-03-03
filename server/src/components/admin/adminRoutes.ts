@@ -1097,6 +1097,54 @@ const buildAdminPanelHtml = () => {
       const PAIRING_AUTO_REFRESH_MS = 12000;
       let isOverviewAutoRefreshRunning = false;
       let isPairingAutoRefreshRunning = false;
+      let autoRefreshBlockedUntil = 0;
+
+      const blockAutoRefresh = (durationMs) => {
+        const normalizedDuration = Number.isFinite(durationMs) && durationMs > 0 ? Math.floor(durationMs) : 0;
+        const nextBlockedUntil = Date.now() + normalizedDuration;
+        if (nextBlockedUntil > autoRefreshBlockedUntil) {
+          autoRefreshBlockedUntil = nextBlockedUntil;
+        }
+      };
+
+      const isEditableControl = (node) => {
+        if (!(node instanceof HTMLElement)) {
+          return false;
+        }
+
+        if (node.isContentEditable) {
+          return true;
+        }
+
+        if (node instanceof HTMLTextAreaElement) {
+          return !node.disabled && !node.readOnly;
+        }
+
+        if (node instanceof HTMLSelectElement) {
+          return !node.disabled;
+        }
+
+        if (node instanceof HTMLInputElement) {
+          if (node.disabled || node.readOnly) {
+            return false;
+          }
+
+          const inputType = String(node.type || '').toLowerCase();
+          const nonEditableTypes = ['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'hidden', 'range', 'color'];
+          return nonEditableTypes.indexOf(inputType) === -1;
+        }
+
+        return false;
+      };
+
+      const shouldPauseAutoRefresh = () => {
+        const activeElement = document.activeElement;
+        if (isEditableControl(activeElement)) {
+          return true;
+        }
+
+        return Date.now() < autoRefreshBlockedUntil;
+      };
 
       const escapeHtml = (value) => {
         return String(value || '')
@@ -1896,6 +1944,10 @@ const buildAdminPanelHtml = () => {
           return;
         }
 
+        if (shouldPauseAutoRefresh()) {
+          return;
+        }
+
         isOverviewAutoRefreshRunning = true;
         try {
           await loadOverview();
@@ -1914,6 +1966,10 @@ const buildAdminPanelHtml = () => {
           return;
         }
 
+        if (shouldPauseAutoRefresh()) {
+          return;
+        }
+
         isPairingAutoRefreshRunning = true;
         try {
           await loadPairingCodes();
@@ -1926,6 +1982,36 @@ const buildAdminPanelHtml = () => {
           isPairingAutoRefreshRunning = false;
         }
       };
+
+      document.addEventListener(
+        'focusin',
+        (event) => {
+          if (isEditableControl(event.target)) {
+            blockAutoRefresh(4000);
+          }
+        },
+        true,
+      );
+
+      document.addEventListener(
+        'input',
+        (event) => {
+          if (isEditableControl(event.target)) {
+            blockAutoRefresh(4000);
+          }
+        },
+        true,
+      );
+
+      document.addEventListener(
+        'focusout',
+        (event) => {
+          if (isEditableControl(event.target)) {
+            blockAutoRefresh(1500);
+          }
+        },
+        true,
+      );
 
       document.getElementById('save-token').addEventListener('click', async () => {
         const tokenInput = document.getElementById('token-input');

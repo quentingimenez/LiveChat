@@ -20,6 +20,7 @@ import type {
   OverlayPeersPayload,
   OverlayPlaybackStatePayload,
   OverlayPlayPayload,
+  OverlaySessionMode,
   OverlayStopPayload,
 } from '@livechat/overlay-protocol';
 
@@ -54,6 +55,7 @@ declare global {
     guildId?: string;
     overlayClientId?: string;
     overlayClientLabel?: string;
+    overlaySessionMode?: OverlaySessionMode;
     overlayAuthorName?: string;
     overlayAuthorImage?: string;
   }

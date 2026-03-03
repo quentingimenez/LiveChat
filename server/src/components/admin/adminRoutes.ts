@@ -51,6 +51,13 @@ interface OverlayClientRecord {
   revokedAt: Date | null;
 }
 
+type OverlaySessionMode = 'normal' | 'invite_read_only';
+
+interface ConnectedOverlayClientState {
+  clientId: string;
+  sessionMode: OverlaySessionMode;
+}
+
 interface IngestClientRecord {
   id: string;
   guildId: string;
@@ -105,6 +112,10 @@ const toNonEmptyString = (value: unknown): string | null => {
 
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
+};
+
+const normalizeOverlaySessionMode = (value: unknown): OverlaySessionMode => {
+  return value === 'invite_read_only' ? 'invite_read_only' : 'normal';
 };
 
 const isPairingCodeActive = (
@@ -621,23 +632,36 @@ const disconnectOverlaySocketsForGuild = async (fastify: FastifyCustomInstance, 
 const collectConnectedOverlayClientIds = async (
   fastify: FastifyCustomInstance,
   guildIds: string[],
-): Promise<Map<string, Set<string>>> => {
-  const result = new Map<string, Set<string>>();
+): Promise<Map<string, Map<string, ConnectedOverlayClientState>>> => {
+  const result = new Map<string, Map<string, ConnectedOverlayClientState>>();
 
   await Promise.all(
     guildIds.map(async (guildId) => {
       const roomName = `overlay-guild-${guildId}`;
       const sockets = await fastify.io.in(roomName).fetchSockets();
-      const connectedClientIds = new Set<string>();
+      const connectedClients = new Map<string, ConnectedOverlayClientState>();
 
       for (const socket of sockets) {
         const overlayClientId = toNonEmptyString(socket.data?.overlayClientId);
         if (overlayClientId) {
-          connectedClientIds.add(overlayClientId);
+          const sessionMode = normalizeOverlaySessionMode(socket.data?.overlaySessionMode);
+          const existing = connectedClients.get(overlayClientId);
+
+          if (!existing) {
+            connectedClients.set(overlayClientId, {
+              clientId: overlayClientId,
+              sessionMode,
+            });
+            continue;
+          }
+
+          if (sessionMode === 'invite_read_only' && existing.sessionMode !== 'invite_read_only') {
+            existing.sessionMode = sessionMode;
+          }
         }
       }
 
-      result.set(guildId, connectedClientIds);
+      result.set(guildId, connectedClients);
     }),
   );
 
@@ -862,6 +886,11 @@ const buildAdminPanelHtml = () => {
       .badge.warn {
         color: var(--warn);
         border-color: rgba(245, 183, 89, 0.52);
+      }
+
+      .badge.info {
+        color: var(--accent);
+        border-color: rgba(103, 194, 255, 0.52);
       }
 
       .guild-grid {
@@ -1334,11 +1363,17 @@ const buildAdminPanelHtml = () => {
               .map((client) => {
                 const badgeClass = client.connected ? 'ok' : 'warn';
                 const badgeText = client.connected ? 'connecté' : 'hors ligne';
+                const modeBadge =
+                  client.connected && client.sessionMode === 'invite_read_only'
+                    ? ' <span class="badge info">invité</span>'
+                    : '';
                 return (
                   '<li class="list-item">' +
                   '<div><strong>' +
                   escapeHtml(client.label) +
-                  '</strong> <span class="badge ' +
+                  '</strong>' +
+                  modeBadge +
+                  ' <span class="badge ' +
                   badgeClass +
                   '">' +
                   badgeText +
@@ -2465,7 +2500,7 @@ export const AdminRoutes = () =>
         const editableGuildName = guildName || persistedGuildName || '';
         const guildOverlays = overlaysByGuild.get(guildId) || [];
         const guildIngest = ingestByGuild.get(guildId) || [];
-        const connectedIds = connectedOverlayMap.get(guildId) || new Set<string>();
+        const connectedClients = connectedOverlayMap.get(guildId) || new Map<string, ConnectedOverlayClientState>();
         const boardUsedBytes = boardBytesByGuild.get(guildId) || 0;
         const playback = playbackByGuild.get(guildId) || {
           pending: 0,
@@ -2495,13 +2530,14 @@ export const AdminRoutes = () =>
           },
           overlays: {
             total: guildOverlays.length,
-            connectedCount: connectedIds.size,
+            connectedCount: connectedClients.size,
             clients: guildOverlays.map((client) => ({
               id: client.id,
               label: client.label,
               lastSeenAt: client.lastSeenAt,
               createdAt: client.createdAt,
-              connected: connectedIds.has(client.id),
+              connected: connectedClients.has(client.id),
+              sessionMode: connectedClients.get(client.id)?.sessionMode || null,
             })),
           },
           ingest: {

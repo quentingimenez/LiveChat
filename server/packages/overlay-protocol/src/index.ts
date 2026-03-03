@@ -13,6 +13,7 @@ export const OVERLAY_SOCKET_EVENTS = {
 export type OverlaySocketEventName = (typeof OVERLAY_SOCKET_EVENTS)[keyof typeof OVERLAY_SOCKET_EVENTS];
 
 export type OverlayMediaKind = 'image' | 'audio' | 'video';
+export type OverlaySessionMode = 'normal' | 'invite_read_only';
 
 export interface OverlayTweetCard {
   url: string;
@@ -54,6 +55,7 @@ export interface OverlayHeartbeatPayload {
   clientId: string;
   guildId: string;
   appVersion: string;
+  sessionMode?: OverlaySessionMode | null;
 }
 
 export interface OverlayErrorPayload {
@@ -93,6 +95,7 @@ export interface OverlayPairConsumeResponse {
   clientId: string;
   guildId: string;
   apiBaseUrl: string;
+  sessionMode?: OverlaySessionMode;
 }
 
 export interface OverlayConfigResponse {

@@ -7,6 +7,7 @@ import {
   type OverlayHeartbeatPayload,
   type OverlayMemeTriggerPayload,
   type OverlayPlaybackStatePayload,
+  type OverlaySessionMode,
   type OverlayStopPayload,
 } from '@livechat/overlay-protocol';
 import { getPlaybackScheduler, MEME_JOB_PRIORITY } from '../services/playbackScheduler';
@@ -35,6 +36,10 @@ const getTokenFromSocketHandshake = (socket) => {
   }
 
   return null;
+};
+
+const normalizeOverlaySessionMode = (value: unknown): OverlaySessionMode => {
+  return value === 'invite_read_only' ? 'invite_read_only' : 'normal';
 };
 
 const listConnectedOverlayPeers = async (fastify: FastifyCustomInstance, guildId: string) => {
@@ -120,6 +125,7 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
       socket.data.guildId = client.guildId;
       socket.data.overlayClientId = client.id;
       socket.data.overlayClientLabel = client.label;
+      socket.data.overlaySessionMode = normalizeOverlaySessionMode(socket.handshake?.auth?.sessionMode);
       socket.data.overlayAuthorName = toNonEmptyString((client as { defaultAuthorName?: unknown }).defaultAuthorName);
       socket.data.overlayAuthorImage = toNonEmptyString(
         (client as { defaultAuthorImage?: unknown }).defaultAuthorImage,
@@ -166,8 +172,9 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
     });
 
     socket.on(OVERLAY_SOCKET_EVENTS.HEARTBEAT, async (payload: OverlayHeartbeatPayload) => {
+      socket.data.overlaySessionMode = normalizeOverlaySessionMode(payload?.sessionMode);
       logger.debug(
-        `Heartbeat from ${socket.data.overlayClientLabel || 'unknown-device'} (${payload?.clientId || socket.data.overlayClientId}, socket: ${socket.id})`,
+        `Heartbeat from ${socket.data.overlayClientLabel || 'unknown-device'} (${payload?.clientId || socket.data.overlayClientId}, socket: ${socket.id}, mode: ${socket.data.overlaySessionMode || 'normal'})`,
       );
 
       await prisma.overlayClient.updateMany({

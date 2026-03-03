@@ -871,6 +871,12 @@ function stopKeepOnTopLoop() {
 function sendOverlaySettingsToRenderer() {
   const cfg = loadConfig();
   const settingsPayload = {
+    serverUrl: cfg.serverUrl,
+    clientToken: cfg.clientToken,
+    guildId: cfg.guildId,
+    clientId: cfg.clientId,
+    guestMode: isGuestModeEnabled(cfg),
+    memeBindings: normalizeMemeBindings(cfg.memeBindings),
     volume: cfg.volume,
     showText: cfg.showText,
   };
@@ -1754,6 +1760,7 @@ ipcMain.handle('pairing:consume', async (_event, payload) => {
   });
 
   const cfg = setGuestMode(isInviteReadOnlySession);
+  sendOverlaySettingsToRenderer();
 
   if (cfg.enabled) {
     createOverlayWindow();

@@ -1,3 +1,5 @@
+import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModalYoutube';
+
 const STYLE_ID = 'lce-youtube-style';
 const BUTTON_ATTRIBUTE = 'data-lce-youtube-button';
 const LEGACY_FLOATING_BUTTON_ID = 'lce-youtube-floating-button';
@@ -453,6 +455,8 @@ const BUTTON_TEXT_BY_STATE: Record<ButtonState, string> = {
 };
 
 const buttonResetTimers = new WeakMap<HTMLButtonElement, number>();
+const buttonClickTimers = new WeakMap<HTMLButtonElement, number>();
+const SINGLE_CLICK_DELAY_MS = 260;
 
 const inpageStyles = `
 .lce-button-youtube {
@@ -864,7 +868,7 @@ const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }>
   }
 };
 
-const sendCompose = async (url: string, text: string): Promise<{ ok: boolean; message: string }> => {
+const sendCompose = async (payload: ComposeSubmitPayload): Promise<ComposeSubmitResult> => {
   const runtime = readRuntime();
 
   if (!runtime || typeof runtime.sendMessage !== 'function') {
@@ -877,8 +881,10 @@ const sendCompose = async (url: string, text: string): Promise<{ ok: boolean; me
   try {
     const response = (await runtime.sendMessage({
       type: 'lce/send-compose',
-      url,
-      text,
+      url: payload.url,
+      text: payload.text,
+      forceRefresh: payload.forceRefresh,
+      saveToBoard: payload.saveToBoard,
     })) as { ok?: unknown; message?: unknown };
 
     if (!response || typeof response.ok !== 'boolean' || typeof response.message !== 'string') {
@@ -900,6 +906,24 @@ const sendCompose = async (url: string, text: string): Promise<{ ok: boolean; me
   }
 };
 
+const clearButtonClickTimer = (button: HTMLButtonElement): void => {
+  const activeTimer = buttonClickTimers.get(button);
+
+  if (typeof activeTimer === 'number') {
+    window.clearTimeout(activeTimer);
+    buttonClickTimers.delete(button);
+  }
+};
+
+const scheduleSingleClickAction = (button: HTMLButtonElement, action: () => void): void => {
+  clearButtonClickTimer(button);
+  const timer = window.setTimeout(() => {
+    buttonClickTimers.delete(button);
+    action();
+  }, SINGLE_CLICK_DELAY_MS);
+
+  buttonClickTimers.set(button, timer);
+};
 const clearButtonResetTimer = (button: HTMLButtonElement): void => {
   const activeTimer = buttonResetTimers.get(button);
 
@@ -970,7 +994,12 @@ const createActionButton = (variant: ButtonVariant): HTMLButtonElement => {
           throw new Error(message);
         }
 
-        const response = await sendCompose(targetUrl, text);
+        const response = await sendCompose({
+          url: targetUrl,
+          text,
+          forceRefresh: false,
+          saveToBoard: false,
+        });
         setButtonState(button, response.ok ? 'success' : 'error', response.message);
         if (!response.ok) {
           showToast('error', response.message);
@@ -992,43 +1021,85 @@ const createActionButton = (variant: ButtonVariant): HTMLButtonElement => {
     event.preventDefault();
     event.stopPropagation();
 
+    if (event.detail > 1) {
+      return;
+    }
+
     if (longPressCompose.consumeSuppressedClick()) {
       return;
     }
 
     longPressCompose.closePopover();
 
-    void (async () => {
-      if (button.disabled) {
-        return;
-      }
-
-      button.disabled = true;
-      setButtonState(button, 'loading', 'Envoi en cours...');
-
-      try {
-        const targetUrl = button.dataset.targetUrl || getCurrentYoutubeUrl();
-
-        if (!targetUrl) {
-          const message = 'Impossible de détecter l’URL YouTube courante.';
-          setButtonState(button, 'error', message);
-          showToast('error', message);
-          resetButtonStateLater(button);
+    scheduleSingleClickAction(button, () => {
+      void (async () => {
+        if (button.disabled) {
           return;
         }
 
-        const response = await sendQuick(targetUrl);
-        setButtonState(button, response.ok ? 'success' : 'error', response.message);
-        if (!response.ok) {
-          showToast('error', response.message);
+        button.disabled = true;
+        setButtonState(button, 'loading', 'Envoi en cours...');
+
+        try {
+          const targetUrl = button.dataset.targetUrl || getCurrentYoutubeUrl();
+
+          if (!targetUrl) {
+            const message = 'Impossible de détecter l’URL YouTube courante.';
+            setButtonState(button, 'error', message);
+            showToast('error', message);
+            resetButtonStateLater(button);
+            return;
+          }
+
+          const response = await sendQuick(targetUrl);
+          setButtonState(button, response.ok ? 'success' : 'error', response.message);
+          if (!response.ok) {
+            showToast('error', response.message);
+          }
+          resetButtonStateLater(button);
+        } finally {
+          window.setTimeout(() => {
+            button.disabled = false;
+          }, 300);
         }
+      })();
+    });
+  });
+
+  button.addEventListener('dblclick', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    clearButtonClickTimer(button);
+
+    if (button.disabled) {
+      return;
+    }
+
+    const targetUrl = button.dataset.targetUrl || getCurrentYoutubeUrl();
+
+    if (!targetUrl) {
+      const message = 'Impossible de détecter l’URL YouTube courante.';
+      setButtonState(button, 'error', message);
+      showToast('error', message);
+      resetButtonStateLater(button);
+      return;
+    }
+
+    openComposeModal({
+      initialUrl: targetUrl,
+      sourceLabel: `YouTube (${variant === 'shorts' ? 'Shorts' : 'Watch'})`,
+      onSubmit: sendCompose,
+      onSuccess: (message) => {
+        setButtonState(button, 'success', message);
         resetButtonStateLater(button);
-      } finally {
-        window.setTimeout(() => {
-          button.disabled = false;
-        }, 300);
-      }
-    })();
+        showToast('success', message);
+      },
+      onError: (message) => {
+        setButtonState(button, 'error', message);
+        resetButtonStateLater(button);
+        showToast('error', message);
+      },
+    });
   });
 
   return button;

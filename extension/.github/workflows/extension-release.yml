@@ -79,3 +79,92 @@ jobs:
           append_body: false
           body: |
             Automatic latest build from `main`.
+
+  publish-webstore:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    env:
+      CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+      CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+      CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+      CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+
+    steps:
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          for var in CWS_EXTENSION_ID CWS_CLIENT_ID CWS_CLIENT_SECRET CWS_REFRESH_TOKEN; do
+            if [ -z "${!var:-}" ]; then
+              echo "Missing secret: $var"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Download package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: livechat-extension-package
+          path: release
+
+      - name: Resolve package path
+        run: |
+          set -euo pipefail
+          zip_path="$(ls -1 release/*.zip | head -n 1)"
+          if [ -z "$zip_path" ]; then
+            echo "No release zip found in release/"
+            exit 1
+          fi
+          echo "ZIP_PATH=$zip_path" >> "$GITHUB_ENV"
+          echo "Found package: $zip_path"
+
+      - name: Get OAuth access token
+        run: |
+          set -euo pipefail
+          token_response="$(curl -sS -X POST "https://oauth2.googleapis.com/token" \
+            -d "client_id=${CWS_CLIENT_ID}" \
+            -d "client_secret=${CWS_CLIENT_SECRET}" \
+            -d "refresh_token=${CWS_REFRESH_TOKEN}" \
+            -d "grant_type=refresh_token")"
+          access_token="$(echo "$token_response" | jq -r '.access_token // empty')"
+          if [ -z "$access_token" ]; then
+            echo "Failed to fetch access token."
+            echo "$token_response"
+            exit 1
+          fi
+          echo "CWS_ACCESS_TOKEN=$access_token" >> "$GITHUB_ENV"
+
+      - name: Upload package to Chrome Web Store
+        run: |
+          set -euo pipefail
+          upload_response="$(curl -sS -X PUT \
+            -H "Authorization: Bearer ${CWS_ACCESS_TOKEN}" \
+            -H "x-goog-api-version: 2" \
+            -T "${ZIP_PATH}" \
+            "https://www.googleapis.com/upload/chromewebstore/v1.1/items/${CWS_EXTENSION_ID}")"
+          upload_state="$(echo "$upload_response" | jq -r '.uploadState // empty')"
+          if [ "$upload_state" != "SUCCESS" ]; then
+            echo "Chrome Web Store upload failed."
+            echo "$upload_response"
+            exit 1
+          fi
+          echo "Upload succeeded."
+
+      - name: Publish item to Chrome Web Store
+        run: |
+          set -euo pipefail
+          publish_response="$(curl -sS -X POST \
+            -H "Authorization: Bearer ${CWS_ACCESS_TOKEN}" \
+            -H "x-goog-api-version: 2" \
+            "https://www.googleapis.com/chromewebstore/v1.1/items/${CWS_EXTENSION_ID}/publish")"
+          publish_ok="$(echo "$publish_response" | jq -r '(.status // [] | index("OK")) != null')"
+          if [ "$publish_ok" != "true" ]; then
+            echo "Chrome Web Store publish failed."
+            echo "$publish_response"
+            exit 1
+          fi
+          echo "Publish succeeded."

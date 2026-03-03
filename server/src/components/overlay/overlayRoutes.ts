@@ -5,7 +5,7 @@ import { OVERLAY_PROTOCOL_VERSION } from '@livechat/overlay-protocol';
 import { createOverlayClientToken, resolveOverlayClientFromRequest } from '../../services/overlayAuth';
 import { touchMediaAsset } from '../../services/media/mediaCache';
 import { ingestMediaFromSource } from '../../services/media/mediaIngestion';
-import { toMediaIngestionError } from '../../services/media/mediaErrors';
+import { MediaIngestionError, toMediaIngestionError } from '../../services/media/mediaErrors';
 import {
   addToMemeBoard,
   listMemeBoardItems,
@@ -540,18 +540,31 @@ export const OverlayRoutes = () =>
         });
       }
 
-      const result = await addToMemeBoard({
-        guildId: authResult.client.guildId,
-        mediaAssetId: mediaAsset.id,
-        title,
-        message,
-        createdByDiscordUserId: toNonEmptyString(
-          (authResult.client as { createdByDiscordUserId?: unknown }).createdByDiscordUserId,
-        ),
-        createdByName:
-          toNonEmptyString((authResult.client as { defaultAuthorName?: unknown }).defaultAuthorName) ||
-          authResult.client.label,
-      });
+      let result: Awaited<ReturnType<typeof addToMemeBoard>>;
+      try {
+        result = await addToMemeBoard({
+          guildId: authResult.client.guildId,
+          mediaAssetId: mediaAsset.id,
+          title,
+          message,
+          createdByDiscordUserId: toNonEmptyString(
+            (authResult.client as { createdByDiscordUserId?: unknown }).createdByDiscordUserId,
+          ),
+          createdByName:
+            toNonEmptyString((authResult.client as { defaultAuthorName?: unknown }).defaultAuthorName) ||
+            authResult.client.label,
+        });
+      } catch (error) {
+        if (error instanceof MediaIngestionError) {
+          return reply.code(422).send({
+            error: 'media_ingestion_failed',
+            code: error.code,
+            message: error.message,
+          });
+        }
+
+        throw error;
+      }
 
       if (!result.item) {
         return reply.code(500).send({

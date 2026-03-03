@@ -61,6 +61,10 @@ export const frLang: typeof enLang = {
   sendCommandMediaErrorNotFound: 'Média introuvable (lien supprimé, expiré ou invalide).',
   sendCommandMediaErrorTimeout: 'Le téléchargement a expiré (timeout). Réessayez dans quelques instants.',
   sendCommandMediaErrorTooLarge: 'Le média est trop volumineux (limite actuelle: {{maxSizeMb}} MB).',
+  sendCommandMediaErrorCacheStorageLimit:
+    'Le cache média non persistant est plein (limite: {{maxCacheTotalMb}} MB). Réessayez dans un instant.',
+  sendCommandMediaErrorBoardStorageLimit:
+    'Le stockage persistant de la mème board est plein (limite: {{maxBoardTotalMb}} MB). Supprimez des éléments avant un nouvel ajout.',
   sendCommandMediaErrorInvalidMedia: 'Le fichier téléchargé est invalide ou corrompu.',
   sendCommandMediaErrorTranscode: 'La conversion du média a échoué (codec/format).',
   sendCommandMediaErrorDownload: 'Le média n’a pas pu être téléchargé depuis cette source.',

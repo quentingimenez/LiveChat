@@ -7,6 +7,8 @@ export type MediaIngestionErrorCode =
   | 'MEDIA_NOT_FOUND'
   | 'DOWNLOAD_TIMEOUT'
   | 'FILE_TOO_LARGE'
+  | 'CACHE_STORAGE_LIMIT_REACHED'
+  | 'BOARD_STORAGE_LIMIT_REACHED'
   | 'INVALID_MEDIA'
   | 'TRANSCODE_FAILED'
   | 'DOWNLOAD_FAILED';
@@ -16,6 +18,8 @@ const ERROR_PRIORITY: Record<MediaIngestionErrorCode, number> = {
   PRIVATE_OR_AUTH_REQUIRED: 85,
   DRM_PROTECTED: 80,
   MEDIA_NOT_FOUND: 75,
+  BOARD_STORAGE_LIMIT_REACHED: 73,
+  CACHE_STORAGE_LIMIT_REACHED: 72,
   FILE_TOO_LARGE: 70,
   INVALID_MEDIA: 65,
   TRANSCODE_FAILED: 60,
@@ -188,6 +192,22 @@ const classifyMediaErrorCode = (rawText: string, fallbackCode: MediaIngestionErr
   }
 
   if (
+    text.includes('board storage limit reached') ||
+    text.includes('meme board storage limit reached') ||
+    text.includes('persistent board storage limit reached')
+  ) {
+    return 'BOARD_STORAGE_LIMIT_REACHED';
+  }
+
+  if (
+    text.includes('cache storage limit reached') ||
+    text.includes('non-persistent cache quota reached') ||
+    text.includes('media cache quota reached')
+  ) {
+    return 'CACHE_STORAGE_LIMIT_REACHED';
+  }
+
+  if (
     text.includes('invalid data found when processing input') ||
     text.includes('moov atom not found') ||
     text.includes('invalid or corrupted') ||
@@ -241,6 +261,8 @@ export const pickMostRelevantMediaError = (first: unknown, second: unknown): Med
 export const getLocalizedMediaErrorMessage = (error: unknown): string => {
   const normalized = toMediaIngestionError(error);
   const maxSizeMb = Math.max(1, env.MEDIA_MAX_SIZE_MB);
+  const maxCacheTotalMb = Math.max(1, env.MEDIA_CACHE_MAX_TOTAL_MB);
+  const maxBoardTotalMb = Math.max(1, env.MEDIA_BOARD_MAX_TOTAL_MB);
 
   switch (normalized.code) {
     case 'UNSUPPORTED_SOURCE':
@@ -256,6 +278,14 @@ export const getLocalizedMediaErrorMessage = (error: unknown): string => {
     case 'FILE_TOO_LARGE':
       return rosetty.t('sendCommandMediaErrorTooLarge', {
         maxSizeMb,
+      })!;
+    case 'CACHE_STORAGE_LIMIT_REACHED':
+      return rosetty.t('sendCommandMediaErrorCacheStorageLimit', {
+        maxCacheTotalMb,
+      })!;
+    case 'BOARD_STORAGE_LIMIT_REACHED':
+      return rosetty.t('sendCommandMediaErrorBoardStorageLimit', {
+        maxBoardTotalMb,
       })!;
     case 'INVALID_MEDIA':
       return rosetty.t('sendCommandMediaErrorInvalidMedia')!;

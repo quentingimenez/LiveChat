@@ -1,10 +1,13 @@
 import { addHours, addYears } from 'date-fns';
 import { Prisma } from '@prisma/client';
 import { MediaAssetStatus } from './prisma/prismaEnums';
+import { MediaIngestionError } from './media/mediaErrors';
 
 const PINNED_EXPIRY_YEARS = 100;
 const DEFAULT_LIST_LIMIT = 50;
 const MAX_LIST_LIMIT = 200;
+const BYTES_PER_MEGABYTE = 1024 * 1024;
+const BYTES_PER_GIGABYTE = 1024 * BYTES_PER_MEGABYTE;
 
 const toNonEmptyString = (value: unknown): string | null => {
   if (typeof value !== 'string') {
@@ -37,6 +40,80 @@ const getPinnedExpiry = (): Date => {
 
 const getCacheTtlExpiry = (): Date => {
   return addHours(new Date(), Math.max(1, env.MEDIA_CACHE_TTL_HOURS));
+};
+
+const getBoardMaxTotalBytes = () => {
+  return Math.max(1, env.MEDIA_BOARD_MAX_TOTAL_MB) * BYTES_PER_MEGABYTE;
+};
+
+const toSafeSizeBytes = (value: unknown): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+
+  return Math.floor(value);
+};
+
+const formatBytesForMessage = (value: number): string => {
+  const normalized = Number.isFinite(value) && value > 0 ? value : 0;
+
+  if (normalized >= BYTES_PER_GIGABYTE) {
+    return `${(normalized / BYTES_PER_GIGABYTE).toFixed(2)} GB`;
+  }
+
+  if (normalized === 0) {
+    return '0 MB';
+  }
+
+  return `${(normalized / BYTES_PER_MEGABYTE).toFixed(2)} MB`;
+};
+
+const getGuildBoardTotalSizeBytes = async (guildId: string): Promise<number> => {
+  const items = await prisma.memeBoardItem.findMany({
+    where: {
+      guildId,
+    },
+    select: {
+      mediaAsset: {
+        select: {
+          sizeBytes: true,
+        },
+      },
+    },
+  });
+
+  return items.reduce((accumulator, item) => accumulator + toSafeSizeBytes(item.mediaAsset.sizeBytes), 0);
+};
+
+const ensureGuildBoardHasCapacity = async (guildId: string, mediaAssetId: string) => {
+  const mediaAsset = await prisma.mediaAsset.findUnique({
+    where: {
+      id: mediaAssetId,
+    },
+    select: {
+      id: true,
+      sizeBytes: true,
+      status: true,
+    },
+  });
+
+  if (!mediaAsset || mediaAsset.status !== MediaAssetStatus.READY) {
+    return;
+  }
+
+  const requestedBytes = toSafeSizeBytes(mediaAsset.sizeBytes);
+  const currentTotalBytes = await getGuildBoardTotalSizeBytes(guildId);
+  const maxTotalBytes = getBoardMaxTotalBytes();
+
+  if (currentTotalBytes + requestedBytes <= maxTotalBytes) {
+    return;
+  }
+
+  throw new MediaIngestionError(
+    'BOARD_STORAGE_LIMIT_REACHED',
+    `Persistent meme board storage limit reached (${formatBytesForMessage(currentTotalBytes)}/${formatBytesForMessage(maxTotalBytes)}). Requested media: ${formatBytesForMessage(requestedBytes)}. Remove older board media first.`,
+    `Guild ${guildId} board limit reached; current=${currentTotalBytes} bytes; requested=${requestedBytes} bytes; max=${maxTotalBytes} bytes; mediaAssetId=${mediaAssetId}`,
+  );
 };
 
 export const ensurePinnedExpiry = async (mediaAssetId: string) => {
@@ -91,12 +168,33 @@ export const addToMemeBoard = async (params: {
   createdByDiscordUserId?: string | null;
   createdByName?: string | null;
 }) => {
-  await ensurePinnedExpiry(params.mediaAssetId);
-
   const title = toNonEmptyString(params.title)?.slice(0, 240) || null;
   const message = toNonEmptyString(params.message)?.slice(0, 500) || null;
   const createdByDiscordUserId = toNonEmptyString(params.createdByDiscordUserId);
   const createdByName = toNonEmptyString(params.createdByName)?.slice(0, 120) || null;
+
+  const existing = await prisma.memeBoardItem.findUnique({
+    where: {
+      guildId_mediaAssetId: {
+        guildId: params.guildId,
+        mediaAssetId: params.mediaAssetId,
+      },
+    },
+    include: {
+      mediaAsset: true,
+    },
+  });
+
+  if (existing) {
+    await ensurePinnedExpiry(params.mediaAssetId);
+    return {
+      created: false,
+      item: existing,
+    };
+  }
+
+  await ensureGuildBoardHasCapacity(params.guildId, params.mediaAssetId);
+  await ensurePinnedExpiry(params.mediaAssetId);
 
   try {
     const item = await prisma.memeBoardItem.create({
@@ -133,6 +231,8 @@ export const addToMemeBoard = async (params: {
         mediaAsset: true,
       },
     });
+
+    await ensurePinnedExpiry(params.mediaAssetId);
 
     return {
       created: false,

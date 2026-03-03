@@ -11,6 +11,7 @@ import { MediaAssetKind, MediaAssetStatus } from '../prisma/prismaEnums';
 import {
   buildMediaOutputBasePath,
   ensureMediaStorageDir,
+  enforceNonPersistentCacheBudget,
   getReadyCachedMediaAsset,
   touchMediaAsset,
 } from './mediaCache';
@@ -25,6 +26,7 @@ import { buildSourceHash, canonicalizeSourceUrl, resolveMediaSource } from './me
 
 const execFileAsync = promisify(execFile);
 const BYTES_PER_MEGABYTE = 1024 * 1024;
+const BYTES_PER_GIGABYTE = 1024 * BYTES_PER_MEGABYTE;
 const LEGACY_YTDLP_FORMAT = 'bv*[height<=1080]+ba/b[height<=1080]/best';
 const PREVIOUS_COMPAT_YTDLP_FORMAT =
   'bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best';
@@ -35,6 +37,20 @@ const COMPAT_YTDLP_FORMAT =
 const YOUTUBE_RELAXED_YTDLP_FORMAT = 'b/bv*+ba/best';
 
 const getMaxMediaSizeBytes = () => Math.max(1, env.MEDIA_MAX_SIZE_MB) * BYTES_PER_MEGABYTE;
+
+const formatBytesForMessage = (value: number) => {
+  const normalized = Number.isFinite(value) && value > 0 ? value : 0;
+
+  if (normalized >= BYTES_PER_GIGABYTE) {
+    return `${(normalized / BYTES_PER_GIGABYTE).toFixed(2)} GB`;
+  }
+
+  if (normalized === 0) {
+    return '0 MB';
+  }
+
+  return `${(normalized / BYTES_PER_MEGABYTE).toFixed(2)} MB`;
+};
 
 const resolveYtdlpFormatSelector = () => {
   const formatSelector = (env.YTDLP_FORMAT || '').trim();
@@ -55,6 +71,25 @@ const newFileTooLargeError = (sourceUrl: string, details?: string) => {
     'FILE_TOO_LARGE',
     `Media exceeds max size of ${Math.max(1, env.MEDIA_MAX_SIZE_MB)} MB`,
     details || `Media exceeds configured max size for ${sourceUrl}`,
+  );
+};
+
+const newCacheStorageLimitReachedError = (params: {
+  sourceUrl: string;
+  requiredBytes: number;
+  maxTotalBytes: number;
+  totalAfterBytes: number;
+  evictedAssetsCount: number;
+  evictedBytes: number;
+}) => {
+  const requiredLabel = formatBytesForMessage(params.requiredBytes);
+  const maxLabel = formatBytesForMessage(params.maxTotalBytes);
+  const currentLabel = formatBytesForMessage(params.totalAfterBytes);
+
+  return new MediaIngestionError(
+    'CACHE_STORAGE_LIMIT_REACHED',
+    `Cache storage limit reached (${currentLabel}/${maxLabel}). Unable to store ${requiredLabel} more.`,
+    `Non-persistent cache quota reached for ${params.sourceUrl}; required=${params.requiredBytes} bytes; current=${params.totalAfterBytes} bytes; max=${params.maxTotalBytes} bytes; evictedAssets=${params.evictedAssetsCount}; evictedBytes=${params.evictedBytes}`,
   );
 };
 
@@ -1856,6 +1891,26 @@ const normalizeAndPersistAsset = async (params: { sourceHash: string; sourceUrl:
     throw toMediaIngestionError(error, 'TRANSCODE_FAILED');
   });
 
+  const normalizedSizeBytes =
+    typeof normalized.sizeBytes === 'number' && Number.isFinite(normalized.sizeBytes) && normalized.sizeBytes > 0
+      ? Math.floor(normalized.sizeBytes)
+      : 0;
+
+  const cacheBudget = await enforceNonPersistentCacheBudget({
+    requiredBytes: normalizedSizeBytes,
+  });
+
+  if (!cacheBudget.hasCapacity) {
+    throw newCacheStorageLimitReachedError({
+      sourceUrl: params.sourceUrl,
+      requiredBytes: normalizedSizeBytes,
+      maxTotalBytes: cacheBudget.maxTotalBytes,
+      totalAfterBytes: cacheBudget.totalAfterBytes,
+      evictedAssetsCount: cacheBudget.evictedAssetsCount,
+      evictedBytes: cacheBudget.evictedBytes,
+    });
+  }
+
   const persistedData = {
     sourceUrl: params.sourceUrl,
     kind: toMediaKind(normalized.kind),
@@ -1865,7 +1920,7 @@ const normalizeAndPersistAsset = async (params: { sourceHash: string; sourceUrl:
     height: normalized.height,
     isVertical: normalized.isVertical,
     storagePath: normalized.storagePath,
-    sizeBytes: normalized.sizeBytes,
+    sizeBytes: normalizedSizeBytes,
     status: MediaAssetStatus.READY,
     error: null,
     lastAccessedAt: new Date(),
@@ -1889,7 +1944,7 @@ const normalizeAndPersistAsset = async (params: { sourceHash: string; sourceUrl:
       height: normalized.height,
       isVertical: normalized.isVertical,
       storagePath: normalized.storagePath,
-      sizeBytes: normalized.sizeBytes,
+      sizeBytes: normalizedSizeBytes,
       status: MediaAssetStatus.READY,
       error: null,
       lastAccessedAt: new Date(),

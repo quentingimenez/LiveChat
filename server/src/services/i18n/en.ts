@@ -59,6 +59,10 @@ export const enLang = {
   sendCommandMediaErrorNotFound: 'Media not found (link removed, expired, or invalid).',
   sendCommandMediaErrorTimeout: 'The media download timed out. Please retry in a moment.',
   sendCommandMediaErrorTooLarge: 'The media is too large (current limit: {{maxSizeMb}} MB).',
+  sendCommandMediaErrorCacheStorageLimit:
+    'The non-persistent media cache is full (limit: {{maxCacheTotalMb}} MB). Retry in a moment.',
+  sendCommandMediaErrorBoardStorageLimit:
+    'Persistent meme board storage is full (limit: {{maxBoardTotalMb}} MB). Remove older board items first.',
   sendCommandMediaErrorInvalidMedia: 'The downloaded file is invalid or corrupted.',
   sendCommandMediaErrorTranscode: 'Media conversion failed (codec/format issue).',
   sendCommandMediaErrorDownload: 'The media could not be downloaded from this source.',

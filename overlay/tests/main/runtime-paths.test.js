@@ -15,6 +15,7 @@ test('runtime-paths resolves runtime assets from baseDir and userDataPath', () =
   assert.deepEqual(runtimePaths, {
     configPath: path.join(userDataPath, 'config.json'),
     appIconPath: path.join(baseDir, '../../../icon.png'),
+    trayIconPath: path.join(baseDir, '../../../icon.png'),
     preloadScriptPath: path.join(baseDir, '../../../dist/preload/index.js'),
     overlayHtmlPath: path.join(baseDir, '../../../renderer/overlay.html'),
     pairingHtmlPath: path.join(baseDir, '../../../renderer/pairing.html'),
@@ -36,6 +37,7 @@ test('runtime-paths copies runtime window assets to a stable userData cache when
   fs.mkdirSync(baseDir, { recursive: true });
 
   fs.writeFileSync(path.join(appRoot, 'icon.png'), 'icon');
+  fs.writeFileSync(path.join(appRoot, 'icon-tray.png'), 'tray-icon');
   fs.writeFileSync(path.join(appRoot, 'renderer', 'overlay.html'), '<html></html>');
   fs.writeFileSync(path.join(appRoot, 'renderer', 'pairing.html'), '<html></html>');
   fs.writeFileSync(path.join(appRoot, 'renderer', 'board.html'), '<html></html>');
@@ -48,6 +50,7 @@ test('runtime-paths copies runtime window assets to a stable userData cache when
 
   assert.equal(runtimePaths.configPath, path.join(userDataPath, 'config.json'));
   assert.equal(runtimePaths.appIconPath, path.join(userDataPath, 'runtime-assets', 'icon.png'));
+  assert.equal(runtimePaths.trayIconPath, path.join(userDataPath, 'runtime-assets', 'icon-tray.png'));
   assert.equal(runtimePaths.preloadScriptPath, path.join(userDataPath, 'runtime-assets', 'dist', 'preload', 'index.js'));
   assert.equal(runtimePaths.overlayHtmlPath, path.join(userDataPath, 'runtime-assets', 'renderer', 'overlay.html'));
   assert.equal(runtimePaths.pairingHtmlPath, path.join(userDataPath, 'runtime-assets', 'renderer', 'pairing.html'));

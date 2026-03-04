@@ -125,6 +125,6 @@ test('runtime-paths resolves a preload file that exists in local dist build', ()
     baseDir
   });
 
-  assert.equal(runtimePaths.preloadScriptPath, path.join(baseDir, '../../../dist/preload/index.js'));
+  assert.equal(runtimePaths.preloadScriptPath, path.join('/tmp/livechat-user', 'runtime-assets', 'dist', 'preload', 'index.js'));
   assert.equal(fs.existsSync(runtimePaths.preloadScriptPath), true);
 });

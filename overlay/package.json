@@ -42,6 +42,7 @@
       "dist/shared/**/*",
       "renderer/**/*",
       "icon.png",
+      "icon.ico",
       "package.json"
     ],
     "win": {
@@ -49,7 +50,7 @@
         "nsis",
         "portable"
       ],
-      "icon": "icon.png"
+      "icon": "icon.ico"
     },
     "nsis": {
       "oneClick": true,

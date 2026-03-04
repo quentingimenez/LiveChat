@@ -1,13 +1,7 @@
-const OVERLAY_SOCKET_EVENTS = {
-  PLAY: 'overlay:play',
-  STOP: 'overlay:stop',
-  HEARTBEAT: 'overlay:heartbeat',
-  ERROR: 'overlay:error',
-  PLAYBACK_STATE: 'overlay:playback-state',
-  MEME_TRIGGER: 'overlay:meme-trigger',
-  PEERS: 'overlay:peers',
-};
+'use strict';
+
+const { OVERLAY_SOCKET_EVENTS } = require('./dist/shared/socket-events.js');
 
 module.exports = {
-  OVERLAY_SOCKET_EVENTS,
+  OVERLAY_SOCKET_EVENTS
 };

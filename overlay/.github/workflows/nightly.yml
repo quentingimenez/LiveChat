@@ -106,7 +106,7 @@ jobs:
         env:
           ELECTRON_CACHE: ${{ github.workspace }}\.cache\electron
           ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\.cache\electron-builder
-        run: npm run dist -- --win portable --publish never
+        run: npm run package:win:portable -- --publish never
 
       - name: List dist outputs
         shell: pwsh

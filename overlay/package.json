@@ -18,6 +18,11 @@
     "test:unit": "node --test tests/main/*.test.js",
     "test:unit:build": "npm run build:main && npm run test:unit",
     "package": "npm run build && electron-builder",
+    "package:win": "npm run build && electron-builder --win nsis portable",
+    "package:win:setup": "npm run build && electron-builder --win nsis",
+    "package:win:portable": "npm run build && electron-builder --win portable",
+    "verify:win:artifacts": "node ./scripts/assert-win-artifacts.mjs",
+    "verify:win:local": "npm run package:win -- --publish never && npm run verify:win:artifacts",
     "dist": "npm run package",
     "verify": "./scripts/verify.sh"
   },
@@ -36,7 +41,8 @@
     ],
     "win": {
       "target": [
-        "nsis"
+        "nsis",
+        "portable"
       ],
       "icon": "icon.png"
     },

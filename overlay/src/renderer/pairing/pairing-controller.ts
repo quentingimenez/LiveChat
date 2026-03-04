@@ -1,4 +1,4 @@
-import type { PairingDom } from './pairing-dom';
+import type { PairingDom } from './pairing-dom.js';
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error && typeof error.message === 'string' && error.message.trim().length > 0) {

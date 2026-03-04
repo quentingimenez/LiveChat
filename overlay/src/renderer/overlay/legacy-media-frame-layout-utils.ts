@@ -1,4 +1,4 @@
-import type { MediaFrameNodes } from './legacy-media-frame-utils';
+import type { MediaFrameNodes } from './legacy-media-frame-utils.js';
 
 export interface OverlayLegacyMediaFrameLayoutState {
   activeMediaFrame: HTMLElement | null;

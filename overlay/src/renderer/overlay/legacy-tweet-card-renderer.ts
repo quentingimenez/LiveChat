@@ -1,7 +1,7 @@
 import type {
   OverlayTweetCardModel,
   OverlayTweetInlineRoleLabelInput
-} from './legacy-tweet-card-utils';
+} from './legacy-tweet-card-utils.js';
 
 interface CreateTweetCardDomParams {
   model: OverlayTweetCardModel;

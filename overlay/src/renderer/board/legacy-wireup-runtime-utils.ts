@@ -1,9 +1,9 @@
-import type { BoardLegacyCaptureUtils } from './legacy-capture-utils';
-import type { BoardLegacyEventBindingsUtils } from './legacy-event-bindings-utils';
-import type { BoardLegacyKeyboardUtils } from './legacy-keyboard-utils';
-import type { BoardLegacyLifecycleEventUtils } from './legacy-lifecycle-event-utils';
-import type { BoardLegacyWireupRegistrationUtils } from './legacy-wireup-registration-utils';
-import type { BoardLegacyWireupUtils } from './legacy-wireup-utils';
+import type { BoardLegacyCaptureUtils } from './legacy-capture-utils.js';
+import type { BoardLegacyEventBindingsUtils } from './legacy-event-bindings-utils.js';
+import type { BoardLegacyKeyboardUtils } from './legacy-keyboard-utils.js';
+import type { BoardLegacyLifecycleEventUtils } from './legacy-lifecycle-event-utils.js';
+import type { BoardLegacyWireupRegistrationUtils } from './legacy-wireup-registration-utils.js';
+import type { BoardLegacyWireupUtils } from './legacy-wireup-utils.js';
 
 interface BoardWireupState {
   resolveAddDialog: unknown;

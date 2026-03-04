@@ -1,13 +1,13 @@
-import type { BoardLegacyBindingsUtils } from './legacy-bindings-utils';
-import type { BoardLegacyDialogUtils } from './legacy-dialog-utils';
-import type { BoardLegacyPreviewLayoutUtils } from './legacy-preview-layout-utils';
-import type { BoardLegacyPreviewMediaUtils } from './legacy-preview-media-utils';
-import type { BoardLegacyRuntimeContextUtils } from './legacy-runtime-context-utils';
-import type { BoardLegacySearchUtils } from './legacy-search-utils';
-import type { BoardLegacySelectionUtils } from './legacy-selection-utils';
-import type { BoardLegacyStatusUtils } from './legacy-status-utils';
-import type { BoardLegacyUtils } from './legacy-utils';
-import type { BoardRuntimeNodes, BoardRuntimeState } from './legacy-runtime-types';
+import type { BoardLegacyBindingsUtils } from './legacy-bindings-utils.js';
+import type { BoardLegacyDialogUtils } from './legacy-dialog-utils.js';
+import type { BoardLegacyPreviewLayoutUtils } from './legacy-preview-layout-utils.js';
+import type { BoardLegacyPreviewMediaUtils } from './legacy-preview-media-utils.js';
+import type { BoardLegacyRuntimeContextUtils } from './legacy-runtime-context-utils.js';
+import type { BoardLegacySearchUtils } from './legacy-search-utils.js';
+import type { BoardLegacySelectionUtils } from './legacy-selection-utils.js';
+import type { BoardLegacyStatusUtils } from './legacy-status-utils.js';
+import type { BoardLegacyUtils } from './legacy-utils.js';
+import type { BoardRuntimeNodes, BoardRuntimeState } from './legacy-runtime-types.js';
 
 interface RuntimeFoundationParams {
   state: BoardRuntimeState;

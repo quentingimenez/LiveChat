@@ -1,6 +1,6 @@
-import type { BoardLegacyItemUtils } from './legacy-item-utils';
-import type { BoardLegacyLoadSearchUtils } from './legacy-load-search-utils';
-import type { BoardLegacySearchUtils } from './legacy-search-utils';
+import type { BoardLegacyItemUtils } from './legacy-item-utils.js';
+import type { BoardLegacyLoadSearchUtils } from './legacy-load-search-utils.js';
+import type { BoardLegacySearchUtils } from './legacy-search-utils.js';
 
 interface PatchItemMetadataPayload {
   title: string;

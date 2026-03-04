@@ -1,4 +1,4 @@
-import type { BoardLegacyCaptureFlowUtils } from './legacy-capture-flow-utils';
+import type { BoardLegacyCaptureFlowUtils } from './legacy-capture-flow-utils.js';
 
 interface CaptureState {
   captureItemId: string | null;

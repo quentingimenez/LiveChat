@@ -1,17 +1,17 @@
-import type { OverlayLegacyBootstrapUtils } from './legacy-bootstrap-utils';
-import type { OverlayLegacyInlineVideoUtils } from './legacy-inline-video-utils';
-import type { OverlayLegacyMediaDiagnosticsUtils } from './legacy-media-diagnostics';
-import type { OverlayLegacyMediaDomUtils } from './legacy-media-dom-utils';
-import type { OverlayLegacyMediaOffsetUtils } from './legacy-media-offset-utils';
-import type { OverlayLegacyMediaRenderUtils } from './legacy-media-render-utils';
-import type { OverlayLegacyTextUtils } from './legacy-overlay-text-utils';
-import type { OverlayLegacyPlayFlowUtils } from './legacy-play-flow-utils';
-import type { OverlayLegacyTweetCardPlaybackUtils } from './legacy-tweet-card-playback-utils';
-import type { OverlayLegacyTweetCardRendererUtils } from './legacy-tweet-card-renderer';
-import type { OverlayLegacyTweetCardUtils } from './legacy-tweet-card-utils';
-import type { OverlayLegacyTwitterWidgetsUtils } from './legacy-twitter-widgets-utils';
-import type { OverlayLegacyUtils } from './legacy-utils';
-import type { OverlayRuntimeConstants, OverlayRuntimeNodes, OverlayRuntimeState } from './legacy-runtime-types';
+import type { OverlayLegacyBootstrapUtils } from './legacy-bootstrap-utils.js';
+import type { OverlayLegacyInlineVideoUtils } from './legacy-inline-video-utils.js';
+import type { OverlayLegacyMediaDiagnosticsUtils } from './legacy-media-diagnostics.js';
+import type { OverlayLegacyMediaDomUtils } from './legacy-media-dom-utils.js';
+import type { OverlayLegacyMediaOffsetUtils } from './legacy-media-offset-utils.js';
+import type { OverlayLegacyMediaRenderUtils } from './legacy-media-render-utils.js';
+import type { OverlayLegacyTextUtils } from './legacy-overlay-text-utils.js';
+import type { OverlayLegacyPlayFlowUtils } from './legacy-play-flow-utils.js';
+import type { OverlayLegacyTweetCardPlaybackUtils } from './legacy-tweet-card-playback-utils.js';
+import type { OverlayLegacyTweetCardRendererUtils } from './legacy-tweet-card-renderer.js';
+import type { OverlayLegacyTweetCardUtils } from './legacy-tweet-card-utils.js';
+import type { OverlayLegacyTwitterWidgetsUtils } from './legacy-twitter-widgets-utils.js';
+import type { OverlayLegacyUtils } from './legacy-utils.js';
+import type { OverlayRuntimeConstants, OverlayRuntimeNodes, OverlayRuntimeState } from './legacy-runtime-types.js';
 
 interface CreateRuntimeRenderHandlersParams {
   nodes: OverlayRuntimeNodes;

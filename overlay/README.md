@@ -63,7 +63,7 @@ npm run dist -- --mac dmg zip
 
 ## CI/CD stable (auto-update)
 
-Le workflow GitHub `release.yml` build et publie automatiquement sur les tags de version (`X.Y` ou `X.Y.Z`, sans préfixe `v`) qui correspondent exactement à `package.json`:
+Le workflow GitHub `release.yml` build et publie automatiquement sur les tags de version (`X.Y` ou `X.Y.Z`, sans préfixe `v`). `package.json` reste en `X.Y.Z` (ex: tag `2.0` <-> version `2.0.0`) :
 - Windows: `setup .exe` (NSIS) + `portable .exe`
 - Métadonnées update: `latest.yml` (+ `*.blockmap` si généré)
 

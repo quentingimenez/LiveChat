@@ -1,6 +1,6 @@
-import type { AddDialogPayload, BoardLegacyDialogFlowUtils, RenameDialogPayload } from './legacy-dialog-flow-utils';
-import type { BoardLegacyDialogStateUtils } from './legacy-dialog-state-utils';
-import type { BoardLegacyDialogUtils } from './legacy-dialog-utils';
+import type { AddDialogPayload, BoardLegacyDialogFlowUtils, RenameDialogPayload } from './legacy-dialog-flow-utils.js';
+import type { BoardLegacyDialogStateUtils } from './legacy-dialog-state-utils.js';
+import type { BoardLegacyDialogUtils } from './legacy-dialog-utils.js';
 
 interface BoardDialogNodes {
   addLinkButton: unknown;

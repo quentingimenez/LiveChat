@@ -10,7 +10,7 @@ interface ScreenLike {
 }
 
 interface CreateTrayLifecycleServiceOptions {
-  appIconPath: string;
+  trayIconPath: string;
   createTrayInstance: (iconPath: string) => Tray;
   buildMenuFromTemplate: (template: MenuItemConstructorOptions[]) => Menu;
   screen: ScreenLike;
@@ -45,7 +45,7 @@ export interface TrayLifecycleService {
 
 export function createTrayLifecycleService(options: CreateTrayLifecycleServiceOptions): TrayLifecycleService {
   const {
-    appIconPath,
+    trayIconPath,
     createTrayInstance,
     buildMenuFromTemplate,
     screen,
@@ -132,7 +132,7 @@ export function createTrayLifecycleService(options: CreateTrayLifecycleServiceOp
   }
 
   function createTray(): void {
-    tray = createTrayInstance(appIconPath);
+    tray = createTrayInstance(trayIconPath);
 
     updateTrayMenu();
 

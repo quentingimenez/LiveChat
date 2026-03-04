@@ -7,5 +7,5 @@
     "lib": ["ES2022", "DOM"],
     "types": ["node"]
   },
-  "include": ["src/renderer/**/*.ts", "src/shared/**/*.ts", "src/types/**/*.d.ts"]
+  "include": ["src/renderer/**/*.ts", "src/types/**/*.d.ts"]
 }

@@ -18,7 +18,7 @@ export function resolveRuntimePaths(params: ResolveRuntimePathsParams): RuntimeR
   return {
     configPath: path.join(params.userDataPath, 'config.json'),
     appIconPath: path.join(params.baseDir, '../../../icon.png'),
-    preloadScriptPath: path.join(params.baseDir, '../../../preload.js'),
+    preloadScriptPath: path.join(params.baseDir, '../../../dist/preload/index.js'),
     overlayHtmlPath: path.join(params.baseDir, '../../../renderer/overlay.html'),
     pairingHtmlPath: path.join(params.baseDir, '../../../renderer/pairing.html'),
     boardHtmlPath: path.join(params.baseDir, '../../../renderer/board.html'),

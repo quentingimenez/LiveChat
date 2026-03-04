@@ -42,6 +42,7 @@
       "dist/shared/**/*",
       "renderer/**/*",
       "icon.png",
+      "icon-tray.png",
       "icon.ico",
       "package.json"
     ],

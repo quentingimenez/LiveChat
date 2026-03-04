@@ -1,5 +1,5 @@
-import type { BoardLegacyListActionUtils } from './legacy-list-action-utils';
-import type { BoardLegacyListRenderUtils } from './legacy-list-render-utils';
+import type { BoardLegacyListActionUtils } from './legacy-list-action-utils.js';
+import type { BoardLegacyListRenderUtils } from './legacy-list-render-utils.js';
 
 interface CreateRenderListParams {
   listActionUtils: BoardLegacyListActionUtils;

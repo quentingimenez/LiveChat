@@ -1,4 +1,4 @@
-import type { OverlayLegacyMediaFrameLayoutState } from './legacy-media-frame-layout-utils';
+import type { OverlayLegacyMediaFrameLayoutState } from './legacy-media-frame-layout-utils.js';
 
 export interface OverlayRuntimeNodes {
   overlayRoot: HTMLElement | null;

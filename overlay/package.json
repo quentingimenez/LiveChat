@@ -15,6 +15,8 @@
     "build:preload": "tsc -p tsconfig.preload.json",
     "build:renderer": "tsc -p tsconfig.renderer.json",
     "build": "npm run build:main && npm run build:preload && npm run build:renderer",
+    "check:renderer:esm": "node ./scripts/assert-renderer-esm.mjs",
+    "verify:renderer:esm": "npm run build:renderer && npm run check:renderer:esm",
     "test:unit": "node --test tests/main/*.test.js",
     "test:unit:build": "npm run build:main && npm run test:unit",
     "package": "npm run build && electron-builder",

@@ -3,8 +3,7 @@ name: Build & Release (stable)
 on:
   push:
     tags:
-      - "v*"
-      - "*.*.*"
+      - "*.*"
   workflow_dispatch:
 
 permissions:
@@ -22,22 +21,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Validate tag matches package version (v optional)
+      - name: Validate release tag and package version parity
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $tag = "${{ github.ref_name }}"
-          $tagVersion = $tag.TrimStart('v')
           $packageVersion = node -p "require('./package.json').version"
-          $isMajorOnlyTag = $tagVersion -match '^[0-9]+$'
-          $matchesExactVersion = $tagVersion -eq $packageVersion
-          $matchesPackageMajor = $isMajorOnlyTag -and $packageVersion.StartsWith("$tagVersion.")
+          $versionPattern = '^[0-9]+\.[0-9]+(\.[0-9]+)?$'
 
-          Write-Host "Tag version: $tagVersion"
+          Write-Host "Tag: $tag"
           Write-Host "package.json version: $packageVersion"
 
-          if (-not ($matchesExactVersion -or $matchesPackageMajor)) {
-            throw "Version mismatch: git tag '$tag' must match package.json version '$packageVersion' (exact) or its major version."
+          if ($tag.StartsWith('v')) {
+            throw "Invalid tag '$tag': do not use the 'v' prefix. Use '$packageVersion'."
+          }
+
+          if ($tag -notmatch $versionPattern) {
+            throw "Invalid tag '$tag': expected version format X.Y or X.Y.Z."
+          }
+
+          if ($packageVersion -notmatch $versionPattern) {
+            throw "Invalid package.json version '$packageVersion': expected X.Y or X.Y.Z."
+          }
+
+          if ($tag -ne $packageVersion) {
+            throw "Version mismatch: git tag '$tag' must exactly match package.json version '$packageVersion'."
           }
 
       - name: Setup Node

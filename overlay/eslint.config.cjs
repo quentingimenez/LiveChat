@@ -61,5 +61,17 @@ module.exports = [
       'no-console': 'off',
       'no-unused-vars': 'off'
     }
+  },
+  {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        ...globals.node
+      }
+    },
+    rules: {
+      'no-console': 'off',
+      'no-unused-vars': 'off'
+    }
   }
 ];

@@ -77,11 +77,14 @@ jobs:
             }
           }
 
-      - name: Build Windows installer (electron-builder)
+      - name: Build Windows setup + portable (electron-builder)
         env:
           ELECTRON_CACHE: ${{ github.workspace }}\.cache\electron
           ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\.cache\electron-builder
-        run: npm run dist -- --win --publish never
+        run: npm run package:win -- --publish never
+
+      - name: Verify Windows artifacts
+        run: npm run verify:win:artifacts
 
       - name: List dist outputs
         shell: pwsh
@@ -111,9 +114,20 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $tag = "${{ github.ref_name }}"
           $files = @()
-          $installerFiles = Get-ChildItem -Path "dist" -Filter "*.exe" -File
-          if ($installerFiles.Count -eq 0) { throw "No Windows installer found in dist/" }
-          $files += $installerFiles | ForEach-Object { $_.FullName }
+
+          $setup = Get-ChildItem -Path "dist" -Filter "*.exe" -File |
+            Where-Object { $_.Name -like "*Setup*" } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if ($null -eq $setup) { throw "No Windows setup .exe found in dist/" }
+          $files += $setup.FullName
+
+          $portable = Get-ChildItem -Path "dist" -Filter "*.exe" -File |
+            Where-Object { $_.Name -notlike "*Setup*" } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if ($null -eq $portable) { throw "No Windows portable .exe found in dist/" }
+          $files += $portable.FullName
 
           if (!(Test-Path "dist/latest.yml")) { throw "latest.yml not found in dist/" }
           $files += (Resolve-Path "dist/latest.yml").Path

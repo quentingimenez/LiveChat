@@ -201,3 +201,4 @@ Compatibilité:
    - `npm run build`
    - `npm run test:unit` (ou `npm run test:unit:build` si build main non fait)
    - `npm run package -- --dir`
+   - Windows release artifacts (setup + portable): `npm run verify:win:local` (sur Windows, ou Linux avec `wine`)

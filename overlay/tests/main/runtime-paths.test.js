@@ -13,7 +13,7 @@ test('runtime-paths resolves runtime assets from baseDir and userDataPath', () =
   assert.deepEqual(runtimePaths, {
     configPath: path.join(userDataPath, 'config.json'),
     appIconPath: path.join(baseDir, '../../../icon.png'),
-    preloadScriptPath: path.join(baseDir, '../../../preload.js'),
+    preloadScriptPath: path.join(baseDir, '../../../dist/preload/index.js'),
     overlayHtmlPath: path.join(baseDir, '../../../renderer/overlay.html'),
     pairingHtmlPath: path.join(baseDir, '../../../renderer/pairing.html'),
     boardHtmlPath: path.join(baseDir, '../../../renderer/board.html')

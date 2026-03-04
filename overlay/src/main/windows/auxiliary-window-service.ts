@@ -7,6 +7,8 @@ interface CreateAuxiliaryWindowServiceOptions {
   pairingHtmlPath: string;
   boardHtmlPath: string;
   onBoardReadyToShow: () => void;
+  createPairingWindowFactory?: (options: { appIconPath: string; preloadPath: string; htmlPath: string }) => BrowserWindow;
+  createBoardWindowFactory?: (options: { appIconPath: string; preloadPath: string; htmlPath: string }) => BrowserWindow;
 }
 
 export interface AuxiliaryWindowService {
@@ -19,10 +21,19 @@ export interface AuxiliaryWindowService {
 }
 
 export function createAuxiliaryWindowService(options: CreateAuxiliaryWindowServiceOptions): AuxiliaryWindowService {
-  const { appIconPath, preloadPath, pairingHtmlPath, boardHtmlPath, onBoardReadyToShow } = options;
+  const {
+    appIconPath,
+    preloadPath,
+    pairingHtmlPath,
+    boardHtmlPath,
+    onBoardReadyToShow,
+    createPairingWindowFactory = createPairingWindowInstance,
+    createBoardWindowFactory = createBoardWindowInstance
+  } = options;
 
   let pairingWindow: BrowserWindow | null = null;
   let boardWindow: BrowserWindow | null = null;
+  let allowBoardWindowClose = false;
 
   function createPairingWindow(): void {
     if (pairingWindow && !pairingWindow.isDestroyed()) {
@@ -30,7 +41,7 @@ export function createAuxiliaryWindowService(options: CreateAuxiliaryWindowServi
       return;
     }
 
-    pairingWindow = createPairingWindowInstance({
+    pairingWindow = createPairingWindowFactory({
       appIconPath,
       preloadPath,
       htmlPath: pairingHtmlPath
@@ -49,14 +60,24 @@ export function createAuxiliaryWindowService(options: CreateAuxiliaryWindowServi
 
   function createBoardWindow(): void {
     if (boardWindow && !boardWindow.isDestroyed()) {
+      boardWindow.show();
       boardWindow.focus();
       return;
     }
 
-    boardWindow = createBoardWindowInstance({
+    boardWindow = createBoardWindowFactory({
       appIconPath,
       preloadPath,
       htmlPath: boardHtmlPath
+    });
+
+    boardWindow.on('close', (event) => {
+      if (allowBoardWindowClose || !boardWindow || boardWindow.isDestroyed()) {
+        return;
+      }
+
+      event.preventDefault();
+      boardWindow.hide();
     });
 
     boardWindow.once('ready-to-show', () => {
@@ -65,15 +86,22 @@ export function createAuxiliaryWindowService(options: CreateAuxiliaryWindowServi
 
     boardWindow.on('closed', () => {
       boardWindow = null;
+      allowBoardWindowClose = false;
     });
   }
 
   function destroyBoardWindow(): void {
     if (boardWindow && !boardWindow.isDestroyed()) {
-      boardWindow.destroy();
+      allowBoardWindowClose = true;
+      boardWindow.close();
+
+      if (boardWindow && !boardWindow.isDestroyed()) {
+        boardWindow.destroy();
+      }
     }
 
     boardWindow = null;
+    allowBoardWindowClose = false;
   }
 
   return {

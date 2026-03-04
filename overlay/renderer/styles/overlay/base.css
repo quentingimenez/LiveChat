@@ -1,0 +1,129 @@
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+}
+
+#overlay-root {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+#media-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: visible;
+}
+
+.overlay-media-frame {
+  position: relative;
+  display: inline-grid;
+  grid-template-rows: auto auto;
+  justify-items: center;
+  align-items: center;
+  --header-left-shift: 0px;
+  --header-right-shift: 0px;
+}
+
+.overlay-media-header {
+  position: relative;
+  width: 100%;
+  min-height: 54px;
+  margin-bottom: 10px;
+  overflow: visible;
+}
+
+.overlay-media-header-left,
+.overlay-media-header-right {
+  position: absolute;
+  top: 0;
+  max-width: max-content;
+  display: flex;
+  align-items: center;
+}
+
+.overlay-media-header-left {
+  left: 0;
+  transform: translateX(calc(-1 * var(--header-left-shift, 0px)));
+}
+
+.overlay-media-header-right {
+  right: 0;
+  transform: translateX(var(--header-right-shift, 0px));
+}
+
+.overlay-media-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.overlay-media-footer {
+  width: 100%;
+  margin-top: 10px;
+  display: none;
+  justify-content: center;
+  overflow: visible;
+}
+
+.overlay-media-footer-meta {
+  width: fit-content;
+  max-width: min(92vw, 1100px);
+}
+
+#countdown-layer {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0.55rem 0.9rem;
+  border-radius: 10px;
+  border: 0;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+  color: #ffffff;
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.9);
+}
+
+.overlay-media-header-right > #countdown-layer {
+  position: static;
+  top: auto;
+  right: auto;
+}
+
+#media-layer img,
+#media-layer video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+#media-layer audio {
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}

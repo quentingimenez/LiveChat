@@ -1,6 +1,6 @@
-import type { OverlayLegacyMediaFrameLayoutUtils } from './legacy-media-frame-layout-utils';
-import type { OverlayLegacyMediaFrameUtils } from './legacy-media-frame-utils';
-import type { OverlayRuntimeNodes, OverlayRuntimeState } from './legacy-runtime-types';
+import type { OverlayLegacyMediaFrameLayoutUtils } from './legacy-media-frame-layout-utils.js';
+import type { OverlayLegacyMediaFrameUtils } from './legacy-media-frame-utils.js';
+import type { OverlayRuntimeNodes, OverlayRuntimeState } from './legacy-runtime-types.js';
 
 interface CreateRuntimeMediaFrameHandlersParams {
   nodes: OverlayRuntimeNodes;

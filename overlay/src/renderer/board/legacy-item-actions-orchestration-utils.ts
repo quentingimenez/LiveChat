@@ -1,8 +1,8 @@
-import type { BoardLegacyBindingsActionUtils } from './legacy-bindings-action-utils';
-import type { BoardLegacyBindingsUtils } from './legacy-bindings-utils';
-import type { BoardLegacyItemActionUtils } from './legacy-item-action-utils';
-import type { BoardLegacyItemMetadataActionsUtils } from './legacy-item-metadata-actions-utils';
-import type { BoardLegacyItemUtils } from './legacy-item-utils';
+import type { BoardLegacyBindingsActionUtils } from './legacy-bindings-action-utils.js';
+import type { BoardLegacyBindingsUtils } from './legacy-bindings-utils.js';
+import type { BoardLegacyItemActionUtils } from './legacy-item-action-utils.js';
+import type { BoardLegacyItemMetadataActionsUtils } from './legacy-item-metadata-actions-utils.js';
+import type { BoardLegacyItemUtils } from './legacy-item-utils.js';
 
 interface MemeBindingsResult {
   ok?: boolean;

@@ -1,9 +1,9 @@
-import type { OverlayLegacyCountdownUtils } from './legacy-countdown-utils';
-import type { OverlayLegacyOverlayResetUtils } from './legacy-overlay-reset-utils';
-import type { OverlayLegacyPlaybackSessionUtils } from './legacy-playback-session-utils';
-import type { OverlayLegacyPlaybackUtils } from './legacy-playback-utils';
-import type { OverlayLegacyUtils } from './legacy-utils';
-import type { OverlayRuntimeNodes, OverlayRuntimeState } from './legacy-runtime-types';
+import type { OverlayLegacyCountdownUtils } from './legacy-countdown-utils.js';
+import type { OverlayLegacyOverlayResetUtils } from './legacy-overlay-reset-utils.js';
+import type { OverlayLegacyPlaybackSessionUtils } from './legacy-playback-session-utils.js';
+import type { OverlayLegacyPlaybackUtils } from './legacy-playback-utils.js';
+import type { OverlayLegacyUtils } from './legacy-utils.js';
+import type { OverlayRuntimeNodes, OverlayRuntimeState } from './legacy-runtime-types.js';
 
 interface CreateRuntimePlaybackCountdownHandlersParams {
   nodes: OverlayRuntimeNodes;

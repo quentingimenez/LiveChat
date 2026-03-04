@@ -1,4 +1,4 @@
-import type { BoardRuntimeNodes, BoardRuntimeState } from './legacy-runtime-types';
+import type { BoardRuntimeNodes, BoardRuntimeState } from './legacy-runtime-types.js';
 
 interface CreateRuntimeCaptureHandlersParams {
   state: BoardRuntimeState;

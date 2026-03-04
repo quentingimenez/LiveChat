@@ -144,7 +144,7 @@ Le runtime fonctionnel reste conservé via une couche de compatibilité, pendant
 - `src/shared`
   - Contrats IPC centralisés, types partagés, événements socket.
 - `tests/main`
-  - Tests unitaires légers sur services purs (`display`, `overlay-peers`, `auto-start-runtime`, `socket-listeners`, `overlay-playback-forwarding`, `overlay-config-ipc`, `meme-board-ipc`, `pairing-consume`, `runtime-paths`).
+  - Tests unitaires et d'intégration légère sur services/main IPC (`display`, `overlay-peers`, `auto-start-runtime`, `startup-auto-start`, `socket-listeners`, `overlay-playback-forwarding`, `overlay-config-ipc`, `meme-board-ipc`, `pairing-consume`, `register-overlay-ipc-handlers`, `register-pairing-ipc-handler`, `runtime-paths`).
 - `renderer/`
   - HTML/CSS + scripts legacy conservés pendant la migration.
   - `board.css` et `overlay.css`: feuilles d'index (`@import`) vers des modules découpés dans `renderer/styles/board/*` et `renderer/styles/overlay/*` pour garder des fichiers plus courts.

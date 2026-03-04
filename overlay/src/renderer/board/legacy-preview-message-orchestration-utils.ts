@@ -1,4 +1,4 @@
-import type { BoardLegacyPreviewMessageEditor, BoardLegacyPreviewMessageUtils } from './legacy-preview-message-utils';
+import type { BoardLegacyPreviewMessageEditor, BoardLegacyPreviewMessageUtils } from './legacy-preview-message-utils.js';
 
 interface PreviewMessageSaveOptions {
   editor?: BoardLegacyPreviewMessageEditor | null;

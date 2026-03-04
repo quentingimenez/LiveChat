@@ -1,4 +1,4 @@
-import type { OverlayRuntimeInputs, OverlayRuntimeNodes, OverlayRuntimeState } from './legacy-runtime-types';
+import type { OverlayRuntimeInputs, OverlayRuntimeNodes, OverlayRuntimeState } from './legacy-runtime-types.js';
 
 export interface OverlayLegacyRuntimeInputsUtils {
   createRuntimeInputs(documentRef: Document): OverlayRuntimeInputs;

@@ -1,6 +1,6 @@
-import type { BoardLegacyDialogOrchestrationUtils } from './legacy-dialog-orchestration-utils';
-import type { BoardLegacyDialogUtils } from './legacy-dialog-utils';
-import type { BoardRuntimeNodes, BoardRuntimeState } from './legacy-runtime-types';
+import type { BoardLegacyDialogOrchestrationUtils } from './legacy-dialog-orchestration-utils.js';
+import type { BoardLegacyDialogUtils } from './legacy-dialog-utils.js';
+import type { BoardRuntimeNodes, BoardRuntimeState } from './legacy-runtime-types.js';
 
 interface CreateRuntimeDialogHandlersParams {
   state: BoardRuntimeState;

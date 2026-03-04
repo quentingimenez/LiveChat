@@ -3,7 +3,7 @@ name: Build & Release (stable)
 on:
   push:
     tags:
-      - "v*.*.*"
+      - "v*"
       - "*.*.*"
   workflow_dispatch:
 
@@ -29,12 +29,15 @@ jobs:
           $tag = "${{ github.ref_name }}"
           $tagVersion = $tag.TrimStart('v')
           $packageVersion = node -p "require('./package.json').version"
+          $isMajorOnlyTag = $tagVersion -match '^[0-9]+$'
+          $matchesExactVersion = $tagVersion -eq $packageVersion
+          $matchesPackageMajor = $isMajorOnlyTag -and $packageVersion.StartsWith("$tagVersion.")
 
           Write-Host "Tag version: $tagVersion"
           Write-Host "package.json version: $packageVersion"
 
-          if ($tagVersion -ne $packageVersion) {
-            throw "Version mismatch: git tag '$tag' must match package.json version '$packageVersion'."
+          if (-not ($matchesExactVersion -or $matchesPackageMajor)) {
+            throw "Version mismatch: git tag '$tag' must match package.json version '$packageVersion' (exact) or its major version."
           }
 
       - name: Setup Node

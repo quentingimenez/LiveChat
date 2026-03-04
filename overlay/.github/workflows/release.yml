@@ -27,7 +27,10 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $tag = "${{ github.ref_name }}"
           $packageVersion = node -p "require('./package.json').version"
-          $versionPattern = '^[0-9]+\.[0-9]+(\.[0-9]+)?$'
+          $tagShortPattern = '^[0-9]+\.[0-9]+$'
+          $tagFullPattern = '^[0-9]+\.[0-9]+\.[0-9]+$'
+          $packagePattern = '^[0-9]+\.[0-9]+\.[0-9]+$'
+          $normalizedTagVersion = $null
 
           Write-Host "Tag: $tag"
           Write-Host "package.json version: $packageVersion"
@@ -36,16 +39,22 @@ jobs:
             throw "Invalid tag '$tag': do not use the 'v' prefix. Use '$packageVersion'."
           }
 
-          if ($tag -notmatch $versionPattern) {
+          if ($tag -match $tagShortPattern) {
+            $normalizedTagVersion = "$tag.0"
+          } elseif ($tag -match $tagFullPattern) {
+            $normalizedTagVersion = $tag
+          } else {
             throw "Invalid tag '$tag': expected version format X.Y or X.Y.Z."
           }
 
-          if ($packageVersion -notmatch $versionPattern) {
-            throw "Invalid package.json version '$packageVersion': expected X.Y or X.Y.Z."
+          if ($packageVersion -notmatch $packagePattern) {
+            throw "Invalid package.json version '$packageVersion': expected X.Y.Z."
           }
 
-          if ($tag -ne $packageVersion) {
-            throw "Version mismatch: git tag '$tag' must exactly match package.json version '$packageVersion'."
+          Write-Host "Normalized tag version: $normalizedTagVersion"
+
+          if ($normalizedTagVersion -ne $packageVersion) {
+            throw "Version mismatch: git tag '$tag' maps to '$normalizedTagVersion' and must match package.json version '$packageVersion'."
           }
 
       - name: Setup Node

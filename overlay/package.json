@@ -18,7 +18,7 @@
     "check:renderer:esm": "node ./scripts/assert-renderer-esm.mjs",
     "verify:renderer:esm": "npm run build:renderer && npm run check:renderer:esm",
     "test:unit": "node --test tests/main/*.test.js",
-    "test:unit:build": "npm run build:main && npm run test:unit",
+    "test:unit:build": "npm run build:main && npm run build:preload && npm run test:unit",
     "package": "npm run build && electron-builder",
     "package:win": "npm run build && electron-builder --win nsis portable",
     "package:win:setup": "npm run build && electron-builder --win nsis",

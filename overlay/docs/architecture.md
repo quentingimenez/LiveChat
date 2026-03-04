@@ -172,6 +172,7 @@ Compatibilité:
 ## Note Packaging
 
 - `package.json` déclare `packageManager: traversal@1.0.0` pour forcer `electron-builder` à utiliser son collecteur interne de dépendances (pas `npm list`), contournant un bug `npm@10` + `electron-builder@26` qui peut casser `npm run package -- --dir` avec `No JSON content found in output`.
+- Les patterns `build.files` ciblent uniquement `dist/main`, `dist/preload`, `dist/renderer` et `dist/shared` (pas `dist/**/*`) pour éviter d'embarquer les artefacts de packaging (`dist/*-unpacked`, anciens `.exe`) dans `app.asar`.
 
 ## Règles de code
 

@@ -34,7 +34,10 @@
       "main.runtime.js",
       "preload.js",
       "protocol.js",
-      "dist/**/*",
+      "dist/main/**/*",
+      "dist/preload/**/*",
+      "dist/renderer/**/*",
+      "dist/shared/**/*",
       "renderer/**/*",
       "icon.png",
       "package.json"

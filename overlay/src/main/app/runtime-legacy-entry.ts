@@ -36,7 +36,7 @@ export function runLegacyRuntime(): void {
     userDataPath: app.getPath('userData'),
     baseDir: __dirname
   });
-  const { configPath, appIconPath, preloadScriptPath, overlayHtmlPath, pairingHtmlPath, boardHtmlPath } = runtimePaths;
+  const { configPath, appIconPath, trayIconPath, preloadScriptPath, overlayHtmlPath, pairingHtmlPath, boardHtmlPath } = runtimePaths;
 
   const { runtimeCoreFacadeService, autoStartRuntimeService, autoUpdateService } = createRuntimeCoreServices({
     logger,
@@ -130,8 +130,15 @@ export function runLegacyRuntime(): void {
 
   initializeRuntimeTrayBootstrap({
     runtimeTrayService,
-    appIconPath,
-    createTrayInstance: (iconPath) => new Tray(nativeImage.createFromPath(iconPath)),
+    trayIconPath,
+    createTrayInstance: (iconPath) => {
+      const icon = nativeImage.createFromPath(iconPath);
+      if (process.platform === 'win32') {
+        return new Tray(icon.resize({ width: 16, height: 16, quality: 'best' }));
+      }
+
+      return new Tray(icon);
+    },
     buildMenuFromTemplate: (template) => Menu.buildFromTemplate(template),
     screen,
     loadConfig,

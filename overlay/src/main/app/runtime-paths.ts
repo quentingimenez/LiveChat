@@ -9,6 +9,7 @@ interface ResolveRuntimePathsParams {
 export interface RuntimeResolvedPaths {
   configPath: string;
   appIconPath: string;
+  trayIconPath: string;
   preloadScriptPath: string;
   overlayHtmlPath: string;
   pairingHtmlPath: string;
@@ -19,6 +20,7 @@ interface RuntimeAssetSourcePaths {
   appRoot: string;
   appIconPngPath: string;
   appIconIcoPath: string;
+  appTrayIconPath: string;
   preloadScriptPath: string;
   overlayHtmlPath: string;
   pairingHtmlPath: string;
@@ -33,6 +35,14 @@ function resolvePreferredIconPath(iconPngPath: string, iconIcoPath: string): str
   return iconPngPath;
 }
 
+function resolvePreferredTrayIconPath(trayIconPath: string, appIconPngPath: string): string {
+  if (fs.existsSync(trayIconPath)) {
+    return trayIconPath;
+  }
+
+  return appIconPngPath;
+}
+
 function resolveSourcePaths(baseDir: string): RuntimeAssetSourcePaths {
   const appRoot = path.join(baseDir, '../../..');
 
@@ -40,6 +50,7 @@ function resolveSourcePaths(baseDir: string): RuntimeAssetSourcePaths {
     appRoot,
     appIconPngPath: path.join(appRoot, 'icon.png'),
     appIconIcoPath: path.join(appRoot, 'icon.ico'),
+    appTrayIconPath: path.join(appRoot, 'icon-tray.png'),
     preloadScriptPath: path.join(appRoot, 'dist/preload/index.js'),
     overlayHtmlPath: path.join(appRoot, 'renderer/overlay.html'),
     pairingHtmlPath: path.join(appRoot, 'renderer/pairing.html'),
@@ -90,16 +101,22 @@ function copyRuntimeAssetsToStableCache(sourcePaths: RuntimeAssetSourcePaths, us
     if (fs.existsSync(sourcePaths.appIconIcoPath)) {
       fs.copyFileSync(sourcePaths.appIconIcoPath, path.join(cacheRoot, 'icon.ico'));
     }
+
+    if (fs.existsSync(sourcePaths.appTrayIconPath)) {
+      fs.copyFileSync(sourcePaths.appTrayIconPath, path.join(cacheRoot, 'icon-tray.png'));
+    }
   } catch {
     return null;
   }
 
   const cachedIconPngPath = path.join(cacheRoot, 'icon.png');
   const cachedIconIcoPath = path.join(cacheRoot, 'icon.ico');
+  const cachedTrayIconPath = path.join(cacheRoot, 'icon-tray.png');
 
   const resolvedCachedPaths: RuntimeResolvedPaths = {
     configPath: path.join(userDataPath, 'config.json'),
     appIconPath: resolvePreferredIconPath(cachedIconPngPath, cachedIconIcoPath),
+    trayIconPath: resolvePreferredTrayIconPath(cachedTrayIconPath, cachedIconPngPath),
     preloadScriptPath: path.join(cacheDistPreloadRoot, 'index.js'),
     overlayHtmlPath: path.join(cacheRendererRoot, 'overlay.html'),
     pairingHtmlPath: path.join(cacheRendererRoot, 'pairing.html'),
@@ -124,6 +141,7 @@ export function resolveRuntimePaths(params: ResolveRuntimePathsParams): RuntimeR
   const fallbackPaths: RuntimeResolvedPaths = {
     configPath: path.join(params.userDataPath, 'config.json'),
     appIconPath: resolvePreferredIconPath(sourcePaths.appIconPngPath, sourcePaths.appIconIcoPath),
+    trayIconPath: resolvePreferredTrayIconPath(sourcePaths.appTrayIconPath, sourcePaths.appIconPngPath),
     preloadScriptPath: sourcePaths.preloadScriptPath,
     overlayHtmlPath: sourcePaths.overlayHtmlPath,
     pairingHtmlPath: sourcePaths.pairingHtmlPath,

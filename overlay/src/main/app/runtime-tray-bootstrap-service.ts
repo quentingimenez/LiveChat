@@ -12,7 +12,7 @@ interface ScreenLike {
 
 interface InitializeRuntimeTrayBootstrapOptions {
   runtimeTrayService: RuntimeTrayService;
-  appIconPath: string;
+  trayIconPath: string;
   createTrayInstance: (iconPath: string) => Tray;
   buildMenuFromTemplate: (template: MenuItemConstructorOptions[]) => Menu;
   screen: ScreenLike;
@@ -38,7 +38,7 @@ interface InitializeRuntimeTrayBootstrapOptions {
 export function initializeRuntimeTrayBootstrap(options: InitializeRuntimeTrayBootstrapOptions): void {
   const {
     runtimeTrayService,
-    appIconPath,
+    trayIconPath,
     createTrayInstance,
     buildMenuFromTemplate,
     screen,
@@ -62,7 +62,7 @@ export function initializeRuntimeTrayBootstrap(options: InitializeRuntimeTrayBoo
   } = options;
 
   runtimeTrayService.initialize({
-    appIconPath,
+    trayIconPath,
     createTrayInstance,
     buildMenuFromTemplate,
     screen,

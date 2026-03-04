@@ -43,6 +43,21 @@ for (const entry of rendererEntries) {
   }
 }
 
+const sharedIpcPath = path.resolve('dist/shared/ipc.js');
+if (!fs.existsSync(sharedIpcPath)) {
+  failures.push(`[preload-shared] Missing compiled shared IPC module: ${sharedIpcPath}`);
+} else {
+  const sharedIpcSource = fs.readFileSync(sharedIpcPath, 'utf8');
+
+  if (sharedIpcSource.includes('export const IPC_CHANNELS')) {
+    failures.push('[preload-shared] dist/shared/ipc.js is ESM, expected CommonJS for preload runtime');
+  }
+
+  if (!sharedIpcSource.includes('exports.IPC_CHANNELS')) {
+    failures.push('[preload-shared] dist/shared/ipc.js does not expose IPC_CHANNELS via CommonJS exports');
+  }
+}
+
 if (failures.length > 0) {
   console.error('Renderer ESM check failed:');
   for (const failure of failures) {
@@ -55,3 +70,4 @@ console.log('Renderer ESM check passed');
 for (const entry of rendererEntries) {
   console.log(`  - ${entry.label}: ${path.relative(process.cwd(), entry.filePath)}`);
 }
+console.log(`  - preload-shared: ${path.relative(process.cwd(), sharedIpcPath)}`);

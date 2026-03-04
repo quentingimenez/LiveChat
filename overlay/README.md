@@ -27,10 +27,32 @@ npm start
 
 ## Build
 
-### Windows (.exe installable NSIS)
+Pré-requis Windows:
+- Build local `.exe` recommandé sur Windows.
+- Sur Linux/macOS, `electron-builder --win` nécessite un environnement compatible (`wine`).
+
+### Windows (.exe setup + portable)
 
 ```bash
-npm run dist -- --win
+npm run package:win
+```
+
+Validation locale des artefacts Windows (setup + portable + latest.yml):
+
+```bash
+npm run verify:win:local
+```
+
+Setup only:
+
+```bash
+npm run package:win:setup
+```
+
+Portable only:
+
+```bash
+npm run package:win:portable
 ```
 
 ### macOS (.dmg + .zip)
@@ -42,14 +64,13 @@ npm run dist -- --mac dmg zip
 ## CI/CD stable (auto-update)
 
 Le workflow GitHub `release.yml` build et publie automatiquement sur les tags `v*.*.*`:
-- Windows: installateur `.exe`
+- Windows: `setup .exe` (NSIS) + `portable .exe`
 - Métadonnées update: `latest.yml` (+ `*.blockmap` si généré)
 
 ## CI/CD nightly
 
 Le workflow GitHub `nightly.yml` build et publie automatiquement:
-- Windows: `.exe` (+ `latest.yml` pour validation technique)
-- macOS: `.dmg` et `.zip`
+- Windows: `.exe portable`
 
 ## macOS: warning de sécurité
 

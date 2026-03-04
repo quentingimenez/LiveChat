@@ -20,6 +20,27 @@ export interface AuxiliaryWindowService {
   destroyBoardWindow(): void;
 }
 
+function isBoardWindowReusable(window: BrowserWindow | null): window is BrowserWindow {
+  if (!window || window.isDestroyed()) {
+    return false;
+  }
+
+  const webContentsLike = window.webContents as unknown as {
+    isDestroyed?: () => boolean;
+    isCrashed?: () => boolean;
+  };
+
+  if (typeof webContentsLike.isDestroyed === 'function' && webContentsLike.isDestroyed()) {
+    return false;
+  }
+
+  if (typeof webContentsLike.isCrashed === 'function' && webContentsLike.isCrashed()) {
+    return false;
+  }
+
+  return true;
+}
+
 export function createAuxiliaryWindowService(options: CreateAuxiliaryWindowServiceOptions): AuxiliaryWindowService {
   const {
     appIconPath,
@@ -59,10 +80,18 @@ export function createAuxiliaryWindowService(options: CreateAuxiliaryWindowServi
   }
 
   function createBoardWindow(): void {
-    if (boardWindow && !boardWindow.isDestroyed()) {
-      boardWindow.show();
-      boardWindow.focus();
+    const existingBoardWindow = boardWindow;
+    if (isBoardWindowReusable(existingBoardWindow)) {
+      existingBoardWindow.show();
+      existingBoardWindow.focus();
       return;
+    }
+
+    if (boardWindow && !boardWindow.isDestroyed()) {
+      allowBoardWindowClose = true;
+      boardWindow.destroy();
+      boardWindow = null;
+      allowBoardWindowClose = false;
     }
 
     boardWindow = createBoardWindowFactory({
@@ -85,6 +114,17 @@ export function createAuxiliaryWindowService(options: CreateAuxiliaryWindowServi
     });
 
     boardWindow.on('closed', () => {
+      boardWindow = null;
+      allowBoardWindowClose = false;
+    });
+
+    boardWindow.webContents.on('render-process-gone', () => {
+      if (!boardWindow || boardWindow.isDestroyed()) {
+        return;
+      }
+
+      allowBoardWindowClose = true;
+      boardWindow.destroy();
       boardWindow = null;
       allowBoardWindowClose = false;
     });

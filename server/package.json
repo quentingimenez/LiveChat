@@ -64,7 +64,7 @@
       "undici": "^7.24.2",
       "minimatch": "^10.2.3",
       "flatted": "^3.4.1",
-      "ajv": "^6.14.0"
+      "ajv": "^8.17.1"
     },
     "onlyBuiltDependencies": [
       "@prisma/client",

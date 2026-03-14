@@ -1,4 +1,5 @@
 import { hashOverlayToken } from '../services/overlayAuth';
+import { syncDiscordUserProfile } from '../services/discordUserSync';
 import { createPlaybackJob } from '../services/playbackJobs';
 import { MediaAssetStatus } from '../services/prisma/prismaEnums';
 import {
@@ -169,6 +170,15 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
           lastSeenAt: new Date(),
         },
       });
+
+      const createdByDiscordUserId = toNonEmptyString(
+        (client as { createdByDiscordUserId?: unknown }).createdByDiscordUserId,
+      );
+      if (createdByDiscordUserId) {
+        void syncDiscordUserProfile(createdByDiscordUserId).catch((error) => {
+          logger.warn({ err: error, socketId: socket.id }, '[DISCORD_SYNC] Profile sync failed on connect');
+        });
+      }
 
       next();
     } catch (error) {

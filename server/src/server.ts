@@ -14,6 +14,7 @@ import { loadPrismaClient } from './services/prisma/loadPrisma';
 import { ensureMediaStorageDir, startMediaCachePurgeWorker } from './services/media/mediaCache';
 import { startPlaybackJobPurgeWorker } from './services/playbackJobs';
 import { startPairingCodePurgeWorker } from './services/pairingCodes';
+import { startDiscordUserSyncWorker } from './loaders/discordUserSyncLoader';
 import { initializePlaybackScheduler } from './services/playbackScheduler';
 import { isDevelopmentEnv, getCorsOrigins } from './services/env';
 
@@ -62,6 +63,8 @@ export const runServer = async () => {
     logger.info('[BOOT] Playback job purge worker started');
     startPairingCodePurgeWorker();
     logger.info('[BOOT] Pairing code purge worker started');
+    startDiscordUserSyncWorker();
+    logger.info('[BOOT] Discord user sync worker started');
   } catch (e) {
     logger.fatal({ err: e }, '[DB] Impossible to connect to database');
     process.exit(1);

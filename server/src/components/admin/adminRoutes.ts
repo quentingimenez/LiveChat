@@ -5,6 +5,7 @@ import { createIngestClientToken } from '../../services/ingestAuth';
 import { executeManualStopForGuild } from '../../services/manualStop';
 import { MediaAssetStatus, PlaybackJobStatus } from '../../services/prisma/prismaEnums';
 import { getRuntimeTikTokCookie, persistRuntimeTikTokCookieToEnvFile } from '../../services/runtimeSettings';
+import { disconnectOverlayClient } from '../../loaders/socketLoader';
 
 const BYTES_PER_MEGABYTE = 1024 * 1024;
 
@@ -3049,6 +3050,10 @@ export const AdminRoutes = () =>
           revokedAt: new Date(),
         },
       });
+
+      if (updateResult.count > 0) {
+        await disconnectOverlayClient(fastify, clientId);
+      }
 
       return reply.send({
         found: true,

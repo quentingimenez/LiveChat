@@ -75,15 +75,18 @@ export const runServer = async () => {
   const getCorsOrigin = (): boolean | string | string[] | RegExp => {
     // In development, allow all origins for easier testing
     if (isDev) {
-      logger.warn(
-        '[SECURITY] Development mode - allowing all CORS origins. Configured origins:',
-        corsOrigins.join(', '),
-      );
+      logger.warn({
+        message: '[SECURITY] Development mode - allowing all CORS origins. Configured origins:',
+        origins: corsOrigins.join(', '),
+      });
       return true;
     }
 
     // In production, use strict whitelist
-    logger.info('[SECURITY] Production mode - CORS restricted to:', corsOrigins.join(', '));
+    logger.info({
+      message: '[SECURITY] Production mode - CORS restricted to:',
+      origins: corsOrigins.join(', '),
+    });
     return corsOrigins;
   };
 

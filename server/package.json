@@ -11,7 +11,9 @@
     "prepare": "husky install",
     "generate": "prisma generate",
     "migration:up": "prisma migrate deploy",
-    "migration:make": "prisma migrate dev"
+    "migration:make": "prisma migrate dev",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "author": "qlaffont",
   "license": "ISC",
@@ -33,7 +35,8 @@
     "pino-pretty": "10.3.1",
     "prettier": "3.2.5",
     "tsx": "^4.7.1",
-    "typescript": "5.3.3"
+    "typescript": "5.3.3",
+    "vitest": "^4.1.0"
   },
   "dependencies": {
     "@gquittet/graceful-server": "^4.0.8",
@@ -52,8 +55,8 @@
     "reflect-metadata": "^0.2.1",
     "rosetty": "^3.0.22",
     "socket.io": "^4.7.4",
-    "zod": "^3.22.4",
-    "zlib-sync": "^0.1.9"
+    "zlib-sync": "^0.1.9",
+    "zod": "^3.22.4"
   },
   "optionalDependencies": {
     "bufferutil": "^4.0.8",

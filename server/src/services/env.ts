@@ -103,6 +103,17 @@ export const env = createEnv({
     TIKTOK_COOKIE: z.string().default(''),
     FFMPEG_BINARY: z.string().default('ffmpeg'),
     FFPROBE_BINARY: z.string().default('ffprobe'),
+
+    // CORS & Security Configuration
+    // Additional origins beyond API_URL (optional)
+    // Example: https://overlay.example.com,https://admin.example.com
+    ADDITIONAL_CORS_ORIGINS: z
+      .string()
+      .default('')
+      .transform((s) => {
+        if (!s || s.trim() === '') return [];
+        return s.split(',').map((origin) => origin.trim()).filter(Boolean);
+      }),
   },
   runtimeEnv: process.env,
 });
@@ -125,7 +136,31 @@ export const isPreProductionEnv = () => currentEnv() === Environment.PREPRODUCTI
 export const isStagingEnv = () => currentEnv() === Environment.STAGING;
 export const isDevelopmentEnv = () => currentEnv() === Environment.DEVELOPMENT;
 export const isTestEnv = () => currentEnv() === Environment.TEST;
-export const isDeployedEnv = () =>
-  Object.values(Environment)
-    .filter((v) => v !== Environment.TEST && v !== Environment.DEVELOPMENT)
-    .indexOf(currentEnv() as Environment) !== -1;
+export const isDeployedEnv = () => {
+  const current = currentEnv();
+  return (
+    current === Environment.PRODUCTION ||
+    current === Environment.PREPRODUCTION ||
+    current === Environment.STAGING
+  );
+};
+
+/**
+ * Get allowed CORS origins based on API_URL + additional origins
+ * Always includes the origin derived from API_URL
+ */
+export const getCorsOrigins = (): string[] => {
+  try {
+    const apiUrl = new URL(env.API_URL);
+    const apiOrigin = apiUrl.origin; // e.g., "https://api.example.com"
+
+    const additionalOrigins = env.ADDITIONAL_CORS_ORIGINS;
+
+    // Always include API_URL origin, plus any additional ones
+    return [apiOrigin, ...additionalOrigins];
+  } catch (error) {
+    // If API_URL is malformed, log error and return additional origins only
+    console.error('[CORS] Invalid API_URL format:', error);
+    return env.ADDITIONAL_CORS_ORIGINS;
+  }
+};

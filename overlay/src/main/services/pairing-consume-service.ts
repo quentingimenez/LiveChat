@@ -1,3 +1,4 @@
+import os from 'os';
 import { isRecord, toTrimmedString } from '../../shared/guards';
 import type { OverlayRuntimeConfig } from './config-service';
 
@@ -71,10 +72,13 @@ export function createPairingConsumeService(options: CreatePairingConsumeService
       throw new Error('missing_required_fields');
     }
 
+    // Use the real PC hostname if no device name is provided
+    const deviceName = requestedDeviceName || os.hostname();
+
     const endpoint = `${serverUrl}/overlay/pair/consume`;
     const requestPayload = {
       code,
-      deviceName: requestedDeviceName || undefined
+      deviceName
     };
     let pairingResponse: PairingHttpResponse;
 

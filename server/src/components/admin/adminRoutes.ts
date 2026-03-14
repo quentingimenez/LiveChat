@@ -1399,7 +1399,7 @@ const buildAdminPanelHtml = () => {
                   authorImage !== null
                     ? '<img class="overlay-avatar" src="' +
                       escapeHtml(authorImage) +
-                      '" alt="Avatar" referrerpolicy="no-referrer" loading="lazy" onerror="this.style.display=\'none\'" />'
+                      '" alt="Avatar" referrerpolicy="no-referrer" loading="lazy" onerror="this.style.display=&apos;none&apos;" />'
                     : '';
                 const deviceLine =
                   hasAuthorName && client.authorName.trim() !== client.label

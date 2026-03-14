@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import type { FastifyRequest } from 'fastify';
+import { type OverlaySessionMode } from '@livechat/overlay-protocol';
 
 interface CreateOverlayClientTokenParams {
   guildId: string;
@@ -23,6 +24,14 @@ export interface OverlayClientRecord {
   createdAt: Date;
   revokedAt: Date | null;
 }
+
+export const normalizeOverlaySessionMode = (value: unknown): OverlaySessionMode => {
+  if (typeof value === 'string' && value.trim().toLowerCase() === 'invite_read_only') {
+    return 'invite_read_only';
+  }
+
+  return 'normal';
+};
 
 export const hashOverlayToken = (token: string) => {
   return crypto.createHash('sha256').update(token).digest('hex');

@@ -24,10 +24,10 @@ import {
 import { getRuntimeTikTokCookie } from '../runtimeSettings';
 import { normalizeDownloadedMedia } from './mediaTranscode';
 import { buildSourceHash, canonicalizeSourceUrl, resolveMediaSource } from './mediaSourceResolver';
+import { formatBytesForMessage } from '../stringUtils';
 
 const execFileAsync = promisify(execFile);
 const BYTES_PER_MEGABYTE = 1024 * 1024;
-const BYTES_PER_GIGABYTE = 1024 * BYTES_PER_MEGABYTE;
 const LEGACY_YTDLP_FORMAT = 'bv*[height<=1080]+ba/b[height<=1080]/best';
 const PREVIOUS_COMPAT_YTDLP_FORMAT =
   'bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best';
@@ -39,19 +39,6 @@ const YOUTUBE_RELAXED_YTDLP_FORMAT = 'b/bv*+ba/best';
 
 const getMaxMediaSizeBytes = () => Math.max(1, env.MEDIA_MAX_SIZE_MB) * BYTES_PER_MEGABYTE;
 
-const formatBytesForMessage = (value: number) => {
-  const normalized = Number.isFinite(value) && value > 0 ? value : 0;
-
-  if (normalized >= BYTES_PER_GIGABYTE) {
-    return `${(normalized / BYTES_PER_GIGABYTE).toFixed(2)} GB`;
-  }
-
-  if (normalized === 0) {
-    return '0 MB';
-  }
-
-  return `${(normalized / BYTES_PER_MEGABYTE).toFixed(2)} MB`;
-};
 
 const resolveYtdlpFormatSelector = () => {
   const formatSelector = (env.YTDLP_FORMAT || '').trim();

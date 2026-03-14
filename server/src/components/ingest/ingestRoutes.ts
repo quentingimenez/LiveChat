@@ -11,6 +11,7 @@ import { extractMediaStartOffsetSec } from '../../services/media/mediaSourceReso
 import { createPlaybackJob } from '../../services/playbackJobs';
 import { buildMediaOverlayTextPayload, encodeRichOverlayPayload } from '../../services/messages/richOverlayPayload';
 import { addToMemeBoard } from '../../services/memeBoard';
+import { toNonEmptyString, toBooleanFlag } from '../../services/stringUtils';
 import {
   normalizeTweetStatusUrl,
   resolveTweetCardFromUrl,
@@ -61,15 +62,6 @@ const getTweetCardDurationSec = (
   return Math.max(1, Math.ceil(Math.max(...knownDurations)));
 };
 
-const toNonEmptyString = (value: unknown): string | null => {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim();
-
-  return trimmed || null;
-};
 
 const toOptionalBoolean = (value: unknown): boolean | undefined => {
   if (typeof value === 'boolean') {
@@ -79,22 +71,6 @@ const toOptionalBoolean = (value: unknown): boolean | undefined => {
   return undefined;
 };
 
-const toBooleanFlag = (value: unknown): boolean => {
-  if (typeof value === 'boolean') {
-    return value;
-  }
-
-  if (typeof value === 'number') {
-    return value === 1;
-  }
-
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase();
-    return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
-  }
-
-  return false;
-};
 
 const toOptionalDurationSec = (value: unknown): number | null => {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {

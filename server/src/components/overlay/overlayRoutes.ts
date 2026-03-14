@@ -3,6 +3,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { addMinutes } from 'date-fns';
 import { OVERLAY_PROTOCOL_VERSION } from '@livechat/overlay-protocol';
 import { createOverlayClientToken, resolveOverlayClientFromRequest } from '../../services/overlayAuth';
+import { toNonEmptyString, toBooleanFlag } from '../../services/stringUtils';
 import { touchMediaAsset } from '../../services/media/mediaCache';
 import { ingestMediaFromSource } from '../../services/media/mediaIngestion';
 import { MediaIngestionError, toMediaIngestionError } from '../../services/media/mediaErrors';
@@ -39,15 +40,6 @@ interface MemeBoardItemUpdateBody {
 const DEFAULT_OVERLAY_DEVICE_PREFIX = 'Overlay';
 const INVITE_READ_ONLY_PAIRING_MODE = 'INVITE_READ_ONLY';
 
-const toNonEmptyString = (value: unknown): string | null => {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const normalized = value.trim();
-  return normalized || null;
-};
-
 const toOptionalInt = (value: unknown): number | null => {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return Math.floor(value);
@@ -61,22 +53,6 @@ const toOptionalInt = (value: unknown): number | null => {
   return null;
 };
 
-const toBooleanFlag = (value: unknown): boolean => {
-  if (typeof value === 'boolean') {
-    return value;
-  }
-
-  if (typeof value === 'number') {
-    return value === 1;
-  }
-
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase();
-    return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
-  }
-
-  return false;
-};
 
 type MemeBoardListItem = Awaited<ReturnType<typeof listMemeBoardItems>>['items'][number];
 

@@ -142,6 +142,10 @@ export const runServer = async () => {
     timeWindow: '15 minutes',
     cache: 10000,
     allowList: (req) => {
+      // Exempt admin routes from rate limiting (auto-refresh every 2s)
+      if (req.url.startsWith('/admin')) {
+        return true;
+      }
       // Allow local requests in development
       if (isDevelopmentEnv()) {
         const ip = req.ip;
@@ -151,7 +155,7 @@ export const runServer = async () => {
     },
     skipOnError: false,
   });
-  logger.info('[BOOT] Rate limiting registered (100 req/15min)');
+  logger.info('[BOOT] Rate limiting registered (100 req/15min, admin routes exempt)');
 
   // CORS
   await fastify.register(FastifyCORS, {

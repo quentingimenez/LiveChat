@@ -128,6 +128,7 @@ export const runServer = async () => {
         objectSrc: ["'none'"],
         mediaSrc: ["'self'"],
         frameSrc: ["'none'"],
+        upgradeInsecureRequests: null, // Allow HTTP for local development
       },
     },
     crossOriginEmbedderPolicy: false, // Required for Socket.IO

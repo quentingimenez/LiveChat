@@ -1,4 +1,4 @@
-import { hashOverlayToken } from '../services/overlayAuth';
+import { hashOverlayToken, normalizeOverlaySessionMode } from '../services/overlayAuth';
 import { syncDiscordUserProfile } from '../services/discordUserSync';
 import { createPlaybackJob } from '../services/playbackJobs';
 import { MediaAssetStatus } from '../services/prisma/prismaEnums';
@@ -13,15 +13,7 @@ import {
 } from '@livechat/overlay-protocol';
 import { getPlaybackScheduler, MEME_JOB_PRIORITY } from '../services/playbackScheduler';
 import { executeManualStopForGuild } from '../services/manualStop';
-
-const toNonEmptyString = (value: unknown): string | undefined => {
-  if (typeof value !== 'string') {
-    return undefined;
-  }
-
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : undefined;
-};
+import { toNonEmptyString } from '../services/stringUtils';
 
 const getTokenFromSocketHandshake = (socket) => {
   const authToken = socket.handshake?.auth?.token;
@@ -39,13 +31,6 @@ const getTokenFromSocketHandshake = (socket) => {
   return null;
 };
 
-const normalizeOverlaySessionMode = (value: unknown): OverlaySessionMode => {
-  if (typeof value === 'string' && value.trim().toLowerCase() === 'invite_read_only') {
-    return 'invite_read_only';
-  }
-
-  return 'normal';
-};
 
 const listConnectedOverlayPeers = async (fastify: FastifyCustomInstance, guildId: string) => {
   const roomName = `overlay-guild-${guildId}`;
@@ -157,10 +142,8 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
       const sessionModeFromHandshake = toNonEmptyString(socket.handshake?.auth?.sessionMode);
       const sessionModeFromClient = (client as { sessionMode?: unknown }).sessionMode;
       socket.data.overlaySessionMode = normalizeOverlaySessionMode(sessionModeFromHandshake || sessionModeFromClient);
-      socket.data.overlayAuthorName = toNonEmptyString((client as { defaultAuthorName?: unknown }).defaultAuthorName);
-      socket.data.overlayAuthorImage = toNonEmptyString(
-        (client as { defaultAuthorImage?: unknown }).defaultAuthorImage,
-      );
+      socket.data.overlayAuthorName = toNonEmptyString((client as { defaultAuthorName?: unknown }).defaultAuthorName) ?? undefined;
+      socket.data.overlayAuthorImage = toNonEmptyString((client as { defaultAuthorImage?: unknown }).defaultAuthorImage) ?? undefined;
 
       await prisma.overlayClient.update({
         where: {

@@ -15,9 +15,6 @@ interface AdminGuildSettingsBody {
   displayMediaFull?: unknown;
 }
 
-interface AdminGuildNameBody {
-  name?: unknown;
-}
 
 interface AdminGuildPurgeBody {
   confirmGuildId?: unknown;
@@ -856,27 +853,6 @@ const buildAdminPanelHtml = () => {
         align-items: flex-start;
       }
 
-      .guild-name-form {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        gap: 8px;
-        align-items: end;
-      }
-
-      .guild-name-form label {
-        font-size: 12px;
-        display: grid;
-        gap: 4px;
-      }
-
-      .guild-name-form input {
-        border-radius: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.2);
-        background: rgba(7, 12, 24, 0.82);
-        color: var(--text);
-        padding: 8px 10px;
-        font-size: 13px;
-      }
 
       .badge {
         display: inline-block;
@@ -1483,14 +1459,6 @@ const buildAdminPanelHtml = () => {
                 : '<span class="badge warn">Aucun overlay connecté</span>') +
               '</div>' +
               '</div>' +
-              '<form class="guild-name-form" data-action="save-guild-name" data-guild-id="' +
-              escapeHtml(guild.id) +
-              '">' +
-              '<label>Nom du serveur<input type="text" name="name" maxlength="120" value="' +
-              escapeHtml(editableGuildName) +
-              '" placeholder="Nom personnalisé (optionnel)" /></label>' +
-              '<button class="action-btn" type="submit">Sauvegarder nom</button>' +
-              '</form>' +
               '<div class="guild-grid guild-grid-meta">' +
               '<div class="guild-meta">' +
               '<div><strong>Busy Until</strong>: ' +
@@ -1867,32 +1835,6 @@ const buildAdminPanelHtml = () => {
         await loadOverview();
       };
 
-      const submitGuildName = async (form) => {
-        const guildId = form.getAttribute('data-guild-id');
-        if (!guildId) {
-          return;
-        }
-
-        const data = new FormData(form);
-        const rawName = String(data.get('name') || '');
-        const trimmedName = rawName.trim();
-        const payload = {
-          name: trimmedName || null,
-        };
-
-        await api('/admin/api/guilds/' + encodeURIComponent(guildId) + '/name', {
-          method: 'PATCH',
-          body: payload,
-        });
-
-        if (trimmedName) {
-          setStatus('Nom sauvegardé pour la guild ' + guildId + ': ' + trimmedName, 'ok');
-        } else {
-          setStatus('Nom personnalisé supprimé pour la guild ' + guildId + '.', 'warn');
-        }
-
-        await loadOverview();
-      };
 
       const handleActionClick = async (button) => {
         const action = button.getAttribute('data-action');
@@ -2290,15 +2232,6 @@ const buildAdminPanelHtml = () => {
           return;
         }
 
-        if (action === 'save-guild-name') {
-          event.preventDefault();
-
-          try {
-            await submitGuildName(form);
-          } catch (error) {
-            setStatus('Erreur sauvegarde nom guild: ' + (error instanceof Error ? error.message : 'request_failed'), 'error');
-          }
-        }
       });
 
       document.addEventListener('click', async (event) => {
@@ -2744,65 +2677,6 @@ export const AdminRoutes = () =>
       });
     });
 
-    fastify.patch<{ Params: { guildId: string }; Body: AdminGuildNameBody }>(
-      '/api/guilds/:guildId/name',
-      async (request, reply) => {
-        if (!(await assertAdminAccess(request, reply))) {
-          return;
-        }
-
-        const guildId = toNonEmptyString(request.params.guildId);
-        if (!guildId) {
-          return reply.code(400).send({
-            error: 'invalid_guild_id',
-          });
-        }
-
-        const rawName = request.body?.name;
-        if (rawName === undefined) {
-          return reply.code(400).send({
-            error: 'invalid_payload',
-          });
-        }
-
-        if (rawName !== undefined && rawName !== null && typeof rawName !== 'string') {
-          return reply.code(400).send({
-            error: 'invalid_payload',
-          });
-        }
-
-        const normalizedName = rawName == null ? null : String(rawName).trim() || null;
-        if (normalizedName && normalizedName.length > 120) {
-          return reply.code(400).send({
-            error: 'invalid_payload',
-          });
-        }
-
-        const createData: Record<string, unknown> = {
-          id: guildId,
-          name: normalizedName,
-        };
-        const updateData: Record<string, unknown> = {
-          name: normalizedName,
-        };
-
-        const guild = (await prisma.guild.upsert({
-          where: {
-            id: guildId,
-          },
-          create: createData,
-          update: updateData,
-        })) as GuildRecord;
-
-        return reply.send({
-          updated: true,
-          guild: {
-            id: guild.id,
-            name: guild.name || null,
-          },
-        });
-      },
-    );
 
     fastify.patch<{ Params: { guildId: string }; Body: AdminGuildSettingsBody }>(
       '/api/guilds/:guildId/settings',

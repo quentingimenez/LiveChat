@@ -2,21 +2,13 @@ import { addHours, addYears } from 'date-fns';
 import { Prisma } from '@prisma/client';
 import { MediaAssetStatus } from './prisma/prismaEnums';
 import { MediaIngestionError } from './media/mediaErrors';
+import { toNonEmptyString, formatBytesForMessage } from './stringUtils';
 
 const PINNED_EXPIRY_YEARS = 100;
 const DEFAULT_LIST_LIMIT = 50;
 const MAX_LIST_LIMIT = 200;
 const BYTES_PER_MEGABYTE = 1024 * 1024;
 const BYTES_PER_GIGABYTE = 1024 * BYTES_PER_MEGABYTE;
-
-const toNonEmptyString = (value: unknown): string | null => {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : null;
-};
 
 const normalizeListLimit = (value?: number | null): number => {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -54,19 +46,6 @@ const toSafeSizeBytes = (value: unknown): number => {
   return Math.floor(value);
 };
 
-const formatBytesForMessage = (value: number): string => {
-  const normalized = Number.isFinite(value) && value > 0 ? value : 0;
-
-  if (normalized >= BYTES_PER_GIGABYTE) {
-    return `${(normalized / BYTES_PER_GIGABYTE).toFixed(2)} GB`;
-  }
-
-  if (normalized === 0) {
-    return '0 MB';
-  }
-
-  return `${(normalized / BYTES_PER_MEGABYTE).toFixed(2)} MB`;
-};
 
 const getGuildBoardTotalSizeBytes = async (guildId: string): Promise<number> => {
   const items = await prisma.memeBoardItem.findMany({

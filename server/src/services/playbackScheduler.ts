@@ -2,6 +2,7 @@ import { addMilliseconds } from 'date-fns';
 import { OVERLAY_SOCKET_EVENTS, type OverlayPlayPayload } from '@livechat/overlay-protocol';
 import { decodeRichOverlayPayload } from './messages/richOverlayPayload';
 import { MediaAssetStatus, PlaybackJobStatus } from './prisma/prismaEnums';
+import { toNonEmptyString } from './stringUtils';
 
 const PLAYBACK_LOCK_PADDING_MS = 250;
 const PLAYBACK_STALE_RELEASE_GRACE_MS = 10_000;
@@ -18,15 +19,6 @@ interface RunGuildOptions {
 }
 
 type DispatchOutcome = 'dispatched' | 'retry' | 'idle';
-
-const toNonEmptyString = (value: unknown): string | null => {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : null;
-};
 
 const toOptionalPositiveInt = (value: unknown): number | null => {
   if (typeof value !== 'number' || !Number.isFinite(value)) {

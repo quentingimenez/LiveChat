@@ -6,6 +6,10 @@ import { executeManualStopForGuild } from '../../services/manualStop';
 import { MediaAssetStatus, PlaybackJobStatus } from '../../services/prisma/prismaEnums';
 import { getRuntimeTikTokCookie, persistRuntimeTikTokCookieToEnvFile } from '../../services/runtimeSettings';
 import { disconnectOverlayClient } from '../../loaders/socketLoader';
+import { toNonEmptyString } from '../../services/stringUtils';
+import { normalizeOverlaySessionMode, type OverlayClientRecord } from '../../services/overlayAuth';
+import { type IngestClientRecord } from '../../services/ingestAuth';
+import { type OverlaySessionMode } from '@livechat/overlay-protocol';
 
 const BYTES_PER_MEGABYTE = 1024 * 1024;
 
@@ -40,36 +44,12 @@ interface PurgePairingCodesQuery {
   guildId?: unknown;
 }
 
-interface OverlayClientRecord {
-  id: string;
-  guildId: string;
-  label: string;
-  sessionMode: string;
-  defaultAuthorName: string | null;
-  defaultAuthorImage: string | null;
-  createdAt: Date;
-  lastSeenAt: Date | null;
-  revokedAt: Date | null;
-}
-
-type OverlaySessionMode = 'normal' | 'invite_read_only';
 
 interface ConnectedOverlayClientState {
   clientId: string;
   sessionMode: OverlaySessionMode;
 }
 
-interface IngestClientRecord {
-  id: string;
-  guildId: string;
-  label: string;
-  createdByDiscordUserId: string;
-  defaultAuthorName: string;
-  defaultAuthorImage: string | null;
-  createdAt: Date;
-  lastSeenAt: Date | null;
-  revokedAt: Date | null;
-}
 
 interface KnownIngestAuthor {
   discordUserId: string;
@@ -105,23 +85,6 @@ interface GroupedPlaybackCount {
     _all: number;
   };
 }
-
-const toNonEmptyString = (value: unknown): string | null => {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : null;
-};
-
-const normalizeOverlaySessionMode = (value: unknown): OverlaySessionMode => {
-  if (typeof value === 'string' && value.trim().toLowerCase() === 'invite_read_only') {
-    return 'invite_read_only';
-  }
-
-  return 'normal';
-};
 
 const isPairingCodeActive = (
   pairingCode: {

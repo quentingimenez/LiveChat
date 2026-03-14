@@ -2,29 +2,7 @@ import { CommandInteraction, EmbedBuilder, SlashCommandBuilder } from 'discord.j
 import { ingestMediaFromSource } from '../../services/media/mediaIngestion';
 import { addToMemeBoard } from '../../services/memeBoard';
 import { getLocalizedMediaErrorMessage, toMediaIngestionError } from '../../services/media/mediaErrors';
-
-const toNonEmptyString = (value: unknown): string | null => {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : null;
-};
-
-const resolveAuthorName = (interaction: CommandInteraction): string => {
-  const memberNick = toNonEmptyString((interaction.member as { nick?: unknown } | null)?.nick);
-  if (memberNick) {
-    return memberNick;
-  }
-
-  const globalName = toNonEmptyString(interaction.user.globalName);
-  if (globalName) {
-    return globalName;
-  }
-
-  return interaction.user.username;
-};
+import { resolveDiscordAuthorName } from '../../services/discord-utils';
 
 export const memeAddCommand = () => ({
   data: new SlashCommandBuilder()
@@ -113,7 +91,7 @@ export const memeAddCommand = () => ({
         mediaAssetId: mediaAsset.id,
         title,
         createdByDiscordUserId: interaction.user.id,
-        createdByName: resolveAuthorName(interaction),
+        createdByName: resolveDiscordAuthorName(interaction),
       });
 
       await interaction.editReply({

@@ -217,7 +217,7 @@ const safeTokenEquals = (expected: string, candidate: string): boolean => {
     return false;
   }
 
-  return timingSafeEqual(expectedBuffer, candidateBuffer);
+  return timingSafeEqual(new Uint8Array(expectedBuffer), new Uint8Array(candidateBuffer));
 };
 
 const getRequestToken = (request: FastifyRequest): string | null => {
@@ -1399,7 +1399,7 @@ const buildAdminPanelHtml = () => {
                   authorImage !== null
                     ? '<img class="overlay-avatar" src="' +
                       escapeHtml(authorImage) +
-                      '" alt="Avatar" referrerpolicy="no-referrer" loading="lazy" />'
+                      '" alt="Avatar" referrerpolicy="no-referrer" loading="lazy" onerror="this.style.display=\'none\'" />'
                     : '';
                 const deviceLine =
                   hasAuthorName && client.authorName.trim() !== client.label

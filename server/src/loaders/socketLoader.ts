@@ -99,6 +99,24 @@ const broadcastOverlayPeers = async (fastify: FastifyCustomInstance, guildId: st
   logger.debug(`[OVERLAY] Peers updated for guild ${guildId} (count: ${peers.length})`);
 };
 
+export const disconnectOverlayClient = async (fastify: FastifyCustomInstance, clientId: string) => {
+  const allSockets = await fastify.io.fetchSockets();
+  let disconnectedCount = 0;
+
+  for (const socket of allSockets) {
+    if (socket.data?.overlayClientId === clientId) {
+      socket.disconnect(true);
+      disconnectedCount++;
+      logger.info(
+        `[OVERLAY] Disconnected revoked overlay (clientId: ${clientId}, socket: ${socket.id})`,
+      );
+    }
+  }
+
+  logger.info(`[OVERLAY] Revoked overlay cleanup complete (clientId: ${clientId}, disconnected: ${disconnectedCount} sockets)`);
+  return disconnectedCount;
+};
+
 export const loadSocket = (fastify: FastifyCustomInstance) => {
   logger.info(`[Socket] Socket loaded`);
   const playbackScheduler = getPlaybackScheduler();

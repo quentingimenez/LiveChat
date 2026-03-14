@@ -2,6 +2,8 @@
 import 'reflect-metadata';
 import Fastify from 'fastify';
 import FastifyCORS from '@fastify/cors';
+import FastifyHelmet from '@fastify/helmet';
+import FastifyRateLimit from '@fastify/rate-limit';
 import GracefulServer from '@gquittet/graceful-server';
 import { Server as SocketIoServer } from 'socket.io';
 import { loadRoutes } from './loaders/RESTLoader';
@@ -13,6 +15,7 @@ import { ensureMediaStorageDir, startMediaCachePurgeWorker } from './services/me
 import { startPlaybackJobPurgeWorker } from './services/playbackJobs';
 import { startPairingCodePurgeWorker } from './services/pairingCodes';
 import { initializePlaybackScheduler } from './services/playbackScheduler';
+import { isDevelopmentEnv, getCorsOrigins } from './services/env';
 
 const corsAllowedHeaders = [
   'Origin',
@@ -64,13 +67,33 @@ export const runServer = async () => {
     process.exit(1);
   }
 
+  // Configure CORS origins from environment
+  // Automatically includes API_URL origin + any additional origins
+  const corsOrigins = getCorsOrigins();
+  const isDev = isDevelopmentEnv();
+
+  const getCorsOrigin = (): boolean | string | string[] | RegExp => {
+    // In development, allow all origins for easier testing
+    if (isDev) {
+      logger.warn(
+        '[SECURITY] Development mode - allowing all CORS origins. Configured origins:',
+        corsOrigins.join(', '),
+      );
+      return true;
+    }
+
+    // In production, use strict whitelist
+    logger.info('[SECURITY] Production mode - CORS restricted to:', corsOrigins.join(', '));
+    return corsOrigins;
+  };
+
   try {
     const io = new SocketIoServer<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>(
       fastify.server,
       {
         cors: {
           allowedHeaders: corsAllowedHeaders,
-          origin: true,
+          origin: getCorsOrigin(),
           credentials: true,
         },
       },
@@ -89,10 +112,48 @@ export const runServer = async () => {
   }
 
   // SERVER CONFIGURATION
+  // Security Headers
+  await fastify.register(FastifyHelmet, {
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        scriptSrc: ["'self'"],
+        imgSrc: ["'self'", 'data:', 'https:'],
+        connectSrc: ["'self'"],
+        fontSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        mediaSrc: ["'self'"],
+        frameSrc: ["'none'"],
+      },
+    },
+    crossOriginEmbedderPolicy: false, // Required for Socket.IO
+    crossOriginResourcePolicy: { policy: 'cross-origin' }, // Required for CORS
+  });
+  logger.info('[BOOT] Security headers (Helmet) registered');
+
+  // Rate Limiting
+  await fastify.register(FastifyRateLimit, {
+    max: 100,
+    timeWindow: '15 minutes',
+    cache: 10000,
+    allowList: (req) => {
+      // Allow local requests in development
+      if (isDevelopmentEnv()) {
+        const ip = req.ip;
+        return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+      }
+      return false;
+    },
+    skipOnError: false,
+  });
+  logger.info('[BOOT] Rate limiting registered (100 req/15min)');
+
+  // CORS
   await fastify.register(FastifyCORS, {
     methods: ['GET', 'PUT', 'DELETE', 'POST', 'OPTIONS', 'PATCH'],
     allowedHeaders: corsAllowedHeaders,
-    origin: true,
+    origin: getCorsOrigin(),
     credentials: true,
   });
   logger.info('[BOOT] CORS registered');

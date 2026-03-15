@@ -1,3 +1,5 @@
+import { isRecord, toNonEmptyString } from './utils';
+
 export type ToastLevel = 'success' | 'error' | 'info';
 export type SendSource = 'youtube' | 'tiktok' | 'twitter' | 'context-menu' | 'popup';
 
@@ -88,25 +90,12 @@ export interface ActiveMediaUrlResponse {
   url: string | null;
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> => {
-  return typeof value === 'object' && value !== null;
-};
-
-const asTrimmedString = (value: unknown): string | null => {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : null;
-};
-
 const asNullableTrimmedString = (value: unknown): string | null => {
   if (value === null || value === undefined) {
     return null;
   }
 
-  return asTrimmedString(value);
+  return toNonEmptyString(value);
 };
 
 export const isSendQuickRequest = (value: unknown): value is SendQuickRequestMessage => {
@@ -114,7 +103,7 @@ export const isSendQuickRequest = (value: unknown): value is SendQuickRequestMes
     return false;
   }
 
-  return !!asTrimmedString(value.url);
+  return !!toNonEmptyString(value.url);
 };
 
 export const isSendComposeRequest = (value: unknown): value is SendComposeRequestMessage => {
@@ -122,7 +111,7 @@ export const isSendComposeRequest = (value: unknown): value is SendComposeReques
     return false;
   }
 
-  if (!asTrimmedString(value.url)) {
+  if (!toNonEmptyString(value.url)) {
     return false;
   }
 
@@ -186,7 +175,7 @@ export const isShowToastMessage = (value: unknown): value is ShowToastMessage =>
     return false;
   }
 
-  const message = asTrimmedString(value.message);
+  const message = toNonEmptyString(value.message);
   if (!message) {
     return false;
   }

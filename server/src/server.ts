@@ -1,5 +1,7 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 import 'reflect-metadata';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import Fastify from 'fastify';
 import FastifyCORS from '@fastify/cors';
 import FastifyHelmet from '@fastify/helmet';
@@ -32,10 +34,18 @@ const corsAllowedHeaders = [
 
 export const runServer = async () => {
   const logLevel = env.LOG || 'info';
+  const isDev = isDevelopmentEnv();
   // LOAD API FRAMEWORK
   //@ts-ignore
   const fastify: FastifyCustomInstance = Fastify({
-    logger: { level: logLevel },
+    logger: {
+      level: logLevel,
+      ...(isDev ? {
+        transport: {
+          target: resolve(typeof __dirname !== 'undefined' ? __dirname : dirname(fileURLToPath(import.meta.url)), 'logger', 'prettyTransport.cjs'),
+        },
+      } : {}),
+    },
     disableRequestLogging: true,
   });
 

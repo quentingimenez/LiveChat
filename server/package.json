@@ -4,7 +4,7 @@
   "description": "LiveChat backend",
   "main": "index.js",
   "scripts": {
-    "dev": "pnpm migration:up && tsx ./src/index.ts | pnpm pino-pretty",
+    "dev": "pnpm migration:up && tsx ./src/index.ts",
     "start": "node ./dist/src/index.js",
     "build": "tsc -p tsconfig.json",
     "lint": "eslint src --ext .ts --fix",

@@ -1,7 +1,6 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 import 'reflect-metadata';
-import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { resolve } from 'path';
 import Fastify from 'fastify';
 import FastifyCORS from '@fastify/cors';
 import FastifyHelmet from '@fastify/helmet';
@@ -42,7 +41,7 @@ export const runServer = async () => {
       level: logLevel,
       ...(isDev ? {
         transport: {
-          target: resolve(typeof __dirname !== 'undefined' ? __dirname : dirname(fileURLToPath(import.meta.url)), 'logger', 'prettyTransport.cjs'),
+          target: resolve(process.cwd(), 'src', 'logger', 'prettyTransport.cjs'),
         },
       } : {}),
     },

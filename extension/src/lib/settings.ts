@@ -1,4 +1,5 @@
 import { resolveIngestTargetUrl, normalizeApiUrl, toApiOriginPattern } from './url';
+import { toNonEmptyString } from './utils';
 
 const SETTINGS_STORAGE_KEY = 'lce.settings.v1';
 const DRAFT_STORAGE_KEY = 'lce.compose-draft.v1';
@@ -41,21 +42,12 @@ export interface PermissionTransitionResult {
   reason?: string;
 }
 
-const asNonEmptyString = (value: unknown): string | null => {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : null;
-};
-
 const getSessionStorageArea = (): chrome.storage.StorageArea => {
   return chrome.storage.session || chrome.storage.local;
 };
 
 export const normalizeSettingsInput = (input: Partial<ExtensionSettings>): SettingsValidationResult => {
-  const rawApiUrl = asNonEmptyString(input.apiUrl);
+  const rawApiUrl = toNonEmptyString(input.apiUrl);
   if (!rawApiUrl) {
     return {
       ok: false,
@@ -73,7 +65,7 @@ export const normalizeSettingsInput = (input: Partial<ExtensionSettings>): Setti
     };
   }
 
-  const ingestToken = asNonEmptyString(input.ingestToken);
+  const ingestToken = toNonEmptyString(input.ingestToken);
   if (!ingestToken) {
     return {
       ok: false,
@@ -81,7 +73,7 @@ export const normalizeSettingsInput = (input: Partial<ExtensionSettings>): Setti
     };
   }
 
-  const guildId = asNonEmptyString(input.guildId);
+  const guildId = toNonEmptyString(input.guildId);
   if (!guildId) {
     return {
       ok: false,
@@ -89,8 +81,8 @@ export const normalizeSettingsInput = (input: Partial<ExtensionSettings>): Setti
     };
   }
 
-  const authorName = asNonEmptyString(input.authorName) || DEFAULT_AUTHOR_NAME;
-  const authorImage = asNonEmptyString(input.authorImage) || null;
+  const authorName = toNonEmptyString(input.authorName) || DEFAULT_AUTHOR_NAME;
+  const authorImage = toNonEmptyString(input.authorImage) || null;
 
   return {
     ok: true,
@@ -110,10 +102,10 @@ export const isSettingsComplete = (value: ExtensionSettings | null): value is Ex
   }
 
   return !!(
-    asNonEmptyString(value.apiUrl) &&
-    asNonEmptyString(value.ingestToken) &&
-    asNonEmptyString(value.guildId) &&
-    asNonEmptyString(value.authorName)
+    toNonEmptyString(value.apiUrl) &&
+    toNonEmptyString(value.ingestToken) &&
+    toNonEmptyString(value.guildId) &&
+    toNonEmptyString(value.authorName)
   );
 };
 
@@ -157,7 +149,7 @@ export const getComposeDraft = async (): Promise<ComposeDraft | null> => {
     text: `${candidate.text || ''}`,
     forceRefresh: !!candidate.forceRefresh,
     saveToBoard: !!candidate.saveToBoard,
-    source: asNonEmptyString(candidate.source) || 'unknown',
+    source: toNonEmptyString(candidate.source) || 'unknown',
     createdAt:
       typeof candidate.createdAt === 'number' && Number.isFinite(candidate.createdAt)
         ? Math.floor(candidate.createdAt)

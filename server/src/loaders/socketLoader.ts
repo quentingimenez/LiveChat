@@ -157,6 +157,7 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
       const createdByDiscordUserId = toNonEmptyString(
         (client as { createdByDiscordUserId?: unknown }).createdByDiscordUserId,
       );
+      socket.data.createdByDiscordUserId = createdByDiscordUserId || undefined;
       if (createdByDiscordUserId) {
         void syncDiscordUserProfile(createdByDiscordUserId).catch((error) => {
           logger.warn(`[DISCORD_SYNC] Profile sync failed on connect (socketId: ${socket.id}, error: ${error?.message || error})`);
@@ -181,9 +182,10 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
     socket.join(`overlay-guild-${guildId}`);
     const roomName = `overlay-guild-${guildId}`;
     const roomSize = fastify.io.sockets.adapter.rooms.get(roomName)?.size ?? 0;
-    const clientLabel = socket.data.overlayClientLabel || 'unknown-device';
+    const authorName = socket.data.overlayAuthorName || socket.data.overlayClientLabel || 'unknown';
+    const discordUserId = socket.data.createdByDiscordUserId || '';
     logger.info(
-      `[OVERLAY] Connected: ${clientLabel} (clientId: ${socket.data.overlayClientId}, socket: ${socket.id}, guild: ${guildId}, roomSize: ${roomSize})`,
+      `[OVERLAY] Connected: ${authorName}${discordUserId ? ` (${discordUserId})` : ''} (clientId: ${socket.data.overlayClientId}, socket: ${socket.id}, guild: ${guildId}, roomSize: ${roomSize})`,
     );
 
     void playbackScheduler.onJobEnqueued(guildId).catch((error) => {

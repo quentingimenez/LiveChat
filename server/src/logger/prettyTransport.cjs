@@ -21,22 +21,20 @@ const PREFIX_COLORS = {
   SERVER:       '\x1b[96m',   // bright cyan
 };
 
-function colorizePrefix(msg) {
-  if (typeof msg !== 'string') return msg;
-
-  return msg.replace(/\[([A-Z][A-Z0-9_]*)\]/, (match, prefix) => {
-    const color = PREFIX_COLORS[prefix];
-    if (color) return `${BOLD}${color}${match}${RESET}`;
-    return match;
-  });
-}
+const PREFIX_RE = /\[([A-Z][A-Z0-9_]*)\]/;
 
 module.exports = (opts) => {
   return pinoPretty({
     ...opts,
     messageFormat: (log, messageKey) => {
       const msg = log[messageKey];
-      return colorizePrefix(msg);
+      if (typeof msg !== 'string') return msg;
+
+      return msg.replace(PREFIX_RE, (match, prefix) => {
+        const color = PREFIX_COLORS[prefix];
+        if (color) return `${BOLD}${color}${match}${RESET}`;
+        return match;
+      });
     },
   });
 };

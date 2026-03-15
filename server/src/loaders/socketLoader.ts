@@ -116,7 +116,7 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
       const token = getTokenFromSocketHandshake(socket);
 
       if (!token) {
-        logger.warn({ socketId: socket.id }, '[OVERLAY] Socket auth failed: missing token');
+        logger.warn(`[OVERLAY] Socket auth failed: missing token (socketId: ${socket.id})`);
         next(new Error('missing_token'));
         return;
       }
@@ -131,7 +131,7 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
       });
 
       if (!client) {
-        logger.warn({ socketId: socket.id }, '[OVERLAY] Socket auth failed: invalid token');
+        logger.warn(`[OVERLAY] Socket auth failed: invalid token (socketId: ${socket.id})`);
         next(new Error('invalid_token'));
         return;
       }
@@ -159,13 +159,13 @@ export const loadSocket = (fastify: FastifyCustomInstance) => {
       );
       if (createdByDiscordUserId) {
         void syncDiscordUserProfile(createdByDiscordUserId).catch((error) => {
-          logger.warn({ err: error, socketId: socket.id }, '[DISCORD_SYNC] Profile sync failed on connect');
+          logger.warn(`[DISCORD_SYNC] Profile sync failed on connect (socketId: ${socket.id}, error: ${error?.message || error})`);
         });
       }
 
       next();
     } catch (error) {
-      logger.error({ err: error, socketId: socket.id }, '[OVERLAY] Socket auth error');
+      logger.error(`[OVERLAY] Socket auth error (socketId: ${socket.id}, error: ${error?.message || error})`);
       next(new Error('auth_error'));
     }
   });

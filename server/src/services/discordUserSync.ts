@@ -166,7 +166,7 @@ export const syncAllActiveDiscordUsers = async (): Promise<void> => {
     }
 
     logger.info(
-      `[DISCORD_SYNC] Completed sync: ${successCount} successful, ${failureCount} failed out of ${uniqueUserIds.size} users`,
+      `[DISCORD_SYNC] Completed sync: ${successCount}/${uniqueUserIds.size} synced${failureCount > 0 ? `, ${failureCount} skipped` : ''}`,
     );
   } catch (error) {
     logger.error(error, '[DISCORD_SYNC] Failed to sync all users');

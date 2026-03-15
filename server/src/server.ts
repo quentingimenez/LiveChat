@@ -83,7 +83,6 @@ export const runServer = async () => {
   // Configure CORS origins from environment
   // Automatically includes API_URL origin + any additional origins
   const corsOrigins = getCorsOrigins();
-  const isDev = isDevelopmentEnv();
 
   const getCorsOrigin = (): boolean | string | string[] | RegExp => {
     // In development, allow all origins for easier testing

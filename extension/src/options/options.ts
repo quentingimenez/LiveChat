@@ -9,6 +9,7 @@ import {
   type ExtensionSettings,
 } from '../lib/settings';
 import { normalizeApiUrl } from '../lib/url';
+import { toNonEmptyString } from '../lib/utils';
 import '../styles/options.css';
 
 interface PairingConsumeSuccessResponse {
@@ -48,15 +49,6 @@ const STATUS_CLASS_MAP = {
   warning: 'status-warning',
 } as const;
 
-const asNonEmptyString = (value: unknown): string | null => {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const normalized = value.trim();
-  return normalized || null;
-};
-
 const parseJsonBody = <T>(rawBody: string): T | null => {
   const normalized = rawBody.trim();
 
@@ -93,10 +85,10 @@ const withBusyState = (busy: boolean, action: 'save' | 'test' | 'pair' = 'save')
 
 const getApiUrlFromInputs = (preferred: 'pairing' | 'manual'): string => {
   if (preferred === 'pairing') {
-    return asNonEmptyString(apiUrlInput.value) || asNonEmptyString(manualApiUrlInput.value) || '';
+    return toNonEmptyString(apiUrlInput.value) || toNonEmptyString(manualApiUrlInput.value) || '';
   }
 
-  return asNonEmptyString(manualApiUrlInput.value) || asNonEmptyString(apiUrlInput.value) || '';
+  return toNonEmptyString(manualApiUrlInput.value) || toNonEmptyString(apiUrlInput.value) || '';
 };
 
 const setApiUrlInputs = (value: string): void => {
@@ -146,7 +138,7 @@ const refreshPermissionState = async (): Promise<void> => {
 };
 
 const resolvePairingApiUrl = (): string => {
-  const rawApiUrl = asNonEmptyString(getApiUrlFromInputs('pairing'));
+  const rawApiUrl = toNonEmptyString(getApiUrlFromInputs('pairing'));
 
   if (!rawApiUrl) {
     throw new Error('API_URL obligatoire avant appairage (URL racine du bot).');
@@ -179,7 +171,7 @@ const getPairingFailureMessage = (params: {
   body: PairingConsumeResponse | null;
 }) => {
   const { status, endpoint, body } = params;
-  const remoteError = asNonEmptyString(body?.error) || asNonEmptyString(body?.message);
+  const remoteError = toNonEmptyString(body?.error) || toNonEmptyString(body?.message);
 
   if (status === 404 && body?.error === 'pairing_code_invalid_or_expired') {
     return 'Code invalide ou expiré. Regénère un code avec /pair-code.';
@@ -216,7 +208,7 @@ pairingForm.addEventListener('submit', (event) => {
     withBusyState(true, 'pair');
 
     try {
-      const pairingCode = asNonEmptyString(pairingCodeInput.value)?.toUpperCase();
+      const pairingCode = toNonEmptyString(pairingCodeInput.value)?.toUpperCase();
 
       if (!pairingCode) {
         setStatus('Code unique obligatoire.', 'error');
@@ -259,11 +251,11 @@ pairingForm.addEventListener('submit', (event) => {
       }
 
       const normalized = normalizeSettingsInput({
-        apiUrl: asNonEmptyString(body?.apiBaseUrl) || apiUrl,
-        ingestToken: asNonEmptyString(body?.ingestApiToken) || '',
-        guildId: asNonEmptyString(body?.guildId) || '',
-        authorName: asNonEmptyString(body?.authorName) || DEFAULT_AUTHOR_NAME,
-        authorImage: asNonEmptyString(body?.authorImage) || '',
+        apiUrl: toNonEmptyString(body?.apiBaseUrl) || apiUrl,
+        ingestToken: toNonEmptyString(body?.ingestApiToken) || '',
+        guildId: toNonEmptyString(body?.guildId) || '',
+        authorName: toNonEmptyString(body?.authorName) || DEFAULT_AUTHOR_NAME,
+        authorImage: toNonEmptyString(body?.authorImage) || '',
       });
 
       if (!normalized.ok) {

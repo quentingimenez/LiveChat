@@ -1,3 +1,5 @@
+import { isRecord, toNonEmptyString } from './utils';
+
 export type IngestFailureCode =
   | 'SETTINGS_MISSING'
   | 'INVALID_CONFIG'
@@ -23,28 +25,15 @@ interface ParsedIngestErrorBody {
   message?: string;
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> => {
-  return typeof value === 'object' && value !== null;
-};
-
-const asTrimmedString = (value: unknown): string | null => {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : null;
-};
-
 export const parseIngestErrorBody = (value: unknown): ParsedIngestErrorBody => {
   if (!isRecord(value)) {
     return {};
   }
 
   return {
-    error: asTrimmedString(value.error) || undefined,
-    code: asTrimmedString(value.code) || undefined,
-    message: asTrimmedString(value.message) || undefined
+    error: toNonEmptyString(value.error) || undefined,
+    code: toNonEmptyString(value.code) || undefined,
+    message: toNonEmptyString(value.message) || undefined
   };
 };
 

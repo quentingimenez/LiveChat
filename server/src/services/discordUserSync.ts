@@ -104,7 +104,7 @@ export const syncDiscordUserProfile = async (discordUserId: string, { force = fa
     lastSyncTimestamps.set(discordUserId, Date.now());
 
     logger.info(
-      `[DISCORD_SYNC] Synced user ${discordUserId}: ${ingestUpdateResult.count} ingest clients, ${pairingUpdateResult.count} pairing codes, ${overlayUpdateResult.count} overlay clients`,
+      `[DISCORD_SYNC] Synced ${displayName} (${discordUserId}): ${ingestUpdateResult.count} ingest clients, ${pairingUpdateResult.count} pairing codes, ${overlayUpdateResult.count} overlay clients`,
     );
 
     return true;

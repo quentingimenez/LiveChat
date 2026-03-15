@@ -41,11 +41,20 @@ export const getDiscordDisplayName = (user: User): string => {
   return user.global_name || user.username;
 };
 
+const SYNC_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
+const lastSyncTimestamps = new Map<string, number>();
+
 /**
  * Syncs a single Discord user's profile info across all records
  * Updates IngestClient, PairingCode, and OverlayClient records
  */
-export const syncDiscordUserProfile = async (discordUserId: string): Promise<boolean> => {
+export const syncDiscordUserProfile = async (discordUserId: string, { force = false } = {}): Promise<boolean> => {
+  if (!force) {
+    const lastSync = lastSyncTimestamps.get(discordUserId);
+    if (lastSync && Date.now() - lastSync < SYNC_COOLDOWN_MS) {
+      return true;
+    }
+  }
   try {
     const userInfo = await fetchDiscordUserInfo(discordUserId);
     if (!userInfo) {
@@ -91,6 +100,8 @@ export const syncDiscordUserProfile = async (discordUserId: string): Promise<boo
         defaultAuthorImage: avatarUrl,
       },
     });
+
+    lastSyncTimestamps.set(discordUserId, Date.now());
 
     logger.info(
       `[DISCORD_SYNC] Synced user ${discordUserId}: ${ingestUpdateResult.count} ingest clients, ${pairingUpdateResult.count} pairing codes, ${overlayUpdateResult.count} overlay clients`,
@@ -154,7 +165,7 @@ export const syncAllActiveDiscordUsers = async (): Promise<void> => {
 
     // Sync each user with rate limiting (avoid Discord API limits)
     for (const userId of uniqueUserIds) {
-      const success = await syncDiscordUserProfile(userId);
+      const success = await syncDiscordUserProfile(userId, { force: true });
       if (success) {
         successCount++;
       } else {

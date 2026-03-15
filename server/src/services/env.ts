@@ -127,7 +127,7 @@ export enum Environment {
 }
 
 export const currentEnv = () =>
-  (!!env.NODE_ENV && env.NODE_ENV !== undefined ? env.NODE_ENV : Environment.DEVELOPMENT)
+  (!!env.NODE_ENV && env.NODE_ENV !== undefined ? env.NODE_ENV : Environment.PRODUCTION)
     ?.toString()
     ?.toLowerCase()
     ?.trim();

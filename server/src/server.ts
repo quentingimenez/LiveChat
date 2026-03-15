@@ -39,11 +39,9 @@ export const runServer = async () => {
   const fastify: FastifyCustomInstance = Fastify({
     logger: {
       level: logLevel,
-      ...(isDev ? {
-        transport: {
-          target: resolve(process.cwd(), 'src', 'logger', 'prettyTransport.cjs'),
-        },
-      } : {}),
+      transport: {
+        target: resolve(process.cwd(), 'src', 'logger', 'prettyTransport.cjs'),
+      },
     },
     disableRequestLogging: true,
   });

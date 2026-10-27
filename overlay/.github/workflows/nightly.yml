@@ -1,0 +1,130 @@
+name: Build & Release (nightly)
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-release
+  cancel-in-progress: true
+
+jobs:
+  ensure-nightly-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure nightly release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="nightly"
+
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --title "Nightly" \
+              --prerelease \
+              --notes "Automated build from main"
+          fi
+
+      - name: Clear existing nightly assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="nightly"
+          assets="$(gh release view "$tag" --json assets --jq '.assets[].name')"
+          if [ -z "${assets}" ]; then
+            echo "No assets to delete on nightly release"
+            exit 0
+          fi
+
+          while IFS= read -r asset; do
+            if [ -z "${asset}" ]; then
+              continue
+            fi
+            echo "Deleting nightly asset: ${asset}"
+            gh release delete-asset "$tag" "$asset" --yes
+          done <<< "${assets}"
+
+  build-windows-portable:
+    runs-on: windows-latest
+    needs: ensure-nightly-release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Cache Electron + electron-builder
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/electron
+            .cache/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
+      - name: Install dependencies (with retry)
+        shell: pwsh
+        env:
+          ELECTRON_CACHE: ${{ github.workspace }}\.cache\electron
+          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\.cache\electron-builder
+          npm_config_fetch_retries: 5
+          npm_config_fetch_retry_mintimeout: 20000
+          npm_config_fetch_retry_maxtimeout: 120000
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            try {
+              npm ci
+              break
+            } catch {
+              if ($attempt -eq $maxAttempts) {
+                throw
+              }
+              Write-Host "Install failed (attempt $attempt/$maxAttempts), retrying in 20s..."
+              Start-Sleep -Seconds 20
+            }
+          }
+
+      - name: Build Windows portable (electron-builder)
+        env:
+          ELECTRON_CACHE: ${{ github.workspace }}\.cache\electron
+          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\.cache\electron-builder
+        run: npm run package:win:portable -- --publish never
+
+      - name: List dist outputs
+        shell: pwsh
+        run: |
+          if (!(Test-Path "dist")) { throw "dist/ folder not found" }
+          Get-ChildItem -Path "dist" -Recurse | Select-Object FullName, Length
+
+      - name: Upload Windows portable asset to nightly
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $portable = Get-ChildItem -Path "dist" -Filter "*.exe" -File |
+            Where-Object { $_.Name -notlike "*Setup*" } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+
+          if ($null -eq $portable) { throw "No portable .exe found in dist/" }
+          gh release upload nightly $portable.FullName --clobber

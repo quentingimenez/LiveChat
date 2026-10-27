@@ -84,14 +84,14 @@ test('register-pairing-ipc-handler wires pairing consume channel and runs side e
   assert.equal(ipcMain.handles.has(IPC_CHANNELS.pairingConsume), true);
 
   const response = await ipcMain.handles.get(IPC_CHANNELS.pairingConsume)(null, {
-    serverUrl: 'https://bot.livechat.test/',
+    serverUrl: 'https://server.livechat.test/',
     code: ' abcd ',
     deviceName: ' Request Device ',
   });
 
   assert.deepEqual(response, { ok: true });
   assert.equal(requestCalls.length, 1);
-  assert.equal(requestCalls[0].url, 'https://bot.livechat.test/overlay/pair/consume');
+  assert.equal(requestCalls[0].url, 'https://server.livechat.test/overlay/pair/consume');
   assert.deepEqual(requestCalls[0].payload, {
     code: 'ABCD',
     deviceName: 'Request Device',

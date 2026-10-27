@@ -1,6 +1,6 @@
 # LiveChat Extension (Chromium)
 
-Extension MV3 pour envoyer rapidement des liens média vers `POST /ingest` du bot LiveChat.
+Extension MV3 pour envoyer rapidement des liens média vers `POST /ingest` du serveur LiveChat.
 
 ## Projets liés (sources)
 
@@ -29,7 +29,7 @@ Extension MV3 pour envoyer rapidement des liens média vers `POST /ingest` du bo
 
 ## Pré-requis
 
-- Bot LiveChat lancé avec `/ingest` activé (`INGEST_API_TOKEN` non vide).
+- Serveur LiveChat lancé avec `/ingest` activé (`INGEST_API_TOKEN` non vide).
 - `API_URL` joignable en `https://` (ou `http://` en local).
 
 ## Développement
@@ -71,7 +71,7 @@ Commandes utiles:
 ## Configuration
 
 1. Ouvrir la page d’options de l’extension.
-2. Saisir **obligatoirement** `API_URL` (URL racine du bot), par exemple `https://bot.exemple.com`.
+2. Saisir **obligatoirement** `API_URL` (URL racine du serveur), par exemple `https://livechat.exemple.com`.
 3. Ne pas mettre `/overlay` ni `/ingest` dans `API_URL`.
 4. Générer un code avec `/pair-code`, puis cliquer `Récupérer la configuration`.
 5. Vérifier les champs récupérés (`INGEST_API_TOKEN`, `guildId`, `authorName`, `authorImage`) puis sauvegarder si besoin.

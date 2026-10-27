@@ -126,8 +126,8 @@ test('pairing-consume-service uses formatted network errors for non-TLS failures
   });
 
   await assert.rejects(
-    () => service.consumePairing({ serverUrl: 'https://bot.livechat.test', code: 'ABCD' }),
-    /network_error \(https:\/\/bot\.livechat\.test\/overlay\/pair\/consume\)/
+    () => service.consumePairing({ serverUrl: 'https://server.livechat.test', code: 'ABCD' }),
+    /network_error \(https:\/\/server\.livechat\.test\/overlay\/pair\/consume\)/
   );
 });
 
@@ -156,7 +156,7 @@ test('pairing-consume-service retries with insecure TLS for likely certificate e
     isLikelyTlsError: () => true,
   });
 
-  const result = await service.consumePairing({ serverUrl: 'https://bot.livechat.test/', code: ' A1B2 ' });
+  const result = await service.consumePairing({ serverUrl: 'https://server.livechat.test/', code: ' A1B2 ' });
 
   assert.deepEqual(result, { ok: true });
   assert.equal(requestCalls.length, 2);
@@ -169,7 +169,7 @@ test('pairing-consume-service persists pairing and opens overlay when pairing co
   const harness = createHarness();
 
   const result = await harness.service.consumePairing({
-    serverUrl: 'https://bot.livechat.test/',
+    serverUrl: 'https://server.livechat.test/',
     code: ' x9y8 ',
     deviceName: ' Requested Device ',
   });
@@ -207,7 +207,7 @@ test('pairing-consume-service does not open overlay when resulting config is dis
   });
 
   await harness.service.consumePairing({
-    serverUrl: 'https://bot.livechat.test',
+    serverUrl: 'https://server.livechat.test',
     code: 'QWER',
   });
 

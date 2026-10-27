@@ -73,7 +73,7 @@ export function createOverlayPlaybackForwardingService(
     const remainingMs = typeof payloadRecord.remainingMs === 'number' ? payloadRecord.remainingMs : 'null';
 
     logger.info(
-      `[OVERLAY] Forwarded playback-state to bot (jobId: ${jobId}, state: ${state}, remainingMs: ${remainingMs})`
+      `[OVERLAY] Forwarded playback-state to server (jobId: ${jobId}, state: ${state}, remainingMs: ${remainingMs})`
     );
   }
 
@@ -92,7 +92,7 @@ export function createOverlayPlaybackForwardingService(
     }
 
     overlaySocket.emit(OVERLAY_SOCKET_EVENTS.STOP, normalizedPayload);
-    logger.info(`[OVERLAY] Forwarded playback-stop to bot (jobId: ${normalizedPayload.jobId})`);
+    logger.info(`[OVERLAY] Forwarded playback-stop to server (jobId: ${normalizedPayload.jobId})`);
   }
 
   return {

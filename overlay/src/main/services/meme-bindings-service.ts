@@ -107,7 +107,7 @@ export function createMemeBindingsService(options: CreateMemeBindingsServiceOpti
     });
 
     logger.info(
-      `[OVERLAY] Forwarded meme trigger to bot (itemId: ${normalizedItemId}, trigger: ${normalizedTrigger})`
+      `[OVERLAY] Forwarded meme trigger to server (itemId: ${normalizedItemId}, trigger: ${normalizedTrigger})`
     );
 
     return {

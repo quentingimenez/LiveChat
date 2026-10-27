@@ -11,11 +11,11 @@ import {
 
 describe('url helpers', () => {
   it('normalise une URL API en retirant le slash final', () => {
-    expect(normalizeApiUrl('https://bot.exemple.com/')).toBe('https://bot.exemple.com');
+    expect(normalizeApiUrl('https://livechat.exemple.com/')).toBe('https://livechat.exemple.com');
   });
 
   it('calcule un pattern d’origine pour permissions', () => {
-    expect(toApiOriginPattern('https://bot.exemple.com/api')).toBe('https://bot.exemple.com/*');
+    expect(toApiOriginPattern('https://livechat.exemple.com/api')).toBe('https://livechat.exemple.com/*');
   });
 
   it('normalise une URL YouTube watch', () => {

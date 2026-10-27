@@ -141,7 +141,7 @@ const resolvePairingApiUrl = (): string => {
   const rawApiUrl = toNonEmptyString(getApiUrlFromInputs('pairing'));
 
   if (!rawApiUrl) {
-    throw new Error('API_URL obligatoire avant appairage (URL racine du bot).');
+    throw new Error('API_URL obligatoire avant appairage (URL racine du serveur).');
   }
 
   return normalizeApiUrl(rawApiUrl);
@@ -178,11 +178,11 @@ const getPairingFailureMessage = (params: {
   }
 
   if (status === 404) {
-    return `Endpoint introuvable (${endpoint}). Vérifie que le bot est à jour et que API_URL est la racine (sans /overlay ni /ingest).`;
+    return `Endpoint introuvable (${endpoint}). Vérifie que le serveur est à jour et que API_URL est la racine (sans /overlay ni /ingest).`;
   }
 
   if (status === 403) {
-    return `Échec appairage (403): requête refusée avant le bot ou par un proxy. Vérifie API_URL racine et autorise POST ${endpoint}.`;
+    return `Échec appairage (403): requête refusée avant le serveur ou par un proxy. Vérifie API_URL racine et autorise POST ${endpoint}.`;
   }
 
   if (status === 401) {
@@ -363,7 +363,7 @@ testButton.addEventListener('click', () => {
       }
 
       if (response.status === 503 || body?.error === 'ingest_api_disabled') {
-        setStatus('Le bot répond mais /ingest est désactivé (503).', 'warning');
+        setStatus('Le serveur répond mais /ingest est désactivé (503).', 'warning');
         return;
       }
 

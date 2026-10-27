@@ -3,18 +3,27 @@ name: Extension Build and Release
 on:
   pull_request:
     branches: [main]
+    paths:
+      - "extension/**"
+      - ".github/workflows/extension.yml"
   push:
     branches: [main]
+    paths:
+      - "extension/**"
+      - ".github/workflows/extension.yml"
     tags:
-      - 'v*'
+      - "extension-v*"
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extension
 
     steps:
       - name: Checkout
@@ -25,6 +34,7 @@ jobs:
         with:
           node-version: 20
           cache: npm
+          cache-dependency-path: extension/package-lock.json
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -44,13 +54,17 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: livechat-extension-package
-          path: release/*.zip
+          path: extension/release/*.zip
           if-no-files-found: error
 
+  # Extension releases never take the repository "Latest" flag: it belongs to
+  # the overlay stable releases, which electron-updater reads for auto-update.
   release:
     needs: build
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
+    permissions:
+      contents: write
 
     steps:
       - name: Download package artifact
@@ -60,17 +74,19 @@ jobs:
           path: release
 
       - name: Create GitHub Release (version tag)
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/extension-v')
         uses: softprops/action-gh-release@v2
         with:
+          name: LiveChat Extension ${{ github.ref_name }}
+          make_latest: false
           files: release/*.zip
           generate_release_notes: true
 
-      - name: Create/Update GitHub Release (latest)
+      - name: Create/Update GitHub Release (latest build)
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest
+          tag_name: extension-latest
           name: LiveChat Extension (latest)
           prerelease: true
           make_latest: false
@@ -78,12 +94,12 @@ jobs:
           generate_release_notes: false
           append_body: false
           body: |
-            Automatic latest build from `main`.
+            Automatic latest extension build from `main`.
 
   publish-webstore:
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/extension-v')
     env:
       CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
       CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}

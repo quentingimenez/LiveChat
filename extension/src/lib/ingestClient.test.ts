@@ -3,7 +3,7 @@ import { buildIngestPayload, sendToIngest } from './ingestClient';
 import type { ExtensionSettings } from './settings';
 
 const settings: ExtensionSettings = {
-  apiUrl: 'https://bot.example.com',
+  apiUrl: 'https://livechat.example.com',
   ingestToken: 'ingest-token',
   guildId: '1234567890',
   authorName: 'LiveChat Extension',

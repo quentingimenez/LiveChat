@@ -45,7 +45,7 @@ export const mapHttpFailure = (status: number, body: unknown): IngestFailure => 
     return {
       code: 'INVALID_PAYLOAD',
       status,
-      message: 'Requête invalide envoyée au bot LiveChat.'
+      message: 'Requête invalide envoyée au serveur LiveChat.'
     };
   }
 
@@ -61,7 +61,7 @@ export const mapHttpFailure = (status: number, body: unknown): IngestFailure => 
     return {
       code: 'MEDIA_INGESTION_FAILED',
       status,
-      message: parsedBody.message || 'Le média n’a pas pu être ingéré par le bot.',
+      message: parsedBody.message || 'Le média n’a pas pu être ingéré par le serveur.',
       details: parsedBody.code || undefined
     };
   }
@@ -70,7 +70,7 @@ export const mapHttpFailure = (status: number, body: unknown): IngestFailure => 
     return {
       code: 'INGEST_DISABLED',
       status,
-      message: 'L’endpoint /ingest est désactivé sur ce bot.'
+      message: 'L’endpoint /ingest est désactivé sur ce serveur.'
     };
   }
 
@@ -78,7 +78,7 @@ export const mapHttpFailure = (status: number, body: unknown): IngestFailure => 
     return {
       code: 'SERVER_ERROR',
       status,
-      message: 'Le bot LiveChat a retourné une erreur interne.'
+      message: 'Le serveur LiveChat a retourné une erreur interne.'
     };
   }
 

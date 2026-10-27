@@ -73,8 +73,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "Streamer",
-        "repo": "LiveChat-Overlay",
+        "owner": "quentingimenez",
+        "repo": "LiveChat",
         "releaseType": "release"
       }
     ]

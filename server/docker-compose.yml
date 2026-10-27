@@ -1,0 +1,14 @@
+services:
+  livechat-server:
+    image: ghcr.io/quentingimenez/livechat-server:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Paths/port baked into the image take precedence over the local-dev values of .env
+      PORT: 3000
+      DATABASE_URL: file:/app/data/sqlite.db
+      MEDIA_STORAGE_DIR: /app/data/media
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data

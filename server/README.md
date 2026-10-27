@@ -2,14 +2,13 @@
 
 Backend Discord/API pour l'architecture LiveChat **EXE-only**.
 
-Documentation projet: `../README.md`
-PRD: `../PRD.md`
+Documentation projet: [`../README.md`](../README.md)
 
-## Projets liés (sources)
+## Projets liés (monorepo [LiveChat](https://github.com/quentingimenez/LiveChat))
 
-- Server (ce dépôt): https://github.com/quentingimenez/LiveChat-server
-- Overlay desktop (Electron): https://github.com/quentingimenez/LiveChat-Overlay
-- Extension navigateur (MV3): https://github.com/quentingimenez/LiveChat-Extension
+- Server (ce dossier): [`server/`](.)
+- Overlay desktop (Electron): [`overlay/`](../overlay)
+- Extension navigateur (MV3): [`extension/`](../extension)
 
 ## Rôle
 
@@ -21,6 +20,8 @@ PRD: `../PRD.md`
 - Diffuse les événements socket vers les overlays appairés.
 
 ## Démarrage rapide
+
+Depuis `server/`:
 
 ```bash
 cp .env.example .env
@@ -83,15 +84,28 @@ La normalisation loudness est activée par défaut pendant la transcode:
 
 Les erreurs HTTP sont volontairement normalisées (`not_found`, `request_error`, `internal_error`) sans stack trace exposée.
 
-## GitHub Container Registry (GitHub Actions)
+## Image Docker (GHCR)
 
-Le workflow `/.github/workflows/docker.yml` build et pousse l'image sur GHCR (`ghcr.io`):
-- sur push vers `main`
-- sur tag `v*`
+Le workflow [`server.yml`](../.github/workflows/server.yml) (racine du monorepo) teste le serveur puis build l'image:
+- sur pull request touchant `server/`: tests + build de l'image (sans push)
+- sur push vers `main` touchant `server/`: tests + build + push sur GHCR
+- sur tag `server-v*` (ex: `server-v1.2.0`): image versionnée `1.2.0`
 - en exécution manuelle (`workflow_dispatch`)
 
 Aucun secret requis: l'authentification utilise le `GITHUB_TOKEN` du workflow (permission `packages: write`).
 
-Image publiée:
-- `ghcr.io/<owner>/livechat-server:latest`
-- `ghcr.io/<owner>/livechat-server:sha-<commit>`
+Images publiées:
+- `ghcr.io/quentingimenez/livechat-server:latest` (dernier build de `main`)
+- `ghcr.io/quentingimenez/livechat-server:sha-<commit>`
+- `ghcr.io/quentingimenez/livechat-server:<version>` (depuis un tag `server-v<version>`)
+
+### Lancer l'image
+
+Avec [`docker-compose.yml`](docker-compose.yml), depuis `server/`:
+
+```bash
+cp .env.example .env   # renseigner au minimum DISCORD_TOKEN et DISCORD_CLIENT_ID
+docker compose up -d
+```
+
+La base SQLite et les médias sont persistés dans `server/data/` (monté sur `/app/data`).

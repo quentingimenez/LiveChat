@@ -7,7 +7,7 @@ export const infoCommand = () => ({
       embeds: [
         new EmbedBuilder()
           .setTitle(`LiveChat Server - ${new Date().getFullYear()}`)
-          .setDescription('[GitHub Repository](https://github.com/quentingimenez/LiveChat-server)'),
+          .setDescription('[GitHub Repository](https://github.com/quentingimenez/LiveChat)'),
       ],
       ephemeral: true,
     });

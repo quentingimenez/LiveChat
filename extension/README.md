@@ -2,11 +2,13 @@
 
 Extension MV3 pour envoyer rapidement des liens média vers `POST /ingest` du serveur LiveChat.
 
-## Projets liés (sources)
+Documentation projet: [`../README.md`](../README.md)
 
-- Extension navigateur (ce dépôt): https://github.com/SuperKn4cky/LiveChat-Extension
-- Bot/API: https://github.com/WardenPro/LiveChat-Bot
-- Overlay desktop (Electron): https://github.com/SuperKn4cky/LiveChat-Overlay
+## Projets liés (monorepo [LiveChat](https://github.com/quentingimenez/LiveChat))
+
+- Extension navigateur (ce dossier): [`extension/`](.)
+- Server (Discord + API): [`server/`](../server)
+- Overlay desktop (Electron): [`overlay/`](../overlay)
 
 ## Fonctionnalités V1
 
@@ -33,6 +35,8 @@ Extension MV3 pour envoyer rapidement des liens média vers `POST /ingest` du se
 - `API_URL` joignable en `https://` (ou `http://` en local).
 
 ## Développement
+
+Depuis `extension/`:
 
 ```bash
 npm install
@@ -93,23 +97,26 @@ Commandes utiles:
 
 ## CI / Release GitHub
 
-Workflow: `.github/workflows/extension-release.yml`
+Workflow: [`extension.yml`](../.github/workflows/extension.yml) (racine du monorepo)
 
-- Sur `pull_request` et `push` sur `main`: checks + build + artifact zip.
-- Sur tag `v*` (ex: `v0.1.0`): création automatique d’une GitHub Release avec le zip.
-- Sur tag `v*` (ex: `v0.1.0`): publication automatique sur Chrome Web Store (upload + publish) si les secrets sont configurés.
+- Sur `pull_request` et `push` sur `main` touchant `extension/`: checks + build + artifact zip.
+- Sur `push` sur `main`: mise à jour de la prerelease `extension-latest` avec le zip.
+- Sur tag `extension-v*` (ex: `extension-v0.1.0`): création automatique d’une GitHub Release avec le zip.
+- Sur tag `extension-v*` (ex: `extension-v0.1.0`): publication automatique sur Chrome Web Store (upload + publish) si les secrets sont configurés.
+
+Les releases de l’extension ne sont jamais marquées *Latest* (réservé à l’overlay, dont l’auto-update lit la release *Latest* du monorepo).
 
 Exemple publication:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag extension-v0.1.0
+git push origin extension-v0.1.0
 ```
 
 ## Auto-update via Chrome Web Store (basé sur GitHub)
 
 L’auto-update des utilisateurs finaux passe par le Chrome Web Store.
-Ce dépôt publie automatiquement l’extension lors d’un push de tag `v*`.
+Le monorepo publie automatiquement l’extension lors d’un push de tag `extension-v*`.
 
 ### Secrets GitHub requis
 
@@ -129,7 +136,7 @@ Configurer ces secrets dans `Settings > Secrets and variables > Actions`:
    `https://www.googleapis.com/auth/chromewebstore`
 5. Renseigner les secrets dans GitHub.
 
-Ensuite, chaque tag `v*` poussé sur GitHub déclenche:
+Ensuite, chaque tag `extension-v*` poussé sur GitHub déclenche:
 - build + zip,
 - upload GitHub Release,
 - upload vers Chrome Web Store,

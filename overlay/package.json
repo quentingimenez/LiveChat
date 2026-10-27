@@ -73,8 +73,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "SuperKn4cky",
-        "repo": "LiveChat-Overlay",
+        "owner": "quentingimenez",
+        "repo": "LiveChat",
         "releaseType": "release"
       }
     ]

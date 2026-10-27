@@ -1,0 +1,4 @@
+# Server unit tests run only when server files are staged.
+if git diff --cached --name-only -- server/ | grep -q .; then
+  pnpm --dir server test
+fi

@@ -1,0 +1,6 @@
+# Root tooling (each project keeps its own .gitignore)
+node_modules/
+.env
+*.log
+.DS_Store
+Thumbs.db

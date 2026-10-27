@@ -1,0 +1,156 @@
+name: Build & Release (stable)
+
+on:
+  push:
+    tags:
+      - "*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stable-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Validate release tag and package version parity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "${{ github.ref_name }}"
+          $packageVersion = node -p "require('./package.json').version"
+          $tagShortPattern = '^[0-9]+\.[0-9]+$'
+          $tagFullPattern = '^[0-9]+\.[0-9]+\.[0-9]+$'
+          $packagePattern = '^[0-9]+\.[0-9]+\.[0-9]+$'
+          $normalizedTagVersion = $null
+
+          Write-Host "Tag: $tag"
+          Write-Host "package.json version: $packageVersion"
+
+          if ($tag.StartsWith('v')) {
+            throw "Invalid tag '$tag': do not use the 'v' prefix. Use '$packageVersion'."
+          }
+
+          if ($tag -match $tagShortPattern) {
+            $normalizedTagVersion = "$tag.0"
+          } elseif ($tag -match $tagFullPattern) {
+            $normalizedTagVersion = $tag
+          } else {
+            throw "Invalid tag '$tag': expected version format X.Y or X.Y.Z."
+          }
+
+          if ($packageVersion -notmatch $packagePattern) {
+            throw "Invalid package.json version '$packageVersion': expected X.Y.Z."
+          }
+
+          Write-Host "Normalized tag version: $normalizedTagVersion"
+
+          if ($normalizedTagVersion -ne $packageVersion) {
+            throw "Version mismatch: git tag '$tag' maps to '$normalizedTagVersion' and must match package.json version '$packageVersion'."
+          }
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Cache Electron + electron-builder
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/electron
+            .cache/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
+      - name: Install dependencies (with retry)
+        shell: pwsh
+        env:
+          ELECTRON_CACHE: ${{ github.workspace }}\.cache\electron
+          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\.cache\electron-builder
+          npm_config_fetch_retries: 5
+          npm_config_fetch_retry_mintimeout: 20000
+          npm_config_fetch_retry_maxtimeout: 120000
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            try {
+              npm ci
+              break
+            } catch {
+              if ($attempt -eq $maxAttempts) {
+                throw
+              }
+              Write-Host "Install failed (attempt $attempt/$maxAttempts), retrying in 20s..."
+              Start-Sleep -Seconds 20
+            }
+          }
+
+      - name: Build Windows setup + portable (electron-builder)
+        env:
+          ELECTRON_CACHE: ${{ github.workspace }}\.cache\electron
+          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\.cache\electron-builder
+        run: npm run package:win -- --publish never
+
+      - name: Verify Windows artifacts
+        run: npm run verify:win:artifacts
+
+      - name: List dist outputs
+        shell: pwsh
+        run: |
+          if (!(Test-Path "dist")) { throw "dist/ folder not found" }
+          Get-ChildItem -Path "dist" -Recurse | Select-Object FullName, Length
+
+      - name: Ensure stable release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "${{ github.ref_name }}"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title $tag --notes "Automated release from tag $tag"
+          }
+
+      - name: Upload Windows assets to stable release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "${{ github.ref_name }}"
+          $files = @()
+
+          $setup = Get-ChildItem -Path "dist" -Filter "*.exe" -File |
+            Where-Object { $_.Name -like "*Setup*" } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if ($null -eq $setup) { throw "No Windows setup .exe found in dist/" }
+          $files += $setup.FullName
+
+          $portable = Get-ChildItem -Path "dist" -Filter "*.exe" -File |
+            Where-Object { $_.Name -notlike "*Setup*" } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if ($null -eq $portable) { throw "No Windows portable .exe found in dist/" }
+          $files += $portable.FullName
+
+          if (!(Test-Path "dist/latest.yml")) { throw "latest.yml not found in dist/" }
+          $files += (Resolve-Path "dist/latest.yml").Path
+          $files += Get-ChildItem -Path "dist" -Filter "*.blockmap" -File | ForEach-Object { $_.FullName }
+
+          gh release upload $tag $files --clobber

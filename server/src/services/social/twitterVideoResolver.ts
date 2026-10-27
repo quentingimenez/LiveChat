@@ -99,7 +99,7 @@ const fetchTextWithTimeout = async (url: string) => {
     const response = await fetch(url, {
       signal: controller.signal,
       headers: {
-        'user-agent': 'LiveChatBot/1.0 (+https://github.com/WardenPro/LiveChat-Bot)',
+        'user-agent': 'LiveChat-server/1.0 (+https://github.com/quentingimenez/LiveChat-server)',
       },
     });
 
@@ -126,7 +126,7 @@ const fetchJsonWithTimeout = async <T>(url: string): Promise<T | null> => {
     const response = await fetch(url, {
       signal: controller.signal,
       headers: {
-        'user-agent': 'LiveChatBot/1.0 (+https://github.com/WardenPro/LiveChat-Bot)',
+        'user-agent': 'LiveChat-server/1.0 (+https://github.com/quentingimenez/LiveChat-server)',
       },
     });
 

@@ -1,4 +1,4 @@
-# LiveChatCaCaBox
+# LiveChat-server
 
 Backend Discord/API pour l'architecture LiveChat **EXE-only**.
 
@@ -7,9 +7,9 @@ PRD: `../PRD.md`
 
 ## Projets liés (sources)
 
-- Bot (ce dépôt): https://github.com/WardenPro/LiveChat-Bot
-- Overlay desktop (Electron): https://github.com/SuperKn4cky/LiveChat-Overlay
-- Extension navigateur (MV3): https://github.com/SuperKn4cky/LiveChat-Extension
+- Server (ce dépôt): https://github.com/quentingimenez/LiveChat-server
+- Overlay desktop (Electron): https://github.com/quentingimenez/LiveChat-Overlay
+- Extension navigateur (MV3): https://github.com/quentingimenez/LiveChat-Extension
 
 ## Rôle
 
@@ -83,17 +83,15 @@ La normalisation loudness est activée par défaut pendant la transcode:
 
 Les erreurs HTTP sont volontairement normalisées (`not_found`, `request_error`, `internal_error`) sans stack trace exposée.
 
-## Docker Hub (GitHub Actions)
+## GitHub Container Registry (GitHub Actions)
 
-Le workflow `/.github/workflows/docker.yml` build et pousse l'image sur Docker Hub:
+Le workflow `/.github/workflows/docker.yml` build et pousse l'image sur GHCR (`ghcr.io`):
 - sur push vers `main`
 - sur tag `v*`
 - en exécution manuelle (`workflow_dispatch`)
 
-Secrets GitHub requis:
-- `DOCKERHUB_USERNAME`
-- `DOCKERHUB_TOKEN` (token d'accès Docker Hub)
+Aucun secret requis: l'authentification utilise le `GITHUB_TOKEN` du workflow (permission `packages: write`).
 
 Image publiée:
-- `${DOCKERHUB_USERNAME}/livechat-bot:latest`
-- `${DOCKERHUB_USERNAME}/livechat-bot:sha-<commit>`
+- `ghcr.io/<owner>/livechat-server:latest`
+- `ghcr.io/<owner>/livechat-server:sha-<commit>`

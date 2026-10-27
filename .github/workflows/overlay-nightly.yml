@@ -1,16 +1,22 @@
-name: Build & Release (nightly)
+name: Overlay Build & Release (nightly)
 
 on:
   push:
     branches: ["main"]
+    paths:
+      - "overlay/**"
+      - ".github/workflows/overlay-nightly.yml"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: nightly-release
+  group: overlay-nightly-release
   cancel-in-progress: true
+
+env:
+  NIGHTLY_TAG: overlay-nightly
 
 jobs:
   ensure-nightly-release:
@@ -23,13 +29,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="nightly"
+          tag="$NIGHTLY_TAG"
 
           if ! gh release view "$tag" >/dev/null 2>&1; then
+            # Prerelease: never marked "Latest", so the stable auto-update feed is untouched
             gh release create "$tag" \
-              --title "Nightly" \
+              --title "LiveChat Overlay (nightly)" \
               --prerelease \
-              --notes "Automated build from main"
+              --target "$GITHUB_SHA" \
+              --notes "Automated overlay build from main"
           fi
 
       - name: Clear existing nightly assets
@@ -39,7 +47,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="nightly"
+          tag="$NIGHTLY_TAG"
           assets="$(gh release view "$tag" --json assets --jq '.assets[].name')"
           if [ -z "${assets}" ]; then
             echo "No assets to delete on nightly release"
@@ -57,6 +65,9 @@ jobs:
   build-windows-portable:
     runs-on: windows-latest
     needs: ensure-nightly-release
+    defaults:
+      run:
+        working-directory: overlay
 
     steps:
       - name: Checkout
@@ -67,6 +78,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: overlay/package-lock.json
 
       - name: Cache Electron + electron-builder
         uses: actions/cache@v4
@@ -74,7 +86,7 @@ jobs:
           path: |
             .cache/electron
             .cache/electron-builder
-          key: ${{ runner.os }}-electron-${{ hashFiles('**/package-lock.json') }}
+          key: ${{ runner.os }}-electron-${{ hashFiles('overlay/package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-electron-
 
@@ -127,4 +139,4 @@ jobs:
             Select-Object -First 1
 
           if ($null -eq $portable) { throw "No portable .exe found in dist/" }
-          gh release upload nightly $portable.FullName --clobber
+          gh release upload $env:NIGHTLY_TAG $portable.FullName --clobber

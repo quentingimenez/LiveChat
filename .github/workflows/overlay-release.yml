@@ -1,21 +1,24 @@
-name: Build & Release (stable)
+name: Overlay Build & Release (stable)
 
 on:
   push:
     tags:
-      - "*.*"
+      - "overlay-v*"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: stable-release-${{ github.ref }}
+  group: overlay-stable-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   build-windows:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: overlay
 
     steps:
       - name: Checkout
@@ -26,6 +29,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $tag = "${{ github.ref_name }}"
+          $tagPrefix = 'overlay-v'
           $packageVersion = node -p "require('./package.json').version"
           $tagShortPattern = '^[0-9]+\.[0-9]+$'
           $tagFullPattern = '^[0-9]+\.[0-9]+\.[0-9]+$'
@@ -35,16 +39,17 @@ jobs:
           Write-Host "Tag: $tag"
           Write-Host "package.json version: $packageVersion"
 
-          if ($tag.StartsWith('v')) {
-            throw "Invalid tag '$tag': do not use the 'v' prefix. Use '$packageVersion'."
+          if (-not $tag.StartsWith($tagPrefix)) {
+            throw "Invalid tag '$tag': overlay releases must be tagged '$tagPrefix<X.Y[.Z]>' (e.g. '$tagPrefix$packageVersion')."
           }
+          $tagVersion = $tag.Substring($tagPrefix.Length)
 
-          if ($tag -match $tagShortPattern) {
-            $normalizedTagVersion = "$tag.0"
-          } elseif ($tag -match $tagFullPattern) {
-            $normalizedTagVersion = $tag
+          if ($tagVersion -match $tagShortPattern) {
+            $normalizedTagVersion = "$tagVersion.0"
+          } elseif ($tagVersion -match $tagFullPattern) {
+            $normalizedTagVersion = $tagVersion
           } else {
-            throw "Invalid tag '$tag': expected version format X.Y or X.Y.Z."
+            throw "Invalid tag '$tag': expected format ${tagPrefix}X.Y or ${tagPrefix}X.Y.Z."
           }
 
           if ($packageVersion -notmatch $packagePattern) {
@@ -62,6 +67,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: overlay/package-lock.json
 
       - name: Cache Electron + electron-builder
         uses: actions/cache@v4
@@ -69,7 +75,7 @@ jobs:
           path: |
             .cache/electron
             .cache/electron-builder
-          key: ${{ runner.os }}-electron-${{ hashFiles('**/package-lock.json') }}
+          key: ${{ runner.os }}-electron-${{ hashFiles('overlay/package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-electron-
 
@@ -112,7 +118,9 @@ jobs:
           if (!(Test-Path "dist")) { throw "dist/ folder not found" }
           Get-ChildItem -Path "dist" -Recurse | Select-Object FullName, Length
 
-      - name: Ensure stable release exists
+      # electron-updater reads the repository's "Latest" release: only stable
+      # overlay releases may hold that flag in the monorepo.
+      - name: Ensure stable release exists and is marked Latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -122,7 +130,9 @@ jobs:
           $tag = "${{ github.ref_name }}"
           gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --title $tag --notes "Automated release from tag $tag"
+            gh release create $tag --title "LiveChat Overlay $tag" --notes "Automated overlay release from tag $tag" --latest
+          } else {
+            gh release edit $tag --latest
           }
 
       - name: Upload Windows assets to stable release

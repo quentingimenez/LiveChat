@@ -6,8 +6,8 @@ export const infoCommand = () => ({
     await interaction.reply({
       embeds: [
         new EmbedBuilder()
-          .setTitle(`LiveChat Bot - ${new Date().getFullYear()}`)
-          .setDescription('[GitHub Repository](https://github.com/WardenPro/LiveChat-Bot)'),
+          .setTitle(`LiveChat Server - ${new Date().getFullYear()}`)
+          .setDescription('[GitHub Repository](https://github.com/quentingimenez/LiveChat-server)'),
       ],
       ephemeral: true,
     });

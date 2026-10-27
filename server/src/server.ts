@@ -169,7 +169,7 @@ export const runServer = async () => {
 
   fastify.get('/', async () => {
     return {
-      service: 'livechat-bot',
+      service: 'livechat-server',
       status: 'ok',
     };
   });

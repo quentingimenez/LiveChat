@@ -1,5 +1,5 @@
 {
-  "name": "livechat-ccb",
+  "name": "livechat-server",
   "version": "1.0.0",
   "description": "LiveChat backend",
   "main": "index.js",

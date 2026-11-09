@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LiveChat — Appairage</title>
+    <script src="./bridge.js"></script>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #14161a;
+        color: #e6e6e6;
+        font: 14px/1.5 "Segoe UI", system-ui, sans-serif;
+      }
+      main {
+        padding: 24px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 18px;
+      }
+      p {
+        margin: 6px 0;
+      }
+      code {
+        color: #9cdcfe;
+      }
+      .muted {
+        color: #97a0ad;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Appairage de l'overlay</h1>
+      <p class="muted">
+        Placeholder Phase 8a. Le formulaire d'appairage réel (pairing.html + module ESM du legacy) et
+        la commande <code>pairing_consume</code> (POST /pairing/consume) sont implémentés en Phase 8b.
+      </p>
+      <p>Bridge : <strong id="bridge-mode">…</strong></p>
+    </main>
+    <script type="module">
+      const bridge = window.__livechatOverlayBridge;
+      document.getElementById('bridge-mode').textContent = bridge
+        ? bridge.mode + ' / ' + bridge.transport
+        : 'absent';
+    </script>
+  </body>
+</html>

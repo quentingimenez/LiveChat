@@ -4,3 +4,9 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+
+# Rust workspace (rebuild v3)
+/target
+/spikes/*/target
+/.phase0/
+

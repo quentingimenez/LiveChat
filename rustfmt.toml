@@ -1,0 +1,3 @@
+# Formatage Rust du workspace LiveChat (rustfmt stable uniquement).
+edition = "2021"
+max_width = 100

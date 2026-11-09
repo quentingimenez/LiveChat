@@ -1,0 +1,19 @@
+{
+  "identifier": "default",
+  "description": "Fenêtres overlay/board/pairing : core Tauri 2 et accès fs restreint aux fichiers de config/logs de l'application (validé au POC Tauri, cf. docs/rust/poc-tauri-report.md §Lead-3). Les commandes applicatives (overlay_*, pairing_*, meme_board_*) ne sont pas soumises à l'ACL Tauri 2 et sont donc accessibles sans permission dédiée.",
+  "windows": ["overlay", "board", "pairing"],
+  "permissions": [
+    "core:default",
+    "fs:default",
+    "fs:allow-read-text-file",
+    "fs:allow-write-text-file",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        "$APPDATA/LiveChat/**",
+        "$APPCONFIG/**/*",
+        "$APPLOCALDATA/**/*"
+      ]
+    }
+  ]
+}

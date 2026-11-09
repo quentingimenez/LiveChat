@@ -1,0 +1,390 @@
+/*
+ * LiveChat Admin — feuille de style extraite du panel legacy.
+ *
+ * Provenance : server/src/components/admin/adminRoutes.ts, fonction
+ * buildAdminPanelHtml(), bloc <style> lignes 646-1014 (template literal).
+ * Extraction mécanique : dé-indentation de 6 espaces, aucun changement de
+ * sélecteur, de valeur ou d'ordre de cascade (parité visuelle avec v1).
+ *
+ * Seul ajout : classes utilitaires .mt-8 / .mt-10 qui remplacent les
+ * attributs style="margin-top: 8px|10px" inline du HTML legacy, afin de
+ * permettre une CSP style-src plus stricte. Voir docs/rust/admin-panel.md.
+ */
+
+:root {
+  --bg-0: #0c111d;
+  --bg-1: #111b2f;
+  --bg-2: #1b2a44;
+  --panel: rgba(17, 27, 47, 0.84);
+  --panel-border: rgba(128, 170, 230, 0.24);
+  --text: #f7fbff;
+  --muted: #a8b8d3;
+  --ok: #38d39f;
+  --warn: #f5b759;
+  --danger: #ff6767;
+  --accent: #67c2ff;
+  --accent-2: #8d87ff;
+  --shadow: 0 14px 32px rgba(2, 8, 24, 0.45);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--text);
+  font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  background:
+    radial-gradient(1200px 700px at 12% -10%, rgba(103, 194, 255, 0.26), transparent 60%),
+    radial-gradient(900px 600px at 100% 0%, rgba(141, 135, 255, 0.2), transparent 55%),
+    linear-gradient(160deg, var(--bg-0), var(--bg-1) 45%, var(--bg-2));
+}
+
+.layout {
+  width: min(1280px, 96vw);
+  margin: 20px auto 30px;
+  display: grid;
+  gap: 14px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(4px);
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  line-height: 1.2;
+}
+
+h1 {
+  font-size: 24px;
+}
+
+h2 {
+  font-size: 18px;
+}
+
+h3 {
+  font-size: 14px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.topbar {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.token-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.token-row input,
+.token-row select,
+.token-row button,
+.guild-settings input {
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(7, 12, 24, 0.82);
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.token-row input,
+.token-row select {
+  min-width: 170px;
+}
+
+.token-row button,
+.action-btn {
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.token-row button:hover,
+.action-btn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(103, 194, 255, 0.7);
+}
+
+.status {
+  min-height: 18px;
+  font-size: 13px;
+}
+
+.status.ok {
+  color: var(--ok);
+}
+
+.status.warn {
+  color: var(--warn);
+}
+
+.status.error {
+  color: var(--danger);
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.metric {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(6, 10, 22, 0.55);
+  padding: 10px;
+}
+
+.metric strong {
+  display: block;
+  font-size: 21px;
+  margin-bottom: 4px;
+}
+
+.guilds {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.guild-card {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(7, 12, 24, 0.58);
+  padding: 9px;
+  display: grid;
+  gap: 8px;
+}
+
+.guild-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+
+.badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+}
+
+.badge.ok {
+  color: var(--ok);
+  border-color: rgba(56, 211, 159, 0.5);
+}
+
+.badge.warn {
+  color: var(--warn);
+  border-color: rgba(245, 183, 89, 0.52);
+}
+
+.badge.info {
+  color: var(--accent);
+  border-color: rgba(103, 194, 255, 0.52);
+}
+
+.guild-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.guild-grid-meta {
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+}
+
+.guild-grid-clients {
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  align-items: start;
+}
+
+.guild-meta,
+.list-block {
+  border-radius: 10px;
+  background: rgba(8, 14, 28, 0.58);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 8px;
+}
+
+.guild-meta div {
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.guild-settings {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  align-items: end;
+}
+
+.guild-settings label {
+  font-size: 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.guild-settings .check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.action-btn {
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(9, 15, 29, 0.85);
+  color: var(--text);
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
+.action-btn.warn {
+  border-color: rgba(245, 183, 89, 0.6);
+}
+
+.action-btn.danger {
+  border-color: rgba(255, 103, 103, 0.65);
+}
+
+.list-block ul {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 0;
+  display: grid;
+  gap: 5px;
+}
+
+.list-item {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 6px;
+  font-size: 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.overlay-client-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.overlay-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  object-fit: cover;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.list-item.empty {
+  border-style: dashed;
+  text-align: center;
+  display: block;
+  padding: 7px;
+  color: var(--muted);
+  background: rgba(6, 10, 22, 0.46);
+}
+
+.pairing-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+}
+
+th,
+td {
+  text-align: left;
+  font-size: 12px;
+  padding: 7px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+td code {
+  font-family: 'IBM Plex Mono', 'Consolas', monospace;
+}
+
+.progress {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+  margin-top: 6px;
+}
+
+.progress > span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+}
+
+/* Utilitaires d'espacement : remplacent les style="margin-top: ..." inline
+   du HTML legacy (mêmes valeurs, aucune autre différence de rendu). */
+.mt-8 {
+  margin-top: 8px;
+}
+
+.mt-10 {
+  margin-top: 10px;
+}
+
+@media (max-width: 920px) {
+  .topbar {
+    grid-template-columns: 1fr;
+  }
+
+  .guild-settings {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .guild-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .guild-name-form {
+    grid-template-columns: 1fr;
+  }
+
+  .guild-settings {
+    grid-template-columns: 1fr;
+  }
+}

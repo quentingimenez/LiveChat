@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LiveChat Admin</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <section class="panel">
+        <div class="topbar">
+          <div>
+            <h1>LiveChat Admin Panel</h1>
+            <div class="muted">Accès local uniquement. Token requis.</div>
+          </div>
+          <div class="token-row">
+            <input id="token-input" type="password" placeholder="ADMIN_UI_TOKEN" />
+            <button id="save-token">Enregistrer token</button>
+            <button id="refresh-overview">Rafraîchir</button>
+          </div>
+        </div>
+        <div id="status" class="status muted">Prêt.</div>
+        <div id="metrics" class="metrics-grid"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Runtime Settings</h2>
+        <div class="muted">Appliqué immédiatement et persisté dans le fichier .env.</div>
+        <div class="token-row mt-8">
+          <input id="tiktok-cookie-input" type="password" placeholder="TIKTOK_COOKIE (header Cookie TikTok)" />
+          <button id="save-tiktok-cookie">Enregistrer TIKTOK_COOKIE</button>
+          <button id="clear-tiktok-cookie" class="action-btn warn">Vider</button>
+        </div>
+        <div id="tiktok-cookie-status" class="status muted mt-8">TIKTOK_COOKIE non chargé.</div>
+      </section>
+
+      <section class="panel">
+        <h2>Create Ingest Client</h2>
+        <div class="muted">Créer un token ingest lié à une guild et un auteur déjà présent en DB.</div>
+        <div class="pairing-controls mt-8">
+          <select id="ingest-create-guild"></select>
+          <select id="ingest-create-author"></select>
+          <input id="ingest-create-label" type="text" placeholder="Label appareil (obligatoire)" />
+          <button id="ingest-create-submit">Créer client ingest</button>
+        </div>
+        <div class="token-row mt-8">
+          <input id="ingest-create-token" type="text" readonly placeholder="Nouveau token ingest (copiez-le et stockez-le)." />
+          <button id="ingest-create-copy-token">Copier token</button>
+        </div>
+        <div id="ingest-create-status" class="status muted mt-8">Aucun client créé.</div>
+      </section>
+
+      <section class="panel">
+        <h2>Guilds</h2>
+        <div class="muted">Vue globale des guilds, overlays, ingest, files et réglages.</div>
+        <div id="guilds" class="guilds mt-10"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Pairing Codes</h2>
+        <div class="pairing-controls mt-8">
+          <select id="pairing-guild-filter"></select>
+          <select id="pairing-status-filter">
+            <option value="all">Tous</option>
+            <option value="active">Actifs</option>
+            <option value="expired">Expirés / utilisés</option>
+          </select>
+          <button id="pairing-load">Charger</button>
+          <button id="pairing-purge" class="action-btn warn">Purger expirés</button>
+        </div>
+        <div id="pairing-summary" class="status muted mt-8"></div>
+        <table>
+          <thead>
+            <tr>
+              <th>Code</th>
+              <th>Guild</th>
+              <th>Auteur</th>
+              <th>Expire</th>
+              <th>Utilisé</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="pairing-rows"></tbody>
+        </table>
+      </section>
+    </div>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>

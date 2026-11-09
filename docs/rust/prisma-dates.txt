@@ -1,0 +1,150 @@
+# Format exact des dates Prisma 5.22 / SQLite — preuve littérale (Phase 0)
+
+Mesuré le 2026-11-09 dans `server/` sur une base SQLite jetable (`DATABASE_URL=file:./tmp-probe.db`),
+après `corepack pnpm exec prisma migrate deploy` (12 migrations), avec le client Prisma généré 5.22.0.
+Node v24.12.0, Windows x64. Scripts jetables `server/.probe-dates.ts`, `.probe-dates2.ts`, `.probe-dates3.ts`
+(supprimés après usage). Logs complets : `%TEMP%\lc-audit\probe-dates-paris.log`, `probe-dates-utc.log`,
+`probe-dates2.log`, `probe-dates3.log`.
+
+## CONCLUSION (à retenir)
+
+- Prisma + SQLite stocke `DateTime` en **INTEGER 64 bits = millisecondes Unix epoch, UTC**.
+- `typeof(colonne)` en SQL brut = **`integer`** ; pas de texte, pas de REAL, pas de fuseau stocké.
+- Précision = **milliseconde** ; toute fraction sous-ms est tronquée.
+- Indépendant de `TZ`/du fuseau système : aucune conversion locale au stockage ni à la lecture.
+- Le client Prisma relit ces entiers en `Date` JS et `toISOString()` restitue `"2024-01-02T03:04:05.678Z"`.
+- Piège : le défaut SQL `CURRENT_TIMESTAMP` (si un INSERT brut omet la colonne) écrit du **TEXT**
+  `"YYYY-MM-DD HH:MM:SS"` en UTC à la **seconde** ; Prisma le relit quand même (interprété UTC).
+- Parseur Prisma : accepte INTEGER ms, TEXT `"YYYY-MM-DD HH:MM:SS"`, ISO 8601 avec `Z` ou offset ;
+  rejette `T` sans timezone, espace+fraction, REAL fractionnaire (voir probe 3).
+
+---
+
+## PROBE 1 — écriture/lecture canonique (TZ=Europe/Paris)
+
+Sortie console verbatim (extrait significatif) :
+
+```
+--- ENV
+TZ_env = "Europe/Paris"
+timezone_systeme = "Europe/Paris"
+locale = "fr-FR"
+node = v24.12.0 | prisma = 5.22.0
+--- VALEURS ATTENDUES (input JS)
+input.createdAt.toISOString = "2024-01-02T03:04:05.678Z" (typeof=string)
+input.createdAt.getTime = 1704164645678 (typeof=number)
+input.expiresAt.toISOString = "2025-06-07T08:09:10.123Z" (typeof=string)
+input.lastAccessedAt.toISOString = "2024-02-03T04:05:06.789Z" (typeof=string)
+--- LECTURE VIA PRISMA CLIENT (retour type Date)
+client.createdAt.toISOString = "2024-01-02T03:04:05.678Z" (typeof=string)
+client.createdAt.constructor = "Date" (typeof=string)
+client.expiresAt.toISOString = "2025-06-07T08:09:10.123Z" (typeof=string)
+client.lastAccessedAt.toISOString = "2024-02-03T04:05:06.789Z" (typeof=string)
+--- DECLARATION SQLITE
+column {"name":"lastAccessedAt","type":"DATETIME","dflt_value":"CURRENT_TIMESTAMP"}
+column {"name":"expiresAt","type":"DATETIME","dflt_value":null}
+column {"name":"createdAt","type":"DATETIME","dflt_value":"CURRENT_TIMESTAMP"}
+--- SELECT BRUT (queryRawUnsafe)
+raw.createdAt = "2024-01-02T03:04:05.678Z" (typeof=object)
+raw.expiresAt = "2025-06-07T08:09:10.123Z" (typeof=object)
+raw.lastAccessedAt = "2024-02-03T04:05:06.789Z" (typeof=object)
+raw.createdAt.toISOString = "2024-01-02T03:04:05.678Z" (typeof=string)
+--- STORAGE CLASS SQLITE (typeof + hex)
+storage {"t_created":"integer","t_expires":"integer","t_last":"integer","c":"2024-01-02T03:04:05.678Z","e":"2025-06-07T08:09:10.123Z","l":"2024-02-03T04:05:06.789Z","h_created":"31373034313634363435363738","cast_text":"1704164645678"}
+--- PRECISION: millisecondes non entieres / fractions
+frac.js_str = "2024-01-02T03:04:05.678Z" (typeof=string)
+frac.getTime = 1704164645678 (typeof=number)
+raw2 {"createdAt":"2024-01-02T03:04:05.678Z","expiresAt":"2000-01-01T00:00:00.000Z","lastAccessedAt":"2038-01-19T03:14:08.000Z","t":"integer"}
+client2.createdAt.toISOString = "2024-01-02T03:04:05.678Z" (typeof=string)
+--- TEST DEFAULT now() (expiresAt/createdAt auto)
+raw3 {"createdAt":"2026-11-09T21:49:11.278Z","lastAccessedAt":"2026-11-09T21:49:11.278Z"}
+client3.createdAt.toISOString = "2026-11-09T21:49:11.278Z" (typeof=string)
+client3.createdAt.getTime = 1794260951278 (typeof=number)
+--- ORDRE/TRI SQL SUR createdAt (numerique ou texte ?)
+order {"sourceHash":"probe-hash-3","createdAt":"2026-11-09T21:49:11.278Z"}
+--- FIN PROBE
+```
+
+Décodage des preuves :
+- `typeof(createdAt)` = **`integer`**, `CAST(createdAt AS TEXT)` = **`1704164645678`** (epoch ms).
+- `hex(createdAt)` = ASCII hex de `"1704164645678"` → SQLite hex() convertit le numérique en texte.
+- Colonne déclarée `DATETIME`, `createdAt`/`lastAccessedAt` `DEFAULT CURRENT_TIMESTAMP`, `expiresAt` sans défaut.
+- `raw2` prouve les dates avant 1970 (`2000-01-01T00:00:00.000Z`) et 2038 (`2038-01-19T03:14:08.000Z`) sans problème.
+- `now()` écrit par Prisma porte des millisecondes (`…278`, `…740`) → **pas** le défaut SQL seconde.
+- `frac` : `new Date(1704164645678.9012).getTime()` = `1704164645678` → fraction sous-ms perdue **côté JS** avant stockage.
+
+## PROBE 1 bis — même script avec TZ=UTC
+
+`Compare-Object` entre les deux logs : **aucune différence sur les valeurs explicites** ; seules diffèrent
+les lignes d'environnement (`TZ_env`, `timezone_systeme`) et les valeurs `now()` (dépendantes de l'instant réel) :
+
+```
+TZ_env = "UTC"
+timezone_systeme = "UTC"
+raw3 {"createdAt":"2026-11-09T21:49:11.740Z","lastAccessedAt":"2026-11-09T21:49:11.740Z"}
+client3.createdAt.toISOString = "2026-11-09T21:49:11.740Z" (typeof=string)
+client3.createdAt.getTime = 1794260951740 (typeof=number)
+```
+
+→ le format stocké/relu ne dépend **pas** du fuseau du process.
+
+## PROBE 2 — valeurs TEXT (INSERT SQL brut / défaut SQL)
+
+```
+raw_default_storage {"t":"text","c":"2026-11-09T21:49:42.000Z","h":"323032362D31312D30392032313A34393A3432"}
+text_storage {"t":"text","c":"2025-01-02T03:04:05.000Z","h":"323032352D30312D30322030333A30343A3035"}
+client_read[raw-default-1].createdAt = "2026-11-09T21:49:42.000Z" (typeof=object)
+client_read[raw-default-1].createdAt.toISOString = "2026-11-09T21:49:42.000Z" (typeof=string)
+client_read[raw-text-1].createdAt = "2025-01-02T03:04:05.000Z" (typeof=object)
+client_read[raw-text-1].createdAt.toISOString = "2025-01-02T03:04:05.000Z" (typeof=string)
+prisma_storage {"t":"integer","c":"2024-01-02T03:04:05.678Z","cast_text":"1704164645678","h":"31373034313634363435363738"}
+```
+
+- INSERT brut **sans** `createdAt` → défaut SQL `CURRENT_TIMESTAMP` → stockage **text** `"2026-11-09 21:49:42"` (UTC, seconde), relu par Prisma `"2026-11-09T21:49:42.000Z"`.
+- INSERT brut avec `'2025-01-02 03:04:05'` → text, relu `"2025-01-02T03:04:05.000Z"` (heure interprétée **UTC**).
+- Un INSERT via Prisma dans la même table écrit bien `integer` ms.
+
+(La probe 2 s'est arrêtée ensuite sur une erreur de validation Prisma sans rapport avec les dates :
+`prisma.playbackJob.create` exige `durationSec` — `Argument 'durationSec' is missing`. Les colonnes nullables
+`PlaybackJob.startedAt/finishedAt` suivent le même format `DATETIME`/integer.)
+
+## PROBE 3 — tolérance du parseur Prisma SQLite (SELECT sur colonnes DateTime)
+
+```
+storage[iso_T_Z] {"t":"text","cast_text":"2026-11-09T21:49:42.123Z","h":"323032362D31312D30395432313A34393A34322E3132335A"}
+client_read[iso_T_Z].createdAt = "2026-11-09T21:49:42.123Z" (typeof=string)
+storage[iso_no_tz] {"t":"text","cast_text":"2026-11-09T21:49:42.123","h":"323032362D31312D30395432313A34393A34322E313233"}
+client_read[iso_no_tz] ERREUR: PrismaClientKnownRequestError: Inconsistent column data: Conversion failed: input contains invalid characters
+storage[iso_offset] {"t":"text","cast_text":"2026-11-09T21:49:42.123+02:00","h":"323032362D31312D30395432313A34393A34322E3132332B30323A3030"}
+client_read[iso_offset].createdAt = "2026-11-09T19:49:42.123Z" (typeof=string)
+storage[space_utc] {"t":"text","cast_text":"2026-11-09 21:49:42","h":"323032362D31312D30392032313A34393A3432"}
+client_read[space_utc].createdAt = "2026-11-09T21:49:42.000Z" (typeof=string)
+storage[space_frac] {"t":"text","cast_text":"2026-11-09 21:49:42.987","h":"323032362D31312D30392032313A34393A34322E393837"}
+client_read[space_frac] ERREUR: PrismaClientKnownRequestError: Inconsistent column data: Conversion failed: input contains invalid characters
+storage[real_frac] {"t":"real","cast_text":"1704164645678.9"}
+client_read[real_frac] ERREUR: PrismaClientKnownRequestError: Inconsistent column data: Could not convert value 1704164645678.9011 of the field `lastAccessedAt` to type `DateTime`.
+```
+
+Synthèse du parseur (comportement observé, Prisma 5.22) :
+
+| Valeur en base `DATETIME` | Stockage | Relu par Prisma |
+|---|---|---|
+| `1704164645678` (int ms) | integer | `2024-01-02T03:04:05.678Z` ✅ |
+| `2026-11-09 21:49:42` | text | `2026-11-09T21:49:42.000Z` (UTC) ✅ |
+| `2026-11-09T21:49:42.123Z` | text | `2026-11-09T21:49:42.123Z` ✅ |
+| `2026-11-09T21:49:42.123+02:00` | text | `2026-11-09T19:49:42.123Z` (offset respecté) ✅ |
+| `2026-11-09T21:49:42.123` (T sans TZ) | text | ❌ `Conversion failed: input contains invalid characters` |
+| `2026-11-09 21:49:42.987` (espace + fraction) | text | ❌ idem |
+| `1704164645678.9011` (REAL) | real | ❌ `Could not convert value … to type DateTime` |
+
+**Effet de bord important** : une seule valeur non convertible dans une colonne `DATETIME` fait échouer
+**toute requête qui sélectionne cette colonne**, y compris un simple `SELECT … ORDER BY` → `P2010 Raw query failed`
+(constaté en fin de probe 3). Le migrateur Rust doit donc tolérer/parsing défensif ou normaliser la base.
+
+## Implications Rust (résumé ; détail dans audit-dynamique.md §7)
+
+- Lire/écrire les colonnes datetime en **i64 millisecondes epoch UTC** (`chrono::DateTime<Utc>::from_timestamp_millis`).
+- Écrire `now()` en ms côté application, **jamais** via `DEFAULT CURRENT_TIMESTAMP` (seconde + TEXT).
+- Parseur d'entrée tolérant : i64 → text `YYYY-MM-DD HH:MM:SS` (UTC) → RFC 3339 `Z`/offset ; rejet explicite sinon.
+- API : sérialiser en ISO 8601 UTC avec millisecondes + `Z` pour rester compatible avec `Date.toISOString()` du legacy
+  (protocole `overlay-protocol` v1.2.0, extension/overlay TS).

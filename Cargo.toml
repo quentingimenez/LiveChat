@@ -5,6 +5,7 @@ members = [
     "crates/lc-domain",
     "crates/lc-db",
     "crates/lc-media",
+    "crates/lc-playback",
     "crates/lc-discord",
     "crates/lc-admin",
     "apps/lc-server",

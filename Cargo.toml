@@ -61,13 +61,31 @@ hmac = "0.12"
 subtle = "2"
 rand = "0.9"
 base64 = "0.22"
+hex = "0.4"
 url = "2"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+# ---- Réseau (outillage : capture de goldens, harnais de parité Phase 9) ----
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+] }
+
+# ---- Discord (Phase 6) ----
+serenity = { version = "0.12", default-features = false, features = [
+    "client",
+    "gateway",
+    "model",
+    "utils",
+    "rustls_backend",
+] }
 
 # ---- Crate locales (versions internes) ----
 lc-protocol = { path = "crates/lc-protocol" }
 lc-domain = { path = "crates/lc-domain" }
 lc-db = { path = "crates/lc-db" }
 lc-media = { path = "crates/lc-media" }
+lc-playback = { path = "crates/lc-playback" }
 lc-discord = { path = "crates/lc-discord" }
 lc-admin = { path = "crates/lc-admin" }
 

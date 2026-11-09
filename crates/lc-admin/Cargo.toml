@@ -1,0 +1,11 @@
+[package]
+name = "lc-admin"
+description = "Panneau d'administration LiveChat : routes HTTP et assets statiques embarqués."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

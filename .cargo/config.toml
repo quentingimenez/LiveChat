@@ -1,0 +1,9 @@
+# Configuration Cargo du dépôt (s'applique à toutes les commandes cargo lancées ici).
+[build]
+# Poste partagé entre plusieurs agents : on plafonne la parallélisation pour
+# éviter la contention CPU/RAM et les timeouts de compilation.
+jobs = 8
+
+[net]
+# Réseau instable / registre distant : quelques retentissements.
+retry = 3

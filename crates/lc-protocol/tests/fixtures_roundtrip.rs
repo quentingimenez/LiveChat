@@ -11,12 +11,14 @@ use std::path::PathBuf;
 use serde_json::Value;
 
 use lc_protocol::{
-    close_code, close_reason, is_frame_too_large, media_signature_input, msg_type, ClientEnvelope,
-    ClientMessage, Envelope, ServerEnvelope, ServerMessage, HEARTBEAT_INTERVAL_MS,
-    HELLO_TIMEOUT_MS, HTTP_UPGRADE_REQUIRED, LEGACY_SOCKET_IO_PATH, MAX_CLIENT_MESSAGES_PER_SECOND,
-    MAX_FRAME_BYTES, MAX_MEME_TEXT_CHARS, MAX_PLAYBACK_REMAINING_MS, MEDIA_URL_TTL_SEC,
-    PEERS_REQUEST_MIN_INTERVAL_MS, PING_INTERVAL_MS, PLAYBACK_STATE_MIN_INTERVAL_MS,
-    PONG_TIMEOUT_MS, PROTOCOL_VERSION, WS_PATH,
+    close_code, close_reason, is_frame_too_large, is_version_below, media_signature_input,
+    media_url_ttl_sec, msg_type, outdated_protocol_reason, parse_simple_version, ClientEnvelope,
+    ClientMessage, Envelope, MediaKind, ServerEnvelope, ServerMessage, StopRequestSource,
+    DEFAULT_MIN_OVERLAY_VERSION, HEARTBEAT_INTERVAL_MS, HELLO_TIMEOUT_MS, HTTP_UPGRADE_REQUIRED,
+    LEGACY_SOCKET_IO_PATH, MAX_CLIENT_MESSAGES_PER_SECOND, MAX_FRAME_BYTES, MAX_MEME_TEXT_CHARS,
+    MAX_PLAYBACK_REMAINING_MS, MEDIA_URL_EXPIRY_MARGIN_SEC, MEDIA_URL_TTL_MAX_SEC,
+    MEDIA_URL_TTL_SEC, PEERS_REQUEST_MIN_INTERVAL_MS, PING_INTERVAL_MS,
+    PLAYBACK_STATE_MIN_INTERVAL_MS, PONG_TIMEOUT_MS, PROTOCOL_VERSION, WS_PATH,
 };
 
 /// Sens de circulation d'une fixture.
@@ -28,7 +30,7 @@ enum Direction {
     Server,
 }
 
-/// Table de référence des 28 fixtures golden : (fichier, sens, type attendu).
+/// Table de référence des 29 fixtures golden : (fichier, sens, type attendu).
 const FIXTURES: &[(&str, Direction, &str)] = &[
     // ---- C→S ----
     ("v2_hello_normal.json", Direction::Client, msg_type::HELLO),
@@ -56,6 +58,11 @@ const FIXTURES: &[(&str, Direction, &str)] = &[
     ),
     (
         "v2_stop_request.json",
+        Direction::Client,
+        msg_type::STOP_REQUEST,
+    ),
+    (
+        "v2_stop_request_user.json",
         Direction::Client,
         msg_type::STOP_REQUEST,
     ),
@@ -214,7 +221,7 @@ fn every_fixture_file_is_covered_by_the_golden_table() {
     expected.sort();
     assert_eq!(
         on_disk, expected,
-        "la table des fixtures doit référencer exactement les 28 fichiers golden"
+        "la table des fixtures doit référencer exactement les 29 fichiers golden"
     );
 }
 
@@ -232,6 +239,9 @@ fn protocol_constants_are_frozen() {
     assert_eq!(PING_INTERVAL_MS, 15_000);
     assert_eq!(PONG_TIMEOUT_MS, 45_000);
     assert_eq!(MEDIA_URL_TTL_SEC, 300);
+    assert_eq!(MEDIA_URL_EXPIRY_MARGIN_SEC, 120);
+    assert_eq!(MEDIA_URL_TTL_MAX_SEC, 3_600);
+    assert_eq!(DEFAULT_MIN_OVERLAY_VERSION, "3.0.0");
     assert_eq!(PEERS_REQUEST_MIN_INTERVAL_MS, 2_000);
     assert_eq!(MAX_PLAYBACK_REMAINING_MS, 86_400_000);
     assert_eq!(MAX_MEME_TEXT_CHARS, 500);
@@ -357,4 +367,103 @@ fn envelope_direction_is_enforced() {
             "{fixture} ne doit pas se parser comme un message serveur"
         );
     }
+}
+
+/// Rév. 2, §15.1 : TTL média adaptatif (300 s plancher, durée + 120 s, 3600 s plafond).
+#[test]
+fn media_url_ttl_follows_lead_revision_2() {
+    assert_eq!(media_url_ttl_sec(MediaKind::Image, None), 300);
+    assert_eq!(media_url_ttl_sec(MediaKind::Image, Some(120)), 300);
+    assert_eq!(media_url_ttl_sec(MediaKind::Video, None), MEDIA_URL_TTL_SEC);
+    assert_eq!(media_url_ttl_sec(MediaKind::Video, Some(60)), 300);
+    assert_eq!(media_url_ttl_sec(MediaKind::Audio, Some(120)), 300);
+    assert_eq!(media_url_ttl_sec(MediaKind::Video, Some(600)), 720);
+    assert_eq!(
+        media_url_ttl_sec(MediaKind::Audio, Some(9_999)),
+        MEDIA_URL_TTL_MAX_SEC
+    );
+}
+
+/// Rév. 2, §1.6 / §15.5 : comparaison semver simple et plancher de version.
+#[test]
+fn version_gate_uses_simple_semver() {
+    assert_eq!(parse_simple_version("3.0.0"), Some((3, 0, 0)));
+    assert_eq!(parse_simple_version("3.0.0-beta.1"), Some((3, 0, 0)));
+    assert_eq!(parse_simple_version("3.0.0+sha.abc"), Some((3, 0, 0)));
+    assert_eq!(parse_simple_version("3.0"), None);
+    assert_eq!(parse_simple_version("abc"), None);
+    assert!(is_version_below("2.9.9", "3.0.0"));
+    assert!(is_version_below("3.0.0", "3.0.1"));
+    assert!(is_version_below("3.0.0", "3.1.0"));
+    assert!(!is_version_below("3.0.0", "3.0.0"));
+    assert!(!is_version_below("3.1.0", "3.0.0"));
+    assert!(is_version_below("not-a-version", "3.0.0"));
+    assert_eq!(DEFAULT_MIN_OVERLAY_VERSION, "3.0.0");
+}
+
+/// Rév. 2, §1.6 / §15.5 : la `reason` du close 4403 est un JSON `{"minVersion":…}`.
+#[test]
+fn outdated_protocol_close_reason_is_json() {
+    assert_eq!(
+        outdated_protocol_reason("3.0.0"),
+        r#"{"minVersion":"3.0.0"}"#
+    );
+}
+
+/// Rév. 2, §5.6 / §15.2 : `stop.request` cible un job et porte une origine informative.
+#[test]
+fn stop_request_carries_optional_job_and_source() {
+    let value = read_fixture("v2_stop_request_user.json");
+    let envelope: ClientEnvelope = serde_json::from_value(value).expect("stop.request user");
+    let ClientMessage::StopRequest(request) = envelope.message else {
+        panic!("la fixture utilisateur doit être un stop.request");
+    };
+    assert_eq!(request.job_id.as_deref(), Some("clx7q2x0b0001abcd1234efgh"));
+    assert_eq!(request.source, Some(StopRequestSource::User));
+    let serialized = serde_json::to_value(Envelope::new(
+        "cli-stop-request-0002",
+        1_794_182_400_000,
+        ClientMessage::StopRequest(request),
+    ))
+    .expect("re-sérialisation stop.request user");
+    assert_eq!(
+        serialized.get("payload"),
+        Some(&serde_json::json!({
+            "jobId": "clx7q2x0b0001abcd1234efgh",
+            "source": "user"
+        }))
+    );
+
+    let value = read_fixture("v2_stop_request.json");
+    let envelope: ClientEnvelope = serde_json::from_value(value).expect("stop.request vide");
+    let ClientMessage::StopRequest(request) = envelope.message else {
+        panic!("la fixture vide doit être un stop.request");
+    };
+    assert!(request.job_id.is_none());
+    assert!(request.source.is_none());
+    let serialized = serde_json::to_value(Envelope::new(
+        "cli-stop-request-0001",
+        1_794_182_400_000,
+        ClientMessage::StopRequest(request),
+    ))
+    .expect("re-sérialisation stop.request vide");
+    assert_eq!(serialized.get("payload"), Some(&serde_json::json!({})));
+}
+
+/// Rév. 2, §6.1 / §15.5 : `welcome.serverVersion` est toujours émis.
+#[test]
+fn welcome_carries_server_version() {
+    let value = read_fixture("v2_welcome_initial.json");
+    let envelope: ServerEnvelope = serde_json::from_value(value).expect("welcome initial");
+    let ServerMessage::Welcome(welcome) = &envelope.message else {
+        panic!("la fixture initiale doit être un welcome");
+    };
+    assert_eq!(welcome.server_version, "3.0.0");
+    let serialized = serde_json::to_value(&envelope).expect("re-sérialisation welcome");
+    assert_eq!(
+        serialized
+            .get("payload")
+            .and_then(|payload| payload.get("serverVersion")),
+        Some(&Value::String("3.0.0".to_owned()))
+    );
 }

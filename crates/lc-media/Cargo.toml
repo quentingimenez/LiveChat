@@ -7,5 +7,34 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[dependencies]
+lc-domain = { workspace = true }
+
+# Sérialisation / erreurs / logs
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Async / runtime (process pour ffmpeg/ffprobe/yt-dlp, io-util pour stdout/stderr)
+tokio = { workspace = true, features = ["process", "io-util"] }
+
+# Système / fichiers / réseau / crypto
+tempfile = { workspace = true }
+url = { workspace = true }
+sha2 = { workspace = true }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "http2",
+    "json",
+    "charset",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }
+serde_json = { workspace = true }
+
 [lints]
 workspace = true

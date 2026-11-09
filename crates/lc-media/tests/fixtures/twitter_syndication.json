@@ -1,0 +1,35 @@
+{
+  "id_str": "1700000000000000001",
+  "text": "regardez cette vidéo",
+  "user": {
+    "screen_name": "livechat",
+    "name": "LiveChat"
+  },
+  "mediaDetails": [
+    {
+      "original_info": {
+        "width": 1280,
+        "height": 720
+      },
+      "video_info": {
+        "aspect_ratio": [16, 9],
+        "variants": [
+          {
+            "content_type": "application/x-mpegURL",
+            "url": "https://video.twimg.com/ext_tw_video/1/pl/playlist.m3u8"
+          },
+          {
+            "content_type": "video/mp4",
+            "bitrate": 832000,
+            "url": "https://video.twimg.com/ext_tw_video/1/pu/vid/640x360/low.mp4"
+          },
+          {
+            "content_type": "video/mp4",
+            "bitrate": 2176000,
+            "url": "https://video.twimg.com/ext_tw_video/1/pu/vid/1280x720/high.mp4"
+          }
+        ]
+      }
+    }
+  ]
+}

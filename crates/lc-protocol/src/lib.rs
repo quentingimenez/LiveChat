@@ -1,7 +1,7 @@
 //! Protocole WebSocket JSON v2 de LiveChat.
 //!
-//! Spécification gelée : `docs/rust/protocol-v2.md` (FROZEN pour l'implémentation,
-//! datée 2026-11-09). Ce crate fournit l'enveloppe JSON, les types de messages
+//! Spécification gelée : `docs/rust/protocol-v2.md` (FROZEN rev. 2 pour
+//! l'implémentation, datée 2026-11-09). Ce crate fournit l'enveloppe JSON, les types de messages
 //! client→serveur et serveur→client, les constantes du protocole et les helpers
 //! associés. Les fixtures golden de référence vivent dans `tests/fixtures/` et
 //! sont vérifiées par `tests/fixtures_roundtrip.rs`.
@@ -44,8 +44,17 @@ pub const PING_INTERVAL_MS: u64 = 15_000;
 /// Délai sans pong avant fermeture 1001 `heartbeat_timeout`.
 pub const PONG_TIMEOUT_MS: u64 = 45_000;
 
-/// Durée de vie des URLs média signées, en secondes.
+/// Durée de vie **plancher** des URLs média signées, en secondes.
 pub const MEDIA_URL_TTL_SEC: u64 = 300;
+
+/// Marge ajoutée à la durée d'un média pour calculer `exp` (secondes).
+pub const MEDIA_URL_EXPIRY_MARGIN_SEC: u64 = 120;
+
+/// Borne haute du TTL des URLs média signées (une heure).
+pub const MEDIA_URL_TTL_MAX_SEC: u64 = 3_600;
+
+/// Version d'overlay minimale par défaut (`MIN_OVERLAY_VERSION`), en semver simple.
+pub const DEFAULT_MIN_OVERLAY_VERSION: &str = "3.0.0";
 
 /// Intervalle minimal entre deux demandes de pairs.
 pub const PEERS_REQUEST_MIN_INTERVAL_MS: u64 = 2_000;
@@ -159,6 +168,63 @@ pub fn is_frame_too_large(len: usize) -> bool {
 #[must_use]
 pub fn media_signature_input(asset_id: &str, client_id: &str, exp_sec: u64) -> String {
     format!("{asset_id}|{client_id}|{exp_sec}")
+}
+
+/// Calcule le TTL d'une URL média signée, en secondes.
+///
+/// Décision gelée (doc §8.1, §15.1) : une image (ou une durée inconnue) reçoit
+/// `MEDIA_URL_TTL_SEC` ; une vidéo/audio dont la durée est connue reçoit
+/// `clamp(durationSec + MEDIA_URL_EXPIRY_MARGIN_SEC, MEDIA_URL_TTL_SEC,
+/// MEDIA_URL_TTL_MAX_SEC)`.
+#[must_use]
+pub fn media_url_ttl_sec(kind: MediaKind, duration_sec: Option<u64>) -> u64 {
+    match kind {
+        MediaKind::Image => MEDIA_URL_TTL_SEC,
+        MediaKind::Audio | MediaKind::Video => duration_sec.map_or(MEDIA_URL_TTL_SEC, |duration| {
+            duration
+                .saturating_add(MEDIA_URL_EXPIRY_MARGIN_SEC)
+                .clamp(MEDIA_URL_TTL_SEC, MEDIA_URL_TTL_MAX_SEC)
+        }),
+    }
+}
+
+/// Construit la `reason` JSON d'une fermeture `4403` : `{"minVersion":"x.y.z"}`.
+#[must_use]
+pub fn outdated_protocol_reason(min_version: &str) -> String {
+    format!("{{\"minVersion\":\"{min_version}\"}}")
+}
+
+/// Analyse une version « semver simple » `major.minor.patch`.
+///
+/// Les suffixes de pré-version (`-beta.1`) et de build (`+sha`) sont ignorés ;
+/// les trois composantes doivent être numériques, sinon `None`.
+#[must_use]
+pub fn parse_simple_version(version: &str) -> Option<(u64, u64, u64)> {
+    let core = version.trim().split(['-', '+']).next()?;
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+/// Indique si `app_version` est strictement inférieure à `min_version`.
+///
+/// Règle gelée (doc §1.6) : comparaison lexicographique des triplets
+/// `(major, minor, patch)` ; une version illisible est considérée obsolète
+/// (`true`, refus par sécurité).
+#[must_use]
+pub fn is_version_below(app_version: &str, min_version: &str) -> bool {
+    match (
+        parse_simple_version(app_version),
+        parse_simple_version(min_version),
+    ) {
+        (Some(app), Some(min)) => app < min,
+        _ => true,
+    }
 }
 
 /// Enveloppe JSON v2 : `{ "v": 2, "id": "...", "ts": ..., "type": "...", "payload": {...} }`.
@@ -412,6 +478,18 @@ pub enum MemeTrigger {
     Ui,
 }
 
+/// Origine déclarative d'un `stop.request` (informationnelle, défaut serveur `user`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StopRequestSource {
+    /// Demande d'un utilisateur.
+    User,
+    /// Raccourci clavier global.
+    Hotkey,
+    /// Action d'administration.
+    Admin,
+}
+
 /// Payload de `hello`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -477,9 +555,20 @@ pub struct ClientErrorPayload {
     pub message: String,
 }
 
-/// Payload de `stop.request` (vide : l'arrêt vise le job courant de la guilde).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StopRequestPayload {}
+/// Payload de `stop.request`.
+///
+/// `jobId` absent/null = arrêt de tous les jobs de la guilde ; `source` est
+/// purement informatif (le serveur applique `user` par défaut).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StopRequestPayload {
+    /// Job ciblé ; absent/null = tous les jobs de la guilde.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    /// Origine déclarative de la demande.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<StopRequestSource>,
+}
 
 /// Payload de `meme.trigger`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -519,6 +608,8 @@ pub struct WelcomePayload {
     pub client_id: String,
     /// Mode de session autoritatif.
     pub session_mode: SessionMode,
+    /// Version sémantique du serveur (ex. `3.0.0`), toujours émise.
+    pub server_version: String,
     /// Heure serveur (millisecondes Unix) pour recaler l'horloge.
     pub server_time: i64,
     /// Configuration par défaut de la guilde.

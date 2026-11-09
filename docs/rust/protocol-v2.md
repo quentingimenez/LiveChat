@@ -1,6 +1,11 @@
 # Protocole v2 LiveChat — spécification GELÉE
 
-> **FROZEN pour l'implémentation** — 2026-11-09 — owner : `protocole-v2` — statut : gelé (Phase 0)
+> **FROZEN rev. 2 pour l'implémentation** — 2026-11-09 — owner : `protocole-v2` — statut : gelé (Phase 0)
+>
+> Révision 2 (2026-11-09, décisions Lead sur les 5 points ouverts) : TTL média adaptatif (§8.1),
+> `stop.request` avec `jobId`/`source` (§5.6), invariant « un seul job `PLAYING` » (§6.1.1),
+> suppression de `GET /overlay/config` (§6.5, §15.4), plancher `MIN_OVERLAY_VERSION` +
+> `welcome.serverVersion` (§1.6, §15.5). Révision 1 (2026-11-09) : version initiale gelée.
 >
 > Toute modification de ce document est une rupture de contrat : elle exige l'accord du Lead,
 > une mise à jour simultanée des fixtures golden (`crates/lc-protocol/tests/fixtures/`) et des
@@ -109,6 +114,7 @@ Trames autorisées avant `welcome` : `hello` uniquement. Toute autre trame → f
   ```json
   {"error":"overlay_outdated","protocolVersion":2,"minOverlayVersion":"3.0.0"}
   ```
+  `minOverlayVersion` reflète l'env `MIN_OVERLAY_VERSION` (défaut `"3.0.0"`, §1.6).
 - `GET {API_URL}/ws` **sans** `Upgrade: websocket` → `426` avec `{"error":"websocket_required"}`.
 - Ces réponses permettent à un overlay v1 (socket.io) d'afficher « version obsolète, mettez à
   jour » au lieu de boucler silencieusement (plan : `docs/rust/migration-plan.md:71`).
@@ -136,6 +142,21 @@ client                                   serveur
 Ordre garanti : les messages S→C sont livrés dans l'ordre d'émission (WebSocket). Un `play` ne
 précède jamais le `welcome` correspondant ; un `stop` ne précède jamais le `play` du job arrêté.
 
+### 1.6 Versions d'application (`serverVersion`, `MIN_OVERLAY_VERSION`)
+
+- `welcome.serverVersion` (string) : version sémantique du serveur, **toujours émise** (ex.
+  `"3.0.0"`). Elle informe l'overlay, sans contrôle de version serveur côté client.
+- `hello.appVersion` (string) : version de l'overlay. Le serveur la compare à
+  `MIN_OVERLAY_VERSION` (env, défaut `"3.0.0"`).
+- Règle de comparaison gelée (rév. 2) : analyse **semver simple** `major.minor.patch` — suffixes
+  de pré-version (`-beta.1`) et de build (`+sha`) ignorés, les trois composantes doivent être
+  numériques. Comparaison lexicographique `(major, minor, patch)`. Une version **illisible** est
+  traitée comme obsolète (refus : plus sûr qu'une acceptation silencieuse).
+- Si `appVersion < MIN_OVERLAY_VERSION` : close `4403` avec `reason` JSON
+  `{"minVersion":"<x.y.z>"}` — aucun `welcome`, aucune autre trame. Le client affiche la version
+  minimale et **ne retente pas** (§10).
+- Le même `MIN_OVERLAY_VERSION` alimente `minOverlayVersion` du corps HTTP 426 de §1.4.
+
 ---
 
 ## 2. Enveloppe
@@ -154,7 +175,7 @@ Chaque trame est **un objet JSON unique** :
 
 | Clé | Type | Règle |
 |---|---|---|
-| `v` | entier | **2**. Toute autre valeur sur la première trame → `4403` (`outdated_protocol`) ; sur une trame ultérieure → `4403` également (protocole non négociable). |
+| `v` | entier | **2**. Toute autre valeur sur la première trame → `4403` (`reason` JSON `{"minVersion":"x.y.z"}`, §1.6) ; sur une trame ultérieure → `4403` également (protocole non négociable). |
 | `type` | chaîne | Nom exact du message (voir §5/§6). Type inconnu → `1002` (`protocol_error`). |
 | `id` | chaîne | Non vide, ≤ 64 caractères. Unique par connexion et par sens (UUID v4 recommandé côté client ; le serveur génère les siens). `ack.ref` référence l'`id` de la requête. |
 | `ts` | entier | Epoch ms UTC de l'émission. Côté client, informatif : le serveur utilise sa propre horloge. |
@@ -186,16 +207,19 @@ Règles générales :
 | 1011 | `INTERNAL_ERROR` | erreur interne inattendue (DB, dispatch) | `internal_error` | oui (backoff) |
 | **4401** | `UNAUTHORIZED` | auth impossible : token absent/invalide, `hello` trop tardif ou absent, clientId incohérent | `missing_token`, `invalid_token`, `auth_timeout`, `hello_required` | non (sauf config modifiée) |
 | **4402** | `REVOKED` | token révoqué (`revoked_at` non nul) ou révocation pendant la connexion | `revoked` | non (re-pairing requis) |
-| **4403** | `OUTDATED_PROTOCOL` | `v` ≠ 2, `hello` v1, version de protocole refusée | `outdated_protocol` | non (mise à jour overlay) |
+| **4403** | `OUTDATED_PROTOCOL` | `v` ≠ 2, `hello` v1, `appVersion` < `MIN_OVERLAY_VERSION` | JSON `{"minVersion":"x.y.z"}` (§1.6) | non (mise à jour overlay) |
 | 4408 | `FRAME_TOO_LARGE` | trame > 64 Kio | `frame_too_large` | oui, bug à corriger |
 | 4409 | `RATE_LIMITED` | > 20 trames C→S dans la seconde glissante | `rate_limited` | oui (backoff) |
 
 Les codes 4401/4402/4403/1011 sont exigés par le plan (`docs/rust/migration-plan.md:68`).
 4408/4409/1002/1003 sont des précisions de cette spec (comportement nécessaire des limites §4).
+Pour `4403`, la `reason` de fermeture est **le JSON compact** `{"minVersion":"<x.y.z>"}` (UTF-8,
+< 123 octets), et non le texte `outdated_protocol` ; c'est la seule exception au tableau.
 Le client mappe :
 - `4401` → état `error` avec message « jeton invalide » ;
 - `4402` → état terminal « appareil révoqué » (pas de retry, re-pairing) ;
-- `4403` → état terminal « overlay obsolète » (pas de retry, mise à jour) ;
+- `4403` → état terminal « overlay obsolète » (pas de retry, mise à jour) ; le client **parse la
+  `reason` JSON** pour afficher `minVersion` ;
 - `1001`/`1011`/`4409`/`1002` → état `reconnecting` avec backoff §10.
 
 ---
@@ -212,7 +236,8 @@ Le client mappe :
 | Ping WS serveur | **15 s** | contrôle |
 | Timeout pong/liveness | **45 s** (`WS_HEARTBEAT_TIMEOUT_SEC`) | close `1001` |
 | `peers.request` | ≤ 1 par 2 s | excédent ignoré |
-| TTL URL média | **300 s** (`MEDIA_URL_TTL_SEC`) | voir §8 |
+| TTL URL média | image ou durée inconnue : **300 s** ; audio/vidéo : `clamp(durationSec + 120, 300, 3600)` | voir §8.1 |
+| Version overlay minimale | `MIN_OVERLAY_VERSION` (défaut `"3.0.0"`, semver simple) | close `4403` — voir §1.6 |
 | `remainingMs` accepté | entier fini, borné **[0, 86 400 000]** | sinon `null` (v1 : clamp identique `socketLoader.ts:229-254`) |
 | Longueur texte de mème | 500 caractères max (tronqué serveur) | v1 : `socketLoader.ts:277-338` |
 | `id` de message | ≤ 64 caractères | sinon `1002` |
@@ -294,14 +319,18 @@ Parité v1 (`index.ts:61-65`) ; seul code produit par le renderer actuel : `rend
 ### 5.6 `stop.request`
 
 ```json
-{"v":2,"type":"stop.request","id":"cli-stop-request-0001","ts":1794182400000,"payload":{}}
+{"v":2,"type":"stop.request","id":"cli-stop-request-0002","ts":1794182400000,"payload":{"jobId":"clx7q2x0b0001abcd1234efgh","source":"user"}}
 ```
 
-Demande d'arrêt manuel déclenchée par l'overlay/le board (v1 : `stopMemePlayback` émettait
-`overlay:stop {jobId:'manual-stop'}`, `meme-bindings-service.ts:51-76`). Serveur : si mode
+Payload (rév. 2, §15.2) : `{ "jobId"?: string, "source"?: "user"|"hotkey"|"admin" }`.
+`jobId` absent ou `null` = arrêt de **tous** les jobs de la guilde (la fixture
+`v2_stop_request.json` porte `{}`) ; `source` est purement informatif (statistiques), défaut
+serveur `user`. Demande d'arrêt manuel déclenchée par l'overlay/le board (v1 : `stopMemePlayback`
+émettait `overlay:stop {jobId:'manual-stop'}`, `meme-bindings-service.ts:51-76`). Serveur : si mode
 lecture seule → `ack {ok:false, error:{code:"read_only"}}` sans arrêt ; sinon
-`executeManualStopForGuild` (v1 `manualStop.ts:9-60`) → `ack {ok:true}` puis `stop`
-`{reason:"manual"}` à la room. Une demande par seconde max (excédent → ack `rate_limited`).
+`executeManualStopForGuild` (v1 `manualStop.ts:9-60`) ciblé sur `jobId` s'il est fourni → `ack
+{ok:true}` puis `stop {reason:"manual", jobId}` à la room. Une demande par seconde max (excédent →
+ack `rate_limited`).
 
 ### 5.7 `meme.trigger`
 
@@ -343,7 +372,7 @@ reconnexion (v1 : broadcast uniquement à la connexion/déconnexion, `socketLoad
 ### 6.1 `welcome`
 
 ```json
-{"v":2,"type":"welcome","id":"srv-welcome-0001","ts":1794182400000,"payload":{"protocolVersion":2,"guildId":"123456789012345678","clientId":"clx7q2x0b0000abcd1234efgh","sessionMode":"normal","serverTime":1794182400000,"config":{"showTextDefault":true,"defaultMediaTime":30,"maxMediaTime":600}}}
+{"v":2,"type":"welcome","id":"srv-welcome-0001","ts":1794182400000,"payload":{"protocolVersion":2,"guildId":"123456789012345678","clientId":"clx7q2x0b0000abcd1234efgh","sessionMode":"normal","serverVersion":"3.0.0","serverTime":1794182400000,"config":{"showTextDefault":true,"defaultMediaTime":30,"maxMediaTime":600}}}
 ```
 
 - `protocolVersion` = **2** (entier). v1 exposait `protocolVersion:"1.2.0"` en REST
@@ -351,17 +380,20 @@ reconnexion (v1 : broadcast uniquement à la connexion/déconnexion, `socketLoad
   version sémantique d'application.
 - `sessionMode` : **autorité serveur** (normalisé `normal`|`invite_read_only`, v1
   `overlayAuth.ts:28-34`).
+- `serverVersion` : version sémantique du serveur (rév. 2, §1.6/§15.5), toujours émise.
 - `serverTime` : epoch ms serveur (alignement des compte à rebours).
 - `config` : mêmes clés que la réponse REST v1 `GET /overlay/config`
-  (`overlayRoutes.ts:293-315`) : `showTextDefault:true`, `defaultMediaTime` (sec,
-  `guild.defaultMediaTime ?? env.DEFAULT_DURATION`), `maxMediaTime` (sec ou `null`).
+  (`overlayRoutes.ts:293-315`), endpoint **supprimé** en v2 (§6.5, §15.4) : `showTextDefault:true`,
+  `defaultMediaTime` (sec, `guild.defaultMediaTime ?? env.DEFAULT_DURATION`), `maxMediaTime`
+  (sec ou `null`).
 - `currentJob` : **présent uniquement s'il y a un job `PLAYING`** au moment du welcome
-  (reconnexion, §10). Absent sinon (ne pas émettre `null`). Voir §6.1.1.
+  (reconnexion, §10). Absent sinon (ne pas émettre `null`). Voir §6.1.1. Invariant serveur : au
+  plus **un** job `PLAYING` par guilde (§6.1.1).
 
 #### 6.1.1 `currentJob` (reprise après reconnexion)
 
 ```json
-{"v":2,"type":"welcome","id":"srv-welcome-0002","ts":1794182424000,"payload":{"protocolVersion":2,"guildId":"123456789012345678","clientId":"clx7q2x0b0000abcd1234efgh","sessionMode":"normal","serverTime":1794182424000,"config":{"showTextDefault":true,"defaultMediaTime":30,"maxMediaTime":600},"currentJob":{"jobId":"clx7q2x0b0001abcd1234efgh","media":{"assetId":"clx7q2x0b0003abcd1234efgh","url":"https://api.livechat.example/overlay/media/clx7q2x0b0003abcd1234efgh?clientId=clx7q2x0b0000abcd1234efgh&exp=1794182700&sig=9f2c4e6a8b1d3f50791b2d4e6f8a0c1e3b5d7f9012a4c6e8b0d2f4a6c8e0b2d4","mime":"video/mp4","kind":"video","durationSec":120,"isVertical":true,"startOffsetSec":12},"text":{"value":"Extrait du direct","enabled":true},"author":{"name":"SuperKnacky","image":null,"enabled":true},"tweetCard":null,"durationSec":108,"startedAt":1794182400000,"remainingMs":84000}}}
+{"v":2,"type":"welcome","id":"srv-welcome-0002","ts":1794182424000,"payload":{"protocolVersion":2,"guildId":"123456789012345678","clientId":"clx7q2x0b0000abcd1234efgh","sessionMode":"normal","serverVersion":"3.0.0","serverTime":1794182424000,"config":{"showTextDefault":true,"defaultMediaTime":30,"maxMediaTime":600},"currentJob":{"jobId":"clx7q2x0b0001abcd1234efgh","media":{"assetId":"clx7q2x0b0003abcd1234efgh","url":"https://api.livechat.example/overlay/media/clx7q2x0b0003abcd1234efgh?clientId=clx7q2x0b0000abcd1234efgh&exp=1794182700&sig=9f2c4e6a8b1d3f50791b2d4e6f8a0c1e3b5d7f9012a4c6e8b0d2f4a6c8e0b2d4","mime":"video/mp4","kind":"video","durationSec":120,"isVertical":true,"startOffsetSec":12},"text":{"value":"Extrait du direct","enabled":true},"author":{"name":"SuperKnacky","image":null,"enabled":true},"tweetCard":null,"durationSec":108,"startedAt":1794182400000,"remainingMs":84000}}}
 ```
 
 `currentJob` = **exactement** un `PlayPayload` + deux champs de reprise :
@@ -374,6 +406,11 @@ reconnexion (v1 : broadcast uniquement à la connexion/déconnexion, `socketLoad
 Formule client de reprise : `elapsedSec = max(0, durationSec - ceil(remainingMs/1000))` puis
 `seekSec = (media.startOffsetSec ?? 0) + elapsedSec`. Si `currentJob` est absent : le client
 efface tout état de lecture local et attend le prochain `play`.
+
+**Invariant (rév. 2, §15.3)** : au plus **un** job `PLAYING` par guilde, garanti par le scheduler
+(Phase 4). Si le serveur détecte malgré tout plusieurs jobs `PLAYING` (anomalie de données), il
+choisit celui dont `startedAt` est le plus récent et journalise un `warn` — il n'émet qu'un seul
+`currentJob`. Aucun changement de type n'est associé à cette décision.
 
 ### 6.2 `play`
 
@@ -457,9 +494,10 @@ représente une room sans overlay.
 
 - Émis juste après `welcome` puis à chaque changement : configuration de guilde
   (`defaultMediaTime`/`maxMediaTime`/`showTextDefault`) ou `sessionMode` du client.
-- Remplace le `GET /overlay/config` v1 pour l'overlay (`overlayRoutes.ts:293-315`) : l'overlay v2
-  ne fait plus de requête REST de config. Le serveur peut conserver l'endpoint pour
-  l'admin/compatibilité, hors contrat WS.
+- `GET /overlay/config` est **supprimé** du protocole v2 (rév. 2, §15.4) : la config n'est
+  délivrée que par `welcome.config` puis `settings`. `/overlay/pair/consume` renvoie uniquement
+  `clientToken`, `guildId` et `sessionMode` ; l'overlay ne fait plus aucune requête REST de config
+  (`overlayRoutes.ts:293-315` pour l'ancien contrat v1).
 - `showTextDefault` v1 est constant `true` ; conservé pour parité.
 - Client : apply idempotent (les `settings` peuvent être dupliqués).
 
@@ -523,7 +561,10 @@ Notation : `T?` = champ optionnel omis si absent ; `T|null` = toujours émis, `n
 `{ jobId: string, code: string, message: string }` (`index.ts:61-65`).
 
 ### 7.6 `StopRequestPayload` / `PeersRequestPayload`
-`{}` (objet vide obligatoire).
+`StopRequestPayload = { jobId?: string, source?: "user"|"hotkey"|"admin" }` (rév. 2) : `jobId`
+absent/null = tous les jobs de la guilde ; `source` informatif, défaut serveur `user`.
+`v2_stop_request.json` = `{}` ; `v2_stop_request_user.json` = `{jobId, source:"user"}`.
+`PeersRequestPayload = {}` (objet vide obligatoire).
 
 ### 7.7 `MemeTriggerPayload`
 `{ itemId: string, trigger: "shortcut"|"ui" }` (`index.ts:73-76`,
@@ -531,10 +572,11 @@ Notation : `T?` = champ optionnel omis si absent ; `T|null` = toujours émis, `n
 
 ### 7.8 `WelcomePayload`
 `{ protocolVersion: 2, guildId: string, clientId: string, sessionMode: SessionMode,
-serverTime: number, config: WelcomeConfig, currentJob?: CurrentJob }`
+serverVersion: string, serverTime: number, config: WelcomeConfig, currentJob?: CurrentJob }`
 `WelcomeConfig = { showTextDefault: boolean, defaultMediaTime: number, maxMediaTime: number|null }`
 `CurrentJob = PlayPayload & { startedAt: number, remainingMs: number }`
-(v1 config : `overlayRoutes.ts:293-315`).
+`serverVersion` (rév. 2) : semver simple du serveur, toujours émis ; `currentJob` : au plus un job
+`PLAYING` par guilde (§6.1.1). (v1 config : `overlayRoutes.ts:293-315`, endpoint supprimé §15.4.)
 
 ### 7.9 `PlayPayload`
 ```
@@ -594,7 +636,12 @@ defaultMediaTime: number, maxMediaTime: number|null }`.
 {API_URL}/overlay/media/{assetId}?clientId={clientId}&exp={exp}&sig={sig}[&startOffsetSec={n}][#t={n}]
 ```
 
-- `exp` : epoch **secondes** UTC = `now + MEDIA_URL_TTL_SEC` (300 s).
+- `exp` : epoch **secondes** UTC = `now + ttl`, avec (rév. 2, §15.1) :
+  - `ttl = 300` s pour une **image** (ou une durée inconnue) ;
+  - `ttl = clamp(durationSec + 120, 300, 3600)` pour une **vidéo/audio** dont `durationSec` est
+    connu.
+  Constantes : `MEDIA_URL_TTL_SEC=300` (plancher), `MEDIA_URL_EXPIRY_MARGIN_SEC=120`,
+  `MEDIA_URL_TTL_MAX_SEC=3600` (plafond).
 - `sig` : `HMAC-SHA256(MEDIA_URL_SECRET, "assetId|clientId|exp")` en **hex minuscule** (64
   caractères). Message signé exactement `{assetId}|{clientId}|{exp}`, sans espaces, `exp` en
   décimal.
@@ -613,6 +660,10 @@ defaultMediaTime: number, maxMediaTime: number|null }`.
   recalculé : un job suspendu longtemps est re-signé au moment du dispatch.
 - `stop`, `peers`, `settings`, `welcome` (hors `currentJob`) ne contiennent pas d'URL et peuvent
   être diffusés à la room.
+- Un `HEAD`/`Range` doit arriver **avant `exp`**. Une pause prolongée au-delà du TTL n'est **pas**
+  supportée en v2 : le client reprend la lecture avec une **nouvelle** URL signée émise par un
+  nouveau dispatch `play` ; l'URL existante n'est jamais prolongée silencieusement (rév. 2,
+  §15.1).
 
 ### 8.3 Vérification serveur (`GET /overlay/media/:assetId`)
 
@@ -628,12 +679,11 @@ defaultMediaTime: number, maxMediaTime: number|null }`.
 Comparaison HMAC en temps constant. `HEAD` supporté (mêmes headers, sans corps). `Range`
 invalide → `416` (parité v1 `overlayRoutes.ts:147-198,317+`).
 
-> Point à confirmer (cf. §15) : le TTL de 300 s est appliqué **à chaque requête HTTP**. Un lecteur
-> HTML5 qui rouvre une plage (`Range`) après expiration verra un `403`. Acceptable car les durées
-> de jobs sont courtes et le média est généralement chargé une fois ; si un job long dépasse
-> 300 s, le serveur peut re-signer (nouveau `play`) ou allonger `exp` à
-> `max(TTL, durationSec+60)`. **Décision gelée : TTL = 300 s**, à rouvrir si les tests de soak
-> montrent des `403` en cours de lecture.
+> **Décision gelée (rév. 2, §15.1)** : TTL **adaptatif** (formule §8.1). Un `HEAD`/`Range` arrivant
+> après `exp` reçoit `403 media_url_expired` et n'est **jamais** ré-autorisé en silence. Une pause
+> ou un seek au-delà de `exp` n'est pas supporté : le serveur re-signe l'URL lors du prochain
+> dispatch `play` (nouveau message, nouvelle URL), ce qui couvre les jobs longs sans allonger
+> indéfiniment la fenêtre de validité.
 
 ---
 
@@ -662,6 +712,11 @@ invalide → `416` (parité v1 `overlayRoutes.ts:147-198,317+`).
   un `welcome` reçu.
 - Fermetures `4402` et `4403` : **ne pas retenter** (état terminal, message utilisateur : appareil
   révoqué / overlay obsolète). `4401` : retenter avec backoff mais afficher l'erreur.
+- `4403` (rév. 2) : la `reason` est le JSON `{"minVersion":"x.y.z"}` (§1.6) ; le client l'affiche
+  et ne retente pas.
+- `4409` (rate limit, précision rév. 2) : le client applique un **backoff exponentiel** (1 s, 2 s,
+  4 s… plafonné à 30 s) et **jamais plus d'une tentative de reconnexion par seconde** — une boucle
+  de reconnexion > 1/s est interdite (protection serveur et respect du quota 20 msg/s).
 - À la reconnexion, le client :
   1. ouvre `/ws`, envoie `hello` (mêmes token/appVersion/clientId/sessionMode) ;
   2. attend `welcome` ; si `currentJob` présent, il **adopte** ce job (seek §6.1.1) et remet son
@@ -687,6 +742,7 @@ invalide → `416` (parité v1 `overlayRoutes.ts:147-198,317+`).
 | v1 (socket.io / REST) | v2 | Delta de payload |
 |---|---|---|
 | `connect` avec `handshake.auth.{token,sessionMode}` + `connect_error` | `hello` → `welcome` + close 4401/4402/4403 | token déplacé dans la trame ; erreurs explicites |
+| — (nouveau) | `hello.appVersion` < `MIN_OVERLAY_VERSION` → close `4403` + `{"minVersion":"x.y.z"}` | plancher de version overlay (§1.6) |
 | `overlay:play` | `play` | mêmes clés ; `media.url` signée et par client |
 | `overlay:stop` `{jobId}` | `stop` `{reason, jobId}` | `reason` ajouté ; sentinelle `manual-stop` supprimée |
 | `overlay:heartbeat` | `heartbeat` | identique |
@@ -695,10 +751,11 @@ invalide → `416` (parité v1 `overlayRoutes.ts:147-198,317+`).
 | `overlay:playback-stop` (renderer → serveur) | `playback.ended` | `reason` ajouté |
 | `overlay:meme-trigger` | `meme.trigger` | identique |
 | `overlay:peers` | `peers` | identique ; `peers.request` ajouté |
+| `overlay:stop {jobId:'manual-stop'}` (client) | `stop.request {jobId?, source?}` | `jobId` ciblé, `source` informatif (rév. 2) |
 | `overlay:stop {jobId:'manual-stop'}` (serveur) | `stop {reason:'manual', jobId}` | plus de sentinelle |
 | révocation = `socket.disconnect(true)` | `stop {reason:'revoked'}` + close `4402` | explicite |
-| `GET /overlay/config` (Bearer) | `welcome.config` + `settings` | version numérique, mode inclus |
-| `GET /overlay/media/:assetId` (Bearer ou `?token=`) | URL signée `?clientId&exp&sig` | plus de jeton ; HMAC TTL 300 s |
+| `GET /overlay/config` (Bearer) | `welcome.config` + `settings` | endpoint **supprimé** (§15.4) ; `serverVersion` dans `welcome` |
+| `GET /overlay/media/:assetId` (Bearer ou `?token=`) | URL signée `?clientId&exp&sig` | plus de jeton ; HMAC, TTL adaptatif §8.1 |
 | reconnexion socket.io 1 s→3 s | reconnexion native 1 s→3 s + `welcome.currentJob` | reprise d'état ajoutée |
 | `/socket.io/` accepté | `426 overlay_outdated` | échec rapide v1 |
 
@@ -724,8 +781,9 @@ Aucune clé ne change de casse ; le renderer conservé lit les mêmes noms qu'en
 | `playback.state` | `jobId`, `state`, `remainingMs` | `index.ts:67-71` |
 | `playback.ended` | `jobId`, `reason` | nouveau |
 | `meme.trigger` | `itemId`, `trigger` | `index.ts:73-76` |
+| `stop.request` | `jobId` (optionnel), `source` (optionnel : `user`/`hotkey`/`admin`) | nouveau (rév. 2) |
 | `peers` | `guildId`, `peers[].clientId`, `peers[].label` | `index.ts:78-86` |
-| `welcome` | `protocolVersion`, `guildId`, `clientId`, `sessionMode`, `serverTime`, `config`, `currentJob` | nouveau + `index.ts:102-108` |
+| `welcome` | `protocolVersion`, `guildId`, `clientId`, `sessionMode`, `serverVersion`, `serverTime`, `config`, `currentJob` | nouveau + `index.ts:102-108` |
 | `welcome.config` | `showTextDefault`, `defaultMediaTime`, `maxMediaTime` | `index.ts:102-108` |
 | `currentJob` | clés `play` + `startedAt`, `remainingMs` | nouveau |
 | `settings` | `guildId`, `sessionMode`, `showTextDefault`, `defaultMediaTime`, `maxMediaTime` | `index.ts:102-108` |
@@ -733,9 +791,11 @@ Aucune clé ne change de casse ; le renderer conservé lit les mêmes noms qu'en
 | `error` S→C | `code`, `message`, `jobId`, `ref` | nouveau |
 | URL média (query) | `clientId`, `exp`, `sig`, `startOffsetSec` (option) | remplace `?token=`/`?startOffsetSec=` |
 
-REST conservé hors WS (inchangé) : `POST /overlay/pair/consume` (`overlayRoutes.ts:202-291`),
-`GET /overlay/meme-board/items`, `GET /overlay/meme-board/media/:assetId`, `/health`, admin
-(`docs/rust/migration-plan.md:135-140`).
+REST conservé hors WS (rév. 2 : inventaire **22 → 21 endpoints**, `GET /overlay/config` supprimé) :
+`POST /overlay/pair/consume` (renvoie `clientToken`, `guildId`, `sessionMode` ;
+`overlayRoutes.ts:202-291`), `GET /overlay/meme-board/items`,
+`GET /overlay/meme-board/media/:assetId`, `/health`, admin
+(`docs/rust/migration-plan.md:135-140` — l'annexe A du plan doit être alignée sur ce retrait).
 
 ---
 
@@ -748,7 +808,7 @@ REST conservé hors WS (inchangé) : `POST /overlay/pair/consume` (`overlayRoute
 | `playback.state` | `scheduler.onPlaybackState` : `playing`/`paused` → `busyUntil` + watchdog (`playbackScheduler.ts:178-237`) |
 | `playback.ended` | `completed`/`error` → `onPlaybackEnded` ; `manual` → `onPlaybackStopped` (`playbackScheduler.ts:239-346`) |
 | `error` | log structuré uniquement (`socketLoader.ts:221-227`) |
-| `stop.request` | `executeManualStopForGuild` → `stop {reason:'manual'}` (`manualStop.ts:9-60`) |
+| `stop.request` | `{jobId?, source?}` (source défaut `user`, sans `jobId` = tous les jobs) → `executeManualStopForGuild` ciblé → `stop {reason:'manual'}` (`manualStop.ts:9-60`) |
 | `meme.trigger` | validation item/média + `createPlaybackJob(priority=100)` + `preemptWithJob` → `stop{preempt}` puis `play` (`socketLoader.ts:277-338`, `playbackScheduler.ts:922-997`) |
 | `peers.request` | broadcast `peers` (`socketLoader.ts:76-86`) |
 | envoi `stop {reason:'revoked'}` | après `revoked_at`, puis close `4402` ; conserve `disconnectOverlayClient` pour compat admin |
@@ -768,7 +828,7 @@ et round-trip serde exact.
 | `v2_hello_normal.json` | C→S | `hello` | token + clientId + normal |
 | `v2_hello_invite_read_only.json` | C→S | `hello` | sessionMode invité |
 | `v2_hello_minimal.json` | C→S | `hello` | `clientId`/`sessionMode` omis |
-| `v2_welcome_initial.json` | S→C | `welcome` | sans currentJob |
+| `v2_welcome_initial.json` | S→C | `welcome` | `serverVersion`, sans currentJob |
 | `v2_welcome_reconnect_current_job.json` | S→C | `welcome` | `currentJob` + `startedAt`/`remainingMs` |
 | `v2_play_media_resume.json` | S→C | `play` | vidéo, `isVertical:true`, `startOffsetSec:12`, URL signée + fragment |
 | `v2_play_text_author.json` | S→C | `play` | `media:null`, texte + auteur actifs |
@@ -791,7 +851,8 @@ et round-trip serde exact.
 | `v2_playback_state.json` | C→S | `playback.state` | `playing`, remainingMs |
 | `v2_playback_ended.json` | C→S | `playback.ended` | `completed` |
 | `v2_meme_trigger.json` | C→S | `meme.trigger` | `shortcut` |
-| `v2_stop_request.json` | C→S | `stop.request` | payload vide |
+| `v2_stop_request.json` | C→S | `stop.request` | payload vide = tous les jobs |
+| `v2_stop_request_user.json` | C→S | `stop.request` | `jobId` + `source:"user"` (rév. 2) |
 | `v2_peers_request.json` | C→S | `peers.request` | payload vide |
 
 Constantes partagées par les fixtures : `GUILD=123456789012345678`,
@@ -801,9 +862,9 @@ Constantes partagées par les fixtures : `GUILD=123456789012345678`,
 
 ---
 
-## 15. Décisions et points à confirmer
+## 15. Décisions
 
-Décisions prises en Phase 0 (à valider par le Lead) :
+Décisions prises en Phase 0 (rév. 1, validées par le Lead) :
 
 1. **`playback.state` sans `ended`** : `ended` est extrait dans `playback.ended` avec `reason`.
    Une valeur `ended` reçue → close `1002` (`bad_playback_state`). Le renderer doit être adapté.
@@ -816,28 +877,59 @@ Décisions prises en Phase 0 (à valider par le Lead) :
 5. **URL média par client** : `clientId` en query (en plus de `exp`/`sig`) car le serveur doit
    vérifier la signature, et signature `HMAC-SHA256(secret, "assetId|clientId|exp")` hex minuscule.
    `startOffsetSec`/fragment `#t=` non signés (seek local uniquement).
-6. **`play`/`welcome.currentJob` émis par socket** (URL signée par client) ; `stop`/`peers`/
-   `settings` en broadcast de room.
+6. **`play`/`welcome.currentJob` émis en unicast par socket** (URL signée par client) ;
+   `stop`/`peers`/`settings` en broadcast de room.
 7. **Codes de fermeture ajoutés** : `1002`, `1003`, `4408`, `4409`, `1001` (timeout liveness et
    arrêt serveur), en plus des 4401/4402/4403/1011 du plan.
 8. **Rate limit 20 msg/s = close 4409** (fail-fast) ; `playback.state` excédentaire =
-   ignoré ; `peers.request` excédentaire = ignoré.
+   ignoré ; `peers.request` excédentaire = ignoré. Le client applique un backoff exponentiel et ne
+   reconnecte jamais plus d'une fois par seconde (§10).
 9. **`hello.sessionMode`/`heartbeat.sessionMode` informationnels** ; mode autoritaire serveur,
    poussé par `settings` (v1 laissait le client écraser `socket.data`).
 10. **Pas de remplacement de socket** : plusieurs sockets par clientId tolérés (parité v1), peers
     dédupliqué.
 
-Points à confirmer :
+### 15.1 TTL média adaptatif (rév. 2)
 
-- (a) **TTL média 300 s vs lecture longue** : un `Range` rouvert après 300 s reçoit `403` ; garder
-  300 s (gelé) ou étendre `exp` à `max(300, durationSec+60)` pour les jobs longs ?
-- (b) **`stop.request` sans champ `source`** : suffisant ou faut-il `source:"ui"|"shortcut"` pour
-  les statistiques ?
-- (c) **Notion de « job PLAYING unique »** pour `stop.manual.jobId` : si plusieurs jobs `PLAYING`
-  (données héritées), envoyer `jobId:null` est acceptable ?
-- (d) **`GET /overlay/config`** : conservé côté serveur pour compat admin ou supprimé ?
-- (e) **`appVersion` minimale** : la spec ferme `4403` sur `v` ≠ 2 ; faut-il aussi un plancher de
-  version overlay (`minOverlayVersion`) contrôlé côté serveur ?
+Décision Lead : `exp = now + clamp(durationSec + 120, 300, 3600)` pour une vidéo/audio dont
+`durationSec` est connu ; `300` s fixes pour une image sans durée. Les requêtes `HEAD`/`Range`
+doivent arriver **avant `exp`** ; une pause prolongée au-delà du TTL n'est pas supportée en v2 —
+le client redémarre le média avec une **nouvelle URL signée** sur un nouveau dispatch `play`.
+La signature reste `HMAC-SHA256(MEDIA_URL_SECRET, "assetId|clientId|exp")` (§8.1, §8.2).
+Implémenté par `media_url_ttl_sec` dans `crates/lc-protocol/src/lib.rs` et couvert par un test.
+
+### 15.2 `stop.request` : `jobId` et `source` (rév. 2)
+
+Décision Lead : payload `{ "jobId"?: string, "source"?: "user"|"hotkey"|"admin" }`. `source` est
+purement informatif (défaut serveur `"user"`) ; `jobId` absent/null = arrêt de **tous** les jobs
+de la guilde. Fixtures : `v2_stop_request.json` (payload vide) et
+`v2_stop_request_user.json` (`jobId` + `source:"user"`). Type Rust `StopRequestPayload`
+(+ enum `StopRequestSource`).
+
+### 15.3 Invariant « au plus un job `PLAYING` » (rév. 2)
+
+Décision Lead : invariant documenté et garanti par le scheduler (Phase 4) : **au plus un job
+`PLAYING` par guilde**. Si le serveur détecte plusieurs `PLAYING` (anomalie), il choisit le plus
+récent par `startedAt` et journalise un `warn`. Aucun changement de type : `welcome.currentJob`
+reste un objet unique (§6.1.1).
+
+### 15.4 `GET /overlay/config` supprimé (rév. 2)
+
+Décision Lead : `GET /overlay/config` est **supprimé** du protocole v2 ; la config n'est délivrée
+que par `welcome.config` puis `settings`. `POST /overlay/pair/consume` renvoie uniquement
+`clientToken`, `guildId` et `sessionMode` ; `apiBaseUrl`/config ne sont plus dupliqués. L'inventaire
+REST passe de **22 à 21 endpoints** — à répercuter en Phase 3 (REST serveur) et Phase 8 (bridge
+overlay) et dans l'annexe A de `docs/rust/migration-plan.md` (owner du plan).
+
+### 15.5 `MIN_OVERLAY_VERSION` et `welcome.serverVersion` (rév. 2)
+
+Décision Lead : env `MIN_OVERLAY_VERSION` (défaut `"3.0.0"`, parse semver simple), close `4403`
+avec `reason` JSON `{"minVersion":"<x.y.z>"}`, et `welcome` gagne `serverVersion` (string).
+Règle de comparaison : `major.minor.patch` lexicographique, suffixe de pré-version ignoré, version
+illisible = obsolète (§1.6). Constantes Rust `DEFAULT_MIN_OVERLAY_VERSION`,
+`outdated_protocol_reason`, `parse_simple_version`, `is_version_below`.
+
+Aucun point ouvert : les 5 points (a)–(e) de la rév. 1 sont soldés par §15.1–§15.5.
 
 ---
 
@@ -846,16 +938,23 @@ Points à confirmer :
 - `PROTOCOL_VERSION: u8 = 2` ; constantes : `HELLO_TIMEOUT_MS=5_000`, `MAX_FRAME_BYTES=65_536`,
   `MAX_CLIENT_MESSAGES_PER_SECOND=20`, `PLAYBACK_STATE_MIN_INTERVAL_MS=1_000`,
   `HEARTBEAT_INTERVAL_MS=15_000`, `PING_INTERVAL_MS=15_000`, `PONG_TIMEOUT_MS=45_000`,
-  `MEDIA_URL_TTL_SEC=300`, `WS_PATH="/ws"`, `LEGACY_SOCKET_IO_PATH="/socket.io/"`,
-  `HTTP_UPGRADE_REQUIRED=426`.
+  `MEDIA_URL_TTL_SEC=300`, `MEDIA_URL_EXPIRY_MARGIN_SEC=120`, `MEDIA_URL_TTL_MAX_SEC=3_600`,
+  `DEFAULT_MIN_OVERLAY_VERSION="3.0.0"`, `PEERS_REQUEST_MIN_INTERVAL_MS=2_000`,
+  `MAX_PLAYBACK_REMAINING_MS=86_400_000`, `MAX_MEME_TEXT_CHARS=500`, `WS_PATH="/ws"`,
+  `LEGACY_SOCKET_IO_PATH="/socket.io/"`, `HTTP_UPGRADE_REQUIRED=426`.
 - Types : `Envelope<M>` (implémentation manuelle de `Serialize`/`Deserialize` : les champs
   `type`/`payload` de l'enum sont aplatis au même niveau que `v`/`id`/`ts`), `ClientMessage`/
   `ServerMessage` (enums adjacents `#[serde(tag="type", content="payload")]`), payloads en
   structs camelCase, mode `SessionMode`, `MediaKind`, `PlaybackState`, `PlaybackEndedReason`,
-  `StopReason`, `MemeTrigger`. `CurrentJobPayload` aplatit `PlayPayload` + `startedAt`/`remainingMs`.
+  `StopReason`, `MemeTrigger`, `StopRequestSource`. `WelcomePayload` porte `server_version`
+  (obligatoire) ; `StopRequestPayload` porte `job_id`/`source` optionnels ;
+  `CurrentJobPayload` aplatit `PlayPayload` + `startedAt`/`remainingMs`.
 - Aides : `close_code::*`, `close_reason::*`, `msg_type::*`,
-  `media_signature_input(assetId, clientId, exp)`, `is_frame_too_large(len)`.
+  `media_signature_input(assetId, clientId, exp)`, `media_url_ttl_sec(kind, durationSec)`,
+  `outdated_protocol_reason(minVersion)`, `parse_simple_version`, `is_version_below`,
+  `is_frame_too_large(len)`.
 - Vérification : `cargo test -p lc-protocol` — `tests/fixtures_roundtrip.rs` vérifie le round-trip
-  exact des 28 fixtures (table fichier → sens → `type`, égalité de `serde_json::Value`), la
+  exact des 29 fixtures (table fichier → sens → `type`, égalité de `serde_json::Value`), la
   couverture exhaustive du dossier `tests/fixtures/`, les constantes, les codes de fermeture, la
-  séparation des sens de message et la reprise `welcome.currentJob`.
+  séparation des sens de message, la reprise `welcome.currentJob`, le TTL média adaptatif, la
+  règle semver et `welcome.serverVersion`.

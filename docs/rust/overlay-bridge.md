@@ -8,6 +8,8 @@
 > Références de plan : `docs/rust/migration-plan.md` (§4 protocole v2 l.63-72, §6 overlay Tauri l.82-88, risques l.29) et
 > `overlay/docs/architecture.md:152-170` (compatibilité « noms des channels / payloads / API preload inchangés »).
 > Toutes les références `fichier:ligne` renvoient au dépôt `C:\Users\SuperKnacky\code\LiveChat`, branche `feat/rust-rebuild`.
+> Décisions Lead du 2026-11-09 intégrées : §8 (bufferisation play/stop, CSP, origine WebView/CORS, URLs média v2, noms
+> d'événements, chemin de config).
 
 ## 1. Vue d'ensemble
 
@@ -34,7 +36,7 @@ HTML + bridge.js (script classique, apps/lc-overlay/web/bridge.js)
 ```
 
 Le renderer **ne change pas** : c'est le bridge qui absorbe le changement de transport. Le tableau de correspondance des
-noms se trouve en §7.
+noms se trouve en §6.
 
 ## 2. Matrice des 13 méthodes de `window.livechatOverlay`
 
@@ -104,10 +106,11 @@ Types exacts (à porter en `serde` avec `rename_all = "camelCase"`) :
 4. `onSettings(...)` (`:68`, `board.js:186-188`) ;
 5. observer + premier chargement des items (`:72-73`).
    ⚠️ Le board **n'appelle pas `rendererReady`** : ses settings arrivent via `onBoardReadyToShow`
-   (`runtime-window-socket-service.ts:99-101`).
+   (`runtime-window-socket-service.ts:99-101`). Conséquence (décision §8.1) : **aucun buffer d'événements n'est
+   nécessaire côté board**, il n'a pas de handshake à attendre.
 
 **Pairing** (`overlay/src/renderer/pairing/pairing-controller.ts`, page `overlay/renderer/pairing.js` **non chargée** —
-voir §4) :
+fichier mort, voir §4 et décision §8.7) :
 
 1. `await getConfig()` (`pairing-controller.ts:17`) ;
 2. `await consumePairing({ serverUrl, code })` au submit (`:25-28`, trim l.26-27) ;
@@ -195,7 +198,7 @@ par Tauri (sinon les `<link>`/`<script>`/`@import` cassent).
 | --- | --- | --- | --- | --- | --- |
 | Overlay | `overlay/renderer/overlay.html` (18 l.) | `<link href="./overlay.css">` l.7 ; `overlay.css` importe `styles/overlay/{base,tweet-card,meta}.css` | `../dist/renderer/overlay/index.js` l.16 | `overlay/renderer/overlay.js` (137 l.) via `legacy-loader.ts:1-8` | DOM requis : `#overlay-root` l.10, `#media-layer` l.11, `#countdown-layer` l.12, `#text-layer` l.13. Transparent, click-through, toujours au-dessus. |
 | Board | `overlay/renderer/board.html` (135 l.) | `<link href="./board.css">` l.7 ; `board.css` importe `styles/board/{base,list,preview,dialogs,responsive}.css` | `../dist/renderer/board/index.js` l.133 | `overlay/renderer/board.js` (230 l.) via `legacy-loader.ts:1-8` | IDs l.17-128 (search-form l.17, search-input l.18, stop-playback-button l.21, refresh-button l.22, add-link-button l.23, status l.27, count-pill l.33, items-list l.35, selected-title l.42, selected-meta l.44, preview-stage l.46, capture-overlay l.53, capture-current l.57, capture-cancel l.59, capture-save l.60, add-overlay l.65, add-form l.66, add-url-input l.69, add-title-input l.71, add-message-input l.79, add-refresh-input l.86, add-cancel l.90, add-submit l.91, rename-overlay l.96, rename-form l.97, rename-input l.101, rename-message-input l.109, rename-cancel l.116, rename-submit l.117, delete-overlay l.122, delete-message l.125, delete-cancel l.127, delete-confirm l.128). |
-| Pairing | `overlay/renderer/pairing.html` (125 l.) | **Aucun CSS externe** : `<style>` inline l.7-97 | `../dist/renderer/pairing/index.js` l.123 | **Aucun** : `pairing/index.ts` (5 l.) appelle `createPairingDom(document)` l.4 + `initializePairingController(dom)` l.5 ; `overlay/renderer/pairing.js` (52 l.) est un artefact **mort**, embarqué par `build.files` mais jamais chargé — ne pas le câbler. | Form `#pairing-form` l.100, `#server-url` l.109, `#pairing-code` l.114, `#submit-button` l.118, `#status` l.120. |
+| Pairing | `overlay/renderer/pairing.html` (125 l.) | **Aucun CSS externe** : `<style>` inline l.7-97 | `../dist/renderer/pairing/index.js` l.123 | **Aucun** : `pairing/index.ts` (5 l.) appelle `createPairingDom(document)` l.4 + `initializePairingController(dom)` l.5 ; `overlay/renderer/pairing.js` (52 l.) est un artefact **mort**, embarqué par `build.files` mais jamais chargé — **ne pas le câbler ni le copier dans `apps/lc-overlay/web/`** (décision §8.7). | Form `#pairing-form` l.100, `#server-url` l.109, `#pairing-code` l.114, `#submit-button` l.118, `#status` l.120. |
 
 Fichiers statiques requis et leur résolution :
 
@@ -217,9 +220,11 @@ Fichiers statiques requis et leur résolution :
 - **Réseau renderer** (hors bridge, conservé en Phase 0) : le board fait des `fetch()` REST vers
   `/overlay/meme-board/items` (`legacy-item-utils.ts:65,71,114,115`), `/items/:itemId` (`:95,96,136,137`), média
   `/overlay/meme-board/media/:assetId` (`legacy-preview-render-state-utils.ts:80`) ; l'overlay ajoute des URLs média
-  (`legacy-media-dom-utils.ts:115-116`, diagnostic `legacy-media-diagnostics.ts:72`) ; `buildAuthedUrl`
-  (`legacy-preview-media-utils.ts:44-53`) ajoute `?token=<clientToken>`. Ces appels ne passent pas par IPC mais dépendent
-  de l'origine WebView et de la CSP (§8).
+  (`overlay/src/renderer/overlay/legacy-media-dom-utils.ts:115-116`, diagnostic
+  `overlay/src/renderer/overlay/legacy-media-diagnostics.ts:72`) ; `buildAuthedUrl`
+  (`overlay/src/renderer/board/legacy-preview-media-utils.ts:44-53`) ajoute `?token=<clientToken>` (à supprimer en Phase 8,
+  décision §8.4). Ces appels ne passent pas par IPC mais dépendent de l'origine WebView et de la CSP (§7 risques #3/#4 et
+  §8.2/§8.3).
 
 ## 5. Chemins runtime et devenir en Tauri
 
@@ -263,15 +268,17 @@ Le renderer ne reçoit qu'une **projection de 8 champs** (`overlay-config-ipc-se
 | `runtime-assets/` + double copie | **Supprimé** : le frontend est embarqué dans le binaire (`frontendDist` → `tauri://localhost` / `http://tauri.localhost`) ou dans les ressources | Ne pas porter `copyRuntimeAssetsToStableCache` ; garder le renderer sous `apps/lc-overlay/web/` et le déclarer dans `tauri.conf.json`. |
 | `renderer/{overlay,pairing,board}.html` + `dist/renderer/**` + CSS | `apps/lc-overlay/web/` (HTML/CSS/JS copiés à l'identique) ; URL de fenêtre relative à `frontendDist` (`overlay.html`, `board.html`, `pairing.html`) | Préserver les chemins relatifs : `./overlay.css`, `../dist/renderer/...`, `./overlay.js` (loader relatif à la page). |
 | `dist/preload/index.js` | **Remplacé par `apps/lc-overlay/web/bridge.js`** chargé par les pages | Le main Rust n'injecte rien : pas de `preload` en Tauri 2. |
-| `config.json` (`%APPDATA%\LiveChat\config.json`) | À conserver **au même emplacement** pour réutiliser la config Electron, ou migrer avec `.bak` (plan `migration-plan.md:86`) | `app.path().app_config_dir()` vaut `%APPDATA%\<bundle identifier>` (ex. `%APPDATA%\com.livechat`), pas `LiveChat` : décider explicitement (identifier `com.livechat` + chemin forcé `%APPDATA%\LiveChat`, ou migration unique). Champs et format JSON inchangés. |
+| `config.json` (`%APPDATA%\LiveChat\config.json`) | **Chemin forcé, conservé** : `%APPDATA%\LiveChat\config.json`, calculé manuellement depuis la variable `APPDATA` ; **ne pas** utiliser `app_config_dir()` (décision Lead §8.6) | Migration one-shot `.bak` si nécessaire ; le même fichier sert au **rollback Electron**. Identifier `com.livechat`, productName `LiveChat` (cohérents avec `build.appId` Electron) ; champs et format JSON inchangés. |
 | `icon.png` / `icon.ico` | Bundle Windows (`bundle.icon`) + icône de fenêtre ; `.ico` requis pour l'installateur NSIS, PNG accepté pour les fenêtres | Fournir les deux, plus `icon-tray.png` pour le tray (`TrayIconBuilder::icon(Image::from_path(...))`). |
 | `icon-tray.png` | Icône tray Rust | Même asset. |
 | `appRoot = ../../../` | **Disparaît** : plus de résolution de chemins source | — |
 | `%APPDATA%` userData | `app_data_dir()`/`app_config_dir()` selon identifiant | Voir ligne config. |
 | Chemins Windows `.ico` conditionnels | Options de bundle, pas de code conditionnel | — |
 
-Décisions à confirmer par le Lead (non tranchées ici) : identifiant de bundle (`com.livechat` vs autre), chemin exact de
-config, mode de chargement du frontend (embarqué vs ressources), stratégie CSP (§8).
+Tranché par le Lead le 2026-11-09 (détail §8) : identifiant Tauri `com.livechat`, `productName` `LiveChat`, config
+**forcée** à `%APPDATA%\LiveChat\config.json` (migration one-shot `.bak`, rollback Electron possible) et CSP cible
+(§8.2). Reste ouvert : mode de chargement du frontend (embarqué via `frontendDist` vs ressources) — sans impact sur le
+bridge.
 
 ## 6. Mapping « nom actuel → nom Tauri »
 
@@ -342,9 +349,10 @@ Recommandations Rust :
 
 - Préférer un emit **par fenêtre** (`WebviewWindow::emit`) pour conserver les cibles actuelles ; `app.emit(...)` diffuse à
   toutes les webviews (le pairing n'écoutant pas, ce serait inoffensif mais moins fidèle).
-- Les noms `overlay://play|stop|settings` ne contiennent que alphanumériques + `-`, `/`, `:` : a priori acceptés par la
-  validation des noms d'événements Tauri 2 ; **à confirmer au POC** (si refus, repli `overlay:play` etc. — mais alors le
-  contrat de mapping doit être mis à jour).
+- Les noms `overlay://play|stop|settings` sont **conservés** (décision Lead §8.5) : Tauri 2 accepte `a-zA-Z0-9`, `-`, `_`,
+  `:`, `/`. Émission/réception réelle **vérifiée par le POC Tauri en cours** ; repli `overlay:play`/`overlay:stop`/
+  `overlay:settings` **uniquement si le POC l'exige**, avec le même mapping applicatif (la table `EVENTS` de
+  `bridge.js:52-58` est le point unique de changement, le renderer ne voit pas la différence).
 - Le bridge normalise l'objet reçu `{ event, id, payload }` en **payload brut** avant d'appeler le callback : le renderer
   ne voit jamais l'enveloppe Tauri.
 - Le bridge s'abonne avec `target: { kind: 'Any' }` (défaut Tauri 2), ce qui reçoit les emits ciblés webview.
@@ -373,10 +381,10 @@ await window.livechatOverlay.consumePairing({ serverUrl: 'https://livechat.examp
 | # | Risque | Symptôme | Mitigation / décision |
 | --- | --- | --- | --- |
 | 1 | **Bridge absent au premier paint** | `TypeError: window.livechatOverlay is undefined` au bootstrap ; écran vide ou overlay muet. | `bridge.js` doit être un `<script>` **classique dans le `<head>`**, avant le module de page (`README.md`). Vérifier l'ordre à l'intégration des pages ; le bridge est idempotent. |
-| 2 | **Événement play/stop perdu avant les listeners** | Un job lancé juste après l'ouverture de la fenêtre n'est jamais joué. | Le renderer pose `onPlay`/`onStop` **avant** `rendererReady` (ordre `legacy-bootstrap-utils.ts:56-73`). Le main Rust devra **bufferiser** play/stop tant que `renderer_ready` n'est pas reçu pour la fenêtre overlay (le main Electron ne le fait pas aujourd'hui : même course, à corriger en Phase 8). `overlay://settings` est déjà envoyé après le handshake. |
-| 3 | **CSP** | Scripts bloqués (`bridge.js`, modules, twitter), styles inline ignorés, médias bloqués. | Tauri 2 : `app.security.csp` doit autoriser `'self'` pour scripts/styles locaux, `style-src 'unsafe-inline'` (ou hash) car `pairing.html:7-97` a un `<style>` inline **conservé tel quel**, `script-src` pour `https://platform.twitter.com` (et domaines du widget), `img-src`/`media-src`/`connect-src` pour `serverUrl` (http/https), `blob:`, `data:`, `asset:`/`http://asset.localhost` et `ipc:`/`http://ipc.localhost` (invoke Tauri). CSP `null` en dev, CSP stricte en prod ; `migration-plan.md:29` signale déjà le risque `unsafe-inline` du legacy. |
-| 4 | **Origine WebView et contenu mixte** | `useHttpsScheme` false ⇒ origine `http://tauri.localhost` : contexte non sécurisé, requêtes http↔https mélangées, `fetch` média bloqué. | Trancher au POC : activer `useHttpsScheme` (origine `https://tauri.localhost`) et exiger une API HTTPS, ou adapter la CSP et les URLs. Les URLs média legacy (`?token=`) et protocol v2 (`?exp&sig`) doivent rester cohérentes avec cette origine. |
-| 5 | **CORS / Origin** | Le board fait du REST direct (`/overlay/meme-board/items`, média) : en Electron l'origine était `file://` (souvent `null`) ; en Tauri elle devient `tauri.localhost` ⇒ préflight/CORS différents. | Mettre à jour la liste d'origines autorisées côté serveur (`apps/lc-server`) ou router ces appels via des commandes Rust. À valider au POC, non couvert par le bridge. |
+| 2 | **Événement play/stop perdu avant les listeners** | Un job lancé juste après l'ouverture de la fenêtre n'est jamais joué. | **Décidé (§8.1) : bufferiser côté Rust.** File bornée par fenêtre ; conserver le **dernier play** et le **dernier stop**, les rejouer **dans l'ordre** dès réception de `overlay_renderer_ready` ; timeout **5 s** puis drop + `warn`. C'est la correction d'une **course de la v1 Electron** (le main Electron n'a pas de file ; listeners posés seulement après `await getConfig()`, `legacy-bootstrap-utils.ts:56-73`), pas une mesure de compatibilité. `overlay://settings` reste envoyé après le handshake. Board : aucun buffer nécessaire (§8.7). |
+| 3 | **CSP** | Scripts bloqués (`bridge.js`, modules, twitter), styles inline ignorés, médias bloqués. | **Décidé (§8.2)** : `script-src 'self'` strict ; `style-src 'self' 'unsafe-inline'` (seule justification : `<style>` inline de `pairing.html:7-97`, contenu local et statique) ; `img-src 'self' asset: http://asset.localhost data:` ; `media-src 'self' blob: {API_URL}` ; `connect-src 'self' {API_URL} {WS_API_URL}` ; `frame-src https://platform.twitter.com` ; `object-src 'none'`. **Pas de hash à maintenir** pour l'instant. À valider au POC (le widget Twitter peut exiger des domaines supplémentaires, ex. `syndication.twitter.com`). `migration-plan.md:29` signalait le `unsafe-inline` du legacy : la décision le circonscrit aux styles. |
+| 4 | **Origine WebView et contenu mixte** | `useHttpsScheme` false ⇒ origine `http://tauri.localhost` : contexte non sécurisé, requêtes http↔https mélangées, `fetch` média bloqué. | **Décidé (§8.3)** : garder le schéma par défaut (**pas** de `useHttpsScheme`) ⇒ origine `http://tauri.localhost` sous Windows. Conséquences : CORS serveur à adapter (§8.3, ligne 5) et `{API_URL}` en HTTPS recommandée pour limiter le contenu mixte. Les URLs média sont utilisées **verbatim** (§8.4). |
+| 5 | **CORS / Origin** | Le board fait du REST direct (`/overlay/meme-board/items`, média) : en Electron l'origine était `file://` (souvent `null`) ; en Tauri elle devient `tauri.localhost` ⇒ préflight/CORS différents. | **Décidé (§8.3)** : ajouter **`http://tauri.localhost` et `https://tauri.localhost`** à la liste CORS des routes `/overlay` (et `/admin` si nécessaire) côté `apps/lc-server` — **action Phase 3**, hors bridge (routeur via commandes Rust écarté pour l'instant). |
 | 6 | **CSP et `window.require` / Node** | Le renderer n'utilise pas `require` (grep exhaustif) ; toute dépendance résiduelle à `process`/`require` casserait. | Aucun changement nécessaire, mais l'acceptation doit vérifier `nodeIntegration` absent (déjà `false` en Electron, `window.require` absent en WebView2). |
 | 7 | **Modules ES vs scripts classiques** | `dist/renderer/*/index.js` doit rester chargé en `type="module"` ; `bridge.js` et `overlay.js`/`board.js` en classique. | Conserver les types de scripts actuels ; ne pas convertir le bridge en module (il doit s'exécuter avant les modules). `legacy-loader.ts:1-8` reste en ESM (import/export). |
 | 8 | **Chemins relatifs / racine web** | CSS/JS 404 après copie dans `web/`. | Préserver l'arborescence : HTML à la racine de `frontendDist`, `dist/renderer/**` et `renderer/*.js` sous la même racine ; conserver `./overlay.css`, `../dist/renderer/...` et le loader relatif à `window.location.href`. |
@@ -387,11 +395,91 @@ await window.livechatOverlay.consumePairing({ serverUrl: 'https://livechat.examp
 | 13 | **Permissions / ACL** | `listen` refusé si la permission événement manque. | `core:event:default` (allow-listen/unlisten/emit) est active par défaut : aucune capability supplémentaire. Les commandes applicatives ne sont pas ACL-gated. Vérifier la capability de fenêtre (labels `overlay`, `board`, `pairing`). |
 | 14 | **Comportements WebView2 de l'overlay** | Transparence, click-through, always-on-top, focusabilité, topmost 2 s, autoplay média. | `set_ignore_cursor_events(true)` + `WS_EX_NOACTIVATE`, topmost réaffirmé toutes les 2 s (`overlay-window-service.ts:25,55`), `focusable: false` (`window-factory.ts:32-53`). Autoplay : Electron utilise `autoplay-policy=no-user-gesture-required` (`runtime-legacy-entry.ts:20-27`) ; en Tauri/WebView2 passer des args navigateur équivalents. POC go/no-go déjà prévu (`migration-plan.md:82-88`). |
 | 15 | **`ignore-certificate-errors`** | Le main Electron ignore les erreurs TLS (`runtime-legacy-entry.ts:20-27`), ce qui masque des problèmes de sécurité et n'a pas d'équivalent WebView2 propre. | **Ne pas porter** ce contournement ; garder la validation TLS stricte (l'appairage fait déjà un repli `isLikelyTlsError`, `pairing-consume-service.ts:85-97`). Risque de régression si un serveur de dev a un certificat auto-signé : documenter. |
-| 16 | **Protocole média v2 vs renderer legacy** | Le renderer legacy ajoute `?token=<clientToken>` (`legacy-preview-media-utils.ts:44-53`) alors que le protocole v2 supprime le token et signe les URLs (`migration-plan.md:63-72`). | Le bridge n'y touche pas : l'adaptation est côté serveur/renderer (Phase ultérieure). Ne pas exposer le token d'avantage ; garder `clientToken` dans `OverlayConfig` pour compatibilité jusqu'à migration. |
+| 16 | **Protocole média v2 vs renderer legacy** | Le renderer legacy ajoute `?token=<clientToken>` (`legacy-preview-media-utils.ts:44-53`) alors que le protocole v2 supprime le token et signe les URLs (`migration-plan.md:63-72`). | **Décidé (§8.4)** : bridge et renderer utilisent `payload.media.url` **verbatim**, aucune réécriture ni paramètre ajouté. Toute logique legacy qui ajoute encore le token est **supprimée en Phase 8** : `overlay/src/renderer/board/legacy-preview-media-utils.ts:44-53` et `overlay/src/renderer/overlay/legacy-media-dom-utils.ts:115-116`. Seule exception tolérée : fragment `#t=` ajouté par le lecteur vidéo côté client pour le seek, à condition que la signature **ne couvre pas le fragment** (déjà le cas). Garder `clientToken` dans `OverlayConfig` pour le reste. |
 | 17 | **Double chargement / HMR** | Deux bridges, fuite de listeners, désabonnements croisés. | Garde d'idempotence dans `bridge.js` (si `window.livechatOverlay` existe, réinstallation contrôlée) ; un seul `<script>` par page. |
 | 18 | **Perte des listeners au reload du renderer** | `overlayWindow.reload()` (raccourci manuel `shortcut-service.ts:31-39`) : les abonnements Tauri (`eventId`) restent-ils côté Rust ? | En Tauri, `listen` enregistre un callback JS ; un reload de page détruit le contexte ⇒ les listeners JS disparaissent, le bridge doit se réabonner au prochain bootstrap (comportement identique à Electron). Vérifier qu'aucun état Rust ne dépend d'un abonnement. |
 
-## 8. Contrat d'implémentation Phase 8 (côté Rust)
+## 8. Décisions Lead (2026-11-09)
+
+Arbitrages du Lead sur les points ouverts de la Phase 0. Ils font foi pour la Phase 8 et **remplacent les mitigations
+provisoires** du §7 pour les risques concernés. Aucun changement de `apps/lc-overlay/web/bridge.js` n'est requis.
+
+### 8.1 Bufferisation play/stop (risque #2)
+
+**Décision : bufferiser côté Rust.** L'adaptateur Tauri garde une **file bornée par fenêtre** ; si `overlay://play` ou
+`overlay://stop` arrive avant que la commande `overlay_renderer_ready` soit reçue pour la fenêtre `overlay` :
+
+- conserver le **dernier play** et le **dernier stop** (pas d'accumulation illimitée) ;
+- les rejouer **dans l'ordre d'arrivée** dès `overlay_renderer_ready` ;
+- si le handshake n'arrive pas dans les **5 s**, vider la file avec un `warn` et ne pas rejouer.
+
+C'est la **correction d'une course de la v1 Electron**, pas une mesure de compatibilité : le main Electron n'a jamais eu
+de file et le renderer ne pose ses listeners qu'après `await getConfig()` (`legacy-bootstrap-utils.ts:56-73`).
+`overlay://settings` reste envoyé après le handshake uniquement. Le board n'appelle pas `rendererReady` (§2.2, §8.7) :
+aucun buffer côté board.
+
+### 8.2 CSP (risque #3)
+
+**Décision : `script-src 'self'` strict ; `'unsafe-inline'` pour les styles uniquement**, justifié par le `<style>` inline
+de `pairing.html:7-97` (contenu local et statique) ; **pas de hash à maintenir** pour le moment. CSP cible :
+
+```text
+script-src 'self';
+style-src 'self' 'unsafe-inline';
+img-src 'self' asset: http://asset.localhost data:;
+media-src 'self' blob: {API_URL};
+connect-src 'self' {API_URL} {WS_API_URL};
+frame-src https://platform.twitter.com;
+object-src 'none';
+```
+
+`{API_URL}` / `{WS_API_URL}` viennent de la config et sont injectées à la construction de la fenêtre. À valider au POC :
+le widget Twitter peut exiger des domaines supplémentaires (`syndication.twitter.com`, `abs.twimg.com`, …).
+
+### 8.3 Origine WebView et CORS (risques #4, #5)
+
+**Décision : garder le schéma par défaut (pas de `useHttpsScheme`) ⇒ origine `http://tauri.localhost` sous Windows.**
+Le serveur Rust (`apps/lc-server`) devra ajouter **`http://tauri.localhost` et `https://tauri.localhost`** à la liste CORS
+des routes `/overlay` (et `/admin` si nécessaire) — **action Phase 3**. Une `{API_URL}` en HTTPS reste recommandée pour
+limiter le contenu mixte.
+
+### 8.4 URLs média protocole v2 (risque #16)
+
+**Décision : bridge et renderer utilisent `payload.media.url` VERBATIM.** Aucune réécriture, aucun ajout de `?token=` ni
+d'aucun autre paramètre. Toute logique legacy qui ajoute encore le token est **supprimée en Phase 8** :
+`overlay/src/renderer/board/legacy-preview-media-utils.ts:44-53` (`buildAuthedUrl`) et
+`overlay/src/renderer/overlay/legacy-media-dom-utils.ts:115-116` (URL média overlay). Seule exception tolérée : ajout du
+fragment `#t=` par le lecteur vidéo côté client pour le seek, à condition que la signature **ne couvre pas le fragment**
+(déjà le cas).
+
+### 8.5 Noms d'événements Tauri (§6.2)
+
+**Décision : conserver `overlay://play`, `overlay://stop`, `overlay://settings`.** Les noms Tauri 2 valides acceptent
+`a-zA-Z0-9`, `-`, `_`, `:`, `/` ; l'émission/réception réelle est **vérifiée par le POC Tauri en cours**. Repli
+`overlay:play` / `overlay:stop` / `overlay:settings` **uniquement si le POC l'exige**, avec le même mapping applicatif
+(point unique de changement : table `EVENTS`, `bridge.js:52-58` ; le renderer ne voit pas la différence).
+
+### 8.6 Chemin de config (§5.3)
+
+**Décision : ne PAS dépendre de `app_config_dir()`.** La config reste à **`%APPDATA%\LiveChat\config.json`**, calculé
+manuellement depuis la variable d'environnement `APPDATA`, avec migration one-shot `.bak` ; le **même fichier** est
+conservé pour permettre le **rollback Electron**. L'identifier Tauri est **`com.livechat`** (cohérent avec le `build.appId`
+Electron) et le `productName` **`LiveChat`** ; le chemin de config est forcé indépendamment de l'identifier. Conséquence :
+un upgrade in-place ou side-by-side **conserve les réglages existants**.
+
+### 8.7 Rappels d'intégration
+
+- Le renderer **board n'appelle pas `rendererReady`** (`legacy-bootstrap-utils.ts:54-74`) : **aucun buffer d'événements
+  n'est nécessaire côté board** ; ses settings arrivent via `onBoardReadyToShow`
+  (`runtime-window-socket-service.ts:99-101`).
+- `overlay/renderer/pairing.js` (52 l.) est **mort** : la page pairing charge `pairing-controller.ts` via
+  `pairing/index.ts:4-5`. **Ne pas le copier dans `apps/lc-overlay/web/`**, ne pas le câbler (cf. §4).
+- `bridge.js` n'a besoin d'aucune modification pour ces décisions (URLs média verbatim, noms d'événements conservés,
+  handshake inchangé).
+
+---
+
+## 9. Contrat d'implémentation Phase 8 (côté Rust)
 
 Checklist minimale pour que le renderer conservé fonctionne sans modification :
 
@@ -400,7 +488,8 @@ Checklist minimale pour que le renderer conservé fonctionne sans modification :
 3. **Handshake** : `overlay_renderer_ready` déclenche l'envoi `overlay://settings` à la fenêtre overlay (équivalent
    `register-overlay-ipc-handlers.ts:60-62`) ; `overlay://settings` aussi sur `ready-to-show` (équivalent
    `runtime-window-socket-service.ts:86-88,99-101`).
-4. **Buffering** : play/stop bufferisés tant que la fenêtre overlay n'est pas prête (risque #2), flush après handshake.
+4. **Buffering** : file bornée par fenêtre overlay (décision §8.1) — dernier play + dernier stop conservés, rejoués dans
+   l'ordre dès `overlay_renderer_ready`, timeout 5 s puis drop avec `warn` ; aucun buffer côté board (§8.7).
 5. **Sémantique métier identique** aux services Electron : projection 8 champs (`overlay-config-ipc-service.ts:25-47`),
    normalisations de config (`config-service.ts:68-107`), appairage HTTP (`pairing-consume-service.ts:65-134`), mémoires
    (`meme-bindings-service.ts:51-204`), télémétrie avec guest/offline (`overlay-playback-forwarding-service.ts:38-96`).
@@ -411,9 +500,10 @@ Checklist minimale pour que le renderer conservé fonctionne sans modification :
    exposées au DOM (cible protocole v2).
 9. **Fenêtres** : labels `overlay`/`board`/`pairing` ; overlay transparent + click-through + topmost 2 s ; pairing
    460×580 ; board 1180×780 min 960×640 (plan l.82-88, `window-factory.ts:32-96`).
-10. **Config** : même fichier/schéma JSON, chemin identique à l'Electron ou migration `.bak` décidée (§5.3).
+10. **Config** : chemin **forcé** `%APPDATA%\LiveChat\config.json` (calcul manuel via `APPDATA`, décision §8.6), schéma
+    JSON inchangé, migration one-shot `.bak`, **fichier partagé avec Electron** pour permettre le rollback.
 
-## 9. Livrable bridge et vérifications
+## 10. Livrable bridge et vérifications
 
 `apps/lc-overlay/web/bridge.js` (719 lignes, script classique IIFE, zéro dépendance) :
 
@@ -437,7 +527,7 @@ Vérifications :
 - Reste à valider en Phase 8 : comportement réel `invoke`/`listen` sous WebView2, ordre des events, CSP, CORS, origines,
   click-through/transparence, autoplay — ces points sont hors de portée du mock.
 
-## 10. Fichiers de référence
+## 11. Fichiers de référence
 
 | Fichier | Rôle |
 | --- | --- |

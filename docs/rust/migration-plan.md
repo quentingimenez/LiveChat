@@ -98,7 +98,7 @@ Règles : `#![forbid(unsafe_code)]` sauf `apps/lc-overlay` (bloc Win32 isolé) ;
 | 4 | scheduler + WS v2 + meme board | 9 |
 | 5 | pipeline média (resolver/download/transcode/cache/social) | 12 |
 | 6 | Discord (13 slash + 5 message commands, i18n) | 7 |
-| 7 | admin (15 endpoints + panel statique) | 5 |
+| 7 | admin (14 endpoints + panel statique) | 5 |
 | 8 | overlay Tauri (shell, bridge, WS, packaging) | 12 |
 | 9 | packaging serveur, parité, soak, bascule | 6 |
 
@@ -110,7 +110,7 @@ Total ≈ 69–70 j-h (+15 % buffer ≈ 80 j-h) ; solo 14–16 semaines ; multi-
 - Intégration : routes via `tower::oneshot`, WS réel (`tokio-tungstenite`), SQLite temporaire par test.
 - Contrat : `xtask parity` rejoue ~20 scénarios REST/WS contre legacy et nouveau, diff JSON tolérant ids/dates.
 - E2E overlay, charge (100 overlays, 24 h), sécurité (SSRF, auth, rate limit, CSP, cargo-deny/audit).
-- Parité : 22 endpoints REST, 13 types WS, 13 slash + 5 message commands, 15 endpoints admin, 3 fenêtres overlay, 100 % des lignes migrées.
+- Parité : 26 endpoints REST v1 (25 en v2 après suppression de `GET /overlay/config`), 13 types WS, 13 slash + 5 message commands, 14 endpoints admin, 3 fenêtres overlay, 100 % des lignes migrées.
 - Budgets : démarrage < 500 ms ; RSS repos < 30 Mo ; p95 REST local < 10 ms ; latence play < 20 ms ; binaire < 25 Mo ; RAM overlay < 150 Mo ; installeur < 20 Mo.
 
 ## 9. CI/CD et bascule (détail dans `runbook.md`)
@@ -134,10 +134,11 @@ Hypothèses : aucune nouvelle fonctionnalité ; Windows-first (mac via runner Gi
 
 ## Annexe A — Inventaire REST conservé
 
-- `/overlay` : `POST /pair/consume`, `GET /config`, `GET /media/:assetId`, `GET|POST /meme-board/items`, `GET /meme-board/media/:assetId`, `DELETE|PATCH /meme-board/items/:itemId`.
+- `/overlay` : `POST /pair/consume`, `GET /media/:assetId`, `GET|POST /meme-board/items`, `GET /meme-board/media/:assetId`, `DELETE|PATCH /meme-board/items/:itemId`. (`GET /config` supprimé en v2 : la config est livrée dans la trame `welcome`.)
 - `/ingest` : `POST /pair/consume`, `POST /`.
-- `/admin` : `GET /`, `GET /api/overview`, `GET|PATCH /api/runtime-settings`, `GET /api/ingest-authors`, `POST /api/ingest-clients`, `PATCH /api/guilds/:guildId`, `POST /api/guilds/:guildId/stop`, `POST /api/guilds/:guildId/purge`, `POST /api/overlay-clients/:clientId/revoke`, `POST /api/ingest-clients/:clientId/revoke`, `GET /api/pairing-codes`, `DELETE /api/pairing-codes/expired`, `POST /api/pairing-codes/:code/revoke`.
+- `/admin` : `GET /`, `GET /api/overview`, `GET|PATCH /api/runtime-settings`, `GET /api/ingest-authors`, `POST /api/ingest-clients`, `PATCH /api/guilds/:guildId/settings`, `POST /api/guilds/:guildId/stop`, `POST /api/guilds/:guildId/purge`, `POST /api/overlay-clients/:clientId/revoke`, `POST /api/ingest-clients/:clientId/revoke`, `GET /api/pairing-codes`, `DELETE /api/pairing-codes/expired`, `POST /api/pairing-codes/:code/revoke`.
 - Racine : `GET /`, `GET /health`.
+- Total vérifié sur le code v1 : **26** routes (8 `/overlay` + 2 `/ingest` + 14 `/admin` + 2 racine), **25** en v2.
 
 ## Annexe B — Commandes Discord
 
@@ -158,3 +159,42 @@ Ajouts : `RUST_LOG`, `MEDIA_MAX_CONCURRENT_INGESTIONS=2`, `MEDIA_URL_TTL_SEC=300
 | `overlay/renderer/**` | Conservé, copié dans `apps/lc-overlay/web/` |
 | `extension/` | Inchangé |
 | workflows server/overlay | Remplacés par `rust.yml`, `server-image.yml`, `overlay-release.yml` |
+
+## 12. Addendum — Phase 0 exécutée (2026-11-09)
+
+État d'avancement : Phase 0 (outillage, audit dynamique, protocole gelé, POC, contrat de schéma) réalisée. Commits : `75952df` (workspace + CI + crate `lc-protocol` + spec v1 du protocole), `7181c44` (audit dynamique + bridge overlay) ; révision protocole 2 committée ensuite.
+
+### 12.1 Outillage validé
+
+Rust 1.99.1 / cargo 1.99.1 (host `x86_64-pc-windows-msvc`), rustfmt + clippy, cargo-nextest 0.9.151, cargo-deny 0.20.2, cargo-audit 0.22.2 ; VS 2022 BuildTools 17.14.44 (toolset 14.44.35207, `cl.exe`/`link.exe`), vswhere ; WebView2 157.0.4341.42 ; node v24.12.0. `cargo check/test/fmt/clippy -D warnings/deny/audit` verts sur le workspace squeletté ; CI `rust.yml` en place.
+
+### 12.2 Audit dynamique du legacy (mesuré, remplace les estimations)
+
+- Tests : server 50/50 OK, overlay 62/62 OK, extension 109/109 OK.
+- Serveur cassé hors tests : `tsc` exit 2 (3× TS2339 `server/src/loaders/socketLoader.ts:160,169,186`) ; lint ESLint crashe (override `ajv` 8 : `TypeError: Cannot set properties of undefined (setting 'defaultMeta')`) ; `pnpm start` pointe `dist/src/index.js` alors que le build émet `dist/index.js`.
+- Vulnérabilités production : server **61** (32 high / 22 mod / 7 low ; `undici` 29, `fast-uri` 12, `fastify` 8, `engine.io` 3, `socket.io-parser` 2, `lodash` 2, `ws` 2, `zod` 1, `fast-copy` 1, `find-my-way` 1) — `SECURITY_EXCEPTIONS.md` était donc périmé ; overlay **6** (5 high, `electron-updater`…) ; extension **0**.
+- Baseline dev : boot → `/health` 22,71 s à froid / 14,42 s à chaud (dont 32 ms d'init applicative, dominée par `tsx`), prod-like 3,67 s, RSS 145,2 Mo, `/health` `{"status":"ok"}` mean 1,06 ms / p95 1,82 ms (n=50). Discord est obligatoire au boot (zod exit 1 en 7,05 s) — le serveur Rust devra démarrer sans Discord pour les tests/CI.
+- Dates Prisma : SQLite stocke les `DateTime` en `INTEGER` epoch ms UTC ; du TEXT `"YYYY-MM-DD HH:MM:SS"` (UTC seconde, via `DEFAULT CURRENT_TIMESTAMP` d'un INSERT brut) est possible et doit être toléré ; Prisma rejette `T` sans fuseau, espace+fraction et REAL ; une valeur invalide casse toute requête sélectionnant la colonne. Le migrateur écrira en i64 ms avec parseur tolérant.
+
+### 12.3 Décisions de protocole rev. 2 (détail `protocol-v2.md`)
+
+- TTL média : `exp = now + clamp(durationSec + 120, 300, 3600)` ; 300 s pour une image sans durée ; `HEAD`/`Range` à faire avant `exp` ; pause > TTL non supportée (nouvelle URL au prochain `play`).
+- `stop.request { jobId?, source?: "user"|"hotkey"|"admin" }` ; absent = tout arrêter.
+- Invariant scheduler : un seul `PLAYING` par guilde ; anomalie = plus récent `started_at` + warn. Reprise : `remaining_ms_snapshot` + `resume_offset_sec`.
+- `GET /overlay/config` supprimé : config uniquement dans `welcome`.
+- `MIN_OVERLAY_VERSION` (défaut 3.0.0), `serverVersion` dans `welcome`, close 4403 `{"minVersion":"x.y.z"}`, comparaison semver simple ; 4409 = reconnexion ≤ 1/s.
+- Helpers dans `lc-protocol` : `media_url_ttl_sec(kind, durationSec)`, `outdated_protocol_reason`, `parse_simple_version`, `is_version_below` ; 29 fixtures golden, 15 tests round-trip.
+
+### 12.4 Overlay Tauri — décisions bridge
+
+`bridge.js` (719 l., 13 méthodes) livré ; CSP `script-src 'self'` strict (`style-src` tolère l'inline de `pairing.html`) ; origine WebView `http://tauri.localhost` ⇒ CORS `/overlay` et `/admin` à compléter avec `http(s)://tauri.localhost` ; URL média v2 utilisée verbatim (token legacy supprimé en Phase 8) ; événements `overlay://play|stop|settings` conservés ; config forcée `%APPDATA%\LiveChat\config.json` (pas de `app_config_dir()`), `.bak` one-shot, rollback Electron possible ; bufferisation Rust des play/stop avant `overlay_renderer_ready` (file bornée, 5 s puis drop), board sans buffer.
+
+### 12.5 Contrat de schéma v3
+
+`docs/rust/schema-v3.sql` : tables STRICT snake_case (`app_metadata`, `media_assets`, `meme_board_items`, `playback_jobs`, `guilds`, `overlay_clients`, `ingest_clients`, `pairing_codes`), dates INTEGER ms, booléens 0/1, contraintes CHECK, index alignés Prisma. C'est le seul contrat dont dépend le migrateur ; toute évolution passe par le Lead.
+
+### 12.6 Corrections d'inventaire et suite
+
+- Inventaire REST vérifié : **26** routes v1 / **25** v2 (18.1) ; admin 14 et non 15 ; le route de réglages guilde est `PATCH /api/guilds/:guildId/settings`.
+- Phase 2 prête : `task-7` (lc-db + lc-domain) et `task-8` (migrateur `xtask migrate-legacy`) sont sur le board, en attente des verdicts POC ; POCs serveur/Tauri en build (`spikes/`).
+- Propos suivant : verdicts POC → go/no-go Tauri → commit d'intégration Phase 0 → lancer Phase 2 → puis Phases 3–9.

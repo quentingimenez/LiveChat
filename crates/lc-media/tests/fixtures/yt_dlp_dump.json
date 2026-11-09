@@ -1,0 +1,25 @@
+{
+  "id": "dQw4w9WgXcQ",
+  "title": "Vidéo de test LiveChat",
+  "uploader": "LiveChat",
+  "channel": "LiveChat",
+  "duration": 213.5,
+  "width": 1920,
+  "height": 1080,
+  "formats": [
+    {
+      "format_id": "137",
+      "height": 1080,
+      "width": 1920,
+      "ext": "mp4",
+      "vcodec": "avc1.640028"
+    },
+    {
+      "format_id": "136",
+      "height": 720,
+      "width": 1280,
+      "ext": "mp4",
+      "vcodec": "avc1.4d401f"
+    }
+  ]
+}

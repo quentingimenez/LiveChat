@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LiveChat Overlay</title>
+    <!-- bridge.js remplace le preload Electron : il doit être un script classique,
+         chargé avant tout module de page (cf. apps/lc-overlay/web/README.md). -->
+    <script src="./bridge.js"></script>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        overflow: hidden;
+        pointer-events: none;
+        color: #fff;
+        font: 12px/1.4 "Segoe UI", system-ui, sans-serif;
+      }
+      #shell-badge {
+        position: absolute;
+        left: 16px;
+        bottom: 16px;
+        padding: 6px 10px;
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.55);
+        color: #d7f7d7;
+        white-space: pre;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Placeholder Phase 8a : le renderer overlay réel (overlay.html + CSS + modules ESM
+         copiés depuis overlay/renderer/) est intégré en Phase 8b. -->
+    <div id="shell-badge">LiveChat Overlay — shell 8a</div>
+    <script type="module">
+      const badge = document.getElementById('shell-badge');
+      const bridge = window.__livechatOverlayBridge;
+      const mode = bridge ? bridge.mode : 'absent';
+      badge.textContent = 'LiveChat Overlay — shell 8a\nbridge: ' + mode;
+
+      if (window.livechatOverlay) {
+        window.livechatOverlay.onPlay((payload) => {
+          badge.textContent = 'shell 8a — play reçu: ' + JSON.stringify(payload);
+        });
+        window.livechatOverlay.onStop(() => {
+          badge.textContent = 'shell 8a — stop reçu';
+        });
+        window.livechatOverlay.onSettings((payload) => {
+          badge.textContent = 'shell 8a — settings reçus: ' + JSON.stringify(payload);
+        });
+      }
+    </script>
+  </body>
+</html>

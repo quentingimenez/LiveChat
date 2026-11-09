@@ -1,0 +1,374 @@
+//! Icône de la zone de notification et menu contextuel du shell.
+//!
+//! Équivalent simplifié du `tray-menu-service` Electron : accès rapide à
+//! l'overlay, au board et à l'appairage, interrupteurs de configuration,
+//! sélection de l'écran, volume, vérification des mises à jour et quitter.
+
+use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::{AppHandle, Manager, Wry};
+
+use crate::display::{self, DisplayInfo};
+use crate::events;
+use crate::state::AppState;
+use crate::windows;
+
+pub const TRAY_ID: &str = "main-tray";
+
+const ID_SHOW_OVERLAY: &str = "tray.show_overlay";
+const ID_OPEN_BOARD: &str = "tray.open_board";
+const ID_OPEN_PAIRING: &str = "tray.open_pairing";
+const ID_TOGGLE_ENABLED: &str = "tray.toggle_enabled";
+const ID_TOGGLE_AUTOSTART: &str = "tray.toggle_autostart";
+const ID_TOGGLE_SHOW_TEXT: &str = "tray.toggle_show_text";
+const ID_DISPLAY_PREFIX: &str = "tray.display.";
+const ID_VOLUME_UP: &str = "tray.volume.up";
+const ID_VOLUME_DOWN: &str = "tray.volume.down";
+const ID_VOLUME_RESET: &str = "tray.volume.reset";
+const ID_CHECK_UPDATES: &str = "tray.check_updates";
+const ID_QUIT: &str = "tray.quit";
+
+fn display_label(selected: Option<&DisplayInfo>, displays: &[DisplayInfo]) -> String {
+    match selected {
+        Some(display) => format!(
+            "Écran sélectionné : {}",
+            display::format_display_menu_label(display)
+        ),
+        None if displays.is_empty() => "Écran sélectionné : aucun écran détecté".to_string(),
+        None => "Écran sélectionné : écran principal".to_string(),
+    }
+}
+
+fn volume_label(volume: f64) -> String {
+    format!("Volume audio ({:.0} %)", (volume * 100.0).round())
+}
+
+/// Construit le menu à partir de l'état courant (config + écrans + autostart).
+pub fn build_menu(
+    app: &AppHandle<Wry>,
+    state: &AppState,
+    displays: &[DisplayInfo],
+    selected_index: Option<usize>,
+    autostart_enabled: bool,
+) -> tauri::Result<Menu<Wry>> {
+    let config = state.config_snapshot();
+    let selected_display = selected_index.and_then(|index| displays.get(index));
+
+    let show_overlay = MenuItem::with_id(
+        app,
+        ID_SHOW_OVERLAY,
+        "Afficher l'overlay",
+        true,
+        None::<&str>,
+    )?;
+    let open_board = MenuItem::with_id(
+        app,
+        ID_OPEN_BOARD,
+        "Ouvrir Meme Board",
+        config.enabled && config.has_pairing_config(),
+        None::<&str>,
+    )?;
+    let open_pairing = MenuItem::with_id(
+        app,
+        ID_OPEN_PAIRING,
+        "Appairer l'overlay",
+        true,
+        None::<&str>,
+    )?;
+    let separator_top = PredefinedMenuItem::separator(app)?;
+
+    let toggle_enabled = CheckMenuItem::with_id(
+        app,
+        ID_TOGGLE_ENABLED,
+        "Overlay activé",
+        true,
+        config.enabled,
+        None::<&str>,
+    )?;
+    let toggle_autostart = CheckMenuItem::with_id(
+        app,
+        ID_TOGGLE_AUTOSTART,
+        "Lancer au démarrage",
+        true,
+        autostart_enabled,
+        None::<&str>,
+    )?;
+    let toggle_show_text = CheckMenuItem::with_id(
+        app,
+        ID_TOGGLE_SHOW_TEXT,
+        "Afficher le texte",
+        true,
+        config.show_text,
+        None::<&str>,
+    )?;
+    let separator_config = PredefinedMenuItem::separator(app)?;
+
+    let display_header = MenuItem::with_id(
+        app,
+        "tray.display.header",
+        display_label(selected_display, displays),
+        false,
+        None::<&str>,
+    )?;
+    let mut display_items = Vec::with_capacity(displays.len());
+    for display in displays {
+        display_items.push(CheckMenuItem::with_id(
+            app,
+            format!("{ID_DISPLAY_PREFIX}{}", display.index),
+            display::format_display_menu_label(display),
+            true,
+            Some(display.index) == selected_index,
+            None::<&str>,
+        )?);
+    }
+    let separator_displays = PredefinedMenuItem::separator(app)?;
+
+    let volume_up = MenuItem::with_id(app, ID_VOLUME_UP, "Volume +", true, None::<&str>)?;
+    let volume_down = MenuItem::with_id(app, ID_VOLUME_DOWN, "Volume -", true, None::<&str>)?;
+    let volume_reset = MenuItem::with_id(app, ID_VOLUME_RESET, "Volume 100 %", true, None::<&str>)?;
+    let volume = Submenu::with_id_and_items(
+        app,
+        "tray.volume",
+        volume_label(config.volume),
+        true,
+        &[&volume_up, &volume_down, &volume_reset],
+    )?;
+    let separator_media = PredefinedMenuItem::separator(app)?;
+
+    let check_updates = MenuItem::with_id(
+        app,
+        ID_CHECK_UPDATES,
+        "Vérifier les mises à jour",
+        true,
+        None::<&str>,
+    )?;
+    let separator_quit = PredefinedMenuItem::separator(app)?;
+    let quit = MenuItem::with_id(app, ID_QUIT, "Quitter", true, None::<&str>)?;
+
+    let mut items: Vec<&dyn IsMenuItem<Wry>> = vec![
+        &show_overlay,
+        &open_board,
+        &open_pairing,
+        &separator_top,
+        &toggle_enabled,
+        &toggle_autostart,
+        &toggle_show_text,
+        &separator_config,
+        &display_header,
+    ];
+    for item in &display_items {
+        items.push(item);
+    }
+    items.push(&separator_displays);
+    items.push(&volume);
+    items.push(&separator_media);
+    items.push(&check_updates);
+    items.push(&separator_quit);
+    items.push(&quit);
+
+    Menu::with_items(app, &items)
+}
+
+fn autostart_enabled(app: &AppHandle<Wry>) -> bool {
+    use tauri_plugin_autostart::ManagerExt as AutostartExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+/// Crée l'icône dans la zone de notification (une seule fois au démarrage).
+///
+/// L'état applicatif doit déjà être géré (`app.manage`) au moment de l'appel.
+pub fn create_tray(app: &AppHandle<Wry>) -> tauri::Result<()> {
+    let state = app.state::<AppState>();
+    let (displays, _primary) = windows::collect_displays(app);
+    let selected = windows::selected_display(app);
+    let selected_index = selected.as_ref().map(|display| display.index);
+    let menu = build_menu(
+        app,
+        &state,
+        &displays,
+        selected_index,
+        autostart_enabled(app),
+    )?;
+
+    let mut builder = tauri::tray::TrayIconBuilder::with_id(TRAY_ID)
+        .menu(&menu)
+        .tooltip("LiveChat — overlay")
+        .on_menu_event(|app, event| handle_menu_event(app, event.id().as_ref()));
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    }
+    let tray = builder.build(app)?;
+    tracing::info!(
+        id = TRAY_ID,
+        "icône et menu de la zone de notification créés"
+    );
+    drop(tray);
+    Ok(())
+}
+
+/// Reconstruit le menu (après changement de config, d'écran ou d'autostart).
+pub fn refresh_tray(app: &AppHandle<Wry>) {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        tracing::debug!("tray introuvable au moment du rafraîchissement");
+        return;
+    };
+    let state = app.state::<AppState>();
+    let (displays, _primary) = windows::collect_displays(app);
+    let selected = windows::selected_display(app);
+    let selected_index = selected.as_ref().map(|display| display.index);
+    let menu = match build_menu(
+        app,
+        &state,
+        &displays,
+        selected_index,
+        autostart_enabled(app),
+    ) {
+        Ok(menu) => menu,
+        Err(error) => {
+            tracing::warn!(%error, "échec de construction du menu tray");
+            return;
+        }
+    };
+    if let Err(error) = tray.set_menu(Some(menu)) {
+        tracing::warn!(%error, "échec d'application du menu tray");
+    }
+    if let Err(error) = tray.set_tooltip(Some("LiveChat — overlay")) {
+        tracing::debug!(%error, "échec de mise à jour du tooltip tray");
+    }
+}
+
+fn publish_settings(app: &AppHandle<Wry>) {
+    let state = app.state::<AppState>();
+    if let Err(error) = events::emit_settings(app, &state.view()) {
+        tracing::debug!(%error, "échec d'émission overlay://settings");
+    }
+}
+
+fn toggle_enabled(app: &AppHandle<Wry>) {
+    let state = app.state::<AppState>();
+    let updated = state.update_config(|config| config.enabled = !config.enabled);
+    match updated {
+        Ok(config) => {
+            tracing::info!(
+                enabled = config.enabled,
+                "overlay activé/désactivé depuis le tray"
+            );
+            publish_settings(app);
+        }
+        Err(error) => tracing::warn!(%error, "échec de sauvegarde de `enabled`"),
+    }
+}
+
+fn toggle_show_text(app: &AppHandle<Wry>) {
+    let state = app.state::<AppState>();
+    let updated = state.update_config(|config| config.show_text = !config.show_text);
+    match updated {
+        Ok(config) => {
+            tracing::info!(show_text = config.show_text, "affichage du texte modifié");
+            publish_settings(app);
+        }
+        Err(error) => tracing::warn!(%error, "échec de sauvegarde de `showText`"),
+    }
+}
+
+fn toggle_autostart(app: &AppHandle<Wry>) {
+    use tauri_plugin_autostart::ManagerExt as AutostartExt;
+    let manager = app.autolaunch();
+    let currently_enabled = manager.is_enabled().unwrap_or(false);
+    let result = if currently_enabled {
+        manager.disable()
+    } else {
+        manager.enable()
+    };
+    match result {
+        Ok(()) => tracing::info!(
+            enabled = !currently_enabled,
+            "démarrage automatique modifié"
+        ),
+        Err(error) => tracing::warn!(%error, "échec de modification du démarrage automatique"),
+    }
+}
+
+fn select_display(app: &AppHandle<Wry>, index: usize) {
+    let (displays, _primary) = windows::collect_displays(app);
+    let Some(target_display) = displays.get(index).cloned() else {
+        tracing::warn!(index, "écran inconnu sélectionné depuis le tray");
+        return;
+    };
+    let state = app.state::<AppState>();
+    let selection = display::DisplaySelection::from_display(&target_display);
+    let result = state.update_config(|config| {
+        config.display_index = selection.display_index;
+        config.display_key = selection.display_key.clone();
+        config.display_label = selection.display_label.clone();
+    });
+    match result {
+        Ok(_) => {
+            tracing::info!(display_key = %target_display.key(), "écran sélectionné depuis le tray");
+            let _positioned = windows::position_overlay_on_selected_display(app);
+        }
+        Err(error) => tracing::warn!(%error, "échec de sauvegarde de l'écran sélectionné"),
+    }
+}
+
+fn adjust_volume(app: &AppHandle<Wry>, delta: f64) {
+    let state = app.state::<AppState>();
+    let result =
+        state.update_config(|config| config.volume = (config.volume + delta).clamp(0.0, 1.0));
+    match result {
+        Ok(config) => tracing::info!(volume = config.volume, "volume modifié depuis le tray"),
+        Err(error) => tracing::warn!(%error, "échec de sauvegarde du volume"),
+    }
+}
+
+fn reset_volume(app: &AppHandle<Wry>) {
+    let state = app.state::<AppState>();
+    match state.update_config(|config| config.volume = 1.0) {
+        Ok(config) => tracing::info!(volume = config.volume, "volume réinitialisé"),
+        Err(error) => tracing::warn!(%error, "échec de sauvegarde du volume"),
+    }
+}
+
+fn spawn_update_check(app: &AppHandle<Wry>) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        use tauri_plugin_updater::UpdaterExt;
+        match handle.updater() {
+            Ok(updater) => match updater.check().await {
+                Ok(Some(update)) => {
+                    tracing::info!(version = %update.version, "mise à jour disponible")
+                }
+                Ok(None) => tracing::info!("aucune mise à jour disponible"),
+                Err(error) => tracing::warn!(%error, "échec de la vérification des mises à jour"),
+            },
+            Err(error) => {
+                tracing::warn!(%error, "updater indisponible (clé publique placeholder ?)")
+            }
+        }
+    });
+}
+
+/// Gère les entrées du menu tray.
+pub fn handle_menu_event(app: &AppHandle<Wry>, id: &str) {
+    match id {
+        ID_SHOW_OVERLAY => windows::show_overlay(app),
+        ID_OPEN_BOARD => windows::show_board(app),
+        ID_OPEN_PAIRING => windows::show_pairing(app),
+        ID_TOGGLE_ENABLED => toggle_enabled(app),
+        ID_TOGGLE_AUTOSTART => toggle_autostart(app),
+        ID_TOGGLE_SHOW_TEXT => toggle_show_text(app),
+        ID_VOLUME_UP => adjust_volume(app, 0.1),
+        ID_VOLUME_DOWN => adjust_volume(app, -0.1),
+        ID_VOLUME_RESET => reset_volume(app),
+        ID_CHECK_UPDATES => spawn_update_check(app),
+        ID_QUIT => app.exit(0),
+        other if other.starts_with(ID_DISPLAY_PREFIX) => {
+            let index = other.trim_start_matches(ID_DISPLAY_PREFIX).parse::<usize>();
+            match index {
+                Ok(index) => select_display(app, index),
+                Err(_) => tracing::warn!(id = other, "identifiant d'écran tray invalide"),
+            }
+        }
+        other => tracing::debug!(id = other, "entrée de menu tray ignorée"),
+    }
+    refresh_tray(app);
+}

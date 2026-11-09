@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LiveChat — Meme Board</title>
+    <script src="./bridge.js"></script>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #14161a;
+        color: #e6e6e6;
+        font: 14px/1.5 "Segoe UI", system-ui, sans-serif;
+      }
+      main {
+        padding: 24px 28px;
+      }
+      h1 {
+        margin: 0 0 4px;
+        font-size: 20px;
+      }
+      p {
+        margin: 6px 0;
+      }
+      pre {
+        padding: 12px;
+        border-radius: 8px;
+        background: #0b0d10;
+        border: 1px solid #262b33;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .muted {
+        color: #97a0ad;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>LiveChat — Meme Board</h1>
+      <p class="muted">
+        Placeholder Phase 8a. Le renderer board réel (board.html + CSS + modules ESM du legacy) est
+        intégré en Phase 8b, avec le client WebSocket.
+      </p>
+      <p>Bridge : <strong id="bridge-mode">…</strong> — API : <strong id="bridge-api">…</strong></p>
+      <pre id="config">chargement de la config…</pre>
+    </main>
+    <script type="module">
+      const bridge = window.__livechatOverlayBridge;
+      const modeEl = document.getElementById('bridge-mode');
+      const apiEl = document.getElementById('bridge-api');
+      const configEl = document.getElementById('config');
+
+      modeEl.textContent = bridge ? bridge.mode + ' / ' + bridge.transport : 'absent';
+      apiEl.textContent = window.livechatOverlay ? 'window.livechatOverlay présente' : 'absente';
+
+      if (window.livechatOverlay) {
+        window.livechatOverlay
+          .getConfig()
+          .then((config) => {
+            configEl.textContent = JSON.stringify(config, null, 2);
+          })
+          .catch((error) => {
+            configEl.textContent = 'getConfig a échoué : ' + (error && error.message ? error.message : error);
+          });
+      } else {
+        configEl.textContent = 'bridge absent : page ouverte hors Tauri ?';
+      }
+    </script>
+  </body>
+</html>

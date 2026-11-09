@@ -12,6 +12,7 @@ chrono.workspace = true
 lc-db = { path = "../lc-db" }
 lc-domain = { path = "../lc-domain" }
 lc-protocol = { path = "../lc-protocol" }
+sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

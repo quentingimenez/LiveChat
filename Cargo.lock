@@ -668,6 +668,20 @@ name = "lc-overlay"
 version = "3.0.0"
 
 [[package]]
+name = "lc-playback"
+version = "3.0.0"
+dependencies = [
+ "chrono",
+ "lc-db",
+ "lc-domain",
+ "lc-protocol",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "lc-protocol"
 version = "3.0.0"
 dependencies = [

@@ -210,3 +210,22 @@ Décisions prises :
 - **Chemins de config.** `app_config_dir()` = `Roaming\com.livechat` ≠ `%APPDATA%\LiveChat` du legacy. Phase 8 force le chemin `%APPDATA%\LiveChat\config.json` (comme décidé §12.4) ou migre avec `.bak` one-shot ; l'option `fs:scope` exacte validée au POC est reprise dans le rapport.
 - **Coexistence et bascule.** Upgrade in-place Electron → Tauri impossible proprement (clés de désinstallation différentes : GUID `ec5c36a6-…` vs `${PRODUCTNAME}`). Bêta side-by-side avec `productName: "LiveChat Next"` et `identifier: "com.livechat.next"`, puis bascule finale : désinstallation Electron 2.0.1, installation `LiveChat` Tauri, migration `%APPDATA%\LiveChat\config.json` → chemin cible, reprise de la Run key, test de désinstallation.
 - **Suite.** Phase 0 close. Phase 2 (`lc-db` + `lc-domain`, migrateur `xtask`) en cours ; Phase 3 (serveur HTTP) et Phase 5 (pipeline média) démarrent en parallèle après les objets `lc-db`.
+
+### 12.8 Verdict POC serveur et décisions Phase 3/4
+
+**POC serveur — GO avec réserves ciblées.** Spike `spikes/poc-server/` (axum 0.8.9, tokio 1.54.1, sqlx 0.8.6 SQLite WAL) : WS v2 sous-ensemble conforme (hello/auth SHA-256, welcome/settings/peers, play + URL signée HMAC, ping/pong 15 s/45 s, rate-limit, close 4401/4402/4403/4408/4409/1001/1002/1003/1011), HTTP `/health`, `/media/{id}` signé (403 expiré/invalide), `POST /jobs` (FK 400, 503 database_busy), `/socket.io/*` → 426, shutdown gracieux ; bench reproductible `src/bench.rs` + `bench/run-bench.ps1`. Rapport conservé en `docs/rust/poc-server-report.md`.
+
+Mesures de référence (100 clients WS / 240 s / play toutes les 500 ms, machine 8c/16t) : RSS 8,91 Mo au repos / 30,00 Mo moyen / 30,74 Mo pic ; CPU 2,3 % d'un cœur moyen ; latence play client→client p50/p95 **1/1 ms** (p99 2 ms), skew p95 1 ms, 0 perte (47 545 msgs, 0 dropped) ; 100/100 clients connectés en 1,06 s (handshake p95 7 ms) ; `welcome` p95 230 ms avec `synchronous=FULL` contre 34 ms en `NORMAL` ; `/health` p95 0 ms (8 916 req, 0 erreur) ; 4 482 `POST /jobs` sans lock ni 503 ; arrêt 202 en 2 ms, 100/100 clients fermés, process sorti en ~20 ms ; build release from scratch 62,57 s à 4 jobs (binaire 7,18 Mo, démarrage 0,53 s).
+
+Décisions retenues pour l'implémentation :
+- `lc-protocol` reste la source unique des types ; épingler `tokio-tungstenite 0.29` (version d'axum 0.8.9) pour éviter un doublon de runtime WS.
+- `max_message_size` WebSocket relevé à 4 × 64 Kio (256 Kio), sinon axum masque le close 4408 de la spécification.
+- Ne **jamais** envelopper `axum::serve` dans un timeout global (bug reproduit puis corrigé dans le spike).
+- Présence/`last_seen_at` : écriture asynchrone ou `synchronous=NORMAL` (gain mesuré ×7 sur `welcome`), sans bloquer le handshake.
+- Média : utiliser `tower-http` `ServeFile` pour `HEAD`/`Range`/206 (absent du spike, à faire en Phase 3b/5).
+- Ne pas exposer `/debug/pragmas` ni `/shutdown` en production ; le bench Phase 3 sera rejoué avec un générateur neutre (`oha`/`wrk`/`k6`), la latence `POST /jobs` p95 34-46 ms étant un artefact du client Windows (serveur 0-1 ms mesuré par TraceLayer, curl et .NET).
+- Budget REST p95 < 10 ms considéré atteint côté serveur ; budget de démarrage serveur ajusté à < 1 s (mesure POC 0,53 s process release).
+
+### 12.9 Évolution d'architecture : crate `lc-playback`
+
+L'ordonnanceur de lecture (`playbackScheduler.ts` legacy, 979 lignes) est extrait dans un crate dédié `crates/lc-playback` plutôt que dans `apps/lc-server` : il dépend de `lc-db` + `lc-protocol` mais pas d'axum, ce qui permet de le tester sans HTTP ni WebSocket (horloge et sink injectés) et de le développer en parallèle du squelette serveur. `apps/lc-server` l'intégrera en Phase 4 via un adaptateur qui diffuse les messages `play`/`stop` sur le hub WebSocket. Le plan §3 est amendé en conséquence (nouveau membre du workspace).

@@ -1,0 +1,78 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lc-protocol",
+    "crates/lc-domain",
+    "crates/lc-db",
+    "crates/lc-media",
+    "crates/lc-discord",
+    "crates/lc-admin",
+    "apps/lc-server",
+    "apps/lc-overlay",
+    "xtask",
+]
+# Les spikes (POC) ont leur propre target/ et ne font pas partie du workspace.
+exclude = ["spikes"]
+
+[workspace.package]
+version = "3.0.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+# ---- Sérialisation / protocole ----
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# ---- Async / runtime ----
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "time",
+    "sync",
+    "signal",
+    "fs",
+] }
+tracing = "0.1"
+
+# ---- Erreurs ----
+thiserror = "2"
+anyhow = "1"
+
+# ---- Identifiants / crypto / encodage ----
+uuid = { version = "1", features = ["v4", "serde"] }
+sha2 = "0.10"
+hmac = "0.12"
+subtle = "2"
+rand = "0.9"
+base64 = "0.22"
+url = "2"
+
+# ---- Crate locales (versions internes) ----
+lc-protocol = { path = "crates/lc-protocol" }
+lc-domain = { path = "crates/lc-domain" }
+lc-db = { path = "crates/lc-db" }
+lc-media = { path = "crates/lc-media" }
+lc-discord = { path = "crates/lc-discord" }
+lc-admin = { path = "crates/lc-admin" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unused_lifetimes = "warn"
+let_underscore_drop = "warn"
+
+[workspace.lints.clippy]
+# Règles du plan de migration : pas de panic silencieux hors tests.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+dbg_macro = "deny"
+todo = "warn"
+unimplemented = "warn"
+# Qualité générale utile dès la Phase 1.
+redundant_clone = "warn"
+trivially_copy_pass_by_ref = "warn"

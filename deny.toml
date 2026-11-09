@@ -1,0 +1,44 @@
+# Politique d'approvisionnement Rust de LiveChat (cargo-deny).
+# CI : `cargo deny check` — voir .github/workflows/rust.yml.
+
+[graph]
+# Vérifie tout le graphe, y compris les dépendances optionnelles.
+all-features = true
+
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Un crate yanké ne doit plus être construit.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Liste blanche volontairement stricte : toute nouvelle licence doit être
+# justifiée ici (et validée par le Lead).
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "0BSD",
+    "MPL-2.0",
+]
+confidence-threshold = 0.9
+# La liste blanche est pré-provisionnée pour les dépendances des Phases 1+ ;
+# une licence autorisée mais pas encore rencontrée n'est pas une anomalie.
+unused-allowed-license = "allow"
+
+[bans]
+# Deux versions majeures d'un même crate : avertissement (à traiter en Phase 1+).
+multiple-versions = "warn"
+# Interdit les contraintes `*` explicites.
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

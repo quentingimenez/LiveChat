@@ -1,0 +1,6 @@
+# Toolchain Rust du dépôt LiveChat.
+# `rustup` installe automatiquement ce canal (host x86_64-pc-windows-msvc sur Windows).
+[toolchain]
+channel = "stable"
+profile = "default"
+components = ["rustfmt", "clippy"]

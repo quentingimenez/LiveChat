@@ -1,0 +1,11 @@
+[package]
+name = "lc-discord"
+description = "Bot Discord LiveChat : commandes slash et message, internationalisation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

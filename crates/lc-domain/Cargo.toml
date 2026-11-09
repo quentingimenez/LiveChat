@@ -1,0 +1,11 @@
+[package]
+name = "lc-domain"
+description = "Domaine LiveChat : entités, identifiants, erreurs métier et abstraction du temps."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

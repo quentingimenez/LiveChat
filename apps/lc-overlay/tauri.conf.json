@@ -51,12 +51,13 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; media-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost; frame-src https://platform.twitter.com; object-src 'none'"
+      "csp": "default-src 'self'; script-src 'self' https://platform.twitter.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost http: https:; media-src 'self' blob: http: https:; connect-src 'self' ipc: http://ipc.localhost http: https: ws: wss:; frame-src https://platform.twitter.com https://syndication.twitter.com; object-src 'none'"
     }
   },
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": false,
     "icon": ["icons/icon.ico", "icons/icon.png"],
     "publisher": "Babz",
     "windows": {
@@ -71,7 +72,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/Babz-Discord/LiveChat/releases/latest/download/latest.json"
+        "https://github.com/quentingimenez/LiveChat/releases/latest/download/latest.json"
       ],
       "pubkey": "RWQPLACEHOLDER_MINISIGN_PUBLIC_KEY_A_REMPLACER_EN_PHASE_9="
     }

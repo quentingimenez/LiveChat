@@ -1,0 +1,188 @@
+name: server-image
+
+# Phase 9b — publication de l'image de production du serveur Rust (`lc-server`).
+# Déclencheurs : tag `server-v*` (release) ou lancement manuel avec `version`.
+# Non-régression locale : voir `deploy/server.Dockerfile` et `docs/rust/packaging.md`.
+
+on:
+  push:
+    tags:
+      - 'server-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version à publier, format X.Y.Z sans préfixe (ex: 3.0.0)"
+        required: true
+        type: string
+      update_latest:
+        description: "Déplacer aussi le tag :latest sur cette version"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: server-image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/livechat-server
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  build:
+    name: build & push (linux/amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      image-ref: ${{ steps.ref.outputs.image-ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # `docker/metadata-action` et le build n'ont pas besoin d'historique complet.
+          fetch-depth: 1
+
+      - name: Validate version input
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::version '$version' invalide (attendu X.Y.Z)"
+            exit 1
+          fi
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
+            type=raw,value=server-v${{ inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'workflow_dispatch' && inputs.update_latest }}
+
+      - name: Resolve primary image reference
+        id: ref
+        run: |
+          set -euo pipefail
+          ref="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | head -n 1)"
+          test -n "$ref"
+          echo "image-ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Image publiée : $ref"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/server.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  smoke:
+    name: smoke test image
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull published image
+        run: docker pull "${{ needs.build.outputs.image-ref }}"
+
+      - name: Run container
+        run: |
+          set -euo pipefail
+          docker rm -f lc-server-smoke >/dev/null 2>&1 || true
+          docker run --detach --name lc-server-smoke \
+            --publish 127.0.0.1:3000:3000 \
+            "${{ needs.build.outputs.image-ref }}"
+          ready=0
+          for attempt in $(seq 1 60); do
+            if curl -fsS --max-time 2 http://127.0.0.1:3000/health > /tmp/health.json 2>/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != "1" ]; then
+            echo "::error::/health n'a pas répondu dans les 60 s"
+            docker logs lc-server-smoke
+            exit 1
+          fi
+          cat /tmp/health.json
+          echo
+          python3 - <<'PY'
+          import json
+
+          with open('/tmp/health.json', encoding='utf-8') as handle:
+              data = json.load(handle)
+          assert data.get('status') in ('ok', 'degraded'), data
+          assert data.get('version') == '3.0.0', data
+          assert data.get('protocolVersion') == 2, data
+          assert data.get('db') == 'ok', data
+          print('health OK:', data['status'], data['version'], 'db=' + data['db'])
+          PY
+
+      - name: Verify non-root user and media tools
+        run: |
+          set -euo pipefail
+          uid="$(docker exec lc-server-smoke id -u)"
+          gid="$(docker exec lc-server-smoke id -g)"
+          echo "uid=$uid gid=$gid"
+          test "$uid" = "10001"
+          test "$gid" = "10001"
+          docker exec lc-server-smoke ffmpeg -version | head -n 1
+          docker exec lc-server-smoke ffprobe -version | head -n 1
+          docker exec lc-server-smoke yt-dlp --version
+
+      - name: Verify SQLite persistence under /app/data
+        run: |
+          set -euo pipefail
+          docker exec lc-server-smoke sh -c 'ls -la /app/data; test -f /app/data/livechat.sqlite'
+          docker exec lc-server-smoke sh -c 'test -w /app/data && echo "volume writable by non-root"'
+
+      - name: Verify graceful shutdown (SIGTERM)
+        run: |
+          set -euo pipefail
+          start="$(date +%s%3N)"
+          docker stop --time 20 lc-server-smoke
+          end="$(date +%s%3N)"
+          exit_code="$(docker inspect lc-server-smoke --format '{{.State.ExitCode}}')"
+          echo "exit_code=$exit_code stop_ms=$((end - start))"
+          test "$exit_code" = "0"
+          test $((end - start)) -le 20000
+
+      - name: Container logs
+        if: always()
+        run: docker logs lc-server-smoke || true
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f lc-server-smoke >/dev/null 2>&1 || true

@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "label": "livechat-v2",
+  "notes": "Suite cible v2 (serveur Rust, Phase 3+). Elle ne rejoue pas le contrat métier legacy : elle vérifie les évolutions voulues (en-têtes de sécurité, x-request-id, rate limit, /health v2, erreurs normalisées, /overlay signé et Bearer only). Les cas v1 restent la référence métier ; voir docs/rust/parity-harness.md § « Parité v2 : ce qui remplace quoi ». Le dernier cas (rate_limit_429) exige --rate-limit-probe et doit rester en dernière position.",
+  "cases": [
+    {
+      "id": "root_v2_response",
+      "description": "Racine v2 : corps stable, en-têtes de sécurité et identifiant de requête présents",
+      "method": "GET",
+      "path": "/",
+      "compare": {
+        "compare_headers": [
+          "content-type",
+          "content-security-policy",
+          "cross-origin-resource-policy",
+          "permissions-policy",
+          "referrer-policy",
+          "x-content-type-options",
+          "x-frame-options",
+          "x-request-id",
+          "x-ratelimit-limit",
+          "x-ratelimit-remaining"
+        ]
+      },
+      "note": "x-request-id généré (UUID) est normalisé ; les valeurs x-ratelimit restent comparées via leurs placeholders."
+    },
+    {
+      "id": "request_id_generated",
+      "description": "Un x-request-id UUID est généré quand le client n'en fournit pas",
+      "method": "GET",
+      "path": "/",
+      "compare": {
+        "ignore_body": true,
+        "compare_headers": ["x-request-id"]
+      },
+      "note": "Le golden doit contenir un UUID, normalisé en <uuid> à la comparaison."
+    },
+    {
+      "id": "request_id_propagated",
+      "description": "Un x-request-id fourni par le client est échoé tel quel",
+      "method": "GET",
+      "path": "/",
+      "headers": {
+        "x-request-id": "parity-correlation-id"
+      },
+      "compare": {
+        "ignore_body": true,
+        "compare_headers": ["x-request-id"]
+      },
+      "note": "Valeur volontairement non UUID : elle doit être conservée à l'identique (pas de normalisation)."
+    },
+    {
+      "id": "health_v2",
+      "description": "/health v2 : version/protocole stables, état opérationnel volatil",
+      "method": "GET",
+      "path": "/health",
+      "compare": {
+        "volatile": ["/status", "/db", "/discord", "/uptimeSec", "/activeJobs"],
+        "compare_headers": ["content-type", "x-request-id"]
+      },
+      "note": "version=3.0.0, protocolVersion=2 et la forme du corps restent comparés strictement."
+    },
+    {
+      "id": "socket_io_overlay_outdated_v2",
+      "description": "Le transport Socket.IO v1 répond 426 overlay_outdated",
+      "method": "GET",
+      "path": "/socket.io/",
+      "compare": {
+        "compare_headers": ["content-type"]
+      },
+      "note": "Statut strict 426 : la réponse est normalisée par le fallback v2."
+    },
+    {
+      "id": "unknown_route_normalized_404",
+      "description": "Une route inconnue répond 404 normalisé",
+      "method": "GET",
+      "path": "/parity-unknown-route",
+      "compare": {
+        "compare_headers": ["content-type", "x-content-type-options", "content-security-policy"]
+      }
+    },
+    {
+      "id": "method_not_allowed_normalized",
+      "description": "Une méthode non supportée ne fuit pas de corps de routeur",
+      "method": "POST",
+      "path": "/",
+      "compare": {
+        "ignore_body": true,
+        "compare_headers": []
+      },
+      "status_alternatives": [404, 405],
+      "note": "Selon la version du routeur : 405 + Allow, ou 404 normalisé. Le corps est ignoré."
+    },
+    {
+      "id": "overlay_config_absent",
+      "description": "GET /overlay/config a été supprimé en v2 (404 normalisé)",
+      "method": "GET",
+      "path": "/overlay/config",
+      "compare": {
+        "compare_headers": ["content-type"]
+      }
+    },
+    {
+      "id": "overlay_media_unsigned_forbidden",
+      "description": "Une URL média non signée est refusée en 403",
+      "method": "GET",
+      "path": "/overlay/media/00000000-0000-4000-8000-000000000000",
+      "compare": {
+        "compare_headers": ["content-type"]
+      },
+      "note": "Sans exp/sig/clientId, la réponse est déterministe : 403 media_url_invalid."
+    },
+    {
+      "id": "overlay_meme_board_query_token_rejected",
+      "description": "Le token en query string est ignoré : auth Bearer only",
+      "method": "GET",
+      "path": "/overlay/meme-board/items?token=parity-invalid-token",
+      "compare": {
+        "compare_headers": ["content-type"]
+      }
+    },
+    {
+      "id": "overlay_meme_board_invalid_bearer",
+      "description": "Un Bearer invalide répond 401 unauthorized",
+      "method": "GET",
+      "path": "/overlay/meme-board/items",
+      "headers": {
+        "authorization": "Bearer parity-invalid-token"
+      },
+      "compare": {
+        "compare_headers": ["content-type"]
+      }
+    },
+    {
+      "id": "rate_limit_429",
+      "description": "Après 100 requêtes, le rate limit répond 429 normalisé avec ses en-têtes",
+      "method": "GET",
+      "path": "/health",
+      "require": ["rate_limit_probe"],
+      "compare": {
+        "compare_headers": [
+          "content-type",
+          "retry-after",
+          "x-ratelimit-limit",
+          "x-ratelimit-remaining",
+          "x-ratelimit-reset"
+        ]
+      },
+      "note": "DOIT rester le dernier cas : la rafale de la sonde épuise la fenêtre de rate limit. Nécessite --rate-limit-probe et un serveur non exempté (NODE_ENV production par défaut)."
+    }
+  ]
+}

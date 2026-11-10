@@ -242,3 +242,20 @@ Toutes les lanes serveur sont livrées et vertes (`fmt`, `clippy -D warnings`, `
 Points de déploiement complémentaires traités : `deploy/.env.example` (conversion des 46 variables legacy + ajouts Rust `MEDIA_URL_SECRET`, `MEDIA_URL_TTL_SEC`, `MIN_OVERLAY_VERSION`, `WS_HEARTBEAT_TIMEOUT_SEC`, `MEDIA_MAX_CONCURRENT_INGESTIONS`, `TRUST_PROXY_HEADERS`), `deploy/.gitignore` (`.env`, `data/`), et versionnement de `apps/lc-overlay/web/dist/renderer/**` (80 modules JS chargés par les 3 pages, sinon un clone propre ne peut pas builder l'overlay).
 
 Reste pour clore la Phase 9 : rapport de release overlay (task-26), capture des goldens de parité legacy (opérateur, avant suppression), tag `legacy-ts-2.0.2`, cutover production 3.0.0.
+
+### 12.11 Smoke E2E du serveur câblé (2026-11-10)
+
+Serveur `lc-server` debug lancé sur `0.0.0.0:3999` avec base SQLite neuve (migrations automatiques), `DISCORD_TOKEN` vide, secret média de test, `ADMIN_UI_TOKEN` de test. Vérifications manuelles (PowerShell + `curl` + `ClientWebSocket`) :
+
+- Démarrage : `startup_ms=33`, log `base SQLite ouverte … schema_version="3.0.0"`, runtime Discord `désactivé (DISCORD_TOKEN absent)`.
+- `GET /health` → `200 {"status":"ok","version":"3.0.0","protocolVersion":2,"db":"ok","discord":"disabled","uptimeSec":3,"activeJobs":0}`.
+- `GET /socket.io/` → `426 {"error":"overlay_outdated","protocolVersion":2,"minOverlayVersion":"3.0.0"}`.
+- `GET /overlay/config` → `404 request_error` ; `GET /overlay/media/{id}` signature falsifiée → `403 media_url_invalid` ; `POST /overlay/pair/consume` code inconnu → `404 pairing_code_invalid_or_expired` ; `POST /ingest` sans jeton → `503 ingest_api_disabled` (attendu, `INGEST_API_TOKEN` vide).
+- `GET /admin/` → 200 HTML ; `GET /admin/api/overview` (Bearer) → 200, compteurs guilde/média/pairing OK ; avec un overlay WS ouvert, `connectedCount=1` et `connected=true` (admin branché sur le hub réel).
+- WS `GET /ws` : `hello` token valide → `welcome` + `settings` + `peers`, puis `play` avec URL signée ; job `PENDING` seedé en base lu par le moteur lazy (preuve scheduler + hub + `media_url` ensemble).
+- Média signé : `HEAD` → 200 `content-length: 788493`, `Accept-Ranges: bytes`, `Cache-Control: no-store` ; `Range: bytes=0-1023` → **206** `content-range: bytes 0-1023/788493`, `content-type: video/mp4`, pas de compression ; signature falsifiée → 403.
+- Version : `hello appVersion=2.0.1` → close **4403** `{"minVersion":"3.0.0"}`.
+- Révocation admin `POST /admin/api/overlay-clients/{id}/revoke` → `{found:true, revoked:true}` puis `hello` → close **4402 revoked**.
+- `stop` admin `POST /admin/api/guilds/{id}/stop` → 200 `{releasedCount:0, stopped:true}` et frame `stop {reason:"manual"}` reçue par l'overlay.
+
+Limites du smoke : ingestion réelle (`yt-dlp`/`ffmpeg`) non rejouée, Discord non connecté (token absent), compose non relancé dans cette passe (voir task-23) ; ces points restent couverts par le runbook de bascule. Seed de test via SQLite (`guilds`, `media_assets`, `playback_jobs`, `overlay_clients`), fichiers de travail sous `.phase0/` (ignoré).

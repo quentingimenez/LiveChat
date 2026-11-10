@@ -20,6 +20,7 @@ const ID_OPEN_PAIRING: &str = "tray.open_pairing";
 const ID_TOGGLE_ENABLED: &str = "tray.toggle_enabled";
 const ID_TOGGLE_AUTOSTART: &str = "tray.toggle_autostart";
 const ID_TOGGLE_SHOW_TEXT: &str = "tray.toggle_show_text";
+const ID_RECONNECT: &str = "tray.reconnect";
 const ID_DISPLAY_PREFIX: &str = "tray.display.";
 const ID_VOLUME_UP: &str = "tray.volume.up";
 const ID_VOLUME_DOWN: &str = "tray.volume.down";
@@ -42,6 +43,44 @@ fn volume_label(volume: f64) -> String {
     format!("Volume audio ({:.0} %)", (volume * 100.0).round())
 }
 
+fn truncate(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut truncated = text.chars().take(max_chars).collect::<String>();
+    truncated.push('…');
+    truncated
+}
+
+fn connection_detail(state: &AppState) -> String {
+    let net = state.net_snapshot();
+    if let Some(error) = net.last_error.as_deref().filter(|error| !error.is_empty()) {
+        return format!("Dernière erreur : {}", truncate(error, 70));
+    }
+    if let Some(reason) = net.reason.as_deref().filter(|reason| !reason.is_empty()) {
+        return format!("Détail : {}", truncate(reason, 70));
+    }
+    if !net.peers.is_empty() {
+        return format!("Pairs connectés : {}", net.peers.len());
+    }
+    if let Some(version) = net.server_version.as_deref() {
+        return format!("Serveur : v{version}");
+    }
+    if net.guild_id.is_some() {
+        return "Appareil appairé".to_string();
+    }
+    "Aucun appareil appairé".to_string()
+}
+
+fn tray_tooltip(state: &AppState) -> String {
+    let net = state.net_snapshot();
+    let mut tooltip = format!("LiveChat — overlay ({})", net.status.label());
+    if let Some(version) = net.server_version.as_deref() {
+        tooltip.push_str(&format!(" — serveur v{version}"));
+    }
+    tooltip
+}
+
 /// Construit le menu à partir de l'état courant (config + écrans + autostart).
 pub fn build_menu(
     app: &AppHandle<Wry>,
@@ -52,6 +91,37 @@ pub fn build_menu(
 ) -> tauri::Result<Menu<Wry>> {
     let config = state.config_snapshot();
     let selected_display = selected_index.and_then(|index| displays.get(index));
+    let net = state.net_snapshot();
+
+    let status_connection = MenuItem::with_id(
+        app,
+        "tray.status.connection",
+        format!("Connexion : {}", net.status.label()),
+        false,
+        None::<&str>,
+    )?;
+    let status_detail = MenuItem::with_id(
+        app,
+        "tray.status.detail",
+        connection_detail(state),
+        false,
+        None::<&str>,
+    )?;
+    let status_version = MenuItem::with_id(
+        app,
+        "tray.status.version",
+        format!("Overlay v{}", env!("CARGO_PKG_VERSION")),
+        false,
+        None::<&str>,
+    )?;
+    let reconnect = MenuItem::with_id(
+        app,
+        ID_RECONNECT,
+        "Reconnecter",
+        config.enabled && config.has_pairing_config(),
+        None::<&str>,
+    )?;
+    let separator_status = PredefinedMenuItem::separator(app)?;
 
     let show_overlay = MenuItem::with_id(
         app,
@@ -145,6 +215,11 @@ pub fn build_menu(
     let quit = MenuItem::with_id(app, ID_QUIT, "Quitter", true, None::<&str>)?;
 
     let mut items: Vec<&dyn IsMenuItem<Wry>> = vec![
+        &status_connection,
+        &status_detail,
+        &status_version,
+        &reconnect,
+        &separator_status,
         &show_overlay,
         &open_board,
         &open_pairing,
@@ -191,7 +266,7 @@ pub fn create_tray(app: &AppHandle<Wry>) -> tauri::Result<()> {
 
     let mut builder = tauri::tray::TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
-        .tooltip("LiveChat — overlay")
+        .tooltip(tray_tooltip(&state))
         .on_menu_event(|app, event| handle_menu_event(app, event.id().as_ref()));
     if let Some(icon) = app.default_window_icon().cloned() {
         builder = builder.icon(icon);
@@ -231,9 +306,15 @@ pub fn refresh_tray(app: &AppHandle<Wry>) {
     if let Err(error) = tray.set_menu(Some(menu)) {
         tracing::warn!(%error, "échec d'application du menu tray");
     }
-    if let Err(error) = tray.set_tooltip(Some("LiveChat — overlay")) {
+    if let Err(error) = tray.set_tooltip(Some(tray_tooltip(&state))) {
         tracing::debug!(%error, "échec de mise à jour du tooltip tray");
     }
+    let net = state.net_snapshot();
+    tracing::debug!(
+        status = %net.status.label(),
+        detail = %connection_detail(&state),
+        "tray rafraîchi"
+    );
 }
 
 fn publish_settings(app: &AppHandle<Wry>) {
@@ -253,6 +334,7 @@ fn toggle_enabled(app: &AppHandle<Wry>) {
                 "overlay activé/désactivé depuis le tray"
             );
             publish_settings(app);
+            crate::net::ws::request_reconnect(app);
         }
         Err(error) => tracing::warn!(%error, "échec de sauvegarde de `enabled`"),
     }
@@ -359,6 +441,7 @@ pub fn handle_menu_event(app: &AppHandle<Wry>, id: &str) {
         ID_VOLUME_UP => adjust_volume(app, 0.1),
         ID_VOLUME_DOWN => adjust_volume(app, -0.1),
         ID_VOLUME_RESET => reset_volume(app),
+        ID_RECONNECT => crate::net::ws::request_reconnect(app),
         ID_CHECK_UPDATES => spawn_update_check(app),
         ID_QUIT => app.exit(0),
         other if other.starts_with(ID_DISPLAY_PREFIX) => {

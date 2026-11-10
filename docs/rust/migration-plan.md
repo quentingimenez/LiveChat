@@ -229,3 +229,16 @@ Décisions retenues pour l'implémentation :
 ### 12.9 Évolution d'architecture : crate `lc-playback`
 
 L'ordonnanceur de lecture (`playbackScheduler.ts` legacy, 979 lignes) est extrait dans un crate dédié `crates/lc-playback` plutôt que dans `apps/lc-server` : il dépend de `lc-db` + `lc-protocol` mais pas d'axum, ce qui permet de le tester sans HTTP ni WebSocket (horloge et sink injectés) et de le développer en parallèle du squelette serveur. `apps/lc-server` l'intégrera en Phase 4 via un adaptateur qui diffuse les messages `play`/`stop` sur le hub WebSocket. Le plan §3 est amendé en conséquence (nouveau membre du workspace).
+
+### 12.10 Câblage final du serveur (2026-11-10)
+
+Toutes les lanes serveur sont livrées et vertes (`fmt`, `clippy -D warnings`, `cargo test -p lc-server` : **230 tests lib + 1 doctest, 0 échec** ; `cargo test -p xtask` : 45 tests). Le câblage final est implémenté dans `apps/lc-server/src/{lib.rs,app.rs,wiring.rs}` :
+
+- `app::router_with_hub(state, Arc<Hub>)` — le hub WebSocket est désormais partagé entre le routeur `/ws`, l'admin et le hook média (auparavant `ws::router()` créait un hub jetable).
+- `wiring::install(&state, &hub)` — implémente `AdminHub` pour `Hub` (compteurs de connexions, `close_client`, `broadcast_stop`/`broadcast_settings` async) et installe `IngestNotifier` comme hook d'ingestion : il appelle `PlaybackEngine::notify(&guild_id)` si le moteur est déjà démarré (jamais `enqueue`), sinon le job reste `PENDING` jusqu'au premier `hello` (aucune perte).
+- `serve()` démarre le runtime Discord **avant** la construction du routeur (`state.with_discord_probe(handle.probe())`, token absent ⇒ `Disabled` non bloquant, base absente ⇒ `DatabaseUnavailable` journalisé) et l'arrête **avant** la fermeture SQLite. Le drain du serveur reste inchangé.
+- Vérifications : `cargo fmt -p lc-server -- --check` = 0, `cargo clippy -p lc-server --all-targets -D warnings` = 0, tests ci-dessus ; le hub partagé est couvert par 3 tests unitaires `wiring::`.
+
+Points de déploiement complémentaires traités : `deploy/.env.example` (conversion des 46 variables legacy + ajouts Rust `MEDIA_URL_SECRET`, `MEDIA_URL_TTL_SEC`, `MIN_OVERLAY_VERSION`, `WS_HEARTBEAT_TIMEOUT_SEC`, `MEDIA_MAX_CONCURRENT_INGESTIONS`, `TRUST_PROXY_HEADERS`), `deploy/.gitignore` (`.env`, `data/`), et versionnement de `apps/lc-overlay/web/dist/renderer/**` (80 modules JS chargés par les 3 pages, sinon un clone propre ne peut pas builder l'overlay).
+
+Reste pour clore la Phase 9 : rapport de release overlay (task-26), capture des goldens de parité legacy (opérateur, avant suppression), tag `legacy-ts-2.0.2`, cutover production 3.0.0.

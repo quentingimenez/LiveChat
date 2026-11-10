@@ -22,8 +22,8 @@ use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
 pub use lc_protocol::{
-    MEDIA_URL_EXPIRY_MARGIN_SEC, MEDIA_URL_TTL_MAX_SEC, MEDIA_URL_TTL_SEC,
-    media_signature_input, media_url_ttl_sec,
+    media_signature_input, media_url_ttl_sec, MEDIA_URL_EXPIRY_MARGIN_SEC, MEDIA_URL_TTL_MAX_SEC,
+    MEDIA_URL_TTL_SEC,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -115,8 +115,20 @@ mod tests {
     #[test]
     fn verify_rejects_other_client_asset_or_expiry() {
         let signature = sign(SECRET, ASSET, CLIENT, EXP).expect("signature");
-        assert!(!verify(SECRET, ASSET, "00000000-0000-4000-8000-000000000000", EXP, &signature));
-        assert!(!verify(SECRET, "ffffffff-ffff-4fff-8fff-ffffffffffff", CLIENT, EXP, &signature));
+        assert!(!verify(
+            SECRET,
+            ASSET,
+            "00000000-0000-4000-8000-000000000000",
+            EXP,
+            &signature
+        ));
+        assert!(!verify(
+            SECRET,
+            "ffffffff-ffff-4fff-8fff-ffffffffffff",
+            CLIENT,
+            EXP,
+            &signature
+        ));
         assert!(!verify(SECRET, ASSET, CLIENT, EXP + 1, &signature));
     }
 
@@ -138,8 +150,14 @@ mod tests {
 
     #[test]
     fn ttl_matches_protocol_contract() {
-        assert_eq!(expiry_for(lc_protocol::MediaKind::Image, None, 1_000), 1_300);
-        assert_eq!(expiry_for(lc_protocol::MediaKind::Video, Some(2), 1_000), 1_300);
+        assert_eq!(
+            expiry_for(lc_protocol::MediaKind::Image, None, 1_000),
+            1_300
+        );
+        assert_eq!(
+            expiry_for(lc_protocol::MediaKind::Video, Some(2), 1_000),
+            1_300
+        );
         assert_eq!(
             expiry_for(lc_protocol::MediaKind::Video, Some(600), 1_000),
             1_720

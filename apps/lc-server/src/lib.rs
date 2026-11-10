@@ -31,9 +31,12 @@
 
 pub mod app;
 pub mod config;
+pub mod discord;
 pub mod http;
+pub mod media;
 pub mod media_url;
 pub mod shutdown;
+pub mod wiring;
 pub mod ws;
 
 use std::future::IntoFuture as _;
@@ -129,8 +132,32 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     // silencieuse).
     let database = app::open_database(&config).await?;
     let database_for_shutdown = database.clone();
-    let state = AppState::new(Arc::clone(&config), database, shutdown.clone());
-    let router = app::router(state);
+    let mut state = AppState::new(Arc::clone(&config), database, shutdown.clone());
+
+    // Hub WebSocket partagé : routeur `/ws`, adaptateur `AdminHub` et hook média.
+    let hub = Arc::new(ws::Hub::new());
+    wiring::install(&state, &hub);
+
+    // Runtime Discord facultatif : `Disabled` (token absent) et l'absence de base
+    // ne bloquent jamais le démarrage. La sonde `/health` est branchée avant la
+    // construction du routeur pour publier l'état réel dès la première requête.
+    let discord = match discord::DiscordRuntime::start(Arc::clone(&config), state.clone()).await {
+        Ok(handle) => {
+            state = state.with_discord_probe(handle.probe());
+            info!("runtime Discord démarré");
+            Some(handle)
+        }
+        Err(error) if error.is_disabled() => {
+            info!("runtime Discord désactivé (DISCORD_TOKEN absent)");
+            None
+        }
+        Err(error) => {
+            warn!(error = %error, "démarrage du runtime Discord impossible");
+            None
+        }
+    };
+
+    let router = app::router_with_hub(state, Arc::clone(&hub));
 
     let listener = bind_listener(config.port).await?;
     let local_address = listener
@@ -161,6 +188,14 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         () = &mut drain => None,
     };
     shutdown.trigger();
+
+    // Arrêt Discord avant la fermeture SQLite : le runtime peut encore écrire
+    // (statuts, upserts de guildes) pendant son drainage.
+    if let Some(discord) = discord {
+        if let Err(error) = discord.shutdown().await {
+            warn!(error = %error, "arrêt du runtime Discord incomplet");
+        }
+    }
 
     if let Some(database) = database_for_shutdown {
         database.close().await;

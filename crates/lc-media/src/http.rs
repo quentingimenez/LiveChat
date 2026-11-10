@@ -1,135 +1,195 @@
-//! Client HTTP partagé (reqwest + rustls) et helpers de requête.
+//! Client HTTP gardé contre les attaques SSRF.
 //!
-//! Aucune fonction de ce module ne lit l'environnement : tout vient de la
-//! [`DownloadConfig`] fournie par l'appelant.
+//! Toutes les requêtes sortantes du pipeline média passent par
+//! [`send_guarded`] : chaque cible est validée par [`crate::guard`] (schéma,
+//! résolution DNS, refus des IP internes), le client est épinglé sur l'IP
+//! validée pour empêcher le rebinding, et les redirections sont suivies
+//! manuellement (maximum [`crate::guard::MAX_REDIRECTS`] sauts) avec
+//! revalidation complète de chaque destination.
+//!
+//! Les corps texte sont bornés ([`crate::guard::MAX_TEXT_RESPONSE_BYTES`]) pour
+//! empêcher une source hostile de faire gonfler la mémoire du serveur.
 
 use std::time::Duration;
 
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{HeaderMap, LOCATION};
+use reqwest::{Method, Response};
 use serde::de::DeserializeOwned;
+use url::Url;
 
 use crate::config::DownloadConfig;
 use crate::error::{code_from_http_status, MediaError, MediaErrorCode, MediaResult};
+use crate::guard::{self, MAX_ERROR_BODY_BYTES, MAX_TEXT_RESPONSE_BYTES};
 
-/// Construit le client HTTP commun (user-agent, timeout, redirections bornées).
-pub fn build_client(config: &DownloadConfig) -> MediaResult<reqwest::Client> {
-    reqwest::Client::builder()
-        .user_agent(config.user_agent.clone())
-        .timeout(config.timeout)
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()
-        .map_err(|error| {
-            MediaError::new(
-                MediaErrorCode::DownloadFailed,
-                format!("impossible d'initialiser le client HTTP : {error}"),
-            )
-        })
-}
+/// En-têtes transmis à un hôte différent lors d'une redirection.
+///
+/// Les cookies, jetons et en-têtes d'authentification ne sont jamais
+/// transmis à un autre hôte.
+const CROSS_HOST_HEADERS: [&str; 4] = ["accept", "accept-language", "range", "referer"];
 
-/// Réponse texte avec l'URL finale (après redirections) et les en-têtes.
-#[derive(Clone, Debug)]
+/// Corps texte d'une réponse HTTP (borné à [`MAX_TEXT_RESPONSE_BYTES`]).
+#[derive(Debug)]
 pub struct HttpText {
-    /// Corps de la réponse décodé en texte.
+    /// Corps décodé en UTF-8 (caractères invalides remplacés).
     pub body: String,
-    /// URL finale après redirections.
+    /// URL finale après redirections (validée).
     pub final_url: String,
-    /// En-têtes de la réponse.
+    /// En-têtes de la réponse finale.
     pub headers: HeaderMap,
 }
 
-/// `GET` renvoyant le corps en texte, avec timeout et en-têtes additionnels.
+/// Envoie une requête HTTP gardée et suit les redirections en revalidant
+/// chaque cible.
+///
+/// Renvoie la réponse finale (non redirigée) et l'URL validée correspondante.
+pub async fn send_guarded(
+    config: &DownloadConfig,
+    method: Method,
+    raw_url: &str,
+    timeout: Duration,
+    headers: &[(&str, &str)],
+) -> MediaResult<(Response, Url)> {
+    let initial = guard::validate_target(raw_url).await?;
+    let original_host = initial.host.clone();
+    let mut next = initial.url.clone();
+    for hop in 0..=guard::MAX_REDIRECTS {
+        let target = if hop == 0 {
+            initial.clone()
+        } else {
+            guard::validate_target(next.as_str()).await?
+        };
+        let client = guard::build_pinned_client(config, &target)?;
+        let same_host = target.host == original_host;
+        let mut request = client
+            .request(method.clone(), target.url.clone())
+            .timeout(timeout);
+        for (name, value) in headers {
+            if same_host
+                || CROSS_HOST_HEADERS
+                    .iter()
+                    .any(|allowed| name.eq_ignore_ascii_case(allowed))
+            {
+                request = request.header(*name, *value);
+            }
+        }
+        let response = request.send().await.map_err(request_error)?;
+        if response.status().is_redirection() {
+            if hop == guard::MAX_REDIRECTS {
+                return Err(MediaError::new(
+                    MediaErrorCode::DownloadFailed,
+                    format!(
+                        "trop de redirections HTTP (maximum {})",
+                        guard::MAX_REDIRECTS
+                    ),
+                ));
+            }
+            let Some(location) = response.headers().get(LOCATION) else {
+                return Err(MediaError::new(
+                    MediaErrorCode::DownloadFailed,
+                    "redirection HTTP sans en-tête Location",
+                ));
+            };
+            let location = location.to_str().map_err(|error| {
+                MediaError::with_raw(
+                    MediaErrorCode::DownloadFailed,
+                    "redirection HTTP illisible",
+                    error.to_string(),
+                )
+            })?;
+            next = guard::resolve_redirect(&target.url, location)?;
+            continue;
+        }
+        return Ok((response, target.url));
+    }
+    Err(MediaError::new(
+        MediaErrorCode::DownloadFailed,
+        "boucle de redirections HTTP",
+    ))
+}
+
+/// Récupère une page texte via le client gardé.
 pub async fn get_text(
-    client: &reqwest::Client,
-    url: &str,
+    config: &DownloadConfig,
+    raw_url: &str,
     timeout: Duration,
     headers: &[(&str, &str)],
 ) -> MediaResult<HttpText> {
-    let mut request = client.get(url).timeout(timeout);
-    for (name, value) in headers {
-        request = request.header(*name, *value);
+    let (response, final_url) =
+        send_guarded(config, Method::GET, raw_url, timeout, headers).await?;
+    let status = response.status();
+    let captured_headers = response.headers().clone();
+    if !status.is_success() {
+        let body = read_body_bounded(response, MAX_ERROR_BODY_BYTES, false).await?;
+        return Err(MediaError::with_raw(
+            code_from_http_status(status.as_u16()),
+            format!("la source a répondu HTTP {} ({final_url})", status.as_u16()),
+            String::from_utf8_lossy(&body).into_owned(),
+        ));
     }
-    let response = request.send().await.map_err(request_error)?;
-    finish_text_response(response).await
+    let body = read_body_bounded(response, MAX_TEXT_RESPONSE_BYTES, true).await?;
+    Ok(HttpText {
+        body: String::from_utf8_lossy(&body).into_owned(),
+        final_url: final_url.to_string(),
+        headers: captured_headers,
+    })
 }
 
-/// `GET` d'un JSON désérialisé en `T`.
+/// Récupère et désérialise une réponse JSON via le client gardé.
 pub async fn get_json<T: DeserializeOwned>(
-    client: &reqwest::Client,
-    url: &str,
+    config: &DownloadConfig,
+    raw_url: &str,
     timeout: Duration,
 ) -> MediaResult<T> {
-    let response = client
-        .get(url)
-        .timeout(timeout)
-        .send()
-        .await
-        .map_err(request_error)?;
-    let response = ensure_success(response).await?;
-    response.json::<T>().await.map_err(|error| {
-        MediaError::new(
+    let text = get_text(config, raw_url, timeout, &[]).await?;
+    serde_json::from_str(&text.body).map_err(|error| {
+        MediaError::with_raw(
             MediaErrorCode::InvalidMedia,
-            format!("réponse JSON invalide : {error}"),
+            format!("réponse JSON invalide ({})", text.final_url),
+            error.to_string(),
         )
     })
 }
 
-/// Suit les redirections d'une URL courte (best effort).
+/// Résout une URL courte en suivant les redirections gardées.
 ///
-/// En cas d'échec, l'URL d'origine est renvoyée : la résolution courte n'est
-/// qu'une optimisation de canonicalisation, jamais un point de blocage.
-pub async fn resolve_short_url(client: &reqwest::Client, url: &str, timeout: Duration) -> String {
-    if let Ok(response) = client.head(url).timeout(timeout).send().await {
-        let final_url = response.url().to_string();
-        if final_url != url {
-            return final_url;
+/// Best-effort : renvoie l'URL d'entrée si la résolution échoue.
+pub async fn resolve_short_url(
+    config: &DownloadConfig,
+    raw_url: &str,
+    timeout: Duration,
+) -> String {
+    let trimmed = raw_url.trim();
+    for method in [Method::HEAD, Method::GET] {
+        if let Ok((response, final_url)) = send_guarded(config, method, trimmed, timeout, &[]).await
+        {
+            if response.status().is_success() {
+                return final_url.to_string();
+            }
         }
     }
-    if let Ok(response) = client.get(url).timeout(timeout).send().await {
-        return response.url().to_string();
-    }
-    url.to_string()
+    trimmed.to_owned()
 }
 
-/// Récupère les valeurs `Set-Cookie` d'une réponse.
-pub fn set_cookie_values(headers: &HeaderMap) -> Vec<String> {
-    headers
-        .get_all(reqwest::header::SET_COOKIE)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .map(str::to_string)
-        .collect()
-}
-
-/// Première valeur d'un en-tête (nom insensible à la casse).
-pub fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
-    HeaderName::from_bytes(name.as_bytes())
-        .ok()
-        .and_then(|name| headers.get(name))
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string)
-}
-
-/// Convertit une erreur reqwest en [`MediaError`] classée.
+/// Convertit une erreur `reqwest` en [`MediaError`] typée.
 pub fn request_error(error: reqwest::Error) -> MediaError {
     if error.is_timeout() {
-        return MediaError::new(
+        return MediaError::with_raw(
             MediaErrorCode::DownloadTimeout,
-            format!("délai de téléchargement dépassé : {error}"),
+            "le téléchargement de la source a dépassé le délai autorisé",
+            error.to_string(),
         );
     }
     if let Some(status) = error.status() {
-        return MediaError::new(
-            code_from_http_status(status.as_u16()),
-            format!("la source a répondu HTTP {} : {error}", status.as_u16()),
-        );
+        return MediaError::from_http_status(status.as_u16());
     }
-    MediaError::new(
+    MediaError::with_raw(
         MediaErrorCode::DownloadFailed,
-        format!("requête HTTP échouée : {error}"),
+        format!("requête HTTP impossible : {error}"),
+        error.to_string(),
     )
 }
 
-/// Convertit un statut HTTP non-2xx en [`MediaError`] classée.
+/// Construit une erreur pour un statut HTTP non 2xx.
 pub fn request_error_for_status(status: u16, url: &str) -> MediaError {
     MediaError::with_raw(
         code_from_http_status(status),
@@ -138,107 +198,62 @@ pub fn request_error_for_status(status: u16, url: &str) -> MediaError {
     )
 }
 
-async fn finish_text_response(response: reqwest::Response) -> MediaResult<HttpText> {
-    let final_url = response.url().to_string();
-    let headers = response.headers().clone();
-    let response = ensure_success_with_url(response, &final_url).await?;
-    let body = response.text().await.map_err(|error| {
-        MediaError::new(
-            MediaErrorCode::DownloadFailed,
-            format!("lecture du corps HTTP impossible : {error}"),
-        )
-    })?;
-    Ok(HttpText {
-        body,
-        final_url,
-        headers,
-    })
-}
-
-async fn ensure_success(response: reqwest::Response) -> MediaResult<reqwest::Response> {
-    let url = response.url().to_string();
-    ensure_success_with_url(response, &url).await
-}
-
-async fn ensure_success_with_url(
-    response: reqwest::Response,
-    url: &str,
-) -> MediaResult<reqwest::Response> {
-    let status = response.status();
-    if status.is_success() {
-        return Ok(response);
+/// Lit un corps de réponse en bornant le nombre d'octets.
+async fn read_body_bounded(
+    mut response: Response,
+    limit: u64,
+    enforce: bool,
+) -> MediaResult<Vec<u8>> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(request_error)? {
+        let next_len = body.len() as u64 + chunk.len() as u64;
+        if next_len > limit {
+            if enforce {
+                return Err(MediaError::new(
+                    MediaErrorCode::InvalidMedia,
+                    format!("réponse HTTP supérieure à la limite de {limit} octets"),
+                ));
+            }
+            let remaining = limit.saturating_sub(body.len() as u64) as usize;
+            body.extend_from_slice(&chunk[..remaining.min(chunk.len())]);
+            break;
+        }
+        body.extend_from_slice(&chunk);
     }
-    let body = response.text().await.unwrap_or_default();
-    Err(MediaError::with_raw(
-        code_from_http_status(status.as_u16()),
-        format!("la source a répondu HTTP {} ({url})", status.as_u16()),
-        body,
-    ))
-}
-
-/// Construit une valeur d'en-tête sûre (utilisé pour les cookies dynamiques).
-pub fn header_pair(name: &'static str, value: &str) -> Option<(&'static str, String)> {
-    HeaderValue::from_str(value)
-        .ok()
-        .map(|_| (name, value.to_string()))
+    Ok(body)
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::config::MediaConfig;
 
-    #[test]
-    fn builds_client_with_config() {
-        let config = DownloadConfig {
-            timeout: Duration::from_secs(30),
-            short_url_timeout: Duration::from_secs(8),
-            max_size_bytes: 1024,
-            max_concurrent_ingestions: 1,
-            user_agent: "test-agent".to_string(),
-        };
-        assert!(build_client(&config).is_ok());
+    fn download_config() -> DownloadConfig {
+        MediaConfig::default().download
     }
 
-    #[test]
-    fn header_value_is_case_insensitive() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            reqwest::header::CONTENT_TYPE,
-            HeaderValue::from_static("video/mp4"),
-        );
-        assert_eq!(
-            header_value(&headers, "content-type").as_deref(),
-            Some("video/mp4")
-        );
-        assert_eq!(
-            header_value(&headers, "CONTENT-TYPE").as_deref(),
-            Some("video/mp4")
-        );
-        assert_eq!(header_value(&headers, "absent"), None);
+    #[tokio::test]
+    async fn refuses_loopback_before_sending() {
+        let config = download_config();
+        let error = send_guarded(
+            &config,
+            Method::GET,
+            "http://127.0.0.1:9/video.mp4",
+            Duration::from_secs(1),
+            &[],
+        )
+        .await
+        .expect_err("loopback refusé");
+        assert_eq!(error.code(), MediaErrorCode::UnsupportedSource);
     }
 
-    #[test]
-    fn header_pair_rejects_invalid_values() {
-        assert!(header_pair("referer", "https://www.tiktok.com/").is_some());
-        assert!(header_pair("x-test", "ok").is_some());
-    }
-
-    #[test]
-    fn set_cookie_values_are_collected() {
-        let mut headers = HeaderMap::new();
-        headers.append(
-            reqwest::header::SET_COOKIE,
-            HeaderValue::from_static("a=b; Path=/"),
-        );
-        headers.append(
-            reqwest::header::SET_COOKIE,
-            HeaderValue::from_static("c=d; Path=/"),
-        );
-        let values = set_cookie_values(&headers);
-        assert_eq!(
-            values,
-            vec!["a=b; Path=/".to_string(), "c=d; Path=/".to_string()]
-        );
+    #[tokio::test]
+    async fn get_text_refuses_file_scheme() {
+        let config = download_config();
+        let error = get_text(&config, "file:/etc/passwd", Duration::from_secs(1), &[])
+            .await
+            .expect_err("file: refusé");
+        assert_eq!(error.code(), MediaErrorCode::UnsupportedSource);
     }
 }

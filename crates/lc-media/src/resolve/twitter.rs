@@ -1,8 +1,6 @@
 //! Résolution X/Twitter : carte oEmbed, variantes vidéo via l'API syndication,
 //! repli sur le rendu vxtwitter.
 
-use std::time::Duration;
-
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -75,15 +73,14 @@ pub fn sanitize_card_html(payload_html: &str) -> String {
 
 /// Résout un tweet : carte oEmbed + meilleure variante vidéo connue.
 pub async fn resolve_tweet(
-    client: &reqwest::Client,
     source: &MediaSource,
     config: &MediaConfig,
 ) -> MediaResult<ResolvedMedia> {
     let canonical_url = source.canonical_url.clone();
     let status_id = tweet_status_id(&canonical_url)
         .ok_or_else(|| MediaError::new(MediaErrorCode::InvalidMedia, "URL de tweet invalide"))?;
-    let card = fetch_tweet_card(client, &canonical_url, config).await?;
-    let (variants, dimensions) = fetch_variants(client, &status_id, &canonical_url, config).await;
+    let card = fetch_tweet_card(&canonical_url, config).await?;
+    let (variants, dimensions) = fetch_variants(&status_id, &canonical_url, config).await;
     let selected = pick_variant(&variants).cloned();
     let (width, height) = match dimensions {
         Some((width, height)) => (Some(width), Some(height)),
@@ -109,17 +106,14 @@ pub async fn resolve_tweet(
     Ok(resolved)
 }
 
-async fn fetch_tweet_card(
-    client: &reqwest::Client,
-    canonical_url: &str,
-    config: &MediaConfig,
-) -> MediaResult<TweetCard> {
+async fn fetch_tweet_card(canonical_url: &str, config: &MediaConfig) -> MediaResult<TweetCard> {
     let url = build_oembed_url(
         &config.resolve.twitter_oembed_endpoint,
         canonical_url,
         &config.resolve.language,
     );
-    let payload: TweetOEmbed = http::get_json(client, &url, config.resolve.oembed_timeout).await?;
+    let payload: TweetOEmbed =
+        http::get_json(&config.download, &url, config.resolve.oembed_timeout).await?;
     let html = payload
         .html
         .as_deref()
@@ -140,7 +134,6 @@ async fn fetch_tweet_card(
 }
 
 async fn fetch_variants(
-    client: &reqwest::Client,
     status_id: &str,
     canonical_url: &str,
     config: &MediaConfig,
@@ -148,15 +141,19 @@ async fn fetch_variants(
     let syndication_url = build_syndication_url(status_id, &config.resolve.language);
     let mut variants = Vec::new();
     let mut dimensions = None;
-    if let Ok(value) =
-        http::get_json::<Value>(client, &syndication_url, config.resolve.oembed_timeout).await
+    if let Ok(value) = http::get_json::<Value>(
+        &config.download,
+        &syndication_url,
+        config.resolve.oembed_timeout,
+    )
+    .await
     {
         variants = collect_variants(&value);
         dimensions = extract_dimensions(&value);
     }
     if variants.is_empty() {
         if let Ok(page) = http::get_text(
-            client,
+            &config.download,
             &build_fallback_url(
                 &config.resolve.twitter_video_resolver_base_url,
                 canonical_url,
@@ -375,16 +372,6 @@ fn infer_content_type(url: &str) -> &'static str {
     } else {
         "video/mp4"
     }
-}
-
-/// Récupère le HTML d'une carte de tweet (utilitaire public pour les tests).
-pub async fn fetch_card_html(
-    client: &reqwest::Client,
-    tweet_url: &str,
-    timeout: Duration,
-) -> MediaResult<String> {
-    let page = http::get_text(client, tweet_url, timeout, &[]).await?;
-    Ok(page.body)
 }
 
 #[cfg(test)]

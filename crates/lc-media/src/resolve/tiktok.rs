@@ -136,13 +136,12 @@ pub fn header_pairs(headers: &[(String, String)]) -> Vec<(&str, &str)> {
 
 /// Résout une publication TikTok.
 pub async fn resolve_tiktok(
-    client: &reqwest::Client,
     source: &MediaSource,
     config: &MediaConfig,
 ) -> MediaResult<ResolvedMedia> {
     let canonical_url = source.canonical_url.clone();
-    let oembed = fetch_oembed(client, &canonical_url, config).await.ok();
-    let page_result = fetch_tiktok_page(client, &canonical_url, config).await;
+    let oembed = fetch_oembed(&canonical_url, config).await.ok();
+    let page_result = fetch_tiktok_page(config, &canonical_url).await;
     match page_result {
         Ok(page) => {
             let canonical_url = page
@@ -194,13 +193,9 @@ pub async fn resolve_tiktok(
     }
 }
 
-async fn fetch_oembed(
-    client: &reqwest::Client,
-    canonical_url: &str,
-    config: &MediaConfig,
-) -> MediaResult<TikTokOEmbed> {
+async fn fetch_oembed(canonical_url: &str, config: &MediaConfig) -> MediaResult<TikTokOEmbed> {
     http::get_json(
-        client,
+        &config.download,
         &build_oembed_url(canonical_url),
         config.resolve.oembed_timeout,
     )
@@ -209,13 +204,12 @@ async fn fetch_oembed(
 
 /// Récupère et analyse la page TikTok (avec repli page embed).
 pub async fn fetch_tiktok_page(
-    client: &reqwest::Client,
-    canonical_url: &str,
     config: &MediaConfig,
+    canonical_url: &str,
 ) -> MediaResult<TikTokPage> {
     let headers = tiktok_headers(config);
     let page = http::get_text(
-        client,
+        &config.download,
         canonical_url,
         config.download.timeout,
         &header_pairs(&headers),
@@ -226,7 +220,7 @@ pub async fn fetch_tiktok_page(
     if needs_embed {
         if let Some(item_id) = parsed.item_id.clone() {
             if let Ok(embed) = http::get_text(
-                client,
+                &config.download,
                 &build_embed_url(&item_id),
                 config.resolve.oembed_timeout,
                 &header_pairs(&headers),

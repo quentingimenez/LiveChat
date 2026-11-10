@@ -20,11 +20,17 @@ use super::ledger;
 use super::legacy::SourceMeta;
 use super::read::LegacyData;
 use super::schema::SCHEMA_V3_SQL;
+use super::snapshot::SnapshotMeta;
 use super::Error;
 
 /// Crée le fichier `<tmp>` et y écrit le schéma 3.0, les métadonnées d'import et
 /// toutes les lignes legacy déjà normalisées.
-pub async fn write(tmp: &Path, data: &LegacyData, source: &SourceMeta) -> Result<(), Error> {
+pub async fn write(
+    tmp: &Path,
+    data: &LegacyData,
+    source: &SourceMeta,
+    snapshot: &SnapshotMeta,
+) -> Result<(), Error> {
     let started = Instant::now();
     let options = SqliteConnectOptions::new()
         .filename(tmp)
@@ -49,7 +55,7 @@ pub async fn write(tmp: &Path, data: &LegacyData, source: &SourceMeta) -> Result
             source,
         })?;
 
-    insert_metadata(&mut conn, source).await?;
+    insert_metadata(&mut conn, source, snapshot).await?;
     insert_tables(&mut conn, data).await?;
 
     // Registre sqlx : écrit avant la vérification et le renommage, pour que le
@@ -66,14 +72,28 @@ pub async fn write(tmp: &Path, data: &LegacyData, source: &SourceMeta) -> Result
 }
 
 /// Ajoute les métadonnées d'import (traçabilité) à `app_metadata`.
-async fn insert_metadata(conn: &mut SqliteConnection, source: &SourceMeta) -> Result<(), Error> {
+///
+/// Outre l'identité de la source, on enregistre l'identité du **snapshot
+/// cohérent** effectivement lu (AUD-A5-002 / AUD-COR-16) : empreinte, taille,
+/// horodatage et version de schéma legacy.
+async fn insert_metadata(
+    conn: &mut SqliteConnection,
+    source: &SourceMeta,
+    snapshot: &SnapshotMeta,
+) -> Result<(), Error> {
     let imported_at = chrono::Utc::now().timestamp_millis().to_string();
     let source_path = source.path.display().to_string();
     let tool = concat!("xtask ", env!("CARGO_PKG_VERSION"), " migrate-legacy");
-    let entries: [(&'static str, String); 4] = [
+    let entries: [(&'static str, String); 10] = [
         ("legacy_import_at", imported_at),
         ("legacy_source_path", source_path),
         ("legacy_source_sha256", source.sha256.clone()),
+        ("legacy_source_bytes", source.bytes.to_string()),
+        ("legacy_source_wal_bytes", source.wal.bytes.to_string()),
+        ("legacy_snapshot_sha256", snapshot.sha256.clone()),
+        ("legacy_snapshot_bytes", snapshot.bytes.to_string()),
+        ("legacy_snapshot_at", snapshot.created_at_ms.to_string()),
+        ("legacy_schema_version", snapshot.schema_version.clone()),
         ("legacy_import_tool", tool.to_string()),
     ];
 

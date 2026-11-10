@@ -31,7 +31,7 @@ use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-use super::hub::{admin_hub, install_admin_hub, NoopAdminHub};
+use super::hub::{admin_hub, NoopAdminHub};
 use super::runtime_settings::SETTINGS_FILE_NAME;
 use super::ADMIN_CSP;
 use crate::app::{router, AppState};
@@ -40,6 +40,10 @@ use crate::http::security::{CONTENT_SECURITY_POLICY, PERMISSIONS_POLICY};
 use crate::shutdown::Shutdown;
 
 const TOKEN: &str = "jeton-admin-de-test";
+/// `Host` envoyé par les requêtes du harnais (origine du panneau en test).
+const TEST_HOST: &str = "127.0.0.1:40000";
+/// Origine correspondant à `TEST_HOST`, utilisée pour les mutations (CSRF).
+const TEST_ORIGIN: &str = "http://127.0.0.1:40000";
 
 /// Environnement de test : dossier temporaire, base mémoire et routeur complet.
 struct Harness {
@@ -104,6 +108,8 @@ impl Harness {
         let mut request = HttpRequest::builder()
             .method(method)
             .uri(path)
+            .header(header::HOST, TEST_HOST)
+            .header(header::ORIGIN, TEST_ORIGIN)
             .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
             .body(Body::empty())
             .expect("requête de test valide");
@@ -113,11 +119,51 @@ impl Harness {
         request
     }
 
+    /// Requête de mutation avec origine explicite (`None` = origine absente).
+    fn request_with_origin(
+        &self,
+        method: Method,
+        path: &str,
+        origin: Option<&str>,
+    ) -> HttpRequest<Body> {
+        let mut builder = HttpRequest::builder()
+            .method(method)
+            .uri(path)
+            .header(header::HOST, TEST_HOST)
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"));
+        if let Some(origin) = origin {
+            builder = builder.header(header::ORIGIN, origin);
+        }
+        let mut request = builder.body(Body::empty()).expect("requête de test valide");
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))));
+        request
+    }
+
+    /// Requête de mutation avec un `Referer` (et sans `Origin`).
+    fn request_with_referer(&self, method: Method, path: &str, referer: &str) -> HttpRequest<Body> {
+        let mut request = HttpRequest::builder()
+            .method(method)
+            .uri(path)
+            .header(header::HOST, TEST_HOST)
+            .header(header::REFERER, referer)
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .body(Body::empty())
+            .expect("requête de test valide");
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))));
+        request
+    }
+
     fn request_json(&self, method: Method, path: &str, body: &Value) -> HttpRequest<Body> {
         let payload = serde_json::to_vec(body).expect("corps JSON sérialisable");
         let mut request = HttpRequest::builder()
             .method(method)
             .uri(path)
+            .header(header::HOST, TEST_HOST)
+            .header(header::ORIGIN, TEST_ORIGIN)
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
             .body(Body::from(payload))
@@ -398,6 +444,86 @@ async fn auth_local_only_desactive_accepte_un_client_externe() {
     let (status, _, _) = harness.send(request).await;
 
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn csrf_mutation_sans_origine_refusee() {
+    let harness = Harness::new().await;
+    let request = harness.request_with_origin(Method::POST, "/admin/api/guilds/42/stop", None);
+
+    let (status, _, bytes) = harness.send(request).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(json_or_null(&bytes)["error"], "invalid_origin");
+}
+
+#[tokio::test]
+async fn csrf_mutation_origine_hostile_refusee() {
+    let harness = Harness::new().await;
+
+    // Origine étrangère, opaque (`null`) ou préfixe trompeur : toutes refusées.
+    for origin in [
+        "https://evil.example",
+        "null",
+        "http://127.0.0.1:40000.evil.example",
+    ] {
+        let request =
+            harness.request_with_origin(Method::POST, "/admin/api/guilds/42/stop", Some(origin));
+
+        let (status, _, bytes) = harness.send(request).await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN, "origine refusée : {origin}");
+        assert_eq!(json_or_null(&bytes)["error"], "invalid_origin");
+    }
+}
+
+#[tokio::test]
+async fn csrf_referer_de_meme_origine_accepte() {
+    let harness = Harness::new().await;
+    let request = harness.request_with_referer(
+        Method::POST,
+        "/admin/api/guilds/42/stop",
+        "http://127.0.0.1:40000/admin/",
+    );
+
+    let (status, _, bytes) = harness.send(request).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json_or_null(&bytes)["stopped"], true);
+}
+
+#[tokio::test]
+async fn csrf_origine_api_url_acceptee_derriere_proxy() {
+    // Derrière un reverse proxy, `Host` peut être réécrit : l'origine publique
+    // `API_URL` reste alors la référence acceptée.
+    let harness = Harness::with_pairs(&[("API_URL", "http://proxy.example")]).await;
+    let request = harness.request_with_origin(
+        Method::POST,
+        "/admin/api/guilds/42/stop",
+        Some("http://proxy.example"),
+    );
+
+    let (status, _, bytes) = harness.send(request).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json_or_null(&bytes)["stopped"], true);
+}
+
+#[tokio::test]
+async fn csrf_get_avec_origine_hostile_reste_accepte() {
+    // Le contrôle d'origine ne s'applique qu'aux mutations (GET non protégé par
+    // CSRF par construction).
+    let harness = Harness::new().await;
+    let request = harness.request_with_origin(
+        Method::GET,
+        "/admin/api/overview",
+        Some("https://evil.example"),
+    );
+
+    let (status, _, bytes) = harness.send(request).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(json_or_null(&bytes)["generatedAt"].is_string());
 }
 
 #[tokio::test]
@@ -1298,16 +1424,72 @@ async fn ingest_client_create_erreurs_de_validation() {
 }
 
 #[tokio::test]
-async fn hub_noop_par_defaut_et_installation_unique() {
+async fn ingest_client_create_label_borne() {
+    let harness = Harness::new().await;
+    let db = harness.db();
+    let guild_id = GuildId::parse("42").expect("guilde");
+    db.pairing_codes()
+        .create(&pairing_code("AUTHOR01", &guild_id, None, None, "1001"))
+        .await
+        .expect("code auteur");
+
+    // > 120 caractères : refusé avant toute création (AUD-COR-14/A3-008).
+    let too_long = "x".repeat(121);
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            "/admin/api/ingest-clients",
+            &json!({ "guildId": "42", "authorDiscordUserId": "1001", "label": too_long }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_label");
+
+    // Caractère de contrôle : refusé (échappement d'UI/terminal).
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            "/admin/api/ingest-clients",
+            &json!({ "guildId": "42", "authorDiscordUserId": "1001", "label": "Chrome\nEvil" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_label");
+
+    // 120 caractères exactement : accepté, label final `{label}-{auteur}`.
+    let max_label = "y".repeat(120);
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            "/admin/api/ingest-clients",
+            &json!({ "guildId": "42", "authorDiscordUserId": "1001", "label": max_label }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["client"]["label"], format!("{max_label}-Alice"));
+
+    // Le client de trop grande longueur n'a pas été persisté.
+    let clients = db
+        .ingest_clients()
+        .list()
+        .await
+        .expect("lecture des clients d'ingestion");
+    assert_eq!(clients.len(), 1);
+}
+
+#[tokio::test]
+async fn hub_noop_par_defaut_et_injectable() {
     let harness = Harness::new().await;
     let hub = admin_hub(&harness.state);
     assert_eq!(hub.connected_count(), 0);
 
-    assert!(install_admin_hub(Arc::new(NoopAdminHub::new())));
-    assert!(
-        !install_admin_hub(Arc::new(NoopAdminHub::new())),
-        "le hub ne peut être installé qu'une fois par processus"
-    );
+    // AUD-COR-14 : plus de `OnceLock` ; le hub est porté par l'état et
+    // remplaçable (le défaut Noop reste utilisé tant que rien n'est injecté).
+    let state = harness
+        .state
+        .clone()
+        .with_admin_hub(Arc::new(NoopAdminHub::new()));
+    assert!(!admin_hub(&state).is_connected(&uuid::Uuid::nil()));
 }
 
 /// AUD-COR-05 : le JavaScript du panneau ne doit plus lire ni propager le jeton

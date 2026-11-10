@@ -30,6 +30,7 @@ pub mod board;
 pub mod confinement;
 pub mod errors;
 pub mod hook;
+pub mod html;
 pub mod jobs;
 pub mod purge;
 pub mod quotas;

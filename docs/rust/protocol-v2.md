@@ -1,6 +1,6 @@
 # Protocole v2 LiveChat — spécification GELÉE
 
-> **FROZEN rev. 2 pour l'implémentation** — 2026-11-09 — owner : `protocole-v2` — statut : gelé (Phase 0)
+> **FROZEN rev. 4 pour l'implémentation** — 2026-11-10 — owner : `protocole-v2` — statut : gelé (Phase 0)
 >
 > Révision 2 (2026-11-09, décisions Lead sur les 5 points ouverts) : TTL média adaptatif (§8.1),
 > `stop.request` avec `jobId`/`source` (§5.6), invariant « un seul job `PLAYING` » (§6.1.1),
@@ -9,8 +9,11 @@
 > `1008 policy_violation` (`origin_not_allowed`, §3), plafonds sockets **3/client** et **16/guilde**
 > + allowlist `Origin` sur `/ws` (§4), jobs **texte-seul** (`play` émis avec `media:null`, §6.2),
 > `stop {reason:"revoked"}` **avant** la close `4402` (§10), raison `purge` dédiée (§6.3, §13),
-> plafond `peers` **8** explicite (§6.4), liveness mesurée sur les `Pong` (§4). Révision 1
-> (2026-11-09) : version initiale gelée.
+> plafond `peers` **8** explicite (§6.4), liveness mesurée sur les `Pong` (§4). Révision 4
+> (2026-11-10, task-48/P2-A) : borne de transport d'upgrade **1 Mio** interprétée en `4408`
+> (§2, §4), validation stricte de `id` (non vide, ≤ 64 → `1002`, §2), `error` S→C effectivement
+> émis pour les échecs non fatals (§6.7), clés inconnues de `play`/`tweetCard` conservées via
+> `extra` (§2, §7.9, §16). Révision 1 (2026-11-09) : version initiale gelée.
 >
 > Toute modification de ce document est une rupture de contrat : elle exige l'accord du Lead,
 > une mise à jour simultanée des fixtures golden (`crates/lc-protocol/tests/fixtures/`) et des
@@ -182,13 +185,17 @@ Chaque trame est **un objet JSON unique** :
 |---|---|---|
 | `v` | entier | **2**. Toute autre valeur sur la première trame → `4403` (`reason` JSON `{"minVersion":"x.y.z"}`, §1.6) ; sur une trame ultérieure → `4403` également (protocole non négociable). |
 | `type` | chaîne | Nom exact du message (voir §5/§6). Type inconnu → `1002` (`protocol_error`). |
-| `id` | chaîne | Non vide, ≤ 64 caractères. Unique par connexion et par sens (UUID v4 recommandé côté client ; le serveur génère les siens). `ack.ref` référence l'`id` de la requête. |
+| `id` | chaîne | Non vide (refusé si vide ou composé uniquement d'espaces) et ≤ 64 caractères ; violation → `1002 protocol_error`. Unique par connexion et par sens (UUID v4 recommandé côté client ; le serveur génère les siens). `ack.ref` référence l'`id` de la requête. |
 | `ts` | entier | Epoch ms UTC de l'émission. Côté client, informatif : le serveur utilise sa propre horloge. |
 | `payload` | objet | Obligatoire (objet vide `{}` autorisé). Absent/null/tableau → `1002`. |
 
 Règles générales :
 
-- Trame > **64 Kio** → `4408` (`frame_too_large`). Les messages S→C sont garantis < 64 Kio.
+- Trame > **64 Kio** → `4408` (`frame_too_large`). La borne **applicative** reste 64 Kio ; la borne
+  de **transport** de l'upgrade est fixée à **1 Mio** (`max_message_size`/`max_frame_size`) pour
+  pouvoir lire une trame surdimensionnée et répondre `4408` au lieu de laisser le transport couper
+  sans code applicatif. Au-delà de 1 Mio, la fermeture est décidée par la couche transport
+  (`1006`/`1009`) sans garantie de code applicatif. Les messages S→C sont garantis < 64 Kio.
 - JSON invalide, objet non unique, clé manquante, `payload` non-objet → `1002`
   (`protocol_error`, `close_reason` précisé si possible).
 - **Champs inconnus** dans `payload` : tolérés et ignorés (compatibilité ascendante douce). Le
@@ -238,6 +245,7 @@ Le client mappe :
 | Limite | Valeur | Application |
 |---|---|---|
 | Taille de trame | **64 Kio (65 536 octets)** | C→S et S→C ; dépassement C→S → close `4408` |
+| Borne de transport d'upgrade | **1 Mio (`MAX_TRANSPORT_MESSAGE_BYTES`)** | 64 Kio..1 Mio → `4408` applicatif ; > 1 Mio → close transport `1006`/`1009` (pas de code applicatif garanti) |
 | Débit C→S | **20 messages/s** fenêtre glissante 1 s | dépassement → close `4409` |
 | Délai `hello` | **5 s** après l'ouverture | sinon close `4401` (`auth_timeout`) |
 | `playback.state` | **≤ 1 msg/s** par connexion | excédent ignoré (pas de close), v1 : `socketLoader.ts:229-254` + plan |
@@ -252,7 +260,7 @@ Le client mappe :
 | Version overlay minimale | `MIN_OVERLAY_VERSION` (défaut `"3.0.0"`, semver simple) | close `4403` — voir §1.6 |
 | `remainingMs` accepté | entier fini, borné **[0, 86 400 000]** | sinon `null` (v1 : clamp identique `socketLoader.ts:229-254`) |
 | Longueur texte de mème | 500 caractères max (tronqué serveur) | v1 : `socketLoader.ts:277-338` |
-| `id` de message | ≤ 64 caractères | sinon `1002` |
+| `id` de message | non vide (espaces refusés) et ≤ 64 caractères | sinon `1002 protocol_error` |
 
 Le serveur ne ferme pas pour un `heartbeat` en retard tant que le transport répond ; seul le
 timeout de 45 s ferme. Les plafonds de sockets sont vérifiés **sous le verrou du registre** (client
@@ -548,7 +556,10 @@ absents). Codes : `dispatch_failed`, `media_unavailable`, `internal_error`. Util
 serveur signale un échec de dispatch/chargement média que l'overlay peut afficher discrètement
 (v1 n'avait aucun équivalent S→C : l'`overlay:error` v1 est C→S uniquement
 `server/src/types/module.d.ts:38-61`). Le client ne doit jamais fermer ni réessayer à cause de ce
-message.
+message. **Émission effective (rév. 4)** : `dispatch_failed` est émis quand un `play` avec média
+n'a pu être délivré à aucun socket de la room alors que des overlays y sont connectés ; `internal_error`
+est émis quand une requête acquittée (`stop.request`, `meme.trigger`) échoue côté moteur après son
+`ack`. `media_unavailable` reste réservé aux hooks média Phase 5.
 
 ---
 
@@ -624,6 +635,11 @@ TweetCardVideo = { url: string, mime: string|null, isVertical: boolean|null,
 ```
 (v1 `index.ts:18-48`, `messagesWorker.ts:44-113`, carte riche
 `richOverlayPayload.ts:3-19`).
+
+**Clés inconnues (rév. 4)** : `lc-protocol` conserve les clés non modélisées de `PlayPayload` et
+`TweetCardPayload` dans un champ `extra` (`#[serde(flatten)] serde_json::Map`), ré-émises à
+l'identique lors de la sérialisation (une map vide n'émet aucune clé). Ce round-trip fidèle est
+vérifié par un test dédié des fixtures golden.
 
 ### 7.10 `StopPayload`
 `{ reason: "manual"|"preempt"|"revoked"|"purge", jobId: string|null }`.
@@ -979,8 +995,33 @@ Décisions appliquées par la rév. 3, sans rupture des structures de payload ex
    à `/ws`, `/overlay/media/`, `/overlay/meme-board/` ni `/ingest` ; `408 request_timeout` ailleurs)
    — voir `docs/rust/server-ws.md` §12 et `docs/rust/audit/p1-correctifs.md` (COR-06).
 
-Aucun point ouvert protocole : les 5 points (a)–(e) de la rév. 1 sont soldés par §15.1–§15.5 et le
-durcissement COR-06/07 est acté par §15.6.
+### 15.7 Dette `task-48` / P2-A (rév. 4)
+
+Décisions appliquées par la rév. 4, sans rupture de structure :
+
+1. **Trame > 256 Kio → `4408` (AUD-A1-006)** : la borne d'upgrade passe de 256 Kio à **1 Mio** pour
+   que le serveur lise la trame et réponde `4408 frame_too_large` au lieu de laisser axum fermer
+   `1006` ; la limite applicative reste 64 Kio (§2, §4). Seul un dépassement > 1 Mio échappe au code
+   applicatif.
+2. **Validation de `id` (AUD-A1-007)** : `id` vide, uniquement d'espaces, ou > 64 caractères →
+   `1002 protocol_error` avant tout traitement du message (§2, §4) ; implémenté par
+   `validate_request_id` et testé.
+3. **Liveness Pong stricte (AUD-A1-008)** : le tracker `PongLiveness` ne mesure que les `Pong`
+   réels ; un `heartbeat` applicatif (ou tout autre message) ne rafraîchit pas la fenêtre, et le
+   timeout reste 45 s (§4, §10).
+4. **`error` S→C émis** : `dispatch_failed` (aucun socket n'a pu recevoir un `play` média) et
+   `internal_error` (échec post-ack de `stop.request`/`meme.trigger`) deviennent effectifs ; l'`ack`
+   reste la voie des rejets synchrones (§6.6, §6.7). `ref` reste optionnel et n'est pas utilisé par
+   le serveur actuel.
+5. **Clés inconnues conservées** : `play`/`tweetCard` gagnent `extra` (`#[serde(flatten)]`) avec
+   round-trip exact, sans modifier les 29 fixtures golden existantes (§2, §7.9, §16).
+6. **Timeout HTTP** : diff hors protocole WS ; exemptions resserrées sur les routes réellement
+   *streaming* : `/ws` (exact), `/ingest` (exact/méthodes d'upload), préfixes `/overlay/media/` et
+   `/overlay/meme-board/media/` ; le reste de l'API reçoit `408 request_timeout` à 30 s — voir
+   `docs/rust/server-ws.md` §12.
+
+Aucun point ouvert protocole : les 5 points (a)–(e) de la rév. 1 sont soldés par §15.1–§15.5, le
+durcissement COR-06/07 est acté par §15.6 et la dette P2-A par §15.7.
 
 ---
 
@@ -1000,12 +1041,15 @@ durcissement COR-06/07 est acté par §15.6.
   `StopReason`, `MemeTrigger`, `StopRequestSource`. `WelcomePayload` porte `server_version`
   (obligatoire) ; `StopRequestPayload` porte `job_id`/`source` optionnels ;
   `CurrentJobPayload` aplatit `PlayPayload` + `startedAt`/`remainingMs`.
+  Depuis la rév. 4, `PlayPayload` et `TweetCardPayload` possèdent `#[serde(flatten)] extra:
+  serde_json::Map<String, Value>` (clés inconnues fidèlement ré-émises) et `PlayPayload` implémente
+  `Default` (map vide) pour que les constructeurs hors crate n'aient pas à dépendre de `serde_json`.
 - Aides : `close_code::*`, `close_reason::*`, `msg_type::*`,
   `media_signature_input(assetId, clientId, exp)`, `media_url_ttl_sec(kind, durationSec)`,
   `outdated_protocol_reason(minVersion)`, `parse_simple_version`, `is_version_below`,
   `is_frame_too_large(len)`.
-- Vérification : `cargo test -p lc-protocol` — `tests/fixtures_roundtrip.rs` vérifie le round-trip
-  exact des 29 fixtures (table fichier → sens → `type`, égalité de `serde_json::Value`), la
-  couverture exhaustive du dossier `tests/fixtures/`, les constantes, les codes de fermeture, la
-  séparation des sens de message, la reprise `welcome.currentJob`, le TTL média adaptatif, la
-  règle semver et `welcome.serverVersion`.
+- Vérification : `cargo test -p lc-protocol` — **16 tests** dans `tests/fixtures_roundtrip.rs` :
+  round-trip exact des 29 fixtures (table fichier → sens → `type`, égalité de `serde_json::Value`),
+  couverture exhaustive du dossier `tests/fixtures/`, constantes, codes de fermeture, séparation
+  des sens de message, reprise `welcome.currentJob`, TTL média adaptatif, règle semver,
+  `welcome.serverVersion` et préservation des clés inconnues (`unknown_play_and_tweet_card_fields_are_preserved`).

@@ -1,15 +1,25 @@
 //! Exécution contrôlée des binaires externes (`ffmpeg`, `ffprobe`, `yt-dlp`).
 //!
-//! Chaque processus est lancé avec un timeout, un `kill_on_drop`, et une
-//! classification d'erreur cohérente avec le reste du pipeline.
+//! Chaque processus est lancé avec un timeout, un `kill_on_drop`, une borne
+//! stricte de la taille de sortie capturée (AUD-A4-005) et une classification
+//! d'erreur cohérente avec le reste du pipeline.
 
+use std::io;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
 use crate::error::{MediaError, MediaErrorCode, MediaResult};
+
+/// Taille maximale de sortie capturée par flux (`stdout`/`stderr`), en octets.
+///
+/// Les binaires externes (`yt-dlp --dump-json`, `ffprobe`, `ffmpeg`) peuvent
+/// produire des sorties arbitrairement grandes ; on refuse au-delà de cette
+/// borne plutôt que de gonfler la mémoire du serveur (AUD-A4-005).
+pub const MAX_COMMAND_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 
 /// Sortie standard et d'erreur d'un processus terminé avec succès.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,15 +47,28 @@ impl CommandOutput {
 /// * erreur de lancement → code `fallback` ;
 /// * timeout → [`MediaErrorCode::DownloadTimeout`] (le processus est tué) ;
 /// * code de sortie non nul → classification textuelle via
-///   [`MediaError::from_command_failure`].
+///   [`MediaError::from_command_failure`] ;
+/// * sortie capturée au-delà de [`MAX_COMMAND_OUTPUT_BYTES`] → code
+///   [`MediaErrorCode::InvalidMedia`].
 pub async fn run_command(
     binary: &Path,
     args: &[String],
     timeout: Duration,
     fallback: MediaErrorCode,
 ) -> MediaResult<CommandOutput> {
+    run_command_with_limit(binary, args, timeout, fallback, MAX_COMMAND_OUTPUT_BYTES).await
+}
+
+/// Variante de [`run_command`] avec une borne de sortie explicite (tests).
+async fn run_command_with_limit(
+    binary: &Path,
+    args: &[String],
+    timeout: Duration,
+    fallback: MediaErrorCode,
+    output_limit: usize,
+) -> MediaResult<CommandOutput> {
     let program = binary.display().to_string();
-    let child = Command::new(binary)
+    let mut child = Command::new(binary)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -59,15 +82,33 @@ pub async fn run_command(
             )
         })?;
 
-    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(Ok(output)) => output,
+    let stdout = child.stdout.take().ok_or_else(|| {
+        MediaError::new(
+            fallback,
+            format!("sortie standard de {program} indisponible"),
+        )
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        MediaError::new(
+            fallback,
+            format!("sortie d'erreur de {program} indisponible"),
+        )
+    })?;
+
+    let stdout_task = tokio::spawn(read_stream_bounded(stdout, output_limit));
+    let stderr_task = tokio::spawn(read_stream_bounded(stderr, output_limit));
+
+    let status = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) => status,
         Ok(Err(error)) => {
+            let _killed = child.kill().await;
             return Err(MediaError::new(
                 fallback,
                 format!("échec de l'exécution de {program} : {error}"),
             ));
         }
         Err(_) => {
+            let _killed = child.kill().await;
             return Err(MediaError::new(
                 MediaErrorCode::DownloadTimeout,
                 format!(
@@ -78,14 +119,64 @@ pub async fn run_command(
         }
     };
 
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    if !output.status.success() {
+    let (stdout_bytes, stderr_bytes) = match tokio::join!(stdout_task, stderr_task) {
+        (Ok(Ok(stdout)), Ok(Ok(stderr))) => (stdout, stderr),
+        _ => {
+            return Err(MediaError::new(
+                fallback,
+                format!("lecture incomplète de la sortie de {program}"),
+            ));
+        }
+    };
+
+    if stdout_bytes.1 || stderr_bytes.1 {
+        return Err(MediaError::new(
+            MediaErrorCode::InvalidMedia,
+            format!(
+                "sortie de {program} trop volumineuse (> {output_limit} octets) : média ou réponse suspecte"
+            ),
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&stdout_bytes.0).into_owned();
+    let stderr = String::from_utf8_lossy(&stderr_bytes.0).into_owned();
+    if !status.success() {
         return Err(MediaError::from_command_failure(
             &program, &stdout, &stderr, fallback,
         ));
     }
     Ok(CommandOutput { stdout, stderr })
+}
+
+/// Lit un flux jusqu'à EOF en bornant la mémoire conservée.
+///
+/// Retourne `(octets_conservés, dépassement)`. En cas de dépassement, le flux
+/// continue d'être drainé (pour ne pas bloquer le processus enfant) mais les
+/// octets supplémentaires sont ignorés.
+async fn read_stream_bounded<R>(mut reader: R, limit: usize) -> io::Result<(Vec<u8>, bool)>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut captured = Vec::with_capacity(limit.min(64 * 1024));
+    let mut chunk = [0_u8; 16 * 1024];
+    let mut oversized = false;
+    loop {
+        let read = reader.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        if captured.len() >= limit {
+            oversized = true;
+            continue;
+        }
+        let remaining = limit - captured.len();
+        let taken = read.min(remaining);
+        captured.extend_from_slice(&chunk[..taken]);
+        if taken < read {
+            oversized = true;
+        }
+    }
+    Ok((captured, oversized))
 }
 
 #[cfg(test)]
@@ -120,6 +211,46 @@ mod tests {
         .await
         .unwrap();
         assert!(output.stdout.contains("hello"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn oversized_output_is_rejected() {
+        let args = vec![
+            "/C".to_string(),
+            "for /L %i in (1,1,100) do @echo 0123456789".to_string(),
+        ];
+        let error = run_command_with_limit(
+            Path::new("cmd.exe"),
+            &args,
+            Duration::from_secs(10),
+            MediaErrorCode::DownloadFailed,
+            64,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code(), MediaErrorCode::InvalidMedia);
+        assert!(error.message().contains("trop volumineuse"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn oversized_output_is_rejected() {
+        let args = vec![
+            "-c".to_string(),
+            "for i in $(seq 1 100); do echo 0123456789; done".to_string(),
+        ];
+        let error = run_command_with_limit(
+            Path::new("sh"),
+            &args,
+            Duration::from_secs(10),
+            MediaErrorCode::DownloadFailed,
+            64,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code(), MediaErrorCode::InvalidMedia);
+        assert!(error.message().contains("trop volumineuse"));
     }
 
     #[cfg(windows)]

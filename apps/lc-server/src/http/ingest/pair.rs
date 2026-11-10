@@ -14,6 +14,7 @@
 //! La réponse renvoie la configuration nécessaire à l'extension navigateur
 //! (`apiBaseUrl`, `ingestApiToken`, identifiants et valeurs par défaut).
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Json, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -26,13 +27,34 @@ use crate::media::tokens::{generate_ingest_token, hash_ingest_token};
 
 use super::body;
 use super::{
-    invalid_payload, media_service_error, simple_error, DEFAULT_INGEST_AUTHOR_NAME,
+    invalid_payload, is_conflict, media_service_error, simple_error, DEFAULT_INGEST_AUTHOR_NAME,
     DEFAULT_INGEST_DEVICE_PREFIX,
 };
 
+/// Longueur maximale d'un libellé de client (deviceName), alignée sur
+/// `/overlay/pair/consume` (AUD-A2-012).
+const MAX_DEVICE_NAME_CHARS: usize = 200;
+
+/// Tronque un libellé de client à [`MAX_DEVICE_NAME_CHARS`] caractères, sur
+/// une frontière UTF-8, après trim.
+fn truncate_device_name(raw: &str) -> String {
+    raw.trim().chars().take(MAX_DEVICE_NAME_CHARS).collect()
+}
+
 /// Handler de `POST /ingest/pair/consume`.
-pub async fn consume(State(state): State<AppState>, body: Option<Json<Value>>) -> Response {
-    let value = body.map(|Json(value)| value).unwrap_or(Value::Null);
+pub async fn consume(
+    State(state): State<AppState>,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Response {
+    // Un JSON malformé est une erreur de payload dédiée, pas un
+    // `request_error` générique (AUD-A2-009).
+    let value = match body {
+        Ok(Json(value)) => value,
+        Err(rejection) => {
+            tracing::debug!(error = ?rejection, "corps JSON invalide (ingest pair/consume)");
+            return invalid_payload(None);
+        }
+    };
 
     let Some(raw_code) = body::non_empty_string(value.get("code")) else {
         return invalid_payload(None);
@@ -88,7 +110,10 @@ pub async fn consume(State(state): State<AppState>, body: Option<Json<Value>>) -
         .filter(|value| !value.trim().is_empty());
 
     let device_name = body::device_name(&value)
-        .unwrap_or_else(|| format!("{DEFAULT_INGEST_DEVICE_PREFIX}-{author_name}"));
+        .map(|name| truncate_device_name(&name))
+        .unwrap_or_else(|| {
+            truncate_device_name(&format!("{DEFAULT_INGEST_DEVICE_PREFIX}-{author_name}"))
+        });
 
     let clients = db.ingest_clients();
     let guild_id = entry.guild_id.clone();
@@ -112,10 +137,10 @@ pub async fn consume(State(state): State<AppState>, body: Option<Json<Value>>) -
         Err(error) => return media_service_error(error.into()),
     }
 
-    let raw_token = generate_ingest_token();
+    let mut raw_token = generate_ingest_token();
     let token_hash = hash_ingest_token(&raw_token);
 
-    let client = lc_domain::entities::IngestClient {
+    let mut client = lc_domain::entities::IngestClient {
         id: IngestClientId::new_v4(),
         guild_id: guild_id.clone(),
         label: device_name.clone(),
@@ -128,7 +153,33 @@ pub async fn consume(State(state): State<AppState>, body: Option<Json<Value>>) -
         revoked_at: None,
     };
 
-    if let Err(error) = clients.create(&client).await {
+    // AUD-A2-010 : une collision de `token_hash` (unique en base) ne doit pas
+    // être avalée en 500 générique — on régénère un jeton une fois, comme le
+    // comportement attendu d'une création de token. Un vrai conflit persistant
+    // (improbable) reste une erreur serveur.
+    let mut create_error: Option<lc_db::DbError> = None;
+    for attempt in 0..2_u8 {
+        match clients.create(&client).await {
+            Ok(()) => {
+                create_error = None;
+                break;
+            }
+            Err(error) => {
+                let retryable = attempt == 0 && is_conflict(&error);
+                create_error = Some(error);
+                if !retryable {
+                    break;
+                }
+                tracing::warn!(
+                    attempt,
+                    "collision de hash de token d'ingestion : nouvelle génération"
+                );
+                raw_token = generate_ingest_token();
+                client.token_hash = hash_ingest_token(&raw_token);
+            }
+        }
+    }
+    if let Some(error) = create_error {
         return media_service_error(error.into());
     }
 
@@ -345,11 +396,79 @@ mod tests {
         assert_eq!(body["error"], "pairing_code_scope_mismatch");
     }
 
+    async fn post_raw(app: Router, uri: &str, raw: &str) -> (StatusCode, Value) {
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(raw.to_owned()))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
     #[tokio::test]
     async fn missing_code_is_a_payload_error() {
         let fixture = fixture().await;
         let (status, body) = post(fixture.app.clone(), "/ingest/pair/consume", json!({})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"], "invalid_payload");
+    }
+
+    #[tokio::test]
+    async fn malformed_json_is_a_payload_error() {
+        // AUD-A2-009 : un corps JSON illisible doit produire `invalid_payload`,
+        // pas le `request_error` générique de la normalisation d'erreurs.
+        let fixture = fixture().await;
+        let (status, body) =
+            post_raw(fixture.app.clone(), "/ingest/pair/consume", "{\"code\": ").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "invalid_payload", "{body}");
+    }
+
+    #[tokio::test]
+    async fn long_device_name_is_truncated() {
+        // AUD-A2-012 : le libellé est borné à 200 caractères, comme côté overlay.
+        let fixture = fixture().await;
+        fixture
+            .db
+            .pairing_codes()
+            .create(&pairing_entry(
+                &fixture.guild_id,
+                "TRUNC1",
+                PairingMode::Normal,
+                None,
+            ))
+            .await
+            .expect("code inséré");
+
+        let long_name = "a".repeat(300);
+        let (status, body) = post(
+            fixture.app.clone(),
+            "/ingest/pair/consume",
+            json!({ "code": "TRUNC1", "deviceName": long_name }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["deviceName"].as_str().map(|name| name.chars().count()),
+            Some(200)
+        );
+
+        let token = body["ingestApiToken"].as_str().expect("token");
+        let client = fixture
+            .db
+            .ingest_clients()
+            .get_by_token_hash(&hash_ingest_token(token))
+            .await
+            .expect("lecture")
+            .expect("client créé");
+        assert_eq!(client.label.chars().count(), 200);
     }
 }

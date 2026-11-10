@@ -131,7 +131,6 @@ Crates (toutes **minimales** en Phase 0 : `#![forbid(unsafe_code)]`, doc de crat
 | `crates/lc-db` | lib | sqlx/SQLite, repositories, migrations | 2 |
 | `crates/lc-media` | lib | resolver, yt-dlp/ffmpeg, transcodage, cache | 5 |
 | `crates/lc-discord` | lib | bot Discord, commandes, i18n | 6 |
-| `crates/lc-admin` | lib | routes admin + assets | 7 |
 | `apps/lc-server` | bin | binaire axum : REST + WS v2 + workers | 3/4 |
 | `apps/lc-overlay` | lib `rlib` | shell Tauri 2 + bridge (POC Phase 0) | 8 |
 | `xtask` | bin | migrateur, harnais de parité, release | 2/9 |

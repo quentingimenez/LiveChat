@@ -467,3 +467,41 @@ fn welcome_carries_server_version() {
         Some(&Value::String("3.0.0".to_owned()))
     );
 }
+
+/// P2/AUD-COR-12 : les champs inconnus de `play` et `tweetCard` sont conservés
+/// tels quels à la désérialisation puis réémis à la sérialisation (tolérance
+/// §2 du protocole, sans casser les fixtures golden).
+#[test]
+fn unknown_play_and_tweet_card_fields_are_preserved() {
+    let mut value = read_fixture("v2_play_tweet_card_rich.json");
+    {
+        let payload = value
+            .get_mut("payload")
+            .and_then(Value::as_object_mut)
+            .expect("payload play");
+        payload.insert(
+            "extensionFuture".to_owned(),
+            serde_json::json!({ "x": 1, "nested": [true, null] }),
+        );
+        let card = payload
+            .get_mut("tweetCard")
+            .and_then(Value::as_object_mut)
+            .expect("tweetCard");
+        card.insert("futureCardKey".to_owned(), Value::Bool(true));
+    }
+
+    let envelope: ServerEnvelope =
+        serde_json::from_value(value.clone()).expect("play avec champs inconnus");
+    let ServerMessage::Play(play) = &envelope.message else {
+        panic!("la fixture doit être un play");
+    };
+    assert_eq!(
+        play.extra.get("extensionFuture"),
+        Some(&serde_json::json!({ "x": 1, "nested": [true, null] }))
+    );
+    let card = play.tweet_card.as_ref().expect("carte tweet");
+    assert_eq!(card.extra.get("futureCardKey"), Some(&Value::Bool(true)));
+
+    let serialized = serde_json::to_value(&envelope).expect("re-sérialisation play");
+    assert_eq!(serialized, value);
+}

@@ -79,6 +79,10 @@ struct RawFormat {
 }
 
 /// Arguments ffprobe pour une sonde JSON.
+///
+/// Le chemin est fourni via `-i` (option d'entrée) plutôt qu'en argument
+/// positionnel : un chemin local commençant par `-` ne peut alors plus être
+/// interprété comme une option ffprobe (AUD-A4-012).
 pub fn probe_args(path: &Path) -> Vec<String> {
     vec![
         "-v".to_string(),
@@ -88,6 +92,7 @@ pub fn probe_args(path: &Path) -> Vec<String> {
             .to_string(),
         "-of".to_string(),
         "json".to_string(),
+        "-i".to_string(),
         path.display().to_string(),
     ]
 }
@@ -236,6 +241,15 @@ mod tests {
         assert_eq!(args[0], "-v");
         assert_eq!(args[1], "error");
         assert_eq!(args[3].split(':').count(), 2);
+        assert_eq!(args[args.len() - 2], "-i");
         assert_eq!(args.last().unwrap(), "C:\\media\\clip.mp4");
+    }
+
+    #[test]
+    fn probe_args_protect_option_like_paths() {
+        let args = probe_args(Path::new("-version"));
+        let input_index = args.iter().position(|arg| arg == "-i").unwrap();
+        assert_eq!(input_index, args.len() - 2);
+        assert_eq!(args.last().unwrap(), "-version");
     }
 }

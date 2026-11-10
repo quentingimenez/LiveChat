@@ -918,6 +918,7 @@ mod tests {
             },
             tweet_card: None,
             duration_sec: 10,
+            ..Default::default()
         }
     }
 

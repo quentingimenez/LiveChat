@@ -5,6 +5,9 @@
 //! - lecture seule de la source et normalisation des dates INTEGER/TEXT/RFC 3339 ;
 //! - `--dry-run` n'écrit rien et ne modifie pas la source (comparaison SHA256) ;
 //! - migration réelle complète, vérifiée et installée ;
+//! - registre sqlx `_sqlx_migrations` écrit avant le rename, checksum SHA-384
+//!   identique à celui de sqlx, démarrage `lc_db::Db::open` réussi (deux fois) ;
+//! - registre sqlx absent ou corrompu détecté avant le rename ;
 //! - date invalide (`T` sans fuseau, `REAL`) => erreur détaillée, aucun fichier final ;
 //! - booléen et énumération invalides rejetés ;
 //! - cible existante refusée sans `--force`, remplacée avec `--force` ;
@@ -257,6 +260,17 @@ async fn open_readonly(path: &Path) -> SqliteConnection {
         .expect("ouverture en lecture seule")
 }
 
+/// Ouvre un fichier existant en écriture (tests de corruption du registre).
+async fn open_write(path: &Path) -> SqliteConnection {
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(false)
+        .journal_mode(SqliteJournalMode::Delete);
+    SqliteConnection::connect_with(&options)
+        .await
+        .expect("ouverture en écriture")
+}
+
 async fn scalar_i64(conn: &mut SqliteConnection, sql: &str) -> i64 {
     sqlx::query_scalar::<_, i64>(sql)
         .fetch_one(conn)
@@ -276,6 +290,13 @@ async fn scalar_text(conn: &mut SqliteConnection, sql: &str) -> String {
         .fetch_one(conn)
         .await
         .expect("requête scalaire texte")
+}
+
+async fn scalar_blob(conn: &mut SqliteConnection, sql: &str) -> Vec<u8> {
+    sqlx::query_scalar::<_, Vec<u8>>(sql)
+        .fetch_one(conn)
+        .await
+        .expect("requête scalaire BLOB")
 }
 
 /// Empreinte SHA256 d'un fichier, via le helper de `legacy.rs`.
@@ -371,6 +392,40 @@ async fn migration_complete_installe_et_normalise() {
         )
         .await,
         concat!("xtask ", env!("CARGO_PKG_VERSION"), " migrate-legacy")
+    );
+
+    // Registre sqlx (: présent, une ligne, version 1, description « init » et
+    // checksum SHA-384 identique à celui que sqlx calcule lui-même.
+    assert_eq!(
+        scalar_i64(&mut target, "SELECT COUNT(*) FROM _sqlx_migrations").await,
+        1
+    );
+    assert_eq!(
+        scalar_i64(&mut target, "SELECT version FROM _sqlx_migrations").await,
+        1
+    );
+    assert_eq!(
+        scalar_text(&mut target, "SELECT description FROM _sqlx_migrations").await,
+        "init"
+    );
+    assert_eq!(
+        scalar_i64(&mut target, "SELECT success FROM _sqlx_migrations").await,
+        1
+    );
+    assert_eq!(
+        scalar_blob(&mut target, "SELECT checksum FROM _sqlx_migrations").await,
+        super::ledger::expected_checksum(),
+        "checksum SHA-384 du registre sqlx"
+    );
+    assert!(
+        !scalar_text(&mut target, "SELECT installed_on FROM _sqlx_migrations")
+            .await
+            .is_empty(),
+        "installed_on doit être renseigné"
+    );
+    assert!(
+        scalar_i64(&mut target, "SELECT execution_time FROM _sqlx_migrations").await >= 0,
+        "execution_time doit être mesuré"
     );
 
     // Dates INTEGER conservées.
@@ -478,6 +533,22 @@ async fn dry_run_n_ecrit_rien_et_source_intacte() {
 
     assert_rien_ecrit(&to);
     assert_eq!(sha256(&from), source_hash, "la source doit rester intacte");
+
+    // dry-run avec cible existante et --force : le registre sqlx est comparé,
+    // mais la cible n'est ni modifiée ni recréée.
+    execute(&options(&from, &to, false, false))
+        .await
+        .expect("migration préalable");
+    let target_hash = sha256(&to);
+    execute(&options(&from, &to, true, true))
+        .await
+        .expect("dry-run avec cible existante");
+    assert_eq!(
+        sha256(&to),
+        target_hash,
+        "la cible existante ne doit pas être modifiée par un dry-run"
+    );
+    assert!(!target::tmp_path(&to).exists());
     drop(legacy);
 }
 
@@ -694,6 +765,136 @@ async fn source_absente_refusee() {
         .await
         .expect_err("une source absente doit être refusée");
     assert!(matches!(err, Error::LegacyNotFound(_)));
+}
+
+#[tokio::test]
+async fn registre_sqlx_absent_ou_corrompu_detecte_avant_rename() {
+    let dir = tempdir().expect("répertoire temporaire");
+    let (from, legacy) = seeded_legacy(&dir).await;
+    let to = dir.path().join("v3.sqlite");
+    execute(&options(&from, &to, false, false))
+        .await
+        .expect("migration complète");
+    drop(legacy);
+
+    let legacy = super::legacy::Legacy::open(&from)
+        .await
+        .expect("réouverture du legacy");
+    let data = legacy
+        .read_tables()
+        .await
+        .expect("relecture des tables legacy");
+
+    // Cas 1 : registre absent d'une cible par ailleurs valide.
+    let sans_ledger = dir.path().join("sans-ledger.sqlite");
+    std::fs::copy(&to, &sans_ledger).expect("copie de la cible");
+    {
+        let mut conn = open_write(&sans_ledger).await;
+        exec(&mut conn, "DROP TABLE _sqlx_migrations;").await;
+        conn.close().await.expect("fermeture de la copie");
+    }
+    let err = super::verify_target(&sans_ledger, &legacy, &data)
+        .await
+        .expect_err("un registre sqlx absent doit être détecté avant le rename");
+    match err {
+        Error::LedgerInvalid(message) => {
+            assert!(message.contains("absente"), "message : {message}");
+        }
+        other => panic!("LedgerInvalid attendu, obtenu : {other:?}"),
+    }
+
+    // Cas 2 : checksum du registre altéré.
+    let checksum_ko = dir.path().join("checksum-ko.sqlite");
+    std::fs::copy(&to, &checksum_ko).expect("copie de la cible");
+    {
+        let mut conn = open_write(&checksum_ko).await;
+        exec(&mut conn, "UPDATE _sqlx_migrations SET checksum = x'00';").await;
+        conn.close().await.expect("fermeture de la copie");
+    }
+    let err = super::verify_target(&checksum_ko, &legacy, &data)
+        .await
+        .expect_err("un checksum sqlx altéré doit être détecté");
+    match err {
+        Error::LedgerInvalid(message) => {
+            assert!(message.contains("checksum"), "message : {message}");
+        }
+        other => panic!("LedgerInvalid attendu, obtenu : {other:?}"),
+    }
+
+    drop(legacy);
+}
+
+#[tokio::test]
+async fn registre_sqlx_compatible_boot_et_deuxieme_boot() {
+    let dir = tempdir().expect("répertoire temporaire");
+    let (from, legacy) = seeded_legacy(&dir).await;
+    let to = dir.path().join("v3.sqlite");
+    execute(&options(&from, &to, false, false))
+        .await
+        .expect("migration complète");
+    drop(legacy);
+
+    let db_config = lc_db::DbConfig::default();
+
+    // Oracle : sur une base vierge, sqlx crée lui-même le registre. Le checksum
+    // qu'il calcule doit être identique à celui écrit par le migrateur.
+    let reference = dir.path().join("reference-sqlx.sqlite");
+    let reference_db = lc_db::Db::open(&reference, &db_config)
+        .await
+        .expect("création de la base de référence par sqlx");
+    reference_db.close().await;
+    let mut reference_conn = open_readonly(&reference).await;
+    let reference_checksum = scalar_blob(
+        &mut reference_conn,
+        "SELECT checksum FROM _sqlx_migrations WHERE version = 1",
+    )
+    .await;
+    assert_eq!(
+        reference_checksum,
+        super::ledger::expected_checksum(),
+        "le checksum du migrateur doit être celui calculé par sqlx"
+    );
+
+    // Boot 1 : `Db::open` (migrations + contrôle de version) doit réussir sans
+    // rejouer 0001_init.
+    let db = lc_db::Db::open(&to, &db_config)
+        .await
+        .expect("démarrage du serveur après migration (boot 1)");
+    let guild_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM guilds")
+        .fetch_one(db.pool())
+        .await
+        .expect("lecture des guildes après le boot");
+    assert_eq!(
+        guild_count, 2,
+        "les données migrées doivent être lisibles après le boot"
+    );
+    db.close().await;
+
+    // Boot 2 : anti-régression, aucun rejeu ni doublon dans le registre.
+    let db = lc_db::Db::open(&to, &db_config)
+        .await
+        .expect("second démarrage (boot 2)");
+    let guild_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM guilds")
+        .fetch_one(db.pool())
+        .await
+        .expect("lecture des guildes au second boot");
+    assert_eq!(guild_count, 2);
+    db.close().await;
+
+    let mut target = open_readonly(&to).await;
+    assert_eq!(
+        scalar_i64(&mut target, "SELECT COUNT(*) FROM _sqlx_migrations").await,
+        1,
+        "le registre doit rester à une seule ligne après deux démarrages"
+    );
+    assert_eq!(
+        scalar_text(
+            &mut target,
+            "SELECT value FROM app_metadata WHERE key = 'schema_version'"
+        )
+        .await,
+        "3.0.0"
+    );
 }
 
 #[tokio::test]

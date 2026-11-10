@@ -1,5 +1,8 @@
 # Politique d'approvisionnement Rust de LiveChat (cargo-deny).
 # CI : `cargo deny check` — voir .github/workflows/rust.yml.
+#
+# Ce fichier est un gate bloquant : toute exception doit être justifiée ici et
+# suivie (tâche de remédiation) pour être retirée dès que possible.
 
 [graph]
 # Vérifie tout le graphe, y compris les dépendances optionnelles.
@@ -9,7 +12,28 @@ all-features = true
 db-urls = ["https://github.com/rustsec/advisory-db"]
 # Un crate yanké ne doit plus être construit.
 yanked = "deny"
-ignore = []
+# Exceptions temporaires documentées (audit A7-002). Chaque entrée doit être
+# retirée dès que la dépendance concernée est mise à jour ; ne jamais ajouter
+# une exception sans raison, sans suivi et sans analyse d'impact.
+ignore = [
+    { id = "RUSTSEC-2026-0459", reason = "libsqlite3-sys 0.30.1 (SQLite bundlé < 3.54) : CVE local nécessitant l'ouverture d'une paire DB/-wal forgée par un tiers. Les bases servies sont créées par lc-server. Correctif = bump sqlx/libsqlite3-sys (Rust 1.88+), hors périmètre P0-4 ; suivi P1." },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error unmaintained, build-dependency uniquement (glib-macros → GTK, cible Linux du build Tauri). Aucun code runtime ; attente d'une version amont de gtk-rs." },
+    { id = "RUSTSEC-2026-0346", reason = "rustls 0.22.4 tiré par serenity 0.12 → tokio-tungstenite 0.21 (gateway Discord). Le Debug des sessions TLS n'est jamais journalisé par l'application ; correctif = rustls 0.23 exigeant un bump serenity, suivi P1." },
+    { id = "RUSTSEC-2026-0349", reason = "rustls 0.22.4 (même chaîne serenity) : downgrade PQ via attaquant réseau. Mitigation = bump serenity/rustls, suivi P1." },
+    { id = "RUSTSEC-2026-0049", reason = "rustls-webpki 0.102.8 (chaîne serenity 0.12 → rustls 0.22). Correctif 0.103+ ; bump = même suivi P1." },
+    { id = "RUSTSEC-2026-0098", reason = "rustls-webpki 0.102.8 (chaîne serenity) : contraintes de noms URI. Bump rustls-webpki 0.103+ nécessaire, suivi P1." },
+    { id = "RUSTSEC-2026-0099", reason = "rustls-webpki 0.102.8 (chaîne serenity) : contraintes de noms wildcard. Correctif 0.103.12+, suivi P1." },
+    { id = "RUSTSEC-2026-0104", reason = "rustls-webpki 0.102.8 (chaîne serenity) : panic CRL. Correctif 0.103.13+, suivi P1." },
+    { id = "RUSTSEC-2026-0382", reason = "rustls-webpki 0.102.8 (chaîne serenity) : intermédiaires distrustés. Correctif 0.103.16+, suivi P1." },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained (fusionné dans zbus 6) : dépendance Linux uniquement via tauri-plugin-single-instance. Pas d'impact Windows ; bump Tauri attendu, suivi P1." },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained (fusionné dans zbus 6), Linux uniquement via tauri-plugin-single-instance. Suivi P1." },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained (fusionné dans zbus 6), Linux uniquement via tauri-plugin-single-instance. Suivi P1." },
+]
+# Une entrée d'ignore qui ne matche plus rien doit être nettoyée (visible en CI).
+unused-ignored-advisory = "warn"
+# Les avis « unmaintained » du graphe transitif restent bloquants par défaut :
+# toute nouvelle alerte doit être traitée ou justifiée ci-dessus.
+unmaintained = "all"
 
 [licenses]
 # Liste blanche volontairement stricte : toute nouvelle licence doit être
@@ -17,6 +41,8 @@ ignore = []
 allow = [
     "MIT",
     "Apache-2.0",
+    # Exception LLVM utilisée par target-lexicon (build-deps des sys-crates GTK).
+    "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
@@ -25,6 +51,8 @@ allow = [
     "CC0-1.0",
     "0BSD",
     "MPL-2.0",
+    # Racines TLS (webpki-roots / webpki-root-certs) : données de certificats.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 # La liste blanche est pré-provisionnée pour les dépendances des Phases 1+ ;
@@ -34,8 +62,26 @@ unused-allowed-license = "allow"
 [bans]
 # Deux versions majeures d'un même crate : avertissement (à traiter en Phase 1+).
 multiple-versions = "warn"
-# Interdit les contraintes `*` explicites.
+# Interdit les contraintes `*` explicites sur les dépendances externes.
 wildcards = "deny"
+# Les crates internes sont `publish = false` : leurs dépendances path/git n'ont
+# pas de version (source de vérité = workspace), ce qui ne constitue pas une
+# wildcard de registre. Autorisé pour les crates privées uniquement.
+allow-wildcard-paths = true
+
+[bans.workspace-dependencies]
+# Les dépendances path internes sont traitées par Cargo (workspace), pas comme
+# des versions de registre : on les exclut des contrôles de duplication/unused
+# qui ne savent pas résoudre `{ workspace = true }` sans numéro de version
+# (diagnostic `unresolved-workspace-dependency` d'A7-002).
+include-path-dependencies = false
+# Les dépendances externes devraient toutes passer par `[workspace.dependencies]`,
+# mais apps/lc-overlay (Tauri, versions propres) et xtask en déclarent encore
+# directement : avertissement (nettoyage dans une tâche dédiée), pas blocage.
+duplicates = "warn"
+# Une dépendance workspace non utilisée est signalée mais ne bloque pas encore
+# (certaines crates sont déclarées pour les phases suivantes).
+unused = "warn"
 
 [sources]
 unknown-registry = "deny"

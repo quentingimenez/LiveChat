@@ -64,6 +64,26 @@ impl AuthedOverlayClient {
     pub fn guild_id(&self) -> &lc_domain::GuildId {
         &self.client.guild_id
     }
+
+    /// Mode de session du client, chargé depuis `overlay_clients.session_mode`
+    /// au moment de l'authentification (`normal` ou `invite_read_only`).
+    ///
+    /// Le mode est **persisté en base** et jamais dérivé d'un en-tête ou du
+    /// corps de la requête : un client ne peut donc pas s'auto-attribuer une
+    /// session normale (cf. `pair.rs`, `sessionMode` du corps ignoré).
+    pub fn session_mode(&self) -> lc_domain::OverlaySessionMode {
+        self.client.session_mode
+    }
+
+    /// `true` si la session est en lecture seule (`INVITE_READ_ONLY`).
+    ///
+    /// Les routes qui écrivent (meme board : `POST`, `PATCH`, `DELETE`) doivent
+    /// refuser la requête avec `403 {"error":"read_only_session"}` lorsque
+    /// cette méthode renvoie `true` (cf. `meme_board.rs`,
+    /// `ensure_writable`). Les routes de lecture (`GET`) restent autorisées.
+    pub fn is_read_only(&self) -> bool {
+        self.session_mode() == lc_domain::OverlaySessionMode::InviteReadOnly
+    }
 }
 
 /// Génère un token overlay : 32 octets aléatoires en hexadécimal minuscule.

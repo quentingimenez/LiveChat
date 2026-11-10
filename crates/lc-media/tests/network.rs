@@ -90,11 +90,9 @@ async fn normalizes_generated_sample_with_ffmpeg() {
 #[ignore = "nécessite un accès réseau"]
 async fn resolves_tiktok_page_online() {
     let config = MediaConfig::default();
-    let client = lc_media::http::build_client(&config.download).unwrap();
     let source = lc_media::source::resolve_source(
-        &client,
-        "https://www.tiktok.com/@tiktok/video/7300000000000000000",
         &config,
+        "https://www.tiktok.com/@tiktok/video/7300000000000000000",
     )
     .await;
     assert!(source.is_ok());

@@ -1,16 +1,20 @@
-name: Overlay CI
+name: Overlay CI (legacy Electron)
 
+# CI du client Electron 2.x conservé pour le rollback (`overlay/`). Il ne publie
+# aucun artefact : le canal Tauri 3.0.0 est couvert par `rust.yml` (build/test)
+# et l'auto-update est désactivé pour 3.0.0 (voir docs/rust/overlay-release.md).
+# Ce workflow sera supprimé au cutover 3.0.0 (cf. docs/rust/legacy-ts-removal.md).
 on:
   pull_request:
     paths:
       - "overlay/**"
-      - ".github/workflows/overlay-*.yml"
+      - ".github/workflows/overlay-ci.yml"
   push:
     branches:
       - main
     paths:
       - "overlay/**"
-      - ".github/workflows/overlay-*.yml"
+      - ".github/workflows/overlay-ci.yml"
   workflow_dispatch:
 
 permissions:
@@ -28,10 +32,10 @@ jobs:
         working-directory: overlay
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm

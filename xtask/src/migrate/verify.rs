@@ -1,7 +1,7 @@
 //! Vérification post-migration, exécutée sur le fichier cible AVANT son
-//! installation définitive (rename) : comptes, sommes numériques, échantillon de
-//! 20 lignes par table comparées champ à champ, clés étrangères, intégrité et
-//! version de schéma.
+//! installation définitive (rename) : intégrité, clés étrangères, registre sqlx,
+//! version de schéma, comptes par table, sommes numériques et échantillon de
+//! 20 lignes par table comparées champ à champ.
 //!
 //! Toute anomalie produit une erreur : le fichier temporaire est supprimé et
 //! aucun fichier final n'est créé.
@@ -10,6 +10,7 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::SqliteConnection;
 
 use super::dates;
+use super::ledger::{self, LedgerReport};
 use super::legacy::Legacy;
 use super::read::LegacyData;
 use super::tables::{
@@ -46,6 +47,8 @@ pub struct VerifyReport {
     pub integrity: String,
     /// Valeur de `app_metadata.schema_version`.
     pub schema_version: String,
+    /// Contenu du registre sqlx `_sqlx_migrations` (une ligne, `0001_init`).
+    pub ledger: LedgerReport,
     /// Métadonnées legacy relues sur la cible.
     pub extra_metadata: Vec<(String, String)>,
 }
@@ -78,6 +81,11 @@ impl VerifyReport {
         println!(
             "      clés étrangères : {} violation(s) ; integrity_check = {} ; schema_version = {}",
             self.foreign_key_violations, self.integrity, self.schema_version
+        );
+        println!(
+            "      registre sqlx : {} ({})",
+            ledger::LEDGER_TABLE,
+            self.ledger.summary()
         );
         if !self.extra_metadata.is_empty() {
             println!("      métadonnées d'import :");
@@ -195,6 +203,10 @@ pub async fn verify(
             report.schema_version
         )));
     }
+
+    // Le registre sqlx doit être présent et conforme AVANT le rename, sinon le
+    // premier démarrage du serveur rejouerait `0001_init` et échouerait.
+    report.ledger = ledger::verify(conn).await?;
 
     for (table, legacy_count) in data.counts() {
         let target_count = count_rows(conn, table).await?;

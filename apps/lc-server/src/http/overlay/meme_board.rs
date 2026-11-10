@@ -20,8 +20,20 @@
 //!   media:{id,kind,mime,durationSec,width,height,isVertical,sizeBytes,sourceUrl}}`
 //!   (`createdAt` en ISO-8601 UTC millisecondes, comme le JSON du legacy) ;
 //! - erreurs : `400 invalid_payload` (+ `message`), `401 unauthorized`,
-//!   `404 item_not_found` / `media_not_found` / `media_not_found_on_disk`,
+//!   `403 read_only_session` (session invitée en écriture), `404 item_not_found`
+//!   / `media_not_found` / `media_not_found_on_disk`,
 //!   `422 media_ingestion_failed` (+ `code`, `message`), `500 internal_error`.
+//!
+//! ## Sessions en lecture seule (`INVITE_READ_ONLY`)
+//!
+//! Le protocole v2 (§9) réserve la session `invite_read_only` à la lecture. Les
+//! mutations du meme board (`POST items`, `PATCH item`, `DELETE item`) sont donc
+//! refusées avec `403 {"error":"read_only_session"}` **avant toute validation de
+//! charge utile**, tandis que les `GET` (`items`, `media`) restent autorisés.
+//! Le mode provient de l'extracteur [`AuthedOverlayClient::is_read_only`]
+//! (colonne `overlay_clients.session_mode`, chargée à l'authentification) ; il
+//! est identique que le jeton arrive par `Authorization: Bearer` ou par le repli
+//! `?token=` du board, et ne peut pas être influencé par le corps de requête.
 //!
 //! ## Écarts assumés (documentés dans `docs/rust/server-overlay.md`)
 //!
@@ -179,6 +191,10 @@ pub async fn create_item(
     auth: AuthedOverlayClient,
     Json(payload): Json<CreateItemRequest>,
 ) -> Response {
+    // Garde de session : refus avant validation/ingestion (403 read_only_session).
+    if let Err(response) = ensure_writable(&auth) {
+        return response;
+    }
     let url = payload
         .url
         .as_deref()
@@ -415,6 +431,10 @@ pub async fn update_item(
     Path(item_id_raw): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
+    // Garde de session : aucune écriture en INVITE_READ_ONLY.
+    if let Err(response) = ensure_writable(&auth) {
+        return response;
+    }
     let Some(object) = body.as_object() else {
         return json_response(
             StatusCode::BAD_REQUEST,
@@ -482,6 +502,10 @@ pub async fn delete_item(
     auth: AuthedOverlayClient,
     Path(item_id_raw): Path<String>,
 ) -> Response {
+    // Garde de session : aucune suppression en INVITE_READ_ONLY.
+    if let Err(response) = ensure_writable(&auth) {
+        return response;
+    }
     let Ok(item_id) = item_id_raw.trim().parse::<MemeBoardItemId>() else {
         return json_response(StatusCode::OK, serde_json::json!({"deleted": false}));
     };
@@ -525,6 +549,21 @@ pub async fn delete_item(
     }
 
     json_response(StatusCode::OK, serde_json::json!({"deleted": deleted}))
+}
+
+/// Garde d'écriture : refuse les mutations en session `INVITE_READ_ONLY`.
+///
+/// Le mode est celui du client authentifié (persisté en
+/// `overlay_clients.session_mode`), quelle que soit la voie d'authentification
+/// (`Authorization: Bearer` ou repli `?token=` du board). Les erreurs du legacy
+/// (`400`, `404`) ne sont volontairement pas évaluées avant cette garde : une
+/// session invitée ne doit obtenir aucune information sur la validité d'une
+/// charge utile ou d'un identifiant.
+fn ensure_writable(auth: &AuthedOverlayClient) -> Result<(), Response> {
+    if auth.is_read_only() {
+        return Err(error(StatusCode::FORBIDDEN, "read_only_session"));
+    }
+    Ok(())
 }
 
 /// Payload JSON d'un item de board (format legacy exact).

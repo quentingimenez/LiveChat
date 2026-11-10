@@ -8,7 +8,9 @@ installateurs de l'overlay Tauri (`apps/lc-overlay`). Il complète
 > État actuel : le canal stable pointe la version **3.0.0** (`LiveChat`,
 > `com.livechat`) et le canal bêta **3.0.0-beta.1** (`LiveChat Next`,
 > `com.livechat.next`, installation side-by-side avec l'Electron 2.0.1).
-> La clé de signature updater est encore un **placeholder** : voir §6.
+> L'auto-update est **explicitement désactivé pour 3.0.0** (clé de signature
+> updater placeholder, `createUpdaterArtifacts: false` dans les deux configs,
+> aucun workflow GitHub Actions de release Tauri) : voir §6 et §7.
 
 ## 1. Canaux et identités
 
@@ -147,13 +149,25 @@ Preuves collectées sur les artefacts de la build du 2026-11-10 :
   positionné `0,0 2560×1440`, styles `0x080C0138 → 0x080C01B8`, raccourcis
   réappliqués, RSS ~46,9 Mo, aucun process résiduel après kill.
 
-## 6. Updater : signature minisign (clé réelle en Phase 9 finale)
+## 6. Updater : signature minisign (désactivé pour 3.0.0)
 
-État actuel : `plugins.updater.pubkey` contient un **placeholder explicite**
-(`RWQPLACEHOLDER_MINISIGN_PUBLIC_KEY_A_REMPLACER_EN_PHASE_9=`) et
-`bundle.createUpdaterArtifacts` vaut `false`. L'application démarre normalement ;
-un clic sur « Vérifier les mises à jour » renvoie une **erreur explicite**
-(clé publique invalide) au lieu de planter — comportement voulu et documenté.
+État actuel (décision P0-4, 2026-11-10) : l'auto-update est **désactivé pour la
+version 3.0.0**, de façon cohérente sur toute la chaîne :
+
+- `plugins.updater.pubkey` contient un **placeholder explicite**
+  (`RWQPLACEHOLDER_MINISIGN_PUBLIC_KEY_A_REMPLACER_EN_PHASE_9=`) dans
+  `tauri.conf.json` et `tauri.beta.conf.json` ;
+- `bundle.createUpdaterArtifacts` vaut `false` dans les deux configs : les builds
+  ne produisent ni `.nsis.zip` signé ni `.sig` ;
+- **aucun workflow GitHub Actions ne publie de release overlay** : les workflows
+  legacy Electron (`overlay-release.yml` sur tag `overlay-v*` avec `--latest`,
+  `overlay-nightly.yml`) ont été supprimés en P0-4 ; il n'existe pas encore de
+  workflow Tauri. La publication 3.0.0 est **manuelle** (§7).
+
+L'application démarre normalement ; un clic sur « Vérifier les mises à jour »
+renvoie une **erreur explicite** (clé publique invalide) au lieu de planter —
+comportement voulu et documenté. Aucun client 3.0.0 ne peut donc être mis à jour
+automatiquement : c'est un choix assumé pour cette première release.
 
 Pour activer réellement l'updater :
 
@@ -238,10 +252,27 @@ Avec updater signé, ajouter à chaque release les fichiers `.nsis.zip`, `.sig` 
 `.../releases/latest/download/latest.json` suit automatiquement la dernière release
 marquée « latest » (donc ne pas marquer la bêta comme latest).
 
-Automatisation CI recommandée (Phase 9 finale) : GitHub Actions
-`tauri-apps/tauri-action` avec `releaseType: release`, secrets
-`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`,
-`GITHUB_TOKEN`, et `args: --config tauri.beta.conf.json` pour le canal bêta.
+### 7.1 Automatisation CI : aucune pour 3.0.0
+
+Décision P0-4 : **aucun workflow GitHub Actions ne build/publipe l'overlay 3.0.0**.
+Les workflows legacy `overlay-release.yml` (tag `overlay-v*`, electron-builder,
+release marquée *Latest*) et `overlay-nightly.yml` (prerelease Electron) ont été
+supprimés ; ils décrivaient l'ancien client Electron 2.x, pas l'application Tauri,
+et entretenaient un canal de release ambigu (AUD-A7-003). La CI Rust (`rust.yml`)
+vérifie seulement que `apps/lc-overlay` compile (clippy/tests) avec les
+dépendances système Linux nécessaires.
+
+Publication 3.0.0 : **manuelle**, avec les commandes de §7. Si l'automatisation est
+souhaitée pour 3.1 (auto-update activé), le workflow Tauri devra :
+
+- être déclenché par tag `overlay-v*` (ou `workflow_dispatch` avec input version) ;
+- utiliser `tauri-apps/tauri-action` **épinglé par SHA** comme toutes les actions ;
+- recevoir `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+  en secrets, plus `GITHUB_TOKEN` en `contents: write` limité au job de release ;
+- produire NSIS (`LiveChat_<version>_x64-setup.exe`) + `.nsis.zip` + `.sig` +
+  `latest.json`, publier la release stable (jamais marquée *Latest* pour la bêta) ;
+- ne pas réutiliser `server.yml` ni l'image serveur : un artefact = un propriétaire
+  de tags.
 
 ## 8. Politique de versions
 
@@ -332,7 +363,8 @@ et non `app_config_dir()` (`%APPDATA%\com.livechat`). Conséquences :
 | Sujet | État | Impact / mitigation |
 |---|---|---|
 | Signature Authenticode | absente | SmartScreen peut afficher un avertissement au premier lancement ; prévoir un certificat de signature de code en Phase 9 finale. |
-| Clé updater | placeholder (`createUpdaterArtifacts: false`) | pas de mise à jour automatique tant que la clé réelle n'est pas fournie (§6) ; l'app affiche une erreur explicite. |
+| Clé updater | placeholder (`createUpdaterArtifacts: false`, aucun workflow de release) | **auto-update explicitement désactivé pour 3.0.0** (§6) ; activation = travail 3.1 (clé réelle, artifacts signés, workflow Tauri). |
+| Workflows de release | Electron legacy supprimés (`overlay-release.yml`, `overlay-nightly.yml`) ; aucun workflow Tauri | publication 3.0.0 manuelle (§7) ; un seul propriétaire de tags par artefact (AUD-A7-003). |
 | Installation locale | **non testée** (consigne : ne pas installer) | procédure et smoke test VM décrits §9 ; à exécuter en Phase 9 finale. |
 | WebView2 | **requis** | Windows 11 : présent. Windows 10 : `downloadBootstrapper` télécharge le runtime à l'installation (réseau requis). Variante hors-ligne possible : `webviewInstallMode: { "type": "offlineInstaller" }` (installeur plus gros, ~100 Mo). |
 | MSI / machine-wide | non produit | NSIS per-user choisi (pas d'admin, updater NSIS, cohérent avec Electron electron-builder per-user) ; `cargo tauri build --bundles msi` possible mais nécessite WiX et une stratégie d'élévation. |
@@ -343,7 +375,9 @@ et non `app_config_dir()` (`%APPDATA%\com.livechat`). Conséquences :
 
 ## 14. Checklist « release finale » (Phase 9)
 
-- [ ] Clé minisign réelle générée, pubkey injecté, `createUpdaterArtifacts: true`.
+- [ ] (3.1 uniquement, auto-update désactivé en 3.0.0 — §6) Clé minisign réelle
+      générée, pubkey injecté, `createUpdaterArtifacts: true`, workflow Tauri de
+      release ajouté avec actions épinglées par SHA.
 - [ ] Certificat Authenticode disponible (optionnel mais recommandé) et commande
       `signtool` intégrée au pipeline.
 - [ ] `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test -p lc-overlay` verts.

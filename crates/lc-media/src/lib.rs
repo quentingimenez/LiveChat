@@ -31,6 +31,7 @@ pub mod cache;
 pub mod config;
 pub mod download;
 pub mod error;
+pub mod guard;
 pub mod html;
 pub mod http;
 pub mod ingest;
@@ -50,18 +51,23 @@ pub use crate::config::{
     VideoConfig, VideoEncoder,
 };
 pub use crate::download::{
-    build_ytdlp_args, download_http, download_local, download_source, download_tiktok,
-    download_with_ytdlp, download_youtube, find_downloaded_file, parse_ytdlp_output_path,
-    sniff_kind, DownloadResult, YtdlpOptions,
+    build_ytdlp_args, download_http, download_source, download_tiktok, download_with_ytdlp,
+    download_youtube, find_downloaded_file, parse_ytdlp_output_path, sniff_kind, DownloadResult,
+    YtdlpOptions,
 };
 pub use crate::error::{
     classify_code, code_from_http_status, ApiErrorLabel, MediaError, MediaErrorCode, MediaResult,
+};
+pub use crate::guard::{
+    ip_block_reason, parse_media_url, resolve_redirect, validate_target, ValidatedTarget,
+    MAX_REDIRECTS,
 };
 pub use crate::ingest::{ingest_url, IngestLimiter, IngestedMedia, MediaPipeline};
 pub use crate::probe::{parse_probe_json, probe, probe_args, ProbeInfo};
 pub use crate::resolve::{resolve_media, ResolvedMedia, TweetCard};
 pub use crate::source::{
-    canonicalize_source_url, classify_source, source_hash, MediaSource, SourceKind,
+    canonicalize_source_url, classify_source, source_hash, validate_ingest_source, MediaSource,
+    SourceKind,
 };
 pub use crate::storage::{MediaStorage, StoredVariant};
 pub use crate::transcode::{

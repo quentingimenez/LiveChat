@@ -1,6 +1,14 @@
 name: rust
 
-# CI du rebuild Rust (serveur + overlay). Remplace à terme server.yml et overlay-ci.yml.
+# Gate CI du rebuild Rust (serveur + overlay Tauri). Remplace à terme server.yml
+# et overlay-ci.yml (legacy Electron/Node conservés pour le rollback 2.0.1).
+#
+# Politique :
+# - actions tierces épinglées par commit SHA (audit A7-003) ;
+# - `cargo deny check` bloquant (politique centralisée dans deny.toml) ;
+# - `cargo audit` bloquant : les exceptions sont exactement celles documentées
+#   dans deny.toml ([advisories].ignore) et reportées en CLI `--ignore` car
+#   cargo-audit ne lit pas deny.toml. Tenir les deux listes synchronisées.
 on:
   push:
     branches: [feat/rust-rebuild, main]
@@ -41,6 +49,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
+  # Les deps du workspace varient entre Linux et Windows : le cache est clé par OS.
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   fmt:
@@ -48,9 +58,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Rust toolchain (rustfmt)
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           components: rustfmt
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
@@ -58,57 +71,136 @@ jobs:
   clippy:
     name: clippy
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Rust toolchain (clippy)
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      # libwebkit2gtk/gtk : requis pour compiler apps/lc-overlay (Tauri 2) sur Linux.
+      # libssl-dev + pkg-config : backend TLS native-tls de l'overlay.
+      - name: Linux system dependencies (Tauri)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libxdo-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            pkg-config \
+            patchelf
+      - name: Rust cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: cargo clippy (-D warnings)
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@nextest
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: Linux system dependencies (Tauri)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libxdo-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            pkg-config \
+            patchelf
+      - name: Rust cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: nextest
       - name: cargo nextest
-        # --no-tests=pass : le squelette Phase 0 n'a pas encore de tests ; on ne
-        # veut pas que la CI échoue sur « no tests to run » avant la Phase 1.
-        run: cargo nextest run --workspace --all-features --locked --no-fail-fast --no-tests=pass
+        # Pas de `--no-tests=pass` : le workspace couvre désormais crates/ et apps/,
+        # un run vide serait une régression de configuration à signaler.
+        run: cargo nextest run --workspace --all-features --locked --no-fail-fast
       # nextest n'exécute pas les doctests : étape séparée.
       - name: doctests
         run: cargo test --workspace --doc --locked
 
   deny:
-    name: deny
+    name: deny (bloquant)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Sortie non nulle = job rouge (advisories/licences/bans/sources).
+      - name: cargo deny check
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           command: check
 
   audit:
-    name: audit (non bloquant)
+    name: audit (bloquant)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Tant que la toolchain n'est pas complète et que le graphe de dépendances
-    # grandit vite, l'audit informe sans bloquer la CI.
-    continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@cargo-audit
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: cargo-audit
+      # Exceptions = copie exacte de deny.toml [advisories].ignore (audit A7-002).
+      # Toute nouvelle alerte fait échouer le job ; toute exception retirée de
+      # deny.toml doit être retirée ici.
       - name: cargo audit
-        run: cargo audit
+        run: |
+          set -euo pipefail
+          # RUSTSEC-2023-0071 (rsa 0.9.10) : crate présent uniquement dans
+          # Cargo.lock via sqlx-mysql (dépendance optionnelle jamais résolue :
+          # `cargo tree -i rsa` = vide, aucun binaire ne l'embarque). cargo-deny
+          # raisonne sur le graphe résolu et ne le voit pas ; cargo-audit scanne
+          # tout le lockfile, d'où cette exception locale au workflow.
+          cargo audit \
+            --ignore RUSTSEC-2023-0071 \
+            --ignore RUSTSEC-2026-0459 \
+            --ignore RUSTSEC-2024-0370 \
+            --ignore RUSTSEC-2026-0346 \
+            --ignore RUSTSEC-2026-0349 \
+            --ignore RUSTSEC-2026-0049 \
+            --ignore RUSTSEC-2026-0098 \
+            --ignore RUSTSEC-2026-0099 \
+            --ignore RUSTSEC-2026-0104 \
+            --ignore RUSTSEC-2026-0382 \
+            --ignore RUSTSEC-2026-0370 \
+            --ignore RUSTSEC-2026-0371 \
+            --ignore RUSTSEC-2026-0372

@@ -32,11 +32,17 @@ proxy, le serveur écoute en HTTP sur le réseau interne).
 | `deploy/server.Dockerfile` | Image multi-stage builder + runtime. |
 | `deploy/server.Dockerfile.dockerignore` | Contexte Docker minimal (BuildKit) : le dépôt pèse ~23 Go. |
 | `deploy/docker-compose.yml` | Compose de production (service `lc-server`, volume `./data`, healthcheck JSON) — voir §10. |
-| `.github/workflows/server-image.yml` | CI : buildx amd64, push GHCR, provenance, smoke test. |
+| `.github/workflows/server-image.yml` | CI : buildx amd64, push GHCR (**propriétaire unique des tags `livechat-server`**), provenance, smoke test ; actions épinglées par SHA. |
 | `docs/rust/packaging.md` | Ce document (contrat, runbooks, mesures, limites). |
 
 Le legacy `server/Dockerfile` et `server/docker-compose.yml` ne sont **pas** modifiés :
 ils restent la référence de rollback (image 2.0.1).
+
+Chaîne de release P0-4 : `server-image.yml` est le **seul** workflow autorisé à publier
+l'image GHCR ; `server.yml` (legacy Node) ne fait que tester et les workflows de release
+Electron (`overlay-release.yml`, `overlay-nightly.yml`) ont été retirés. Le canal overlay
+3.0.0 a son auto-update **explicitement désactivé** (voir
+[docs/rust/overlay-release.md](overlay-release.md) §6-§7).
 
 ## 3. Contrat de l'image
 
@@ -226,6 +232,11 @@ Dockerfile est inchangé ; en CI, le build se fait toujours sur un checkout prop
 <!-- MESURES:FIN -->
 
 ## 6. Publication CI et politique de tags
+
+**Propriétaire unique des tags GHCR.** Depuis P0-4 (A7-003), `server.yml` (Node legacy)
+ne publie plus d'image : seul `.github/workflows/server-image.yml` pousse
+`ghcr.io/<owner>/livechat-server`. Toutes les actions tierces des workflows CI/release
+sont épinglées par commit SHA.
 
 `.github/workflows/server-image.yml` :
 

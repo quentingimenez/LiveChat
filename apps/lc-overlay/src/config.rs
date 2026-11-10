@@ -12,8 +12,9 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -186,16 +187,63 @@ impl OverlayConfig {
         Ok(serde_json::to_string_pretty(self)?)
     }
 
-    /// Écrit le fichier (crée le dossier parent si nécessaire).
+    /// Écrit le fichier de façon **atomique** : sérialisation dans un fichier
+    /// temporaire voisin, `sync_all`, puis renommage sur la cible (NTFS remplace
+    /// la cible de façon atomique). Crée le dossier parent si nécessaire.
+    ///
+    /// Un crash pendant l'écriture ne peut donc jamais laisser un `config.json`
+    /// tronqué : soit l'ancien fichier reste, soit le nouveau est complet
+    /// (AUD-A6-007 / O-006).
     pub fn write_to(&self, path: &Path) -> Result<(), ConfigError> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 fs::create_dir_all(parent)?;
             }
         }
-        fs::write(path, self.to_json_string()?)?;
+        let payload = self.to_json_string()?;
+        let temp = temp_sibling(path);
+        {
+            let mut file = fs::File::create(&temp)?;
+            if let Err(error) = file
+                .write_all(payload.as_bytes())
+                .and_then(|()| file.sync_all())
+            {
+                let _removed = fs::remove_file(&temp);
+                return Err(error.into());
+            }
+        }
+        if let Err(error) = replace_file(&temp, path) {
+            let _removed = fs::remove_file(&temp);
+            return Err(error.into());
+        }
         Ok(())
     }
+}
+
+/// Chemin temporaire voisin (même volume ⇒ renommage atomique).
+fn temp_sibling(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".tmp-{}", std::process::id()));
+    path.with_file_name(name)
+}
+
+/// Remplace `target` par `temp`. `std::fs::rename` mappe `MoveFileExW` avec
+/// `MOVEFILE_REPLACE_EXISTING` sur Windows ; un antivirus/indexeur peut
+/// brièvement retenir un handle, d'où quelques tentatives courtes.
+fn replace_file(temp: &Path, target: &Path) -> io::Result<()> {
+    let mut last_error = None;
+    for attempt in 0..3 {
+        match fs::rename(temp, target) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 2 {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| io::Error::other("renommage atomique impossible")))
 }
 
 fn non_empty(value: &Option<String>) -> bool {
@@ -391,12 +439,23 @@ impl ConfigStore {
     }
 
     /// Crée `.bak` une seule fois (avant toute écriture Tauri) pour préserver
-    /// le fichier lu par Electron en cas de rollback.
+    /// le fichier lu par Electron en cas de rollback. La copie passe par un
+    /// temporaire voisin renommé ensuite : un crash ne laisse pas de `.bak`
+    /// partiel (AUD-A6-007).
     pub fn ensure_backup(&self) -> Result<bool, ConfigError> {
         if !self.path.exists() || self.backup_path().exists() {
             return Ok(false);
         }
-        fs::copy(&self.path, self.backup_path())?;
+        let backup = self.backup_path();
+        let temp = temp_sibling(&backup);
+        if let Err(error) = fs::copy(&self.path, &temp) {
+            let _removed = fs::remove_file(&temp);
+            return Err(error.into());
+        }
+        if let Err(error) = replace_file(&temp, &backup) {
+            let _removed = fs::remove_file(&temp);
+            return Err(error.into());
+        }
         Ok(true)
     }
 
@@ -593,6 +652,48 @@ mod tests {
         let backup = fs::read_to_string(store.backup_path()).expect("read backup");
         assert!(backup.contains("0.2"));
         assert!(!store.ensure_backup().expect("second backup"));
+    }
+
+    #[test]
+    fn backup_leaves_no_temporary_file() {
+        let (dir, store) = temp_store("{\"volume\":0.2}");
+        assert!(store.ensure_backup().expect("backup"));
+        let leftovers = fs::read_dir(dir.path())
+            .expect("readdir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
+            .count();
+        assert_eq!(leftovers, 0, "aucun temporaire ne doit rester");
+    }
+
+    #[test]
+    fn save_is_atomic_and_leaves_no_temporary_file() {
+        let (dir, store) = temp_store("{\"volume\":0.2}");
+        let mut config = store.load();
+        config.volume = 0.5;
+        store.save(&config).expect("save");
+
+        assert_eq!(store.load().volume, 0.5);
+        let leftovers = fs::read_dir(dir.path())
+            .expect("readdir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
+            .count();
+        assert_eq!(leftovers, 0, "aucun temporaire ne doit rester");
+        // La cible reste un JSON complet et valide après le renommage.
+        let raw = fs::read_to_string(store.path()).expect("read target");
+        assert!(raw.contains("\"volume\": 0.5"), "json: {raw}");
+    }
+
+    #[test]
+    fn repeated_saves_replace_the_previous_file() {
+        let (_dir, store) = temp_store("{\"volume\":0.2}");
+        for volume in [0.1, 0.4, 0.9] {
+            let mut config = store.load();
+            config.volume = volume;
+            store.save(&config).expect("save");
+        }
+        assert!((store.load().volume - 0.9).abs() < f64::EPSILON);
     }
 
     #[test]

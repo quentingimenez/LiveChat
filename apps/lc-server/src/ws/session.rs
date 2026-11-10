@@ -47,8 +47,13 @@ use uuid::Uuid;
 
 use super::hub::{self, AuthError, Hub, HubEngine, OutFrame, TOO_MANY_CONNECTIONS_REASON};
 
-/// Taille maximale acceptée par l'upgrade (les trames > 64 Kio reçoivent 4408).
-const MAX_UPGRADE_MESSAGE_BYTES: usize = 256 * 1024;
+/// Borne dure de transport de l'upgrade : volontairement supérieure à la
+/// limite applicative (64 Kio) afin de pouvoir répondre `4408` aux trames
+/// intermédiaires au lieu de laisser axum couper en 1006/1009 (P2, AUD-COR-12).
+const MAX_TRANSPORT_MESSAGE_BYTES: usize = 1024 * 1024;
+
+/// Longueur maximale de l'`id` d'une trame client (protocole §4).
+const MAX_REQUEST_ID_CHARS: usize = 64;
 
 /// Fenêtre glissante du rate limiter client.
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(1);
@@ -112,8 +117,8 @@ pub(crate) async fn ws_handler(
         .map(str::to_owned);
     match ws {
         Ok(upgrade) => upgrade
-            .max_message_size(MAX_UPGRADE_MESSAGE_BYTES)
-            .max_frame_size(MAX_UPGRADE_MESSAGE_BYTES)
+            .max_message_size(MAX_TRANSPORT_MESSAGE_BYTES)
+            .max_frame_size(MAX_TRANSPORT_MESSAGE_BYTES)
             .on_upgrade(move |socket| handle_socket(socket, state, hub, origin)),
         Err(_rejection) => {
             debug!("upgrade WebSocket refusé : 426 websocket_required");
@@ -250,8 +255,8 @@ async fn handle_socket(
     let max_messages = usize::try_from(MAX_CLIENT_MESSAGES_PER_SECOND).unwrap_or(usize::MAX);
     let mut rate_window: VecDeque<Instant> =
         VecDeque::with_capacity(max_messages.saturating_add(1));
-    let mut last_pong = Instant::now();
     let heartbeat_timeout = Duration::from_secs(state.config.ws_heartbeat_timeout_sec.max(1));
+    let mut liveness = PongLiveness::new(heartbeat_timeout);
     let mut ping_interval = interval(Duration::from_millis(PING_INTERVAL_MS));
     ping_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     ping_interval.tick().await;
@@ -306,6 +311,10 @@ async fn handle_socket(
                             break;
                         }
                         let request_id = envelope.id;
+                        if let Err(info) = validate_request_id(request_id.as_str()) {
+                            close_info = Some(info);
+                            break;
+                        }
                         if let Err(info) = handle_client_message(
                             &state,
                             &hub,
@@ -332,7 +341,7 @@ async fn handle_socket(
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Ok(Message::Pong(_))) => {
-                        last_pong = Instant::now();
+                        liveness.on_pong();
                     }
                     Some(Ok(Message::Ping(_))) => {}
                     Some(Err(error)) => {
@@ -356,7 +365,7 @@ async fn handle_socket(
                 }
             }
             _ = ping_interval.tick() => {
-                if last_pong.elapsed() >= heartbeat_timeout {
+                if liveness.is_expired() {
                     close_info = Some(CloseInfo::new(
                         close_code::GOING_AWAY,
                         close_reason::HEARTBEAT_TIMEOUT,
@@ -727,7 +736,16 @@ async fn handle_client_message(
             send_ack(hub, connection_id, request_id.as_str(), true, None);
             match engine.stop(&context.guild_id, job_id, source).await {
                 Ok(outcome) => debug!(stopped = outcome.stopped.len(), "stop.request appliqué"),
-                Err(error) => warn!(error = %error, "échec de stop.request"),
+                Err(error) => {
+                    warn!(error = %error, "échec de stop.request");
+                    send_server_error(
+                        hub,
+                        connection_id,
+                        "internal_error",
+                        "échec de l'arrêt demandé",
+                        job_id.map(|job_id| job_id.to_canonical()),
+                    );
+                }
             }
         }
         ClientMessage::MemeTrigger(payload) => {
@@ -864,7 +882,16 @@ async fn handle_client_message(
                     item = %payload.item_id,
                     "mème déclenché",
                 ),
-                Err(error) => warn!(error = %error, "échec de l'enfilement d'un mème"),
+                Err(error) => {
+                    warn!(error = %error, "échec de l'enfilement d'un mème");
+                    send_server_error(
+                        hub,
+                        connection_id,
+                        "internal_error",
+                        "échec de l'enfilement du mème",
+                        Some(job.id.to_canonical()),
+                    );
+                }
             }
         }
         ClientMessage::PeersRequest(_payload) => {
@@ -919,9 +946,7 @@ fn ack_error(code: &str, message: &str) -> AckError {
     }
 }
 
-/// Envoie un message d'erreur serveur non fatal (conservé pour les erreurs
-/// asynchrones de dispatch ; non utilisé dans le flux synchrone actuel).
-#[allow(dead_code)]
+/// Envoie un message `error` serveur non fatal (P2, AUD-COR-12).
 fn send_server_error(
     hub: &Arc<Hub>,
     connection_id: Uuid,
@@ -972,4 +997,74 @@ fn throttle(slot: &mut Option<Instant>, min_interval: Duration) -> bool {
     }
     *slot = Some(now);
     true
+}
+
+/// Valide l'`id` d'une trame client : non vide et ≤ 64 caractères (protocole §4).
+fn validate_request_id(id: &str) -> Result<(), CloseInfo> {
+    if id.trim().is_empty() || id.chars().count() > MAX_REQUEST_ID_CHARS {
+        return Err(CloseInfo::new(
+            close_code::PROTOCOL_ERROR,
+            close_reason::PROTOCOL_ERROR,
+        ));
+    }
+    Ok(())
+}
+
+/// Suivi de liveness : seule une trame `Pong` rafraîchit la fenêtre.
+///
+/// Le `heartbeat` applicatif (message JSON C→S) ne rafraîchit PAS cette
+/// fenêtre : sinon un client qui n'enverrait que des heartbeats ne serait
+/// jamais fermé après le timeout sans Pong (P2, AUD-COR-12).
+#[derive(Debug)]
+struct PongLiveness {
+    last_pong: Instant,
+    timeout: Duration,
+}
+
+impl PongLiveness {
+    fn new(timeout: Duration) -> Self {
+        Self {
+            last_pong: Instant::now(),
+            timeout,
+        }
+    }
+
+    /// Un `Pong` reçu du pair rafraîchit la fenêtre.
+    fn on_pong(&mut self) {
+        self.last_pong = Instant::now();
+    }
+
+    /// La fenêtre est-elle expirée sans `Pong` ?
+    fn is_expired(&self) -> bool {
+        self.last_pong.elapsed() >= self.timeout
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_id_validation_accepts_64_chars_and_rejects_others() {
+        assert!(validate_request_id("cli-0001").is_ok());
+        assert!(validate_request_id(&"a".repeat(MAX_REQUEST_ID_CHARS)).is_ok());
+        assert!(validate_request_id("").is_err());
+        assert!(validate_request_id("   ").is_err());
+        assert!(validate_request_id(&"a".repeat(MAX_REQUEST_ID_CHARS + 1)).is_err());
+    }
+
+    #[test]
+    fn pong_liveness_is_not_refreshed_by_application_heartbeats() {
+        let mut liveness = PongLiveness::new(Duration::from_millis(40));
+        std::thread::sleep(Duration::from_millis(80));
+        assert!(
+            liveness.is_expired(),
+            "la fenêtre doit expirer sans trame Pong"
+        );
+        // Un heartbeat applicatif n'appelle pas `on_pong()` : la fenêtre reste
+        // expirée (le code de session ne met à jour que sur `Message::Pong`).
+        assert!(liveness.is_expired());
+        liveness.on_pong();
+        assert!(!liveness.is_expired(), "un Pong reçu rafraîchit la fenêtre");
+    }
 }

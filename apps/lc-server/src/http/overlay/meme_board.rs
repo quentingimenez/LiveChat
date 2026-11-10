@@ -49,27 +49,26 @@
 //! - `guildId` en query (legacy admin) est accepté uniquement s'il correspond à
 //!   la guilde du Bearer, sinon `403 forbidden` (défense en profondeur).
 
-use std::time::Duration as StdDuration;
-
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
 use chrono::{DateTime, Utc};
-use lc_domain::{MediaAsset, MediaAssetId, MediaStatus, MemeBoardItem, MemeBoardItemId};
+use lc_domain::{GuildId, MediaAsset, MediaAssetId, MemeBoardItem, MemeBoardItemId};
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::media::shared_pipeline_for_state;
+use crate::media::assets;
+use crate::media::errors::MediaServiceError;
+use crate::media::service::MediaService;
 
 use super::auth::AuthedOverlayClient;
-use super::{db, db_failure, error, internal_error, json_response, now};
+use super::{db, db_failure, error, internal_error, is_conflict, json_response, now};
 
 /// Alias local pour garder les signatures courtes.
 type Db = lc_db::Db;
 
-/// Durée d'épinglage d'un média de board (legacy : `now + 100 ans`).
-const PINNED_YEARS: i64 = 100;
 /// Limite legacy de la longueur du titre.
 const TITLE_MAX_CHARS: usize = 240;
 /// Limite legacy de la longueur du message.
@@ -144,35 +143,35 @@ pub async fn list_items(
         .map(|value| truncate_chars(value.trim(), TITLE_MAX_CHARS).to_lowercase())
         .filter(|value| !value.is_empty());
 
-    let items = match db.meme_board().list_by_guild(auth.guild_id()).await {
-        Ok(items) => items,
+    // AUD-A2-013 : une seule requête pour lire les lignes de la board, au lieu
+    // de `list_by_guild` suivi d'un `media_assets().get` par item (N+1 non
+    // borné). La recherche et la pagination restent en Rust (board de quelques
+    // centaines d'items) ; seuls les assets de la page (≤ 200) sont rechargés.
+    let rows = match load_board_rows(db, auth.guild_id()).await {
+        Ok(rows) => rows,
         Err(db_error) => return db_failure("overlay_meme_board.list_items", &db_error),
     };
-
-    let mut rows: Vec<(MemeBoardItem, MediaAsset)> = Vec::with_capacity(items.len());
-    for item in items {
-        let asset = match db.media_assets().get(item.media_asset_id).await {
+    let filtered = rows
+        .into_iter()
+        .filter(|row| {
+            search
+                .as_deref()
+                .map(|needle| row_matches(row, needle))
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    let total = filtered.len();
+    let mut page = Vec::new();
+    for row in filtered.into_iter().skip(offset).take(limit) {
+        let asset = match db.media_assets().get(row.media_asset_id()).await {
             Ok(Some(asset)) => asset,
             Ok(None) => continue,
             Err(db_error) => {
                 return db_failure("overlay_meme_board.list_item_asset", &db_error);
             }
         };
-        if let Some(search) = search.as_deref() {
-            if !item_matches(&item, &asset, search) {
-                continue;
-            }
-        }
-        rows.push((item, asset));
+        page.push(item_payload(&row.item, &asset));
     }
-
-    let total = rows.len();
-    let page = rows
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .map(|(item, asset)| item_payload(&item, &asset))
-        .collect::<Vec<_>>();
 
     json_response(
         StatusCode::OK,
@@ -189,12 +188,25 @@ pub async fn list_items(
 pub async fn create_item(
     State(state): State<AppState>,
     auth: AuthedOverlayClient,
-    Json(payload): Json<CreateItemRequest>,
+    payload: Result<Json<CreateItemRequest>, JsonRejection>,
 ) -> Response {
     // Garde de session : refus avant validation/ingestion (403 read_only_session).
     if let Err(response) = ensure_writable(&auth) {
         return response;
     }
+    // AUD-A2-009 : un corps JSON malformé est une erreur de validation dédiée
+    // (`400 invalid_payload`), et non la réécriture générique `request_error`
+    // appliquée par le normaliseur aux réponses non JSON d'Axum.
+    let payload = match payload {
+        Ok(Json(payload)) => payload,
+        Err(rejection) => {
+            tracing::debug!(
+                error = %rejection.body_text(),
+                "corps JSON invalide sur POST /overlay/meme-board/items"
+            );
+            return invalid_json();
+        }
+    };
     let url = payload
         .url
         .as_deref()
@@ -215,99 +227,18 @@ pub async fn create_item(
     };
     let now = now(&state);
 
-    // AUD-A2-006/A4-007 : pipeline partagé par processus (sémaphore, client
-    // HTTP et budgets globaux) au lieu d'un pipeline reconstruit par requête.
-    let pipeline = match shared_pipeline_for_state(&state) {
-        Ok(pipeline) => pipeline,
-        Err(error) => {
-            if let Some(media_error) = error.media_error() {
-                return media_ingestion_error(media_error);
-            }
-            tracing::warn!(error = %error, "pipeline média partagé indisponible");
-            return internal_error();
-        }
+    // AUD-A2-006/A2-007/V2-S-003 : l'ingestion est unifiée sur `MediaService`
+    // (pipeline partagé OnceLock, cache par `source_hash`, quotas de cache,
+    // `record_failure` et nettoyage des fichiers partiels). Les branches ad hoc
+    // précédentes laissaient des assets `READY` sans métadonnées rafraîchies et
+    // ne nettoyaient pas un `forceRefresh` en échec.
+    let service = match MediaService::for_state(&state) {
+        Ok(service) => service,
+        Err(service_error) => return media_service_error(&service_error),
     };
-    let ingested = match pipeline.ingest_url(&url).await {
-        Ok(ingested) => ingested,
-        Err(media_error) => return media_ingestion_error(&media_error),
-    };
-
-    let pinned_expiry = pinned_expiry(now);
-    let asset = match db
-        .media_assets()
-        .get_by_source_hash(&ingested.source.source_hash)
-        .await
-    {
-        Ok(Some(mut existing)) if !force_refresh && existing.is_ready() => {
-            if existing.expires_at < pinned_expiry {
-                if let Err(db_error) = db
-                    .media_assets()
-                    .touch_last_accessed(existing.id, now, pinned_expiry)
-                    .await
-                {
-                    return db_failure("overlay_meme_board.pin_existing_asset", &db_error);
-                }
-                existing.expires_at = pinned_expiry;
-                existing.last_accessed_at = now;
-            }
-            existing
-        }
-        Ok(Some(mut existing)) => {
-            // Cache existant mais non prêt : on le repasse READY (les
-            // métadonnées seront re-validées par la Phase 5b).
-            if let Err(db_error) = db
-                .media_assets()
-                .update_status(existing.id, MediaStatus::Ready, None)
-                .await
-            {
-                return db_failure("overlay_meme_board.mark_asset_ready", &db_error);
-            }
-            existing.status = MediaStatus::Ready;
-            existing.error = None;
-            existing.expires_at = pinned_expiry;
-            existing.last_accessed_at = now;
-            existing
-        }
-        Ok(None) => {
-            let asset = MediaAsset {
-                id: MediaAssetId::new_v4(),
-                source_hash: ingested.source.source_hash.clone(),
-                source_url: ingested.source.canonical_url.clone(),
-                kind: ingested.normalized.kind,
-                mime: ingested.normalized.mime.clone(),
-                duration_sec: ingested.normalized.duration_sec,
-                width: ingested.normalized.width.map(i64::from),
-                height: ingested.normalized.height.map(i64::from),
-                is_vertical: ingested.normalized.is_vertical,
-                storage_path: ingested
-                    .normalized
-                    .storage_path
-                    .to_string_lossy()
-                    .into_owned(),
-                size_bytes: i64::try_from(ingested.normalized.size_bytes).unwrap_or(i64::MAX),
-                status: MediaStatus::Ready,
-                error: None,
-                last_accessed_at: now,
-                expires_at: pinned_expiry,
-                created_at: now,
-            };
-            match db.media_assets().insert(&asset).await {
-                Ok(()) => asset,
-                Err(db_error) if db_error.is_unique_violation() => match db
-                    .media_assets()
-                    .get_by_source_hash(&ingested.source.source_hash)
-                    .await
-                {
-                    Ok(Some(existing)) => existing,
-                    Ok(None) => return internal_error(),
-                    Err(db_error) => {
-                        return db_failure("overlay_meme_board.reload_asset", &db_error);
-                    }
-                },
-                Err(db_error) => return db_failure("overlay_meme_board.insert_asset", &db_error),
-            }
-        }
-        Err(db_error) => return db_failure("overlay_meme_board.asset_by_source_hash", &db_error),
+    let asset = match service.ingest(Some(&url), None, force_refresh).await {
+        Ok(asset) => asset,
+        Err(service_error) => return media_service_error(&service_error),
     };
 
     // Dédoublonnage board : (guilde, asset) déjà épinglé → `created:false`.
@@ -353,6 +284,18 @@ pub async fn create_item(
         );
     }
 
+    // AUD-A2-007 : le service a persisté l'asset avec le TTL de cache ; le
+    // board l'épingle pour 100 ans (`ensurePinnedExpiry` legacy), après
+    // validation de la capacité et pour les deux cas d'usage (asset neuf ou
+    // déjà en cache).
+    let asset = match assets::pin(db, asset.id, now).await {
+        Ok(pinned) => pinned,
+        Err(MediaServiceError::Database(db_error)) => {
+            return db_failure("overlay_meme_board.pin_board_asset", &db_error);
+        }
+        Err(service_error) => return media_service_error(&service_error),
+    };
+
     let item = MemeBoardItem {
         id: MemeBoardItemId::new_v4(),
         guild_id: auth.guild_id().clone(),
@@ -376,7 +319,7 @@ pub async fn create_item(
             StatusCode::OK,
             serde_json::json!({"created": true, "item": item_payload(&item, &asset)}),
         ),
-        Err(db_error) if db_error.is_unique_violation() => match db
+        Err(db_error) if is_conflict(&db_error) => match db
             .meme_board()
             .get_by_guild_and_asset(auth.guild_id(), asset.id)
             .await
@@ -437,12 +380,22 @@ pub async fn update_item(
     State(state): State<AppState>,
     auth: AuthedOverlayClient,
     Path(item_id_raw): Path<String>,
-    Json(body): Json<serde_json::Value>,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Response {
     // Garde de session : aucune écriture en INVITE_READ_ONLY.
     if let Err(response) = ensure_writable(&auth) {
         return response;
     }
+    let body = match body {
+        Ok(Json(value)) => value,
+        Err(rejection) => {
+            tracing::debug!(
+                error = %rejection.body_text(),
+                "corps JSON invalide sur PATCH /overlay/meme-board/items"
+            );
+            return invalid_json();
+        }
+    };
     let Some(object) = body.as_object() else {
         return json_response(
             StatusCode::BAD_REQUEST,
@@ -526,35 +479,27 @@ pub async fn delete_item(
         Ok(_) => return json_response(StatusCode::OK, serde_json::json!({"deleted": false})),
         Err(db_error) => return db_failure("overlay_meme_board.delete_lookup", &db_error),
     };
-    let deleted = match db.meme_board().delete(item_id).await {
+
+    // AUD-A2-013 : suppression et libération de l'expiration épinglée dans une
+    // même transaction (le comptage de références est fait côté SQL), au lieu
+    // d'un DELETE puis d'un comptage applicatif non transactionnel.
+    let now = now(&state);
+    let release_seconds = i64::try_from(state.config.media_cache_ttl_hours)
+        .unwrap_or(i64::MAX / 3_600)
+        .saturating_mul(3_600);
+    let released_expiry = now + chrono::Duration::seconds(release_seconds);
+    let deleted = match delete_item_and_release(
+        db,
+        item_id,
+        auth.guild_id(),
+        existing.media_asset_id,
+        released_expiry,
+    )
+    .await
+    {
         Ok(deleted) => deleted,
         Err(db_error) => return db_failure("overlay_meme_board.delete", &db_error),
     };
-
-    if deleted {
-        // Libération de l'expiration épinglée si plus aucun board ne référence
-        // ce média (parité legacy `releasePinnedExpiry`).
-        match board_reference_count(db, &existing.media_asset_id).await {
-            Ok(0) => {
-                let now = now(&state);
-                let released_expiry = now
-                    + StdDuration::from_secs(
-                        state.config.media_cache_ttl_hours.saturating_mul(3_600),
-                    );
-                if let Err(db_error) = db
-                    .media_assets()
-                    .touch_last_accessed(existing.media_asset_id, now, released_expiry)
-                    .await
-                {
-                    tracing::warn!(error = %db_error, "libération de l'expiration épinglée impossible");
-                }
-            }
-            Ok(_) => {}
-            Err(db_error) => {
-                tracing::warn!(error = %db_error, "comptage des références board impossible");
-            }
-        }
-    }
 
     json_response(StatusCode::OK, serde_json::json!({"deleted": deleted}))
 }
@@ -622,13 +567,26 @@ fn normalize_offset(raw: Option<&str>) -> usize {
         .unwrap_or(0)
 }
 
+/// Ligne de board lue en une seule requête (item + URL source de l'asset).
+struct BoardRow {
+    item: MemeBoardItem,
+    source_url: String,
+}
+
+impl BoardRow {
+    /// Identifiant de l'asset média référencé (rechargé seulement pour la page).
+    fn media_asset_id(&self) -> MediaAssetId {
+        self.item.media_asset_id
+    }
+}
+
 /// Filtre `q` (insensible à la casse) sur les champs exposés par le legacy.
-fn item_matches(item: &MemeBoardItem, asset: &MediaAsset, search: &str) -> bool {
+fn row_matches(row: &BoardRow, search: &str) -> bool {
     let fields = [
-        item.title.as_deref(),
-        item.message.as_deref(),
-        item.created_by_name.as_deref(),
-        Some(asset.source_url.as_str()),
+        row.item.title.as_deref(),
+        row.item.message.as_deref(),
+        row.item.created_by_name.as_deref(),
+        Some(row.source_url.as_str()),
     ];
     fields
         .into_iter()
@@ -636,28 +594,138 @@ fn item_matches(item: &MemeBoardItem, asset: &MediaAsset, search: &str) -> bool 
         .any(|value| value.to_lowercase().contains(search))
 }
 
-/// Somme des tailles des médias actuellement référencés par une board.
-async fn board_total_bytes(db: &Db, guild_id: &lc_domain::GuildId) -> lc_db::DbResult<i64> {
-    let mut total: i64 = 0;
-    for item in db.meme_board().list_by_guild(guild_id).await? {
-        if let Some(asset) = db.media_assets().get(item.media_asset_id).await? {
-            total = total.saturating_add(asset.size_bytes.max(0));
-        }
+/// Charge la board d'une guilde en une requête (même ordre que `list_by_guild`).
+async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<BoardRow>> {
+    use sqlx::Row as _;
+
+    let raw_rows = sqlx::query(
+        "SELECT b.id, b.guild_id, b.media_asset_id, b.title, b.message, \
+                b.created_by_discord_user_id, b.created_by_name, b.created_at, \
+                a.source_url \
+           FROM meme_board_items b \
+           JOIN media_assets a ON a.id = b.media_asset_id \
+          WHERE b.guild_id = ? \
+          ORDER BY b.created_at DESC, b.id ASC",
+    )
+    .bind(guild_id.as_str())
+    .fetch_all(db.pool())
+    .await
+    .map_err(lc_db::DbError::from)?;
+
+    let mut rows = Vec::with_capacity(raw_rows.len());
+    for raw in raw_rows {
+        let item_id_raw: String = raw.try_get("id").map_err(lc_db::DbError::from)?;
+        let guild_raw: String = raw.try_get("guild_id").map_err(lc_db::DbError::from)?;
+        let asset_id_raw: String = raw
+            .try_get("media_asset_id")
+            .map_err(lc_db::DbError::from)?;
+        let created_at_ms: i64 = raw.try_get("created_at").map_err(lc_db::DbError::from)?;
+        let title: Option<String> = raw.try_get("title").map_err(lc_db::DbError::from)?;
+        let message: Option<String> = raw.try_get("message").map_err(lc_db::DbError::from)?;
+        let created_by_discord_user_id: Option<String> = raw
+            .try_get("created_by_discord_user_id")
+            .map_err(lc_db::DbError::from)?;
+        let created_by_name: Option<String> = raw
+            .try_get("created_by_name")
+            .map_err(lc_db::DbError::from)?;
+        let source_url: String = raw.try_get("source_url").map_err(lc_db::DbError::from)?;
+
+        let item_id = MemeBoardItemId::parse(&item_id_raw)
+            .map_err(|error| corrupt_row(format!("id invalide ({item_id_raw}): {error}")))?;
+        let item_guild = GuildId::parse(&guild_raw)
+            .map_err(|error| corrupt_row(format!("guild_id invalide ({guild_raw}): {error}")))?;
+        let media_asset_id = MediaAssetId::parse(&asset_id_raw).map_err(|error| {
+            corrupt_row(format!("media_asset_id invalide ({asset_id_raw}): {error}"))
+        })?;
+        let created_at = lc_domain::time::ms_to_datetime(created_at_ms)
+            .ok_or_else(|| corrupt_row(format!("created_at invalide ({created_at_ms})")))?;
+
+        rows.push(BoardRow {
+            item: MemeBoardItem {
+                id: item_id,
+                guild_id: item_guild,
+                media_asset_id,
+                title,
+                message,
+                created_by_discord_user_id,
+                created_by_name,
+                created_at,
+            },
+            source_url,
+        });
     }
+    Ok(rows)
+}
+
+/// Erreur `Corrupt` ciblée pour une ligne de board illisible.
+fn corrupt_row(detail: String) -> lc_db::DbError {
+    lc_db::DbError::Corrupt {
+        table: "meme_board_items",
+        detail,
+    }
+}
+
+/// Somme des tailles des médias actuellement référencés par une board.
+async fn board_total_bytes(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<i64> {
+    let total = sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(SUM(a.size_bytes), 0) \
+           FROM meme_board_items b \
+           JOIN media_assets a ON a.id = b.media_asset_id \
+          WHERE b.guild_id = ?",
+    )
+    .bind(guild_id.as_str())
+    .fetch_one(db.pool())
+    .await
+    .map_err(lc_db::DbError::from)?;
     Ok(total)
 }
 
-/// Nombre de références board à un asset (toutes guildes connues).
-async fn board_reference_count(db: &Db, asset_id: &MediaAssetId) -> lc_db::DbResult<usize> {
-    let mut count = 0_usize;
-    for guild in db.guilds().list().await? {
-        for item in db.meme_board().list_by_guild(&guild.id).await? {
-            if item.media_asset_id == *asset_id {
-                count += 1;
-            }
+/// Supprime un item de board et libère l'expiration épinglée si l'asset n'est
+/// plus référencé, le tout dans une transaction (AUD-A2-013).
+async fn delete_item_and_release(
+    db: &Db,
+    item_id: MemeBoardItemId,
+    guild_id: &GuildId,
+    media_asset_id: MediaAssetId,
+    released_expiry: DateTime<Utc>,
+) -> lc_db::DbResult<bool> {
+    let mut transaction = db.pool().begin().await.map_err(lc_db::DbError::from)?;
+
+    let deleted = sqlx::query("DELETE FROM meme_board_items WHERE id = ? AND guild_id = ?")
+        .bind(item_id.to_canonical())
+        .bind(guild_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(lc_db::DbError::from)?
+        .rows_affected()
+        > 0;
+
+    if deleted {
+        let remaining = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM meme_board_items WHERE media_asset_id = ?",
+        )
+        .bind(media_asset_id.to_canonical())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(lc_db::DbError::from)?;
+        if remaining == 0 {
+            // `touch_last_accessed` ne peut pas rejoindre la transaction
+            // (repository séparé) : l'UPDATE est fait directement sur la même
+            // connexion pour rester atomique avec la suppression.
+            sqlx::query(
+                "UPDATE media_assets SET last_accessed_at = ?, expires_at = ? WHERE id = ?",
+            )
+            .bind(lc_domain::time::datetime_to_ms(Utc::now()))
+            .bind(lc_domain::time::datetime_to_ms(released_expiry))
+            .bind(media_asset_id.to_canonical())
+            .execute(&mut *transaction)
+            .await
+            .map_err(lc_db::DbError::from)?;
         }
     }
-    Ok(count)
+
+    transaction.commit().await.map_err(lc_db::DbError::from)?;
+    Ok(deleted)
 }
 
 /// Réponse `422 media_ingestion_failed` (format API legacy).
@@ -669,6 +737,24 @@ fn media_ingestion_error(media_error: &lc_media::MediaError) -> Response {
             "code": media_error.code().as_str(),
             "message": media_error.message(),
         }),
+    )
+}
+
+/// Traduit une erreur du service média (`Database`/`Unavailable` → 500, comme
+/// le board legacy qui ne documente que `422 media_ingestion_failed`).
+fn media_service_error(service_error: &MediaServiceError) -> Response {
+    if let Some(media_error) = service_error.media_error() {
+        return media_ingestion_error(media_error);
+    }
+    tracing::warn!(error = %service_error, "opération média du board impossible");
+    internal_error()
+}
+
+/// Réponse `400 invalid_payload` pour un corps JSON malformé (AUD-A2-009).
+fn invalid_json() -> Response {
+    json_response(
+        StatusCode::BAD_REQUEST,
+        serde_json::json!({"error": "invalid_payload", "message": "corps JSON invalide"}),
     )
 }
 
@@ -697,22 +783,42 @@ fn normalize_optional_text(value: Option<&serde_json::Value>, max: usize) -> Opt
     }
 }
 
-/// Interprète `forceRefresh` (booléen JSON, `"true"`/`"1"` legacy).
+/// Interprète `forceRefresh` (booléen JSON, `"true"`/`"1"`/`"on"` legacy).
 fn coerce_flag(value: Option<&serde_json::Value>) -> bool {
     match value {
         Some(serde_json::Value::Bool(flag)) => *flag,
-        Some(serde_json::Value::String(raw)) => {
-            matches!(
-                raw.trim().to_ascii_lowercase().as_str(),
-                "true" | "1" | "yes"
-            )
-        }
+        Some(serde_json::Value::String(raw)) => matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "true" | "1" | "yes" | "on"
+        ),
         Some(serde_json::Value::Number(number)) => number.as_i64().is_some_and(|value| value != 0),
         _ => false,
     }
 }
 
-/// Expiration « épinglée » d'un média de board (legacy : +100 ans).
-fn pinned_expiry(now: DateTime<Utc>) -> DateTime<Utc> {
-    now + chrono::Duration::days(365 * PINNED_YEARS)
+#[cfg(test)]
+mod tests {
+    use super::coerce_flag;
+    use serde_json::json;
+
+    #[test]
+    fn coerce_flag_accepts_legacy_truthy_values() {
+        // AUD-A2-014 : `toBooleanFlag` legacy accepte aussi "on".
+        for value in [
+            json!(true),
+            json!(1),
+            json!("1"),
+            json!("true"),
+            json!("TRUE"),
+            json!("yes"),
+            json!("on"),
+            json!(" On "),
+        ] {
+            assert!(coerce_flag(Some(&value)), "valeur acceptee : {value}");
+        }
+        for value in [json!(false), json!(0), json!("0"), json!("no"), json!("")] {
+            assert!(!coerce_flag(Some(&value)), "valeur refusee : {value}");
+        }
+        assert!(!coerce_flag(None));
+    }
 }

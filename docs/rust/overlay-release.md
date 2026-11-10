@@ -414,3 +414,41 @@ contenu et le comportement du bundle 3.0.0 :
 - **Board** : authentification par en-tête `Authorization: Bearer` via
   `window.livechatOverlay.authorizedFetch` ; plus de `?token=` dans les URLs.
 
+## 16. Durcissement P2-E (audit AUD-COR-17 / verification-2) — impact release
+
+Les correctifs de la task-52 (`AUD-A6-006/007/009/010/011/016`, nits O-005..O-008)
+modifient encore le contenu et le comportement du bundle 3.0.0 :
+
+- **`enabled=false` strict** : au boot comme sur `show_overlay`, aucune fenêtre
+  overlay n'est affichée tant que l'overlay n'est pas activé **et** appairé
+  (`windows::overlay_should_show`). Le tray reflète l'état (« Overlay désactivé
+  (aucune lecture) » / « Appairage requis »), l'entrée « Afficher l'overlay » est
+  grisée et la désactivation coupe la lecture (`overlay://stop`) puis masque la
+  fenêtre. Aucun événement `play`/`stop` n'est bufferisé ni rejoué dans cet état.
+- **Config atomique** : `config.json` est écrit dans un fichier temporaire voisin
+  puis renommé (`replace_file`, 3 essais) ; la copie `.bak` suit le même schéma.
+  Plus de fichier partiellement écrit en cas de coupure. Permissions et partage
+  du répertoire `%APPDATA%\LiveChat` : voir §11 (chemin partagé avec Electron
+  2.0.1, isolation par `LIVECHAT_CONFIG_PATH`).
+- **CSP resserrée** : `img-src`/`media-src` conservent `http:`/`https:`/`blob:`
+  (URLs média signées dynamiques) mais plus de `asset:` ni de
+  `http://asset.localhost` ; `connect-src` ne liste plus `ws:`/`wss:` (le
+  WebSocket vit côté Rust). Le renderer reste compatible (aucun accès direct au
+  réseau autre que `fetch` board/média via `authorizedFetch`).
+- **`withGlobalTauri: false`** : bridge.js utilise `window.__TAURI_INTERNALS__`
+  (voie officielle Tauri 2) ; plus d'API `window.__TAURI__` exposée au contenu
+  des pages. Les pages de dev hors bundle ne sont pas concernées.
+- **Diagnostics bridge conditionnels** : `window.__livechatOverlayBridge`,
+  `__bridgeCalls`, `__bridgeLastEvent`, `__bridgeMockEmit` ne sont créés qu'en
+  mode mock (harnais `dev/bridge-test.html`) ou si
+  `window.__LIVECHAT_BRIDGE_DEBUG = true` est posé avant `bridge.js`. Un
+  installeur release n'expose donc aucun journal d'appels.
+- **Matrice IPC complétée** : `overlay_install_update` est autorisée pour la
+  fenêtre board (bouton de mise à jour) et reste refusée pour l'overlay ; la
+  matrice par fenêtre est testée (`command_matrix_is_window_scoped`).
+
+Contrôle release associé : `cargo tauri build --debug --no-bundle` (ou release),
+puis scan du binaire pour `bridge-test.html`, `platform.twitter.com`,
+`twitter-widgets-js` (absents) et présence de `overlay.html`/`renderer-errors.js`.
+
+

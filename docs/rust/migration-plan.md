@@ -46,7 +46,6 @@ crates/lc-domain              entités, ids, erreurs métier, temps
 crates/lc-db                  sqlx, repositories, migrations SQL
 crates/lc-media               resolver, yt-dlp/ffmpeg, transcode, cache, social
 crates/lc-discord             bot serenity/poise, commandes, i18n
-crates/lc-admin               routes admin + assets embarqués
 apps/lc-server                binaire axum : REST + WS v2 + workers
 apps/lc-overlay               app Tauri 2 + web/ (renderer existant + bridge)
 static/admin                  index.html, app.js, styles.css
@@ -259,3 +258,30 @@ Serveur `lc-server` debug lancé sur `0.0.0.0:3999` avec base SQLite neuve (migr
 - `stop` admin `POST /admin/api/guilds/{id}/stop` → 200 `{releasedCount:0, stopped:true}` et frame `stop {reason:"manual"}` reçue par l'overlay.
 
 Limites du smoke : ingestion réelle (`yt-dlp`/`ffmpeg`) non rejouée, Discord non connecté (token absent), compose non relancé dans cette passe (voir task-23) ; ces points restent couverts par le runbook de bascule. Seed de test via SQLite (`guilds`, `media_assets`, `playback_jobs`, `overlay_clients`), fichiers de travail sous `.phase0/` (ignoré).
+
+### 12.12 État des correctifs post-release (2026-11-10)
+
+Après le gel de la v3.0.0, les audits et re-audits ont produit des correctifs
+livrés par ordre de sévérité sur `feat/rust-rebuild` :
+
+- **P0** (`ab97b1c`) : garde SSRF/LFI `lc-media::guard` branchée sur
+  HTTP/download/source/ingest et pré-validation `/ingest` (allowlist de schémas,
+  refus loopback/RFC1918/ULA/link-local, résolution DNS + anti-rebinding,
+  redirections revalidées, corps bornés) ; registre `_sqlx_migrations` écrit par
+  le migrateur ; mode overlay `invite_read_only` effectif côté bot ; gate CI
+  (fmt/clippy/test/deny).
+- **P1** (`63e12f5`, COR-05..COR-11) : admin Bearer-only + logs HTTP path-only ;
+  Origin allowlist et plafonds de sockets `/ws` + `TimeoutLayer` ; jobs
+  texte-seul émis/comptés, révocation `stop` puis 4402, purge broadcastée ;
+  migration `0002_playback_single_playing` + retry BUSY + `mode=ro` strict ;
+  racine média fail-closed, publication atomique, TTL média plafonné, worker de
+  purge ; rate-limit admin 429 avant auth ; bureau admin local-only.
+- **V2** (`5fae8a8`) : durcissement ciblé après re-audit adversarial
+  (`docs/rust/audit/verification-2-server.md`) — confinement du purge, scoping
+  des routes overlay et session mode ; les points résiduels (snapshot de
+  migration cohérent, WAL/checksums, runbook) sont suivis dans
+  `docs/rust/audit/backlog-corrections.md` §P2/P3 (le crate vide `crates/lc-admin`
+  a été supprimé le 2026-11-10).
+- **P2** (en cours) : snapshot cohérent de la source de migration + métadonnées
+  SHA-256/horodatage/schema_version + runbook `migrator.md` (AUD-COR-16) ; autres
+  items de dette post-release dans le backlog.

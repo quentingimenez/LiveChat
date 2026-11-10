@@ -52,6 +52,7 @@ const COMMAND_MATRIX: &[(&str, &[&str])] = &[
             "meme_board_trigger",
             "meme_board_stop",
             "overlay_check_updates",
+            "overlay_install_update",
         ],
     ),
     (
@@ -553,6 +554,7 @@ mod tests {
         assert!(command_allowed("board", "meme_board_set_bindings"));
         assert!(command_allowed("board", "meme_board_trigger"));
         assert!(command_allowed("board", "overlay_check_updates"));
+        assert!(command_allowed("board", "overlay_install_update"));
         assert!(!command_allowed("board", "pairing_consume"));
         assert!(!command_allowed("board", "overlay_renderer_ready"));
 

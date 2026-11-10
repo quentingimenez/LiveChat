@@ -22,6 +22,19 @@ fn window(app: &AppHandle<Wry>, label: &str) -> Option<WebviewWindow<Wry>> {
     app.get_webview_window(label)
 }
 
+/// Décision pure d'affichage de l'overlay : il ne doit être visible que si
+/// l'utilisateur l'a activé **et** si l'appareil est appairé (AUD-A6-006).
+/// Sans appairage, aucun job ne peut arriver ; afficher la fenêtre ne ferait
+/// qu'exposer un cadre topmost inutile.
+pub fn overlay_should_show(config: &OverlayConfig) -> bool {
+    config.enabled && config.has_pairing_config()
+}
+
+/// Applique la décision [`overlay_should_show`] à l'état courant.
+fn overlay_should_show_now(app: &AppHandle<Wry>) -> bool {
+    overlay_should_show(&app.state::<AppState>().config_snapshot())
+}
+
 /// Liste les moniteurs visibles avec leur index Tauri et l'index du primaire.
 pub fn collect_displays(app: &AppHandle<Wry>) -> (Vec<DisplayInfo>, Option<usize>) {
     let monitors = match app.available_monitors() {
@@ -164,6 +177,16 @@ pub fn apply_overlay_flags(app: &AppHandle<Wry>) {
         Err(error) => tracing::warn!(%error, "hwnd overlay indisponible"),
     }
 
+    if !overlay_should_show_now(app) {
+        // AUD-A6-006 : `enabled=false` (ou appareil non appairé) ⇒ la fenêtre
+        // reste masquée, aucune lecture, aucun topmost.
+        if let Err(error) = window.hide() {
+            tracing::warn!(%error, "échec hide overlay (overlay désactivé)");
+        }
+        tracing::debug!("overlay désactivé ou non appairé : fenêtre masquée");
+        return;
+    }
+
     if let Err(error) = window.show() {
         tracing::warn!(%error, "échec show overlay");
     }
@@ -182,6 +205,10 @@ pub fn spawn_topmost_guard(app: AppHandle<Wry>) {
         let Some(window) = app.get_webview_window(OVERLAY_LABEL) else {
             break;
         };
+        if !overlay_should_show_now(&app) {
+            // Overlay désactivé : aucune réaffirmation topmost ni lecture.
+            continue;
+        }
         if let Err(error) = window.set_always_on_top(true) {
             tracing::debug!(%error, "set_always_on_top tick en échec");
         }
@@ -240,8 +267,22 @@ fn reveal(app: &AppHandle<Wry>, label: &str, focus: bool) {
 }
 
 pub fn show_overlay(app: &AppHandle<Wry>) {
+    if !overlay_should_show_now(app) {
+        tracing::info!("affichage overlay ignoré : overlay désactivé ou appareil non appairé");
+        hide_overlay(app);
+        return;
+    }
     reveal(app, OVERLAY_LABEL, false);
     apply_overlay_flags(app);
+}
+
+/// Masque l'overlay (utilisé au boot désactivé et lors du toggle tray).
+pub fn hide_overlay(app: &AppHandle<Wry>) {
+    if let Some(window) = window(app, OVERLAY_LABEL) {
+        if let Err(error) = window.hide() {
+            tracing::warn!(%error, "échec hide overlay");
+        }
+    }
 }
 
 pub fn show_board(app: &AppHandle<Wry>) {
@@ -268,4 +309,31 @@ pub fn bootstrap_windows(app: &AppHandle<Wry>) {
     let _display = position_overlay_on_selected_display(app);
     apply_overlay_flags(app);
     spawn_topmost_guard(app.clone());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::OverlayConfig;
+
+    fn paired_config() -> OverlayConfig {
+        let mut config = OverlayConfig::default();
+        config.server_url = Some("https://example.test".to_string());
+        config.client_token = Some("token".to_string());
+        config.guild_id = Some("guild".to_string());
+        config
+    }
+
+    #[test]
+    fn overlay_is_hidden_when_disabled_or_not_paired() {
+        let mut config = paired_config();
+        assert!(overlay_should_show(&config));
+
+        config.enabled = false;
+        assert!(!overlay_should_show(&config), "enabled=false => masqué");
+
+        let mut unpaired = paired_config();
+        unpaired.client_token = None;
+        assert!(!overlay_should_show(&unpaired), "sans token => masqué");
+    }
 }

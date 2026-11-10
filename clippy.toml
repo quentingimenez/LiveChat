@@ -1,7 +1,7 @@
-# Configuration Clippy partagée du workspace LiveChat.
-# Les lints bloquants (unwrap_used/expect_used/panic) sont déclarés une seule fois
+﻿# Configuration Clippy partagÃ©e du workspace LiveChat.
+# Les lints bloquants (unwrap_used/expect_used/panic) sont dÃ©clarÃ©s une seule fois
 # dans [workspace.lints.clippy] du Cargo.toml racine, pas ici.
-msrv = "1.85"
+msrv = "1.90"
 avoid-breaking-exported-api = false
 too-many-arguments-threshold = 8
 type-complexity-threshold = 250

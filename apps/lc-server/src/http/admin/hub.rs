@@ -1,11 +1,10 @@
 //! Pont entre le panneau d'administration et le hub WebSocket.
 //!
 //! Le panneau ne dépend pas du type concret du hub (`crate::ws`) : il ne parle
-//! qu'à ce trait, installé une seule fois au démarrage par le câblage
-//! applicatif (voir [`install_admin_hub`]). Tant qu'aucun hub réel n'est
-//! installé, [`NoopAdminHub`] répond « rien de connecté » et ne diffuse rien :
-//! le panneau reste testable sans serveur WebSocket, et les handlers ne
-//! peuvent pas échouer faute de hub.
+//! qu'à ce trait, injecté dans [`AppState`] au démarrage par le câblage
+//! applicatif (`AppState::with_admin_hub`). Par défaut, [`NoopAdminHub`] répond
+//! « rien de connecté » et ne diffuse rien : le panneau reste testable sans
+//! serveur WebSocket, et les handlers ne peuvent pas échouer faute de hub.
 //!
 //! Les méthodes synchrones (`connected_count`, `connected_for_guild`,
 //! `is_connected`, `close_client`) sont volontairement non bloquantes : elles
@@ -14,17 +13,17 @@
 //! diffusions (`broadcast_stop`, `broadcast_settings`) sont asynchrones car
 //! elles peuvent attendre l'envoi sur des sockets.
 //!
-//! # Exemple de câblage (côté hub réel, lane task-17)
+//! # Exemple de câblage (côté serveur)
 //!
 //! ```ignore
-//! admin::install_admin_hub(Arc::new(mon_hub_websocket));
+//! let state = AppState::new(/* … */).with_admin_hub(Arc::new(mon_hub_websocket));
 //! ```
 //!
-//! [`install_admin_hub`] n'accepte qu'une installation : le second appel
-//! renvoie `false` (le premier hub gagne). C'est volontaire, pour que deux
-//! chemins de démarrage ne se contredisent pas silencieusement.
+//! AUD-COR-14 : le hub est porté par [`AppState`] (plus de `OnceLock` global),
+//! ce qui rend les tests hermétiques et évite qu'un second démarrage dans le
+//! même processus ne réutilise silencieusement l'ancien hub.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use lc_domain::GuildId;
@@ -115,25 +114,9 @@ impl AdminHub for NoopAdminHub {
     }
 }
 
-static ADMIN_HUB: OnceLock<Arc<dyn AdminHub>> = OnceLock::new();
-
-/// Installe le hub réel pour toute la durée du processus.
-///
-/// Retourne `false` si un hub a déjà été installé (le premier gagne).
-pub fn install_admin_hub(hub: Arc<dyn AdminHub>) -> bool {
-    ADMIN_HUB.set(hub).is_ok()
-}
-
-/// Hub actif : le hub installé, sinon [`NoopAdminHub`].
-///
-/// `_state` est accepté pour que les appelants n'aient pas à distinguer
-/// l'origine du hub ; le hub est global car [`AppState`] ne porte pas encore
-/// de champ dédié (le câblage final appartient à la lane app/hub).
-pub fn admin_hub(_state: &AppState) -> Arc<dyn AdminHub> {
-    ADMIN_HUB
-        .get()
-        .cloned()
-        .unwrap_or_else(|| Arc::new(NoopAdminHub))
+/// Hub actif porté par l'état applicatif (Noop par défaut).
+pub fn admin_hub(state: &AppState) -> Arc<dyn AdminHub> {
+    Arc::clone(&state.admin_hub)
 }
 
 #[cfg(test)]

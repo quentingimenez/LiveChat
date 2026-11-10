@@ -1087,3 +1087,159 @@ async fn benchmark_volume() {
     );
     assert!(to.is_file());
 }
+
+/// Le snapshot est figé au moment de sa création : les écritures qui suivent
+/// (même dans le `-wal` encore ouvert) ne doivent pas y apparaître.
+#[tokio::test]
+async fn snapshot_isole_les_ecritures_ulterieures() {
+    let dir = tempdir().expect("répertoire temporaire");
+    let from = dir.path().join("legacy-wal.sqlite");
+    let options = SqliteConnectOptions::new()
+        .filename(&from)
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal);
+    let mut writer = SqliteConnection::connect_with(&options)
+        .await
+        .expect("ouverture de la fixture WAL");
+    sqlx::raw_sql(LEGACY_DDL)
+        .execute(&mut writer)
+        .await
+        .expect("DDL legacy");
+    sqlx::raw_sql(LEGACY_SEED)
+        .execute(&mut writer)
+        .await
+        .expect("données legacy");
+
+    let snapshot = super::snapshot::create(&from)
+        .await
+        .expect("snapshot cohérent");
+    assert!(
+        super::legacy::wal_info(&from).exists,
+        "la fixture doit rester en WAL avec un -wal présent"
+    );
+
+    exec(
+        &mut writer,
+        r#"INSERT INTO "MediaAsset" (
+            "id", "sourceHash", "sourceUrl", "kind", "mime", "storagePath",
+            "lastAccessedAt", "expiresAt", "createdAt"
+        ) VALUES ('m-apres', 'h-apres', 'http://apres', 'IMAGE', 'image/png',
+            'p-apres', 1704067200000, 1704153600000, 1704067200000)"#,
+    )
+    .await;
+
+    let mut snapshot_conn = open_readonly(snapshot.path()).await;
+    assert_eq!(
+        scalar_i64(&mut snapshot_conn, "SELECT COUNT(*) FROM \"MediaAsset\"").await,
+        2,
+        "le snapshot ne doit pas contenir l'écriture postérieure"
+    );
+    drop(snapshot_conn);
+
+    let source_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM \"MediaAsset\"")
+        .fetch_one(&mut writer)
+        .await
+        .expect("comptage de la source");
+    assert_eq!(source_count, 3);
+    drop(writer);
+}
+
+/// La cible enregistre l'identité du snapshot réellement lu (AUD-COR-16).
+#[tokio::test]
+async fn metadonnees_du_snapshot_enregistrees_dans_la_cible() {
+    let dir = tempdir().expect("répertoire temporaire");
+    let (from, legacy) = seeded_legacy(&dir).await;
+    drop(legacy);
+    let source_bytes = std::fs::metadata(&from).expect("métadonnées source").len();
+
+    let to = dir.path().join("v3.sqlite");
+    execute(&options(&from, &to, false, false))
+        .await
+        .expect("migration complète");
+
+    let mut target = open_readonly(&to).await;
+    let snapshot_sha = scalar_text(
+        &mut target,
+        "SELECT value FROM app_metadata WHERE key = 'legacy_snapshot_sha256'",
+    )
+    .await;
+    assert_eq!(snapshot_sha.len(), 64, "empreinte SHA256 hexadécimale");
+    assert!(snapshot_sha.chars().all(|ch| ch.is_ascii_hexdigit()));
+    assert!(
+        scalar_i64(
+            &mut target,
+            "SELECT CAST(value AS INTEGER) FROM app_metadata WHERE key = 'legacy_snapshot_bytes'",
+        )
+        .await
+            > 0
+    );
+    assert!(
+        scalar_i64(
+            &mut target,
+            "SELECT CAST(value AS INTEGER) FROM app_metadata WHERE key = 'legacy_snapshot_at'",
+        )
+        .await
+            > 1_700_000_000_000
+    );
+    let schema = scalar_text(
+        &mut target,
+        "SELECT value FROM app_metadata WHERE key = 'legacy_schema_version'",
+    )
+    .await;
+    assert!(
+        schema.contains("_prisma_migrations"),
+        "version de schéma legacy renseignée : {schema}"
+    );
+    assert_eq!(
+        scalar_i64(
+            &mut target,
+            "SELECT CAST(value AS INTEGER) FROM app_metadata WHERE key = 'legacy_source_wal_bytes'",
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        scalar_i64(
+            &mut target,
+            "SELECT CAST(value AS INTEGER) FROM app_metadata WHERE key = 'legacy_source_bytes'",
+        )
+        .await,
+        i64::try_from(source_bytes).expect("taille source")
+    );
+}
+
+/// Marqueur de source « sale » : simule une écriture concurrente après le
+/// snapshot (fichier `-wal` apparu), sans toucher le fichier principal.
+fn salir_la_source(source: &Path) {
+    let wal = super::append_suffix(source, "-wal");
+    std::fs::write(&wal, b"ecriture concurrente").expect("marqueur -wal");
+}
+
+/// Réinitialise le crochet de test même si le test panique.
+struct HookReset;
+
+impl Drop for HookReset {
+    fn drop(&mut self) {
+        super::snapshot::set_after_snapshot_hook(None);
+    }
+}
+
+/// Une modification de la source entre le snapshot et l'installation doit
+/// annuler la migration et ne laisser aucun fichier final ni temporaire.
+#[tokio::test]
+async fn source_modifiee_avant_installation_echoue_proprement() {
+    let dir = tempdir().expect("répertoire temporaire");
+    let (from, legacy) = seeded_legacy(&dir).await;
+    drop(legacy);
+    let to = dir.path().join("v3.sqlite");
+
+    super::snapshot::set_after_snapshot_hook(Some(salir_la_source));
+    let _reset = HookReset;
+
+    let result = execute(&options(&from, &to, false, false)).await;
+    match result {
+        Err(Error::SourceChanged { .. }) => {}
+        other => panic!("attendu Error::SourceChanged, obtenu {other:?}"),
+    }
+    assert_rien_ecrit(&to);
+}

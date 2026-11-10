@@ -396,6 +396,11 @@ pub fn kind_from_mime(mime: &str) -> Option<MediaKind> {
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
+    // Un SVG est un contenu actif : il n'est jamais assimilé à une image
+    // téléchargeable (AUD-A4-004, défense en profondeur après `transcode`).
+    if essence == "image/svg+xml" {
+        return None;
+    }
     if essence.starts_with("image/") {
         Some(MediaKind::Image)
     } else if essence.starts_with("audio/") {
@@ -834,6 +839,8 @@ mod tests {
         assert_eq!(kind_from_url("https://a.test/b.pdf"), None);
         assert_eq!(kind_from_url("pas-une-url"), None);
         assert_eq!(kind_from_mime("image/png"), Some(MediaKind::Image));
+        assert_eq!(kind_from_mime("image/svg+xml"), None);
+        assert_eq!(kind_from_mime("image/SVG+XML; charset=utf-8"), None);
         assert_eq!(
             kind_from_mime("audio/mp4; codecs=mp4a"),
             Some(MediaKind::Audio)

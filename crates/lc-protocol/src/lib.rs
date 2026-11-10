@@ -755,6 +755,11 @@ pub struct TweetCardPayload {
     /// Vidéos disponibles dans le tweet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub videos: Option<Vec<TweetCardVideo>>,
+    /// Champs inconnus conservés tels quels (tolérance §2 : un client récent
+    /// qui renvoie une carte enrichie ne perd pas les clés qu'il ne connaît
+    /// pas).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Payload de `play`.
@@ -773,6 +778,31 @@ pub struct PlayPayload {
     pub tweet_card: Option<TweetCardPayload>,
     /// Durée effective de lecture, en secondes.
     pub duration_sec: u64,
+    /// Champs inconnus conservés tels quels (tolérance §2, ex. extensions
+    /// futures de `play` ; une map vide n'émet aucune clé).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Default for PlayPayload {
+    fn default() -> Self {
+        Self {
+            job_id: String::new(),
+            media: None,
+            text: TextPayload {
+                value: String::new(),
+                enabled: false,
+            },
+            author: AuthorPayload {
+                name: String::new(),
+                image: None,
+                enabled: false,
+            },
+            tweet_card: None,
+            duration_sec: 0,
+            extra: serde_json::Map::new(),
+        }
+    }
 }
 
 /// Payload de `stop`.

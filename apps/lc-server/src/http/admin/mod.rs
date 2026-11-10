@@ -47,7 +47,7 @@ mod tests;
 pub mod hub;
 
 pub use error::AdminError;
-pub use hub::{install_admin_hub, AdminHub, NoopAdminHub};
+pub use hub::{AdminHub, NoopAdminHub};
 
 use std::net::SocketAddr;
 
@@ -135,6 +135,13 @@ async fn admin_headers(request: axum::extract::Request, next: middleware::Next) 
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|info| info.0.ip());
+    // `x-request-id` est posé par la couche la plus externe (AUD-COR-10/A3-012) :
+    // il corrèle la ligne d'audit avec les logs HTTP et la réponse.
+    let request_id = request
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     let mutating = matches!(
         method,
         Method::POST | Method::PATCH | Method::PUT | Method::DELETE
@@ -149,6 +156,7 @@ async fn admin_headers(request: axum::extract::Request, next: middleware::Next) 
             path = %path,
             status = response.status().as_u16(),
             client_ip = ?client_ip,
+            request_id = ?request_id,
             "mutation administrative"
         );
     }

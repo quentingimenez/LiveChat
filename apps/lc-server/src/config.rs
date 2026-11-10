@@ -228,6 +228,9 @@ pub struct Config {
     pub admin_ui_token: Secret,
     /// `ADMIN_UI_LOCAL_ONLY` (défaut `true`).
     pub admin_ui_local_only: bool,
+    /// `ADMIN_TRUST_FORWARDED_FOR` (défaut `false`) : lit le premier
+    /// `X-Forwarded-For` pour le contrôle local-only admin (proxy de confiance).
+    pub admin_trust_forwarded_for: bool,
     /// `DISCORD_TOKEN` (facultatif ; absent = Discord désactivé).
     pub discord_token: Option<Secret>,
     /// `DISCORD_CLIENT_ID` (facultatif ; absent = Discord désactivé).
@@ -345,6 +348,12 @@ impl Config {
         let admin_ui_token = env.secret("ADMIN_UI_TOKEN");
         let admin_ui_local_only =
             env.parsed("ADMIN_UI_LOCAL_ONLY", true, "true ou false", parse_bool)?;
+        let admin_trust_forwarded_for = env.parsed(
+            "ADMIN_TRUST_FORWARDED_FOR",
+            false,
+            "true ou false",
+            parse_bool,
+        )?;
         let discord_token = env.optional_secret("DISCORD_TOKEN");
         let discord_client_id = env.optional_string("DISCORD_CLIENT_ID");
         match (&discord_token, &discord_client_id) {
@@ -486,6 +495,7 @@ impl Config {
             api_url,
             admin_ui_token,
             admin_ui_local_only,
+            admin_trust_forwarded_for,
             discord_token,
             discord_client_id,
             ingest_api_token,
@@ -944,6 +954,7 @@ mod tests {
     fn invalid_boolean_is_reported() {
         for name in [
             "ADMIN_UI_LOCAL_ONLY",
+            "ADMIN_TRUST_FORWARDED_FOR",
             "HIDE_COMMANDS_DISABLED",
             "MEDIA_AUDIO_NORMALIZE_ENABLED",
             "TRUST_PROXY_HEADERS",

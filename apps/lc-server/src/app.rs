@@ -43,7 +43,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use axum::extract::{DefaultBodyLimit, Request, State};
-use axum::http::{header, Extensions, HeaderMap, StatusCode, Version};
+use axum::http::{header, Extensions, HeaderMap, Method, StatusCode, Version};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -59,6 +59,7 @@ use tracing::{Level, Span};
 
 use crate::config::Config;
 use crate::http;
+use crate::http::admin::hub::{AdminHub, NoopAdminHub};
 use crate::http::health::{DiscordProbe, HealthProbe};
 use crate::http::rate_limit::RateLimitState;
 use crate::shutdown::Shutdown;
@@ -78,11 +79,26 @@ pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Indique si une route est exemptée du timeout global de requête.
-fn is_timeout_exempt(path: &str) -> bool {
-    path == "/ws"
-        || path.starts_with("/overlay/media/")
-        || path.starts_with("/overlay/meme-board/")
-        || path.starts_with("/ingest")
+///
+/// Les exemptions sont resserrées au strict nécessaire (AUD-COR-06) : les autres
+/// routes de l'API admin / board JSON / config / pairing / health restent
+/// soumises à [`REQUEST_TIMEOUT`] et reçoivent `408 request_timeout` si elles la
+/// dépassent.
+fn is_timeout_exempt(method: &Method, path: &str) -> bool {
+    // WebSocket de longue durée.
+    if path == "/ws" {
+        return true;
+    }
+    // Ingestion média synchrone (bornée par `MEDIA_DOWNLOAD_TIMEOUT_MS`).
+    if path == "/ingest" || path.starts_with("/ingest/") {
+        return true;
+    }
+    // Streaming média signé (`Range`/`206`) et aperçus du board.
+    if path.starts_with("/overlay/media/") || path.starts_with("/overlay/meme-board/media/") {
+        return true;
+    }
+    // Ingestion média synchrone du board (téléchargement + transcodage).
+    method == Method::POST && path == "/overlay/meme-board/items"
 }
 
 /// Middleware de timeout de requête (jamais appliqué aux routes exemptées).
@@ -95,7 +111,7 @@ async fn enforce_timeout(
     request: Request,
     next: Next,
 ) -> Response {
-    if is_timeout_exempt(request.uri().path()) {
+    if is_timeout_exempt(request.method(), request.uri().path()) {
         return next.run(request).await;
     }
     match tokio::time::timeout(timeout, next.run(request)).await {
@@ -124,6 +140,8 @@ pub struct AppState {
     pub shutdown: Shutdown,
     /// Sonde d'état Discord (remplacée en Phase 6 par l'état réel du bot).
     pub discord: Arc<dyn HealthProbe>,
+    /// Hub WebSocket exposé aux handlers admin (AUD-COR-14).
+    pub admin_hub: Arc<dyn AdminHub>,
 }
 
 impl AppState {
@@ -140,6 +158,7 @@ impl AppState {
             started_at,
             shutdown,
             discord,
+            admin_hub: Arc::new(NoopAdminHub),
         }
     }
 
@@ -153,6 +172,13 @@ impl AppState {
     /// Remplace la sonde Discord (Phase 6 ou tests).
     pub fn with_discord_probe(mut self, probe: Arc<dyn HealthProbe>) -> Self {
         self.discord = probe;
+        self
+    }
+
+    /// Injecte le hub WebSocket réel (remplace le `NoopAdminHub` par défaut).
+    #[must_use]
+    pub fn with_admin_hub(mut self, hub: Arc<dyn AdminHub>) -> Self {
+        self.admin_hub = hub;
         self
     }
 }
@@ -576,7 +602,10 @@ mod tests {
         }
         let app = Router::new()
             .route("/slow", axum::routing::get(slow))
+            .route("/admin/api/overview", axum::routing::get(slow))
             .route("/overlay/media/abc", axum::routing::get(slow))
+            .route("/overlay/meme-board/media/abc", axum::routing::get(slow))
+            .route("/overlay/meme-board/items", axum::routing::post(slow))
             .route("/ingest", axum::routing::post(slow))
             .layer(middleware::from_fn_with_state(
                 std::time::Duration::from_millis(20),
@@ -587,13 +616,17 @@ mod tests {
         assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
         assert_eq!(body, serde_json::json!({ "error": "request_timeout" }));
 
+        // Les routes JSON ordinaires restent soumises au timeout.
+        let (status, _, _) = send(&app, request(Method::GET, "/admin/api/overview")).await;
+        assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
+
         // Routes exemptées : le timeout ne s'applique pas.
-        for path in ["/overlay/media/abc", "/ingest"] {
-            let method = if path == "/ingest" {
-                Method::POST
-            } else {
-                Method::GET
-            };
+        for (method, path) in [
+            (Method::GET, "/overlay/media/abc"),
+            (Method::GET, "/overlay/meme-board/media/abc"),
+            (Method::POST, "/overlay/meme-board/items"),
+            (Method::POST, "/ingest"),
+        ] {
             let (status, _, _) = send(&app, request(method, path)).await;
             assert_eq!(status, StatusCode::OK, "route exemptée {path}");
         }

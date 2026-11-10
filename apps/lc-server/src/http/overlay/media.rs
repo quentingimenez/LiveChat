@@ -54,8 +54,7 @@ use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::Response;
-use chrono::Duration;
-use lc_domain::{MediaAsset, MediaAssetId, OverlayClientId};
+use lc_domain::{GuildId, MediaAsset, MediaAssetId, OverlayClientId};
 use serde::Deserialize;
 use tower::ServiceExt as _;
 use tower_http::services::ServeFile;
@@ -150,6 +149,10 @@ pub async fn get_media(
         return media_url_invalid();
     }
 
+    // AUD-A2-004 : parité legacy — un média signé n'est servi que si un job de
+    // lecture de la guilde du client y fait référence. Sans ce contrôle, une URL
+    // signée (client valide d'une guilde) permettait de lire le média d'une
+    // autre guilde ; le legacy répond `403 forbidden` dans ce cas.
     let asset = match db.media_assets().get(asset_id).await {
         Ok(Some(asset)) => asset,
         Ok(None) => return media_not_found(),
@@ -157,6 +160,12 @@ pub async fn get_media(
     };
     if !asset.is_ready() || asset.is_expired_at(timestamp) {
         return media_not_found();
+    }
+
+    match playback_access_exists(db, asset_id, &client.guild_id).await {
+        Ok(true) => {}
+        Ok(false) => return forbidden(),
+        Err(db_error) => return db_failure("overlay_media.playback_binding", &db_error),
     }
 
     let file_path = match resolve_media_file(&state, &asset).await {
@@ -168,6 +177,35 @@ pub async fn get_media(
 
     let range = headers.get(header::RANGE).cloned();
     serve_file(&asset, &file_path, method, range.as_ref()).await
+}
+
+/// Vérifie qu'un job de lecture de la guilde référence cet asset.
+///
+/// AUD-A2-004 : c'est la liaison manquante entre l'URL signée (asset + client)
+/// et la lecture réelle (job de la guilde). Le legacy refuse avec `403
+/// forbidden` quand aucun job de la guilde ne porte sur le média.
+pub(super) async fn playback_access_exists(
+    db: &lc_db::Db,
+    asset_id: MediaAssetId,
+    guild_id: &GuildId,
+) -> lc_db::DbResult<bool> {
+    let found = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(\
+             SELECT 1 FROM playback_jobs \
+              WHERE media_asset_id = ? AND guild_id = ?\
+         )",
+    )
+    .bind(asset_id.to_canonical())
+    .bind(guild_id.as_str())
+    .fetch_one(db.pool())
+    .await
+    .map_err(lc_db::DbError::from)?;
+    Ok(found != 0)
+}
+
+/// Réponse `403 {"error":"forbidden"}` (accès média hors job de la guilde).
+pub(super) fn forbidden() -> Response {
+    error(StatusCode::FORBIDDEN, "forbidden")
 }
 
 /// Réponse `403 {"error":"media_url_invalid"}`.
@@ -311,7 +349,12 @@ pub(super) async fn serve_file(
     response
 }
 
-/// Rafraîchit `last_accessed_at`/`expires_at` (best-effort, jamais bloquant).
+/// Rafraîchit `last_accessed_at` **sans** prolonger `expires_at`.
+///
+/// AUD-A2-005 : le legacy ne prolonge pas la rétention cache à chaque lecture
+/// d'un média servi ; prolonger l'échéance à chaque GET permettait à un client
+/// de garder un asset indéfiniment (et cassait l'épinglage board, un asset
+/// épinglé ne devant jamais expirer). Best-effort, jamais bloquant.
 pub(super) async fn touch_asset(
     state: &AppState,
     asset: &MediaAsset,
@@ -320,12 +363,12 @@ pub(super) async fn touch_asset(
     let Some(db) = state.db.as_ref() else {
         return;
     };
-    let ttl = Duration::hours(i64::try_from(state.config.media_cache_ttl_hours).unwrap_or(12));
-    let next_expiry = asset.expires_at.max(timestamp + ttl);
-    if let Err(db_error) = db
-        .media_assets()
-        .touch_last_accessed(asset.id, timestamp, next_expiry)
+    if let Err(db_error) = sqlx::query("UPDATE media_assets SET last_accessed_at = ? WHERE id = ?")
+        .bind(lc_domain::time::datetime_to_ms(timestamp))
+        .bind(asset.id.to_canonical())
+        .execute(db.pool())
         .await
+        .map_err(lc_db::DbError::from)
     {
         warn!(asset_id = %asset.id, error = %db_error, "touch média impossible");
     }

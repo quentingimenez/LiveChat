@@ -57,12 +57,20 @@ impl Harness {
     async fn with_pairs(extra: &[(&str, &str)]) -> Self {
         let dir = tempfile::tempdir().expect("dossier temporaire");
         let database_path = dir.path().join("livechat.sqlite3");
+        // Racine média confinée dans le dossier du harnais : la purge admin
+        // n'est autorisée à supprimer que des fichiers sous cette racine (V2-S).
+        let media_storage_dir = dir.path().join("media");
+        std::fs::create_dir_all(&media_storage_dir).expect("racine média de test");
         let mut pairs: Vec<(String, String)> = vec![
             ("API_URL".to_owned(), "http://localhost:3000".to_owned()),
             ("ADMIN_UI_TOKEN".to_owned(), TOKEN.to_owned()),
             (
                 "DATABASE_URL".to_owned(),
                 format!("sqlite://{}", database_path.display()),
+            ),
+            (
+                "MEDIA_STORAGE_DIR".to_owned(),
+                media_storage_dir.display().to_string(),
             ),
         ];
         for (name, value) in extra {
@@ -863,8 +871,9 @@ async fn purge_supprime_les_donnees_de_la_guilde_et_les_medias_orphelins() {
         .expect("job");
 
     // Média référencé par le board de la guilde purgée : après suppression des
-    // éléments du board, il devient orphelin et son fichier est effacé.
-    let orphan_path = harness.path("orphelin.png");
+    // éléments du board, il devient orphelin et son fichier est effacé (il est
+    // sous MEDIA_STORAGE_DIR, seul endroit où la purge est autorisée à supprimer).
+    let orphan_path = harness.path("media").join("orphelin.png");
     std::fs::write(&orphan_path, b"orphelin").expect("fichier orphelin");
     let orphan_asset = media_asset(1024, &orphan_path);
     db.media_assets()
@@ -922,6 +931,53 @@ async fn purge_supprime_les_donnees_de_la_guilde_et_les_medias_orphelins() {
         "la ligne du média conservé reste en base"
     );
     assert!(db.guilds().get(&guild_id).await.expect("lecture").is_none());
+}
+
+#[tokio::test]
+async fn purge_ne_supprime_pas_un_fichier_hors_de_la_racine_media() {
+    let harness = Harness::new().await;
+    let db = harness.db();
+    let guild_id = GuildId::parse("42").expect("guilde");
+    db.guilds().upsert(&guild("42")).await.expect("guilde");
+
+    // Média orphelin dont le fichier est hors de MEDIA_STORAGE_DIR : la purge
+    // supprime la ligne mais refuse la suppression du fichier (confinement V2-S).
+    let outside_path = harness.path("hors-racine.png");
+    std::fs::write(&outside_path, b"hors racine").expect("fichier hors racine");
+    let outside_asset = media_asset(1024, &outside_path);
+    db.media_assets()
+        .insert(&outside_asset)
+        .await
+        .expect("média hors racine");
+    db.meme_board()
+        .create(&board_item(&guild_id, outside_asset.id))
+        .await
+        .expect("élément de board hors racine");
+
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            "/admin/api/guilds/42/purge",
+            &json!({ "confirmGuildId": "42" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["purged"], true);
+    assert_eq!(body["deleted"]["orphanMediaAssets"], 1);
+    assert_eq!(body["deleted"]["orphanMediaFileDeleteErrors"], 0);
+
+    assert!(
+        outside_path.exists(),
+        "un fichier hors de la racine média n'est jamais supprimé par la purge"
+    );
+    assert!(
+        db.media_assets()
+            .get(outside_asset.id)
+            .await
+            .expect("lecture")
+            .is_none(),
+        "la ligne du média orphelin est quand même supprimée"
+    );
 }
 
 #[tokio::test]

@@ -204,11 +204,13 @@ pub fn build_menu(
     )?;
     let separator_media = PredefinedMenuItem::separator(app)?;
 
+    let (update_label, update_enabled) =
+        update_menu_entry(crate::updater::UPDATER_ENABLED_FOR_RELEASE);
     let check_updates = MenuItem::with_id(
         app,
         ID_CHECK_UPDATES,
-        "Vérifier les mises à jour",
-        true,
+        update_label,
+        update_enabled,
         None::<&str>,
     )?;
     let separator_quit = PredefinedMenuItem::separator(app)?;
@@ -410,21 +412,44 @@ fn reset_volume(app: &AppHandle<Wry>) {
     }
 }
 
+/// Libellé et état de l'entrée « mises à jour » du menu tray (AUD-V2-O-001).
+///
+/// Quand l'updater est désactivé pour la release, l'entrée est **grisée** et
+/// annonce l'état au lieu de laisser un clic déclencher une requête réseau.
+fn update_menu_entry(updater_enabled: bool) -> (&'static str, bool) {
+    if updater_enabled {
+        ("Vérifier les mises à jour", true)
+    } else {
+        ("Mises à jour désactivées pour cette version", false)
+    }
+}
+
+/// Vérifie les mises à jour depuis le tray.
+///
+/// Le flag `updater::UPDATER_ENABLED_FOR_RELEASE` est consulté **avant** toute
+/// tâche asynchrone : désactivé, aucun appel au plugin n'est effectué (donc
+/// aucune requête réseau), conformément à AUD-V2-O-001.
 fn spawn_update_check(app: &AppHandle<Wry>) {
+    if !crate::updater::UPDATER_ENABLED_FOR_RELEASE {
+        tracing::info!(
+            "vérification des mises à jour ignorée : updater désactivé pour cette version"
+        );
+        return;
+    }
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        use tauri_plugin_updater::UpdaterExt;
-        match handle.updater() {
-            Ok(updater) => match updater.check().await {
-                Ok(Some(update)) => {
-                    tracing::info!(version = %update.version, "mise à jour disponible")
-                }
-                Ok(None) => tracing::info!("aucune mise à jour disponible"),
-                Err(error) => tracing::warn!(%error, "échec de la vérification des mises à jour"),
-            },
-            Err(error) => {
-                tracing::warn!(%error, "updater indisponible (clé publique placeholder ?)")
-            }
+        let status = crate::updater::check_for_update(&handle).await;
+        match status.state.as_str() {
+            "available" => tracing::info!(
+                version = status.available_version.as_deref().unwrap_or("?"),
+                "mise à jour disponible"
+            ),
+            "up_to_date" => tracing::info!("aucune mise à jour disponible"),
+            "error" => tracing::warn!(
+                message = %status.message,
+                "échec de la vérification des mises à jour"
+            ),
+            other => tracing::debug!(state = other, message = %status.message, "updater"),
         }
     });
 }
@@ -454,4 +479,23 @@ pub fn handle_menu_event(app: &AppHandle<Wry>, id: &str) {
         other => tracing::debug!(id = other, "entrée de menu tray ignorée"),
     }
     refresh_tray(app);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::update_menu_entry;
+
+    #[test]
+    fn update_entry_is_disabled_when_updater_is_off() {
+        let (label, enabled) = update_menu_entry(false);
+        assert!(!enabled, "l'entrée tray doit être grisée (AUD-V2-O-001)");
+        assert!(label.contains("désactivées"));
+    }
+
+    #[test]
+    fn update_entry_is_active_when_updater_is_on() {
+        let (label, enabled) = update_menu_entry(true);
+        assert!(enabled);
+        assert_eq!(label, "Vérifier les mises à jour");
+    }
 }

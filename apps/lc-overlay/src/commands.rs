@@ -194,6 +194,18 @@ fn ended_reason_from_label(label: Option<&str>) -> PlaybackEndedReason {
     }
 }
 
+/// Projette la configuration pour une fenêtre donnée (AUD-V2-O-002).
+///
+/// Le `clientToken` n'est utile qu'au board (via `authorizedFetch`) : il est
+/// retiré des projections des fenêtres overlay et pairing (moindre privilège),
+/// et absent pour tout label inconnu.
+fn config_view_for_window(window_label: &str, mut view: OverlayConfigView) -> OverlayConfigView {
+    if window_label != windows::BOARD_LABEL {
+        view.client_token = None;
+    }
+    view
+}
+
 /// `overlay_get_config` — projection 8 champs consommée par le renderer.
 #[tauri::command]
 pub fn overlay_get_config(
@@ -201,8 +213,9 @@ pub fn overlay_get_config(
     state: State<'_, AppState>,
 ) -> Result<OverlayConfigView, String> {
     ensure_allowed(&window, "overlay_get_config")?;
-    let view = state.view();
+    let view = config_view_for_window(window.label(), state.view());
     tracing::debug!(
+        window = window.label(),
         has_server_url = view.server_url.is_some(),
         has_token = view.client_token.is_some(),
         has_guild = view.guild_id.is_some(),
@@ -551,5 +564,38 @@ mod tests {
         // Fenêtre inconnue : tout est refusé.
         assert!(!command_allowed("unknown", "overlay_get_config"));
         assert!(!command_allowed("", "overlay_get_config"));
+    }
+
+    #[test]
+    fn config_view_is_window_scoped() {
+        use crate::config::{MemeBindings, OverlayConfigView};
+
+        fn view_with_token() -> OverlayConfigView {
+            OverlayConfigView {
+                server_url: Some("https://example.test".to_string()),
+                client_token: Some("secret-token".to_string()),
+                guild_id: Some("42".to_string()),
+                client_id: Some("client-1".to_string()),
+                guest_mode: false,
+                show_text: true,
+                volume: 1.0,
+                meme_bindings: MemeBindings::new(),
+            }
+        }
+
+        // Board : le token est nécessaire à `authorizedFetch`.
+        let board = super::config_view_for_window("board", view_with_token());
+        assert_eq!(board.client_token.as_deref(), Some("secret-token"));
+
+        // Overlay et pairing : token retiré, reste de la projection intact.
+        for label in ["overlay", "pairing", "unknown"] {
+            let view = super::config_view_for_window(label, view_with_token());
+            assert!(
+                view.client_token.is_none(),
+                "le token ne doit pas être exposé à la fenêtre '{label}'"
+            );
+            assert_eq!(view.server_url.as_deref(), Some("https://example.test"));
+            assert_eq!(view.guild_id.as_deref(), Some("42"));
+        }
     }
 }

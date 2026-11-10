@@ -81,3 +81,13 @@ probe rejouée : **17/17 PASS**, fichier média intact (`media_present=True`).
 - Plafond `peers=8` documenté dans `server-ws.md` (écart spec assumé).
 - Re-audit ciblé des diffs P0/P1 (`verification-2.md`) et P2/P3 du backlog restent
   à planifier ; décision de release 3.0.0 après ces points.
+
+## 6. Re-audit ciblé (V2) et correctifs associés
+
+`verification-2.md` (deux vérificateurs indépendants + synthèse Lead) : 0 Bloquant,
+0 Élevé résiduel. Trois Majeurs serveur corrigés dans la foulée — confinement de la
+purge (symlinks S-001, chemins relatifs/cwd S-002, fichier partagé S-004), avec
+tests de régression et harnais admin ajusté — et deux Faibles overlay (tray
+updater O-001, scoping `clientToken` O-002). Reste `AUD-V2-S-003` (board hors
+`MediaService`) en dette P2 `AUD-COR-13`. Gates finales : fmt/clippy/deny 0,
+`cargo test --workspace` 0 échec.

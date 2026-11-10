@@ -9,27 +9,33 @@ HTML, le CSS et le JS du renderer Electron existant sont dans
 `apps/lc-overlay/web/` et un fichier **`bridge.js`** y réinstalle l'API publique
 `window.livechatOverlay` que ces pages attendent.
 
-Phase 0 ne livre que le bridge et son harnais ; l'app Rust (`Cargo.toml` / `src/lib.rs`) est encore un squelette sans
-dépendance Tauri, et aucune page réelle n'est copiée ici pour l'instant.
+L'app Rust Tauri 2 (`apps/lc-overlay/src/`) est complète depuis la Phase 8 : les
+pages réelles, les styles et les shims du renderer Electron ont été portés dans
+`apps/lc-overlay/web/` (cf. `docs/rust/lc-overlay-shell.md` et
+`docs/rust/overlay-bridge.md`). Ce dossier `dev/` ne contient que le harnais de
+test manuel et sa documentation.
 
 ## Contenu actuel
 
 | Fichier | Rôle |
 | --- | --- |
-| `bridge.js` | Script classique autonome (aucune dépendance, aucun bundler) qui installe `window.livechatOverlay` (13 méthodes) au-dessus des commandes/événements Tauri 2, avec un mode **mock** si Tauri est absent. |
-| `dev/bridge-test.html` | Harnais navigateur autonome : charge `web/bridge.js`, exerce les 13 méthodes, simule les 3 événements, et affiche le journal des appels. |
+| `bridge.js` | Script classique autonome (aucune dépendance, aucun bundler) qui installe `window.livechatOverlay` (13 méthodes legacy + `authorizedFetch`, soit 14 au total) au-dessus des commandes/événements Tauri 2, avec un mode **mock** si Tauri est absent. |
+| `dev/bridge-test.html` | Harnais navigateur autonome : charge `web/bridge.js`, exerce les 13 méthodes legacy, simule les 3 événements, et affiche le journal des appels. |
 | `README.md` | Ce document. |
 
-Cible à terme (copie du renderer Electron, cf. `overlay/renderer/` et `overlay/dist/renderer/`) :
+Contenu actuel de `apps/lc-overlay/web/` (embarqué dans le binaire) :
 
 ```
 web/
-├── bridge.js                 <- ce dossier
+├── bridge.js                 <- API window.livechatOverlay (hors de ce dossier dev)
 ├── overlay.html  board.html  pairing.html
 ├── overlay.css   board.css
+├── overlay.js    board.js    pairing.js
+├── renderer-errors.js        <- télémétrie d'erreurs du renderer
+├── favicon.ico
 ├── styles/{overlay,board}/*.css
-├── dist/renderer/{overlay,board,pairing}/index.js   <- modules ESM compilés
-└── renderer/{overlay.js,board.js}                   <- modules legacy chargés par index.js
+└── dist/renderer/{overlay,board,pairing}/index.js   <- shims ESM portés
+    └── legacy-loader.js + utils (dont twitter-widgets neutralisé)
 ```
 
 ## Intégration dans une page
@@ -84,7 +90,8 @@ window.__bridgeMockEmit(event, payload);       // émet un événement vers les 
 
 1. Ouvrir `apps/lc-overlay/dev/bridge-test.html` directement (double-clic, `file://`) ou via un petit serveur statique
    (`python -m http.server`, `npx serve`, etc. — utile pour tester le comportement en contexte `http`).
-2. Vérifier les badges : `mode: mock`, `transport: mock`, `API: 13/13 méthodes`.
+2. Vérifier les badges : `mode: mock`, `transport: mock`, `API: 13/13 méthodes` (les 13 méthodes legacy ;
+   `authorizedFetch` n'est pas exercée par le harnais car elle nécessite un backend).
 3. Exécuter les 10 commandes, s'abonner aux 3 événements, cliquer sur « Simuler `overlay://play|stop|settings` »,
    puis sur **« Tout tester (13 méthodes) »** : le rapport doit afficher `13/13 méthodes exercées — tout est OK`.
 4. Le journal du bas montre chaque appel (méthode, statut, argument masqué, résultat, horodatage) ; il se rafraîchit tout
@@ -123,8 +130,10 @@ Rien n'est persisté : le mock ne lit ni n'écrit de configuration, ne contacte 
 
 ## API exposée (contrat inchangé)
 
-Les 13 méthodes, signatures et payloads sont identiques à `overlay/src/preload/index.ts` ; seul le transport change.
-Tableau complet, canaux, handlers et sémantique : **`docs/rust/overlay-bridge.md`**.
+Les 13 méthodes legacy, signatures et payloads sont identiques à `overlay/src/preload/index.ts` ; seul le transport change.
+Depuis P1-11, une 14<sup>e</sup> méthode additive, `authorizedFetch(url, options)`, est exposée pour l'authentification
+Bearer du board (voir `docs/rust/overlay-bridge.md` §12.4). Tableau complet, canaux, handlers et sémantique :
+**`docs/rust/overlay-bridge.md`**.
 
 | Méthode | Forme |
 | --- | --- |
@@ -147,14 +156,16 @@ propagent l'erreur normalisée en `Error` (avec `.message` exploité par les pag
 - Le mode mock ne doit jamais être considéré comme une validation d'intégration : il ne teste pas les commandes Rust.
 - Aucun secret n'est inclus dans ce dossier ni dans le harnais ; les payloads d'exemple sont fictifs.
 
-## Limites connues de la Phase 0
+## Limites connues
 
-- Pas d'app Tauri fonctionnelle : les chemins natifs (`invoke`, `listen`) ne sont pas exercés par un vrai WebView2.
-- Pas de pages copiées : l'intégration HTML/CSS/ESM réelle sera faite à l'étape de migration du renderer.
-- Pas de buffer d'événements : si le main émet `overlay://play` avant que la page ait posé ses listeners, l'événement est
-  perdu (comme aujourd'hui en Electron) ; le handshake `rendererReady` + émission des settings le limite, et le main devra
-  bufferiser play/stop tant que le renderer n'est pas prêt (cf. risques dans `docs/rust/overlay-bridge.md`).
-- `bridge-test.html` est un outil manuel, pas une suite de tests CI.
+- Le harnais est un outil manuel de smoke-test : il n'exerce pas le backend Rust (commandes, WebSocket, appairage) et ne
+  remplace pas les tests `cargo test -p lc-overlay`.
+- `authorizedFetch` et les appels réseau du board ne sont pas testables en mode mock (pas de backend) : utiliser l'app
+  réelle avec un serveur local pour ces parcours.
+- Les diagnostics du bridge (`__bridgeCalls`, `__bridgeMockEmit`) restent actifs en release : outil de support, aucune
+  donnée sensible n'y est journalisée (masquage `token`/`code`/`sig`/…).
+- `bridge-test.html` n'est pas exécuté en CI : les tests Rust couvrent la matrice IPC et le bridge est vérifié par
+  `node --check`.
 
 ## Vérifications
 
@@ -162,4 +173,4 @@ propagent l'erreur normalisée en `Error` (avec `.message` exploité par les pag
 node --check apps/lc-overlay/web/bridge.js
 ```
 
-Le harnais se vérifie à l'œil dans un navigateur, ou via le bouton « Tout tester (13 méthodes) ».
+Le harnais se vérifie à l'œil dans un navigateur, ou via le bouton « Tout tester (13 méthodes) » (méthodes legacy).

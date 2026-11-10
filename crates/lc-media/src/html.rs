@@ -318,10 +318,173 @@ pub fn remove_tag_blocks(html: &str, tag: &str) -> String {
     output
 }
 
-/// Nettoie un HTML de citation (retire `<script>` et `<iframe>`).
+/// Balises conservées par le nettoyage d'un HTML de citation.
+const ALLOWED_EMBED_TAGS: &[&str] = &[
+    "a",
+    "p",
+    "span",
+    "blockquote",
+    "br",
+    "strong",
+    "em",
+    "b",
+    "i",
+    "code",
+    "pre",
+    "ul",
+    "ol",
+    "li",
+];
+
+/// Attributs conservés par le nettoyage d'un HTML de citation.
+const ALLOWED_EMBED_ATTRIBUTES: &[&str] = &[
+    "href", "src", "alt", "title", "class", "dir", "lang", "rel", "target", "width", "height",
+];
+
+/// Blocs supprimés intégralement (contenu compris) avant filtrage.
+const REMOVED_BLOCKS: &[&str] = &["script", "style", "iframe", "object", "embed", "form"];
+
+/// Nettoie un HTML de citation (allowlist de balises et d'attributs).
+///
+/// Un simple retrait de `<script>`/`<iframe>` ne suffit pas : un attribut
+/// `on*`, un `href="javascript:"` ou une balise exotique resteraient actifs
+/// (AUD-A4-015). Ici, seules les balises de [`ALLOWED_EMBED_TAGS`] et les
+/// attributs de [`ALLOWED_EMBED_ATTRIBUTES`] sont conservés ; les autres tags
+/// sont retirés en gardant leur contenu textuel, et les URL `href`/`src`
+/// doivent être `http(s)`. Les `<a href>` reçoivent systématiquement
+/// `rel="nofollow noopener noreferrer" target="_blank"`.
 pub fn sanitize_embed_html(html: &str) -> String {
-    let without_scripts = remove_tag_blocks(html, "script");
-    remove_tag_blocks(&without_scripts, "iframe")
+    let mut cleaned = html.to_string();
+    for block in REMOVED_BLOCKS {
+        cleaned = remove_tag_blocks(&cleaned, block);
+    }
+
+    let mut output = String::with_capacity(cleaned.len());
+    let bytes = cleaned.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'<' {
+            let start = index;
+            while index < bytes.len() && bytes[index] != b'<' {
+                index += 1;
+            }
+            output.push_str(&cleaned[start..index]);
+            continue;
+        }
+        if cleaned[index..].starts_with("<!--") {
+            match cleaned[index + 4..].find("-->") {
+                Some(offset) => {
+                    index = index + 4 + offset + 3;
+                }
+                None => break,
+            }
+            continue;
+        }
+        match tag_end(bytes, index) {
+            Some(end) => {
+                emit_embed_tag(&cleaned[index..=end], &mut output);
+                index = end + 1;
+            }
+            None => {
+                output.push_str(&cleaned[index..]);
+                break;
+            }
+        }
+    }
+    output
+}
+
+/// Indice du `>` fermant la balise commençant à `start`, en ignorant les `>`
+/// situés dans des valeurs d'attributs entre guillemets.
+fn tag_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut index = start + 1;
+    let mut quote: Option<u8> = None;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        match quote {
+            Some(expected) => {
+                if byte == expected {
+                    quote = None;
+                }
+            }
+            None => {
+                if byte == b'"' || byte == b'\'' {
+                    quote = Some(byte);
+                } else if byte == b'>' {
+                    return Some(index);
+                }
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
+/// Ré-émet une balise si elle est autorisée, en filtrant ses attributs.
+fn emit_embed_tag(tag: &str, output: &mut String) {
+    let lower = tag.to_ascii_lowercase();
+    let is_closing = lower.starts_with("</");
+    let name = lower
+        .trim_start_matches('<')
+        .trim_start_matches('/')
+        .split(|character: char| {
+            character.is_ascii_whitespace() || character == '>' || character == '/'
+        })
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    if name.is_empty() || !ALLOWED_EMBED_TAGS.contains(&name.as_str()) {
+        return;
+    }
+    if is_closing {
+        output.push_str("</");
+        output.push_str(&name);
+        output.push('>');
+        return;
+    }
+
+    output.push('<');
+    output.push_str(&name);
+    let mut has_href = false;
+    for (attribute, value) in attributes(tag) {
+        if !ALLOWED_EMBED_ATTRIBUTES.contains(&attribute.as_str()) {
+            continue;
+        }
+        if attribute == "href" || attribute == "src" {
+            let value_lower = value.to_ascii_lowercase();
+            if !(value_lower.starts_with("http://") || value_lower.starts_with("https://")) {
+                continue;
+            }
+            if attribute == "href" {
+                has_href = true;
+            }
+        }
+        output.push(' ');
+        output.push_str(&attribute);
+        output.push_str("=\"");
+        escape_attribute(&value, output);
+        output.push('"');
+    }
+    if name == "a" && has_href {
+        output.push_str(" rel=\"nofollow noopener noreferrer\" target=\"_blank\"");
+    } else if name == "br" {
+        output.push_str(" /");
+    }
+    output.push('>');
+}
+
+/// Échappe une valeur d'attribut avant ré-émission.
+fn escape_attribute(value: &str, output: &mut String) {
+    for character in value.chars() {
+        match character {
+            '&' => output.push_str("&amp;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            '"' => output.push_str("&quot;"),
+            '\'' => output.push_str("&#39;"),
+            other => output.push(other),
+        }
+    }
 }
 
 fn is_attribute_name_start(byte: u8) -> bool {
@@ -454,6 +617,45 @@ mod tests {
         assert!(!sanitized.to_ascii_lowercase().contains("<script"));
         assert!(!sanitized.to_ascii_lowercase().contains("<iframe"));
         assert!(!sanitized.contains("widgets.js"));
+    }
+
+    #[test]
+    fn sanitize_embed_html_applique_une_allowlist() {
+        let html = r#"<P onclick="alert(1)" class="x">Hi <a href="javascript:alert(1)">bad</a><a href="https://ok.test/a?x=1&amp;y=2" onmouseover="x">ok</a><img src="https://x.test/a.png" onerror="alert(1)"> <div>ligne</div><br></p><style>body{}</style>"#;
+        let sanitized = sanitize_embed_html(html);
+        assert!(!sanitized.to_ascii_lowercase().contains("onclick"));
+        assert!(!sanitized.to_ascii_lowercase().contains("onmouseover"));
+        assert!(!sanitized.to_ascii_lowercase().contains("onerror"));
+        assert!(!sanitized.to_ascii_lowercase().contains("javascript:"));
+        assert!(!sanitized.to_ascii_lowercase().contains("<img"));
+        assert!(!sanitized.contains("body{}"));
+        assert!(sanitized.contains(r#"class="x""#));
+        assert!(sanitized.contains("ligne"));
+        assert!(sanitized.contains("<br />"));
+        assert!(sanitized.contains(
+            r#"<a href="https://ok.test/a?x=1&amp;y=2" rel="nofollow noopener noreferrer" target="_blank">ok</a>"#
+        ));
+    }
+
+    #[test]
+    fn sanitize_embed_html_retire_les_blocs_actifs_avec_leur_contenu() {
+        let html = r#"<blockquote><p>ok</p><script>alert(1)</script><iframe src="x">fallback</iframe><object>o</object></blockquote>"#;
+        let sanitized = sanitize_embed_html(html);
+        assert!(sanitized.contains("<p>ok</p>"));
+        for forbidden in ["alert(1)", "fallback", "<object", "iframe"] {
+            assert!(
+                !sanitized.to_ascii_lowercase().contains(forbidden),
+                "contenu actif conservé : {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_embed_html_ignore_les_commentaires() {
+        assert_eq!(
+            sanitize_embed_html("<p>a<!-- <script>x</script> -->b</p>"),
+            "<p>ab</p>"
+        );
     }
 
     #[test]

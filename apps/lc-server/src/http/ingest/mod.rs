@@ -70,6 +70,20 @@ pub(crate) fn internal_error() -> Response {
     simple_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
 }
 
+/// Conflit d'unicité quel que soit le chemin de conversion de l'erreur.
+///
+/// `lc-db` convertit parfois `SQLITE_CONSTRAINT` en `DomainError::Conflict`,
+/// parfois laisse le `DbError::Sqlx` brut : les deux formes doivent être
+/// reconnues pour que les branches de récupération (régénération de token,
+/// relecture d'un item créé en concurrence) ne soient pas mortes (AUD-A2-010).
+pub(crate) fn is_conflict(db_error: &lc_db::DbError) -> bool {
+    db_error.is_unique_violation()
+        || matches!(
+            db_error,
+            lc_db::DbError::Domain(lc_domain::DomainError::Conflict(_))
+        )
+}
+
 /// Erreur d'ingestion média : 422 `media_ingestion_failed` avec code legacy,
 /// 500 pour une erreur inattendue, 503 si le service est indisponible.
 pub(crate) fn media_service_error(error: MediaServiceError) -> Response {

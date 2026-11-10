@@ -25,7 +25,7 @@ use lc_domain::{
 };
 use lc_playback::PlaybackStateEvent;
 use lc_protocol::{
-    close_code, media_signature_input, MediaKind as ProtocolMediaKind, PlaybackState,
+    close_code, close_reason, media_signature_input, MediaKind as ProtocolMediaKind, PlaybackState,
     PlaybackStatePayload, StopReason, StopRequestPayload, StopRequestSource,
 };
 use serde_json::{json, Value};
@@ -74,22 +74,36 @@ impl Drop for TestServer {
     }
 }
 
+/// Configuration d'un serveur de test (avec ou sans secret média).
+fn test_config(media_secret: bool) -> Arc<Config> {
+    let mut pairs = vec![
+        ("API_URL".to_owned(), "http://127.0.0.1:3000".to_owned()),
+        ("MIN_OVERLAY_VERSION".to_owned(), APP_VERSION.to_owned()),
+        ("NODE_ENV".to_owned(), "test".to_owned()),
+    ];
+    if media_secret {
+        pairs.push(("MEDIA_URL_SECRET".to_owned(), MEDIA_SECRET.to_owned()));
+    }
+    Arc::new(Config::from_pairs(pairs).expect("configuration de test"))
+}
+
 /// Démarre un serveur de test complet sur un port éphémère.
 async fn start_server() -> TestServer {
+    start_server_with(test_config(true)).await
+}
+
+/// Démarre un serveur sans secret média : les URLs média ne sont pas signables.
+async fn start_server_without_media_secret() -> TestServer {
+    start_server_with(test_config(false)).await
+}
+
+/// Démarre un serveur de test avec la configuration fournie.
+async fn start_server_with(config: Arc<Config>) -> TestServer {
     let dir = tempfile::tempdir().expect("répertoire temporaire");
     let path = dir.path().join("livechat-test.sqlite3");
     let db = Db::open(path.as_path(), &lc_db::DbConfig::default())
         .await
         .expect("base de test");
-    let config = Arc::new(
-        Config::from_pairs(vec![
-            ("API_URL".to_owned(), "http://127.0.0.1:3000".to_owned()),
-            ("MEDIA_URL_SECRET".to_owned(), MEDIA_SECRET.to_owned()),
-            ("MIN_OVERLAY_VERSION".to_owned(), APP_VERSION.to_owned()),
-            ("NODE_ENV".to_owned(), "test".to_owned()),
-        ])
-        .expect("configuration de test"),
-    );
     let shutdown = Shutdown::new().0;
     let state = AppState::new(Arc::clone(&config), Some(db.clone()), shutdown.clone());
     let hub = Arc::new(Hub::new());
@@ -925,6 +939,7 @@ fn signed_play_uses_the_adaptive_media_ttl() {
         },
         tweet_card: None,
         duration_sec: 588,
+        ..Default::default()
     };
     let now_sec = 1_700_000_000;
     let signed =
@@ -1269,4 +1284,141 @@ async fn purge_stop_has_a_dedicated_reason() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert_eq!(status, Some(JobStatus::Done));
+}
+
+// ---------------------------------------------------------------------------
+// P2 — AUD-COR-12 : robustesse des trames et erreurs non fatales
+// ---------------------------------------------------------------------------
+
+/// Une trame de 300 Kio (au-delà des 64 Kio applicatifs, sous la borne de
+/// transport de 1 Mio) doit recevoir un close `4408`, pas un `1006` transport.
+#[tokio::test]
+async fn oversized_frame_is_closed_with_4408_instead_of_1006() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let mut socket = connect(server.addr).await;
+    let _welcome = handshake(&mut socket, TOKEN).await;
+
+    socket
+        .send(Message::Text("x".repeat(300 * 1024).into()))
+        .await
+        .expect("envoi d'une trame surdimensionnée");
+    expect_close_with_reason(
+        &mut socket,
+        close_code::FRAME_TOO_LARGE,
+        close_reason::FRAME_TOO_LARGE,
+    )
+    .await;
+}
+
+/// Un `id` vide est une violation de protocole (`1002`), avant tout traitement.
+#[tokio::test]
+async fn empty_request_id_is_closed_with_1002() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let mut socket = connect(server.addr).await;
+    let _welcome = handshake(&mut socket, TOKEN).await;
+
+    send_value(
+        &mut socket,
+        &envelope(
+            "heartbeat",
+            "",
+            json!({
+                "clientId": "test",
+                "guildId": GUILD_ID,
+                "appVersion": APP_VERSION,
+            }),
+        ),
+    )
+    .await;
+    expect_close_with_reason(
+        &mut socket,
+        close_code::PROTOCOL_ERROR,
+        close_reason::PROTOCOL_ERROR,
+    )
+    .await;
+}
+
+/// Un `id` de plus de 64 caractères est refusé de la même manière.
+#[tokio::test]
+async fn oversized_request_id_is_closed_with_1002() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let mut socket = connect(server.addr).await;
+    let _welcome = handshake(&mut socket, TOKEN).await;
+
+    send_value(
+        &mut socket,
+        &envelope(
+            "heartbeat",
+            &"a".repeat(65),
+            json!({
+                "clientId": "test",
+                "guildId": GUILD_ID,
+                "appVersion": APP_VERSION,
+            }),
+        ),
+    )
+    .await;
+    expect_close_with_reason(
+        &mut socket,
+        close_code::PROTOCOL_ERROR,
+        close_reason::PROTOCOL_ERROR,
+    )
+    .await;
+}
+
+/// Un échec de dispatch non fatal (ici : URL média non signable) émet une trame
+/// `error` et laisse la connexion ouverte.
+#[tokio::test]
+async fn dispatch_failure_emits_non_fatal_error_frame() {
+    let server = start_server_without_media_secret().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 12).await;
+    let mut socket = connect(server.addr).await;
+    let _welcome = handshake(&mut socket, TOKEN).await;
+
+    let now = now();
+    let job = PlaybackJob {
+        id: PlaybackJobId::new_v4(),
+        guild_id: guild.clone(),
+        media_asset_id: Some(asset_id),
+        text: Some("mème de test".to_owned()),
+        show_text: true,
+        author_name: Some("Auteur".to_owned()),
+        author_image: None,
+        duration_sec: 12,
+        priority: 0,
+        status: JobStatus::Pending,
+        resumes_after_job_id: None,
+        resume_offset_sec: 0,
+        remaining_ms_snapshot: None,
+        last_playback_state_at: None,
+        submission_date: now,
+        execution_date: now,
+        scheduled_at: now,
+        started_at: None,
+        finished_at: None,
+    };
+    let engine = server.hub.engine().expect("moteur initialisé au hello");
+    engine.enqueue(&job).await.expect("enqueue du job");
+
+    let error = recv_until_type(&mut socket, "error").await;
+    assert_eq!(error["payload"]["code"], "dispatch_failed");
+    assert_eq!(error["payload"]["jobId"], job.id.to_canonical());
+
+    // La connexion survit à l'erreur : une requête suivante est servie.
+    send_value(
+        &mut socket,
+        &envelope("peers.request", "cli-peers-after-error", json!({})),
+    )
+    .await;
+    let ack = recv_until_type(&mut socket, "ack").await;
+    assert_eq!(ack["payload"]["ref"], "cli-peers-after-error");
+    assert_eq!(ack["payload"]["ok"], true);
 }

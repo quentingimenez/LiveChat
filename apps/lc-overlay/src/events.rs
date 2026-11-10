@@ -17,7 +17,7 @@ use tauri::{AppHandle, Emitter, EventTarget, Manager, Wry};
 
 use crate::config::OverlayConfigView;
 use crate::state::AppState;
-use crate::windows::{BOARD_LABEL, OVERLAY_LABEL};
+use crate::windows::{overlay_should_show, BOARD_LABEL, OVERLAY_LABEL};
 
 pub const EVENT_PLAY: &str = "overlay://play";
 pub const EVENT_STOP: &str = "overlay://stop";
@@ -136,22 +136,54 @@ pub fn emit_to_overlay(app: &AppHandle<Wry>, event: &OverlayEvent) -> tauri::Res
 }
 
 /// Émet `overlay://settings` vers overlay et board (jamais pairing).
+///
+/// AUD-A6-011 : le `clientToken` n'est pas nécessaire au renderer (le board le
+/// lit via `overlay_get_config`, scoping par fenêtre) ⇒ il n'est jamais diffusé
+/// dans l'événement de settings.
 pub fn emit_settings(app: &AppHandle<Wry>, view: &OverlayConfigView) -> tauri::Result<()> {
+    let redacted = settings_view_without_token(view);
     app.emit_to(
         EventTarget::labeled(OVERLAY_LABEL),
         EVENT_SETTINGS,
-        view.clone(),
+        redacted.clone(),
     )?;
-    app.emit_to(
-        EventTarget::labeled(BOARD_LABEL),
-        EVENT_SETTINGS,
-        view.clone(),
-    )
+    app.emit_to(EventTarget::labeled(BOARD_LABEL), EVENT_SETTINGS, redacted)
+}
+
+/// Projection settings sans secret (pure, testable).
+fn settings_view_without_token(view: &OverlayConfigView) -> OverlayConfigView {
+    let mut redacted = view.clone();
+    redacted.client_token = None;
+    redacted
+}
+
+/// Émet immédiatement un `overlay://stop` vers l'overlay puis vide le buffer.
+/// Utilisé quand l'utilisateur désactive l'overlay : la fenêtre est masquée
+/// juste après, et une lecture en cours doit être interrompue (AUD-A6-006).
+pub fn stop_overlay_now(app: &AppHandle<Wry>, reason: &str) {
+    let state = app.state::<AppState>();
+    state.pending_events().clear();
+    let event = OverlayEvent::stop(serde_json::json!({ "reason": reason }));
+    if let Err(error) = emit_to_overlay(app, &event) {
+        tracing::debug!(%error, "échec d'émission du stop de désactivation");
+    }
 }
 
 /// Livre immédiatement si le renderer est prêt, sinon bufferise et arme le
 /// timeout de purge. Ne panique jamais (les erreurs d'émission sont loguées).
+///
+/// Aucun événement n'est livré ni bufferisé quand l'overlay est désactivé ou
+/// non appairé (AUD-A6-006 : pas de lecture sans overlay actif).
 pub fn deliver_or_buffer(app: &AppHandle<Wry>, overlay_ready: bool, event: OverlayEvent) {
+    let state = app.state::<AppState>();
+    if !overlay_should_show(&state.config_snapshot()) {
+        tracing::debug!(
+            event = event.name(),
+            "événement overlay ignoré : overlay désactivé ou appareil non appairé"
+        );
+        return;
+    }
+
     if overlay_ready {
         if let Err(error) = emit_to_overlay(app, &event) {
             tracing::warn!(event = event.name(), %error, "échec d'émission de l'événement overlay");
@@ -159,7 +191,6 @@ pub fn deliver_or_buffer(app: &AppHandle<Wry>, overlay_ready: bool, event: Overl
         return;
     }
 
-    let state = app.state::<AppState>();
     let buffer = state.pending_events();
     buffer.enqueue(event);
     if buffer.arm_timeout() {
@@ -183,11 +214,23 @@ pub fn deliver_or_buffer(app: &AppHandle<Wry>, overlay_ready: bool, event: Overl
 }
 
 /// Rejoue les événements en attente, puis libère le timeout.
+///
+/// Si l'overlay a été désactivé ou désappairé entre-temps, le buffer est vidé
+/// sans rejeu (AUD-A6-006).
 pub fn flush_pending(app: &AppHandle<Wry>) {
     let state = app.state::<AppState>();
     let buffer = state.pending_events();
     let pending = buffer.drain();
     buffer.disarm_timeout();
+    if !overlay_should_show(&state.config_snapshot()) {
+        if !pending.is_empty() {
+            tracing::debug!(
+                count = pending.len(),
+                "rejeu overlay annulé : overlay désactivé ou appareil non appairé"
+            );
+        }
+        return;
+    }
     for event in pending {
         if let Err(error) = emit_to_overlay(app, &event) {
             tracing::warn!(event = event.name(), %error, "échec de rejeu d'un événement overlay");
@@ -239,5 +282,26 @@ mod tests {
         assert_eq!(OverlayEvent::play(json!({})).name(), "overlay://play");
         assert_eq!(OverlayEvent::stop(json!({})).name(), "overlay://stop");
         assert_eq!(EVENT_SETTINGS, "overlay://settings");
+    }
+
+    #[test]
+    fn settings_event_never_carries_client_token() {
+        let mut view = OverlayConfigView {
+            server_url: Some("https://example.test".to_string()),
+            client_token: Some("secret-token".to_string()),
+            guild_id: Some("guild".to_string()),
+            client_id: Some("client".to_string()),
+            guest_mode: false,
+            show_text: true,
+            volume: 1.0,
+            meme_bindings: Default::default(),
+        };
+        let redacted = settings_view_without_token(&view);
+        assert_eq!(redacted.client_token, None);
+        assert_eq!(redacted.server_url, view.server_url);
+        assert_eq!(redacted.guild_id, view.guild_id);
+
+        view.client_token = None;
+        assert_eq!(settings_view_without_token(&view), view);
     }
 }

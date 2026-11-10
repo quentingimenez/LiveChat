@@ -1,11 +1,11 @@
-//! Accès à la base legacy : ouverture strictement en lecture seule, contrôles
-//! d'intégrité, lecture des 7 tables Prisma et empreinte SHA256 du fichier.
+//! Accès à la base legacy : ouverture strictement en lecture seule du snapshot
+//! cohérent produit par [`super::snapshot`], contrôles d'intégrité, lecture des
+//! 7 tables Prisma et empreintes SHA256.
 //!
-//! La base legacy n'est JAMAIS modifiée : connexion `read_only(true)` +
-//! `PRAGMA query_only=ON`, connexion unique, aucun `ATTACH`/`VACUUM`. Un éventuel
-//! fichier `-wal` est lu par SQLite sans risque de corruption (mode
-//! `journal_mode` conservé tel quel), mais le serveur legacy doit être arrêté
-//! avant la migration pour ne pas lire un état en cours d'écriture.
+//! La base legacy elle-même n'est **jamais ouverte** par ce module : le
+//! migrateur travaille sur le snapshot temporaire (copie + `VACUUM INTO`), qui
+//! est en lecture seule (`read_only(true)` + `PRAGMA query_only=ON`, connexion
+//! unique, aucun `ATTACH`/`VACUUM`/`PRAGMA` d'écriture).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -117,11 +117,11 @@ impl Legacy {
             .map_err(|source| {
                 let wal = wal_info(path);
                 let hint = if wal.exists {
-                    "un fichier -wal est présent : arrêter le serveur legacy avant de migrer, \
-                     ou copier la base avec ses fichiers -wal et -shm"
+                    "un fichier -wal est présent à côté du snapshot : répertoire temporaire \
+                     inaccessible en écriture ou snapshot incomplet"
                 } else {
-                    "vérifier que le fichier est une base SQLite valide et que le serveur legacy \
-                     n'écrit pas dessus"
+                    "vérifier que le snapshot est une base SQLite valide et que le répertoire \
+                     temporaire est accessible en lecture"
                 };
                 Error::LegacyOpen {
                     path: path.to_path_buf(),

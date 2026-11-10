@@ -1,10 +1,16 @@
 //! Normalisation ffmpeg : vidéo H.264/AAC MP4 faststart, audio MP3, images
-//! copiées telles quelles, plus la construction des vidéos de carrousel TikTok.
+//! raster copiées telles quelles, plus la construction des vidéos de carrousel
+//! TikTok.
 //!
 //! La décision de transcoder ou de copier reprend les règles de l'ancien
 //! serveur : un MP4/MOV H.264/AAC yuv420p sous la hauteur maximale est copié.
+//! Les SVG sont refusés (contenu actif, non rasterisé ici — AUD-A4-004) et le
+//! type MIME d'une image est dérivé en priorité de la sonde ffprobe, pas du
+//! `Content-Type` distant (AUD-A4-010).
 
 use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -106,13 +112,22 @@ pub async fn normalize_downloaded_media(
     }
 }
 
-/// Normalise une image en la copiant avec la bonne extension.
+/// Normalise une image raster en la copiant avec la bonne extension.
+///
+/// Les SVG sont refusés : un SVG est un contenu actif (scripts, liens) qui ne
+/// doit jamais être servi tel quel depuis le stockage média (AUD-A4-004).
 pub fn normalize_image(
     input: &Path,
     content_type: Option<&str>,
     output_base: &Path,
     probed: Option<&ProbeInfo>,
 ) -> MediaResult<NormalizedMedia> {
+    if is_svg_image(input, content_type) {
+        return Err(MediaError::new(
+            MediaErrorCode::InvalidMedia,
+            "image SVG non supportée : contenu actif, rasterisation requise",
+        ));
+    }
     let mime = image_mime(content_type, input, probed);
     let extension = extension_from_mime(&mime).unwrap_or("png");
     let output = output_base.with_extension(extension);
@@ -129,19 +144,71 @@ pub fn normalize_image(
     finalize(MediaKind::Image, &mime, &output, probed, None, None)
 }
 
-/// Détermine le type MIME d'une image téléchargée.
-pub fn image_mime(content_type: Option<&str>, input: &Path, probed: Option<&ProbeInfo>) -> String {
+/// `true` si l'entrée est (ou prétend être) un SVG.
+fn is_svg_image(input: &Path, content_type: Option<&str>) -> bool {
     if let Some(content_type) = content_type {
-        let essence = content_type
-            .split(';')
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase();
-        if essence.starts_with("image/") {
-            return essence;
+        let essence = content_type_essence(content_type);
+        if essence == "image/svg+xml" {
+            return true;
         }
     }
+    if input
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
+    {
+        return true;
+    }
+    head_looks_like_svg(input)
+}
+
+/// Détection best-effort d'un SVG par signature, indépendamment du nom/MIME.
+fn head_looks_like_svg(input: &Path) -> bool {
+    let mut header = [0_u8; 1024];
+    let read = match File::open(input) {
+        Ok(mut file) => match file.read(&mut header) {
+            Ok(read) => read,
+            Err(_) => return false,
+        },
+        Err(_) => return false,
+    };
+    let head = String::from_utf8_lossy(&header[..read])
+        .trim_start()
+        .to_ascii_lowercase();
+    head.starts_with("<svg")
+        || head.starts_with("<!doctype svg")
+        || (head.starts_with("<?xml") && head.contains("<svg"))
+}
+
+/// Essence normalisée d'un `Content-Type`.
+fn content_type_essence(content_type: &str) -> String {
+    content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+}
+
+/// MIME d'image sûr, sans SVG, pour l'essence fournie.
+fn safe_image_mime(essence: &str) -> Option<&'static str> {
+    match essence {
+        "image/png" => Some("image/png"),
+        "image/jpeg" | "image/jpg" => Some("image/jpeg"),
+        "image/webp" => Some("image/webp"),
+        "image/gif" => Some("image/gif"),
+        "image/bmp" => Some("image/bmp"),
+        "image/avif" => Some("image/avif"),
+        _ => None,
+    }
+}
+
+/// Détermine le type MIME d'une image téléchargée.
+///
+/// Priorité : codec détecté par ffprobe (fiable, non contrôlé par la source),
+/// puis `Content-Type` distant restreint à une liste blanche sans SVG, puis
+/// extension du fichier téléchargé. Le résutat est toujours un MIME raster.
+pub fn image_mime(content_type: Option<&str>, input: &Path, probed: Option<&ProbeInfo>) -> String {
     let codec_mime = probed
         .and_then(|probed| probed.video_codec.as_deref())
         .and_then(|codec| match codec {
@@ -156,11 +223,16 @@ pub fn image_mime(content_type: Option<&str>, input: &Path, probed: Option<&Prob
     if let Some(mime) = codec_mime {
         return mime.to_string();
     }
+    if let Some(content_type) = content_type {
+        if let Some(mime) = safe_image_mime(&content_type_essence(content_type)) {
+            return mime.to_string();
+        }
+    }
     input
         .extension()
         .and_then(|extension| extension.to_str())
         .and_then(mime_from_extension)
-        .filter(|mime| mime.starts_with("image/"))
+        .and_then(|mime| safe_image_mime(mime))
         .unwrap_or("image/png")
         .to_string()
 }
@@ -794,12 +866,17 @@ mod tests {
             video_codec: Some("png".to_string()),
             ..ProbeInfo::default()
         };
+        // Le codec sonde prime sur le Content-Type distant (AUD-A4-010).
         assert_eq!(
             image_mime(
                 Some("image/webp; charset=binary"),
                 Path::new("x.bin"),
                 Some(&probed)
             ),
+            "image/png"
+        );
+        assert_eq!(
+            image_mime(Some("image/webp"), Path::new("x.bin"), None),
             "image/webp"
         );
         assert_eq!(
@@ -808,6 +885,36 @@ mod tests {
         );
         assert_eq!(image_mime(None, Path::new("photo.jpg"), None), "image/jpeg");
         assert_eq!(image_mime(None, Path::new("x.inconnu"), None), "image/png");
+        // Un Content-Type image/svg+xml n'est jamais retenu (contenu actif).
+        assert_eq!(
+            image_mime(Some("image/svg+xml"), Path::new("x.bin"), None),
+            "image/png"
+        );
+    }
+
+    #[test]
+    fn normalize_image_rejette_le_svg_par_type_mime() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let input = directory.path().join("dessin.bin");
+        std::fs::write(&input, b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>").unwrap();
+        let output_base = directory.path().join("sortie");
+        let error = normalize_image(&input, Some("image/svg+xml"), &output_base, None).unwrap_err();
+        assert!(error.is(MediaErrorCode::InvalidMedia));
+        assert!(error.message().contains("SVG"));
+        assert!(!output_base.with_extension("png").exists());
+    }
+
+    #[test]
+    fn normalize_image_rejette_le_svg_par_signature() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let input = directory.path().join("image.png");
+        let svg = br#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>"#;
+        std::fs::write(&input, svg).unwrap();
+        let output_base = directory.path().join("sortie");
+        let error = normalize_image(&input, Some("image/png"), &output_base, None).unwrap_err();
+        assert!(error.is(MediaErrorCode::InvalidMedia));
+        assert!(error.message().contains("SVG"));
+        assert!(!output_base.with_extension("png").exists());
     }
 
     #[test]

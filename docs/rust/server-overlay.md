@@ -111,6 +111,16 @@ authentification et avant toute validation de payload (garde
   `warn_query_token_deprecation_once` dans `auth.rs`) pour mesurer l'usage avant
   suppression ; il disparaîtra avec le renderer Rust. Aucun autre jeton ne doit
   figurer dans une URL (l'admin, lui, n'accepte plus que le Bearer).
+- **Mécanique exacte du repli** (état HEAD P2) : `query_token` n'extrait
+  `?token=` que si le chemin commence par `/overlay/meme-board/`
+  (`auth.rs:137-148`) ; la valeur est décodée (`application/x-www-form-urlencoded`),
+  `trim`ée, rejetée si vide ou > 200 caractères (`MAX_TOKEN_LEN`). Le repli
+  n'est consulté que si `bearer_token` renvoie `None` : en-tête absent, schéma
+  différent de `Bearer` (casse ignorée), token vide ou segments supplémentaires
+  (en-tête malformé) — un Bearer valide prime donc toujours, et un Bearer
+  malformé retombe sur le query token. Le token reste ensuite haché SHA-256 et
+  résolu en base comme la voie nominale ; le warn de dépréciation est émis une
+  seule fois par processus.
 - Le token brut est généré côté serveur : 32 octets aléatoires encodés en hex
   (64 caractères), `auth.rs:65` — équivalent de
   `crypto.randomBytes(32).toString('hex')` (`overlayAuth.ts:40-42`).
@@ -230,6 +240,10 @@ sig = HMAC-SHA256(MEDIA_URL_SECRET, "assetId|clientId|exp")
   audio/vidéo `clamp(duration+120, 300, 3600)`), jamais prolongé par ce handler ;
 - `startOffsetSec` et `#t=` ne sont pas signés et sont ignorés côté serveur
   (seul le lecteur les utilise) — `media.rs:69-70` ;
+- **liaison à la lecture en cours (AUD-A2-004)** : une signature valide ne suffit
+  plus ; le handler exige qu'un `playback_jobs` de la guilde du client référence
+  l'asset (n'importe quel statut), sinon `403 {"error":"forbidden"}`. Parité
+  legacy `403 forbidden` quand aucun job de la guilde ne référence le média ;
 - vérification via `crate::media_url::verify` (HMAC + `subtle::ConstantTimeEq`),
   **aucune duplication** de la logique HMAC dans ce module.
 
@@ -243,8 +257,9 @@ sig = HMAC-SHA256(MEDIA_URL_SECRET, "assetId|clientId|exp")
 | 4 | `now >= exp` (`media_url::is_expired`) | `403 {"error":"media_url_expired"}` |
 | 5 | client existant et non révoqué | `403 media_url_invalid` |
 | 6 | asset existant, `status == READY`, non expiré | `404 {"error":"media_not_found"}` |
-| 7 | fichier présent et confiné dans `MEDIA_STORAGE_DIR` | `404 {"error":"media_not_found_on_disk"}` |
-| 8 | stream `HEAD`/`Range` | `200`/`206`/`416` |
+| 7 | **liaison lecture** : `EXISTS(SELECT 1 FROM playback_jobs WHERE media_asset_id = ? AND guild_id = ?)` pour la guilde du client (AUD-A2-004) | `403 {"error":"forbidden"}` |
+| 8 | fichier présent et confiné dans `MEDIA_STORAGE_DIR` | `404 {"error":"media_not_found_on_disk"}` |
+| 9 | stream `HEAD`/`Range` | `200`/`206`/`416` |
 
 Le plafond `exp` (AUD-A2-002, task-42) borne les signatures forgées ou les TTL
 abusifs : une URL dont `exp` dépasse `now + MEDIA_URL_TTL_MAX_SEC` (3600 s par
@@ -271,9 +286,11 @@ la seconde barrière côté vérification.
   bytes */total`, `Content-Length`, `Content-Type` par extension. Le handler
   force ensuite `Content-Type: <asset.mime>`, `Cache-Control: no-store` et
   `Accept-Ranges: bytes` (en-têtes legacy conservés).
-- `touch_asset` (`media.rs:302-319`) : `last_accessed_at = now`,
-  `expires_at = max(expires_at, now + MEDIA_CACHE_TTL_HOURS)` — best-effort,
-  jamais bloquant ; ne prolonge pas la signature.
+- `touch_asset` (`media.rs`) : `last_accessed_at = now` uniquement, best-effort,
+  jamais bloquant (AUD-A2-005). Le stream **ne prolonge plus** `expires_at` :
+  une lecture ne repousse plus le TTL de 12 h à chaque requête (comportement
+  legacy corrigé) ; seule la libération d'un pin board ou une ingestion réussie
+  modifient l'expiration.
 
 ### 6.4 Compression
 
@@ -311,11 +328,15 @@ Query : `q`, `limit`, `offset`, `guildId`.
 - `limit` : défaut 50, clamp `1..=200` (`meme_board.rs:565-570`) ;
 - `offset` : défaut 0, négatif ramené à 0 (`:567`) ;
 - `q` : trim, max 240 caractères, insensible à la casse, filtre `contains` sur
-  `title`, `message`, `createdByName`, `media.sourceUrl` (`item_matches` :574) ;
+  `title`, `message`, `createdByName`, `media.sourceUrl` (`row_matches`) ;
 - `guildId` : s'il est fourni et diffère de la guilde du Bearer →
   `403 {"error":"forbidden"}` (défense en profondeur) ;
-- tri legacy : `created_at DESC` (repo `list_by_guild`), `total` calculé **avant**
-  pagination ;
+- **chargement borné (AUD-A2-013)** : une requête SQL join unique
+  (`load_board_rows`, `meme_board_items` × `media_assets`, ordre
+  `created_at DESC, id ASC`) fournit les lignes ; le filtre `q`, le `total` et
+  la pagination sont calculés en mémoire, puis seuls les assets de la page
+  (`≤ 200`) sont rechargés via `media_assets().get` — plus de N+1 non borné sur
+  toute la guilde ni de double parcours repo+Rust ;
 - réponse : `{"total": n, "limit": l, "offset": o, "items": [...]}`.
 
 Payload d'un item (`item_payload`, `meme_board.rs:531-552`) :
@@ -341,34 +362,37 @@ epoch — le renderer board tolère les deux (`toSafeDateLabel`).
 Corps legacy : `{"url": "…", "title"?: "…", "message"?: "…", "forceRefresh"?: bool}`.
 
 0. session `INVITE_READ_ONLY` → `403 {"error":"read_only_session"}` **avant
-   toute validation** (aucun appel réseau, aucune lecture du corps au-delà du
-   parsing JSON) ;
+   toute validation** (aucun appel réseau, aucune lecture du corps) ; un corps
+   JSON illisible (`Result<Json<CreateItemRequest>, JsonRejection>`) donne
+   ensuite `400 {"error":"invalid_payload","message":"corps JSON invalide"}`
+   (AUD-A2-009), jamais le `request_error` générique de la normalisation ;
 1. `url` trim vide → `400 {"error":"invalid_payload","message":"url is required"}`
    (aucun appel réseau dans ce cas) ;
-2. **ingestion best-effort inline** : depuis task-42 (P1-09, AUD-A2-006), le
-   handler utilise le `MediaPipeline` **partagé** du serveur via
-   `media::shared_pipeline_for_state(&state)` (même `OnceLock`, même sémaphore
-   `MEDIA_MAX_CONCURRENT_INGESTIONS`, même budget cache et même client HTTP que
-   `MediaService`) puis `ingest_url(url).await` — plus d'instanciation par
-   requête. Échec → `422` legacy
+2. **ingestion unifiée (AUD-V2-S-003, COR-13-7)** : le handler construit
+   `MediaService::for_state(&state)` puis appelle
+   `service.ingest(Some(&url), None, force_refresh)` — même cache
+   `READY`/`source_hash`, même sémaphore `MEDIA_MAX_CONCURRENT_INGESTIONS`, même
+   budget cache et même `record_failure` (`FAILED` + message `[CODE] …`) que
+   `/ingest`. Plus de `shared_pipeline_for_state` ni d'insertion manuelle
+   d'asset : un échec après téléchargement supprime les variantes partielles
+   (`discard_partial_files`). Échec média → `422` legacy
    `{"error":"media_ingestion_failed","code":"<CODE>","message":"<msg>"}` ;
-   erreur non média du pipeline → `500 internal_error` (loggée).
-3. asset par `source_hash` :
-   - existant `READY` et `!forceRefresh` → réutilisé, expiry épinglée si besoin ;
-   - existant non prêt → `update_status(Ready)` puis réutilisation ;
-   - absent → insertion `MediaAsset` (`status: READY`, expiry épinglée) ; collision
-     unique → relecture par `source_hash` ;
-4. dédoublonnage board `(guild, asset)` → `200 {"created":false,"item":…}` ;
-5. quota board (somme `sizeBytes` de la board + nouvel asset vs
+   base indisponible → `500 internal_error` (loggée) ;
+3. dédoublonnage board `(guild, asset)` → `200 {"created":false,"item":…}` ;
+4. quota board (`board_total_bytes` = `SUM(size_bytes)` par jointure SQL, contre
    `MEDIA_BOARD_MAX_TOTAL_MB`) → `422 {"error":"media_ingestion_failed",
-   "code":"BOARD_STORAGE_LIMIT_REACHED",…}` ;
+   "code":"BOARD_STORAGE_LIMIT_REACHED",…}` (AUD-A2-013 : plus de N+1) ;
+5. **épinglage** : `assets::pin(db, asset.id, now)` (`expires_at = now + 100 ans`
+   pour les assets `READY` non déjà épinglés) — parité `ensurePinnedExpiry` ;
 6. insertion item (`title` ≤240, `message` ≤500, `createdByName` =
    `default_author_name` sinon `label`, ≤120), réponse
-   `200 {"created":true,"item":…}` ; collision unique concurrente → relecture et
-   `created:false`.
+   `200 {"created":true,"item":…}` ; collision unique concurrente détectée via
+   `is_conflict` (unique **ou** `Domain(Conflict)`) → relecture et
+   `created:false` (AUD-A2-010).
 
-Expiry épinglée = `now + 100 ans` (`PINNED_YEARS`, `meme_board.rs:60`,
-`pinned_expiry` :678) — parité `ensurePinnedExpiry` legacy.
+`forceRefresh` est interprété par `coerce_flag` (booléen JSON, `"true"`,
+`"1"`, `"yes"`, `"on"`, casse ignorée) — parité `toBooleanFlag` legacy
+(AUD-A2-014).
 
 ### 7.3 `GET /overlay/meme-board/media/{assetId}` (`meme_board.rs:388`)
 
@@ -383,6 +407,8 @@ Expiry épinglée = `now + 100 ans` (`PINNED_YEARS`, `meme_board.rs:60`,
 
 - session `INVITE_READ_ONLY` → `403 {"error":"read_only_session"}` (avant la
   validation du corps et la lecture de l'item) ;
+- corps JSON illisible → `400 {"error":"invalid_payload","message":"corps JSON
+  invalide"}` (AUD-A2-009, `Result<Json<Value>, JsonRejection>`) ;
 - corps JSON objet ; ni `title` ni `message` → `400 {"error":"invalid_payload",
   "message":"title or message is required"}` ;
 - champ absent → conservé ; `null`/chaîne vide → effacé
@@ -397,16 +423,18 @@ Expiry épinglée = `now + 100 ans` (`PINNED_YEARS`, `meme_board.rs:60`,
   validation de l'identifiant) ;
 - id invalide ou item d'une autre guilde → `200 {"deleted":false}` (parité
   legacy : pas de 404 sur delete) ;
-- suppression puis, si plus aucun board ne référence le média
-  (`board_reference_count`), libération de l'expiry épinglée :
-  `expires_at = now + MEDIA_CACHE_TTL_HOURS` best-effort ;
+- suppression **transactionnelle** (`delete_item_and_release`) : `DELETE` de
+  l'item `(id, guilde)`, `COUNT(*)` des références board restantes, puis si 0
+  `UPDATE media_assets SET last_accessed_at, expires_at = now +
+  MEDIA_CACHE_TTL_HOURS` — le tout dans une transaction SQLite, fin des
+  comptages non transactionnels (AUD-A2-013) ;
 - réponse `{"deleted": bool}`.
 
 ### 7.6 Erreurs meme board (récapitulatif)
 
 | Statut | Corps | Cas |
 |--------|-------|-----|
-| `400` | `{"error":"invalid_payload",…}` | `url` manquante, `title`+`message` absents |
+| `400` | `{"error":"invalid_payload",…}` | `url` manquante, `title`+`message` absents, JSON illisible |
 | `401` | `{"error":"unauthorized"}` | Bearer absent/invalide/révoqué |
 | `403` | `{"error":"forbidden"}` | `guildId` query ≠ guilde du Bearer |
 | `403` | `{"error":"read_only_session"}` | **écriture (`POST`/`PATCH`/`DELETE`) avec une session `invite_read_only`** |
@@ -424,7 +452,7 @@ Les variables sont validées par `crate::config::Config` (aucune copie locale,
 | `API_URL` | `apiBaseUrl` renvoyé par l'appairage (`api_origin()`) |
 | `MEDIA_URL_SECRET` | vérification HMAC du média signé ; absent → `403 media_url_invalid` + warn |
 | `MEDIA_STORAGE_DIR` | confinement des fichiers ; répertoire du `MediaPipeline` |
-| `MEDIA_CACHE_TTL_HOURS` | prolongation `expires_at` au stream et à la suppression board |
+| `MEDIA_CACHE_TTL_HOURS` | libération de l'expiry à la suppression board (`now + TTL`) ; une lecture média ne prolonge plus l'expiration |
 | `MEDIA_BOARD_MAX_TOTAL_MB` | quota de la board (422 `BOARD_STORAGE_LIMIT_REACHED`) |
 | `PAIRING_CODE_TTL_MINUTES` | (création admin des codes, Phase 7b ; pas ce module) |
 | `MEDIA_URL_TTL_SEC` | (validation config ; le TTL effectif de l'URL est calculé par le hub) |
@@ -457,29 +485,28 @@ pub fn sign_media_url(
 
 | # | Écart | Raison / mitigation |
 |---|-------|---------------------|
-| 1 | Plus de contrôle « un playback job existe pour `(guilde, média)` » avant de servir `/overlay/media` | `lc-db` n'expose pas cette requête (`PlaybackJobsRepository`) et le hub est la seule source d'URL signées ; l'accès est déjà borné par HMAC + `clientId` actif + TTL court. Documenté handoff Phase 4b/5b |
-| 2 | `?token=` supprimé pour le protocole WS et les URLs média signées ; Bearer obligatoire, **sauf** le repli `?token=` des routes board `/overlay/meme-board/*` | protocole v2 §9 ; le repli board est l'unique exception REST (renderer HTML legacy `overlay/renderer/board.js` charge `<video>`/`<img>` par URL), limité au chemin board, Bearer prioritaire, et les mutations restent soumises à la garde `invite_read_only` (§7.0). **Temporaire** depuis AUD-COR-05 : WARN unique par processus (`warn_query_token_deprecation_once`), suppression prévue avec le renderer Rust (P1-11) |
-| 3 | `GET /overlay/config` supprimé | protocole v2 ; config locale overlay (Tauri) |
-| 4 | Ingestion média **inline** dans `POST items` (pipeline) | pas de file d'ingestion côté serveur en Phase 3b ; `MediaPipeline::ingest_url` ne consulte pas le cache et retélécharge — la Phase 5b doit fournir le worker, l'éviction et les transitions de statut |
-| 5 | Un asset non-`READY` rencontré dans `POST items` est repassé `READY` sans re-validation | best-effort Phase 3b ; la Phase 5b devient propriétaire des statuts |
-| 6 | Troncature titre/message/nom par **caractères Unicode** (`chars`) | le legacy JS tronquait par unités UTF-16 ; écart uniquement sur paires de substitution (emoji) — bénin, plus correct |
-| 7 | `createdAt` ISO-8601 ms via `to_rfc3339_opts` | même format observable que `Date.toJSON()` |
-| 8 | `protocolVersion` additif dans la réponse d'appairage | permet au client de refuser un serveur incompatible avant WS |
-| 9 | Révocation des clients même `(guilde, label)` conservée ; modes depuis le code persisté | parité legacy |
-| 10 | `sessionMode` du corps d'appairage ignoré | sécurité : un client ne s'auto-attribue pas une session normale |
-| 11 | `delete` renvoie toujours `200 {deleted}` (jamais 404) | parité legacy |
-| 12 | Compression possible des réponses média `200` | `app.rs` (Lead) doit exclure `/overlay/media` du `CompressionLayer` — cf. §12.1 |
-| 13 | Mutations meme-board **refusées** en session `invite_read_only` (`403 read_only_session`) | AUD-V-003 : le legacy ne vérifiait pas le mode sur les écritures ; le protocole v2 §9 réserve l'invite à la lecture. Garde serveur ajoutée (`meme_board::ensure_writable`, §7.0), identique pour Bearer et `?token=` ; les `GET` restent inchangés |
+| 1 | `?token=` supprimé pour le protocole WS et les URLs média signées ; Bearer obligatoire, **sauf** le repli `?token=` des routes board `/overlay/meme-board/*` | protocole v2 §9 ; le repli board est l'unique exception REST (renderer HTML legacy `overlay/renderer/board.js` charge `<video>`/`<img>` par URL), limité au chemin board, Bearer prioritaire, token trimé/≤200, et les mutations restent soumises à la garde `invite_read_only` (§7.0). **Temporaire** depuis AUD-COR-05 : WARN unique par processus (`warn_query_token_deprecation_once`), suppression prévue avec le renderer Rust (P1-11) |
+| 2 | `GET /overlay/config` supprimé | protocole v2 ; config locale overlay (Tauri) |
+| 3 | Ingestion média du board **déléguée à `MediaService`** (plus de pipeline inline custom dans le handler) | une seule voie d'ingestion : cache `READY`/`source_hash`, sémaphore, budget cache, `FAILED` + `record_failure`, nettoyage des fichiers partiels (AUD-V2-S-003, AUD-A2-006/007). La branche rich tweet card reste hors scope REST (Phase 6b) |
+| 4 | Une lecture `/overlay/media` **ne prolonge plus** `expires_at` (seul `last_accessed_at` est touché) | AUD-A2-005 : le legacy repoussait le TTL de 12 h à chaque requête, gonflant la rétention. Seules l'ingestion, le pin board et la libération de pin modifient l'expiration |
+| 5 | Troncature titre/message/nom par **caractères Unicode** (`chars`) | le legacy JS tronquait par unités UTF-16 ; écart uniquement sur paires de substitution (emoji) — bénin, plus correct |
+| 6 | `createdAt` ISO-8601 ms via `to_rfc3339_opts` | même format observable que `Date.toJSON()` |
+| 7 | `protocolVersion` additif dans la réponse d'appairage | permet au client de refuser un serveur incompatible avant WS |
+| 8 | Révocation des clients même `(guilde, label)` conservée ; modes depuis le code persisté | parité legacy |
+| 9 | `sessionMode` du corps d'appairage ignoré | sécurité : un client ne s'auto-attribue pas une session normale |
+| 10 | `delete` renvoie toujours `200 {deleted}` (jamais 404) | parité legacy |
+| 11 | Compression possible des réponses média `200` | `app.rs` (Lead) doit exclure `/overlay/media` du `CompressionLayer` — cf. §12.1 |
+| 12 | Mutations meme-board **refusées** en session `invite_read_only` (`403 read_only_session`) | AUD-V-003 : le legacy ne vérifiait pas le mode sur les écritures ; le protocole v2 §9 réserve l'invite à la lecture. Garde serveur ajoutée (`meme_board::ensure_writable`, §7.0), identique pour Bearer et `?token=` ; les `GET` restent inchangés |
+| 13 | JSON illisible → `400 {"error":"invalid_payload"}` dédié (et non `request_error` générique) | AUD-A2-009 : `Result<Json<…>, JsonRejection>` sur pair/board ; l'authentification et la garde read-only restent évaluées avant le refus de corps |
 
 ## 11. Tests
 
 `apps/lc-server/src/http/overlay/tests.rs` — base SQLite en mémoire
 (`Db::open_in_memory`), horloge figée `FixedClock` (2026-11-10T12:00:00Z),
 routeur **complet** via `crate::app::router` (middlewares réels) et
-`tower::ServiceExt::oneshot`. État : **19/19 verts** (filtre
-`cargo test -p lc-server --lib http::overlay`) : **15** tests dans `tests.rs` +
-**4** tests ciblés session dans `http/overlay/mod.rs::session_mode_tests`
-(`mod.rs:159`).
+`tower::ServiceExt::oneshot`. État (task-49) : **23/23 verts** (filtre
+`cargo test -p lc-server --lib http::overlay`) ; la suite complète
+`cargo test -p lc-server --lib` passe à **284 passed, 1 ignored**.
 
 | Test | Couverture |
 |------|------------|
@@ -502,6 +529,9 @@ routeur **complet** via `crate::app::router` (middlewares réels) et
 | `normal_session_mutations_stay_allowed` (`mod.rs`) | session normale : POST sans `url` → 400, PATCH/DELETE 200 |
 | `query_token_cannot_bypass_read_only_gate` (`mod.rs`) | `?token=` invité → 403 sur les 3 mutations ; `?token=` normal → PATCH 200 |
 | `bearer_token_takes_precedence_over_query_token` (`mod.rs`) | un Bearer normal prime sur un `?token=` invité (et inversement) |
+| `signed_media_requires_a_playback_job_in_the_client_guild` | 403 `forbidden` sans playback job de la guilde, 403 si job d'une autre guilde, 200 + bytes si job de la guilde (AUD-A2-004) |
+| `meme_board_create_rejects_malformed_json` | 400 `invalid_payload` sur corps illisible, après la garde session (AUD-A2-009) |
+| `meme_board_patch_rejects_malformed_json` | idem sur `PATCH /items/{id}` |
 
 Commandes :
 
@@ -528,16 +558,22 @@ par `tower-http` (présence de `Content-Range`). Alternative : prédicat custom
 - générer les URLs via `crate::http::overlay::sign_media_url` + `expiry_for` ;
 - émettre `overlay://play` avec `media.url` **verbatim** (pas de réécriture,
   pas de `?token=`) — décisions Lead `docs/rust/overlay-bridge.md` §8 ;
-- le hub est seul à décider quels assets sont accessibles ; le contrôle legacy
-  « playback job » n'existe plus côté REST (§10 #1).
+- le hub reste la seule source d'URLs signées, mais **le REST vérifie désormais
+  la liaison lecture** : un `playback_jobs` de la guilde du client doit
+  référencer l'asset, sinon `403 forbidden` (§6.1/§6.2, AUD-A2-004). Le hub doit
+  donc signer en priorité l'asset du job courant/en cours de lecture ; une URL
+  signée n'est plus un laissez-passer autonome.
 
 ### 12.3 Service média (Phase 5b)
 
-- worker d'ingestion, transitions `Processing/Failed`, purge/éviction du cache ;
-- `POST items` repasse aujourd'hui un asset non-`READY` en `READY` sans
-  re-validation (§10 #5) : à supprimer quand le service média est en place ;
-- `ingest_url` ne consulte pas le cache disque : dédoublonnage uniquement par
-  `source_hash` en base.
+- le service média persistant est livré : `POST items` passe désormais par
+  `MediaService` (cache/quota/`FAILED`/nettoyage), et le worker de purge
+  (`apps/lc-server/src/media/purge.rs`) existe — voir `docs/rust/server-ingest.md`
+  §5/§6 pour les budgets et le cycle de vie ;
+- restent pour les phases suivantes : branche « rich tweet card » (Phase 6b,
+  hors scope REST), invalidation de cache documentée après `forceRefresh`
+  (`discard_partial_files` couvre l'échec), et ré-encodage/rasterisation médias
+  avancée (COR-15 traité pour le SVG, sécurités associées).
 
 ### 12.4 Admin (Phase 7b)
 

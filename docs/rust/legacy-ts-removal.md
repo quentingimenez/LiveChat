@@ -120,7 +120,7 @@ correspondants sont la référence détaillée de chaque lane.
 | `server/src/loaders/RESTLoader.ts` | `apps/lc-server/src/http/mod.rs` (merge des sous-routeurs) | Chaîne de middlewares identique (CORS, sécurité, rate-limit, normalisation d'erreurs) |
 | `server/src/components/overlay/overlayRoutes.ts` | `apps/lc-server/src/http/overlay/{mod,auth,pair,media,meme_board}.rs` | Bearer only (`?token=` supprimé), `GET /overlay/config` supprimé, `protocolVersion: 2` additif ; docs `server-overlay.md` |
 | `server/src/components/ingest/ingestRoutes.ts` | `apps/lc-server/src/http/ingest/{mod,auth,body,pair,submit}.rs` | Ingest client DB-backed uniquement ; docs `server-ingest.md` |
-| `server/src/components/admin/adminRoutes.ts` | `apps/lc-server/src/http/admin/**` + `static/admin/{index.html,app.js,styles.css}` | Squelette `crates/lc-admin` (lib.rs) ; 13 endpoints ; docs `server-admin.md`, `admin-panel.md` |
+| `server/src/components/admin/adminRoutes.ts` | `apps/lc-server/src/http/admin/**` + `static/admin/{index.html,app.js,styles.css}` | 13 endpoints ; docs `server-admin.md`, `admin-panel.md` (le squelette `crates/lc-admin` a été supprimé le 2026-11-10) |
 | `server/src/loaders/socketLoader.ts` (`/socket.io/` → 426) | `apps/lc-server/src/http/socket_io.rs` | Réponse 426 `overlay_outdated` conservée |
 | `server/src/services/{ingestAuth,overlayAuth,pairingCodes}.ts` | `apps/lc-server/src/http/{ingest,overlay}/auth.rs`, `overlay/pair.rs` | SHA-256 des tokens, `overlay_clients.token_hash`, apps/lc-server `media/tokens.rs` |
 

@@ -18,6 +18,7 @@
 //! est hors périmètre de la Phase 3c : elle sera traitée avec Phase 6b et est
 //! documentée dans `docs/rust/server-ingest.md`.
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
@@ -42,10 +43,8 @@ use super::{invalid_payload, media_service_error, simple_error, DEFAULT_INGEST_A
 pub async fn submit(
     State(state): State<AppState>,
     headers: HeaderMap,
-    body: Option<Json<Value>>,
+    body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    let value = body.map(|Json(value)| value).unwrap_or(Value::Null);
-
     // 1. Authentification — toujours avant la validation du corps.
     let client = match auth::resolve(&state, &headers).await {
         Ok(IngestAuth::Client(client)) => client,
@@ -58,7 +57,17 @@ pub async fn submit(
         Err(error) => return media_service_error(error),
     };
 
-    // 2. Normalisation du corps.
+    // 2. Corps JSON : un JSON malformé est une erreur de payload dédiée, pas
+    // un `request_error` générique (AUD-A2-009).
+    let value = match body {
+        Ok(Json(value)) => value,
+        Err(rejection) => {
+            tracing::debug!(error = ?rejection, "corps JSON invalide (ingest submit)");
+            return invalid_payload(None);
+        }
+    };
+
+    // 3. Normalisation du corps.
     let request = NormalizedIngest::from_value(&value);
     let now = state.clock.now();
 
@@ -405,6 +414,35 @@ mod tests {
             .as_str()
             .expect("message")
             .contains("resolvable media source"));
+    }
+
+    async fn post_raw(app: Router, token: Option<&str>, raw: &str) -> (StatusCode, Value) {
+        let mut builder = HttpRequest::builder()
+            .method("POST")
+            .uri("/ingest")
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        let request = builder.body(Body::from(raw.to_owned())).unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    #[tokio::test]
+    async fn malformed_json_is_a_payload_error() {
+        // AUD-A2-009 : l'authentification passe d'abord, puis le corps JSON
+        // illisible produit `invalid_payload` (pas `request_error`).
+        let fixture = fixture().await;
+        insert_client(&fixture.db).await;
+        let (status, body) = post_raw(fixture.app.clone(), Some(TOKEN), "{\"text\": ").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "invalid_payload", "{body}");
     }
 
     #[tokio::test]

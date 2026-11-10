@@ -87,7 +87,11 @@ propre à chaque ingestion.
 | `resolve.language` | `I18N` (préfixe `fr`) | `fr` |
 
 Les valeurs invalides retombent sur le défaut avec un `tracing::warn` ; les minimas sont
-forcés (1 h de TTL, 1 Mo, 1 ms, 1 ingestion, 1 fragment).
+forcés (1 h de TTL, 1 Mo, 1 ms, 1 ingestion, 1 fragment). `TIKTOK_COOKIE` est
+normalisé par `sanitize_tiktok_cookie` (task-49, AUD-A4-013) : trim, préfixe
+`cookie:` retiré, refus des valeurs vides ou contenant un caractère de contrôle
+(`\r`, `\n`, `\t`…), plafond 4096 caractères ; la valeur n'est **jamais**
+journalisée (remplacement par défaut + `warn` sans le contenu).
 
 ### Garde SSRF/LFI (`guard`)
 
@@ -115,6 +119,14 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
   sauf allowlist (`accept`, `accept-language`, `range`, `referer`).
 - `http::get_text` / `get_json` bornent les corps texte (4 Mio) et les corps d'erreur
   (8 Kio) ; `resolve_short_url` (URLs courtes TikTok) passe aussi par la garde.
+- `html::sanitize_embed_html` (durci task-49, AUD-A4-015) : liste **fermée** de
+  tags (`a,p,span,blockquote,br,strong,em,b,i,code,pre,ul,ol,li`) et d'attributs
+  (`href,src,alt,title,class,dir,lang,rel,target,width,height`) ; blocs
+  `script/style/iframe/object/embed/form` supprimés avec leur contenu,
+  commentaires retirés, `href`/`src` limités à `http(s)`, `rel`/`target` forcés
+  sur `<a>`, attributs ré-échappés. Aucune heuristique de retrait seule : tout
+  ce qui n'est pas autorisé disparaît. Le pendant « carte tweet » côté serveur
+  est `apps/lc-server/src/media/html.rs::sanitize_tweet_embed` (Phase 6b).
 
 ### Sources (`source`)
 
@@ -172,11 +184,22 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
 video_codec, audio_codec, pixel_format, has_video, has_audio }`, plus
 `probe_args`, `parse_probe_json`, `duration_ceil_sec()`, `is_vertical()`.
 
+Depuis task-49 (AUD-A4-012), `probe_args` insère `-i` **avant** le chemin :
+un nom de fichier local commençant par `-` (ex. `-version`) n'est plus
+interprété comme une option ffprobe. Test dédié
+(`probe_args_protect_option_like_paths`).
+
 ### Transcodage (`transcode`)
 
 `normalize_downloaded_media(input, content_type, output_base, config)` :
 
-- détection du type (mime + sonde) ; image = copie avec extension normalisée ;
+- détection du type (mime + sonde) ; **images** : `image/svg+xml` est refusé avant
+  toute copie (Content-Type, extension `.svg`, ou signature `<?xml`/`<svg` sur
+  les 1024 premiers octets) → `INVALID_MEDIA` « image SVG non supportée… » —
+  jamais de SVG stocké ni servi tel quel (AUD-A4-004) ; pour les autres images,
+  le MIME est dérivé du probe codec d'abord (whitelist png/jpeg/webp/gif/bmp/
+  avif), puis du Content-Type distant whitelisté, puis de l'extension, et la
+  copie garde une extension normalisée (AUD-A4-010) ;
   audio = copie mp3 ou réencodage `libmp3lame -b:a 192k` (+ loudnorm) ;
   vidéo = copie si H.264/AAC/yuv420p déjà conforme, sinon transcodage
   `-c:v libx264|h264_nvenc -pix_fmt yuv420p -movflags +faststart -c:a aac -b:a 192k`
@@ -187,6 +210,15 @@ video_codec, audio_codec, pixel_format, has_video, has_audio }`, plus
   vidéo et calcule `is_vertical` (hauteur > largeur).
 - `build_carousel_video_args` / `build_carousel_video` assemblent un carrousel TikTok
   (`-loop 1 -t 3` par image, `fps=30`, `pad` 9:16, `concat`, audio aac `-shortest`).
+
+### Processus externes (`process`)
+
+`run_command(program, args, timeout)` (ffmpeg/ffprobe/yt-dlp) lance le processus
+avec `kill_on_drop` et un timeout ; depuis task-49 (AUD-A4-005) stdout/stderr
+sont drainés avec un plafond `MAX_COMMAND_OUTPUT_BYTES = 8 Mio` — au-delà,
+l'enfant est tué et l'erreur remonte en `INVALID_MEDIA` (« sortie de … trop
+volumineuse »), au lieu d'un buffer mémoire illimité. La limite est
+paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
 
 ### Stockage et cache (`storage`, `cache`)
 
@@ -279,23 +311,32 @@ video_codec, audio_codec, pixel_format, has_video, has_audio }`, plus
   et la purge admin (`POST /admin/api/guilds/:id/purge`) passe par le même garde. Écart
   legacy assumé : l'ancien serveur supprimait sans vérifier le confinement
   (AUD-V2-S-001/002/004).
-- **Dette P2 (V2-S / AUD-V2-S-003, suivi backlog AUD-COR-13)** : le chemin `forceRefresh`
-  du meme board appelle encore le pipeline directement (pas `MediaService::ingest`) et,
-  quand l'asset existe déjà, met à jour statut/pin sans réécrire
-  `storage_path`/mime/dimensions — le fichier fraîchement téléchargé/normalisé peut alors
-  devenir orphelin et le « refresh » ne rafraîchit pas les métadonnées. Correctif propre =
-  factoriser cache/budgets/`record_failure`/métadonnées dans le service (effort M), hors
-  périmètre de ce durcissement ; suivi P2 au backlog (`AUD-COR-13`, qui regroupe les
-  restes P2 de la lane, item précis `AUD-V2-S-003`).
+- **Dette P2 résolue (task-49, AUD-COR-13 / AUD-V2-S-003)** : `POST
+  /overlay/meme-board/items` passe désormais par `MediaService::ingest` — cache
+  `READY`/`source_hash`, sémaphore, budget cache, `record_failure` ;
+  l'asset existant est rafraîchi par le pipeline puis épinglé via `assets::pin`,
+  et un échec `forceRefresh` supprime les variantes partielles
+  (`discard_partial_files`). Les variantes périmées restent nettoyées lors d'une
+  publication réussie (`remove_other_variants`) ; le worker de purge serveur
+  traite le reste.
+- **Durcissement sécurité COR-15 (task-49)** : SVG refusé et jamais servi, MIME
+  image dérivé en priorité du probe, `ffprobe` protégé par `-i`, sorties de
+  commandes bornées à 8 Mio (kill + `INVALID_MEDIA`), cookie TikTok validé sans
+  log, sanitizers HTML allowlist (oEmbed + carte tweet). Voir
+  `docs/rust/server-ingest.md` §5 « Sécurités pipeline ».
 
 ## Tests
 
-- 121 tests unitaires dans la crate (URL/hash, résolution offline sur fixtures, parsing
+- 130 tests unitaires dans la crate (URL/hash, résolution offline sur fixtures, parsing
   HTML/JSON, arguments ffmpeg, décisions de copie, éviction LRU, configuration, erreurs,
   garde SSRF : schémas/UNC, plages IPv4/IPv6, redirections ; stockage : racine
   canonicalisée fail-closed, chemins de transit, publication atomique, purge ciblée des
   variantes, confinement des suppressions — chemins hors racine refusés, liens
-  symboliques ignorés, références relatives résolues sous la racine).
+  symboliques ignorés, références relatives résolues sous la racine). Task-49 ajoute :
+  refus SVG par MIME et par signature + résolution MIME probe-first (`transcode`),
+  `probe_args` protégeant un chemin en `-…`, sortie de commande plafonnée
+  (`oversized_output_is_rejected`), validation du cookie TikTok (contrôle de
+  caractères, taille), et sanitizer HTML allowlist (XSS, blocs actifs, `rel`/`target`).
 - `tests/offline.rs` : 7 tests sur fixtures (`tiktok_video.html`, `tiktok_photo.html`,
   `twitter_syndication.json`, `yt_dlp_dump.json`, `youtube_oembed.json`,
   `tiktok_oembed.json`).
@@ -305,6 +346,7 @@ video_codec, audio_codec, pixel_format, has_video, has_audio }`, plus
   privées/métadonnées refusées.
 - `tests/network.rs` : 4 tests marqués `#[ignore]` (YouTube e2e, TikTok en ligne, carte
   tweet, échantillon `testsrc` ffmpeg) ; ils nécessitent réseau + `ffmpeg`/`yt-dlp`.
+- Doctest de la crate : 1.
 
 Commandes :
 
@@ -326,9 +368,12 @@ cargo test -p lc-media --test network -- --ignored   # réseau + binaires requis
 2. Application des plans de cache : lecture des `CacheEntry` depuis la DB, suppression des
    fichiers + lignes, propagation des erreurs `CACHE_STORAGE_LIMIT_REACHED` /
    `BOARD_STORAGE_LIMIT_REACHED` — fait côté serveur (`media/quotas.rs`).
-3. Annulation et arrêt propre : le `sémaphore` borne la concurrence mais il reste à
-   propager un `CancellationToken` et à tuer les groupes de processus (`ffmpeg`, `yt-dlp`)
-   sur arrêt du serveur (exigence audit S10).
+3. Annulation et arrêt propre : le `sémaphore` borne la concurrence ; les
+   processus externes sont lancés avec `kill_on_drop`, donc le drop de la future
+   d'ingestion (shutdown axum/abandon de handler) tue `ffmpeg`/`yt-dlp`. Un
+   `CancellationToken` explicite n'est pas encore propagé (ligne `PROCESSING`
+   nettoyée par le worker de purge après 2 h) (exigence audit S10, partiellement
+   couverte).
 4. `MediaPipeline` : brancher la file d'attente Phase 5b (workers, reprise après crash,
    quotas globaux) et exposer des métriques `tracing`.
 5. URL signées HMAC (`MEDIA_URL_SECRET`, TTL) : implémentation côté serveur Phase 3,

@@ -13,7 +13,8 @@ Ce module remplace le serveur socket.io 1.2.0 par un WebSocket JSON natif :
 - enveloppe `{v, type, id, ts, payload}` du crate `lc-protocol` ;
 - authentification SHA-256 du jeton contre `overlay_clients.token_hash` (client non révoqué) ;
 - versions : `MIN_OVERLAY_VERSION` / `serverVersion`, close `4403` avec `{"minVersion":"x.y.z"}` ;
-- limites : trames 64 Kio, 20 messages/s, heartbeat 15 s, timeout 45 s, close 4408/4409 ;
+- limites : trames **64 Kio** applicatives (close `4408`) avec borne de transport d'upgrade
+  **1 Mio**, 20 messages/s, heartbeat 15 s, timeout 45 s mesuré sur les `Pong`, close `4408/4409` ;
 - `play` **unicast** par socket avec URL média signée HMAC liée au `clientId` ;
 - `stop`, `peers`, `settings` en broadcast de room `overlay-guild-{guildId}` ;
 - intégration `lc-playback` via l'adaptateur `PlaybackSink` (moteur créé au premier `hello`) ;
@@ -70,8 +71,10 @@ overlay (Tauri) ──WS /ws──> session.rs (1 tâche par socket)
 
 1. **Upgrade** `GET /ws` : si la requête n'est pas un upgrade WebSocket valide, axum répond par
    notre convertisseur : HTTP `426` + `{"error":"websocket_required"}`.
-   Limites d'upgrade : `max_message_size = max_frame_size = 256 Kio` (garde-fou axum ; le contrat
-   64 Kio est vérifié applicativement, cf. §6).
+   Limites d'upgrade : `max_message_size = max_frame_size = 1 Mio`
+   (`MAX_TRANSPORT_MESSAGE_BYTES`). Le contrat applicatif reste **64 Kio** : une trame entre 64 Kio
+   et 1 Mio est lue puis fermée `4408 frame_too_large` ; au-delà de 1 Mio, c'est la couche transport
+   (axum/tungstenite) qui ferme (`1006`/`1009`) sans code applicatif garanti.
    **Origine (COR-06)** : si l'en-tête `Origin` est présent, il doit être autorisé par l'allowlist
    (§6) ; sinon la socket est fermée `1008 origin_not_allowed` **avant** toute lecture de trame.
    Une requête sans `Origin` (client natif) est acceptée.
@@ -86,8 +89,9 @@ overlay (Tauri) ──WS /ws──> session.rs (1 tâche par socket)
    illisible = obsolète) ⇒ `4403 outdated_protocol` avec raison JSON `{"minVersion":"x.y.z"}`.
 5. **Welcome** : envoi de `welcome` (avec `currentJob` re-signé pour ce socket si un job `PLAYING`
    existe), puis `settings` (modes `normal`/`invite_read_only`), puis broadcast `peers` à la room.
-6. **Boucle** : trames client (parsing `ClientEnvelope`, `v == 2`), file sortante, ping toutes les 15 s
-   (timeout 45 s sans activité), arrêt gracieux sur `state.shutdown`.
+6. **Boucle** : trames client (parsing `ClientEnvelope`, `v == 2`, `id` non vide et ≤ 64 caractères,
+   sinon `1002 protocol_error`), file sortante, ping toutes les 15 s (timeout 45 s sans `Pong`),
+   arrêt gracieux sur `state.shutdown`.
 7. **Fermeture** : close frame si possible, désenregistrement du registre, broadcast `peers`.
 
 Codes de fermeture émis par le serveur (cf. SSOT §3) :
@@ -96,21 +100,23 @@ Codes de fermeture émis par le serveur (cf. SSOT §3) :
 | --- | --- | --- |
 | `1000` | `client_shutdown` | close client, socket fermé par le client, fin normale |
 | `1001` | `server_shutdown`, `heartbeat_timeout` | arrêt du serveur, 45 s sans activité |
-| `1002` | `protocol_error`, `bad_playback_state` | JSON/type/v inconnu, payload invalide, `playback.state` incohérent |
+| `1002` | `protocol_error`, `bad_playback_state` | JSON/type/v inconnu, payload invalide, `id` vide ou > 64, `playback.state` incohérent |
 | `1003` | `unsupported_frame` | trame binaire |
 | `1008` | `origin_not_allowed` | en-tête `Origin` hors allowlist (fermeture pré-hello, COR-06) |
 | `1011` | `internal_error` | erreur DB au handshake/runtime, base indisponible |
 | `4401` | `auth_timeout`, `missing_token`, `invalid_token` | hello absent/tardif, jeton vide/inconnu, `clientId` incohérent |
 | `4402` | `revoked` | client révoqué (y compris fermeture admin) |
 | `4403` | `outdated_protocol` | `v != 2` ou `appVersion` < minimum (raison JSON) |
-| `4408` | `frame_too_large` | trame texte > 64 Kio |
+| `4408` | `frame_too_large` | trame texte > 64 Kio (lue jusqu'à la borne de transport de 1 Mio) |
 | `4409` | `rate_limited` | > 20 trames C→S/s |
 
 ## 4. Messages C→S
 
 Toutes les trames sont des enveloppes JSON `lc_protocol::ClientEnvelope`
 (`{v:2, type, id, ts, payload}`). Les champs inconnus sont tolérés ; le serveur ne renvoie jamais
-d'erreur pour un `id` inconnu.
+d'erreur pour un `id` inconnu. Le champ `id` est **validé** avant tout traitement : non vide
+(refusé s'il est vide ou uniquement composé d'espaces) et ≤ 64 caractères, sinon close
+`1002 protocol_error` (prend effet avant les débits et les acks).
 
 | `type` | Payload | Traitement |
 | --- | --- | --- |
@@ -143,7 +149,7 @@ Règles de complétude :
 | `play` | `{jobId, media: {assetId, url, mime, kind, durationSec, isVertical, startOffsetSec}\|null, text, author, tweetCard: ...\|null, durationSec}` | **unicast par socket** (URL signée pour son `clientId`) ; `startOffsetSec` et `tweetCard` toujours présents (null autorisé) |
 | `stop` | `{reason: manual\|preempt\|revoked\|purge, jobId: string\|null}` | broadcast room (moteur / admin) |
 | `ack` | `{ref, ok, error?: {code, message}}` | unicast en réponse aux requêtes le demandant |
-| `error` | `{code, message, jobId?}` | réservé aux erreurs asynchrones non fatales (helper présent, aucune émission automatique pour l'instant) |
+| `error` | `{code, message, jobId?}` | erreur **non fatale** émise effectivement (rév. 4) : `dispatch_failed` (aucun socket de la room n'a pu recevoir un `play` média) et `internal_error` (échec moteur après `ack` de `stop.request`/`meme.trigger`) |
 
 Les `id` serveur sont de la forme `srv-<préfixe>-NNNNNN` (`welcome`, `settings`, `peers`, `play`,
 `stop`, `ack`, `error`), `ts` en millisecondes Unix, `v = 2`.
@@ -157,7 +163,8 @@ scheduler, §15.3 de la SSOT) ; si plusieurs sont détectés, le plus récent pa
 | Limite | Valeur | Comportement |
 | --- | --- | --- |
 | trame client | 64 Kio (`MAX_FRAME_BYTES`) | close `4408` |
-| plafond d'upgrade axum | 256 Kio (`max_message_size`, `max_frame_size`) | garde-fou avant lecture applicative |
+| borne de transport d'upgrade | 1 Mio (`MAX_TRANSPORT_MESSAGE_BYTES`) | 64 Kio..1 Mio → `4408` applicatif ; > 1 Mio → close transport `1006`/`1009` |
+| `id` de trame C→S | non vide (espaces refusés), ≤ 64 caractères (`MAX_REQUEST_ID_CHARS`) | close `1002 protocol_error` avant traitement |
 | messages C→S | 20/s glissant sur 1 s, par connexion | close `4409` |
 | `playback.state` | 1/s | excédent ignoré silencieusement |
 | `peers.request` | 1/2 s | excédent ignoré silencieusement |
@@ -217,14 +224,16 @@ et déléguer sans conversion.
 | `broadcast_settings(&self, guild_id: &GuildId) -> usize` | async | relit les défauts de guilde (DB) et diffuse un `settings` à jour à chaque socket ; retourne le nombre de sockets servis (`0` sans moteur/DB) |
 | `broadcast_purge(&self, guild_id: &GuildId) -> usize` | async | `engine.stop_all_with_reason(guild, StopReason::Purge)` : diffuse `stop {reason:"purge", jobId:null}` ; retourne le nombre de jobs arrêtés (`0` sans moteur). Implémentation par défaut du trait = repli sur `broadcast_stop` ; `Hub` la surcharge |
 
-Câblage final (app.rs, propriété du Lead) :
+Câblage final (fait dans `serve()` / `app.rs`, intégration Lead) :
 
 ```rust
 use std::sync::Arc;
 
 let hub = Arc::new(lc_server::ws::Hub::new());
-let router = app::router_with_hub(state, Arc::clone(&hub)); // ou .merge(ws::router_with_hub(hub.clone()))
-// http/admin : install_admin_hub(hub.clone()) → impl AdminHub pour Arc<Hub>
+let hub_handle: Arc<Hub> = Arc::clone(&hub);
+let admin_hub: Arc<dyn AdminHub> = hub_handle;
+state = state.with_admin_hub(admin_hub); // AUD-COR-14 : plus de OnceLock
+let router = app::router_with_hub(state, Arc::clone(&hub));
 ```
 
 > ⚠️ `ws::router()` crée un `Arc<Hub>` privé (pratique pour les tests/outils) : en production,
@@ -274,7 +283,8 @@ pub async fn broadcast_settings(&self, guild_id: &GuildId) -> usize;
 
 ## 10. Tests
 
-`apps/lc-server/src/ws/tests.rs` (28 tests, `#[cfg(test)] mod tests`) :
+`apps/lc-server/src/ws/tests.rs` (**34 tests** filtrés par `cargo test -p lc-server ws::` — 27
+d'intégration, 7 unitaires dont 2 dans `session.rs`) :
 
 Intégration (vrai serveur axum sur port éphémère + SQLite temporaire + client `tokio-tungstenite`) :
 
@@ -305,10 +315,19 @@ Intégration (vrai serveur axum sur port éphémère + SQLite temporaire + clien
 22. `revocation_emits_stop_revoked_before_close_4402` (stop `revoked` `jobId:null` PUIS close `4402`,
     broadcast aux autres sockets, job libéré en DB).
 23. `purge_stop_has_a_dedicated_reason` (`broadcast_purge` → reason `"purge"`, `jobId:null`, DB `DONE`).
+24. `oversized_frame_is_closed_with_4408_instead_of_1006` (trame de 300 Kio sous la borne transport
+    de 1 Mio → close `4408 frame_too_large`, pas `1006`).
+25. `empty_request_id_is_closed_with_1002` (`heartbeat` avec `id:""` → close `1002`).
+26. `oversized_request_id_is_closed_with_1002` (`id` de 65 caractères → close `1002`).
+27. `dispatch_failure_emits_non_fatal_error_frame` (serveur sans `MEDIA_URL_SECRET` : le `play`
+    média ne peut être signé → trame `error` `dispatch_failed` avec `jobId`, puis `peers.request`
+    acquitté et connexion toujours ouverte).
 
 Unitaires : `max_peers_is_frozen`, `sha256_token_hash_matches_the_reference_vector`,
 `close_reason_mapping_is_stable`, `signed_play_uses_the_adaptive_media_ttl`,
-`playback_state_event_and_stop_payload_shapes_match_the_protocol`.
+`playback_state_event_and_stop_payload_shapes_match_the_protocol`, et dans `session.rs` :
+`request_id_validation_accepts_64_chars_and_rejects_others`,
+`pong_liveness_is_not_refreshed_by_application_heartbeats`.
 
 Commandes de vérification (PowerShell) :
 
@@ -331,14 +350,29 @@ cargo test -p lc-server
   décale de 1 s la `submission_date` du second job de `claim_est_unique_pour_une_guilde`
   (départage par UUID v4 non déterministe lorsque deux jobs tombaient dans la même milliseconde).
 
+État de la vérification (2026-11-10, task-48 / P2-A) :
+
+- `cargo test -p lc-server --no-fail-fast` : OK (exit 0) — **284 passed / 0 failed / 1 ignored**
+  (dont les **34 tests `ws::tests`**) + doctest `lc-server` 1 passed ;
+- `cargo test -p lc-protocol` : OK (exit 0) — **16 passed / 0 failed** (29 fixtures golden
+  inchangées + `unknown_play_and_tweet_card_fields_are_preserved`) ;
+- `cargo clippy -p lc-server -p lc-protocol --all-targets -- -D warnings` : OK (exit 0) ;
+- `rustfmt --check` sur les fichiers modifiés de cette lane : OK ;
+- execution de la ligne de commande ci-dessus relancée après stabilisation des lanes parallèles ;
+  le `cargo fmt --all -- --check` global reste à la charge de l'intégration (fichiers d'autres
+  lanes en cours d'écriture).
+
 ## 11. Écarts et décisions
 
 1. **Hello tardif → `4401 auth_timeout`** : le prompt de la task-17 mentionnait `1008`/`4403` ;
    la SSOT `protocol-v2.md` (et la décision du Lead) impose `4401 auth_timeout`. Écart
    prompt↔SSOT signalé au Lead, SSOT appliquée.
-2. **Plafond axum 256 Kio vs contrat 64 Kio** : `max_message_size`/`max_frame_size` à 256 Kio pour
+2. **Borne transport 1 Mio vs contrat 64 Kio** : `max_message_size`/`max_frame_size` à 1 Mio pour
    pouvoir lire une trame trop grosse et répondre proprement `4408` (le contrat applicatif reste
-   64 Kio). Une trame > 256 Kio est fermée par axum sans close code applicatif.
+   64 Kio). Une trame > 1 Mio est fermée par le transport sans close code applicatif — la marge de
+   1 Mio couvre largement une trame `Text` surdimensionnée réaliste tout en bornant la mémoire lue
+   par trame. La validation de `id` (non vide, ≤ 64) suit immédiatement le parsing de l'enveloppe,
+   avant tout effet de bord.
 3. **Rate limit `4409`** : la SSOT exige `4409` au-delà de 20 msg/s ; les excédents « ignorés » ne
    concernent que `playback.state` (1/s) et `peers.request` (1/2 s). Le compteur est par connexion,
    fenêtre glissante de 1 s.
@@ -352,9 +386,10 @@ cargo test -p lc-server
    autoritaire est celui de la base, renvoyé dans `welcome`/`settings`.
 7. **Peers** : maximum 8, dédupliqués par `clientId`, label = `default_author_name` sinon label du
    client sinon `unknown-device`, tri stable label puis `clientId`.
-8. **`ServerMessage::Error`** : le payload existe (spec) mais le hub n'émet pas encore d'erreur
-   asynchrone non fatale ; le helper `send_server_error` est conservé (allow dead_code) pour les
-   hooks à venir (échec d'envoi média, purge en cours…).
+8. **`ServerMessage::Error`** : le hub émet désormais les erreurs asynchrones non fatales
+   (rév. 4) : `dispatch_failed` depuis `HubSink::on_play` quand `unicast_play` ne délivre à aucun
+   socket alors que la room en contient, et `internal_error` après un `ack` lorsque l'appel moteur
+   (`stop.request`/`meme.trigger`) échoue. `media_unavailable` reste réservé aux hooks média.
 9. **Origine `1008` plutôt que HTTP 403 (COR-06)** : le refus d'`Origin` intervient après l'upgrade
    (une réponse HTTP n'est alors plus possible) ; on ferme donc la socket `1008 origin_not_allowed`,
    avant `hello`. L'allowlist est configurable sans redéploiement de code (`WS_ALLOWED_ORIGINS`,
@@ -378,16 +413,33 @@ cargo test -p lc-server
     (`http/admin/hub.rs`, `http/admin/guilds.rs`, `wiring.rs`).
 14. **Liveness sur Pong (AUD-A1-008)** : le timeout de 45 s est mesuré sur le dernier `Pong` reçu,
     pas sur n'importe quelle trame ; une socket qui reçoit des Ping serveur mais ne répond jamais
-    est fermée `1001 heartbeat_timeout`.
+    est fermée `1001 heartbeat_timeout`. Depuis la rév. 4, le tracker `PongLiveness` (session.rs) ne
+    peut pas être rafraîchi par un `heartbeat` applicatif : seule une trame `Pong` réelle remet la
+    fenêtre à zéro, ce qui est couvert par un test unitaire dédié.
+15. **Validation de `id` (AUD-A1-007)** : `validate_request_id` refuse un `id` vide, uniquement
+    composé d'espaces, ou de plus de 64 caractères (`MAX_REQUEST_ID_CHARS`), avant tout traitement
+    du message ; close `1002 protocol_error`. Testé en unitaire (64 acceptés, 65 refusés) et en
+    intégration (`empty_request_id_is_closed_with_1002`, `oversized_request_id_is_closed_with_1002`).
+16. **Champs inconnus `play`/`tweetCard` (AUD-COR-12)** : `PlayPayload` et `TweetCardPayload` du
+    crate `lc-protocol` portent un `#[serde(flatten)] extra: serde_json::Map<String, Value>` ;
+    les clés non modélisées sont conservées puis ré-émises à l'identique (round-trip exact vérifié
+    par `unknown_play_and_tweet_card_fields_are_preserved`, qui étend une fixture existante). Les
+    29 fixtures golden restent inchangées ; `PlayPayload::default()` (map vide) évite d'imposer
+    `serde_json` aux crates consommateurs.
+17. **Timeout HTTP global (COR-06, nit V2 « exemptions par préfixe »)** : le diff de `§12` n'exempte
+    plus le préfixe `/overlay/meme-board/` en bloc : seules les routes réellement de streaming sont
+    exemptées (`/ws` exact, `/ingest` exact, préfixes `/overlay/media/` et
+    `/overlay/meme-board/media/`). Le reste de l'API (admin, board JSON, config, pairing, health)
+    reçoit `408 request_timeout` à 30 s. Le rate-limit appliqué au streaming (`Range`)/uploads est
+    un nit séparé, hors de cette lane : à traiter par l'owner du rate limiter.
 
 ## 12. Points d'intégration restants (hors propriétaire)
 
-- **Lead / `app.rs`** : remplacer `ws::router()` par `ws::router_with_hub(Arc<Hub>)` et câbler
-  `install_admin_hub(hub.clone())` ; `Hub` est le handle partageable (aucun changement d'`AppState`).
-  **Diff TimeoutLayer** (COR-06, à intégrer par l'owner d'`app.rs`) : jamais de timeout global sur
-  `/ws`, `/overlay/media/` (Range/206), `/overlay/meme-board/` (previews streaming) ni `/ingest`
-  (uploads longs) — cf. plan `docs/rust/audit/p1-correctifs.md` COR-06 (`408 request_timeout`
-  ailleurs, 30 s).
+- **Lead / `app.rs`** : intégré — `ws::router_with_hub(Arc<Hub>)` + admin hub
+  injecté dans `AppState` (`with_admin_hub`), plus de `OnceLock` ; le
+  **TimeoutLayer** (COR-06) est en place avec exemptions resserrées (`/ws` et
+  `/ingest` exacts, préfixes `/overlay/media/` et `/overlay/meme-board/media/`,
+  `408 request_timeout` 30 s ailleurs).
   ```rust
   // apps/lc-server/Cargo.toml : tower-http features += "timeout"
   use std::time::Duration;
@@ -403,12 +455,13 @@ cargo test -p lc-server
       next: Next,
   ) -> Response {
       // Streaming média (Range/206), previews board, uploads ingest et WebSocket :
-      // jamais de timeout global sur ces routes.
+      // jamais de timeout global sur ces routes ; seules les routes réellement
+      // streaming sont exemptées (nit V2 : exemptions exactes/par préfixe ciblé).
       let path = request.uri().path();
       if path == "/ws"
+          || path == "/ingest"
           || path.starts_with("/overlay/media/")
-          || path.starts_with("/overlay/meme-board/")
-          || path.starts_with("/ingest")
+          || path.starts_with("/overlay/meme-board/media/")
       {
           return next.run(request).await;
       }

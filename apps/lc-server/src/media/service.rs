@@ -140,6 +140,7 @@ impl MediaService {
             Ok(ingested) => ingested,
             Err(error) => {
                 self.record_failure(asset.id, &error, now).await;
+                self.discard_partial_files(&source.source_hash);
                 return Err(MediaServiceError::Media(error));
             }
         };
@@ -160,6 +161,7 @@ impl MediaService {
             if let Some(media_error) = error.media_error() {
                 self.record_failure(asset.id, media_error, now).await;
             }
+            self.discard_partial_files(&source.source_hash);
             return Err(error);
         }
 
@@ -179,6 +181,33 @@ impl MediaService {
                 error = %failure,
                 "impossible de marquer l'asset média en échec"
             );
+        }
+    }
+
+    /// Supprime les fichiers de stockage d'une source dont l'ingestion a échoué.
+    ///
+    /// AUD-A2-007 : avec `forceRefresh`, les variantes précédentes sont
+    /// remplacées ; en cas d'échec du pipeline, le fichier partiel (ou l'ancien
+    /// fichier devenu orphelin) ne doit pas survivre à une ligne `FAILED`, sinon
+    /// le disque se remplit sans référence en base. Best-effort : un échec de
+    /// nettoyage est journalisé mais ne masque jamais l'erreur d'ingestion.
+    fn discard_partial_files(&self, source_hash: &str) {
+        match self.storage.remove_variants(source_hash) {
+            Ok(0) => {}
+            Ok(removed) => {
+                tracing::debug!(
+                    source_hash,
+                    removed,
+                    "variantes de la source en échec supprimées du stockage"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    source_hash,
+                    error = %error,
+                    "nettoyage des variantes de la source en échec impossible"
+                );
+            }
         }
     }
 }
@@ -327,6 +356,40 @@ mod tests {
         assert_eq!(stored.status, MediaStatus::Failed);
         let error = stored.error.expect("message d'erreur");
         assert!(error.starts_with('['), "erreur formatée legacy : {error}");
+    }
+
+    #[tokio::test]
+    async fn force_refresh_failure_removes_partial_files() {
+        // AUD-A2-007 / COR-15-5 : un rafraîchissement forcé qui échoue ne doit
+        // pas laisser de variantes orphelines sur disque.
+        let fixture = fixture().await;
+        let service = MediaService::new(
+            fixture.config.clone(),
+            fixture.db.clone(),
+            Arc::new(SystemClock),
+        )
+        .expect("service");
+
+        let raw = "file:/chemin/inexistant/lc-server-test-cleanup.mp4";
+        let source = lc_media::source::MediaSource::from_raw(raw).expect("source");
+        let variant = fixture
+            .config
+            .storage
+            .directory
+            .join(format!("{}.mp4", source.source_hash));
+        tokio::fs::create_dir_all(&fixture.config.storage.directory)
+            .await
+            .expect("répertoire");
+        tokio::fs::write(&variant, b"partiel")
+            .await
+            .expect("fichier partiel");
+
+        let result = service.ingest(Some(raw), None, true).await;
+        assert!(result.is_err());
+        assert!(
+            !tokio::fs::try_exists(&variant).await.expect("stat"),
+            "la variante partielle aurait dû être supprimée"
+        );
     }
 
     #[tokio::test]

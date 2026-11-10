@@ -87,9 +87,9 @@ Trois conséquences importantes :
    admin peut donc poser sa CSP stricte avec `insert` sans être écrasée.
 3. La même couche `admin_headers` journalise un **audit minimal** des mutations
    (`POST`/`PATCH`/`PUT`/`DELETE` sur `/admin/api/**`) : méthode, chemin seul,
-   statut et IP du client, target `lc_server::admin_audit` (AUD-COR-10). Ni la
-   query string ni les en-têtes ne sont journalisés, pour ne pas exposer un
-   jeton (AUD-COR-05).
+   statut, IP du client et `x-request-id` (corrélation), target
+   `lc_server::admin_audit` (AUD-COR-10/A3-012). Ni la query string ni les
+   en-têtes ne sont journalisés, pour ne pas exposer un jeton (AUD-COR-05).
 
 ### Middleware d'en-têtes (et non `tower-http::set-header`)
 
@@ -113,6 +113,8 @@ pub(crate) fn secure(router: Router<AppState>) -> Router<AppState> {
 | `x-frame-options` | `DENY` |
 | `referrer-policy` | `no-referrer` |
 | `permissions-policy` | héritée de la couche globale `http::security` : `camera=(), microphone=(), geolocation=(), payment=(), usb=()` (le panneau ne la redéfinit pas ; la couche globale étant extérieure, elle s'applique après les handlers) |
+| `cross-origin-opener-policy` | `same-origin`, posé par la couche globale `http::security` (AUD-COR-18) |
+| `strict-transport-security` | `max-age=31536000; includeSubDomains`, posé par la couche globale **uniquement** si le navigateur est en HTTPS (directement ou via `X-Forwarded-Proto: https`) |
 | `content-security-policy` | CSP admin (voir ci-dessous) |
 
 ### CSP admin
@@ -161,7 +163,33 @@ qu'un futur endpoint ne peut pas oublier l'authentification.
    - connect info absent (ex. test unitaire sans `ConnectInfo`) ⇒ considéré non
      loopback, donc **refus**.
 3. Token absent ou différent → **401** `{"error":"unauthorized"}`.
-4. Sinon le handler s'exécute.
+4. **Mutations uniquement** (`POST`/`PATCH`/`PUT`/`DELETE`) : origine absente,
+   opaque (`null`) ou étrangère → **403** `{"error":"invalid_origin"}`
+   (AUD-COR-14, voir « Défense CSRF » ci-dessous).
+5. Sinon le handler s'exécute.
+
+### Défense CSRF (AUD-COR-14)
+
+Les mutations exigent une origine vérifiée, en plus du Bearer :
+
+- origine lue dans `Origin:` ; à défaut, origine déduite du `Referer:` ;
+- acceptée si son autorité correspond à celle de l'en-tête `Host` (même origine
+  que le panneau) **ou** à l'origine publique `API_URL` (déploiement derrière un
+  reverse proxy qui réécrit `Host`) ;
+- `null`, les schémas non HTTP(S) et les origines étrangères sont refusés ;
+- les requêtes sûres (`GET`, `HEAD`, `OPTIONS`) ne sont pas concernées ;
+- l'authentification reste prioritaire : sans jeton valide, la réponse est
+  `401`, l'origine n'étant évaluée qu'après (une mutation authentifiée sans
+  origine reçoit `403 invalid_origin`).
+
+Cela prépare une éventuelle session cookie et couvre le cas d'un `Referer`/`Host`
+détourné ; aujourd'hui le Bearer seul rend déjà le CSRF inexploitable (un site
+tiers ne peut pas poser d'en-tête `Authorization`), c'est une défense en
+profondeur. Tests : `csrf_mutation_sans_origine_refusee`,
+`csrf_mutation_origine_hostile_refusee`,
+`csrf_referer_de_meme_origine_accepte`,
+`csrf_origine_api_url_acceptee_derriere_proxy`,
+`csrf_get_avec_origine_hostile_reste_accepte`.
 
 ### Lecture du token
 
@@ -185,6 +213,25 @@ IPv4-mappées (`::ffff:127.x.x.x` via `to_ipv4_mapped`). La confiance dans
 `ConnectInfo` repose sur `axum::serve(... into_make_service_with_connect_info)`
 utilisé par `lib.rs` (`X-Forwarded-For` n'est **pas** consulté ; le legacy suivait
 `trustProxyHeaders` mais l'admin reste réservé au loopback).
+
+Conséquence **derrière un reverse proxy** (AUD-COR-14/A3-011) : le serveur voit
+l'IP du proxy (ex. la passerelle bridge Docker), pas celle de l'administrateur.
+`ADMIN_UI_LOCAL_ONLY=true` répond alors `403 admin_local_only` même depuis la
+machine administrée. Deux options, documentées ici parce que la configuration
+config n'offre pas encore de réglage dédié :
+
+1. **recommandé** : garder le serveur lié à `127.0.0.1` (compose par défaut) et
+   accéder à `/admin/` en local ; le token Bearer reste la seule barrière,
+2. si un reverse proxy est indispensable : `ADMIN_UI_LOCAL_ONLY=false` **et**
+   exposer l'admin uniquement derrière une authentification proxy/TLS, sur un
+   bind réseau restreint (`docs/rust/packaging.md` §10.4).
+
+`TRUST_PROXY_HEADERS` (défaut `false`) n'affecte que le rate-limit (lecture du
+premier `X-Forwarded-For`). Pour l'admin, l'option dédiée
+`ADMIN_TRUST_FORWARDED_FOR` (défaut `false`, AUD-COR-14) est **implémentée** :
+quand elle vaut `true`, le contrôle `ADMIN_UI_LOCAL_ONLY` lit le premier saut de
+`X-Forwarded-For` au lieu du socket brut. À n'activer que derrière un reverse
+proxy de confiance qui écrase cet en-tête (sinon un client peut le forger).
 
 ## 5. Assets statiques
 
@@ -214,9 +261,9 @@ pas à chaque requête.
 ## 6. Trait `AdminHub`
 
 Le panneau ne dépend **pas** directement du hub WebSocket réel : il dialogue via
-un trait installé une seule fois par processus. `protocole-v2` (`task-17`)
-implémente ce trait sur le hub réel ; le câblage final (appel de
-`install_admin_hub`) appartient au Lead.
+un trait porté par l'état applicatif. `protocole-v2` (`task-17`) implémente ce
+trait sur le hub réel ; le câblage est fait dans `serve()`
+(`AppState::with_admin_hub(Arc<dyn AdminHub>)`, AUD-COR-14) et `wiring.rs`.
 
 ```rust
 #[async_trait::async_trait]
@@ -229,16 +276,17 @@ pub trait AdminHub: Send + Sync {
 
     // Asynchrone : diffusion d'ordres aux sockets.
     async fn broadcast_stop(&self, guild_id: &GuildId) -> usize;
+    async fn broadcast_purge(&self, guild_id: &GuildId) -> usize; // défaut = broadcast_stop
     async fn broadcast_settings(&self, guild_id: &GuildId) -> usize;
 }
 ```
 
 - `NoopAdminHub` (0 / `false`) est l'implémentation par défaut : le panneau
   fonctionne sans hub (utilisé par tous les tests).
-- `install_admin_hub(Arc<dyn AdminHub>) -> bool` ne réussit qu'une fois
-  (`OnceLock`) ; un second appel renvoie `false` (utilisé comme sonde par les
-  tests).
-- `admin_hub(&AppState)` renvoie le hub installé ou `NoopAdminHub`.
+- `AppState::with_admin_hub(Arc<dyn AdminHub>)` injecte le hub réel ; plus de
+  `OnceLock` global (AUD-COR-14), donc tests hermétiques et double démarrage
+  sans réutilisation silencieuse.
+- `admin_hub(&AppState)` renvoie `Arc::clone(&state.admin_hub)`.
 - Les handlers font `await` sur les broadcasts ; la sémantique des compteurs
   renvoyés (nombre de sockets touchés) est celle de l'implémentation réelle.
 
@@ -357,6 +405,11 @@ body: {"guildId": "42", "authorDiscordUserId": "1001", "label": "Chrome"}
 - L'auteur doit exister dans la fusion du §7.3 (`author_not_found` sinon).
 - Label persisté = `"{label}-{displayName}"` (suffixe identifiant si le nom est
   vide), comme `deviceLabel` du legacy.
+- **Bornes des libellés** (AUD-COR-14/A3-008) : `label` saisi ≤ **120
+  caractères**, sans caractère de contrôle ; le libellé persisté
+  `{label}-{auteur}` ≤ **200 caractères** et sans caractère de contrôle. Toute
+  violation ⇒ `400 invalid_label`, avant création du client. La borne finale
+  rattrape le cas d'un nom d'auteur anormalement long.
 - Token : 32 octets aléatoires (`rand::rng().fill_bytes`) en hexadécimal (64
   caractères). **Seul le SHA-256 hexadécimal est stocké** (`token_hash`) ; le
   token en clair n'apparaît que dans cette réponse — ne jamais le journaliser
@@ -520,8 +573,8 @@ non seulement par `admin::router()`. Chaque test crée sa propre base SQLite en
 mémoire et son dossier temporaire (`DATABASE_URL` pointe dedans), donc
 `admin_runtime.json` n'est jamais écrit dans le dépôt.
 
-Fichier : `apps/lc-server/src/http/admin/tests.rs` (27 tests d'intégration,
-plus le test statique du JS et les tests unitaires de `auth.rs`).
+Fichier : `apps/lc-server/src/http/admin/tests.rs` (33 tests d'intégration,
+plus le test statique du JS et les tests unitaires de `auth.rs`/`ingest_authors.rs`).
 
 Couverture par thème :
 
@@ -529,11 +582,18 @@ Couverture par thème :
   query string est **refusé** par 401 (AUD-COR-05) ; `ADMIN_UI_LOCAL_ONLY=false`
   accepte un client externe ; page `/admin/` publique alors que l'API est
   protégée.
+- **CSRF (AUD-COR-14)** : mutation sans origine → 403 `invalid_origin` ;
+  origines hostiles (`https://evil…`, `null`, préfixe trompeur) → 403 ;
+  `Referer` de même origine accepté ; origine `API_URL` acceptée derrière proxy ;
+  `GET` avec origine hostile toujours accepté. Le harnais pose par défaut
+  `Host: 127.0.0.1:40000` et `Origin: http://127.0.0.1:40000` sur les mutations.
 - **Jetons hors URL** : `static/admin/app.js` ne contient plus de réécriture
   d'URL avec `token` (test statique `app_js_ne_propage_pas_le_jeton_dans_l_url`).
 - **Statique/en-têtes** : 308 `/admin` → `/admin/` ; index + `no-store` + CSP
   admin + Permissions-Policy ; CSP admin (`/admin/`) vs CSP globale (`/health`)
-  et absence de `no-store` sur `/health`.
+  et absence de `no-store` sur `/health`. HSTS/COOP testés dans
+  `http::security` (HSTS émis seulement en HTTPS/`X-Forwarded-Proto`, jamais en
+  HTTP direct).
 - **Runtime settings** : défauts, PATCH normalisé et persisté
   (`admin_runtime.json` écrit, pas de `.tmp` résiduel), payloads invalides.
 - **Overview** : bornes de configuration à vide ; agrégats (board 1 Mio, cache
@@ -549,8 +609,10 @@ Couverture par thème :
   posées) et 404.
 - **Ingestion** : fusion des auteurs, création de client (token 64 hexadécimal
   affiché une fois, hash SHA-256 en base, label `Chrome-Alice`), erreurs de
-  validation.
-- **Hub** : Noop par défaut, installation unique via `OnceLock`.
+  validation, **bornes de libellé** (121 chars → 400, caractère de contrôle →
+  400, 120 chars accepté, aucun client en base après refus).
+- **Hub** : Noop par défaut, installation unique via `OnceLock` (comportement
+  conservé tant que la migration vers `AppState` n'est pas faite par le Lead).
 
 Commandes de vérification (depuis `apps/lc-server`) :
 
@@ -559,8 +621,19 @@ $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
 $env:CARGO_BUILD_JOBS = "4"
 cargo fmt -p lc-server -- --check
 cargo clippy -p lc-server --all-targets -- -D warnings
+cargo test -p lc-server --lib http::
 cargo test -p lc-server
 ```
+
+### MSRV et CI (AUD-COR-18/A7-012)
+
+`rust-version = "1.85"` est déclaré au workspace mais **invérifiable** avec le
+lock actuel : les dépendances Tauri 2 exigent ≥ 1.90 (`tauri-utils 2.10.2`,
+`tray-icon 0.25.1`), `time 0.3.55` → 1.88, `uuid 1.29.2` → 1.89. Le job CI
+`msrv (1.90)` épingle la MSRV **réelle** vérifiée (`cargo check --workspace
+--all-targets --locked`), avec commentaire d'écart dans
+`.github/workflows/rust.yml`. Proposition au Lead : aligner
+`rust-version`/`clippy.toml:msrv` sur 1.90.
 
 ## 11. Runbook et dépannage
 
@@ -579,7 +652,8 @@ cargo test -p lc-server
 | Symptôme | Cause probable | Action |
 |---|---|---|
 | 503 `admin_ui_disabled` | `ADMIN_UI_TOKEN` vide | définir la variable puis redémarrer |
-| 403 `admin_local_only` | accès depuis une IP non loopback | accéder en local, ou (conscient du risque) `ADMIN_UI_LOCAL_ONLY=false` |
+| 403 `admin_local_only` | accès depuis une IP non loopback (ou via proxy : le serveur voit l'IP du proxy) | accéder en local ; derrière un proxy, voir §4 « IP loopback » (`ADMIN_UI_LOCAL_ONLY=false` + exposition restreinte uniquement) |
+| 403 `invalid_origin` | mutation sans `Origin`/`Referer`, origine `null` ou étrangère (AUD-COR-14) | envoyer `Origin: <hôte du panneau>` ou `Referer` de même origine ; ne pas appeler l'API depuis un autre site |
 | 401 `unauthorized` | token absent/faux | vérifier l'en-tête `Authorization: Bearer` (le `?token=` n'est plus accepté, AUD-COR-05) |
 | 429 `request_error` | plus de 100 requêtes / 15 min / IP, **y compris `/admin*`** (AUD-COR-10) | patienter `Retry-After`, ou augmenter la fenêtre si usage légitime |
 | 404 `overlay_client_not_found` | identifiant non UUID | le legacy répondait 404 pour un id invalide ; conservé |
@@ -590,6 +664,14 @@ cargo test -p lc-server
 ### Sécurité — points d'attention
 
 - Le token admin est comparé à temps constant ; ne jamais le journaliser.
+- Les **mutations** exigent en plus une origine vérifiée (`Origin`/`Referer`) —
+  défense CSRF même si le Bearer seul rend déjà l'attaque impraticable.
+- Les libellés de clients d'ingestion sont bornés (120/200 caractères, pas de
+  caractère de contrôle) pour protéger l'UI et la base.
+- `security.rs` pose COOP `same-origin` sur toutes les réponses et HSTS
+  uniquement quand le navigateur voit du HTTPS (`X-Forwarded-Proto: https`).
+- `TRUST_PROXY_HEADERS` ne concerne que le rate-limit ; l'admin lit le socket
+  brut, sauf `ADMIN_TRUST_FORWARDED_FOR=true` (proxy de confiance, voir §4).
 - Le token d'ingestion n'est affiché qu'une seule fois (réponse de création),
   seul son hash est en base.
 - La purge est **destructive par défaut** (point E14) et exige
@@ -606,5 +688,8 @@ cargo test -p lc-server
   au rate limit global (100 req / 15 min / IP), ce plafond est donc à considérer
   avant d'augmenter la fréquence.
 - Stockage chiffré du cookie TikTok (actuellement en clair, parité v1).
-- Câblage réel du hub (`install_admin_hub`) : Lead après implémentation du trait
-  par `protocole-v2` ; la couche admin n'a pas à changer.
+- Câblage réel du hub : fait (AUD-COR-14, `AppState::with_admin_hub`, plus de
+  `OnceLock`).
+- **Dette hors lane P2-C** : purge des doublons de dépendances
+  `windows-sys`/`winnow` (transitifs Tauri/serenity — seul `windows-sys 0.48.0`,
+  inutilisé, peut être purgé en régénérant le lock).

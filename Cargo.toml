@@ -1,4 +1,4 @@
-[workspace]
+﻿[workspace]
 resolver = "2"
 members = [
     "crates/lc-protocol",
@@ -7,7 +7,6 @@ members = [
     "crates/lc-media",
     "crates/lc-playback",
     "crates/lc-discord",
-    "crates/lc-admin",
     "apps/lc-server",
     "apps/lc-overlay",
     "xtask",
@@ -18,12 +17,12 @@ exclude = ["spikes"]
 [workspace.package]
 version = "3.0.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.90"
 license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
-# ---- Sérialisation / protocole ----
+# ---- SÃ©rialisation / protocole ----
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -44,7 +43,7 @@ thiserror = "2"
 anyhow = "1"
 async-trait = "0.1"
 
-# ---- Base de données (Phase 2) ----
+# ---- Base de donnÃ©es (Phase 2) ----
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "sqlite",
@@ -66,7 +65,7 @@ hex = "0.4"
 url = "2"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
-# ---- Réseau (outillage : capture de goldens, harnais de parité Phase 9) ----
+# ---- RÃ©seau (outillage : capture de goldens, harnais de paritÃ© Phase 9) ----
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
     "json",
@@ -88,7 +87,6 @@ lc-db = { path = "crates/lc-db" }
 lc-media = { path = "crates/lc-media" }
 lc-playback = { path = "crates/lc-playback" }
 lc-discord = { path = "crates/lc-discord" }
-lc-admin = { path = "crates/lc-admin" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -97,13 +95,13 @@ unused_lifetimes = "warn"
 let_underscore_drop = "warn"
 
 [workspace.lints.clippy]
-# Règles du plan de migration : pas de panic silencieux hors tests.
+# RÃ¨gles du plan de migration : pas de panic silencieux hors tests.
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 dbg_macro = "deny"
 todo = "warn"
 unimplemented = "warn"
-# Qualité générale utile dès la Phase 1.
+# QualitÃ© gÃ©nÃ©rale utile dÃ¨s la Phase 1.
 redundant_clone = "warn"
 trivially_copy_pass_by_ref = "warn"

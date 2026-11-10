@@ -67,7 +67,10 @@ Le bridge choisit son transport au chargement :
 | `tauri` / transport `global-invoke` | `window.__TAURI_INTERNALS__` absent mais `window.__TAURI__.core.invoke` présent (`app.withGlobalTauri: true`) | Même chose via l'API globale `__TAURI__`. |
 | `mock` | Aucun des deux | Aucun réseau, aucun backend : valeurs neutres, événements simulables, journal console. |
 
-L'état est exposé pour les tests et le support :
+L'état est exposé **uniquement en mode mock** (navigateur / ce harnais) ou si la
+page pose `window.__LIVECHAT_BRIDGE_DEBUG = true` **avant** de charger
+`bridge.js`. En mode Tauri release, ces globals n'existent pas (AUD-A6-010 /
+O-007) :
 
 ```js
 window.__livechatOverlayBridge.mode;          // 'tauri' | 'mock'
@@ -78,11 +81,11 @@ window.__bridgeLastEvent;                      // dernier événement reçu { ev
 window.__bridgeMockEmit(event, payload);       // émet un événement vers les listeners locaux
 ```
 
-### Recommandation de configuration Tauri
+### Configuration Tauri actuelle
 
-- `app.withGlobalTauri: true` simplifie la voie officielle (`__TAURI__.event.listen`) et suffit pour le bridge.
-- `withGlobalTauri: false` fonctionne aussi : le bridge retombe sur `plugin:event|listen` / `plugin:event|unlisten` +
-  `transformCallback` via `__TAURI_INTERNALS__`. Cette voie est la plus probable en production (surface minimale).
+- `app.withGlobalTauri: false` (P2-E) : le bridge utilise
+  `window.__TAURI_INTERNALS__.invoke` + le repli `plugin:event|listen` /
+  `transformCallback`. Aucun contenu de page n'a accès à `window.__TAURI__`.
 - La permission `core:event:default` (listen/unlisten/emit) est activée par défaut : aucune capability supplémentaire n'est
   nécessaire pour les événements. Les commandes applicatives ne sont pas soumises à l'ACL Tauri.
 
@@ -162,8 +165,9 @@ propagent l'erreur normalisée en `Error` (avec `.message` exploité par les pag
   remplace pas les tests `cargo test -p lc-overlay`.
 - `authorizedFetch` et les appels réseau du board ne sont pas testables en mode mock (pas de backend) : utiliser l'app
   réelle avec un serveur local pour ces parcours.
-- Les diagnostics du bridge (`__bridgeCalls`, `__bridgeMockEmit`) restent actifs en release : outil de support, aucune
-  donnée sensible n'y est journalisée (masquage `token`/`code`/`sig`/…).
+- Les diagnostics du bridge (`__bridgeCalls`, `__bridgeMockEmit`, etc.) ne sont
+  exposés qu'en mode mock ou via `window.__LIVECHAT_BRIDGE_DEBUG = true` posé
+  avant `bridge.js` : un installeur release n'expose rien (P2-E / O-007).
 - `bridge-test.html` n'est pas exécuté en CI : les tests Rust couvrent la matrice IPC et le bridge est vérifié par
   `node --check`.
 

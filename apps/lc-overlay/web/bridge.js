@@ -1,19 +1,19 @@
 /*
- * LiveChat overlay bridge — Phase 0 (squelette).
- *
- * But : réinstaller `window.livechatOverlay` (les 13 méthodes du preload
- * Electron) au-dessus de l'IPC Tauri 2, sans modifier le renderer existant.
+ * LiveChat overlay bridge — façade `window.livechatOverlay` au-dessus de l'IPC
+ * Tauri 2, sans modifier le renderer existant.
  * Contrat de référence : docs/rust/overlay-bridge.md.
  *
  * Contraintes :
  *  - script CLASSIQUE (pas de module ES, pas de bundler, aucune dépendance) ;
  *    il doit être évalué AVANT les scripts `type="module"` des pages ;
  *  - aucune référence à Node/Electron : uniquement `window.__TAURI_INTERNALS__`
- *    (Tauri 2) ou `window.__TAURI__` (mode `withGlobalTauri: true`) ;
+ *    (Tauri 2) ou `window.__TAURI__` (si `withGlobalTauri` est activé) ;
  *  - si Tauri est absent (navigateur, `file://`), bascule en mode MOCK :
  *    valeurs neutres, aucun réseau, événements simulables pour les tests.
  *
- * Globals de diagnostic ajoutés (hors API du renderer) :
+ * Globals de diagnostic (hors API du renderer) — exposés UNIQUEMENT en mode mock
+ * ou si `window.__LIVECHAT_BRIDGE_DEBUG = true` est posé avant le chargement
+ * (AUD-A6-010 / O-007 ; le build release Tauri n'expose rien) :
  *   window.__livechatOverlayBridge : { version, mode, transport, hasNativeEvents,
  *                                      commands, events, calls, resetCallLog() }
  *   window.__bridgeMode            : 'tauri' | 'mock'
@@ -97,6 +97,12 @@
   const transport = resolveTransport();
   const invokeFn = transport.invoke;
   const isTauri = transport.mode === 'tauri';
+  // Diagnostics actifs uniquement en mode mock (harnais de dev) ou avec un
+  // opt-in explicite posé AVANT le chargement de bridge.js :
+  //   window.__LIVECHAT_BRIDGE_DEBUG = true
+  // Le build release en mode Tauri n'expose donc aucun global de diagnostic
+  // (AUD-A6-010 / O-007 : pas de journal d'appels ni de dernier événement).
+  const debugEnabled = !isTauri || window.__LIVECHAT_BRIDGE_DEBUG === true;
 
   // ---------------------------------------------------------------------------
   // Abonnement aux événements Tauri 2.
@@ -308,12 +314,14 @@
             return;
           }
 
-          window.__bridgeLastEvent = {
-            event: eventName,
-            payload: sanitizeForLog(payload, 0),
-            at: new Date().toISOString(),
-            source: 'tauri'
-          };
+          if (debugEnabled) {
+            window.__bridgeLastEvent = {
+              event: eventName,
+              payload: sanitizeForLog(payload, 0),
+              at: new Date().toISOString(),
+              source: 'tauri'
+            };
+          }
 
           invokeListener(callback, payload, eventName);
         })
@@ -600,12 +608,14 @@
     const listeners = localListeners[eventName] ? localListeners[eventName].slice() : [];
     const entry = pushCall('__bridgeMockEmit ' + eventName, payload === undefined ? null : payload);
 
-    window.__bridgeLastEvent = {
-      event: eventName,
-      payload: sanitizeForLog(payload, 0),
-      at: new Date().toISOString(),
-      source: source || 'test'
-    };
+    if (debugEnabled) {
+      window.__bridgeLastEvent = {
+        event: eventName,
+        payload: sanitizeForLog(payload, 0),
+        at: new Date().toISOString(),
+        source: source || 'test'
+      };
+    }
 
     listeners.forEach(function (callback) {
       invokeListener(callback, payload, eventName);
@@ -613,7 +623,9 @@
 
     finishCall(entry, 'ok', { notified: listeners.length });
 
-    console.debug(LOG_PREFIX + ' événement simulé ' + eventName + ' → ' + listeners.length + ' listener(s)', sanitizeForLog(payload, 0));
+    if (debugEnabled) {
+      console.debug(LOG_PREFIX + ' événement simulé ' + eventName + ' → ' + listeners.length + ' listener(s)', sanitizeForLog(payload, 0));
+    }
 
     return listeners.length;
   }
@@ -712,36 +724,40 @@
 
   // ---------------------------------------------------------------------------
   // Diagnostics (globals distincts de l'API pour ne pas modifier le contrat).
+  // Exposés uniquement en mode mock ou avec window.__LIVECHAT_BRIDGE_DEBUG=true
+  // (AUD-A6-010 / O-007) : le build release Tauri ne les crée pas.
   // ---------------------------------------------------------------------------
-  window.__livechatOverlayBridge = {
-    version: VERSION,
-    mode: transport.mode,
-    transport: transport.kind,
-    hasNativeEvents: Boolean(nativeListen),
-    commands: COMMANDS,
-    events: EVENTS,
-    calls: callLog,
-    resetCallLog: function () {
-      callLog.length = 0;
-      callSeq = 0;
+  if (debugEnabled) {
+    window.__livechatOverlayBridge = {
+      version: VERSION,
+      mode: transport.mode,
+      transport: transport.kind,
+      hasNativeEvents: Boolean(nativeListen),
+      commands: COMMANDS,
+      events: EVENTS,
+      calls: callLog,
+      resetCallLog: function () {
+        callLog.length = 0;
+        callSeq = 0;
+      }
+    };
+
+    window.__bridgeMode = transport.mode;
+    window.__bridgeCalls = callLog;
+    window.__bridgeLastEvent = null;
+    window.__bridgeMockEmit = function (eventName, payload) {
+      return emitMockEvent(eventName, payload, 'test');
+    };
+
+    if (isTauri) {
+      console.info(LOG_PREFIX + ' v' + VERSION + ' — mode TAURI (' + transport.kind + ', événements natifs : ' + (nativeListen ? 'oui' : 'non') + ').');
+    } else {
+      console.info(
+        LOG_PREFIX +
+          ' v' +
+          VERSION +
+          ' — mode MOCK (Tauri absent) : commandes simulées, événements via window.__bridgeMockEmit("play"|"stop"|"settings", payload).'
+      );
     }
-  };
-
-  window.__bridgeMode = transport.mode;
-  window.__bridgeCalls = callLog;
-  window.__bridgeLastEvent = null;
-  window.__bridgeMockEmit = function (eventName, payload) {
-    return emitMockEvent(eventName, payload, 'test');
-  };
-
-  if (isTauri) {
-    console.info(LOG_PREFIX + ' v' + VERSION + ' — mode TAURI (' + transport.kind + ', événements natifs : ' + (nativeListen ? 'oui' : 'non') + ').');
-  } else {
-    console.info(
-      LOG_PREFIX +
-        ' v' +
-        VERSION +
-        ' — mode MOCK (Tauri absent) : commandes simulées, événements via window.__bridgeMockEmit("play"|"stop"|"settings", payload).'
-    );
   }
 })();

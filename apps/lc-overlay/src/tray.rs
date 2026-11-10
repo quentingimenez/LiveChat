@@ -53,6 +53,13 @@ fn truncate(text: &str, max_chars: usize) -> String {
 }
 
 fn connection_detail(state: &AppState) -> String {
+    let config = state.config_snapshot();
+    if !config.enabled {
+        return "Overlay désactivé (aucune lecture)".to_string();
+    }
+    if !config.has_pairing_config() {
+        return "Appairage requis".to_string();
+    }
     let net = state.net_snapshot();
     if let Some(error) = net.last_error.as_deref().filter(|error| !error.is_empty()) {
         return format!("Dernière erreur : {}", truncate(error, 70));
@@ -69,12 +76,27 @@ fn connection_detail(state: &AppState) -> String {
     if net.guild_id.is_some() {
         return "Appareil appairé".to_string();
     }
+    if config.has_pairing_config() {
+        // Appareil configuré mais serveur pas encore joint (welcome non reçu).
+        return "Appareil appairé (en attente du serveur)".to_string();
+    }
     "Aucun appareil appairé".to_string()
 }
 
+/// L'entrée « Afficher l'overlay » n'a de sens que si l'overlay est activé et
+/// appairé (AUD-A6-006) : sinon la fenêtre resterait masquée.
+fn show_overlay_item_enabled(config: &crate::config::OverlayConfig) -> bool {
+    config.enabled && config.has_pairing_config()
+}
+
 fn tray_tooltip(state: &AppState) -> String {
+    let config = state.config_snapshot();
     let net = state.net_snapshot();
-    let mut tooltip = format!("LiveChat — overlay ({})", net.status.label());
+    let mut tooltip = if config.enabled {
+        format!("LiveChat — overlay ({})", net.status.label())
+    } else {
+        "LiveChat — overlay (désactivé)".to_string()
+    };
     if let Some(version) = net.server_version.as_deref() {
         tooltip.push_str(&format!(" — serveur v{version}"));
     }
@@ -127,7 +149,7 @@ pub fn build_menu(
         app,
         ID_SHOW_OVERLAY,
         "Afficher l'overlay",
-        true,
+        show_overlay_item_enabled(&config),
         None::<&str>,
     )?;
     let open_board = MenuItem::with_id(
@@ -335,6 +357,14 @@ fn toggle_enabled(app: &AppHandle<Wry>) {
                 enabled = config.enabled,
                 "overlay activé/désactivé depuis le tray"
             );
+            if config.enabled && config.has_pairing_config() {
+                windows::show_overlay(app);
+            } else {
+                // AUD-A6-006 : désactivation immédiate, lecture interrompue et
+                // fenêtre masquée (aucun événement bufferisé ne sera rejoué).
+                events::stop_overlay_now(app, "disabled");
+                windows::hide_overlay(app);
+            }
             publish_settings(app);
             crate::net::ws::request_reconnect(app);
         }
@@ -483,7 +513,16 @@ pub fn handle_menu_event(app: &AppHandle<Wry>, id: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::update_menu_entry;
+    use super::{show_overlay_item_enabled, update_menu_entry};
+    use crate::config::OverlayConfig;
+
+    fn paired_config() -> OverlayConfig {
+        let mut config = OverlayConfig::default();
+        config.server_url = Some("https://example.test".to_string());
+        config.client_token = Some("token".to_string());
+        config.guild_id = Some("guild".to_string());
+        config
+    }
 
     #[test]
     fn update_entry_is_disabled_when_updater_is_off() {
@@ -497,5 +536,21 @@ mod tests {
         let (label, enabled) = update_menu_entry(true);
         assert!(enabled);
         assert_eq!(label, "Vérifier les mises à jour");
+    }
+
+    #[test]
+    fn show_overlay_item_requires_enabled_and_paired() {
+        let mut config = paired_config();
+        assert!(show_overlay_item_enabled(&config));
+
+        config.enabled = false;
+        assert!(!show_overlay_item_enabled(&config), "désactivé => grisé");
+
+        let mut unpaired = paired_config();
+        unpaired.client_token = None;
+        assert!(
+            !show_overlay_item_enabled(&unpaired),
+            "non appairé => grisé"
+        );
     }
 }

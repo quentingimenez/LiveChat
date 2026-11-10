@@ -47,6 +47,7 @@
 //! | 500 | `{"error":"internal_error"}` |
 //! | 503 | `{"error":"database_unavailable"}` |
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
@@ -55,7 +56,7 @@ use lc_domain::{OverlayClient, OverlayClientId, OverlaySessionMode, PairingCode}
 
 use crate::app::AppState;
 
-use super::{db, db_failure, error, json_response, now};
+use super::{db, db_failure, error, is_conflict, json_response, now};
 
 /// Corps d'appairage (tolérant : les alias legacy sont acceptés).
 #[derive(Debug, Default, serde::Deserialize)]
@@ -83,8 +84,21 @@ const MAX_LABEL_LEN: usize = 200;
 /// Handler `POST /overlay/pair/consume`.
 pub async fn consume_pairing(
     State(state): State<AppState>,
-    Json(payload): Json<PairConsumeRequest>,
+    payload: Result<Json<PairConsumeRequest>, JsonRejection>,
 ) -> Response {
+    // AUD-A2-009 : JSON malformé → `400 invalid_payload` dédié (comme le legacy
+    // qui traite un corps illisible comme une charge utile invalide), au lieu de
+    // la réécriture générique `request_error`.
+    let payload = match payload {
+        Ok(Json(payload)) => payload,
+        Err(rejection) => {
+            tracing::debug!(
+                error = %rejection.body_text(),
+                "corps JSON invalide sur POST /overlay/pair/consume"
+            );
+            return error(StatusCode::BAD_REQUEST, "invalid_payload");
+        }
+    };
     let requested_code = payload
         .code
         .as_deref()
@@ -164,7 +178,7 @@ pub async fn consume_pairing(
         revoked_at: None,
     };
     if let Err(db_error) = db.overlay_clients().create(&client).await {
-        if db_error.is_unique_violation() {
+        if is_conflict(&db_error) {
             return error(StatusCode::CONFLICT, "overlay_client_conflict");
         }
         return db_failure("overlay_pair.create_client", &db_error);

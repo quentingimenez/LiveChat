@@ -4,7 +4,9 @@
 //! (`server/src/components/admin/adminRoutes.ts:197-225`) :
 //!
 //! 1. `ADMIN_UI_TOKEN` vide ⇒ `503 admin_ui_disabled` (message exact du legacy) ;
-//! 2. `ADMIN_UI_LOCAL_ONLY` vrai et client non loopback ⇒ `403 admin_local_only` ;
+//! 2. `ADMIN_UI_LOCAL_ONLY` vrai et client non loopback ⇒ `403 admin_local_only`
+//!    (avec `ADMIN_TRUST_FORWARDED_FOR=true`, le premier `X-Forwarded-For` est
+//!    pris en compte derrière un proxy de confiance) ;
 //! 3. token absent/différent ⇒ `401 unauthorized`, comparaison à temps constant.
 //!
 //! Le token est accepté **uniquement** en `Authorization: Bearer <token>`.
@@ -27,11 +29,21 @@
 //! différence assumée : `Ipv4Addr::is_loopback()` couvre tout
 //! `127.0.0.0/8` alors que le legacy ne testait que `127.0.0.1` — c'est plus
 //! permissif mais reste strictement local.
+//!
+//! Depuis AUD-COR-14, les **mutations** (`POST`/`PATCH`/`PUT`/`DELETE`) exigent
+//! en plus une origine vérifiée (`Origin:`, à défaut l'origine du `Referer:`).
+//! L'authentification Bearer reste prioritaire : une requête sans jeton valide
+//! reçoit `401` sans que l'origine soit évaluée. Une origine absente, `null` ou
+//! étrangère reçoit `403 {"error":"invalid_origin"}`. Les requêtes sûres (`GET`,
+//! `HEAD`, `OPTIONS`) ne sont pas concernées. L'origine est acceptée si son
+//! autorité correspond à celle de l'en-tête `Host` (même origine que le
+//! panneau) ou à l'origine publique `API_URL` (déploiement derrière un reverse
+//! proxy qui réécrit `Host`).
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use axum::extract::{ConnectInfo, FromRequestParts};
-use axum::http::{header, request::Parts, StatusCode};
+use axum::http::{header, request::Parts, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
@@ -60,7 +72,12 @@ impl FromRequestParts<AppState> for AdminAccess {
             return Err(disabled_response());
         }
 
-        if state.config.admin_ui_local_only && !is_loopback_parts(parts) {
+        let loopback = if state.config.admin_trust_forwarded_for {
+            forwarded_loopback_parts(parts)
+        } else {
+            is_loopback_parts(parts)
+        };
+        if state.config.admin_ui_local_only && !loopback {
             return Err(json_status(
                 StatusCode::FORBIDDEN,
                 json!({ "error": "admin_local_only" }),
@@ -75,8 +92,110 @@ impl FromRequestParts<AppState> for AdminAccess {
             return Err(unauthorized_response());
         }
 
+        // AUD-COR-14 : défense CSRF en profondeur. Un site tiers ne peut pas
+        // poser `Authorization: Bearer`, mais vérifier l'origine sur les
+        // mutations est gratuit et protège le jour où une session cookie serait
+        // introduite (ou si le jeton fuitait via un autre canal).
+        if is_mutation(&parts.method) && !origin_allowed(parts, state) {
+            return Err(invalid_origin_response());
+        }
+
         Ok(Self)
     }
+}
+
+/// Méthodes considérées comme mutantes (contrôle d'origine obligatoire).
+///
+/// `http::Method` n'expose pas de variante utilisable en pattern : on compare
+/// la représentation textuelle, stable majuscule pour les méthodes standard.
+fn is_mutation(method: &Method) -> bool {
+    matches!(method.as_str(), "POST" | "PATCH" | "PUT" | "DELETE")
+}
+
+/// Origine annoncée par la requête : `Origin`, sinon origine du `Referer`.
+fn request_origin(parts: &Parts) -> Option<String> {
+    if let Some(origin) = parts
+        .headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+    {
+        let origin = origin.trim();
+        if !origin.is_empty() {
+            return Some(origin.to_owned());
+        }
+    }
+
+    parts
+        .headers
+        .get(header::REFERER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(referer_origin)
+}
+
+/// Extrait `schéma://autorité` d'un `Referer` (le chemin est ignoré).
+fn referer_origin(referer: &str) -> Option<String> {
+    let (scheme, rest) = referer.trim().split_once("://")?;
+    if scheme.is_empty() {
+        return None;
+    }
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .filter(|authority| !authority.is_empty())?;
+    Some(format!("{scheme}://{authority}"))
+}
+
+/// Autorité normalisée d'une origine (`http(s)://hôte[:port]`), en minuscules.
+///
+/// Renvoie `None` pour une origine opaque (`null`), non HTTP(S) ou vide : ces
+/// valeurs ne peuvent jamais correspondre à une requête légitime du panneau.
+fn canonical_authority(origin: &str) -> Option<String> {
+    let (scheme, rest) = origin.trim().split_once("://")?;
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return None;
+    }
+    let authority = rest.split(['/', '?', '#']).next()?.trim();
+    if authority.is_empty() || authority.eq_ignore_ascii_case("null") {
+        return None;
+    }
+    Some(authority.to_ascii_lowercase())
+}
+
+/// Autorité de l'en-tête `Host` (normalisée en minuscules).
+fn request_host(parts: &Parts) -> Option<String> {
+    let host = parts.headers.get(header::HOST)?.to_str().ok()?.trim();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_ascii_lowercase())
+    }
+}
+
+/// Origine autorisée pour une mutation ?
+///
+/// Accepte l'origine si son autorité est celle du `Host` de la requête (même
+/// origine que le panneau) ou l'origine publique dérivée de `API_URL`
+/// (déploiement derrière un reverse proxy). L'origine `null` (iframe sandbox,
+/// `data:`) est toujours refusée.
+fn origin_allowed(parts: &Parts, state: &AppState) -> bool {
+    let Some(origin) = request_origin(parts) else {
+        return false;
+    };
+    let Some(origin_authority) = canonical_authority(&origin) else {
+        return false;
+    };
+
+    if let Some(host) = request_host(parts) {
+        if origin_authority == host {
+            return true;
+        }
+    }
+
+    canonical_authority(&state.config.api_origin()).is_some_and(|api| api == origin_authority)
+}
+
+fn invalid_origin_response() -> Response {
+    json_status(StatusCode::FORBIDDEN, json!({ "error": "invalid_origin" }))
 }
 
 fn disabled_response() -> Response {
@@ -119,6 +238,22 @@ fn is_loopback_parts(parts: &Parts) -> bool {
     };
 
     is_loopback(address.ip())
+}
+
+/// `X-Forwarded-For` (premier saut) pour le contrôle local-only derrière un
+/// reverse proxy de confiance (`ADMIN_TRUST_FORWARDED_FOR=true`).
+///
+/// Le premier saut est celui du client d'origine quand le proxy *ajoute* son
+/// entrée à la fin (convention `X-Forwarded-For`). Un en-tête absent ou
+/// illisible retombe sur « non loopback » : refus explicite.
+fn forwarded_loopback_parts(parts: &Parts) -> bool {
+    parts
+        .headers
+        .get(header::HeaderName::from_static("x-forwarded-for"))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .and_then(|hop| hop.trim().parse::<IpAddr>().ok())
+        .is_some_and(is_loopback)
 }
 
 /// Token de la requête : `Authorization: Bearer` uniquement (AUD-COR-05).

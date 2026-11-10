@@ -149,6 +149,20 @@ fn db_failure(operation: &'static str, db_error: &lc_db::DbError) -> Response {
     internal_error()
 }
 
+/// Conflit d'unicité quel que soit le chemin de conversion de l'erreur.
+///
+/// `lc-db` convertit parfois `SQLITE_CONSTRAINT` en `DomainError::Conflict`
+/// (`map_sqlx_error`), parfois laisse le `DbError::Sqlx` brut : les deux formes
+/// doivent être reconnues, sinon les branches de récupération sont mortes
+/// (AUD-A2-010).
+fn is_conflict(db_error: &lc_db::DbError) -> bool {
+    db_error.is_unique_violation()
+        || matches!(
+            db_error,
+            lc_db::DbError::Domain(lc_domain::DomainError::Conflict(_))
+        )
+}
+
 /// Tests ciblés AUD-V-003 : garde `read_only_session` sur les écritures board.
 ///
 /// Ces tests montent le routeur complet (`crate::app::router`) comme

@@ -291,11 +291,7 @@ impl MediaConfig {
                 "YTDLP_FORMAT",
                 DEFAULT_YTDLP_FORMAT,
             )),
-            tiktok_cookie: value(&vars, "TIKTOK_COOKIE")
-                .map(str::trim)
-                .filter(|cookie| !cookie.is_empty())
-                .map(strip_cookie_prefix)
-                .filter(|cookie| !cookie.is_empty()),
+            tiktok_cookie: value(&vars, "TIKTOK_COOKIE").and_then(sanitize_tiktok_cookie),
         };
 
         let resolve = ResolveConfig {
@@ -456,6 +452,26 @@ fn strip_cookie_prefix(cookie: &str) -> String {
         .or_else(|| trimmed.strip_prefix("COOKIE:"))
         .unwrap_or(trimmed);
     without_prefix.trim().to_string()
+}
+
+/// Longueur maximale acceptée pour `TIKTOK_COOKIE`.
+const MAX_TIKTOK_COOKIE_CHARS: usize = 4096;
+
+/// Nettoie et valide le cookie TikTok (`TIKTOK_COOKIE`).
+///
+/// La valeur est écrite dans un fichier de cookies pour yt-dlp : un caractère
+/// de contrôle (CR, LF, TAB…) ou une valeur démesurée est refusé plutôt
+/// qu'échappé silencieusement (AUD-A4-013). La valeur n'est jamais loguée.
+fn sanitize_tiktok_cookie(raw: &str) -> Option<String> {
+    let cookie = strip_cookie_prefix(raw);
+    if cookie.is_empty() || cookie.chars().count() > MAX_TIKTOK_COOKIE_CHARS {
+        return None;
+    }
+    if cookie.chars().any(char::is_control) {
+        tracing::warn!("TIKTOK_COOKIE ignoré : caractères de contrôle interdits dans la valeur");
+        return None;
+    }
+    Some(cookie)
 }
 
 fn normalize_cpu_preset(preset: &str) -> String {
@@ -676,5 +692,28 @@ mod tests {
         assert_eq!(config.tools.tiktok_cookie.as_deref(), Some("a=b"));
         let empty = MediaConfig::from_pairs([("TIKTOK_COOKIE", "cookie: ")]);
         assert_eq!(empty.tools.tiktok_cookie, None);
+    }
+
+    #[test]
+    fn tiktok_cookie_rejects_control_characters() {
+        for raw in [
+            "cookie: sessionid=a\r\nInjected: b",
+            "sessionid=a\nb",
+            "sessionid=a\tb",
+            "sessionid=a\u{0}b",
+        ] {
+            let config = MediaConfig::from_pairs([("TIKTOK_COOKIE", raw)]);
+            assert!(
+                config.tools.tiktok_cookie.is_none(),
+                "cookie avec caractère de contrôle accepté : {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tiktok_cookie_rejects_oversized_values() {
+        let huge = format!("sessionid={}", "a".repeat(MAX_TIKTOK_COOKIE_CHARS));
+        let config = MediaConfig::from_pairs([("TIKTOK_COOKIE", huge.as_str())]);
+        assert_eq!(config.tools.tiktok_cookie, None);
     }
 }

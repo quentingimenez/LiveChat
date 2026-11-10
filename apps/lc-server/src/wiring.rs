@@ -2,8 +2,10 @@
 //!
 //! Ce module relie les briques qui ne doivent pas se connaître mutuellement :
 //!
-//! - [`crate::ws::Hub`] implémente le trait [`AdminHub`] de la lane admin
-//!   (compteurs de connexions, fermeture ciblée, diffusions `stop`/`settings`) ;
+//! - le hub WebSocket est injecté dans l'état applicatif
+//!   (`AppState::with_admin_hub`) et implémente le trait [`AdminHub`] de la lane
+//!   admin (compteurs de connexions, fermeture ciblée, diffusions
+//!   `stop`/`settings`) ;
 //! - le hook d'ingestion média notifie le moteur de lecture **déjà démarré**
 //!   (`PlaybackEngine::notify`), jamais `enqueue` : le service média a déjà
 //!   persisté le job `PENDING` (cf. [`crate::media::hook`]).
@@ -22,7 +24,7 @@ use lc_domain::ids::GuildId;
 use uuid::Uuid;
 
 use crate::app::AppState;
-use crate::http::admin::hub::{install_admin_hub, AdminHub};
+use crate::http::admin::hub::AdminHub;
 use crate::media::hook::{install_ingest_hook, IngestHook};
 use crate::ws::Hub;
 
@@ -103,20 +105,14 @@ impl IngestHook for IngestNotifier {
     }
 }
 
-/// Installe le hub comme `AdminHub` global et branche le hook d'ingestion.
+/// Installe le hub comme `AdminHub` dans l'état applicatif et branche le hook
+/// d'ingestion.
 ///
-/// Retourne `true` si l'`AdminHub` a bien été installé (un second appel ne
-/// remplace pas l'instance existante ; le hook média est, lui, remplaçable).
-pub fn install(state: &AppState, hub: &Arc<Hub>) -> bool {
+/// AUD-COR-14 : le hub n'est plus un `OnceLock` global ; il est injecté dans
+/// [`AppState::with_admin_hub`] par `serve()` avant la construction du routeur.
+pub fn install(state: &AppState, hub: &Arc<Hub>) {
     let _ = state;
-    let hub_handle: Arc<Hub> = Arc::clone(hub);
-    let admin: Arc<dyn AdminHub> = hub_handle;
-    let installed = install_admin_hub(admin);
-    if !installed {
-        tracing::warn!("AdminHub déjà installé : le hub WebSocket n'est pas celui utilisé");
-    }
     install_ingest_hook(Arc::new(IngestNotifier::new(Arc::clone(hub))));
-    installed
 }
 
 #[cfg(test)]

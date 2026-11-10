@@ -119,6 +119,7 @@ pub(crate) fn build_play_payload(
         },
         tweet_card: None,
         duration_sec: u64::try_from(timing.play_duration_sec).unwrap_or_default(),
+        ..Default::default()
     }
 }
 

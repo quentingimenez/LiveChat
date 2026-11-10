@@ -716,10 +716,23 @@ impl PlaybackSink for HubSink {
         let hub = self.hub.clone();
         let guild_id = guild_id.clone();
         async move {
-            match hub.upgrade() {
-                Some(hub) => hub.unicast_play(&guild_id, &payload),
-                None => 0,
+            let Some(hub) = hub.upgrade() else {
+                return 0;
+            };
+            let delivered = hub.unicast_play(&guild_id, &payload);
+            if delivered == 0 && hub.connected_for_guild(&guild_id) > 0 {
+                // Des sockets existent mais aucune n'a pu recevoir le média
+                // (URL non signable, configuration absente…) : `lc-playback`
+                // marque le job FAILED ; on prévient les clients via `error`
+                // non fatal (P2, AUD-COR-12).
+                let error = lc_protocol::ServerErrorPayload {
+                    code: "dispatch_failed".to_owned(),
+                    message: "aucun overlay connecté n'a pu recevoir le média".to_owned(),
+                    job_id: Some(payload.job_id.clone()),
+                };
+                hub.broadcast_message(&guild_id, ServerMessage::Error(error));
             }
+            delivered
         }
     }
 

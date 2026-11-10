@@ -110,11 +110,11 @@ Convention d'effort : XS ≤ 0,5 j-h, S ≤ 1 j-h, M 1–2 j-h, L > 2 j-h.
 
 ## P3 — documentation / nits
 
-- Corriger `docs/rust/server-overlay.md` (le `?token=` board est accepté depuis `e0a381f`) et la décision `overlay-bridge.md` §8.4/§8.6.
-- Corriger le runbook `migrator.md` (ledger, ordre stop/migrate/start).
+- ~~Corriger `docs/rust/server-overlay.md` (le `?token=` board est accepté depuis `e0a381f`) et la décision `overlay-bridge.md` §8.4/§8.6~~ — fait (repli board documenté §4.1 + en-tête du tableau).
+- ~~Corriger le runbook `migrator.md` (ledger, ordre stop/migrate/start)~~ — fait (P0/P2-D).
 - ~~Documenter le plafond `peers` (8) ou changer la spec~~ — fait (protocol-v2 rév. 3, §6.4).
 - ~~Supprimer ou implémenter `crates/lc-admin` (crate vide)~~ — fait (crate supprimé le 2026-11-10, workspace mis à jour).
-- Mettre à jour `docs/rust/migration-plan.md` §12.11 avec les résultats d'audit et les décisions de release.
+- ~~Mettre à jour `docs/rust/migration-plan.md` §12.11 avec les résultats d'audit et les décisions de release~~ — fait (§12.11 smoke, §12.12 état P0→P2 et reste avant release).
 - ~~Nettoyer `bridge-test.html`/`README.md` du bundle release~~ — fait (COR-11, `apps/lc-overlay/dev/`).
 
 ## Séquencement proposé (multi-agents)

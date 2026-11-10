@@ -35,8 +35,12 @@
 //!
 //! - Les URLs signées sont générées par le hub WebSocket (Phase 4b) via
 //!   [`crate::media_url`] ; la signature et sa vérification sont partagées.
-//! - Le renderer board (Phase 8) devra envoyer un en-tête `Authorization`
-//!   (le fallback `?token=` du legacy est volontairement supprimé).
+//! - Le renderer board (Phase 8) envoie un en-tête `Authorization` quand c'est
+//!   possible ; pour les balises `src` (`<video>`, `<img>`) qui ne peuvent pas
+//!   porter d'en-tête, l'extracteur accepte un repli `?token=` **limité aux
+//!   routes `/overlay/meme-board/*`** (parité legacy, cf.
+//!   `http/overlay/auth.rs::query_token`). Ce repli n'existe sur aucune autre
+//!   route overlay.
 
 // Les helpers (`db`, `resolve_media_file`, ...) et certains handlers renvoient
 // `Result<_, Response>` : `Response` est le type d'erreur natif d'axum et le

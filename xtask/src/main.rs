@@ -6,13 +6,17 @@
 //!   migration one-shot de la base SQLite du serveur legacy (Prisma 5.22) vers le
 //!   schéma 3.0 (`docs/rust/schema-v3.sql`). Le déroulé, le format du rapport et
 //!   la procédure de rollback sont documentés dans `docs/rust/migrator.md`.
+//! - `parity capture|compare` : harnais de parité HTTP entre le serveur legacy
+//!   TypeScript et la cible Rust (goldens, normalisation, rapport). Voir
+//!   `docs/rust/parity-harness.md`.
 //!
 //! `--help` affiche l'aide. La CLI est analysée à la main, volontairement :
-//! `clap` n'appartient pas aux dépendances du workspace (une seule sous-commande,
+//! `clap` n'appartient pas aux dépendances du workspace (deux sous-commandes,
 //! analyse triviale à maintenir).
 #![forbid(unsafe_code)]
 
 mod migrate;
+mod parity;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -24,9 +28,12 @@ xtask — outillage du workspace LiveChat 3.0
 
 USAGE :
     cargo run -p xtask -- migrate-legacy --from <legacy.sqlite> --to <nouvelle.sqlite> [--dry-run] [--force]
+    cargo run -p xtask -- parity capture --base-url <URL> [OPTIONS]
+    cargo run -p xtask -- parity compare --base-url <URL> --golden <DIR> [OPTIONS]
 
 COMMANDES :
     migrate-legacy    Migre une base SQLite legacy (serveur Prisma 5.22) vers le schéma 3.0.
+    parity            Harnais de parité HTTP legacy TS ↔ cible Rust (`parity help` pour l'aide).
 
 OPTIONS (migrate-legacy) :
     --from <PATH>     Base legacy à lire (ouverture strictement en lecture seule).
@@ -44,6 +51,7 @@ CODES DE SORTIE :
 enum Command {
     Help,
     MigrateLegacy(Options),
+    Parity(parity::ParityCommand),
 }
 
 /// Erreurs d'analyse de la ligne de commande (code de sortie 2).
@@ -61,6 +69,8 @@ enum CliError {
     MissingFrom,
     #[error("option --to obligatoire pour migrate-legacy")]
     MissingTo,
+    #[error("arguments parity invalides : {0} (voir parity help)")]
+    ParityArguments(String),
 }
 
 #[tokio::main]
@@ -88,6 +98,7 @@ async fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
+        Command::Parity(command) => ExitCode::from(parity::execute(command).await),
     }
 }
 
@@ -100,6 +111,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, CliErro
     match subcommand.as_str() {
         "-h" | "--help" | "help" => Ok(Command::Help),
         "migrate-legacy" => parse_migrate_legacy(args),
+        "parity" => parity::cli::parse(args)
+            .map(Command::Parity)
+            .map_err(CliError::ParityArguments),
         other => Err(CliError::UnknownCommand(other.to_string())),
     }
 }
@@ -213,6 +227,7 @@ mod tests {
                 assert!(options.force);
             }
             Command::Help => panic!("migrate-legacy attendu"),
+            Command::Parity(_) => panic!("migrate-legacy attendu"),
         }
     }
 
@@ -232,6 +247,7 @@ mod tests {
                 assert!(!options.force);
             }
             Command::Help => panic!("migrate-legacy attendu"),
+            Command::Parity(_) => panic!("migrate-legacy attendu"),
         }
     }
 
@@ -248,6 +264,19 @@ mod tests {
         assert!(matches!(
             parse_args(args(&["migrate-legacy", "--from"])),
             Err(CliError::MissingValue("--from"))
+        ));
+    }
+
+    #[test]
+    fn parity_dispatch() {
+        let command = parse_args(args(&["parity", "help"])).expect("arguments valides");
+        match command {
+            Command::Parity(parity::ParityCommand::Help) => {}
+            other => panic!("commande parity help attendue : {other:?}"),
+        }
+        assert!(matches!(
+            parse_args(args(&["parity", "bogus"])),
+            Err(CliError::ParityArguments(_))
         ));
     }
 

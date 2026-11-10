@@ -41,11 +41,13 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use axum::extract::DefaultBodyLimit;
+use axum::http::{header, Extensions, HeaderMap, StatusCode, Version};
 use axum::middleware;
 use axum::Router;
 use chrono::{DateTime, Utc};
 use lc_db::{Db, DbConfig};
 use lc_domain::{Clock, SystemClock};
+use tower_http::compression::predicate::{DefaultPredicate, Predicate};
 use tower_http::compression::CompressionLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::{DefaultOnFailure, DefaultOnRequest, DefaultOnResponse, TraceLayer};
@@ -129,11 +131,55 @@ pub async fn open_database(config: &Config) -> anyhow::Result<Option<Db>> {
     Ok(Some(db))
 }
 
+/// Prédicat de compression : jamais de média binaire ni de `206 Partial
+/// Content`.
+///
+/// Le [[CompressionLayer]] par défaut (`DefaultPredicate`) n'exclut pas
+/// `video/*`/`audio/*` : sans ce garde-fou, un `GET /overlay/media/{id}` 200
+/// complet serait gzippé, supprimant `Content-Length`/`Accept-Ranges` et cassant
+/// le streaming côté WebView (cf. docs/rust/server-overlay.md §6.4). La couche
+/// reste appliquée aux réponses JSON/HTML.
+fn compression_predicate(
+    status: StatusCode,
+    _version: Version,
+    headers: &HeaderMap,
+    _extensions: &Extensions,
+) -> bool {
+    if status == StatusCode::PARTIAL_CONTENT {
+        return false;
+    }
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_ascii_lowercase());
+    match content_type {
+        Some(value) => {
+            !(value.starts_with("video/")
+                || value.starts_with("audio/")
+                || value.starts_with("application/octet-stream")
+                || value.starts_with("multipart/"))
+        }
+        None => true,
+    }
+}
+
 /// Construit le routeur complet de l'application.
 ///
 /// Le routeur est rendu avec son état appliqué ; il peut être servi par
 /// `axum::serve` ou testé directement avec `tower::ServiceExt::oneshot`.
+///
+/// Le hub WebSocket est créé localement : pour le partager avec le câblage
+/// Discord, le hook média et l'admin (`install_admin_hub`), utiliser
+/// [`router_with_hub`].
 pub fn router(state: AppState) -> Router {
+    router_with_hub(state, Arc::new(crate::ws::Hub::new()))
+}
+
+/// Construit le routeur complet autour d'un hub WebSocket existant.
+///
+/// Utilisé par `serve()` : le même [`crate::ws::Hub`] alimente le routeur
+/// (`/ws`), l'adaptateur `AdminHub` et le hook d'ingestion média.
+pub fn router_with_hub(state: AppState, hub: Arc<crate::ws::Hub>) -> Router {
     let config = Arc::clone(&state.config);
     let rate_limit = RateLimitState::from_config(&config);
     let cors = http::cors::layer(&config);
@@ -150,7 +196,7 @@ pub fn router(state: AppState) -> Router {
         .merge(http::overlay::router())
         .merge(http::ingest::router())
         .merge(http::admin::router())
-        .merge(crate::ws::router())
+        .merge(crate::ws::router_with_hub(hub))
         .fallback(http::error::fallback)
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(middleware::from_fn_with_state(
@@ -158,7 +204,10 @@ pub fn router(state: AppState) -> Router {
             http::rate_limit::enforce,
         ))
         .layer(middleware::from_fn(http::error::normalize_errors))
-        .layer(CompressionLayer::new())
+        .layer(
+            CompressionLayer::new()
+                .compress_when(DefaultPredicate::new().and(compression_predicate)),
+        )
         .layer(cors)
         .layer(middleware::from_fn(http::security::security_headers))
         .layer(trace)
@@ -440,13 +489,14 @@ mod tests {
         assert_eq!(headers.get("x-ratelimit-remaining").unwrap(), "0");
         assert!(headers.get(header::RETRY_AFTER).is_some());
 
-        // `/admin*` est exempté : la requête atteint le routeur (404), pas le 429.
+        // `/admin*` est exempté : la requête atteint le routeur admin (308 vers
+        // `/admin/`), pas le 429.
         let (status, _, _) = send(
             &app,
             from_client(request(Method::GET, "/admin"), [203, 0, 113, 10]),
         )
         .await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(status, StatusCode::PERMANENT_REDIRECT);
     }
 
     #[tokio::test]

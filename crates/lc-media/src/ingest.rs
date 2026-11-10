@@ -13,9 +13,9 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::config::MediaConfig;
 use crate::download::{self, DownloadResult};
 use crate::error::{MediaError, MediaErrorCode, MediaResult};
-use crate::http;
+use crate::guard;
 use crate::resolve::{self, ResolvedMedia};
-use crate::source::{self, MediaSource};
+use crate::source::{self, MediaSource, SourceKind};
 use crate::storage::MediaStorage;
 use crate::transcode::{self, NormalizedMedia};
 
@@ -71,42 +71,25 @@ impl IngestLimiter {
     }
 }
 
-/// Pipeline d'ingestion réutilisable (client HTTP + limiteur + configuration).
+/// Pipeline d'ingestion réutilisable (limiteur + configuration).
 #[derive(Clone, Debug)]
 pub struct MediaPipeline {
-    client: reqwest::Client,
     limiter: IngestLimiter,
     config: MediaConfig,
 }
 
 impl MediaPipeline {
-    /// Construit le pipeline (client HTTP reqwest configuré).
+    /// Construit le pipeline.
     pub fn new(config: MediaConfig) -> MediaResult<Self> {
-        let client = http::build_client(&config.download)?;
         Ok(Self {
-            client,
             limiter: IngestLimiter::from_config(&config),
             config,
         })
     }
 
-    /// Construit le pipeline à partir d'éléments déjà initialisés (tests, serveur).
-    pub fn from_parts(config: MediaConfig, client: reqwest::Client) -> Self {
-        Self {
-            limiter: IngestLimiter::from_config(&config),
-            client,
-            config,
-        }
-    }
-
     /// Configuration utilisée par le pipeline.
     pub fn config(&self) -> &MediaConfig {
         &self.config
-    }
-
-    /// Client HTTP partagé.
-    pub fn client(&self) -> &reqwest::Client {
-        &self.client
     }
 
     /// Limiteur de concurrence.
@@ -116,7 +99,7 @@ impl MediaPipeline {
 
     /// Ingère une URL brute (résolution de source incluse).
     pub async fn ingest_url(&self, raw: &str) -> MediaResult<IngestedMedia> {
-        let source = source::resolve_source(&self.client, raw, &self.config)
+        let source = source::resolve_source(&self.config, raw)
             .await?
             .ok_or_else(|| {
                 MediaError::new(
@@ -129,7 +112,24 @@ impl MediaPipeline {
 
     /// Ingère une source déjà normalisée.
     pub async fn ingest_source(&self, source: &MediaSource) -> MediaResult<IngestedMedia> {
-        let resolved = match resolve::resolve_media(&self.client, source, &self.config).await {
+        match source.source_kind {
+            SourceKind::LocalFile | SourceKind::Gtts | SourceKind::Unknown => {
+                return Err(MediaError::new(
+                    MediaErrorCode::UnsupportedSource,
+                    format!(
+                        "source média refusée par la politique : {}",
+                        source.canonical_url
+                    ),
+                ));
+            }
+            SourceKind::YouTube
+            | SourceKind::TikTok
+            | SourceKind::Twitter
+            | SourceKind::DirectMedia => {
+                guard::validate_target(&source.canonical_url).await?;
+            }
+        }
+        let resolved = match resolve::resolve_media(&self.config, source).await {
             Ok(resolved) => Some(resolved),
             Err(error) => {
                 tracing::debug!(
@@ -156,14 +156,9 @@ impl MediaPipeline {
                 &error,
             )
         })?;
-        let download = download::download_source(
-            &self.client,
-            source,
-            resolved.as_ref(),
-            &self.config,
-            temp_dir.path(),
-        )
-        .await?;
+        let download =
+            download::download_source(source, resolved.as_ref(), &self.config, temp_dir.path())
+                .await?;
         if download.size_bytes > self.config.download.max_size_bytes {
             return Err(MediaError::new(
                 MediaErrorCode::FileTooLarge,
@@ -235,7 +230,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pipeline_exposes_config_and_client() {
+    async fn pipeline_exposes_config_and_limiter() {
         let config = MediaConfig::default();
         let pipeline = MediaPipeline::new(config.clone()).unwrap();
         assert_eq!(
@@ -246,6 +241,5 @@ mod tests {
             pipeline.limiter().available_permits(),
             config.download.max_concurrent_ingestions
         );
-        let _ = pipeline.client();
     }
 }

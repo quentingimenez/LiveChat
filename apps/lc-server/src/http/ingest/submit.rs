@@ -85,6 +85,17 @@ pub async fn submit(
         return invalid_payload(Some("saveToBoard requires a resolvable media source"));
     }
 
+    // 5b. Politique de source (garde SSRF/LFI) : une source refusée est
+    //     rejetée AVANT toute création d'asset, avec le même format d'erreur
+    //     que le pipeline (`media_ingestion_failed`).
+    if has_source {
+        if let Some(raw_source) = request.media.as_deref().or(request.url.as_deref()) {
+            if let Err(error) = lc_media::source::validate_ingest_source(raw_source).await {
+                return media_service_error(MediaServiceError::Media(error));
+            }
+        }
+    }
+
     // 6. Texte enrichi (offset YouTube) et métadonnées du job.
     let offset = lc_discord::text::youtube_start_offset_sec(
         request.url.as_deref(),

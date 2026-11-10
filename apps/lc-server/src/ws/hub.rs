@@ -15,7 +15,9 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use lc_db::Db;
-use lc_domain::{now_ms, GuildId, OverlayClient, OverlayClientId, OverlaySessionMode, SystemClock};
+use lc_domain::{
+    now_ms, GuildId, OverlayClient, OverlayClientId, OverlaySessionMode, PlaybackJobId, SystemClock,
+};
 use lc_playback::{PlaybackConfig, PlaybackEngine, PlaybackSink};
 use lc_protocol::{
     close_code, close_reason, CurrentJobPayload, MediaKind as ProtocolMediaKind, MediaPayload,
@@ -35,6 +37,18 @@ use crate::media_url;
 /// Nombre maximal de pairs renvoyés dans un payload `peers`.
 pub const MAX_PEERS: usize = 8;
 
+/// Nombre maximal de sockets simultanées pour un même client overlay.
+///
+/// Au-delà, la nouvelle connexion est fermée `4409` avec la raison
+/// `too_many_connections` (cf. `docs/rust/server-ws.md` §6).
+pub const MAX_SOCKETS_PER_CLIENT: usize = 3;
+
+/// Nombre maximal de sockets simultanées pour une même guilde.
+pub const MAX_SOCKETS_PER_GUILD: usize = 16;
+
+/// Raison de fermeture `4409` lorsqu'un plafond de connexions est atteint.
+pub(crate) const TOO_MANY_CONNECTIONS_REASON: &str = "too_many_connections";
+
 /// Période de la purge de rétention exécutée par le hub.
 const PURGE_INTERVAL: Duration = Duration::from_secs(3_600);
 
@@ -47,6 +61,15 @@ pub enum HubError {
     /// Le serveur tourne sans base de données : le hub ne peut pas démarrer.
     #[error("base de données indisponible pour le hub WebSocket")]
     DatabaseUnavailable,
+}
+
+/// Motif de refus d'une nouvelle connexion (plafonds anti-DoS, COR-06).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RegisterError {
+    /// Le client overlay a déjà [`MAX_SOCKETS_PER_CLIENT`] sockets.
+    ClientLimit,
+    /// La guilde a déjà [`MAX_SOCKETS_PER_GUILD`] sockets.
+    GuildLimit,
 }
 
 /// Trame sortante en attente d'écriture sur un socket.
@@ -119,6 +142,10 @@ impl Hub {
     }
 
     /// Enregistre une connexion authentifiée et retourne son identifiant.
+    ///
+    /// Applique les plafonds anti-DoS [`MAX_SOCKETS_PER_CLIENT`] et
+    /// [`MAX_SOCKETS_PER_GUILD`] sous le verrou du registre ; au-delà,
+    /// [`RegisterError`] est renvoyé et l'appelant ferme la socket `4409`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn register(
         &self,
@@ -130,7 +157,20 @@ impl Hub {
         author_name: Option<String>,
         _author_image: Option<String>,
         sender: mpsc::UnboundedSender<OutFrame>,
-    ) -> Uuid {
+    ) -> Result<Uuid, RegisterError> {
+        let mut inner = self.lock_inner();
+        let client_sockets = inner
+            .connections
+            .values()
+            .filter(|connection| connection.client_id == client_id)
+            .count();
+        if client_sockets >= MAX_SOCKETS_PER_CLIENT {
+            return Err(RegisterError::ClientLimit);
+        }
+        let guild_sockets = inner.guilds.get(&guild_id).map_or(0, BTreeSet::len);
+        if guild_sockets >= MAX_SOCKETS_PER_GUILD {
+            return Err(RegisterError::GuildLimit);
+        }
         let connection_id = Uuid::new_v4();
         let peer_label = peer_label(author_name.as_deref(), &label);
         let connection = Connection {
@@ -144,14 +184,13 @@ impl Hub {
         };
         // `_author_image` n'est pas stocké : il est déjà utilisé par la session
         // pour construire les jobs `meme.trigger` (le hub n'en a pas besoin).
-        let mut inner = self.lock_inner();
         inner
             .guilds
             .entry(guild_id)
             .or_default()
             .insert(connection_id);
         inner.connections.insert(connection_id, connection);
-        connection_id
+        Ok(connection_id)
     }
 
     /// Retire une connexion du registre ; `true` si elle existait.
@@ -262,10 +301,7 @@ impl Hub {
     /// média signée pour le `clientId` de la connexion ; retourne le nombre de
     /// sockets servis.
     pub(crate) fn unicast_play(&self, guild_id: &GuildId, payload: &PlayPayload) -> usize {
-        let Some(config) = self.config.get() else {
-            warn!("configuration absente : play impossible");
-            return 0;
-        };
+        let config = self.config.get();
         let now_sec = current_unix_seconds();
         let inner = self.lock_inner();
         let Some(room) = inner.guilds.get(guild_id) else {
@@ -276,10 +312,22 @@ impl Hub {
             let Some(connection) = inner.connections.get(connection_id) else {
                 continue;
             };
-            let Some(signed) =
-                signed_play_payload(payload, &connection.client_id_str, config, now_sec)
-            else {
-                continue;
+            // Job texte-seul (`media == null`) : aucun média à signer, le
+            // payload est envoyé tel quel mais la socket est bien servie
+            // (AUD-A1-001).
+            let signed = if payload.media.is_none() {
+                payload.clone()
+            } else {
+                let Some(config) = config else {
+                    warn!("configuration absente : play média impossible");
+                    return 0;
+                };
+                let Some(signed) =
+                    signed_play_payload(payload, &connection.client_id_str, config, now_sec)
+                else {
+                    continue;
+                };
+                signed
             };
             let envelope = ServerEnvelope::new(
                 self.next_message_id("play"),
@@ -311,6 +359,10 @@ impl Hub {
         client_id: &str,
         now_sec: u64,
     ) -> Option<CurrentJobPayload> {
+        // Job texte-seul : aucun média à signer, le payload part tel quel.
+        if current_job.play.media.is_none() {
+            return Some(current_job.clone());
+        }
         let config = self.config.get()?;
         let play = signed_play_payload(&current_job.play, client_id, config, now_sec)?;
         Some(CurrentJobPayload {
@@ -516,38 +568,115 @@ impl Hub {
 
     /// Ferme toutes les connexions d'un client avec le code donné.
     ///
-    /// Retourne `true` si au moins un socket a été ciblé. La raison de close
-    /// est mappée depuis `code` (`4402` → `revoked`, `1000` →
-    /// `client_shutdown`, `1001` → `server_shutdown`, sinon `internal_error`).
+    /// Pour une révocation (`4402`), le hub diffuse d'abord
+    /// `stop {reason:"revoked", jobId:null}` (protocole §6.3/§10) puis envoie
+    /// les close — l'ordre est garanti par le canal FIFO de chaque connexion.
+    /// Retourne `true` si au moins un socket a été ciblé.
     pub fn close_client(&self, client_id: &Uuid, code: u16) -> bool {
         let reason = close_reason_for_code(code).to_owned();
-        let inner = self.lock_inner();
-        let mut closed = false;
-        for connection in inner.connections.values() {
-            if connection.client_uuid != *client_id {
-                continue;
+        let revoked = code == close_code::REVOKED;
+        let (connection_ids, guilds): (Vec<Uuid>, BTreeSet<GuildId>) = {
+            let inner = self.lock_inner();
+            let mut connection_ids = Vec::new();
+            let mut guilds = BTreeSet::new();
+            for (connection_id, connection) in &inner.connections {
+                if connection.client_uuid == *client_id {
+                    connection_ids.push(*connection_id);
+                    guilds.insert(connection.guild_id.clone());
+                }
             }
-            let frame = OutFrame::Close(code, reason.clone());
-            if connection.sender.send(frame).is_ok() {
+            (connection_ids, guilds)
+        };
+        if connection_ids.is_empty() {
+            return false;
+        }
+        if revoked {
+            let payload = StopPayload {
+                reason: StopReason::Revoked,
+                job_id: None,
+            };
+            for guild_id in &guilds {
+                self.broadcast_stop_frame(guild_id, payload.clone());
+            }
+        }
+        let mut closed = false;
+        for connection_id in connection_ids {
+            if self.send(connection_id, OutFrame::Close(code, reason.clone())) {
                 closed = true;
             }
         }
+        if revoked {
+            self.spawn_release_after_revocation(&guilds);
+        }
         closed
+    }
+
+    /// Réconcilie l'état des jobs après révocation sans rediffuser de `stop`
+    /// (le payload a déjà été diffusé en amont par [`Self::close_client`]).
+    fn spawn_release_after_revocation(&self, guilds: &BTreeSet<GuildId>) {
+        let Some(engine) = self.engine.get().cloned() else {
+            return;
+        };
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            warn!("révocation hors runtime Tokio : jobs PLAYING non réconciliés");
+            return;
+        };
+        for guild_id in guilds {
+            let engine = Arc::clone(&engine);
+            let guild_id = guild_id.clone();
+            handle.spawn(async move {
+                if let Err(error) = engine
+                    .release_playing_without_stop(&guild_id, None, StopReason::Revoked)
+                    .await
+                {
+                    warn!(error = %error, guild = %guild_id, "libération des jobs après révocation impossible");
+                }
+            });
+        }
     }
 
     /// Arrête tous les jobs de la guilde (reason `manual`) ; retourne le nombre
     /// de jobs effectivement arrêtés.
     pub async fn broadcast_stop(&self, guild_id: &GuildId) -> usize {
+        self.broadcast_stop_with_reason(guild_id, None, StopReason::Manual)
+            .await
+    }
+
+    /// Arrête des jobs avec une raison protocolaire explicite.
+    ///
+    /// `job_id` ciblé produit un `stop {jobId}` ; `None` arrête toute la file
+    /// (le `jobId` du payload suit `lc-playback` : l'identifiant unique si un
+    /// seul job est libéré, sinon `null`).
+    pub async fn broadcast_stop_with_reason(
+        &self,
+        guild_id: &GuildId,
+        job_id: Option<PlaybackJobId>,
+        reason: StopReason,
+    ) -> usize {
+        let Some(engine) = self.engine.get().cloned() else {
+            return 0;
+        };
+        match engine.stop_with_reason(guild_id, job_id, reason).await {
+            Ok(outcome) => outcome.stopped.len(),
+            Err(error) => {
+                warn!(error = %error, guild = %guild_id, "arrêt de guilde impossible");
+                0
+            }
+        }
+    }
+
+    /// Purge administrateur : `stop {reason:"purge", jobId:null}` dédié.
+    pub async fn broadcast_purge(&self, guild_id: &GuildId) -> usize {
         let Some(engine) = self.engine.get().cloned() else {
             return 0;
         };
         match engine
-            .stop_with_reason(guild_id, None, StopReason::Manual)
+            .stop_all_with_reason(guild_id, StopReason::Purge)
             .await
         {
             Ok(outcome) => outcome.stopped.len(),
             Err(error) => {
-                warn!(error = %error, guild = %guild_id, "arrêt de guilde impossible");
+                warn!(error = %error, guild = %guild_id, "purge de guilde impossible");
                 0
             }
         }
@@ -729,6 +858,11 @@ pub(crate) fn signed_play_payload(
     config: &Config,
     now_sec: u64,
 ) -> Option<PlayPayload> {
+    // Job texte-seul (`media == null`) : il n'y a aucune URL à signer, le
+    // payload `play` part tel quel (COR-07 / AUD-A1-001).
+    if payload.media.is_none() {
+        return Some(payload.clone());
+    }
     let media = payload.media.as_ref()?;
     let secret = config.media_url_secret.expose_secret();
     if secret.is_empty() {

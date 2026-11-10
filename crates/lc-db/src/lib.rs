@@ -4,8 +4,11 @@
 //!
 //! - [`Db`] ouvre un [`SqlitePool`](sqlx::SqlitePool) avec les pragmas imposés
 //!   (WAL, `foreign_keys = ON`, `busy_timeout = 5000`, `synchronous = NORMAL`),
-//!   applique la migration embarquée [`crates/lc-db/migrations/0001_init.sql`]
-//!   puis vérifie `app_metadata.schema_version`.
+//!   applique les migrations embarquées
+//!   [`crates/lc-db/migrations/0001_init.sql`] et
+//!   [`crates/lc-db/migrations/0002_playback_single_playing.sql`], puis vérifie
+//!   `app_metadata.schema_version`. Une URL `file:…?mode=ro` ouvre une connexion
+//!   strictement en lecture seule (migrations désactivées, aucun passage WAL).
 //! - Chaque table possède un repository exposé par [`Db`] (`db.media_assets()`,
 //!   `db.playback_jobs()`, …) qui renvoie des entités `lc-domain`.
 //! - Toutes les requêtes sont **runtime** (`sqlx::query`/`query_as` + `FromRow`) :
@@ -42,17 +45,23 @@ mod convert;
 mod db;
 mod error;
 mod repos;
+mod retry;
 
 pub use config::DbConfig;
 pub use db::{Db, SCHEMA_VERSION};
 pub use error::{DbError, DbResult};
+pub use retry::with_busy_retry;
 
-/// DDL de la migration initiale, embarqué à la compilation.
+/// DDL de la migration **initiale**, embarqué à la compilation.
 ///
-/// C'est la source unique du schéma : `docs/rust/schema-v3.sql` en est la copie
-/// humaine, et un test de `lc-db` vérifie que les deux restent octet pour octet
-/// identiques. Le migrateur `xtask` consomme cette constante plutôt que de
-/// dupliquer le SQL.
+/// C'est la source unique du schéma initial : `xtask` l'exécute pour créer la
+/// base cible d'une migration legacy, puis seede le registre sqlx avec la seule
+/// version 1. Les migrations suivantes (dont `0002_playback_single_playing.sql`)
+/// sont appliquées par `sqlx` au premier démarrage du serveur.
+///
+/// `docs/rust/schema-v3.sql` est la copie humaine du schéma complet
+/// (0001 + 0002) ; un test de `lc-db` vérifie que la concaténation des
+/// migrations reste octet pour octet identique à ce contrat.
 pub const MIGRATION_SQL: &str = include_str!("../migrations/0001_init.sql");
 pub use repos::{
     GuildsRepository, IngestClientsRepository, MediaAssetsRepository, MemeBoardRepository,

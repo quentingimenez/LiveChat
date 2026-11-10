@@ -5,9 +5,14 @@
 //! `clientToken`, `guildId` et `sessionMode` sont garantis (les champs legacy
 //! `apiBaseUrl`, `clientId`, `authorName`, `deviceName` restent lus de façon
 //! tolérante). Le legacy tentait d'abord une connexion TLS stricte puis
-//! rétrogradait silencieusement en `rejectUnauthorized: false` ; ici la
-//! rétrogradation est explicite via `LIVECHAT_INSECURE_TLS=1` et documentée
-//! dans `docs/rust/lc-overlay-8b.md`.
+//! rétrogradait silencieusement en `rejectUnauthorized: false` ; ici :
+//!
+//! - `serverUrl` doit être `https://` par défaut. Une URL `http://` n'est
+//!   acceptée qu'en build debug avec `LIVECHAT_INSECURE_TLS=1` (cf.
+//!   [`super::tls`]) ;
+//! - un `apiBaseUrl` renvoyé par le serveur ne peut **jamais** rétrograder une
+//!   configuration HTTPS vers HTTP (AUD-A6-003) ;
+//! - les erreurs sont explicites (schéma refusé, downgrade refusé).
 
 use std::time::Duration;
 
@@ -17,12 +22,15 @@ use serde::{Deserialize, Serialize};
 use url::Url as ParsedUrl;
 
 use crate::config::OverlayConfig;
+use crate::net::tls;
 use crate::state::AppState;
 
 /// Délai maximal d'une requête d'appairage.
 const PAIR_TIMEOUT: Duration = Duration::from_secs(15);
-/// Option TLS legacy (certificat non vérifié), explicite et documentée.
-const INSECURE_TLS_ENV: &str = "LIVECHAT_INSECURE_TLS";
+/// Longueurs maximales acceptées avant tout appel réseau.
+const MAX_SERVER_URL_CHARS: usize = 2048;
+const MAX_CODE_CHARS: usize = 64;
+const MAX_DEVICE_NAME_CHARS: usize = 128;
 /// Nom d'appareil de secours si l'appelant n'en fournit pas.
 const FALLBACK_DEVICE_NAME: &str = "LiveChat-Overlay";
 
@@ -66,22 +74,33 @@ struct PairConsumeResponse {
 }
 
 impl PairingRequest {
-    /// Valide la requête comme le legacy (`missing_required_fields`).
+    /// Valide la requête comme le legacy (`missing_required_fields`), en
+    /// ajoutant des bornes de longueur (défense en profondeur IPC).
     fn validated(&self) -> Result<(String, String), String> {
         let server_url = self.server_url.trim().trim_end_matches('/').to_string();
         if server_url.is_empty() {
             return Err("champs requis manquants : serverUrl".to_string());
         }
+        if server_url.chars().count() > MAX_SERVER_URL_CHARS {
+            return Err("serverUrl trop long".to_string());
+        }
         let code = self.code.trim().to_ascii_uppercase();
         if code.is_empty() {
             return Err("champs requis manquants : code".to_string());
+        }
+        if code.chars().count() > MAX_CODE_CHARS {
+            return Err("code d'appairage invalide (trop long)".to_string());
         }
         Ok((server_url, code))
     }
 
     fn device_name(&self) -> String {
         match self.device_name.as_deref() {
-            Some(name) if !name.trim().is_empty() => name.trim().to_string(),
+            Some(name) if !name.trim().is_empty() => name
+                .trim()
+                .chars()
+                .take(MAX_DEVICE_NAME_CHARS)
+                .collect::<String>(),
             _ => fallback_device_name(),
         }
     }
@@ -95,24 +114,20 @@ fn fallback_device_name() -> String {
 }
 
 fn insecure_tls_enabled() -> bool {
-    match std::env::var(INSECURE_TLS_ENV) {
-        Ok(value) => {
-            let normalized = value.trim().to_ascii_lowercase();
-            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
-        }
-        Err(_) => false,
-    }
+    tls::insecure_tls_enabled()
 }
 
 /// Construit l'URL de l'endpoint d'appairage à partir de `serverUrl`.
 fn pairing_endpoint(server_url: &str) -> Result<Url, String> {
+    pairing_endpoint_with(server_url, insecure_tls_enabled())
+}
+
+/// Variante testable : `allow_insecure` remplace la lecture de l'environnement.
+fn pairing_endpoint_with(server_url: &str, allow_insecure: bool) -> Result<Url, String> {
     let base = server_url.trim().trim_end_matches('/');
     let mut url =
         ParsedUrl::parse(base).map_err(|error| format!("serverUrl invalide : {error}"))?;
-    match url.scheme() {
-        "http" | "https" => {}
-        other => return Err(format!("schéma serverUrl non supporté : {other}")),
-    }
+    tls::require_secure_scheme(url.scheme(), "serverUrl", allow_insecure)?;
     url.set_path("/overlay/pair/consume");
     url.set_query(None);
     url.set_fragment(None);
@@ -144,12 +159,34 @@ fn apply_consume_response(
         .map(str::trim)
         .filter(|token| !token.is_empty())
         .ok_or_else(|| "réponse d'appairage invalide : clientToken absent".to_string())?;
-    let base_url = response
+    let requested = ParsedUrl::parse(request.server_url.trim())
+        .map_err(|error| format!("serverUrl invalide : {error}"))?;
+    let base_url = match response
         .api_base_url
         .as_deref()
         .map(str::trim)
         .filter(|url| !url.is_empty())
-        .unwrap_or(request.server_url.trim());
+    {
+        Some(raw) => {
+            let parsed =
+                ParsedUrl::parse(raw).map_err(|error| format!("apiBaseUrl invalide : {error}"))?;
+            if !matches!(parsed.scheme(), "http" | "https") {
+                return Err(format!(
+                    "apiBaseUrl de schéma non supporté : {}",
+                    parsed.scheme()
+                ));
+            }
+            if requested.scheme() == "https" && parsed.scheme() == "http" {
+                return Err(
+                    "le serveur a renvoyé un apiBaseUrl http incompatible avec un appairage HTTPS \
+                     (mise à jour du serveur requise)"
+                        .to_string(),
+                );
+            }
+            parsed.to_string()
+        }
+        None => requested.to_string(),
+    };
     config.server_url = Some(base_url.trim_end_matches('/').to_string());
     config.client_token = Some(token.to_string());
     config.client_id = response
@@ -277,13 +314,63 @@ mod tests {
                 .as_str(),
             "https://api.example.test/overlay/pair/consume"
         );
+        assert!(pairing_endpoint("ftp://example.test").is_err());
+    }
+
+    #[test]
+    fn http_server_url_is_refused_without_derogation() {
+        let error = pairing_endpoint("http://127.0.0.1:3000").expect_err("http refusé");
+        assert!(
+            error.contains("HTTPS"),
+            "message explicite attendu: {error}"
+        );
         assert_eq!(
-            pairing_endpoint("http://127.0.0.1:3000")
-                .expect("endpoint")
+            pairing_endpoint_with("http://127.0.0.1:3000", true)
+                .expect("dérogation dev")
                 .as_str(),
             "http://127.0.0.1:3000/overlay/pair/consume"
         );
-        assert!(pairing_endpoint("ftp://example.test").is_err());
+    }
+
+    #[test]
+    fn api_base_url_cannot_downgrade_https_to_http() {
+        let mut config = OverlayConfig::default();
+        let response = PairConsumeResponse {
+            api_base_url: Some("http://api.example.test/".to_string()),
+            client_token: Some("abc123".to_string()),
+            client_id: None,
+            guild_id: Some("guild-42".to_string()),
+            author_name: None,
+            device_name: None,
+            session_mode: None,
+        };
+        let error = apply_consume_response(&mut config, &request(), &response, "PC-TEST")
+            .expect_err("downgrade refusé");
+        assert!(error.contains("apiBaseUrl"), "message attendu: {error}");
+        assert_eq!(config.server_url, None);
+        assert_eq!(config.client_token, None);
+    }
+
+    #[test]
+    fn api_base_url_https_upgrade_is_accepted() {
+        let mut config = OverlayConfig::default();
+        let mut request = request();
+        request.server_url = "http://api.example.test".to_string();
+        let response = PairConsumeResponse {
+            api_base_url: Some("https://api.example.test/".to_string()),
+            client_token: Some("abc123".to_string()),
+            client_id: None,
+            guild_id: Some("guild-42".to_string()),
+            author_name: None,
+            device_name: None,
+            session_mode: None,
+        };
+        apply_consume_response(&mut config, &request, &response, "PC-TEST")
+            .expect("upgrade accepté");
+        assert_eq!(
+            config.server_url.as_deref(),
+            Some("https://api.example.test")
+        );
     }
 
     #[test]

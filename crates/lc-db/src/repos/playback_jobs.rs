@@ -152,48 +152,75 @@ impl PlaybackJobsRepository {
     /// Retourne `None` si aucun job n'est éligible. Sûr en concurrence : la
     /// sélection et la mise à jour `PENDING → PLAYING` sont la même écriture
     /// SQLite (le perdant voit `None` ou un autre job).
+    ///
+    /// Les verrous SQLite transitoires (`SQLITE_BUSY`/`SQLITE_LOCKED`, dus à un
+    /// autre écrivain — migrateur, sauvegarde, second processus) sont réessayés
+    /// avec un backoff court via [`crate::with_busy_retry`] : un incident
+    /// transitoire ne doit pas arrêter la boucle du scheduler. Une violation de
+    /// l'index unique partiel `idx_playback_jobs_single_playing` (course entre
+    /// deux instances) est traduite en `None`.
     pub async fn claim_next(&self, now: DateTime<Utc>) -> DbResult<Option<PlaybackJob>> {
-        let row = sqlx::query_as::<_, PlaybackJobRow>(
-            "UPDATE playback_jobs \
-             SET status = 'PLAYING', started_at = ? \
-             WHERE id = ( \
-                 SELECT j.id FROM playback_jobs j \
-                 WHERE j.status = 'PENDING' \
-                   AND j.scheduled_at <= ? \
-                   AND j.finished_at IS NULL \
-                   AND ( \
-                       j.resumes_after_job_id IS NULL \
-                       OR NOT EXISTS ( \
-                           SELECT 1 FROM playback_jobs p \
-                           WHERE p.id = j.resumes_after_job_id \
-                             AND p.status IN ('PENDING', 'PLAYING') \
-                       ) \
-                   ) \
-                   AND NOT EXISTS ( \
-                       SELECT 1 FROM playback_jobs busy \
-                       WHERE busy.guild_id = j.guild_id AND busy.status = 'PLAYING' \
-                   ) \
-                   AND NOT EXISTS ( \
-                       SELECT 1 FROM guilds g \
-                       WHERE g.id = j.guild_id \
-                         AND g.busy_until IS NOT NULL \
-                         AND g.busy_until > ? \
-                   ) \
-                 ORDER BY j.priority DESC, j.submission_date ASC, j.id ASC \
-                 LIMIT 1 \
-             ) \
-             AND status = 'PENDING' \
-             RETURNING *",
-        )
-        .bind(to_ms(now))
-        .bind(to_ms(now))
-        .bind(to_ms(now))
-        .fetch_optional(&self.pool)
-        .await?;
+        let now_ms = to_ms(now);
+        let pool = self.pool.clone();
+        let row = match crate::with_busy_retry(|| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_as::<_, PlaybackJobRow>(
+                    "UPDATE playback_jobs \
+                     SET status = 'PLAYING', started_at = ? \
+                     WHERE id = ( \
+                         SELECT j.id FROM playback_jobs j \
+                         WHERE j.status = 'PENDING' \
+                           AND j.scheduled_at <= ? \
+                           AND j.finished_at IS NULL \
+                           AND ( \
+                               j.resumes_after_job_id IS NULL \
+                               OR NOT EXISTS ( \
+                                   SELECT 1 FROM playback_jobs p \
+                                   WHERE p.id = j.resumes_after_job_id \
+                                     AND p.status IN ('PENDING', 'PLAYING') \
+                               ) \
+                           ) \
+                           AND NOT EXISTS ( \
+                               SELECT 1 FROM playback_jobs busy \
+                               WHERE busy.guild_id = j.guild_id AND busy.status = 'PLAYING' \
+                           ) \
+                           AND NOT EXISTS ( \
+                               SELECT 1 FROM guilds g \
+                               WHERE g.id = j.guild_id \
+                                 AND g.busy_until IS NOT NULL \
+                                 AND g.busy_until > ? \
+                           ) \
+                         ORDER BY j.priority DESC, j.submission_date ASC, j.id ASC \
+                         LIMIT 1 \
+                     ) \
+                     AND status = 'PENDING' \
+                     RETURNING *",
+                )
+                .bind(now_ms)
+                .bind(now_ms)
+                .bind(now_ms)
+                .fetch_optional(&pool)
+                .await
+                .map_err(DbError::from)
+            }
+        })
+        .await
+        {
+            Ok(row) => row,
+            Err(error) if error.is_unique_violation() => return Ok(None),
+            Err(error) => return Err(error),
+        };
         row.map(PlaybackJobRow::into_entity).transpose()
     }
 
     /// Change le statut d'un job sans toucher aux dates de cycle de vie.
+    ///
+    /// Le passage à [`JobStatus::Playing`] est protégé par l'index unique
+    /// partiel `idx_playback_jobs_single_playing` (migration 0002) : s'il existe
+    /// déjà un job `PLAYING` pour la même guilde, l'écriture échoue et l'erreur
+    /// est traduite en [`DbError::Domain`] (`DomainError::InvalidState`) plutôt
+    /// qu'en erreur SQLite brute.
     ///
     /// Retourne `false` si le job n'existe pas.
     pub async fn set_status(&self, id: PlaybackJobId, status: JobStatus) -> DbResult<bool> {
@@ -201,8 +228,21 @@ impl PlaybackJobsRepository {
             .bind(status.as_db_str())
             .bind(id.to_canonical())
             .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
+            .await;
+        match result {
+            Ok(result) => Ok(result.rows_affected() > 0),
+            Err(error) => {
+                let error = DbError::from(error);
+                if status == JobStatus::Playing && error.is_unique_violation() {
+                    Err(DbError::Domain(DomainError::invalid_state(
+                        "un autre job est déjà PLAYING pour cette guilde \
+                         (index idx_playback_jobs_single_playing)",
+                    )))
+                } else {
+                    Err(error)
+                }
+            }
+        }
     }
 
     /// Termine un job : statut terminal (`DONE`/`FAILED`) + `finished_at`.

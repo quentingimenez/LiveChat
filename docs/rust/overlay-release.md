@@ -368,7 +368,7 @@ et non `app_config_dir()` (`%APPDATA%\com.livechat`). Conséquences :
 | Installation locale | **non testée** (consigne : ne pas installer) | procédure et smoke test VM décrits §9 ; à exécuter en Phase 9 finale. |
 | WebView2 | **requis** | Windows 11 : présent. Windows 10 : `downloadBootstrapper` télécharge le runtime à l'installation (réseau requis). Variante hors-ligne possible : `webviewInstallMode: { "type": "offlineInstaller" }` (installeur plus gros, ~100 Mo). |
 | MSI / machine-wide | non produit | NSIS per-user choisi (pas d'admin, updater NSIS, cohérent avec Electron electron-builder per-user) ; `cargo tauri build --bundles msi` possible mais nécessite WiX et une stratégie d'élévation. |
-| Pages de dev embarquées | `web/bridge-test.html` + `web/README.md` (~35 Ko) | sans impact fonctionnel ; `frontendDist` embarque tout le dossier `web/`. |
+| Pages de dev | hors bundle | `bridge-test.html` + `README.md` déplacés dans `apps/lc-overlay/dev/` (AUD-A6-015) ; `frontendDist` reste `web/`, vérifié par scan du binaire release. |
 | Autostart vs Electron | valeur `Run` `LiveChat` ≡ `livechat` (casse ignorée) | ne pas activer l'autostart Tauri tant qu'Electron 2.0.1 est encore installé ; bêta `LiveChat Next` sans collision. |
 | Config partagée Electron/Tauri | voulue | permet le rollback ; isoler une instance de test via `LIVECHAT_CONFIG_PATH`. |
 | Code de release | non commité | artefacts laissés dans `target/release/bundle/nsis/` pour le Lead. |
@@ -387,3 +387,30 @@ et non `app_config_dir()` (`%APPDATA%\com.livechat`). Conséquences :
       bêta pré-release tag `next`).
 - [ ] Upgrade in-place validé sur VM : Electron 2.0.1 → bêta side-by-side →
       désinstallation Electron → stable 3.0.0 → auto-update 3.0.1.
+
+## 15. Durcissement P1-11 (audit A6) — impact release
+
+Les correctifs de la task-43 (`AUD-A6-002/003/004/005/008/015`) modifient le
+contenu et le comportement du bundle 3.0.0 :
+
+- **Updater explicitement désactivé dans le code** : en plus de
+  `createUpdaterArtifacts: false` et de la pubkey placeholder, `updater.rs`
+  expose `UPDATER_ENABLED_FOR_RELEASE = false`. Les commandes
+  `overlay_check_updates` / `overlay_install_update` renvoient l'état `disabled`
+  sans appel réseau ni erreur de clé. Pour activer l'auto-update (3.1) : clé
+  minisign réelle, `createUpdaterArtifacts: true`, artefacts `.nsis.zip`/`.sig`,
+  `latest.json` signé, puis passer la constante à `true` **et** vérifier la
+  signature de bout en bout sur VM.
+- **Harnais de dev hors bundle** : `apps/lc-overlay/dev/bridge-test.html` et
+  `dev/README.md` ne sont plus dans `frontendDist` ; le binaire release ne doit
+  plus contenir `bridge-test.html` (vérification : scan ASCII/UTF-16 du binaire).
+- **CSP resserrée** : plus de `platform.twitter.com` (`script-src 'self'`,
+  `frame-src 'none'`) ; le rendu de carte tweet est statique.
+- **Capabilities par fenêtre** : `capabilities/{overlay,board,pairing}.json`
+  remplacent `default.json` ; la matrice IPC est appliquée côté Rust.
+- **Appairage/WS HTTPS** : `http://` refusé par défaut ; la dérogation
+  `LIVECHAT_INSECURE_TLS=1` est limitée aux builds debug et ne doit jamais être
+  utilisée pour un installeur de release.
+- **Board** : authentification par en-tête `Authorization: Bearer` via
+  `window.livechatOverlay.authorizedFetch` ; plus de `?token=` dans les URLs.
+

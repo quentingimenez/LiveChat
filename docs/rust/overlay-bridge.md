@@ -3,8 +3,8 @@
 > Statut : **Phase 0** (document de référence, aucun code Rust de production).
 > Portée : l'app Electron `overlay/` est remplacée par une app **Tauri 2** ; le renderer HTML/CSS/JS est conservé tel quel
 > et reçoit un bridge qui réexpose `window.livechatOverlay`.
-> Livrables associés : `apps/lc-overlay/web/bridge.js`, `apps/lc-overlay/web/README.md`,
-> `apps/lc-overlay/web/bridge-test.html`.
+> Livrables associés : `apps/lc-overlay/web/bridge.js`, `apps/lc-overlay/dev/README.md`,
+> `apps/lc-overlay/dev/bridge-test.html` (harnais de dev, hors bundle depuis P1-11, cf. §12.6).
 > Références de plan : `docs/rust/migration-plan.md` (§4 protocole v2 l.63-72, §6 overlay Tauri l.82-88, risques l.29) et
 > `overlay/docs/architecture.md:152-170` (compatibilité « noms des channels / payloads / API preload inchangés »).
 > Toutes les références `fichier:ligne` renvoient au dépôt `C:\Users\SuperKnacky\code\LiveChat`, branche `feat/rust-rebuild`.
@@ -214,17 +214,19 @@ Fichiers statiques requis et leur résolution :
 - **CSS** : aucun fichier image/police local dans `overlay/renderer/` ; les seuls styles sont les 3+5 CSS ci-dessus.
 - **Icônes** (racine `overlay/`, copiées dans le cache runtime) : `icon.png` (1 363 390 o), `icon.ico` (211 141 o),
   `icon-tray.png` (1 327 203 o) — voir §5.
-- **Dépendance externe** : le renderer overlay injecte le script `https://platform.twitter.com/widgets.js`
-  (`overlay/src/renderer/overlay/legacy-twitter-widgets-utils.ts:54`, appelé au bootstrap l.70) ⇒ à autoriser dans la CSP
-  et à valider en POC (aucune garantie de chargement hors ligne).
+- **Dépendance externe (supprimée en P1-11)** : le renderer overlay legacy injectait le script
+  `https://platform.twitter.com/widgets.js` (`overlay/src/renderer/overlay/legacy-twitter-widgets-utils.ts:54`, appelé au
+  bootstrap l.70). Ce chargement est **désactivé** et la CSP n'autorise plus de script tiers (cf. §12.2) ; le rendu de carte
+  tweet est statique.
 - **Réseau renderer** (hors bridge, conservé en Phase 0) : le board fait des `fetch()` REST vers
   `/overlay/meme-board/items` (`legacy-item-utils.ts:65,71,114,115`), `/items/:itemId` (`:95,96,136,137`), média
   `/overlay/meme-board/media/:assetId` (`legacy-preview-render-state-utils.ts:80`) ; l'overlay ajoute des URLs média
   (`overlay/src/renderer/overlay/legacy-media-dom-utils.ts:115-116`, diagnostic
   `overlay/src/renderer/overlay/legacy-media-diagnostics.ts:72`) ; `buildAuthedUrl`
-  (`overlay/src/renderer/board/legacy-preview-media-utils.ts:44-53`) ajoute `?token=<clientToken>` (à supprimer en Phase 8,
-  décision §8.4). Ces appels ne passent pas par IPC mais dépendent de l'origine WebView et de la CSP (§7 risques #3/#4 et
-  §8.2/§8.3).
+  (`overlay/src/renderer/board/legacy-preview-media-utils.ts:44-53`) ajoutait `?token=<clientToken>` ; le portage
+  P1-11 l'a supprimé et passe l'authentification par en-tête `Authorization: Bearer` via
+  `window.livechatOverlay.authorizedFetch` (cf. §12.4). Ces appels ne passent pas par IPC mais dépendent de l'origine
+  WebView et de la CSP (§7 risques #3/#4 et §8.2/§8.3).
 
 ## 5. Chemins runtime et devenir en Tauri
 
@@ -424,17 +426,19 @@ aucun buffer côté board.
 de `pairing.html:7-97` (contenu local et statique) ; **pas de hash à maintenir** pour le moment. CSP cible :
 
 ```text
+default-src 'self';
 script-src 'self';
 style-src 'self' 'unsafe-inline';
-img-src 'self' asset: http://asset.localhost data:;
-media-src 'self' blob: {API_URL};
-connect-src 'self' {API_URL} {WS_API_URL};
-frame-src https://platform.twitter.com;
+img-src 'self' data: blob: asset: http://asset.localhost http: https:;
+media-src 'self' blob: http: https:;
+connect-src 'self' ipc: http://ipc.localhost http: https: ws: wss:;
+frame-src 'none';
 object-src 'none';
 ```
 
-`{API_URL}` / `{WS_API_URL}` viennent de la config et sont injectées à la construction de la fenêtre. À valider au POC :
-le widget Twitter peut exiger des domaines supplémentaires (`syndication.twitter.com`, `abs.twimg.com`, …).
+`{API_URL}` / `{WS_API_URL}` ne peuvent pas être interpolées statiquement dans `tauri.conf.json` (config dynamique) : le
+portage P1-11 élargit donc `img-src`/`media-src`/`connect-src` à `http:`/`https:` (et `ws:`/`wss:`) tout en gardant
+`script-src 'self'` strict. **Aucun script tiers** : la dépendance Twitter a été supprimée (cf. §12.2).
 
 ### 8.3 Origine WebView et CORS (risques #4, #5)
 
@@ -522,8 +526,8 @@ Checklist minimale pour que le renderer conservé fonctionne sans modification :
 Vérifications :
 
 - `node --check apps/lc-overlay/web/bridge.js` — **OK** (vérifié).
-- `apps/lc-overlay/web/bridge-test.html` — harnais manuel : 10 commandes, 3 abonnements, émission simulée, journal des
-  appels, bouton « Tout tester (13 méthodes) » (score attendu 13/13 en mock).
+- `apps/lc-overlay/dev/bridge-test.html` — harnais manuel : 10 commandes, 3 abonnements, émission simulée, journal des
+  appels, bouton « Tout tester (13 méthodes) » (score attendu 13/13 en mock). Hors bundle depuis P1-11 (cf. §12.6).
 - Reste à valider en Phase 8 : comportement réel `invoke`/`listen` sous WebView2, ordre des events, CSP, CORS, origines,
   click-through/transparence, autoplay — ces points sont hors de portée du mock.
 
@@ -543,6 +547,72 @@ Vérifications :
 | `overlay/renderer/*.html|css|js` | Pages conservées telles quelles. |
 | `overlay/docs/architecture.md:152-170` | Politique de compatibilité renderer/main. |
 | `docs/rust/migration-plan.md` | Plan approuvé (§4 protocole v2, §6 overlay Tauri, risques). |
-| `apps/lc-overlay/web/bridge.js` | Bridge Tauri 2 livré (Phase 0). |
-| `apps/lc-overlay/web/bridge-test.html` | Harnais de test navigateur. |
-| `apps/lc-overlay/web/README.md` | Mode d'emploi du bridge et du mock. |
+| `apps/lc-overlay/web/bridge.js` | Bridge Tauri 2 livré (Phase 0, durci P1-11). |
+| `apps/lc-overlay/dev/bridge-test.html` | Harnais de test navigateur (hors bundle). |
+| `apps/lc-overlay/dev/README.md` | Mode d'emploi du bridge et du mock (hors bundle). |
+
+## 12. Durcissement P1-11 (audit A6)
+
+Cette section remplace les points de la matrice ci-dessus devenus obsolètes
+après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
+
+### 12.1 Appairage et WebSocket : HTTPS obligatoire par défaut (A6-003/004)
+
+- `pairing_consume` refuse une `serverUrl` `http://` par défaut : le message
+  d'erreur indique explicitement qu'il faut `https://`.
+- `net::ws::build_session_config` refuse de construire une URL `ws://` ; seul
+  `wss://` est accepté. La dérogation dev est centralisée dans
+  `apps/lc-overlay/src/net/tls.rs` : `LIVECHAT_INSECURE_TLS=1` n'est honoré
+  **qu'en build debug** (`debug_assertions`) et émet un `warn!`.
+- Un `apiBaseUrl` renvoyé par `POST /overlay/pair/consume` ne peut jamais
+  rétrograder un appairage HTTPS vers HTTP ; l'upgrade HTTP→HTTPS reste accepté.
+- Le repli `?token=` du board côté serveur reste transitoire (contrat serveur
+  inchangé) ; le renderer ne l'utilise plus (voir §12.4).
+
+### 12.2 Carte tweet : widgets tiers désactivés, rendu statique (A6-002)
+
+- `legacy-twitter-widgets-utils.js::ensureTwitterWidgets` lève
+  `tweet_widgets_disabled` sauf si `window.__LIVECHAT_TWEET_WIDGETS_ENABLED === true`
+  (opt-in explicite, jamais activé en production).
+- `legacy-tweet-card-renderer.js` n'utilise plus `innerHTML` : le HTML distant
+  est parsé dans un document inerte et seul son `textContent` est affiché
+  (aucun script ne peut s'exécuter, même si le serveur renvoyait `tweet_card`).
+- CSP : `script-src 'self'` et `frame-src 'none'` (plus de `platform.twitter.com`).
+  Le serveur v2 n'expose pas `tweet_card` (atténuation) ; le renderer est
+  désormais sûr même en cas de régression serveur.
+
+### 12.3 Capabilities et autorisation IPC par fenêtre (A6-008)
+
+- `capabilities/overlay.json`, `board.json`, `pairing.json` : une capability par
+  fenêtre (`windows: ["overlay"]`, etc.), permissions `core:default` minimales.
+  `capabilities/default.json` est supprimé.
+- La matrice `commands::COMMAND_MATRIX` limite les 12 commandes par label :
+  overlay = handshake/télémétrie ; board = meme-board + lecture config +
+  check_updates ; pairing = appairage + lecture config. Toute autre combinaison
+  est refusée avec un message explicite (testé par
+  `commands::tests::command_matrix_is_window_scoped`).
+
+### 12.4 Board : Authorization Bearer via le bridge, plus de token en query (A6-001/004)
+
+- `bridge.js` expose `window.livechatOverlay.authorizedFetch(url, options)` :
+  il lit la configuration via `getConfig()`, ajoute
+  `Authorization: Bearer <clientToken>` et appelle `fetch`.
+- Les shims board (`legacy-item-utils.js`, `legacy-preview-media-utils.js`)
+  n'ajoutent plus `?token=` : `buildAuthedUrl` ne pose plus le token, les 4
+  appels REST passent par `authorizedFetch`, et les médias d'aperçu sont
+  récupérés en binaire puis exposés en `blob:` object URL.
+- Le token ne doit plus apparaître dans les URLs ni dans les logs HTTP.
+
+### 12.5 Updater désactivé pour 3.0.0 (A6-005)
+
+- `updater.rs` expose `UPDATER_ENABLED_FOR_RELEASE = false` : les commandes
+  renvoient l'état `disabled` **sans** appeler le plugin (pas de requête réseau,
+  pas d'erreur de clé placeholder). L'activation exige la clé minisign réelle et
+  des artefacts signés (Phase 9, voir `docs/rust/overlay-release.md`).
+
+### 12.6 Harnais de développement hors bundle (A6-015)
+
+- `bridge-test.html` et `README.md` ont été déplacés de `web/` vers
+  `apps/lc-overlay/dev/` : `frontendDist` reste `web/`, donc le harnais n'est
+  plus embarqué dans le binaire ni dans l'installeur.
+

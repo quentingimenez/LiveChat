@@ -13,6 +13,35 @@ function toMediaKindLabel(value) {
     return normalized || 'MEDIA';
 }
 export function createBoardLegacyRenderUtils() {
+    // AUD-A6-004 : les médias du board exigent l'en-tête Authorization ; on
+    // récupère le binaire via le bridge puis on l'expose en object URL local.
+    let activeObjectUrl = null;
+    function attachAuthorizedMediaSource(mediaNode, mediaUrl) {
+        const bridge = window.livechatOverlay;
+        if (!bridge || typeof bridge.authorizedFetch !== 'function') {
+            mediaNode.src = mediaUrl;
+            return;
+        }
+        if (activeObjectUrl) {
+            URL.revokeObjectURL(activeObjectUrl);
+            activeObjectUrl = null;
+        }
+        bridge
+            .authorizedFetch(mediaUrl)
+            .then((response) => {
+                if (!response.ok) {
+                    throw new Error(`HTTP_${response.status}`);
+                }
+                return response.blob();
+            })
+            .then((blob) => {
+                activeObjectUrl = URL.createObjectURL(blob);
+                mediaNode.src = activeObjectUrl;
+            })
+            .catch((error) => {
+                console.warn('aperçu média indisponible', error);
+            });
+    }
     function createEmptyStateNode(params) {
         const emptyNode = document.createElement('p');
         emptyNode.className = 'preview-empty';
@@ -22,7 +51,7 @@ export function createBoardLegacyRenderUtils() {
     function createPreviewMediaNode(params) {
         if (params.mediaKind === 'image') {
             const mediaNode = document.createElement('img');
-            mediaNode.src = params.mediaUrl;
+            attachAuthorizedMediaSource(mediaNode, params.mediaUrl);
             mediaNode.alt = params.title;
             mediaNode.loading = 'lazy';
             mediaNode.addEventListener('load', () => {
@@ -33,14 +62,14 @@ export function createBoardLegacyRenderUtils() {
         }
         if (params.mediaKind === 'audio') {
             const mediaNode = document.createElement('audio');
-            mediaNode.src = params.mediaUrl;
+            attachAuthorizedMediaSource(mediaNode, params.mediaUrl);
             mediaNode.controls = true;
             mediaNode.preload = 'metadata';
             mediaNode.className = 'preview-media';
             return mediaNode;
         }
         const mediaNode = document.createElement('video');
-        mediaNode.src = params.mediaUrl;
+        attachAuthorizedMediaSource(mediaNode, params.mediaUrl);
         mediaNode.controls = true;
         mediaNode.preload = 'metadata';
         mediaNode.addEventListener('loadedmetadata', () => {

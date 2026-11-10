@@ -433,6 +433,73 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
         job_id: Option<PlaybackJobId>,
         reason: StopReason,
     ) -> PlaybackResult<StopOutcome> {
+        let released = self.release_playing_jobs(guild_id, job_id).await?;
+        let payload = StopPayload {
+            reason,
+            job_id: stop_payload_job_id(job_id, &released),
+        };
+        self.sink.on_stop(guild_id, payload.clone()).await;
+        self.process_guild(guild_id).await?;
+        Ok(StopOutcome {
+            stopped: released.iter().map(|id| id.to_canonical()).collect(),
+            payload,
+        })
+    }
+
+    /// Arrête **tous** les jobs `PLAYING` d'une guilde avec `jobId: null`.
+    ///
+    /// Variante de [`Self::stop_with_reason`] utilisée par la purge
+    /// administrateur : le protocole exige `stop {reason:"purge",jobId:null}`
+    /// même lorsqu'un seul job est libéré (cf. `protocol-v2.md` §6.3).
+    pub async fn stop_all_with_reason(
+        &self,
+        guild_id: &GuildId,
+        reason: StopReason,
+    ) -> PlaybackResult<StopOutcome> {
+        let released = self.release_playing_jobs(guild_id, None).await?;
+        let payload = StopPayload {
+            reason,
+            job_id: None,
+        };
+        self.sink.on_stop(guild_id, payload.clone()).await;
+        self.process_guild(guild_id).await?;
+        Ok(StopOutcome {
+            stopped: released.iter().map(|id| id.to_canonical()).collect(),
+            payload,
+        })
+    }
+
+    /// Libère les jobs `PLAYING` **sans émettre de `stop`**.
+    ///
+    /// Utilisé par le hub lorsque le payload protocolaire a déjà été diffusé :
+    /// révocation d'un client (`stop {reason:"revoked",jobId:null}` diffusé
+    /// avant le close `4402`, cf. `protocol-v2.md` §6.3/§10). Le `StopOutcome`
+    /// retourné documente la raison et le `jobId` que l'appelant a diffusés.
+    pub async fn release_playing_without_stop(
+        &self,
+        guild_id: &GuildId,
+        job_id: Option<PlaybackJobId>,
+        reason: StopReason,
+    ) -> PlaybackResult<StopOutcome> {
+        let released = self.release_playing_jobs(guild_id, job_id).await?;
+        let payload = StopPayload {
+            reason,
+            job_id: stop_payload_job_id(job_id, &released),
+        };
+        self.process_guild(guild_id).await?;
+        Ok(StopOutcome {
+            stopped: released.iter().map(|id| id.to_canonical()).collect(),
+            payload,
+        })
+    }
+
+    /// Libère les jobs `PLAYING` ciblés, efface la réservation `busyUntil` et
+    /// oublie les checkpoints de diffusion associés.
+    async fn release_playing_jobs(
+        &self,
+        guild_id: &GuildId,
+        job_id: Option<PlaybackJobId>,
+    ) -> PlaybackResult<Vec<PlaybackJobId>> {
         let now = self.clock.now();
         let released = self.store.release_playing(guild_id, job_id, now).await?;
         self.clear_busy(guild_id).await?;
@@ -442,14 +509,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
                 inner.state_persisted_at.remove(released_id);
             }
         }
-        let stopped: Vec<String> = released.iter().map(|id| id.to_canonical()).collect();
-        let payload = StopPayload {
-            reason,
-            job_id: stop_payload_job_id(job_id, &released),
-        };
-        self.sink.on_stop(guild_id, payload.clone()).await;
-        self.process_guild(guild_id).await?;
-        Ok(StopOutcome { stopped, payload })
+        Ok(released)
     }
 
     /// Payload `welcome.currentJob` : job `PLAYING` le plus récent de la

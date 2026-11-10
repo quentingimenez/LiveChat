@@ -93,10 +93,15 @@ Convention d'effort : XS ≤ 0,5 j-h, S ≤ 1 j-h, M 1–2 j-h, L > 2 j-h.
 
 ## P2 — dette et robustesse (post-release)
 
+> Re-audit ciblé exécuté le 2026-11-10 (`verification-2.md`) : les Majeurs/findings
+> résiduels P0/P1 ont été corrigés (confinement purge S-001/S-002/S-004, tray
+> updater et scoping `clientToken` côté overlay). Reste notamment AUD-V2-S-003
+> (board hors `MediaService`) ci-dessous.
+
 | ID | Réf. | Action | Effort |
 |---|---|---|---|
 | AUD-COR-12 | A1-006…014 | Closes 1006→4408 pour trames > 256 Kio, validation `id`, liveness Pong 45 s, `error` S→C, champs inconnus conservés | S |
-| AUD-COR-13 | A2-001…017 (reste) | JSON malformé → erreur dédiée, branche 409, O(N) board, doc `?token=`, `deviceName`, binding job du média signé | M |
+| AUD-COR-13 | A2-001…017 + V2-S-003 | JSON malformé → erreur dédiée, branche 409, O(N) board, doc `?token=`, `deviceName`, binding job du média signé ; **unifier l'ingestion board sur `MediaService`** (cache/quota/`record_failure`, nettoyage `forceRefresh`) | M |
 | AUD-COR-14 | A3-004…012 | `Origin`/`Referer` sur mutations, `AdminHub` dans `AppState`, labels bornés, messages UI, `TRUST_PROXY_HEADERS`/local-only derrière proxy | S |
 | AUD-COR-15 | A4-004…018 | `svg+xml` ré-encodé, réponses bornées, options ffprobe, cookie TikTok échappé, tests réseau réels, invalidation cache | M |
 | AUD-COR-16 | A5-002, 006, 008…021 | Snapshot source de migration, WAL/`busy_timeout` doc, checksums, testsâ€¦ | M |
@@ -107,10 +112,10 @@ Convention d'effort : XS ≤ 0,5 j-h, S ≤ 1 j-h, M 1–2 j-h, L > 2 j-h.
 
 - Corriger `docs/rust/server-overlay.md` (le `?token=` board est accepté depuis `e0a381f`) et la décision `overlay-bridge.md` §8.4/§8.6.
 - Corriger le runbook `migrator.md` (ledger, ordre stop/migrate/start).
-- Documenter le plafond `peers` (8) ou changer la spec.
+- ~~Documenter le plafond `peers` (8) ou changer la spec~~ — fait (protocol-v2 rév. 3, §6.4).
 - Supprimer ou implémenter `crates/lc-admin` (crate vide).
 - Mettre à jour `docs/rust/migration-plan.md` §12.11 avec les résultats d'audit et les décisions de release.
-- Nettoyer `bridge-test.html`/`README.md` du bundle release.
+- ~~Nettoyer `bridge-test.html`/`README.md` du bundle release~~ — fait (COR-11, `apps/lc-overlay/dev/`).
 
 ## Séquencement proposé (multi-agents)
 
@@ -118,4 +123,6 @@ Convention d'effort : XS ≤ 0,5 j-h, S ≤ 1 j-h, M 1–2 j-h, L > 2 j-h.
 2. **Gates** : fmt/clippy/test/deny/audit verts + probes Lead rejouées (`/ingest` file/http loopback, WS, admin, rate-limit) + build release.
 3. **Vague 2 (3–4 agents, ≈ 2 j)** : AUD-COR-05 à 11.
 4. **Re-audit ciblé** des diffs P0/P1 (V ou subagent frais) → `verification-2.md`.
+   *Exécuté le 2026-11-10 : 3 Majeurs serveur (confinement purge) + 2 Faibles
+   overlay corrigés, gates rejouées ; AUD-V2-S-003 renvoyé en P2.*
 5. Décision release 3.0.0 ; P2/P3 en dette documentée.

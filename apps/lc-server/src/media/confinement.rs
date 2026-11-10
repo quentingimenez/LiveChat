@@ -8,9 +8,11 @@
 //! si elle n'est pas exploitable) et fournit la racine canonique à réutiliser
 //! pour les vérifications de confinement des requêtes.
 
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context as _};
+use tracing::warn;
 
 /// Crée puis canonicalise le répertoire de stockage média.
 ///
@@ -46,6 +48,79 @@ pub fn ensure_storage_root(directory: &Path) -> anyhow::Result<PathBuf> {
     }
 
     Ok(canonical)
+}
+
+/// Résout une référence de stockage (`media_assets.storage_path`) sous la
+/// racine média canonicalisée.
+///
+/// Les lignes importées du legacy peuvent porter un chemin relatif
+/// (`./data/media/<hash>.mp4`) : il doit être interprété relativement à la
+/// racine média, **jamais** au répertoire courant du processus (AUD-V2-S-002 :
+/// un conteneur dont le WORKDIR change traitait sinon un fichier référencé comme
+/// orphelin). Les variantes sont plates sous la racine : on ne conserve que le
+/// nom de fichier.
+pub fn resolve_reference(root: &Path, reference: &Path) -> PathBuf {
+    if reference.is_absolute() {
+        return reference.to_path_buf();
+    }
+    match reference.file_name() {
+        Some(name) if !name.is_empty() => root.join(name),
+        _ => root.to_path_buf(),
+    }
+}
+
+/// Vérifie le confinement d'une référence avant suppression et renvoie le
+/// chemin canonique à supprimer.
+///
+/// Retourne `None` (avec un `warn`, sans erreur) si la référence est vide, si la
+/// cible est un lien symbolique (on ne suit jamais les liens : AUD-V2-S-001), si
+/// elle n'existe pas, ou si sa canonicalisation sort de la racine média. Une
+/// suppression hors confinement est donc toujours refusée.
+pub fn confined_removal_path(root: &Path, reference: &Path) -> Option<PathBuf> {
+    if reference.as_os_str().is_empty() {
+        return None;
+    }
+    let resolved = resolve_reference(root, reference);
+    match std::fs::symlink_metadata(&resolved) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                warn!(
+                    path = %resolved.display(),
+                    "suppression média refusée : lien symbolique"
+                );
+                return None;
+            }
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => return None,
+        Err(error) => {
+            warn!(
+                path = %resolved.display(),
+                %error,
+                "suppression média refusée : inspection impossible"
+            );
+            return None;
+        }
+    }
+    let canonical = match std::fs::canonicalize(&resolved) {
+        Ok(canonical) => canonical,
+        Err(error) => {
+            warn!(
+                path = %resolved.display(),
+                %error,
+                "suppression média refusée : canonicalisation impossible"
+            );
+            return None;
+        }
+    };
+    if !canonical.starts_with(root) {
+        warn!(
+            path = %canonical.display(),
+            root = %root.display(),
+            "suppression média refusée : chemin hors de la racine de stockage"
+        );
+        return None;
+    }
+    Some(canonical)
 }
 
 #[cfg(test)]

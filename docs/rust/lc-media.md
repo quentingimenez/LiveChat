@@ -206,6 +206,14 @@ video_codec, audio_codec, pixel_format, has_video, has_audio }`, plus
   canonicalisent la racine de stockage et échouent en `DOWNLOAD_FAILED` avec un
   message explicite si ce n'est pas possible (fail-closed : le pipeline ne publie
   jamais dans un chemin non vérifiable).
+- **Confinement des suppressions (V2-S, task-46)** : `remove_path` résout d'abord
+  la référence (`resolve_reference` : un `storage_path` relatif importé du legacy est
+  lu **sous la racine média**, jamais relatif au cwd), refuse les liens symboliques
+  (`symlink_metadata`, no-follow) et tout chemin dont la cible canonique sort de la
+  racine (`starts_with` sur racine canonicalisée) : `Ok(false)` + `warn`, jamais de
+  suppression hors confinement (AUD-V2-S-001/002). `list_variants` ignore les liens
+  symboliques et les non-fichiers, et `remove_variants`/`remove_other_variants`
+  passent par ce même garde.
 - `transcode::normalize_*` produisent dans un transit puis publient via
   `commit_file`, et `ingest` n'appelle `remove_other_variants` qu'**après** succès
   de la publication.
@@ -221,10 +229,13 @@ video_codec, audio_codec, pixel_format, has_video, has_audio }`, plus
 - `MediaPipeline::new(config)` puis `ingest_url(raw)` ou `ingest_source(&MediaSource)` →
   `IngestedMedia { source, resolved, download, normalized }`.
 - `IngestLimiter` (sémaphore) borne les ingestions simultanées.
-- **Single-flight par `source_hash` (P1-09)** : `acquire_source_lock(&source.source_hash)`
+- **Single-flight par `source_hash` (P1-09)** : `lock_source_hash(&source.source_hash)`
   sérialise les ingestions concurrentes de la même source (deux requêtes simultanées
   réutilisent/complètent le même fichier au lieu de se supprimer mutuellement) ; les
-  verrous sans référence sont élagués.
+  verrous sans référence sont élagués. La fonction est publique : le worker de purge du
+  serveur prend le même verrou avant d'évincer un asset `READY` expiré, pour ne pas
+  supprimer des fichiers pendant une ingestion concurrente du même média
+  (AUD-V2-S-004).
 - En cas d'échec, l'erreur `MediaError` remonte avec le code legacy ; Phase 5b la
   persiste en `[CODE] message` sur l'asset FAILED.
 
@@ -258,14 +269,33 @@ video_codec, audio_codec, pixel_format, has_video, has_audio }`, plus
   single-flight par `source_hash`, remplacement des variantes uniquement après succès
   de la publication. Le legacy écrivait directement puis supprimait les anciens fichiers
   avant transcodage (perte de média possible en cas d'échec) : écart voulu.
+- **Durcissement confinement purge (V2-S, task-46)** : toute suppression de fichier est
+  confinée à la racine média canonicalisée — un `storage_path` relatif (legacy) est résolu
+  sous la racine et **jamais** relativement au cwd, les liens symboliques sont refusés
+  (`symlink_metadata`, no-follow) et une cible canonique hors racine est ignorée (`warn`,
+  pas de suppression). `list_variants` ignore les liens et la purge du serveur déduplique
+  les références (deux assets vers le même fichier : le fichier n'est supprimé qu'à la
+  dernière référence) sous le verrou `lock_source_hash` avant d'évincer un `READY` expiré,
+  et la purge admin (`POST /admin/api/guilds/:id/purge`) passe par le même garde. Écart
+  legacy assumé : l'ancien serveur supprimait sans vérifier le confinement
+  (AUD-V2-S-001/002/004).
+- **Dette P2 (V2-S / AUD-V2-S-003, suivi backlog AUD-COR-13)** : le chemin `forceRefresh`
+  du meme board appelle encore le pipeline directement (pas `MediaService::ingest`) et,
+  quand l'asset existe déjà, met à jour statut/pin sans réécrire
+  `storage_path`/mime/dimensions — le fichier fraîchement téléchargé/normalisé peut alors
+  devenir orphelin et le « refresh » ne rafraîchit pas les métadonnées. Correctif propre =
+  factoriser cache/budgets/`record_failure`/métadonnées dans le service (effort M), hors
+  périmètre de ce durcissement ; suivi P2 au backlog (`AUD-COR-13`, qui regroupe les
+  restes P2 de la lane, item précis `AUD-V2-S-003`).
 
 ## Tests
 
-- 117 tests unitaires dans la crate (URL/hash, résolution offline sur fixtures, parsing
+- 121 tests unitaires dans la crate (URL/hash, résolution offline sur fixtures, parsing
   HTML/JSON, arguments ffmpeg, décisions de copie, éviction LRU, configuration, erreurs,
   garde SSRF : schémas/UNC, plages IPv4/IPv6, redirections ; stockage : racine
   canonicalisée fail-closed, chemins de transit, publication atomique, purge ciblée des
-  variantes).
+  variantes, confinement des suppressions — chemins hors racine refusés, liens
+  symboliques ignorés, références relatives résolues sous la racine).
 - `tests/offline.rs` : 7 tests sur fixtures (`tiktok_video.html`, `tiktok_photo.html`,
   `twitter_syndication.json`, `yt_dlp_dump.json`, `youtube_oembed.json`,
   `tiktok_oembed.json`).

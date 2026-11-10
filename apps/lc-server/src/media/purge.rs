@@ -10,7 +10,7 @@
 //! suppression est toujours protégée par une grâce ([`ORPHAN_GRACE`]) pour ne
 //! jamais toucher un fichier en cours d'écriture par une ingestion concurrente.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,6 +18,7 @@ use std::time::Duration;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use lc_db::Db;
 use lc_domain::time::datetime_to_ms;
+use lc_media::ingest::lock_source_hash;
 use lc_media::storage::{is_staged_file_name, MediaStorage};
 use sqlx::Row as _;
 use tokio::task::JoinHandle;
@@ -25,6 +26,7 @@ use tracing::{info, warn};
 
 use crate::app::AppState;
 use crate::media::assets;
+use crate::media::confinement;
 use crate::media::errors::MediaServiceResult;
 
 /// Intervalle entre deux passes de purge (10 minutes, comme les workers legacy).
@@ -73,10 +75,30 @@ pub async fn purge_once(
     storage: &MediaStorage,
     now: DateTime<Utc>,
 ) -> MediaServiceResult<PurgeReport> {
+    // Toute suppression de fichier exige une racine canonicalisable : si elle
+    // ne l'est pas, on ne supprime rien plutôt que de comparer des chemins
+    // incomparables (AUD-V2-S-002). Le worker la canonicalise déjà au démarrage.
+    let root = match std::fs::canonicalize(storage.root()) {
+        Ok(root) => root,
+        Err(error) => {
+            warn!(
+                root = %storage.root().display(),
+                %error,
+                "purge média ignorée : racine non canonicalisable, aucune suppression"
+            );
+            return Ok(PurgeReport::default());
+        }
+    };
+
+    // Deux lignes d'assets peuvent référencer le même fichier (AUD-V2-S-004) :
+    // on ne supprime le fichier qu'après la disparition de la dernière ligne.
+    let mut references = reference_counts(db, &root).await?;
+
     // 1. Assets `FAILED` périmés (jamais épinglés par le board ni actifs).
     let failed_removed = purge_stale_status(
         db,
-        storage,
+        &root,
+        &mut references,
         "FAILED",
         datetime_to_ms(now - assets::FAILED_TTL),
     )
@@ -85,18 +107,20 @@ pub async fn purge_once(
     // 2. Assets `PROCESSING` abandonnés (crash du serveur pendant l'ingestion).
     let processing_removed = purge_stale_status(
         db,
-        storage,
+        &root,
+        &mut references,
         "PROCESSING",
         datetime_to_ms(now - assets::STALE_PROCESSING_TTL),
     )
     .await?;
 
     // 3. Assets `READY` expirés (hors épinglage et hors lecture active).
-    let expired_evicted = purge_expired_ready(db, storage, datetime_to_ms(now)).await?;
+    let expired_evicted =
+        purge_expired_ready(db, &root, &mut references, datetime_to_ms(now)).await?;
 
     // 4. Fichiers du stockage : transit périmé puis orphelins.
     let (staged_files_removed, orphan_files_removed) =
-        purge_storage_files(db, storage, now).await?;
+        purge_storage_files(db, storage, &root, now).await?;
 
     Ok(PurgeReport {
         failed_removed,
@@ -107,11 +131,68 @@ pub async fn purge_once(
     })
 }
 
+/// Clé canonique d'une référence de stockage, utilisée pour dédupliquer les
+/// références entre lignes d'assets (AUD-V2-S-004).
+fn reference_key(root: &Path, reference: &Path) -> PathBuf {
+    let resolved = confinement::resolve_reference(root, reference);
+    std::fs::canonicalize(&resolved).unwrap_or(resolved)
+}
+
+/// Compte les références de chaque fichier du stockage avant la passe.
+async fn reference_counts(db: &Db, root: &Path) -> MediaServiceResult<HashMap<PathBuf, usize>> {
+    let rows = sqlx::query("SELECT storage_path FROM media_assets WHERE storage_path != ''")
+        .fetch_all(db.pool())
+        .await
+        .map_err(lc_db::DbError::from)?;
+    let mut counts: HashMap<PathBuf, usize> = HashMap::with_capacity(rows.len());
+    for row in rows {
+        let storage_path: String = row.try_get("storage_path").map_err(lc_db::DbError::from)?;
+        if storage_path.trim().is_empty() {
+            continue;
+        }
+        let key = reference_key(root, Path::new(&storage_path));
+        *counts.entry(key).or_insert(0) += 1;
+    }
+    Ok(counts)
+}
+
+/// Décrémente la référence d'un fichier après suppression de sa ligne ; vrai si
+/// c'était la dernière référence (le fichier peut alors être supprimé).
+fn release_reference(counts: &mut HashMap<PathBuf, usize>, root: &Path, reference: &Path) -> bool {
+    let key = reference_key(root, reference);
+    match counts.get_mut(&key) {
+        Some(count) if *count > 0 => {
+            *count -= 1;
+            *count == 0
+        }
+        // Référence inconnue (ligne insérée pendant la passe) : prudence, on ne
+        // supprime pas un fichier potentiellement encore référencé.
+        _ => false,
+    }
+}
+
+/// Supprime le fichier d'une référence s'il était le dernier, en restant
+/// confiné sous la racine média (AUD-V2-S-001/002).
+fn remove_reference_if_last(
+    root: &Path,
+    counts: &mut HashMap<PathBuf, usize>,
+    reference: &Path,
+) -> bool {
+    if !release_reference(counts, root, reference) {
+        return false;
+    }
+    match confinement::confined_removal_path(root, reference) {
+        Some(path) => std::fs::remove_file(&path).is_ok(),
+        None => false,
+    }
+}
+
 /// Supprime les lignes d'un statut terminal dont `last_accessed_at` est antérieur
 /// à `cutoff_ms`, en excluant le board épinglé et les jobs actifs.
 async fn purge_stale_status(
     db: &Db,
-    storage: &MediaStorage,
+    root: &Path,
+    references: &mut HashMap<PathBuf, usize>,
     status: &str,
     cutoff_ms: i64,
 ) -> MediaServiceResult<usize> {
@@ -134,28 +215,32 @@ async fn purge_stale_status(
     for row in rows {
         let id: String = row.try_get("id").map_err(lc_db::DbError::from)?;
         let storage_path: String = row.try_get("storage_path").map_err(lc_db::DbError::from)?;
-        if !storage_path.trim().is_empty() {
-            // Le fichier peut déjà avoir été remplacé/supprimé : best effort.
-            storage.remove_path(Path::new(&storage_path))?;
-        }
         let affected = sqlx::query("DELETE FROM media_assets WHERE id = ?")
             .bind(&id)
             .execute(db.pool())
             .await
             .map_err(lc_db::DbError::from)?
             .rows_affected();
-        if affected > 0 {
-            removed += 1;
+        if affected == 0 {
+            continue;
         }
+        if !storage_path.trim().is_empty() {
+            // Fichier supprimé seulement si la ligne était sa dernière
+            // référence, et uniquement sous la racine média.
+            let _deleted = remove_reference_if_last(root, references, Path::new(&storage_path));
+        }
+        removed += 1;
     }
 
     Ok(removed)
 }
 
-/// Évince les assets `READY` expirés (fichier + variantes + ligne).
+/// Évince les assets `READY` expirés (ligne puis fichier s'il n'est plus
+/// référencé).
 async fn purge_expired_ready(
     db: &Db,
-    storage: &MediaStorage,
+    root: &Path,
+    references: &mut HashMap<PathBuf, usize>,
     now_ms: i64,
 ) -> MediaServiceResult<usize> {
     let rows = sqlx::query(
@@ -178,6 +263,11 @@ async fn purge_expired_ready(
         let source_hash: String = row.try_get("source_hash").map_err(lc_db::DbError::from)?;
         let storage_path: String = row.try_get("storage_path").map_err(lc_db::DbError::from)?;
 
+        // Sérialise avec une ingestion concurrente du même média : sans ce
+        // verrou, une ingestion pourrait publier des fichiers entre le DELETE
+        // et la suppression du fichier (AUD-V2-S-004).
+        let _source_lock = lock_source_hash(&source_hash).await;
+
         // Course possible avec une ingestion qui vient de réarmer la ligne :
         // le DELETE conditionnel ne supprime que l'état expiré observé.
         let affected = sqlx::query(
@@ -194,9 +284,11 @@ async fn purge_expired_ready(
             continue;
         }
 
-        storage.remove_variants(&source_hash)?;
+        // Ne jamais supprimer les variantes du hash par principe : une autre
+        // ligne peut référencer le même fichier. On ne retire que le fichier
+        // de cette ligne, s'il était la dernière référence.
         if !storage_path.trim().is_empty() {
-            storage.remove_path(Path::new(&storage_path))?;
+            let _deleted = remove_reference_if_last(root, references, Path::new(&storage_path));
         }
         removed += 1;
     }
@@ -208,6 +300,7 @@ async fn purge_expired_ready(
 async fn purge_storage_files(
     db: &Db,
     storage: &MediaStorage,
+    root: &Path,
     now: DateTime<Utc>,
 ) -> MediaServiceResult<(usize, usize)> {
     let known_rows = sqlx::query("SELECT storage_path FROM media_assets WHERE storage_path != ''")
@@ -217,13 +310,13 @@ async fn purge_storage_files(
     let mut known: HashSet<PathBuf> = HashSet::with_capacity(known_rows.len());
     for row in &known_rows {
         let storage_path: String = row.try_get("storage_path").map_err(lc_db::DbError::from)?;
-        // Les lignes importées du legacy (ou écrites avant canonicalisation de
-        // la racine) peuvent porter un chemin relatif, avec une casse
-        // différente ou sans préfixe verbatim `\\?\`. La comparaison avec les
-        // entrées de `read_dir` (qui héritent du préfixe de la racine
-        // canonicalisée) doit donc se faire sur des chemins normalisés, sous
-        // peine de supprimer un fichier référencé comme « orphelin ».
-        known.insert(normalized_path(Path::new(&storage_path)));
+        if storage_path.trim().is_empty() {
+            continue;
+        }
+        // Les lignes relatives héritées du legacy sont résolues sous la racine
+        // média (jamais le cwd) puis canonicalisées pour être comparables aux
+        // entrées de `read_dir` (AUD-V2-S-002).
+        known.insert(reference_key(root, Path::new(&storage_path)));
     }
 
     let grace_ms = ORPHAN_GRACE.num_milliseconds();
@@ -247,20 +340,14 @@ async fn purge_storage_files(
             }
             continue;
         }
-        let variant_path = normalized_path(&variant.path);
-        if !known.contains(&variant_path) && storage.remove_path(&variant_path)? {
+        let variant_path =
+            std::fs::canonicalize(&variant.path).unwrap_or_else(|_| variant.path.to_path_buf());
+        if !known.contains(&variant_path) && storage.remove_path(&variant.path)? {
             orphans += 1;
         }
     }
 
     Ok((staged, orphans))
-}
-
-/// Normalise un chemin pour la comparaison des ensembles : `canonicalize`
-/// résout le préfixe verbatim `\\?\`, les liens et la casse ; en cas d'échec
-/// (fichier déjà supprimé, droits), on retombe sur le chemin brut.
-fn normalized_path(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Démarre le worker de purge en arrière-plan (une passe immédiate puis toutes
@@ -575,6 +662,192 @@ mod tests {
         assert!(
             file.exists(),
             "un fichier référencé ne doit pas être supprimé"
+        );
+    }
+
+    #[cfg(windows)]
+    fn create_symlink(target: &StdPath, link: &StdPath) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+
+    #[cfg(unix)]
+    fn create_symlink(target: &StdPath, link: &StdPath) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    /// Régression AUD-V2-S-002 : les `storage_path` relatifs hérités du legacy
+    /// sont résolus contre la racine média, jamais contre le répertoire courant
+    /// du processus ; un fichier référencé reste conservé, un fichier périmé de
+    /// la même forme est bien supprimé via la racine.
+    #[tokio::test]
+    async fn resolves_relative_storage_paths_against_the_storage_root() {
+        let fixture = fixture().await;
+        let referenced = fixture.storage.root().join("relative-referenced.mp4");
+        let stale = fixture.storage.root().join("relative-stale.mp4");
+        std::fs::write(&referenced, b"referenced").expect("fichier");
+        std::fs::write(&stale, b"stale").expect("fichier");
+
+        let ready = asset(
+            MediaStatus::Ready,
+            "relative-referenced-hash",
+            StdPath::new("./data/media/relative-referenced.mp4"),
+            fixture.now - ChronoDuration::hours(3),
+            fixture.now + ChronoDuration::days(30),
+            fixture.now - ChronoDuration::hours(4),
+        );
+        let failed = asset(
+            MediaStatus::Failed,
+            "relative-stale-hash",
+            StdPath::new("data\\media\\relative-stale.mp4"),
+            fixture.now - ChronoDuration::hours(3),
+            fixture.now,
+            fixture.now - ChronoDuration::hours(4),
+        );
+        fixture
+            .db
+            .media_assets()
+            .insert(&ready)
+            .await
+            .expect("asset relatif référencé");
+        fixture
+            .db
+            .media_assets()
+            .insert(&failed)
+            .await
+            .expect("asset relatif périmé");
+
+        let later = fixture.now + ORPHAN_GRACE + ChronoDuration::minutes(1);
+        let report = purge_once(&fixture.db, &fixture.storage, later)
+            .await
+            .expect("purge");
+
+        assert_eq!(report.failed_removed, 1);
+        assert_eq!(report.orphan_files_removed, 0);
+        assert!(
+            referenced.exists(),
+            "un chemin relatif référencé ne doit pas être traité comme orphelin"
+        );
+        assert!(
+            !stale.exists(),
+            "le fichier d'une ligne périmée doit être supprimé via la racine"
+        );
+    }
+
+    /// Régression AUD-V2-S-002 : un `storage_path` absolu hors racine ne doit
+    /// jamais être supprimé, même quand la ligne est purgée.
+    #[tokio::test]
+    async fn never_removes_files_outside_the_storage_root() {
+        let fixture = fixture().await;
+        let outside = tempfile::tempdir().expect("hors racine");
+        let secret = outside.path().join("secret.mp4");
+        std::fs::write(&secret, b"secret").expect("fichier hors racine");
+
+        let row = asset(
+            MediaStatus::Ready,
+            "outside-hash",
+            &secret,
+            fixture.now - ChronoDuration::hours(2),
+            fixture.now - ChronoDuration::hours(1),
+            fixture.now - ChronoDuration::hours(3),
+        );
+        fixture
+            .db
+            .media_assets()
+            .insert(&row)
+            .await
+            .expect("asset hors racine");
+
+        let report = purge_once(&fixture.db, &fixture.storage, fixture.now)
+            .await
+            .expect("purge");
+
+        assert_eq!(report.expired_evicted, 1);
+        assert!(
+            secret.exists(),
+            "un fichier hors racine ne doit jamais être supprimé"
+        );
+    }
+
+    /// Régression AUD-V2-S-004 : deux assets partageant le même fichier ; la
+    /// purge d'une ligne ne doit pas casser la seconde.
+    #[tokio::test]
+    async fn keeps_files_shared_by_two_assets() {
+        let fixture = fixture().await;
+        let shared = fixture.storage.root().join("shared.mp4");
+        std::fs::write(&shared, b"shared").expect("fichier partagé");
+
+        let expired = asset(
+            MediaStatus::Ready,
+            "shared-expired-hash",
+            &shared,
+            fixture.now - ChronoDuration::hours(2),
+            fixture.now - ChronoDuration::hours(1),
+            fixture.now - ChronoDuration::hours(3),
+        );
+        let active = asset(
+            MediaStatus::Ready,
+            "shared-active-hash",
+            &shared,
+            fixture.now,
+            fixture.now + ChronoDuration::days(30),
+            fixture.now - ChronoDuration::hours(1),
+        );
+        fixture
+            .db
+            .media_assets()
+            .insert(&expired)
+            .await
+            .expect("asset expiré");
+        fixture
+            .db
+            .media_assets()
+            .insert(&active)
+            .await
+            .expect("asset actif");
+
+        let report = purge_once(&fixture.db, &fixture.storage, fixture.now)
+            .await
+            .expect("purge");
+
+        assert_eq!(report.expired_evicted, 1);
+        assert!(
+            shared.exists(),
+            "le fichier est encore référencé par l'autre asset"
+        );
+        assert!(fixture
+            .db
+            .media_assets()
+            .get(active.id)
+            .await
+            .expect("lecture")
+            .is_some());
+    }
+
+    /// Régression AUD-V2-S-001 : un lien symbolique dans la racine ne doit pas
+    /// faire supprimer sa cible hors racine.
+    #[tokio::test]
+    async fn never_follows_symbolic_links_outside_the_storage_root() {
+        let fixture = fixture().await;
+        let outside = tempfile::tempdir().expect("hors racine");
+        let target = outside.path().join("secret.mp4");
+        std::fs::write(&target, b"secret").expect("cible hors racine");
+        let link = fixture.storage.root().join("innocent.mp4");
+        if create_symlink(&target, &link).is_err() {
+            // Création de lien symbolique refusée (privilège Windows) : le
+            // scénario n'est pas reproductible sur cette machine.
+            return;
+        }
+
+        let later = fixture.now + ORPHAN_GRACE + ChronoDuration::minutes(1);
+        let report = purge_once(&fixture.db, &fixture.storage, later)
+            .await
+            .expect("purge");
+
+        assert_eq!(report.orphan_files_removed, 0);
+        assert!(link.exists(), "le lien lui-même ne doit pas être supprimé");
+        assert!(
+            target.exists(),
+            "la cible hors racine ne doit jamais être supprimée"
         );
     }
 }

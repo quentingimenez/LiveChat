@@ -146,38 +146,114 @@ impl MediaStorage {
         Ok(paths)
     }
 
-    /// Supprime toutes les variantes existantes d'une source.
+    /// Résout une référence de stockage sous la racine média.
+    ///
+    /// Les lignes importées du legacy peuvent porter un `storage_path` relatif
+    /// (`./data/media/<hash>.mp4`) : il doit être interprété relativement à la
+    /// racine du stockage, **jamais** au répertoire courant du processus
+    /// (AUD-V2-S-002). Les variantes sont plates sous la racine : on ne garde
+    /// donc que le nom de fichier.
+    pub fn resolve_reference(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            return path.to_path_buf();
+        }
+        match path.file_name() {
+            Some(name) if !name.is_empty() => self.root.join(name),
+            _ => self.root.clone(),
+        }
+    }
+
+    /// Résout et confine un chemin de stockage sans suivre les liens.
+    ///
+    /// Retourne le chemin canonique à supprimer, ou `None` (après un `warn`)
+    /// si la cible est un lien symbolique, sort de la racine ou n'existe pas :
+    /// une suppression hors confinement est toujours refusée (AUD-V2-S-001/002).
+    fn confined_path(&self, path: &Path) -> MediaResult<Option<PathBuf>> {
+        let resolved = self.resolve_reference(path);
+        if resolved.as_os_str().is_empty() {
+            return Ok(None);
+        }
+        match fs::symlink_metadata(&resolved) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    tracing::warn!(
+                        path = %resolved.display(),
+                        "suppression média refusée : lien symbolique"
+                    );
+                    return Ok(None);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(MediaError::from_io(
+                    MediaErrorCode::DownloadFailed,
+                    "inspection du fichier média",
+                    &error,
+                ));
+            }
+        }
+        let canonical = fs::canonicalize(&resolved).map_err(|error| {
+            MediaError::from_io(
+                MediaErrorCode::DownloadFailed,
+                "canonicalisation du fichier média",
+                &error,
+            )
+        })?;
+        let root = fs::canonicalize(&self.root).map_err(|error| {
+            MediaError::from_io(
+                MediaErrorCode::DownloadFailed,
+                "canonicalisation de la racine média",
+                &error,
+            )
+        })?;
+        if !canonical.starts_with(&root) {
+            tracing::warn!(
+                path = %canonical.display(),
+                root = %root.display(),
+                "suppression média refusée : chemin hors de la racine de stockage"
+            );
+            return Ok(None);
+        }
+        Ok(Some(canonical))
+    }
+
+    /// Supprime toutes les variantes existantes d'une source (sous confinement).
     pub fn remove_variants(&self, source_hash: &str) -> MediaResult<usize> {
         let mut removed = 0;
         for path in self.variant_paths(source_hash)? {
-            if fs::remove_file(&path).is_ok() {
+            if self.remove_path(&path)? {
                 removed += 1;
             }
         }
         Ok(removed)
     }
 
-    /// Supprime les variantes d'une source autres que `keep`.
+    /// Supprime les variantes d'une source autres que `keep` (sous confinement).
     ///
     /// Appelée **après** la publication atomique de la nouvelle variante : les
     /// anciennes extensions d'un même `source_hash` ne doivent jamais être
     /// effacées avant que le remplaçant soit sur disque (AUD-A4-007).
     pub fn remove_other_variants(&self, source_hash: &str, keep: &Path) -> MediaResult<usize> {
+        let keep = std::fs::canonicalize(keep).unwrap_or_else(|_| keep.to_path_buf());
         let mut removed = 0;
         for path in self.variant_paths(source_hash)? {
-            if path == keep {
+            let candidate = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            if candidate == keep {
                 continue;
             }
-            if fs::remove_file(&path).is_ok() {
+            if self.remove_path(&path)? {
                 removed += 1;
             }
         }
         Ok(removed)
     }
 
-    /// Supprime un fichier s'il existe.
+    /// Supprime un fichier s'il existe, **uniquement sous la racine média**.
     pub fn remove_path(&self, path: &Path) -> MediaResult<bool> {
-        match fs::remove_file(path) {
+        let Some(confined) = self.confined_path(path)? else {
+            return Ok(false);
+        };
+        match fs::remove_file(&confined) {
             Ok(()) => Ok(true),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(MediaError::from_io(
@@ -258,13 +334,18 @@ impl MediaStorage {
                     &error,
                 )
             })?;
-            let path = entry.path();
-            let Ok(metadata) = entry.metadata() else {
+            // Ne jamais suivre un lien symbolique : la purge ne doit ni lister
+            // ni supprimer la cible d'un lien (AUD-V2-S-001).
+            let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            if !metadata.is_file() {
+            if file_type.is_symlink() || !file_type.is_file() {
                 continue;
             }
+            let path = entry.path();
+            let Ok(metadata) = fs::metadata(&path) else {
+                continue;
+            };
             variants.push(StoredVariant {
                 path: path.clone(),
                 size_bytes: metadata.len(),
@@ -512,5 +593,79 @@ mod tests {
         assert_eq!(storage.remove_other_variants("hash", &keep).unwrap(), 1);
         assert!(keep.exists());
         assert!(!stale.exists());
+    }
+
+    #[cfg(windows)]
+    fn create_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+
+    #[cfg(unix)]
+    fn create_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[test]
+    fn remove_path_refuses_paths_outside_storage_root() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let storage = MediaStorage::from_root(directory.path().join("media"));
+        storage.ensure().unwrap();
+        let outside = directory.path().join("outside.mp4");
+        fs::write(&outside, b"secret").unwrap();
+
+        assert!(!storage.remove_path(&outside).unwrap());
+        assert!(outside.exists());
+    }
+
+    #[test]
+    fn remove_path_refuses_symbolic_links_and_keeps_the_target() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let storage = MediaStorage::from_root(directory.path().join("media"));
+        storage.ensure().unwrap();
+        let target = directory.path().join("target.mp4");
+        fs::write(&target, b"secret").unwrap();
+        let link = storage.root().join("innocent.mp4");
+        if create_symlink(&target, &link).is_err() {
+            // Création de lien symbolique refusée (privilège Windows) : le
+            // scénario n'est pas reproductible sur cette machine.
+            return;
+        }
+
+        assert!(!storage.remove_path(&link).unwrap());
+        assert!(link.exists());
+        assert!(target.exists());
+    }
+
+    #[test]
+    fn list_variants_ignores_symbolic_links() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let storage = MediaStorage::from_root(directory.path().join("media"));
+        storage.ensure().unwrap();
+        let target = directory.path().join("target.mp4");
+        fs::write(&target, b"secret").unwrap();
+        let link = storage.root().join("innocent.mp4");
+        if create_symlink(&target, &link).is_err() {
+            return;
+        }
+
+        assert!(storage.list_variants().unwrap().is_empty());
+    }
+
+    #[test]
+    fn relative_references_are_resolved_against_the_storage_root() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let root = directory.path().join("media");
+        let storage = MediaStorage::from_root(&root);
+
+        assert_eq!(
+            storage.resolve_reference(Path::new("./data/media/hash.mp4")),
+            root.join("hash.mp4")
+        );
+        assert_eq!(
+            storage.resolve_reference(Path::new("hash.mp4")),
+            root.join("hash.mp4")
+        );
+        let absolute = std::env::temp_dir().join("hash.mp4");
+        assert_eq!(storage.resolve_reference(&absolute), absolute);
     }
 }

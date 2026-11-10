@@ -62,7 +62,9 @@ pub use crate::guard::{
     ip_block_reason, parse_media_url, resolve_redirect, validate_target, ValidatedTarget,
     MAX_REDIRECTS,
 };
-pub use crate::ingest::{ingest_url, IngestLimiter, IngestedMedia, MediaPipeline};
+pub use crate::ingest::{
+    ingest_url, lock_source_hash, IngestLimiter, IngestedMedia, MediaPipeline,
+};
 pub use crate::probe::{parse_probe_json, probe, probe_args, ProbeInfo};
 pub use crate::resolve::{resolve_media, ResolvedMedia, TweetCard};
 pub use crate::source::{

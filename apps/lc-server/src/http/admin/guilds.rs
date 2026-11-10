@@ -16,7 +16,7 @@
 //! - la suppression des clients d'ingestion reste non bloquante (avertissement,
 //!   compteur à 0) comme dans le legacy.
 
-use std::path::PathBuf;
+use std::path::Path as StdPath;
 
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
@@ -260,6 +260,21 @@ pub(super) async fn purge(
         .map_err(|error| AdminError::db("suppression des réglages de guilde", error))?;
 
     // 5. Médias devenus orphelins : fichier puis ligne, compteurs séparés.
+    //
+    // La suppression du fichier n'est autorisée que si sa cible canonique reste
+    // sous la racine média et n'est pas un lien symbolique (AUD-V2-S-001/002) :
+    // un `storage_path` hors racine est ignoré (warn) plutôt que supprimé.
+    let media_root = match std::fs::canonicalize(&state.config.media_storage_dir) {
+        Ok(root) => Some(root),
+        Err(error) => {
+            tracing::warn!(
+                directory = %state.config.media_storage_dir.display(),
+                %error,
+                "purge : racine média non canonicalisable, fichiers non supprimés"
+            );
+            None
+        }
+    };
     let mut deleted_orphan_media_assets = 0_u64;
     let mut orphan_media_file_delete_errors = 0_u64;
     for asset_id in candidate_media_asset_ids {
@@ -270,16 +285,23 @@ pub(super) async fn purge(
             continue;
         };
 
-        match tokio::fs::remove_file(PathBuf::from(&asset.storage_path)).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                orphan_media_file_delete_errors += 1;
-                tracing::warn!(
-                    path = %asset.storage_path,
-                    %error,
-                    "purge : suppression du fichier média impossible"
-                );
+        if let Some(root) = media_root.as_deref() {
+            if let Some(confined) = crate::media::confinement::confined_removal_path(
+                root,
+                StdPath::new(&asset.storage_path),
+            ) {
+                match tokio::fs::remove_file(&confined).await {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        orphan_media_file_delete_errors += 1;
+                        tracing::warn!(
+                            path = %confined.display(),
+                            %error,
+                            "purge : suppression du fichier média impossible"
+                        );
+                    }
+                }
             }
         }
 

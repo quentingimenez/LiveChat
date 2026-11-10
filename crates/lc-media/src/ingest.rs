@@ -77,7 +77,12 @@ impl IngestLimiter {
 /// stockage content-addressed (audit A4-007).
 static SOURCE_LOCKS: OnceLock<StdMutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
 
-async fn acquire_source_lock(source_hash: &str) -> OwnedMutexGuard<()> {
+/// Acquiert le verrou single-flight d'un `source_hash`.
+///
+/// Les purges de stockage doivent prendre ce même verrou avant de supprimer le
+/// fichier d'un asset `READY` expiré : une ingestion concurrente du même média
+/// pourrait sinon publier puis voir ses fichiers supprimés (AUD-V2-S-004).
+pub async fn lock_source_hash(source_hash: &str) -> OwnedMutexGuard<()> {
     let registry = SOURCE_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
     let lock = {
         let mut locks = registry
@@ -171,7 +176,7 @@ impl MediaPipeline {
         resolved: Option<ResolvedMedia>,
     ) -> MediaResult<IngestedMedia> {
         let _permit = self.limiter.acquire().await?;
-        let _source_lock = acquire_source_lock(&source.source_hash).await;
+        let _source_lock = lock_source_hash(&source.source_hash).await;
         let temp_dir = tempfile::TempDir::new().map_err(|error| {
             MediaError::from_io(
                 MediaErrorCode::DownloadFailed,

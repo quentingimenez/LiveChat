@@ -282,6 +282,18 @@ livrés par ordre de sévérité sur `feat/rust-rebuild` :
   migration cohérent, WAL/checksums, runbook) sont suivis dans
   `docs/rust/audit/backlog-corrections.md` §P2/P3 (le crate vide `crates/lc-admin`
   a été supprimé le 2026-11-10).
-- **P2** (en cours) : snapshot cohérent de la source de migration + métadonnées
-  SHA-256/horodatage/schema_version + runbook `migrator.md` (AUD-COR-16) ; autres
-  items de dette post-release dans le backlog.
+- **P2** (`f9f9ee8`, COR-12..COR-18) : WS durci (limite transport 1 Mio
+  interprétée en 4408, validation `id`, liveness Pong stricte, `error` S→C,
+  champs inconnus préservés, protocol-v2 rév. 4) ; REST/média durcis (JSON
+  malformé → `invalid_payload`, 409 réel, board borné, médias signés liés à la
+  guilde, `MediaService` unifié, SVG refusé, sanitizers allowlist) ; admin
+  (CSRF Origin/Referer, `AdminHub` injecté dans `AppState`, audit-log
+  `request_id`, HSTS/COOP, `ADMIN_TRUST_FORWARDED_FOR`) ; MSRV 1.90
+  (`rust-version`/`clippy.toml`/job CI `msrv`) ; snapshot de migration cohérent
+  (`VACUUM INTO` + checksums + 10 clés `app_metadata`) et runbook `migrator.md` ;
+  overlay (`enabled=false` strict, config atomique, IPC par fenêtre, bundle
+  release nettoyé). Crate vide `crates/lc-admin` supprimé.
+- Reste avant release publique : capture des goldens de parité legacy/v2 sur une
+  base réelle (runbook `parity-harness.md`), décision de fusion
+  `feat/rust-rebuild` → `main`, validation machine cible (yt-dlp/Discord/NSIS),
+  puis bascule opérateur (backup, migration, fenêtre de maintenance).

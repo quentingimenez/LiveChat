@@ -769,7 +769,7 @@ async fn signed_media_missing_or_escaped_file_is_rejected() {
 // --------------------------------------------------------------------------
 
 #[tokio::test]
-async fn meme_board_requires_bearer_and_rejects_query_token() {
+async fn meme_board_requires_token_and_accepts_legacy_query_token() {
     let dir = TempDir::new().expect("tempdir");
     let (app, db) = harness(dir.path()).await;
     let client = make_client(
@@ -792,8 +792,9 @@ async fn meme_board_requires_bearer_and_rejects_query_token() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body_json(&bytes)["error"], "unauthorized");
 
-    // Fallback `?token=` supprimé en v2 : ignoré, donc 401.
-    let (status, _, _) = send(
+    // Repli legacy `?token=` : accepté pour le board (renderer HTML legacy,
+    // `<video>/<img>` d'aperçu) mais ignoré hors `/overlay/meme-board/*`.
+    let (status, _, bytes) = send(
         &app,
         request(
             Method::GET,
@@ -803,7 +804,54 @@ async fn meme_board_requires_bearer_and_rejects_query_token() {
         ),
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body_json(&bytes)["total"], 0);
+
+    // Le Bearer prime : un token query invalide est neutralisé par l'en-tête.
+    let (status, _, _) = send(
+        &app,
+        request(
+            Method::GET,
+            &format!("/overlay/meme-board/items?token={OTHER_TOKEN}"),
+            Some(BEARER_TOKEN),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Token query seul et inconnu → 401.
+    let (status, _, _) = send(
+        &app,
+        request(
+            Method::GET,
+            &format!("/overlay/meme-board/items?token={OTHER_TOKEN}"),
+            None,
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Le repli query est strictement limité au board : aucune autre route ne
+    // l'accepte (garde-fou de surface d'attaque).
+    assert!(
+        auth::query_token(&"/overlay/media/abc?token=peu-importe".parse().expect("uri")).is_none()
+    );
+    assert!(auth::query_token(
+        &"/overlay/pair/consume?token=peu-importe"
+            .parse()
+            .expect("uri")
+    )
+    .is_none());
+    assert_eq!(
+        auth::query_token(
+            &format!("/overlay/meme-board/media/abc?token={BEARER_TOKEN}")
+                .parse()
+                .expect("uri")
+        ),
+        Some(BEARER_TOKEN.to_owned())
+    );
 
     // Mauvais jeton.
     let (status, _, _) = send(

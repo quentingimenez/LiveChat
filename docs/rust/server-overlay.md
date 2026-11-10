@@ -90,10 +90,15 @@ sous-routeur.
 
 ### 4.1 Contrat
 
-- Seul l'en-tête `Authorization: Bearer <token>` est accepté ; **le `?token=`
-  legacy est supprimé** (`overlayAuth.ts:116-143` le tolérait). Le query string
-  est totalement ignoré : une requête `?token=<valide>` sans Bearer répond
-  `401 {"error":"unauthorized"}`.
+- La voie nominale est l'en-tête `Authorization: Bearer <token>`, qui prime
+  toujours. **Exception board** (test local 2026-11-10) : les routes
+  `/overlay/meme-board/*` acceptent en repli `?token=<token>`
+  (`auth::query_token`) car le renderer board HTML legacy construit ses URLs et
+  ses balises `src` (`<video>`, `<img>` d'aperçu) sans en-tête possible
+  (`board/legacy-preview-media-utils.js`). Ce repli est **strictement limité**
+  au préfixe `/overlay/meme-board/` ; `/overlay/media/{assetId}` reste
+  exclusivement HMAC signé et aucune autre route overlay n'accepte de jeton en
+  query.
 - Le token brut est généré côté serveur : 32 octets aléatoires encodés en hex
   (64 caractères), `auth.rs:65` — équivalent de
   `crypto.randomBytes(32).toString('hex')` (`overlayAuth.ts:40-42`).

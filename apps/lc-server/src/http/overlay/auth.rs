@@ -1,12 +1,17 @@
-//! Authentification des routes `/overlay/meme-board/*` (Bearer uniquement).
+//! Authentification des routes `/overlay/meme-board/*`.
 //!
 //! ## Contrat v2
 //!
 //! Le legacy (`server/src/services/overlayAuth.ts:116-143`) acceptait le token
-//! en en-tête **ou** dans `?token=` ; le protocole v2 supprime le passage par
-//! query string (cf. `docs/rust/protocol-v2.md` §9) : seule l'en-tête
-//! `Authorization: Bearer <token>` est acceptée. Un `?token=` présent est donc
-//! simplement ignoré, ce qui produit un `401` si aucun Bearer valide n'est fourni.
+//! en en-tête **ou** dans `?token=`. Le protocole v2 supprime le passage par
+//! query string pour les URLs média signées (cf. `docs/rust/protocol-v2.md` §9),
+//! mais le renderer board (HTML/JS legacy conservé en Phase 8) construit encore
+//! ses URLs avec `?token=` — y compris pour les `<video>`/`<img>` d'aperçu qui ne
+//! peuvent pas porter d'en-tête. Pour ne pas casser cette fonctionnalité, la
+//! query string est acceptée **uniquement** sous `/overlay/meme-board/*` ; les
+//! autres routes overlay (média de lecture HMAC, ingestion) restent sans jeton
+//! en query. L'en-tête `Authorization: Bearer <token>` reste la voie nominale et
+//! prime toujours sur `?token=` lorsqu'il est présent.
 //!
 //! Le token brut n'est jamais stocké : seule son empreinte `SHA-256` hexadécimale
 //! est persistée dans `overlay_clients.token_hash` (parité legacy
@@ -92,6 +97,28 @@ pub fn bearer_token(headers: &HeaderMap) -> Option<String> {
     Some(token.to_owned())
 }
 
+/// Longueur maximale d'un jeton accepté (64 hex) ; garde-fou anti-abus.
+const MAX_TOKEN_LEN: usize = 200;
+
+/// Extrait `?token=` **uniquement** pour les routes `/overlay/meme-board/*`.
+///
+/// Le renderer board legacy charge ses listes et ses aperçus (`<video>`/`<img>`)
+/// par URL, sans possibilité d'ajouter un en-tête : c'est l'unique exception
+/// query string du contrat REST v2 (cf. doc du module). Le parsing est celui de
+/// `application/x-www-form-urlencoded` (décodage des pourcentages inclus).
+pub fn query_token(uri: &axum::http::Uri) -> Option<String> {
+    if !uri.path().starts_with("/overlay/meme-board/") {
+        return None;
+    }
+    let token = url::form_urlencoded::parse(uri.query()?.as_bytes())
+        .find_map(|(key, value)| (key == "token").then(|| value.into_owned()))?;
+    let token = token.trim().to_owned();
+    if token.is_empty() || token.len() > MAX_TOKEN_LEN {
+        return None;
+    }
+    Some(token)
+}
+
 impl FromRequestParts<AppState> for AuthedOverlayClient {
     type Rejection = Response;
 
@@ -99,7 +126,8 @@ impl FromRequestParts<AppState> for AuthedOverlayClient {
         parts: &mut Parts,
         state: &AppState,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
-        let token = bearer_token(&parts.headers);
+        // L'en-tête Bearer prime ; `?token=` n'est toléré que pour le board.
+        let token = bearer_token(&parts.headers).or_else(|| query_token(&parts.uri));
         let db = state.db.clone();
         let now = state.clock.now();
         async move {

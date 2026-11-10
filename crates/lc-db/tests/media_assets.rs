@@ -6,7 +6,7 @@ mod common;
 
 use chrono::Duration;
 use lc_db::DbError;
-use lc_domain::{MediaAssetId, MediaStatus};
+use lc_domain::{JobStatus, MediaAssetId, MediaStatus};
 
 #[tokio::test]
 async fn crud_media_asset() {
@@ -103,40 +103,80 @@ async fn touche_et_listes_par_statut() {
 }
 
 #[tokio::test]
-async fn purge_expired_supprime_et_cascade() {
+async fn purge_expired_protege_board_et_jobs_actifs() {
     let (db, _dir) = common::temp_db().await;
     let now = common::now();
     let guild = common::guild("123456789012345678");
 
-    let mut expired = common::sample_asset("expire", now);
-    expired.expires_at = common::date(common::NOW_MS - 1_000);
-    let mut fresh = common::sample_asset("frais", now);
-    fresh.expires_at = now + Duration::hours(1);
-    db.media_assets().insert(&expired).await.unwrap();
-    db.media_assets().insert(&fresh).await.unwrap();
+    // Quatre assets expirés : épinglé au board, référencé par un job PENDING,
+    // orphelin, et référencé par un job terminé (DONE).
+    let mut pinned = common::sample_asset("pin", now);
+    pinned.expires_at = common::date(common::NOW_MS - 1_000);
+    let mut active = common::sample_asset("actif", now);
+    active.expires_at = common::date(common::NOW_MS - 1_000);
+    let mut orphan = common::sample_asset("orphelin", now);
+    orphan.expires_at = common::date(common::NOW_MS - 1_000);
+    let mut done = common::sample_asset("termine", now);
+    done.expires_at = common::date(common::NOW_MS - 1_000);
+    for asset in [&pinned, &active, &orphan, &done] {
+        db.media_assets().insert(asset).await.unwrap();
+    }
 
-    // Élément de meme board et job rattachés au média expiré.
-    let meme = common::sample_meme(&guild, expired.id, now);
+    let meme = common::sample_meme(&guild, pinned.id, now);
     db.meme_board().create(&meme).await.unwrap();
-    let mut job = common::sample_job(&guild, now);
-    job.media_asset_id = Some(expired.id);
-    db.playback_jobs().create(&job).await.unwrap();
+
+    let mut pending_job = common::sample_job(&guild, now);
+    pending_job.media_asset_id = Some(active.id);
+    db.playback_jobs().create(&pending_job).await.unwrap();
+
+    let mut done_job = common::sample_job(&guild, now);
+    done_job.media_asset_id = Some(done.id);
+    done_job.status = JobStatus::Done;
+    done_job.finished_at = Some(now);
+    db.playback_jobs().create(&done_job).await.unwrap();
 
     let listed = db.media_assets().list_expired(now).await.unwrap();
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].id, expired.id);
+    assert_eq!(listed.len(), 4, "les quatre assets sont expirés");
 
-    assert_eq!(db.media_assets().purge_expired(now).await.unwrap(), 1);
-    assert!(db.media_assets().get(expired.id).await.unwrap().is_none());
-    // Cascade `ON DELETE CASCADE` sur meme_board_items.
-    assert!(db.meme_board().get(meme.id).await.unwrap().is_none());
-    // `ON DELETE SET NULL` sur playback_jobs.media_asset_id.
-    let job = db.playback_jobs().get(job.id).await.unwrap().unwrap();
-    assert_eq!(job.media_asset_id, None);
+    let purged = db.media_assets().purge_expired(now).await.unwrap();
+    assert_eq!(
+        purged.len(),
+        2,
+        "seuls les assets sans référence active ou terminée sont purgés"
+    );
+    let purged_ids: Vec<_> = purged.iter().map(|asset| asset.id).collect();
+    assert!(purged_ids.contains(&orphan.id), "asset orphelin purgé");
+    assert!(purged_ids.contains(&done.id), "asset d'un job DONE purgé");
+    assert!(
+        purged.iter().all(|asset| !asset.storage_path.is_empty()),
+        "les lignes supprimées sont retournées pour supprimer les fichiers"
+    );
 
-    // Le média frais est intact et une seconde purge ne supprime rien.
-    assert!(db.media_assets().get(fresh.id).await.unwrap().is_some());
-    assert_eq!(db.media_assets().purge_expired(now).await.unwrap(), 0);
+    // Les références protégées sont intactes.
+    assert!(db.media_assets().get(pinned.id).await.unwrap().is_some());
+    assert!(db.media_assets().get(active.id).await.unwrap().is_some());
+    assert!(db.meme_board().get(meme.id).await.unwrap().is_some());
+    let stored_pending = db
+        .playback_jobs()
+        .get(pending_job.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_pending.media_asset_id, Some(active.id));
+
+    // Le job terminé survit, mais sa FK est passée à NULL (ON DELETE SET NULL).
+    let stored_done = db.playback_jobs().get(done_job.id).await.unwrap().unwrap();
+    assert_eq!(stored_done.media_asset_id, None);
+
+    // Les assets encore référencés restent expirés : une seconde purge ne les
+    // supprime toujours pas.
+    let second = db.media_assets().purge_expired(now).await.unwrap();
+    assert!(
+        second.is_empty(),
+        "aucun autre asset purgeable : {second:?}"
+    );
+    assert!(db.media_assets().get(pinned.id).await.unwrap().is_some());
+    assert!(db.media_assets().get(active.id).await.unwrap().is_some());
 }
 
 #[tokio::test]

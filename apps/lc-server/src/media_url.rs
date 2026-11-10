@@ -79,6 +79,16 @@ pub fn verify(
     provided.ct_eq(&expected).into()
 }
 
+/// Vérifie que l'expiration fournie reste dans la politique serveur.
+///
+/// Une URL signée ne doit jamais expirer au-delà de
+/// `now + MEDIA_URL_TTL_MAX_SEC` : sinon un `exp` forgé (ou prolongé) porterait
+/// la durée de validité d'un lien média au-delà de la politique (AUD-A2-002).
+/// Le test d'expiration (`now >= exp`) reste distinct et s'applique après.
+pub fn is_expiry_within_max(exp_sec: u64, now_sec: u64) -> bool {
+    exp_sec <= now_sec.saturating_add(MEDIA_URL_TTL_MAX_SEC)
+}
+
 /// Indique si une URL signée est expirée à l'instant `now_sec`.
 ///
 /// L'expiration est inclusive : à `exp_sec`, l'URL n'est plus valide.
@@ -146,6 +156,19 @@ mod tests {
         assert!(!is_expired(EXP, EXP - 1));
         assert!(is_expired(EXP, EXP));
         assert!(is_expired(EXP, EXP + 1));
+    }
+
+    #[test]
+    fn expiry_beyond_policy_max_is_rejected() {
+        let now = 1_700_000_000;
+        assert!(is_expiry_within_max(now, now));
+        assert!(is_expiry_within_max(now + MEDIA_URL_TTL_MAX_SEC, now));
+        assert!(!is_expiry_within_max(now + MEDIA_URL_TTL_MAX_SEC + 1, now));
+        // Une URL déjà expirée reste acceptée par le plafond : le refus
+        // « expiré » est un contrôle distinct appliqué ensuite.
+        assert!(is_expiry_within_max(now - 10, now));
+        // Saturation : pas de panique sur une valeur extrême.
+        assert!(!is_expiry_within_max(u64::MAX, now));
     }
 
     #[test]

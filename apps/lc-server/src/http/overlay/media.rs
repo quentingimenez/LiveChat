@@ -121,6 +121,18 @@ pub async fn get_media(
 
     let timestamp = now(&state);
     let now_sec = u64::try_from(timestamp.timestamp()).unwrap_or(0);
+    // AUD-A2-002 : une URL signée ne peut pas porter une expiration au-delà de
+    // la politique serveur (défense contre un `exp` forgé/prolongé).
+    if !media_url::is_expiry_within_max(exp_sec, now_sec) {
+        warn!(
+            asset_id = %asset_key,
+            exp_sec,
+            now_sec,
+            max_ttl_sec = lc_protocol::MEDIA_URL_TTL_MAX_SEC,
+            "URL média signée au-delà du plafond d'expiration : refus"
+        );
+        return media_url_invalid();
+    }
     if media_url::is_expired(exp_sec, now_sec) {
         return media_url_expired();
     }
@@ -254,8 +266,9 @@ pub(super) async fn resolve_media_file(
             warn!(
                 base = %state.config.media_storage_dir.display(),
                 error = %error,
-                "répertoire média absent : confinement non vérifiable"
+                "racine média non canonicalisable : confinement non vérifiable, accès refusé"
             );
+            return Err(media_not_found_on_disk());
         }
     }
     Ok(canonical)

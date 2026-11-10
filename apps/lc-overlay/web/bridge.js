@@ -627,6 +627,34 @@
       return callCommand('getConfig', COMMANDS.getConfig, undefined);
     },
 
+    // AUD-A6-004 : fetch authentifié par en-tête Authorization (Bearer) pour
+    // les appels REST du board. Le clientToken ne doit plus transiter en query.
+    authorizedFetch: function (url, options) {
+      const requestOptions = options && typeof options === 'object' ? options : {};
+      return api.getConfig().then(function (config) {
+        const token =
+          config && typeof config.clientToken === 'string' ? config.clientToken.trim() : '';
+        if (!token) {
+          throw new Error('not_paired');
+        }
+        const headers = new Headers(requestOptions.headers || undefined);
+        headers.set('Authorization', 'Bearer ' + token);
+        const requestInit = Object.assign({}, requestOptions, { headers: headers });
+        const entry = pushCall('authorizedFetch', sanitizeForLog(url, 0));
+        return fetch(url, requestInit)
+          .then(function (response) {
+            finishCall(entry, response.ok ? 'ok' : 'error', { status: response.status });
+            return response;
+          })
+          .catch(function (error) {
+            finishCall(entry, 'error', {
+              message: String(error && error.message ? error.message : error)
+            });
+            throw error;
+          });
+      });
+    },
+
     rendererReady: function () {
       return sendCommand('rendererReady', COMMANDS.rendererReady, undefined);
     },

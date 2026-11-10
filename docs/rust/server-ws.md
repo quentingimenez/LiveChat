@@ -72,6 +72,9 @@ overlay (Tauri) ──WS /ws──> session.rs (1 tâche par socket)
    notre convertisseur : HTTP `426` + `{"error":"websocket_required"}`.
    Limites d'upgrade : `max_message_size = max_frame_size = 256 Kio` (garde-fou axum ; le contrat
    64 Kio est vérifié applicativement, cf. §6).
+   **Origine (COR-06)** : si l'en-tête `Origin` est présent, il doit être autorisé par l'allowlist
+   (§6) ; sinon la socket est fermée `1008 origin_not_allowed` **avant** toute lecture de trame.
+   Une requête sans `Origin` (client natif) est acceptée.
 2. **Hello** : la première trame doit être un `hello` sous **5 s**. Toute autre trame, ou un timeout,
    entraîne une fermeture (`4401 auth_timeout` pour le timeout ; `1002 protocol_error` pour une
    autre trame). Aucun jeton n'est accepté en query string ni en header.
@@ -95,6 +98,7 @@ Codes de fermeture émis par le serveur (cf. SSOT §3) :
 | `1001` | `server_shutdown`, `heartbeat_timeout` | arrêt du serveur, 45 s sans activité |
 | `1002` | `protocol_error`, `bad_playback_state` | JSON/type/v inconnu, payload invalide, `playback.state` incohérent |
 | `1003` | `unsupported_frame` | trame binaire |
+| `1008` | `origin_not_allowed` | en-tête `Origin` hors allowlist (fermeture pré-hello, COR-06) |
 | `1011` | `internal_error` | erreur DB au handshake/runtime, base indisponible |
 | `4401` | `auth_timeout`, `missing_token`, `invalid_token` | hello absent/tardif, jeton vide/inconnu, `clientId` incohérent |
 | `4402` | `revoked` | client révoqué (y compris fermeture admin) |
@@ -158,7 +162,10 @@ scheduler, §15.3 de la SSOT) ; si plusieurs sont détectés, le plus récent pa
 | `playback.state` | 1/s | excédent ignoré silencieusement |
 | `peers.request` | 1/2 s | excédent ignoré silencieusement |
 | hello | 5 s (`HELLO_TIMEOUT_MS`) | close `4401 auth_timeout` |
-| heartbeat / pong | ping 15 s, timeout 45 s (`WS_HEARTBEAT_TIMEOUT_SEC`) | close `1001 heartbeat_timeout` |
+| heartbeat / pong | ping 15 s, timeout 45 s (`WS_HEARTBEAT_TIMEOUT_SEC`) | timeout mesuré sur le dernier **Pong** reçu ; close `1001 heartbeat_timeout` |
+| sockets par client | **3** (`MAX_SOCKETS_PER_CLIENT`) | nouvelle socket : close `4409 too_many_connections` avant `welcome` |
+| sockets par guilde | **16** (`MAX_SOCKETS_PER_GUILD`) | nouvelle socket : close `4409 too_many_connections` avant `welcome` |
+| origine `/ws` | allowlist : origine de `API_URL`, `http(s)://tauri.localhost`, `ADDITIONAL_CORS_ORIGINS`, env `WS_ALLOWED_ORIGINS` ; loopback seulement en dev | `Origin` présent et hors liste : close `1008 origin_not_allowed` ; `Origin` absent : accepté |
 | `remainingMs` | `[0, 86_400_000]` | borne avant transmission au moteur |
 | texte de mème | 500 caractères | troncature |
 | peers | 8 | troncature (ordre déterministe) |
@@ -166,6 +173,11 @@ scheduler, §15.3 de la SSOT) ; si plusieurs sont détectés, le plus récent pa
 Le rate limiter est un simple `VecDeque<Instant>` par connexion (fenêtre glissante de 1 s) : sans
 allocation par message, et suffisant pour un client overlay. Toute trame texte est comptée, y
 compris les messages rejetés ensuite ; les Pong et les trames de contrôle ne sont pas comptés.
+
+Les plafonds de sockets (3/client, 16/guilde) sont vérifiés **sous le verrou du registre** au moment
+de `Hub::register`, après authentification et avant l'envoi de `welcome` : un client refusé ne reçoit
+donc jamais de `welcome`, et les compteurs sont libérés par `Hub::unregister` dans la sortie
+normale de `handle_socket` (close, erreur, shutdown).
 
 ## 7. URLs média signées
 
@@ -203,6 +215,7 @@ et déléguer sans conversion.
 | `close_client(&self, client_id: &Uuid, code: u16) -> bool` | sync | envoie `OutFrame::Close` à tous les sockets du client ; `true` si au moins un ciblé. Raison mappée : `4402 → revoked`, `1000 → client_shutdown`, `1001 → server_shutdown`, sinon `internal_error` |
 | `broadcast_stop(&self, guild_id: &GuildId) -> usize` | async | `engine.stop_with_reason(guild, None, StopReason::Manual)` et retourne le nombre de jobs arrêtés (`0` sans moteur) |
 | `broadcast_settings(&self, guild_id: &GuildId) -> usize` | async | relit les défauts de guilde (DB) et diffuse un `settings` à jour à chaque socket ; retourne le nombre de sockets servis (`0` sans moteur/DB) |
+| `broadcast_purge(&self, guild_id: &GuildId) -> usize` | async | `engine.stop_all_with_reason(guild, StopReason::Purge)` : diffuse `stop {reason:"purge", jobId:null}` ; retourne le nombre de jobs arrêtés (`0` sans moteur). Implémentation par défaut du trait = repli sur `broadcast_stop` ; `Hub` la surcharge |
 
 Câblage final (app.rs, propriété du Lead) :
 
@@ -226,8 +239,22 @@ pub fn connected_for_guild(&self, guild_id: &GuildId) -> usize;
 pub fn is_connected(&self, client_id: &Uuid) -> bool;
 pub fn close_client(&self, client_id: &Uuid, code: u16) -> bool;
 pub async fn broadcast_stop(&self, guild_id: &GuildId) -> usize;
+pub async fn broadcast_stop_with_reason(
+    &self,
+    guild_id: &GuildId,
+    job_id: Option<PlaybackJobId>,
+    reason: StopReason,
+) -> usize;
+pub async fn broadcast_purge(&self, guild_id: &GuildId) -> usize;
 pub async fn broadcast_settings(&self, guild_id: &GuildId) -> usize;
 ```
+
+`broadcast_purge` est exposé par le trait `AdminHub` (méthode à implémentation par défaut, repli sur
+`broadcast_stop`) et surchargé par `Hub` pour émettre `stop {reason:"purge", jobId:null}`. La route
+`POST /admin/api/guilds/{id}/purge` l'appelle désormais à la place de `broadcast_stop`. La route
+`.../stop` continue d'utiliser `broadcast_stop` (`reason:"manual"`, `jobId` renseigné si un seul job
+était en cours). La révocation admin (`close_client(..., 4402)`) diffuse elle aussi
+`stop {reason:"revoked", jobId:null}` **avant** la close frame (cf. §9).
 
 ## 9. Intégration `lc-playback`
 
@@ -247,7 +274,7 @@ pub async fn broadcast_settings(&self, guild_id: &GuildId) -> usize;
 
 ## 10. Tests
 
-`apps/lc-server/src/ws/tests.rs` (20 tests, `#[cfg(test)] mod tests`) :
+`apps/lc-server/src/ws/tests.rs` (28 tests, `#[cfg(test)] mod tests`) :
 
 Intégration (vrai serveur axum sur port éphémère + SQLite temporaire + client `tokio-tungstenite`) :
 
@@ -267,6 +294,17 @@ Intégration (vrai serveur axum sur port éphémère + SQLite temporaire + clien
 13. `heartbeat_is_accepted_and_updates_last_seen` (`last_seen_at` mis à jour en DB).
 14. `peers_request_returns_ack_then_peers`.
 15. `playback_state_is_persisted_for_a_corresponding_job` (`remaining_ms_snapshot` en DB).
+16. `origin_tauri_localhost_is_allowed` (Origin `http://tauri.localhost` → `welcome`).
+17. `unknown_origin_is_closed_with_1008` (Origin étrangère → close `1008 origin_not_allowed`).
+18. `too_many_sockets_per_client_are_rejected_with_4409` (3 sockets OK, 4e → `4409
+    too_many_connections` sans `welcome` ; compteur libéré à la déconnexion).
+19. `socket_caps_are_enforced_unit` (`Hub::register` : `ClientLimit` puis `GuildLimit`, 3/16).
+20. `text_only_job_is_played_and_marked_playing` (job sans média → `play` émis, `media:null`, DB
+    `PLAYING`).
+21. `welcome_exposes_text_only_current_job` (`currentJob` aplati sans média, `remainingMs` u64).
+22. `revocation_emits_stop_revoked_before_close_4402` (stop `revoked` `jobId:null` PUIS close `4402`,
+    broadcast aux autres sockets, job libéré en DB).
+23. `purge_stop_has_a_dedicated_reason` (`broadcast_purge` → reason `"purge"`, `jobId:null`, DB `DONE`).
 
 Unitaires : `max_peers_is_frozen`, `sha256_token_hash_matches_the_reference_vector`,
 `close_reason_mapping_is_stable`, `signed_play_uses_the_adaptive_media_ttl`,
@@ -282,14 +320,16 @@ cargo clippy -p lc-server --all-targets -- -D warnings
 cargo test -p lc-server
 ```
 
-État final de la vérification (2026-11-10) :
+État final de la vérification (2026-11-10, task-40) :
 
-- `cargo fmt -p lc-server -- --check` : OK (exit 0) ;
-- `cargo clippy -p lc-server --all-targets -- -D warnings` : OK (exit 0), aucune erreur dans `ws/**` ;
-- `cargo test -p lc-server --lib` : **227 passed ; 0 failed ; 1 ignored** (dont les 20 tests `ws::tests`) ;
-- `cargo test -p lc-server` (avec doctests) reste bloqué par un doctest hors périmètre,
-  `apps/lc-server/src/discord/mod.rs` (appelle `Shutdown::wait` au lieu de `subscribe().wait()`),
-  signalé à la lane discord. Aucun fichier hors `ws/**` n'est modifié par ce travail.
+- `cargo fmt --all -- --check` : OK (exit 0) ;
+- `cargo clippy --workspace --all-targets -- -D warnings` : OK (exit 0) ;
+- `cargo test -p lc-server -p lc-playback --no-fail-fast` : OK (exit 0) — `lc-server` **251 passed /
+  0 failed / 1 ignored** (dont les 28 tests `ws::tests`) + doctest `lc-server` 1 passed ; `lc-playback`
+  `3+3+13 passed / 0 failed` ;
+- Correctif test-only hors périmètre (autorisé par le Lead) : `crates/lc-playback/src/store.rs:414`
+  décale de 1 s la `submission_date` du second job de `claim_est_unique_pour_une_guilde`
+  (départage par UUID v4 non déterministe lorsque deux jobs tombaient dans la même milliseconde).
 
 ## 11. Écarts et décisions
 
@@ -315,11 +355,79 @@ cargo test -p lc-server
 8. **`ServerMessage::Error`** : le payload existe (spec) mais le hub n'émet pas encore d'erreur
    asynchrone non fatale ; le helper `send_server_error` est conservé (allow dead_code) pour les
    hooks à venir (échec d'envoi média, purge en cours…).
+9. **Origine `1008` plutôt que HTTP 403 (COR-06)** : le refus d'`Origin` intervient après l'upgrade
+   (une réponse HTTP n'est alors plus possible) ; on ferme donc la socket `1008 origin_not_allowed`,
+   avant `hello`. L'allowlist est configurable sans redéploiement de code (`WS_ALLOWED_ORIGINS`,
+   séparée par virgules) et réutilise les origines déjà connues (`API_URL`, Tauri, CORS additionnels).
+   Absence d'`Origin` = client natif accepté (le token reste obligatoire).
+10. **Plafonds de sockets 3/16 (COR-06)** : constants du crate, comptées sous le verrou du registre
+    à `register` (client puis guilde), fermeture `4409 too_many_connections` sans `welcome`. Les
+    compteurs sont libérés par `unregister`, appelé inconditionnellement à la sortie de
+    `handle_socket` (y compris en cas d'erreur ou de shutdown).
+11. **Jobs texte-seul (COR-07)** : `Hub::signed_play_payload` et `signed_current_job` ne renvoient
+    plus `None` quand `media` est absent : ils renvoient le payload tel quel. `unicast_play` compte
+    ces sockets comme servis, donc le moteur ne marque plus le job `FAILED` (`recipients == 0`) —
+    `play` est émis avec `media:null`, `text`/`author`/`tweetCard` restant porteurs du contenu.
+12. **Révocation (COR-07)** : `close_client(..., 4402)` diffuse d'abord `stop {reason:"revoked",
+    jobId:null}` sur la room (donc le client ciblé ET les autres), puis envoie la close frame, puis
+    libère le job côté moteur via un `spawn` de `release_playing_without_stop` (le broadcast a déjà
+    prévenu les clients ; on ne rediffuse pas de stop manuel).
+13. **Purge admin (COR-07)** : nouvelle raison dédiée `StopReason::Purge` via `broadcast_purge`
+    (`AdminHub` + `Hub`), avec `jobId:null` imposé par `engine.stop_all_with_reason` ; la route
+    `/stop` conserve `manual`. Le trait `AdminHub` est modifié hors `ws/**` avec l'accord du Lead
+    (`http/admin/hub.rs`, `http/admin/guilds.rs`, `wiring.rs`).
+14. **Liveness sur Pong (AUD-A1-008)** : le timeout de 45 s est mesuré sur le dernier `Pong` reçu,
+    pas sur n'importe quelle trame ; une socket qui reçoit des Ping serveur mais ne répond jamais
+    est fermée `1001 heartbeat_timeout`.
 
 ## 12. Points d'intégration restants (hors propriétaire)
 
 - **Lead / `app.rs`** : remplacer `ws::router()` par `ws::router_with_hub(Arc<Hub>)` et câbler
   `install_admin_hub(hub.clone())` ; `Hub` est le handle partageable (aucun changement d'`AppState`).
+  **Diff TimeoutLayer** (COR-06, à intégrer par l'owner d'`app.rs`) : jamais de timeout global sur
+  `/ws`, `/overlay/media/` (Range/206), `/overlay/meme-board/` (previews streaming) ni `/ingest`
+  (uploads longs) — cf. plan `docs/rust/audit/p1-correctifs.md` COR-06 (`408 request_timeout`
+  ailleurs, 30 s).
+  ```rust
+  // apps/lc-server/Cargo.toml : tower-http features += "timeout"
+  use std::time::Duration;
+  use axum::extract::Request;
+  use axum::middleware::{self, Next};
+  use axum::response::{IntoResponse, Response};
+  use axum::Json;
+  use axum::http::StatusCode;
+
+  async fn enforce_timeout(
+      axum::extract::State(timeout): axum::extract::State<Duration>,
+      request: Request,
+      next: Next,
+  ) -> Response {
+      // Streaming média (Range/206), previews board, uploads ingest et WebSocket :
+      // jamais de timeout global sur ces routes.
+      let path = request.uri().path();
+      if path == "/ws"
+          || path.starts_with("/overlay/media/")
+          || path.starts_with("/overlay/meme-board/")
+          || path.starts_with("/ingest")
+      {
+          return next.run(request).await;
+      }
+      match tokio::time::timeout(timeout, next.run(request)).await {
+          Ok(response) => response,
+          Err(_) => (
+              StatusCode::REQUEST_TIMEOUT,
+              Json(serde_json::json!({ "error": "request_timeout" })),
+          )
+              .into_response(),
+      }
+  }
+
+  // dans router_with_hub, après normalize_errors / avant compression :
+  .layer(middleware::from_fn_with_state(
+      Duration::from_secs(30),
+      enforce_timeout,
+  ))
+  ```
 - **Lane overlay (Phase 3/8)** : implémente `GET /overlay/media/{assetId}` avec vérification
   `exp`/`sig` (`media_url::verify`), `HEAD`, `Range` (206/416) avant expiration ; le hub ne sert pas
   les octets.

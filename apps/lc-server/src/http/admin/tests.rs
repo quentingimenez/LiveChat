@@ -355,14 +355,14 @@ async fn auth_401_sans_token() {
 }
 
 #[tokio::test]
-async fn auth_accepte_bearer_puis_query_token() {
+async fn auth_refuse_le_token_en_query_string() {
     let harness = Harness::new().await;
 
     let (status, _) = harness.call(Method::GET, "/admin/api/ingest-authors").await;
     assert_eq!(status, StatusCode::OK);
 
-    // Sans en-tête Authorization : le `?token=` est lu par app.js puis utilisé
-    // en Bearer ; le serveur doit l'accepter en repli.
+    // AUD-COR-05 : le jeton n'est plus accepté en query string, même si app.js
+    // le lisait autrefois dans `?token=` pour en faire un Bearer.
     let request = HttpRequest::builder()
         .method(Method::GET)
         .uri(format!("/admin/api/ingest-authors?token={TOKEN}"))
@@ -373,8 +373,9 @@ async fn auth_accepte_bearer_puis_query_token() {
         .extensions_mut()
         .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))));
 
-    let (status, _, _) = harness.send(request).await;
-    assert_eq!(status, StatusCode::OK);
+    let (status, _, bytes) = harness.send(request).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(json_or_null(&bytes)["error"], "unauthorized");
 }
 
 #[tokio::test]
@@ -1250,5 +1251,33 @@ async fn hub_noop_par_defaut_et_installation_unique() {
     assert!(
         !install_admin_hub(Arc::new(NoopAdminHub::new())),
         "le hub ne peut être installé qu'une fois par processus"
+    );
+}
+
+/// AUD-COR-05 : le JavaScript du panneau ne doit plus lire ni propager le jeton
+/// via l'URL (le jeton reste dans le champ et/ou `localStorage`, puis part en
+/// `Authorization: Bearer`).
+#[test]
+fn app_js_ne_propage_pas_le_jeton_dans_l_url() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../static/admin/app.js");
+    let source = std::fs::read_to_string(&path).expect("static/admin/app.js lisible");
+
+    for interdit in [
+        "syncTokenInUrl",
+        "history.replaceState",
+        "searchParams.set('token'",
+        "searchParams.set(\"token\"",
+        "searchParams.delete('token'",
+        "location.search",
+    ] {
+        assert!(
+            !source.contains(interdit),
+            "app.js ne doit plus contenir {interdit:?} (AUD-COR-05)"
+        );
+    }
+
+    assert!(
+        source.contains("localStorage.getItem('livechat_admin_token')"),
+        "le jeton doit être lu depuis localStorage"
     );
 }

@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Extension, State};
-use axum::http::StatusCode;
+use axum::http::{header::ORIGIN, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::Utc;
@@ -45,13 +45,25 @@ use tokio::time::{interval, sleep, MissedTickBehavior};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use super::hub::{self, AuthError, Hub, HubEngine, OutFrame};
+use super::hub::{self, AuthError, Hub, HubEngine, OutFrame, TOO_MANY_CONNECTIONS_REASON};
 
 /// Taille maximale acceptée par l'upgrade (les trames > 64 Kio reçoivent 4408).
 const MAX_UPGRADE_MESSAGE_BYTES: usize = 256 * 1024;
 
 /// Fenêtre glissante du rate limiter client.
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(1);
+
+/// Code close `1008` (policy violation) pour une origine refusée.
+///
+/// Le close est utilisé plutôt qu'une réponse HTTP 403 car la requête est déjà
+/// un upgrade WebSocket ; la raison documentée est `origin_not_allowed`.
+const POLICY_VIOLATION: u16 = 1008;
+
+/// Raison de fermeture quand l'origine WebSocket n'est pas autorisée.
+const ORIGIN_NOT_ALLOWED_REASON: &str = "origin_not_allowed";
+
+/// Variable d'environnement d'allowlist d'origines WebSocket (séparées par `,`).
+const WS_ALLOWED_ORIGINS_ENV: &str = "WS_ALLOWED_ORIGINS";
 
 /// Raison de fermeture décidée par la session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,14 +102,19 @@ struct SessionTimers {
 /// Handler axum de `GET /ws`.
 pub(crate) async fn ws_handler(
     State(state): State<crate::app::AppState>,
+    headers: HeaderMap,
     Extension(hub): Extension<Arc<Hub>>,
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Response {
+    let origin = headers
+        .get(ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     match ws {
         Ok(upgrade) => upgrade
             .max_message_size(MAX_UPGRADE_MESSAGE_BYTES)
             .max_frame_size(MAX_UPGRADE_MESSAGE_BYTES)
-            .on_upgrade(move |socket| handle_socket(socket, state, hub)),
+            .on_upgrade(move |socket| handle_socket(socket, state, hub, origin)),
         Err(_rejection) => {
             debug!("upgrade WebSocket refusé : 426 websocket_required");
             (
@@ -110,8 +127,23 @@ pub(crate) async fn ws_handler(
 }
 
 /// Boucle de vie d'une connexion WebSocket.
-async fn handle_socket(socket: WebSocket, state: crate::app::AppState, hub: Arc<Hub>) {
+async fn handle_socket(
+    socket: WebSocket,
+    state: crate::app::AppState,
+    hub: Arc<Hub>,
+    origin: Option<String>,
+) {
     let (mut sink, mut stream) = socket.split();
+
+    if !origin_allowed(origin.as_deref(), &state.config) {
+        debug!(
+            ?origin,
+            "origine WebSocket refusée : 1008 origin_not_allowed"
+        );
+        let info = CloseInfo::new(POLICY_VIOLATION, ORIGIN_NOT_ALLOWED_REASON);
+        close_sink(&mut sink, &info).await;
+        return;
+    }
 
     let hello = match wait_for_hello(&mut stream, state.config.min_overlay_version.as_str()).await {
         Ok(hello) => hello,
@@ -183,12 +215,8 @@ async fn handle_socket(socket: WebSocket, state: crate::app::AppState, hub: Arc<
         author_image: client.default_author_image.clone(),
     };
 
-    if !send_welcome(&mut sink, &hub, &engine, &context).await {
-        return;
-    }
-
     let (sender, mut receiver) = mpsc::unbounded_channel::<OutFrame>();
-    let connection_id = hub.register(
+    let connection_id = match hub.register(
         guild_id.clone(),
         client.id,
         client_id_str,
@@ -197,7 +225,24 @@ async fn handle_socket(socket: WebSocket, state: crate::app::AppState, hub: Arc<
         context.author_name.clone(),
         context.author_image.clone(),
         sender,
-    );
+    ) {
+        Ok(connection_id) => connection_id,
+        Err(error) => {
+            debug!(
+                ?error,
+                "connexion WebSocket refusée : plafond de sockets atteint"
+            );
+            let info = CloseInfo::new(close_code::RATE_LIMITED, TOO_MANY_CONNECTIONS_REASON);
+            close_sink(&mut sink, &info).await;
+            return;
+        }
+    };
+
+    if !send_welcome(&mut sink, &hub, &engine, &context).await {
+        hub.unregister(connection_id);
+        return;
+    }
+
     hub.broadcast_peers(&guild_id);
     info!(client = %context.client_id_str, guild = %guild_id, "overlay connecté au hub WebSocket");
 
@@ -205,7 +250,7 @@ async fn handle_socket(socket: WebSocket, state: crate::app::AppState, hub: Arc<
     let max_messages = usize::try_from(MAX_CLIENT_MESSAGES_PER_SECOND).unwrap_or(usize::MAX);
     let mut rate_window: VecDeque<Instant> =
         VecDeque::with_capacity(max_messages.saturating_add(1));
-    let mut last_activity = Instant::now();
+    let mut last_pong = Instant::now();
     let heartbeat_timeout = Duration::from_secs(state.config.ws_heartbeat_timeout_sec.max(1));
     let mut ping_interval = interval(Duration::from_millis(PING_INTERVAL_MS));
     ping_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -217,7 +262,6 @@ async fn handle_socket(socket: WebSocket, state: crate::app::AppState, hub: Arc<
             maybe_message = stream.next() => {
                 match maybe_message {
                     Some(Ok(Message::Text(text))) => {
-                        last_activity = Instant::now();
                         let raw = text.as_str();
                         if raw.len() > MAX_FRAME_BYTES {
                             close_info = Some(CloseInfo::new(
@@ -287,9 +331,10 @@ async fn handle_socket(socket: WebSocket, state: crate::app::AppState, hub: Arc<
                         break;
                     }
                     Some(Ok(Message::Close(_))) | None => break,
-                    Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => {
-                        last_activity = Instant::now();
+                    Some(Ok(Message::Pong(_))) => {
+                        last_pong = Instant::now();
                     }
+                    Some(Ok(Message::Ping(_))) => {}
                     Some(Err(error)) => {
                         debug!(error = %error, "lecture du socket WebSocket interrompue");
                         break;
@@ -311,7 +356,7 @@ async fn handle_socket(socket: WebSocket, state: crate::app::AppState, hub: Arc<
                 }
             }
             _ = ping_interval.tick() => {
-                if last_activity.elapsed() >= heartbeat_timeout {
+                if last_pong.elapsed() >= heartbeat_timeout {
                     close_info = Some(CloseInfo::new(
                         close_code::GOING_AWAY,
                         close_reason::HEARTBEAT_TIMEOUT,
@@ -338,6 +383,65 @@ async fn handle_socket(socket: WebSocket, state: crate::app::AppState, hub: Arc<
     hub.unregister(connection_id);
     hub.broadcast_peers(&guild_id);
     info!(client = %context.client_id_str, guild = %guild_id, "overlay déconnecté du hub WebSocket");
+}
+
+/// Vérifie qu'une origine WebSocket est autorisée (plafonds/anti-DoS COR-06).
+///
+/// L'absence d'en-tête `Origin` désigne un client natif (overlay Tauri) et est
+/// acceptée. Sinon, l'origine doit appartenir à l'allowlist : origine de
+/// `API_URL`, `tauri.localhost` (http et https), `ADDITIONAL_CORS_ORIGINS`,
+/// variable `WS_ALLOWED_ORIGINS`, et loopback uniquement en développement.
+fn origin_allowed(origin: Option<&str>, config: &crate::config::Config) -> bool {
+    let Some(raw) = origin else {
+        return true;
+    };
+    let Ok(parsed) = url::Url::parse(raw) else {
+        return false;
+    };
+    if !parsed.origin().is_tuple() {
+        // `null` et origines opaques (`file:`, `data:`…) refusées.
+        return false;
+    }
+    if config.is_development() && is_loopback_origin(&parsed) {
+        return true;
+    }
+    let serialized = parsed.origin().ascii_serialization();
+    let mut allowed = vec![
+        config.api_origin(),
+        "http://tauri.localhost".to_owned(),
+        "https://tauri.localhost".to_owned(),
+    ];
+    allowed.extend(
+        config
+            .additional_cors_origins
+            .iter()
+            .map(|origin| origin.origin().ascii_serialization()),
+    );
+    if let Ok(extra) = std::env::var(WS_ALLOWED_ORIGINS_ENV) {
+        for item in extra.split(',') {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+            match url::Url::parse(item) {
+                Ok(url) if url.origin().is_tuple() => {
+                    allowed.push(url.origin().ascii_serialization());
+                }
+                _ => warn!(value = %item, "origine invalide dans {WS_ALLOWED_ORIGINS_ENV}"),
+            }
+        }
+    }
+    allowed.iter().any(|candidate| candidate == &serialized)
+}
+
+/// Vrai si l'origine pointe vers la boucle locale.
+fn is_loopback_origin(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    }
 }
 
 /// Attend la trame `hello` (5 s) et applique les validations amont.

@@ -19,6 +19,13 @@
 //! sont générés par [`generate_token`] : 32 octets aléatoires encodés en hex
 //! (64 caractères), équivalent de `crypto.randomBytes(32).toString('hex')`.
 //!
+//! ## Exception temporaire AUD-COR-05
+//!
+//! Le repli `?token=` pour `/overlay/meme-board/*` est **temporaire** : il ne
+//! survit que le temps de la migration du renderer legacy (P1-11). Chaque
+//! utilisation est journalisée une seule fois par processus en `WARN` (target
+//! `lc_server::overlay`) afin d'en mesurer l'usage avant suppression.
+//!
 //! ## Extracteur d'authentification
 //!
 //! L'authentification est portée par l'extracteur [`AuthedOverlayClient`]
@@ -33,6 +40,7 @@
 //! `crate::app::router`, qui seul détient l'instance `AppState`).
 
 use std::future::Future;
+use std::sync::Once;
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
@@ -139,6 +147,22 @@ pub fn query_token(uri: &axum::http::Uri) -> Option<String> {
     Some(token)
 }
 
+/// Avertissement de dépréciation du repli `?token=` board, émis une seule fois
+/// par processus (AUD-COR-05).
+///
+/// L'exception est temporaire : elle sera supprimée quand le renderer legacy
+/// cessera de mettre le jeton dans l'URL (P1-11).
+fn warn_query_token_deprecation_once() {
+    static WARNED: Once = Once::new();
+
+    WARNED.call_once(|| {
+        warn!(
+            target: "lc_server::overlay",
+            "repli `?token=` utilisé pour /overlay/meme-board/* : mécanisme legacy temporaire (AUD-COR-05), supprimé après migration du renderer (P1-11)"
+        );
+    });
+}
+
 impl FromRequestParts<AppState> for AuthedOverlayClient {
     type Rejection = Response;
 
@@ -146,8 +170,18 @@ impl FromRequestParts<AppState> for AuthedOverlayClient {
         parts: &mut Parts,
         state: &AppState,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
-        // L'en-tête Bearer prime ; `?token=` n'est toléré que pour le board.
-        let token = bearer_token(&parts.headers).or_else(|| query_token(&parts.uri));
+        // L'en-tête Bearer prime ; `?token=` n'est toléré que pour le board
+        // legacy (exception temporaire AUD-COR-05, signalée une fois).
+        let token = match bearer_token(&parts.headers) {
+            Some(token) => Some(token),
+            None => {
+                let legacy = query_token(&parts.uri);
+                if legacy.is_some() {
+                    warn_query_token_deprecation_once();
+                }
+                legacy
+            }
+        };
         let db = state.db.clone();
         let now = state.clock.now();
         async move {

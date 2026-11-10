@@ -884,8 +884,25 @@ async fn registre_sqlx_compatible_boot_et_deuxieme_boot() {
     let mut target = open_readonly(&to).await;
     assert_eq!(
         scalar_i64(&mut target, "SELECT COUNT(*) FROM _sqlx_migrations").await,
+        2,
+        "le registre doit contenir 0001 (seedée par le migrateur) et 0002 (appliquée \
+         par sqlx au premier boot)"
+    );
+    assert_eq!(
+        scalar_i64(&mut target, "SELECT MAX(version) FROM _sqlx_migrations").await,
+        2,
+        "0002_playback_single_playing doit être appliquée au premier démarrage"
+    );
+    assert_eq!(
+        scalar_i64(
+            &mut target,
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type = 'index' AND name = 'idx_playback_jobs_single_playing'"
+        )
+        .await,
         1,
-        "le registre doit rester à une seule ligne après deux démarrages"
+        "l'index unique partiel de l'invariant « un PLAYING par guilde » doit exister \
+         après le premier boot"
     );
     assert_eq!(
         scalar_text(
@@ -894,6 +911,82 @@ async fn registre_sqlx_compatible_boot_et_deuxieme_boot() {
         )
         .await,
         "3.0.0"
+    );
+}
+
+#[tokio::test]
+async fn sauvegarde_old_orpheline_restauree_et_refus_explicite() {
+    let dir = tempdir().expect("répertoire temporaire");
+    let (from, legacy) = seeded_legacy(&dir).await;
+    let to = dir.path().join("v3.sqlite");
+    let backup = super::append_suffix(&to, ".old");
+    std::fs::write(&backup, b"ancienne cible").expect("sauvegarde orpheline");
+
+    let err = execute(&options(&from, &to, false, false))
+        .await
+        .expect_err("sans --force, la restauration doit être annoncée explicitement");
+    assert!(
+        matches!(err, Error::BackupRestored { .. }),
+        "erreur : {err:?}"
+    );
+    assert!(to.is_file(), "la sauvegarde doit être restaurée en cible");
+    assert!(!backup.exists(), "la sauvegarde doit avoir été renommée");
+    assert_eq!(
+        std::fs::read(&to).expect("lecture de la cible restaurée"),
+        b"ancienne cible".to_vec(),
+        "le contenu restauré doit être celui de la sauvegarde"
+    );
+    drop(legacy);
+}
+
+#[tokio::test]
+async fn force_apres_restauration_migre_par_dessus() {
+    let dir = tempdir().expect("répertoire temporaire");
+    let (from, legacy) = seeded_legacy(&dir).await;
+    let to = dir.path().join("v3.sqlite");
+    let backup = super::append_suffix(&to, ".old");
+    std::fs::write(&backup, b"ancienne cible").expect("sauvegarde orpheline");
+    drop(legacy);
+
+    execute(&options(&from, &to, false, true))
+        .await
+        .expect("la migration --force doit réussir après restauration");
+    assert!(to.is_file(), "la cible migrée doit exister");
+    assert!(
+        !backup.exists(),
+        "la sauvegarde doit être consommée par --force"
+    );
+
+    let mut target = open_readonly(&to).await;
+    assert_eq!(
+        scalar_i64(&mut target, "SELECT COUNT(*) FROM guilds").await,
+        2,
+        "les données migrées doivent être présentes"
+    );
+    assert_eq!(
+        scalar_i64(&mut target, "SELECT COUNT(*) FROM _sqlx_migrations").await,
+        1,
+        "avant le premier boot, seul le registre 0001 est seedé"
+    );
+}
+
+#[tokio::test]
+async fn dry_run_ne_restaure_pas_la_sauvegarde() {
+    let dir = tempdir().expect("répertoire temporaire");
+    let (from, legacy) = seeded_legacy(&dir).await;
+    let to = dir.path().join("v3.sqlite");
+    let backup = super::append_suffix(&to, ".old");
+    std::fs::write(&backup, b"ancienne cible").expect("sauvegarde orpheline");
+    drop(legacy);
+
+    execute(&options(&from, &to, true, false))
+        .await
+        .expect("le dry-run ne doit pas échouer sur une sauvegarde orpheline");
+    assert!(!to.exists(), "le dry-run ne doit rien restaurer");
+    assert!(backup.exists(), "la sauvegarde doit rester intacte");
+    assert!(
+        !target::tmp_path(&to).exists(),
+        "le dry-run ne doit pas créer de temporaire"
     );
 }
 

@@ -54,6 +54,15 @@ pub trait AdminHub: Send + Sync {
     /// touchées (0 si le hub n'expose pas cette information).
     async fn broadcast_stop(&self, guild_id: &GuildId) -> usize;
 
+    /// Purge administrateur : arrête tous les jobs avec
+    /// `stop {reason:"purge", jobId:null}`.
+    ///
+    /// Implémentation par défaut : retombe sur [`Self::broadcast_stop`] tant
+    /// que le hub concret n'expose pas la raison dédiée.
+    async fn broadcast_purge(&self, guild_id: &GuildId) -> usize {
+        self.broadcast_stop(guild_id).await
+    }
+
     /// Diffuse un changement de réglages à la guilde ; retourne le nombre de
     /// sockets touchées (0 si le hub n'expose pas cette information).
     async fn broadcast_settings(&self, guild_id: &GuildId) -> usize;

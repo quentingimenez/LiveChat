@@ -5,10 +5,11 @@
 //! content-addressed. La concurrence est limitée par un sémaphore
 //! (`MEDIA_MAX_CONCURRENT_INGESTIONS`, défaut 2) comme l'exige l'audit S10.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, OwnedMutexGuard, OwnedSemaphorePermit, Semaphore};
 
 use crate::config::MediaConfig;
 use crate::download::{self, DownloadResult};
@@ -69,6 +70,27 @@ impl IngestLimiter {
                 )
             })
     }
+}
+
+/// Verrous single-flight par hash de source : deux ingestions concurrentes du
+/// même média sont sérialisées pour éviter des écritures concurrentes dans le
+/// stockage content-addressed (audit A4-007).
+static SOURCE_LOCKS: OnceLock<StdMutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+
+async fn acquire_source_lock(source_hash: &str) -> OwnedMutexGuard<()> {
+    let registry = SOURCE_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
+    let lock = {
+        let mut locks = registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Purge les verrous qui ne sont plus référencés que par la table.
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        locks
+            .entry(source_hash.to_owned())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    };
+    lock.lock_owned().await
 }
 
 /// Pipeline d'ingestion réutilisable (limiteur + configuration).
@@ -149,6 +171,7 @@ impl MediaPipeline {
         resolved: Option<ResolvedMedia>,
     ) -> MediaResult<IngestedMedia> {
         let _permit = self.limiter.acquire().await?;
+        let _source_lock = acquire_source_lock(&source.source_hash).await;
         let temp_dir = tempfile::TempDir::new().map_err(|error| {
             MediaError::from_io(
                 MediaErrorCode::DownloadFailed,
@@ -166,8 +189,10 @@ impl MediaPipeline {
             ));
         }
         let storage = MediaStorage::new(&self.config.storage);
-        storage.ensure()?;
-        let _removed = storage.remove_variants(&source.source_hash);
+        // Fail-closed : une racine média non canonicalisable (absente, lien
+        // cassé...) doit faire échouer l'ingestion avant toute écriture.
+        let canonical_root = storage.ensure_canonical()?;
+        let storage = MediaStorage::from_root(canonical_root);
         let output_base = storage.output_base_path(&source.source_hash);
         let normalized = transcode::normalize_downloaded_media(
             &download.path,
@@ -182,6 +207,26 @@ impl MediaPipeline {
                 MediaErrorCode::FileTooLarge,
                 "le média normalisé dépasse la taille maximale autorisée",
             ));
+        }
+        // Les variantes obsolètes ne sont supprimées qu'après publication
+        // atomique du nouveau fichier : un échec de transcodage ne détruit
+        // jamais le média précédent (audit A4-007).
+        match storage.remove_other_variants(&source.source_hash, &normalized.storage_path) {
+            Ok(removed) => {
+                if removed > 0 {
+                    tracing::debug!(
+                        source_hash = %source.source_hash,
+                        removed,
+                        "anciennes variantes média supprimées"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    source_hash = %source.source_hash,
+                    "nettoyage des anciennes variantes impossible : {error}"
+                );
+            }
         }
         Ok(IngestedMedia {
             source: source.clone(),

@@ -5,6 +5,18 @@ function applyExternalLinkAttributes(root) {
         link.setAttribute('rel', 'noopener noreferrer');
     });
 }
+// AUD-A6-002 : ne jamais injecter le HTML distant via innerHTML (exécution de
+// scripts tiers). On ne conserve que le texte, extrait d'un document inerte.
+function setTweetCardTextContent(node, html) {
+    let text = '';
+    try {
+        const parsed = new DOMParser().parseFromString(`${html || ''}`, 'text/html');
+        text = parsed.body ? parsed.body.textContent || '' : '';
+    } catch {
+        text = '';
+    }
+    node.textContent = text.replace(/\s+/g, ' ').trim();
+}
 export function createOverlayLegacyTweetCardRendererUtils(options) {
     function createInlineVideoNode(model, index) {
         const inlineVideo = model.videos[index];
@@ -52,7 +64,7 @@ export function createOverlayLegacyTweetCardRendererUtils(options) {
             }
             const widgetContent = document.createElement('div');
             widgetContent.className = 'overlay-tweet-card-content overlay-tweet-widget';
-            widgetContent.innerHTML = model.html;
+            setTweetCardTextContent(widgetContent, model.html);
             applyExternalLinkAttributes(widgetContent);
             container.appendChild(widgetContent);
             const inlineMediaNode = document.createElement('div');
@@ -75,7 +87,7 @@ export function createOverlayLegacyTweetCardRendererUtils(options) {
         container.className = 'overlay-tweet-card';
         const widgetContent = document.createElement('div');
         widgetContent.className = 'overlay-tweet-card-content';
-        widgetContent.innerHTML = model.html;
+        setTweetCardTextContent(widgetContent, model.html);
         applyExternalLinkAttributes(widgetContent);
         container.appendChild(widgetContent);
         return {

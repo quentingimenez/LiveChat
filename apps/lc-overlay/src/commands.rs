@@ -14,7 +14,7 @@ use lc_protocol::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Manager, State, Wry};
+use tauri::{AppHandle, Manager, State, WebviewWindow, Wry};
 
 use crate::config::{MemeBindings, OverlayConfigView};
 use crate::events;
@@ -24,6 +24,69 @@ use crate::state::AppState;
 use crate::tray;
 use crate::updater::{self, UpdateStatus};
 use crate::windows;
+
+/// Matrice d'autorisation IPC par fenêtre (AUD-A6-008).
+///
+/// Chaque page ne peut appeler que les commandes dont elle a besoin : une page
+/// compromise (ex. contenu tiers) ne peut pas récupérer le token via
+/// `overlay_get_config` depuis une autre fenêtre, ni déclencher l'updater ou
+/// l'écriture du board. Les commandes non listées sont refusées.
+const COMMAND_MATRIX: &[(&str, &[&str])] = &[
+    (
+        "overlay",
+        &[
+            "overlay_get_config",
+            "overlay_renderer_ready",
+            "overlay_report_error",
+            "overlay_report_playback_state",
+            "overlay_report_playback_stop",
+        ],
+    ),
+    (
+        "board",
+        &[
+            "overlay_get_config",
+            "overlay_report_error",
+            "meme_board_get_bindings",
+            "meme_board_set_bindings",
+            "meme_board_trigger",
+            "meme_board_stop",
+            "overlay_check_updates",
+        ],
+    ),
+    (
+        "pairing",
+        &[
+            "overlay_get_config",
+            "overlay_report_error",
+            "pairing_consume",
+        ],
+    ),
+];
+
+/// Indique si `command` est autorisée pour la fenêtre `window_label`.
+pub fn command_allowed(window_label: &str, command: &str) -> bool {
+    COMMAND_MATRIX
+        .iter()
+        .find(|(label, _)| *label == window_label)
+        .is_some_and(|(_, commands)| commands.contains(&command))
+}
+
+/// Refuse l'appel si la fenêtre émettrice n'est pas autorisée (AUD-A6-008).
+fn ensure_allowed(window: &WebviewWindow<Wry>, command: &str) -> Result<(), String> {
+    if command_allowed(window.label(), command) {
+        return Ok(());
+    }
+    tracing::warn!(
+        window = window.label(),
+        command,
+        "commande IPC refusée : non autorisée pour cette fenêtre"
+    );
+    Err(format!(
+        "commande '{command}' non autorisée pour la fenêtre '{}'",
+        window.label()
+    ))
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -133,7 +196,11 @@ fn ended_reason_from_label(label: Option<&str>) -> PlaybackEndedReason {
 
 /// `overlay_get_config` — projection 8 champs consommée par le renderer.
 #[tauri::command]
-pub fn overlay_get_config(state: State<'_, AppState>) -> OverlayConfigView {
+pub fn overlay_get_config(
+    window: WebviewWindow<Wry>,
+    state: State<'_, AppState>,
+) -> Result<OverlayConfigView, String> {
+    ensure_allowed(&window, "overlay_get_config")?;
     let view = state.view();
     tracing::debug!(
         has_server_url = view.server_url.is_some(),
@@ -141,24 +208,35 @@ pub fn overlay_get_config(state: State<'_, AppState>) -> OverlayConfigView {
         has_guild = view.guild_id.is_some(),
         "overlay_get_config demandé par le renderer"
     );
-    view
+    Ok(view)
 }
 
 /// `overlay_renderer_ready` — handshake : envoie `overlay://settings` puis
 /// rejoue les événements bufferisés.
 #[tauri::command]
-pub fn overlay_renderer_ready(app: AppHandle<Wry>, state: State<'_, AppState>) {
+pub fn overlay_renderer_ready(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    ensure_allowed(&window, "overlay_renderer_ready")?;
     state.mark_overlay_ready();
     tracing::info!("renderer overlay prêt : envoi des settings et rejeu du buffer");
     if let Err(error) = events::emit_settings(&app, &state.view()) {
         tracing::warn!(%error, "échec d'émission des settings initiaux");
     }
     events::flush_pending(&app);
+    Ok(())
 }
 
 /// `overlay_report_error` — erreur remontée par le renderer, relayée au serveur.
 #[tauri::command]
-pub fn overlay_report_error(app: AppHandle<Wry>, payload: Value) {
+pub fn overlay_report_error(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+    payload: Value,
+) -> Result<(), String> {
+    ensure_allowed(&window, "overlay_report_error")?;
     let parsed =
         serde_json::from_value::<RendererErrorPayload>(payload.clone()).unwrap_or_default();
     let code = parsed
@@ -179,17 +257,23 @@ pub fn overlay_report_error(app: AppHandle<Wry>, payload: Value) {
         }),
         "overlay_report_error",
     );
+    Ok(())
 }
 
 /// `overlay_report_playback_state` — position de lecture, limitée à 1 msg/s.
 #[tauri::command]
-pub fn overlay_report_playback_state(app: AppHandle<Wry>, payload: Value) {
+pub fn overlay_report_playback_state(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+    payload: Value,
+) -> Result<(), String> {
+    ensure_allowed(&window, "overlay_report_playback_state")?;
     let parsed =
         serde_json::from_value::<RendererPlaybackStatePayload>(payload.clone()).unwrap_or_default();
     let state = app.state::<AppState>();
     let Some(playback_state) = parsed.state.as_deref().and_then(playback_state_from_label) else {
         tracing::debug!(payload = %payload, "état de lecture ignoré (état inconnu)");
-        return;
+        return Ok(());
     };
     let job_id = parsed
         .job_id
@@ -198,11 +282,11 @@ pub fn overlay_report_playback_state(app: AppHandle<Wry>, payload: Value) {
         .unwrap_or_default();
     if job_id.is_empty() {
         tracing::debug!("état de lecture ignoré : aucun job courant");
-        return;
+        return Ok(());
     }
     if !state.try_record_playback_state() {
         tracing::trace!("playback.state limité à 1 msg/s");
-        return;
+        return Ok(());
     }
     let remaining_ms = parsed
         .remaining_ms
@@ -217,11 +301,17 @@ pub fn overlay_report_playback_state(app: AppHandle<Wry>, payload: Value) {
         }),
         "overlay_report_playback_state",
     );
+    Ok(())
 }
 
 /// `overlay_report_playback_stop` — fin de lecture envoyée comme `playback.ended`.
 #[tauri::command]
-pub fn overlay_report_playback_stop(app: AppHandle<Wry>, payload: Value) {
+pub fn overlay_report_playback_stop(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+    payload: Value,
+) -> Result<(), String> {
+    ensure_allowed(&window, "overlay_report_playback_stop")?;
     let parsed = serde_json::from_value::<RendererPlaybackStopPayload>(payload).unwrap_or_default();
     let state = app.state::<AppState>();
     let job_id = parsed
@@ -231,7 +321,7 @@ pub fn overlay_report_playback_stop(app: AppHandle<Wry>, payload: Value) {
         .unwrap_or_default();
     if job_id.is_empty() {
         tracing::debug!("arrêt de lecture ignoré : aucun job courant");
-        return;
+        return Ok(());
     }
     state.clear_playback();
     send_protocol(
@@ -242,15 +332,18 @@ pub fn overlay_report_playback_stop(app: AppHandle<Wry>, payload: Value) {
         }),
         "overlay_report_playback_stop",
     );
+    Ok(())
 }
 
 /// `pairing_consume` — appairage HTTP réel puis reconnexion WebSocket.
 #[tauri::command]
 pub async fn pairing_consume(
+    window: WebviewWindow<Wry>,
     app: AppHandle<Wry>,
     state: State<'_, AppState>,
     payload: Value,
 ) -> Result<PairingConsumeResponse, String> {
+    ensure_allowed(&window, "pairing_consume")?;
     let server_url = payload
         .get("serverUrl")
         .and_then(Value::as_str)
@@ -312,18 +405,24 @@ pub async fn pairing_consume(
 
 /// `meme_board_get_bindings` — bindings actuellement enregistrés.
 #[tauri::command]
-pub fn meme_board_get_bindings(state: State<'_, AppState>) -> MemeBoardBindingsResponse {
-    MemeBoardBindingsResponse {
+pub fn meme_board_get_bindings(
+    window: WebviewWindow<Wry>,
+    state: State<'_, AppState>,
+) -> Result<MemeBoardBindingsResponse, String> {
+    ensure_allowed(&window, "meme_board_get_bindings")?;
+    Ok(MemeBoardBindingsResponse {
         bindings: state.active_bindings(),
-    }
+    })
 }
 
 /// `meme_board_set_bindings` — applique puis persiste les bindings (strict).
 #[tauri::command]
 pub fn meme_board_set_bindings(
+    window: WebviewWindow<Wry>,
     app: AppHandle<Wry>,
     payload: Value,
 ) -> Result<MemeBoardSetBindingsResponse, String> {
+    ensure_allowed(&window, "meme_board_set_bindings")?;
     let bindings = payload
         .get("bindings")
         .cloned()
@@ -342,17 +441,22 @@ pub fn meme_board_set_bindings(
 
 /// `meme_board_trigger` — déclenchement manuel via `meme.trigger`.
 #[tauri::command]
-pub fn meme_board_trigger(app: AppHandle<Wry>, payload: Value) -> MemeBoardActionResponse {
+pub fn meme_board_trigger(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+    payload: Value,
+) -> Result<MemeBoardActionResponse, String> {
+    ensure_allowed(&window, "meme_board_trigger")?;
     let parsed = serde_json::from_value::<MemeTriggerRequest>(payload).unwrap_or_default();
     let item_id = parsed
         .item_id
         .map(|item_id| item_id.trim().to_string())
         .filter(|item_id| !item_id.is_empty());
     let Some(item_id) = item_id else {
-        return MemeBoardActionResponse {
+        return Ok(MemeBoardActionResponse {
             ok: false,
             reason: Some("invalid_item_id".to_string()),
-        };
+        });
     };
     let trigger = match parsed.trigger.as_deref() {
         Some("shortcut") => MemeTrigger::Shortcut,
@@ -363,19 +467,23 @@ pub fn meme_board_trigger(app: AppHandle<Wry>, payload: Value) -> MemeBoardActio
         ClientMessage::MemeTrigger(MemeTriggerPayload { item_id, trigger }),
         "meme_board_trigger",
     );
-    MemeBoardActionResponse {
+    Ok(MemeBoardActionResponse {
         ok: sent,
         reason: if sent {
             None
         } else {
             Some("socket_unavailable".to_string())
         },
-    }
+    })
 }
 
 /// `meme_board_stop` — arrêt manuel via `stop.request`.
 #[tauri::command]
-pub fn meme_board_stop(app: AppHandle<Wry>) -> MemeBoardActionResponse {
+pub fn meme_board_stop(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+) -> Result<MemeBoardActionResponse, String> {
+    ensure_allowed(&window, "meme_board_stop")?;
     let sent = send_protocol(
         &app,
         ClientMessage::StopRequest(StopRequestPayload {
@@ -384,24 +492,64 @@ pub fn meme_board_stop(app: AppHandle<Wry>) -> MemeBoardActionResponse {
         }),
         "meme_board_stop",
     );
-    MemeBoardActionResponse {
+    Ok(MemeBoardActionResponse {
         ok: sent,
         reason: if sent {
             None
         } else {
             Some("socket_unavailable".to_string())
         },
-    }
+    })
 }
 
 /// `overlay_check_updates` — vérifie les mises à jour et renvoie un état lisible.
 #[tauri::command]
-pub async fn overlay_check_updates(app: AppHandle<Wry>) -> UpdateStatus {
-    updater::check_for_update(&app).await
+pub async fn overlay_check_updates(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+) -> Result<UpdateStatus, String> {
+    ensure_allowed(&window, "overlay_check_updates")?;
+    Ok(updater::check_for_update(&app).await)
 }
 
 /// `overlay_install_update` — télécharge/installe la mise à jour disponible.
 #[tauri::command]
-pub async fn overlay_install_update(app: AppHandle<Wry>) -> UpdateStatus {
-    updater::install_update(&app).await
+pub async fn overlay_install_update(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+) -> Result<UpdateStatus, String> {
+    ensure_allowed(&window, "overlay_install_update")?;
+    Ok(updater::install_update(&app).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::command_allowed;
+
+    #[test]
+    fn command_matrix_is_window_scoped() {
+        // Fenêtre overlay : télémetrie et handshake uniquement.
+        assert!(command_allowed("overlay", "overlay_get_config"));
+        assert!(command_allowed("overlay", "overlay_renderer_ready"));
+        assert!(command_allowed("overlay", "overlay_report_error"));
+        assert!(!command_allowed("overlay", "pairing_consume"));
+        assert!(!command_allowed("overlay", "meme_board_set_bindings"));
+        assert!(!command_allowed("overlay", "overlay_install_update"));
+
+        // Board : gestion des mémos et mises à jour.
+        assert!(command_allowed("board", "meme_board_set_bindings"));
+        assert!(command_allowed("board", "meme_board_trigger"));
+        assert!(command_allowed("board", "overlay_check_updates"));
+        assert!(!command_allowed("board", "pairing_consume"));
+        assert!(!command_allowed("board", "overlay_renderer_ready"));
+
+        // Pairing : appairage uniquement.
+        assert!(command_allowed("pairing", "pairing_consume"));
+        assert!(command_allowed("pairing", "overlay_get_config"));
+        assert!(!command_allowed("pairing", "meme_board_trigger"));
+
+        // Fenêtre inconnue : tout est refusé.
+        assert!(!command_allowed("unknown", "overlay_get_config"));
+        assert!(!command_allowed("", "overlay_get_config"));
+    }
 }

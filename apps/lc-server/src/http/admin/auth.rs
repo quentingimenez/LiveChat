@@ -7,9 +7,11 @@
 //! 2. `ADMIN_UI_LOCAL_ONLY` vrai et client non loopback ⇒ `403 admin_local_only` ;
 //! 3. token absent/différent ⇒ `401 unauthorized`, comparaison à temps constant.
 //!
-//! Le token est accepté en `Authorization: Bearer <token>` (priorité) ou en
-//! `?token=<token>` (le panneau JS lit d'abord l'URL, puis localStorage, et
-//! envoie ensuite l'en-tête Bearer).
+//! Le token est accepté **uniquement** en `Authorization: Bearer <token>`.
+//! L'acceptation historique de `?token=<token>` (parité legacy) a été retirée
+//! (AUD-COR-05) : un jeton en query string finit dans les journaux d'accès, les
+//! proxies et l'historique navigateur. Le panneau lit le token depuis son champ
+//! puis `localStorage` et l'envoie en en-tête (voir `static/admin/app.js`).
 //!
 //! L'authentification est un extracteur ([`AdminAccess`]) plutôt qu'un
 //! middleware : le routeur admin est construit sans l'état (`Router<AppState>`)
@@ -19,9 +21,10 @@
 //! contrôle. Les assets statiques restent publics (page sans donnée, décision
 //! E9 de `docs/rust/admin-panel.md`).
 //!
-//! L'ordre de lecture du token est volontaire (Bearer d'abord) : si un proxy
-//! vide ou falsifie `Authorization`, le `?token=` sert de repli comme dans le
-//! legacy. Une différence assumée : `Ipv4Addr::is_loopback()` couvre tout
+//! L'ordre de lecture du token est volontaire : l'en-tête `Authorization` est la
+//! seule voie depuis AUD-COR-05 (les requêtes portant un `?token=` sont
+//! traitées comme non authentifiées, le jeton de query étant ignoré). Une
+//! différence assumée : `Ipv4Addr::is_loopback()` couvre tout
 //! `127.0.0.0/8` alors que le legacy ne testait que `127.0.0.1` — c'est plus
 //! permissif mais reste strictement local.
 
@@ -33,7 +36,6 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
 use subtle::ConstantTimeEq as _;
-use url::form_urlencoded;
 
 use crate::app::AppState;
 
@@ -119,40 +121,26 @@ fn is_loopback_parts(parts: &Parts) -> bool {
     is_loopback(address.ip())
 }
 
-/// Token de la requête : `Authorization: Bearer` prioritaire, puis `?token=`.
+/// Token de la requête : `Authorization: Bearer` uniquement (AUD-COR-05).
+///
+/// Un éventuel `?token=` est volontairement ignoré : accepter un secret en
+/// query string le ferait apparaître dans les journaux d'accès, les proxies et
+/// l'historique du navigateur.
 fn request_token(parts: &Parts) -> Option<String> {
-    if let Some(value) = parts
-        .headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-    {
-        if let Some((scheme, token)) = value.split_once(' ') {
-            if scheme.eq_ignore_ascii_case("bearer") {
-                let token = token.trim();
-                if !token.is_empty() {
-                    return Some(token.to_owned());
-                }
-            }
-        }
+    let value = parts.headers.get(header::AUTHORIZATION)?;
+    let value = value.to_str().ok()?;
+    let (scheme, token) = value.split_once(' ')?;
+
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
     }
 
-    query_token(parts.uri.query())
-}
-
-/// Extrait et décode `?token=` (tronqué, vide ⇒ absent).
-fn query_token(query: Option<&str>) -> Option<String> {
-    let query = query?;
-
-    for (key, value) in form_urlencoded::parse(query.as_bytes()) {
-        if key == "token" {
-            let value = value.trim();
-            if !value.is_empty() {
-                return Some(value.to_owned());
-            }
-        }
+    let token = token.trim();
+    if token.is_empty() {
+        return None;
     }
 
-    None
+    Some(token.to_owned())
 }
 
 /// Comparaison à temps constant (longueur d'abord, comme le legacy).
@@ -174,19 +162,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn token_query_decode_et_ignore_vide() {
-        assert_eq!(query_token(Some("token=secret")), Some("secret".to_owned()));
-        assert_eq!(
-            query_token(Some("token=sec%20ret")),
-            Some("sec ret".to_owned())
-        );
-        assert_eq!(
-            query_token(Some("other=1&token=abc")),
-            Some("abc".to_owned())
-        );
-        assert_eq!(query_token(Some("token=%20%20")), None);
-        assert_eq!(query_token(Some("other=1")), None);
-        assert_eq!(query_token(None), None);
+    fn token_lu_uniquement_dans_authorization_bearer() {
+        let (parts, _) = axum::http::Request::builder()
+            .uri("/admin/api/overview")
+            .header(header::AUTHORIZATION, "Bearer secret")
+            .body(())
+            .expect("requête valide")
+            .into_parts();
+        assert_eq!(request_token(&parts), Some("secret".to_owned()));
+
+        let (parts, _) = axum::http::Request::builder()
+            .uri("/admin/api/overview")
+            .header(header::AUTHORIZATION, "Basic secret")
+            .body(())
+            .expect("requête valide")
+            .into_parts();
+        assert_eq!(request_token(&parts), None);
+    }
+
+    #[test]
+    fn query_token_ignoree() {
+        let (parts, _) = axum::http::Request::builder()
+            .uri("/admin/api/overview?token=secret")
+            .body(())
+            .expect("requête valide")
+            .into_parts();
+        assert_eq!(request_token(&parts), None);
     }
 
     #[test]

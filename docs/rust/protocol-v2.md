@@ -5,7 +5,12 @@
 > Révision 2 (2026-11-09, décisions Lead sur les 5 points ouverts) : TTL média adaptatif (§8.1),
 > `stop.request` avec `jobId`/`source` (§5.6), invariant « un seul job `PLAYING` » (§6.1.1),
 > suppression de `GET /overlay/config` (§6.5, §15.4), plancher `MIN_OVERLAY_VERSION` +
-> `welcome.serverVersion` (§1.6, §15.5). Révision 1 (2026-11-09) : version initiale gelée.
+> `welcome.serverVersion` (§1.6, §15.5). Révision 3 (2026-11-10, task-40/COR-06/07) : close
+> `1008 policy_violation` (`origin_not_allowed`, §3), plafonds sockets **3/client** et **16/guilde**
+> + allowlist `Origin` sur `/ws` (§4), jobs **texte-seul** (`play` émis avec `media:null`, §6.2),
+> `stop {reason:"revoked"}` **avant** la close `4402` (§10), raison `purge` dédiée (§6.3, §13),
+> plafond `peers` **8** explicite (§6.4), liveness mesurée sur les `Pong` (§4). Révision 1
+> (2026-11-09) : version initiale gelée.
 >
 > Toute modification de ce document est une rupture de contrat : elle exige l'accord du Lead,
 > une mise à jour simultanée des fixtures golden (`crates/lc-protocol/tests/fixtures/`) et des
@@ -204,6 +209,7 @@ Règles générales :
 | 1001 | `GOING_AWAY` | arrêt/redémarrage serveur, ou timeout de liveness | `server_shutdown`, `heartbeat_timeout` | oui (backoff §10) |
 | 1002 | `PROTOCOL_ERROR` | trame/état invalide (JSON, type inconnu, second hello, état interdit) | `protocol_error`, `bad_playback_state` | oui, mais bug à corriger |
 | 1003 | `UNSUPPORTED_FRAME` | trame binaire | `unsupported_frame` | non |
+| **1008** | `POLICY_VIOLATION` | en-tête `Origin` absent de l'allowlist `/ws` (pré-hello) | `origin_not_allowed` | non (configuration serveur ; ne pas retenter tant que l'origine n'est pas autorisée) |
 | 1011 | `INTERNAL_ERROR` | erreur interne inattendue (DB, dispatch) | `internal_error` | oui (backoff) |
 | **4401** | `UNAUTHORIZED` | auth impossible : token absent/invalide, `hello` trop tardif ou absent, clientId incohérent | `missing_token`, `invalid_token`, `auth_timeout`, `hello_required` | non (sauf config modifiée) |
 | **4402** | `REVOKED` | token révoqué (`revoked_at` non nul) ou révocation pendant la connexion | `revoked` | non (re-pairing requis) |
@@ -212,7 +218,8 @@ Règles générales :
 | 4409 | `RATE_LIMITED` | > 20 trames C→S dans la seconde glissante | `rate_limited` | oui (backoff) |
 
 Les codes 4401/4402/4403/1011 sont exigés par le plan (`docs/rust/migration-plan.md:68`).
-4408/4409/1002/1003 sont des précisions de cette spec (comportement nécessaire des limites §4).
+4408/4409/1002/1003 sont des précisions de cette spec (comportement nécessaire des limites §4) ;
+`1008` est ajouté par la révision 3 (durcissement `Origin`, §4).
 Pour `4403`, la `reason` de fermeture est **le JSON compact** `{"minVersion":"<x.y.z>"}` (UTF-8,
 < 123 octets), et non le texte `outdated_protocol` ; c'est la seule exception au tableau.
 Le client mappe :
@@ -220,6 +227,8 @@ Le client mappe :
 - `4402` → état terminal « appareil révoqué » (pas de retry, re-pairing) ;
 - `4403` → état terminal « overlay obsolète » (pas de retry, mise à jour) ; le client **parse la
   `reason` JSON** pour afficher `minVersion` ;
+- `1008` → état terminal « origine non autorisée » (pas de retry ; l'origine doit être ajoutée côté
+  serveur — `WS_ALLOWED_ORIGINS` ou `ADDITIONAL_CORS_ORIGINS`) ;
 - `1001`/`1011`/`4409`/`1002` → état `reconnecting` avec backoff §10.
 
 ---
@@ -234,7 +243,10 @@ Le client mappe :
 | `playback.state` | **≤ 1 msg/s** par connexion | excédent ignoré (pas de close), v1 : `socketLoader.ts:229-254` + plan |
 | Heartbeat applicatif | **15 s** | présentiel ; `lastSeenAt` |
 | Ping WS serveur | **15 s** | contrôle |
-| Timeout pong/liveness | **45 s** (`WS_HEARTBEAT_TIMEOUT_SEC`) | close `1001` |
+| Timeout pong/liveness | **45 s** (`WS_HEARTBEAT_TIMEOUT_SEC`) | mesuré sur le dernier **`Pong`** reçu ; close `1001` |
+| Sockets par client | **3** (`MAX_SOCKETS_PER_CLIENT`) | au-delà → close `4409` reason `too_many_connections` (avant `welcome`) |
+| Sockets par guilde | **16** (`MAX_SOCKETS_PER_GUILD`) | au-delà → close `4409` reason `too_many_connections` (avant `welcome`) |
+| Origine `/ws` | allowlist : origine de `API_URL`, `http(s)://tauri.localhost`, `ADDITIONAL_CORS_ORIGINS`, env `WS_ALLOWED_ORIGINS` ; loopback seulement en dev | `Origin` présent hors liste → close `1008` reason `origin_not_allowed` (avant `hello`) ; `Origin` absent = client natif accepté |
 | `peers.request` | ≤ 1 par 2 s | excédent ignoré |
 | TTL URL média | image ou durée inconnue : **300 s** ; audio/vidéo : `clamp(durationSec + 120, 300, 3600)` | voir §8.1 |
 | Version overlay minimale | `MIN_OVERLAY_VERSION` (défaut `"3.0.0"`, semver simple) | close `4403` — voir §1.6 |
@@ -243,7 +255,9 @@ Le client mappe :
 | `id` de message | ≤ 64 caractères | sinon `1002` |
 
 Le serveur ne ferme pas pour un `heartbeat` en retard tant que le transport répond ; seul le
-timeout de 45 s ferme.
+timeout de 45 s ferme. Les plafonds de sockets sont vérifiés **sous le verrou du registre** (client
+puis guilde) après authentification et avant l'envoi de `welcome` ; les compteurs sont libérés à la
+déconnexion, y compris close/erreur/shutdown.
 
 ---
 
@@ -441,6 +455,9 @@ Rappels de construction v1 conservés :
 - `author.enabled` = `false` si carte tweet, sinon `!!job.authorName` ; `author.name` =
   `job.authorName ?? ""` ; `author.image` = `job.authorImage ?? null` (`messagesWorker.ts:100-104`).
 - `tweetCard` toujours émis : objet ou `null` (`messagesWorker.ts:105-110`).
+- **job texte-seul (rév. 3, COR-07)** : si le job n'a pas de média (`media_asset_id` nul), `play` est
+  tout de même émis vers chaque socket connecté avec `media:null` (aucune URL à signer) ; le job
+  passe `PLAYING` et n'est **pas** marqué `FAILED` par le moteur au motif « aucun overlay ».
 
 #### 6.2.1 `tweetCard` riche (parité de forme, clés optionnelles tolérées)
 
@@ -483,8 +500,9 @@ qui décide).
 ```
 
 Parité v1 (`index.ts:78-86`) : dédupliqué par `clientId`, `label = authorLabel || deviceLabel ||
-'unknown-device'`, trié par `label` puis `clientId` (`socketLoader.ts:76-86`). `v2_peers_empty.json`
-représente une room sans overlay.
+'unknown-device'`, trié par `label` puis `clientId` (`socketLoader.ts:76-86`). **Plafond : 8 pairs
+maximum** (`MAX_PEERS`, dédupliqués) ; au-delà, la liste est tronquée après tri (ordre déterministe).
+`v2_peers_empty.json` représente une room sans overlay.
 
 ### 6.5 `settings`
 
@@ -726,9 +744,13 @@ invalide → `416` (parité v1 `overlayRoutes.ts:147-198,317+`).
      rejouait après connexion, `socket-service.ts:105-124`) : le `welcome.currentJob` fait foi et
      un `playback.ended` périmé tuerait le job repris ;
   5. il envoie un `heartbeat`, puis reprend la boucle 15 s.
-- Plusieurs sockets pour un même `clientId` sont tolérés (parité v1) : `peers` déduplique par
-  `clientId`, `play`/`stop` atteignent tous les sockets de la room. Le serveur ne déconnecte pas
-  l'ancien socket ; il disparaît par timeout `45 s` ou déconnexion du client.
+- Plusieurs sockets pour un même `clientId` sont tolérées **dans les plafonds de la rév. 3** :
+  au plus **3 par client** et **16 par guilde** (§4) ; au-delà, la nouvelle socket est fermée
+  `4409 too_many_connections` sans `welcome`. `peers` déduplique par `clientId` (plafond 8) ;
+  `play`/`stop` atteignent tous les sockets de la room. Le serveur ne déconnecte pas l'ancien socket
+  sous le plafond ; il disparaît par timeout `45 s` ou déconnexion du client.
+- Origine refusée (`1008 origin_not_allowed`) : erreur de configuration, pas de reconnexion
+  automatique ; ajouter l'origine côté serveur (`WS_ALLOWED_ORIGINS`/`ADDITIONAL_CORS_ORIGINS`).
 - Redémarrage serveur : close `1001` (`server_shutdown`) → reconnexion 1 s, `welcome` sans
   `currentJob` (le scheduler repart de la base), état local effacé.
 - Révocation pendant la connexion : le serveur envoie `stop {reason:"revoked", jobId:null}` puis
@@ -811,9 +833,10 @@ REST conservé hors WS (rév. 2 : inventaire **22 → 21 endpoints**, `GET /over
 | `stop.request` | `{jobId?, source?}` (source défaut `user`, sans `jobId` = tous les jobs) → `executeManualStopForGuild` ciblé → `stop {reason:'manual'}` (`manualStop.ts:9-60`) |
 | `meme.trigger` | validation item/média + `createPlaybackJob(priority=100)` + `preemptWithJob` → `stop{preempt}` puis `play` (`socketLoader.ts:277-338`, `playbackScheduler.ts:922-997`) |
 | `peers.request` | broadcast `peers` (`socketLoader.ts:76-86`) |
-| envoi `stop {reason:'revoked'}` | après `revoked_at`, puis close `4402` ; conserve `disconnectOverlayClient` pour compat admin |
-| purge admin | `stop {reason:'purge'}` + libération de tous les jobs (`adminRoutes.ts:2747,2776-2831`) |
-| dispatch d'un job | `play` émis **par socket** avec URL signée (cf. §8.2) ; `busyUntil = startedAt + durationSec*1000 + 250` (parité `playbackScheduler.ts:849-918`) |
+| envoi `stop {reason:'revoked'}` | après `revoked_at`, **diffusion room du `stop` puis close `4402`** (ordre garanti par la file du socket) ; libération moteur sans second `stop` (`Hub::close_client`, rév. 3) |
+| purge admin | `stop {reason:'purge', jobId:null}` via `broadcast_purge` (`engine.stop_all_with_reason`) + libération de tous les jobs (rév. 3 ; v1 `adminRoutes.ts:2747,2776-2831`) |
+| plafonds / origine `/ws` | vérifiés à `Hub::register` (3/client, 16/guilde) et à l'upgrade (`Origin` allowlist) ; closes `4409 too_many_connections` / `1008 origin_not_allowed` (rév. 3) |
+| dispatch d'un job | `play` émis **par socket** avec URL signée (cf. §8.2) ; `busyUntil = startedAt + durationSec*1000 + 250` (parité `playbackScheduler.ts:849-918`) ; job texte-seul = `play` `media:null` compté comme servi (§6.2) |
 
 ---
 
@@ -929,7 +952,35 @@ Règle de comparaison : `major.minor.patch` lexicographique, suffixe de pré-ver
 illisible = obsolète (§1.6). Constantes Rust `DEFAULT_MIN_OVERLAY_VERSION`,
 `outdated_protocol_reason`, `parse_simple_version`, `is_version_below`.
 
-Aucun point ouvert : les 5 points (a)–(e) de la rév. 1 sont soldés par §15.1–§15.5.
+### 15.6 Durcissement `task-40` / COR-06 & COR-07 (rév. 3)
+
+Décisions appliquées par la rév. 3, sans rupture des structures de payload existantes :
+
+1. **Plafonds de sockets (COR-06)** : `MAX_SOCKETS_PER_CLIENT = 3`, `MAX_SOCKETS_PER_GUILD = 16`
+   (constantes du crate serveur `apps/lc-server/src/ws/hub.rs`) ; comptage sous verrou à
+   `Hub::register`, close `4409` reason `too_many_connections` avant `welcome`, libération à
+   `unregister` (§4).
+2. **Origine `/ws`** : allowlist configurable (origine `API_URL`, `http(s)://tauri.localhost`,
+   `ADDITIONAL_CORS_ORIGINS`, env serveur `WS_ALLOWED_ORIGINS`, loopback en dev uniquement) ;
+   `Origin` hors liste → close `1008` reason `origin_not_allowed` avant `hello` ; absence d'`Origin`
+   acceptée. `lc-protocol::close_code` ne contient pas `1008` (code de politique hors spec Rust) :
+   le serveur ws utilise la constante littérale `1008` et la raison `origin_not_allowed` (§3).
+3. **Jobs texte-seul (COR-07, AUD-A1-001)** : `play` émis avec `media:null` pour les jobs sans
+   média ; le socket est compté comme servi (moteur `on_play` > 0) et le job passe `PLAYING`
+   (§6.2, §13).
+4. **Révocation (COR-07, AUD-A1-002)** : `stop {reason:"revoked", jobId:null}` diffusé à la room
+   **avant** la close `4402`, puis libération moteur (`release_playing_without_stop`) sans second
+   `stop` (§10, §13).
+5. **Purge (COR-07, AUD-A1-003)** : raison dédiée `purge` avec `jobId:null` via
+   `AdminHub::broadcast_purge` / `Hub::broadcast_purge` (§6.3, §13) ; `/stop` admin reste `manual`.
+6. **Liveness (AUD-A1-008)** : timeout de 45 s mesuré sur le dernier `Pong` reçu (§4).
+7. **Peers (AUD-A1-004)** : plafond de **8** pairs explicitement gelé (§6.4).
+8. **Timeout HTTP global** : hors protocole WS, diff proposé à l'owner d'`app.rs` (jamais appliqué
+   à `/ws`, `/overlay/media/`, `/overlay/meme-board/` ni `/ingest` ; `408 request_timeout` ailleurs)
+   — voir `docs/rust/server-ws.md` §12 et `docs/rust/audit/p1-correctifs.md` (COR-06).
+
+Aucun point ouvert protocole : les 5 points (a)–(e) de la rév. 1 sont soldés par §15.1–§15.5 et le
+durcissement COR-06/07 est acté par §15.6.
 
 ---
 

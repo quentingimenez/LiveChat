@@ -285,6 +285,40 @@ async fn claim_concurrent_deux_guildes_reussissent() {
 }
 
 #[tokio::test]
+async fn set_status_playing_doublon_refuse() {
+    let (db, _dir) = common::temp_db().await;
+    let repo = db.playback_jobs();
+    let now = common::now();
+    let guild = common::guild("567777777777777777");
+
+    let first = common::sample_job(&guild, now);
+    let second = common::sample_job(&guild, now);
+    repo.create(&first).await.unwrap();
+    repo.create(&second).await.unwrap();
+
+    assert!(repo.set_status(first.id, JobStatus::Playing).await.unwrap());
+
+    // L'index unique partiel de la migration 0002 refuse le second PLAYING.
+    let error = repo
+        .set_status(second.id, JobStatus::Playing)
+        .await
+        .unwrap_err();
+    match error {
+        DbError::Domain(DomainError::InvalidState(message)) => {
+            assert!(message.contains("PLAYING"), "{message}");
+        }
+        other => panic!("erreur inattendue : {other}"),
+    }
+    assert_eq!(
+        repo.count_by_status(JobStatus::Playing).await.unwrap(),
+        1,
+        "l'invariant « un seul PLAYING par guilde » doit rester respecté"
+    );
+    let stored = repo.get(second.id).await.unwrap().unwrap();
+    assert_eq!(stored.status, JobStatus::Pending);
+}
+
+#[tokio::test]
 async fn cycle_de_vie_finish_et_purge() {
     let (db, _dir) = common::temp_db().await;
     let repo = db.playback_jobs();

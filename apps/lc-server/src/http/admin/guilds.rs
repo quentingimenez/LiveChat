@@ -201,7 +201,7 @@ pub(super) async fn purge(
 
     // 2. Arrêt : diffusion, jobs PLAYING libérés, busyUntil effacé.
     let hub = admin_hub(&state);
-    let broadcast = hub.broadcast_stop(&guild_id).await;
+    let broadcast = hub.broadcast_purge(&guild_id).await;
     let now_ms = state.clock.now().timestamp_millis();
     let released_playing_jobs = queries::release_playing_jobs(db, guild_id.as_str(), now_ms)
         .await

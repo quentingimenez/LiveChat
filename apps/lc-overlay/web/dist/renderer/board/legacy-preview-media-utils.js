@@ -21,11 +21,9 @@ export function createBoardLegacyPreviewMediaUtils() {
     function buildAuthedUrl(params) {
         const config = toRecord(params.config);
         const baseUrl = `${config.serverUrl || ''}`.trim();
-        const token = `${config.clientToken || ''}`.trim();
+        // AUD-A6-004 : plus de clientToken dans l'URL ; l'authentification se
+        // fait par l'en-tête Authorization via window.livechatOverlay.authorizedFetch.
         const url = new URL(params.pathname, baseUrl);
-        if (token) {
-            url.searchParams.set('token', token);
-        }
         const options = params.options || {};
         for (const [key, value] of Object.entries(options)) {
             if (value === null || value === undefined || value === '') {

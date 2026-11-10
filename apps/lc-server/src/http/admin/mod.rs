@@ -8,7 +8,8 @@
 //! # Structure
 //!
 //! - [`static_files`] : `GET /admin` (308) et `GET /admin/*` (assets) ;
-//! - [`auth`] : middleware des routes API (503/403/401, Bearer ou `?token=`) ;
+//! - [`auth`] : extracteur des routes API (503/403/401, `Authorization: Bearer`
+//!   uniquement — le repli `?token=` a été retiré, cf. AUD-COR-05) ;
 //! - [`hub`] : trait [`AdminHub`] vers les sockets WebSocket (comptage,
 //!   fermeture, diffusions d'arrêt et de réglages) ;
 //! - [`overview`], [`runtime_settings`], [`ingest_authors`], [`guilds`],
@@ -24,6 +25,11 @@
 //! `Permissions-Policy` restrictive. La couche globale `http::security` est
 //! conçue pour ne pas écraser ces en-têtes (`entry(...).or_insert(...)`, fix
 //! validé par le Lead).
+//!
+//! Cette couche journalise aussi un **audit minimal** des mutations
+//! administratives (AUD-COR-10) : méthode, chemin seul, statut HTTP et adresse
+//! du client. Ni la query string ni les en-têtes ne sont journalisés (un
+//! `?token=` ou un `Authorization` finirait en clair dans les journaux).
 
 mod auth;
 mod clients;
@@ -43,7 +49,10 @@ pub mod hub;
 pub use error::AdminError;
 pub use hub::{install_admin_hub, AdminHub, NoopAdminHub};
 
-use axum::http::{header, HeaderName, HeaderValue};
+use std::net::SocketAddr;
+
+use axum::extract::ConnectInfo;
+use axum::http::{header, HeaderName, HeaderValue, Method};
 use axum::middleware;
 use axum::response::Response;
 use axum::routing::{delete, get, patch, post};
@@ -115,8 +124,35 @@ pub(crate) fn secure(router: Router<AppState>) -> Router<AppState> {
 }
 
 /// Middleware qui pose les en-têtes de sécurité du panneau.
+///
+/// Il journalise également un audit minimal des mutations administratives
+/// (AUD-COR-10). Le chemin seul est conservé : la query string et les en-têtes
+/// ne sont jamais journalisés, pour ne pas exposer un jeton (AUD-COR-05).
 async fn admin_headers(request: axum::extract::Request, next: middleware::Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let client_ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.0.ip());
+    let mutating = matches!(
+        method,
+        Method::POST | Method::PATCH | Method::PUT | Method::DELETE
+    );
+
     let mut response = next.run(request).await;
+
+    if mutating {
+        tracing::info!(
+            target: "lc_server::admin_audit",
+            method = %method,
+            path = %path,
+            status = response.status().as_u16(),
+            client_ip = ?client_ip,
+            "mutation administrative"
+        );
+    }
+
     let headers = response.headers_mut();
 
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

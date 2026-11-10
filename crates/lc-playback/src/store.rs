@@ -65,6 +65,11 @@ impl PlaybackStore {
 
     /// Claim ciblé d'un job précis (préemption/reprise), avec les mêmes gardes
     /// que `claim_next`.
+    ///
+    /// Les verrous SQLite transitoires (`SQLITE_BUSY`/`SQLITE_LOCKED`) sont
+    /// réessayés avec un backoff court (`lc_db::with_busy_retry`) ; une course
+    /// avec un autre worker (index unique partiel
+    /// `idx_playback_jobs_single_playing`) est traduite en `None`.
     pub(crate) async fn claim_specific(
         &self,
         job_id: PlaybackJobId,
@@ -72,32 +77,49 @@ impl PlaybackStore {
         now: DateTime<Utc>,
     ) -> DbResult<Option<PlaybackJob>> {
         let now_ms = datetime_to_ms(now);
-        let claimed: Option<String> = sqlx::query_scalar(
-            "UPDATE playback_jobs SET status = 'PLAYING', started_at = ? \
-             WHERE id = ( \
-                 SELECT j.id FROM playback_jobs j \
-                 WHERE j.id = ? AND j.guild_id = ? AND j.status = 'PENDING' \
-                   AND j.finished_at IS NULL AND j.scheduled_at <= ? \
-                   AND (j.resumes_after_job_id IS NULL OR NOT EXISTS ( \
-                       SELECT 1 FROM playback_jobs p \
-                       WHERE p.id = j.resumes_after_job_id AND p.status IN ('PENDING', 'PLAYING'))) \
-                   AND NOT EXISTS ( \
-                       SELECT 1 FROM playback_jobs busy \
-                       WHERE busy.guild_id = j.guild_id AND busy.status = 'PLAYING') \
-                   AND NOT EXISTS ( \
-                       SELECT 1 FROM guilds g \
-                       WHERE g.id = j.guild_id AND g.busy_until IS NOT NULL AND g.busy_until > ?) \
-                 LIMIT 1) \
-             AND status = 'PENDING' \
-             RETURNING id",
-        )
-        .bind(now_ms)
-        .bind(job_id.to_canonical())
-        .bind(guild_id.as_str())
-        .bind(now_ms)
-        .bind(now_ms)
-        .fetch_optional(self.db.pool())
-        .await?;
+        let pool = self.db.pool().clone();
+        let job_id_raw = job_id.to_canonical();
+        let guild_raw = guild_id.as_str().to_owned();
+        let claimed: Option<String> = match lc_db::with_busy_retry(|| {
+            let pool = pool.clone();
+            let job_id_raw = job_id_raw.clone();
+            let guild_raw = guild_raw.clone();
+            async move {
+                sqlx::query_scalar::<_, String>(
+                    "UPDATE playback_jobs SET status = 'PLAYING', started_at = ? \
+                     WHERE id = ( \
+                         SELECT j.id FROM playback_jobs j \
+                         WHERE j.id = ? AND j.guild_id = ? AND j.status = 'PENDING' \
+                           AND j.finished_at IS NULL AND j.scheduled_at <= ? \
+                           AND (j.resumes_after_job_id IS NULL OR NOT EXISTS ( \
+                               SELECT 1 FROM playback_jobs p \
+                               WHERE p.id = j.resumes_after_job_id AND p.status IN ('PENDING', 'PLAYING'))) \
+                           AND NOT EXISTS ( \
+                               SELECT 1 FROM playback_jobs busy \
+                               WHERE busy.guild_id = j.guild_id AND busy.status = 'PLAYING') \
+                           AND NOT EXISTS ( \
+                               SELECT 1 FROM guilds g \
+                               WHERE g.id = j.guild_id AND g.busy_until IS NOT NULL AND g.busy_until > ?) \
+                         LIMIT 1) \
+                     AND status = 'PENDING' \
+                     RETURNING id",
+                )
+                .bind(now_ms)
+                .bind(&job_id_raw)
+                .bind(&guild_raw)
+                .bind(now_ms)
+                .bind(now_ms)
+                .fetch_optional(&pool)
+                .await
+                .map_err(DbError::from)
+            }
+        })
+        .await
+        {
+            Ok(claimed) => claimed,
+            Err(error) if error.is_unique_violation() => return Ok(None),
+            Err(error) => return Err(error),
+        };
         match claimed {
             Some(raw) => {
                 let claimed_id = PlaybackJobId::parse(&raw).map_err(DbError::from)?;
@@ -108,38 +130,56 @@ impl PlaybackStore {
     }
 
     /// Claim du prochain job d'une guilde, avec l'ordre de priorité legacy.
+    ///
+    /// Mêmes retries de verrous transitoires et même traitement de course que
+    /// [`Self::claim_specific`].
     pub(crate) async fn claim_next_for_guild(
         &self,
         guild_id: &GuildId,
         now: DateTime<Utc>,
     ) -> DbResult<Option<PlaybackJob>> {
         let now_ms = datetime_to_ms(now);
-        let claimed: Option<String> = sqlx::query_scalar(
-            "UPDATE playback_jobs SET status = 'PLAYING', started_at = ? \
-             WHERE id = ( \
-                 SELECT j.id FROM playback_jobs j \
-                 WHERE j.guild_id = ? AND j.status = 'PENDING' \
-                   AND j.finished_at IS NULL AND j.scheduled_at <= ? \
-                   AND (j.resumes_after_job_id IS NULL OR NOT EXISTS ( \
-                       SELECT 1 FROM playback_jobs p \
-                       WHERE p.id = j.resumes_after_job_id AND p.status IN ('PENDING', 'PLAYING'))) \
-                   AND NOT EXISTS ( \
-                       SELECT 1 FROM playback_jobs busy \
-                       WHERE busy.guild_id = j.guild_id AND busy.status = 'PLAYING') \
-                   AND NOT EXISTS ( \
-                       SELECT 1 FROM guilds g \
-                       WHERE g.id = j.guild_id AND g.busy_until IS NOT NULL AND g.busy_until > ?) \
-                 ORDER BY j.priority DESC, j.submission_date ASC, j.id ASC \
-                 LIMIT 1) \
-             AND status = 'PENDING' \
-             RETURNING id",
-        )
-        .bind(now_ms)
-        .bind(guild_id.as_str())
-        .bind(now_ms)
-        .bind(now_ms)
-        .fetch_optional(self.db.pool())
-        .await?;
+        let pool = self.db.pool().clone();
+        let guild_raw = guild_id.as_str().to_owned();
+        let claimed: Option<String> = match lc_db::with_busy_retry(|| {
+            let pool = pool.clone();
+            let guild_raw = guild_raw.clone();
+            async move {
+                sqlx::query_scalar::<_, String>(
+                    "UPDATE playback_jobs SET status = 'PLAYING', started_at = ? \
+                     WHERE id = ( \
+                         SELECT j.id FROM playback_jobs j \
+                         WHERE j.guild_id = ? AND j.status = 'PENDING' \
+                           AND j.finished_at IS NULL AND j.scheduled_at <= ? \
+                           AND (j.resumes_after_job_id IS NULL OR NOT EXISTS ( \
+                               SELECT 1 FROM playback_jobs p \
+                               WHERE p.id = j.resumes_after_job_id AND p.status IN ('PENDING', 'PLAYING'))) \
+                           AND NOT EXISTS ( \
+                               SELECT 1 FROM playback_jobs busy \
+                               WHERE busy.guild_id = j.guild_id AND busy.status = 'PLAYING') \
+                           AND NOT EXISTS ( \
+                               SELECT 1 FROM guilds g \
+                               WHERE g.id = j.guild_id AND g.busy_until IS NOT NULL AND g.busy_until > ?) \
+                         ORDER BY j.priority DESC, j.submission_date ASC, j.id ASC \
+                         LIMIT 1) \
+                     AND status = 'PENDING' \
+                     RETURNING id",
+                )
+                .bind(now_ms)
+                .bind(&guild_raw)
+                .bind(now_ms)
+                .bind(now_ms)
+                .fetch_optional(&pool)
+                .await
+                .map_err(DbError::from)
+            }
+        })
+        .await
+        {
+            Ok(claimed) => claimed,
+            Err(error) if error.is_unique_violation() => return Ok(None),
+            Err(error) => return Err(error),
+        };
         match claimed {
             Some(raw) => {
                 let claimed_id = PlaybackJobId::parse(&raw).map_err(DbError::from)?;
@@ -253,5 +293,146 @@ impl PlaybackStore {
             released.push(PlaybackJobId::parse(raw).map_err(DbError::from)?);
         }
         Ok(released)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    //! Tests ciblés des retries de verrous SQLite (AUD-A5-005) : les claims sont
+    //! les primitives dont l'échec ne doit pas arrêter le scheduler.
+
+    use std::time::Duration;
+
+    use lc_db::{Db, DbConfig};
+    use lc_domain::JobStatus;
+
+    use super::*;
+
+    fn sample_job(guild_id: GuildId, now: DateTime<Utc>) -> PlaybackJob {
+        PlaybackJob {
+            id: PlaybackJobId::new_v4(),
+            guild_id,
+            media_asset_id: None,
+            text: Some("test busy".to_owned()),
+            show_text: true,
+            author_name: None,
+            author_image: None,
+            duration_sec: 5,
+            priority: 0,
+            status: JobStatus::Pending,
+            resumes_after_job_id: None,
+            resume_offset_sec: 0,
+            remaining_ms_snapshot: None,
+            last_playback_state_at: None,
+            submission_date: now,
+            execution_date: now,
+            scheduled_at: now,
+            started_at: None,
+            finished_at: None,
+        }
+    }
+
+    /// Fixture : base fichier (WAL) avec un timeout d'attente court, une guilde
+    /// et un job `PENDING`.
+    async fn fixture() -> (tempfile::TempDir, Db, GuildId, PlaybackJob) {
+        let dir = tempfile::tempdir().expect("répertoire temporaire");
+        let config = DbConfig::new().with_busy_timeout(Duration::from_millis(100));
+        let db = Db::open(dir.path().join("busy.sqlite"), &config)
+            .await
+            .expect("base de test");
+        let now = Utc::now();
+        let guild = GuildId::parse("123456789012345678").expect("guild id");
+        let job = sample_job(guild.clone(), now);
+        db.playback_jobs().create(&job).await.expect("job de test");
+        (dir, db, guild, job)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn claim_reessaie_apres_verrou_transitoire() {
+        let (_dir, db, guild, job) = fixture().await;
+        let expected = job.id;
+        let store = PlaybackStore::new(db.clone());
+
+        let mut holder = db.pool().acquire().await.expect("connexion de verrou");
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *holder)
+            .await
+            .expect("verrou d'écriture");
+
+        let claim =
+            tokio::spawn(async move { store.claim_next_for_guild(&guild, Utc::now()).await });
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        sqlx::query("COMMIT")
+            .execute(&mut *holder)
+            .await
+            .expect("libération du verrou");
+
+        let claimed = tokio::time::timeout(Duration::from_secs(5), claim)
+            .await
+            .expect("le claim doit se terminer")
+            .expect("tâche de claim")
+            .expect("claim sans erreur")
+            .expect("un job doit être réclamé");
+        assert_eq!(claimed.id, expected);
+        assert_eq!(claimed.status, JobStatus::Playing);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn claim_renvoie_une_erreur_bornee_si_le_verrou_persiste() {
+        let (_dir, db, guild, _job) = fixture().await;
+        let store = PlaybackStore::new(db.clone());
+
+        let mut holder = db.pool().acquire().await.expect("connexion de verrou");
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *holder)
+            .await
+            .expect("verrou d'écriture");
+
+        let started = std::time::Instant::now();
+        let error = store
+            .claim_next_for_guild(&guild, Utc::now())
+            .await
+            .expect_err("le claim doit échouer tant que le verrou persiste");
+        assert!(error.is_busy(), "erreur attendue BUSY, obtenue : {error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "les retries doivent rester bornés, écoulé : {:?}",
+            started.elapsed()
+        );
+
+        sqlx::query("ROLLBACK")
+            .execute(&mut *holder)
+            .await
+            .expect("libération du verrou");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn claim_est_unique_pour_une_guilde() {
+        let (_dir, db, guild, first) = fixture().await;
+        let expected = first.id;
+        // Décalage explicite : deux jobs créés dans la même milliseconde ont la
+        // même `submission_date`, et l'ordre de claim retombe alors sur `id ASC`
+        // (UUID v4 aléatoires → test non déterministe, cf. AUD-A5).
+        let second = sample_job(guild.clone(), Utc::now() + chrono::Duration::seconds(1));
+        db.playback_jobs()
+            .create(&second)
+            .await
+            .expect("second job");
+        let store = PlaybackStore::new(db.clone());
+
+        let claimed = store
+            .claim_next_for_guild(&guild, Utc::now())
+            .await
+            .expect("claim")
+            .expect("un job doit être réclamé");
+        assert_eq!(claimed.id, expected);
+        assert_eq!(claimed.status, JobStatus::Playing);
+
+        let blocked = store
+            .claim_next_for_guild(&guild, Utc::now())
+            .await
+            .expect("claim suivant");
+        assert!(blocked.is_none(), "un second PLAYING est interdit");
     }
 }

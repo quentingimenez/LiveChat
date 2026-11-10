@@ -183,6 +183,16 @@ impl MediaService {
     }
 }
 
+/// Retourne le pipeline partagé par processus pour un état d'application.
+///
+/// Utilisé par les routes qui n'instancient pas de [`MediaService`] complet
+/// (meme board) : sans cela, chaque requête construisait un nouveau client HTTP
+/// et un nouveau sémaphore, contournant les budgets de cache et le compteur de
+/// concurrence globaux (AUD-A2-006/A4-007).
+pub fn shared_pipeline_for_state(state: &AppState) -> MediaServiceResult<Arc<MediaPipeline>> {
+    shared_pipeline(&media_config(&state.config))
+}
+
 /// Retourne le pipeline partagé, en l'initialisant au premier usage.
 fn shared_pipeline(config: &MediaConfig) -> MediaServiceResult<Arc<MediaPipeline>> {
     if let Some(pipeline) = PIPELINE.get() {

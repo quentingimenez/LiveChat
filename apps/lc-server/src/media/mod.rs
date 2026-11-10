@@ -14,6 +14,8 @@
 //! - [`hook`] : point d'extension `on_ingested`, câblé en Phase 4b par le hub
 //!   de lecture (`lc-playback`) sans dépendance inverse vers `crate::ws` ;
 //! - [`assets`] : persistance et cycle de vie des `MediaAsset` ;
+//! - [`confinement`] : canonicalisation fail-closed de la racine de stockage ;
+//! - [`purge`] : worker de purge des lignes périmées et fichiers orphelins ;
 //! - [`quotas`] : éviction du cache et budget du meme board (`lc_media::cache`) ;
 //! - [`board`] : ajout d'un média au meme board (épinglage, doublons, budget) ;
 //! - [`jobs`] : construction des `PlaybackJob` avec la résolution de durée du
@@ -25,14 +27,18 @@
 
 pub mod assets;
 pub mod board;
+pub mod confinement;
 pub mod errors;
 pub mod hook;
 pub mod jobs;
+pub mod purge;
 pub mod quotas;
 pub mod service;
 pub mod settings;
 pub mod tokens;
 
+pub use confinement::ensure_storage_root;
 pub use errors::{MediaServiceError, MediaServiceResult};
 pub use hook::{install_ingest_hook, notify_ingested, IngestHook};
-pub use service::MediaService;
+pub use purge::{purge_once, spawn_purge_worker, PurgeReport, ORPHAN_GRACE, PURGE_INTERVAL};
+pub use service::{shared_pipeline_for_state, MediaService};

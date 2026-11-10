@@ -75,20 +75,49 @@ impl Db {
     ///
     /// Accepte les schémas `sqlite:` de `sqlx` (`sqlite://data/livechat.db`,
     /// `sqlite::memory:`) et les URLs `file:` façon Prisma
-    /// (`file:./data/livechat.db`, `file::memory:`). Pour `file:`, le dossier
-    /// parent est créé comme avec [`Db::open`] et `?mode=memory` est supporté.
+    /// (`file:./data/livechat.db`, `file::memory:`). Pour `file:` :
+    ///
+    /// - `?mode=memory` ouvre une base en mémoire ;
+    /// - `?mode=ro` ouvre une connexion **strictement en lecture seule** : le
+    ///   dossier parent n'est pas créé, les migrations et la création du
+    ///   fichier sont désactivées, et les pragmas d'écriture (`journal_mode`,
+    ///   `synchronous`) ne sont pas appliqués. Toute écriture échoue alors avec
+    ///   l'erreur SQLite `SQLITE_READONLY` (refus effectif, pas seulement
+    ///   documentaire) ;
+    /// - `?mode=rw` et `?mode=rwc` sont acceptés pour la compatibilité ; le
+    ///   comportement reste piloté par `DbConfig` (comme [`Db::open`]).
+    ///
+    /// `?mode=ro` désactive `run_migrations` et `create_parent_dirs` pour cette
+    /// connexion (les migrations écrivent) ; `check_schema_version` reste actif
+    /// car il ne fait que lire.
     pub async fn connect(url: &str, config: &DbConfig) -> DbResult<Self> {
         let parsed = parse_connection_url(url)?;
-        if config.create_parent_dirs {
+        let mut effective = config.clone();
+        if parsed.read_only {
+            effective.create_if_missing = false;
+            effective.create_parent_dirs = false;
+            effective.run_migrations = false;
+            tracing::debug!(
+                url,
+                "connexion SQLite en lecture seule : migrations et création désactivées"
+            );
+        }
+        if effective.create_parent_dirs {
             if let Some(path) = parsed.file_path.as_deref() {
                 create_parent_dir(path)?;
             }
         }
-        let options = apply_pragmas(
-            parsed.options.create_if_missing(config.create_if_missing),
-            config,
-        );
-        Self::from_options(options, config).await
+        let options = if parsed.read_only {
+            apply_read_only_pragmas(parsed.options.create_if_missing(false), &effective)
+        } else {
+            apply_pragmas(
+                parsed
+                    .options
+                    .create_if_missing(effective.create_if_missing),
+                &effective,
+            )
+        };
+        Self::from_options(options, &effective).await
     }
 
     async fn from_options(options: SqliteConnectOptions, config: &DbConfig) -> DbResult<Self> {
@@ -217,6 +246,21 @@ fn apply_pragmas(options: SqliteConnectOptions, config: &DbConfig) -> SqliteConn
         .busy_timeout(config.busy_timeout)
 }
 
+/// Applique les pragmas d'une connexion strictement en lecture seule.
+///
+/// `journal_mode` et `synchronous` écrivent dans l'en-tête de la base : ils sont
+/// volontairement omis (passer une base en WAL est une écriture). `foreign_keys`
+/// et `busy_timeout` sont des réglages de connexion, sans effet sur le fichier.
+fn apply_read_only_pragmas(
+    options: SqliteConnectOptions,
+    config: &DbConfig,
+) -> SqliteConnectOptions {
+    options
+        .read_only(true)
+        .foreign_keys(true)
+        .busy_timeout(config.busy_timeout)
+}
+
 /// Crée le dossier parent d'un fichier de base (sans effet pour un nom nu).
 fn create_parent_dir(path: &Path) -> DbResult<()> {
     if let Some(parent) = path.parent() {
@@ -233,6 +277,9 @@ struct ParsedUrl {
     options: SqliteConnectOptions,
     /// Chemin de fichier (pour la création du dossier parent et les messages).
     file_path: Option<PathBuf>,
+    /// `true` si l'URL demande une connexion strictement en lecture seule
+    /// (`?mode=ro`).
+    read_only: bool,
 }
 
 /// Parse une URL de connexion en options `sqlx`.
@@ -240,7 +287,7 @@ struct ParsedUrl {
 /// `file:` est le format Prisma repris tel quel : `file:./prisma/dev.db`,
 /// `file::memory:` ou `file:/tmp/lc.db?mode=memory`. Les paramètres de requête
 /// inconnus (ex. `connection_limit`) sont ignorés ; seul `mode` est interprété
-/// (`memory`).
+/// (`memory`, `ro`, `rw`, `rwc`).
 fn parse_connection_url(url: &str) -> DbResult<ParsedUrl> {
     if let Some(rest) = url.strip_prefix("file:") {
         let (path, query) = match rest.split_once('?') {
@@ -253,6 +300,7 @@ fn parse_connection_url(url: &str) -> DbResult<ParsedUrl> {
 
         let mut options = SqliteConnectOptions::new().filename(path);
         let mut file_path = Some(PathBuf::from(path));
+        let mut read_only = false;
         for pair in query.split('&').filter(|part| !part.is_empty()) {
             let (key, value) = match pair.split_once('=') {
                 Some((key, value)) => (key, value),
@@ -263,7 +311,8 @@ fn parse_connection_url(url: &str) -> DbResult<ParsedUrl> {
                     options = options.in_memory(true);
                     file_path = None;
                 }
-                ("mode", "rwc" | "rw" | "ro") => {}
+                ("mode", "ro") => read_only = true,
+                ("mode", "rwc" | "rw") => {}
                 ("mode", unknown) => {
                     return Err(DbError::InvalidUrl(format!(
                         "mode SQLite inconnu `{unknown}` dans `{url}`"
@@ -274,13 +323,36 @@ fn parse_connection_url(url: &str) -> DbResult<ParsedUrl> {
                 }
             }
         }
-        Ok(ParsedUrl { options, file_path })
+        Ok(ParsedUrl {
+            options,
+            file_path,
+            read_only,
+        })
     } else {
         Ok(ParsedUrl {
             options: SqliteConnectOptions::from_str(url)?,
             file_path: None,
+            read_only: requests_read_only(url),
         })
     }
+}
+
+/// `true` si l'URL contient un paramètre de requête `mode=ro`.
+///
+/// Utilisé pour les URLs `sqlite:` analysées par `sqlx` (qui ne permettent pas
+/// de relire `read_only` depuis les options) : la demande de lecture seule est
+/// donc détectée dans la chaîne pour que [`Db::connect`] n'applique pas les
+/// pragmas d'écriture.
+fn requests_read_only(url: &str) -> bool {
+    url.split_once('?').is_some_and(|(_, query)| {
+        query.split('&').any(|part| {
+            let (key, value) = match part.split_once('=') {
+                Some(pair) => pair,
+                None => (part, ""),
+            };
+            key.eq_ignore_ascii_case("mode") && value.eq_ignore_ascii_case("ro")
+        })
+    })
 }
 
 #[cfg(test)]
@@ -302,6 +374,23 @@ mod tests {
     fn url_file_memory() {
         let parsed = parse_connection_url("file::memory:?mode=memory").unwrap();
         assert!(parsed.file_path.is_none());
+        assert!(!parsed.read_only);
+    }
+
+    #[test]
+    fn url_mode_ro_demande_lecture_seule() {
+        let parsed = parse_connection_url("file:./db.sqlite?mode=ro").unwrap();
+        assert!(parsed.read_only);
+        assert_eq!(
+            parsed.file_path.as_deref(),
+            Some(std::path::Path::new("./db.sqlite"))
+        );
+
+        let parsed = parse_connection_url("sqlite://./db.sqlite?mode=ro").unwrap();
+        assert!(parsed.read_only);
+
+        let parsed = parse_connection_url("file:./db.sqlite?mode=rw").unwrap();
+        assert!(!parsed.read_only);
     }
 
     #[test]

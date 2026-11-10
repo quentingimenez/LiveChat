@@ -33,6 +33,7 @@ use uuid::Uuid;
 
 use crate::config::{OverlayConfig, OverlayConfigView};
 use crate::events::{self, OverlayEvent};
+use crate::net::tls;
 use crate::state::AppState;
 use crate::tray;
 use crate::windows;
@@ -41,8 +42,6 @@ use crate::windows;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Cadence du heartbeat applicatif (contrat v2 : 15 s).
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
-/// Variable d'environnement legacy : accepter un certificat TLS non vérifié.
-const INSECURE_TLS_ENV: &str = "LIVECHAT_INSECURE_TLS";
 
 /// Statut de connexion affiché dans le tray et exposé au bridge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -438,6 +437,7 @@ fn build_session_config(config: &OverlayConfig) -> Result<SessionConfig, String>
         .as_deref()
         .filter(|token| !token.trim().is_empty())
         .ok_or_else(|| "clientToken absent de la configuration".to_string())?;
+    let insecure_tls = tls::insecure_tls_enabled();
     let ws_url = ws_url_from_server_url(server_url)?;
     let session_mode = if config.guest_mode {
         SessionMode::InviteReadOnly
@@ -452,19 +452,33 @@ fn build_session_config(config: &OverlayConfig) -> Result<SessionConfig, String>
             client_id: config.client_id.clone(),
             session_mode: Some(session_mode),
         },
-        insecure_tls: insecure_tls_enabled(),
+        insecure_tls,
     })
 }
 
 /// Convertit `{API_URL}` en URL WebSocket `ws(s)://…/ws`.
 fn ws_url_from_server_url(server_url: &str) -> Result<Url, String> {
+    ws_url_from_server_url_with(server_url, tls::insecure_tls_enabled())
+}
+
+/// Variante testable : `allow_insecure` autorise `http://`/`ws://` (dev only).
+fn ws_url_from_server_url_with(server_url: &str, allow_insecure: bool) -> Result<Url, String> {
     let trimmed = server_url.trim();
     if trimmed.is_empty() {
         return Err("serverUrl vide".to_string());
     }
     let mut url = Url::parse(trimmed).map_err(|error| format!("serverUrl invalide : {error}"))?;
     let scheme = match url.scheme() {
-        "http" | "ws" => "ws",
+        "http" | "ws" => {
+            if !allow_insecure {
+                return Err(
+                    "connexion WebSocket non sécurisée refusée : utilisez https:// (ou \
+                     LIVECHAT_INSECURE_TLS=1 en build debug pour le développement local)"
+                        .to_string(),
+                );
+            }
+            "ws"
+        }
         "https" | "wss" => "wss",
         other => return Err(format!("schéma serverUrl non supporté : {other}")),
     };
@@ -474,16 +488,6 @@ fn ws_url_from_server_url(server_url: &str) -> Result<Url, String> {
     url.set_query(None);
     url.set_fragment(None);
     Ok(url)
-}
-
-fn insecure_tls_enabled() -> bool {
-    match std::env::var(INSECURE_TLS_ENV) {
-        Ok(value) => {
-            let normalized = value.trim().to_ascii_lowercase();
-            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
-        }
-        Err(_) => false,
-    }
 }
 
 fn build_connector(insecure_tls: bool) -> Result<Option<Connector>, String> {
@@ -977,7 +981,7 @@ mod tests {
 
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<NetCommand>();
         let session = SessionConfig {
-            ws_url: ws_url_from_server_url(&format!("http://{address}"))
+            ws_url: ws_url_from_server_url_with(&format!("http://{address}"), true)
                 .expect("url WebSocket de test"),
             hello: HelloPayload {
                 token: "token-test".to_string(),
@@ -1060,9 +1064,13 @@ mod tests {
 
     #[test]
     fn ws_url_conversion_matches_v2_contract() {
+        assert!(
+            ws_url_from_server_url("http://127.0.0.1:3000/").is_err(),
+            "http:// refusé par défaut (AUD-A6-003)"
+        );
         assert_eq!(
-            ws_url_from_server_url("http://127.0.0.1:3000/")
-                .expect("http")
+            ws_url_from_server_url_with("http://127.0.0.1:3000/", true)
+                .expect("dérogation dev")
                 .as_str(),
             "ws://127.0.0.1:3000/ws"
         );

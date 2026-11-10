@@ -1,8 +1,13 @@
-# `apps/lc-overlay/web/` — renderer de l'overlay + bridge Tauri
+# `apps/lc-overlay/dev/` — harnais de développement du bridge (hors bundle)
 
-Ce dossier est la future racine web de l'application **Tauri 2** `apps/lc-overlay` : les pages HTML, le CSS et le JS du
-renderer Electron existant y seront copiés **tels quels** (plan de migration, annexe D), et un fichier **`bridge.js`** y
-réinstalle l'API publique `window.livechatOverlay` que ces pages attendent.
+> **AUD-A6-015** : ce dossier n'est **pas** inclus dans `frontendDist` (`web/`).
+> Le harnais `bridge-test.html` et ce README servent au développement local et ne
+> sont plus embarqués dans l'application ni dans l'installeur release.
+
+Ce dossier contient les outils de développement du bridge Tauri 2 ; les pages
+HTML, le CSS et le JS du renderer Electron existant sont dans
+`apps/lc-overlay/web/` et un fichier **`bridge.js`** y réinstalle l'API publique
+`window.livechatOverlay` que ces pages attendent.
 
 Phase 0 ne livre que le bridge et son harnais ; l'app Rust (`Cargo.toml` / `src/lib.rs`) est encore un squelette sans
 dépendance Tauri, et aucune page réelle n'est copiée ici pour l'instant.
@@ -12,7 +17,7 @@ dépendance Tauri, et aucune page réelle n'est copiée ici pour l'instant.
 | Fichier | Rôle |
 | --- | --- |
 | `bridge.js` | Script classique autonome (aucune dépendance, aucun bundler) qui installe `window.livechatOverlay` (13 méthodes) au-dessus des commandes/événements Tauri 2, avec un mode **mock** si Tauri est absent. |
-| `bridge-test.html` | Harnais navigateur autonome : charge `bridge.js`, exerce les 13 méthodes, simule les 3 événements, et affiche le journal des appels. |
+| `dev/bridge-test.html` | Harnais navigateur autonome : charge `web/bridge.js`, exerce les 13 méthodes, simule les 3 événements, et affiche le journal des appels. |
 | `README.md` | Ce document. |
 
 Cible à terme (copie du renderer Electron, cf. `overlay/renderer/` et `overlay/dist/renderer/`) :
@@ -77,7 +82,7 @@ window.__bridgeMockEmit(event, payload);       // émet un événement vers les 
 
 ## Tester dans un navigateur (mode mock)
 
-1. Ouvrir `apps/lc-overlay/web/bridge-test.html` directement (double-clic, `file://`) ou via un petit serveur statique
+1. Ouvrir `apps/lc-overlay/dev/bridge-test.html` directement (double-clic, `file://`) ou via un petit serveur statique
    (`python -m http.server`, `npx serve`, etc. — utile pour tester le comportement en contexte `http`).
 2. Vérifier les badges : `mode: mock`, `transport: mock`, `API: 13/13 méthodes`.
 3. Exécuter les 10 commandes, s'abonner aux 3 événements, cliquer sur « Simuler `overlay://play|stop|settings` »,

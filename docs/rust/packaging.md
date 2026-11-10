@@ -116,7 +116,7 @@ Défauts posés **dans l'image** (surchargeables par `docker run -e` ou l'orches
 | `DATABASE_URL` | `sqlite:///app/data/livechat.sqlite` | non | absent/vide ⇒ base désactivée (`/health db=disabled`) ; si configurée mais KO ⇒ exit 1 |
 | `MEDIA_STORAGE_DIR` | `/app/data/media` | non | stockage des médias ingérés |
 | `RUST_LOG` | `info` | non | prioritaire sur `LOG` |
-| `ADMIN_UI_LOCAL_ONLY` | `false` | non | dans un conteneur, l'admin doit être joignable hors loopback ; la sécurité repose sur `ADMIN_UI_TOKEN` |
+| `ADMIN_UI_LOCAL_ONLY` | `true` | non | AUD-COR-10 : l'API admin n'accepte que le loopback (défaut serveur). Dans un conteneur bridge, le serveur voit l'IP de la passerelle : passer à `false` pour utiliser le panneau (protégé par le bind et `ADMIN_UI_TOKEN`) — §10.4 |
 | `MIN_OVERLAY_VERSION` | `3.0.0` | non | contrat 426 `/socket.io` |
 | `ADMIN_UI_TOKEN` | `""` | **prod : oui** | secret ; vide ⇒ endpoints admin `503 admin_ui_disabled` |
 | `INGEST_API_TOKEN` | `""` | **prod : oui** | secret d'ingestion |
@@ -295,8 +295,8 @@ Le rollback ne dépend pas de la base 3.0.0 : c'est la base legacy qui fait foi.
 | Taille d'image | Voir §5 ; `ffmpeg` Debian tire des dépendances d'accélération (LLVM/Mesa/Vulkan) lourdes | Cible < 250 Mo à réévaluer ; options : build ffmpeg statique minimal, ou image média séparée (worker) |
 | `ffmpeg` | version Debian bookworm `7:5.1.9-0+deb12u1`, mise à jour liée à la distro | acceptée (codecs H.264/AAC/VP9/AV1 présents) ; monter de base = rebuild |
 | `yt-dlp` | binaire standalone épinglé, mise à jour manuelle (ARG + SHA256) | cadence de revue trimestrielle ou à incident ; vérifier le hash au build |
-| TLS | le serveur écoute en HTTP | terminaison TLS au reverse proxy ; `API_URL` doit être l'URL publique https |
-| `ADMIN_UI_LOCAL_ONLY=false` | exposé hors loopback par défaut en conteneur | `ADMIN_UI_TOKEN` **obligatoire** en prod ; réseau d'admin isolé (VPN) recommandé |
+| TLS | le serveur écoute en HTTP | terminaison TLS au reverse proxy ; `API_URL` doit être l'URL publique https — procédure §10.4 |
+| `ADMIN_UI_LOCAL_ONLY` | `true` par défaut depuis AUD-COR-10 ; en conteneur bridge le serveur voit la passerelle | bind `127.0.0.1:3000` par défaut (non joignable LAN) ; pour le panneau : proxy TLS + `ADMIN_UI_LOCAL_ONLY=false` + `ADMIN_UI_TOKEN` long, ou `network_mode: host` — §10.4 |
 | Secrets | fournis par l'environnement (pas de fichiers/dotenv) | secret manager / variables d'orchestrateur ; jamais dans l'image ni les logs |
 | SQLite | un seul écrivain, volume local | une seule réplique ; sauvegardes régulières ; pas de multi-nœuds partagés |
 | Migrations auto au boot | comportement Phase 3a | documenté §3.6 ; sauvegarde avant upgrade ; ne jamais pointer une base legacy |
@@ -335,9 +335,9 @@ Le rollback ne dépend pas de la base 3.0.0 : c'est la base legacy qui fait foi.
 | Image | `${LIVECHAT_IMAGE:-ghcr.io/quentingimenez/livechat-server:3.0.0}` |
 | `container_name` / projet | `livechat-server` / projet `livechat` |
 | Redémarrage | `restart: unless-stopped` |
-| Environnement | `env_file: .env` + surcharges explicites (`PORT=3000`, `DATABASE_URL=sqlite:///app/data/livechat.sqlite`, `MEDIA_STORAGE_DIR=/app/data/media`, `ADMIN_UI_LOCAL_ONLY=false`, `RUST_LOG=info`) |
+| Environnement | `env_file: .env` + surcharges explicites (`PORT=3000`, `DATABASE_URL=sqlite:///app/data/livechat.sqlite`, `MEDIA_STORAGE_DIR=/app/data/media`, `ADMIN_UI_LOCAL_ONLY=true`, `RUST_LOG=info`) |
 | `API_URL` | **obligatoire** : `${API_URL:?API_URL requis …}` ⇒ `config`/`up` échouent sans elle (pas de défaut silencieux en production) |
-| Ports | `3000:3000` (l'exposition publique/TLS reste au reverse proxy) |
+| Ports | `127.0.0.1:3000:3000` (AUD-COR-10) : exposition sur l'hôte uniquement, jamais le LAN par défaut ; le reverse proxy hôte assure TLS et l'exposition publique — §10.4 |
 | Données | bind mount `./data:/app/data` (SQLite `livechat.sqlite` + `-wal`/`-shm` + `media/`) |
 | Healthcheck | `curl /health` **+ vérification du JSON `db:"ok"`** (un 200 seul ne suffit pas, `/health` répond 200 même dégradé) — interval 15 s, timeout 3 s, start_period 15 s, 3 essais |
 | Arrêt | `stop_grace_period: 20s` (drain serveur 10 s + marge, exit 0 attendu) |
@@ -411,6 +411,33 @@ Smoke local sans GHCR : `LIVECHAT_IMAGE=livechat-server:3.0.0 docker compose -f 
   création de `deploy/.env`. L'image `livechat-server:3.0.0` est présente sur le poste et
   déjà validée (smoke §5), l'override `LIVECHAT_IMAGE` permet ce smoke sans GHCR.
 
+### 10.4 Exposition réseau, TLS et accès au panneau admin (AUD-COR-10)
+
+Le compose par défaut n'expose le serveur que sur le loopback de l'hôte
+(`ports: "127.0.0.1:3000:3000"`) et le serveur garde
+`ADMIN_UI_LOCAL_ONLY=true` : le panneau `/admin/` n'est donc **pas joignable
+depuis le LAN**, et le reverse proxy est le seul point d'entrée public.
+
+- **Exposition publique avec TLS (recommandé)** : conserver le bind
+  `127.0.0.1`, laisser un reverse proxy sur l'hôte (Caddy, nginx, Traefik)
+  écouter sur l'IP publique et relayer vers `http://127.0.0.1:3000`. Le serveur
+  reste en HTTP (limite assumée, §8) et `API_URL` doit être l'URL **publique
+  https**. Exemple Caddy : `livechat.example.com { reverse_proxy 127.0.0.1:3000 }`
+  (certificat automatique).
+- **Accès au panneau admin via le proxy** : réserver `/admin*` au réseau
+  d'administration (règle réseau, basic auth ou mTLS du proxy), puis passer
+  `ADMIN_UI_LOCAL_ONLY=false` **avec** `ADMIN_UI_TOKEN` long et aléatoire. Le
+  panneau n'accepte que `Authorization: Bearer` (AUD-COR-05) et est soumis au
+  rate limit global (AUD-COR-10).
+- **Accès admin depuis l'hôte, sans proxy** : dans un conteneur bridge, le
+  serveur voit l'IP de la passerelle Docker et non `127.0.0.1` ; avec
+  `ADMIN_UI_LOCAL_ONLY=true`, l'API admin répond `403 admin_local_only`. Deux
+  options : `ADMIN_UI_LOCAL_ONLY=false` (le bind `127.0.0.1` et le token
+  protègent toujours l'accès) ou `network_mode: host`.
+- **LAN direct (déconseillé)** : remplacer `127.0.0.1:3000:3000` par
+  `3000:3000` ou l'IP LAN, avec TLS au proxy et pare-feu ; ne jamais exposer
+  l'API admin hors d'un réseau d'administration.
+
 ## 11. Décisions Lead (Phase 9b, 2026-11-10)
 
 | Sujet | Décision | Conséquence |
@@ -420,6 +447,7 @@ Smoke local sans GHCR : `LIVECHAT_IMAGE=livechat-server:3.0.0 docker compose -f 
 | Migrations sqlx au boot | acceptées et documentées ; **ne jamais pointer la base legacy** ; sauvegarde avant upgrade | §3.6, §8, §9 |
 | `/health` 200 même `db=down` | accepté ; les sondes métier lisent le champ JSON `db` (pas le code 200) ; le HEALTHCHECK du compose vérifie `db:"ok"` | §3.5, §8, §10.1 |
 | Bind `0.0.0.0` + `PORT` | accepté (le binaire n'a aucun flag CLI) | §3.2, §9 |
+| Durcissement admin/compose (AUD-COR-10) | bind `127.0.0.1` + `ADMIN_UI_LOCAL_ONLY=true` par défaut, `/admin*` soumis au rate limit, audit minimal des mutations | §8, §10.1, §10.4 |
 
 Suites hors Phase 9b : follow-up 3.1 taille d'image ; ajout de `deploy/.env` et
 `deploy/data/` au `.gitignore` racine ; exécution du smoke compose par l'opérateur/CI.

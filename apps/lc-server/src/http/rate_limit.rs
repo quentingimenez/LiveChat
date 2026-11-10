@@ -5,13 +5,14 @@
 //! Le legacy utilisait `@fastify/rate-limit` : 100 requêtes par fenêtre de
 //! 15 minutes, cache de 10 000 entrées, exemption des URLs `/admin*` et, en
 //! développement, des adresses loopback (`server/src/server.ts`, cf.
-//! `docs/rust/audit-dynamique.md`). Ces paramètres sont conservés, mais le
-//! limiteur est ré-implémenté en mémoire plutôt qu'avec `tower_governor` :
+//! `docs/rust/audit-dynamique.md`). Le limiteur est ré-implémenté en mémoire
+//! plutôt qu'avec `tower_governor` :
 //!
 //! - une fenêtre fixe suffit au contrat (le legacy n'utilisait pas non plus de
 //!   fenêtre glissante) et rend les tests déterministes ;
-//! - les exemptions dépendent du chemin et de l'environnement, ce qu'un
-//!   middleware générique exprimerait plus mal ;
+//! - une seule exemption subsiste (loopback en développement) : l'exemption
+//!   `/admin*` du legacy est **supprimée** (AUD-COR-10), le panneau est limité
+//!   comme les autres routes et un bruteforce reçoit `429` ;
 //! - aucune dépendance supplémentaire n'est ajoutée.
 //!
 //! L'adresse IP est lue depuis `ConnectInfo<SocketAddr>` (jamais fourni par le
@@ -41,9 +42,6 @@ pub const RATE_LIMIT_MAX: u32 = 100;
 
 /// Durée de la fenêtre de limitation.
 pub const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(15 * 60);
-
-/// Préfixe d'URL exempté (parité legacy : tout `/admin*`).
-const ADMIN_PATH_PREFIX: &str = "/admin";
 
 /// Clé de comptage : adresse connue, ou seau partagé quand elle est inconnue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -186,7 +184,7 @@ pub async fn enforce(
     next: Next,
 ) -> Response {
     let ip = client_ip(&state, &request);
-    if is_exempt(request.uri().path(), &state, ip) {
+    if is_exempt(&state, ip) {
         return next.run(request).await;
     }
 
@@ -220,11 +218,13 @@ fn client_key(ip: Option<IpAddr>) -> ClientKey {
     }
 }
 
-/// Exemptions : `/admin*` (l'admin UI a ses propres contrôles) et, en
-/// développement seulement, les adresses loopback (tests locaux).
-fn is_exempt(path: &str, state: &RateLimitState, ip: Option<IpAddr>) -> bool {
-    path.starts_with(ADMIN_PATH_PREFIX)
-        || (state.development && ip.is_some_and(|address| address.is_loopback()))
+/// Exemption : uniquement les adresses loopback en mode développement (tests
+/// locaux, parité legacy `server/src/server.ts`).
+///
+/// `/admin*` n'est plus exempté (AUD-COR-10) : le panneau admin est soumis au
+/// même budget que le reste et un bruteforce reçoit `429 Too Many Requests`.
+fn is_exempt(state: &RateLimitState, ip: Option<IpAddr>) -> bool {
+    state.development && ip.is_some_and(|address| address.is_loopback())
 }
 
 fn client_ip(state: &RateLimitState, request: &Request) -> Option<IpAddr> {
@@ -374,21 +374,23 @@ mod tests {
     }
 
     #[test]
-    fn admin_paths_and_dev_loopback_are_exempt() {
+    fn admin_paths_are_rate_limited_and_only_dev_loopback_is_exempt() {
         let production =
             RateLimitState::from_config(&config(&[("API_URL", "http://localhost:3000")]));
         let loopback = Some(IpAddr::V4(Ipv4Addr::LOCALHOST));
-        assert!(is_exempt("/admin", &production, loopback));
-        assert!(is_exempt("/admin/overlay", &production, loopback));
-        assert!(!is_exempt("/health", &production, loopback));
+        // AUD-COR-10 : plus aucune exemption `/admin*`.
+        assert!(!is_exempt(&production, loopback));
+        assert!(!is_exempt(
+            &production,
+            Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)))
+        ));
 
         let development = RateLimitState::from_config(&config(&[
             ("API_URL", "http://localhost:3000"),
             ("NODE_ENV", "development"),
         ]));
-        assert!(is_exempt("/health", &development, loopback));
+        assert!(is_exempt(&development, loopback));
         assert!(!is_exempt(
-            "/health",
             &development,
             Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)))
         ));

@@ -15,7 +15,7 @@ use crate::error::{MediaError, MediaErrorCode, MediaResult};
 use crate::probe::{self, ProbeInfo};
 use crate::process;
 use crate::source::{extension_from_mime, kind_from_mime, mime_from_extension};
-use crate::storage::MediaStorage;
+use crate::storage::{staged_path, MediaStorage};
 
 /// Taille minimale d'un média normalisé valide.
 pub const MIN_MEDIA_BYTES: u64 = 1024;
@@ -116,13 +116,16 @@ pub fn normalize_image(
     let mime = image_mime(content_type, input, probed);
     let extension = extension_from_mime(&mime).unwrap_or("png");
     let output = output_base.with_extension(extension);
-    fs::copy(input, &output).map_err(|error| {
-        MediaError::from_io(
+    let staged = staged_path(&output);
+    if let Err(error) = fs::copy(input, &staged) {
+        let _removed = fs::remove_file(&staged);
+        return Err(MediaError::from_io(
             MediaErrorCode::InvalidMedia,
             "copie de l'image normalisée",
             &error,
-        )
-    })?;
+        ));
+    }
+    MediaStorage::commit_file(&staged, &output)?;
     finalize(MediaKind::Image, &mime, &output, probed, None, None)
 }
 
@@ -170,6 +173,7 @@ pub async fn normalize_audio(
     config: &MediaConfig,
 ) -> MediaResult<NormalizedMedia> {
     let output = output_base.with_extension("mp3");
+    let staged = staged_path(&output);
     let can_copy = !config.video.audio_normalize
         && probed.is_some_and(|probed| {
             probed.audio_codec.as_deref() == Some("mp3")
@@ -179,15 +183,16 @@ pub async fn normalize_audio(
                     .is_some_and(|format| format.contains("mp3"))
         });
     if can_copy {
-        fs::copy(input, &output).map_err(|error| {
-            MediaError::from_io(
+        if let Err(error) = fs::copy(input, &staged) {
+            let _removed = fs::remove_file(&staged);
+            return Err(MediaError::from_io(
                 MediaErrorCode::InvalidMedia,
                 "copie de l'audio normalisé",
                 &error,
-            )
-        })?;
+            ));
+        }
     } else {
-        let args = build_audio_args(input, &output, config);
+        let args = build_audio_args(input, &staged, config);
         let output_command = process::run_command(
             &config.tools.ffmpeg,
             &args,
@@ -196,10 +201,11 @@ pub async fn normalize_audio(
         )
         .await;
         if let Err(error) = output_command {
-            let _removed = fs::remove_file(&output);
+            let _removed = fs::remove_file(&staged);
             return Err(error);
         }
     }
+    MediaStorage::commit_file(&staged, &output)?;
     let duration = probed.and_then(|probed| probed.duration_ceil_sec());
     finalize(
         MediaKind::Audio,
@@ -219,17 +225,19 @@ pub async fn normalize_video(
     config: &MediaConfig,
 ) -> MediaResult<NormalizedMedia> {
     let output = output_base.with_extension("mp4");
+    let staged = staged_path(&output);
     let can_copy = probed
         .as_ref()
         .is_some_and(|probed| can_copy_without_transcode(probed, &config.video));
     if can_copy {
-        fs::copy(input, &output).map_err(|error| {
-            MediaError::from_io(
+        if let Err(error) = fs::copy(input, &staged) {
+            let _removed = fs::remove_file(&staged);
+            return Err(MediaError::from_io(
                 MediaErrorCode::InvalidMedia,
                 "copie de la vidéo normalisée",
                 &error,
-            )
-        })?;
+            ));
+        }
     } else {
         let nvenc_available = match config.video.encoder {
             VideoEncoder::LibX264 => false,
@@ -238,7 +246,7 @@ pub async fn normalize_video(
             }
         };
         let (encoder, preset) = resolve_video_encoder(&config.video, nvenc_available);
-        let args = build_video_transcode_args(input, &output, config, probed, &encoder, &preset);
+        let args = build_video_transcode_args(input, &staged, config, probed, &encoder, &preset);
         let first = process::run_command(
             &config.tools.ffmpeg,
             &args,
@@ -247,31 +255,36 @@ pub async fn normalize_video(
         )
         .await;
         if let Err(error) = first {
-            let _removed = fs::remove_file(&output);
+            let _removed = fs::remove_file(&staged);
             if encoder == "h264_nvenc" {
                 tracing::warn!("échec NVENC, nouvelle tentative en libx264");
                 let (fallback_encoder, fallback_preset) =
                     resolve_video_encoder(&config.video, false);
                 let fallback_args = build_video_transcode_args(
                     input,
-                    &output,
+                    &staged,
                     config,
                     probed,
                     &fallback_encoder,
                     &fallback_preset,
                 );
-                process::run_command(
+                if let Err(fallback_error) = process::run_command(
                     &config.tools.ffmpeg,
                     &fallback_args,
                     config.download.timeout,
                     MediaErrorCode::TranscodeFailed,
                 )
-                .await?;
+                .await
+                {
+                    let _removed = fs::remove_file(&staged);
+                    return Err(fallback_error);
+                }
             } else {
                 return Err(error);
             }
         }
     }
+    MediaStorage::commit_file(&staged, &output)?;
     let output_probe = probe::probe(&config.tools.ffprobe, &output, config.download.timeout)
         .await
         .ok();

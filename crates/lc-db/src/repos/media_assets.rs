@@ -163,19 +163,39 @@ impl MediaAssetsRepository {
         rows.into_iter().map(MediaAssetRow::into_entity).collect()
     }
 
-    /// Supprime les médias expirés.
+    /// Supprime les médias expirés **non référencés**.
     ///
-    /// Les jobs de lecture liés passent `media_asset_id` à `NULL`
-    /// (`ON DELETE SET NULL`) et les entrées de meme board associées sont
-    /// supprimées (`ON DELETE CASCADE`).
+    /// Un média expiré est conservé (et donc non retourné) s'il est encore
+    /// épinglé sur un meme board ou référencé par un job `PENDING`/`PLAYING` :
+    /// la purge ne doit jamais casser un média visible ou une lecture en cours.
+    /// Les autres sont supprimés ; les jobs terminés qui le référençaient
+    /// passent `media_asset_id` à `NULL` (`ON DELETE SET NULL`).
     ///
-    /// Retourne le nombre de médias supprimés.
-    pub async fn purge_expired(&self, now: DateTime<Utc>) -> DbResult<u64> {
-        let result = sqlx::query("DELETE FROM media_assets WHERE expires_at <= ?")
-            .bind(to_ms(now))
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected())
+    /// Retourne les lignes supprimées : l'appelant (worker de purge, service
+    /// média) utilise `storage_path` pour supprimer les fichiers correspondants,
+    /// que la couche SQL ne connaît pas.
+    ///
+    /// AUD-A5-007 : l'ancienne version `DELETE … WHERE expires_at <= ?` pouvait
+    /// supprimer en cascade des `meme_board_items` épinglés.
+    pub async fn purge_expired(&self, now: DateTime<Utc>) -> DbResult<Vec<MediaAsset>> {
+        let rows = sqlx::query_as::<_, MediaAssetRow>(
+            "DELETE FROM media_assets \
+             WHERE expires_at <= ? \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM meme_board_items b \
+                   WHERE b.media_asset_id = media_assets.id \
+               ) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM playback_jobs j \
+                   WHERE j.media_asset_id = media_assets.id \
+                     AND j.status IN ('PENDING', 'PLAYING') \
+               ) \
+             RETURNING *",
+        )
+        .bind(to_ms(now))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(MediaAssetRow::into_entity).collect()
     }
 
     /// Liste les médias d'un état donné, les plus anciens d'abord.

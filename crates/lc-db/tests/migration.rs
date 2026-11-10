@@ -43,6 +43,20 @@ async fn migration_fraiche_puis_idempotente() {
     }
     assert_eq!(tables.len(), 8, "tables inattendues : {tables:?}");
 
+    // L'invariant « un seul PLAYING par guilde » est porté par un index unique
+    // partiel créé par la migration 0002.
+    let index_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' \
+         AND name = 'idx_playback_jobs_single_playing'",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        index_count, 1,
+        "la migration 0002 doit créer l'index unique partiel de l'invariant PLAYING"
+    );
+
     // Relancer les migrations ne rejoue rien et ne casse rien.
     db.migrate().await.unwrap();
     db.migrate().await.unwrap();

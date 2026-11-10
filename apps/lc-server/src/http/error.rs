@@ -18,9 +18,10 @@
 //!
 //! Le middleware journalise aussi l'erreur avec le contexte de corrélation :
 //! `error!` pour les 5xx, `warn!` pour les 4xx, jamais de fuite du corps
-//! d'origine dans la réponse.
+//! d'origine dans la réponse. Seul le **chemin** est journalisé (jamais la
+//! query string ni les en-têtes, cf. AUD-COR-05).
 
-use axum::http::{header, Method, StatusCode, Uri};
+use axum::http::{header, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::{extract::Request, Json};
@@ -52,7 +53,9 @@ pub async fn fallback() -> Response {
 /// Middleware de normalisation des erreurs (voir la documentation du module).
 pub async fn normalize_errors(request: Request, next: Next) -> Response {
     let method: Method = request.method().clone();
-    let uri: Uri = request.uri().clone();
+    // Chemin seul : la query string peut porter un secret (`?token=`), elle ne
+    // doit jamais apparaître dans les journaux (AUD-COR-05).
+    let path = request.uri().path().to_owned();
     let response = next.run(request).await;
     let status = response.status();
 
@@ -75,7 +78,7 @@ pub async fn normalize_errors(request: Request, next: Next) -> Response {
     let code = if status.is_server_error() {
         tracing::error!(
             method = %method,
-            uri = %uri,
+            path = %path,
             status = status.as_u16(),
             "requête en erreur serveur (réponse normalisée)"
         );
@@ -83,7 +86,7 @@ pub async fn normalize_errors(request: Request, next: Next) -> Response {
     } else {
         tracing::warn!(
             method = %method,
-            uri = %uri,
+            path = %path,
             status = status.as_u16(),
             "requête invalide (réponse normalisée)"
         );
@@ -99,7 +102,7 @@ pub async fn normalize_errors(request: Request, next: Next) -> Response {
     // Trace de diagnostic : type de contenu d'origine, utile pour comprendre
     // quelle couche interne a produit le corps brut.
     if let Some(content_type) = content_type {
-        tracing::debug!(uri = %uri, content_type = %content_type, "corps d'erreur brut remplacé");
+        tracing::debug!(path = %path, content_type = %content_type, "corps d'erreur brut remplacé");
     }
     normalized
 }

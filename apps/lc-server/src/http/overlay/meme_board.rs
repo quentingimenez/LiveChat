@@ -57,10 +57,10 @@ use axum::response::Response;
 use axum::Json;
 use chrono::{DateTime, Utc};
 use lc_domain::{MediaAsset, MediaAssetId, MediaStatus, MemeBoardItem, MemeBoardItemId};
-use lc_media::{MediaConfig, MediaPipeline};
 use serde::Deserialize;
 
 use crate::app::AppState;
+use crate::media::shared_pipeline_for_state;
 
 use super::auth::AuthedOverlayClient;
 use super::{db, db_failure, error, internal_error, json_response, now};
@@ -215,9 +215,17 @@ pub async fn create_item(
     };
     let now = now(&state);
 
-    let pipeline = match MediaPipeline::new(media_config(&state)) {
+    // AUD-A2-006/A4-007 : pipeline partagé par processus (sémaphore, client
+    // HTTP et budgets globaux) au lieu d'un pipeline reconstruit par requête.
+    let pipeline = match shared_pipeline_for_state(&state) {
         Ok(pipeline) => pipeline,
-        Err(media_error) => return media_ingestion_error(&media_error),
+        Err(error) => {
+            if let Some(media_error) = error.media_error() {
+                return media_ingestion_error(media_error);
+            }
+            tracing::warn!(error = %error, "pipeline média partagé indisponible");
+            return internal_error();
+        }
     };
     let ingested = match pipeline.ingest_url(&url).await {
         Ok(ingested) => ingested,
@@ -650,17 +658,6 @@ async fn board_reference_count(db: &Db, asset_id: &MediaAssetId) -> lc_db::DbRes
         }
     }
     Ok(count)
-}
-
-/// Construit la configuration média depuis la configuration serveur.
-fn media_config(state: &AppState) -> MediaConfig {
-    let mut config = MediaConfig::default();
-    config.storage.directory = state.config.media_storage_dir.clone();
-    config.storage.cache_ttl =
-        StdDuration::from_secs(state.config.media_cache_ttl_hours.saturating_mul(3_600));
-    config.storage.board_max_total_bytes =
-        state.config.media_board_max_total_mb.saturating_mul(MIB);
-    config
 }
 
 /// Réponse `422 media_ingestion_failed` (format API legacy).

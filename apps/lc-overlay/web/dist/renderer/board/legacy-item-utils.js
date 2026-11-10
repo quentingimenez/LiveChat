@@ -4,6 +4,15 @@ function toRecord(value) {
 function toTrimmedString(value) {
     return `${value || ''}`.trim();
 }
+// AUD-A6-004 : les appels REST du board passent par le bridge qui ajoute
+// l'en-tête Authorization (Bearer) ; plus de token en query.
+function authorizedFetch(url, options) {
+    const bridge = window.livechatOverlay;
+    if (!bridge || typeof bridge.authorizedFetch !== 'function') {
+        return Promise.reject(new Error('bridge_authorized_fetch_indisponible'));
+    }
+    return bridge.authorizedFetch(url, options);
+}
 export function createBoardLegacyItemUtils() {
     async function fetchItems(params) {
         const endpoint = params.buildAuthedUrl('/overlay/meme-board/items', {
@@ -11,7 +20,7 @@ export function createBoardLegacyItemUtils() {
             offset: 0,
             q: params.searchQuery
         });
-        const response = await fetch(endpoint.toString(), {
+        const response = await authorizedFetch(endpoint.toString(), {
             method: 'GET',
             cache: 'no-store'
         });
@@ -32,7 +41,7 @@ export function createBoardLegacyItemUtils() {
     }
     async function patchItemMetadata(params) {
         const endpoint = params.buildAuthedUrl(`/overlay/meme-board/items/${params.itemId}`);
-        const response = await fetch(endpoint.toString(), {
+        const response = await authorizedFetch(endpoint.toString(), {
             method: 'PATCH',
             headers: {
                 'Content-Type': 'application/json'
@@ -49,7 +58,7 @@ export function createBoardLegacyItemUtils() {
     }
     async function createItem(params) {
         const endpoint = params.buildAuthedUrl('/overlay/meme-board/items');
-        const response = await fetch(endpoint.toString(), {
+        const response = await authorizedFetch(endpoint.toString(), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -68,7 +77,7 @@ export function createBoardLegacyItemUtils() {
     }
     async function deleteItem(params) {
         const endpoint = params.buildAuthedUrl(`/overlay/meme-board/items/${params.itemId}`);
-        const response = await fetch(endpoint.toString(), {
+        const response = await authorizedFetch(endpoint.toString(), {
             method: 'DELETE'
         });
         if (!response.ok) {

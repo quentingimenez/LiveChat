@@ -52,6 +52,10 @@ impl AdminHub for Hub {
         Hub::broadcast_stop(self, guild_id).await
     }
 
+    async fn broadcast_purge(&self, guild_id: &GuildId) -> usize {
+        Hub::broadcast_purge(self, guild_id).await
+    }
+
     async fn broadcast_settings(&self, guild_id: &GuildId) -> usize {
         Hub::broadcast_settings(self, guild_id).await
     }

@@ -50,6 +50,11 @@ Convention d'effort : XS ≤ 0,5 j-h, S ≤ 1 j-h, M 1–2 j-h, L > 2 j-h.
 
 ## P1 — majeurs (avant exposition réseau large)
 
+> ✅ **Vague 2 exécutée le 2026-11-10** : AUD-COR-05 à AUD-COR-11 corrigés
+> (5 lanes, gates vertes, probes 17/17). Détails, preuves et régression purge
+> corrigée : `p1-correctifs.md`. Reste : re-audit ciblé (`verification-2.md`)
+> avant décision de release.
+
 ### AUD-COR-05 — Supprimer les jetons des URLs et des logs
 - **Réf.** `AUD-A3-002`, `AUD-A7-004`, `AUD-V-005`, `AUD-A6-001` (volet fuite).
 - **Correctif** : retirer `?token=` admin (Bearer uniquement, + cookie `HttpOnly` optionnel) ; côté board, injecter le jeton via `bridge.js` (header `Authorization`) au lieu de `buildAuthedUrl` ; redacter `uri`/`Referer` dans `TraceLayer` (ne logguer que le path) ; retirer la réécriture d'URL de `app.js`.

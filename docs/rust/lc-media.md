@@ -191,7 +191,24 @@ video_codec, audio_codec, pixel_format, has_video, has_audio }`, plus
 ### Stockage et cache (`storage`, `cache`)
 
 - `MediaStorage` : chemins content-addressed `<root>/<source_hash>` + variantes
-  `<root>/<source_hash>.<ext>`, `sanitize_hash`, `remove_variants`, `list_variants`.
+  `<root>/<source_hash>.<ext>`, `sanitize_hash`, `remove_variants`,
+  `remove_other_variants(hash, keep)` (supprime les variantes du même hash sauf le
+  fichier publié), `list_variants`, `is_staged_file_name`.
+- **Publication atomique (P1-09, task-42)** : toutes les écritures passent par un
+  fichier de transit `<stem>.tmp-<8 hex>.<ext>` (`staged_path`) puis
+  `MediaStorage::commit_file(staged, final)` = `create_dir_all` du parent,
+  `sync_all` best-effort du transit, `rename` atomique, `sync_all` best-effort du
+  parent et suppression du transit en cas d'échec. Une annulation, un crash ou un
+  `ffmpeg` en échec ne laisse donc jamais un média partiellement publié : l'ancien
+  fichier reste intact jusqu'au `rename`, et un reliquat `.tmp-*` est reconnaissable
+  et purgé par le serveur (`media::purge`).
+- **Racine canonicalisée** : `ensure_canonical()` / `canonical_root()` créent puis
+  canonicalisent la racine de stockage et échouent en `DOWNLOAD_FAILED` avec un
+  message explicite si ce n'est pas possible (fail-closed : le pipeline ne publie
+  jamais dans un chemin non vérifiable).
+- `transcode::normalize_*` produisent dans un transit puis publient via
+  `commit_file`, et `ingest` n'appelle `remove_other_variants` qu'**après** succès
+  de la publication.
 - `cache` : fonctions **pures** (sans I/O ni DB) pour que les quotas soient testables.
   `CacheEntry { key, size_bytes, last_accessed_ms, created_at_ms, pinned, active, stale }`,
   `plan_cache_eviction(entries, required, max, exclude)` (LRU, épinglés hors budget,
@@ -204,6 +221,10 @@ video_codec, audio_codec, pixel_format, has_video, has_audio }`, plus
 - `MediaPipeline::new(config)` puis `ingest_url(raw)` ou `ingest_source(&MediaSource)` →
   `IngestedMedia { source, resolved, download, normalized }`.
 - `IngestLimiter` (sémaphore) borne les ingestions simultanées.
+- **Single-flight par `source_hash` (P1-09)** : `acquire_source_lock(&source.source_hash)`
+  sérialise les ingestions concurrentes de la même source (deux requêtes simultanées
+  réutilisent/complètent le même fichier au lieu de se supprimer mutuellement) ; les
+  verrous sans référence sont élagués.
 - En cas d'échec, l'erreur `MediaError` remonte avec le code legacy ; Phase 5b la
   persiste en `[CODE] message` sur l'asset FAILED.
 
@@ -232,12 +253,19 @@ video_codec, audio_codec, pixel_format, has_video, has_audio }`, plus
   422, même format que le pipeline) ; le meme board est protégé indirectement via
   `MediaPipeline`. Ce refus est un changement de comportement voulu, pas une régression
   de parité.
+- **Durcissement stockage (P1-09, task-42)** : publication atomique (transit `.tmp-*` +
+  `rename`, jamais de fichier partiel visible), racine canonicalisée fail-closed,
+  single-flight par `source_hash`, remplacement des variantes uniquement après succès
+  de la publication. Le legacy écrivait directement puis supprimait les anciens fichiers
+  avant transcodage (perte de média possible en cas d'échec) : écart voulu.
 
 ## Tests
 
-- 112 tests unitaires dans la crate (URL/hash, résolution offline sur fixtures, parsing
+- 117 tests unitaires dans la crate (URL/hash, résolution offline sur fixtures, parsing
   HTML/JSON, arguments ffmpeg, décisions de copie, éviction LRU, configuration, erreurs,
-  garde SSRF : schémas/UNC, plages IPv4/IPv6, redirections).
+  garde SSRF : schémas/UNC, plages IPv4/IPv6, redirections ; stockage : racine
+  canonicalisée fail-closed, chemins de transit, publication atomique, purge ciblée des
+  variantes).
 - `tests/offline.rs` : 7 tests sur fixtures (`tiktok_video.html`, `tiktok_photo.html`,
   `twitter_syndication.json`, `yt_dlp_dump.json`, `youtube_oembed.json`,
   `tiktok_oembed.json`).
@@ -262,10 +290,12 @@ cargo test -p lc-media --test network -- --ignored   # réseau + binaires requis
 ## Points ouverts / TODO Phase 5b
 
 1. Persistance des assets : insertion `MediaAsset` PROCESSING → READY/FAILED, erreur
-   `[CODE] message` (≤ 500), TTL et `last_accessed_at` ; worker de purge.
+   `[CODE] message` (≤ 500), TTL et `last_accessed_at` — fait côté serveur (Phase 5b) ;
+   worker de purge des lignes/fichiers orphelins — fait côté serveur
+   (`apps/lc-server/src/media/purge.rs`, task-42).
 2. Application des plans de cache : lecture des `CacheEntry` depuis la DB, suppression des
    fichiers + lignes, propagation des erreurs `CACHE_STORAGE_LIMIT_REACHED` /
-   `BOARD_STORAGE_LIMIT_REACHED`.
+   `BOARD_STORAGE_LIMIT_REACHED` — fait côté serveur (`media/quotas.rs`).
 3. Annulation et arrêt propre : le `sémaphore` borne la concurrence mais il reste à
    propager un `CancellationToken` et à tuer les groupes de processus (`ffmpeg`, `yt-dlp`)
    sur arrêt du serveur (exigence audit S10).

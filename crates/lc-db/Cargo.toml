@@ -12,6 +12,7 @@ chrono.workspace = true
 lc-domain.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

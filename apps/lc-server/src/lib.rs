@@ -127,6 +127,16 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let (shutdown, signal) = Shutdown::new();
     shutdown::install_signal_handlers(shutdown.clone());
 
+    // AUD-A2-003/A4-014 : refuser de démarrer si la racine média n'est pas
+    // exploitable. Le handler média redevient ainsi strictement fail-closed :
+    // sans racine canonicalisable au démarrage, aucun fichier n'est servi.
+    let media_storage_root = media::ensure_storage_root(&config.media_storage_dir)
+        .context("racine de stockage média invalide (MEDIA_STORAGE_DIR)")?;
+    info!(
+        directory = %media_storage_root.display(),
+        "racine de stockage média canonicalisée"
+    );
+
     // Base facultative : `open_database` ne renvoie une erreur que si
     // `DATABASE_URL` est fournie et inutilisable (échec explicite, pas de perte
     // silencieuse).
@@ -137,6 +147,14 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     // Hub WebSocket partagé : routeur `/ws`, adaptateur `AdminHub` et hook média.
     let hub = Arc::new(ws::Hub::new());
     wiring::install(&state, &hub);
+
+    // AUD-A4-008/A4-014 : purge immédiate au démarrage puis périodique. Le
+    // handle est délibérément détaché : le worker s'arrête avec le runtime.
+    if media::spawn_purge_worker(&state).is_some() {
+        info!("worker de purge média démarré");
+    } else {
+        info!("worker de purge média désactivé (aucune base configurée)");
+    }
 
     // Runtime Discord facultatif : `Disabled` (token absent) et l'absence de base
     // ne bloquent jamais le démarrage. La sonde `/health` est branchée avant la

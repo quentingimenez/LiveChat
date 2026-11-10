@@ -18,7 +18,7 @@ Le panneau est servi par le serveur Rust sous le préfixe `/admin` :
 |---|---|
 | Page et assets (`/admin/`, `/admin/app.js`, `/admin/styles.css`) | **publics** : aucun token requis pour charger la coquille HTML/JS/CSS |
 | 13 endpoints JSON (`/admin/api/...`) | **protégés** par le token d'administration |
-| Token | `ADMIN_UI_TOKEN`, transmis en `Authorization: Bearer` avec repli `?token=` |
+| Token | `ADMIN_UI_TOKEN`, transmis en `Authorization: Bearer` **uniquement** (repli `?token=` supprimé, AUD-COR-05) |
 | Restriction réseau | `ADMIN_UI_LOCAL_ONLY=true` (défaut) : seules les connexions loopback |
 
 ### Décision E9 — page publique, API protégées
@@ -29,6 +29,8 @@ problème d'ergonomie : le JS a besoin du token (`?token=`) puis le stocke en
 v1, la page était **protégée** ; en v2 elle est **publique** (assets seulement).
 Le token reste obligatoire pour chaque appel `/admin/api/...`, et cette
 décision est couverte par des tests (`page_admin_publique_mais_api_protegee`).
+Depuis AUD-COR-05, le token n'est plus accepté dans l'URL : le JS le lit dans le
+champ de la page et le conserve en `localStorage`.
 
 ## 2. Fichiers livrés
 
@@ -38,7 +40,7 @@ n'a été modifié) :
 | Fichier | Rôle |
 |---|---|
 | `mod.rs` | routeur `/admin`, couche d'en-têtes `secure`, helpers partagés |
-| `auth.rs` | extracteur `AdminAccess` (503/403/401), lecture Bearer/`?token=` |
+| `auth.rs` | extracteur `AdminAccess` (503/403/401), `Authorization: Bearer` uniquement (AUD-COR-05) |
 | `hub.rs` | trait `AdminHub`, `NoopAdminHub`, installation `OnceLock` |
 | `static_files.rs` | `ServeDir` sur `static/admin`, redirection `/admin` → `/admin/` |
 | `overview.rs` | `GET /admin/api/overview` |
@@ -74,14 +76,20 @@ app::router()
        → DefaultBodyLimit(1 Mio)
 ```
 
-Deux conséquences importantes :
+Trois conséquences importantes :
 
-1. **`/admin*` est exempté du rate limit** (comme dans le legacy ; voir
-   `http/rate_limit.rs`). Les rafraîchissements automatiques du panneau
-   (overview toutes les 2 s) ne doivent pas déclencher de 429.
+1. **`/admin*` n'est plus exempté du rate limit** (AUD-COR-10) : le panneau est
+   soumis au budget global (100 requêtes / 15 min / IP) et un bruteforce reçoit
+   `429 Too Many Requests` avec `Retry-After`. Seule l'exemption loopback du
+   mode développement (`NODE_ENV=development`) subsiste pour les tests locaux.
 2. La couche `security.rs` globale posait ses en-têtes en **écrasant** ceux des
    handlers ; le Lead l'a corrigée en `entry(...).or_insert(...)`. La couche
    admin peut donc poser sa CSP stricte avec `insert` sans être écrasée.
+3. La même couche `admin_headers` journalise un **audit minimal** des mutations
+   (`POST`/`PATCH`/`PUT`/`DELETE` sur `/admin/api/**`) : méthode, chemin seul,
+   statut et IP du client, target `lc_server::admin_audit` (AUD-COR-10). Ni la
+   query string ni les en-têtes ne sont journalisés, pour ne pas exposer un
+   jeton (AUD-COR-05).
 
 ### Middleware d'en-têtes (et non `tower-http::set-header`)
 
@@ -157,12 +165,18 @@ qu'un futur endpoint ne peut pas oublier l'authentification.
 
 ### Lecture du token
 
-- `Authorization: Bearer <token>` **prioritaire** (scheme insensible à la casse,
-  token trimé non vide).
-- Repli `?token=<token>` (décodé via `url::form_urlencoded::parse`), utilisé par
-  `app.js` qui le lit une fois puis envoie le Bearer.
+- `Authorization: Bearer <token>` **uniquement** (scheme insensible à la casse,
+  token trimé non vide). Le repli `?token=` du legacy a été **supprimé**
+  (AUD-COR-05) : un jeton ne doit jamais figurer dans une URL, où il finit dans
+  les journaux, l'historique du navigateur ou un en-tête `Referer`.
+- `app.js` lit le jeton dans le champ de la page et le conserve en
+  `localStorage` ; il ne le remet plus dans l'URL (`syncTokenInUrl` /
+  `history.replaceState` retirés, vérifiés par le test statique
+  `app_js_ne_propage_pas_le_jeton_dans_l_url`).
 - Comparaison **à temps constant** : égalité de longueur puis
   `subtle::ConstantTimeEq` (identique à `safeTokenEquals` du legacy).
+- Le jeton n'est **jamais** journalisé : ni le middleware de trace (chemin seul),
+  ni la normalisation d'erreurs, ni l'audit des mutations (chemin seul).
 
 ### IP loopback
 
@@ -506,14 +520,17 @@ non seulement par `admin::router()`. Chaque test crée sa propre base SQLite en
 mémoire et son dossier temporaire (`DATABASE_URL` pointe dedans), donc
 `admin_runtime.json` n'est jamais écrit dans le dépôt.
 
-Fichier : `apps/lc-server/src/http/admin/tests.rs` (27 tests d'intégration, plus
-les tests unitaires de `auth.rs`).
+Fichier : `apps/lc-server/src/http/admin/tests.rs` (27 tests d'intégration,
+plus le test statique du JS et les tests unitaires de `auth.rs`).
 
 Couverture par thème :
 
-- **Auth** : 503 token vide ; 403 IP externe ; 401 sans token ; Bearer puis
-  `?token=` ; `ADMIN_UI_LOCAL_ONLY=false` accepte un client externe ; page
-  `/admin/` publique alors que l'API est protégée.
+- **Auth** : 503 token vide ; 403 IP externe ; 401 sans token ; le jeton en
+  query string est **refusé** par 401 (AUD-COR-05) ; `ADMIN_UI_LOCAL_ONLY=false`
+  accepte un client externe ; page `/admin/` publique alors que l'API est
+  protégée.
+- **Jetons hors URL** : `static/admin/app.js` ne contient plus de réécriture
+  d'URL avec `token` (test statique `app_js_ne_propage_pas_le_jeton_dans_l_url`).
 - **Statique/en-têtes** : 308 `/admin` → `/admin/` ; index + `no-store` + CSP
   admin + Permissions-Policy ; CSP admin (`/admin/`) vs CSP globale (`/health`)
   et absence de `no-store` sur `/health`.
@@ -551,10 +568,11 @@ cargo test -p lc-server
 
 1. Définir `ADMIN_UI_TOKEN` (non vide) — sinon *toute* l'API répond 503.
 2. Vérifier que le serveur écoute bien sur la machine administrée
-   (`ADMIN_UI_LOCAL_ONLY=true` par défaut, donc accès local uniquement).
+   (`ADMIN_UI_LOCAL_ONLY=true` par défaut, donc accès local uniquement ; en
+   conteneur, voir `docs/rust/packaging.md` §10.4).
 3. Ouvrir `http://127.0.0.1:<port>/admin/` (slash final obligatoire, la page
-   redirige `/admin` → `/admin/`), puis saisir le token ou utiliser
-   `.../admin/?token=...`.
+   redirige `/admin` → `/admin/`), puis saisir le token dans le champ de la
+   page : il n'est plus accepté dans l'URL (AUD-COR-05).
 
 ### Problèmes fréquents
 
@@ -562,7 +580,8 @@ cargo test -p lc-server
 |---|---|---|
 | 503 `admin_ui_disabled` | `ADMIN_UI_TOKEN` vide | définir la variable puis redémarrer |
 | 403 `admin_local_only` | accès depuis une IP non loopback | accéder en local, ou (conscient du risque) `ADMIN_UI_LOCAL_ONLY=false` |
-| 401 `unauthorized` | token absent/faux | vérifier le Bearer ou `?token=` |
+| 401 `unauthorized` | token absent/faux | vérifier l'en-tête `Authorization: Bearer` (le `?token=` n'est plus accepté, AUD-COR-05) |
+| 429 `request_error` | plus de 100 requêtes / 15 min / IP, **y compris `/admin*`** (AUD-COR-10) | patienter `Retry-After`, ou augmenter la fenêtre si usage légitime |
 | 404 `overlay_client_not_found` | identifiant non UUID | le legacy répondait 404 pour un id invalide ; conservé |
 | `admin_runtime.json` absent | jamais de PATCH | fichier créé au premier PATCH (défaut = `TIKTOK_COOKIE`) |
 | Pas de nom de guilde Discord | pas de résolution Discord en v2 | divergence §9 (nom persisté ou `Guild {id}`) |
@@ -583,8 +602,9 @@ cargo test -p lc-server
   pas d'appel Discord depuis le panneau).
 - Retrait du champ `editableName` si le JS n'en dépend plus (E7).
 - Réduction des rafraîchissements automatiques (E11 : overview 2 s, pairing
-  12 s) si la charge devient sensible ; `/admin*` est déjà exempté du rate
-  limit.
+  12 s) si la charge devient sensible ; depuis AUD-COR-10 `/admin*` est soumis
+  au rate limit global (100 req / 15 min / IP), ce plafond est donc à considérer
+  avant d'augmenter la fréquence.
 - Stockage chiffré du cookie TikTok (actuellement en clair, parité v1).
 - Câblage réel du hub (`install_admin_hub`) : Lead après implémentation du trait
   par `protocole-v2` ; la couche admin n'a pas à changer.

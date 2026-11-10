@@ -44,9 +44,33 @@ fn not_available(current: String) -> UpdateStatus {
     }
 }
 
+/// L'updater est explicitement **désactivé** pour la 3.0.0 (AUD-A6-005).
+///
+/// La clé publique minisign de `tauri.conf.json` est un placeholder et
+/// `bundle.createUpdaterArtifacts` vaut `false` : activer l'updater sans clé
+/// réelle et sans installateurs signés produirait un faux sentiment de
+/// sécurité. L'activation (génération de clé, signature, publication
+/// `latest.json`) est planifiée en Phase 9 et documentée dans
+/// `docs/rust/overlay-release.md`.
+pub const UPDATER_ENABLED_FOR_RELEASE: bool = false;
+
+fn disabled(current: String) -> UpdateStatus {
+    UpdateStatus {
+        state: "disabled".to_string(),
+        current_version: current,
+        available_version: None,
+        message: "Mises à jour désactivées pour la version 3.0.0 (clé de signature \
+                  non configurée)."
+            .to_string(),
+    }
+}
+
 /// Interroge l'endpoint updater ; renvoie l'état à afficher.
 pub async fn check_for_update(app: &AppHandle<Wry>) -> UpdateStatus {
     let current = current_version(app);
+    if !UPDATER_ENABLED_FOR_RELEASE {
+        return disabled(current);
+    }
     let updater = match app.updater() {
         Ok(updater) => updater,
         Err(error) => {
@@ -77,6 +101,9 @@ pub async fn check_for_update(app: &AppHandle<Wry>) -> UpdateStatus {
 /// renvoyé n'est donc qu'un accusé de réception (même contrat que le legacy).
 pub async fn install_update(app: &AppHandle<Wry>) -> UpdateStatus {
     let current = current_version(app);
+    if !UPDATER_ENABLED_FOR_RELEASE {
+        return disabled(current);
+    }
     let updater = match app.updater() {
         Ok(updater) => updater,
         Err(error) => {

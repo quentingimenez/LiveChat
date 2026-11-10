@@ -1,6 +1,7 @@
 # Pont renderer ↔ main de l'overlay — matrice IPC et contrat Tauri 2
 
-> Statut : **Phase 0** (document de référence, aucun code Rust de production).
+> Statut : **contrat de référence maintenu** (établi en Phase 0, appliqué par `apps/lc-overlay` depuis la Phase 8 et
+> durci en P1-11 ; le renderer reste la référence HTML/CSS/JS).
 > Portée : l'app Electron `overlay/` est remplacée par une app **Tauri 2** ; le renderer HTML/CSS/JS est conservé tel quel
 > et reçoit un bridge qui réexpose `window.livechatOverlay`.
 > Livrables associés : `apps/lc-overlay/web/bridge.js`, `apps/lc-overlay/dev/README.md`,
@@ -29,7 +30,7 @@ Chaîne cible (Tauri 2, Phase 8) :
 
 ```
 HTML + bridge.js (script classique, apps/lc-overlay/web/bridge.js)
-  └─ window.livechatOverlay (mêmes 13 méthodes, mêmes payloads)
+  └─ window.livechatOverlay (13 méthodes legacy + `authorizedFetch`, mêmes payloads)
        └─ invoke(<commande Tauri>, { payload }) / listen("overlay://play|stop|settings")
             └─ commandes/événements Rust (apps/lc-overlay/src/**)
                  └─ mêmes services métier portés en Rust
@@ -38,7 +39,11 @@ HTML + bridge.js (script classique, apps/lc-overlay/web/bridge.js)
 Le renderer **ne change pas** : c'est le bridge qui absorbe le changement de transport. Le tableau de correspondance des
 noms se trouve en §6.
 
-## 2. Matrice des 13 méthodes de `window.livechatOverlay`
+## 2. Matrice des 13 méthodes legacy de `window.livechatOverlay`
+
+> Depuis P1-11, l'API expose **14 méthodes** : les 13 méthodes legacy ci-dessous
+> (contrat renderer inchangé) plus `authorizedFetch(url, options)`, extension
+> additive utilisée par le board pour l'authentification Bearer (cf. §12.4).
 
 Sources : API `overlay/src/preload/index.ts:40-54`, types `overlay/src/types/livechat-overlay.d.ts:19-39`, canaux
 `overlay/src/shared/ipc.ts:19-33`, handlers `overlay/src/main/ipc/register-overlay-ipc-handlers.ts:42-74` et
@@ -520,14 +525,15 @@ Checklist minimale pour que le renderer conservé fonctionne sans modification :
 | Abonnement | `nativeListen` via `__TAURI__.event.listen` sinon `plugin:event|listen` + `transformCallback` ; désabonnement via `plugin:event|unlisten` / `dispose()` (l.299-…, l.349-…) ; liste locale pour le mock. |
 | Journal | `pushCall` l.196 ; max 200 entrées ; masquage `token|code|sig|secret|password` ; troncature >300 caractères. |
 | Mock | valeurs neutres ; `rendererReady` → `overlay://settings` différé ; aucun réseau. |
-| API | objet `api` l.625-681, exactement 13 clés ; exposition `window.livechatOverlay` l.683 + `window.__livechatOverlayBridge` l.688-… |
+| API | objet `api` l.625-681, 13 clés legacy + `authorizedFetch` (14 au total) ; exposition `window.livechatOverlay` l.683 + `window.__livechatOverlayBridge` l.688-… |
 | Test | `window.__bridgeMockEmit` l.705 (alias `play`/`overlay:play`/`overlay://play`, retour nb listeners) ; `window.__bridgeCalls`, `window.__bridgeLastEvent`. |
 
 Vérifications :
 
 - `node --check apps/lc-overlay/web/bridge.js` — **OK** (vérifié).
 - `apps/lc-overlay/dev/bridge-test.html` — harnais manuel : 10 commandes, 3 abonnements, émission simulée, journal des
-  appels, bouton « Tout tester (13 méthodes) » (score attendu 13/13 en mock). Hors bundle depuis P1-11 (cf. §12.6).
+  appels, bouton « Tout tester (13 méthodes) » (score attendu 13/13 pour les méthodes legacy en mock). Hors bundle depuis
+  P1-11 (cf. §12.6).
 - Reste à valider en Phase 8 : comportement réel `invoke`/`listen` sous WebView2, ordre des events, CSP, CORS, origines,
   click-through/transparence, autoplay — ces points sont hors de portée du mock.
 
@@ -536,7 +542,7 @@ Vérifications :
 | Fichier | Rôle |
 | --- | --- |
 | `overlay/src/shared/ipc.ts:19-64` | Source unique des 13 canaux IPC (strings, maps de payloads). |
-| `overlay/src/preload/index.ts:14-56` | API `window.livechatOverlay` (13 méthodes) + exposition. |
+| `overlay/src/preload/index.ts:14-56` | API `window.livechatOverlay` (13 méthodes legacy ; + `authorizedFetch` côté Tauri) + exposition. |
 | `overlay/src/types/livechat-overlay.d.ts:19-39` | Signatures TypeScript exactes de l'API. |
 | `overlay/src/main/ipc/register-overlay-ipc-handlers.ts:42-74` | Handlers main des 9 canaux overlay/mémoires. |
 | `overlay/src/main/ipc/register-pairing-ipc-handler.ts:36-38` | Handler `pairing:consume`. |
@@ -571,9 +577,11 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
 
 ### 12.2 Carte tweet : widgets tiers désactivés, rendu statique (A6-002)
 
-- `legacy-twitter-widgets-utils.js::ensureTwitterWidgets` lève
-  `tweet_widgets_disabled` sauf si `window.__LIVECHAT_TWEET_WIDGETS_ENABLED === true`
-  (opt-in explicite, jamais activé en production).
+- `legacy-twitter-widgets-utils.js::ensureTwitterWidgets` lève **toujours**
+  `tweet_widgets_disabled` : il n'existe **aucun flag d'opt-in** (le
+  `window.__LIVECHAT_TWEET_WIDGETS_ENABLED` évoqué dans une version antérieure
+  de ce document n'a jamais été implémenté). Aucun script tiers n'est chargé,
+  même en développement.
 - `legacy-tweet-card-renderer.js` n'utilise plus `innerHTML` : le HTML distant
   est parsé dans un document inerte et seul son `textContent` est affiché
   (aucun script ne peut s'exécuter, même si le serveur renvoyait `tweet_card`).
@@ -609,10 +617,24 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
   renvoient l'état `disabled` **sans** appeler le plugin (pas de requête réseau,
   pas d'erreur de clé placeholder). L'activation exige la clé minisign réelle et
   des artefacts signés (Phase 9, voir `docs/rust/overlay-release.md`).
+- Le **menu tray** respecte le même flag depuis V2-O (`AUD-V2-O-001`) : l'entrée
+  « Vérifier les mises à jour » devient « Mises à jour désactivées pour cette
+  version » (grisée) et `tray::spawn_update_check` retourne immédiatement, sans
+  aucun appel à `tauri_plugin_updater` ni requête réseau.
 
 ### 12.6 Harnais de développement hors bundle (A6-015)
 
 - `bridge-test.html` et `README.md` ont été déplacés de `web/` vers
   `apps/lc-overlay/dev/` : `frontendDist` reste `web/`, donc le harnais n'est
   plus embarqué dans le binaire ni dans l'installeur.
+
+### 12.7 Projection de config restreinte par fenêtre (V2-O-002)
+
+- `overlay_get_config` reste autorisée pour les trois fenêtres, mais la
+  projection renvoyée est filtrée par label : le `clientToken` n'est présent
+  que pour la fenêtre **board** (nécessaire à `authorizedFetch`). Pour
+  `overlay` et `pairing`, le champ est retiré (`clientToken` absent/null).
+- Décision dans `commands::config_view_for_window` (fonction pure), testée par
+  `commands::tests::config_view_is_window_scoped`.
+
 

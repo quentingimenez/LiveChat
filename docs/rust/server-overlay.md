@@ -15,7 +15,7 @@ Ce module remplace le sous-système HTTP de l'overlay Electron :
 | `server/src/components/overlay/overlayRoutes.ts` (568 l.) | `apps/lc-server/src/http/overlay/**` |
 | `server/src/services/overlayAuth.ts` (143 l.) | `apps/lc-server/src/http/overlay/auth.rs` + `crates/lc-domain` + `crates/lc-db` |
 | `GET /overlay/config` | **supprimé** en v2 (la route répond 404) |
-| `?token=` sur les routes board | **supprimé** en v2 (Bearer uniquement) |
+| `?token=` sur les routes board | **Bearer uniquement** en v2 ; repli transitoire `?token=` **toléré sur `/overlay/meme-board/*`** (renderer legacy, Bearer prioritaire, WARN unique) — voir §4.1 |
 
 Hors périmètre (autres lanes) : hub WebSocket Phase 4b (`ws/**`), service média
 Phase 5b (`media/**` : ingestion en tâche de fond, cache/éviction), admin Phase 7b

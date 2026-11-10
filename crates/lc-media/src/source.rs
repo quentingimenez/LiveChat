@@ -12,7 +12,8 @@ use url::Url;
 use lc_domain::MediaKind;
 
 use crate::config::MediaConfig;
-use crate::error::MediaResult;
+use crate::error::{MediaError, MediaErrorCode, MediaResult};
+use crate::guard;
 use crate::http;
 
 /// Hôtes courts TikTok résolus avant canonicalisation.
@@ -278,23 +279,64 @@ pub fn classify_source(canonical_url: &str) -> SourceKind {
 
 /// Démarre la résolution d'une source (suit au besoin les URL courtes TikTok).
 ///
-/// Renvoie `Ok(None)` pour une entrée vide.
-pub async fn resolve_source(
-    client: &reqwest::Client,
-    raw: &str,
-    config: &MediaConfig,
-) -> MediaResult<Option<MediaSource>> {
+/// Renvoie `Ok(None)` pour une entrée vide et refuse toute source qui n'est
+/// pas une URL `http`/`https` publique (voir [`validate_ingest_source`]).
+pub async fn resolve_source(config: &MediaConfig, raw: &str) -> MediaResult<Option<MediaSource>> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok(None);
     }
-    let mut candidate = trimmed.to_string();
-    if is_tiktok_short_url(trimmed) {
-        candidate =
-            http::resolve_short_url(client, trimmed, config.download.short_url_timeout).await;
+    let candidate = if is_tiktok_short_url(trimmed) {
+        http::resolve_short_url(&config.download, trimmed, config.download.short_url_timeout).await
+    } else {
+        trimmed.to_string()
+    };
+    validate_ingest_source(&candidate).await.map(Some)
+}
+
+/// Valide une entrée d'ingestion avant toute connexion réseau ou insertion en
+/// base.
+///
+/// Refuse les schémas faibles (`file:`, `gtts:`, UNC, `ftp:`, `data:`…), les
+/// URL inconnues, puis applique la garde SSRF de [`crate::guard`] : résolution
+/// DNS et refus de toute adresse IP interne. Le serveur appelle cette fonction
+/// avant `MediaService::ingest` pour ne créer aucun asset pour une source
+/// refusée.
+pub async fn validate_ingest_source(raw: &str) -> MediaResult<MediaSource> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(MediaError::new(
+            MediaErrorCode::UnsupportedSource,
+            "URL média vide",
+        ));
     }
-    let canonical_url = canonicalize_source_url(&candidate);
+    let canonical_url = canonicalize_source_url(trimmed);
     let source_kind = classify_source(&canonical_url);
+    match source_kind {
+        SourceKind::LocalFile => {
+            return Err(MediaError::new(
+                MediaErrorCode::UnsupportedSource,
+                "les sources locales (file:) sont refusées par la politique média",
+            ));
+        }
+        SourceKind::Gtts => {
+            return Err(MediaError::new(
+                MediaErrorCode::UnsupportedSource,
+                "la synthèse vocale gtts: n'est pas prise en charge par le pipeline média",
+            ));
+        }
+        SourceKind::Unknown => {
+            return Err(MediaError::new(
+                MediaErrorCode::UnsupportedSource,
+                format!("source média non supportée : {canonical_url}"),
+            ));
+        }
+        SourceKind::YouTube
+        | SourceKind::TikTok
+        | SourceKind::Twitter
+        | SourceKind::DirectMedia => {}
+    }
+    guard::validate_target(&canonical_url).await?;
     let start_offset_sec = if source_kind == SourceKind::YouTube {
         parse_youtube_start_offset(trimmed)
     } else {
@@ -304,15 +346,15 @@ pub async fn resolve_source(
         original = trimmed,
         canonical = canonical_url,
         kind = source_kind.as_str(),
-        "source média normalisée"
+        "source média validée"
     );
-    Ok(Some(MediaSource {
+    Ok(MediaSource {
         original: trimmed.to_string(),
         source_hash: source_hash(&canonical_url),
         canonical_url,
         source_kind,
         start_offset_sec,
-    }))
+    })
 }
 
 /// Parse un offset de démarrage YouTube (`?t=`, `?start=`, fragment `#t=`).
@@ -434,7 +476,7 @@ fn youtube_host(parsed: &Url) -> bool {
         .host_str()
         .map(|host| {
             let host = host.to_ascii_lowercase();
-            host == "youtu.be" || host.ends_with("youtube.com")
+            host == "youtu.be" || host == "youtube.com" || host.ends_with(".youtube.com")
         })
         .unwrap_or(false)
 }
@@ -442,7 +484,10 @@ fn youtube_host(parsed: &Url) -> bool {
 fn tiktok_host(parsed: &Url) -> bool {
     parsed
         .host_str()
-        .map(|host| host.to_ascii_lowercase().ends_with("tiktok.com"))
+        .map(|host| {
+            let host = host.to_ascii_lowercase();
+            host == "tiktok.com" || host.ends_with(".tiktok.com")
+        })
         .unwrap_or(false)
 }
 

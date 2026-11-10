@@ -12,6 +12,7 @@
 //! est rejouable depuis la source d'origine.
 
 mod dates;
+mod ledger;
 mod legacy;
 mod read;
 mod schema;
@@ -147,6 +148,12 @@ pub enum Error {
         table: &'static str,
         source: sqlx::Error,
     },
+    #[error("écriture du registre sqlx _sqlx_migrations dans la cible impossible : {0}")]
+    LedgerWrite(sqlx::Error),
+    #[error("lecture du registre sqlx _sqlx_migrations dans la cible impossible : {0}")]
+    LedgerVerify(sqlx::Error),
+    #[error("registre sqlx (_sqlx_migrations) incohérent : {0}")]
+    LedgerInvalid(String),
     #[error("vérification post-migration échouée : {0}")]
     Verify(String),
     #[error(
@@ -224,7 +231,7 @@ async fn run(
     print_warnings(&data.warnings);
 
     if options.dry_run {
-        print_dry_run(options, &data, source, started.elapsed());
+        print_dry_run(options, &data, source, started.elapsed()).await;
         return Ok(());
     }
 
@@ -344,14 +351,24 @@ async fn verify_target(
     Ok(report)
 }
 
-/// Rapport du mode `--dry-run` : aucune écriture, seulement des comptes.
-fn print_dry_run(options: &Options, data: &LegacyData, source: &SourceMeta, elapsed: Duration) {
+/// Rapport du mode `--dry-run` : aucune écriture, seulement des comptes et une
+/// comparaison du registre sqlx attendu avec la cible existante (si `--force`).
+async fn print_dry_run(
+    options: &Options,
+    data: &LegacyData,
+    source: &SourceMeta,
+    elapsed: Duration,
+) {
     println!("  mode     : --dry-run, aucune écriture");
     println!("  tables legacy :");
     for (table, count) in data.counts() {
         println!("    - {table:<18} {count:>8}");
     }
     println!("  dates     : {}", data.dates);
+    println!(
+        "  registre sqlx : {}",
+        ledger::compare_existing(&options.to).await
+    );
     println!(
         "  conclusion : source lisible et normalisable ; la migration réelle écrirait {} puis \
          l'installerait en {}",

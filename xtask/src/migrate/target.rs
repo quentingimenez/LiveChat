@@ -1,6 +1,8 @@
 //! Écriture du fichier cible 3.0, toujours dans un fichier temporaire
-//! (`<to>.tmp`) : DDL de `docs/rust/schema-v3.sql`, métadonnées d'import puis
-//! les 7 tables dans l'ordre des clés étrangères.
+//! (`<to>.tmp`) : DDL de `docs/rust/schema-v3.sql`, métadonnées d'import, les
+//! 7 tables dans l'ordre des clés étrangères, puis le registre sqlx
+//! `_sqlx_migrations` (`ledger`) pour que le premier démarrage du serveur ne
+//! rejoue pas `0001_init`.
 //!
 //! Le fichier temporaire utilise un journal de type `DELETE` (et non `WAL`) :
 //! l'écriture doit être entièrement contenue dans un seul fichier, car SQLite
@@ -9,11 +11,12 @@
 //! sont bien sur disque avant la vérification puis le renommage atomique.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
 use sqlx::{Connection, SqliteConnection};
 
+use super::ledger;
 use super::legacy::SourceMeta;
 use super::read::LegacyData;
 use super::schema::SCHEMA_V3_SQL;
@@ -22,6 +25,7 @@ use super::Error;
 /// Crée le fichier `<tmp>` et y écrit le schéma 3.0, les métadonnées d'import et
 /// toutes les lignes legacy déjà normalisées.
 pub async fn write(tmp: &Path, data: &LegacyData, source: &SourceMeta) -> Result<(), Error> {
+    let started = Instant::now();
     let options = SqliteConnectOptions::new()
         .filename(tmp)
         .create_if_missing(true)
@@ -47,6 +51,11 @@ pub async fn write(tmp: &Path, data: &LegacyData, source: &SourceMeta) -> Result
 
     insert_metadata(&mut conn, source).await?;
     insert_tables(&mut conn, data).await?;
+
+    // Registre sqlx : écrit avant la vérification et le renommage, pour que le
+    // premier démarrage du serveur considère `0001_init` comme déjà appliquée.
+    let execution_time_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+    ledger::write(&mut conn, execution_time_ms).await?;
 
     conn.close().await.map_err(|source| Error::TargetInit {
         path: tmp.to_path_buf(),

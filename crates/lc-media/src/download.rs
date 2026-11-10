@@ -11,6 +11,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::config::{MediaConfig, BYTES_PER_MB, YOUTUBE_RELAXED_YTDLP_FORMAT};
 use crate::error::{MediaError, MediaErrorCode, MediaResult};
+use crate::guard;
 use crate::http;
 use crate::resolve::tiktok;
 use crate::source::{
@@ -60,36 +61,63 @@ impl Default for YtdlpOptions {
 
 /// Télécharge une source selon sa nature.
 pub async fn download_source(
-    client: &reqwest::Client,
     source: &MediaSource,
     resolved: Option<&crate::resolve::ResolvedMedia>,
     config: &MediaConfig,
     temp_dir: &Path,
 ) -> MediaResult<DownloadResult> {
+    ensure_download_allowed(source).await?;
     match source.source_kind {
         SourceKind::YouTube => download_youtube(config, &source.canonical_url, temp_dir).await,
-        SourceKind::TikTok => download_tiktok(client, source, config, temp_dir).await,
-        SourceKind::Twitter => download_twitter(client, source, resolved, config, temp_dir).await,
-        SourceKind::LocalFile => download_local(&source.canonical_url, config),
+        SourceKind::TikTok => download_tiktok(source, config, temp_dir).await,
+        SourceKind::Twitter => download_twitter(source, resolved, config, temp_dir).await,
+        SourceKind::LocalFile => Err(MediaError::new(
+            MediaErrorCode::UnsupportedSource,
+            "les sources locales (file:) sont refusées par la politique média",
+        )),
         SourceKind::Gtts => Err(MediaError::new(
             MediaErrorCode::UnsupportedSource,
             "la source gtts n'est pas prise en charge par lc-media (Phase 5b)",
         )),
         SourceKind::DirectMedia | SourceKind::Unknown => {
-            download_http(client, &source.canonical_url, temp_dir, config, &[]).await
+            download_http(config, &source.canonical_url, temp_dir, &[]).await
+        }
+    }
+}
+
+/// Refuse les sources locales et valide la cible réseau (garde SSRF).
+async fn ensure_download_allowed(source: &MediaSource) -> MediaResult<()> {
+    match source.source_kind {
+        SourceKind::LocalFile => Err(MediaError::new(
+            MediaErrorCode::UnsupportedSource,
+            "les sources locales (file:) sont refusées par la politique média",
+        )),
+        SourceKind::Gtts => Err(MediaError::new(
+            MediaErrorCode::UnsupportedSource,
+            "la synthèse vocale gtts: n'est pas prise en charge par le pipeline média",
+        )),
+        SourceKind::Unknown => Err(MediaError::new(
+            MediaErrorCode::UnsupportedSource,
+            format!("source média non supportée : {}", source.canonical_url),
+        )),
+        SourceKind::YouTube
+        | SourceKind::TikTok
+        | SourceKind::Twitter
+        | SourceKind::DirectMedia => {
+            guard::validate_target(&source.canonical_url).await?;
+            Ok(())
         }
     }
 }
 
 async fn download_twitter(
-    client: &reqwest::Client,
     source: &MediaSource,
     resolved: Option<&crate::resolve::ResolvedMedia>,
     config: &MediaConfig,
     temp_dir: &Path,
 ) -> MediaResult<DownloadResult> {
     if let Some(media_url) = resolved.and_then(|resolved| resolved.media_url.clone()) {
-        match download_http(client, &media_url, temp_dir, config, &[]).await {
+        match download_http(config, &media_url, temp_dir, &[]).await {
             Ok(download) => return Ok(download),
             Err(error) => {
                 tracing::debug!(%media_url, "téléchargement direct du tweet échoué : {error}");
@@ -98,70 +126,6 @@ async fn download_twitter(
     }
     let options = YtdlpOptions::default();
     download_with_ytdlp(config, &source.canonical_url, temp_dir, &options).await
-}
-
-/// Copie un fichier local (`file:`), sans passer par le réseau.
-pub fn download_local(url: &str, config: &MediaConfig) -> MediaResult<DownloadResult> {
-    let path = local_path_from_url(url).ok_or_else(|| {
-        MediaError::new(
-            MediaErrorCode::InvalidMedia,
-            "chemin de fichier local invalide",
-        )
-    })?;
-    let metadata = fs::metadata(&path).map_err(|error| {
-        MediaError::with_raw(
-            MediaErrorCode::MediaNotFound,
-            "fichier local introuvable",
-            error.to_string(),
-        )
-    })?;
-    if !metadata.is_file() {
-        return Err(MediaError::new(
-            MediaErrorCode::MediaNotFound,
-            "le chemin local n'est pas un fichier",
-        ));
-    }
-    if metadata.len() > config.download.max_size_bytes {
-        return Err(MediaError::new(
-            MediaErrorCode::FileTooLarge,
-            "le fichier local dépasse la taille maximale",
-        ));
-    }
-    let kind = kind_from_url(url).or_else(|| {
-        path.extension()
-            .and_then(|extension| extension.to_str())
-            .and_then(kind_from_extension)
-    });
-    let mime = kind.map(|kind| default_mime(kind).to_string());
-    Ok(DownloadResult {
-        path,
-        kind,
-        mime,
-        size_bytes: metadata.len(),
-        source_url: url.to_string(),
-    })
-}
-
-fn kind_from_extension(extension: &str) -> Option<MediaKind> {
-    mime_from_extension(extension).and_then(kind_from_mime)
-}
-
-/// Convertit une URL `file:` en chemin local.
-pub fn local_path_from_url(url: &str) -> Option<PathBuf> {
-    let trimmed = url.trim();
-    let without_scheme = trimmed.strip_prefix("file:")?.trim();
-    if without_scheme.is_empty() {
-        return None;
-    }
-    if let Some(rest) = without_scheme.strip_prefix("///") {
-        return Some(PathBuf::from(
-            rest.replace('/', std::path::MAIN_SEPARATOR_STR),
-        ));
-    }
-    if let Some(rest) = without_scheme.strip_prefix("//") {
-        return Some(PathBuf::from(rest));
-    }
-    Some(PathBuf::from(without_scheme))
 }
 
 /// Télécharge via `yt-dlp` avec les replis YouTube.
@@ -388,17 +352,19 @@ pub async fn download_with_ytdlp(
 
 /// Télécharge une URL directe en streaming, avec plafond de taille.
 pub async fn download_http(
-    client: &reqwest::Client,
+    config: &MediaConfig,
     url: &str,
     temp_dir: &Path,
-    config: &MediaConfig,
     headers: &[(&str, &str)],
 ) -> MediaResult<DownloadResult> {
-    let mut request = client.get(url);
-    for (name, value) in headers {
-        request = request.header(*name, *value);
-    }
-    let response = request.send().await.map_err(http::request_error)?;
+    let (response, final_url) = http::send_guarded(
+        &config.download,
+        reqwest::Method::GET,
+        url,
+        config.download.timeout,
+        headers,
+    )
+    .await?;
     let status = response.status();
     if !status.is_success() {
         return Err(http::request_error_for_status(status.as_u16(), url));
@@ -500,23 +466,22 @@ pub async fn download_http(
         kind,
         mime,
         size_bytes: total,
-        source_url: url.to_string(),
+        source_url: final_url.to_string(),
     })
 }
 
 /// Télécharge une publication TikTok (vidéo, image ou carrousel assemblé).
 pub async fn download_tiktok(
-    client: &reqwest::Client,
     source: &MediaSource,
     config: &MediaConfig,
     temp_dir: &Path,
 ) -> MediaResult<DownloadResult> {
-    let page = tiktok::fetch_tiktok_page(client, &source.canonical_url, config).await?;
+    let page = tiktok::fetch_tiktok_page(config, &source.canonical_url).await?;
     let owned_headers = tiktok::tiktok_headers(config);
     let headers = tiktok::header_pairs(&owned_headers);
     let mut last_error: Option<MediaError> = None;
     for candidate in &page.video_candidates {
-        match download_http(client, &candidate.url, temp_dir, config, &headers).await {
+        match download_http(config, &candidate.url, temp_dir, &headers).await {
             Ok(download) => return Ok(download),
             Err(error) => {
                 if error.is(MediaErrorCode::FileTooLarge)
@@ -532,7 +497,7 @@ pub async fn download_tiktok(
         }
     }
     if !page.photo_slides.is_empty() {
-        match download_tiktok_carousel(client, &page, config, temp_dir).await {
+        match download_tiktok_carousel(&page, config, temp_dir).await {
             Ok(download) => return Ok(download),
             Err(error) => {
                 last_error = Some(match last_error {
@@ -557,7 +522,6 @@ pub async fn download_tiktok(
 }
 
 async fn download_tiktok_carousel(
-    client: &reqwest::Client,
     page: &tiktok::TikTokPage,
     config: &MediaConfig,
     temp_dir: &Path,
@@ -571,7 +535,7 @@ async fn download_tiktok_carousel(
             break;
         }
         for candidate in slide {
-            match download_http(client, &candidate.url, temp_dir, config, &headers).await {
+            match download_http(config, &candidate.url, temp_dir, &headers).await {
                 Ok(download) => {
                     images.push(download.path);
                     break;
@@ -610,7 +574,7 @@ async fn download_tiktok_carousel(
     }
     let mut audio: Option<PathBuf> = None;
     for candidate in &page.audio_candidates {
-        match download_http(client, &candidate.url, temp_dir, config, &headers).await {
+        match download_http(config, &candidate.url, temp_dir, &headers).await {
             Ok(download) => {
                 audio = Some(download.path);
                 break;
@@ -853,17 +817,6 @@ mod tests {
         );
         assert_eq!(sniff_kind(b"pas un media"), None);
         assert_eq!(sniff_kind(&[]), None);
-    }
-
-    #[test]
-    fn parses_local_file_urls() {
-        assert_eq!(
-            local_path_from_url("file:C:\\media\\clip.mp4"),
-            Some(PathBuf::from("C:\\media\\clip.mp4"))
-        );
-        assert!(local_path_from_url("file:///C:/media/clip.mp4").is_some());
-        assert_eq!(local_path_from_url("https://example.test/a.mp4"), None);
-        assert_eq!(local_path_from_url("file:"), None);
     }
 
     #[test]

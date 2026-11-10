@@ -9,6 +9,8 @@ schéma 3.0 Rust (`docs/rust/schema-v3.sql`). Le migrateur est la sous-commande
 - **Format des dates mesuré** : [`docs/rust/prisma-dates.txt`](prisma-dates.txt).
 - **Matrice sécurité liée** : [`docs/rust/audit-dynamique.md`](audit-dynamique.md)
   (§6-7 : la migration ne modifie jamais la base legacy).
+- **Registre sqlx** : la cible contient la table `_sqlx_migrations` (voir §10.1),
+  sans quoi le premier démarrage du serveur rejouerait `0001_init` et échouerait.
 
 ## 1. Garanties
 
@@ -19,6 +21,7 @@ schéma 3.0 Rust (`docs/rust/schema-v3.sql`). Le migrateur est la sous-commande
 | Pas de fichier final partiel | écriture dans `<to>.tmp`, vérification complète, puis renommage atomique |
 | Échec propre | sur erreur, le `.tmp` est supprimé et `<to>` reste tel quel ; aucun `.old` ne subsiste |
 | Traçabilité | empreinte SHA256 de la source, chemin, horodatage et version de l'outil enregistrés dans `app_metadata` |
+| Démarrage immédiat du serveur | registre sqlx `_sqlx_migrations` écrit et vérifié avant le renommage : `Db::open` considère `0001_init` comme déjà appliquée et ne la rejoue pas (§10.1) |
 
 La migration lit **toutes** les lignes en mémoire avant d'écrire la cible
 (validation précoce, rapport `--dry-run` complet). Volumétrie attendue pour
@@ -55,7 +58,7 @@ cargo run -p xtask -- migrate-legacy --from .\server\prisma\dev.sqlite --to .\da
 | --- | --- |
 | `--from <PATH>` | base legacy (obligatoire, ouverture strictement en lecture seule) |
 | `--to <PATH>` | base cible 3.0 à installer (obligatoire) ; seul `<to>.tmp` est écrit avant le renommage |
-| `--dry-run` | valide la lecture et la normalisation, affiche le rapport, n'écrit rien |
+| `--dry-run` | valide la lecture et la normalisation, affiche le rapport, n'écrit rien ; compare aussi le registre sqlx attendu avec la cible existante si `--force` est présent |
 | `--force` | autorise le remplacement d'une cible existante **et** la suppression d'un `<to>.tmp` résiduel |
 | `-h`, `--help` | aide |
 
@@ -83,9 +86,15 @@ Les chemins peuvent aussi être passés en ligne : `--from=legacy.sqlite`.
    `overlay_clients`, `ingest_clients`, `pairing_codes`). Journal `DELETE` +
    `synchronous=FULL` : le fichier temporaire est autonome (pas de `-wal` qui
    serait perdu au renommage).
+   **Registre sqlx** : après les tables, écriture de `_sqlx_migrations` (une
+   ligne : `version = 1`, `description = 'init'`, `success = 1`,
+   `checksum = SHA-384` des octets de `lc_db::MIGRATION_SQL`, `execution_time`,
+   `installed_on` par défaut) — toujours **avant** la vérification et le
+   renommage (§10.1).
 6. **Vérification du temporaire** (voir §6) : comptes, sommes numériques,
-   échantillon champ à champ, FK, intégrité, `schema_version`. Échec ⇒ suppression
-   du `.tmp`, aucun renommage.
+   échantillon champ à champ, FK, intégrité, `schema_version`, **registre sqlx**
+   (présent, une ligne, version/description/checksum corrects). Échec ⇒
+   suppression du `.tmp`, aucun renommage.
 7. **Installation atomique** : `rename(<to>.tmp, <to>)`. Si `<to>` existe
    (`--force`), ancienne cible renommée en `<to>.old`, bascule, suppression du
    `.old` ; restauration de l'ancienne cible si la bascule échoue.
@@ -112,6 +121,7 @@ migrate-legacy : C:\LiveChat\legacy.sqlite -> C:\LiveChat\v3.sqlite
         ...
       échantillon : 13 ligne(s) comparée(s) champ à champ (20 par table max)
       clés étrangères : 0 violation(s) ; integrity_check = ok ; schema_version = 3.0.0
+      registre sqlx : _sqlx_migrations (1 ligne(s), version 1, description "init", success 1, SHA-384 conforme)
       métadonnées d'import :
         - legacy_import_at = 2026-11-09T23:41:02.123Z
         - legacy_source_path = C:\LiveChat\legacy.sqlite
@@ -122,7 +132,9 @@ migration terminée en 1.98 s
 ```
 
 En `--dry-run`, le rapport s'arrête aux comptes par table, aux statistiques de
-dates et aux avertissements, avec une ligne « aucune écriture ».
+dates et aux avertissements, avec une ligne « aucune écriture » ; une ligne
+« registre sqlx » indique si la cible existante (`--force`) possède déjà un
+registre conforme ou si la cible serait créée avec le registre attendu.
 
 Les **avertissements** non bloquants sont comptés par message, par exemple :
 `playback_jobs.resume_offset_sec : NULL legacy remplacé par 0 (×3)`.
@@ -141,6 +153,7 @@ l'installation.
 | Sommes numériques | `media_assets.size_bytes`, `media_assets.duration_sec`, `playback_jobs.duration_sec`, `playback_jobs.priority`, `playback_jobs.resume_offset_sec` (NULL legacy comptés 0), `guilds.default_media_time`, `guilds.max_media_time` |
 | Échantillon | 20 lignes maximum par table relues par clé primaire et comparées **champ à champ** (structs identiques) ; 13 lignes sur la fixture de test |
 | Métadonnées | `legacy_import_at`, `legacy_source_path`, `legacy_source_sha256`, `legacy_import_tool` relues |
+| Registre sqlx | table `_sqlx_migrations` présente, exactement une ligne : `version = 1`, `description = 'init'`, `success = 1`, `checksum = SHA-384(MIGRATION_SQL)` (§10.1) |
 
 ## 7. Mapping legacy → schéma 3.0
 
@@ -244,6 +257,31 @@ n'est pas incrémentale : relancer sur une base plus grosse repart de zéro.
 Ces clés permettent de vérifier qu'une cible correspond bien à une source donnée
 avant de démarrer le serveur 3.0.
 
+### 10.1 Registre sqlx `_sqlx_migrations`
+
+`lc-db` applique son schéma avec `sqlx::migrate!("./migrations")` : au démarrage
+(`Db::open`), sqlx lit la table `_sqlx_migrations` et n'exécute que les
+migrations non enregistrées. Une base produite par le seul DDL (sans ce registre)
+serait donc considérée « vierge » : sqlx rejouerait `0001_init` et échouerait sur
+« table app_metadata already exists », empêchant le serveur 3.0 de démarrer.
+
+Le migrateur écrit donc lui-même le registre, **dans la cible temporaire, après
+les tables et avant la vérification/renommage** :
+
+| Colonne | Valeur |
+| --- | --- |
+| `version` | `1` (préfixe de `0001_init.sql`) |
+| `description` | `init` (nom de migration, `_` → espace) |
+| `success` | `1` |
+| `checksum` | SHA-384 des **octets** de `lc_db::MIGRATION_SQL` (algorithme de sqlx) |
+| `execution_time` | durée d'écriture de la cible, en ms |
+| `installed_on` | défaut SQL `CURRENT_TIMESTAMP` |
+
+La vérification (§6) relit ce registre ; en cas d'absence ou d'incohérence,
+l'installation est annulée. Un test d'intégration compare en outre le checksum
+écrit à celui produit par sqlx lui-même sur une base vierge ouverte par
+`lc_db::Db::open`, puis démarre deux fois le serveur sur la cible migrée.
+
 ## 11. Procédure de rollback
 
 La base legacy n'étant jamais modifiée, le rollback consiste à revenir au
@@ -273,9 +311,11 @@ ou réutilisé avec `--force`.
    `resume_offset_sec`).
 4. **Migration réelle** vers un chemin neuf (pas de `--force` nécessaire).
 5. **Contrôler** le rapport : `integrity_check = ok`, 0 violation FK,
-   `schema_version = 3.0.0`, échantillon sans anomalie.
+   `schema_version = 3.0.0`, registre sqlx conforme, échantillon sans anomalie.
 6. **Démarrer le serveur 3.0** sur la base cible et vérifier le démarrage
-   (< 500 ms attendu) et l'authentification overlay/ingest.
+   (< 500 ms attendu), l'absence de rejeu de `0001_init` (preuve : le serveur
+   démarre sans erreur « table app_metadata already exists ») et
+   l'authentification overlay/ingest.
 7. **Conserver** la base legacy et la cible précédente au moins jusqu'à la fin
    de la phase de validation (rollback possible à tout moment).
 
@@ -296,6 +336,10 @@ ou réutilisé avec `--force`.
   avec `docs/rust/schema-v3.sql` (copie humaine du contrat). Toute évolution du
   schéma se fait dans la migration puis dans la copie de doc.
 - `clap` absent : CLI maison, à remplacer si le nombre de sous-commandes croît.
+- Le registre sqlx écrit référence la migration `0001_init` de `lc-db` : si ce
+  fichier évolue après une migration, le checksum enregistré ne correspondra
+  plus et sqlx refusera le démarrage. Relancer alors la migration (et non
+  éditer le registre) pour repartir d'un schéma et d'un checksum cohérents.
 - Pas de migration des tokens/sessions applicatives : seuls les hash de tokens
   (`tokenHash`, `token_hash`) sont transférés ; les secrets en clair n'existent
   pas en base.
@@ -315,3 +359,5 @@ ou réutilisé avec `--force`.
 | `fichier temporaire déjà existant` | migration précédente interrompue | supprimer `<to>.tmp` ou `--force` |
 | `la source et la cible désignent le même fichier` | `--from` = `--to` | utiliser un chemin cible distinct |
 | `échantillon incohérent` / `somme incohérente` | bug de mapping ou base modifiée pendant la migration | ne pas ouvrir la cible ; relancer sur une source au repos et signaler |
+| `registre sqlx absent` / `registre sqlx incohérent` | cible produite par une version du migrateur antérieure au registre, table modifiée à la main, ou checksum ne correspondant pas à la migration `0001_init` courante | ne pas démarrer le serveur sur cette cible ; relancer `migrate-legacy` avec le migrateur à jour vers un chemin neuf |
+| au démarrage : `table app_metadata already exists` | la cible n'avait pas de registre sqlx : `Db::open` a rejoué `0001_init` | restaurer/relancer la migration avec le migrateur à jour (registre vérifié avant renommage) |

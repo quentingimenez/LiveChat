@@ -70,12 +70,11 @@ pub fn ytdlp_dump_args(canonical_url: &str) -> Vec<String> {
 
 /// Résout une vidéo YouTube.
 pub async fn resolve_youtube(
-    client: &reqwest::Client,
     source: &MediaSource,
     config: &MediaConfig,
 ) -> MediaResult<ResolvedMedia> {
     let canonical_url = source.canonical_url.clone();
-    let oembed_result = fetch_oembed(client, &canonical_url, config).await;
+    let oembed_result = fetch_oembed(&canonical_url, config).await;
     if let Ok(payload) = oembed_result {
         let mut resolved = ResolvedMedia {
             source_kind: SourceKind::YouTube,
@@ -144,13 +143,9 @@ pub fn parse_ytdlp_dump(json: &str) -> MediaResult<YoutubeMetadata> {
     Ok(metadata)
 }
 
-async fn fetch_oembed(
-    client: &reqwest::Client,
-    canonical_url: &str,
-    config: &MediaConfig,
-) -> MediaResult<YoutubeOEmbed> {
+async fn fetch_oembed(canonical_url: &str, config: &MediaConfig) -> MediaResult<YoutubeOEmbed> {
     let url = build_oembed_url(&config.resolve.youtube_oembed_endpoint, canonical_url);
-    http::get_json(client, &url, config.resolve.oembed_timeout).await
+    http::get_json(&config.download, &url, config.resolve.oembed_timeout).await
 }
 
 fn separator(endpoint: &str) -> &'static str {

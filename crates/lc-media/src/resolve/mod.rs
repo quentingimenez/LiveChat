@@ -90,14 +90,13 @@ impl ResolvedMedia {
 
 /// Résout les métadonnées d'une source selon sa nature.
 pub async fn resolve_media(
-    client: &reqwest::Client,
-    source: &MediaSource,
     config: &MediaConfig,
+    source: &MediaSource,
 ) -> MediaResult<ResolvedMedia> {
     match source.source_kind {
-        SourceKind::YouTube => youtube::resolve_youtube(client, source, config).await,
-        SourceKind::TikTok => tiktok::resolve_tiktok(client, source, config).await,
-        SourceKind::Twitter => twitter::resolve_tweet(client, source, config).await,
+        SourceKind::YouTube => youtube::resolve_youtube(source, config).await,
+        SourceKind::TikTok => tiktok::resolve_tiktok(source, config).await,
+        SourceKind::Twitter => twitter::resolve_tweet(source, config).await,
         _ => Ok(ResolvedMedia::from_source(source)),
     }
 }

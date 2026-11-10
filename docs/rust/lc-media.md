@@ -6,7 +6,7 @@ Elle produit un [`NormalizedMedia`] (chemin sur disque + métadonnées) que la c
 persistance (`lc-db`, Phase 5b) enregistre ensuite comme `MediaAsset`.
 
 - Pas d'accès SQL, pas d'état global : toutes les fonctions reçoivent leur configuration
-  (`MediaConfig`) et un client HTTP (`reqwest::Client`).
+  (`MediaConfig`) ; tout accès réseau passe par la garde SSRF/LFI (`guard`) décrite plus bas.
 - Aucun `unwrap`/`expect`/`panic`/`dbg` hors tests (lints workspace, `-D warnings`).
 - Les binaires externes (`ffmpeg`, `ffprobe`, `yt-dlp`) sont configurables et jamais
   invoqués dans les tests par défaut.
@@ -16,12 +16,13 @@ persistance (`lc-db`, Phase 5b) enregistre ensuite comme `MediaAsset`.
 ```
 URL brute
    │  source::resolve_source            (normalisation URL, hash SHA-256, offset YouTube)
+   │  source::validate_ingest_source    (allowlist http/https + refus IP internes)
    ▼
 MediaSource
    │  resolve::resolve_media            (oEmbed / yt-dlp --dump-json / syndication X / HTML TikTok)
    ▼
 ResolvedMedia  (titre, auteur, dimensions, kind, carte tweet, URL média directe)
-   │  download::download_source         (HTTP streaming borné, ou yt-dlp, ou fichiers locaux)
+   │  download::download_source         (HTTP streaming borné + garde SSRF, ou yt-dlp)
    ▼
 DownloadResult (fichier temporaire + kind/mime devinés)
    │  transcode::normalize_downloaded_media (probe ffprobe → copie ou transcodage ffmpeg)
@@ -88,6 +89,33 @@ propre à chaque ingestion.
 Les valeurs invalides retombent sur le défaut avec un `tracing::warn` ; les minimas sont
 forcés (1 h de TTL, 1 Mo, 1 ms, 1 ingestion, 1 fragment).
 
+### Garde SSRF/LFI (`guard`)
+
+Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête réseau
+(résolutions oEmbed, téléchargements, yt-dlp, redirections) et à la pré-validation REST :
+
+- `parse_media_url(raw)` : allowlist stricte `http`/`https` ; refus de `file:`, `gtts:`,
+  `ftp:`, `data:`, `javascript:`, des chemins UNC (`\\host\share`, `//host/share`) et des
+  URL avec identifiants intégrés (`user:pass@`). Erreur `UNSUPPORTED_SOURCE`.
+- `ip_block_reason(ip)` : refuse loopback, non spécifiée, RFC1918, lien-local
+  (169.254/16, métadonnées cloud), multicast, broadcast, 0.0.0.0/8, CGNAT
+  (100.64/10), documentation, benchmarking (198.18/15), réservé 240/4 ; côté IPv6 : `::1`,
+  `::`, multicast, ULA `fc00::/7`, lien-local `fe80::/10`, documentation `2001:db8::/32`
+  et adresses IPv4-mapped reclassées.
+- `validate_target(raw) -> ValidatedTarget { url, host, port, addrs }` : résout l'hôte
+  (`tokio::net::lookup_host`) **avant** connexion, refuse si **au moins une** adresse
+  résolue est interne, déduplique les `SocketAddr`. Erreur `UNSUPPORTED_SOURCE` (cible
+  refusée) ou `DOWNLOAD_FAILED` (résolution impossible).
+- `build_pinned_client(config, target)` : client `reqwest` avec redirections désactivées,
+  `no_proxy()` et `resolve(host, ip)` par adresse validée → la connexion se fait sur
+  **l'IP validée** (anti-rebinding DNS).
+- `resolve_redirect(current, location)` : jointure relative, allowlist de schéma ;
+  `http::send_guarded` suit au maximum `MAX_REDIRECTS = 3` sauts et revalide
+  schéma + hôte + IP à chaque saut. Les en-têtes ne sont propagés que vers le même hôte,
+  sauf allowlist (`accept`, `accept-language`, `range`, `referer`).
+- `http::get_text` / `get_json` bornent les corps texte (4 Mio) et les corps d'erreur
+  (8 Kio) ; `resolve_short_url` (URLs courtes TikTok) passe aussi par la garde.
+
 ### Sources (`source`)
 
 - `SourceKind` : `YouTube`, `TikTok`, `Twitter`, `DirectMedia`, `LocalFile`, `Gtts`,
@@ -100,12 +128,17 @@ forcés (1 h de TTL, 1 Mo, 1 ms, 1 ingestion, 1 fragment).
 - `parse_youtube_start_offset(url)` : `t`/`start` en query ou fragment, formats
   `123`, `123s`, `mm:ss`, `hh:mm:ss`, `1h2m3s`.
 - `kind_from_url` / `kind_from_mime` / `extension_from_mime` / `mime_from_extension`.
-- `resolve_source(client, raw, config)` : suit les redirections TikTok courtes
-  (`vm.tiktok.com`, `vt.tiktok.com`, …) avant de canonicaliser.
+- `validate_ingest_source(raw) -> MediaResult<MediaSource>` : validation complète d'une
+  source d'ingestion — canonicalisation, classification, refus de `file:`/`gtts:`/inconnu
+  et `guard::validate_target` sur l'URL canonique. **Aucune connexion** n'est ouverte pour
+  une cible interne.
+- `resolve_source(config, raw)` : suit les redirections TikTok courtes
+  (`vm.tiktok.com`, `vt.tiktok.com`, …) via `http::resolve_short_url`, puis passe par
+  `validate_ingest_source`.
 
 ### Résolution (`resolve`)
 
-`resolve_media(client, source, config) -> MediaResult<ResolvedMedia>`.
+`resolve_media(config, source) -> MediaResult<ResolvedMedia>`.
 
 - YouTube : oEmbed (titre/auteur/dimensions) puis repli `yt-dlp --dump-json`.
 - TikTok : oEmbed puis scraping de la page (`__UNIVERSAL_DATA_FOR_REHYDRATION__`,
@@ -118,13 +151,17 @@ forcés (1 h de TTL, 1 Mo, 1 ms, 1 ingestion, 1 fragment).
 
 ### Téléchargement (`download`)
 
-- `download_source(client, source, resolved, config, temp_dir)` : dispatch par type de
-  source (YouTube, TikTok, Twitter, fichier local, HTTP direct).
-- HTTP streaming : `reqwest` rustls, timeout global, plafond 2 Gio compté au fil de l'eau,
+- `download_source(source, resolved, config, temp_dir)` : dispatch par type de source
+  (YouTube, TikTok, Twitter, HTTP direct) après validation de la cible ; les sources
+  `file:`/`gtts:` sont **refusées** (`UNSUPPORTED_SOURCE`) — l'ancien `download_local`
+  a été supprimé avec la garde LFI.
+- HTTP streaming : `reqwest` rustls via `http::send_guarded` (garde SSRF, redirections
+  manuelles max 3, corps borné), timeout global, plafond 2 Gio compté au fil de l'eau,
   sniffing des 32 premiers octets, rejet des réponses HTML (`UNSUPPORTED_SOURCE`).
-- `yt-dlp` : format avc1/mp4 borné à 1080p, `--max-filesize`, fusion mp4, cookies TikTok
-  générés au format Netscape ; sur YouTube, un échec auth/bot rejoue avec
-  `youtube:player_client=android` et un échec de format rejoue avec un sélecteur relâché.
+- `yt-dlp` : la cible est validée (schéma + hôte + IP) avant tout lancement ; format
+  avc1/mp4 borné à 1080p, `--max-filesize`, fusion mp4, cookies TikTok générés au format
+  Netscape ; sur YouTube, un échec auth/bot rejoue avec `youtube:player_client=android` et
+  un échec de format rejoue avec un sélecteur relâché.
 - `download_tiktok` : vidéo d'abord, puis carrousel photo (assemblage ffmpeg en 9:16),
   remontée prioritaire des erreurs `FILE_TOO_LARGE` / `PRIVATE_OR_AUTH_REQUIRED`.
 - `DownloadResult { path, kind, mime, size_bytes, source_url }`.
@@ -164,9 +201,8 @@ video_codec, audio_codec, pixel_format, has_video, has_audio }`, plus
 
 ### Ingestion (`ingest`)
 
-- `MediaPipeline::new(config)` / `from_parts(config, client)` puis
-  `ingest_url(raw)` ou `ingest_source(&MediaSource)` → `IngestedMedia { source, resolved,
-  download, normalized }`.
+- `MediaPipeline::new(config)` puis `ingest_url(raw)` ou `ingest_source(&MediaSource)` →
+  `IngestedMedia { source, resolved, download, normalized }`.
 - `IngestLimiter` (sémaphore) borne les ingestions simultanées.
 - En cas d'échec, l'erreur `MediaError` remonte avec le code legacy ; Phase 5b la
   persiste en `[CODE] message` sur l'asset FAILED.
@@ -187,14 +223,28 @@ video_codec, audio_codec, pixel_format, has_video, has_audio }`, plus
   dans le legacy mais peut manquer de nouvelles clés.
 - Détection de statut HTTP insensible à la casse (corrige un écart legacy où
   `HTTP/1.1 503` n'était pas reconnu quand la casse différait).
+- **Durcissement sécurité assumé (P0-1, task-35)** : le legacy acceptait `file:` (lecture de
+  fichiers locaux), les URL `http(s)` vers loopback/RFC1918/métadonnées cloud et suivait les
+  redirections sans revalidation. La crate refuse désormais ces cibles
+  (`UNSUPPORTED_SOURCE`), résout le DNS avant connexion, se connecte à l'IP validée
+  (anti-rebinding) et revalide chaque saut de redirection (max 3). Le serveur pré-valide la
+  source dans `POST /ingest` **avant** toute création d'asset (`media_ingestion_failed`
+  422, même format que le pipeline) ; le meme board est protégé indirectement via
+  `MediaPipeline`. Ce refus est un changement de comportement voulu, pas une régression
+  de parité.
 
 ## Tests
 
-- 105 tests unitaires dans la crate (URL/hash, résolution offline sur fixtures, parsing
-  HTML/JSON, arguments ffmpeg, décisions de copie, éviction LRU, configuration, erreurs).
+- 112 tests unitaires dans la crate (URL/hash, résolution offline sur fixtures, parsing
+  HTML/JSON, arguments ffmpeg, décisions de copie, éviction LRU, configuration, erreurs,
+  garde SSRF : schémas/UNC, plages IPv4/IPv6, redirections).
 - `tests/offline.rs` : 7 tests sur fixtures (`tiktok_video.html`, `tiktok_photo.html`,
   `twitter_syndication.json`, `yt_dlp_dump.json`, `youtube_oembed.json`,
   `tiktok_oembed.json`).
+- `tests/ssrf_guard.rs` : 5 tests d'intégration sans réseau — refus loopback **avant toute
+  connexion** (sentinelle `TcpListener` + `accept()`/`WouldBlock`), schémas/UNC refusés,
+  redirection interne refusée, IP publique littérale acceptée sans DNS, plages
+  privées/métadonnées refusées.
 - `tests/network.rs` : 4 tests marqués `#[ignore]` (YouTube e2e, TikTok en ligne, carte
   tweet, échantillon `testsrc` ffmpeg) ; ils nécessitent réseau + `ffmpeg`/`yt-dlp`.
 

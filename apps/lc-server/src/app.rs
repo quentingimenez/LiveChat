@@ -9,7 +9,8 @@
 //! 1. `SetRequestIdLayer` / `PropagateRequestIdLayer` : `x-request-id` généré ou
 //!    repris, propagé au client ;
 //! 2. `TraceLayer` : journalisation corrélée (sans journaliser les en-têtes, pour
-//!    ne jamais logguer `Authorization` / `Cookie`) ;
+//!    ne jamais logguer `Authorization` / `Cookie`, ni la query string : seul le
+//!    chemin est journalisé, cf. AUD-COR-05) ;
 //! 3. en-têtes de sécurité (CSP, `nosniff`, `frame-ancestors`…) ;
 //! 4. CORS explicite ;
 //! 5. compression gzip ;
@@ -38,11 +39,14 @@
 //! un échec explicite qu'un serveur qui perd silencieusement les données.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context as _;
-use axum::extract::DefaultBodyLimit;
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{header, Extensions, HeaderMap, StatusCode, Version};
-use axum::middleware;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use axum::Router;
 use chrono::{DateTime, Utc};
 use lc_db::{Db, DbConfig};
@@ -61,6 +65,48 @@ use crate::shutdown::Shutdown;
 
 /// Limite de taille du corps des requêtes (1 Mio, défaut Fastify du legacy).
 pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+
+/// Timeout par requête des routes non-streaming (AUD-COR-06).
+///
+/// Les routes suivantes en sont exclues car leur durée dépasse volontairement
+/// un budget court de requête :
+///
+/// - `/ws` : WebSocket de longue durée (liveness bornée par le hub) ;
+/// - `/overlay/media/` : streaming média `Range`/`206` ;
+/// - `/overlay/meme-board/` : ingestion média synchrone et aperçus ;
+/// - `/ingest` : ingestion média synchrone bornée par `MEDIA_DOWNLOAD_TIMEOUT_MS`.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Indique si une route est exemptée du timeout global de requête.
+fn is_timeout_exempt(path: &str) -> bool {
+    path == "/ws"
+        || path.starts_with("/overlay/media/")
+        || path.starts_with("/overlay/meme-board/")
+        || path.starts_with("/ingest")
+}
+
+/// Middleware de timeout de requête (jamais appliqué aux routes exemptées).
+///
+/// Le timeout couvre aussi la lecture du corps : les extracteurs s'exécutent
+/// dans le futur du handler, donc un client lent (slowloris applicatif) est
+/// interrompu au bout de [`REQUEST_TIMEOUT`].
+async fn enforce_timeout(
+    State(timeout): State<Duration>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if is_timeout_exempt(request.uri().path()) {
+        return next.run(request).await;
+    }
+    match tokio::time::timeout(timeout, next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => (
+            StatusCode::REQUEST_TIMEOUT,
+            Json(serde_json::json!({ "error": "request_timeout" })),
+        )
+            .into_response(),
+    }
+}
 
 /// État partagé par tous les handlers (cloneable, sans intérieur mutable
 /// directement accessible).
@@ -203,6 +249,10 @@ pub fn router_with_hub(state: AppState, hub: Arc<crate::ws::Hub>) -> Router {
             rate_limit,
             http::rate_limit::enforce,
         ))
+        .layer(middleware::from_fn_with_state(
+            REQUEST_TIMEOUT,
+            enforce_timeout,
+        ))
         .layer(middleware::from_fn(http::error::normalize_errors))
         .layer(
             CompressionLayer::new()
@@ -220,6 +270,10 @@ pub fn router_with_hub(state: AppState, hub: Arc<crate::ws::Hub>) -> Router {
 ///
 /// Les en-têtes ne sont volontairement pas inclus (`include_headers = false`) :
 /// journaliser tous les en-têtes exposerait `Authorization`/`Cookie`.
+///
+/// Seul le **chemin** est journalisé : `request.uri()` contiendrait la query
+/// string (`?token=...`, codes d'appairage…) qui finirait en clair dans les
+/// journaux (AUD-COR-05).
 fn make_span(request: &axum::http::Request<axum::body::Body>) -> Span {
     let request_id = request
         .headers()
@@ -229,9 +283,14 @@ fn make_span(request: &axum::http::Request<axum::body::Body>) -> Span {
     tracing::info_span!(
         "http_request",
         method = %request.method(),
-        uri = %request.uri(),
+        path = %request_path(request.uri()),
         request_id = %request_id
     )
+}
+
+/// Chemin seul d'une URI (sans query string ni fragment), pour journalisation.
+fn request_path(uri: &axum::http::Uri) -> &str {
+    uri.path()
 }
 
 #[cfg(test)]
@@ -468,7 +527,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limit_blocks_after_100_requests_and_exempts_admin() {
+    async fn rate_limit_applique_les_routes_admin() {
         let app = router(state());
         for index in 0..RATE_LIMIT_MAX {
             let (status, _, _) = send(
@@ -489,14 +548,55 @@ mod tests {
         assert_eq!(headers.get("x-ratelimit-remaining").unwrap(), "0");
         assert!(headers.get(header::RETRY_AFTER).is_some());
 
-        // `/admin*` est exempté : la requête atteint le routeur admin (308 vers
-        // `/admin/`), pas le 429.
-        let (status, _, _) = send(
+        // `/admin*` n'est plus exempté (AUD-COR-10) : la requête est limitée
+        // comme les autres et reçoit 429, pas la redirection 308 du panneau.
+        let (status, headers, body) = send(
             &app,
             from_client(request(Method::GET, "/admin"), [203, 0, 113, 10]),
         )
         .await;
-        assert_eq!(status, StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(body, serde_json::json!({ "error": "request_error" }));
+        assert!(headers.get(header::RETRY_AFTER).is_some());
+    }
+
+    #[test]
+    fn journalisation_ignore_la_query_string() {
+        let uri: axum::http::Uri = "/admin/api/overview?token=SECRET"
+            .parse()
+            .expect("URI valide");
+        assert_eq!(request_path(&uri), "/admin/api/overview");
+    }
+
+    #[tokio::test]
+    async fn request_timeout_returns_408_but_exempts_streaming_routes() {
+        async fn slow() -> &'static str {
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+            "ok"
+        }
+        let app = Router::new()
+            .route("/slow", axum::routing::get(slow))
+            .route("/overlay/media/abc", axum::routing::get(slow))
+            .route("/ingest", axum::routing::post(slow))
+            .layer(middleware::from_fn_with_state(
+                std::time::Duration::from_millis(20),
+                enforce_timeout,
+            ));
+
+        let (status, _, body) = send(&app, request(Method::GET, "/slow")).await;
+        assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(body, serde_json::json!({ "error": "request_timeout" }));
+
+        // Routes exemptées : le timeout ne s'applique pas.
+        for path in ["/overlay/media/abc", "/ingest"] {
+            let method = if path == "/ingest" {
+                Method::POST
+            } else {
+                Method::GET
+            };
+            let (status, _, _) = send(&app, request(method, path)).await;
+            assert_eq!(status, StatusCode::OK, "route exemptée {path}");
+        }
     }
 
     #[tokio::test]

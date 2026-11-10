@@ -32,6 +32,7 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
@@ -39,7 +40,7 @@ use crate::app::AppState;
 use crate::config::Config;
 use crate::shutdown::Shutdown;
 
-use super::hub::{self, Hub, MAX_PEERS};
+use super::hub::{self, Hub, MAX_PEERS, MAX_SOCKETS_PER_CLIENT, MAX_SOCKETS_PER_GUILD};
 use super::router_with_hub;
 
 /// Client WebSocket de test.
@@ -47,6 +48,7 @@ type WsClient = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// En-tête de la fixture `hello` (identifiants stables des tests).
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const TOKEN_B: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 const APP_VERSION: &str = "3.0.0";
 const GUILD_ID: &str = "123456789012345678";
 const TS: i64 = 1_700_000_000_000;
@@ -210,6 +212,48 @@ async fn handshake_full(socket: &mut WsClient, token: &str) -> Handshake {
 /// Variante ne retournant que le `welcome`.
 async fn handshake(socket: &mut WsClient, token: &str) -> Value {
     handshake_full(socket, token).await.welcome
+}
+
+/// Ouvre une connexion WebSocket cliente avec un en-tête `Origin` explicite.
+async fn connect_with_origin(addr: SocketAddr, origin: &str) -> WsClient {
+    let url = format!("ws://{addr}/ws");
+    let mut request = url
+        .as_str()
+        .into_client_request()
+        .expect("requête WebSocket");
+    request.headers_mut().insert(
+        axum::http::HeaderName::from_static("origin"),
+        origin.parse().expect("valeur d'en-tête Origin"),
+    );
+    let (socket, _response) = connect_async(request)
+        .await
+        .expect("connexion WebSocket avec Origin");
+    socket
+}
+
+/// Attend la fermeture et vérifie le code **et** la raison.
+async fn expect_close_with_reason(socket: &mut WsClient, expected: u16, expected_reason: &str) {
+    loop {
+        let message = timeout(Duration::from_secs(5), socket.next())
+            .await
+            .expect("timeout d'attente de la fermeture")
+            .expect("flux terminé sans trame de fermeture")
+            .expect("trame WebSocket invalide");
+        match message {
+            Message::Close(Some(frame)) => {
+                let code: u16 = frame.code.into();
+                assert_eq!(
+                    code, expected,
+                    "code de fermeture inattendu (raison: {})",
+                    frame.reason
+                );
+                assert_eq!(frame.reason.to_string(), expected_reason);
+                return;
+            }
+            Message::Close(None) => panic!("fermeture sans code"),
+            _ => continue,
+        }
+    }
 }
 
 /// Attend une trame de fermeture et vérifie son code.
@@ -921,4 +965,308 @@ fn playback_state_event_and_stop_payload_shapes_match_the_protocol() {
     let json = serde_json::to_value(&request).expect("sérialisation");
     assert_eq!(json["source"], "admin");
     assert_eq!(json["jobId"], "job");
+}
+
+// ---------------------------------------------------------------------------
+// COR-06 : Origin allowlist et plafonds de sockets
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn origin_tauri_localhost_is_allowed() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let mut socket = connect_with_origin(server.addr, "http://tauri.localhost").await;
+    let welcome = handshake(&mut socket, TOKEN).await;
+    assert_eq!(welcome["payload"]["protocolVersion"], 2);
+}
+
+#[tokio::test]
+async fn unknown_origin_is_closed_with_1008() {
+    let server = start_server().await;
+    let mut socket = connect_with_origin(server.addr, "https://evil.example").await;
+    expect_close_with_reason(&mut socket, 1008, "origin_not_allowed").await;
+}
+
+#[tokio::test]
+async fn too_many_sockets_per_client_are_rejected_with_4409() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    let client = seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let mut sockets = Vec::new();
+    for _ in 0..MAX_SOCKETS_PER_CLIENT {
+        let mut socket = connect(server.addr).await;
+        let welcome = handshake(&mut socket, TOKEN).await;
+        assert_eq!(welcome["payload"]["clientId"], client.to_canonical());
+        sockets.push(socket);
+    }
+    let mut fourth = connect(server.addr).await;
+    send_hello(&mut fourth, TOKEN, APP_VERSION).await;
+    expect_close_with_reason(
+        &mut fourth,
+        close_code::RATE_LIMITED,
+        "too_many_connections",
+    )
+    .await;
+    drop(sockets.pop());
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let mut reconnected = connect(server.addr).await;
+    let _welcome = handshake(&mut reconnected, TOKEN).await;
+}
+
+#[tokio::test]
+async fn socket_caps_are_enforced_unit() {
+    let hub = Hub::new();
+    let guild = guild_id();
+    let client = OverlayClientId::new_v4();
+    for _ in 0..MAX_SOCKETS_PER_CLIENT {
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        hub.register(
+            guild.clone(),
+            client,
+            client.to_canonical(),
+            "board".to_owned(),
+            lc_protocol::SessionMode::Normal,
+            None,
+            None,
+            sender,
+        )
+        .expect("sous le plafond client");
+    }
+    let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    assert_eq!(
+        hub.register(
+            guild,
+            client,
+            client.to_canonical(),
+            "board".to_owned(),
+            lc_protocol::SessionMode::Normal,
+            None,
+            None,
+            sender,
+        ),
+        Err(hub::RegisterError::ClientLimit)
+    );
+
+    let other_guild = GuildId::parse("123456789012345679").expect("guilde de test");
+    for _ in 0..MAX_SOCKETS_PER_GUILD {
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        hub.register(
+            other_guild.clone(),
+            OverlayClientId::new_v4(),
+            "client".to_owned(),
+            "board".to_owned(),
+            lc_protocol::SessionMode::Normal,
+            None,
+            None,
+            sender,
+        )
+        .expect("sous le plafond guilde");
+    }
+    let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    assert_eq!(
+        hub.register(
+            other_guild,
+            OverlayClientId::new_v4(),
+            "client".to_owned(),
+            "board".to_owned(),
+            lc_protocol::SessionMode::Normal,
+            None,
+            None,
+            sender,
+        ),
+        Err(hub::RegisterError::GuildLimit)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// COR-07 : jobs texte-seul, révocation et purge
+// ---------------------------------------------------------------------------
+
+/// Construit un job sans média (texte/tweet-card uniquement).
+fn text_only_job(guild_id: &GuildId, status: JobStatus) -> PlaybackJob {
+    PlaybackJob {
+        id: PlaybackJobId::new_v4(),
+        guild_id: guild_id.clone(),
+        media_asset_id: None,
+        text: Some("mème sans média".to_owned()),
+        show_text: true,
+        author_name: Some("Auteur".to_owned()),
+        author_image: None,
+        duration_sec: 5,
+        priority: 0,
+        status,
+        resumes_after_job_id: None,
+        resume_offset_sec: 0,
+        remaining_ms_snapshot: None,
+        last_playback_state_at: None,
+        submission_date: now(),
+        execution_date: now(),
+        scheduled_at: now(),
+        started_at: if status == JobStatus::Playing {
+            // Horloge réelle : un `started_at` figé dans le passé (TS) serait
+            // libéré par le watchdog « stale » du moteur au bootstrap.
+            Some(Utc::now())
+        } else {
+            None
+        },
+        finished_at: None,
+    }
+}
+
+#[tokio::test]
+async fn text_only_job_is_played_and_marked_playing() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let mut socket = connect(server.addr).await;
+    let _welcome = handshake(&mut socket, TOKEN).await;
+
+    let job = text_only_job(&guild, JobStatus::Pending);
+    let job_id = job.id;
+    let engine = server.hub.engine().expect("moteur initialisé au hello");
+    engine
+        .enqueue(&job)
+        .await
+        .expect("enqueue du job texte-seul");
+
+    let play = recv_until_type(&mut socket, "play").await;
+    assert_eq!(play["payload"]["jobId"], job_id.to_canonical());
+    assert!(
+        play["payload"]["media"].is_null(),
+        "un job texte-seul doit être émis sans média : {play}"
+    );
+    assert_eq!(play["payload"]["text"]["value"], "mème sans média");
+
+    let mut status = None;
+    for _ in 0..40 {
+        status = server
+            .db
+            .playback_jobs()
+            .get(job_id)
+            .await
+            .expect("lecture du job")
+            .map(|job| job.status);
+        if status == Some(JobStatus::Playing) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(status, Some(JobStatus::Playing));
+}
+
+#[tokio::test]
+async fn welcome_exposes_text_only_current_job() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let job = text_only_job(&guild, JobStatus::Playing);
+    server
+        .db
+        .playback_jobs()
+        .create(&job)
+        .await
+        .expect("job en cours");
+
+    let mut socket = connect(server.addr).await;
+    let welcome = handshake(&mut socket, TOKEN).await;
+    let current = &welcome["payload"]["currentJob"];
+    assert!(current.is_object(), "currentJob attendu : {welcome}");
+    assert_eq!(current["jobId"], job.id.to_canonical());
+    assert!(current["media"].is_null());
+    assert!(current["remainingMs"].as_u64().is_some());
+}
+
+#[tokio::test]
+async fn revocation_emits_stop_revoked_before_close_4402() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    let client_a = seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let _client_b =
+        seed_overlay_client(&server.db, &guild, TOKEN_B, OverlaySessionMode::Normal).await;
+    let asset = seed_media_asset(&server.db, 20).await;
+    let job_id = seed_job(
+        &server.db,
+        &guild,
+        asset,
+        20,
+        JobStatus::Playing,
+        Some(Utc::now()),
+    )
+    .await;
+    let mut socket_a = connect(server.addr).await;
+    let _welcome = handshake(&mut socket_a, TOKEN).await;
+    let mut socket_b = connect(server.addr).await;
+    let _welcome = handshake(&mut socket_b, TOKEN_B).await;
+
+    let closed = server
+        .hub
+        .close_client(&client_a.as_uuid(), close_code::REVOKED);
+    assert!(closed, "le client révoqué doit avoir des sockets ouverts");
+
+    let stop_a = recv_until_type(&mut socket_a, "stop").await;
+    assert_eq!(stop_a["payload"]["reason"], "revoked");
+    assert!(stop_a["payload"]["jobId"].is_null());
+    expect_close(&mut socket_a, close_code::REVOKED).await;
+
+    let stop_b = recv_until_type(&mut socket_b, "stop").await;
+    assert_eq!(stop_b["payload"]["reason"], "revoked");
+    assert!(stop_b["payload"]["jobId"].is_null());
+
+    let mut status = None;
+    for _ in 0..60 {
+        status = server
+            .db
+            .playback_jobs()
+            .get(job_id)
+            .await
+            .expect("lecture du job")
+            .map(|job| job.status);
+        if status == Some(JobStatus::Done) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(status, Some(JobStatus::Done));
+}
+
+#[tokio::test]
+async fn purge_stop_has_a_dedicated_reason() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset = seed_media_asset(&server.db, 20).await;
+    let job_id = seed_job(
+        &server.db,
+        &guild,
+        asset,
+        20,
+        JobStatus::Playing,
+        Some(Utc::now()),
+    )
+    .await;
+    let mut socket = connect(server.addr).await;
+    let _welcome = handshake(&mut socket, TOKEN).await;
+
+    let stopped = server.hub.broadcast_purge(&guild).await;
+    assert_eq!(stopped, 1, "un job PLAYING doit être arrêté par la purge");
+    let stop = recv_until_type(&mut socket, "stop").await;
+    assert_eq!(stop["payload"]["reason"], "purge");
+    assert!(stop["payload"]["jobId"].is_null());
+
+    let mut status = None;
+    for _ in 0..40 {
+        status = server
+            .db
+            .playback_jobs()
+            .get(job_id)
+            .await
+            .expect("lecture du job")
+            .map(|job| job.status);
+        if status == Some(JobStatus::Done) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(status, Some(JobStatus::Done));
 }

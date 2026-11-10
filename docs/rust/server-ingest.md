@@ -156,6 +156,42 @@ fois par processus (`OnceLock`), les appels suivants réutilisent l'instance. La
 limite `MEDIA_MAX_CONCURRENT_INGESTIONS` est donc globale au serveur, comme le
 legacy. Une base absente renvoie `Unavailable` → `503 ingest_unavailable`.
 
+`shared_pipeline_for_state(&AppState)` expose la même instance aux autres routes
+média : `POST /overlay/meme-board/items` l'utilise depuis task-42 (P1-09,
+AUD-A2-006/A4-007) au lieu d'instancier un `MediaPipeline::new` par requête. Le
+meme board partage donc le sémaphore global, le budget de cache
+(`quotas::enforce_cache_budget`), l'enregistrement `FAILED` et le client HTTP
+partagé (limites de connexions).
+
+### Confinement du stockage (fail-closed)
+
+Au démarrage (`lib.rs`), `media::ensure_storage_root(&config.media_storage_dir)`
+crée puis canonicalise `MEDIA_STORAGE_DIR` ; un chemin inutilisable (vide, fichier,
+permissions) fait échouer le démarrage avec un contexte explicite. Le pipeline
+refuse aussi de publier dans une racine non canonicalisable (`lc_media::storage::ensure_canonical`,
+`DOWNLOAD_FAILED`). À la lecture, `resolve_media_file` applique le confinement
+strict : si la racine ne peut plus être canonicalisée à chaud, l'accès est refusé
+en `404 media_not_found_on_disk` (plus de service fail-open hors racine — AUD-A2-003/A4-014).
+
+### Worker de purge (fichiers orphelins et assets périmés)
+
+`media::purge::spawn_purge_worker(&AppState)` démarre un worker `tokio` (première
+passe immédiate puis toutes les 10 min, `PURGE_INTERVAL`) si une base est
+configurée. Chaque passe `purge_once(db, storage, now)` :
+
+1. supprime les assets `FAILED` inactifs depuis plus de 1 h et `PROCESSING` depuis
+   plus de 2 h (`STALE_PROCESSING_TTL`/`FAILED_TTL` legacy, AUD-A4-008) — jamais
+   ceux épinglés par le meme board ou référencés par un job `PENDING`/`PLAYING`,
+   avec suppression du fichier associé ;
+2. évince les assets `READY` expirés via `quotas::purge_candidates` puis
+   `evict_source_hashes` (fichiers + lignes) ;
+3. scanne `MediaStorage::list_variants` : supprime les fichiers de transit
+   `.tmp-*` et les orphelins absents de la table `media_assets`, uniquement après
+   une grâce de 1 h (`ORPHAN_GRACE`) et si le fichier n'est pas plus récent.
+
+Ces opérations sont idempotentes et best-effort (un fichier déjà absent n'échoue
+pas la passe).
+
 ### Cycle des assets
 
 1. Cache hit : asset `READY`, non expiré, fichier présent sur disque
@@ -236,9 +272,10 @@ Le registre de hook est un `RwLock<Option<Arc<dyn IngestHook>>>` global
 `lc-media` lance les processus externes avec `kill_on_drop`. Le shutdown
 gracieux d'axum abandonne les handlers en cours : les futures d'ingestion sont
 droppées, donc les processus `ffmpeg`/`yt-dlp` sont tués et l'asset reste en
-`PROCESSING` (nettoyé par le purge worker de la Phase 6, comme le
-`STALE_PROCESSING_TTL` legacy de 2 h). Aucun endpoint de debug/shutdown n'est
-exposé.
+`PROCESSING` (nettoyé ensuite par le worker `media::purge` — task-42 — via
+`STALE_PROCESSING_TTL` de 2 h, comme le legacy). La publication du fichier étant
+atomique (transit `.tmp-*` + `rename`), aucune annulation ne laisse de média
+partiellement publié. Aucun endpoint de debug/shutdown n'est exposé.
 
 ## 9. Tests
 
@@ -256,6 +293,8 @@ exposé.
 | `media::board` | 3 | ajout+épinglage, idempotence, budget dépassé |
 | `media::jobs` | 5 | durées par défaut/guilde/explicite, image, offset riche |
 | `media::service` | 3 | cache hit sans réseau, échec pipeline → FAILED, source absente |
+| `media::confinement` | 2 | racine créée/canonicalisée idempotente, chemins vides/fichiers refusés |
+| `media::purge` | 3 | FAILED/PROCESSING périmés supprimés (fichier inclus), assets épinglés board conservés et READY expiré évincé, transit/orphelins supprimés seulement après la grâce |
 | `http::ingest::body` | 4 | normalisation, types, drapeaux, durées |
 | `http::ingest::auth` | 1 | parsing Bearer |
 | `http::ingest::pair` | 4 | succès + hash + code consommé, expiré/inconnu, scope invité, code absent |
@@ -275,7 +314,7 @@ Vérifications de la lane : `cargo fmt -p lc-server -- --check`,
 | Rich tweet card | résolution oEmbed + payload riche | **hors scope 3c** (Phase 6b) ; les URLs de tweet passent par le pipeline média standard |
 | `saveToBoard` | 201 board, pas de job | idem |
 | Réponse `/pair/consume` `apiBaseUrl` | `env.API_URL` | `api_url` validée, slash final retiré |
-| Purge worker cache | boucle toutes les 60 s | **non porté** : fonctions `purge_candidates`/`evict_source_hashes` prêtes, worker en Phase 6 |
+| Purge worker | boucle toutes les 60 s | worker `media::purge` toutes les 10 min (task-42) : FAILED > 1 h, PROCESSING > 2 h, READY expirés, transit `.tmp-*` et orphelins du storage après 1 h de grâce |
 | Corps JSON invalide | 400 Fastify (parsing avant handler) | `Option<Json>` → corps vide ; auth d'abord, donc un token invalide peut donner 401 avant 400 |
 | SQL direct | Prisma | `db.pool()` pour `mark_ready` et l'éviction (repositories lc-db incomplets) |
 
@@ -292,7 +331,9 @@ Vérifications de la lane : `cargo fmt -p lc-server -- --check`,
   dans les repositories `lc-db`. À promouvoir en méthodes de repository
   (`MediaAssetsRepository`) une fois l'API stabilisée, puis supprimer les requêtes
   ad hoc de `src/media` (décision Lead : accepté temporairement, dette tracée).
-- **Lignes `PROCESSING` orphelines** après crash/arrêt : purge worker Phase 6.
+- **Lignes `PROCESSING` orphelines** après crash/arrêt : purge worker Phase 6 —
+  implémenté en task-42 (`media::purge`, TTL 2 h), avec purge des `FAILED` > 1 h et
+  des fichiers orphelins/transit.
 - **Comptage « actif »** par SQL direct sur `playback_jobs` : à consolider si
   `lc-db` expose un jour la requête.
 - **Rich tweet card** et **offset média** : la Phase 6b devra étendre

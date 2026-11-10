@@ -72,6 +72,20 @@ impl DbError {
             _ => false,
         }
     }
+
+    /// `true` si l'erreur est un verrou SQLite transitoire (`SQLITE_BUSY` ou
+    /// `SQLITE_LOCKED`).
+    ///
+    /// Ces erreurs ne sont pas définitives : une autre connexion (autre
+    /// processus, migrateur, sauvegarde) peut tenir le verrou d'écriture plus
+    /// longtemps que `busy_timeout`. L'appelant peut alors réessayer avec un
+    /// backoff borné, par exemple via [`crate::with_busy_retry`].
+    pub fn is_busy(&self) -> bool {
+        match self {
+            Self::Sqlx(error) => is_busy(error),
+            _ => false,
+        }
+    }
 }
 
 fn database_message(error: &sqlx::Error) -> Option<&str> {
@@ -97,6 +111,20 @@ pub(crate) fn is_foreign_key_violation(error: &sqlx::Error) -> bool {
 /// `true` si `error` est une violation de contrainte `CHECK` SQLite.
 pub(crate) fn is_check_violation(error: &sqlx::Error) -> bool {
     database_message(error).is_some_and(|message| message.contains("CHECK constraint failed"))
+}
+
+/// `true` si `error` est un verrou SQLite transitoire.
+///
+/// SQLite ne fournit pas de code stable via `sqlx::Error` (`DatabaseError::code`
+/// vaut le code étendu, variable selon la version) : on reconnaît les messages
+/// documentés par SQLite, qui sont stables et non localisés.
+pub(crate) fn is_busy(error: &sqlx::Error) -> bool {
+    database_message(error).is_some_and(|message| {
+        message.contains("database is locked")
+            || message.contains("database table is locked")
+            || message.contains("database schema is locked")
+            || message.contains("database is busy")
+    })
 }
 
 /// Traduit une violation d'unicité en [`DomainError::Conflict`], laisse passer

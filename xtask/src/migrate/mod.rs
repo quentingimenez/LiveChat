@@ -7,6 +7,11 @@
 //! `<to>`. Un échec à n'importe quelle étape laisse la source intacte et supprime
 //! le temporaire : aucun fichier final n'est créé.
 //!
+//! Récupération : si un crash a laissé une sauvegarde `<to>.old` sans `<to>`
+//! (fenêtre entre les deux renommages de l'installation), elle est restaurée en
+//! `<to>` au démarrage du migrateur ; sans `--force`, l'outil s'arrête ensuite
+//! avec un message explicite pour que l'opérateur relance la migration.
+//!
 //! La base legacy n'est jamais modifiée (connexion `read_only` + `query_only`),
 //! et la cible n'est écrite qu'après lecture complète en mémoire : la migration
 //! est rejouable depuis la source d'origine.
@@ -126,6 +131,12 @@ pub enum Error {
     OrphanForeignKeys { detail: String },
     #[error("cible déjà existante : {0} (utiliser --force pour la remplacer)")]
     TargetExists(PathBuf),
+    #[error(
+        "sauvegarde orpheline restaurée : {backup} -> {target}\n  \
+         un crash a laissé `<to>.old` sans `<to>` ; la sauvegarde a été remise en place. \
+         Relancer avec --force pour migrer par-dessus, ou supprimer {target} pour annuler"
+    )]
+    BackupRestored { target: PathBuf, backup: PathBuf },
     #[error("la source et la cible désignent le même fichier : {0}")]
     SameSourceAndTarget(PathBuf),
     #[error("fichier temporaire déjà existant : {0} (le supprimer ou utiliser --force)")]
@@ -179,6 +190,7 @@ pub async fn execute(options: &Options) -> Result<(), Error> {
         options.from.display(),
         options.to.display()
     );
+    recover_orphan_backup(options)?;
     validate_paths(options)?;
 
     let source = legacy::source_meta(&options.from)?;
@@ -282,6 +294,60 @@ async fn run(
         "migration terminée en {:.2} s",
         started.elapsed().as_secs_f64()
     );
+    Ok(())
+}
+
+/// Récupère une sauvegarde `<to>.old` orpheline laissée par un crash entre les
+/// deux renommages de [`target::install`] (AUD-A5-003).
+///
+/// - `<to>` absent + `<to>.old` présent → la sauvegarde est restaurée en `<to>`
+///   (rename atomique) ; sans `--force`, on s'arrête avec un message explicite
+///   pour que l'opérateur relance la migration en connaissance de cause ;
+/// - `<to>` présent + `<to>.old` présent → sauvegarde orpheline seulement
+///   signalée, jamais supprimée automatiquement (elle peut être la dernière
+///   copie saine de la cible) ;
+/// - `--dry-run` ne renomme rien : il annonce seulement la restauration qui
+///   aurait lieu.
+fn recover_orphan_backup(options: &Options) -> Result<(), Error> {
+    // La validation de la source (erreurs `LegacyNotFound`/`SourceIsNotFile`)
+    // appartient à `validate_paths` : ne rien toucher tant qu'elle n'est pas
+    // lisible, pour que le diagnostic reste celui de la source.
+    if !options.from.is_file() {
+        return Ok(());
+    }
+    let backup = append_suffix(&options.to, ".old");
+    if !backup.exists() {
+        return Ok(());
+    }
+    if options.to.exists() {
+        println!(
+            "  .old    : sauvegarde orpheline conservée ({}) — la cible existe déjà",
+            backup.display()
+        );
+        return Ok(());
+    }
+    if options.dry_run {
+        println!(
+            "  .old    : cible absente — la sauvegarde {} serait restaurée au prochain \
+             lancement réel",
+            backup.display()
+        );
+        return Ok(());
+    }
+
+    println!(
+        "  .old    : cible absente — restauration de la sauvegarde {} en {}",
+        backup.display(),
+        options.to.display()
+    );
+    std::fs::rename(&backup, &options.to)?;
+    if !options.force {
+        return Err(Error::BackupRestored {
+            target: options.to.clone(),
+            backup,
+        });
+    }
+    println!("  .old    : sauvegarde restaurée ; migration --force poursuivie");
     Ok(())
 }
 

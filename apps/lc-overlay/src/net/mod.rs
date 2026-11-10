@@ -6,6 +6,7 @@
 //! - [`pairing`] : appairage HTTP (`POST {serverUrl}/overlay/pair/consume`).
 
 pub mod pairing;
+mod tls;
 pub mod ws;
 
 pub use pairing::{consume as consume_pairing, PairingOutcome, PairingRequest};

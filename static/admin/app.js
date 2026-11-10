@@ -124,46 +124,20 @@ const setStatus = (message, kind) => {
   element.textContent = message;
 };
 
-const syncTokenInUrl = (token) => {
-  const url = new URL(window.location.href);
-  const normalized = String(token || '').trim();
-
-  if (normalized) {
-    url.searchParams.set('token', normalized);
-  } else {
-    url.searchParams.delete('token');
-  }
-
-  window.history.replaceState({}, '', url.toString());
-};
-
-const readToken = () => {
-  const queryToken = new URLSearchParams(window.location.search).get('token') || '';
-
-  if (queryToken) {
-    localStorage.setItem('livechat_admin_token', queryToken);
-    syncTokenInUrl(queryToken);
-    return queryToken;
-  }
-
-  const storedToken = localStorage.getItem('livechat_admin_token') || '';
-  if (storedToken) {
-    syncTokenInUrl(storedToken);
-  }
-  return storedToken;
-};
+// AUD-COR-05 : le jeton ne transite plus par l'URL (ni lecture `?token=`, ni
+// réécriture de l'adresse dans l'historique du navigateur). Il est lu depuis le
+// champ de la page ou depuis localStorage, et envoyé en `Authorization: Bearer`.
+const readToken = () => localStorage.getItem('livechat_admin_token') || '';
 
 const writeToken = (token) => {
   const normalized = String(token || '').trim();
 
   if (!normalized) {
     localStorage.removeItem('livechat_admin_token');
-    syncTokenInUrl('');
     return;
   }
 
   localStorage.setItem('livechat_admin_token', normalized);
-  syncTokenInUrl(normalized);
 };
 
 const api = async (path, options = {}) => {

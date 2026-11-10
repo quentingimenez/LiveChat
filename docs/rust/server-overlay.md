@@ -105,6 +105,12 @@ authentification et avant toute validation de payload (garde
   au préfixe `/overlay/meme-board/` ; `/overlay/media/{assetId}` reste
   exclusivement HMAC signé et aucune autre route overlay n'accepte de jeton en
   query.
+- **Statut temporaire (AUD-COR-05)** : ce repli `?token=` ne survit que le temps
+  de la migration du renderer legacy (P1-11). Chaque utilisation émet un `WARN`
+  unique par processus (target `lc_server::overlay`,
+  `warn_query_token_deprecation_once` dans `auth.rs`) pour mesurer l'usage avant
+  suppression ; il disparaîtra avec le renderer Rust. Aucun autre jeton ne doit
+  figurer dans une URL (l'admin, lui, n'accepte plus que le Bearer).
 - Le token brut est généré côté serveur : 32 octets aléatoires encodés en hex
   (64 caractères), `auth.rs:65` — équivalent de
   `crypto.randomBytes(32).toString('hex')` (`overlayAuth.ts:40-42`).
@@ -233,19 +239,33 @@ sig = HMAC-SHA256(MEDIA_URL_SECRET, "assetId|clientId|exp")
 |---|----------|-------|
 | 1 | `clientId`, `exp`, `sig` présents ; UUID `assetId`/`clientId` valides ; `exp` numérique ; `sig` = 64 hex ; `MEDIA_URL_SECRET` non vide | sinon `403 {"error":"media_url_invalid"}` (sauf UUID asset invalide → `404 media_not_found`) |
 | 2 | signature HMAC valide (constant-time) | `403 media_url_invalid` |
-| 3 | `now >= exp` (`media_url::is_expired`) | `403 {"error":"media_url_expired"}` |
-| 4 | client existant et non révoqué | `403 media_url_invalid` |
-| 5 | asset existant, `status == READY`, non expiré | `404 {"error":"media_not_found"}` |
-| 6 | fichier présent et confiné dans `MEDIA_STORAGE_DIR` | `404 {"error":"media_not_found_on_disk"}` |
-| 7 | stream `HEAD`/`Range` | `200`/`206`/`416` |
+| 3 | `exp` plafonné : `exp <= now + MEDIA_URL_TTL_MAX_SEC` (`media_url::is_expiry_within_max`, `now` calculé une seule fois) | `403 {"error":"media_url_invalid"}` |
+| 4 | `now >= exp` (`media_url::is_expired`) | `403 {"error":"media_url_expired"}` |
+| 5 | client existant et non révoqué | `403 media_url_invalid` |
+| 6 | asset existant, `status == READY`, non expiré | `404 {"error":"media_not_found"}` |
+| 7 | fichier présent et confiné dans `MEDIA_STORAGE_DIR` | `404 {"error":"media_not_found_on_disk"}` |
+| 8 | stream `HEAD`/`Range` | `200`/`206`/`416` |
+
+Le plafond `exp` (AUD-A2-002, task-42) borne les signatures forgées ou les TTL
+abusifs : une URL dont `exp` dépasse `now + MEDIA_URL_TTL_MAX_SEC` (3600 s par
+défaut) est refusée même avec une signature HMAC valide, avant le test
+d'expiration. `MEDIA_URL_TTL_SEC` reste validé au démarrage
+(`config.rs:433-442`) et le hub n'émet jamais de TTL supérieur ; ce contrôle est
+la seconde barrière côté vérification.
 
 ### 6.3 Résolution du fichier et en-têtes
 
 - `resolve_media_file` (`media.rs:219-265`) : chemin absolu conservé, chemin
   relatif résolu depuis le cwd du serveur, `tokio::fs::canonicalize`, puis
   confinement strict `canonical.starts_with(canonical(MEDIA_STORAGE_DIR))` —
-  empêche toute traversée. Répertoire média absent : confinement non
-  vérifiable → avertissement + service (compatibilité tests/tempdir).
+  empêche toute traversée. **Fail-closed (AUD-A2-003/A4-014, task-42)** : si la
+  racine média n'existe plus ou n'est pas canonicalisable à chaud, le handler
+  journalise un avertissement et refuse en `404 media_not_found_on_disk` ; il ne
+  sert plus jamais un chemin arbitraire (l'ancien comportement fail-open pouvait
+  répondre `200` avec un fichier hors racine quand `MEDIA_STORAGE_DIR` était
+  absent). Le démarrage vérifie déjà la racine
+  (`media::ensure_storage_root`), donc cette branche ne couvre que la disparition
+  en cours de vie.
 - `serve_file` (`media.rs:268-300`) : `tower_http::services::ServeFile` sert
   `GET`/`HEAD`, gère `Range` (`206` + `Content-Range`), `416` + `Content-Range:
   bytes */total`, `Content-Length`, `Content-Type` par extension. Le handler
@@ -325,10 +345,14 @@ Corps legacy : `{"url": "…", "title"?: "…", "message"?: "…", "forceRefresh
    parsing JSON) ;
 1. `url` trim vide → `400 {"error":"invalid_payload","message":"url is required"}`
    (aucun appel réseau dans ce cas) ;
-2. **ingestion best-effort inline** : `MediaPipeline::new(media_config(&state))`
-   puis `ingest_url(url).await` — échec → `422` legacy
+2. **ingestion best-effort inline** : depuis task-42 (P1-09, AUD-A2-006), le
+   handler utilise le `MediaPipeline` **partagé** du serveur via
+   `media::shared_pipeline_for_state(&state)` (même `OnceLock`, même sémaphore
+   `MEDIA_MAX_CONCURRENT_INGESTIONS`, même budget cache et même client HTTP que
+   `MediaService`) puis `ingest_url(url).await` — plus d'instanciation par
+   requête. Échec → `422` legacy
    `{"error":"media_ingestion_failed","code":"<CODE>","message":"<msg>"}` ;
-   la configuration est dérivée de `Config` (répertoire, TTL cache, quota board) ;
+   erreur non média du pipeline → `500 internal_error` (loggée).
 3. asset par `source_hash` :
    - existant `READY` et `!forceRefresh` → réutilisé, expiry épinglée si besoin ;
    - existant non prêt → `update_status(Ready)` puis réutilisation ;
@@ -434,7 +458,7 @@ pub fn sign_media_url(
 | # | Écart | Raison / mitigation |
 |---|-------|---------------------|
 | 1 | Plus de contrôle « un playback job existe pour `(guilde, média)` » avant de servir `/overlay/media` | `lc-db` n'expose pas cette requête (`PlaybackJobsRepository`) et le hub est la seule source d'URL signées ; l'accès est déjà borné par HMAC + `clientId` actif + TTL court. Documenté handoff Phase 4b/5b |
-| 2 | `?token=` supprimé pour le protocole WS et les URLs média signées ; Bearer obligatoire, **sauf** le repli `?token=` des routes board `/overlay/meme-board/*` | protocole v2 §9 ; le repli board est l'unique exception REST (renderer HTML legacy `overlay/renderer/board.js` charge `<video>`/`<img>` par URL), limité au chemin board, Bearer prioritaire, et les mutations restent soumises à la garde `invite_read_only` (§7.0) |
+| 2 | `?token=` supprimé pour le protocole WS et les URLs média signées ; Bearer obligatoire, **sauf** le repli `?token=` des routes board `/overlay/meme-board/*` | protocole v2 §9 ; le repli board est l'unique exception REST (renderer HTML legacy `overlay/renderer/board.js` charge `<video>`/`<img>` par URL), limité au chemin board, Bearer prioritaire, et les mutations restent soumises à la garde `invite_read_only` (§7.0). **Temporaire** depuis AUD-COR-05 : WARN unique par processus (`warn_query_token_deprecation_once`), suppression prévue avec le renderer Rust (P1-11) |
 | 3 | `GET /overlay/config` supprimé | protocole v2 ; config locale overlay (Tauri) |
 | 4 | Ingestion média **inline** dans `POST items` (pipeline) | pas de file d'ingestion côté serveur en Phase 3b ; `MediaPipeline::ingest_url` ne consulte pas le cache et retélécharge — la Phase 5b doit fournir le worker, l'éviction et les transitions de statut |
 | 5 | Un asset non-`READY` rencontré dans `POST items` est repassé `READY` sans re-validation | best-effort Phase 3b ; la Phase 5b devient propriétaire des statuts |

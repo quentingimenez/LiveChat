@@ -42,6 +42,7 @@ tracing = "0.1"
 # ---- Erreurs ----
 thiserror = "2"
 anyhow = "1"
+async-trait = "0.1"
 
 # ---- Base de données (Phase 2) ----
 sqlx = { version = "0.8", default-features = false, features = [

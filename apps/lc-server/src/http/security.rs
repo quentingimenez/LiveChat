@@ -48,10 +48,13 @@ pub async fn security_headers(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
 
-    headers.insert(
-        HeaderName::from_static("content-security-policy"),
-        HeaderValue::from_static(CONTENT_SECURITY_POLICY),
-    );
+    // `entry().or_insert()` : la couche étant externe, un sous-routeur (page
+    // admin) peut avoir posé sa propre CSP plus stricte ; la valeur globale ne
+    // doit s'appliquer qu'en l'absence de valeur (sinon l'admin ne pourrait pas
+    // restreindre script/style/connect pour sa page).
+    headers
+        .entry(HeaderName::from_static("content-security-policy"))
+        .or_insert(HeaderValue::from_static(CONTENT_SECURITY_POLICY));
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),

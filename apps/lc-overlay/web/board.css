@@ -1,0 +1,5 @@
+@import url('./styles/board/base.css');
+@import url('./styles/board/list.css');
+@import url('./styles/board/preview.css');
+@import url('./styles/board/dialogs.css');
+@import url('./styles/board/responsive.css');

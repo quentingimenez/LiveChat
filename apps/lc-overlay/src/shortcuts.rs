@@ -5,11 +5,13 @@
 //! « recharger l'overlay » est également posé ; sa valeur exacte sera alignée
 //! sur le legacy lors du branchement du renderer.
 
+use lc_protocol::{ClientMessage, MemeTrigger, MemeTriggerPayload};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Wry};
-use tauri_plugin_global_shortcut::GlobalShortcutExt;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 use crate::config::{normalize_meme_bindings, MemeBindings};
+use crate::net::ws::{self, NetCommand};
 use crate::state::AppState;
 use crate::windows::OVERLAY_LABEL;
 
@@ -146,7 +148,21 @@ pub fn handle_shortcut_pressed(
         .map(|manual| manual.id() == shortcut.id())
         .unwrap_or(false);
     if !is_manual_reload {
-        tracing::debug!(shortcut = %shortcut.into_string(), "raccourci global ignoré (Phase 8b)");
+        if let Some(item_id) = meme_item_for_shortcut(app, shortcut) {
+            let sent = ws::send_command(
+                app,
+                NetCommand::Send(ClientMessage::MemeTrigger(MemeTriggerPayload {
+                    item_id: item_id.clone(),
+                    trigger: MemeTrigger::Shortcut,
+                })),
+            );
+            tracing::info!(item_id = %item_id, sent, "déclenchement de mémoire demandé");
+        } else {
+            tracing::debug!(
+                shortcut = %shortcut.into_string(),
+                "raccourci global sans action associée"
+            );
+        }
         return;
     }
     let enabled = app.state::<AppState>().config_snapshot().enabled;
@@ -164,6 +180,12 @@ pub fn handle_shortcut_pressed(
 /// Restaure les bindings persistés au démarrage (mode invité exclus).
 pub fn restore_bindings(app: &AppHandle<Wry>) {
     register_manual_reload(app);
+    reapply_for_session(app);
+}
+
+/// Réapplique les bindings de mémoire selon la session serveur courante
+/// (`welcome`/`settings`/purge d'appairage peuvent changer `guestMode`).
+pub fn reapply_for_session(app: &AppHandle<Wry>) {
     let state = app.state::<AppState>();
     let config = state.config_snapshot();
     let bindings = if config.guest_mode {
@@ -175,8 +197,25 @@ pub fn restore_bindings(app: &AppHandle<Wry>) {
     tracing::info!(
         applied = result.applied_bindings.len(),
         failed = result.failed_accelerators.len(),
-        "raccourcis de mémoire restaurés"
+        "raccourcis de mémoire réappliqués"
     );
+}
+
+/// Item de mémoire associé à un raccourci global pressé, s'il existe.
+fn meme_item_for_shortcut(app: &AppHandle<Wry>, shortcut: &Shortcut) -> Option<String> {
+    let state = app.state::<AppState>();
+    let config = state.config_snapshot();
+    if !config.enabled || config.guest_mode {
+        return None;
+    }
+    for (accelerator, item_id) in config.meme_bindings.iter() {
+        if let Ok(parsed) = accelerator.parse::<Shortcut>() {
+            if parsed.id() == shortcut.id() {
+                return Some(item_id.clone());
+            }
+        }
+    }
+    None
 }
 
 /// Désenregistre tous les raccourcis (utilisé à la fermeture et dans les tests).

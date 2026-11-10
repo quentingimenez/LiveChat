@@ -1,0 +1,66 @@
+# Docker Compose de production — serveur Rust LiveChat 3.0.0 (protocole v2)
+#
+# Utilisation (depuis la racine du dépôt) :
+#   docker compose -f deploy/docker-compose.yml config      # validation du rendu
+#   docker compose -f deploy/docker-compose.yml pull        # tire l'image GHCR
+#   docker compose -f deploy/docker-compose.yml up -d
+#   docker compose -f deploy/docker-compose.yml logs -f --tail=100 lc-server
+#   docker compose -f deploy/docker-compose.yml down        # données conservées (./data)
+#
+# Prérequis : un fichier `deploy/.env` (non versionné, permissions 600) contenant au
+# moins API_URL, ADMIN_UI_TOKEN, INGEST_API_TOKEN et MEDIA_URL_SECRET. Voir le modèle
+# et la procédure complète dans `docs/rust/packaging.md` (§10 « Compose v3 »).
+#
+# Le legacy `server/docker-compose.yml` n'est pas concerné (référence de rollback 2.0.1).
+
+name: livechat
+
+services:
+  lc-server:
+    image: ${LIVECHAT_IMAGE:-ghcr.io/quentingimenez/livechat-server:3.0.0}
+    container_name: livechat-server
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Contrat de l'image (voir docs/rust/packaging.md §3) — surcharge .env si besoin.
+      PORT: "3000"
+      DATABASE_URL: sqlite:///app/data/livechat.sqlite
+      MEDIA_STORAGE_DIR: /app/data/media
+      ADMIN_UI_LOCAL_ONLY: "false"
+      RUST_LOG: info
+      # Origine publique du serveur (CORS + URLs médias signées). Obligatoire :
+      # `${API_URL:?...}` fait échouer `docker compose config/up` si absent.
+      API_URL: ${API_URL:?API_URL requis (origine publique, ex. https://livechat.example.com)}
+    ports:
+      - "3000:3000"
+    volumes:
+      # Données persistantes : SQLite (+ -wal/-shm) et médias ingérés.
+      # Sur un hôte Linux, préparer le dossier : mkdir -p data && chown 10001:10001 data
+      - ./data:/app/data
+    # SQLite + médias : un seul serveur, jamais de réplique (un seul écrivain SQLite).
+    healthcheck:
+      # Le simple 200 ne suffit pas : /health répond 200 même avec db=down.
+      # On vérifie donc le champ JSON `db` (décision Lead, voir packaging.md §11).
+      test: ["CMD-SHELL", "curl -fsS --max-time 2 http://127.0.0.1:3000/health | grep -q '\"db\":\"ok\"'"]
+      interval: 15s
+      timeout: 3s
+      start_period: 15s
+      retries: 3
+    # Le serveur draine 10 s après SIGTERM : laisser une marge avant le SIGKILL.
+    stop_grace_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    # Pas de read_only : SQLite et l'ingestion média écrivent dans /app/data.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Limites mémoire (décommenter/adapter selon l'hôte ; le POC mesurait ~6 MiB au repos) :
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 512M
+    #     reservations:
+    #       memory: 64M

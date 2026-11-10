@@ -27,6 +27,7 @@ pub mod commands;
 pub mod config;
 pub mod display;
 pub mod events;
+pub mod net;
 pub mod shortcuts;
 pub mod state;
 pub mod tray;
@@ -58,13 +59,15 @@ fn init_tracing() {
 
 /// Nom de la valeur `Run` utilisée par le plugin autostart.
 ///
-/// Par défaut `LiveChat` : c'est la même valeur (casse ignorée) que celle de
-/// l'Electron historique, donc l'activer pendant une coexistence side-by-side
-/// écraserait la clé de l'ancienne application (cf. docs/rust/lc-overlay-shell.md).
-/// Les builds bêta peuvent définir `LIVECHAT_PRODUCT_NAME="LiveChat Next"` pour
-/// utiliser une valeur distincte.
-fn autostart_app_name() -> String {
-    std::env::var("LIVECHAT_PRODUCT_NAME").unwrap_or_else(|_| "LiveChat".to_string())
+/// Par défaut le `productName` de la configuration Tauri : `LiveChat` pour le
+/// canal stable (même valeur, casse ignorée, que l'Electron historique — activer
+/// l'autostart pendant une coexistence side-by-side écraserait donc la clé de
+/// l'ancienne application, voir docs/rust/lc-overlay-shell.md) et
+/// `LiveChat Next` pour la bêta, ce qui donne deux valeurs `Run` distinctes.
+/// `LIVECHAT_PRODUCT_NAME` reste un override explicite (tests, lancements
+/// portables).
+fn autostart_app_name(product_name: &str) -> String {
+    std::env::var("LIVECHAT_PRODUCT_NAME").unwrap_or_else(|_| product_name.to_string())
 }
 
 fn app_config_dir(app: &tauri::App<Wry>) -> Option<PathBuf> {
@@ -77,26 +80,43 @@ fn app_config_dir(app: &tauri::App<Wry>) -> Option<PathBuf> {
     }
 }
 
-fn prepare_store(app: &tauri::App<Wry>) -> ConfigStore {
-    let fallback = app_config_dir(app);
-    let path = config::resolve_config_path_from_env(fallback.as_deref());
+/// Résolution du chemin de configuration AVANT la création des fenêtres.
+///
+/// L'état applicatif est géré via `Builder::manage` (et non `App::manage` dans
+/// `setup`) pour être disponible dès le chargement initial des webviews : les
+/// pages appellent `overlay_get_config` pendant leur boot, avant que `setup`
+/// ne s'exécute, et une course provoquerait `state not managed`.
+/// Conséquence : le fallback `app_config_dir()` n'est pas disponible ici, mais
+/// sur Windows `%APPDATA%` existe toujours et `resolve_config_path_from_env`
+/// l'utilise en priorité ; le fallback n'est qu'un garde-fou.
+fn initial_store() -> ConfigStore {
+    let fallback = std::env::temp_dir().join("lc-overlay");
+    let path = config::resolve_config_path_from_env(Some(fallback.as_path()));
     tracing::info!(chemin = %path.display(), "fichier de configuration forcé");
-    let store = ConfigStore::new(path);
-    if let Some(fallback) = fallback.as_deref() {
-        match store.migrate_from(&fallback.join(config::CONFIG_FILE_NAME)) {
+    ConfigStore::new(path)
+}
+
+/// Migration éventuelle et sauvegarde `.bak`, une fois l'`App` construite.
+fn finalize_store(app: &tauri::App<Wry>) {
+    let state = app.state::<AppState>();
+    if let Some(fallback) = app_config_dir(app) {
+        match state
+            .store()
+            .migrate_from(&fallback.join(config::CONFIG_FILE_NAME))
+        {
             Ok(true) => tracing::info!("configuration migrée depuis app_config_dir()"),
             Ok(false) => {}
             Err(error) => tracing::warn!(%error, "migration de configuration impossible"),
         }
     }
-    match store.ensure_backup() {
-        Ok(true) => {
-            tracing::info!(backup = %store.backup_path().display(), "sauvegarde .bak créée")
-        }
+    match state.store().ensure_backup() {
+        Ok(true) => tracing::info!(
+            backup = %state.store().backup_path().display(),
+            "sauvegarde .bak créée"
+        ),
         Ok(false) => {}
         Err(error) => tracing::warn!(%error, "création du fichier .bak impossible"),
     }
-    store
 }
 
 fn handle_second_instance(app: &tauri::AppHandle<Wry>, argv: Vec<String>) {
@@ -108,15 +128,16 @@ fn handle_second_instance(app: &tauri::AppHandle<Wry>, argv: Vec<String>) {
 }
 
 fn setup(app: &mut tauri::App<Wry>) -> Result<(), Box<dyn Error>> {
-    let store = prepare_store(app);
+    finalize_store(app);
     let handle = app.handle().clone();
-    // L'état doit être géré avant toute commande/tray qui lit `app.state()`.
-    app.manage(AppState::new(store));
     if let Err(error) = tray::create_tray(&handle) {
         tracing::warn!(%error, "création du tray impossible");
     }
     windows::bootstrap_windows(&handle);
     shortcuts::restore_bindings(&handle);
+    // Le superviseur WebSocket démarre en dernier : la configuration, le tray et
+    // les raccourcis sont prêts avant la première connexion.
+    net::ws::start(&handle);
     Ok(())
 }
 
@@ -141,7 +162,19 @@ fn handler_closures() -> impl Fn(
 pub fn run() -> Result<(), Box<dyn Error>> {
     init_tracing();
 
+    // Contexte construit tôt : le `productName` sert de nom de valeur `Run` au
+    // plugin autostart (LiveChat vs LiveChat Next pour la coexistence bêta).
+    let context = tauri::generate_context!();
+    let product_name = context
+        .config()
+        .product_name
+        .clone()
+        .unwrap_or_else(|| "LiveChat".to_string());
+
     let app = tauri::Builder::<Wry>::default()
+        // Géré avant la construction des fenêtres configurées (les webviews
+        // peuvent appeler des commandes dès leur chargement initial).
+        .manage(AppState::new(initial_store()))
         .plugin(tauri_plugin_single_instance::init(
             |app: &tauri::AppHandle<Wry>, argv: Vec<String>, _cwd: String| {
                 handle_second_instance(app, argv);
@@ -149,7 +182,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         ))
         .plugin(
             tauri_plugin_autostart::Builder::new()
-                .app_name(autostart_app_name())
+                .app_name(autostart_app_name(&product_name))
                 .args(["--from-autostart"])
                 .build(),
         )
@@ -175,10 +208,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             commands::overlay_install_update,
         ])
         .setup(setup)
-        .build(tauri::generate_context!())?;
+        .build(context)?;
 
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
+            net::ws::request_shutdown(app_handle);
             shortcuts::unregister_all(app_handle);
             tracing::info!("overlay : sortie propre");
         }

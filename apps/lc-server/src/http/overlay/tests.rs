@@ -19,9 +19,9 @@ use axum::Router;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use lc_db::{Db, DbConfig};
 use lc_domain::{
-    FixedClock, GuildId, MediaAsset, MediaAssetId, MediaKind, MediaStatus, MemeBoardItem,
-    MemeBoardItemId, OverlayClient, OverlayClientId, OverlaySessionMode, PairingCode,
-    PairingCodeEntry, PairingMode,
+    FixedClock, GuildId, JobStatus, MediaAsset, MediaAssetId, MediaKind, MediaStatus,
+    MemeBoardItem, MemeBoardItemId, OverlayClient, OverlayClientId, OverlaySessionMode,
+    PairingCode, PairingCodeEntry, PairingMode, PlaybackJob, PlaybackJobId,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -124,6 +124,20 @@ fn body_json(bytes: &[u8]) -> Value {
     serde_json::from_slice(bytes).expect("corps JSON")
 }
 
+/// Construit une requete avec un corps brut (JSON malforme volontaire).
+fn raw_request(method: Method, uri: &str, token: Option<&str>, raw: &str) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(token) = token {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    builder
+        .body(Body::from(raw.to_owned()))
+        .expect("requete valide")
+}
+
 /// Client overlay de test (jeton haché SHA-256).
 fn make_client(
     guild_id: &GuildId,
@@ -207,6 +221,37 @@ async fn insert_asset(
         .await
         .expect("insertion média");
     asset
+}
+
+/// Insère un job de lecture `PENDING` référençant l'asset (binding média → guilde).
+async fn insert_playback_job(db: &Db, guild_id: &GuildId, asset_id: MediaAssetId) -> PlaybackJob {
+    let now = fixed_now();
+    let job = PlaybackJob {
+        id: PlaybackJobId::new_v4(),
+        guild_id: guild_id.clone(),
+        media_asset_id: Some(asset_id),
+        text: None,
+        show_text: false,
+        author_name: None,
+        author_image: None,
+        duration_sec: 30,
+        priority: 0,
+        status: JobStatus::Pending,
+        resumes_after_job_id: None,
+        resume_offset_sec: 0,
+        remaining_ms_snapshot: None,
+        last_playback_state_at: None,
+        submission_date: now,
+        execution_date: now,
+        scheduled_at: now,
+        started_at: None,
+        finished_at: None,
+    };
+    db.playback_jobs()
+        .create(&job)
+        .await
+        .expect("insertion job de lecture");
+    job
 }
 
 /// Insère un item de board.
@@ -483,6 +528,7 @@ async fn signed_media_serves_file_with_legacy_headers_and_range() {
         .create(&client)
         .await
         .expect("client média");
+    insert_playback_job(&db, &guild(), asset.id).await;
     let uri = signed_uri(&asset, &client, fixed_now_secs() + 300);
 
     let (status, headers, body) = send(&app, request(Method::GET, &uri, None, None)).await;
@@ -531,6 +577,51 @@ async fn signed_media_serves_file_with_legacy_headers_and_range() {
         headers[header::CONTENT_RANGE],
         format!("bytes */{}", bytes.len())
     );
+}
+
+#[tokio::test]
+async fn signed_media_requires_a_playback_job_in_the_client_guild() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, db) = harness(dir.path()).await;
+    let asset = insert_asset(
+        &db,
+        dir.path(),
+        "binding.mp4",
+        "video/mp4",
+        MediaKind::Video,
+        b"binding",
+        fixed_now() + Duration::hours(12),
+    )
+    .await;
+    let client = make_client(
+        &guild(),
+        "Poste",
+        "binding-token",
+        OverlaySessionMode::Normal,
+        Some("Alice"),
+    );
+    db.overlay_clients()
+        .create(&client)
+        .await
+        .expect("client média");
+    let uri = signed_uri(&asset, &client, fixed_now_secs() + 300);
+
+    // Sans job de la guilde, le média n'est pas accessible (parité legacy 403).
+    let (status, _, bytes) = send(&app, request(Method::GET, &uri, None, None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body_json(&bytes)["error"], "forbidden");
+
+    // Un job d'une autre guilde ne suffit pas.
+    insert_playback_job(&db, &other_guild(), asset.id).await;
+    let (status, _, bytes) = send(&app, request(Method::GET, &uri, None, None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body_json(&bytes)["error"], "forbidden");
+
+    // Un job de la guilde du client ouvre l'accès.
+    insert_playback_job(&db, &guild(), asset.id).await;
+    let (status, _, body) = send(&app, request(Method::GET, &uri, None, None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"binding");
 }
 
 #[tokio::test]
@@ -726,6 +817,7 @@ async fn signed_media_missing_or_escaped_file_is_rejected() {
         .insert(&missing)
         .await
         .expect("asset manquant");
+    insert_playback_job(&db, &guild(), missing.id).await;
     let uri = signed_uri(&missing, &client, fixed_now_secs() + 300);
     let (status, _, bytes) = send(&app, request(Method::GET, &uri, None, None)).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -758,6 +850,7 @@ async fn signed_media_missing_or_escaped_file_is_rejected() {
         .insert(&escaped)
         .await
         .expect("asset hors zone");
+    insert_playback_job(&db, &guild(), escaped.id).await;
     let uri = signed_uri(&escaped, &client, fixed_now_secs() + 300);
     let (status, _, bytes) = send(&app, request(Method::GET, &uri, None, None)).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -1391,4 +1484,73 @@ fn sign_media_url_matches_protocol_v2_format_and_verifies() {
         lc_protocol::media_url_ttl_sec(lc_protocol::MediaKind::Video, Some(30)),
         300
     );
+}
+
+#[tokio::test]
+async fn meme_board_create_rejects_malformed_json() {
+    // AUD-A2-009 : JSON illisible -> 400 invalid_payload (pas request_error),
+    // apres le controle de session en ecriture.
+    let dir = TempDir::new().expect("tempdir");
+    let (app, db) = harness(dir.path()).await;
+    let client = make_client(
+        &guild(),
+        "Poste",
+        BEARER_TOKEN,
+        OverlaySessionMode::Normal,
+        Some("Alice"),
+    );
+    db.overlay_clients()
+        .create(&client)
+        .await
+        .expect("client board");
+
+    let (status, _, bytes) = send(
+        &app,
+        raw_request(
+            Method::POST,
+            "/overlay/meme-board/items",
+            Some(BEARER_TOKEN),
+            "{\"url\":",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(&bytes)["error"], "invalid_payload");
+}
+
+#[tokio::test]
+async fn meme_board_patch_rejects_malformed_json() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, db) = harness(dir.path()).await;
+    let client = make_client(
+        &guild(),
+        "Poste",
+        BEARER_TOKEN,
+        OverlaySessionMode::Normal,
+        Some("Alice"),
+    );
+    db.overlay_clients()
+        .create(&client)
+        .await
+        .expect("client board");
+    let asset = insert_asset(
+        &db,
+        dir.path(),
+        "malformed.mp4",
+        "video/mp4",
+        MediaKind::Video,
+        b"malformed",
+        fixed_now() + Duration::hours(12),
+    )
+    .await;
+    let item = insert_item(&db, &guild(), &asset, Some("Titre"), None, fixed_now()).await;
+
+    let uri = format!("/overlay/meme-board/items/{}", item.id.to_canonical());
+    let (status, _, bytes) = send(
+        &app,
+        raw_request(Method::PATCH, &uri, Some(BEARER_TOKEN), "{"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(&bytes)["error"], "invalid_payload");
 }

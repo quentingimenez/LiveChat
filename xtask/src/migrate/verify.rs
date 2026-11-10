@@ -25,10 +25,18 @@ pub const SAMPLE_SIZE: usize = 20;
 pub const SCHEMA_VERSION: &str = "3.0.0";
 
 /// Clés de métadonnées ajoutées par le migrateur (en plus de `schema_version`).
-pub const EXTRA_METADATA_KEYS: [&str; 4] = [
+/// Les quatre dernières (snapshot/version legacy) tracent le snapshot cohérent
+/// réellement lu (AUD-A5-002 / AUD-COR-16).
+pub const EXTRA_METADATA_KEYS: [&str; 10] = [
     "legacy_import_at",
     "legacy_source_path",
     "legacy_source_sha256",
+    "legacy_source_bytes",
+    "legacy_source_wal_bytes",
+    "legacy_snapshot_sha256",
+    "legacy_snapshot_bytes",
+    "legacy_snapshot_at",
+    "legacy_schema_version",
     "legacy_import_tool",
 ];
 
@@ -90,7 +98,7 @@ impl VerifyReport {
         if !self.extra_metadata.is_empty() {
             println!("      métadonnées d'import :");
             for (key, value) in &self.extra_metadata {
-                let rendered = if key == "legacy_import_at" {
+                let rendered = if key.ends_with("_at") {
                     value
                         .parse::<i64>()
                         .map(dates::format_millis)

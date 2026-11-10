@@ -1,26 +1,31 @@
 //! Sous-commande `migrate-legacy` : migration one-shot de la base SQLite du
 //! serveur legacy (Prisma 5.22) vers le schéma 3.0 de `docs/rust/schema-v3.sql`.
 //!
-//! Déroulé : validation des chemins, empreinte de la source, lecture strictement
-//! en lecture seule (intégrité, 7 tables, normalisation des dates), écriture dans
-//! `<to>.tmp`, vérification complète du temporaire, puis renommage atomique en
-//! `<to>`. Un échec à n'importe quelle étape laisse la source intacte et supprime
-//! le temporaire : aucun fichier final n'est créé.
+//! Déroulé : validation des chemins, snapshot cohérent de la source (copie +
+//! `VACUUM INTO`, signature et intégrité vérifiées), lecte strictement en
+//! lecture seule du snapshot (intégrité, 7 tables, normalisation des dates),
+//! écriture dans `<to>.tmp`, vérification complète du temporaire, contrôle que
+//! la source n'a pas bougé depuis le snapshot, puis renommage atomique en
+//! `<to>`. Un échec à n'importe quelle étape laisse la source intacte et
+//! supprime le temporaire : aucun fichier final n'est créé.
 //!
 //! Récupération : si un crash a laissé une sauvegarde `<to>.old` sans `<to>`
 //! (fenêtre entre les deux renommages de l'installation), elle est restaurée en
 //! `<to>` au démarrage du migrateur ; sans `--force`, l'outil s'arrête ensuite
 //! avec un message explicite pour que l'opérateur relance la migration.
 //!
-//! La base legacy n'est jamais modifiée (connexion `read_only` + `query_only`),
-//! et la cible n'est écrite qu'après lecture complète en mémoire : la migration
-//! est rejouable depuis la source d'origine.
+//! La base legacy n'est **jamais ouverte** : elle est copiée avec ses annexes
+//! `-wal`/`-journal` dans un répertoire temporaire, la copie est contrôlée par
+//! `PRAGMA integrity_check`, puis un snapshot autonome en est extrait par
+//! `VACUUM INTO` ([`snapshot`]). La cible n'est écrite qu'après lecture complète
+//! en mémoire : la migration est rejouable depuis la source d'origine.
 
 mod dates;
 mod ledger;
 mod legacy;
 mod read;
 mod schema;
+mod snapshot;
 mod tables;
 mod target;
 #[cfg(test)]
@@ -37,6 +42,7 @@ use thiserror::Error;
 
 use legacy::{Legacy, SourceMeta};
 use read::LegacyData;
+use snapshot::Snapshot;
 use verify::VerifyReport;
 
 /// Options validées de `migrate-legacy`, construites par la CLI (`main.rs`).
@@ -68,6 +74,22 @@ pub enum Error {
     },
     #[error("PRAGMA integrity_check de la base legacy = {0:?} (attendu \"ok\")")]
     LegacyIntegrity(String),
+    #[error("ouverture du snapshot {path} impossible : {source}")]
+    SnapshotOpen { path: PathBuf, source: sqlx::Error },
+    #[error("production du snapshot {path} impossible (VACUUM INTO) : {source}")]
+    SnapshotVacuum { path: PathBuf, source: sqlx::Error },
+    #[error("snapshot {path} incohérent : PRAGMA integrity_check = {detail:?} (attendu \"ok\")")]
+    SnapshotIntegrity { path: PathBuf, detail: String },
+    #[error(
+        "source instable : {attempts} tentative(s) de snapshot ont échoué ({detail})\n  \
+         piste : arrêter le serveur legacy avant de migrer (aucune cible n'a été écrite)"
+    )]
+    SnapshotUnstable { attempts: u32, detail: String },
+    #[error(
+        "la source a changé pendant la migration :\n  avant : {before}\n  après : {after}\n  \
+         piste : arrêter le serveur legacy puis relancer ; la cible n'a pas été installée"
+    )]
+    SourceChanged { before: String, after: String },
     #[error("table legacy absente : {0}")]
     MissingLegacyTable(&'static str),
     #[error("table legacy {table} illisible : {source}")]
@@ -214,8 +236,20 @@ pub async fn execute(options: &Options) -> Result<(), Error> {
         println!("  WAL     : absent");
     }
 
-    let legacy = Legacy::open(&options.from).await?;
-    let outcome = run(options, &legacy, &source, started).await;
+    // Snapshot cohérent : la source n'est plus lue directement (AUD-A5-002).
+    let snapshot = snapshot::create(&options.from).await?;
+    println!(
+        "  snapshot: {} octet(s), sha256 {}, schéma legacy : {} (copie {} tentative(s))",
+        snapshot.meta().bytes,
+        snapshot.meta().sha256,
+        snapshot.meta().schema_version,
+        snapshot.meta().attempts
+    );
+    #[cfg(test)]
+    snapshot::run_after_snapshot_hook(&options.from);
+
+    let legacy = Legacy::open(snapshot.path()).await?;
+    let outcome = run(options, &legacy, &source, &snapshot, started).await;
     legacy.close().await;
     outcome
 }
@@ -225,6 +259,7 @@ async fn run(
     options: &Options,
     legacy: &Legacy,
     source: &SourceMeta,
+    snapshot: &Snapshot,
     started: Instant,
 ) -> Result<(), Error> {
     let integrity = legacy.integrity_check().await?;
@@ -256,7 +291,7 @@ async fn run(
         }
     }
 
-    let verified = match target::write(&tmp, &data, source).await {
+    let verified = match target::write(&tmp, &data, source, snapshot.meta()).await {
         Ok(()) => verify_target(&tmp, legacy, &data).await,
         Err(err) => Err(err),
     };
@@ -275,15 +310,18 @@ async fn run(
     );
     report.print();
 
-    target::install(&tmp, &options.to, options.force)?;
-
-    let after = legacy::source_meta(&options.from)?;
-    if after.sha256 != source.sha256 {
-        println!(
-            "  ATTENTION : la source a changé pendant la migration (serveur legacy encore actif ?) \
-             — vérifier les données migrées"
-        );
+    // Dernier contrôle avant l'installation : la source ne doit pas avoir bougé
+    // depuis le snapshot, sinon la migration serait partielle (AUD-A5-002).
+    let current = snapshot::capture_signature(&options.from)?;
+    if &current != snapshot.source_signature() {
+        drop(std::fs::remove_file(&tmp));
+        return Err(Error::SourceChanged {
+            before: snapshot.source_signature().summary(),
+            after: current.summary(),
+        });
     }
+
+    target::install(&tmp, &options.to, options.force)?;
 
     println!(
         "  installé : {} ({} octet(s))",

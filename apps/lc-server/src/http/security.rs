@@ -43,8 +43,39 @@ pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
 /// Politique de permissions (fonctionnalités navigateur inutiles au produit).
 pub const PERMISSIONS_POLICY: &str = "camera=(), microphone=(), geolocation=(), payment=(), usb=()";
 
+/// HSTS (AUD-COR-18/A7-020). Appliqué uniquement quand la requête arrive en
+/// HTTPS (directement ou via un reverse proxy qui pose `X-Forwarded-Proto`).
+pub const STRICT_TRANSPORT_SECURITY: &str = "max-age=31536000; includeSubDomains";
+
+/// Isolation d'ouverture inter-origines (COOP).
+pub const CROSS_ORIGIN_OPENER_POLICY: &str = "same-origin";
+
+/// La requête est-elle servie en HTTPS aux yeux du navigateur ?
+///
+/// Le serveur écoute en HTTP : en production, c'est le reverse proxy TLS qui
+/// termine HTTPS et transmet `X-Forwarded-Proto: https`. On ne fait confiance
+/// qu'à cette information pour HSTS (un HSTS posé en HTTP est de toute façon
+/// ignoré par les navigateurs, mais ne pas l'émettre en développement évite de
+/// verrouiller `localhost`).
+fn request_is_secure(request: &Request) -> bool {
+    if request.uri().scheme_str() == Some("https") {
+        return true;
+    }
+    request
+        .headers()
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .next()
+                .is_some_and(|scheme| scheme.trim().eq_ignore_ascii_case("https"))
+        })
+}
+
 /// Middleware ajoutant les en-têtes de sécurité à chaque réponse.
 pub async fn security_headers(request: Request, next: Next) -> Response {
+    let secure = request_is_secure(&request);
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
 
@@ -72,6 +103,17 @@ pub async fn security_headers(request: Request, next: Next) -> Response {
         HeaderName::from_static("permissions-policy"),
         HeaderValue::from_static(PERMISSIONS_POLICY),
     );
+    headers.insert(
+        HeaderName::from_static("cross-origin-opener-policy"),
+        HeaderValue::from_static(CROSS_ORIGIN_OPENER_POLICY),
+    );
+    // HSTS uniquement si le navigateur voit du HTTPS (délégué au reverse proxy).
+    if secure {
+        headers.insert(
+            HeaderName::from_static("strict-transport-security"),
+            HeaderValue::from_static(STRICT_TRANSPORT_SECURITY),
+        );
+    }
 
     response
 }
@@ -120,6 +162,46 @@ mod tests {
             headers.get("permissions-policy").unwrap(),
             PERMISSIONS_POLICY
         );
+        assert_eq!(
+            headers.get("cross-origin-opener-policy").unwrap(),
+            CROSS_ORIGIN_OPENER_POLICY
+        );
+        // HTTP simple (développement, tests) : pas de HSTS.
+        assert!(headers.get("strict-transport-security").is_none());
+    }
+
+    #[tokio::test]
+    async fn hsts_is_emitted_only_over_tls() {
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(middleware::from_fn(security_headers));
+
+        // Derrière un reverse proxy TLS (`X-Forwarded-Proto: https`).
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("x-forwarded-proto", "https")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.headers().get("strict-transport-security").unwrap(),
+            STRICT_TRANSPORT_SECURITY
+        );
+
+        // HTTP direct : jamais de HSTS (ne pas verrouiller le développement).
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert!(response
+            .headers()
+            .get("strict-transport-security")
+            .is_none());
     }
 
     #[test]

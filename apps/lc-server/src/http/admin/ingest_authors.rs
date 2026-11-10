@@ -88,6 +88,27 @@ pub(super) async fn list(
     Ok(Json(json!({ "items": items, "count": count })).into_response())
 }
 
+/// Longueur maximale du libellé saisi par l'administrateur (AUD-COR-14/A3-008).
+const MAX_LABEL_CHARS: usize = 120;
+/// Longueur maximale du libellé persisté `{label}-{auteur}`.
+const MAX_DEVICE_LABEL_CHARS: usize = 200;
+
+/// Valide le libellé saisi : non vide, ≤ 120 caractères, sans caractère de
+/// contrôle (le corps JSON est borné à 1 Mio, cette borne protège la base et
+/// l'UI d'entrées absurdes ou d'échappements de terminal).
+fn validate_label(label: &str) -> bool {
+    !label.is_empty()
+        && label.chars().count() <= MAX_LABEL_CHARS
+        && !label.chars().any(char::is_control)
+}
+
+/// Valide le libellé final persisté (`{label}-{auteur}`).
+fn validate_device_label(device_label: &str) -> bool {
+    !device_label.is_empty()
+        && device_label.chars().count() <= MAX_DEVICE_LABEL_CHARS
+        && !device_label.chars().any(char::is_control)
+}
+
 /// Handler `POST /admin/api/ingest-clients`.
 pub(super) async fn create_client(
     State(state): State<AppState>,
@@ -104,6 +125,9 @@ pub(super) async fn create_client(
 
     let label = to_non_empty_string(payload.get("label"))
         .ok_or_else(|| AdminError::bad_request("invalid_label"))?;
+    if !validate_label(&label) {
+        return Err(AdminError::bad_request("invalid_label"));
+    }
 
     let db = require_db(&state)?;
     let known_authors = merged_authors(&state).await?;
@@ -114,6 +138,9 @@ pub(super) async fn create_client(
 
     let author_display = author.display_name().to_owned();
     let device_label = format!("{label}-{author_display}");
+    if !validate_device_label(&device_label) {
+        return Err(AdminError::bad_request("invalid_label"));
+    }
 
     let raw_token = generate_token();
     let token_hash = hash_token(&raw_token);
@@ -370,5 +397,28 @@ mod tests {
         assert_eq!(hash_token("abc").len(), 64);
         assert_eq!(hash_token("abc"), hash_token("abc"));
         assert_ne!(hash_token("abc"), hash_token("abd"));
+    }
+
+    #[test]
+    fn libelles_bornees_et_sans_caracteres_de_controle() {
+        assert!(validate_label("Chrome"));
+        assert!(validate_label(&"a".repeat(MAX_LABEL_CHARS)));
+        assert!(!validate_label(""));
+        assert!(!validate_label(&"a".repeat(MAX_LABEL_CHARS + 1)));
+        assert!(!validate_label("Chrome\nEvil"));
+        assert!(!validate_label("Chrome\tTab"));
+        assert!(!validate_label("Chrome\u{7}"));
+
+        assert!(validate_device_label("Chrome-Alice"));
+        assert!(validate_device_label(&"a".repeat(MAX_DEVICE_LABEL_CHARS)));
+        assert!(!validate_device_label(
+            &"a".repeat(MAX_DEVICE_LABEL_CHARS + 1)
+        ));
+        assert!(!validate_device_label("Chrome-\u{1b}[31m"));
+        // Un libellé saisi valide peut devenir trop long une fois suffixé par un
+        // nom d'auteur anormalement long : la borne finale le rattrape.
+        let long_author = "a".repeat(MAX_DEVICE_LABEL_CHARS);
+        let device = format!("Chrome-{long_author}");
+        assert!(!validate_device_label(&device));
     }
 }

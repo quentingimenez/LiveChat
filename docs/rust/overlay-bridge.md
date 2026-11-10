@@ -637,4 +637,54 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
 - Décision dans `commands::config_view_for_window` (fonction pure), testée par
   `commands::tests::config_view_is_window_scoped`.
 
+### 12.8 Diagnostics bridge conditionnels (P2-E, O-007/A6-010)
+
+- Les globals `window.__livechatOverlayBridge`, `__bridgeCalls`,
+  `__bridgeLastEvent`, `__bridgeMode` et `__bridgeMockEmit` ne sont **plus**
+  exposés par défaut en mode Tauri. Ils le sont :
+  - en mode **mock** (navigateur / `dev/bridge-test.html`), où le harnais en a
+    besoin ; ou
+  - si la page pose `window.__LIVECHAT_BRIDGE_DEBUG = true` **avant** de charger
+    `bridge.js` (opt-in explicite pour un debug local).
+- Conséquence : un installeur release n'expose aucun journal d'appels au contenu
+  des pages (les champs sensibles restaient masqués par `sanitizeForLog`, mais le
+  journal lui-même disparaît).
+- La ligne `console.info` de démarrage suit la même condition.
+
+### 12.9 CSP et `withGlobalTauri` (P2-E, O-005/O-008/A6-009)
+
+- `app.withGlobalTauri` est passé à **`false`** : le bridge utilise
+  `window.__TAURI_INTERNALS__.invoke` (voie officielle Tauri 2) et le repli
+  `plugin:event|listen` + `transformCallback`, déjà en place. Aucun contenu de
+  page n'a donc accès à `window.__TAURI__`.
+- CSP resserrée (les deux configs `tauri.conf.json` et `tauri.beta.conf.json`) :
+  `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
+  img-src 'self' data: blob: http: https:; media-src 'self' blob: http: https:;
+  connect-src 'self' ipc: http://ipc.localhost http: https:; frame-src 'none';
+  object-src 'none'`.
+  - `http:`/`https:` restent nécessaires aux URLs média signées et aux appels
+    REST board dynamiques (API_URL inconnue à la compilation) ;
+  - plus de `asset:`/`http://asset.localhost` (protocole asset non utilisé) ;
+  - plus de `ws:`/`wss:` : le WebSocket v2 est ouvert par le superviseur Rust,
+    pas par la webview.
+- Le rendu carte tweet reste statique (§12.2) ; `frame-src 'none'` interdit tout
+  iframe.
+
+### 12.10 `enabled=false` strict et états d'erreur (P2-E, A6-006/A6-016)
+
+- `windows::overlay_should_show(config) = enabled && has_pairing_config()` :
+  aucune fenêtre overlay n'est affichée au boot ni via « Afficher l'overlay »
+  quand l'overlay est désactivé ou non appairé ; la fenêtre est masquée et le
+  thread topmost ne fait rien.
+- `events::deliver_or_buffer` / `flush_pending` ignorent (et ne bufferisent pas)
+  les événements `play`/`stop` dans cet état ; `events::stop_overlay_now` coupe
+  une lecture en cours lors d'une désactivation (tray).
+- `emit_settings` ne diffuse plus `clientToken` (redaction) vers les fenêtres
+  overlay/board — cohérent avec §12.7 (le token board passe par `get_config`).
+- Tray : priorité aux états « Overlay désactivé (aucune lecture) » et
+  « Appairage requis » sur les erreurs réseau ; entrée « Afficher l'overlay »
+  grisée hors état actif ; tooltip suffixé « (désactivé) ».
+- Config : écriture atomique (temp + rename) et `.bak` atomique (A6-007).
+
+
 

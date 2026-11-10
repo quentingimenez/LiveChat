@@ -1,9 +1,10 @@
 # Serveur — ingestion REST et service média persistant
 
-> **Statut : Phase 3c + 5b livrée.** Owner : `http-core` (task-16).
+> **Statut : Phase 3c + 5b livrée ; durcie par task-49 (COR-13/COR-15).**
+> Owner : `http-core` (task-16 puis task-49).
 > Périmètre : `apps/lc-server/src/http/ingest/**`, `apps/lc-server/src/media/**`,
-> ce document. Le crate `lc-media` (pipeline) et les repositories `lc-db` ne sont
-> pas modifiés par cette phase.
+> `apps/lc-server/src/http/overlay/{media,meme_board}.rs` (unification board),
+> `crates/lc-media/**` (sécurités pipeline) et ce document.
 
 ## 1. Objectif
 
@@ -78,6 +79,7 @@ Corps : `{ "code": string, "deviceName"?: string }`.
 
 | Cas | Statut | Corps |
 | --- | --- | --- |
+| corps JSON illisible | 400 | `{"error":"invalid_payload"}` (AUD-A2-009) |
 | code absent/vide | 400 | `{"error":"invalid_payload"}` |
 | base absente (DATABASE_URL vide) | 503 | `{"error":"ingest_api_disabled"}` |
 | code inconnu/expiré/consommé/mal formé | 404 | `{"error":"pairing_code_invalid_or_expired"}` |
@@ -89,12 +91,18 @@ Ordre : purge des codes expirés → lookup du code utilisable → refus si mode
 anciens clients de la même guilde portant le même libellé → création du client.
 Le token en clair n'est renvoyé qu'une fois ; seul son SHA-256 est persisté.
 
+`deviceName` est trimé puis tronqué à **200 caractères** (`MAX_DEVICE_NAME_CHARS`,
+comme l'overlay depuis AUD-A2-012) ; repli `Extension-<authorName>` si absent.
+La collision `token_hash` (improbable) est réessayée une fois avec un token
+régénéré, puis remontée en erreur serveur — AUD-A2-010.
+
 ### `POST /ingest`
 
 Authentification **avant** toute validation de corps, comme le legacy.
 
 | Cas | Statut | Corps |
 | --- | --- | --- |
+| corps JSON illisible | 400 | `{"error":"invalid_payload"}` (après l'auth, AUD-A2-009) |
 | aucun client actif / base absente | 503 | `{"error":"ingest_api_disabled"}` |
 | token absent, invalide ou révoqué | 401 | `{"error":"unauthorized"}` |
 | `guildId` ≠ guilde du client | 403 | `{"error":"guild_mismatch"}` |
@@ -150,18 +158,19 @@ sont saturantes).
 ### Pipeline partagé
 
 `MediaService::new(config, db, clock)` est testable (pipeline propre).
-`MediaService::for_state(&AppState)` est le chemin des routes : le
-`MediaPipeline` (client HTTP + sémaphore de concurrence) est construit une seule
-fois par processus (`OnceLock`), les appels suivants réutilisent l'instance. La
-limite `MEDIA_MAX_CONCURRENT_INGESTIONS` est donc globale au serveur, comme le
-legacy. Une base absente renvoie `Unavailable` → `503 ingest_unavailable`.
+`MediaService::for_state(&AppState)` est le chemin de **toutes** les routes média
+depuis task-49 : le `MediaPipeline` (client HTTP + sémaphore de concurrence) est
+construit une seule fois par processus (`OnceLock`), les appels suivants
+réutilisent l'instance. La limite `MEDIA_MAX_CONCURRENT_INGESTIONS` est donc
+globale au serveur, comme le legacy. Une base absente renvoie `Unavailable` →
+`503 ingest_unavailable`.
 
-`shared_pipeline_for_state(&AppState)` expose la même instance aux autres routes
-média : `POST /overlay/meme-board/items` l'utilise depuis task-42 (P1-09,
-AUD-A2-006/A4-007) au lieu d'instancier un `MediaPipeline::new` par requête. Le
-meme board partage donc le sémaphore global, le budget de cache
-(`quotas::enforce_cache_budget`), l'enregistrement `FAILED` et le client HTTP
-partagé (limites de connexions).
+Le meme board (`POST /overlay/meme-board/items`) utilise la **même**
+`MediaService` (AUD-V2-S-003) : cache `READY`/`source_hash`, sémaphore, budget
+cache, `record_failure` et nettoyage `discard_partial_files` sont partagés, plus
+d'ingestion inline custom ni de `shared_pipeline_for_state` dans le handler.
+`shared_pipeline_for_state` reste exposée pour les futurs consommateurs
+(worker/phase suivante), mais le board ne l'appelle plus.
 
 ### Confinement du stockage (fail-closed)
 
@@ -225,6 +234,34 @@ base et l'indisponibilité :
 Une erreur inattendue du service (`MediaServiceError` non média) donne 500, et
 non `DOWNLOAD_FAILED` comme le legacy : décision assumée, documentée ici.
 
+### Sécurités pipeline (task-49 / COR-15)
+
+- **SVG refusé** (AUD-A4-004) : `normalize_image` rejette `image/svg+xml` avant
+  toute copie (Content-Type, extension `.svg`, ou signature `<?xml`/`<svg` sur
+  les premiers octets) → `422 media_ingestion_failed` code `INVALID_MEDIA`.
+  `kind_from_mime` exclut aussi SVG. Les images sont donc toujours des raster
+  ré-encodés, jamais servies telles quelles.
+- **MIME dérivé du probe** (AUD-A4-010) : pour les images, le codec ffprobe
+  prime (whitelist png/jpeg/webp/gif/bmp/avif), puis le Content-Type distant
+  whitelisté, puis l'extension. Le Content-Type distant seul n'est jamais
+  stocké/servi tel quel.
+- **Options ffprobe** (AUD-A4-012) : `probe_args` place `-i` avant le chemin
+  (un chemin local commençant par `-` n'est plus interprété comme option).
+- **Sorties de commandes bornées** (AUD-A4-005) : `lc_media::process::run_command`
+  draine stdout/stderr avec un plafond de 8 Mio ; dépassement →
+  `INVALID_MEDIA` (« sortie de … trop volumineuse »), plus de buffer illimité.
+- **Cookie TikTok** (AUD-A4-013) : `sanitize_tiktok_cookie` trim, retire le
+  préfixe `cookie:`, refuse vide/caractères de contrôle, plafonne à 4096
+  caractères ; la valeur n'est jamais journalisée.
+- **Sanitizers HTML allowlist** (AUD-A4-015) : `lc_media::html::sanitize_embed_html`
+  (oEmbed/embed) et `crate::media::html::sanitize_tweet_embed` (carte tweet,
+  Phase 6b) n'autorisent qu'une liste fermée de tags/attributs, suppriment
+  `script/style/iframe/object/embed/form`, forcent `rel`/`target` sur `<a>` et
+  n'acceptent que `http(s)` pour `href`/`src` (attributs ré-échappés).
+
+Tests réseau réels (SSRF, redirection privée, taille, `file:`) restent
+`#[ignore]` : la CI ne dépend d'aucun réseau.
+
 ## 6. Quotas et meme board
 
 Deux budgets distincts, plans purs fournis par `lc_media::cache` :
@@ -243,6 +280,12 @@ Deux budgets distincts, plans purs fournis par `lc_media::cache` :
 
 Le comptage « actif » (jobs `PENDING`/`PLAYING`) et « épinglé » est calculé par
 requêtes SQL sur `media_asset_id` : les repositories n'offrent pas ces filtres.
+
+Le meme board exposed par `http::overlay::meme_board` partage ces budgets :
+`POST /overlay/meme-board/items` passe par la même `MediaService` puis
+`assets::pin` (expiry à +100 ans) ; la liste charge en une jointure bornée et la
+suppression est transactionnelle (`delete_item_and_release`). Voir
+`docs/rust/server-overlay.md` §7.
 
 ## 7. Jobs et hook temps réel
 
@@ -279,8 +322,9 @@ partiellement publié. Aucun endpoint de debug/shutdown n'est exposé.
 
 ## 9. Tests
 
-50 tests ajoutés (unitaires et in-process, base SQLite temporaire
-`tempfile::tempdir()`, aucun réseau réel) :
+Tests de la lane (état task-49 : **47 tests `media::` + 21 tests `http::ingest`**,
+suite complète `cargo test -p lc-server --lib` = 284 passed, 1 ignoré), unitaires
+et in-process, base SQLite temporaire `tempfile::tempdir()`, aucun réseau réel :
 
 | Module | Tests | Couverture |
 | --- | --- | --- |
@@ -292,18 +336,20 @@ partiellement publié. Aucun endpoint de debug/shutdown n'est exposé.
 | `media::quotas` | 4 | éviction LRU, assets actifs protégés, budget board |
 | `media::board` | 3 | ajout+épinglage, idempotence, budget dépassé |
 | `media::jobs` | 5 | durées par défaut/guilde/explicite, image, offset riche |
-| `media::service` | 3 | cache hit sans réseau, échec pipeline → FAILED, source absente |
+| `media::service` | 4 | cache hit sans réseau, échec pipeline → FAILED, source absente, nettoyage fichier après échec `forceRefresh` |
+| `media::html` | 4 | sanitizer tweet allowlist : tags/attrs autorisés, blocs actifs supprimés, `href`/`src` http(s), texte conservé |
 | `media::confinement` | 2 | racine créée/canonicalisée idempotente, chemins vides/fichiers refusés |
 | `media::purge` | 3 | FAILED/PROCESSING périmés supprimés (fichier inclus), assets épinglés board conservés et READY expiré évincé, transit/orphelins supprimés seulement après la grâce |
 | `http::ingest::body` | 4 | normalisation, types, drapeaux, durées |
 | `http::ingest::auth` | 1 | parsing Bearer |
-| `http::ingest::pair` | 4 | succès + hash + code consommé, expiré/inconnu, scope invité, code absent |
-| `http::ingest::submit` | 8 | 503/401, job texte, guild mismatch, champs auteur, corps vide, saveToBoard sans média, révocation |
+| `http::ingest::pair` | 6 | succès + hash + code consommé, expiré/inconnu, scope invité, code absent, JSON illisible, deviceName long tronqué à 200 |
+| `http::ingest::submit` | 9 | 503/401, job texte, guild mismatch, champs auteur, corps vide, saveToBoard sans média, révocation, JSON illisible |
 | `http::ingest::mod` | 1 | montage des deux variantes de slash |
 
-Vérifications de la lane : `cargo fmt -p lc-server -- --check`,
-`cargo clippy -p lc-server --all-targets -- -D warnings`,
-`cargo test -p lc-server`.
+Vérifications de la lane (task-49) : `cargo fmt -p lc-media -p lc-server -- --check`,
+`cargo clippy -p lc-media -p lc-server --all-targets -- -D warnings`,
+`cargo test -p lc-media` (130 unit + 12 intégration + 1 doctest, 4 réseau `#[ignore]`),
+`cargo test -p lc-server --lib`.
 
 ## 10. Écarts et décisions vs legacy
 
@@ -314,8 +360,14 @@ Vérifications de la lane : `cargo fmt -p lc-server -- --check`,
 | Rich tweet card | résolution oEmbed + payload riche | **hors scope 3c** (Phase 6b) ; les URLs de tweet passent par le pipeline média standard |
 | `saveToBoard` | 201 board, pas de job | idem |
 | Réponse `/pair/consume` `apiBaseUrl` | `env.API_URL` | `api_url` validée, slash final retiré |
+| `deviceName` | champ libre | trimé puis tronqué à 200 caractères, comme l'overlay (AUD-A2-012) |
+| Collision `token_hash` à l'appairage | erreur 500 Prisma | réessai unique avec token régénéré, puis 500 (AUD-A2-010) |
 | Purge worker | boucle toutes les 60 s | worker `media::purge` toutes les 10 min (task-42) : FAILED > 1 h, PROCESSING > 2 h, READY expirés, transit `.tmp-*` et orphelins du storage après 1 h de grâce |
-| Corps JSON invalide | 400 Fastify (parsing avant handler) | `Option<Json>` → corps vide ; auth d'abord, donc un token invalide peut donner 401 avant 400 |
+| Corps JSON invalide | 400 Fastify (parsing avant handler) | 400 `invalid_payload` dédié ; l'auth/token reste évaluée avant le refus de corps (AUD-A2-009) |
+| SVG / MIME distant | SVG accepté, Content-Type distant de confiance | SVG refusé (`INVALID_MEDIA`), MIME dérivé du probe (AUD-A4-004/A4-010) |
+| Commandes externes | sortie non bornée | stdout/stderr plafonnés à 8 Mio (`run_command`), ffprobe `-i` (AUD-A4-005/A4-012) |
+| Cookie TikTok | préfixe retiré, valeur brute | validation contrôle/cap 4096, jamais journalisée (AUD-A4-013) |
+| HTML embeds | suppression script/iframe seulement | allowlist tags/attrs + `rel`/`target` forcés (AUD-A4-015) |
 | SQL direct | Prisma | `db.pool()` pour `mark_ready` et l'éviction (repositories lc-db incomplets) |
 
 ## 11. Risques et points Phase 4b/6b
@@ -323,9 +375,15 @@ Vérifications de la lane : `cargo fmt -p lc-server -- --check`,
 - **Hook** : contrat `notify` (pas `enqueue`) ; à câbler en Phase 4b au hub WS
   (`install_ingest_hook`) sans importer `src/ws` depuis `src/media`.
 - **Pipeline global** : la config du pipeline est figée au premier usage
-  (`OnceLock`) ; cohérent avec une configuration d'environnement immuable, mais
-  rend les tests de routes dépendants de la première configuration vue. Les
-  tests média contournent le global via `MediaService::new`.
+  (`OnceLock`), y compris via `MediaService::for_state` désormais utilisé par le
+  board. Cohérent avec une configuration d'environnement immuable, mais rend les
+  tests de routes dépendants de la première configuration vue ; les tests média
+  contournent le global via `MediaService::new`. Réinitialisation = redémarrage.
+- **`forceRefresh`** : le téléchargement est refait et les variantes partielles
+  sont supprimées en cas d'échec (`discard_partial_files`) ; les anciens fichiers
+  d'un asset étaient déjà nettoyés par le pipeline avant publication atomique.
+  L'invalidation de cache est donc effective, mais aucune purge opportuniste des
+  autres assets n'est déclenchée dans la foulée (worker de purge séparé).
 - **Dette — SQL direct** : `assets.rs`/`quotas.rs` utilisent `db.pool()` pour le
   passage complet en `READY`, l'éviction et le total du board, faute de méthodes
   dans les repositories `lc-db`. À promouvoir en méthodes de repository
@@ -344,6 +402,9 @@ Vérifications de la lane : `cargo fmt -p lc-server -- --check`,
   `auth::resolve` uniquement (pas de changement de contrat de réponse).
 - **Concurrence** : limite globale `MEDIA_MAX_CONCURRENT_INGESTIONS` portée par
   le pipeline partagé ; pas de limite par client d'ingestion (legacy idem).
+- **Tests réseau** : les scénarios SSRF/redirection/taille/sortie de commande
+  sont couverts par des tests locaux et des `#[ignore]` ; une vraie CI réseau
+  reste à décider (aucun test ne dépend du réseau par défaut).
 
 ## 12. Références
 

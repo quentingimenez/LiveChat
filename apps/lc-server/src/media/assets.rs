@@ -237,6 +237,39 @@ pub async fn mark_ready(
     })
 }
 
+/// Épingle un asset `READY` (expiration à 100 ans) pour sa présence au board.
+///
+/// Parité legacy `ensurePinnedExpiry` : seules les échéances plus courtes sont
+/// repoussées, un asset déjà épinglé n'est pas réécrit inutilement. La mise à
+/// jour est conditionnée à `READY` pour ne jamais épingler un asset en échec.
+pub async fn pin(
+    db: &Db,
+    asset_id: MediaAssetId,
+    now: DateTime<Utc>,
+) -> MediaServiceResult<MediaAsset> {
+    let expiry = pinned_expiry(now);
+    sqlx::query(
+        "UPDATE media_assets \
+            SET last_accessed_at = ?, expires_at = ? \
+          WHERE id = ? AND status = 'READY' AND expires_at < ?",
+    )
+    .bind(datetime_to_ms(now))
+    .bind(datetime_to_ms(expiry))
+    .bind(asset_id.to_canonical())
+    .bind(datetime_to_ms(expiry))
+    .execute(db.pool())
+    .await
+    .map_err(lc_db::DbError::from)?;
+
+    let assets = db.media_assets();
+    assets.get(asset_id).await?.ok_or_else(|| {
+        MediaServiceError::Database(lc_db::DbError::Domain(lc_domain::DomainError::not_found(
+            "media_assets",
+            asset_id.to_string(),
+        )))
+    })
+}
+
 /// Passe un asset en `FAILED` avec `"[CODE] message"` et une expiration courte.
 pub async fn mark_failed(
     db: &Db,

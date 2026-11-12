@@ -13,9 +13,21 @@
 //! - `deviceName` : facultatif ; repli legacy `Overlay-<authorName|User>` ;
 //! - `label` / `clientName` sont acceptés en alias de `deviceName` (anciens
 //!   clients) ;
-//! - `appVersion` / `sessionMode` sont ignorés pour la décision : le mode vient
-//!   TOUJOURS du code d'appairage persisté (`pairing_codes.mode`), jamais du
-//!   client (un client ne peut pas s'auto-attribuer une session normale).
+//! - `displayName` / `avatar` : profil du nouveau membre (facultatifs) ;
+//! - `appVersion` / `sessionMode` sont ignorés pour la décision : le rôle vient
+//!   TOUJOURS du code persisté, jamais du client (un client ne peut pas
+//!   s'auto-attribuer un rôle).
+//!
+//! ## Deux familles de codes
+//!
+//! Le code est cherché d'abord dans `guild_invites` (invitations porteuses d'un
+//! rôle, émises depuis l'overlay ou le panel serveur), puis dans
+//! `pairing_codes` (codes legacy émis depuis Discord : `NORMAL` → membre,
+//! `INVITE_READ_ONLY` → invité). Les tirets saisis (`K7QX-M2PD`) sont ignorés.
+//!
+//! Chaque appairage rattache l'overlay à un membre de guilde : un nouveau
+//! membre, ou le membre existant visé par un code « appareil »
+//! (`guild_invites.member_id`).
 //!
 //! ## Réponse (200)
 //!
@@ -28,6 +40,10 @@
 //!   "deviceName": "Poste salon",
 //!   "authorName": "Alice" | null,
 //!   "sessionMode": "normal" | "invite_read_only",
+//!   "role": "admin" | "member" | "guest",
+//!   "memberId": "…uuid…",
+//!   "displayName": "Alice",
+//!   "guildName": "Les Sardines" | null,
 //!   "protocolVersion": 2
 //! }
 //! ```
@@ -52,11 +68,28 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::Json;
-use lc_domain::{OverlayClient, OverlayClientId, OverlaySessionMode, PairingCode};
+use lc_domain::{
+    GuildId, GuildMember, GuildMemberId, GuildRole, OverlayClient, OverlayClientId, PairingCode,
+};
 
 use crate::app::AppState;
 
+use super::guild::{normalize_avatar, normalize_display_name};
 use super::{db, db_failure, error, is_conflict, json_response, now};
+
+/// Ce qu'un code consommé accorde, quelle que soit sa famille.
+struct Grant {
+    guild_id: GuildId,
+    role: GuildRole,
+    /// Membre existant auquel rattacher l'overlay (code « appareil »).
+    attach_member_id: Option<GuildMemberId>,
+    /// Nom d'auteur porté par un code legacy.
+    author_name: Option<String>,
+    /// Avatar d'auteur porté par un code legacy.
+    author_image: Option<String>,
+    /// Auteur Discord d'un code legacy.
+    created_by_discord_user_id: Option<String>,
+}
 
 /// Corps d'appairage (tolérant : les alias legacy sont acceptés).
 #[derive(Debug, Default, serde::Deserialize)]
@@ -68,6 +101,12 @@ pub(super) struct PairConsumeRequest {
     /// Nom d'appareil demandé (nom de la fenêtre/du poste).
     #[serde(default, alias = "label", alias = "clientName")]
     device_name: Option<String>,
+    /// Pseudo du nouveau membre.
+    #[serde(default)]
+    display_name: Option<String>,
+    /// Avatar du nouveau membre (URL ou image embarquée).
+    #[serde(default)]
+    avatar: Option<String>,
     /// Version de l'application overlay (journalisation uniquement).
     #[serde(default)]
     app_version: Option<String>,
@@ -121,19 +160,32 @@ pub async fn consume_pairing(
         tracing::warn!(error = %db_error, "nettoyage des codes d'appairage expirés impossible");
     }
 
-    let code = match PairingCode::parse(&requested_code) {
+    let code = match PairingCode::parse(&requested_code.replace('-', "")) {
         Ok(code) => code,
         Err(_) => return error(StatusCode::NOT_FOUND, "pairing_code_invalid_or_expired"),
     };
-    let entry = match db.pairing_codes().consume(&code, now).await {
-        Ok(Some(entry)) => entry,
-        Ok(None) => return error(StatusCode::NOT_FOUND, "pairing_code_invalid_or_expired"),
-        Err(db_error) => return db_failure("overlay_pair.consume_code", &db_error),
-    };
-
-    let session_mode = match entry.mode {
-        lc_domain::PairingMode::InviteReadOnly => OverlaySessionMode::InviteReadOnly,
-        lc_domain::PairingMode::Normal => OverlaySessionMode::Normal,
+    let grant = match db.guild_invites().consume(&code, now).await {
+        Ok(Some(invite)) => Grant {
+            guild_id: invite.guild_id,
+            role: invite.role,
+            attach_member_id: invite.member_id,
+            author_name: None,
+            author_image: None,
+            created_by_discord_user_id: None,
+        },
+        Ok(None) => match db.pairing_codes().consume(&code, now).await {
+            Ok(Some(entry)) => Grant {
+                guild_id: entry.guild_id,
+                role: GuildRole::from_pairing_mode(entry.mode),
+                attach_member_id: None,
+                author_name: entry.author_name,
+                author_image: entry.author_image,
+                created_by_discord_user_id: Some(entry.created_by_discord_user_id),
+            },
+            Ok(None) => return error(StatusCode::NOT_FOUND, "pairing_code_invalid_or_expired"),
+            Err(db_error) => return db_failure("overlay_pair.consume_code", &db_error),
+        },
+        Err(db_error) => return db_failure("overlay_pair.consume_invite", &db_error),
     };
 
     let requested_label = payload
@@ -142,15 +194,75 @@ pub async fn consume_pairing(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(truncate_label);
-    let author_name = entry.author_name.clone();
+
+    // Membre propriétaire de l'overlay : existant (code « appareil ») ou neuf.
+    let (member, is_new_member) = match grant.attach_member_id {
+        Some(member_id) => match db.guild_members().get(member_id).await {
+            Ok(Some(member)) if member.is_active() => (member, false),
+            Ok(_) => return error(StatusCode::NOT_FOUND, "pairing_code_invalid_or_expired"),
+            Err(db_error) => return db_failure("overlay_pair.member_lookup", &db_error),
+        },
+        None => {
+            let display_name = payload
+                .display_name
+                .as_deref()
+                .and_then(normalize_display_name)
+                .or_else(|| {
+                    grant
+                        .author_name
+                        .as_deref()
+                        .and_then(normalize_display_name)
+                })
+                .or_else(|| requested_label.as_deref().and_then(normalize_display_name))
+                .unwrap_or_else(|| "User".to_owned());
+            let avatar = payload
+                .avatar
+                .as_deref()
+                .and_then(normalize_avatar)
+                .or_else(|| grant.author_image.as_deref().and_then(normalize_avatar));
+            let member = GuildMember {
+                id: GuildMemberId::new_v4(),
+                guild_id: grant.guild_id.clone(),
+                display_name,
+                avatar,
+                role: grant.role,
+                created_at: now,
+                removed_at: None,
+            };
+            (member, true)
+        }
+    };
+    // Un code « appareil » reprend le rôle courant du membre, pas celui figé
+    // dans le code à sa création.
+    let role = member.role;
+    let session_mode = role.session_mode();
+
+    // Parité legacy : le nom d'auteur renvoyé est celui du code Discord quand
+    // il existe ; sinon c'est le pseudo du membre.
+    let author_name = grant
+        .author_name
+        .clone()
+        .or_else(|| Some(member.display_name.clone()));
+    let explicit_label = requested_label.is_some();
     let label = requested_label.unwrap_or_else(|| {
-        let suffix = author_name.as_deref().unwrap_or("User");
+        let suffix = grant.author_name.as_deref().unwrap_or("User");
         truncate_label(&format!("Overlay-{suffix}"))
     });
 
-    // Révoque les clients actifs de la même guilde portant le même libellé
-    // (parité legacy : un poste ne peut avoir qu'une session active).
-    match db.overlay_clients().list_by_guild(&entry.guild_id).await {
+    // Un poste ne garde qu'une session active par libellé. Pour un code legacy
+    // la règle porte sur toute la guilde (parité) ; pour une invitation elle se
+    // limite aux overlays du même membre, sinon un simple nom d'appareil
+    // suffirait à déconnecter l'overlay de quelqu'un d'autre ; et elle ne joue
+    // que pour un nom d'appareil fourni, sinon le libellé par défaut d'un
+    // second overlay révoquerait le premier.
+    let previous = if grant.created_by_discord_user_id.is_some() {
+        db.overlay_clients().list_by_guild(&grant.guild_id).await
+    } else if is_new_member || !explicit_label {
+        Ok(Vec::new())
+    } else {
+        db.overlay_clients().list_active_by_member(member.id).await
+    };
+    match previous {
         Ok(clients) => {
             for client in clients {
                 if client.is_active() && client.label == label {
@@ -163,16 +275,22 @@ pub async fn consume_pairing(
         Err(db_error) => return db_failure("overlay_pair.list_previous_clients", &db_error),
     }
 
+    if is_new_member {
+        if let Err(db_error) = db.guild_members().create(&member).await {
+            return db_failure("overlay_pair.create_member", &db_error);
+        }
+    }
+
     let token = super::auth::generate_token();
     let client = OverlayClient {
         id: OverlayClientId::new_v4(),
-        guild_id: entry.guild_id.clone(),
+        guild_id: grant.guild_id.clone(),
         label: label.clone(),
         token_hash: super::auth::hash_token(&token),
         session_mode,
         default_author_name: author_name.clone(),
-        default_author_image: entry.author_image.clone(),
-        created_by_discord_user_id: Some(entry.created_by_discord_user_id.clone()),
+        default_author_image: grant.author_image.clone().or_else(|| member.avatar.clone()),
+        created_by_discord_user_id: grant.created_by_discord_user_id.clone(),
         last_seen_at: None,
         created_at: now,
         revoked_at: None,
@@ -183,10 +301,20 @@ pub async fn consume_pairing(
         }
         return db_failure("overlay_pair.create_client", &db_error);
     }
+    if let Err(db_error) = db.overlay_clients().set_member(client.id, member.id).await {
+        return db_failure("overlay_pair.attach_member", &db_error);
+    }
+
+    let guild_name = match db.guilds().access(&grant.guild_id).await {
+        Ok(access) => access.and_then(|access| access.name),
+        Err(db_error) => return db_failure("overlay_pair.guild_lookup", &db_error),
+    };
 
     tracing::info!(
         client_id = %client.id,
         guild_id = %client.guild_id,
+        member_id = %member.id,
+        role = role.as_wire_str(),
         session_mode = %session_mode.as_wire_str(),
         app_version = payload.app_version.as_deref().unwrap_or(""),
         "overlay appairé"
@@ -200,8 +328,12 @@ pub async fn consume_pairing(
             "guildId": client.guild_id.as_str(),
             "apiBaseUrl": state.config.api_origin(),
             "deviceName": client.label,
-            "authorName": author_name,
+            "authorName": grant.author_name,
             "sessionMode": session_mode.as_wire_str(),
+            "role": role.as_wire_str(),
+            "memberId": member.id.to_canonical(),
+            "displayName": member.display_name,
+            "guildName": guild_name,
             "protocolVersion": lc_protocol::PROTOCOL_VERSION,
         }),
     )

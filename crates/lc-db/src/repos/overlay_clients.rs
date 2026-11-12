@@ -3,7 +3,7 @@
 use chrono::DateTime;
 use lc_domain::entities::OverlayClient;
 use lc_domain::enums::OverlaySessionMode;
-use lc_domain::ids::{GuildId, OverlayClientId};
+use lc_domain::ids::{GuildId, GuildMemberId, OverlayClientId};
 use sqlx::SqlitePool;
 
 use crate::convert::{decode, from_ms, from_opt_ms, to_ms, to_opt_ms};
@@ -155,6 +155,97 @@ impl OverlayClientsRepository {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Rattache un overlay à un membre de guilde.
+    pub async fn set_member(
+        &self,
+        id: OverlayClientId,
+        member_id: GuildMemberId,
+    ) -> DbResult<bool> {
+        let result = sqlx::query("UPDATE overlay_clients SET member_id = ? WHERE id = ?")
+            .bind(member_id.to_canonical())
+            .bind(id.to_canonical())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Liste les overlays **actifs** d'un membre, du plus ancien au plus récent.
+    pub async fn list_active_by_member(
+        &self,
+        member_id: GuildMemberId,
+    ) -> DbResult<Vec<OverlayClient>> {
+        let rows = sqlx::query_as::<_, OverlayClientRow>(
+            "SELECT * FROM overlay_clients WHERE member_id = ? AND revoked_at IS NULL \
+             ORDER BY created_at ASC, id ASC",
+        )
+        .bind(member_id.to_canonical())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(OverlayClientRow::into_entity)
+            .collect()
+    }
+
+    /// Révoque tous les overlays actifs d'un membre (exclusion ou départ).
+    ///
+    /// Retourne les identifiants révoqués, pour fermer leurs sessions WS.
+    pub async fn revoke_by_member(
+        &self,
+        member_id: GuildMemberId,
+        revoked_at: DateTime<chrono::Utc>,
+    ) -> DbResult<Vec<OverlayClientId>> {
+        let ids: Vec<String> = sqlx::query_scalar(
+            "UPDATE overlay_clients SET revoked_at = ? \
+             WHERE member_id = ? AND revoked_at IS NULL \
+             RETURNING id",
+        )
+        .bind(to_ms(revoked_at))
+        .bind(member_id.to_canonical())
+        .fetch_all(&self.pool)
+        .await?;
+        ids.iter()
+            .map(|id| decode(TABLE, "id", id, OverlayClientId::parse))
+            .collect()
+    }
+
+    /// Aligne le mode de session des overlays actifs d'un membre sur son rôle
+    /// (parité protocole v2). Retourne le nombre d'overlays modifiés.
+    pub async fn update_mode_by_member(
+        &self,
+        member_id: GuildMemberId,
+        session_mode: OverlaySessionMode,
+    ) -> DbResult<u64> {
+        let result = sqlx::query(
+            "UPDATE overlay_clients SET session_mode = ? \
+             WHERE member_id = ? AND revoked_at IS NULL",
+        )
+        .bind(session_mode.as_db_str())
+        .bind(member_id.to_canonical())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Aligne le nom et l'avatar d'auteur des overlays actifs d'un membre sur
+    /// son profil. Retourne le nombre d'overlays modifiés.
+    pub async fn update_author_by_member(
+        &self,
+        member_id: GuildMemberId,
+        author_name: &str,
+        author_image: Option<&str>,
+    ) -> DbResult<u64> {
+        let result = sqlx::query(
+            "UPDATE overlay_clients SET default_author_name = ?, default_author_image = ? \
+             WHERE member_id = ? AND revoked_at IS NULL",
+        )
+        .bind(author_name)
+        .bind(author_image)
+        .bind(member_id.to_canonical())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     /// Change le mode de session d'un overlay actif.

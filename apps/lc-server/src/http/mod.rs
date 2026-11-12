@@ -8,7 +8,7 @@
 //! - [`socket_io`] : garde-fou 426 pour les clients protocolaire v1 ;
 //! - [`security`] : CSP et en-têtes de sécurité ;
 //! - [`cors`] : origines autorisées explicites ;
-//! - [`rate_limit`] : 100 requêtes / 15 min par IP ;
+//! - [`rate_limit`] : 100 requêtes / 15 min par IP (budget séparé pour les médias) ;
 //! - [`error`] : normalisation JSON des erreurs et repli 404.
 //!
 //! L'assemblage (ordre des couches, état partagé) est centralisé dans

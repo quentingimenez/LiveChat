@@ -429,6 +429,13 @@ depuis le LAN**, et le reverse proxy est le seul point d'entrée public.
   `ADMIN_UI_LOCAL_ONLY=false` **avec** `ADMIN_UI_TOKEN` long et aléatoire. Le
   panneau n'accepte que `Authorization: Bearer` (AUD-COR-05) et est soumis au
   rate limit global (AUD-COR-10).
+- **Rate limit** : 100 requêtes par fenêtre de 15 min et par IP pour toutes les
+  routes, sauf les téléchargements de médias (`GET`/`HEAD` sur
+  `/overlay/media/{id}` et `/overlay/meme-board/media/{id}`), comptés à part
+  avec un budget de 1 000. Les vignettes de la mème board et les requêtes
+  `Range` des vidéos épuisaient sinon le budget commun. Plusieurs overlays
+  derrière la même IP (NAT) partagent ces deux budgets ; derrière un reverse
+  proxy, activer `TRUST_PROXY_HEADERS=true` pour compter par client réel.
 - **Accès admin depuis l'hôte, sans proxy** : dans un conteneur bridge, le
   serveur voit l'IP de la passerelle Docker et non `127.0.0.1` ; avec
   `ADMIN_UI_LOCAL_ONLY=true`, l'API admin répond `403 admin_local_only`. Deux

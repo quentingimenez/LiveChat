@@ -11,6 +11,7 @@ fn migrations_embedded_equal_schema_contract() {
     let migrations = concat!(
         include_str!("../migrations/0001_init.sql"),
         include_str!("../migrations/0002_playback_single_playing.sql"),
+        include_str!("../migrations/0003_guild_members.sql"),
     );
     let contract = include_str!("../../../docs/rust/schema-v3.sql");
     assert_eq!(

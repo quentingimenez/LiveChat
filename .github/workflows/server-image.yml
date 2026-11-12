@@ -75,10 +75,11 @@ jobs:
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.IMAGE }}
+          # Tag git `server-v3.0.0` -> image `livechat-server:3.0.0` (pas de `server` en double).
           tags: |
-            type=ref,event=tag
+            type=match,pattern=server-v(.*),group=1
             type=raw,value=latest,enable=${{ github.event_name == 'push' }}
-            type=raw,value=server-v${{ inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
             type=raw,value=latest,enable=${{ github.event_name == 'workflow_dispatch' && inputs.update_latest }}
 
       - name: Resolve primary image reference

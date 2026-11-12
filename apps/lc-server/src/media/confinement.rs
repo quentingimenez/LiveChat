@@ -60,13 +60,7 @@ pub fn ensure_storage_root(directory: &Path) -> anyhow::Result<PathBuf> {
 /// orphelin). Les variantes sont plates sous la racine : on ne conserve que le
 /// nom de fichier.
 pub fn resolve_reference(root: &Path, reference: &Path) -> PathBuf {
-    if reference.is_absolute() {
-        return reference.to_path_buf();
-    }
-    match reference.file_name() {
-        Some(name) if !name.is_empty() => root.join(name),
-        _ => root.to_path_buf(),
-    }
+    lc_media::resolve_storage_reference(root, reference)
 }
 
 /// Vérifie le confinement d'une référence avant suppression et renvoie le

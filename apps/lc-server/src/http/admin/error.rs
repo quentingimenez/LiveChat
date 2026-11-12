@@ -19,6 +19,8 @@ pub enum AdminError {
     BadRequest(&'static str),
     /// 404 avec un code métier (`overlay_client_not_found`…).
     NotFound(&'static str),
+    /// 409 avec un code métier (`native_guild_unlink`…).
+    Conflict(&'static str),
     /// 500 `internal_error` ; le détail a déjà été journalisé.
     Internal,
 }
@@ -32,6 +34,11 @@ impl AdminError {
     /// Construit un 404 avec le code métier fourni.
     pub fn not_found(code: &'static str) -> Self {
         Self::NotFound(code)
+    }
+
+    /// Construit un 409 avec le code métier fourni.
+    pub fn conflict(code: &'static str) -> Self {
+        Self::Conflict(code)
     }
 
     /// Encapsule une erreur de base de données : journalise le détail et
@@ -51,6 +58,7 @@ impl IntoResponse for AdminError {
         let (status, code): (StatusCode, &'static str) = match self {
             Self::BadRequest(code) => (StatusCode::BAD_REQUEST, code),
             Self::NotFound(code) => (StatusCode::NOT_FOUND, code),
+            Self::Conflict(code) => (StatusCode::CONFLICT, code),
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
 

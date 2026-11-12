@@ -58,6 +58,7 @@ use tower_http::trace::{DefaultOnFailure, DefaultOnRequest, DefaultOnResponse, T
 use tracing::{Level, Span};
 
 use crate::config::Config;
+use crate::discord::guild_leave::{DisabledLeaver, DiscordGuildLeaver};
 use crate::http;
 use crate::http::admin::hub::{AdminHub, NoopAdminHub};
 use crate::http::health::{DiscordProbe, HealthProbe};
@@ -142,6 +143,9 @@ pub struct AppState {
     pub discord: Arc<dyn HealthProbe>,
     /// Hub WebSocket exposé aux handlers admin (AUD-COR-14).
     pub admin_hub: Arc<dyn AdminHub>,
+    /// Client capable de faire quitter le bot d'un serveur Discord (panneau
+    /// admin). `DisabledLeaver` par défaut quand Discord n'est pas configuré.
+    pub discord_leaver: Arc<dyn DiscordGuildLeaver>,
 }
 
 impl AppState {
@@ -159,6 +163,7 @@ impl AppState {
             shutdown,
             discord,
             admin_hub: Arc::new(NoopAdminHub),
+            discord_leaver: Arc::new(DisabledLeaver),
         }
     }
 
@@ -179,6 +184,13 @@ impl AppState {
     #[must_use]
     pub fn with_admin_hub(mut self, hub: Arc<dyn AdminHub>) -> Self {
         self.admin_hub = hub;
+        self
+    }
+
+    /// Remplace le client de départ Discord (Phase 7c ou tests).
+    #[must_use]
+    pub fn with_discord_leaver(mut self, leaver: Arc<dyn DiscordGuildLeaver>) -> Self {
+        self.discord_leaver = leaver;
         self
     }
 }

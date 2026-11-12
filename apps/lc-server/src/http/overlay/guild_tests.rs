@@ -1,5 +1,8 @@
 //! Tests bout en bout des guildes indépendantes : invitations, rôles,
 //! administration de guilde et file d'attente (routeur complet, base mémoire).
+//!
+//! [`Harness`] et ses helpers sont `pub(super)` : les tests des autres modules
+//! `overlay` (liaison Discord, code d'extension) les réutilisent.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -22,7 +25,7 @@ use crate::shutdown::Shutdown;
 
 use super::guild::{create_invite, NewInvite};
 
-fn fixed_now() -> DateTime<Utc> {
+pub(super) fn fixed_now() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 11, 10, 12, 0, 0)
         .single()
         .unwrap()
@@ -44,16 +47,16 @@ fn test_config(media_dir: &Path) -> Config {
     .unwrap()
 }
 
-struct Harness {
-    app: Router,
-    db: Db,
-    guild_id: GuildId,
+pub(super) struct Harness {
+    pub(super) app: Router,
+    pub(super) db: Db,
+    pub(super) guild_id: GuildId,
     _media: TempDir,
 }
 
 impl Harness {
     /// Routeur complet + une guilde indépendante « Les Sardines ».
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         let media = TempDir::new().unwrap();
         let db = Db::open_in_memory(&DbConfig::default()).await.unwrap();
         let clock: Arc<dyn lc_domain::Clock> = Arc::new(FixedClock::new(fixed_now()));
@@ -76,7 +79,7 @@ impl Harness {
         }
     }
 
-    async fn call(
+    pub(super) async fn call(
         &self,
         method: Method,
         uri: &str,
@@ -102,7 +105,7 @@ impl Harness {
     }
 
     /// Code émis comme le ferait le panel serveur (aucun membre créateur).
-    async fn server_invite(&self, role: GuildRole) -> String {
+    pub(super) async fn server_invite(&self, role: GuildRole) -> String {
         let invite = create_invite(
             &self.db,
             NewInvite {
@@ -122,7 +125,7 @@ impl Harness {
     }
 
     /// Consomme un code ; retourne le corps de la réponse d'appairage.
-    async fn join(&self, code: &str, display_name: &str) -> Value {
+    pub(super) async fn join(&self, code: &str, display_name: &str) -> Value {
         let (status, body) = self
             .call(
                 Method::POST,
@@ -136,7 +139,7 @@ impl Harness {
     }
 
     /// Crée une invitation en tant qu'admin et la fait consommer.
-    async fn invite_and_join(&self, admin_token: &str, role: &str, name: &str) -> Value {
+    pub(super) async fn invite_and_join(&self, admin_token: &str, role: &str, name: &str) -> Value {
         let (status, body) = self
             .call(
                 Method::POST,
@@ -151,7 +154,7 @@ impl Harness {
     }
 }
 
-fn token(body: &Value) -> String {
+pub(super) fn token(body: &Value) -> String {
     body["clientToken"].as_str().unwrap().to_owned()
 }
 

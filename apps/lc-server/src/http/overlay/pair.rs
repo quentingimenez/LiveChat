@@ -25,6 +25,11 @@
 //! `pairing_codes` (codes legacy émis depuis Discord : `NORMAL` → membre,
 //! `INVITE_READ_ONLY` → invité). Les tirets saisis (`K7QX-M2PD`) sont ignorés.
 //!
+//! Depuis `/overlay/ingest-code`, un code `pairing_codes` peut être émis par un
+//! membre overlay (`created_by_discord_user_id` préfixé `member:`) : il est
+//! réservé à l'extension d'ingestion et l'overlay le refuse (`403
+//! pairing_code_scope_mismatch`) **sans le consommer**.
+//!
 //! Chaque appairage rattache l'overlay à un membre de guilde : un nouveau
 //! membre, ou le membre existant visé par un code « appareil »
 //! (`guild_invites.member_id`).
@@ -58,6 +63,7 @@
 //! | Statut | Corps |
 //! |--------|-------|
 //! | 400 | `{"error":"invalid_payload"}` (code absent) |
+//! | 403 | `{"error":"pairing_code_scope_mismatch"}` (code réservé à l'extension) |
 //! | 404 | `{"error":"pairing_code_invalid_or_expired"}` |
 //! | 409 | `{"error":"overlay_client_conflict"}` (collision de token, très improbable) |
 //! | 500 | `{"error":"internal_error"}` |
@@ -173,18 +179,35 @@ pub async fn consume_pairing(
             author_image: None,
             created_by_discord_user_id: None,
         },
-        Ok(None) => match db.pairing_codes().consume(&code, now).await {
-            Ok(Some(entry)) => Grant {
-                guild_id: entry.guild_id,
-                role: GuildRole::from_pairing_mode(entry.mode),
-                attach_member_id: None,
-                author_name: entry.author_name,
-                author_image: entry.author_image,
-                created_by_discord_user_id: Some(entry.created_by_discord_user_id),
-            },
-            Ok(None) => return error(StatusCode::NOT_FOUND, "pairing_code_invalid_or_expired"),
-            Err(db_error) => return db_failure("overlay_pair.consume_code", &db_error),
-        },
+        Ok(None) => {
+            // Un code émis depuis l'overlay (`member:`) est réservé à
+            // l'extension : le refuser sans le consommer, sinon il deviendrait
+            // inutilisable pour elle.
+            match db.pairing_codes().get(&code).await {
+                Ok(Some(entry))
+                    if entry.is_usable_at(now)
+                        && entry
+                            .created_by_discord_user_id
+                            .starts_with(super::ingest_code::INGEST_CODE_CREATOR_PREFIX) =>
+                {
+                    return error(StatusCode::FORBIDDEN, "pairing_code_scope_mismatch");
+                }
+                Ok(_) => {}
+                Err(db_error) => return db_failure("overlay_pair.lookup_code", &db_error),
+            }
+            match db.pairing_codes().consume(&code, now).await {
+                Ok(Some(entry)) => Grant {
+                    guild_id: entry.guild_id,
+                    role: GuildRole::from_pairing_mode(entry.mode),
+                    attach_member_id: None,
+                    author_name: entry.author_name,
+                    author_image: entry.author_image,
+                    created_by_discord_user_id: Some(entry.created_by_discord_user_id),
+                },
+                Ok(None) => return error(StatusCode::NOT_FOUND, "pairing_code_invalid_or_expired"),
+                Err(db_error) => return db_failure("overlay_pair.consume_code", &db_error),
+            }
+        }
         Err(db_error) => return db_failure("overlay_pair.consume_invite", &db_error),
     };
 

@@ -64,7 +64,7 @@ pub use retry::with_busy_retry;
 /// migrations reste octet pour octet identique à ce contrat.
 pub const MIGRATION_SQL: &str = include_str!("../migrations/0001_init.sql");
 pub use repos::{
-    GuildInvitesRepository, GuildMembersRepository, GuildsRepository, IngestClientsRepository,
-    MediaAssetsRepository, MemberChange, MemeBoardRepository, MetadataRepository,
-    OverlayClientsRepository, PairingCodesRepository, PlaybackJobsRepository,
+    DiscordLinkCodesRepository, GuildInvitesRepository, GuildMembersRepository, GuildsRepository,
+    IngestClientsRepository, LinkOutcome, MediaAssetsRepository, MemberChange, MemeBoardRepository,
+    MetadataRepository, OverlayClientsRepository, PairingCodesRepository, PlaybackJobsRepository,
 };

@@ -69,6 +69,13 @@ pub struct DisplayFullInput {
     pub value: bool,
 }
 
+/// Options de `/lier` (`/link`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkInput {
+    /// Code de liaison affiché dans l'overlay de la guilde indépendante.
+    pub code: String,
+}
+
 /// Options spécifiques à une commande.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommandInput {
@@ -84,6 +91,8 @@ pub enum CommandInput {
     Talk(TalkInput),
     /// `/cdire`.
     HideTalk(TalkInput),
+    /// `/lier`.
+    Link(LinkInput),
     /// `/overlays`.
     Overlays,
     /// `/help`.
@@ -112,6 +121,7 @@ impl CommandInput {
             Self::MemeAdd(_) => CommandKey::MemeAdd,
             Self::Talk(_) => CommandKey::Talk,
             Self::HideTalk(_) => CommandKey::HideTalk,
+            Self::Link(_) => CommandKey::Link,
             Self::Overlays => CommandKey::Overlays,
             Self::Help => CommandKey::Help,
             Self::Info => CommandKey::Info,
@@ -165,7 +175,8 @@ mod tests {
     use lc_domain::{GuildId, PairingMode};
 
     use super::{
-        CommandInput, DisplayFullInput, Invocation, MediaSubmission, PairCodeInput, TalkInput,
+        CommandInput, DisplayFullInput, Invocation, LinkInput, MediaSubmission, PairCodeInput,
+        TalkInput,
     };
     use crate::catalog::CommandKey;
     use crate::context::Author;
@@ -191,6 +202,13 @@ mod tests {
         assert_eq!(
             CommandInput::SetDisplayFull(DisplayFullInput { value: true }).command(),
             CommandKey::SetDisplayFull
+        );
+        assert_eq!(
+            CommandInput::Link(LinkInput {
+                code: "K7QXM2PD".to_owned()
+            })
+            .command(),
+            CommandKey::Link
         );
     }
 

@@ -70,7 +70,9 @@ use crate::app::AppState;
 
 mod admin;
 mod auth;
+mod discord_link;
 pub(crate) mod guild;
+mod ingest_code;
 mod media;
 mod meme_board;
 mod pair;
@@ -112,6 +114,10 @@ pub fn router() -> Router<AppState> {
             axum::routing::patch(guild::update_profile),
         )
         .route("/overlay/device-code", post(guild::create_device_code))
+        .route(
+            "/overlay/ingest-code",
+            post(ingest_code::create_ingest_code),
+        )
         .route("/overlay/leave", post(guild::leave))
         .route(
             "/overlay/queue",
@@ -137,6 +143,14 @@ pub fn router() -> Router<AppState> {
         .route(
             "/overlay/admin/settings",
             axum::routing::patch(admin::update_settings),
+        )
+        .route(
+            "/overlay/admin/discord-link-code",
+            post(discord_link::create_link_code),
+        )
+        .route(
+            "/overlay/admin/discord-link",
+            axum::routing::delete(discord_link::unlink),
         );
 
     Router::new()

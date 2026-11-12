@@ -1,4 +1,4 @@
-//! Handlers des 14 commandes, indépendants de serenity.
+//! Handlers des 15 commandes, indépendants de serenity.
 //!
 //! Chaque handler reproduit le comportement du legacy
 //! (`server/src/components/**/*Command.ts`) : même texte, mêmes couleurs,
@@ -6,9 +6,12 @@
 //! volontaire est l'enrichissement des tweets de `/send` (réseau, Phase 6b).
 
 use chrono::Duration as ChronoDuration;
-use lc_domain::{Guild, GuildId, MediaAsset, MediaKind, PairingCodeEntry, PairingMode};
+use lc_db::LinkOutcome;
+use lc_domain::{
+    Guild, GuildId, MediaAsset, MediaKind, PairingCode, PairingCodeEntry, PairingMode,
+};
 
-use crate::catalog::registered_command_names;
+use crate::catalog::{registered_command_names, CommandKey};
 use crate::context::{
     load_guild, Author, BotConfig, BotContext, GuildSettingsPatch, MediaRequest, MemeAddRequest,
     PlaybackJobRequest, PAIRING_CODE_MAX_ATTEMPTS,
@@ -16,8 +19,8 @@ use crate::context::{
 use crate::error::{BotError, MediaError, MediaErrorCode, MediaLimits};
 use crate::i18n::{interpolate, strings, Lang};
 use crate::inputs::{
-    CommandInput, DisplayFullInput, Invocation, MediaSubmission, PairCodeInput, TalkInput,
-    TimeSettingInput,
+    CommandInput, DisplayFullInput, Invocation, LinkInput, MediaSubmission, PairCodeInput,
+    TalkInput, TimeSettingInput,
 };
 use crate::reply::{
     CommandOutcome, Deferral, Embed, Reply, COLOR_ERROR, COLOR_INFO, COLOR_SUCCESS, COLOR_WARNING,
@@ -75,8 +78,18 @@ pub fn plan_deferral(invocation: &Invocation) -> Deferral {
 
 async fn handle(ctx: &dyn BotContext, invocation: Invocation) -> Result<Reply, BotError> {
     let lang = invocation.lang;
-    let guild_id = invocation.guild_id.clone();
+    let raw_guild_id = invocation.guild_id.clone();
+    let is_link = invocation.command() == CommandKey::Link;
     let author = invocation.author;
+    // Toutes les commandes sauf `/lier` visent la guilde résolue : un serveur
+    // Discord lié à une guilde indépendante laisse le snowflake au seul
+    // `/lier`, qui doit justement lier ce serveur brut.
+    let guild_id = match raw_guild_id.as_ref() {
+        Some(raw_guild_id) if !is_link => {
+            Some(ctx.db().guilds().resolve_discord(raw_guild_id).await?)
+        }
+        _ => raw_guild_id.clone(),
+    };
     match invocation.input {
         CommandInput::Alive => Ok(alive_reply(lang, &author)),
         CommandInput::Send(submission) => {
@@ -135,6 +148,9 @@ async fn handle(ctx: &dyn BotContext, invocation: Invocation) -> Result<Reply, B
                 strings(lang).hide_talk_answer,
             )
             .await
+        }
+        CommandInput::Link(input) => {
+            handle_link(ctx, lang, raw_guild_id.as_ref(), &author, input).await
         }
         CommandInput::Overlays => Ok(handle_overlays(ctx, lang, guild_id.as_ref()).await),
         CommandInput::Help => Ok(handle_help(ctx, lang)),
@@ -648,6 +664,48 @@ async fn handle_display_full(
 }
 
 // ---------------------------------------------------------------------------
+// /lier (liaison d'un serveur Discord à une guilde indépendante)
+// ---------------------------------------------------------------------------
+
+async fn handle_link(
+    ctx: &dyn BotContext,
+    lang: Lang,
+    raw_guild_id: Option<&GuildId>,
+    author: &Author,
+    input: LinkInput,
+) -> Result<Reply, BotError> {
+    let dict = strings(lang);
+    let Some(discord_guild_id) = raw_guild_id else {
+        return Ok(generic_error_reply(lang));
+    };
+    if !author.is_admin {
+        return Ok(not_allowed_reply(lang));
+    }
+    let Ok(code) = PairingCode::parse(&input.code) else {
+        return Ok(error_reply(lang, dict.link_invalid_code, true));
+    };
+    let outcome = ctx
+        .db()
+        .discord_link_codes()
+        .redeem(&code, discord_guild_id, ctx.clock().now())
+        .await?;
+    Ok(match outcome {
+        LinkOutcome::Linked { guild_name, .. } => {
+            let name = guild_name.as_deref().unwrap_or("LiveChat");
+            let description = interpolate(dict.link_success_description, &[("guildName", name)]);
+            Reply::ephemeral(
+                Embed::new()
+                    .with_title(dict.link_success_title)
+                    .with_description(description)
+                    .with_color(COLOR_SUCCESS),
+            )
+        }
+        LinkOutcome::InvalidCode => error_reply(lang, dict.link_invalid_code, true),
+        LinkOutcome::AlreadyLinkedElsewhere => error_reply(lang, dict.link_already_linked, true),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // /stop
 // ---------------------------------------------------------------------------
 
@@ -777,13 +835,45 @@ fn generic_error_reply(lang: Lang) -> Reply {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{plan_deferral, Deferral, Invocation};
-    use crate::context::Author;
-    use crate::i18n::Lang;
-    use crate::inputs::{CommandInput, MediaSubmission, TalkInput};
+    use chrono::Duration as ChronoDuration;
+    use lc_domain::entities::DiscordLinkCode;
+    use lc_domain::ids::{GuildId, PairingCode};
+
+    use super::{dispatch, plan_deferral, Deferral, Invocation};
+    use crate::context::{Author, BotContext};
+    use crate::i18n::{strings, Lang};
+    use crate::inputs::{CommandInput, LinkInput, MediaSubmission, TalkInput, TimeSettingInput};
+    use crate::reply::COLOR_SUCCESS;
+    use crate::testing::{admin_author, member_author, sample_now, FakeBotContext};
 
     fn invocation(input: CommandInput) -> Invocation {
         Invocation::new(None, Lang::Fr, Author::new("john"), input)
+    }
+
+    async fn standalone_guild(ctx: &FakeBotContext, raw: &str, name: &str) -> GuildId {
+        let guild_id = GuildId::parse(raw).unwrap();
+        ctx.db()
+            .guilds()
+            .create_standalone(&guild_id, name, sample_now())
+            .await
+            .unwrap();
+        guild_id
+    }
+
+    async fn seed_link_code(ctx: &FakeBotContext, guild_id: &GuildId, raw: &str) {
+        let now = sample_now();
+        ctx.db()
+            .discord_link_codes()
+            .replace_for_guild(&DiscordLinkCode {
+                code: PairingCode::parse(raw).unwrap(),
+                guild_id: guild_id.clone(),
+                created_by_member_id: None,
+                expires_at: now + ChronoDuration::minutes(10),
+                used_at: None,
+                created_at: now,
+            })
+            .await
+            .unwrap();
     }
 
     #[test]
@@ -836,5 +926,140 @@ mod tests {
             plan_deferral(&invocation(CommandInput::Stop)),
             Deferral::None
         );
+        assert_eq!(
+            plan_deferral(&invocation(CommandInput::Link(LinkInput {
+                code: "K7QXM2PD".to_owned(),
+            }))),
+            Deferral::None
+        );
+    }
+
+    #[tokio::test]
+    async fn link_lie_le_serveur_et_repond_en_ephemere() {
+        let ctx = FakeBotContext::new().await.unwrap();
+        let guild_id = standalone_guild(&ctx, "111", "Les Sardines").await;
+        let discord = GuildId::parse("123456789012345678").unwrap();
+        seed_link_code(&ctx, &guild_id, "K7QXM2PD").await;
+
+        let outcome = dispatch(
+            &ctx,
+            Invocation::new(
+                Some(discord.clone()),
+                Lang::Fr,
+                admin_author(),
+                CommandInput::Link(LinkInput {
+                    code: "k7qxm2pd".to_owned(),
+                }),
+            ),
+        )
+        .await;
+
+        assert!(outcome.reply.ephemeral);
+        assert_eq!(outcome.reply.embed.color, Some(COLOR_SUCCESS));
+        assert_eq!(outcome.reply.embed.title.as_deref(), Some("Serveur lié"));
+        assert!(outcome
+            .reply
+            .embed
+            .description
+            .as_deref()
+            .is_some_and(|text| text.contains("Les Sardines")));
+        assert_eq!(
+            ctx.db().guilds().resolve_discord(&discord).await.unwrap(),
+            guild_id
+        );
+    }
+
+    #[tokio::test]
+    async fn link_refuse_les_non_admins() {
+        let ctx = FakeBotContext::new().await.unwrap();
+        let guild_id = standalone_guild(&ctx, "111", "Les Sardines").await;
+        let discord = GuildId::parse("123456789012345678").unwrap();
+        seed_link_code(&ctx, &guild_id, "K7QXM2PD").await;
+
+        let outcome = dispatch(
+            &ctx,
+            Invocation::new(
+                Some(discord.clone()),
+                Lang::Fr,
+                member_author(),
+                CommandInput::Link(LinkInput {
+                    code: "K7QXM2PD".to_owned(),
+                }),
+            ),
+        )
+        .await;
+
+        assert!(outcome.reply.ephemeral);
+        assert_eq!(outcome.reply.embed.color, Some(crate::reply::COLOR_ERROR));
+        assert_eq!(
+            outcome.reply.embed.title.as_deref(),
+            Some(strings(Lang::Fr).not_allowed)
+        );
+        assert_eq!(
+            ctx.db().guilds().resolve_discord(&discord).await.unwrap(),
+            discord
+        );
+    }
+
+    #[tokio::test]
+    async fn link_refuse_un_code_invalide() {
+        let ctx = FakeBotContext::new().await.unwrap();
+        let discord = GuildId::parse("123456789012345678").unwrap();
+
+        for code in ["K7QXM2PD", "pas un code !"] {
+            let outcome = dispatch(
+                &ctx,
+                Invocation::new(
+                    Some(discord.clone()),
+                    Lang::Fr,
+                    admin_author(),
+                    CommandInput::Link(LinkInput {
+                        code: code.to_owned(),
+                    }),
+                ),
+            )
+            .await;
+
+            assert!(outcome.reply.ephemeral);
+            assert_eq!(outcome.reply.embed.color, Some(crate::reply::COLOR_ERROR));
+            assert_eq!(
+                outcome.reply.embed.description.as_deref(),
+                Some(strings(Lang::Fr).link_invalid_code)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn commande_sur_serveur_lie_vise_la_guilde_independante() {
+        let ctx = FakeBotContext::new().await.unwrap();
+        let guild_id = standalone_guild(&ctx, "111", "Les Sardines").await;
+        let discord = GuildId::parse("123456789012345678").unwrap();
+        ctx.db()
+            .guilds()
+            .link_discord(&guild_id, Some(&discord))
+            .await
+            .unwrap();
+
+        let outcome = dispatch(
+            &ctx,
+            Invocation::new(
+                Some(discord.clone()),
+                Lang::Fr,
+                admin_author(),
+                CommandInput::SetDefaultTime(TimeSettingInput { seconds: 10 }),
+            ),
+        )
+        .await;
+
+        assert_eq!(outcome.reply.embed.color, Some(COLOR_SUCCESS));
+        let row = ctx
+            .db()
+            .guilds()
+            .get(&guild_id)
+            .await
+            .unwrap()
+            .expect("ligne de la guilde indépendante");
+        assert_eq!(row.default_media_time, Some(10));
+        assert!(ctx.db().guilds().get(&discord).await.unwrap().is_none());
     }
 }

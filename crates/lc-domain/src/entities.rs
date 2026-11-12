@@ -341,6 +341,39 @@ impl GuildInvite {
     }
 }
 
+/// Code de liaison Discord émis par l'overlay d'une guilde indépendante.
+///
+/// Un administrateur du serveur Discord saisit ce code avec la commande
+/// `/lier` (`/link`) : `DiscordLinkCodesRepository::redeem` renseigne alors
+/// `guilds.discord_guild_id`. Usage unique et durée de vie courte ; un nouveau
+/// code émis remplace les codes non utilisés de la même guilde.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscordLinkCode {
+    /// Code lisible (clé primaire, MAJUSCULES).
+    pub code: PairingCodeValue,
+    /// Guilde indépendante à lier.
+    pub guild_id: GuildId,
+    /// Membre administrateur qui a émis le code (`None` = panel serveur).
+    pub created_by_member_id: Option<GuildMemberId>,
+    /// Expiration (obligatoire, TTL court).
+    #[serde(with = "ms_required")]
+    pub expires_at: DateTime<Utc>,
+    /// Date de consommation (`None` = pas encore utilisé).
+    #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
+    pub used_at: Option<DateTime<Utc>>,
+    /// Date de création.
+    #[serde(with = "ms_required")]
+    pub created_at: DateTime<Utc>,
+}
+
+impl DiscordLinkCode {
+    /// `true` si le code peut encore être consommé à l'instant `now`.
+    pub fn is_usable_at(&self, now: DateTime<Utc>) -> bool {
+        self.used_at.is_none() && self.expires_at > now
+    }
+}
+
 /// Overlay appairé (navigateur/desktop), authentifié par hash de token.
 ///
 /// Le token en clair n'est **jamais** stocké : seul `token_hash` (SHA-256)

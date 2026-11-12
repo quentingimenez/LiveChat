@@ -83,6 +83,9 @@ Séquence :
 - `upsert_guild_row` : insère la guilde si absente, met à jour `name` sinon,
   **en préservant** `busy_until`, `default_media_time`, `max_media_time`,
   `display_media_full` (ces réglages sont posés par les commandes admin) ;
+- **sauf** si `resolve_discord` renvoie une autre guilde : le serveur est lié à
+  une guilde indépendante, sa ligne native n'est ni créée ni modifiée (log
+  `info`, retour immédiat ; voir § 4 bis) ;
 - si `is_new == Some(true)`, envoie l'embed « how to use » du legacy dans le
   premier salon textuel où le bot peut écrire (voir § 6) ;
 - toute erreur (DB/reste) est loggée, jamais fatale.
@@ -93,6 +96,10 @@ Séquence :
   dans le legacy) ;
 - `parse_invocation(&command, lang, hide_commands_disabled)` résout la
   commande par son nom localisé et les options par position ;
+- pour toutes les commandes **sauf `/lier`**, le handler remplace le snowflake
+  brut par `GuildsRepository::resolve_discord(snowflake)` avant de dispatcher :
+  un serveur lié à une guilde indépendante agit donc sur cette guilde
+  (réglages, file, meme board, overlays) ; `/lier` garde le snowflake brut ;
 - `dispatch(context, invocation)` exécute le handler `lc-discord`, puis
   `respond(http, command, outcome)` envoie le defer/réponse ;
 - commande inconnue ou échec de réponse ⇒ `warn!`, pas de panic.
@@ -117,14 +124,35 @@ réel. À documenter comme écart conscient avec le libellé.
 - payloads : `lc_discord::command_payloads(lang, hide_commands_disabled)`
   réutilisé tel quel (JSON `{name, description, options}`) ; l'ordre legacy est
   conservé (`alive, msg, dire, pair-code, help, info, config-defaut,
-  config-displayfull, config-max, overlays, stop, meme-add`, puis `cmsg`,
-  `cdire` si activées) ;
+  config-displayfull, config-max, overlays, stop, meme-add`, puis `lier`,
+  puis `cmsg`, `cdire` si activées) ;
 - `Http::create_global_commands` exige une map `Serialize + Sized` : la tranche
   est matérialisée en `Vec<serde_json::Value>` dans `register_global_commands` ;
 - un `AtomicBool` empêche un double enregistrement (plusieurs `ready` après
   reconnexions) ;
 - erreurs stockées dans `DiscordStatus::registration_error` et loggées, jamais
   fatales.
+
+## 4 bis. Commande `/lier` (`/link`)
+
+Nouvelle commande (hors legacy), enregistrée comme les autres : nom `lier` en
+français, `link` en anglais, une option `code` requise (texte). Elle lie le
+serveur Discord courant à une guilde indépendante :
+
+1. un administrateur d'overlay émet un code court (10 minutes, usage unique)
+   avec `POST /overlay/admin/discord-link-code` ;
+2. un administrateur Discord exécute `/lier code:<CODE>` (ou `/link`) ;
+3. `DiscordLinkCodesRepository::redeem` valide le code, vérifie que la cible est
+   indépendante et que le serveur n'est pas déjà lié ailleurs, puis pose
+   `guilds.discord_guild_id` et marque le code utilisé ;
+4. `DELETE /overlay/admin/discord-link` retire la liaison.
+
+Réponses : toutes éphémères. Succès `Serveur lié` / `Server linked` en vert ;
+code invalide, expiré ou déjà utilisé et serveur déjà lié ailleurs en rouge.
+Seul un administrateur Discord (`author.is_admin`) peut l'exécuter ; hors
+serveur Discord, réponse d'erreur générique. Une guilde cible déjà liée à un
+autre serveur est re-liée au nouveau (remplacement), mais un serveur déjà lié à
+une autre guilde n'est jamais repris automatiquement.
 
 ## 5. Adaptateurs `BotContext`
 

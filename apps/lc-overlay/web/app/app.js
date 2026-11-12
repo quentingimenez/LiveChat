@@ -109,6 +109,9 @@ const ERROR_LABELS = {
   last_admin: "Tu es le dernier admin : nomme un autre admin d'abord.",
   unauthorized: "Cet appareil n'est plus reconnu par la guilde.",
   pairing_code_invalid_or_expired: 'Code invalide, expiré ou déjà utilisé.',
+  pairing_code_scope_mismatch: "Ce code sert à appairer l'extension navigateur, pas un overlay.",
+  guild_not_standalone: 'Seule une guilde créée hors Discord peut être liée à un serveur Discord.',
+  member_required: 'Action réservée aux membres de la guilde.',
   invalid_role: 'Rôle inconnu.',
   invalid_payload: 'Valeur invalide.',
   invalid_name: 'Nom invalide.',
@@ -1125,6 +1128,59 @@ function renderSettings() {
       renderView();
     }
   };
+  const discord = [
+    h('h3', { class: 'section-title' }, 'Discord'),
+    h('p', { class: 'meta' }, guild.discordGuildId ? `Guilde liée au serveur Discord ${guild.discordGuildId}.` : guild.standalone ? 'Cette guilde n’est liée à aucun serveur Discord.' : 'Cette guilde est un serveur Discord.'),
+  ];
+  if (guild.standalone && can('manageSettings')) {
+    if (guild.discordGuildId) {
+      const unlink = () => {
+        confirmDialog('Délier le serveur Discord ?', 'Les commandes de ce serveur Discord ne viseront plus cette guilde.', 'Délier', async () => {
+          await run(() => api('DELETE', '/overlay/admin/discord-link'));
+          await loadGuild();
+          renderView();
+        });
+      };
+      discord.push(h('div', { class: 'row is-wrap' }, h('button', { class: 'btn is-quiet is-danger', onClick: unlink }, 'Délier le serveur Discord')));
+    } else {
+      const generated = h('div', { class: 'stack', hidden: true });
+      const verifyDiscordLink = async () => {
+        await loadGuild();
+        const linked = Boolean(state.info && state.info.guild && state.info.guild.discordGuildId);
+        renderView();
+        notify(linked ? 'Serveur Discord lié.' : 'Pas encore lié : saisis la commande dans Discord.', !linked);
+      };
+      const generate = async () => {
+        const body = await run(() => api('POST', '/overlay/admin/discord-link-code'));
+        if (!body || !body.code) {
+          return;
+        }
+        const command = `/lier code:${body.code}`;
+        generated.replaceChildren(
+          h(
+            'p',
+            { class: 'meta' },
+            'Dans le serveur Discord, un administrateur tape /lier code:',
+            h('span', { class: 'code' }, body.code),
+            ' (ou /link code:',
+            h('span', { class: 'code' }, body.code),
+            '). Code valable 10 minutes.',
+          ),
+          h(
+            'div',
+            { class: 'row is-wrap' },
+            h('button', { class: 'btn', onClick: () => copyText(command, 'Commande copiée.') }, 'Copier la commande'),
+            h('button', { class: 'btn is-quiet', onClick: verifyDiscordLink }, 'Vérifier la liaison'),
+          ),
+        );
+        generated.hidden = false;
+      };
+      discord.push(
+        h('div', { class: 'row is-wrap' }, h('button', { class: 'btn', onClick: generate }, 'Générer un code de liaison')),
+        generated,
+      );
+    }
+  }
   return h(
     'div',
     null,
@@ -1144,8 +1200,7 @@ function renderSettings() {
       h('label', { class: 'switch' }, guests, 'Peuvent consulter le board'),
     ),
     h('div', { class: 'row', style: 'margin-top:20px' }, h('button', { class: 'btn', onClick: save }, 'Enregistrer les réglages')),
-    h('h3', { class: 'section-title' }, 'Discord'),
-    h('p', { class: 'meta' }, guild.discordGuildId ? `Guilde liée au serveur Discord ${guild.discordGuildId}.` : guild.standalone ? 'Cette guilde n’est liée à aucun serveur Discord.' : 'Cette guilde est un serveur Discord.'),
+    discord,
   );
 }
 
@@ -1347,6 +1402,7 @@ function openGuildDialog(guild) {
     const member = (state.info && state.info.member) || {};
     const name = h('input', { class: 'field', maxlength: '40', value: member.displayName || guild.membership.displayName || '' });
     const deviceCode = h('p', { class: 'meta', hidden: true });
+    const extensionCode = h('p', { class: 'meta', hidden: true });
     const save = async () => {
       const body = await run(() => api('PATCH', '/overlay/profile', { displayName: name.value }), 'Profil enregistré.');
       if (body) {
@@ -1360,6 +1416,21 @@ function openGuildDialog(guild) {
         deviceCode.replaceChildren('Code valable 10 minutes : ', h('span', { class: 'code' }, formatCode(body.invite.code)));
         deviceCode.hidden = false;
       }
+    };
+    const makeExtensionCode = async () => {
+      const body = await run(() => api('POST', '/overlay/ingest-code'));
+      if (!body || !body.code) {
+        return;
+      }
+      extensionCode.replaceChildren(
+        'Dans les options de l’extension, saisis l’URL ',
+        h('span', { class: 'code' }, body.apiBaseUrl),
+        ' et le code ',
+        h('span', { class: 'code' }, body.code),
+        '. Valable 10 minutes.',
+      );
+      extensionCode.hidden = false;
+      copyText(body.code, 'Code de l’extension copié.');
     };
     const leave = () => {
       close();
@@ -1381,8 +1452,14 @@ function openGuildDialog(guild) {
         'div',
         { class: 'stack' },
         h('label', null, 'Pseudo', name),
-        h('div', { class: 'row is-wrap' }, h('button', { class: 'btn', onClick: makeDeviceCode }, 'Ajouter un autre appareil')),
+        h(
+          'div',
+          { class: 'row is-wrap' },
+          h('button', { class: 'btn', onClick: makeDeviceCode }, 'Ajouter un autre appareil'),
+          can('play') ? h('button', { class: 'btn', onClick: makeExtensionCode }, 'Appairer l’extension navigateur') : null,
+        ),
         deviceCode,
+        can('play') ? extensionCode : null,
       ),
       h(
         'div',

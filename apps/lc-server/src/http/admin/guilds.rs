@@ -340,6 +340,10 @@ pub(super) async fn purge(
         .delete_by_guild(&guild_id)
         .await
         .map_err(|error| AdminError::db("suppression des invitations", error))?;
+    db.discord_link_codes()
+        .delete_by_guild(&guild_id)
+        .await
+        .map_err(|error| AdminError::db("suppression des codes de liaison Discord", error))?;
     db.guild_members()
         .delete_by_guild(&guild_id)
         .await

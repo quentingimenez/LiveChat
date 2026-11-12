@@ -89,6 +89,8 @@ pub enum CommandKey {
     Info,
     /// `/meme-add`.
     MemeAdd,
+    /// `/lier` (en : `/link`).
+    Link,
     /// `/overlays`.
     Overlays,
     /// `/config-defaulttime` (fr : `/config-defaut`).
@@ -118,6 +120,7 @@ impl CommandKey {
             Self::Help => "help",
             Self::Info => "info",
             Self::MemeAdd => "meme-add",
+            Self::Link => "link",
             Self::Overlays => "overlays",
             Self::SetDefaultTime => "set-default-time",
             Self::SetDisplayFull => "set-display-full",
@@ -171,6 +174,17 @@ impl CommandSpec {
 }
 
 const NO_OPTIONS: &[OptionSpec] = &[];
+
+const LINK_OPTIONS: &[OptionSpec] = &[OptionSpec {
+    name: LocalizedText::new(FR.link_option_code, EN.link_option_code),
+    description: LocalizedText::new(
+        FR.link_option_code_description,
+        EN.link_option_code_description,
+    ),
+    kind: OptionKind::String,
+    required: true,
+    choices: &[],
+}];
 
 const PAIR_CODE_CHOICES: &[ChoiceSpec] = &[
     ChoiceSpec {
@@ -417,8 +431,10 @@ const DISPLAY_FULL_OPTIONS: &[OptionSpec] = &[OptionSpec {
 /// Catalogue complet, dans l'**ordre d'enregistrement legacy**.
 ///
 /// `DiscordLoader.loadDiscordCommands` ajoute d'abord les 12 commandes
-/// générales puis `hidesend`/`hidetalk` (si `HIDE_COMMANDS_DISABLED !== 'true'`).
-/// Cet ordre est aussi celui affiché par `/help` (`global.commandsLoaded`).
+/// générales du legacy puis `hidesend`/`hidetalk` (si `HIDE_COMMANDS_DISABLED
+/// !== 'true'`). `/lier` (nouvelle commande, hors legacy) s'insère juste avant
+/// les commandes cachées. Cet ordre est aussi celui affiché par `/help`
+/// (`global.commandsLoaded`).
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         key: CommandKey::Alive,
@@ -501,6 +517,12 @@ pub static COMMANDS: &[CommandSpec] = &[
         options: MEME_ADD_OPTIONS,
     },
     CommandSpec {
+        key: CommandKey::Link,
+        name: LocalizedText::new(FR.link_name, EN.link_name),
+        description: LocalizedText::new(FR.link_description, EN.link_description),
+        options: LINK_OPTIONS,
+    },
+    CommandSpec {
         key: CommandKey::HideSend,
         name: LocalizedText::new(FR.hide_send_name, EN.hide_send_name),
         description: LocalizedText::new(FR.hide_send_description, EN.hide_send_description),
@@ -577,6 +599,7 @@ mod tests {
                 "overlays",
                 "stop",
                 "meme-add",
+                "lier",
                 "cmsg",
                 "cdire",
             ]
@@ -598,6 +621,7 @@ mod tests {
                 "overlays",
                 "stop",
                 "meme-add",
+                "link",
                 "hsend",
                 "htalk",
             ]
@@ -609,7 +633,7 @@ mod tests {
         let names = registered_command_names(Lang::En, true);
         assert!(!names.contains(&"hsend"));
         assert!(!names.contains(&"htalk"));
-        assert_eq!(names.len(), 12);
+        assert_eq!(names.len(), 13);
         assert!(find_by_name(Lang::En, true, "hsend").is_none());
         assert!(find_by_name(Lang::En, false, "hsend").is_some());
     }
@@ -638,11 +662,19 @@ mod tests {
         let config = find_by_name(Lang::En, false, "config-maxtime").expect("config-maxtime");
         assert_eq!(config.options[0].kind, OptionKind::Integer);
         assert!(config.options[0].required);
+
+        let link = find_by_name(Lang::Fr, false, "lier").expect("lier doit exister");
+        assert_eq!(link.key, CommandKey::Link);
+        assert_eq!(link.options.len(), 1);
+        assert_eq!(link.options[0].kind, OptionKind::String);
+        assert!(link.options[0].required);
+        assert_eq!(link.options[0].name.get(Lang::Fr), "code");
+        assert_eq!(link.options[0].name.get(Lang::En), "code");
     }
 
     #[test]
-    fn catalogue_contient_quatorze_commandes() {
-        assert_eq!(COMMANDS.len(), 14);
+    fn catalogue_contient_quinze_commandes() {
+        assert_eq!(COMMANDS.len(), 15);
         assert_eq!(
             COMMANDS
                 .iter()

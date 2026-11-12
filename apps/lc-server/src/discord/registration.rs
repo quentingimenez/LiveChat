@@ -35,7 +35,7 @@ pub async fn register_global_commands(
     payloads: &[serde_json::Value],
 ) -> Result<Vec<Command>, DiscordError> {
     // `Http::create_global_commands` exige une map `Serialize + Sized` : on
-    // matérialise la tranche en `Vec` (14 commandes au maximum).
+    // matérialise la tranche en `Vec` (15 commandes au maximum).
     let body = payloads.to_vec();
     http.create_global_commands(&body)
         .await
@@ -71,6 +71,7 @@ mod tests {
                 "overlays",
                 "stop",
                 "meme-add",
+                "lier",
                 "cmsg",
                 "cdire",
             ]
@@ -84,7 +85,7 @@ mod tests {
             .iter()
             .filter_map(|payload| payload.get("name").and_then(|name| name.as_str()))
             .collect();
-        assert_eq!(names.len(), 12);
+        assert_eq!(names.len(), 13);
         assert!(!names.contains(&"cmsg"));
         assert!(!names.contains(&"cdire"));
     }

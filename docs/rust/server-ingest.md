@@ -96,6 +96,27 @@ comme l'overlay depuis AUD-A2-012) ; repli `Extension-<authorName>` si absent.
 La collision `token_hash` (improbable) est réessayée une fois avec un token
 régénéré, puis remontée en erreur serveur — AUD-A2-010.
 
+### Code d'appairage émis depuis l'overlay
+
+Une guilde sans Discord peut appairer une extension depuis l'overlay :
+`POST /overlay/ingest-code` (Bearer overlay, droit `TriggerPlayback` ; un invité
+reçoit `403 {"error":"forbidden"}` et un overlay sans membre
+`409 {"error":"member_required"}`) crée un code `NORMAL` à usage unique dans
+`pairing_codes`. Le nom du membre sert d'`author_name` ; son avatar n'est
+recopié que s'il s'agit d'une URL `http(s)` (une image `data:` est trop
+volumineuse pour l'extension).
+
+Réponse `200` : `{"code":"ABCD2345","expiresAt":"2026-11-10T12:10:00.000Z",
+"apiBaseUrl":"https://api.exemple.tld"}`. Le code expire au bout de
+**10 minutes** et se consomme inchangé avec `POST /ingest/pair/consume`
+ci-dessus.
+
+L'auteur persisté est préfixé `member:` dans `created_by_discord_user_id`
+(colonne NOT NULL), ce qui distingue un code émis par un membre overlay d'un
+code émis depuis Discord. Côté overlay, `POST /overlay/pair/consume` refuse un
+tel code avec `403 {"error":"pairing_code_scope_mismatch"}` **sans le
+consommer** : le code reste utilisable par l'extension.
+
 ### `POST /ingest`
 
 Authentification **avant** toute validation de corps, comme le legacy.

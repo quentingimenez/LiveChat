@@ -26,8 +26,8 @@ use crate::catalog::{self, CommandSpec, OptionKind};
 use crate::context::Author;
 use crate::i18n::Lang;
 use crate::inputs::{
-    CommandInput, DisplayFullInput, Invocation, MediaSubmission, PairCodeInput, TalkInput,
-    TimeSettingInput,
+    CommandInput, DisplayFullInput, Invocation, LinkInput, MediaSubmission, PairCodeInput,
+    TalkInput, TimeSettingInput,
 };
 use crate::reply::{CommandOutcome, Deferral, Embed};
 
@@ -152,6 +152,13 @@ fn parse_input(
         crate::catalog::CommandKey::MemeAdd => {
             // La glue legacy réutilise `text` pour le titre du meme board.
             CommandInput::MemeAdd(parse_media_submission(interaction, spec, lang))
+        }
+        crate::catalog::CommandKey::Link => {
+            let code = string_option(interaction, spec, lang, 0)?;
+            CommandInput::Link(LinkInput {
+                // Le tiret affiché par l'overlay (`ABCD-2345`) est ignoré.
+                code: code.trim().replace('-', "").to_ascii_uppercase(),
+            })
         }
         crate::catalog::CommandKey::Talk => CommandInput::Talk(TalkInput {
             text: string_option(interaction, spec, lang, 1),

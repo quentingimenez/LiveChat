@@ -24,8 +24,8 @@ pub mod time;
 
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use entities::{
-    Guild, GuildAccess, GuildInvite, GuildMember, IngestClient, MediaAsset, MemeBoardItem,
-    OverlayClient, PairingCodeEntry, PlaybackJob,
+    DiscordLinkCode, Guild, GuildAccess, GuildInvite, GuildMember, IngestClient, MediaAsset,
+    MemeBoardItem, OverlayClient, PairingCodeEntry, PlaybackJob,
 };
 pub use enums::{
     GuildRole, JobStatus, MediaKind, MediaStatus, OverlaySessionMode, PairingMode, Permission,

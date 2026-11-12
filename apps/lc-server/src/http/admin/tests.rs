@@ -433,6 +433,34 @@ async fn auth_refuse_le_token_en_query_string() {
 }
 
 #[tokio::test]
+async fn trusted_proxy_ignores_a_forged_first_forwarded_hop() {
+    let harness = Harness::with_pairs(&[("ADMIN_TRUST_FORWARDED_FOR", "true")]).await;
+    let proxy = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+
+    // The client forges `127.0.0.1`; the proxy appends the real address.
+    let mut forged = harness.request_from(Method::GET, "/admin/api/overview", proxy);
+    forged.headers_mut().insert(
+        "x-forwarded-for",
+        header::HeaderValue::from_static("127.0.0.1, 203.0.113.9"),
+    );
+    let (status, _, bytes) = harness.send(forged).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(json_or_null(&bytes)["error"], "admin_local_only");
+
+    // `X-Real-IP` set by the proxy decides when present.
+    let mut local = harness.request_from(Method::GET, "/admin/api/overview", proxy);
+    local.headers_mut().insert(
+        "x-forwarded-for",
+        header::HeaderValue::from_static("203.0.113.9, 127.0.0.1"),
+    );
+    local
+        .headers_mut()
+        .insert("x-real-ip", header::HeaderValue::from_static("127.0.0.1"));
+    let (status, _, _) = harness.send(local).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn auth_local_only_desactive_accepte_un_client_externe() {
     let harness = Harness::with_pairs(&[("ADMIN_UI_LOCAL_ONLY", "false")]).await;
     let request = harness.request_from(

@@ -97,6 +97,18 @@ pub fn router() -> Router<AppState> {
         .route("/admin/api/guilds/{guild_id}/stop", post(guilds::stop))
         .route("/admin/api/guilds/{guild_id}/purge", post(guilds::purge))
         .route(
+            "/admin/api/guilds/{guild_id}/revoke-clients",
+            post(guilds::revoke_clients),
+        )
+        .route(
+            "/admin/api/guilds/{guild_id}/meme-board/clear",
+            post(guilds::clear_meme_board),
+        )
+        .route(
+            "/admin/api/guilds/{guild_id}/discord-unlink",
+            post(guilds::discord_unlink),
+        )
+        .route(
             "/admin/api/overlay-clients/{client_id}/revoke",
             post(clients::revoke_overlay),
         )

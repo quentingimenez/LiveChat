@@ -150,6 +150,11 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let hub_handle: Arc<ws::Hub> = Arc::clone(&hub);
     let admin_hub: Arc<dyn crate::http::admin::hub::AdminHub> = hub_handle;
     state = state.with_admin_hub(admin_hub);
+    if let Some(token) = config.discord_token.as_ref() {
+        state = state.with_discord_leaver(Arc::new(discord::guild_leave::SerenityLeaver::new(
+            token.expose_secret(),
+        )));
+    }
     wiring::install(&state, &hub);
 
     // AUD-A4-008/A4-014 : purge immédiate au démarrage puis périodique. Le

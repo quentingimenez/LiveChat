@@ -25,7 +25,7 @@ const INVALID_CLIENT_ID: &str = "invalid_client_id";
 const OVERLAY_NOT_FOUND: &str = "overlay_client_not_found";
 const INGEST_NOT_FOUND: &str = "ingest_client_not_found";
 /// Code de fermeture WebSocket d'un client révoqué (convention du protocole).
-const REVOKED_CLOSE_CODE: u16 = 4402;
+pub(super) const REVOKED_CLOSE_CODE: u16 = 4402;
 
 /// Handler `POST /admin/api/overlay-clients/{client_id}/revoke`.
 pub(super) async fn revoke_overlay(

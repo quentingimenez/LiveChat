@@ -96,6 +96,76 @@ pub async fn guild_media_asset_ids(db: &Db, guild_id: &str) -> Result<Vec<String
     .map_err(DbError::from)
 }
 
+/// Media asset ids referenced by the guild's meme board only.
+pub async fn guild_board_media_asset_ids(db: &Db, guild_id: &str) -> Result<Vec<String>, DbError> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT media_asset_id FROM meme_board_items WHERE guild_id = ?1",
+    )
+    .bind(guild_id)
+    .fetch_all(db.pool())
+    .await
+    .map_err(DbError::from)
+}
+
+/// Revoke the guild's active overlay clients and return their ids.
+///
+/// `now_ms` is an epoch-milliseconds timestamp, like the stored `revoked_at`.
+pub async fn revoke_overlay_clients_for_guild(
+    db: &Db,
+    guild_id: &str,
+    now_ms: i64,
+) -> Result<Vec<String>, DbError> {
+    sqlx::query_scalar::<_, String>(
+        "UPDATE overlay_clients SET revoked_at = ?1 \
+         WHERE guild_id = ?2 AND revoked_at IS NULL \
+         RETURNING id",
+    )
+    .bind(now_ms)
+    .bind(guild_id)
+    .fetch_all(db.pool())
+    .await
+    .map_err(DbError::from)
+}
+
+/// Revoke the guild's active ingest clients; returns the number of rows changed.
+pub async fn revoke_ingest_clients_for_guild(
+    db: &Db,
+    guild_id: &str,
+    now_ms: i64,
+) -> Result<u64, DbError> {
+    let result = sqlx::query(
+        "UPDATE ingest_clients SET revoked_at = ?1 \
+         WHERE guild_id = ?2 AND revoked_at IS NULL",
+    )
+    .bind(now_ms)
+    .bind(guild_id)
+    .execute(db.pool())
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
+/// Mark the guild's active members as removed; returns the number of rows changed.
+///
+/// This deliberately bypasses the last-admin rule: a server admin can issue a
+/// new admin code afterwards.
+pub async fn remove_members_for_guild(
+    db: &Db,
+    guild_id: &str,
+    now_ms: i64,
+) -> Result<u64, DbError> {
+    let result = sqlx::query(
+        "UPDATE guild_members SET removed_at = ?1 \
+         WHERE guild_id = ?2 AND removed_at IS NULL",
+    )
+    .bind(now_ms)
+    .bind(guild_id)
+    .execute(db.pool())
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
 /// Supprime les clients d'ingestion d'une guilde ; retourne le nombre supprimé.
 pub async fn delete_ingest_clients_for_guild(db: &Db, guild_id: &str) -> Result<u64, DbError> {
     let result = sqlx::query("DELETE FROM ingest_clients WHERE guild_id = ?1")

@@ -3,8 +3,10 @@
  *
  * Provenance : static/admin/app.js, extrait du panneau legacy
  * (server/src/components/admin/adminRoutes.ts), puis réduit à l'exploitation :
- * jeton admin, vue d'ensemble, arrêt et purge d'une guilde, cookie TikTok,
- * création de guilde et émission de codes admin.
+ * jeton admin, vue d'ensemble, arrêt de la lecture, révocation des overlays et
+ * extensions, vidage du meme board, suppression d'une guilde (avec départ du
+ * bot), déliaison Discord, cookie TikTok, création de guilde et émission de
+ * codes admin.
  *
  * Script classique chargé en defer ; aucun gestionnaire inline, aucun module ES.
  */
@@ -147,6 +149,9 @@ const errorLabel = (error) => {
     invalid_payload: 'les données envoyées sont invalides.',
     confirm_guild_id_mismatch: "l'identifiant de confirmation ne correspond pas.",
     invalid_response: 'la réponse du serveur est inattendue.',
+    guild_not_found: 'la guilde est introuvable.',
+    native_guild_unlink: 'une guilde native ne peut pas être déliée de Discord.',
+    not_linked: "la guilde n'est liée à aucun serveur Discord.",
     network_error: 'le serveur est injoignable.',
     request_failed: 'la requête a échoué.',
   };
@@ -252,6 +257,41 @@ const findGuild = (guildId) => {
   return guilds.find((guild) => guild && guild.id === guildId) || null;
 };
 
+const guildDiscordInfo = (guild) => {
+  const discord = guild && guild.discord && typeof guild.discord === 'object' ? guild.discord : {};
+  const kind = discord.kind === 'native' || discord.kind === 'linked' ? discord.kind : 'none';
+  const serverId = typeof discord.serverId === 'string' ? discord.serverId : '';
+
+  return { kind, serverId };
+};
+
+const discordLeaveStatus = (discord) => {
+  const source = discord && typeof discord === 'object' ? discord : {};
+  const outcome = typeof source.outcome === 'string' ? source.outcome : 'skipped';
+
+  if (outcome === 'left') {
+    return { message: 'Le bot a quitté le serveur Discord.', kind: 'ok' };
+  }
+
+  if (outcome === 'not_member') {
+    return { message: "Le bot n'était pas sur ce serveur Discord.", kind: 'ok' };
+  }
+
+  if (outcome === 'error') {
+    const details =
+      typeof source.error === 'string' && source.error.trim()
+        ? source.error.trim()
+        : 'erreur inconnue';
+
+    return {
+      message: "Le bot n'a pas pu quitter le serveur : " + details + '.',
+      kind: 'warn',
+    };
+  }
+
+  return { message: '', kind: 'ok' };
+};
+
 const playbackStat = (playback) => {
   const stat = createElement('div', 'stat');
   stat.append(createElement('span', 'stat-label', 'Lecture'));
@@ -282,6 +322,7 @@ const buildGuildCard = (guild) => {
   const overlays = guild.overlays || {};
   const board = guild.memeBoard || {};
   const playback = guild.playback || {};
+  const discord = guildDiscordInfo(guild);
   const connectedCount = Number(overlays.connectedCount) || 0;
   const totalCount = Number(overlays.total) || 0;
   const boardPercent = Math.min(100, Math.max(0, Number(board.usedPercent) || 0));
@@ -294,12 +335,21 @@ const buildGuildCard = (guild) => {
   );
 
   const badges = createElement('div', 'badge-row');
+  let discordBadgeText = 'Sans Discord';
+
+  if (discord.kind === 'native') {
+    discordBadgeText = 'Discord : serveur ' + discord.serverId;
+  } else if (discord.kind === 'linked') {
+    discordBadgeText = 'Discord lié : ' + discord.serverId;
+  }
+
   badges.append(
     createElement(
       'span',
       'badge',
       connectedCount > 0 ? formatNumber(connectedCount) + ' overlay(s) connecté(s)' : 'Aucun overlay connecté',
     ),
+    createElement('span', 'badge', discordBadgeText),
   );
   head.append(identity, badges);
   card.append(head);
@@ -344,17 +394,38 @@ const buildGuildCard = (guild) => {
   adminCodeButton.dataset.action = 'admin-code';
   adminCodeButton.dataset.guildId = guild.id || '';
 
-  const stopButton = createElement('button', 'button', 'Stop playback');
+  const stopButton = createElement('button', 'button', 'Stopper la lecture');
   stopButton.type = 'button';
   stopButton.dataset.action = 'stop';
   stopButton.dataset.guildId = guild.id || '';
 
-  const purgeButton = createElement('button', 'button danger', 'Purger');
+  const unlinkButton = createElement('button', 'button', 'Délier Discord');
+  unlinkButton.type = 'button';
+  unlinkButton.dataset.action = 'discord-unlink';
+  unlinkButton.dataset.guildId = guild.id || '';
+
+  const revokeButton = createElement('button', 'button danger', 'Purger');
+  revokeButton.type = 'button';
+  revokeButton.dataset.action = 'revoke-clients';
+  revokeButton.dataset.guildId = guild.id || '';
+
+  const clearBoardButton = createElement('button', 'button danger', 'Vider la board');
+  clearBoardButton.type = 'button';
+  clearBoardButton.dataset.action = 'clear-board';
+  clearBoardButton.dataset.guildId = guild.id || '';
+
+  const purgeButton = createElement('button', 'button danger', 'Supprimer');
   purgeButton.type = 'button';
   purgeButton.dataset.action = 'purge';
   purgeButton.dataset.guildId = guild.id || '';
 
-  actions.append(adminCodeButton, stopButton, purgeButton);
+  actions.append(adminCodeButton, stopButton);
+
+  if (discord.kind === 'linked') {
+    actions.append(unlinkButton);
+  }
+
+  actions.append(revokeButton, clearBoardButton, purgeButton);
   card.append(actions);
 
   return card;
@@ -655,9 +726,15 @@ const stopPlayback = async (button, guildId) => {
   }
 };
 
-const purgeGuild = async (button, guildId) => {
+const revokeClients = async (button, guildId) => {
+  const guild = findGuild(guildId);
+  const guildName = guild && typeof guild.name === 'string' ? guild.name : guildId;
   const typed = window.prompt(
-    'Action irréversible. Retapez l’identifiant de la guilde pour confirmer la purge complète :',
+    'Révoquer tous les overlays et extensions de la guilde « ' +
+      guildName +
+      ' » ? Les membres devront rejoindre avec un nouveau code. ' +
+      'La meme board et la guilde sont conservées. ' +
+      'Retapez l’identifiant de la guilde pour confirmer :',
     '',
   );
 
@@ -671,15 +748,72 @@ const purgeGuild = async (button, guildId) => {
     return;
   }
 
-  const guild = findGuild(guildId);
-  const guildName = guild && typeof guild.name === 'string' ? guild.name : guildId;
-
   button.disabled = true;
-  setStatus('Purge de la guilde en cours…', 'muted');
+  setStatus('Révocation des overlays et extensions en cours…', 'muted');
 
   try {
     const payload = await api(
-      '/admin/api/guilds/' + encodeURIComponent(guildId) + '/purge',
+      '/admin/api/guilds/' + encodeURIComponent(guildId) + '/revoke-clients',
+      {
+        method: 'POST',
+        body: { confirmGuildId: guildId },
+      },
+    );
+    const revoked =
+      payload && payload.revoked && typeof payload.revoked === 'object' ? payload.revoked : {};
+    const count = (value) => {
+      const numeric = Number(value);
+      return formatNumber(Number.isFinite(numeric) ? numeric : 0);
+    };
+
+    setStatus(
+      'Guilde « ' +
+        guildName +
+        ' » purgée : ' +
+        count(revoked.overlayClients) +
+        ' overlay(s), ' +
+        count(revoked.ingestClients) +
+        ' extension(s) et ' +
+        count(revoked.members) +
+        ' membre(s) révoqué(s).',
+      'ok',
+    );
+
+    await loadOverview();
+  } catch (error) {
+    setStatus('Purge impossible : ' + errorLabel(error), 'error');
+  } finally {
+    button.disabled = false;
+  }
+};
+
+const clearBoard = async (button, guildId) => {
+  const guild = findGuild(guildId);
+  const guildName = guild && typeof guild.name === 'string' ? guild.name : guildId;
+  const typed = window.prompt(
+    'Vider la meme board de la guilde « ' +
+      guildName +
+      ' » ? Tous les mèmes et leurs médias seront supprimés définitivement. ' +
+      'Retapez l’identifiant de la guilde pour confirmer :',
+    '',
+  );
+
+  if (typed === null) {
+    setStatus('Vidage annulé.', 'muted');
+    return;
+  }
+
+  if (typed.trim() !== guildId) {
+    setStatus('Vidage annulé : l’identifiant saisi ne correspond pas.', 'warn');
+    return;
+  }
+
+  button.disabled = true;
+  setStatus('Vidage du meme board en cours…', 'muted');
+
+  try {
+    const payload = await api(
+      '/admin/api/guilds/' + encodeURIComponent(guildId) + '/meme-board/clear',
       {
         method: 'POST',
         body: { confirmGuildId: guildId },
@@ -693,23 +827,146 @@ const purgeGuild = async (button, guildId) => {
     };
 
     setStatus(
-      'Guilde « ' +
+      'Meme board de « ' +
         guildName +
-        ' » purgée. Overlays : ' +
-        count(deleted.overlayClients) +
-        ' · lectures : ' +
-        count(deleted.playbackJobs) +
-        ' · board : ' +
+        ' » vidée : ' +
         count(deleted.memeBoardItems) +
-        ' · médias : ' +
+        ' mème(s) et ' +
         count(deleted.orphanMediaAssets) +
-        '.',
+        ' média(s) supprimé(s).',
       'ok',
     );
 
     await loadOverview();
   } catch (error) {
-    setStatus('Purge impossible : ' + errorLabel(error), 'error');
+    setStatus('Vidage impossible : ' + errorLabel(error), 'error');
+  } finally {
+    button.disabled = false;
+  }
+};
+
+const purgeGuild = async (button, guildId) => {
+  const guild = findGuild(guildId);
+  const guildName = guild && typeof guild.name === 'string' ? guild.name : guildId;
+  const discord = guildDiscordInfo(guild);
+  let question =
+    'Action irréversible : la guilde « ' +
+    guildName +
+    ' », ses overlays, extensions, membres, sa meme board et ses médias seront supprimés';
+
+  if (discord.kind !== 'none') {
+    question += ', et le bot quittera le serveur Discord ' + discord.serverId;
+  }
+
+  question += '. Retapez l’identifiant de la guilde pour confirmer :';
+
+  const typed = window.prompt(question, '');
+
+  if (typed === null) {
+    setStatus('Suppression annulée.', 'muted');
+    return;
+  }
+
+  if (typed.trim() !== guildId) {
+    setStatus('Suppression annulée : l’identifiant saisi ne correspond pas.', 'warn');
+    return;
+  }
+
+  button.disabled = true;
+  setStatus('Suppression de la guilde en cours…', 'muted');
+
+  try {
+    const payload = await api(
+      '/admin/api/guilds/' + encodeURIComponent(guildId) + '/purge',
+      {
+        method: 'POST',
+        body: { confirmGuildId: guildId, leaveDiscord: discord.kind !== 'none' },
+      },
+    );
+    const deleted =
+      payload && payload.deleted && typeof payload.deleted === 'object' ? payload.deleted : {};
+    const discordStatus = discordLeaveStatus(payload && payload.discord);
+    const count = (value) => {
+      const numeric = Number(value);
+      return formatNumber(Number.isFinite(numeric) ? numeric : 0);
+    };
+
+    let message =
+      'Guilde « ' +
+      guildName +
+      ' » supprimée. Overlays : ' +
+      count(deleted.overlayClients) +
+      ' · lectures : ' +
+      count(deleted.playbackJobs) +
+      ' · board : ' +
+      count(deleted.memeBoardItems) +
+      ' · médias : ' +
+      count(deleted.orphanMediaAssets) +
+      '.';
+
+    if (discordStatus.message) {
+      message += ' ' + discordStatus.message;
+    }
+
+    setStatus(message, discordStatus.kind);
+
+    await loadOverview();
+  } catch (error) {
+    setStatus('Suppression impossible : ' + errorLabel(error), 'error');
+  } finally {
+    button.disabled = false;
+  }
+};
+
+const unlinkDiscord = async (button, guildId) => {
+  const guild = findGuild(guildId);
+  const discord = guildDiscordInfo(guild);
+
+  if (discord.kind !== 'linked') {
+    return;
+  }
+
+  const guildName = guild && typeof guild.name === 'string' ? guild.name : guildId;
+  const confirmed = window.confirm(
+    'Délier la guilde « ' +
+      guildName +
+      ' » du serveur Discord ' +
+      discord.serverId +
+      ' ? Les commandes de ce serveur ne viseront plus cette guilde.',
+  );
+
+  if (!confirmed) {
+    setStatus('Déliaison annulée.', 'muted');
+    return;
+  }
+
+  const leaveDiscord = window.confirm(
+    'Faire aussi quitter le bot du serveur Discord ' + discord.serverId + ' ?',
+  );
+
+  button.disabled = true;
+  setStatus('Déliaison de la guilde en cours…', 'muted');
+
+  try {
+    const payload = await api(
+      '/admin/api/guilds/' + encodeURIComponent(guildId) + '/discord-unlink',
+      {
+        method: 'POST',
+        body: { leaveDiscord },
+      },
+    );
+    const discordStatus = discordLeaveStatus(payload && payload.discord);
+    let message = 'Guilde « ' + guildName + ' » déliée de Discord.';
+
+    if (discordStatus.message) {
+      message += ' ' + discordStatus.message;
+    }
+
+    setStatus(message, discordStatus.kind);
+
+    await loadOverview();
+  } catch (error) {
+    setStatus('Déliaison impossible : ' + errorLabel(error), 'error');
   } finally {
     button.disabled = false;
   }
@@ -734,6 +991,21 @@ const handleActionClick = async (button) => {
 
   if (action === 'stop') {
     await stopPlayback(button, guildId);
+    return;
+  }
+
+  if (action === 'discord-unlink') {
+    await unlinkDiscord(button, guildId);
+    return;
+  }
+
+  if (action === 'revoke-clients') {
+    await revokeClients(button, guildId);
+    return;
+  }
+
+  if (action === 'clear-board') {
+    await clearBoard(button, guildId);
     return;
   }
 

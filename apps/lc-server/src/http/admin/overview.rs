@@ -18,7 +18,7 @@ use std::collections::{BTreeSet, HashMap};
 use axum::extract::State;
 use axum::response::{IntoResponse as _, Response};
 use axum::Json;
-use lc_domain::{Guild, GuildId, OverlaySessionMode};
+use lc_domain::{Guild, GuildAccess, GuildId, OverlaySessionMode};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -70,6 +70,15 @@ pub(super) async fn overview(
         .list()
         .await
         .map_err(|error| AdminError::db("guildes", error))?;
+    let access = db
+        .guilds()
+        .list_access()
+        .await
+        .map_err(|error| AdminError::db("rattachement des guildes", error))?;
+    let access_by_id: HashMap<&str, &GuildAccess> = access
+        .iter()
+        .map(|entry| (entry.id.as_str(), entry))
+        .collect();
     let overlays = queries::overlay_clients(db)
         .await
         .map_err(|error| AdminError::db("clients overlay", error))?;
@@ -225,11 +234,26 @@ pub(super) async fn overview(
             })
             .collect();
 
+        let discord = match access_by_id.get(guild_id.as_str()) {
+            Some(access) if access.standalone => match access.discord_guild_id.as_deref() {
+                Some(discord_guild_id) => {
+                    json!({ "kind": "linked", "serverId": discord_guild_id })
+                }
+                None => json!({ "kind": "none", "serverId": null }),
+            },
+            Some(_) => json!({ "kind": "native", "serverId": guild_id }),
+            None if guild_id.bytes().all(|byte| byte.is_ascii_digit()) => {
+                json!({ "kind": "native", "serverId": guild_id })
+            }
+            None => json!({ "kind": "none", "serverId": null }),
+        };
+
         let used_bytes = guild_aggregates.board_bytes.max(0);
         guild_payloads.push(json!({
             "id": guild_id,
             "name": display_name,
             "editableName": editable_name,
+            "discord": discord,
             "busyUntil": opt_iso_ms(record.and_then(|guild| guild.busy_until.map(|date| date.timestamp_millis()))),
             "settings": settings,
             "overlays": {

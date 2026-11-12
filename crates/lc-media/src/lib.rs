@@ -71,7 +71,9 @@ pub use crate::source::{
     canonicalize_source_url, classify_source, source_hash, validate_ingest_source, MediaSource,
     SourceKind,
 };
-pub use crate::storage::{is_staged_file_name, staged_path, MediaStorage, StoredVariant};
+pub use crate::storage::{
+    is_staged_file_name, resolve_storage_reference, staged_path, MediaStorage, StoredVariant,
+};
 pub use crate::transcode::{
     build_audio_args, build_carousel_video, build_carousel_video_args, build_video_transcode_args,
     carousel_dimensions, normalize_downloaded_media, resolve_video_encoder, NormalizedMedia,

@@ -154,13 +154,7 @@ impl MediaStorage {
     /// (AUD-V2-S-002). Les variantes sont plates sous la racine : on ne garde
     /// donc que le nom de fichier.
     pub fn resolve_reference(&self, path: &Path) -> PathBuf {
-        if path.is_absolute() {
-            return path.to_path_buf();
-        }
-        match path.file_name() {
-            Some(name) if !name.is_empty() => self.root.join(name),
-            _ => self.root.clone(),
-        }
+        resolve_storage_reference(&self.root, path)
     }
 
     /// Résout et confine un chemin de stockage sans suivre les liens.
@@ -439,10 +433,51 @@ fn now_ms() -> i64 {
         .unwrap_or_default()
 }
 
+/// Résout une référence de stockage (`media_assets.storage_path`) sous `root`.
+///
+/// Un chemin absolu est gardé tel quel ; un chemin relatif hérité du legacy est
+/// ramené à son nom de fichier sous la racine (les variantes sont plates). Le
+/// legacy tournait sous Windows : `data\media\<hash>.mp4` doit donner le même
+/// nom de fichier sous Linux, où `\` n'est pas un séparateur (sinon la purge
+/// prend le fichier référencé pour un orphelin).
+pub fn resolve_storage_reference(root: &Path, reference: &Path) -> PathBuf {
+    if reference.is_absolute() {
+        return reference.to_path_buf();
+    }
+    let raw = reference.to_string_lossy();
+    match raw.rsplit(['/', '\\']).next() {
+        Some(name) if !name.is_empty() && name != "." && name != ".." => root.join(name),
+        _ => root.to_path_buf(),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolves_legacy_references_with_either_separator() {
+        let root = std::env::temp_dir().join("lc-media-root");
+        assert_eq!(
+            resolve_storage_reference(&root, Path::new("data\\media\\a.mp4")),
+            root.join("a.mp4")
+        );
+        assert_eq!(
+            resolve_storage_reference(&root, Path::new("./data/media/b.mp4")),
+            root.join("b.mp4")
+        );
+        assert_eq!(
+            resolve_storage_reference(&root, Path::new("c.mp4")),
+            root.join("c.mp4")
+        );
+        assert_eq!(
+            resolve_storage_reference(&root, Path::new("data\\..")),
+            root
+        );
+        let absolute = root.join("d.mp4");
+        assert_eq!(resolve_storage_reference(&root, &absolute), absolute);
+    }
 
     #[test]
     fn builds_content_addressed_paths() {

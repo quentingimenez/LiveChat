@@ -153,6 +153,30 @@ strings! {
         "This media is already in the meme board."
     ),
 
+    link_name: ("lier", "link"),
+    link_description: (
+        "Lie ce serveur Discord à une guilde LiveChat (code donné par son overlay)",
+        "Link this Discord server to a LiveChat guild (code from its overlay)"
+    ),
+    link_option_code: ("code", "code"),
+    link_option_code_description: (
+        "Code de liaison affiché dans l'overlay",
+        "Link code shown in the overlay"
+    ),
+    link_success_title: ("Serveur lié", "Server linked"),
+    link_success_description: (
+        "Ce serveur Discord est maintenant lié à la guilde LiveChat « {{guildName}} ». Les commandes du bot visent cette guilde.",
+        "This Discord server is now linked to the LiveChat guild “{{guildName}}”. Bot commands now target that guild."
+    ),
+    link_invalid_code: (
+        "Code de liaison invalide, expiré ou déjà utilisé. Génère un nouveau code depuis les réglages de la guilde dans l'overlay.",
+        "Invalid, expired or already used link code. Create a new one from the guild settings in the overlay."
+    ),
+    link_already_linked: (
+        "Ce serveur Discord est déjà lié à une autre guilde LiveChat. Délie-la d'abord depuis son overlay.",
+        "This Discord server is already linked to another LiveChat guild. Unlink it from its overlay first."
+    ),
+
     send_name: ("msg", "send"),
     send_description: ("Envoyer du contenu sur le stream", "Send content to stream"),
     send_option_url: ("lien", "link"),

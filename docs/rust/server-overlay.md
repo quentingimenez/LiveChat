@@ -73,6 +73,7 @@ Conventions appliquées dans tout le module :
 | Méthode | Chemin | Auth | Handler | Succès |
 |---------|--------|------|---------|--------|
 | `POST` | `/overlay/pair/consume` | code d'appairage (corps) | `pair.rs:84` | `200` JSON (§5) |
+| `POST` | `/overlay/ingest-code` | `Authorization: Bearer` (membre, droit `TriggerPlayback`) | `ingest_code.rs` | `200 {code,expiresAt,apiBaseUrl}` |
 | `GET` | `/overlay/media/{assetId}` | URL signée HMAC (`clientId`, `exp`, `sig`) | `media.rs:86` | `200`/`206`, binaire |
 | `GET` | `/overlay/meme-board/items` | `Authorization: Bearer` (repli `?token=`) | `meme_board.rs:119` | `200 {total,limit,offset,items}` |
 | `POST` | `/overlay/meme-board/items` | `Authorization: Bearer` (repli `?token=`) | `meme_board.rs:189` | `200 {created,item}` |

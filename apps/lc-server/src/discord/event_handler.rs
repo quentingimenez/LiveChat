@@ -146,6 +146,20 @@ pub async fn upsert_guild_row(
     db.guilds().upsert(&guild).await
 }
 
+/// Cible d'upsert d'un `guild_create`.
+///
+/// `None` quand le serveur Discord est lié à une guilde indépendante : sa ligne
+/// native (`id` = snowflake) ne doit alors pas être créée, les commandes du bot
+/// visant la guilde indépendante. `Some(id)` renvoie sinon l'identifiant natif à
+/// synchroniser.
+pub async fn native_upsert_target(
+    db: &Db,
+    discord_guild_id: &lc_domain::GuildId,
+) -> Result<Option<lc_domain::GuildId>, lc_db::DbError> {
+    let resolved = db.guilds().resolve_discord(discord_guild_id).await?;
+    Ok((resolved == *discord_guild_id).then_some(resolved))
+}
+
 /// Envoie l'embed d'aide legacy dans le premier salon textuel où le bot peut
 /// écrire.
 async fn send_how_to_use(
@@ -219,7 +233,24 @@ impl EventHandler for DiscordEventHandler {
             );
             return;
         };
-        self.upsert_guild(&guild_id, &guild.name).await;
+        match native_upsert_target(&self.db, &guild_id).await {
+            Ok(Some(_)) => self.upsert_guild(&guild_id, &guild.name).await,
+            Ok(None) => {
+                tracing::info!(
+                    guild = guild_id.as_str(),
+                    "serveur Discord lié à une guilde indépendante : ligne native non créée"
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    guild = guild_id.as_str(),
+                    %error,
+                    "résolution de la guilde liée échouée"
+                );
+                return;
+            }
+        }
 
         // Le legacy n'envoyait cet embed qu'aux nouvelles guildes ; serenity
         // distingue ce cas via `is_new` (les guildes rechargées au démarrage ne
@@ -285,7 +316,9 @@ mod tests {
     use lc_discord::{dispatch, Lang};
     use lc_domain::GuildId;
 
-    use super::{how_to_use_texts, upsert_guild_row, HOW_TO_USE_EN, HOW_TO_USE_FR};
+    use super::{
+        how_to_use_texts, native_upsert_target, upsert_guild_row, HOW_TO_USE_EN, HOW_TO_USE_FR,
+    };
 
     fn guild_id() -> GuildId {
         GuildId::parse("424242424242424242").unwrap()
@@ -351,6 +384,30 @@ mod tests {
         assert_eq!(guild.default_media_time, None);
         assert_eq!(guild.max_media_time, None);
         assert!(!guild.display_media_full);
+    }
+
+    #[tokio::test]
+    async fn serveur_lie_a_une_guilde_independante_sans_ligne_native() {
+        let db = Db::open_in_memory(&DbConfig::default()).await.unwrap();
+        let standalone = GuildId::generate();
+        let now = lc_domain::ms_to_datetime(0).unwrap();
+        db.guilds()
+            .create_standalone(&standalone, "Les Sardines", now)
+            .await
+            .unwrap();
+
+        // Serveur non lié : la ligne native doit être synchronisée.
+        assert_eq!(
+            native_upsert_target(&db, &guild_id()).await.unwrap(),
+            Some(guild_id())
+        );
+
+        db.guilds()
+            .link_discord(&standalone, Some(&guild_id()))
+            .await
+            .unwrap();
+        assert_eq!(native_upsert_target(&db, &guild_id()).await.unwrap(), None);
+        assert!(db.guilds().get(&guild_id()).await.unwrap().is_none());
     }
 
     #[test]

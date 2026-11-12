@@ -3,7 +3,7 @@
 //!
 //! ## Découpage
 //!
-//! - [`catalog`] : catalogue **de données pur** des 14 commandes slash legacy
+//! - [`catalog`] : catalogue **de données pur** des 15 commandes slash legacy
 //!   (9 commandes « générales » + 5 commandes d'envoi de médias), avec leurs
 //!   noms/descriptions/options localisés fr/en et l'ordre d'enregistrement
 //!   historique.

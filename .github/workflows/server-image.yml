@@ -153,6 +153,14 @@ jobs:
           print('health OK:', data['status'], data['version'], 'db=' + data['db'])
           PY
 
+      - name: Verify admin panel assets are served
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -o /tmp/admin.html -w '%{http_code}' --max-time 5 http://127.0.0.1:3000/admin/)"
+          echo "GET /admin/ -> $status"
+          test "$status" = "200"
+          grep -qi '<html' /tmp/admin.html
+
       - name: Verify non-root user and media tools
         run: |
           set -euo pipefail

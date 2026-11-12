@@ -5,8 +5,9 @@
 //!
 //! 1. `ADMIN_UI_TOKEN` vide ⇒ `503 admin_ui_disabled` (message exact du legacy) ;
 //! 2. `ADMIN_UI_LOCAL_ONLY` vrai et client non loopback ⇒ `403 admin_local_only`
-//!    (avec `ADMIN_TRUST_FORWARDED_FOR=true`, le premier `X-Forwarded-For` est
-//!    pris en compte derrière un proxy de confiance) ;
+//!    (avec `ADMIN_TRUST_FORWARDED_FOR=true`, l'IP annoncée par le proxy de
+//!    confiance — `X-Real-IP` puis dernier `X-Forwarded-For` — est prise en
+//!    compte, voir [`crate::http::proxy`]) ;
 //! 3. token absent/différent ⇒ `401 unauthorized`, comparaison à temps constant.
 //!
 //! Le token est accepté **uniquement** en `Authorization: Bearer <token>`.
@@ -240,20 +241,12 @@ fn is_loopback_parts(parts: &Parts) -> bool {
     is_loopback(address.ip())
 }
 
-/// `X-Forwarded-For` (premier saut) pour le contrôle local-only derrière un
-/// reverse proxy de confiance (`ADMIN_TRUST_FORWARDED_FOR=true`).
-///
-/// Le premier saut est celui du client d'origine quand le proxy *ajoute* son
-/// entrée à la fin (convention `X-Forwarded-For`). Un en-tête absent ou
-/// illisible retombe sur « non loopback » : refus explicite.
+/// IP annoncée par le reverse proxy de confiance (`ADMIN_TRUST_FORWARDED_FOR=true`)
+/// pour le contrôle local-only : `X-Real-IP`, puis le dernier `X-Forwarded-For`.
+/// Le premier saut est écrit par le client (un `X-Forwarded-For: 127.0.0.1` forgé
+/// ne doit pas passer pour local). En-tête absent ou illisible : « non loopback ».
 fn forwarded_loopback_parts(parts: &Parts) -> bool {
-    parts
-        .headers
-        .get(header::HeaderName::from_static("x-forwarded-for"))
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(',').next())
-        .and_then(|hop| hop.trim().parse::<IpAddr>().ok())
-        .is_some_and(is_loopback)
+    crate::http::proxy::proxied_client_ip(&parts.headers).is_some_and(is_loopback)
 }
 
 /// Token de la requête : `Authorization: Bearer` uniquement (AUD-COR-05).

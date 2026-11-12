@@ -22,6 +22,10 @@ body {
   display: grid;
   place-items: center;
   pointer-events: none;
+  /* Space kept free around the media frame so its chrome stays on screen. */
+  --overlay-safe-margin: 24px;
+  --overlay-media-header-height: 54px;
+  --overlay-media-header-gap: 10px;
 }
 
 #media-layer {
@@ -41,13 +45,28 @@ body {
   align-items: center;
   --header-left-shift: 0px;
   --header-right-shift: 0px;
+  /* Height taken by the caption footer (margin included), kept up to date
+     by overlay.js; 0 while the footer is hidden. */
+  --overlay-media-footer-height: 0px;
+  /* Largest box the media may use: the viewport minus the safe margins, the
+     header (author chip + countdown) and the caption footer. Viewport units
+     keep it definite, so the media keeps its aspect ratio when scaled down. */
+  --overlay-media-max-width: calc(100vw - 2 * var(--overlay-safe-margin));
+  --overlay-media-max-height: max(
+    80px,
+    calc(
+      100vh - 2 * var(--overlay-safe-margin) - var(--overlay-media-header-height) -
+        var(--overlay-media-header-gap) - var(--overlay-media-footer-height)
+    )
+  );
+  max-width: var(--overlay-media-max-width);
 }
 
 .overlay-media-header {
   position: relative;
   width: 100%;
-  min-height: 54px;
-  margin-bottom: 10px;
+  min-height: var(--overlay-media-header-height);
+  margin-bottom: var(--overlay-media-header-gap);
   overflow: visible;
 }
 
@@ -120,6 +139,19 @@ body {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+}
+
+/* Standalone media: scale down (never up) to fit the space left by the chrome.
+   The percentages above resolve against an auto-sized frame and do not bound
+   a high-resolution media, which then pushed the header and caption off screen. */
+#media-layer .overlay-media-content > img,
+#media-layer .overlay-media-content > video {
+  max-width: var(--overlay-media-max-width);
+  max-height: var(--overlay-media-max-height);
+}
+
+#media-layer .overlay-media-content > .overlay-tweet-card {
+  max-height: min(84vh, 1500px, var(--overlay-media-max-height));
 }
 
 #media-layer audio {

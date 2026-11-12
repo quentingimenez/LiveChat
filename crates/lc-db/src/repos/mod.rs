@@ -4,6 +4,7 @@
 //! `lc-domain`/des services) sauf quand la garantie doit être atomique en base
 //! (`PlaybackJobsRepository::claim_next`, `PairingCodesRepository::consume`).
 
+mod discord_link_codes;
 mod guild_invites;
 mod guild_members;
 mod guilds;
@@ -15,6 +16,7 @@ mod overlay_clients;
 mod pairing_codes;
 mod playback_jobs;
 
+pub use discord_link_codes::{DiscordLinkCodesRepository, LinkOutcome};
 pub use guild_invites::GuildInvitesRepository;
 pub use guild_members::{GuildMembersRepository, MemberChange};
 pub use guilds::GuildsRepository;

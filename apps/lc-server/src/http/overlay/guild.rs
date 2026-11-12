@@ -89,7 +89,7 @@ pub(super) fn normalize_avatar(raw: &str) -> Option<String> {
 }
 
 /// Tire un code d'invitation aléatoire.
-fn random_invite_code() -> String {
+pub(super) fn random_invite_code() -> String {
     let mut rng = rand::rng();
     (0..INVITE_CODE_LEN)
         .map(|_| char::from(CODE_ALPHABET[rng.random_range(0..CODE_ALPHABET.len())]))

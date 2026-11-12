@@ -9,7 +9,7 @@ Une guilde est identifiée par un `GuildId` numérique. Deux origines coexistent
 - `guilds.standalone = 0` : l'identifiant est le snowflake du serveur Discord. Les guildes existantes et celles que les flux Discord créent encore à la volée gardent ce sens.
 - `guilds.standalone = 1` : la guilde a été créée hors Discord, depuis le panneau serveur (`POST /admin/api/guilds`). Son identifiant est généré localement avec le même format qu'un snowflake.
 
-Une guilde indépendante peut être liée à un serveur Discord par `guilds.discord_guild_id`, mais aucune route ni commande Discord n'expose encore cette liaison (voir « Limites connues »).
+Une guilde indépendante peut être liée à un serveur Discord par `guilds.discord_guild_id` (voir « Liaison Discord »).
 
 L'adhésion se fait par code. `POST /overlay/pair/consume` cherche le code dans `guild_invites` (invitations porteuses d'un rôle), puis dans `pairing_codes` (codes legacy émis depuis Discord). Chaque appairage crée un `GuildMember` ou rattache l'overlay à un membre existant ; `overlay_clients.member_id` porte ce rattachement.
 
@@ -384,6 +384,41 @@ Sur `4401` (jeton invalide) ou `4402` (appareil révoqué), `close_step` renvoie
 
 Toute autre fenêtre, y compris un libellé vide ou inconnu, n'a aucune commande autorisée.
 
+## Liaison Discord
+
+Une guilde indépendante peut être rattachée à un serveur Discord sans changer
+son identifiant local :
+
+1. un administrateur d'overlay (`manageSettings`) demande un code avec
+   `POST /overlay/admin/discord-link-code`, qui répond
+   `{"code": "<CODE>", "expiresAt": "<iso ms>", "commands": ["/lier", "/link"]}`.
+   Le code suit le format des invitations, expire au bout de 10 minutes et est à
+   usage unique ; chaque nouvelle demande supprime les codes non utilisés de la
+   guilde (`DiscordLinkCodesRepository::replace_for_guild`) ;
+2. un administrateur du serveur Discord saisit ce code avec la commande slash
+   `/lier` (français) ou `/link` (anglais). Seuls les administrateurs Discord
+   peuvent l'exécuter et toutes ses réponses sont éphémères ;
+3. `DiscordLinkCodesRepository::redeem` pose `guilds.discord_guild_id` et marque
+   le code utilisé. Un serveur déjà lié à une autre guilde est refusé
+   (`AlreadyLinkedElsewhere`, le code reste utilisable) ; lier la guilde à un
+   autre serveur remplace la liaison précédente ;
+4. `DELETE /overlay/admin/discord-link` efface la liaison (`{"linked": false}`).
+   Les deux routes répondent `409 {"error":"guild_not_standalone"}` pour une
+   guilde native.
+
+| Méthode | Chemin | Droit | Réponse |
+|---------|--------|-------|---------|
+| `POST` | `/overlay/admin/discord-link-code` | `manageSettings` | `200` avec code, `expiresAt` et commandes ; `409 guild_not_standalone` |
+| `DELETE` | `/overlay/admin/discord-link` | `manageSettings` | `200 {"linked": false}` ; `409 guild_not_standalone` |
+
+Résolution : pour **toutes** les commandes sauf `/lier`, le bot remplace le
+snowflake du serveur par `GuildsRepository::resolve_discord(snowflake)`. Un
+serveur lié vise donc la guilde indépendante pour ses réglages, sa file, son
+meme board et ses overlays. La ligne `guilds` native du serveur Discord (si elle
+existait déjà) est laissée telle quelle : `guild_create` ne la crée plus pour un
+serveur lié, ne la supprime pas, et ses overlays cessent simplement de recevoir
+les commandes de ce serveur, désormais destinées à la guilde indépendante.
+
 ## Limites connues
 
 - Aucun message WebSocket ne transporte la file d'attente : l'interface interroge `GET /overlay/queue`.
@@ -392,5 +427,4 @@ Toute autre fenêtre, y compris un libellé vide ou inconnu, n'a aucune commande
 - Un changement de rôle ferme les sessions WebSocket du membre avec le code `1001` pour qu'elles se reconnectent et reprennent leur mode à jour.
 - Les raccourcis clavier ne valent que pour la guilde active : ils sont lus dans `config.meme_bindings`, miroir de cette guilde.
 - L'URL des médias du board embarque encore le jeton en query (`board_media_url`), ce que le serveur accepte uniquement sous `/overlay/meme-board/*`.
-- La liaison Discord d'une guilde indépendante existe en base (`GuildsRepository::link_discord`) mais n'a encore ni route HTTP ni commande Discord.
 - L'arbitrage local d'affichage n'a pas été validé contre le délai de surveillance du moteur de lecture côté serveur. Le moteur libère un job `PLAYING` au-delà de sa durée attendue plus `stale_release_grace_ms` (10 s par défaut, `crates/lc-playback/src/lib.rs`) ; l'attente d'un `play` dans la file locale n'est pas couverte par un test d'interaction.

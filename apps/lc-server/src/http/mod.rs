@@ -9,6 +9,7 @@
 //! - [`security`] : CSP et en-têtes de sécurité ;
 //! - [`cors`] : origines autorisées explicites ;
 //! - [`rate_limit`] : 100 requêtes / 15 min par IP (budget séparé pour les médias) ;
+//! - [`proxy`] : IP du client annoncée par un reverse proxy de confiance ;
 //! - [`error`] : normalisation JSON des erreurs et repli 404.
 //!
 //! L'assemblage (ordre des couches, état partagé) est centralisé dans
@@ -21,6 +22,7 @@ pub mod error;
 pub mod health;
 pub mod ingest;
 pub mod overlay;
+pub mod proxy;
 pub mod rate_limit;
 pub mod root;
 pub mod security;

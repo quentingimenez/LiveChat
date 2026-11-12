@@ -24,7 +24,8 @@
 //!
 //! L'adresse IP est lue depuis `ConnectInfo<SocketAddr>` (jamais fourni par le
 //! client). Derrière un reverse proxy, `TRUST_PROXY_HEADERS=true` active la
-//! lecture du premier `X-Forwarded-For` — configuration explicite exigée par le
+//! lecture de `X-Real-IP` puis du dernier `X-Forwarded-For` (voir
+//! [`super::proxy`] ; le premier est écrit par le client) — configuration explicite exigée par le
 //! point S6 du plan de migration : le serveur ne fait jamais confiance à cet
 //! en-tête par défaut.
 //!
@@ -264,7 +265,7 @@ fn is_exempt(state: &RateLimitState, ip: Option<IpAddr>) -> bool {
 
 fn client_ip(state: &RateLimitState, request: &Request) -> Option<IpAddr> {
     if state.trust_proxy_headers {
-        if let Some(ip) = forwarded_ip(request) {
+        if let Some(ip) = super::proxy::proxied_client_ip(request.headers()) {
             return Some(canonical_ip(ip));
         }
     }
@@ -288,17 +289,6 @@ fn canonical_ip(ip: IpAddr) -> IpAddr {
         },
         IpAddr::V4(v4) => IpAddr::V4(v4),
     }
-}
-
-/// Premier `X-Forwarded-For` exploitable (uniquement si `TRUST_PROXY_HEADERS`).
-fn forwarded_ip(request: &Request) -> Option<IpAddr> {
-    request
-        .headers()
-        .get("x-forwarded-for")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(',').next())
-        .map(str::trim)
-        .and_then(|value| value.parse::<IpAddr>().ok())
 }
 
 fn insert_rate_limit_headers(response: &mut Response, decision: Decision) {
@@ -458,7 +448,8 @@ mod tests {
     fn forwarded_ip_is_used_only_when_enabled() {
         let request = HttpRequest::builder()
             .uri("/health")
-            .header("x-forwarded-for", "203.0.113.7, 10.0.0.1")
+            // First hop forged by the client, last one appended by the proxy.
+            .header("x-forwarded-for", "127.0.0.1, 203.0.113.7")
             .body(axum::body::Body::empty())
             .unwrap();
 

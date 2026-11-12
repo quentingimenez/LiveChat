@@ -228,8 +228,9 @@ pub struct Config {
     pub admin_ui_token: Secret,
     /// `ADMIN_UI_LOCAL_ONLY` (défaut `true`).
     pub admin_ui_local_only: bool,
-    /// `ADMIN_TRUST_FORWARDED_FOR` (défaut `false`) : lit le premier
-    /// `X-Forwarded-For` pour le contrôle local-only admin (proxy de confiance).
+    /// `ADMIN_TRUST_FORWARDED_FOR` (défaut `false`) : lit l'IP annoncée par le
+    /// proxy de confiance (`X-Real-IP`, puis dernier `X-Forwarded-For`) pour le
+    /// contrôle local-only admin.
     pub admin_trust_forwarded_for: bool,
     /// `DISCORD_TOKEN` (facultatif ; absent = Discord désactivé).
     pub discord_token: Option<Secret>,
@@ -303,7 +304,8 @@ pub struct Config {
     pub additional_cors_origins: Vec<Url>,
     /// `MIN_OVERLAY_VERSION` (défaut `3.0.0`).
     pub min_overlay_version: String,
-    /// `TRUST_PROXY_HEADERS` (défaut `false`).
+    /// `TRUST_PROXY_HEADERS` (défaut `false`) : le rate limit lit `X-Real-IP`,
+    /// puis le dernier `X-Forwarded-For` (voir `http::proxy`).
     pub trust_proxy_headers: bool,
     /// `WS_HEARTBEAT_TIMEOUT_SEC` (défaut `45`, utilisé en Phase 4).
     pub ws_heartbeat_timeout_sec: u64,

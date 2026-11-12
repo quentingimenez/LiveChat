@@ -170,7 +170,7 @@ global) : c'est elle qu'utilisent les tests.
 | `FFPROBE_BINARY` | `ffprobe` | |
 | `ADDITIONAL_CORS_ORIGINS` | `""` | origines séparées par des virgules |
 | `MIN_OVERLAY_VERSION` | `3.0.0` | doit ressembler à `x.y.z` (contrat 426) |
-| `TRUST_PROXY_HEADERS` | `false` | si `true`, `X-Forwarded-For` fait foi pour l'IP |
+| `TRUST_PROXY_HEADERS` | `false` | si `true`, `X-Real-IP` puis le dernier `X-Forwarded-For` font foi pour l'IP |
 | `WS_HEARTBEAT_TIMEOUT_SEC` | `45` | réservé Phase 4 |
 
 ### Règles de validation
@@ -281,8 +281,9 @@ contrairement au legacy qui combinait les deux). Préflight mis en cache 600 s.
 
 - **100 requêtes / 15 minutes par IP**, fenêtre fixe, compteur en mémoire
   (`Arc<Mutex<…>>`), nettoyage opportuniste des fenêtres expirées ;
-- IP lue depuis la connexion (`ConnectInfo`), ou premier `X-Forwarded-For`
-  **seulement si** `TRUST_PROXY_HEADERS=true` ; les IPv4 encapsulées en IPv6
+- IP lue depuis la connexion (`ConnectInfo`), ou, **seulement si**
+  `TRUST_PROXY_HEADERS=true`, `X-Real-IP` puis le dernier `X-Forwarded-For`
+  (le premier est écrit par le client, `http/proxy.rs`) ; les IPv4 encapsulées en IPv6
   (`::ffff:a.b.c.d`) sont normalisées ;
 - exemptions : préfixe `/admin` (l'UI admin a ses propres contrôles) et, en
   `development`, les adresses loopback ;
@@ -430,8 +431,9 @@ L'état partagé est `AppState` (cloneable) : `config`, `db`, `clock`,
    client reçoit un flux invalide. À exclure explicitement lors de l'ajout des
    routes médias (Phase 3b/7).
 3. **Rate limit et IP réelle** : `TRUST_PROXY_HEADERS=true` fait confiance à
-   `X-Forwarded-For` ; ne l'activer que derrière un proxy de confiance, sinon
-   l'IP est falsifiable (documenté).
+   `X-Real-IP`, puis au dernier saut de `X-Forwarded-For` (celui ajouté par le
+   proxy) ; ne l'activer que derrière un proxy de confiance qui pose ces
+   en-têtes, sinon l'IP est falsifiable.
 4. **`/health` `discord=down`** tant que la Phase 6 n'injecte pas l'état réel :
    un overlay qui attend `ok` verra `down` si Discord est configuré. À
    connecter au bot en Phase 6.

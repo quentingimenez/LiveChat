@@ -226,12 +226,14 @@ config n'offre pas encore de réglage dédié :
    exposer l'admin uniquement derrière une authentification proxy/TLS, sur un
    bind réseau restreint (`docs/rust/packaging.md` §10.4).
 
-`TRUST_PROXY_HEADERS` (défaut `false`) n'affecte que le rate-limit (lecture du
-premier `X-Forwarded-For`). Pour l'admin, l'option dédiée
-`ADMIN_TRUST_FORWARDED_FOR` (défaut `false`, AUD-COR-14) est **implémentée** :
-quand elle vaut `true`, le contrôle `ADMIN_UI_LOCAL_ONLY` lit le premier saut de
-`X-Forwarded-For` au lieu du socket brut. À n'activer que derrière un reverse
-proxy de confiance qui écrase cet en-tête (sinon un client peut le forger).
+`TRUST_PROXY_HEADERS` (défaut `false`) n'affecte que le rate-limit. Pour
+l'admin, l'option dédiée `ADMIN_TRUST_FORWARDED_FOR` (défaut `false`,
+AUD-COR-14) est **implémentée** : quand elle vaut `true`, le contrôle
+`ADMIN_UI_LOCAL_ONLY` lit l'IP annoncée par le proxy au lieu du socket brut.
+Les deux options lisent `X-Real-IP`, puis le **dernier** saut de
+`X-Forwarded-For` (`http/proxy.rs`) : le premier saut est écrit par le client,
+un `X-Forwarded-For: 127.0.0.1` forgé ne passe donc pas pour local. À n'activer
+que derrière un reverse proxy de confiance qui pose ces en-têtes.
 
 ## 5. Assets statiques
 

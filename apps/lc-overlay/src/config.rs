@@ -16,7 +16,7 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// Nom du dossier de configuration dans `%APPDATA%` (compatibilité Electron).
@@ -30,7 +30,7 @@ pub const CONFIG_PATH_ENV: &str = "LIVECHAT_CONFIG_PATH";
 
 const DEFAULT_VOLUME: f64 = 1.0;
 
-const KNOWN_KEYS: [&str; 16] = [
+const KNOWN_KEYS: [&str; 19] = [
     "displayId",
     "displayIndex",
     "displayKey",
@@ -47,7 +47,60 @@ const KNOWN_KEYS: [&str; 16] = [
     "authorName",
     "deviceName",
     "memeBindings",
+    "memberships",
+    "profileName",
+    "profileAvatar",
 ];
+
+/// Adhésion à une guilde : un jeton overlay par guilde rejointe.
+///
+/// L'overlay reste connecté à toutes ses guildes non muettes. Les champs
+/// historiques de [`OverlayConfig`] (`serverUrl`, `clientToken`, `clientId`,
+/// `guildId`, `guestMode`, `memeBindings`) sont le **miroir de la guilde
+/// active** (celle affichée dans le board) : le renderer d'affichage, le tray
+/// et les raccourcis continuent de les lire tels quels.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Membership {
+    pub server_url: String,
+    pub guild_id: String,
+    pub guild_name: Option<String>,
+    pub client_token: String,
+    pub client_id: Option<String>,
+    pub member_id: Option<String>,
+    pub display_name: Option<String>,
+    /// `admin`, `member` ou `guest` (valeur du serveur, informative : le
+    /// serveur reste seul juge des droits).
+    pub role: Option<String>,
+    pub guest_mode: bool,
+    /// Guilde coupée : aucune connexion, donc aucun média affiché.
+    pub muted: bool,
+    pub meme_bindings: MemeBindings,
+}
+
+impl Membership {
+    fn is_valid(&self) -> bool {
+        !self.server_url.trim().is_empty()
+            && !self.guild_id.trim().is_empty()
+            && !self.client_token.trim().is_empty()
+    }
+}
+
+/// Vue d'une adhésion pour l'interface : jamais de jeton.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MembershipView {
+    pub server_url: String,
+    pub guild_id: String,
+    pub guild_name: Option<String>,
+    pub client_id: Option<String>,
+    pub member_id: Option<String>,
+    pub display_name: Option<String>,
+    pub role: Option<String>,
+    pub guest_mode: bool,
+    pub muted: bool,
+    pub active: bool,
+}
 
 /// Dictionnaire accélérateur -> identifiant de média (meme board).
 pub type MemeBindings = BTreeMap<String, String>;
@@ -72,6 +125,13 @@ pub struct OverlayConfig {
     pub author_name: Option<String>,
     pub device_name: Option<String>,
     pub meme_bindings: MemeBindings,
+    /// Guildes rejointes (la guilde active est aussi reflétée dans les champs
+    /// historiques ci-dessus).
+    pub memberships: Vec<Membership>,
+    /// Pseudo du profil local, proposé à chaque nouvelle guilde.
+    pub profile_name: Option<String>,
+    /// Avatar du profil local.
+    pub profile_avatar: Option<String>,
     /// Champs écrits par une autre version (Electron) : conservés à l'écriture
     /// pour ne pas casser un rollback.
     #[serde(flatten)]
@@ -97,6 +157,9 @@ impl Default for OverlayConfig {
             author_name: None,
             device_name: None,
             meme_bindings: MemeBindings::new(),
+            memberships: Vec::new(),
+            profile_name: None,
+            profile_avatar: None,
             extra: BTreeMap::new(),
         }
     }
@@ -147,6 +210,15 @@ impl OverlayConfig {
         config.author_name = string_field(map, "authorName", &mut warnings);
         config.device_name = string_field(map, "deviceName", &mut warnings);
         config.meme_bindings = meme_bindings_field(map, &mut warnings);
+        config.profile_name = string_field(map, "profileName", &mut warnings);
+        config.profile_avatar = string_field(map, "profileAvatar", &mut warnings);
+        if let Some(raw) = map.get("memberships") {
+            match serde_json::from_value::<Vec<Membership>>(raw.clone()) {
+                Ok(memberships) => config.memberships = memberships,
+                Err(error) => warnings.push(format!("memberships invalide : {error}")),
+            }
+        }
+        config.reconcile_memberships();
 
         for (key, value) in map {
             if !KNOWN_KEYS.contains(&key.as_str()) {
@@ -161,6 +233,178 @@ impl OverlayConfig {
     pub fn normalize(&mut self) {
         self.volume = normalize_volume(self.volume);
         self.meme_bindings = normalize_meme_bindings(&self.meme_bindings);
+        self.reconcile_memberships();
+    }
+
+    /// Maintient la cohérence entre la liste des adhésions et les champs
+    /// historiques (miroir de la guilde active).
+    ///
+    /// - une configuration d'avant le multi-guilde (champs historiques seuls)
+    ///   devient une adhésion ;
+    /// - les champs historiques font foi pour la guilde active (ce sont eux que
+    ///   le code de session modifie) : ils sont recopiés dans son adhésion ;
+    /// - si la guilde active a perdu son jeton (purge après révocation), son
+    ///   adhésion est retirée et la première restante devient active.
+    pub fn reconcile_memberships(&mut self) {
+        self.memberships.retain(Membership::is_valid);
+        let mut seen = Vec::new();
+        self.memberships.retain(|membership| {
+            if seen.contains(&membership.guild_id) {
+                false
+            } else {
+                seen.push(membership.guild_id.clone());
+                true
+            }
+        });
+
+        if self.has_pairing_config() {
+            let guild_id = self.guild_id.clone().unwrap_or_default();
+            let mirrored = Membership {
+                server_url: self.server_url.clone().unwrap_or_default(),
+                guild_id: guild_id.clone(),
+                client_token: self.client_token.clone().unwrap_or_default(),
+                client_id: self.client_id.clone(),
+                guest_mode: self.guest_mode,
+                meme_bindings: self.meme_bindings.clone(),
+                ..Membership::default()
+            };
+            match self.membership_mut(&guild_id) {
+                Some(existing) => {
+                    existing.server_url = mirrored.server_url;
+                    existing.client_token = mirrored.client_token;
+                    existing.client_id = mirrored.client_id;
+                    existing.guest_mode = mirrored.guest_mode;
+                    existing.meme_bindings = mirrored.meme_bindings;
+                }
+                None => self.memberships.push(Membership {
+                    display_name: self.author_name.clone(),
+                    ..mirrored
+                }),
+            }
+            return;
+        }
+
+        // Guilde active sans jeton : elle a été purgée.
+        if let Some(purged) = self.guild_id.clone() {
+            self.memberships
+                .retain(|membership| membership.guild_id != purged);
+        }
+        match self.memberships.first().cloned() {
+            Some(next) => self.mirror(&next),
+            None => {
+                self.client_token = None;
+                self.client_id = None;
+                self.guild_id = None;
+                self.guest_mode = false;
+            }
+        }
+    }
+
+    /// Recopie une adhésion dans les champs historiques (elle devient active).
+    fn mirror(&mut self, membership: &Membership) {
+        self.server_url = Some(membership.server_url.clone());
+        self.client_token = Some(membership.client_token.clone());
+        self.client_id = membership.client_id.clone();
+        self.guild_id = Some(membership.guild_id.clone());
+        self.guest_mode = membership.guest_mode;
+        self.meme_bindings = membership.meme_bindings.clone();
+    }
+
+    /// Adhésion d'une guilde.
+    pub fn membership(&self, guild_id: &str) -> Option<&Membership> {
+        self.memberships
+            .iter()
+            .find(|membership| membership.guild_id == guild_id)
+    }
+
+    fn membership_mut(&mut self, guild_id: &str) -> Option<&mut Membership> {
+        self.memberships
+            .iter_mut()
+            .find(|membership| membership.guild_id == guild_id)
+    }
+
+    /// `true` si `guild_id` est la guilde active.
+    pub fn is_active_guild(&self, guild_id: &str) -> bool {
+        self.guild_id.as_deref() == Some(guild_id)
+    }
+
+    /// Ajoute ou remplace une adhésion et la rend active.
+    pub fn join(&mut self, membership: Membership) {
+        // Fige d'abord l'état de la guilde active courante dans son adhésion.
+        self.reconcile_memberships();
+        self.memberships
+            .retain(|existing| existing.guild_id != membership.guild_id);
+        self.mirror(&membership);
+        self.memberships.push(membership);
+    }
+
+    /// Rend une guilde active. `false` si elle est inconnue.
+    pub fn activate(&mut self, guild_id: &str) -> bool {
+        self.reconcile_memberships();
+        match self.membership(guild_id).cloned() {
+            Some(membership) => {
+                self.mirror(&membership);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Modifie une adhésion ; si elle est active, le miroir suit.
+    /// `false` si la guilde est inconnue.
+    pub fn update_membership<F>(&mut self, guild_id: &str, mutate: F) -> bool
+    where
+        F: FnOnce(&mut Membership),
+    {
+        self.reconcile_memberships();
+        let Some(membership) = self.membership_mut(guild_id) else {
+            return false;
+        };
+        mutate(membership);
+        let updated = membership.clone();
+        if self.is_active_guild(guild_id) {
+            self.mirror(&updated);
+        }
+        true
+    }
+
+    /// Retire une adhésion. Si elle était active, la suivante le devient.
+    pub fn leave(&mut self, guild_id: &str) -> bool {
+        self.reconcile_memberships();
+        let before = self.memberships.len();
+        self.memberships
+            .retain(|membership| membership.guild_id != guild_id);
+        if self.memberships.len() == before {
+            return false;
+        }
+        if self.is_active_guild(guild_id) {
+            self.client_token = None;
+            self.client_id = None;
+            self.guild_id = None;
+            self.guest_mode = false;
+            self.meme_bindings = MemeBindings::new();
+            self.reconcile_memberships();
+        }
+        true
+    }
+
+    /// Vues des adhésions pour l'interface (sans jeton).
+    pub fn membership_views(&self) -> Vec<MembershipView> {
+        self.memberships
+            .iter()
+            .map(|membership| MembershipView {
+                server_url: membership.server_url.clone(),
+                guild_id: membership.guild_id.clone(),
+                guild_name: membership.guild_name.clone(),
+                client_id: membership.client_id.clone(),
+                member_id: membership.member_id.clone(),
+                display_name: membership.display_name.clone(),
+                role: membership.role.clone(),
+                guest_mode: membership.guest_mode,
+                muted: membership.muted,
+                active: self.is_active_guild(&membership.guild_id),
+            })
+            .collect()
     }
 
     /// Projection renderer (8 champs).

@@ -60,6 +60,11 @@ use super::{database_unavailable, db_failure, unauthorized};
 pub struct AuthedOverlayClient {
     /// Client tel que persisté (`overlay_clients`), forcément non révoqué.
     pub client: lc_domain::OverlayClient,
+    /// Membre de guilde propriétaire de l'overlay (migration 0003).
+    ///
+    /// `None` pour un overlay sans membre rattaché : son rôle se déduit alors
+    /// du mode de session persisté (cf. [`AuthedOverlayClient::role`]).
+    pub member: Option<lc_domain::GuildMember>,
     /// Instant d'authentification (horloge injectée).
     /// Horodatage de la résolution du client (conservé pour l'audit et les
     /// handlers qui voudront borner la fraîcheur d'un token).
@@ -73,24 +78,39 @@ impl AuthedOverlayClient {
         &self.client.guild_id
     }
 
-    /// Mode de session du client, chargé depuis `overlay_clients.session_mode`
-    /// au moment de l'authentification (`normal` ou `invite_read_only`).
+    /// Rôle du client dans sa guilde.
     ///
-    /// Le mode est **persisté en base** et jamais dérivé d'un en-tête ou du
-    /// corps de la requête : un client ne peut donc pas s'auto-attribuer une
-    /// session normale (cf. `pair.rs`, `sessionMode` du corps ignoré).
-    pub fn session_mode(&self) -> lc_domain::OverlaySessionMode {
-        self.client.session_mode
+    /// Celui du membre rattaché ; à défaut, l'équivalent du mode de session
+    /// persisté (`invite_read_only` → invité, `normal` → membre). Comme le mode,
+    /// il vient toujours de la base, jamais de la requête.
+    pub fn role(&self) -> lc_domain::GuildRole {
+        match &self.member {
+            Some(member) => member.role,
+            None => match self.client.session_mode {
+                lc_domain::OverlaySessionMode::InviteReadOnly => lc_domain::GuildRole::Guest,
+                lc_domain::OverlaySessionMode::Normal => lc_domain::GuildRole::Member,
+            },
+        }
     }
 
-    /// `true` si la session est en lecture seule (`INVITE_READ_ONLY`).
+    /// `true` si le rôle du client autorise `permission`.
+    pub fn can(&self, permission: lc_domain::Permission) -> bool {
+        self.role().can(permission)
+    }
+
+    /// Identifiant du membre rattaché, s'il existe.
+    pub fn member_id(&self) -> Option<lc_domain::GuildMemberId> {
+        self.member.as_ref().map(|member| member.id)
+    }
+
+    /// `true` si la session est en lecture seule (rôle invité).
     ///
     /// Les routes qui écrivent (meme board : `POST`, `PATCH`, `DELETE`) doivent
     /// refuser la requête avec `403 {"error":"read_only_session"}` lorsque
     /// cette méthode renvoie `true` (cf. `meme_board.rs`,
     /// `ensure_writable`). Les routes de lecture (`GET`) restent autorisées.
     pub fn is_read_only(&self) -> bool {
-        self.session_mode() == lc_domain::OverlaySessionMode::InviteReadOnly
+        self.role() == lc_domain::GuildRole::Guest
     }
 }
 
@@ -207,8 +227,14 @@ impl FromRequestParts<AppState> for AuthedOverlayClient {
                 warn!(error = %error, "mise à jour de last_seen_at impossible");
             }
 
+            let member = match db.guild_members().get_for_overlay_client(client_id).await {
+                Ok(member) => member,
+                Err(error) => return Err(db_failure("overlay_auth.member_lookup", &error)),
+            };
+
             Ok(Self {
                 client,
+                member,
                 authenticated_at: now,
             })
         }

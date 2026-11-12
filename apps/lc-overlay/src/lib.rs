@@ -204,6 +204,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             commands::meme_board_set_bindings,
             commands::meme_board_trigger,
             commands::meme_board_stop,
+            commands::guilds_list,
+            commands::guild_select,
+            commands::guild_set_muted,
+            commands::guild_leave,
+            commands::guild_api,
+            commands::guild_media_url,
             commands::overlay_check_updates,
             commands::overlay_install_update,
         ])

@@ -35,6 +35,95 @@ use crate::app::AppState;
 const INVALID_GUILD_ID: &str = "invalid_guild_id";
 const INVALID_PAYLOAD: &str = "invalid_payload";
 
+/// Durée de vie d'un code admin émis par le panel serveur (7 jours).
+const ADMIN_CODE_TTL_HOURS: i64 = 24 * 7;
+/// Longueur maximale du nom d'une guilde.
+const GUILD_NAME_MAX_CHARS: usize = 60;
+/// Tentatives de génération d'identifiant de guilde.
+const GUILD_ID_ATTEMPTS: usize = 5;
+
+/// Émet un code d'invitation admin à usage unique pour la guilde.
+async fn issue_admin_code(
+    state: &AppState,
+    db: &lc_db::Db,
+    guild_id: &GuildId,
+) -> Result<Value, AdminError> {
+    use crate::http::overlay::guild::{create_invite, invite_payload, NewInvite};
+
+    let now = state.clock.now();
+    let invite = NewInvite {
+        guild_id: guild_id.clone(),
+        role: lc_domain::GuildRole::Admin,
+        member_id: None,
+        max_uses: Some(1),
+        created_by_member_id: None,
+        expires_at: Some(now + chrono::Duration::hours(ADMIN_CODE_TTL_HOURS)),
+    };
+    match create_invite(db, invite, now).await {
+        Ok(Some(invite)) => Ok(invite_payload(&invite, now)),
+        Ok(None) => Err(AdminError::Internal),
+        Err(error) => Err(AdminError::db("création du code admin", error)),
+    }
+}
+
+/// Handler `POST /admin/api/guilds` : crée une guilde indépendante de Discord
+/// et son premier code admin.
+///
+/// Corps : `{"name": "Les Sardines"}`. Réponse :
+/// `{"created": true, "guild": {"id", "name"}, "adminInvite": {…}}`.
+pub(super) async fn create(
+    State(state): State<AppState>,
+    _access: AdminAccess,
+    payload: Json<Value>,
+) -> Result<Response, AdminError> {
+    let db = require_db(&state)?;
+    let name: String = to_non_empty_string(payload.get("name"))
+        .and_then(|raw| crate::http::overlay::guild::normalize_label(&raw, GUILD_NAME_MAX_CHARS))
+        .ok_or_else(|| AdminError::bad_request("invalid_name"))?;
+
+    let now = state.clock.now();
+    let mut created = None;
+    for _ in 0..GUILD_ID_ATTEMPTS {
+        let candidate = GuildId::generate();
+        match db.guilds().create_standalone(&candidate, &name, now).await {
+            Ok(()) => {
+                created = Some(candidate);
+                break;
+            }
+            Err(lc_db::DbError::Domain(lc_domain::DomainError::Conflict(_))) => {}
+            Err(error) => return Err(AdminError::db("création de la guilde", error)),
+        }
+    }
+    let guild_id = created.ok_or(AdminError::Internal)?;
+    let admin_invite = issue_admin_code(&state, db, &guild_id).await?;
+    tracing::info!(guild_id = guild_id.as_str(), "guilde indépendante créée");
+
+    Ok(Json(json!({
+        "created": true,
+        "guild": { "id": guild_id.as_str(), "name": name },
+        "adminInvite": admin_invite,
+    }))
+    .into_response())
+}
+
+/// Handler `POST /admin/api/guilds/{guild_id}/admin-code` : émet un nouveau
+/// code admin (premier admin d'une guilde existante, ou récupération).
+pub(super) async fn admin_code(
+    State(state): State<AppState>,
+    _access: AdminAccess,
+    Path(raw_guild_id): Path<String>,
+) -> Result<Response, AdminError> {
+    let db = require_db(&state)?;
+    let guild_id = parse_guild_id(&raw_guild_id)?;
+    let admin_invite = issue_admin_code(&state, db, &guild_id).await?;
+    Ok(Json(json!({
+        "created": true,
+        "guildId": guild_id.as_str(),
+        "adminInvite": admin_invite,
+    }))
+    .into_response())
+}
+
 /// Handler `PATCH /admin/api/guilds/{guild_id}/settings`.
 ///
 /// Corps partiel : `defaultMediaTime`, `maxMediaTime`, `displayMediaFull`. Les
@@ -245,6 +334,16 @@ pub(super) async fn purge(
     let deleted_overlay_clients = queries::delete_overlay_clients_for_guild(db, guild_id.as_str())
         .await
         .map_err(|error| AdminError::db("suppression des clients overlay", error))?;
+    // Invitations puis membres : après les overlays (clé étrangère
+    // `overlay_clients.member_id`).
+    db.guild_invites()
+        .delete_by_guild(&guild_id)
+        .await
+        .map_err(|error| AdminError::db("suppression des invitations", error))?;
+    db.guild_members()
+        .delete_by_guild(&guild_id)
+        .await
+        .map_err(|error| AdminError::db("suppression des membres", error))?;
     let deleted_pairing_codes = queries::delete_pairing_codes_for_guild(db, guild_id.as_str())
         .await
         .map_err(|error| AdminError::db("suppression des codes de pairing", error))?;

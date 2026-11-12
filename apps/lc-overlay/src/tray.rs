@@ -9,6 +9,7 @@ use tauri::{AppHandle, Manager, Wry};
 
 use crate::display::{self, DisplayInfo};
 use crate::events;
+use crate::net::ws::ConnectionStatus;
 use crate::state::AppState;
 use crate::windows;
 
@@ -22,6 +23,8 @@ const ID_TOGGLE_AUTOSTART: &str = "tray.toggle_autostart";
 const ID_TOGGLE_SHOW_TEXT: &str = "tray.toggle_show_text";
 const ID_RECONNECT: &str = "tray.reconnect";
 const ID_DISPLAY_PREFIX: &str = "tray.display.";
+const ID_GUILD_PREFIX: &str = "tray.guild.";
+const GUILD_LABEL_MAX_CHARS: usize = 48;
 const ID_VOLUME_UP: &str = "tray.volume.up";
 const ID_VOLUME_DOWN: &str = "tray.volume.down";
 const ID_VOLUME_RESET: &str = "tray.volume.reset";
@@ -50,6 +53,24 @@ fn truncate(text: &str, max_chars: usize) -> String {
     let mut truncated = text.chars().take(max_chars).collect::<String>();
     truncated.push('…');
     truncated
+}
+
+/// Libellé d'une entrée de guilde : nom (ou identifiant) puis statut.
+///
+/// Le statut est remplacé par « en sourdine » quand la guilde est coupée,
+/// comme dans le rail du board.
+fn guild_menu_label(
+    guild_name: Option<&str>,
+    guild_id: &str,
+    muted: bool,
+    status: ConnectionStatus,
+) -> String {
+    let name = match guild_name.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(name) => name.to_string(),
+        None => format!("Guilde {guild_id}"),
+    };
+    let status_label = if muted { "en sourdine" } else { status.label() };
+    truncate(&format!("{name} — {status_label}"), GUILD_LABEL_MAX_CHARS)
 }
 
 fn connection_detail(state: &AppState) -> String {
@@ -136,6 +157,25 @@ pub fn build_menu(
         false,
         None::<&str>,
     )?;
+    // Une entrée cochée par guilde rejointe, juste avant « Reconnecter ».
+    let memberships = config.membership_views();
+    let mut guild_items = Vec::with_capacity(memberships.len());
+    for membership in &memberships {
+        let status = state.net_snapshot_for(&membership.guild_id).status;
+        guild_items.push(CheckMenuItem::with_id(
+            app,
+            format!("{ID_GUILD_PREFIX}{}", membership.guild_id),
+            guild_menu_label(
+                membership.guild_name.as_deref(),
+                &membership.guild_id,
+                membership.muted,
+                status,
+            ),
+            true,
+            membership.active,
+            None::<&str>,
+        )?);
+    }
     let reconnect = MenuItem::with_id(
         app,
         ID_RECONNECT,
@@ -152,17 +192,11 @@ pub fn build_menu(
         show_overlay_item_enabled(&config),
         None::<&str>,
     )?;
-    let open_board = MenuItem::with_id(
-        app,
-        ID_OPEN_BOARD,
-        "Ouvrir Meme Board",
-        config.enabled && config.has_pairing_config(),
-        None::<&str>,
-    )?;
+    let open_board = MenuItem::with_id(app, ID_OPEN_BOARD, "Ouvrir LiveChat", true, None::<&str>)?;
     let open_pairing = MenuItem::with_id(
         app,
         ID_OPEN_PAIRING,
-        "Appairer l'overlay",
+        "Rejoindre une guilde",
         true,
         None::<&str>,
     )?;
@@ -238,22 +272,22 @@ pub fn build_menu(
     let separator_quit = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, ID_QUIT, "Quitter", true, None::<&str>)?;
 
-    let mut items: Vec<&dyn IsMenuItem<Wry>> = vec![
-        &status_connection,
-        &status_detail,
-        &status_version,
-        &reconnect,
-        &separator_status,
-        &show_overlay,
-        &open_board,
-        &open_pairing,
-        &separator_top,
-        &toggle_enabled,
-        &toggle_autostart,
-        &toggle_show_text,
-        &separator_config,
-        &display_header,
-    ];
+    let mut items: Vec<&dyn IsMenuItem<Wry>> =
+        vec![&status_connection, &status_detail, &status_version];
+    for item in &guild_items {
+        items.push(item);
+    }
+    items.push(&reconnect);
+    items.push(&separator_status);
+    items.push(&show_overlay);
+    items.push(&open_board);
+    items.push(&open_pairing);
+    items.push(&separator_top);
+    items.push(&toggle_enabled);
+    items.push(&toggle_autostart);
+    items.push(&toggle_show_text);
+    items.push(&separator_config);
+    items.push(&display_header);
     for item in &display_items {
         items.push(item);
     }
@@ -424,6 +458,52 @@ fn select_display(app: &AppHandle<Wry>, index: usize) {
     }
 }
 
+/// Active une guilde depuis le tray et diffuse le changement.
+///
+/// Un clic sur la guilde déjà active ne change rien : le menu est simplement
+/// reconstruit pour reposer la coche.
+fn select_guild(app: &AppHandle<Wry>, guild_id: &str) {
+    if guild_id.is_empty() {
+        tracing::warn!("identifiant de guilde tray invalide");
+        refresh_tray(app);
+        return;
+    }
+    let state = app.state::<AppState>();
+    if state.config_snapshot().is_active_guild(guild_id) {
+        tracing::debug!(guild_id, "guilde déjà active sélectionnée depuis le tray");
+        refresh_tray(app);
+        return;
+    }
+
+    let mut known = false;
+    match state.update_config(|config| known = config.activate(guild_id)) {
+        Ok(_) if known => {
+            tracing::info!(guild_id, "guilde active sélectionnée depuis le tray");
+            crate::shortcuts::reapply_for_session(app);
+            if state.overlay_ready() {
+                if let Err(error) = events::emit_settings(app, &state.view()) {
+                    tracing::debug!(
+                        %error,
+                        "échec d'émission des settings après activation de guilde"
+                    );
+                }
+            }
+            refresh_tray(app);
+            if let Err(error) = events::emit_guilds_changed(app) {
+                tracing::debug!(%error, "échec d'émission de l'état des guildes");
+            }
+        }
+        Ok(_) => {
+            tracing::warn!(guild_id, "guilde inconnue sélectionnée depuis le tray");
+            refresh_tray(app);
+        }
+        Err(error) => {
+            tracing::warn!(%error, guild_id, "échec de sauvegarde de la guilde active");
+            refresh_tray(app);
+        }
+    }
+}
+
 fn adjust_volume(app: &AppHandle<Wry>, delta: f64) {
     let state = app.state::<AppState>();
     let result =
@@ -506,6 +586,12 @@ pub fn handle_menu_event(app: &AppHandle<Wry>, id: &str) {
                 Err(_) => tracing::warn!(id = other, "identifiant d'écran tray invalide"),
             }
         }
+        other if other.starts_with(ID_GUILD_PREFIX) => {
+            // `select_guild` rafraîchit déjà le tray avant d'émettre l'état
+            // des guildes : inutile de reconstruire le menu une seconde fois.
+            select_guild(app, other.trim_start_matches(ID_GUILD_PREFIX));
+            return;
+        }
         other => tracing::debug!(id = other, "entrée de menu tray ignorée"),
     }
     refresh_tray(app);
@@ -513,8 +599,9 @@ pub fn handle_menu_event(app: &AppHandle<Wry>, id: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{show_overlay_item_enabled, update_menu_entry};
+    use super::{guild_menu_label, show_overlay_item_enabled, update_menu_entry};
     use crate::config::OverlayConfig;
+    use crate::net::ws::ConnectionStatus;
 
     fn paired_config() -> OverlayConfig {
         let mut config = OverlayConfig::default();
@@ -552,5 +639,36 @@ mod tests {
             !show_overlay_item_enabled(&unpaired),
             "non appairé => grisé"
         );
+    }
+
+    #[test]
+    fn guild_label_uses_name_fallback_mute_and_truncation() {
+        assert_eq!(
+            guild_menu_label(
+                Some("Les Sardines"),
+                "111",
+                false,
+                ConnectionStatus::Connected
+            ),
+            "Les Sardines — connecté"
+        );
+        assert_eq!(
+            guild_menu_label(None, "111", false, ConnectionStatus::Connecting),
+            "Guilde 111 — connexion…"
+        );
+        assert_eq!(
+            guild_menu_label(
+                Some("Les Sardines"),
+                "111",
+                true,
+                ConnectionStatus::Connected
+            ),
+            "Les Sardines — en sourdine"
+        );
+
+        let long_name = "a".repeat(60);
+        let label = guild_menu_label(Some(&long_name), "111", false, ConnectionStatus::Connected);
+        assert_eq!(label, format!("{}…", "a".repeat(48)));
+        assert_eq!(label.chars().count(), 49);
     }
 }

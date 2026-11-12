@@ -366,17 +366,9 @@ const TALK_OPTIONS: &[OptionSpec] = &[
     },
 ];
 
+// Same order as the legacy `hidetalkCommand.ts`: Discord requires the required
+// `voice` option before the optional `text` one.
 const HIDE_TALK_OPTIONS: &[OptionSpec] = &[
-    OptionSpec {
-        name: LocalizedText::new(FR.hide_talk_option_text, EN.hide_talk_option_text),
-        description: LocalizedText::new(
-            FR.hide_talk_option_text_description,
-            EN.hide_talk_option_text_description,
-        ),
-        kind: OptionKind::String,
-        required: false,
-        choices: &[],
-    },
     OptionSpec {
         name: LocalizedText::new(FR.hide_talk_option_voice, EN.hide_talk_option_voice),
         description: LocalizedText::new(
@@ -385,6 +377,16 @@ const HIDE_TALK_OPTIONS: &[OptionSpec] = &[
         ),
         kind: OptionKind::String,
         required: true,
+        choices: &[],
+    },
+    OptionSpec {
+        name: LocalizedText::new(FR.hide_talk_option_text, EN.hide_talk_option_text),
+        description: LocalizedText::new(
+            FR.hide_talk_option_text_description,
+            EN.hide_talk_option_text_description,
+        ),
+        kind: OptionKind::String,
+        required: false,
         choices: &[],
     },
 ];
@@ -670,6 +672,24 @@ mod tests {
         assert!(link.options[0].required);
         assert_eq!(link.options[0].name.get(Lang::Fr), "code");
         assert_eq!(link.options[0].name.get(Lang::En), "code");
+    }
+
+    /// Discord rejects the whole bulk registration ("Required options must be
+    /// placed before non-required options") when one command breaks this rule.
+    #[test]
+    fn required_options_come_before_optional_ones() {
+        for command in COMMANDS {
+            let first_optional = command.options.iter().position(|option| !option.required);
+            if let Some(first_optional) = first_optional {
+                assert!(
+                    command.options[first_optional..]
+                        .iter()
+                        .all(|option| !option.required),
+                    "{}: required option after an optional one",
+                    command.name_for(Lang::En)
+                );
+            }
+        }
     }
 
     #[test]

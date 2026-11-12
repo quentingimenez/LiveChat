@@ -40,7 +40,6 @@ COPY crates/lc-db/Cargo.toml crates/lc-db/Cargo.toml
 COPY crates/lc-media/Cargo.toml crates/lc-media/Cargo.toml
 COPY crates/lc-playback/Cargo.toml crates/lc-playback/Cargo.toml
 COPY crates/lc-discord/Cargo.toml crates/lc-discord/Cargo.toml
-COPY crates/lc-admin/Cargo.toml crates/lc-admin/Cargo.toml
 COPY apps/lc-server/Cargo.toml apps/lc-server/Cargo.toml
 COPY apps/lc-overlay/Cargo.toml apps/lc-overlay/Cargo.toml
 COPY xtask/Cargo.toml xtask/Cargo.toml
@@ -120,6 +119,9 @@ RUN groupadd --gid 10001 livechat \
     && chown -R 10001:10001 /app
 
 COPY --from=builder --chown=10001:10001 /app/target/release/lc-server /usr/local/bin/lc-server
+# Panneau d'administration : `lc-server` cherche `static/admin` relatif au
+# répertoire courant (WORKDIR /app), voir apps/lc-server/src/http/admin/static_files.rs.
+COPY --chown=10001:10001 static/admin /app/static/admin
 
 # Défauts du conteneur (tous surchargeables par `docker run -e` / orchestration).
 #  - API_URL est OBLIGATOIRE pour `lc-server` (origine CORS + base des URL médias) ;

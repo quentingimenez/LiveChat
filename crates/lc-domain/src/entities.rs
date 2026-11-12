@@ -12,9 +12,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::enums::{JobStatus, MediaKind, MediaStatus, OverlaySessionMode, PairingMode};
+use crate::enums::{GuildRole, JobStatus, MediaKind, MediaStatus, OverlaySessionMode, PairingMode};
 use crate::ids::{
-    GuildId, IngestClientId, MediaAssetId, MemeBoardItemId, OverlayClientId,
+    GuildId, GuildMemberId, IngestClientId, MediaAssetId, MemeBoardItemId, OverlayClientId,
     PairingCode as PairingCodeValue, PlaybackJobId,
 };
 
@@ -244,6 +244,103 @@ pub struct Guild {
     pub display_media_full: bool,
 }
 
+/// Rattachement d'une guilde : indépendante ou liée à un serveur Discord.
+///
+/// Colonnes ajoutées par la migration 0003, lues à part de [`Guild`] (qui reste
+/// l'entité des réglages de lecture).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuildAccess {
+    /// Identifiant de la guilde.
+    pub id: GuildId,
+    /// Nom lisible.
+    pub name: Option<String>,
+    /// `true` si la guilde a été créée hors Discord (panel serveur). Sinon son
+    /// identifiant **est** le snowflake du serveur Discord (legacy).
+    pub standalone: bool,
+    /// Serveur Discord lié à une guilde indépendante, si elle en a un.
+    pub discord_guild_id: Option<String>,
+    /// Les invités peuvent consulter le meme board.
+    pub guests_can_view_board: bool,
+    /// Date de création (`None` pour une guilde antérieure à la migration 0003).
+    #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+/// Membre d'une guilde : un profil (pseudo, avatar) et un rôle.
+///
+/// Un membre possède un ou plusieurs overlays (`overlay_clients.member_id`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuildMember {
+    /// Clé primaire UUID.
+    pub id: GuildMemberId,
+    /// Guilde d'appartenance.
+    pub guild_id: GuildId,
+    /// Pseudo affiché.
+    pub display_name: String,
+    /// Avatar (URL), si renseigné.
+    pub avatar: Option<String>,
+    /// Rôle dans la guilde.
+    pub role: GuildRole,
+    /// Date d'arrivée.
+    #[serde(with = "ms_required")]
+    pub created_at: DateTime<Utc>,
+    /// Date d'exclusion ou de départ (`None` = actif).
+    #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
+    pub removed_at: Option<DateTime<Utc>>,
+}
+
+impl GuildMember {
+    /// `true` si le membre n'a ni quitté la guilde ni été exclu.
+    pub fn is_active(&self) -> bool {
+        self.removed_at.is_none()
+    }
+}
+
+/// Invitation à rejoindre une guilde : le code porte le rôle accordé.
+///
+/// Si `member_id` est renseigné, le code n'ajoute pas un nouveau membre : il
+/// rattache un overlay supplémentaire à ce membre existant.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuildInvite {
+    /// Code lisible (clé primaire, MAJUSCULES).
+    pub code: PairingCodeValue,
+    /// Guilde cible.
+    pub guild_id: GuildId,
+    /// Rôle accordé au nouveau membre.
+    pub role: GuildRole,
+    /// Membre existant auquel rattacher l'overlay (code « appareil »).
+    pub member_id: Option<GuildMemberId>,
+    /// Nombre maximal d'utilisations (`None` = illimité).
+    pub max_uses: Option<i64>,
+    /// Nombre d'utilisations déjà faites.
+    pub use_count: i64,
+    /// Membre créateur (`None` = émis par l'admin serveur).
+    pub created_by_member_id: Option<GuildMemberId>,
+    /// Expiration (`None` = jamais).
+    #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+    /// Date de révocation (`None` = non révoquée).
+    #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<DateTime<Utc>>,
+    /// Date de création.
+    #[serde(with = "ms_required")]
+    pub created_at: DateTime<Utc>,
+}
+
+impl GuildInvite {
+    /// `true` si l'invitation peut encore être utilisée à l'instant `now`.
+    pub fn is_usable_at(&self, now: DateTime<Utc>) -> bool {
+        self.revoked_at.is_none()
+            && self.expires_at.is_none_or(|expires_at| expires_at > now)
+            && self
+                .max_uses
+                .is_none_or(|max_uses| self.use_count < max_uses)
+    }
+}
+
 /// Overlay appairé (navigateur/desktop), authentifié par hash de token.
 ///
 /// Le token en clair n'est **jamais** stocké : seul `token_hash` (SHA-256)
@@ -421,6 +518,34 @@ mod tests {
         assert!(asset.is_ready());
         assert!(!asset.is_expired_at(date(1_700_000_599_999)));
         assert!(asset.is_expired_at(date(1_700_000_600_000)));
+    }
+
+    #[test]
+    fn guild_invite_usable() {
+        use super::GuildInvite;
+        use crate::enums::GuildRole;
+
+        let mut invite = GuildInvite {
+            code: PairingCodeId::parse("K7QXM2PD").unwrap(),
+            guild_id: GuildId::parse("123456789012345678").unwrap(),
+            role: GuildRole::Member,
+            member_id: None,
+            max_uses: Some(2),
+            use_count: 1,
+            created_by_member_id: None,
+            expires_at: Some(date(1_000)),
+            revoked_at: None,
+            created_at: date(0),
+        };
+        assert!(invite.is_usable_at(date(999)));
+        assert!(!invite.is_usable_at(date(1_000)));
+        invite.use_count = 2;
+        assert!(!invite.is_usable_at(date(999)));
+        invite.max_uses = None;
+        invite.expires_at = None;
+        assert!(invite.is_usable_at(date(999)));
+        invite.revoked_at = Some(date(500));
+        assert!(!invite.is_usable_at(date(999)));
     }
 
     #[test]

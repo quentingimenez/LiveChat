@@ -15,6 +15,13 @@
 //!   comme les autres routes et un bruteforce reçoit `429` ;
 //! - aucune dépendance supplémentaire n'est ajoutée.
 //!
+//! Les téléchargements média (`GET`/`HEAD` sur les deux routes média) ont leur
+//! propre budget, plus large ([`MEDIA_RATE_LIMIT_MAX`]) : la grille du meme
+//! board charge une miniature par carte (et plusieurs requêtes `Range` par
+//! vidéo), ce qui épuiserait le budget général et ferait répondre `429` aux
+//! appels JSON. Les URLs média sont signées HMAC ou contrôlées par jeton, un
+//! budget plus large n'aide donc pas un bruteforce.
+//!
 //! L'adresse IP est lue depuis `ConnectInfo<SocketAddr>` (jamais fourni par le
 //! client). Derrière un reverse proxy, `TRUST_PROXY_HEADERS=true` active la
 //! lecture du premier `X-Forwarded-For` — configuration explicite exigée par le
@@ -30,7 +37,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{header, HeaderName, HeaderValue, StatusCode};
+use axum::http::{header, HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 
@@ -39,6 +46,10 @@ use crate::http::error::{json_error, REQUEST_ERROR};
 
 /// Nombre maximal de requêtes par fenêtre et par client.
 pub const RATE_LIMIT_MAX: u32 = 100;
+
+/// Budget de téléchargements média (`GET`/`HEAD` sur les deux routes média) par
+/// fenêtre et par client, compté à part de [`RATE_LIMIT_MAX`].
+pub const MEDIA_RATE_LIMIT_MAX: u32 = 1000;
 
 /// Durée de la fenêtre de limitation.
 pub const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(15 * 60);
@@ -162,6 +173,7 @@ impl RateLimiter {
 #[derive(Debug, Clone)]
 pub struct RateLimitState {
     limiter: RateLimiter,
+    media: RateLimiter,
     development: bool,
     trust_proxy_headers: bool,
 }
@@ -171,6 +183,7 @@ impl RateLimitState {
     pub fn from_config(config: &Config) -> Self {
         Self {
             limiter: RateLimiter::new(RATE_LIMIT_MAX, RATE_LIMIT_WINDOW),
+            media: RateLimiter::new(MEDIA_RATE_LIMIT_MAX, RATE_LIMIT_WINDOW),
             development: config.is_development(),
             trust_proxy_headers: config.trust_proxy_headers,
         }
@@ -188,10 +201,16 @@ pub async fn enforce(
         return next.run(request).await;
     }
 
-    let decision = state.limiter.check_at(client_key(ip), Instant::now());
+    let (limiter, bucket) = if is_media_request(request.method(), request.uri().path()) {
+        (&state.media, "media")
+    } else {
+        (&state.limiter, "general")
+    };
+    let decision = limiter.check_at(client_key(ip), Instant::now());
     if !decision.allowed {
         tracing::warn!(
             client = ?ip,
+            bucket = %bucket,
             path = %request.uri().path(),
             retry_after_secs = decision.reset_after.as_secs(),
             "limite de débit dépassée"
@@ -216,6 +235,22 @@ fn client_key(ip: Option<IpAddr>) -> ClientKey {
         Some(ip) => ClientKey::Known(ip),
         None => ClientKey::Unknown,
     }
+}
+
+/// Vrai pour un téléchargement média `GET`/`HEAD` : `/overlay/media/{asset_id}`
+/// ou `/overlay/meme-board/media/{asset_id}`, avec `{asset_id}` réduit à un
+/// unique segment de chemin non vide. Ces requêtes seules relèvent de
+/// [`MEDIA_RATE_LIMIT_MAX`].
+fn is_media_request(method: &Method, path: &str) -> bool {
+    if !matches!(*method, Method::GET | Method::HEAD) {
+        return false;
+    }
+    ["/overlay/media/", "/overlay/meme-board/media/"]
+        .iter()
+        .any(|prefix| {
+            path.strip_prefix(prefix)
+                .is_some_and(|asset_id| !asset_id.is_empty() && !asset_id.contains('/'))
+        })
 }
 
 /// Exemption : uniquement les adresses loopback en mode développement (tests
@@ -371,6 +406,29 @@ mod tests {
         let now = Instant::now();
         assert!(limiter.check_at(ClientKey::Unknown, now).allowed);
         assert!(!limiter.check_at(ClientKey::Unknown, now).allowed);
+    }
+
+    #[test]
+    fn media_paths_are_classified() {
+        for (method, path) in [
+            (Method::GET, "/overlay/media/abc"),
+            (Method::HEAD, "/overlay/media/abc"),
+            (Method::GET, "/overlay/meme-board/media/abc"),
+        ] {
+            assert!(is_media_request(&method, path), "{method} {path}");
+        }
+
+        for (method, path) in [
+            (Method::POST, "/overlay/media/abc"),
+            (Method::GET, "/overlay/media"),
+            (Method::GET, "/overlay/media/"),
+            (Method::GET, "/overlay/media/a/b"),
+            (Method::GET, "/overlay/mediax/a"),
+            (Method::GET, "/overlay/meme-board/items"),
+            (Method::GET, "/health"),
+        ] {
+            assert!(!is_media_request(&method, path), "{method} {path}");
+        }
     }
 
     #[test]

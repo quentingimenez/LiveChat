@@ -5,6 +5,7 @@
 //!   commandes du bridge → serveur).
 //! - [`pairing`] : appairage HTTP (`POST {serverUrl}/overlay/pair/consume`).
 
+pub mod api;
 pub mod pairing;
 mod tls;
 pub mod ws;

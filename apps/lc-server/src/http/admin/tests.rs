@@ -13,7 +13,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::body::{to_bytes, Body};
 use axum::extract::ConnectInfo;
@@ -22,9 +22,10 @@ use axum::Router;
 use chrono::{Duration, Utc};
 use lc_db::{Db, DbConfig};
 use lc_domain::{
-    Guild, GuildId, IngestClient, IngestClientId, JobStatus, MediaAsset, MediaAssetId, MediaKind,
-    MediaStatus, MemeBoardItem, MemeBoardItemId, OverlayClient, OverlayClientId,
-    OverlaySessionMode, PairingCode, PairingCodeEntry, PairingMode, PlaybackJob, PlaybackJobId,
+    Guild, GuildId, GuildInvite, GuildMember, GuildMemberId, GuildRole, IngestClient,
+    IngestClientId, JobStatus, MediaAsset, MediaAssetId, MediaKind, MediaStatus, MemeBoardItem,
+    MemeBoardItemId, OverlayClient, OverlayClientId, OverlaySessionMode, PairingCode,
+    PairingCodeEntry, PairingMode, PlaybackJob, PlaybackJobId,
 };
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
@@ -36,6 +37,7 @@ use super::runtime_settings::SETTINGS_FILE_NAME;
 use super::ADMIN_CSP;
 use crate::app::{router, AppState};
 use crate::config::Config;
+use crate::discord::guild_leave::{DiscordGuildLeaver, LeaveError, LeaveOutcome};
 use crate::http::security::{CONTENT_SECURITY_POLICY, PERMISSIONS_POLICY};
 use crate::shutdown::Shutdown;
 
@@ -44,6 +46,49 @@ const TOKEN: &str = "jeton-admin-de-test";
 const TEST_HOST: &str = "127.0.0.1:40000";
 /// Origine correspondant à `TEST_HOST`, utilisée pour les mutations (CSRF).
 const TEST_ORIGIN: &str = "http://127.0.0.1:40000";
+
+/// Issue configurée d'un [`FakeLeaver`].
+#[derive(Debug, Clone, Copy)]
+enum FakeLeaveResult {
+    Left,
+    NotMember,
+    Api,
+}
+
+/// Leaver factice : enregistre les identifiants reçus, sans réseau.
+#[derive(Debug)]
+struct FakeLeaver {
+    calls: Mutex<Vec<String>>,
+    result: FakeLeaveResult,
+}
+
+impl FakeLeaver {
+    fn new(result: FakeLeaveResult) -> Arc<Self> {
+        Arc::new(Self {
+            calls: Mutex::new(Vec::new()),
+            result,
+        })
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().expect("verrou du leaver").clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl DiscordGuildLeaver for FakeLeaver {
+    async fn leave(&self, discord_guild_id: &str) -> Result<LeaveOutcome, LeaveError> {
+        self.calls
+            .lock()
+            .expect("verrou du leaver")
+            .push(discord_guild_id.to_owned());
+        match self.result {
+            FakeLeaveResult::Left => Ok(LeaveOutcome::Left),
+            FakeLeaveResult::NotMember => Ok(LeaveOutcome::NotMember),
+            FakeLeaveResult::Api => Err(LeaveError::Api("échec Discord simulé".to_owned())),
+        }
+    }
+}
 
 /// Environnement de test : dossier temporaire, base mémoire et routeur complet.
 struct Harness {
@@ -59,6 +104,17 @@ impl Harness {
     }
 
     async fn with_pairs(extra: &[(&str, &str)]) -> Self {
+        Self::with_pairs_and_leaver(extra, None).await
+    }
+
+    async fn with_leaver(leaver: Arc<dyn DiscordGuildLeaver>) -> Self {
+        Self::with_pairs_and_leaver(&[], Some(leaver)).await
+    }
+
+    async fn with_pairs_and_leaver(
+        extra: &[(&str, &str)],
+        leaver: Option<Arc<dyn DiscordGuildLeaver>>,
+    ) -> Self {
         let dir = tempfile::tempdir().expect("dossier temporaire");
         let database_path = dir.path().join("livechat.sqlite3");
         // Racine média confinée dans le dossier du harnais : la purge admin
@@ -85,7 +141,10 @@ impl Harness {
         let db = Db::open_in_memory(&DbConfig::default())
             .await
             .expect("base de test en mémoire");
-        let state = AppState::new(Arc::new(config), Some(db.clone()), Shutdown::detached());
+        let mut state = AppState::new(Arc::new(config), Some(db.clone()), Shutdown::detached());
+        if let Some(leaver) = leaver {
+            state = state.with_discord_leaver(leaver);
+        }
         let app = router(state.clone());
 
         Self {
@@ -248,6 +307,20 @@ fn guild(id: &str) -> Guild {
     }
 }
 
+/// Crée une guilde indépendante liée à `discord_guild_id`.
+async fn create_linked_standalone(db: &Db, guild_id: &GuildId, discord_guild_id: &str) {
+    db.guilds()
+        .create_standalone(guild_id, "Indépendante", Utc::now())
+        .await
+        .expect("guilde indépendante");
+    let discord_guild_id = GuildId::parse(discord_guild_id).expect("serveur Discord valide");
+    assert!(db
+        .guilds()
+        .link_discord(guild_id, Some(&discord_guild_id))
+        .await
+        .expect("liaison Discord"));
+}
+
 fn media_asset(size_bytes: i64, storage_path: &Path) -> MediaAsset {
     let now = Utc::now();
     MediaAsset {
@@ -355,6 +428,33 @@ fn pairing_code(
         author_image: None,
         expires_at,
         used_at,
+        created_at: Utc::now(),
+    }
+}
+
+fn guild_member(guild_id: &GuildId, role: GuildRole) -> GuildMember {
+    GuildMember {
+        id: GuildMemberId::new_v4(),
+        guild_id: guild_id.clone(),
+        display_name: "Alice".to_owned(),
+        avatar: None,
+        role,
+        created_at: Utc::now(),
+        removed_at: None,
+    }
+}
+
+fn guild_invite(code: &str, guild_id: &GuildId) -> GuildInvite {
+    GuildInvite {
+        code: PairingCode::parse(code).expect("code d'invitation valide"),
+        guild_id: guild_id.clone(),
+        role: GuildRole::Member,
+        member_id: None,
+        max_uses: Some(1),
+        use_count: 0,
+        created_by_member_id: None,
+        expires_at: None,
+        revoked_at: None,
         created_at: Utc::now(),
     }
 }
@@ -1157,6 +1257,790 @@ async fn purge_refuse_une_confirmation_differente() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], "invalid_payload");
+}
+
+#[tokio::test]
+async fn revoke_clients_revokes_guild_clients_and_keeps_guild_data() {
+    let harness = Harness::new().await;
+    let db = harness.db();
+    let guild_id = GuildId::parse("42").expect("guilde");
+    let other_guild_id = GuildId::parse("43").expect("autre guilde");
+    create_linked_standalone(db, &guild_id, "123456789012345678").await;
+    db.guilds()
+        .upsert(&guild("43"))
+        .await
+        .expect("autre guilde");
+    let now = Utc::now();
+    let pre_revoked_at_ms = (now - Duration::minutes(5)).timestamp_millis();
+    db.guilds()
+        .set_busy_until(&guild_id, Some(now + Duration::hours(1)))
+        .await
+        .expect("verrou de lecture");
+
+    let playing_job = playback_job(&guild_id, JobStatus::Playing);
+    db.playback_jobs()
+        .create(&playing_job)
+        .await
+        .expect("job playing");
+
+    let overlay_one = overlay_client(&guild_id, OverlaySessionMode::Normal);
+    let overlay_two = overlay_client(&guild_id, OverlaySessionMode::Normal);
+    let mut already_revoked_overlay = overlay_client(&guild_id, OverlaySessionMode::Normal);
+    already_revoked_overlay.revoked_at = Some(now - Duration::minutes(5));
+    let other_overlay = overlay_client(&other_guild_id, OverlaySessionMode::Normal);
+    for client in [
+        &overlay_one,
+        &overlay_two,
+        &already_revoked_overlay,
+        &other_overlay,
+    ] {
+        db.overlay_clients()
+            .create(client)
+            .await
+            .expect("client overlay");
+    }
+
+    let ingest_one = ingest_client(&guild_id, "1001", "Chrome");
+    let ingest_two = ingest_client(&guild_id, "1002", "Firefox");
+    let mut already_revoked_ingest = ingest_client(&guild_id, "1003", "Edge");
+    already_revoked_ingest.revoked_at = Some(now - Duration::minutes(5));
+    let other_ingest = ingest_client(&other_guild_id, "2001", "Safari");
+    for client in [
+        &ingest_one,
+        &ingest_two,
+        &already_revoked_ingest,
+        &other_ingest,
+    ] {
+        db.ingest_clients()
+            .create(client)
+            .await
+            .expect("client ingest");
+    }
+
+    let admin = guild_member(&guild_id, GuildRole::Admin);
+    let member = guild_member(&guild_id, GuildRole::Member);
+    let other_member = guild_member(&other_guild_id, GuildRole::Member);
+    for guild_member in [&admin, &member, &other_member] {
+        db.guild_members()
+            .create(guild_member)
+            .await
+            .expect("membre");
+    }
+
+    for (code, target) in [
+        ("PAIR0001", &guild_id),
+        ("PAIR0002", &guild_id),
+        ("PAIR0003", &other_guild_id),
+    ] {
+        db.pairing_codes()
+            .create(&pairing_code(code, target, None, None, "1001"))
+            .await
+            .expect("code de pairing");
+    }
+    for (code, target) in [
+        ("INVITE01", &guild_id),
+        ("INVITE02", &guild_id),
+        ("INVITE03", &other_guild_id),
+    ] {
+        db.guild_invites()
+            .create(&guild_invite(code, target))
+            .await
+            .expect("invitation");
+    }
+
+    let board_path = harness.path("media").join("board-kept.png");
+    std::fs::write(&board_path, b"board").expect("fichier board");
+    let board_asset = media_asset(1024, &board_path);
+    db.media_assets()
+        .insert(&board_asset)
+        .await
+        .expect("média board");
+    db.meme_board()
+        .create(&board_item(&guild_id, board_asset.id))
+        .await
+        .expect("élément de board");
+
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            "/admin/api/guilds/42/revoke-clients",
+            &json!({ "confirmGuildId": "42" }),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["guildId"], "42");
+    assert_eq!(
+        body["stop"],
+        json!({ "releasedPlayingJobs": 1, "disconnectedOverlaySockets": 0 })
+    );
+    assert_eq!(
+        body["revoked"],
+        json!({
+            "overlayClients": 2,
+            "ingestClients": 2,
+            "members": 2,
+            "pairingCodes": 2,
+            "invites": 2,
+        })
+    );
+
+    for client in [&overlay_one, &overlay_two] {
+        let stored = db
+            .overlay_clients()
+            .get(client.id)
+            .await
+            .expect("lecture overlay")
+            .expect("overlay présent");
+        assert!(stored.revoked_at.is_some(), "overlay actif révoqué");
+    }
+    let stored = db
+        .overlay_clients()
+        .get(already_revoked_overlay.id)
+        .await
+        .expect("lecture overlay")
+        .expect("overlay présent");
+    assert_eq!(
+        stored.revoked_at.map(|date| date.timestamp_millis()),
+        Some(pre_revoked_at_ms)
+    );
+    let stored = db
+        .overlay_clients()
+        .get(other_overlay.id)
+        .await
+        .expect("lecture overlay")
+        .expect("overlay présent");
+    assert!(stored.revoked_at.is_none(), "autre guilde intacte");
+
+    for client in [&ingest_one, &ingest_two] {
+        let stored = db
+            .ingest_clients()
+            .get(client.id)
+            .await
+            .expect("lecture ingest")
+            .expect("ingest présent");
+        assert!(stored.revoked_at.is_some(), "client ingest révoqué");
+    }
+    let stored = db
+        .ingest_clients()
+        .get(already_revoked_ingest.id)
+        .await
+        .expect("lecture ingest")
+        .expect("ingest présent");
+    assert_eq!(
+        stored.revoked_at.map(|date| date.timestamp_millis()),
+        Some(pre_revoked_at_ms)
+    );
+    let stored = db
+        .ingest_clients()
+        .get(other_ingest.id)
+        .await
+        .expect("lecture ingest")
+        .expect("ingest présent");
+    assert!(stored.revoked_at.is_none(), "autre guilde intacte");
+
+    for guild_member in [&admin, &member] {
+        let stored = db
+            .guild_members()
+            .get(guild_member.id)
+            .await
+            .expect("lecture membre")
+            .expect("membre présent");
+        assert!(stored.removed_at.is_some(), "membre marqué retiré");
+    }
+    let stored = db
+        .guild_members()
+        .get(other_member.id)
+        .await
+        .expect("lecture membre")
+        .expect("membre présent");
+    assert!(stored.removed_at.is_none(), "autre guilde intacte");
+
+    for code in ["PAIR0001", "PAIR0002"] {
+        assert!(
+            db.pairing_codes()
+                .get(&PairingCode::parse(code).expect("code"))
+                .await
+                .expect("lecture pairing")
+                .is_none(),
+            "code de pairing supprimé"
+        );
+    }
+    assert!(
+        db.pairing_codes()
+            .get(&PairingCode::parse("PAIR0003").expect("code"))
+            .await
+            .expect("lecture pairing")
+            .is_some(),
+        "code de l'autre guilde conservé"
+    );
+    assert!(db
+        .guild_invites()
+        .list_by_guild(&guild_id)
+        .await
+        .expect("invitations")
+        .is_empty());
+    assert_eq!(
+        db.guild_invites()
+            .list_by_guild(&other_guild_id)
+            .await
+            .expect("invitations de l'autre guilde")
+            .len(),
+        1
+    );
+
+    let stored_guild = db
+        .guilds()
+        .get(&guild_id)
+        .await
+        .expect("lecture guilde")
+        .expect("guilde conservée");
+    assert_eq!(stored_guild.name.as_deref(), Some("Indépendante"));
+    assert_eq!(stored_guild.busy_until, None);
+    let access = db
+        .guilds()
+        .access(&guild_id)
+        .await
+        .expect("lecture liaison")
+        .expect("guilde conservée");
+    assert_eq!(
+        access.discord_guild_id.as_deref(),
+        Some("123456789012345678")
+    );
+    assert_eq!(
+        db.meme_board()
+            .list_by_guild(&guild_id)
+            .await
+            .expect("board")
+            .len(),
+        1,
+        "meme board conservé"
+    );
+    assert!(
+        db.media_assets()
+            .get(board_asset.id)
+            .await
+            .expect("lecture média")
+            .is_some(),
+        "média du board conservé"
+    );
+    assert!(board_path.exists(), "fichier du board conservé");
+
+    let stored_job = db
+        .playback_jobs()
+        .get(playing_job.id)
+        .await
+        .expect("lecture job")
+        .expect("job conservé");
+    assert_eq!(stored_job.status, JobStatus::Done);
+}
+
+#[tokio::test]
+async fn revoke_clients_unknown_guild_returns_zero_counts() {
+    let harness = Harness::new().await;
+    let unknown = GuildId::parse("987654321098765432").expect("unknown guild");
+
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            &format!("/admin/api/guilds/{unknown}/revoke-clients"),
+            &json!({ "confirmGuildId": unknown.as_str() }),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        json!({
+            "guildId": unknown.as_str(),
+            "stop": {
+                "releasedPlayingJobs": 0,
+                "disconnectedOverlaySockets": 0,
+            },
+            "revoked": {
+                "overlayClients": 0,
+                "ingestClients": 0,
+                "members": 0,
+                "pairingCodes": 0,
+                "invites": 0,
+            },
+        })
+    );
+    assert!(
+        harness
+            .db()
+            .guilds()
+            .get(&unknown)
+            .await
+            .expect("reading guild")
+            .is_none(),
+        "an unknown guild must not be created"
+    );
+}
+
+#[tokio::test]
+async fn revoke_clients_rejects_wrong_confirmation() {
+    let harness = Harness::new().await;
+
+    for body in [json!({ "confirmGuildId": "43" }), json!({})] {
+        let (status, response) = harness
+            .call_json(Method::POST, "/admin/api/guilds/42/revoke-clients", &body)
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(response["error"], "confirm_guild_id_mismatch");
+    }
+}
+
+#[tokio::test]
+async fn revoke_clients_requires_admin_token() {
+    let harness = Harness::new().await;
+    let request = HttpRequest::builder()
+        .method(Method::POST)
+        .uri("/admin/api/guilds/42/revoke-clients")
+        .header(header::HOST, TEST_HOST)
+        .header(header::ORIGIN, TEST_ORIGIN)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"confirmGuildId":"42"}"#))
+        .expect("requête valide");
+    let mut request = request;
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))));
+
+    let (status, _, bytes) = harness.send(request).await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(json_or_null(&bytes)["error"], "unauthorized");
+}
+
+#[tokio::test]
+async fn clear_meme_board_deletes_items_and_only_orphan_media() {
+    let harness = Harness::new().await;
+    let db = harness.db();
+    let guild_id = GuildId::parse("42").expect("guilde");
+    db.guilds().upsert(&guild("42")).await.expect("guilde");
+    let overlay = overlay_client(&guild_id, OverlaySessionMode::Normal);
+    db.overlay_clients()
+        .create(&overlay)
+        .await
+        .expect("client overlay");
+
+    let orphan_path = harness.path("media").join("meme-orphan.png");
+    std::fs::write(&orphan_path, b"orphan").expect("fichier orphelin");
+    let orphan_asset = media_asset(1024, &orphan_path);
+    db.media_assets()
+        .insert(&orphan_asset)
+        .await
+        .expect("média orphelin");
+    db.meme_board()
+        .create(&board_item(&guild_id, orphan_asset.id))
+        .await
+        .expect("élément orphelin");
+
+    let used_path = harness.path("media").join("meme-used.png");
+    std::fs::write(&used_path, b"used").expect("fichier utilisé");
+    let used_asset = media_asset(2048, &used_path);
+    db.media_assets()
+        .insert(&used_asset)
+        .await
+        .expect("média utilisé");
+    db.meme_board()
+        .create(&board_item(&guild_id, used_asset.id))
+        .await
+        .expect("élément utilisé");
+    let mut job = playback_job(&guild_id, JobStatus::Pending);
+    job.media_asset_id = Some(used_asset.id);
+    db.playback_jobs()
+        .create(&job)
+        .await
+        .expect("job référençant le média");
+
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            "/admin/api/guilds/42/meme-board/clear",
+            &json!({ "confirmGuildId": "42" }),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["guildId"], "42");
+    assert_eq!(
+        body["deleted"],
+        json!({
+            "memeBoardItems": 2,
+            "orphanMediaAssets": 1,
+            "orphanMediaFileDeleteErrors": 0,
+        })
+    );
+
+    assert!(db
+        .meme_board()
+        .list_by_guild(&guild_id)
+        .await
+        .expect("board")
+        .is_empty());
+    assert!(!orphan_path.exists(), "fichier orphelin supprimé");
+    assert!(
+        db.media_assets()
+            .get(orphan_asset.id)
+            .await
+            .expect("lecture média")
+            .is_none(),
+        "ligne du média orphelin supprimée"
+    );
+    assert!(used_path.exists(), "fichier encore référencé conservé");
+    assert!(
+        db.media_assets()
+            .get(used_asset.id)
+            .await
+            .expect("lecture média")
+            .is_some(),
+        "média encore référencé conservé"
+    );
+    assert!(
+        db.playback_jobs()
+            .get(job.id)
+            .await
+            .expect("lecture job")
+            .is_some(),
+        "job de playback conservé"
+    );
+    assert!(
+        db.guilds()
+            .get(&guild_id)
+            .await
+            .expect("lecture guilde")
+            .is_some(),
+        "guilde conservée"
+    );
+    let stored_overlay = db
+        .overlay_clients()
+        .get(overlay.id)
+        .await
+        .expect("lecture overlay")
+        .expect("overlay conservé");
+    assert!(stored_overlay.revoked_at.is_none());
+}
+
+#[tokio::test]
+async fn clear_meme_board_rejects_wrong_confirmation() {
+    let harness = Harness::new().await;
+
+    for body in [json!({ "confirmGuildId": "43" }), json!({})] {
+        let (status, response) = harness
+            .call_json(Method::POST, "/admin/api/guilds/42/meme-board/clear", &body)
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(response["error"], "confirm_guild_id_mismatch");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Discord : départ du bot et détachement d'une guilde
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn purge_avec_leave_discord_quitte_le_serveur_natif() {
+    let leaver = FakeLeaver::new(FakeLeaveResult::Left);
+    let harness = Harness::with_leaver(leaver.clone()).await;
+    let native_id = GuildId::parse("123456789012345678").expect("guilde native");
+    harness
+        .db()
+        .guilds()
+        .upsert(&guild(native_id.as_str()))
+        .await
+        .expect("guilde native");
+
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            &format!("/admin/api/guilds/{native_id}/purge"),
+            &json!({ "confirmGuildId": native_id.as_str(), "leaveDiscord": true }),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["purged"], true);
+    assert_eq!(
+        body["discord"],
+        json!({
+            "serverId": native_id.as_str(),
+            "requested": true,
+            "outcome": "left",
+            "error": null,
+        })
+    );
+    assert_eq!(leaver.calls(), vec![native_id.to_string()]);
+    assert!(
+        harness
+            .db()
+            .guilds()
+            .get(&native_id)
+            .await
+            .expect("lecture")
+            .is_none(),
+        "la ligne de la guilde native est supprimée"
+    );
+}
+
+#[tokio::test]
+async fn purge_sans_leave_discord_ne_quitte_pas_le_serveur() {
+    let leaver = FakeLeaver::new(FakeLeaveResult::Left);
+    let harness = Harness::with_leaver(leaver.clone()).await;
+    let native_id = GuildId::parse("123456789012345678").expect("guilde native");
+    harness
+        .db()
+        .guilds()
+        .upsert(&guild(native_id.as_str()))
+        .await
+        .expect("guilde native");
+
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            &format!("/admin/api/guilds/{native_id}/purge"),
+            &json!({ "confirmGuildId": native_id.as_str() }),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["discord"]["requested"], false);
+    assert_eq!(body["discord"]["outcome"], "skipped");
+    assert_eq!(body["discord"]["serverId"], native_id.as_str());
+    assert!(body["discord"]["error"].is_null());
+    assert!(leaver.calls().is_empty());
+}
+
+#[tokio::test]
+async fn purge_leave_discord_not_member_reste_200() {
+    let leaver = FakeLeaver::new(FakeLeaveResult::NotMember);
+    let harness = Harness::with_leaver(leaver.clone()).await;
+    let native_id = GuildId::parse("123456789012345678").expect("guilde native");
+    harness
+        .db()
+        .guilds()
+        .upsert(&guild(native_id.as_str()))
+        .await
+        .expect("guilde native");
+
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            &format!("/admin/api/guilds/{native_id}/purge"),
+            &json!({ "confirmGuildId": native_id.as_str(), "leaveDiscord": true }),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["purged"], true);
+    assert_eq!(body["discord"]["outcome"], "not_member");
+    assert!(body["discord"]["error"].is_null());
+    assert_eq!(leaver.calls(), vec![native_id.to_string()]);
+}
+
+#[tokio::test]
+async fn purge_leave_discord_en_erreur_reste_200() {
+    let leaver = FakeLeaver::new(FakeLeaveResult::Api);
+    let harness = Harness::with_leaver(leaver.clone()).await;
+    let native_id = GuildId::parse("123456789012345678").expect("guilde native");
+    harness
+        .db()
+        .guilds()
+        .upsert(&guild(native_id.as_str()))
+        .await
+        .expect("guilde native");
+
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            &format!("/admin/api/guilds/{native_id}/purge"),
+            &json!({ "confirmGuildId": native_id.as_str(), "leaveDiscord": true }),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["purged"], true);
+    assert_eq!(body["discord"]["outcome"], "error");
+    assert_eq!(body["discord"]["error"], "Discord : échec Discord simulé");
+    assert_eq!(leaver.calls(), vec![native_id.to_string()]);
+}
+
+#[tokio::test]
+async fn purge_leave_discord_au_mauvais_type_est_refuse() {
+    let leaver = FakeLeaver::new(FakeLeaveResult::Left);
+    let harness = Harness::with_leaver(leaver.clone()).await;
+    let native_id = GuildId::parse("123456789012345678").expect("guilde native");
+    harness
+        .db()
+        .guilds()
+        .upsert(&guild(native_id.as_str()))
+        .await
+        .expect("guilde native");
+
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            &format!("/admin/api/guilds/{native_id}/purge"),
+            &json!({ "confirmGuildId": native_id.as_str(), "leaveDiscord": "true" }),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_payload");
+    assert!(leaver.calls().is_empty());
+}
+
+#[tokio::test]
+async fn discord_unlink_delie_la_guilde_et_quitte_le_serveur() {
+    let leaver = FakeLeaver::new(FakeLeaveResult::Left);
+    let harness = Harness::with_leaver(leaver.clone()).await;
+    let guild_id = GuildId::parse("900000000000000001").expect("guilde indépendante");
+    let discord_id = "123456789012345678";
+    create_linked_standalone(harness.db(), &guild_id, discord_id).await;
+
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            &format!("/admin/api/guilds/{guild_id}/discord-unlink"),
+            &json!({ "leaveDiscord": true }),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["unlinked"], true);
+    assert_eq!(body["guildId"], guild_id.as_str());
+    assert_eq!(
+        body["discord"],
+        json!({
+            "serverId": discord_id,
+            "requested": true,
+            "outcome": "left",
+            "error": null,
+        })
+    );
+    assert_eq!(leaver.calls(), vec![discord_id.to_owned()]);
+
+    let access = harness
+        .db()
+        .guilds()
+        .access(&guild_id)
+        .await
+        .expect("lecture")
+        .expect("guilde présente");
+    assert!(access.standalone);
+    assert_eq!(access.discord_guild_id, None);
+}
+
+#[tokio::test]
+async fn discord_unlink_refuse_une_guilde_native() {
+    let leaver = FakeLeaver::new(FakeLeaveResult::Left);
+    let harness = Harness::with_leaver(leaver.clone()).await;
+    let native_id = GuildId::parse("123456789012345678").expect("guilde native");
+    harness
+        .db()
+        .guilds()
+        .upsert(&guild(native_id.as_str()))
+        .await
+        .expect("guilde native");
+
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            &format!("/admin/api/guilds/{native_id}/discord-unlink"),
+            &json!({}),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"], "native_guild_unlink");
+    assert!(leaver.calls().is_empty());
+}
+
+#[tokio::test]
+async fn discord_unlink_refuse_une_guilde_non_liee() {
+    let harness = Harness::with_leaver(FakeLeaver::new(FakeLeaveResult::Left)).await;
+    let guild_id = GuildId::parse("900000000000000001").expect("guilde indépendante");
+    harness
+        .db()
+        .guilds()
+        .create_standalone(&guild_id, "Indépendante", Utc::now())
+        .await
+        .expect("guilde indépendante");
+
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            &format!("/admin/api/guilds/{guild_id}/discord-unlink"),
+            &json!({}),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"], "not_linked");
+}
+
+#[tokio::test]
+async fn discord_unlink_guilde_inconnue_renvoie_404() {
+    let leaver = FakeLeaver::new(FakeLeaveResult::Left);
+    let harness = Harness::with_leaver(leaver.clone()).await;
+
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            "/admin/api/guilds/987654321098765432/discord-unlink",
+            &json!({ "leaveDiscord": true }),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"], "guild_not_found");
+    assert!(leaver.calls().is_empty());
+}
+
+#[tokio::test]
+async fn overview_expose_le_rattachement_discord() {
+    let harness = Harness::new().await;
+    let db = harness.db();
+
+    let native_id = GuildId::parse("123456789012345678").expect("guilde native");
+    db.guilds()
+        .upsert(&guild(native_id.as_str()))
+        .await
+        .expect("guilde native");
+
+    let linked_id = GuildId::parse("900000000000000001").expect("guilde liée");
+    create_linked_standalone(db, &linked_id, "223456789012345678").await;
+
+    let unlinked_id = GuildId::parse("900000000000000002").expect("guilde non liée");
+    db.guilds()
+        .create_standalone(&unlinked_id, "Non liée", Utc::now())
+        .await
+        .expect("guilde non liée");
+
+    let (status, body) = harness.call(Method::GET, "/admin/api/overview").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let guilds = body["guilds"].as_array().expect("tableau des guildes");
+    let find = |id: &str| {
+        guilds
+            .iter()
+            .find(|entry| entry["id"] == id)
+            .expect("guilde présente dans l'aperçu")
+    };
+
+    assert_eq!(
+        find(native_id.as_str())["discord"],
+        json!({ "kind": "native", "serverId": native_id.as_str() })
+    );
+    assert_eq!(
+        find(linked_id.as_str())["discord"],
+        json!({ "kind": "linked", "serverId": "223456789012345678" })
+    );
+    assert_eq!(
+        find(unlinked_id.as_str())["discord"],
+        json!({ "kind": "none", "serverId": null })
+    );
 }
 
 // ---------------------------------------------------------------------------

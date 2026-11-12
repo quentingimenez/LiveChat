@@ -10,6 +10,7 @@
 //! | [`registration`] | enregistrement global des commandes via le catalogue `lc_discord` |
 //! | [`adapters`] | adaptateurs [`lc_discord::BotContext`] au-dessus de [`crate::AppState`] |
 //! | [`message_commands`] | classification des messages entrants (no-op fidèle au legacy) |
+//! | [`guild_leave`] | départ du bot d'un serveur Discord (trait injectable) |
 //! | [`error`] | erreurs de démarrage/arrêt du runtime |
 //!
 //! # Câblage côté serveur (fait par le Lead, hors de ce périmètre)
@@ -53,6 +54,7 @@
 pub mod adapters;
 pub mod error;
 pub mod event_handler;
+pub mod guild_leave;
 pub mod message_commands;
 pub mod registration;
 pub mod runtime;

@@ -17,7 +17,7 @@ Le panneau est servi par le serveur Rust sous le préfixe `/admin` :
 | Élément | Décision |
 |---|---|
 | Page et assets (`/admin/`, `/admin/app.js`, `/admin/styles.css`) | **publics** : aucun token requis pour charger la coquille HTML/JS/CSS |
-| 13 endpoints JSON (`/admin/api/...`) | **protégés** par le token d'administration |
+| 17 routes JSON (`/admin/api/...`) | **protégées** par le token d'administration |
 | Token | `ADMIN_UI_TOKEN`, transmis en `Authorization: Bearer` **uniquement** (repli `?token=` supprimé, AUD-COR-05) |
 | Restriction réseau | `ADMIN_UI_LOCAL_ONLY=true` (défaut) : seules les connexions loopback |
 
@@ -46,12 +46,12 @@ n'a été modifié) :
 | `overview.rs` | `GET /admin/api/overview` |
 | `runtime_settings.rs` | `GET`/`PATCH /admin/api/runtime-settings`, fichier JSON |
 | `ingest_authors.rs` | `GET /admin/api/ingest-authors`, `POST /admin/api/ingest-clients` |
-| `guilds.rs` | settings partiels, stop, purge d'une guilde |
+| `guilds.rs` | settings partiels, stop, purge, révocation groupée, vidage du meme board, détachement Discord d'une guilde |
 | `clients.rs` | révocation des clients overlay et ingest |
 | `pairings.rs` | liste / purge des expirés / révocation des codes de pairing |
 | `queries.rs` | requêtes SQL brutes que les repositories de `lc-db` ne couvrent pas |
 | `error.rs` | `AdminError` → réponses `{"error": code}` |
-| `tests.rs` | 27 tests d'intégration via `crate::app::router()` |
+| `tests.rs` | 52 tests d'intégration via `crate::app::router()` |
 
 Les routes sont montées par `admin::router()` appelé sans argument depuis
 `http/mod.rs` (fichier hors périmètre de cette lane).
@@ -63,7 +63,7 @@ app::router()
   └─ merge …
       ├─ admin::router()
       │    ├─ Router::new()
-      │    │    ├─ 13 routes /admin/api/...        (handlers)
+      │    │    ├─ 17 routes /admin/api/...        (handlers)
       │    │    └─ layer(admin_headers)            ─┐
       │    ├─ merge static_files::router()           │ secure() : no-store,
       │    │    ├─ GET /admin → 308 /admin/          │ nosniff, DENY, CSP admin,
@@ -292,7 +292,7 @@ pub trait AdminHub: Send + Sync {
 - Les handlers font `await` sur les broadcasts ; la sémantique des compteurs
   renvoyés (nombre de sockets touchés) est celle de l'implémentation réelle.
 
-## 7. Contrats des 13 endpoints
+## 7. Contrats des 17 routes
 
 Tous les corps sont en JSON, en `camelCase`, dates ISO 8601 UTC
 (`to_rfc3339_opts(SecondsFormat::Millis, true)`, suffixe `Z`). Tous exigent
@@ -311,6 +311,7 @@ Agrégat du panneau (une requête par famille de données, en parallèle) :
   "pairingCodes": {"active": 0, "expired": 0, "total": 0},
   "guilds": [{
     "id": "42", "name": "Guilde 42", "editableName": "Guilde 42", "busyUntil": null,
+    "discord": {"kind": "native", "serverId": "42"},
     "settings": {
       "defaultMediaTime": 5, "maxMediaTime": null, "displayMediaFull": false,
       "overrides": {"defaultMediaTime": null, "maxMediaTime": null, "displayMediaFull": null}
@@ -334,6 +335,12 @@ Règles d'agrégation :
   présentes dans le hub.
 - `name` = nom persisté trimé, sinon `Guild {id}` ; `editableName` = nom persisté
   sinon `""` (champ conservé pour le contrat, inutilisé par le JS — point E7).
+- `discord` décrit le rattachement : `kind = "native"` pour une guilde dont
+  l'identifiant **est** le serveur Discord (`serverId` = `id`), `"linked"` pour
+  une guilde indépendante liée (`serverId` = `discord_guild_id`), `"none"` pour
+  une guilde indépendante non liée (`serverId = null`). Une guilde sans ligne
+  `guilds` est `native` si son identifiant est entièrement numérique, `none`
+  sinon. Le rattachement est lu une seule fois via `list_access()`.
 - `settings.defaultMediaTime` = valeur persistée sinon `DEFAULT_DURATION`
   (défaut 5) ; `overrides` distingue explicitement « non défini » (`null`) de la
   valeur par défaut.
@@ -457,20 +464,23 @@ panneau (divergence §10).
 ### 7.7 `POST /admin/api/guilds/{guildId}/purge`
 
 ```json
-body: {"confirmGuildId": "42", "removeOrphanMedia": true}   // 2e champ optionnel, défaut true
+body: {"confirmGuildId": "42", "removeOrphanMedia": true, "leaveDiscord": false}   // 2 champs optionnels
 → 200 {"purged": true, "guildId": "42",
        "stop": {"releasedPlayingJobs": 1, "disconnectedOverlaySockets": 2},
        "deleted": {"guildSettings": 1, "overlayClients": 2, "ingestClients": 1,
                    "pairingCodes": 3, "playbackJobs": 5, "memeBoardItems": 2,
-                   "orphanMediaAssets": 1, "orphanMediaFileDeleteErrors": 0}}
+                   "orphanMediaAssets": 1, "orphanMediaFileDeleteErrors": 0},
+       "discord": {"serverId": "123456789012345678", "requested": true,
+                   "outcome": "left", "error": null}}
 ```
 
 - Validation : `invalid_guild_id` ; `confirmGuildId` absent ou différent de
-  l'identifiant d'URL → `confirm_guild_id_mismatch` ; `removeOrphanMedia`
-  présent et non booléen → `invalid_payload`.
+  l'identifiant d'URL → `confirm_guild_id_mismatch` ; `removeOrphanMedia` ou
+  `leaveDiscord` présent et non booléen → `invalid_payload`.
 - Ordre (identique au legacy) : candidates médias **avant** suppression →
   stop (§7.6) → fermeture des sockets de la guilde → suppression
-  ingest/overlay/pairing/jobs/board/guilde → purge des médias orphelins.
+  ingest/overlay/pairing/jobs/board/guilde → purge des médias orphelins →
+  départ Discord éventuel.
 - `disconnectedOverlaySockets` = nombre de clients overlay connectés dont la
   socket a été fermée via `hub.close_client(uuid, 1000)` (divergence mineure
   §10 : le legacy comptait les sockets déconnectés, ici les clients distincts).
@@ -480,8 +490,58 @@ body: {"confirmGuildId": "42", "removeOrphanMedia": true}   // 2e champ optionne
   `orphanMediaFileDeleteErrors += 1`), puis la ligne `media_assets`.
 - Les échecs de suppression des clients d'ingestion ne bloquent pas la purge
   (compteur 0 + `warn!`), comme le legacy.
+- `leaveDiscord` (défaut `false`) fait quitter le bot du serveur Discord associé
+  après les suppressions. Le rattachement est lu **avant** toute suppression.
+  `discord.serverId` est le serveur visé (ou `null`) ; `requested` reprend le
+  booléen ; `outcome` vaut `left`, `not_member`, `skipped` (non demandé ou aucun
+  serveur Discord) ou `error` (`error` contient alors le message). Une erreur de
+  départ ne fait **jamais** échouer la purge (réponse 200 conservée).
+- Cette route est la **suppression complète** utilisée par le bouton
+  « Supprimer » : toutes les données de la guilde sont effacées, puis le bot
+  quitte Discord si `leaveDiscord` est demandé.
 
-### 7.8 `POST /admin/api/overlay-clients/{clientId}/revoke`
+### 7.8 `POST /admin/api/guilds/{guildId}/revoke-clients`
+
+Révoque tous les clients actifs de la guilde sans la supprimer : arrêt de la
+lecture (`broadcast_stop`, jobs `PLAYING` libérés, `busyUntil` effacé),
+`revoked_at` sur les overlays et les clients d'ingestion, fermeture des sockets
+overlay avec le code **4402**, `removed_at` sur les membres actifs, puis
+suppression des codes de pairing et des invitations en attente. La règle du
+dernier admin est volontairement contournée : un nouveau code admin peut être
+émis ensuite.
+
+```json
+body: {"confirmGuildId": "42"}
+→ 200 {"guildId": "42",
+       "stop": {"releasedPlayingJobs": 1, "disconnectedOverlaySockets": 2},
+       "revoked": {"overlayClients": 2, "ingestClients": 1, "members": 3,
+                   "pairingCodes": 2, "invites": 1}}
+```
+
+La ligne `guilds`, les réglages, le meme board, les jobs de playback, les
+médias, la liaison Discord et les codes de liaison Discord sont conservés.
+`confirmGuildId` absent ou différent de l'identifiant d'URL → 400
+`confirm_guild_id_mismatch`. Une guilde inconnue renvoie 200 avec des compteurs
+à zéro.
+
+### 7.9 `POST /admin/api/guilds/{guildId}/meme-board/clear`
+
+Supprime uniquement le meme board de la guilde, puis les médias devenus
+orphelins. Un média encore référencé par un job de playback ou par le board
+d'une autre guilde est conservé ; les fichiers ne sont supprimés que sous la
+racine média confinée.
+
+```json
+body: {"confirmGuildId": "42"}
+→ 200 {"guildId": "42",
+       "deleted": {"memeBoardItems": 2, "orphanMediaAssets": 1,
+                   "orphanMediaFileDeleteErrors": 0}}
+```
+
+La guilde, ses réglages, ses overlays et ses autres données restent intacts.
+`confirmGuildId` absent ou différent → 400 `confirm_guild_id_mismatch`.
+
+### 7.10 `POST /admin/api/overlay-clients/{clientId}/revoke`
 
 ```json
 → 200 {"found": true, "revoked": true, "clientId": "…", "guildId": "42", "label": "Salon principal"}
@@ -495,12 +555,12 @@ body: {"confirmGuildId": "42", "removeOrphanMedia": true}   // 2e champ optionne
 - Si révoqué, ferme la socket avec le code **4402** via
   `hub.close_client(uuid, 4402)`.
 
-### 7.9 `POST /admin/api/ingest-clients/{clientId}/revoke`
+### 7.11 `POST /admin/api/ingest-clients/{clientId}/revoke`
 
-Identique au §7.8, avec 404 `ingest_client_not_found`. Pas de socket à fermer
+Identique au §7.10, avec 404 `ingest_client_not_found`. Pas de socket à fermer
 (les clients d'ingestion sont authentifiés par requête HTTP).
 
-### 7.10 `GET /admin/api/pairing-codes?guildId&status=all|active|expired`
+### 7.12 `GET /admin/api/pairing-codes?guildId&status=all|active|expired`
 
 ```json
 {"items": [{"code": "ACTIF001", "guildId": "42",
@@ -516,7 +576,7 @@ Identique au §7.8, avec 404 `ingest_client_not_found`. Pas de socket à fermer
 - Tri : `created_at` décroissant puis `code`.
 - `status` inconnu/vide → `all`.
 
-### 7.11 `DELETE /admin/api/pairing-codes/expired?guildId`
+### 7.13 `DELETE /admin/api/pairing-codes/expired?guildId`
 
 ```json
 → 200 {"deletedCount": 1, "guildId": null}
@@ -526,7 +586,7 @@ Supprime les codes `used_at IS NOT NULL` **ou** `expires_at <= now`,
 éventuellement limités à la guilde fournie. `guildId` renvoyé = valeur de la
 requête normalisée, `null` si absent.
 
-### 7.12 `POST /admin/api/pairing-codes/{code}/revoke`
+### 7.14 `POST /admin/api/pairing-codes/{code}/revoke`
 
 ```json
 → 200 {"found": true, "revoked": true, "guildId": "42"}
@@ -537,6 +597,26 @@ requête normalisée, `null` si absent.
 - Révoque **seulement** si le code est encore actif (`used_at IS NULL` et non
   expiré) : `used_at = now` **et** `expires_at = now` (comme le legacy : il
   n'existait pas de colonne « révoqué »). Sinon `revoked: false`.
+
+### 7.15 `POST /admin/api/guilds/{guildId}/discord-unlink`
+
+Détache une guilde indépendante de son serveur Discord (sans supprimer la
+guilde ni ses données) :
+
+```json
+body optionnel: {"leaveDiscord": false}
+→ 200 {"unlinked": true, "guildId": "900000000000000001",
+       "discord": {"serverId": "123456789012345678", "requested": true,
+                   "outcome": "left", "error": null}}
+```
+
+- Guilde inconnue → 404 `guild_not_found` ; guilde native (`standalone = 0`) →
+  409 `native_guild_unlink` ; guilde indépendante non liée → 409 `not_linked` ;
+  `leaveDiscord` présent et non booléen → 400 `invalid_payload`.
+- Si la guilde est liée : `discord_guild_id = NULL`, suppression des codes de
+  liaison Discord en attente, puis départ éventuel du bot. L'objet `discord` et
+  les garanties sont ceux de la purge (§7.7) : `skipped` si non demandé,
+  `left` / `not_member` / `error` sinon, et une erreur de départ reste un 200.
 
 ## 8. Réglages runtime persistés
 
@@ -575,8 +655,9 @@ non seulement par `admin::router()`. Chaque test crée sa propre base SQLite en
 mémoire et son dossier temporaire (`DATABASE_URL` pointe dedans), donc
 `admin_runtime.json` n'est jamais écrit dans le dépôt.
 
-Fichier : `apps/lc-server/src/http/admin/tests.rs` (33 tests d'intégration,
-plus le test statique du JS et les tests unitaires de `auth.rs`/`ingest_authors.rs`).
+Fichier : `apps/lc-server/src/http/admin/tests.rs` (52 tests d'intégration,
+dont le test statique du JS, plus les tests unitaires de
+`auth.rs`/`ingest_authors.rs`).
 
 Couverture par thème :
 
@@ -604,9 +685,20 @@ Couverture par thème :
 - **Guildes** : settings partiels (création puis fusion), erreurs ;
   `stop` libère les jobs `PLAYING` et remet `busy_until` à `NULL` ; purge
   complète (compteurs, fichier orphelin supprimé, média référencé conservé,
-  confirmation erronée refusée).
+  confirmation erronée refusée) ; révocation groupée (clients actifs révoqués,
+  membres retirés, pairing/invitations supprimés, guildes/board/liaison
+  conservés, guilde inconnue laissée absente) ; vidage du meme board (média
+  orphelin supprimé, média d'un job conservé, overlays et guilde intacts), avec
+  confirmation erronée et token absent refusés.
+- **Discord (départ / détachement)** : purge avec `leaveDiscord` sur une guilde
+  native (leaver appelé, `left`, ligne supprimée) ; sans `leaveDiscord`
+  (`skipped`, leaver non appelé) ; `not_member` et erreur API (200 conservé,
+  message renvoyé) ; `leaveDiscord` non booléen → 400. Détachement d'une guilde
+  liée (liaison effacée, leaver appelé), refus 409 `native_guild_unlink` /
+  `not_linked`, 404 `guild_not_found`. Overview : `kind` `native` / `linked` /
+  `none`.
 - **Révocations** : overlay (révocation puis `revoked:false`), ingest inconnu
-  → 404, UUID invalide → 404.
+  → 404, UUID invalide → 404 ; route groupée protégée par token et confirmation.
 - **Pairing** : liste/filtre/compteurs, purge des expirés, révocation (dates
   posées) et 404.
 - **Ingestion** : fusion des auteurs, création de client (token 64 hexadécimal

@@ -139,7 +139,7 @@ Preuves collectées sur les artefacts de la build du 2026-11-10 :
 
 - métadonnées PE : installeur stable `ProductName=LiveChat`, `ProductVersion=3.0.0` ;
   installeur bêta `ProductName=LiveChat Next`, `ProductVersion=3.0.0-beta.1` ;
-  binaires : `FileVersion=3.0.0` / `3.0.0-beta.1`, `CompanyName=Babz` (publisher configuré) ;
+  binaires : `FileVersion=3.0.0` / `3.0.0-beta.1`, `CompanyName=LiveChat` (publisher configuré) ;
 - scan binaire de `lc-overlay-stable.exe` (ASCII/UTF-16) : présence de
   `overlay.html`, `bridge.js`, `renderer-errors.js`, `overlay://play`, `WebView2` —
   confirme que le frontend `web/` et l'événement de bridge sont bien embarqués dans

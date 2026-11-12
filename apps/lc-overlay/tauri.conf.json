@@ -59,7 +59,7 @@
     "targets": ["nsis"],
     "createUpdaterArtifacts": false,
     "icon": ["icons/icon.ico", "icons/icon.png"],
-    "publisher": "Babz",
+    "publisher": "LiveChat",
     "windows": {
       "nsis": {
         "installMode": "currentUser"

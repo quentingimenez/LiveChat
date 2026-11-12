@@ -291,6 +291,16 @@ impl AppState {
         self.lock_queue().pop_front()
     }
 
+    /// `(job_id, durée en ms)` des `play` d'une guilde encore en file locale,
+    /// dans l'ordre d'attente.
+    pub fn queued_jobs_for(&self, guild_id: &str) -> Vec<(String, u64)> {
+        self.lock_queue()
+            .iter()
+            .filter(|queued| queued.guild_id == guild_id)
+            .map(|queued| (queued.job_id.clone(), queued_duration_ms(&queued.payload)))
+            .collect()
+    }
+
     /// Retire les `play` en attente d'une guilde (un job précis, ou tous).
     /// Retourne le nombre d'entrées retirées.
     pub fn drop_queued(&self, guild_id: &str, job_id: Option<&str>) -> usize {
@@ -360,6 +370,16 @@ fn session_mode_label(session_mode: lc_protocol::SessionMode) -> &'static str {
         lc_protocol::SessionMode::Normal => "normal",
         lc_protocol::SessionMode::InviteReadOnly => "invite_read_only",
     }
+}
+
+/// Durée de lecture d'un `play` en file locale : `durationSec` en ms, 5 s par
+/// défaut si absent/invalide, plafonnée par le protocole.
+fn queued_duration_ms(payload: &serde_json::Value) -> u64 {
+    payload["durationSec"]
+        .as_u64()
+        .map(|duration_sec| duration_sec.saturating_mul(1_000))
+        .unwrap_or(5_000)
+        .min(lc_protocol::MAX_PLAYBACK_REMAINING_MS)
 }
 
 #[cfg(test)]
@@ -535,5 +555,43 @@ mod tests {
 
         state.clear_playback();
         assert!(state.playback_guild().is_none());
+    }
+
+    #[test]
+    fn queued_jobs_reports_durations_per_guild() {
+        let (_dir, state) = paired_state(&["111", "222"]);
+        let queued = |guild: &str, job: &str, duration_sec: Option<u64>| QueuedPlay {
+            guild_id: guild.to_string(),
+            job_id: job.to_string(),
+            payload: match duration_sec {
+                Some(duration_sec) => serde_json::json!({ "durationSec": duration_sec }),
+                None => serde_json::json!({}),
+            },
+        };
+        state.enqueue_play(queued("222", "job-b", Some(7)));
+        state.enqueue_play(queued("222", "job-c", None));
+        state.enqueue_play(queued("111", "job-d", Some(3)));
+        // Durée invalide (chaîne) : repli sur 5 s ; durée démesurée : plafonnée.
+        state.enqueue_play(QueuedPlay {
+            guild_id: "222".to_string(),
+            job_id: "job-e".to_string(),
+            payload: serde_json::json!({ "durationSec": "sept" }),
+        });
+        state.enqueue_play(queued("222", "job-f", Some(1_000_000_000)));
+
+        assert_eq!(
+            state.queued_jobs_for("222"),
+            vec![
+                ("job-b".to_string(), 7_000),
+                ("job-c".to_string(), 5_000),
+                ("job-e".to_string(), 5_000),
+                ("job-f".to_string(), lc_protocol::MAX_PLAYBACK_REMAINING_MS),
+            ]
+        );
+        assert_eq!(
+            state.queued_jobs_for("111"),
+            vec![("job-d".to_string(), 3_000)]
+        );
+        assert!(state.queued_jobs_for("333").is_empty());
     }
 }

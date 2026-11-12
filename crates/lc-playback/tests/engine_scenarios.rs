@@ -66,6 +66,66 @@ async fn dispatch_texte_puis_watchdog_passe_au_suivant() {
 }
 
 #[tokio::test]
+async fn watchdog_ne_libere_pas_un_job_confirme_recemment() {
+    let h = harness(1).await;
+    let guild = h.guild_id.clone();
+
+    let job = sample_job(guild.clone(), h.clock.now());
+    h.engine.enqueue(&job).await.unwrap();
+    assert_eq!(h.sink.play_calls().len(), 1);
+
+    // Keep-alive de file locale 10 s après le dispatch.
+    h.advance(10_000);
+    let outcome = h
+        .engine
+        .handle_playback_state(PlaybackStateEvent::new(
+            guild.clone(),
+            Some(job.id),
+            PlaybackState::Paused,
+            Some(5_000),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(outcome, PlaybackStateOutcome::Persisted);
+
+    // 5,5 s plus tard le seuil du watchdog est dépassé, mais le dernier
+    // checkpoint a moins de 15 s : le job n'est pas libéré.
+    h.advance(5_500);
+    let report = h.engine.tick().await.unwrap();
+    assert_eq!(report.processed_guilds, 1);
+    assert_eq!(h.stored_job(job.id).await.status, JobStatus::Playing);
+    assert_eq!(h.sink.play_calls().len(), 1);
+}
+
+#[tokio::test]
+async fn watchdog_libere_un_job_sans_keepalive_depuis_quinze_secondes() {
+    let h = harness(1).await;
+    let guild = h.guild_id.clone();
+
+    let job = sample_job(guild.clone(), h.clock.now());
+    h.engine.enqueue(&job).await.unwrap();
+
+    h.advance(10_000);
+    h.engine
+        .handle_playback_state(PlaybackStateEvent::new(
+            guild.clone(),
+            Some(job.id),
+            PlaybackState::Paused,
+            Some(5_000),
+        ))
+        .await
+        .unwrap();
+    h.advance(5_500);
+    h.engine.tick().await.unwrap();
+    assert_eq!(h.stored_job(job.id).await.status, JobStatus::Playing);
+
+    // Dernier checkpoint vieux de plus de 15 s : le watchdog reprend la main.
+    h.advance(10_000);
+    h.engine.tick().await.unwrap();
+    assert_eq!(h.stored_job(job.id).await.status, JobStatus::Done);
+}
+
+#[tokio::test]
 async fn ordre_priorite_puis_soumission() {
     let h = harness(1).await;
     let guild = h.guild_id.clone();

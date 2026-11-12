@@ -22,7 +22,9 @@ build
 data
 **/data
 docs
-static
+# Seul le panneau admin (static/admin) est copié dans l'image runtime.
+static/*
+!static/admin
 deploy
 *.log
 **/*.log

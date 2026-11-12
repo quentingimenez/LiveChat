@@ -101,6 +101,65 @@
     },
   });
 
+  // Publish the caption footer height on the media frame so the stylesheet can
+  // shrink the media to the space left on screen (see --overlay-media-max-height
+  // in styles/overlay/base.css). Only the caption box is resized-observed: its
+  // size does not depend on the media size, so updating the variable can never
+  // feed back into another observation (no ResizeObserver loop error).
+  const watchMediaFooterHeight = () => {
+    const mediaLayer = nodes.mediaLayer;
+    if (
+      !(mediaLayer instanceof HTMLElement) ||
+      typeof ResizeObserver !== 'function' ||
+      typeof MutationObserver !== 'function'
+    ) {
+      return;
+    }
+
+    let observedCaption = null;
+
+    const syncFooterHeight = () => {
+      const frame = mediaLayer.querySelector('.overlay-media-frame');
+      if (!(frame instanceof HTMLElement)) {
+        return;
+      }
+      const footer = frame.querySelector('.overlay-media-footer');
+      let footerHeightPx = 0;
+      if (footer instanceof HTMLElement && footer.style.display !== 'none') {
+        const marginTopPx = Number.parseFloat(window.getComputedStyle(footer).marginTop) || 0;
+        footerHeightPx = Math.ceil(footer.getBoundingClientRect().height + marginTopPx);
+      }
+      const nextValue = `${footerHeightPx}px`;
+      if (frame.style.getPropertyValue('--overlay-media-footer-height') !== nextValue) {
+        frame.style.setProperty('--overlay-media-footer-height', nextValue);
+      }
+    };
+
+    const resizeObserver = new ResizeObserver(() => syncFooterHeight());
+
+    const mutationObserver = new MutationObserver(() => {
+      const caption = mediaLayer.querySelector('.overlay-media-footer-meta');
+      if (caption !== observedCaption) {
+        if (observedCaption) {
+          resizeObserver.unobserve(observedCaption);
+        }
+        observedCaption = caption instanceof HTMLElement ? caption : null;
+        if (observedCaption) {
+          resizeObserver.observe(observedCaption);
+        }
+      }
+      syncFooterHeight();
+    });
+    mutationObserver.observe(mediaLayer, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['style'],
+    });
+  };
+
+  watchMediaFooterHeight();
+
   const bootstrap = async () => {
     await overlayLegacyBootstrapUtils.bootstrapOverlay({
       getConfig: () => window.livechatOverlay.getConfig(),

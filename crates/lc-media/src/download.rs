@@ -757,21 +757,23 @@ mod tests {
 
     #[test]
     fn parses_ytdlp_output_paths() {
-        let temp_dir = Path::new("C:\\temp\\lc-media");
+        // Absolute on every platform: a hard-coded `C:\…` path is relative on Linux.
+        let temp_dir_buf = std::env::temp_dir().join("lc-media");
+        let temp_dir = temp_dir_buf.as_path();
+        let absolute = temp_dir.join("download.mp4");
         assert_eq!(
-            parse_ytdlp_output_path("C:\\temp\\lc-media\\download.mp4", temp_dir),
-            Some(PathBuf::from("C:\\temp\\lc-media\\download.mp4"))
+            parse_ytdlp_output_path(&absolute.to_string_lossy(), temp_dir),
+            Some(absolute)
         );
         assert_eq!(
             parse_ytdlp_output_path("download.mkv\n", temp_dir),
             Some(temp_dir.join("download.mkv"))
         );
+        let json_path = temp_dir.join("a.mp4");
+        let json_line = serde_json::json!({ "_filename": json_path.to_string_lossy() }).to_string();
         assert_eq!(
-            parse_ytdlp_output_path(
-                "{\"_filename\": \"C:\\\\temp\\\\lc-media\\\\a.mp4\"}",
-                temp_dir
-            ),
-            Some(PathBuf::from("C:\\temp\\lc-media\\a.mp4"))
+            parse_ytdlp_output_path(&json_line, temp_dir),
+            Some(json_path)
         );
         assert_eq!(
             parse_ytdlp_output_path("[youtube] extraction", temp_dir),

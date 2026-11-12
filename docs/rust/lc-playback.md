@@ -164,6 +164,12 @@ pub trait PlaybackSink: Send + Sync {
    `started_at` est retenu et un `warn` est émis) ; `remaining_ms` = snapshot si
    sa fraîcheur est ≤ 15 s, sinon `started_at + duration_sec*1000 - now`.
 
+**Keep-alive de file locale.** Un overlay multi-guilde qui reçoit un `play` pendant
+qu'une autre guilde occupe l'écran garde ce job en file locale et envoie toutes les
+3 s un `playback.state` `paused` pour lui. Tant que le dernier checkpoint persisté a
+moins de `PLAYBACK_STATE_MAX_AGE_MS` (15 s), le watchdog ne libère pas le job ; sans
+keep-alive, la libération survient au plus 15 s après le dernier.
+
 ## 6. Chronologie
 
 1. **Dispatch** (`dispatch_pending_job`) : média requis (`READY` sinon `FAILED`),

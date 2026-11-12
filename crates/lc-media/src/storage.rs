@@ -347,7 +347,7 @@ impl MediaStorage {
                 continue;
             };
             variants.push(StoredVariant {
-                path: path.clone(),
+                path,
                 size_bytes: metadata.len(),
                 modified_ms: metadata
                     .modified()

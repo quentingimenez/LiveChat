@@ -32,6 +32,7 @@ pub mod shortcuts;
 pub mod state;
 pub mod tray;
 pub mod updater;
+#[cfg(windows)]
 pub mod win32;
 pub mod windows;
 

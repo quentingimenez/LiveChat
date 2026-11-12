@@ -94,6 +94,7 @@ const state = {
   kind: 'all',
   selectedId: null,
   queue: { playing: null, pending: [] },
+  queueStale: false,
   members: [],
   invites: [],
   bindings: {},
@@ -185,17 +186,39 @@ async function mediaUrl(assetId) {
 }
 
 // ------------------------------------------------------------- chargements ---
+let guildRefreshTimer = null;
+let queueEndTimer = null;
+
+// Laisse au serveur le temps de constater la fermeture du WebSocket avant de
+// relire l'état de connexion de la guilde.
+function scheduleGuildRefresh() {
+  clearTimeout(guildRefreshTimer);
+  guildRefreshTimer = setTimeout(loadGuild, 800);
+}
+
 function applyGuilds(payload) {
   if (!payload) {
     return;
   }
   const previous = state.activeGuildId;
+  const previousGuild = activeGuild();
+  const previousStatus = previousGuild && previousGuild.connection ? previousGuild.connection.status : null;
   state.guilds = payload.guilds || [];
   state.activeGuildId = payload.activeGuildId || null;
   state.profile = payload.profile || state.profile;
   if (previous !== state.activeGuildId) {
+    clearTimeout(guildRefreshTimer);
+    guildRefreshTimer = null;
+    clearTimeout(queueEndTimer);
+    queueEndTimer = null;
     resetGuildData();
     loadGuild();
+  } else if (state.activeGuildId) {
+    const guild = activeGuild();
+    const status = guild && guild.connection ? guild.connection.status : null;
+    if (previousStatus !== status) {
+      scheduleGuildRefresh();
+    }
   }
   renderRail();
   renderHeader();
@@ -210,6 +233,7 @@ function resetGuildData() {
   state.itemsLoaded = false;
   state.selectedId = null;
   state.queue = { playing: null, pending: [] };
+  state.queueStale = false;
   state.members = [];
   state.invites = [];
   state.search = '';
@@ -219,26 +243,35 @@ function resetGuildData() {
   }
 }
 
-async function loadGuild() {
+async function loadGuildInfo() {
   if (!state.activeGuildId) {
-    return;
+    return false;
   }
   const guildId = state.activeGuildId;
   try {
     const info = await api('GET', '/overlay/guild');
     if (guildId !== state.activeGuildId) {
-      return;
+      return false;
     }
     state.info = info;
   } catch (error) {
-    if (guildId === state.activeGuildId) {
-      notify(error.message, true);
+    if (guildId !== state.activeGuildId) {
+      return false;
     }
+    notify(error.message, true);
+  }
+  renderHeader();
+  return true;
+}
+
+async function loadGuild() {
+  if (!(await loadGuildInfo())) {
+    return;
   }
   const bindings = await invoke('meme_board_get_bindings').catch(() => null);
   state.bindings = (bindings && bindings.bindings) || {};
   renderHeader();
-  await Promise.all([loadItems(), loadQueue()]);
+  await Promise.all([loadItems(), refreshQueueAutomatically()]);
 }
 
 async function loadItems() {
@@ -264,19 +297,32 @@ async function loadItems() {
   }
 }
 
-let queueEndTimer = null;
+// Les rafraîchissements automatiques de la file sont inutiles quand la page est
+// masquée (board réduit dans le tray) : on mémorise qu'elle est périmée et on la
+// relira une seule fois au retour au premier plan.
+function refreshQueueAutomatically() {
+  if (document.hidden) {
+    state.queueStale = true;
+    return;
+  }
+  loadQueue();
+}
 
 function scheduleQueueEndRefresh() {
   clearTimeout(queueEndTimer);
   queueEndTimer = null;
   const playing = state.queue.playing;
-  const started = playing && playing.startedAt ? new Date(playing.startedAt).getTime() : NaN;
+  // Rien ne joue : aucun rafraîchissement de fin à programmer.
+  if (!playing) {
+    return;
+  }
+  const started = playing.startedAt ? new Date(playing.startedAt).getTime() : NaN;
   if (!Number.isFinite(started) || !(playing.durationSec > 0)) {
     return;
   }
   const endsAt = started + playing.durationSec * 1000;
   const delay = Math.max(0, endsAt - Date.now()) + 1500;
-  queueEndTimer = setTimeout(loadQueue, delay);
+  queueEndTimer = setTimeout(refreshQueueAutomatically, delay);
 }
 
 async function loadQueue() {
@@ -290,6 +336,7 @@ async function loadQueue() {
       return;
     }
     state.queue = { playing: body.playing || null, pending: body.pending || [], at: Date.now() };
+    state.queueStale = false;
   } catch {
     return;
   }
@@ -660,7 +707,7 @@ async function playItem(item) {
   }
   if (response.ok) {
     notify(`« ${itemTitle(item)} » envoyé aux overlays.`);
-    setTimeout(loadQueue, 400);
+    setTimeout(refreshQueueAutomatically, 400);
   } else {
     notify(describeError(response.reason), true);
   }
@@ -896,7 +943,7 @@ async function stopPlayback() {
   if (response && !response.ok) {
     notify(describeError(response.reason), true);
   }
-  setTimeout(loadQueue, 400);
+  setTimeout(refreshQueueAutomatically, 400);
 }
 
 async function removeJob(job) {
@@ -1483,15 +1530,25 @@ listen('overlay://queue-hint', (payload) => {
   if (!payload || payload.guildId !== state.activeGuildId) {
     return;
   }
+  // L'indice rafraîchit déjà la file : le rafraîchissement de fin de média
+  // programmé plus tôt devient redondant.
+  clearTimeout(queueEndTimer);
+  queueEndTimer = null;
   clearTimeout(queueHintTimer);
-  queueHintTimer = setTimeout(loadQueue, 500);
+  queueHintTimer = setTimeout(refreshQueueAutomatically, 500);
 });
 
 // Repli : un rafraîchissement lent uniquement quand la file est réellement
 // visible et au premier plan. Aucun autre appel périodique à loadQueue.
 setInterval(() => {
-  if (state.tab === 'queue' && document.hasFocus() && !document.hidden) {
-    loadQueue();
+  if (document.hidden) {
+    if (state.tab === 'queue') {
+      state.queueStale = true;
+    }
+    return;
+  }
+  if (state.tab === 'queue' && document.hasFocus()) {
+    refreshQueueAutomatically();
   }
 }, 30000);
 
@@ -1499,13 +1556,41 @@ setInterval(() => {
 let lastFocusQueueLoad = 0;
 function loadQueueOnFocus() {
   const now = Date.now();
+  if (state.queueStale) {
+    if (document.hidden) {
+      return;
+    }
+    // La file a changé pendant que la page était masquée : une seule relecture.
+    state.queueStale = false;
+    lastFocusQueueLoad = now;
+    loadQueue();
+    return;
+  }
   if (now - lastFocusQueueLoad < 15000) {
     return;
   }
   lastFocusQueueLoad = now;
-  loadQueue();
+  refreshQueueAutomatically();
 }
-window.addEventListener('focus', loadQueueOnFocus);
+
+// Le compte d'overlays connectés est relu au plus une fois toutes les 15 s.
+let lastFocusGuildLoad = 0;
+function loadGuildOnFocus() {
+  if (!state.activeGuildId) {
+    return;
+  }
+  const now = Date.now();
+  if (now - lastFocusGuildLoad < 15000) {
+    return;
+  }
+  lastFocusGuildLoad = now;
+  loadGuildInfo();
+}
+
+window.addEventListener('focus', () => {
+  loadGuildOnFocus();
+  loadQueueOnFocus();
+});
 setInterval(() => {
   if (state.tab === 'queue' && state.queue.playing && !document.hidden) {
     renderView();

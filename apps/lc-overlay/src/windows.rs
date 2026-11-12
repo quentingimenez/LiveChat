@@ -9,6 +9,7 @@ use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, W
 use crate::config::OverlayConfig;
 use crate::display::{self, DisplayInfo, DisplaySelection};
 use crate::state::AppState;
+#[cfg(windows)]
 use crate::win32;
 
 pub const OVERLAY_LABEL: &str = "overlay";
@@ -33,6 +34,13 @@ pub fn overlay_should_show(config: &OverlayConfig) -> bool {
 /// Applique la décision [`overlay_should_show`] à l'état courant.
 fn overlay_should_show_now(app: &AppHandle<Wry>) -> bool {
     overlay_should_show(&app.state::<AppState>().config_snapshot())
+}
+
+/// Le board ne doit passer au-dessus de l'overlay que s'il est visible et qu'il
+/// détient le focus clavier : c'est la seule situation où l'utilisateur
+/// interagit avec lui alors qu'un média plein écran couvre l'écran.
+pub fn board_should_float(visible: bool, focused: bool) -> bool {
+    visible && focused
 }
 
 /// Liste les moniteurs visibles avec leur index Tauri et l'index du primaire.
@@ -164,6 +172,7 @@ pub fn apply_overlay_flags(app: &AppHandle<Wry>) {
         }
     }
 
+    #[cfg(windows)]
     match window.hwnd() {
         Ok(hwnd) => {
             let before = win32::ex_style(hwnd);
@@ -191,6 +200,7 @@ pub fn apply_overlay_flags(app: &AppHandle<Wry>) {
         tracing::warn!(%error, "échec show overlay");
     }
 
+    #[cfg(windows)]
     if let Ok(hwnd) = window.hwnd() {
         if let Err(error) = win32::reassert_topmost(hwnd) {
             tracing::warn!(%error, "échec réaffirmation topmost initiale");
@@ -212,6 +222,7 @@ pub fn spawn_topmost_guard(app: AppHandle<Wry>) {
         if let Err(error) = window.set_always_on_top(true) {
             tracing::debug!(%error, "set_always_on_top tick en échec");
         }
+        #[cfg(windows)]
         match window.hwnd() {
             Ok(hwnd) => {
                 let _styles = win32::ensure_overlay_ex_style(hwnd);
@@ -220,6 +231,27 @@ pub fn spawn_topmost_guard(app: AppHandle<Wry>) {
                 }
             }
             Err(error) => tracing::debug!(%error, "hwnd overlay perdu (tick)"),
+        }
+
+        // Le board au focus doit rester au-dessus de l'overlay topmost : on le
+        // réaffirme après l'overlay, sans jamais toucher aux flags de ce dernier.
+        if let Some(board) = app.get_webview_window(BOARD_LABEL) {
+            let visible = board.is_visible().unwrap_or(false);
+            let focused = board.is_focused().unwrap_or(false);
+            if board_should_float(visible, focused) {
+                if let Err(error) = board.set_always_on_top(true) {
+                    tracing::debug!(%error, "set_always_on_top board tick en échec");
+                }
+                #[cfg(windows)]
+                match board.hwnd() {
+                    Ok(hwnd) => {
+                        if let Err(error) = win32::reassert_topmost(hwnd) {
+                            tracing::debug!(%error, "SetWindowPos topmost board tick en échec");
+                        }
+                    }
+                    Err(error) => tracing::debug!(%error, "hwnd board perdu (tick)"),
+                }
+            }
         }
     });
 }
@@ -239,9 +271,27 @@ fn hide_on_close(app: &AppHandle<Wry>, label: &str) {
     });
 }
 
+/// Le board passe au-dessus de l'overlay pendant qu'il a le focus, puis
+/// redevient une fenêtre normale dès qu'il le perd.
+fn track_board_focus(app: &AppHandle<Wry>) {
+    let Some(window) = window(app, BOARD_LABEL) else {
+        tracing::warn!("fenêtre board absente");
+        return;
+    };
+    let target = window.clone();
+    window.on_window_event(move |event| {
+        if let WindowEvent::Focused(focused) = event {
+            if let Err(error) = target.set_always_on_top(*focused) {
+                tracing::debug!(%error, "échec set_always_on_top board");
+            }
+        }
+    });
+}
+
 /// Les fenêtres du shell ne se détruisent pas à la fermeture : elles se cachent.
 pub fn install_window_events(app: &AppHandle<Wry>) {
     hide_on_close(app, BOARD_LABEL);
+    track_board_focus(app);
     hide_on_close(app, PAIRING_LABEL);
     hide_on_close(app, OVERLAY_LABEL);
 }
@@ -335,5 +385,13 @@ mod tests {
         let mut unpaired = paired_config();
         unpaired.client_token = None;
         assert!(!overlay_should_show(&unpaired), "sans token => masqué");
+    }
+
+    #[test]
+    fn board_floats_only_when_visible_and_focused() {
+        assert!(board_should_float(true, true));
+        assert!(!board_should_float(true, false));
+        assert!(!board_should_float(false, true));
+        assert!(!board_should_float(false, false));
     }
 }

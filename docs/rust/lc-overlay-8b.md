@@ -47,6 +47,12 @@ injectée dans les pages.
   avec backoff 1→2→3 s (remis à zéro après `welcome`).
 - `NetSnapshot` (status, reason, version serveur, `minVersion`, guild/client,
   session mode, pairs, dernière erreur) est la source du tray et des logs.
+- **Keep-alive des `play` en file locale.** Quand un `play` arrive alors qu'une
+  autre guilde occupe l'écran, il reste dans la file locale de l'overlay ; tant
+  qu'il y est, la session envoie toutes les 3 s un `playback.state`
+  `state: "paused"` avec `remainingMs = durationSec * 1000` (après `welcome`
+  uniquement). Le serveur voit un job toujours en attente et son watchdog (15 s)
+  ne le libère pas avant l'affichage.
 
 ## 3. Bridge réel (`src/commands.rs`)
 

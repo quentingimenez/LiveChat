@@ -18,8 +18,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use futures_util::{SinkExt, StreamExt};
 use lc_protocol::{
     AckPayload, ClientEnvelope, ClientMessage, HeartbeatPayload, HelloPayload, PeersPayload,
-    PlayPayload, ServerEnvelope, ServerErrorPayload, ServerMessage, SessionMode, SettingsPayload,
-    StopPayload, WelcomePayload,
+    PlayPayload, PlaybackState, PlaybackStatePayload, ServerEnvelope, ServerErrorPayload,
+    ServerMessage, SessionMode, SettingsPayload, StopPayload, WelcomePayload,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Wry};
@@ -42,6 +42,8 @@ use crate::windows;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Cadence du heartbeat applicatif (contrat v2 : 15 s).
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+/// Cadence du keep-alive des `play` en file locale (avant leur affichage).
+const QUEUED_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(3);
 
 /// Statut de connexion affiché dans le tray et exposé au bridge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -116,6 +118,8 @@ struct SessionConfig {
     ws_url: Url,
     hello: HelloPayload,
     insecure_tls: bool,
+    /// Cadence du keep-alive `playback.state` des jobs en file locale.
+    queued_keepalive_interval: Duration,
 }
 
 /// Effets d'une session WS, abstraits pour permettre les tests sans Tauri.
@@ -127,6 +131,8 @@ pub trait SessionEffects: Send + Sync {
     fn on_peers(&self, payload: &PeersPayload);
     fn on_ack(&self, payload: &AckPayload);
     fn on_server_error(&self, payload: &ServerErrorPayload);
+    /// `(job_id, durée ms)` des `play` de cette guilde en file locale.
+    fn queued_jobs(&self) -> Vec<(String, u64)>;
 }
 
 /// Fin d'une session, interprétée par le superviseur.
@@ -568,6 +574,7 @@ fn build_session_config(membership: &Membership) -> Result<SessionConfig, String
             session_mode: Some(session_mode),
         },
         insecure_tls,
+        queued_keepalive_interval: QUEUED_KEEPALIVE_INTERVAL,
     })
 }
 
@@ -671,6 +678,9 @@ async fn run_session<E: SessionEffects>(
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     heartbeat.tick().await;
     let mut heartbeat_frame: Option<ClientMessage> = None;
+    let mut queued_keepalive = tokio::time::interval(config.queued_keepalive_interval);
+    queued_keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    queued_keepalive.tick().await;
 
     loop {
         tokio::select! {
@@ -780,6 +790,32 @@ async fn run_session<E: SessionEffects>(
                             code: None,
                             reason: format!("envoi du heartbeat impossible : {error}"),
                         };
+                    }
+                }
+            }
+            _ = queued_keepalive.tick() => {
+                // La file locale n'est annoncée qu'après le `welcome` : sans lui
+                // le serveur ne connaît pas encore la session.
+                if heartbeat_frame.is_some() {
+                    for (job_id, duration_ms) in effects.queued_jobs() {
+                        tracing::debug!(
+                            job_id = %job_id,
+                            duration_ms,
+                            "keep-alive playback.state d'un play en file locale"
+                        );
+                        let frame = ClientMessage::PlaybackState(PlaybackStatePayload {
+                            job_id,
+                            state: PlaybackState::Paused,
+                            remaining_ms: Some(duration_ms),
+                        });
+                        if let Err(error) = send_message(&mut sink, frame).await {
+                            return SessionOutcome::Closed {
+                                code: None,
+                                reason: format!(
+                                    "envoi du keep-alive playback.state impossible : {error}"
+                                ),
+                            };
+                        }
                     }
                 }
             }
@@ -937,6 +973,10 @@ impl SessionEffects for AppEffects {
             .set_net_error(&self.guild_id, message);
         refresh_tray_from_any_thread(&self.app);
     }
+
+    fn queued_jobs(&self) -> Vec<(String, u64)> {
+        self.app.state::<AppState>().queued_jobs_for(&self.guild_id)
+    }
 }
 
 impl AppEffects {
@@ -998,6 +1038,7 @@ mod tests {
         stops: StdMutex<u32>,
         peers: StdMutex<u32>,
         settings: StdMutex<u32>,
+        queued: StdMutex<Vec<(String, u64)>>,
     }
 
     impl SessionEffects for RecordingEffects {
@@ -1034,6 +1075,13 @@ mod tests {
         fn on_ack(&self, _payload: &AckPayload) {}
 
         fn on_server_error(&self, _payload: &ServerErrorPayload) {}
+
+        fn queued_jobs(&self) -> Vec<(String, u64)> {
+            self.queued
+                .lock()
+                .map(|queued| queued.clone())
+                .unwrap_or_default()
+        }
     }
 
     fn welcome_payload() -> WelcomePayload {
@@ -1149,6 +1197,7 @@ mod tests {
                 session_mode: Some(SessionMode::Normal),
             },
             insecure_tls: false,
+            queued_keepalive_interval: QUEUED_KEEPALIVE_INTERVAL,
         };
         let effects = RecordingEffects::default();
         let outcome = tokio::time::timeout(
@@ -1163,6 +1212,77 @@ mod tests {
         }
         assert_eq!(*effects.welcome.lock().expect("welcome"), 1);
         assert_eq!(effects.plays.lock().expect("plays").as_slice(), ["job-1"]);
+        drop(sender);
+        server.await.expect("serveur mock");
+    }
+
+    #[tokio::test]
+    async fn session_sends_keepalive_for_locally_queued_job() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("adresse locale");
+        let server = tokio::spawn(async move {
+            let (stream, _peer) = listener.accept().await.expect("accept");
+            let mut socket = accept_async(stream).await.expect("handshake serveur");
+            let hello = next_client_message(&mut socket).await;
+            assert!(matches!(hello, Some(ClientMessage::Hello(_))));
+            send_server_message(
+                &mut socket,
+                "srv-welcome",
+                ServerMessage::Welcome(welcome_payload()),
+            )
+            .await;
+            let keepalive = loop {
+                match next_client_message(&mut socket).await {
+                    Some(ClientMessage::PlaybackState(payload))
+                        if payload.job_id == "job-queue-1" =>
+                    {
+                        break payload;
+                    }
+                    Some(_) => continue,
+                    None => panic!("flux fermé avant le keep-alive"),
+                }
+            };
+            assert_eq!(keepalive.state, PlaybackState::Paused);
+            assert_eq!(keepalive.remaining_ms, Some(7_000));
+            socket
+                .send(Message::Close(Some(CloseFrame {
+                    code: CloseCode::Normal,
+                    reason: "bye".into(),
+                })))
+                .await
+                .expect("close serveur");
+            let _closed = socket.close(None).await;
+        });
+
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<NetCommand>();
+        let session = SessionConfig {
+            ws_url: ws_url_from_server_url_with(&format!("http://{address}"), true)
+                .expect("url WebSocket de test"),
+            hello: HelloPayload {
+                token: "token-test".to_string(),
+                app_version: "3.0.0".to_string(),
+                client_id: Some("client-1".to_string()),
+                session_mode: Some(SessionMode::Normal),
+            },
+            insecure_tls: false,
+            queued_keepalive_interval: Duration::from_millis(50),
+        };
+        let effects = RecordingEffects::default();
+        effects
+            .queued
+            .lock()
+            .expect("queued")
+            .push(("job-queue-1".to_string(), 7_000));
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_session(&effects, &session, &mut receiver),
+        )
+        .await
+        .expect("session non bloquée");
+        match outcome {
+            SessionOutcome::Closed { code, .. } => assert_eq!(code, Some(1000)),
+            other => panic!("fin de session inattendue : {other:?}"),
+        }
         drop(sender);
         server.await.expect("serveur mock");
     }

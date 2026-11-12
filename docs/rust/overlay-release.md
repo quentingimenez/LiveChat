@@ -10,7 +10,8 @@ installateurs de l'overlay Tauri (`apps/lc-overlay`). Il complète
 > `com.livechat.next`, installation side-by-side avec l'Electron 2.0.1).
 > L'auto-update est **explicitement désactivé pour 3.0.0** (clé de signature
 > updater placeholder, `createUpdaterArtifacts: false` dans les deux configs,
-> aucun workflow GitHub Actions de release Tauri) : voir §6 et §7.
+> pas d'artefacts updater) : voir §6 et §7. L'installeur est construit par la CI
+> `overlay-tauri.yml` (§7.1).
 
 ## 1. Canaux et identités
 
@@ -159,10 +160,11 @@ version 3.0.0**, de façon cohérente sur toute la chaîne :
   `tauri.conf.json` et `tauri.beta.conf.json` ;
 - `bundle.createUpdaterArtifacts` vaut `false` dans les deux configs : les builds
   ne produisent ni `.nsis.zip` signé ni `.sig` ;
-- **aucun workflow GitHub Actions ne publie de release overlay** : les workflows
-  legacy Electron (`overlay-release.yml` sur tag `overlay-v*` avec `--latest`,
-  `overlay-nightly.yml`) ont été supprimés en P0-4 ; il n'existe pas encore de
-  workflow Tauri. La publication 3.0.0 est **manuelle** (§7).
+- les workflows legacy Electron (`overlay-release.yml` sur tag `overlay-v*` avec
+  `--latest`, `overlay-nightly.yml`) ont été supprimés en P0-4 ; le workflow Tauri
+  `overlay-tauri.yml` (§7.1) construit l'installeur NSIS sans artefacts updater et
+  ne crée qu'un **brouillon** de release : la publication reste une décision
+  manuelle (§7).
 
 L'application démarre normalement ; un clic sur « Vérifier les mises à jour »
 renvoie une **erreur explicite** (clé publique invalide) au lieu de planter —
@@ -252,27 +254,33 @@ Avec updater signé, ajouter à chaque release les fichiers `.nsis.zip`, `.sig` 
 `.../releases/latest/download/latest.json` suit automatiquement la dernière release
 marquée « latest » (donc ne pas marquer la bêta comme latest).
 
-### 7.1 Automatisation CI : aucune pour 3.0.0
+### 7.1 Automatisation CI : `overlay-tauri.yml`
 
-Décision P0-4 : **aucun workflow GitHub Actions ne build/publipe l'overlay 3.0.0**.
-Les workflows legacy `overlay-release.yml` (tag `overlay-v*`, electron-builder,
-release marquée *Latest*) et `overlay-nightly.yml` (prerelease Electron) ont été
-supprimés ; ils décrivaient l'ancien client Electron 2.x, pas l'application Tauri,
-et entretenaient un canal de release ambigu (AUD-A7-003). La CI Rust (`rust.yml`)
-vérifie seulement que `apps/lc-overlay` compile (clippy/tests) avec les
-dépendances système Linux nécessaires.
+Le workflow `.github/workflows/overlay-tauri.yml` (runner `windows-latest`,
+actions épinglées par SHA) :
 
-Publication 3.0.0 : **manuelle**, avec les commandes de §7. Si l'automatisation est
-souhaitée pour 3.1 (auto-update activé), le workflow Tauri devra :
+- se déclenche sur push/PR touchant `apps/lc-overlay/**`, `crates/lc-protocol/**`,
+  `crates/lc-domain/**`, `Cargo.*` ou le workflow lui-même, sur tag `overlay-v*`
+  et à la demande ;
+- installe `tauri-cli` 2.12.4 puis lance `cargo tauri build --ci` (installeur NSIS
+  stable `LiveChat_<version>_x64-setup.exe`, sans `.nsis.zip` ni `.sig`) ;
+- vérifie le budget de 20 Mo, calcule le SHA-256, puis fait un **smoke test** :
+  installation silencieuse (`/S`) dans `%LOCALAPPDATA%\LiveChat`, lancement 8 s
+  avec une config isolée (`LIVECHAT_CONFIG_PATH`), désinstallation silencieuse ;
+- publie l'installeur et son `.sha256` en artefact du run (14 jours) ;
+- sur tag `overlay-v<version>` : refuse un tag différent de la version de
+  `tauri.conf.json`, puis crée un **brouillon** de release GitHub avec les deux
+  fichiers (job séparé, seul à avoir `contents: write`). Publier le brouillon
+  reste manuel ; ne jamais le marquer *Latest* pour une bêta.
 
-- être déclenché par tag `overlay-v*` (ou `workflow_dispatch` avec input version) ;
-- utiliser `tauri-apps/tauri-action` **épinglé par SHA** comme toutes les actions ;
-- recevoir `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-  en secrets, plus `GITHUB_TOKEN` en `contents: write` limité au job de release ;
-- produire NSIS (`LiveChat_<version>_x64-setup.exe`) + `.nsis.zip` + `.sig` +
-  `latest.json`, publier la release stable (jamais marquée *Latest* pour la bêta) ;
-- ne pas réutiliser `server.yml` ni l'image serveur : un artefact = un propriétaire
-  de tags.
+La CI Rust (`rust.yml`) continue de vérifier que `apps/lc-overlay` compile (clippy,
+tests) sous Linux et Windows ; le bloc Win32 (`win32.rs`, crate `windows`) n'est
+compilé que sous Windows.
+
+Pour activer l'auto-update (3.1), il faudra en plus : les secrets
+`TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`,
+`createUpdaterArtifacts: true`, la vraie clé publique (§6) et la génération de
+`latest.json` dans le job de release.
 
 ## 8. Politique de versions
 

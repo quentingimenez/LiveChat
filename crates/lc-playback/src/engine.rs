@@ -354,11 +354,13 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
             .finish(event.job_id, JobStatus::Done, now)
             .await?;
         self.clear_busy(&event.guild_id).await?;
-        self.inner
-            .lock()
-            .await
-            .just_finished
-            .insert(event.guild_id.clone(), event.job_id);
+        {
+            let mut inner = self.inner.lock().await;
+            inner.state_persisted_at.remove(&event.job_id);
+            inner
+                .just_finished
+                .insert(event.guild_id.clone(), event.job_id);
+        }
         let run = self.process_guild(&event.guild_id).await?;
         Ok(ReleaseOutcome {
             released: true,
@@ -403,6 +405,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
                 });
             }
         }
+        self.inner.lock().await.state_persisted_at.remove(&job_id);
         let run = self.process_guild(guild_id).await?;
         Ok(ReleaseOutcome {
             released: true,
@@ -640,7 +643,8 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
             let now = self.clock.now();
             let playing = self.store.playing_jobs(guild_id).await?;
             if let Some(active) = playing.first().cloned() {
-                self.handle_multi_playing(guild_id, &playing, now).await?;
+                self.handle_multi_playing(inner, guild_id, &playing, now)
+                    .await?;
                 let expected_end_ms = active
                     .started_at
                     .map(datetime_to_ms)
@@ -648,18 +652,38 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
                     + active.duration_sec.max(1) * 1_000
                     + self.config.lock_padding_ms;
                 if datetime_to_ms(now) >= expected_end_ms + self.config.stale_release_grace_ms {
-                    warn!(
+                    // Un overlay multi-guilde peut garder ce `play` en file
+                    // locale : ses keep-alives `playback.state` récents prouvent
+                    // qu'il attend encore d'être affiché, donc le watchdog ne
+                    // doit pas le libérer (sinon la file serveur dérive).
+                    let recently_confirmed = inner
+                        .state_persisted_at
+                        .get(&active.id)
+                        .map(|persisted_at| datetime_to_ms(*persisted_at))
+                        .is_some_and(|persisted_at_ms| {
+                            datetime_to_ms(now) - persisted_at_ms
+                                < self.config.state_snapshot_max_age_ms
+                        });
+                    if !recently_confirmed {
+                        warn!(
+                            guild = %guild_id,
+                            job = %active.id,
+                            "job PLAYING au-delà de sa durée attendue : libération (watchdog)"
+                        );
+                        self.db
+                            .playback_jobs()
+                            .finish(active.id, JobStatus::Done, now)
+                            .await?;
+                        self.clear_busy(guild_id).await?;
+                        inner.state_persisted_at.remove(&active.id);
+                        preferred = Some(active.id);
+                        continue;
+                    }
+                    tracing::debug!(
                         guild = %guild_id,
                         job = %active.id,
-                        "job PLAYING au-delà de sa durée attendue : libération (watchdog)"
+                        "watchdog suspendu : keep-alive playback.state récent (file locale)"
                     );
-                    self.db
-                        .playback_jobs()
-                        .finish(active.id, JobStatus::Done, now)
-                        .await?;
-                    self.clear_busy(guild_id).await?;
-                    preferred = Some(active.id);
-                    continue;
                 }
                 if let Some(preemptor) = self.find_preemption(guild_id, &active, now).await? {
                     self.suspend_for_preemption(guild_id, &active, &preemptor, now)
@@ -696,6 +720,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
                     .playback_jobs()
                     .finish(job.id, JobStatus::Failed, now)
                     .await?;
+                inner.state_persisted_at.remove(&job.id);
                 preferred = None;
                 continue;
             }
@@ -731,6 +756,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
                     .finish(job.id, JobStatus::Failed, now)
                     .await?;
                 self.clear_busy(guild_id).await?;
+                inner.state_persisted_at.remove(&job.id);
                 preferred = None;
                 continue;
             }
@@ -754,6 +780,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
     /// Libère les jobs `PLAYING` excédentaires (anomalie d'invariant).
     async fn handle_multi_playing(
         &self,
+        inner: &mut Inner,
         guild_id: &GuildId,
         playing: &[PlaybackJob],
         now: DateTime<Utc>,
@@ -772,6 +799,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
                 .playback_jobs()
                 .finish(extra.id, JobStatus::Done, now)
                 .await?;
+            inner.state_persisted_at.remove(&extra.id);
         }
         Ok(())
     }

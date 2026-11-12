@@ -263,7 +263,7 @@ réécriture).
 
 ### 7.1 Déploiement d'une nouvelle version (résumé ; bascule complète : migration-plan §9)
 
-1. vérifier la publication de l'image (`docker pull ghcr.io/<owner>/livechat-server:server-vX.Y.Z`) ;
+1. vérifier la publication de l'image (`docker pull ghcr.io/<owner>/livechat-server:X.Y.Z`) ;
 2. sauvegarder le volume : arrêter l'instance, copier `/app/data` (SQLite + médias) —
    en WAL, préférer un arrêt propre ou `sqlite3 .backup` pour un instantané cohérent ;
 3. démarrer le nouveau conteneur sur le même volume et le même port, avec les secrets

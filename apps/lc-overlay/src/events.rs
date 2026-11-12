@@ -22,6 +22,10 @@ use crate::windows::{overlay_should_show, BOARD_LABEL, OVERLAY_LABEL};
 pub const EVENT_PLAY: &str = "overlay://play";
 pub const EVENT_STOP: &str = "overlay://stop";
 pub const EVENT_SETTINGS: &str = "overlay://settings";
+/// Liste des guildes et de leur état de connexion (fenêtre board uniquement).
+pub const EVENT_GUILDS: &str = "overlay://guilds";
+/// Indice de changement de file d'attente (fenêtre board uniquement).
+pub const EVENT_QUEUE_HINT: &str = "overlay://queue-hint";
 
 /// Délai maximal de rétention des événements avant que le renderer ne soit prêt.
 pub const READY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -148,6 +152,23 @@ pub fn emit_settings(app: &AppHandle<Wry>, view: &OverlayConfigView) -> tauri::R
         redacted.clone(),
     )?;
     app.emit_to(EventTarget::labeled(BOARD_LABEL), EVENT_SETTINGS, redacted)
+}
+
+/// Émet `overlay://guilds` vers le board : adhésions (sans jeton) et état de
+/// connexion de chaque guilde.
+pub fn emit_guilds_changed(app: &AppHandle<Wry>) -> tauri::Result<()> {
+    let payload = app.state::<AppState>().guilds_payload();
+    app.emit_to(EventTarget::labeled(BOARD_LABEL), EVENT_GUILDS, payload)
+}
+
+/// Signals the board that a guild's queue probably changed
+/// (play/stop received). Payload: `{ "guildId": "<id>" }`.
+pub fn emit_queue_hint(app: &AppHandle<Wry>, guild_id: &str) -> tauri::Result<()> {
+    app.emit_to(
+        EventTarget::labeled(BOARD_LABEL),
+        EVENT_QUEUE_HINT,
+        serde_json::json!({ "guildId": guild_id }),
+    )
 }
 
 /// Projection settings sans secret (pure, testable).

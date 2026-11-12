@@ -336,6 +336,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+    use crate::http::rate_limit::MEDIA_RATE_LIMIT_MAX;
     use crate::http::rate_limit::RATE_LIMIT_MAX;
 
     fn config(values: &[(&str, &str)]) -> Config {
@@ -584,6 +585,40 @@ mod tests {
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(body, serde_json::json!({ "error": "request_error" }));
         assert!(headers.get(header::RETRY_AFTER).is_some());
+    }
+
+    #[tokio::test]
+    async fn rate_limit_compte_les_medias_a_part() {
+        let app = router(state());
+        let client = [203, 0, 113, 20];
+
+        // Le budget général est épuisé par les appels JSON.
+        for index in 0..RATE_LIMIT_MAX {
+            let (status, _, _) =
+                send(&app, from_client(request(Method::GET, "/health"), client)).await;
+            assert_eq!(status, StatusCode::OK, "requête {index} acceptée");
+        }
+        let (status, _, _) = send(&app, from_client(request(Method::GET, "/health"), client)).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+        // Un téléchargement média n'est pas concerné par ce budget : la requête
+        // atteint le handler (403/404, URL non signée) avec le plafond média.
+        let (status, headers, _) = send(
+            &app,
+            from_client(
+                request(
+                    Method::GET,
+                    "/overlay/media/00000000-0000-4000-8000-000000000000",
+                ),
+                client,
+            ),
+        )
+        .await;
+        assert_ne!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            *headers.get("x-ratelimit-limit").unwrap(),
+            MEDIA_RATE_LIMIT_MAX.to_string()
+        );
     }
 
     #[test]

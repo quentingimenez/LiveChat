@@ -31,10 +31,10 @@ use tokio_tungstenite::{connect_async_tls_with_config, Connector};
 use url::Url;
 use uuid::Uuid;
 
-use crate::config::{OverlayConfig, OverlayConfigView};
+use crate::config::{Membership, OverlayConfigView};
 use crate::events::{self, OverlayEvent};
 use crate::net::tls;
-use crate::state::AppState;
+use crate::state::{AppState, QueuedPlay};
 use crate::tray;
 use crate::windows;
 
@@ -179,37 +179,95 @@ impl Backoff {
     }
 }
 
-/// Démarre la tâche réseau (une seule fois, depuis `setup`).
+/// Démarre un superviseur par guilde rejointe (depuis `setup`).
 pub fn start(app: &AppHandle<Wry>) {
-    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<NetCommand>();
-    {
-        let state = app.state::<AppState>();
-        state.set_net_command_sender(sender);
+    let guilds: Vec<String> = app
+        .state::<AppState>()
+        .config_snapshot()
+        .memberships
+        .iter()
+        .map(|membership| membership.guild_id.clone())
+        .collect();
+    for guild_id in guilds {
+        ensure_supervisor(app, &guild_id);
     }
+    refresh_tray_from_any_thread(app);
+}
+
+/// Démarre le superviseur d'une guilde s'il ne tourne pas déjà.
+pub fn ensure_supervisor(app: &AppHandle<Wry>, guild_id: &str) {
+    let state = app.state::<AppState>();
+    if state.has_supervisor(guild_id) {
+        return;
+    }
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<NetCommand>();
+    state.set_net_command_sender(guild_id, sender);
     let handle = app.clone();
+    let guild_id = guild_id.to_string();
     tauri::async_runtime::spawn(async move {
-        supervise(handle, receiver).await;
-        tracing::info!("superviseur WebSocket arrêté");
+        supervise(handle.clone(), guild_id.clone(), receiver).await;
+        handle.state::<AppState>().remove_net(&guild_id);
+        refresh_tray_from_any_thread(&handle);
+        tracing::info!(guild_id = %guild_id, "superviseur WebSocket arrêté");
     });
 }
 
-/// Demande une reconnexion (appairage terminé, config modifiée, tray…).
+/// Demande une reconnexion de toutes les guildes (config modifiée, tray…) et
+/// démarre les superviseurs manquants (guilde tout juste rejointe).
 pub fn request_reconnect(app: &AppHandle<Wry>) {
     let state = app.state::<AppState>();
-    if !state.send_net_command(NetCommand::Reconnect) {
-        tracing::debug!("superviseur WebSocket non démarré : reconnexion ignorée");
+    let guilds: Vec<String> = state
+        .config_snapshot()
+        .memberships
+        .iter()
+        .map(|membership| membership.guild_id.clone())
+        .collect();
+    for guild_id in &guilds {
+        if state.has_supervisor(guild_id) {
+            state.send_net_command_to(guild_id, NetCommand::Reconnect);
+        } else {
+            ensure_supervisor(app, guild_id);
+        }
+    }
+    // Un superviseur dont la guilde a disparu se réveille et s'arrête.
+    for guild_id in state.supervised_guilds() {
+        if !guilds.contains(&guild_id) {
+            state.send_net_command_to(&guild_id, NetCommand::Reconnect);
+        }
     }
 }
 
-/// Envoie une trame au serveur si la connexion est établie.
+/// Envoie une trame au serveur de la guilde active si la connexion est établie.
 pub fn send_command(app: &AppHandle<Wry>, command: NetCommand) -> bool {
     app.state::<AppState>().send_net_command(command)
 }
 
-/// Ferme proprement la tâche réseau (sortie de l'application).
+/// Envoie une trame au serveur d'une guilde donnée.
+pub fn send_command_to(app: &AppHandle<Wry>, guild_id: &str, command: NetCommand) -> bool {
+    let state = app.state::<AppState>();
+    if !is_deliverable(state.net_snapshot_for(guild_id).status, &command) {
+        return false;
+    }
+    state.send_net_command_to(guild_id, command)
+}
+
+/// A `Send` frame is only deliverable through a live session: a muted,
+/// disabled or reconnecting supervisor would drop it while the caller
+/// believed it was sent.
+fn is_deliverable(status: ConnectionStatus, command: &NetCommand) -> bool {
+    match command {
+        NetCommand::Send(_) => status == ConnectionStatus::Connected,
+        NetCommand::Reconnect | NetCommand::Shutdown => true,
+    }
+}
+
+/// Ferme proprement toutes les tâches réseau (sortie de l'application).
 pub fn request_shutdown(app: &AppHandle<Wry>) {
-    let sent = send_command(app, NetCommand::Shutdown);
-    tracing::debug!(sent, "arrêt demandé au superviseur WebSocket");
+    let state = app.state::<AppState>();
+    for guild_id in state.supervised_guilds() {
+        let sent = state.send_net_command_to(&guild_id, NetCommand::Shutdown);
+        tracing::debug!(sent, guild_id = %guild_id, "arrêt demandé au superviseur WebSocket");
+    }
 }
 
 /// Rafraîchit le tray depuis n'importe quel thread (les menus exigent le
@@ -221,15 +279,27 @@ pub fn refresh_tray_from_any_thread(app: &AppHandle<Wry>) {
     }) {
         tracing::debug!(%error, "run_on_main_thread indisponible pour le tray");
     }
+    if let Err(error) = events::emit_guilds_changed(app) {
+        tracing::debug!(%error, "échec d'émission de l'état des guildes");
+    }
 }
 
-async fn supervise(app: AppHandle<Wry>, mut commands: UnboundedReceiver<NetCommand>) {
+async fn supervise(
+    app: AppHandle<Wry>,
+    guild_id: String,
+    mut commands: UnboundedReceiver<NetCommand>,
+) {
     let mut backoff = Backoff::default();
     loop {
         let config = app.state::<AppState>().config_snapshot();
+        // Guilde quittée ou purgée : le superviseur n'a plus de raison d'être.
+        let Some(membership) = config.membership(&guild_id).cloned() else {
+            return;
+        };
         if !config.enabled {
             publish(
                 &app,
+                &guild_id,
                 ConnectionStatus::Disabled,
                 Some("overlay désactivé".to_string()),
             );
@@ -238,21 +308,22 @@ async fn supervise(app: AppHandle<Wry>, mut commands: UnboundedReceiver<NetComma
             }
             continue;
         }
-        if !config.has_pairing_config() {
+        if membership.muted {
             publish(
                 &app,
-                ConnectionStatus::NotPaired,
-                Some("appairage requis".to_string()),
+                &guild_id,
+                ConnectionStatus::Disabled,
+                Some("guilde en sourdine".to_string()),
             );
             if !wait_for_command(&mut commands, &app).await {
                 return;
             }
             continue;
         }
-        let session = match build_session_config(&config) {
+        let session = match build_session_config(&membership) {
             Ok(session) => session,
             Err(error) => {
-                publish(&app, ConnectionStatus::Error, Some(error));
+                publish(&app, &guild_id, ConnectionStatus::Error, Some(error));
                 if !wait_for_command(&mut commands, &app).await {
                     return;
                 }
@@ -264,15 +335,22 @@ async fn supervise(app: AppHandle<Wry>, mut commands: UnboundedReceiver<NetComma
         } else {
             ConnectionStatus::Reconnecting
         };
-        publish(&app, status, None);
-        let effects = AppEffects { app: app.clone() };
+        publish(&app, &guild_id, status, None);
+        let effects = AppEffects {
+            app: app.clone(),
+            guild_id: guild_id.clone(),
+        };
         let outcome = run_session(&effects, &session, &mut commands).await;
+        // La connexion est tombée : ce que cette guilde affichait ou faisait
+        // attendre ne peut plus être piloté par son serveur.
+        release_guild_playback(&app, &guild_id);
         let step = match outcome {
             SessionOutcome::Shutdown => return,
             SessionOutcome::ReconnectRequested => {
                 backoff.reset();
                 publish(
                     &app,
+                    &guild_id,
                     ConnectionStatus::Connecting,
                     Some("reconnexion demandée".to_string()),
                 );
@@ -297,9 +375,15 @@ async fn supervise(app: AppHandle<Wry>, mut commands: UnboundedReceiver<NetComma
                 tracing::info!(
                     delay_ms = delay.as_millis(),
                     reason,
+                    guild_id = %guild_id,
                     "nouvelle tentative de connexion WebSocket"
                 );
-                publish(&app, ConnectionStatus::Reconnecting, Some(reason));
+                publish(
+                    &app,
+                    &guild_id,
+                    ConnectionStatus::Reconnecting,
+                    Some(reason),
+                );
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {}
                     command = commands.recv() => match command {
@@ -317,10 +401,16 @@ async fn supervise(app: AppHandle<Wry>, mut commands: UnboundedReceiver<NetComma
                 purge,
             } => {
                 if purge {
-                    purge_pairing(&app);
-                    windows::show_pairing(&app);
+                    // Jeton invalide ou révoqué : la guilde est retirée ; le
+                    // superviseur s'arrête au tour suivant.
+                    let remaining = purge_pairing(&app, &guild_id);
+                    if remaining == 0 {
+                        windows::show_pairing(&app);
+                    }
+                    tracing::info!(guild_id = %guild_id, reason, "adhésion retirée");
+                    return;
                 }
-                publish(&app, status, Some(reason));
+                publish(&app, &guild_id, status, Some(reason));
                 backoff.reset();
                 if !wait_for_command(&mut commands, &app).await {
                     return;
@@ -346,23 +436,53 @@ async fn wait_for_command(
     }
 }
 
-fn publish(app: &AppHandle<Wry>, status: ConnectionStatus, reason: Option<String>) {
-    app.state::<AppState>().set_net_status(status, reason);
+fn publish(app: &AppHandle<Wry>, guild_id: &str, status: ConnectionStatus, reason: Option<String>) {
+    app.state::<AppState>()
+        .set_net_status(guild_id, status, reason);
     refresh_tray_from_any_thread(app);
 }
 
-fn purge_pairing(app: &AppHandle<Wry>) {
+/// Retire l'adhésion d'une guilde ; retourne le nombre d'adhésions restantes.
+fn purge_pairing(app: &AppHandle<Wry>, guild_id: &str) -> usize {
     let state = app.state::<AppState>();
-    if let Err(error) = state.update_config(|config| {
-        config.client_token = None;
-        config.client_id = None;
-        config.guest_mode = false;
+    let remaining = match state.update_config(|config| {
+        config.leave(guild_id);
     }) {
-        tracing::warn!(%error, "échec de purge du jeton d'appairage");
-    }
+        Ok(config) => config.memberships.len(),
+        Err(error) => {
+            tracing::warn!(%error, "échec de retrait de l'adhésion");
+            state.config_snapshot().memberships.len()
+        }
+    };
     crate::shortcuts::reapply_for_session(app);
     if let Err(error) = events::emit_settings(app, &state.view()) {
         tracing::debug!(%error, "échec d'émission des settings après purge");
+    }
+    remaining
+}
+
+/// Libère l'écran et la file locale de ce que tenait une guilde, puis passe au
+/// `play` suivant en attente.
+fn release_guild_playback(app: &AppHandle<Wry>, guild_id: &str) {
+    let state = app.state::<AppState>();
+    state.drop_queued(guild_id, None);
+    if state.playback_guild().as_deref() == Some(guild_id) {
+        state.clear_playback();
+        events::stop_overlay_now(app, "disconnected");
+        advance_local_queue(app);
+    }
+}
+
+/// Affiche le prochain `play` en attente, s'il y en a un.
+pub fn advance_local_queue(app: &AppHandle<Wry>) {
+    let state = app.state::<AppState>();
+    if state.playback_job().is_some() {
+        return;
+    }
+    if let Some(next) = state.dequeue_play() {
+        tracing::info!(job_id = %next.job_id, guild_id = %next.guild_id, "play en attente affiché");
+        state.set_playback(&next.guild_id, next.job_id);
+        events::deliver_or_buffer(app, state.overlay_ready(), OverlayEvent::play(next.payload));
     }
 }
 
@@ -427,19 +547,14 @@ fn outdated_reason(raw_reason: &str) -> String {
     }
 }
 
-fn build_session_config(config: &OverlayConfig) -> Result<SessionConfig, String> {
-    let server_url = config
-        .server_url
-        .as_deref()
-        .ok_or_else(|| "serverUrl absent de la configuration".to_string())?;
-    let token = config
-        .client_token
-        .as_deref()
+fn build_session_config(membership: &Membership) -> Result<SessionConfig, String> {
+    let server_url = membership.server_url.as_str();
+    let token = Some(membership.client_token.as_str())
         .filter(|token| !token.trim().is_empty())
         .ok_or_else(|| "clientToken absent de la configuration".to_string())?;
     let insecure_tls = tls::insecure_tls_enabled();
     let ws_url = ws_url_from_server_url(server_url)?;
-    let session_mode = if config.guest_mode {
+    let session_mode = if membership.guest_mode {
         SessionMode::InviteReadOnly
     } else {
         SessionMode::Normal
@@ -449,7 +564,7 @@ fn build_session_config(config: &OverlayConfig) -> Result<SessionConfig, String>
         hello: HelloPayload {
             token: token.to_string(),
             app_version: env!("CARGO_PKG_VERSION").to_string(),
-            client_id: config.client_id.clone(),
+            client_id: membership.client_id.clone(),
             session_mode: Some(session_mode),
         },
         insecure_tls,
@@ -687,31 +802,37 @@ fn adopt_current_job(play: PlayPayload, remaining_ms: u64) -> PlayPayload {
 /// Effets Tauri : dispatcher vers le renderer, le tray et l'état partagé.
 struct AppEffects {
     app: AppHandle<Wry>,
+    /// Guilde de la session (clé de l'adhésion).
+    guild_id: String,
 }
 
 impl SessionEffects for AppEffects {
     fn on_welcome(&self, payload: &WelcomePayload) {
         let app = &self.app;
+        let guild_id = self.guild_id.as_str();
         let state = app.state::<AppState>();
         let guest_mode = payload.session_mode == SessionMode::InviteReadOnly;
         let config = state.config_snapshot();
-        let identity_changed = config.client_id.as_deref() != Some(payload.client_id.as_str())
-            || config.guild_id.as_deref() != Some(payload.guild_id.as_str())
-            || config.guest_mode != guest_mode;
+        let identity_changed = config.membership(guild_id).is_some_and(|membership| {
+            membership.client_id.as_deref() != Some(payload.client_id.as_str())
+                || membership.guest_mode != guest_mode
+        });
         if identity_changed {
             if let Err(error) = state.update_config(|config| {
-                config.client_id = Some(payload.client_id.clone());
-                config.guild_id = Some(payload.guild_id.clone());
-                config.guest_mode = guest_mode;
+                config.update_membership(guild_id, |membership| {
+                    membership.client_id = Some(payload.client_id.clone());
+                    membership.guest_mode = guest_mode;
+                });
             }) {
                 tracing::warn!(%error, "échec de persistance de l'identité serveur");
             }
             crate::shortcuts::reapply_for_session(app);
         }
-        state.set_net_welcome(payload);
+        state.set_net_welcome(guild_id, payload);
         tracing::info!(
             server_version = %payload.server_version,
             client_id = %payload.client_id,
+            guild_id = %guild_id,
             session_mode = ?payload.session_mode,
             "welcome reçu"
         );
@@ -723,23 +844,13 @@ impl SessionEffects for AppEffects {
         }
         if let Some(current) = &payload.current_job {
             let adopted = adopt_current_job(current.play.clone(), current.remaining_ms);
-            match serde_json::to_value(&adopted) {
-                Ok(value) => {
-                    state.set_playback(adopted.job_id);
-                    events::deliver_or_buffer(
-                        app,
-                        state.overlay_ready(),
-                        OverlayEvent::play(value),
-                    );
-                }
-                Err(error) => tracing::warn!(%error, "currentJob non sérialisable"),
-            }
+            self.present_play(&adopted);
         }
     }
 
     fn on_settings(&self, payload: &SettingsPayload) {
         let state = self.app.state::<AppState>();
-        state.set_net_settings_summary(&payload.guild_id, payload.session_mode);
+        state.set_net_settings_summary(&self.guild_id, payload.session_mode);
         tracing::info!(
             guild_id = %payload.guild_id,
             show_text_default = payload.show_text_default,
@@ -755,29 +866,39 @@ impl SessionEffects for AppEffects {
     }
 
     fn on_play(&self, payload: &PlayPayload) {
-        let app = &self.app;
-        let state = app.state::<AppState>();
-        state.set_playback(payload.job_id.clone());
-        match serde_json::to_value(payload) {
-            Ok(value) => {
-                tracing::info!(job_id = %payload.job_id, "play reçu");
-                events::deliver_or_buffer(app, state.overlay_ready(), OverlayEvent::play(value));
-            }
-            Err(error) => tracing::warn!(%error, "play non sérialisable"),
+        self.present_play(payload);
+        if let Err(error) = events::emit_queue_hint(&self.app, &self.guild_id) {
+            tracing::debug!(%error, "échec d'émission de l'indice de file d'attente");
         }
     }
 
     fn on_stop(&self, payload: &StopPayload) {
+        if let Err(error) = events::emit_queue_hint(&self.app, &self.guild_id) {
+            tracing::debug!(%error, "échec d'émission de l'indice de file d'attente");
+        }
         let app = &self.app;
         let state = app.state::<AppState>();
+        // Un `stop` ne concerne l'écran que si cette guilde l'occupe ; sinon il
+        // annule seulement ce qu'elle faisait attendre.
+        let dropped = state.drop_queued(&self.guild_id, payload.job_id.as_deref());
+        let owner = state.playback_guild();
+        if owner.is_some() && owner.as_deref() != Some(self.guild_id.as_str()) {
+            tracing::info!(
+                guild_id = %self.guild_id,
+                dropped,
+                "stop reçu d'une guilde qui n'occupe pas l'écran"
+            );
+            return;
+        }
         state.clear_playback();
         match serde_json::to_value(payload) {
             Ok(value) => {
-                tracing::info!(reason = ?payload.reason, "stop reçu");
+                tracing::info!(reason = ?payload.reason, guild_id = %self.guild_id, "stop reçu");
                 events::deliver_or_buffer(app, state.overlay_ready(), OverlayEvent::stop(value));
             }
             Err(error) => tracing::warn!(%error, "stop non sérialisable"),
         }
+        advance_local_queue(app);
     }
 
     fn on_peers(&self, payload: &PeersPayload) {
@@ -787,7 +908,7 @@ impl SessionEffects for AppEffects {
             .iter()
             .map(|peer| peer.label.clone())
             .collect::<Vec<_>>();
-        state.set_net_peers(labels);
+        state.set_net_peers(&self.guild_id, labels);
         refresh_tray_from_any_thread(&self.app);
     }
 
@@ -801,7 +922,9 @@ impl SessionEffects for AppEffects {
                 .map(|error| format!("{}: {}", error.code, error.message))
                 .unwrap_or_else(|| "ack en erreur sans détail".to_string());
             tracing::warn!(reference = %payload.ref_id, %error, "ack en erreur");
-            self.app.state::<AppState>().set_net_error(error);
+            self.app
+                .state::<AppState>()
+                .set_net_error(&self.guild_id, error);
             refresh_tray_from_any_thread(&self.app);
         }
     }
@@ -809,8 +932,43 @@ impl SessionEffects for AppEffects {
     fn on_server_error(&self, payload: &ServerErrorPayload) {
         let message = format!("{}: {}", payload.code, payload.message);
         tracing::warn!(%message, job_id = ?payload.job_id, "erreur serveur non fatale");
-        self.app.state::<AppState>().set_net_error(message);
+        self.app
+            .state::<AppState>()
+            .set_net_error(&self.guild_id, message);
         refresh_tray_from_any_thread(&self.app);
+    }
+}
+
+impl AppEffects {
+    /// Affiche un `play`, ou le met en attente si une autre guilde occupe
+    /// l'écran (un seul média à la fois, toutes guildes confondues).
+    fn present_play(&self, payload: &PlayPayload) {
+        let app = &self.app;
+        let state = app.state::<AppState>();
+        let value = match serde_json::to_value(payload) {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(%error, "play non sérialisable");
+                return;
+            }
+        };
+        let owner = state.playback_guild();
+        if owner.is_some() && owner.as_deref() != Some(self.guild_id.as_str()) {
+            tracing::info!(
+                job_id = %payload.job_id,
+                guild_id = %self.guild_id,
+                "play mis en attente : une autre guilde occupe l'écran"
+            );
+            state.enqueue_play(QueuedPlay {
+                guild_id: self.guild_id.clone(),
+                job_id: payload.job_id.clone(),
+                payload: value,
+            });
+            return;
+        }
+        tracing::info!(job_id = %payload.job_id, guild_id = %self.guild_id, "play reçu");
+        state.set_playback(&self.guild_id, payload.job_id.clone());
+        events::deliver_or_buffer(app, state.overlay_ready(), OverlayEvent::play(value));
     }
 }
 
@@ -1119,5 +1277,45 @@ mod tests {
         // Le payload reste un objet (éventuellement vide) : le contrat v2 exige
         // un objet et tolère les champs vides.
         assert!(json.get("payload").is_none_or(serde_json::Value::is_object));
+    }
+
+    fn test_send() -> NetCommand {
+        NetCommand::Send(ClientMessage::PeersRequest(
+            lc_protocol::PeersRequestPayload {},
+        ))
+    }
+
+    #[test]
+    fn send_is_deliverable_when_connected() {
+        assert!(is_deliverable(ConnectionStatus::Connected, &test_send()));
+    }
+
+    #[test]
+    fn send_is_not_deliverable_when_disabled() {
+        assert!(!is_deliverable(ConnectionStatus::Disabled, &test_send()));
+    }
+
+    #[test]
+    fn send_is_not_deliverable_when_reconnecting() {
+        assert!(!is_deliverable(
+            ConnectionStatus::Reconnecting,
+            &test_send()
+        ));
+    }
+
+    #[test]
+    fn reconnect_is_deliverable_when_disabled() {
+        assert!(is_deliverable(
+            ConnectionStatus::Disabled,
+            &NetCommand::Reconnect
+        ));
+    }
+
+    #[test]
+    fn shutdown_is_deliverable_when_disabled() {
+        assert!(is_deliverable(
+            ConnectionStatus::Disabled,
+            &NetCommand::Shutdown
+        ));
     }
 }

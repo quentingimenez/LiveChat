@@ -55,7 +55,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
 use chrono::{DateTime, Utc};
-use lc_domain::{GuildId, MediaAsset, MediaAssetId, MemeBoardItem, MemeBoardItemId};
+use lc_domain::{GuildId, MediaAsset, MediaAssetId, MemeBoardItem, MemeBoardItemId, Permission};
 use serde::Deserialize;
 
 use crate::app::AppState;
@@ -134,6 +134,9 @@ pub async fn list_items(
         Ok(db) => db,
         Err(response) => return response,
     };
+    if let Err(response) = ensure_board_visible(db, &auth).await {
+        return response;
+    }
 
     let limit = normalize_limit(query.limit.as_deref());
     let offset = normalize_offset(query.offset.as_deref());
@@ -170,7 +173,18 @@ pub async fn list_items(
                 return db_failure("overlay_meme_board.list_item_asset", &db_error);
             }
         };
-        page.push(item_payload(&row.item, &asset));
+        let mut payload = item_payload(&row.item, &asset);
+        if let Some(object) = payload.as_object_mut() {
+            object.insert(
+                "createdByMemberId".to_owned(),
+                serde_json::json!(row.created_by_member_id),
+            );
+            object.insert(
+                "canEdit".to_owned(),
+                serde_json::json!(can_edit(&auth, row.created_by_member_id.as_deref())),
+            );
+        }
+        page.push(payload);
     }
 
     json_response(
@@ -315,10 +329,19 @@ pub async fn create_item(
         created_at: now,
     };
     match db.meme_board().create(&item).await {
-        Ok(()) => json_response(
-            StatusCode::OK,
-            serde_json::json!({"created": true, "item": item_payload(&item, &asset)}),
-        ),
+        Ok(()) => {
+            // L'auteur sert au droit « modifier ses propres mèmes ».
+            if let Some(member_id) = auth.member_id() {
+                if let Err(db_error) = db.meme_board().set_creator_member(item.id, member_id).await
+                {
+                    return db_failure("overlay_meme_board.record_author", &db_error);
+                }
+            }
+            json_response(
+                StatusCode::OK,
+                serde_json::json!({"created": true, "item": item_payload(&item, &asset)}),
+            )
+        }
         Err(db_error) if is_conflict(&db_error) => match db
             .meme_board()
             .get_by_guild_and_asset(auth.guild_id(), asset.id)
@@ -350,6 +373,9 @@ pub async fn get_media(
         Ok(db) => db,
         Err(response) => return response,
     };
+    if let Err(response) = ensure_board_visible(db, &auth).await {
+        return response;
+    }
     match db
         .meme_board()
         .get_by_guild_and_asset(auth.guild_id(), asset_id)
@@ -422,6 +448,9 @@ pub async fn update_item(
         Ok(_) => return error(StatusCode::NOT_FOUND, "item_not_found"),
         Err(db_error) => return db_failure("overlay_meme_board.patch_lookup", &db_error),
     };
+    if let Err(response) = ensure_can_edit(db, &auth, item_id).await {
+        return response;
+    }
 
     // Valeur absente → on conserve ; null/vide → on efface (parité legacy
     // `hasOwnProperty` + `toNonEmptyString`).
@@ -479,6 +508,9 @@ pub async fn delete_item(
         Ok(_) => return json_response(StatusCode::OK, serde_json::json!({"deleted": false})),
         Err(db_error) => return db_failure("overlay_meme_board.delete_lookup", &db_error),
     };
+    if let Err(response) = ensure_can_edit(db, &auth, item_id).await {
+        return response;
+    }
 
     // AUD-A2-013 : suppression et libération de l'expiration épinglée dans une
     // même transaction (le comptage de références est fait côté SQL), au lieu
@@ -519,6 +551,60 @@ fn ensure_writable(auth: &AuthedOverlayClient) -> Result<(), Response> {
     Ok(())
 }
 
+/// Garde de lecture : un invité ne consulte le board que si la guilde
+/// l'autorise (`guilds.guests_can_view_board`, vrai par défaut).
+async fn ensure_board_visible(db: &Db, auth: &AuthedOverlayClient) -> Result<(), Response> {
+    if auth.role() != lc_domain::GuildRole::Guest {
+        return Ok(());
+    }
+    let guests_can_view_board = match db.guilds().access(auth.guild_id()).await {
+        Ok(access) => access.is_none_or(|access| access.guests_can_view_board),
+        Err(db_error) => return Err(db_failure("overlay_meme_board.board_access", &db_error)),
+    };
+    if auth.role().can_view_board(guests_can_view_board) {
+        Ok(())
+    } else {
+        Err(error(StatusCode::FORBIDDEN, "forbidden"))
+    }
+}
+
+/// `true` si le client peut modifier ou supprimer un mème dont l'auteur est
+/// `creator_member_id`.
+///
+/// Un admin modifie tout ; un membre modifie ses propres mèmes. Un mème sans
+/// auteur enregistré (antérieur aux rôles, ou ajouté depuis Discord) reste
+/// modifiable par tout membre, comme avant ; il en va de même pour un overlay
+/// sans membre rattaché.
+fn can_edit(auth: &AuthedOverlayClient, creator_member_id: Option<&str>) -> bool {
+    if auth.can(Permission::EditAnyMeme) {
+        return true;
+    }
+    if !auth.can(Permission::EditOwnMeme) {
+        return false;
+    }
+    match (auth.member_id(), creator_member_id) {
+        (Some(member_id), Some(creator)) => member_id.to_canonical() == creator,
+        _ => true,
+    }
+}
+
+/// Garde de modification d'un mème existant (`403 forbidden` sinon).
+async fn ensure_can_edit(
+    db: &Db,
+    auth: &AuthedOverlayClient,
+    item_id: MemeBoardItemId,
+) -> Result<(), Response> {
+    let creator = match db.meme_board().creator_member(item_id).await {
+        Ok(creator) => creator.map(lc_domain::GuildMemberId::to_canonical),
+        Err(db_error) => return Err(db_failure("overlay_meme_board.item_author", &db_error)),
+    };
+    if can_edit(auth, creator.as_deref()) {
+        Ok(())
+    } else {
+        Err(error(StatusCode::FORBIDDEN, "forbidden"))
+    }
+}
+
 /// Payload JSON d'un item de board (format legacy exact).
 fn item_payload(item: &MemeBoardItem, asset: &MediaAsset) -> serde_json::Value {
     serde_json::json!({
@@ -545,9 +631,10 @@ fn item_payload(item: &MemeBoardItem, asset: &MediaAsset) -> serde_json::Value {
 
 /// Nom d'auteur affiché d'un client overlay (repli label legacy).
 fn board_author_name(auth: &AuthedOverlayClient) -> Option<String> {
-    auth.client
-        .default_author_name
-        .as_deref()
+    auth.member
+        .as_ref()
+        .map(|member| member.display_name.as_str())
+        .or(auth.client.default_author_name.as_deref())
         .or(Some(auth.client.label.as_str()))
         .map(|value| truncate_chars(value.trim(), AUTHOR_NAME_MAX_CHARS))
         .filter(|value| !value.is_empty())
@@ -571,6 +658,8 @@ fn normalize_offset(raw: Option<&str>) -> usize {
 struct BoardRow {
     item: MemeBoardItem,
     source_url: String,
+    /// Membre auteur (`meme_board_items.created_by_member_id`), s'il est connu.
+    created_by_member_id: Option<String>,
 }
 
 impl BoardRow {
@@ -600,7 +689,7 @@ async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<Boa
 
     let raw_rows = sqlx::query(
         "SELECT b.id, b.guild_id, b.media_asset_id, b.title, b.message, \
-                b.created_by_discord_user_id, b.created_by_name, b.created_at, \
+                b.created_by_discord_user_id, b.created_by_name, b.created_at, b.created_by_member_id, \
                 a.source_url \
            FROM meme_board_items b \
            JOIN media_assets a ON a.id = b.media_asset_id \
@@ -629,6 +718,9 @@ async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<Boa
             .try_get("created_by_name")
             .map_err(lc_db::DbError::from)?;
         let source_url: String = raw.try_get("source_url").map_err(lc_db::DbError::from)?;
+        let created_by_member_id: Option<String> = raw
+            .try_get("created_by_member_id")
+            .map_err(lc_db::DbError::from)?;
 
         let item_id = MemeBoardItemId::parse(&item_id_raw)
             .map_err(|error| corrupt_row(format!("id invalide ({item_id_raw}): {error}")))?;
@@ -652,6 +744,7 @@ async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<Boa
                 created_at,
             },
             source_url,
+            created_by_member_id,
         });
     }
     Ok(rows)

@@ -884,14 +884,25 @@ async fn registre_sqlx_compatible_boot_et_deuxieme_boot() {
     let mut target = open_readonly(&to).await;
     assert_eq!(
         scalar_i64(&mut target, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-        2,
-        "le registre doit contenir 0001 (seedée par le migrateur) et 0002 (appliquée \
-         par sqlx au premier boot)"
+        3,
+        "le registre doit contenir 0001 (seedée par le migrateur), puis 0002 et 0003 \
+         (appliquées par sqlx au premier boot)"
     );
     assert_eq!(
         scalar_i64(&mut target, "SELECT MAX(version) FROM _sqlx_migrations").await,
-        2,
-        "0002_playback_single_playing doit être appliquée au premier démarrage"
+        3,
+        "0002 et 0003 doivent être appliquées au premier démarrage"
+    );
+    assert_eq!(
+        scalar_i64(
+            &mut target,
+            "SELECT COUNT(*) FROM overlay_clients AS c \
+             LEFT JOIN guild_members AS m ON m.id = c.member_id \
+             WHERE m.id IS NULL"
+        )
+        .await,
+        0,
+        "0003 doit rattacher chaque overlay migré à un membre de guilde"
     );
     assert_eq!(
         scalar_i64(

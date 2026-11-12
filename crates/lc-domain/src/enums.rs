@@ -154,6 +154,97 @@ text_enum! {
     }
 }
 
+text_enum! {
+    /// Rôle d'un membre dans une guilde (`guild_members.role`).
+    GuildRole {
+        /// Gère la guilde : membres, invitations, réglages, modération.
+        Admin => ("ADMIN", "admin"),
+        /// Peut jouer, ajouter des mèmes et arrêter la lecture.
+        Member => ("MEMBER", "member"),
+        /// Reçoit les médias ; lecture seule.
+        Guest => ("GUEST", "guest"),
+    }
+}
+
+/// Action soumise à autorisation dans une guilde.
+///
+/// [`GuildRole::can`] est l'unique point de décision : les handlers ne
+/// comparent jamais un rôle directement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Permission {
+    /// Recevoir les médias diffusés sur l'overlay.
+    ReceiveMedia,
+    /// Consulter la file d'attente.
+    ViewQueue,
+    /// Consulter le meme board (pour un invité : sous réserve du réglage de
+    /// guilde, cf. [`GuildRole::can_view_board`]).
+    ViewBoard,
+    /// Déclencher la lecture d'un mème.
+    TriggerPlayback,
+    /// Arrêter la lecture en cours.
+    StopPlayback,
+    /// Ajouter un mème au board.
+    AddMeme,
+    /// Modifier ou supprimer un mème que l'on a soi-même ajouté.
+    EditOwnMeme,
+    /// Modifier ou supprimer n'importe quel mème.
+    EditAnyMeme,
+    /// Retirer, réordonner ou vider la file d'attente.
+    ModerateQueue,
+    /// Changer un rôle ou exclure un membre.
+    ManageMembers,
+    /// Créer ou révoquer des invitations.
+    ManageInvites,
+    /// Modifier les réglages de la guilde (dont la liaison Discord).
+    ManageSettings,
+    /// Purger les données de la guilde.
+    PurgeGuild,
+}
+
+impl GuildRole {
+    /// `true` si le rôle autorise `permission`.
+    pub const fn can(self, permission: Permission) -> bool {
+        match permission {
+            Permission::ReceiveMedia | Permission::ViewQueue | Permission::ViewBoard => true,
+            Permission::TriggerPlayback
+            | Permission::StopPlayback
+            | Permission::AddMeme
+            | Permission::EditOwnMeme => matches!(self, Self::Admin | Self::Member),
+            Permission::EditAnyMeme
+            | Permission::ModerateQueue
+            | Permission::ManageMembers
+            | Permission::ManageInvites
+            | Permission::ManageSettings
+            | Permission::PurgeGuild => matches!(self, Self::Admin),
+        }
+    }
+
+    /// `true` si le rôle peut consulter le board, compte tenu du réglage
+    /// `guests_can_view_board` de la guilde.
+    pub const fn can_view_board(self, guests_can_view_board: bool) -> bool {
+        match self {
+            Self::Guest => guests_can_view_board,
+            Self::Admin | Self::Member => true,
+        }
+    }
+
+    /// Mode de session WS équivalent (parité protocole v2).
+    pub const fn session_mode(self) -> OverlaySessionMode {
+        match self {
+            Self::Guest => OverlaySessionMode::InviteReadOnly,
+            Self::Admin | Self::Member => OverlaySessionMode::Normal,
+        }
+    }
+
+    /// Rôle accordé par un code d'appairage legacy (émis depuis Discord).
+    pub const fn from_pairing_mode(mode: PairingMode) -> Self {
+        match mode {
+            PairingMode::Normal => Self::Member,
+            PairingMode::InviteReadOnly => Self::Guest,
+        }
+    }
+}
+
 impl JobStatus {
     /// `true` pour les états terminaux (`DONE`, `FAILED`).
     pub const fn is_terminal(self) -> bool {
@@ -213,6 +304,40 @@ mod tests {
         assert!(MediaKind::from_db_str("image").is_err());
         assert!(MediaKind::from_db_str("GIF").is_err());
         assert!(JobStatus::from_wire_str("PLAYING").is_err());
+    }
+
+    #[test]
+    fn permissions_par_role() {
+        use super::{GuildRole, Permission};
+
+        for role in GuildRole::ALL {
+            assert!(role.can(Permission::ReceiveMedia));
+            assert!(role.can(Permission::ViewQueue));
+        }
+        assert!(!GuildRole::Guest.can(Permission::TriggerPlayback));
+        assert!(!GuildRole::Guest.can(Permission::AddMeme));
+        assert!(GuildRole::Member.can(Permission::TriggerPlayback));
+        assert!(GuildRole::Member.can(Permission::EditOwnMeme));
+        assert!(!GuildRole::Member.can(Permission::EditAnyMeme));
+        assert!(!GuildRole::Member.can(Permission::ManageMembers));
+        assert!(GuildRole::Admin.can(Permission::ManageMembers));
+        assert!(GuildRole::Admin.can(Permission::PurgeGuild));
+
+        assert!(!GuildRole::Guest.can_view_board(false));
+        assert!(GuildRole::Guest.can_view_board(true));
+        assert!(GuildRole::Member.can_view_board(false));
+
+        assert_eq!(
+            GuildRole::Guest.session_mode(),
+            OverlaySessionMode::InviteReadOnly
+        );
+        assert_eq!(GuildRole::Admin.session_mode(), OverlaySessionMode::Normal);
+        assert_eq!(
+            GuildRole::from_pairing_mode(PairingMode::InviteReadOnly),
+            GuildRole::Guest
+        );
+        assert_eq!(GuildRole::Admin.as_db_str(), "ADMIN");
+        assert_eq!(GuildRole::Guest.as_wire_str(), "guest");
     }
 
     #[test]

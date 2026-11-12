@@ -21,7 +21,7 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use url::Url as ParsedUrl;
 
-use crate::config::OverlayConfig;
+use crate::config::{Membership, OverlayConfig};
 use crate::net::tls;
 use crate::state::AppState;
 
@@ -40,6 +40,10 @@ pub struct PairingRequest {
     pub server_url: String,
     pub code: String,
     pub device_name: Option<String>,
+    /// Pseudo du profil local (nouveau membre).
+    pub display_name: Option<String>,
+    /// Avatar du profil local (URL ou image embarquée).
+    pub avatar: Option<String>,
 }
 
 /// Résultat de l'appairage : sert à la commande Tauri et aux effets tray.
@@ -71,6 +75,22 @@ struct PairConsumeResponse {
     device_name: Option<String>,
     #[serde(default)]
     session_mode: Option<SessionMode>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    member_id: Option<String>,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    guild_name: Option<String>,
+}
+
+/// Chaîne non vide après `trim`, sinon `None`.
+fn clean(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
 
 impl PairingRequest {
@@ -187,36 +207,34 @@ fn apply_consume_response(
         }
         None => requested.to_string(),
     };
-    config.server_url = Some(base_url.trim_end_matches('/').to_string());
-    config.client_token = Some(token.to_string());
-    config.client_id = response
-        .client_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(ToString::to_string);
-    config.guild_id = response
-        .guild_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(ToString::to_string);
-    config.author_name = response
-        .author_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(ToString::to_string);
-    config.device_name = Some(
-        response
-            .device_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .map(ToString::to_string)
-            .unwrap_or_else(|| device_name.to_string()),
-    );
-    config.guest_mode = response.session_mode == Some(SessionMode::InviteReadOnly);
+    let guild_id = clean(response.guild_id.as_deref())
+        .ok_or_else(|| "réponse d'appairage invalide : guildId absent".to_string())?;
+    let guest_mode = response.session_mode == Some(SessionMode::InviteReadOnly);
+    // La guilde rejointe devient la guilde active ; les autres adhésions sont
+    // conservées (multi-guilde).
+    config.join(Membership {
+        server_url: base_url.trim_end_matches('/').to_string(),
+        guild_id,
+        guild_name: clean(response.guild_name.as_deref()),
+        client_token: token.to_string(),
+        client_id: clean(response.client_id.as_deref()),
+        member_id: clean(response.member_id.as_deref()),
+        display_name: clean(response.display_name.as_deref())
+            .or_else(|| clean(response.author_name.as_deref())),
+        role: clean(response.role.as_deref()),
+        guest_mode,
+        muted: false,
+        meme_bindings: Default::default(),
+    });
+    config.author_name = clean(response.author_name.as_deref());
+    config.device_name =
+        Some(clean(response.device_name.as_deref()).unwrap_or_else(|| device_name.to_string()));
+    if let Some(display_name) = clean(request.display_name.as_deref()) {
+        config.profile_name = Some(display_name);
+    }
+    if let Some(avatar) = clean(request.avatar.as_deref()) {
+        config.profile_avatar = Some(avatar);
+    }
     Ok(())
 }
 
@@ -248,6 +266,10 @@ pub async fn consume(state: &AppState, request: PairingRequest) -> PairingOutcom
         .json(&serde_json::json!({
             "code": code,
             "deviceName": device_name,
+            "displayName": clean(request.display_name.as_deref())
+                .or_else(|| state.config_snapshot().profile_name),
+            "avatar": clean(request.avatar.as_deref())
+                .or_else(|| state.config_snapshot().profile_avatar),
         }))
         .send()
         .await
@@ -303,6 +325,8 @@ mod tests {
             server_url: "https://api.example.test/".to_string(),
             code: " ab12 ".to_string(),
             device_name: None,
+            display_name: None,
+            avatar: None,
         }
     }
 
@@ -343,6 +367,10 @@ mod tests {
             author_name: None,
             device_name: None,
             session_mode: None,
+            role: None,
+            member_id: None,
+            display_name: None,
+            guild_name: None,
         };
         let error = apply_consume_response(&mut config, &request(), &response, "PC-TEST")
             .expect_err("downgrade refusé");
@@ -364,6 +392,10 @@ mod tests {
             author_name: None,
             device_name: None,
             session_mode: None,
+            role: None,
+            member_id: None,
+            display_name: None,
+            guild_name: None,
         };
         apply_consume_response(&mut config, &request, &response, "PC-TEST")
             .expect("upgrade accepté");
@@ -382,6 +414,8 @@ mod tests {
             server_url: String::new(),
             code: "X".to_string(),
             device_name: None,
+            display_name: None,
+            avatar: None,
         }
         .validated()
         .is_err());
@@ -398,6 +432,10 @@ mod tests {
             author_name: Some("Babz".to_string()),
             device_name: None,
             session_mode: Some(SessionMode::InviteReadOnly),
+            role: None,
+            member_id: None,
+            display_name: None,
+            guild_name: None,
         };
         apply_consume_response(&mut config, &request(), &response, "PC-TEST")
             .expect("application de la réponse");
@@ -414,6 +452,73 @@ mod tests {
     }
 
     #[test]
+    fn second_guild_is_added_and_becomes_active() {
+        let mut config = OverlayConfig::default();
+        let first = PairConsumeResponse {
+            api_base_url: None,
+            client_token: Some("token-a".to_string()),
+            client_id: Some("client-a".to_string()),
+            guild_id: Some("111".to_string()),
+            author_name: None,
+            device_name: None,
+            session_mode: Some(SessionMode::Normal),
+            role: Some("admin".to_string()),
+            member_id: Some("member-a".to_string()),
+            display_name: Some("Quentin".to_string()),
+            guild_name: Some("Les Sardines".to_string()),
+        };
+        apply_consume_response(&mut config, &request(), &first, "PC-TEST").expect("guilde 1");
+        config
+            .meme_bindings
+            .insert("Ctrl+1".to_string(), "meme-a".to_string());
+
+        let mut second_request = request();
+        second_request.display_name = Some("  Quentin B. ".to_string());
+        let second = PairConsumeResponse {
+            api_base_url: None,
+            client_token: Some("token-b".to_string()),
+            client_id: None,
+            guild_id: Some("222".to_string()),
+            author_name: None,
+            device_name: None,
+            session_mode: Some(SessionMode::InviteReadOnly),
+            role: Some("guest".to_string()),
+            member_id: None,
+            display_name: None,
+            guild_name: None,
+        };
+        apply_consume_response(&mut config, &second_request, &second, "PC-TEST").expect("guilde 2");
+
+        assert_eq!(config.memberships.len(), 2);
+        assert_eq!(config.guild_id.as_deref(), Some("222"));
+        assert_eq!(config.client_token.as_deref(), Some("token-b"));
+        assert!(config.guest_mode);
+        // Les raccourcis de la première guilde restent rangés avec elle.
+        assert!(config.meme_bindings.is_empty());
+        let kept = config.membership("111").expect("guilde 1 conservée");
+        assert_eq!(kept.client_token, "token-a");
+        assert_eq!(kept.role.as_deref(), Some("admin"));
+        assert_eq!(kept.guild_name.as_deref(), Some("Les Sardines"));
+        assert_eq!(
+            kept.meme_bindings.get("Ctrl+1").map(String::as_str),
+            Some("meme-a")
+        );
+        assert_eq!(config.profile_name.as_deref(), Some("Quentin B."));
+
+        // Rejoindre à nouveau la même guilde remplace son adhésion.
+        apply_consume_response(&mut config, &request(), &first, "PC-TEST").expect("re-join");
+        assert_eq!(config.memberships.len(), 2);
+        assert_eq!(config.guild_id.as_deref(), Some("111"));
+
+        // Quitter la guilde active rend l'autre active.
+        assert!(config.leave("111"));
+        assert_eq!(config.guild_id.as_deref(), Some("222"));
+        assert!(config.leave("222"));
+        assert!(!config.has_pairing_config());
+        assert!(config.memberships.is_empty());
+    }
+
+    #[test]
     fn consume_response_requires_token() {
         let mut config = OverlayConfig::default();
         let response = PairConsumeResponse {
@@ -424,6 +529,10 @@ mod tests {
             author_name: None,
             device_name: None,
             session_mode: None,
+            role: None,
+            member_id: None,
+            display_name: None,
+            guild_name: None,
         };
         let error = apply_consume_response(&mut config, &request(), &response, "PC-TEST")
             .expect_err("clientToken requis");

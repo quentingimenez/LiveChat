@@ -85,6 +85,11 @@ pub fn router() -> Router<AppState> {
             "/admin/api/ingest-clients",
             post(ingest_authors::create_client),
         )
+        .route("/admin/api/guilds", post(guilds::create))
+        .route(
+            "/admin/api/guilds/{guild_id}/admin-code",
+            post(guilds::admin_code),
+        )
         .route(
             "/admin/api/guilds/{guild_id}/settings",
             patch(guilds::update_settings),

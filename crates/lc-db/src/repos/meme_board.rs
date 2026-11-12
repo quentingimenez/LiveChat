@@ -1,10 +1,10 @@
 //! Repository `meme_board_items` (mème board persistant par guilde).
 
 use lc_domain::entities::MemeBoardItem;
-use lc_domain::ids::{GuildId, MediaAssetId, MemeBoardItemId};
+use lc_domain::ids::{GuildId, GuildMemberId, MediaAssetId, MemeBoardItemId};
 use sqlx::SqlitePool;
 
-use crate::convert::{decode, from_ms, to_ms};
+use crate::convert::{decode, decode_opt, from_ms, to_ms};
 use crate::error::{conflict_on_unique, DbResult};
 
 const TABLE: &str = "meme_board_items";
@@ -145,6 +145,38 @@ impl MemeBoardRepository {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Enregistre le membre auteur d'un élément (droit « modifier ses propres
+    /// mèmes »). Retourne `false` si l'élément n'existe pas.
+    pub async fn set_creator_member(
+        &self,
+        id: MemeBoardItemId,
+        member_id: GuildMemberId,
+    ) -> DbResult<bool> {
+        let result =
+            sqlx::query("UPDATE meme_board_items SET created_by_member_id = ? WHERE id = ?")
+                .bind(member_id.to_canonical())
+                .bind(id.to_canonical())
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Membre auteur d'un élément ; `None` si l'élément est inconnu, antérieur
+    /// à la migration 0003 ou ajouté depuis Discord.
+    pub async fn creator_member(&self, id: MemeBoardItemId) -> DbResult<Option<GuildMemberId>> {
+        let raw: Option<Option<String>> =
+            sqlx::query_scalar("SELECT created_by_member_id FROM meme_board_items WHERE id = ?")
+                .bind(id.to_canonical())
+                .fetch_optional(&self.pool)
+                .await?;
+        decode_opt(
+            TABLE,
+            "created_by_member_id",
+            raw.flatten().as_deref(),
+            GuildMemberId::parse,
+        )
     }
 
     /// Supprime un élément du board.

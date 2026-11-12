@@ -68,13 +68,18 @@ use tracing::error;
 
 use crate::app::AppState;
 
+mod admin;
 mod auth;
+pub(crate) mod guild;
 mod media;
 mod meme_board;
 mod pair;
+mod queue;
 
 pub use media::sign_media_url;
 
+#[cfg(test)]
+mod guild_tests;
 #[cfg(test)]
 mod tests;
 
@@ -100,6 +105,38 @@ pub fn router() -> Router<AppState> {
         .route(
             "/overlay/meme-board/media/{asset_id}",
             get(meme_board::get_media),
+        )
+        .route("/overlay/guild", get(guild::get_guild))
+        .route(
+            "/overlay/profile",
+            axum::routing::patch(guild::update_profile),
+        )
+        .route("/overlay/device-code", post(guild::create_device_code))
+        .route("/overlay/leave", post(guild::leave))
+        .route(
+            "/overlay/queue",
+            get(queue::get_queue).delete(queue::clear_queue),
+        )
+        .route(
+            "/overlay/queue/{job_id}",
+            axum::routing::delete(queue::remove_job),
+        )
+        .route("/overlay/admin/members", get(admin::list_members))
+        .route(
+            "/overlay/admin/members/{member_id}",
+            axum::routing::patch(admin::update_member).delete(admin::remove_member_handler),
+        )
+        .route(
+            "/overlay/admin/invites",
+            get(admin::list_invites).post(admin::create_invite_handler),
+        )
+        .route(
+            "/overlay/admin/invites/{code}/revoke",
+            post(admin::revoke_invite),
+        )
+        .route(
+            "/overlay/admin/settings",
+            axum::routing::patch(admin::update_settings),
         );
 
     Router::new()

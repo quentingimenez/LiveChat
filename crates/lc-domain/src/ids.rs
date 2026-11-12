@@ -123,7 +123,16 @@ uuid_id!(
     "ingest_client"
 );
 
-/// Identifiant de guilde Discord (snowflake numérique, stocké `TEXT`).
+uuid_id!(
+    /// Identifiant d'un membre de guilde (`guild_members.id`).
+    GuildMemberId,
+    "guild_member"
+);
+
+/// Identifiant de guilde (numérique, stocké `TEXT`).
+///
+/// Historiquement un snowflake Discord ; une guilde créée hors Discord reçoit
+/// un identifiant numérique de même format, généré par [`GuildId::generate`].
 ///
 /// Validé : chaîne non vide composée uniquement de chiffres ASCII et d'au plus
 /// 20 caractères (`u64` maximal). Aucune conversion `u64` n'est imposée car le
@@ -155,6 +164,18 @@ impl GuildId {
             )));
         }
         Ok(Self(value.to_owned()))
+    }
+
+    /// Génère l'identifiant d'une guilde créée hors Discord.
+    ///
+    /// 19 chiffres commençant par `9` : même format qu'un snowflake (aucun
+    /// changement de validation ni de stockage), dans une plage que Discord
+    /// n'atteindra pas avant plusieurs décennies. L'unicité réelle est garantie
+    /// par la clé primaire `guilds.id` (l'appelant retente sur conflit).
+    pub fn generate() -> Self {
+        const SPAN: u128 = 1_000_000_000_000_000_000;
+        let random = Uuid::new_v4().as_u128() % SPAN;
+        Self((9 * SPAN + random).to_string())
     }
 
     /// Représentation texte (snowflake).
@@ -309,6 +330,16 @@ mod tests {
         let guild = GuildId::parse(" 123456789012345678 ").unwrap();
         assert_eq!(guild.as_str(), "123456789012345678");
         assert_eq!(guild.to_string(), "123456789012345678");
+    }
+
+    #[test]
+    fn guild_id_genere_est_valide() {
+        let first = GuildId::generate();
+        let second = GuildId::generate();
+        assert_eq!(first.as_str().len(), 19);
+        assert!(first.as_str().starts_with('9'));
+        assert_eq!(GuildId::parse(first.as_str()).unwrap(), first);
+        assert_ne!(first, second);
     }
 
     #[test]

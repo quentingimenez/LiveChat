@@ -1,132 +1,27 @@
 /*
- * LiveChat Admin — logique client extraite du panel legacy.
+ * LiveChat Admin — exploitation du serveur.
  *
- * Provenance : server/src/components/admin/adminRoutes.ts, fonction
- * buildAdminPanelHtml(), bloc <script> lignes 1096-2240 (template literal).
- * Extraction mécanique : dé-indentation de 6 espaces et dé-échappement des
- * séquences du template literal (\" -> " et \\' -> \'), aucun autre changement.
+ * Provenance : static/admin/app.js, extrait du panneau legacy
+ * (server/src/components/admin/adminRoutes.ts), puis réduit à l'exploitation :
+ * jeton admin, vue d'ensemble, arrêt et purge d'une guilde, cookie TikTok,
+ * création de guilde et émission de codes admin.
  *
- * Modifications volontaires (voir docs/rust/admin-panel.md §4) :
- *  - le handler inline onerror="this.style.display='none'" de l'avatar a été
- *    supprimé du HTML généré et remplacé par un listener délégué 'error'
- *    (capture), afin d'autoriser script-src 'self' sans 'unsafe-inline' ;
- *  - ce fichier est chargé via <script src="app.js" defer> au lieu d'un bloc
- *    inline : même moment d'exécution effectif (DOM déjà parsé).
- * Les appels réseau, chemins, méthodes et payloads sont identiques au legacy.
+ * Script classique chargé en defer ; aucun gestionnaire inline, aucun module ES.
  */
+
+'use strict';
+
+const OVERVIEW_AUTO_REFRESH_MS = 10000;
+const GUILD_NAME_MAX_LENGTH = 60;
 
 const state = {
   token: '',
   overview: null,
-  pairingItems: [],
-  ingestAuthors: [],
+  adminCode: '',
 };
 
-const OVERVIEW_AUTO_REFRESH_MS = 2000;
-const PAIRING_AUTO_REFRESH_MS = 12000;
-let isOverviewAutoRefreshRunning = false;
-let isPairingAutoRefreshRunning = false;
-let autoRefreshBlockedUntil = 0;
+let overviewAutoRefreshRunning = false;
 
-const blockAutoRefresh = (durationMs) => {
-  const normalizedDuration = Number.isFinite(durationMs) && durationMs > 0 ? Math.floor(durationMs) : 0;
-  const nextBlockedUntil = Date.now() + normalizedDuration;
-  if (nextBlockedUntil > autoRefreshBlockedUntil) {
-    autoRefreshBlockedUntil = nextBlockedUntil;
-  }
-};
-
-const isEditableControl = (node) => {
-  if (!(node instanceof HTMLElement)) {
-    return false;
-  }
-
-  if (node.isContentEditable) {
-    return true;
-  }
-
-  if (node instanceof HTMLTextAreaElement) {
-    return !node.disabled && !node.readOnly;
-  }
-
-  if (node instanceof HTMLSelectElement) {
-    return !node.disabled;
-  }
-
-  if (node instanceof HTMLInputElement) {
-    if (node.disabled || node.readOnly) {
-      return false;
-    }
-
-    const inputType = String(node.type || '').toLowerCase();
-    const nonEditableTypes = ['button', 'submit', 'reset', 'file', 'hidden'];
-    return nonEditableTypes.indexOf(inputType) === -1;
-  }
-
-  return false;
-};
-
-const shouldPauseAutoRefresh = () => {
-  const activeElement = document.activeElement;
-  if (isEditableControl(activeElement)) {
-    return true;
-  }
-
-  return Date.now() < autoRefreshBlockedUntil;
-};
-
-const escapeHtml = (value) => {
-  return String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-};
-
-const bytesToHuman = (value) => {
-  const bytes = Number.isFinite(value) && value > 0 ? value : 0;
-  const kb = 1024;
-  const mb = kb * 1024;
-  const gb = mb * 1024;
-
-  if (bytes >= gb) {
-    return (bytes / gb).toFixed(2) + ' GB';
-  }
-
-  if (bytes >= mb) {
-    return (bytes / mb).toFixed(2) + ' MB';
-  }
-
-  if (bytes >= kb) {
-    return (bytes / kb).toFixed(2) + ' KB';
-  }
-
-  return bytes + ' B';
-};
-
-const toDateTime = (value) => {
-  if (!value) {
-    return '-';
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return '-';
-  }
-
-  return date.toLocaleString('fr-FR');
-};
-
-const setStatus = (message, kind) => {
-  const element = document.getElementById('status');
-  element.className = 'status ' + (kind || 'muted');
-  element.textContent = message;
-};
-
-// AUD-COR-05 : le jeton ne transite plus par l'URL (ni lecture `?token=`, ni
-// réécriture de l'adresse dans l'historique du navigateur). Il est lu depuis le
-// champ de la page ou depuis localStorage, et envoyé en `Authorization: Bearer`.
 const readToken = () => localStorage.getItem('livechat_admin_token') || '';
 
 const writeToken = (token) => {
@@ -138,6 +33,125 @@ const writeToken = (token) => {
   }
 
   localStorage.setItem('livechat_admin_token', normalized);
+};
+
+const setStatus = (message, kind) => {
+  const element = document.getElementById('status');
+
+  if (!element) {
+    return;
+  }
+
+  element.className = 'status ' + (kind || 'muted');
+  element.textContent = message;
+};
+
+const setInlineStatus = (id, message, kind) => {
+  const element = document.getElementById(id);
+
+  if (!element) {
+    return;
+  }
+
+  element.className = 'status ' + (kind || 'muted');
+  element.textContent = message;
+};
+
+const createElement = (tagName, className, text) => {
+  const element = document.createElement(tagName);
+
+  if (className) {
+    element.className = className;
+  }
+
+  if (text !== undefined && text !== null) {
+    element.textContent = String(text);
+  }
+
+  return element;
+};
+
+const bytesToHuman = (value) => {
+  const numeric = Number(value);
+  const bytes = Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
+  const kb = 1024;
+  const mb = kb * 1024;
+  const gb = mb * 1024;
+
+  if (bytes >= gb) {
+    return (bytes / gb).toLocaleString('fr-FR', { maximumFractionDigits: 2 }) + ' GB';
+  }
+
+  if (bytes >= mb) {
+    return (bytes / mb).toLocaleString('fr-FR', { maximumFractionDigits: 2 }) + ' MB';
+  }
+
+  if (bytes >= kb) {
+    return (bytes / kb).toLocaleString('fr-FR', { maximumFractionDigits: 2 }) + ' KB';
+  }
+
+  return bytes.toLocaleString('fr-FR') + ' B';
+};
+
+const formatNumber = (value, maximumFractionDigits) => {
+  const numeric = Number(value);
+
+  if (!Number.isFinite(numeric)) {
+    return '0';
+  }
+
+  return numeric.toLocaleString('fr-FR', {
+    maximumFractionDigits: maximumFractionDigits === undefined ? 0 : maximumFractionDigits,
+  });
+};
+
+const formatDateTime = (value) => {
+  if (!value) {
+    return '';
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  return date.toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' });
+};
+
+const formatAdminCode = (value) => {
+  const normalized = String(value || '')
+    .replace(/[\s-]+/g, '')
+    .toUpperCase();
+
+  if (!normalized) {
+    return '';
+  }
+
+  if (normalized.length <= 4) {
+    return normalized;
+  }
+
+  return normalized.slice(0, 4) + '-' + normalized.slice(4);
+};
+
+const errorLabel = (error) => {
+  const code = error instanceof Error && error.message ? error.message : 'request_failed';
+  const labels = {
+    token_missing: 'le jeton admin est requis.',
+    unauthorized: 'le jeton admin est refusé.',
+    admin_ui_disabled: "l'interface d'administration est désactivée sur le serveur.",
+    admin_local_only: "l'accès est limité à la machine locale.",
+    invalid_name: 'le nom de la guilde est invalide.',
+    invalid_guild_id: "l'identifiant de guilde est invalide.",
+    invalid_payload: 'les données envoyées sont invalides.',
+    confirm_guild_id_mismatch: "l'identifiant de confirmation ne correspond pas.",
+    invalid_response: 'la réponse du serveur est inattendue.',
+    network_error: 'le serveur est injoignable.',
+    request_failed: 'la requête a échoué.',
+  };
+
+  return labels[code] || 'erreur inattendue (' + code + ').';
 };
 
 const api = async (path, options = {}) => {
@@ -157,13 +171,20 @@ const api = async (path, options = {}) => {
     headers['Content-Type'] = 'application/json';
   }
 
-  const response = await fetch(path, {
-    method: options.method || 'GET',
-    headers,
-    body: hasBody ? JSON.stringify(options.body) : undefined,
-  });
+  let response;
+
+  try {
+    response = await fetch(path, {
+      method: options.method || 'GET',
+      headers,
+      body: hasBody ? JSON.stringify(options.body) : undefined,
+    });
+  } catch {
+    throw new Error('network_error');
+  }
 
   let payload = null;
+
   try {
     payload = await response.json();
   } catch {
@@ -171,976 +192,726 @@ const api = async (path, options = {}) => {
   }
 
   if (!response.ok) {
-    const errorText = payload && payload.error ? payload.error : 'request_failed';
-    throw new Error(errorText);
+    const code = payload && typeof payload.error === 'string' ? payload.error : 'request_failed';
+    throw new Error(code);
   }
 
   return payload;
 };
 
+const metricCard = (label, value, note) => {
+  const card = createElement('div', 'metric');
+  card.append(createElement('span', 'metric-value', value), createElement('span', 'metric-label', label));
+
+  if (note) {
+    card.append(createElement('span', 'metric-note', note));
+  }
+
+  return card;
+};
+
 const renderMetrics = () => {
   const container = document.getElementById('metrics');
-  const overview = state.overview;
-
-  if (!overview) {
-    container.innerHTML = '';
+  if (!container) {
     return;
   }
 
-  const cache = overview.cache;
-  const totals = overview.totals;
+  container.replaceChildren();
 
-  container.innerHTML = [
-    '<div class="metric"><strong>' + escapeHtml(String(totals.guildCount)) + '</strong><div class="muted">Guilds suivies</div></div>',
-    '<div class="metric"><strong>' + escapeHtml(String(totals.overlayConnectedCount)) + '</strong><div class="muted">Overlays connectés</div></div>',
-    '<div class="metric"><strong>' + escapeHtml(String(totals.ingestClientCount)) + '</strong><div class="muted">Ingest clients actifs</div></div>',
-    '<div class="metric"><strong>' + escapeHtml(String(overview.pairingCodes.active)) + '</strong><div class="muted">Pairing codes actifs</div></div>',
-    '<div class="metric"><strong>' + escapeHtml(bytesToHuman(cache.remainingBytes)) + '</strong><div class="muted">Cache restant</div><div class="progress"><span style="width:' + escapeHtml(String(cache.usedPercent)) + '%"></span></div></div>',
-  ].join('');
+  if (!state.overview) {
+    const message = state.token
+      ? 'Chargement de la vue d’ensemble…'
+      : 'Renseignez le jeton admin pour afficher les métriques.';
+    container.append(createElement('p', 'empty-state', message));
+    return;
+  }
+
+  const totals = state.overview.totals || {};
+  const cache = state.overview.cache || {};
+  const cachePercent = Math.min(100, Math.max(0, Number(cache.usedPercent) || 0));
+  const cacheCard = metricCard(
+    'Cache média utilisé',
+    bytesToHuman(cache.usedBytes),
+    formatNumber(cachePercent, 2) + ' % de ' + bytesToHuman(cache.maxBytes),
+  );
+  const cacheProgress = document.createElement('progress');
+  cacheProgress.max = 100;
+  cacheProgress.value = cachePercent;
+  cacheProgress.setAttribute('aria-label', 'Occupation du cache média');
+  cacheCard.append(cacheProgress);
+
+  container.append(
+    metricCard('Guildes', formatNumber(totals.guildCount)),
+    metricCard('Overlays connectés', formatNumber(totals.overlayConnectedCount)),
+    cacheCard,
+  );
+};
+
+const findGuild = (guildId) => {
+  const guilds = state.overview && Array.isArray(state.overview.guilds) ? state.overview.guilds : [];
+  return guilds.find((guild) => guild && guild.id === guildId) || null;
+};
+
+const playbackStat = (playback) => {
+  const stat = createElement('div', 'stat');
+  stat.append(createElement('span', 'stat-label', 'Lecture'));
+
+  const grid = createElement('div', 'playback-grid');
+  const counters = [
+    ['En attente', playback.pending],
+    ['En lecture', playback.playing],
+    ['Échecs', playback.failed],
+    ['Terminés', playback.done],
+  ];
+
+  counters.forEach(([label, value]) => {
+    const item = createElement('div', 'playback-item');
+    item.append(
+      createElement('span', 'playback-label', label),
+      createElement('strong', 'playback-value', formatNumber(value)),
+    );
+    grid.append(item);
+  });
+
+  stat.append(grid);
+  return stat;
+};
+
+const buildGuildCard = (guild) => {
+  const card = createElement('article', 'guild-card');
+  const overlays = guild.overlays || {};
+  const board = guild.memeBoard || {};
+  const playback = guild.playback || {};
+  const connectedCount = Number(overlays.connectedCount) || 0;
+  const totalCount = Number(overlays.total) || 0;
+  const boardPercent = Math.min(100, Math.max(0, Number(board.usedPercent) || 0));
+
+  const head = createElement('div', 'guild-head');
+  const identity = createElement('div', 'guild-identity');
+  identity.append(
+    createElement('h3', 'guild-name', guild.name || 'Guilde sans nom'),
+    createElement('p', 'guild-id', guild.id || '-'),
+  );
+
+  const badges = createElement('div', 'badge-row');
+  badges.append(
+    createElement(
+      'span',
+      'badge',
+      connectedCount > 0 ? formatNumber(connectedCount) + ' overlay(s) connecté(s)' : 'Aucun overlay connecté',
+    ),
+  );
+  head.append(identity, badges);
+  card.append(head);
+
+  const stats = createElement('div', 'guild-stats');
+
+  const overlaysStat = createElement('div', 'stat');
+  overlaysStat.append(
+    createElement('span', 'stat-label', 'Overlays'),
+    createElement('strong', 'stat-value', formatNumber(totalCount) + ' total'),
+    createElement('span', 'stat-note', formatNumber(connectedCount) + ' connecté(s)'),
+  );
+
+  const boardStat = createElement('div', 'stat');
+  boardStat.append(
+    createElement('span', 'stat-label', 'Meme board'),
+    createElement(
+      'strong',
+      'stat-value',
+      bytesToHuman(board.usedBytes) + ' / ' + bytesToHuman(board.maxBytes),
+    ),
+  );
+  const boardProgress = document.createElement('progress');
+  boardProgress.max = 100;
+  boardProgress.value = boardPercent;
+  boardProgress.setAttribute('aria-label', 'Occupation du meme board');
+  boardStat.append(
+    boardProgress,
+    createElement(
+      'span',
+      'stat-note',
+      formatNumber(boardPercent, 2) + ' % · ' + formatNumber(board.itemsCount) + ' élément(s)',
+    ),
+  );
+
+  stats.append(overlaysStat, boardStat, playbackStat(playback));
+  card.append(stats);
+
+  const actions = createElement('div', 'guild-actions');
+  const adminCodeButton = createElement('button', 'button', 'Code admin');
+  adminCodeButton.type = 'button';
+  adminCodeButton.dataset.action = 'admin-code';
+  adminCodeButton.dataset.guildId = guild.id || '';
+
+  const stopButton = createElement('button', 'button', 'Stop playback');
+  stopButton.type = 'button';
+  stopButton.dataset.action = 'stop';
+  stopButton.dataset.guildId = guild.id || '';
+
+  const purgeButton = createElement('button', 'button danger', 'Purger');
+  purgeButton.type = 'button';
+  purgeButton.dataset.action = 'purge';
+  purgeButton.dataset.guildId = guild.id || '';
+
+  actions.append(adminCodeButton, stopButton, purgeButton);
+  card.append(actions);
+
+  return card;
 };
 
 const renderGuilds = () => {
   const container = document.getElementById('guilds');
-  const overview = state.overview;
-
-  if (!overview || !Array.isArray(overview.guilds) || overview.guilds.length === 0) {
-    container.innerHTML = '<div class="muted">Aucune guild disponible.</div>';
+  if (!container) {
     return;
   }
 
-  container.innerHTML = overview.guilds
-    .map((guild) => {
-      const board = guild.memeBoard;
-      const overlays = guild.overlays;
-      const ingest = guild.ingest;
-      const playback = guild.playback;
+  container.replaceChildren();
 
-      const overlayItems = overlays.clients
-        .map((client) => {
-          const badgeClass = client.connected ? 'ok' : 'warn';
-          const badgeText = client.connected ? 'connecté' : 'hors ligne';
-          const modeBadge =
-            client.connected && client.sessionMode === 'invite_read_only'
-              ? ' <span class="badge info">invité</span>'
-              : '';
-          const hasAuthorName = typeof client.authorName === 'string' && client.authorName.trim() !== '';
-          const displayName = hasAuthorName ? client.authorName.trim() : client.label;
-          const authorImage =
-            typeof client.authorImage === 'string' && client.authorImage.trim() !== ''
-              ? client.authorImage.trim()
-              : null;
-          const avatar =
-            authorImage !== null
-              ? '<img class="overlay-avatar" src="' +
-                escapeHtml(authorImage) +
-                '" alt="Avatar" referrerpolicy="no-referrer" loading="lazy" />'
-              : '';
-          const deviceLine =
-            hasAuthorName && client.authorName.trim() !== client.label
-              ? '<div class="muted">device: ' + escapeHtml(client.label) + '</div>'
-              : '';
-          return (
-            '<li class="list-item">' +
-            '<div class="overlay-client-head">' +
-            avatar +
-            '<div><strong>' +
-            escapeHtml(displayName) +
-            '</strong>' +
-            modeBadge +
-            ' <span class="badge ' +
-            badgeClass +
-            '">' +
-            badgeText +
-            '</span></div></div>' +
-            deviceLine +
-            '<div class="muted">id: ' +
-            escapeHtml(client.id) +
-            '</div>' +
-            '<div class="muted">lastSeen: ' +
-            escapeHtml(toDateTime(client.lastSeenAt)) +
-            '</div>' +
-            '<button class="action-btn danger" data-action="revoke-overlay" data-client-id="' +
-            escapeHtml(client.id) +
-            '">Révoquer</button>' +
-            '</li>'
-          );
-        })
-        .join('');
-
-      const ingestItems = ingest.clients
-        .map((client) => {
-          return (
-            '<li class="list-item">' +
-            '<div><strong>' +
-            escapeHtml(client.label) +
-            '</strong></div>' +
-            '<div class="muted">id: ' +
-            escapeHtml(client.id) +
-            '</div>' +
-            '<div class="muted">lastSeen: ' +
-            escapeHtml(toDateTime(client.lastSeenAt)) +
-            '</div>' +
-            '<button class="action-btn danger" data-action="revoke-ingest" data-client-id="' +
-            escapeHtml(client.id) +
-            '">Révoquer</button>' +
-            '</li>'
-          );
-        })
-        .join('');
-
-      const boardPercent = Number.isFinite(board.usedPercent) ? board.usedPercent : 0;
-      const settings = guild.settings || {};
-      const settingOverrides = settings.overrides || {};
-      const editableGuildName = typeof guild.editableName === 'string' ? guild.editableName : '';
-      const defaultEffectiveRaw = settings.defaultMediaTime == null ? '' : String(settings.defaultMediaTime);
-      const maxEffectiveRaw = settings.maxMediaTime == null ? '' : String(settings.maxMediaTime);
-      const displayEffective = !!settings.displayMediaFull;
-      const defaultOverrideRaw =
-        settingOverrides.defaultMediaTime == null ? '' : String(settingOverrides.defaultMediaTime);
-      const maxOverrideRaw = settingOverrides.maxMediaTime == null ? '' : String(settingOverrides.maxMediaTime);
-      const displayOverrideRaw =
-        typeof settingOverrides.displayMediaFull === 'boolean' ? String(settingOverrides.displayMediaFull) : '';
-
-      return (
-        '<article class="guild-card" data-guild-id="' +
-        escapeHtml(guild.id) +
-        '">' +
-        '<div class="guild-head">' +
-        '<div><h3>' +
-        escapeHtml(guild.name) +
-        '</h3><div class="muted">' +
-        escapeHtml(guild.id) +
-        '</div></div>' +
-        '<div>' +
-        (overlays.connectedCount > 0
-          ? '<span class="badge ok">' + escapeHtml(String(overlays.connectedCount)) + ' overlay(s) connectés</span>'
-          : '<span class="badge warn">Aucun overlay connecté</span>') +
-        '</div>' +
-        '</div>' +
-        '<div class="guild-grid guild-grid-meta">' +
-        '<div class="guild-meta">' +
-        '<div><strong>Busy Until</strong>: ' +
-        escapeHtml(toDateTime(guild.busyUntil)) +
-        '</div>' +
-        '<div><strong>Jobs</strong>: PENDING ' +
-        escapeHtml(String(playback.pending)) +
-        ' / PLAYING ' +
-        escapeHtml(String(playback.playing)) +
-        ' / FAILED ' +
-        escapeHtml(String(playback.failed)) +
-        ' / DONE ' +
-        escapeHtml(String(playback.done)) +
-        '</div>' +
-        '<div><strong>Meme board</strong>: ' +
-        escapeHtml(bytesToHuman(board.usedBytes)) +
-        ' / ' +
-        escapeHtml(bytesToHuman(board.maxBytes)) +
-        '</div>' +
-        '<div class="progress"><span style="width:' +
-        escapeHtml(String(boardPercent)) +
-        '%"></span></div>' +
-        '</div>' +
-        '<div class="guild-meta">' +
-        '<div><strong>Overlays</strong>: ' +
-        escapeHtml(String(overlays.total)) +
-        ' total</div>' +
-        '<div><strong>Ingest clients</strong>: ' +
-        escapeHtml(String(ingest.total)) +
-        '</div>' +
-        '<div><strong>Board items</strong>: ' +
-        escapeHtml(String(board.itemsCount)) +
-        '</div>' +
-        '<div><strong>Cache restant global</strong>: ' +
-        escapeHtml(bytesToHuman(overview.cache.remainingBytes)) +
-        '</div>' +
-        '</div>' +
-        '</div>' +
-        '<form class="guild-settings" data-action="save-settings" data-guild-id="' +
-        escapeHtml(guild.id) +
-        '" data-default-effective="' +
-        escapeHtml(defaultEffectiveRaw) +
-        '" data-default-override="' +
-        escapeHtml(defaultOverrideRaw) +
-        '" data-max-effective="' +
-        escapeHtml(maxEffectiveRaw) +
-        '" data-max-override="' +
-        escapeHtml(maxOverrideRaw) +
-        '" data-display-effective="' +
-        escapeHtml(displayEffective ? 'true' : 'false') +
-        '" data-display-override="' +
-        escapeHtml(displayOverrideRaw) +
-        '">' +
-        '<label>Default media time (sec)<input type="number" min="1" name="defaultMediaTime" value="' +
-        escapeHtml(defaultEffectiveRaw) +
-        '" /></label>' +
-        '<label>Max media time (sec)<input type="number" min="1" name="maxMediaTime" value="' +
-        escapeHtml(maxEffectiveRaw) +
-        '" /></label>' +
-        '<label class="check"><input type="checkbox" name="displayMediaFull" ' +
-        (displayEffective ? 'checked' : '') +
-        ' /> Display media full</label>' +
-        '<button class="action-btn" type="submit">Sauvegarder réglages</button>' +
-        '</form>' +
-        '<div class="actions">' +
-        '<button class="action-btn warn" data-action="stop-guild" data-guild-id="' +
-        escapeHtml(guild.id) +
-        '">Stop playback</button>' +
-        '<button class="action-btn" data-action="pairing-select" data-guild-id="' +
-        escapeHtml(guild.id) +
-        '">Filtrer pairing codes</button>' +
-        '<button class="action-btn danger" data-action="purge-guild" data-guild-id="' +
-        escapeHtml(guild.id) +
-        '">Purger guild</button>' +
-        '</div>' +
-        '<div class="guild-grid guild-grid-clients">' +
-        '<div class="list-block"><strong>Overlay clients</strong><ul>' +
-        (overlayItems || '<li class="list-item empty">Aucun client</li>') +
-        '</ul></div>' +
-        '<div class="list-block"><strong>Ingest clients</strong><ul>' +
-        (ingestItems || '<li class="list-item empty">Aucun client</li>') +
-        '</ul></div>' +
-        '</div>' +
-        '</article>'
-      );
-    })
-    .join('');
-};
-
-const renderPairingGuildFilter = () => {
-  const select = document.getElementById('pairing-guild-filter');
-  const overview = state.overview;
-
-  if (!overview || !Array.isArray(overview.guilds)) {
-    select.innerHTML = '<option value="">Toutes les guilds</option>';
+  if (!state.overview) {
+    const message = state.token
+      ? 'Chargement des guildes…'
+      : 'Renseignez le jeton admin pour afficher les guildes.';
+    container.append(createElement('p', 'empty-state', message));
     return;
   }
 
-  const options = ['<option value="">Toutes les guilds</option>']
-    .concat(
-      overview.guilds.map((guild) => {
-        return '<option value="' + escapeHtml(guild.id) + '">' + escapeHtml(guild.name + ' (' + guild.id + ')') + '</option>';
-      }),
-    )
-    .join('');
+  const guilds = Array.isArray(state.overview.guilds) ? state.overview.guilds : [];
 
-  const current = select.value;
-  select.innerHTML = options;
-
-  if (current) {
-    select.value = current;
-  }
-};
-
-const renderIngestCreateGuildFilter = () => {
-  const select = document.getElementById('ingest-create-guild');
-  const overview = state.overview;
-
-  if (!overview || !Array.isArray(overview.guilds) || overview.guilds.length === 0) {
-    select.innerHTML = '<option value="">Aucune guild disponible</option>';
+  if (guilds.length === 0) {
+    container.append(createElement('p', 'empty-state', 'Aucune guilde pour le moment.'));
     return;
   }
 
-  const options = overview.guilds
-    .map((guild) => {
-      return '<option value="' + escapeHtml(guild.id) + '">' + escapeHtml(guild.name + ' (' + guild.id + ')') + '</option>';
-    })
-    .join('');
-
-  const current = select.value;
-  select.innerHTML = options;
-
-  if (current) {
-    select.value = current;
-  }
-};
-
-const renderIngestCreateAuthorFilter = () => {
-  const select = document.getElementById('ingest-create-author');
-  const items = Array.isArray(state.ingestAuthors) ? state.ingestAuthors : [];
-
-  if (items.length === 0) {
-    select.innerHTML = '<option value="">Aucun auteur en DB</option>';
-    return;
-  }
-
-  const options = items
-    .map((author) => {
-      const suffix = author.source === 'mixed' ? 'pairing+ingest' : author.source;
-      return (
-        '<option value="' +
-        escapeHtml(author.discordUserId) +
-        '">' +
-        escapeHtml(author.displayName + ' (' + author.discordUserId + ') [' + suffix + ']') +
-        '</option>'
-      );
-    })
-    .join('');
-
-  const current = select.value;
-  select.innerHTML = options;
-
-  if (current) {
-    select.value = current;
-  }
-};
-
-const renderPairingRows = () => {
-  const container = document.getElementById('pairing-rows');
-
-  if (!Array.isArray(state.pairingItems) || state.pairingItems.length === 0) {
-    container.innerHTML = '<tr><td colspan="6" class="muted">Aucun code</td></tr>';
-    return;
-  }
-
-  container.innerHTML = state.pairingItems
-    .map((item) => {
-      return (
-        '<tr>' +
-        '<td><code>' +
-        escapeHtml(item.code) +
-        '</code></td>' +
-        '<td>' +
-        escapeHtml(item.guildId) +
-        '</td>' +
-        '<td>' +
-        escapeHtml(item.authorName || item.createdByDiscordUserId || '-') +
-        '</td>' +
-        '<td>' +
-        escapeHtml(toDateTime(item.expiresAt)) +
-        '</td>' +
-        '<td>' +
-        escapeHtml(item.usedAt ? toDateTime(item.usedAt) : '-') +
-        '</td>' +
-        '<td>' +
-        (item.isActive
-          ? '<button class="action-btn danger" data-action="revoke-pairing" data-code="' +
-            escapeHtml(item.code) +
-            '">Révoquer</button>'
-          : '<span class="muted">-</span>') +
-        '</td>' +
-        '</tr>'
-      );
-    })
-    .join('');
+  guilds.forEach((guild) => container.append(buildGuildCard(guild)));
 };
 
 const loadOverview = async () => {
   const payload = await api('/admin/api/overview');
-  state.overview = payload;
+  state.overview = payload && typeof payload === 'object' ? payload : {};
   renderMetrics();
   renderGuilds();
-  renderPairingGuildFilter();
-  renderIngestCreateGuildFilter();
-};
-
-const loadPairingCodes = async () => {
-  const guildId = document.getElementById('pairing-guild-filter').value;
-  const status = document.getElementById('pairing-status-filter').value;
-  const params = new URLSearchParams();
-
-  if (guildId) {
-    params.set('guildId', guildId);
-  }
-
-  if (status) {
-    params.set('status', status);
-  }
-
-  const payload = await api('/admin/api/pairing-codes?' + params.toString());
-  state.pairingItems = Array.isArray(payload.items) ? payload.items : [];
-  renderPairingRows();
-
-  const summary = document.getElementById('pairing-summary');
-  summary.className = 'status muted';
-  summary.textContent =
-    'Codes: ' +
-    String(payload.counts.total) +
-    ' (actifs: ' +
-    String(payload.counts.active) +
-    ', expirés/utilisés: ' +
-    String(payload.counts.expired) +
-    ')';
-};
-
-const loadIngestAuthors = async () => {
-  const payload = await api('/admin/api/ingest-authors');
-  state.ingestAuthors = Array.isArray(payload.items) ? payload.items : [];
-  renderIngestCreateAuthorFilter();
 };
 
 const loadRuntimeSettings = async () => {
   const payload = await api('/admin/api/runtime-settings');
   const input = document.getElementById('tiktok-cookie-input');
-  const runtimeStatus = document.getElementById('tiktok-cookie-status');
-  const tiktokCookie = typeof payload.tiktokCookie === 'string' ? payload.tiktokCookie : '';
+  const tiktokCookie = payload && typeof payload.tiktokCookie === 'string' ? payload.tiktokCookie : '';
 
-  input.value = tiktokCookie;
-  runtimeStatus.className = 'status muted';
-  runtimeStatus.textContent = tiktokCookie
-    ? 'TIKTOK_COOKIE configuré (' + String(tiktokCookie.length) + ' caractères).'
-    : 'TIKTOK_COOKIE vide.';
-};
-
-const copyTextToClipboard = async (value) => {
-  const normalized = String(value || '').trim();
-  if (!normalized) {
-    return false;
+  if (input) {
+    input.value = tiktokCookie;
   }
 
-  if (navigator.clipboard && window.isSecureContext) {
-    try {
-      await navigator.clipboard.writeText(normalized);
-      return true;
-    } catch {
-      // fallback below
-    }
-  }
-
-  const tokenInput = document.getElementById('ingest-create-token');
-  tokenInput.focus();
-  tokenInput.select();
-  tokenInput.setSelectionRange(0, tokenInput.value.length);
-  const copied = document.execCommand('copy');
-  window.getSelection()?.removeAllRanges();
-  return copied;
-};
-
-const submitGuildSettings = async (form) => {
-  const guildId = form.getAttribute('data-guild-id');
-  if (!guildId) {
-    return;
-  }
-
-  const data = new FormData(form);
-  const toOptionalNumber = (value) => {
-    const normalized = String(value || '').trim();
-    if (!normalized) {
-      return null;
-    }
-
-    const parsed = Number(normalized);
-    return Number.isFinite(parsed) ? parsed : null;
-  };
-  const toOptionalBool = (value) => {
-    const normalized = String(value || '').trim().toLowerCase();
-    if (normalized === 'true') {
-      return true;
-    }
-
-    if (normalized === 'false') {
-      return false;
-    }
-
-    return null;
-  };
-
-  const defaultMediaTimeRaw = String(data.get('defaultMediaTime') || '').trim();
-  const maxMediaTimeRaw = String(data.get('maxMediaTime') || '').trim();
-  const defaultEffective = toOptionalNumber(form.getAttribute('data-default-effective'));
-  const maxEffective = toOptionalNumber(form.getAttribute('data-max-effective'));
-  const currentDefaultOverride = toOptionalNumber(form.getAttribute('data-default-override'));
-  const currentMaxOverride = toOptionalNumber(form.getAttribute('data-max-override'));
-  const displayEffective = toOptionalBool(form.getAttribute('data-display-effective')) === true;
-  const currentDisplayOverride = toOptionalBool(form.getAttribute('data-display-override'));
-  const selectedDisplayValue = data.get('displayMediaFull') === 'on';
-
-  let nextDefaultOverride = defaultMediaTimeRaw ? Number(defaultMediaTimeRaw) : null;
-  let nextMaxOverride = maxMediaTimeRaw ? Number(maxMediaTimeRaw) : null;
-
-  if (
-    currentDefaultOverride === null &&
-    nextDefaultOverride !== null &&
-    defaultEffective !== null &&
-    nextDefaultOverride === defaultEffective
-  ) {
-    nextDefaultOverride = null;
-  }
-
-  if (currentMaxOverride === null && nextMaxOverride !== null && maxEffective !== null && nextMaxOverride === maxEffective) {
-    nextMaxOverride = null;
-  }
-
-  let nextDisplayOverride = selectedDisplayValue;
-  if (currentDisplayOverride === null && selectedDisplayValue === displayEffective) {
-    nextDisplayOverride = null;
-  }
-
-  const payload = {};
-
-  if (nextDefaultOverride !== currentDefaultOverride) {
-    payload.defaultMediaTime = nextDefaultOverride;
-  }
-
-  if (nextMaxOverride !== currentMaxOverride) {
-    payload.maxMediaTime = nextMaxOverride;
-  }
-
-  if (nextDisplayOverride !== null && nextDisplayOverride !== currentDisplayOverride) {
-    payload.displayMediaFull = nextDisplayOverride;
-  }
-
-  if (Object.keys(payload).length === 0) {
-    setStatus('Aucun changement de réglages.', 'muted');
-    return;
-  }
-
-  await api('/admin/api/guilds/' + encodeURIComponent(guildId) + '/settings', {
-    method: 'PATCH',
-    body: payload,
-  });
-
-  setStatus('Réglages guild sauvegardés.', 'ok');
-  await loadOverview();
-};
-
-
-const handleActionClick = async (button) => {
-  const action = button.getAttribute('data-action');
-
-  if (!action) {
-    return;
-  }
-
-  if (action === 'stop-guild') {
-    const guildId = button.getAttribute('data-guild-id');
-    if (!guildId) {
-      return;
-    }
-
-    await api('/admin/api/guilds/' + encodeURIComponent(guildId) + '/stop', {
-      method: 'POST',
-    });
-
-    setStatus('Stop playback envoyé pour la guild ' + guildId + '.', 'warn');
-    await loadOverview();
-    return;
-  }
-
-  if (action === 'revoke-overlay') {
-    const clientId = button.getAttribute('data-client-id');
-    if (!clientId) {
-      return;
-    }
-
-    await api('/admin/api/overlay-clients/' + encodeURIComponent(clientId) + '/revoke', {
-      method: 'POST',
-    });
-
-    setStatus('Overlay client révoqué: ' + clientId, 'warn');
-    await loadOverview();
-    return;
-  }
-
-  if (action === 'revoke-ingest') {
-    const clientId = button.getAttribute('data-client-id');
-    if (!clientId) {
-      return;
-    }
-
-    await api('/admin/api/ingest-clients/' + encodeURIComponent(clientId) + '/revoke', {
-      method: 'POST',
-    });
-
-    setStatus('Ingest client révoqué: ' + clientId, 'warn');
-    await loadOverview();
-    return;
-  }
-
-  if (action === 'revoke-pairing') {
-    const code = button.getAttribute('data-code');
-    if (!code) {
-      return;
-    }
-
-    await api('/admin/api/pairing-codes/' + encodeURIComponent(code) + '/revoke', {
-      method: 'POST',
-    });
-
-    setStatus('Pairing code révoqué: ' + code, 'warn');
-    await loadPairingCodes();
-    return;
-  }
-
-  if (action === 'pairing-select') {
-    const guildId = button.getAttribute('data-guild-id') || '';
-    const guildSelect = document.getElementById('pairing-guild-filter');
-    guildSelect.value = guildId;
-    await loadPairingCodes();
-    setStatus('Filtre pairing positionné sur la guild ' + guildId + '.', 'ok');
-    return;
-  }
-
-  if (action === 'purge-guild') {
-    const guildId = button.getAttribute('data-guild-id');
-    if (!guildId) {
-      return;
-    }
-
-    const typedGuildId = window.prompt(
-      'Action irréversible. Tapez l\'ID exact de la guild pour confirmer la purge complète.',
-      '',
-    );
-    if (typedGuildId !== guildId) {
-      setStatus('Purge annulée (confirmation invalide).', 'warn');
-      return;
-    }
-
-    const result = await api('/admin/api/guilds/' + encodeURIComponent(guildId) + '/purge', {
-      method: 'POST',
-      body: {
-        confirmGuildId: typedGuildId,
-        removeOrphanMedia: true,
-      },
-    });
-
-    const deleted = result && typeof result === 'object' ? result.deleted || {} : {};
-    const summary =
-      'Guild purgée ' +
-      guildId +
-      ' | overlays=' +
-      String(deleted.overlayClients || 0) +
-      ', ingest=' +
-      String(deleted.ingestClients || 0) +
-      ', pairing=' +
-      String(deleted.pairingCodes || 0) +
-      ', jobs=' +
-      String(deleted.playbackJobs || 0) +
-      ', board=' +
-      String(deleted.memeBoardItems || 0) +
-      ', assets=' +
-      String(deleted.orphanMediaAssets || 0);
-    setStatus(summary, 'warn');
-    await refreshAll();
-    return;
-  }
+  setInlineStatus(
+    'tiktok-cookie-status',
+    tiktokCookie
+      ? 'Cookie TikTok configuré (' + formatNumber(tiktokCookie.length) + ' caractères).'
+      : 'Cookie TikTok vide.',
+    'muted',
+  );
 };
 
 const refreshAll = async () => {
-  try {
-    setStatus('Chargement des données admin...', 'muted');
-    await loadOverview();
-    await loadIngestAuthors();
-    await loadPairingCodes();
-    await loadRuntimeSettings();
-    setStatus('Données à jour. Dernière synchro: ' + new Date().toLocaleTimeString('fr-FR'), 'ok');
-  } catch (error) {
-    const code = error instanceof Error ? error.message : 'request_failed';
-    if (code === 'token_missing') {
-      setStatus('Token manquant. Renseignez ADMIN_UI_TOKEN.', 'warn');
-    } else {
-      setStatus('Erreur admin: ' + code, 'error');
-    }
+  if (!state.token) {
+    setStatus('Renseignez le jeton admin puis cliquez sur « Enregistrer le jeton ».', 'warn');
+    return;
   }
+
+  setStatus('Chargement des données…', 'muted');
+
+  try {
+    await loadOverview();
+  } catch (error) {
+    setStatus('Impossible de charger la vue d’ensemble : ' + errorLabel(error), 'error');
+    return;
+  }
+
+  let cookieError = null;
+
+  try {
+    await loadRuntimeSettings();
+  } catch (error) {
+    cookieError = error;
+  }
+
+  if (cookieError) {
+    setStatus(
+      'Vue d’ensemble à jour, mais le cookie TikTok n’a pas pu être chargé : ' + errorLabel(cookieError),
+      'error',
+    );
+    return;
+  }
+
+  setStatus(
+    'Données à jour. Dernière synchronisation : ' + new Date().toLocaleTimeString('fr-FR') + '.',
+    'ok',
+  );
 };
 
 const autoRefreshOverview = async () => {
-  if (isOverviewAutoRefreshRunning) {
+  if (!state.token || overviewAutoRefreshRunning) {
     return;
   }
 
-  if (shouldPauseAutoRefresh()) {
-    return;
-  }
+  overviewAutoRefreshRunning = true;
 
-  isOverviewAutoRefreshRunning = true;
   try {
     await loadOverview();
   } catch (error) {
-    const code = error instanceof Error ? error.message : 'request_failed';
-    if (code !== 'token_missing') {
-      setStatus('Erreur refresh overview: ' + code, 'error');
+    if (!(error instanceof Error) || error.message !== 'token_missing') {
+      setStatus('Rafraîchissement automatique impossible : ' + errorLabel(error), 'error');
     }
   } finally {
-    isOverviewAutoRefreshRunning = false;
+    overviewAutoRefreshRunning = false;
   }
 };
 
-const autoRefreshPairingCodes = async () => {
-  if (isPairingAutoRefreshRunning) {
+const showAdminCode = (details) => {
+  const code = String(details.code || '').trim();
+
+  if (!code) {
+    return false;
+  }
+
+  state.adminCode = code;
+
+  const section = document.getElementById('admin-code-section');
+  const context = document.getElementById('admin-code-context');
+  const codeElement = document.getElementById('admin-code-value');
+  const expiryElement = document.getElementById('admin-code-expiry');
+
+  if (!section || !context || !codeElement || !expiryElement) {
+    return false;
+  }
+
+  const guildName = String(details.guildName || '').trim() || 'guilde inconnue';
+  const guildId = String(details.guildId || '').trim() || '-';
+  const prefix =
+    details.origin === 'create' ? 'Guilde créée : ' : 'Nouveau code admin pour la guilde ';
+
+  context.textContent = prefix + '« ' + guildName + ' » (' + guildId + ').';
+  codeElement.textContent = formatAdminCode(code);
+
+  const expiration = formatDateTime(details.expiresAt);
+  expiryElement.textContent = expiration
+    ? 'Expire le ' + expiration + '.'
+    : 'Aucune date d’expiration fournie.';
+
+  setInlineStatus('copy-code-status', '', 'muted');
+  section.hidden = false;
+  section.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  return true;
+};
+
+const createGuild = async (event) => {
+  event.preventDefault();
+
+  const input = document.getElementById('guild-name');
+  const submit = document.getElementById('create-guild-submit');
+
+  if (!(input instanceof HTMLInputElement) || !(submit instanceof HTMLButtonElement)) {
     return;
   }
 
-  if (shouldPauseAutoRefresh()) {
+  const name = String(input.value || '').trim();
+
+  if (!name) {
+    setInlineStatus('create-guild-status', 'Le nom de la guilde est obligatoire.', 'warn');
+    input.focus();
     return;
   }
 
-  isPairingAutoRefreshRunning = true;
+  if (name.length > GUILD_NAME_MAX_LENGTH) {
+    setInlineStatus(
+      'create-guild-status',
+      'Le nom de la guilde ne peut pas dépasser 60 caractères.',
+      'warn',
+    );
+    input.focus();
+    return;
+  }
+
+  submit.disabled = true;
+  setInlineStatus('create-guild-status', 'Création de la guilde…', 'muted');
+
   try {
-    await loadPairingCodes();
-  } catch (error) {
-    const code = error instanceof Error ? error.message : 'request_failed';
-    if (code !== 'token_missing') {
-      setStatus('Erreur refresh pairing: ' + code, 'error');
+    const payload = await api('/admin/api/guilds', {
+      method: 'POST',
+      body: { name },
+    });
+    const guild = payload && payload.guild && typeof payload.guild === 'object' ? payload.guild : {};
+    const invite =
+      payload && payload.adminInvite && typeof payload.adminInvite === 'object'
+        ? payload.adminInvite
+        : {};
+    const guildId = typeof guild.id === 'string' ? guild.id : '';
+    const guildName =
+      typeof guild.name === 'string' && guild.name.trim() ? guild.name.trim() : name;
+    const displayed = showAdminCode({
+      code: invite.code,
+      expiresAt: invite.expiresAt,
+      guildName,
+      guildId,
+      origin: 'create',
+    });
+
+    input.value = '';
+
+    if (displayed) {
+      setInlineStatus(
+        'create-guild-status',
+        'Guilde créée. Le code admin est affiché ci-dessous.',
+        'ok',
+      );
+    } else {
+      setInlineStatus(
+        'create-guild-status',
+        'Guilde créée, mais le code admin n’a pas été reçu.',
+        'error',
+      );
     }
+
+    try {
+      await loadOverview();
+    } catch (error) {
+      setStatus(
+        'Guilde créée, mais l’actualisation de la vue d’ensemble a échoué : ' + errorLabel(error),
+        'error',
+      );
+    }
+  } catch (error) {
+    setInlineStatus('create-guild-status', 'Création impossible : ' + errorLabel(error), 'error');
   } finally {
-    isPairingAutoRefreshRunning = false;
+    submit.disabled = false;
   }
 };
 
-document.addEventListener(
-  'error',
-  (event) => {
-    const target = event.target;
+const issueAdminCode = async (button, guildId) => {
+  const guild = findGuild(guildId);
+  const guildName = guild && typeof guild.name === 'string' ? guild.name : guildId;
 
-    if (target instanceof HTMLImageElement && target.classList.contains('overlay-avatar')) {
-      target.setAttribute('hidden', '');
+  button.disabled = true;
+  setStatus('Émission du code admin…', 'muted');
+
+  try {
+    const payload = await api(
+      '/admin/api/guilds/' + encodeURIComponent(guildId) + '/admin-code',
+      { method: 'POST' },
+    );
+    const invite =
+      payload && payload.adminInvite && typeof payload.adminInvite === 'object'
+        ? payload.adminInvite
+        : {};
+    const responseGuildId =
+      payload && typeof payload.guildId === 'string' ? payload.guildId : guildId;
+    const displayed = showAdminCode({
+      code: invite.code,
+      expiresAt: invite.expiresAt,
+      guildName,
+      guildId: responseGuildId,
+      origin: 'admin-code',
+    });
+
+    if (!displayed) {
+      throw new Error('invalid_response');
     }
-  },
-  true,
-);
 
-document.addEventListener(
-  'focusin',
-  (event) => {
-    if (isEditableControl(event.target)) {
-      blockAutoRefresh(4000);
+    setStatus('Nouveau code admin émis pour la guilde « ' + guildName + ' ».', 'ok');
+  } catch (error) {
+    setStatus('Impossible d’émettre un code admin : ' + errorLabel(error), 'error');
+  } finally {
+    button.disabled = false;
+  }
+};
+
+const stopPlayback = async (button, guildId) => {
+  const guild = findGuild(guildId);
+  const guildName = guild && typeof guild.name === 'string' ? guild.name : guildId;
+
+  button.disabled = true;
+
+  try {
+    const payload = await api(
+      '/admin/api/guilds/' + encodeURIComponent(guildId) + '/stop',
+      { method: 'POST' },
+    );
+    const released = Number(payload && payload.releasedCount);
+
+    setStatus(
+      'Stop playback envoyé pour « ' +
+        guildName +
+        ' ». Lectures libérées : ' +
+        formatNumber(Number.isFinite(released) ? released : 0) +
+        '.',
+      'ok',
+    );
+
+    await loadOverview();
+  } catch (error) {
+    setStatus('Impossible d’arrêter la lecture : ' + errorLabel(error), 'error');
+  } finally {
+    button.disabled = false;
+  }
+};
+
+const purgeGuild = async (button, guildId) => {
+  const typed = window.prompt(
+    'Action irréversible. Retapez l’identifiant de la guilde pour confirmer la purge complète :',
+    '',
+  );
+
+  if (typed === null) {
+    setStatus('Purge annulée.', 'muted');
+    return;
+  }
+
+  if (typed.trim() !== guildId) {
+    setStatus('Purge annulée : l’identifiant saisi ne correspond pas.', 'warn');
+    return;
+  }
+
+  const guild = findGuild(guildId);
+  const guildName = guild && typeof guild.name === 'string' ? guild.name : guildId;
+
+  button.disabled = true;
+  setStatus('Purge de la guilde en cours…', 'muted');
+
+  try {
+    const payload = await api(
+      '/admin/api/guilds/' + encodeURIComponent(guildId) + '/purge',
+      {
+        method: 'POST',
+        body: { confirmGuildId: guildId },
+      },
+    );
+    const deleted =
+      payload && payload.deleted && typeof payload.deleted === 'object' ? payload.deleted : {};
+    const count = (value) => {
+      const numeric = Number(value);
+      return formatNumber(Number.isFinite(numeric) ? numeric : 0);
+    };
+
+    setStatus(
+      'Guilde « ' +
+        guildName +
+        ' » purgée. Overlays : ' +
+        count(deleted.overlayClients) +
+        ' · lectures : ' +
+        count(deleted.playbackJobs) +
+        ' · board : ' +
+        count(deleted.memeBoardItems) +
+        ' · médias : ' +
+        count(deleted.orphanMediaAssets) +
+        '.',
+      'ok',
+    );
+
+    await loadOverview();
+  } catch (error) {
+    setStatus('Purge impossible : ' + errorLabel(error), 'error');
+  } finally {
+    button.disabled = false;
+  }
+};
+
+const handleActionClick = async (button) => {
+  if (button.disabled) {
+    return;
+  }
+
+  const action = button.dataset.action;
+  const guildId = button.dataset.guildId || '';
+
+  if (!action || !guildId) {
+    return;
+  }
+
+  if (action === 'admin-code') {
+    await issueAdminCode(button, guildId);
+    return;
+  }
+
+  if (action === 'stop') {
+    await stopPlayback(button, guildId);
+    return;
+  }
+
+  if (action === 'purge') {
+    await purgeGuild(button, guildId);
+  }
+};
+
+const fallbackCopyText = (text) => {
+  const helper = document.createElement('textarea');
+  helper.value = text;
+  helper.setAttribute('readonly', '');
+  helper.className = 'copy-helper';
+  document.body.append(helper);
+
+  let copied = false;
+
+  try {
+    helper.select();
+    helper.setSelectionRange(0, helper.value.length);
+    copied = document.execCommand('copy');
+  } catch {
+    copied = false;
+  } finally {
+    helper.remove();
+  }
+
+  return copied;
+};
+
+const copyText = async (text) => {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Repli ci-dessous.
     }
-  },
-  true,
-);
+  }
 
-document.addEventListener(
-  'input',
-  (event) => {
-    if (isEditableControl(event.target)) {
-      blockAutoRefresh(4000);
-    }
-  },
-  true,
-);
+  return fallbackCopyText(text);
+};
 
-document.addEventListener(
-  'change',
-  (event) => {
-    if (isEditableControl(event.target)) {
-      blockAutoRefresh(4000);
-    }
-  },
-  true,
-);
+const copyCurrentAdminCode = async () => {
+  if (!state.adminCode) {
+    return;
+  }
 
-document.addEventListener(
-  'focusout',
-  (event) => {
-    if (isEditableControl(event.target)) {
-      blockAutoRefresh(1500);
-    }
-  },
-  true,
-);
+  const copied = await copyText(formatAdminCode(state.adminCode));
+  setInlineStatus(
+    'copy-code-status',
+    copied ? 'Code copié dans le presse-papiers.' : '',
+    copied ? 'ok' : 'muted',
+  );
+};
 
-document.getElementById('save-token').addEventListener('click', async () => {
-  const tokenInput = document.getElementById('token-input');
-  const token = String(tokenInput.value || '').trim();
+const saveToken = async () => {
+  const input = document.getElementById('token-input');
+  const token = input instanceof HTMLInputElement ? String(input.value || '').trim() : '';
 
   state.token = token;
   writeToken(token);
 
   if (!token) {
-    setStatus('Token vidé.', 'warn');
+    setStatus('Jeton admin effacé.', 'warn');
     return;
   }
 
+  setStatus('Jeton admin enregistré. Chargement des données…', 'muted');
   await refreshAll();
-});
+};
 
-document.getElementById('refresh-overview').addEventListener('click', async () => {
-  await refreshAll();
-});
-
-document.getElementById('save-tiktok-cookie').addEventListener('click', async () => {
-  try {
-    const input = document.getElementById('tiktok-cookie-input');
-    const tiktokCookie = String(input.value || '');
-
-    await api('/admin/api/runtime-settings', {
-      method: 'PATCH',
-      body: {
-        tiktokCookie,
-      },
-    });
-
-    await loadRuntimeSettings();
-    setStatus('TIKTOK_COOKIE mis à jour.', 'ok');
-  } catch (error) {
-    setStatus('Erreur TIKTOK_COOKIE: ' + (error instanceof Error ? error.message : 'request_failed'), 'error');
-  }
-});
-
-document.getElementById('clear-tiktok-cookie').addEventListener('click', async () => {
-  try {
-    await api('/admin/api/runtime-settings', {
-      method: 'PATCH',
-      body: {
-        tiktokCookie: '',
-      },
-    });
-
-    await loadRuntimeSettings();
-    setStatus('TIKTOK_COOKIE vidé.', 'warn');
-  } catch (error) {
-    setStatus('Erreur TIKTOK_COOKIE: ' + (error instanceof Error ? error.message : 'request_failed'), 'error');
-  }
-});
-
-document.getElementById('ingest-create-submit').addEventListener('click', async () => {
-  try {
-    const guildSelect = document.getElementById('ingest-create-guild');
-    const authorSelect = document.getElementById('ingest-create-author');
-    const labelInput = document.getElementById('ingest-create-label');
-    const guildId = String(guildSelect.value || '').trim();
-    const authorDiscordUserId = String(authorSelect.value || '').trim();
-    const label = String(labelInput.value || '').trim();
-
-    if (!guildId || !authorDiscordUserId) {
-      setStatus('Sélectionnez une guild et un auteur.', 'warn');
-      return;
-    }
-
-    if (!label) {
-      setStatus('Le label ingest est obligatoire.', 'warn');
-      return;
-    }
-
-    const payload = {
-      guildId,
-      authorDiscordUserId,
-      label,
-    };
-
-    const created = await api('/admin/api/ingest-clients', {
-      method: 'POST',
-      body: payload,
-    });
-
-    const tokenInput = document.getElementById('ingest-create-token');
-    tokenInput.value = typeof created.ingestApiToken === 'string' ? created.ingestApiToken : '';
-
-    const ingestStatus = document.getElementById('ingest-create-status');
-    ingestStatus.className = 'status ok';
-    ingestStatus.textContent =
-      'Client ingest créé: ' +
-      String(created?.client?.label || '-') +
-      ' (' +
-      String(created?.client?.id || '-') +
-      ')';
-
-    await loadOverview();
-    await loadIngestAuthors();
-    setStatus('Client ingest créé et token généré.', 'ok');
-  } catch (error) {
-    setStatus('Erreur création ingest client: ' + (error instanceof Error ? error.message : 'request_failed'), 'error');
-  }
-});
-
-document.getElementById('ingest-create-copy-token').addEventListener('click', async () => {
-  try {
-    const tokenInput = document.getElementById('ingest-create-token');
-    const value = String(tokenInput.value || '').trim();
-
-    if (!value) {
-      setStatus('Aucun token à copier.', 'warn');
-      return;
-    }
-
-    const copied = await copyTextToClipboard(value);
-    if (!copied) {
-      setStatus('Impossible de copier le token ingest.', 'error');
-      return;
-    }
-
-    setStatus('Token ingest copié dans le presse-papiers.', 'ok');
-  } catch (error) {
-    setStatus('Impossible de copier le token ingest.', 'error');
-  }
-});
-
-document.getElementById('pairing-load').addEventListener('click', async () => {
-  try {
-    await loadPairingCodes();
-  } catch (error) {
-    setStatus('Erreur pairing codes: ' + (error instanceof Error ? error.message : 'request_failed'), 'error');
-  }
-});
-
-document.getElementById('pairing-purge').addEventListener('click', async () => {
-  try {
-    const guildId = document.getElementById('pairing-guild-filter').value;
-    const params = new URLSearchParams();
-    if (guildId) {
-      params.set('guildId', guildId);
-    }
-
-    await api('/admin/api/pairing-codes/expired?' + params.toString(), {
-      method: 'DELETE',
-    });
-
-    setStatus('Pairing codes expirés purgés.', 'warn');
-    await loadPairingCodes();
-    await loadOverview();
-  } catch (error) {
-    setStatus('Erreur purge pairing codes: ' + (error instanceof Error ? error.message : 'request_failed'), 'error');
-  }
-});
-
-document.addEventListener('submit', async (event) => {
-  const form = event.target;
-
-  if (!(form instanceof HTMLFormElement)) {
-    return;
-  }
-
-  const action = form.getAttribute('data-action');
-  if (action === 'save-settings') {
-    event.preventDefault();
-
-    try {
-      await submitGuildSettings(form);
-    } catch (error) {
-      setStatus('Erreur sauvegarde settings: ' + (error instanceof Error ? error.message : 'request_failed'), 'error');
-    }
-    return;
-  }
-
-});
-
-document.addEventListener('click', async (event) => {
-  const target = event.target;
-
-  if (!(target instanceof HTMLElement)) {
-    return;
-  }
-
-  const button = target.closest('button[data-action]');
-
-  if (!(button instanceof HTMLButtonElement)) {
-    return;
-  }
-
+const saveTikTokCookie = async (event) => {
   event.preventDefault();
 
-  try {
-    await handleActionClick(button);
-  } catch (error) {
-    setStatus('Erreur action admin: ' + (error instanceof Error ? error.message : 'request_failed'), 'error');
-  }
-});
+  const input = document.getElementById('tiktok-cookie-input');
+  const tiktokCookie = input instanceof HTMLInputElement ? String(input.value || '') : '';
 
-const boot = async () => {
+  try {
+    await api('/admin/api/runtime-settings', {
+      method: 'PATCH',
+      body: { tiktokCookie },
+    });
+    await loadRuntimeSettings();
+    setInlineStatus(
+      'tiktok-cookie-status',
+      tiktokCookie ? 'Cookie TikTok enregistré.' : 'Cookie TikTok vidé.',
+      'ok',
+    );
+    setStatus('Cookie TikTok mis à jour.', 'ok');
+  } catch (error) {
+    setInlineStatus(
+      'tiktok-cookie-status',
+      'Mise à jour impossible : ' + errorLabel(error),
+      'error',
+    );
+  }
+};
+
+const clearTikTokCookie = async () => {
+  try {
+    await api('/admin/api/runtime-settings', {
+      method: 'PATCH',
+      body: { tiktokCookie: '' },
+    });
+    await loadRuntimeSettings();
+    setStatus('Cookie TikTok vidé.', 'ok');
+  } catch (error) {
+    setInlineStatus(
+      'tiktok-cookie-status',
+      'Suppression impossible : ' + errorLabel(error),
+      'error',
+    );
+  }
+};
+
+const boot = () => {
   const token = readToken();
   state.token = token;
 
   const tokenInput = document.getElementById('token-input');
-  tokenInput.value = token;
+  if (tokenInput instanceof HTMLInputElement) {
+    tokenInput.value = token;
+  }
+
+  document.getElementById('save-token')?.addEventListener('click', () => {
+    void saveToken();
+  });
+
+  document.getElementById('refresh-overview')?.addEventListener('click', () => {
+    void refreshAll();
+  });
+
+  document.getElementById('create-guild-form')?.addEventListener('submit', (event) => {
+    void createGuild(event);
+  });
+
+  document.getElementById('tiktok-cookie-form')?.addEventListener('submit', (event) => {
+    void saveTikTokCookie(event);
+  });
+
+  document.getElementById('clear-tiktok-cookie')?.addEventListener('click', () => {
+    void clearTikTokCookie();
+  });
+
+  document.getElementById('copy-admin-code')?.addEventListener('click', () => {
+    void copyCurrentAdminCode();
+  });
+
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+
+    if (!(target instanceof Element)) {
+      return;
+    }
+
+    const button = target.closest('button[data-action]');
+
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+
+    event.preventDefault();
+    void handleActionClick(button);
+  });
+
+  window.setInterval(() => {
+    void autoRefreshOverview();
+  }, OVERVIEW_AUTO_REFRESH_MS);
 
   if (!token) {
-    setStatus('Saisissez ADMIN_UI_TOKEN puis cliquez "Enregistrer token".', 'warn');
+    setStatus('Saisissez le jeton admin puis cliquez sur « Enregistrer le jeton ».', 'warn');
+    renderMetrics();
+    renderGuilds();
     return;
   }
 
-  await refreshAll();
-  setInterval(autoRefreshOverview, OVERVIEW_AUTO_REFRESH_MS);
-  setInterval(autoRefreshPairingCodes, PAIRING_AUTO_REFRESH_MS);
+  void refreshAll();
 };
 
 boot();

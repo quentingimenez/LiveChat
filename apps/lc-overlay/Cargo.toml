@@ -44,8 +44,11 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 lc-protocol = { workspace = true }
 lc-domain = { workspace = true }
+
 # Blob Win32 isolé (styles étendus + topmost) : même version que Tauri 2.12.5,
-# pour partager le type `HWND` sans conversion.
+# pour partager le type `HWND` sans conversion. Windows uniquement : la CI Linux
+# compile le workspace et `windows-future` ne compile pas hors Windows.
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",

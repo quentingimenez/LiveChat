@@ -1,0 +1,166 @@
+name: overlay-tauri
+
+# Installeur Windows de l'overlay Tauri (`apps/lc-overlay`).
+#
+# - push / PR touchant l'overlay : build release + installeur NSIS, smoke test
+#   d'installation silencieuse, installeur publié en artefact du run ;
+# - tag `overlay-v*` : même chose, puis brouillon de release GitHub avec
+#   l'installeur et son SHA-256 (publication à valider à la main).
+#
+# Pas d'artefacts updater : l'auto-update est désactivé pour 3.0.0 (clé minisign
+# placeholder, voir docs/rust/overlay-release.md §6). Actions épinglées par SHA
+# (audit A7-003).
+on:
+  push:
+    branches: [feat/rust-rebuild, main]
+    tags:
+      - "overlay-v*"
+    paths:
+      - "apps/lc-overlay/**"
+      - "crates/lc-protocol/**"
+      - "crates/lc-domain/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/overlay-tauri.yml"
+  pull_request:
+    paths:
+      - "apps/lc-overlay/**"
+      - "crates/lc-protocol/**"
+      - "crates/lc-domain/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/overlay-tauri.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: overlay-tauri-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  TAURI_CLI_VERSION: "2.12.4"
+
+jobs:
+  installer:
+    name: installeur NSIS (windows)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    outputs:
+      installer-name: ${{ steps.collect.outputs.installer-name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: overlay-tauri
+
+      - name: Install tauri-cli
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: tauri-cli@${{ env.TAURI_CLI_VERSION }}
+
+      - name: Check tag matches app version
+        if: startsWith(github.ref, 'refs/tags/overlay-v')
+        shell: pwsh
+        run: |
+          $config = Get-Content apps/lc-overlay/tauri.conf.json -Raw | ConvertFrom-Json
+          $tag = "${{ github.ref_name }}".Substring("overlay-v".Length)
+          if ($tag -ne $config.version) {
+            Write-Error "tag overlay-v$tag ≠ version tauri.conf.json $($config.version)"
+            exit 1
+          }
+
+      - name: Build installer
+        working-directory: apps/lc-overlay
+        run: cargo tauri build --ci
+
+      - name: Collect installer
+        id: collect
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if (-not $installer) { Write-Error "aucun installeur NSIS produit"; exit 1 }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item $installer.FullName dist/
+          $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash
+          "$hash  $($installer.Name)" | Out-File -Encoding ascii "dist/$($installer.Name).sha256"
+          $info = $installer.VersionInfo
+          Write-Host "installeur : $($installer.Name) ($($installer.Length) o) $($info.ProductName) $($info.ProductVersion)"
+          Write-Host "sha256 : $hash"
+          if ($installer.Length -gt 20MB) { Write-Error "installeur > 20 Mo (budget Phase 0)"; exit 1 }
+          "installer-name=$($installer.Name)" >> $env:GITHUB_OUTPUT
+
+      - name: Smoke test (silent install, launch, uninstall)
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem dist/*-setup.exe | Select-Object -First 1
+          $process = Start-Process $installer.FullName -ArgumentList "/S" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { Write-Error "installation silencieuse : code $($process.ExitCode)"; exit 1 }
+          $config = Get-Content apps/lc-overlay/tauri.conf.json -Raw | ConvertFrom-Json
+          $dir = Join-Path $env:LOCALAPPDATA $config.productName
+          if (-not (Test-Path $dir)) { Write-Error "dossier d'installation absent : $dir"; exit 1 }
+          Get-ChildItem $dir | Format-Table Name, Length
+          $app = Get-ChildItem $dir -Filter *.exe | Where-Object { $_.Name -notlike "uninstall*" } | Select-Object -First 1
+          if (-not $app) { Write-Error "exécutable absent après installation"; exit 1 }
+          # Config isolée : le smoke test ne lit ni n'écrit %APPDATA%\LiveChat.
+          $env:LIVECHAT_CONFIG_PATH = Join-Path $env:RUNNER_TEMP "livechat-smoke\config.json"
+          $running = Start-Process $app.FullName -PassThru
+          Start-Sleep -Seconds 8
+          if ($running.HasExited) { Write-Error "l'application s'est arrêtée au démarrage (code $($running.ExitCode))"; exit 1 }
+          Write-Host "application vivante après 8 s (pid $($running.Id))"
+          Stop-Process -Id $running.Id -Force
+          $uninstaller = Get-ChildItem $dir -Filter "uninstall*.exe" | Select-Object -First 1
+          if (-not $uninstaller) { Write-Error "désinstalleur absent"; exit 1 }
+          $removal = Start-Process $uninstaller.FullName -ArgumentList "/S" -Wait -PassThru
+          if ($removal.ExitCode -ne 0) { Write-Error "désinstallation silencieuse : code $($removal.ExitCode)"; exit 1 }
+          Write-Host "installation, lancement et désinstallation OK"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: livechat-overlay-windows
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: brouillon de release
+    needs: installer
+    if: startsWith(github.ref, 'refs/tags/overlay-v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download installer
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: livechat-overlay-windows
+          path: dist
+
+      - name: Draft GitHub release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          draft: true
+          name: LiveChat overlay ${{ github.ref_name }}
+          files: dist/*
+          body: |
+            Installeur Windows de l'overlay LiveChat (Tauri).
+
+            - Installation par utilisateur dans `%LOCALAPPDATA%\LiveChat`, sans droits admin.
+            - Vérifier le SHA-256 avec le fichier `.sha256` joint.
+            - Pas de mise à jour automatique pour cette version : installer la nouvelle version par-dessus.

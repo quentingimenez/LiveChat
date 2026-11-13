@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use lc_domain::GuildId;
+use lc_protocol::ServerMessage;
 use uuid::Uuid;
 
 use crate::app::AppState;
@@ -51,6 +52,22 @@ pub trait AdminHub: Send + Sync {
 
     /// Closes every socket of `client_id` with an explicit close reason.
     fn close_client_with_reason(&self, client_id: &Uuid, code: u16, reason: &str) -> bool;
+
+    /// Sends one protocol message to every socket of an overlay client.
+    ///
+    /// Returns `true` when at least one socket accepted the frame; a client
+    /// without connected socket is not an error (the result is then available
+    /// through `GET /overlay/media-board/ingestions`).
+    fn send_to_client(&self, _client_id: &Uuid, _message: ServerMessage) -> bool {
+        false
+    }
+
+    /// Broadcasts one protocol message to every socket of a guild.
+    ///
+    /// Returns the number of sockets the message was delivered to.
+    fn broadcast_to_guild(&self, _guild_id: &GuildId, _message: ServerMessage) -> usize {
+        0
+    }
 
     /// Diffuse un arrêt manuel à la guilde ; retourne le nombre de sockets
     /// touchées (0 si le hub n'expose pas cette information).

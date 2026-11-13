@@ -129,8 +129,8 @@ d'erreur pour un `id` inconnu. Le champ `id` est **validé** avant tout traiteme
 | `media.trigger` | `{itemId, trigger: shortcut\|ui}` | en lecture seule : ack `read_only` ; item inconnu ⇒ ack `item_not_found` ; média absent/non `READY`/expiré ⇒ ack `media_not_ready` ; ack `ok` puis job priorité 100 (`MEDIA_BOARD_JOB_PRIORITY`) et `engine.enqueue` (préemption `stop {reason:"preempt"}` + `play`) |
 | `peers.request` | `{}` | throttle 2 s (excédent ignoré **sans** ack) ; ack `ok` puis broadcast `peers` |
 
-Le type legacy `meme.trigger` reste désérialisé en `ClientMessage::MediaTrigger`
-pour l'overlay 3.0.0 (alias serde) ; les nouveaux clients envoient
+Le type legacy `meme.trigger` n'est **plus accepté** : la désérialisation échoue
+comme pour tout type inconnu (close `1002`). Les clients envoient uniquement
 `media.trigger`.
 
 Codes d'ack (`error.code`) : `read_only`, `item_not_found`, `media_not_ready`, `invalid_payload`,
@@ -154,9 +154,11 @@ Règles de complétude :
 | `stop` | `{reason: manual\|preempt\|revoked\|purge, jobId: string\|null}` | broadcast room (moteur / admin) |
 | `ack` | `{ref, ok, error?: {code, message}}` | unicast en réponse aux requêtes le demandant |
 | `error` | `{code, message, jobId?}` | erreur **non fatale** émise effectivement (rév. 4) : `dispatch_failed` (aucun socket de la room n'a pu recevoir un `play` média) et `internal_error` (échec moteur après `ack` de `stop.request`/`media.trigger`) |
+| `media.ingestion` | `{ingestionId, ok, created?, itemId?, error?: {code, message?}}` | **unicast à toutes les sockets d'un client overlay** : fin d'une ingestion asynchrone du board demandée par ce client (`202 {ingestionId}`) |
+| `board.changed` | `{change: added\|updated\|deleted, itemId}` | **broadcast room** : ajout/modification/suppression d'un item du board (overlay, `/ingest` `saveToBoard`, Discord `/media-add`, panneau admin) |
 
 Les `id` serveur sont de la forme `srv-<préfixe>-NNNNNN` (`welcome`, `settings`, `peers`, `play`,
-`stop`, `ack`, `error`), `ts` en millisecondes Unix, `v = 2`.
+`stop`, `ack`, `error`, `ingestion`, `board`), `ts` en millisecondes Unix, `v = 2`.
 
 `currentJob` : présent seulement si un job `PLAYING` existe ; c'est un `PlayPayload` (URL re-signée
 pour ce socket) + `startedAt` + `remainingMs`. Au plus un job `PLAYING` par guilde (invariant du
@@ -224,6 +226,8 @@ et déléguer sans conversion.
 | `connected_for_guild(&self, guild_id: &GuildId) -> usize` | sync | sockets enregistrés pour la guilde |
 | `is_connected(&self, client_id: &Uuid) -> bool` | sync | au moins un socket de ce client (`Uuid` = `OverlayClientId::as_uuid()`) |
 | `close_client(&self, client_id: &Uuid, code: u16) -> bool` | sync | envoie `OutFrame::Close` à tous les sockets du client ; `true` si au moins un ciblé. Raison mappée : `4402 → revoked`, `1000 → client_shutdown`, `1001 → server_shutdown`, sinon `internal_error` |
+| `send_to_client(&self, client_id: &Uuid, message: ServerMessage) -> bool` | sync | envoie un message protocolaire à **toutes** les sockets du client (comparaison `client_uuid`, plusieurs sockets possibles) ; `true` si au moins une socket l'a accepté. Utilisé pour `media.ingestion` |
+| `broadcast_to_guild(&self, guild_id: &GuildId, message: ServerMessage) -> usize` | sync | diffuse un message protocolaire à toutes les sockets de la guilde ; retourne le nombre de sockets servies. Utilisé pour `board.changed` (et disponible pour l'admin) |
 | `broadcast_stop(&self, guild_id: &GuildId) -> usize` | async | `engine.stop_with_reason(guild, None, StopReason::Manual)` et retourne le nombre de jobs arrêtés (`0` sans moteur) |
 | `broadcast_settings(&self, guild_id: &GuildId) -> usize` | async | relit les défauts de guilde (DB) et diffuse un `settings` à jour à chaque socket ; retourne le nombre de sockets servis (`0` sans moteur/DB) |
 | `broadcast_purge(&self, guild_id: &GuildId) -> usize` | async | `engine.stop_all_with_reason(guild, StopReason::Purge)` : diffuse `stop {reason:"purge", jobId:null}` ; retourne le nombre de jobs arrêtés (`0` sans moteur). Implémentation par défaut du trait = repli sur `broadcast_stop` ; `Hub` la surcharge |
@@ -251,6 +255,8 @@ pub fn connected_count(&self) -> usize;
 pub fn connected_for_guild(&self, guild_id: &GuildId) -> usize;
 pub fn is_connected(&self, client_id: &Uuid) -> bool;
 pub fn close_client(&self, client_id: &Uuid, code: u16) -> bool;
+pub fn send_to_client(&self, client_id: &Uuid, message: ServerMessage) -> bool;
+pub fn broadcast_to_guild(&self, guild_id: &GuildId, message: ServerMessage) -> usize;
 pub async fn broadcast_stop(&self, guild_id: &GuildId) -> usize;
 pub async fn broadcast_stop_with_reason(
     &self,
@@ -305,7 +311,6 @@ Intégration (vrai serveur axum sur port éphémère + SQLite temporaire + clien
 10. `dispatched_play_carries_a_verifiable_signature` (signature re-vérifiée avec `media_url::verify`).
 11. `stop_request_stops_the_job_and_broadcasts_stop` (ack puis `stop {reason:"manual"}` ; DB `DONE`).
 12. `invite_read_only_refuses_media_trigger` (ack `read_only`).
-12b. `legacy_meme_trigger_type_still_plays_a_media_item` (type legacy `meme.trigger`, ack `ok` puis `play`).
 13. `heartbeat_is_accepted_and_updates_last_seen` (`last_seen_at` mis à jour en DB).
 14. `peers_request_returns_ack_then_peers`.
 15. `playback_state_is_persisted_for_a_corresponding_job` (`remaining_ms_snapshot` en DB).
@@ -434,8 +439,10 @@ cargo test -p lc-server
 17. **Timeout HTTP global (COR-06, nit V2 « exemptions par préfixe »)** : le diff de `§12` n'exempte
     plus le préfixe `/overlay/media-board/` en bloc : seules les routes réellement de streaming sont
     exemptées (`/ws` exact, `/ingest` exact, préfixes `/overlay/media/` et
-    `/overlay/media-board/media/`). Les anciens chemins `/overlay/meme-board/...` restent exemptés
-    sur les mêmes handlers (compatibilité overlay 3.0.0, suppression en 3.1). Le reste de l'API
+    `/overlay/media-board/media/`). Les routes d'écriture du board
+    (`POST /overlay/media-board/items` et `/upload`) gardent leur budget historique, mais
+    l'ingestion longue ne dépend plus de la requête HTTP (tâche détachée). Les anciens chemins
+    `/overlay/meme-board/...` n'existent plus. Le reste de l'API
     (admin, board JSON, config, pairing, health) reçoit `408 request_timeout` à 30 s. Le rate-limit
     appliqué au streaming (`Range`)/uploads est un nit séparé, hors de cette lane : à traiter par
     l'owner du rate limiter.
@@ -445,8 +452,8 @@ cargo test -p lc-server
 - **Lead / `app.rs`** : intégré — `ws::router_with_hub(Arc<Hub>)` + admin hub
   injecté dans `AppState` (`with_admin_hub`), plus de `OnceLock` ; le
   **TimeoutLayer** (COR-06) est en place avec exemptions resserrées (`/ws` et
-  `/ingest` exacts, préfixes `/overlay/media/` et `/overlay/media-board/media/`,
-  plus l'alias legacy `/overlay/meme-board/media/`, `408 request_timeout` 30 s ailleurs).
+  `/ingest` exacts, préfixes `/overlay/media/` et `/overlay/media-board/media/`),
+  plus de chemin legacy, `408 request_timeout` 30 s ailleurs).
   ```rust
   // apps/lc-server/Cargo.toml : tower-http features += "timeout"
   use std::time::Duration;
@@ -469,8 +476,6 @@ cargo test -p lc-server
           || path == "/ingest"
           || path.starts_with("/overlay/media/")
           || path.starts_with("/overlay/media-board/media/")
-          // Legacy overlay 3.0.0 compatibility: remove in 3.1.
-          || path.starts_with("/overlay/meme-board/media/")
       {
           return next.run(request).await;
       }

@@ -1,14 +1,21 @@
+/* LiveChat charter palette: see docs/brand/README.md. */
 :root {
   color-scheme: dark;
-  font-family: 'Manrope', 'Segoe UI', sans-serif;
-  --surface: #121318;
-  --surface-strong: #1a1d26;
-  --surface-soft: #1f2330;
-  --line: rgba(255, 255, 255, 0.12);
-  --text-main: #f5f5f7;
-  --text-muted: #9ea2b2;
-  --accent: #ffffff;
-  --accent-ink: #111319;
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --surface: #1e2330;
+  --surface-strong: #171b25;
+  --surface-soft: #171b25;
+  --surface-raised: #262c3c;
+  --line: #3a4259;
+  --text-main: #e9ebf3;
+  --text-muted: #a3abc2;
+  --text-faint: #717a93;
+  --accent: #e9ebf3;
+  --accent-ink: #171b25;
+  --amber: #f2b544;
+  --red: #ec6a70;
+  --green: #5fc9a3;
+  --blue: #7fa8f5;
 }
 
 * {
@@ -23,11 +30,13 @@ body {
 body {
   margin: 0;
   min-height: 100vh;
-  background:
-    radial-gradient(circle at 5% 5%, rgba(255, 255, 255, 0.08), transparent 48%),
-    radial-gradient(circle at 95% 4%, rgba(255, 255, 255, 0.05), transparent 45%),
-    #0a0b0f;
+  background: var(--surface-strong);
   color: var(--text-main);
+}
+
+:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
 }
 
 .options-shell {
@@ -38,10 +47,10 @@ body {
 }
 
 .options-card {
-  border-radius: 20px;
-  background: linear-gradient(162deg, var(--surface) 0%, var(--surface-strong) 100%);
+  border-radius: 16px;
+  background: var(--surface);
   border: 1px solid var(--line);
-  box-shadow: 0 26px 40px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.35);
   padding: 20px 20px 16px;
 }
 
@@ -58,15 +67,12 @@ body {
 .brand-logo {
   width: 22px;
   height: 22px;
-  border-radius: 6px;
 }
 
 .options-kicker {
   margin: 0;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-size: 11px;
-  font-weight: 800;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--text-muted);
 }
 
@@ -79,7 +85,7 @@ body {
 .options-subtitle {
   margin: 0;
   font-size: 14px;
-  color: #b0b4c2;
+  color: var(--text-muted);
 }
 
 .panels-grid {
@@ -91,18 +97,18 @@ body {
   display: grid;
   gap: 12px;
   padding: 14px;
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(255, 255, 255, 0.03);
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface-strong);
 }
 
 .pairing-panel {
-  border-color: rgba(116, 177, 255, 0.44);
-  background: linear-gradient(160deg, rgba(60, 95, 176, 0.2) 0%, rgba(33, 51, 94, 0.26) 100%);
+  border-color: rgba(127, 168, 245, 0.45);
+  background: rgba(127, 168, 245, 0.06);
 }
 
 .manual-panel {
-  border-color: rgba(255, 255, 255, 0.2);
+  border-color: var(--line);
 }
 
 .options-form {
@@ -118,15 +124,12 @@ body {
 .panel-tag {
   width: fit-content;
   margin: 0;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.26);
-  background: rgba(255, 255, 255, 0.08);
-  color: #ebefff;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-size: 10px;
-  font-weight: 800;
-  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 1px 8px;
 }
 
 .field-group {
@@ -137,37 +140,37 @@ body {
 .section-title {
   margin: 0;
   font-size: 16px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .section-subtitle {
   margin: 0;
   font-size: 12px;
-  color: #d8dceb;
+  color: var(--text-muted);
 }
 
 .api-note {
   margin: -2px 0 0;
   font-size: 11px;
-  color: #bac2de;
+  color: var(--text-muted);
 }
 
 .field-hint {
   margin: 0;
   font-size: 11px;
-  color: #cad1e8;
+  color: var(--text-muted);
 }
 
 .field-label {
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .field-input {
   width: 100%;
   box-sizing: border-box;
   min-height: 40px;
-  border-radius: 11px;
+  border-radius: 6px;
   border: 1px solid var(--line);
   background: var(--surface-soft);
   color: var(--text-main);
@@ -178,20 +181,20 @@ body {
 
 .field-input:focus {
   outline: none;
-  border-color: rgba(118, 168, 255, 0.85);
-  background: #232a3b;
+  border-color: var(--blue);
+  background: var(--surface);
 }
 
 .field-input::placeholder {
-  color: #8e92a1;
+  color: var(--text-faint);
 }
 
 .permission-state {
   margin: 8px 0 0;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: #d8dae3;
+  border-radius: 6px;
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  color: var(--text-main);
   padding: 8px 10px;
   font-size: 12px;
   font-weight: 600;
@@ -207,16 +210,12 @@ body {
 .btn {
   flex: 1 1 180px;
   min-height: 38px;
-  border-radius: 11px;
+  border-radius: 6px;
   border: 1px solid transparent;
   font: inherit;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
-  transition: transform 120ms ease, opacity 120ms ease;
-}
-
-.btn:hover:not(:disabled) {
-  transform: translateY(-1px);
+  transition: background-color 120ms ease, opacity 120ms ease;
 }
 
 .btn:disabled {
@@ -229,10 +228,18 @@ body {
   color: var(--accent-ink);
 }
 
+.btn-primary:hover:not(:disabled) {
+  background: #ffffff;
+}
+
 .btn-ghost {
   background: transparent;
   color: var(--text-main);
   border-color: var(--line);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--surface-raised);
 }
 
 @media (min-width: 940px) {
@@ -249,7 +256,7 @@ body {
 
   .options-card {
     padding: 16px 12px 12px;
-    border-radius: 14px;
+    border-radius: 12px;
   }
 
   .actions-row {
@@ -257,37 +264,40 @@ body {
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}
+
 .status {
   margin: 12px 0 0;
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 10px 12px;
   font-size: 13px;
   font-weight: 600;
   border: 1px solid transparent;
+  color: var(--text-main);
 }
 
 .status-info {
-  background: rgba(87, 114, 245, 0.18);
-  border-color: rgba(123, 145, 255, 0.42);
-  color: #d2deff;
+  background: rgba(127, 168, 245, 0.14);
+  border-color: rgba(127, 168, 245, 0.45);
 }
 
 .status-success {
-  background: rgba(42, 145, 98, 0.2);
-  border-color: rgba(67, 190, 128, 0.35);
-  color: #bbf6d6;
+  background: rgba(95, 201, 163, 0.14);
+  border-color: rgba(95, 201, 163, 0.45);
 }
 
 .status-error {
-  background: rgba(177, 48, 48, 0.2);
-  border-color: rgba(237, 94, 94, 0.36);
-  color: #ffd0d0;
+  background: rgba(236, 106, 112, 0.14);
+  border-color: rgba(236, 106, 112, 0.45);
 }
 
 .status-warning {
-  background: rgba(164, 132, 35, 0.2);
-  border-color: rgba(239, 197, 74, 0.35);
-  color: #ffe9b2;
+  background: rgba(242, 181, 68, 0.12);
+  border-color: rgba(242, 181, 68, 0.4);
 }
 
 .hidden {

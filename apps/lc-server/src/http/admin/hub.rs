@@ -49,6 +49,9 @@ pub trait AdminHub: Send + Sync {
     /// de fermeture WebSocket transmis au client (4402 pour une révocation).
     fn close_client(&self, client_id: &Uuid, code: u16) -> bool;
 
+    /// Closes every socket of `client_id` with an explicit close reason.
+    fn close_client_with_reason(&self, client_id: &Uuid, code: u16, reason: &str) -> bool;
+
     /// Diffuse un arrêt manuel à la guilde ; retourne le nombre de sockets
     /// touchées (0 si le hub n'expose pas cette information).
     async fn broadcast_stop(&self, guild_id: &GuildId) -> usize;
@@ -105,6 +108,10 @@ impl AdminHub for NoopAdminHub {
         false
     }
 
+    fn close_client_with_reason(&self, _client_id: &Uuid, _code: u16, _reason: &str) -> bool {
+        false
+    }
+
     async fn broadcast_stop(&self, _guild_id: &GuildId) -> usize {
         0
     }
@@ -135,6 +142,7 @@ mod tests {
         assert_eq!(hub.connected_for_guild(&guild_id), 0);
         assert!(!hub.is_connected(&client_id));
         assert!(!hub.close_client(&client_id, 4402));
+        assert!(!hub.close_client_with_reason(&client_id, 4404, "guild_deleted"));
         assert_eq!(hub.broadcast_stop(&guild_id).await, 0);
         assert_eq!(hub.broadcast_settings(&guild_id).await, 0);
     }

@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Method, Request, StatusCode};
@@ -15,12 +15,14 @@ use axum::Router;
 use chrono::{DateTime, TimeZone, Utc};
 use lc_db::{Db, DbConfig};
 use lc_domain::{FixedClock, GuildId, GuildRole};
+use lc_protocol::{close_code, close_reason};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tower::ServiceExt as _;
 
 use crate::app::AppState;
 use crate::config::Config;
+use crate::http::admin::hub::AdminHub;
 use crate::shutdown::Shutdown;
 
 use super::guild::{create_invite, NewInvite};
@@ -47,8 +49,60 @@ fn test_config(media_dir: &Path) -> Config {
     .unwrap()
 }
 
+/// Admin hub fake recording close codes and reasons.
+#[derive(Debug, Default)]
+struct RecordingAdminHub {
+    closes: Mutex<Vec<(uuid::Uuid, u16, String)>>,
+}
+
+impl RecordingAdminHub {
+    fn closes(&self) -> Vec<(uuid::Uuid, u16, String)> {
+        self.closes.lock().expect("verrou du hub").clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl AdminHub for RecordingAdminHub {
+    fn connected_count(&self) -> usize {
+        0
+    }
+
+    fn connected_for_guild(&self, _guild_id: &GuildId) -> usize {
+        0
+    }
+
+    fn is_connected(&self, _client_id: &uuid::Uuid) -> bool {
+        false
+    }
+
+    fn close_client(&self, client_id: &uuid::Uuid, code: u16) -> bool {
+        self.closes
+            .lock()
+            .expect("verrou du hub")
+            .push((*client_id, code, String::new()));
+        true
+    }
+
+    fn close_client_with_reason(&self, client_id: &uuid::Uuid, code: u16, reason: &str) -> bool {
+        self.closes
+            .lock()
+            .expect("verrou du hub")
+            .push((*client_id, code, reason.to_owned()));
+        true
+    }
+
+    async fn broadcast_stop(&self, _guild_id: &GuildId) -> usize {
+        0
+    }
+
+    async fn broadcast_settings(&self, _guild_id: &GuildId) -> usize {
+        0
+    }
+}
+
 pub(super) struct Harness {
     pub(super) app: Router,
+    pub(super) state: AppState,
     pub(super) db: Db,
     pub(super) guild_id: GuildId,
     _media: TempDir,
@@ -71,8 +125,10 @@ impl Harness {
             .create_standalone(&guild_id, "Les Sardines", fixed_now())
             .await
             .unwrap();
+        let app = crate::app::router(state.clone());
         Self {
-            app: crate::app::router(state),
+            app,
+            state,
             db,
             guild_id,
             _media: media,
@@ -86,22 +142,7 @@ impl Harness {
         token: Option<&str>,
         body: Option<Value>,
     ) -> (StatusCode, Value) {
-        let mut builder = Request::builder().method(method).uri(uri);
-        if let Some(token) = token {
-            builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
-        }
-        let request = match body {
-            Some(body) => builder
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_vec(&body).unwrap()))
-                .unwrap(),
-            None => builder.body(Body::empty()).unwrap(),
-        };
-        let response = self.app.clone().oneshot(request).await.unwrap();
-        let status = response.status();
-        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-        (status, value)
+        call_app(&self.app, method, uri, token, body).await
     }
 
     /// Code émis comme le ferait le panel serveur (aucun membre créateur).
@@ -152,6 +193,32 @@ impl Harness {
         self.join(body["invite"]["code"].as_str().unwrap(), name)
             .await
     }
+}
+
+/// Calls a router with the same request shape as [`Harness::call`].
+async fn call_app(
+    app: &Router,
+    method: Method,
+    uri: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder().method(method).uri(uri);
+    if let Some(token) = token {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    let request = match body {
+        Some(body) => builder
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap(),
+        None => builder.body(Body::empty()).unwrap(),
+    };
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, value)
 }
 
 pub(super) fn token(body: &Value) -> String {
@@ -215,6 +282,49 @@ async fn code_admin_puis_invitation_a_usage_unique() {
     assert_eq!(body["permissions"]["play"], false);
     assert_eq!(body["permissions"]["manageMembers"], false);
     assert_eq!(body["permissions"]["viewQueue"], true);
+}
+
+#[tokio::test]
+async fn guild_response_exposes_the_linked_discord_icon() {
+    let harness = Harness::new().await;
+    let discord_id = GuildId::parse("987654321098765432").unwrap();
+    harness
+        .db
+        .guilds()
+        .link_discord(&harness.guild_id, Some(&discord_id))
+        .await
+        .unwrap();
+    harness
+        .db
+        .guilds()
+        .set_discord_icon(discord_id.as_str(), Some("abc_DEF_123"))
+        .await
+        .unwrap();
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Quentin")
+        .await;
+    let admin_token = token(&admin);
+
+    let (status, body) = harness
+        .call(Method::GET, "/overlay/guild", Some(&admin_token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["guild"]["iconUrl"],
+        "https://cdn.discordapp.com/icons/987654321098765432/abc_DEF_123.png?size=128"
+    );
+
+    harness
+        .db
+        .guilds()
+        .set_discord_icon(discord_id.as_str(), None)
+        .await
+        .unwrap();
+    let (status, body) = harness
+        .call(Method::GET, "/overlay/guild", Some(&admin_token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["guild"]["iconUrl"].is_null());
 }
 
 #[tokio::test]
@@ -376,6 +486,66 @@ async fn roles_exclusion_et_dernier_admin() {
         )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn member_removal_and_leave_use_distinct_close_reasons() {
+    let harness = Harness::new().await;
+    let hub = Arc::new(RecordingAdminHub::default());
+    let state = harness
+        .state
+        .clone()
+        .with_admin_hub(hub.clone() as Arc<dyn AdminHub>);
+    let app = crate::app::router(state);
+
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Quentin")
+        .await;
+    let admin_token = token(&admin);
+    let guest = harness.invite_and_join(&admin_token, "guest", "Max").await;
+    let guest_client_id = uuid::Uuid::parse_str(guest["clientId"].as_str().unwrap()).unwrap();
+    let guest_id = guest["memberId"].as_str().unwrap().to_owned();
+
+    let (status, body) = call_app(
+        &app,
+        Method::DELETE,
+        &format!("/overlay/admin/members/{guest_id}"),
+        Some(&admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        hub.closes(),
+        vec![(
+            guest_client_id,
+            close_code::REVOKED,
+            "member_removed".to_owned()
+        )]
+    );
+
+    let leaver = harness.invite_and_join(&admin_token, "guest", "Léa").await;
+    let leaver_token = token(&leaver);
+    let leaver_client_id = uuid::Uuid::parse_str(leaver["clientId"].as_str().unwrap()).unwrap();
+    let (status, body) = call_app(
+        &app,
+        Method::POST,
+        "/overlay/leave",
+        Some(&leaver_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let calls = hub.closes();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls[1],
+        (
+            leaver_client_id,
+            close_code::REVOKED,
+            close_reason::REVOKED.to_owned()
+        )
+    );
 }
 
 #[tokio::test]

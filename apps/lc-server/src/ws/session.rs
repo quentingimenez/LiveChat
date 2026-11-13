@@ -32,10 +32,10 @@ use lc_playback::{
     PlaybackEndedEvent, PlaybackStateEvent, PlaybackStateOutcome, MEDIA_BOARD_JOB_PRIORITY,
 };
 use lc_protocol::{
-    close_code, close_reason, is_version_below, outdated_protocol_reason, AckError, AckPayload,
-    ClientEnvelope, ClientMessage, HelloPayload, PlaybackEndedPayload, PlaybackStatePayload,
-    ServerEnvelope, ServerErrorPayload, ServerMessage, SessionMode, SettingsPayload,
-    StopRequestSource, WelcomeConfig, WelcomePayload, HELLO_TIMEOUT_MS,
+    close_code, close_reason, is_version_below, outdated_protocol_reason, AckError, AckOutcome,
+    AckPayload, ClientEnvelope, ClientMessage, HelloPayload, PlaybackEndedPayload,
+    PlaybackStatePayload, ServerEnvelope, ServerErrorPayload, ServerMessage, SessionMode,
+    SettingsPayload, StopRequestSource, WelcomeConfig, WelcomePayload, HELLO_TIMEOUT_MS,
     MAX_CLIENT_MESSAGES_PER_SECOND, MAX_FRAME_BYTES, MAX_MEDIA_TEXT_CHARS,
     MAX_PLAYBACK_REMAINING_MS, PEERS_REQUEST_MIN_INTERVAL_MS, PING_INTERVAL_MS,
     PLAYBACK_STATE_MIN_INTERVAL_MS, PROTOCOL_VERSION,
@@ -46,6 +46,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::hub::{self, AuthError, Hub, HubEngine, OutFrame, TOO_MANY_CONNECTIONS_REASON};
+use crate::http::overlay::guild::guild_icon_url;
 
 /// Borne dure de transport de l'upgrade : volontairement supérieure à la
 /// limite applicative (64 Kio) afin de pouvoir répondre `4408` aux trames
@@ -243,7 +244,7 @@ async fn handle_socket(
         }
     };
 
-    if !send_welcome(&mut sink, &hub, &engine, &context).await {
+    if !send_welcome(&mut sink, &hub, &engine, &db, &context).await {
         hub.unregister(connection_id);
         return;
     }
@@ -531,10 +532,18 @@ async fn send_welcome(
     sink: &mut SplitSink<WebSocket, Message>,
     hub: &Arc<Hub>,
     engine: &Arc<HubEngine>,
+    db: &Db,
     context: &SessionContext,
 ) -> bool {
     let (show_text_default, default_media_time, max_media_time) =
         hub.guild_defaults(&context.guild_id).await;
+    let access = match db.guilds().access(&context.guild_id).await {
+        Ok(access) => access,
+        Err(error) => {
+            warn!(error = %error, "lecture du rattachement de guilde impossible au welcome");
+            None
+        }
+    };
     let current_job = match engine.current_job(&context.guild_id).await {
         Ok(Some(current_job)) => {
             let now_sec = u64::try_from(Utc::now().timestamp()).unwrap_or(0);
@@ -549,6 +558,8 @@ async fn send_welcome(
     let welcome = WelcomePayload {
         protocol_version: PROTOCOL_VERSION,
         guild_id: context.guild_id.as_str().to_owned(),
+        guild_name: access.as_ref().and_then(|access| access.name.clone()),
+        guild_icon_url: access.as_ref().and_then(guild_icon_url),
         client_id: context.client_id_str.clone(),
         session_mode: context.session_mode,
         server_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -876,20 +887,71 @@ async fn handle_client_message(
                 started_at: None,
                 finished_at: None,
             };
-            send_ack(hub, connection_id, request_id.as_str(), true, None);
             match engine.enqueue(&job).await {
-                Ok(()) => debug!(
-                    item = %payload.item_id,
-                    "média déclenché",
-                ),
-                Err(error) => {
-                    warn!(error = %error, "échec de l'enfilement d'un média");
-                    send_server_error(
+                Ok(()) => {
+                    let mut outcome = None;
+                    let mut position = None;
+                    match db.playback_jobs().get(job.id).await {
+                        Ok(Some(stored)) => match stored.status {
+                            JobStatus::Playing => outcome = Some(AckOutcome::Playing),
+                            JobStatus::Pending => {
+                                outcome = Some(AckOutcome::Queued);
+                                match db
+                                    .playback_jobs()
+                                    .list_pending_by_guild(&context.guild_id)
+                                    .await
+                                {
+                                    Ok(pending) => {
+                                        position = pending
+                                            .iter()
+                                            .position(|pending_job| pending_job.id == job.id)
+                                            .and_then(|index| u32::try_from(index + 1).ok());
+                                    }
+                                    Err(error) => warn!(
+                                        error = %error,
+                                        "lecture de la file d'attente impossible après enfilement"
+                                    ),
+                                }
+                            }
+                            _ => {}
+                        },
+                        Ok(None) => warn!(
+                            job_id = %job.id,
+                            "job introuvable après enfilement"
+                        ),
+                        Err(error) => warn!(
+                            error = %error,
+                            job_id = %job.id,
+                            "relecture du job impossible après enfilement"
+                        ),
+                    }
+                    send_trigger_ack(
                         hub,
                         connection_id,
-                        "internal_error",
-                        "échec de l'enfilement du média",
+                        request_id.as_str(),
+                        None,
+                        outcome,
+                        position,
                         Some(job.id.to_canonical()),
+                    );
+                    debug!(
+                        item = %payload.item_id,
+                        "média déclenché",
+                    );
+                }
+                Err(error) => {
+                    warn!(error = %error, "échec de l'enfilement d'un média");
+                    send_trigger_ack(
+                        hub,
+                        connection_id,
+                        request_id.as_str(),
+                        Some(ack_error(
+                            "internal_error",
+                            "échec de l'enfilement du média",
+                        )),
+                        None,
+                        None,
+                        None,
                     );
                 }
             }
@@ -927,7 +989,36 @@ fn send_ack(
         ref_id: request_id.to_owned(),
         ok,
         error,
+        outcome: None,
+        position: None,
+        job_id: None,
     };
+    send_ack_payload(hub, connection_id, payload);
+}
+
+/// Sends a `media.trigger` ack carrying its dispatch result.
+fn send_trigger_ack(
+    hub: &Arc<Hub>,
+    connection_id: Uuid,
+    request_id: &str,
+    error: Option<AckError>,
+    outcome: Option<AckOutcome>,
+    position: Option<u32>,
+    job_id: Option<String>,
+) {
+    let payload = AckPayload {
+        ref_id: request_id.to_owned(),
+        ok: error.is_none(),
+        error,
+        outcome,
+        position,
+        job_id,
+    };
+    send_ack_payload(hub, connection_id, payload);
+}
+
+/// Serializes and sends an `ack` payload on the connection channel.
+fn send_ack_payload(hub: &Arc<Hub>, connection_id: Uuid, payload: AckPayload) {
     let envelope = ServerEnvelope::new(
         hub.next_message_id("ack"),
         now_ms(),

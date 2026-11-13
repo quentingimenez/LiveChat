@@ -219,8 +219,9 @@ Règles générales :
 | **1008** | `POLICY_VIOLATION` | en-tête `Origin` absent de l'allowlist `/ws` (pré-hello) | `origin_not_allowed` | non (configuration serveur ; ne pas retenter tant que l'origine n'est pas autorisée) |
 | 1011 | `INTERNAL_ERROR` | erreur interne inattendue (DB, dispatch) | `internal_error` | oui (backoff) |
 | **4401** | `UNAUTHORIZED` | auth impossible : token absent/invalide, `hello` trop tardif ou absent, clientId incohérent | `missing_token`, `invalid_token`, `auth_timeout`, `hello_required` | non (sauf config modifiée) |
-| **4402** | `REVOKED` | token révoqué (`revoked_at` non nul) ou révocation pendant la connexion | `revoked` | non (re-pairing requis) |
+| **4402** | `REVOKED` | token révoqué (`revoked_at` non nul), exclusion d'un membre ou départ volontaire | `revoked`, `member_removed` | non (re-pairing requis) |
 | **4403** | `OUTDATED_PROTOCOL` | `v` ≠ 2, `hello` v1, `appVersion` < `MIN_OVERLAY_VERSION` | JSON `{"minVersion":"x.y.z"}` (§1.6) | non (mise à jour overlay) |
+| **4404** | `GUILD_DELETED` | guilde supprimée par le panneau d'administration | `guild_deleted` | non (guilde supprimée) |
 | 4408 | `FRAME_TOO_LARGE` | trame > 64 Kio | `frame_too_large` | oui, bug à corriger |
 | 4409 | `RATE_LIMITED` | > 20 trames C→S dans la seconde glissante | `rate_limited` | oui (backoff) |
 
@@ -231,9 +232,11 @@ Pour `4403`, la `reason` de fermeture est **le JSON compact** `{"minVersion":"<x
 < 123 octets), et non le texte `outdated_protocol` ; c'est la seule exception au tableau.
 Le client mappe :
 - `4401` → état `error` avec message « jeton invalide » ;
-- `4402` → état terminal « appareil révoqué » (pas de retry, re-pairing) ;
+- `4402` → état terminal « appareil révoqué » (pas de retry, re-pairing) ; la `reason`
+  distingue `member_removed` (exclusion) de `revoked` (départ volontaire ou révocation admin) ;
 - `4403` → état terminal « overlay obsolète » (pas de retry, mise à jour) ; le client **parse la
   `reason` JSON** pour afficher `minVersion` ;
+- `4404` → état terminal « guilde supprimée » (pas de retry) ;
 - `1008` → état terminal « origine non autorisée » (pas de retry ; l'origine doit être ajoutée côté
   serveur — `WS_ALLOWED_ORIGINS` ou `ADDITIONAL_CORS_ORIGINS`) ;
 - `1001`/`1011`/`4409`/`1002` → état `reconnecting` avec backoff §10.
@@ -408,6 +411,10 @@ reconnexion (v1 : broadcast uniquement à la connexion/déconnexion, `socketLoad
 - `sessionMode` : **autorité serveur** (normalisé `normal`|`invite_read_only`, v1
   `overlayAuth.ts:28-34`).
 - `serverVersion` : version sémantique du serveur (rév. 2, §1.6/§15.5), toujours émise.
+- `guildName` : nom lisible de la guilde, **omis** quand il est inconnu.
+- `guildIconUrl` : URL CDN Discord (`…png?size=128`) de l'icône de la guilde, **omise** quand
+  le serveur Discord n'a pas d'icône ou que la guilde n'est pas liée. Utilise l'identifiant Discord
+  du serveur, ou l'identifiant de la guilde pour une guilde native.
 - `serverTime` : epoch ms serveur (alignement des compte à rebours).
 - `config` : mêmes clés que la réponse REST v1 `GET /overlay/config`
   (`overlayRoutes.ts:293-315`), endpoint **supprimé** en v2 (§6.5, §15.4) : `showTextDefault:true`,
@@ -542,8 +549,22 @@ maximum** (`MAX_PEERS`, dédupliqués) ; au-delà, la liste est tronquée après
 {"v":2,"type":"ack","id":"srv-ack-0003","ts":1794182400000,"payload":{"ref":"cli-media-trigger-0002","ok":false,"error":{"code":"read_only","message":"Session en lecture seule : déclenchement refusé."}}}
 ```
 
+```json
+{"v":2,"type":"ack","id":"srv-ack-0004","ts":1794182400000,"payload":{"ref":"cli-media-trigger-0003","ok":true,"outcome":"queued","position":2,"jobId":"clx7q2x0b0005abcd1234efgh"}}
+```
+
 - `ref` = `id` de la trame C→S acquittée.
 - `ok:true` → `error` omis. `ok:false` → `error {code, message}`.
+- `outcome` (optionnel) : résultat d'un `media.trigger` accepté, `"playing"` si le média démarre
+  immédiatement, `"queued"` s'il attend dans la file de la guilde. Omis pour les autres `ack` et
+  quand le statut du job n'a pas pu être relu.
+- `position` (optionnel) : rang **1-based** du job parmi les jobs `PENDING` de la guilde, dans
+  l'ordre du moteur (`priority DESC`, `submissionDate ASC`, `id ASC`). Présent avec
+  `outcome:"queued"` lorsque le rang est connu, omis sinon.
+- `jobId` (optionnel) : identifiant canonique du job créé par un `media.trigger` accepté. Toujours
+  présent quand `ok:true`, omis pour les autres requêtes et pour un échec d'enfilement.
+- Les trois champs sont **omis** (`skip_serializing_if`) quand ils sont absents ; un client qui ne
+  les connaît pas reste compatible.
 - Codes d'erreur d'ack : `read_only`, `item_not_found`, `media_not_ready`, `invalid_payload`,
   `rate_limited`, `internal_error`.
 - Les messages de flux (`playback.state`, `playback.ended`, `heartbeat`, `error`) ne sont
@@ -563,8 +584,9 @@ serveur signale un échec de dispatch/chargement média que l'overlay peut affic
 `server/src/types/module.d.ts:38-61`). Le client ne doit jamais fermer ni réessayer à cause de ce
 message. **Émission effective (rév. 4)** : `dispatch_failed` est émis quand un `play` avec média
 n'a pu être délivré à aucun socket de la room alors que des overlays y sont connectés ; `internal_error`
-est émis quand une requête acquittée (`stop.request`, `media.trigger`) échoue côté moteur après son
-`ack`. `media_unavailable` reste réservé aux hooks média Phase 5.
+est émis quand un `stop.request` échoue côté moteur après son `ack`. Un échec d'enfilement de
+`media.trigger` est désormais signalé par l'`ack` `ok:false` (`internal_error`), sans trame `error`
+supplémentaire. `media_unavailable` reste réservé aux hooks média Phase 5.
 
 ---
 

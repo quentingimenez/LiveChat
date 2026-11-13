@@ -25,7 +25,7 @@ use axum::Json;
 use chrono::Duration;
 use lc_db::MemberChange;
 use lc_domain::{Guild, GuildMember, GuildMemberId, GuildRole, PairingCode, Permission};
-use lc_protocol::close_code;
+use lc_protocol::{close_code, close_reason};
 use serde_json::{json, Value};
 
 use crate::app::AppState;
@@ -196,7 +196,15 @@ pub async fn remove_member_handler(
         Ok(member) => member,
         Err(response) => return response,
     };
-    match remove_member(&state, db, member.id, now(&state)).await {
+    match remove_member(
+        &state,
+        db,
+        member.id,
+        now(&state),
+        close_reason::MEMBER_REMOVED,
+    )
+    .await
+    {
         Ok(MemberChange::Applied) => {
             tracing::info!(
                 guild_id = %member.guild_id,

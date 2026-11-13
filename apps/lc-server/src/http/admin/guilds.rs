@@ -22,6 +22,7 @@ use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use lc_domain::{Guild, GuildAccess, GuildId};
+use lc_protocol::close_code;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -611,7 +612,7 @@ pub(super) async fn purge(
         let Ok(client_id) = Uuid::parse_str(&overlay.id) else {
             continue;
         };
-        if hub.close_client(&client_id, 1000) {
+        if hub.close_client(&client_id, close_code::GUILD_DELETED) {
             disconnected_overlay_sockets += 1;
         }
     }

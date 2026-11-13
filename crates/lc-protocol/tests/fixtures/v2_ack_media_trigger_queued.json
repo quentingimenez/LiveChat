@@ -1,0 +1,1 @@
+{"v":2,"type":"ack","id":"srv-ack-0004","ts":1794182400000,"payload":{"ref":"cli-media-trigger-0003","ok":true,"outcome":"queued","position":2,"jobId":"clx7q2x0b0005abcd1234efgh"}}

@@ -312,3 +312,6 @@ CREATE INDEX idx_media_board_items_guild_created
     ON media_board_items (guild_id, created_at);
 CREATE INDEX idx_media_board_items_media_asset
     ON media_board_items (media_asset_id);
+-- Discord guild icon hash, refreshed by the guild_create and guild_update
+-- gateway handlers. NULL when the linked server has no icon.
+ALTER TABLE guilds ADD COLUMN discord_icon_hash TEXT;

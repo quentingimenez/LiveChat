@@ -12,6 +12,7 @@
 //! afin d'être testable contre un serveur WebSocket mock ; l'implémentation
 //! Tauri ([`AppEffects`]) branche les événements sur le renderer et le tray.
 
+use std::collections::HashMap;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -24,6 +25,7 @@ use lc_protocol::{
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Wry};
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
@@ -34,7 +36,7 @@ use uuid::Uuid;
 use crate::config::{Membership, OverlayConfigView};
 use crate::events::{self, OverlayEvent};
 use crate::net::tls;
-use crate::state::{AppState, QueuedPlay};
+use crate::state::{AppState, GuildRemoval, GuildRemovalReason, QueuedPlay};
 use crate::tray;
 use crate::windows;
 
@@ -109,6 +111,11 @@ impl Default for NetSnapshot {
 #[derive(Debug)]
 pub enum NetCommand {
     Send(ClientMessage),
+    /// Sends a frame and routes the matching `ack` back to the caller.
+    SendWithAck {
+        message: ClientMessage,
+        reply: oneshot::Sender<AckPayload>,
+    },
     Reconnect,
     Shutdown,
 }
@@ -155,7 +162,8 @@ enum SupervisorStep {
     Terminal {
         status: ConnectionStatus,
         reason: String,
-        purge: bool,
+        /// Some when the guild must be removed from the local config.
+        purge: Option<GuildRemovalReason>,
     },
 }
 
@@ -262,7 +270,9 @@ pub fn send_command_to(app: &AppHandle<Wry>, guild_id: &str, command: NetCommand
 /// believed it was sent.
 fn is_deliverable(status: ConnectionStatus, command: &NetCommand) -> bool {
     match command {
-        NetCommand::Send(_) => status == ConnectionStatus::Connected,
+        NetCommand::Send(_) | NetCommand::SendWithAck { .. } => {
+            status == ConnectionStatus::Connected
+        }
         NetCommand::Reconnect | NetCommand::Shutdown => true,
     }
 }
@@ -395,7 +405,7 @@ async fn supervise(
                     command = commands.recv() => match command {
                         None | Some(NetCommand::Shutdown) => return,
                         Some(NetCommand::Reconnect) => backoff.reset(),
-                        Some(NetCommand::Send(_)) => {
+                        Some(NetCommand::Send(_) | NetCommand::SendWithAck { .. }) => {
                             tracing::debug!("trame ignorée pendant le backoff de reconnexion");
                         }
                     }
@@ -406,10 +416,10 @@ async fn supervise(
                 reason,
                 purge,
             } => {
-                if purge {
+                if let Some(purge_reason) = purge {
                     // Jeton invalide ou révoqué : la guilde est retirée ; le
                     // superviseur s'arrête au tour suivant.
-                    let remaining = purge_pairing(&app, &guild_id);
+                    let remaining = purge_pairing(&app, &guild_id, purge_reason);
                     if remaining == 0 {
                         windows::show_board(&app);
                     }
@@ -435,7 +445,7 @@ async fn wait_for_command(
         match commands.recv().await {
             None | Some(NetCommand::Shutdown) => return false,
             Some(NetCommand::Reconnect) => return true,
-            Some(NetCommand::Send(_)) => {
+            Some(NetCommand::Send(_) | NetCommand::SendWithAck { .. }) => {
                 tracing::debug!("trame ignorée : aucune connexion WebSocket active");
             }
         }
@@ -449,8 +459,22 @@ fn publish(app: &AppHandle<Wry>, guild_id: &str, status: ConnectionStatus, reaso
 }
 
 /// Retire l'adhésion d'une guilde ; retourne le nombre d'adhésions restantes.
-fn purge_pairing(app: &AppHandle<Wry>, guild_id: &str) -> usize {
+fn purge_pairing(app: &AppHandle<Wry>, guild_id: &str, reason: GuildRemovalReason) -> usize {
     let state = app.state::<AppState>();
+    // Read the display name before the membership disappears.
+    let guild_name = state
+        .config_snapshot()
+        .membership(guild_id)
+        .and_then(|membership| membership.guild_name.clone());
+    let removal = GuildRemoval {
+        guild_id: guild_id.to_string(),
+        guild_name,
+        reason,
+    };
+    state.push_guild_removal(removal.clone());
+    if let Err(error) = events::emit_guild_removed(app, &removal) {
+        tracing::debug!(%error, "échec d'émission de l'événement de retrait de guilde");
+    }
     let remaining = match state.update_config(|config| {
         config.leave(guild_id);
     }) {
@@ -497,27 +521,39 @@ fn close_step(code: Option<u16>, reason: &str) -> SupervisorStep {
         Some(1000) => SupervisorStep::Terminal {
             status: ConnectionStatus::Error,
             reason: "connexion fermée par le serveur".to_string(),
-            purge: false,
+            purge: None,
         },
         Some(1003) => SupervisorStep::Terminal {
             status: ConnectionStatus::Error,
             reason: "trame non supportée par le serveur".to_string(),
-            purge: false,
+            purge: None,
         },
         Some(4401) => SupervisorStep::Terminal {
             status: ConnectionStatus::Error,
             reason: "jeton invalide — réappairage nécessaire".to_string(),
-            purge: true,
+            purge: Some(GuildRemovalReason::InvalidToken),
         },
+        Some(4402) if reason == lc_protocol::close_reason::MEMBER_REMOVED => {
+            SupervisorStep::Terminal {
+                status: ConnectionStatus::Revoked,
+                reason: "membre exclu de la guilde — réappairage nécessaire".to_string(),
+                purge: Some(GuildRemovalReason::MemberRemoved),
+            }
+        }
         Some(4402) => SupervisorStep::Terminal {
             status: ConnectionStatus::Revoked,
             reason: "appareil révoqué — réappairage nécessaire".to_string(),
-            purge: true,
+            purge: Some(GuildRemovalReason::Revoked),
         },
         Some(4403) => SupervisorStep::Terminal {
             status: ConnectionStatus::Outdated,
             reason: outdated_reason(reason),
-            purge: false,
+            purge: None,
+        },
+        Some(4404) => SupervisorStep::Terminal {
+            status: ConnectionStatus::Revoked,
+            reason: "guilde supprimée par un admin".to_string(),
+            purge: Some(GuildRemovalReason::GuildDeleted),
         },
         Some(4409) => SupervisorStep::Retry {
             rate_limited: true,
@@ -631,17 +667,37 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Envoie une trame cliente enveloppée (id/timestamp générés).
-async fn send_message<S>(sink: &mut S, message: ClientMessage) -> Result<(), String>
+/// Enveloppe id used for a client frame (unique per connection).
+fn new_envelope_id() -> String {
+    format!("cli-{}", Uuid::new_v4())
+}
+
+/// Envoie une trame cliente enveloppée avec un id déjà connu de l'appelant.
+async fn send_message_with_id<S>(
+    sink: &mut S,
+    id: &str,
+    message: ClientMessage,
+) -> Result<(), String>
 where
     S: futures_util::Sink<Message, Error = tungstenite::Error> + Unpin,
 {
-    let envelope = ClientEnvelope::new(format!("cli-{}", Uuid::new_v4()), now_ms(), message);
+    let envelope = ClientEnvelope::new(id.to_string(), now_ms(), message);
     let text = serde_json::to_string(&envelope)
         .map_err(|error| format!("sérialisation de trame impossible : {error}"))?;
     sink.send(Message::Text(text.into()))
         .await
         .map_err(|error| error.to_string())
+}
+
+/// Envoie une trame cliente enveloppée (id/timestamp générés) et retourne
+/// l'identifiant de l'enveloppe.
+async fn send_message<S>(sink: &mut S, message: ClientMessage) -> Result<String, String>
+where
+    S: futures_util::Sink<Message, Error = tungstenite::Error> + Unpin,
+{
+    let id = new_envelope_id();
+    send_message_with_id(sink, &id, message).await?;
+    Ok(id)
 }
 
 /// Exécute une session WebSocket complète jusqu'à fermeture ou erreur.
@@ -681,6 +737,9 @@ async fn run_session<E: SessionEffects>(
     let mut queued_keepalive = tokio::time::interval(config.queued_keepalive_interval);
     queued_keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     queued_keepalive.tick().await;
+    // Acks expected by `SendWithAck` callers, keyed by the sent envelope id.
+    // Dropped with the session: callers observe a closed reply channel.
+    let mut pending_acks: HashMap<String, oneshot::Sender<AckPayload>> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -737,7 +796,18 @@ async fn run_session<E: SessionEffects>(
                                     ServerMessage::Play(payload) => effects.on_play(&payload),
                                     ServerMessage::Stop(payload) => effects.on_stop(&payload),
                                     ServerMessage::Peers(payload) => effects.on_peers(&payload),
-                                    ServerMessage::Ack(payload) => effects.on_ack(&payload),
+                                    ServerMessage::Ack(payload) => {
+                                        match pending_acks.remove(&payload.ref_id) {
+                                            Some(reply) => {
+                                                if reply.send(payload).is_err() {
+                                                    tracing::debug!(
+                                                        "ack attendu abandonné : appelant disparu"
+                                                    );
+                                                }
+                                            }
+                                            None => effects.on_ack(&payload),
+                                        }
+                                    }
                                     ServerMessage::Error(payload) => effects.on_server_error(&payload),
                                 }
                             }
@@ -779,6 +849,20 @@ async fn run_session<E: SessionEffects>(
                                 code: None,
                                 reason: format!("envoi de trame impossible : {error}"),
                             };
+                        }
+                    }
+                    Some(NetCommand::SendWithAck { message, reply }) => {
+                        let id = new_envelope_id();
+                        match send_message_with_id(&mut sink, &id, message).await {
+                            Ok(()) => {
+                                pending_acks.insert(id, reply);
+                            }
+                            Err(error) => {
+                                return SessionOutcome::Closed {
+                                    code: None,
+                                    reason: format!("envoi de trame impossible : {error}"),
+                                };
+                            }
                         }
                     }
                 }
@@ -835,6 +919,82 @@ fn adopt_current_job(play: PlayPayload, remaining_ms: u64) -> PlayPayload {
     play
 }
 
+/// Guild identity fields refreshed by a `welcome`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IdentityUpdate {
+    client_id: String,
+    guest_mode: bool,
+    /// New display name, when it differs from the stored one.
+    guild_name: Option<String>,
+    /// `Some` = apply this icon value (`None` clears it), `None` = no change.
+    guild_icon_url: Option<Option<String>>,
+}
+
+impl IdentityUpdate {
+    fn apply(&self, membership: &mut Membership) {
+        membership.client_id = Some(self.client_id.clone());
+        membership.guest_mode = self.guest_mode;
+        if let Some(guild_name) = &self.guild_name {
+            membership.guild_name = Some(guild_name.clone());
+        }
+        if let Some(guild_icon_url) = &self.guild_icon_url {
+            membership.guild_icon_url = guild_icon_url.clone();
+        }
+    }
+}
+
+/// Icons are only trusted from Discord's CDN.
+const GUILD_ICON_PREFIX: &str = "https://cdn.discordapp.com/";
+
+/// Computes the membership update carried by a `welcome`, or `None` when the
+/// stored identity and the welcome agree.
+fn identity_from_welcome(
+    membership: &Membership,
+    payload: &WelcomePayload,
+) -> Option<IdentityUpdate> {
+    let guest_mode = payload.session_mode == SessionMode::InviteReadOnly;
+    let client_changed = membership.client_id.as_deref() != Some(payload.client_id.as_str());
+    let guest_mode_changed = membership.guest_mode != guest_mode;
+
+    let welcome_name = payload
+        .guild_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    let guild_name = welcome_name
+        .filter(|name| membership.guild_name.as_deref() != Some(*name))
+        .map(ToString::to_string);
+
+    let welcome_icon = payload
+        .guild_icon_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| url.starts_with(GUILD_ICON_PREFIX))
+        .map(ToString::to_string);
+    let guild_icon_url = match welcome_icon {
+        Some(icon) => Some(Some(icon)),
+        // A modern welcome without an icon means a guild without an icon.
+        None if welcome_name.is_some() => Some(None),
+        // An old welcome carries no identity: leave the icon untouched.
+        None => None,
+    };
+    let icon_changed = match &guild_icon_url {
+        Some(Some(icon)) => membership.guild_icon_url.as_deref() != Some(icon.as_str()),
+        Some(None) => membership.guild_icon_url.is_some(),
+        None => false,
+    };
+
+    if !client_changed && !guest_mode_changed && guild_name.is_none() && !icon_changed {
+        return None;
+    }
+    Some(IdentityUpdate {
+        client_id: payload.client_id.clone(),
+        guest_mode,
+        guild_name,
+        guild_icon_url,
+    })
+}
+
 /// Effets Tauri : dispatcher vers le renderer, le tray et l'état partagé.
 struct AppEffects {
     app: AppHandle<Wry>,
@@ -847,18 +1007,13 @@ impl SessionEffects for AppEffects {
         let app = &self.app;
         let guild_id = self.guild_id.as_str();
         let state = app.state::<AppState>();
-        let guest_mode = payload.session_mode == SessionMode::InviteReadOnly;
         let config = state.config_snapshot();
-        let identity_changed = config.membership(guild_id).is_some_and(|membership| {
-            membership.client_id.as_deref() != Some(payload.client_id.as_str())
-                || membership.guest_mode != guest_mode
-        });
-        if identity_changed {
+        let identity = config
+            .membership(guild_id)
+            .and_then(|membership| identity_from_welcome(membership, payload));
+        if let Some(identity) = identity {
             if let Err(error) = state.update_config(|config| {
-                config.update_membership(guild_id, |membership| {
-                    membership.client_id = Some(payload.client_id.clone());
-                    membership.guest_mode = guest_mode;
-                });
+                config.update_membership(guild_id, |membership| identity.apply(membership));
             }) {
                 tracing::warn!(%error, "échec de persistance de l'identité serveur");
             }
@@ -1031,6 +1186,8 @@ mod tests {
     use tokio_tungstenite::tungstenite::protocol::CloseFrame;
     use tokio_tungstenite::WebSocketStream;
 
+    use lc_protocol::{AckOutcome, MediaTrigger, MediaTriggerPayload};
+
     #[derive(Default)]
     struct RecordingEffects {
         welcome: StdMutex<u32>,
@@ -1038,6 +1195,7 @@ mod tests {
         stops: StdMutex<u32>,
         peers: StdMutex<u32>,
         settings: StdMutex<u32>,
+        acks: StdMutex<u32>,
         queued: StdMutex<Vec<(String, u64)>>,
     }
 
@@ -1072,7 +1230,11 @@ mod tests {
             }
         }
 
-        fn on_ack(&self, _payload: &AckPayload) {}
+        fn on_ack(&self, _payload: &AckPayload) {
+            if let Ok(mut counter) = self.acks.lock() {
+                *counter += 1;
+            }
+        }
 
         fn on_server_error(&self, _payload: &ServerErrorPayload) {}
 
@@ -1130,21 +1292,27 @@ mod tests {
         }
     }
 
-    async fn next_client_message(
+    async fn next_client_envelope(
         socket: &mut WebSocketStream<tokio::net::TcpStream>,
-    ) -> Option<ClientMessage> {
+    ) -> Option<ClientEnvelope> {
         loop {
             let message = socket.next().await?.ok()?;
             match message {
                 Message::Text(text) => {
-                    return serde_json::from_str::<ClientEnvelope>(text.as_str())
-                        .ok()
-                        .map(|envelope| envelope.message);
+                    return serde_json::from_str::<ClientEnvelope>(text.as_str()).ok();
                 }
                 Message::Close(_) => return None,
                 Message::Ping(_) | Message::Pong(_) | Message::Binary(_) | Message::Frame(_) => {}
             }
         }
+    }
+
+    async fn next_client_message(
+        socket: &mut WebSocketStream<tokio::net::TcpStream>,
+    ) -> Option<ClientMessage> {
+        next_client_envelope(socket)
+            .await
+            .map(|envelope| envelope.message)
     }
 
     async fn send_server_message(
@@ -1289,17 +1457,187 @@ mod tests {
         server.await.expect("serveur mock");
     }
 
+    #[tokio::test]
+    async fn send_with_ack_routes_the_matching_ack_to_the_reply() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("adresse locale");
+        let server = tokio::spawn(async move {
+            let (stream, _peer) = listener.accept().await.expect("accept");
+            let mut socket = accept_async(stream).await.expect("handshake serveur");
+            let hello = next_client_message(&mut socket).await;
+            assert!(matches!(hello, Some(ClientMessage::Hello(_))));
+            send_server_message(
+                &mut socket,
+                "srv-welcome",
+                ServerMessage::Welcome(welcome_payload()),
+            )
+            .await;
+            let envelope = loop {
+                match next_client_envelope(&mut socket).await {
+                    Some(envelope) => match envelope.message {
+                        ClientMessage::MediaTrigger(_) => break envelope,
+                        _ => continue,
+                    },
+                    None => panic!("flux fermé avant media.trigger"),
+                }
+            };
+            send_server_message(
+                &mut socket,
+                "srv-ack",
+                ServerMessage::Ack(AckPayload {
+                    ref_id: envelope.id,
+                    ok: true,
+                    error: None,
+                    outcome: Some(AckOutcome::Queued),
+                    position: Some(2),
+                    job_id: Some("job-42".to_string()),
+                }),
+            )
+            .await;
+            socket
+                .send(Message::Close(Some(CloseFrame {
+                    code: CloseCode::Normal,
+                    reason: "bye".into(),
+                })))
+                .await
+                .expect("close serveur");
+            let _closed = socket.close(None).await;
+        });
+
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<NetCommand>();
+        let (reply, reply_receiver) = oneshot::channel();
+        sender
+            .send(NetCommand::SendWithAck {
+                message: ClientMessage::MediaTrigger(MediaTriggerPayload {
+                    item_id: "item-1".to_string(),
+                    trigger: MediaTrigger::Ui,
+                }),
+                reply,
+            })
+            .expect("commande en file");
+        let session = SessionConfig {
+            ws_url: ws_url_from_server_url_with(&format!("http://{address}"), true)
+                .expect("url WebSocket de test"),
+            hello: HelloPayload {
+                token: "token-test".to_string(),
+                app_version: "3.0.0".to_string(),
+                client_id: Some("client-1".to_string()),
+                session_mode: Some(SessionMode::Normal),
+            },
+            insecure_tls: false,
+            queued_keepalive_interval: QUEUED_KEEPALIVE_INTERVAL,
+        };
+        let effects = RecordingEffects::default();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_session(&effects, &session, &mut receiver),
+        )
+        .await
+        .expect("session non bloquée");
+        match outcome {
+            SessionOutcome::Closed { code, .. } => assert_eq!(code, Some(1000)),
+            other => panic!("fin de session inattendue : {other:?}"),
+        }
+
+        let payload = reply_receiver.await.expect("ack routé vers le reply");
+        assert!(payload.ok);
+        assert_eq!(payload.outcome, Some(AckOutcome::Queued));
+        assert_eq!(payload.position, Some(2));
+        assert_eq!(payload.job_id.as_deref(), Some("job-42"));
+        assert_eq!(*effects.acks.lock().expect("acks"), 0);
+        drop(sender);
+        server.await.expect("serveur mock");
+    }
+
+    #[tokio::test]
+    async fn ack_without_expected_reference_is_dispatched_to_effects() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("adresse locale");
+        let server = tokio::spawn(async move {
+            let (stream, _peer) = listener.accept().await.expect("accept");
+            let mut socket = accept_async(stream).await.expect("handshake serveur");
+            let hello = next_client_message(&mut socket).await;
+            assert!(matches!(hello, Some(ClientMessage::Hello(_))));
+            send_server_message(
+                &mut socket,
+                "srv-welcome",
+                ServerMessage::Welcome(welcome_payload()),
+            )
+            .await;
+            send_server_message(
+                &mut socket,
+                "srv-ack",
+                ServerMessage::Ack(AckPayload {
+                    ref_id: "cli-not-expected".to_string(),
+                    ok: true,
+                    error: None,
+                    outcome: None,
+                    position: None,
+                    job_id: None,
+                }),
+            )
+            .await;
+            socket
+                .send(Message::Close(Some(CloseFrame {
+                    code: CloseCode::Normal,
+                    reason: "bye".into(),
+                })))
+                .await
+                .expect("close serveur");
+            let _closed = socket.close(None).await;
+        });
+
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<NetCommand>();
+        let session = SessionConfig {
+            ws_url: ws_url_from_server_url_with(&format!("http://{address}"), true)
+                .expect("url WebSocket de test"),
+            hello: HelloPayload {
+                token: "token-test".to_string(),
+                app_version: "3.0.0".to_string(),
+                client_id: Some("client-1".to_string()),
+                session_mode: Some(SessionMode::Normal),
+            },
+            insecure_tls: false,
+            queued_keepalive_interval: QUEUED_KEEPALIVE_INTERVAL,
+        };
+        let effects = RecordingEffects::default();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_session(&effects, &session, &mut receiver),
+        )
+        .await
+        .expect("session non bloquée");
+        match outcome {
+            SessionOutcome::Closed { code, .. } => assert_eq!(code, Some(1000)),
+            other => panic!("fin de session inattendue : {other:?}"),
+        }
+        assert_eq!(*effects.acks.lock().expect("acks"), 1);
+        drop(sender);
+        server.await.expect("serveur mock");
+    }
+
     #[test]
     fn close_codes_map_to_expected_actions() {
         assert!(matches!(
             close_step(Some(4401), ""),
-            SupervisorStep::Terminal { purge: true, .. }
+            SupervisorStep::Terminal {
+                purge: Some(GuildRemovalReason::InvalidToken),
+                ..
+            }
         ));
         assert!(matches!(
-            close_step(Some(4402), ""),
+            close_step(Some(4402), "revoked"),
             SupervisorStep::Terminal {
                 status: ConnectionStatus::Revoked,
-                purge: true,
+                purge: Some(GuildRemovalReason::Revoked),
+                ..
+            }
+        ));
+        assert!(matches!(
+            close_step(Some(4402), "member_removed"),
+            SupervisorStep::Terminal {
+                status: ConnectionStatus::Revoked,
+                purge: Some(GuildRemovalReason::MemberRemoved),
                 ..
             }
         ));
@@ -1309,6 +1647,14 @@ mod tests {
                 status: ConnectionStatus::Outdated,
                 ..
             }
+        ));
+        assert!(matches!(
+            close_step(Some(4404), "guild_deleted"),
+            SupervisorStep::Terminal {
+                status: ConnectionStatus::Revoked,
+                purge: Some(GuildRemovalReason::GuildDeleted),
+                reason,
+            } if reason.contains("guilde supprimée")
         ));
         assert!(matches!(
             close_step(Some(4409), "rate_limited"),
@@ -1326,7 +1672,105 @@ mod tests {
         ));
         assert!(matches!(
             close_step(Some(1000), ""),
-            SupervisorStep::Terminal { .. }
+            SupervisorStep::Terminal { purge: None, .. }
+        ));
+    }
+
+    fn identity_membership() -> Membership {
+        Membership {
+            server_url: "https://example.test".to_string(),
+            guild_id: "guild-1".to_string(),
+            guild_name: Some("Ancienne guilde".to_string()),
+            guild_icon_url: Some("https://cdn.discordapp.com/icons/old.png".to_string()),
+            client_token: "token-test".to_string(),
+            client_id: Some("client-1".to_string()),
+            member_id: None,
+            display_name: None,
+            role: None,
+            guest_mode: false,
+            muted: false,
+            media_bindings: Default::default(),
+        }
+    }
+
+    #[test]
+    fn identity_from_welcome_updates_name_and_icon() {
+        let mut welcome = welcome_payload();
+        welcome.guild_name = Some("  Nouvelle guilde  ".to_string());
+        welcome.guild_icon_url = Some("https://cdn.discordapp.com/icons/new.png".to_string());
+        let update = identity_from_welcome(&identity_membership(), &welcome).expect("update");
+        assert_eq!(update.client_id, "client-1");
+        assert_eq!(update.guild_name.as_deref(), Some("Nouvelle guilde"));
+        assert_eq!(
+            update.guild_icon_url,
+            Some(Some("https://cdn.discordapp.com/icons/new.png".to_string()))
+        );
+    }
+
+    #[test]
+    fn identity_from_welcome_clears_a_modern_iconless_guild_icon() {
+        let mut welcome = welcome_payload();
+        welcome.guild_name = Some("Ancienne guilde".to_string());
+        welcome.guild_icon_url = None;
+        let update = identity_from_welcome(&identity_membership(), &welcome).expect("update");
+        assert_eq!(update.guild_name, None);
+        assert_eq!(update.guild_icon_url, Some(None));
+    }
+
+    #[test]
+    fn identity_from_welcome_keeps_icon_for_a_legacy_welcome() {
+        let membership = identity_membership();
+        let welcome = welcome_payload();
+        assert_eq!(identity_from_welcome(&membership, &welcome), None);
+
+        let mut welcome = welcome_payload();
+        welcome.client_id = "client-2".to_string();
+        let update = identity_from_welcome(&membership, &welcome).expect("update");
+        assert_eq!(update.client_id, "client-2");
+        assert_eq!(update.guild_icon_url, None);
+    }
+
+    #[test]
+    fn identity_from_welcome_treats_untrusted_icons_as_absent() {
+        let mut welcome = welcome_payload();
+        welcome.guild_name = Some("Ancienne guilde".to_string());
+        welcome.guild_icon_url = Some("https://evil.test/icons/old.png".to_string());
+        let update = identity_from_welcome(&identity_membership(), &welcome).expect("update");
+        assert_eq!(update.guild_icon_url, Some(None));
+    }
+
+    #[test]
+    fn identity_from_welcome_returns_none_when_nothing_changed() {
+        let mut welcome = welcome_payload();
+        welcome.guild_name = Some("Ancienne guilde".to_string());
+        welcome.guild_icon_url = Some("https://cdn.discordapp.com/icons/old.png".to_string());
+        assert_eq!(
+            identity_from_welcome(&identity_membership(), &welcome),
+            None
+        );
+    }
+
+    fn test_send_with_ack() -> NetCommand {
+        let (reply, _receiver) = oneshot::channel();
+        NetCommand::SendWithAck {
+            message: ClientMessage::PeersRequest(lc_protocol::PeersRequestPayload {}),
+            reply,
+        }
+    }
+
+    #[test]
+    fn send_with_ack_is_deliverable_only_when_connected() {
+        assert!(is_deliverable(
+            ConnectionStatus::Connected,
+            &test_send_with_ack()
+        ));
+        assert!(!is_deliverable(
+            ConnectionStatus::Reconnecting,
+            &test_send_with_ack()
+        ));
+        assert!(!is_deliverable(
+            ConnectionStatus::Disabled,
+            &test_send_with_ack()
         ));
     }
 

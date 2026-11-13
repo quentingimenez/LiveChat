@@ -216,6 +216,7 @@ fn apply_consume_response(
         server_url: base_url.trim_end_matches('/').to_string(),
         guild_id,
         guild_name: clean(response.guild_name.as_deref()),
+        guild_icon_url: None,
         client_token: token.to_string(),
         client_id: clean(response.client_id.as_deref()),
         member_id: clean(response.member_id.as_deref()),

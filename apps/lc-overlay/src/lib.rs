@@ -177,6 +177,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         // Géré avant la construction des fenêtres configurées (les webviews
         // peuvent appeler des commandes dès leur chargement initial).
         .manage(AppState::new(initial_store()))
+        .manage(net::upload::UploadRegistry::default())
         .plugin(tauri_plugin_single_instance::init(
             |app: &tauri::AppHandle<Wry>, argv: Vec<String>, _cwd: String| {
                 handle_second_instance(app, argv);
@@ -215,6 +216,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             commands::overlay_check_updates,
             commands::overlay_install_update,
             commands::board_take_pending_view,
+            commands::board_take_guild_removals,
+            commands::media_upload_start,
+            commands::media_upload_chunk,
+            commands::media_upload_finish,
+            commands::media_upload_cancel,
         ])
         .setup(setup)
         .build(context)?;

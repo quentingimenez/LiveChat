@@ -48,7 +48,7 @@ fn parse_method(raw: &str) -> Result<Method, String> {
 ///
 /// Le chemin est résolu puis re-vérifié sur l'URL finale : ni `..`, ni URL
 /// absolue, ni changement d'hôte ne peuvent contourner le préfixe.
-fn build_url(server_url: &str, path: &str, allow_insecure: bool) -> Result<Url, String> {
+pub(crate) fn build_url(server_url: &str, path: &str, allow_insecure: bool) -> Result<Url, String> {
     if path.chars().count() > MAX_PATH_CHARS {
         return Err("chemin trop long".to_string());
     }
@@ -119,13 +119,21 @@ pub async fn request(
         .send()
         .await
         .map_err(|error| format!("serveur injoignable : {error}"))?;
+    Ok(read_response(response).await)
+}
+
+/// Reads a response body into the shape exposed to the board.
+///
+/// Shared by REST calls and streamed uploads: an empty or non-JSON body
+/// becomes `Value::Null` and `ok` reflects the HTTP status.
+pub(crate) async fn read_response(response: reqwest::Response) -> ApiResponse {
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
-    Ok(ApiResponse {
+    ApiResponse {
         ok: status.is_success(),
         status: status.as_u16(),
         body: serde_json::from_str(&text).unwrap_or(Value::Null),
-    })
+    }
 }
 
 #[cfg(test)]

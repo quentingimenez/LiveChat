@@ -71,6 +71,8 @@ pub struct Membership {
     pub server_url: String,
     pub guild_id: String,
     pub guild_name: Option<String>,
+    /// Discord CDN URL of the guild icon, when known.
+    pub guild_icon_url: Option<String>,
     pub client_token: String,
     pub client_id: Option<String>,
     pub member_id: Option<String>,
@@ -102,6 +104,7 @@ pub struct MembershipView {
     pub server_url: String,
     pub guild_id: String,
     pub guild_name: Option<String>,
+    pub guild_icon_url: Option<String>,
     pub client_id: Option<String>,
     pub member_id: Option<String>,
     pub display_name: Option<String>,
@@ -405,6 +408,7 @@ impl OverlayConfig {
                 server_url: membership.server_url.clone(),
                 guild_id: membership.guild_id.clone(),
                 guild_name: membership.guild_name.clone(),
+                guild_icon_url: membership.guild_icon_url.clone(),
                 client_id: membership.client_id.clone(),
                 member_id: membership.member_id.clone(),
                 display_name: membership.display_name.clone(),
@@ -892,6 +896,52 @@ mod tests {
             BTreeMap::from([("Ctrl+1".to_string(), "item-1".to_string())])
         );
         assert_eq!(config.media_bindings, membership.media_bindings);
+    }
+
+    #[test]
+    fn guild_icon_url_roundtrips_through_the_config_file() {
+        let (_dir, store) = temp_store("{}");
+        let mut config = store.load();
+        config.join(Membership {
+            server_url: "https://example.test".to_string(),
+            guild_id: "111".to_string(),
+            guild_name: Some("Les Sardines".to_string()),
+            guild_icon_url: Some("https://cdn.discordapp.com/icons/111/abc.png".to_string()),
+            client_token: "jeton".to_string(),
+            ..Membership::default()
+        });
+        store.save(&config).expect("save");
+
+        let raw = fs::read_to_string(store.path()).expect("read saved config");
+        assert!(raw.contains("\"guildIconUrl\""), "json: {raw}");
+
+        let reloaded = store.load();
+        let membership = reloaded.membership("111").expect("adhésion");
+        assert_eq!(
+            membership.guild_icon_url.as_deref(),
+            Some("https://cdn.discordapp.com/icons/111/abc.png")
+        );
+        let views = reloaded.membership_views();
+        assert_eq!(
+            views[0].guild_icon_url.as_deref(),
+            Some("https://cdn.discordapp.com/icons/111/abc.png")
+        );
+    }
+
+    #[test]
+    fn membership_without_guild_icon_url_loads_with_none() {
+        let (config, warnings) = OverlayConfig::from_json_value(&json!({
+            "memberships": [{
+                "serverUrl": "https://example.test",
+                "guildId": "111",
+                "guildName": "Les Sardines",
+                "clientToken": "jeton"
+            }]
+        }));
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        let membership = config.membership("111").expect("adhésion");
+        assert_eq!(membership.guild_name.as_deref(), Some("Les Sardines"));
+        assert!(membership.guild_icon_url.is_none());
     }
 
     #[test]

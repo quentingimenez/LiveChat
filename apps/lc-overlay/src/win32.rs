@@ -15,13 +15,17 @@
 //! documenté comme tel dans `docs/rust/lc-overlay-shell.md`.
 #![allow(unsafe_code)]
 
+use std::sync::OnceLock;
+
 use windows::core::{w, Result as WindowsResult};
 use windows::Win32::Foundation::{ERROR_SUCCESS, HWND};
 use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos,
-    GWL_EXSTYLE, HWND_TOPMOST, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    WINDOW_EX_STYLE, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    ShowWindow, EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE, HWND_TOPMOST, OBJID_WINDOW,
+    SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE,
+    WINEVENT_OUTOFCONTEXT, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_EX_TRANSPARENT,
 };
 
@@ -157,6 +161,82 @@ pub fn place_behind_foreground(hwnd: HWND) -> bool {
         )
     }
     .is_ok()
+}
+
+/// Shows a window without activating it (`SW_SHOWNOACTIVATE`).
+///
+/// Once a window exists, tao shows it — and re-shows it after any style
+/// change — with `SW_SHOW`, which activates it even with `WS_EX_NOACTIVATE`:
+/// `focused(false)` only applies to the show done at creation. tao's own
+/// visibility flag is left unset, so no tao setter may run on the window
+/// afterwards (it would hide it again); only destroy it.
+pub fn show_without_activation(hwnd: HWND) {
+    // SAFETY: `hwnd` comes from a live Tauri window. The return value only
+    // says whether the window was visible before, so it is ignored.
+    let _was_visible = unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
+}
+
+/// Whether `hwnd` currently has the topmost extended style.
+pub fn is_topmost(hwnd: HWND) -> bool {
+    (ex_style(hwnd) as u32) & WS_EX_TOPMOST.0 != 0
+}
+
+/// The desktop's foreground window, if any.
+pub fn foreground_window() -> Option<HWND> {
+    // SAFETY: GetForegroundWindow only reads the desktop's foreground window.
+    let foreground = unsafe { GetForegroundWindow() };
+    (!foreground.is_invalid()).then_some(foreground)
+}
+
+type ForegroundCallback = Box<dyn Fn(HWND) + Send + Sync>;
+
+static FOREGROUND_CALLBACK: OnceLock<ForegroundCallback> = OnceLock::new();
+
+/// Calls `callback` with the new foreground window every time the desktop's
+/// foreground window changes, in any process.
+///
+/// Must run on a thread that pumps messages (the main thread): Windows queues
+/// out-of-context WinEvents to the thread that installed the hook, so the
+/// callback always runs there. WebView2 does not reliably raise `LostFocus`
+/// when another application is activated, so Tauri's `Focused(false)` event
+/// cannot be relied on for this. Only one callback can be installed; returns
+/// `false` if one already was or if the hook could not be set.
+pub fn watch_foreground(callback: impl Fn(HWND) + Send + Sync + 'static) -> bool {
+    if FOREGROUND_CALLBACK.set(Box::new(callback)).is_err() {
+        return false;
+    }
+    // SAFETY: `foreground_event` is a plain `extern "system"` function with the
+    // WINEVENTPROC signature; out-of-context hooks need no module handle. The
+    // hook lives as long as the process, so it is never unhooked.
+    let hook: HWINEVENTHOOK = unsafe {
+        SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            None,
+            Some(foreground_event),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        )
+    };
+    !hook.is_invalid()
+}
+
+unsafe extern "system" fn foreground_event(
+    _hook: HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    object_id: i32,
+    _child_id: i32,
+    _thread_id: u32,
+    _time: u32,
+) {
+    if event != EVENT_SYSTEM_FOREGROUND || object_id != OBJID_WINDOW.0 || hwnd.is_invalid() {
+        return;
+    }
+    if let Some(callback) = FOREGROUND_CALLBACK.get() {
+        callback(hwnd);
+    }
 }
 
 /// Whether the Windows taskbar uses the light theme (`SystemUsesLightTheme`).

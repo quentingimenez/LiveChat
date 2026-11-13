@@ -9,8 +9,17 @@ function graphemes(text) {
   return Array.from(graphemeSegmenter.segment(text), (part) => part.segment);
 }
 
+// First grapheme of a string, never half of a surrogate pair. Used for avatar
+// letters, where a single code unit could split an emoji.
+export function firstGrapheme(text) {
+  if (text === null || text === undefined) {
+    return '';
+  }
+  return graphemes(String(text))[0] || '';
+}
+
 export function initials(name) {
-  const text = name === null || name === undefined ? '' : String(name).trim();
+  const text = name === null || name === undefined ? '' : String(name).normalize('NFKC').trim();
   if (!text) {
     return '?';
   }
@@ -79,4 +88,26 @@ export function relativeTime(iso) {
 
 export function formatCode(code) {
   return code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
+}
+
+// Signed media URLs expire: reload the board five minutes before the earliest
+// expiry of the loaded items. Returns the setTimeout delay in ms, or null when
+// no item carries a usable expiry.
+export const MEDIA_URL_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+
+export function mediaRefreshDelay(items, now = Date.now()) {
+  let earliest = null;
+  for (const item of items || []) {
+    const expiresAt = Number(item && item.mediaUrlExpiresAt);
+    if (!Number.isFinite(expiresAt) || expiresAt <= 0) {
+      continue;
+    }
+    if (earliest === null || expiresAt < earliest) {
+      earliest = expiresAt;
+    }
+  }
+  if (earliest === null) {
+    return null;
+  }
+  return Math.max(0, earliest - MEDIA_URL_REFRESH_MARGIN_MS - now);
 }

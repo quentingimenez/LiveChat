@@ -31,11 +31,3 @@ export async function run(action, successMessage) {
     return undefined;
   }
 }
-
-export async function mediaUrl(assetId) {
-  const key = `${state.activeGuildId}:${assetId}`;
-  if (!state.mediaUrls.has(key)) {
-    state.mediaUrls.set(key, await invoke('guild_media_url', { payload: { guildId: state.activeGuildId, assetId } }));
-  }
-  return state.mediaUrls.get(key);
-}

@@ -3,7 +3,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { initials, removalMessage } from '../../web/app/core/format.js';
+import {
+  firstGrapheme,
+  initials,
+  mediaRefreshDelay,
+  removalMessage,
+} from '../../web/app/core/format.js';
 
 test('initials keeps the first graphemes of significant words', () => {
   const cases = [
@@ -16,7 +21,8 @@ test('initials keeps the first graphemes of significant words', () => {
     ['R2D2', 'R2'],
     ['🔱', '🔱'],
     ['👨‍👩‍👧 Famille', 'FA'],
-    ['e\u0301cole', 'E\u0301C'],
+    ['𝐒𝐮𝐩𝐞𝐫𝐊𝐧𝐚𝐜𝐤𝐲', 'SU'],
+    ['e\u0301cole', 'ÉC'],
     ['', '?'],
     [null, '?'],
     [undefined, '?'],
@@ -25,6 +31,31 @@ test('initials keeps the first graphemes of significant words', () => {
   for (const [input, expected] of cases) {
     assert.equal(initials(input), expected, `initials(${JSON.stringify(input) ?? 'undefined'})`);
   }
+});
+
+test('firstGrapheme keeps a whole grapheme for avatar letters', () => {
+  const cases = [
+    ['𝐒𝐮𝐩𝐞𝐫𝐊𝐧𝐚𝐜𝐤𝐲', 'S'],
+    ['L’Escale 🔱', 'L'],
+    ['🔱', '🔱'],
+    ['👨‍👩‍👧', '👨‍👩‍👧'],
+    ['', '?'],
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(firstGrapheme(initials(input)), expected, `firstGrapheme(initials(${JSON.stringify(input)})`);
+  }
+});
+
+test('mediaRefreshDelay reloads five minutes before the earliest signed URL expiry', () => {
+  const now = 1_700_000_000_000;
+  const minute = 60_000;
+  assert.equal(mediaRefreshDelay([], now), null);
+  assert.equal(mediaRefreshDelay([{ id: 'a' }], now), null);
+  assert.equal(mediaRefreshDelay([{ mediaUrlExpiresAt: 'nope' }], now), null);
+  assert.equal(mediaRefreshDelay([{ mediaUrlExpiresAt: now + 10 * minute }], now), 5 * minute);
+  assert.equal(mediaRefreshDelay([{ mediaUrlExpiresAt: now + 60 * minute }, { mediaUrlExpiresAt: now + 6 * minute }], now), minute);
+  assert.equal(mediaRefreshDelay([{ mediaUrlExpiresAt: now + 2 * minute }], now), 0);
+  assert.equal(mediaRefreshDelay([{ mediaUrlExpiresAt: now + 30 * minute }, { mediaUrlExpiresAt: 0 }], now), 25 * minute);
 });
 
 test('removalMessage names the guild for every removal reason', () => {

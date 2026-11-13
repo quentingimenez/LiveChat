@@ -1,6 +1,7 @@
 // Queue tab and "on air" bar.
 
 import { api, run } from '../core/api.js';
+import { openContextMenu } from '../core/contextmenu.js';
 import { h, icon } from '../core/dom.js';
 import { formatDuration } from '../core/format.js';
 import { invoke } from '../core/ipc.js';
@@ -10,6 +11,43 @@ import { loadQueue, refreshQueueAutomatically } from '../data.js';
 
 export function jobTitle(job) {
   return job.title || job.text || (job.kind ? KIND_LABELS[job.kind] : null) || 'Média';
+}
+
+function openStopMenu(event) {
+  if (!can('stop')) {
+    openContextMenu(event, []);
+    return;
+  }
+  openContextMenu(event, [{ label: 'Arrêter la lecture', icon: 'stop', onSelect: stopPlayback }]);
+}
+
+function openPendingMenu(event, job) {
+  // Without the moderation permission there is no action, so no menu.
+  if (!can('moderateQueue')) {
+    openContextMenu(event, []);
+    return;
+  }
+  openContextMenu(event, [
+    { heading: jobTitle(job) },
+    { label: 'Retirer de la file', icon: 'close', onSelect: () => removeJob(job) },
+    'separator',
+    { label: 'Vider la file', icon: 'remove', danger: true, onSelect: () => clearQueue() },
+  ]);
+}
+
+// The on-air bar is reused (only its children are replaced): bind its menu once.
+let onAirMenuBound = false;
+
+function bindOnAirMenu() {
+  if (onAirMenuBound) {
+    return;
+  }
+  const bar = document.getElementById('onair');
+  if (!bar) {
+    return;
+  }
+  bar.addEventListener('contextmenu', openStopMenu);
+  onAirMenuBound = true;
 }
 
 export function renderQueue() {
@@ -22,7 +60,7 @@ export function renderQueue() {
     blocks.push(
       h(
         'div',
-        { class: 'now' },
+        { class: 'now', onContextMenu: openStopMenu },
         h(
           'div',
           { class: 'row' },
@@ -54,7 +92,7 @@ export function renderQueue() {
         pending.map((job, index) =>
           h(
             'div',
-            { class: 'line is-queue' },
+            { class: 'line is-queue', onContextMenu: (event) => openPendingMenu(event, job) },
             h('span', { class: 'meta' }, index + 1),
             h('div', { class: 'ellipsis' }, jobTitle(job), job.authorName ? h('span', { class: 'sub' }, `  par ${job.authorName}`) : null),
             h('span', { class: 'meta' }, formatDuration(job.durationSec) || ''),
@@ -96,6 +134,7 @@ export async function clearQueue() {
 }
 
 export function renderOnAir() {
+  bindOnAirMenu();
   const bar = document.getElementById('onair');
   const playing = state.queue.playing;
   if (!playing || !state.activeGuildId) {

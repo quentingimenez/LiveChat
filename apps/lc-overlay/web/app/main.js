@@ -16,6 +16,7 @@ import { invoke, listen } from './core/ipc.js';
 import { state } from './core/state.js';
 import { notify } from './core/toast.js';
 import { applyGuilds, clearQueueEndTimer, loadGuildInfo, loadQueue, refreshQueueAutomatically } from './data.js';
+import { initGuildRemovalNotices } from './views/notices.js';
 import { renderRail } from './views/rail.js';
 import { renderView } from './views/view.js';
 
@@ -24,6 +25,9 @@ import { renderView } from './views/view.js';
 installContextMenuGuard();
 
 listen('overlay://guilds', applyGuilds);
+
+// Guilds removed by the shell (deleted, member removed, device revoked).
+initGuildRemovalNotices();
 
 // The queue is refreshed on a WebSocket hint instead of polling: the server
 // limits every route to 100 requests per 15 minutes and per IP.

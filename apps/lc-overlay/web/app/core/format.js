@@ -1,9 +1,55 @@
 // Pure formatting helpers (no DOM, no state).
 
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+// Words are separated by spaces, apostrophes, hyphens, underscores and dots.
+const WORD_SEPARATORS = /[\s'’\-_.]+/u;
+const LETTER_OR_DIGIT = /^[\p{L}\p{N}]/u;
+
+function graphemes(text) {
+  return Array.from(graphemeSegmenter.segment(text), (part) => part.segment);
+}
+
 export function initials(name) {
-  const words = String(name || '?').trim().split(/\s+/).filter(Boolean);
-  const letters = words.length > 1 ? words[0][0] + words[1][0] : (words[0] || '?').slice(0, 2);
-  return letters.toUpperCase();
+  const text = name === null || name === undefined ? '' : String(name).trim();
+  if (!text) {
+    return '?';
+  }
+  // Keep the words that start with a letter or a digit: punctuation and emoji
+  // words must not steal the initials ("L’Escale 🔱" → "LE").
+  const words = text.split(WORD_SEPARATORS).filter(Boolean);
+  const kept = words.filter((word) => LETTER_OR_DIGIT.test(word));
+  let letters;
+  if (kept.length >= 2) {
+    letters = graphemes(kept[0])[0] + graphemes(kept[1])[0];
+  } else if (kept.length === 1) {
+    const parts = graphemes(kept[0]);
+    // A second grapheme that is not a letter or a digit is no initial.
+    letters = parts.length > 1 && LETTER_OR_DIGIT.test(parts[1]) ? parts[0] + parts[1] : parts[0];
+  } else {
+    // A lone emoji is still a readable avatar.
+    letters = graphemes(text)[0];
+  }
+  return letters.toLocaleUpperCase('fr-FR');
+}
+
+// Message of a guild removal notice. The shell removes a guild on its own when
+// it is deleted, when the member is removed or when the device is revoked.
+export function removalMessage(removal = {}) {
+  const { guildName, reason } = removal || {};
+  const name = guildName === null || guildName === undefined ? '' : String(guildName).trim();
+  // A missing name is not quoted: « Une guilde » would read as a guild name.
+  const quoted = (fallback) => (name ? `« ${name} »` : fallback);
+  switch (reason) {
+    case 'guild_deleted':
+      return `${quoted('Une guilde')} a été supprimée par un admin et retirée de LiveChat.`;
+    case 'member_removed':
+      return `Un admin t’a retiré de ${quoted('une guilde')}. La guilde est retirée de LiveChat.`;
+    case 'revoked':
+      return `Cet appareil a été révoqué dans ${quoted('une guilde')}. La guilde est retirée de LiveChat.`;
+    case 'invalid_token':
+    default:
+      return `${quoted('Une guilde')} ne reconnaît plus cet appareil. La guilde est retirée de LiveChat.`;
+  }
 }
 
 export function formatDuration(seconds) {

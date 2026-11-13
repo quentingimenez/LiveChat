@@ -44,6 +44,29 @@
   opacity: 0.45;
 }
 
+/* Guild icon: the button itself must not clip the status dot, so only the
+   image is rounded. The active ring is drawn outside the button. */
+.guild.has-icon {
+  padding: 0;
+}
+
+.guild .guild-icon {
+  display: block;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  object-fit: cover;
+}
+
+.guild.is-active .guild-icon {
+  border-radius: 10px;
+}
+
+.guild.is-active.has-icon {
+  background: none;
+  box-shadow: 0 0 0 2px var(--slate-900), 0 0 0 4px var(--text);
+}
+
 /* An SVG glyph, centred by flex: a text "+" sits off-centre in the font. */
 .guild.is-add {
   display: grid;

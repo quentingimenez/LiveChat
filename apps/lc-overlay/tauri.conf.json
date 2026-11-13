@@ -36,7 +36,8 @@
         "minHeight": 640,
         "center": true,
         "visible": false,
-        "skipTaskbar": false
+        "skipTaskbar": false,
+        "dragDropEnabled": false
       }
     ],
     "security": {

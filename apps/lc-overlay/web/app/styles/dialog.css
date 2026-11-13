@@ -42,6 +42,79 @@
   font-size: 13px;
 }
 
+/* ------------------------------------------------------ add media */
+.add-media-modes {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--slate-900);
+}
+
+.add-media-modes .mode-choice {
+  flex: 1;
+  justify-content: center;
+  border-color: transparent;
+  background: none;
+  color: var(--text-soft);
+}
+
+.add-media-modes .mode-choice:hover {
+  background: var(--slate-700);
+  color: var(--text);
+}
+
+.add-media-modes .mode-choice[aria-pressed='true'] {
+  border-color: var(--line);
+  background: var(--slate-600);
+  color: var(--text);
+}
+
+.file-picker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.file-list {
+  display: grid;
+  gap: 4px;
+  max-height: 150px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.file-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--slate-900);
+  font-size: 13px;
+}
+
+.file-name {
+  min-width: 0;
+}
+
+.file-size {
+  flex: none;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.dialog .file-hint {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
 .dialog .actions {
   display: flex;
   justify-content: flex-end;

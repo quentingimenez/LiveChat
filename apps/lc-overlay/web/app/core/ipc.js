@@ -3,11 +3,11 @@
 
 const internals = window.__TAURI_INTERNALS__ || null;
 
-export function invoke(command, args) {
+export function invoke(command, args, options) {
   if (!internals) {
     return Promise.reject(new Error('Application ouverte hors de LiveChat.'));
   }
-  return internals.invoke(command, args);
+  return internals.invoke(command, args, options);
 }
 
 export function listen(eventName, handler) {

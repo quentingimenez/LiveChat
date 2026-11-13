@@ -60,8 +60,10 @@ function resetGuildData() {
   state.items = [];
   state.itemsLoaded = false;
   state.selectedId = null;
-  state.queue = { playing: null, pending: [] };
+  state.queue = { playing: null, pending: [], at: 0 };
   state.queueStale = false;
+  state.triggers.clear();
+  state.triggerHints.clear();
   state.members = [];
   state.invites = [];
   state.search = '';
@@ -163,6 +165,9 @@ export async function loadQueue() {
     }
     state.queue = { playing: body.playing || null, pending: body.pending || [], at: Date.now() };
     state.queueStale = false;
+    // Board cards listen to this event to update their playback badges without
+    // re-rendering the view (the detail panel may hold a playing video).
+    document.dispatchEvent(new CustomEvent('livechat:queue'));
   } catch {
     return;
   }

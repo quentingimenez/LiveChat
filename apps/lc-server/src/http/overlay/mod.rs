@@ -10,11 +10,14 @@
 //! |---------|--------|------------------|
 //! | `POST` | `/overlay/pair/consume` | publique (code d'appairage) |
 //! | `GET` | `/overlay/media/{assetId}` | URL signée HMAC (`exp`, `sig`, `clientId`) |
-//! | `GET` | `/overlay/meme-board/items` | `Authorization: Bearer` (repli `?token=`) |
-//! | `POST` | `/overlay/meme-board/items` | `Authorization: Bearer` (repli `?token=`) — **écriture refusée en `invite_read_only`** |
-//! | `GET` | `/overlay/meme-board/media/{assetId}` | `Authorization: Bearer` (repli `?token=`) |
-//! | `PATCH` | `/overlay/meme-board/items/{itemId}` | `Authorization: Bearer` (repli `?token=`) — **écriture refusée en `invite_read_only`** |
-//! | `DELETE` | `/overlay/meme-board/items/{itemId}` | `Authorization: Bearer` (repli `?token=`) — **écriture refusée en `invite_read_only`** |
+//! | `GET` | `/overlay/media-board/items` | `Authorization: Bearer` (repli `?token=`) |
+//! | `POST` | `/overlay/media-board/items` | `Authorization: Bearer` (repli `?token=`) — **écriture refusée en `invite_read_only`** |
+//! | `GET` | `/overlay/media-board/media/{assetId}` | `Authorization: Bearer` (repli `?token=`) |
+//! | `PATCH` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` (repli `?token=`) — **écriture refusée en `invite_read_only`** |
+//! | `DELETE` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` (repli `?token=`) — **écriture refusée en `invite_read_only`** |
+//!
+//! Les anciens chemins `/overlay/meme-board/*` restent enregistrés sur les
+//! mêmes handlers pour l'overlay 3.0.0 (compatibilité legacy).
 //!
 //! `GET /overlay/config` **n'existe pas** en protocole v2 (supprimé, cf.
 //! `docs/rust/protocol-v2.md` §8) : la route tombe sur le `fallback` de
@@ -25,7 +28,7 @@
 //! Un jeton dont `overlay_clients.session_mode = INVITE_READ_ONLY` peut lire la
 //! board (`GET items`, `GET media`) mais **pas** la modifier : `POST`, `PATCH`
 //! et `DELETE` répondent `403 {"error":"read_only_session"}` (garde
-//! `meme_board::ensure_writable`, AUD-V-003). La garde s'applique après
+//! `media_board::ensure_writable`, AUD-V-003). La garde s'applique après
 //! l'authentification et donc identiquement pour `Authorization: Bearer` et
 //! pour le repli `?token=` du board.
 //!
@@ -47,7 +50,8 @@
 //! - Le renderer board (Phase 8) envoie un en-tête `Authorization` quand c'est
 //!   possible ; pour les balises `src` (`<video>`, `<img>`) qui ne peuvent pas
 //!   porter d'en-tête, l'extracteur accepte un repli `?token=` **limité aux
-//!   routes `/overlay/meme-board/*`** (parité legacy, cf.
+//!   routes du board média** `/overlay/media-board/*` et à leur alias legacy
+//!   `/overlay/meme-board/*` (parité legacy, cf.
 //!   `http/overlay/auth.rs::query_token`). Ce repli n'existe sur aucune autre
 //!   route overlay.
 
@@ -74,7 +78,7 @@ mod discord_link;
 pub(crate) mod guild;
 mod ingest_code;
 mod media;
-mod meme_board;
+mod media_board;
 mod pair;
 mod queue;
 
@@ -91,22 +95,35 @@ mod tests;
 /// [`crate::app::router`] : il porte donc lui-même le préfixe `/overlay`,
 /// comme [`crate::http::ingest::router`].
 ///
-/// Les routes du meme board exigent l'extracteur [`auth::AuthedOverlayClient`]
+/// Les routes du board média exigent l'extracteur [`auth::AuthedOverlayClient`]
 /// (Bearer uniquement, exécuté avant le handler) ; l'appairage et le média
 /// signé ont leurs propres contrôles (code d'appairage / signature HMAC).
 pub fn router() -> Router<AppState> {
     let authed = Router::new()
         .route(
+            "/overlay/media-board/items",
+            get(media_board::list_items).post(media_board::create_item),
+        )
+        .route(
+            "/overlay/media-board/items/{item_id}",
+            axum::routing::patch(media_board::update_item).delete(media_board::delete_item),
+        )
+        .route(
+            "/overlay/media-board/media/{asset_id}",
+            get(media_board::get_media),
+        )
+        // Legacy overlay 3.0.0 compatibility: remove in 3.1.
+        .route(
             "/overlay/meme-board/items",
-            get(meme_board::list_items).post(meme_board::create_item),
+            get(media_board::list_items).post(media_board::create_item),
         )
         .route(
             "/overlay/meme-board/items/{item_id}",
-            axum::routing::patch(meme_board::update_item).delete(meme_board::delete_item),
+            axum::routing::patch(media_board::update_item).delete(media_board::delete_item),
         )
         .route(
             "/overlay/meme-board/media/{asset_id}",
-            get(meme_board::get_media),
+            get(media_board::get_media),
         )
         .route("/overlay/guild", get(guild::get_guild))
         .route(
@@ -233,8 +250,8 @@ mod session_mode_tests {
     use chrono::{DateTime, TimeZone, Utc};
     use lc_db::{Db, DbConfig};
     use lc_domain::{
-        FixedClock, GuildId, MediaAsset, MediaAssetId, MediaKind, MediaStatus, MemeBoardItem,
-        MemeBoardItemId, OverlayClient, OverlayClientId, OverlaySessionMode,
+        FixedClock, GuildId, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, MediaKind,
+        MediaStatus, OverlayClient, OverlayClientId, OverlaySessionMode,
     };
     use serde_json::{json, Value};
     use tempfile::TempDir;
@@ -312,15 +329,15 @@ mod session_mode_tests {
     }
 
     async fn insert_asset(db: &Db, media_dir: &Path) -> MediaAsset {
-        let file_path = media_dir.join("meme-test.bin");
-        tokio::fs::write(&file_path, b"meme-test-body")
+        let file_path = media_dir.join("media-test.bin");
+        tokio::fs::write(&file_path, b"media-test-body")
             .await
             .unwrap();
         let now = fixed_now();
         let asset = MediaAsset {
             id: MediaAssetId::new_v4(),
             source_hash: "hash-test-session-mode".to_owned(),
-            source_url: "https://example.com/meme.mp4".to_owned(),
+            source_url: "https://example.com/media.mp4".to_owned(),
             kind: MediaKind::Video,
             mime: "video/mp4".to_owned(),
             duration_sec: Some(30),
@@ -339,9 +356,9 @@ mod session_mode_tests {
         asset
     }
 
-    async fn insert_item(db: &Db, asset: &MediaAsset, title: &str) -> MemeBoardItem {
-        let item = MemeBoardItem {
-            id: MemeBoardItemId::new_v4(),
+    async fn insert_item(db: &Db, asset: &MediaAsset, title: &str) -> MediaBoardItem {
+        let item = MediaBoardItem {
+            id: MediaBoardItemId::new_v4(),
             guild_id: guild(),
             media_asset_id: asset.id,
             title: Some(title.to_owned()),
@@ -350,7 +367,7 @@ mod session_mode_tests {
             created_by_name: Some("test".to_owned()),
             created_at: fixed_now(),
         };
-        db.meme_board().create(&item).await.unwrap();
+        db.media_board().create(&item).await.unwrap();
         item
     }
 
@@ -405,7 +422,7 @@ mod session_mode_tests {
             &app,
             request(
                 Method::GET,
-                "/overlay/meme-board/items",
+                "/overlay/media-board/items",
                 Some(READ_ONLY_TOKEN),
                 None,
             ),
@@ -413,7 +430,7 @@ mod session_mode_tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["items"].as_array().map(Vec::len), Some(1));
-        let media_uri = format!("/overlay/meme-board/media/{}", asset.id.to_canonical());
+        let media_uri = format!("/overlay/media-board/media/{}", asset.id.to_canonical());
         let status = send_status(
             &app,
             request(Method::GET, &media_uri, Some(READ_ONLY_TOKEN), None),
@@ -426,7 +443,7 @@ mod session_mode_tests {
             &app,
             request(
                 Method::POST,
-                "/overlay/meme-board/items",
+                "/overlay/media-board/items",
                 Some(READ_ONLY_TOKEN),
                 Some(&json!({})),
             ),
@@ -436,7 +453,7 @@ mod session_mode_tests {
         assert_eq!(body["error"], "read_only_session");
 
         // PATCH : refusé.
-        let item_uri = format!("/overlay/meme-board/items/{}", item.id.to_canonical());
+        let item_uri = format!("/overlay/media-board/items/{}", item.id.to_canonical());
         let (status, body) = send_json(
             &app,
             request(
@@ -461,7 +478,7 @@ mod session_mode_tests {
 
         // L'item est intact en base (aucune mutation partielle).
         let stored = db
-            .meme_board()
+            .media_board()
             .get(item.id)
             .await
             .unwrap()
@@ -483,7 +500,7 @@ mod session_mode_tests {
             &app,
             request(
                 Method::POST,
-                "/overlay/meme-board/items",
+                "/overlay/media-board/items",
                 Some(NORMAL_TOKEN),
                 Some(&json!({})),
             ),
@@ -493,7 +510,7 @@ mod session_mode_tests {
         assert_eq!(body["error"], "invalid_payload");
 
         // PATCH autorisé.
-        let item_uri = format!("/overlay/meme-board/items/{}", item.id.to_canonical());
+        let item_uri = format!("/overlay/media-board/items/{}", item.id.to_canonical());
         let (status, body) = send_json(
             &app,
             request(
@@ -526,7 +543,7 @@ mod session_mode_tests {
         insert_client(&db, OverlaySessionMode::Normal, NORMAL_TOKEN).await;
         let asset = insert_asset(&db, dir.path()).await;
         let item = insert_item(&db, &asset, "titre initial").await;
-        let item_uri = format!("/overlay/meme-board/items/{}", item.id.to_canonical());
+        let item_uri = format!("/overlay/media-board/items/{}", item.id.to_canonical());
 
         // PATCH via ?token= invitée (sans Bearer) : 403.
         let uri = format!("{item_uri}?token={READ_ONLY_TOKEN}");
@@ -544,7 +561,7 @@ mod session_mode_tests {
         assert_eq!(body["error"], "read_only_session");
 
         // POST via ?token= invitée : 403 (avant validation `url`).
-        let uri = format!("/overlay/meme-board/items?token={READ_ONLY_TOKEN}");
+        let uri = format!("/overlay/media-board/items?token={READ_ONLY_TOKEN}");
         let (status, body) =
             send_json(&app, request(Method::POST, &uri, None, Some(&json!({})))).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
@@ -575,7 +592,7 @@ mod session_mode_tests {
         insert_client(&db, OverlaySessionMode::Normal, NORMAL_TOKEN).await;
         let asset = insert_asset(&db, dir.path()).await;
         let item = insert_item(&db, &asset, "titre initial").await;
-        let item_uri = format!("/overlay/meme-board/items/{}", item.id.to_canonical());
+        let item_uri = format!("/overlay/media-board/items/{}", item.id.to_canonical());
 
         // Bearer normal + ?token= invité → le Bearer prime, écriture autorisée.
         let uri = format!("{item_uri}?token={READ_ONLY_TOKEN}");

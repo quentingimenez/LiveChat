@@ -23,8 +23,8 @@ use chrono::{Duration, Utc};
 use lc_db::{Db, DbConfig};
 use lc_domain::{
     Guild, GuildId, GuildInvite, GuildMember, GuildMemberId, GuildRole, IngestClient,
-    IngestClientId, JobStatus, MediaAsset, MediaAssetId, MediaKind, MediaStatus, MemeBoardItem,
-    MemeBoardItemId, OverlayClient, OverlayClientId, OverlaySessionMode, PairingCode,
+    IngestClientId, JobStatus, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId,
+    MediaKind, MediaStatus, OverlayClient, OverlayClientId, OverlaySessionMode, PairingCode,
     PairingCodeEntry, PairingMode, PlaybackJob, PlaybackJobId,
 };
 use serde_json::{json, Value};
@@ -343,9 +343,9 @@ fn media_asset(size_bytes: i64, storage_path: &Path) -> MediaAsset {
     }
 }
 
-fn board_item(guild_id: &GuildId, media_asset_id: MediaAssetId) -> MemeBoardItem {
-    MemeBoardItem {
-        id: MemeBoardItemId::new_v4(),
+fn board_item(guild_id: &GuildId, media_asset_id: MediaAssetId) -> MediaBoardItem {
+    MediaBoardItem {
+        id: MediaBoardItemId::new_v4(),
         guild_id: guild_id.clone(),
         media_asset_id,
         title: Some("Titre".to_owned()),
@@ -606,7 +606,7 @@ async fn csrf_mutation_origine_hostile_refusee() {
 }
 
 #[tokio::test]
-async fn csrf_referer_de_meme_origine_accepte() {
+async fn csrf_referer_origine_identique_accepte() {
     let harness = Harness::new().await;
     let request = harness.request_with_referer(
         Method::POST,
@@ -862,7 +862,7 @@ async fn overview_agrege_guildes_medias_et_playback() {
         .insert(&cache_asset)
         .await
         .expect("média cache");
-    db.meme_board()
+    db.media_board()
         .create(&board_item(&guild_id, board_asset.id))
         .await
         .expect("élément de board");
@@ -914,9 +914,9 @@ async fn overview_agrege_guildes_medias_et_playback() {
     assert_eq!(payload["settings"]["displayMediaFull"], true);
     assert_eq!(payload["settings"]["overrides"]["defaultMediaTime"], 7);
     assert_eq!(payload["settings"]["overrides"]["displayMediaFull"], true);
-    assert_eq!(payload["memeBoard"]["itemsCount"], 1);
-    assert_eq!(payload["memeBoard"]["usedBytes"], 1_048_576_i64);
-    assert_eq!(payload["memeBoard"]["maxBytes"], 15360_i64 * 1024 * 1024);
+    assert_eq!(payload["mediaBoard"]["itemsCount"], 1);
+    assert_eq!(payload["mediaBoard"]["usedBytes"], 1_048_576_i64);
+    assert_eq!(payload["mediaBoard"]["maxBytes"], 15360_i64 * 1024 * 1024);
     assert_eq!(payload["playback"]["pending"], 1);
     assert_eq!(payload["playback"]["playing"], 1);
     assert_eq!(payload["playback"]["failed"], 1);
@@ -1134,7 +1134,7 @@ async fn purge_supprime_les_donnees_de_la_guilde_et_les_medias_orphelins() {
         .insert(&orphan_asset)
         .await
         .expect("média orphelin");
-    db.meme_board()
+    db.media_board()
         .create(&board_item(&guild_id, orphan_asset.id))
         .await
         .expect("élément de board orphelin");
@@ -1148,7 +1148,7 @@ async fn purge_supprime_les_donnees_de_la_guilde_et_les_medias_orphelins() {
         .insert(&kept_asset)
         .await
         .expect("média conservé");
-    db.meme_board()
+    db.media_board()
         .create(&board_item(&other_guild_id, kept_asset.id))
         .await
         .expect("élément de board d'une autre guilde");
@@ -1167,7 +1167,7 @@ async fn purge_supprime_les_donnees_de_la_guilde_et_les_medias_orphelins() {
     assert_eq!(body["deleted"]["overlayClients"], 1);
     assert_eq!(body["deleted"]["pairingCodes"], 1);
     assert_eq!(body["deleted"]["playbackJobs"], 1);
-    assert_eq!(body["deleted"]["memeBoardItems"], 1);
+    assert_eq!(body["deleted"]["mediaBoardItems"], 1);
     assert_eq!(body["deleted"]["orphanMediaAssets"], 1);
     assert_eq!(body["deleted"]["orphanMediaFileDeleteErrors"], 0);
 
@@ -1203,7 +1203,7 @@ async fn purge_ne_supprime_pas_un_fichier_hors_de_la_racine_media() {
         .insert(&outside_asset)
         .await
         .expect("média hors racine");
-    db.meme_board()
+    db.media_board()
         .create(&board_item(&guild_id, outside_asset.id))
         .await
         .expect("élément de board hors racine");
@@ -1355,7 +1355,7 @@ async fn revoke_clients_revokes_guild_clients_and_keeps_guild_data() {
         .insert(&board_asset)
         .await
         .expect("média board");
-    db.meme_board()
+    db.media_board()
         .create(&board_item(&guild_id, board_asset.id))
         .await
         .expect("élément de board");
@@ -1508,13 +1508,13 @@ async fn revoke_clients_revokes_guild_clients_and_keeps_guild_data() {
         Some("123456789012345678")
     );
     assert_eq!(
-        db.meme_board()
+        db.media_board()
             .list_by_guild(&guild_id)
             .await
             .expect("board")
             .len(),
         1,
-        "meme board conservé"
+        "board média conservé"
     );
     assert!(
         db.media_assets()
@@ -1614,7 +1614,7 @@ async fn revoke_clients_requires_admin_token() {
 }
 
 #[tokio::test]
-async fn clear_meme_board_deletes_items_and_only_orphan_media() {
+async fn clear_media_board_deletes_items_and_only_orphan_media() {
     let harness = Harness::new().await;
     let db = harness.db();
     let guild_id = GuildId::parse("42").expect("guilde");
@@ -1625,26 +1625,26 @@ async fn clear_meme_board_deletes_items_and_only_orphan_media() {
         .await
         .expect("client overlay");
 
-    let orphan_path = harness.path("media").join("meme-orphan.png");
+    let orphan_path = harness.path("media").join("media-orphan.png");
     std::fs::write(&orphan_path, b"orphan").expect("fichier orphelin");
     let orphan_asset = media_asset(1024, &orphan_path);
     db.media_assets()
         .insert(&orphan_asset)
         .await
         .expect("média orphelin");
-    db.meme_board()
+    db.media_board()
         .create(&board_item(&guild_id, orphan_asset.id))
         .await
         .expect("élément orphelin");
 
-    let used_path = harness.path("media").join("meme-used.png");
+    let used_path = harness.path("media").join("media-used.png");
     std::fs::write(&used_path, b"used").expect("fichier utilisé");
     let used_asset = media_asset(2048, &used_path);
     db.media_assets()
         .insert(&used_asset)
         .await
         .expect("média utilisé");
-    db.meme_board()
+    db.media_board()
         .create(&board_item(&guild_id, used_asset.id))
         .await
         .expect("élément utilisé");
@@ -1658,7 +1658,7 @@ async fn clear_meme_board_deletes_items_and_only_orphan_media() {
     let (status, body) = harness
         .call_json(
             Method::POST,
-            "/admin/api/guilds/42/meme-board/clear",
+            "/admin/api/guilds/42/media-board/clear",
             &json!({ "confirmGuildId": "42" }),
         )
         .await;
@@ -1668,14 +1668,14 @@ async fn clear_meme_board_deletes_items_and_only_orphan_media() {
     assert_eq!(
         body["deleted"],
         json!({
-            "memeBoardItems": 2,
+            "mediaBoardItems": 2,
             "orphanMediaAssets": 1,
             "orphanMediaFileDeleteErrors": 0,
         })
     );
 
     assert!(db
-        .meme_board()
+        .media_board()
         .list_by_guild(&guild_id)
         .await
         .expect("board")
@@ -1724,12 +1724,16 @@ async fn clear_meme_board_deletes_items_and_only_orphan_media() {
 }
 
 #[tokio::test]
-async fn clear_meme_board_rejects_wrong_confirmation() {
+async fn clear_media_board_rejects_wrong_confirmation() {
     let harness = Harness::new().await;
 
     for body in [json!({ "confirmGuildId": "43" }), json!({})] {
         let (status, response) = harness
-            .call_json(Method::POST, "/admin/api/guilds/42/meme-board/clear", &body)
+            .call_json(
+                Method::POST,
+                "/admin/api/guilds/42/media-board/clear",
+                &body,
+            )
             .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(response["error"], "confirm_guild_id_mismatch");

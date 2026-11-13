@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::config::{ConfigStore, MemeBindings, OverlayConfig, OverlayConfigView};
+use crate::config::{ConfigStore, MediaBindings, OverlayConfig, OverlayConfigView};
 use crate::events::EventBuffer;
 use crate::net::ws::{ConnectionStatus, NetCommand, NetSnapshot};
 
@@ -33,7 +33,7 @@ pub struct AppState {
     config: Mutex<OverlayConfig>,
     overlay_ready: AtomicBool,
     pending: EventBuffer,
-    active_bindings: Mutex<MemeBindings>,
+    active_bindings: Mutex<MediaBindings>,
     /// Instantané de connexion par guilde.
     nets: Mutex<BTreeMap<String, NetSnapshot>>,
     /// Canal de commandes du superviseur de chaque guilde.
@@ -53,7 +53,7 @@ impl AppState {
             config: Mutex::new(config),
             overlay_ready: AtomicBool::new(false),
             pending: EventBuffer::new(),
-            active_bindings: Mutex::new(MemeBindings::default()),
+            active_bindings: Mutex::new(MediaBindings::default()),
             nets: Mutex::new(BTreeMap::new()),
             net_commands: Mutex::new(BTreeMap::new()),
             playback_job: Mutex::new(None),
@@ -107,11 +107,11 @@ impl AppState {
         &self.pending
     }
 
-    pub fn active_bindings(&self) -> MemeBindings {
+    pub fn active_bindings(&self) -> MediaBindings {
         self.lock_bindings().clone()
     }
 
-    pub fn set_active_bindings(&self, bindings: MemeBindings) {
+    pub fn set_active_bindings(&self, bindings: MediaBindings) {
         *self.lock_bindings() = bindings;
     }
 
@@ -334,7 +334,7 @@ impl AppState {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
-    fn lock_bindings(&self) -> MutexGuard<'_, MemeBindings> {
+    fn lock_bindings(&self) -> MutexGuard<'_, MediaBindings> {
         self.active_bindings
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -436,8 +436,8 @@ mod tests {
     fn active_bindings_are_replaceable() {
         let (_dir, store) = temp_store();
         let state = AppState::new(store);
-        let mut bindings = MemeBindings::default();
-        bindings.insert("Ctrl+Shift+1".to_string(), "meme-1".to_string());
+        let mut bindings = MediaBindings::default();
+        bindings.insert("Ctrl+Shift+1".to_string(), "media-1".to_string());
         state.set_active_bindings(bindings.clone());
         assert_eq!(state.active_bindings(), bindings);
     }

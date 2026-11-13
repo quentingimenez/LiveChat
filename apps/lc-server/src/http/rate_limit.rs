@@ -16,7 +16,7 @@
 //! - aucune dépendance supplémentaire n'est ajoutée.
 //!
 //! Les téléchargements média (`GET`/`HEAD` sur les deux routes média) ont leur
-//! propre budget, plus large ([`MEDIA_RATE_LIMIT_MAX`]) : la grille du meme
+//! propre budget, plus large ([`MEDIA_RATE_LIMIT_MAX`]) : la grille du board
 //! board charge une miniature par carte (et plusieurs requêtes `Range` par
 //! vidéo), ce qui épuiserait le budget général et ferait répondre `429` aux
 //! appels JSON. Les URLs média sont signées HMAC ou contrôlées par jeton, un
@@ -239,19 +239,25 @@ fn client_key(ip: Option<IpAddr>) -> ClientKey {
 }
 
 /// Vrai pour un téléchargement média `GET`/`HEAD` : `/overlay/media/{asset_id}`
-/// ou `/overlay/meme-board/media/{asset_id}`, avec `{asset_id}` réduit à un
+/// ou `/overlay/media-board/media/{asset_id}`, avec `{asset_id}` réduit à un
 /// unique segment de chemin non vide. Ces requêtes seules relèvent de
-/// [`MEDIA_RATE_LIMIT_MAX`].
+/// [`MEDIA_RATE_LIMIT_MAX`]. Les chemins legacy `/overlay/meme-board/media/…`
+/// restent comptés dans le même budget.
 fn is_media_request(method: &Method, path: &str) -> bool {
     if !matches!(*method, Method::GET | Method::HEAD) {
         return false;
     }
-    ["/overlay/media/", "/overlay/meme-board/media/"]
-        .iter()
-        .any(|prefix| {
-            path.strip_prefix(prefix)
-                .is_some_and(|asset_id| !asset_id.is_empty() && !asset_id.contains('/'))
-        })
+    [
+        "/overlay/media/",
+        "/overlay/media-board/media/",
+        // Legacy overlay 3.0.0 compatibility: remove in 3.1.
+        "/overlay/meme-board/media/",
+    ]
+    .iter()
+    .any(|prefix| {
+        path.strip_prefix(prefix)
+            .is_some_and(|asset_id| !asset_id.is_empty() && !asset_id.contains('/'))
+    })
 }
 
 /// Exemption : uniquement les adresses loopback en mode développement (tests
@@ -403,7 +409,7 @@ mod tests {
         for (method, path) in [
             (Method::GET, "/overlay/media/abc"),
             (Method::HEAD, "/overlay/media/abc"),
-            (Method::GET, "/overlay/meme-board/media/abc"),
+            (Method::GET, "/overlay/media-board/media/abc"),
         ] {
             assert!(is_media_request(&method, path), "{method} {path}");
         }
@@ -414,7 +420,7 @@ mod tests {
             (Method::GET, "/overlay/media/"),
             (Method::GET, "/overlay/media/a/b"),
             (Method::GET, "/overlay/mediax/a"),
-            (Method::GET, "/overlay/meme-board/items"),
+            (Method::GET, "/overlay/media-board/items"),
             (Method::GET, "/health"),
         ] {
             assert!(!is_media_request(&method, path), "{method} {path}");

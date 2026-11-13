@@ -70,7 +70,7 @@ mod tests {
                 "config-max",
                 "overlays",
                 "stop",
-                "meme-add",
+                "media-add",
                 "lier",
                 "cmsg",
                 "cdire",
@@ -93,15 +93,15 @@ mod tests {
     #[test]
     fn payload_contient_description_et_options_types() {
         let payloads = registration_payloads(Lang::Fr, false);
-        let meme_add = payloads
+        let media_add = payloads
             .iter()
-            .find(|payload| payload.get("name").and_then(|name| name.as_str()) == Some("meme-add"))
+            .find(|payload| payload.get("name").and_then(|name| name.as_str()) == Some("media-add"))
             .unwrap();
-        assert!(meme_add
+        assert!(media_add
             .get("description")
             .and_then(|value| value.as_str())
             .is_some_and(|text| !text.is_empty()));
-        let options = meme_add
+        let options = media_add
             .get("options")
             .and_then(|value| value.as_array())
             .unwrap();

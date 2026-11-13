@@ -26,17 +26,17 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use lc_db::Db;
 use lc_domain::{
-    now_ms, GuildId, JobStatus, MemeBoardItemId, OverlayClientId, PlaybackJob, PlaybackJobId,
+    now_ms, GuildId, JobStatus, MediaBoardItemId, OverlayClientId, PlaybackJob, PlaybackJobId,
 };
 use lc_playback::{
-    PlaybackEndedEvent, PlaybackStateEvent, PlaybackStateOutcome, MEME_JOB_PRIORITY,
+    PlaybackEndedEvent, PlaybackStateEvent, PlaybackStateOutcome, MEDIA_BOARD_JOB_PRIORITY,
 };
 use lc_protocol::{
     close_code, close_reason, is_version_below, outdated_protocol_reason, AckError, AckPayload,
     ClientEnvelope, ClientMessage, HelloPayload, PlaybackEndedPayload, PlaybackStatePayload,
     ServerEnvelope, ServerErrorPayload, ServerMessage, SessionMode, SettingsPayload,
     StopRequestSource, WelcomeConfig, WelcomePayload, HELLO_TIMEOUT_MS,
-    MAX_CLIENT_MESSAGES_PER_SECOND, MAX_FRAME_BYTES, MAX_MEME_TEXT_CHARS,
+    MAX_CLIENT_MESSAGES_PER_SECOND, MAX_FRAME_BYTES, MAX_MEDIA_TEXT_CHARS,
     MAX_PLAYBACK_REMAINING_MS, PEERS_REQUEST_MIN_INTERVAL_MS, PING_INTERVAL_MS,
     PLAYBACK_STATE_MIN_INTERVAL_MS, PROTOCOL_VERSION,
 };
@@ -748,18 +748,18 @@ async fn handle_client_message(
                 }
             }
         }
-        ClientMessage::MemeTrigger(payload) => {
+        ClientMessage::MediaTrigger(payload) => {
             if context.session_mode == SessionMode::InviteReadOnly {
                 send_ack(
                     hub,
                     connection_id,
                     request_id.as_str(),
                     false,
-                    Some(ack_error("read_only", "mème refusé en lecture seule")),
+                    Some(ack_error("read_only", "média refusé en lecture seule")),
                 );
                 return Ok(());
             }
-            let item_id = match MemeBoardItemId::parse(payload.item_id.as_str()) {
+            let item_id = match MediaBoardItemId::parse(payload.item_id.as_str()) {
                 Ok(item_id) => item_id,
                 Err(_) => {
                     send_ack(
@@ -772,7 +772,7 @@ async fn handle_client_message(
                     return Ok(());
                 }
             };
-            let item = match db.meme_board().get(item_id).await {
+            let item = match db.media_board().get(item_id).await {
                 Ok(Some(item)) => item,
                 Ok(None) => {
                     send_ack(
@@ -785,7 +785,7 @@ async fn handle_client_message(
                     return Ok(());
                 }
                 Err(error) => {
-                    warn!(error = %error, "lecture d'un item de meme board impossible");
+                    warn!(error = %error, "lecture d'un item du board média impossible");
                     send_ack(
                         hub,
                         connection_id,
@@ -819,7 +819,7 @@ async fn handle_client_message(
                     return Ok(());
                 }
                 Err(error) => {
-                    warn!(error = %error, "lecture du média d'un meme impossible");
+                    warn!(error = %error, "lecture du média d'un item du board impossible");
                     send_ack(
                         hub,
                         connection_id,
@@ -846,7 +846,7 @@ async fn handle_client_message(
                 .as_deref()
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
-                .map(|text| text.chars().take(MAX_MEME_TEXT_CHARS).collect::<String>());
+                .map(|text| text.chars().take(MAX_MEDIA_TEXT_CHARS).collect::<String>());
             let author_name = context
                 .author_name
                 .clone()
@@ -864,7 +864,7 @@ async fn handle_client_message(
                 author_name,
                 author_image: context.author_image.clone(),
                 duration_sec,
-                priority: MEME_JOB_PRIORITY,
+                priority: MEDIA_BOARD_JOB_PRIORITY,
                 status: JobStatus::Pending,
                 resumes_after_job_id: None,
                 resume_offset_sec: 0,
@@ -880,15 +880,15 @@ async fn handle_client_message(
             match engine.enqueue(&job).await {
                 Ok(()) => debug!(
                     item = %payload.item_id,
-                    "mème déclenché",
+                    "média déclenché",
                 ),
                 Err(error) => {
-                    warn!(error = %error, "échec de l'enfilement d'un mème");
+                    warn!(error = %error, "échec de l'enfilement d'un média");
                     send_server_error(
                         hub,
                         connection_id,
                         "internal_error",
-                        "échec de l'enfilement du mème",
+                        "échec de l'enfilement du média",
                         Some(job.id.to_canonical()),
                     );
                 }

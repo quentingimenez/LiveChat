@@ -4,10 +4,9 @@
 //!
 //! - [`Db`] ouvre un [`SqlitePool`](sqlx::SqlitePool) avec les pragmas imposés
 //!   (WAL, `foreign_keys = ON`, `busy_timeout = 5000`, `synchronous = NORMAL`),
-//!   applique les migrations embarquées
-//!   [`crates/lc-db/migrations/0001_init.sql`] et
-//!   [`crates/lc-db/migrations/0002_playback_single_playing.sql`], puis vérifie
-//!   `app_metadata.schema_version`. Une URL `file:…?mode=ro` ouvre une connexion
+//!   applique les migrations embarquées de `crates/lc-db/migrations/`
+//!   (`0001`..`0005`), puis vérifie `app_metadata.schema_version`. Une URL
+//!   `file:…?mode=ro` ouvre une connexion
 //!   strictement en lecture seule (migrations désactivées, aucun passage WAL).
 //! - Chaque table possède un repository exposé par [`Db`] (`db.media_assets()`,
 //!   `db.playback_jobs()`, …) qui renvoie des entités `lc-domain`.
@@ -56,15 +55,17 @@ pub use retry::with_busy_retry;
 ///
 /// C'est la source unique du schéma initial : `xtask` l'exécute pour créer la
 /// base cible d'une migration legacy, puis seede le registre sqlx avec la seule
-/// version 1. Les migrations suivantes (dont `0002_playback_single_playing.sql`)
-/// sont appliquées par `sqlx` au premier démarrage du serveur.
+/// version 1. Les migrations suivantes (`0002`..`0005`) sont appliquées par
+/// `sqlx` au premier démarrage du serveur.
 ///
 /// `docs/rust/schema-v3.sql` est la copie humaine du schéma complet
-/// (0001 + 0002) ; un test de `lc-db` vérifie que la concaténation des
-/// migrations reste octet pour octet identique à ce contrat.
+/// (0001..0005) ; un test de `lc-db` vérifie que la concaténation des migrations
+/// reste octet pour octet identique à ce contrat.
 pub const MIGRATION_SQL: &str = include_str!("../migrations/0001_init.sql");
+
 pub use repos::{
     DiscordLinkCodesRepository, GuildInvitesRepository, GuildMembersRepository, GuildsRepository,
-    IngestClientsRepository, LinkOutcome, MediaAssetsRepository, MemberChange, MemeBoardRepository,
-    MetadataRepository, OverlayClientsRepository, PairingCodesRepository, PlaybackJobsRepository,
+    IngestClientsRepository, LinkOutcome, MediaAssetsRepository, MediaBoardRepository,
+    MemberChange, MetadataRepository, OverlayClientsRepository, PairingCodesRepository,
+    PlaybackJobsRepository,
 };

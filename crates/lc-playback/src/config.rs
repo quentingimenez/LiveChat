@@ -6,7 +6,7 @@ use chrono::Duration as ChronoDuration;
 
 use crate::{
     DEFAULT_PLAYBACK_DURATION_SEC, DEFAULT_RETENTION_HOURS, GUILD_RUN_MAX_ITERATIONS,
-    MEME_JOB_PRIORITY, MIN_ACTIVE_PLAYBACK_BUSY_LOCK_MS, PLAYBACK_LOCK_PADDING_MS,
+    MEDIA_BOARD_JOB_PRIORITY, MIN_ACTIVE_PLAYBACK_BUSY_LOCK_MS, PLAYBACK_LOCK_PADDING_MS,
     PLAYBACK_STALE_RELEASE_GRACE_MS, PLAYBACK_STATE_MAX_AGE_MS,
 };
 
@@ -25,8 +25,8 @@ pub struct PlaybackConfig {
     pub default_duration_sec: i64,
     /// Rétention des jobs terminés avant purge.
     pub retention: ChronoDuration,
-    /// Priorité déclenchant une préemption (mème).
-    pub meme_priority: i64,
+    /// Priorité déclenchant une préemption (média du board).
+    pub media_board_priority: i64,
     /// Base des URLs média (`{base}/overlay/media/{assetId}`).
     pub api_base_url: String,
     /// Débit minimal de persistance des checkpoints `playback.state`.
@@ -49,7 +49,7 @@ impl Default for PlaybackConfig {
             tick_interval: Duration::from_millis(500),
             default_duration_sec: DEFAULT_PLAYBACK_DURATION_SEC,
             retention: ChronoDuration::hours(DEFAULT_RETENTION_HOURS),
-            meme_priority: MEME_JOB_PRIORITY,
+            media_board_priority: MEDIA_BOARD_JOB_PRIORITY,
             api_base_url: "http://127.0.0.1:3000".to_owned(),
             state_persist_min_interval: Duration::from_secs(1),
             max_guild_iterations: GUILD_RUN_MAX_ITERATIONS,

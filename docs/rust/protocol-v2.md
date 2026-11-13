@@ -259,7 +259,7 @@ Le client mappe :
 | TTL URL média | image ou durée inconnue : **300 s** ; audio/vidéo : `clamp(durationSec + 120, 300, 3600)` | voir §8.1 |
 | Version overlay minimale | `MIN_OVERLAY_VERSION` (défaut `"3.0.0"`, semver simple) | close `4403` — voir §1.6 |
 | `remainingMs` accepté | entier fini, borné **[0, 86 400 000]** | sinon `null` (v1 : clamp identique `socketLoader.ts:229-254`) |
-| Longueur texte de mème | 500 caractères max (tronqué serveur) | v1 : `socketLoader.ts:277-338` |
+| Longueur texte de média | 500 caractères max (tronqué serveur) | v1 : `socketLoader.ts:277-338` |
 | `id` de message | non vide (espaces refusés) et ≤ 64 caractères | sinon `1002 protocol_error` |
 
 Le serveur ne ferme pas pour un `heartbeat` en retard tant que le transport répond ; seul le
@@ -279,7 +279,7 @@ déconnexion, y compris close/erreur/shutdown.
 | `playback.ended` | `PlaybackEndedPayload` | aucune |
 | `error` | `ClientErrorPayload` | aucune (log) |
 | `stop.request` | `StopRequestPayload` (`{}`) | `ack` puis `stop` (reason `manual`) |
-| `meme.trigger` | `MemeTriggerPayload` | `ack` puis `stop`(preempt)+`play` si accepté |
+| `media.trigger` | `MediaTriggerPayload` | `ack` puis `stop`(preempt)+`play` si accepté |
 | `peers.request` | `PeersRequestPayload` (`{}`) | `ack` puis `peers` |
 
 ### 5.1 `hello`
@@ -354,10 +354,10 @@ lecture seule → `ack {ok:false, error:{code:"read_only"}}` sans arrêt ; sinon
 {ok:true}` puis `stop {reason:"manual", jobId}` à la room. Une demande par seconde max (excédent →
 ack `rate_limited`).
 
-### 5.7 `meme.trigger`
+### 5.7 `media.trigger`
 
 ```json
-{"v":2,"type":"meme.trigger","id":"cli-meme-trigger-0001","ts":1794182400000,"payload":{"itemId":"clx7q2x0b0004abcd1234efgh","trigger":"shortcut"}}
+{"v":2,"type":"media.trigger","id":"cli-media-trigger-0001","ts":1794182400000,"payload":{"itemId":"clx7q2x0b0004abcd1234efgh","trigger":"shortcut"}}
 ```
 
 Parité v1 (`index.ts:73-76`, `socketLoader.ts:277-338`). `trigger` ∈ `shortcut` | `ui`.
@@ -365,8 +365,13 @@ Serveur : mode lecture seule → ack `read_only` ; item/média absent ou non `RE
 `item_not_found`/`media_not_ready` ; sinon crée un job priorité 100
 (`text = item.message.trim().slice(0, 500)`, `showText = !!message`,
 `authorName = session.authorName || item.createdByName`, `authorImage = session.authorImage`),
-`ack {ok:true}`, puis préemption : `stop {reason:"preempt"}` du job actif puis `play` du mème
+`ack {ok:true}`, puis préemption : `stop {reason:"preempt"}` du job actif puis `play` du média du board
 (v1 : `suspendPlayingJobForPreemption`, `playbackScheduler.ts:922-997`).
+
+Compatibilité overlay 3.0.0 : l'ancien type `meme.trigger` reste accepté en
+désérialisation et produit le même `ClientMessage::MediaTrigger` ; la
+sérialisation émet toujours `media.trigger`. La fixture
+`v2_meme_trigger_legacy.json` couvre ce cas.
 
 ### 5.8 `peers.request`
 
@@ -388,7 +393,7 @@ reconnexion (v1 : broadcast uniquement à la connexion/déconnexion, `socketLoad
 | `peers` | `PeersPayload` | connexion/déconnexion d'un overlay, `peers.request`, gracieux |
 | `play` | `PlayPayload` | dispatch d'un job (media signé par client) |
 | `stop` | `StopPayload` | arrêt manuel, préemption, révocation, purge |
-| `ack` | `AckPayload` | réponse à `stop.request`, `meme.trigger`, `peers.request` |
+| `ack` | `AckPayload` | réponse à `stop.request`, `media.trigger`, `peers.request` |
 | `error` | `ServerErrorPayload` | erreur non fatale (dispatch, média indisponible) |
 
 ### 6.1 `welcome`
@@ -492,7 +497,7 @@ Exemples : `v2_play_tweet_card.json` (forme minimale) et `v2_play_tweet_card_ric
 | `reason` | Sens v1 | `jobId` |
 |---|---|---|
 | `manual` | arrêt utilisateur/commande/admin (v1 sentinelle `jobId:"manual-stop"` émise par `manualStop.ts:9-60`, consommée par `socketLoader.ts:256-275`) | id du job `PLAYING` si unique, sinon `null` |
-| `preempt` | job suspendu pour laisser passer un mème (v1 `STOP {jobId: activeJob.id}`, `playbackScheduler.ts:922-997`) | id du job suspendu (toujours connu) |
+| `preempt` | job suspendu pour laisser passer un média du board (v1 `STOP {jobId: activeJob.id}`, `playbackScheduler.ts:922-997`) | id du job suspendu (toujours connu) |
 | `revoked` | jeton révoqué (v1 : simple `socket.disconnect(true)`, `socketLoader.ts:88-104` ; admin `adminRoutes.ts:2884-2892`) | `null` ; fermeture `4402` juste après |
 | `purge` | purge admin de la guilde (v1 : arrêt manuel loggué « Admin panel purge », `adminRoutes.ts:2747,2776-2831`) | `null` |
 
@@ -534,7 +539,7 @@ maximum** (`MAX_PEERS`, dédupliqués) ; au-delà, la liste est tronquée après
 ```
 
 ```json
-{"v":2,"type":"ack","id":"srv-ack-0003","ts":1794182400000,"payload":{"ref":"cli-meme-trigger-0002","ok":false,"error":{"code":"read_only","message":"Session en lecture seule : déclenchement refusé."}}}
+{"v":2,"type":"ack","id":"srv-ack-0003","ts":1794182400000,"payload":{"ref":"cli-media-trigger-0002","ok":false,"error":{"code":"read_only","message":"Session en lecture seule : déclenchement refusé."}}}
 ```
 
 - `ref` = `id` de la trame C→S acquittée.
@@ -543,7 +548,7 @@ maximum** (`MAX_PEERS`, dédupliqués) ; au-delà, la liste est tronquée après
   `rate_limited`, `internal_error`.
 - Les messages de flux (`playback.state`, `playback.ended`, `heartbeat`, `error`) ne sont
   **jamais** acquittés (économie de trames) ; seules les requêtes (`stop.request`,
-  `meme.trigger`, `peers.request`) le sont.
+  `media.trigger`, `peers.request`) le sont.
 
 ### 6.7 `error` (S→C)
 
@@ -558,7 +563,7 @@ serveur signale un échec de dispatch/chargement média que l'overlay peut affic
 `server/src/types/module.d.ts:38-61`). Le client ne doit jamais fermer ni réessayer à cause de ce
 message. **Émission effective (rév. 4)** : `dispatch_failed` est émis quand un `play` avec média
 n'a pu être délivré à aucun socket de la room alors que des overlays y sont connectés ; `internal_error`
-est émis quand une requête acquittée (`stop.request`, `meme.trigger`) échoue côté moteur après son
+est émis quand une requête acquittée (`stop.request`, `media.trigger`) échoue côté moteur après son
 `ack`. `media_unavailable` reste réservé aux hooks média Phase 5.
 
 ---
@@ -595,7 +600,7 @@ absent/null = tous les jobs de la guilde ; `source` informatif, défaut serveur 
 `v2_stop_request.json` = `{}` ; `v2_stop_request_user.json` = `{jobId, source:"user"}`.
 `PeersRequestPayload = {}` (objet vide obligatoire).
 
-### 7.7 `MemeTriggerPayload`
+### 7.7 `MediaTriggerPayload`
 `{ itemId: string, trigger: "shortcut"|"ui" }` (`index.ts:73-76`,
 `meme-bindings-service.ts:78-116`).
 
@@ -725,7 +730,7 @@ invalide → `416` (parité v1 `overlayRoutes.ts:147-198,317+`).
 
 - Mode autoritaire = serveur (`overlay_clients.session_mode` / `sessionMode` du welcome et des
   `settings`), normalisé par `overlayAuth.ts:28-34`.
-- `invite_read_only` : le serveur **refuse** `meme.trigger` et `stop.request` avec
+- `invite_read_only` : le serveur **refuse** `media.trigger` et `stop.request` avec
   `ack {ok:false, error:{code:"read_only"}}`. Les autres messages restent acceptés : `heartbeat`,
   `playback.state`, `playback.ended`, `error`, `peers.request`, et les flux S→C (`play`, `stop`,
   `settings`, `peers`) continuent normalement.
@@ -787,7 +792,7 @@ invalide → `416` (parité v1 `overlayRoutes.ts:147-198,317+`).
 | `overlay:error` | `error` (C→S) | identique |
 | `overlay:playback-state` (`playing`/`paused`/`ended`) | `playback.state` (`playing`/`paused`) + `playback.ended` | `ended` extrait dans un message dédié |
 | `overlay:playback-stop` (renderer → serveur) | `playback.ended` | `reason` ajouté |
-| `overlay:meme-trigger` | `meme.trigger` | identique |
+| `overlay:meme-trigger` | `media.trigger` | identique |
 | `overlay:peers` | `peers` | identique ; `peers.request` ajouté |
 | `overlay:stop {jobId:'manual-stop'}` (client) | `stop.request {jobId?, source?}` | `jobId` ciblé, `source` informatif (rév. 2) |
 | `overlay:stop {jobId:'manual-stop'}` (serveur) | `stop {reason:'manual', jobId}` | plus de sentinelle |
@@ -818,7 +823,7 @@ Aucune clé ne change de casse ; le renderer conservé lit les mêmes noms qu'en
 | `error` C→S | `jobId`, `code`, `message` | `index.ts:61-65` |
 | `playback.state` | `jobId`, `state`, `remainingMs` | `index.ts:67-71` |
 | `playback.ended` | `jobId`, `reason` | nouveau |
-| `meme.trigger` | `itemId`, `trigger` | `index.ts:73-76` |
+| `media.trigger` | `itemId`, `trigger` | `index.ts:73-76` |
 | `stop.request` | `jobId` (optionnel), `source` (optionnel : `user`/`hotkey`/`admin`) | nouveau (rév. 2) |
 | `peers` | `guildId`, `peers[].clientId`, `peers[].label` | `index.ts:78-86` |
 | `welcome` | `protocolVersion`, `guildId`, `clientId`, `sessionMode`, `serverVersion`, `serverTime`, `config`, `currentJob` | nouveau + `index.ts:102-108` |
@@ -847,7 +852,7 @@ REST conservé hors WS (rév. 2 : inventaire **22 → 21 endpoints**, `GET /over
 | `playback.ended` | `completed`/`error` → `onPlaybackEnded` ; `manual` → `onPlaybackStopped` (`playbackScheduler.ts:239-346`) |
 | `error` | log structuré uniquement (`socketLoader.ts:221-227`) |
 | `stop.request` | `{jobId?, source?}` (source défaut `user`, sans `jobId` = tous les jobs) → `executeManualStopForGuild` ciblé → `stop {reason:'manual'}` (`manualStop.ts:9-60`) |
-| `meme.trigger` | validation item/média + `createPlaybackJob(priority=100)` + `preemptWithJob` → `stop{preempt}` puis `play` (`socketLoader.ts:277-338`, `playbackScheduler.ts:922-997`) |
+| `media.trigger` | validation item/média + `createPlaybackJob(priority=100)` + `preemptWithJob` → `stop{preempt}` puis `play` (`socketLoader.ts:277-338`, `playbackScheduler.ts:922-997`) |
 | `peers.request` | broadcast `peers` (`socketLoader.ts:76-86`) |
 | envoi `stop {reason:'revoked'}` | après `revoked_at`, **diffusion room du `stop` puis close `4402`** (ordre garanti par la file du socket) ; libération moteur sans second `stop` (`Hub::close_client`, rév. 3) |
 | purge admin | `stop {reason:'purge', jobId:null}` via `broadcast_purge` (`engine.stop_all_with_reason`) + libération de tous les jobs (rév. 3 ; v1 `adminRoutes.ts:2747,2776-2831`) |
@@ -882,14 +887,15 @@ et round-trip serde exact.
 | `v2_settings_normal.json` | S→C | `settings` | mode normal |
 | `v2_settings_invite_read_only.json` | S→C | `settings` | mode invité, `maxMediaTime:null` |
 | `v2_ack_stop_request_ok.json` | S→C | `ack` | `ok:true` |
-| `v2_ack_meme_trigger_ok.json` | S→C | `ack` | `ok:true` |
+| `v2_ack_media_trigger_ok.json` | S→C | `ack` | `ok:true` |
 | `v2_ack_read_only.json` | S→C | `ack` | `ok:false`, `error.code:"read_only"` |
 | `v2_error_render_failed.json` | C→S | `error` | code renderer `render_failed` |
 | `v2_error_dispatch_failed.json` | S→C | `error` | non fatal, `jobId` |
 | `v2_heartbeat.json` | C→S | `heartbeat` | parité v1 |
 | `v2_playback_state.json` | C→S | `playback.state` | `playing`, remainingMs |
 | `v2_playback_ended.json` | C→S | `playback.ended` | `completed` |
-| `v2_meme_trigger.json` | C→S | `meme.trigger` | `shortcut` |
+| `v2_media_trigger.json` | C→S | `media.trigger` | `shortcut` |
+| `v2_meme_trigger_legacy.json` | C→S | `meme.trigger` (legacy) | désérialise en `MediaTrigger` |
 | `v2_stop_request.json` | C→S | `stop.request` | payload vide = tous les jobs |
 | `v2_stop_request_user.json` | C→S | `stop.request` | `jobId` + `source:"user"` (rév. 2) |
 | `v2_peers_request.json` | C→S | `peers.request` | payload vide |
@@ -1010,7 +1016,7 @@ Décisions appliquées par la rév. 4, sans rupture de structure :
    réels ; un `heartbeat` applicatif (ou tout autre message) ne rafraîchit pas la fenêtre, et le
    timeout reste 45 s (§4, §10).
 4. **`error` S→C émis** : `dispatch_failed` (aucun socket n'a pu recevoir un `play` média) et
-   `internal_error` (échec post-ack de `stop.request`/`meme.trigger`) deviennent effectifs ; l'`ack`
+   `internal_error` (échec post-ack de `stop.request`/`media.trigger`) deviennent effectifs ; l'`ack`
    reste la voie des rejets synchrones (§6.6, §6.7). `ref` reste optionnel et n'est pas utilisé par
    le serveur actuel.
 5. **Clés inconnues conservées** : `play`/`tweetCard` gagnent `extra` (`#[serde(flatten)]`) avec
@@ -1032,13 +1038,13 @@ durcissement COR-06/07 est acté par §15.6 et la dette P2-A par §15.7.
   `HEARTBEAT_INTERVAL_MS=15_000`, `PING_INTERVAL_MS=15_000`, `PONG_TIMEOUT_MS=45_000`,
   `MEDIA_URL_TTL_SEC=300`, `MEDIA_URL_EXPIRY_MARGIN_SEC=120`, `MEDIA_URL_TTL_MAX_SEC=3_600`,
   `DEFAULT_MIN_OVERLAY_VERSION="3.0.0"`, `PEERS_REQUEST_MIN_INTERVAL_MS=2_000`,
-  `MAX_PLAYBACK_REMAINING_MS=86_400_000`, `MAX_MEME_TEXT_CHARS=500`, `WS_PATH="/ws"`,
+  `MAX_PLAYBACK_REMAINING_MS=86_400_000`, `MAX_MEDIA_TEXT_CHARS=500`, `WS_PATH="/ws"`,
   `LEGACY_SOCKET_IO_PATH="/socket.io/"`, `HTTP_UPGRADE_REQUIRED=426`.
 - Types : `Envelope<M>` (implémentation manuelle de `Serialize`/`Deserialize` : les champs
   `type`/`payload` de l'enum sont aplatis au même niveau que `v`/`id`/`ts`), `ClientMessage`/
   `ServerMessage` (enums adjacents `#[serde(tag="type", content="payload")]`), payloads en
   structs camelCase, mode `SessionMode`, `MediaKind`, `PlaybackState`, `PlaybackEndedReason`,
-  `StopReason`, `MemeTrigger`, `StopRequestSource`. `WelcomePayload` porte `server_version`
+  `StopReason`, `MediaTrigger`, `StopRequestSource`. `WelcomePayload` porte `server_version`
   (obligatoire) ; `StopRequestPayload` porte `job_id`/`source` optionnels ;
   `CurrentJobPayload` aplatit `PlayPayload` + `startedAt`/`remainingMs`.
   Depuis la rév. 4, `PlayPayload` et `TweetCardPayload` possèdent `#[serde(flatten)] extra:
@@ -1048,8 +1054,10 @@ durcissement COR-06/07 est acté par §15.6 et la dette P2-A par §15.7.
   `media_signature_input(assetId, clientId, exp)`, `media_url_ttl_sec(kind, durationSec)`,
   `outdated_protocol_reason(minVersion)`, `parse_simple_version`, `is_version_below`,
   `is_frame_too_large(len)`.
-- Vérification : `cargo test -p lc-protocol` — **16 tests** dans `tests/fixtures_roundtrip.rs` :
-  round-trip exact des 29 fixtures (table fichier → sens → `type`, égalité de `serde_json::Value`),
-  couverture exhaustive du dossier `tests/fixtures/`, constantes, codes de fermeture, séparation
+- Vérification : `cargo test -p lc-protocol` — **17 tests** dans `tests/fixtures_roundtrip.rs` :
+  round-trip exact des 29 fixtures golden (table fichier → sens → `type`, égalité de
+  `serde_json::Value`) et de la fixture legacy `v2_meme_trigger_legacy.json` (parse en
+  `MediaTrigger`, sérialisation en `media.trigger`), couverture exhaustive du dossier
+  `tests/fixtures/`, constantes, codes de fermeture, séparation
   des sens de message, reprise `welcome.currentJob`, TTL média adaptatif, règle semver,
   `welcome.serverVersion` et préservation des clés inconnues (`unknown_play_and_tweet_card_fields_are_preserved`).

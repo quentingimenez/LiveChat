@@ -6,7 +6,7 @@
 mod common;
 
 use lc_db::{Db, DbConfig, DbError, SCHEMA_VERSION};
-use lc_domain::{MediaAssetId, MemeBoardItemId};
+use lc_domain::{MediaAssetId, MediaBoardItemId};
 
 #[tokio::test]
 async fn migration_fraiche_puis_idempotente() {
@@ -34,7 +34,7 @@ async fn migration_fraiche_puis_idempotente() {
         "guilds",
         "ingest_clients",
         "media_assets",
-        "meme_board_items",
+        "media_board_items",
         "overlay_clients",
         "pairing_codes",
         "playback_jobs",
@@ -143,10 +143,10 @@ async fn violation_de_cle_etrangere_rejetee() {
     let (db, _dir) = common::temp_db().await;
 
     let error = sqlx::query(
-        "INSERT INTO meme_board_items (id, guild_id, media_asset_id, created_at) \
+        "INSERT INTO media_board_items (id, guild_id, media_asset_id, created_at) \
          VALUES (?, ?, ?, ?)",
     )
-    .bind(MemeBoardItemId::new_v4().to_canonical())
+    .bind(MediaBoardItemId::new_v4().to_canonical())
     .bind("123456789012345678")
     .bind(MediaAssetId::new_v4().to_canonical())
     .bind(common::NOW_MS)

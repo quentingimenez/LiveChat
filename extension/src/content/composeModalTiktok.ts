@@ -343,7 +343,7 @@ const ensureModal = (): ComposeModalRefs => {
 
     <label class="lce-compose-modal-checkbox">
       <input id="lce-compose-modal-save-to-board" type="checkbox" />
-      Sauvegarder dans la Meme Board (saveToBoard)
+      Sauvegarder dans le board média (saveToBoard)
     </label>
 
     <p class="lce-compose-modal-status is-hidden" data-lce-compose-status></p>

@@ -23,7 +23,7 @@
 //!   **unicast** (un par socket, avec une URL média signée pour le `clientId`
 //!   de la connexion) et les `stop` en **broadcast** à la room de la guilde ;
 //! - alimente le moteur avec les messages `playback.state`, `playback.ended`,
-//!   `playback.ended`, `meme.trigger` et `stop.request` ;
+//!   `playback.ended`, `media.trigger` et `stop.request` ;
 //! - lance la boucle de fond du moteur (`run_until_shutdown` via `run`) et une
 //!   purge de rétention périodique, toutes deux arrêtées par
 //!   `AppState::shutdown`.

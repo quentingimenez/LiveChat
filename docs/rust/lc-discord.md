@@ -42,7 +42,7 @@ Non-objectifs assumés de cette phase :
 | `src/inputs.rs` | Entrées typées par commande (`CommandInput`, `Invocation`, `MediaSubmission`, etc.). |
 | `src/reply.rs` | Sortie neutre (`Embed`, `Reply`, `Deferral`, `CommandOutcome`) et couleurs legacy. |
 | `src/handlers.rs` | `dispatch` + 14 handlers fidèles au legacy + helpers de durée/erreurs. |
-| `src/context.rs` | Trait `BotContext`, backends injectés (`MediaBackend`, `PlaybackBackend`, `MemeBackend`, `OverlayDirectory`), `DbBotContext`. |
+| `src/context.rs` | Trait `BotContext`, backends injectés (`MediaBackend`, `PlaybackBackend`, `MediaBoardBackend`, `OverlayDirectory`), `DbBotContext`. |
 | `src/error.rs` | `BotError`, `MediaError`, `MediaErrorCode` (11 codes) et messages localisés. |
 | `src/text.rs` | Équivalents legacy : `startCase`, offsets YouTube (`t`/`start`), troncature. |
 | `src/rich_payload.rs` | Format `__LC_OVERLAY_RICH__::` + base64(JSON) du texte overlay. |
@@ -62,7 +62,7 @@ L'ordre ci-dessous est l'**ordre d'enregistrement legacy** (`DiscordLoader`),
 qui est aussi l'ordre affiché par `/help` :
 
 `alive, send, talk, pair-code, help, info, config-defaut, config-displayfull,
-config-max, overlays, stop, meme-add, hidesend, hidetalk`
+config-max, overlays, stop, media-add, hidesend, hidetalk`
 
 | Commande | Nom fr | Nom en | Options | Réponse | Couleur |
 |---|---|---|---|---|---|
@@ -77,7 +77,7 @@ config-max, overlays, stop, meme-add, hidesend, hidetalk`
 | config-max | `config-max` | `config-maxtime` | `nombre` (int, requis) | éphémère | vert |
 | overlays | `overlays` | `overlays` | — | éphémère | vert / jaune |
 | stop | `stop` | `stop` | — | éphémère | vert |
-| meme-add | `meme-add` | `meme-add` | `url`, `media`, `title`, `refresh` | defer éphémère | vert |
+| media-add | `media-add` | `media-add` | `url`, `media`, `title`, `refresh` | defer éphémère | vert |
 | hidesend | `cmsg` | `hsend` | `url`, `media`, `text`, `refresh` | defer éphémère | vert |
 | hidetalk | `cdire` | `htalk` | `text` (str), `voice` (str, requis) | defer éphémère | vert |
 
@@ -113,7 +113,7 @@ pub fn plan_deferral(invocation: &Invocation) -> Deferral;
   `Embed { title, description, color }` ; couleurs legacy :
   vert `0x2ecc71`, rouge `0xe74c3c`, bleu `0x3498db`, jaune `0xf1c40f`.
 - `BotContext` expose : `db() -> &lc_db::Db`, `clock() -> &dyn Clock`,
-  `config() -> &BotConfig`, `media()`, `playback()`, `meme()`,
+  `config() -> &BotConfig`, `media()`, `playback()`, `media_board()`,
   `list_connected_overlays(guild)`, `update_guild_settings(guild, patch)` et
   `generate_pairing_code()`.
 - `DbBotContext` câble `lc-db` + `Clock` + les quatre backends injectés ;
@@ -129,7 +129,7 @@ pub fn plan_deferral(invocation: &Invocation) -> Deferral;
     `ingest_speech(lang, text) -> Result<MediaAsset, SpeechFailure>` ;
   - `PlaybackBackend::enqueue(PlaybackJobRequest)` et
     `stop_guild(&GuildId) -> Result<u64, BotError>` (nombre de jobs libérés) ;
-  - `MemeBackend::add_to_board(MemeAddRequest) -> Result<bool, BotError>`
+  - `MediaBoardBackend::add_to_board(MediaAddRequest) -> Result<bool, BotError>`
     (`true` = créé, `false` = déjà présent) ;
   - `OverlayDirectory::list_connected(&GuildId) -> Result<Vec<ConnectedOverlay>, BotError>`.
 
@@ -160,14 +160,14 @@ l'ordre du catalogue, séparés par `, ` ; `HIDE_COMMANDS_DISABLED` respecté ;
 Titre `LiveChat Server - {année}` (année fournie par l'horloge injectée, donc
 déterministe en test), description = lien GitHub historique, éphémère.
 
-### `/meme-add`
+### `/media-add`
 Guilde obligatoire, puis au moins une source (`url` ou pièce jointe, la pièce
 jointe prime : `media || url`). Sans source : erreur éphémère
-`memeAddCommandMissingMedia`, sans defer (comme le legacy). Sinon defer
+`media_add_missing_media`, sans defer (comme le legacy). Sinon defer
 éphémère, ingestion par `MediaBackend` (le backend gère le cache et
-`forceRefresh`), puis `MemeBackend::add_to_board` avec `title` tronqué à 240
-caractères et l'auteur résolu. Réponse verte `memeAddCommandAnswerCreated` ou
-`...Exists`. Les erreurs d'ingestion sont localisées via `MediaErrorCode`.
+`forceRefresh`), puis `MediaBoardBackend::add_to_board` avec `title` tronqué à
+240 caractères et l'auteur résolu. Réponse verte `media_add_answer_created` ou
+`...exists`. Les erreurs d'ingestion sont localisées via `MediaErrorCode`.
 
 ### `/overlays`
 Guilde obligatoire. `OverlayDirectory` renvoie les clients connectés ; 0
@@ -271,13 +271,13 @@ hors commandes). La boucle gateway n'est volontairement pas dans ce crate.
    avec le variant `TweetCard` du protocole v2. C'est l'écart fonctionnel
    principal.
 2. **Adaptateurs réels absents** : `lc-media` et `lc-playback` étaient des
-   squelettes. `BotContext`/`MediaBackend`/`PlaybackBackend`/`MemeBackend`/
+   squelettes. `BotContext`/`MediaBackend`/`PlaybackBackend`/`MediaBoardBackend`/
    `OverlayDirectory` fixent le contrat ; les adaptateurs Phase 6b devront
    notamment implémenter TTS + cache/modèle média et le scheduler de lecture.
-3. **Meme board** : le pinning legacy (`expiresAt = now + 100 ans`), le contrôle
+3. **Board média** : le pinning legacy (`expiresAt = now + 100 ans`), le contrôle
    de capacité (`MEDIA_BOARD_MAX_TOTAL_MB`) et la somme des tailles ne sont pas
    dans `lc-db` (pas de setter d'expiration ni de liste par guilde côté
-   `MediaAssetsRepository`). Tout est délégué à `MemeBackend::add_to_board` ;
+   `MediaAssetsRepository`). Tout est délégué à `MediaBoardBackend::add_to_board` ;
    l'adaptateur devra soit étendre `lc-db`, soit gérer ces invariants.
 4. **Workers de purge** (codes d'appairage toutes les 60 s, médias expirés,
    jobs, etc.) : restent côté serveur, hors commandes. Les handlers ne purgent

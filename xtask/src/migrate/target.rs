@@ -123,7 +123,7 @@ async fn insert_tables(conn: &mut SqliteConnection, data: &LegacyData) -> Result
     }
 
     insert_table!(data.media_assets.iter());
-    insert_table!(data.meme_board_items.iter());
+    insert_table!(data.media_board_items.iter());
     insert_table!(data.playback_jobs.iter());
     insert_table!(data.guilds.iter());
     insert_table!(data.overlay_clients.iter());

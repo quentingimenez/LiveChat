@@ -228,7 +228,7 @@ async fn claim_job_de_reprise_apres_parent() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn claim_concurrent_ne_prend_pas_deux_fois_le_meme_job() {
+async fn claim_concurrent_ne_prend_pas_deux_fois_un_job() {
     let (db, _dir) = common::temp_db().await;
     let now = common::now();
     let job = common::sample_job(&common::guild("563333333333333333"), now);

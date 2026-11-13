@@ -3,7 +3,7 @@
 > **Statut : Phase 3c + 5b livrée ; durcie par task-49 (COR-13/COR-15).**
 > Owner : `http-core` (task-16 puis task-49).
 > Périmètre : `apps/lc-server/src/http/ingest/**`, `apps/lc-server/src/media/**`,
-> `apps/lc-server/src/http/overlay/{media,meme_board}.rs` (unification board),
+> `apps/lc-server/src/http/overlay/{media,media_board}.rs` (unification board),
 > `crates/lc-media/**` (sécurités pipeline) et ce document.
 
 ## 1. Objectif
@@ -15,13 +15,13 @@ média associé :
 - `POST /ingest/pair/consume` : appairage d'un client d'ingestion à partir d'un
   code `INVITE_READ_ONLY` produit par l'overlay ;
 - `POST /ingest` : soumission d'une URL/média/texte → ingestion dans le cache
-  média, création d'un `PlaybackJob` (ou ajout au meme board) ;
+  média, création d'un `PlaybackJob` (ou ajout au board média) ;
 
 avec les garanties associées :
 
 - cycle `MediaAsset` `PROCESSING → READY` (ou `FAILED` avec code legacy),
   réutilisation par `source_hash`, TTL de cache ;
-- budgets de stockage (cache LRU et meme board épinglé) ;
+- budgets de stockage (cache LRU et board média épinglé) ;
 - hook `on_ingested` pour déclencher la lecture en temps réel (Phase 4b/6b) ;
 - arrêt propre : les processus `ffmpeg`/`yt-dlp` sont tués au drop
   (`kill_on_drop` dans `lc-media`), donc à l'abandon d'un handler au shutdown.
@@ -42,8 +42,8 @@ apps/lc-server/src/
     ├── errors.rs    MediaServiceError (média / base / indisponible)
     ├── hook.rs      trait IngestHook + registre global
     ├── assets.rs    cycle PROCESSING/READY/FAILED + réutilisation + TTL
-    ├── quotas.rs    budgets cache (LRU) et meme board
-    ├── board.rs     ajout au meme board (épinglage 100 ans)
+    ├── quotas.rs    budgets cache (LRU) et board média
+    ├── board.rs     ajout au board média (épinglage 100 ans)
     ├── jobs.rs      création du PlaybackJob (règles de durée legacy)
     └── service.rs   MediaService : pipeline lc-media + persistance
 ```
@@ -131,7 +131,7 @@ Authentification **avant** toute validation de corps, comme le legacy.
 | ni `url`/`media` ni `text` | 400 | `{"error":"invalid_payload"}` |
 | `saveToBoard` sans `url`/`media` | 400 | `{"error":"invalid_payload","message":"saveToBoard requires a resolvable media source"}` |
 | ingestion média en échec | 422 | `{"error":"media_ingestion_failed","code":<CODE>,"message":…}` |
-| `saveToBoard` réussi | 201 | `{"accepted":true,"savedToBoard":true,"created":bool,"guildId","memeBoardItemId","mediaAssetId"}` |
+| `saveToBoard` réussi | 201 | `{"accepted":true,"savedToBoard":true,"created":bool,"guildId","mediaBoardItemId","mediaAssetId"}` (la clé legacy `memeBoardItemId` est aussi émise pour l'overlay 3.0.0) |
 | job créé | 201 | `{"accepted":true,"jobId","guildId","hasMedia":bool,"hasText":bool}` |
 | erreur interne (base) | 500 | `{"error":"internal_error"}` |
 
@@ -186,7 +186,8 @@ réutilisent l'instance. La limite `MEDIA_MAX_CONCURRENT_INGESTIONS` est donc
 globale au serveur, comme le legacy. Une base absente renvoie `Unavailable` →
 `503 ingest_unavailable`.
 
-Le meme board (`POST /overlay/meme-board/items`) utilise la **même**
+Le board média (`POST /overlay/media-board/items`, alias legacy
+`/overlay/meme-board/items`) utilise la **même**
 `MediaService` (AUD-V2-S-003) : cache `READY`/`source_hash`, sémaphore, budget
 cache, `record_failure` et nettoyage `discard_partial_files` sont partagés, plus
 d'ingestion inline custom ni de `shared_pipeline_for_state` dans le handler.
@@ -211,7 +212,7 @@ configurée. Chaque passe `purge_once(db, storage, now)` :
 
 1. supprime les assets `FAILED` inactifs depuis plus de 1 h et `PROCESSING` depuis
    plus de 2 h (`STALE_PROCESSING_TTL`/`FAILED_TTL` legacy, AUD-A4-008) — jamais
-   ceux épinglés par le meme board ou référencés par un job `PENDING`/`PLAYING`,
+   ceux épinglés par le board média ou référencés par un job `PENDING`/`PLAYING`,
    avec suppression du fichier associé ;
 2. évince les assets `READY` expirés via `quotas::purge_candidates` puis
    `evict_source_hashes` (fichiers + lignes) ;
@@ -283,18 +284,18 @@ non `DOWNLOAD_FAILED` comme le legacy : décision assumée, documentée ici.
 Tests réseau réels (SSRF, redirection privée, taille, `file:`) restent
 `#[ignore]` : la CI ne dépend d'aucun réseau.
 
-## 6. Quotas et meme board
+## 6. Quotas et board média
 
 Deux budgets distincts, plans purs fournis par `lc_media::cache` :
 
 - **cache non persistant** : total = assets `READY` non épinglés (les assets du
-  meme board ne comptent pas) ; les assets épinglés ou référencés par un job
+  board média ne comptent pas) ; les assets épinglés ou référencés par un job
   `PENDING`/`PLAYING` ne sont jamais évincés ; éviction LRU
   (`last_accessed_at`, puis `created_at`) si le total + la nouvelle taille dépasse
   `MEDIA_CACHE_MAX_TOTAL_MB`. Éviction = suppression des fichiers normalisés puis
   de la ligne. Budget insuffisant → `CACHE_STORAGE_LIMIT_REACHED` avec le
   message legacy.
-- **meme board** : jamais d'éviction automatique. Un ajout qui dépasserait
+- **board média** : jamais d'éviction automatique. Un ajout qui dépasserait
   `MEDIA_BOARD_MAX_TOTAL_MB` échoue en `BOARD_STORAGE_LIMIT_REACHED` (message
   legacy). Un ajout existant est idempotent (`created:false`) et réépingle
   l'asset (`expires_at = now + 100 ans`, `last_accessed_at = now`).
@@ -302,11 +303,11 @@ Deux budgets distincts, plans purs fournis par `lc_media::cache` :
 Le comptage « actif » (jobs `PENDING`/`PLAYING`) et « épinglé » est calculé par
 requêtes SQL sur `media_asset_id` : les repositories n'offrent pas ces filtres.
 
-Le meme board exposed par `http::overlay::meme_board` partage ces budgets :
-`POST /overlay/meme-board/items` passe par la même `MediaService` puis
-`assets::pin` (expiry à +100 ans) ; la liste charge en une jointure bornée et la
-suppression est transactionnelle (`delete_item_and_release`). Voir
-`docs/rust/server-overlay.md` §7.
+Le board média exposé par `http::overlay::media_board` partage ces budgets :
+`POST /overlay/media-board/items` (et l'alias legacy `/overlay/meme-board/items`)
+passe par la même `MediaService` puis `assets::pin` (expiry à +100 ans) ; la liste
+charge en une jointure bornée et la suppression est transactionnelle
+(`delete_item_and_release`). Voir `docs/rust/server-overlay.md` §7.
 
 ## 7. Jobs et hook temps réel
 

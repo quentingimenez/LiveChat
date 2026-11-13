@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::enums::{GuildRole, JobStatus, MediaKind, MediaStatus, OverlaySessionMode, PairingMode};
 use crate::ids::{
-    GuildId, GuildMemberId, IngestClientId, MediaAssetId, MemeBoardItemId, OverlayClientId,
+    GuildId, GuildMemberId, IngestClientId, MediaAssetId, MediaBoardItemId, OverlayClientId,
     PairingCode as PairingCodeValue, PlaybackJobId,
 };
 
@@ -127,23 +127,23 @@ impl MediaAsset {
     }
 }
 
-/// Élément du meme board d'une guilde.
+/// Élément du board média d'une guilde.
 ///
 /// Contraintes du schéma : `UNIQUE (guild_id, media_asset_id)` et
 /// `ON DELETE CASCADE` depuis `media_assets` (purger un média supprime les
 /// entrées de board qui le référencent).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MemeBoardItem {
+pub struct MediaBoardItem {
     /// Clé primaire UUID.
-    pub id: MemeBoardItemId,
+    pub id: MediaBoardItemId,
     /// Guilde Discord propriétaire.
     pub guild_id: GuildId,
     /// Média associé (aucun doublon par guilde).
     pub media_asset_id: MediaAssetId,
     /// Titre affiché sur le board.
     pub title: Option<String>,
-    /// Texte/message associé au mème.
+    /// Texte/message associé au média.
     pub message: Option<String>,
     /// Auteur Discord (snowflake), si l'ajout vient de Discord.
     pub created_by_discord_user_id: Option<String>,
@@ -168,7 +168,7 @@ pub struct PlaybackJob {
     pub guild_id: GuildId,
     /// Média à lire (`None` pour un job texte seul).
     pub media_asset_id: Option<MediaAssetId>,
-    /// Texte affiché pendant la lecture (mème textuel).
+    /// Texte affiché pendant la lecture (média textuel).
     pub text: Option<String>,
     /// Afficher le texte en plus du média.
     pub show_text: bool,
@@ -260,7 +260,7 @@ pub struct GuildAccess {
     pub standalone: bool,
     /// Serveur Discord lié à une guilde indépendante, si elle en a un.
     pub discord_guild_id: Option<String>,
-    /// Les invités peuvent consulter le meme board.
+    /// Les invités peuvent consulter le board média.
     pub guests_can_view_board: bool,
     /// Date de création (`None` pour une guilde antérieure à la migration 0003).
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]

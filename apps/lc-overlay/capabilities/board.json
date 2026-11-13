@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "board",
-  "description": "Fenêtre Meme Board : gestion des mémos, lecture de la configuration et mises à jour.",
+  "description": "Fenêtre Board : gestion des médias, lecture de la configuration et mises à jour.",
   "windows": ["board"],
   "permissions": ["core:default"]
 }

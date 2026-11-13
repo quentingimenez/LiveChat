@@ -653,10 +653,10 @@ pub(super) async fn purge(
     let deleted_playback_jobs = queries::delete_playback_jobs_for_guild(db, guild_id.as_str())
         .await
         .map_err(|error| AdminError::db("suppression des jobs de playback", error))?;
-    let deleted_meme_board_items =
-        queries::delete_meme_board_items_for_guild(db, guild_id.as_str())
+    let deleted_media_board_items =
+        queries::delete_media_board_items_for_guild(db, guild_id.as_str())
             .await
-            .map_err(|error| AdminError::db("suppression du meme board", error))?;
+            .map_err(|error| AdminError::db("suppression du board média", error))?;
     let deleted_guild_settings = queries::delete_guild_settings(db, guild_id.as_str())
         .await
         .map_err(|error| AdminError::db("suppression des réglages de guilde", error))?;
@@ -690,7 +690,7 @@ pub(super) async fn purge(
             "ingestClients": deleted_ingest_clients,
             "pairingCodes": deleted_pairing_codes,
             "playbackJobs": deleted_playback_jobs,
-            "memeBoardItems": deleted_meme_board_items,
+            "mediaBoardItems": deleted_media_board_items,
             "orphanMediaAssets": deleted_orphan_media_assets,
             "orphanMediaFileDeleteErrors": orphan_media_file_delete_errors,
         },
@@ -781,11 +781,11 @@ pub(super) async fn revoke_clients(
     .into_response())
 }
 
-/// Handler `POST /admin/api/guilds/{guild_id}/meme-board/clear`.
+/// Handler `POST /admin/api/guilds/{guild_id}/media-board/clear`.
 ///
-/// Deletes the guild's meme board items and the media that become orphans.
+/// Deletes the guild's media board items and the media that become orphans.
 /// Media still referenced by a playback job or another board is kept.
-pub(super) async fn clear_meme_board(
+pub(super) async fn clear_media_board(
     State(state): State<AppState>,
     _access: AdminAccess,
     Path(raw_guild_id): Path<String>,
@@ -798,25 +798,25 @@ pub(super) async fn clear_meme_board(
     let candidate_media_asset_ids = queries::guild_board_media_asset_ids(db, guild_id.as_str())
         .await
         .map_err(|error| AdminError::db("board media asset ids", error))?;
-    let deleted_meme_board_items =
-        queries::delete_meme_board_items_for_guild(db, guild_id.as_str())
+    let deleted_media_board_items =
+        queries::delete_media_board_items_for_guild(db, guild_id.as_str())
             .await
-            .map_err(|error| AdminError::db("deleting meme board items", error))?;
+            .map_err(|error| AdminError::db("deleting media board items", error))?;
     let (deleted_orphan_media_assets, orphan_media_file_delete_errors) =
         remove_orphan_media(&state, db, &candidate_media_asset_ids).await?;
 
     tracing::info!(
         guild_id = guild_id.as_str(),
-        meme_board_items = deleted_meme_board_items,
+        media_board_items = deleted_media_board_items,
         orphan_media_assets = deleted_orphan_media_assets,
         orphan_media_file_delete_errors,
-        "meme board cleared from the admin panel"
+        "media board cleared from the admin panel"
     );
 
     Ok(Json(json!({
         "guildId": guild_id.as_str(),
         "deleted": {
-            "memeBoardItems": deleted_meme_board_items,
+            "mediaBoardItems": deleted_media_board_items,
             "orphanMediaAssets": deleted_orphan_media_assets,
             "orphanMediaFileDeleteErrors": orphan_media_file_delete_errors,
         },

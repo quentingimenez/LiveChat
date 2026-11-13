@@ -20,8 +20,9 @@ use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use lc_db::Db;
 use lc_domain::{
-    Guild, GuildId, JobStatus, MediaAsset, MediaAssetId, MediaKind as DomainMediaKind, MediaStatus,
-    OverlayClient, OverlayClientId, OverlaySessionMode, PlaybackJob, PlaybackJobId,
+    Guild, GuildId, JobStatus, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId,
+    MediaKind as DomainMediaKind, MediaStatus, OverlayClient, OverlayClientId, OverlaySessionMode,
+    PlaybackJob, PlaybackJobId,
 };
 use lc_playback::PlaybackStateEvent;
 use lc_protocol::{
@@ -388,7 +389,7 @@ async fn seed_job(
         id: PlaybackJobId::new_v4(),
         guild_id: guild_id.clone(),
         media_asset_id: Some(media_asset_id),
-        text: Some("mème de test".to_owned()),
+        text: Some("média de test".to_owned()),
         show_text: true,
         author_name: Some("Auteur de test".to_owned()),
         author_image: None,
@@ -628,7 +629,7 @@ async fn dispatched_play_carries_a_verifiable_signature() {
         id: PlaybackJobId::new_v4(),
         guild_id: guild.clone(),
         media_asset_id: Some(asset_id),
-        text: Some("mème de test".to_owned()),
+        text: Some("média de test".to_owned()),
         show_text: true,
         author_name: Some("Auteur".to_owned()),
         author_image: None,
@@ -744,7 +745,7 @@ async fn stop_request_stops_the_job_and_broadcasts_stop() {
 }
 
 #[tokio::test]
-async fn invite_read_only_refuses_meme_trigger() {
+async fn invite_read_only_refuses_media_trigger() {
     let server = start_server().await;
     let guild = seed_guild(&server.db).await;
     seed_overlay_client(
@@ -761,8 +762,8 @@ async fn invite_read_only_refuses_meme_trigger() {
     send_value(
         &mut socket,
         &envelope(
-            "meme.trigger",
-            "cli-meme-trigger-0001",
+            "media.trigger",
+            "cli-media-trigger-0001",
             json!({ "itemId": "clx7q2x0b0004abcd1234efgh", "trigger": "shortcut" }),
         ),
     )
@@ -770,6 +771,56 @@ async fn invite_read_only_refuses_meme_trigger() {
     let ack = recv_until_type(&mut socket, "ack").await;
     assert_eq!(ack["payload"]["ok"], false);
     assert_eq!(ack["payload"]["error"]["code"], "read_only");
+}
+
+/// Legacy overlay 3.0.0 compatibility: remove in 3.1.
+#[tokio::test]
+async fn legacy_meme_trigger_type_still_plays_a_media_item() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 12).await;
+    // Le serveur utilise l'horloge système : l'asset de test doit expirer dans
+    // le futur réel pour passer le contrôle `media_not_ready`.
+    sqlx::query("UPDATE media_assets SET expires_at = ? WHERE id = ?")
+        .bind((Utc::now() + chrono::Duration::hours(24)).timestamp_millis())
+        .bind(asset_id.to_canonical())
+        .execute(server.db.pool())
+        .await
+        .expect("expiration du média de test");
+    let item = MediaBoardItem {
+        id: MediaBoardItemId::new_v4(),
+        guild_id: guild.clone(),
+        media_asset_id: asset_id,
+        title: Some("Legacy".to_owned()),
+        message: None,
+        created_by_discord_user_id: None,
+        created_by_name: Some("Auteur".to_owned()),
+        created_at: now(),
+    };
+    server
+        .db
+        .media_board()
+        .create(&item)
+        .await
+        .expect("item de board");
+    let mut socket = connect(server.addr).await;
+    handshake(&mut socket, TOKEN).await;
+
+    send_value(
+        &mut socket,
+        &envelope(
+            "meme.trigger",
+            "cli-legacy-meme-trigger-0001",
+            json!({ "itemId": item.id.to_canonical(), "trigger": "shortcut" }),
+        ),
+    )
+    .await;
+    let ack = recv_until_type(&mut socket, "ack").await;
+    assert_eq!(ack["payload"]["ok"], true);
+    assert_eq!(ack["payload"]["ref"], "cli-legacy-meme-trigger-0001");
+    let play = recv_until_type(&mut socket, "play").await;
+    assert!(play["payload"]["jobId"].as_str().is_some());
 }
 
 #[tokio::test]
@@ -1104,7 +1155,7 @@ fn text_only_job(guild_id: &GuildId, status: JobStatus) -> PlaybackJob {
         id: PlaybackJobId::new_v4(),
         guild_id: guild_id.clone(),
         media_asset_id: None,
-        text: Some("mème sans média".to_owned()),
+        text: Some("texte sans média".to_owned()),
         show_text: true,
         author_name: Some("Auteur".to_owned()),
         author_image: None,
@@ -1151,7 +1202,7 @@ async fn text_only_job_is_played_and_marked_playing() {
         play["payload"]["media"].is_null(),
         "un job texte-seul doit être émis sans média : {play}"
     );
-    assert_eq!(play["payload"]["text"]["value"], "mème sans média");
+    assert_eq!(play["payload"]["text"]["value"], "texte sans média");
 
     let mut status = None;
     for _ in 0..40 {
@@ -1388,7 +1439,7 @@ async fn dispatch_failure_emits_non_fatal_error_frame() {
         id: PlaybackJobId::new_v4(),
         guild_id: guild.clone(),
         media_asset_id: Some(asset_id),
-        text: Some("mème de test".to_owned()),
+        text: Some("média de test".to_owned()),
         show_text: true,
         author_name: Some("Auteur".to_owned()),
         author_image: None,

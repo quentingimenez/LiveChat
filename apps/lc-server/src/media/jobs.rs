@@ -36,7 +36,7 @@ pub struct JobSpec<'a> {
     pub author_image: Option<&'a str>,
     /// Durée explicite demandée par le client, en secondes.
     pub duration_sec: Option<i64>,
-    /// Priorité du job (0 par défaut ; le meme board utilisera la priorité de
+    /// Priorité du job (0 par défaut ; le board média utilisera la priorité de
     /// l'engine en Phase 4b).
     pub priority: i64,
 }

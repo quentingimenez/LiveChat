@@ -77,7 +77,7 @@ prennent `&self` et peuvent être appelées depuis plusieurs tâches.
 | `tick_interval` | 500 ms | période de la boucle de fond (watchdogs, wake, file) |
 | `default_duration_sec` | 30 | durée d'un job texte sans `duration_sec` |
 | `retention` | 24 h | rétention des jobs terminés pour `purge` |
-| `meme_priority` | 100 | priorité de préemption des mèmes |
+| `media_board_priority` | 100 | priorité de préemption des médias du board |
 | `api_base_url` | `http://127.0.0.1:3000` | base des URLs média canoniques |
 | `state_persist_min_interval` | 1 s | throttle d'écriture de `playback.state` |
 | `max_guild_iterations` | 25 | borne anti-boucle d'une passe de guilde |
@@ -196,7 +196,7 @@ keep-alive, la libération survient au plus 15 s après le dernier.
 | `MIN_ACTIVE_PLAYBACK_BUSY_LOCK_MS` (l.11) | `MIN_ACTIVE_PLAYBACK_BUSY_LOCK_MS` / `min_busy_lock_ms` |
 | `PLAYBACK_STATE_MAX_AGE_MS` (l.13) | `PLAYBACK_STATE_MAX_AGE_MS` / `state_snapshot_max_age_ms` |
 | `GUILD_RUN_MAX_ITERATIONS` (l.15) | `GUILD_RUN_MAX_ITERATIONS` / `max_guild_iterations` |
-| `MEME_JOB_PRIORITY = 100` (l.19) | `MEME_JOB_PRIORITY` |
+| `MEME_JOB_PRIORITY = 100` (l.19) | `MEDIA_BOARD_JOB_PRIORITY` |
 | `suspendPlayingJobForPreemption` (l.922) | `suspend_for_preemption` |
 | `estimateRemainingMs` (l.999) | `estimated_remaining_ms` |
 | `releaseStalePlayingJob` (l.601) | branche stale de `run_guild` |
@@ -210,7 +210,7 @@ trame JSON -> Envelope<ClientMessage>
   playback.ended   -> engine.handle_playback_ended(PlaybackEndedEvent::new(...))
   error            -> log + engine.handle_error(guild, job_id)
   stop.request     -> engine.stop(guild, payload.job_id, payload.source)
-  meme.trigger     -> createPlaybackJob(priority = engine.config().meme_priority)
+  media.trigger    -> createPlaybackJob(priority = engine.config().media_board_priority)
                       puis engine.enqueue(&job)
   peers.request    -> rooms peers (hors crate)
 hello (avant)      -> auth + welcome ; currentJob = engine.current_job(&guild)
@@ -263,7 +263,7 @@ Limitation transactionnelle : `createPlaybackJob` + `enqueue` ne sont pas atomiq
 | `tick_sans_job_ne_fait_rien` | passe vide |
 | `dispatch_texte_puis_watchdog_passe_au_suivant` | payload texte, `busy_until`, un seul `PLAYING`, watchdog |
 | `ordre_priorite_puis_soumission` | ordre `priority DESC` |
-| `preemption_meme_puis_reprise_du_parent` | mème priorité 100, `stop preempt`, reprise avec offset/durée |
+| `preemption_media_du_board_puis_reprise_du_parent` | média du board priorité 100, `stop preempt`, reprise avec offset/durée |
 | `stop_cible_puis_global` | `stop.request` ciblé puis global, `jobId` du payload |
 | `stop_avec_raison_revoked` | révocation admin |
 | `busy_until_futur_bloque_puis_expire` | verrou de guilde |

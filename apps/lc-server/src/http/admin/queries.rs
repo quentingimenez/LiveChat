@@ -38,11 +38,11 @@ pub async fn overlay_clients(db: &Db) -> Result<Vec<OverlayClientRow>, DbError> 
     .map_err(DbError::from)
 }
 
-/// Éléments du meme board avec la taille de leur média : `(guild_id, size_bytes)`.
-pub async fn meme_board_sizes(db: &Db) -> Result<Vec<(String, i64)>, DbError> {
+/// Éléments du board média avec la taille de leur média : `(guild_id, size_bytes)`.
+pub async fn media_board_sizes(db: &Db) -> Result<Vec<(String, i64)>, DbError> {
     sqlx::query_as::<_, (String, i64)>(
         "SELECT items.guild_id, assets.size_bytes \
-         FROM meme_board_items AS items \
+         FROM media_board_items AS items \
          JOIN media_assets AS assets ON assets.id = items.media_asset_id",
     )
     .fetch_all(db.pool())
@@ -62,17 +62,17 @@ pub async fn playback_counts(db: &Db) -> Result<Vec<(String, String, i64)>, DbEr
     .map_err(DbError::from)
 }
 
-/// Octets occupés par le cache : médias `READY` absents du meme board.
+/// Octets occupés par le cache : médias `READY` absents du board média.
 ///
 /// Même définition que l'agrégat legacy (`status: READY`,
-/// `memeBoardItems: { none: {} }`).
+/// `mediaBoardItems: { none: {} }`).
 pub async fn cache_used_bytes(db: &Db) -> Result<i64, DbError> {
     sqlx::query_scalar::<_, i64>(
         "SELECT COALESCE(SUM(size_bytes), 0) \
          FROM media_assets AS assets \
          WHERE assets.status = 'READY' \
            AND NOT EXISTS ( \
-               SELECT 1 FROM meme_board_items AS items \
+               SELECT 1 FROM media_board_items AS items \
                WHERE items.media_asset_id = assets.id \
            )",
     )
@@ -81,10 +81,10 @@ pub async fn cache_used_bytes(db: &Db) -> Result<i64, DbError> {
     .map_err(DbError::from)
 }
 
-/// Médias référencés par une guilde : meme board + jobs de playback.
+/// Médias référencés par une guilde : board média + jobs de playback.
 pub async fn guild_media_asset_ids(db: &Db, guild_id: &str) -> Result<Vec<String>, DbError> {
     sqlx::query_scalar::<_, String>(
-        "SELECT media_asset_id FROM meme_board_items WHERE guild_id = ? \
+        "SELECT media_asset_id FROM media_board_items WHERE guild_id = ? \
          UNION \
          SELECT media_asset_id FROM playback_jobs \
          WHERE guild_id = ? AND media_asset_id IS NOT NULL",
@@ -96,10 +96,10 @@ pub async fn guild_media_asset_ids(db: &Db, guild_id: &str) -> Result<Vec<String
     .map_err(DbError::from)
 }
 
-/// Media asset ids referenced by the guild's meme board only.
+/// Media asset ids referenced by the guild's media board only.
 pub async fn guild_board_media_asset_ids(db: &Db, guild_id: &str) -> Result<Vec<String>, DbError> {
     sqlx::query_scalar::<_, String>(
-        "SELECT DISTINCT media_asset_id FROM meme_board_items WHERE guild_id = ?1",
+        "SELECT DISTINCT media_asset_id FROM media_board_items WHERE guild_id = ?1",
     )
     .bind(guild_id)
     .fetch_all(db.pool())
@@ -206,9 +206,9 @@ pub async fn delete_playback_jobs_for_guild(db: &Db, guild_id: &str) -> Result<u
     Ok(result.rows_affected())
 }
 
-/// Supprime le meme board d'une guilde ; retourne le nombre supprimé.
-pub async fn delete_meme_board_items_for_guild(db: &Db, guild_id: &str) -> Result<u64, DbError> {
-    let result = sqlx::query("DELETE FROM meme_board_items WHERE guild_id = ?1")
+/// Supprime le board média d'une guilde ; retourne le nombre supprimé.
+pub async fn delete_media_board_items_for_guild(db: &Db, guild_id: &str) -> Result<u64, DbError> {
+    let result = sqlx::query("DELETE FROM media_board_items WHERE guild_id = ?1")
         .bind(guild_id)
         .execute(db.pool())
         .await?;
@@ -238,7 +238,7 @@ pub async fn unreferenced_media(db: &Db, id: &str) -> Result<Option<OrphanMediaR
         "SELECT storage_path FROM media_assets \
          WHERE id = ?1 \
            AND NOT EXISTS ( \
-               SELECT 1 FROM meme_board_items WHERE media_asset_id = ?1 \
+               SELECT 1 FROM media_board_items WHERE media_asset_id = ?1 \
            ) \
            AND NOT EXISTS ( \
                SELECT 1 FROM playback_jobs WHERE media_asset_id = ?1 \

@@ -186,8 +186,12 @@ fn permissions_payload(role: GuildRole, guests_can_view_board: bool) -> Value {
         "viewQueue": role.can(Permission::ViewQueue),
         "play": role.can(Permission::TriggerPlayback),
         "stop": role.can(Permission::StopPlayback),
-        "addMeme": role.can(Permission::AddMeme),
-        "editAnyMeme": role.can(Permission::EditAnyMeme),
+        "addMedia": role.can(Permission::AddMedia),
+        "editAnyMedia": role.can(Permission::EditAnyMedia),
+        // Legacy overlay 3.0.0 compatibility: remove in 3.1.
+        "addMeme": role.can(Permission::AddMedia),
+        // Legacy overlay 3.0.0 compatibility: remove in 3.1.
+        "editAnyMeme": role.can(Permission::EditAnyMedia),
         "moderateQueue": role.can(Permission::ModerateQueue),
         "manageMembers": role.can(Permission::ManageMembers),
         "manageInvites": role.can(Permission::ManageInvites),

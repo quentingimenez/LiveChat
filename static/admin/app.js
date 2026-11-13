@@ -4,7 +4,7 @@
  * Provenance : static/admin/app.js, extrait du panneau legacy
  * (server/src/components/admin/adminRoutes.ts), puis réduit à l'exploitation :
  * jeton admin, vue d'ensemble, arrêt de la lecture, révocation des overlays et
- * extensions, vidage du meme board, suppression d'une guilde (avec départ du
+ * extensions, vidage du board, suppression d'une guilde (avec départ du
  * bot), déliaison Discord, cookie TikTok, création de guilde et émission de
  * codes admin.
  *
@@ -320,7 +320,7 @@ const playbackStat = (playback) => {
 const buildGuildCard = (guild) => {
   const card = createElement('article', 'guild-card');
   const overlays = guild.overlays || {};
-  const board = guild.memeBoard || {};
+  const board = guild.mediaBoard || {};
   const playback = guild.playback || {};
   const discord = guildDiscordInfo(guild);
   const connectedCount = Number(overlays.connectedCount) || 0;
@@ -365,7 +365,7 @@ const buildGuildCard = (guild) => {
 
   const boardStat = createElement('div', 'stat');
   boardStat.append(
-    createElement('span', 'stat-label', 'Meme board'),
+    createElement('span', 'stat-label', 'Board'),
     createElement(
       'strong',
       'stat-value',
@@ -375,7 +375,7 @@ const buildGuildCard = (guild) => {
   const boardProgress = document.createElement('progress');
   boardProgress.max = 100;
   boardProgress.value = boardPercent;
-  boardProgress.setAttribute('aria-label', 'Occupation du meme board');
+  boardProgress.setAttribute('aria-label', 'Occupation du board');
   boardStat.append(
     boardProgress,
     createElement(
@@ -409,7 +409,7 @@ const buildGuildCard = (guild) => {
   revokeButton.dataset.action = 'revoke-clients';
   revokeButton.dataset.guildId = guild.id || '';
 
-  const clearBoardButton = createElement('button', 'button danger', 'Vider la board');
+  const clearBoardButton = createElement('button', 'button danger', 'Vider le board');
   clearBoardButton.type = 'button';
   clearBoardButton.dataset.action = 'clear-board';
   clearBoardButton.dataset.guildId = guild.id || '';
@@ -733,7 +733,7 @@ const revokeClients = async (button, guildId) => {
     'Révoquer tous les overlays et extensions de la guilde « ' +
       guildName +
       ' » ? Les membres devront rejoindre avec un nouveau code. ' +
-      'La meme board et la guilde sont conservées. ' +
+      'Le board et la guilde sont conservés. ' +
       'Retapez l’identifiant de la guilde pour confirmer :',
     '',
   );
@@ -791,9 +791,9 @@ const clearBoard = async (button, guildId) => {
   const guild = findGuild(guildId);
   const guildName = guild && typeof guild.name === 'string' ? guild.name : guildId;
   const typed = window.prompt(
-    'Vider la meme board de la guilde « ' +
+    'Vider le board de la guilde « ' +
       guildName +
-      ' » ? Tous les mèmes et leurs médias seront supprimés définitivement. ' +
+      ' » ? Tous les médias du board et leurs fichiers seront supprimés définitivement. ' +
       'Retapez l’identifiant de la guilde pour confirmer :',
     '',
   );
@@ -809,11 +809,11 @@ const clearBoard = async (button, guildId) => {
   }
 
   button.disabled = true;
-  setStatus('Vidage du meme board en cours…', 'muted');
+  setStatus('Vidage du board en cours…', 'muted');
 
   try {
     const payload = await api(
-      '/admin/api/guilds/' + encodeURIComponent(guildId) + '/meme-board/clear',
+      '/admin/api/guilds/' + encodeURIComponent(guildId) + '/media-board/clear',
       {
         method: 'POST',
         body: { confirmGuildId: guildId },
@@ -827,13 +827,13 @@ const clearBoard = async (button, guildId) => {
     };
 
     setStatus(
-      'Meme board de « ' +
+      'Board de « ' +
         guildName +
-        ' » vidée : ' +
-        count(deleted.memeBoardItems) +
-        ' mème(s) et ' +
+        ' » vidé : ' +
+        count(deleted.mediaBoardItems) +
+        ' média(s) et ' +
         count(deleted.orphanMediaAssets) +
-        ' média(s) supprimé(s).',
+        ' fichier(s) supprimé(s).',
       'ok',
     );
 
@@ -852,7 +852,7 @@ const purgeGuild = async (button, guildId) => {
   let question =
     'Action irréversible : la guilde « ' +
     guildName +
-    ' », ses overlays, extensions, membres, sa meme board et ses médias seront supprimés';
+    ' », ses overlays, extensions, membres, son board et ses fichiers seront supprimés';
 
   if (discord.kind !== 'none') {
     question += ', et le bot quittera le serveur Discord ' + discord.serverId;
@@ -899,8 +899,8 @@ const purgeGuild = async (button, guildId) => {
       ' · lectures : ' +
       count(deleted.playbackJobs) +
       ' · board : ' +
-      count(deleted.memeBoardItems) +
-      ' · médias : ' +
+      count(deleted.mediaBoardItems) +
+      ' · fichiers : ' +
       count(deleted.orphanMediaAssets) +
       '.';
 

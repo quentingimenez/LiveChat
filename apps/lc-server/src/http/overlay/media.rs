@@ -314,7 +314,7 @@ pub(super) async fn resolve_media_file(
 
 /// Sert un fichier média avec `Range`/`HEAD` (mise en forme legacy conservée).
 ///
-/// Utilisé par la route média signée et par le média du meme board (protégé
+/// Utilisé par la route média signée et par le média du board média (protégé
 /// Bearer). Le corps de `ServeFile` est converti en `axum::body::Body`.
 pub(super) async fn serve_file(
     asset: &MediaAsset,

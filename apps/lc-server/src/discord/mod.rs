@@ -60,8 +60,8 @@ pub mod registration;
 pub mod runtime;
 
 pub use adapters::{
-    bot_config_from, DbMemeBackend, DbOverlayDirectory, DiscordAdapters, UnavailableMediaBackend,
-    UnavailablePlaybackBackend,
+    bot_config_from, DbMediaBoardBackend, DbOverlayDirectory, DiscordAdapters,
+    UnavailableMediaBackend, UnavailablePlaybackBackend,
 };
 pub use error::DiscordError;
 pub use event_handler::DiscordEventHandler;

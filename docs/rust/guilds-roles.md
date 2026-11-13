@@ -25,10 +25,10 @@ Côté overlay, `config.json` contient une liste d'adhésions (`memberships`). L
 |-------|---------|--------------------|------|
 | `guilds` | `standalone` | `INTEGER NOT NULL DEFAULT 0`, `CHECK IN (0,1)` | `1` : créée hors Discord ; `0` : identifiant = snowflake Discord |
 | `guilds` | `discord_guild_id` | `TEXT`, index unique partiel sur les valeurs non nulles | Serveur Discord lié à une guilde indépendante |
-| `guilds` | `guests_can_view_board` | `INTEGER NOT NULL DEFAULT 1`, `CHECK IN (0,1)` | Autorise les invités à consulter le meme board |
+| `guilds` | `guests_can_view_board` | `INTEGER NOT NULL DEFAULT 1`, `CHECK IN (0,1)` | Autorise les invités à consulter le board média |
 | `guilds` | `created_at` | `INTEGER` nullable | `NULL` pour une guilde antérieure à la migration |
 | `overlay_clients` | `member_id` | `TEXT REFERENCES guild_members(id)` | Membre propriétaire de l'overlay |
-| `meme_board_items` | `created_by_member_id` | `TEXT` | Auteur d'un mème, pour le droit « modifier ses propres mèmes » |
+| `media_board_items` | `created_by_member_id` | `TEXT` | Auteur d'un média, pour le droit « modifier ses propres médias » |
 
 La migration crée les index `idx_guilds_discord_guild_id`, `idx_guild_members_guild`, `idx_overlay_clients_member` et `idx_guild_invites_guild`.
 
@@ -87,9 +87,9 @@ Les rôles sont stockés en majuscules (`ADMIN`, `MEMBER`, `GUEST`) et sérialis
 | `ViewBoard` | oui | oui | oui |
 | `TriggerPlayback` | oui | oui | non |
 | `StopPlayback` | oui | oui | non |
-| `AddMeme` | oui | oui | non |
-| `EditOwnMeme` | oui | oui | non |
-| `EditAnyMeme` | oui | non | non |
+| `AddMedia` | oui | oui | non |
+| `EditOwnMedia` | oui | oui | non |
+| `EditAnyMedia` | oui | non | non |
 | `ModerateQueue` | oui | non | non |
 | `ManageMembers` | oui | non | non |
 | `ManageInvites` | oui | non | non |
@@ -118,19 +118,19 @@ WHERE id = ? AND removed_at IS NULL
 
 Une guilde conserve donc au moins un admin actif ; la vérification est faite dans l'instruction de mise à jour, donc deux rétrogradations concurrentes ne peuvent pas vider la guilde de ses admins. Si aucune ligne n'est modifiée, `classify` distingue `NotFound` (membre inconnu ou déjà retiré) de `LastAdmin` (membre actif protégé). Les handlers traduisent `LastAdmin` en `409 {"error":"last_admin"}` sur `PATCH` et `DELETE /overlay/admin/members/{memberId}`, ainsi que sur `POST /overlay/leave` pour le départ du dernier admin (`apps/lc-server/src/http/overlay/admin.rs`, `guild.rs`).
 
-### Modification des mèmes (`can_edit`)
+### Modification des médias (`can_edit`)
 
-`can_edit` (`apps/lc-server/src/http/overlay/meme_board.rs`) décide si un client peut modifier ou supprimer un mème :
+`can_edit` (`apps/lc-server/src/http/overlay/media_board.rs`) décide si un client peut modifier ou supprimer un média :
 
-1. s'il a `EditAnyMeme` (admin) : `true` ;
-2. sinon, s'il n'a pas `EditOwnMeme` (invité) : `false` ;
+1. s'il a `EditAnyMedia` (admin) : `true` ;
+2. sinon, s'il n'a pas `EditOwnMedia` (invité) : `false` ;
 3. sinon, compare le membre propriétaire de l'overlay au membre auteur de `created_by_member_id` : égaux → `true` ; différents → `false` ; l'un des deux absent → `true`.
 
-Le dernier cas couvre un mème antérieur aux rôles ou ajouté depuis Discord, ainsi qu'un overlay sans membre : ils restent modifiables par tout membre. `GET /overlay/meme-board/items` renvoie `createdByMemberId` et `canEdit` pour chaque élément.
+Le dernier cas couvre un média antérieur aux rôles ou ajouté depuis Discord, ainsi qu'un overlay sans membre : ils restent modifiables par tout membre. `GET /overlay/media-board/items` renvoie `createdByMemberId` et `canEdit` pour chaque élément.
 
 ### Visibilité du board pour les invités
 
-`GuildRole::can_view_board` renvoie `guests_can_view_board` pour `GUEST`, et `true` pour `ADMIN` et `MEMBER`. `GuildsRepository::set_guests_can_view_board` crée la ligne de guilde si nécessaire ; la valeur par défaut est `1`. `ensure_board_visible` (`meme_board.rs`) ne consulte le réglage que pour un invité ; si la ligne `guilds` est absente, la valeur retenue est `true` (`access.is_none_or(...)`). Un invité non autorisé reçoit `403 {"error":"forbidden"}` sur `GET /overlay/meme-board/items` et `GET /overlay/meme-board/media/{assetId}`. Un admin ou un membre passe sans consulter le réglage.
+`GuildRole::can_view_board` renvoie `guests_can_view_board` pour `GUEST`, et `true` pour `ADMIN` et `MEMBER`. `GuildsRepository::set_guests_can_view_board` crée la ligne de guilde si nécessaire ; la valeur par défaut est `1`. `ensure_board_visible` (`media_board.rs`) ne consulte le réglage que pour un invité ; si la ligne `guilds` est absente, la valeur retenue est `true` (`access.is_none_or(...)`). Un invité non autorisé reçoit `403 {"error":"forbidden"}` sur `GET /overlay/media-board/items` et `GET /overlay/media-board/media/{assetId}`. Un admin ou un membre passe sans consulter le réglage.
 
 ## Rejoindre une guilde
 
@@ -147,7 +147,7 @@ Normalisation : le code est trimé, les tirets sont retirés (`replace('-', "")`
 
 ### Code appareil
 
-`POST /overlay/device-code` émet une invitation à usage unique, valable 10 minutes (`DEVICE_CODE_TTL_MINUTES`) : `member_id` et `created_by_member_id` = membre courant, `max_uses = 1`, rôle = rôle courant, aucun corps. Un second overlay qui consomme ce code n'ajoute pas de membre : `consume_pairing` retrouve le membre par `member_id`, exige qu'il soit actif et rattache le nouvel overlay. Le rôle utilisé est le rôle courant du membre, pas celui figé dans l'invitation ; un membre rétrogradé entre-temps obtient son rôle actuel. Le `displayName` fourni est ignoré pour un membre existant (`code_appareil_rattache_au_meme_membre`). Les codes appareil ne sont pas listés par `GET /overlay/admin/invites`, qui filtre les invitations dont `member_id` est non nul.
+`POST /overlay/device-code` émet une invitation à usage unique, valable 10 minutes (`DEVICE_CODE_TTL_MINUTES`) : `member_id` et `created_by_member_id` = membre courant, `max_uses = 1`, rôle = rôle courant, aucun corps. Un second overlay qui consomme ce code n'ajoute pas de membre : `consume_pairing` retrouve le membre par `member_id`, exige qu'il soit actif et rattache le nouvel overlay. Le rôle utilisé est le rôle courant du membre, pas celui figé dans l'invitation ; un membre rétrogradé entre-temps obtient son rôle actuel. Le `displayName` fourni est ignoré pour un membre existant (`code_appareil_rattache_membre_existant`). Les codes appareil ne sont pas listés par `GET /overlay/admin/invites`, qui filtre les invitations dont `member_id` est non nul.
 
 ### Règle de révocation par libellé
 
@@ -200,7 +200,7 @@ Erreurs : `400 invalid_payload` (JSON malformé ou code absent), `404 pairing_co
 
 ## Routes overlay
 
-Toutes les routes authentifiées acceptent `Authorization: Bearer <token>`. Le repli `?token=` n'est accepté que sous `/overlay/meme-board/*` (`query_token` dans `auth.rs`) ; l'en-tête Bearer prime toujours. `AuthedOverlayClient` charge un client non révoqué, rafraîchit `last_seen_at` au mieux, puis charge le membre actif. Erreurs communes : `401 {"error":"unauthorized"}` si le jeton est absent, inconnu ou révoqué ; `503 {"error":"database_unavailable"}` sans base ; `500 {"error":"internal_error"}` sur échec base.
+Toutes les routes authentifiées acceptent `Authorization: Bearer <token>`. Le repli `?token=` n'est accepté que sous `/overlay/media-board/*` (`query_token` dans `auth.rs`) ; l'en-tête Bearer prime toujours. `AuthedOverlayClient` charge un client non révoqué, rafraîchit `last_seen_at` au mieux, puis charge le membre actif. Erreurs communes : `401 {"error":"unauthorized"}` si le jeton est absent, inconnu ou révoqué ; `503 {"error":"database_unavailable"}` sans base ; `500 {"error":"internal_error"}` sur échec base.
 
 | Méthode | Chemin | Droit requis |
 |---------|--------|--------------|
@@ -213,11 +213,11 @@ Toutes les routes authentifiées acceptent `Authorization: Bearer <token>`. Le r
 | `GET` | `/overlay/queue` | `ViewQueue` (tous les rôles) |
 | `DELETE` | `/overlay/queue/{jobId}` | `ModerateQueue` (admin) |
 | `DELETE` | `/overlay/queue` | `ModerateQueue` (admin) |
-| `GET` | `/overlay/meme-board/items` | `ViewBoard` (invité selon `guests_can_view_board`) |
-| `POST` | `/overlay/meme-board/items` | `AddMeme` (admin, membre) |
-| `GET` | `/overlay/meme-board/media/{assetId}` | `ViewBoard` (invité selon `guests_can_view_board`) |
-| `PATCH` | `/overlay/meme-board/items/{itemId}` | `EditAnyMeme` (admin) ou `EditOwnMeme` + auteur (membre) |
-| `DELETE` | `/overlay/meme-board/items/{itemId}` | `EditAnyMeme` (admin) ou `EditOwnMeme` + auteur (membre) |
+| `GET` | `/overlay/media-board/items` | `ViewBoard` (invité selon `guests_can_view_board`) |
+| `POST` | `/overlay/media-board/items` | `AddMedia` (admin, membre) |
+| `GET` | `/overlay/media-board/media/{assetId}` | `ViewBoard` (invité selon `guests_can_view_board`) |
+| `PATCH` | `/overlay/media-board/items/{itemId}` | `EditAnyMedia` (admin) ou `EditOwnMedia` + auteur (membre) |
+| `DELETE` | `/overlay/media-board/items/{itemId}` | `EditAnyMedia` (admin) ou `EditOwnMedia` + auteur (membre) |
 | `GET` | `/overlay/admin/members` | `ManageMembers` |
 | `PATCH` | `/overlay/admin/members/{memberId}` | `ManageMembers` |
 | `DELETE` | `/overlay/admin/members/{memberId}` | `ManageMembers` |
@@ -239,11 +239,11 @@ Toutes les routes authentifiées acceptent `Authorization: Bearer <token>`. Le r
 | `GET /overlay/queue` | aucun | `{playing, pending, serverTime}` | aucun (les trois rôles ont `ViewQueue`) |
 | `DELETE /overlay/queue/{jobId}` | aucun | `{removed:true ou false}` | `403 forbidden` (non-admin) |
 | `DELETE /overlay/queue` | aucun | `{removedCount:n}` | `403 forbidden` (non-admin) |
-| `GET /overlay/meme-board/items?q=&limit=&offset=` | aucun | `{total,limit,offset,items}` | `403 forbidden` (`guildId` différent ou board masqué aux invités) |
-| `POST /overlay/meme-board/items` | `{"url":"…","title":"…","message":"…","forceRefresh":false}` ; `url` obligatoire | `{created, item}` (`created:false` si déjà épinglé) | `400 invalid_payload`, `403 read_only_session`, `422 media_ingestion_failed` |
-| `GET /overlay/meme-board/media/{assetId}` | aucun | flux binaire (`200`, `206`, `416`) | `403 forbidden`, `404 media_not_found`, `404 media_not_found_on_disk` |
-| `PATCH /overlay/meme-board/items/{itemId}` | `{"title":"…","message":"…"}` ; au moins un des deux | `{updated:true,item:{id,title,message}}` | `400 invalid_payload`, `403 read_only_session`, `403 forbidden`, `404 item_not_found` |
-| `DELETE /overlay/meme-board/items/{itemId}` | aucun | `{deleted:true ou false}` | `403 read_only_session`, `403 forbidden` |
+| `GET /overlay/media-board/items?q=&limit=&offset=` | aucun | `{total,limit,offset,items}` | `403 forbidden` (`guildId` différent ou board masqué aux invités) |
+| `POST /overlay/media-board/items` | `{"url":"…","title":"…","message":"…","forceRefresh":false}` ; `url` obligatoire | `{created, item}` (`created:false` si déjà épinglé) | `400 invalid_payload`, `403 read_only_session`, `422 media_ingestion_failed` |
+| `GET /overlay/media-board/media/{assetId}` | aucun | flux binaire (`200`, `206`, `416`) | `403 forbidden`, `404 media_not_found`, `404 media_not_found_on_disk` |
+| `PATCH /overlay/media-board/items/{itemId}` | `{"title":"…","message":"…"}` ; au moins un des deux | `{updated:true,item:{id,title,message}}` | `400 invalid_payload`, `403 read_only_session`, `403 forbidden`, `404 item_not_found` |
+| `DELETE /overlay/media-board/items/{itemId}` | aucun | `{deleted:true ou false}` | `403 read_only_session`, `403 forbidden` |
 | `GET /overlay/admin/members` | aucun | `{count, items}` | `403 forbidden` |
 | `PATCH /overlay/admin/members/{memberId}` | `{"role":"admin"}` (admin, member ou guest) | `{updated:true,member:{id,role}}` | `400 invalid_payload`, `400 invalid_role`, `403 forbidden`, `404 member_not_found`, `409 last_admin` |
 | `DELETE /overlay/admin/members/{memberId}` | aucun | `{removed:true}` | `403 forbidden`, `404 member_not_found`, `409 last_admin` |
@@ -252,7 +252,7 @@ Toutes les routes authentifiées acceptent `Authorization: Bearer <token>`. Le r
 | `POST /overlay/admin/invites/{code}/revoke` | aucun | `{found:true, revoked:true ou false}` | `403 forbidden`, `404 invite_not_found` |
 | `PATCH /overlay/admin/settings` | champs partiels `name`, `defaultMediaTime`, `maxMediaTime`, `displayMediaFull`, `guestsCanViewBoard` | `{updated:true, guild}` | `400 invalid_payload`, `400 invalid_name`, `403 forbidden` |
 
-`GET /overlay/guild` renvoie `standalone: false`, `name: null` et des réglages `null` si la guilde n'a pas de ligne. `permissions` contient exactement `viewBoard`, `viewQueue`, `play`, `stop`, `addMeme`, `editAnyMeme`, `moderateQueue`, `manageMembers`, `manageInvites`, `manageSettings`.
+`GET /overlay/guild` renvoie `standalone: false`, `name: null` et des réglages `null` si la guilde n'a pas de ligne. `permissions` contient exactement `viewBoard`, `viewQueue`, `play`, `stop`, `addMedia`, `editAnyMedia`, `moderateQueue`, `manageMembers`, `manageInvites`, `manageSettings`. Pour l'overlay 3.0.0, les clés legacy `addMeme` et `editAnyMeme` restent émises avec les mêmes valeurs (suppression prévue en 3.1).
 
 `PATCH /overlay/profile` exige un membre rattaché. Un pseudo vide après normalisation donne `invalid_display_name` ; un avatar non `http(s)` et non `data:image/{png,jpeg,webp,gif};base64,` est ignoré (`None`) plutôt que refusé. Le nom et l'avatar sont recopiés sur les overlays actifs du membre (`update_author_by_member`). `POST /overlay/leave` sans membre révoque seulement l'overlay courant et ferme sa session avec `4402` (`{left:true}`). Avec un membre, il applique la règle du dernier admin, marque `removed_at`, révoque les overlays actifs du membre et ferme leurs sessions WebSocket avec `4402` (`close_code::REVOKED`).
 
@@ -304,7 +304,7 @@ Le handler ne vérifie pas que la guilde existe : `issue_admin_code` appelle dir
 
 ### Purge
 
-`POST /admin/api/guilds/{guild_id}/purge` exige `confirmGuildId` égal à l'identifiant de la route (`400 confirm_guild_id_mismatch` sinon) et accepte `removeOrphanMedia` (booléen, `true` par défaut). Après avoir libéré les jobs `PLAYING` et fermé les overlays connectés, la purge supprime les clients overlay, puis les invitations, puis les membres (`delete_by_guild` sur `guild_invites` puis `guild_members`). Cet ordre respecte `overlay_clients.member_id`. La réponse détaille les compteurs dans `deleted` (`guildSettings`, `overlayClients`, `ingestClients`, `pairingCodes`, `playbackJobs`, `memeBoardItems`, `orphanMediaAssets`, `orphanMediaFileDeleteErrors`).
+`POST /admin/api/guilds/{guild_id}/purge` exige `confirmGuildId` égal à l'identifiant de la route (`400 confirm_guild_id_mismatch` sinon) et accepte `removeOrphanMedia` (booléen, `true` par défaut). Après avoir libéré les jobs `PLAYING` et fermé les overlays connectés, la purge supprime les clients overlay, puis les invitations, puis les membres (`delete_by_guild` sur `guild_invites` puis `guild_members`). Cet ordre respecte `overlay_clients.member_id`. La réponse détaille les compteurs dans `deleted` (`guildSettings`, `overlayClients`, `ingestClients`, `pairingCodes`, `playbackJobs`, `mediaBoardItems`, `orphanMediaAssets`, `orphanMediaFileDeleteErrors`).
 
 ## Overlay multi-guilde
 
@@ -319,18 +319,18 @@ Le fichier est `%APPDATA%\LiveChat\config.json` (`apps/lc-overlay/src/config.rs`
   "clientId": "2f1c9e4a-3b7d-4c1e-9a2f-5d6e7f8a9b0c",
   "guildId": "9123456789012345678",
   "guestMode": false,
-  "memeBindings": { "Ctrl+Shift+1": "média-1" },
+  "mediaBindings": { "Ctrl+Shift+1": "média-1" },
   "memberships": [
-    { "serverUrl": "https://api.exemple.tld", "guildId": "9123456789012345678", "guildName": "Les Sardines", "clientToken": "jeton-guilde-active", "clientId": "2f1c9e4a-3b7d-4c1e-9a2f-5d6e7f8a9b0c", "memberId": "6a5b4c3d-2e1f-4a9b-8c7d-6e5f4a3b2c1d", "displayName": "Alice", "role": "admin", "guestMode": false, "muted": false, "memeBindings": { "Ctrl+Shift+1": "média-1" } }
+    { "serverUrl": "https://api.exemple.tld", "guildId": "9123456789012345678", "guildName": "Les Sardines", "clientToken": "jeton-guilde-active", "clientId": "2f1c9e4a-3b7d-4c1e-9a2f-5d6e7f8a9b0c", "memberId": "6a5b4c3d-2e1f-4a9b-8c7d-6e5f4a3b2c1d", "displayName": "Alice", "role": "admin", "guestMode": false, "muted": false, "mediaBindings": { "Ctrl+Shift+1": "média-1" } }
   ]
 }
 ```
 
-Les champs historiques de premier niveau (`serverUrl`, `clientToken`, `clientId`, `guildId`, `guestMode`, `memeBindings`) sont le miroir de la guilde active. Le renderer d'affichage, le tray et les raccourcis continuent de les lire. `authorName` et `deviceName` restent des champs legacy : le miroir ne les recopie pas.
+Les champs historiques de premier niveau (`serverUrl`, `clientToken`, `clientId`, `guildId`, `guestMode`, `mediaBindings`) sont le miroir de la guilde active. Le renderer d'affichage, le tray et les raccourcis continuent de les lire. `authorName` et `deviceName` restent des champs legacy : le miroir ne les recopie pas. Au chargement, l'ancienne clé `memeBindings` est encore lue si `mediaBindings` est absent ; elle est ensuite réenregistrée sous `mediaBindings`.
 
-`reconcile_memberships` applique ces règles : les adhésions dont `serverUrl`, `guildId` ou `clientToken` est vide sont supprimées ; les doublons de `guildId` sont supprimés en gardant le premier ; si les champs historiques forment une configuration appairée complète, ils font foi et l'adhésion de la guilde active est mise à jour (`serverUrl`, `clientToken`, `clientId`, `guestMode`, `memeBindings`) ou créée avec `displayName = authorName` ; sinon, la guilde active est considérée comme purgée : son adhésion est retirée si `guildId` est renseigné, la première restante est recopiée dans les champs historiques, ou `clientToken`, `clientId`, `guildId` et `guestMode` sont remis à zéro s'il n'en reste aucune.
+`reconcile_memberships` applique ces règles : les adhésions dont `serverUrl`, `guildId` ou `clientToken` est vide sont supprimées ; les doublons de `guildId` sont supprimés en gardant le premier ; si les champs historiques forment une configuration appairée complète, ils font foi et l'adhésion de la guilde active est mise à jour (`serverUrl`, `clientToken`, `clientId`, `guestMode`, `mediaBindings`) ou créée avec `displayName = authorName` ; sinon, la guilde active est considérée comme purgée : son adhésion est retirée si `guildId` est renseigné, la première restante est recopiée dans les champs historiques, ou `clientToken`, `clientId`, `guildId` et `guestMode` sont remis à zéro s'il n'en reste aucune.
 
-`join` recopie une adhésion dans les champs historiques et la rend active. `activate` fait de même pour une adhésion existante. `update_membership` modifie une adhésion et met à jour le miroir si elle est active. `leave` retire l'adhésion ; si elle était active, `clientToken`, `clientId`, `guildId`, `guestMode` et `memeBindings` sont effacés, puis `reconcile_memberships` promeut la suivante. `membership_views` expose les adhésions sans jeton pour l'interface.
+`join` recopie une adhésion dans les champs historiques et la rend active. `activate` fait de même pour une adhésion existante. `update_membership` modifie une adhésion et met à jour le miroir si elle est active. `leave` retire l'adhésion ; si elle était active, `clientToken`, `clientId`, `guildId`, `guestMode` et `mediaBindings` sont effacés, puis `reconcile_memberships` promeut la suivante. `membership_views` expose les adhésions sans jeton pour l'interface.
 
 ### Un superviseur WebSocket par guilde
 
@@ -371,15 +371,15 @@ Sur `4401` (jeton invalide) ou `4402` (appareil révoqué), `close_step` renvoie
 | `guild_set_muted` | `{guildId?, muted}` | Met à jour la sourdine ; `invalid_payload` si `muted` manque, `unknown_guild` si inconnue |
 | `guild_leave` | `{guildId}` | Appelle `POST /overlay/leave` ; `invalid_guild_id` si absent, `unknown_guild` si inconnue ; sur `409`, conserve l'adhésion et renvoie le code d'erreur ; sur toute autre réponse ou erreur réseau, retire l'adhésion localement |
 | `guild_api` | `{guildId?, method?, path?, body?}` | Appel REST authentifié vers `/overlay/…` ; méthodes `GET`, `POST`, `PATCH`, `DELETE` ; renvoie `{ok,status,body}` |
-| `guild_media_url` | `{guildId?, assetId}` | URL `/overlay/meme-board/media/{assetId}?token=…` pour `<img>`/`<video>` |
+| `guild_media_url` | `{guildId?, assetId}` | URL `/overlay/media-board/media/{assetId}?token=…` pour `<img>`/`<video>` |
 | `pairing_consume` | `{serverUrl, code, deviceName?, displayName?, avatar?}` | Appelle `POST {serverUrl}/overlay/pair/consume`, ajoute l'adhésion et la rend active, masque la fenêtre d'appairage, affiche l'overlay si activé, reconnecte les superviseurs |
 
-`guild_leave` et `guild_api` ciblent par défaut la guilde active. `guild_api` impose que le chemin commence par `/overlay/` et ne contienne ni `..` ni `\` ; le jeton est ajouté par le shell et n'est jamais exposé au board. `overlay_get_config` retire `clientToken` des projections des fenêtres `overlay` et `pairing` ; seule la fenêtre `board` le reçoit.
+`guild_leave` et `guild_api` ciblent par défaut la guilde active. `guild_api` impose que le chemin commence par `/overlay/` et ne contienne ni `..` ni `\` ; le jeton est ajouté par le shell et n'est jamais exposé au board. `overlay_get_config` retire `clientToken` des projections des fenêtres `overlay` et `pairing` ; seule la fenêtre `board` le reçoit. Les anciens chemins `/overlay/meme-board/...` restent acceptés par le serveur pour l'overlay 3.0.0.
 
 | Fenêtre | Commandes autorisées |
 |---------|----------------------|
 | `overlay` | `overlay_get_config`, `overlay_renderer_ready`, `overlay_report_error`, `overlay_report_playback_state`, `overlay_report_playback_stop` |
-| `board` | `overlay_get_config`, `overlay_report_error`, `meme_board_get_bindings`, `meme_board_set_bindings`, `meme_board_trigger`, `meme_board_stop`, `overlay_check_updates`, `overlay_install_update`, `pairing_consume`, `guilds_list`, `guild_select`, `guild_set_muted`, `guild_leave`, `guild_api`, `guild_media_url` |
+| `board` | `overlay_get_config`, `overlay_report_error`, `media_board_get_bindings`, `media_board_set_bindings`, `media_board_trigger`, `media_board_stop`, `overlay_check_updates`, `overlay_install_update`, `pairing_consume`, `guilds_list`, `guild_select`, `guild_set_muted`, `guild_leave`, `guild_api`, `guild_media_url` |
 | `pairing` | `overlay_get_config`, `overlay_report_error`, `pairing_consume` |
 
 Toute autre fenêtre, y compris un libellé vide ou inconnu, n'a aucune commande autorisée.
@@ -414,7 +414,7 @@ son identifiant local :
 Résolution : pour **toutes** les commandes sauf `/lier`, le bot remplace le
 snowflake du serveur par `GuildsRepository::resolve_discord(snowflake)`. Un
 serveur lié vise donc la guilde indépendante pour ses réglages, sa file, son
-meme board et ses overlays. La ligne `guilds` native du serveur Discord (si elle
+board média et ses overlays. La ligne `guilds` native du serveur Discord (si elle
 existait déjà) est laissée telle quelle : `guild_create` ne la crée plus pour un
 serveur lié, ne la supprime pas, et ses overlays cessent simplement de recevoir
 les commandes de ce serveur, désormais destinées à la guilde indépendante.
@@ -425,6 +425,6 @@ les commandes de ce serveur, désormais destinées à la guilde indépendante.
 - La file d'attente n'a pas de réordonnancement : les routes se limitent à la lecture et à la suppression.
 - Un job retiré de la file passe à l'état `FAILED` ; la route ne retire pas le job `PLAYING`.
 - Un changement de rôle ferme les sessions WebSocket du membre avec le code `1001` pour qu'elles se reconnectent et reprennent leur mode à jour.
-- Les raccourcis clavier ne valent que pour la guilde active : ils sont lus dans `config.meme_bindings`, miroir de cette guilde.
-- L'URL des médias du board embarque encore le jeton en query (`board_media_url`), ce que le serveur accepte uniquement sous `/overlay/meme-board/*`.
+- Les raccourcis clavier ne valent que pour la guilde active : ils sont lus dans `config.media_bindings`, miroir de cette guilde.
+- L'URL des médias du board embarque encore le jeton en query (`board_media_url`), ce que le serveur accepte uniquement sous `/overlay/media-board/*`.
 - L'arbitrage local d'affichage n'a pas été validé contre le délai de surveillance du moteur de lecture côté serveur. Le moteur libère un job `PLAYING` au-delà de sa durée attendue plus `stale_release_grace_ms` (10 s par défaut, `crates/lc-playback/src/lib.rs`) ; l'attente d'un `play` dans la file locale n'est pas couverte par un test d'interaction.

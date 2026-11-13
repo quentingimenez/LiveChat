@@ -121,13 +121,13 @@ off();
 
 | Méthode | Valeur simulée |
 | --- | --- |
-| `getConfig()` | `{ serverUrl: null, clientToken: null, guildId: null, clientId: null, guestMode: false, showText: true, volume: 1, memeBindings: {} }` |
+| `getConfig()` | `{ serverUrl: null, clientToken: null, guildId: null, clientId: null, guestMode: false, showText: true, volume: 1, mediaBindings: {} }` |
 | `rendererReady()` | No-op ; planifie l'émission `overlay://settings` (comme le fait le main après le handshake). |
 | `reportError` / `reportPlaybackState` / `reportPlaybackStop` | No-op, journalisés dans le journal des appels. |
 | `consumePairing()` | `{ ok: true }` — **aucune requête réseau** n'est faite. |
-| `getMemeBindings()` | `{ bindings: {} }` |
-| `setMemeBindings(payload)` | `{ ok: true, bindings: <payload normalisé>, failedAccelerators: [] }` |
-| `triggerMeme()` / `stopMemePlayback()` | `{ ok: true }` |
+| `getMediaBindings()` | `{ bindings: {} }` |
+| `setMediaBindings(payload)` | `{ ok: true, bindings: <payload normalisé>, failedAccelerators: [] }` |
+| `triggerMedia()` / `stopMediaPlayback()` | `{ ok: true }` |
 
 Rien n'est persisté : le mock ne lit ni n'écrit de configuration, ne contacte pas le serveur et ne crée pas de fenêtre.
 
@@ -145,8 +145,8 @@ Bearer du board (voir `docs/rust/overlay-bridge.md` §12.4). Tableau complet, ca
 | `onPlay(cb)` / `onStop(cb)` / `onSettings(cb)` | retourne une fonction de désabonnement |
 | `reportError(p)` / `reportPlaybackState(p)` / `reportPlaybackStop(p)` | fire-and-forget |
 | `consumePairing(p)` | `Promise<{ ok: boolean }>` |
-| `getMemeBindings()` / `setMemeBindings(p)` | `Promise<…>` |
-| `triggerMeme(p)` / `stopMemePlayback()` | `Promise<{ ok, reason? }>` |
+| `getMediaBindings()` / `setMediaBindings(p)` | `Promise<…>` |
+| `triggerMedia(p)` / `stopMediaPlayback()` | `Promise<{ ok, reason? }>` |
 
 Les méthodes fire-and-forget renvoient une `Promise` **toujours résolue** (échec journalisé en `console.warn`) afin de ne
 jamais produire de rejet non géré dans le renderer legacy, qui ignore leur retour. Les méthodes de type `invoke`

@@ -51,22 +51,9 @@ export const ERROR_LABELS = {
   unsupported_media: 'Format de fichier non pris en charge.',
 };
 
-// Legacy overlay 3.0.0 compatibility: remove in 3.1.
-const LEGACY_PERMISSION_KEYS = {
-  addMedia: 'addMeme',
-  editAnyMedia: 'editAnyMeme',
-};
-
 export function can(permission) {
   const permissions = state.info && state.info.permissions;
-  if (!permissions) {
-    return false;
-  }
-  if (permissions[permission] !== undefined) {
-    return Boolean(permissions[permission]);
-  }
-  const legacy = LEGACY_PERMISSION_KEYS[permission];
-  return Boolean(legacy && permissions[legacy]);
+  return Boolean(permissions && permissions[permission]);
 }
 
 export function activeGuild() {

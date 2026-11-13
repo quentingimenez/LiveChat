@@ -252,7 +252,7 @@ Toutes les routes authentifiées acceptent `Authorization: Bearer <token>`. Le r
 | `POST /overlay/admin/invites/{code}/revoke` | aucun | `{found:true, revoked:true ou false}` | `403 forbidden`, `404 invite_not_found` |
 | `PATCH /overlay/admin/settings` | champs partiels `name`, `defaultMediaTime`, `maxMediaTime`, `displayMediaFull`, `guestsCanViewBoard` | `{updated:true, guild}` | `400 invalid_payload`, `400 invalid_name`, `403 forbidden` |
 
-`GET /overlay/guild` renvoie `standalone: false`, `name: null` et des réglages `null` si la guilde n'a pas de ligne. `permissions` contient exactement `viewBoard`, `viewQueue`, `play`, `stop`, `addMedia`, `editAnyMedia`, `moderateQueue`, `manageMembers`, `manageInvites`, `manageSettings`. Pour l'overlay 3.0.0, les clés legacy `addMeme` et `editAnyMeme` restent émises avec les mêmes valeurs (suppression prévue en 3.1).
+`GET /overlay/guild` renvoie `standalone: false`, `name: null` et des réglages `null` si la guilde n'a pas de ligne. `permissions` contient exactement `viewBoard`, `viewQueue`, `play`, `stop`, `addMedia`, `editAnyMedia`, `moderateQueue`, `manageMembers`, `manageInvites`, `manageSettings`.
 
 `PATCH /overlay/profile` exige un membre rattaché. Un pseudo vide après normalisation donne `invalid_display_name` ; un avatar non `http(s)` et non `data:image/{png,jpeg,webp,gif};base64,` est ignoré (`None`) plutôt que refusé. Le nom et l'avatar sont recopiés sur les overlays actifs du membre (`update_author_by_member`). `POST /overlay/leave` sans membre révoque seulement l'overlay courant et ferme sa session avec `4402` (`{left:true}`). Avec un membre, il applique la règle du dernier admin, marque `removed_at`, révoque les overlays actifs du membre et ferme leurs sessions WebSocket avec `4402` (`close_code::REVOKED`).
 
@@ -326,7 +326,7 @@ Le fichier est `%APPDATA%\LiveChat\config.json` (`apps/lc-overlay/src/config.rs`
 }
 ```
 
-Les champs historiques de premier niveau (`serverUrl`, `clientToken`, `clientId`, `guildId`, `guestMode`, `mediaBindings`) sont le miroir de la guilde active. Le renderer d'affichage, le tray et les raccourcis continuent de les lire. `authorName` et `deviceName` restent des champs legacy : le miroir ne les recopie pas. Au chargement, l'ancienne clé `memeBindings` est encore lue si `mediaBindings` est absent ; elle est ensuite réenregistrée sous `mediaBindings`.
+Les champs historiques de premier niveau (`serverUrl`, `clientToken`, `clientId`, `guildId`, `guestMode`, `mediaBindings`) sont le miroir de la guilde active. Le renderer d'affichage, le tray et les raccourcis continuent de les lire. `authorName` et `deviceName` restent des champs legacy : le miroir ne les recopie pas.
 
 `reconcile_memberships` applique ces règles : les adhésions dont `serverUrl`, `guildId` ou `clientToken` est vide sont supprimées ; les doublons de `guildId` sont supprimés en gardant le premier ; si les champs historiques forment une configuration appairée complète, ils font foi et l'adhésion de la guilde active est mise à jour (`serverUrl`, `clientToken`, `clientId`, `guestMode`, `mediaBindings`) ou créée avec `displayName = authorName` ; sinon, la guilde active est considérée comme purgée : son adhésion est retirée si `guildId` est renseigné, la première restante est recopiée dans les champs historiques, ou `clientToken`, `clientId`, `guildId` et `guestMode` sont remis à zéro s'il n'en reste aucune.
 
@@ -374,7 +374,7 @@ Sur `4401` (jeton invalide) ou `4402` (appareil révoqué), `close_step` renvoie
 | `guild_media_url` | `{guildId?, assetId}` | URL `/overlay/media-board/media/{assetId}?token=…` pour `<img>`/`<video>` |
 | `pairing_consume` | `{serverUrl, code, deviceName?, displayName?, avatar?}` | Appelle `POST {serverUrl}/overlay/pair/consume`, ajoute l'adhésion et la rend active, masque la fenêtre d'appairage, affiche l'overlay si activé, reconnecte les superviseurs |
 
-`guild_leave` et `guild_api` ciblent par défaut la guilde active. `guild_api` impose que le chemin commence par `/overlay/` et ne contienne ni `..` ni `\` ; le jeton est ajouté par le shell et n'est jamais exposé au board. `overlay_get_config` retire `clientToken` des projections des fenêtres `overlay` et `pairing` ; seule la fenêtre `board` le reçoit. Les anciens chemins `/overlay/meme-board/...` restent acceptés par le serveur pour l'overlay 3.0.0.
+`guild_leave` et `guild_api` ciblent par défaut la guilde active. `guild_api` impose que le chemin commence par `/overlay/` et ne contienne ni `..` ni `\` ; le jeton est ajouté par le shell et n'est jamais exposé au board. `overlay_get_config` retire `clientToken` des projections des fenêtres `overlay` et `pairing` ; seule la fenêtre `board` le reçoit.
 
 | Fenêtre | Commandes autorisées |
 |---------|----------------------|

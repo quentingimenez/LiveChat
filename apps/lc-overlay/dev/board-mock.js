@@ -6,8 +6,14 @@
 // Options de l'URL : ?role=admin|member|guest, ?empty (aucune guilde),
 // ?removed (un retrait de guilde en attente au démarrage).
 // Depuis la console : `__mock.emit(event, payload)`,
-// `__mock.removeGuild(guildId, reason)`, `__mock.finishPlaying()`.
-// Un fichier dont le nom contient « fail » est refusé (415), « big » (413).
+// `__mock.removeGuild(guildId, reason)`, `__mock.finishPlaying()`,
+// `__mock.reconnect(guildId)` (coupure puis retour du WebSocket),
+// `__mock.restartServer()` (perd les conversions en cours).
+// Ajouts (lien ou fichier) : le serveur répond 202 puis envoie le résultat
+// `overlay://media-ingestion` et `overlay://board-changed`. Selon le nom du
+// fichier ou le lien : « big » → 413 pendant l'envoi, « fail » → conversion
+// en échec, « dup » → déjà sur le board, « race » → résultat reçu avant le 202,
+// « slow » → conversion qui ne finit qu'au bout de 20 s.
 // « Sad violin » n'est pas prêt (media_not_ready).
 (function () {
   'use strict';
@@ -98,8 +104,31 @@
     return 'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200"><rect width="320" height="200" fill="hsl(${hue} 35% 32%)"/><circle cx="${60 + index * 20}" cy="100" r="46" fill="hsl(${hue} 45% 52%)"/></svg>`);
   }
 
-  function api(method, path) {
+  function api(payload) {
+    const { method, path } = payload;
     const ok = (body) => ({ ok: true, status: 200, body });
+    if (path === '/overlay/media-board/items' && method === 'POST') {
+      const body = payload.body || {};
+      return acceptIngestion({ guildId: payload.guildId, name: String(body.url || ''), title: body.title, message: body.message, contentType: 'video/mp4', received: 0 });
+    }
+    if (path === '/overlay/media-board/ingestions' && method === 'GET') {
+      return ok({ items: ingestionList(payload.guildId) });
+    }
+    const itemPath = /^\/overlay\/media-board\/items\/([^/?]+)$/.exec(path);
+    if (itemPath && (method === 'PATCH' || method === 'DELETE')) {
+      const itemId = decodeURIComponent(itemPath[1]);
+      const index = items.findIndex((entry) => entry.id === itemId);
+      if (index === -1) {
+        return { ok: false, status: 404, body: { error: 'not_found' } };
+      }
+      if (method === 'DELETE') {
+        items.splice(index, 1);
+      } else {
+        Object.assign(items[index], { title: (payload.body && payload.body.title) || null, message: (payload.body && payload.body.message) || null });
+      }
+      boardChanged(payload.guildId, method === 'DELETE' ? 'deleted' : 'updated', itemId);
+      return ok(method === 'DELETE' ? { deleted: true } : { updated: true, item: items[index] });
+    }
     if (path === '/overlay/guild') {
       return ok({
         guild: { id: '111', name: 'Les Sardines', standalone: true, discordGuildId: null, guestsCanViewBoard: true, settings: { defaultMediaTime: 30, maxMediaTime: null, displayMediaFull: false }, connectedCount: 6 },
@@ -171,30 +200,102 @@
   const uploads = new Map();
   let nextUpload = 1;
   const delay = (ms, value) => new Promise((resolve) => setTimeout(() => resolve(value), ms));
-  function finishUpload(upload) {
-    const name = String(upload.filename || '').toLowerCase();
-    if (name.includes('big')) {
-      return { ok: false, status: 413, body: { error: 'payload_too_large' } };
-    }
-    if (name.includes('fail')) {
-      return { ok: false, status: 415, body: { error: 'unsupported_media' } };
-    }
-    const index = items.length;
-    const kind = String(upload.contentType || '').split('/')[0];
+
+  // Background ingestions, as the server keeps them: 202 at once, then the
+  // result over the WebSocket of the requesting device only.
+  const ingestions = new Map();
+  let nextIngestion = 1;
+  let nextItem = items.length;
+  function boardChanged(guildId, change, itemId) {
+    setTimeout(() => emit('overlay://board-changed', { guildId: guildId || '111', change, itemId }), 50);
+  }
+  function ingestionList(guildId) {
+    return Array.from(ingestions.values())
+      .filter((entry) => entry.guildId === (guildId || '111'))
+      .map(({ ingestionId, status, created, itemId, error }) => ({ ingestionId, status, created, itemId, error }));
+  }
+  function createItem(source) {
+    const index = nextItem++;
+    const kind = String(source.contentType || '').split('/')[0];
     const item = {
       id: 'item-' + index,
-      guildId: upload.guildId || '111',
+      guildId: source.guildId || '111',
       mediaAssetId: 'a' + index,
-      title: upload.title || null,
-      message: upload.message || null,
+      title: source.title || null,
+      message: source.message || null,
       createdByName: 'Quentin',
       createdByMemberId: 'm-111',
       canEdit: true,
       createdAt: new Date().toISOString(),
-      media: { id: 'a' + index, kind: ['video', 'image', 'audio'].includes(kind) ? kind : 'video', mime: upload.contentType || 'x', durationSec: kind === 'image' ? null : 6, width: 1280, height: 720, isVertical: false, sizeBytes: upload.received, sourceUrl: null },
+      media: { id: 'a' + index, kind: ['video', 'image', 'audio'].includes(kind) ? kind : 'video', mime: source.contentType || 'x', durationSec: kind === 'image' ? null : 6, width: 1280, height: 720, isVertical: false, sizeBytes: source.received, sourceUrl: null },
     };
     items.unshift(item);
-    return { ok: true, status: 200, body: { created: true, item } };
+    return item;
+  }
+  // The result reaches the board only while the guild's WebSocket is up;
+  // otherwise the board must find it with GET /overlay/media-board/ingestions.
+  function completeIngestion(ingestion, source) {
+    if (!ingestions.has(ingestion.ingestionId)) {
+      return; // Lost by a simulated server restart.
+    }
+    const name = source.name.toLowerCase();
+    if (name.includes('fail')) {
+      Object.assign(ingestion, { status: 'failed', error: { code: 'media_ingestion_failed', message: 'la vidéo dépasse la durée maximale de 120 s' } });
+    } else if (name.includes('dup')) {
+      Object.assign(ingestion, { status: 'ready', created: false, itemId: items[0] ? items[0].id : 'item-0' });
+    } else {
+      const item = createItem(source);
+      Object.assign(ingestion, { status: 'ready', created: true, itemId: item.id });
+      boardChanged(ingestion.guildId, 'added', item.id);
+    }
+    const guild = guilds.guilds.find((entry) => entry.membership.guildId === ingestion.guildId);
+    if (guild && guild.connection.status === 'connected') {
+      const { ingestionId, status, created, itemId, error } = ingestion;
+      emit('overlay://media-ingestion', { guildId: ingestion.guildId, ingestionId, ok: status === 'ready', created, itemId, error });
+    }
+  }
+  function acceptIngestion(source) {
+    const name = source.name.toLowerCase();
+    const ingestion = { ingestionId: 'ing-' + nextIngestion++, guildId: source.guildId || '111', status: 'processing' };
+    ingestions.set(ingestion.ingestionId, ingestion);
+    const accepted = { ok: true, status: 202, body: { ingestionId: ingestion.ingestionId } };
+    if (name.includes('race')) {
+      setTimeout(() => completeIngestion(ingestion, source), 0);
+      return delay(400, accepted);
+    }
+    setTimeout(() => completeIngestion(ingestion, source), name.includes('slow') ? 20000 : 2500);
+    return accepted;
+  }
+  function finishUpload(upload) {
+    const name = String(upload.filename || '');
+    if (name.toLowerCase().includes('big')) {
+      return { ok: false, status: 413, body: { error: 'payload_too_large' } };
+    }
+    return acceptIngestion({ guildId: upload.guildId, name, title: upload.title, message: upload.message, contentType: upload.contentType, received: upload.received });
+  }
+  // The shell sends a fresh copy with every event, never the object the board
+  // already holds: the board compares the old and new connection states.
+  const guildsCopy = () => JSON.parse(JSON.stringify(guilds));
+  function setConnection(guildId, status, label) {
+    const guild = guilds.guilds.find((entry) => entry.membership.guildId === guildId);
+    if (guild) {
+      guild.connection.status = status;
+      guild.statusLabel = label;
+      emit('overlay://guilds', guildsCopy());
+    }
+  }
+  function reconnect(guildId) {
+    const id = guildId || '111';
+    setConnection(id, 'reconnecting', 'reconnexion…');
+    setTimeout(() => setConnection(id, 'connected', 'connecté'), 3000);
+  }
+  function restartServer() {
+    for (const [id, entry] of ingestions) {
+      if (entry.status === 'processing') {
+        ingestions.delete(id);
+      }
+    }
+    reconnect('111');
   }
 
   const removals = new URLSearchParams(location.search).has('removed')
@@ -214,10 +315,10 @@
     }
     removals.push({ guildId, guildName: name, reason: reason || 'guild_deleted' });
     emit('overlay://guild-removed', removals[removals.length - 1]);
-    emit('overlay://guilds', guilds);
+    emit('overlay://guilds', guildsCopy());
   }
 
-  window.__mock = { emit, removeGuild, finishPlaying, queue, items, guilds };
+  window.__mock = { emit, removeGuild, finishPlaying, reconnect, restartServer, queue, items, guilds, ingestions };
 
   window.__TAURI_INTERNALS__ = {
     transformCallback(callback) {
@@ -248,16 +349,16 @@
         case 'media_upload_finish': {
           const upload = uploads.get(payload.uploadId);
           uploads.delete(payload.uploadId);
-          return upload ? delay(1500, finishUpload(upload)) : Promise.reject(new Error('upload_not_found'));
+          return upload ? delay(300).then(() => finishUpload(upload)) : Promise.reject(new Error('upload_not_found'));
         }
         case 'media_upload_cancel':
           return Promise.resolve(uploads.delete(payload.uploadId));
         case 'board_take_guild_removals':
           return Promise.resolve(removals.splice(0));
         case 'guilds_list':
-          return Promise.resolve(guilds);
+          return Promise.resolve(guildsCopy());
         case 'guild_api':
-          return Promise.resolve(api(payload.method, payload.path));
+          return delay(80).then(() => api(payload));
         case 'guild_media_url':
           return Promise.resolve(svg(Number(String(payload.assetId).slice(1)) || 0));
         case 'media_board_get_bindings':
@@ -274,16 +375,16 @@
           guilds.guilds.forEach((guild) => {
             guild.membership.active = guild.membership.guildId === payload.guildId;
           });
-          return Promise.resolve({ ok: true, guilds });
+          return Promise.resolve({ ok: true, guilds: guildsCopy() });
         case 'guild_set_muted':
           guilds.guilds.forEach((guild) => {
             if (guild.membership.guildId === payload.guildId) {
               guild.membership.muted = Boolean(payload.muted);
             }
           });
-          return Promise.resolve({ ok: true, guilds });
+          return Promise.resolve({ ok: true, guilds: guildsCopy() });
         case 'guild_leave':
-          return Promise.resolve({ ok: true, guilds });
+          return Promise.resolve({ ok: true, guilds: guildsCopy() });
         case 'pairing_consume':
           return Promise.resolve({ ok: false, message: 'appairage refusé (HTTP 404 - {"error":"pairing_code_invalid_or_expired"})' });
         default:

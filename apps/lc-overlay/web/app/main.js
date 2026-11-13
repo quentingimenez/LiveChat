@@ -15,9 +15,17 @@ import { installContextMenuGuard } from './core/contextmenu.js';
 import { invoke, listen } from './core/ipc.js';
 import { state } from './core/state.js';
 import { notify } from './core/toast.js';
-import { applyGuilds, clearQueueEndTimer, loadGuildInfo, loadQueue, refreshQueueAutomatically } from './data.js';
+import {
+  applyGuilds,
+  clearQueueEndTimer,
+  loadGuildInfo,
+  loadQueue,
+  refreshQueueAutomatically,
+  requestItemsReload,
+} from './data.js';
 import { initGuildRemovalNotices } from './views/notices.js';
 import { renderRail } from './views/rail.js';
+import { initUploadIngestion } from './views/uploads.js';
 import { renderView } from './views/view.js';
 
 // No WebView menu (reload, print, save as): the board opens its own menus
@@ -25,6 +33,9 @@ import { renderView } from './views/view.js';
 installContextMenuGuard();
 
 listen('overlay://guilds', applyGuilds);
+
+// Asynchronous media ingestions: conversion results and board resync.
+initUploadIngestion();
 
 // Guilds removed by the shell (deleted, member removed, device revoked).
 initGuildRemovalNotices();
@@ -41,6 +52,14 @@ listen('overlay://queue-hint', (payload) => {
   clearQueueEndTimer();
   clearTimeout(queueHintTimer);
   queueHintTimer = setTimeout(refreshQueueAutomatically, 500);
+});
+
+// A media was added, edited or deleted on the active guild's board (by anyone,
+// from the board or from Discord): reload the items once, coalesced.
+listen('overlay://board-changed', (payload) => {
+  if (payload && payload.guildId === state.activeGuildId) {
+    requestItemsReload();
+  }
 });
 
 // Fallback: a slow refresh only while the queue is really visible and

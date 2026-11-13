@@ -8,11 +8,10 @@
 //! mais le renderer board (HTML/JS legacy conservé en Phase 8) construit encore
 //! ses URLs avec `?token=` — y compris pour les `<video>`/`<img>` d'aperçu qui ne
 //! peuvent pas porter d'en-tête. Pour ne pas casser cette fonctionnalité, la
-//! query string est acceptée **uniquement** sous `/overlay/media-board/*` (et
-//! son alias legacy `/overlay/meme-board/*`) ; les autres routes overlay (média
-//! de lecture HMAC, ingestion) restent sans jeton en query. L'en-tête
-//! `Authorization: Bearer <token>` reste la voie nominale et prime toujours sur
-//! `?token=` lorsqu'il est présent.
+//! query string est acceptée **uniquement** sous `/overlay/media-board/*` ; les
+//! autres routes overlay (média de lecture HMAC, ingestion) restent sans jeton
+//! en query. L'en-tête `Authorization: Bearer <token>` reste la voie nominale et
+//! prime toujours sur `?token=` lorsqu'il est présent.
 //!
 //! Le token brut n'est jamais stocké : seule son empreinte `SHA-256` hexadécimale
 //! est persistée dans `overlay_clients.token_hash` (parité legacy
@@ -22,11 +21,10 @@
 //!
 //! ## Exception temporaire AUD-COR-05
 //!
-//! Le repli `?token=` pour `/overlay/media-board/*` (et son alias legacy
-//! `/overlay/meme-board/*`) est **temporaire** : il ne survit que le temps de la
-//! migration du renderer legacy (P1-11). Chaque utilisation est journalisée une
-//! seule fois par processus en `WARN` (target `lc_server::overlay`) afin d'en
-//! mesurer l'usage avant suppression.
+//! Le repli `?token=` pour `/overlay/media-board/*` est **temporaire** : il ne
+//! survit que le temps de la migration du renderer legacy (P1-11). Chaque
+//! utilisation est journalisée une seule fois par processus en `WARN` (target
+//! `lc_server::overlay`) afin d'en mesurer l'usage avant suppression.
 //!
 //! ## Extracteur d'authentification
 //!
@@ -158,8 +156,7 @@ const MAX_TOKEN_LEN: usize = 200;
 /// `application/x-www-form-urlencoded` (décodage des pourcentages inclus).
 pub fn query_token(uri: &axum::http::Uri) -> Option<String> {
     let path = uri.path();
-    // Legacy overlay 3.0.0 compatibility: remove in 3.1.
-    if !(path.starts_with("/overlay/media-board/") || path.starts_with("/overlay/meme-board/")) {
+    if !path.starts_with("/overlay/media-board/") {
         return None;
     }
     let token = url::form_urlencoded::parse(uri.query()?.as_bytes())

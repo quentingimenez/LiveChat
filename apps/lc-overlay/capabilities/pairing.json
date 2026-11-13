@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "pairing",
+  "description": "Fenêtre d'appairage : soumission du code, lecture de la configuration. Aucun accès board/mise à jour.",
+  "windows": ["pairing"],
+  "permissions": ["core:default"]
+}

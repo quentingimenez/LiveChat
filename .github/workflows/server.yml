@@ -1,5 +1,11 @@
-name: Server (tests + GHCR)
+name: Server legacy (tests)
 
+# Tests du serveur Node/Prisma 2.x conservé pour le rollback 2.0.1.
+#
+# Ce workflow NE PUBLIE PLUS d'image : l'image de production 3.0.0 du serveur
+# Rust est publiée exclusivement par `server-image.yml`, propriétaire unique des
+# tags `ghcr.io/<owner>/livechat-server` (audit A7-003). L'image legacy déjà
+# publiée (2.0.1) reste disponible pour un rollback via `docs/rust/packaging.md`.
 on:
   pull_request:
     paths:
@@ -11,35 +17,35 @@ on:
     paths:
       - "server/**"
       - ".github/workflows/server.yml"
-    tags:
-      - "server-v*"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: server-${{ github.ref }}
+  group: server-legacy-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
+    name: test (legacy Node)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: server
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           package_json_file: server/package.json
 
-      # Same major as the runtime image (node:20-alpine)
+      # Même majeure que l'image legacy (node:20-alpine) conservée pour le rollback.
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: pnpm
@@ -53,48 +59,3 @@ jobs:
 
       - name: Unit tests
         run: pnpm test
-
-  docker:
-    needs: test
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GitHub Container Registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/livechat-server
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=branch
-            type=ref,event=pr
-            type=match,pattern=^server-v(.*)$,group=1
-            type=sha,prefix=sha-
-
-      - name: Build and push image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./server
-          file: ./server/Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
-          platforms: linux/amd64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=livechat-server
-          cache-to: type=gha,mode=max,scope=livechat-server

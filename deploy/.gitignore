@@ -1,0 +1,3 @@
+# Secrets et données locales de déploiement : jamais versionnés.
+.env
+data/

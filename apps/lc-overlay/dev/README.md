@@ -28,13 +28,17 @@ Contenu actuel de `apps/lc-overlay/web/` (embarqué dans le binaire) :
 ```
 web/
 ├── bridge.js                 <- API window.livechatOverlay (hors de ce dossier dev)
-├── overlay.html  board.html  pairing.html
-├── overlay.css   board.css
-├── overlay.js    board.js    pairing.js
+├── overlay.html  overlay.css  overlay.js   <- rendu des médias à l'écran
+├── board.html                <- board (guildes, médias, file, admin, appairage)
+├── app/                      <- application de la board, modules ES sans build
+│   ├── main.js  data.js  app.css
+│   ├── core/                 <- ipc, api, état, DOM, notifications
+│   ├── views/                <- une vue par fonctionnalité
+│   └── styles/               <- une feuille par fonctionnalité
 ├── renderer-errors.js        <- télémétrie d'erreurs du renderer
 ├── favicon.ico
-├── styles/{overlay,board}/*.css
-└── dist/renderer/{overlay,board,pairing}/index.js   <- shims ESM portés
+├── styles/overlay/*.css
+└── dist/renderer/overlay/index.js   <- shim ESM porté
     └── legacy-loader.js + utils (dont twitter-widgets neutralisé)
 ```
 

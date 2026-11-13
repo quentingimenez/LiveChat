@@ -43,6 +43,8 @@ pub struct AppState {
     /// `play` des autres guildes en attente de l'écran.
     local_queue: Mutex<VecDeque<QueuedPlay>>,
     last_state_sent: Mutex<Option<Instant>>,
+    /// View requested by the tray before the board was loaded.
+    pending_board_view: Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -59,6 +61,7 @@ impl AppState {
             playback_job: Mutex::new(None),
             local_queue: Mutex::new(VecDeque::new()),
             last_state_sent: Mutex::new(None),
+            pending_board_view: Mutex::new(None),
         }
     }
 
@@ -312,6 +315,16 @@ impl AppState {
         before - guard.len()
     }
 
+    /// Remembers the view requested by the tray for the board (e.g. `settings`).
+    pub fn set_pending_board_view(&self, view: impl Into<String>) {
+        *self.lock_pending_board_view() = Some(view.into());
+    }
+
+    /// Returns and clears the pending view for the board.
+    pub fn take_pending_board_view(&self) -> Option<String> {
+        self.lock_pending_board_view().take()
+    }
+
     /// Limite l'envoi de `playback.state` à un message par seconde (contrat v2).
     pub fn try_record_playback_state(&self) -> bool {
         let mut guard = self
@@ -360,6 +373,12 @@ impl AppState {
 
     fn lock_playback(&self) -> MutexGuard<'_, Option<(String, String)>> {
         self.playback_job
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    fn lock_pending_board_view(&self) -> MutexGuard<'_, Option<String>> {
+        self.pending_board_view
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
     }
@@ -449,6 +468,16 @@ mod tests {
         assert_eq!(state.net_snapshot().status, ConnectionStatus::Disabled);
         assert!(!state.send_net_command(NetCommand::Reconnect));
         assert!(state.active_guild().is_none());
+    }
+
+    #[test]
+    fn pending_board_view_is_taken_once() {
+        let (_dir, store) = temp_store();
+        let state = AppState::new(store);
+        assert!(state.take_pending_board_view().is_none());
+        state.set_pending_board_view("settings");
+        assert_eq!(state.take_pending_board_view().as_deref(), Some("settings"));
+        assert!(state.take_pending_board_view().is_none());
     }
 
     #[test]

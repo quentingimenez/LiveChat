@@ -411,7 +411,7 @@ async fn supervise(
                     // superviseur s'arrête au tour suivant.
                     let remaining = purge_pairing(&app, &guild_id);
                     if remaining == 0 {
-                        windows::show_pairing(&app);
+                        windows::show_board(&app);
                     }
                     tracing::info!(guild_id = %guild_id, reason, "adhésion retirée");
                     return;

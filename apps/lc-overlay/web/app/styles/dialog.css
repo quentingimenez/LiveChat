@@ -1,0 +1,55 @@
+/* ------------------------------------------------------------------ dialogue */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(13, 16, 23, 0.72);
+  z-index: 10;
+}
+
+.dialog {
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 22px 24px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--slate-800);
+}
+
+.dialog h2 {
+  margin: 0 0 4px;
+  font-family: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.dialog p {
+  margin: 0 0 16px;
+  color: var(--text-soft);
+}
+
+.dialog .stack {
+  display: grid;
+  gap: 12px;
+}
+
+.dialog .stack label {
+  display: grid;
+  gap: 4px;
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.dialog .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.error-text {
+  color: var(--red);
+  font-size: 13px;
+}

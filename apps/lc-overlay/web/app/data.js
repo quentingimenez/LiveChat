@@ -1,0 +1,189 @@
+// Loading and refreshing guild data (guild info, board items, queue, admin
+// lists) and applying the shell's guild list.
+
+import { api, run } from './core/api.js';
+import { invoke } from './core/ipc.js';
+import { activeGuild, can, state } from './core/state.js';
+import { notify } from './core/toast.js';
+import { renderHeader } from './views/header.js';
+import { renderOnAir } from './views/queue.js';
+import { renderRail } from './views/rail.js';
+import { renderView } from './views/view.js';
+
+let guildRefreshTimer = null;
+let queueEndTimer = null;
+
+// Gives the server time to notice the closed WebSocket before reading the
+// guild's connection state again.
+function scheduleGuildRefresh() {
+  clearTimeout(guildRefreshTimer);
+  guildRefreshTimer = setTimeout(loadGuild, 800);
+}
+
+export function clearQueueEndTimer() {
+  clearTimeout(queueEndTimer);
+  queueEndTimer = null;
+}
+
+export function applyGuilds(payload) {
+  if (!payload) {
+    return;
+  }
+  const previous = state.activeGuildId;
+  const previousGuild = activeGuild();
+  const previousStatus = previousGuild && previousGuild.connection ? previousGuild.connection.status : null;
+  state.guilds = payload.guilds || [];
+  state.activeGuildId = payload.activeGuildId || null;
+  state.profile = payload.profile || state.profile;
+  if (previous !== state.activeGuildId) {
+    clearTimeout(guildRefreshTimer);
+    guildRefreshTimer = null;
+    clearQueueEndTimer();
+    resetGuildData();
+    loadGuild();
+  } else if (state.activeGuildId) {
+    const guild = activeGuild();
+    const status = guild && guild.connection ? guild.connection.status : null;
+    if (previousStatus !== status) {
+      scheduleGuildRefresh();
+    }
+  }
+  renderRail();
+  renderHeader();
+  if (!state.activeGuildId) {
+    renderView();
+  }
+}
+
+function resetGuildData() {
+  state.info = null;
+  state.items = [];
+  state.itemsLoaded = false;
+  state.selectedId = null;
+  state.queue = { playing: null, pending: [] };
+  state.queueStale = false;
+  state.members = [];
+  state.invites = [];
+  state.search = '';
+  state.kind = 'all';
+  if (state.tab === 'admin') {
+    state.tab = 'board';
+  }
+}
+
+export async function loadGuildInfo() {
+  if (!state.activeGuildId) {
+    return false;
+  }
+  const guildId = state.activeGuildId;
+  try {
+    const info = await api('GET', '/overlay/guild');
+    if (guildId !== state.activeGuildId) {
+      return false;
+    }
+    state.info = info;
+  } catch (error) {
+    if (guildId !== state.activeGuildId) {
+      return false;
+    }
+    notify(error.message, true);
+  }
+  renderHeader();
+  return true;
+}
+
+export async function loadGuild() {
+  if (!(await loadGuildInfo())) {
+    return;
+  }
+  const bindings = await invoke('media_board_get_bindings').catch(() => null);
+  state.bindings = (bindings && bindings.bindings) || {};
+  renderHeader();
+  await Promise.all([loadItems(), refreshQueueAutomatically()]);
+}
+
+export async function loadItems() {
+  if (!state.activeGuildId) {
+    return;
+  }
+  const guildId = state.activeGuildId;
+  try {
+    const body = await api('GET', '/overlay/media-board/items?limit=200');
+    if (guildId !== state.activeGuildId) {
+      return;
+    }
+    state.items = body.items || [];
+  } catch (error) {
+    state.items = [];
+    if (error.code !== 'forbidden') {
+      notify(error.message, true);
+    }
+  }
+  state.itemsLoaded = true;
+  if (state.tab === 'board') {
+    renderView();
+  }
+}
+
+// Automatic queue refreshes are useless while the page is hidden (board in the
+// tray): mark the queue stale and read it once when the page comes back.
+export function refreshQueueAutomatically() {
+  if (document.hidden) {
+    state.queueStale = true;
+    return;
+  }
+  loadQueue();
+}
+
+function scheduleQueueEndRefresh() {
+  clearQueueEndTimer();
+  const playing = state.queue.playing;
+  // Nothing playing: no end-of-media refresh to schedule.
+  if (!playing) {
+    return;
+  }
+  const started = playing.startedAt ? new Date(playing.startedAt).getTime() : NaN;
+  if (!Number.isFinite(started) || !(playing.durationSec > 0)) {
+    return;
+  }
+  const endsAt = started + playing.durationSec * 1000;
+  const delay = Math.max(0, endsAt - Date.now()) + 1500;
+  queueEndTimer = setTimeout(refreshQueueAutomatically, delay);
+}
+
+export async function loadQueue() {
+  if (!state.activeGuildId || document.hidden) {
+    return;
+  }
+  const guildId = state.activeGuildId;
+  try {
+    const body = await api('GET', '/overlay/queue');
+    if (guildId !== state.activeGuildId) {
+      return;
+    }
+    state.queue = { playing: body.playing || null, pending: body.pending || [], at: Date.now() };
+    state.queueStale = false;
+  } catch {
+    return;
+  }
+  renderHeader();
+  renderOnAir();
+  if (state.tab === 'queue') {
+    renderView();
+  }
+  scheduleQueueEndRefresh();
+}
+
+export async function loadAdmin() {
+  if (state.adminTab === 'members' && can('manageMembers')) {
+    const body = await run(() => api('GET', '/overlay/admin/members'));
+    state.members = (body && body.items) || [];
+  }
+  if (state.adminTab === 'invites' && can('manageInvites')) {
+    const body = await run(() => api('GET', '/overlay/admin/invites'));
+    state.invites = (body && body.items) || [];
+  }
+  if (state.tab === 'admin') {
+    renderView();
+  }
+}

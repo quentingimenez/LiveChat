@@ -1,6 +1,6 @@
 // Harnais de développement : simule le shell Tauri pour afficher l'application
 // principale (`web/board.html`) dans un navigateur ordinaire, sans serveur.
-// Chargé par `dev/board-mock.html` avant `web/app/app.js`. Jamais embarqué dans
+// Chargé par `dev/board-mock.html` avant `web/app/main.js`. Jamais embarqué dans
 // l'application (le dossier `dev/` est hors de `frontendDist`).
 (function () {
   'use strict';

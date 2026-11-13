@@ -1,6 +1,6 @@
-//! Cycle de vie et politiques des trois fenêtres du shell :
-//! `overlay` (plein écran transparent, click-through, topmost), `board`
-//! (1180×780) et `pairing` (460×580).
+//! Cycle de vie et politiques des deux fenêtres du shell :
+//! `overlay` (plein écran transparent, click-through, topmost) et `board`
+//! (1180×780, qui porte aussi l'appairage).
 
 use std::time::Duration;
 
@@ -14,7 +14,6 @@ use crate::win32;
 
 pub const OVERLAY_LABEL: &str = "overlay";
 pub const BOARD_LABEL: &str = "board";
-pub const PAIRING_LABEL: &str = "pairing";
 
 /// Même cadence que le legacy Electron (`setInterval(..., 2000)`).
 pub const KEEP_ON_TOP_INTERVAL: Duration = Duration::from_secs(2);
@@ -271,6 +270,11 @@ fn hide_on_close(app: &AppHandle<Wry>, label: &str) {
     });
 }
 
+/// Délai laissé à Windows pour terminer le changement de fenêtre active avant
+/// de replacer le board derrière la nouvelle fenêtre au premier plan.
+#[cfg(windows)]
+const BOARD_BLUR_SETTLE_DELAY: Duration = Duration::from_millis(40);
+
 /// Le board passe au-dessus de l'overlay pendant qu'il a le focus, puis
 /// redevient une fenêtre normale dès qu'il le perd.
 fn track_board_focus(app: &AppHandle<Wry>) {
@@ -284,6 +288,31 @@ fn track_board_focus(app: &AppHandle<Wry>) {
             if let Err(error) = target.set_always_on_top(*focused) {
                 tracing::debug!(%error, "échec set_always_on_top board");
             }
+            #[cfg(windows)]
+            if !*focused {
+                settle_board_behind_foreground(target.clone());
+            }
+        }
+    });
+}
+
+/// Retirer le mode « toujours au-dessus » (`HWND_NOTOPMOST`) place le board
+/// devant toutes les fenêtres normales, y compris celle que l'utilisateur vient
+/// d'activer : on le range juste derrière elle, comme une fenêtre ordinaire.
+#[cfg(windows)]
+fn settle_board_behind_foreground(board: WebviewWindow<Wry>) {
+    std::thread::spawn(move || {
+        std::thread::sleep(BOARD_BLUR_SETTLE_DELAY);
+        if board.is_focused().unwrap_or(false) {
+            return;
+        }
+        match board.hwnd() {
+            Ok(hwnd) => {
+                if !win32::place_behind_foreground(hwnd) {
+                    tracing::debug!("board laissé en place : fenêtre au premier plan non éligible");
+                }
+            }
+            Err(error) => tracing::debug!(%error, "hwnd board indisponible après perte du focus"),
         }
     });
 }
@@ -292,7 +321,6 @@ fn track_board_focus(app: &AppHandle<Wry>) {
 pub fn install_window_events(app: &AppHandle<Wry>) {
     hide_on_close(app, BOARD_LABEL);
     track_board_focus(app);
-    hide_on_close(app, PAIRING_LABEL);
     hide_on_close(app, OVERLAY_LABEL);
 }
 
@@ -339,18 +367,15 @@ pub fn show_board(app: &AppHandle<Wry>) {
     reveal(app, BOARD_LABEL, true);
 }
 
-pub fn show_pairing(app: &AppHandle<Wry>) {
-    reveal(app, PAIRING_LABEL, true);
-}
-
-/// Deuxième lancement : demande d'ouverture explicite (`--pairing`/`--board`).
+/// Deuxième lancement : ouverture explicite de la board.
+///
+/// `--pairing` reste accepté pour la compatibilité des raccourcis existants :
+/// il ouvre aussi la board, qui porte désormais l'appairage.
 pub fn handle_second_instance(app: &AppHandle<Wry>, args: &[String]) {
-    let wants_pairing = args.iter().any(|arg| arg == "--pairing");
-    if wants_pairing {
-        show_pairing(app);
-    } else {
-        show_board(app);
+    if args.iter().any(|arg| arg == "--pairing") {
+        tracing::info!("--pairing reçu : ouverture de la board (fenêtre d'appairage supprimée)");
     }
+    show_board(app);
 }
 
 /// Point d'entrée de l'affichage initial, appelé depuis `setup`.
@@ -358,6 +383,16 @@ pub fn bootstrap_windows(app: &AppHandle<Wry>) {
     install_window_events(app);
     let _display = position_overlay_on_selected_display(app);
     apply_overlay_flags(app);
+    // First launch without a guild: open the board so pairing can happen (it
+    // replaces the former `pairing` window).
+    if app
+        .state::<AppState>()
+        .config_snapshot()
+        .memberships
+        .is_empty()
+    {
+        show_board(app);
+    }
     spawn_topmost_guard(app.clone());
 }
 

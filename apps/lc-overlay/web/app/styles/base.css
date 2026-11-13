@@ -1,0 +1,280 @@
+/* LiveChat — application principale (guildes, board, file d'attente, admin).
+ *
+ * Palette « régie » : ardoise bleutée pour les surfaces, ambre réservé à ce
+ * qui est à l'antenne (lecture en cours, action Jouer). Rien d'autre n'est
+ * ambre : quand quelque chose l'est, c'est que ça passe à l'écran.
+ */
+:root {
+  --slate-900: #171b25;
+  --slate-800: #1e2330;
+  --slate-700: #262c3c;
+  --slate-600: #30384c;
+  --line: #3a4259;
+  --text: #e9ebf3;
+  --text-soft: #a3abc2;
+  --text-faint: #717a93;
+  --amber: #f2b544;
+  --amber-ink: #2a1d02;
+  --red: #ec6a70;
+  --green: #5fc9a3;
+  --blue: #7fa8f5;
+  --radius-s: 6px;
+  --radius-m: 10px;
+  --rail: 68px;
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text);
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  background: var(--slate-900);
+  overflow: hidden;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* ---------------------------------------------------------------- structure */
+.app {
+  display: grid;
+  grid-template-columns: var(--rail) minmax(0, 1fr);
+  height: 100%;
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--slate-800);
+}
+
+.view {
+  flex: 1;
+  overflow: auto;
+  /* The scrollbar's room is always kept: its appearance must not resize the
+     grid thumbnails. */
+  scrollbar-gutter: stable;
+  padding: 20px 24px 28px;
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------------ contrôles */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--slate-700);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn:hover {
+  background: var(--slate-600);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn.is-quiet {
+  border-color: transparent;
+  background: none;
+  color: var(--text-soft);
+}
+
+.btn.is-quiet:hover {
+  background: var(--slate-700);
+  color: var(--text);
+}
+
+.btn.is-danger {
+  color: var(--red);
+}
+
+.btn.is-air {
+  border-color: var(--amber);
+  background: var(--amber);
+  color: var(--amber-ink);
+  font-weight: 600;
+}
+
+.btn.is-air:hover {
+  background: #f7c466;
+}
+
+.btn.is-wide {
+  width: 100%;
+  justify-content: center;
+  height: 38px;
+}
+
+.btn svg,
+.icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.field {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--slate-900);
+}
+
+textarea.field {
+  height: auto;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+select.field {
+  width: auto;
+  padding-right: 6px;
+}
+
+.field::placeholder {
+  color: var(--text-faint);
+}
+
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: var(--slate-600);
+  color: var(--text-soft);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.badge.is-admin {
+  background: #2b3a5e;
+  color: #b5cbfb;
+}
+
+.badge.is-guest {
+  background: #3d3526;
+  color: #e0c68d;
+}
+
+.badge.is-off {
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--text-faint);
+}
+
+.empty {
+  max-width: 420px;
+  margin: 64px auto;
+  text-align: center;
+  color: var(--text-soft);
+}
+
+.empty h2 {
+  margin: 0 0 6px;
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.empty p {
+  margin: 0 0 16px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.row.is-wrap {
+  flex-wrap: wrap;
+}
+
+kbd {
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--slate-900);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.list {
+  border-top: 1px solid var(--line);
+}
+
+.line {
+  display: grid;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--line);
+}
+
+.line .sub {
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.ellipsis {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--slate-600);
+  color: var(--text-soft);
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  object-fit: cover;
+}
+
+.code {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 14px;
+  letter-spacing: 0.08em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}

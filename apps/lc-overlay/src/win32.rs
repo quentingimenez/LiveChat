@@ -15,11 +15,13 @@
 //! documenté comme tel dans `docs/rust/lc-overlay-shell.md`.
 #![allow(unsafe_code)]
 
-use windows::core::Result as WindowsResult;
-use windows::Win32::Foundation::HWND;
+use windows::core::{w, Result as WindowsResult};
+use windows::Win32::Foundation::{ERROR_SUCCESS, HWND};
+use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HWND_TOPMOST, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, WINDOW_EX_STYLE, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos,
+    GWL_EXSTYLE, HWND_TOPMOST, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    WINDOW_EX_STYLE, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_EX_TRANSPARENT,
 };
 
@@ -89,9 +91,111 @@ pub fn reassert_topmost(hwnd: HWND) -> WindowsResult<()> {
     }
 }
 
+/// Classes of shell windows that must never get a window placed behind them:
+/// the desktop sits at the bottom of the Z order (a window behind it would
+/// vanish under the icons) and the taskbars are topmost.
+const SHELL_WINDOW_CLASSES: [&str; 4] = [
+    "Progman",
+    "WorkerW",
+    "Shell_TrayWnd",
+    "Shell_SecondaryTrayWnd",
+];
+
+/// Decides whether a window that just lost the focus may be put right behind
+/// the new foreground window.
+///
+/// Only an ordinary window qualifies: not the window itself, not a topmost
+/// window (inserting after it would keep ours topmost) and not a shell window.
+pub fn may_settle_behind(foreground_class: &str, foreground_topmost: bool, is_self: bool) -> bool {
+    !is_self && !foreground_topmost && !SHELL_WINDOW_CLASSES.contains(&foreground_class)
+}
+
+fn class_name(hwnd: HWND) -> String {
+    let mut buffer = [0_u16; 256];
+    // SAFETY: `hwnd` comes from GetForegroundWindow and the buffer outlives the
+    // call; GetClassNameW writes at most `buffer.len()` UTF-16 units.
+    let length = unsafe { GetClassNameW(hwnd, &mut buffer) };
+    let length = usize::try_from(length).unwrap_or(0).min(buffer.len());
+    String::from_utf16_lossy(&buffer[..length])
+}
+
+/// Puts `hwnd` right behind the current foreground window, without activating
+/// it.
+///
+/// Removing the topmost state with `HWND_NOTOPMOST` (what Tauri does) moves a
+/// window above *every* ordinary window, including the one the user just
+/// clicked: the board then stayed in front of it. Inserting the window after
+/// the foreground one gives the normal Windows behaviour, and also clears its
+/// topmost state. Returns `false` when the foreground window does not qualify
+/// (see [`may_settle_behind`]).
+pub fn place_behind_foreground(hwnd: HWND) -> bool {
+    // SAFETY: GetForegroundWindow only reads the desktop's foreground window.
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.is_invalid() {
+        return false;
+    }
+    let foreground_topmost = (ex_style(foreground) as u32) & WS_EX_TOPMOST.0 != 0;
+    if !may_settle_behind(
+        &class_name(foreground),
+        foreground_topmost,
+        foreground == hwnd,
+    ) {
+        return false;
+    }
+    // SAFETY: `hwnd` comes from a live Tauri window; the flags forbid any
+    // move, resize or activation, and the async flag never blocks the caller
+    // on the window's thread.
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            Some(foreground),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
+        )
+    }
+    .is_ok()
+}
+
+/// Whether the Windows taskbar uses the light theme (`SystemUsesLightTheme`).
+///
+/// The tray icon follows it: its framing corners must contrast with the
+/// taskbar. Falls back to `false` (dark taskbar, the Windows 11 default) when
+/// the value cannot be read.
+pub fn taskbar_uses_light_theme() -> bool {
+    let mut data: u32 = 0;
+    let mut size = u32::try_from(std::mem::size_of::<u32>()).unwrap_or(4);
+    // SAFETY: `data` and `size` outlive the call, `size` is the byte length of
+    // `data`, and RRF_RT_REG_DWORD makes the API write at most one DWORD.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"),
+            w!("SystemUsesLightTheme"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some(std::ptr::from_mut(&mut data).cast()),
+            Some(&mut size),
+        )
+    };
+    status == ERROR_SUCCESS && data != 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settles_only_behind_an_ordinary_foreground_window() {
+        assert!(may_settle_behind("Notepad", false, false));
+        assert!(!may_settle_behind("Notepad", false, true), "itself");
+        assert!(!may_settle_behind("Notepad", true, false), "topmost");
+        assert!(!may_settle_behind("Progman", false, false), "desktop");
+        assert!(!may_settle_behind("WorkerW", false, false), "desktop");
+        assert!(!may_settle_behind("Shell_TrayWnd", false, false), "taskbar");
+    }
 
     #[test]
     fn describe_reports_each_overlay_flag() {

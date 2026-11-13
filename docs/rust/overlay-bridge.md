@@ -597,13 +597,14 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
 
 ### 12.3 Capabilities et autorisation IPC par fenêtre (A6-008)
 
-- `capabilities/overlay.json`, `board.json`, `pairing.json` : une capability par
-  fenêtre (`windows: ["overlay"]`, etc.), permissions `core:default` minimales.
-  `capabilities/default.json` est supprimé.
-- La matrice `commands::COMMAND_MATRIX` limite les 12 commandes par label :
-  overlay = handshake/télémétrie ; board = media-board + lecture config +
-  check_updates ; pairing = appairage + lecture config. Toute autre combinaison
-  est refusée avec un message explicite (testé par
+- `capabilities/overlay.json`, `board.json` : une capability par fenêtre
+  (`windows: ["overlay"]`, etc.), permissions `core:default` minimales.
+  `capabilities/pairing.json` n'est plus utilisé depuis la suppression de la
+  fenêtre `pairing` (fichier restant à supprimer).
+- La matrice `commands::COMMAND_MATRIX` limite les commandes par label :
+  overlay = handshake/télémétrie ; board = media-board, lecture config,
+  check_updates, appairage, guildes et `board_take_pending_view`. Toute autre
+  combinaison est refusée avec un message explicite (testé par
   `commands::tests::command_matrix_is_window_scoped`).
 
 ### 12.4 Board : Authorization Bearer via le bridge, plus de token en query (A6-001/004)
@@ -623,10 +624,12 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
   renvoient l'état `disabled` **sans** appeler le plugin (pas de requête réseau,
   pas d'erreur de clé placeholder). L'activation exige la clé minisign réelle et
   des artefacts signés (Phase 9, voir `docs/rust/overlay-release.md`).
-- Le **menu tray** respecte le même flag depuis V2-O (`AUD-V2-O-001`) : l'entrée
-  « Vérifier les mises à jour » devient « Mises à jour désactivées pour cette
-  version » (grisée) et `tray::spawn_update_check` retourne immédiatement, sans
-  aucun appel à `tauri_plugin_updater` ni requête réseau.
+- Le menu tray ne contient plus l'entrée de mise à jour ; les helpers
+  `device_settings::update_menu_entry` (« Vérifier les mises à jour » /
+  « Mises à jour désactivées pour cette version », grisée) et
+  `device_settings::spawn_update_check` conservent la sémantique V2-O
+  (`AUD-V2-O-001`) pour la future page Paramètres : updater désactivé ⇒ retour
+  immédiat, sans appel à `tauri_plugin_updater` ni requête réseau.
 
 ### 12.6 Harnais de développement hors bundle (A6-015)
 
@@ -636,10 +639,10 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
 
 ### 12.7 Projection de config restreinte par fenêtre (V2-O-002)
 
-- `overlay_get_config` reste autorisée pour les trois fenêtres, mais la
-  projection renvoyée est filtrée par label : le `clientToken` n'est présent
-  que pour la fenêtre **board** (nécessaire à `authorizedFetch`). Pour
-  `overlay` et `pairing`, le champ est retiré (`clientToken` absent/null).
+- `overlay_get_config` reste autorisée pour les fenêtres `overlay` et `board`,
+  mais la projection renvoyée est filtrée par label : le `clientToken` n'est
+  présent que pour la fenêtre **board** (nécessaire à `authorizedFetch`). Pour
+  `overlay`, le champ est retiré (`clientToken` absent/null).
 - Décision dans `commands::config_view_for_window` (fonction pure), testée par
   `commands::tests::config_view_is_window_scoped`.
 
@@ -687,10 +690,33 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
   une lecture en cours lors d'une désactivation (tray).
 - `emit_settings` ne diffuse plus `clientToken` (redaction) vers les fenêtres
   overlay/board — cohérent avec §12.7 (le token board passe par `get_config`).
-- Tray : priorité aux états « Overlay désactivé (aucune lecture) » et
-  « Appairage requis » sur les erreurs réseau ; entrée « Afficher l'overlay »
-  grisée hors état actif ; tooltip suffixé « (désactivé) ».
+- Tray : en-tête `N/M guildes connectées` (ou « aucune guilde »), case
+  « Sourdine générale » (cochée = `enabled == false`) qui coupe la lecture via
+  `stop_overlay_now`, et tooltip suffixé « (désactivé) ».
 - Config : écriture atomique (temp + rename) et `.bak` atomique (A6-007).
+
+### 12.11 Tray compact, navigation board et fin de la fenêtre pairing
+
+- Menu tray (ordre exact) : en-tête désactivé `LiveChat — N/M guildes
+  connectées` (ou `LiveChat — aucune guilde`), séparateur, `Ouvrir la board`,
+  `Paramètres…`, séparateur, `Sourdine générale`, une case par guilde appairée,
+  séparateur, `Quitter`.
+- La décision est un modèle pur (`tray::menu_model` → `MenuEntry`) testé sans
+  Tauri ; `tray::build_menu` le traduit en items. Les anciennes entrées de
+  réglages (autostart, texte, écran, volume, mises à jour) sont retirées du
+  menu et conservées dans `device_settings`.
+- `Paramètres…` ouvre la board puis émet `overlay://navigate` avec
+  `{"view":"settings"}`. La vue est aussi mémorisée dans
+  `AppState::pending_board_view` pour le cas où la webview n'est pas chargée ;
+  `board_take_pending_view` (autorisée pour `board` seulement) la renvoie puis
+  l'efface (`null` si absente).
+- Clic droit = menu (`show_menu_on_left_click(false)`) ; double-clic gauche
+  (`TrayIconEvent::DoubleClick`, `MouseButton::Left`) = ouverture de la board.
+- Fenêtre `pairing` supprimée de `tauri.conf.json`/`tauri.beta.conf.json` :
+  `--pairing` ouvre la board, une purge sans guilde restante ouvre la board, et
+  le premier lancement sans guilde ouvre la board. `pairing_consume` et
+  `net/pairing.rs` restent inchangés ; `web/pairing.html`, `web/pairing.js` et
+  `web/dist/renderer/pairing/**` ne sont plus référencés.
 
 
 

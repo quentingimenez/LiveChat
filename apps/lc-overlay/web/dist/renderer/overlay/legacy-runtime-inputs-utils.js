@@ -30,6 +30,7 @@ export function createOverlayLegacyRuntimeInputsUtils() {
             activePlayableElement: null,
             activePlayback: null,
             activeObjectUrl: null,
+            activeVolume: null,
             mediaFrameState: {
                 activeMediaFrame: null,
                 activeMediaContent: null,

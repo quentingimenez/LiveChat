@@ -1,24 +1,34 @@
+/* LiveChat charter palette: see docs/brand/README.md. Amber is reserved for
+   what goes on screen (the Send button). */
 :root {
   color-scheme: dark;
-  font-family: 'Manrope', 'Segoe UI', sans-serif;
-  --surface: #121216;
-  --surface-strong: #1a1b21;
-  --surface-soft: #20222a;
-  --line: rgba(255, 255, 255, 0.14);
-  --text-main: #f5f5f7;
-  --text-muted: #9ea2b2;
-  --accent: #ffffff;
-  --accent-ink: #101014;
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --surface: #1e2330;
+  --surface-strong: #171b25;
+  --surface-soft: #171b25;
+  --line: #3a4259;
+  --text-main: #e9ebf3;
+  --text-muted: #a3abc2;
+  --text-faint: #717a93;
+  --accent: #e9ebf3;
+  --accent-ink: #171b25;
+  --amber: #f2b544;
+  --amber-ink: #2a1d02;
+  --red: #ec6a70;
+  --green: #5fc9a3;
+  --blue: #7fa8f5;
 }
 
 body {
   margin: 0;
   min-width: 360px;
-  background:
-    radial-gradient(circle at 8% 6%, rgba(255, 255, 255, 0.08), transparent 48%),
-    radial-gradient(circle at 92% 4%, rgba(255, 255, 255, 0.06), transparent 42%),
-    #0a0b0f;
+  background: var(--surface-strong);
   color: var(--text-main);
+}
+
+:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
 }
 
 .popup-shell {
@@ -26,10 +36,10 @@ body {
 }
 
 .popup-card {
-  border-radius: 16px;
-  background: linear-gradient(165deg, var(--surface) 0%, var(--surface-strong) 100%);
+  border-radius: 12px;
+  background: var(--surface);
   border: 1px solid var(--line);
-  box-shadow: 0 20px 36px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
   padding: 14px;
 }
 
@@ -59,13 +69,14 @@ body {
   padding: 10px 12px;
   font-size: 13px;
   font-weight: 600;
-  background: rgba(164, 132, 35, 0.2);
-  border: 1px solid rgba(239, 197, 74, 0.35);
-  color: #ffe9b2;
+  background: rgba(242, 181, 68, 0.12);
+  border: 1px solid rgba(242, 181, 68, 0.4);
+  color: var(--text-main);
 }
 
-.setup-button {
+.btn.setup-button {
   width: 100%;
+  flex: none;
 }
 
 .popup-header {
@@ -81,15 +92,12 @@ body {
 .brand-logo {
   width: 20px;
   height: 20px;
-  border-radius: 6px;
 }
 
 .popup-kicker {
   margin: 0;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-size: 11px;
-  font-weight: 800;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--text-muted);
 }
 
@@ -106,14 +114,14 @@ body {
 
 .field-label {
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .field-input,
 .field-textarea {
   width: 100%;
   box-sizing: border-box;
-  border-radius: 10px;
+  border-radius: 6px;
   border: 1px solid var(--line);
   background: var(--surface-soft);
   color: var(--text-main);
@@ -123,7 +131,7 @@ body {
 
 .field-input::placeholder,
 .field-textarea::placeholder {
-  color: #8e92a1;
+  color: var(--text-faint);
 }
 
 .field-textarea {
@@ -136,7 +144,7 @@ body {
   gap: 8px;
   font-size: 12px;
   font-weight: 600;
-  color: #d7d9e1;
+  color: var(--text-muted);
 }
 
 .actions-row {
@@ -148,10 +156,10 @@ body {
 .btn {
   flex: 1;
   min-height: 34px;
-  border-radius: 10px;
+  border-radius: 6px;
   border: 1px solid transparent;
   font: inherit;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -165,43 +173,57 @@ body {
   color: var(--accent-ink);
 }
 
+.btn-primary:hover:not(:disabled) {
+  background: #ffffff;
+}
+
+.btn-air {
+  background: var(--amber);
+  color: var(--amber-ink);
+}
+
+.btn-air:hover:not(:disabled) {
+  background: #f7c466;
+}
+
 .btn-ghost {
   background: transparent;
   color: var(--text-main);
   border-color: var(--line);
 }
 
+.btn-ghost:hover:not(:disabled) {
+  background: #262c3c;
+}
+
 .status {
   margin: 10px 0 0;
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 9px 10px;
   font-size: 12px;
   font-weight: 600;
   border: 1px solid transparent;
+  color: var(--text-main);
 }
 
 .status-info {
-  background: rgba(87, 114, 245, 0.18);
-  border-color: rgba(123, 145, 255, 0.42);
-  color: #d2deff;
+  background: rgba(127, 168, 245, 0.14);
+  border-color: rgba(127, 168, 245, 0.45);
 }
 
 .status-success {
-  background: rgba(42, 145, 98, 0.2);
-  border-color: rgba(67, 190, 128, 0.35);
-  color: #bbf6d6;
+  background: rgba(95, 201, 163, 0.14);
+  border-color: rgba(95, 201, 163, 0.45);
 }
 
 .status-error {
-  background: rgba(177, 48, 48, 0.2);
-  border-color: rgba(237, 94, 94, 0.36);
-  color: #ffd0d0;
+  background: rgba(236, 106, 112, 0.14);
+  border-color: rgba(236, 106, 112, 0.45);
 }
 
 .status-warning {
-  background: rgba(164, 132, 35, 0.2);
-  border-color: rgba(239, 197, 74, 0.35);
-  color: #ffe9b2;
+  background: rgba(242, 181, 68, 0.12);
+  border-color: rgba(242, 181, 68, 0.4);
 }
 
 .hidden {

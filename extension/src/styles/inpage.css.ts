@@ -9,30 +9,30 @@ export const inpageStyles = `
   justify-content: center;
   gap: 6px;
   min-height: 28px;
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  border: 1px solid transparent;
   border-radius: 999px;
   padding: 4px 12px;
-  font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1;
   letter-spacing: 0.02em;
   cursor: pointer;
   user-select: none;
-  background: linear-gradient(135deg, #ffca28 0%, #ff7043 100%);
-  color: #111;
-  box-shadow: 0 6px 14px rgba(255, 112, 67, 0.22);
-  transition: transform 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+  /* LiveChat charter (docs/brand/README.md): amber means "goes on screen". */
+  background: #f2b544;
+  color: #2a1d02;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  transition: background-color 120ms ease, opacity 120ms ease;
 }
 
 .lce-button:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 8px 16px rgba(255, 112, 67, 0.28);
+  background: #f7c466;
 }
 
-.lce-button:active {
-  transform: translateY(0);
-  box-shadow: 0 4px 8px rgba(255, 112, 67, 0.24);
+.lce-button:focus-visible {
+  outline: 2px solid #7fa8f5;
+  outline-offset: 2px;
 }
 
 .lce-button[disabled] {
@@ -62,26 +62,29 @@ export const inpageStyles = `
   max-width: 360px;
   border-radius: 10px;
   padding: 10px 12px;
-  font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   font-size: 13px;
   font-weight: 600;
-  color: #fff;
-  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.3);
+  color: #e9ebf3;
+  background: #262c3c;
+  border: 1px solid #3a4259;
+  border-left: 3px solid #7fa8f5;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
   opacity: 0;
   transform: translateY(8px);
   animation: lce-toast-in 180ms ease forwards;
 }
 
 .lce-toast-success {
-  background: linear-gradient(135deg, #2e7d32, #43a047);
+  border-left-color: #5fc9a3;
 }
 
 .lce-toast-error {
-  background: linear-gradient(135deg, #b71c1c, #e53935);
+  border-left-color: #ec6a70;
 }
 
 .lce-toast-info {
-  background: linear-gradient(135deg, #1565c0, #1e88e5);
+  border-left-color: #7fa8f5;
 }
 
 @keyframes lce-toast-in {

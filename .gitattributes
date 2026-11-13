@@ -2,3 +2,7 @@
 # Shell scripts and git hooks must keep LF endings (Windows checkouts included)
 *.sh text eol=lf
 .husky/* text eol=lf
+# sqlx checksums migrations byte for byte and schema_contract compares them with
+# the contract copy: keep both LF so every checkout builds the same checksums.
+crates/lc-db/migrations/*.sql text eol=lf
+docs/rust/schema-v3.sql text eol=lf

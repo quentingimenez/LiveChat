@@ -884,14 +884,14 @@ async fn registre_sqlx_compatible_boot_et_deuxieme_boot() {
     let mut target = open_readonly(&to).await;
     assert_eq!(
         scalar_i64(&mut target, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-        6,
-        "le registre doit contenir 0001 (seedée par le migrateur), puis 0002 à 0006 \
+        7,
+        "le registre doit contenir 0001 (seedée par le migrateur), puis 0002 à 0007 \
          (appliquées par sqlx au premier boot)"
     );
     assert_eq!(
         scalar_i64(&mut target, "SELECT MAX(version) FROM _sqlx_migrations").await,
-        6,
-        "0002 à 0006 doivent être appliquées au premier démarrage"
+        7,
+        "0002 à 0007 doivent être appliquées au premier démarrage"
     );
     assert!(
         scalar_i64(&mut target, "SELECT COUNT(*) FROM media_board_items").await > 0,

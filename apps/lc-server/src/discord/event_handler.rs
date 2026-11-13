@@ -25,7 +25,8 @@ use serenity::all::{
 };
 
 use lc_db::Db;
-use lc_discord::serenity_glue::{parse_invocation, respond};
+use lc_discord::handlers::plan_deferral;
+use lc_discord::serenity_glue::{defer, parse_invocation, respond};
 use lc_discord::{dispatch, BotConfig, DbBotContext, Lang};
 
 use super::message_commands;
@@ -357,6 +358,15 @@ impl EventHandler for DiscordEventHandler {
             );
             return;
         };
+
+        // Acknowledge before the handler touches the database: Discord allows
+        // only 3 seconds to answer an interaction (`/pair-code` was seen
+        // failing with "Unknown interaction").
+        let deferral = plan_deferral(&invocation);
+        if let Err(error) = defer(&ctx.http, &command, deferral).await {
+            tracing::warn!(name = %command.data.name, %error, "accusé de réception d'interaction échoué");
+            return;
+        }
 
         let outcome = dispatch(self.context.as_ref(), invocation).await;
         if let Err(error) = respond(&ctx.http, &command, &outcome).await {

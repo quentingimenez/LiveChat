@@ -15,6 +15,7 @@ fn migrations_embedded_equal_schema_contract() {
         include_str!("../migrations/0004_discord_link_codes.sql"),
         include_str!("../migrations/0005_media_board.sql"),
         include_str!("../migrations/0006_guild_discord_icon.sql"),
+        include_str!("../migrations/0007_pairing_code_admin.sql"),
     );
     let contract = include_str!("../../../docs/rust/schema-v3.sql");
     assert_eq!(

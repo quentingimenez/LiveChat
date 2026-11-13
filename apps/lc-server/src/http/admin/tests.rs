@@ -471,6 +471,7 @@ fn pairing_code(
         code: PairingCode::parse(code).expect("code de pairing valide"),
         guild_id: guild_id.clone(),
         mode: PairingMode::Normal,
+        grants_admin: false,
         created_by_discord_user_id: created_by.to_owned(),
         author_name: Some("Alice".to_owned()),
         author_image: None,

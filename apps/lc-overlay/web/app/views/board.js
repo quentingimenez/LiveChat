@@ -1,7 +1,8 @@
 // Media board: grid, cards, detail panel, play, shortcuts, edit and delete.
 
-import { api, mediaUrl, run } from '../core/api.js';
+import { api, run } from '../core/api.js';
 import { openContextMenu } from '../core/contextmenu.js';
+import { acceleratorFromEvent, acceleratorLabel } from '../core/accelerators.js';
 import { h, icon } from '../core/dom.js';
 import { formatDuration } from '../core/format.js';
 import { invoke } from '../core/ipc.js';
@@ -74,20 +75,19 @@ const thumbObserver = new IntersectionObserver(
         continue;
       }
       thumbObserver.unobserve(entry.target);
-      const { assetId, kind } = entry.target.dataset;
-      mediaUrl(assetId)
-        .then((url) => {
-          const media =
-            kind === 'video'
-              ? h('video', { src: `${url}#t=0.1`, preload: 'metadata', muted: true, playsinline: true, tabindex: '-1' })
-              : h('img', { src: url, alt: '', loading: 'lazy' });
-          // The fallback glyph goes away as soon as the thumbnail can be shown.
-          const glyph = entry.target.querySelector('.glyph');
-          media.addEventListener('error', () => media.remove());
-          media.addEventListener(kind === 'video' ? 'loadeddata' : 'load', () => glyph && glyph.remove());
-          entry.target.prepend(media);
-        })
-        .catch(() => {});
+      const { mediaUrl, kind } = entry.target.dataset;
+      if (!mediaUrl) {
+        return;
+      }
+      const media =
+        kind === 'video'
+          ? h('video', { src: `${mediaUrl}#t=0.1`, preload: 'metadata', muted: true, playsinline: true, tabindex: '-1' })
+          : h('img', { src: mediaUrl, alt: '', loading: 'lazy' });
+      // The fallback glyph goes away as soon as the thumbnail can be shown.
+      const glyph = entry.target.querySelector('.glyph');
+      media.addEventListener('error', () => media.remove());
+      media.addEventListener(kind === 'video' ? 'loadeddata' : 'load', () => glyph && glyph.remove());
+      entry.target.prepend(media);
     }
   },
   { rootMargin: '200px' },
@@ -165,7 +165,7 @@ function badgeNode(badge) {
 // Updates badges in place: re-rendering the whole view would reload the video
 // in the detail panel.
 function refreshTriggerBadges() {
-  if (state.tab !== 'board') {
+  if (state.tab !== 'board' || state.page !== 'guild') {
     return;
   }
   pruneTriggers();
@@ -209,7 +209,7 @@ function uploadCards() {
 // Replaces only the provisional cards, keeping normal cards and the detail
 // panel (and its video) untouched.
 function refreshUploadCards() {
-  if (state.tab !== 'board' || !state.activeGuildId) {
+  if (state.tab !== 'board' || state.page !== 'guild' || !state.activeGuildId) {
     return;
   }
   const grid = document.getElementById('grid');
@@ -230,11 +230,12 @@ function refreshUploadCards() {
 
 function renderCard(item) {
   const kind = item.media.kind;
+  const mediaUrl = typeof item.mediaUrl === 'string' && item.mediaUrl ? item.mediaUrl : null;
   const thumb = h(
     'button',
     {
       class: 'thumb',
-      'data-asset-id': item.mediaAssetId,
+      'data-media-url': mediaUrl,
       'data-kind': kind,
       'aria-label': `Détails de ${itemTitle(item)}`,
       onClick: () => selectItem(item.id),
@@ -242,7 +243,7 @@ function renderCard(item) {
     h('span', { class: 'glyph' }, icon(kind === 'audio' ? 'audio' : kind === 'image' ? 'image' : 'video')),
     formatDuration(item.media.durationSec) ? h('span', { class: 'duration' }, formatDuration(item.media.durationSec)) : null,
   );
-  if (kind !== 'audio') {
+  if (kind !== 'audio' && mediaUrl) {
     thumbObserver.observe(thumb);
   }
   return h(
@@ -399,17 +400,17 @@ export function shortcutFor(itemId) {
 
 function renderDetail(item) {
   const preview = h('div', { class: 'preview' });
-  mediaUrl(item.mediaAssetId)
-    .then((url) => {
-      if (item.media.kind === 'video') {
-        preview.append(h('video', { src: url, controls: true, preload: 'metadata' }));
-      } else if (item.media.kind === 'audio') {
-        preview.append(h('audio', { src: url, controls: true }));
-      } else {
-        preview.append(h('img', { src: url, alt: '' }));
-      }
-    })
-    .catch(() => {});
+  if (item.mediaUrl) {
+    if (item.media.kind === 'video') {
+      preview.append(h('video', { src: item.mediaUrl, controls: true, preload: 'metadata' }));
+    } else if (item.media.kind === 'audio') {
+      preview.append(h('audio', { src: item.mediaUrl, controls: true }));
+    } else {
+      preview.append(h('img', { src: item.mediaUrl, alt: '' }));
+    }
+  } else {
+    preview.append(h('span', { class: 'meta' }, 'Média indisponible.'));
+  }
   let source = null;
   try {
     source = new URL(item.media.sourceUrl).hostname.replace(/^www\./, '');
@@ -447,7 +448,7 @@ function renderDetail(item) {
               state.capturing
                 ? h('span', { class: 'meta' }, 'Appuie sur la combinaison… (Échap pour annuler)')
                 : shortcut
-                  ? h('kbd', null, shortcut.replace('CommandOrControl', 'Ctrl'))
+                  ? h('kbd', null, acceleratorLabel(shortcut))
                   : h('span', { class: 'meta' }, 'Aucun'),
             ),
           ]
@@ -472,37 +473,6 @@ export function startCapture(item) {
   captureItem = item;
   state.capturing = true;
   renderView();
-}
-
-function acceleratorFromEvent(event) {
-  const key = event.key;
-  if (['Control', 'Shift', 'Alt', 'Meta'].includes(key)) {
-    return null;
-  }
-  const parts = [];
-  if (event.ctrlKey || event.metaKey) {
-    parts.push('CommandOrControl');
-  }
-  if (event.altKey) {
-    parts.push('Alt');
-  }
-  if (event.shiftKey) {
-    parts.push('Shift');
-  }
-  if (parts.length === 0) {
-    return undefined; // a bare key would capture typing in every application
-  }
-  let name = null;
-  if (/^Key[A-Z]$/.test(event.code)) {
-    name = event.code.slice(3);
-  } else if (/^Digit[0-9]$/.test(event.code)) {
-    name = event.code.slice(5);
-  } else if (/^Numpad[0-9]$/.test(event.code)) {
-    name = `num${event.code.slice(6)}`;
-  } else if (/^F([1-9]|1[0-9]|2[0-4])$/.test(key)) {
-    name = key;
-  }
-  return name ? [...parts, name].join('+') : undefined;
 }
 
 document.addEventListener('keydown', (event) => {
@@ -601,7 +571,7 @@ function transfersFiles(event) {
 }
 
 function canDropFiles() {
-  return Boolean(state.activeGuildId) && state.tab === 'board' && can('addMedia');
+  return Boolean(state.activeGuildId) && state.page === 'guild' && state.tab === 'board' && can('addMedia');
 }
 
 function inMainArea(target) {

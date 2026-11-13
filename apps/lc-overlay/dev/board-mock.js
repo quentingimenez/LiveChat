@@ -4,17 +4,26 @@
 // l'application (le dossier `dev/` est hors de `frontendDist`).
 //
 // Options de l'URL : ?role=admin|member|guest, ?empty (aucune guilde),
-// ?removed (un retrait de guilde en attente au démarrage).
+// ?removed (un retrait de guilde en attente au démarrage), ?settings (la page
+// Paramètres est demandée au démarrage via board_take_pending_view).
 // Depuis la console : `__mock.emit(event, payload)`,
 // `__mock.removeGuild(guildId, reason)`, `__mock.finishPlaying()`,
 // `__mock.reconnect(guildId)` (coupure puis retour du WebSocket),
-// `__mock.restartServer()` (perd les conversions en cours).
+// `__mock.restartServer()` (perd les conversions en cours),
+// `__mock.openSettings()` (équivalent de l'entrée tray « Paramètres… »),
+// `__mock.settings` (réglages simulés).
+// Paramètres : settings_get/settings_set (validation des écrans, volumes,
+// sourdine, démarrage automatique, raccourcis, disposition et profil),
+// settings_identify_displays, settings_test_media (overlay_busy si un média
+// passe), overlay_check_updates et board_take_pending_view. Chaque changement
+// émet `overlay://device-settings` avec une copie profonde.
 // Ajouts (lien ou fichier) : le serveur répond 202 puis envoie le résultat
 // `overlay://media-ingestion` et `overlay://board-changed`. Selon le nom du
 // fichier ou le lien : « big » → 413 pendant l'envoi, « fail » → conversion
 // en échec, « dup » → déjà sur le board, « race » → résultat reçu avant le 202,
 // « slow » → conversion qui ne finit qu'au bout de 20 s.
 // « Sad violin » n'est pas prêt (media_not_ready).
+// Appairage : le code NOPSEUDO sans pseudo renvoie display_name_required.
 (function () {
   'use strict';
 
@@ -49,12 +58,35 @@
         ],
   };
 
+  const now = Date.now();
+
+  const settings = {
+    version: '3.0.1',
+    updaterEnabled: false,
+    displays: [
+      { index: 0, key: 'display-0', label: 'Écran 1 — 2560 × 1440 (principal)', width: 2560, height: 1440, primary: true },
+      { index: 1, key: 'display-1', label: 'Écran 2 — 1920 × 1080', width: 1920, height: 1080, primary: false },
+    ],
+    selectedDisplayKey: null,
+    volume: 0.8,
+    guildVolumes: Object.fromEntries(guilds.guilds.map((guild) => [guild.membership.guildId, 1])),
+    generalMute: false,
+    showText: true,
+    autoStart: false,
+    shortcuts: { stop: 'CommandOrControl+Shift+S', muteAll: null },
+    layout: { anchor: 'center', maxWidth: 100, maxHeight: 100, margin: 24 },
+    profile: { displayName: 'Quentin', avatar: null },
+  };
+  let pendingView = new URLSearchParams(location.search).has('settings') ? 'settings' : null;
+
   const titles = ['Chat qui tombe', 'Bruh', 'Vine boom', 'Directed by Robert B. Weide', 'Stonks', 'Ah shit, here we go again', null, 'Fanfare de la victoire totale et définitive', 'Nope', 'Sad violin'];
   const kinds = ['video', 'image', 'audio', 'video', 'image', 'video', 'video', 'audio', 'image', 'audio'];
   const items = titles.map((title, index) => ({
     id: 'item-' + index,
     guildId: '111',
     mediaAssetId: 'a' + index,
+    mediaUrl: svg(index),
+    mediaUrlExpiresAt: now + 3600000,
     title,
     message: index === 0 ? 'aïe' : null,
     createdByName: index % 2 ? 'Léa' : 'Quentin',
@@ -64,7 +96,6 @@
     media: { id: 'a' + index, kind: kinds[index], mime: 'x', durationSec: kinds[index] === 'image' ? null : 3 + index * 7, width: 1280, height: 720, isVertical: false, sizeBytes: 420000 * (index + 1), sourceUrl: 'https://www.tiktok.com/@x/video/' + index },
   }));
 
-  const now = Date.now();
   const queue = {
     playing: { id: 'j0', status: 'playing', title: 'Chat qui tombe', text: null, authorName: 'Léa', durationSec: 30, kind: 'video', startedAt: new Date(now - 12000).toISOString(), submittedAt: new Date(now - 20000).toISOString() },
     pending: [
@@ -80,6 +111,8 @@
     { id: 'm-max', displayName: 'Max', avatar: null, role: 'member', connected: false, deviceCount: 1, lastSeenAt: new Date(now - 7200000).toISOString(), isSelf: false },
     { id: 'm-42', displayName: 'Invité-42', avatar: null, role: 'guest', connected: false, deviceCount: 1, lastSeenAt: null, isSelf: false },
   ];
+  // Guild profile edited by « Mon profil »: the mock keeps it between dialogs.
+  const memberProfile = { displayName: 'Quentin', avatar: null };
   const invites = [
     { code: 'K7QXM2PD', role: 'member', maxUses: 1, useCount: 0, expiresAt: new Date(now + 22 * 3600000).toISOString(), revokedAt: null, isActive: true },
     { code: 'P3WN8RTA', role: 'guest', maxUses: 10, useCount: 4, expiresAt: new Date(now + 6 * 86400000).toISOString(), revokedAt: null, isActive: true },
@@ -102,6 +135,153 @@
   function svg(index) {
     const hue = (index * 47) % 360;
     return 'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200"><rect width="320" height="200" fill="hsl(${hue} 35% 32%)"/><circle cx="${60 + index * 20}" cy="100" r="46" fill="hsl(${hue} 45% 52%)"/></svg>`);
+  }
+
+  // Device settings: the mock validates the same fields as the Rust shell and
+  // always answers with a deep copy.
+  const ANCHORS = new Set(['center', 'top', 'bottom', 'top-left', 'top-right', 'bottom-left', 'bottom-right']);
+  const settingsCopy = () => JSON.parse(JSON.stringify(settings));
+  const settingsError = (field, message) => ({ ok: false, field, message, settings: settingsCopy() });
+
+  function validAccelerator(value) {
+    if (typeof value !== 'string' || /bad/i.test(value)) {
+      return false;
+    }
+    const parts = value.split('+');
+    if (parts.length < 2) {
+      return false;
+    }
+    const modifiers = /^(CommandOrControl|Command|Cmd|Control|Ctrl|Alt|Option|Shift|Super|Meta)$/i;
+    if (!parts.slice(0, -1).every((part) => modifiers.test(part))) {
+      return false;
+    }
+    return /^[A-Za-z0-9]+$/.test(parts[parts.length - 1]);
+  }
+
+  function applySettingsPatch(patch) {
+    const input = patch && typeof patch === 'object' ? patch : {};
+    const next = settingsCopy();
+    if ('selectedDisplayKey' in input) {
+      const key = input.selectedDisplayKey;
+      if (key !== null && !next.displays.some((display) => display.key === key)) {
+        return settingsError('selectedDisplayKey', 'Écran inconnu.');
+      }
+      next.selectedDisplayKey = key;
+    }
+    if ('volume' in input) {
+      if (typeof input.volume !== 'number' || !Number.isFinite(input.volume)) {
+        return settingsError('volume', 'Volume numérique attendu.');
+      }
+      next.volume = Math.min(1, Math.max(0, input.volume));
+    }
+    if ('guildVolumes' in input) {
+      const volumes = input.guildVolumes;
+      if (!volumes || typeof volumes !== 'object') {
+        return settingsError('guildVolumes', 'Volumes de guilde invalides.');
+      }
+      for (const [guildId, value] of Object.entries(volumes)) {
+        if (typeof value !== 'number' || !Number.isFinite(value)) {
+          return settingsError(`guildVolumes.${guildId}`, 'Volume numérique attendu.');
+        }
+        // Unknown guilds are ignored, like the shell's membership lookup.
+        if (next.guildVolumes && guildId in next.guildVolumes) {
+          next.guildVolumes[guildId] = Math.min(1, Math.max(0, value));
+        }
+      }
+    }
+    for (const key of ['generalMute', 'showText', 'autoStart']) {
+      if (!(key in input)) {
+        continue;
+      }
+      if (typeof input[key] !== 'boolean') {
+        return settingsError(key, 'Valeur booléenne attendue.');
+      }
+      next[key] = input[key];
+    }
+    if ('shortcuts' in input) {
+      const shortcuts = input.shortcuts;
+      if (shortcuts === null) {
+        next.shortcuts = { stop: null, muteAll: null };
+      } else if (!shortcuts || typeof shortcuts !== 'object') {
+        return settingsError('shortcuts', 'Raccourcis invalides.');
+      } else {
+        for (const [action, value] of Object.entries(shortcuts)) {
+          if (!(action in next.shortcuts)) {
+            return settingsError(`shortcuts.${action}`, 'Raccourci inconnu.');
+          }
+          if (value !== null && !validAccelerator(value)) {
+            return settingsError(`shortcuts.${action}`, 'Raccourci invalide.');
+          }
+          next.shortcuts[action] = value;
+        }
+        // Like the shell: one accelerator cannot drive two actions.
+        const { stop, muteAll } = next.shortcuts;
+        if (stop && muteAll && stop === muteAll) {
+          const field = 'stop' in shortcuts ? 'shortcuts.stop' : 'shortcuts.muteAll';
+          return settingsError(field, 'Ce raccourci sert déjà à une autre action.');
+        }
+      }
+    }
+    if ('layout' in input) {
+      const layout = input.layout;
+      if (layout === null) {
+        next.layout = { anchor: 'center', maxWidth: 100, maxHeight: 100, margin: 24 };
+      } else if (!layout || typeof layout !== 'object') {
+        return settingsError('layout', 'Disposition invalide.');
+      } else {
+        for (const [key, value] of Object.entries(layout)) {
+          if (key === 'anchor') {
+            if (value === null) {
+              next.layout.anchor = 'center';
+            } else if (ANCHORS.has(value)) {
+              next.layout.anchor = value;
+            } else {
+              return settingsError('layout.anchor', 'Position invalide.');
+            }
+          } else if (key === 'maxWidth' || key === 'maxHeight') {
+            if (typeof value !== 'number' || !Number.isFinite(value)) {
+              return settingsError(`layout.${key}`, 'Nombre attendu.');
+            }
+            next.layout[key] = Math.min(100, Math.max(20, Math.round(value)));
+          } else if (key === 'margin') {
+            if (typeof value !== 'number' || !Number.isFinite(value)) {
+              return settingsError('layout.margin', 'Nombre attendu.');
+            }
+            next.layout.margin = Math.min(200, Math.max(0, Math.round(value)));
+          } else {
+            return settingsError(`layout.${key}`, 'Champ de disposition inconnu.');
+          }
+        }
+      }
+    }
+    if ('profile' in input) {
+      const profile = input.profile;
+      if (profile === null) {
+        next.profile = { displayName: null, avatar: null };
+      } else if (!profile || typeof profile !== 'object') {
+        return settingsError('profile', 'Profil invalide.');
+      } else {
+        for (const [key, value] of Object.entries(profile)) {
+          if (key !== 'displayName' && key !== 'avatar') {
+            return settingsError(`profile.${key}`, 'Champ de profil inconnu.');
+          }
+          if (value !== null && typeof value !== 'string') {
+            return settingsError(`profile.${key}`, 'Valeur invalide.');
+          }
+          next.profile[key] = value;
+        }
+      }
+    }
+    Object.assign(settings, next);
+    emit('overlay://device-settings', settingsCopy());
+    return { ok: true, settings: settingsCopy() };
+  }
+
+  function updateCheckStatus() {
+    if (!settings.updaterEnabled) {
+      return { state: 'disabled', currentVersion: settings.version, availableVersion: null, message: 'Mises à jour désactivées pour cette version.' };
+    }
+    return { state: 'up_to_date', currentVersion: settings.version, availableVersion: null, message: 'Aucune mise à jour disponible.' };
   }
 
   function api(payload) {
@@ -129,10 +309,25 @@
       boardChanged(payload.guildId, method === 'DELETE' ? 'deleted' : 'updated', itemId);
       return ok(method === 'DELETE' ? { deleted: true } : { updated: true, item: items[index] });
     }
+    if (path === '/overlay/profile' && method === 'PATCH') {
+      const body = payload.body || {};
+      // Missing key keeps the value; an explicit null removes it.
+      if ('displayName' in body) {
+        memberProfile.displayName = body.displayName === null ? null : String(body.displayName);
+      }
+      if ('avatar' in body) {
+        memberProfile.avatar = body.avatar === null ? null : String(body.avatar);
+      }
+      const self = members.find((member) => member.id === 'm-111');
+      if (self) {
+        Object.assign(self, memberProfile);
+      }
+      return ok({ updated: true, profile: Object.assign({}, memberProfile) });
+    }
     if (path === '/overlay/guild') {
       return ok({
         guild: { id: '111', name: 'Les Sardines', standalone: true, discordGuildId: null, guestsCanViewBoard: true, settings: { defaultMediaTime: 30, maxMediaTime: null, displayMediaFull: false }, connectedCount: 6 },
-        member: { id: 'm-111', displayName: 'Quentin', avatar: null, role },
+        member: { id: 'm-111', ...memberProfile, role },
         permissions,
       });
     }
@@ -221,6 +416,8 @@
       id: 'item-' + index,
       guildId: source.guildId || '111',
       mediaAssetId: 'a' + index,
+      mediaUrl: svg(index),
+      mediaUrlExpiresAt: Date.now() + 3600000,
       title: source.title || null,
       message: source.message || null,
       createdByName: 'Quentin',
@@ -318,7 +515,11 @@
     emit('overlay://guilds', guildsCopy());
   }
 
-  window.__mock = { emit, removeGuild, finishPlaying, reconnect, restartServer, queue, items, guilds, ingestions };
+  function openSettingsPage() {
+    emit('overlay://navigate', { view: 'settings' });
+  }
+
+  window.__mock = { emit, removeGuild, finishPlaying, reconnect, restartServer, openSettings: openSettingsPage, settings, queue, items, guilds, ingestions };
 
   window.__TAURI_INTERNALS__ = {
     transformCallback(callback) {
@@ -355,12 +556,25 @@
           return Promise.resolve(uploads.delete(payload.uploadId));
         case 'board_take_guild_removals':
           return Promise.resolve(removals.splice(0));
+        case 'board_take_pending_view': {
+          const view = pendingView;
+          pendingView = null;
+          return Promise.resolve(view);
+        }
+        case 'settings_get':
+          return delay(60).then(() => settingsCopy());
+        case 'settings_set':
+          return delay(60).then(() => applySettingsPatch(payload));
+        case 'settings_identify_displays':
+          return delay(200).then(() => ({ count: settings.displays.length }));
+        case 'settings_test_media':
+          return delay(120).then(() => (queue.playing ? { ok: false, reason: 'overlay_busy' } : { ok: true }));
+        case 'overlay_check_updates':
+          return delay(300).then(updateCheckStatus);
         case 'guilds_list':
           return Promise.resolve(guildsCopy());
         case 'guild_api':
           return delay(80).then(() => api(payload));
-        case 'guild_media_url':
-          return Promise.resolve(svg(Number(String(payload.assetId).slice(1)) || 0));
         case 'media_board_get_bindings':
           return Promise.resolve({ bindings: { 'CommandOrControl+Shift+1': 'item-0' } });
         case 'media_board_set_bindings':
@@ -385,8 +599,13 @@
           return Promise.resolve({ ok: true, guilds: guildsCopy() });
         case 'guild_leave':
           return Promise.resolve({ ok: true, guilds: guildsCopy() });
-        case 'pairing_consume':
+        case 'pairing_consume': {
+          const code = String(payload.code || '').toUpperCase();
+          if (code === 'NOPSEUDO' && !String(payload.displayName || '').trim()) {
+            return Promise.resolve({ ok: false, message: 'appairage refusé (HTTP 400 - {"error":"display_name_required"})' });
+          }
           return Promise.resolve({ ok: false, message: 'appairage refusé (HTTP 404 - {"error":"pairing_code_invalid_or_expired"})' });
+        }
         default:
           return Promise.resolve(null);
       }

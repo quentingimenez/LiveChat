@@ -1,7 +1,7 @@
 // DOM helpers. No remote data is ever injected as HTML: the DOM is built node
 // by node with `h`.
 
-import { initials } from './format.js';
+import { firstGrapheme, initials } from './format.js';
 
 export function h(tag, props, ...children) {
   const node = document.createElement(tag);
@@ -41,6 +41,8 @@ const ICONS = {
   sound: 'M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 010 6',
   remove: 'M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13',
   refresh: 'M5 12a7 7 0 0112-5l2 2M19 5v4h-4M19 12a7 7 0 01-12 5l-2-2M5 19v-4h4',
+  settings:
+    'M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1zM15 12a3 3 0 11-6 0 3 3 0 016 0z',
 };
 
 // Filled glyphs; every other icon is a stroke.
@@ -74,5 +76,5 @@ export function icon(name) {
 }
 
 export function avatarNode(name, avatar) {
-  return avatar ? h('img', { class: 'avatar', src: avatar, alt: '' }) : h('span', { class: 'avatar' }, initials(name).slice(0, 1));
+  return avatar ? h('img', { class: 'avatar', src: avatar, alt: '' }) : h('span', { class: 'avatar' }, firstGrapheme(initials(name)));
 }

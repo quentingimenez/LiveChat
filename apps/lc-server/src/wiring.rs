@@ -50,6 +50,10 @@ impl AdminHub for Hub {
         Hub::close_client(self, client_id, code)
     }
 
+    fn close_client_with_reason(&self, client_id: &Uuid, code: u16, reason: &str) -> bool {
+        Hub::close_client_with_reason(self, client_id, code, reason)
+    }
+
     async fn broadcast_stop(&self, guild_id: &GuildId) -> usize {
         Hub::broadcast_stop(self, guild_id).await
     }

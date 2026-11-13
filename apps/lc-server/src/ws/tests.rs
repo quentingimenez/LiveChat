@@ -411,6 +411,36 @@ async fn seed_job(
     id
 }
 
+/// Creates a ready board item whose asset expires in the real future.
+async fn seed_ready_board_item(
+    db: &Db,
+    guild_id: &GuildId,
+    media_asset_id: MediaAssetId,
+) -> MediaBoardItemId {
+    sqlx::query("UPDATE media_assets SET expires_at = ? WHERE id = ?")
+        .bind((Utc::now() + chrono::Duration::hours(24)).timestamp_millis())
+        .bind(media_asset_id.to_canonical())
+        .execute(db.pool())
+        .await
+        .expect("expiration du média de test");
+    let item = MediaBoardItem {
+        id: MediaBoardItemId::new_v4(),
+        guild_id: guild_id.clone(),
+        media_asset_id,
+        title: Some("Board".to_owned()),
+        message: None,
+        created_by_discord_user_id: None,
+        created_by_name: Some("Auteur".to_owned()),
+        created_at: now(),
+    };
+    let id = item.id;
+    db.media_board()
+        .create(&item)
+        .await
+        .expect("item de board de test");
+    id
+}
+
 // ---------------------------------------------------------------------------
 // Handshake et authentification
 // ---------------------------------------------------------------------------
@@ -421,6 +451,12 @@ async fn hello_returns_welcome_then_settings_then_peers() {
     let guild = seed_guild(&server.db).await;
     let client_id =
         seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    server
+        .db
+        .guilds()
+        .set_discord_icon(GUILD_ID, Some("icon_hash"))
+        .await
+        .expect("icône de guilde");
     let mut socket = connect(server.addr).await;
     let welcome = handshake(&mut socket, TOKEN).await;
 
@@ -429,6 +465,11 @@ async fn hello_returns_welcome_then_settings_then_peers() {
     let payload = &welcome["payload"];
     assert_eq!(payload["protocolVersion"], 2);
     assert_eq!(payload["guildId"], GUILD_ID);
+    assert_eq!(payload["guildName"], "Guilde de test");
+    assert_eq!(
+        payload["guildIconUrl"],
+        format!("https://cdn.discordapp.com/icons/{GUILD_ID}/icon_hash.png?size=128")
+    );
     assert_eq!(payload["clientId"], client_id.to_canonical());
     assert_eq!(payload["sessionMode"], "normal");
     assert_eq!(payload["serverVersion"], env!("CARGO_PKG_VERSION"));
@@ -816,11 +857,110 @@ async fn legacy_meme_trigger_type_still_plays_a_media_item() {
         ),
     )
     .await;
-    let ack = recv_until_type(&mut socket, "ack").await;
+    // The play frame is emitted while enqueueing, before the ack.
+    let mut ack = None;
+    let mut play = None;
+    for _ in 0..20 {
+        let frame = recv_value(&mut socket).await;
+        let kind = frame
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        match kind.as_str() {
+            "ack" => ack = Some(frame),
+            "play" => play = Some(frame),
+            _ => {}
+        }
+        if ack.is_some() && play.is_some() {
+            break;
+        }
+    }
+    let ack = ack.expect("ack legacy");
     assert_eq!(ack["payload"]["ok"], true);
     assert_eq!(ack["payload"]["ref"], "cli-legacy-meme-trigger-0001");
-    let play = recv_until_type(&mut socket, "play").await;
+    let play = play.expect("play legacy");
     assert!(play["payload"]["jobId"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn media_trigger_acks_playing_with_job_id() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 120).await;
+    let item_id = seed_ready_board_item(&server.db, &guild, asset_id).await;
+    let mut socket = connect(server.addr).await;
+    handshake(&mut socket, TOKEN).await;
+
+    send_value(
+        &mut socket,
+        &envelope(
+            "media.trigger",
+            "cli-media-trigger-playing",
+            json!({ "itemId": item_id.to_canonical(), "trigger": "shortcut" }),
+        ),
+    )
+    .await;
+
+    let ack = recv_until_type(&mut socket, "ack").await;
+    assert_eq!(ack["payload"]["ok"], true, "{ack}");
+    assert_eq!(ack["payload"]["outcome"], "playing");
+    assert!(ack["payload"].get("position").is_none(), "{ack}");
+    let job_id = ack["payload"]["jobId"].as_str().expect("jobId de l'ack");
+    let stored = server
+        .db
+        .playback_jobs()
+        .get(PlaybackJobId::parse(job_id).expect("jobId valide"))
+        .await
+        .expect("lecture du job")
+        .expect("job créé");
+    assert_eq!(stored.status, JobStatus::Playing);
+}
+
+#[tokio::test]
+async fn second_media_trigger_acks_queued_at_position_one() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 120).await;
+    let item_id = seed_ready_board_item(&server.db, &guild, asset_id).await;
+    let mut socket = connect(server.addr).await;
+    handshake(&mut socket, TOKEN).await;
+
+    send_value(
+        &mut socket,
+        &envelope(
+            "media.trigger",
+            "cli-media-trigger-first",
+            json!({ "itemId": item_id.to_canonical(), "trigger": "shortcut" }),
+        ),
+    )
+    .await;
+    let first = recv_until_type(&mut socket, "ack").await;
+    assert_eq!(first["payload"]["outcome"], "playing", "{first}");
+    let first_job_id = first["payload"]["jobId"]
+        .as_str()
+        .expect("jobId du premier ack")
+        .to_owned();
+
+    send_value(
+        &mut socket,
+        &envelope(
+            "media.trigger",
+            "cli-media-trigger-second",
+            json!({ "itemId": item_id.to_canonical(), "trigger": "shortcut" }),
+        ),
+    )
+    .await;
+    let second = recv_until_type(&mut socket, "ack").await;
+    assert_eq!(second["payload"]["ok"], true, "{second}");
+    assert_eq!(second["payload"]["outcome"], "queued");
+    assert_eq!(second["payload"]["position"], 1);
+    assert_ne!(
+        second["payload"]["jobId"].as_str(),
+        Some(first_job_id.as_str())
+    );
 }
 
 #[tokio::test]
@@ -958,6 +1098,10 @@ fn close_reason_mapping_is_stable() {
     assert_eq!(
         hub::close_reason_for_code(close_code::NORMAL),
         lc_protocol::close_reason::CLIENT_SHUTDOWN
+    );
+    assert_eq!(
+        hub::close_reason_for_code(close_code::GUILD_DELETED),
+        lc_protocol::close_reason::GUILD_DELETED
     );
 }
 
@@ -1294,6 +1438,53 @@ async fn revocation_emits_stop_revoked_before_close_4402() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert_eq!(status, Some(JobStatus::Done));
+}
+
+#[tokio::test]
+async fn close_client_with_reason_transmits_explicit_reasons() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    let client_a = seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let client_b =
+        seed_overlay_client(&server.db, &guild, TOKEN_B, OverlaySessionMode::Normal).await;
+    let mut socket_a = connect(server.addr).await;
+    handshake(&mut socket_a, TOKEN).await;
+    let mut socket_b = connect(server.addr).await;
+    handshake(&mut socket_b, TOKEN_B).await;
+
+    assert!(
+        server.hub.close_client_with_reason(
+            &client_a.as_uuid(),
+            close_code::REVOKED,
+            close_reason::MEMBER_REMOVED,
+        ),
+        "le client exclu doit avoir une socket ouverte"
+    );
+    // A revocation still broadcasts the stop before the close, regardless of
+    // the explicit close reason.
+    let stop = recv_until_type(&mut socket_a, "stop").await;
+    assert_eq!(stop["payload"]["reason"], "revoked");
+    expect_close_with_reason(
+        &mut socket_a,
+        close_code::REVOKED,
+        close_reason::MEMBER_REMOVED,
+    )
+    .await;
+
+    assert!(
+        server.hub.close_client_with_reason(
+            &client_b.as_uuid(),
+            close_code::GUILD_DELETED,
+            close_reason::GUILD_DELETED,
+        ),
+        "le client de la guilde supprimée doit avoir une socket ouverte"
+    );
+    expect_close_with_reason(
+        &mut socket_b,
+        close_code::GUILD_DELETED,
+        close_reason::GUILD_DELETED,
+    )
+    .await;
 }
 
 #[tokio::test]

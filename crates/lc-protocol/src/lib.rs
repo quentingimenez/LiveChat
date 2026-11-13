@@ -83,6 +83,8 @@ pub mod close_code {
     pub const REVOKED: u16 = 4402;
     /// Version de protocole obsolète.
     pub const OUTDATED_PROTOCOL: u16 = 4403;
+    /// Guild deleted by an administrator.
+    pub const GUILD_DELETED: u16 = 4404;
     /// Trame dépassant `MAX_FRAME_BYTES`.
     pub const FRAME_TOO_LARGE: u16 = 4408;
     /// Débit client dépassant `MAX_CLIENT_MESSAGES_PER_SECOND`.
@@ -115,6 +117,10 @@ pub mod close_reason {
     pub const HELLO_REQUIRED: &str = "hello_required";
     /// Client révoqué.
     pub const REVOKED: &str = "revoked";
+    /// Member removed from the guild by an administrator.
+    pub const MEMBER_REMOVED: &str = "member_removed";
+    /// Guild deleted by an administrator.
+    pub const GUILD_DELETED: &str = "guild_deleted";
     /// Client d'une version d'overlay trop ancienne.
     pub const OUTDATED_PROTOCOL: &str = "outdated_protocol";
     /// Trame trop volumineuse.
@@ -607,6 +613,12 @@ pub struct WelcomePayload {
     pub protocol_version: u8,
     /// Identifiant de la guilde.
     pub guild_id: String,
+    /// Display name of the guild, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guild_name: Option<String>,
+    /// Discord CDN URL of the guild icon, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guild_icon_url: Option<String>,
     /// Identifiant canonique du client.
     pub client_id: String,
     /// Mode de session autoritatif.
@@ -828,6 +840,16 @@ pub struct AckError {
     pub message: String,
 }
 
+/// Outcome of a successfully accepted `media.trigger`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AckOutcome {
+    /// The media started playing immediately.
+    Playing,
+    /// The media is waiting in the guild queue.
+    Queued,
+}
+
 /// Payload de `ack`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -840,6 +862,15 @@ pub struct AckPayload {
     /// Détail du refus (`ok: false`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<AckError>,
+    /// Whether the triggered media is playing or queued.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<AckOutcome>,
+    /// 1-based rank among the guild's pending jobs (`outcome = queued`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<u32>,
+    /// Canonical id of the created playback job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
 }
 
 /// Payload de `error` serveur→client.

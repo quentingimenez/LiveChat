@@ -260,6 +260,8 @@ pub struct GuildAccess {
     pub standalone: bool,
     /// Serveur Discord lié à une guilde indépendante, si elle en a un.
     pub discord_guild_id: Option<String>,
+    /// Discord icon hash, when the linked server has an icon.
+    pub discord_icon_hash: Option<String>,
     /// Les invités peuvent consulter le board média.
     pub guests_can_view_board: bool,
     /// Date de création (`None` pour une guilde antérieure à la migration 0003).

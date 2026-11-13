@@ -59,7 +59,7 @@ fn disabled(current: String) -> UpdateStatus {
         state: "disabled".to_string(),
         current_version: current,
         available_version: None,
-        message: "Mises à jour désactivées pour la version 3.0.0 (clé de signature \
+        message: "Mises à jour désactivées en 3.0 (clé de signature \
                   non configurée)."
             .to_string(),
     }

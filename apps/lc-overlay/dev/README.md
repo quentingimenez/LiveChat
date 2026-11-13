@@ -111,7 +111,8 @@ backend ni WebView2. `node --check apps/lc-overlay/web/bridge.js` valide la synt
 ### Utiliser `__bridgeMockEmit` dans les pages
 
 En mode mock (ou pour tester un listener sans backend), les noms d'événements acceptés sont indifféremment
-`play`/`stop`/`settings`, `overlay:play`/… ou `overlay://play`/… ; le second argument est le payload transmis tel quel :
+`play`/`stop`/`settings`/`placement`, `overlay:play`/… ou `overlay://play`/… ; le second argument est le payload
+transmis tel quel :
 
 ```js
 const off = window.livechatOverlay.onPlay((payload) => console.log(payload));
@@ -145,6 +146,7 @@ Depuis la console :
 | `__mock.settings` | Objet `SettingsView` simulé (affichage, volumes, raccourcis, disposition, profil). |
 | `__mock.emit(event, payload)` | Émet un événement vers les listeners du board (par exemple `overlay://device-settings` avec une copie). |
 | `__mock.finishPlaying()` | Termine le média à l'antenne et passe au suivant. |
+| `__mock.finishPlacement(zone)` | Fait ce que fait l'overlay en fin de placement : enregistre `zone` (`{ x, y, width, height }`) ou annule (`null`), puis émet `overlay://device-settings`. |
 | `__mock.reconnect(guildId)`, `__mock.restartServer()`, `__mock.removeGuild(guildId, reason)` | Simulent les incidents de connexion et les retraits de guilde. |
 
 Commandes shell simulées pour les réglages :
@@ -154,7 +156,7 @@ Commandes shell simulées pour les réglages :
   `guildVolumes`, `generalMute`, `showText`, `autoStart`, `shortcuts`,
   `layout`, `profile`) et répond `{ ok: false, field, message, settings }` sur
   une valeur invalide — un raccourci contenant « Bad » est refusé. Les volumes
-  et les bornes de disposition sont ramenés dans leur plage, et `null`
+  sont ramenés dans leur plage, la zone d'affichage est normalisée et `null`
   réinitialise un objet, comme dans le shell.
 - Chaque modification réussie émet `overlay://device-settings` avec une copie
   profonde.
@@ -162,8 +164,9 @@ Commandes shell simulées pour les réglages :
   `settings_test_media` renvoie `{ ok: false, reason: "overlay_busy" }` tant
   qu'un média passe, `{ ok: true }` sinon ; `settings_preview_layout` garde
   chaque brouillon de mise en page dans `__mock.previewLayouts` ;
-  `overlay_check_updates` renvoie un `UpdateStatus` (updater désactivé dans le
-  mock).
+  `settings_placement_start` passe `placing` à `true` et
+  `settings_placement_cancel` l'annule ; `overlay_check_updates` renvoie un
+  `UpdateStatus` (updater désactivé dans le mock).
 - Les items du board portent `mediaUrl` (data URI SVG) et
   `mediaUrlExpiresAt` (une heure après le chargement), comme le serveur signé.
 - `pairing_consume` répond `display_name_required` pour le code `NOPSEUDO`
@@ -189,7 +192,8 @@ Rien n'est persisté : le mock ne lit ni n'écrit de configuration, ne contacte 
 
 Les 13 méthodes legacy, signatures et payloads sont identiques à `overlay/src/preload/index.ts` ; seul le transport change.
 Depuis P1-11, une 14<sup>e</sup> méthode additive, `authorizedFetch(url, options)`, est exposée pour l'authentification
-Bearer du board (voir `docs/rust/overlay-bridge.md` §12.4). Tableau complet, canaux, handlers et sémantique :
+Bearer du board (voir `docs/rust/overlay-bridge.md` §12.4). Le placement de la zone d'affichage ajoute
+`onPlacement(cb)` et `finishPlacement(p)` (§14.6). Tableau complet, canaux, handlers et sémantique :
 **`docs/rust/overlay-bridge.md`**.
 
 | Méthode | Forme |
@@ -201,6 +205,8 @@ Bearer du board (voir `docs/rust/overlay-bridge.md` §12.4). Tableau complet, ca
 | `consumePairing(p)` | `Promise<{ ok: boolean }>` |
 | `getMediaBindings()` / `setMediaBindings(p)` | `Promise<…>` |
 | `triggerMedia(p)` / `stopMediaPlayback()` | `Promise<{ ok, reason? }>` |
+| `onPlacement(cb)` | retourne une fonction de désabonnement ; payload `{ active, layout? }` |
+| `finishPlacement({ zone })` | `Promise<null>` ; en mock, émet `overlay://placement` `{ active: false }` |
 
 Les méthodes fire-and-forget renvoient une `Promise` **toujours résolue** (échec journalisé en `console.warn`) afin de ne
 jamais produire de rejet non géré dans le renderer legacy, qui ignore leur retour. Les méthodes de type `invoke`

@@ -182,8 +182,13 @@ pub fn position_overlay_without_persisting(app: &AppHandle<Wry>) -> Option<Displ
     position_overlay(app, false)
 }
 
-/// Applies click-through, non-focusable, topmost and Win32 overlay policies.
+/// Applies click-through, non-focusable, topmost and Win32 overlay policies,
+/// or the placement ones while the display zone is being placed.
 fn apply_window_policies(window: &WebviewWindow<Wry>) {
+    if crate::placement::is_active() {
+        apply_placement_policies(window);
+        return;
+    }
     let tauri_results = [
         (
             "set_ignore_cursor_events",
@@ -211,6 +216,57 @@ fn apply_window_policies(window: &WebviewWindow<Wry>) {
             );
         }
         Err(error) => tracing::warn!(%error, "hwnd overlay indisponible"),
+    }
+}
+
+/// Placement: the overlay takes the mouse and the keyboard on its screen,
+/// still topmost and out of the taskbar.
+fn apply_placement_policies(window: &WebviewWindow<Wry>) {
+    let tauri_results = [
+        (
+            "set_ignore_cursor_events",
+            window.set_ignore_cursor_events(false),
+        ),
+        ("set_focusable", window.set_focusable(true)),
+        ("set_always_on_top", window.set_always_on_top(true)),
+        ("set_skip_taskbar", window.set_skip_taskbar(true)),
+    ];
+    for (call, result) in tauri_results {
+        if let Err(error) = result {
+            tracing::warn!(call, %error, "échec d'une politique de placement");
+        }
+    }
+    #[cfg(windows)]
+    match window.hwnd() {
+        Ok(hwnd) => win32::clear_click_through(hwnd),
+        Err(error) => tracing::warn!(%error, "hwnd overlay indisponible (placement)"),
+    }
+}
+
+/// Shows the overlay as a clickable, focused window for the zone placement.
+pub fn enter_placement(app: &AppHandle<Wry>) {
+    let Some(window) = window(app, OVERLAY_LABEL) else {
+        tracing::warn!("fenêtre overlay absente au placement");
+        return;
+    };
+    apply_window_policies(&window);
+    reveal(app, OVERLAY_LABEL, true);
+    #[cfg(windows)]
+    if let Ok(hwnd) = window.hwnd() {
+        if let Err(error) = win32::reassert_topmost(hwnd) {
+            tracing::warn!(%error, "échec topmost au placement");
+        }
+    }
+}
+
+/// Back to the click-through overlay, hidden again when it is turned off.
+pub fn exit_placement(app: &AppHandle<Wry>) {
+    let Some(window) = window(app, OVERLAY_LABEL) else {
+        return;
+    };
+    apply_window_policies(&window);
+    if !overlay_should_show_now(app) {
+        hide_overlay(app);
     }
 }
 
@@ -270,7 +326,8 @@ pub fn spawn_topmost_guard(app: AppHandle<Wry>) {
         let Some(window) = app.get_webview_window(OVERLAY_LABEL) else {
             break;
         };
-        if !overlay_should_show_now(&app) {
+        let placing = crate::placement::is_active();
+        if !overlay_should_show_now(&app) && !placing {
             // Overlay désactivé : aucune réaffirmation topmost ni lecture.
             continue;
         }
@@ -280,7 +337,10 @@ pub fn spawn_topmost_guard(app: AppHandle<Wry>) {
         #[cfg(windows)]
         match window.hwnd() {
             Ok(hwnd) => {
-                let _styles = win32::ensure_overlay_ex_style(hwnd);
+                // While the zone is placed, the overlay must stay clickable.
+                if !placing {
+                    let _styles = win32::ensure_overlay_ex_style(hwnd);
+                }
                 if let Err(error) = win32::reassert_topmost(hwnd) {
                     tracing::debug!(%error, "SetWindowPos topmost tick en échec");
                 }

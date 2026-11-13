@@ -2,11 +2,11 @@
 //!
 //! Dialogue avec `{serverUrl}/ws` selon `docs/rust/protocol-v2.md` :
 //! handshake `hello`/`welcome`, heartbeat applicatif toutes les 15 s,
-//! réception `play`/`stop`/`settings`/`peers`/`ack`/`error`, envoi
-//! `playback.state`, `playback.ended`, `stop.request`, `media.trigger`,
-//! `peers.request`, reconnexion avec backoff (1 s → 3 s, 4409 plafonné à 30 s),
-//! et gestion terminale des closes 4401 (jeton invalide → réappairage),
-//! 4402 (révoqué) et 4403 (overlay obsolète).
+//! réception `play`/`stop`/`settings`/`peers`/`ack`/`error`/`media.ingestion`/
+//! `board.changed`, envoi `playback.state`, `playback.ended`, `stop.request`,
+//! `media.trigger`, `peers.request`, reconnexion avec backoff (1 s → 3 s,
+//! 4409 plafonné à 30 s), et gestion terminale des closes 4401 (jeton invalide
+//! → réappairage), 4402 (révoqué) et 4403 (overlay obsolète).
 //!
 //! La logique de session ([`run_session`]) est générique sur [`SessionEffects`]
 //! afin d'être testable contre un serveur WebSocket mock ; l'implémentation
@@ -18,9 +18,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
 use lc_protocol::{
-    AckPayload, ClientEnvelope, ClientMessage, HeartbeatPayload, HelloPayload, PeersPayload,
-    PlayPayload, PlaybackState, PlaybackStatePayload, ServerEnvelope, ServerErrorPayload,
-    ServerMessage, SessionMode, SettingsPayload, StopPayload, WelcomePayload,
+    AckPayload, BoardChangedPayload, ClientEnvelope, ClientMessage, HeartbeatPayload, HelloPayload,
+    MediaIngestionPayload, PeersPayload, PlayPayload, PlaybackState, PlaybackStatePayload,
+    ServerEnvelope, ServerErrorPayload, ServerMessage, SessionMode, SettingsPayload, StopPayload,
+    WelcomePayload,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Wry};
@@ -46,6 +47,18 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 /// Cadence du keep-alive des `play` en file locale (avant leur affichage).
 const QUEUED_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(3);
+/// Every server message type known by this client.
+const KNOWN_SERVER_MESSAGE_TYPES: [&str; 9] = [
+    lc_protocol::msg_type::WELCOME,
+    lc_protocol::msg_type::SETTINGS,
+    lc_protocol::msg_type::PEERS,
+    lc_protocol::msg_type::PLAY,
+    lc_protocol::msg_type::STOP,
+    lc_protocol::msg_type::ACK,
+    lc_protocol::msg_type::ERROR,
+    lc_protocol::msg_type::MEDIA_INGESTION,
+    lc_protocol::msg_type::BOARD_CHANGED,
+];
 
 /// Statut de connexion affiché dans le tray et exposé au bridge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -138,6 +151,10 @@ pub trait SessionEffects: Send + Sync {
     fn on_peers(&self, payload: &PeersPayload);
     fn on_ack(&self, payload: &AckPayload);
     fn on_server_error(&self, payload: &ServerErrorPayload);
+    /// Result of the asynchronous media ingestion this client requested.
+    fn on_media_ingestion(&self, payload: &MediaIngestionPayload);
+    /// The guild's media board changed.
+    fn on_board_changed(&self, payload: &BoardChangedPayload);
     /// `(job_id, durée ms)` des `play` de cette guilde en file locale.
     fn queued_jobs(&self) -> Vec<(String, u64)>;
 }
@@ -700,6 +717,20 @@ where
     Ok(id)
 }
 
+/// Returns the `type` of a text frame when it names no known server message.
+///
+/// Unknown message types are ignored so a newer server can add frames without
+/// breaking older overlays; anything else is a protocol error.
+fn unknown_server_message_type(text: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let message_type = value.as_object()?.get("type")?.as_str()?;
+    if KNOWN_SERVER_MESSAGE_TYPES.contains(&message_type) {
+        None
+    } else {
+        Some(message_type.to_string())
+    }
+}
+
 /// Exécute une session WebSocket complète jusqu'à fermeture ou erreur.
 async fn run_session<E: SessionEffects>(
     effects: &E,
@@ -763,6 +794,15 @@ async fn run_session<E: SessionEffects>(
                                 let envelope = match serde_json::from_str::<ServerEnvelope>(text.as_str()) {
                                     Ok(envelope) => envelope,
                                     Err(error) => {
+                                        let unknown_type =
+                                            unknown_server_message_type(text.as_str());
+                                        if let Some(message_type) = unknown_type {
+                                            tracing::warn!(
+                                                message_type = %message_type,
+                                                "type de message serveur inconnu ignoré"
+                                            );
+                                            continue;
+                                        }
                                         return SessionOutcome::Failed(format!(
                                             "trame serveur invalide : {error}"
                                         ));
@@ -809,6 +849,12 @@ async fn run_session<E: SessionEffects>(
                                         }
                                     }
                                     ServerMessage::Error(payload) => effects.on_server_error(&payload),
+                                    ServerMessage::MediaIngestion(payload) => {
+                                        effects.on_media_ingestion(&payload)
+                                    }
+                                    ServerMessage::BoardChanged(payload) => {
+                                        effects.on_board_changed(&payload)
+                                    }
                                 }
                             }
                             Message::Close(frame) => {
@@ -1129,6 +1175,18 @@ impl SessionEffects for AppEffects {
         refresh_tray_from_any_thread(&self.app);
     }
 
+    fn on_media_ingestion(&self, payload: &MediaIngestionPayload) {
+        if let Err(error) = events::emit_media_ingestion(&self.app, &self.guild_id, payload) {
+            tracing::debug!(%error, "échec d'émission du résultat d'ingestion");
+        }
+    }
+
+    fn on_board_changed(&self, payload: &BoardChangedPayload) {
+        if let Err(error) = events::emit_board_changed(&self.app, &self.guild_id, payload) {
+            tracing::debug!(%error, "échec d'émission du changement de board");
+        }
+    }
+
     fn queued_jobs(&self) -> Vec<(String, u64)> {
         self.app.state::<AppState>().queued_jobs_for(&self.guild_id)
     }
@@ -1186,7 +1244,10 @@ mod tests {
     use tokio_tungstenite::tungstenite::protocol::CloseFrame;
     use tokio_tungstenite::WebSocketStream;
 
-    use lc_protocol::{AckOutcome, MediaTrigger, MediaTriggerPayload};
+    use lc_protocol::{
+        AckOutcome, BoardChange, BoardChangedPayload, MediaIngestionError, MediaIngestionPayload,
+        MediaTrigger, MediaTriggerPayload,
+    };
 
     #[derive(Default)]
     struct RecordingEffects {
@@ -1196,6 +1257,8 @@ mod tests {
         peers: StdMutex<u32>,
         settings: StdMutex<u32>,
         acks: StdMutex<u32>,
+        media_ingestions: StdMutex<Vec<MediaIngestionPayload>>,
+        board_changes: StdMutex<Vec<BoardChangedPayload>>,
         queued: StdMutex<Vec<(String, u64)>>,
     }
 
@@ -1237,6 +1300,18 @@ mod tests {
         }
 
         fn on_server_error(&self, _payload: &ServerErrorPayload) {}
+
+        fn on_media_ingestion(&self, payload: &MediaIngestionPayload) {
+            if let Ok(mut received) = self.media_ingestions.lock() {
+                received.push(payload.clone());
+            }
+        }
+
+        fn on_board_changed(&self, payload: &BoardChangedPayload) {
+            if let Ok(mut received) = self.board_changes.lock() {
+                received.push(payload.clone());
+            }
+        }
 
         fn queued_jobs(&self) -> Vec<(String, u64)> {
             self.queued
@@ -1292,6 +1367,41 @@ mod tests {
         }
     }
 
+    fn media_ingestion_payload() -> MediaIngestionPayload {
+        MediaIngestionPayload {
+            ingestion_id: "ing-1".to_string(),
+            ok: false,
+            created: None,
+            item_id: None,
+            error: Some(MediaIngestionError {
+                code: "unsupported_media".to_string(),
+                message: Some("format inconnu".to_string()),
+            }),
+        }
+    }
+
+    fn board_changed_payload() -> BoardChangedPayload {
+        BoardChangedPayload {
+            change: BoardChange::Added,
+            item_id: "item-1".to_string(),
+        }
+    }
+
+    fn session_config(address: std::net::SocketAddr) -> SessionConfig {
+        SessionConfig {
+            ws_url: ws_url_from_server_url_with(&format!("http://{address}"), true)
+                .expect("url WebSocket de test"),
+            hello: HelloPayload {
+                token: "token-test".to_string(),
+                app_version: "3.0.0".to_string(),
+                client_id: Some("client-1".to_string()),
+                session_mode: Some(SessionMode::Normal),
+            },
+            insecure_tls: false,
+            queued_keepalive_interval: QUEUED_KEEPALIVE_INTERVAL,
+        }
+    }
+
     async fn next_client_envelope(
         socket: &mut WebSocketStream<tokio::net::TcpStream>,
     ) -> Option<ClientEnvelope> {
@@ -1326,6 +1436,13 @@ mod tests {
             .send(Message::Text(text.into()))
             .await
             .expect("envoi serveur");
+    }
+
+    async fn send_server_text(socket: &mut WebSocketStream<tokio::net::TcpStream>, text: &str) {
+        socket
+            .send(Message::Text(text.to_string().into()))
+            .await
+            .expect("envoi serveur brut");
     }
 
     #[tokio::test]
@@ -1384,6 +1501,178 @@ mod tests {
         assert_eq!(effects.plays.lock().expect("plays").as_slice(), ["job-1"]);
         drop(sender);
         server.await.expect("serveur mock");
+    }
+
+    #[tokio::test]
+    async fn session_dispatches_media_ingestion_and_board_changed() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("adresse locale");
+        let server = tokio::spawn(async move {
+            let (stream, _peer) = listener.accept().await.expect("accept");
+            let mut socket = accept_async(stream).await.expect("handshake serveur");
+            let hello = next_client_message(&mut socket).await;
+            assert!(matches!(hello, Some(ClientMessage::Hello(_))));
+            send_server_message(
+                &mut socket,
+                "srv-welcome",
+                ServerMessage::Welcome(welcome_payload()),
+            )
+            .await;
+            send_server_message(
+                &mut socket,
+                "srv-ingestion",
+                ServerMessage::MediaIngestion(media_ingestion_payload()),
+            )
+            .await;
+            send_server_message(
+                &mut socket,
+                "srv-board",
+                ServerMessage::BoardChanged(board_changed_payload()),
+            )
+            .await;
+            socket
+                .send(Message::Close(Some(CloseFrame {
+                    code: CloseCode::Normal,
+                    reason: "bye".into(),
+                })))
+                .await
+                .expect("close serveur");
+            let _closed = socket.close(None).await;
+        });
+
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<NetCommand>();
+        let session = session_config(address);
+        let effects = RecordingEffects::default();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_session(&effects, &session, &mut receiver),
+        )
+        .await
+        .expect("session non bloquée");
+        match outcome {
+            SessionOutcome::Closed { code, .. } => assert_eq!(code, Some(1000)),
+            other => panic!("fin de session inattendue : {other:?}"),
+        }
+        assert_eq!(
+            effects
+                .media_ingestions
+                .lock()
+                .expect("ingestions")
+                .as_slice(),
+            [media_ingestion_payload()]
+        );
+        assert_eq!(
+            effects
+                .board_changes
+                .lock()
+                .expect("changements de board")
+                .as_slice(),
+            [board_changed_payload()]
+        );
+        drop(sender);
+        server.await.expect("serveur mock");
+    }
+
+    #[tokio::test]
+    async fn unknown_server_message_type_is_ignored_and_session_continues() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("adresse locale");
+        let server = tokio::spawn(async move {
+            let (stream, _peer) = listener.accept().await.expect("accept");
+            let mut socket = accept_async(stream).await.expect("handshake serveur");
+            let hello = next_client_message(&mut socket).await;
+            assert!(matches!(hello, Some(ClientMessage::Hello(_))));
+            send_server_message(
+                &mut socket,
+                "srv-welcome",
+                ServerMessage::Welcome(welcome_payload()),
+            )
+            .await;
+            send_server_text(
+                &mut socket,
+                r#"{"v":2,"id":"srv-future","ts":0,"type":"future.event","payload":{"x":1}}"#,
+            )
+            .await;
+            send_server_message(&mut socket, "srv-play", ServerMessage::Play(play_payload())).await;
+            socket
+                .send(Message::Close(Some(CloseFrame {
+                    code: CloseCode::Normal,
+                    reason: "bye".into(),
+                })))
+                .await
+                .expect("close serveur");
+            let _closed = socket.close(None).await;
+        });
+
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<NetCommand>();
+        let session = session_config(address);
+        let effects = RecordingEffects::default();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_session(&effects, &session, &mut receiver),
+        )
+        .await
+        .expect("session non bloquée");
+        match outcome {
+            SessionOutcome::Closed { code, .. } => assert_eq!(code, Some(1000)),
+            other => panic!("fin de session inattendue : {other:?}"),
+        }
+        assert_eq!(effects.plays.lock().expect("plays").as_slice(), ["job-1"]);
+        drop(sender);
+        server.await.expect("serveur mock");
+    }
+
+    #[tokio::test]
+    async fn known_server_message_type_with_invalid_payload_fails_the_session() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("adresse locale");
+        let server = tokio::spawn(async move {
+            let (stream, _peer) = listener.accept().await.expect("accept");
+            let mut socket = accept_async(stream).await.expect("handshake serveur");
+            let hello = next_client_message(&mut socket).await;
+            assert!(matches!(hello, Some(ClientMessage::Hello(_))));
+            send_server_message(
+                &mut socket,
+                "srv-welcome",
+                ServerMessage::Welcome(welcome_payload()),
+            )
+            .await;
+            send_server_text(
+                &mut socket,
+                r#"{"v":2,"id":"srv-bad","ts":0,"type":"play","payload":null}"#,
+            )
+            .await;
+            let _closed = socket.close(None).await;
+        });
+
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<NetCommand>();
+        let session = session_config(address);
+        let effects = RecordingEffects::default();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_session(&effects, &session, &mut receiver),
+        )
+        .await
+        .expect("session non bloquée");
+        match outcome {
+            SessionOutcome::Failed(reason) => {
+                assert!(reason.starts_with("trame serveur invalide"), "{reason}");
+            }
+            other => panic!("fin de session inattendue : {other:?}"),
+        }
+        drop(sender);
+        server.await.expect("serveur mock");
+    }
+
+    #[test]
+    fn unknown_server_message_type_only_matches_unknown_types() {
+        assert_eq!(
+            unknown_server_message_type(r#"{"type":"future.event"}"#),
+            Some("future.event".to_string())
+        );
+        assert_eq!(unknown_server_message_type(r#"{"type":"play"}"#), None);
+        assert_eq!(unknown_server_message_type(r#"{"type":3}"#), None);
+        assert_eq!(unknown_server_message_type("pas du json"), None);
     }
 
     #[tokio::test]

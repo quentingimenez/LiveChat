@@ -615,7 +615,7 @@ async fn code_appareil_rattache_membre_existant() {
 }
 
 #[tokio::test]
-async fn permissions_emettent_les_anciennes_cles_legacy() {
+async fn permissions_emit_media_keys() {
     let harness = Harness::new().await;
     let admin = harness
         .join(&harness.server_invite(GuildRole::Admin).await, "Quentin")
@@ -631,10 +631,6 @@ async fn permissions_emettent_les_anciennes_cles_legacy() {
         let permissions = &guild["permissions"];
         assert!(permissions.get("addMedia").is_some());
         assert!(permissions.get("editAnyMedia").is_some());
-        // Legacy overlay 3.0.0 compatibility: remove in 3.1.
-        assert_eq!(permissions["addMedia"], permissions["addMeme"]);
-        // Legacy overlay 3.0.0 compatibility: remove in 3.1.
-        assert_eq!(permissions["editAnyMedia"], permissions["editAnyMeme"]);
     }
 }
 

@@ -13,12 +13,10 @@
 //! | `GET` | `/overlay/media-board/items` | `Authorization: Bearer` (repli `?token=`) |
 //! | `POST` | `/overlay/media-board/items` | `Authorization: Bearer` (repli `?token=`) — **écriture refusée en `invite_read_only`** |
 //! | `POST` | `/overlay/media-board/upload?filename=&title=&message=` | `Authorization: Bearer` (query-token fallback) — **writes refused in `invite_read_only`** |
+//! | `GET` | `/overlay/media-board/ingestions` | `Authorization: Bearer` (repli `?token=`) |
 //! | `GET` | `/overlay/media-board/media/{assetId}` | `Authorization: Bearer` (repli `?token=`) |
 //! | `PATCH` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` (repli `?token=`) — **écriture refusée en `invite_read_only`** |
 //! | `DELETE` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` (repli `?token=`) — **écriture refusée en `invite_read_only`** |
-//!
-//! Les anciens chemins `/overlay/meme-board/*` restent enregistrés sur les
-//! mêmes handlers pour l'overlay 3.0.0 (compatibilité legacy).
 //!
 //! `GET /overlay/config` **n'existe pas** en protocole v2 (supprimé, cf.
 //! `docs/rust/protocol-v2.md` §8) : la route tombe sur le `fallback` de
@@ -27,8 +25,8 @@
 //! ## Sessions en lecture seule
 //!
 //! Un jeton dont `overlay_clients.session_mode = INVITE_READ_ONLY` peut lire la
-//! board (`GET items`, `GET media`) mais **pas** la modifier : `POST`, `PATCH`
-//! et `DELETE` répondent `403 {"error":"read_only_session"}` (garde
+//! board (`GET items`, `GET ingestions`, `GET media`) mais **pas** la modifier :
+//! `POST`, `PATCH` et `DELETE` répondent `403 {"error":"read_only_session"}` (garde
 //! `media_board::ensure_writable`, AUD-V-003). La garde s'applique après
 //! l'authentification et donc identiquement pour `Authorization: Bearer` et
 //! pour le repli `?token=` du board.
@@ -51,8 +49,7 @@
 //! - Le renderer board (Phase 8) envoie un en-tête `Authorization` quand c'est
 //!   possible ; pour les balises `src` (`<video>`, `<img>`) qui ne peuvent pas
 //!   porter d'en-tête, l'extracteur accepte un repli `?token=` **limité aux
-//!   routes du board média** `/overlay/media-board/*` et à leur alias legacy
-//!   `/overlay/meme-board/*` (parité legacy, cf.
+//!   routes du board média** `/overlay/media-board/*` (cf.
 //!   `http/overlay/auth.rs::query_token`). Ce repli n'existe sur aucune autre
 //!   route overlay.
 
@@ -80,6 +77,7 @@ pub(crate) mod guild;
 mod ingest_code;
 mod media;
 mod media_board;
+mod media_ingestion;
 mod media_upload;
 mod pair;
 mod queue;
@@ -88,6 +86,8 @@ pub use media::sign_media_url;
 
 #[cfg(test)]
 mod guild_tests;
+#[cfg(test)]
+mod ingestion_tests;
 #[cfg(test)]
 mod media_upload_tests;
 #[cfg(test)]
@@ -113,24 +113,15 @@ pub fn router() -> Router<AppState> {
             post(media_upload::upload_item),
         )
         .route(
+            "/overlay/media-board/ingestions",
+            get(media_board::list_ingestions),
+        )
+        .route(
             "/overlay/media-board/items/{item_id}",
             axum::routing::patch(media_board::update_item).delete(media_board::delete_item),
         )
         .route(
             "/overlay/media-board/media/{asset_id}",
-            get(media_board::get_media),
-        )
-        // Legacy overlay 3.0.0 compatibility: remove in 3.1.
-        .route(
-            "/overlay/meme-board/items",
-            get(media_board::list_items).post(media_board::create_item),
-        )
-        .route(
-            "/overlay/meme-board/items/{item_id}",
-            axum::routing::patch(media_board::update_item).delete(media_board::delete_item),
-        )
-        .route(
-            "/overlay/meme-board/media/{asset_id}",
             get(media_board::get_media),
         )
         .route("/overlay/guild", get(guild::get_guild))

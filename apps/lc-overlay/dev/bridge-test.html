@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LiveChat — harnais bridge overlay</title>
+    <!-- Script CLASSIQUE : doit être évalué avant tout script module de page. -->
+    <script src="./bridge.js"></script>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #14161a;
+        --panel: #1c1f26;
+        --panel-2: #22262f;
+        --border: #333a46;
+        --text: #e8eaed;
+        --muted: #9aa4b2;
+        --ok: #55efc4;
+        --warn: #ffd166;
+        --err: #ff7675;
+        --accent: #6aa9ff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 24px;
+        font-family: 'Segoe UI', Helvetica, Arial, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      h1 {
+        margin: 0 0 4px;
+        font-size: 1.35rem;
+      }
+
+      h2 {
+        margin: 32px 0 12px;
+        font-size: 1.05rem;
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 6px;
+      }
+
+      h3 {
+        margin: 0;
+        font-size: 0.98rem;
+      }
+
+      p {
+        margin: 6px 0;
+      }
+
+      .sub {
+        color: var(--muted);
+        font-size: 0.88rem;
+        margin: 0;
+      }
+
+      .badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .badge {
+        display: inline-block;
+        padding: 3px 9px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+        font-size: 0.78rem;
+        color: var(--muted);
+      }
+
+      .badge.ok {
+        color: var(--ok);
+        border-color: rgba(85, 239, 196, 0.4);
+      }
+
+      .badge.err {
+        color: var(--err);
+        border-color: rgba(255, 118, 117, 0.45);
+      }
+
+      .grid {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+        margin-top: 14px;
+      }
+
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .card header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .card code {
+        color: var(--accent);
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 64px;
+        resize: vertical;
+        padding: 8px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: #0f1115;
+        color: var(--text);
+        font-family: Consolas, 'Cascadia Mono', monospace;
+        font-size: 0.8rem;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      button {
+        padding: 7px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+        color: var(--text);
+        font-weight: 600;
+        font-size: 0.84rem;
+        cursor: pointer;
+      }
+
+      button:hover {
+        border-color: var(--accent);
+      }
+
+      button.primary {
+        background: #2b4b78;
+        border-color: #3f6ea8;
+      }
+
+      pre {
+        margin: 0;
+        padding: 8px;
+        border-radius: 8px;
+        background: #0f1115;
+        border: 1px solid var(--border);
+        overflow: auto;
+        max-height: 190px;
+        font-family: Consolas, 'Cascadia Mono', monospace;
+        font-size: 0.78rem;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      pre.err {
+        border-color: rgba(255, 118, 117, 0.5);
+        color: var(--err);
+      }
+
+      ul.events {
+        margin: 0;
+        padding-left: 18px;
+        font-family: Consolas, 'Cascadia Mono', monospace;
+        font-size: 0.76rem;
+        max-height: 140px;
+        overflow: auto;
+        color: var(--muted);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.78rem;
+        margin-top: 10px;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid var(--border);
+        padding: 6px 8px;
+        text-align: left;
+        vertical-align: top;
+        word-break: break-word;
+      }
+
+      th {
+        color: var(--muted);
+        font-weight: 600;
+        position: sticky;
+        top: 0;
+        background: var(--bg);
+      }
+
+      .pill {
+        display: inline-block;
+        padding: 1px 7px;
+        border-radius: 999px;
+        font-size: 0.72rem;
+        border: 1px solid var(--border);
+      }
+
+      .pill.ok {
+        color: var(--ok);
+      }
+
+      .pill.error {
+        color: var(--err);
+      }
+
+      .pill.pending {
+        color: var(--warn);
+      }
+
+      .note {
+        margin-top: 26px;
+        padding: 12px 14px;
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--accent);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--muted);
+        font-size: 0.84rem;
+        line-height: 1.5;
+      }
+
+      .note code {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Harnais de test — bridge <code>window.livechatOverlay</code></h1>
+    <p class="sub">
+      Charge <code>./bridge.js</code> en script classique, exerce les 13 méthodes et affiche chaque appel.
+      Ouvrable directement en <code>file://</code> (mode mock, aucun réseau), sans bundler ni dépendance.
+    </p>
+
+    <div class="badges" id="badges"></div>
+
+    <h2>1. Méthodes de commande (invoke / send)</h2>
+    <p class="sub">Les payloads sont éditables en JSON. Les méthodes <code>send</code> sont fire-and-forget côté Electron.</p>
+    <div class="grid" id="command-cards"></div>
+
+    <h2>2. Abonnements aux événements main → renderer</h2>
+    <p class="sub">
+      En mode mock, aucun backend n'émet : utiliser les boutons ci-dessous (<code>window.__bridgeMockEmit</code>) pour simuler
+      <code>overlay://play</code>, <code>overlay://stop</code> et <code>overlay://settings</code>.
+    </p>
+    <div class="actions" id="emit-actions"></div>
+    <div class="grid" id="event-cards"></div>
+
+    <h2>3. Journal des appels (<code>window.__bridgeCalls</code>)</h2>
+    <div class="actions">
+      <button type="button" class="primary" id="run-all">Tout tester (13 méthodes)</button>
+      <button type="button" id="clear-calls">Vider le journal</button>
+    </div>
+    <pre id="run-all-output" class="result" style="margin-top: 10px">—</pre>
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 42px">#</th>
+          <th style="width: 170px">Méthode</th>
+          <th style="width: 76px">Statut</th>
+          <th>Arguments / résultat</th>
+          <th style="width: 150px">Horodatage</th>
+        </tr>
+      </thead>
+      <tbody id="calls-body"></tbody>
+    </table>
+
+    <div class="note">
+      Mode mock : <code>getConfig</code> renvoie une config neutre (<code>serverUrl: null</code>),
+      <code>consumePairing</code> renvoie <code>{ ok: true }</code> sans réseau, <code>getMediaBindings</code> renvoie
+      <code>{ bindings: {} }</code>, les rapports sont des no-op. Après <code>rendererReady</code>, le bridge simule
+      l'envoi de <code>overlay://settings</code>. Aucun secret n'est journalisé : les clés contenant
+      <code>token</code>, <code>code</code>, <code>sig</code> sont masquées (<code>***</code>).
+    </div>
+
+    <script>
+      (function () {
+        'use strict';
+
+        var api = window.livechatOverlay;
+        var meta = window.__livechatOverlayBridge;
+
+        if (!api || !meta) {
+          document.body.insertAdjacentHTML(
+            'afterbegin',
+            '<p class="badge err">bridge.js absent ou non installé : window.livechatOverlay introuvable.</p>'
+          );
+          return;
+        }
+
+        var ALL_METHODS = [
+          'getConfig',
+          'rendererReady',
+          'onPlay',
+          'onStop',
+          'onSettings',
+          'reportError',
+          'reportPlaybackState',
+          'reportPlaybackStop',
+          'consumePairing',
+          'getMediaBindings',
+          'setMediaBindings',
+          'triggerMedia',
+          'stopMediaPlayback'
+        ];
+
+        var COMMANDS = [
+          {
+            name: 'getConfig',
+            kind: 'invoke',
+            desc: 'Lit la projection config (8 champs) — 1er appel du bootstrap de chaque page.',
+            payload: null
+          },
+          {
+            name: 'rendererReady',
+            kind: 'send',
+            desc: 'Signale que les listeners sont posés ; le main renvoie alors les settings.',
+            payload: null
+          },
+          {
+            name: 'reportError',
+            kind: 'send',
+            desc: 'Erreur de lecture média → forwardée au serveur via socket (sauf invité/hors ligne).',
+            payload: { jobId: 'job-test-1', code: 'test_error', message: 'Erreur de test' }
+          },
+          {
+            name: 'reportPlaybackState',
+            kind: 'send',
+            desc: 'État de lecture (≤ 1/s côté serveur) ; bufferisé si socket hors ligne.',
+            payload: { jobId: 'job-test-1', state: 'playing', remainingMs: 4200 }
+          },
+          {
+            name: 'reportPlaybackStop',
+            kind: 'send',
+            desc: 'Fin de lecture ; jobId normalisé en "unknown" si vide.',
+            payload: { jobId: 'job-test-1' }
+          },
+          {
+            name: 'consumePairing',
+            kind: 'invoke',
+            desc: 'POST {serverUrl}/overlay/pair/consume puis persiste la config et ouvre l’overlay.',
+            payload: { serverUrl: 'https://livechat.example.com', code: 'AB12CD' }
+          },
+          {
+            name: 'getMediaBindings',
+            kind: 'invoke',
+            desc: 'Bindings raccourci → itemId (config.json, normalisés).',
+            payload: null
+          },
+          {
+            name: 'setMediaBindings',
+            kind: 'invoke',
+            desc: 'Enregistre les raccourcis globaux (strict : rollback si un accélérateur échoue).',
+            payload: { bindings: { 'Ctrl+Shift+1': 'item-1' } }
+          },
+          {
+            name: 'triggerMedia',
+            kind: 'invoke',
+            desc: 'Déclenche l’item (trame media.trigger, défaut trigger=shortcut).',
+            payload: { itemId: 'item-1', trigger: 'ui' }
+          },
+          {
+            name: 'stopMediaPlayback',
+            kind: 'invoke',
+            desc: 'Stop manuel : socket overlay:stop { jobId: "manual-stop" }.',
+            payload: null
+          }
+        ];
+
+        var EVENT_CARDS = [
+          {
+            name: 'onPlay',
+            event: 'play',
+            desc: 'payload OverlayPlayPayload : { jobId?, durationSec?, media?, author?, text?, … }.',
+            sample: {
+              jobId: 'job-play-1',
+              durationSec: 8,
+              media: { kind: 'image', url: 'https://example.com/media.png' },
+              author: { name: 'Testeur' },
+              text: 'Média de test'
+            }
+          },
+          {
+            name: 'onStop',
+            event: 'stop',
+            desc: 'payload OverlayStopPayload : { jobId? }.',
+            sample: { jobId: 'job-play-1' }
+          },
+          {
+            name: 'onSettings',
+            event: 'settings',
+            desc: 'payload OverlaySettingsPayload (8 champs, même forme que getConfig).',
+            sample: { volume: 1, showText: true, guestMode: false }
+          }
+        ];
+
+        // ---------------------------------------------------------------
+        // Badges d'état
+        // ---------------------------------------------------------------
+        function renderBadges() {
+          var names = Object.keys(api);
+          var badges = [
+            { label: 'mode: ' + meta.mode, cls: meta.mode === 'tauri' ? 'ok' : '' },
+            { label: 'transport: ' + meta.transport, cls: '' },
+            { label: 'événements natifs: ' + (meta.hasNativeEvents ? 'oui' : 'non'), cls: meta.hasNativeEvents ? 'ok' : '' },
+            { label: 'version: ' + meta.version, cls: '' },
+            {
+              label: 'API: ' + names.length + '/13 méthodes',
+              cls: names.length === 13 && ALL_METHODS.every(function (name) { return typeof api[name] === 'function'; })
+                ? 'ok'
+                : 'err'
+            }
+          ];
+
+          document.getElementById('badges').innerHTML = badges
+            .map(function (badge) {
+              return '<span class="badge ' + badge.cls + '">' + badge.label + '</span>';
+            })
+            .join('');
+        }
+
+        // ---------------------------------------------------------------
+        // Cartes de méthodes de commande
+        // ---------------------------------------------------------------
+        function prettyJson(value) {
+          try {
+            return JSON.stringify(value, null, 2);
+          } catch (error) {
+            return String(value);
+          }
+        }
+
+        function formatOutcome(method, result) {
+          if (method.kind === 'send') {
+            return 'void (fire-and-forget) — Promise résolue : ' + prettyJson(result === undefined ? null : result);
+          }
+
+          return prettyJson(result);
+        }
+
+        function runCommand(card) {
+          var pre = card.querySelector('pre.result');
+          var textarea = card.querySelector('textarea');
+          var payload = null;
+
+          if (textarea) {
+            try {
+              payload = JSON.parse(textarea.value);
+            } catch (error) {
+              pre.className = 'result err';
+              pre.textContent = 'JSON invalide : ' + error.message;
+              return Promise.resolve({ ok: false });
+            }
+          }
+
+          pre.className = 'result';
+          pre.textContent = 'appel en cours…';
+
+          var invocation;
+
+          try {
+            invocation = payload === null ? api[card.dataset.method]() : api[card.dataset.method](payload);
+          } catch (error) {
+            invocation = Promise.reject(error);
+          }
+
+          return Promise.resolve(invocation).then(
+            function (result) {
+              pre.textContent = formatOutcome(card.dataset.kind === 'send' ? { kind: 'send' } : { kind: 'invoke' }, result);
+              return { ok: true };
+            },
+            function (error) {
+              pre.className = 'result err';
+              pre.textContent = 'ERREUR : ' + (error && error.message ? error.message : String(error));
+              return { ok: false };
+            }
+          );
+        }
+
+        function renderCommandCards() {
+          var container = document.getElementById('command-cards');
+
+          container.innerHTML = COMMANDS.map(function (method) {
+            return (
+              '<article class="card" data-method="' +
+              method.name +
+              '" data-kind="' +
+              method.kind +
+              '">' +
+              '<header><h3><code>' +
+              method.name +
+              '</code></h3><span class="badge">' +
+              method.kind +
+              '</span></header>' +
+              '<p class="sub">' +
+              method.desc +
+              '</p>' +
+              (method.payload === null
+                ? ''
+                : '<textarea spellcheck="false">' + prettyJson(method.payload) + '</textarea>') +
+              '<div class="actions"><button type="button" class="primary">Exécuter</button></div>' +
+              '<pre class="result">—</pre>' +
+              '</article>'
+            );
+          }).join('');
+
+          Array.prototype.forEach.call(container.querySelectorAll('.card'), function (card) {
+            card.querySelector('button').addEventListener('click', function () {
+              runCommand(card);
+            });
+          });
+        }
+
+        // ---------------------------------------------------------------
+        // Cartes d'abonnements
+        // ---------------------------------------------------------------
+        function renderEventCards() {
+          var container = document.getElementById('event-cards');
+
+          container.innerHTML = EVENT_CARDS.map(function (method) {
+            return (
+              '<article class="card" data-event-method="' +
+              method.name +
+              '" data-event="' +
+              method.event +
+              '">' +
+              '<header><h3><code>' +
+              method.name +
+              '</code></h3><span class="badge">overlay://' +
+              method.event +
+              '</span></header>' +
+              '<p class="sub">' +
+              method.desc +
+              '</p>' +
+              '<div class="actions">' +
+              '<button type="button" class="primary" data-action="subscribe">S’abonner</button>' +
+              '<button type="button" data-action="unsubscribe" disabled>Se désabonner</button>' +
+              '</div>' +
+              '<p class="sub" data-role="status">non abonné — 0 événement reçu</p>' +
+              '<ul class="events" data-role="log"></ul>' +
+              '</article>'
+            );
+          }).join('');
+
+          Array.prototype.forEach.call(container.querySelectorAll('.card'), function (card) {
+            var method = card.dataset.eventMethod;
+            var unsubscribe = null;
+            var received = 0;
+            var status = card.querySelector('[data-role="status"]');
+            var log = card.querySelector('[data-role="log"]');
+            var subscribeButton = card.querySelector('[data-action="subscribe"]');
+            var unsubscribeButton = card.querySelector('[data-action="unsubscribe"]');
+
+            function updateStatus() {
+              status.textContent =
+                (unsubscribe ? 'abonné' : 'non abonné') + ' — ' + received + ' événement(s) reçu(s)';
+            }
+
+            subscribeButton.addEventListener('click', function () {
+              if (unsubscribe) {
+                return;
+              }
+
+              unsubscribe = api[method](function (payload) {
+                received += 1;
+                var line = document.createElement('li');
+                line.textContent = new Date().toLocaleTimeString() + ' — ' + JSON.stringify(payload);
+                log.appendChild(line);
+                log.scrollTop = log.scrollHeight;
+                updateStatus();
+              });
+
+              subscribeButton.disabled = true;
+              unsubscribeButton.disabled = false;
+              updateStatus();
+            });
+
+            unsubscribeButton.addEventListener('click', function () {
+              if (!unsubscribe) {
+                return;
+              }
+
+              unsubscribe();
+              unsubscribe = null;
+              subscribeButton.disabled = false;
+              unsubscribeButton.disabled = true;
+              updateStatus();
+            });
+          });
+        }
+
+        function renderEmitActions() {
+          var container = document.getElementById('emit-actions');
+
+          container.innerHTML = EVENT_CARDS.map(function (method) {
+            return (
+              '<button type="button" data-emit="' +
+              method.event +
+              '">Simuler overlay://' +
+              method.event +
+              '</button>'
+            );
+          }).join('');
+
+          Array.prototype.forEach.call(container.querySelectorAll('button'), function (button) {
+            button.addEventListener('click', function () {
+              var eventName = button.dataset.emit;
+              var card = EVENT_CARDS.filter(function (method) {
+                return method.event === eventName;
+              })[0];
+
+              var notified = window.__bridgeMockEmit(eventName, card.sample);
+              console.info('[test] __bridgeMockEmit(' + eventName + ') → ' + notified + ' listener(s)');
+            });
+          });
+        }
+
+        // ---------------------------------------------------------------
+        // Journal des appels
+        // ---------------------------------------------------------------
+        function cell(text) {
+          var td = document.createElement('td');
+          td.textContent = text;
+          return td;
+        }
+
+        function renderCalls() {
+          var body = document.getElementById('calls-body');
+          var calls = window.__bridgeCalls || [];
+
+          if (!calls.length) {
+            body.innerHTML = '<tr><td colspan="5" class="sub">Aucun appel pour l’instant.</td></tr>';
+            return;
+          }
+
+          body.innerHTML = '';
+
+          calls
+            .slice()
+            .reverse()
+            .forEach(function (call) {
+              var row = document.createElement('tr');
+              row.appendChild(cell(String(call.id)));
+
+              var methodCell = document.createElement('td');
+              var code = document.createElement('code');
+              code.textContent = call.method;
+              methodCell.appendChild(code);
+              row.appendChild(methodCell);
+
+              var statusCell = document.createElement('td');
+              var pill = document.createElement('span');
+              pill.className = 'pill ' + call.status;
+              pill.textContent = call.status;
+              statusCell.appendChild(pill);
+              row.appendChild(statusCell);
+
+              var detailParts = [];
+              if (call.args !== null && call.args !== undefined) {
+                detailParts.push('args: ' + JSON.stringify(call.args));
+              }
+              if (call.status === 'ok') {
+                detailParts.push('→ ' + JSON.stringify(call.result === undefined ? null : call.result));
+              }
+              if (call.status === 'error') {
+                detailParts.push('→ erreur: ' + call.error);
+              }
+              row.appendChild(cell(detailParts.join('\n')));
+
+              row.appendChild(cell(call.at + (call.finishedAt ? ' → ' + call.finishedAt : '')));
+              body.appendChild(row);
+            });
+        }
+
+        // ---------------------------------------------------------------
+        // Tout tester
+        // ---------------------------------------------------------------
+        async function runAll() {
+          var output = document.getElementById('run-all-output');
+          var lines = [];
+          var failures = 0;
+
+          function log(name, ok, detail) {
+            if (!ok) {
+              failures += 1;
+            }
+
+            lines.push((ok ? 'OK  ' : 'KO  ') + name + ' — ' + detail);
+            output.textContent = lines.join('\n');
+          }
+
+          output.className = 'result';
+
+          // 1. Méthodes de commande (dans l'ordre de bootstrap réel : config d'abord).
+          var commandCards = Array.prototype.slice.call(document.querySelectorAll('#command-cards .card'));
+
+          for (var index = 0; index < commandCards.length; index += 1) {
+            var card = commandCards[index];
+            var outcome = await runCommand(card);
+
+            log(card.dataset.method, outcome.ok, outcome.ok ? 'appel effectué' : 'échec (voir carte)');
+          }
+
+          // 2. Abonnements : on s'abonne, on émet localement, on vérifie la réception.
+          var eventCards = Array.prototype.slice.call(document.querySelectorAll('#event-cards .card'));
+
+          for (var eventIndex = 0; eventIndex < eventCards.length; eventIndex += 1) {
+            var eventCard = eventCards[eventIndex];
+            var methodName = eventCard.dataset.eventMethod;
+            var eventName = eventCard.dataset.event;
+            var sample = EVENT_CARDS.filter(function (method) {
+              return method.event === eventName;
+            })[0].sample;
+
+            var received = 0;
+            var unsubscribe = api[methodName](function () {
+              received += 1;
+            });
+
+            window.__bridgeMockEmit(eventName, sample);
+            unsubscribe();
+
+            log(methodName, received === 1, received === 1 ? 'abonnement + événement simulé + désabonnement' : received + ' événement(s) reçu(s)');
+          }
+
+          lines.push('');
+          lines.push('Résultat : ' + (13 - failures) + '/13 méthodes exercées' + (failures === 0 ? ' — tout est OK.' : ' — ' + failures + ' échec(s).'));
+          output.textContent = lines.join('\n');
+        }
+
+        // ---------------------------------------------------------------
+        // Initialisation
+        // ---------------------------------------------------------------
+        renderBadges();
+        renderCommandCards();
+        renderEventCards();
+        renderEmitActions();
+        renderCalls();
+
+        document.getElementById('clear-calls').addEventListener('click', function () {
+          if (meta.resetCallLog) {
+            meta.resetCallLog();
+          }
+          renderCalls();
+        });
+
+        document.getElementById('run-all').addEventListener('click', function () {
+          runAll().catch(function (error) {
+            var output = document.getElementById('run-all-output');
+            output.className = 'result err';
+            output.textContent = 'Échec du scénario complet : ' + (error && error.message ? error.message : String(error));
+          });
+        });
+
+        setInterval(renderCalls, 400);
+      })();
+    </script>
+  </body>
+</html>

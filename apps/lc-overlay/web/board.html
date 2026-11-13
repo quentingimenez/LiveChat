@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LiveChat</title>
+    <link rel="stylesheet" href="./app/app.css" />
+    <!-- Façade historique : sert uniquement à la télémétrie d'erreurs. -->
+    <script src="./bridge.js"></script>
+    <script src="./renderer-errors.js"></script>
+  </head>
+  <body>
+    <div id="app" class="app">
+      <nav id="rail" class="rail" aria-label="Guildes"></nav>
+      <div class="main">
+        <header id="header" class="header"></header>
+        <div id="notice" class="notice" role="status" hidden></div>
+        <main id="view" class="view"></main>
+        <footer id="onair" class="onair" hidden></footer>
+      </div>
+    </div>
+    <div id="dialog-root"></div>
+    <script type="module" src="./app/app.js"></script>
+  </body>
+</html>

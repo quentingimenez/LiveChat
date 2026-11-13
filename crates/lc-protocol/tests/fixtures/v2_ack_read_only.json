@@ -1,0 +1,1 @@
+{"v":2,"type":"ack","id":"srv-ack-0003","ts":1794182400000,"payload":{"ref":"cli-media-trigger-0002","ok":false,"error":{"code":"read_only","message":"Session en lecture seule : déclenchement refusé."}}}

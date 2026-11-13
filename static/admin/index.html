@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Administration LiveChat</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <header class="panel header-panel">
+        <div class="header-copy">
+          <p class="eyebrow">LiveChat</p>
+          <h1>Administration du serveur</h1>
+          <p class="muted">Exploitation des guildes et émission des codes admin. Accès local uniquement.</p>
+        </div>
+        <div class="token-block">
+          <label class="field-label" for="token-input">Jeton admin</label>
+          <div class="token-row">
+            <input
+              id="token-input"
+              type="password"
+              autocomplete="off"
+              placeholder="ADMIN_UI_TOKEN"
+            />
+            <button id="save-token" type="button">Enregistrer le jeton</button>
+            <button id="refresh-overview" type="button">Rafraîchir</button>
+          </div>
+        </div>
+        <p id="status" class="status muted" role="status" aria-live="polite">Prêt.</p>
+      </header>
+
+      <section class="panel" aria-labelledby="metrics-title">
+        <h2 id="metrics-title">Vue d'ensemble</h2>
+        <div id="metrics" class="metrics-grid"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="create-guild-title">
+        <h2 id="create-guild-title">Créer une guilde</h2>
+        <p class="muted">
+          Une guilde indépendante est créée avec un premier code admin à usage unique.
+        </p>
+        <form id="create-guild-form" class="inline-form">
+          <label class="sr-only" for="guild-name">Nom de la guilde</label>
+          <input
+            id="guild-name"
+            name="name"
+            type="text"
+            maxlength="60"
+            required
+            autocomplete="off"
+            placeholder="Nom de la guilde (60 caractères au plus)"
+          />
+          <button id="create-guild-submit" class="button primary" type="submit">
+            Créer une guilde
+          </button>
+        </form>
+        <p id="create-guild-status" class="status muted" role="status" aria-live="polite"></p>
+      </section>
+
+      <section id="admin-code-section" class="panel code-panel" aria-labelledby="admin-code-heading" hidden>
+        <div class="code-heading">
+          <div>
+            <h2 id="admin-code-heading">Code admin</h2>
+            <p id="admin-code-context" class="muted"></p>
+          </div>
+          <span class="badge">À usage unique</span>
+        </div>
+        <div class="code-row">
+          <code id="admin-code-value" class="admin-code"></code>
+          <button id="copy-admin-code" class="button" type="button">Copier le code</button>
+        </div>
+        <p id="admin-code-expiry" class="muted"></p>
+        <p class="muted">
+          Ce code est à usage unique. Saisissez-le dans l'application LiveChat avec le bouton
+          « Rejoindre une guilde ».
+        </p>
+        <p id="copy-code-status" class="status muted" role="status" aria-live="polite"></p>
+      </section>
+
+      <section class="panel" aria-labelledby="guilds-title">
+        <h2 id="guilds-title">Guildes</h2>
+        <p class="muted">Suivi des overlays, du board et des lectures de chaque guilde.</p>
+        <div id="guilds" class="guilds"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="tiktok-cookie-title">
+        <h2 id="tiktok-cookie-title">Cookie TikTok</h2>
+        <p class="muted">
+          Appliqué immédiatement et conservé dans la configuration du serveur.
+        </p>
+        <form id="tiktok-cookie-form" class="inline-form">
+          <label class="sr-only" for="tiktok-cookie-input">Cookie TikTok</label>
+          <input
+            id="tiktok-cookie-input"
+            type="password"
+            autocomplete="off"
+            placeholder="Cookie TikTok (en-tête Cookie)"
+          />
+          <button id="save-tiktok-cookie" class="button" type="submit">Enregistrer</button>
+          <button id="clear-tiktok-cookie" class="button" type="button">Vider</button>
+        </form>
+        <p id="tiktok-cookie-status" class="status muted" role="status" aria-live="polite">
+          Cookie TikTok non chargé.
+        </p>
+      </section>
+    </main>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>

@@ -174,7 +174,7 @@ const getPairingFailureMessage = (params: {
   const remoteError = toNonEmptyString(body?.error) || toNonEmptyString(body?.message);
 
   if (status === 404 && body?.error === 'pairing_code_invalid_or_expired') {
-    return 'Code invalide ou expiré. Regénère un code avec /pair-code.';
+    return 'Code invalide ou expiré. Regénère un code depuis l’overlay (Mon profil → Appairer l’extension navigateur) ou avec /pair-code sur Discord.';
   }
 
   if (status === 404) {

@@ -1,0 +1,338 @@
+{
+  "schema_version": 1,
+  "label": "livechat-v1",
+  "notes": "Suite de parité REST v1 (26 routes) rejouée contre le serveur TypeScript legacy puis contre le serveur Rust. Les cas marqués d'une note sont des divergences connues et documentées (voir docs/rust/parity-harness.md) ; elles restent visibles dans le rapport.",
+  "cases": [
+    {
+      "id": "root",
+      "description": "GET / — identité du service",
+      "method": "GET",
+      "path": "/"
+    },
+    {
+      "id": "health",
+      "description": "GET /health — sonde de santé (corps enrichi en v2)",
+      "method": "GET",
+      "path": "/health",
+      "compare": {
+        "volatile": ["/uptimeSec", "/activeJobs", "/db", "/discord"],
+        "allow_extra_keys": true
+      },
+      "note": "v2 enrichit /health (version, protocolVersion, db, discord, uptimeSec, activeJobs) : les clés supplémentaires du serveur Rust sont tolérées."
+    },
+    {
+      "id": "socket_io_overlay_outdated",
+      "description": "GET /socket.io/ — socket.io legacy (426 attendu en v2)",
+      "method": "GET",
+      "path": "/socket.io/",
+      "status_alternatives": [200, 400, 426],
+      "compare": {
+        "ignore_body": true
+      },
+      "note": "Divergence intentionnelle : le serveur Rust répond 426 overlay_outdated, le serveur legacy servait socket.io. Statut et corps tolérés."
+    },
+    {
+      "id": "unknown_route",
+      "description": "GET /route-inconnue — 404",
+      "method": "GET",
+      "path": "/route-inconnue-parite",
+      "compare": {
+        "ignore_body": true
+      },
+      "note": "Corps 404 différent (Fastify vs {\"error\":\"request_error\"}) : statut comparé, corps toléré."
+    },
+    {
+      "id": "overlay_pair_consume_empty",
+      "description": "POST /overlay/pair/consume — corps vide",
+      "method": "POST",
+      "path": "/overlay/pair/consume",
+      "body": {}
+    },
+    {
+      "id": "overlay_pair_consume_unknown",
+      "description": "POST /overlay/pair/consume — code inconnu",
+      "method": "POST",
+      "path": "/overlay/pair/consume",
+      "body": { "code": "ZZZZZZ" },
+      "status_alternatives": [400, 404],
+      "compare": {
+        "ignore_body": true
+      }
+    },
+    {
+      "id": "overlay_config_no_auth",
+      "description": "GET /overlay/config — sans token overlay",
+      "method": "GET",
+      "path": "/overlay/config",
+      "status_alternatives": [401, 404],
+      "compare": {
+        "ignore_body": true
+      },
+      "note": "Route GET /overlay/config supprimée en protocole v2 : 404 attendu côté Rust."
+    },
+    {
+      "id": "overlay_media_no_auth",
+      "description": "GET /overlay/media/:assetId — sans token overlay",
+      "method": "GET",
+      "path": "/overlay/media/00000000-0000-0000-0000-000000000000"
+    },
+    {
+      "id": "overlay_media_unknown_asset",
+      "description": "GET /overlay/media/:assetId — asset inexistant avec token overlay",
+      "method": "GET",
+      "path": "/overlay/media/00000000-0000-0000-0000-000000000000",
+      "auth": "overlay",
+      "status_alternatives": [403, 404],
+      "compare": {
+        "ignore_body": true
+      }
+    },
+    {
+      "id": "overlay_media_range_first",
+      "description": "GET /overlay/media/:assetId Range bytes=0-99 (asset fourni par --media-id)",
+      "method": "GET",
+      "path": "/overlay/media/{media_id}",
+      "auth": "overlay",
+      "require": ["media_id"],
+      "headers": { "range": "bytes=0-99" },
+      "status_alternatives": [200, 206, 403, 404, 416],
+      "compare": {
+        "ignore_body": true,
+        "compare_headers": ["content-type", "content-range", "accept-ranges"]
+      }
+    },
+    {
+      "id": "overlay_media_range_second",
+      "description": "GET /overlay/media/:assetId Range bytes=100-199 (asset fourni par --media-id)",
+      "method": "GET",
+      "path": "/overlay/media/{media_id}",
+      "auth": "overlay",
+      "require": ["media_id"],
+      "headers": { "range": "bytes=100-199" },
+      "status_alternatives": [200, 206, 403, 404, 416],
+      "compare": {
+        "ignore_body": true,
+        "compare_headers": ["content-type", "content-range", "accept-ranges"]
+      }
+    },
+    {
+      "id": "overlay_media_head",
+      "description": "HEAD /overlay/media/:assetId (asset fourni par --media-id)",
+      "method": "HEAD",
+      "path": "/overlay/media/{media_id}",
+      "auth": "overlay",
+      "require": ["media_id"],
+      "status_alternatives": [200, 403, 404],
+      "compare": {
+        "ignore_body": true,
+        "compare_headers": ["content-type", "accept-ranges"]
+      }
+    },
+    {
+      "id": "overlay_meme_board_items_no_auth",
+      "description": "GET /overlay/meme-board/items — sans token",
+      "method": "GET",
+      "path": "/overlay/meme-board/items"
+    },
+    {
+      "id": "overlay_meme_board_items_with_auth",
+      "description": "GET /overlay/meme-board/items — avec token overlay",
+      "method": "GET",
+      "path": "/overlay/meme-board/items",
+      "auth": "overlay",
+      "compare": {
+        "volatile": ["/items", "/total", "/limit", "/offset"]
+      },
+      "note": "Contenu dépendant de l'état de la base : structure comparée, données volatiles."
+    },
+    {
+      "id": "overlay_meme_board_create_invalid",
+      "description": "POST /overlay/meme-board/items — corps vide avec token",
+      "method": "POST",
+      "path": "/overlay/meme-board/items",
+      "auth": "overlay",
+      "body": {}
+    },
+    {
+      "id": "overlay_meme_board_delete_unknown",
+      "description": "DELETE /overlay/meme-board/items/:itemId — item inexistant avec token",
+      "method": "DELETE",
+      "path": "/overlay/meme-board/items/00000000-0000-0000-0000-000000000000",
+      "auth": "overlay",
+      "status_alternatives": [200, 404],
+      "compare": {
+        "volatile": ["/deleted"]
+      }
+    },
+    {
+      "id": "overlay_meme_board_patch_invalid",
+      "description": "PATCH /overlay/meme-board/items/:itemId — corps vide avec token",
+      "method": "PATCH",
+      "path": "/overlay/meme-board/items/00000000-0000-0000-0000-000000000000",
+      "auth": "overlay",
+      "body": {},
+      "status_alternatives": [400, 404],
+      "compare": {
+        "ignore_body": true
+      }
+    },
+    {
+      "id": "overlay_meme_board_media_unknown",
+      "description": "GET /overlay/meme-board/media/:assetId — asset inexistant avec token",
+      "method": "GET",
+      "path": "/overlay/meme-board/media/00000000-0000-0000-0000-000000000000",
+      "auth": "overlay"
+    },
+    {
+      "id": "ingest_pair_consume_empty",
+      "description": "POST /ingest/pair/consume — corps vide",
+      "method": "POST",
+      "path": "/ingest/pair/consume",
+      "body": {}
+    },
+    {
+      "id": "ingest_pair_consume_unknown",
+      "description": "POST /ingest/pair/consume — code inconnu",
+      "method": "POST",
+      "path": "/ingest/pair/consume",
+      "body": { "code": "ZZZZZZ" },
+      "status_alternatives": [400, 404],
+      "compare": {
+        "ignore_body": true
+      }
+    },
+    {
+      "id": "ingest_no_auth",
+      "description": "POST /ingest/ — sans token ingest",
+      "method": "POST",
+      "path": "/ingest/",
+      "body": {},
+      "status_alternatives": [401, 503],
+      "compare": {
+        "ignore_body": true
+      },
+      "note": "401 unauthorized si l'API ingest est activée, 503 ingest_api_disabled sinon (même sémantique v1/v2)."
+    },
+    {
+      "id": "ingest_invalid_payload",
+      "description": "POST /ingest/ — corps vide avec token ingest",
+      "method": "POST",
+      "path": "/ingest/",
+      "auth": "ingest",
+      "body": {}
+    },
+    {
+      "id": "admin_page_no_auth",
+      "description": "GET /admin/ — page admin sans token",
+      "method": "GET",
+      "path": "/admin/",
+      "status_alternatives": [200, 401, 403, 503],
+      "compare": {
+        "ignore_body": true
+      },
+      "note": "La page est protégée en v1 ; la décision v2 (page publique ou protégée) est ouverte : statut toléré, corps non comparé."
+    },
+    {
+      "id": "admin_page_with_auth",
+      "description": "GET /admin/ — page admin avec token",
+      "method": "GET",
+      "path": "/admin/",
+      "auth": "admin",
+      "status_alternatives": [200, 404],
+      "compare": {
+        "ignore_body": true,
+        "compare_headers": ["content-type"]
+      }
+    },
+    {
+      "id": "admin_overview_no_auth",
+      "description": "GET /admin/api/overview — sans token admin",
+      "method": "GET",
+      "path": "/admin/api/overview",
+      "status_alternatives": [401, 403, 503],
+      "compare": {
+        "ignore_body": true
+      }
+    },
+    {
+      "id": "admin_overview_with_auth",
+      "description": "GET /admin/api/overview — avec token admin",
+      "method": "GET",
+      "path": "/admin/api/overview",
+      "auth": "admin",
+      "compare": {
+        "volatile": ["/generatedAt", "/cache", "/totals", "/pairingCodes", "/guilds"],
+        "allow_extra_keys": true
+      },
+      "note": "Agrégats dépendants de l'état de la base : seul le squelette de la réponse est comparé."
+    },
+    {
+      "id": "admin_overview_bad_token",
+      "description": "GET /admin/api/overview — token admin invalide",
+      "method": "GET",
+      "path": "/admin/api/overview",
+      "auth": "admin_invalid",
+      "status_alternatives": [401, 403, 503],
+      "compare": {
+        "ignore_body": true
+      }
+    },
+    {
+      "id": "admin_runtime_settings_get",
+      "description": "GET /admin/api/runtime-settings — avec token admin",
+      "method": "GET",
+      "path": "/admin/api/runtime-settings",
+      "auth": "admin",
+      "compare": {
+        "volatile": ["/tiktokCookie", "/hasTikTokCookie"]
+      }
+    },
+    {
+      "id": "admin_ingest_authors",
+      "description": "GET /admin/api/ingest-authors — avec token admin",
+      "method": "GET",
+      "path": "/admin/api/ingest-authors",
+      "auth": "admin",
+      "compare": {
+        "volatile": ["/items", "/count"]
+      }
+    },
+    {
+      "id": "admin_pairing_codes_list",
+      "description": "GET /admin/api/pairing-codes — avec token admin",
+      "method": "GET",
+      "path": "/admin/api/pairing-codes?status=all",
+      "auth": "admin",
+      "compare": {
+        "volatile": ["/items", "/counts"]
+      }
+    },
+    {
+      "id": "admin_guild_stop_invalid_id",
+      "description": "POST /admin/api/guilds/:guildId/stop — guildId invalide",
+      "method": "POST",
+      "path": "/admin/api/guilds/not-a-guild/stop",
+      "auth": "admin"
+    },
+    {
+      "id": "admin_guild_stop",
+      "description": "POST /admin/api/guilds/:guildId/stop — guilde inconnue",
+      "method": "POST",
+      "path": "/admin/api/guilds/123456789012345678/stop",
+      "auth": "admin",
+      "status_alternatives": [200, 400, 404],
+      "compare": {
+        "volatile": ["/releasedCount", "/guildId"]
+      }
+    },
+    {
+      "id": "admin_guild_purge_invalid_confirm",
+      "description": "POST /admin/api/guilds/:guildId/purge — confirmation incohérente",
+      "method": "POST",
+      "path": "/admin/api/guilds/123456789012345678/purge",
+      "auth": "admin",
+      "body": { "confirmGuildId": "1234567890123456789" },
+      "status_alternatives": [400, 404]
+    }
+  ]
+}

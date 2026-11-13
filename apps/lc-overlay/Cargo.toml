@@ -1,0 +1,82 @@
+[package]
+name = "lc-overlay"
+description = "Application overlay LiveChat (Tauri 2) : shell Rust, fenêtres, config, tray et bridge renderer."
+version = "3.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# Phase 8a : rlib (le binaire `lc-overlay` la consomme). Les cibles mobiles
+# (staticlib/cdylib) ne sont pas nécessaires : l'overlay est desktop-only.
+crate-type = ["rlib"]
+
+[[bin]]
+name = "lc-overlay"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+# Client WebSocket v2 (Phase 8b). `native-tls` fournit le backend TLS du
+# `connect_async_tls_with_config` et permet l'option legacy « certificat non
+# vérifié » (LIVECHAT_INSECURE_TLS=1), documentée dans docs/rust/lc-overlay-8b.md.
+tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
+native-tls = "0.2"
+futures-util = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+lc-protocol = { workspace = true }
+lc-domain = { workspace = true }
+
+# Blob Win32 isolé (styles étendus + topmost) : même version que Tauri 2.12.5,
+# pour partager le type `HWND` sans conversion. Windows uniquement : la CI Linux
+# compile le workspace et `windows-future` ne compile pas hors Windows.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+# Écart documenté (docs/rust/lc-overlay-shell.md §Lints) : `[lints] workspace = true`
+# est repris à l'identique SAUF `unsafe_code` (workspace = `forbid`). Cargo interdit
+# d'override un lint workspace hérité, et le shell a besoin d'un unique module
+# `src/win32.rs` avec `#[allow(unsafe_code)]` (SetWindowLongPtrW/SetWindowPos).
+# Le crate reste donc `#![deny(unsafe_code)]` ; seul `win32.rs` lève localement.
+[lints.rust]
+unsafe_code = "deny"
+rust_2018_idioms = "warn"
+unused_lifetimes = "warn"
+let_underscore_drop = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+dbg_macro = "deny"
+todo = "warn"
+unimplemented = "warn"
+redundant_clone = "warn"
+trivially_copy_pass_by_ref = "warn"
+
+[package.metadata.tauri]
+# Rien à générer ici : le bundle est configuré dans tauri.conf.json.

@@ -1,0 +1,42 @@
+[package]
+name = "lc-discord"
+description = "Bot Discord LiveChat : commandes slash et message, internationalisation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Glue serenity (enregistrement des commandes, parsing des interactions,
+# réponses Discord). Désactivée par défaut : les handlers et leurs tests ne
+# dépendent ni de serenity ni du réseau.
+serenity = ["dep:serenity"]
+
+[dependencies]
+async-trait = "0.1"
+base64.workspace = true
+chrono.workspace = true
+lc-db = { path = "../lc-db" }
+lc-domain = { path = "../lc-domain" }
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+serenity = { version = "0.12", default-features = false, features = [
+  "client",
+  "gateway",
+  "model",
+  "utils",
+  "rustls_backend",
+], optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

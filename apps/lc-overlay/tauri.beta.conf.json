@@ -1,0 +1,80 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "LiveChat Next",
+  "version": "3.0.0-beta.1",
+  "identifier": "com.livechat.next",
+  "build": {
+    "frontendDist": "web"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "overlay",
+        "title": "LiveChat Next Overlay",
+        "url": "overlay.html",
+        "width": 1280,
+        "height": 720,
+        "x": 0,
+        "y": 0,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focus": false,
+        "resizable": false,
+        "shadow": false,
+        "visible": false
+      },
+      {
+        "label": "pairing",
+        "title": "LiveChat Next — Appairage",
+        "url": "pairing.html",
+        "width": 460,
+        "height": 580,
+        "resizable": false,
+        "center": true,
+        "visible": false,
+        "skipTaskbar": false
+      },
+      {
+        "label": "board",
+        "title": "LiveChat Next — Board",
+        "url": "board.html",
+        "width": 1180,
+        "height": 780,
+        "minWidth": 960,
+        "minHeight": 640,
+        "center": true,
+        "visible": false,
+        "skipTaskbar": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http: https:; media-src 'self' blob: http: https:; connect-src 'self' ipc: http://ipc.localhost http: https:; frame-src 'none'; object-src 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": false,
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "publisher": "LiveChat",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/quentingimenez/LiveChat/releases/download/next/latest.json"
+      ],
+      "pubkey": "RWQPLACEHOLDER_MINISIGN_PUBLIC_KEY_A_REMPLACER_EN_PHASE_9="
+    }
+  }
+}

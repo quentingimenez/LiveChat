@@ -12,7 +12,7 @@ L'image legacy `server/Dockerfile` (Node 20 + `pnpm dev`) est un des problèmes 
 (migration-plan, S7) : image de développement, pas de healthcheck, pas de migration au
 boot, exécution en root. La Phase 9b la remplace par une image de production :
 
-- binaire Rust `lc-server` compilé en `--release --locked` (version workspace **3.0.0**,
+- binaire Rust `lc-server` compilé en `--release --locked` (version du workspace, **3.1.0**,
   protocole **v2**) ;
 - base d'exécution Debian slim, utilisateur **non-root**, `tini` comme PID 1,
   `HEALTHCHECK` sur `/health`, arrêt propre sur `SIGTERM` ;
@@ -159,11 +159,11 @@ Conséquences opérationnelles :
 Depuis la racine du dépôt (Docker 28.5.2, BuildKit) :
 
 ```powershell
-docker build -f deploy/server.Dockerfile -t livechat-server:3.0.0 .
+docker build -f deploy/server.Dockerfile -t livechat-server:3.1.0 .
 docker run --detach --name lc-server-test `
   --publish 127.0.0.1:3000:3000 `
   --volume lc-server-test-data:/app/data `
-  livechat-server:3.0.0
+  livechat-server:3.1.0
 ```
 
 Rebuild exact (après changement de code, cache deps conservé) :
@@ -242,19 +242,22 @@ sont épinglées par commit SHA.
 
 - déclencheurs : push de tag `server-v*` (release) et `workflow_dispatch`
   (input `version` au format `X.Y.Z`, option `update_latest`) ;
+- garde de version : une version finale (sans `-préversion`) doit être celle de
+  `[workspace.package]` dans `Cargo.toml`, que le binaire annonce sur `/health` ;
+  une préversion (`3.1.0-beta.1`) peut précéder le bump ;
 - permissions : `contents: read`, `packages: write` (GHCR via `GITHUB_TOKEN`) ;
 - buildx `linux/amd64` (aucun besoin arm64 aujourd'hui), `provenance: true` (attestation
   SLSA du build), cache GHA (`type=gha,mode=max`) ;
 - image : `ghcr.io/<owner>/livechat-server` ;
-  - tag push `server-v3.0.0` → tags `server-v3.0.0` **et** `latest` ;
-  - `workflow_dispatch` → tag `server-v<version>` (et `latest` seulement si
+  - tag push `server-v3.1.0` → tags `3.1.0` **et** `latest` ;
+  - `workflow_dispatch` → tag `<version>` (et `latest` seulement si
     `update_latest=true`) ;
 - job `smoke` (après build) : pull de l'image publiée, `docker run`, attente `/health`
-  (≤ 60 s), vérification `status`/`version`/`protocolVersion`/`db`, uid/gid **10001**
-  non-root, `ffmpeg`/`ffprobe`/`yt-dlp`, persistance SQLite sous `/app/data`, puis
-  `docker stop` (SIGTERM) et vérification `ExitCode == 0`.
+  (≤ 60 s), vérification de `status`, `version` (celle du workspace), `protocolVersion`
+  et `db`, uid/gid **10001** non-root, `ffmpeg`/`ffprobe`/`yt-dlp`, persistance SQLite
+  sous `/app/data`, puis `docker stop` (SIGTERM) et vérification `ExitCode == 0`.
 
-Politique de rétention : conserver les tags `server-v*` de production (pas de `latest`
+Politique de rétention : conserver les tags de version de production (pas de `latest`
 comme référence de rollback — **toujours** épingler une version) ; la visibilité du
 package GHCR est à aligner sur celle du dépôt ; un tag publié est immuable (pas de
 réécriture).
@@ -332,7 +335,7 @@ Le rollback ne dépend pas de la base 3.0.0 : c'est la base legacy qui fait foi.
 
 | Élément | Valeur |
 | --- | --- |
-| Image | `${LIVECHAT_IMAGE:-ghcr.io/quentingimenez/livechat-server:3.0.0}` |
+| Image | `${LIVECHAT_IMAGE:-ghcr.io/quentingimenez/livechat-server:3.1.0}` |
 | `container_name` / projet | `livechat-server` / projet `livechat` |
 | Redémarrage | `restart: unless-stopped` |
 | Environnement | `env_file: .env` + surcharges explicites (`PORT=3000`, `DATABASE_URL=sqlite:///app/data/livechat.sqlite`, `MEDIA_STORAGE_DIR=/app/data/media`, `ADMIN_UI_LOCAL_ONLY=true`, `RUST_LOG=info`) |
@@ -349,7 +352,7 @@ Fichier `deploy/.env` (non versionné, permissions `600`) — modèle :
 
 ```dotenv
 # deploy/.env — production, ne jamais committer
-LIVECHAT_IMAGE=ghcr.io/quentingimenez/livechat-server:3.0.0
+LIVECHAT_IMAGE=ghcr.io/quentingimenez/livechat-server:3.1.0
 API_URL=https://livechat.example.com
 ADMIN_UI_TOKEN=<secret admin>
 INGEST_API_TOKEN=<secret ingest>

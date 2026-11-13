@@ -4,3 +4,11 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+
+# Rust workspace (rebuild v3)
+/target
+/.phase0/
+
+# POC spikes : sources et artefacts d'essai hors dépôt (synthèse dans docs/rust/)
+/spikes/
+

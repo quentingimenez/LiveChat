@@ -107,7 +107,7 @@ impl HealthProbe for DiscordProbe {
 pub struct HealthResponse {
     /// `ok` ou `degraded`.
     pub status: &'static str,
-    /// Version du serveur (`CARGO_PKG_VERSION`, 3.0.0).
+    /// Version du serveur (`CARGO_PKG_VERSION`).
     pub version: &'static str,
     /// Version du protocole applicatif (2).
     #[serde(rename = "protocolVersion")]

@@ -2,6 +2,7 @@
 // lists) and applying the shell's guild list.
 
 import { api, run } from './core/api.js';
+import { mediaRefreshDelay } from './core/format.js';
 import { invoke } from './core/ipc.js';
 import { activeGuild, can, state } from './core/state.js';
 import { notify } from './core/toast.js';
@@ -15,6 +16,10 @@ let queueEndTimer = null;
 let itemsReloadTimer = null;
 let itemsReloadPromise = null;
 let itemsReloadResolve = null;
+let itemsRefreshTimer = null;
+// A media URL expired while the window was hidden: reload it on the next
+// visibility/focus instead of fetching in the background.
+let itemsRefreshPending = false;
 
 // Board changes are coalesced: nearby requests share one debounced loadItems()
 // and the same promise.
@@ -102,7 +107,7 @@ export function applyGuilds(payload) {
   }
   renderRail();
   renderHeader();
-  if (!state.activeGuildId) {
+  if (!state.activeGuildId || state.page === 'settings') {
     renderView();
   }
 }
@@ -120,6 +125,9 @@ function resetGuildData() {
   state.invites = [];
   state.search = '';
   state.kind = 'all';
+  clearTimeout(itemsRefreshTimer);
+  itemsRefreshTimer = null;
+  itemsRefreshPending = false;
   if (state.tab === 'admin') {
     state.tab = 'board';
   }
@@ -174,9 +182,39 @@ export async function loadItems() {
     }
   }
   state.itemsLoaded = true;
-  if (state.tab === 'board') {
+  scheduleItemsRefresh();
+  if (state.tab === 'board' && state.page === 'guild') {
     renderView();
   }
+}
+
+// Signed media URLs expire about an hour after they are issued: reload the
+// board five minutes before the earliest expiry. While the window is hidden
+// (board in the tray), wait for the next visibilitychange or focus.
+function scheduleItemsRefresh() {
+  clearTimeout(itemsRefreshTimer);
+  itemsRefreshTimer = null;
+  itemsRefreshPending = false;
+  const delay = mediaRefreshDelay(state.items);
+  if (delay === null) {
+    return;
+  }
+  itemsRefreshTimer = setTimeout(() => {
+    itemsRefreshTimer = null;
+    if (document.hidden) {
+      itemsRefreshPending = true;
+      return;
+    }
+    requestItemsReload();
+  }, delay);
+}
+
+export function reloadItemsWhenVisible() {
+  if (!itemsRefreshPending || document.hidden || !state.activeGuildId) {
+    return;
+  }
+  itemsRefreshPending = false;
+  requestItemsReload();
 }
 
 // Automatic queue refreshes are useless while the page is hidden (board in the
@@ -225,7 +263,7 @@ export async function loadQueue() {
   }
   renderHeader();
   renderOnAir();
-  if (state.tab === 'queue') {
+  if (state.tab === 'queue' && state.page === 'guild') {
     renderView();
   }
   scheduleQueueEndRefresh();
@@ -240,7 +278,7 @@ export async function loadAdmin() {
     const body = await run(() => api('GET', '/overlay/admin/invites'));
     state.invites = (body && body.items) || [];
   }
-  if (state.tab === 'admin') {
+  if (state.tab === 'admin' && state.page === 'guild') {
     renderView();
   }
 }

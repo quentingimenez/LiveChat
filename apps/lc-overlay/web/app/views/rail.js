@@ -7,9 +7,11 @@ import { initials } from '../core/format.js';
 import { invoke } from '../core/ipc.js';
 import { guildLabel, state } from '../core/state.js';
 import { applyGuilds } from '../data.js';
-import { toggleMute } from './header.js';
+import { renderHeader, toggleMute } from './header.js';
 import { openJoinDialog } from './join.js';
 import { confirmLeaveGuild, openGuildDialog } from './profile.js';
+import { openSettings } from './settings.js';
+import { renderView } from './view.js';
 
 function dotClass(guild) {
   if (guild.playing) {
@@ -78,7 +80,7 @@ export function renderRail() {
   rail.replaceChildren(
     ...state.guilds.map((guild) => {
       const label = guild.membership.guildName || 'Guilde';
-      const active = guild.membership.guildId === state.activeGuildId;
+      const active = guild.membership.guildId === state.activeGuildId && state.page !== 'settings';
       const hasIcon = Boolean(guild.membership.guildIconUrl);
       return h(
         'button',
@@ -96,10 +98,27 @@ export function renderRail() {
     }),
     h('button', { class: 'guild is-add', title: 'Rejoindre une guilde', 'aria-label': 'Rejoindre une guilde', onClick: openJoinDialog }, icon('plus')),
     h('span', { class: 'rail-spacer' }),
+    h(
+      'button',
+      {
+        class: `guild is-settings${state.page === 'settings' ? ' is-active' : ''}`,
+        title: 'Paramètres',
+        'aria-label': 'Paramètres',
+        'aria-current': state.page === 'settings' ? 'page' : null,
+        onClick: openSettings,
+      },
+      icon('settings'),
+    ),
   );
 }
 
 export async function selectGuild(guildId) {
+  if (state.page === 'settings') {
+    state.page = 'guild';
+    renderRail();
+    renderHeader();
+    renderView();
+  }
   if (guildId === state.activeGuildId) {
     return;
   }

@@ -1,4 +1,5 @@
-// Main view router: board, queue or admin of the active guild.
+// Main view router: settings page, or board, queue or admin of the active
+// guild.
 
 import { h } from '../core/dom.js';
 import { state } from '../core/state.js';
@@ -6,9 +7,14 @@ import { renderAdmin } from './admin.js';
 import { renderBoard } from './board.js';
 import { openJoinDialog } from './join.js';
 import { renderQueue } from './queue.js';
+import { renderSettings } from './settings.js';
 
 export function renderView() {
   const view = document.getElementById('view');
+  if (state.page === 'settings') {
+    view.replaceChildren(renderSettings());
+    return;
+  }
   if (!state.activeGuildId) {
     view.replaceChildren(
       h(

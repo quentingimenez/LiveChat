@@ -9,7 +9,7 @@
 // - `core/`  : IPC, DOM helpers, shared state, REST, toasts, dialogs,
 //              context menus;
 // - `data.js`: loading and refreshing guild data;
-// - `views/` : rail, header, board, queue, admin and dialogs.
+// - `views/` : rail, header, board, queue, admin, settings and dialogs.
 
 import { installContextMenuGuard } from './core/contextmenu.js';
 import { invoke, listen } from './core/ipc.js';
@@ -21,10 +21,12 @@ import {
   loadGuildInfo,
   loadQueue,
   refreshQueueAutomatically,
+  reloadItemsWhenVisible,
   requestItemsReload,
 } from './data.js';
 import { initGuildRemovalNotices } from './views/notices.js';
 import { renderRail } from './views/rail.js';
+import { initDeviceSettings, openSettings } from './views/settings.js';
 import { initUploadIngestion } from './views/uploads.js';
 import { renderView } from './views/view.js';
 
@@ -33,6 +35,9 @@ import { renderView } from './views/view.js';
 installContextMenuGuard();
 
 listen('overlay://guilds', applyGuilds);
+
+// Device settings: changes made elsewhere and the tray's « Paramètres… » view.
+initDeviceSettings();
 
 // Asynchronous media ingestions: conversion results and board resync.
 initUploadIngestion();
@@ -114,17 +119,28 @@ function loadGuildOnFocus() {
 window.addEventListener('focus', () => {
   loadGuildOnFocus();
   loadQueueOnFocus();
+  reloadItemsWhenVisible();
 });
 setInterval(() => {
-  if (state.tab === 'queue' && state.queue.playing && !document.hidden) {
+  if (state.page === 'guild' && state.tab === 'queue' && state.queue.playing && !document.hidden) {
     renderView();
   }
 }, 1000);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
     loadQueueOnFocus();
+    reloadItemsWhenVisible();
   }
 });
+
+// The tray stores the view before the board exists: consume it once.
+invoke('board_take_pending_view')
+  .then((view) => {
+    if (view === 'settings') {
+      openSettings();
+    }
+  })
+  .catch(() => {});
 
 invoke('guilds_list')
   .then(applyGuilds)

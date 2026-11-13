@@ -122,7 +122,25 @@
   margin-top: 20px;
 }
 
-.error-text {
+/* Mon profil : avatar and pseudo side by side. */
+.profile-avatar {
+  align-items: flex-start;
+}
+
+.profile-avatar .avatar {
+  width: 52px;
+  height: 52px;
+  font-size: 18px;
+}
+
+.profile-fields {
+  flex: 1;
+  min-width: 0;
+}
+
+/* `.dialog p` would otherwise turn an error paragraph grey. */
+.error-text,
+.dialog .error-text {
   color: var(--red);
   font-size: 13px;
 }

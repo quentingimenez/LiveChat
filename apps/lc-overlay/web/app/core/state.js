@@ -4,6 +4,9 @@ export const state = {
   guilds: [],
   activeGuildId: null,
   profile: { displayName: null, avatar: null },
+  // 'guild' shows the active guild (board, queue, admin); 'settings' is the
+  // device-wide page, available with zero guild.
+  page: 'guild',
   tab: 'board',
   adminTab: 'members',
   info: null, // GET /overlay/guild response for the active guild
@@ -20,7 +23,6 @@ export const state = {
   members: [],
   invites: [],
   bindings: {},
-  mediaUrls: new Map(),
   capturing: false,
 };
 
@@ -32,6 +34,7 @@ export const ERROR_LABELS = {
   last_admin: "Tu es le dernier admin : nomme un autre admin d'abord.",
   unauthorized: "Cet appareil n'est plus reconnu par la guilde.",
   pairing_code_invalid_or_expired: 'Code invalide, expiré ou déjà utilisé.',
+  display_name_required: 'Choisis un pseudo : ce code d’invitation ne vient pas de Discord.',
   pairing_code_scope_mismatch: "Ce code sert à appairer l'extension navigateur, pas un overlay.",
   guild_not_standalone: 'Seule une guilde créée hors Discord peut être liée à un serveur Discord.',
   member_required: 'Action réservée aux membres de la guilde.',

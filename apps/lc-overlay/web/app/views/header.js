@@ -11,7 +11,7 @@ import { renderView } from './view.js';
 export function renderHeader() {
   const header = document.getElementById('header');
   const guild = activeGuild();
-  if (!guild) {
+  if (state.page === 'settings' || !guild) {
     header.replaceChildren();
     header.hidden = true;
     return;
@@ -66,6 +66,7 @@ export function renderHeader() {
 }
 
 export function setTab(tab) {
+  state.page = 'guild';
   state.tab = tab;
   renderHeader();
   renderView();

@@ -81,6 +81,30 @@
   height: 18px;
 }
 
+/* Device settings: a gear at the bottom of the rail, below the guild list. */
+.guild.is-settings {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: none;
+  color: var(--text-faint);
+}
+
+.guild.is-settings:hover {
+  color: var(--text);
+}
+
+.guild.is-settings.is-active {
+  border-radius: 10px;
+  background: var(--slate-600);
+  color: var(--text);
+}
+
+.guild.is-settings .icon {
+  width: 20px;
+  height: 20px;
+}
+
 .guild .dot {
   position: absolute;
   right: -3px;

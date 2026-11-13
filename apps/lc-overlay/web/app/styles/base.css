@@ -161,7 +161,19 @@ textarea.field {
 
 select.field {
   width: auto;
-  padding-right: 6px;
+  padding: 0 34px 0 12px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1.5 2 6 6.5 10.5 2' fill='none' stroke='%23a3abc2' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 10px 7px;
+  cursor: pointer;
+}
+
+select.field:disabled {
+  color: var(--text-faint);
+  cursor: default;
 }
 
 .field::placeholder {

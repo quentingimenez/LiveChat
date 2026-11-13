@@ -2,7 +2,8 @@
 // extension pairing and leaving the guild.
 
 import { api, run } from '../core/api.js';
-import { h } from '../core/dom.js';
+import { resizeAvatar } from '../core/avatar.js';
+import { avatarNode, h } from '../core/dom.js';
 import { formatCode } from '../core/format.js';
 import { invoke } from '../core/ipc.js';
 import { can, describeError, guildLabel, ROLE_LABELS, state } from '../core/state.js';
@@ -26,12 +27,53 @@ export function confirmLeaveGuild(guild) {
 export function openGuildDialog(guild) {
   openDialog((close) => {
     const member = (state.info && state.info.member) || {};
-    const name = h('input', { class: 'field', maxlength: '40', value: member.displayName || guild.membership.displayName || '' });
+    const initialName = member.displayName || guild.membership.displayName || '';
+    const name = h('input', { class: 'field', maxlength: '40', value: initialName });
+    let avatar = member.avatar || null;
+    let avatarChanged = false;
+    const preview = h('span', { class: 'avatar-preview' }, avatarNode(initialName || '?', avatar));
+    name.addEventListener('input', () => preview.replaceChildren(avatarNode(name.value || '?', avatar)));
+    const removeAvatar = h(
+      'button',
+      { class: 'btn is-quiet', type: 'button', disabled: !avatar },
+      'Retirer l’avatar',
+    );
+    const file = h('input', {
+      type: 'file',
+      accept: 'image/png,image/jpeg,image/webp',
+      hidden: true,
+      onChange: async (event) => {
+        const picked = event.target.files && event.target.files[0];
+        if (!picked) {
+          return;
+        }
+        const resized = await resizeAvatar(picked);
+        if (!resized) {
+          notify('Cette image ne peut pas être lue.', true);
+          return;
+        }
+        avatar = resized;
+        avatarChanged = true;
+        preview.replaceChildren(avatarNode(name.value || '?', avatar));
+        removeAvatar.disabled = false;
+      },
+    });
+    removeAvatar.addEventListener('click', () => {
+      avatar = null;
+      avatarChanged = true;
+      preview.replaceChildren(avatarNode(name.value || '?', avatar));
+      removeAvatar.disabled = true;
+    });
     const deviceCode = h('p', { class: 'meta', hidden: true });
     const extensionCode = h('p', { class: 'meta', hidden: true });
     const save = async () => {
-      const body = await run(() => api('PATCH', '/overlay/profile', { displayName: name.value }), 'Profil enregistré.');
-      if (body) {
+      const body = { displayName: name.value };
+      // Unchanged avatar is omitted; an explicit null removes it.
+      if (avatarChanged) {
+        body.avatar = avatar;
+      }
+      const saved = await run(() => api('PATCH', '/overlay/profile', body), 'Profil enregistré.');
+      if (saved) {
         close();
         loadGuild();
       }
@@ -68,7 +110,24 @@ export function openGuildDialog(guild) {
       h(
         'div',
         { class: 'stack' },
-        h('label', null, 'Pseudo', name),
+        h(
+          'div',
+          { class: 'row is-wrap profile-avatar' },
+          preview,
+          h(
+            'div',
+            { class: 'stack profile-fields' },
+            h('label', null, 'Pseudo', name),
+            h(
+              'div',
+              { class: 'row is-wrap' },
+              h('button', { class: 'btn', type: 'button', onClick: () => file.click() }, 'Choisir un avatar'),
+              removeAvatar,
+              file,
+            ),
+          ),
+        ),
+        h('p', { class: 'file-hint' }, 'Ce pseudo et cet avatar s’affichent sur le stream quand tu lances un média.'),
         h(
           'div',
           { class: 'row is-wrap' },

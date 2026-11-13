@@ -240,7 +240,8 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
 
     /// Crée un job puis tente immédiatement de le dispatcher.
     ///
-    /// Utilisé par les workers (Discord, admin, mèmes) après construction du
+    /// Utilisé par les workers (Discord, admin, médias du board) après
+    /// construction du
     /// `PlaybackJob` ; le job peut préempter la lecture en cours s'il est de
     /// priorité supérieure.
     pub async fn enqueue(&self, job: &PlaybackJob) -> PlaybackResult<()> {
@@ -841,7 +842,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
     }
 
     /// Cherche un job `PENDING` de priorité strictement supérieure au job
-    /// actif (préemption mème).
+    /// actif (préemption d'un média du board).
     async fn find_preemption(
         &self,
         guild_id: &GuildId,

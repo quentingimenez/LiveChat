@@ -30,7 +30,11 @@ pub const CONFIG_PATH_ENV: &str = "LIVECHAT_CONFIG_PATH";
 
 const DEFAULT_VOLUME: f64 = 1.0;
 
-const KNOWN_KEYS: [&str; 19] = [
+/// Ancienne clé de configuration de l'overlay 3.0.0, encore lue au chargement
+/// puis réécrite sous `mediaBindings`.
+const LEGACY_MEDIA_BINDINGS_KEY: &str = "memeBindings";
+
+const KNOWN_KEYS: [&str; 20] = [
     "displayId",
     "displayIndex",
     "displayKey",
@@ -46,6 +50,8 @@ const KNOWN_KEYS: [&str; 19] = [
     "guildId",
     "authorName",
     "deviceName",
+    "mediaBindings",
+    // Legacy overlay 3.0.0 compatibility: remove in 3.1.
     "memeBindings",
     "memberships",
     "profileName",
@@ -56,7 +62,7 @@ const KNOWN_KEYS: [&str; 19] = [
 ///
 /// L'overlay reste connecté à toutes ses guildes non muettes. Les champs
 /// historiques de [`OverlayConfig`] (`serverUrl`, `clientToken`, `clientId`,
-/// `guildId`, `guestMode`, `memeBindings`) sont le **miroir de la guilde
+/// `guildId`, `guestMode`, `mediaBindings`) sont le **miroir de la guilde
 /// active** (celle affichée dans le board) : le renderer d'affichage, le tray
 /// et les raccourcis continuent de les lire tels quels.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -75,7 +81,10 @@ pub struct Membership {
     pub guest_mode: bool,
     /// Guilde coupée : aucune connexion, donc aucun média affiché.
     pub muted: bool,
-    pub meme_bindings: MemeBindings,
+    /// Raccourcis conservés par guilde ; l'ancienne clé JSON `memeBindings`
+    /// reste acceptée à la lecture (compatibilité overlay 3.0.0).
+    #[serde(alias = "memeBindings")]
+    pub media_bindings: MediaBindings,
 }
 
 impl Membership {
@@ -102,8 +111,8 @@ pub struct MembershipView {
     pub active: bool,
 }
 
-/// Dictionnaire accélérateur -> identifiant de média (meme board).
-pub type MemeBindings = BTreeMap<String, String>;
+/// Dictionnaire accélérateur -> identifiant d'item du board média.
+pub type MediaBindings = BTreeMap<String, String>;
 
 /// Configuration complète persistée (16 champs legacy + champs inconnus préservés).
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -124,7 +133,7 @@ pub struct OverlayConfig {
     pub guild_id: Option<String>,
     pub author_name: Option<String>,
     pub device_name: Option<String>,
-    pub meme_bindings: MemeBindings,
+    pub media_bindings: MediaBindings,
     /// Guildes rejointes (la guilde active est aussi reflétée dans les champs
     /// historiques ci-dessus).
     pub memberships: Vec<Membership>,
@@ -156,7 +165,7 @@ impl Default for OverlayConfig {
             guild_id: None,
             author_name: None,
             device_name: None,
-            meme_bindings: MemeBindings::new(),
+            media_bindings: MediaBindings::new(),
             memberships: Vec::new(),
             profile_name: None,
             profile_avatar: None,
@@ -176,7 +185,7 @@ pub struct OverlayConfigView {
     pub guest_mode: bool,
     pub show_text: bool,
     pub volume: f64,
-    pub meme_bindings: MemeBindings,
+    pub media_bindings: MediaBindings,
 }
 
 impl OverlayConfig {
@@ -209,7 +218,7 @@ impl OverlayConfig {
         config.guild_id = string_field(map, "guildId", &mut warnings);
         config.author_name = string_field(map, "authorName", &mut warnings);
         config.device_name = string_field(map, "deviceName", &mut warnings);
-        config.meme_bindings = meme_bindings_field(map, &mut warnings);
+        config.media_bindings = media_bindings_field(map, &mut warnings);
         config.profile_name = string_field(map, "profileName", &mut warnings);
         config.profile_avatar = string_field(map, "profileAvatar", &mut warnings);
         if let Some(raw) = map.get("memberships") {
@@ -232,7 +241,7 @@ impl OverlayConfig {
     /// Applique les normalisations legacy (volume borné, dictionnaire nettoyé).
     pub fn normalize(&mut self) {
         self.volume = normalize_volume(self.volume);
-        self.meme_bindings = normalize_meme_bindings(&self.meme_bindings);
+        self.media_bindings = normalize_media_bindings(&self.media_bindings);
         self.reconcile_memberships();
     }
 
@@ -265,7 +274,7 @@ impl OverlayConfig {
                 client_token: self.client_token.clone().unwrap_or_default(),
                 client_id: self.client_id.clone(),
                 guest_mode: self.guest_mode,
-                meme_bindings: self.meme_bindings.clone(),
+                media_bindings: self.media_bindings.clone(),
                 ..Membership::default()
             };
             match self.membership_mut(&guild_id) {
@@ -274,7 +283,7 @@ impl OverlayConfig {
                     existing.client_token = mirrored.client_token;
                     existing.client_id = mirrored.client_id;
                     existing.guest_mode = mirrored.guest_mode;
-                    existing.meme_bindings = mirrored.meme_bindings;
+                    existing.media_bindings = mirrored.media_bindings;
                 }
                 None => self.memberships.push(Membership {
                     display_name: self.author_name.clone(),
@@ -307,7 +316,7 @@ impl OverlayConfig {
         self.client_id = membership.client_id.clone();
         self.guild_id = Some(membership.guild_id.clone());
         self.guest_mode = membership.guest_mode;
-        self.meme_bindings = membership.meme_bindings.clone();
+        self.media_bindings = membership.media_bindings.clone();
     }
 
     /// Adhésion d'une guilde.
@@ -382,7 +391,7 @@ impl OverlayConfig {
             self.client_id = None;
             self.guild_id = None;
             self.guest_mode = false;
-            self.meme_bindings = MemeBindings::new();
+            self.media_bindings = MediaBindings::new();
             self.reconcile_memberships();
         }
         true
@@ -417,7 +426,7 @@ impl OverlayConfig {
             guest_mode: self.guest_mode,
             show_text: self.show_text,
             volume: self.volume,
-            meme_bindings: self.meme_bindings.clone(),
+            media_bindings: self.media_bindings.clone(),
         }
     }
 
@@ -555,11 +564,18 @@ fn volume_field(map: &Map<String, Value>, warnings: &mut Vec<String>) -> f64 {
     }
 }
 
-fn meme_bindings_field(map: &Map<String, Value>, warnings: &mut Vec<String>) -> MemeBindings {
-    match map.get("memeBindings") {
-        None | Some(Value::Null) => MemeBindings::new(),
+fn media_bindings_field(map: &Map<String, Value>, warnings: &mut Vec<String>) -> MediaBindings {
+    let (key, value) = match map.get("mediaBindings") {
+        Some(value) => ("mediaBindings", Some(value)),
+        None => (
+            LEGACY_MEDIA_BINDINGS_KEY,
+            map.get(LEGACY_MEDIA_BINDINGS_KEY),
+        ),
+    };
+    match value {
+        None | Some(Value::Null) => MediaBindings::new(),
         Some(Value::Object(bindings)) => {
-            let mut raw = MemeBindings::new();
+            let mut raw = MediaBindings::new();
             for (accelerator, item_id) in bindings {
                 let accelerator = accelerator.trim().to_string();
                 let item_id = match item_id {
@@ -569,20 +585,20 @@ fn meme_bindings_field(map: &Map<String, Value>, warnings: &mut Vec<String>) -> 
                     Value::Bool(value) => value.to_string(),
                     other => {
                         warnings.push(format!(
-                            "binding {accelerator} ignoré (identifiant de média non scalaire: {other})"
+                            "binding {accelerator} ignoré (identifiant d'item non scalaire: {other})"
                         ));
                         continue;
                     }
                 };
                 raw.insert(accelerator, item_id);
             }
-            normalize_meme_bindings(&raw)
+            normalize_media_bindings(&raw)
         }
         Some(other) => {
             warnings.push(format!(
-                "champ memeBindings ignoré (attendu: objet, reçu: {other})"
+                "champ {key} ignoré (attendu: objet, reçu: {other})"
             ));
-            MemeBindings::new()
+            MediaBindings::new()
         }
     }
 }
@@ -596,8 +612,8 @@ pub fn normalize_volume(volume: f64) -> f64 {
 }
 
 /// Trim des deux côtés et suppression des entrées vides (legacy).
-pub fn normalize_meme_bindings(bindings: &MemeBindings) -> MemeBindings {
-    let mut normalized = MemeBindings::new();
+pub fn normalize_media_bindings(bindings: &MediaBindings) -> MediaBindings {
+    let mut normalized = MediaBindings::new();
     for (accelerator, item_id) in bindings {
         let accelerator = accelerator.trim();
         let item_id = item_id.trim();
@@ -778,7 +794,7 @@ mod tests {
         assert_eq!(config.guild_id, None);
         assert_eq!(config.author_name, None);
         assert_eq!(config.device_name, None);
-        assert!(config.meme_bindings.is_empty());
+        assert!(config.media_bindings.is_empty());
         assert!(config.extra.is_empty());
     }
 
@@ -823,9 +839,9 @@ mod tests {
     }
 
     #[test]
-    fn meme_bindings_are_trimmed_and_empties_dropped() {
+    fn media_bindings_are_trimmed_and_empties_dropped() {
         let (config, _) = OverlayConfig::from_json_value(&json!({
-            "memeBindings": {
+            "mediaBindings": {
                 "  Ctrl+Shift+1  ": "  media-1  ",
                 "   ": "media-2",
                 "Ctrl+Alt+2": "   ",
@@ -833,12 +849,49 @@ mod tests {
             }
         }));
         assert_eq!(
-            config.meme_bindings,
+            config.media_bindings,
             BTreeMap::from([
                 ("Ctrl+Alt+3".to_string(), "7".to_string()),
                 ("Ctrl+Shift+1".to_string(), "media-1".to_string()),
             ])
         );
+    }
+
+    /// Un fichier 3.0.0 ne contient que `memeBindings` : il doit alimenter le
+    /// nouveau champ et être réécrit sous `mediaBindings` au prochain save.
+    #[test]
+    fn legacy_meme_bindings_load_into_media_bindings_and_are_saved_renamed() {
+        let (_dir, store) = temp_store(r#"{"memeBindings":{"Ctrl+1":"item-1"}}"#);
+        let config = store.load();
+        assert_eq!(
+            config.media_bindings,
+            BTreeMap::from([("Ctrl+1".to_string(), "item-1".to_string())])
+        );
+
+        store.save(&config).expect("save");
+        let raw = fs::read_to_string(store.path()).expect("read saved config");
+        assert!(raw.contains("\"mediaBindings\""), "json: {raw}");
+        assert!(!raw.contains("memeBindings"), "json: {raw}");
+        assert_eq!(store.load().media_bindings, config.media_bindings);
+    }
+
+    #[test]
+    fn legacy_membership_bindings_are_read_through_the_serde_alias() {
+        let (config, warnings) = OverlayConfig::from_json_value(&json!({
+            "memberships": [{
+                "serverUrl": "https://example.test",
+                "guildId": "111",
+                "clientToken": "jeton",
+                "memeBindings": { "Ctrl+1": "item-1" }
+            }]
+        }));
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        let membership = config.membership("111").expect("adhésion");
+        assert_eq!(
+            membership.media_bindings,
+            BTreeMap::from([("Ctrl+1".to_string(), "item-1".to_string())])
+        );
+        assert_eq!(config.media_bindings, membership.media_bindings);
     }
 
     #[test]
@@ -851,7 +904,7 @@ mod tests {
         config.display_key = Some("0,0,2560,1440,0".to_string());
         config.display_label = Some("Écran 1".to_string());
         config.server_url = Some("http://localhost:3000/".to_string());
-        config.meme_bindings = BTreeMap::from([("Ctrl+1".to_string(), "id-1".to_string())]);
+        config.media_bindings = BTreeMap::from([("Ctrl+1".to_string(), "id-1".to_string())]);
         config
             .extra
             .insert("electronOnly".to_string(), json!({"nested": true}));
@@ -980,7 +1033,7 @@ mod tests {
         config.server_url = Some("http://localhost:3000".to_string());
         config.client_token = Some("jeton".to_string());
         config.guild_id = Some("guilde".to_string());
-        config.meme_bindings = BTreeMap::from([("Ctrl+1".to_string(), "id-1".to_string())]);
+        config.media_bindings = BTreeMap::from([("Ctrl+1".to_string(), "id-1".to_string())]);
         let value = serde_json::to_value(config.view()).expect("serialize view");
         let object = value.as_object().expect("objet");
         let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
@@ -992,7 +1045,7 @@ mod tests {
                 "clientToken",
                 "guestMode",
                 "guildId",
-                "memeBindings",
+                "mediaBindings",
                 "serverUrl",
                 "showText",
                 "volume"

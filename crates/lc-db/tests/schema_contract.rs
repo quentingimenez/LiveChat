@@ -13,6 +13,7 @@ fn migrations_embedded_equal_schema_contract() {
         include_str!("../migrations/0002_playback_single_playing.sql"),
         include_str!("../migrations/0003_guild_members.sql"),
         include_str!("../migrations/0004_discord_link_codes.sql"),
+        include_str!("../migrations/0005_media_board.sql"),
     );
     let contract = include_str!("../../../docs/rust/schema-v3.sql");
     assert_eq!(

@@ -5,7 +5,7 @@
 //!
 //! | trait | adaptateur réel | état Phase 6b |
 //! |---|---|---|
-//! | [`lc_discord::MemeBackend`] | [`DbMemeBackend`] (table `meme_board_items`) | branché |
+//! | [`lc_discord::MediaBoardBackend`] | [`DbMediaBoardBackend`] (table `media_board_items`) | branché |
 //! | [`lc_discord::OverlayDirectory`] | [`DbOverlayDirectory`] (table `overlay_clients`) | branché (approximation du hub WS) |
 //! | [`lc_discord::MediaBackend`] | [`UnavailableMediaBackend`] | placeholder : `lc-media` en cours (task-16) |
 //! | [`lc_discord::PlaybackBackend`] | [`UnavailablePlaybackBackend`] | placeholder : `lc-playback` en cours |
@@ -22,13 +22,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use lc_db::Db;
 use lc_discord::context::{
-    ConnectedOverlay, MediaBackend, MediaRequest, MemeAddRequest, MemeBackend, OverlayDirectory,
-    PlaybackBackend, PlaybackJobRequest,
+    ConnectedOverlay, MediaAddRequest, MediaBackend, MediaBoardBackend, MediaRequest,
+    OverlayDirectory, PlaybackBackend, PlaybackJobRequest,
 };
 use lc_discord::error::MediaLimits;
 use lc_discord::{BotConfig, BotError, Lang, MediaError, MediaErrorCode, SpeechFailure};
 use lc_domain::{
-    Clock, DomainError, GuildId, MediaAsset, MemeBoardItem, MemeBoardItemId, OverlayClient,
+    Clock, DomainError, GuildId, MediaAsset, MediaBoardItem, MediaBoardItemId, OverlayClient,
     SystemClock,
 };
 
@@ -64,7 +64,7 @@ fn saturating_i64(value: u64) -> i64 {
 pub struct DiscordAdapters {
     media: Arc<dyn MediaBackend>,
     playback: Arc<dyn PlaybackBackend>,
-    meme: Arc<dyn MemeBackend>,
+    media_board: Arc<dyn MediaBoardBackend>,
     overlays: Arc<dyn OverlayDirectory>,
 }
 
@@ -74,18 +74,18 @@ impl DiscordAdapters {
     pub fn new(
         media: Arc<dyn MediaBackend>,
         playback: Arc<dyn PlaybackBackend>,
-        meme: Arc<dyn MemeBackend>,
+        media_board: Arc<dyn MediaBoardBackend>,
         overlays: Arc<dyn OverlayDirectory>,
     ) -> Self {
         Self {
             media,
             playback,
-            meme,
+            media_board,
             overlays,
         }
     }
 
-    /// Adaptateurs par défaut : meme board et overlays branchés sur `lc-db`,
+    /// Adaptateurs par défaut : board média et overlays branchés sur `lc-db`,
     /// média et playback en attente des lanes Phase 6b.
     pub fn placeholders(db: Db) -> Self {
         Self::with_clock(db, Arc::new(SystemClock))
@@ -97,7 +97,7 @@ impl DiscordAdapters {
         Self {
             media: Arc::new(UnavailableMediaBackend),
             playback: Arc::new(UnavailablePlaybackBackend),
-            meme: Arc::new(DbMemeBackend::new(db.clone(), Arc::clone(&clock))),
+            media_board: Arc::new(DbMediaBoardBackend::new(db.clone(), Arc::clone(&clock))),
             overlays: Arc::new(DbOverlayDirectory::new(db)),
         }
     }
@@ -124,9 +124,9 @@ impl DiscordAdapters {
         Arc::clone(&self.playback)
     }
 
-    /// Adaptateur meme board courant.
-    pub fn meme(&self) -> Arc<dyn MemeBackend> {
-        Arc::clone(&self.meme)
+    /// Adaptateur board média courant.
+    pub fn media_board(&self) -> Arc<dyn MediaBoardBackend> {
+        Arc::clone(&self.media_board)
     }
 
     /// Annuaire des overlays connectés.
@@ -173,13 +173,13 @@ impl PlaybackBackend for UnavailablePlaybackBackend {
     }
 }
 
-/// Adaptateur meme board sur la table `meme_board_items` de `lc-db`.
-pub struct DbMemeBackend {
+/// Adaptateur board média sur la table `media_board_items` de `lc-db`.
+pub struct DbMediaBoardBackend {
     db: Db,
     clock: Arc<dyn Clock>,
 }
 
-impl DbMemeBackend {
+impl DbMediaBoardBackend {
     /// Construit l'adaptateur.
     pub fn new(db: Db, clock: Arc<dyn Clock>) -> Self {
         Self { db, clock }
@@ -187,11 +187,11 @@ impl DbMemeBackend {
 }
 
 #[async_trait]
-impl MemeBackend for DbMemeBackend {
-    async fn add_to_board(&self, request: MemeAddRequest) -> Result<bool, BotError> {
+impl MediaBoardBackend for DbMediaBoardBackend {
+    async fn add_to_board(&self, request: MediaAddRequest) -> Result<bool, BotError> {
         if self
             .db
-            .meme_board()
+            .media_board()
             .get_by_guild_and_asset(&request.guild_id, request.media_asset_id)
             .await?
             .is_some()
@@ -199,8 +199,8 @@ impl MemeBackend for DbMemeBackend {
             return Ok(false);
         }
 
-        let item = MemeBoardItem {
-            id: MemeBoardItemId::new_v4(),
+        let item = MediaBoardItem {
+            id: MediaBoardItemId::new_v4(),
             guild_id: request.guild_id,
             media_asset_id: request.media_asset_id,
             title: request.title,
@@ -210,7 +210,7 @@ impl MemeBackend for DbMemeBackend {
             created_at: self.clock.now(),
         };
 
-        match self.db.meme_board().create(&item).await {
+        match self.db.media_board().create(&item).await {
             Ok(()) => Ok(true),
             Err(error) if is_conflict(&error) => Ok(false),
             Err(error) => Err(BotError::Db(error)),
@@ -268,7 +268,7 @@ mod tests {
 
     use chrono::{DateTime, TimeZone, Utc};
     use lc_db::{Db, DbConfig};
-    use lc_discord::context::{MediaRequest, MemeAddRequest, MemeBackend, OverlayDirectory};
+    use lc_discord::context::{MediaAddRequest, MediaBoardBackend, MediaRequest, OverlayDirectory};
     use lc_discord::{BotContext, DbBotContext};
     use lc_domain::{
         FixedClock, Guild, GuildId, MediaAsset, MediaAssetId, MediaKind, MediaStatus,
@@ -278,7 +278,8 @@ mod tests {
     use crate::Config;
 
     use super::{
-        bot_config_from, DbMemeBackend, DbOverlayDirectory, DiscordAdapters, MAX_OVERLAYS_LISTED,
+        bot_config_from, DbMediaBoardBackend, DbOverlayDirectory, DiscordAdapters,
+        MAX_OVERLAYS_LISTED,
     };
 
     fn config_with(pairs: &[(&str, &str)]) -> Config {
@@ -319,14 +320,14 @@ mod tests {
             .insert(&MediaAsset {
                 id,
                 source_hash: format!("hash-{id}"),
-                source_url: "https://example.test/meme.png".to_owned(),
+                source_url: "https://example.test/media.png".to_owned(),
                 kind: MediaKind::Image,
                 mime: "image/png".to_owned(),
                 duration_sec: None,
                 width: Some(640),
                 height: Some(480),
                 is_vertical: false,
-                storage_path: "media/meme.png".to_owned(),
+                storage_path: "media/media.png".to_owned(),
                 size_bytes: 1024,
                 status: MediaStatus::Ready,
                 error: None,
@@ -418,12 +419,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn meme_board_cree_puis_detecte_le_doublon() {
+    async fn media_board_cree_puis_detecte_le_doublon() {
         let db = Db::open_in_memory(&DbConfig::default()).await.unwrap();
         insert_guild(&db).await;
         let asset = insert_asset(&db, sample_now()).await;
-        let backend = DbMemeBackend::new(db.clone(), Arc::new(FixedClock::new(sample_now())));
-        let request = MemeAddRequest {
+        let backend = DbMediaBoardBackend::new(db.clone(), Arc::new(FixedClock::new(sample_now())));
+        let request = MediaAddRequest {
             guild_id: guild_id(),
             media_asset_id: asset,
             title: Some("Titre".to_owned()),
@@ -433,7 +434,7 @@ mod tests {
         };
         assert!(backend.add_to_board(request.clone()).await.unwrap());
         assert!(!backend.add_to_board(request).await.unwrap());
-        let items = db.meme_board().list_by_guild(&guild_id()).await.unwrap();
+        let items = db.media_board().list_by_guild(&guild_id()).await.unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].title.as_deref(), Some("Titre"));
         assert_eq!(items[0].created_by_name.as_deref(), Some("Alice"));
@@ -467,7 +468,7 @@ mod tests {
             bot_config_from(&config_with(&[])),
             adapters.media(),
             adapters.playback(),
-            adapters.meme(),
+            adapters.media_board(),
             adapters.overlays(),
         );
         assert_eq!(context.config().pairing_code_ttl_minutes, 5);

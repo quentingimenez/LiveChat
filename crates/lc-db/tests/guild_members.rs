@@ -417,25 +417,28 @@ async fn invitation_usages_expiration_revocation() {
 }
 
 #[tokio::test]
-async fn auteur_d_un_meme() {
+async fn auteur_d_un_item_de_board() {
     let (db, _dir) = common::temp_db().await;
     let guild_id = common::guild("111");
-    let asset = common::sample_asset("hash-meme", common::now());
+    let asset = common::sample_asset("hash-board-item", common::now());
     db.media_assets().insert(&asset).await.unwrap();
-    let item = common::sample_meme(&guild_id, asset.id, common::now());
-    db.meme_board().create(&item).await.unwrap();
+    let item = common::sample_board_item(&guild_id, asset.id, common::now());
+    db.media_board().create(&item).await.unwrap();
 
-    assert_eq!(db.meme_board().creator_member(item.id).await.unwrap(), None);
+    assert_eq!(
+        db.media_board().creator_member(item.id).await.unwrap(),
+        None
+    );
     let author = GuildMemberId::new_v4();
     assert!(db
-        .meme_board()
+        .media_board()
         .set_creator_member(item.id, author)
         .await
         .unwrap());
     assert_eq!(
-        db.meme_board().creator_member(item.id).await.unwrap(),
+        db.media_board().creator_member(item.id).await.unwrap(),
         Some(author)
     );
     // L'entité historique se relit sans changement.
-    assert_eq!(db.meme_board().get(item.id).await.unwrap().unwrap(), item);
+    assert_eq!(db.media_board().get(item.id).await.unwrap().unwrap(), item);
 }

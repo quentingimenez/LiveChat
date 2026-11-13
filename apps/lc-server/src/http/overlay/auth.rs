@@ -1,4 +1,4 @@
-//! Authentification des routes `/overlay/meme-board/*`.
+//! Authentification des routes `/overlay/media-board/*`.
 //!
 //! ## Contrat v2
 //!
@@ -8,10 +8,11 @@
 //! mais le renderer board (HTML/JS legacy conservé en Phase 8) construit encore
 //! ses URLs avec `?token=` — y compris pour les `<video>`/`<img>` d'aperçu qui ne
 //! peuvent pas porter d'en-tête. Pour ne pas casser cette fonctionnalité, la
-//! query string est acceptée **uniquement** sous `/overlay/meme-board/*` ; les
-//! autres routes overlay (média de lecture HMAC, ingestion) restent sans jeton
-//! en query. L'en-tête `Authorization: Bearer <token>` reste la voie nominale et
-//! prime toujours sur `?token=` lorsqu'il est présent.
+//! query string est acceptée **uniquement** sous `/overlay/media-board/*` (et
+//! son alias legacy `/overlay/meme-board/*`) ; les autres routes overlay (média
+//! de lecture HMAC, ingestion) restent sans jeton en query. L'en-tête
+//! `Authorization: Bearer <token>` reste la voie nominale et prime toujours sur
+//! `?token=` lorsqu'il est présent.
 //!
 //! Le token brut n'est jamais stocké : seule son empreinte `SHA-256` hexadécimale
 //! est persistée dans `overlay_clients.token_hash` (parité legacy
@@ -21,10 +22,11 @@
 //!
 //! ## Exception temporaire AUD-COR-05
 //!
-//! Le repli `?token=` pour `/overlay/meme-board/*` est **temporaire** : il ne
-//! survit que le temps de la migration du renderer legacy (P1-11). Chaque
-//! utilisation est journalisée une seule fois par processus en `WARN` (target
-//! `lc_server::overlay`) afin d'en mesurer l'usage avant suppression.
+//! Le repli `?token=` pour `/overlay/media-board/*` (et son alias legacy
+//! `/overlay/meme-board/*`) est **temporaire** : il ne survit que le temps de la
+//! migration du renderer legacy (P1-11). Chaque utilisation est journalisée une
+//! seule fois par processus en `WARN` (target `lc_server::overlay`) afin d'en
+//! mesurer l'usage avant suppression.
 //!
 //! ## Extracteur d'authentification
 //!
@@ -105,9 +107,9 @@ impl AuthedOverlayClient {
 
     /// `true` si la session est en lecture seule (rôle invité).
     ///
-    /// Les routes qui écrivent (meme board : `POST`, `PATCH`, `DELETE`) doivent
+    /// Les routes qui écrivent (board média : `POST`, `PATCH`, `DELETE`) doivent
     /// refuser la requête avec `403 {"error":"read_only_session"}` lorsque
-    /// cette méthode renvoie `true` (cf. `meme_board.rs`,
+    /// cette méthode renvoie `true` (cf. `media_board.rs`,
     /// `ensure_writable`). Les routes de lecture (`GET`) restent autorisées.
     pub fn is_read_only(&self) -> bool {
         self.role() == lc_domain::GuildRole::Guest
@@ -148,14 +150,16 @@ pub fn bearer_token(headers: &HeaderMap) -> Option<String> {
 /// Longueur maximale d'un jeton accepté (64 hex) ; garde-fou anti-abus.
 const MAX_TOKEN_LEN: usize = 200;
 
-/// Extrait `?token=` **uniquement** pour les routes `/overlay/meme-board/*`.
+/// Extrait `?token=` **uniquement** pour les routes du board média.
 ///
 /// Le renderer board legacy charge ses listes et ses aperçus (`<video>`/`<img>`)
 /// par URL, sans possibilité d'ajouter un en-tête : c'est l'unique exception
 /// query string du contrat REST v2 (cf. doc du module). Le parsing est celui de
 /// `application/x-www-form-urlencoded` (décodage des pourcentages inclus).
 pub fn query_token(uri: &axum::http::Uri) -> Option<String> {
-    if !uri.path().starts_with("/overlay/meme-board/") {
+    let path = uri.path();
+    // Legacy overlay 3.0.0 compatibility: remove in 3.1.
+    if !(path.starts_with("/overlay/media-board/") || path.starts_with("/overlay/meme-board/")) {
         return None;
     }
     let token = url::form_urlencoded::parse(uri.query()?.as_bytes())
@@ -178,7 +182,7 @@ fn warn_query_token_deprecation_once() {
     WARNED.call_once(|| {
         warn!(
             target: "lc_server::overlay",
-            "repli `?token=` utilisé pour /overlay/meme-board/* : mécanisme legacy temporaire (AUD-COR-05), supprimé après migration du renderer (P1-11)"
+            "repli `?token=` utilisé pour /overlay/media-board/* : mécanisme legacy temporaire (AUD-COR-05), supprimé après migration du renderer (P1-11)"
         );
     });
 }

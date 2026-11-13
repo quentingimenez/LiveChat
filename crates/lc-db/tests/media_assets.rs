@@ -122,8 +122,8 @@ async fn purge_expired_protege_board_et_jobs_actifs() {
         db.media_assets().insert(asset).await.unwrap();
     }
 
-    let meme = common::sample_meme(&guild, pinned.id, now);
-    db.meme_board().create(&meme).await.unwrap();
+    let item = common::sample_board_item(&guild, pinned.id, now);
+    db.media_board().create(&item).await.unwrap();
 
     let mut pending_job = common::sample_job(&guild, now);
     pending_job.media_asset_id = Some(active.id);
@@ -155,7 +155,7 @@ async fn purge_expired_protege_board_et_jobs_actifs() {
     // Les références protégées sont intactes.
     assert!(db.media_assets().get(pinned.id).await.unwrap().is_some());
     assert!(db.media_assets().get(active.id).await.unwrap().is_some());
-    assert!(db.meme_board().get(meme.id).await.unwrap().is_some());
+    assert!(db.media_board().get(item.id).await.unwrap().is_some());
     let stored_pending = db
         .playback_jobs()
         .get(pending_job.id)

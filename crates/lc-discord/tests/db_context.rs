@@ -18,7 +18,7 @@ use lc_discord::inputs::{
     CommandInput, DisplayFullInput, Invocation, PairCodeInput, TimeSettingInput,
 };
 use lc_discord::testing::{
-    admin_author, member_author, sample_now, FakeMediaBackend, FakeMemeBackend,
+    admin_author, member_author, sample_now, FakeMediaBackend, FakeMediaBoardBackend,
     FakeOverlayDirectory, FakePlaybackBackend,
 };
 use lc_domain::{FixedClock, GuildId, PairingMode};
@@ -29,7 +29,7 @@ struct Harness {
     context: Context,
     media: Arc<FakeMediaBackend>,
     playback: Arc<FakePlaybackBackend>,
-    meme: Arc<FakeMemeBackend>,
+    media_board: Arc<FakeMediaBoardBackend>,
     overlays: Arc<FakeOverlayDirectory>,
 }
 
@@ -39,7 +39,7 @@ async fn harness() -> Harness {
         .expect("base mémoire");
     let media = Arc::new(FakeMediaBackend::new());
     let playback = Arc::new(FakePlaybackBackend::new());
-    let meme = Arc::new(FakeMemeBackend::new());
+    let media_board = Arc::new(FakeMediaBoardBackend::new());
     let overlays = Arc::new(FakeOverlayDirectory::new());
     let clock = FixedClock::new(sample_now());
     let context = DbBotContext::with_clock(
@@ -48,14 +48,14 @@ async fn harness() -> Harness {
         BotConfig::new("http://localhost:3333"),
         Arc::clone(&media) as Arc<dyn lc_discord::context::MediaBackend>,
         Arc::clone(&playback) as Arc<dyn lc_discord::context::PlaybackBackend>,
-        Arc::clone(&meme) as Arc<dyn lc_discord::context::MemeBackend>,
+        Arc::clone(&media_board) as Arc<dyn lc_discord::context::MediaBoardBackend>,
         Arc::clone(&overlays) as Arc<dyn lc_discord::context::OverlayDirectory>,
     );
     Harness {
         context,
         media,
         playback,
-        meme,
+        media_board,
         overlays,
     }
 }
@@ -228,7 +228,7 @@ async fn db_context_refuse_les_reglages_sans_admin() {
         .expect("lecture")
         .is_none());
     assert!(harness.media.requests().is_empty());
-    assert!(harness.meme.requests().is_empty());
+    assert!(harness.media_board.requests().is_empty());
     assert!(harness.overlays.queried_guilds().is_empty());
 }
 

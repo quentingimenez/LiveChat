@@ -87,8 +87,8 @@ pub enum CommandKey {
     Help,
     /// `/info` (nom non localisé).
     Info,
-    /// `/meme-add`.
-    MemeAdd,
+    /// `/media-add`.
+    MediaAdd,
     /// `/lier` (en : `/link`).
     Link,
     /// `/overlays`.
@@ -119,7 +119,7 @@ impl CommandKey {
             Self::PairCode => "pair-code",
             Self::Help => "help",
             Self::Info => "info",
-            Self::MemeAdd => "meme-add",
+            Self::MediaAdd => "media-add",
             Self::Link => "link",
             Self::Overlays => "overlays",
             Self::SetDefaultTime => "set-default-time",
@@ -297,32 +297,32 @@ const HIDE_SEND_OPTIONS: &[OptionSpec] = &[
     },
 ];
 
-const MEME_ADD_OPTIONS: &[OptionSpec] = &[
+const MEDIA_ADD_OPTIONS: &[OptionSpec] = &[
     OptionSpec {
-        name: LocalizedText::new(FR.meme_add_option_url, EN.meme_add_option_url),
+        name: LocalizedText::new(FR.media_add_option_url, EN.media_add_option_url),
         description: LocalizedText::new(
-            FR.meme_add_option_url_description,
-            EN.meme_add_option_url_description,
+            FR.media_add_option_url_description,
+            EN.media_add_option_url_description,
         ),
         kind: OptionKind::String,
         required: false,
         choices: &[],
     },
     OptionSpec {
-        name: LocalizedText::new(FR.meme_add_option_media, EN.meme_add_option_media),
+        name: LocalizedText::new(FR.media_add_option_media, EN.media_add_option_media),
         description: LocalizedText::new(
-            FR.meme_add_option_media_description,
-            EN.meme_add_option_media_description,
+            FR.media_add_option_media_description,
+            EN.media_add_option_media_description,
         ),
         kind: OptionKind::Attachment,
         required: false,
         choices: &[],
     },
     OptionSpec {
-        name: LocalizedText::new(FR.meme_add_option_title, EN.meme_add_option_title),
+        name: LocalizedText::new(FR.media_add_option_title, EN.media_add_option_title),
         description: LocalizedText::new(
-            FR.meme_add_option_title_description,
-            EN.meme_add_option_title_description,
+            FR.media_add_option_title_description,
+            EN.media_add_option_title_description,
         ),
         kind: OptionKind::String,
         required: false,
@@ -330,12 +330,12 @@ const MEME_ADD_OPTIONS: &[OptionSpec] = &[
     },
     OptionSpec {
         name: LocalizedText::new(
-            FR.meme_add_option_force_refresh,
-            EN.meme_add_option_force_refresh,
+            FR.media_add_option_force_refresh,
+            EN.media_add_option_force_refresh,
         ),
         description: LocalizedText::new(
-            FR.meme_add_option_force_refresh_description,
-            EN.meme_add_option_force_refresh_description,
+            FR.media_add_option_force_refresh_description,
+            EN.media_add_option_force_refresh_description,
         ),
         kind: OptionKind::Boolean,
         required: false,
@@ -513,10 +513,10 @@ pub static COMMANDS: &[CommandSpec] = &[
         options: NO_OPTIONS,
     },
     CommandSpec {
-        key: CommandKey::MemeAdd,
-        name: LocalizedText::new(FR.meme_add_name, EN.meme_add_name),
-        description: LocalizedText::new(FR.meme_add_description, EN.meme_add_description),
-        options: MEME_ADD_OPTIONS,
+        key: CommandKey::MediaAdd,
+        name: LocalizedText::new(FR.media_add_name, EN.media_add_name),
+        description: LocalizedText::new(FR.media_add_description, EN.media_add_description),
+        options: MEDIA_ADD_OPTIONS,
     },
     CommandSpec {
         key: CommandKey::Link,
@@ -600,7 +600,7 @@ mod tests {
                 "config-max",
                 "overlays",
                 "stop",
-                "meme-add",
+                "media-add",
                 "lier",
                 "cmsg",
                 "cdire",
@@ -622,7 +622,7 @@ mod tests {
                 "config-maxtime",
                 "overlays",
                 "stop",
-                "meme-add",
+                "media-add",
                 "link",
                 "hsend",
                 "htalk",

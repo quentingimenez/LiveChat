@@ -46,7 +46,7 @@ async fn load_queue(db: &Db, guild_id: &GuildId) -> Result<Vec<Value>, sqlx::Err
         "SELECT j.id, j.status, j.text, j.author_name, j.author_image, j.duration_sec, \
                 j.submission_date, j.started_at, j.media_asset_id, \
                 a.kind AS media_kind, \
-                (SELECT b.title FROM meme_board_items b \
+                (SELECT b.title FROM media_board_items b \
                   WHERE b.guild_id = j.guild_id AND b.media_asset_id = j.media_asset_id) \
                     AS title \
            FROM playback_jobs j \

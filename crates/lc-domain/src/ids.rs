@@ -1,7 +1,7 @@
 //! Identifiants typés du domaine.
 //!
 //! Deux familles :
-//! - les identifiants générés par le serveur (`MediaAssetId`, `MemeBoardItemId`,
+//! - les identifiants générés par le serveur (`MediaAssetId`, `MediaBoardItemId`,
 //!   `PlaybackJobId`, `OverlayClientId`, `IngestClientId`) sont des **UUID v4**
 //!   (stockés `TEXT` dans SQLite, comme le legacy Prisma `@default(uuid())`) ;
 //! - `GuildId` (snowflake Discord, numérique) et `PairingCode` (code lisible
@@ -100,9 +100,9 @@ uuid_id!(
 );
 
 uuid_id!(
-    /// Identifiant d'un élément du meme board (`meme_board_items.id`).
-    MemeBoardItemId,
-    "meme_board_item"
+    /// Identifiant d'un élément du board média (`media_board_items.id`).
+    MediaBoardItemId,
+    "media_board_item"
 );
 
 uuid_id!(

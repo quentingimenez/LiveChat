@@ -10,7 +10,7 @@
 //! 4. `authorName`/`authorImage` → 400 (valeurs liées au token) ;
 //! 5. corps vide / `saveToBoard` sans source → 400 `invalid_payload` ;
 //! 6. ingestion média éventuelle (cache par `source_hash` sauf `forceRefresh`) ;
-//! 7. `saveToBoard` → 201 avec l'élément de meme board ;
+//! 7. `saveToBoard` → 201 avec l'élément de board média ;
 //!    sinon création d'un `PlaybackJob` puis notification du hook temps réel
 //!    (Phase 4b) → 201.
 //!
@@ -158,7 +158,7 @@ pub async fn submit(
 
     let guild_id = client.guild_id.clone();
 
-    // 8. Enregistrement sur le meme board (pas de job, parité legacy).
+    // 8. Enregistrement sur le board média (pas de job, parité legacy).
     if request.save_to_board {
         let Some(asset) = asset.as_ref() else {
             return invalid_payload(Some("saveToBoard requires media"));
@@ -189,6 +189,8 @@ pub async fn submit(
                     "savedToBoard": true,
                     "created": result.created,
                     "guildId": guild_id.as_str(),
+                    "mediaBoardItemId": result.item.id.to_canonical(),
+                    // Legacy overlay 3.0.0 compatibility: remove in 3.1.
                     "memeBoardItemId": result.item.id.to_canonical(),
                     "mediaAssetId": asset.id.to_canonical(),
                 });

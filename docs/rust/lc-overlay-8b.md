@@ -12,8 +12,8 @@ réel, le portage du renderer legacy et les écarts/limites.
 | Supervision WS | `src/net/ws.rs` | connexion `{serverUrl}/ws`, handshake `hello`, heartbeat, reconnexion backoff, adoption `welcome.currentJob`, mapping des codes de fermeture, snapshot d'état pour le tray |
 | Appairage HTTP | `src/net/pairing.rs` | `POST {serverUrl}/overlay/pair/consume`, validation legacy, persistance de la config |
 | État partagé | `src/state.rs` | config persistée + `NetSnapshot` + sender de commandes réseau + playback courant + throttle `playback.state` |
-| Bridge commandes | `src/commands.rs` | 12 commandes Tauri : config, handshake renderer, télémétrie, appairage, memes, updater |
-| Tray/statut | `src/tray.rs`, `src/windows.rs`, `src/shortcuts.rs` | ligne de connexion, reconnexion, raccourcis mémoire → trames `meme.trigger` |
+| Bridge commandes | `src/commands.rs` | 12 commandes Tauri : config, handshake renderer, télémétrie, appairage, médias du board, updater |
+| Tray/statut | `src/tray.rs`, `src/windows.rs`, `src/shortcuts.rs` | ligne de connexion, reconnexion, raccourcis du board média → trames `media.trigger` |
 | Renderer | `web/**` | pages legacy copiées telles quelles + `bridge.js` + `dist/renderer/**` (shims) |
 
 Le renderer legacy (`overlay.js` / `board.js` / `pairing.js`) n'a pas été modifié :
@@ -36,7 +36,7 @@ injectée dans les pages.
   (seek calculé par `adopt_current_job`), `settings` immédiat, heartbeat toutes les 15 s.
 - Trames sortantes : `hello`, `heartbeat`, `playback.state` (throttle 1/s au niveau
   `AppState`), `playback.ended`, `error` (télémétrie renderer), `stop.request`,
-  `meme.trigger`, `peers.request`.
+  `media.trigger`, `peers.request`.
 - Trames entrantes : `welcome`, `settings`, `play`, `stop`, `peers`, `ack`, `error`
   (les `error` serveur ne sont pas fatales). `play`/`stop` passent par le buffer
   borné existant (`events::deliver_or_buffer`, 5 s avant renderer-ready).
@@ -67,10 +67,10 @@ injectée dans les pages.
 - `pairing_consume` : appelle `pairing::consume` (HTTP), puis réapplique les
   raccourcis selon `guestMode`, émet les settings, ferme la fenêtre pairing,
   rafraîchit le tray, affiche l'overlay et demande une reconnexion WS.
-- `meme_board_trigger` / `meme_board_stop` : trames `meme.trigger` /
+- `media_board_trigger` / `media_board_stop` : trames `media.trigger` /
   `stop.request`. Plus de stub `socket_unavailable` ; si le superviseur n'est pas
   lancé, la commande renvoie `ok:false` avec une raison explicite.
-- `meme_board_get_bindings` / `meme_board_set_bindings` : conservés, avec rollback
+- `media_board_get_bindings` / `media_board_set_bindings` : conservés, avec rollback
   strict côté raccourcis.
 
 ## 4. Renderer porté (`web/**`)
@@ -88,7 +88,7 @@ injectée dans les pages.
 - Patch média v2 : `web/dist/renderer/overlay/legacy-media-dom-utils.js`
   `buildAuthorizedMediaUrl` retourne désormais l'URL **verbatim** (aucun `?token=`) :
   les URLs signées v2 (`?clientId&exp&sig[&startOffsetSec]`) sont la seule source.
-  Le board conserve son `?token=` REST (`/overlay/meme-board/items` et
+  Le board conserve son `?token=` REST (`/overlay/media-board/items` et
   `/media/:assetId`), le contrat REST v2 n'ayant pas changé — écart documenté.
 - `web/renderer-errors.js` : remonte les erreurs JS (window error, unhandled
   rejection, `console.error`) vers `overlay_report_error` → trame `error` serveur.
@@ -125,11 +125,11 @@ comme prévu.
 
 - Menu tray : lignes désactivées `Connexion : …` / `Détail : …` / `Version : Overlay vX`,
   puis `Reconnecter` (enabled si overlay activé et appairé), `Afficher l'overlay`,
-  `Ouvrir Meme Board`, `Appairer l'overlay`, toggles config, écrans, volume,
+  `Ouvrir LiveChat`, `Appairer l'overlay`, toggles config, écrans, volume,
   `Vérifier les mises à jour`, `Quitter`. Le tooltip inclut le statut et la version serveur.
 - `tray rafraîchi status=… detail=…` est journalisé en debug à chaque changement.
 - Raccourcis : `reapply_for_session` recale les bindings sur `guestMode` après
-  `welcome`/purge ; un raccourci mémoire trouvé envoie `meme.trigger` au serveur
+  `welcome`/purge ; un raccourci du board média trouvé envoie `media.trigger` au serveur
   (plus d'émission directe « locale »).
 
 ## 7. Configuration et cycle de vie
@@ -164,7 +164,7 @@ Smoke run (9 s, config temporaire `%TEMP%\lc-overlay-8b-smoke\config.json`
 - `overlay positionné sur l'écran sélectionné display_index=0 …`,
   `styles étendus overlay appliqués before=0x080C0138 after=0x080C01B8`
   (`WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW`)
-- `raccourcis de mémoire réappliqués applied=0 failed=0`
+- `raccourcis du board média réappliqués applied=0 failed=0`
 - `tray rafraîchi status=non appairé detail=Détail : appairage requis`
 - process vivant à 9 s, tué ensuite : `leftover_lc_overlay=0`, stderr vide.
 
@@ -178,7 +178,7 @@ handshake réel contre un mock WS (hello reçu, heartbeat reçu, `play` reçu, c
    gardant le token. Implémentation conforme à la consigne produit (purge +
    pairing) ; divergence documentée ici.
 2. **Board** : le renderer board conserve `?token=` pour les appels REST
-   meme-board (contrat REST v2 inchangé) alors que l'overlay n'envoie plus de
+   media-board (contrat REST v2 inchangé) alors que l'overlay n'envoie plus de
    token sur les médias signés.
 3. **CSP** : élargie (http/https/ws/wss) ; une future config statique d'API
    permettrait de la resserrer.

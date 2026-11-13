@@ -34,7 +34,7 @@ pub const STALE_PROCESSING_TTL: ChronoDuration = ChronoDuration::hours(2);
 /// d'erreur d'être consulté sans hacher immédiatement le cache.
 pub const FAILED_TTL: ChronoDuration = ChronoDuration::hours(1);
 
-/// Durée d'épinglage d'un élément du meme board (100 ans, comme le legacy).
+/// Durée d'épinglage d'un élément du board média (100 ans, comme le legacy).
 pub const PINNED_TTL_DAYS: i64 = 36_500;
 
 /// Champ `error` maximal du legacy (`meda_assets.error`), tronqué proprement.
@@ -319,7 +319,7 @@ pub fn cache_entry(asset: &MediaAsset, pinned: bool, active: bool) -> CacheEntry
     }
 }
 
-/// Échéance d'épinglage d'un élément du meme board (100 ans).
+/// Échéance d'épinglage d'un élément du board média (100 ans).
 pub fn pinned_expiry(now: DateTime<Utc>) -> DateTime<Utc> {
     now + ChronoDuration::days(PINNED_TTL_DAYS)
 }

@@ -10,7 +10,7 @@ use crate::catalog::CommandKey;
 use crate::context::Author;
 use crate::i18n::Lang;
 
-/// Options de `/send`, `/hidesend` et `/meme-add` (partie média).
+/// Options de `/send`, `/hidesend` et `/media-add` (partie média).
 ///
 /// La pièce jointe est déjà résolue en URL (`attachment.url ||
 /// attachment.proxyURL`) par la glue, comme dans le legacy.
@@ -20,7 +20,7 @@ pub struct MediaSubmission {
     pub url: Option<String>,
     /// Pièce jointe résolue en URL.
     pub media: Option<String>,
-    /// Texte overlay (`text` pour `/send`, `title` pour `/meme-add`).
+    /// Texte overlay (`text` pour `/send`, `title` pour `/media-add`).
     pub text: Option<String>,
     /// Option `refresh`.
     pub force_refresh: bool,
@@ -85,8 +85,8 @@ pub enum CommandInput {
     Send(MediaSubmission),
     /// `/hidesend`.
     HideSend(MediaSubmission),
-    /// `/meme-add`.
-    MemeAdd(MediaSubmission),
+    /// `/media-add`.
+    MediaAdd(MediaSubmission),
     /// `/dire`.
     Talk(TalkInput),
     /// `/cdire`.
@@ -118,7 +118,7 @@ impl CommandInput {
             Self::Alive => CommandKey::Alive,
             Self::Send(_) => CommandKey::Send,
             Self::HideSend(_) => CommandKey::HideSend,
-            Self::MemeAdd(_) => CommandKey::MemeAdd,
+            Self::MediaAdd(_) => CommandKey::MediaAdd,
             Self::Talk(_) => CommandKey::Talk,
             Self::HideTalk(_) => CommandKey::HideTalk,
             Self::Link(_) => CommandKey::Link,

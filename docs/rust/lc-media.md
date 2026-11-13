@@ -293,7 +293,7 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
   (`UNSUPPORTED_SOURCE`), résout le DNS avant connexion, se connecte à l'IP validée
   (anti-rebinding) et revalide chaque saut de redirection (max 3). Le serveur pré-valide la
   source dans `POST /ingest` **avant** toute création d'asset (`media_ingestion_failed`
-  422, même format que le pipeline) ; le meme board est protégé indirectement via
+  422, même format que le pipeline) ; le board média est protégé indirectement via
   `MediaPipeline`. Ce refus est un changement de comportement voulu, pas une régression
   de parité.
 - **Durcissement stockage (P1-09, task-42)** : publication atomique (transit `.tmp-*` +
@@ -312,7 +312,7 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
   legacy assumé : l'ancien serveur supprimait sans vérifier le confinement
   (AUD-V2-S-001/002/004).
 - **Dette P2 résolue (task-49, AUD-COR-13 / AUD-V2-S-003)** : `POST
-  /overlay/meme-board/items` passe désormais par `MediaService::ingest` — cache
+  /overlay/media-board/items` passe désormais par `MediaService::ingest` — cache
   `READY`/`source_hash`, sémaphore, budget cache, `record_failure` ;
   l'asset existant est rafraîchi par le pipeline puis épinglé via `assets::pin`,
   et un échec `forceRefresh` supprime les variantes partielles

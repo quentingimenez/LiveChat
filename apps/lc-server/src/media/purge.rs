@@ -199,7 +199,7 @@ async fn purge_stale_status(
     let rows = sqlx::query(
         "SELECT id, storage_path FROM media_assets \
           WHERE status = ? AND last_accessed_at <= ? \
-            AND id NOT IN (SELECT media_asset_id FROM meme_board_items \
+            AND id NOT IN (SELECT media_asset_id FROM media_board_items \
                             WHERE media_asset_id IS NOT NULL) \
             AND id NOT IN (SELECT media_asset_id FROM playback_jobs \
                             WHERE media_asset_id IS NOT NULL \
@@ -246,7 +246,7 @@ async fn purge_expired_ready(
     let rows = sqlx::query(
         "SELECT id, source_hash, storage_path FROM media_assets \
           WHERE status = 'READY' AND expires_at <= ? \
-            AND id NOT IN (SELECT media_asset_id FROM meme_board_items \
+            AND id NOT IN (SELECT media_asset_id FROM media_board_items \
                             WHERE media_asset_id IS NOT NULL) \
             AND id NOT IN (SELECT media_asset_id FROM playback_jobs \
                             WHERE media_asset_id IS NOT NULL \
@@ -403,9 +403,9 @@ mod tests {
 
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use lc_db::DbConfig;
-    use lc_domain::entities::{MediaAsset, MemeBoardItem};
+    use lc_domain::entities::{MediaAsset, MediaBoardItem};
     use lc_domain::enums::{MediaKind, MediaStatus};
-    use lc_domain::ids::{GuildId, MediaAssetId, MemeBoardItemId};
+    use lc_domain::ids::{GuildId, MediaAssetId, MediaBoardItemId};
     use lc_media::config::MediaConfig;
     use lc_media::storage::MediaStorage;
 
@@ -558,8 +558,8 @@ mod tests {
             .await
             .expect("asset expiré");
 
-        let item = MemeBoardItem {
-            id: MemeBoardItemId::new_v4(),
+        let item = MediaBoardItem {
+            id: MediaBoardItemId::new_v4(),
             guild_id: GuildId::parse("123456789012345678").expect("guilde"),
             media_asset_id: pinned.id,
             title: None,
@@ -570,7 +570,7 @@ mod tests {
         };
         fixture
             .db
-            .meme_board()
+            .media_board()
             .create(&item)
             .await
             .expect("item board");

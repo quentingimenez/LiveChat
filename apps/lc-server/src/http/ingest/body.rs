@@ -27,7 +27,7 @@ pub struct NormalizedIngest {
     pub show_text: Option<bool>,
     /// Force une ré-ingestion même si un asset en cache existe.
     pub force_refresh: bool,
-    /// Enregistre le média sur le meme board au lieu de créer un job.
+    /// Enregistre le média sur le board média au lieu de créer un job.
     pub save_to_board: bool,
     /// Auteur demandé (refusé pour un client d'ingestion).
     pub author_name: Option<String>,

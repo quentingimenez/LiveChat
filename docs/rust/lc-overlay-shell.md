@@ -16,7 +16,7 @@ Statut : shell compilé, testé et vérifié le 2026-11-10 (Windows 11, rustc/ca
 | Projet Tauri 2 complet (`cargo`, `build.rs`, `tauri.conf.json`, `tauri.beta.conf.json`) | Client WebSocket `tokio-tungstenite 0.29` + protocole v2 |
 | Config legacy 16 champs, chemin forcé `%APPDATA%\LiveChat\config.json`, `.bak`, migration | Appairage HTTP réel (`pairing_consume`) |
 | 3 fenêtres (overlay/pairing/board), click-through, topmost 2 s, styles Win32 | Renderer définitif (copie `overlay/renderer/**`, overlay.html/board.html/pairing.html) |
-| Tray + menu complet (affichage, écran, volume, autostart, MAJ, quitter) | Hotkeys de memes actifs (émission socket) |
+| Tray + menu complet (affichage, écran, volume, autostart, MAJ, quitter) | Hotkeys de médias actifs (émission socket) |
 | Single-instance, autostart, squelette global-shortcuts | Updater signé (clé minisign réelle), vérification au démarrage |
 | 10 commandes + 3 événements du contrat bridge (buffer 5 s) | Statut de connexion dynamique dans le tray |
 | Updater plugin (stub), capabilities, CSP | Broadcast d'état playback/erreurs vers le board |
@@ -33,7 +33,7 @@ apps/lc-overlay/
   icons/icon.png|icon.ico # reprise de spikes/poc-tauri/icons (placeholders Phase 9)
   gen/schemas/            # généré par tauri-build (gitignore : /gen/schemas/)
   web/
-    bridge.js             # CONTRAT EXISTANT, conservé tel quel
+    bridge.js             # façade window.livechatOverlay (contrat Tauri 2)
     bridge-test.html      # page de test Phase 0, conservée
     README.md             # consignes bridge Phase 0, conservées
     overlay.html          # placeholder 8a (badge bridge)
@@ -50,9 +50,9 @@ apps/lc-overlay/
     win32.rs              # SEUL module unsafe : styles ex + SetWindowPos topmost
     windows.rs            # cycle de vie 3 fenêtres, topmost 2 s, second instance
     tray.rs               # icône + menu + handlers
-    shortcuts.rs          # global-shortcuts / memeBindings (squelette)
+    shortcuts.rs          # global-shortcuts / mediaBindings (squelette)
     updater.rs            # check/install (stub)
-    commands.rs           # 10 commandes bridge + 2 commandes update
+    commands.rs           # commandes bridge (config, télémétrie, appairage, médias du board) + 2 commandes update
 ```
 
 ## 3. Build et vérifications
@@ -120,19 +120,20 @@ Au démarrage (`lib.rs::prepare_store`) :
 `OverlayConfig` = les 16 champs legacy exacts (camelCase JSON) :
 `displayId`, `displayIndex`, `displayKey`, `displayLabel`, `volume`, `enabled`,
 `autoStart`, `guestMode`, `showText`, `serverUrl`, `clientToken`, `clientId`,
-`guildId`, `authorName`, `deviceName`, `memeBindings` ; les clés inconnues sont
+`guildId`, `authorName`, `deviceName`, `mediaBindings` ; les clés inconnues sont
 conservées dans `extra` (`#[serde(flatten)]`) pour ne pas perdre de champ
-Electron lors d'un rollback.
+Electron lors d'un rollback. L'ancienne clé `memeBindings` de l'overlay 3.0.0
+reste lue au chargement et est réécrite sous `mediaBindings`.
 
 Normalisations identiques au legacy : volume borné `[0,1]` (non fini → 1),
-`autoStart`/`guestMode` seulement si `=== true`, `memeBindings` trimmés et
+`autoStart`/`guestMode` seulement si `=== true`, `mediaBindings` trimmés et
 entrées vides supprimées. `serverUrl` est **conservé tel quel** dans le fichier :
 comme dans le legacy, `normalizeServerUrl` (trim + suppression des `/` finaux)
 ne s'applique qu'à l'usage (appairage/connexion, Phase 8b).
 
 Projection renderer (`OverlayConfigView`, 8 champs) :
 `serverUrl`, `clientToken`, `guildId`, `clientId`, `guestMode`, `showText`,
-`volume`, `memeBindings` — `display*`, `enabled`, `autoStart`, `authorName` et
+`volume`, `mediaBindings` — `display*`, `enabled`, `autoStart`, `authorName` et
 `deviceName` restent côté shell.
 
 ## 5. Fenêtres
@@ -172,7 +173,7 @@ changement (config/écran/autostart).
 Ordre et identifiants :
 
 1. `tray.show_overlay` — Afficher l'overlay
-2. `tray.open_board` — Ouvrir Meme Board (activé si `enabled &&
+2. `tray.open_board` — Ouvrir LiveChat (activé si `enabled &&
    hasPairingConfig`)
 3. `tray.open_pairing` — Appairer l'overlay
 4. `tray.toggle_enabled` — Overlay activé (case)
@@ -224,17 +225,17 @@ Mise à jour / Version » (dépendent du client WS et de l'updater réels, Phase
 - Pas encore de vérification automatique au démarrage ni de lignes de statut
   dans le tray (Phase 8b/9).
 
-## 9. Global shortcuts (squelette memeBindings)
+## 9. Global shortcuts (squelette mediaBindings)
 
 - Accélérateur de rechargement manuel (legacy) :
   `CommandOrControl+Shift+Alt+R` → `emitManualStopSignal` sera branché sur le
   socket en 8b ; pour l'instant l'action recharge la webview overlay
   (`window.eval("window.location.reload()")`) et journalise.
-- `apply_meme_bindings(app, bindings, strict, persist)` reproduit la sémantique
+- `apply_media_bindings(app, bindings, strict, persist)` reproduit la sémantique
   legacy : mode invité → aucun binding ; `strict` → rollback complet si un
   accélérateur est refusé, réponse `{ok, appliedBindings, failedAccelerators}`.
-- Commandes bridge `meme_board_get_bindings` / `meme_board_set_bindings`
-  opérationnelles ; `meme_board_trigger` / `meme_board_stop` renvoient
+- Commandes bridge `media_board_get_bindings` / `media_board_set_bindings`
+  opérationnelles ; `media_board_trigger` / `media_board_stop` renvoient
   `{ok:false, reason:"socket_unavailable"}` jusqu'au client WS (8b).
 
 ## 10. Événements et commandes (contrat bridge)
@@ -257,11 +258,11 @@ immédiatement aux deux fenêtres.
 Commandes exposées (via `tauri::generate_handler!`) :
 `overlay_get_config`, `overlay_renderer_ready`, `overlay_report_error`,
 `overlay_report_playback_state`, `overlay_report_playback_stop`,
-`pairing_consume`, `meme_board_get_bindings`, `meme_board_set_bindings`,
-`meme_board_trigger`, `meme_board_stop` (+ `overlay_check_updates`,
+`pairing_consume`, `media_board_get_bindings`, `media_board_set_bindings`,
+`media_board_trigger`, `media_board_stop` (+ `overlay_check_updates`,
 `overlay_install_update`).
 
-`bridge.js` (Phase 0, inchangé) détecte `__TAURI_INTERNALS__.invoke` puis
+`bridge.js` (façade Tauri 2) détecte `__TAURI_INTERNALS__.invoke` puis
 `__TAURI__.core.invoke` ; `app.withGlobalTauri: true` est activé, `core:default`
 couvre les commandes applicatives (hors ACL) et les événements.
 
@@ -316,7 +317,7 @@ URLs média restant verbatim. Origine WebView : `http://tauri.localhost` (pas de
    sélection utilise `displayKey`/`displayIndex`/primaire, comme décidé au POC.
 2. `pairing_consume` renvoie une erreur explicite (« Phase 8b ») — l'UI
    d'appairage réelle n'est pas encore servie.
-3. `meme_board_trigger/stop` : `socket_unavailable` jusqu'au client WS.
+3. `media_board_trigger/stop` : `socket_unavailable` jusqu'au client WS.
 4. Updater : clé minisign placeholder + pas de check au démarrage.
 5. Tray : pas de statut de connexion/version dans le menu (Phase 8b).
 6. `serverUrl` non normalisé à l'écriture (parité legacy volontaire).
@@ -341,7 +342,7 @@ URLs média restant verbatim. Origine WebView : `http://tauri.localhost` (pas de
 - [ ] Renderer : copier `overlay/renderer/**` (HTML/CSS/JS existants) dans
       `web/overlay.html`, `web/board.html`, `web/pairing.html` et brancher
       `bridge.js` (script classique, `<head>`, avant les modules).
-- [ ] Hotkeys memes actifs : `meme_board_trigger/stop` → socket, feedback
+- [ ] Hotkeys médias actifs : `media_board_trigger/stop` → socket, feedback
       `failedAccelerators` réel.
 - [ ] Cibles `overlay://settings` après `overlay_renderer_ready` + à chaque
       changement de config (toggles tray, écran, volume).

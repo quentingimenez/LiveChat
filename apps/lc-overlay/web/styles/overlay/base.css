@@ -22,11 +22,13 @@ body {
   display: grid;
   place-items: center;
   pointer-events: none;
-  /* Space kept free around the media frame so its chrome stays on screen. */
-  --overlay-safe-margin: 24px;
-  --overlay-layout-max-width: 100vw;
-  --overlay-layout-max-height: 100vh;
-  --overlay-layout-anchor: center;
+  /* Display zone: the rectangle of the screen the media frame (header,
+     media, caption) must fit in. Set from the layout by the renderer. */
+  --overlay-zone-left: 0vw;
+  --overlay-zone-top: 0vh;
+  --overlay-zone-width: 100vw;
+  --overlay-zone-height: 100vh;
+  /* Where the frame sits in the zone when it does not fill it. */
   --overlay-layout-align-items: center;
   --overlay-layout-justify-content: center;
   --overlay-media-header-height: 54px;
@@ -40,11 +42,13 @@ body {
 
 #media-layer {
   position: absolute;
-  inset: 0;
+  left: var(--overlay-zone-left);
+  top: var(--overlay-zone-top);
+  width: var(--overlay-zone-width);
+  height: var(--overlay-zone-height);
   display: flex;
   align-items: var(--overlay-layout-align-items);
   justify-content: var(--overlay-layout-justify-content);
-  padding: var(--overlay-safe-margin);
   overflow: visible;
 }
 
@@ -59,22 +63,11 @@ body {
   /* Height taken by the caption footer (margin included), kept up to date
      by overlay.js; 0 while the footer is hidden. */
   --overlay-media-footer-height: 0px;
-  /* Largest box the media may use: the configured viewport percentage, also
-     bounded by the safe margins. The content box additionally leaves room for
-     the header (author chip + countdown) and the caption footer. */
-  --overlay-layout-box-max-height: max(
-    0px,
-    calc(
-      min(var(--overlay-layout-max-height), 100vh) - 2 * var(--overlay-safe-margin)
-    )
-  );
-  --overlay-media-max-width: max(
-    0px,
-    min(
-      var(--overlay-layout-max-width),
-      calc(100vw - 2 * var(--overlay-safe-margin))
-    )
-  );
+  /* Largest box the frame may use: the display zone. The content box
+     additionally leaves room for the header (author chip + countdown) and
+     the caption footer. */
+  --overlay-layout-box-max-height: var(--overlay-zone-height);
+  --overlay-media-max-width: var(--overlay-zone-width);
   --overlay-media-max-height: max(
     0px,
     calc(
@@ -129,13 +122,13 @@ body {
 
 .overlay-media-footer-meta {
   width: fit-content;
-  max-width: min(92vw, 1100px);
+  max-width: min(var(--overlay-zone-width), 1100px);
 }
 
 #countdown-layer {
   position: absolute;
-  top: 24px;
-  right: 24px;
+  top: calc(var(--overlay-zone-top) + 24px);
+  right: calc(100vw - var(--overlay-zone-left) - var(--overlay-zone-width) + 24px);
   display: none;
   align-items: center;
   justify-content: center;

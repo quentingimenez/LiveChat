@@ -11,6 +11,10 @@
 //! quatre styles en ceinture et bretelles (le POC Phase 0 a montré qu'ils
 //! pouvaient manquer selon le timing du `show()`).
 //!
+//! Exception : pendant le placement de la zone d'affichage (`placement`),
+//! [`clear_click_through`] rend l'overlay cliquable et activable ; la garde
+//! topmost ne réimpose alors pas ces styles.
+//!
 //! Ce fichier est le SEUL du crate autorisé à utiliser `unsafe` : il est
 //! documenté comme tel dans `docs/rust/lc-overlay-shell.md`.
 #![allow(unsafe_code)]
@@ -75,6 +79,28 @@ pub fn ensure_overlay_ex_style(hwnd: HWND) -> isize {
         desired as isize
     } else {
         current
+    }
+}
+
+/// Styles removed while the display zone is placed: the overlay must then
+/// take clicks and keyboard focus.
+pub const CLICK_THROUGH_EX_STYLE: WINDOW_EX_STYLE =
+    WINDOW_EX_STYLE(WS_EX_TRANSPARENT.0 | WS_EX_NOACTIVATE.0);
+
+/// Ex style of the overlay during the zone placement (pure, testable).
+pub fn placement_ex_style(current: u32) -> u32 {
+    current & !CLICK_THROUGH_EX_STYLE.0
+}
+
+/// Makes the overlay clickable and activable for the zone placement; the
+/// next [`ensure_overlay_ex_style`] makes it click-through again.
+pub fn clear_click_through(hwnd: HWND) {
+    let current = ex_style(hwnd) as u32;
+    let desired = placement_ex_style(current);
+    if desired != current {
+        // SAFETY: same live HWND; only the extended styles change and the
+        // previous value is deliberately ignored (failure = style unchanged).
+        let _previous = unsafe { SetWindowLongPtrW(hwnd, GWL_EXSTYLE, desired as isize) };
     }
 }
 
@@ -284,6 +310,16 @@ mod tests {
         assert!(described.contains("WS_EX_TRANSPARENT"));
         assert!(described.contains("WS_EX_NOACTIVATE"));
         assert!(described.contains("WS_EX_TOOLWINDOW"));
+    }
+
+    #[test]
+    fn the_placement_style_takes_clicks_and_keeps_the_other_flags() {
+        let placing = placement_ex_style(OVERLAY_EX_STYLE.0 | WS_EX_TOPMOST.0);
+        assert_eq!(placing & WS_EX_TRANSPARENT.0, 0);
+        assert_eq!(placing & WS_EX_NOACTIVATE.0, 0);
+        assert_ne!(placing & WS_EX_LAYERED.0, 0);
+        assert_ne!(placing & WS_EX_TOOLWINDOW.0, 0);
+        assert_ne!(placing & WS_EX_TOPMOST.0, 0);
     }
 
     #[test]

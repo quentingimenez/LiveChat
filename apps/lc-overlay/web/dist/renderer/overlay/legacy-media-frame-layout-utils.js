@@ -1,6 +1,3 @@
-// Gap kept between the header chrome and the screen edge when the header
-// spills past a frame anchored near that edge.
-const HEADER_SCREEN_GAP_PX = 8;
 export function createOverlayLegacyMediaFrameLayoutUtils() {
     function clearMediaHeaderLayoutRaf(params) {
         if (params.state.mediaHeaderLayoutRaf === null) {
@@ -30,14 +27,18 @@ export function createOverlayLegacyMediaFrameLayoutUtils() {
         // previous pass may have set.
         frame.style.removeProperty('--header-left-max-width');
         const leftWidth = params.state.activeMediaHeaderLeft.scrollWidth;
-        const viewportWidth = frame.ownerDocument.documentElement.clientWidth;
+        // The header may spill past a narrow media, but never out of the
+        // display zone (the media layer).
+        const zoneRect = frame.parentElement instanceof HTMLElement
+            ? frame.parentElement.getBoundingClientRect()
+            : { left: 0, right: frame.ownerDocument.documentElement.clientWidth };
         const shift = params.computeHeaderShift({
             mediaWidth,
             leftWidth,
             rightWidth: params.state.activeMediaHeaderRight.scrollWidth,
             minGapPx: 14,
-            leftRoomPx: frameRect.left - HEADER_SCREEN_GAP_PX,
-            rightRoomPx: viewportWidth - frameRect.right - HEADER_SCREEN_GAP_PX,
+            leftRoomPx: frameRect.left - zoneRect.left,
+            rightRoomPx: zoneRect.right - frameRect.right,
         });
         frame.style.setProperty('--header-left-shift', `${shift.leftShiftPx}px`);
         frame.style.setProperty('--header-right-shift', `${shift.rightShiftPx}px`);

@@ -895,7 +895,8 @@ invalide ou un type connu avec un payload invalide termine la session
 
 ## 14. Paramètres de l'appareil (board)
 
-Ces cinq commandes sont autorisées **pour la seule fenêtre `board`**.
+Ces sept commandes sont autorisées **pour la seule fenêtre `board`** ;
+`overlay_placement_finish` (§14.6) l'est pour la seule fenêtre `overlay`.
 
 ### 14.1 `settings_get`
 
@@ -922,7 +923,11 @@ Aucun payload. Réponse `SettingsView` :
   "showText": true,
   "autoStart": false,
   "shortcuts": { "stop": "CommandOrControl+Shift+S", "muteAll": null },
-  "layout": { "anchor": "center", "maxWidth": 100, "maxHeight": 100, "margin": 24 },
+  "layout": {
+    "zone": { "x": 0, "y": 0, "width": 1, "height": 1 },
+    "align": "center"
+  },
+  "placing": false,
   "profile": { "displayName": "Quentin", "avatar": null }
 }
 ```
@@ -930,6 +935,15 @@ Aucun payload. Réponse `SettingsView` :
 `selectedDisplayKey: null` désigne l'écran principal. `generalMute` est
 l'inverse de `enabled`. `guildVolumes` contient toutes les guildes rejointes.
 `autoStart` reflète l'état réel du plugin autostart.
+
+`layout.zone` est le rectangle de l'écran choisi où le cadre média (en-tête,
+média, légende) doit tenir, en fractions de l'écran : `0,0,1,1` est l'écran
+entier. Le shell le normalise : côtés entre 0,05 et 1, zone gardée sur l'écran,
+fractions arrondies au 1/10 000 ; une valeur non finie remet l'écran entier.
+`layout.align` place le cadre dans la zone quand il n'en a pas la forme :
+`center`, `top`, `bottom`, `left`, `right`, `top-left`, `top-right`,
+`bottom-left` ou `bottom-right`. `placing` vaut `true` pendant un placement
+(§14.6).
 
 ### 14.2 `settings_set`
 
@@ -955,8 +969,11 @@ Réponse en échec (aucune modification appliquée) :
 }
 ```
 
-Règles : volumes ramenés dans `[0,1]` ; ancres inconnues refusées ; nombres de
-mise en page bornés (`maxWidth`/`maxHeight` 20..100, `margin` 0..200) ; un
+Règles : volumes ramenés dans `[0,1]` ; `layout.align` inconnu refusé
+(`layout.align`) ; `layout.zone` partiel (chaque nombre présent remplace le
+sien, puis la zone est normalisée), `null` pour l'écran entier, un nombre non
+numérique refusé (`layout.zone.<clé>`) ; `layout: null` remet la mise en page
+par défaut ; les autres clés de `layout` sont ignorées ; un
 accélérateur doit être analysable, ne pas entrer en collision avec l'autre
 raccourci global, un binding média ou le rechargement manuel, et être accepté
 par l'OS. En cas de refus OS, l'ancien raccourci est réenregistré et rien n'est
@@ -993,15 +1010,16 @@ contient aucun `jobId` et porte `test: true` : aucun rapport de lecture ou
 d'erreur n'est envoyé au serveur. Le SVG a une taille intrinsèque de
 3840 × 2160 : l'overlay ne grandit jamais un média, la carte occupe donc la
 plus grande place permise à un média 16:9 par la mise en page. La carte de test
-remplace le gabarit d'aperçu (§14.5) s'il est affiché.
+remplace le gabarit d'aperçu (§14.5) s'il est affiché. Pendant un placement
+(§14.6), la réponse est `overlay_busy`.
 
 ### 14.5 `settings_preview_layout`
 
 Payload `{ "layout": { ... } }` (partiel, mêmes règles que `layout` dans
 `settings_set`) → `null`, ou une erreur `"<champ> : <message>"`. Rien n'est
-enregistré : le board appelle cette commande à chaque mouvement d'un réglage
-d'affichage (au plus une fois toutes les 16 ms) et n'enregistre la valeur
-qu'au relâchement, avec `settings_set`.
+enregistré : le board montre ainsi un changement d'alignement, d'écran ou le
+retour à l'écran entier (au plus un appel toutes les 16 ms) et l'enregistre
+avec `settings_set`.
 
 - Le shell émet `overlay://settings` avec la mise en page brouillon : un média
   affiché la suit tout de suite.
@@ -1017,8 +1035,55 @@ qu'au relâchement, avec `settings_set`.
 
 L'échéance est décidée sur le thread principal, comme chaque appel de la
 commande (synchrone) : un réglage modifié pile à l'échéance n'est jamais perdu.
+Pendant un placement (§14.6), seule la mise en page brouillon est émise : le
+placement affiche déjà son gabarit.
 
-### 14.6 Suppression de `guild_media_url`
+### 14.6 Placement de la zone à l'écran
+
+L'utilisateur place la zone d'affichage directement sur l'écran de l'overlay,
+comme une fenêtre.
+
+`settings_placement_start` (board, async, aucun payload) → `{ "ok": true }`,
+ou `{ "ok": false, "reason": "overlay_not_ready" }` tant que le renderer
+overlay n'a pas appelé `overlay_renderer_ready` (rien ne dessinerait la zone et
+une fenêtre transparente cliquable bloquerait l'écran). Le shell :
+
+- annule l'aperçu de mise en page en cours (§14.5) ;
+- rend la fenêtre overlay cliquable et activable (`set_ignore_cursor_events(false)`,
+  `set_focusable(true)`, retrait de `WS_EX_TRANSPARENT | WS_EX_NOACTIVATE`),
+  toujours au premier plan et hors de la barre des tâches, puis l'affiche et
+  lui donne le focus ; la garde topmost ne réimpose plus les styles
+  click-through pendant le placement ;
+- envoie le gabarit d'aperçu (§14.5, `hold: true`) si aucun média réel ne joue ;
+- émet `overlay://placement` `{ "active": true, "layout": { ... } }` à
+  l'overlay et `overlay://device-settings` (`placing: true`) au board.
+
+Un second appel pendant un placement ne fait que ramener l'overlay au premier
+plan.
+
+Le renderer dessine la zone avec une poignée à chaque coin et au milieu de
+chaque bord, assombrit le reste de l'écran et affiche une barre « Plein écran /
+Annuler / Valider ». Glisser la zone la déplace, glisser une poignée la
+redimensionne (côté minimal : 5 % de l'écran). Les bords et le centre de la
+zone s'aimantent aux bords et au centre de l'écran à moins de 8 px (Alt :
+sans magnétisme). Les flèches déplacent d'un pixel physique (Maj : 10),
+Ctrl + flèches redimensionnent, Entrée valide, Échap annule. Chaque changement
+est appliqué tout de suite à la mise en page de l'overlay, sans IPC.
+
+`overlay_placement_finish` (overlay, async) : payload
+`{ "zone": { "x", "y", "width", "height" } }` pour enregistrer (les quatre
+nombres finis sont exigés, puis normalisés), `{ "zone": null }` pour annuler
+→ `null`, ou une erreur. `settings_placement_cancel` (board, async, aucun
+payload) annule aussi, si l'écran de l'overlay est hors d'atteinte. Dans les
+deux cas, le shell enregistre la zone éventuelle, émet `overlay://placement`
+`{ "active": false }`, renvoie `overlay://settings` avec la mise en page
+enregistrée, retire le gabarit (`reason: "placement_end"`) si aucun média réel
+ne l'a remplacé, remet les politiques click-through de l'overlay (masqué s'il
+est désactivé), émet `overlay://device-settings` et ramène le board au premier
+plan. Sans placement en cours, ces commandes ne font rien. Un renderer overlay
+rechargé pendant un placement (`overlay_renderer_ready`) l'annule.
+
+### 14.7 Suppression de `guild_media_url`
 
 `guild_media_url`, son entrée d'allowlist et `net::api::board_media_url` sont
 supprimés : chaque élément du board fournit désormais une URL signée

@@ -16,7 +16,9 @@
 // sourdine, démarrage automatique, raccourcis, disposition et profil),
 // settings_identify_displays, settings_test_media (overlay_busy si un média
 // passe), settings_preview_layout (dernier brouillon dans
-// `__mock.previewLayouts`), overlay_check_updates et board_take_pending_view.
+// `__mock.previewLayouts`), settings_placement_start / settings_placement_cancel
+// (`__mock.finishPlacement(zone)` simule la validation sur l'overlay, `null`
+// l'annulation), overlay_check_updates et board_take_pending_view.
 // Chaque changement émet `overlay://device-settings` avec une copie profonde.
 // Ajouts (lien ou fichier) : le serveur répond 202 puis envoie le résultat
 // `overlay://media-ingestion` et `overlay://board-changed`. Selon le nom du
@@ -75,7 +77,8 @@
     showText: true,
     autoStart: false,
     shortcuts: { stop: 'CommandOrControl+Shift+S', muteAll: null },
-    layout: { anchor: 'center', maxWidth: 100, maxHeight: 100, margin: 24 },
+    layout: { zone: { x: 0, y: 0, width: 1, height: 1 }, align: 'center' },
+    placing: false,
     profile: { displayName: 'Quentin', avatar: null },
   };
   let pendingView = new URLSearchParams(location.search).has('settings') ? 'settings' : null;
@@ -140,7 +143,19 @@
 
   // Device settings: the mock validates the same fields as the Rust shell and
   // always answers with a deep copy.
-  const ANCHORS = new Set(['center', 'top', 'bottom', 'top-left', 'top-right', 'bottom-left', 'bottom-right']);
+  const ALIGNMENTS = new Set([
+    'center', 'top', 'bottom', 'left', 'right', 'top-left', 'top-right', 'bottom-left', 'bottom-right',
+  ]);
+  const MIN_ZONE_FRACTION = 0.05;
+  const fullZone = () => ({ x: 0, y: 0, width: 1, height: 1 });
+  // Same rules as `LayoutZone::normalize` in the shell.
+  function normalizeZone(zone) {
+    const round = (value) => Math.round(value * 10000) / 10000;
+    const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+    const width = round(clamp(zone.width, MIN_ZONE_FRACTION, 1));
+    const height = round(clamp(zone.height, MIN_ZONE_FRACTION, 1));
+    return { x: round(clamp(zone.x, 0, 1 - width)), y: round(clamp(zone.y, 0, 1 - height)), width, height };
+  }
   const settingsCopy = () => JSON.parse(JSON.stringify(settings));
   const settingsError = (field, message) => ({ ok: false, field, message, settings: settingsCopy() });
   // Draft layouts sent by the live preview, oldest first.
@@ -228,31 +243,38 @@
     if ('layout' in input) {
       const layout = input.layout;
       if (layout === null) {
-        next.layout = { anchor: 'center', maxWidth: 100, maxHeight: 100, margin: 24 };
+        next.layout = { zone: fullZone(), align: 'center' };
       } else if (!layout || typeof layout !== 'object') {
-        return settingsError('layout', 'Disposition invalide.');
+        return settingsError('layout', 'objet JSON attendu');
       } else {
-        for (const [key, value] of Object.entries(layout)) {
-          if (key === 'anchor') {
-            if (value === null) {
-              next.layout.anchor = 'center';
-            } else if (ANCHORS.has(value)) {
-              next.layout.anchor = value;
-            } else {
-              return settingsError('layout.anchor', 'Position invalide.');
-            }
-          } else if (key === 'maxWidth' || key === 'maxHeight') {
-            if (typeof value !== 'number' || !Number.isFinite(value)) {
-              return settingsError(`layout.${key}`, 'Nombre attendu.');
-            }
-            next.layout[key] = Math.min(100, Math.max(20, Math.round(value)));
-          } else if (key === 'margin') {
-            if (typeof value !== 'number' || !Number.isFinite(value)) {
-              return settingsError('layout.margin', 'Nombre attendu.');
-            }
-            next.layout.margin = Math.min(200, Math.max(0, Math.round(value)));
+        // Like the shell, other keys are ignored.
+        if ('align' in layout) {
+          if (layout.align === null) {
+            next.layout.align = 'center';
+          } else if (ALIGNMENTS.has(layout.align)) {
+            next.layout.align = layout.align;
           } else {
-            return settingsError(`layout.${key}`, 'Champ de disposition inconnu.');
+            return settingsError('layout.align', 'alignement inconnu');
+          }
+        }
+        if ('zone' in layout) {
+          const zone = layout.zone;
+          if (zone === null) {
+            next.layout.zone = fullZone();
+          } else if (!zone || typeof zone !== 'object' || Array.isArray(zone)) {
+            return settingsError('layout.zone', 'objet JSON ou null attendu');
+          } else {
+            const merged = { ...next.layout.zone };
+            for (const key of ['x', 'y', 'width', 'height']) {
+              if (!(key in zone)) {
+                continue;
+              }
+              if (typeof zone[key] !== 'number' || !Number.isFinite(zone[key])) {
+                return settingsError(`layout.zone.${key}`, 'nombre attendu');
+              }
+              merged[key] = zone[key];
+            }
+            next.layout.zone = normalizeZone(merged);
           }
         }
       }
@@ -518,11 +540,24 @@
     emit('overlay://guilds', guildsCopy());
   }
 
+  // What the overlay does on « Valider » (a zone) or « Annuler » (null).
+  function finishPlacement(zone) {
+    if (!settings.placing) {
+      return null;
+    }
+    settings.placing = false;
+    if (zone) {
+      settings.layout.zone = normalizeZone(zone);
+    }
+    emit('overlay://device-settings', settingsCopy());
+    return null;
+  }
+
   function openSettingsPage() {
     emit('overlay://navigate', { view: 'settings' });
   }
 
-  window.__mock = { emit, removeGuild, finishPlaying, reconnect, restartServer, openSettings: openSettingsPage, settings, previewLayouts, queue, items, guilds, ingestions };
+  window.__mock = { emit, removeGuild, finishPlaying, reconnect, restartServer, openSettings: openSettingsPage, finishPlacement, settings, previewLayouts, queue, items, guilds, ingestions };
 
   window.__TAURI_INTERNALS__ = {
     transformCallback(callback) {
@@ -575,6 +610,14 @@
         case 'settings_preview_layout':
           previewLayouts.push(JSON.parse(JSON.stringify(payload.layout)));
           return Promise.resolve(null);
+        case 'settings_placement_start':
+          return delay(120).then(() => {
+            settings.placing = true;
+            emit('overlay://device-settings', settingsCopy());
+            return { ok: true };
+          });
+        case 'settings_placement_cancel':
+          return delay(60).then(() => finishPlacement(null));
         case 'overlay_check_updates':
           return delay(300).then(updateCheckStatus);
         case 'guilds_list':

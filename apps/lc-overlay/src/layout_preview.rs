@@ -123,6 +123,10 @@ pub fn show(app: &AppHandle<Wry>, layout: OverlayLayout) {
     if let Err(error) = events::emit_settings(app, &view) {
         tracing::debug!(%error, "échec d'émission de la mise en page d'aperçu");
     }
+    // The zone placement already shows its own template until it ends.
+    if crate::placement::is_active() {
+        return;
+    }
 
     let extended = hold().extend(Instant::now(), LAYOUT_PREVIEW_HOLD);
     if extended.started && state.playback_job().is_none() {

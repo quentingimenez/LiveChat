@@ -21,14 +21,15 @@ use tauri::{AppHandle, Manager, State, WebviewWindow, Wry};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
-use crate::config::{MediaBindings, OverlayConfigView};
+use crate::config::{LayoutZone, MediaBindings, OverlayConfigView};
 use crate::events;
 use crate::layout_preview;
 use crate::net::api;
 use crate::net::pairing::{self, PairingRequest};
 use crate::net::upload::{self, UploadEntry, UploadRegistry};
 use crate::net::ws::{self, NetCommand};
-use crate::settings::{self, SettingsSetResponse, SettingsTestMediaResponse, SettingsView};
+use crate::placement;
+use crate::settings::{self, SettingsActionResponse, SettingsSetResponse, SettingsView};
 use crate::state::{AppState, GuildRemoval};
 use crate::tray;
 use crate::updater::{self, UpdateStatus};
@@ -55,6 +56,7 @@ const COMMAND_MATRIX: &[(&str, &[&str])] = &[
             "overlay_report_error",
             "overlay_report_playback_state",
             "overlay_report_playback_stop",
+            "overlay_placement_finish",
         ],
     ),
     (
@@ -79,6 +81,8 @@ const COMMAND_MATRIX: &[(&str, &[&str])] = &[
             "settings_identify_displays",
             "settings_test_media",
             "settings_preview_layout",
+            "settings_placement_start",
+            "settings_placement_cancel",
             "board_take_pending_view",
             "board_take_guild_removals",
             "media_upload_start",
@@ -579,11 +583,11 @@ pub async fn settings_identify_displays(
 pub fn settings_test_media(
     window: WebviewWindow<Wry>,
     app: AppHandle<Wry>,
-) -> Result<SettingsTestMediaResponse, String> {
+) -> Result<SettingsActionResponse, String> {
     ensure_allowed(&window, "settings_test_media")?;
     let state = app.state::<AppState>();
-    if state.playback_job().is_some() {
-        return Ok(SettingsTestMediaResponse {
+    if state.playback_job().is_some() || placement::is_active() {
+        return Ok(SettingsActionResponse {
             ok: false,
             reason: Some("overlay_busy".to_string()),
         });
@@ -614,7 +618,7 @@ pub fn settings_test_media(
             tracing::debug!(%error, "fermeture de l'aperçu local impossible");
         }
     });
-    Ok(SettingsTestMediaResponse {
+    Ok(SettingsActionResponse {
         ok: true,
         reason: None,
     })
@@ -637,6 +641,73 @@ pub fn settings_preview_layout(
         .map_err(|error| format!("{} : {}", error.field, error.message))?;
     layout_preview::show(&app, layout);
     Ok(())
+}
+
+/// `settings_placement_start` — turns the overlay into a window the user moves
+/// and resizes to set the display zone (see `placement`).
+///
+/// Asynchronous: it shows and focuses the overlay window, which must not run
+/// inside the board's IPC callback on the main thread.
+#[tauri::command]
+pub async fn settings_placement_start(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+) -> Result<SettingsActionResponse, String> {
+    ensure_allowed(&window, "settings_placement_start")?;
+    let (sender, receiver) = oneshot::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let _sent = sender.send(placement::start(&handle));
+    })
+    .map_err(|error| error.to_string())?;
+    let started = receiver.await.map_err(|error| error.to_string())?;
+    Ok(match started {
+        Ok(()) => SettingsActionResponse {
+            ok: true,
+            reason: None,
+        },
+        Err(error) => SettingsActionResponse {
+            ok: false,
+            reason: Some(error.reason().to_string()),
+        },
+    })
+}
+
+/// `settings_placement_cancel` — ends the placement from the board without
+/// saving, when the overlay screen is out of reach.
+#[tauri::command]
+pub async fn settings_placement_cancel(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+) -> Result<(), String> {
+    ensure_allowed(&window, "settings_placement_cancel")?;
+    finish_placement_on_main_thread(app, None).await
+}
+
+/// `overlay_placement_finish` — the overlay saves the placed zone
+/// (`{ "zone": {...} }`) or cancels (`{ "zone": null }`).
+#[tauri::command]
+pub async fn overlay_placement_finish(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+    payload: Value,
+) -> Result<(), String> {
+    ensure_allowed(&window, "overlay_placement_finish")?;
+    let zone = placement::parse_finish(&payload)?;
+    finish_placement_on_main_thread(app, zone).await
+}
+
+async fn finish_placement_on_main_thread(
+    app: AppHandle<Wry>,
+    zone: Option<LayoutZone>,
+) -> Result<(), String> {
+    let (sender, receiver) = oneshot::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let _sent = sender.send(placement::finish(&handle, zone));
+    })
+    .map_err(|error| error.to_string())?;
+    receiver.await.map_err(|error| error.to_string())?
 }
 
 /// `overlay_get_config` — projection 8 champs consommée par le renderer.
@@ -667,6 +738,10 @@ pub fn overlay_renderer_ready(
 ) -> Result<(), String> {
     ensure_allowed(&window, "overlay_renderer_ready")?;
     state.mark_overlay_ready();
+    // A reloaded page lost the placement editor: give the screen back.
+    if let Err(error) = placement::finish(&app, None) {
+        tracing::warn!(%error, "échec de fin du placement au rechargement de l'overlay");
+    }
     tracing::info!("renderer overlay prêt : envoi des settings et rejeu du buffer");
     if let Err(error) = events::emit_settings(&app, &state.view()) {
         tracing::warn!(%error, "échec d'émission des settings initiaux");
@@ -1295,6 +1370,8 @@ mod tests {
         assert!(command_allowed("overlay", "overlay_get_config"));
         assert!(command_allowed("overlay", "overlay_renderer_ready"));
         assert!(command_allowed("overlay", "overlay_report_error"));
+        assert!(command_allowed("overlay", "overlay_placement_finish"));
+        assert!(!command_allowed("board", "overlay_placement_finish"));
         assert!(!command_allowed("overlay", "pairing_consume"));
         assert!(!command_allowed("overlay", "media_board_set_bindings"));
         assert!(!command_allowed("overlay", "overlay_install_update"));
@@ -1313,6 +1390,8 @@ mod tests {
         assert!(command_allowed("board", "settings_identify_displays"));
         assert!(command_allowed("board", "settings_test_media"));
         assert!(command_allowed("board", "settings_preview_layout"));
+        assert!(command_allowed("board", "settings_placement_start"));
+        assert!(command_allowed("board", "settings_placement_cancel"));
         assert!(command_allowed("board", "board_take_pending_view"));
         assert!(command_allowed("board", "board_take_guild_removals"));
         assert!(command_allowed("board", "media_upload_start"));
@@ -1332,6 +1411,8 @@ mod tests {
             "settings_identify_displays",
             "settings_test_media",
             "settings_preview_layout",
+            "settings_placement_start",
+            "settings_placement_cancel",
             "board_take_guild_removals",
             "media_upload_start",
             "media_upload_chunk",

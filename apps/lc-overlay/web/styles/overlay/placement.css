@@ -1,0 +1,268 @@
+/* Zone placement editor (dist/renderer/overlay/placement-editor.js).
+   Colours follow the board: slate panels, amber for what can be grabbed. */
+
+.placement-layer {
+  --placement-amber: #f2b544;
+  --placement-amber-ink: #2a1d02;
+  --placement-panel: rgba(23, 27, 37, 0.96);
+  --placement-line: #3a4259;
+  --placement-text: #e9ebf3;
+  --placement-text-soft: #a3abc2;
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  pointer-events: auto;
+  cursor: default;
+  outline: none;
+  user-select: none;
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--placement-text);
+}
+
+.placement-layer[hidden] {
+  display: none;
+}
+
+/* The zone itself stays clear so the template card shows through; the rest
+   of the screen is dimmed by its shadow. */
+.placement-zone {
+  position: absolute;
+  border: 2px solid var(--placement-amber);
+  box-shadow: 0 0 0 200vmax rgba(9, 11, 17, 0.55);
+  cursor: move;
+  touch-action: none;
+}
+
+.placement-layer.is-moving .placement-zone {
+  cursor: grabbing;
+}
+
+.placement-readout {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--placement-panel);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.placement-readout-size {
+  color: var(--placement-amber);
+  font-weight: 600;
+}
+
+.placement-readout-origin {
+  color: var(--placement-text-soft);
+}
+
+/* Corners are squares, edges are bars: both are grabbed the same way. */
+.placement-handle {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--placement-amber-ink);
+  border-radius: 4px;
+  background: var(--placement-amber);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+.placement-handle.is-n,
+.placement-handle.is-s {
+  width: 36px;
+  height: 10px;
+  left: calc(50% - 18px);
+}
+
+.placement-handle.is-e,
+.placement-handle.is-w {
+  width: 10px;
+  height: 36px;
+  top: calc(50% - 18px);
+}
+
+/* Inside the zone border, so a zone against a screen edge (the whole
+   screen, by default) keeps every handle on screen. */
+.placement-handle.is-nw,
+.placement-handle.is-ne {
+  top: 0;
+}
+
+.placement-handle.is-sw,
+.placement-handle.is-se {
+  bottom: 0;
+}
+
+.placement-handle.is-nw,
+.placement-handle.is-sw {
+  left: 0;
+}
+
+.placement-handle.is-ne,
+.placement-handle.is-se {
+  right: 0;
+}
+
+.placement-handle.is-n {
+  top: 0;
+}
+
+.placement-handle.is-s {
+  bottom: 0;
+}
+
+.placement-handle.is-w {
+  left: 0;
+}
+
+.placement-handle.is-e {
+  right: 0;
+}
+
+.placement-handle.is-nw,
+.placement-handle.is-se {
+  cursor: nwse-resize;
+}
+
+.placement-handle.is-ne,
+.placement-handle.is-sw {
+  cursor: nesw-resize;
+}
+
+.placement-handle.is-n,
+.placement-handle.is-s {
+  cursor: ns-resize;
+}
+
+.placement-handle.is-e,
+.placement-handle.is-w {
+  cursor: ew-resize;
+}
+
+.placement-guides {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.placement-guide {
+  position: absolute;
+  background: var(--placement-amber);
+  opacity: 0.85;
+}
+
+.placement-guide.is-x {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  margin-left: -0.5px;
+}
+
+.placement-guide.is-y {
+  left: 0;
+  right: 0;
+  height: 1px;
+  margin-top: -0.5px;
+}
+
+.placement-toolbar {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  max-width: calc(100vw - 24px);
+  padding: 12px 14px 12px 16px;
+  border: 1px solid var(--placement-line);
+  border-radius: 10px;
+  background: var(--placement-panel);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+
+.placement-layer.is-moving .placement-toolbar,
+.placement-layer.is-resizing .placement-toolbar {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.placement-toolbar-text p {
+  margin: 0;
+}
+
+.placement-keys {
+  margin-top: 2px;
+  color: var(--placement-text-soft);
+  font-size: 13px;
+}
+
+.placement-keys kbd {
+  display: inline-block;
+  padding: 0 5px;
+  border: 1px solid var(--placement-line);
+  border-radius: 4px;
+  background: #262c3c;
+  color: var(--placement-text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.placement-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+.placement-button {
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--placement-line);
+  border-radius: 6px;
+  background: #262c3c;
+  color: var(--placement-text);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.placement-button:hover {
+  background: #30384c;
+}
+
+.placement-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.placement-button:focus-visible {
+  outline: 2px solid #7fa8f5;
+  outline-offset: 2px;
+}
+
+.placement-button.is-quiet {
+  border-color: transparent;
+  background: none;
+  color: var(--placement-text-soft);
+}
+
+.placement-button.is-quiet:hover {
+  background: #262c3c;
+  color: var(--placement-text);
+}
+
+.placement-button.is-primary {
+  border-color: var(--placement-amber);
+  background: var(--placement-amber);
+  color: var(--placement-amber-ink);
+  font-weight: 600;
+}
+
+.placement-button.is-primary:hover {
+  background: #f7c466;
+}

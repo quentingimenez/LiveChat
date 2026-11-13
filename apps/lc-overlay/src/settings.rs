@@ -10,7 +10,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use tauri::{AppHandle, Manager, Wry};
 
-use crate::config::{LayoutAnchor, OverlayConfig, OverlayLayout, ShortcutSettings};
+use crate::config::{LayoutAnchor, LayoutZone, OverlayConfig, OverlayLayout, ShortcutSettings};
 use crate::display::DisplayInfo;
 use crate::state::AppState;
 use crate::updater;
@@ -51,6 +51,8 @@ pub struct SettingsView {
     pub auto_start: bool,
     pub shortcuts: ShortcutSettings,
     pub layout: OverlayLayout,
+    /// The display zone is being placed on the overlay screen.
+    pub placing: bool,
     pub profile: SettingsProfile,
 }
 
@@ -97,10 +99,10 @@ pub struct SettingsIdentifyDisplaysResponse {
     pub count: usize,
 }
 
-/// Answer of `settings_test_media`.
+/// Answer of `settings_test_media` and `settings_placement_start`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SettingsTestMediaResponse {
+pub struct SettingsActionResponse {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -160,6 +162,7 @@ pub fn build_settings_view(
         auto_start,
         shortcuts: config.shortcuts.clone(),
         layout: config.layout.clone(),
+        placing: false,
         profile: SettingsProfile {
             display_name: config.profile_name.clone(),
             avatar: config.profile_avatar.clone(),
@@ -172,7 +175,9 @@ pub fn settings_view(app: &AppHandle<Wry>) -> SettingsView {
     let config = app.state::<AppState>().config_snapshot();
     let (displays, primary_index) = crate::windows::collect_displays(app);
     let auto_start = crate::device_settings::autostart_enabled(app);
-    build_settings_view(&config, &displays, primary_index, auto_start)
+    let mut view = build_settings_view(&config, &displays, primary_index, auto_start);
+    view.placing = crate::placement::is_active();
+    view
 }
 
 /// Local `overlay://play` payload used by `settings_test_media`.
@@ -283,14 +288,6 @@ fn number_value(
     }
 }
 
-fn clamp_percent(value: f64) -> u32 {
-    value.round().clamp(20.0, 100.0) as u32
-}
-
-fn clamp_margin(value: f64) -> u32 {
-    value.round().clamp(0.0, 200.0) as u32
-}
-
 fn apply_volume_patch(
     config: &mut OverlayConfig,
     object: &Map<String, Value>,
@@ -365,29 +362,38 @@ fn apply_layout_patch(
     let Some(layout) = raw_layout.as_object() else {
         return Err(SettingsError::new("layout", "objet JSON attendu"));
     };
-    if let Some(raw_anchor) = layout.get("anchor") {
-        if raw_anchor.is_null() {
-            config.layout.anchor = LayoutAnchor::Center;
+    if let Some(raw_align) = layout.get("align") {
+        if raw_align.is_null() {
+            config.layout.align = LayoutAnchor::Center;
         } else {
-            match serde_json::from_value::<LayoutAnchor>(raw_anchor.clone()) {
-                Ok(anchor) => config.layout.anchor = anchor,
-                Err(_) => {
-                    return Err(SettingsError::new(
-                        "layout.anchor",
-                        "ancre d'affichage inconnue",
-                    ))
-                }
+            match serde_json::from_value::<LayoutAnchor>(raw_align.clone()) {
+                Ok(align) => config.layout.align = align,
+                Err(_) => return Err(SettingsError::new("layout.align", "alignement inconnu")),
             }
         }
     }
-    if let Some(max_width) = number_value(layout, "maxWidth", "layout.maxWidth")? {
-        config.layout.max_width = clamp_percent(max_width);
-    }
-    if let Some(max_height) = number_value(layout, "maxHeight", "layout.maxHeight")? {
-        config.layout.max_height = clamp_percent(max_height);
-    }
-    if let Some(margin) = number_value(layout, "margin", "layout.margin")? {
-        config.layout.margin = clamp_margin(margin);
+    match layout.get("zone") {
+        None => {}
+        Some(Value::Null) => config.layout.zone = LayoutZone::default(),
+        Some(Value::Object(zone)) => {
+            let target = &mut config.layout.zone;
+            for (key, slot) in [
+                ("x", &mut target.x),
+                ("y", &mut target.y),
+                ("width", &mut target.width),
+                ("height", &mut target.height),
+            ] {
+                if let Some(value) = number_value(zone, key, &format!("layout.zone.{key}"))? {
+                    *slot = value;
+                }
+            }
+        }
+        Some(_) => {
+            return Err(SettingsError::new(
+                "layout.zone",
+                "objet JSON ou null attendu",
+            ))
+        }
     }
     config.layout.normalize();
     Ok(())
@@ -455,8 +461,8 @@ fn apply_profile_patch(
 /// Applies a partial `settings_set` payload to a copy of `base`.
 ///
 /// Every field is validated before returning: a failure means the caller must
-/// not apply anything. Volumes and layout numbers are clamped, unknown anchors
-/// and invalid shortcut accelerators are rejected.
+/// not apply anything. Volumes are clamped, the zone is kept on screen, unknown
+/// alignments and invalid shortcut accelerators are rejected.
 pub fn apply_settings_patch(
     base: &OverlayConfig,
     payload: &Value,
@@ -530,31 +536,56 @@ mod tests {
     }
 
     #[test]
-    fn settings_set_rejects_unknown_anchor_without_mutating_the_base() {
+    fn settings_set_rejects_unknown_align_without_mutating_the_base() {
         let config = paired_config();
         let before = config.clone();
         let error = apply_settings_patch(
             &config,
-            &json!({ "volume": 0.4, "layout": { "anchor": "middle" } }),
+            &json!({ "volume": 0.4, "layout": { "align": "middle" } }),
             &sample_displays(),
         )
-        .expect_err("unknown anchor");
-        assert_eq!(error.field, "layout.anchor");
+        .expect_err("unknown align");
+        assert_eq!(error.field, "layout.align");
         assert_eq!(config, before);
+
+        let error = apply_settings_patch(
+            &config,
+            &json!({ "layout": { "zone": { "x": "left" } } }),
+            &sample_displays(),
+        )
+        .expect_err("zone numbers only");
+        assert_eq!(error.field, "layout.zone.x");
     }
 
     #[test]
-    fn settings_set_layout_numbers_are_clamped() {
+    fn settings_set_zone_is_partial_and_kept_on_screen() {
+        let mut config = paired_config();
+        config.layout.zone = LayoutZone {
+            x: 0.1,
+            y: 0.1,
+            width: 0.5,
+            height: 0.5,
+        };
         let patched = apply_settings_patch(
-            &paired_config(),
-            &json!({ "layout": { "anchor": "top-left", "maxWidth": 4, "maxHeight": 500, "margin": 900 } }),
+            &config,
+            &json!({ "layout": { "align": "right", "zone": { "x": 0.8 } } }),
             &sample_displays(),
         )
         .expect("valid layout");
-        assert_eq!(patched.layout.anchor, LayoutAnchor::TopLeft);
-        assert_eq!(patched.layout.max_width, 20);
-        assert_eq!(patched.layout.max_height, 100);
-        assert_eq!(patched.layout.margin, 200);
+        assert_eq!(patched.layout.align, LayoutAnchor::Right);
+        assert_eq!(
+            patched.layout.zone,
+            LayoutZone {
+                x: 0.5,
+                y: 0.1,
+                width: 0.5,
+                height: 0.5,
+            }
+        );
+
+        let reset = apply_settings_patch(&config, &json!({ "layout": { "zone": null } }), &[])
+            .expect("reset zone");
+        assert_eq!(reset.layout.zone, LayoutZone::default());
     }
 
     #[test]
@@ -671,20 +702,19 @@ mod tests {
     #[test]
     fn preview_layout_applies_the_draft_without_touching_the_config() {
         let mut config = paired_config();
-        config.layout.margin = 40;
-        let layout = preview_layout(
-            &config,
-            &json!({ "layout": { "anchor": "bottom-right", "maxWidth": 300 } }),
-        )
-        .expect("valid draft");
-        assert_eq!(layout.anchor, LayoutAnchor::BottomRight);
-        assert_eq!(layout.max_width, 100);
-        assert_eq!(layout.margin, 40, "fields left out keep the saved value");
-        assert_eq!(config.layout.anchor, LayoutAnchor::Center);
+        config.layout.zone.width = 0.4;
+        let layout = preview_layout(&config, &json!({ "layout": { "align": "bottom-right" } }))
+            .expect("valid draft");
+        assert_eq!(layout.align, LayoutAnchor::BottomRight);
+        assert_eq!(
+            layout.zone.width, 0.4,
+            "fields left out keep the saved value"
+        );
+        assert_eq!(config.layout.align, LayoutAnchor::Center);
 
-        let error = preview_layout(&config, &json!({ "layout": { "anchor": "middle" } }))
-            .expect_err("unknown anchor");
-        assert_eq!(error.field, "layout.anchor");
+        let error = preview_layout(&config, &json!({ "layout": { "align": "middle" } }))
+            .expect_err("unknown align");
+        assert_eq!(error.field, "layout.align");
         let error = preview_layout(&config, &json!({})).expect_err("layout required");
         assert_eq!(error.field, "layout");
     }
@@ -692,7 +722,7 @@ mod tests {
     #[test]
     fn settings_view_matches_the_board_contract() {
         let mut config = paired_config();
-        config.layout.max_width = 70;
+        config.layout.zone.width = 0.7;
         config.shortcuts.stop = Some("Ctrl+Shift+S".to_string());
         config.profile_name = Some("Quentin".to_string());
         let displays = sample_displays();
@@ -703,10 +733,13 @@ mod tests {
         assert_eq!(view.displays[0].label, "Écran 1 — 2560 × 1440 (principal)");
         assert!(view.displays[0].primary);
         assert_eq!(view.displays[1].label, "Écran 2 — 1920 × 1080");
-        assert_eq!(view.layout.max_width, 70);
+        assert_eq!(view.layout.zone.width, 0.7);
         assert!(view.auto_start);
+        assert!(!view.placing);
 
         let value = serde_json::to_value(view).expect("serialize");
+        assert_eq!(value["placing"], json!(false));
+        assert_eq!(value["layout"]["zone"]["width"], json!(0.7));
         assert_eq!(value["shortcuts"]["stop"], json!("Ctrl+Shift+S"));
         assert_eq!(value["profile"]["displayName"], json!("Quentin"));
     }

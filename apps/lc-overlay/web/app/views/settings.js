@@ -5,9 +5,10 @@
 // sound sliders are debounced, and the page always renders from the settings
 // view returned by the shell.
 //
-// Display settings are previewed live: each draft goes to
-// `settings_preview_layout`, which shows it on the overlay with a template
-// card, and the value is saved once the control is released.
+// The display zone is placed on the overlay screen itself
+// (`settings_placement_start`): the overlay becomes a window the user moves
+// and resizes, and saves the zone. The alignment is previewed live through
+// `settings_preview_layout`, which shows it with a template card.
 
 import { run } from '../core/api.js';
 import { acceleratorFromEvent, acceleratorLabel } from '../core/accelerators.js';
@@ -21,10 +22,13 @@ import { renderHeader } from './header.js';
 import { renderRail } from './rail.js';
 import { renderView } from './view.js';
 
-const POSITIONS = [
+// Where a media sits in the zone when it does not have the zone's shape.
+const ALIGNMENTS = [
   ['center', 'Centre'],
   ['top', 'En haut'],
   ['bottom', 'En bas'],
+  ['left', 'À gauche'],
+  ['right', 'À droite'],
   ['top-left', 'En haut à gauche'],
   ['top-right', 'En haut à droite'],
   ['bottom-left', 'En bas à gauche'],
@@ -51,6 +55,7 @@ let shortcutCapture = null;
 let shortcutErrors = {};
 let identifyingDisplays = false;
 let testingMedia = false;
+let startingPlacement = false;
 let checkingUpdates = false;
 let updateMessage = null;
 const debounceTimers = new Map();
@@ -168,8 +173,8 @@ function debounce(key, action) {
 }
 
 // Sends the draft layout (saved layout plus `changes`) to the overlay, at most
-// once per frame while a slider moves. Nothing is saved here. A timer rather
-// than requestAnimationFrame, which stops while the page is hidden.
+// once per frame. Nothing is saved here. A timer rather than
+// requestAnimationFrame, which stops while the page is hidden.
 function previewLayout(changes) {
   const saved = (deviceSettings && deviceSettings.layout) || {};
   previewDraft = { ...saved, ...previewDraft, ...changes };
@@ -199,8 +204,7 @@ function controlRow(label, control, id) {
   return h('div', { class: 'settings-row' }, labelNode, h('div', { class: 'settings-control' }, control));
 }
 
-// `onInput` follows the thumb; `onChange`, when given, runs once on release.
-function rangeControl({ id, min, max, value, format, onInput, onChange }) {
+function rangeControl({ id, min, max, value, format, onInput }) {
   const output = h('span', { class: 'settings-value' }, format(value));
   const input = h('input', {
     id,
@@ -215,23 +219,49 @@ function rangeControl({ id, min, max, value, format, onInput, onChange }) {
       output.textContent = format(next);
       onInput(next);
     },
-    onChange: onChange ? (event) => onChange(Number(event.target.value)) : null,
   });
   return [input, output];
+}
+
+function selectedDisplay(settings, displays) {
+  return (
+    displays.find((display) => display.key === settings.selectedDisplayKey) ||
+    displays.find((display) => display.primary) ||
+    displays[0] ||
+    null
+  );
+}
+
+function isWholeScreen(zone) {
+  return zone.x === 0 && zone.y === 0 && zone.width === 1 && zone.height === 1;
+}
+
+// « 1280 × 720 px à 640, 360 » on the overlay screen, or fractions when its
+// size is unknown.
+function zoneSummary(zone, display) {
+  if (isWholeScreen(zone)) {
+    return 'Tout l’écran';
+  }
+  if (!display || !display.width || !display.height) {
+    const percent = (value) => `${Math.round(value * 100)} %`;
+    return `${percent(zone.width)} × ${percent(zone.height)} de l’écran`;
+  }
+  const px = (fraction, side) => Math.round(fraction * side);
+  return `${px(zone.width, display.width)} × ${px(zone.height, display.height)} px à ${px(zone.x, display.width)}, ${px(zone.y, display.height)}`;
 }
 
 function renderDisplay(settings) {
   const displays = Array.isArray(settings.displays) ? settings.displays : [];
   const layout = settings.layout || {};
-  const maxWidth = Number.isInteger(layout.maxWidth) ? layout.maxWidth : 100;
-  const maxHeight = Number.isInteger(layout.maxHeight) ? layout.maxHeight : 100;
-  const margin = Number.isInteger(layout.margin) ? layout.margin : 24;
+  const zone = { x: 0, y: 0, width: 1, height: 1, ...(layout.zone || {}) };
+  const placing = Boolean(settings.placing);
 
   const screen = h(
     'select',
     {
       id: 'settings-screen',
       class: 'field',
+      disabled: placing,
       // The overlay moves once the screen is saved: preview it there.
       onChange: (event) =>
         applyPatch({ selectedDisplayKey: event.target.value || null }).then(() => previewLayout({})),
@@ -247,19 +277,44 @@ function renderDisplay(settings) {
     identifyingDisplays ? 'Identification…' : 'Identifier les écrans',
   );
 
-  const position = h(
+  const zoneControls = placing
+    ? [
+        h('span', { class: 'settings-zone is-live' }, 'Placement en cours sur l’écran de l’overlay'),
+        h('button', { class: 'btn', type: 'button', onClick: cancelPlacement }, 'Annuler le placement'),
+      ]
+    : [
+        h('span', { class: 'settings-zone' }, zoneSummary(zone, selectedDisplay(settings, displays))),
+        h(
+          'button',
+          { class: 'btn is-air', type: 'button', disabled: startingPlacement, onClick: startPlacement },
+          startingPlacement ? 'Ouverture…' : 'Placer sur l’écran',
+        ),
+        isWholeScreen(zone)
+          ? null
+          : h(
+              'button',
+              {
+                class: 'btn is-quiet',
+                type: 'button',
+                onClick: () => applyPatch({ layout: { zone: null } }).then(() => previewLayout({})),
+              },
+              'Revenir à tout l’écran',
+            ),
+      ];
+
+  const alignment = h(
     'select',
     {
-      id: 'settings-position',
+      id: 'settings-align',
       class: 'field',
       onChange: (event) => {
-        previewLayout({ anchor: event.target.value });
-        applyPatch({ layout: { anchor: event.target.value } });
+        previewLayout({ align: event.target.value });
+        applyPatch({ layout: { align: event.target.value } });
       },
     },
-    POSITIONS.map(([value, label]) => h('option', { value }, label)),
+    ALIGNMENTS.map(([value, label]) => h('option', { value }, label)),
   );
-  position.value = layout.anchor || 'center';
+  alignment.value = layout.align || 'center';
 
   const showText = h('input', {
     id: 'settings-show-text',
@@ -270,71 +325,22 @@ function renderDisplay(settings) {
 
   const testButton = h(
     'button',
-    { class: 'btn', type: 'button', disabled: testingMedia, onClick: testMedia },
+    { class: 'btn', type: 'button', disabled: testingMedia || placing, onClick: testMedia },
     testingMedia ? 'Lancement…' : 'Lancer un média de test',
   );
 
   return section(
     'Affichage',
     controlRow('Écran', [screen, identify], 'settings-screen'),
-    controlRow('Position', position, 'settings-position'),
-    controlRow(
-      'Largeur maximale',
-      rangeControl({
-        id: 'settings-max-width',
-        min: 20,
-        max: 100,
-        value: maxWidth,
-        format: (value) => `${value} %`,
-        onInput: (value) => previewLayout({ maxWidth: value }),
-        onChange: (value) => applyPatch({ layout: { maxWidth: value } }),
-      }),
-      'settings-max-width',
+    controlRow('Zone d’affichage', zoneControls),
+    h(
+      'p',
+      { class: 'settings-hint is-under' },
+      placing
+        ? 'Déplace la zone et tire ses coins sur l’écran de l’overlay, puis valide (Entrée) ou annule (Échap).'
+        : 'Les médias, leur auteur et leur légende restent dans cette zone. Place-la directement sur l’écran, comme une fenêtre.',
     ),
-    controlRow(
-      'Hauteur maximale',
-      rangeControl({
-        id: 'settings-max-height',
-        min: 20,
-        max: 100,
-        value: maxHeight,
-        format: (value) => `${value} %`,
-        onInput: (value) => previewLayout({ maxHeight: value }),
-        onChange: (value) => applyPatch({ layout: { maxHeight: value } }),
-      }),
-      'settings-max-height',
-    ),
-    controlRow(
-      'Marge',
-      [
-        h('input', {
-          id: 'settings-margin',
-          class: 'field settings-number',
-          type: 'number',
-          min: '0',
-          max: '200',
-          step: '1',
-          value: String(margin),
-          onInput: (event) => {
-            const value = Number(event.target.value);
-            if (event.target.value !== '' && Number.isInteger(value) && value >= 0 && value <= 200) {
-              previewLayout({ margin: value });
-            }
-          },
-          onChange: (event) => {
-            const value = Number(event.target.value);
-            if (!Number.isInteger(value) || value < 0 || value > 200) {
-              notify('La marge doit être un nombre entier entre 0 et 200 px.', true);
-              renderView();
-              return;
-            }
-            applyPatch({ layout: { margin: value } });
-          },
-        }),
-        h('span', { class: 'meta' }, 'px'),
-      ],
-      'settings-margin',
-    ),
+    controlRow('Alignement dans la zone', alignment, 'settings-align'),
     controlRow('Afficher le texte des médias', showText, 'settings-show-text'),
     controlRow('Média de test', testButton),
   );
@@ -659,6 +665,40 @@ async function testMedia() {
     if (state.page === 'settings') {
       renderView();
     }
+  }
+}
+
+async function startPlacement() {
+  if (startingPlacement) {
+    return;
+  }
+  startingPlacement = true;
+  renderView();
+  try {
+    const response = await invoke('settings_placement_start');
+    if (response && response.ok === false) {
+      notify(
+        response.reason === 'overlay_not_ready'
+          ? 'L’overlay n’est pas encore prêt. Réessaie dans un instant.'
+          : 'Impossible de lancer le placement.',
+        true,
+      );
+    }
+  } catch (error) {
+    notify(errorMessage(error), true);
+  } finally {
+    startingPlacement = false;
+    if (state.page === 'settings') {
+      renderView();
+    }
+  }
+}
+
+async function cancelPlacement() {
+  try {
+    await invoke('settings_placement_cancel');
+  } catch (error) {
+    notify(errorMessage(error), true);
   }
 }
 

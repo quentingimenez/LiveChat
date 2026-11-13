@@ -49,6 +49,7 @@ apps/lc-overlay/
     state.rs              # AppState (config + Ready + buffer + bindings actifs), tests
     events.rs             # noms d'événements, buffer borné + timeout 5 s, tests
     layout_preview.rs     # aperçu en direct de la mise en page (gabarit, échéance 4 s), tests
+    placement.rs          # placement de la zone d'affichage à l'écran (début, fin, payloads), tests
     win32.rs              # SEUL module unsafe : styles ex, SetWindowPos topmost, hook de premier plan
     windows.rs            # cycle de vie 2 fenêtres, topmost 2 s, second instance
     tray.rs               # icône + modèle de menu pur + handlers
@@ -129,11 +130,14 @@ sont conservées dans `extra` (`#[serde(flatten)]`) pour ne pas perdre de champ
 Electron lors d'un rollback.
 
 `Membership` porte un `volume` par guilde (défaut `1.0`, borné `[0,1]`).
-`shortcuts = { stop, muteAll }` et `layout = { anchor, maxWidth, maxHeight,
-margin }` sont les clés persistées camelCase des réglages de l'appareil. Elles
-sont normalisées à la lecture : accélérateurs trimmés/vides retirés, ancre
-`center|top|bottom|top-left|top-right|bottom-left|bottom-right`, pourcentages
-bornés 20..100 et marge 0..200.
+`shortcuts = { stop, muteAll }` et `layout = { zone: { x, y, width, height },
+align }` sont les clés persistées camelCase des réglages de l'appareil. Elles
+sont normalisées à la lecture : accélérateurs trimmés/vides retirés ; zone en
+fractions de l'écran choisi, côtés bornés 0,05..1, gardée sur l'écran et
+arrondie au 1/10 000 (non finie → écran entier) ; alignement
+`center|top|bottom|left|right|top-left|top-right|bottom-left|bottom-right`
+(inconnu → `center`). Les anciennes clés `anchor`, `maxWidth`, `maxHeight` et
+`margin` sont ignorées.
 
 Normalisations identiques au legacy : volume borné `[0,1]` (non fini → 1),
 `autoStart`/`guestMode` seulement si `=== true`, `mediaBindings` trimmés et
@@ -148,9 +152,11 @@ Projection renderer (`OverlayConfigView`) : `serverUrl`, `clientToken`,
 
 La vue complète de la page Paramètres (`SettingsView`) et le contrat
 `settings_get` / `settings_set` / `settings_identify_displays` /
-`settings_test_media` / `settings_preview_layout` sont documentés dans
-`overlay-bridge.md` §14. L'aperçu en direct de la mise en page (gabarit,
-échéance de 4 s) vit dans `src/layout_preview.rs`.
+`settings_test_media` / `settings_preview_layout` / placement de la zone
+(`settings_placement_start`, `settings_placement_cancel`,
+`overlay_placement_finish`) sont documentés dans `overlay-bridge.md` §14.
+L'aperçu en direct de la mise en page (gabarit, échéance de 4 s) vit dans
+`src/layout_preview.rs`, le placement dans `src/placement.rs`.
 
 ## 5. Fenêtres
 
@@ -175,6 +181,14 @@ Détails d'implémentation :
   de `HWND_TOPMOST`, jusqu'à ce que la fenêtre disparaisse ; il remet ensuite
   le board au-dessus s'il est au premier plan (et les cartes `identify-*`
   au-dessus du board).
+- Placement de la zone (`placement::start`) : tant qu'il dure,
+  `apply_window_policies` applique les politiques de placement à `overlay`
+  (`set_ignore_cursor_events(false)`, `set_focusable(true)`, topmost, skip
+  taskbar, `win32::clear_click_through` retire `WS_EX_TRANSPARENT |
+  WS_EX_NOACTIVATE`), la fenêtre est montrée et reçoit le focus, et la garde
+  topmost ne réimpose pas les styles click-through. À la fin
+  (`placement::finish`), les politiques overlay normales reviennent et la
+  fenêtre est masquée si l'overlay est désactivé.
 - Plan du board (`windows::board_layer`) : il suit la fenêtre au premier plan
   de Windows (`SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`, installé sur le
   thread principal), pas l'événement Tauri `Focused` : sous Windows celui-ci
@@ -309,6 +323,7 @@ la board. L'infobulle reste `tray_tooltip`.
 | `overlay://settings` | fenêtre `overlay` | projection renderer (`OverlayConfigView`, layout compris) |
 | `overlay://device-settings` | fenêtre `board` | `SettingsView` complet |
 | `overlay://navigate` | fenêtre `board` | `{ "view": "settings" }` (demande du tray) |
+| `overlay://placement` | fenêtre `overlay` | `{ "active": true, "layout" }` au début d'un placement, `{ "active": false }` à la fin |
 
 Le volume effectif ajouté à `overlay://play` vaut volume général × volume de la
 guilde propriétaire du média. Le renderer utilise `payload.volume` seulement
@@ -327,7 +342,9 @@ Commandes exposées (via `tauri::generate_handler!`) :
 `media_board_trigger`, `media_board_stop`, `overlay_check_updates`,
 `overlay_install_update`, `board_take_pending_view`, `settings_get`,
 `settings_set`, `settings_identify_displays`, `settings_test_media`,
-`settings_preview_layout` et les commandes de guildes / upload. `guild_media_url` est supprimé : les URL média
+`settings_preview_layout`, `settings_placement_start`,
+`settings_placement_cancel`, `overlay_placement_finish` et les commandes de
+guildes / upload. `guild_media_url` est supprimé : les URL média
 signées arrivent directement dans les éléments du board.
 
 `bridge.js` (façade Tauri 2) détecte `__TAURI_INTERNALS__.invoke` puis

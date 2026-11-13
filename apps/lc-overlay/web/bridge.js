@@ -19,7 +19,7 @@
  *   window.__bridgeMode            : 'tauri' | 'mock'
  *   window.__bridgeCalls           : journal des appels (max 200, champs sensibles masqués)
  *   window.__bridgeLastEvent       : dernier événement reçu/émis en mode test
- *   window.__bridgeMockEmit(event, payload) : émet un événement localement (play/stop/settings)
+ *   window.__bridgeMockEmit(event, payload) : émet un événement localement (play/stop/settings/placement)
  */
 (function () {
   'use strict';
@@ -46,16 +46,18 @@
     getMediaBindings: 'media_board_get_bindings',
     setMediaBindings: 'media_board_set_bindings',
     triggerMedia: 'media_board_trigger',
-    stopMediaPlayback: 'media_board_stop'
+    stopMediaPlayback: 'media_board_stop',
+    finishPlacement: 'overlay_placement_finish'
   });
 
   const EVENTS = Object.freeze({
     play: 'overlay://play',
     stop: 'overlay://stop',
-    settings: 'overlay://settings'
+    settings: 'overlay://settings',
+    placement: 'overlay://placement'
   });
 
-  const EVENT_LIST = [EVENTS.play, EVENTS.stop, EVENTS.settings];
+  const EVENT_LIST = [EVENTS.play, EVENTS.stop, EVENTS.settings, EVENTS.placement];
 
   // ---------------------------------------------------------------------------
   // Détection Tauri 2.
@@ -508,6 +510,13 @@
         result = { ok: true };
         break;
 
+      case COMMANDS.finishPlacement:
+        result = undefined;
+        setTimeout(function () {
+          emitMockEvent(EVENTS.placement, { active: false }, 'mock:finishPlacement');
+        }, 0);
+        break;
+
       default:
         result = undefined;
         console.warn(LOG_PREFIX + ' [mock] commande inconnue : ' + commandName);
@@ -597,7 +606,10 @@
       'overlay:settings': EVENTS.settings,
       'overlay://play': EVENTS.play,
       'overlay://stop': EVENTS.stop,
-      'overlay://settings': EVENTS.settings
+      'overlay://settings': EVENTS.settings,
+      placement: EVENTS.placement,
+      'overlay:placement': EVENTS.placement,
+      'overlay://placement': EVENTS.placement
     };
 
     return aliases[name] || null;
@@ -607,7 +619,7 @@
     const eventName = normalizeEventName(rawEventName);
 
     if (!eventName) {
-      console.warn(LOG_PREFIX + ' __bridgeMockEmit : événement inconnu « ' + rawEventName + ' » (attendu : play, stop, settings).');
+      console.warn(LOG_PREFIX + ' __bridgeMockEmit : événement inconnu « ' + rawEventName + ' » (attendu : play, stop, settings, placement).');
       return 0;
     }
 
@@ -637,7 +649,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // API publique : exactement les 13 méthodes du preload Electron.
+  // API publique : les méthodes du preload Electron, plus le placement de zone.
   // Signatures : overlay/src/types/livechat-overlay.d.ts:19-33.
   // ---------------------------------------------------------------------------
   const api = {
@@ -687,6 +699,17 @@
 
     onSettings: function (callback) {
       return subscribeEvent('onSettings', EVENTS.settings, callback);
+    },
+
+    // Zone placement start / end ({ active, layout? }), overlay window only.
+    onPlacement: function (callback) {
+      return subscribeEvent('onPlacement', EVENTS.placement, callback);
+    },
+
+    // Ends the zone placement: { zone: {x, y, width, height} } saves it,
+    // { zone: null } cancels.
+    finishPlacement: function (payload) {
+      return callCommand('finishPlacement', COMMANDS.finishPlacement, asPayloadArg(payload));
     },
 
     reportError: function (payload) {

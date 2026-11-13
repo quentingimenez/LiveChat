@@ -102,10 +102,13 @@ fn is_timeout_exempt(method: &Method, path: &str) -> bool {
     {
         return true;
     }
-    // Ingestion média synchrone du board (téléchargement + transcodage).
+    // Synchronous board media ingestion (download + transcode) and local-file
+    // upload (body streaming + transcode).
     // Legacy overlay 3.0.0 compatibility: remove in 3.1.
     method == Method::POST
-        && (path == "/overlay/media-board/items" || path == "/overlay/meme-board/items")
+        && (path == "/overlay/media-board/items"
+            || path == "/overlay/media-board/upload"
+            || path == "/overlay/meme-board/items")
 }
 
 /// Middleware de timeout de requête (jamais appliqué aux routes exemptées).

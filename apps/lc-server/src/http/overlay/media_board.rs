@@ -13,6 +13,7 @@
 //! |---------|--------|---------|
 //! | `GET` | `/overlay/media-board/items?q=&limit=&offset=` | `{total, limit, offset, items}` |
 //! | `POST` | `/overlay/media-board/items` | `{created, item}` |
+//! | `POST` | `/overlay/media-board/upload?filename=&title=&message=` | `{created, item}` (raw binary body) |
 //! | `GET` | `/overlay/media-board/media/{assetId}` | flux binaire (`Range` supporté) |
 //! | `PATCH` | `/overlay/media-board/items/{itemId}` | `{updated:true, item:{id,title,message}}` |
 //! | `DELETE` | `/overlay/media-board/items/{itemId}` | `{deleted}` |
@@ -25,7 +26,8 @@
 //! - erreurs : `400 invalid_payload` (+ `message`), `401 unauthorized`,
 //!   `403 read_only_session` (session invitée en écriture), `404 item_not_found`
 //!   / `media_not_found` / `media_not_found_on_disk`,
-//!   `422 media_ingestion_failed` (+ `code`, `message`), `500 internal_error`.
+//!   `422 media_ingestion_failed` (+ `code`, `message`), `500 internal_error` ;
+//! - upload errors: `413 payload_too_large`, `415 unsupported_media`.
 //!
 //! ## Sessions en lecture seule (`INVITE_READ_ONLY`)
 //!
@@ -33,6 +35,7 @@
 //! mutations du board média (`POST items`, `PATCH item`, `DELETE item`) sont donc
 //! refusées avec `403 {"error":"read_only_session"}` **avant toute validation de
 //! charge utile**, tandis que les `GET` (`items`, `media`) restent autorisés.
+//! `POST /overlay/media-board/upload` is subject to the same guard.
 //! Le mode provient de l'extracteur [`AuthedOverlayClient::is_read_only`]
 //! (colonne `overlay_clients.session_mode`, chargée à l'authentification) ; il
 //! est identique que le jeton arrive par `Authorization: Bearer` ou par le repli
@@ -55,7 +58,7 @@
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
 use lc_domain::{GuildId, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, Permission};
@@ -221,7 +224,7 @@ pub async fn create_item(
                 error = %rejection.body_text(),
                 "corps JSON invalide sur POST /overlay/media-board/items"
             );
-            return invalid_json();
+            return json_rejection_error(rejection);
         }
     };
     let url = payload
@@ -258,6 +261,32 @@ pub async fn create_item(
         Err(service_error) => return media_service_error(&service_error),
     };
 
+    complete_board_item(
+        &state,
+        &auth,
+        db,
+        asset,
+        payload.title,
+        payload.message,
+        now,
+    )
+    .await
+}
+
+/// Common board insertion steps after media ingestion.
+///
+/// Handles `(guild, asset)` deduplication, storage quota, 100-year pinning,
+/// item insertion and author recording. Answers `200` with `created:true` for a
+/// new item and `created:false` when the asset was already pinned.
+pub(super) async fn complete_board_item(
+    state: &AppState,
+    auth: &AuthedOverlayClient,
+    db: &Db,
+    asset: MediaAsset,
+    title: Option<String>,
+    message: Option<String>,
+    now: DateTime<Utc>,
+) -> Response {
     // Dédoublonnage board : (guilde, asset) déjà épinglé → `created:false`.
     match db
         .media_board()
@@ -317,18 +346,16 @@ pub async fn create_item(
         id: MediaBoardItemId::new_v4(),
         guild_id: auth.guild_id().clone(),
         media_asset_id: asset.id,
-        title: payload
-            .title
+        title: title
             .as_deref()
             .map(|value| truncate_chars(value.trim(), TITLE_MAX_CHARS))
             .filter(|value| !value.is_empty()),
-        message: payload
-            .message
+        message: message
             .as_deref()
             .map(|value| truncate_chars(value.trim(), MESSAGE_MAX_CHARS))
             .filter(|value| !value.is_empty()),
         created_by_discord_user_id: auth.client.created_by_discord_user_id.clone(),
-        created_by_name: board_author_name(&auth),
+        created_by_name: board_author_name(auth),
         created_at: now,
     };
     match db.media_board().create(&item).await {
@@ -425,7 +452,7 @@ pub async fn update_item(
                 error = %rejection.body_text(),
                 "corps JSON invalide sur PATCH /overlay/media-board/items"
             );
-            return invalid_json();
+            return json_rejection_error(rejection);
         }
     };
     let Some(object) = body.as_object() else {
@@ -550,7 +577,7 @@ pub async fn delete_item(
 /// (`400`, `404`) ne sont volontairement pas évaluées avant cette garde : une
 /// session invitée ne doit obtenir aucune information sur la validité d'une
 /// charge utile ou d'un identifiant.
-fn ensure_writable(auth: &AuthedOverlayClient) -> Result<(), Response> {
+pub(super) fn ensure_writable(auth: &AuthedOverlayClient) -> Result<(), Response> {
     if auth.is_read_only() {
         return Err(error(StatusCode::FORBIDDEN, "read_only_session"));
     }
@@ -828,7 +855,7 @@ async fn delete_item_and_release(
 }
 
 /// Réponse `422 media_ingestion_failed` (format API legacy).
-fn media_ingestion_error(media_error: &lc_media::MediaError) -> Response {
+pub(super) fn media_ingestion_error(media_error: &lc_media::MediaError) -> Response {
     json_response(
         StatusCode::UNPROCESSABLE_ENTITY,
         serde_json::json!({
@@ -841,12 +868,25 @@ fn media_ingestion_error(media_error: &lc_media::MediaError) -> Response {
 
 /// Traduit une erreur du service média (`Database`/`Unavailable` → 500, comme
 /// le board legacy qui ne documente que `422 media_ingestion_failed`).
-fn media_service_error(service_error: &MediaServiceError) -> Response {
+pub(super) fn media_service_error(service_error: &MediaServiceError) -> Response {
     if let Some(media_error) = service_error.media_error() {
         return media_ingestion_error(media_error);
     }
     tracing::warn!(error = %service_error, "opération média du board impossible");
     internal_error()
+}
+
+/// JSON extraction error response.
+///
+/// Exceeding the global limit (`DefaultBodyLimit`, 1 MiB) keeps its `413`
+/// status; other rejections remain `400 invalid_payload` (AUD-A2-009).
+fn json_rejection_error(rejection: JsonRejection) -> Response {
+    if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        // Keep the rejection's `413` and let `normalize_errors` produce the
+        // usual `{"error":"request_error"}` body.
+        return rejection.into_response();
+    }
+    invalid_json()
 }
 
 /// Réponse `400 invalid_payload` pour un corps JSON malformé (AUD-A2-009).

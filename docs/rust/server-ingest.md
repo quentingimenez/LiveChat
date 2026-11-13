@@ -309,6 +309,59 @@ passe par la même `MediaService` puis `assets::pin` (expiry à +100 ans) ; la l
 charge en une jointure bornée et la suppression est transactionnelle
 (`delete_item_and_release`). Voir `docs/rust/server-overlay.md` §7.
 
+### `POST /overlay/media-board/upload`
+
+Ajout d'un média au board depuis un fichier local, sans URL ni multipart.
+
+Paramètres de query :
+
+| Paramètre | Obligatoire | Contrainte |
+| --- | --- | --- |
+| `filename` | oui | 1 à 255 caractères, sans `/`, `\`, `..` ni caractère de contrôle |
+| `title` | non | tronqué à 240 caractères ; défaut = nom du fichier sans extension |
+| `message` | non | tronqué à 500 caractères |
+
+Le corps est le fichier brut (`application/octet-stream` ou tout autre
+`Content-Type`, utilisé seulement comme indice). L'authentification et la garde
+`invite_read_only` sont évaluées **avant** toute lecture du corps
+(`403 read_only_session`). Un `filename` absent/invalide répond
+`400 {"error":"invalid_payload","message":…}`.
+
+Le handler lit le corps en streaming avec `axum::body::Body::into_data_stream`
+(jamais tout le fichier en mémoire), écrit dans un répertoire temporaire du même
+espace que les téléchargements `lc-media`, calcule le SHA-256 au fil de l'eau et
+supprime le fichier temporaire dans tous les cas (garde RAII, y compris abandon
+du handler). La limite globale `DefaultBodyLimit` de 1 Mio ne s'applique pas à
+cette route (`Body`, pas `Bytes`/`Json`) ; les autres routes la conservent. La
+route est exemptée du timeout global (`app::is_timeout_exempt`).
+
+Limites et erreurs :
+
+| Cas | Statut | Corps |
+| --- | --- | --- |
+| `filename` absent, vide, trop long ou interdit | 400 | `{"error":"invalid_payload","message":…}` |
+| corps vide | 400 | `{"error":"invalid_payload",…}` |
+| corps > `MEDIA_MAX_SIZE_MB` (2048 Mo par défaut) | 413 | `{"error":"payload_too_large"}` |
+| session `invite_read_only` | 403 | `{"error":"read_only_session"}` |
+| type non reconnu (`UNSUPPORTED_SOURCE`) | 415 | `{"error":"unsupported_media"}` |
+| SVG ou autre échec d'ingestion | 422 | `{"error":"media_ingestion_failed","code":…,"message":…}` |
+| erreur base/service | 500 | `{"error":"internal_error"}` |
+
+L'ingestion passe par `MediaPipeline::ingest_local_file` (ou
+`ingest_local_file_with_hash` quand le service a déjà l'empreinte) : détection
+du type par les octets, puis les mêmes contrôles de taille, transcodage,
+publication content-addressed et limiteur de concurrence que `ingest_url`. Les
+SVG sont refusés (`INVALID_MEDIA`). Une image raster locale valide peut être
+plus petite que le seuil anti-fichier-vide de 1 Kio des sources distantes
+(icône 1×1) ; ce seuil reste inchangé pour `ingest_url`.
+
+La clé de cache/déduplication est `upload:sha256:<sha256 du contenu>` ; si un
+asset `READY` existe déjà pour cette clé il est réutilisé sans nouvelle
+ingestion. La colonne `media_assets.source_url` reçoit `upload:<filename>`. Les
+étapes board (quota `MEDIA_BOARD_MAX_TOTAL_MB`, dédoublonnage, épinglage 100 ans,
+insertion, auteur) sont partagées avec `create_item` : réponse `200` avec
+`{"created":true}` pour un nouvel item, `{"created":false}` si l'asset était déjà sur le board.
+
 ## 7. Jobs et hook temps réel
 
 `jobs::create_for_ingest` reproduit `createPlaybackJob` :

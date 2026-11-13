@@ -1,4 +1,4 @@
-//! Routes `/overlay/media-board/*` (Bearer obligatoire).
+//! Routes `/overlay/media-board/*`.
 //!
 //! Parité REST avec `server/src/components/overlay/overlayRoutes.ts:376-567` et
 //! `server/src/services/mediaBoard.ts`. Le board média est une liste ordonnée de
@@ -6,15 +6,15 @@
 //!
 //! ## Routes
 //!
-//! | Méthode | Chemin | Réponse |
-//! |---------|--------|---------|
-//! | `GET` | `/overlay/media-board/items?q=&limit=&offset=` | `{total, limit, offset, items}` |
-//! | `POST` | `/overlay/media-board/items` | `202 {ingestionId}` |
-//! | `POST` | `/overlay/media-board/upload?filename=&title=&message=` | `202 {ingestionId}` (raw binary body) |
-//! | `GET` | `/overlay/media-board/ingestions` | `{items:[...]}` |
-//! | `GET` | `/overlay/media-board/media/{assetId}` | flux binaire (`Range` supporté) |
-//! | `PATCH` | `/overlay/media-board/items/{itemId}` | `{updated:true, item:{id,title,message}}` |
-//! | `DELETE` | `/overlay/media-board/items/{itemId}` | `{deleted}` |
+//! | Méthode | Chemin | Authentification | Réponse |
+//! |---------|--------|------------------|---------|
+//! | `GET` | `/overlay/media-board/items?q=&limit=&offset=` | Bearer | `{total, limit, offset, items}` |
+//! | `POST` | `/overlay/media-board/items` | Bearer | `202 {ingestionId}` |
+//! | `POST` | `/overlay/media-board/upload?filename=&title=&message=` | Bearer | `202 {ingestionId}` (raw binary body) |
+//! | `GET` | `/overlay/media-board/ingestions` | Bearer | `{items:[...]}` |
+//! | `GET` | `/overlay/media-board/media/{assetId}?clientId=&exp=&sig=` | URL signée | flux binaire (`Range` supporté) |
+//! | `PATCH` | `/overlay/media-board/items/{itemId}` | Bearer | `{updated:true, item:{id,title,message}}` |
+//! | `DELETE` | `/overlay/media-board/items/{itemId}` | Bearer | `{deleted}` |
 //!
 //! ## Asynchronous ingestion
 //!
@@ -29,8 +29,11 @@
 //! ## Réponses exactes
 //!
 //! - item : `{id, guildId, mediaAssetId, title, message, createdByName, createdAt,
+//!   mediaUrl, mediaUrlExpiresAt,
 //!   media:{id,kind,mime,durationSec,width,height,isVertical,sizeBytes,sourceUrl}}`
-//!   (`createdAt` en ISO-8601 UTC millisecondes, comme le JSON du legacy) ;
+//!   (`createdAt` en ISO-8601 UTC millisecondes, comme le JSON du legacy).
+//!   `mediaUrl` est une URL absolue signée une heure pour le client demandeur
+//!   (`board:{assetId}`), utilisable verbatim par `<img>`/`<video>` ;
 //! - erreurs synchrones : `400 invalid_payload` (+ `message`), `401 unauthorized`,
 //!   `403 read_only_session` (session invitée en écriture), `404 item_not_found`
 //!   / `media_not_found` / `media_not_found_on_disk`, `413 payload_too_large`,
@@ -47,9 +50,9 @@
 //! **avant toute validation de charge utile**, tandis que les `GET` (`items`,
 //! `ingestions`, `media`) restent autorisés.
 //! Le mode provient de l'extracteur [`AuthedOverlayClient::is_read_only`]
-//! (colonne `overlay_clients.session_mode`, chargée à l'authentification) ; il
-//! est identique que le jeton arrive par `Authorization: Bearer` ou par le repli
-//! `?token=` du board, et ne peut pas être influencé par le corps de requête.
+//! (colonne `overlay_clients.session_mode`, chargée à l'authentification) et ne
+//! peut pas être influencé par le corps de requête. Le flux média signé applique
+//! la même règle de visibilité à partir du rôle du client.
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
@@ -57,7 +60,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
-use lc_domain::{GuildId, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, Permission};
+use lc_domain::{
+    GuildId, GuildRole, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId,
+    OverlayClientId, Permission,
+};
 use lc_protocol::{BoardChange, BoardChangedPayload, ServerMessage};
 use serde::Deserialize;
 
@@ -98,6 +104,25 @@ pub(super) struct ListQuery {
     /// Ancien filtre admin : doit correspondre à la guilde du Bearer.
     #[serde(default)]
     guild_id: Option<String>,
+}
+
+/// Paramètres de l'URL signée d'un média du board.
+///
+/// La route n'accepte ni `Authorization: Bearer` ni `?token=` : les tags
+/// `<img>`/`<video>` ne peuvent pas porter d'en-tête, seule la signature HMAC
+/// authentifie la requête.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct BoardMediaQuery {
+    /// Identifiant du client overlay auquel l'URL est liée.
+    #[serde(default)]
+    client_id: Option<String>,
+    /// Expiration en secondes UNIX.
+    #[serde(default)]
+    exp: Option<String>,
+    /// Signature HMAC-SHA256 hexadécimale minuscule.
+    #[serde(default)]
+    sig: Option<String>,
 }
 
 /// Corps `POST /media-board/items`.
@@ -142,6 +167,15 @@ pub async fn list_items(
         return response;
     }
 
+    let secret = state.config.media_url_secret.expose_secret();
+    if secret.is_empty() {
+        tracing::warn!("MEDIA_URL_SECRET absent : URLs du board non signables");
+        return super::internal_error();
+    }
+    let expires_at_sec =
+        crate::media_url::board_url_expiry(u64::try_from(now(&state).timestamp()).unwrap_or(0));
+    let client_id = auth.client.id.to_canonical();
+
     let limit = normalize_limit(query.limit.as_deref());
     let offset = normalize_offset(query.offset.as_deref());
     let search = query
@@ -177,8 +211,27 @@ pub async fn list_items(
                 return db_failure("overlay_media_board.list_item_asset", &db_error);
             }
         };
+        let asset_id = asset.id.to_canonical();
+        let media_url = match crate::media_url::sign_board_url(
+            secret.as_bytes(),
+            &state.config.api_origin(),
+            &asset_id,
+            &client_id,
+            expires_at_sec,
+        ) {
+            Ok(url) => url,
+            Err(error) => {
+                tracing::warn!(%error, "signature d'une URL du board impossible");
+                return super::internal_error();
+            }
+        };
         let mut payload = item_payload(&row.item, &asset);
         if let Some(object) = payload.as_object_mut() {
+            object.insert("mediaUrl".to_owned(), serde_json::json!(media_url));
+            object.insert(
+                "mediaUrlExpiresAt".to_owned(),
+                serde_json::json!(expires_at_sec.saturating_mul(1000)),
+            );
             object.insert(
                 "createdByMemberId".to_owned(),
                 serde_json::json!(row.created_by_member_id),
@@ -471,27 +524,91 @@ fn internal_failure() -> IngestionFailure {
     }
 }
 
-/// Handler `GET /overlay/media-board/media/{assetId}`.
+/// Handler `GET`/`HEAD /overlay/media-board/media/{assetId}`.
+///
+/// Authentification **uniquement** par URL signée (`clientId`, `exp`, `sig`) :
+/// ni Bearer ni `?token=`, qui ne sont plus acceptés sur cette route. La
+/// signature couvre `board:{assetId}`, donc une URL de lecture ne peut pas être
+/// rejouée ici (et inversement).
 pub async fn get_media(
     State(state): State<AppState>,
-    auth: AuthedOverlayClient,
     Path(asset_id_raw): Path<String>,
+    Query(query): Query<BoardMediaQuery>,
     method: axum::http::Method,
     headers: HeaderMap,
 ) -> Response {
-    let Ok(asset_id) = asset_id_raw.trim().parse::<MediaAssetId>() else {
+    let (client_id_raw, exp_raw, sig) = match (query.client_id, query.exp, query.sig) {
+        (Some(client_id), Some(exp), Some(sig)) => (client_id, exp, sig),
+        _ => return super::media::media_url_invalid(),
+    };
+    let Ok(asset_id) = MediaAssetId::parse(asset_id_raw.trim()) else {
         return super::media::media_not_found();
     };
+    let Ok(client_id) = OverlayClientId::parse(client_id_raw.trim()) else {
+        return super::media::media_url_invalid();
+    };
+    let Ok(exp_sec) = exp_raw.trim().parse::<u64>() else {
+        return super::media::media_url_invalid();
+    };
+    if sig.len() != 64 || !sig.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return super::media::media_url_invalid();
+    }
+
+    let secret = state.config.media_url_secret.expose_secret();
+    if secret.is_empty() {
+        tracing::warn!("MEDIA_URL_SECRET absent : média du board refusé");
+        return super::media::media_url_invalid();
+    }
+    let asset_key = asset_id.to_canonical();
+    let client_key = client_id.to_canonical();
+    if !crate::media_url::verify_board(secret.as_bytes(), &asset_key, &client_key, exp_sec, &sig) {
+        return super::media::media_url_invalid();
+    }
+
+    let timestamp = now(&state);
+    let now_sec = u64::try_from(timestamp.timestamp()).unwrap_or(0);
+    if !crate::media_url::is_expiry_within_max(exp_sec, now_sec) {
+        tracing::warn!(
+            asset_id = %asset_key,
+            exp_sec,
+            now_sec,
+            max_ttl_sec = lc_protocol::MEDIA_URL_TTL_MAX_SEC,
+            "URL de média du board au-delà du plafond d'expiration : refus"
+        );
+        return super::media::media_url_invalid();
+    }
+    if crate::media_url::is_expired(exp_sec, now_sec) {
+        return super::media::media_url_expired();
+    }
+
     let db = match db(&state) {
         Ok(db) => db,
         Err(response) => return response,
     };
-    if let Err(response) = ensure_board_visible(db, &auth).await {
+    let client = match db.overlay_clients().get(client_id).await {
+        Ok(Some(client)) => client,
+        Ok(None) => return super::media::media_url_invalid(),
+        Err(db_error) => return db_failure("overlay_media_board.media_client", &db_error),
+    };
+    if !client.is_active() {
+        return super::media::media_url_invalid();
+    }
+
+    let role = match db.guild_members().get_for_overlay_client(client.id).await {
+        Ok(Some(member)) => member.role,
+        Ok(None) => match client.session_mode {
+            lc_domain::OverlaySessionMode::InviteReadOnly => GuildRole::Guest,
+            lc_domain::OverlaySessionMode::Normal => GuildRole::Member,
+        },
+        Err(db_error) => return db_failure("overlay_media_board.media_member", &db_error),
+    };
+    if let Err(response) = ensure_board_visible_for(db, &client.guild_id, role).await {
         return response;
     }
+
     match db
         .media_board()
-        .get_by_guild_and_asset(auth.guild_id(), asset_id)
+        .get_by_guild_and_asset(&client.guild_id, asset_id)
         .await
     {
         Ok(Some(_)) => {}
@@ -503,7 +620,7 @@ pub async fn get_media(
         Ok(None) => return super::media::media_not_found(),
         Err(db_error) => return db_failure("overlay_media_board.media_asset", &db_error),
     };
-    if !asset.is_ready() || asset.is_expired_at(now(&state)) {
+    if !asset.is_ready() || asset.is_expired_at(timestamp) {
         return super::media::media_not_found();
     }
     let file_path = match super::media::resolve_media_file(&state, &asset).await {
@@ -670,9 +787,8 @@ pub async fn delete_item(
 
 /// Garde d'écriture : refuse les mutations en session `INVITE_READ_ONLY`.
 ///
-/// Le mode est celui du client authentifié (persisté en
-/// `overlay_clients.session_mode`), quelle que soit la voie d'authentification
-/// (`Authorization: Bearer` ou repli `?token=` du board). Les erreurs du legacy
+/// Le mode est celui du client authentifié par Bearer (persisté en
+/// `overlay_clients.session_mode`). Les erreurs du legacy
 /// (`400`, `404`) ne sont volontairement pas évaluées avant cette garde : une
 /// session invitée ne doit obtenir aucune information sur la validité d'une
 /// charge utile ou d'un identifiant.
@@ -686,14 +802,24 @@ pub(super) fn ensure_writable(auth: &AuthedOverlayClient) -> Result<(), Response
 /// Garde de lecture : un invité ne consulte le board que si la guilde
 /// l'autorise (`guilds.guests_can_view_board`, vrai par défaut).
 async fn ensure_board_visible(db: &Db, auth: &AuthedOverlayClient) -> Result<(), Response> {
-    if auth.role() != lc_domain::GuildRole::Guest {
+    ensure_board_visible_for(db, auth.guild_id(), auth.role()).await
+}
+
+/// Même garde pour un rôle résolu sans [`AuthedOverlayClient`] (route média
+/// signée, qui n'a pas d'authentification Bearer).
+async fn ensure_board_visible_for(
+    db: &Db,
+    guild_id: &GuildId,
+    role: GuildRole,
+) -> Result<(), Response> {
+    if role != GuildRole::Guest {
         return Ok(());
     }
-    let guests_can_view_board = match db.guilds().access(auth.guild_id()).await {
+    let guests_can_view_board = match db.guilds().access(guild_id).await {
         Ok(access) => access.is_none_or(|access| access.guests_can_view_board),
         Err(db_error) => return Err(db_failure("overlay_media_board.board_access", &db_error)),
     };
-    if auth.role().can_view_board(guests_can_view_board) {
+    if role.can_view_board(guests_can_view_board) {
         Ok(())
     } else {
         Err(error(StatusCode::FORBIDDEN, "forbidden"))

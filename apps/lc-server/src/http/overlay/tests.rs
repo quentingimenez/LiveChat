@@ -19,9 +19,10 @@ use axum::Router;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use lc_db::{Db, DbConfig};
 use lc_domain::{
-    FixedClock, GuildId, JobStatus, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId,
-    MediaKind, MediaStatus, OverlayClient, OverlayClientId, OverlaySessionMode, PairingCode,
-    PairingCodeEntry, PairingMode, PlaybackJob, PlaybackJobId,
+    FixedClock, GuildId, GuildInvite, GuildMember, GuildMemberId, GuildRole, JobStatus, MediaAsset,
+    MediaAssetId, MediaBoardItem, MediaBoardItemId, MediaKind, MediaStatus, OverlayClient,
+    OverlayClientId, OverlaySessionMode, PairingCode, PairingCodeEntry, PairingMode, PlaybackJob,
+    PlaybackJobId,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -167,6 +168,7 @@ fn pairing_entry(
     code: &str,
     guild_id: &GuildId,
     mode: PairingMode,
+    grants_admin: bool,
     author: Option<&str>,
     expires_at: Option<DateTime<Utc>>,
 ) -> PairingCodeEntry {
@@ -174,11 +176,34 @@ fn pairing_entry(
         code: PairingCode::parse(code).expect("code valide"),
         guild_id: guild_id.clone(),
         mode,
+        grants_admin,
         created_by_discord_user_id: "4242".to_owned(),
         author_name: author.map(str::to_owned),
         author_image: None,
         expires_at,
         used_at: None,
+        created_at: fixed_now() - Duration::minutes(1),
+    }
+}
+
+/// Invitation de test (aucune identité Discord).
+fn invite_entry(
+    code: &str,
+    guild_id: &GuildId,
+    role: GuildRole,
+    member_id: Option<GuildMemberId>,
+    max_uses: Option<i64>,
+) -> GuildInvite {
+    GuildInvite {
+        code: PairingCode::parse(code).expect("code valide"),
+        guild_id: guild_id.clone(),
+        role,
+        member_id,
+        max_uses,
+        use_count: 0,
+        created_by_member_id: None,
+        expires_at: None,
+        revoked_at: None,
         created_at: fixed_now() - Duration::minutes(1),
     }
 }
@@ -298,6 +323,22 @@ fn signed_uri(asset: &MediaAsset, client: &OverlayClient, exp: u64) -> String {
     )
 }
 
+/// URL de média du board signée (`board:` namespace).
+fn signed_board_uri(asset: &MediaAsset, client: &OverlayClient, exp: u64) -> String {
+    let asset_key = asset.id.to_canonical();
+    let client_key = client.id.to_canonical();
+    let signature = crate::media_url::sign(
+        MEDIA_SECRET.as_bytes(),
+        &format!("board:{asset_key}"),
+        &client_key,
+        exp,
+    )
+    .expect("signature HMAC board");
+    format!(
+        "/overlay/media-board/media/{asset_key}?clientId={client_key}&exp={exp}&sig={signature}"
+    )
+}
+
 // --------------------------------------------------------------------------
 // POST /overlay/pair/consume
 // --------------------------------------------------------------------------
@@ -310,6 +351,7 @@ async fn pair_consume_creates_client_and_returns_legacy_payload() {
         "ABC123",
         &guild(),
         PairingMode::Normal,
+        false,
         Some("Alice"),
         Some(fixed_now() + Duration::minutes(5)),
     );
@@ -390,6 +432,7 @@ async fn pair_consume_rejects_missing_and_expired_codes() {
             "EXPIRED",
             &guild(),
             PairingMode::Normal,
+            false,
             Some("Alice"),
             Some(fixed_now() - Duration::minutes(1)),
         ))
@@ -421,6 +464,7 @@ async fn pair_consume_honors_invite_read_only_and_default_label() {
             "INVITE",
             &guild(),
             PairingMode::InviteReadOnly,
+            false,
             None,
             None,
         ))
@@ -433,7 +477,7 @@ async fn pair_consume_honors_invite_read_only_and_default_label() {
             Method::POST,
             "/overlay/pair/consume",
             None,
-            Some(&json!({"code": "invite"})),
+            Some(&json!({"code": "invite", "displayName": "Invité"})),
         ),
     )
     .await;
@@ -441,6 +485,7 @@ async fn pair_consume_honors_invite_read_only_and_default_label() {
     let body = body_json(&bytes);
     assert_eq!(body["sessionMode"], "invite_read_only");
     assert_eq!(body["deviceName"], "Overlay-User");
+    assert_eq!(body["displayName"], "Invité");
     assert!(body["authorName"].is_null());
 
     let client_id =
@@ -474,6 +519,7 @@ async fn pair_consume_revokes_previous_client_with_same_label() {
             "REVOKE",
             &guild(),
             PairingMode::Normal,
+            false,
             Some("Alice"),
             None,
         ))
@@ -499,6 +545,331 @@ async fn pair_consume_revokes_previous_client_with_same_label() {
         .expect("lecture")
         .expect("client");
     assert!(previous.revoked_at.is_some());
+}
+
+#[tokio::test]
+async fn pair_consume_invite_requires_a_display_name_without_consuming() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, db) = harness(dir.path()).await;
+    let invite = invite_entry("K7QXM2PD", &guild(), GuildRole::Member, None, Some(2));
+    db.guild_invites()
+        .create(&invite)
+        .await
+        .expect("invitation créée");
+
+    // Un nom vide (ou uniquement des espaces) est refusé et ne consomme rien.
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::POST,
+            "/overlay/pair/consume",
+            None,
+            Some(&json!({"code": "k7qx-m2pd", "displayName": "   "})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(&bytes)["error"], "display_name_required");
+    let stored = db
+        .guild_invites()
+        .get(&invite.code)
+        .await
+        .expect("lecture invitation")
+        .expect("invitation conservée");
+    assert_eq!(stored.use_count, 0, "le refus ne consomme pas l'invitation");
+
+    // Avec un pseudo, l'invitation est consommée et le membre le reçoit.
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::POST,
+            "/overlay/pair/consume",
+            None,
+            Some(&json!({"code": "k7qx-m2pd", "displayName": "  Léa   B. "})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let body = body_json(&bytes);
+    assert_eq!(body["displayName"], "Léa B.");
+    assert_eq!(body["role"], "member");
+    let stored = db
+        .guild_invites()
+        .get(&invite.code)
+        .await
+        .expect("lecture invitation")
+        .expect("invitation conservée");
+    assert_eq!(stored.use_count, 1);
+
+    let client_id =
+        OverlayClientId::parse(body["clientId"].as_str().expect("clientId")).expect("uuid");
+    let client = db
+        .overlay_clients()
+        .get(client_id)
+        .await
+        .expect("lecture client")
+        .expect("client créé");
+    assert_eq!(client.default_author_name.as_deref(), Some("Léa B."));
+    assert!(client.default_author_image.is_none());
+}
+
+#[tokio::test]
+async fn pair_consume_pair_code_falls_back_to_the_discord_author() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, db) = harness(dir.path()).await;
+    let mut code = pairing_entry(
+        "DISC42",
+        &guild(),
+        PairingMode::Normal,
+        false,
+        Some("Discordeur"),
+        Some(fixed_now() + Duration::minutes(5)),
+    );
+    code.author_image = Some("https://cdn.example/avatar.png".to_owned());
+    db.pairing_codes().create(&code).await.expect("code créé");
+
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::POST,
+            "/overlay/pair/consume",
+            None,
+            Some(&json!({"code": "DISC42"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let body = body_json(&bytes);
+    assert_eq!(body["displayName"], "Discordeur");
+    assert_eq!(body["role"], "member");
+
+    let member_id =
+        GuildMemberId::parse(body["memberId"].as_str().expect("memberId")).expect("uuid");
+    let member = db
+        .guild_members()
+        .get(member_id)
+        .await
+        .expect("lecture membre")
+        .expect("membre créé");
+    assert_eq!(member.display_name, "Discordeur");
+    assert_eq!(
+        member.avatar.as_deref(),
+        Some("https://cdn.example/avatar.png")
+    );
+
+    let client_id =
+        OverlayClientId::parse(body["clientId"].as_str().expect("clientId")).expect("uuid");
+    let client = db
+        .overlay_clients()
+        .get(client_id)
+        .await
+        .expect("lecture client")
+        .expect("client créé");
+    assert_eq!(client.default_author_name.as_deref(), Some("Discordeur"));
+    assert_eq!(
+        client.default_author_image.as_deref(),
+        Some("https://cdn.example/avatar.png")
+    );
+}
+
+#[tokio::test]
+async fn pair_consume_pair_code_typed_name_and_avatar_win() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, db) = harness(dir.path()).await;
+    let mut code = pairing_entry(
+        "TYPED42",
+        &guild(),
+        PairingMode::Normal,
+        false,
+        Some("Discordeur"),
+        Some(fixed_now() + Duration::minutes(5)),
+    );
+    code.author_image = Some("https://cdn.example/discord.png".to_owned());
+    db.pairing_codes().create(&code).await.expect("code créé");
+
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::POST,
+            "/overlay/pair/consume",
+            None,
+            Some(&json!({
+                "code": "TYPED42",
+                "displayName": "  Léa  ",
+                "avatar": " https://typed.example/lea.png ",
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let body = body_json(&bytes);
+    assert_eq!(body["displayName"], "Léa");
+
+    let member_id =
+        GuildMemberId::parse(body["memberId"].as_str().expect("memberId")).expect("uuid");
+    let member = db
+        .guild_members()
+        .get(member_id)
+        .await
+        .expect("lecture membre")
+        .expect("membre créé");
+    assert_eq!(member.display_name, "Léa");
+    assert_eq!(
+        member.avatar.as_deref(),
+        Some("https://typed.example/lea.png")
+    );
+
+    let client_id =
+        OverlayClientId::parse(body["clientId"].as_str().expect("clientId")).expect("uuid");
+    let client = db
+        .overlay_clients()
+        .get(client_id)
+        .await
+        .expect("lecture client")
+        .expect("client créé");
+    assert_eq!(client.default_author_name.as_deref(), Some("Léa"));
+    assert_eq!(
+        client.default_author_image.as_deref(),
+        Some("https://typed.example/lea.png")
+    );
+}
+
+#[tokio::test]
+async fn pair_consume_pair_code_without_any_name_is_refused_without_consuming() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, db) = harness(dir.path()).await;
+    let code = pairing_entry(
+        "NONAME",
+        &guild(),
+        PairingMode::Normal,
+        false,
+        None,
+        Some(fixed_now() + Duration::minutes(5)),
+    );
+    db.pairing_codes().create(&code).await.expect("code créé");
+
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::POST,
+            "/overlay/pair/consume",
+            None,
+            Some(&json!({"code": "NONAME"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(&bytes)["error"], "display_name_required");
+    let stored = db
+        .pairing_codes()
+        .get(&code.code)
+        .await
+        .expect("lecture code")
+        .expect("code conservé");
+    assert!(stored.used_at.is_none(), "le refus ne consomme pas le code");
+}
+
+#[tokio::test]
+async fn pair_consume_device_code_needs_no_display_name() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, db) = harness(dir.path()).await;
+    let member = GuildMember {
+        id: GuildMemberId::new_v4(),
+        guild_id: guild(),
+        display_name: "Porteur".to_owned(),
+        avatar: Some("https://cdn.example/porteur.png".to_owned()),
+        role: GuildRole::Member,
+        created_at: fixed_now() - Duration::minutes(5),
+        removed_at: None,
+    };
+    db.guild_members()
+        .create(&member)
+        .await
+        .expect("membre créé");
+    let invite = invite_entry(
+        "DEVICE22",
+        &guild(),
+        GuildRole::Member,
+        Some(member.id),
+        Some(1),
+    );
+    db.guild_invites()
+        .create(&invite)
+        .await
+        .expect("code appareil créé");
+
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::POST,
+            "/overlay/pair/consume",
+            None,
+            Some(&json!({"code": "DEVICE22"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let body = body_json(&bytes);
+    assert_eq!(body["displayName"], "Porteur");
+    assert_eq!(body["memberId"], member.id.to_canonical());
+    assert_eq!(body["role"], "member");
+
+    let client_id =
+        OverlayClientId::parse(body["clientId"].as_str().expect("clientId")).expect("uuid");
+    let client = db
+        .overlay_clients()
+        .get(client_id)
+        .await
+        .expect("lecture client")
+        .expect("client créé");
+    assert_eq!(client.default_author_name.as_deref(), Some("Porteur"));
+    assert_eq!(
+        client.default_author_image.as_deref(),
+        Some("https://cdn.example/porteur.png")
+    );
+}
+
+#[tokio::test]
+async fn pair_consume_admin_pairing_code_grants_admin() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, db) = harness(dir.path()).await;
+    let code = pairing_entry(
+        "ADMIN42",
+        &guild(),
+        PairingMode::Normal,
+        true,
+        Some("Chef"),
+        Some(fixed_now() + Duration::minutes(5)),
+    );
+    db.pairing_codes()
+        .create(&code)
+        .await
+        .expect("code admin créé");
+
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::POST,
+            "/overlay/pair/consume",
+            None,
+            Some(&json!({"code": "ADMIN42"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let body = body_json(&bytes);
+    assert_eq!(body["role"], "admin");
+    assert_eq!(body["sessionMode"], "normal");
+
+    let member_id =
+        GuildMemberId::parse(body["memberId"].as_str().expect("memberId")).expect("uuid");
+    let member = db
+        .guild_members()
+        .get(member_id)
+        .await
+        .expect("lecture membre")
+        .expect("membre créé");
+    assert_eq!(member.role, GuildRole::Admin);
 }
 
 // --------------------------------------------------------------------------
@@ -865,7 +1236,7 @@ async fn signed_media_missing_or_escaped_file_is_rejected() {
 // --------------------------------------------------------------------------
 
 #[tokio::test]
-async fn media_board_requires_token_and_accepts_legacy_query_token() {
+async fn media_board_requires_bearer_token_only() {
     let dir = TempDir::new().expect("tempdir");
     let (app, db) = harness(dir.path()).await;
     let client = make_client(
@@ -888,8 +1259,8 @@ async fn media_board_requires_token_and_accepts_legacy_query_token() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body_json(&bytes)["error"], "unauthorized");
 
-    // Repli legacy `?token=` : accepté pour le board (renderer HTML legacy,
-    // `<video>/<img>` d'aperçu) mais ignoré hors `/overlay/media-board/*`.
+    // Le repli `?token=` a été supprimé : un jeton valide en query n'est plus
+    // accepté sur aucune route board.
     let (status, _, bytes) = send(
         &app,
         request(
@@ -900,54 +1271,8 @@ async fn media_board_requires_token_and_accepts_legacy_query_token() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body_json(&bytes)["total"], 0);
-
-    // Le Bearer prime : un token query invalide est neutralisé par l'en-tête.
-    let (status, _, _) = send(
-        &app,
-        request(
-            Method::GET,
-            &format!("/overlay/media-board/items?token={OTHER_TOKEN}"),
-            Some(BEARER_TOKEN),
-            None,
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-
-    // Token query seul et inconnu → 401.
-    let (status, _, _) = send(
-        &app,
-        request(
-            Method::GET,
-            &format!("/overlay/media-board/items?token={OTHER_TOKEN}"),
-            None,
-            None,
-        ),
-    )
-    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-
-    // Le repli query est strictement limité au board : aucune autre route ne
-    // l'accepte (garde-fou de surface d'attaque).
-    assert!(
-        auth::query_token(&"/overlay/media/abc?token=peu-importe".parse().expect("uri")).is_none()
-    );
-    assert!(auth::query_token(
-        &"/overlay/pair/consume?token=peu-importe"
-            .parse()
-            .expect("uri")
-    )
-    .is_none());
-    assert_eq!(
-        auth::query_token(
-            &format!("/overlay/media-board/media/abc?token={BEARER_TOKEN}")
-                .parse()
-                .expect("uri")
-        ),
-        Some(BEARER_TOKEN.to_owned())
-    );
+    assert_eq!(body_json(&bytes)["error"], "unauthorized");
 
     // Mauvais jeton.
     let (status, _, _) = send(
@@ -1093,6 +1418,39 @@ async fn media_board_lists_filters_and_paginates() {
         .as_str()
         .expect("createdAt")
         .ends_with('Z'));
+
+    // Chaque item porte une URL de média signée pour le client demandeur.
+    let expected_exp = fixed_now_secs() + 3600;
+    let media_url = body["items"][0]["mediaUrl"]
+        .as_str()
+        .expect("mediaUrl signée");
+    assert!(
+        media_url.starts_with("http://127.0.0.1:8099/overlay/media-board/media/"),
+        "{media_url}"
+    );
+    assert!(
+        media_url.contains(&format!("clientId={}", client.id.to_canonical())),
+        "{media_url}"
+    );
+    assert_eq!(
+        body["items"][0]["mediaUrlExpiresAt"],
+        json!(expected_exp * 1000)
+    );
+    let path = media_url
+        .strip_prefix("http://127.0.0.1:8099")
+        .expect("origine API");
+    let (status, headers, fetched) = send(&app, request(Method::GET, path, None, None)).await;
+    assert_eq!(status, StatusCode::OK, "{fetched:?}");
+    assert_eq!(fetched, b"ccc");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    let mut ranged = request(Method::GET, path, None, None);
+    ranged.headers_mut().insert(
+        header::RANGE,
+        axum::http::HeaderValue::from_static("bytes=1-2"),
+    );
+    let (status, _, ranged_body) = send(&app, ranged).await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(ranged_body, b"cc");
 
     // Filtre `q` (titre + URL source).
     let (status, _, bytes) = send(
@@ -1353,7 +1711,112 @@ async fn media_board_create_rejects_missing_url_without_network() {
 }
 
 #[tokio::test]
-async fn media_board_media_requires_auth_and_binding() {
+async fn media_board_media_requires_a_valid_signed_url() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, db) = harness(dir.path()).await;
+    let client = make_client(
+        &guild(),
+        "Poste",
+        BEARER_TOKEN,
+        OverlaySessionMode::Normal,
+        Some("Alice"),
+    );
+    db.overlay_clients()
+        .create(&client)
+        .await
+        .expect("client board");
+    let asset = insert_asset(
+        &db,
+        dir.path(),
+        "board.mp4",
+        "video/mp4",
+        MediaKind::Video,
+        b"board-media",
+        fixed_now() + Duration::hours(12),
+    )
+    .await;
+    insert_item(&db, &guild(), &asset, Some("Board"), None, fixed_now()).await;
+    let asset_key = asset.id.to_canonical();
+    let client_key = client.id.to_canonical();
+    let path = format!("/overlay/media-board/media/{asset_key}");
+
+    // Sans paramètres signés : refus, même avec un Bearer valide.
+    let (status, _, bytes) = send(&app, request(Method::GET, &path, None, None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body_json(&bytes)["error"], "media_url_invalid");
+    let (status, _, bytes) =
+        send(&app, request(Method::GET, &path, Some(BEARER_TOKEN), None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body_json(&bytes)["error"], "media_url_invalid");
+
+    // `?token=` n'est plus accepté sur cette route.
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::GET,
+            &format!("{path}?token={BEARER_TOKEN}"),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body_json(&bytes)["error"], "media_url_invalid");
+
+    // Signature falsifiée.
+    let exp = fixed_now_secs() + 300;
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::GET,
+            &format!(
+                "{path}?clientId={client_key}&exp={exp}&sig={}",
+                "0".repeat(64)
+            ),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body_json(&bytes)["error"], "media_url_invalid");
+
+    // Signature de lecture (sans le préfixe `board:`) : refusée sur le board.
+    let playback_signature =
+        crate::media_url::sign(MEDIA_SECRET.as_bytes(), &asset_key, &client_key, exp)
+            .expect("signature lecture");
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::GET,
+            &format!("{path}?clientId={client_key}&exp={exp}&sig={playback_signature}"),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body_json(&bytes)["error"], "media_url_invalid");
+
+    // Expiration dépassée.
+    let expired_uri = signed_board_uri(&asset, &client, fixed_now_secs() - 10);
+    let (status, _, bytes) = send(&app, request(Method::GET, &expired_uri, None, None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body_json(&bytes)["error"], "media_url_expired");
+
+    // Client révoqué : l'URL signée ne sert plus.
+    db.overlay_clients()
+        .revoke(client.id, fixed_now())
+        .await
+        .expect("révocation");
+    let valid_uri = signed_board_uri(&asset, &client, exp);
+    let (status, _, bytes) = send(&app, request(Method::GET, &valid_uri, None, None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body_json(&bytes)["error"], "media_url_invalid");
+}
+
+#[tokio::test]
+async fn media_board_media_is_bound_to_the_client_guild_and_role() {
     let dir = TempDir::new().expect("tempdir");
     let (app, db) = harness(dir.path()).await;
     let client = make_client(
@@ -1391,37 +1854,54 @@ async fn media_board_media_requires_auth_and_binding() {
     )
     .await;
     insert_item(&db, &guild(), &asset, Some("Board"), None, fixed_now()).await;
-    let uri = format!("/overlay/media-board/media/{}", asset.id.to_canonical());
+    let exp = fixed_now_secs() + 300;
 
-    let (status, _, _) = send(&app, request(Method::GET, &uri, None, None)).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-
-    let (status, _, bytes_out) =
-        send(&app, request(Method::GET, &uri, Some(OTHER_TOKEN), None)).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert_eq!(body_json(&bytes_out)["error"], "media_not_found");
-
-    let (status, headers, bytes_out) =
-        send(&app, request(Method::GET, &uri, Some(BEARER_TOKEN), None)).await;
+    // URL valide : 200 puis HEAD (aucun corps).
+    let uri = signed_board_uri(&asset, &client, exp);
+    let (status, headers, body) = send(&app, request(Method::GET, &uri, None, None)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(bytes_out, bytes);
+    assert_eq!(body, bytes);
     assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    let (status, headers, head_body) = send(&app, request(Method::HEAD, &uri, None, None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(head_body.is_empty());
+    assert_eq!(headers[header::CONTENT_LENGTH], bytes.len().to_string());
 
-    // Asset inconnu → 404 media_not_found.
-    let (status, _, _) = send(
-        &app,
-        request(
-            Method::GET,
-            &format!(
-                "/overlay/media-board/media/{}",
-                MediaAssetId::new_v4().to_canonical()
-            ),
-            Some(BEARER_TOKEN),
-            None,
-        ),
-    )
-    .await;
+    // Asset du board d'une autre guilde : refus.
+    let other_uri = signed_board_uri(&asset, &other, exp);
+    let (status, _, body) = send(&app, request(Method::GET, &other_uri, None, None)).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body_json(&body)["error"], "media_not_found");
+
+    // Asset inconnu (UUID valide) : refus.
+    let unknown = MediaAsset {
+        id: MediaAssetId::new_v4(),
+        ..asset.clone()
+    };
+    let unknown_uri = signed_board_uri(&unknown, &client, exp);
+    let (status, _, _) = send(&app, request(Method::GET, &unknown_uri, None, None)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Un invité dont la guilde interdit le board reçoit 403 forbidden.
+    let guest = make_client(
+        &guild(),
+        "Invité",
+        "guest-token",
+        OverlaySessionMode::InviteReadOnly,
+        None,
+    );
+    db.overlay_clients()
+        .create(&guest)
+        .await
+        .expect("client invité");
+    db.guilds()
+        .set_guests_can_view_board(&guild(), false)
+        .await
+        .expect("réglage de guilde");
+    let guest_uri = signed_board_uri(&asset, &guest, exp);
+    let (status, _, body) = send(&app, request(Method::GET, &guest_uri, None, None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body_json(&body)["error"], "forbidden");
 }
 
 // --------------------------------------------------------------------------

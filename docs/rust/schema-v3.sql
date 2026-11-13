@@ -315,3 +315,8 @@ CREATE INDEX idx_media_board_items_media_asset
 -- Discord guild icon hash, refreshed by the guild_create and guild_update
 -- gateway handlers. NULL when the linked server has no icon.
 ALTER TABLE guilds ADD COLUMN discord_icon_hash TEXT;
+-- A `/pair-code` code issued by a Discord administrator in normal mode grants
+-- the LiveChat `admin` role when it is consumed. The decision is frozen at
+-- pairing time: existing members are never re-synced from Discord permissions.
+ALTER TABLE pairing_codes ADD COLUMN grants_admin INTEGER NOT NULL
+    DEFAULT 0 CHECK (grants_admin IN (0, 1));

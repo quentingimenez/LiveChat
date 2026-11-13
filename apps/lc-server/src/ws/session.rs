@@ -88,13 +88,15 @@ impl CloseInfo {
 }
 
 /// Contexte immuable d'une session authentifiée.
+///
+/// Aucun profil d'auteur n'est figé ici : `media.trigger` relit le membre en
+/// base à chaque déclenchement, pour qu'une modification de profil soit prise
+/// en compte sans reconnexion.
 struct SessionContext {
     guild_id: GuildId,
     client_id: OverlayClientId,
     client_id_str: String,
     session_mode: SessionMode,
-    author_name: Option<String>,
-    author_image: Option<String>,
 }
 
 /// Horodatages des derniers messages soumis à throttle (par connexion).
@@ -217,8 +219,6 @@ async fn handle_socket(
         client_id: client.id,
         client_id_str: client_id_str.clone(),
         session_mode,
-        author_name: client.default_author_name.clone(),
-        author_image: client.default_author_image.clone(),
     };
 
     let (sender, mut receiver) = mpsc::unbounded_channel::<OutFrame>();
@@ -228,8 +228,10 @@ async fn handle_socket(
         client_id_str,
         client.label,
         session_mode,
-        context.author_name.clone(),
-        context.author_image.clone(),
+        // Peers keep the client's author defaults at connect time; the play
+        // payload is the part that must follow the live member profile.
+        client.default_author_name.clone(),
+        client.default_author_image.clone(),
         sender,
     ) {
         Ok(connection_id) => connection_id,
@@ -858,10 +860,11 @@ async fn handle_client_message(
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
                 .map(|text| text.chars().take(MAX_MEDIA_TEXT_CHARS).collect::<String>());
-            let author_name = context
-                .author_name
-                .clone()
-                .or_else(|| item.created_by_name.clone());
+            // The member profile is read at trigger time: a `PATCH
+            // /overlay/profile` must be visible immediately, without waiting
+            // for a reconnection.
+            let (author_name, author_image) = trigger_author(db, context.client_id).await;
+            let author_name = author_name.or_else(|| item.created_by_name.clone());
             let duration_sec = media
                 .duration_sec
                 .filter(|duration| *duration > 0)
@@ -873,7 +876,7 @@ async fn handle_client_message(
                 text: text.clone(),
                 show_text: text.is_some(),
                 author_name,
-                author_image: context.author_image.clone(),
+                author_image,
                 duration_sec,
                 priority: MEDIA_BOARD_JOB_PRIORITY,
                 status: JobStatus::Pending,
@@ -975,6 +978,30 @@ async fn handle_client_message(
         }
     }
     Ok(())
+}
+
+/// Current stream author of an overlay socket, read from the database.
+///
+/// The owning member's live profile (`display_name`, `avatar`) wins. The
+/// client's `default_author_*` values are only a fallback for an overlay with
+/// no attached member (`legacy` pairings). A database error is logged and
+/// treated as "no profile" so it never blocks playback.
+async fn trigger_author(db: &Db, client_id: OverlayClientId) -> (Option<String>, Option<String>) {
+    match db.guild_members().get_for_overlay_client(client_id).await {
+        Ok(Some(member)) => (Some(member.display_name), member.avatar),
+        Ok(None) => match db.overlay_clients().get(client_id).await {
+            Ok(Some(client)) => (client.default_author_name, client.default_author_image),
+            Ok(None) => (None, None),
+            Err(error) => {
+                warn!(error = %error, client = %client_id, "lecture du profil d'auteur impossible");
+                (None, None)
+            }
+        },
+        Err(error) => {
+            warn!(error = %error, client = %client_id, "lecture du membre d'auteur impossible");
+            (None, None)
+        }
+    }
 }
 
 /// Construit un payload `ack` et l'envoie via le canal de la connexion.

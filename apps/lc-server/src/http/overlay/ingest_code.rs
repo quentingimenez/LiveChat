@@ -96,6 +96,7 @@ pub async fn create_ingest_code(
             code,
             guild_id: member.guild_id.clone(),
             mode: PairingMode::Normal,
+            grants_admin: false,
             created_by_discord_user_id: format!(
                 "{INGEST_CODE_CREATOR_PREFIX}{}",
                 member.id.to_canonical()
@@ -280,6 +281,7 @@ mod tests {
                 code: PairingCode::parse("DISC42").unwrap(),
                 guild_id: harness.guild_id.clone(),
                 mode: PairingMode::Normal,
+                grants_admin: false,
                 created_by_discord_user_id: "123456789012345678".to_owned(),
                 author_name: Some("Discordeur".to_owned()),
                 author_image: None,

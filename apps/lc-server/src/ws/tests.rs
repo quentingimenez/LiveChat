@@ -16,13 +16,15 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::body::{to_bytes, Body};
+use axum::http::{header, Request, StatusCode};
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use lc_db::Db;
 use lc_domain::{
-    Guild, GuildId, JobStatus, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId,
-    MediaKind as DomainMediaKind, MediaStatus, OverlayClient, OverlayClientId, OverlaySessionMode,
-    PlaybackJob, PlaybackJobId,
+    Guild, GuildId, GuildMember, GuildMemberId, GuildRole, JobStatus, MediaAsset, MediaAssetId,
+    MediaBoardItem, MediaBoardItemId, MediaKind as DomainMediaKind, MediaStatus, OverlayClient,
+    OverlayClientId, OverlaySessionMode, PlaybackJob, PlaybackJobId,
 };
 use lc_playback::PlaybackStateEvent;
 use lc_protocol::{
@@ -36,6 +38,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tower::ServiceExt as _;
 
 use crate::app::AppState;
 use crate::config::Config;
@@ -344,6 +347,30 @@ async fn seed_overlay_client(
         .create(&client)
         .await
         .expect("client overlay de test");
+    id
+}
+
+/// Crée un membre actif de test.
+async fn seed_member(
+    db: &Db,
+    guild_id: &GuildId,
+    display_name: &str,
+    avatar: Option<&str>,
+) -> GuildMemberId {
+    let member = GuildMember {
+        id: GuildMemberId::new_v4(),
+        guild_id: guild_id.clone(),
+        display_name: display_name.to_owned(),
+        avatar: avatar.map(str::to_owned),
+        role: GuildRole::Member,
+        created_at: now(),
+        removed_at: None,
+    };
+    let id = member.id;
+    db.guild_members()
+        .create(&member)
+        .await
+        .expect("membre de test");
     id
 }
 
@@ -847,6 +874,76 @@ async fn media_trigger_acks_playing_with_job_id() {
         .expect("lecture du job")
         .expect("job créé");
     assert_eq!(stored.status, JobStatus::Playing);
+}
+
+#[tokio::test]
+async fn media_trigger_uses_the_live_member_profile() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    let client_id =
+        seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let member_id = seed_member(
+        &server.db,
+        &guild,
+        "Ancien profil",
+        Some("https://cdn.example/old.png"),
+    )
+    .await;
+    server
+        .db
+        .overlay_clients()
+        .set_member(client_id, member_id)
+        .await
+        .expect("rattachement du membre");
+    let asset_id = seed_media_asset(&server.db, 120).await;
+    let item_id = seed_ready_board_item(&server.db, &guild, asset_id).await;
+
+    let mut socket = connect(server.addr).await;
+    handshake(&mut socket, TOKEN).await;
+
+    // Le profil est modifié APRÈS l'ouverture de la session : le trigger doit
+    // lire la valeur courante en base, pas celle copiée à la connexion.
+    let app = crate::app::router_with_hub(server.state.clone(), Arc::clone(&server.hub));
+    let profile = json!({
+        "displayName": "Nouveau profil",
+        "avatar": "https://cdn.example/new.png",
+    });
+    let request = Request::builder()
+        .method("PATCH")
+        .uri("/overlay/profile")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&profile).expect("profil JSON"),
+        ))
+        .expect("requête de profil");
+    let response = app.oneshot(request).await.expect("réponse PATCH");
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("corps du profil");
+    let body: Value = serde_json::from_slice(&bytes).expect("JSON du profil");
+    assert_eq!(body["updated"], true);
+
+    send_value(
+        &mut socket,
+        &envelope(
+            "media.trigger",
+            "cli-media-trigger-profile",
+            json!({ "itemId": item_id.to_canonical(), "trigger": "shortcut" }),
+        ),
+    )
+    .await;
+
+    let play = recv_until_type(&mut socket, "play").await;
+    assert_eq!(
+        play["payload"]["author"]["name"], "Nouveau profil",
+        "{play}"
+    );
+    assert_eq!(
+        play["payload"]["author"]["image"], "https://cdn.example/new.png",
+        "{play}"
+    );
 }
 
 #[tokio::test]

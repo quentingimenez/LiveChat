@@ -141,6 +141,8 @@ export function createOverlayLegacyRuntimeRenderHandlersUtils() {
                 },
                 applyVolume,
             });
+            // The zone may have moved: re-fit the header chips in it.
+            params.scheduleMediaHeaderLayout();
         }
         return {
             onPlay,

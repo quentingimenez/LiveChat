@@ -2,6 +2,9 @@
 /* Device-wide settings: a plain page in the main area, with the rail kept
    visible and no guild header. */
 .settings {
+  /* One width for the first control of a row (selects, sliders, the zone
+     summary), so the buttons after it line up from row to row. */
+  --settings-field-width: 256px;
   max-width: 820px;
   margin: 0 auto;
 }
@@ -56,8 +59,7 @@
 }
 
 .settings-control > .field {
-  width: auto;
-  min-width: 220px;
+  width: var(--settings-field-width);
   max-width: 100%;
 }
 
@@ -69,13 +71,21 @@
 }
 
 .settings-range {
-  width: min(280px, 100%);
+  width: min(var(--settings-field-width), 100%);
   accent-color: var(--blue);
 }
 
-.settings-number {
-  width: 90px !important;
-  min-width: 0 !important;
+/* Display zone summary, next to « Placer sur l’écran ». */
+.settings-zone {
+  flex: none;
+  width: var(--settings-field-width);
+  max-width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-zone.is-live {
+  color: var(--amber);
+  font-weight: 600;
 }
 
 .settings-hint {
@@ -86,6 +96,11 @@
 
 .settings-hint.is-inline {
   color: var(--text-soft);
+}
+
+/* A hint about the row above, aligned with its control column. */
+.settings-hint.is-under {
+  margin: -4px 0 6px 206px;
 }
 
 .settings-control .error-text {
@@ -166,7 +181,7 @@
     gap: 6px;
   }
 
-  .settings-control > .field {
-    min-width: 0;
+  .settings-hint.is-under {
+    margin-left: 0;
   }
 }

@@ -76,5 +76,6 @@ pub use crate::storage::{
 };
 pub use crate::transcode::{
     build_audio_args, build_carousel_video, build_carousel_video_args, build_video_transcode_args,
-    carousel_dimensions, normalize_downloaded_media, resolve_video_encoder, NormalizedMedia,
+    carousel_dimensions, normalize_downloaded_media, normalize_local_media, resolve_video_encoder,
+    NormalizedMedia,
 };

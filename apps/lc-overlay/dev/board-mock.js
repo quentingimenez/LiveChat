@@ -2,6 +2,13 @@
 // principale (`web/board.html`) dans un navigateur ordinaire, sans serveur.
 // Chargé par `dev/board-mock.html` avant `web/app/main.js`. Jamais embarqué dans
 // l'application (le dossier `dev/` est hors de `frontendDist`).
+//
+// Options de l'URL : ?role=admin|member|guest, ?empty (aucune guilde),
+// ?removed (un retrait de guilde en attente au démarrage).
+// Depuis la console : `__mock.emit(event, payload)`,
+// `__mock.removeGuild(guildId, reason)`, `__mock.finishPlaying()`.
+// Un fichier dont le nom contient « fail » est refusé (415), « big » (413).
+// « Sad violin » n'est pas prêt (media_not_ready).
 (function () {
   'use strict';
 
@@ -17,6 +24,10 @@
     );
   const connection = (status) => ({ status, reason: null, serverVersion: '3.0.0', minVersion: null, guildId: null, clientId: null, sessionMode: 'normal', peers: [], lastError: null });
 
+  function guildIcon(hue) {
+    return 'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><rect width="128" height="128" fill="hsl(${hue} 55% 45%)"/><path d="M34 88 64 34l30 54z" fill="hsl(${hue} 80% 85%)"/></svg>`);
+  }
+
   const guilds = {
     activeGuildId: empty ? null : '111',
     enabled: true,
@@ -25,8 +36,10 @@
       ? []
       : [
           { membership: membership('111', 'Les Sardines', { active: true }), connection: connection('connected'), statusLabel: 'connecté', playing: true },
-          { membership: membership('222', 'GG Squad'), connection: connection('reconnecting'), statusLabel: 'reconnexion…', playing: false },
-          { membership: membership('333', 'TV du salon', { muted: true }), connection: connection('disabled'), statusLabel: 'désactivé', playing: false },
+          { membership: membership('222', 'GG Squad', { guildIconUrl: guildIcon(200) }), connection: connection('reconnecting'), statusLabel: 'reconnexion…', playing: false },
+          { membership: membership('333', 'TV du salon', { muted: true, guildIconUrl: guildIcon(30) }), connection: connection('disabled'), statusLabel: 'désactivé', playing: false },
+          // An icon that fails to load: the rail falls back to the initials.
+          { membership: membership('444', 'L’Escale 🔱', { guildIconUrl: 'https://cdn.discordapp.com/icons/0/missing.png' }), connection: connection('connected'), statusLabel: 'connecté', playing: false },
         ],
   };
 
@@ -95,10 +108,11 @@
       });
     }
     if (path.startsWith('/overlay/media-board/items') && method === 'GET') {
-      return ok({ total: items.length, items });
+      // Copies: the board must not see the mock's arrays change under it.
+      return ok({ total: items.length, items: items.slice() });
     }
     if (path === '/overlay/queue' && method === 'GET') {
-      return ok(queue);
+      return ok(JSON.parse(JSON.stringify(queue)));
     }
     if (path === '/overlay/admin/members') {
       return ok({ count: members.length, items: members });
@@ -112,11 +126,134 @@
     return ok({ created: true, updated: true, removed: true, deleted: true, invite: invites[0] });
   }
 
+  // Events: `listen` registers a callback id, `__mock.emit` calls it.
+  const callbacks = new Map();
+  const listeners = new Map();
+  let nextCallback = 1;
+  function emit(event, payload) {
+    for (const id of listeners.get(event) || []) {
+      const callback = callbacks.get(id);
+      if (callback) {
+        callback({ event, payload });
+      }
+    }
+  }
+  const queueHint = () => setTimeout(() => emit('overlay://queue-hint', { guildId: '111' }), 150);
+
+  let nextJob = 10;
+  function trigger(itemId) {
+    const item = items.find((entry) => entry.id === itemId);
+    if (!item) {
+      return { ok: false, reason: 'item_not_found' };
+    }
+    if (item.title === 'Sad violin') {
+      return { ok: false, reason: 'media_not_ready' };
+    }
+    const job = { id: 'j' + nextJob++, title: item.title, text: item.message, authorName: 'Quentin', durationSec: item.media.durationSec || 8, kind: item.media.kind };
+    queueHint();
+    if (!queue.playing) {
+      const at = new Date().toISOString();
+      queue.playing = Object.assign(job, { status: 'playing', startedAt: at, submittedAt: at });
+      return { ok: true, outcome: 'playing', jobId: job.id };
+    }
+    queue.pending.push(Object.assign(job, { status: 'pending' }));
+    return { ok: true, outcome: 'queued', position: queue.pending.length, jobId: job.id };
+  }
+  function finishPlaying() {
+    queue.playing = queue.pending.shift() || null;
+    if (queue.playing) {
+      Object.assign(queue.playing, { status: 'playing', startedAt: new Date().toISOString() });
+    }
+    queueHint();
+  }
+
+  // Local file uploads: chunks are counted, finish answers like the server.
+  const uploads = new Map();
+  let nextUpload = 1;
+  const delay = (ms, value) => new Promise((resolve) => setTimeout(() => resolve(value), ms));
+  function finishUpload(upload) {
+    const name = String(upload.filename || '').toLowerCase();
+    if (name.includes('big')) {
+      return { ok: false, status: 413, body: { error: 'payload_too_large' } };
+    }
+    if (name.includes('fail')) {
+      return { ok: false, status: 415, body: { error: 'unsupported_media' } };
+    }
+    const index = items.length;
+    const kind = String(upload.contentType || '').split('/')[0];
+    const item = {
+      id: 'item-' + index,
+      guildId: upload.guildId || '111',
+      mediaAssetId: 'a' + index,
+      title: upload.title || null,
+      message: upload.message || null,
+      createdByName: 'Quentin',
+      createdByMemberId: 'm-111',
+      canEdit: true,
+      createdAt: new Date().toISOString(),
+      media: { id: 'a' + index, kind: ['video', 'image', 'audio'].includes(kind) ? kind : 'video', mime: upload.contentType || 'x', durationSec: kind === 'image' ? null : 6, width: 1280, height: 720, isVertical: false, sizeBytes: upload.received, sourceUrl: null },
+    };
+    items.unshift(item);
+    return { ok: true, status: 200, body: { created: true, item } };
+  }
+
+  const removals = new URLSearchParams(location.search).has('removed')
+    ? [{ guildId: '999', guildName: 'Ancienne guilde', reason: 'guild_deleted' }]
+    : [];
+  function removeGuild(guildId, reason) {
+    const index = guilds.guilds.findIndex((guild) => guild.membership.guildId === guildId);
+    const name = index >= 0 ? guilds.guilds[index].membership.guildName : null;
+    if (index >= 0) {
+      guilds.guilds.splice(index, 1);
+    }
+    if (guilds.activeGuildId === guildId) {
+      guilds.activeGuildId = guilds.guilds.length ? guilds.guilds[0].membership.guildId : null;
+      guilds.guilds.forEach((guild) => {
+        guild.membership.active = guild.membership.guildId === guilds.activeGuildId;
+      });
+    }
+    removals.push({ guildId, guildName: name, reason: reason || 'guild_deleted' });
+    emit('overlay://guild-removed', removals[removals.length - 1]);
+    emit('overlay://guilds', guilds);
+  }
+
+  window.__mock = { emit, removeGuild, finishPlaying, queue, items, guilds };
+
   window.__TAURI_INTERNALS__ = {
-    transformCallback: () => 1,
-    invoke(command, args) {
+    transformCallback(callback) {
+      const id = nextCallback++;
+      callbacks.set(id, callback);
+      return id;
+    },
+    invoke(command, args, options) {
       const payload = (args && args.payload) || {};
       switch (command) {
+        case 'plugin:event|listen':
+          listeners.set(args.event, (listeners.get(args.event) || []).concat(args.handler));
+          return Promise.resolve(args.handler);
+        case 'media_upload_start': {
+          const uploadId = 'up-' + nextUpload++;
+          uploads.set(uploadId, Object.assign({ received: 0, chunks: 0 }, payload));
+          return delay(100, { uploadId });
+        }
+        case 'media_upload_chunk': {
+          const upload = uploads.get(options && options.headers && options.headers['x-upload-id']);
+          if (!upload) {
+            return Promise.reject(new Error('upload_not_found'));
+          }
+          upload.received += (args && args.byteLength) || 0;
+          upload.chunks += 1;
+          return delay(400, null);
+        }
+        case 'media_upload_finish': {
+          const upload = uploads.get(payload.uploadId);
+          uploads.delete(payload.uploadId);
+          return upload ? delay(1500, finishUpload(upload)) : Promise.reject(new Error('upload_not_found'));
+        }
+        case 'media_upload_cancel':
+          return Promise.resolve(uploads.delete(payload.uploadId));
+        case 'board_take_guild_removals':
+          return Promise.resolve(removals.splice(0));
         case 'guilds_list':
           return Promise.resolve(guilds);
         case 'guild_api':
@@ -128,10 +265,23 @@
         case 'media_board_set_bindings':
           return Promise.resolve({ ok: true, bindings: payload.bindings || {}, failedAccelerators: [] });
         case 'media_board_trigger':
+          return delay(250, trigger(payload.itemId));
         case 'media_board_stop':
+          finishPlaying();
           return Promise.resolve({ ok: true });
         case 'guild_select':
+          guilds.activeGuildId = payload.guildId;
+          guilds.guilds.forEach((guild) => {
+            guild.membership.active = guild.membership.guildId === payload.guildId;
+          });
+          return Promise.resolve({ ok: true, guilds });
         case 'guild_set_muted':
+          guilds.guilds.forEach((guild) => {
+            if (guild.membership.guildId === payload.guildId) {
+              guild.membership.muted = Boolean(payload.muted);
+            }
+          });
+          return Promise.resolve({ ok: true, guilds });
         case 'guild_leave':
           return Promise.resolve({ ok: true, guilds });
         case 'pairing_consume':

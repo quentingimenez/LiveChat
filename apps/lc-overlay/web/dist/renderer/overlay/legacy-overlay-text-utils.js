@@ -4,6 +4,34 @@ function toRecord(value) {
 function toTrimmedString(value) {
     return typeof value === 'string' ? value.trim() : '';
 }
+let graphemeSegmenter = null;
+function firstGrapheme(value) {
+    if (!value) {
+        return '';
+    }
+    try {
+        if (typeof Intl === 'object' && typeof Intl.Segmenter === 'function') {
+            if (graphemeSegmenter === null) {
+                graphemeSegmenter = new Intl.Segmenter('fr-FR', { granularity: 'grapheme' });
+            }
+            const first = graphemeSegmenter.segments(value)[Symbol.iterator]().next();
+            if (!first.done && typeof first.value?.segment === 'string') {
+                return first.value.segment;
+            }
+        }
+    }
+    catch {
+        // Fall back to code points below.
+    }
+    return Array.from(value)[0] || '';
+}
+function fallbackAvatarLetter(authorName) {
+    const normalized = toTrimmedString(authorName).normalize('NFKC').trim();
+    if (!normalized) {
+        return '?';
+    }
+    return firstGrapheme(normalized).toLocaleUpperCase('fr-FR') || '?';
+}
 function resolveOverlayText(payload) {
     const payloadRecord = toRecord(payload);
     const textRecord = toRecord(payloadRecord.text);
@@ -43,7 +71,7 @@ export function createOverlayLegacyTextUtils() {
         }
         const fallback = document.createElement('div');
         fallback.className = 'overlay-author-avatar-fallback';
-        fallback.textContent = authorName.trim().charAt(0).toUpperCase() || '?';
+        fallback.textContent = fallbackAvatarLetter(authorName);
         return fallback;
     }
     function createAuthorNode(authorName, authorImage) {
@@ -132,6 +160,7 @@ export function createOverlayLegacyTextUtils() {
         layer.style.display = 'block';
     }
     return {
+        fallbackAvatarLetter,
         resolveAuthorInfo,
         applyMediaHeaderAuthor,
         applyMediaFooterText,

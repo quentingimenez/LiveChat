@@ -68,6 +68,17 @@ pub fn format_display_menu_label(display: &DisplayInfo) -> String {
     }
 }
 
+/// Label shown by the Settings display list and the identification cards.
+pub fn format_settings_label(display: &DisplayInfo, primary: bool) -> String {
+    let suffix = if primary { " (principal)" } else { "" };
+    format!(
+        "Écran {} — {} × {}{suffix}",
+        display.index + 1,
+        display.width,
+        display.height
+    )
+}
+
 /// Champs de configuration à persister pour mémoriser l'écran choisi.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DisplaySelection {
@@ -159,6 +170,18 @@ mod tests {
         assert_eq!(
             format_display_menu_label(&display(1, -2560, None)),
             "Écran 2"
+        );
+    }
+
+    #[test]
+    fn settings_label_uses_dimensions_and_primary() {
+        assert_eq!(
+            format_settings_label(&display(0, 0, Some("DISPLAY1")), true),
+            "Écran 1 — 2560 × 1440 (principal)"
+        );
+        assert_eq!(
+            format_settings_label(&display(1, -2560, None), false),
+            "Écran 2 — 2560 × 1440"
         );
     }
 

@@ -29,6 +29,7 @@ pub mod device_settings;
 pub mod display;
 pub mod events;
 pub mod net;
+pub mod settings;
 pub mod shortcuts;
 pub mod state;
 pub mod tray;
@@ -212,7 +213,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             commands::guild_set_muted,
             commands::guild_leave,
             commands::guild_api,
-            commands::guild_media_url,
+            commands::settings_get,
+            commands::settings_set,
+            commands::settings_identify_displays,
+            commands::settings_test_media,
             commands::overlay_check_updates,
             commands::overlay_install_update,
             commands::board_take_pending_view,

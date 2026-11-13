@@ -13,11 +13,11 @@ use serde_json::Value;
 use lc_protocol::{
     close_code, close_reason, is_frame_too_large, is_version_below, media_signature_input,
     media_url_ttl_sec, msg_type, outdated_protocol_reason, parse_simple_version, ClientEnvelope,
-    ClientMessage, Envelope, MediaKind, ServerEnvelope, ServerMessage, StopRequestSource,
-    DEFAULT_MIN_OVERLAY_VERSION, HEARTBEAT_INTERVAL_MS, HELLO_TIMEOUT_MS, HTTP_UPGRADE_REQUIRED,
-    LEGACY_SOCKET_IO_PATH, MAX_CLIENT_MESSAGES_PER_SECOND, MAX_FRAME_BYTES, MAX_MEME_TEXT_CHARS,
-    MAX_PLAYBACK_REMAINING_MS, MEDIA_URL_EXPIRY_MARGIN_SEC, MEDIA_URL_TTL_MAX_SEC,
-    MEDIA_URL_TTL_SEC, PEERS_REQUEST_MIN_INTERVAL_MS, PING_INTERVAL_MS,
+    ClientMessage, Envelope, MediaKind, MediaTrigger, ServerEnvelope, ServerMessage,
+    StopRequestSource, DEFAULT_MIN_OVERLAY_VERSION, HEARTBEAT_INTERVAL_MS, HELLO_TIMEOUT_MS,
+    HTTP_UPGRADE_REQUIRED, LEGACY_SOCKET_IO_PATH, MAX_CLIENT_MESSAGES_PER_SECOND, MAX_FRAME_BYTES,
+    MAX_MEDIA_TEXT_CHARS, MAX_PLAYBACK_REMAINING_MS, MEDIA_URL_EXPIRY_MARGIN_SEC,
+    MEDIA_URL_TTL_MAX_SEC, MEDIA_URL_TTL_SEC, PEERS_REQUEST_MIN_INTERVAL_MS, PING_INTERVAL_MS,
     PLAYBACK_STATE_MIN_INTERVAL_MS, PONG_TIMEOUT_MS, PROTOCOL_VERSION, WS_PATH,
 };
 
@@ -52,9 +52,9 @@ const FIXTURES: &[(&str, Direction, &str)] = &[
         msg_type::PLAYBACK_ENDED,
     ),
     (
-        "v2_meme_trigger.json",
+        "v2_media_trigger.json",
         Direction::Client,
-        msg_type::MEME_TRIGGER,
+        msg_type::MEDIA_TRIGGER,
     ),
     (
         "v2_stop_request.json",
@@ -125,7 +125,7 @@ const FIXTURES: &[(&str, Direction, &str)] = &[
         msg_type::ACK,
     ),
     (
-        "v2_ack_meme_trigger_ok.json",
+        "v2_ack_media_trigger_ok.json",
         Direction::Server,
         msg_type::ACK,
     ),
@@ -136,6 +136,11 @@ const FIXTURES: &[(&str, Direction, &str)] = &[
         msg_type::ERROR,
     ),
 ];
+
+/// Fixtures legacy conservées : elles ne font pas partie du golden round-trip
+/// (leur type est réécrit en `media.trigger`) mais doivent rester sur disque et
+/// être couvertes par le test de couverture.
+const LEGACY_FIXTURES: &[&str] = &["v2_meme_trigger_legacy.json"];
 
 /// Chemin absolu d'une fixture.
 fn fixture_path(name: &str) -> PathBuf {
@@ -202,6 +207,31 @@ fn golden_fixtures_roundtrip_exactly() {
 }
 
 #[test]
+fn legacy_meme_trigger_deserialises_into_media_trigger() {
+    let value = read_fixture("v2_meme_trigger_legacy.json");
+    let envelope: ClientEnvelope =
+        serde_json::from_value(value).expect("l'ancien type meme.trigger doit rester accepté");
+    assert_eq!(envelope.message.type_name(), msg_type::MEDIA_TRIGGER);
+    let ClientMessage::MediaTrigger(payload) = envelope.message else {
+        panic!("meme.trigger doit désérialiser en ClientMessage::MediaTrigger");
+    };
+    assert_eq!(payload.item_id, "clx7q2x0b0004abcd1234efgh");
+    assert_eq!(payload.trigger, MediaTrigger::Shortcut);
+
+    let serialized = serde_json::to_value(Envelope::new(
+        "cli-media-trigger-0001",
+        1_794_182_400_000,
+        ClientMessage::MediaTrigger(payload),
+    ))
+    .expect("re-sérialisation media.trigger");
+    assert_eq!(
+        serialized.get("type"),
+        Some(&Value::String("media.trigger".to_owned())),
+        "la sérialisation doit toujours émettre le nouveau nom"
+    );
+}
+
+#[test]
 fn every_fixture_file_is_covered_by_the_golden_table() {
     let directory = fixture_path("");
     let mut on_disk: Vec<String> = fs::read_dir(&directory)
@@ -210,18 +240,21 @@ fn every_fixture_file_is_covered_by_the_golden_table() {
         .filter_map(|entry| {
             let path = entry.path();
             let is_json = path.extension().and_then(|ext| ext.to_str()) == Some("json");
-            is_json.then(|| path.file_name()?.to_str().map(ToOwned::to_owned))?
+            let name = path.file_name()?.to_str().map(ToOwned::to_owned)?;
+            is_json.then_some(name)
         })
         .collect();
     on_disk.sort();
     let mut expected: Vec<String> = FIXTURES
         .iter()
         .map(|(name, ..)| (*name).to_owned())
+        .chain(LEGACY_FIXTURES.iter().map(|name| (*name).to_owned()))
         .collect();
     expected.sort();
     assert_eq!(
         on_disk, expected,
-        "la table des fixtures doit référencer exactement les 29 fichiers golden"
+        "la table des fixtures doit référencer exactement les 29 fichiers golden \
+         et la fixture legacy"
     );
 }
 
@@ -244,7 +277,9 @@ fn protocol_constants_are_frozen() {
     assert_eq!(DEFAULT_MIN_OVERLAY_VERSION, "3.0.0");
     assert_eq!(PEERS_REQUEST_MIN_INTERVAL_MS, 2_000);
     assert_eq!(MAX_PLAYBACK_REMAINING_MS, 86_400_000);
-    assert_eq!(MAX_MEME_TEXT_CHARS, 500);
+    assert_eq!(MAX_MEDIA_TEXT_CHARS, 500);
+    assert_eq!(msg_type::MEDIA_TRIGGER, "media.trigger");
+    assert_eq!(msg_type::LEGACY_MEME_TRIGGER, "meme.trigger");
 }
 
 #[test]
@@ -358,7 +393,7 @@ fn envelope_direction_is_enforced() {
     for fixture in [
         "v2_hello_normal.json",
         "v2_heartbeat.json",
-        "v2_meme_trigger.json",
+        "v2_media_trigger.json",
         "v2_stop_request.json",
     ] {
         let value = read_fixture(fixture);

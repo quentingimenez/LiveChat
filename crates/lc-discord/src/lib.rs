@@ -29,7 +29,7 @@
 //! Les crates `lc-media` et `lc-playback` sont encore des squelettes au moment
 //! de l'écriture : les handlers ne dépendent donc que de traits
 //! ([`context::MediaBackend`], [`context::PlaybackBackend`],
-//! [`context::MemeBackend`]) dont les adaptateurs réels arrivent en Phase 6b.
+//! [`context::MediaBoardBackend`]) dont les adaptateurs réels arrivent en Phase 6b.
 //! Aucun réseau n'est fait dans ce crate (y compris dans les tests).
 
 #![forbid(unsafe_code)]

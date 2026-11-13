@@ -14,7 +14,7 @@ use sqlx::Row;
 
 use super::dates::{self, DateStats};
 use super::tables::{
-    Guild, IngestClient, MediaAsset, MemeBoardItem, OverlayClient, PairingCode, PlaybackJob,
+    Guild, IngestClient, MediaAsset, MediaBoardItem, OverlayClient, PairingCode, PlaybackJob,
 };
 use super::Error;
 
@@ -38,7 +38,7 @@ impl ReadOut {
 #[derive(Debug, Default)]
 pub struct LegacyData {
     pub media_assets: Vec<MediaAsset>,
-    pub meme_board_items: Vec<MemeBoardItem>,
+    pub media_board_items: Vec<MediaBoardItem>,
     pub playback_jobs: Vec<PlaybackJob>,
     pub guilds: Vec<Guild>,
     pub overlay_clients: Vec<OverlayClient>,
@@ -55,7 +55,7 @@ impl LegacyData {
     pub fn counts(&self) -> [(&'static str, usize); 7] {
         [
             (MediaAsset::TABLE, self.media_assets.len()),
-            (MemeBoardItem::TABLE, self.meme_board_items.len()),
+            (MediaBoardItem::TABLE, self.media_board_items.len()),
             (PlaybackJob::TABLE, self.playback_jobs.len()),
             (Guild::TABLE, self.guilds.len()),
             (OverlayClient::TABLE, self.overlay_clients.len()),
@@ -67,7 +67,7 @@ impl LegacyData {
     /// Nombre total de lignes legacy lues.
     pub fn total_rows(&self) -> usize {
         self.media_assets.len()
-            + self.meme_board_items.len()
+            + self.media_board_items.len()
             + self.playback_jobs.len()
             + self.guilds.len()
             + self.overlay_clients.len()

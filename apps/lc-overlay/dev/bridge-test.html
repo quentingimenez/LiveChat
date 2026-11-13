@@ -286,7 +286,7 @@
 
     <div class="note">
       Mode mock : <code>getConfig</code> renvoie une config neutre (<code>serverUrl: null</code>),
-      <code>consumePairing</code> renvoie <code>{ ok: true }</code> sans réseau, <code>getMemeBindings</code> renvoie
+      <code>consumePairing</code> renvoie <code>{ ok: true }</code> sans réseau, <code>getMediaBindings</code> renvoie
       <code>{ bindings: {} }</code>, les rapports sont des no-op. Après <code>rendererReady</code>, le bridge simule
       l'envoi de <code>overlay://settings</code>. Aucun secret n'est journalisé : les clés contenant
       <code>token</code>, <code>code</code>, <code>sig</code> sont masquées (<code>***</code>).
@@ -317,10 +317,10 @@
           'reportPlaybackState',
           'reportPlaybackStop',
           'consumePairing',
-          'getMemeBindings',
-          'setMemeBindings',
-          'triggerMeme',
-          'stopMemePlayback'
+          'getMediaBindings',
+          'setMediaBindings',
+          'triggerMedia',
+          'stopMediaPlayback'
         ];
 
         var COMMANDS = [
@@ -361,25 +361,25 @@
             payload: { serverUrl: 'https://livechat.example.com', code: 'AB12CD' }
           },
           {
-            name: 'getMemeBindings',
+            name: 'getMediaBindings',
             kind: 'invoke',
             desc: 'Bindings raccourci → itemId (config.json, normalisés).',
             payload: null
           },
           {
-            name: 'setMemeBindings',
+            name: 'setMediaBindings',
             kind: 'invoke',
             desc: 'Enregistre les raccourcis globaux (strict : rollback si un accélérateur échoue).',
             payload: { bindings: { 'Ctrl+Shift+1': 'item-1' } }
           },
           {
-            name: 'triggerMeme',
+            name: 'triggerMedia',
             kind: 'invoke',
-            desc: 'Déclenche l’item (socket overlay:meme-trigger, défaut trigger=shortcut).',
+            desc: 'Déclenche l’item (trame media.trigger, défaut trigger=shortcut).',
             payload: { itemId: 'item-1', trigger: 'ui' }
           },
           {
-            name: 'stopMemePlayback',
+            name: 'stopMediaPlayback',
             kind: 'invoke',
             desc: 'Stop manuel : socket overlay:stop { jobId: "manual-stop" }.',
             payload: null
@@ -394,9 +394,9 @@
             sample: {
               jobId: 'job-play-1',
               durationSec: 8,
-              media: { kind: 'image', url: 'https://example.com/meme.png' },
+              media: { kind: 'image', url: 'https://example.com/media.png' },
               author: { name: 'Testeur' },
-              text: 'Mème de test'
+              text: 'Média de test'
             }
           },
           {

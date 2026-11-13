@@ -21,7 +21,7 @@ Ce document est la référence d'API pour la Phase 3 (serveur) et la Phase 4
 | Booléens | `INTEGER` 0/1 avec `CHECK (col IN (0,1))`. |
 | Énumérations | Texte **MAJUSCULE** (`IMAGE`, `PLAYING`, `INVITE_READ_ONLY`), conversions dans `lc-domain::enums`. |
 | Identifiants | UUID v4 stockés en `TEXT` canonique `8-4-4-4-12` ; `GuildId`/`PairingCode` = chaînes externes validées. |
-| Migrations | Appliquées automatiquement à l'ouverture (`sqlx::migrate!("./migrations")`), idempotentes (`_sqlx_migrations`). Une cible migrée depuis le legacy reçoit `0002` au **premier démarrage** du serveur : le registre sqlx du migrateur ne couvre que `0001` (voir `docs/rust/migrator.md` §10.1). |
+| Migrations | Appliquées automatiquement à l'ouverture (`sqlx::migrate!("./migrations")`), idempotentes (`_sqlx_migrations`). Une cible migrée depuis le legacy reçoit `0002`..`0005` au **premier démarrage** du serveur : le registre sqlx du migrateur ne couvre que `0001` (voir `docs/rust/migrator.md` §10.1). |
 
 Pragmas posés sur **chaque connexion** du pool (`after_connect` implicite de
 `SqliteConnectOptions`) :
@@ -29,7 +29,7 @@ Pragmas posés sur **chaque connexion** du pool (`after_connect` implicite de
 | Pragma | Valeur | Raison |
 | --- | --- | --- |
 | `journal_mode` | `WAL` | lectures concurrentes pendant une écriture ; indispensable avec plusieurs connexions. |
-| `foreign_keys` | `ON` | le DDL déclare des FK (`meme_board_items`, `playback_jobs`) ; SQLite les ignore sinon. |
+| `foreign_keys` | `ON` | le DDL déclare des FK (`media_board_items`, `playback_jobs`) ; SQLite les ignore sinon. |
 | `busy_timeout` | `5000` ms | attente sur verrou d'écriture au lieu d'un `SQLITE_BUSY` immédiat. |
 | `synchronous` | `NORMAL` | bon compromis durabilité/perf en WAL (le mode `FULL` coûte un fsync par commit). |
 
@@ -118,7 +118,7 @@ Accesseurs de repositories (chacun `Clone`) :
 | --- | --- | --- |
 | `metadata()` | `MetadataRepository` | `get(key)`, `set(key, value)` (upsert) |
 | `media_assets()` | `MediaAssetsRepository` | `insert`, `get`, `get_by_source_hash`, `update_status`, `touch_last_accessed`, `list_expired`, `purge_expired`, `list_by_status` |
-| `meme_board()` | `MemeBoardRepository` | `create`, `get`, `get_by_guild_and_asset`, `list_by_guild`, `update(title, message)`, `delete` |
+| `media_board()` | `MediaBoardRepository` | `create`, `get`, `get_by_guild_and_asset`, `list_by_guild`, `update(title, message)`, `delete` |
 | `playback_jobs()` | `PlaybackJobsRepository` | `create`, `get`, `claim_next`, `set_status`, `finish`, `list_pending_by_guild`, `count_by_status`, `purge_done_before`, `set_playback_state`, `requeue` |
 | `guilds()` | `GuildsRepository` | `upsert`, `get`, `set_busy_until`, `update_settings`, `list` |
 | `overlay_clients()` | `OverlayClientsRepository` | `create`, `get`, `get_by_token_hash`, `list_by_guild`, `touch_last_seen`, `revoke`, `update_mode` |
@@ -138,7 +138,7 @@ Conventions de signatures :
 - `playback_jobs().set_status(job, Playing)` sur une guilde qui a déjà un
   `PLAYING` renvoie `DbError::Domain(DomainError::InvalidState)` (index unique
   partiel) au lieu d'une erreur SQLite brute ;
-- violations de contraintes : `UNIQUE` conjugué métier (`meme_board_items`,
+- violations de contraintes : `UNIQUE` conjugué métier (`media_board_items`,
   `overlay_clients`, `ingest_clients`, `pairing_codes`) → `DomainError::Conflict`
   enveloppé dans `DbError::Domain` ; `FOREIGN KEY`/`CHECK` brutes accessibles via
   `DbError::is_foreign_key_violation()` / `is_check_violation()` ;
@@ -228,18 +228,18 @@ besoin.
 | `pairing_codes().delete_expired(now)` | `DELETE … WHERE used_at IS NOT NULL OR (expires_at IS NOT NULL AND expires_at <= now)` | `purgeStalePairingCodes` |
 
 La purge des médias est **protectrice** : un asset expiré encore épinglé au
-meme board ou référencé par un job `PENDING`/`PLAYING` n'est jamais supprimé
+board média ou référencé par un job `PENDING`/`PLAYING` n'est jamais supprimé
 (aucune cascade silencieuse d'items de board). Elle retourne les lignes
 effectivement supprimées (`Vec<MediaAsset>`) : l'appelant (worker de purge) y
 lit `storage_path` pour effacer les fichiers, puis les FK du contrat
-s'appliquent aux références restantes (`meme_board_items` en cascade,
+s'appliquent aux références restantes (`media_board_items` en cascade,
 `playback_jobs.media_asset_id` à `NULL` pour les jobs terminés).
 
 ## 5. Tests
 
 `crates/lc-db/tests/` :
 
-- `migration.rs` — migration fraîche + idempotence (0001 + 0002), 8 tables,
+- `migration.rs` — migration fraîche + idempotence (0001..0005), 11 tables,
   index unique partiel `idx_playback_jobs_single_playing`, pragmas réels
   (`journal_mode=wal`, `foreign_keys=1`, `busy_timeout=5000`, `synchronous=1`),
   version inattendue/absente, FK refusée, CHECK refusés, création du dossier
@@ -250,7 +250,9 @@ s'appliquent aux références restantes (`meme_board_items` en cascade,
 - `media_assets.rs` — CRUD, `source_hash` unique, listes/limites, touche, purge
   protectrice (board épinglé et jobs actifs conservés, lignes supprimées
   retournées), aller-retour ms (0, 2023, 2100), date hors plage → `Corrupt` ;
-- `meme_board.rs` — CRUD, unicité `(guild_id, media_asset_id)` → `Conflict`, FK ;
+- `media_board.rs` — CRUD, unicité `(guild_id, media_asset_id)` → `Conflict`, FK,
+  migration `0005` (base arrêtée à `0004`, renommage, relecture via
+  `Db::media_board()`) ;
 - `playback_jobs.rs` — ordre de la file, `scheduled_at`, un seul `PLAYING` par
   guilde, priorité/soumission, `busy_until`, reprise après parent, claims
   concurrents (2 tasks tokio), retry `SQLITE_BUSY` de `claim_next` (verrou
@@ -319,7 +321,7 @@ migrations comprises) et n'utilise pas de base partagée.
    rotation éventuelle des `playback_jobs` terminés (`purge_done_before`).
 3. **Import Prisma (Phase 4)** : mapper les dates `DateTime` Prisma en ms epoch
    (voir `docs/rust/prisma-dates.txt`), les `Int` restent `i64`, les colonnes
-   `Boolean` en 0/1 ; importer dans l'ordre `media_assets` → `meme_board_items`
+   `Boolean` en 0/1 ; importer dans l'ordre `media_assets` → `media_board_items`
    → `playback_jobs`/`guilds` → clients/pairing pour satisfaire les FK.
 4. **Génération des codes d'appairage** (alphabet `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`,
    6 caractères, TTL) : service (`lc-discord`), pas `lc-db` ; `pairing_codes` ne

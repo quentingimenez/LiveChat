@@ -75,7 +75,7 @@ pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 ///
 /// - `/ws` : WebSocket de longue durée (liveness bornée par le hub) ;
 /// - `/overlay/media/` : streaming média `Range`/`206` ;
-/// - `/overlay/meme-board/` : ingestion média synchrone et aperçus ;
+/// - `/overlay/media-board/` : ingestion média synchrone et aperçus ;
 /// - `/ingest` : ingestion média synchrone bornée par `MEDIA_DOWNLOAD_TIMEOUT_MS`.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -95,11 +95,17 @@ fn is_timeout_exempt(method: &Method, path: &str) -> bool {
         return true;
     }
     // Streaming média signé (`Range`/`206`) et aperçus du board.
-    if path.starts_with("/overlay/media/") || path.starts_with("/overlay/meme-board/media/") {
+    // Legacy overlay 3.0.0 compatibility: remove in 3.1.
+    if path.starts_with("/overlay/media/")
+        || path.starts_with("/overlay/media-board/media/")
+        || path.starts_with("/overlay/meme-board/media/")
+    {
         return true;
     }
     // Ingestion média synchrone du board (téléchargement + transcodage).
-    method == Method::POST && path == "/overlay/meme-board/items"
+    // Legacy overlay 3.0.0 compatibility: remove in 3.1.
+    method == Method::POST
+        && (path == "/overlay/media-board/items" || path == "/overlay/meme-board/items")
 }
 
 /// Middleware de timeout de requête (jamais appliqué aux routes exemptées).
@@ -651,6 +657,9 @@ mod tests {
             .route("/slow", axum::routing::get(slow))
             .route("/admin/api/overview", axum::routing::get(slow))
             .route("/overlay/media/abc", axum::routing::get(slow))
+            .route("/overlay/media-board/media/abc", axum::routing::get(slow))
+            .route("/overlay/media-board/items", axum::routing::post(slow))
+            // Legacy overlay 3.0.0 compatibility: remove in 3.1.
             .route("/overlay/meme-board/media/abc", axum::routing::get(slow))
             .route("/overlay/meme-board/items", axum::routing::post(slow))
             .route("/ingest", axum::routing::post(slow))
@@ -670,6 +679,9 @@ mod tests {
         // Routes exemptées : le timeout ne s'applique pas.
         for (method, path) in [
             (Method::GET, "/overlay/media/abc"),
+            (Method::GET, "/overlay/media-board/media/abc"),
+            (Method::POST, "/overlay/media-board/items"),
+            // Legacy overlay 3.0.0 compatibility: remove in 3.1.
             (Method::GET, "/overlay/meme-board/media/abc"),
             (Method::POST, "/overlay/meme-board/items"),
             (Method::POST, "/ingest"),

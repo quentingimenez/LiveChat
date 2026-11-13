@@ -252,7 +252,7 @@ impl GuildsRepository {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Autorise ou non les invités à consulter le meme board.
+    /// Autorise ou non les invités à consulter le board média.
     ///
     /// Crée la ligne de guilde si elle n'existe pas encore.
     pub async fn set_guests_can_view_board(&self, id: &GuildId, allowed: bool) -> DbResult<()> {

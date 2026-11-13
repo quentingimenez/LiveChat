@@ -3,8 +3,8 @@
 //! Ce module fait le lien entre le pipeline média sans état de [`lc_media`] et
 //! les tables SQLite de [`lc_db`] : il décide si un média peut être réutilisé
 //! (même empreinte de source), exécute l'ingestion, persiste son cycle de vie
-//! `PROCESSING → READY`/`FAILED`, applique les budgets de cache et de meme
-//! board, puis crée les `PlaybackJob` correspondants.
+//! `PROCESSING → READY`/`FAILED`, applique les budgets de cache et de board
+//! média, puis crée les `PlaybackJob` correspondants.
 //!
 //! ## Découpage
 //!
@@ -16,8 +16,8 @@
 //! - [`assets`] : persistance et cycle de vie des `MediaAsset` ;
 //! - [`confinement`] : canonicalisation fail-closed de la racine de stockage ;
 //! - [`purge`] : worker de purge des lignes périmées et fichiers orphelins ;
-//! - [`quotas`] : éviction du cache et budget du meme board (`lc_media::cache`) ;
-//! - [`board`] : ajout d'un média au meme board (épinglage, doublons, budget) ;
+//! - [`quotas`] : éviction du cache et budget du board média (`lc_media::cache`) ;
+//! - [`board`] : ajout d'un média au board média (épinglage, doublons, budget) ;
 //! - [`jobs`] : construction des `PlaybackJob` avec la résolution de durée du
 //!   legacy (durée demandée → durée du média → réglages de guilde → défaut) ;
 //! - [`service`] : orchestration de l'ingestion (`MediaService`).

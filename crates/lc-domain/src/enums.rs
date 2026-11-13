@@ -137,7 +137,7 @@ text_enum! {
 text_enum! {
     /// Mode de session d'un overlay (`overlay_clients.session_mode`).
     OverlaySessionMode {
-        /// Contrôle complet (arrêt, meme board…).
+        /// Contrôle complet (arrêt, board média…).
         Normal => ("NORMAL", "normal"),
         /// Invité : lecture seule, les commandes d'arrêt sont refusées.
         InviteReadOnly => ("INVITE_READ_ONLY", "invite_read_only"),
@@ -159,7 +159,7 @@ text_enum! {
     GuildRole {
         /// Gère la guilde : membres, invitations, réglages, modération.
         Admin => ("ADMIN", "admin"),
-        /// Peut jouer, ajouter des mèmes et arrêter la lecture.
+        /// Peut jouer, ajouter des médias et arrêter la lecture.
         Member => ("MEMBER", "member"),
         /// Reçoit les médias ; lecture seule.
         Guest => ("GUEST", "guest"),
@@ -176,19 +176,19 @@ pub enum Permission {
     ReceiveMedia,
     /// Consulter la file d'attente.
     ViewQueue,
-    /// Consulter le meme board (pour un invité : sous réserve du réglage de
+    /// Consulter le board média (pour un invité : sous réserve du réglage de
     /// guilde, cf. [`GuildRole::can_view_board`]).
     ViewBoard,
-    /// Déclencher la lecture d'un mème.
+    /// Déclencher la lecture d'un média.
     TriggerPlayback,
     /// Arrêter la lecture en cours.
     StopPlayback,
-    /// Ajouter un mème au board.
-    AddMeme,
-    /// Modifier ou supprimer un mème que l'on a soi-même ajouté.
-    EditOwnMeme,
-    /// Modifier ou supprimer n'importe quel mème.
-    EditAnyMeme,
+    /// Ajouter un média au board.
+    AddMedia,
+    /// Modifier ou supprimer un média que l'on a soi-même ajouté.
+    EditOwnMedia,
+    /// Modifier ou supprimer n'importe quel média.
+    EditAnyMedia,
     /// Retirer, réordonner ou vider la file d'attente.
     ModerateQueue,
     /// Changer un rôle ou exclure un membre.
@@ -208,9 +208,9 @@ impl GuildRole {
             Permission::ReceiveMedia | Permission::ViewQueue | Permission::ViewBoard => true,
             Permission::TriggerPlayback
             | Permission::StopPlayback
-            | Permission::AddMeme
-            | Permission::EditOwnMeme => matches!(self, Self::Admin | Self::Member),
-            Permission::EditAnyMeme
+            | Permission::AddMedia
+            | Permission::EditOwnMedia => matches!(self, Self::Admin | Self::Member),
+            Permission::EditAnyMedia
             | Permission::ModerateQueue
             | Permission::ManageMembers
             | Permission::ManageInvites
@@ -315,10 +315,10 @@ mod tests {
             assert!(role.can(Permission::ViewQueue));
         }
         assert!(!GuildRole::Guest.can(Permission::TriggerPlayback));
-        assert!(!GuildRole::Guest.can(Permission::AddMeme));
+        assert!(!GuildRole::Guest.can(Permission::AddMedia));
         assert!(GuildRole::Member.can(Permission::TriggerPlayback));
-        assert!(GuildRole::Member.can(Permission::EditOwnMeme));
-        assert!(!GuildRole::Member.can(Permission::EditAnyMeme));
+        assert!(GuildRole::Member.can(Permission::EditOwnMedia));
+        assert!(!GuildRole::Member.can(Permission::EditAnyMedia));
         assert!(!GuildRole::Member.can(Permission::ManageMembers));
         assert!(GuildRole::Admin.can(Permission::ManageMembers));
         assert!(GuildRole::Admin.can(Permission::PurgeGuild));

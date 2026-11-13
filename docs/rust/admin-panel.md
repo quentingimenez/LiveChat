@@ -119,13 +119,13 @@ Réponse 200 :
                     "lastSeenAt": "…", "createdAt": "…", "connected": false, "sessionMode": "normal" }]
     },
     "ingest": { "total": 0, "clients": [{ "id": "…", "label": "…", "lastSeenAt": "…", "createdAt": "…" }] },
-    "memeBoard": { "itemsCount": 0, "usedBytes": 0, "maxBytes": 0, "remainingBytes": 0, "usedPercent": 0 },
+    "mediaBoard": { "itemsCount": 0, "usedBytes": 0, "maxBytes": 0, "remainingBytes": 0, "usedPercent": 0 },
     "playback": { "pending": 0, "playing": 0, "failed": 0, "done": 0 }
   }]
 }
 ```
 
-Calculs legacy à reproduire : guilds = union (`guilds` + overlay_clients + ingest_clients + meme_board_items + playback_jobs + pairing_codes + cache Discord) triée ; `cache.maxBytes = max(1, MEDIA_CACHE_MAX_TOTAL_MB) × 1024²` ; `memeBoard.maxBytes = max(1, MEDIA_BOARD_MAX_TOTAL_MB) × 1024²` ; cache usé = somme `sizeBytes` des `media_assets` `READY` sans `memeBoardItems` ; `connectedCount` = sockets overlay dédupliqués par clientId (`sessionMode` `invite_read_only` prioritaire).
+Calculs legacy à reproduire : guilds = union (`guilds` + overlay_clients + ingest_clients + media_board_items + playback_jobs + pairing_codes + cache Discord) triée ; `cache.maxBytes = max(1, MEDIA_CACHE_MAX_TOTAL_MB) × 1024²` ; `memeBoard.maxBytes = max(1, MEDIA_BOARD_MAX_TOTAL_MB) × 1024²` ; cache usé = somme `sizeBytes` des `media_assets` `READY` sans `memeBoardItems` ; `connectedCount` = sockets overlay dédupliqués par clientId (`sessionMode` `invite_read_only` prioritaire).
 
 ### 6.2 `GET|PATCH /admin/api/runtime-settings`
 
@@ -171,7 +171,7 @@ Succès 200 :
 { "purged": true, "guildId": "…",
   "stop": { "releasedPlayingJobs": 0, "disconnectedOverlaySockets": 0 },
   "deleted": { "guildSettings": 0, "overlayClients": 0, "ingestClients": 0, "pairingCodes": 0,
-               "playbackJobs": 0, "memeBoardItems": 0, "orphanMediaAssets": 0,
+               "playbackJobs": 0, "mediaBoardItems": 0, "orphanMediaAssets": 0,
                "orphanMediaFileDeleteErrors": 0 } }
 ```
 

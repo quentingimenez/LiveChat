@@ -118,7 +118,7 @@ correspondants sont la référence détaillée de chaque lane.
 |---|---|---|
 | `server/src/server.ts` (bootstrap Fastify, port, health) | `apps/lc-server/src/main.rs`, `src/lib.rs`, `src/app.rs`, `src/http/{root,health}.rs` | Axum 0.8, `/health` JSON compatible ; docs `server-core.md` |
 | `server/src/loaders/RESTLoader.ts` | `apps/lc-server/src/http/mod.rs` (merge des sous-routeurs) | Chaîne de middlewares identique (CORS, sécurité, rate-limit, normalisation d'erreurs) |
-| `server/src/components/overlay/overlayRoutes.ts` | `apps/lc-server/src/http/overlay/{mod,auth,pair,media,meme_board}.rs` | Bearer only (`?token=` supprimé), `GET /overlay/config` supprimé, `protocolVersion: 2` additif ; docs `server-overlay.md` |
+| `server/src/components/overlay/overlayRoutes.ts` | `apps/lc-server/src/http/overlay/{mod,auth,pair,media,media_board}.rs` | Bearer only (`?token=` supprimé), `GET /overlay/config` supprimé, `protocolVersion: 2` additif ; docs `server-overlay.md` |
 | `server/src/components/ingest/ingestRoutes.ts` | `apps/lc-server/src/http/ingest/{mod,auth,body,pair,submit}.rs` | Ingest client DB-backed uniquement ; docs `server-ingest.md` |
 | `server/src/components/admin/adminRoutes.ts` | `apps/lc-server/src/http/admin/**` + `static/admin/{index.html,app.js,styles.css}` | 13 endpoints ; docs `server-admin.md`, `admin-panel.md` (le squelette `crates/lc-admin` a été supprimé le 2026-11-10) |
 | `server/src/loaders/socketLoader.ts` (`/socket.io/` → 426) | `apps/lc-server/src/http/socket_io.rs` | Réponse 426 `overlay_outdated` conservée |
@@ -150,7 +150,7 @@ correspondants sont la référence détaillée de chaque lane.
 | `server/src/services/media/mediaCache.ts` | `crates/lc-media/src/cache.rs` | Éviction/purge Phase 5b |
 | `server/src/services/social/twitterVideoResolver.ts`, `twitterOEmbed.ts` | `crates/lc-media/src/twitter.rs` (+ `tiktok.rs`, `youtube.rs`) | Résolveurs par plateforme |
 | `server/src/services/gtts.ts` | `crates/lc-discord/src/context.rs` (« Synthétise un texte en MP3 et l'ingère ») | TTS intégré à la glue Discord |
-| `server/src/services/memeBoard.ts` | `apps/lc-server/src/http/overlay/meme_board.rs`, `apps/lc-server/src/media/board.rs`, `crates/lc-db/src/meme_board.rs` | Ingestion inline + quota ; docs `server-overlay.md` §7 |
+| `server/src/services/memeBoard.ts` | `apps/lc-server/src/http/overlay/media_board.rs`, `apps/lc-server/src/media/board.rs`, `crates/lc-db/src/repos/media_board.rs` | Ingestion inline + quota ; docs `server-overlay.md` §7 |
 
 ### 3.5 Discord (bot)
 

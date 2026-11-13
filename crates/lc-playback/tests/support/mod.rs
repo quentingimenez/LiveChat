@@ -83,7 +83,7 @@ pub fn sample_job(guild_id: GuildId, submission: DateTime<Utc>) -> PlaybackJob {
         id: PlaybackJobId::new_v4(),
         guild_id,
         media_asset_id: None,
-        text: Some("mème de test".to_owned()),
+        text: Some("média de test".to_owned()),
         show_text: true,
         author_name: Some("Auteur".to_owned()),
         author_image: None,

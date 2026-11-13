@@ -14,7 +14,7 @@ use super::ledger::{self, LedgerReport};
 use super::legacy::Legacy;
 use super::read::LegacyData;
 use super::tables::{
-    Guild, IngestClient, MediaAsset, MemeBoardItem, OverlayClient, PairingCode, PlaybackJob,
+    Guild, IngestClient, MediaAsset, MediaBoardItem, OverlayClient, PairingCode, PlaybackJob,
 };
 use super::Error;
 
@@ -246,8 +246,8 @@ pub async fn verify(
         sample_media_assets(conn, &data.media_assets).await?,
     ));
     report.samples.push((
-        MemeBoardItem::TABLE,
-        sample_meme_board_items(conn, &data.meme_board_items).await?,
+        MediaBoardItem::TABLE,
+        sample_media_board_items(conn, &data.media_board_items).await?,
     ));
     report.samples.push((
         PlaybackJob::TABLE,
@@ -399,10 +399,10 @@ sample_check!(
     MediaAsset::PK
 );
 sample_check!(
-    sample_meme_board_items,
-    MemeBoardItem,
-    MemeBoardItem::TABLE,
-    MemeBoardItem::PK
+    sample_media_board_items,
+    MediaBoardItem,
+    MediaBoardItem::TABLE,
+    MediaBoardItem::PK
 );
 sample_check!(
     sample_playback_jobs,

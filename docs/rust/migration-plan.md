@@ -62,13 +62,13 @@ Règles : `#![forbid(unsafe_code)]` sauf `apps/lc-overlay` (bloc Win32 isolé) ;
 - `GET /ws` ; première trame `hello` sous 5 s : `{token, appVersion, clientId?, sessionMode?}` ; auth = SHA-256(token) vs `overlay_clients.token_hash` + `revoked_at IS NULL`.
 - Enveloppe : `{v:2, type, id, ts, payload}` ; clés métier en camelCase (parité renderer).
 - `welcome` : `{protocolVersion:2, guildId, clientId, sessionMode, serverTime, config{showTextDefault,defaultMediaTime,maxMediaTime}, currentJob?}`.
-- C→S : `hello`, `heartbeat` (15 s), `playback.state` (≤1/s), `playback.ended`, `error`, `stop.request`, `meme.trigger`, `peers.request`.
+- C→S : `hello`, `heartbeat` (15 s), `playback.state` (≤1/s), `playback.ended`, `error`, `stop.request`, `media.trigger` (l'ancien `meme.trigger` reste accepté), `peers.request`.
 - S→C : `welcome`, `play`, `stop` (manual/preempt/revoked/purge), `peers`, `settings`, `ack`, `error`.
 - Close : 4401 auth, 4402 révoqué, 4403 version obsolète, 1011 interne.
 - Limites : trame 64 Kio, 20 msg/s, ping 15 s, timeout pong 45 s.
 - Média : `{API_URL}/overlay/media/{assetId}?exp&sig`, `sig = HMAC-SHA256(secret, "assetId|clientId|exp")`, TTL 300 s ; `?token=` supprimé ; `Accept-Ranges` + `HEAD`.
 - `/socket.io/` → 426 `overlay_outdated`.
-- Modes : `normal` | `invite_read_only` (meme/stop refusés en lecture seule — à confirmer Phase 0).
+- Modes : `normal` | `invite_read_only` (média/stop refusés en lecture seule — à confirmer Phase 0).
 
 ## 5. Persistance et migration
 
@@ -94,7 +94,7 @@ Règles : `#![forbid(unsafe_code)]` sauf `apps/lc-overlay` (bloc Win32 isolé) ;
 | 1 | workspace, protocole, domaine, CI | 3 |
 | 2 | db + migrateur + tests | 5 |
 | 3 | serveur HTTP, auth, pairing, config, média Range, health | 6 |
-| 4 | scheduler + WS v2 + meme board | 9 |
+| 4 | scheduler + WS v2 + board média | 9 |
 | 5 | pipeline média (resolver/download/transcode/cache/social) | 12 |
 | 6 | Discord (13 slash + 5 message commands, i18n) | 7 |
 | 7 | admin (14 endpoints + panel statique) | 5 |
@@ -190,7 +190,7 @@ Rust 1.99.1 / cargo 1.99.1 (host `x86_64-pc-windows-msvc`), rustfmt + clippy, ca
 
 ### 12.5 Contrat de schéma v3
 
-`docs/rust/schema-v3.sql` : tables STRICT snake_case (`app_metadata`, `media_assets`, `meme_board_items`, `playback_jobs`, `guilds`, `overlay_clients`, `ingest_clients`, `pairing_codes`), dates INTEGER ms, booléens 0/1, contraintes CHECK, index alignés Prisma. C'est le seul contrat dont dépend le migrateur ; toute évolution passe par le Lead.
+`docs/rust/schema-v3.sql` : tables STRICT snake_case (`app_metadata`, `media_assets`, `media_board_items`, `playback_jobs`, `guilds`, `overlay_clients`, `ingest_clients`, `pairing_codes`), dates INTEGER ms, booléens 0/1, contraintes CHECK, index alignés Prisma. C'est le seul contrat dont dépend le migrateur ; toute évolution passe par le Lead.
 
 ### 12.6 Corrections d'inventaire et suite
 

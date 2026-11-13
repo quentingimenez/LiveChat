@@ -15,7 +15,7 @@ use url::Url;
 use crate::config::Membership;
 use crate::net::tls;
 
-/// Délai maximal d'un appel (l'ajout d'un mème télécharge le média en ligne).
+/// Délai maximal d'un appel (l'ajout d'un média télécharge le fichier en ligne).
 const API_TIMEOUT: Duration = Duration::from_secs(120);
 /// Longueur maximale d'un chemin (query comprise).
 const MAX_PATH_CHARS: usize = 2_048;
@@ -70,7 +70,7 @@ fn build_url(server_url: &str, path: &str, allow_insecure: bool) -> Result<Url, 
 /// URL d'un média du board pour une balise `<img>`/`<video>`.
 ///
 /// Ces balises ne peuvent pas porter d'en-tête : l'URL embarque le jeton en
-/// query (repli accepté par le serveur sur `/overlay/meme-board/*` seulement).
+/// query (repli accepté par le serveur sur `/overlay/media-board/*` seulement).
 pub fn board_media_url(membership: &Membership, asset_id: &str) -> Result<String, String> {
     let asset_id = asset_id.trim();
     if asset_id.is_empty()
@@ -82,7 +82,7 @@ pub fn board_media_url(membership: &Membership, asset_id: &str) -> Result<String
     }
     let mut url = build_url(
         &membership.server_url,
-        &format!("/overlay/meme-board/media/{asset_id}"),
+        &format!("/overlay/media-board/media/{asset_id}"),
         tls::insecure_tls_enabled(),
     )?;
     url.query_pairs_mut()
@@ -180,7 +180,7 @@ mod tests {
         let url = board_media_url(&membership, "0a1b-2c3d").expect("url");
         assert_eq!(
             url,
-            "https://api.example.test/overlay/meme-board/media/0a1b-2c3d?token=abc"
+            "https://api.example.test/overlay/media-board/media/0a1b-2c3d?token=abc"
         );
         assert!(board_media_url(&membership, "../x").is_err());
         assert!(board_media_url(&membership, "").is_err());

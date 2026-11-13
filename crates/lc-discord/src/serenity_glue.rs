@@ -149,9 +149,9 @@ fn parse_input(
         crate::catalog::CommandKey::HideSend => {
             CommandInput::HideSend(parse_media_submission(interaction, spec, lang))
         }
-        crate::catalog::CommandKey::MemeAdd => {
-            // La glue legacy réutilise `text` pour le titre du meme board.
-            CommandInput::MemeAdd(parse_media_submission(interaction, spec, lang))
+        crate::catalog::CommandKey::MediaAdd => {
+            // La glue legacy réutilise `text` pour le titre du board média.
+            CommandInput::MediaAdd(parse_media_submission(interaction, spec, lang))
         }
         crate::catalog::CommandKey::Link => {
             let code = string_option(interaction, spec, lang, 0)?;

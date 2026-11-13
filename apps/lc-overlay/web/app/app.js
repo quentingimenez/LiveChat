@@ -120,8 +120,22 @@ const ERROR_LABELS = {
   socket_unavailable: 'Guilde déconnectée : impossible de jouer pour le moment.',
 };
 
+// Legacy overlay 3.0.0 compatibility: remove in 3.1.
+const LEGACY_PERMISSION_KEYS = {
+  addMedia: 'addMeme',
+  editAnyMedia: 'editAnyMeme',
+};
+
 function can(permission) {
-  return Boolean(state.info && state.info.permissions && state.info.permissions[permission]);
+  const permissions = state.info && state.info.permissions;
+  if (!permissions) {
+    return false;
+  }
+  if (permissions[permission] !== undefined) {
+    return Boolean(permissions[permission]);
+  }
+  const legacy = LEGACY_PERMISSION_KEYS[permission];
+  return Boolean(legacy && permissions[legacy]);
 }
 
 function activeGuild() {
@@ -268,7 +282,7 @@ async function loadGuild() {
   if (!(await loadGuildInfo())) {
     return;
   }
-  const bindings = await invoke('meme_board_get_bindings').catch(() => null);
+  const bindings = await invoke('media_board_get_bindings').catch(() => null);
   state.bindings = (bindings && bindings.bindings) || {};
   renderHeader();
   await Promise.all([loadItems(), refreshQueueAutomatically()]);
@@ -280,7 +294,7 @@ async function loadItems() {
   }
   const guildId = state.activeGuildId;
   try {
-    const body = await api('GET', '/overlay/meme-board/items?limit=200');
+    const body = await api('GET', '/overlay/media-board/items?limit=200');
     if (guildId !== state.activeGuildId) {
       return;
     }
@@ -630,7 +644,7 @@ function renderBoard() {
     h('input', {
       class: 'field',
       type: 'search',
-      placeholder: 'Rechercher un mème',
+      placeholder: 'Rechercher un média',
       value: state.search,
       onInput: (event) => {
         state.search = event.target.value;
@@ -646,7 +660,7 @@ function renderBoard() {
     ),
     h('span', { class: 'spacer' }),
     h('button', { class: 'btn is-quiet', title: 'Recharger le board', 'aria-label': 'Recharger le board', onClick: loadItems }, icon('refresh')),
-    can('addMeme') ? h('button', { class: 'btn', onClick: openAddDialog }, icon('plus'), 'Ajouter un mème') : null,
+    can('addMedia') ? h('button', { class: 'btn', onClick: openAddDialog }, icon('plus'), 'Ajouter un média') : null,
   );
   let content;
   if (!state.itemsLoaded) {
@@ -656,11 +670,11 @@ function renderBoard() {
       'div',
       { class: 'empty' },
       h('h2', null, 'Le board est vide'),
-      h('p', null, 'Colle le lien d’une vidéo, d’une image ou d’un son pour créer le premier mème.'),
-      can('addMeme') ? h('button', { class: 'btn', onClick: openAddDialog }, 'Ajouter un mème') : null,
+      h('p', null, 'Colle le lien d’une vidéo, d’une image ou d’un son pour créer le premier média.'),
+      can('addMedia') ? h('button', { class: 'btn', onClick: openAddDialog }, 'Ajouter un média') : null,
     );
   } else if (items.length === 0) {
-    content = h('p', { class: 'meta' }, 'Aucun mème ne correspond à cette recherche.');
+    content = h('p', { class: 'meta' }, 'Aucun média ne correspond à cette recherche.');
   } else {
     content = h('div', { class: 'grid', id: 'grid' }, items.map(renderCard));
   }
@@ -701,7 +715,7 @@ async function playItem(item) {
     notify('Guilde en sourdine : rétablis-la pour jouer.', true);
     return;
   }
-  const response = await run(() => invoke('meme_board_trigger', { payload: { itemId: item.id, guildId: state.activeGuildId, trigger: 'ui' } }));
+  const response = await run(() => invoke('media_board_trigger', { payload: { itemId: item.id, guildId: state.activeGuildId, trigger: 'ui' } }));
   if (!response) {
     return;
   }
@@ -742,7 +756,7 @@ function renderDetail(item) {
   const added = new Date(item.createdAt);
   return h(
     'aside',
-    { class: 'detail', 'aria-label': 'Détails du mème' },
+    { class: 'detail', 'aria-label': 'Détails du média' },
     h(
       'div',
       { class: 'detail-head' },
@@ -858,7 +872,7 @@ async function saveShortcut(item, accelerator) {
   if (accelerator) {
     bindings[accelerator] = item.id;
   }
-  const response = await run(() => invoke('meme_board_set_bindings', { payload: { bindings } }));
+  const response = await run(() => invoke('media_board_set_bindings', { payload: { bindings } }));
   if (response) {
     state.bindings = response.bindings || {};
     if (response.failedAccelerators && response.failedAccelerators.length > 0) {
@@ -939,7 +953,7 @@ function renderQueue() {
 }
 
 async function stopPlayback() {
-  const response = await run(() => invoke('meme_board_stop', { payload: { guildId: state.activeGuildId } }));
+  const response = await run(() => invoke('media_board_stop', { payload: { guildId: state.activeGuildId } }));
   if (response && !response.ok) {
     notify(describeError(response.reason), true);
   }
@@ -1371,10 +1385,10 @@ function openAddDialog() {
           event.preventDefault();
           submit.disabled = true;
           submit.textContent = 'Téléchargement…';
-          const body = await run(() => api('POST', '/overlay/meme-board/items', { url: url.value.trim(), title: title.value, message: message.value }));
+          const body = await run(() => api('POST', '/overlay/media-board/items', { url: url.value.trim(), title: title.value, message: message.value }));
           if (body) {
             close();
-            notify(body.created ? 'Mème ajouté au board.' : 'Ce média est déjà sur le board.');
+            notify(body.created ? 'Média ajouté au board.' : 'Ce média est déjà sur le board.');
             loadItems();
           } else {
             submit.disabled = false;
@@ -1387,7 +1401,7 @@ function openAddDialog() {
       h('label', null, 'Message (facultatif)', message),
       h('div', { class: 'actions' }, h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'), submit),
     );
-    return [h('h2', null, 'Ajouter un mème'), h('p', null, 'Vidéo, image ou son : TikTok, X, YouTube ou lien direct.'), form];
+    return [h('h2', null, 'Ajouter un média'), h('p', null, 'Vidéo, image ou son : TikTok, X, YouTube ou lien direct.'), form];
   });
 }
 
@@ -1401,7 +1415,7 @@ function openEditDialog(item) {
         class: 'stack',
         onSubmit: async (event) => {
           event.preventDefault();
-          const body = await run(() => api('PATCH', `/overlay/meme-board/items/${encodeURIComponent(item.id)}`, { title: title.value, message: message.value }), 'Mème modifié.');
+          const body = await run(() => api('PATCH', `/overlay/media-board/items/${encodeURIComponent(item.id)}`, { title: title.value, message: message.value }), 'Média modifié.');
           if (body) {
             close();
             loadItems();
@@ -1412,7 +1426,7 @@ function openEditDialog(item) {
       h('label', null, 'Message', message),
       h('div', { class: 'actions' }, h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'), h('button', { class: 'btn', type: 'submit' }, 'Enregistrer')),
     );
-    return [h('h2', null, 'Modifier le mème'), h('p', null, 'Un champ vide efface la valeur.'), form];
+    return [h('h2', null, 'Modifier le média'), h('p', null, 'Un champ vide efface la valeur.'), form];
   });
 }
 
@@ -1430,8 +1444,8 @@ function confirmDialog(title, text, actionLabel, action) {
 }
 
 function openDeleteDialog(item) {
-  confirmDialog('Supprimer ce mème ?', `« ${itemTitle(item)} » sera retiré du board de la guilde.`, 'Supprimer', async () => {
-    await run(() => api('DELETE', `/overlay/meme-board/items/${encodeURIComponent(item.id)}`), 'Mème supprimé.');
+  confirmDialog('Supprimer ce média ?', `« ${itemTitle(item)} » sera retiré du board de la guilde.`, 'Supprimer', async () => {
+    await run(() => api('DELETE', `/overlay/media-board/items/${encodeURIComponent(item.id)}`), 'Média supprimé.');
     state.selectedId = null;
     loadItems();
   });

@@ -224,7 +224,7 @@ fn apply_consume_response(
         role: clean(response.role.as_deref()),
         guest_mode,
         muted: false,
-        meme_bindings: Default::default(),
+        media_bindings: Default::default(),
     });
     config.author_name = clean(response.author_name.as_deref());
     config.device_name =
@@ -469,8 +469,8 @@ mod tests {
         };
         apply_consume_response(&mut config, &request(), &first, "PC-TEST").expect("guilde 1");
         config
-            .meme_bindings
-            .insert("Ctrl+1".to_string(), "meme-a".to_string());
+            .media_bindings
+            .insert("Ctrl+1".to_string(), "media-a".to_string());
 
         let mut second_request = request();
         second_request.display_name = Some("  Quentin B. ".to_string());
@@ -494,14 +494,14 @@ mod tests {
         assert_eq!(config.client_token.as_deref(), Some("token-b"));
         assert!(config.guest_mode);
         // Les raccourcis de la première guilde restent rangés avec elle.
-        assert!(config.meme_bindings.is_empty());
+        assert!(config.media_bindings.is_empty());
         let kept = config.membership("111").expect("guilde 1 conservée");
         assert_eq!(kept.client_token, "token-a");
         assert_eq!(kept.role.as_deref(), Some("admin"));
         assert_eq!(kept.guild_name.as_deref(), Some("Les Sardines"));
         assert_eq!(
-            kept.meme_bindings.get("Ctrl+1").map(String::as_str),
-            Some("meme-a")
+            kept.media_bindings.get("Ctrl+1").map(String::as_str),
+            Some("media-a")
         );
         assert_eq!(config.profile_name.as_deref(), Some("Quentin B."));
 

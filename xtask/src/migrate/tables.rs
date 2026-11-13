@@ -152,9 +152,9 @@ impl MediaAsset {
     }
 }
 
-/// Élément du meme board d'une guilde.
+/// Élément du board média d'une guilde.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemeBoardItem {
+pub struct MediaBoardItem {
     pub id: String,
     pub guild_id: String,
     pub media_asset_id: String,
@@ -165,10 +165,12 @@ pub struct MemeBoardItem {
     pub created_at: i64,
 }
 
-impl MemeBoardItem {
+impl MediaBoardItem {
     /// Table legacy Prisma.
     pub const LEGACY_TABLE: &'static str = "MemeBoardItem";
-    /// Table cible 3.0.
+    /// Table cible 3.0, sous son nom du schéma `0001_init` que construit le
+    /// migrateur ; la migration `0005_media_board` la renomme en
+    /// `media_board_items` au premier démarrage du serveur.
     pub const TABLE: &'static str = "meme_board_items";
     /// Clé primaire applicative.
     pub const PK: &'static str = "id";

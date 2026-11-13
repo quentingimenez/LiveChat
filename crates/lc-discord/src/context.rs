@@ -7,7 +7,7 @@
 //! [`crate::testing`]).
 //!
 //! Hypothèse Phase 6a documentée dans `docs/rust/lc-discord.md` : les traits
-//! [`MediaBackend`], [`PlaybackBackend`], [`MemeBackend`] et
+//! [`MediaBackend`], [`PlaybackBackend`], [`MediaBoardBackend`] et
 //! [`OverlayDirectory`] sont les points d'intégration qui seront implémentés
 //! par les adaptateurs réels en Phase 6b (respectivement au-dessus de
 //! `lc-media`, `lc-playback` et des dépôts `lc-db`).
@@ -177,10 +177,10 @@ pub struct PlaybackJobRequest {
     pub source: String,
 }
 
-/// Demande d'ajout au meme board (`addToMemeBoard` legacy).
+/// Demande d'ajout au board média (`addToMemeBoard` legacy).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MemeAddRequest {
-    /// Guilde du meme board.
+pub struct MediaAddRequest {
+    /// Guilde du board média.
     pub guild_id: GuildId,
     /// Média à épingler.
     pub media_asset_id: MediaAssetId,
@@ -221,15 +221,15 @@ pub trait PlaybackBackend: Send + Sync {
     async fn stop_guild(&self, guild_id: &GuildId) -> Result<u64, BotError>;
 }
 
-/// Backend du meme board (dépôts `lc-db` + stockage en Phase 6b).
+/// Backend du board média (dépôts `lc-db` + stockage en Phase 6b).
 #[async_trait]
-pub trait MemeBackend: Send + Sync {
-    /// Ajoute (ou retrouve) un média sur le meme board.
+pub trait MediaBoardBackend: Send + Sync {
+    /// Ajoute (ou retrouve) un média sur le board média.
     ///
     /// Retourne `true` si un nouvel élément a été créé. Une erreur de capacité
     /// doit être signalée via
     /// [`BotError::Media`] avec [`crate::MediaErrorCode::BoardStorageLimitReached`].
-    async fn add_to_board(&self, request: MemeAddRequest) -> Result<bool, BotError>;
+    async fn add_to_board(&self, request: MediaAddRequest) -> Result<bool, BotError>;
 }
 
 /// Annuaire des overlays connectés (socket.io `overlay-guild-*` en Phase 6b).
@@ -255,8 +255,8 @@ pub trait BotContext: Send + Sync {
     fn media(&self) -> &dyn MediaBackend;
     /// Backend de lecture.
     fn playback(&self) -> &dyn PlaybackBackend;
-    /// Backend du meme board.
-    fn meme(&self) -> &dyn MemeBackend;
+    /// Backend du board média.
+    fn media_board(&self) -> &dyn MediaBoardBackend;
 
     /// Overlays actuellement connectés pour la guilde.
     async fn list_connected_overlays(
@@ -298,7 +298,7 @@ pub struct DbBotContext<C: Clock = SystemClock> {
     config: BotConfig,
     media: Arc<dyn MediaBackend>,
     playback: Arc<dyn PlaybackBackend>,
-    meme: Arc<dyn MemeBackend>,
+    media_board: Arc<dyn MediaBoardBackend>,
     overlays: Arc<dyn OverlayDirectory>,
 }
 
@@ -309,10 +309,18 @@ impl DbBotContext<SystemClock> {
         config: BotConfig,
         media: Arc<dyn MediaBackend>,
         playback: Arc<dyn PlaybackBackend>,
-        meme: Arc<dyn MemeBackend>,
+        media_board: Arc<dyn MediaBoardBackend>,
         overlays: Arc<dyn OverlayDirectory>,
     ) -> Self {
-        Self::with_clock(db, SystemClock, config, media, playback, meme, overlays)
+        Self::with_clock(
+            db,
+            SystemClock,
+            config,
+            media,
+            playback,
+            media_board,
+            overlays,
+        )
     }
 }
 
@@ -324,7 +332,7 @@ impl<C: Clock> DbBotContext<C> {
         config: BotConfig,
         media: Arc<dyn MediaBackend>,
         playback: Arc<dyn PlaybackBackend>,
-        meme: Arc<dyn MemeBackend>,
+        media_board: Arc<dyn MediaBoardBackend>,
         overlays: Arc<dyn OverlayDirectory>,
     ) -> Self {
         Self {
@@ -333,7 +341,7 @@ impl<C: Clock> DbBotContext<C> {
             config,
             media,
             playback,
-            meme,
+            media_board,
             overlays,
         }
     }
@@ -376,8 +384,8 @@ impl<C: Clock + Send + Sync> BotContext for DbBotContext<C> {
         self.playback.as_ref()
     }
 
-    fn meme(&self) -> &dyn MemeBackend {
-        self.meme.as_ref()
+    fn media_board(&self) -> &dyn MediaBoardBackend {
+        self.media_board.as_ref()
     }
 
     async fn list_connected_overlays(

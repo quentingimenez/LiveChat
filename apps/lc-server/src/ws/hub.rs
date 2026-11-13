@@ -183,7 +183,7 @@ impl Hub {
             sender,
         };
         // `_author_image` n'est pas stocké : il est déjà utilisé par la session
-        // pour construire les jobs `meme.trigger` (le hub n'en a pas besoin).
+        // pour construire les jobs `media.trigger` (le hub n'en a pas besoin).
         inner
             .guilds
             .entry(guild_id)

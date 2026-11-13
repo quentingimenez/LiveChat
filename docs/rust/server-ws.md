@@ -126,17 +126,21 @@ d'erreur pour un `id` inconnu. Le champ `id` est **validé** avant tout traiteme
 | `playback.ended` | `{jobId, reason: completed\|manual\|error}` | transmet `PlaybackEndedEvent` ; idempotent côté moteur ; `jobId` invalide ⇒ `1002 bad_playback_state` |
 | `error` | `{jobId, code, message}` | log seulement (le watchdog libère le job) |
 | `stop.request` | `{jobId?, source?: user\|hotkey\|admin}` | en `invite_read_only` : ack `read_only` ; throttle 1/s (ack `rate_limited`) ; sans `jobId` ⇒ tous les jobs de la guilde ; ack `ok` **puis** `engine.stop(...)` qui diffuse `stop {reason:"manual"}` |
-| `meme.trigger` | `{itemId, trigger: shortcut\|ui}` | en lecture seule : ack `read_only` ; item inconnu ⇒ ack `item_not_found` ; média absent/non `READY`/expiré ⇒ ack `media_not_ready` ; ack `ok` puis job priorité 100 (`MEME_JOB_PRIORITY`) et `engine.enqueue` (préemption `stop {reason:"preempt"}` + `play`) |
+| `media.trigger` | `{itemId, trigger: shortcut\|ui}` | en lecture seule : ack `read_only` ; item inconnu ⇒ ack `item_not_found` ; média absent/non `READY`/expiré ⇒ ack `media_not_ready` ; ack `ok` puis job priorité 100 (`MEDIA_BOARD_JOB_PRIORITY`) et `engine.enqueue` (préemption `stop {reason:"preempt"}` + `play`) |
 | `peers.request` | `{}` | throttle 2 s (excédent ignoré **sans** ack) ; ack `ok` puis broadcast `peers` |
+
+Le type legacy `meme.trigger` reste désérialisé en `ClientMessage::MediaTrigger`
+pour l'overlay 3.0.0 (alias serde) ; les nouveaux clients envoient
+`media.trigger`.
 
 Codes d'ack (`error.code`) : `read_only`, `item_not_found`, `media_not_ready`, `invalid_payload`,
 `rate_limited`, `internal_error`.
 
 Règles de complétude :
-- texte du mème = `item.message` trimé, tronqué à `MAX_MEME_TEXT_CHARS` (500) ;
+- texte du média = `item.message` trimé, tronqué à `MAX_MEDIA_TEXT_CHARS` (500) ;
 - `showText = message non vide` ; `authorName = session.authorName || item.createdByName` ;
   `authorImage = session.authorImage` ; `durationSec = media.duration_sec` (0 si absent) ;
-- ids de jobs/d'items parsés via `lc_domain` (`PlaybackJobId::parse`, `MemeBoardItemId::parse`),
+- ids de jobs/d'items parsés via `lc_domain` (`PlaybackJobId::parse`, `MediaBoardItemId::parse`),
   un id invalide produit une ack `invalid_payload`, jamais une panique.
 
 ## 5. Messages S→C
@@ -149,7 +153,7 @@ Règles de complétude :
 | `play` | `{jobId, media: {assetId, url, mime, kind, durationSec, isVertical, startOffsetSec}\|null, text, author, tweetCard: ...\|null, durationSec}` | **unicast par socket** (URL signée pour son `clientId`) ; `startOffsetSec` et `tweetCard` toujours présents (null autorisé) |
 | `stop` | `{reason: manual\|preempt\|revoked\|purge, jobId: string\|null}` | broadcast room (moteur / admin) |
 | `ack` | `{ref, ok, error?: {code, message}}` | unicast en réponse aux requêtes le demandant |
-| `error` | `{code, message, jobId?}` | erreur **non fatale** émise effectivement (rév. 4) : `dispatch_failed` (aucun socket de la room n'a pu recevoir un `play` média) et `internal_error` (échec moteur après `ack` de `stop.request`/`meme.trigger`) |
+| `error` | `{code, message, jobId?}` | erreur **non fatale** émise effectivement (rév. 4) : `dispatch_failed` (aucun socket de la room n'a pu recevoir un `play` média) et `internal_error` (échec moteur après `ack` de `stop.request`/`media.trigger`) |
 
 Les `id` serveur sont de la forme `srv-<préfixe>-NNNNNN` (`welcome`, `settings`, `peers`, `play`,
 `stop`, `ack`, `error`), `ts` en millisecondes Unix, `v = 2`.
@@ -174,7 +178,7 @@ scheduler, §15.3 de la SSOT) ; si plusieurs sont détectés, le plus récent pa
 | sockets par guilde | **16** (`MAX_SOCKETS_PER_GUILD`) | nouvelle socket : close `4409 too_many_connections` avant `welcome` |
 | origine `/ws` | allowlist : origine de `API_URL`, `http(s)://tauri.localhost`, `ADDITIONAL_CORS_ORIGINS`, env `WS_ALLOWED_ORIGINS` ; loopback seulement en dev | `Origin` présent et hors liste : close `1008 origin_not_allowed` ; `Origin` absent : accepté |
 | `remainingMs` | `[0, 86_400_000]` | borne avant transmission au moteur |
-| texte de mème | 500 caractères | troncature |
+| texte du média | 500 caractères | troncature |
 | peers | 8 | troncature (ordre déterministe) |
 
 Le rate limiter est un simple `VecDeque<Instant>` par connexion (fenêtre glissante de 1 s) : sans
@@ -300,7 +304,8 @@ Intégration (vrai serveur axum sur port éphémère + SQLite temporaire + clien
    null/absent quand l'offset de reprise vaut 0).
 10. `dispatched_play_carries_a_verifiable_signature` (signature re-vérifiée avec `media_url::verify`).
 11. `stop_request_stops_the_job_and_broadcasts_stop` (ack puis `stop {reason:"manual"}` ; DB `DONE`).
-12. `invite_read_only_refuses_meme_trigger` (ack `read_only`).
+12. `invite_read_only_refuses_media_trigger` (ack `read_only`).
+12b. `legacy_meme_trigger_type_still_plays_a_media_item` (type legacy `meme.trigger`, ack `ok` puis `play`).
 13. `heartbeat_is_accepted_and_updates_last_seen` (`last_seen_at` mis à jour en DB).
 14. `peers_request_returns_ack_then_peers`.
 15. `playback_state_is_persisted_for_a_corresponding_job` (`remaining_ms_snapshot` en DB).
@@ -380,7 +385,7 @@ cargo test -p lc-server
    déjà `revoked_at IS NULL`, d'où un `SELECT revoked_at FROM overlay_clients WHERE token_hash = ?`
    ciblé dans `ws/hub.rs` via `db.pool()` (accès public, approuvé par le Lead, dépendance `sqlx`
    ajoutée par lui). Promotion future conseillée : `get_by_token_hash_including_revoked` dans `lc-db`.
-5. **Ordre ack/broadcast** : les acks de `stop.request`, `meme.trigger`, `peers.request` sont envoyés
+5. **Ordre ack/broadcast** : les acks de `stop.request`, `media.trigger`, `peers.request` sont envoyés
    via la file du socket **avant** l'appel moteur, pour que le client observe `ack` puis `stop`/`play`.
 6. **`sessionMode`** : celui du `hello` est purement diagnostique (log de divergence) ; le mode
    autoritaire est celui de la base, renvoyé dans `welcome`/`settings`.
@@ -389,7 +394,7 @@ cargo test -p lc-server
 8. **`ServerMessage::Error`** : le hub émet désormais les erreurs asynchrones non fatales
    (rév. 4) : `dispatch_failed` depuis `HubSink::on_play` quand `unicast_play` ne délivre à aucun
    socket alors que la room en contient, et `internal_error` après un `ack` lorsque l'appel moteur
-   (`stop.request`/`meme.trigger`) échoue. `media_unavailable` reste réservé aux hooks média.
+   (`stop.request`/`media.trigger`) échoue. `media_unavailable` reste réservé aux hooks média.
 9. **Origine `1008` plutôt que HTTP 403 (COR-06)** : le refus d'`Origin` intervient après l'upgrade
    (une réponse HTTP n'est alors plus possible) ; on ferme donc la socket `1008 origin_not_allowed`,
    avant `hello`. L'allowlist est configurable sans redéploiement de code (`WS_ALLOWED_ORIGINS`,
@@ -427,19 +432,21 @@ cargo test -p lc-server
     29 fixtures golden restent inchangées ; `PlayPayload::default()` (map vide) évite d'imposer
     `serde_json` aux crates consommateurs.
 17. **Timeout HTTP global (COR-06, nit V2 « exemptions par préfixe »)** : le diff de `§12` n'exempte
-    plus le préfixe `/overlay/meme-board/` en bloc : seules les routes réellement de streaming sont
+    plus le préfixe `/overlay/media-board/` en bloc : seules les routes réellement de streaming sont
     exemptées (`/ws` exact, `/ingest` exact, préfixes `/overlay/media/` et
-    `/overlay/meme-board/media/`). Le reste de l'API (admin, board JSON, config, pairing, health)
-    reçoit `408 request_timeout` à 30 s. Le rate-limit appliqué au streaming (`Range`)/uploads est
-    un nit séparé, hors de cette lane : à traiter par l'owner du rate limiter.
+    `/overlay/media-board/media/`). Les anciens chemins `/overlay/meme-board/...` restent exemptés
+    sur les mêmes handlers (compatibilité overlay 3.0.0, suppression en 3.1). Le reste de l'API
+    (admin, board JSON, config, pairing, health) reçoit `408 request_timeout` à 30 s. Le rate-limit
+    appliqué au streaming (`Range`)/uploads est un nit séparé, hors de cette lane : à traiter par
+    l'owner du rate limiter.
 
 ## 12. Points d'intégration restants (hors propriétaire)
 
 - **Lead / `app.rs`** : intégré — `ws::router_with_hub(Arc<Hub>)` + admin hub
   injecté dans `AppState` (`with_admin_hub`), plus de `OnceLock` ; le
   **TimeoutLayer** (COR-06) est en place avec exemptions resserrées (`/ws` et
-  `/ingest` exacts, préfixes `/overlay/media/` et `/overlay/meme-board/media/`,
-  `408 request_timeout` 30 s ailleurs).
+  `/ingest` exacts, préfixes `/overlay/media/` et `/overlay/media-board/media/`,
+  plus l'alias legacy `/overlay/meme-board/media/`, `408 request_timeout` 30 s ailleurs).
   ```rust
   // apps/lc-server/Cargo.toml : tower-http features += "timeout"
   use std::time::Duration;
@@ -461,6 +468,8 @@ cargo test -p lc-server
       if path == "/ws"
           || path == "/ingest"
           || path.starts_with("/overlay/media/")
+          || path.starts_with("/overlay/media-board/media/")
+          // Legacy overlay 3.0.0 compatibility: remove in 3.1.
           || path.starts_with("/overlay/meme-board/media/")
       {
           return next.run(request).await;

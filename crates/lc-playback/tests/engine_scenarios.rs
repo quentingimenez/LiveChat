@@ -7,7 +7,7 @@ mod support;
 use chrono::Duration as ChronoDuration;
 use lc_domain::{datetime_to_ms, Clock, JobStatus};
 use lc_playback::{
-    PlaybackEndedEvent, PlaybackStateEvent, PlaybackStateOutcome, MEME_JOB_PRIORITY,
+    PlaybackEndedEvent, PlaybackStateEvent, PlaybackStateOutcome, MEDIA_BOARD_JOB_PRIORITY,
 };
 use lc_protocol::{PlaybackEndedReason, PlaybackState, StopReason, StopRequestSource};
 
@@ -33,7 +33,7 @@ async fn dispatch_texte_puis_watchdog_passe_au_suivant() {
     let plays = h.sink.play_calls();
     assert_eq!(plays.len(), 1);
     assert_eq!(plays[0].job_id, first.id.to_canonical());
-    assert_eq!(plays[0].text.value, "mème de test");
+    assert_eq!(plays[0].text.value, "média de test");
     assert!(plays[0].text.enabled);
     assert_eq!(plays[0].author.name, "Auteur");
     assert!(plays[0].author.enabled);
@@ -161,7 +161,7 @@ async fn ordre_priorite_puis_soumission() {
 }
 
 #[tokio::test]
-async fn preemption_meme_puis_reprise_du_parent() {
+async fn preemption_media_du_board_puis_reprise_du_parent() {
     let h = harness(1).await;
     let guild = h.guild_id.clone();
 
@@ -175,10 +175,10 @@ async fn preemption_meme_puis_reprise_du_parent() {
 
     h.advance(5_000);
 
-    let mut meme = sample_job(guild.clone(), h.clock.now());
-    meme.priority = MEME_JOB_PRIORITY;
-    meme.duration_sec = 2;
-    h.engine.enqueue(&meme).await.unwrap();
+    let mut item = sample_job(guild.clone(), h.clock.now());
+    item.priority = MEDIA_BOARD_JOB_PRIORITY;
+    item.duration_sec = 2;
+    h.engine.enqueue(&item).await.unwrap();
 
     let stops = h.sink.stop_calls();
     assert_eq!(stops.len(), 1);
@@ -188,18 +188,18 @@ async fn preemption_meme_puis_reprise_du_parent() {
 
     let suspended = h.stored_job(parent.id).await;
     assert_eq!(suspended.status, JobStatus::Pending);
-    assert_eq!(suspended.resumes_after_job_id, Some(meme.id));
+    assert_eq!(suspended.resumes_after_job_id, Some(item.id));
     assert_eq!(suspended.resume_offset_sec, 5);
     assert_eq!(suspended.remaining_ms_snapshot, Some(15_000));
     assert!(suspended.started_at.is_none());
 
     assert_eq!(h.sink.play_calls().len(), 2);
-    assert_eq!(h.sink.play_calls()[1].job_id, meme.id.to_canonical());
+    assert_eq!(h.sink.play_calls()[1].job_id, item.id.to_canonical());
 
     h.engine
         .handle_playback_ended(PlaybackEndedEvent::new(
             guild.clone(),
-            meme.id,
+            item.id,
             PlaybackEndedReason::Completed,
         ))
         .await

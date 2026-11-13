@@ -19,9 +19,9 @@ use axum::Router;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use lc_db::{Db, DbConfig};
 use lc_domain::{
-    FixedClock, GuildId, JobStatus, MediaAsset, MediaAssetId, MediaKind, MediaStatus,
-    MemeBoardItem, MemeBoardItemId, OverlayClient, OverlayClientId, OverlaySessionMode,
-    PairingCode, PairingCodeEntry, PairingMode, PlaybackJob, PlaybackJobId,
+    FixedClock, GuildId, JobStatus, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId,
+    MediaKind, MediaStatus, OverlayClient, OverlayClientId, OverlaySessionMode, PairingCode,
+    PairingCodeEntry, PairingMode, PlaybackJob, PlaybackJobId,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -262,9 +262,9 @@ async fn insert_item(
     title: Option<&str>,
     message: Option<&str>,
     created_at: DateTime<Utc>,
-) -> MemeBoardItem {
-    let item = MemeBoardItem {
-        id: MemeBoardItemId::new_v4(),
+) -> MediaBoardItem {
+    let item = MediaBoardItem {
+        id: MediaBoardItemId::new_v4(),
         guild_id: guild_id.clone(),
         media_asset_id: asset.id,
         title: title.map(str::to_owned),
@@ -273,7 +273,10 @@ async fn insert_item(
         created_by_name: Some("Alice".to_owned()),
         created_at,
     };
-    db.meme_board().create(&item).await.expect("insertion item");
+    db.media_board()
+        .create(&item)
+        .await
+        .expect("insertion item");
     item
 }
 
@@ -858,11 +861,11 @@ async fn signed_media_missing_or_escaped_file_is_rejected() {
 }
 
 // --------------------------------------------------------------------------
-// /overlay/meme-board/*
+// /overlay/media-board/*
 // --------------------------------------------------------------------------
 
 #[tokio::test]
-async fn meme_board_requires_token_and_accepts_legacy_query_token() {
+async fn media_board_requires_token_and_accepts_legacy_query_token() {
     let dir = TempDir::new().expect("tempdir");
     let (app, db) = harness(dir.path()).await;
     let client = make_client(
@@ -879,19 +882,19 @@ async fn meme_board_requires_token_and_accepts_legacy_query_token() {
 
     let (status, _, bytes) = send(
         &app,
-        request(Method::GET, "/overlay/meme-board/items", None, None),
+        request(Method::GET, "/overlay/media-board/items", None, None),
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body_json(&bytes)["error"], "unauthorized");
 
     // Repli legacy `?token=` : accepté pour le board (renderer HTML legacy,
-    // `<video>/<img>` d'aperçu) mais ignoré hors `/overlay/meme-board/*`.
+    // `<video>/<img>` d'aperçu) mais ignoré hors `/overlay/media-board/*`.
     let (status, _, bytes) = send(
         &app,
         request(
             Method::GET,
-            &format!("/overlay/meme-board/items?token={BEARER_TOKEN}"),
+            &format!("/overlay/media-board/items?token={BEARER_TOKEN}"),
             None,
             None,
         ),
@@ -905,7 +908,7 @@ async fn meme_board_requires_token_and_accepts_legacy_query_token() {
         &app,
         request(
             Method::GET,
-            &format!("/overlay/meme-board/items?token={OTHER_TOKEN}"),
+            &format!("/overlay/media-board/items?token={OTHER_TOKEN}"),
             Some(BEARER_TOKEN),
             None,
         ),
@@ -918,7 +921,7 @@ async fn meme_board_requires_token_and_accepts_legacy_query_token() {
         &app,
         request(
             Method::GET,
-            &format!("/overlay/meme-board/items?token={OTHER_TOKEN}"),
+            &format!("/overlay/media-board/items?token={OTHER_TOKEN}"),
             None,
             None,
         ),
@@ -939,7 +942,7 @@ async fn meme_board_requires_token_and_accepts_legacy_query_token() {
     .is_none());
     assert_eq!(
         auth::query_token(
-            &format!("/overlay/meme-board/media/abc?token={BEARER_TOKEN}")
+            &format!("/overlay/media-board/media/abc?token={BEARER_TOKEN}")
                 .parse()
                 .expect("uri")
         ),
@@ -951,7 +954,7 @@ async fn meme_board_requires_token_and_accepts_legacy_query_token() {
         &app,
         request(
             Method::GET,
-            "/overlay/meme-board/items",
+            "/overlay/media-board/items",
             Some("mauvais-jeton"),
             None,
         ),
@@ -964,7 +967,7 @@ async fn meme_board_requires_token_and_accepts_legacy_query_token() {
         &app,
         request(
             Method::GET,
-            "/overlay/meme-board/items",
+            "/overlay/media-board/items",
             Some(BEARER_TOKEN),
             None,
         ),
@@ -982,7 +985,7 @@ async fn meme_board_requires_token_and_accepts_legacy_query_token() {
         request(
             Method::GET,
             &format!(
-                "/overlay/meme-board/items?guildId={}",
+                "/overlay/media-board/items?guildId={}",
                 other_guild().as_str()
             ),
             Some(BEARER_TOKEN),
@@ -995,7 +998,50 @@ async fn meme_board_requires_token_and_accepts_legacy_query_token() {
 }
 
 #[tokio::test]
-async fn meme_board_lists_filters_and_paginates() {
+async fn legacy_media_board_route_answers_like_the_new_one() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, db) = harness(dir.path()).await;
+    let client = make_client(
+        &guild(),
+        "Poste",
+        BEARER_TOKEN,
+        OverlaySessionMode::Normal,
+        Some("Alice"),
+    );
+    db.overlay_clients()
+        .create(&client)
+        .await
+        .expect("client board");
+
+    let (new_status, _, new_bytes) = send(
+        &app,
+        request(
+            Method::GET,
+            "/overlay/media-board/items",
+            Some(BEARER_TOKEN),
+            None,
+        ),
+    )
+    .await;
+    // Legacy overlay 3.0.0 compatibility: remove in 3.1.
+    let (legacy_status, _, legacy_bytes) = send(
+        &app,
+        request(
+            Method::GET,
+            "/overlay/meme-board/items",
+            Some(BEARER_TOKEN),
+            None,
+        ),
+    )
+    .await;
+
+    assert_eq!(new_status, StatusCode::OK);
+    assert_eq!(legacy_status, new_status);
+    assert_eq!(body_json(&legacy_bytes), body_json(&new_bytes));
+}
+
+#[tokio::test]
+async fn media_board_lists_filters_and_paginates() {
     let dir = TempDir::new().expect("tempdir");
     let (app, db) = harness(dir.path()).await;
     let client = make_client(
@@ -1072,7 +1118,7 @@ async fn meme_board_lists_filters_and_paginates() {
         &app,
         request(
             Method::GET,
-            "/overlay/meme-board/items",
+            "/overlay/media-board/items",
             Some(BEARER_TOKEN),
             None,
         ),
@@ -1096,7 +1142,7 @@ async fn meme_board_lists_filters_and_paginates() {
         &app,
         request(
             Method::GET,
-            "/overlay/meme-board/items?q=beta",
+            "/overlay/media-board/items?q=beta",
             Some(BEARER_TOKEN),
             None,
         ),
@@ -1108,7 +1154,7 @@ async fn meme_board_lists_filters_and_paginates() {
         &app,
         request(
             Method::GET,
-            "/overlay/meme-board/items?q=clip",
+            "/overlay/media-board/items?q=clip",
             Some(BEARER_TOKEN),
             None,
         ),
@@ -1122,7 +1168,7 @@ async fn meme_board_lists_filters_and_paginates() {
         &app,
         request(
             Method::GET,
-            "/overlay/meme-board/items?limit=2&offset=1",
+            "/overlay/media-board/items?limit=2&offset=1",
             Some(BEARER_TOKEN),
             None,
         ),
@@ -1140,7 +1186,7 @@ async fn meme_board_lists_filters_and_paginates() {
         &app,
         request(
             Method::GET,
-            "/overlay/meme-board/items?limit=0",
+            "/overlay/media-board/items?limit=0",
             Some(BEARER_TOKEN),
             None,
         ),
@@ -1152,7 +1198,7 @@ async fn meme_board_lists_filters_and_paginates() {
         &app,
         request(
             Method::GET,
-            "/overlay/meme-board/items?limit=999",
+            "/overlay/media-board/items?limit=999",
             Some(BEARER_TOKEN),
             None,
         ),
@@ -1163,7 +1209,7 @@ async fn meme_board_lists_filters_and_paginates() {
 }
 
 #[tokio::test]
-async fn meme_board_patch_and_delete_semantics() {
+async fn media_board_patch_and_delete_semantics() {
     let dir = TempDir::new().expect("tempdir");
     let (app, db) = harness(dir.path()).await;
     let client = make_client(
@@ -1209,7 +1255,7 @@ async fn meme_board_patch_and_delete_semantics() {
     )
     .await;
 
-    let uri = format!("/overlay/meme-board/items/{}", item.id.to_canonical());
+    let uri = format!("/overlay/media-board/items/{}", item.id.to_canonical());
 
     // Aucun champ → 400 invalid_payload.
     let (status, _, bytes) = send(
@@ -1236,7 +1282,7 @@ async fn meme_board_patch_and_delete_semantics() {
     assert_eq!(body["updated"], true);
     assert_eq!(body["item"]["title"], "Nouveau titre");
     let stored = db
-        .meme_board()
+        .media_board()
         .get(item.id)
         .await
         .expect("lecture item")
@@ -1277,8 +1323,8 @@ async fn meme_board_patch_and_delete_semantics() {
         request(
             Method::PATCH,
             &format!(
-                "/overlay/meme-board/items/{}",
-                MemeBoardItemId::new_v4().to_canonical()
+                "/overlay/media-board/items/{}",
+                MediaBoardItemId::new_v4().to_canonical()
             ),
             Some(BEARER_TOKEN),
             Some(&json!({"title": "x"})),
@@ -1305,7 +1351,7 @@ async fn meme_board_patch_and_delete_semantics() {
 }
 
 #[tokio::test]
-async fn meme_board_create_rejects_missing_url_without_network() {
+async fn media_board_create_rejects_missing_url_without_network() {
     let dir = TempDir::new().expect("tempdir");
     let (app, db) = harness(dir.path()).await;
     let client = make_client(
@@ -1324,7 +1370,7 @@ async fn meme_board_create_rejects_missing_url_without_network() {
         &app,
         request(
             Method::POST,
-            "/overlay/meme-board/items",
+            "/overlay/media-board/items",
             Some(BEARER_TOKEN),
             Some(&json!({"title": "sans URL"})),
         ),
@@ -1340,7 +1386,7 @@ async fn meme_board_create_rejects_missing_url_without_network() {
         &app,
         request(
             Method::POST,
-            "/overlay/meme-board/items",
+            "/overlay/media-board/items",
             Some(BEARER_TOKEN),
             Some(&json!({"url": "   "})),
         ),
@@ -1350,7 +1396,7 @@ async fn meme_board_create_rejects_missing_url_without_network() {
 }
 
 #[tokio::test]
-async fn meme_board_media_requires_auth_and_binding() {
+async fn media_board_media_requires_auth_and_binding() {
     let dir = TempDir::new().expect("tempdir");
     let (app, db) = harness(dir.path()).await;
     let client = make_client(
@@ -1388,7 +1434,7 @@ async fn meme_board_media_requires_auth_and_binding() {
     )
     .await;
     insert_item(&db, &guild(), &asset, Some("Board"), None, fixed_now()).await;
-    let uri = format!("/overlay/meme-board/media/{}", asset.id.to_canonical());
+    let uri = format!("/overlay/media-board/media/{}", asset.id.to_canonical());
 
     let (status, _, _) = send(&app, request(Method::GET, &uri, None, None)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -1410,7 +1456,7 @@ async fn meme_board_media_requires_auth_and_binding() {
         request(
             Method::GET,
             &format!(
-                "/overlay/meme-board/media/{}",
+                "/overlay/media-board/media/{}",
                 MediaAssetId::new_v4().to_canonical()
             ),
             Some(BEARER_TOKEN),
@@ -1487,7 +1533,7 @@ fn sign_media_url_matches_protocol_v2_format_and_verifies() {
 }
 
 #[tokio::test]
-async fn meme_board_create_rejects_malformed_json() {
+async fn media_board_create_rejects_malformed_json() {
     // AUD-A2-009 : JSON illisible -> 400 invalid_payload (pas request_error),
     // apres le controle de session en ecriture.
     let dir = TempDir::new().expect("tempdir");
@@ -1508,7 +1554,7 @@ async fn meme_board_create_rejects_malformed_json() {
         &app,
         raw_request(
             Method::POST,
-            "/overlay/meme-board/items",
+            "/overlay/media-board/items",
             Some(BEARER_TOKEN),
             "{\"url\":",
         ),
@@ -1519,7 +1565,7 @@ async fn meme_board_create_rejects_malformed_json() {
 }
 
 #[tokio::test]
-async fn meme_board_patch_rejects_malformed_json() {
+async fn media_board_patch_rejects_malformed_json() {
     let dir = TempDir::new().expect("tempdir");
     let (app, db) = harness(dir.path()).await;
     let client = make_client(
@@ -1545,7 +1591,7 @@ async fn meme_board_patch_rejects_malformed_json() {
     .await;
     let item = insert_item(&db, &guild(), &asset, Some("Titre"), None, fixed_now()).await;
 
-    let uri = format!("/overlay/meme-board/items/{}", item.id.to_canonical());
+    let uri = format!("/overlay/media-board/items/{}", item.id.to_canonical());
     let (status, _, bytes) = send(
         &app,
         raw_request(Method::PATCH, &uri, Some(BEARER_TOKEN), "{"),

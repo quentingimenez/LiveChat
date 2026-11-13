@@ -4,11 +4,11 @@
 //!
 //! Phase 8b : la télémétrie du renderer est traduite en trames WebSocket v2,
 //! l'appairage passe par `POST {serverUrl}/overlay/pair/consume`, et les
-//! déclenchements de mémoire utilisent les trames `meme.trigger` /
+//! déclenchements de média du board utilisent les trames `media.trigger` /
 //! `stop.request` (plus de stub `socket_unavailable`).
 
 use lc_protocol::{
-    ClientMessage, MemeTrigger, MemeTriggerPayload, PlaybackEndedPayload, PlaybackEndedReason,
+    ClientMessage, MediaTrigger, MediaTriggerPayload, PlaybackEndedPayload, PlaybackEndedReason,
     PlaybackState as ProtocolPlaybackState, PlaybackStatePayload, StopRequestPayload,
     StopRequestSource,
 };
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager, State, WebviewWindow, Wry};
 
-use crate::config::{MemeBindings, OverlayConfigView};
+use crate::config::{MediaBindings, OverlayConfigView};
 use crate::events;
 use crate::net::api;
 use crate::net::pairing::{self, PairingRequest};
@@ -48,10 +48,10 @@ const COMMAND_MATRIX: &[(&str, &[&str])] = &[
         &[
             "overlay_get_config",
             "overlay_report_error",
-            "meme_board_get_bindings",
-            "meme_board_set_bindings",
-            "meme_board_trigger",
-            "meme_board_stop",
+            "media_board_get_bindings",
+            "media_board_set_bindings",
+            "media_board_trigger",
+            "media_board_stop",
             "overlay_check_updates",
             "overlay_install_update",
             "pairing_consume",
@@ -99,21 +99,21 @@ fn ensure_allowed(window: &WebviewWindow<Wry>, command: &str) -> Result<(), Stri
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MemeBoardBindingsResponse {
-    pub bindings: MemeBindings,
+pub struct MediaBoardBindingsResponse {
+    pub bindings: MediaBindings,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MemeBoardSetBindingsResponse {
+pub struct MediaBoardSetBindingsResponse {
     pub ok: bool,
-    pub bindings: MemeBindings,
+    pub bindings: MediaBindings,
     pub failed_accelerators: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MemeBoardActionResponse {
+pub struct MediaBoardActionResponse {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -166,10 +166,10 @@ struct RendererPlaybackStopPayload {
     reason: Option<String>,
 }
 
-/// Payload de `meme_board_trigger`.
+/// Payload de `media_board_trigger`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MemeTriggerRequest {
+struct MediaTriggerRequest {
     #[serde(default)]
     item_id: Option<String>,
     #[serde(default)]
@@ -520,76 +520,76 @@ pub async fn pairing_consume(
     })
 }
 
-/// `meme_board_get_bindings` — bindings actuellement enregistrés.
+/// `media_board_get_bindings` — bindings actuellement enregistrés.
 #[tauri::command]
-pub fn meme_board_get_bindings(
+pub fn media_board_get_bindings(
     window: WebviewWindow<Wry>,
     state: State<'_, AppState>,
-) -> Result<MemeBoardBindingsResponse, String> {
-    ensure_allowed(&window, "meme_board_get_bindings")?;
-    Ok(MemeBoardBindingsResponse {
+) -> Result<MediaBoardBindingsResponse, String> {
+    ensure_allowed(&window, "media_board_get_bindings")?;
+    Ok(MediaBoardBindingsResponse {
         bindings: state.active_bindings(),
     })
 }
 
-/// `meme_board_set_bindings` — applique puis persiste les bindings (strict).
+/// `media_board_set_bindings` — applique puis persiste les bindings (strict).
 #[tauri::command]
-pub fn meme_board_set_bindings(
+pub fn media_board_set_bindings(
     window: WebviewWindow<Wry>,
     app: AppHandle<Wry>,
     payload: Value,
-) -> Result<MemeBoardSetBindingsResponse, String> {
-    ensure_allowed(&window, "meme_board_set_bindings")?;
+) -> Result<MediaBoardSetBindingsResponse, String> {
+    ensure_allowed(&window, "media_board_set_bindings")?;
     let bindings = payload
         .get("bindings")
         .cloned()
-        .map(serde_json::from_value::<MemeBindings>)
+        .map(serde_json::from_value::<MediaBindings>)
         .transpose()
         .map_err(|error| format!("bindings invalides : {error}"))?
         .unwrap_or_default();
-    let result = crate::shortcuts::apply_meme_bindings(&app, bindings, true, true);
+    let result = crate::shortcuts::apply_media_bindings(&app, bindings, true, true);
     tray::refresh_tray(&app);
-    Ok(MemeBoardSetBindingsResponse {
+    Ok(MediaBoardSetBindingsResponse {
         ok: result.ok,
         bindings: result.applied_bindings,
         failed_accelerators: result.failed_accelerators,
     })
 }
 
-/// `meme_board_trigger` — déclenchement manuel via `meme.trigger`.
+/// `media_board_trigger` — déclenchement manuel via `media.trigger`.
 #[tauri::command]
-pub fn meme_board_trigger(
+pub fn media_board_trigger(
     window: WebviewWindow<Wry>,
     app: AppHandle<Wry>,
     payload: Value,
-) -> Result<MemeBoardActionResponse, String> {
-    ensure_allowed(&window, "meme_board_trigger")?;
-    let parsed = serde_json::from_value::<MemeTriggerRequest>(payload).unwrap_or_default();
+) -> Result<MediaBoardActionResponse, String> {
+    ensure_allowed(&window, "media_board_trigger")?;
+    let parsed = serde_json::from_value::<MediaTriggerRequest>(payload).unwrap_or_default();
     let item_id = parsed
         .item_id
         .map(|item_id| item_id.trim().to_string())
         .filter(|item_id| !item_id.is_empty());
     let Some(item_id) = item_id else {
-        return Ok(MemeBoardActionResponse {
+        return Ok(MediaBoardActionResponse {
             ok: false,
             reason: Some("invalid_item_id".to_string()),
         });
     };
     let trigger = match parsed.trigger.as_deref() {
-        Some("shortcut") => MemeTrigger::Shortcut,
-        _ => MemeTrigger::Ui,
+        Some("shortcut") => MediaTrigger::Shortcut,
+        _ => MediaTrigger::Ui,
     };
     let state = app.state::<AppState>();
     let sent = match target_guild(&state, parsed.guild_id.as_deref()) {
         Some(guild_id) => send_protocol_to(
             &app,
             &guild_id,
-            ClientMessage::MemeTrigger(MemeTriggerPayload { item_id, trigger }),
-            "meme_board_trigger",
+            ClientMessage::MediaTrigger(MediaTriggerPayload { item_id, trigger }),
+            "media_board_trigger",
         ),
         None => false,
     };
-    Ok(MemeBoardActionResponse {
+    Ok(MediaBoardActionResponse {
         ok: sent,
         reason: if sent {
             None
@@ -599,14 +599,14 @@ pub fn meme_board_trigger(
     })
 }
 
-/// `meme_board_stop` — arrêt manuel via `stop.request`.
+/// `media_board_stop` — arrêt manuel via `stop.request`.
 #[tauri::command]
-pub fn meme_board_stop(
+pub fn media_board_stop(
     window: WebviewWindow<Wry>,
     app: AppHandle<Wry>,
     payload: Option<Value>,
-) -> Result<MemeBoardActionResponse, String> {
-    ensure_allowed(&window, "meme_board_stop")?;
+) -> Result<MediaBoardActionResponse, String> {
+    ensure_allowed(&window, "media_board_stop")?;
     let parsed = payload
         .map(|payload| serde_json::from_value::<GuildRequest>(payload).unwrap_or_default())
         .unwrap_or_default();
@@ -619,11 +619,11 @@ pub fn meme_board_stop(
                 job_id: None,
                 source: Some(StopRequestSource::User),
             }),
-            "meme_board_stop",
+            "media_board_stop",
         ),
         None => false,
     };
-    Ok(MemeBoardActionResponse {
+    Ok(MediaBoardActionResponse {
         ok: sent,
         reason: if sent {
             None
@@ -820,12 +820,12 @@ mod tests {
         assert!(command_allowed("overlay", "overlay_renderer_ready"));
         assert!(command_allowed("overlay", "overlay_report_error"));
         assert!(!command_allowed("overlay", "pairing_consume"));
-        assert!(!command_allowed("overlay", "meme_board_set_bindings"));
+        assert!(!command_allowed("overlay", "media_board_set_bindings"));
         assert!(!command_allowed("overlay", "overlay_install_update"));
 
-        // Board : gestion des mémos et mises à jour.
-        assert!(command_allowed("board", "meme_board_set_bindings"));
-        assert!(command_allowed("board", "meme_board_trigger"));
+        // Board : gestion des médias du board et mises à jour.
+        assert!(command_allowed("board", "media_board_set_bindings"));
+        assert!(command_allowed("board", "media_board_trigger"));
         assert!(command_allowed("board", "overlay_check_updates"));
         assert!(command_allowed("board", "overlay_install_update"));
         // Le board est l'application principale : il rejoint et gère les guildes.
@@ -849,7 +849,7 @@ mod tests {
         // Pairing : appairage uniquement.
         assert!(command_allowed("pairing", "pairing_consume"));
         assert!(command_allowed("pairing", "overlay_get_config"));
-        assert!(!command_allowed("pairing", "meme_board_trigger"));
+        assert!(!command_allowed("pairing", "media_board_trigger"));
 
         // Fenêtre inconnue : tout est refusé.
         assert!(!command_allowed("unknown", "overlay_get_config"));
@@ -858,7 +858,7 @@ mod tests {
 
     #[test]
     fn config_view_is_window_scoped() {
-        use crate::config::{MemeBindings, OverlayConfigView};
+        use crate::config::{MediaBindings, OverlayConfigView};
 
         fn view_with_token() -> OverlayConfigView {
             OverlayConfigView {
@@ -869,7 +869,7 @@ mod tests {
                 guest_mode: false,
                 show_text: true,
                 volume: 1.0,
-                meme_bindings: MemeBindings::new(),
+                media_bindings: MediaBindings::new(),
             }
         }
 

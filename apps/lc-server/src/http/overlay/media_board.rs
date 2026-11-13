@@ -1,18 +1,21 @@
-//! Routes `/overlay/meme-board/*` (Bearer obligatoire).
+//! Routes `/overlay/media-board/*` (Bearer obligatoire).
 //!
 //! Parité REST avec `server/src/components/overlay/overlayRoutes.ts:376-567` et
-//! `server/src/services/memeBoard.ts`. Le meme board est une liste ordonnée de
+//! `server/src/services/mediaBoard.ts`. Le board média est une liste ordonnée de
 //! médias épinglés appartenant à la guilde du client overlay authentifié.
+//!
+//! Les anciens chemins `/overlay/meme-board/*` restent acceptés par le routeur
+//! pour l'overlay 3.0.0 (mêmes handlers, compatibilité legacy).
 //!
 //! ## Routes
 //!
 //! | Méthode | Chemin | Réponse |
 //! |---------|--------|---------|
-//! | `GET` | `/overlay/meme-board/items?q=&limit=&offset=` | `{total, limit, offset, items}` |
-//! | `POST` | `/overlay/meme-board/items` | `{created, item}` |
-//! | `GET` | `/overlay/meme-board/media/{assetId}` | flux binaire (`Range` supporté) |
-//! | `PATCH` | `/overlay/meme-board/items/{itemId}` | `{updated:true, item:{id,title,message}}` |
-//! | `DELETE` | `/overlay/meme-board/items/{itemId}` | `{deleted}` |
+//! | `GET` | `/overlay/media-board/items?q=&limit=&offset=` | `{total, limit, offset, items}` |
+//! | `POST` | `/overlay/media-board/items` | `{created, item}` |
+//! | `GET` | `/overlay/media-board/media/{assetId}` | flux binaire (`Range` supporté) |
+//! | `PATCH` | `/overlay/media-board/items/{itemId}` | `{updated:true, item:{id,title,message}}` |
+//! | `DELETE` | `/overlay/media-board/items/{itemId}` | `{deleted}` |
 //!
 //! ## Réponses exactes
 //!
@@ -27,7 +30,7 @@
 //! ## Sessions en lecture seule (`INVITE_READ_ONLY`)
 //!
 //! Le protocole v2 (§9) réserve la session `invite_read_only` à la lecture. Les
-//! mutations du meme board (`POST items`, `PATCH item`, `DELETE item`) sont donc
+//! mutations du board média (`POST items`, `PATCH item`, `DELETE item`) sont donc
 //! refusées avec `403 {"error":"read_only_session"}` **avant toute validation de
 //! charge utile**, tandis que les `GET` (`items`, `media`) restent autorisés.
 //! Le mode provient de l'extracteur [`AuthedOverlayClient::is_read_only`]
@@ -55,7 +58,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
 use chrono::{DateTime, Utc};
-use lc_domain::{GuildId, MediaAsset, MediaAssetId, MemeBoardItem, MemeBoardItemId, Permission};
+use lc_domain::{GuildId, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, Permission};
 use serde::Deserialize;
 
 use crate::app::AppState;
@@ -96,7 +99,7 @@ pub(super) struct ListQuery {
     guild_id: Option<String>,
 }
 
-/// Corps `POST /meme-board/items`.
+/// Corps `POST /media-board/items`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct CreateItemRequest {
@@ -114,7 +117,7 @@ pub(super) struct CreateItemRequest {
     force_refresh: Option<serde_json::Value>,
 }
 
-/// Handler `GET /overlay/meme-board/items`.
+/// Handler `GET /overlay/media-board/items`.
 pub async fn list_items(
     State(state): State<AppState>,
     auth: AuthedOverlayClient,
@@ -152,7 +155,7 @@ pub async fn list_items(
     // centaines d'items) ; seuls les assets de la page (≤ 200) sont rechargés.
     let rows = match load_board_rows(db, auth.guild_id()).await {
         Ok(rows) => rows,
-        Err(db_error) => return db_failure("overlay_meme_board.list_items", &db_error),
+        Err(db_error) => return db_failure("overlay_media_board.list_items", &db_error),
     };
     let filtered = rows
         .into_iter()
@@ -170,7 +173,7 @@ pub async fn list_items(
             Ok(Some(asset)) => asset,
             Ok(None) => continue,
             Err(db_error) => {
-                return db_failure("overlay_meme_board.list_item_asset", &db_error);
+                return db_failure("overlay_media_board.list_item_asset", &db_error);
             }
         };
         let mut payload = item_payload(&row.item, &asset);
@@ -198,7 +201,7 @@ pub async fn list_items(
     )
 }
 
-/// Handler `POST /overlay/meme-board/items`.
+/// Handler `POST /overlay/media-board/items`.
 pub async fn create_item(
     State(state): State<AppState>,
     auth: AuthedOverlayClient,
@@ -216,7 +219,7 @@ pub async fn create_item(
         Err(rejection) => {
             tracing::debug!(
                 error = %rejection.body_text(),
-                "corps JSON invalide sur POST /overlay/meme-board/items"
+                "corps JSON invalide sur POST /overlay/media-board/items"
             );
             return invalid_json();
         }
@@ -257,7 +260,7 @@ pub async fn create_item(
 
     // Dédoublonnage board : (guilde, asset) déjà épinglé → `created:false`.
     match db
-        .meme_board()
+        .media_board()
         .get_by_guild_and_asset(auth.guild_id(), asset.id)
         .await
     {
@@ -268,13 +271,13 @@ pub async fn create_item(
             );
         }
         Ok(None) => {}
-        Err(db_error) => return db_failure("overlay_meme_board.board_lookup", &db_error),
+        Err(db_error) => return db_failure("overlay_media_board.board_lookup", &db_error),
     }
 
     // Quota de stockage de la board (legacy `ensureGuildBoardHasCapacity`).
     let used = match board_total_bytes(db, auth.guild_id()).await {
         Ok(used) => used,
-        Err(db_error) => return db_failure("overlay_meme_board.board_usage", &db_error),
+        Err(db_error) => return db_failure("overlay_media_board.board_usage", &db_error),
     };
     let limit_bytes = i64::try_from(
         state
@@ -305,13 +308,13 @@ pub async fn create_item(
     let asset = match assets::pin(db, asset.id, now).await {
         Ok(pinned) => pinned,
         Err(MediaServiceError::Database(db_error)) => {
-            return db_failure("overlay_meme_board.pin_board_asset", &db_error);
+            return db_failure("overlay_media_board.pin_board_asset", &db_error);
         }
         Err(service_error) => return media_service_error(&service_error),
     };
 
-    let item = MemeBoardItem {
-        id: MemeBoardItemId::new_v4(),
+    let item = MediaBoardItem {
+        id: MediaBoardItemId::new_v4(),
         guild_id: auth.guild_id().clone(),
         media_asset_id: asset.id,
         title: payload
@@ -328,13 +331,16 @@ pub async fn create_item(
         created_by_name: board_author_name(&auth),
         created_at: now,
     };
-    match db.meme_board().create(&item).await {
+    match db.media_board().create(&item).await {
         Ok(()) => {
-            // L'auteur sert au droit « modifier ses propres mèmes ».
+            // L'auteur sert au droit « modifier ses propres médias ».
             if let Some(member_id) = auth.member_id() {
-                if let Err(db_error) = db.meme_board().set_creator_member(item.id, member_id).await
+                if let Err(db_error) = db
+                    .media_board()
+                    .set_creator_member(item.id, member_id)
+                    .await
                 {
-                    return db_failure("overlay_meme_board.record_author", &db_error);
+                    return db_failure("overlay_media_board.record_author", &db_error);
                 }
             }
             json_response(
@@ -343,7 +349,7 @@ pub async fn create_item(
             )
         }
         Err(db_error) if is_conflict(&db_error) => match db
-            .meme_board()
+            .media_board()
             .get_by_guild_and_asset(auth.guild_id(), asset.id)
             .await
         {
@@ -352,13 +358,13 @@ pub async fn create_item(
                 serde_json::json!({"created": false, "item": item_payload(&existing_item, &asset)}),
             ),
             Ok(None) => internal_error(),
-            Err(db_error) => db_failure("overlay_meme_board.reload_item", &db_error),
+            Err(db_error) => db_failure("overlay_media_board.reload_item", &db_error),
         },
-        Err(db_error) => db_failure("overlay_meme_board.insert_item", &db_error),
+        Err(db_error) => db_failure("overlay_media_board.insert_item", &db_error),
     }
 }
 
-/// Handler `GET /overlay/meme-board/media/{assetId}`.
+/// Handler `GET /overlay/media-board/media/{assetId}`.
 pub async fn get_media(
     State(state): State<AppState>,
     auth: AuthedOverlayClient,
@@ -377,18 +383,18 @@ pub async fn get_media(
         return response;
     }
     match db
-        .meme_board()
+        .media_board()
         .get_by_guild_and_asset(auth.guild_id(), asset_id)
         .await
     {
         Ok(Some(_)) => {}
         Ok(None) => return super::media::media_not_found(),
-        Err(db_error) => return db_failure("overlay_meme_board.media_binding", &db_error),
+        Err(db_error) => return db_failure("overlay_media_board.media_binding", &db_error),
     }
     let asset = match db.media_assets().get(asset_id).await {
         Ok(Some(asset)) => asset,
         Ok(None) => return super::media::media_not_found(),
-        Err(db_error) => return db_failure("overlay_meme_board.media_asset", &db_error),
+        Err(db_error) => return db_failure("overlay_media_board.media_asset", &db_error),
     };
     if !asset.is_ready() || asset.is_expired_at(now(&state)) {
         return super::media::media_not_found();
@@ -401,7 +407,7 @@ pub async fn get_media(
     super::media::serve_file(&asset, &file_path, method, range.as_ref()).await
 }
 
-/// Handler `PATCH /overlay/meme-board/items/{itemId}`.
+/// Handler `PATCH /overlay/media-board/items/{itemId}`.
 pub async fn update_item(
     State(state): State<AppState>,
     auth: AuthedOverlayClient,
@@ -417,7 +423,7 @@ pub async fn update_item(
         Err(rejection) => {
             tracing::debug!(
                 error = %rejection.body_text(),
-                "corps JSON invalide sur PATCH /overlay/meme-board/items"
+                "corps JSON invalide sur PATCH /overlay/media-board/items"
             );
             return invalid_json();
         }
@@ -436,17 +442,17 @@ pub async fn update_item(
             serde_json::json!({"error": "invalid_payload", "message": "title or message is required"}),
         );
     }
-    let Ok(item_id) = item_id_raw.trim().parse::<MemeBoardItemId>() else {
+    let Ok(item_id) = item_id_raw.trim().parse::<MediaBoardItemId>() else {
         return error(StatusCode::NOT_FOUND, "item_not_found");
     };
     let db = match db(&state) {
         Ok(db) => db,
         Err(response) => return response,
     };
-    let existing = match db.meme_board().get(item_id).await {
+    let existing = match db.media_board().get(item_id).await {
         Ok(Some(item)) if &item.guild_id == auth.guild_id() => item,
         Ok(_) => return error(StatusCode::NOT_FOUND, "item_not_found"),
-        Err(db_error) => return db_failure("overlay_meme_board.patch_lookup", &db_error),
+        Err(db_error) => return db_failure("overlay_media_board.patch_lookup", &db_error),
     };
     if let Err(response) = ensure_can_edit(db, &auth, item_id).await {
         return response;
@@ -466,7 +472,7 @@ pub async fn update_item(
     };
 
     match db
-        .meme_board()
+        .media_board()
         .update(item_id, title.as_deref(), message.as_deref())
         .await
     {
@@ -482,11 +488,11 @@ pub async fn update_item(
             }),
         ),
         Ok(false) => error(StatusCode::NOT_FOUND, "item_not_found"),
-        Err(db_error) => db_failure("overlay_meme_board.patch_update", &db_error),
+        Err(db_error) => db_failure("overlay_media_board.patch_update", &db_error),
     }
 }
 
-/// Handler `DELETE /overlay/meme-board/items/{itemId}`.
+/// Handler `DELETE /overlay/media-board/items/{itemId}`.
 pub async fn delete_item(
     State(state): State<AppState>,
     auth: AuthedOverlayClient,
@@ -496,17 +502,17 @@ pub async fn delete_item(
     if let Err(response) = ensure_writable(&auth) {
         return response;
     }
-    let Ok(item_id) = item_id_raw.trim().parse::<MemeBoardItemId>() else {
+    let Ok(item_id) = item_id_raw.trim().parse::<MediaBoardItemId>() else {
         return json_response(StatusCode::OK, serde_json::json!({"deleted": false}));
     };
     let db = match db(&state) {
         Ok(db) => db,
         Err(response) => return response,
     };
-    let existing = match db.meme_board().get(item_id).await {
+    let existing = match db.media_board().get(item_id).await {
         Ok(Some(item)) if &item.guild_id == auth.guild_id() => item,
         Ok(_) => return json_response(StatusCode::OK, serde_json::json!({"deleted": false})),
-        Err(db_error) => return db_failure("overlay_meme_board.delete_lookup", &db_error),
+        Err(db_error) => return db_failure("overlay_media_board.delete_lookup", &db_error),
     };
     if let Err(response) = ensure_can_edit(db, &auth, item_id).await {
         return response;
@@ -530,7 +536,7 @@ pub async fn delete_item(
     .await
     {
         Ok(deleted) => deleted,
-        Err(db_error) => return db_failure("overlay_meme_board.delete", &db_error),
+        Err(db_error) => return db_failure("overlay_media_board.delete", &db_error),
     };
 
     json_response(StatusCode::OK, serde_json::json!({"deleted": deleted}))
@@ -559,7 +565,7 @@ async fn ensure_board_visible(db: &Db, auth: &AuthedOverlayClient) -> Result<(),
     }
     let guests_can_view_board = match db.guilds().access(auth.guild_id()).await {
         Ok(access) => access.is_none_or(|access| access.guests_can_view_board),
-        Err(db_error) => return Err(db_failure("overlay_meme_board.board_access", &db_error)),
+        Err(db_error) => return Err(db_failure("overlay_media_board.board_access", &db_error)),
     };
     if auth.role().can_view_board(guests_can_view_board) {
         Ok(())
@@ -568,18 +574,18 @@ async fn ensure_board_visible(db: &Db, auth: &AuthedOverlayClient) -> Result<(),
     }
 }
 
-/// `true` si le client peut modifier ou supprimer un mème dont l'auteur est
+/// `true` si le client peut modifier ou supprimer un média dont l'auteur est
 /// `creator_member_id`.
 ///
-/// Un admin modifie tout ; un membre modifie ses propres mèmes. Un mème sans
+/// Un admin modifie tout ; un membre modifie ses propres médias. Un média sans
 /// auteur enregistré (antérieur aux rôles, ou ajouté depuis Discord) reste
 /// modifiable par tout membre, comme avant ; il en va de même pour un overlay
 /// sans membre rattaché.
 fn can_edit(auth: &AuthedOverlayClient, creator_member_id: Option<&str>) -> bool {
-    if auth.can(Permission::EditAnyMeme) {
+    if auth.can(Permission::EditAnyMedia) {
         return true;
     }
-    if !auth.can(Permission::EditOwnMeme) {
+    if !auth.can(Permission::EditOwnMedia) {
         return false;
     }
     match (auth.member_id(), creator_member_id) {
@@ -588,15 +594,15 @@ fn can_edit(auth: &AuthedOverlayClient, creator_member_id: Option<&str>) -> bool
     }
 }
 
-/// Garde de modification d'un mème existant (`403 forbidden` sinon).
+/// Garde de modification d'un média existant (`403 forbidden` sinon).
 async fn ensure_can_edit(
     db: &Db,
     auth: &AuthedOverlayClient,
-    item_id: MemeBoardItemId,
+    item_id: MediaBoardItemId,
 ) -> Result<(), Response> {
-    let creator = match db.meme_board().creator_member(item_id).await {
+    let creator = match db.media_board().creator_member(item_id).await {
         Ok(creator) => creator.map(lc_domain::GuildMemberId::to_canonical),
-        Err(db_error) => return Err(db_failure("overlay_meme_board.item_author", &db_error)),
+        Err(db_error) => return Err(db_failure("overlay_media_board.item_author", &db_error)),
     };
     if can_edit(auth, creator.as_deref()) {
         Ok(())
@@ -606,7 +612,7 @@ async fn ensure_can_edit(
 }
 
 /// Payload JSON d'un item de board (format legacy exact).
-fn item_payload(item: &MemeBoardItem, asset: &MediaAsset) -> serde_json::Value {
+fn item_payload(item: &MediaBoardItem, asset: &MediaAsset) -> serde_json::Value {
     serde_json::json!({
         "id": item.id.to_canonical(),
         "guildId": item.guild_id.as_str(),
@@ -656,9 +662,9 @@ fn normalize_offset(raw: Option<&str>) -> usize {
 
 /// Ligne de board lue en une seule requête (item + URL source de l'asset).
 struct BoardRow {
-    item: MemeBoardItem,
+    item: MediaBoardItem,
     source_url: String,
-    /// Membre auteur (`meme_board_items.created_by_member_id`), s'il est connu.
+    /// Membre auteur (`media_board_items.created_by_member_id`), s'il est connu.
     created_by_member_id: Option<String>,
 }
 
@@ -691,7 +697,7 @@ async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<Boa
         "SELECT b.id, b.guild_id, b.media_asset_id, b.title, b.message, \
                 b.created_by_discord_user_id, b.created_by_name, b.created_at, b.created_by_member_id, \
                 a.source_url \
-           FROM meme_board_items b \
+           FROM media_board_items b \
            JOIN media_assets a ON a.id = b.media_asset_id \
           WHERE b.guild_id = ? \
           ORDER BY b.created_at DESC, b.id ASC",
@@ -722,7 +728,7 @@ async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<Boa
             .try_get("created_by_member_id")
             .map_err(lc_db::DbError::from)?;
 
-        let item_id = MemeBoardItemId::parse(&item_id_raw)
+        let item_id = MediaBoardItemId::parse(&item_id_raw)
             .map_err(|error| corrupt_row(format!("id invalide ({item_id_raw}): {error}")))?;
         let item_guild = GuildId::parse(&guild_raw)
             .map_err(|error| corrupt_row(format!("guild_id invalide ({guild_raw}): {error}")))?;
@@ -733,7 +739,7 @@ async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<Boa
             .ok_or_else(|| corrupt_row(format!("created_at invalide ({created_at_ms})")))?;
 
         rows.push(BoardRow {
-            item: MemeBoardItem {
+            item: MediaBoardItem {
                 id: item_id,
                 guild_id: item_guild,
                 media_asset_id,
@@ -753,7 +759,7 @@ async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<Boa
 /// Erreur `Corrupt` ciblée pour une ligne de board illisible.
 fn corrupt_row(detail: String) -> lc_db::DbError {
     lc_db::DbError::Corrupt {
-        table: "meme_board_items",
+        table: "media_board_items",
         detail,
     }
 }
@@ -762,7 +768,7 @@ fn corrupt_row(detail: String) -> lc_db::DbError {
 async fn board_total_bytes(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<i64> {
     let total = sqlx::query_scalar::<_, i64>(
         "SELECT COALESCE(SUM(a.size_bytes), 0) \
-           FROM meme_board_items b \
+           FROM media_board_items b \
            JOIN media_assets a ON a.id = b.media_asset_id \
           WHERE b.guild_id = ?",
     )
@@ -777,14 +783,14 @@ async fn board_total_bytes(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<i64> 
 /// plus référencé, le tout dans une transaction (AUD-A2-013).
 async fn delete_item_and_release(
     db: &Db,
-    item_id: MemeBoardItemId,
+    item_id: MediaBoardItemId,
     guild_id: &GuildId,
     media_asset_id: MediaAssetId,
     released_expiry: DateTime<Utc>,
 ) -> lc_db::DbResult<bool> {
     let mut transaction = db.pool().begin().await.map_err(lc_db::DbError::from)?;
 
-    let deleted = sqlx::query("DELETE FROM meme_board_items WHERE id = ? AND guild_id = ?")
+    let deleted = sqlx::query("DELETE FROM media_board_items WHERE id = ? AND guild_id = ?")
         .bind(item_id.to_canonical())
         .bind(guild_id.as_str())
         .execute(&mut *transaction)
@@ -795,7 +801,7 @@ async fn delete_item_and_release(
 
     if deleted {
         let remaining = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM meme_board_items WHERE media_asset_id = ?",
+            "SELECT COUNT(*) FROM media_board_items WHERE media_asset_id = ?",
         )
         .bind(media_asset_id.to_canonical())
         .fetch_one(&mut *transaction)

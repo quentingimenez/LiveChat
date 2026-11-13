@@ -10,11 +10,11 @@
 use chrono::{DateTime, Duration, Utc};
 use lc_db::{Db, DbConfig};
 use lc_domain::entities::{
-    Guild, IngestClient, MediaAsset, MemeBoardItem, OverlayClient, PairingCodeEntry, PlaybackJob,
+    Guild, IngestClient, MediaAsset, MediaBoardItem, OverlayClient, PairingCodeEntry, PlaybackJob,
 };
 use lc_domain::enums::{JobStatus, MediaKind, MediaStatus, OverlaySessionMode, PairingMode};
 use lc_domain::ids::{
-    GuildId, IngestClientId, MediaAssetId, MemeBoardItemId, OverlayClientId,
+    GuildId, IngestClientId, MediaAssetId, MediaBoardItemId, OverlayClientId,
     PairingCode as PairingCodeValue, PlaybackJobId,
 };
 use lc_domain::ms_to_datetime;
@@ -85,7 +85,7 @@ pub fn sample_job(guild_id: &GuildId, now: DateTime<Utc>) -> PlaybackJob {
         id: PlaybackJobId::new_v4(),
         guild_id: guild_id.clone(),
         media_asset_id: None,
-        text: Some("mème de test".to_owned()),
+        text: Some("média de test".to_owned()),
         show_text: false,
         author_name: Some("Auteur test".to_owned()),
         author_image: None,
@@ -104,18 +104,18 @@ pub fn sample_job(guild_id: &GuildId, now: DateTime<Utc>) -> PlaybackJob {
     }
 }
 
-/// Élément de meme board minimal.
-pub fn sample_meme(
+/// Élément de board média minimal.
+pub fn sample_board_item(
     guild_id: &GuildId,
     media_asset_id: MediaAssetId,
     now: DateTime<Utc>,
-) -> MemeBoardItem {
-    MemeBoardItem {
-        id: MemeBoardItemId::new_v4(),
+) -> MediaBoardItem {
+    MediaBoardItem {
+        id: MediaBoardItemId::new_v4(),
         guild_id: guild_id.clone(),
         media_asset_id,
-        title: Some("Titre mème".to_owned()),
-        message: Some("Message mème".to_owned()),
+        title: Some("Titre média".to_owned()),
+        message: Some("Message média".to_owned()),
         created_by_discord_user_id: Some("42".to_owned()),
         created_by_name: Some("Auteur".to_owned()),
         created_at: now,

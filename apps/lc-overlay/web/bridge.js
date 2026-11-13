@@ -43,10 +43,10 @@
     reportPlaybackState: 'overlay_report_playback_state',
     reportPlaybackStop: 'overlay_report_playback_stop',
     consumePairing: 'pairing_consume',
-    getMemeBindings: 'meme_board_get_bindings',
-    setMemeBindings: 'meme_board_set_bindings',
-    triggerMeme: 'meme_board_trigger',
-    stopMemePlayback: 'meme_board_stop'
+    getMediaBindings: 'media_board_get_bindings',
+    setMediaBindings: 'media_board_set_bindings',
+    triggerMedia: 'media_board_trigger',
+    stopMediaPlayback: 'media_board_stop'
   });
 
   const EVENTS = Object.freeze({
@@ -408,7 +408,7 @@
     guestMode: false,
     showText: true,
     volume: 1,
-    memeBindings: {}
+    mediaBindings: {}
   });
 
   function cloneJson(value) {
@@ -482,11 +482,11 @@
         console.info(LOG_PREFIX + ' [mock] consumePairing simulé (aucune requête réseau) :', sanitizeForLog(payload, 0));
         break;
 
-      case COMMANDS.getMemeBindings:
+      case COMMANDS.getMediaBindings:
         result = { bindings: {} };
         break;
 
-      case COMMANDS.setMemeBindings:
+      case COMMANDS.setMediaBindings:
         result = {
           ok: true,
           bindings: normalizeMockBindings(payload && payload.bindings),
@@ -494,11 +494,11 @@
         };
         break;
 
-      case COMMANDS.triggerMeme:
+      case COMMANDS.triggerMedia:
         result = { ok: true };
         break;
 
-      case COMMANDS.stopMemePlayback:
+      case COMMANDS.stopMediaPlayback:
         result = { ok: true };
         break;
 
@@ -562,7 +562,7 @@
    * Les méthodes Electron `rendererReady` / `report*` sont des `send` sans
    * retour : on conserve une API « fire-and-forget » (Promise toujours résolue)
    * pour ne pas provoquer d'unhandled rejection chez le renderer legacy.
-   * `getConfig` / `consumePairing` / `meme-board:*` propagent leurs erreurs.
+   * `getConfig` / `consumePairing` / `media-board:*` propagent leurs erreurs.
    */
   function sendCommand(method, commandName, args) {
     return callCommand(method, commandName, args, { ignoreErrors: true });
@@ -703,20 +703,20 @@
       return callCommand('consumePairing', COMMANDS.consumePairing, asPayloadArg(payload));
     },
 
-    getMemeBindings: function () {
-      return callCommand('getMemeBindings', COMMANDS.getMemeBindings, undefined);
+    getMediaBindings: function () {
+      return callCommand('getMediaBindings', COMMANDS.getMediaBindings, undefined);
     },
 
-    setMemeBindings: function (payload) {
-      return callCommand('setMemeBindings', COMMANDS.setMemeBindings, asPayloadArg(payload));
+    setMediaBindings: function (payload) {
+      return callCommand('setMediaBindings', COMMANDS.setMediaBindings, asPayloadArg(payload));
     },
 
-    triggerMeme: function (payload) {
-      return callCommand('triggerMeme', COMMANDS.triggerMeme, asPayloadArg(payload));
+    triggerMedia: function (payload) {
+      return callCommand('triggerMedia', COMMANDS.triggerMedia, asPayloadArg(payload));
     },
 
-    stopMemePlayback: function () {
-      return callCommand('stopMemePlayback', COMMANDS.stopMemePlayback, undefined);
+    stopMediaPlayback: function () {
+      return callCommand('stopMediaPlayback', COMMANDS.stopMediaPlayback, undefined);
     }
   };
 

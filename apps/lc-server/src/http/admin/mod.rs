@@ -101,8 +101,8 @@ pub fn router() -> Router<AppState> {
             post(guilds::revoke_clients),
         )
         .route(
-            "/admin/api/guilds/{guild_id}/meme-board/clear",
-            post(guilds::clear_meme_board),
+            "/admin/api/guilds/{guild_id}/media-board/clear",
+            post(guilds::clear_media_board),
         )
         .route(
             "/admin/api/guilds/{guild_id}/discord-unlink",

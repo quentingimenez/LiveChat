@@ -62,8 +62,8 @@ pub const PEERS_REQUEST_MIN_INTERVAL_MS: u64 = 2_000;
 /// Borne haute de `remainingMs` acceptée (24 heures).
 pub const MAX_PLAYBACK_REMAINING_MS: u64 = 86_400_000;
 
-/// Longueur maximale du texte d'un mème déclenché depuis l'overlay.
-pub const MAX_MEME_TEXT_CHARS: usize = 500;
+/// Longueur maximale du texte d'un média déclenché depuis l'overlay.
+pub const MAX_MEDIA_TEXT_CHARS: usize = 500;
 
 /// Codes de fermeture WebSocket v2.
 pub mod close_code {
@@ -137,8 +137,10 @@ pub mod msg_type {
     pub const ERROR: &str = "error";
     /// C→S : demande d'arrêt manuel de la lecture.
     pub const STOP_REQUEST: &str = "stop.request";
-    /// C→S : déclenchement d'un mème.
-    pub const MEME_TRIGGER: &str = "meme.trigger";
+    /// C→S : déclenchement d'un média.
+    pub const MEDIA_TRIGGER: &str = "media.trigger";
+    /// C→S : ancien nom du déclenchement, accepté pour l'overlay 3.0.0.
+    pub const LEGACY_MEME_TRIGGER: &str = "meme.trigger";
     /// C→S : demande de la liste des pairs.
     pub const PEERS_REQUEST: &str = "peers.request";
     /// S→C : acceptation du `hello`.
@@ -151,7 +153,7 @@ pub mod msg_type {
     pub const PLAY: &str = "play";
     /// S→C : arrêt de lecture (manuel, préemption, révocation, purge).
     pub const STOP: &str = "stop";
-    /// S→C : acquittement d'un `stop.request` ou `meme.trigger`.
+    /// S→C : acquittement d'un `stop.request` ou `media.trigger`.
     pub const ACK: &str = "ack";
 }
 
@@ -342,9 +344,10 @@ pub enum ClientMessage {
     /// Demande d'arrêt manuel.
     #[serde(rename = "stop.request")]
     StopRequest(StopRequestPayload),
-    /// Déclenchement d'un mème.
-    #[serde(rename = "meme.trigger")]
-    MemeTrigger(MemeTriggerPayload),
+    /// Déclenchement d'un média.
+    // Legacy overlay 3.0.0 compatibility: remove in 3.1.
+    #[serde(rename = "media.trigger", alias = "meme.trigger")]
+    MediaTrigger(MediaTriggerPayload),
     /// Demande de la liste des pairs.
     #[serde(rename = "peers.request")]
     PeersRequest(PeersRequestPayload),
@@ -361,7 +364,7 @@ impl ClientMessage {
             Self::PlaybackEnded(_) => msg_type::PLAYBACK_ENDED,
             Self::Error(_) => msg_type::ERROR,
             Self::StopRequest(_) => msg_type::STOP_REQUEST,
-            Self::MemeTrigger(_) => msg_type::MEME_TRIGGER,
+            Self::MediaTrigger(_) => msg_type::MEDIA_TRIGGER,
             Self::PeersRequest(_) => msg_type::PEERS_REQUEST,
         }
     }
@@ -414,9 +417,9 @@ impl ServerMessage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionMode {
-    /// Session normale : lecture, mèmes et arrêt autorisés.
+    /// Session normale : lecture, médias et arrêt autorisés.
     Normal,
-    /// Session invitée : mèmes et arrêt refusés (`ack` `read_only`).
+    /// Session invitée : médias et arrêt refusés (`ack` `read_only`).
     InviteReadOnly,
 }
 
@@ -460,7 +463,7 @@ pub enum PlaybackEndedReason {
 pub enum StopReason {
     /// Arrêt manuel demandé par un opérateur.
     Manual,
-    /// Préemption par un job prioritaire (mème).
+    /// Préemption par un job prioritaire (média du board).
     Preempt,
     /// Client révoqué par l'administration.
     Revoked,
@@ -468,10 +471,10 @@ pub enum StopReason {
     Purge,
 }
 
-/// Origine d'un déclenchement de mème.
+/// Origine d'un déclenchement de média.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum MemeTrigger {
+pub enum MediaTrigger {
     /// Raccourci clavier configuré.
     Shortcut,
     /// Déclenchement depuis l'interface du board.
@@ -570,14 +573,14 @@ pub struct StopRequestPayload {
     pub source: Option<StopRequestSource>,
 }
 
-/// Payload de `meme.trigger`.
+/// Payload de `media.trigger`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MemeTriggerPayload {
-    /// Identifiant de l'item mème.
+pub struct MediaTriggerPayload {
+    /// Identifiant de l'item du board.
     pub item_id: String,
     /// Origine du déclenchement.
-    pub trigger: MemeTrigger,
+    pub trigger: MediaTrigger,
 }
 
 /// Payload de `peers.request` (vide).

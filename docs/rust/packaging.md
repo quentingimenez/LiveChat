@@ -431,7 +431,7 @@ depuis le LAN**, et le reverse proxy est le seul point d'entrée public.
   rate limit global (AUD-COR-10).
 - **Rate limit** : 100 requêtes par fenêtre de 15 min et par IP pour toutes les
   routes, sauf les téléchargements de médias (`GET`/`HEAD` sur
-  `/overlay/media/{id}` et `/overlay/meme-board/media/{id}`), comptés à part
+  `/overlay/media/{id}` et `/overlay/media-board/media/{id}`, plus l'ancien préfixe `/overlay/meme-board/`), comptés à part
   avec un budget de 1 000. Les vignettes de la mème board et les requêtes
   `Range` des vidéos épuisaient sinon le budget commun. Plusieurs overlays
   derrière la même IP (NAT) partagent ces deux budgets ; derrière un reverse

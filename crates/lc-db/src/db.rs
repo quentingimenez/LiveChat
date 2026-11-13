@@ -11,7 +11,7 @@ use crate::config::DbConfig;
 use crate::error::{DbError, DbResult};
 use crate::repos::{
     DiscordLinkCodesRepository, GuildInvitesRepository, GuildMembersRepository, GuildsRepository,
-    IngestClientsRepository, MediaAssetsRepository, MemeBoardRepository, MetadataRepository,
+    IngestClientsRepository, MediaAssetsRepository, MediaBoardRepository, MetadataRepository,
     OverlayClientsRepository, PairingCodesRepository, PlaybackJobsRepository,
 };
 
@@ -207,9 +207,9 @@ impl Db {
         MediaAssetsRepository::new(self.pool.clone())
     }
 
-    /// Repository `meme_board_items`.
-    pub fn meme_board(&self) -> MemeBoardRepository {
-        MemeBoardRepository::new(self.pool.clone())
+    /// Repository `media_board_items`.
+    pub fn media_board(&self) -> MediaBoardRepository {
+        MediaBoardRepository::new(self.pool.clone())
     }
 
     /// Repository `playback_jobs`.

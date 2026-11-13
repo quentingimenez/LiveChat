@@ -16,7 +16,7 @@ use sqlx::SqlitePool;
 
 use super::read::{LegacyData, ReadOut};
 use super::tables::{
-    Guild, IngestClient, MediaAsset, MemeBoardItem, OverlayClient, PairingCode, PlaybackJob,
+    Guild, IngestClient, MediaAsset, MediaBoardItem, OverlayClient, PairingCode, PlaybackJob,
 };
 use super::Error;
 
@@ -40,7 +40,7 @@ pub struct SourceMeta {
 /// Tables legacy attendues, dans l'ordre de migration (FK d'abord).
 const EXPECTED_TABLES: [&str; 7] = [
     MediaAsset::LEGACY_TABLE,
-    MemeBoardItem::LEGACY_TABLE,
+    MediaBoardItem::LEGACY_TABLE,
     PlaybackJob::LEGACY_TABLE,
     Guild::LEGACY_TABLE,
     OverlayClient::LEGACY_TABLE,
@@ -183,11 +183,11 @@ impl Legacy {
                 &mut out,
             )
             .await?;
-        let meme_board_items = self
+        let media_board_items = self
             .read_table(
-                MemeBoardItem::LEGACY_TABLE,
-                MemeBoardItem::DATE_COLUMNS_LEGACY,
-                MemeBoardItem::from_legacy,
+                MediaBoardItem::LEGACY_TABLE,
+                MediaBoardItem::DATE_COLUMNS_LEGACY,
+                MediaBoardItem::from_legacy,
                 &mut out,
             )
             .await?;
@@ -234,7 +234,7 @@ impl Legacy {
 
         Ok(LegacyData {
             media_assets,
-            meme_board_items,
+            media_board_items,
             playback_jobs,
             guilds,
             overlay_clients,

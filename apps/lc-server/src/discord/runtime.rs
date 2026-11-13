@@ -296,7 +296,7 @@ fn build_context(
         bot_config.clone(),
         adapters.media(),
         adapters.playback(),
-        adapters.meme(),
+        adapters.media_board(),
         adapters.overlays(),
     ))
 }

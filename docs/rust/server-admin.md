@@ -46,7 +46,7 @@ n'a été modifié) :
 | `overview.rs` | `GET /admin/api/overview` |
 | `runtime_settings.rs` | `GET`/`PATCH /admin/api/runtime-settings`, fichier JSON |
 | `ingest_authors.rs` | `GET /admin/api/ingest-authors`, `POST /admin/api/ingest-clients` |
-| `guilds.rs` | settings partiels, stop, purge, révocation groupée, vidage du meme board, détachement Discord d'une guilde |
+| `guilds.rs` | settings partiels, stop, purge, révocation groupée, vidage du board média, détachement Discord d'une guilde |
 | `clients.rs` | révocation des clients overlay et ingest |
 | `pairings.rs` | liste / purge des expirés / révocation des codes de pairing |
 | `queries.rs` | requêtes SQL brutes que les repositories de `lc-db` ne couvrent pas |
@@ -187,7 +187,7 @@ détourné ; aujourd'hui le Bearer seul rend déjà le CSRF inexploitable (un si
 tiers ne peut pas poser d'en-tête `Authorization`), c'est une défense en
 profondeur. Tests : `csrf_mutation_sans_origine_refusee`,
 `csrf_mutation_origine_hostile_refusee`,
-`csrf_referer_de_meme_origine_accepte`,
+`csrf_referer_origine_identique_accepte`,
 `csrf_origine_api_url_acceptee_derriere_proxy`,
 `csrf_get_avec_origine_hostile_reste_accepte`.
 
@@ -321,7 +321,7 @@ Agrégat du panneau (une requête par famille de données, en parallèle) :
        "lastSeenAt": null, "createdAt": "…", "connected": false, "sessionMode": "normal"}
     ]},
     "ingest": {"total": 0, "clients": [{"id": "…", "label": "…", "lastSeenAt": null, "createdAt": "…"}]},
-    "memeBoard": {"itemsCount": 0, "usedBytes": 0, "maxBytes": 16106127360, "remainingBytes": 16106127360, "usedPercent": 0.0},
+    "mediaBoard": {"itemsCount": 0, "usedBytes": 0, "maxBytes": 16106127360, "remainingBytes": 16106127360, "usedPercent": 0.0},
     "playback": {"pending": 0, "playing": 0, "failed": 0, "done": 0}
   }]
 }
@@ -331,7 +331,7 @@ Règles d'agrégation :
 
 - `guilds` = union triée (`BTreeSet<String>` puis ordre `id`) des guildes
   présentes dans `guilds`, `overlay_clients` (actifs), `ingest_clients` (actifs),
-  `meme_board_items`, `playback_jobs` et `pairing_codes`, plus les guildes
+  `media_board_items`, `playback_jobs` et `pairing_codes`, plus les guildes
   présentes dans le hub.
 - `name` = nom persisté trimé, sinon `Guild {id}` ; `editableName` = nom persisté
   sinon `""` (champ conservé pour le contrat, inutilisé par le JS — point E7).
@@ -349,11 +349,11 @@ Règles d'agrégation :
   (`normal` / `invite_read_only`), priorité à la session du socket connecté.
 - `ingest.clients` ne contient que les clients actifs, triés
   `(guild_id, label)` puis regroupés par guilde.
-- `memeBoard.usedBytes` = somme des `size_bytes` des médias du board ;
+- `mediaBoard.usedBytes` = somme des `size_bytes` des médias du board ;
   `cache.usedBytes` = somme des `size_bytes` des médias `READY` **non** présents
-  dans `meme_board_items` (les deux ensembles sont disjoints, comme le legacy).
+  dans `media_board_items` (les deux ensembles sont disjoints, comme le legacy).
 - Bornes : `cache.maxBytes = max(1, MEDIA_CACHE_MAX_TOTAL_MB) * 1024 * 1024`
-  (défaut 5120 Mio = 5 Gio) ; `memeBoard.maxBytes = max(1,
+  (défaut 5120 Mio = 5 Gio) ; `mediaBoard.maxBytes = max(1,
   MEDIA_BOARD_MAX_TOTAL_MB) * 1024 * 1024` (défaut 15360 Mio = 15 Gio).
 - `usedPercent` : `toPercent(used, max)` = 0 si `max <= 0`, sinon
   `clamp(0..100, round(used/max*100, 2))` ; renvoyé en nombre.
@@ -468,7 +468,7 @@ body: {"confirmGuildId": "42", "removeOrphanMedia": true, "leaveDiscord": false}
 → 200 {"purged": true, "guildId": "42",
        "stop": {"releasedPlayingJobs": 1, "disconnectedOverlaySockets": 2},
        "deleted": {"guildSettings": 1, "overlayClients": 2, "ingestClients": 1,
-                   "pairingCodes": 3, "playbackJobs": 5, "memeBoardItems": 2,
+                   "pairingCodes": 3, "playbackJobs": 5, "mediaBoardItems": 2,
                    "orphanMediaAssets": 1, "orphanMediaFileDeleteErrors": 0},
        "discord": {"serverId": "123456789012345678", "requested": true,
                    "outcome": "left", "error": null}}
@@ -518,15 +518,15 @@ body: {"confirmGuildId": "42"}
                    "pairingCodes": 2, "invites": 1}}
 ```
 
-La ligne `guilds`, les réglages, le meme board, les jobs de playback, les
+La ligne `guilds`, les réglages, le board média, les jobs de playback, les
 médias, la liaison Discord et les codes de liaison Discord sont conservés.
 `confirmGuildId` absent ou différent de l'identifiant d'URL → 400
 `confirm_guild_id_mismatch`. Une guilde inconnue renvoie 200 avec des compteurs
 à zéro.
 
-### 7.9 `POST /admin/api/guilds/{guildId}/meme-board/clear`
+### 7.9 `POST /admin/api/guilds/{guildId}/media-board/clear`
 
-Supprime uniquement le meme board de la guilde, puis les médias devenus
+Supprime uniquement le board média de la guilde, puis les médias devenus
 orphelins. Un média encore référencé par un job de playback ou par le board
 d'une autre guilde est conservé ; les fichiers ne sont supprimés que sous la
 racine média confinée.
@@ -534,7 +534,7 @@ racine média confinée.
 ```json
 body: {"confirmGuildId": "42"}
 → 200 {"guildId": "42",
-       "deleted": {"memeBoardItems": 2, "orphanMediaAssets": 1,
+       "deleted": {"mediaBoardItems": 2, "orphanMediaAssets": 1,
                    "orphanMediaFileDeleteErrors": 0}}
 ```
 
@@ -687,7 +687,7 @@ Couverture par thème :
   complète (compteurs, fichier orphelin supprimé, média référencé conservé,
   confirmation erronée refusée) ; révocation groupée (clients actifs révoqués,
   membres retirés, pairing/invitations supprimés, guildes/board/liaison
-  conservés, guilde inconnue laissée absente) ; vidage du meme board (média
+  conservés, guilde inconnue laissée absente) ; vidage du board média (média
   orphelin supprimé, média d'un job conservé, overlays et guilde intacts), avec
   confirmation erronée et token absent refusés.
 - **Discord (départ / détachement)** : purge avec `leaveDiscord` sur une guilde

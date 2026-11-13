@@ -11,6 +11,12 @@
 > Toutes les références `fichier:ligne` renvoient au dépôt `C:\Users\SuperKnacky\code\LiveChat`, branche `feat/rust-rebuild`.
 > Décisions Lead du 2026-11-09 intégrées : §8 (bufferisation play/stop, CSP, origine WebView/CORS, URLs média v2, noms
 > d'événements, chemin de config).
+>
+> Vague 2 « meme → media » : le bridge Tauri expose désormais `getMediaBindings`, `setMediaBindings`, `triggerMedia`,
+> `stopMediaPlayback` et les commandes `media_board_*` ; la config écrit `mediaBindings` (l'ancienne clé `memeBindings` de
+> l'overlay 3.0.0 reste lue) et le board lit les permissions `addMedia` / `editAnyMedia` (repli `addMeme` / `editAnyMeme`).
+> Les noms `meme-board:*`, `MemeBoard*` et les chemins `overlay/src/**/meme-*` conservés ci-dessous sont ceux de
+> l'application Electron 3.0.0, documentés à titre historique : ils ne font pas partie du nouveau contrat.
 
 ## 1. Vue d'ensemble
 
@@ -60,10 +66,10 @@ Sources : API `overlay/src/preload/index.ts:40-54`, types `overlay/src/types/liv
 | 7 | `reportPlaybackState` | `reportPlaybackState(payload: OverlayPlaybackStatePayload): void` | `overlay:playback-state` | `ipcMain.on` → `handleOverlayPlaybackState` (`:68-70`, service `:51-78`) | `{ jobId, state, remainingMs }` → void | Progression de lecture ; bufferisée si socket hors ligne (`setPendingPlaybackStatePayload`), rejouée à la reconnexion (`socket-service.ts:105-124`). |
 | 8 | `reportPlaybackStop` | `reportPlaybackStop(payload: OverlayPlaybackStopPayload): void` | `overlay:playback-stop` | `ipcMain.on` → `handleOverlayPlaybackStop` (`:72-74`, service `:80-96`) | `{ jobId }` → void | Fin de lecture ; `jobId` vide normalisé en `'unknown'` (`overlay-playback-forwarding-service.ts:24-31`) ; bufferisée hors ligne. |
 | 9 | `consumePairing` | `consumePairing(payload: PairingConsumeRequest): Promise<PairingConsumeResponse>` | `pairing:consume` | `ipcMain.handle` → `pairing-consume-service.consumePairing` (`register-pairing-ipc-handler.ts:36-38`, service `pairing-consume-service.ts:65-134`) | `{ serverUrl, code, deviceName? }` → `{ ok: boolean }` | Appel HTTP POST `{serverUrl}/overlay/pair/consume`, persiste la config, ouvre l'overlay, ferme la fenêtre d'appairage. |
-| 10 | `getMemeBindings` | `getMemeBindings(): Promise<MemeBoardBindingsResponse>` | `meme-board:get-bindings` | `ipcMain.handle` → `meme-board-ipc-service.getBindings` (`:46-48`, service `:29-34`) | `undefined` → `{ bindings }` | Bindings raccourci → itemId, normalisés. |
-| 11 | `setMemeBindings` | `setMemeBindings(payload: MemeBoardSetBindingsRequest): Promise<MemeBoardSetBindingsResponse>` | `meme-board:set-bindings` | `ipcMain.handle` → `meme-board-ipc-service.setBindings` (`:50-52`, service `:36-53`) | `{ bindings }` → `{ ok, bindings, failedAccelerators }` | Normalise, enregistre les accélérateurs globaux en mode strict (rollback si échec), persiste. |
-| 12 | `triggerMeme` | `triggerMeme(payload: MemeBoardTriggerRequest): Promise<MemeBoardActionResponse>` | `meme-board:trigger` | `ipcMain.handle` → `meme-board-ipc-service.trigger` (`:54-56`, service `:55-58`) | `{ itemId?, trigger?: 'ui' \| 'shortcut' }` → `{ ok, reason? }` | Émet `overlay:meme-trigger` sur le socket (défaut `trigger: 'shortcut'`). |
-| 13 | `stopMemePlayback` | `stopMemePlayback(): Promise<MemeBoardActionResponse>` | `meme-board:stop` | `ipcMain.handle` → `meme-board-ipc-service.stop` (`:58`, service `:60-62`) | `undefined` → `{ ok, reason? }` | Émet `overlay:stop { jobId: 'manual-stop' }` sur le socket (stop manuel). |
+| 10 | `getMediaBindings` | `getMediaBindings(): Promise<MediaBoardBindingsResponse>` | `meme-board:get-bindings` | `ipcMain.handle` → `meme-board-ipc-service.getBindings` (`:46-48`, service `:29-34`) | `undefined` → `{ bindings }` | Bindings raccourci → itemId, normalisés. |
+| 11 | `setMediaBindings` | `setMediaBindings(payload: MediaBoardSetBindingsRequest): Promise<MediaBoardSetBindingsResponse>` | `meme-board:set-bindings` | `ipcMain.handle` → `meme-board-ipc-service.setBindings` (`:50-52`, service `:36-53`) | `{ bindings }` → `{ ok, bindings, failedAccelerators }` | Normalise, enregistre les accélérateurs globaux en mode strict (rollback si échec), persiste. |
+| 12 | `triggerMedia` | `triggerMedia(payload: MediaBoardTriggerRequest): Promise<MediaBoardActionResponse>` | `meme-board:trigger` | `ipcMain.handle` → `meme-board-ipc-service.trigger` (`:54-56`, service `:55-58`) | `{ itemId?, trigger?: 'ui' \| 'shortcut' }` → `{ ok, reason? }` | Émet la trame `media.trigger` sur le socket (défaut `trigger: 'shortcut'`). |
+| 13 | `stopMediaPlayback` | `stopMediaPlayback(): Promise<MediaBoardActionResponse>` | `meme-board:stop` | `ipcMain.handle` → `meme-board-ipc-service.stop` (`:58`, service `:60-62`) | `undefined` → `{ ok, reason? }` | Émet `stop.request { jobId: 'manual-stop' }` sur le socket (stop manuel). |
 
 Remarques transverses :
 
@@ -78,7 +84,7 @@ Remarques transverses :
 
 Types exacts (à porter en `serde` avec `rename_all = "camelCase"`) :
 
-- `OverlayConfig` — `overlay/src/shared/overlay-config.ts:3-12` : `{ serverUrl, clientToken, guildId, clientId: string|null; guestMode, showText: boolean; volume: number; memeBindings: Record<string,string> }`.
+- `OverlayConfig` — `overlay/src/shared/overlay-config.ts:3-12` : `{ serverUrl, clientToken, guildId, clientId: string|null; guestMode, showText: boolean; volume: number; mediaBindings: Record<string,string> }` (l'ancienne clé `memeBindings` de l'overlay 3.0.0 reste lue au chargement).
   Projection renvoyée au renderer (8 champs) : `overlay-config-ipc-service.ts:25-47`.
 - `OverlaySettingsPayload = OverlayConfig` — `overlay-config.ts:14`.
 - `OverlayPlaybackStatePayload` — `:16-20` : `{ jobId: string; state: string; remainingMs: number|null }`.
@@ -107,7 +113,7 @@ Types exacts (à porter en `serde` avec `rename_all = "camelCase"`) :
 
 1. `await getConfig()` (`:56`, `board.js:184`) ;
 2. si non appairé (`serverUrl`/`clientToken`/`guildId` absents), message + désactivation + `return` (`:59-63`) ;
-3. `await getMemeBindings()` (`:65`, `board.js:185`) ;
+3. `await getMediaBindings()` (`:65`, `board.js:185`) ;
 4. `onSettings(...)` (`:68`, `board.js:186-188`) ;
 5. observer + premier chargement des items (`:72-73`).
    ⚠️ Le board **n'appelle pas `rendererReady`** : ses settings arrivent via `onBoardReadyToShow`
@@ -192,7 +198,7 @@ L'ordre d'exposition et les noms sont testés par `overlay/tests/main/preload-ru
 | `onSettings` | ✅ | ✅ | — |
 | `reportError` / `reportPlaybackState` / `reportPlaybackStop` | ✅ | — | — |
 | `consumePairing` | — | — | ✅ |
-| `getMemeBindings` / `setMemeBindings` / `triggerMeme` / `stopMemePlayback` | — | ✅ | — |
+| `getMediaBindings` / `setMediaBindings` / `triggerMedia` / `stopMediaPlayback` | — | ✅ | — |
 
 ## 4. Assets et fichiers statiques des 3 pages
 
@@ -224,8 +230,8 @@ Fichiers statiques requis et leur résolution :
   bootstrap l.70). Ce chargement est **désactivé** et la CSP n'autorise plus de script tiers (cf. §12.2) ; le rendu de carte
   tweet est statique.
 - **Réseau renderer** (hors bridge, conservé en Phase 0) : le board fait des `fetch()` REST vers
-  `/overlay/meme-board/items` (`legacy-item-utils.ts:65,71,114,115`), `/items/:itemId` (`:95,96,136,137`), média
-  `/overlay/meme-board/media/:assetId` (`legacy-preview-render-state-utils.ts:80`) ; l'overlay ajoute des URLs média
+  `/overlay/media-board/items` (`legacy-item-utils.ts:65,71,114,115`), `/items/:itemId` (`:95,96,136,137`), média
+  `/overlay/media-board/media/:assetId` (`legacy-preview-render-state-utils.ts:80`) ; l'overlay ajoute des URLs média
   (`overlay/src/renderer/overlay/legacy-media-dom-utils.ts:115-116`, diagnostic
   `overlay/src/renderer/overlay/legacy-media-diagnostics.ts:72`) ; `buildAuthedUrl`
   (`overlay/src/renderer/board/legacy-preview-media-utils.ts:44-53`) ajoutait `?token=<clientToken>` ; le portage
@@ -259,13 +265,13 @@ aucune logique métier dans `runtime-assets/`.
 `OverlayRuntimeConfig` (`config-service.ts:4-21`), 16 champs, avec `DEFAULT_CONFIG` (`:42-59`) :
 `displayId/displayIndex/displayKey/displayLabel` `null`, `volume: 1`, `enabled: true`, `autoStart: false`,
 `guestMode: false`, `showText: true`, `serverUrl/clientToken/clientId/guildId/authorName/deviceName: null`,
-`memeBindings: {}`. Normalisations : volume clampé `[0,1]` (`:68-74`), autoStart booléen (`:76-78`), guestMode booléen
-(`:80-82`), `memeBindings` trim/drop des vides (`:84-103`), URLs trim + sans `/` final (`:105-107`). Écriture
+`mediaBindings: {}` (clé historique `memeBindings` encore lue). Normalisations : volume clampé `[0,1]` (`:68-74`), autoStart booléen (`:76-78`), guestMode booléen
+(`:80-82`), `mediaBindings` trim/drop des vides (`:84-103`), URLs trim + sans `/` final (`:105-107`). Écriture
 `JSON.stringify(config, null, 2)` (`:134-157`), lecture avec défauts si fichier absent/inexploitable (`:109-132`).
 `hasPairingConfig` = `serverUrl && clientToken && guildId` (`:159-161`).
 
 Le renderer ne reçoit qu'une **projection de 8 champs** (`overlay-config-ipc-service.ts:25-47`) :
-`serverUrl`, `clientToken`, `guildId`, `clientId`, `guestMode`, `showText`, `volume`, `memeBindings` — champs de fenêtre
+`serverUrl`, `clientToken`, `guildId`, `clientId`, `guestMode`, `showText`, `volume`, `mediaBindings` — champs de fenêtre
 (`display*`, `enabled`, `autoStart`) exclus.
 
 ### 5.3 Devenir en Tauri 2
@@ -303,10 +309,10 @@ Convention retenue et implémentée dans `apps/lc-overlay/web/bridge.js` (`COMMA
 | `reportPlaybackState` | `overlay:playback-state` | `overlay_report_playback_state` | `{ payload: OverlayPlaybackStatePayload }` | `()` |
 | `reportPlaybackStop` | `overlay:playback-stop` | `overlay_report_playback_stop` | `{ payload: OverlayPlaybackStopPayload }` | `()` |
 | `consumePairing` | `pairing:consume` | `pairing_consume` | `{ payload: PairingConsumeRequest }` | `PairingConsumeResponse` |
-| `getMemeBindings` | `meme-board:get-bindings` | `meme_board_get_bindings` | `{}` | `MemeBoardBindingsResponse` |
-| `setMemeBindings` | `meme-board:set-bindings` | `meme_board_set_bindings` | `{ payload: MemeBoardSetBindingsRequest }` | `MemeBoardSetBindingsResponse` |
-| `triggerMeme` | `meme-board:trigger` | `meme_board_trigger` | `{ payload: MemeBoardTriggerRequest }` | `MemeBoardActionResponse` |
-| `stopMemePlayback` | `meme-board:stop` | `meme_board_stop` | `{}` | `MemeBoardActionResponse` |
+| `getMediaBindings` | `meme-board:get-bindings` | `media_board_get_bindings` | `{}` | `MediaBoardBindingsResponse` |
+| `setMediaBindings` | `meme-board:set-bindings` | `media_board_set_bindings` | `{ payload: MediaBoardSetBindingsRequest }` | `MediaBoardSetBindingsResponse` |
+| `triggerMedia` | `meme-board:trigger` | `media_board_trigger` | `{ payload: MediaBoardTriggerRequest }` | `MediaBoardActionResponse` |
+| `stopMediaPlayback` | `meme-board:stop` | `media_board_stop` | `{}` | `MediaBoardActionResponse` |
 
 Signatures Rust recommandées (payloads `serde` avec `rename_all = "camelCase"`, erreurs en `Result<_, String>` pour rester
 compatible avec `error.message` du renderer) :
@@ -331,8 +337,8 @@ async fn overlay_report_playback_stop(payload: OverlayPlaybackStopPayload, state
 async fn pairing_consume(payload: PairingConsumeRequest, app: AppHandle, state: State<'_, OverlayState>) -> Result<PairingConsumeResponse, String>;
 
 #[tauri::command]
-async fn meme_board_get_bindings(state: State<'_, OverlayState>) -> Result<MemeBoardBindingsResponse, String>;
-// idem meme_board_set_bindings(payload), meme_board_trigger(payload), meme_board_stop()
+async fn media_board_get_bindings(state: State<'_, OverlayState>) -> Result<MediaBoardBindingsResponse, String>;
+// idem media_board_set_bindings(payload), media_board_trigger(payload), media_board_stop()
 ```
 
 Notes de contrat :
@@ -391,7 +397,7 @@ await window.livechatOverlay.consumePairing({ serverUrl: 'https://livechat.examp
 | 2 | **Événement play/stop perdu avant les listeners** | Un job lancé juste après l'ouverture de la fenêtre n'est jamais joué. | **Décidé (§8.1) : bufferiser côté Rust.** File bornée par fenêtre ; conserver le **dernier play** et le **dernier stop**, les rejouer **dans l'ordre** dès réception de `overlay_renderer_ready` ; timeout **5 s** puis drop + `warn`. C'est la correction d'une **course de la v1 Electron** (le main Electron n'a pas de file ; listeners posés seulement après `await getConfig()`, `legacy-bootstrap-utils.ts:56-73`), pas une mesure de compatibilité. `overlay://settings` reste envoyé après le handshake. Board : aucun buffer nécessaire (§8.7). |
 | 3 | **CSP** | Scripts bloqués (`bridge.js`, modules, twitter), styles inline ignorés, médias bloqués. | **Décidé (§8.2)** : `script-src 'self'` strict ; `style-src 'self' 'unsafe-inline'` (seule justification : `<style>` inline de `pairing.html:7-97`, contenu local et statique) ; `img-src 'self' asset: http://asset.localhost data:` ; `media-src 'self' blob: {API_URL}` ; `connect-src 'self' {API_URL} {WS_API_URL}` ; `frame-src https://platform.twitter.com` ; `object-src 'none'`. **Pas de hash à maintenir** pour l'instant. À valider au POC (le widget Twitter peut exiger des domaines supplémentaires, ex. `syndication.twitter.com`). `migration-plan.md:29` signalait le `unsafe-inline` du legacy : la décision le circonscrit aux styles. |
 | 4 | **Origine WebView et contenu mixte** | `useHttpsScheme` false ⇒ origine `http://tauri.localhost` : contexte non sécurisé, requêtes http↔https mélangées, `fetch` média bloqué. | **Décidé (§8.3)** : garder le schéma par défaut (**pas** de `useHttpsScheme`) ⇒ origine `http://tauri.localhost` sous Windows. Conséquences : CORS serveur à adapter (§8.3, ligne 5) et `{API_URL}` en HTTPS recommandée pour limiter le contenu mixte. Les URLs média sont utilisées **verbatim** (§8.4). |
-| 5 | **CORS / Origin** | Le board fait du REST direct (`/overlay/meme-board/items`, média) : en Electron l'origine était `file://` (souvent `null`) ; en Tauri elle devient `tauri.localhost` ⇒ préflight/CORS différents. | **Décidé (§8.3)** : ajouter **`http://tauri.localhost` et `https://tauri.localhost`** à la liste CORS des routes `/overlay` (et `/admin` si nécessaire) côté `apps/lc-server` — **action Phase 3**, hors bridge (routeur via commandes Rust écarté pour l'instant). |
+| 5 | **CORS / Origin** | Le board fait du REST direct (`/overlay/media-board/items`, média) : en Electron l'origine était `file://` (souvent `null`) ; en Tauri elle devient `tauri.localhost` ⇒ préflight/CORS différents. | **Décidé (§8.3)** : ajouter **`http://tauri.localhost` et `https://tauri.localhost`** à la liste CORS des routes `/overlay` (et `/admin` si nécessaire) côté `apps/lc-server` — **action Phase 3**, hors bridge (routeur via commandes Rust écarté pour l'instant). |
 | 6 | **CSP et `window.require` / Node** | Le renderer n'utilise pas `require` (grep exhaustif) ; toute dépendance résiduelle à `process`/`require` casserait. | Aucun changement nécessaire, mais l'acceptation doit vérifier `nodeIntegration` absent (déjà `false` en Electron, `window.require` absent en WebView2). |
 | 7 | **Modules ES vs scripts classiques** | `dist/renderer/*/index.js` doit rester chargé en `type="module"` ; `bridge.js` et `overlay.js`/`board.js` en classique. | Conserver les types de scripts actuels ; ne pas convertir le bridge en module (il doit s'exécuter avant les modules). `legacy-loader.ts:1-8` reste en ESM (import/export). |
 | 8 | **Chemins relatifs / racine web** | CSS/JS 404 après copie dans `web/`. | Préserver l'arborescence : HTML à la racine de `frontendDist`, `dist/renderer/**` et `renderer/*.js` sous la même racine ; conserver `./overlay.css`, `../dist/renderer/...` et le loader relatif à `window.location.href`. |
@@ -500,8 +506,8 @@ Checklist minimale pour que le renderer conservé fonctionne sans modification :
 4. **Buffering** : file bornée par fenêtre overlay (décision §8.1) — dernier play + dernier stop conservés, rejoués dans
    l'ordre dès `overlay_renderer_ready`, timeout 5 s puis drop avec `warn` ; aucun buffer côté board (§8.7).
 5. **Sémantique métier identique** aux services Electron : projection 8 champs (`overlay-config-ipc-service.ts:25-47`),
-   normalisations de config (`config-service.ts:68-107`), appairage HTTP (`pairing-consume-service.ts:65-134`), mémoires
-   (`meme-bindings-service.ts:51-204`), télémétrie avec guest/offline (`overlay-playback-forwarding-service.ts:38-96`).
+   normalisations de config (`config-service.ts:68-107`), appairage HTTP (`pairing-consume-service.ts:65-134`), raccourcis
+   du board média (service Electron `meme-bindings-service.ts:51-204`), télémétrie avec guest/offline (`overlay-playback-forwarding-service.ts:38-96`).
 6. **Erreurs** : `Result<_, String>` avec messages exploitables par `error.message` ; pas de panic (lints workspace
    `deny(unwrap_used, expect_used, panic)`, `forbid(unsafe_code)`).
 7. **Async / I/O** : commandes `async`, jamais de blocage du thread UI (fs via `spawn_blocking`, HTTP via client async).
@@ -595,7 +601,7 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
   fenêtre (`windows: ["overlay"]`, etc.), permissions `core:default` minimales.
   `capabilities/default.json` est supprimé.
 - La matrice `commands::COMMAND_MATRIX` limite les 12 commandes par label :
-  overlay = handshake/télémétrie ; board = meme-board + lecture config +
+  overlay = handshake/télémétrie ; board = media-board + lecture config +
   check_updates ; pairing = appairage + lecture config. Toute autre combinaison
   est refusée avec un message explicite (testé par
   `commands::tests::command_matrix_is_window_scoped`).

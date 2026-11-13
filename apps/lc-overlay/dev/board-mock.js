@@ -72,8 +72,8 @@
     viewQueue: true,
     play: !isGuest,
     stop: !isGuest,
-    addMeme: !isGuest,
-    editAnyMeme: isAdmin,
+    addMedia: !isGuest,
+    editAnyMedia: isAdmin,
     moderateQueue: isAdmin,
     manageMembers: isAdmin,
     manageInvites: isAdmin,
@@ -94,7 +94,7 @@
         permissions,
       });
     }
-    if (path.startsWith('/overlay/meme-board/items') && method === 'GET') {
+    if (path.startsWith('/overlay/media-board/items') && method === 'GET') {
       return ok({ total: items.length, items });
     }
     if (path === '/overlay/queue' && method === 'GET') {
@@ -123,12 +123,12 @@
           return Promise.resolve(api(payload.method, payload.path));
         case 'guild_media_url':
           return Promise.resolve(svg(Number(String(payload.assetId).slice(1)) || 0));
-        case 'meme_board_get_bindings':
+        case 'media_board_get_bindings':
           return Promise.resolve({ bindings: { 'CommandOrControl+Shift+1': 'item-0' } });
-        case 'meme_board_set_bindings':
+        case 'media_board_set_bindings':
           return Promise.resolve({ ok: true, bindings: payload.bindings || {}, failedAccelerators: [] });
-        case 'meme_board_trigger':
-        case 'meme_board_stop':
+        case 'media_board_trigger':
+        case 'media_board_stop':
           return Promise.resolve({ ok: true });
         case 'guild_select':
         case 'guild_set_muted':

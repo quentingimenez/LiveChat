@@ -12,8 +12,8 @@ use lc_db::{Db, DbConfig};
 use lc_domain::{Clock, FixedClock, GuildId, MediaAsset, MediaAssetId, MediaKind, MediaStatus};
 
 use crate::context::{
-    Author, BotConfig, BotContext, ConnectedOverlay, GuildSettingsPatch, MediaBackend,
-    MediaRequest, MemeAddRequest, OverlayDirectory, PlaybackBackend, PlaybackJobRequest,
+    Author, BotConfig, BotContext, ConnectedOverlay, GuildSettingsPatch, MediaAddRequest,
+    MediaBackend, MediaRequest, OverlayDirectory, PlaybackBackend, PlaybackJobRequest,
 };
 use crate::error::{BotError, MediaError, MediaErrorCode, SpeechFailure};
 use crate::i18n::Lang;
@@ -235,15 +235,15 @@ impl PlaybackBackend for FakePlaybackBackend {
     }
 }
 
-/// Backend meme board factice.
+/// Backend board média factice.
 #[derive(Default)]
-pub struct FakeMemeBackend {
-    requests: Mutex<Vec<MemeAddRequest>>,
+pub struct FakeMediaBoardBackend {
+    requests: Mutex<Vec<MediaAddRequest>>,
     created: Mutex<bool>,
     failure: Mutex<Option<MediaErrorCode>>,
 }
 
-impl FakeMemeBackend {
+impl FakeMediaBoardBackend {
     /// Backend par défaut : le premier ajout crée l'élément.
     pub fn new() -> Self {
         Self::default()
@@ -264,7 +264,7 @@ impl FakeMemeBackend {
     }
 
     /// Demandes d'ajout reçues.
-    pub fn requests(&self) -> Vec<MemeAddRequest> {
+    pub fn requests(&self) -> Vec<MediaAddRequest> {
         match self.requests.lock() {
             Ok(guard) => guard.clone(),
             Err(_) => Vec::new(),
@@ -273,8 +273,8 @@ impl FakeMemeBackend {
 }
 
 #[async_trait]
-impl crate::context::MemeBackend for FakeMemeBackend {
-    async fn add_to_board(&self, request: MemeAddRequest) -> Result<bool, BotError> {
+impl crate::context::MediaBoardBackend for FakeMediaBoardBackend {
+    async fn add_to_board(&self, request: MediaAddRequest) -> Result<bool, BotError> {
         if let Ok(mut guard) = self.requests.lock() {
             guard.push(request);
         }
@@ -357,7 +357,7 @@ pub struct FakeBotContext {
     config: BotConfig,
     media: FakeMediaBackend,
     playback: FakePlaybackBackend,
-    meme: FakeMemeBackend,
+    media_board: FakeMediaBoardBackend,
     overlays: FakeOverlayDirectory,
 }
 
@@ -371,7 +371,7 @@ impl FakeBotContext {
             config: BotConfig::new("http://localhost:3333"),
             media: FakeMediaBackend::new(),
             playback: FakePlaybackBackend::new(),
-            meme: FakeMemeBackend::new(),
+            media_board: FakeMediaBoardBackend::new(),
             overlays: FakeOverlayDirectory::new(),
         })
     }
@@ -398,9 +398,9 @@ impl FakeBotContext {
         &mut self.playback
     }
 
-    /// Accès mutable au backend meme board.
-    pub fn meme_mut(&mut self) -> &mut FakeMemeBackend {
-        &mut self.meme
+    /// Accès mutable au backend board média.
+    pub fn media_board_mut(&mut self) -> &mut FakeMediaBoardBackend {
+        &mut self.media_board
     }
 
     /// Accès mutable à l'annuaire d'overlays.
@@ -436,8 +436,8 @@ impl BotContext for FakeBotContext {
         &self.playback
     }
 
-    fn meme(&self) -> &dyn crate::context::MemeBackend {
-        &self.meme
+    fn media_board(&self) -> &dyn crate::context::MediaBoardBackend {
+        &self.media_board
     }
 
     async fn list_connected_overlays(

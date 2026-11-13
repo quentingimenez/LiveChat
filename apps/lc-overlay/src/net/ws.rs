@@ -3,7 +3,7 @@
 //! Dialogue avec `{serverUrl}/ws` selon `docs/rust/protocol-v2.md` :
 //! handshake `hello`/`welcome`, heartbeat applicatif toutes les 15 s,
 //! réception `play`/`stop`/`settings`/`peers`/`ack`/`error`, envoi
-//! `playback.state`, `playback.ended`, `stop.request`, `meme.trigger`,
+//! `playback.state`, `playback.ended`, `stop.request`, `media.trigger`,
 //! `peers.request`, reconnexion avec backoff (1 s → 3 s, 4409 plafonné à 30 s),
 //! et gestion terminale des closes 4401 (jeton invalide → réappairage),
 //! 4402 (révoqué) et 4403 (overlay obsolète).

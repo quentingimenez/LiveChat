@@ -1,4 +1,4 @@
-//! Meme board persistant : ajout d'un média ingéré au board d'une guilde.
+//! Board média persistant : ajout d'un média ingéré au board d'une guilde.
 //!
 //! Reproduit `addToMemeBoard` du legacy :
 //!
@@ -11,8 +11,8 @@
 
 use chrono::{DateTime, Utc};
 use lc_db::{Db, DbError};
-use lc_domain::entities::{MediaAsset, MemeBoardItem};
-use lc_domain::ids::{GuildId, MediaAssetId, MemeBoardItemId};
+use lc_domain::entities::{MediaAsset, MediaBoardItem};
+use lc_domain::ids::{GuildId, MediaAssetId, MediaBoardItemId};
 use lc_domain::time::datetime_to_ms;
 use lc_media::config::MediaConfig;
 
@@ -25,16 +25,16 @@ const MAX_TITLE_CHARS: usize = 240;
 const MAX_MESSAGE_CHARS: usize = 500;
 const MAX_AUTHOR_NAME_CHARS: usize = 120;
 
-/// Résultat d'un ajout au meme board.
+/// Résultat d'un ajout au board média.
 #[derive(Debug, Clone)]
 pub struct BoardAddResult {
     /// `true` si une nouvelle ligne a été créée, `false` si le média y était déjà.
     pub created: bool,
     /// Élément de board correspondant (existant ou nouvellement créé).
-    pub item: MemeBoardItem,
+    pub item: MediaBoardItem,
 }
 
-/// Ajoute (ou retrouve) un média sur le meme board d'une guilde.
+/// Ajoute (ou retrouve) un média sur le board média d'une guilde.
 ///
 /// L'asset doit déjà être `READY` ; l'appelant a vérifié le média et les
 /// permissions. `title`, `message`, `created_by_*` sont optionnels et tronqués
@@ -51,7 +51,7 @@ pub async fn add_to_board(
     created_by_name: Option<&str>,
     now: DateTime<Utc>,
 ) -> MediaServiceResult<BoardAddResult> {
-    let repository = db.meme_board();
+    let repository = db.media_board();
 
     if let Some(existing) = repository
         .get_by_guild_and_asset(guild_id, asset.id)
@@ -70,8 +70,8 @@ pub async fn add_to_board(
 
     pin_asset(db, asset.id, now).await?;
 
-    let item = MemeBoardItem {
-        id: MemeBoardItemId::new_v4(),
+    let item = MediaBoardItem {
+        id: MediaBoardItemId::new_v4(),
         guild_id: guild_id.clone(),
         media_asset_id: asset.id,
         title: normalize(title, MAX_TITLE_CHARS),
@@ -93,7 +93,7 @@ pub async fn add_to_board(
                 .await?
                 .ok_or_else(|| {
                     MediaServiceError::unavailable(
-                        "élément de meme board introuvable après conflit d'unicité",
+                        "élément de board média introuvable après conflit d'unicité",
                     )
                 })?;
             pin_asset(db, asset.id, now).await?;
@@ -284,7 +284,7 @@ mod tests {
         assert_eq!(media_error.code(), MediaErrorCode::BoardStorageLimitReached);
         assert!(fixture
             .db
-            .meme_board()
+            .media_board()
             .list_by_guild(&guild)
             .await
             .expect("liste")

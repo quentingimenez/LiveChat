@@ -12,7 +12,7 @@ Livré ici :
 - démarrage/arrêt du client serenity (`DiscordRuntime`, `DiscordHandle`) ;
 - enregistrement des commandes slash depuis le catalogue `lc-discord` ;
 - adaptateurs `BotContext` au-dessus de `AppState` (`lc-db` pour les guilde,
-  codes d'appairage, meme board et overlays ; placeholders typés pour média et
+  codes d'appairage, board média et overlays ; placeholders typés pour média et
   playback) ;
 - événements `ready`, `guild_create`, `interaction_create` et `message` ;
 - sonde de santé Discord (`DiscordStatusProbe`) ;
@@ -36,7 +36,7 @@ Hors périmètre (laissé aux lanes parallèles / Phase 9) :
 | `runtime.rs` | `DiscordRuntime::start`, `DiscordHandle`, `DiscordStatus`, `DiscordStatusProbe`, `SharedClock` |
 | `event_handler.rs` | `DiscordEventHandler` : `ready`, `guild_create`, `interaction_create`, `message` ; embed « how to use » |
 | `registration.rs` | construction des payloads JSON depuis `lc_discord::command_payloads` + `create_global_commands` |
-| `adapters.rs` | `bot_config_from`, `DiscordAdapters`, `DbMemeBackend`, `DbOverlayDirectory`, placeholders média/playback |
+| `adapters.rs` | `bot_config_from`, `DiscordAdapters`, `DbMediaBoardBackend`, `DbOverlayDirectory`, placeholders média/playback |
 | `message_commands.rs` | classification des messages (fidélité : toujours `None`) |
 
 ## 2. Démarrage
@@ -99,7 +99,7 @@ Séquence :
 - pour toutes les commandes **sauf `/lier`**, le handler remplace le snowflake
   brut par `GuildsRepository::resolve_discord(snowflake)` avant de dispatcher :
   un serveur lié à une guilde indépendante agit donc sur cette guilde
-  (réglages, file, meme board, overlays) ; `/lier` garde le snowflake brut ;
+  (réglages, file, board média, overlays) ; `/lier` garde le snowflake brut ;
 - `dispatch(context, invocation)` exécute le handler `lc-discord`, puis
   `respond(http, command, outcome)` envoie le defer/réponse ;
 - commande inconnue ou échec de réponse ⇒ `warn!`, pas de panic.
@@ -124,7 +124,7 @@ réel. À documenter comme écart conscient avec le libellé.
 - payloads : `lc_discord::command_payloads(lang, hide_commands_disabled)`
   réutilisé tel quel (JSON `{name, description, options}`) ; l'ordre legacy est
   conservé (`alive, msg, dire, pair-code, help, info, config-defaut,
-  config-displayfull, config-max, overlays, stop, meme-add`, puis `lier`,
+  config-displayfull, config-max, overlays, stop, media-add`, puis `lier`,
   puis `cmsg`, `cdire` si activées) ;
 - `Http::create_global_commands` exige une map `Serialize + Sized` : la tranche
   est matérialisée en `Vec<serde_json::Value>` dans `register_global_commands` ;
@@ -169,7 +169,7 @@ une autre guilde n'est jamais repris automatiquement.
 
 Adaptateurs livrés :
 
-- `DbMemeBackend` : `MemeBackend` sur `lc-db` (`meme_board`). `add_to_board`
+- `DbMediaBoardBackend` : `MediaBoardBackend` sur `lc-db` (`media_board`). `add_to_board`
   renvoie `false` si l'association existe déjà, `true` sinon ; une violation
   d'unicité concurrente est convertie en `false` (elle est mappée par `lc-db`
   en `DbError::Domain(DomainError::Conflict)`). TODO Phase 9 : la capacité
@@ -242,9 +242,9 @@ Tous sans réseau (aucun jeton requis) :
 
 - `error.rs` : 2 tests (messages, `is_disabled`) ;
 - `adapters.rs` : 6 tests (mapping config, défauts legacy, placeholders typés,
-  meme board create/doublon, overlays actifs/révoqués, contexte complet) ;
+  board média create/doublon, overlays actifs/révoqués, contexte complet) ;
 - `registration.rs` : 3 tests (ordre et noms fr, filtrage des commandes
-  cachées, options de `meme-add`) ;
+  cachées, options de `media-add`) ;
 - `message_commands.rs` : 2 tests (toujours `None`) ;
 - `runtime.rs` : 4 tests (sans token ⇒ `Disabled` sans réseau, token sans base
   ⇒ `DatabaseUnavailable`, `SharedClock` délègue, gateway réel `#[ignore]`
@@ -271,7 +271,7 @@ ignoré (soit 22 tests pour le module `discord`, dont 1 ignoré).
    `lc-playback` via `DiscordAdapters::with_media` / `with_playback`.
 3. **Overlays** : lecture `lc-db` ; brancher le hub WebSocket (task-17) pour
    l'ordre réel des sessions connectées.
-4. **Meme board** : capacité + pinning d'expiration non implémentés (lc-db
+4. **Board média** : capacité + pinning d'expiration non implémentés (lc-db
    sans setters) ; à traiter côté `lc-media`/`lc-db` (Phase 9).
 5. **Présence/statut Discord** : le legacy n'en posait pas (aucun
    `set_activity`) ⇒ rien à porter.

@@ -1,6 +1,6 @@
 # Serveur Rust — routes `/overlay/*` (Phase 3b)
 
-Statut : **implémenté** (routes, auth, média signé, meme board, tests in-process).
+Statut : **implémenté** (routes, auth, média signé, media board, tests in-process).
 Propriétaire : lane `overlay-bridge` (task-15). Sources de vérité : code ci-dessous,
 legacy Node (`server/src/components/overlay/overlayRoutes.ts`), protocole v2
 (`docs/rust/protocol-v2.md` §8/§9) et plan de migration
@@ -15,7 +15,7 @@ Ce module remplace le sous-système HTTP de l'overlay Electron :
 | `server/src/components/overlay/overlayRoutes.ts` (568 l.) | `apps/lc-server/src/http/overlay/**` |
 | `server/src/services/overlayAuth.ts` (143 l.) | `apps/lc-server/src/http/overlay/auth.rs` + `crates/lc-domain` + `crates/lc-db` |
 | `GET /overlay/config` | **supprimé** en v2 (la route répond 404) |
-| `?token=` sur les routes board | **Bearer uniquement** en v2 ; repli transitoire `?token=` **toléré sur `/overlay/meme-board/*`** (renderer legacy, Bearer prioritaire, WARN unique) — voir §4.1 |
+| `?token=` sur les routes board | **Bearer uniquement** en v2 ; repli transitoire `?token=` **toléré sur `/overlay/media-board/*`** (renderer legacy, Bearer prioritaire, WARN unique) — voir §4.1 |
 
 Hors périmètre (autres lanes) : hub WebSocket Phase 4b (`ws/**`), service média
 Phase 5b (`media/**` : ingestion en tâche de fond, cache/éviction), admin Phase 7b
@@ -40,7 +40,7 @@ crate::app::router(state)                       # apps/lc-server/src/app.rs:136-
  └─ http::overlay::router()   # apps/lc-server/src/http/overlay/mod.rs:77
       ├─ POST /pair/consume
       ├─ GET  /media/{asset_id}
-      └─ meme board (auth par extracteur)
+      └─ media board (auth par extracteur)
 ```
 
 Conventions appliquées dans tout le module :
@@ -65,7 +65,7 @@ Conventions appliquées dans tout le module :
 | `http/overlay/auth.rs` | extracteur `AuthedOverlayClient`, token/hash, Bearer | extracteur :92, `generate_token` :62, `hash_token` :69, `bearer_token` :78 |
 | `http/overlay/pair.rs` | `POST /pair/consume` | handler :82 |
 | `http/overlay/media.rs` | `GET /media/{assetId}` signé HMAC, `ServeFile` | handler :81, `sign_media_url` :189, `resolve_media_file` :214, `serve_file` :263, `touch_asset` :300 |
-| `http/overlay/meme_board.rs` | CRUD board + média board, ingestion best-effort | handlers :107, :177, :368, :408, :476 |
+| `http/overlay/media_board.rs` | CRUD board + média board, ingestion best-effort | handlers :107, :177, :368, :408, :476 |
 | `http/overlay/tests.rs` | 15 tests in-process + 1 test unitaire | liste §11 |
 
 ## 3. Table des routes
@@ -75,11 +75,11 @@ Conventions appliquées dans tout le module :
 | `POST` | `/overlay/pair/consume` | code d'appairage (corps) | `pair.rs:84` | `200` JSON (§5) |
 | `POST` | `/overlay/ingest-code` | `Authorization: Bearer` (membre, droit `TriggerPlayback`) | `ingest_code.rs` | `200 {code,expiresAt,apiBaseUrl}` |
 | `GET` | `/overlay/media/{assetId}` | URL signée HMAC (`clientId`, `exp`, `sig`) | `media.rs:86` | `200`/`206`, binaire |
-| `GET` | `/overlay/meme-board/items` | `Authorization: Bearer` (repli `?token=`) | `meme_board.rs:119` | `200 {total,limit,offset,items}` |
-| `POST` | `/overlay/meme-board/items` | `Authorization: Bearer` (repli `?token=`) | `meme_board.rs:189` | `200 {created,item}` |
-| `GET` | `/overlay/meme-board/media/{assetId}` | `Authorization: Bearer` (repli `?token=`) | `meme_board.rs:388` | `200`/`206`, binaire |
-| `PATCH` | `/overlay/meme-board/items/{itemId}` | `Authorization: Bearer` (repli `?token=`) | `meme_board.rs:428` | `200 {updated:true,item}` |
-| `DELETE` | `/overlay/meme-board/items/{itemId}` | `Authorization: Bearer` (repli `?token=`) | `meme_board.rs:500` | `200 {deleted}` |
+| `GET` | `/overlay/media-board/items` | `Authorization: Bearer` (repli `?token=`) | `media_board.rs:119` | `200 {total,limit,offset,items}` |
+| `POST` | `/overlay/media-board/items` | `Authorization: Bearer` (repli `?token=`) | `media_board.rs:189` | `200 {created,item}` |
+| `GET` | `/overlay/media-board/media/{assetId}` | `Authorization: Bearer` (repli `?token=`) | `media_board.rs:388` | `200`/`206`, binaire |
+| `PATCH` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` (repli `?token=`) | `media_board.rs:428` | `200 {updated:true,item}` |
+| `DELETE` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` (repli `?token=`) | `media_board.rs:500` | `200 {deleted}` |
 | — | `/overlay/config` | — | **absent** | `404 {"error":"request_error"}` (fallback global) |
 
 Les routes protégées portent l'authentification via l'extracteur
@@ -87,11 +87,14 @@ Les routes protégées portent l'authentification via l'extracteur
 par axum (§4). Aucun middleware `.layer(...)` spécifique n'est nécessaire sur le
 sous-routeur.
 
+Les anciens chemins `/overlay/meme-board/...` restent enregistrés sur les mêmes
+handlers pour l'overlay 3.0.0 (compatibilité legacy, suppression prévue en 3.1).
+
 **Sessions en lecture seule** : une session `INVITE_READ_ONLY` peut lire
 (`GET items`, `GET media`) mais **pas** modifier la board. Les routes d'écriture
 (`POST`, `PATCH`, `DELETE`) répondent `403 {"error":"read_only_session"}` après
 authentification et avant toute validation de payload (garde
-`meme_board::ensure_writable`, `meme_board.rs:562`) — voir §7.0 et AUD-V-003.
+`media_board::ensure_writable`, `media_board.rs:562`) — voir §7.0 et AUD-V-003.
 
 ## 4. Authentification Bearer (`auth.rs`)
 
@@ -99,13 +102,13 @@ authentification et avant toute validation de payload (garde
 
 - La voie nominale est l'en-tête `Authorization: Bearer <token>`, qui prime
   toujours. **Exception board** (test local 2026-11-10) : les routes
-  `/overlay/meme-board/*` acceptent en repli `?token=<token>`
+  `/overlay/media-board/*` acceptent en repli `?token=<token>`
   (`auth::query_token`) car le renderer board HTML legacy construit ses URLs et
   ses balises `src` (`<video>`, `<img>` d'aperçu) sans en-tête possible
   (`board/legacy-preview-media-utils.js`). Ce repli est **strictement limité**
-  au préfixe `/overlay/meme-board/` ; `/overlay/media/{assetId}` reste
-  exclusivement HMAC signé et aucune autre route overlay n'accepte de jeton en
-  query.
+  au préfixe `/overlay/media-board/` et à son alias legacy `/overlay/meme-board/` ;
+  `/overlay/media/{assetId}` reste exclusivement HMAC signé et aucune autre route
+  overlay n'accepte de jeton en query.
 - **Statut temporaire (AUD-COR-05)** : ce repli `?token=` ne survit que le temps
   de la migration du renderer legacy (P1-11). Chaque utilisation émet un `WARN`
   unique par processus (target `lc_server::overlay`,
@@ -113,7 +116,8 @@ authentification et avant toute validation de payload (garde
   suppression ; il disparaîtra avec le renderer Rust. Aucun autre jeton ne doit
   figurer dans une URL (l'admin, lui, n'accepte plus que le Bearer).
 - **Mécanique exacte du repli** (état HEAD P2) : `query_token` n'extrait
-  `?token=` que si le chemin commence par `/overlay/meme-board/`
+  `?token=` que si le chemin commence par `/overlay/media-board/` (ou par
+  l'alias legacy `/overlay/meme-board/`)
   (`auth.rs:137-148`) ; la valeur est décodée (`application/x-www-form-urlencoded`),
   `trim`ée, rejetée si vide ou > 200 caractères (`MAX_TOKEN_LEN`). Le repli
   n'est consulté que si `bearer_token` renvoie `None` : en-tête absent, schéma
@@ -152,8 +156,8 @@ du corps d'appairage ignoré, §5.2) et ne peut donc pas être contourné côté
 client. Les handlers le reçoivent directement (`auth: AuthedOverlayClient`) et
 comparent la guilde des ressources à `auth.guild_id()` (défense en profondeur :
 `403 forbidden` pour un `guildId` de requête incohérent, `404 item_not_found`
-pour un item d'une autre guilde). Les écritures meme board utilisent
-`auth.is_read_only()` via `meme_board::ensure_writable` (§7.0).
+pour un item d'une autre guilde). Les écritures media board utilisent
+`auth.is_read_only()` via `media_board::ensure_writable` (§7.0).
 
 > Note d'implémentation : le middleware `from_fn` initialement prévu a été
 > remplacé par un extracteur strictement équivalent. `from_fn` avec
@@ -302,7 +306,7 @@ compressée (et perdre `Accept-Ranges`/`Content-Length`). Correction attendue
 côté `app.rs` (prédicat excluant `/overlay/media` ou les types vidéo/audio) —
 suivi en §12.1.
 
-## 7. Mème board (`/overlay/meme-board/*`)
+## 7. Board média (`/overlay/media-board/*`)
 
 ### 7.0 Sessions en lecture seule (AUD-V-003)
 
@@ -311,8 +315,8 @@ suivi en §12.1.
 | `normal` | `200` | `200`/`206` | comportement §7.2 | comportement §7.4 | comportement §7.5 |
 | `invite_read_only` | `200` | `200`/`206` | **`403 read_only_session`** | **`403 read_only_session`** | **`403 read_only_session`** |
 
-La garde `ensure_writable` (`meme_board.rs:562`) est évaluée en tête des trois
-handlers d'écriture (`meme_board.rs:195`, `:435`, `:506`), **avant** la
+La garde `ensure_writable` (`media_board.rs:562`) est évaluée en tête des trois
+handlers d'écriture (`media_board.rs:195`, `:435`, `:506`), **avant** la
 validation de `url`/`title`/`message` et avant tout accès base : une session
 invitée ne reçoit ni `400` de validation, ni `404` d'identifiant, seulement le
 `403 {"error":"read_only_session"}`. Le mode appliqué est celui du jeton
@@ -322,25 +326,25 @@ présents, le Bearer prime (§4.2). Le mode n'étant jamais relu depuis la requ�
 aucun en-tête/corps ne peut élever une session invitée en session normale.
 Tests : `mod.rs:159` (§11).
 
-### 7.1 `GET /overlay/meme-board/items` (`meme_board.rs:119`)
+### 7.1 `GET /overlay/media-board/items` (`media_board.rs:119`)
 
 Query : `q`, `limit`, `offset`, `guildId`.
 
-- `limit` : défaut 50, clamp `1..=200` (`meme_board.rs:565-570`) ;
+- `limit` : défaut 50, clamp `1..=200` (`media_board.rs:565-570`) ;
 - `offset` : défaut 0, négatif ramené à 0 (`:567`) ;
 - `q` : trim, max 240 caractères, insensible à la casse, filtre `contains` sur
   `title`, `message`, `createdByName`, `media.sourceUrl` (`row_matches`) ;
 - `guildId` : s'il est fourni et diffère de la guilde du Bearer →
   `403 {"error":"forbidden"}` (défense en profondeur) ;
 - **chargement borné (AUD-A2-013)** : une requête SQL join unique
-  (`load_board_rows`, `meme_board_items` × `media_assets`, ordre
+  (`load_board_rows`, `media_board_items` × `media_assets`, ordre
   `created_at DESC, id ASC`) fournit les lignes ; le filtre `q`, le `total` et
   la pagination sont calculés en mémoire, puis seuls les assets de la page
   (`≤ 200`) sont rechargés via `media_assets().get` — plus de N+1 non borné sur
   toute la guilde ni de double parcours repo+Rust ;
 - réponse : `{"total": n, "limit": l, "offset": o, "items": [...]}`.
 
-Payload d'un item (`item_payload`, `meme_board.rs:531-552`) :
+Payload d'un item (`item_payload`, `media_board.rs:531-552`) :
 
 ```json
 {
@@ -358,7 +362,7 @@ Payload d'un item (`item_payload`, `meme_board.rs:531-552`) :
 true)`) : le legacy renvoyait la sérialisation JSON de `Date` (ISO), pas un
 epoch — le renderer board tolère les deux (`toSafeDateLabel`).
 
-### 7.2 `POST /overlay/meme-board/items` (`meme_board.rs:189`)
+### 7.2 `POST /overlay/media-board/items` (`media_board.rs:189`)
 
 Corps legacy : `{"url": "…", "title"?: "…", "message"?: "…", "forceRefresh"?: bool}`.
 
@@ -395,7 +399,7 @@ Corps legacy : `{"url": "…", "title"?: "…", "message"?: "…", "forceRefresh
 `"1"`, `"yes"`, `"on"`, casse ignorée) — parité `toBooleanFlag` legacy
 (AUD-A2-014).
 
-### 7.3 `GET /overlay/meme-board/media/{assetId}` (`meme_board.rs:388`)
+### 7.3 `GET /overlay/media-board/media/{assetId}` (`media_board.rs:388`)
 
 - Bearer obligatoire ; l'item `(guild du client, asset)` doit exister
   (`get_by_guild_and_asset`) sinon `404 media_not_found` (pas de fuite
@@ -404,7 +408,7 @@ Corps legacy : `{"url": "…", "title"?: "…", "message"?: "…", "forceRefresh
 - fichier résolu/confiné sinon `404 media_not_found_on_disk` ;
 - partage le streaming `serve_file` (`Range`/`HEAD`), sans `touch_asset`.
 
-### 7.4 `PATCH /overlay/meme-board/items/{itemId}` (`meme_board.rs:428`)
+### 7.4 `PATCH /overlay/media-board/items/{itemId}` (`media_board.rs:428`)
 
 - session `INVITE_READ_ONLY` → `403 {"error":"read_only_session"}` (avant la
   validation du corps et la lecture de l'item) ;
@@ -418,7 +422,7 @@ Corps legacy : `{"url": "…", "title"?: "…", "message"?: "…", "forceRefresh
 - item inconnu ou d'une autre guilde → `404 {"error":"item_not_found"}` ;
 - réponse `{"updated":true,"item":{"id","title","message"}}`.
 
-### 7.5 `DELETE /overlay/meme-board/items/{itemId}` (`meme_board.rs:500`)
+### 7.5 `DELETE /overlay/media-board/items/{itemId}` (`media_board.rs:500`)
 
 - session `INVITE_READ_ONLY` → `403 {"error":"read_only_session"}` (avant la
   validation de l'identifiant) ;
@@ -431,7 +435,7 @@ Corps legacy : `{"url": "…", "title"?: "…", "message"?: "…", "forceRefresh
   comptages non transactionnels (AUD-A2-013) ;
 - réponse `{"deleted": bool}`.
 
-### 7.6 Erreurs meme board (récapitulatif)
+### 7.6 Erreurs media board (récapitulatif)
 
 | Statut | Corps | Cas |
 |--------|-------|-----|
@@ -486,7 +490,7 @@ pub fn sign_media_url(
 
 | # | Écart | Raison / mitigation |
 |---|-------|---------------------|
-| 1 | `?token=` supprimé pour le protocole WS et les URLs média signées ; Bearer obligatoire, **sauf** le repli `?token=` des routes board `/overlay/meme-board/*` | protocole v2 §9 ; le repli board est l'unique exception REST (renderer HTML legacy `overlay/renderer/board.js` charge `<video>`/`<img>` par URL), limité au chemin board, Bearer prioritaire, token trimé/≤200, et les mutations restent soumises à la garde `invite_read_only` (§7.0). **Temporaire** depuis AUD-COR-05 : WARN unique par processus (`warn_query_token_deprecation_once`), suppression prévue avec le renderer Rust (P1-11) |
+| 1 | `?token=` supprimé pour le protocole WS et les URLs média signées ; Bearer obligatoire, **sauf** le repli `?token=` des routes board `/overlay/media-board/*` | protocole v2 §9 ; le repli board est l'unique exception REST (renderer HTML legacy `overlay/renderer/board.js` charge `<video>`/`<img>` par URL), limité au chemin board, Bearer prioritaire, token trimé/≤200, et les mutations restent soumises à la garde `invite_read_only` (§7.0). **Temporaire** depuis AUD-COR-05 : WARN unique par processus (`warn_query_token_deprecation_once`), suppression prévue avec le renderer Rust (P1-11) |
 | 2 | `GET /overlay/config` supprimé | protocole v2 ; config locale overlay (Tauri) |
 | 3 | Ingestion média du board **déléguée à `MediaService`** (plus de pipeline inline custom dans le handler) | une seule voie d'ingestion : cache `READY`/`source_hash`, sémaphore, budget cache, `FAILED` + `record_failure`, nettoyage des fichiers partiels (AUD-V2-S-003, AUD-A2-006/007). La branche rich tweet card reste hors scope REST (Phase 6b) |
 | 4 | Une lecture `/overlay/media` **ne prolonge plus** `expires_at` (seul `last_accessed_at` est touché) | AUD-A2-005 : le legacy repoussait le TTL de 12 h à chaque requête, gonflant la rétention. Seules l'ingestion, le pin board et la libération de pin modifient l'expiration |
@@ -497,7 +501,7 @@ pub fn sign_media_url(
 | 9 | `sessionMode` du corps d'appairage ignoré | sécurité : un client ne s'auto-attribue pas une session normale |
 | 10 | `delete` renvoie toujours `200 {deleted}` (jamais 404) | parité legacy |
 | 11 | Compression possible des réponses média `200` | `app.rs` (Lead) doit exclure `/overlay/media` du `CompressionLayer` — cf. §12.1 |
-| 12 | Mutations meme-board **refusées** en session `invite_read_only` (`403 read_only_session`) | AUD-V-003 : le legacy ne vérifiait pas le mode sur les écritures ; le protocole v2 §9 réserve l'invite à la lecture. Garde serveur ajoutée (`meme_board::ensure_writable`, §7.0), identique pour Bearer et `?token=` ; les `GET` restent inchangés |
+| 12 | Mutations media-board **refusées** en session `invite_read_only` (`403 read_only_session`) | AUD-V-003 : le legacy ne vérifiait pas le mode sur les écritures ; le protocole v2 §9 réserve l'invite à la lecture. Garde serveur ajoutée (`media_board::ensure_writable`, §7.0), identique pour Bearer et `?token=` ; les `GET` restent inchangés |
 | 13 | JSON illisible → `400 {"error":"invalid_payload"}` dédié (et non `request_error` générique) | AUD-A2-009 : `Result<Json<…>, JsonRejection>` sur pair/board ; l'authentification et la garde read-only restent évaluées avant le refus de corps |
 
 ## 11. Tests
@@ -519,11 +523,11 @@ routeur **complet** via `crate::app::router` (middlewares réels) et
 | `signed_media_rejects_bad_signature_expiry_and_missing_params` | params absents, sig falsifiée, exp malformé/expiré, asset inconnu |
 | `signed_media_rejects_revoked_client_and_expired_asset` | client révoqué → 403, asset expiré → 404 |
 | `signed_media_missing_or_escaped_file_is_rejected` | fichier absent / hors `MEDIA_STORAGE_DIR` → 404 |
-| `meme_board_requires_token_and_accepts_legacy_query_token` | 401 sans token, `?token=` accepté sur `/overlay/meme-board/*`, Bearer prioritaire, `guildId` étranger → 403 |
-| `meme_board_lists_filters_and_paginates` | ordre, payload media, filtres `q`, pagination, clamps 1..=200 |
-| `meme_board_patch_and_delete_semantics` | validation corps, conservation/effacement, isolation guilde, delete idempotent |
-| `meme_board_create_rejects_missing_url_without_network` | 400 `url is required`, aucun réseau |
-| `meme_board_media_requires_auth_and_binding` | 401, 404 hors guilde, 200 + `no-store` |
+| `media_board_requires_token_and_accepts_legacy_query_token` | 401 sans token, `?token=` accepté sur `/overlay/media-board/*`, Bearer prioritaire, `guildId` étranger → 403 |
+| `media_board_lists_filters_and_paginates` | ordre, payload media, filtres `q`, pagination, clamps 1..=200 |
+| `media_board_patch_and_delete_semantics` | validation corps, conservation/effacement, isolation guilde, delete idempotent |
+| `media_board_create_rejects_missing_url_without_network` | 400 `url is required`, aucun réseau |
+| `media_board_media_requires_auth_and_binding` | 401, 404 hors guilde, 200 + `no-store` |
 | `overlay_config_route_is_absent_in_v2` | 404 `request_error` |
 | `sign_media_url_matches_protocol_v2_format_and_verifies` (unitaire) | format exact, vérification HMAC, mauvais secret rejeté |
 | `read_only_allows_reads_and_blocks_mutations` (`mod.rs`) | session invitée : GET items/media 200, POST/PATCH/DELETE 403 `read_only_session`, item intact |
@@ -531,8 +535,8 @@ routeur **complet** via `crate::app::router` (middlewares réels) et
 | `query_token_cannot_bypass_read_only_gate` (`mod.rs`) | `?token=` invité → 403 sur les 3 mutations ; `?token=` normal → PATCH 200 |
 | `bearer_token_takes_precedence_over_query_token` (`mod.rs`) | un Bearer normal prime sur un `?token=` invité (et inversement) |
 | `signed_media_requires_a_playback_job_in_the_client_guild` | 403 `forbidden` sans playback job de la guilde, 403 si job d'une autre guilde, 200 + bytes si job de la guilde (AUD-A2-004) |
-| `meme_board_create_rejects_malformed_json` | 400 `invalid_payload` sur corps illisible, après la garde session (AUD-A2-009) |
-| `meme_board_patch_rejects_malformed_json` | idem sur `PATCH /items/{id}` |
+| `media_board_create_rejects_malformed_json` | 400 `invalid_payload` sur corps illisible, après la garde session (AUD-A2-009) |
+| `media_board_patch_rejects_malformed_json` | idem sur `PATCH /items/{id}` |
 
 Commandes :
 
@@ -584,7 +588,7 @@ par `tower-http` (présence de `Content-Range`). Alternative : prédicat custom
 
 ### 12.5 Renderer (Phase 8)
 
-- appels `/overlay/meme-board/*` : envoyer `Authorization: Bearer` au lieu de
+- appels `/overlay/media-board/*` : envoyer `Authorization: Bearer` au lieu de
   `?token=` (`overlay/src/renderer/board/legacy-preview-media-utils.ts:44-53`
   legacy) ;
 - média : utiliser `media.url` verbatim (URL signée du hub), pas de token

@@ -13,7 +13,7 @@ use lc_domain::{
 
 use crate::catalog::{registered_command_names, CommandKey};
 use crate::context::{
-    load_guild, Author, BotConfig, BotContext, GuildSettingsPatch, MediaRequest, MemeAddRequest,
+    load_guild, Author, BotConfig, BotContext, GuildSettingsPatch, MediaAddRequest, MediaRequest,
     PlaybackJobRequest, PAIRING_CODE_MAX_ATTEMPTS,
 };
 use crate::error::{BotError, MediaError, MediaErrorCode, MediaLimits};
@@ -63,7 +63,7 @@ pub fn plan_deferral(invocation: &Invocation) -> Deferral {
                 Deferral::None
             }
         }
-        CommandInput::MemeAdd(submission) => {
+        CommandInput::MediaAdd(submission) => {
             if invocation.guild_id.is_some() && submission.has_source() {
                 Deferral::Ephemeral
             } else {
@@ -120,8 +120,8 @@ async fn handle(ctx: &dyn BotContext, invocation: Invocation) -> Result<Reply, B
             )
             .await
         }
-        CommandInput::MemeAdd(submission) => {
-            handle_meme_add(ctx, lang, guild_id.as_ref(), &author, submission).await
+        CommandInput::MediaAdd(submission) => {
+            handle_media_add(ctx, lang, guild_id.as_ref(), &author, submission).await
         }
         CommandInput::Talk(input) => {
             handle_talk(
@@ -232,7 +232,7 @@ fn handle_info(ctx: &dyn BotContext, _lang: Lang) -> Reply {
 }
 
 // ---------------------------------------------------------------------------
-// Ingestion média (/send, /hidesend, /meme-add) et /dire, /cdire
+// Ingestion média (/send, /hidesend, /media-add) et /dire, /cdire
 // ---------------------------------------------------------------------------
 
 async fn ingest_asset(
@@ -351,7 +351,7 @@ async fn handle_media_command(
     }
 }
 
-async fn handle_meme_add(
+async fn handle_media_add(
     ctx: &dyn BotContext,
     lang: Lang,
     guild_id: Option<&GuildId>,
@@ -363,7 +363,7 @@ async fn handle_meme_add(
         return Ok(not_allowed_reply(lang));
     };
     if !submission.has_source() {
-        return Ok(error_reply(lang, dict.meme_add_missing_media, true));
+        return Ok(error_reply(lang, dict.media_add_missing_media, true));
     }
     let asset = match ingest_asset(ctx, lang, &submission, true).await {
         Ok(asset) => asset,
@@ -371,7 +371,7 @@ async fn handle_meme_add(
     };
 
     let title = to_optional_text(submission.text.as_deref(), 240);
-    let request = MemeAddRequest {
+    let request = MediaAddRequest {
         guild_id: guild_id.clone(),
         media_asset_id: asset.id,
         title,
@@ -379,17 +379,17 @@ async fn handle_meme_add(
         created_by_discord_user_id: Some(author.id.clone()),
         created_by_name: Some(author.name.clone()),
     };
-    match ctx.meme().add_to_board(request).await {
+    match ctx.media_board().add_to_board(request).await {
         Ok(created) => {
             let answer = if created {
-                dict.meme_add_answer_created
+                dict.media_add_answer_created
             } else {
-                dict.meme_add_answer_exists
+                dict.media_add_answer_exists
             };
             Ok(success_reply(lang, answer, true))
         }
         Err(error) => {
-            tracing::warn!(?error, "échec d'ajout au meme board");
+            tracing::warn!(?error, "échec d'ajout au board média");
             Ok(failure_reply(
                 lang,
                 &error,
@@ -904,11 +904,11 @@ mod tests {
     }
 
     #[test]
-    fn deferral_meme_add() {
-        let no_source = invocation(CommandInput::MemeAdd(MediaSubmission::default()));
+    fn deferral_media_add() {
+        let no_source = invocation(CommandInput::MediaAdd(MediaSubmission::default()));
         assert_eq!(plan_deferral(&no_source), Deferral::None);
 
-        let with_source = invocation(CommandInput::MemeAdd(MediaSubmission {
+        let with_source = invocation(CommandInput::MediaAdd(MediaSubmission {
             media: Some("https://cdn.discordapp.com/x.png".to_owned()),
             ..MediaSubmission::default()
         }));

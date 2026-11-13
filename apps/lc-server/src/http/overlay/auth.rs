@@ -4,29 +4,17 @@
 //!
 //! Le legacy (`server/src/services/overlayAuth.ts:116-143`) acceptait le token
 //! en en-tête **ou** dans `?token=`. Le protocole v2 supprime le passage par
-//! query string pour les URLs média signées (cf. `docs/rust/protocol-v2.md` §9),
-//! mais le renderer board (HTML/JS legacy conservé en Phase 8) construit encore
-//! ses URLs avec `?token=` — y compris pour les `<video>`/`<img>` d'aperçu qui ne
-//! peuvent pas porter d'en-tête. Pour ne pas casser cette fonctionnalité, la
-//! query string est acceptée **uniquement** sous `/overlay/media-board/*` (et
-//! son alias legacy `/overlay/meme-board/*`) ; les autres routes overlay (média
-//! de lecture HMAC, ingestion) restent sans jeton en query. L'en-tête
-//! `Authorization: Bearer <token>` reste la voie nominale et prime toujours sur
-//! `?token=` lorsqu'il est présent.
+//! query string : les routes REST du board exigent
+//! `Authorization: Bearer <token>`, et le flux binaire
+//! `GET /overlay/media-board/media/{assetId}` est authentifié par une URL
+//! signée (`clientId`, `exp`, `sig`, cf. [`super::media_board::get_media`]).
+//! Aucune route overlay n'accepte plus de jeton en query string.
 //!
 //! Le token brut n'est jamais stocké : seule son empreinte `SHA-256` hexadécimale
 //! est persistée dans `overlay_clients.token_hash` (parité legacy
 //! `hashOverlayToken`, `server/src/services/overlayAuth.ts:36-38`). Les jetons
 //! sont générés par [`generate_token`] : 32 octets aléatoires encodés en hex
 //! (64 caractères), équivalent de `crypto.randomBytes(32).toString('hex')`.
-//!
-//! ## Exception temporaire AUD-COR-05
-//!
-//! Le repli `?token=` pour `/overlay/media-board/*` (et son alias legacy
-//! `/overlay/meme-board/*`) est **temporaire** : il ne survit que le temps de la
-//! migration du renderer legacy (P1-11). Chaque utilisation est journalisée une
-//! seule fois par processus en `WARN` (target `lc_server::overlay`) afin d'en
-//! mesurer l'usage avant suppression.
 //!
 //! ## Extracteur d'authentification
 //!
@@ -42,7 +30,6 @@
 //! `crate::app::router`, qui seul détient l'instance `AppState`).
 
 use std::future::Future;
-use std::sync::Once;
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
@@ -147,46 +134,6 @@ pub fn bearer_token(headers: &HeaderMap) -> Option<String> {
     Some(token.to_owned())
 }
 
-/// Longueur maximale d'un jeton accepté (64 hex) ; garde-fou anti-abus.
-const MAX_TOKEN_LEN: usize = 200;
-
-/// Extrait `?token=` **uniquement** pour les routes du board média.
-///
-/// Le renderer board legacy charge ses listes et ses aperçus (`<video>`/`<img>`)
-/// par URL, sans possibilité d'ajouter un en-tête : c'est l'unique exception
-/// query string du contrat REST v2 (cf. doc du module). Le parsing est celui de
-/// `application/x-www-form-urlencoded` (décodage des pourcentages inclus).
-pub fn query_token(uri: &axum::http::Uri) -> Option<String> {
-    let path = uri.path();
-    // Legacy overlay 3.0.0 compatibility: remove in 3.1.
-    if !(path.starts_with("/overlay/media-board/") || path.starts_with("/overlay/meme-board/")) {
-        return None;
-    }
-    let token = url::form_urlencoded::parse(uri.query()?.as_bytes())
-        .find_map(|(key, value)| (key == "token").then(|| value.into_owned()))?;
-    let token = token.trim().to_owned();
-    if token.is_empty() || token.len() > MAX_TOKEN_LEN {
-        return None;
-    }
-    Some(token)
-}
-
-/// Avertissement de dépréciation du repli `?token=` board, émis une seule fois
-/// par processus (AUD-COR-05).
-///
-/// L'exception est temporaire : elle sera supprimée quand le renderer legacy
-/// cessera de mettre le jeton dans l'URL (P1-11).
-fn warn_query_token_deprecation_once() {
-    static WARNED: Once = Once::new();
-
-    WARNED.call_once(|| {
-        warn!(
-            target: "lc_server::overlay",
-            "repli `?token=` utilisé pour /overlay/media-board/* : mécanisme legacy temporaire (AUD-COR-05), supprimé après migration du renderer (P1-11)"
-        );
-    });
-}
-
 impl FromRequestParts<AppState> for AuthedOverlayClient {
     type Rejection = Response;
 
@@ -194,18 +141,9 @@ impl FromRequestParts<AppState> for AuthedOverlayClient {
         parts: &mut Parts,
         state: &AppState,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
-        // L'en-tête Bearer prime ; `?token=` n'est toléré que pour le board
-        // legacy (exception temporaire AUD-COR-05, signalée une fois).
-        let token = match bearer_token(&parts.headers) {
-            Some(token) => Some(token),
-            None => {
-                let legacy = query_token(&parts.uri);
-                if legacy.is_some() {
-                    warn_query_token_deprecation_once();
-                }
-                legacy
-            }
-        };
+        // Un seul mécanisme : l'en-tête `Authorization: Bearer`. Aucun repli
+        // `?token=` (supprimé avec AUD-COR-05).
+        let token = bearer_token(&parts.headers);
         let db = state.db.clone();
         let now = state.clock.now();
         async move {

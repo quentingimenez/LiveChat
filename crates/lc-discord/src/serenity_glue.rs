@@ -18,7 +18,10 @@
 
 use lc_domain::{GuildId, PairingMode};
 use serde_json::{json, Value};
-use serenity::builder::{CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage};
+use serenity::builder::{
+    CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
+    EditInteractionResponse,
+};
 use serenity::http::Http;
 use serenity::model::application::{CommandDataOption, CommandDataOptionValue, CommandInteraction};
 
@@ -363,35 +366,68 @@ pub fn create_embed(embed: &Embed) -> CreateEmbed {
     builder
 }
 
-/// Envoie le deferral puis la réponse via l'API HTTP de Discord.
+/// Envoie l'accusé de réception différé (`type: 5`) **avant** le traitement.
 ///
-/// La boucle gateway de Phase 6b appelle `dispatch` puis cette fonction ; les
-/// tests, eux, restent sur [`deferral_response`] / [`message_response`].
+/// Discord laisse 3 secondes pour répondre à une interaction : les commandes
+/// qui touchent la base ou le média doivent donc être acquittées d'abord, puis
+/// répondre par une édition de la réponse d'origine (voir [`respond`]).
+pub async fn defer(
+    http: &Http,
+    interaction: &CommandInteraction,
+    deferral: Deferral,
+) -> Result<(), Box<serenity::Error>> {
+    if deferral == Deferral::None {
+        return Ok(());
+    }
+    let message =
+        CreateInteractionResponseMessage::new().ephemeral(deferral == Deferral::Ephemeral);
+    let response = CreateInteractionResponse::Defer(message);
+    http.create_interaction_response(interaction.id, &interaction.token, &response, Vec::new())
+        .await
+        .map_err(Box::new)
+}
+
+/// Envoie la réponse finale d'une interaction.
+///
+/// Sans accusé de réception, la réponse est un `type: 4` classique. Après un
+/// [`defer`], Discord refuse une seconde réponse initiale : le résultat remplace
+/// donc la réponse d'origine via `edit_original_interaction_response`.
+///
+/// La boucle gateway (`apps/lc-server/src/discord/`) appelle [`defer`] puis
+/// `dispatch` puis cette fonction ; les tests, eux, restent sur
+/// [`deferral_response`] / [`message_response`].
 pub async fn respond(
     http: &Http,
     interaction: &CommandInteraction,
     outcome: &CommandOutcome,
 ) -> Result<(), Box<serenity::Error>> {
+    let has_embed =
+        outcome.reply.embed.title.is_some() || outcome.reply.embed.description.is_some();
+
     if outcome.deferral != Deferral::None {
-        let deferral = CreateInteractionResponseMessage::new()
-            .ephemeral(outcome.deferral == Deferral::Ephemeral);
-        let response = CreateInteractionResponse::Defer(deferral);
+        // The deferred acknowledgement is already displayed: edit it. The
+        // ephemeral flag belongs to the original (deferred) message and is not
+        // changed here.
+        let mut message = EditInteractionResponse::new();
+        if has_embed {
+            message = message.embed(create_embed(&outcome.reply.embed));
+        }
+        http.edit_original_interaction_response(&interaction.token, &message, Vec::new())
+            .await
+            .map(|_| ())
+            .map_err(Box::new)
+    } else {
+        let mut message = CreateInteractionResponseMessage::new()
+            .embed(create_embed(&outcome.reply.embed))
+            .ephemeral(outcome.reply.ephemeral);
+        // `embed` n'est pas optionnel côté builder : un embed vide est accepté
+        // mais on préfère ne rien ajouter quand la réponse n'a que du texte.
+        if !has_embed {
+            message = CreateInteractionResponseMessage::new().ephemeral(outcome.reply.ephemeral);
+        }
+        let response = CreateInteractionResponse::Message(message);
         http.create_interaction_response(interaction.id, &interaction.token, &response, Vec::new())
             .await
-            .map_err(Box::new)?;
+            .map_err(Box::new)
     }
-
-    let mut message = CreateInteractionResponseMessage::new()
-        .embed(create_embed(&outcome.reply.embed))
-        .ephemeral(outcome.reply.ephemeral);
-    // `embed` n'est pas optionnel côté builder : un embed vide est accepté mais
-    // on préfère ne rien ajouter quand la réponse n'a que du texte.
-    if outcome.reply.embed.title.is_none() && outcome.reply.embed.description.is_none() {
-        message = CreateInteractionResponseMessage::new().ephemeral(outcome.reply.ephemeral);
-    }
-    let response = CreateInteractionResponse::Message(message);
-    http.create_interaction_response(interaction.id, &interaction.token, &response, Vec::new())
-        .await
-        .map_err(Box::new)?;
-    Ok(())
 }

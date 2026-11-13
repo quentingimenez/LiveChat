@@ -201,6 +201,43 @@ async fn violation_de_contrainte_check_rejetee() {
 }
 
 #[tokio::test]
+async fn pairing_code_admin_flag_default_and_check() {
+    let (db, _dir) = common::temp_db().await;
+
+    // La colonne ajoutée par la migration 0007 est optionnelle à l'insertion
+    // (DEFAULT 0) et contrainte à 0/1.
+    sqlx::query(
+        "INSERT INTO pairing_codes ( \
+            code, guild_id, mode, created_by_discord_user_id, created_at \
+         ) VALUES ('DEF001', '123456789012345678', 'NORMAL', '42', ?)",
+    )
+    .bind(common::NOW_MS)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    let grants_admin: i64 =
+        sqlx::query_scalar("SELECT grants_admin FROM pairing_codes WHERE code = 'DEF001'")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(grants_admin, 0, "DEFAULT 0 de grants_admin");
+
+    let error = sqlx::query(
+        "INSERT INTO pairing_codes ( \
+            code, guild_id, mode, grants_admin, created_by_discord_user_id, created_at \
+         ) VALUES ('BAD001', '123456789012345678', 'NORMAL', 2, '42', ?)",
+    )
+    .bind(common::NOW_MS)
+    .execute(db.pool())
+    .await
+    .unwrap_err();
+    assert!(
+        DbError::from(error).is_check_violation(),
+        "grants_admin=2 doit violer le CHECK"
+    );
+}
+
+#[tokio::test]
 async fn dossier_parent_cree_et_urls_acceptees() {
     let dir = tempfile::tempdir().unwrap();
 

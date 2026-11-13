@@ -206,6 +206,15 @@ pub async fn delete_playback_jobs_for_guild(db: &Db, guild_id: &str) -> Result<u
     Ok(result.rows_affected())
 }
 
+/// Media-board item ids of a guild (read before deletion).
+pub async fn guild_board_item_ids(db: &Db, guild_id: &str) -> Result<Vec<String>, DbError> {
+    sqlx::query_scalar::<_, String>("SELECT id FROM media_board_items WHERE guild_id = ?1")
+        .bind(guild_id)
+        .fetch_all(db.pool())
+        .await
+        .map_err(DbError::from)
+}
+
 /// Supprime le board média d'une guilde ; retourne le nombre supprimé.
 pub async fn delete_media_board_items_for_guild(db: &Db, guild_id: &str) -> Result<u64, DbError> {
     let result = sqlx::query("DELETE FROM media_board_items WHERE guild_id = ?1")

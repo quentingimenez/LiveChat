@@ -48,7 +48,7 @@ fn parse_method(raw: &str) -> Result<Method, String> {
 ///
 /// Le chemin est résolu puis re-vérifié sur l'URL finale : ni `..`, ni URL
 /// absolue, ni changement d'hôte ne peuvent contourner le préfixe.
-fn build_url(server_url: &str, path: &str, allow_insecure: bool) -> Result<Url, String> {
+pub(crate) fn build_url(server_url: &str, path: &str, allow_insecure: bool) -> Result<Url, String> {
     if path.chars().count() > MAX_PATH_CHARS {
         return Err("chemin trop long".to_string());
     }
@@ -65,29 +65,6 @@ fn build_url(server_url: &str, path: &str, allow_insecure: bool) -> Result<Url, 
         return Err("chemin non autorisé".to_string());
     }
     Ok(url)
-}
-
-/// URL d'un média du board pour une balise `<img>`/`<video>`.
-///
-/// Ces balises ne peuvent pas porter d'en-tête : l'URL embarque le jeton en
-/// query (repli accepté par le serveur sur `/overlay/media-board/*` seulement).
-pub fn board_media_url(membership: &Membership, asset_id: &str) -> Result<String, String> {
-    let asset_id = asset_id.trim();
-    if asset_id.is_empty()
-        || !asset_id
-            .chars()
-            .all(|character| character.is_ascii_hexdigit() || character == '-')
-    {
-        return Err("identifiant de média invalide".to_string());
-    }
-    let mut url = build_url(
-        &membership.server_url,
-        &format!("/overlay/media-board/media/{asset_id}"),
-        tls::insecure_tls_enabled(),
-    )?;
-    url.query_pairs_mut()
-        .append_pair("token", &membership.client_token);
-    Ok(url.to_string())
 }
 
 /// Exécute un appel REST authentifié pour la guilde de `membership`.
@@ -119,13 +96,21 @@ pub async fn request(
         .send()
         .await
         .map_err(|error| format!("serveur injoignable : {error}"))?;
+    Ok(read_response(response).await)
+}
+
+/// Reads a response body into the shape exposed to the board.
+///
+/// Shared by REST calls and streamed uploads: an empty or non-JSON body
+/// becomes `Value::Null` and `ok` reflects the HTTP status.
+pub(crate) async fn read_response(response: reqwest::Response) -> ApiResponse {
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
-    Ok(ApiResponse {
+    ApiResponse {
         ok: status.is_success(),
         status: status.as_u16(),
         body: serde_json::from_str(&text).unwrap_or(Value::Null),
-    })
+    }
 }
 
 #[cfg(test)]
@@ -167,22 +152,5 @@ mod tests {
         assert!(parse_method("patch").is_ok());
         assert!(parse_method("PUT").is_err());
         assert!(parse_method("CONNECT").is_err());
-    }
-
-    #[test]
-    fn media_url_carries_token_and_rejects_bad_ids() {
-        let membership = Membership {
-            server_url: "https://api.example.test".to_string(),
-            guild_id: "111".to_string(),
-            client_token: "abc".to_string(),
-            ..Default::default()
-        };
-        let url = board_media_url(&membership, "0a1b-2c3d").expect("url");
-        assert_eq!(
-            url,
-            "https://api.example.test/overlay/media-board/media/0a1b-2c3d?token=abc"
-        );
-        assert!(board_media_url(&membership, "../x").is_err());
-        assert!(board_media_url(&membership, "").is_err());
     }
 }

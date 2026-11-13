@@ -9,6 +9,7 @@
 //! Le service ne dépend pas du hub WebSocket : la lecture est déclenchée par un
 //! hook injecté (voir [`crate::media::hook`], contrat Phase 4b).
 
+use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use lc_db::Db;
@@ -168,6 +169,68 @@ impl MediaService {
         assets::mark_ready(&self.db, asset.id, &ready, now, ttl).await
     }
 
+    /// Ingests a locally uploaded file and returns the `READY` asset.
+    ///
+    /// The cache/deduplication key is `upload:sha256:<hex>`, where `<hex>` is
+    /// the content SHA-256 computed by the caller while streaming the body. A
+    /// reusable `READY` asset for that key is returned without running the
+    /// pipeline again. The input file remains owned by the caller.
+    pub async fn ingest_file(
+        &self,
+        path: &Path,
+        original_filename: &str,
+        content_type_hint: Option<&str>,
+        content_sha256: &str,
+    ) -> MediaServiceResult<MediaAsset> {
+        let source = MediaSource::from_upload(original_filename, content_sha256);
+        let now = self.clock.now();
+        let ttl = assets::cache_ttl(&self.config);
+
+        if let Some(cached) =
+            assets::find_reusable(&self.db, &self.config, &source.source_hash, now).await?
+        {
+            tracing::debug!(
+                source_hash = %cached.source_hash,
+                "asset média téléversé réutilisé depuis le cache"
+            );
+            return Ok(cached);
+        }
+
+        let asset = assets::begin_processing(&self.db, &source, now, ttl).await?;
+
+        let ingested = match self
+            .pipeline
+            .ingest_local_file_with_hash(path, original_filename, content_type_hint, content_sha256)
+            .await
+        {
+            Ok(ingested) => ingested,
+            Err(error) => {
+                self.record_failure(asset.id, &error, now).await;
+                self.discard_partial_files(&source.source_hash);
+                return Err(MediaServiceError::Media(error));
+            }
+        };
+
+        let ready = ReadyAsset::from_ingested(&ingested);
+        if let Err(error) = quotas::enforce_cache_budget(
+            &self.db,
+            &self.storage,
+            &self.config,
+            ready.size_bytes_u64(),
+            Some(ready.source_hash.as_str()),
+        )
+        .await
+        {
+            if let Some(media_error) = error.media_error() {
+                self.record_failure(asset.id, media_error, now).await;
+            }
+            self.discard_partial_files(&source.source_hash);
+            return Err(error);
+        }
+
+        assets::mark_ready(&self.db, asset.id, &ready, now, ttl).await
+    }
+
     /// Marque l'asset en échec et journalise si même l'écriture échoue.
     async fn record_failure(
         &self,
@@ -225,7 +288,14 @@ pub fn shared_pipeline_for_state(state: &AppState) -> MediaServiceResult<Arc<Med
 /// Retourne le pipeline partagé, en l'initialisant au premier usage.
 fn shared_pipeline(config: &MediaConfig) -> MediaServiceResult<Arc<MediaPipeline>> {
     if let Some(pipeline) = PIPELINE.get() {
-        return Ok(Arc::clone(pipeline));
+        if pipeline.config() == config {
+            return Ok(Arc::clone(pipeline));
+        }
+        // Different configuration (notably parallel tests with distinct storage
+        // roots): never reuse a pipeline whose frozen configuration would write
+        // to the wrong directory.
+        tracing::debug!("configuration média différente du pipeline partagé : pipeline dédié");
+        return Ok(Arc::new(MediaPipeline::new(config.clone())?));
     }
 
     let built = Arc::new(MediaPipeline::new(config.clone())?);
@@ -234,7 +304,10 @@ fn shared_pipeline(config: &MediaConfig) -> MediaServiceResult<Arc<MediaPipeline
     if PIPELINE.set(Arc::clone(&built)).is_err() {
         tracing::debug!("pipeline média partagé déjà initialisé par un autre thread");
     }
-    Ok(PIPELINE.get().map_or(built, Arc::clone))
+    match PIPELINE.get() {
+        Some(shared) if shared.config() == config => Ok(Arc::clone(shared)),
+        _ => Ok(built),
+    }
 }
 
 #[cfg(test)]

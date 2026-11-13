@@ -22,6 +22,7 @@ import { createOverlayLegacyRuntimeMediaFrameHandlersUtils } from './legacy-runt
 import { createOverlayLegacyRuntimePlaybackCountdownHandlersUtils } from './legacy-runtime-playback-countdown-handlers-utils.js';
 import { createOverlayLegacyRuntimeRenderHandlersUtils } from './legacy-runtime-render-handlers-utils.js';
 import { createOverlayLegacyUtils } from './legacy-utils.js';
+import { createPlacementEditor } from './placement-editor.js';
 const overlayLegacyUtils = createOverlayLegacyUtils();
 window.__overlayLegacyUtils = overlayLegacyUtils;
 window.__overlayLegacyMediaDomUtils = createOverlayLegacyMediaDomUtils();
@@ -66,4 +67,5 @@ window.__overlayLegacyRuntimeInputsUtils = createOverlayLegacyRuntimeInputsUtils
 window.__overlayLegacyRuntimeMediaFrameHandlersUtils = createOverlayLegacyRuntimeMediaFrameHandlersUtils();
 window.__overlayLegacyRuntimePlaybackCountdownHandlersUtils = createOverlayLegacyRuntimePlaybackCountdownHandlersUtils();
 window.__overlayLegacyRuntimeRenderHandlersUtils = createOverlayLegacyRuntimeRenderHandlersUtils();
+window.__overlayCreatePlacementEditor = createPlacementEditor;
 loadLegacyRendererScript('./overlay.js');

@@ -92,3 +92,58 @@ async fn update_settings_cree_la_ligne_et_liste_ordre() {
     let ids: Vec<_> = listed.iter().map(|guild| guild.id.as_str()).collect();
     assert_eq!(ids, vec![guild_a.as_str(), guild_b.as_str()]);
 }
+
+#[tokio::test]
+async fn set_discord_icon_updates_native_and_linked_guilds() {
+    let (db, _dir) = common::temp_db().await;
+    let repo = db.guilds();
+
+    let native = common::guild("604444444444444444");
+    repo.upsert(&common::sample_guild(&native)).await.unwrap();
+    assert_eq!(
+        repo.set_discord_icon(native.as_str(), Some("native_hash"))
+            .await
+            .unwrap(),
+        1
+    );
+    let access = repo.access(&native).await.unwrap().unwrap();
+    assert!(!access.standalone);
+    assert_eq!(access.discord_icon_hash.as_deref(), Some("native_hash"));
+
+    let standalone = common::guild("607777777777777777");
+    let linked_discord = common::guild("606666666666666666");
+    repo.create_standalone(&standalone, "Linked", common::now())
+        .await
+        .unwrap();
+    repo.link_discord(&standalone, Some(&linked_discord))
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.set_discord_icon(linked_discord.as_str(), Some("linked_hash"))
+            .await
+            .unwrap(),
+        1
+    );
+    let access = repo.access(&standalone).await.unwrap().unwrap();
+    assert!(access.standalone);
+    assert_eq!(access.discord_icon_hash.as_deref(), Some("linked_hash"));
+}
+
+#[tokio::test]
+async fn upsert_preserves_discord_icon_hash() {
+    let (db, _dir) = common::temp_db().await;
+    let repo = db.guilds();
+    let guild = common::guild("605555555555555555");
+    repo.upsert(&common::sample_guild(&guild)).await.unwrap();
+    repo.set_discord_icon(guild.as_str(), Some("keep_me"))
+        .await
+        .unwrap();
+
+    let mut updated = common::sample_guild(&guild);
+    updated.name = Some("Renamed".to_owned());
+    repo.upsert(&updated).await.unwrap();
+
+    let access = repo.access(&guild).await.unwrap().unwrap();
+    assert_eq!(access.name.as_deref(), Some("Renamed"));
+    assert_eq!(access.discord_icon_hash.as_deref(), Some("keep_me"));
+}

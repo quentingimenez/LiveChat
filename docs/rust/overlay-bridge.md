@@ -974,11 +974,13 @@ depuis le tray ou quand une guilde est rejointe/quittée (donc quand
 
 ### 14.3 `settings_identify_displays`
 
-Aucun payload → `{ "count": N }`. Le shell crée une fenêtre transparente,
-sans décoration, always-on-top, cliquable à travers et non focusable par écran
-(label `identify-<index>`, page `identify.html`) ; chaque fenêtre affiche le
-numéro de l'écran et son libellé, puis le shell les ferme après 3 s. Ces
-fenêtres n'utilisent aucune commande IPC.
+Aucun payload → `{ "count": N }`. Commande async (une commande synchrone
+bloquerait la création des fenêtres sous Windows). Le shell crée une fenêtre
+transparente, sans décoration, always-on-top, cliquable à travers et non
+focusable par écran (label `identify-<index>`, page `identify.html`), affichée
+sans activation : le board garde le focus. Chaque fenêtre affiche le numéro de
+l'écran et son libellé, reste au-dessus du board, puis le shell les ferme après
+3 s. Ces fenêtres n'utilisent aucune commande IPC.
 
 ### 14.4 `settings_test_media`
 

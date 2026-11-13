@@ -48,7 +48,7 @@ apps/lc-overlay/
     display.rs            # DisplayInfo, sélection d'écran, helpers purs, tests
     state.rs              # AppState (config + Ready + buffer + bindings actifs), tests
     events.rs             # noms d'événements, buffer borné + timeout 5 s, tests
-    win32.rs              # SEUL module unsafe : styles ex + SetWindowPos topmost
+    win32.rs              # SEUL module unsafe : styles ex, SetWindowPos topmost, hook de premier plan
     windows.rs            # cycle de vie 2 fenêtres, topmost 2 s, second instance
     tray.rs               # icône + modèle de menu pur + handlers
     device_settings.rs    # réglages appareil retirés du tray (page Paramètres)
@@ -154,8 +154,8 @@ La vue complète de la page Paramètres (`SettingsView`) et le contrat
 | Label | Taille | Politique |
 | --- | --- | --- |
 | `overlay` | écran cible plein (2560×1440 ×1.0 dans le POC) | transparente, sans décorations, always-on-top, skip taskbar, focusable=false, click-through, `WS_EX_LAYERED|TRANSPARENT|NOACTIVATE|TOOLWINDOW` |
-| `board` | 1180×780 (min 960×640) | centrée, cachée au démarrage ; porte aussi l'appairage et les paramètres |
-| `identify-<index>` | plein écran par moniteur, créée à la demande | transparente, sans décorations, always-on-top, skip taskbar, focusable=false, click-through ; fermée par le shell après 3 s (`settings_identify_displays`) |
+| `board` | 1180×780 (min 960×640) | centrée, cachée au démarrage ; porte aussi l'appairage et les paramètres ; topmost (au-dessus de l'overlay) seulement tant qu'elle est la fenêtre au premier plan |
+| `identify-<index>` | plein écran par moniteur, créée à la demande | transparente, sans décorations, always-on-top, skip taskbar, focusable=false, click-through, affichée sans activation (`SW_SHOWNOACTIVATE`) ; fermée par le shell après 3 s (`settings_identify_displays`) |
 
 Détails d'implémentation :
 
@@ -169,7 +169,27 @@ Détails d'implémentation :
   SWP_NOACTIVATE)`.
 - Thread `spawn_topmost_guard` : toutes les 2 s (cadence legacy
   `setInterval(2000)`), `set_always_on_top(true)` + réaffirmation des styles et
-  de `HWND_TOPMOST`, jusqu'à ce que la fenêtre disparaisse.
+  de `HWND_TOPMOST`, jusqu'à ce que la fenêtre disparaisse ; il remet ensuite
+  le board au-dessus s'il est au premier plan (et les cartes `identify-*`
+  au-dessus du board).
+- Plan du board (`windows::board_layer`) : il suit la fenêtre au premier plan
+  de Windows (`SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`, installé sur le
+  thread principal), pas l'événement Tauri `Focused` : sous Windows celui-ci
+  vient de `GotFocus`/`LostFocus` de WebView2, et `LostFocus` n'est pas levé
+  quand l'utilisateur active une autre application (le board restait alors
+  devant la fenêtre cliquée). Au premier plan → topmost ; sinon, s'il est
+  topmost → `set_always_on_top(false)` puis placé juste derrière la nouvelle
+  fenêtre au premier plan. Le traitement est toujours posté sur la boucle
+  d'événements (`run_on_main_thread` depuis un autre thread) : le hook peut
+  être appelé dans une boucle de messages imbriquée où rappeler Tauri n'est
+  pas sûr.
+- `identify-<index>` : créées par une commande **async**. Une commande
+  synchrone tourne sur le thread principal dans le callback IPC de WebView2,
+  où construire une fenêtre WebView bloque sous Windows (la commande ne
+  revenait jamais). Une fois la fenêtre créée, tao la montre — et la remontre
+  après tout changement de style — avec `SW_SHOW`, qui l'active même avec
+  `WS_EX_NOACTIVATE` : les cartes sont donc configurées cachées puis montrées
+  par `win32::show_without_activation`, sans aucun setter tao ensuite.
 - `CloseRequested` sur les 2 fenêtres → `api.prevent_close()` + `hide()` : le
   shell ne détruit jamais ses fenêtres (comme l'`auxiliary-window-service`
   Electron).

@@ -557,8 +557,12 @@ pub fn settings_set(
 }
 
 /// `settings_identify_displays` — shows an index card on every monitor for 3 s.
+///
+/// Async on purpose: a synchronous command runs on the main thread inside the
+/// WebView2 IPC callback, where building a webview window deadlocks on Windows
+/// (the command never returned and the button stayed on « Identification… »).
 #[tauri::command]
-pub fn settings_identify_displays(
+pub async fn settings_identify_displays(
     window: WebviewWindow<Wry>,
     app: AppHandle<Wry>,
 ) -> Result<settings::SettingsIdentifyDisplaysResponse, String> {

@@ -52,6 +52,13 @@ export function createOverlayLegacyPlayFlowUtils() {
             params.clearOverlay();
             return;
         }
+        if (params.payload?.durationSec && params.payload.hold === true) {
+            // Layout preview template: the countdown is shown frozen and the
+            // card stays until the shell sends overlay://stop.
+            params.startCountdown(params.payload.durationSec, { autoClear: false });
+            params.pauseCountdown();
+            return;
+        }
         if (params.payload?.durationSec) {
             params.startCountdown(params.payload.durationSec, { autoClear: autoClearByTimer });
             if (autoClearByTimer) {

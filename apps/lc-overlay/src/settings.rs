@@ -180,6 +180,27 @@ pub fn settings_view(app: &AppHandle<Wry>) -> SettingsView {
 /// It deliberately has no `jobId`: the renderer opens no playback session and
 /// therefore never reports this test to a server.
 pub fn test_media_payload(config: &OverlayConfig) -> Value {
+    local_card_payload(config, 5, "Média de test")
+}
+
+/// Countdown shown, frozen, on the layout preview template.
+pub const LAYOUT_PREVIEW_COUNTDOWN_SEC: u64 = 10;
+
+/// Local `overlay://play` payload of the layout preview template.
+///
+/// Same card as the test media, with `hold`: the renderer shows the countdown
+/// frozen and keeps the card until the shell sends `overlay://stop`.
+pub fn layout_preview_payload(config: &OverlayConfig) -> Value {
+    let mut payload = local_card_payload(
+        config,
+        LAYOUT_PREVIEW_COUNTDOWN_SEC,
+        "Aperçu de la mise en page",
+    );
+    payload["hold"] = Value::Bool(true);
+    payload
+}
+
+fn local_card_payload(config: &OverlayConfig, duration_sec: u64, text: &str) -> Value {
     let author_name = config
         .profile_name
         .as_deref()
@@ -187,7 +208,7 @@ pub fn test_media_payload(config: &OverlayConfig) -> Value {
         .filter(|name| !name.is_empty())
         .unwrap_or("LiveChat");
     serde_json::json!({
-        "durationSec": 5,
+        "durationSec": duration_sec,
         "test": true,
         "media": {
             "kind": "image",
@@ -200,9 +221,24 @@ pub fn test_media_payload(config: &OverlayConfig) -> Value {
         },
         "text": {
             "enabled": true,
-            "value": "Média de test",
+            "value": text,
         },
     })
+}
+
+/// Validates a `settings_preview_layout` payload (`{ "layout": {...} }`) and
+/// returns the layout it describes on top of the saved one, without saving it.
+pub fn preview_layout(
+    config: &OverlayConfig,
+    payload: &Value,
+) -> Result<OverlayLayout, SettingsError> {
+    let object = request_object(payload)?;
+    if !object.contains_key("layout") {
+        return Err(SettingsError::new("layout", "objet JSON attendu"));
+    }
+    let mut candidate = config.clone();
+    apply_layout_patch(&mut candidate, object)?;
+    Ok(candidate.layout)
 }
 
 fn request_object(payload: &Value) -> Result<&Map<String, Value>, SettingsError> {
@@ -619,6 +655,38 @@ mod tests {
             test_media_payload(&config)["author"]["name"],
             json!("LiveChat")
         );
+    }
+
+    #[test]
+    fn layout_preview_payload_holds_the_test_card() {
+        let payload = layout_preview_payload(&paired_config());
+        assert!(payload.get("jobId").is_none());
+        assert_eq!(payload["test"], json!(true));
+        assert_eq!(payload["hold"], json!(true));
+        assert_eq!(payload["durationSec"], json!(LAYOUT_PREVIEW_COUNTDOWN_SEC));
+        assert_eq!(payload["media"]["url"], json!("assets/test-media.svg"));
+        assert_eq!(payload["text"]["value"], json!("Aperçu de la mise en page"));
+    }
+
+    #[test]
+    fn preview_layout_applies_the_draft_without_touching_the_config() {
+        let mut config = paired_config();
+        config.layout.margin = 40;
+        let layout = preview_layout(
+            &config,
+            &json!({ "layout": { "anchor": "bottom-right", "maxWidth": 300 } }),
+        )
+        .expect("valid draft");
+        assert_eq!(layout.anchor, LayoutAnchor::BottomRight);
+        assert_eq!(layout.max_width, 100);
+        assert_eq!(layout.margin, 40, "fields left out keep the saved value");
+        assert_eq!(config.layout.anchor, LayoutAnchor::Center);
+
+        let error = preview_layout(&config, &json!({ "layout": { "anchor": "middle" } }))
+            .expect_err("unknown anchor");
+        assert_eq!(error.field, "layout.anchor");
+        let error = preview_layout(&config, &json!({})).expect_err("layout required");
+        assert_eq!(error.field, "layout");
     }
 
     #[test]

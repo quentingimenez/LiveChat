@@ -1,0 +1,107 @@
+﻿[workspace]
+resolver = "2"
+members = [
+    "crates/lc-protocol",
+    "crates/lc-domain",
+    "crates/lc-db",
+    "crates/lc-media",
+    "crates/lc-playback",
+    "crates/lc-discord",
+    "apps/lc-server",
+    "apps/lc-overlay",
+    "xtask",
+]
+# Les spikes (POC) ont leur propre target/ et ne font pas partie du workspace.
+exclude = ["spikes"]
+
+[workspace.package]
+version = "3.0.0"
+edition = "2021"
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+# ---- SÃ©rialisation / protocole ----
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# ---- Async / runtime ----
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "time",
+    "sync",
+    "signal",
+    "fs",
+] }
+tracing = "0.1"
+
+# ---- Erreurs ----
+thiserror = "2"
+anyhow = "1"
+async-trait = "0.1"
+
+# ---- Base de donnÃ©es (Phase 2) ----
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "migrate",
+    "macros",
+    "chrono",
+] }
+chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3"
+
+# ---- Identifiants / crypto / encodage ----
+uuid = { version = "1", features = ["v4", "serde"] }
+sha2 = "0.10"
+hmac = "0.12"
+subtle = "2"
+rand = "0.9"
+base64 = "0.22"
+hex = "0.4"
+url = "2"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+# ---- RÃ©seau (outillage : capture de goldens, harnais de paritÃ© Phase 9) ----
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+] }
+
+# ---- Discord (Phase 6) ----
+serenity = { version = "0.12", default-features = false, features = [
+    "client",
+    "gateway",
+    "model",
+    "utils",
+    "rustls_backend",
+] }
+
+# ---- Crate locales (versions internes) ----
+lc-protocol = { path = "crates/lc-protocol" }
+lc-domain = { path = "crates/lc-domain" }
+lc-db = { path = "crates/lc-db" }
+lc-media = { path = "crates/lc-media" }
+lc-playback = { path = "crates/lc-playback" }
+lc-discord = { path = "crates/lc-discord" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unused_lifetimes = "warn"
+let_underscore_drop = "warn"
+
+[workspace.lints.clippy]
+# RÃ¨gles du plan de migration : pas de panic silencieux hors tests.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+dbg_macro = "deny"
+todo = "warn"
+unimplemented = "warn"
+# QualitÃ© gÃ©nÃ©rale utile dÃ¨s la Phase 1.
+redundant_clone = "warn"
+trivially_copy_pass_by_ref = "warn"

@@ -1,10 +1,10 @@
 //! Coquille applicative Tauri 2 de l'overlay LiveChat (Phase 8a).
 //!
-//! Cette crate construit les trois fenêtres (overlay transparent click-through,
-//! pairing 460×580, board 1180×780), le tray, le single-instance, l'autostart,
-//! le squelette des raccourcis globaux et l'updater. Le renderer existant
-//! (`web/bridge.js`) est embarqué ; le client WebSocket et la logique métier
-//! arrivent en Phase 8b sans changer le contrat exposé.
+//! Cette crate construit les deux fenêtres (overlay transparent click-through,
+//! board 1180×780), le tray, le single-instance, l'autostart, le squelette des
+//! raccourcis globaux et l'updater. L'appairage se fait désormais dans la board.
+//! Le renderer existant (`web/bridge.js`) est embarqué ; le client WebSocket et
+//! la logique métier arrivent en Phase 8b sans changer le contrat exposé.
 //!
 //! Le seul module autorisé à utiliser `unsafe` est [`win32`] (bloc Win32 isolé
 //! et documenté), d'où `deny` au niveau crate plutôt que `forbid`, comme
@@ -25,6 +25,7 @@
 
 pub mod commands;
 pub mod config;
+pub mod device_settings;
 pub mod display;
 pub mod events;
 pub mod net;
@@ -213,6 +214,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             commands::guild_media_url,
             commands::overlay_check_updates,
             commands::overlay_install_update,
+            commands::board_take_pending_view,
         ])
         .setup(setup)
         .build(context)?;

@@ -1,0 +1,65 @@
+/* ------------------------------------------------------------------- header */
+.header {
+  padding: 16px 24px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.header-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 32px;
+}
+
+.guild-name {
+  margin: 0;
+  font-family: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
+  font-size: 20px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.meta {
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.tabs {
+  display: flex;
+  gap: 22px;
+  margin-top: 12px;
+}
+
+.tab {
+  padding: 0 0 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-soft);
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab.is-active {
+  color: var(--text);
+  font-weight: 600;
+  border-bottom-color: var(--text);
+}
+
+.tab .count {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--slate-600);
+  font-size: 12px;
+  font-weight: 400;
+}

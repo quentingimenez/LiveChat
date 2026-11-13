@@ -68,7 +68,7 @@ La migration insère un membre pour chaque ligne de `overlay_clients` :
 - rôle `GUEST` si `session_mode = 'INVITE_READ_ONLY'`, sinon `MEMBER` ;
 - `created_at` = date de création ; `removed_at` = `revoked_at` (un overlay révoqué donne un membre retiré).
 
-`UPDATE overlay_clients SET member_id = id` rattache ensuite chaque overlay à son membre. Aucune guilde existante n'a d'admin après la migration : le premier code admin s'émet depuis le panneau serveur.
+`UPDATE overlay_clients SET member_id = id` rattache ensuite chaque overlay à son membre. Aucune guilde existante n'a d'admin après la migration : le premier code admin s'émet depuis le panneau serveur, ou avec `/pair-code` exécuté par un administrateur Discord en mode normal.
 
 ### Sens de `standalone` et `discord_guild_id`
 
@@ -103,6 +103,8 @@ Les rôles sont stockés en majuscules (`ADMIN`, `MEMBER`, `GUEST`) et sérialis
 `AuthedOverlayClient::role` (`apps/lc-server/src/http/overlay/auth.rs`) utilise le rôle du membre rattaché. Sans membre, il déduit le rôle du mode de session persisté : `INVITE_READ_ONLY` donne `guest`, `normal` donne `member`. Un overlay sans membre ne peut donc jamais être admin.
 
 `GuildRole::session_mode` fait la conversion inverse : `GUEST` donne `invite_read_only`, `ADMIN` et `MEMBER` donnent `normal`. `GuildRole::from_pairing_mode` convertit un code legacy : `NORMAL` donne `member`, `INVITE_READ_ONLY` donne `guest`.
+
+Un code `/pair-code` peut porter `grants_admin` (`pairing_codes.grants_admin`, migration 0007) : `lc-discord` le pose quand l'auteur Discord a la permission Administrateur **et** que le mode est `normal`. À la consommation, `POST /overlay/pair/consume` donne `admin` au nouveau membre ; le rôle est figé à l'appairage, aucune permission Discord n'est relue ensuite. Un code `invite` ne donne jamais l'admin.
 
 ### Règle du dernier admin
 
@@ -196,11 +198,13 @@ Réponse `200` :
 
 `clientToken` est le jeton brut, affiché une seule fois ; seul son SHA-256 est stocké dans `overlay_clients.token_hash`. `apiBaseUrl` vient de `state.config.api_origin()`. `guildName` est `null` si aucune ligne `guilds` n'existe. `authorName` reprend uniquement le nom porté par un code legacy ; il vaut `null` pour une invitation, même si `displayName` est renseigné. `protocolVersion` vaut `lc_protocol::PROTOCOL_VERSION` (2).
 
-Erreurs : `400 invalid_payload` (JSON malformé ou code absent), `404 pairing_code_invalid_or_expired`, `409 overlay_client_conflict` (collision de hash), `500 internal_error`, `503 database_unavailable`.
+Pour un **nouveau** membre, `displayName` normalisé est le pseudo ; à défaut, un code `/pair-code` fournit son auteur Discord (`author_name`). Sans aucun des deux, la requête est refusée `400 {"error":"display_name_required"}` **sans consommer le code**. L'avatar suit la même priorité : `avatar` de la requête, sinon l'avatar du `/pair-code`, sinon aucun. Un code « appareil » (`guild_invites.member_id`) rattache un membre existant et n'exige aucun pseudo. Les champs `default_author_name` / `default_author_image` du client créé reprennent le profil du membre.
+
+Erreurs : `400 invalid_payload` (JSON malformé ou code absent), `400 display_name_required`, `403 pairing_code_scope_mismatch` (code réservé à l'extension), `404 pairing_code_invalid_or_expired`, `409 overlay_client_conflict` (collision de hash), `500 internal_error`, `503 database_unavailable`.
 
 ## Routes overlay
 
-Toutes les routes authentifiées acceptent `Authorization: Bearer <token>`. Le repli `?token=` n'est accepté que sous `/overlay/media-board/*` (`query_token` dans `auth.rs`) ; l'en-tête Bearer prime toujours. `AuthedOverlayClient` charge un client non révoqué, rafraîchit `last_seen_at` au mieux, puis charge le membre actif. Erreurs communes : `401 {"error":"unauthorized"}` si le jeton est absent, inconnu ou révoqué ; `503 {"error":"database_unavailable"}` sans base ; `500 {"error":"internal_error"}` sur échec base.
+Toutes les routes authentifiées acceptent uniquement `Authorization: Bearer <token>` : le repli `?token=` a été supprimé (`auth.rs`). Le flux binaire du board est la seule exception : il est authentifié par une URL signée (`clientId`, `exp`, `sig`). `AuthedOverlayClient` charge un client non révoqué, rafraîchit `last_seen_at` au mieux, puis charge le membre actif. Erreurs communes : `401 {"error":"unauthorized"}` si le jeton est absent, inconnu ou révoqué ; `503 {"error":"database_unavailable"}` sans base ; `500 {"error":"internal_error"}` sur échec base.
 
 | Méthode | Chemin | Droit requis |
 |---------|--------|--------------|
@@ -241,7 +245,7 @@ Toutes les routes authentifiées acceptent `Authorization: Bearer <token>`. Le r
 | `DELETE /overlay/queue` | aucun | `{removedCount:n}` | `403 forbidden` (non-admin) |
 | `GET /overlay/media-board/items?q=&limit=&offset=` | aucun | `{total,limit,offset,items}` | `403 forbidden` (`guildId` différent ou board masqué aux invités) |
 | `POST /overlay/media-board/items` | `{"url":"…","title":"…","message":"…","forceRefresh":false}` ; `url` obligatoire | `{created, item}` (`created:false` si déjà épinglé) | `400 invalid_payload`, `403 read_only_session`, `422 media_ingestion_failed` |
-| `GET /overlay/media-board/media/{assetId}` | aucun | flux binaire (`200`, `206`, `416`) | `403 forbidden`, `404 media_not_found`, `404 media_not_found_on_disk` |
+| `GET /overlay/media-board/media/{assetId}?clientId=&exp=&sig=` | aucun | flux binaire (`200`, `206`, `416`) | `403 media_url_invalid`, `403 media_url_expired`, `403 forbidden`, `404 media_not_found`, `404 media_not_found_on_disk` |
 | `PATCH /overlay/media-board/items/{itemId}` | `{"title":"…","message":"…"}` ; au moins un des deux | `{updated:true,item:{id,title,message}}` | `400 invalid_payload`, `403 read_only_session`, `403 forbidden`, `404 item_not_found` |
 | `DELETE /overlay/media-board/items/{itemId}` | aucun | `{deleted:true ou false}` | `403 read_only_session`, `403 forbidden` |
 | `GET /overlay/admin/members` | aucun | `{count, items}` | `403 forbidden` |
@@ -258,9 +262,9 @@ Toutes les routes authentifiées acceptent `Authorization: Bearer <token>`. Le r
 
 `GET /overlay/queue` lit au plus 200 jobs (`QUEUE_LIMIT`) et trie `PLAYING` d'abord, puis `priority DESC`, `submission_date ASC`, `id ASC` ; `playing` est le premier job en lecture ou `null`, `pending` contient les autres, `serverTime` est une date ISO 8601 UTC en millisecondes. `DELETE /overlay/queue/{jobId}` passe un job `PENDING` de la guilde à `FAILED` avec `finished_at` ; un identifiant invalide, un job d'une autre guilde ou un job `PLAYING` renvoie `{removed:false}`. `DELETE /overlay/queue` passe tous les `PENDING` à `FAILED` et renvoie le nombre modifié. Le job en cours n'est pas retiré.
 
-Sur le board, `limit` vaut 50 par défaut et est borné à `1..=200` ; `offset` vaut 0 et n'est jamais négatif ; `q` filtre sur le titre, le message, le nom d'auteur et l'URL source. Chaque élément de la liste contient `id`, `guildId`, `mediaAssetId`, `title`, `message`, `createdByName`, `createdAt`, `media`, plus `createdByMemberId` et `canEdit` ; `media` contient `id`, `kind`, `mime`, `durationSec`, `width`, `height`, `isVertical`, `sizeBytes`, `sourceUrl`.
+Sur le board, `limit` vaut 50 par défaut et est borné à `1..=200` ; `offset` vaut 0 et n'est jamais négatif ; `q` filtre sur le titre, le message, le nom d'auteur et l'URL source. Chaque élément de la liste contient `id`, `guildId`, `mediaAssetId`, `title`, `message`, `createdByName`, `createdAt`, `mediaUrl`, `mediaUrlExpiresAt`, `media`, plus `createdByMemberId` et `canEdit` ; `media` contient `id`, `kind`, `mime`, `durationSec`, `width`, `height`, `isVertical`, `sizeBytes`, `sourceUrl`. `mediaUrl` est une URL absolue signée pour le client demandeur (`board:{assetId}`, `exp = now + 3600 s`) ; le flux binaire n'accepte ni Bearer ni `?token=`, seulement cette signature.
 
-Sur une session invitée, `POST`, `PATCH` et `DELETE` du board répondent `403 {"error":"read_only_session"}` avant toute validation du corps ; la garde s'applique aussi au repli `?token=`. `POST` ingère l'URL via `MediaService` ; si le couple `(guilde, média)` est déjà épinglé, la réponse est `{created:false, item}`. Le quota `MEDIA_BOARD_MAX_TOTAL_MB` produit `422` avec `code: "BOARD_STORAGE_LIMIT_REACHED"`, et les erreurs du pipeline média `422 {"error":"media_ingestion_failed","code":"…","message":"…"}`. Un identifiant invalide ou d'une autre guilde donne `404 item_not_found` en `PATCH` et `{deleted:false}` en `DELETE`.
+Sur une session invitée, `POST`, `PATCH` et `DELETE` du board répondent `403 {"error":"read_only_session"}` avant toute validation du corps. `POST` ingère l'URL via `MediaService` ; si le couple `(guilde, média)` est déjà épinglé, la réponse est `{created:false, item}`. Le quota `MEDIA_BOARD_MAX_TOTAL_MB` produit `422` avec `code: "BOARD_STORAGE_LIMIT_REACHED"`, et les erreurs du pipeline média `422 {"error":"media_ingestion_failed","code":"…","message":"…"}`. Un identifiant invalide ou d'une autre guilde donne `404 item_not_found` en `PATCH` et `{deleted:false}` en `DELETE`.
 
 Les routes admin sont bornées à la guilde du jeton : un membre d'une autre guilde est `404 member_not_found`, une invitation d'une autre guilde `404 invite_not_found`. `GET /overlay/admin/members` ajoute `connected` (au moins un overlay connecté), `deviceCount` (overlays actifs), `lastSeenAt` (le plus récent) et `isSelf`. Les invitations listées excluent les codes appareil et exposent `code`, `role`, `memberId`, `maxUses`, `useCount`, `createdByMemberId`, `expiresAt`, `revokedAt`, `createdAt`, `isActive`.
 

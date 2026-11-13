@@ -15,7 +15,7 @@ Ce module remplace le sous-système HTTP de l'overlay Electron :
 | `server/src/components/overlay/overlayRoutes.ts` (568 l.) | `apps/lc-server/src/http/overlay/**` |
 | `server/src/services/overlayAuth.ts` (143 l.) | `apps/lc-server/src/http/overlay/auth.rs` + `crates/lc-domain` + `crates/lc-db` |
 | `GET /overlay/config` | **supprimé** en v2 (la route répond 404) |
-| `?token=` sur les routes board | **Bearer uniquement** en v2 ; repli transitoire `?token=` **toléré sur `/overlay/media-board/*`** (renderer legacy, Bearer prioritaire, WARN unique) — voir §4.1 |
+| `?token=` sur les routes board | **supprimé** : Bearer uniquement pour le CRUD, URL signée pour le flux binaire — voir §4.1 |
 
 Hors périmètre (autres lanes) : hub WebSocket Phase 4b (`ws/**`), service média
 Phase 5b (`media/**` : ingestion en tâche de fond, cache/éviction), admin Phase 7b
@@ -77,13 +77,13 @@ Conventions appliquées dans tout le module :
 | `POST` | `/overlay/pair/consume` | code d'appairage (corps) | `pair.rs:84` | `200` JSON (§5) |
 | `POST` | `/overlay/ingest-code` | `Authorization: Bearer` (membre, droit `TriggerPlayback`) | `ingest_code.rs` | `200 {code,expiresAt,apiBaseUrl}` |
 | `GET` | `/overlay/media/{assetId}` | URL signée HMAC (`clientId`, `exp`, `sig`) | `media.rs:86` | `200`/`206`, binaire |
-| `GET` | `/overlay/media-board/items` | `Authorization: Bearer` (repli `?token=`) | `media_board.rs:list_items` | `200 {total,limit,offset,items}` |
-| `POST` | `/overlay/media-board/items` | `Authorization: Bearer` (repli `?token=`) | `media_board.rs:create_item` | `202 {ingestionId}` |
-| `POST` | `/overlay/media-board/upload?filename=&title=&message=` | `Authorization: Bearer` (repli `?token=`) | `media_upload.rs:upload_item` | `202 {ingestionId}` |
-| `GET` | `/overlay/media-board/ingestions` | `Authorization: Bearer` (repli `?token=`) | `media_board.rs:list_ingestions` | `200 {items:[…]}` |
-| `GET` | `/overlay/media-board/media/{assetId}` | `Authorization: Bearer` (repli `?token=`) | `media_board.rs:get_media` | `200`/`206`, binaire |
-| `PATCH` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` (repli `?token=`) | `media_board.rs:update_item` | `200 {updated:true,item}` |
-| `DELETE` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` (repli `?token=`) | `media_board.rs:delete_item` | `200 {deleted}` |
+| `GET` | `/overlay/media-board/items` | `Authorization: Bearer` | `media_board.rs:list_items` | `200 {total,limit,offset,items}` |
+| `POST` | `/overlay/media-board/items` | `Authorization: Bearer` | `media_board.rs:create_item` | `202 {ingestionId}` |
+| `POST` | `/overlay/media-board/upload?filename=&title=&message=` | `Authorization: Bearer` | `media_upload.rs:upload_item` | `202 {ingestionId}` |
+| `GET` | `/overlay/media-board/ingestions` | `Authorization: Bearer` | `media_board.rs:list_ingestions` | `200 {items:[…]}` |
+| `GET` | `/overlay/media-board/media/{assetId}` | URL signée (`clientId`, `exp`, `sig`) | `media_board.rs:get_media` | `200`/`206`, binaire |
+| `PATCH` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` | `media_board.rs:update_item` | `200 {updated:true,item}` |
+| `DELETE` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` | `media_board.rs:delete_item` | `200 {deleted}` |
 | — | `/overlay/config` | — | **absent** | `404 {"error":"request_error"}` (fallback global) |
 
 Les routes protégées portent l'authentification via l'extracteur
@@ -105,31 +105,16 @@ AUD-V-003.
 
 ### 4.1 Contrat
 
-- La voie nominale est l'en-tête `Authorization: Bearer <token>`, qui prime
-  toujours. **Exception board** (test local 2026-11-10) : les routes
-  `/overlay/media-board/*` acceptent en repli `?token=<token>`
-  (`auth::query_token`) car le renderer board HTML legacy construit ses URLs et
-  ses balises `src` (`<video>`, `<img>` d'aperçu) sans en-tête possible
-  (`board/legacy-preview-media-utils.js`). Ce repli est **strictement limité**
-  au préfixe `/overlay/media-board/` ;
-  `/overlay/media/{assetId}` reste exclusivement HMAC signé et aucune autre route
-  overlay n'accepte de jeton en query.
-- **Statut temporaire (AUD-COR-05)** : ce repli `?token=` ne survit que le temps
-  de la migration du renderer legacy (P1-11). Chaque utilisation émet un `WARN`
-  unique par processus (target `lc_server::overlay`,
-  `warn_query_token_deprecation_once` dans `auth.rs`) pour mesurer l'usage avant
-  suppression ; il disparaîtra avec le renderer Rust. Aucun autre jeton ne doit
-  figurer dans une URL (l'admin, lui, n'accepte plus que le Bearer).
-- **Mécanique exacte du repli** (état HEAD P2) : `query_token` n'extrait
-  `?token=` que si le chemin commence par `/overlay/media-board/`
-  (`auth.rs`) ; la valeur est décodée (`application/x-www-form-urlencoded`),
-  `trim`ée, rejetée si vide ou > 200 caractères (`MAX_TOKEN_LEN`). Le repli
-  n'est consulté que si `bearer_token` renvoie `None` : en-tête absent, schéma
-  différent de `Bearer` (casse ignorée), token vide ou segments supplémentaires
-  (en-tête malformé) — un Bearer valide prime donc toujours, et un Bearer
-  malformé retombe sur le query token. Le token reste ensuite haché SHA-256 et
-  résolu en base comme la voie nominale ; le warn de dépréciation est émis une
-  seule fois par processus.
+- **Unique voie pour le CRUD board** : l'en-tête
+  `Authorization: Bearer <token>`. Le repli `?token=` a été **supprimé**
+  (AUD-COR-05) : un jeton présent uniquement en query string donne
+  `401 {"error":"unauthorized"}`. L'extracteur `AuthedOverlayClient` ne lit plus
+  que `bearer_token`.
+- **Flux binaire** : `GET`/`HEAD /overlay/media-board/media/{assetId}` n'accepte
+  ni Bearer ni `?token=` ; il est authentifié par une URL signée
+  (`clientId`, `exp`, `sig`) générée pour chaque item de la liste (§7.2). Les
+  balises `<video>`/`<img>` du renderer utilisent cette URL verbatim, sans
+  ajouter de jeton.
 - Le token brut est généré côté serveur : 32 octets aléatoires encodés en hex
   (64 caractères), `auth.rs:65` — équivalent de
   `crypto.randomBytes(32).toString('hex')` (`overlayAuth.ts:40-42`).
@@ -188,19 +173,35 @@ pour un item d'une autre guilde). Les écritures media board utilisent
 ### 5.2 Traitement (`pair.rs:84-199`)
 
 1. normalisation du code puis `delete_expired(now)` best-effort (ne bloque pas) ;
-2. `PairingCodesRepository::consume(code, now)` — UPDATE atomique
-   (`used_at IS NULL AND (expires_at IS NULL OR expires_at > now)`), donc un
-   code ne peut être consommé qu'une fois, y compris en concurrence ;
-3. mode : `PairingMode::InviteReadOnly → OverlaySessionMode::InviteReadOnly`,
-   `Normal → Normal` ;
-4. libellé : `deviceName` trim non vide tronqué à 200 caractères, sinon repli
+2. **lecture d'abord, décision ensuite** : `guild_invites.get(code)` puis, à
+   défaut, `pairing_codes.get(code)`, sans consommer. Un code émis par l'overlay
+   (`created_by_discord_user_id` préfixé `member:`) est refusé
+   `403 pairing_code_scope_mismatch` sans être consommé ;
+3. **nom du nouveau membre** (aucun code « appareil ») :
+   `displayName` normalisé s'il est non vide, sinon l'auteur Discord d'un
+   `/pair-code` (`author_name`) ; sans ni l'un ni l'autre →
+   `400 {"error":"display_name_required"}` **sans consommer** l'invitation ni le
+   code. `deviceName`, le libellé d'overlay et « User » ne sont jamais des noms
+   de membre. Un code « appareil » (`guild_invites.member_id`) rattache un
+   membre existant et n'exige aucun nom ;
+4. **avatar** du nouveau membre : `avatar` normalisé s'il est valide, sinon
+   l'avatar d'auteur du `/pair-code`, sinon aucun ;
+5. consommation atomique (`guild_invites.consume` ou
+   `pairing_codes.consume`) : un code ne peut être consommé qu'une fois, y
+   compris en concurrence ;
+6. rôle : `grant.role` pour une invitation ; pour un `/pair-code`,
+   `Admin` si `grants_admin`, sinon
+   `GuildRole::from_pairing_mode(mode)` (`NORMAL` → membre,
+   `INVITE_READ_ONLY` → invité) ;
+7. libellé : `deviceName` trim non vide tronqué à 200 caractères, sinon repli
    legacy `Overlay-<authorName|User>` ;
-5. révocation des clients actifs de la même guilde portant le même libellé
+8. révocation des clients actifs de la même guilde portant le même libellé
    (parité legacy : un poste = une session active) ;
-6. création de l'`OverlayClient` (token + hash, `default_author_name`,
-   `default_author_image`, `created_by_discord_user_id`) ; collision de token
-   unique → `409 overlay_client_conflict` (théoriquement impossible) ;
-7. log `tracing::info!` (client, guilde, mode, appVersion) puis réponse.
+9. création de l'`OverlayClient` (token + hash, `default_author_name` =
+   pseudo du membre, `default_author_image` = avatar du membre,
+   `created_by_discord_user_id`) ; collision de token unique →
+   `409 overlay_client_conflict` (théoriquement impossible) ;
+10. log `tracing::info!` (client, guilde, mode, appVersion) puis réponse.
 
 ### 5.3 Réponse `200`
 
@@ -227,6 +228,8 @@ WebSocket. Tous les autres champs sont ceux lus par le client Electron
 | Statut | Corps | Cas |
 |--------|-------|-----|
 | `400` | `{"error":"invalid_payload"}` | `code` absent/vide |
+| `400` | `{"error":"display_name_required"}` | nouveau membre sans pseudo utilisable (code non consommé) |
+| `403` | `{"error":"pairing_code_scope_mismatch"}` | code réservé à l'extension d'ingestion |
 | `404` | `{"error":"pairing_code_invalid_or_expired"}` | code inconnu, déjà utilisé ou expiré |
 | `409` | `{"error":"overlay_client_conflict"}` | collision improbable de token |
 | `500` | `{"error":"internal_error"}` | erreur interne (hors panique) |
@@ -324,10 +327,10 @@ La garde `ensure_writable` est évaluée en tête des quatre handlers d'écritur
 validation de `url`/`title`/`message` et avant tout accès base : une session
 invitée ne reçoit ni `400` de validation, ni `404` d'identifiant, seulement le
 `403 {"error":"read_only_session"}`. Le mode appliqué est celui du jeton
-serveur (`overlay_clients.session_mode`), que l'authentification passe par
-`Authorization: Bearer` ou par le repli `?token=` du board ; si les deux sont
-présents, le Bearer prime (§4.2). Le mode n'étant jamais relu depuis la requête,
-aucun en-tête/corps ne peut élever une session invitée en session normale.
+serveur (`overlay_clients.session_mode`) ; le mode n'étant jamais relu depuis la
+requête, aucun en-tête/corps ne peut élever une session invitée en session
+normale. Le flux média signé (§7.3) applique la même règle de visibilité à
+partir du rôle du client signé.
 
 ### 7.1 `GET /overlay/media-board/items` (`media_board.rs:119`)
 
@@ -354,6 +357,8 @@ Payload d'un item (`item_payload`, `media_board.rs:531-552`) :
   "id": "<uuid>", "guildId": "…", "mediaAssetId": "<uuid>",
   "title": "…" | null, "message": "…" | null, "createdByName": "…" | null,
   "createdAt": "2026-11-10T12:00:00.000Z",
+  "mediaUrl": "https://api…/overlay/media-board/media/<uuid>?clientId=…&exp=…&sig=…",
+  "mediaUrlExpiresAt": 1762785600000,
   "media": { "id": "<uuid>", "kind": "video", "mime": "video/mp4",
              "durationSec": 30, "width": 1280, "height": 720,
              "isVertical": false, "sizeBytes": 12345,
@@ -364,6 +369,13 @@ Payload d'un item (`item_payload`, `media_board.rs:531-552`) :
 `createdAt` est en ISO-8601 UTC avec millisecondes (`to_rfc3339_opts(Millis,
 true)`) : le legacy renvoyait la sérialisation JSON de `Date` (ISO), pas un
 epoch — le renderer board tolère les deux (`toSafeDateLabel`).
+
+`mediaUrl` est une URL **absolue** construite sur l'origine de `API_URL` pour le
+client demandeur : `exp = now + 3600 s`, `mediaUrlExpiresAt = exp * 1000`.
+La signature est `media_url::sign(MEDIA_URL_SECRET,
+"board:{assetId}", clientId, exp)` : le préfixe `board:` rend une URL de lecture
+inutilisable sur cette route, et inversement. `mediaUrl` ne contient **aucun
+jeton** et s'utilise verbatim dans `src` (`<video>`/`<img>`).
 
 ### 7.2 `POST /overlay/media-board/items` (`media_board.rs:189`)
 
@@ -425,7 +437,7 @@ Réponse `200` :
   heure** ; les plus récentes d'abord ;
 - `created`/`itemId` sont omis hors succès, `error.message` est omis quand le
   serveur n'a pas de détail ; `status` ∈ `processing` | `ready` | `failed` ;
-- session invitée autorisée (lecture) ; le repli `?token=` du board s'applique ;
+- session invitée autorisée (lecture) ;
 - but : après une reconnexion WebSocket, le board récupère un `media.ingestion`
   manqué. La purge est paresseuse (insertion/lecture), aucun timer.
 
@@ -450,14 +462,22 @@ Réponse `200` :
 - `title` par défaut = nom de fichier sans extension ; `title`/`message` tronqués
   aux limites du board.
 
-### 7.3 `GET /overlay/media-board/media/{assetId}` (`media_board.rs:388`)
+### 7.3 `GET`/`HEAD /overlay/media-board/media/{assetId}` (`media_board.rs:get_media`)
 
-- Bearer obligatoire ; l'item `(guild du client, asset)` doit exister
-  (`get_by_guild_and_asset`) sinon `404 media_not_found` (pas de fuite
-  inter-guilde) ;
+- **aucun Bearer, aucun `?token=`** : seuls `clientId`, `exp` et `sig` sont lus
+  (paramètres absents/mal formés, mauvais secret ou signature invalide →
+  `403 media_url_invalid`) ;
+- `exp` dépassée → `403 media_url_expired` ; `exp` au-delà de
+  `now + MEDIA_URL_TTL_MAX_SEC` (1 h) → `403 media_url_invalid` ;
+- client inconnu ou révoqué → `403 media_url_invalid` ;
+- rôle du client (membre rattaché, sinon mode de session) : un invité dont la
+  guilde interdit le board → `403 forbidden` ;
+- l'item `(guilde du client, asset)` doit exister (`get_by_guild_and_asset`)
+  sinon `404 media_not_found` (pas de fuite inter-guilde) ;
 - asset `READY` et non expiré sinon `404 media_not_found` ;
 - fichier résolu/confiné sinon `404 media_not_found_on_disk` ;
-- partage le streaming `serve_file` (`Range`/`HEAD`), sans `touch_asset`.
+- partage le streaming `serve_file` (`Range` → `206`, `HEAD`), sans
+  `touch_asset`.
 
 ### 7.4 `PATCH /overlay/media-board/items/{itemId}` (`media_board.rs:428`)
 
@@ -552,7 +572,7 @@ pub fn sign_media_url(
 
 | # | Écart | Raison / mitigation |
 |---|-------|---------------------|
-| 1 | `?token=` supprimé pour le protocole WS et les URLs média signées ; Bearer obligatoire, **sauf** le repli `?token=` des routes board `/overlay/media-board/*` | protocole v2 §9 ; le repli board est l'unique exception REST (renderer HTML legacy `overlay/renderer/board.js` charge `<video>`/`<img>` par URL), limité au chemin board, Bearer prioritaire, token trimé/≤200, et les mutations restent soumises à la garde `invite_read_only` (§7.0). **Temporaire** depuis AUD-COR-05 : WARN unique par processus (`warn_query_token_deprecation_once`), suppression prévue avec le renderer Rust (P1-11) |
+| 1 | `?token=` **entièrement supprimé** ; Bearer obligatoire pour le CRUD board, URL signée (`board:` namespace) pour le flux binaire | protocole v2 §9 ; les balises `<video>`/`<img>` n'ont pas d'en-tête possible, elles utilisent le `mediaUrl` signé porté par chaque item (§7.1/§7.3). Les mutations restent soumises à la garde `invite_read_only` (§7.0) |
 | 2 | `GET /overlay/config` supprimé | protocole v2 ; config locale overlay (Tauri) |
 | 3 | Ingestion média du board **asynchrone** : `202 {ingestionId}`, travail dans une tâche `tokio::spawn` détachée de la connexion HTTP | plus de coupure proxy (Cloudflare 100 s / Nginx 90 s) qui annule la conversion ; registre partagé, plafond de 20 `processing` par client, rattrapage via `GET /ingestions`, notification `media.ingestion` (AUD-V2-S-003, AUD-A2-006/007). L'ingestion reste déléguée à `MediaService` (cache, sémaphore, budget, `record_failure`, nettoyage) |
 | 4 | Une lecture `/overlay/media` **ne prolonge plus** `expires_at` (seul `last_accessed_at` est touché) | AUD-A2-005 : le legacy repoussait le TTL de 12 h à chaque requête, gonflant la rétention. Seules l'ingestion, le pin board et la libération de pin modifient l'expiration |
@@ -563,7 +583,7 @@ pub fn sign_media_url(
 | 9 | `sessionMode` du corps d'appairage ignoré | sécurité : un client ne s'auto-attribue pas une session normale |
 | 10 | `delete` renvoie toujours `200 {deleted}` (jamais 404) | parité legacy |
 | 11 | Compression possible des réponses média `200` | `app.rs` (Lead) doit exclure `/overlay/media` du `CompressionLayer` — cf. §12.1 |
-| 12 | Mutations media-board **refusées** en session `invite_read_only` (`403 read_only_session`) | AUD-V-003 : le legacy ne vérifiait pas le mode sur les écritures ; le protocole v2 §9 réserve l'invite à la lecture. Garde serveur ajoutée (`media_board::ensure_writable`, §7.0), identique pour Bearer et `?token=` ; les `GET` restent inchangés |
+| 12 | Mutations media-board **refusées** en session `invite_read_only` (`403 read_only_session`) | AUD-V-003 : le legacy ne vérifiait pas le mode sur les écritures ; le protocole v2 §9 réserve l'invite à la lecture. Garde serveur ajoutée (`media_board::ensure_writable`, §7.0) ; les `GET` restent autorisés selon la règle de visibilité du rôle |
 | 13 | JSON illisible → `400 {"error":"invalid_payload"}` dédié (et non `request_error` générique) | AUD-A2-009 : `Result<Json<…>, JsonRejection>` sur pair/board ; l'authentification et la garde read-only restent évaluées avant le refus de corps |
 
 ## 11. Tests
@@ -571,31 +591,37 @@ pub fn sign_media_url(
 `apps/lc-server/src/http/overlay/tests.rs` — base SQLite en mémoire
 (`Db::open_in_memory`), horloge figée `FixedClock` (2026-11-10T12:00:00Z),
 routeur **complet** via `crate::app::router` (middlewares réels) et
-`tower::ServiceExt::oneshot`. État (task-49) : **23/23 verts** (filtre
+`tower::ServiceExt::oneshot`. État : **62/62 verts** (filtre
 `cargo test -p lc-server --lib http::overlay`) ; la suite complète
-`cargo test -p lc-server --lib` passe à **284 passed, 1 ignored**.
+`cargo test -p lc-server --lib` passe à **359 passed, 1 ignored**.
 
 | Test | Couverture |
 |------|------------|
 | `pair_consume_creates_client_and_returns_legacy_payload` | 200, token 64 hex, hash stocké, code à usage unique |
 | `pair_consume_rejects_missing_and_expired_codes` | 400 `invalid_payload`, 404 code expiré |
-| `pair_consume_honors_invite_read_only_and_default_label` | mode invité, label `Overlay-User`, autor null |
+| `pair_consume_honors_invite_read_only_and_default_label` | mode invité, label `Overlay-User`, `authorName` null |
 | `pair_consume_revokes_previous_client_with_same_label` | révocation même libellé |
+| `pair_consume_invite_requires_a_display_name_without_consuming` | 400 `display_name_required`, `use_count` inchangé, puis 200 avec pseudo |
+| `pair_consume_pair_code_falls_back_to_the_discord_author` | pseudo + avatar = auteur Discord du `/pair-code` |
+| `pair_consume_pair_code_typed_name_and_avatar_win` | `displayName`/`avatar` de la requête priment |
+| `pair_consume_pair_code_without_any_name_is_refused_without_consuming` | 400, `used_at` reste null |
+| `pair_consume_device_code_needs_no_display_name` | code « appareil » : membre existant, aucun nom requis |
+| `pair_consume_admin_pairing_code_grants_admin` | `grants_admin` → rôle `admin` |
 | `signed_media_serves_file_with_legacy_headers_and_range` | 200 + en-têtes legacy, HEAD, 206 `bytes=2-5`, 416 `bytes */16`, absence de compression sur 206 |
 | `signed_media_rejects_bad_signature_expiry_and_missing_params` | params absents, sig falsifiée, exp malformé/expiré, asset inconnu |
 | `signed_media_rejects_revoked_client_and_expired_asset` | client révoqué → 403, asset expiré → 404 |
 | `signed_media_missing_or_escaped_file_is_rejected` | fichier absent / hors `MEDIA_STORAGE_DIR` → 404 |
-| `media_board_requires_token_and_accepts_legacy_query_token` | 401 sans token, `?token=` accepté sur `/overlay/media-board/*`, Bearer prioritaire, `guildId` étranger → 403 |
-| `media_board_lists_filters_and_paginates` | ordre, payload media, filtres `q`, pagination, clamps 1..=200 |
+| `media_board_requires_bearer_token_only` | 401 sans Bearer, `?token=` seul → 401, `guildId` étranger → 403 |
+| `media_board_lists_filters_and_paginates` | ordre, payload media, `mediaUrl`/`mediaUrlExpiresAt`, GET signé + Range 206, filtres `q`, pagination, clamps 1..=200 |
 | `media_board_patch_and_delete_semantics` | validation corps, conservation/effacement, isolation guilde, delete idempotent |
 | `media_board_create_rejects_missing_url_without_network` | 400 `url is required`, aucun réseau |
-| `media_board_media_requires_auth_and_binding` | 401, 404 hors guilde, 200 + `no-store` |
+| `media_board_media_requires_a_valid_signed_url` | params absents, Bearer seul, `?token=`, sig falsifiée, signature de lecture, exp expirée, client révoqué → 403 |
+| `media_board_media_is_bound_to_the_client_guild_and_role` | 200 + `no-store` + HEAD, 404 hors guilde/inconnu, invité interdit → 403 |
 | `overlay_config_route_is_absent_in_v2` | 404 `request_error` |
 | `sign_media_url_matches_protocol_v2_format_and_verifies` (unitaire) | format exact, vérification HMAC, mauvais secret rejeté |
 | `read_only_allows_reads_and_blocks_mutations` (`mod.rs`) | session invitée : GET items/media 200, POST/PATCH/DELETE 403 `read_only_session`, item intact |
 | `normal_session_mutations_stay_allowed` (`mod.rs`) | session normale : POST sans `url` → 400, PATCH/DELETE 200 |
-| `query_token_cannot_bypass_read_only_gate` (`mod.rs`) | `?token=` invité → 403 sur les 3 mutations ; `?token=` normal → PATCH 200 |
-| `bearer_token_takes_precedence_over_query_token` (`mod.rs`) | un Bearer normal prime sur un `?token=` invité (et inversement) |
+| `query_token_no_longer_authenticates_mutations` (`mod.rs`) | `?token=` seul → 401 sur une mutation |
 | `signed_media_requires_a_playback_job_in_the_client_guild` | 403 `forbidden` sans playback job de la guilde, 403 si job d'une autre guilde, 200 + bytes si job de la guilde (AUD-A2-004) |
 | `media_board_create_rejects_malformed_json` | 400 `invalid_payload` sur corps illisible, après la garde session (AUD-A2-009) |
 | `media_board_patch_rejects_malformed_json` | idem sur `PATCH /items/{id}` |
@@ -657,9 +683,10 @@ par `tower-http` (présence de `Content-Range`). Alternative : prédicat custom
 
 ### 12.5 Renderer (Phase 8)
 
-- appels `/overlay/media-board/*` : envoyer `Authorization: Bearer` au lieu de
-  `?token=` (`overlay/src/renderer/board/legacy-preview-media-utils.ts:44-53`
-  legacy) ;
+- appels CRUD `/overlay/media-board/*` : envoyer `Authorization: Bearer` (plus
+  de `?token=`) ;
+- aperçus (`<img>`/`<video>`) : utiliser `item.mediaUrl` **verbatim** (URL
+  signée, TTL 1 h) au lieu de construire une URL avec le jeton ;
 - média : utiliser `media.url` verbatim (URL signée du hub), pas de token
   ajouté ;
 - `GET /overlay/config` n'existe plus : configuration via le bridge Tauri

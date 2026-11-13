@@ -114,6 +114,7 @@ export function createOverlayLegacyRuntimeRenderHandlersUtils() {
                     }
                 },
                 startCountdown: params.startCountdown,
+                pauseCountdown: params.pauseCountdown,
                 setResetTimer: (nextResetTimer) => {
                     params.state.resetTimer = nextResetTimer;
                 },

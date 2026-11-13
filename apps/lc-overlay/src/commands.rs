@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 use crate::config::{MediaBindings, OverlayConfigView};
 use crate::events;
+use crate::layout_preview;
 use crate::net::api;
 use crate::net::pairing::{self, PairingRequest};
 use crate::net::upload::{self, UploadEntry, UploadRegistry};
@@ -77,6 +78,7 @@ const COMMAND_MATRIX: &[(&str, &[&str])] = &[
             "settings_set",
             "settings_identify_displays",
             "settings_test_media",
+            "settings_preview_layout",
             "board_take_pending_view",
             "board_take_guild_removals",
             "media_upload_start",
@@ -588,6 +590,8 @@ pub fn settings_test_media(
     }
     let payload = settings::test_media_payload(&state.config_snapshot());
     let generation = TEST_MEDIA_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    // The test card replaces the layout preview template, if any.
+    layout_preview::cancel();
     windows::show_overlay_preview(&app);
     events::emit_to_overlay(&app, &events::OverlayEvent::play(payload))
         .map_err(|error| error.to_string())?;
@@ -600,7 +604,7 @@ pub fn settings_test_media(
                 return;
             }
             let state = timer_handle.state::<AppState>();
-            if state.playback_job().is_some() {
+            if state.playback_job().is_some() || layout_preview::is_active() {
                 return;
             }
             if !windows::overlay_should_show(&state.config_snapshot()) {
@@ -614,6 +618,25 @@ pub fn settings_test_media(
         ok: true,
         reason: None,
     })
+}
+
+/// `settings_preview_layout` — shows a draft layout on the overlay, with a
+/// template card when nothing plays, without saving it (see `layout_preview`).
+///
+/// Synchronous on purpose: it runs on the main thread, where the preview's
+/// end is decided too.
+#[tauri::command]
+pub fn settings_preview_layout(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+    payload: Value,
+) -> Result<(), String> {
+    ensure_allowed(&window, "settings_preview_layout")?;
+    let config = app.state::<AppState>().config_snapshot();
+    let layout = settings::preview_layout(&config, &payload)
+        .map_err(|error| format!("{} : {}", error.field, error.message))?;
+    layout_preview::show(&app, layout);
+    Ok(())
 }
 
 /// `overlay_get_config` — projection 8 champs consommée par le renderer.
@@ -1289,6 +1312,7 @@ mod tests {
         assert!(command_allowed("board", "settings_set"));
         assert!(command_allowed("board", "settings_identify_displays"));
         assert!(command_allowed("board", "settings_test_media"));
+        assert!(command_allowed("board", "settings_preview_layout"));
         assert!(command_allowed("board", "board_take_pending_view"));
         assert!(command_allowed("board", "board_take_guild_removals"));
         assert!(command_allowed("board", "media_upload_start"));
@@ -1307,6 +1331,7 @@ mod tests {
             "settings_set",
             "settings_identify_displays",
             "settings_test_media",
+            "settings_preview_layout",
             "board_take_guild_removals",
             "media_upload_start",
             "media_upload_chunk",

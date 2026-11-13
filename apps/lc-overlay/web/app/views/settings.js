@@ -2,8 +2,12 @@
 //
 // A page of its own, not a guild tab: it works with zero guild and keeps the
 // rail visible. Every change is applied immediately through `settings_set`;
-// sliders are debounced, and the page always renders from the settings view
-// returned by the shell.
+// sound sliders are debounced, and the page always renders from the settings
+// view returned by the shell.
+//
+// Display settings are previewed live: each draft goes to
+// `settings_preview_layout`, which shows it on the overlay with a template
+// card, and the value is saved once the control is released.
 
 import { run } from '../core/api.js';
 import { acceleratorFromEvent, acceleratorLabel } from '../core/accelerators.js';
@@ -37,6 +41,7 @@ const SHORTCUTS = [
 const LOGO_URL = new URL('../assets/logo.svg', import.meta.url).href;
 
 const SLIDER_DEBOUNCE_MS = 250;
+const PREVIEW_FRAME_MS = 16;
 const BARE_KEY_MESSAGE = 'Utilise Ctrl, Alt ou Maj avec une lettre, un chiffre ou une touche F.';
 
 let deviceSettings = null;
@@ -49,6 +54,8 @@ let testingMedia = false;
 let checkingUpdates = false;
 let updateMessage = null;
 const debounceTimers = new Map();
+let previewDraft = null;
+let previewFrame = null;
 
 function errorMessage(error) {
   if (!error) {
@@ -160,6 +167,25 @@ function debounce(key, action) {
   );
 }
 
+// Sends the draft layout (saved layout plus `changes`) to the overlay, at most
+// once per frame while a slider moves. Nothing is saved here. A timer rather
+// than requestAnimationFrame, which stops while the page is hidden.
+function previewLayout(changes) {
+  const saved = (deviceSettings && deviceSettings.layout) || {};
+  previewDraft = { ...saved, ...previewDraft, ...changes };
+  if (previewFrame !== null) {
+    return;
+  }
+  previewFrame = setTimeout(() => {
+    previewFrame = null;
+    const layout = previewDraft;
+    previewDraft = null;
+    invoke('settings_preview_layout', { payload: { layout } }).catch((error) => {
+      console.warn('Aperçu de la mise en page impossible :', errorMessage(error));
+    });
+  }, PREVIEW_FRAME_MS);
+}
+
 // ------------------------------------------------------------------ rendering
 
 function section(title, ...children) {
@@ -173,7 +199,8 @@ function controlRow(label, control, id) {
   return h('div', { class: 'settings-row' }, labelNode, h('div', { class: 'settings-control' }, control));
 }
 
-function rangeControl({ id, min, max, value, format, onInput }) {
+// `onInput` follows the thumb; `onChange`, when given, runs once on release.
+function rangeControl({ id, min, max, value, format, onInput, onChange }) {
   const output = h('span', { class: 'settings-value' }, format(value));
   const input = h('input', {
     id,
@@ -188,6 +215,7 @@ function rangeControl({ id, min, max, value, format, onInput }) {
       output.textContent = format(next);
       onInput(next);
     },
+    onChange: onChange ? (event) => onChange(Number(event.target.value)) : null,
   });
   return [input, output];
 }
@@ -204,7 +232,9 @@ function renderDisplay(settings) {
     {
       id: 'settings-screen',
       class: 'field',
-      onChange: (event) => applyPatch({ selectedDisplayKey: event.target.value || null }),
+      // The overlay moves once the screen is saved: preview it there.
+      onChange: (event) =>
+        applyPatch({ selectedDisplayKey: event.target.value || null }).then(() => previewLayout({})),
     },
     h('option', { value: '' }, 'Écran principal'),
     displays.map((display) => h('option', { value: display.key }, display.label)),
@@ -222,7 +252,10 @@ function renderDisplay(settings) {
     {
       id: 'settings-position',
       class: 'field',
-      onChange: (event) => applyPatch({ layout: { anchor: event.target.value } }),
+      onChange: (event) => {
+        previewLayout({ anchor: event.target.value });
+        applyPatch({ layout: { anchor: event.target.value } });
+      },
     },
     POSITIONS.map(([value, label]) => h('option', { value }, label)),
   );
@@ -253,7 +286,8 @@ function renderDisplay(settings) {
         max: 100,
         value: maxWidth,
         format: (value) => `${value} %`,
-        onInput: (value) => debounce('layout.maxWidth', () => applyPatch({ layout: { maxWidth: value } })),
+        onInput: (value) => previewLayout({ maxWidth: value }),
+        onChange: (value) => applyPatch({ layout: { maxWidth: value } }),
       }),
       'settings-max-width',
     ),
@@ -265,7 +299,8 @@ function renderDisplay(settings) {
         max: 100,
         value: maxHeight,
         format: (value) => `${value} %`,
-        onInput: (value) => debounce('layout.maxHeight', () => applyPatch({ layout: { maxHeight: value } })),
+        onInput: (value) => previewLayout({ maxHeight: value }),
+        onChange: (value) => applyPatch({ layout: { maxHeight: value } }),
       }),
       'settings-max-height',
     ),
@@ -280,6 +315,12 @@ function renderDisplay(settings) {
           max: '200',
           step: '1',
           value: String(margin),
+          onInput: (event) => {
+            const value = Number(event.target.value);
+            if (event.target.value !== '' && Number.isInteger(value) && value >= 0 && value <= 200) {
+              previewLayout({ margin: value });
+            }
+          },
           onChange: (event) => {
             const value = Number(event.target.value);
             if (!Number.isInteger(value) || value < 0 || value > 200) {

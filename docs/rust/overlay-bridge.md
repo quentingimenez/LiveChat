@@ -895,7 +895,7 @@ invalide ou un type connu avec un payload invalide termine la session
 
 ## 14. Paramètres de l'appareil (board)
 
-Ces quatre commandes sont autorisées **pour la seule fenêtre `board`**.
+Ces cinq commandes sont autorisées **pour la seule fenêtre `board`**.
 
 ### 14.1 `settings_get`
 
@@ -990,9 +990,35 @@ Affiche pendant 5 s la carte locale `assets/test-media.svg` via le même
 événement `overlay://play` que la lecture réelle, avec le profil local (ou
 « LiveChat »), le texte « Média de test » et le compte à rebours. Le payload ne
 contient aucun `jobId` et porte `test: true` : aucun rapport de lecture ou
-d'erreur n'est envoyé au serveur.
+d'erreur n'est envoyé au serveur. Le SVG a une taille intrinsèque de
+3840 × 2160 : l'overlay ne grandit jamais un média, la carte occupe donc la
+plus grande place permise à un média 16:9 par la mise en page. La carte de test
+remplace le gabarit d'aperçu (§14.5) s'il est affiché.
 
-### 14.5 Suppression de `guild_media_url`
+### 14.5 `settings_preview_layout`
+
+Payload `{ "layout": { ... } }` (partiel, mêmes règles que `layout` dans
+`settings_set`) → `null`, ou une erreur `"<champ> : <message>"`. Rien n'est
+enregistré : le board appelle cette commande à chaque mouvement d'un réglage
+d'affichage (au plus une fois toutes les 16 ms) et n'enregistre la valeur
+qu'au relâchement, avec `settings_set`.
+
+- Le shell émet `overlay://settings` avec la mise en page brouillon : un média
+  affiché la suit tout de suite.
+- Au premier appel d'un aperçu, si aucun média réel ne joue, le shell affiche
+  la fenêtre overlay et lui envoie le gabarit par `overlay://play` : la carte
+  du média de test avec le texte « Aperçu de la mise en page », `test: true`,
+  `durationSec: 10` et `hold: true`. Avec `hold`, le renderer affiche le
+  compte à rebours figé et garde la carte jusqu'au `overlay://stop`.
+- 4 s après le dernier appel, le shell renvoie `overlay://settings` avec la
+  mise en page enregistrée, retire le gabarit par `overlay://stop`
+  (`reason: "layout_preview_end"`) si aucun média réel ne l'a remplacé, et
+  masque la fenêtre overlay si l'overlay est désactivé.
+
+L'échéance est décidée sur le thread principal, comme chaque appel de la
+commande (synchrone) : un réglage modifié pile à l'échéance n'est jamais perdu.
+
+### 14.6 Suppression de `guild_media_url`
 
 `guild_media_url`, son entrée d'allowlist et `net::api::board_media_url` sont
 supprimés : chaque élément du board fournit désormais une URL signée

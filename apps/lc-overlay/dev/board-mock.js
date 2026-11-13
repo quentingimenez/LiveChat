@@ -15,8 +15,9 @@
 // Paramètres : settings_get/settings_set (validation des écrans, volumes,
 // sourdine, démarrage automatique, raccourcis, disposition et profil),
 // settings_identify_displays, settings_test_media (overlay_busy si un média
-// passe), overlay_check_updates et board_take_pending_view. Chaque changement
-// émet `overlay://device-settings` avec une copie profonde.
+// passe), settings_preview_layout (dernier brouillon dans
+// `__mock.previewLayouts`), overlay_check_updates et board_take_pending_view.
+// Chaque changement émet `overlay://device-settings` avec une copie profonde.
 // Ajouts (lien ou fichier) : le serveur répond 202 puis envoie le résultat
 // `overlay://media-ingestion` et `overlay://board-changed`. Selon le nom du
 // fichier ou le lien : « big » → 413 pendant l'envoi, « fail » → conversion
@@ -142,6 +143,8 @@
   const ANCHORS = new Set(['center', 'top', 'bottom', 'top-left', 'top-right', 'bottom-left', 'bottom-right']);
   const settingsCopy = () => JSON.parse(JSON.stringify(settings));
   const settingsError = (field, message) => ({ ok: false, field, message, settings: settingsCopy() });
+  // Draft layouts sent by the live preview, oldest first.
+  const previewLayouts = [];
 
   function validAccelerator(value) {
     if (typeof value !== 'string' || /bad/i.test(value)) {
@@ -519,7 +522,7 @@
     emit('overlay://navigate', { view: 'settings' });
   }
 
-  window.__mock = { emit, removeGuild, finishPlaying, reconnect, restartServer, openSettings: openSettingsPage, settings, queue, items, guilds, ingestions };
+  window.__mock = { emit, removeGuild, finishPlaying, reconnect, restartServer, openSettings: openSettingsPage, settings, previewLayouts, queue, items, guilds, ingestions };
 
   window.__TAURI_INTERNALS__ = {
     transformCallback(callback) {
@@ -569,6 +572,9 @@
           return delay(200).then(() => ({ count: settings.displays.length }));
         case 'settings_test_media':
           return delay(120).then(() => (queue.playing ? { ok: false, reason: 'overlay_busy' } : { ok: true }));
+        case 'settings_preview_layout':
+          previewLayouts.push(JSON.parse(JSON.stringify(payload.layout)));
+          return Promise.resolve(null);
         case 'overlay_check_updates':
           return delay(300).then(updateCheckStatus);
         case 'guilds_list':

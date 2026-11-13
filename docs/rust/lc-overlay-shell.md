@@ -48,6 +48,7 @@ apps/lc-overlay/
     display.rs            # DisplayInfo, sélection d'écran, helpers purs, tests
     state.rs              # AppState (config + Ready + buffer + bindings actifs), tests
     events.rs             # noms d'événements, buffer borné + timeout 5 s, tests
+    layout_preview.rs     # aperçu en direct de la mise en page (gabarit, échéance 4 s), tests
     win32.rs              # SEUL module unsafe : styles ex, SetWindowPos topmost, hook de premier plan
     windows.rs            # cycle de vie 2 fenêtres, topmost 2 s, second instance
     tray.rs               # icône + modèle de menu pur + handlers
@@ -147,7 +148,9 @@ Projection renderer (`OverlayConfigView`) : `serverUrl`, `clientToken`,
 
 La vue complète de la page Paramètres (`SettingsView`) et le contrat
 `settings_get` / `settings_set` / `settings_identify_displays` /
-`settings_test_media` sont documentés dans `overlay-bridge.md` §14.
+`settings_test_media` / `settings_preview_layout` sont documentés dans
+`overlay-bridge.md` §14. L'aperçu en direct de la mise en page (gabarit,
+échéance de 4 s) vit dans `src/layout_preview.rs`.
 
 ## 5. Fenêtres
 
@@ -323,8 +326,8 @@ Commandes exposées (via `tauri::generate_handler!`) :
 `pairing_consume`, `media_board_get_bindings`, `media_board_set_bindings`,
 `media_board_trigger`, `media_board_stop`, `overlay_check_updates`,
 `overlay_install_update`, `board_take_pending_view`, `settings_get`,
-`settings_set`, `settings_identify_displays`, `settings_test_media` et les
-commandes de guildes / upload. `guild_media_url` est supprimé : les URL média
+`settings_set`, `settings_identify_displays`, `settings_test_media`,
+`settings_preview_layout` et les commandes de guildes / upload. `guild_media_url` est supprimé : les URL média
 signées arrivent directement dans les éléments du board.
 
 `bridge.js` (façade Tauri 2) détecte `__TAURI_INTERNALS__.invoke` puis

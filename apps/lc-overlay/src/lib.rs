@@ -28,6 +28,7 @@ pub mod config;
 pub mod device_settings;
 pub mod display;
 pub mod events;
+pub mod layout_preview;
 pub mod net;
 pub mod settings;
 pub mod shortcuts;
@@ -217,6 +218,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             commands::settings_set,
             commands::settings_identify_displays,
             commands::settings_test_media,
+            commands::settings_preview_layout,
             commands::overlay_check_updates,
             commands::overlay_install_update,
             commands::board_take_pending_view,

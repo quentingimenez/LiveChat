@@ -160,8 +160,10 @@ Commandes shell simulées pour les réglages :
   profonde.
 - `settings_identify_displays` renvoie `{ count: 2 }` ;
   `settings_test_media` renvoie `{ ok: false, reason: "overlay_busy" }` tant
-  qu'un média passe, `{ ok: true }` sinon ; `overlay_check_updates` renvoie un
-  `UpdateStatus` (updater désactivé dans le mock).
+  qu'un média passe, `{ ok: true }` sinon ; `settings_preview_layout` garde
+  chaque brouillon de mise en page dans `__mock.previewLayouts` ;
+  `overlay_check_updates` renvoie un `UpdateStatus` (updater désactivé dans le
+  mock).
 - Les items du board portent `mediaUrl` (data URI SVG) et
   `mediaUrlExpiresAt` (une heure après le chargement), comme le serveur signé.
 - `pairing_consume` répond `display_name_required` pour le code `NOPSEUDO`

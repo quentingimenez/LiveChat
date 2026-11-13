@@ -219,6 +219,36 @@ impl Hub {
             .is_some_and(|connection| connection.sender.send(frame).is_ok())
     }
 
+    /// Sends one protocol message to every socket of an overlay client.
+    ///
+    /// The lookup is by `client_uuid` (not connection id): a client may hold
+    /// several sockets (up to [`MAX_SOCKETS_PER_CLIENT`]). Returns `true` when
+    /// at least one socket accepted the frame.
+    pub(crate) fn send_to_client(&self, client_id: &Uuid, message: ServerMessage) -> bool {
+        let envelope = ServerEnvelope::new(
+            self.next_message_id(message_prefix(&message)),
+            now_ms(),
+            message,
+        );
+        let text = match serde_json::to_string(&envelope) {
+            Ok(text) => text,
+            Err(error) => {
+                warn!(error = %error, "sérialisation d'un message serveur impossible");
+                return false;
+            }
+        };
+        let inner = self.lock_inner();
+        let mut delivered = false;
+        for connection in inner.connections.values() {
+            if connection.client_uuid == *client_id
+                && connection.sender.send(OutFrame::Text(text.clone())).is_ok()
+            {
+                delivered = true;
+            }
+        }
+        delivered
+    }
+
     /// Construit la liste des pairs d'une guilde (dédupliquée par client,
     /// triée par libellé puis `clientId`, tronquée à [`MAX_PEERS`]).
     pub(crate) fn peer_list(&self, guild_id: &GuildId) -> Vec<PeerInfo> {
@@ -573,7 +603,17 @@ impl Hub {
     /// les close — l'ordre est garanti par le canal FIFO de chaque connexion.
     /// Retourne `true` si au moins un socket a été ciblé.
     pub fn close_client(&self, client_id: &Uuid, code: u16) -> bool {
-        let reason = close_reason_for_code(code).to_owned();
+        self.close_client_with_reason(client_id, code, close_reason_for_code(code))
+    }
+
+    /// Closes every connection of a client with an explicit reason.
+    ///
+    /// For a revocation (`4402`), the hub still broadcasts
+    /// `stop {reason:"revoked", jobId:null}` first regardless of `reason`;
+    /// revoking a membership and a voluntary leave use different close
+    /// reasons for the same code.
+    pub fn close_client_with_reason(&self, client_id: &Uuid, code: u16, reason: &str) -> bool {
+        let reason = reason.to_owned();
         let revoked = code == close_code::REVOKED;
         let (connection_ids, guilds): (Vec<Uuid>, BTreeSet<GuildId>) = {
             let inner = self.lock_inner();
@@ -842,6 +882,8 @@ pub(crate) fn message_prefix(message: &ServerMessage) -> &'static str {
         ServerMessage::Stop(_) => "stop",
         ServerMessage::Ack(_) => "ack",
         ServerMessage::Error(_) => "error",
+        ServerMessage::MediaIngestion(_) => "ingestion",
+        ServerMessage::BoardChanged(_) => "board",
     }
 }
 
@@ -854,6 +896,7 @@ pub(crate) fn close_reason_for_code(code: u16) -> &'static str {
         close_code::UNAUTHORIZED => close_reason::INVALID_TOKEN,
         close_code::REVOKED => close_reason::REVOKED,
         close_code::OUTDATED_PROTOCOL => close_reason::OUTDATED_PROTOCOL,
+        close_code::GUILD_DELETED => close_reason::GUILD_DELETED,
         close_code::FRAME_TOO_LARGE => close_reason::FRAME_TOO_LARGE,
         close_code::RATE_LIMITED => close_reason::RATE_LIMITED,
         _ => close_reason::INTERNAL_ERROR,

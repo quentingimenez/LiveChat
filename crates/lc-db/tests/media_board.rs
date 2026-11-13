@@ -204,7 +204,7 @@ async fn migration_0005_renomme_la_table_et_conserve_les_elements() {
             .fetch_all(db.pool())
             .await
             .unwrap();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7]);
 
     let item = db
         .media_board()

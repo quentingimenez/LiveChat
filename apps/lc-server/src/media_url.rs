@@ -28,6 +28,29 @@ pub use lc_protocol::{
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// Durée de validité d'une URL signée du board média (une heure).
+pub const BOARD_MEDIA_URL_TTL_SEC: u64 = 3_600;
+
+/// Board URL expiries are rounded down to this window so that the URLs stay
+/// identical between two item reloads and the browser keeps its cached
+/// thumbnails.
+pub const BOARD_MEDIA_URL_WINDOW_SEC: u64 = 900;
+
+/// Expiry of a board URL signed at `now_sec`: the start of the current
+/// 15-minute window plus the TTL, i.e. 45 to 60 minutes ahead, never beyond
+/// the maximum TTL checked by the media route.
+#[must_use]
+pub fn board_url_expiry(now_sec: u64) -> u64 {
+    (now_sec - now_sec % BOARD_MEDIA_URL_WINDOW_SEC).saturating_add(BOARD_MEDIA_URL_TTL_SEC)
+}
+
+/// Préfixe de la clé signée d'un média du board.
+///
+/// Le préfixe sépare les espaces de signature : une URL de lecture
+/// (`/overlay/media/{assetId}`) ne vérifie jamais sur la route du board, et
+/// inversement.
+const BOARD_SIGNATURE_PREFIX: &str = "board:";
+
 /// Erreur de signature : secret HMAC inutilisable.
 ///
 /// `Hmac::new_from_slice` n'échoue en pratique jamais pour SHA-256 (toutes les
@@ -77,6 +100,65 @@ pub fn verify(
         return false;
     };
     provided.ct_eq(&expected).into()
+}
+
+/// Clé signée d'un asset du board média (`board:{assetId}`).
+#[must_use]
+pub fn board_signature_key(asset_id: &str) -> String {
+    format!("{BOARD_SIGNATURE_PREFIX}{asset_id}")
+}
+
+/// Signe une URL de média du board pour un client et une expiration donnés.
+///
+/// La clé inclut le préfixe [`board_signature_key`] : la signature diffère de
+/// celle d'une URL de lecture pour le même asset.
+pub fn sign_board(
+    secret: &[u8],
+    asset_id: &str,
+    client_id: &str,
+    exp_sec: u64,
+) -> Result<String, MediaUrlError> {
+    sign(secret, &board_signature_key(asset_id), client_id, exp_sec)
+}
+
+/// Vérifie en temps constant la signature d'une URL de média du board.
+pub fn verify_board(
+    secret: &[u8],
+    asset_id: &str,
+    client_id: &str,
+    exp_sec: u64,
+    signature_hex: &str,
+) -> bool {
+    verify(
+        secret,
+        &board_signature_key(asset_id),
+        client_id,
+        exp_sec,
+        signature_hex,
+    )
+}
+
+/// Construit une URL absolue de média du board, signée pour un client.
+///
+/// ```text
+/// {apiUrl}/overlay/media-board/media/{assetId}?clientId={clientId}&exp={exp}&sig={hex}
+/// ```
+pub fn sign_board_url(
+    secret: &[u8],
+    api_url: &str,
+    asset_id: &str,
+    client_id: &str,
+    exp_sec: u64,
+) -> Result<String, MediaUrlError> {
+    let signature = sign_board(secret, asset_id, client_id, exp_sec)?;
+    Ok(format!(
+        "{}/overlay/media-board/media/{}?clientId={}&exp={}&sig={}",
+        api_url.trim_end_matches('/'),
+        asset_id,
+        client_id,
+        exp_sec,
+        signature
+    ))
 }
 
 /// Vérifie que l'expiration fournie reste dans la politique serveur.
@@ -149,6 +231,46 @@ mod tests {
         assert!(!verify(SECRET, ASSET, CLIENT, EXP, "pas-hex"));
         assert!(!verify(SECRET, ASSET, CLIENT, EXP, "00"));
         assert!(!verify(SECRET, ASSET, CLIENT, EXP, ""));
+    }
+
+    #[test]
+    fn board_url_expiry_is_stable_within_a_window_and_within_the_max_ttl() {
+        let start = 1_794_182_400; // multiple of the 15-minute window
+        assert_eq!(board_url_expiry(start), start + BOARD_MEDIA_URL_TTL_SEC);
+        assert_eq!(
+            board_url_expiry(start + BOARD_MEDIA_URL_WINDOW_SEC - 1),
+            start + BOARD_MEDIA_URL_TTL_SEC
+        );
+        assert_eq!(
+            board_url_expiry(start + BOARD_MEDIA_URL_WINDOW_SEC),
+            start + BOARD_MEDIA_URL_WINDOW_SEC + BOARD_MEDIA_URL_TTL_SEC
+        );
+        for now in [start, start + 1, start + BOARD_MEDIA_URL_WINDOW_SEC - 1] {
+            assert!(is_expiry_within_max(board_url_expiry(now), now));
+            assert!(!is_expired(board_url_expiry(now), now));
+        }
+    }
+
+    #[test]
+    fn board_url_uses_the_board_signature_namespace() {
+        let url = sign_board_url(SECRET, "https://api.example.test/", ASSET, CLIENT, EXP)
+            .expect("URL board signée");
+        assert!(url.starts_with(&format!(
+            "https://api.example.test/overlay/media-board/media/{ASSET}?clientId={CLIENT}&exp={EXP}&sig="
+        )));
+        let signature = url.rsplit("sig=").next().expect("signature");
+        assert!(verify_board(SECRET, ASSET, CLIENT, EXP, signature));
+        // Une URL de lecture (sans `board:`) ne vérifie pas sur le board.
+        let playback = sign(SECRET, ASSET, CLIENT, EXP).expect("signature lecture");
+        assert!(!verify_board(SECRET, ASSET, CLIENT, EXP, &playback));
+        assert!(!verify(
+            SECRET,
+            &board_signature_key(ASSET),
+            CLIENT,
+            EXP,
+            &playback
+        ));
+        assert_eq!(board_signature_key(ASSET), format!("board:{ASSET}"));
     }
 
     #[test]

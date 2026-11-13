@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use lc_domain::GuildId;
+use lc_protocol::ServerMessage;
 use uuid::Uuid;
 
 use crate::app::AppState;
@@ -48,6 +49,25 @@ pub trait AdminHub: Send + Sync {
     /// Retourne `true` si au moins une socket a été fermée ; `code` est le code
     /// de fermeture WebSocket transmis au client (4402 pour une révocation).
     fn close_client(&self, client_id: &Uuid, code: u16) -> bool;
+
+    /// Closes every socket of `client_id` with an explicit close reason.
+    fn close_client_with_reason(&self, client_id: &Uuid, code: u16, reason: &str) -> bool;
+
+    /// Sends one protocol message to every socket of an overlay client.
+    ///
+    /// Returns `true` when at least one socket accepted the frame; a client
+    /// without connected socket is not an error (the result is then available
+    /// through `GET /overlay/media-board/ingestions`).
+    fn send_to_client(&self, _client_id: &Uuid, _message: ServerMessage) -> bool {
+        false
+    }
+
+    /// Broadcasts one protocol message to every socket of a guild.
+    ///
+    /// Returns the number of sockets the message was delivered to.
+    fn broadcast_to_guild(&self, _guild_id: &GuildId, _message: ServerMessage) -> usize {
+        0
+    }
 
     /// Diffuse un arrêt manuel à la guilde ; retourne le nombre de sockets
     /// touchées (0 si le hub n'expose pas cette information).
@@ -105,6 +125,10 @@ impl AdminHub for NoopAdminHub {
         false
     }
 
+    fn close_client_with_reason(&self, _client_id: &Uuid, _code: u16, _reason: &str) -> bool {
+        false
+    }
+
     async fn broadcast_stop(&self, _guild_id: &GuildId) -> usize {
         0
     }
@@ -135,6 +159,7 @@ mod tests {
         assert_eq!(hub.connected_for_guild(&guild_id), 0);
         assert!(!hub.is_connected(&client_id));
         assert!(!hub.close_client(&client_id, 4402));
+        assert!(!hub.close_client_with_reason(&client_id, 4404, "guild_deleted"));
         assert_eq!(hub.broadcast_stop(&guild_id).await, 0);
         assert_eq!(hub.broadcast_settings(&guild_id).await, 0);
     }

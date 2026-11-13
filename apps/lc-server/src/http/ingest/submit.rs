@@ -27,6 +27,7 @@ use axum::Json;
 use serde_json::{json, Value};
 
 use lc_domain::entities::MediaAsset;
+use lc_protocol::{BoardChange, BoardChangedPayload, ServerMessage};
 
 use crate::app::AppState;
 use crate::media::board;
@@ -184,14 +185,21 @@ pub async fn submit(
 
         return match added {
             Ok(result) => {
+                if result.created {
+                    state.admin_hub.broadcast_to_guild(
+                        &guild_id,
+                        ServerMessage::BoardChanged(BoardChangedPayload {
+                            change: BoardChange::Added,
+                            item_id: result.item.id.to_canonical(),
+                        }),
+                    );
+                }
                 let payload = json!({
                     "accepted": true,
                     "savedToBoard": true,
                     "created": result.created,
                     "guildId": guild_id.as_str(),
                     "mediaBoardItemId": result.item.id.to_canonical(),
-                    // Legacy overlay 3.0.0 compatibility: remove in 3.1.
-                    "memeBoardItemId": result.item.id.to_canonical(),
                     "mediaAssetId": asset.id.to_canonical(),
                 });
                 (StatusCode::CREATED, Json(payload)).into_response()

@@ -1,0 +1,133 @@
+/* --------------------------------------------------------------------- rail */
+.rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 0;
+  background: var(--slate-900);
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+}
+
+.rail-spacer {
+  flex: 1;
+}
+
+.guild {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--slate-700);
+  color: var(--text-soft);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: border-radius 120ms ease, background 120ms ease;
+}
+
+.guild:hover {
+  background: var(--slate-600);
+  color: var(--text);
+}
+
+.guild.is-active {
+  border-radius: 10px;
+  background: var(--text);
+  color: var(--slate-900);
+}
+
+.guild.is-muted {
+  opacity: 0.45;
+}
+
+/* Guild icon: the button itself must not clip the status dot, so only the
+   image is rounded. The active ring is drawn outside the button. */
+.guild.has-icon {
+  padding: 0;
+}
+
+.guild .guild-icon {
+  display: block;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  object-fit: cover;
+}
+
+.guild.is-active .guild-icon {
+  border-radius: 10px;
+}
+
+.guild.is-active.has-icon {
+  background: none;
+  box-shadow: 0 0 0 2px var(--slate-900), 0 0 0 4px var(--text);
+}
+
+/* An SVG glyph, centred by flex: a text "+" sits off-centre in the font. */
+.guild.is-add {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: none;
+  border: 1px dashed var(--line);
+}
+
+.guild.is-add .icon {
+  width: 18px;
+  height: 18px;
+}
+
+/* Device settings: a gear at the bottom of the rail, below the guild list. */
+.guild.is-settings {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: none;
+  color: var(--text-faint);
+}
+
+.guild.is-settings:hover {
+  color: var(--text);
+}
+
+.guild.is-settings.is-active {
+  border-radius: 10px;
+  background: var(--slate-600);
+  color: var(--text);
+}
+
+.guild.is-settings .icon {
+  width: 20px;
+  height: 20px;
+}
+
+.guild .dot {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 3px solid var(--slate-900);
+  background: var(--text-faint);
+}
+
+.guild .dot.is-on {
+  background: var(--green);
+}
+
+.guild .dot.is-busy {
+  background: var(--blue);
+}
+
+.guild .dot.is-err {
+  background: var(--red);
+}
+
+.guild .dot.is-air {
+  background: var(--amber);
+}

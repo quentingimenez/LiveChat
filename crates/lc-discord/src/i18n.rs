@@ -117,6 +117,10 @@ strings! {
         "API_URL :\n```{{apiUrl}}```\nCode d’appairage :\n```{{code}}```\nMode : invité lecture seule (Overlay EXE uniquement).\nCode à usage unique sans expiration.",
         "API_URL:\n```{{apiUrl}}```\nPairing code:\n```{{code}}```\nMode: invite read-only (Overlay EXE only).\nOne-time code without expiration."
     ),
+    pair_code_grants_admin: (
+        "Ce code donne le rôle admin.",
+        "This code grants the admin role."
+    ),
 
     media_add_name: ("media-add", "media-add"),
     media_add_description: (

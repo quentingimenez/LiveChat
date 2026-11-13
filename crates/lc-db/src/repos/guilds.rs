@@ -11,8 +11,8 @@ use crate::error::{conflict_on_unique, DbResult};
 const TABLE: &str = "guilds";
 
 /// Colonnes lues pour un [`GuildAccess`].
-const ACCESS_COLUMNS: &str =
-    "id, name, standalone, discord_guild_id, guests_can_view_board, created_at";
+const ACCESS_COLUMNS: &str = "id, name, standalone, discord_guild_id, discord_icon_hash, \
+     guests_can_view_board, created_at";
 
 /// Projection SQLite de `guilds` pour le rattachement (migration 0003).
 #[derive(Debug, sqlx::FromRow)]
@@ -21,6 +21,7 @@ struct GuildAccessRow {
     name: Option<String>,
     standalone: i64,
     discord_guild_id: Option<String>,
+    discord_icon_hash: Option<String>,
     guests_can_view_board: i64,
     created_at: Option<i64>,
 }
@@ -32,6 +33,7 @@ impl GuildAccessRow {
             name: self.name,
             standalone: from_bool(self.standalone),
             discord_guild_id: self.discord_guild_id,
+            discord_icon_hash: self.discord_icon_hash,
             guests_can_view_board: from_bool(self.guests_can_view_board),
             created_at: from_opt_ms(TABLE, "created_at", self.created_at)?,
         })
@@ -240,6 +242,27 @@ impl GuildsRepository {
                     conflict_on_unique(error, "ce serveur Discord est déjà lié à une autre guilde")
                 })?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Stores the Discord icon hash for either a native guild row (`id` is the
+    /// snowflake) or a standalone guild linked through `discord_guild_id`.
+    ///
+    /// Returns the number of rows updated.
+    pub async fn set_discord_icon(
+        &self,
+        discord_guild_id: &str,
+        icon_hash: Option<&str>,
+    ) -> DbResult<u64> {
+        let result = sqlx::query(
+            "UPDATE guilds SET discord_icon_hash = ? \
+             WHERE id = ? OR discord_guild_id = ?",
+        )
+        .bind(icon_hash)
+        .bind(discord_guild_id)
+        .bind(discord_guild_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     /// Renomme une guilde. Retourne `false` si elle n'existe pas.

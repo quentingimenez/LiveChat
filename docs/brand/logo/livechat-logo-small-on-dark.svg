@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>LiveChat</title>
+  <g fill="none" stroke="#E9EBF3" stroke-width="28" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M30 118V68H80"/>
+    <path d="M30 176V226H80"/>
+    <path d="M148 226H198V176"/>
+  </g>
+  <rect x="108" y="10" width="138" height="114" rx="32" fill="#F2B544"/>
+  <path d="M140 110L104 160L182 118Z" fill="#F2B544" stroke="#F2B544" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M160 42L200 67L160 92Z" fill="#2A1D02" stroke="#2A1D02" stroke-width="9" stroke-linejoin="round"/>
+</svg>

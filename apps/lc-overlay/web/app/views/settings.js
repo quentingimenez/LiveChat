@@ -343,16 +343,18 @@ function renderGuildVolume(guild, settings) {
     checked: Boolean(guild.membership.muted),
     onChange: (event) => toggleGuildMute(guild, event.target.checked),
   });
+  const sliderId = `settings-guild-volume-${guildId}`;
+  // Same grid as the rows above, so the guild slider and its value line up
+  // with « Volume général »; the guild mute follows the value.
   return h(
     'div',
-    { class: 'settings-guild' },
-    h('span', { class: 'settings-guild-name ellipsis', title: label }, label),
-    h('label', { class: 'switch settings-guild-mute' }, mute, 'Sourdine'),
+    { class: 'settings-row' },
+    h('label', { class: 'settings-label settings-guild-name ellipsis', for: sliderId, title: label }, label),
     h(
       'div',
       { class: 'settings-control' },
       rangeControl({
-        id: `settings-guild-volume-${guildId}`,
+        id: sliderId,
         min: 0,
         max: 100,
         value: Math.round(volume * 100),
@@ -360,6 +362,7 @@ function renderGuildVolume(guild, settings) {
         onInput: (value) =>
           debounce(`guildVolume:${guildId}`, () => applyPatch({ guildVolumes: { [guildId]: value / 100 } })),
       }),
+      h('label', { class: 'switch settings-guild-mute' }, mute, 'Sourdine'),
     ),
   );
 }

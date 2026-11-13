@@ -311,7 +311,7 @@ Convention retenue et implémentée dans `apps/lc-overlay/web/bridge.js` (`COMMA
 | `consumePairing` | `pairing:consume` | `pairing_consume` | `{ payload: PairingConsumeRequest }` | `PairingConsumeResponse` |
 | `getMediaBindings` | `meme-board:get-bindings` | `media_board_get_bindings` | `{}` | `MediaBoardBindingsResponse` |
 | `setMediaBindings` | `meme-board:set-bindings` | `media_board_set_bindings` | `{ payload: MediaBoardSetBindingsRequest }` | `MediaBoardSetBindingsResponse` |
-| `triggerMedia` | `meme-board:trigger` | `media_board_trigger` | `{ payload: MediaBoardTriggerRequest }` | `MediaBoardActionResponse` |
+| `triggerMedia` | `meme-board:trigger` | `media_board_trigger` | `{ payload: MediaBoardTriggerRequest }` | `MediaBoardTriggerResponse` (voir §13.1) |
 | `stopMediaPlayback` | `meme-board:stop` | `media_board_stop` | `{}` | `MediaBoardActionResponse` |
 
 Signatures Rust recommandées (payloads `serde` avec `rename_all = "camelCase"`, erreurs en `Result<_, String>` pour rester
@@ -357,6 +357,7 @@ Notes de contrat :
 | `onPlay` | `overlay:play` | `overlay://play` | `OverlayPlayPayload` | fenêtre `overlay` uniquement |
 | `onStop` | `overlay:stop` | `overlay://stop` | `OverlayStopPayload` | fenêtre `overlay` uniquement |
 | `onSettings` | `overlay:settings` | `overlay://settings` | `OverlaySettingsPayload` | fenêtres `overlay` **et** `board`, jamais `pairing` |
+| — | — | `overlay://guild-removed` | `GuildRemoval` (voir §13.2) | fenêtre `board` uniquement |
 
 Recommandations Rust :
 
@@ -718,5 +719,102 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
   `net/pairing.rs` restent inchangés ; `web/pairing.html`, `web/pairing.js` et
   `web/dist/renderer/pairing/**` ne sont plus référencés.
 
+## 13. Board : lecture acquittée, retraits de guilde, envoi de fichiers
 
+Cette section décrit les contrats ajoutés ou modifiés pour la board :
+déclenchement de média acquitté, retrait automatique d'une guilde, icône de
+guilde et envoi de fichiers locaux. Tous les payloads suivent la convention
+existante : arguments sous `payload`, objets en camelCase, options omises
+quand elles sont absentes.
 
+### 13.1 `media_board_trigger` : réponse acquittée
+
+La commande est désormais asynchrone : elle envoie `media.trigger` puis attend
+l'`ack` correspondant pendant **10 s** (`TRIGGER_ACK_TIMEOUT`). Le champ
+`ref` de l'`ack` est comparé à l'`id` de l'enveloppe envoyée.
+
+Entrée (inchangée) :
+
+```json
+{ "payload": { "itemId": "media-1", "trigger": "ui", "guildId": "111" } }
+```
+
+Réponse `MediaBoardTriggerResponse` :
+
+```json
+{ "ok": true, "outcome": "playing" }
+{ "ok": true, "outcome": "queued", "position": 2, "jobId": "job-42" }
+{ "ok": true }
+{ "ok": false, "reason": "invalid_item_id" }
+{ "ok": false, "reason": "socket_unavailable" }
+{ "ok": false, "reason": "ack_timeout" }
+{ "ok": false, "reason": "read_only", "message": "session invitée" }
+{ "ok": false, "reason": "trigger_refused" }
+```
+
+- `outcome` vaut `"playing"` ou `"queued"` ; `position` est le rang 1-based en
+  file ; `jobId` l'identifiant du job créé côté serveur. Ces trois champs sont
+  omis quand l'`ack` (ou un serveur plus ancien) ne les fournit pas.
+- `socket_unavailable` : aucune guilde, superviseur non connecté, ou canal de
+  réponse fermé avant l'`ack` (session terminée).
+- `ack_timeout` : aucun `ack` reçu dans les 10 s.
+- Refus serveur : `reason` = `error.code`, `message` = `error.message` ; sans
+  objet `error`, `reason` vaut `trigger_refused`.
+
+### 13.2 Retrait automatique d'une guilde
+
+Une fermeture WebSocket terminale purge l'adhésion locale et produit un
+`GuildRemoval` :
+
+```json
+{ "guildId": "111", "guildName": "Les Sardines", "reason": "guild_deleted" }
+```
+
+`guildName` est omis s'il est inconnu. `reason` est l'un de
+`"guild_deleted"` (4404), `"member_removed"` (4402 avec raison de fermeture
+`member_removed`), `"revoked"` (4402 avec toute autre raison) ou
+`"invalid_token"` (4401).
+
+- Événement `overlay://guild-removed` : émis vers la fenêtre `board` avec ce
+  même objet, au moment de la purge.
+- Commande `board_take_guild_removals` (board uniquement, sans argument) :
+  renvoie `GuildRemoval[]` en attente puis vide la file ; renvoie `[]` s'il n'y
+  a rien. La board l'appelle au démarrage et à chaque événement
+  `overlay://guild-removed`.
+- Un `401` sur `guild_api` (et sur `media_upload_finish`) envoie
+  `NetCommand::Reconnect` au superviseur de la guilde : le WebSocket revalide
+  le jeton et un `4401` déclenche la purge avec `invalid_token`.
+
+`guilds_list` expose l'icône dans chaque adhésion : `guilds[].membership`
+contient `guildIconUrl` (absent si inconnue). `welcome.guildIconUrl` n'est
+accepté que s'il commence par `https://cdn.discordapp.com/`.
+
+### 13.3 `media_upload_*` : envoi d'un fichier local
+
+Quatre commandes réservées à la fenêtre `board`. Le corps est le fichier brut
+(pas de multipart) ; le jeton reste dans le shell Rust. `ApiResponse` a la même
+forme que `guild_api` : `{ "ok": bool, "status": number, "body": object|null }`.
+
+1. `invoke('media_upload_start', { payload: { guildId?, filename, title?, message?, contentType? } })`
+   → `{ "uploadId": "uuid-v4" }`.
+   - `filename` obligatoire (1 à 255 caractères, sans `/`, `\` ni
+     caractère de contrôle), sinon erreur `"nom de fichier invalide"`.
+   - Guilde inconnue → erreur `"guilde inconnue"`.
+   - Au plus **8 uploads simultanés**, sinon `"trop d'envois en cours"`.
+   - `contentType` n'est conservé que sous la forme `type/sous-type` ASCII
+     imprimable sans espace ni `;` ; sinon `application/octet-stream`.
+2. `invoke('media_upload_chunk', <Uint8Array>, { headers: { 'x-upload-id': uploadId } })`
+   → `null`. Morceau vide ou > 8 Mio refusé ; corps JSON refusé
+   (`"corps binaire attendu"`) ; id inconnu (`"envoi inconnu"`). Si la requête
+   HTTP s'est déjà terminée (413, serveur injoignable…), renvoie
+   `"upload_closed"` : la board appelle alors `media_upload_finish` pour lire
+   la réponse.
+3. `invoke('media_upload_finish', { payload: { uploadId } })`
+   → `ApiResponse`. Ferme le corps, attend la tâche HTTP et relaie la réponse
+   du serveur (`200 {created, item}`, erreurs `{error}`…).
+4. `invoke('media_upload_cancel', { payload: { uploadId } })` → `bool`
+   (`true` si l'upload existait). Retire l'entrée et interrompt la tâche.
+
+Séquence : `start` → `chunk` (répété) → `finish`, ou `cancel` à tout moment.
+Le délai de la requête est de 30 min (conversion serveur) et le délai de
+connexion de 15 s.

@@ -16,7 +16,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, EventTarget, Manager, Wry};
 
 use crate::config::OverlayConfigView;
-use crate::state::AppState;
+use crate::state::{AppState, GuildRemoval};
 use crate::windows::{overlay_should_show, BOARD_LABEL, OVERLAY_LABEL};
 
 pub const EVENT_PLAY: &str = "overlay://play";
@@ -24,6 +24,8 @@ pub const EVENT_STOP: &str = "overlay://stop";
 pub const EVENT_SETTINGS: &str = "overlay://settings";
 /// Liste des guildes et de leur état de connexion (fenêtre board uniquement).
 pub const EVENT_GUILDS: &str = "overlay://guilds";
+/// Guilde retirée automatiquement (fenêtre board uniquement).
+pub const EVENT_GUILD_REMOVED: &str = "overlay://guild-removed";
 /// Indice de changement de file d'attente (fenêtre board uniquement).
 pub const EVENT_QUEUE_HINT: &str = "overlay://queue-hint";
 /// In-board navigation request (e.g. the `settings` view).
@@ -161,6 +163,15 @@ pub fn emit_settings(app: &AppHandle<Wry>, view: &OverlayConfigView) -> tauri::R
 pub fn emit_guilds_changed(app: &AppHandle<Wry>) -> tauri::Result<()> {
     let payload = app.state::<AppState>().guilds_payload();
     app.emit_to(EventTarget::labeled(BOARD_LABEL), EVENT_GUILDS, payload)
+}
+
+/// Emits `overlay://guild-removed` to the board with the removal details.
+pub fn emit_guild_removed(app: &AppHandle<Wry>, removal: &GuildRemoval) -> tauri::Result<()> {
+    app.emit_to(
+        EventTarget::labeled(BOARD_LABEL),
+        EVENT_GUILD_REMOVED,
+        removal.clone(),
+    )
 }
 
 /// Signals the board that a guild's queue probably changed
@@ -320,6 +331,7 @@ mod tests {
         assert_eq!(OverlayEvent::stop(json!({})).name(), "overlay://stop");
         assert_eq!(EVENT_SETTINGS, "overlay://settings");
         assert_eq!(EVENT_NAVIGATE, "overlay://navigate");
+        assert_eq!(EVENT_GUILD_REMOVED, "overlay://guild-removed");
     }
 
     #[test]

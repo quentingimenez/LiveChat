@@ -138,8 +138,13 @@ Codes d'ack (`error.code`) : `read_only`, `item_not_found`, `media_not_ready`, `
 
 Règles de complétude :
 - texte du média = `item.message` trimé, tronqué à `MAX_MEDIA_TEXT_CHARS` (500) ;
-- `showText = message non vide` ; `authorName = session.authorName || item.createdByName` ;
-  `authorImage = session.authorImage` ; `durationSec = media.duration_sec` (0 si absent) ;
+- `showText = message non vide` ; `authorName = profil membre courant || item.createdByName` ;
+  `authorImage = avatar du membre courant` ; `durationSec = media.duration_sec` (0 si absent) ;
+- **profil d'auteur lu à l'instant du trigger** : `guild_members.display_name` /
+  `guild_members.avatar` du membre propriétaire de l'overlay. Un
+  `PATCH /overlay/profile` est donc pris en compte immédiatement, sans
+  reconnexion. Si l'overlay n'a aucun membre rattaché (ancien appairage), repli
+  sur `overlay_clients.default_author_name` / `default_author_image` ;
 - ids de jobs/d'items parsés via `lc_domain` (`PlaybackJobId::parse`, `MediaBoardItemId::parse`),
   un id invalide produit une ack `invalid_payload`, jamais une panique.
 
@@ -394,8 +399,10 @@ cargo test -p lc-server
    via la file du socket **avant** l'appel moteur, pour que le client observe `ack` puis `stop`/`play`.
 6. **`sessionMode`** : celui du `hello` est purement diagnostique (log de divergence) ; le mode
    autoritaire est celui de la base, renvoyé dans `welcome`/`settings`.
-7. **Peers** : maximum 8, dédupliqués par `clientId`, label = `default_author_name` sinon label du
-   client sinon `unknown-device`, tri stable label puis `clientId`.
+7. **Peers** : maximum 8, dédupliqués par `clientId`, label = `default_author_name` lu à la
+   connexion, sinon label du client sinon `unknown-device`, tri stable label puis `clientId`. Le
+   profil vivant du membre ne sert qu'aux payloads `play` (relu à chaque `media.trigger`), pas au
+   libellé des pairs.
 8. **`ServerMessage::Error`** : le hub émet désormais les erreurs asynchrones non fatales
    (rév. 4) : `dispatch_failed` depuis `HubSink::on_play` quand `unicast_play` ne délivre à aucun
    socket alors que la room en contient, et `internal_error` après un `ack` lorsque l'appel moteur

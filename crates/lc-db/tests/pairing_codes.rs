@@ -49,6 +49,44 @@ async fn crud_normalisation_et_doublon() {
 }
 
 #[tokio::test]
+async fn grants_admin_est_persiste_et_relu() {
+    let (db, _dir) = common::temp_db().await;
+    let repo = db.pairing_codes();
+    let now = common::now();
+    let guild = common::guild("800000000000000001");
+
+    let mut admin_code = common::sample_pairing("ADMIN1", &guild, now);
+    admin_code.grants_admin = true;
+    repo.create(&admin_code).await.unwrap();
+    let stored = repo
+        .get(&admin_code.code)
+        .await
+        .unwrap()
+        .expect("code admin présent");
+    assert!(stored.grants_admin);
+    assert_eq!(stored, admin_code, "aller-retour complet du code admin");
+
+    let member_code = common::sample_pairing("MEMBER", &guild, now);
+    repo.create(&member_code).await.unwrap();
+    assert!(
+        !repo
+            .get(&member_code.code)
+            .await
+            .unwrap()
+            .expect("code membre présent")
+            .grants_admin
+    );
+
+    // La consommation conserve le drapeau figé à la création.
+    let consumed = repo
+        .consume(&admin_code.code, now + Duration::seconds(1))
+        .await
+        .unwrap()
+        .expect("code admin consommé");
+    assert!(consumed.grants_admin);
+}
+
+#[tokio::test]
 async fn consume_met_a_jour_used_at_une_seule_fois() {
     let (db, _dir) = common::temp_db().await;
     let repo = db.pairing_codes();

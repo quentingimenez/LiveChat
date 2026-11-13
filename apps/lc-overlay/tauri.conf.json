@@ -27,17 +27,6 @@
         "visible": false
       },
       {
-        "label": "pairing",
-        "title": "LiveChat — Appairage",
-        "url": "pairing.html",
-        "width": 460,
-        "height": 580,
-        "resizable": false,
-        "center": true,
-        "visible": false,
-        "skipTaskbar": false
-      },
-      {
         "label": "board",
         "title": "LiveChat — Board",
         "url": "board.html",

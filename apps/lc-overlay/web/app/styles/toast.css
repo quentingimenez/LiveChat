@@ -1,0 +1,78 @@
+/* ------------------------------------------------------------------- toasts */
+/* Floating notifications: positioned over the page, they never move the
+   layout. Above the "on air" bar when it is shown. */
+.toasts {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: min(420px, calc(100vw - 40px));
+  pointer-events: none;
+}
+
+body:has(.onair:not([hidden])) .toasts {
+  bottom: 72px;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 8px 9px 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--blue);
+  border-radius: var(--radius-m);
+  background: var(--slate-700);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  font-size: 13px;
+  pointer-events: auto;
+  animation: toast-in 140ms ease-out;
+}
+
+.toast.is-success {
+  border-left-color: var(--green);
+}
+
+.toast.is-error {
+  border-left-color: var(--red);
+}
+
+.toast-text {
+  flex: 1;
+  padding-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+.toast-close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.toast-close:hover {
+  background: var(--slate-600);
+  color: var(--text);
+}
+
+.toast-close svg {
+  width: 14px;
+  height: 14px;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}

@@ -61,14 +61,7 @@ const COMMAND_MATRIX: &[(&str, &[&str])] = &[
             "guild_leave",
             "guild_api",
             "guild_media_url",
-        ],
-    ),
-    (
-        "pairing",
-        &[
-            "overlay_get_config",
-            "overlay_report_error",
-            "pairing_consume",
+            "board_take_pending_view",
         ],
     ),
 ];
@@ -288,13 +281,24 @@ fn ended_reason_from_label(label: Option<&str>) -> PlaybackEndedReason {
 /// Projette la configuration pour une fenêtre donnée (AUD-V2-O-002).
 ///
 /// Le `clientToken` n'est utile qu'au board (via `authorizedFetch`) : il est
-/// retiré des projections des fenêtres overlay et pairing (moindre privilège),
-/// et absent pour tout label inconnu.
+/// retiré de la projection de la fenêtre overlay (moindre privilège), et absent
+/// pour tout label inconnu.
 fn config_view_for_window(window_label: &str, mut view: OverlayConfigView) -> OverlayConfigView {
     if window_label != windows::BOARD_LABEL {
         view.client_token = None;
     }
     view
+}
+
+/// `board_take_pending_view` — view requested by the tray before the board was
+/// loaded, consumed once (`null` when absent).
+#[tauri::command]
+pub fn board_take_pending_view(
+    window: WebviewWindow<Wry>,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    ensure_allowed(&window, "board_take_pending_view")?;
+    Ok(state.take_pending_board_view())
 }
 
 /// `overlay_get_config` — projection 8 champs consommée par le renderer.
@@ -498,11 +502,6 @@ pub async fn pairing_consume(
             tracing::debug!(%error, "échec d'émission des settings après appairage");
         }
     }
-    if let Some(window) = app.get_webview_window(windows::PAIRING_LABEL) {
-        if let Err(error) = window.hide() {
-            tracing::debug!(%error, "échec de fermeture de la fenêtre d'appairage");
-        }
-    }
     tray::refresh_tray(&app);
     if state.config_snapshot().enabled {
         windows::show_overlay(&app);
@@ -665,6 +664,29 @@ pub fn guild_select(
     Ok(guild_action(&state, None))
 }
 
+/// Applies a guild mute then broadcasts the change.
+///
+/// Shared by the tray checkbox and the `guild_set_muted` command. Returns
+/// `false` when the guild is unknown.
+pub fn set_guild_muted(app: &AppHandle<Wry>, guild_id: &str, muted: bool) -> Result<bool, String> {
+    let guild_id = guild_id.trim();
+    if guild_id.is_empty() {
+        return Ok(false);
+    }
+    let state = app.state::<AppState>();
+    let mut known = false;
+    state.update_config(|config| {
+        known = config.update_membership(guild_id, |membership| membership.muted = muted);
+    })?;
+    if !known {
+        return Ok(false);
+    }
+    ws::ensure_supervisor(app, guild_id);
+    ws::send_command_to(app, guild_id, NetCommand::Reconnect);
+    publish_guilds(app);
+    Ok(true)
+}
+
 /// `guild_set_muted` — coupe ou rétablit une guilde. Une guilde coupée est
 /// déconnectée : plus aucun de ses médias ne s'affiche.
 #[tauri::command]
@@ -682,16 +704,9 @@ pub fn guild_set_muted(
     ) else {
         return Ok(guild_action(&state, Some("invalid_payload")));
     };
-    let mut known = false;
-    state.update_config(|config| {
-        known = config.update_membership(&guild_id, |membership| membership.muted = muted);
-    })?;
-    if !known {
+    if !set_guild_muted(&app, &guild_id, muted)? {
         return Ok(guild_action(&state, Some("unknown_guild")));
     }
-    ws::ensure_supervisor(&app, &guild_id);
-    ws::send_command_to(&app, &guild_id, NetCommand::Reconnect);
-    publish_guilds(&app);
     Ok(guild_action(&state, None))
 }
 
@@ -832,6 +847,7 @@ mod tests {
         assert!(command_allowed("board", "pairing_consume"));
         assert!(command_allowed("board", "guild_api"));
         assert!(command_allowed("board", "guild_leave"));
+        assert!(command_allowed("board", "board_take_pending_view"));
         assert!(!command_allowed("board", "overlay_renderer_ready"));
         // Les commandes de guilde restent fermées aux autres fenêtres.
         for command in [
@@ -843,16 +859,14 @@ mod tests {
             "guild_media_url",
         ] {
             assert!(!command_allowed("overlay", command), "{command}");
-            assert!(!command_allowed("pairing", command), "{command}");
         }
 
-        // Pairing : appairage uniquement.
-        assert!(command_allowed("pairing", "pairing_consume"));
-        assert!(command_allowed("pairing", "overlay_get_config"));
-        assert!(!command_allowed("pairing", "media_board_trigger"));
+        // The pending view can only be consumed by the board.
+        assert!(!command_allowed("overlay", "board_take_pending_view"));
 
         // Fenêtre inconnue : tout est refusé.
         assert!(!command_allowed("unknown", "overlay_get_config"));
+        assert!(!command_allowed("unknown", "board_take_pending_view"));
         assert!(!command_allowed("", "overlay_get_config"));
     }
 
@@ -877,8 +891,8 @@ mod tests {
         let board = super::config_view_for_window("board", view_with_token());
         assert_eq!(board.client_token.as_deref(), Some("secret-token"));
 
-        // Overlay et pairing : token retiré, reste de la projection intact.
-        for label in ["overlay", "pairing", "unknown"] {
+        // Overlay et label inconnu : token retiré, reste de la projection intact.
+        for label in ["overlay", "unknown"] {
             let view = super::config_view_for_window(label, view_with_token());
             assert!(
                 view.client_token.is_none(),

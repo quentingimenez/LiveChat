@@ -26,6 +26,8 @@ pub const EVENT_SETTINGS: &str = "overlay://settings";
 pub const EVENT_GUILDS: &str = "overlay://guilds";
 /// Indice de changement de file d'attente (fenêtre board uniquement).
 pub const EVENT_QUEUE_HINT: &str = "overlay://queue-hint";
+/// In-board navigation request (e.g. the `settings` view).
+pub const EVENT_NAVIGATE: &str = "overlay://navigate";
 
 /// Délai maximal de rétention des événements avant que le renderer ne soit prêt.
 pub const READY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -139,7 +141,7 @@ pub fn emit_to_overlay(app: &AppHandle<Wry>, event: &OverlayEvent) -> tauri::Res
     )
 }
 
-/// Émet `overlay://settings` vers overlay et board (jamais pairing).
+/// Émet `overlay://settings` vers overlay et board uniquement.
 ///
 /// AUD-A6-011 : le `clientToken` n'est pas nécessaire au renderer (le board le
 /// lit via `overlay_get_config`, scoping par fenêtre) ⇒ il n'est jamais diffusé
@@ -168,6 +170,20 @@ pub fn emit_queue_hint(app: &AppHandle<Wry>, guild_id: &str) -> tauri::Result<()
         EventTarget::labeled(BOARD_LABEL),
         EVENT_QUEUE_HINT,
         serde_json::json!({ "guildId": guild_id }),
+    )
+}
+
+/// `overlay://navigate` payload: the view the board must display.
+fn navigate_payload(view: &str) -> Value {
+    serde_json::json!({ "view": view })
+}
+
+/// Asks the board to display a view (e.g. `settings`).
+pub fn emit_board_navigate(app: &AppHandle<Wry>, view: &str) -> tauri::Result<()> {
+    app.emit_to(
+        EventTarget::labeled(BOARD_LABEL),
+        EVENT_NAVIGATE,
+        navigate_payload(view),
     )
 }
 
@@ -303,6 +319,12 @@ mod tests {
         assert_eq!(OverlayEvent::play(json!({})).name(), "overlay://play");
         assert_eq!(OverlayEvent::stop(json!({})).name(), "overlay://stop");
         assert_eq!(EVENT_SETTINGS, "overlay://settings");
+        assert_eq!(EVENT_NAVIGATE, "overlay://navigate");
+    }
+
+    #[test]
+    fn navigate_payload_carries_the_requested_view() {
+        assert_eq!(navigate_payload("settings"), json!({"view": "settings"}));
     }
 
     #[test]

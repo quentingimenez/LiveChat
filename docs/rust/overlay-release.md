@@ -5,7 +5,7 @@ installateurs de l'overlay Tauri (`apps/lc-overlay`). Il complète
 [lc-overlay-shell.md](lc-overlay-shell.md) (shell Phase 8a) et
 [lc-overlay-8b.md](lc-overlay-8b.md) (client WS / bridge / renderer Phase 8b).
 
-> État actuel : le canal stable pointe la version **3.0.0** (`LiveChat`,
+> État actuel : le canal stable pointe la version **3.0.1** (`LiveChat`,
 > `com.livechat`) et le canal bêta **3.0.0-beta.1** (`LiveChat Next`,
 > `com.livechat.next`, installation side-by-side avec l'Electron 2.0.1).
 > L'auto-update est **explicitement désactivé pour 3.0.0** (clé de signature
@@ -20,7 +20,7 @@ installateurs de l'overlay Tauri (`apps/lc-overlay`). Il complète
 | Fichier de config Tauri | `tauri.conf.json` | `tauri.beta.conf.json` |
 | `productName` | `LiveChat` | `LiveChat Next` |
 | `identifier` | `com.livechat` | `com.livechat.next` |
-| Version | `3.0.0` | `3.0.0-beta.1` |
+| Version | `3.0.1` | `3.0.0-beta.1` |
 | Dossier d'installation (NSIS currentUser) | `%LOCALAPPDATA%\LiveChat` | `%LOCALAPPDATA%\LiveChat Next` |
 | Clé de désinstallation | `HKCU\...\Uninstall\LiveChat` | `HKCU\...\Uninstall\LiveChat Next` |
 | Endpoint updater | `https://github.com/quentingimenez/LiveChat/releases/latest/download/latest.json` | `https://github.com/quentingimenez/LiveChat/releases/download/next/latest.json` |
@@ -291,8 +291,8 @@ Pour activer l'auto-update (3.1), il faudra en plus : les secrets
 - Le serveur impose une **version minimale d'overlay** (`MIN_OVERLAY_VERSION`,
   défaut `3.0.0`) : un client trop ancien reçoit `close 4403` avec
   `{"minVersion":"x.y.z"}` et n'essaie pas de se reconnecter en boucle.
-- La version embarquée dans le binaire est `version` de `tauri.conf.json`
-  (`Cargo.toml` du crate reste `3.0.0`).
+- La version embarquée dans le binaire est `version` de `tauri.conf.json`, alignée
+  sur `version` du `Cargo.toml` du crate (le reste du workspace reste en `3.0.0`).
 
 ## 9. Smoke test de l'installeur (VM, jamais sur la machine de build)
 

@@ -1088,6 +1088,8 @@ mod tests {
         WelcomePayload {
             protocol_version: 2,
             guild_id: "guild-1".to_string(),
+            guild_name: None,
+            guild_icon_url: None,
             client_id: "client-1".to_string(),
             session_mode: SessionMode::Normal,
             server_version: "0.1.0-test".to_string(),

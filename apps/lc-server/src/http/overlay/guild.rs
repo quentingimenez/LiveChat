@@ -19,9 +19,10 @@ use axum::Json;
 use chrono::{DateTime, Duration, Utc};
 use lc_db::{Db, MemberChange};
 use lc_domain::{
-    GuildId, GuildInvite, GuildMember, GuildMemberId, GuildRole, PairingCode, Permission,
+    GuildAccess, GuildId, GuildInvite, GuildMember, GuildMemberId, GuildRole, PairingCode,
+    Permission,
 };
-use lc_protocol::close_code;
+use lc_protocol::{close_code, close_reason};
 use rand::Rng as _;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -199,6 +200,39 @@ fn permissions_payload(role: GuildRole, guests_can_view_board: bool) -> Value {
     })
 }
 
+/// Builds the fixed-size Discord CDN URL for a guild icon.
+///
+/// Returns `None` unless `discord_guild_id` is a non-empty decimal snowflake
+/// and `icon_hash` is 1 to 64 ASCII alphanumeric or underscore characters.
+/// Animated hashes (`a_...`) intentionally resolve to a static `.png`.
+#[must_use]
+pub(crate) fn discord_icon_url(discord_guild_id: &str, icon_hash: &str) -> Option<String> {
+    let valid_id =
+        !discord_guild_id.is_empty() && discord_guild_id.bytes().all(|byte| byte.is_ascii_digit());
+    let valid_hash = (1..=64).contains(&icon_hash.len())
+        && icon_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+    (valid_id && valid_hash).then(|| {
+        format!("https://cdn.discordapp.com/icons/{discord_guild_id}/{icon_hash}.png?size=128")
+    })
+}
+
+/// Resolves the icon URL of a guild from its stored access row.
+///
+/// Native guilds (not standalone) use their own id as the Discord snowflake;
+/// standalone guilds use their linked `discord_guild_id`.
+#[must_use]
+pub(crate) fn guild_icon_url(access: &GuildAccess) -> Option<String> {
+    let icon_hash = access.discord_icon_hash.as_deref()?;
+    let discord_guild_id = if access.standalone {
+        access.discord_guild_id.as_deref()?
+    } else {
+        access.id.as_str()
+    };
+    discord_icon_url(discord_guild_id, icon_hash)
+}
+
 /// Handler `GET /overlay/guild`.
 pub async fn get_guild(State(state): State<AppState>, auth: AuthedOverlayClient) -> Response {
     let db = match db(&state) {
@@ -227,6 +261,7 @@ pub async fn get_guild(State(state): State<AppState>, auth: AuthedOverlayClient)
                 "name": access.as_ref().and_then(|access| access.name.clone()),
                 "standalone": access.as_ref().is_some_and(|access| access.standalone),
                 "discordGuildId": access.as_ref().and_then(|access| access.discord_guild_id.clone()),
+                "iconUrl": access.as_ref().and_then(guild_icon_url),
                 "guestsCanViewBoard": guests_can_view_board,
                 "settings": {
                     "defaultMediaTime": settings.as_ref().and_then(|guild| guild.default_media_time),
@@ -367,11 +402,14 @@ pub async fn create_device_code(
 /// sessions WS (`4402 revoked`).
 ///
 /// Partagé par le départ volontaire et l'exclusion ([`super::admin`]).
+///
+/// The close reason is supplied by the caller.
 pub(super) async fn remove_member(
     state: &AppState,
     db: &Db,
     member_id: GuildMemberId,
     at: DateTime<Utc>,
+    close_reason: &str,
 ) -> Result<MemberChange, Response> {
     let change = db
         .guild_members()
@@ -387,9 +425,11 @@ pub(super) async fn remove_member(
         .await
         .map_err(|db_error| db_failure("overlay_member.revoke_clients", &db_error))?;
     for client_id in revoked {
-        state
-            .admin_hub
-            .close_client(&client_id.as_uuid(), close_code::REVOKED);
+        state.admin_hub.close_client_with_reason(
+            &client_id.as_uuid(),
+            close_code::REVOKED,
+            close_reason,
+        );
     }
     Ok(change)
 }
@@ -406,16 +446,18 @@ pub async fn leave(State(state): State<AppState>, auth: AuthedOverlayClient) -> 
         // Overlay sans membre : seul cet overlay est révoqué.
         return match db.overlay_clients().revoke(auth.client.id, now).await {
             Ok(_) => {
-                state
-                    .admin_hub
-                    .close_client(&auth.client.id.as_uuid(), close_code::REVOKED);
+                state.admin_hub.close_client_with_reason(
+                    &auth.client.id.as_uuid(),
+                    close_code::REVOKED,
+                    close_reason::REVOKED,
+                );
                 json_response(StatusCode::OK, json!({"left": true}))
             }
             Err(db_error) => db_failure("overlay_leave.revoke_client", &db_error),
         };
     };
 
-    match remove_member(&state, db, member.id, now).await {
+    match remove_member(&state, db, member.id, now, close_reason::REVOKED).await {
         Ok(MemberChange::Applied) => json_response(StatusCode::OK, json!({"left": true})),
         Ok(MemberChange::LastAdmin) => error(StatusCode::CONFLICT, "last_admin"),
         Ok(MemberChange::NotFound) => error(StatusCode::NOT_FOUND, "member_not_found"),
@@ -427,7 +469,10 @@ pub async fn leave(State(state): State<AppState>, auth: AuthedOverlayClient) -> 
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use super::{normalize_avatar, normalize_display_name, random_invite_code, CODE_ALPHABET};
+    use super::{
+        discord_icon_url, normalize_avatar, normalize_display_name, random_invite_code,
+        CODE_ALPHABET,
+    };
 
     #[test]
     fn pseudo_normalise() {
@@ -473,5 +518,35 @@ mod tests {
         assert_eq!(code.len(), 8);
         assert!(code.bytes().all(|byte| CODE_ALPHABET.contains(&byte)));
         assert!(lc_domain::PairingCode::parse(&code).is_ok());
+    }
+
+    #[test]
+    fn discord_icon_url_accepts_valid_snowflakes_and_hashes() {
+        assert_eq!(
+            discord_icon_url("123456789012345678", "abcdef_0123456789").as_deref(),
+            Some(
+                "https://cdn.discordapp.com/icons/123456789012345678/abcdef_0123456789.png?size=128"
+            )
+        );
+        assert_eq!(
+            discord_icon_url("42", "a_0123456789abcdef").as_deref(),
+            Some("https://cdn.discordapp.com/icons/42/a_0123456789abcdef.png?size=128")
+        );
+        let long_hash = "z".repeat(64);
+        let expected = format!("https://cdn.discordapp.com/icons/42/{long_hash}.png?size=128");
+        assert_eq!(
+            discord_icon_url("42", &long_hash).as_deref(),
+            Some(expected.as_str())
+        );
+    }
+
+    #[test]
+    fn discord_icon_url_rejects_invalid_ids_and_hashes() {
+        assert_eq!(discord_icon_url("", "abc"), None);
+        assert_eq!(discord_icon_url("123abc", "abc"), None);
+        assert_eq!(discord_icon_url("123", ""), None);
+        assert_eq!(discord_icon_url("123", "ab-cd"), None);
+        assert_eq!(discord_icon_url("123", "abc def"), None);
+        assert_eq!(discord_icon_url("123", &"z".repeat(65)), None);
     }
 }

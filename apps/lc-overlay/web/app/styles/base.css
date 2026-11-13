@@ -180,6 +180,16 @@ select.field:disabled {
   color: var(--text-faint);
 }
 
+/* One checkbox size for the whole board: settings, guild sound and admin. */
+input[type='checkbox'] {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--blue);
+  cursor: pointer;
+}
+
 .badge {
   display: inline-block;
   padding: 1px 8px;

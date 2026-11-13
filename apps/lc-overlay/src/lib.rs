@@ -30,6 +30,7 @@ pub mod display;
 pub mod events;
 pub mod layout_preview;
 pub mod net;
+pub mod placement;
 pub mod settings;
 pub mod shortcuts;
 pub mod state;
@@ -219,6 +220,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             commands::settings_identify_displays,
             commands::settings_test_media,
             commands::settings_preview_layout,
+            commands::settings_placement_start,
+            commands::settings_placement_cancel,
+            commands::overlay_placement_finish,
             commands::overlay_check_updates,
             commands::overlay_install_update,
             commands::board_take_pending_view,

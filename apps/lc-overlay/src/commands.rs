@@ -7,24 +7,32 @@
 //! déclenchements de média du board utilisent les trames `media.trigger` /
 //! `stop.request` (plus de stub `socket_unavailable`).
 
+use std::time::Duration;
+
 use lc_protocol::{
-    ClientMessage, MediaTrigger, MediaTriggerPayload, PlaybackEndedPayload, PlaybackEndedReason,
-    PlaybackState as ProtocolPlaybackState, PlaybackStatePayload, StopRequestPayload,
-    StopRequestSource,
+    AckOutcome, AckPayload, ClientMessage, MediaTrigger, MediaTriggerPayload, PlaybackEndedPayload,
+    PlaybackEndedReason, PlaybackState as ProtocolPlaybackState, PlaybackStatePayload,
+    StopRequestPayload, StopRequestSource,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager, State, WebviewWindow, Wry};
+use tokio::sync::{mpsc, oneshot};
+use uuid::Uuid;
 
 use crate::config::{MediaBindings, OverlayConfigView};
 use crate::events;
 use crate::net::api;
 use crate::net::pairing::{self, PairingRequest};
+use crate::net::upload::{self, UploadEntry, UploadRegistry};
 use crate::net::ws::{self, NetCommand};
-use crate::state::AppState;
+use crate::state::{AppState, GuildRemoval};
 use crate::tray;
 use crate::updater::{self, UpdateStatus};
 use crate::windows;
+
+/// How long `media_board_trigger` waits for the server `ack`.
+const TRIGGER_ACK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Matrice d'autorisation IPC par fenêtre (AUD-A6-008).
 ///
@@ -62,6 +70,11 @@ const COMMAND_MATRIX: &[(&str, &[&str])] = &[
             "guild_api",
             "guild_media_url",
             "board_take_pending_view",
+            "board_take_guild_removals",
+            "media_upload_start",
+            "media_upload_chunk",
+            "media_upload_finish",
+            "media_upload_cancel",
         ],
     ),
 ];
@@ -110,6 +123,23 @@ pub struct MediaBoardActionResponse {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// Result of `media_board_trigger`, once the server has acknowledged it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaBoardTriggerResponse {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<AckOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -188,6 +218,30 @@ struct GuildRequest {
     body: Option<Value>,
     #[serde(default)]
     asset_id: Option<String>,
+}
+
+/// Paramètres of `media_upload_start`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaUploadStartRequest {
+    #[serde(default)]
+    guild_id: Option<String>,
+    #[serde(default)]
+    filename: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    content_type: Option<String>,
+}
+
+/// Payload of `media_upload_finish` / `media_upload_cancel`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaUploadRequest {
+    #[serde(default)]
+    upload_id: Option<String>,
 }
 
 /// Résultat d'une commande de gestion des guildes.
@@ -278,6 +332,67 @@ fn ended_reason_from_label(label: Option<&str>) -> PlaybackEndedReason {
     }
 }
 
+/// Converts a server `ack` into the board-facing trigger response (pure).
+fn trigger_response_from_ack(ack: AckPayload) -> MediaBoardTriggerResponse {
+    if ack.ok {
+        return MediaBoardTriggerResponse {
+            ok: true,
+            reason: None,
+            message: None,
+            outcome: ack.outcome,
+            position: ack.position,
+            job_id: ack.job_id,
+        };
+    }
+    let (reason, message) = match ack.error {
+        Some(error) => (error.code, Some(error.message)),
+        None => ("trigger_refused".to_string(), None),
+    };
+    MediaBoardTriggerResponse {
+        ok: false,
+        reason: Some(reason),
+        message,
+        outcome: None,
+        position: None,
+        job_id: None,
+    }
+}
+
+/// Failure response for `media_board_trigger` (no ack involved).
+fn trigger_failure(reason: &str) -> MediaBoardTriggerResponse {
+    MediaBoardTriggerResponse {
+        ok: false,
+        reason: Some(reason.to_string()),
+        message: None,
+        outcome: None,
+        position: None,
+        job_id: None,
+    }
+}
+
+/// A REST 401 means the guild token must be revalidated: ask the WebSocket
+/// supervisor to reconnect (a 4401 close then purges the guild).
+fn reconnect_on_unauthorized(app: &AppHandle<Wry>, guild_id: &str, response: &api::ApiResponse) {
+    if response.status != 401 {
+        return;
+    }
+    tracing::info!(
+        guild_id,
+        "401 REST : reconnexion WebSocket pour revalider le jeton"
+    );
+    if !ws::send_command_to(app, guild_id, NetCommand::Reconnect) {
+        tracing::debug!(guild_id, "reconnexion non transmise : superviseur absent");
+    }
+}
+
+fn upload_id_from_payload(payload: &Value) -> Option<String> {
+    let parsed = serde_json::from_value::<MediaUploadRequest>(payload.clone()).unwrap_or_default();
+    parsed
+        .upload_id
+        .map(|upload_id| upload_id.trim().to_string())
+        .filter(|upload_id| !upload_id.is_empty())
+}
+
 /// Projette la configuration pour une fenêtre donnée (AUD-V2-O-002).
 ///
 /// Le `clientToken` n'est utile qu'au board (via `authorizedFetch`) : il est
@@ -299,6 +414,17 @@ pub fn board_take_pending_view(
 ) -> Result<Option<String>, String> {
     ensure_allowed(&window, "board_take_pending_view")?;
     Ok(state.take_pending_board_view())
+}
+
+/// `board_take_guild_removals` — guilds purged automatically since the last
+/// call (consumed once, empty when nothing was removed).
+#[tauri::command]
+pub fn board_take_guild_removals(
+    window: WebviewWindow<Wry>,
+    state: State<'_, AppState>,
+) -> Result<Vec<GuildRemoval>, String> {
+    ensure_allowed(&window, "board_take_guild_removals")?;
+    Ok(state.take_guild_removals())
 }
 
 /// `overlay_get_config` — projection 8 champs consommée par le renderer.
@@ -555,13 +681,14 @@ pub fn media_board_set_bindings(
     })
 }
 
-/// `media_board_trigger` — déclenchement manuel via `media.trigger`.
+/// `media_board_trigger` — déclenchement manuel via `media.trigger`, puis
+/// attente de l'`ack` du serveur (rang en file, `jobId`, refus).
 #[tauri::command]
-pub fn media_board_trigger(
+pub async fn media_board_trigger(
     window: WebviewWindow<Wry>,
     app: AppHandle<Wry>,
     payload: Value,
-) -> Result<MediaBoardActionResponse, String> {
+) -> Result<MediaBoardTriggerResponse, String> {
     ensure_allowed(&window, "media_board_trigger")?;
     let parsed = serde_json::from_value::<MediaTriggerRequest>(payload).unwrap_or_default();
     let item_id = parsed
@@ -569,33 +696,35 @@ pub fn media_board_trigger(
         .map(|item_id| item_id.trim().to_string())
         .filter(|item_id| !item_id.is_empty());
     let Some(item_id) = item_id else {
-        return Ok(MediaBoardActionResponse {
-            ok: false,
-            reason: Some("invalid_item_id".to_string()),
-        });
+        return Ok(trigger_failure("invalid_item_id"));
     };
     let trigger = match parsed.trigger.as_deref() {
         Some("shortcut") => MediaTrigger::Shortcut,
         _ => MediaTrigger::Ui,
     };
-    let state = app.state::<AppState>();
-    let sent = match target_guild(&state, parsed.guild_id.as_deref()) {
-        Some(guild_id) => send_protocol_to(
-            &app,
-            &guild_id,
-            ClientMessage::MediaTrigger(MediaTriggerPayload { item_id, trigger }),
-            "media_board_trigger",
-        ),
-        None => false,
+    let (reply, receiver) = oneshot::channel();
+    let sent = {
+        let state = app.state::<AppState>();
+        match target_guild(&state, parsed.guild_id.as_deref()) {
+            Some(guild_id) => ws::send_command_to(
+                &app,
+                &guild_id,
+                NetCommand::SendWithAck {
+                    message: ClientMessage::MediaTrigger(MediaTriggerPayload { item_id, trigger }),
+                    reply,
+                },
+            ),
+            None => false,
+        }
     };
-    Ok(MediaBoardActionResponse {
-        ok: sent,
-        reason: if sent {
-            None
-        } else {
-            Some("socket_unavailable".to_string())
-        },
-    })
+    if !sent {
+        return Ok(trigger_failure("socket_unavailable"));
+    }
+    match tokio::time::timeout(TRIGGER_ACK_TIMEOUT, receiver).await {
+        Ok(Ok(ack)) => Ok(trigger_response_from_ack(ack)),
+        Ok(Err(_)) => Ok(trigger_failure("socket_unavailable")),
+        Err(_) => Ok(trigger_failure("ack_timeout")),
+    }
 }
 
 /// `media_board_stop` — arrêt manuel via `stop.request`.
@@ -764,6 +893,7 @@ pub async fn guild_leave(
 #[tauri::command]
 pub async fn guild_api(
     window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
     state: State<'_, AppState>,
     payload: Value,
 ) -> Result<api::ApiResponse, String> {
@@ -776,13 +906,15 @@ pub async fn guild_api(
         .membership(&guild_id)
         .cloned()
         .ok_or_else(|| "guilde inconnue".to_string())?;
-    api::request(
+    let response = api::request(
         &membership,
         parsed.method.as_deref().unwrap_or("GET"),
         parsed.path.as_deref().unwrap_or_default(),
         parsed.body,
     )
-    .await
+    .await?;
+    reconnect_on_unauthorized(&app, &guild_id, &response);
+    Ok(response)
 }
 
 /// `guild_media_url` — URL d'un média du board pour `<img>`/`<video>`.
@@ -802,6 +934,129 @@ pub fn guild_media_url(
         .cloned()
         .ok_or_else(|| "guilde inconnue".to_string())?;
     api::board_media_url(&membership, parsed.asset_id.as_deref().unwrap_or_default())
+}
+
+/// `media_upload_start` — begins a raw, streamed file upload to the board.
+#[tauri::command]
+pub fn media_upload_start(
+    window: WebviewWindow<Wry>,
+    state: State<'_, AppState>,
+    uploads: State<'_, UploadRegistry>,
+    payload: Value,
+) -> Result<upload::MediaUploadStartResponse, String> {
+    ensure_allowed(&window, "media_upload_start")?;
+    let parsed = serde_json::from_value::<MediaUploadStartRequest>(payload).unwrap_or_default();
+    let guild_id = target_guild(&state, parsed.guild_id.as_deref())
+        .ok_or_else(|| "guilde inconnue".to_string())?;
+    let membership = state
+        .config_snapshot()
+        .membership(&guild_id)
+        .cloned()
+        .ok_or_else(|| "guilde inconnue".to_string())?;
+    let filename = upload::validate_filename(parsed.filename.as_deref())?;
+    let insecure = crate::net::tls::insecure_tls_enabled();
+    let url = upload::upload_url(
+        &membership.server_url,
+        &filename,
+        parsed.title.as_deref(),
+        parsed.message.as_deref(),
+        insecure,
+    )?;
+    let content_type = upload::normalize_content_type(parsed.content_type.as_deref());
+    let client = upload::build_client(insecure)?;
+    let (sender, receiver) = mpsc::channel::<upload::UploadChunk>(4);
+    let token = membership.client_token;
+    let task = tauri::async_runtime::spawn(async move {
+        upload::run_upload(client, url, &token, &content_type, receiver).await
+    });
+    let upload_id = Uuid::new_v4().to_string();
+    uploads.insert(
+        upload_id.clone(),
+        UploadEntry {
+            guild_id,
+            sender,
+            task,
+        },
+    )?;
+    Ok(upload::MediaUploadStartResponse::new(upload_id))
+}
+
+/// `media_upload_chunk` — appends raw bytes to an in-flight upload.
+#[tauri::command]
+pub async fn media_upload_chunk(
+    window: WebviewWindow<Wry>,
+    uploads: State<'_, UploadRegistry>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    ensure_allowed(&window, "media_upload_chunk")?;
+    let upload_id = request
+        .headers()
+        .get("x-upload-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|upload_id| !upload_id.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| "envoi inconnu".to_string())?;
+    let bytes = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
+        tauri::ipc::InvokeBody::Json(_) => return Err("corps binaire attendu".to_string()),
+    };
+    if bytes.is_empty() {
+        return Err("morceau vide".to_string());
+    }
+    if bytes.len() > upload::MAX_CHUNK_BYTES {
+        return Err("morceau trop volumineux".to_string());
+    }
+    // The registry lock is released before awaiting the send.
+    let sender = uploads.sender(&upload_id)?;
+    sender
+        .send(Ok(bytes))
+        .await
+        .map_err(|_| "upload_closed".to_string())
+}
+
+/// `media_upload_finish` — ends the body and returns the server response
+/// (same shape as `guild_api`).
+#[tauri::command]
+pub async fn media_upload_finish(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+    uploads: State<'_, UploadRegistry>,
+    payload: Value,
+) -> Result<api::ApiResponse, String> {
+    ensure_allowed(&window, "media_upload_finish")?;
+    let upload_id = upload_id_from_payload(&payload).ok_or_else(|| "envoi inconnu".to_string())?;
+    let UploadEntry {
+        guild_id,
+        sender,
+        task,
+    } = uploads
+        .take(&upload_id)
+        .ok_or_else(|| "envoi inconnu".to_string())?;
+    // Closing the sender terminates the streamed request body.
+    drop(sender);
+    match task.await {
+        Ok(Ok(response)) => {
+            reconnect_on_unauthorized(&app, &guild_id, &response);
+            Ok(response)
+        }
+        Ok(Err(message)) => Err(message),
+        Err(error) => Err(format!("envoi du fichier interrompu : {error}")),
+    }
+}
+
+/// `media_upload_cancel` — aborts an in-flight upload (`true` if it existed).
+#[tauri::command]
+pub fn media_upload_cancel(
+    window: WebviewWindow<Wry>,
+    uploads: State<'_, UploadRegistry>,
+    payload: Value,
+) -> Result<bool, String> {
+    ensure_allowed(&window, "media_upload_cancel")?;
+    let Some(upload_id) = upload_id_from_payload(&payload) else {
+        return Ok(false);
+    };
+    Ok(uploads.cancel(&upload_id))
 }
 
 /// `overlay_check_updates` — vérifie les mises à jour et renvoie un état lisible.
@@ -848,6 +1103,11 @@ mod tests {
         assert!(command_allowed("board", "guild_api"));
         assert!(command_allowed("board", "guild_leave"));
         assert!(command_allowed("board", "board_take_pending_view"));
+        assert!(command_allowed("board", "board_take_guild_removals"));
+        assert!(command_allowed("board", "media_upload_start"));
+        assert!(command_allowed("board", "media_upload_chunk"));
+        assert!(command_allowed("board", "media_upload_finish"));
+        assert!(command_allowed("board", "media_upload_cancel"));
         assert!(!command_allowed("board", "overlay_renderer_ready"));
         // Les commandes de guilde restent fermées aux autres fenêtres.
         for command in [
@@ -857,6 +1117,11 @@ mod tests {
             "guild_leave",
             "guild_api",
             "guild_media_url",
+            "board_take_guild_removals",
+            "media_upload_start",
+            "media_upload_chunk",
+            "media_upload_finish",
+            "media_upload_cancel",
         ] {
             assert!(!command_allowed("overlay", command), "{command}");
         }
@@ -901,5 +1166,73 @@ mod tests {
             assert_eq!(view.server_url.as_deref(), Some("https://example.test"));
             assert_eq!(view.guild_id.as_deref(), Some("42"));
         }
+    }
+
+    #[test]
+    fn ack_is_projected_into_the_trigger_response() {
+        use lc_protocol::{AckError, AckOutcome, AckPayload};
+
+        let queued = super::trigger_response_from_ack(AckPayload {
+            ref_id: "cli-1".to_string(),
+            ok: true,
+            error: None,
+            outcome: Some(AckOutcome::Queued),
+            position: Some(2),
+            job_id: Some("job-42".to_string()),
+        });
+        assert!(queued.ok);
+        assert_eq!(queued.outcome, Some(AckOutcome::Queued));
+        assert_eq!(queued.position, Some(2));
+        assert_eq!(queued.job_id.as_deref(), Some("job-42"));
+        assert_eq!(
+            serde_json::to_value(&queued).expect("json"),
+            serde_json::json!({
+                "ok": true,
+                "outcome": "queued",
+                "position": 2,
+                "jobId": "job-42",
+            })
+        );
+
+        // Ancien serveur : ok sans outcome/position/jobId.
+        let playing = super::trigger_response_from_ack(AckPayload {
+            ref_id: "cli-2".to_string(),
+            ok: true,
+            error: None,
+            outcome: Some(AckOutcome::Playing),
+            position: None,
+            job_id: None,
+        });
+        assert_eq!(
+            serde_json::to_value(&playing).expect("json"),
+            serde_json::json!({ "ok": true, "outcome": "playing" })
+        );
+
+        let refused = super::trigger_response_from_ack(AckPayload {
+            ref_id: "cli-3".to_string(),
+            ok: false,
+            error: Some(AckError {
+                code: "read_only".to_string(),
+                message: "session invitée".to_string(),
+            }),
+            outcome: None,
+            position: None,
+            job_id: None,
+        });
+        assert!(!refused.ok);
+        assert_eq!(refused.reason.as_deref(), Some("read_only"));
+        assert_eq!(refused.message.as_deref(), Some("session invitée"));
+
+        let bare_refusal = super::trigger_response_from_ack(AckPayload {
+            ref_id: "cli-4".to_string(),
+            ok: false,
+            error: None,
+            outcome: None,
+            position: None,
+            job_id: None,
+        });
+        assert!(!bare_refusal.ok);
+        assert_eq!(bare_refusal.reason.as_deref(), Some("trigger_refused"));
+        assert!(bare_refusal.message.is_none());
     }
 }

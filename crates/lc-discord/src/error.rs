@@ -22,7 +22,7 @@ pub struct MediaLimits {
     pub max_size_mb: i64,
     /// Taille maximale du cache média non persistant (Mo).
     pub max_cache_total_mb: i64,
-    /// Taille maximale du stockage persistant du meme board (Mo).
+    /// Taille maximale du stockage persistant du board média (Mo).
     pub max_board_total_mb: i64,
 }
 
@@ -53,7 +53,7 @@ pub enum MediaErrorCode {
     FileTooLarge,
     /// Cache média non persistant plein.
     CacheStorageLimitReached,
-    /// Stockage persistant du meme board plein.
+    /// Stockage persistant du board média plein.
     BoardStorageLimitReached,
     /// Fichier téléchargé invalide/corrompu.
     InvalidMedia,
@@ -224,7 +224,7 @@ mod tests {
         );
         assert_eq!(
             MediaErrorCode::BoardStorageLimitReached.message(Lang::En, limits),
-            "Persistent meme board storage is full (limit: 20 MB). Remove older board items first."
+            "Persistent media board storage is full (limit: 20 MB). Remove older board items first."
         );
     }
 

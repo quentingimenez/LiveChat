@@ -221,16 +221,16 @@ async fn pair_code_sans_guilde_renvoie_une_erreur_generique() {
 }
 
 // ---------------------------------------------------------------------------
-// /meme-add
+// /media-add
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn meme_add_sans_source_repond_missing_media() {
+async fn media_add_sans_source_repond_missing_media() {
     let mut ctx = FakeBotContext::new().await.expect("contexte");
     let outcome = dispatch(
         &ctx,
         invocation(
-            CommandInput::MemeAdd(MediaSubmission::default()),
+            CommandInput::MediaAdd(MediaSubmission::default()),
             member_author(),
             Some(guild()),
             Lang::Fr,
@@ -243,26 +243,26 @@ async fn meme_add_sans_source_repond_missing_media() {
     assert_eq!(outcome.reply.embed.color, Some(COLOR_ERROR));
     assert_eq!(
         description(&outcome),
-        strings(Lang::Fr).meme_add_missing_media
+        strings(Lang::Fr).media_add_missing_media
     );
-    assert!(ctx.meme_mut().requests().is_empty());
+    assert!(ctx.media_board_mut().requests().is_empty());
 }
 
 #[tokio::test]
-async fn meme_add_ingere_et_ajoute_au_board() {
+async fn media_add_ingere_et_ajoute_au_board() {
     let mut ctx = FakeBotContext::with_media_asset(sample_asset(MediaKind::Image))
         .await
         .expect("contexte");
-    ctx.meme_mut().set_created(true);
+    ctx.media_board_mut().set_created(true);
     let submission = MediaSubmission {
-        url: Some("https://example.com/meme.png".to_owned()),
-        text: Some("Mon meme".to_owned()),
+        url: Some("https://example.com/media.png".to_owned()),
+        text: Some("Mon média".to_owned()),
         ..MediaSubmission::default()
     };
     let outcome = dispatch(
         &ctx,
         invocation(
-            CommandInput::MemeAdd(submission),
+            CommandInput::MediaAdd(submission),
             member_author(),
             Some(guild()),
             Lang::Fr,
@@ -275,13 +275,13 @@ async fn meme_add_ingere_et_ajoute_au_board() {
     assert_eq!(outcome.reply.embed.color, Some(COLOR_SUCCESS));
     assert_eq!(
         description(&outcome),
-        strings(Lang::Fr).meme_add_answer_created
+        strings(Lang::Fr).media_add_answer_created
     );
 
-    let requests = ctx.meme_mut().requests();
+    let requests = ctx.media_board_mut().requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].guild_id, guild());
-    assert_eq!(requests[0].title.as_deref(), Some("Mon meme"));
+    assert_eq!(requests[0].title.as_deref(), Some("Mon média"));
     assert_eq!(
         requests[0].created_by_discord_user_id.as_deref(),
         Some(MEMBER_ID)
@@ -290,11 +290,11 @@ async fn meme_add_ingere_et_ajoute_au_board() {
 }
 
 #[tokio::test]
-async fn meme_add_deja_present_repond_exists() {
+async fn media_add_deja_present_repond_exists() {
     let mut ctx = FakeBotContext::with_media_asset(sample_asset(MediaKind::Image))
         .await
         .expect("contexte");
-    ctx.meme_mut().set_created(false);
+    ctx.media_board_mut().set_created(false);
     let submission = MediaSubmission {
         media: Some("https://cdn.discordapp.com/attachments/x.png".to_owned()),
         ..MediaSubmission::default()
@@ -302,7 +302,7 @@ async fn meme_add_deja_present_repond_exists() {
     let outcome = dispatch(
         &ctx,
         invocation(
-            CommandInput::MemeAdd(submission),
+            CommandInput::MediaAdd(submission),
             member_author(),
             Some(guild()),
             Lang::Fr,
@@ -312,7 +312,7 @@ async fn meme_add_deja_present_repond_exists() {
 
     assert_eq!(
         description(&outcome),
-        strings(Lang::Fr).meme_add_answer_exists
+        strings(Lang::Fr).media_add_answer_exists
     );
 }
 

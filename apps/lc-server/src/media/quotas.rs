@@ -1,11 +1,11 @@
-//! Budgets de stockage : cache non persistant et meme board persistant.
+//! Budgets de stockage : cache non persistant et board média persistant.
 //!
 //! Le legacy distinguait deux budgets :
 //!
 //! - le cache (médias non épinglés) est évincé LRU quand une nouvelle ingestion
-//!   dépasserait `MEDIA_CACHE_MAX_TOTAL_MB` ; les médias épinglés au meme board
+//!   dépasserait `MEDIA_CACHE_MAX_TOTAL_MB` ; les médias épinglés au board média
 //!   ou référencés par un job `PENDING`/`PLAYING` sont protégés ;
-//! - le meme board ne s'évince jamais automatiquement : un ajout qui dépasserait
+//! - le board média ne s'évince jamais automatiquement : un ajout qui dépasserait
 //!   `MEDIA_BOARD_MAX_TOTAL_MB` échoue en `BOARD_STORAGE_LIMIT_REACHED`.
 //!
 //! Les décisions pures (tri, plan d'éviction) viennent de
@@ -30,7 +30,7 @@ const BYTES_PER_MEGABYTE: u64 = 1024 * 1024;
 
 /// Construit les entrées d'éviction du cache depuis SQLite.
 ///
-/// `pinned` = présent dans le meme board (toutes guildes), `active` = référencé
+/// `pinned` = présent dans le board média (toutes guildes), `active` = référencé
 /// par un job `PENDING`/`PLAYING`. Les repositories `lc-db` n'exposent pas de
 /// requête « assets référencés » : on interroge directement le pool sur les
 /// colonnes du schéma (documenté dans `docs/rust/server-ingest.md`).
@@ -40,7 +40,7 @@ pub async fn cache_entries(db: &Db) -> Result<Vec<CacheEntry>, DbError> {
         .list_by_status(MediaStatus::Ready, 0)
         .await?;
     let pinned =
-        query_asset_ids(db, "SELECT DISTINCT media_asset_id FROM meme_board_items").await?;
+        query_asset_ids(db, "SELECT DISTINCT media_asset_id FROM media_board_items").await?;
     let active = query_asset_ids(
         db,
         "SELECT DISTINCT media_asset_id FROM playback_jobs \
@@ -131,11 +131,11 @@ fn cache_limit_error(plan: &CacheEvictionPlan) -> MediaError {
     )
 }
 
-/// Somme des tailles des médias du meme board d'une guilde.
+/// Somme des tailles des médias du board média d'une guilde.
 pub async fn board_usage_bytes(db: &Db, guild_id: &GuildId) -> Result<i64, DbError> {
     sqlx::query_scalar::<_, i64>(
         "SELECT COALESCE(SUM(assets.size_bytes), 0) \
-           FROM meme_board_items AS items \
+           FROM media_board_items AS items \
            JOIN media_assets AS assets ON assets.id = items.media_asset_id \
           WHERE items.guild_id = ?",
     )
@@ -145,7 +145,7 @@ pub async fn board_usage_bytes(db: &Db, guild_id: &GuildId) -> Result<i64, DbErr
     .map_err(DbError::from)
 }
 
-/// Vérifie que le meme board de la guilde peut accueillir un média.
+/// Vérifie que le board média de la guilde peut accueillir un média.
 pub async fn ensure_board_capacity(
     db: &Db,
     config: &MediaConfig,
@@ -166,12 +166,12 @@ pub async fn ensure_board_capacity(
     Ok(())
 }
 
-/// Construit l'erreur legacy de dépassement du meme board.
+/// Construit l'erreur legacy de dépassement du board média.
 fn board_limit_error(current: i64, max: i64, requested: i64) -> MediaError {
     MediaError::new(
         MediaErrorCode::BoardStorageLimitReached,
         format!(
-            "Persistent meme board storage limit reached ({current}/{max} MB). \
+            "Persistent media board storage limit reached ({current}/{max} MB). \
              Requested media: {requested} MB. Remove older board media first.",
             current = bytes_to_megabytes(u64::try_from(current).unwrap_or(0)),
             max = bytes_to_megabytes(u64::try_from(max).unwrap_or(0)),
@@ -409,7 +409,7 @@ mod tests {
 
         // Un élément de 20 octets occupe déjà plus que le budget de 10 octets.
         sqlx::query(
-            "INSERT INTO meme_board_items (id, guild_id, media_asset_id, created_at) \
+            "INSERT INTO media_board_items (id, guild_id, media_asset_id, created_at) \
              VALUES (?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
@@ -427,6 +427,6 @@ mod tests {
         assert_eq!(media.code(), MediaErrorCode::BoardStorageLimitReached);
         assert!(media
             .message()
-            .contains("Persistent meme board storage limit reached"));
+            .contains("Persistent media board storage limit reached"));
     }
 }

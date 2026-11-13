@@ -25,7 +25,8 @@
 //! 2. **Ordre de la file** : `priority DESC`, `submission_date ASC`, `id ASC`
 //!    (parité avec le scheduler legacy).
 //! 3. **Préemption** : un job `PENDING` de priorité strictement supérieure au
-//!    job actif (typiquement un mème, [`MEME_JOB_PRIORITY`] = 100) suspend le
+//!    job actif (typiquement un média du board, [`MEDIA_BOARD_JOB_PRIORITY`] = 100)
+//!    suspend le
 //!    job actif (`PENDING` + `resumes_after_job_id` + `resume_offset_sec`) et le
 //!    reprend automatiquement quand le job prioritaire se termine.
 //! 4. **Un seul job à la fois** : toutes les opérations publiques prennent un
@@ -76,8 +77,9 @@ pub use engine::{
 pub use error::{PlaybackError, PlaybackResult};
 pub use sink::PlaybackSink;
 
-/// Priorité d'un job déclenché par un mème (parité legacy `MEME_JOB_PRIORITY`).
-pub const MEME_JOB_PRIORITY: i64 = 100;
+/// Priorité d'un job déclenché depuis le board média (parité avec le scheduler
+/// legacy).
+pub const MEDIA_BOARD_JOB_PRIORITY: i64 = 100;
 
 /// Marge ajoutée au verrou `busy_until` d'une guilde (millisecondes).
 pub const PLAYBACK_LOCK_PADDING_MS: i64 = 250;

@@ -100,9 +100,9 @@ pub(super) async fn overview(
         .list()
         .await
         .map_err(|error| AdminError::db("codes de pairing", error))?;
-    let board_sizes = queries::meme_board_sizes(db)
+    let board_sizes = queries::media_board_sizes(db)
         .await
-        .map_err(|error| AdminError::db("meme board", error))?;
+        .map_err(|error| AdminError::db("board média", error))?;
     let playback_counts = queries::playback_counts(db)
         .await
         .map_err(|error| AdminError::db("playback", error))?;
@@ -265,7 +265,7 @@ pub(super) async fn overview(
                 "total": ingest_clients_payload.len(),
                 "clients": ingest_clients_payload,
             },
-            "memeBoard": {
+            "mediaBoard": {
                 "itemsCount": guild_aggregates.board_items,
                 "usedBytes": used_bytes,
                 "maxBytes": board_max_bytes,

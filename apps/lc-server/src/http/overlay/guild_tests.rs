@@ -379,7 +379,7 @@ async fn roles_exclusion_et_dernier_admin() {
 }
 
 #[tokio::test]
-async fn code_appareil_rattache_au_meme_membre() {
+async fn code_appareil_rattache_membre_existant() {
     let harness = Harness::new().await;
     let admin = harness
         .join(&harness.server_invite(GuildRole::Admin).await, "Quentin")
@@ -445,6 +445,30 @@ async fn code_appareil_rattache_au_meme_membre() {
 }
 
 #[tokio::test]
+async fn permissions_emettent_les_anciennes_cles_legacy() {
+    let harness = Harness::new().await;
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Quentin")
+        .await;
+    let admin_token = token(&admin);
+    let guest = harness.invite_and_join(&admin_token, "guest", "Max").await;
+
+    for body in [&admin, &guest] {
+        let (status, guild) = harness
+            .call(Method::GET, "/overlay/guild", Some(&token(body)), None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{guild}");
+        let permissions = &guild["permissions"];
+        assert!(permissions.get("addMedia").is_some());
+        assert!(permissions.get("editAnyMedia").is_some());
+        // Legacy overlay 3.0.0 compatibility: remove in 3.1.
+        assert_eq!(permissions["addMedia"], permissions["addMeme"]);
+        // Legacy overlay 3.0.0 compatibility: remove in 3.1.
+        assert_eq!(permissions["editAnyMedia"], permissions["editAnyMeme"]);
+    }
+}
+
+#[tokio::test]
 async fn reglages_revocation_et_board_des_invites() {
     let harness = Harness::new().await;
     let admin = harness
@@ -458,7 +482,7 @@ async fn reglages_revocation_et_board_des_invites() {
     let (status, _) = harness
         .call(
             Method::GET,
-            "/overlay/meme-board/items",
+            "/overlay/media-board/items",
             Some(&guest_token),
             None,
         )
@@ -487,7 +511,7 @@ async fn reglages_revocation_et_board_des_invites() {
     let (status, body) = harness
         .call(
             Method::GET,
-            "/overlay/meme-board/items",
+            "/overlay/media-board/items",
             Some(&guest_token),
             None,
         )
@@ -497,7 +521,7 @@ async fn reglages_revocation_et_board_des_invites() {
     let (status, _) = harness
         .call(
             Method::GET,
-            "/overlay/meme-board/items",
+            "/overlay/media-board/items",
             Some(&admin_token),
             None,
         )
@@ -585,7 +609,7 @@ async fn file_d_attente_lue_et_moderee() {
         )
         .bind(id.to_string())
         .bind(harness.guild_id.as_str())
-        .bind(format!("mème {index}"))
+        .bind(format!("média {index}"))
         .bind(status)
         .bind(now_ms + index as i64)
         .bind(now_ms)
@@ -600,11 +624,11 @@ async fn file_d_attente_lue_et_moderee() {
         .call(Method::GET, "/overlay/queue", Some(&admin_token), None)
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["playing"]["text"], "mème 0");
+    assert_eq!(body["playing"]["text"], "média 0");
     assert_eq!(body["playing"]["status"], "playing");
     let pending = body["pending"].as_array().unwrap();
     assert_eq!(pending.len(), 2);
-    assert_eq!(pending[0]["text"], "mème 1");
+    assert_eq!(pending[0]["text"], "média 1");
     assert_eq!(pending[0]["authorName"], "Léa");
 
     // Le job en cours ne se retire pas par cette route.

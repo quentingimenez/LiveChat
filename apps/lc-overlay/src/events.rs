@@ -315,7 +315,7 @@ mod tests {
             guest_mode: false,
             show_text: true,
             volume: 1.0,
-            meme_bindings: Default::default(),
+            media_bindings: Default::default(),
         };
         let redacted = settings_view_without_token(&view);
         assert_eq!(redacted.client_token, None);

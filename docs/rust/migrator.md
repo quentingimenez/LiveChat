@@ -341,6 +341,12 @@ le registre contient 2 lignes (`version = 1` et `2`), l'index
 `idx_playback_jobs_single_playing` existe, et le second démarrage ne rejoue
 rien.
 
+Les migrations suivantes (`0003`..`0005`) suivent le même chemin. En
+particulier, le migrateur écrit le board dans `meme_board_items`, son nom du
+schéma `0001_init` ; `0005_media_board` la renomme en `media_board_items` au
+premier démarrage. Le test vérifie que le registre contient alors 5 lignes et
+que les éléments migrés se lisent dans `media_board_items`.
+
 ## 11. Procédure de rollback
 
 La base legacy n'étant jamais modifiée, le rollback consiste à revenir au

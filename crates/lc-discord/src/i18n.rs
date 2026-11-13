@@ -118,39 +118,39 @@ strings! {
         "API_URL:\n```{{apiUrl}}```\nPairing code:\n```{{code}}```\nMode: invite read-only (Overlay EXE only).\nOne-time code without expiration."
     ),
 
-    meme_add_name: ("meme-add", "meme-add"),
-    meme_add_description: (
-        "Ajouter un media a la meme board persistante",
-        "Add media to the persistent meme board"
+    media_add_name: ("media-add", "media-add"),
+    media_add_description: (
+        "Ajouter un média au board média persistant",
+        "Add a media item to the persistent media board"
     ),
-    meme_add_option_url: ("lien", "link"),
-    meme_add_option_url_description: (
-        "Lien du media a enregistrer dans la meme board",
-        "Link to media to store in meme board"
+    media_add_option_url: ("lien", "link"),
+    media_add_option_url_description: (
+        "Lien du média à enregistrer dans le board média",
+        "Link to the media item to store in the media board"
     ),
-    meme_add_option_media: ("media", "media"),
-    meme_add_option_media_description: (
-        "Media en piece jointe a enregistrer dans la meme board",
-        "Attachment media to store in meme board"
+    media_add_option_media: ("media", "media"),
+    media_add_option_media_description: (
+        "Média en pièce jointe à enregistrer dans le board média",
+        "Attachment media item to store in the media board"
     ),
-    meme_add_option_title: ("titre", "title"),
-    meme_add_option_title_description: (
-        "Titre optionnel pour la meme board",
-        "Optional display title for meme board"
+    media_add_option_title: ("titre", "title"),
+    media_add_option_title_description: (
+        "Titre optionnel pour le board média",
+        "Optional display title for the media board"
     ),
-    meme_add_option_force_refresh: ("refresh", "refresh"),
-    meme_add_option_force_refresh_description: (
-        "Ignorer le cache media et re-telecharger/re-transcoder la source",
+    media_add_option_force_refresh: ("refresh", "refresh"),
+    media_add_option_force_refresh_description: (
+        "Ignorer le cache média et re-télécharger/re-transcoder la source",
         "Bypass media cache and re-download/re-transcode this source"
     ),
-    meme_add_missing_media: (
-        "Veuillez fournir au moins une source media (lien ou piece jointe).",
+    media_add_missing_media: (
+        "Veuillez fournir au moins une source média (lien ou pièce jointe).",
         "Please provide at least one media source (link or attachment)."
     ),
-    meme_add_answer_created: ("Meme ajoute a la board.", "Meme added to board."),
-    meme_add_answer_exists: (
-        "Ce media est deja present dans la meme board.",
-        "This media is already in the meme board."
+    media_add_answer_created: ("Média ajouté au board.", "Media item added to the board."),
+    media_add_answer_exists: (
+        "Ce média est déjà présent dans le board média.",
+        "This media item is already in the media board."
     ),
 
     link_name: ("lier", "link"),
@@ -323,8 +323,8 @@ strings! {
         "The non-persistent media cache is full (limit: {{maxCacheTotalMb}} MB). Retry in a moment."
     ),
     media_error_board_storage_limit: (
-        "Le stockage persistant de la mème board est plein (limite: {{maxBoardTotalMb}} MB). Supprimez des éléments avant un nouvel ajout.",
-        "Persistent meme board storage is full (limit: {{maxBoardTotalMb}} MB). Remove older board items first."
+        "Le stockage persistant du board média est plein (limite: {{maxBoardTotalMb}} MB). Supprimez des éléments avant un nouvel ajout.",
+        "Persistent media board storage is full (limit: {{maxBoardTotalMb}} MB). Remove older board items first."
     ),
     media_error_invalid_media: (
         "Le fichier téléchargé est invalide ou corrompu.",

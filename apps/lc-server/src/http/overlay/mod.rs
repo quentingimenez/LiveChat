@@ -12,6 +12,7 @@
 //! | `GET` | `/overlay/media/{assetId}` | URL signée HMAC (`exp`, `sig`, `clientId`) |
 //! | `GET` | `/overlay/media-board/items` | `Authorization: Bearer` (repli `?token=`) |
 //! | `POST` | `/overlay/media-board/items` | `Authorization: Bearer` (repli `?token=`) — **écriture refusée en `invite_read_only`** |
+//! | `POST` | `/overlay/media-board/upload?filename=&title=&message=` | `Authorization: Bearer` (query-token fallback) — **writes refused in `invite_read_only`** |
 //! | `GET` | `/overlay/media-board/media/{assetId}` | `Authorization: Bearer` (repli `?token=`) |
 //! | `PATCH` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` (repli `?token=`) — **écriture refusée en `invite_read_only`** |
 //! | `DELETE` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` (repli `?token=`) — **écriture refusée en `invite_read_only`** |
@@ -79,6 +80,7 @@ pub(crate) mod guild;
 mod ingest_code;
 mod media;
 mod media_board;
+mod media_upload;
 mod pair;
 mod queue;
 
@@ -86,6 +88,8 @@ pub use media::sign_media_url;
 
 #[cfg(test)]
 mod guild_tests;
+#[cfg(test)]
+mod media_upload_tests;
 #[cfg(test)]
 mod tests;
 
@@ -103,6 +107,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/overlay/media-board/items",
             get(media_board::list_items).post(media_board::create_item),
+        )
+        .route(
+            "/overlay/media-board/upload",
+            post(media_upload::upload_item),
         )
         .route(
             "/overlay/media-board/items/{item_id}",

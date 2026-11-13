@@ -44,7 +44,8 @@ fn not_available(current: String) -> UpdateStatus {
     }
 }
 
-/// L'updater est explicitement **désactivé** pour la 3.0.0 (AUD-A6-005).
+/// L'updater est explicitement **désactivé** tant que la clé de signature
+/// n'est pas configurée (AUD-A6-005).
 ///
 /// La clé publique minisign de `tauri.conf.json` est un placeholder et
 /// `bundle.createUpdaterArtifacts` vaut `false` : activer l'updater sans clé
@@ -59,7 +60,7 @@ fn disabled(current: String) -> UpdateStatus {
         state: "disabled".to_string(),
         current_version: current,
         available_version: None,
-        message: "Mises à jour désactivées en 3.0 (clé de signature \
+        message: "Mises à jour automatiques désactivées (clé de signature \
                   non configurée)."
             .to_string(),
     }

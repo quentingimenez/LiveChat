@@ -63,6 +63,7 @@ use crate::http;
 use crate::http::admin::hub::{AdminHub, NoopAdminHub};
 use crate::http::health::{DiscordProbe, HealthProbe};
 use crate::http::rate_limit::RateLimitState;
+use crate::ingestions::IngestionRegistry;
 use crate::shutdown::Shutdown;
 
 /// Limite de taille du corps des requêtes (1 Mio, défaut Fastify du legacy).
@@ -75,7 +76,7 @@ pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 ///
 /// - `/ws` : WebSocket de longue durée (liveness bornée par le hub) ;
 /// - `/overlay/media/` : streaming média `Range`/`206` ;
-/// - `/overlay/media-board/` : ingestion média synchrone et aperçus ;
+/// - `/overlay/media-board/` : réception d'un upload brut et aperçus ;
 /// - `/ingest` : ingestion média synchrone bornée par `MEDIA_DOWNLOAD_TIMEOUT_MS`.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -95,17 +96,12 @@ fn is_timeout_exempt(method: &Method, path: &str) -> bool {
         return true;
     }
     // Streaming média signé (`Range`/`206`) et aperçus du board.
-    // Legacy overlay 3.0.0 compatibility: remove in 3.1.
-    if path.starts_with("/overlay/media/")
-        || path.starts_with("/overlay/media-board/media/")
-        || path.starts_with("/overlay/meme-board/media/")
-    {
+    if path.starts_with("/overlay/media/") || path.starts_with("/overlay/media-board/media/") {
         return true;
     }
-    // Ingestion média synchrone du board (téléchargement + transcodage).
-    // Legacy overlay 3.0.0 compatibility: remove in 3.1.
-    method == Method::POST
-        && (path == "/overlay/media-board/items" || path == "/overlay/meme-board/items")
+    // A board upload streams a potentially large body before answering `202`.
+    // Adding a link answers `202` at once: it keeps the ordinary timeout.
+    method == Method::POST && path == "/overlay/media-board/upload"
 }
 
 /// Middleware de timeout de requête (jamais appliqué aux routes exemptées).
@@ -152,6 +148,8 @@ pub struct AppState {
     /// Client capable de faire quitter le bot d'un serveur Discord (panneau
     /// admin). `DisabledLeaver` par défaut quand Discord n'est pas configuré.
     pub discord_leaver: Arc<dyn DiscordGuildLeaver>,
+    /// Registre partagé des ingestions média asynchrones.
+    pub ingestions: Arc<IngestionRegistry>,
 }
 
 impl AppState {
@@ -170,6 +168,7 @@ impl AppState {
             discord,
             admin_hub: Arc::new(NoopAdminHub),
             discord_leaver: Arc::new(DisabledLeaver),
+            ingestions: Arc::new(IngestionRegistry::new()),
         }
     }
 
@@ -659,9 +658,7 @@ mod tests {
             .route("/overlay/media/abc", axum::routing::get(slow))
             .route("/overlay/media-board/media/abc", axum::routing::get(slow))
             .route("/overlay/media-board/items", axum::routing::post(slow))
-            // Legacy overlay 3.0.0 compatibility: remove in 3.1.
-            .route("/overlay/meme-board/media/abc", axum::routing::get(slow))
-            .route("/overlay/meme-board/items", axum::routing::post(slow))
+            .route("/overlay/media-board/upload", axum::routing::post(slow))
             .route("/ingest", axum::routing::post(slow))
             .layer(middleware::from_fn_with_state(
                 std::time::Duration::from_millis(20),
@@ -672,18 +669,21 @@ mod tests {
         assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
         assert_eq!(body, serde_json::json!({ "error": "request_timeout" }));
 
-        // Les routes JSON ordinaires restent soumises au timeout.
-        let (status, _, _) = send(&app, request(Method::GET, "/admin/api/overview")).await;
-        assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
+        // Les routes JSON ordinaires restent soumises au timeout, y compris
+        // l'ajout d'un lien au board, qui répond `202` sans attendre.
+        for (method, path) in [
+            (Method::GET, "/admin/api/overview"),
+            (Method::POST, "/overlay/media-board/items"),
+        ] {
+            let (status, _, _) = send(&app, request(method, path)).await;
+            assert_eq!(status, StatusCode::REQUEST_TIMEOUT, "route {path}");
+        }
 
         // Routes exemptées : le timeout ne s'applique pas.
         for (method, path) in [
             (Method::GET, "/overlay/media/abc"),
             (Method::GET, "/overlay/media-board/media/abc"),
-            (Method::POST, "/overlay/media-board/items"),
-            // Legacy overlay 3.0.0 compatibility: remove in 3.1.
-            (Method::GET, "/overlay/meme-board/media/abc"),
-            (Method::POST, "/overlay/meme-board/items"),
+            (Method::POST, "/overlay/media-board/upload"),
             (Method::POST, "/ingest"),
         ] {
             let (status, _, _) = send(&app, request(method, path)).await;

@@ -98,6 +98,23 @@ impl MediaSource {
         }
     }
 
+    /// Builds the source of a locally uploaded file.
+    ///
+    /// The cache key is `upload:sha256:<hex>` (content digest supplied by the
+    /// caller); `source_url` keeps the original filename for display and for
+    /// the NOT NULL `media_assets.source_url` column.
+    pub fn from_upload(original_filename: impl Into<String>, content_sha256: &str) -> Self {
+        let original_filename = original_filename.into();
+        let canonical_url = format!("upload:{original_filename}");
+        Self {
+            original: canonical_url.clone(),
+            canonical_url,
+            source_hash: format!("upload:sha256:{content_sha256}"),
+            source_kind: SourceKind::LocalFile,
+            start_offset_sec: None,
+        }
+    }
+
     /// Construit une source depuis une URL brute (sans résolution réseau).
     pub fn from_raw(raw: &str) -> Option<Self> {
         let trimmed = raw.trim();

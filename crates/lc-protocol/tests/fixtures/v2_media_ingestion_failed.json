@@ -1,0 +1,1 @@
+{"v":2,"type":"media.ingestion","id":"srv-ingestion-0002","ts":1794182400000,"payload":{"ingestionId":"6f1c2a7e-3b4d-4e5f-8a9b-0c1d2e3f4a5c","ok":false,"error":{"code":"media_ingestion_failed","message":"la board de la guilde dépasserait la limite de 2048 Mo"}}}

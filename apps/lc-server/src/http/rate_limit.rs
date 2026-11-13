@@ -241,23 +241,17 @@ fn client_key(ip: Option<IpAddr>) -> ClientKey {
 /// Vrai pour un téléchargement média `GET`/`HEAD` : `/overlay/media/{asset_id}`
 /// ou `/overlay/media-board/media/{asset_id}`, avec `{asset_id}` réduit à un
 /// unique segment de chemin non vide. Ces requêtes seules relèvent de
-/// [`MEDIA_RATE_LIMIT_MAX`]. Les chemins legacy `/overlay/meme-board/media/…`
-/// restent comptés dans le même budget.
+/// [`MEDIA_RATE_LIMIT_MAX`].
 fn is_media_request(method: &Method, path: &str) -> bool {
     if !matches!(*method, Method::GET | Method::HEAD) {
         return false;
     }
-    [
-        "/overlay/media/",
-        "/overlay/media-board/media/",
-        // Legacy overlay 3.0.0 compatibility: remove in 3.1.
-        "/overlay/meme-board/media/",
-    ]
-    .iter()
-    .any(|prefix| {
-        path.strip_prefix(prefix)
-            .is_some_and(|asset_id| !asset_id.is_empty() && !asset_id.contains('/'))
-    })
+    ["/overlay/media/", "/overlay/media-board/media/"]
+        .iter()
+        .any(|prefix| {
+            path.strip_prefix(prefix)
+                .is_some_and(|asset_id| !asset_id.is_empty() && !asset_id.contains('/'))
+        })
 }
 
 /// Exemption : uniquement les adresses loopback en mode développement (tests

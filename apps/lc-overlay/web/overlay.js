@@ -160,10 +160,38 @@
 
   watchMediaFooterHeight();
 
+  // Zone placement: the shell turns this window into a clickable one and the
+  // editor draws the zone over the screen (overlay://placement).
+  const placementEditor = window.__overlayCreatePlacementEditor({
+    document,
+    window,
+    applyLayout: (layout) => {
+      overlayLegacyBootstrapUtils.applyOverlayLayout({ root: nodes.overlayRoot, layout });
+      mediaFrameHandlers.scheduleMediaHeaderLayout();
+    },
+    finishPlacement: (payload) => window.livechatOverlay.finishPlacement(payload),
+  });
+
+  const onSettings = (nextSettings) => {
+    renderHandlers.onSettings(nextSettings);
+    placementEditor.syncLayout(state.overlayConfig?.layout);
+  };
+
+  const onPlacement = (payload) => {
+    if (payload && payload.active === true) {
+      placementEditor.start(payload.layout || state.overlayConfig?.layout);
+    } else {
+      placementEditor.stop();
+    }
+  };
+  // Before rendererReady: the shell only starts a placement once it is ready.
+  window.livechatOverlay.onPlacement(onPlacement);
+
   const bootstrap = async () => {
     await overlayLegacyBootstrapUtils.bootstrapOverlay({
       getConfig: () => window.livechatOverlay.getConfig(),
       getCurrentConfig: () => state.overlayConfig,
+      overlayRoot: nodes.overlayRoot,
       setConfig: (nextConfig) => {
         state.overlayConfig = nextConfig;
       },
@@ -178,7 +206,7 @@
       },
       onPlay: renderHandlers.onPlay,
       onStop: () => playbackCountdownHandlers.clearOverlay(),
-      onSettings: renderHandlers.onSettings,
+      onSettings,
       addWindowResizeListener: (handler) => {
         window.addEventListener('resize', handler);
       },

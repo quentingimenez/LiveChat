@@ -21,6 +21,7 @@ test manuel et sa documentation.
 | --- | --- |
 | `bridge.js` | Script classique autonome (aucune dépendance, aucun bundler) qui installe `window.livechatOverlay` (13 méthodes legacy + `authorizedFetch`, soit 14 au total) au-dessus des commandes/événements Tauri 2, avec un mode **mock** si Tauri est absent. |
 | `dev/bridge-test.html` | Harnais navigateur autonome : charge `web/bridge.js`, exerce les 13 méthodes legacy, simule les 3 événements, et affiche le journal des appels. |
+| `board-mock.html` / `board-mock.js` | Harnais de l'application board : simule le shell Tauri (`__TAURI_INTERNALS__`), les guildes, le board, la file, les appairages et les réglages de l'appareil. |
 | `README.md` | Ce document. |
 
 Contenu actuel de `apps/lc-overlay/web/` (embarqué dans le binaire) :
@@ -28,13 +29,17 @@ Contenu actuel de `apps/lc-overlay/web/` (embarqué dans le binaire) :
 ```
 web/
 ├── bridge.js                 <- API window.livechatOverlay (hors de ce dossier dev)
-├── overlay.html  board.html  pairing.html
-├── overlay.css   board.css
-├── overlay.js    board.js    pairing.js
+├── overlay.html  overlay.css  overlay.js   <- rendu des médias à l'écran
+├── board.html                <- board (guildes, médias, file, admin, appairage)
+├── app/                      <- application de la board, modules ES sans build
+│   ├── main.js  data.js  app.css
+│   ├── core/                 <- ipc, api, état, DOM, notifications
+│   ├── views/                <- une vue par fonctionnalité
+│   └── styles/               <- une feuille par fonctionnalité
 ├── renderer-errors.js        <- télémétrie d'erreurs du renderer
 ├── favicon.ico
-├── styles/{overlay,board}/*.css
-└── dist/renderer/{overlay,board,pairing}/index.js   <- shims ESM portés
+├── styles/overlay/*.css
+└── dist/renderer/overlay/index.js   <- shim ESM porté
     └── legacy-loader.js + utils (dont twitter-widgets neutralisé)
 ```
 
@@ -106,7 +111,8 @@ backend ni WebView2. `node --check apps/lc-overlay/web/bridge.js` valide la synt
 ### Utiliser `__bridgeMockEmit` dans les pages
 
 En mode mock (ou pour tester un listener sans backend), les noms d'événements acceptés sont indifféremment
-`play`/`stop`/`settings`, `overlay:play`/… ou `overlay://play`/… ; le second argument est le payload transmis tel quel :
+`play`/`stop`/`settings`/`placement`, `overlay:play`/… ou `overlay://play`/… ; le second argument est le payload
+transmis tel quel :
 
 ```js
 const off = window.livechatOverlay.onPlay((payload) => console.log(payload));
@@ -116,6 +122,57 @@ off();
 ```
 
 `__bridgeMockEmit` renvoie le nombre de listeners locaux notifiés (0 si aucun abonnement).
+
+## Harnais board (`board-mock.html`)
+
+`board-mock.html` charge `board-mock.js` puis `web/app/main.js` : l'application
+board complète s'affiche dans un navigateur ordinaire, sans serveur ni WebView2.
+Le mock ne contacte aucun réseau et ne persiste rien.
+
+Options de l'URL :
+
+| Option | Effet |
+| --- | --- |
+| `?role=admin` (défaut), `?role=member`, `?role=guest` | Rôle et permissions de la guilde active. |
+| `?empty` | Démarre sans aucune guilde : la page Paramètres et le rail restent utilisables. |
+| `?settings` | `board_take_pending_view` renvoie `settings` une fois au démarrage : la page Paramètres s'ouvre, comme après l'entrée tray « Paramètres… ». |
+| `?removed` | Met un retrait de guilde en attente au démarrage. |
+
+Depuis la console :
+
+| Appel | Effet |
+| --- | --- |
+| `__mock.openSettings()` | Émet `overlay://navigate` `{ view: 'settings' }`, l'équivalent de l'entrée tray. |
+| `__mock.settings` | Objet `SettingsView` simulé (affichage, volumes, raccourcis, disposition, profil). |
+| `__mock.emit(event, payload)` | Émet un événement vers les listeners du board (par exemple `overlay://device-settings` avec une copie). |
+| `__mock.finishPlaying()` | Termine le média à l'antenne et passe au suivant. |
+| `__mock.finishPlacement(zone)` | Fait ce que fait l'overlay en fin de placement : enregistre `zone` (`{ x, y, width, height }`) ou annule (`null`), puis émet `overlay://device-settings`. |
+| `__mock.reconnect(guildId)`, `__mock.restartServer()`, `__mock.removeGuild(guildId, reason)` | Simulent les incidents de connexion et les retraits de guilde. |
+
+Commandes shell simulées pour les réglages :
+
+- `settings_get` renvoie une copie profonde du `SettingsView` ; `settings_set`
+  valide les champs du contrat (`selectedDisplayKey`, `volume`,
+  `guildVolumes`, `generalMute`, `showText`, `autoStart`, `shortcuts`,
+  `layout`, `profile`) et répond `{ ok: false, field, message, settings }` sur
+  une valeur invalide — un raccourci contenant « Bad » est refusé. Les volumes
+  sont ramenés dans leur plage, la zone d'affichage est normalisée et `null`
+  réinitialise un objet, comme dans le shell.
+- Chaque modification réussie émet `overlay://device-settings` avec une copie
+  profonde.
+- `settings_identify_displays` renvoie `{ count: 2 }` ;
+  `settings_test_media` renvoie `{ ok: false, reason: "overlay_busy" }` tant
+  qu'un média passe, `{ ok: true }` sinon ; `settings_preview_layout` garde
+  chaque brouillon de mise en page dans `__mock.previewLayouts` ;
+  `settings_placement_start` passe `placing` à `true` et
+  `settings_placement_cancel` l'annule ; `overlay_check_updates` renvoie un
+  `UpdateStatus` (updater désactivé dans le mock).
+- Les items du board portent `mediaUrl` (data URI SVG) et
+  `mediaUrlExpiresAt` (une heure après le chargement), comme le serveur signé.
+- `pairing_consume` répond `display_name_required` pour le code `NOPSEUDO`
+  sans pseudo, et `pairing_code_invalid_or_expired` sinon.
+- `PATCH /overlay/profile` mémorise le pseudo et l'avatar de la guilde (avatar
+  `null` pour le retirer, clé absente pour conserver la valeur).
 
 ## Mode mock en détail
 
@@ -135,7 +192,8 @@ Rien n'est persisté : le mock ne lit ni n'écrit de configuration, ne contacte 
 
 Les 13 méthodes legacy, signatures et payloads sont identiques à `overlay/src/preload/index.ts` ; seul le transport change.
 Depuis P1-11, une 14<sup>e</sup> méthode additive, `authorizedFetch(url, options)`, est exposée pour l'authentification
-Bearer du board (voir `docs/rust/overlay-bridge.md` §12.4). Tableau complet, canaux, handlers et sémantique :
+Bearer du board (voir `docs/rust/overlay-bridge.md` §12.4). Le placement de la zone d'affichage ajoute
+`onPlacement(cb)` et `finishPlacement(p)` (§14.6). Tableau complet, canaux, handlers et sémantique :
 **`docs/rust/overlay-bridge.md`**.
 
 | Méthode | Forme |
@@ -147,6 +205,8 @@ Bearer du board (voir `docs/rust/overlay-bridge.md` §12.4). Tableau complet, ca
 | `consumePairing(p)` | `Promise<{ ok: boolean }>` |
 | `getMediaBindings()` / `setMediaBindings(p)` | `Promise<…>` |
 | `triggerMedia(p)` / `stopMediaPlayback()` | `Promise<{ ok, reason? }>` |
+| `onPlacement(cb)` | retourne une fonction de désabonnement ; payload `{ active, layout? }` |
+| `finishPlacement({ zone })` | `Promise<null>` ; en mock, émet `overlay://placement` `{ active: false }` |
 
 Les méthodes fire-and-forget renvoient une `Promise` **toujours résolue** (échec journalisé en `console.warn`) afin de ne
 jamais produire de rejet non géré dans le renderer legacy, qui ignore leur retour. Les méthodes de type `invoke`

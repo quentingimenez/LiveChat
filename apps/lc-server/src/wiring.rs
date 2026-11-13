@@ -21,6 +21,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use lc_domain::entities::PlaybackJob;
 use lc_domain::ids::GuildId;
+use lc_protocol::ServerMessage;
 use uuid::Uuid;
 
 use crate::app::AppState;
@@ -48,6 +49,18 @@ impl AdminHub for Hub {
 
     fn close_client(&self, client_id: &Uuid, code: u16) -> bool {
         Hub::close_client(self, client_id, code)
+    }
+
+    fn close_client_with_reason(&self, client_id: &Uuid, code: u16, reason: &str) -> bool {
+        Hub::close_client_with_reason(self, client_id, code, reason)
+    }
+
+    fn send_to_client(&self, client_id: &Uuid, message: ServerMessage) -> bool {
+        Hub::send_to_client(self, client_id, message)
+    }
+
+    fn broadcast_to_guild(&self, guild_id: &GuildId, message: ServerMessage) -> usize {
+        Hub::broadcast_message(self, guild_id, message)
     }
 
     async fn broadcast_stop(&self, guild_id: &GuildId) -> usize {

@@ -1,6 +1,6 @@
 //! Board média persistant : ajout d'un média ingéré au board d'une guilde.
 //!
-//! Reproduit `addToMemeBoard` du legacy :
+//! Reproduit l'ajout au board média du legacy :
 //!
 //! - un média déjà présent sur le board de la guilde n'est pas dupliqué : il est
 //!   ré-épinglé (expiration très lointaine) et renvoyé avec `created = false` ;

@@ -1,73 +1,80 @@
-//! Routes `/overlay/media-board/*` (Bearer obligatoire).
+//! Routes `/overlay/media-board/*`.
 //!
 //! Parité REST avec `server/src/components/overlay/overlayRoutes.ts:376-567` et
 //! `server/src/services/mediaBoard.ts`. Le board média est une liste ordonnée de
 //! médias épinglés appartenant à la guilde du client overlay authentifié.
 //!
-//! Les anciens chemins `/overlay/meme-board/*` restent acceptés par le routeur
-//! pour l'overlay 3.0.0 (mêmes handlers, compatibilité legacy).
-//!
 //! ## Routes
 //!
-//! | Méthode | Chemin | Réponse |
-//! |---------|--------|---------|
-//! | `GET` | `/overlay/media-board/items?q=&limit=&offset=` | `{total, limit, offset, items}` |
-//! | `POST` | `/overlay/media-board/items` | `{created, item}` |
-//! | `GET` | `/overlay/media-board/media/{assetId}` | flux binaire (`Range` supporté) |
-//! | `PATCH` | `/overlay/media-board/items/{itemId}` | `{updated:true, item:{id,title,message}}` |
-//! | `DELETE` | `/overlay/media-board/items/{itemId}` | `{deleted}` |
+//! | Méthode | Chemin | Authentification | Réponse |
+//! |---------|--------|------------------|---------|
+//! | `GET` | `/overlay/media-board/items?q=&limit=&offset=` | Bearer | `{total, limit, offset, items}` |
+//! | `POST` | `/overlay/media-board/items` | Bearer | `202 {ingestionId}` |
+//! | `POST` | `/overlay/media-board/upload?filename=&title=&message=` | Bearer | `202 {ingestionId}` (raw binary body) |
+//! | `GET` | `/overlay/media-board/ingestions` | Bearer | `{items:[...]}` |
+//! | `GET` | `/overlay/media-board/media/{assetId}?clientId=&exp=&sig=` | URL signée | flux binaire (`Range` supporté) |
+//! | `PATCH` | `/overlay/media-board/items/{itemId}` | Bearer | `{updated:true, item:{id,title,message}}` |
+//! | `DELETE` | `/overlay/media-board/items/{itemId}` | Bearer | `{deleted}` |
+//!
+//! ## Asynchronous ingestion
+//!
+//! `POST items` and `POST upload` validate the request, register an ingestion in
+//! [`crate::ingestions::IngestionRegistry`] and answer `202 {ingestionId}`. The
+//! download/transcode then runs in a detached Tokio task, so a client
+//! disconnection (Cloudflare's 100 s limit, Nginx's 90 s limit) can no longer
+//! cancel it. When the task finishes it updates the registry, sends
+//! `media.ingestion` to every socket of the requesting overlay client and, for a
+//! new item, broadcasts `board.changed {change:"added"}` to the guild.
 //!
 //! ## Réponses exactes
 //!
 //! - item : `{id, guildId, mediaAssetId, title, message, createdByName, createdAt,
+//!   mediaUrl, mediaUrlExpiresAt,
 //!   media:{id,kind,mime,durationSec,width,height,isVertical,sizeBytes,sourceUrl}}`
-//!   (`createdAt` en ISO-8601 UTC millisecondes, comme le JSON du legacy) ;
-//! - erreurs : `400 invalid_payload` (+ `message`), `401 unauthorized`,
+//!   (`createdAt` en ISO-8601 UTC millisecondes, comme le JSON du legacy).
+//!   `mediaUrl` est une URL absolue signée une heure pour le client demandeur
+//!   (`board:{assetId}`), utilisable verbatim par `<img>`/`<video>` ;
+//! - erreurs synchrones : `400 invalid_payload` (+ `message`), `401 unauthorized`,
 //!   `403 read_only_session` (session invitée en écriture), `404 item_not_found`
-//!   / `media_not_found` / `media_not_found_on_disk`,
-//!   `422 media_ingestion_failed` (+ `code`, `message`), `500 internal_error`.
+//!   / `media_not_found` / `media_not_found_on_disk`, `413 payload_too_large`,
+//!   `429 too_many_ingestions`, `500 internal_error` ;
+//! - les échecs d'ingestion (`media_ingestion_failed`, `unsupported_media`,
+//!   `internal_error`) sont envoyés après coup par `media.ingestion`, jamais
+//!   comme réponse de la requête `202`.
 //!
 //! ## Sessions en lecture seule (`INVITE_READ_ONLY`)
 //!
 //! Le protocole v2 (§9) réserve la session `invite_read_only` à la lecture. Les
-//! mutations du board média (`POST items`, `PATCH item`, `DELETE item`) sont donc
-//! refusées avec `403 {"error":"read_only_session"}` **avant toute validation de
-//! charge utile**, tandis que les `GET` (`items`, `media`) restent autorisés.
+//! mutations du board média (`POST items`, `POST upload`, `PATCH item`,
+//! `DELETE item`) sont donc refusées avec `403 {"error":"read_only_session"}`
+//! **avant toute validation de charge utile**, tandis que les `GET` (`items`,
+//! `ingestions`, `media`) restent autorisés.
 //! Le mode provient de l'extracteur [`AuthedOverlayClient::is_read_only`]
-//! (colonne `overlay_clients.session_mode`, chargée à l'authentification) ; il
-//! est identique que le jeton arrive par `Authorization: Bearer` ou par le repli
-//! `?token=` du board, et ne peut pas être influencé par le corps de requête.
-//!
-//! ## Écarts assumés (documentés dans `docs/rust/server-overlay.md`)
-//!
-//! - l'ingestion média est faite **en ligne** via `lc_media::MediaPipeline`
-//!   (Phase 5b la déplacera dans un worker) : le handler bloque pendant le
-//!   téléchargement/transcodage ;
-//! - la recherche `q` est filtrée en Rust (le repository n'expose pas de
-//!   `search`) : coût acceptable pour une board ≤ 200 items ;
-//! - la libération de l'expiration épinglée après suppression compte les
-//!   références via `GuildsRepository::list` (pas de `count` dédié dans
-//!   `lc-db`) ; un item orphelin de guilde inconnue n'est pas compté (écart
-//!   mineur, Phase 5b) ;
-//! - `guildId` en query (legacy admin) est accepté uniquement s'il correspond à
-//!   la guilde du Bearer, sinon `403 forbidden` (défense en profondeur).
+//! (colonne `overlay_clients.session_mode`, chargée à l'authentification) et ne
+//! peut pas être influencé par le corps de requête. Le flux média signé applique
+//! la même règle de visibilité à partir du rôle du client.
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
-use lc_domain::{GuildId, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, Permission};
+use lc_domain::{
+    GuildId, GuildRole, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId,
+    OverlayClientId, Permission,
+};
+use lc_protocol::{BoardChange, BoardChangedPayload, ServerMessage};
 use serde::Deserialize;
 
 use crate::app::AppState;
+use crate::ingestions::{IngestionEntry, StartIngestionError};
 use crate::media::assets;
 use crate::media::errors::MediaServiceError;
-use crate::media::service::MediaService;
 
 use super::auth::AuthedOverlayClient;
-use super::{db, db_failure, error, internal_error, is_conflict, json_response, now};
+use super::media_ingestion::{spawn_ingestion, IngestionInput};
+use super::{db, db_failure, error, is_conflict, json_response, now};
 
 /// Alias local pour garder les signatures courtes.
 type Db = lc_db::Db;
@@ -97,6 +104,25 @@ pub(super) struct ListQuery {
     /// Ancien filtre admin : doit correspondre à la guilde du Bearer.
     #[serde(default)]
     guild_id: Option<String>,
+}
+
+/// Paramètres de l'URL signée d'un média du board.
+///
+/// La route n'accepte ni `Authorization: Bearer` ni `?token=` : les tags
+/// `<img>`/`<video>` ne peuvent pas porter d'en-tête, seule la signature HMAC
+/// authentifie la requête.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct BoardMediaQuery {
+    /// Identifiant du client overlay auquel l'URL est liée.
+    #[serde(default)]
+    client_id: Option<String>,
+    /// Expiration en secondes UNIX.
+    #[serde(default)]
+    exp: Option<String>,
+    /// Signature HMAC-SHA256 hexadécimale minuscule.
+    #[serde(default)]
+    sig: Option<String>,
 }
 
 /// Corps `POST /media-board/items`.
@@ -141,6 +167,15 @@ pub async fn list_items(
         return response;
     }
 
+    let secret = state.config.media_url_secret.expose_secret();
+    if secret.is_empty() {
+        tracing::warn!("MEDIA_URL_SECRET absent : URLs du board non signables");
+        return super::internal_error();
+    }
+    let expires_at_sec =
+        crate::media_url::board_url_expiry(u64::try_from(now(&state).timestamp()).unwrap_or(0));
+    let client_id = auth.client.id.to_canonical();
+
     let limit = normalize_limit(query.limit.as_deref());
     let offset = normalize_offset(query.offset.as_deref());
     let search = query
@@ -176,8 +211,27 @@ pub async fn list_items(
                 return db_failure("overlay_media_board.list_item_asset", &db_error);
             }
         };
+        let asset_id = asset.id.to_canonical();
+        let media_url = match crate::media_url::sign_board_url(
+            secret.as_bytes(),
+            &state.config.api_origin(),
+            &asset_id,
+            &client_id,
+            expires_at_sec,
+        ) {
+            Ok(url) => url,
+            Err(error) => {
+                tracing::warn!(%error, "signature d'une URL du board impossible");
+                return super::internal_error();
+            }
+        };
         let mut payload = item_payload(&row.item, &asset);
         if let Some(object) = payload.as_object_mut() {
+            object.insert("mediaUrl".to_owned(), serde_json::json!(media_url));
+            object.insert(
+                "mediaUrlExpiresAt".to_owned(),
+                serde_json::json!(expires_at_sec.saturating_mul(1000)),
+            );
             object.insert(
                 "createdByMemberId".to_owned(),
                 serde_json::json!(row.created_by_member_id),
@@ -202,6 +256,10 @@ pub async fn list_items(
 }
 
 /// Handler `POST /overlay/media-board/items`.
+///
+/// Validates the payload, registers the ingestion and returns `202
+/// {ingestionId}` immediately; the download and board insertion run in a
+/// detached task (see [`super::media_ingestion`]).
 pub async fn create_item(
     State(state): State<AppState>,
     auth: AuthedOverlayClient,
@@ -221,7 +279,7 @@ pub async fn create_item(
                 error = %rejection.body_text(),
                 "corps JSON invalide sur POST /overlay/media-board/items"
             );
-            return invalid_json();
+            return json_rejection_error(rejection);
         }
     };
     let url = payload
@@ -238,26 +296,92 @@ pub async fn create_item(
     }
     let force_refresh = coerce_flag(payload.force_refresh.as_ref());
 
-    let db = match db(&state) {
-        Ok(db) => db,
-        Err(response) => return response,
-    };
-    let now = now(&state);
+    // A missing database is still reported synchronously (503): the background
+    // task cannot persist the media without it.
+    if let Err(response) = db(&state) {
+        return response;
+    }
 
-    // AUD-A2-006/A2-007/V2-S-003 : l'ingestion est unifiée sur `MediaService`
-    // (pipeline partagé OnceLock, cache par `source_hash`, quotas de cache,
-    // `record_failure` et nettoyage des fichiers partiels). Les branches ad hoc
-    // précédentes laissaient des assets `READY` sans métadonnées rafraîchies et
-    // ne nettoyaient pas un `forceRefresh` en échec.
-    let service = match MediaService::for_state(&state) {
-        Ok(service) => service,
-        Err(service_error) => return media_service_error(&service_error),
-    };
-    let asset = match service.ingest(Some(&url), None, force_refresh).await {
-        Ok(asset) => asset,
-        Err(service_error) => return media_service_error(&service_error),
+    let ingestion_id = match state.ingestions.start(
+        auth.guild_id().clone(),
+        auth.client.id.as_uuid(),
+        now(&state),
+    ) {
+        Ok(ingestion_id) => ingestion_id,
+        Err(StartIngestionError::TooManyProcessing) => return too_many_ingestions(),
     };
 
+    spawn_ingestion(
+        state,
+        auth,
+        ingestion_id.clone(),
+        IngestionInput::Link { url, force_refresh },
+        payload.title,
+        payload.message,
+    );
+
+    json_response(
+        StatusCode::ACCEPTED,
+        serde_json::json!({ "ingestionId": ingestion_id }),
+    )
+}
+
+/// `429 {"error":"too_many_ingestions"}` (20 concurrent ingestions per client).
+pub(super) fn too_many_ingestions() -> Response {
+    json_response(
+        StatusCode::TOO_MANY_REQUESTS,
+        serde_json::json!({ "error": "too_many_ingestions" }),
+    )
+}
+
+/// Handler `GET /overlay/media-board/ingestions`.
+///
+/// Returns the requesting client's ingestions only (processing or finished less
+/// than one hour ago), so a board can recover a `media.ingestion` it missed
+/// while disconnected.
+pub async fn list_ingestions(State(state): State<AppState>, auth: AuthedOverlayClient) -> Response {
+    let entries = state
+        .ingestions
+        .list_for_client(auth.client.id.as_uuid(), now(&state));
+    let items: Vec<serde_json::Value> = entries.iter().map(IngestionEntry::payload).collect();
+    json_response(StatusCode::OK, serde_json::json!({ "items": items }))
+}
+
+/// Business outcome of a completed board ingestion.
+#[derive(Debug)]
+pub(super) struct CompletedBoardItem {
+    /// `true` when a new board row was created.
+    pub created: bool,
+    /// Board item holding the media (new or already pinned).
+    pub item: MediaBoardItem,
+}
+
+/// Business failure of an asynchronous ingestion (protocol vocabulary).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct IngestionFailure {
+    /// REST/protocol machine code (`media_ingestion_failed`,
+    /// `unsupported_media`, `internal_error`, ...).
+    pub code: &'static str,
+    /// Readable detail, when available.
+    pub message: Option<String>,
+}
+
+/// Common board insertion steps after media ingestion.
+///
+/// Handles `(guild, asset)` deduplication, storage quota, 100-year pinning,
+/// item insertion and author recording. Returns a business result instead of an
+/// HTTP response: the same function serves the asynchronous task (which maps it
+/// to `media.ingestion`) and keeps the error vocabulary shared with the REST
+/// helpers below.
+pub(super) async fn complete_board_item(
+    state: &AppState,
+    auth: &AuthedOverlayClient,
+    db: &Db,
+    asset: MediaAsset,
+    title: Option<String>,
+    message: Option<String>,
+    now: DateTime<Utc>,
+) -> Result<CompletedBoardItem, IngestionFailure> {
     // Dédoublonnage board : (guilde, asset) déjà épinglé → `created:false`.
     match db
         .media_board()
@@ -265,19 +389,29 @@ pub async fn create_item(
         .await
     {
         Ok(Some(existing_item)) => {
-            return json_response(
-                StatusCode::OK,
-                serde_json::json!({"created": false, "item": item_payload(&existing_item, &asset)}),
-            );
+            return Ok(CompletedBoardItem {
+                created: false,
+                item: existing_item,
+            });
         }
         Ok(None) => {}
-        Err(db_error) => return db_failure("overlay_media_board.board_lookup", &db_error),
+        Err(db_error) => {
+            return Err(completion_db_failure(
+                "overlay_media_board.board_lookup",
+                &db_error,
+            ));
+        }
     }
 
     // Quota de stockage de la board (legacy `ensureGuildBoardHasCapacity`).
     let used = match board_total_bytes(db, auth.guild_id()).await {
         Ok(used) => used,
-        Err(db_error) => return db_failure("overlay_media_board.board_usage", &db_error),
+        Err(db_error) => {
+            return Err(completion_db_failure(
+                "overlay_media_board.board_usage",
+                &db_error,
+            ));
+        }
     };
     let limit_bytes = i64::try_from(
         state
@@ -288,17 +422,13 @@ pub async fn create_item(
     )
     .unwrap_or(i64::MAX);
     if used.saturating_add(asset.size_bytes) > limit_bytes {
-        return json_response(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            serde_json::json!({
-                "error": "media_ingestion_failed",
-                "code": "BOARD_STORAGE_LIMIT_REACHED",
-                "message": format!(
-                    "la board de la guilde dépasserait la limite de {} Mo",
-                    state.config.media_board_max_total_mb
-                ),
-            }),
-        );
+        return Err(IngestionFailure {
+            code: "media_ingestion_failed",
+            message: Some(format!(
+                "la board de la guilde dépasserait la limite de {} Mo",
+                state.config.media_board_max_total_mb
+            )),
+        });
     }
 
     // AUD-A2-007 : le service a persisté l'asset avec le TTL de cache ; le
@@ -308,83 +438,177 @@ pub async fn create_item(
     let asset = match assets::pin(db, asset.id, now).await {
         Ok(pinned) => pinned,
         Err(MediaServiceError::Database(db_error)) => {
-            return db_failure("overlay_media_board.pin_board_asset", &db_error);
+            return Err(completion_db_failure(
+                "overlay_media_board.pin_board_asset",
+                &db_error,
+            ));
         }
-        Err(service_error) => return media_service_error(&service_error),
+        Err(service_error) => return Err(media_service_failure(&service_error)),
     };
 
     let item = MediaBoardItem {
         id: MediaBoardItemId::new_v4(),
         guild_id: auth.guild_id().clone(),
         media_asset_id: asset.id,
-        title: payload
-            .title
+        title: title
             .as_deref()
             .map(|value| truncate_chars(value.trim(), TITLE_MAX_CHARS))
             .filter(|value| !value.is_empty()),
-        message: payload
-            .message
+        message: message
             .as_deref()
             .map(|value| truncate_chars(value.trim(), MESSAGE_MAX_CHARS))
             .filter(|value| !value.is_empty()),
         created_by_discord_user_id: auth.client.created_by_discord_user_id.clone(),
-        created_by_name: board_author_name(&auth),
+        created_by_name: board_author_name(auth),
         created_at: now,
     };
     match db.media_board().create(&item).await {
         Ok(()) => {
-            // L'auteur sert au droit « modifier ses propres médias ».
+            // L'auteur sert au droit « modifier ses propres médias ». The item is
+            // already visible, so an author-recording failure is logged but does
+            // not turn a successful ingestion into a failure.
             if let Some(member_id) = auth.member_id() {
                 if let Err(db_error) = db
                     .media_board()
                     .set_creator_member(item.id, member_id)
                     .await
                 {
-                    return db_failure("overlay_media_board.record_author", &db_error);
+                    tracing::warn!(
+                        error = %db_error,
+                        item_id = %item.id,
+                        "enregistrement de l'auteur d'un média de board impossible"
+                    );
                 }
             }
-            json_response(
-                StatusCode::OK,
-                serde_json::json!({"created": true, "item": item_payload(&item, &asset)}),
-            )
+            Ok(CompletedBoardItem {
+                created: true,
+                item,
+            })
         }
         Err(db_error) if is_conflict(&db_error) => match db
             .media_board()
             .get_by_guild_and_asset(auth.guild_id(), asset.id)
             .await
         {
-            Ok(Some(existing_item)) => json_response(
-                StatusCode::OK,
-                serde_json::json!({"created": false, "item": item_payload(&existing_item, &asset)}),
-            ),
-            Ok(None) => internal_error(),
-            Err(db_error) => db_failure("overlay_media_board.reload_item", &db_error),
+            Ok(Some(existing_item)) => Ok(CompletedBoardItem {
+                created: false,
+                item: existing_item,
+            }),
+            Ok(None) => {
+                tracing::error!("item du board introuvable après un conflit d'insertion");
+                Err(internal_failure())
+            }
+            Err(db_error) => Err(completion_db_failure(
+                "overlay_media_board.reload_item",
+                &db_error,
+            )),
         },
-        Err(db_error) => db_failure("overlay_media_board.insert_item", &db_error),
+        Err(db_error) => Err(completion_db_failure(
+            "overlay_media_board.insert_item",
+            &db_error,
+        )),
     }
 }
 
-/// Handler `GET /overlay/media-board/media/{assetId}`.
+/// Logs a database error and turns it into the protocol `internal_error`.
+fn completion_db_failure(operation: &'static str, db_error: &lc_db::DbError) -> IngestionFailure {
+    tracing::error!(operation, error = %db_error, "échec d'accès base pendant une ingestion média");
+    internal_failure()
+}
+
+/// Protocol `internal_error`, without detail for the client.
+fn internal_failure() -> IngestionFailure {
+    IngestionFailure {
+        code: "internal_error",
+        message: None,
+    }
+}
+
+/// Handler `GET`/`HEAD /overlay/media-board/media/{assetId}`.
+///
+/// Authentification **uniquement** par URL signée (`clientId`, `exp`, `sig`) :
+/// ni Bearer ni `?token=`, qui ne sont plus acceptés sur cette route. La
+/// signature couvre `board:{assetId}`, donc une URL de lecture ne peut pas être
+/// rejouée ici (et inversement).
 pub async fn get_media(
     State(state): State<AppState>,
-    auth: AuthedOverlayClient,
     Path(asset_id_raw): Path<String>,
+    Query(query): Query<BoardMediaQuery>,
     method: axum::http::Method,
     headers: HeaderMap,
 ) -> Response {
-    let Ok(asset_id) = asset_id_raw.trim().parse::<MediaAssetId>() else {
+    let (client_id_raw, exp_raw, sig) = match (query.client_id, query.exp, query.sig) {
+        (Some(client_id), Some(exp), Some(sig)) => (client_id, exp, sig),
+        _ => return super::media::media_url_invalid(),
+    };
+    let Ok(asset_id) = MediaAssetId::parse(asset_id_raw.trim()) else {
         return super::media::media_not_found();
     };
+    let Ok(client_id) = OverlayClientId::parse(client_id_raw.trim()) else {
+        return super::media::media_url_invalid();
+    };
+    let Ok(exp_sec) = exp_raw.trim().parse::<u64>() else {
+        return super::media::media_url_invalid();
+    };
+    if sig.len() != 64 || !sig.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return super::media::media_url_invalid();
+    }
+
+    let secret = state.config.media_url_secret.expose_secret();
+    if secret.is_empty() {
+        tracing::warn!("MEDIA_URL_SECRET absent : média du board refusé");
+        return super::media::media_url_invalid();
+    }
+    let asset_key = asset_id.to_canonical();
+    let client_key = client_id.to_canonical();
+    if !crate::media_url::verify_board(secret.as_bytes(), &asset_key, &client_key, exp_sec, &sig) {
+        return super::media::media_url_invalid();
+    }
+
+    let timestamp = now(&state);
+    let now_sec = u64::try_from(timestamp.timestamp()).unwrap_or(0);
+    if !crate::media_url::is_expiry_within_max(exp_sec, now_sec) {
+        tracing::warn!(
+            asset_id = %asset_key,
+            exp_sec,
+            now_sec,
+            max_ttl_sec = lc_protocol::MEDIA_URL_TTL_MAX_SEC,
+            "URL de média du board au-delà du plafond d'expiration : refus"
+        );
+        return super::media::media_url_invalid();
+    }
+    if crate::media_url::is_expired(exp_sec, now_sec) {
+        return super::media::media_url_expired();
+    }
+
     let db = match db(&state) {
         Ok(db) => db,
         Err(response) => return response,
     };
-    if let Err(response) = ensure_board_visible(db, &auth).await {
+    let client = match db.overlay_clients().get(client_id).await {
+        Ok(Some(client)) => client,
+        Ok(None) => return super::media::media_url_invalid(),
+        Err(db_error) => return db_failure("overlay_media_board.media_client", &db_error),
+    };
+    if !client.is_active() {
+        return super::media::media_url_invalid();
+    }
+
+    let role = match db.guild_members().get_for_overlay_client(client.id).await {
+        Ok(Some(member)) => member.role,
+        Ok(None) => match client.session_mode {
+            lc_domain::OverlaySessionMode::InviteReadOnly => GuildRole::Guest,
+            lc_domain::OverlaySessionMode::Normal => GuildRole::Member,
+        },
+        Err(db_error) => return db_failure("overlay_media_board.media_member", &db_error),
+    };
+    if let Err(response) = ensure_board_visible_for(db, &client.guild_id, role).await {
         return response;
     }
+
     match db
         .media_board()
-        .get_by_guild_and_asset(auth.guild_id(), asset_id)
+        .get_by_guild_and_asset(&client.guild_id, asset_id)
         .await
     {
         Ok(Some(_)) => {}
@@ -396,7 +620,7 @@ pub async fn get_media(
         Ok(None) => return super::media::media_not_found(),
         Err(db_error) => return db_failure("overlay_media_board.media_asset", &db_error),
     };
-    if !asset.is_ready() || asset.is_expired_at(now(&state)) {
+    if !asset.is_ready() || asset.is_expired_at(timestamp) {
         return super::media::media_not_found();
     }
     let file_path = match super::media::resolve_media_file(&state, &asset).await {
@@ -425,7 +649,7 @@ pub async fn update_item(
                 error = %rejection.body_text(),
                 "corps JSON invalide sur PATCH /overlay/media-board/items"
             );
-            return invalid_json();
+            return json_rejection_error(rejection);
         }
     };
     let Some(object) = body.as_object() else {
@@ -476,17 +700,26 @@ pub async fn update_item(
         .update(item_id, title.as_deref(), message.as_deref())
         .await
     {
-        Ok(true) => json_response(
-            StatusCode::OK,
-            serde_json::json!({
-                "updated": true,
-                "item": {
-                    "id": existing.id.to_canonical(),
-                    "title": title,
-                    "message": message,
-                },
-            }),
-        ),
+        Ok(true) => {
+            state.admin_hub.broadcast_to_guild(
+                auth.guild_id(),
+                ServerMessage::BoardChanged(BoardChangedPayload {
+                    change: BoardChange::Updated,
+                    item_id: item_id.to_canonical(),
+                }),
+            );
+            json_response(
+                StatusCode::OK,
+                serde_json::json!({
+                    "updated": true,
+                    "item": {
+                        "id": existing.id.to_canonical(),
+                        "title": title,
+                        "message": message,
+                    },
+                }),
+            )
+        }
         Ok(false) => error(StatusCode::NOT_FOUND, "item_not_found"),
         Err(db_error) => db_failure("overlay_media_board.patch_update", &db_error),
     }
@@ -539,18 +772,27 @@ pub async fn delete_item(
         Err(db_error) => return db_failure("overlay_media_board.delete", &db_error),
     };
 
+    if deleted {
+        state.admin_hub.broadcast_to_guild(
+            auth.guild_id(),
+            ServerMessage::BoardChanged(BoardChangedPayload {
+                change: BoardChange::Deleted,
+                item_id: item_id.to_canonical(),
+            }),
+        );
+    }
+
     json_response(StatusCode::OK, serde_json::json!({"deleted": deleted}))
 }
 
 /// Garde d'écriture : refuse les mutations en session `INVITE_READ_ONLY`.
 ///
-/// Le mode est celui du client authentifié (persisté en
-/// `overlay_clients.session_mode`), quelle que soit la voie d'authentification
-/// (`Authorization: Bearer` ou repli `?token=` du board). Les erreurs du legacy
+/// Le mode est celui du client authentifié par Bearer (persisté en
+/// `overlay_clients.session_mode`). Les erreurs du legacy
 /// (`400`, `404`) ne sont volontairement pas évaluées avant cette garde : une
 /// session invitée ne doit obtenir aucune information sur la validité d'une
 /// charge utile ou d'un identifiant.
-fn ensure_writable(auth: &AuthedOverlayClient) -> Result<(), Response> {
+pub(super) fn ensure_writable(auth: &AuthedOverlayClient) -> Result<(), Response> {
     if auth.is_read_only() {
         return Err(error(StatusCode::FORBIDDEN, "read_only_session"));
     }
@@ -560,14 +802,24 @@ fn ensure_writable(auth: &AuthedOverlayClient) -> Result<(), Response> {
 /// Garde de lecture : un invité ne consulte le board que si la guilde
 /// l'autorise (`guilds.guests_can_view_board`, vrai par défaut).
 async fn ensure_board_visible(db: &Db, auth: &AuthedOverlayClient) -> Result<(), Response> {
-    if auth.role() != lc_domain::GuildRole::Guest {
+    ensure_board_visible_for(db, auth.guild_id(), auth.role()).await
+}
+
+/// Même garde pour un rôle résolu sans [`AuthedOverlayClient`] (route média
+/// signée, qui n'a pas d'authentification Bearer).
+async fn ensure_board_visible_for(
+    db: &Db,
+    guild_id: &GuildId,
+    role: GuildRole,
+) -> Result<(), Response> {
+    if role != GuildRole::Guest {
         return Ok(());
     }
-    let guests_can_view_board = match db.guilds().access(auth.guild_id()).await {
+    let guests_can_view_board = match db.guilds().access(guild_id).await {
         Ok(access) => access.is_none_or(|access| access.guests_can_view_board),
         Err(db_error) => return Err(db_failure("overlay_media_board.board_access", &db_error)),
     };
-    if auth.role().can_view_board(guests_can_view_board) {
+    if role.can_view_board(guests_can_view_board) {
         Ok(())
     } else {
         Err(error(StatusCode::FORBIDDEN, "forbidden"))
@@ -827,26 +1079,104 @@ async fn delete_item_and_release(
     Ok(deleted)
 }
 
-/// Réponse `422 media_ingestion_failed` (format API legacy).
-fn media_ingestion_error(media_error: &lc_media::MediaError) -> Response {
-    json_response(
-        StatusCode::UNPROCESSABLE_ENTITY,
-        serde_json::json!({
-            "error": "media_ingestion_failed",
-            "code": media_error.code().as_str(),
-            "message": media_error.message(),
-        }),
-    )
+/// Error vocabulary shared by the REST responses and `media.ingestion`.
+///
+/// `rest_code` is the detailed code documented by the REST contract
+/// (`UNSUPPORTED_SOURCE`, `BOARD_STORAGE_LIMIT_REACHED`, ...); `ws_code` is the
+/// single machine code carried by the protocol payload.
+pub(super) struct MediaErrorPayload {
+    /// HTTP status of the synchronous equivalent.
+    status: StatusCode,
+    /// Value of the REST `error` field.
+    error: &'static str,
+    /// Value of the REST detailed `code` field, when the contract has one.
+    rest_code: Option<&'static str>,
+    /// Readable message, when available.
+    message: Option<String>,
+    /// Machine code used by `media.ingestion`.
+    ws_code: &'static str,
+}
+
+impl MediaErrorPayload {
+    /// `500 {"error":"internal_error"}` / `{code:"internal_error"}`.
+    fn internal() -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            error: "internal_error",
+            rest_code: None,
+            message: None,
+            ws_code: "internal_error",
+        }
+    }
+
+    /// Builds the synchronous REST response from the same data.
+    fn response(&self) -> Response {
+        let mut body = serde_json::Map::new();
+        body.insert(
+            "error".to_owned(),
+            serde_json::Value::String(self.error.to_owned()),
+        );
+        if let Some(code) = self.rest_code {
+            body.insert(
+                "code".to_owned(),
+                serde_json::Value::String(code.to_owned()),
+            );
+        }
+        if let Some(message) = &self.message {
+            body.insert(
+                "message".to_owned(),
+                serde_json::Value::String(message.clone()),
+            );
+        }
+        json_response(self.status, serde_json::Value::Object(body))
+    }
+
+    /// Builds the asynchronous failure sent through `media.ingestion`.
+    fn failure(&self) -> IngestionFailure {
+        IngestionFailure {
+            code: self.ws_code,
+            message: self.message.clone(),
+        }
+    }
 }
 
 /// Traduit une erreur du service média (`Database`/`Unavailable` → 500, comme
 /// le board legacy qui ne documente que `422 media_ingestion_failed`).
-fn media_service_error(service_error: &MediaServiceError) -> Response {
+fn media_service_error_payload(service_error: &MediaServiceError) -> MediaErrorPayload {
     if let Some(media_error) = service_error.media_error() {
-        return media_ingestion_error(media_error);
+        return MediaErrorPayload {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            error: "media_ingestion_failed",
+            rest_code: Some(media_error.code().as_str()),
+            message: Some(media_error.message().to_owned()),
+            ws_code: "media_ingestion_failed",
+        };
     }
     tracing::warn!(error = %service_error, "opération média du board impossible");
-    internal_error()
+    MediaErrorPayload::internal()
+}
+
+/// Asynchronous failure for a media-service error.
+pub(super) fn media_service_failure(service_error: &MediaServiceError) -> IngestionFailure {
+    media_service_error_payload(service_error).failure()
+}
+
+/// Réponse REST d'une erreur du service média.
+pub(super) fn media_service_error(service_error: &MediaServiceError) -> Response {
+    media_service_error_payload(service_error).response()
+}
+
+/// JSON extraction error response.
+///
+/// Exceeding the global limit (`DefaultBodyLimit`, 1 MiB) keeps its `413`
+/// status; other rejections remain `400 invalid_payload` (AUD-A2-009).
+fn json_rejection_error(rejection: JsonRejection) -> Response {
+    if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        // Keep the rejection's `413` and let `normalize_errors` produce the
+        // usual `{"error":"request_error"}` body.
+        return rejection.into_response();
+    }
+    invalid_json()
 }
 
 /// Réponse `400 invalid_payload` pour un corps JSON malformé (AUD-A2-009).

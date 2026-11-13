@@ -13,8 +13,8 @@
 > d'événements, chemin de config).
 >
 > Vague 2 « meme → media » : le bridge Tauri expose désormais `getMediaBindings`, `setMediaBindings`, `triggerMedia`,
-> `stopMediaPlayback` et les commandes `media_board_*` ; la config écrit `mediaBindings` (l'ancienne clé `memeBindings` de
-> l'overlay 3.0.0 reste lue) et le board lit les permissions `addMedia` / `editAnyMedia` (repli `addMeme` / `editAnyMeme`).
+> `stopMediaPlayback` et les commandes `media_board_*` ; la config écrit `mediaBindings` et le board lit les permissions
+> `addMedia` / `editAnyMedia`.
 > Les noms `meme-board:*`, `MemeBoard*` et les chemins `overlay/src/**/meme-*` conservés ci-dessous sont ceux de
 > l'application Electron 3.0.0, documentés à titre historique : ils ne font pas partie du nouveau contrat.
 
@@ -84,7 +84,7 @@ Remarques transverses :
 
 Types exacts (à porter en `serde` avec `rename_all = "camelCase"`) :
 
-- `OverlayConfig` — `overlay/src/shared/overlay-config.ts:3-12` : `{ serverUrl, clientToken, guildId, clientId: string|null; guestMode, showText: boolean; volume: number; mediaBindings: Record<string,string> }` (l'ancienne clé `memeBindings` de l'overlay 3.0.0 reste lue au chargement).
+- `OverlayConfig` — `overlay/src/shared/overlay-config.ts:3-12` : `{ serverUrl, clientToken, guildId, clientId: string|null; guestMode, showText: boolean; volume: number; mediaBindings: Record<string,string> }`.
   Projection renvoyée au renderer (8 champs) : `overlay-config-ipc-service.ts:25-47`.
 - `OverlaySettingsPayload = OverlayConfig` — `overlay-config.ts:14`.
 - `OverlayPlaybackStatePayload` — `:16-20` : `{ jobId: string; state: string; remainingMs: number|null }`.
@@ -265,7 +265,7 @@ aucune logique métier dans `runtime-assets/`.
 `OverlayRuntimeConfig` (`config-service.ts:4-21`), 16 champs, avec `DEFAULT_CONFIG` (`:42-59`) :
 `displayId/displayIndex/displayKey/displayLabel` `null`, `volume: 1`, `enabled: true`, `autoStart: false`,
 `guestMode: false`, `showText: true`, `serverUrl/clientToken/clientId/guildId/authorName/deviceName: null`,
-`mediaBindings: {}` (clé historique `memeBindings` encore lue). Normalisations : volume clampé `[0,1]` (`:68-74`), autoStart booléen (`:76-78`), guestMode booléen
+`mediaBindings: {}`. Normalisations : volume clampé `[0,1]` (`:68-74`), autoStart booléen (`:76-78`), guestMode booléen
 (`:80-82`), `mediaBindings` trim/drop des vides (`:84-103`), URLs trim + sans `/` final (`:105-107`). Écriture
 `JSON.stringify(config, null, 2)` (`:134-157`), lecture avec défauts si fichier absent/inexploitable (`:109-132`).
 `hasPairingConfig` = `serverUrl && clientToken && guildId` (`:159-161`).
@@ -311,7 +311,7 @@ Convention retenue et implémentée dans `apps/lc-overlay/web/bridge.js` (`COMMA
 | `consumePairing` | `pairing:consume` | `pairing_consume` | `{ payload: PairingConsumeRequest }` | `PairingConsumeResponse` |
 | `getMediaBindings` | `meme-board:get-bindings` | `media_board_get_bindings` | `{}` | `MediaBoardBindingsResponse` |
 | `setMediaBindings` | `meme-board:set-bindings` | `media_board_set_bindings` | `{ payload: MediaBoardSetBindingsRequest }` | `MediaBoardSetBindingsResponse` |
-| `triggerMedia` | `meme-board:trigger` | `media_board_trigger` | `{ payload: MediaBoardTriggerRequest }` | `MediaBoardActionResponse` |
+| `triggerMedia` | `meme-board:trigger` | `media_board_trigger` | `{ payload: MediaBoardTriggerRequest }` | `MediaBoardTriggerResponse` (voir §13.1) |
 | `stopMediaPlayback` | `meme-board:stop` | `media_board_stop` | `{}` | `MediaBoardActionResponse` |
 
 Signatures Rust recommandées (payloads `serde` avec `rename_all = "camelCase"`, erreurs en `Result<_, String>` pour rester
@@ -356,7 +356,11 @@ Notes de contrat :
 | --- | --- | --- | --- | --- |
 | `onPlay` | `overlay:play` | `overlay://play` | `OverlayPlayPayload` | fenêtre `overlay` uniquement |
 | `onStop` | `overlay:stop` | `overlay://stop` | `OverlayStopPayload` | fenêtre `overlay` uniquement |
-| `onSettings` | `overlay:settings` | `overlay://settings` | `OverlaySettingsPayload` | fenêtres `overlay` **et** `board`, jamais `pairing` |
+| `onSettings` | `overlay:settings` | `overlay://settings` | `OverlaySettingsPayload` | fenêtre `overlay` uniquement |
+| — | — | `overlay://device-settings` | `SettingsView` complet (voir §14) | fenêtre `board` uniquement |
+| — | — | `overlay://guild-removed` | `GuildRemoval` (voir §13.2) | fenêtre `board` uniquement |
+| — | — | `overlay://media-ingestion` | résultat d'ingestion + `guildId` (voir §13.4) | fenêtre `board` uniquement |
+| — | — | `overlay://board-changed` | `{ guildId, change, itemId }` (voir §13.4) | fenêtre `board` uniquement |
 
 Recommandations Rust :
 
@@ -597,13 +601,14 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
 
 ### 12.3 Capabilities et autorisation IPC par fenêtre (A6-008)
 
-- `capabilities/overlay.json`, `board.json`, `pairing.json` : une capability par
-  fenêtre (`windows: ["overlay"]`, etc.), permissions `core:default` minimales.
-  `capabilities/default.json` est supprimé.
-- La matrice `commands::COMMAND_MATRIX` limite les 12 commandes par label :
-  overlay = handshake/télémétrie ; board = media-board + lecture config +
-  check_updates ; pairing = appairage + lecture config. Toute autre combinaison
-  est refusée avec un message explicite (testé par
+- `capabilities/overlay.json`, `board.json` : une capability par fenêtre
+  (`windows: ["overlay"]`, etc.), permissions `core:default` minimales.
+  `capabilities/pairing.json` n'est plus utilisé depuis la suppression de la
+  fenêtre `pairing` (fichier restant à supprimer).
+- La matrice `commands::COMMAND_MATRIX` limite les commandes par label :
+  overlay = handshake/télémétrie ; board = media-board, lecture config,
+  check_updates, appairage, guildes et `board_take_pending_view`. Toute autre
+  combinaison est refusée avec un message explicite (testé par
   `commands::tests::command_matrix_is_window_scoped`).
 
 ### 12.4 Board : Authorization Bearer via le bridge, plus de token en query (A6-001/004)
@@ -623,10 +628,12 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
   renvoient l'état `disabled` **sans** appeler le plugin (pas de requête réseau,
   pas d'erreur de clé placeholder). L'activation exige la clé minisign réelle et
   des artefacts signés (Phase 9, voir `docs/rust/overlay-release.md`).
-- Le **menu tray** respecte le même flag depuis V2-O (`AUD-V2-O-001`) : l'entrée
-  « Vérifier les mises à jour » devient « Mises à jour désactivées pour cette
-  version » (grisée) et `tray::spawn_update_check` retourne immédiatement, sans
-  aucun appel à `tauri_plugin_updater` ni requête réseau.
+- Le menu tray ne contient plus l'entrée de mise à jour ; les helpers
+  `device_settings::update_menu_entry` (« Vérifier les mises à jour » /
+  « Mises à jour désactivées pour cette version », grisée) et
+  `device_settings::spawn_update_check` conservent la sémantique V2-O
+  (`AUD-V2-O-001`) pour la future page Paramètres : updater désactivé ⇒ retour
+  immédiat, sans appel à `tauri_plugin_updater` ni requête réseau.
 
 ### 12.6 Harnais de développement hors bundle (A6-015)
 
@@ -636,10 +643,10 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
 
 ### 12.7 Projection de config restreinte par fenêtre (V2-O-002)
 
-- `overlay_get_config` reste autorisée pour les trois fenêtres, mais la
-  projection renvoyée est filtrée par label : le `clientToken` n'est présent
-  que pour la fenêtre **board** (nécessaire à `authorizedFetch`). Pour
-  `overlay` et `pairing`, le champ est retiré (`clientToken` absent/null).
+- `overlay_get_config` reste autorisée pour les fenêtres `overlay` et `board`,
+  mais la projection renvoyée est filtrée par label : le `clientToken` n'est
+  présent que pour la fenêtre **board** (nécessaire à `authorizedFetch`). Pour
+  `overlay`, le champ est retiré (`clientToken` absent/null).
 - Décision dans `commands::config_view_for_window` (fonction pure), testée par
   `commands::tests::config_view_is_window_scoped`.
 
@@ -687,10 +694,397 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
   une lecture en cours lors d'une désactivation (tray).
 - `emit_settings` ne diffuse plus `clientToken` (redaction) vers les fenêtres
   overlay/board — cohérent avec §12.7 (le token board passe par `get_config`).
-- Tray : priorité aux états « Overlay désactivé (aucune lecture) » et
-  « Appairage requis » sur les erreurs réseau ; entrée « Afficher l'overlay »
-  grisée hors état actif ; tooltip suffixé « (désactivé) ».
+- Tray : en-tête `N/M guildes connectées` (ou « aucune guilde »), case
+  « Sourdine générale » (cochée = `enabled == false`) qui coupe la lecture via
+  `stop_overlay_now`, et tooltip suffixé « (désactivé) ».
 - Config : écriture atomique (temp + rename) et `.bak` atomique (A6-007).
 
+### 12.11 Tray compact, navigation board et fin de la fenêtre pairing
 
+- Menu tray (ordre exact) : en-tête désactivé `LiveChat — N/M guildes
+  connectées` (ou `LiveChat — aucune guilde`), séparateur, `Ouvrir la board`,
+  `Paramètres…`, séparateur, `Sourdine générale`, une case par guilde appairée,
+  séparateur, `Quitter`.
+- La décision est un modèle pur (`tray::menu_model` → `MenuEntry`) testé sans
+  Tauri ; `tray::build_menu` le traduit en items. Les anciennes entrées de
+  réglages (autostart, texte, écran, volume, mises à jour) sont retirées du
+  menu et conservées dans `device_settings`.
+- `Paramètres…` ouvre la board puis émet `overlay://navigate` avec
+  `{"view":"settings"}`. La vue est aussi mémorisée dans
+  `AppState::pending_board_view` pour le cas où la webview n'est pas chargée ;
+  `board_take_pending_view` (autorisée pour `board` seulement) la renvoie puis
+  l'efface (`null` si absente).
+- Clic droit = menu (`show_menu_on_left_click(false)`) ; double-clic gauche
+  (`TrayIconEvent::DoubleClick`, `MouseButton::Left`) = ouverture de la board.
+- Fenêtre `pairing` supprimée de `tauri.conf.json`/`tauri.beta.conf.json` :
+  `--pairing` ouvre la board, une purge sans guilde restante ouvre la board, et
+  le premier lancement sans guilde ouvre la board. `pairing_consume` et
+  `net/pairing.rs` restent inchangés ; `web/pairing.html`, `web/pairing.js` et
+  `web/dist/renderer/pairing/**` ne sont plus référencés.
 
+## 13. Board : lecture acquittée, retraits de guilde, envoi de fichiers
+
+Cette section décrit les contrats ajoutés ou modifiés pour la board :
+déclenchement de média acquitté, retrait automatique d'une guilde, icône de
+guilde, envoi de fichiers locaux et ingestion asynchrone. Tous les payloads
+suivent la convention existante : arguments sous `payload`, objets en
+camelCase, options omises quand elles sont absentes.
+
+### 13.1 `media_board_trigger` : réponse acquittée
+
+La commande est désormais asynchrone : elle envoie `media.trigger` puis attend
+l'`ack` correspondant pendant **10 s** (`TRIGGER_ACK_TIMEOUT`). Le champ
+`ref` de l'`ack` est comparé à l'`id` de l'enveloppe envoyée.
+
+Entrée (inchangée) :
+
+```json
+{ "payload": { "itemId": "media-1", "trigger": "ui", "guildId": "111" } }
+```
+
+Réponse `MediaBoardTriggerResponse` :
+
+```json
+{ "ok": true, "outcome": "playing" }
+{ "ok": true, "outcome": "queued", "position": 2, "jobId": "job-42" }
+{ "ok": true }
+{ "ok": false, "reason": "invalid_item_id" }
+{ "ok": false, "reason": "socket_unavailable" }
+{ "ok": false, "reason": "ack_timeout" }
+{ "ok": false, "reason": "read_only", "message": "session invitée" }
+{ "ok": false, "reason": "trigger_refused" }
+```
+
+- `outcome` vaut `"playing"` ou `"queued"` ; `position` est le rang 1-based en
+  file ; `jobId` l'identifiant du job créé côté serveur. Ces trois champs sont
+  omis quand l'`ack` (ou un serveur plus ancien) ne les fournit pas.
+- `socket_unavailable` : aucune guilde, superviseur non connecté, ou canal de
+  réponse fermé avant l'`ack` (session terminée).
+- `ack_timeout` : aucun `ack` reçu dans les 10 s.
+- Refus serveur : `reason` = `error.code`, `message` = `error.message` ; sans
+  objet `error`, `reason` vaut `trigger_refused`.
+
+### 13.2 Retrait automatique d'une guilde
+
+Une fermeture WebSocket terminale purge l'adhésion locale et produit un
+`GuildRemoval` :
+
+```json
+{ "guildId": "111", "guildName": "Les Sardines", "reason": "guild_deleted" }
+```
+
+`guildName` est omis s'il est inconnu. `reason` est l'un de
+`"guild_deleted"` (4404), `"member_removed"` (4402 avec raison de fermeture
+`member_removed`), `"revoked"` (4402 avec toute autre raison) ou
+`"invalid_token"` (4401).
+
+- Événement `overlay://guild-removed` : émis vers la fenêtre `board` avec ce
+  même objet, au moment de la purge.
+- Commande `board_take_guild_removals` (board uniquement, sans argument) :
+  renvoie `GuildRemoval[]` en attente puis vide la file ; renvoie `[]` s'il n'y
+  a rien. La board l'appelle au démarrage et à chaque événement
+  `overlay://guild-removed`.
+- Un `401` sur `guild_api` (et sur `media_upload_finish`) envoie
+  `NetCommand::Reconnect` au superviseur de la guilde : le WebSocket revalide
+  le jeton et un `4401` déclenche la purge avec `invalid_token`.
+
+`guilds_list` expose l'icône dans chaque adhésion : `guilds[].membership`
+contient `guildIconUrl` (absent si inconnue). `welcome.guildIconUrl` n'est
+accepté que s'il commence par `https://cdn.discordapp.com/`.
+
+### 13.3 `media_upload_*` : envoi d'un fichier local
+
+Quatre commandes réservées à la fenêtre `board`. Le corps est le fichier brut
+(pas de multipart) ; le jeton reste dans le shell Rust. `ApiResponse` a la même
+forme que `guild_api` : `{ "ok": bool, "status": number, "body": object|null }`.
+
+1. `invoke('media_upload_start', { payload: { guildId?, filename, title?, message?, contentType? } })`
+   → `{ "uploadId": "uuid-v4" }`.
+   - `filename` obligatoire (1 à 255 caractères, sans `/`, `\` ni
+     caractère de contrôle), sinon erreur `"nom de fichier invalide"`.
+   - Guilde inconnue → erreur `"guilde inconnue"`.
+   - Au plus **8 uploads simultanés**, sinon `"trop d'envois en cours"`.
+   - `contentType` n'est conservé que sous la forme `type/sous-type` ASCII
+     imprimable sans espace ni `;` ; sinon `application/octet-stream`.
+2. `invoke('media_upload_chunk', <Uint8Array>, { headers: { 'x-upload-id': uploadId } })`
+   → `null`. Morceau vide ou > 8 Mio refusé ; corps JSON refusé
+   (`"corps binaire attendu"`) ; id inconnu (`"envoi inconnu"`). Si la requête
+   HTTP s'est déjà terminée (413, serveur injoignable…), renvoie
+   `"upload_closed"` : la board appelle alors `media_upload_finish` pour lire
+   la réponse.
+3. `invoke('media_upload_finish', { payload: { uploadId } })`
+   → `ApiResponse`. Ferme le corps, attend la tâche HTTP et relaie la réponse
+   du serveur (`202 {ingestionId}`, erreurs `{error}`…).
+4. `invoke('media_upload_cancel', { payload: { uploadId } })` → `bool`
+   (`true` si l'upload existait). Retire l'entrée et interrompt la tâche.
+
+Séquence : `start` → `chunk` (répété) → `finish`, ou `cancel` à tout moment.
+Le délai de la requête est de 30 min (conversion serveur) et le délai de
+connexion de 15 s.
+
+### 13.4 Ingestion asynchrone et rafraîchissement du board
+
+Les routes d'ajout de média répondent désormais **`202 {"ingestionId": "<uuid>"}`**
+dès que le lien est accepté (`POST /overlay/media-board/items` via `guild_api`)
+ou que le fichier est entièrement reçu (`media_upload_finish`). Le
+téléchargement et la conversion continuent en tâche de fond côté serveur. Une
+erreur avant le 202 garde son statut habituel (`400`, `403 read_only_session`,
+`413`, `415`, `422`, et `429 {"error":"too_many_ingestions"}`).
+
+Cycle d'une carte provisoire (`state.uploads`) :
+
+- `waiting` : « En attente… » ; ne consomme aucun créneau.
+- `sending` : « Envoi… » pour un fichier, « Téléchargement… » pour un lien ;
+  consomme un des `MAX_ACTIVE_UPLOADS` créneaux.
+- `converting` : « Conversion… » après le 202 ; libère immédiatement son
+  créneau. Un 202 sans `ingestionId` échoue avec « Réponse inattendue du
+  serveur. ».
+- `failed` : message d'erreur, boutons « Réessayer » et « Retirer ». Un
+  fichier de plus de 100 MiB (100 × 1024 × 1024 octets) n'est jamais envoyé :
+  la carte est créée directement en échec avec « Fichier trop volumineux :
+  100 Mo maximum. » et sans « Réessayer ».
+
+Le shell émet deux événements vers la fenêtre `board` :
+
+| Événement | Payload | Émission |
+| --- | --- | --- |
+| `overlay://media-ingestion` | résultat `media.ingestion` en camelCase + `guildId` : `{ ingestionId, ok, created?, itemId?, error?: { code, message? }, guildId }` | au client demandeur, à la fin de la conversion |
+| `overlay://board-changed` | `{ guildId, change: "added" \| "updated" \| "deleted", itemId }` | à toute la guilde, à chaque ajout/modification/suppression d'item |
+
+À la réception de `overlay://media-ingestion`, le board cherche l'entrée par
+`ingestionId`. Un résultat peut arriver avant que la réponse 202 ne soit
+traitée : le board conserve alors les résultats sans entrée (Map bornée à 50,
+les plus anciens jetés) et les applique dès l'enregistrement de l'`ingestionId`.
+
+- `ok:true, created:false` : l'entrée est retirée et « « titre » est déjà sur
+  le board. » est affiché.
+- `ok:true, created:true` (ou `created` absent) : un rechargement des items est
+  demandé ; l'entrée est retirée à la fin de ce rechargement et « « titre »
+  ajouté au board. » est affiché.
+- `ok:false` : l'entrée passe en `failed` avec le message de
+  `ingestionErrorMessage` (`unsupported_media`,
+  `media_ingestion_failed` + message serveur, libellé connu, sinon message
+  serveur, sinon « La conversion a échoué. »).
+
+Rafraîchissement du board : `overlay://board-changed` ne déclenche un
+`requestItemsReload()` que si `payload.guildId` est la guilde active. Les
+appels rapprochés sont regroupés par un délai de 300 ms en un seul
+`loadItems()` ; tous les appelants regroupés reçoivent la même promesse,
+résolue à la fin de ce chargement.
+
+Resynchronisation des conversions :
+
+- quand une guilde repasse à `connection.status === "connected"` après un
+  autre état et qu'elle a des entrées `converting`, le board lit une fois
+  `GET /overlay/media-board/ingestions` via `guild_api` ;
+- tant qu'une guilde a des entrées `converting` **et** qu'elle n'a pas de
+  WebSocket connecté (guilde en sourdine ou hors ligne), le même GET est
+  répété toutes les 15 s, uniquement pour cette guilde, et s'arrête dès
+  qu'elle n'a plus d'entrée `converting` ou redevient connectée ;
+- pour chaque entrée : `ready` → succès, `failed` → échec,
+  `processing` → rien, entrée absente de la liste → échec « Le serveur a
+  redémarré pendant la conversion. » (une ingestion absente de la liste
+  signifie un redémarrage du serveur).
+
+Tolérance du WebSocket : une trame texte qui ne se désérialise pas en
+`ServerEnvelope` est relue en JSON. Si c'est un objet dont `type` est une
+chaîne inconnue de tous les messages serveur (constantes `msg_type` de
+`lc-protocol`), un `warn` est journalisé et la session continue ; un JSON
+invalide ou un type connu avec un payload invalide termine la session
+(« trame serveur invalide »).
+
+## 14. Paramètres de l'appareil (board)
+
+Ces sept commandes sont autorisées **pour la seule fenêtre `board`** ;
+`overlay_placement_finish` (§14.6) l'est pour la seule fenêtre `overlay`.
+
+### 14.1 `settings_get`
+
+Aucun payload. Réponse `SettingsView` :
+
+```json
+{
+  "version": "3.0.1",
+  "updaterEnabled": false,
+  "displays": [
+    {
+      "index": 0,
+      "key": "0,0,2560,1440,0",
+      "label": "Écran 1 — 2560 × 1440 (principal)",
+      "width": 2560,
+      "height": 1440,
+      "primary": true
+    }
+  ],
+  "selectedDisplayKey": null,
+  "volume": 0.8,
+  "guildVolumes": { "111": 1.0 },
+  "generalMute": false,
+  "showText": true,
+  "autoStart": false,
+  "shortcuts": { "stop": "CommandOrControl+Shift+S", "muteAll": null },
+  "layout": {
+    "zone": { "x": 0, "y": 0, "width": 1, "height": 1 },
+    "align": "center"
+  },
+  "placing": false,
+  "profile": { "displayName": "Quentin", "avatar": null }
+}
+```
+
+`selectedDisplayKey: null` désigne l'écran principal. `generalMute` est
+l'inverse de `enabled`. `guildVolumes` contient toutes les guildes rejointes.
+`autoStart` reflète l'état réel du plugin autostart.
+
+`layout.zone` est le rectangle de l'écran choisi où le cadre média (en-tête,
+média, légende) doit tenir, en fractions de l'écran : `0,0,1,1` est l'écran
+entier. Le shell le normalise : côtés entre 0,05 et 1, zone gardée sur l'écran,
+fractions arrondies au 1/10 000 ; une valeur non finie remet l'écran entier.
+`layout.align` place le cadre dans la zone quand il n'en a pas la forme :
+`center`, `top`, `bottom`, `left`, `right`, `top-left`, `top-right`,
+`bottom-left` ou `bottom-right`. `placing` vaut `true` pendant un placement
+(§14.6).
+
+### 14.2 `settings_set`
+
+Le payload est un objet partiel. Seules les clés présentes sont modifiées :
+`selectedDisplayKey`, `volume`, `guildVolumes` (fusion par guilde),
+`generalMute`, `showText`, `autoStart`, `shortcuts` (partiel ; `null` efface un
+accélérateur), `layout` (partiel), `profile` (partiel ; `null` efface un champ).
+
+Réponse en succès :
+
+```json
+{ "ok": true, "settings": { "...": "SettingsView à jour" } }
+```
+
+Réponse en échec (aucune modification appliquée) :
+
+```json
+{
+  "ok": false,
+  "field": "shortcuts.stop",
+  "message": "raccourci invalide ou non pris en charge",
+  "settings": { "...": "SettingsView inchangée" }
+}
+```
+
+Règles : volumes ramenés dans `[0,1]` ; `layout.align` inconnu refusé
+(`layout.align`) ; `layout.zone` partiel (chaque nombre présent remplace le
+sien, puis la zone est normalisée), `null` pour l'écran entier, un nombre non
+numérique refusé (`layout.zone.<clé>`) ; `layout: null` remet la mise en page
+par défaut ; les autres clés de `layout` sont ignorées ; un
+accélérateur doit être analysable, ne pas entrer en collision avec l'autre
+raccourci global, un binding média ou le rechargement manuel, et être accepté
+par l'OS. En cas de refus OS, l'ancien raccourci est réenregistré et rien n'est
+persisté.
+
+Effets immédiats : persistance atomique, replacement de l'overlay sur l'écran
+choisi, réenregistrement des raccourcis, activation/désactivation de
+l'autostart, connexion/déconnexion de la sourdine générale comme le tray,
+rafraîchissement du tray, envoi de `overlay://settings` à l'overlay et de
+`overlay://device-settings` au board.
+
+`overlay://device-settings` est aussi émis quand la sourdine générale change
+depuis le tray ou quand une guilde est rejointe/quittée (donc quand
+`guildVolumes` change).
+
+### 14.3 `settings_identify_displays`
+
+Aucun payload → `{ "count": N }`. Commande async (une commande synchrone
+bloquerait la création des fenêtres sous Windows). Le shell crée une fenêtre
+transparente, sans décoration, always-on-top, cliquable à travers et non
+focusable par écran (label `identify-<index>`, page `identify.html`), affichée
+sans activation : le board garde le focus. Chaque fenêtre affiche le numéro de
+l'écran et son libellé, reste au-dessus du board, puis le shell les ferme après
+3 s. Ces fenêtres n'utilisent aucune commande IPC.
+
+### 14.4 `settings_test_media`
+
+Aucun payload → `{ "ok": true }`, ou
+`{ "ok": false, "reason": "overlay_busy" }` si un média réel occupe l'overlay.
+Affiche pendant 5 s la carte locale `assets/test-media.svg` via le même
+événement `overlay://play` que la lecture réelle, avec le profil local (ou
+« LiveChat »), le texte « Média de test » et le compte à rebours. Le payload ne
+contient aucun `jobId` et porte `test: true` : aucun rapport de lecture ou
+d'erreur n'est envoyé au serveur. Le SVG a une taille intrinsèque de
+3840 × 2160 : l'overlay ne grandit jamais un média, la carte occupe donc la
+plus grande place permise à un média 16:9 par la mise en page. La carte de test
+remplace le gabarit d'aperçu (§14.5) s'il est affiché. Pendant un placement
+(§14.6), la réponse est `overlay_busy`.
+
+### 14.5 `settings_preview_layout`
+
+Payload `{ "layout": { ... } }` (partiel, mêmes règles que `layout` dans
+`settings_set`) → `null`, ou une erreur `"<champ> : <message>"`. Rien n'est
+enregistré : le board montre ainsi un changement d'alignement, d'écran ou le
+retour à l'écran entier (au plus un appel toutes les 16 ms) et l'enregistre
+avec `settings_set`.
+
+- Le shell émet `overlay://settings` avec la mise en page brouillon : un média
+  affiché la suit tout de suite.
+- Au premier appel d'un aperçu, si aucun média réel ne joue, le shell affiche
+  la fenêtre overlay et lui envoie le gabarit par `overlay://play` : la carte
+  du média de test avec le texte « Aperçu de la mise en page », `test: true`,
+  `durationSec: 10` et `hold: true`. Avec `hold`, le renderer affiche le
+  compte à rebours figé et garde la carte jusqu'au `overlay://stop`.
+- 4 s après le dernier appel, le shell renvoie `overlay://settings` avec la
+  mise en page enregistrée, retire le gabarit par `overlay://stop`
+  (`reason: "layout_preview_end"`) si aucun média réel ne l'a remplacé, et
+  masque la fenêtre overlay si l'overlay est désactivé.
+
+L'échéance est décidée sur le thread principal, comme chaque appel de la
+commande (synchrone) : un réglage modifié pile à l'échéance n'est jamais perdu.
+Pendant un placement (§14.6), seule la mise en page brouillon est émise : le
+placement affiche déjà son gabarit.
+
+### 14.6 Placement de la zone à l'écran
+
+L'utilisateur place la zone d'affichage directement sur l'écran de l'overlay,
+comme une fenêtre.
+
+`settings_placement_start` (board, async, aucun payload) → `{ "ok": true }`,
+ou `{ "ok": false, "reason": "overlay_not_ready" }` tant que le renderer
+overlay n'a pas appelé `overlay_renderer_ready` (rien ne dessinerait la zone et
+une fenêtre transparente cliquable bloquerait l'écran). Le shell :
+
+- annule l'aperçu de mise en page en cours (§14.5) ;
+- rend la fenêtre overlay cliquable et activable (`set_ignore_cursor_events(false)`,
+  `set_focusable(true)`, retrait de `WS_EX_TRANSPARENT | WS_EX_NOACTIVATE`),
+  toujours au premier plan et hors de la barre des tâches, puis l'affiche et
+  lui donne le focus ; la garde topmost ne réimpose plus les styles
+  click-through pendant le placement ;
+- envoie le gabarit d'aperçu (§14.5, `hold: true`) si aucun média réel ne joue ;
+- émet `overlay://placement` `{ "active": true, "layout": { ... } }` à
+  l'overlay et `overlay://device-settings` (`placing: true`) au board.
+
+Un second appel pendant un placement ne fait que ramener l'overlay au premier
+plan.
+
+Le renderer dessine la zone avec une poignée à chaque coin et au milieu de
+chaque bord, assombrit le reste de l'écran et affiche une barre « Plein écran /
+Annuler / Valider ». Glisser la zone la déplace, glisser une poignée la
+redimensionne (côté minimal : 5 % de l'écran). Les bords et le centre de la
+zone s'aimantent aux bords et au centre de l'écran à moins de 8 px (Alt :
+sans magnétisme). Les flèches déplacent d'un pixel physique (Maj : 10),
+Ctrl + flèches redimensionnent, Entrée valide, Échap annule. Chaque changement
+est appliqué tout de suite à la mise en page de l'overlay, sans IPC.
+
+`overlay_placement_finish` (overlay, async) : payload
+`{ "zone": { "x", "y", "width", "height" } }` pour enregistrer (les quatre
+nombres finis sont exigés, puis normalisés), `{ "zone": null }` pour annuler
+→ `null`, ou une erreur. `settings_placement_cancel` (board, async, aucun
+payload) annule aussi, si l'écran de l'overlay est hors d'atteinte. Dans les
+deux cas, le shell enregistre la zone éventuelle, émet `overlay://placement`
+`{ "active": false }`, renvoie `overlay://settings` avec la mise en page
+enregistrée, retire le gabarit (`reason: "placement_end"`) si aucun média réel
+ne l'a remplacé, remet les politiques click-through de l'overlay (masqué s'il
+est désactivé), émet `overlay://device-settings` et ramène le board au premier
+plan. Sans placement en cours, ces commandes ne font rien. Un renderer overlay
+rechargé pendant un placement (`overlay_renderer_ready`) l'annule.
+
+### 14.7 Suppression de `guild_media_url`
+
+`guild_media_url`, son entrée d'allowlist et `net::api::board_media_url` sont
+supprimés : chaque élément du board fournit désormais une URL signée
+`mediaUrl`, utilisée directement par le board.

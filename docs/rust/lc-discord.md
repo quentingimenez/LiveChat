@@ -69,7 +69,7 @@ config-max, overlays, stop, media-add, hidesend, hidetalk`
 | alive | `dispo` | `alive` | — | publique (pas de defer) | vert |
 | send | `msg` | `send` | `url` (str), `media` (attachment), `text` (str), `refresh` (bool) | defer public | vert |
 | talk | `dire` | `talk` | `voice` (str, requis), `text` (str) | defer public | vert |
-| pair-code | `pair-code` | `pair-code` | `mode` (str, choix `normal`/`invite`) | éphémère | bleu |
+| pair-code | `pair-code` | `pair-code` | `mode` (str, choix `normal`/`invite`) | defer éphémère puis édition éphémère | bleu |
 | help | `help` | `help` | — | éphémère | — |
 | info | `info` | `info` | — | éphémère | — |
 | config-defaut | `config-defaut` | `config-defaulttime` | `nombre` (int, requis) | éphémère | vert |
@@ -147,9 +147,19 @@ d'unicité (`pairing_codes().get`). Mode `normal` : expiration
 `now + max(1, PAIRING_CODE_TTL_MINUTES)` minutes ; mode `invite` : aucune
 expiration, `PairingMode::InviteReadOnly` (usage unique, overlay EXE seulement).
 La ligne `PairingCodeEntry` est créée dans `lc-db` avec l'auteur Discord
-(id, nom, image). La description est exactement celle du legacy (`API URL`,
-code, « Expire dans N minute(s). », N = TTL effectif, minimum 1 minute). Embed
-bleu éphémère.
+(id, nom, image). `grants_admin = (mode == normal && author.is_admin)` : un
+administrateur Discord en mode normal produit un code qui donne le rôle LiveChat
+`admin` à l'appairage ; un code `invite` ne le donne jamais. Le rôle est figé à
+la consommation. Quand le drapeau est posé, la description ajoute une ligne
+courte localisée (« Ce code donne le rôle admin. »). La description reprend
+ensuite le texte legacy (`API URL`, code, « Expire dans N minute(s). », N = TTL
+effectif, minimum 1 minute). Embed bleu éphémère.
+
+La commande est **acquittée avant le travail en base** : `plan_deferral` renvoie
+`Deferral::Ephemeral` pour `/pair-code`, la glue envoie un `type: 5` éphémère
+puis édite la réponse d'origine avec le code (`edit_original_interaction_response`).
+Cela respecte la limite Discord de 3 secondes (correctif « Unknown
+interaction »).
 
 ### `/help`
 Titre littéral `Commands :`, description = liste des noms enregistrés dans
@@ -252,9 +262,13 @@ Elle apporte :
   `...?size=256`), `is_admin = member.permissions.administrator()` ;
 - `deferral_response` / `message_response` : corps JSON `type: 5` / `type: 4`
   (flags éphémère `64`), utiles pour les tests d'API et un autre transport ;
-- `respond(&Http, &CommandInteraction, &CommandOutcome)` : envoie le defer puis
-  le message via `http.create_interaction_response` (erreur boxée pour clippy).
-  ⚠ `serenity::Error` est boxé dans la signature publique de cette fonction.
+- `defer(&Http, &CommandInteraction, Deferral)` : envoie l'accusé de réception
+  `type: 5` **avant** `dispatch` (public ou éphémère, `Deferral::None` = no-op) ;
+- `respond(&Http, &CommandInteraction, &CommandOutcome)` : sans defer, envoie le
+  message `type: 4` via `create_interaction_response` ; après un defer, édite la
+  réponse d'origine via `edit_original_interaction_response` (Discord refuse une
+  seconde réponse initiale). Erreurs boxées pour clippy.
+  ⚠ `serenity::Error` est boxé dans la signature publique de ces fonctions.
 
 Câblage Phase 6b (non fait ici) : créer le `Client` (`Guilds`), enregistrer
 `command_payloads`, router `interactionCreate` vers `parse_invocation` →

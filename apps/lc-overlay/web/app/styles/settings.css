@@ -1,0 +1,187 @@
+/* ------------------------------------------------------------ page Paramètres */
+/* Device-wide settings: a plain page in the main area, with the rail kept
+   visible and no guild header. */
+.settings {
+  /* One width for the first control of a row (selects, sliders, the zone
+     summary), so the buttons after it line up from row to row. */
+  --settings-field-width: 256px;
+  max-width: 820px;
+  margin: 0 auto;
+}
+
+.settings-head {
+  margin-bottom: 20px;
+}
+
+.settings-head h2 {
+  margin: 0 0 4px;
+  font-family: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.settings-head p {
+  margin: 0;
+}
+
+.settings-section {
+  margin-bottom: 16px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--slate-700);
+}
+
+.settings-section h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 8px 16px;
+  align-items: center;
+  padding: 7px 0;
+}
+
+.settings-label {
+  color: var(--text-soft);
+}
+
+.settings-control {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+
+.settings-control > .field {
+  width: var(--settings-field-width);
+  max-width: 100%;
+}
+
+.settings-value {
+  min-width: 48px;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.settings-range {
+  width: min(var(--settings-field-width), 100%);
+  accent-color: var(--blue);
+}
+
+/* Display zone summary, next to « Placer sur l’écran ». */
+.settings-zone {
+  flex: none;
+  width: var(--settings-field-width);
+  max-width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-zone.is-live {
+  color: var(--amber);
+  font-weight: 600;
+}
+
+.settings-hint {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.settings-hint.is-inline {
+  color: var(--text-soft);
+}
+
+/* A hint about the row above, aligned with its control column. */
+.settings-hint.is-under {
+  margin: -4px 0 6px 206px;
+}
+
+.settings-control .error-text {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.settings-subtitle {
+  margin: 16px 0 2px;
+  color: var(--text-soft);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------- per-guild sound */
+/* Guild rows are plain settings rows: no rule of their own above them, so each
+   one sits in the middle of its band like the general sound rows. */
+.settings-guild-name {
+  color: var(--text);
+}
+
+.settings-guild-mute {
+  color: var(--text-soft);
+}
+
+/* -------------------------------------------------------------------- profil */
+.settings-profile {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 2px 0 10px;
+}
+
+.settings-avatar .avatar {
+  width: 56px;
+  height: 56px;
+  font-size: 20px;
+}
+
+.settings-profile-fields {
+  display: grid;
+  flex: 1;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-field-label {
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+/* ------------------------------------------------------------------ à propos */
+.settings-about {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.settings-logo {
+  width: 64px;
+  height: 64px;
+}
+
+.settings-about-name {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.settings-about .meta {
+  margin: 0;
+}
+
+@media (max-width: 720px) {
+  .settings-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .settings-hint.is-under {
+    margin-left: 0;
+  }
+}

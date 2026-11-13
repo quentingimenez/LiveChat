@@ -27,12 +27,13 @@ use lc_domain::{
     MediaKind, MediaStatus, OverlayClient, OverlayClientId, OverlaySessionMode, PairingCode,
     PairingCodeEntry, PairingMode, PlaybackJob, PlaybackJobId,
 };
+use lc_protocol::close_code;
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-use super::hub::{admin_hub, NoopAdminHub};
+use super::hub::{admin_hub, AdminHub, NoopAdminHub};
 use super::runtime_settings::SETTINGS_FILE_NAME;
 use super::ADMIN_CSP;
 use crate::app::{router, AppState};
@@ -87,6 +88,53 @@ impl DiscordGuildLeaver for FakeLeaver {
             FakeLeaveResult::NotMember => Ok(LeaveOutcome::NotMember),
             FakeLeaveResult::Api => Err(LeaveError::Api("échec Discord simulé".to_owned())),
         }
+    }
+}
+
+/// Admin hub fake that records close calls.
+#[derive(Debug, Default)]
+struct RecordingAdminHub {
+    closes: Mutex<Vec<(uuid::Uuid, u16)>>,
+}
+
+impl RecordingAdminHub {
+    fn closes(&self) -> Vec<(uuid::Uuid, u16)> {
+        self.closes.lock().expect("verrou du hub").clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl AdminHub for RecordingAdminHub {
+    fn connected_count(&self) -> usize {
+        0
+    }
+
+    fn connected_for_guild(&self, _guild_id: &GuildId) -> usize {
+        0
+    }
+
+    fn is_connected(&self, _client_id: &uuid::Uuid) -> bool {
+        false
+    }
+
+    fn close_client(&self, client_id: &uuid::Uuid, code: u16) -> bool {
+        self.closes
+            .lock()
+            .expect("verrou du hub")
+            .push((*client_id, code));
+        true
+    }
+
+    fn close_client_with_reason(&self, client_id: &uuid::Uuid, code: u16, _reason: &str) -> bool {
+        self.close_client(client_id, code)
+    }
+
+    async fn broadcast_stop(&self, _guild_id: &GuildId) -> usize {
+        0
+    }
+
+    async fn broadcast_settings(&self, _guild_id: &GuildId) -> usize {
+        0
     }
 }
 
@@ -423,6 +471,7 @@ fn pairing_code(
         code: PairingCode::parse(code).expect("code de pairing valide"),
         guild_id: guild_id.clone(),
         mode: PairingMode::Normal,
+        grants_admin: false,
         created_by_discord_user_id: created_by.to_owned(),
         author_name: Some("Alice".to_owned()),
         author_image: None,
@@ -1185,6 +1234,47 @@ async fn purge_supprime_les_donnees_de_la_guilde_et_les_medias_orphelins() {
         "la ligne du média conservé reste en base"
     );
     assert!(db.guilds().get(&guild_id).await.expect("lecture").is_none());
+}
+
+#[tokio::test]
+async fn purge_closes_overlay_sockets_with_guild_deleted() {
+    let harness = Harness::new().await;
+    let guild_id = GuildId::parse("42").expect("guilde");
+    harness
+        .db
+        .guilds()
+        .upsert(&guild("42"))
+        .await
+        .expect("guilde");
+    let overlay = overlay_client(&guild_id, OverlaySessionMode::Normal);
+    let overlay_id = overlay.id;
+    harness
+        .db
+        .overlay_clients()
+        .create(&overlay)
+        .await
+        .expect("client overlay");
+
+    let hub = Arc::new(RecordingAdminHub::default());
+    let state = harness
+        .state
+        .clone()
+        .with_admin_hub(hub.clone() as Arc<dyn AdminHub>);
+    let app = router(state);
+    let response = app
+        .oneshot(harness.request_json(
+            Method::POST,
+            "/admin/api/guilds/42/purge",
+            &json!({ "confirmGuildId": "42" }),
+        ))
+        .await
+        .expect("réponse de purge");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    assert_eq!(
+        hub.closes(),
+        vec![(overlay_id.as_uuid(), close_code::GUILD_DELETED)]
+    );
 }
 
 #[tokio::test]

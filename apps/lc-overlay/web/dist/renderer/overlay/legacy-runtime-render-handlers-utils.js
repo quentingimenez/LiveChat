@@ -32,10 +32,17 @@ export function createOverlayLegacyRuntimeRenderHandlersUtils() {
                 attachTextToMedia: options.attachTextToMedia === true,
             });
         }
+        function resolveVolume() {
+            const payloadVolume = params.state.activeVolume;
+            if (typeof payloadVolume === 'number' && Number.isFinite(payloadVolume) && payloadVolume >= 0 && payloadVolume <= 1) {
+                return payloadVolume;
+            }
+            return params.state.overlayConfig.volume;
+        }
         function applyVolume() {
             params.mediaDomUtils.applyMediaVolume({
                 root: params.nodes.mediaLayer,
-                perceptualGain: params.utils.toPerceptualGain(params.state.overlayConfig.volume, params.constants.volumeCurveGamma),
+                perceptualGain: params.utils.toPerceptualGain(resolveVolume(), params.constants.volumeCurveGamma),
             });
         }
         function ensureTwitterWidgets() {
@@ -89,6 +96,8 @@ export function createOverlayLegacyRuntimeRenderHandlersUtils() {
             });
         }
         async function onPlay(payload) {
+            params.state.activeVolume = typeof payload?.volume === 'number' ? payload.volume : null;
+            const isLocalTest = payload?.test === true;
             await params.playFlowUtils.runPlayFlow({
                 payload: payload,
                 clearOverlay: params.clearOverlay,
@@ -100,11 +109,12 @@ export function createOverlayLegacyRuntimeRenderHandlersUtils() {
                 applyMediaFooterText,
                 logRenderError: params.logError,
                 reportError: (errorPayload) => {
-                    if (typeof params.reportError === 'function') {
+                    if (!isLocalTest && typeof params.reportError === 'function') {
                         params.reportError(errorPayload);
                     }
                 },
                 startCountdown: params.startCountdown,
+                pauseCountdown: params.pauseCountdown,
                 setResetTimer: (nextResetTimer) => {
                     params.state.resetTimer = nextResetTimer;
                 },
@@ -116,6 +126,7 @@ export function createOverlayLegacyRuntimeRenderHandlersUtils() {
             params.state.overlayConfig = params.bootstrapUtils.applyOverlaySettings({
                 currentConfig: params.state.overlayConfig,
                 nextSettings,
+                overlayRoot: params.nodes.overlayRoot,
                 onHideText: () => {
                     if (params.nodes.textLayer instanceof HTMLElement) {
                         params.nodes.textLayer.innerHTML = '';
@@ -130,6 +141,8 @@ export function createOverlayLegacyRuntimeRenderHandlersUtils() {
                 },
                 applyVolume,
             });
+            // The zone may have moved: re-fit the header chips in it.
+            params.scheduleMediaHeaderLayout();
         }
         return {
             onPlay,

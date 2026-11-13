@@ -25,6 +25,11 @@ use crate::storage::{staged_path, MediaStorage};
 
 /// Taille minimale d'un média normalisé valide.
 pub const MIN_MEDIA_BYTES: u64 = 1024;
+/// Minimum size for an authenticated local-upload image.
+///
+/// A valid 1×1 PNG is smaller than [`MIN_MEDIA_BYTES`]; uploaded icons are
+/// legitimate, while remote sources keep the stricter anti-empty guard.
+const MIN_LOCAL_IMAGE_BYTES: u64 = 8;
 /// Débit audio de sortie.
 pub const AUDIO_BITRATE: &str = "192k";
 /// Type MIME des audio normalisés.
@@ -90,6 +95,44 @@ pub async fn normalize_downloaded_media(
     output_base: &Path,
     config: &MediaConfig,
 ) -> MediaResult<NormalizedMedia> {
+    normalize_downloaded_media_with_min_image_size(
+        input,
+        content_type,
+        output_base,
+        config,
+        MIN_MEDIA_BYTES,
+    )
+    .await
+}
+
+/// Normalizes an authenticated local upload.
+///
+/// Identical to [`normalize_downloaded_media`] except that small raster images
+/// are accepted: valid 1×1 PNG/JPEG/GIF icons are below the remote-source
+/// anti-empty guard. Audio and video keep [`MIN_MEDIA_BYTES`].
+pub async fn normalize_local_media(
+    input: &Path,
+    content_type: Option<&str>,
+    output_base: &Path,
+    config: &MediaConfig,
+) -> MediaResult<NormalizedMedia> {
+    normalize_downloaded_media_with_min_image_size(
+        input,
+        content_type,
+        output_base,
+        config,
+        MIN_LOCAL_IMAGE_BYTES,
+    )
+    .await
+}
+
+async fn normalize_downloaded_media_with_min_image_size(
+    input: &Path,
+    content_type: Option<&str>,
+    output_base: &Path,
+    config: &MediaConfig,
+    min_image_bytes: u64,
+) -> MediaResult<NormalizedMedia> {
     let probed = probe::probe(&config.tools.ffprobe, input, config.download.timeout)
         .await
         .ok();
@@ -106,7 +149,13 @@ pub async fn normalize_downloaded_media(
         })?;
     }
     match kind {
-        MediaKind::Image => normalize_image(input, content_type, output_base, probed.as_ref()),
+        MediaKind::Image => normalize_image_with_min_size(
+            input,
+            content_type,
+            output_base,
+            probed.as_ref(),
+            min_image_bytes,
+        ),
         MediaKind::Audio => normalize_audio(input, output_base, probed.as_ref(), config).await,
         MediaKind::Video => normalize_video(input, output_base, probed.as_ref(), config).await,
     }
@@ -121,6 +170,16 @@ pub fn normalize_image(
     content_type: Option<&str>,
     output_base: &Path,
     probed: Option<&ProbeInfo>,
+) -> MediaResult<NormalizedMedia> {
+    normalize_image_with_min_size(input, content_type, output_base, probed, MIN_MEDIA_BYTES)
+}
+
+fn normalize_image_with_min_size(
+    input: &Path,
+    content_type: Option<&str>,
+    output_base: &Path,
+    probed: Option<&ProbeInfo>,
+    min_size_bytes: u64,
 ) -> MediaResult<NormalizedMedia> {
     if is_svg_image(input, content_type) {
         return Err(MediaError::new(
@@ -141,7 +200,15 @@ pub fn normalize_image(
         ));
     }
     MediaStorage::commit_file(&staged, &output)?;
-    finalize(MediaKind::Image, &mime, &output, probed, None, None)
+    finalize_with_min_size(
+        MediaKind::Image,
+        &mime,
+        &output,
+        probed,
+        None,
+        None,
+        min_size_bytes,
+    )
 }
 
 /// `true` si l'entrée est (ou prétend être) un SVG.
@@ -383,8 +450,28 @@ pub fn finalize(
     max_height: Option<u32>,
     duration_sec: Option<i64>,
 ) -> MediaResult<NormalizedMedia> {
+    finalize_with_min_size(
+        kind,
+        mime,
+        output,
+        probed,
+        max_height,
+        duration_sec,
+        MIN_MEDIA_BYTES,
+    )
+}
+
+fn finalize_with_min_size(
+    kind: MediaKind,
+    mime: &str,
+    output: &Path,
+    probed: Option<&ProbeInfo>,
+    max_height: Option<u32>,
+    duration_sec: Option<i64>,
+    min_size_bytes: u64,
+) -> MediaResult<NormalizedMedia> {
     let size_bytes = MediaStorage::file_size(output)?;
-    if size_bytes < MIN_MEDIA_BYTES {
+    if size_bytes < min_size_bytes {
         let _removed = fs::remove_file(output);
         return Err(MediaError::new(
             MediaErrorCode::InvalidMedia,

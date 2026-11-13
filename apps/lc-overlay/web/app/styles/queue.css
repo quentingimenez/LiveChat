@@ -1,0 +1,49 @@
+/* --------------------------------------------------------------------- file */
+
+.line.is-queue {
+  grid-template-columns: 24px minmax(0, 1fr) auto auto;
+}
+
+.now {
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border-radius: var(--radius-m);
+  background: var(--slate-700);
+  border-left: 3px solid var(--amber);
+}
+
+.progress {
+  height: 3px;
+  margin-top: 10px;
+  border-radius: 2px;
+  background: var(--slate-600);
+  overflow: hidden;
+}
+
+.progress > span {
+  display: block;
+  height: 100%;
+  background: var(--amber);
+}
+
+/* --------------------------------------------------------------- à l'antenne */
+.onair {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 24px;
+  border-top: 1px solid var(--line);
+  background: var(--slate-900);
+  font-size: 13px;
+}
+
+.onair .pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--amber);
+}
+
+.onair .title {
+  font-weight: 600;
+}

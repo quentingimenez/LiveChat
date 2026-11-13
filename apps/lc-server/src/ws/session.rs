@@ -32,10 +32,10 @@ use lc_playback::{
     PlaybackEndedEvent, PlaybackStateEvent, PlaybackStateOutcome, MEDIA_BOARD_JOB_PRIORITY,
 };
 use lc_protocol::{
-    close_code, close_reason, is_version_below, outdated_protocol_reason, AckError, AckPayload,
-    ClientEnvelope, ClientMessage, HelloPayload, PlaybackEndedPayload, PlaybackStatePayload,
-    ServerEnvelope, ServerErrorPayload, ServerMessage, SessionMode, SettingsPayload,
-    StopRequestSource, WelcomeConfig, WelcomePayload, HELLO_TIMEOUT_MS,
+    close_code, close_reason, is_version_below, outdated_protocol_reason, AckError, AckOutcome,
+    AckPayload, ClientEnvelope, ClientMessage, HelloPayload, PlaybackEndedPayload,
+    PlaybackStatePayload, ServerEnvelope, ServerErrorPayload, ServerMessage, SessionMode,
+    SettingsPayload, StopRequestSource, WelcomeConfig, WelcomePayload, HELLO_TIMEOUT_MS,
     MAX_CLIENT_MESSAGES_PER_SECOND, MAX_FRAME_BYTES, MAX_MEDIA_TEXT_CHARS,
     MAX_PLAYBACK_REMAINING_MS, PEERS_REQUEST_MIN_INTERVAL_MS, PING_INTERVAL_MS,
     PLAYBACK_STATE_MIN_INTERVAL_MS, PROTOCOL_VERSION,
@@ -46,6 +46,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::hub::{self, AuthError, Hub, HubEngine, OutFrame, TOO_MANY_CONNECTIONS_REASON};
+use crate::http::overlay::guild::guild_icon_url;
 
 /// Borne dure de transport de l'upgrade : volontairement supérieure à la
 /// limite applicative (64 Kio) afin de pouvoir répondre `4408` aux trames
@@ -87,13 +88,15 @@ impl CloseInfo {
 }
 
 /// Contexte immuable d'une session authentifiée.
+///
+/// Aucun profil d'auteur n'est figé ici : `media.trigger` relit le membre en
+/// base à chaque déclenchement, pour qu'une modification de profil soit prise
+/// en compte sans reconnexion.
 struct SessionContext {
     guild_id: GuildId,
     client_id: OverlayClientId,
     client_id_str: String,
     session_mode: SessionMode,
-    author_name: Option<String>,
-    author_image: Option<String>,
 }
 
 /// Horodatages des derniers messages soumis à throttle (par connexion).
@@ -216,8 +219,6 @@ async fn handle_socket(
         client_id: client.id,
         client_id_str: client_id_str.clone(),
         session_mode,
-        author_name: client.default_author_name.clone(),
-        author_image: client.default_author_image.clone(),
     };
 
     let (sender, mut receiver) = mpsc::unbounded_channel::<OutFrame>();
@@ -227,8 +228,10 @@ async fn handle_socket(
         client_id_str,
         client.label,
         session_mode,
-        context.author_name.clone(),
-        context.author_image.clone(),
+        // Peers keep the client's author defaults at connect time; the play
+        // payload is the part that must follow the live member profile.
+        client.default_author_name.clone(),
+        client.default_author_image.clone(),
         sender,
     ) {
         Ok(connection_id) => connection_id,
@@ -243,7 +246,7 @@ async fn handle_socket(
         }
     };
 
-    if !send_welcome(&mut sink, &hub, &engine, &context).await {
+    if !send_welcome(&mut sink, &hub, &engine, &db, &context).await {
         hub.unregister(connection_id);
         return;
     }
@@ -531,10 +534,18 @@ async fn send_welcome(
     sink: &mut SplitSink<WebSocket, Message>,
     hub: &Arc<Hub>,
     engine: &Arc<HubEngine>,
+    db: &Db,
     context: &SessionContext,
 ) -> bool {
     let (show_text_default, default_media_time, max_media_time) =
         hub.guild_defaults(&context.guild_id).await;
+    let access = match db.guilds().access(&context.guild_id).await {
+        Ok(access) => access,
+        Err(error) => {
+            warn!(error = %error, "lecture du rattachement de guilde impossible au welcome");
+            None
+        }
+    };
     let current_job = match engine.current_job(&context.guild_id).await {
         Ok(Some(current_job)) => {
             let now_sec = u64::try_from(Utc::now().timestamp()).unwrap_or(0);
@@ -549,6 +560,8 @@ async fn send_welcome(
     let welcome = WelcomePayload {
         protocol_version: PROTOCOL_VERSION,
         guild_id: context.guild_id.as_str().to_owned(),
+        guild_name: access.as_ref().and_then(|access| access.name.clone()),
+        guild_icon_url: access.as_ref().and_then(guild_icon_url),
         client_id: context.client_id_str.clone(),
         session_mode: context.session_mode,
         server_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -847,10 +860,11 @@ async fn handle_client_message(
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
                 .map(|text| text.chars().take(MAX_MEDIA_TEXT_CHARS).collect::<String>());
-            let author_name = context
-                .author_name
-                .clone()
-                .or_else(|| item.created_by_name.clone());
+            // The member profile is read at trigger time: a `PATCH
+            // /overlay/profile` must be visible immediately, without waiting
+            // for a reconnection.
+            let (author_name, author_image) = trigger_author(db, context.client_id).await;
+            let author_name = author_name.or_else(|| item.created_by_name.clone());
             let duration_sec = media
                 .duration_sec
                 .filter(|duration| *duration > 0)
@@ -862,7 +876,7 @@ async fn handle_client_message(
                 text: text.clone(),
                 show_text: text.is_some(),
                 author_name,
-                author_image: context.author_image.clone(),
+                author_image,
                 duration_sec,
                 priority: MEDIA_BOARD_JOB_PRIORITY,
                 status: JobStatus::Pending,
@@ -876,20 +890,71 @@ async fn handle_client_message(
                 started_at: None,
                 finished_at: None,
             };
-            send_ack(hub, connection_id, request_id.as_str(), true, None);
             match engine.enqueue(&job).await {
-                Ok(()) => debug!(
-                    item = %payload.item_id,
-                    "média déclenché",
-                ),
-                Err(error) => {
-                    warn!(error = %error, "échec de l'enfilement d'un média");
-                    send_server_error(
+                Ok(()) => {
+                    let mut outcome = None;
+                    let mut position = None;
+                    match db.playback_jobs().get(job.id).await {
+                        Ok(Some(stored)) => match stored.status {
+                            JobStatus::Playing => outcome = Some(AckOutcome::Playing),
+                            JobStatus::Pending => {
+                                outcome = Some(AckOutcome::Queued);
+                                match db
+                                    .playback_jobs()
+                                    .list_pending_by_guild(&context.guild_id)
+                                    .await
+                                {
+                                    Ok(pending) => {
+                                        position = pending
+                                            .iter()
+                                            .position(|pending_job| pending_job.id == job.id)
+                                            .and_then(|index| u32::try_from(index + 1).ok());
+                                    }
+                                    Err(error) => warn!(
+                                        error = %error,
+                                        "lecture de la file d'attente impossible après enfilement"
+                                    ),
+                                }
+                            }
+                            _ => {}
+                        },
+                        Ok(None) => warn!(
+                            job_id = %job.id,
+                            "job introuvable après enfilement"
+                        ),
+                        Err(error) => warn!(
+                            error = %error,
+                            job_id = %job.id,
+                            "relecture du job impossible après enfilement"
+                        ),
+                    }
+                    send_trigger_ack(
                         hub,
                         connection_id,
-                        "internal_error",
-                        "échec de l'enfilement du média",
+                        request_id.as_str(),
+                        None,
+                        outcome,
+                        position,
                         Some(job.id.to_canonical()),
+                    );
+                    debug!(
+                        item = %payload.item_id,
+                        "média déclenché",
+                    );
+                }
+                Err(error) => {
+                    warn!(error = %error, "échec de l'enfilement d'un média");
+                    send_trigger_ack(
+                        hub,
+                        connection_id,
+                        request_id.as_str(),
+                        Some(ack_error(
+                            "internal_error",
+                            "échec de l'enfilement du média",
+                        )),
+                        None,
+                        None,
+                        None,
                     );
                 }
             }
@@ -915,6 +980,30 @@ async fn handle_client_message(
     Ok(())
 }
 
+/// Current stream author of an overlay socket, read from the database.
+///
+/// The owning member's live profile (`display_name`, `avatar`) wins. The
+/// client's `default_author_*` values are only a fallback for an overlay with
+/// no attached member (`legacy` pairings). A database error is logged and
+/// treated as "no profile" so it never blocks playback.
+async fn trigger_author(db: &Db, client_id: OverlayClientId) -> (Option<String>, Option<String>) {
+    match db.guild_members().get_for_overlay_client(client_id).await {
+        Ok(Some(member)) => (Some(member.display_name), member.avatar),
+        Ok(None) => match db.overlay_clients().get(client_id).await {
+            Ok(Some(client)) => (client.default_author_name, client.default_author_image),
+            Ok(None) => (None, None),
+            Err(error) => {
+                warn!(error = %error, client = %client_id, "lecture du profil d'auteur impossible");
+                (None, None)
+            }
+        },
+        Err(error) => {
+            warn!(error = %error, client = %client_id, "lecture du membre d'auteur impossible");
+            (None, None)
+        }
+    }
+}
+
 /// Construit un payload `ack` et l'envoie via le canal de la connexion.
 fn send_ack(
     hub: &Arc<Hub>,
@@ -927,7 +1016,36 @@ fn send_ack(
         ref_id: request_id.to_owned(),
         ok,
         error,
+        outcome: None,
+        position: None,
+        job_id: None,
     };
+    send_ack_payload(hub, connection_id, payload);
+}
+
+/// Sends a `media.trigger` ack carrying its dispatch result.
+fn send_trigger_ack(
+    hub: &Arc<Hub>,
+    connection_id: Uuid,
+    request_id: &str,
+    error: Option<AckError>,
+    outcome: Option<AckOutcome>,
+    position: Option<u32>,
+    job_id: Option<String>,
+) {
+    let payload = AckPayload {
+        ref_id: request_id.to_owned(),
+        ok: error.is_none(),
+        error,
+        outcome,
+        position,
+        job_id,
+    };
+    send_ack_payload(hub, connection_id, payload);
+}
+
+/// Serializes and sends an `ack` payload on the connection channel.
+fn send_ack_payload(hub: &Arc<Hub>, connection_id: Uuid, payload: AckPayload) {
     let envelope = ServerEnvelope::new(
         hub.next_message_id("ack"),
         now_ms(),

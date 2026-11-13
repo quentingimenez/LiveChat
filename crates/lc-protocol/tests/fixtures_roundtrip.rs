@@ -12,8 +12,8 @@ use serde_json::Value;
 
 use lc_protocol::{
     close_code, close_reason, is_frame_too_large, is_version_below, media_signature_input,
-    media_url_ttl_sec, msg_type, outdated_protocol_reason, parse_simple_version, ClientEnvelope,
-    ClientMessage, Envelope, MediaKind, MediaTrigger, ServerEnvelope, ServerMessage,
+    media_url_ttl_sec, msg_type, outdated_protocol_reason, parse_simple_version, AckOutcome,
+    AckPayload, ClientEnvelope, ClientMessage, Envelope, MediaKind, ServerEnvelope, ServerMessage,
     StopRequestSource, DEFAULT_MIN_OVERLAY_VERSION, HEARTBEAT_INTERVAL_MS, HELLO_TIMEOUT_MS,
     HTTP_UPGRADE_REQUIRED, LEGACY_SOCKET_IO_PATH, MAX_CLIENT_MESSAGES_PER_SECOND, MAX_FRAME_BYTES,
     MAX_MEDIA_TEXT_CHARS, MAX_PLAYBACK_REMAINING_MS, MEDIA_URL_EXPIRY_MARGIN_SEC,
@@ -30,7 +30,7 @@ enum Direction {
     Server,
 }
 
-/// Table de référence des 29 fixtures golden : (fichier, sens, type attendu).
+/// Table de référence des 32 fixtures golden : (fichier, sens, type attendu).
 const FIXTURES: &[(&str, Direction, &str)] = &[
     // ---- C→S ----
     ("v2_hello_normal.json", Direction::Client, msg_type::HELLO),
@@ -129,18 +129,33 @@ const FIXTURES: &[(&str, Direction, &str)] = &[
         Direction::Server,
         msg_type::ACK,
     ),
+    (
+        "v2_ack_media_trigger_queued.json",
+        Direction::Server,
+        msg_type::ACK,
+    ),
     ("v2_ack_read_only.json", Direction::Server, msg_type::ACK),
     (
         "v2_error_dispatch_failed.json",
         Direction::Server,
         msg_type::ERROR,
     ),
+    (
+        "v2_media_ingestion_ready.json",
+        Direction::Server,
+        msg_type::MEDIA_INGESTION,
+    ),
+    (
+        "v2_media_ingestion_failed.json",
+        Direction::Server,
+        msg_type::MEDIA_INGESTION,
+    ),
+    (
+        "v2_board_changed.json",
+        Direction::Server,
+        msg_type::BOARD_CHANGED,
+    ),
 ];
-
-/// Fixtures legacy conservées : elles ne font pas partie du golden round-trip
-/// (leur type est réécrit en `media.trigger`) mais doivent rester sur disque et
-/// être couvertes par le test de couverture.
-const LEGACY_FIXTURES: &[&str] = &["v2_meme_trigger_legacy.json"];
 
 /// Chemin absolu d'une fixture.
 fn fixture_path(name: &str) -> PathBuf {
@@ -207,27 +222,17 @@ fn golden_fixtures_roundtrip_exactly() {
 }
 
 #[test]
-fn legacy_meme_trigger_deserialises_into_media_trigger() {
-    let value = read_fixture("v2_meme_trigger_legacy.json");
-    let envelope: ClientEnvelope =
-        serde_json::from_value(value).expect("l'ancien type meme.trigger doit rester accepté");
-    assert_eq!(envelope.message.type_name(), msg_type::MEDIA_TRIGGER);
-    let ClientMessage::MediaTrigger(payload) = envelope.message else {
-        panic!("meme.trigger doit désérialiser en ClientMessage::MediaTrigger");
-    };
-    assert_eq!(payload.item_id, "clx7q2x0b0004abcd1234efgh");
-    assert_eq!(payload.trigger, MediaTrigger::Shortcut);
-
-    let serialized = serde_json::to_value(Envelope::new(
-        "cli-media-trigger-0001",
-        1_794_182_400_000,
-        ClientMessage::MediaTrigger(payload),
-    ))
-    .expect("re-sérialisation media.trigger");
-    assert_eq!(
-        serialized.get("type"),
-        Some(&Value::String("media.trigger".to_owned())),
-        "la sérialisation doit toujours émettre le nouveau nom"
+fn removed_meme_trigger_name_is_rejected() {
+    let value = serde_json::json!({
+        "v": 2,
+        "type": "meme.trigger",
+        "id": "cli-media-trigger-0001",
+        "ts": 1_794_182_400_000_u64,
+        "payload": { "itemId": "clx7q2x0b0004abcd1234efgh", "trigger": "shortcut" }
+    });
+    assert!(
+        serde_json::from_value::<ClientEnvelope>(value).is_err(),
+        "l'ancien nom meme.trigger n'est plus accepté"
     );
 }
 
@@ -248,13 +253,11 @@ fn every_fixture_file_is_covered_by_the_golden_table() {
     let mut expected: Vec<String> = FIXTURES
         .iter()
         .map(|(name, ..)| (*name).to_owned())
-        .chain(LEGACY_FIXTURES.iter().map(|name| (*name).to_owned()))
         .collect();
     expected.sort();
     assert_eq!(
         on_disk, expected,
-        "la table des fixtures doit référencer exactement les 29 fichiers golden \
-         et la fixture legacy"
+        "la table des fixtures doit référencer exactement les 32 fichiers golden"
     );
 }
 
@@ -279,7 +282,8 @@ fn protocol_constants_are_frozen() {
     assert_eq!(MAX_PLAYBACK_REMAINING_MS, 86_400_000);
     assert_eq!(MAX_MEDIA_TEXT_CHARS, 500);
     assert_eq!(msg_type::MEDIA_TRIGGER, "media.trigger");
-    assert_eq!(msg_type::LEGACY_MEME_TRIGGER, "meme.trigger");
+    assert_eq!(msg_type::MEDIA_INGESTION, "media.ingestion");
+    assert_eq!(msg_type::BOARD_CHANGED, "board.changed");
 }
 
 #[test]
@@ -292,6 +296,7 @@ fn close_codes_and_reasons_are_frozen() {
     assert_eq!(close_code::UNAUTHORIZED, 4401);
     assert_eq!(close_code::REVOKED, 4402);
     assert_eq!(close_code::OUTDATED_PROTOCOL, 4403);
+    assert_eq!(close_code::GUILD_DELETED, 4404);
     assert_eq!(close_code::FRAME_TOO_LARGE, 4408);
     assert_eq!(close_code::RATE_LIMITED, 4409);
 
@@ -299,6 +304,8 @@ fn close_codes_and_reasons_are_frozen() {
     assert_eq!(close_reason::AUTH_TIMEOUT, "auth_timeout");
     assert_eq!(close_reason::HELLO_REQUIRED, "hello_required");
     assert_eq!(close_reason::OUTDATED_PROTOCOL, "outdated_protocol");
+    assert_eq!(close_reason::MEMBER_REMOVED, "member_removed");
+    assert_eq!(close_reason::GUILD_DELETED, "guild_deleted");
 }
 
 #[test]
@@ -343,6 +350,8 @@ fn welcome_initial_omits_current_job() {
         panic!("la fixture initiale doit être un welcome");
     };
     assert!(welcome.current_job.is_none());
+    assert!(welcome.guild_name.is_none());
+    assert!(welcome.guild_icon_url.is_none());
     let serialized = serde_json::to_value(Envelope::new(
         "srv-welcome-0001",
         1_794_182_400_000,
@@ -350,11 +359,53 @@ fn welcome_initial_omits_current_job() {
     ))
     .expect("re-sérialisation");
     assert!(
-        serialized
-            .get("payload")
-            .and_then(|payload| payload.get("currentJob"))
-            .is_none(),
+        serialized.get("currentJob").is_none(),
         "currentJob ne doit pas être émis quand aucun job n'est en cours"
+    );
+    assert!(!serialized
+        .as_object()
+        .expect("enveloppe welcome")
+        .contains_key("guildName"));
+    assert!(!serialized
+        .as_object()
+        .expect("enveloppe welcome")
+        .contains_key("guildIconUrl"));
+}
+
+#[test]
+fn ack_optional_trigger_fields_are_omitted_by_default() {
+    let ack: AckPayload =
+        serde_json::from_value(serde_json::json!({"ref": "cli-ack-1", "ok": true}))
+            .expect("ack sans champs optionnels");
+    assert!(ack.outcome.is_none());
+    assert!(ack.position.is_none());
+    assert!(ack.job_id.is_none());
+
+    let serialized = serde_json::to_value(&ack).expect("sérialisation ack");
+    let payload = serialized
+        .as_object()
+        .expect("payload ack sous forme d'objet");
+    assert!(!payload.contains_key("outcome"));
+    assert!(!payload.contains_key("position"));
+    assert!(!payload.contains_key("jobId"));
+}
+
+#[test]
+fn ack_trigger_outcome_roundtrips() {
+    let value = serde_json::json!({
+        "ref": "cli-ack-2",
+        "ok": true,
+        "outcome": "queued",
+        "position": 2,
+        "jobId": "job-x"
+    });
+    let ack: AckPayload = serde_json::from_value(value.clone()).expect("ack avec résultat");
+    assert_eq!(ack.outcome, Some(AckOutcome::Queued));
+    assert_eq!(ack.position, Some(2));
+    assert_eq!(ack.job_id.as_deref(), Some("job-x"));
+    assert_eq!(
+        serde_json::to_value(&ack).expect("sérialisation ack"),
+        value
     );
 }
 

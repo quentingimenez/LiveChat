@@ -7,24 +7,39 @@
 //! déclenchements de média du board utilisent les trames `media.trigger` /
 //! `stop.request` (plus de stub `socket_unavailable`).
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
 use lc_protocol::{
-    ClientMessage, MediaTrigger, MediaTriggerPayload, PlaybackEndedPayload, PlaybackEndedReason,
-    PlaybackState as ProtocolPlaybackState, PlaybackStatePayload, StopRequestPayload,
-    StopRequestSource,
+    AckOutcome, AckPayload, ClientMessage, MediaTrigger, MediaTriggerPayload, PlaybackEndedPayload,
+    PlaybackEndedReason, PlaybackState as ProtocolPlaybackState, PlaybackStatePayload,
+    StopRequestPayload, StopRequestSource,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager, State, WebviewWindow, Wry};
+use tokio::sync::{mpsc, oneshot};
+use uuid::Uuid;
 
-use crate::config::{MediaBindings, OverlayConfigView};
+use crate::config::{LayoutZone, MediaBindings, OverlayConfigView};
 use crate::events;
+use crate::layout_preview;
 use crate::net::api;
 use crate::net::pairing::{self, PairingRequest};
+use crate::net::upload::{self, UploadEntry, UploadRegistry};
 use crate::net::ws::{self, NetCommand};
-use crate::state::AppState;
+use crate::placement;
+use crate::settings::{self, SettingsActionResponse, SettingsSetResponse, SettingsView};
+use crate::state::{AppState, GuildRemoval};
 use crate::tray;
 use crate::updater::{self, UpdateStatus};
 use crate::windows;
+
+/// How long `media_board_trigger` waits for the server `ack`.
+const TRIGGER_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+/// Test card display time plus a small margin for the renderer timer.
+const TEST_MEDIA_DURATION: Duration = Duration::from_millis(5_300);
+static TEST_MEDIA_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Matrice d'autorisation IPC par fenêtre (AUD-A6-008).
 ///
@@ -41,6 +56,7 @@ const COMMAND_MATRIX: &[(&str, &[&str])] = &[
             "overlay_report_error",
             "overlay_report_playback_state",
             "overlay_report_playback_stop",
+            "overlay_placement_finish",
         ],
     ),
     (
@@ -60,15 +76,19 @@ const COMMAND_MATRIX: &[(&str, &[&str])] = &[
             "guild_set_muted",
             "guild_leave",
             "guild_api",
-            "guild_media_url",
-        ],
-    ),
-    (
-        "pairing",
-        &[
-            "overlay_get_config",
-            "overlay_report_error",
-            "pairing_consume",
+            "settings_get",
+            "settings_set",
+            "settings_identify_displays",
+            "settings_test_media",
+            "settings_preview_layout",
+            "settings_placement_start",
+            "settings_placement_cancel",
+            "board_take_pending_view",
+            "board_take_guild_removals",
+            "media_upload_start",
+            "media_upload_chunk",
+            "media_upload_finish",
+            "media_upload_cancel",
         ],
     ),
 ];
@@ -117,6 +137,23 @@ pub struct MediaBoardActionResponse {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// Result of `media_board_trigger`, once the server has acknowledged it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaBoardTriggerResponse {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<AckOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -193,8 +230,30 @@ struct GuildRequest {
     path: Option<String>,
     #[serde(default)]
     body: Option<Value>,
+}
+
+/// Paramètres of `media_upload_start`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaUploadStartRequest {
     #[serde(default)]
-    asset_id: Option<String>,
+    guild_id: Option<String>,
+    #[serde(default)]
+    filename: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    content_type: Option<String>,
+}
+
+/// Payload of `media_upload_finish` / `media_upload_cancel`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaUploadRequest {
+    #[serde(default)]
+    upload_id: Option<String>,
 }
 
 /// Résultat d'une commande de gestion des guildes.
@@ -255,6 +314,9 @@ fn publish_guilds(app: &AppHandle<Wry>) {
             tracing::debug!(%error, "échec d'émission des settings après changement de guilde");
         }
     }
+    if let Err(error) = events::emit_device_settings(app) {
+        tracing::debug!(%error, "échec d'émission de overlay://device-settings");
+    }
     tray::refresh_tray(app);
     if let Err(error) = events::emit_guilds_changed(app) {
         tracing::debug!(%error, "échec d'émission de l'état des guildes");
@@ -285,16 +347,367 @@ fn ended_reason_from_label(label: Option<&str>) -> PlaybackEndedReason {
     }
 }
 
+/// Converts a server `ack` into the board-facing trigger response (pure).
+fn trigger_response_from_ack(ack: AckPayload) -> MediaBoardTriggerResponse {
+    if ack.ok {
+        return MediaBoardTriggerResponse {
+            ok: true,
+            reason: None,
+            message: None,
+            outcome: ack.outcome,
+            position: ack.position,
+            job_id: ack.job_id,
+        };
+    }
+    let (reason, message) = match ack.error {
+        Some(error) => (error.code, Some(error.message)),
+        None => ("trigger_refused".to_string(), None),
+    };
+    MediaBoardTriggerResponse {
+        ok: false,
+        reason: Some(reason),
+        message,
+        outcome: None,
+        position: None,
+        job_id: None,
+    }
+}
+
+/// Failure response for `media_board_trigger` (no ack involved).
+fn trigger_failure(reason: &str) -> MediaBoardTriggerResponse {
+    MediaBoardTriggerResponse {
+        ok: false,
+        reason: Some(reason.to_string()),
+        message: None,
+        outcome: None,
+        position: None,
+        job_id: None,
+    }
+}
+
+/// A REST 401 means the guild token must be revalidated: ask the WebSocket
+/// supervisor to reconnect (a 4401 close then purges the guild).
+fn reconnect_on_unauthorized(app: &AppHandle<Wry>, guild_id: &str, response: &api::ApiResponse) {
+    if response.status != 401 {
+        return;
+    }
+    tracing::info!(
+        guild_id,
+        "401 REST : reconnexion WebSocket pour revalider le jeton"
+    );
+    if !ws::send_command_to(app, guild_id, NetCommand::Reconnect) {
+        tracing::debug!(guild_id, "reconnexion non transmise : superviseur absent");
+    }
+}
+
+fn upload_id_from_payload(payload: &Value) -> Option<String> {
+    let parsed = serde_json::from_value::<MediaUploadRequest>(payload.clone()).unwrap_or_default();
+    parsed
+        .upload_id
+        .map(|upload_id| upload_id.trim().to_string())
+        .filter(|upload_id| !upload_id.is_empty())
+}
+
 /// Projette la configuration pour une fenêtre donnée (AUD-V2-O-002).
 ///
 /// Le `clientToken` n'est utile qu'au board (via `authorizedFetch`) : il est
-/// retiré des projections des fenêtres overlay et pairing (moindre privilège),
-/// et absent pour tout label inconnu.
+/// retiré de la projection de la fenêtre overlay (moindre privilège), et absent
+/// pour tout label inconnu.
 fn config_view_for_window(window_label: &str, mut view: OverlayConfigView) -> OverlayConfigView {
     if window_label != windows::BOARD_LABEL {
         view.client_token = None;
     }
     view
+}
+
+/// `board_take_pending_view` — view requested by the tray before the board was
+/// loaded, consumed once (`null` when absent).
+#[tauri::command]
+pub fn board_take_pending_view(
+    window: WebviewWindow<Wry>,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    ensure_allowed(&window, "board_take_pending_view")?;
+    Ok(state.take_pending_board_view())
+}
+
+/// `board_take_guild_removals` — guilds purged automatically since the last
+/// call (consumed once, empty when nothing was removed).
+#[tauri::command]
+pub fn board_take_guild_removals(
+    window: WebviewWindow<Wry>,
+    state: State<'_, AppState>,
+) -> Result<Vec<GuildRemoval>, String> {
+    ensure_allowed(&window, "board_take_guild_removals")?;
+    Ok(state.take_guild_removals())
+}
+
+/// `settings_get` — full settings view for the board.
+#[tauri::command]
+pub fn settings_get(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+) -> Result<SettingsView, String> {
+    ensure_allowed(&window, "settings_get")?;
+    Ok(settings::settings_view(&app))
+}
+
+/// `settings_set` — validates the whole payload, then persists and applies it.
+///
+/// Shortcut registration and autostart are attempted before the configuration
+/// is written so a refusal leaves everything untouched. If persistence itself
+/// fails, both side effects are rolled back.
+#[tauri::command]
+pub fn settings_set(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+    payload: Value,
+) -> Result<SettingsSetResponse, String> {
+    ensure_allowed(&window, "settings_set")?;
+    let state = app.state::<AppState>();
+    let base = state.config_snapshot();
+    let (displays, _primary) = windows::collect_displays(&app);
+    let candidate = match settings::apply_settings_patch(&base, &payload, &displays) {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            return Ok(SettingsSetResponse::failure(
+                error.field,
+                error.message,
+                settings::settings_view(&app),
+            ));
+        }
+    };
+
+    let shortcuts_changed = base.shortcuts != candidate.shortcuts;
+    if shortcuts_changed {
+        if let Err(error) = crate::shortcuts::replace_configured_shortcuts(
+            &app,
+            &base.shortcuts,
+            &candidate.shortcuts,
+        ) {
+            return Ok(SettingsSetResponse::failure(
+                error.field,
+                error.message,
+                settings::settings_view(&app),
+            ));
+        }
+    }
+
+    let autostart_changed = base.auto_start != candidate.auto_start;
+    let previous_autostart = if autostart_changed {
+        crate::device_settings::autostart_enabled(&app)
+    } else {
+        base.auto_start
+    };
+    if autostart_changed {
+        if let Err(message) = crate::device_settings::set_autostart(&app, candidate.auto_start) {
+            if shortcuts_changed {
+                let _restored = crate::shortcuts::replace_configured_shortcuts(
+                    &app,
+                    &candidate.shortcuts,
+                    &base.shortcuts,
+                );
+            }
+            return Ok(SettingsSetResponse::failure(
+                "autoStart",
+                message,
+                settings::settings_view(&app),
+            ));
+        }
+    }
+
+    if let Err(error) = state.update_config(|config| *config = candidate.clone()) {
+        if autostart_changed {
+            if let Err(rollback) = crate::device_settings::set_autostart(&app, previous_autostart) {
+                tracing::warn!(%rollback, "restauration du démarrage automatique impossible");
+            }
+        }
+        if shortcuts_changed {
+            if let Err(rollback) = crate::shortcuts::replace_configured_shortcuts(
+                &app,
+                &candidate.shortcuts,
+                &base.shortcuts,
+            ) {
+                tracing::warn!(
+                    field = rollback.field,
+                    message = rollback.message,
+                    "restauration des raccourcis impossible"
+                );
+            }
+        }
+        return Ok(SettingsSetResponse::failure(
+            "settings",
+            error,
+            settings::settings_view(&app),
+        ));
+    }
+
+    let saved = state.config_snapshot();
+    if base.display_key != saved.display_key || base.display_index != saved.display_index {
+        let _positioned = windows::position_overlay_without_persisting(&app);
+    }
+    if base.enabled != saved.enabled {
+        tray::apply_general_mute_effect(&app, saved.enabled);
+        if let Err(error) = events::emit_guilds_changed(&app) {
+            tracing::debug!(%error, "échec d'émission de l'état des guildes après sourdine");
+        }
+    }
+    tray::refresh_tray(&app);
+    if let Err(error) = events::emit_settings(&app, &state.view()) {
+        tracing::debug!(%error, "échec d'émission overlay://settings après settings_set");
+    }
+    if let Err(error) = events::emit_device_settings(&app) {
+        tracing::debug!(%error, "échec d'émission overlay://device-settings après settings_set");
+    }
+    Ok(SettingsSetResponse::success(settings::settings_view(&app)))
+}
+
+/// `settings_identify_displays` — shows an index card on every monitor for 3 s.
+///
+/// Async on purpose: a synchronous command runs on the main thread inside the
+/// WebView2 IPC callback, where building a webview window deadlocks on Windows
+/// (the command never returned and the button stayed on « Identification… »).
+#[tauri::command]
+pub async fn settings_identify_displays(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+) -> Result<settings::SettingsIdentifyDisplaysResponse, String> {
+    ensure_allowed(&window, "settings_identify_displays")?;
+    Ok(settings::SettingsIdentifyDisplaysResponse {
+        count: windows::identify_displays(&app),
+    })
+}
+
+/// `settings_test_media` — local five-second test card, never sent to a server.
+#[tauri::command]
+pub fn settings_test_media(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+) -> Result<SettingsActionResponse, String> {
+    ensure_allowed(&window, "settings_test_media")?;
+    let state = app.state::<AppState>();
+    if state.playback_job().is_some() || placement::is_active() {
+        return Ok(SettingsActionResponse {
+            ok: false,
+            reason: Some("overlay_busy".to_string()),
+        });
+    }
+    let payload = settings::test_media_payload(&state.config_snapshot());
+    let generation = TEST_MEDIA_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    // The test card replaces the layout preview template, if any.
+    layout_preview::cancel();
+    windows::show_overlay_preview(&app);
+    events::emit_to_overlay(&app, &events::OverlayEvent::play(payload))
+        .map_err(|error| error.to_string())?;
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(TEST_MEDIA_DURATION);
+        let timer_handle = handle.clone();
+        if let Err(error) = handle.run_on_main_thread(move || {
+            if TEST_MEDIA_GENERATION.load(Ordering::SeqCst) != generation {
+                return;
+            }
+            let state = timer_handle.state::<AppState>();
+            if state.playback_job().is_some() || layout_preview::is_active() {
+                return;
+            }
+            if !windows::overlay_should_show(&state.config_snapshot()) {
+                windows::hide_overlay(&timer_handle);
+            }
+        }) {
+            tracing::debug!(%error, "fermeture de l'aperçu local impossible");
+        }
+    });
+    Ok(SettingsActionResponse {
+        ok: true,
+        reason: None,
+    })
+}
+
+/// `settings_preview_layout` — shows a draft layout on the overlay, with a
+/// template card when nothing plays, without saving it (see `layout_preview`).
+///
+/// Synchronous on purpose: it runs on the main thread, where the preview's
+/// end is decided too.
+#[tauri::command]
+pub fn settings_preview_layout(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+    payload: Value,
+) -> Result<(), String> {
+    ensure_allowed(&window, "settings_preview_layout")?;
+    let config = app.state::<AppState>().config_snapshot();
+    let layout = settings::preview_layout(&config, &payload)
+        .map_err(|error| format!("{} : {}", error.field, error.message))?;
+    layout_preview::show(&app, layout);
+    Ok(())
+}
+
+/// `settings_placement_start` — turns the overlay into a window the user moves
+/// and resizes to set the display zone (see `placement`).
+///
+/// Asynchronous: it shows and focuses the overlay window, which must not run
+/// inside the board's IPC callback on the main thread.
+#[tauri::command]
+pub async fn settings_placement_start(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+) -> Result<SettingsActionResponse, String> {
+    ensure_allowed(&window, "settings_placement_start")?;
+    let (sender, receiver) = oneshot::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let _sent = sender.send(placement::start(&handle));
+    })
+    .map_err(|error| error.to_string())?;
+    let started = receiver.await.map_err(|error| error.to_string())?;
+    Ok(match started {
+        Ok(()) => SettingsActionResponse {
+            ok: true,
+            reason: None,
+        },
+        Err(error) => SettingsActionResponse {
+            ok: false,
+            reason: Some(error.reason().to_string()),
+        },
+    })
+}
+
+/// `settings_placement_cancel` — ends the placement from the board without
+/// saving, when the overlay screen is out of reach.
+#[tauri::command]
+pub async fn settings_placement_cancel(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+) -> Result<(), String> {
+    ensure_allowed(&window, "settings_placement_cancel")?;
+    finish_placement_on_main_thread(app, None).await
+}
+
+/// `overlay_placement_finish` — the overlay saves the placed zone
+/// (`{ "zone": {...} }`) or cancels (`{ "zone": null }`).
+#[tauri::command]
+pub async fn overlay_placement_finish(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+    payload: Value,
+) -> Result<(), String> {
+    ensure_allowed(&window, "overlay_placement_finish")?;
+    let zone = placement::parse_finish(&payload)?;
+    finish_placement_on_main_thread(app, zone).await
+}
+
+async fn finish_placement_on_main_thread(
+    app: AppHandle<Wry>,
+    zone: Option<LayoutZone>,
+) -> Result<(), String> {
+    let (sender, receiver) = oneshot::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let _sent = sender.send(placement::finish(&handle, zone));
+    })
+    .map_err(|error| error.to_string())?;
+    receiver.await.map_err(|error| error.to_string())?
 }
 
 /// `overlay_get_config` — projection 8 champs consommée par le renderer.
@@ -325,6 +738,10 @@ pub fn overlay_renderer_ready(
 ) -> Result<(), String> {
     ensure_allowed(&window, "overlay_renderer_ready")?;
     state.mark_overlay_ready();
+    // A reloaded page lost the placement editor: give the screen back.
+    if let Err(error) = placement::finish(&app, None) {
+        tracing::warn!(%error, "échec de fin du placement au rechargement de l'overlay");
+    }
     tracing::info!("renderer overlay prêt : envoi des settings et rejeu du buffer");
     if let Err(error) = events::emit_settings(&app, &state.view()) {
         tracing::warn!(%error, "échec d'émission des settings initiaux");
@@ -493,16 +910,7 @@ pub async fn pairing_consume(
         });
     }
     crate::shortcuts::reapply_for_session(&app);
-    if state.overlay_ready() {
-        if let Err(error) = events::emit_settings(&app, &state.view()) {
-            tracing::debug!(%error, "échec d'émission des settings après appairage");
-        }
-    }
-    if let Some(window) = app.get_webview_window(windows::PAIRING_LABEL) {
-        if let Err(error) = window.hide() {
-            tracing::debug!(%error, "échec de fermeture de la fenêtre d'appairage");
-        }
-    }
+    crate::device_settings::publish_settings(&app);
     tray::refresh_tray(&app);
     if state.config_snapshot().enabled {
         windows::show_overlay(&app);
@@ -556,13 +964,14 @@ pub fn media_board_set_bindings(
     })
 }
 
-/// `media_board_trigger` — déclenchement manuel via `media.trigger`.
+/// `media_board_trigger` — déclenchement manuel via `media.trigger`, puis
+/// attente de l'`ack` du serveur (rang en file, `jobId`, refus).
 #[tauri::command]
-pub fn media_board_trigger(
+pub async fn media_board_trigger(
     window: WebviewWindow<Wry>,
     app: AppHandle<Wry>,
     payload: Value,
-) -> Result<MediaBoardActionResponse, String> {
+) -> Result<MediaBoardTriggerResponse, String> {
     ensure_allowed(&window, "media_board_trigger")?;
     let parsed = serde_json::from_value::<MediaTriggerRequest>(payload).unwrap_or_default();
     let item_id = parsed
@@ -570,33 +979,52 @@ pub fn media_board_trigger(
         .map(|item_id| item_id.trim().to_string())
         .filter(|item_id| !item_id.is_empty());
     let Some(item_id) = item_id else {
-        return Ok(MediaBoardActionResponse {
-            ok: false,
-            reason: Some("invalid_item_id".to_string()),
-        });
+        return Ok(trigger_failure("invalid_item_id"));
     };
     let trigger = match parsed.trigger.as_deref() {
         Some("shortcut") => MediaTrigger::Shortcut,
         _ => MediaTrigger::Ui,
     };
+    let (reply, receiver) = oneshot::channel();
+    let sent = {
+        let state = app.state::<AppState>();
+        match target_guild(&state, parsed.guild_id.as_deref()) {
+            Some(guild_id) => ws::send_command_to(
+                &app,
+                &guild_id,
+                NetCommand::SendWithAck {
+                    message: ClientMessage::MediaTrigger(MediaTriggerPayload { item_id, trigger }),
+                    reply,
+                },
+            ),
+            None => false,
+        }
+    };
+    if !sent {
+        return Ok(trigger_failure("socket_unavailable"));
+    }
+    match tokio::time::timeout(TRIGGER_ACK_TIMEOUT, receiver).await {
+        Ok(Ok(ack)) => Ok(trigger_response_from_ack(ack)),
+        Ok(Err(_)) => Ok(trigger_failure("socket_unavailable")),
+        Err(_) => Ok(trigger_failure("ack_timeout")),
+    }
+}
+
+/// Stops the active guild playback (board button and `shortcuts.stop`).
+pub(crate) fn stop_active_media(app: &AppHandle<Wry>) -> bool {
     let state = app.state::<AppState>();
-    let sent = match target_guild(&state, parsed.guild_id.as_deref()) {
+    match target_guild(&state, None) {
         Some(guild_id) => send_protocol_to(
-            &app,
+            app,
             &guild_id,
-            ClientMessage::MediaTrigger(MediaTriggerPayload { item_id, trigger }),
-            "media_board_trigger",
+            ClientMessage::StopRequest(StopRequestPayload {
+                job_id: None,
+                source: Some(StopRequestSource::User),
+            }),
+            "media_board_stop",
         ),
         None => false,
-    };
-    Ok(MediaBoardActionResponse {
-        ok: sent,
-        reason: if sent {
-            None
-        } else {
-            Some("socket_unavailable".to_string())
-        },
-    })
+    }
 }
 
 /// `media_board_stop` — arrêt manuel via `stop.request`.
@@ -665,6 +1093,29 @@ pub fn guild_select(
     Ok(guild_action(&state, None))
 }
 
+/// Applies a guild mute then broadcasts the change.
+///
+/// Shared by the tray checkbox and the `guild_set_muted` command. Returns
+/// `false` when the guild is unknown.
+pub fn set_guild_muted(app: &AppHandle<Wry>, guild_id: &str, muted: bool) -> Result<bool, String> {
+    let guild_id = guild_id.trim();
+    if guild_id.is_empty() {
+        return Ok(false);
+    }
+    let state = app.state::<AppState>();
+    let mut known = false;
+    state.update_config(|config| {
+        known = config.update_membership(guild_id, |membership| membership.muted = muted);
+    })?;
+    if !known {
+        return Ok(false);
+    }
+    ws::ensure_supervisor(app, guild_id);
+    ws::send_command_to(app, guild_id, NetCommand::Reconnect);
+    publish_guilds(app);
+    Ok(true)
+}
+
 /// `guild_set_muted` — coupe ou rétablit une guilde. Une guilde coupée est
 /// déconnectée : plus aucun de ses médias ne s'affiche.
 #[tauri::command]
@@ -682,16 +1133,9 @@ pub fn guild_set_muted(
     ) else {
         return Ok(guild_action(&state, Some("invalid_payload")));
     };
-    let mut known = false;
-    state.update_config(|config| {
-        known = config.update_membership(&guild_id, |membership| membership.muted = muted);
-    })?;
-    if !known {
+    if !set_guild_muted(&app, &guild_id, muted)? {
         return Ok(guild_action(&state, Some("unknown_guild")));
     }
-    ws::ensure_supervisor(&app, &guild_id);
-    ws::send_command_to(&app, &guild_id, NetCommand::Reconnect);
-    publish_guilds(&app);
     Ok(guild_action(&state, None))
 }
 
@@ -749,6 +1193,7 @@ pub async fn guild_leave(
 #[tauri::command]
 pub async fn guild_api(
     window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
     state: State<'_, AppState>,
     payload: Value,
 ) -> Result<api::ApiResponse, String> {
@@ -761,32 +1206,138 @@ pub async fn guild_api(
         .membership(&guild_id)
         .cloned()
         .ok_or_else(|| "guilde inconnue".to_string())?;
-    api::request(
+    let response = api::request(
         &membership,
         parsed.method.as_deref().unwrap_or("GET"),
         parsed.path.as_deref().unwrap_or_default(),
         parsed.body,
     )
-    .await
+    .await?;
+    reconnect_on_unauthorized(&app, &guild_id, &response);
+    Ok(response)
 }
 
-/// `guild_media_url` — URL d'un média du board pour `<img>`/`<video>`.
+/// `media_upload_start` — begins a raw, streamed file upload to the board.
 #[tauri::command]
-pub fn guild_media_url(
+pub fn media_upload_start(
     window: WebviewWindow<Wry>,
     state: State<'_, AppState>,
+    uploads: State<'_, UploadRegistry>,
     payload: Value,
-) -> Result<String, String> {
-    ensure_allowed(&window, "guild_media_url")?;
-    let parsed = serde_json::from_value::<GuildRequest>(payload).unwrap_or_default();
+) -> Result<upload::MediaUploadStartResponse, String> {
+    ensure_allowed(&window, "media_upload_start")?;
+    let parsed = serde_json::from_value::<MediaUploadStartRequest>(payload).unwrap_or_default();
     let guild_id = target_guild(&state, parsed.guild_id.as_deref())
-        .ok_or_else(|| "aucune guilde".to_string())?;
+        .ok_or_else(|| "guilde inconnue".to_string())?;
     let membership = state
         .config_snapshot()
         .membership(&guild_id)
         .cloned()
         .ok_or_else(|| "guilde inconnue".to_string())?;
-    api::board_media_url(&membership, parsed.asset_id.as_deref().unwrap_or_default())
+    let filename = upload::validate_filename(parsed.filename.as_deref())?;
+    let insecure = crate::net::tls::insecure_tls_enabled();
+    let url = upload::upload_url(
+        &membership.server_url,
+        &filename,
+        parsed.title.as_deref(),
+        parsed.message.as_deref(),
+        insecure,
+    )?;
+    let content_type = upload::normalize_content_type(parsed.content_type.as_deref());
+    let client = upload::build_client(insecure)?;
+    let (sender, receiver) = mpsc::channel::<upload::UploadChunk>(4);
+    let token = membership.client_token;
+    let task = tauri::async_runtime::spawn(async move {
+        upload::run_upload(client, url, &token, &content_type, receiver).await
+    });
+    let upload_id = Uuid::new_v4().to_string();
+    uploads.insert(
+        upload_id.clone(),
+        UploadEntry {
+            guild_id,
+            sender,
+            task,
+        },
+    )?;
+    Ok(upload::MediaUploadStartResponse::new(upload_id))
+}
+
+/// `media_upload_chunk` — appends raw bytes to an in-flight upload.
+#[tauri::command]
+pub async fn media_upload_chunk(
+    window: WebviewWindow<Wry>,
+    uploads: State<'_, UploadRegistry>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    ensure_allowed(&window, "media_upload_chunk")?;
+    let upload_id = request
+        .headers()
+        .get("x-upload-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|upload_id| !upload_id.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| "envoi inconnu".to_string())?;
+    let bytes = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
+        tauri::ipc::InvokeBody::Json(_) => return Err("corps binaire attendu".to_string()),
+    };
+    if bytes.is_empty() {
+        return Err("morceau vide".to_string());
+    }
+    if bytes.len() > upload::MAX_CHUNK_BYTES {
+        return Err("morceau trop volumineux".to_string());
+    }
+    // The registry lock is released before awaiting the send.
+    let sender = uploads.sender(&upload_id)?;
+    sender
+        .send(Ok(bytes))
+        .await
+        .map_err(|_| "upload_closed".to_string())
+}
+
+/// `media_upload_finish` — ends the body and returns the server response
+/// (same shape as `guild_api`).
+#[tauri::command]
+pub async fn media_upload_finish(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+    uploads: State<'_, UploadRegistry>,
+    payload: Value,
+) -> Result<api::ApiResponse, String> {
+    ensure_allowed(&window, "media_upload_finish")?;
+    let upload_id = upload_id_from_payload(&payload).ok_or_else(|| "envoi inconnu".to_string())?;
+    let UploadEntry {
+        guild_id,
+        sender,
+        task,
+    } = uploads
+        .take(&upload_id)
+        .ok_or_else(|| "envoi inconnu".to_string())?;
+    // Closing the sender terminates the streamed request body.
+    drop(sender);
+    match task.await {
+        Ok(Ok(response)) => {
+            reconnect_on_unauthorized(&app, &guild_id, &response);
+            Ok(response)
+        }
+        Ok(Err(message)) => Err(message),
+        Err(error) => Err(format!("envoi du fichier interrompu : {error}")),
+    }
+}
+
+/// `media_upload_cancel` — aborts an in-flight upload (`true` if it existed).
+#[tauri::command]
+pub fn media_upload_cancel(
+    window: WebviewWindow<Wry>,
+    uploads: State<'_, UploadRegistry>,
+    payload: Value,
+) -> Result<bool, String> {
+    ensure_allowed(&window, "media_upload_cancel")?;
+    let Some(upload_id) = upload_id_from_payload(&payload) else {
+        return Ok(false);
+    };
+    Ok(uploads.cancel(&upload_id))
 }
 
 /// `overlay_check_updates` — vérifie les mises à jour et renvoie un état lisible.
@@ -819,6 +1370,8 @@ mod tests {
         assert!(command_allowed("overlay", "overlay_get_config"));
         assert!(command_allowed("overlay", "overlay_renderer_ready"));
         assert!(command_allowed("overlay", "overlay_report_error"));
+        assert!(command_allowed("overlay", "overlay_placement_finish"));
+        assert!(!command_allowed("board", "overlay_placement_finish"));
         assert!(!command_allowed("overlay", "pairing_consume"));
         assert!(!command_allowed("overlay", "media_board_set_bindings"));
         assert!(!command_allowed("overlay", "overlay_install_update"));
@@ -832,6 +1385,19 @@ mod tests {
         assert!(command_allowed("board", "pairing_consume"));
         assert!(command_allowed("board", "guild_api"));
         assert!(command_allowed("board", "guild_leave"));
+        assert!(command_allowed("board", "settings_get"));
+        assert!(command_allowed("board", "settings_set"));
+        assert!(command_allowed("board", "settings_identify_displays"));
+        assert!(command_allowed("board", "settings_test_media"));
+        assert!(command_allowed("board", "settings_preview_layout"));
+        assert!(command_allowed("board", "settings_placement_start"));
+        assert!(command_allowed("board", "settings_placement_cancel"));
+        assert!(command_allowed("board", "board_take_pending_view"));
+        assert!(command_allowed("board", "board_take_guild_removals"));
+        assert!(command_allowed("board", "media_upload_start"));
+        assert!(command_allowed("board", "media_upload_chunk"));
+        assert!(command_allowed("board", "media_upload_finish"));
+        assert!(command_allowed("board", "media_upload_cancel"));
         assert!(!command_allowed("board", "overlay_renderer_ready"));
         // Les commandes de guilde restent fermées aux autres fenêtres.
         for command in [
@@ -840,19 +1406,28 @@ mod tests {
             "guild_set_muted",
             "guild_leave",
             "guild_api",
-            "guild_media_url",
+            "settings_get",
+            "settings_set",
+            "settings_identify_displays",
+            "settings_test_media",
+            "settings_preview_layout",
+            "settings_placement_start",
+            "settings_placement_cancel",
+            "board_take_guild_removals",
+            "media_upload_start",
+            "media_upload_chunk",
+            "media_upload_finish",
+            "media_upload_cancel",
         ] {
             assert!(!command_allowed("overlay", command), "{command}");
-            assert!(!command_allowed("pairing", command), "{command}");
         }
 
-        // Pairing : appairage uniquement.
-        assert!(command_allowed("pairing", "pairing_consume"));
-        assert!(command_allowed("pairing", "overlay_get_config"));
-        assert!(!command_allowed("pairing", "media_board_trigger"));
+        // The pending view can only be consumed by the board.
+        assert!(!command_allowed("overlay", "board_take_pending_view"));
 
         // Fenêtre inconnue : tout est refusé.
         assert!(!command_allowed("unknown", "overlay_get_config"));
+        assert!(!command_allowed("unknown", "board_take_pending_view"));
         assert!(!command_allowed("", "overlay_get_config"));
     }
 
@@ -870,6 +1445,7 @@ mod tests {
                 show_text: true,
                 volume: 1.0,
                 media_bindings: MediaBindings::new(),
+                layout: crate::config::OverlayLayout::default(),
             }
         }
 
@@ -877,8 +1453,8 @@ mod tests {
         let board = super::config_view_for_window("board", view_with_token());
         assert_eq!(board.client_token.as_deref(), Some("secret-token"));
 
-        // Overlay et pairing : token retiré, reste de la projection intact.
-        for label in ["overlay", "pairing", "unknown"] {
+        // Overlay et label inconnu : token retiré, reste de la projection intact.
+        for label in ["overlay", "unknown"] {
             let view = super::config_view_for_window(label, view_with_token());
             assert!(
                 view.client_token.is_none(),
@@ -887,5 +1463,73 @@ mod tests {
             assert_eq!(view.server_url.as_deref(), Some("https://example.test"));
             assert_eq!(view.guild_id.as_deref(), Some("42"));
         }
+    }
+
+    #[test]
+    fn ack_is_projected_into_the_trigger_response() {
+        use lc_protocol::{AckError, AckOutcome, AckPayload};
+
+        let queued = super::trigger_response_from_ack(AckPayload {
+            ref_id: "cli-1".to_string(),
+            ok: true,
+            error: None,
+            outcome: Some(AckOutcome::Queued),
+            position: Some(2),
+            job_id: Some("job-42".to_string()),
+        });
+        assert!(queued.ok);
+        assert_eq!(queued.outcome, Some(AckOutcome::Queued));
+        assert_eq!(queued.position, Some(2));
+        assert_eq!(queued.job_id.as_deref(), Some("job-42"));
+        assert_eq!(
+            serde_json::to_value(&queued).expect("json"),
+            serde_json::json!({
+                "ok": true,
+                "outcome": "queued",
+                "position": 2,
+                "jobId": "job-42",
+            })
+        );
+
+        // Ancien serveur : ok sans outcome/position/jobId.
+        let playing = super::trigger_response_from_ack(AckPayload {
+            ref_id: "cli-2".to_string(),
+            ok: true,
+            error: None,
+            outcome: Some(AckOutcome::Playing),
+            position: None,
+            job_id: None,
+        });
+        assert_eq!(
+            serde_json::to_value(&playing).expect("json"),
+            serde_json::json!({ "ok": true, "outcome": "playing" })
+        );
+
+        let refused = super::trigger_response_from_ack(AckPayload {
+            ref_id: "cli-3".to_string(),
+            ok: false,
+            error: Some(AckError {
+                code: "read_only".to_string(),
+                message: "session invitée".to_string(),
+            }),
+            outcome: None,
+            position: None,
+            job_id: None,
+        });
+        assert!(!refused.ok);
+        assert_eq!(refused.reason.as_deref(), Some("read_only"));
+        assert_eq!(refused.message.as_deref(), Some("session invitée"));
+
+        let bare_refusal = super::trigger_response_from_ack(AckPayload {
+            ref_id: "cli-4".to_string(),
+            ok: false,
+            error: None,
+            outcome: None,
+            position: None,
+            job_id: None,
+        });
+        assert!(!bare_refusal.ok);
+        assert_eq!(bare_refusal.reason.as_deref(), Some("trigger_refused"));
+        assert!(bare_refusal.message.is_none());
     }
 }

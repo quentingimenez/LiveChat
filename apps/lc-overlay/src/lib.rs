@@ -1,10 +1,10 @@
 //! Coquille applicative Tauri 2 de l'overlay LiveChat (Phase 8a).
 //!
-//! Cette crate construit les trois fenêtres (overlay transparent click-through,
-//! pairing 460×580, board 1180×780), le tray, le single-instance, l'autostart,
-//! le squelette des raccourcis globaux et l'updater. Le renderer existant
-//! (`web/bridge.js`) est embarqué ; le client WebSocket et la logique métier
-//! arrivent en Phase 8b sans changer le contrat exposé.
+//! Cette crate construit les deux fenêtres (overlay transparent click-through,
+//! board 1180×780), le tray, le single-instance, l'autostart, le squelette des
+//! raccourcis globaux et l'updater. L'appairage se fait désormais dans la board.
+//! Le renderer existant (`web/bridge.js`) est embarqué ; le client WebSocket et
+//! la logique métier arrivent en Phase 8b sans changer le contrat exposé.
 //!
 //! Le seul module autorisé à utiliser `unsafe` est [`win32`] (bloc Win32 isolé
 //! et documenté), d'où `deny` au niveau crate plutôt que `forbid`, comme
@@ -25,9 +25,13 @@
 
 pub mod commands;
 pub mod config;
+pub mod device_settings;
 pub mod display;
 pub mod events;
+pub mod layout_preview;
 pub mod net;
+pub mod placement;
+pub mod settings;
 pub mod shortcuts;
 pub mod state;
 pub mod tray;
@@ -176,6 +180,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         // Géré avant la construction des fenêtres configurées (les webviews
         // peuvent appeler des commandes dès leur chargement initial).
         .manage(AppState::new(initial_store()))
+        .manage(net::upload::UploadRegistry::default())
         .plugin(tauri_plugin_single_instance::init(
             |app: &tauri::AppHandle<Wry>, argv: Vec<String>, _cwd: String| {
                 handle_second_instance(app, argv);
@@ -210,9 +215,22 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             commands::guild_set_muted,
             commands::guild_leave,
             commands::guild_api,
-            commands::guild_media_url,
+            commands::settings_get,
+            commands::settings_set,
+            commands::settings_identify_displays,
+            commands::settings_test_media,
+            commands::settings_preview_layout,
+            commands::settings_placement_start,
+            commands::settings_placement_cancel,
+            commands::overlay_placement_finish,
             commands::overlay_check_updates,
             commands::overlay_install_update,
+            commands::board_take_pending_view,
+            commands::board_take_guild_removals,
+            commands::media_upload_start,
+            commands::media_upload_chunk,
+            commands::media_upload_finish,
+            commands::media_upload_cancel,
         ])
         .setup(setup)
         .build(context)?;

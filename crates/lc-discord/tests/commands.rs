@@ -148,7 +148,8 @@ async fn pair_code_normal_persiste_un_code_avec_expiration() {
     )
     .await;
 
-    assert_eq!(outcome.deferral, Deferral::None);
+    // Acquittement éphémère immédiat, puis édition avec le code créé.
+    assert_eq!(outcome.deferral, Deferral::Ephemeral);
     assert!(outcome.reply.ephemeral);
     assert_eq!(outcome.reply.embed.color, Some(COLOR_INFO));
     let description = description(&outcome);
@@ -160,12 +161,17 @@ async fn pair_code_normal_persiste_un_code_avec_expiration() {
         description.contains("Expire dans 5 minute(s)."),
         "{description}"
     );
+    assert!(
+        description.contains(strings(Lang::Fr).pair_code_grants_admin),
+        "un admin Discord doit voir la ligne « admin » : {description}"
+    );
 
     let codes = ctx.db().pairing_codes().list().await.expect("codes");
     assert_eq!(codes.len(), 1);
     let entry = &codes[0];
     assert_eq!(entry.guild_id, guild());
     assert_eq!(entry.mode, PairingMode::Normal);
+    assert!(entry.grants_admin, "admin Discord en mode normal");
     assert_eq!(entry.created_by_discord_user_id, ADMIN_ID);
     assert_eq!(entry.author_name.as_deref(), Some("Admin"));
     assert_eq!(
@@ -194,10 +200,42 @@ async fn pair_code_invite_est_sans_expiration() {
     assert!(outcome.reply.ephemeral);
     let description = description(&outcome);
     assert!(!description.contains("Expire"), "{description}");
+    assert!(
+        !description.contains(strings(Lang::Fr).pair_code_grants_admin),
+        "un code invité ne donne jamais l'admin : {description}"
+    );
     let codes = ctx.db().pairing_codes().list().await.expect("codes");
     assert_eq!(codes[0].mode, PairingMode::InviteReadOnly);
+    assert!(!codes[0].grants_admin);
     assert!(codes[0].expires_at.is_none());
     assert!(codes[0].is_usable_at(sample_now()));
+}
+
+#[tokio::test]
+async fn pair_code_d_un_membre_n_accorde_pas_l_admin() {
+    let ctx = FakeBotContext::new().await.expect("contexte");
+    let outcome = dispatch(
+        &ctx,
+        invocation(
+            CommandInput::PairCode(PairCodeInput {
+                mode: PairingMode::Normal,
+            }),
+            member_author(),
+            Some(guild()),
+            Lang::Fr,
+        ),
+    )
+    .await;
+
+    // A non-administrator normal code grants nothing beyond the member role.
+    assert!(
+        !description(&outcome).contains(strings(Lang::Fr).pair_code_grants_admin),
+        "{}",
+        description(&outcome)
+    );
+    let codes = ctx.db().pairing_codes().list().await.expect("codes");
+    assert_eq!(codes.len(), 1);
+    assert!(!codes[0].grants_admin);
 }
 
 #[tokio::test]

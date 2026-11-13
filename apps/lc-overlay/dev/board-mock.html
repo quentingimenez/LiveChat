@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LiveChat — harnais board</title>
     <!-- Harnais de dev : même structure que web/board.html, shell Tauri simulé.
-         Options : ?role=admin|member|guest, ?empty (aucune guilde). -->
+         Options : ?role=admin|member|guest, ?empty (aucune guilde),
+         ?settings (page Paramètres demandée au démarrage). -->
     <link rel="stylesheet" href="../web/app/app.css" />
     <script src="./board-mock.js"></script>
   </head>
@@ -14,12 +15,12 @@
       <nav id="rail" class="rail" aria-label="Guildes"></nav>
       <div class="main">
         <header id="header" class="header"></header>
-        <div id="notice" class="notice" role="status" hidden></div>
         <main id="view" class="view"></main>
         <footer id="onair" class="onair" hidden></footer>
       </div>
     </div>
     <div id="dialog-root"></div>
-    <script type="module" src="../web/app/app.js"></script>
+    <div id="toasts" class="toasts" aria-live="polite"></div>
+    <script type="module" src="../web/app/main.js"></script>
   </body>
 </html>

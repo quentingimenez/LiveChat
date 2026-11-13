@@ -10,13 +10,96 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, Wry};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
-use crate::config::{normalize_media_bindings, MediaBindings};
+use crate::config::{normalize_media_bindings, MediaBindings, ShortcutSettings};
 use crate::net::ws::{self, NetCommand};
 use crate::state::AppState;
 use crate::windows::OVERLAY_LABEL;
 
 /// Raccourci de secours pour recharger l'overlay (valeur legacy à confirmer).
 pub const MANUAL_RELOAD_ACCELERATOR: &str = "CommandOrControl+Shift+Alt+R";
+
+/// Invalid global shortcut configuration, mapped to a `settings_set` field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShortcutError {
+    pub field: String,
+    pub message: String,
+}
+
+impl ShortcutError {
+    fn new(field: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            field: field.into(),
+            message: message.into(),
+        }
+    }
+}
+
+fn parse_accelerator(accelerator: &str) -> Option<Shortcut> {
+    accelerator.trim().parse::<Shortcut>().ok()
+}
+
+/// Compares accelerators by their parsed shortcut identity, so aliases such as
+/// `Ctrl` and `Control` are treated as the same key combination.
+pub fn accelerators_match(left: &str, right: &str) -> bool {
+    match (parse_accelerator(left), parse_accelerator(right)) {
+        (Some(left), Some(right)) => left.id() == right.id(),
+        _ => left.trim().eq_ignore_ascii_case(right.trim()),
+    }
+}
+
+fn shortcut_matches(configured: Option<&str>, shortcut: &Shortcut) -> bool {
+    configured.is_some_and(|accelerator| {
+        parse_accelerator(accelerator).is_some_and(|parsed| parsed.id() == shortcut.id())
+    })
+}
+
+/// Validates the persisted stop / mute-all shortcuts against the media
+/// bindings before anything is registered or saved.
+pub fn validate_shortcut_settings(
+    shortcuts: &ShortcutSettings,
+    media_bindings: &MediaBindings,
+) -> Result<(), ShortcutError> {
+    let entries = [
+        ("shortcuts.stop", shortcuts.stop.as_deref()),
+        ("shortcuts.muteAll", shortcuts.mute_all.as_deref()),
+    ];
+    for (field, accelerator) in entries {
+        let Some(accelerator) = accelerator else {
+            continue;
+        };
+        if parse_accelerator(accelerator).is_none() {
+            return Err(ShortcutError::new(
+                field,
+                "raccourci invalide ou non pris en charge",
+            ));
+        }
+        if accelerators_match(accelerator, MANUAL_RELOAD_ACCELERATOR) {
+            return Err(ShortcutError::new(
+                field,
+                "raccourci réservé au rechargement de l'overlay",
+            ));
+        }
+        if media_bindings
+            .keys()
+            .any(|binding| accelerators_match(accelerator, binding))
+        {
+            return Err(ShortcutError::new(
+                field,
+                "raccourci déjà utilisé par un média du board",
+            ));
+        }
+    }
+    if let (Some(stop), Some(mute_all)) = (shortcuts.stop.as_deref(), shortcuts.mute_all.as_deref())
+    {
+        if accelerators_match(stop, mute_all) {
+            return Err(ShortcutError::new(
+                "shortcuts.muteAll",
+                "raccourci déjà utilisé par l'arrêt de lecture",
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// Résultat d'application des bindings du board média (même forme que le legacy).
 #[derive(Debug, Clone, Serialize)]
@@ -70,7 +153,9 @@ pub fn apply_media_bindings(
 ) -> MediaBindingsApplyResult {
     let state = app.state::<AppState>();
     let normalized = normalize_media_bindings(&next);
-    let guest_mode = state.config_snapshot().guest_mode;
+    let config = state.config_snapshot();
+    let guest_mode = config.guest_mode;
+    let configured_shortcuts = config.shortcuts;
     let previous = state.active_bindings();
     unregister_bindings(app, &previous);
 
@@ -90,7 +175,17 @@ pub fn apply_media_bindings(
     let mut applied = MediaBindings::default();
     let mut failed = Vec::new();
     for (accelerator, item_id) in &normalized {
-        if register_one(app, accelerator) {
+        let reserved = configured_shortcuts
+            .stop
+            .as_deref()
+            .is_some_and(|stop| accelerators_match(accelerator, stop))
+            || configured_shortcuts
+                .mute_all
+                .as_deref()
+                .is_some_and(|mute_all| accelerators_match(accelerator, mute_all));
+        if reserved {
+            failed.push(accelerator.clone());
+        } else if register_one(app, accelerator) {
             applied.insert(accelerator.clone(), item_id.clone());
         } else {
             failed.push(accelerator.clone());
@@ -143,6 +238,17 @@ pub fn handle_shortcut_pressed(
     app: &AppHandle<Wry>,
     shortcut: &tauri_plugin_global_shortcut::Shortcut,
 ) {
+    let config = app.state::<AppState>().config_snapshot();
+    if shortcut_matches(config.shortcuts.mute_all.as_deref(), shortcut) {
+        crate::tray::toggle_general_mute(app);
+        crate::tray::refresh_tray(app);
+        return;
+    }
+    if shortcut_matches(config.shortcuts.stop.as_deref(), shortcut) {
+        let sent = crate::commands::stop_active_media(app);
+        tracing::info!(sent, "arrêt de lecture demandé par le raccourci global");
+        return;
+    }
     let is_manual_reload = MANUAL_RELOAD_ACCELERATOR
         .parse::<tauri_plugin_global_shortcut::Shortcut>()
         .map(|manual| manual.id() == shortcut.id())
@@ -177,10 +283,107 @@ pub fn handle_shortcut_pressed(
     }
 }
 
+fn unregister_configured_shortcuts(app: &AppHandle<Wry>, shortcuts: &ShortcutSettings) {
+    for accelerator in [shortcuts.stop.as_deref(), shortcuts.mute_all.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        unregister_one(app, accelerator);
+    }
+}
+
+fn register_configured_shortcut(
+    app: &AppHandle<Wry>,
+    field: &str,
+    accelerator: &str,
+) -> Result<(), ShortcutError> {
+    if register_one(app, accelerator) {
+        Ok(())
+    } else {
+        Err(ShortcutError::new(
+            field,
+            "le système a refusé d'enregistrer ce raccourci",
+        ))
+    }
+}
+
+fn restore_previous_shortcuts(app: &AppHandle<Wry>, previous: &ShortcutSettings) {
+    for (field, accelerator) in [
+        ("shortcuts.stop", previous.stop.as_deref()),
+        ("shortcuts.muteAll", previous.mute_all.as_deref()),
+    ] {
+        if let Some(accelerator) = accelerator {
+            if let Err(error) = register_configured_shortcut(app, field, accelerator) {
+                tracing::warn!(
+                    field = error.field,
+                    message = error.message,
+                    "restauration d'un raccourci global impossible"
+                );
+            }
+        }
+    }
+}
+
+/// Replaces the configured stop / mute-all registrations transactionally.
+///
+/// The previous shortcuts are unregistered first so shortcuts can be moved
+/// between the two actions. If the OS refuses a new accelerator, every new
+/// registration is removed and the previous ones are restored.
+pub fn replace_configured_shortcuts(
+    app: &AppHandle<Wry>,
+    previous: &ShortcutSettings,
+    next: &ShortcutSettings,
+) -> Result<(), ShortcutError> {
+    if previous == next {
+        return Ok(());
+    }
+    unregister_configured_shortcuts(app, previous);
+    let registration = next
+        .stop
+        .as_deref()
+        .map(|accelerator| register_configured_shortcut(app, "shortcuts.stop", accelerator))
+        .unwrap_or(Ok(()))
+        .and_then(|()| {
+            next.mute_all
+                .as_deref()
+                .map(|accelerator| {
+                    register_configured_shortcut(app, "shortcuts.muteAll", accelerator)
+                })
+                .unwrap_or(Ok(()))
+        });
+    if let Err(error) = registration {
+        unregister_configured_shortcuts(app, next);
+        restore_previous_shortcuts(app, previous);
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Registers the persisted global shortcuts at startup.
+pub fn register_configured_shortcuts(app: &AppHandle<Wry>) {
+    let shortcuts = app.state::<AppState>().config_snapshot().shortcuts;
+    for (field, accelerator) in [
+        ("shortcuts.stop", shortcuts.stop.as_deref()),
+        ("shortcuts.muteAll", shortcuts.mute_all.as_deref()),
+    ] {
+        if let Some(accelerator) = accelerator {
+            if let Err(error) = register_configured_shortcut(app, field, accelerator) {
+                tracing::warn!(
+                    field = error.field,
+                    accelerator,
+                    message = error.message,
+                    "raccourci global non enregistré au démarrage"
+                );
+            }
+        }
+    }
+}
+
 /// Restaure les bindings persistés au démarrage (mode invité exclus).
 pub fn restore_bindings(app: &AppHandle<Wry>) {
     register_manual_reload(app);
     reapply_for_session(app);
+    register_configured_shortcuts(app);
 }
 
 /// Réapplique les bindings du board média selon la session serveur courante

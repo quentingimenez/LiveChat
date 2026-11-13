@@ -10,14 +10,13 @@
 //! |---------|--------|------------------|
 //! | `POST` | `/overlay/pair/consume` | publique (code d'appairage) |
 //! | `GET` | `/overlay/media/{assetId}` | URL signée HMAC (`exp`, `sig`, `clientId`) |
-//! | `GET` | `/overlay/media-board/items` | `Authorization: Bearer` (repli `?token=`) |
-//! | `POST` | `/overlay/media-board/items` | `Authorization: Bearer` (repli `?token=`) — **écriture refusée en `invite_read_only`** |
-//! | `GET` | `/overlay/media-board/media/{assetId}` | `Authorization: Bearer` (repli `?token=`) |
-//! | `PATCH` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` (repli `?token=`) — **écriture refusée en `invite_read_only`** |
-//! | `DELETE` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` (repli `?token=`) — **écriture refusée en `invite_read_only`** |
-//!
-//! Les anciens chemins `/overlay/meme-board/*` restent enregistrés sur les
-//! mêmes handlers pour l'overlay 3.0.0 (compatibilité legacy).
+//! | `GET` | `/overlay/media-board/items` | `Authorization: Bearer` |
+//! | `POST` | `/overlay/media-board/items` | `Authorization: Bearer` — **écriture refusée en `invite_read_only`** |
+//! | `POST` | `/overlay/media-board/upload?filename=&title=&message=` | `Authorization: Bearer` — **writes refused in `invite_read_only`** |
+//! | `GET` | `/overlay/media-board/ingestions` | `Authorization: Bearer` |
+//! | `GET` | `/overlay/media-board/media/{assetId}` | URL signée (`clientId`, `exp`, `sig`) |
+//! | `PATCH` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` — **écriture refusée en `invite_read_only`** |
+//! | `DELETE` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` — **écriture refusée en `invite_read_only`** |
 //!
 //! `GET /overlay/config` **n'existe pas** en protocole v2 (supprimé, cf.
 //! `docs/rust/protocol-v2.md` §8) : la route tombe sur le `fallback` de
@@ -26,11 +25,11 @@
 //! ## Sessions en lecture seule
 //!
 //! Un jeton dont `overlay_clients.session_mode = INVITE_READ_ONLY` peut lire la
-//! board (`GET items`, `GET media`) mais **pas** la modifier : `POST`, `PATCH`
-//! et `DELETE` répondent `403 {"error":"read_only_session"}` (garde
+//! board (`GET items`, `GET ingestions`, `GET media`) mais **pas** la modifier :
+//! `POST`, `PATCH` et `DELETE` répondent `403 {"error":"read_only_session"}` (garde
 //! `media_board::ensure_writable`, AUD-V-003). La garde s'applique après
-//! l'authentification et donc identiquement pour `Authorization: Bearer` et
-//! pour le repli `?token=` du board.
+//! l'authentification Bearer ; le flux binaire du board applique la même règle
+//! de visibilité à partir du rôle du client signé.
 //!
 //! ## Conventions
 //!
@@ -47,13 +46,10 @@
 //!
 //! - Les URLs signées sont générées par le hub WebSocket (Phase 4b) via
 //!   [`crate::media_url`] ; la signature et sa vérification sont partagées.
-//! - Le renderer board (Phase 8) envoie un en-tête `Authorization` quand c'est
-//!   possible ; pour les balises `src` (`<video>`, `<img>`) qui ne peuvent pas
-//!   porter d'en-tête, l'extracteur accepte un repli `?token=` **limité aux
-//!   routes du board média** `/overlay/media-board/*` et à leur alias legacy
-//!   `/overlay/meme-board/*` (parité legacy, cf.
-//!   `http/overlay/auth.rs::query_token`). Ce repli n'existe sur aucune autre
-//!   route overlay.
+//! - Les balises `src` (`<video>`, `<img>`) du board ne peuvent pas porter
+//!   d'en-tête : chaque item de `GET /overlay/media-board/items` expose donc
+//!   `mediaUrl` / `mediaUrlExpiresAt`, une URL signée une heure pour le client
+//!   demandeur. Aucun jeton n'est accepté en query string.
 
 // Les helpers (`db`, `resolve_media_file`, ...) et certains handlers renvoient
 // `Result<_, Response>` : `Response` est le type d'erreur natif d'axum et le
@@ -79,6 +75,8 @@ pub(crate) mod guild;
 mod ingest_code;
 mod media;
 mod media_board;
+mod media_ingestion;
+mod media_upload;
 mod pair;
 mod queue;
 
@@ -86,6 +84,10 @@ pub use media::sign_media_url;
 
 #[cfg(test)]
 mod guild_tests;
+#[cfg(test)]
+mod ingestion_tests;
+#[cfg(test)]
+mod media_upload_tests;
 #[cfg(test)]
 mod tests;
 
@@ -105,24 +107,19 @@ pub fn router() -> Router<AppState> {
             get(media_board::list_items).post(media_board::create_item),
         )
         .route(
+            "/overlay/media-board/upload",
+            post(media_upload::upload_item),
+        )
+        .route(
+            "/overlay/media-board/ingestions",
+            get(media_board::list_ingestions),
+        )
+        .route(
             "/overlay/media-board/items/{item_id}",
             axum::routing::patch(media_board::update_item).delete(media_board::delete_item),
         )
         .route(
             "/overlay/media-board/media/{asset_id}",
-            get(media_board::get_media),
-        )
-        // Legacy overlay 3.0.0 compatibility: remove in 3.1.
-        .route(
-            "/overlay/meme-board/items",
-            get(media_board::list_items).post(media_board::create_item),
-        )
-        .route(
-            "/overlay/meme-board/items/{item_id}",
-            axum::routing::patch(media_board::update_item).delete(media_board::delete_item),
-        )
-        .route(
-            "/overlay/meme-board/media/{asset_id}",
             get(media_board::get_media),
         )
         .route("/overlay/guild", get(guild::get_guild))
@@ -235,8 +232,8 @@ fn is_conflict(db_error: &lc_db::DbError) -> bool {
 ///
 /// Ces tests montent le routeur complet (`crate::app::router`) comme
 /// `tests.rs`, mais vivent ici pour rester dans le périmètre de la correction ;
-/// ils couvrent les deux voies d'authentification (Bearer et `?token=`) et les
-/// deux modes de session (`normal` / `invite_read_only`).
+/// ils couvrent l'authentification Bearer, le flux média signé et les deux modes
+/// de session (`normal` / `invite_read_only`).
 #[cfg(test)]
 mod session_mode_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -307,6 +304,22 @@ mod session_mode_tests {
         )
         .with_clock(clock);
         (crate::app::router(state), db)
+    }
+
+    /// URL de média du board signée pour ce client (`board:` namespace).
+    fn signed_board_uri(asset: &MediaAsset, client: &OverlayClient, exp: u64) -> String {
+        let asset_key = asset.id.to_canonical();
+        let client_key = client.id.to_canonical();
+        let signature = crate::media_url::sign(
+            b"secret-test-session-mode",
+            &format!("board:{asset_key}"),
+            &client_key,
+            exp,
+        )
+        .expect("signature board");
+        format!(
+            "/overlay/media-board/media/{asset_key}?clientId={client_key}&exp={exp}&sig={signature}"
+        )
     }
 
     async fn insert_client(db: &Db, mode: OverlaySessionMode, token: &str) -> OverlayClient {
@@ -413,7 +426,7 @@ mod session_mode_tests {
     async fn read_only_allows_reads_and_blocks_mutations() {
         let dir = TempDir::new().unwrap();
         let (app, db) = harness(dir.path()).await;
-        insert_client(&db, OverlaySessionMode::InviteReadOnly, READ_ONLY_TOKEN).await;
+        let client = insert_client(&db, OverlaySessionMode::InviteReadOnly, READ_ONLY_TOKEN).await;
         let asset = insert_asset(&db, dir.path()).await;
         let item = insert_item(&db, &asset, "titre initial").await;
 
@@ -430,12 +443,9 @@ mod session_mode_tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["items"].as_array().map(Vec::len), Some(1));
-        let media_uri = format!("/overlay/media-board/media/{}", asset.id.to_canonical());
-        let status = send_status(
-            &app,
-            request(Method::GET, &media_uri, Some(READ_ONLY_TOKEN), None),
-        )
-        .await;
+        let exp = u64::try_from(fixed_now().timestamp()).unwrap() + 300;
+        let media_uri = signed_board_uri(&asset, &client, exp);
+        let status = send_status(&app, request(Method::GET, &media_uri, None, None)).await;
         assert_eq!(status, StatusCode::OK);
 
         // POST : refusé avant même la validation de la charge utile.
@@ -534,94 +544,23 @@ mod session_mode_tests {
         assert_eq!(body["deleted"], true);
     }
 
-    /// Le repli `?token=` du board est soumis à la même garde que le Bearer.
+    /// Le repli `?token=` a disparu : un jeton en query n'authentifie plus rien.
     #[tokio::test]
-    async fn query_token_cannot_bypass_read_only_gate() {
+    async fn query_token_no_longer_authenticates_mutations() {
         let dir = TempDir::new().unwrap();
         let (app, db) = harness(dir.path()).await;
-        insert_client(&db, OverlaySessionMode::InviteReadOnly, READ_ONLY_TOKEN).await;
         insert_client(&db, OverlaySessionMode::Normal, NORMAL_TOKEN).await;
         let asset = insert_asset(&db, dir.path()).await;
         let item = insert_item(&db, &asset, "titre initial").await;
         let item_uri = format!("/overlay/media-board/items/{}", item.id.to_canonical());
 
-        // PATCH via ?token= invitée (sans Bearer) : 403.
-        let uri = format!("{item_uri}?token={READ_ONLY_TOKEN}");
+        let uri = format!("{item_uri}?token={NORMAL_TOKEN}");
         let (status, body) = send_json(
             &app,
             request(Method::PATCH, &uri, None, Some(&json!({"title": "hack"}))),
         )
         .await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
-        assert_eq!(body["error"], "read_only_session");
-
-        // DELETE via ?token= invitée : 403.
-        let (status, body) = send_json(&app, request(Method::DELETE, &uri, None, None)).await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
-        assert_eq!(body["error"], "read_only_session");
-
-        // POST via ?token= invitée : 403 (avant validation `url`).
-        let uri = format!("/overlay/media-board/items?token={READ_ONLY_TOKEN}");
-        let (status, body) =
-            send_json(&app, request(Method::POST, &uri, None, Some(&json!({})))).await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
-        assert_eq!(body["error"], "read_only_session");
-
-        // PATCH via ?token= normale : autorisé (le mode suit le jeton, pas la voie).
-        let uri = format!("{item_uri}?token={NORMAL_TOKEN}");
-        let (status, body) = send_json(
-            &app,
-            request(
-                Method::PATCH,
-                &uri,
-                None,
-                Some(&json!({"message": "via query"})),
-            ),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["updated"], true);
-    }
-
-    /// Priorité du Bearer : le mode retenu est toujours celui du jeton serveur.
-    #[tokio::test]
-    async fn bearer_token_takes_precedence_over_query_token() {
-        let dir = TempDir::new().unwrap();
-        let (app, db) = harness(dir.path()).await;
-        insert_client(&db, OverlaySessionMode::InviteReadOnly, READ_ONLY_TOKEN).await;
-        insert_client(&db, OverlaySessionMode::Normal, NORMAL_TOKEN).await;
-        let asset = insert_asset(&db, dir.path()).await;
-        let item = insert_item(&db, &asset, "titre initial").await;
-        let item_uri = format!("/overlay/media-board/items/{}", item.id.to_canonical());
-
-        // Bearer normal + ?token= invité → le Bearer prime, écriture autorisée.
-        let uri = format!("{item_uri}?token={READ_ONLY_TOKEN}");
-        let (status, body) = send_json(
-            &app,
-            request(
-                Method::PATCH,
-                &uri,
-                Some(NORMAL_TOKEN),
-                Some(&json!({"title": "via bearer"})),
-            ),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["updated"], true);
-
-        // Bearer invité + ?token= normal → le Bearer prime, écriture refusée.
-        let uri = format!("{item_uri}?token={NORMAL_TOKEN}");
-        let (status, body) = send_json(
-            &app,
-            request(
-                Method::PATCH,
-                &uri,
-                Some(READ_ONLY_TOKEN),
-                Some(&json!({"title": "hack"})),
-            ),
-        )
-        .await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
-        assert_eq!(body["error"], "read_only_session");
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "unauthorized");
     }
 }

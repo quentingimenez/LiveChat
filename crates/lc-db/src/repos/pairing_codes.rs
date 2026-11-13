@@ -17,6 +17,7 @@ struct PairingCodeRow {
     code: String,
     guild_id: String,
     mode: String,
+    grants_admin: i64,
     created_by_discord_user_id: String,
     author_name: Option<String>,
     author_image: Option<String>,
@@ -31,6 +32,7 @@ impl PairingCodeRow {
             code: decode(TABLE, "code", &self.code, PairingCodeValue::parse)?,
             guild_id: decode(TABLE, "guild_id", &self.guild_id, GuildId::parse)?,
             mode: decode(TABLE, "mode", &self.mode, PairingMode::from_db_str)?,
+            grants_admin: self.grants_admin != 0,
             created_by_discord_user_id: self.created_by_discord_user_id,
             author_name: self.author_name,
             author_image: self.author_image,
@@ -58,13 +60,14 @@ impl PairingCodesRepository {
     pub async fn create(&self, code: &PairingCodeEntry) -> DbResult<()> {
         sqlx::query(
             "INSERT INTO pairing_codes ( \
-                code, guild_id, mode, created_by_discord_user_id, author_name, author_image, \
-                expires_at, used_at, created_at \
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                code, guild_id, mode, grants_admin, created_by_discord_user_id, author_name, \
+                author_image, expires_at, used_at, created_at \
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(code.code.as_str())
         .bind(code.guild_id.as_str())
         .bind(code.mode.as_db_str())
+        .bind(i64::from(code.grants_admin))
         .bind(code.created_by_discord_user_id.as_str())
         .bind(code.author_name.as_deref())
         .bind(code.author_image.as_deref())

@@ -15,8 +15,8 @@ Statut : shell compilé, testé et vérifié le 2026-11-10 (Windows 11, rustc/ca
 | --- | --- |
 | Projet Tauri 2 complet (`cargo`, `build.rs`, `tauri.conf.json`, `tauri.beta.conf.json`) | Client WebSocket `tokio-tungstenite 0.29` + protocole v2 |
 | Config legacy 16 champs, chemin forcé `%APPDATA%\LiveChat\config.json`, `.bak`, migration | Appairage HTTP réel (`pairing_consume`) |
-| 3 fenêtres (overlay/pairing/board), click-through, topmost 2 s, styles Win32 | Renderer définitif (copie `overlay/renderer/**`, overlay.html/board.html/pairing.html) |
-| Tray + menu complet (affichage, écran, volume, autostart, MAJ, quitter) | Hotkeys de médias actifs (émission socket) |
+| 2 fenêtres (overlay/board), click-through, topmost 2 s, styles Win32 | Renderer définitif (copie `overlay/renderer/**`, overlay.html/board.html) |
+| Tray compact (board, paramètres, sourdine générale/par guilde, quitter) | Hotkeys de médias actifs (émission socket) |
 | Single-instance, autostart, squelette global-shortcuts | Updater signé (clé minisign réelle), vérification au démarrage |
 | 10 commandes + 3 événements du contrat bridge (buffer 5 s) | Statut de connexion dynamique dans le tray |
 | Updater plugin (stub), capabilities, CSP | Broadcast d'état playback/erreurs vers le board |
@@ -29,7 +29,9 @@ apps/lc-overlay/
   build.rs                # tauri_build::build()
   tauri.conf.json         # LiveChat / com.livechat — build stable
   tauri.beta.conf.json    # LiveChat Next / com.livechat.next — build bêta side-by-side
-  capabilities/default.json
+  capabilities/board.json # capability de la fenêtre board
+  capabilities/overlay.json # capability de la fenêtre overlay
+  capabilities/pairing.json # obsolète (fenêtre pairing supprimée)
   icons/icon.png|icon.ico # reprise de spikes/poc-tauri/icons (placeholders Phase 9)
   gen/schemas/            # généré par tauri-build (gitignore : /gen/schemas/)
   web/
@@ -38,7 +40,6 @@ apps/lc-overlay/
     README.md             # consignes bridge Phase 0, conservées
     overlay.html          # placeholder 8a (badge bridge)
     board.html            # placeholder 8a (config JSON via bridge)
-    pairing.html          # placeholder 8a (appairage en 8b)
     favicon.ico           # évite les asset not found de WebView2
   src/
     main.rs               # windows_subsystem release + appel run()
@@ -47,9 +48,12 @@ apps/lc-overlay/
     display.rs            # DisplayInfo, sélection d'écran, helpers purs, tests
     state.rs              # AppState (config + Ready + buffer + bindings actifs), tests
     events.rs             # noms d'événements, buffer borné + timeout 5 s, tests
-    win32.rs              # SEUL module unsafe : styles ex + SetWindowPos topmost
-    windows.rs            # cycle de vie 3 fenêtres, topmost 2 s, second instance
-    tray.rs               # icône + menu + handlers
+    layout_preview.rs     # aperçu en direct de la mise en page (gabarit, échéance 4 s), tests
+    placement.rs          # placement de la zone d'affichage à l'écran (début, fin, payloads), tests
+    win32.rs              # SEUL module unsafe : styles ex, SetWindowPos topmost, hook de premier plan
+    windows.rs            # cycle de vie 2 fenêtres, topmost 2 s, second instance
+    tray.rs               # icône + modèle de menu pur + handlers
+    device_settings.rs    # réglages appareil retirés du tray (page Paramètres)
     shortcuts.rs          # global-shortcuts / mediaBindings (squelette)
     updater.rs            # check/install (stub)
     commands.rs           # commandes bridge (config, télémétrie, appairage, médias du board) + 2 commandes update
@@ -120,29 +124,47 @@ Au démarrage (`lib.rs::prepare_store`) :
 `OverlayConfig` = les 16 champs legacy exacts (camelCase JSON) :
 `displayId`, `displayIndex`, `displayKey`, `displayLabel`, `volume`, `enabled`,
 `autoStart`, `guestMode`, `showText`, `serverUrl`, `clientToken`, `clientId`,
-`guildId`, `authorName`, `deviceName`, `mediaBindings` ; les clés inconnues sont
-conservées dans `extra` (`#[serde(flatten)]`) pour ne pas perdre de champ
-Electron lors d'un rollback. L'ancienne clé `memeBindings` de l'overlay 3.0.0
-reste lue au chargement et est réécrite sous `mediaBindings`.
+`guildId`, `authorName`, `deviceName`, `mediaBindings`, plus `memberships`,
+`profileName`, `profileAvatar`, `shortcuts` et `layout` ; les clés inconnues
+sont conservées dans `extra` (`#[serde(flatten)]`) pour ne pas perdre de champ
+Electron lors d'un rollback.
+
+`Membership` porte un `volume` par guilde (défaut `1.0`, borné `[0,1]`).
+`shortcuts = { stop, muteAll }` et `layout = { zone: { x, y, width, height },
+align }` sont les clés persistées camelCase des réglages de l'appareil. Elles
+sont normalisées à la lecture : accélérateurs trimmés/vides retirés ; zone en
+fractions de l'écran choisi, côtés bornés 0,05..1, gardée sur l'écran et
+arrondie au 1/10 000 (non finie → écran entier) ; alignement
+`center|top|bottom|left|right|top-left|top-right|bottom-left|bottom-right`
+(inconnu → `center`). Les anciennes clés `anchor`, `maxWidth`, `maxHeight` et
+`margin` sont ignorées.
 
 Normalisations identiques au legacy : volume borné `[0,1]` (non fini → 1),
 `autoStart`/`guestMode` seulement si `=== true`, `mediaBindings` trimmés et
 entrées vides supprimées. `serverUrl` est **conservé tel quel** dans le fichier :
 comme dans le legacy, `normalizeServerUrl` (trim + suppression des `/` finaux)
-ne s'applique qu'à l'usage (appairage/connexion, Phase 8b).
+ne s'applique qu'à l'usage (appairage/connexion).
 
-Projection renderer (`OverlayConfigView`, 8 champs) :
-`serverUrl`, `clientToken`, `guildId`, `clientId`, `guestMode`, `showText`,
-`volume`, `mediaBindings` — `display*`, `enabled`, `autoStart`, `authorName` et
-`deviceName` restent côté shell.
+Projection renderer (`OverlayConfigView`) : `serverUrl`, `clientToken`,
+`guildId`, `clientId`, `guestMode`, `showText`, `volume`, `mediaBindings` et
+`layout` — `display*`, `enabled`, `autoStart`, `authorName`, `deviceName`,
+`shortcuts` et le profil restent côté shell.
+
+La vue complète de la page Paramètres (`SettingsView`) et le contrat
+`settings_get` / `settings_set` / `settings_identify_displays` /
+`settings_test_media` / `settings_preview_layout` / placement de la zone
+(`settings_placement_start`, `settings_placement_cancel`,
+`overlay_placement_finish`) sont documentés dans `overlay-bridge.md` §14.
+L'aperçu en direct de la mise en page (gabarit, échéance de 4 s) vit dans
+`src/layout_preview.rs`, le placement dans `src/placement.rs`.
 
 ## 5. Fenêtres
 
 | Label | Taille | Politique |
 | --- | --- | --- |
 | `overlay` | écran cible plein (2560×1440 ×1.0 dans le POC) | transparente, sans décorations, always-on-top, skip taskbar, focusable=false, click-through, `WS_EX_LAYERED|TRANSPARENT|NOACTIVATE|TOOLWINDOW` |
-| `pairing` | 460×580 | non redimensionnable, centrée, cachée au démarrage |
-| `board` | 1180×780 (min 960×640) | centrée, cachée au démarrage |
+| `board` | 1180×780 (min 960×640) | centrée, cachée au démarrage ; porte aussi l'appairage et les paramètres ; topmost (au-dessus de l'overlay) seulement tant qu'elle est la fenêtre au premier plan |
+| `identify-<index>` | plein écran par moniteur, créée à la demande | transparente, sans décorations, always-on-top, skip taskbar, focusable=false, click-through, affichée sans activation (`SW_SHOWNOACTIVATE`) ; fermée par le shell après 3 s (`settings_identify_displays`) |
 
 Détails d'implémentation :
 
@@ -156,37 +178,82 @@ Détails d'implémentation :
   SWP_NOACTIVATE)`.
 - Thread `spawn_topmost_guard` : toutes les 2 s (cadence legacy
   `setInterval(2000)`), `set_always_on_top(true)` + réaffirmation des styles et
-  de `HWND_TOPMOST`, jusqu'à ce que la fenêtre disparaisse.
-- `CloseRequested` sur les 3 fenêtres → `api.prevent_close()` + `hide()` : le
+  de `HWND_TOPMOST`, jusqu'à ce que la fenêtre disparaisse ; il remet ensuite
+  le board au-dessus s'il est au premier plan (et les cartes `identify-*`
+  au-dessus du board).
+- Placement de la zone (`placement::start`) : tant qu'il dure,
+  `apply_window_policies` applique les politiques de placement à `overlay`
+  (`set_ignore_cursor_events(false)`, `set_focusable(true)`, topmost, skip
+  taskbar, `win32::clear_click_through` retire `WS_EX_TRANSPARENT |
+  WS_EX_NOACTIVATE`), la fenêtre est montrée et reçoit le focus, et la garde
+  topmost ne réimpose pas les styles click-through. À la fin
+  (`placement::finish`), les politiques overlay normales reviennent et la
+  fenêtre est masquée si l'overlay est désactivé.
+- Plan du board (`windows::board_layer`) : il suit la fenêtre au premier plan
+  de Windows (`SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`, installé sur le
+  thread principal), pas l'événement Tauri `Focused` : sous Windows celui-ci
+  vient de `GotFocus`/`LostFocus` de WebView2, et `LostFocus` n'est pas levé
+  quand l'utilisateur active une autre application (le board restait alors
+  devant la fenêtre cliquée). Au premier plan → topmost ; sinon, s'il est
+  topmost → `set_always_on_top(false)` puis placé juste derrière la nouvelle
+  fenêtre au premier plan. Le traitement est toujours posté sur la boucle
+  d'événements (`run_on_main_thread` depuis un autre thread) : le hook peut
+  être appelé dans une boucle de messages imbriquée où rappeler Tauri n'est
+  pas sûr.
+- `identify-<index>` : créées par une commande **async**. Une commande
+  synchrone tourne sur le thread principal dans le callback IPC de WebView2,
+  où construire une fenêtre WebView bloque sous Windows (la commande ne
+  revenait jamais). Une fois la fenêtre créée, tao la montre — et la remontre
+  après tout changement de style — avec `SW_SHOW`, qui l'active même avec
+  `WS_EX_NOACTIVATE` : les cartes sont donc configurées cachées puis montrées
+  par `win32::show_without_activation`, sans aucun setter tao ensuite.
+- `CloseRequested` sur les 2 fenêtres → `api.prevent_close()` + `hide()` : le
   shell ne détruit jamais ses fenêtres (comme l'`auxiliary-window-service`
   Electron).
+- Premier lancement sans guilde : `bootstrap_windows` ouvre la board (elle
+  remplace l'ancienne fenêtre d'appairage).
 - Single-instance : le plugin est enregistré **en premier** ; une deuxième
   instance transmet `argv`/cwd à l'instance principale puis quitte.
-  `--pairing` ouvre la fenêtre d'appairage, sinon le board.
+  `--pairing` (compatibilité) comme `--board` ouvrent la board.
 
 ## 6. Tray
 
 `TRAY_ID = "main-tray"`, icône = `default_window_icon()` (placeholder Phase 9).
 Menu reconstruit via `app.tray_by_id("main-tray").set_menu(...)` après tout
-changement (config/écran/autostart).
+changement (config ou état de connexion). La décision est isolée dans le modèle
+pur `tray::menu_model` (testé sans Tauri), puis traduite en items par
+`tray::build_menu`.
 
 Ordre et identifiants :
 
-1. `tray.show_overlay` — Afficher l'overlay
-2. `tray.open_board` — Ouvrir LiveChat (activé si `enabled &&
-   hasPairingConfig`)
-3. `tray.open_pairing` — Appairer l'overlay
-4. `tray.toggle_enabled` — Overlay activé (case)
-5. `tray.toggle_autostart` — Lancer au démarrage (case, pilotée par le plugin)
-6. `tray.toggle_show_text` — Afficher le texte (case)
-7. `tray.display.header` — « Écran sélectionné : … » (désactivé) +
-   `tray.display.<index>` — radios « Écran N - label »
-8. `tray.volume` — sous-menu : `Volume +`, `Volume -`, `Volume 100 %`
-9. `tray.check_updates` — Vérifier les mises à jour
-10. `tray.quit` — Quitter
+1. `tray.header` — en-tête **désactivé** : `LiveChat — N/M guildes connectées`
+   (N = guildes `Connected`, M = guildes appairées) ; sans guilde :
+   `LiveChat — aucune guilde`.
+2. séparateur
+3. `tray.open_board` — Ouvrir la board.
+4. `tray.settings` — Paramètres… : ouvre la board puis émet
+   `overlay://navigate` avec `{"view":"settings"}`. La vue est aussi mémorisée
+   dans `AppState::pending_board_view` (la board peut ne pas être encore
+   chargée) et consommée une seule fois par `board_take_pending_view`.
+5. séparateur
+6. `tray.general_mute` — Sourdine générale : cochée = `enabled == false`.
+   Pendant la sourdine générale, les cases de guilde sont grisées.
+7. `tray.guild.<id>` — une case par guilde appairée : cochée = la guilde
+   diffuse (non muette), décochée = en sourdine. Le libellé reprend le nom de
+   la guilde (repli `Guilde <id>`, troncature à 48 caractères) et ajoute
+   ` — <statut>` si elle n'est pas connectée. Le clic passe par
+   `commands::set_guild_muted`, partagé avec la commande `guild_set_muted`.
+8. séparateur
+9. `tray.quit` — Quitter.
 
-Écarts assumés vs menu Electron : pas encore de lignes « Statut connexion /
-Mise à jour / Version » (dépendent du client WS et de l'updater réels, Phase 8b).
+Entrées retirées : statut détaillé, Reconnecter, Afficher l'overlay, Ouvrir
+LiveChat, Rejoindre, Overlay activé, autostart, texte, écrans, volume et mises à
+jour. Les fonctions correspondantes restent dans `device_settings` (publiées,
+comportement inchangé) pour la future page Paramètres.
+
+Icône : `show_menu_on_left_click(false)` (le menu s'ouvre au clic droit) ; un
+double-clic gauche (`TrayIconEvent::DoubleClick` avec `MouseButton::Left`) ouvre
+la board. L'infobulle reste `tray_tooltip`.
 
 ## 7. Autostart et coexistence
 
@@ -225,18 +292,25 @@ Mise à jour / Version » (dépendent du client WS et de l'updater réels, Phase
 - Pas encore de vérification automatique au démarrage ni de lignes de statut
   dans le tray (Phase 8b/9).
 
-## 9. Global shortcuts (squelette mediaBindings)
+## 9. Global shortcuts
 
 - Accélérateur de rechargement manuel (legacy) :
-  `CommandOrControl+Shift+Alt+R` → `emitManualStopSignal` sera branché sur le
-  socket en 8b ; pour l'instant l'action recharge la webview overlay
+  `CommandOrControl+Shift+Alt+R` recharge la webview overlay
   (`window.eval("window.location.reload()")`) et journalise.
 - `apply_media_bindings(app, bindings, strict, persist)` reproduit la sémantique
   legacy : mode invité → aucun binding ; `strict` → rollback complet si un
   accélérateur est refusé, réponse `{ok, appliedBindings, failedAccelerators}`.
-- Commandes bridge `media_board_get_bindings` / `media_board_set_bindings`
-  opérationnelles ; `media_board_trigger` / `media_board_stop` renvoient
-  `{ok:false, reason:"socket_unavailable"}` jusqu'au client WS (8b).
+  Les accélérateurs réservés aux raccourcis globaux sont signalés dans
+  `failedAccelerators`.
+- `shortcuts.stop` et `shortcuts.muteAll` sont persistés dans
+  `OverlayConfig.shortcuts`, enregistrés au démarrage puis réenregistrés
+  transactionnellement par `settings_set`. `stop` envoie `stop.request` à la
+  guilde active ; `muteAll` bascule la sourdine générale exactement comme le
+  tray. En cas de refus OS, les anciens raccourcis sont restaurés.
+- La validation de `settings_set` refuse un accélérateur invalide, en collision
+  avec l'autre raccourci global, un binding média ou le rechargement manuel.
+- Commandes bridge `media_board_get_bindings` / `media_board_set_bindings`,
+  `media_board_trigger` / `media_board_stop` opérationnelles sur le socket v2.
 
 ## 10. Événements et commandes (contrat bridge)
 
@@ -244,23 +318,34 @@ Mise à jour / Version » (dépendent du client WS et de l'updater réels, Phase
 
 | Nom | Cible | Payload |
 | --- | --- | --- |
-| `overlay://play` | fenêtre `overlay` | `OverlayPlayPayload` complet |
+| `overlay://play` | fenêtre `overlay` | `OverlayPlayPayload` complet + `volume` effectif |
 | `overlay://stop` | fenêtre `overlay` | `OverlayStopPayload` |
-| `overlay://settings` | fenêtres `overlay` + `board` | projection 8 champs |
+| `overlay://settings` | fenêtre `overlay` | projection renderer (`OverlayConfigView`, layout compris) |
+| `overlay://device-settings` | fenêtre `board` | `SettingsView` complet |
+| `overlay://navigate` | fenêtre `board` | `{ "view": "settings" }` (demande du tray) |
+| `overlay://placement` | fenêtre `overlay` | `{ "active": true, "layout" }` au début d'un placement, `{ "active": false }` à la fin |
+
+Le volume effectif ajouté à `overlay://play` vaut volume général × volume de la
+guilde propriétaire du média. Le renderer utilise `payload.volume` seulement
+quand il est fini et dans `[0,1]`, sinon le volume de configuration.
 
 Bufferisation (décision §8.1 de `overlay-bridge.md`) : tant que l'overlay n'a
 pas appelé `overlay_renderer_ready`, les événements play/stop sont coalescés
 (durée bornée à 2 : dernier play + dernier stop), puis rejoués dans l'ordre au
-handshake ; timeout de 5 s → purge + `warn`. `overlay://settings` n'est jamais
-bufferisé vers le board (il n'appelle pas `renderer_ready`) mais est émis
-immédiatement aux deux fenêtres.
+handshake ; timeout de 5 s → purge + `warn`. `overlay://settings` et
+`overlay://device-settings` sont émis immédiatement.
 
 Commandes exposées (via `tauri::generate_handler!`) :
 `overlay_get_config`, `overlay_renderer_ready`, `overlay_report_error`,
 `overlay_report_playback_state`, `overlay_report_playback_stop`,
 `pairing_consume`, `media_board_get_bindings`, `media_board_set_bindings`,
-`media_board_trigger`, `media_board_stop` (+ `overlay_check_updates`,
-`overlay_install_update`).
+`media_board_trigger`, `media_board_stop`, `overlay_check_updates`,
+`overlay_install_update`, `board_take_pending_view`, `settings_get`,
+`settings_set`, `settings_identify_displays`, `settings_test_media`,
+`settings_preview_layout`, `settings_placement_start`,
+`settings_placement_cancel`, `overlay_placement_finish` et les commandes de
+guildes / upload. `guild_media_url` est supprimé : les URL média
+signées arrivent directement dans les éléments du board.
 
 `bridge.js` (façade Tauri 2) détecte `__TAURI_INTERNALS__.invoke` puis
 `__TAURI__.core.invoke` ; `app.withGlobalTauri: true` est activé, `core:default`
@@ -268,19 +353,15 @@ couvre les commandes applicatives (hors ACL) et les événements.
 
 ## 11. Capabilities et CSP
 
-`capabilities/default.json` — fenêtres `overlay`, `board`, `pairing` :
+`capabilities/board.json` et `capabilities/overlay.json` — une capability par
+fenêtre (`windows: ["board"]` / `["overlay"]`), permissions `core:default`
+minimales. Les fenêtres `identify-<index>` n'ont aucune capability : elles
+n'appellent aucune commande IPC et affichent uniquement leur page locale.
+`capabilities/pairing.json` n'est plus utilisé depuis la suppression de la
+fenêtre d'appairage (il reste à supprimer).
 
-```json
-["core:default", "fs:default", "fs:allow-read-text-file",
- "fs:allow-write-text-file",
- { "identifier": "fs:scope",
-   "allow": ["$APPDATA/LiveChat/**", "$APPCONFIG/**/*", "$APPLOCALDATA/**/*"] }]
-```
-
-(valeur exacte validée au POC ; `fs:default` = dossiers app en lecture,
-`fs:allow-read-text-file`/`fs:allow-write-text-file` = commandes explicites,
-`fs:scope` = chemins additionnels, dont le fichier de config legacy).
-Pas de `shell`/`opener` : le shell 8a n'ouvre pas de process externe.
+Chaque capability ne demande que `core:default` (aucun accès `fs`, `shell` ou
+`opener`) : le shell n'ouvre pas de process externe.
 
 CSP (`tauri.conf.json`) :
 
@@ -315,11 +396,12 @@ URLs média restant verbatim. Origine WebView : `http://tauri.localhost` (pas de
 
 1. `displayId` (identifiant Electron du moniteur) n'est pas résolu : la
    sélection utilise `displayKey`/`displayIndex`/primaire, comme décidé au POC.
-2. `pairing_consume` renvoie une erreur explicite (« Phase 8b ») — l'UI
-   d'appairage réelle n'est pas encore servie.
-3. `media_board_trigger/stop` : `socket_unavailable` jusqu'au client WS.
+2. `pairing_consume` est opérationnel et la board porte l'appairage ; la
+   fenêtre `pairing` a été retirée.
+3. `media_board_trigger/stop` sont branchés sur le client WebSocket v2 ;
+   `socket_unavailable` signale désormais une guilde/superviseur indisponible.
 4. Updater : clé minisign placeholder + pas de check au démarrage.
-5. Tray : pas de statut de connexion/version dans le menu (Phase 8b).
+5. Tray : en-tête N/M guildes connectées, sans version serveur détaillée.
 6. `serverUrl` non normalisé à l'écriture (parité legacy volontaire).
 7. Autostart : collision potentielle de la valeur `Run` `livechat` avec
    l'Electron (voir §7).
@@ -340,8 +422,8 @@ URLs média restant verbatim. Origine WebView : `http://tauri.localhost` (pas de
       `overlay_report_*` → télémétrie/socket, `pairing_consume` → appairage HTTP
       réel + `normalizeServerUrl`.
 - [ ] Renderer : copier `overlay/renderer/**` (HTML/CSS/JS existants) dans
-      `web/overlay.html`, `web/board.html`, `web/pairing.html` et brancher
-      `bridge.js` (script classique, `<head>`, avant les modules).
+      `web/overlay.html`, `web/board.html` et brancher `bridge.js` (script
+      classique, `<head>`, avant les modules).
 - [ ] Hotkeys médias actifs : `media_board_trigger/stop` → socket, feedback
       `failedAccelerators` réel.
 - [ ] Cibles `overlay://settings` après `overlay_renderer_ready` + à chaque
@@ -350,7 +432,8 @@ URLs média restant verbatim. Origine WebView : `http://tauri.localhost` (pas de
       `http://tauri.localhost`.
 - [ ] Updater : clé minisign réelle, `latest.json`, check au démarrage +
       lignes de statut tray.
-- [ ] Single-instance : `--pairing`/`--from-autostart` et remontée au board.
+- [ ] Single-instance : `--board`/`--from-autostart` (et `--pairing` en
+      compatibilité) et remontée au board.
 - [ ] Coexistence bêta : build `tauri.beta.conf.json` + `LIVECHAT_PRODUCT_NAME`,
       test side-by-side avec l'Electron, migration/rollback `.bak`.
 

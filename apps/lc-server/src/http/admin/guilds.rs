@@ -22,6 +22,7 @@ use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use lc_domain::{Guild, GuildAccess, GuildId};
+use lc_protocol::{close_code, BoardChange, BoardChangedPayload, ServerMessage};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -611,7 +612,7 @@ pub(super) async fn purge(
         let Ok(client_id) = Uuid::parse_str(&overlay.id) else {
             continue;
         };
-        if hub.close_client(&client_id, 1000) {
+        if hub.close_client(&client_id, close_code::GUILD_DELETED) {
             disconnected_overlay_sockets += 1;
         }
     }
@@ -798,10 +799,25 @@ pub(super) async fn clear_media_board(
     let candidate_media_asset_ids = queries::guild_board_media_asset_ids(db, guild_id.as_str())
         .await
         .map_err(|error| AdminError::db("board media asset ids", error))?;
+    let item_ids = queries::guild_board_item_ids(db, guild_id.as_str())
+        .await
+        .map_err(|error| AdminError::db("board media item ids", error))?;
     let deleted_media_board_items =
         queries::delete_media_board_items_for_guild(db, guild_id.as_str())
             .await
             .map_err(|error| AdminError::db("deleting media board items", error))?;
+    if deleted_media_board_items > 0 {
+        let hub = admin_hub(&state);
+        for item_id in item_ids {
+            hub.broadcast_to_guild(
+                &guild_id,
+                ServerMessage::BoardChanged(BoardChangedPayload {
+                    change: BoardChange::Deleted,
+                    item_id,
+                }),
+            );
+        }
+    }
     let (deleted_orphan_media_assets, orphan_media_file_delete_errors) =
         remove_orphan_media(&state, db, &candidate_media_asset_ids).await?;
 

@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "description": "Envoi rapide de liens media vers LiveChat /ingest.",
   "icons": {
-    "16": "icon.png",
-    "32": "icon.png",
-    "48": "icon.png",
-    "128": "icon.png"
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
   },
   "permissions": ["storage", "contextMenus", "tabs", "webRequest"],
   "host_permissions": [
@@ -29,9 +29,9 @@
   "action": {
     "default_title": "LiveChat Extension",
     "default_icon": {
-      "16": "icon.png",
-      "24": "icon.png",
-      "32": "icon.png"
+      "16": "icons/icon-16.png",
+      "24": "icons/icon-24.png",
+      "32": "icons/icon-32.png"
     },
     "default_popup": "popup.html"
   },

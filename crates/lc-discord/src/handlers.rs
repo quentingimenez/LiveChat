@@ -72,6 +72,9 @@ pub fn plan_deferral(invocation: &Invocation) -> Deferral {
         }
         CommandInput::Talk(_) => Deferral::Public,
         CommandInput::HideTalk(_) => Deferral::Ephemeral,
+        // `/pair-code` acknowledges first: Discord only allows 3 seconds to
+        // answer an interaction, and the code creation touches the database.
+        CommandInput::PairCode(_) => Deferral::Ephemeral,
         _ => Deferral::None,
     }
 }
@@ -543,10 +546,15 @@ async fn handle_pair_code(
             dict.pair_code_answer_description_invite,
         ),
     };
+    // Discord Administrator in normal mode → the paired overlay becomes a
+    // LiveChat admin. Frozen at pairing: later permission changes do not
+    // re-sync existing members.
+    let grants_admin = mode == PairingMode::Normal && author.is_admin;
     let entry = PairingCodeEntry {
         code,
         guild_id: guild_id.clone(),
         mode,
+        grants_admin,
         created_by_discord_user_id: author.id.clone(),
         author_name: Some(author.name.clone()),
         author_image: author.image.clone(),
@@ -559,7 +567,7 @@ async fn handle_pair_code(
     let api_url = ctx.config().api_url.clone();
     let code_text = entry.code.as_str().to_owned();
     let expires_in = ttl_minutes.to_string();
-    let description = interpolate(
+    let mut description = interpolate(
         template,
         &[
             ("apiUrl", &api_url),
@@ -567,6 +575,10 @@ async fn handle_pair_code(
             ("expiresIn", &expires_in),
         ],
     );
+    if grants_admin {
+        description.push_str("\n\n");
+        description.push_str(dict.pair_code_grants_admin);
+    }
     Ok(Reply::ephemeral(
         Embed::new()
             .with_title(dict.pair_code_answer_title)
@@ -838,11 +850,14 @@ mod tests {
     use chrono::Duration as ChronoDuration;
     use lc_domain::entities::DiscordLinkCode;
     use lc_domain::ids::{GuildId, PairingCode};
+    use lc_domain::PairingMode;
 
     use super::{dispatch, plan_deferral, Deferral, Invocation};
     use crate::context::{Author, BotContext};
     use crate::i18n::{strings, Lang};
-    use crate::inputs::{CommandInput, LinkInput, MediaSubmission, TalkInput, TimeSettingInput};
+    use crate::inputs::{
+        CommandInput, LinkInput, MediaSubmission, PairCodeInput, TalkInput, TimeSettingInput,
+    };
     use crate::reply::COLOR_SUCCESS;
     use crate::testing::{admin_author, member_author, sample_now, FakeBotContext};
 
@@ -914,6 +929,16 @@ mod tests {
         }));
         // Sans guilde le legacy répond immédiatement not_allowed.
         assert_eq!(plan_deferral(&with_source), Deferral::None);
+    }
+
+    #[test]
+    fn deferral_pair_code_est_ephemere() {
+        // `/pair-code` écrit en base : l'interaction doit être acquittée tout
+        // de suite (limite Discord de 3 s), puis éditée avec le code créé.
+        let pair = invocation(CommandInput::PairCode(PairCodeInput {
+            mode: PairingMode::Normal,
+        }));
+        assert_eq!(plan_deferral(&pair), Deferral::Ephemeral);
     }
 
     #[test]

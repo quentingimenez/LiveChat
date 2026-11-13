@@ -1,5 +1,6 @@
 // "Rejoindre une guilde" dialog.
 
+import { resizeAvatar } from '../core/avatar.js';
 import { avatarNode, h } from '../core/dom.js';
 import { invoke } from '../core/ipc.js';
 import { ERROR_LABELS, state } from '../core/state.js';
@@ -7,30 +8,12 @@ import { notify } from '../core/toast.js';
 import { openDialog } from '../core/ui.js';
 import { applyGuilds } from '../data.js';
 
-function resizeAvatar(file) {
-  return new Promise((resolve) => {
-    const image = new Image();
-    image.onload = () => {
-      const size = 96;
-      const canvas = document.createElement('canvas');
-      canvas.width = size;
-      canvas.height = size;
-      const side = Math.min(image.width, image.height);
-      canvas.getContext('2d').drawImage(image, (image.width - side) / 2, (image.height - side) / 2, side, side, 0, 0, size, size);
-      URL.revokeObjectURL(image.src);
-      resolve(canvas.toDataURL('image/jpeg', 0.82));
-    };
-    image.onerror = () => resolve(null);
-    image.src = URL.createObjectURL(file);
-  });
-}
-
 export function openJoinDialog() {
   openDialog((close) => {
     const known = state.guilds[0] ? state.guilds[0].membership.serverUrl : '';
     const server = h('input', { class: 'field', type: 'url', placeholder: 'https://livechat.exemple.fr', value: known, required: true });
     const code = h('input', { class: 'field code', placeholder: 'K7QX-M2PD', maxlength: '40', autocomplete: 'off', spellcheck: 'false', required: true });
-    const name = h('input', { class: 'field', placeholder: 'Ton pseudo', maxlength: '40', value: state.profile.displayName || '' });
+    const name = h('input', { class: 'field', placeholder: 'Ton pseudo (facultatif avec un code Discord)', maxlength: '40', value: state.profile.displayName || '' });
     let avatar = state.profile.avatar || null;
     const avatarPreview = h('span', null, avatarNode(name.value || '?', avatar));
     const file = h('input', {
@@ -77,9 +60,16 @@ export function openJoinDialog() {
           }
           submit.disabled = false;
           submit.textContent = 'Rejoindre';
-          error.textContent = /pairing_code_invalid_or_expired/.test(response.message || '')
+          const message = response.message || '';
+          if (/display_name_required/.test(message)) {
+            error.textContent = ERROR_LABELS.display_name_required;
+            error.hidden = false;
+            name.focus();
+            return;
+          }
+          error.textContent = /pairing_code_invalid_or_expired/.test(message)
             ? ERROR_LABELS.pairing_code_invalid_or_expired
-            : response.message || 'Impossible de rejoindre la guilde.';
+            : message || 'Impossible de rejoindre la guilde.';
           error.hidden = false;
         },
       },
@@ -87,6 +77,11 @@ export function openJoinDialog() {
       h('label', null, "Code d'invitation", code),
       h('label', null, 'Pseudo', name),
       h('div', { class: 'row' }, avatarPreview, h('button', { class: 'btn', type: 'button', onClick: () => file.click() }, 'Choisir un avatar'), file),
+      h(
+        'p',
+        { class: 'file-hint' },
+        'Code /pair-code de Discord : laisse le pseudo et l’avatar vides pour reprendre ceux de Discord.',
+      ),
       error,
       h('div', { class: 'actions' }, h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'), submit),
     );

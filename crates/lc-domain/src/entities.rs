@@ -260,6 +260,8 @@ pub struct GuildAccess {
     pub standalone: bool,
     /// Serveur Discord lié à une guilde indépendante, si elle en a un.
     pub discord_guild_id: Option<String>,
+    /// Discord icon hash, when the linked server has an icon.
+    pub discord_icon_hash: Option<String>,
     /// Les invités peuvent consulter le board média.
     pub guests_can_view_board: bool,
     /// Date de création (`None` pour une guilde antérieure à la migration 0003).
@@ -469,6 +471,11 @@ pub struct PairingCodeEntry {
     pub guild_id: GuildId,
     /// Mode accordé au futur client.
     pub mode: PairingMode,
+    /// `true` si le code accorde le rôle LiveChat `admin` à l'appairage.
+    ///
+    /// Figé à la consommation : un membre admin issu d'un code garde ce rôle,
+    /// même si les permissions Discord de son auteur changent ensuite.
+    pub grants_admin: bool,
     /// Auteur Discord créateur (obligatoire).
     pub created_by_discord_user_id: String,
     /// Nom d'auteur affiché par l'overlay après appairage.
@@ -587,6 +594,7 @@ mod tests {
             code: PairingCodeId::parse("AB12CD").unwrap(),
             guild_id: GuildId::parse("123456789012345678").unwrap(),
             mode: PairingMode::Normal,
+            grants_admin: false,
             created_by_discord_user_id: "42".to_owned(),
             author_name: None,
             author_image: None,

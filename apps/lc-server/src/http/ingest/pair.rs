@@ -266,6 +266,7 @@ mod tests {
             code: PairingCode::parse(code).expect("code"),
             guild_id: guild_id.clone(),
             mode,
+            grants_admin: false,
             created_by_discord_user_id: "42".into(),
             author_name: Some("Alice".into()),
             author_image: Some("https://example.com/a.png".into()),

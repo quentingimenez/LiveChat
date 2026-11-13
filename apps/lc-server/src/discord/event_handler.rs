@@ -1,5 +1,5 @@
-//! Handler gateway serenity : `ready`, `guild_create`, `interaction_create`,
-//! `message`.
+//! Handler gateway serenity : `ready`, `guild_create`, `guild_update`,
+//! `interaction_create`, `message`.
 //!
 //! Comportement aligné sur le legacy `server/src/loaders/DiscordLoader.ts` :
 //!
@@ -7,6 +7,7 @@
 //! |---|---|---|
 //! | `READY` | log du tag + enregistrement global des commandes | log + enregistrement **global** une seule fois |
 //! | `GUILD_CREATE` | upsert implicite (Prisma) + embed `howToUse` dans le premier salon textuel | upsert `guilds` (réglages préservés) + embed `howToUse` si nouvelle guilde |
+//! | `GUILD_UPDATE` | implicit upsert on next access | name and icon synchronized without the help embed |
 //! | `INTERACTION_CREATE` | dispatch par nom, erreurs → embed rouge éphémère | `parse_invocation` → `dispatch` → `respond` |
 //! | `MESSAGE_CREATE` | **aucun handler** (intent `Guilds` seul) | no-op documenté ([`super::message_commands`]) |
 //!
@@ -20,11 +21,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serenity::all::{
     ChannelType, Colour, Context, CreateEmbed, CreateMessage, EventHandler, GatewayIntents, Guild,
-    Interaction, Message, Permissions, Ready,
+    ImageHash, Interaction, Message, PartialGuild, Permissions, Ready,
 };
 
 use lc_db::Db;
-use lc_discord::serenity_glue::{parse_invocation, respond};
+use lc_discord::handlers::plan_deferral;
+use lc_discord::serenity_glue::{defer, parse_invocation, respond};
 use lc_discord::{dispatch, BotConfig, DbBotContext, Lang};
 
 use super::message_commands;
@@ -61,6 +63,17 @@ pub struct DiscordEventHandler {
     bot_config: BotConfig,
     status: Arc<DiscordStatus>,
     registered: AtomicBool,
+}
+
+/// Outcome of resolving a Discord guild against the local `guilds` table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuildSync {
+    /// The native row (`id` = snowflake) was synchronized.
+    Native,
+    /// The server is linked to a standalone guild; no native row was created.
+    Linked,
+    /// Resolution failed and no local row was touched.
+    Failed,
 }
 
 impl DiscordEventHandler {
@@ -121,6 +134,60 @@ impl DiscordEventHandler {
             Err(error) => {
                 tracing::warn!(guild = guild_id.as_str(), %error, "synchronisation de guilde échouée");
             }
+        }
+    }
+
+    /// Applies a gateway guild name and icon using the same native/linked
+    /// routing as `guild_create`, then stores the icon hash.
+    async fn sync_guild_identity(
+        &self,
+        guild_id: &lc_domain::GuildId,
+        name: &str,
+        icon: Option<&ImageHash>,
+    ) -> GuildSync {
+        let native = match native_upsert_target(&self.db, guild_id).await {
+            Ok(Some(_)) => {
+                self.upsert_guild(guild_id, name).await;
+                true
+            }
+            Ok(None) => {
+                tracing::debug!(
+                    guild = guild_id.as_str(),
+                    "serveur Discord lié à une guilde indépendante : ligne native non créée"
+                );
+                false
+            }
+            Err(error) => {
+                tracing::warn!(
+                    guild = guild_id.as_str(),
+                    %error,
+                    "résolution de la guilde liée échouée"
+                );
+                return GuildSync::Failed;
+            }
+        };
+        let icon_hash = icon.map(ToString::to_string);
+        match self
+            .db
+            .guilds()
+            .set_discord_icon(guild_id.as_str(), icon_hash.as_deref())
+            .await
+        {
+            Ok(0) => tracing::warn!(
+                guild = guild_id.as_str(),
+                "aucune ligne de guilde à mettre à jour pour l'icône Discord"
+            ),
+            Ok(_) => {}
+            Err(error) => tracing::warn!(
+                guild = guild_id.as_str(),
+                %error,
+                "enregistrement de l'icône Discord échoué"
+            ),
+        }
+        if native {
+            GuildSync::Native
+        } else {
+            GuildSync::Linked
         }
     }
 }
@@ -233,23 +300,11 @@ impl EventHandler for DiscordEventHandler {
             );
             return;
         };
-        match native_upsert_target(&self.db, &guild_id).await {
-            Ok(Some(_)) => self.upsert_guild(&guild_id, &guild.name).await,
-            Ok(None) => {
-                tracing::info!(
-                    guild = guild_id.as_str(),
-                    "serveur Discord lié à une guilde indépendante : ligne native non créée"
-                );
-                return;
-            }
-            Err(error) => {
-                tracing::warn!(
-                    guild = guild_id.as_str(),
-                    %error,
-                    "résolution de la guilde liée échouée"
-                );
-                return;
-            }
+        let sync = self
+            .sync_guild_identity(&guild_id, &guild.name, guild.icon.as_ref())
+            .await;
+        if sync != GuildSync::Native {
+            return;
         }
 
         // Le legacy n'envoyait cet embed qu'aux nouvelles guildes ; serenity
@@ -269,6 +324,24 @@ impl EventHandler for DiscordEventHandler {
         }
     }
 
+    async fn guild_update(
+        &self,
+        _ctx: Context,
+        _old_data_if_available: Option<Guild>,
+        new_data: PartialGuild,
+    ) {
+        let Ok(guild_id) = lc_domain::GuildId::parse(&new_data.id.get().to_string()) else {
+            tracing::warn!(
+                discord_id = new_data.id.get(),
+                "identifiant de guilde invalide"
+            );
+            return;
+        };
+        let _ = self
+            .sync_guild_identity(&guild_id, &new_data.name, new_data.icon.as_ref())
+            .await;
+    }
+
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         let Interaction::Command(command) = interaction else {
             return;
@@ -285,6 +358,15 @@ impl EventHandler for DiscordEventHandler {
             );
             return;
         };
+
+        // Acknowledge before the handler touches the database: Discord allows
+        // only 3 seconds to answer an interaction (`/pair-code` was seen
+        // failing with "Unknown interaction").
+        let deferral = plan_deferral(&invocation);
+        if let Err(error) = defer(&ctx.http, &command, deferral).await {
+            tracing::warn!(name = %command.data.name, %error, "accusé de réception d'interaction échoué");
+            return;
+        }
 
         let outcome = dispatch(self.context.as_ref(), invocation).await;
         if let Err(error) = respond(&ctx.http, &command, &outcome).await {

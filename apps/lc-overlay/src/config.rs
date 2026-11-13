@@ -30,11 +30,7 @@ pub const CONFIG_PATH_ENV: &str = "LIVECHAT_CONFIG_PATH";
 
 const DEFAULT_VOLUME: f64 = 1.0;
 
-/// Ancienne clé de configuration de l'overlay 3.0.0, encore lue au chargement
-/// puis réécrite sous `mediaBindings`.
-const LEGACY_MEDIA_BINDINGS_KEY: &str = "memeBindings";
-
-const KNOWN_KEYS: [&str; 20] = [
+const KNOWN_KEYS: [&str; 21] = [
     "displayId",
     "displayIndex",
     "displayKey",
@@ -51,11 +47,11 @@ const KNOWN_KEYS: [&str; 20] = [
     "authorName",
     "deviceName",
     "mediaBindings",
-    // Legacy overlay 3.0.0 compatibility: remove in 3.1.
-    "memeBindings",
     "memberships",
     "profileName",
     "profileAvatar",
+    "shortcuts",
+    "layout",
 ];
 
 /// Adhésion à une guilde : un jeton overlay par guilde rejointe.
@@ -65,12 +61,14 @@ const KNOWN_KEYS: [&str; 20] = [
 /// `guildId`, `guestMode`, `mediaBindings`) sont le **miroir de la guilde
 /// active** (celle affichée dans le board) : le renderer d'affichage, le tray
 /// et les raccourcis continuent de les lire tels quels.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Membership {
     pub server_url: String,
     pub guild_id: String,
     pub guild_name: Option<String>,
+    /// Discord CDN URL of the guild icon, when known.
+    pub guild_icon_url: Option<String>,
     pub client_token: String,
     pub client_id: Option<String>,
     pub member_id: Option<String>,
@@ -81,10 +79,30 @@ pub struct Membership {
     pub guest_mode: bool,
     /// Guilde coupée : aucune connexion, donc aucun média affiché.
     pub muted: bool,
-    /// Raccourcis conservés par guilde ; l'ancienne clé JSON `memeBindings`
-    /// reste acceptée à la lecture (compatibilité overlay 3.0.0).
-    #[serde(alias = "memeBindings")]
+    /// Guild-specific volume, multiplied by the general volume.
+    pub volume: f64,
+    /// Raccourcis conservés par guilde.
     pub media_bindings: MediaBindings,
+}
+
+impl Default for Membership {
+    fn default() -> Self {
+        Self {
+            server_url: String::new(),
+            guild_id: String::new(),
+            guild_name: None,
+            guild_icon_url: None,
+            client_token: String::new(),
+            client_id: None,
+            member_id: None,
+            display_name: None,
+            role: None,
+            guest_mode: false,
+            muted: false,
+            volume: DEFAULT_VOLUME,
+            media_bindings: MediaBindings::new(),
+        }
+    }
 }
 
 impl Membership {
@@ -102,6 +120,7 @@ pub struct MembershipView {
     pub server_url: String,
     pub guild_id: String,
     pub guild_name: Option<String>,
+    pub guild_icon_url: Option<String>,
     pub client_id: Option<String>,
     pub member_id: Option<String>,
     pub display_name: Option<String>,
@@ -113,6 +132,110 @@ pub struct MembershipView {
 
 /// Dictionnaire accélérateur -> identifiant d'item du board média.
 pub type MediaBindings = BTreeMap<String, String>;
+
+/// Global shortcuts owned by the shell (not the per-media bindings).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ShortcutSettings {
+    /// Stop the current board media.
+    pub stop: Option<String>,
+    /// Toggle the general mute (same action as the tray entry).
+    pub mute_all: Option<String>,
+}
+
+impl ShortcutSettings {
+    fn normalize(&mut self) {
+        self.stop = normalized_shortcut(self.stop.take());
+        self.mute_all = normalized_shortcut(self.mute_all.take());
+    }
+}
+
+fn normalized_shortcut(value: Option<String>) -> Option<String> {
+    value
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
+/// Where a media sits in the display zone when it does not have its shape.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LayoutAnchor {
+    #[default]
+    Center,
+    Top,
+    Bottom,
+    Left,
+    Right,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+/// Smallest zone side, as a fraction of the screen side.
+pub const MIN_ZONE_FRACTION: f64 = 0.05;
+
+/// Zone fractions are kept to 1/10 000 (0.1 px on a 1000 px side).
+const ZONE_FRACTION_SCALE: f64 = 10_000.0;
+
+/// Rectangle of the screen the media frame (header, media, caption) must fit
+/// in, as fractions of the selected screen: `0,0,1,1` is the whole screen.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LayoutZone {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl Default for LayoutZone {
+    fn default() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+        }
+    }
+}
+
+impl LayoutZone {
+    /// Keeps the zone on screen and at least [`MIN_ZONE_FRACTION`] wide and
+    /// high; a non-finite value resets the whole zone.
+    pub fn normalize(&mut self) {
+        if ![self.x, self.y, self.width, self.height]
+            .iter()
+            .all(|value| value.is_finite())
+        {
+            *self = Self::default();
+            return;
+        }
+        self.width = round_fraction(self.width.clamp(MIN_ZONE_FRACTION, 1.0));
+        self.height = round_fraction(self.height.clamp(MIN_ZONE_FRACTION, 1.0));
+        self.x = round_fraction(self.x.clamp(0.0, 1.0 - self.width));
+        self.y = round_fraction(self.y.clamp(0.0, 1.0 - self.height));
+    }
+}
+
+fn round_fraction(value: f64) -> f64 {
+    // Dividing an integer gives the nearest float (7000 / 10 000 == 0.7).
+    (value * ZONE_FRACTION_SCALE).round() / ZONE_FRACTION_SCALE
+}
+
+/// Media frame layout, persisted in `OverlayConfig` and sent to the renderer.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OverlayLayout {
+    pub zone: LayoutZone,
+    pub align: LayoutAnchor,
+}
+
+impl OverlayLayout {
+    pub fn normalize(&mut self) {
+        self.zone.normalize();
+    }
+}
 
 /// Configuration complète persistée (16 champs legacy + champs inconnus préservés).
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -141,6 +264,10 @@ pub struct OverlayConfig {
     pub profile_name: Option<String>,
     /// Avatar du profil local.
     pub profile_avatar: Option<String>,
+    /// Global stop / mute-all shortcuts.
+    pub shortcuts: ShortcutSettings,
+    /// Media frame placement sent to the renderer.
+    pub layout: OverlayLayout,
     /// Champs écrits par une autre version (Electron) : conservés à l'écriture
     /// pour ne pas casser un rollback.
     #[serde(flatten)]
@@ -169,12 +296,14 @@ impl Default for OverlayConfig {
             memberships: Vec::new(),
             profile_name: None,
             profile_avatar: None,
+            shortcuts: ShortcutSettings::default(),
+            layout: OverlayLayout::default(),
             extra: BTreeMap::new(),
         }
     }
 }
 
-/// Projection envoyée au renderer (8 champs, cf. `OverlayConfig` legacy).
+/// Renderer projection (legacy renderer fields plus layout).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OverlayConfigView {
@@ -186,6 +315,7 @@ pub struct OverlayConfigView {
     pub show_text: bool,
     pub volume: f64,
     pub media_bindings: MediaBindings,
+    pub layout: OverlayLayout,
 }
 
 impl OverlayConfig {
@@ -221,13 +351,15 @@ impl OverlayConfig {
         config.media_bindings = media_bindings_field(map, &mut warnings);
         config.profile_name = string_field(map, "profileName", &mut warnings);
         config.profile_avatar = string_field(map, "profileAvatar", &mut warnings);
+        config.shortcuts = shortcut_settings_field(map, &mut warnings);
+        config.layout = layout_field(map, &mut warnings);
         if let Some(raw) = map.get("memberships") {
             match serde_json::from_value::<Vec<Membership>>(raw.clone()) {
                 Ok(memberships) => config.memberships = memberships,
                 Err(error) => warnings.push(format!("memberships invalide : {error}")),
             }
         }
-        config.reconcile_memberships();
+        config.normalize();
 
         for (key, value) in map {
             if !KNOWN_KEYS.contains(&key.as_str()) {
@@ -242,6 +374,11 @@ impl OverlayConfig {
     pub fn normalize(&mut self) {
         self.volume = normalize_volume(self.volume);
         self.media_bindings = normalize_media_bindings(&self.media_bindings);
+        for membership in &mut self.memberships {
+            membership.volume = normalize_volume(membership.volume);
+        }
+        self.shortcuts.normalize();
+        self.layout.normalize();
         self.reconcile_memberships();
     }
 
@@ -405,6 +542,7 @@ impl OverlayConfig {
                 server_url: membership.server_url.clone(),
                 guild_id: membership.guild_id.clone(),
                 guild_name: membership.guild_name.clone(),
+                guild_icon_url: membership.guild_icon_url.clone(),
                 client_id: membership.client_id.clone(),
                 member_id: membership.member_id.clone(),
                 display_name: membership.display_name.clone(),
@@ -427,6 +565,7 @@ impl OverlayConfig {
             show_text: self.show_text,
             volume: self.volume,
             media_bindings: self.media_bindings.clone(),
+            layout: self.layout.clone(),
         }
     }
 
@@ -565,14 +704,7 @@ fn volume_field(map: &Map<String, Value>, warnings: &mut Vec<String>) -> f64 {
 }
 
 fn media_bindings_field(map: &Map<String, Value>, warnings: &mut Vec<String>) -> MediaBindings {
-    let (key, value) = match map.get("mediaBindings") {
-        Some(value) => ("mediaBindings", Some(value)),
-        None => (
-            LEGACY_MEDIA_BINDINGS_KEY,
-            map.get(LEGACY_MEDIA_BINDINGS_KEY),
-        ),
-    };
-    match value {
+    match map.get("mediaBindings") {
         None | Some(Value::Null) => MediaBindings::new(),
         Some(Value::Object(bindings)) => {
             let mut raw = MediaBindings::new();
@@ -596,10 +728,93 @@ fn media_bindings_field(map: &Map<String, Value>, warnings: &mut Vec<String>) ->
         }
         Some(other) => {
             warnings.push(format!(
-                "champ {key} ignoré (attendu: objet, reçu: {other})"
+                "champ mediaBindings ignoré (attendu: objet, reçu: {other})"
             ));
             MediaBindings::new()
         }
+    }
+}
+
+fn shortcut_settings_field(
+    map: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> ShortcutSettings {
+    let Some(raw) = map.get("shortcuts") else {
+        return ShortcutSettings::default();
+    };
+    if raw.is_null() {
+        return ShortcutSettings::default();
+    }
+    let Some(object) = raw.as_object() else {
+        warnings.push(format!(
+            "champ shortcuts ignoré (attendu: objet, reçu: {raw})"
+        ));
+        return ShortcutSettings::default();
+    };
+    ShortcutSettings {
+        stop: string_field(object, "stop", warnings),
+        mute_all: string_field(object, "muteAll", warnings),
+    }
+}
+
+fn layout_field(map: &Map<String, Value>, warnings: &mut Vec<String>) -> OverlayLayout {
+    let Some(raw) = map.get("layout") else {
+        return OverlayLayout::default();
+    };
+    if raw.is_null() {
+        return OverlayLayout::default();
+    }
+    let Some(object) = raw.as_object() else {
+        warnings.push(format!("champ layout ignoré (attendu: objet, reçu: {raw})"));
+        return OverlayLayout::default();
+    };
+    let mut layout = OverlayLayout::default();
+    if let Some(align) = object.get("align") {
+        match serde_json::from_value::<LayoutAnchor>(align.clone()) {
+            Ok(parsed) => layout.align = parsed,
+            Err(_) => warnings.push(format!(
+                "layout.align ignoré (valeur inconnue: {align}); défaut center utilisé"
+            )),
+        }
+    }
+    match object.get("zone") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(zone)) => {
+            for (key, slot) in [
+                ("x", &mut layout.zone.x),
+                ("y", &mut layout.zone.y),
+                ("width", &mut layout.zone.width),
+                ("height", &mut layout.zone.height),
+            ] {
+                if let Some(value) = zone_number_field(zone, key, warnings) {
+                    *slot = value;
+                }
+            }
+        }
+        Some(raw_zone) => warnings.push(format!(
+            "layout.zone ignoré (attendu: objet, reçu: {raw_zone})"
+        )),
+    }
+    layout.normalize();
+    layout
+}
+
+fn zone_number_field(
+    zone: &Map<String, Value>,
+    key: &str,
+    warnings: &mut Vec<String>,
+) -> Option<f64> {
+    match zone.get(key) {
+        None | Some(Value::Null) => None,
+        Some(value) => match value.as_f64() {
+            Some(number) if number.is_finite() => Some(number),
+            _ => {
+                warnings.push(format!(
+                    "layout.zone.{key} ignoré (attendu: nombre, reçu: {value})"
+                ));
+                None
+            }
+        },
     }
 }
 
@@ -795,6 +1010,8 @@ mod tests {
         assert_eq!(config.author_name, None);
         assert_eq!(config.device_name, None);
         assert!(config.media_bindings.is_empty());
+        assert_eq!(config.shortcuts, ShortcutSettings::default());
+        assert_eq!(config.layout, OverlayLayout::default());
         assert!(config.extra.is_empty());
     }
 
@@ -806,6 +1023,126 @@ mod tests {
         assert!(!config.enabled);
         assert!(config.show_text);
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn shortcuts_and_layout_are_parsed_and_normalized() {
+        let (config, warnings) = OverlayConfig::from_json_value(&json!({
+            "shortcuts": {
+                "stop": "  Ctrl+Shift+S  ",
+                "muteAll": "   "
+            },
+            "layout": {
+                "align": "top-left",
+                "zone": { "x": 0.9, "y": -0.2, "width": 0.25, "height": 0.01 }
+            }
+        }));
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        assert_eq!(config.shortcuts.stop.as_deref(), Some("Ctrl+Shift+S"));
+        assert!(config.shortcuts.mute_all.is_none());
+        assert_eq!(config.layout.align, LayoutAnchor::TopLeft);
+        assert_eq!(
+            config.layout.zone,
+            LayoutZone {
+                x: 0.75,
+                y: 0.0,
+                width: 0.25,
+                height: MIN_ZONE_FRACTION,
+            },
+            "the zone is kept on screen and not smaller than the minimum"
+        );
+    }
+
+    #[test]
+    fn invalid_layout_values_fall_back_to_the_defaults() {
+        let (config, warnings) = OverlayConfig::from_json_value(&json!({
+            "layout": { "align": "middle", "zone": { "x": "left", "width": 0.5 } }
+        }));
+        assert_eq!(config.layout.align, LayoutAnchor::Center);
+        assert_eq!(config.layout.zone.x, 0.0);
+        assert_eq!(config.layout.zone.width, 0.5);
+        for field in ["layout.align", "layout.zone.x"] {
+            assert!(
+                warnings.iter().any(|warning| warning.contains(field)),
+                "{field} missing from {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_former_layout_keys_are_dropped() {
+        let (config, _warnings) = OverlayConfig::from_json_value(&json!({
+            "layout": { "anchor": "top-left", "maxWidth": 50, "margin": 10 }
+        }));
+        assert_eq!(config.layout, OverlayLayout::default());
+    }
+
+    #[test]
+    fn a_non_finite_zone_resets_to_the_whole_screen() {
+        let mut zone = LayoutZone {
+            x: 0.2,
+            y: f64::NAN,
+            width: 0.5,
+            height: 0.5,
+        };
+        zone.normalize();
+        assert_eq!(zone, LayoutZone::default());
+    }
+
+    #[test]
+    fn new_keys_roundtrip_through_the_config_file() {
+        let (_dir, store) = temp_store("{}");
+        let mut config = store.load();
+        config.shortcuts.stop = Some("Ctrl+Shift+S".to_string());
+        config.shortcuts.mute_all = Some("Ctrl+Alt+M".to_string());
+        config.layout = OverlayLayout {
+            zone: LayoutZone {
+                x: 0.5,
+                y: 0.25,
+                width: 0.4,
+                height: 0.3,
+            },
+            align: LayoutAnchor::BottomRight,
+        };
+        config.join(Membership {
+            server_url: "https://example.test".to_string(),
+            guild_id: "111".to_string(),
+            client_token: "jeton".to_string(),
+            volume: 0.5,
+            ..Membership::default()
+        });
+        store.save(&config).expect("save");
+
+        let raw = fs::read_to_string(store.path()).expect("read saved config");
+        for key in ["shortcuts", "layout", "\"volume\": 0.5"] {
+            assert!(raw.contains(key), "missing {key} in {raw}");
+        }
+        let reloaded = store.load();
+        assert_eq!(reloaded.shortcuts, config.shortcuts);
+        assert_eq!(reloaded.layout, config.layout);
+        assert_eq!(
+            reloaded
+                .membership("111")
+                .map(|membership| membership.volume),
+            Some(0.5)
+        );
+    }
+
+    #[test]
+    fn membership_volume_defaults_to_one_and_is_clamped() {
+        assert_eq!(Membership::default().volume, 1.0);
+        let (config, _) = OverlayConfig::from_json_value(&json!({
+            "memberships": [{
+                "serverUrl": "https://example.test",
+                "guildId": "111",
+                "clientToken": "jeton",
+                "volume": 3.0
+            }]
+        }));
+        assert_eq!(
+            config.membership("111").map(|membership| membership.volume),
+            Some(1.0)
+        );
     }
 
     #[test]
@@ -857,41 +1194,50 @@ mod tests {
         );
     }
 
-    /// Un fichier 3.0.0 ne contient que `memeBindings` : il doit alimenter le
-    /// nouveau champ et être réécrit sous `mediaBindings` au prochain save.
     #[test]
-    fn legacy_meme_bindings_load_into_media_bindings_and_are_saved_renamed() {
-        let (_dir, store) = temp_store(r#"{"memeBindings":{"Ctrl+1":"item-1"}}"#);
-        let config = store.load();
-        assert_eq!(
-            config.media_bindings,
-            BTreeMap::from([("Ctrl+1".to_string(), "item-1".to_string())])
-        );
-
+    fn guild_icon_url_roundtrips_through_the_config_file() {
+        let (_dir, store) = temp_store("{}");
+        let mut config = store.load();
+        config.join(Membership {
+            server_url: "https://example.test".to_string(),
+            guild_id: "111".to_string(),
+            guild_name: Some("Les Sardines".to_string()),
+            guild_icon_url: Some("https://cdn.discordapp.com/icons/111/abc.png".to_string()),
+            client_token: "jeton".to_string(),
+            ..Membership::default()
+        });
         store.save(&config).expect("save");
+
         let raw = fs::read_to_string(store.path()).expect("read saved config");
-        assert!(raw.contains("\"mediaBindings\""), "json: {raw}");
-        assert!(!raw.contains("memeBindings"), "json: {raw}");
-        assert_eq!(store.load().media_bindings, config.media_bindings);
+        assert!(raw.contains("\"guildIconUrl\""), "json: {raw}");
+
+        let reloaded = store.load();
+        let membership = reloaded.membership("111").expect("adhésion");
+        assert_eq!(
+            membership.guild_icon_url.as_deref(),
+            Some("https://cdn.discordapp.com/icons/111/abc.png")
+        );
+        let views = reloaded.membership_views();
+        assert_eq!(
+            views[0].guild_icon_url.as_deref(),
+            Some("https://cdn.discordapp.com/icons/111/abc.png")
+        );
     }
 
     #[test]
-    fn legacy_membership_bindings_are_read_through_the_serde_alias() {
+    fn membership_without_guild_icon_url_loads_with_none() {
         let (config, warnings) = OverlayConfig::from_json_value(&json!({
             "memberships": [{
                 "serverUrl": "https://example.test",
                 "guildId": "111",
-                "clientToken": "jeton",
-                "memeBindings": { "Ctrl+1": "item-1" }
+                "guildName": "Les Sardines",
+                "clientToken": "jeton"
             }]
         }));
         assert!(warnings.is_empty(), "warnings: {warnings:?}");
         let membership = config.membership("111").expect("adhésion");
-        assert_eq!(
-            membership.media_bindings,
-            BTreeMap::from([("Ctrl+1".to_string(), "item-1".to_string())])
-        );
-        assert_eq!(config.media_bindings, membership.media_bindings);
+        assert_eq!(membership.guild_name.as_deref(), Some("Les Sardines"));
+        assert!(membership.guild_icon_url.is_none());
     }
 
     #[test]
@@ -1028,12 +1374,14 @@ mod tests {
     }
 
     #[test]
-    fn view_projects_eight_fields_only() {
+    fn view_projects_renderer_fields_and_layout() {
         let mut config = OverlayConfig::default();
         config.server_url = Some("http://localhost:3000".to_string());
         config.client_token = Some("jeton".to_string());
         config.guild_id = Some("guilde".to_string());
         config.media_bindings = BTreeMap::from([("Ctrl+1".to_string(), "id-1".to_string())]);
+        config.layout.align = LayoutAnchor::BottomRight;
+        config.layout.zone.width = 0.5;
         let value = serde_json::to_value(config.view()).expect("serialize view");
         let object = value.as_object().expect("objet");
         let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
@@ -1045,6 +1393,7 @@ mod tests {
                 "clientToken",
                 "guestMode",
                 "guildId",
+                "layout",
                 "mediaBindings",
                 "serverUrl",
                 "showText",
@@ -1052,6 +1401,13 @@ mod tests {
             ]
         );
         assert_eq!(object["serverUrl"], json!("http://localhost:3000"));
+        assert_eq!(
+            object["layout"],
+            json!({
+                "zone": { "x": 0.0, "y": 0.0, "width": 0.5, "height": 1.0 },
+                "align": "bottom-right"
+            })
+        );
     }
 
     #[test]

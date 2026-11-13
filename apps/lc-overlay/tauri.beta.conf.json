@@ -27,17 +27,6 @@
         "visible": false
       },
       {
-        "label": "pairing",
-        "title": "LiveChat Next — Appairage",
-        "url": "pairing.html",
-        "width": 460,
-        "height": 580,
-        "resizable": false,
-        "center": true,
-        "visible": false,
-        "skipTaskbar": false
-      },
-      {
         "label": "board",
         "title": "LiveChat Next — Board",
         "url": "board.html",
@@ -47,7 +36,8 @@
         "minHeight": 640,
         "center": true,
         "visible": false,
-        "skipTaskbar": false
+        "skipTaskbar": false,
+        "dragDropEnabled": false
       }
     ],
     "security": {

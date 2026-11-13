@@ -173,6 +173,7 @@ pub fn sample_pairing(code: &str, guild_id: &GuildId, now: DateTime<Utc>) -> Pai
         code: PairingCodeValue::parse(code).expect("code d'appairage de test valide"),
         guild_id: guild_id.clone(),
         mode: PairingMode::Normal,
+        grants_admin: false,
         created_by_discord_user_id: "42".to_owned(),
         author_name: Some("Invité".to_owned()),
         author_image: None,

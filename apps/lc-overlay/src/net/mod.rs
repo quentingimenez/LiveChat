@@ -7,7 +7,8 @@
 
 pub mod api;
 pub mod pairing;
-mod tls;
+pub(crate) mod tls;
+pub mod upload;
 pub mod ws;
 
 pub use pairing::{consume as consume_pairing, PairingOutcome, PairingRequest};

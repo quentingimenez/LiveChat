@@ -100,41 +100,15 @@
   font-weight: 600;
 }
 
-.switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-}
-
-.switch input {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--blue);
-}
-
 /* ------------------------------------------------------------- per-guild sound */
-.settings-guild {
-  display: grid;
-  grid-template-columns: 190px 112px minmax(0, 1fr);
-  gap: 8px 16px;
-  align-items: center;
-  padding: 8px 0;
-  border-top: 1px solid var(--line);
-}
-
+/* Guild rows are plain settings rows: no rule of their own above them, so each
+   one sits in the middle of its band like the general sound rows. */
 .settings-guild-name {
   color: var(--text);
 }
 
 .settings-guild-mute {
   color: var(--text-soft);
-  font-size: 13px;
-}
-
-.settings-guild .settings-range {
-  width: 100%;
-  max-width: 220px;
 }
 
 /* -------------------------------------------------------------------- profil */
@@ -187,17 +161,12 @@
 }
 
 @media (max-width: 720px) {
-  .settings-row,
-  .settings-guild {
+  .settings-row {
     grid-template-columns: minmax(0, 1fr);
     gap: 6px;
   }
 
   .settings-control > .field {
     min-width: 0;
-  }
-
-  .settings-guild-mute {
-    justify-self: start;
   }
 }

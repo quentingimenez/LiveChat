@@ -43,6 +43,7 @@ jobs:
     timeout-minutes: 45
     outputs:
       image-ref: ${{ steps.ref.outputs.image-ref }}
+      server-version: ${{ steps.version.outputs.workspace }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -50,15 +51,30 @@ jobs:
           # `docker/metadata-action` et le build n'ont pas besoin d'historique complet.
           fetch-depth: 1
 
-      - name: Validate version input
-        if: github.event_name == 'workflow_dispatch'
+      - name: Check version against the workspace
+        id: version
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          version="${{ inputs.version }}"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            version="$VERSION_INPUT"
+          else
+            version="${GITHUB_REF_NAME#server-v}"
+          fi
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::version '$version' invalide (attendu X.Y.Z)"
             exit 1
           fi
+          workspace="$(awk '/^\[workspace\.package\]/ { s = 1; next } /^\[/ { s = 0 } s && $1 == "version" { gsub(/"/, "", $3); print $3; exit }' Cargo.toml)"
+          test -n "$workspace"
+          # Une version finale est celle que le binaire annonce sur /health ; une
+          # préversion (`3.1.0-beta.1`) peut être publiée avant le bump du workspace.
+          if [[ "$version" != *-* && "${version%%+*}" != "$workspace" ]]; then
+            echo "::error::image $version ≠ version du workspace $workspace (Cargo.toml)"
+            exit 1
+          fi
+          echo "workspace=$workspace" >> "$GITHUB_OUTPUT"
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -121,6 +137,8 @@ jobs:
         run: docker pull "${{ needs.build.outputs.image-ref }}"
 
       - name: Run container
+        env:
+          EXPECTED_VERSION: ${{ needs.build.outputs.server-version }}
         run: |
           set -euo pipefail
           docker rm -f lc-server-smoke >/dev/null 2>&1 || true
@@ -144,11 +162,12 @@ jobs:
           echo
           python3 - <<'PY'
           import json
+          import os
 
           with open('/tmp/health.json', encoding='utf-8') as handle:
               data = json.load(handle)
           assert data.get('status') in ('ok', 'degraded'), data
-          assert data.get('version') == '3.0.0', data
+          assert data.get('version') == os.environ['EXPECTED_VERSION'], data
           assert data.get('protocolVersion') == 2, data
           assert data.get('db') == 'ok', data
           print('health OK:', data['status'], data['version'], 'db=' + data['db'])

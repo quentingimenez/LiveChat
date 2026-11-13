@@ -1,3 +1,6 @@
+// Gap kept between the header chrome and the screen edge when the header
+// spills past a frame anchored near that edge.
+const HEADER_SCREEN_GAP_PX = 8;
 export function createOverlayLegacyMediaFrameLayoutUtils() {
     function clearMediaHeaderLayoutRaf(params) {
         if (params.state.mediaHeaderLayoutRaf === null) {
@@ -17,18 +20,32 @@ export function createOverlayLegacyMediaFrameLayoutUtils() {
             !(params.state.activeMediaHeaderRight instanceof HTMLElement)) {
             return;
         }
+        const frame = params.state.activeMediaFrame;
+        const frameRect = frame.getBoundingClientRect();
         const mediaNode = params.state.activeMediaContent?.firstElementChild;
         const mediaWidth = mediaNode instanceof HTMLElement
             ? Math.max(0, Math.round(mediaNode.getBoundingClientRect().width))
-            : Math.max(0, Math.round(params.state.activeMediaFrame.getBoundingClientRect().width));
+            : Math.max(0, Math.round(frameRect.width));
+        // Measure the author chip at its natural width, without the clamp a
+        // previous pass may have set.
+        frame.style.removeProperty('--header-left-max-width');
+        const leftWidth = params.state.activeMediaHeaderLeft.scrollWidth;
+        const viewportWidth = frame.ownerDocument.documentElement.clientWidth;
         const shift = params.computeHeaderShift({
             mediaWidth,
-            leftWidth: params.state.activeMediaHeaderLeft.scrollWidth,
+            leftWidth,
             rightWidth: params.state.activeMediaHeaderRight.scrollWidth,
             minGapPx: 14,
+            leftRoomPx: frameRect.left - HEADER_SCREEN_GAP_PX,
+            rightRoomPx: viewportWidth - frameRect.right - HEADER_SCREEN_GAP_PX,
         });
-        params.state.activeMediaFrame.style.setProperty('--header-left-shift', `${shift.leftShiftPx}px`);
-        params.state.activeMediaFrame.style.setProperty('--header-right-shift', `${shift.rightShiftPx}px`);
+        frame.style.setProperty('--header-left-shift', `${shift.leftShiftPx}px`);
+        frame.style.setProperty('--header-right-shift', `${shift.rightShiftPx}px`);
+        if (shift.unresolvedPx > 0) {
+            // No room left on either side: shorten the author name (ellipsis)
+            // rather than overlap the countdown or leave the screen.
+            frame.style.setProperty('--header-left-max-width', `${Math.max(0, leftWidth - shift.unresolvedPx)}px`);
+        }
     }
     function scheduleMediaHeaderLayout(params) {
         if (params.state.mediaHeaderLayoutRaf !== null) {

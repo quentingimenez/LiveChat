@@ -30,7 +30,7 @@ pub const CONFIG_PATH_ENV: &str = "LIVECHAT_CONFIG_PATH";
 
 const DEFAULT_VOLUME: f64 = 1.0;
 
-const KNOWN_KEYS: [&str; 19] = [
+const KNOWN_KEYS: [&str; 21] = [
     "displayId",
     "displayIndex",
     "displayKey",
@@ -50,6 +50,8 @@ const KNOWN_KEYS: [&str; 19] = [
     "memberships",
     "profileName",
     "profileAvatar",
+    "shortcuts",
+    "layout",
 ];
 
 /// Adhésion à une guilde : un jeton overlay par guilde rejointe.
@@ -59,7 +61,7 @@ const KNOWN_KEYS: [&str; 19] = [
 /// `guildId`, `guestMode`, `mediaBindings`) sont le **miroir de la guilde
 /// active** (celle affichée dans le board) : le renderer d'affichage, le tray
 /// et les raccourcis continuent de les lire tels quels.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Membership {
     pub server_url: String,
@@ -77,8 +79,30 @@ pub struct Membership {
     pub guest_mode: bool,
     /// Guilde coupée : aucune connexion, donc aucun média affiché.
     pub muted: bool,
+    /// Guild-specific volume, multiplied by the general volume.
+    pub volume: f64,
     /// Raccourcis conservés par guilde.
     pub media_bindings: MediaBindings,
+}
+
+impl Default for Membership {
+    fn default() -> Self {
+        Self {
+            server_url: String::new(),
+            guild_id: String::new(),
+            guild_name: None,
+            guild_icon_url: None,
+            client_token: String::new(),
+            client_id: None,
+            member_id: None,
+            display_name: None,
+            role: None,
+            guest_mode: false,
+            muted: false,
+            volume: DEFAULT_VOLUME,
+            media_bindings: MediaBindings::new(),
+        }
+    }
 }
 
 impl Membership {
@@ -109,6 +133,75 @@ pub struct MembershipView {
 /// Dictionnaire accélérateur -> identifiant d'item du board média.
 pub type MediaBindings = BTreeMap<String, String>;
 
+/// Global shortcuts owned by the shell (not the per-media bindings).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ShortcutSettings {
+    /// Stop the current board media.
+    pub stop: Option<String>,
+    /// Toggle the general mute (same action as the tray entry).
+    pub mute_all: Option<String>,
+}
+
+impl ShortcutSettings {
+    fn normalize(&mut self) {
+        self.stop = normalized_shortcut(self.stop.take());
+        self.mute_all = normalized_shortcut(self.mute_all.take());
+    }
+}
+
+fn normalized_shortcut(value: Option<String>) -> Option<String> {
+    value
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
+/// Where the media frame is placed inside the overlay.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LayoutAnchor {
+    #[default]
+    Center,
+    Top,
+    Bottom,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+/// Media frame layout, persisted in `OverlayConfig` and sent to the renderer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OverlayLayout {
+    pub anchor: LayoutAnchor,
+    /// Maximum frame width, as a percentage of the viewport (20..100).
+    pub max_width: u32,
+    /// Maximum frame height, as a percentage of the viewport (20..100).
+    pub max_height: u32,
+    /// Space kept free at every screen edge, in CSS pixels (0..200).
+    pub margin: u32,
+}
+
+impl Default for OverlayLayout {
+    fn default() -> Self {
+        Self {
+            anchor: LayoutAnchor::Center,
+            max_width: 100,
+            max_height: 100,
+            margin: 24,
+        }
+    }
+}
+
+impl OverlayLayout {
+    pub fn normalize(&mut self) {
+        self.max_width = self.max_width.clamp(20, 100);
+        self.max_height = self.max_height.clamp(20, 100);
+        self.margin = self.margin.min(200);
+    }
+}
+
 /// Configuration complète persistée (16 champs legacy + champs inconnus préservés).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -136,6 +229,10 @@ pub struct OverlayConfig {
     pub profile_name: Option<String>,
     /// Avatar du profil local.
     pub profile_avatar: Option<String>,
+    /// Global stop / mute-all shortcuts.
+    pub shortcuts: ShortcutSettings,
+    /// Media frame placement sent to the renderer.
+    pub layout: OverlayLayout,
     /// Champs écrits par une autre version (Electron) : conservés à l'écriture
     /// pour ne pas casser un rollback.
     #[serde(flatten)]
@@ -164,12 +261,14 @@ impl Default for OverlayConfig {
             memberships: Vec::new(),
             profile_name: None,
             profile_avatar: None,
+            shortcuts: ShortcutSettings::default(),
+            layout: OverlayLayout::default(),
             extra: BTreeMap::new(),
         }
     }
 }
 
-/// Projection envoyée au renderer (8 champs, cf. `OverlayConfig` legacy).
+/// Renderer projection (legacy renderer fields plus layout).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OverlayConfigView {
@@ -181,6 +280,7 @@ pub struct OverlayConfigView {
     pub show_text: bool,
     pub volume: f64,
     pub media_bindings: MediaBindings,
+    pub layout: OverlayLayout,
 }
 
 impl OverlayConfig {
@@ -216,13 +316,15 @@ impl OverlayConfig {
         config.media_bindings = media_bindings_field(map, &mut warnings);
         config.profile_name = string_field(map, "profileName", &mut warnings);
         config.profile_avatar = string_field(map, "profileAvatar", &mut warnings);
+        config.shortcuts = shortcut_settings_field(map, &mut warnings);
+        config.layout = layout_field(map, &mut warnings);
         if let Some(raw) = map.get("memberships") {
             match serde_json::from_value::<Vec<Membership>>(raw.clone()) {
                 Ok(memberships) => config.memberships = memberships,
                 Err(error) => warnings.push(format!("memberships invalide : {error}")),
             }
         }
-        config.reconcile_memberships();
+        config.normalize();
 
         for (key, value) in map {
             if !KNOWN_KEYS.contains(&key.as_str()) {
@@ -237,6 +339,11 @@ impl OverlayConfig {
     pub fn normalize(&mut self) {
         self.volume = normalize_volume(self.volume);
         self.media_bindings = normalize_media_bindings(&self.media_bindings);
+        for membership in &mut self.memberships {
+            membership.volume = normalize_volume(membership.volume);
+        }
+        self.shortcuts.normalize();
+        self.layout.normalize();
         self.reconcile_memberships();
     }
 
@@ -423,6 +530,7 @@ impl OverlayConfig {
             show_text: self.show_text,
             volume: self.volume,
             media_bindings: self.media_bindings.clone(),
+            layout: self.layout.clone(),
         }
     }
 
@@ -589,6 +697,80 @@ fn media_bindings_field(map: &Map<String, Value>, warnings: &mut Vec<String>) ->
             ));
             MediaBindings::new()
         }
+    }
+}
+
+fn shortcut_settings_field(
+    map: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> ShortcutSettings {
+    let Some(raw) = map.get("shortcuts") else {
+        return ShortcutSettings::default();
+    };
+    if raw.is_null() {
+        return ShortcutSettings::default();
+    }
+    let Some(object) = raw.as_object() else {
+        warnings.push(format!(
+            "champ shortcuts ignoré (attendu: objet, reçu: {raw})"
+        ));
+        return ShortcutSettings::default();
+    };
+    ShortcutSettings {
+        stop: string_field(object, "stop", warnings),
+        mute_all: string_field(object, "muteAll", warnings),
+    }
+}
+
+fn layout_field(map: &Map<String, Value>, warnings: &mut Vec<String>) -> OverlayLayout {
+    let Some(raw) = map.get("layout") else {
+        return OverlayLayout::default();
+    };
+    if raw.is_null() {
+        return OverlayLayout::default();
+    }
+    let Some(object) = raw.as_object() else {
+        warnings.push(format!("champ layout ignoré (attendu: objet, reçu: {raw})"));
+        return OverlayLayout::default();
+    };
+    let mut layout = OverlayLayout::default();
+    if let Some(anchor) = object.get("anchor") {
+        match serde_json::from_value::<LayoutAnchor>(anchor.clone()) {
+            Ok(parsed) => layout.anchor = parsed,
+            Err(_) => warnings.push(format!(
+                "layout.anchor ignoré (valeur inconnue: {anchor}); défaut center utilisé"
+            )),
+        }
+    }
+    if let Some(max_width) = layout_integer_field(object, "maxWidth", warnings) {
+        layout.max_width = max_width.clamp(20, 100) as u32;
+    }
+    if let Some(max_height) = layout_integer_field(object, "maxHeight", warnings) {
+        layout.max_height = max_height.clamp(20, 100) as u32;
+    }
+    if let Some(margin) = layout_integer_field(object, "margin", warnings) {
+        layout.margin = margin.clamp(0, 200) as u32;
+    }
+    layout.normalize();
+    layout
+}
+
+fn layout_integer_field(
+    object: &Map<String, Value>,
+    key: &str,
+    warnings: &mut Vec<String>,
+) -> Option<i64> {
+    match object.get(key) {
+        None | Some(Value::Null) => None,
+        Some(value) => match value.as_f64() {
+            Some(number) if number.is_finite() => Some(number.round() as i64),
+            _ => {
+                warnings.push(format!(
+                    "layout.{key} ignoré (attendu: nombre, reçu: {value})"
+                ));
+                None
+            }
+        },
     }
 }
 
@@ -784,6 +966,8 @@ mod tests {
         assert_eq!(config.author_name, None);
         assert_eq!(config.device_name, None);
         assert!(config.media_bindings.is_empty());
+        assert_eq!(config.shortcuts, ShortcutSettings::default());
+        assert_eq!(config.layout, OverlayLayout::default());
         assert!(config.extra.is_empty());
     }
 
@@ -795,6 +979,96 @@ mod tests {
         assert!(!config.enabled);
         assert!(config.show_text);
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn shortcuts_and_layout_are_parsed_and_normalized() {
+        let (config, warnings) = OverlayConfig::from_json_value(&json!({
+            "shortcuts": {
+                "stop": "  Ctrl+Shift+S  ",
+                "muteAll": "   "
+            },
+            "layout": {
+                "anchor": "top-left",
+                "maxWidth": 5,
+                "maxHeight": 140,
+                "margin": -3
+            }
+        }));
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        assert_eq!(config.shortcuts.stop.as_deref(), Some("Ctrl+Shift+S"));
+        assert!(config.shortcuts.mute_all.is_none());
+        assert_eq!(config.layout.anchor, LayoutAnchor::TopLeft);
+        assert_eq!(config.layout.max_width, 20);
+        assert_eq!(config.layout.max_height, 100);
+        assert_eq!(config.layout.margin, 0);
+    }
+
+    #[test]
+    fn invalid_layout_anchor_falls_back_to_center() {
+        let (config, warnings) = OverlayConfig::from_json_value(&json!({
+            "layout": { "anchor": "middle" }
+        }));
+        assert_eq!(config.layout.anchor, LayoutAnchor::Center);
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("layout.anchor")),
+            "warnings: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn new_keys_roundtrip_through_the_config_file() {
+        let (_dir, store) = temp_store("{}");
+        let mut config = store.load();
+        config.shortcuts.stop = Some("Ctrl+Shift+S".to_string());
+        config.shortcuts.mute_all = Some("Ctrl+Alt+M".to_string());
+        config.layout = OverlayLayout {
+            anchor: LayoutAnchor::Bottom,
+            max_width: 80,
+            max_height: 70,
+            margin: 32,
+        };
+        config.join(Membership {
+            server_url: "https://example.test".to_string(),
+            guild_id: "111".to_string(),
+            client_token: "jeton".to_string(),
+            volume: 0.5,
+            ..Membership::default()
+        });
+        store.save(&config).expect("save");
+
+        let raw = fs::read_to_string(store.path()).expect("read saved config");
+        for key in ["shortcuts", "layout", "\"volume\": 0.5"] {
+            assert!(raw.contains(key), "missing {key} in {raw}");
+        }
+        let reloaded = store.load();
+        assert_eq!(reloaded.shortcuts, config.shortcuts);
+        assert_eq!(reloaded.layout, config.layout);
+        assert_eq!(
+            reloaded
+                .membership("111")
+                .map(|membership| membership.volume),
+            Some(0.5)
+        );
+    }
+
+    #[test]
+    fn membership_volume_defaults_to_one_and_is_clamped() {
+        assert_eq!(Membership::default().volume, 1.0);
+        let (config, _) = OverlayConfig::from_json_value(&json!({
+            "memberships": [{
+                "serverUrl": "https://example.test",
+                "guildId": "111",
+                "clientToken": "jeton",
+                "volume": 3.0
+            }]
+        }));
+        assert_eq!(
+            config.membership("111").map(|membership| membership.volume),
+            Some(1.0)
+        );
     }
 
     #[test]
@@ -1026,12 +1300,13 @@ mod tests {
     }
 
     #[test]
-    fn view_projects_eight_fields_only() {
+    fn view_projects_renderer_fields_and_layout() {
         let mut config = OverlayConfig::default();
         config.server_url = Some("http://localhost:3000".to_string());
         config.client_token = Some("jeton".to_string());
         config.guild_id = Some("guilde".to_string());
         config.media_bindings = BTreeMap::from([("Ctrl+1".to_string(), "id-1".to_string())]);
+        config.layout.anchor = LayoutAnchor::BottomRight;
         let value = serde_json::to_value(config.view()).expect("serialize view");
         let object = value.as_object().expect("objet");
         let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
@@ -1043,6 +1318,7 @@ mod tests {
                 "clientToken",
                 "guestMode",
                 "guildId",
+                "layout",
                 "mediaBindings",
                 "serverUrl",
                 "showText",
@@ -1050,6 +1326,7 @@ mod tests {
             ]
         );
         assert_eq!(object["serverUrl"], json!("http://localhost:3000"));
+        assert_eq!(object["layout"]["anchor"], json!("bottom-right"));
     }
 
     #[test]

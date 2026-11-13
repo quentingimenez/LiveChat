@@ -313,9 +313,27 @@ pub fn refresh_tray(app: &AppHandle<Wry>) {
     tracing::debug!(status = %net.status.label(), "tray rafraîchi");
 }
 
+/// Applies the connection/window effect of general mute, exactly like the tray.
+pub(crate) fn apply_general_mute_effect(app: &AppHandle<Wry>, enabled: bool) {
+    if enabled
+        && app
+            .state::<AppState>()
+            .config_snapshot()
+            .has_pairing_config()
+    {
+        windows::show_overlay(app);
+    } else {
+        // AUD-A6-006 : désactivation immédiate, lecture interrompue et fenêtre
+        // masquée (aucun événement bufferisé ne sera rejoué).
+        events::stop_overlay_now(app, "disabled");
+        windows::hide_overlay(app);
+    }
+    crate::net::ws::request_reconnect(app);
+}
+
 /// Applies the global mute: disables the overlay and stops the current playback
 /// (the same logic as the former `toggle_enabled`, inverted).
-fn toggle_general_mute(app: &AppHandle<Wry>) {
+pub(crate) fn toggle_general_mute(app: &AppHandle<Wry>) {
     let state = app.state::<AppState>();
     let updated = state.update_config(|config| config.enabled = !config.enabled);
     match updated {
@@ -324,16 +342,8 @@ fn toggle_general_mute(app: &AppHandle<Wry>) {
                 enabled = config.enabled,
                 "sourdine générale modifiée depuis le tray"
             );
-            if config.enabled && config.has_pairing_config() {
-                windows::show_overlay(app);
-            } else {
-                // AUD-A6-006 : désactivation immédiate, lecture interrompue et
-                // fenêtre masquée (aucun événement bufferisé ne sera rejoué).
-                events::stop_overlay_now(app, "disabled");
-                windows::hide_overlay(app);
-            }
+            apply_general_mute_effect(app, config.enabled);
             device_settings::publish_settings(app);
-            crate::net::ws::request_reconnect(app);
         }
         Err(error) => tracing::warn!(%error, "échec de sauvegarde de `enabled`"),
     }

@@ -2,9 +2,13 @@
 //! `overlay` (plein écran transparent, click-through, topmost) et `board`
 //! (1180×780, qui porte aussi l'appairage).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, WindowEvent, Wry};
+use tauri::{
+    AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder, WindowEvent, Wry,
+};
 
 use crate::config::OverlayConfig;
 use crate::display::{self, DisplayInfo, DisplaySelection};
@@ -118,8 +122,7 @@ fn persist_display_selection(app: &AppHandle<Wry>, display: &DisplayInfo, config
     }
 }
 
-/// Positionne et dimensionne l'overlay sur l'écran sélectionné.
-pub fn position_overlay_on_selected_display(app: &AppHandle<Wry>) -> Option<DisplayInfo> {
+fn position_overlay(app: &AppHandle<Wry>, persist: bool) -> Option<DisplayInfo> {
     let Some(window) = window(app, OVERLAY_LABEL) else {
         tracing::warn!("fenêtre overlay absente");
         return None;
@@ -135,8 +138,10 @@ pub fn position_overlay_on_selected_display(app: &AppHandle<Wry>) -> Option<Disp
     if let Err(error) = window.set_position(PhysicalPosition::new(x, y)) {
         tracing::warn!(%error, "échec set_position overlay");
     }
-    let config = app.state::<AppState>().config_snapshot();
-    persist_display_selection(app, &target, &config);
+    if persist {
+        let config = app.state::<AppState>().config_snapshot();
+        persist_display_selection(app, &target, &config);
+    }
     tracing::info!(
         display_index = target.index,
         display_key = %target.key(),
@@ -149,13 +154,18 @@ pub fn position_overlay_on_selected_display(app: &AppHandle<Wry>) -> Option<Disp
     Some(target)
 }
 
-/// Applique les politiques de l'overlay (click-through, topmost, styles Win32)
-/// puis l'affiche sans lui donner le focus.
-pub fn apply_overlay_flags(app: &AppHandle<Wry>) {
-    let Some(window) = window(app, OVERLAY_LABEL) else {
-        tracing::warn!("fenêtre overlay absente");
-        return;
-    };
+/// Positionne et dimensionne l'overlay sur l'écran sélectionné.
+pub fn position_overlay_on_selected_display(app: &AppHandle<Wry>) -> Option<DisplayInfo> {
+    position_overlay(app, true)
+}
+
+/// Re-places the overlay after `settings_set` already persisted the selection.
+pub fn position_overlay_without_persisting(app: &AppHandle<Wry>) -> Option<DisplayInfo> {
+    position_overlay(app, false)
+}
+
+/// Applies click-through, non-focusable, topmost and Win32 overlay policies.
+fn apply_window_policies(window: &WebviewWindow<Wry>) {
     let tauri_results = [
         (
             "set_ignore_cursor_events",
@@ -184,6 +194,16 @@ pub fn apply_overlay_flags(app: &AppHandle<Wry>) {
         }
         Err(error) => tracing::warn!(%error, "hwnd overlay indisponible"),
     }
+}
+
+/// Applique les politiques de l'overlay (click-through, topmost, styles Win32)
+/// puis l'affiche sans lui donner le focus.
+pub fn apply_overlay_flags(app: &AppHandle<Wry>) {
+    let Some(window) = window(app, OVERLAY_LABEL) else {
+        tracing::warn!("fenêtre overlay absente");
+        return;
+    };
+    apply_window_policies(&window);
 
     if !overlay_should_show_now(app) {
         // AUD-A6-006 : `enabled=false` (ou appareil non appairé) ⇒ la fenêtre
@@ -203,6 +223,24 @@ pub fn apply_overlay_flags(app: &AppHandle<Wry>) {
     if let Ok(hwnd) = window.hwnd() {
         if let Err(error) = win32::reassert_topmost(hwnd) {
             tracing::warn!(%error, "échec réaffirmation topmost initiale");
+        }
+    }
+}
+
+/// Shows the overlay for the local settings preview, including when the device
+/// is not paired or the overlay is muted. This is only used by
+/// `settings_test_media`; no server event is involved.
+pub fn show_overlay_preview(app: &AppHandle<Wry>) {
+    let Some(window) = window(app, OVERLAY_LABEL) else {
+        tracing::warn!("fenêtre overlay absente pendant l'aperçu");
+        return;
+    };
+    apply_window_policies(&window);
+    reveal(app, OVERLAY_LABEL, false);
+    #[cfg(windows)]
+    if let Ok(hwnd) = window.hwnd() {
+        if let Err(error) = win32::reassert_topmost(hwnd) {
+            tracing::warn!(%error, "échec réaffirmation topmost de l'aperçu");
         }
     }
 }
@@ -376,6 +414,105 @@ pub fn handle_second_instance(app: &AppHandle<Wry>, args: &[String]) {
         tracing::info!("--pairing reçu : ouverture de la board (fenêtre d'appairage supprimée)");
     }
     show_board(app);
+}
+
+/// How long the display identification cards stay visible.
+pub const IDENTIFY_DISPLAY_DURATION: Duration = Duration::from_secs(3);
+const IDENTIFY_LABEL_PREFIX: &str = "identify-";
+
+/// Generation counter so a previous 3-second timer can never close a newer
+/// identification batch.
+static IDENTIFY_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn close_identify_windows(app: &AppHandle<Wry>) {
+    for (label, window) in app.webview_windows() {
+        if label.starts_with(IDENTIFY_LABEL_PREFIX) {
+            if let Err(error) = window.destroy() {
+                tracing::debug!(label, %error, "fermeture de la fenêtre d'identification impossible");
+            }
+        }
+    }
+}
+
+/// Shows one identifying overlay per display and closes them after 3 seconds.
+/// Returns the number of displays that received a card.
+pub fn identify_displays(app: &AppHandle<Wry>) -> usize {
+    close_identify_windows(app);
+    let generation = IDENTIFY_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let (displays, primary_index) = collect_displays(app);
+    let mut created = 0;
+    for display in &displays {
+        let label = format!("{IDENTIFY_LABEL_PREFIX}{}", display.index);
+        let primary = primary_index == Some(display.index);
+        let initialization_script = format!(
+            "window.__livechatIdentify = {};",
+            serde_json::json!({
+                "index": display.index,
+                "label": display::format_settings_label(display, primary),
+                "role": if primary { "Écran principal" } else { "Écran secondaire" },
+            })
+        );
+        let builder =
+            WebviewWindowBuilder::new(app, &label, WebviewUrl::App("identify.html".into()))
+                .title("LiveChat — Identification des écrans")
+                .decorations(false)
+                .transparent(true)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .shadow(false)
+                .resizable(false)
+                .focused(false)
+                .focusable(false)
+                .visible(false)
+                .initialization_script(initialization_script);
+        let built = builder
+            .position(display.x as f64, display.y as f64)
+            .inner_size(display.width as f64, display.height as f64)
+            .build();
+        match built {
+            Ok(window) => {
+                if let Err(error) =
+                    window.set_size(PhysicalSize::new(display.width, display.height))
+                {
+                    tracing::warn!(label, %error, "taille de la fenêtre d'identification");
+                }
+                if let Err(error) = window.set_position(PhysicalPosition::new(display.x, display.y))
+                {
+                    tracing::warn!(label, %error, "position de la fenêtre d'identification");
+                }
+                if let Err(error) = window.set_ignore_cursor_events(true) {
+                    tracing::warn!(label, %error, "click-through de l'identification");
+                }
+                if let Err(error) = window.set_focusable(false) {
+                    tracing::warn!(label, %error, "focus de l'identification");
+                }
+                if let Err(error) = window.show() {
+                    tracing::warn!(label, %error, "affichage de l'identification");
+                }
+                created += 1;
+            }
+            Err(error) => {
+                tracing::warn!(label, %error, "création de la fenêtre d'identification impossible");
+            }
+        }
+    }
+
+    if created > 0 {
+        let handle = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(IDENTIFY_DISPLAY_DURATION);
+            let timer_handle = handle.clone();
+            if let Err(error) = handle.run_on_main_thread(move || {
+                if IDENTIFY_GENERATION.load(Ordering::SeqCst) != generation {
+                    return;
+                }
+                close_identify_windows(&timer_handle);
+            }) {
+                tracing::warn!(%error, "fermeture planifiée des fenêtres d'identification impossible");
+            }
+        });
+    }
+    created
 }
 
 /// Point d'entrée de l'affichage initial, appelé depuis `setup`.

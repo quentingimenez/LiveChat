@@ -24,6 +24,8 @@ use crate::windows::{overlay_should_show, BOARD_LABEL, OVERLAY_LABEL};
 pub const EVENT_PLAY: &str = "overlay://play";
 pub const EVENT_STOP: &str = "overlay://stop";
 pub const EVENT_SETTINGS: &str = "overlay://settings";
+/// Full device settings sent to the board whenever they change.
+pub const EVENT_DEVICE_SETTINGS: &str = "overlay://device-settings";
 /// Liste des guildes et de leur état de connexion (fenêtre board uniquement).
 pub const EVENT_GUILDS: &str = "overlay://guilds";
 /// Guilde retirée automatiquement (fenêtre board uniquement).
@@ -149,19 +151,28 @@ pub fn emit_to_overlay(app: &AppHandle<Wry>, event: &OverlayEvent) -> tauri::Res
     )
 }
 
-/// Émet `overlay://settings` vers overlay et board uniquement.
+/// Emits `overlay://settings` to the overlay window only.
 ///
-/// AUD-A6-011 : le `clientToken` n'est pas nécessaire au renderer (le board le
-/// lit via `overlay_get_config`, scoping par fenêtre) ⇒ il n'est jamais diffusé
-/// dans l'événement de settings.
+/// AUD-A6-011: the renderer does not need `clientToken` (the board reads it
+/// through `overlay_get_config`, scoped per window), so it is never sent in the
+/// settings event.
 pub fn emit_settings(app: &AppHandle<Wry>, view: &OverlayConfigView) -> tauri::Result<()> {
     let redacted = settings_view_without_token(view);
     app.emit_to(
         EventTarget::labeled(OVERLAY_LABEL),
         EVENT_SETTINGS,
-        redacted.clone(),
-    )?;
-    app.emit_to(EventTarget::labeled(BOARD_LABEL), EVENT_SETTINGS, redacted)
+        redacted,
+    )
+}
+
+/// Emits the full `SettingsView` to the board after any device settings change.
+pub fn emit_device_settings(app: &AppHandle<Wry>) -> tauri::Result<()> {
+    let settings = crate::settings::settings_view(app);
+    app.emit_to(
+        EventTarget::labeled(BOARD_LABEL),
+        EVENT_DEVICE_SETTINGS,
+        settings,
+    )
 }
 
 /// Émet `overlay://guilds` vers le board : adhésions (sans jeton) et état de
@@ -382,6 +393,7 @@ mod tests {
         assert_eq!(OverlayEvent::play(json!({})).name(), "overlay://play");
         assert_eq!(OverlayEvent::stop(json!({})).name(), "overlay://stop");
         assert_eq!(EVENT_SETTINGS, "overlay://settings");
+        assert_eq!(EVENT_DEVICE_SETTINGS, "overlay://device-settings");
         assert_eq!(EVENT_NAVIGATE, "overlay://navigate");
         assert_eq!(EVENT_GUILD_REMOVED, "overlay://guild-removed");
     }
@@ -464,6 +476,7 @@ mod tests {
             show_text: true,
             volume: 1.0,
             media_bindings: Default::default(),
+            layout: Default::default(),
         };
         let redacted = settings_view_without_token(&view);
         assert_eq!(redacted.client_token, None);

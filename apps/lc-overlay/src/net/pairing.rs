@@ -225,6 +225,7 @@ fn apply_consume_response(
         role: clean(response.role.as_deref()),
         guest_mode,
         muted: false,
+        volume: 1.0,
         media_bindings: Default::default(),
     });
     config.author_name = clean(response.author_name.as_deref());

@@ -164,6 +164,7 @@
     await overlayLegacyBootstrapUtils.bootstrapOverlay({
       getConfig: () => window.livechatOverlay.getConfig(),
       getCurrentConfig: () => state.overlayConfig,
+      overlayRoot: nodes.overlayRoot,
       setConfig: (nextConfig) => {
         state.overlayConfig = nextConfig;
       },

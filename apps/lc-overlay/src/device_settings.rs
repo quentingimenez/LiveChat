@@ -32,21 +32,23 @@ pub fn autostart_enabled(app: &AppHandle<Wry>) -> bool {
     app.autolaunch().is_enabled().unwrap_or(false)
 }
 
-pub fn toggle_autostart(app: &AppHandle<Wry>) {
+pub fn set_autostart(app: &AppHandle<Wry>, enabled: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt as AutostartExt;
     let manager = app.autolaunch();
-    let currently_enabled = manager.is_enabled().unwrap_or(false);
-    let result = if currently_enabled {
-        manager.disable()
-    } else {
+    let result = if enabled {
         manager.enable()
+    } else {
+        manager.disable()
     };
-    match result {
-        Ok(()) => tracing::info!(
-            enabled = !currently_enabled,
-            "démarrage automatique modifié"
-        ),
-        Err(error) => tracing::warn!(%error, "échec de modification du démarrage automatique"),
+    result.map_err(|error| error.to_string())?;
+    tracing::info!(enabled, "démarrage automatique modifié");
+    Ok(())
+}
+
+pub fn toggle_autostart(app: &AppHandle<Wry>) {
+    let enabled = !autostart_enabled(app);
+    if let Err(error) = set_autostart(app, enabled) {
+        tracing::warn!(%error, "échec de modification du démarrage automatique");
     }
 }
 
@@ -54,6 +56,9 @@ pub(crate) fn publish_settings(app: &AppHandle<Wry>) {
     let state = app.state::<AppState>();
     if let Err(error) = events::emit_settings(app, &state.view()) {
         tracing::debug!(%error, "échec d'émission overlay://settings");
+    }
+    if let Err(error) = events::emit_device_settings(app) {
+        tracing::debug!(%error, "échec d'émission overlay://device-settings");
     }
 }
 
@@ -86,6 +91,7 @@ pub fn select_display(app: &AppHandle<Wry>, index: usize) {
         Ok(_) => {
             tracing::info!(display_key = %target_display.key(), "écran sélectionné depuis le tray");
             let _positioned = windows::position_overlay_on_selected_display(app);
+            publish_settings(app);
         }
         Err(error) => tracing::warn!(%error, "échec de sauvegarde de l'écran sélectionné"),
     }
@@ -96,7 +102,10 @@ pub fn adjust_volume(app: &AppHandle<Wry>, delta: f64) {
     let result =
         state.update_config(|config| config.volume = (config.volume + delta).clamp(0.0, 1.0));
     match result {
-        Ok(config) => tracing::info!(volume = config.volume, "volume modifié depuis le tray"),
+        Ok(config) => {
+            tracing::info!(volume = config.volume, "volume modifié depuis le tray");
+            publish_settings(app);
+        }
         Err(error) => tracing::warn!(%error, "échec de sauvegarde du volume"),
     }
 }
@@ -104,7 +113,10 @@ pub fn adjust_volume(app: &AppHandle<Wry>, delta: f64) {
 pub fn reset_volume(app: &AppHandle<Wry>) {
     let state = app.state::<AppState>();
     match state.update_config(|config| config.volume = 1.0) {
-        Ok(config) => tracing::info!(volume = config.volume, "volume réinitialisé"),
+        Ok(config) => {
+            tracing::info!(volume = config.volume, "volume réinitialisé");
+            publish_settings(app);
+        }
         Err(error) => tracing::warn!(%error, "échec de sauvegarde du volume"),
     }
 }

@@ -408,7 +408,13 @@
     guestMode: false,
     showText: true,
     volume: 1,
-    mediaBindings: {}
+    mediaBindings: {},
+    layout: {
+      anchor: 'center',
+      maxWidth: 100,
+      maxHeight: 100,
+      margin: 24
+    }
   });
 
   function cloneJson(value) {

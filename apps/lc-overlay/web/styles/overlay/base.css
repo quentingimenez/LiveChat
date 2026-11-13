@@ -24,16 +24,27 @@ body {
   pointer-events: none;
   /* Space kept free around the media frame so its chrome stays on screen. */
   --overlay-safe-margin: 24px;
+  --overlay-layout-max-width: 100vw;
+  --overlay-layout-max-height: 100vh;
+  --overlay-layout-anchor: center;
+  --overlay-layout-align-items: center;
+  --overlay-layout-justify-content: center;
   --overlay-media-header-height: 54px;
   --overlay-media-header-gap: 10px;
+  /* Shared by the author chip and the countdown so both keep the exact same
+     height and font size, whatever the author name. */
+  /* Header avatar (34px, meta.css) plus the chip's former vertical padding. */
+  --overlay-meta-chip-height: calc(34px + 2 * 0.55rem);
+  --overlay-meta-font-size: clamp(16px, 1.7vw, 24px);
 }
 
 #media-layer {
   position: absolute;
   inset: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: var(--overlay-layout-align-items);
+  justify-content: var(--overlay-layout-justify-content);
+  padding: var(--overlay-safe-margin);
   overflow: visible;
 }
 
@@ -48,18 +59,31 @@ body {
   /* Height taken by the caption footer (margin included), kept up to date
      by overlay.js; 0 while the footer is hidden. */
   --overlay-media-footer-height: 0px;
-  /* Largest box the media may use: the viewport minus the safe margins, the
-     header (author chip + countdown) and the caption footer. Viewport units
-     keep it definite, so the media keeps its aspect ratio when scaled down. */
-  --overlay-media-max-width: calc(100vw - 2 * var(--overlay-safe-margin));
-  --overlay-media-max-height: max(
-    80px,
+  /* Largest box the media may use: the configured viewport percentage, also
+     bounded by the safe margins. The content box additionally leaves room for
+     the header (author chip + countdown) and the caption footer. */
+  --overlay-layout-box-max-height: max(
+    0px,
     calc(
-      100vh - 2 * var(--overlay-safe-margin) - var(--overlay-media-header-height) -
+      min(var(--overlay-layout-max-height), 100vh) - 2 * var(--overlay-safe-margin)
+    )
+  );
+  --overlay-media-max-width: max(
+    0px,
+    min(
+      var(--overlay-layout-max-width),
+      calc(100vw - 2 * var(--overlay-safe-margin))
+    )
+  );
+  --overlay-media-max-height: max(
+    0px,
+    calc(
+      var(--overlay-layout-box-max-height) - var(--overlay-media-header-height) -
         var(--overlay-media-header-gap) - var(--overlay-media-footer-height)
     )
   );
   max-width: var(--overlay-media-max-width);
+  max-height: var(--overlay-layout-box-max-height);
 }
 
 .overlay-media-header {
@@ -115,13 +139,15 @@ body {
   display: none;
   align-items: center;
   justify-content: center;
-  padding: 0.55rem 0.9rem;
+  box-sizing: border-box;
+  height: var(--overlay-meta-chip-height);
+  padding: 0 0.9rem;
   border-radius: 10px;
   border: 0;
   background: rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(2px);
   color: #ffffff;
-  font-size: 20px;
+  font-size: var(--overlay-meta-font-size);
   font-weight: 800;
   line-height: 1;
   letter-spacing: 0.02em;

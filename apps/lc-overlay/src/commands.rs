@@ -7,6 +7,7 @@
 //! déclenchements de média du board utilisent les trames `media.trigger` /
 //! `stop.request` (plus de stub `socket_unavailable`).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use lc_protocol::{
@@ -26,6 +27,7 @@ use crate::net::api;
 use crate::net::pairing::{self, PairingRequest};
 use crate::net::upload::{self, UploadEntry, UploadRegistry};
 use crate::net::ws::{self, NetCommand};
+use crate::settings::{self, SettingsSetResponse, SettingsTestMediaResponse, SettingsView};
 use crate::state::{AppState, GuildRemoval};
 use crate::tray;
 use crate::updater::{self, UpdateStatus};
@@ -33,6 +35,9 @@ use crate::windows;
 
 /// How long `media_board_trigger` waits for the server `ack`.
 const TRIGGER_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+/// Test card display time plus a small margin for the renderer timer.
+const TEST_MEDIA_DURATION: Duration = Duration::from_millis(5_300);
+static TEST_MEDIA_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Matrice d'autorisation IPC par fenêtre (AUD-A6-008).
 ///
@@ -68,7 +73,10 @@ const COMMAND_MATRIX: &[(&str, &[&str])] = &[
             "guild_set_muted",
             "guild_leave",
             "guild_api",
-            "guild_media_url",
+            "settings_get",
+            "settings_set",
+            "settings_identify_displays",
+            "settings_test_media",
             "board_take_pending_view",
             "board_take_guild_removals",
             "media_upload_start",
@@ -216,8 +224,6 @@ struct GuildRequest {
     path: Option<String>,
     #[serde(default)]
     body: Option<Value>,
-    #[serde(default)]
-    asset_id: Option<String>,
 }
 
 /// Paramètres of `media_upload_start`.
@@ -301,6 +307,9 @@ fn publish_guilds(app: &AppHandle<Wry>) {
         if let Err(error) = events::emit_settings(app, &state.view()) {
             tracing::debug!(%error, "échec d'émission des settings après changement de guilde");
         }
+    }
+    if let Err(error) = events::emit_device_settings(app) {
+        tracing::debug!(%error, "échec d'émission de overlay://device-settings");
     }
     tray::refresh_tray(app);
     if let Err(error) = events::emit_guilds_changed(app) {
@@ -425,6 +434,182 @@ pub fn board_take_guild_removals(
 ) -> Result<Vec<GuildRemoval>, String> {
     ensure_allowed(&window, "board_take_guild_removals")?;
     Ok(state.take_guild_removals())
+}
+
+/// `settings_get` — full settings view for the board.
+#[tauri::command]
+pub fn settings_get(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+) -> Result<SettingsView, String> {
+    ensure_allowed(&window, "settings_get")?;
+    Ok(settings::settings_view(&app))
+}
+
+/// `settings_set` — validates the whole payload, then persists and applies it.
+///
+/// Shortcut registration and autostart are attempted before the configuration
+/// is written so a refusal leaves everything untouched. If persistence itself
+/// fails, both side effects are rolled back.
+#[tauri::command]
+pub fn settings_set(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+    payload: Value,
+) -> Result<SettingsSetResponse, String> {
+    ensure_allowed(&window, "settings_set")?;
+    let state = app.state::<AppState>();
+    let base = state.config_snapshot();
+    let (displays, _primary) = windows::collect_displays(&app);
+    let candidate = match settings::apply_settings_patch(&base, &payload, &displays) {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            return Ok(SettingsSetResponse::failure(
+                error.field,
+                error.message,
+                settings::settings_view(&app),
+            ));
+        }
+    };
+
+    let shortcuts_changed = base.shortcuts != candidate.shortcuts;
+    if shortcuts_changed {
+        if let Err(error) = crate::shortcuts::replace_configured_shortcuts(
+            &app,
+            &base.shortcuts,
+            &candidate.shortcuts,
+        ) {
+            return Ok(SettingsSetResponse::failure(
+                error.field,
+                error.message,
+                settings::settings_view(&app),
+            ));
+        }
+    }
+
+    let autostart_changed = base.auto_start != candidate.auto_start;
+    let previous_autostart = if autostart_changed {
+        crate::device_settings::autostart_enabled(&app)
+    } else {
+        base.auto_start
+    };
+    if autostart_changed {
+        if let Err(message) = crate::device_settings::set_autostart(&app, candidate.auto_start) {
+            if shortcuts_changed {
+                let _restored = crate::shortcuts::replace_configured_shortcuts(
+                    &app,
+                    &candidate.shortcuts,
+                    &base.shortcuts,
+                );
+            }
+            return Ok(SettingsSetResponse::failure(
+                "autoStart",
+                message,
+                settings::settings_view(&app),
+            ));
+        }
+    }
+
+    if let Err(error) = state.update_config(|config| *config = candidate.clone()) {
+        if autostart_changed {
+            if let Err(rollback) = crate::device_settings::set_autostart(&app, previous_autostart) {
+                tracing::warn!(%rollback, "restauration du démarrage automatique impossible");
+            }
+        }
+        if shortcuts_changed {
+            if let Err(rollback) = crate::shortcuts::replace_configured_shortcuts(
+                &app,
+                &candidate.shortcuts,
+                &base.shortcuts,
+            ) {
+                tracing::warn!(
+                    field = rollback.field,
+                    message = rollback.message,
+                    "restauration des raccourcis impossible"
+                );
+            }
+        }
+        return Ok(SettingsSetResponse::failure(
+            "settings",
+            error,
+            settings::settings_view(&app),
+        ));
+    }
+
+    let saved = state.config_snapshot();
+    if base.display_key != saved.display_key || base.display_index != saved.display_index {
+        let _positioned = windows::position_overlay_without_persisting(&app);
+    }
+    if base.enabled != saved.enabled {
+        tray::apply_general_mute_effect(&app, saved.enabled);
+        if let Err(error) = events::emit_guilds_changed(&app) {
+            tracing::debug!(%error, "échec d'émission de l'état des guildes après sourdine");
+        }
+    }
+    tray::refresh_tray(&app);
+    if let Err(error) = events::emit_settings(&app, &state.view()) {
+        tracing::debug!(%error, "échec d'émission overlay://settings après settings_set");
+    }
+    if let Err(error) = events::emit_device_settings(&app) {
+        tracing::debug!(%error, "échec d'émission overlay://device-settings après settings_set");
+    }
+    Ok(SettingsSetResponse::success(settings::settings_view(&app)))
+}
+
+/// `settings_identify_displays` — shows an index card on every monitor for 3 s.
+#[tauri::command]
+pub fn settings_identify_displays(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+) -> Result<settings::SettingsIdentifyDisplaysResponse, String> {
+    ensure_allowed(&window, "settings_identify_displays")?;
+    Ok(settings::SettingsIdentifyDisplaysResponse {
+        count: windows::identify_displays(&app),
+    })
+}
+
+/// `settings_test_media` — local five-second test card, never sent to a server.
+#[tauri::command]
+pub fn settings_test_media(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+) -> Result<SettingsTestMediaResponse, String> {
+    ensure_allowed(&window, "settings_test_media")?;
+    let state = app.state::<AppState>();
+    if state.playback_job().is_some() {
+        return Ok(SettingsTestMediaResponse {
+            ok: false,
+            reason: Some("overlay_busy".to_string()),
+        });
+    }
+    let payload = settings::test_media_payload(&state.config_snapshot());
+    let generation = TEST_MEDIA_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    windows::show_overlay_preview(&app);
+    events::emit_to_overlay(&app, &events::OverlayEvent::play(payload))
+        .map_err(|error| error.to_string())?;
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(TEST_MEDIA_DURATION);
+        let timer_handle = handle.clone();
+        if let Err(error) = handle.run_on_main_thread(move || {
+            if TEST_MEDIA_GENERATION.load(Ordering::SeqCst) != generation {
+                return;
+            }
+            let state = timer_handle.state::<AppState>();
+            if state.playback_job().is_some() {
+                return;
+            }
+            if !windows::overlay_should_show(&state.config_snapshot()) {
+                windows::hide_overlay(&timer_handle);
+            }
+        }) {
+            tracing::debug!(%error, "fermeture de l'aperçu local impossible");
+        }
+    });
+    Ok(SettingsTestMediaResponse {
+        ok: true,
+        reason: None,
+    })
 }
 
 /// `overlay_get_config` — projection 8 champs consommée par le renderer.
@@ -623,11 +808,7 @@ pub async fn pairing_consume(
         });
     }
     crate::shortcuts::reapply_for_session(&app);
-    if state.overlay_ready() {
-        if let Err(error) = events::emit_settings(&app, &state.view()) {
-            tracing::debug!(%error, "échec d'émission des settings après appairage");
-        }
-    }
+    crate::device_settings::publish_settings(&app);
     tray::refresh_tray(&app);
     if state.config_snapshot().enabled {
         windows::show_overlay(&app);
@@ -724,6 +905,23 @@ pub async fn media_board_trigger(
         Ok(Ok(ack)) => Ok(trigger_response_from_ack(ack)),
         Ok(Err(_)) => Ok(trigger_failure("socket_unavailable")),
         Err(_) => Ok(trigger_failure("ack_timeout")),
+    }
+}
+
+/// Stops the active guild playback (board button and `shortcuts.stop`).
+pub(crate) fn stop_active_media(app: &AppHandle<Wry>) -> bool {
+    let state = app.state::<AppState>();
+    match target_guild(&state, None) {
+        Some(guild_id) => send_protocol_to(
+            app,
+            &guild_id,
+            ClientMessage::StopRequest(StopRequestPayload {
+                job_id: None,
+                source: Some(StopRequestSource::User),
+            }),
+            "media_board_stop",
+        ),
+        None => false,
     }
 }
 
@@ -917,25 +1115,6 @@ pub async fn guild_api(
     Ok(response)
 }
 
-/// `guild_media_url` — URL d'un média du board pour `<img>`/`<video>`.
-#[tauri::command]
-pub fn guild_media_url(
-    window: WebviewWindow<Wry>,
-    state: State<'_, AppState>,
-    payload: Value,
-) -> Result<String, String> {
-    ensure_allowed(&window, "guild_media_url")?;
-    let parsed = serde_json::from_value::<GuildRequest>(payload).unwrap_or_default();
-    let guild_id = target_guild(&state, parsed.guild_id.as_deref())
-        .ok_or_else(|| "aucune guilde".to_string())?;
-    let membership = state
-        .config_snapshot()
-        .membership(&guild_id)
-        .cloned()
-        .ok_or_else(|| "guilde inconnue".to_string())?;
-    api::board_media_url(&membership, parsed.asset_id.as_deref().unwrap_or_default())
-}
-
 /// `media_upload_start` — begins a raw, streamed file upload to the board.
 #[tauri::command]
 pub fn media_upload_start(
@@ -1102,6 +1281,10 @@ mod tests {
         assert!(command_allowed("board", "pairing_consume"));
         assert!(command_allowed("board", "guild_api"));
         assert!(command_allowed("board", "guild_leave"));
+        assert!(command_allowed("board", "settings_get"));
+        assert!(command_allowed("board", "settings_set"));
+        assert!(command_allowed("board", "settings_identify_displays"));
+        assert!(command_allowed("board", "settings_test_media"));
         assert!(command_allowed("board", "board_take_pending_view"));
         assert!(command_allowed("board", "board_take_guild_removals"));
         assert!(command_allowed("board", "media_upload_start"));
@@ -1116,7 +1299,10 @@ mod tests {
             "guild_set_muted",
             "guild_leave",
             "guild_api",
-            "guild_media_url",
+            "settings_get",
+            "settings_set",
+            "settings_identify_displays",
+            "settings_test_media",
             "board_take_guild_removals",
             "media_upload_start",
             "media_upload_chunk",
@@ -1149,6 +1335,7 @@ mod tests {
                 show_text: true,
                 volume: 1.0,
                 media_bindings: MediaBindings::new(),
+                layout: crate::config::OverlayLayout::default(),
             }
         }
 

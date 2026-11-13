@@ -505,6 +505,9 @@ fn purge_pairing(app: &AppHandle<Wry>, guild_id: &str, reason: GuildRemovalReaso
     if let Err(error) = events::emit_settings(app, &state.view()) {
         tracing::debug!(%error, "échec d'émission des settings après purge");
     }
+    if let Err(error) = events::emit_device_settings(app) {
+        tracing::debug!(%error, "échec d'émission de overlay://device-settings après purge");
+    }
     remaining
 }
 
@@ -1192,13 +1195,38 @@ impl SessionEffects for AppEffects {
     }
 }
 
+/// Effective renderer volume: general volume × the guild's own volume.
+pub(crate) fn effective_volume(general_volume: f64, guild_volume: f64) -> f64 {
+    crate::config::normalize_volume(general_volume) * crate::config::normalize_volume(guild_volume)
+}
+
+/// Serializes a `play` for the renderer and adds the computed effective volume.
+pub(crate) fn renderer_play_payload(
+    payload: &PlayPayload,
+    general_volume: f64,
+    guild_volume: f64,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let mut value = serde_json::to_value(payload)?;
+    if let serde_json::Value::Object(object) = &mut value {
+        object.insert(
+            "volume".to_string(),
+            serde_json::json!(effective_volume(general_volume, guild_volume)),
+        );
+    }
+    Ok(value)
+}
+
 impl AppEffects {
     /// Affiche un `play`, ou le met en attente si une autre guilde occupe
     /// l'écran (un seul média à la fois, toutes guildes confondues).
     fn present_play(&self, payload: &PlayPayload) {
         let app = &self.app;
         let state = app.state::<AppState>();
-        let value = match serde_json::to_value(payload) {
+        let config = state.config_snapshot();
+        let guild_volume = config
+            .membership(&self.guild_id)
+            .map_or(1.0, |membership| membership.volume);
+        let value = match renderer_play_payload(payload, config.volume, guild_volume) {
             Ok(value) => value,
             Err(error) => {
                 tracing::warn!(%error, "play non sérialisable");
@@ -1978,6 +2006,7 @@ mod tests {
             role: None,
             guest_mode: false,
             muted: false,
+            volume: 1.0,
             media_bindings: Default::default(),
         }
     }
@@ -2172,5 +2201,21 @@ mod tests {
             ConnectionStatus::Disabled,
             &NetCommand::Shutdown
         ));
+    }
+
+    #[test]
+    fn effective_volume_multiplies_general_and_guild_volumes() {
+        assert!((effective_volume(0.8, 0.5) - 0.4).abs() < f64::EPSILON);
+        assert_eq!(effective_volume(2.0, 3.0), 1.0);
+        assert_eq!(effective_volume(-1.0, 0.5), 0.0);
+        assert_eq!(effective_volume(0.8, 1.0), 0.8);
+    }
+
+    #[test]
+    fn renderer_play_payload_carries_the_effective_volume() {
+        let play = play_payload();
+        let value = renderer_play_payload(&play, 0.8, 0.5).expect("serialize");
+        assert_eq!(value["jobId"], play.job_id);
+        assert!((value["volume"].as_f64().expect("volume") - 0.4).abs() < f64::EPSILON);
     }
 }

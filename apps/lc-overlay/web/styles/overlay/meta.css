@@ -27,21 +27,31 @@
 }
 
 .overlay-media-header-left .overlay-author {
-  padding: 0.55rem 0.9rem;
+  box-sizing: border-box;
+  height: var(--overlay-meta-chip-height);
+  padding: 0 0.9rem;
   border-radius: 10px;
   border: 0;
   background: rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(2px);
-  max-width: min(68vw, 920px);
+  /* --header-left-max-width is set by the header layout when the chip cannot
+     shift any further without leaving the screen. */
+  max-width: min(68vw, 920px, var(--header-left-max-width, 100vw));
 }
 
 .overlay-media-header-left .overlay-author-name {
-  font-size: clamp(16px, 1.7vw, 24px);
+  min-width: 0;
+  /* Vertical room for the text shadow, which overflow would otherwise clip. */
+  padding-block: 6px;
+  overflow: hidden;
+  font-size: var(--overlay-meta-font-size);
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .overlay-media-header-left .overlay-author-avatar,
 .overlay-media-header-left .overlay-author-avatar-fallback {
+  flex: none;
   width: 34px;
   height: 34px;
 }

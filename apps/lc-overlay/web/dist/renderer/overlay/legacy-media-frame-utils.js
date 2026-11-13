@@ -14,13 +14,29 @@ export function createOverlayLegacyMediaFrameUtils() {
         if (overflowPx <= 0) {
             return {
                 leftShiftPx: 0,
-                rightShiftPx: 0
+                rightShiftPx: 0,
+                unresolvedPx: 0
             };
         }
+        // Room between the frame and the screen edge on each side: unbounded
+        // when unknown. A frame anchored to a corner has none on that side, so
+        // the other side takes what it can and the rest stays unresolved.
+        const leftRoomPx = roomPx(params.leftRoomPx);
+        const rightRoomPx = roomPx(params.rightRoomPx);
+        const rightShiftPx = Math.min(Math.floor(overflowPx / 2), rightRoomPx);
+        const leftShiftPx = Math.min(overflowPx - rightShiftPx, leftRoomPx);
+        const finalRightShiftPx = Math.min(overflowPx - leftShiftPx, rightRoomPx);
         return {
-            leftShiftPx: Math.ceil(overflowPx / 2),
-            rightShiftPx: Math.floor(overflowPx / 2)
+            leftShiftPx,
+            rightShiftPx: finalRightShiftPx,
+            unresolvedPx: overflowPx - leftShiftPx - finalRightShiftPx
         };
+    }
+    function roomPx(value) {
+        if (typeof value !== 'number' || Number.isNaN(value)) {
+            return Number.POSITIVE_INFINITY;
+        }
+        return Math.max(0, Math.floor(value));
     }
     function createMediaFrameNodes(params) {
         const frame = document.createElement('div');

@@ -67,29 +67,6 @@ pub(crate) fn build_url(server_url: &str, path: &str, allow_insecure: bool) -> R
     Ok(url)
 }
 
-/// URL d'un média du board pour une balise `<img>`/`<video>`.
-///
-/// Ces balises ne peuvent pas porter d'en-tête : l'URL embarque le jeton en
-/// query (repli accepté par le serveur sur `/overlay/media-board/*` seulement).
-pub fn board_media_url(membership: &Membership, asset_id: &str) -> Result<String, String> {
-    let asset_id = asset_id.trim();
-    if asset_id.is_empty()
-        || !asset_id
-            .chars()
-            .all(|character| character.is_ascii_hexdigit() || character == '-')
-    {
-        return Err("identifiant de média invalide".to_string());
-    }
-    let mut url = build_url(
-        &membership.server_url,
-        &format!("/overlay/media-board/media/{asset_id}"),
-        tls::insecure_tls_enabled(),
-    )?;
-    url.query_pairs_mut()
-        .append_pair("token", &membership.client_token);
-    Ok(url.to_string())
-}
-
 /// Exécute un appel REST authentifié pour la guilde de `membership`.
 pub async fn request(
     membership: &Membership,
@@ -175,22 +152,5 @@ mod tests {
         assert!(parse_method("patch").is_ok());
         assert!(parse_method("PUT").is_err());
         assert!(parse_method("CONNECT").is_err());
-    }
-
-    #[test]
-    fn media_url_carries_token_and_rejects_bad_ids() {
-        let membership = Membership {
-            server_url: "https://api.example.test".to_string(),
-            guild_id: "111".to_string(),
-            client_token: "abc".to_string(),
-            ..Default::default()
-        };
-        let url = board_media_url(&membership, "0a1b-2c3d").expect("url");
-        assert_eq!(
-            url,
-            "https://api.example.test/overlay/media-board/media/0a1b-2c3d?token=abc"
-        );
-        assert!(board_media_url(&membership, "../x").is_err());
-        assert!(board_media_url(&membership, "").is_err());
     }
 }

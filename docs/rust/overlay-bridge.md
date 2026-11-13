@@ -356,7 +356,8 @@ Notes de contrat :
 | --- | --- | --- | --- | --- |
 | `onPlay` | `overlay:play` | `overlay://play` | `OverlayPlayPayload` | fenêtre `overlay` uniquement |
 | `onStop` | `overlay:stop` | `overlay://stop` | `OverlayStopPayload` | fenêtre `overlay` uniquement |
-| `onSettings` | `overlay:settings` | `overlay://settings` | `OverlaySettingsPayload` | fenêtres `overlay` **et** `board`, jamais `pairing` |
+| `onSettings` | `overlay:settings` | `overlay://settings` | `OverlaySettingsPayload` | fenêtre `overlay` uniquement |
+| — | — | `overlay://device-settings` | `SettingsView` complet (voir §14) | fenêtre `board` uniquement |
 | — | — | `overlay://guild-removed` | `GuildRemoval` (voir §13.2) | fenêtre `board` uniquement |
 | — | — | `overlay://media-ingestion` | résultat d'ingestion + `guildId` (voir §13.4) | fenêtre `board` uniquement |
 | — | — | `overlay://board-changed` | `{ guildId, change, itemId }` (voir §13.4) | fenêtre `board` uniquement |
@@ -891,3 +892,106 @@ chaîne inconnue de tous les messages serveur (constantes `msg_type` de
 `lc-protocol`), un `warn` est journalisé et la session continue ; un JSON
 invalide ou un type connu avec un payload invalide termine la session
 (« trame serveur invalide »).
+
+## 14. Paramètres de l'appareil (board)
+
+Ces quatre commandes sont autorisées **pour la seule fenêtre `board`**.
+
+### 14.1 `settings_get`
+
+Aucun payload. Réponse `SettingsView` :
+
+```json
+{
+  "version": "3.0.1",
+  "updaterEnabled": false,
+  "displays": [
+    {
+      "index": 0,
+      "key": "0,0,2560,1440,0",
+      "label": "Écran 1 — 2560 × 1440 (principal)",
+      "width": 2560,
+      "height": 1440,
+      "primary": true
+    }
+  ],
+  "selectedDisplayKey": null,
+  "volume": 0.8,
+  "guildVolumes": { "111": 1.0 },
+  "generalMute": false,
+  "showText": true,
+  "autoStart": false,
+  "shortcuts": { "stop": "CommandOrControl+Shift+S", "muteAll": null },
+  "layout": { "anchor": "center", "maxWidth": 100, "maxHeight": 100, "margin": 24 },
+  "profile": { "displayName": "Quentin", "avatar": null }
+}
+```
+
+`selectedDisplayKey: null` désigne l'écran principal. `generalMute` est
+l'inverse de `enabled`. `guildVolumes` contient toutes les guildes rejointes.
+`autoStart` reflète l'état réel du plugin autostart.
+
+### 14.2 `settings_set`
+
+Le payload est un objet partiel. Seules les clés présentes sont modifiées :
+`selectedDisplayKey`, `volume`, `guildVolumes` (fusion par guilde),
+`generalMute`, `showText`, `autoStart`, `shortcuts` (partiel ; `null` efface un
+accélérateur), `layout` (partiel), `profile` (partiel ; `null` efface un champ).
+
+Réponse en succès :
+
+```json
+{ "ok": true, "settings": { "...": "SettingsView à jour" } }
+```
+
+Réponse en échec (aucune modification appliquée) :
+
+```json
+{
+  "ok": false,
+  "field": "shortcuts.stop",
+  "message": "raccourci invalide ou non pris en charge",
+  "settings": { "...": "SettingsView inchangée" }
+}
+```
+
+Règles : volumes ramenés dans `[0,1]` ; ancres inconnues refusées ; nombres de
+mise en page bornés (`maxWidth`/`maxHeight` 20..100, `margin` 0..200) ; un
+accélérateur doit être analysable, ne pas entrer en collision avec l'autre
+raccourci global, un binding média ou le rechargement manuel, et être accepté
+par l'OS. En cas de refus OS, l'ancien raccourci est réenregistré et rien n'est
+persisté.
+
+Effets immédiats : persistance atomique, replacement de l'overlay sur l'écran
+choisi, réenregistrement des raccourcis, activation/désactivation de
+l'autostart, connexion/déconnexion de la sourdine générale comme le tray,
+rafraîchissement du tray, envoi de `overlay://settings` à l'overlay et de
+`overlay://device-settings` au board.
+
+`overlay://device-settings` est aussi émis quand la sourdine générale change
+depuis le tray ou quand une guilde est rejointe/quittée (donc quand
+`guildVolumes` change).
+
+### 14.3 `settings_identify_displays`
+
+Aucun payload → `{ "count": N }`. Le shell crée une fenêtre transparente,
+sans décoration, always-on-top, cliquable à travers et non focusable par écran
+(label `identify-<index>`, page `identify.html`) ; chaque fenêtre affiche le
+numéro de l'écran et son libellé, puis le shell les ferme après 3 s. Ces
+fenêtres n'utilisent aucune commande IPC.
+
+### 14.4 `settings_test_media`
+
+Aucun payload → `{ "ok": true }`, ou
+`{ "ok": false, "reason": "overlay_busy" }` si un média réel occupe l'overlay.
+Affiche pendant 5 s la carte locale `assets/test-media.svg` via le même
+événement `overlay://play` que la lecture réelle, avec le profil local (ou
+« LiveChat »), le texte « Média de test » et le compte à rebours. Le payload ne
+contient aucun `jobId` et porte `test: true` : aucun rapport de lecture ou
+d'erreur n'est envoyé au serveur.
+
+### 14.5 Suppression de `guild_media_url`
+
+`guild_media_url`, son entrée d'allowlist et `net::api::board_media_url` sont
+supprimés : chaque élément du board fournit désormais une URL signée
+`mediaUrl`, utilisée directement par le board.

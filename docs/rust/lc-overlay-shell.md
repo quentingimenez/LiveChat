@@ -122,20 +122,32 @@ Au démarrage (`lib.rs::prepare_store`) :
 `OverlayConfig` = les 16 champs legacy exacts (camelCase JSON) :
 `displayId`, `displayIndex`, `displayKey`, `displayLabel`, `volume`, `enabled`,
 `autoStart`, `guestMode`, `showText`, `serverUrl`, `clientToken`, `clientId`,
-`guildId`, `authorName`, `deviceName`, `mediaBindings` ; les clés inconnues sont
-conservées dans `extra` (`#[serde(flatten)]`) pour ne pas perdre de champ
+`guildId`, `authorName`, `deviceName`, `mediaBindings`, plus `memberships`,
+`profileName`, `profileAvatar`, `shortcuts` et `layout` ; les clés inconnues
+sont conservées dans `extra` (`#[serde(flatten)]`) pour ne pas perdre de champ
 Electron lors d'un rollback.
+
+`Membership` porte un `volume` par guilde (défaut `1.0`, borné `[0,1]`).
+`shortcuts = { stop, muteAll }` et `layout = { anchor, maxWidth, maxHeight,
+margin }` sont les clés persistées camelCase des réglages de l'appareil. Elles
+sont normalisées à la lecture : accélérateurs trimmés/vides retirés, ancre
+`center|top|bottom|top-left|top-right|bottom-left|bottom-right`, pourcentages
+bornés 20..100 et marge 0..200.
 
 Normalisations identiques au legacy : volume borné `[0,1]` (non fini → 1),
 `autoStart`/`guestMode` seulement si `=== true`, `mediaBindings` trimmés et
 entrées vides supprimées. `serverUrl` est **conservé tel quel** dans le fichier :
 comme dans le legacy, `normalizeServerUrl` (trim + suppression des `/` finaux)
-ne s'applique qu'à l'usage (appairage/connexion, Phase 8b).
+ne s'applique qu'à l'usage (appairage/connexion).
 
-Projection renderer (`OverlayConfigView`, 8 champs) :
-`serverUrl`, `clientToken`, `guildId`, `clientId`, `guestMode`, `showText`,
-`volume`, `mediaBindings` — `display*`, `enabled`, `autoStart`, `authorName` et
-`deviceName` restent côté shell.
+Projection renderer (`OverlayConfigView`) : `serverUrl`, `clientToken`,
+`guildId`, `clientId`, `guestMode`, `showText`, `volume`, `mediaBindings` et
+`layout` — `display*`, `enabled`, `autoStart`, `authorName`, `deviceName`,
+`shortcuts` et le profil restent côté shell.
+
+La vue complète de la page Paramètres (`SettingsView`) et le contrat
+`settings_get` / `settings_set` / `settings_identify_displays` /
+`settings_test_media` sont documentés dans `overlay-bridge.md` §14.
 
 ## 5. Fenêtres
 
@@ -143,6 +155,7 @@ Projection renderer (`OverlayConfigView`, 8 champs) :
 | --- | --- | --- |
 | `overlay` | écran cible plein (2560×1440 ×1.0 dans le POC) | transparente, sans décorations, always-on-top, skip taskbar, focusable=false, click-through, `WS_EX_LAYERED|TRANSPARENT|NOACTIVATE|TOOLWINDOW` |
 | `board` | 1180×780 (min 960×640) | centrée, cachée au démarrage ; porte aussi l'appairage et les paramètres |
+| `identify-<index>` | plein écran par moniteur, créée à la demande | transparente, sans décorations, always-on-top, skip taskbar, focusable=false, click-through ; fermée par le shell après 3 s (`settings_identify_displays`) |
 
 Détails d'implémentation :
 
@@ -242,18 +255,25 @@ la board. L'infobulle reste `tray_tooltip`.
 - Pas encore de vérification automatique au démarrage ni de lignes de statut
   dans le tray (Phase 8b/9).
 
-## 9. Global shortcuts (squelette mediaBindings)
+## 9. Global shortcuts
 
 - Accélérateur de rechargement manuel (legacy) :
-  `CommandOrControl+Shift+Alt+R` → `emitManualStopSignal` sera branché sur le
-  socket en 8b ; pour l'instant l'action recharge la webview overlay
+  `CommandOrControl+Shift+Alt+R` recharge la webview overlay
   (`window.eval("window.location.reload()")`) et journalise.
 - `apply_media_bindings(app, bindings, strict, persist)` reproduit la sémantique
   legacy : mode invité → aucun binding ; `strict` → rollback complet si un
   accélérateur est refusé, réponse `{ok, appliedBindings, failedAccelerators}`.
-- Commandes bridge `media_board_get_bindings` / `media_board_set_bindings`
-  opérationnelles ; `media_board_trigger` / `media_board_stop` renvoient
-  `{ok:false, reason:"socket_unavailable"}` jusqu'au client WS (8b).
+  Les accélérateurs réservés aux raccourcis globaux sont signalés dans
+  `failedAccelerators`.
+- `shortcuts.stop` et `shortcuts.muteAll` sont persistés dans
+  `OverlayConfig.shortcuts`, enregistrés au démarrage puis réenregistrés
+  transactionnellement par `settings_set`. `stop` envoie `stop.request` à la
+  guilde active ; `muteAll` bascule la sourdine générale exactement comme le
+  tray. En cas de refus OS, les anciens raccourcis sont restaurés.
+- La validation de `settings_set` refuse un accélérateur invalide, en collision
+  avec l'autre raccourci global, un binding média ou le rechargement manuel.
+- Commandes bridge `media_board_get_bindings` / `media_board_set_bindings`,
+  `media_board_trigger` / `media_board_stop` opérationnelles sur le socket v2.
 
 ## 10. Événements et commandes (contrat bridge)
 
@@ -261,25 +281,31 @@ la board. L'infobulle reste `tray_tooltip`.
 
 | Nom | Cible | Payload |
 | --- | --- | --- |
-| `overlay://play` | fenêtre `overlay` | `OverlayPlayPayload` complet |
+| `overlay://play` | fenêtre `overlay` | `OverlayPlayPayload` complet + `volume` effectif |
 | `overlay://stop` | fenêtre `overlay` | `OverlayStopPayload` |
-| `overlay://settings` | fenêtres `overlay` + `board` | projection 8 champs |
+| `overlay://settings` | fenêtre `overlay` | projection renderer (`OverlayConfigView`, layout compris) |
+| `overlay://device-settings` | fenêtre `board` | `SettingsView` complet |
 | `overlay://navigate` | fenêtre `board` | `{ "view": "settings" }` (demande du tray) |
+
+Le volume effectif ajouté à `overlay://play` vaut volume général × volume de la
+guilde propriétaire du média. Le renderer utilise `payload.volume` seulement
+quand il est fini et dans `[0,1]`, sinon le volume de configuration.
 
 Bufferisation (décision §8.1 de `overlay-bridge.md`) : tant que l'overlay n'a
 pas appelé `overlay_renderer_ready`, les événements play/stop sont coalescés
 (durée bornée à 2 : dernier play + dernier stop), puis rejoués dans l'ordre au
-handshake ; timeout de 5 s → purge + `warn`. `overlay://settings` n'est jamais
-bufferisé vers le board (il n'appelle pas `renderer_ready`) mais est émis
-immédiatement aux deux fenêtres.
+handshake ; timeout de 5 s → purge + `warn`. `overlay://settings` et
+`overlay://device-settings` sont émis immédiatement.
 
 Commandes exposées (via `tauri::generate_handler!`) :
 `overlay_get_config`, `overlay_renderer_ready`, `overlay_report_error`,
 `overlay_report_playback_state`, `overlay_report_playback_stop`,
 `pairing_consume`, `media_board_get_bindings`, `media_board_set_bindings`,
 `media_board_trigger`, `media_board_stop`, `overlay_check_updates`,
-`overlay_install_update` et `board_take_pending_view` (autorisée pour la seule
-fenêtre `board`).
+`overlay_install_update`, `board_take_pending_view`, `settings_get`,
+`settings_set`, `settings_identify_displays`, `settings_test_media` et les
+commandes de guildes / upload. `guild_media_url` est supprimé : les URL média
+signées arrivent directement dans les éléments du board.
 
 `bridge.js` (façade Tauri 2) détecte `__TAURI_INTERNALS__.invoke` puis
 `__TAURI__.core.invoke` ; `app.withGlobalTauri: true` est activé, `core:default`
@@ -289,8 +315,10 @@ couvre les commandes applicatives (hors ACL) et les événements.
 
 `capabilities/board.json` et `capabilities/overlay.json` — une capability par
 fenêtre (`windows: ["board"]` / `["overlay"]`), permissions `core:default`
-minimales. `capabilities/pairing.json` n'est plus utilisé depuis la suppression
-de la fenêtre d'appairage (il reste à supprimer).
+minimales. Les fenêtres `identify-<index>` n'ont aucune capability : elles
+n'appellent aucune commande IPC et affichent uniquement leur page locale.
+`capabilities/pairing.json` n'est plus utilisé depuis la suppression de la
+fenêtre d'appairage (il reste à supprimer).
 
 Chaque capability ne demande que `core:default` (aucun accès `fs`, `shell` ou
 `opener`) : le shell n'ouvre pas de process externe.
@@ -330,7 +358,8 @@ URLs média restant verbatim. Origine WebView : `http://tauri.localhost` (pas de
    sélection utilise `displayKey`/`displayIndex`/primaire, comme décidé au POC.
 2. `pairing_consume` est opérationnel et la board porte l'appairage ; la
    fenêtre `pairing` a été retirée.
-3. `media_board_trigger/stop` : `socket_unavailable` jusqu'au client WS.
+3. `media_board_trigger/stop` sont branchés sur le client WebSocket v2 ;
+   `socket_unavailable` signale désormais une guilde/superviseur indisponible.
 4. Updater : clé minisign placeholder + pas de check au démarrage.
 5. Tray : en-tête N/M guildes connectées, sans version serveur détaillée.
 6. `serverUrl` non normalisé à l'écriture (parité legacy volontaire).

@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::{ConfigStore, MediaBindings, OverlayConfig, OverlayConfigView};
@@ -18,6 +19,30 @@ use crate::net::ws::{ConnectionStatus, NetCommand, NetSnapshot};
 
 /// Cadence maximale d'envoi de `playback.state` (contrat v2 : 1 msg/s).
 const PLAYBACK_STATE_MIN_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Why a guild was automatically removed from the local configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuildRemovalReason {
+    /// The guild was deleted by an administrator.
+    GuildDeleted,
+    /// The member was removed from the guild.
+    MemberRemoved,
+    /// The overlay device was revoked.
+    Revoked,
+    /// The guild token is no longer valid.
+    InvalidToken,
+}
+
+/// Guild removal waiting for the board to acknowledge it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuildRemoval {
+    pub guild_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guild_name: Option<String>,
+    pub reason: GuildRemovalReason,
+}
 
 /// `play` reçu d'une guilde pendant qu'une autre occupe l'écran.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +70,8 @@ pub struct AppState {
     last_state_sent: Mutex<Option<Instant>>,
     /// View requested by the tray before the board was loaded.
     pending_board_view: Mutex<Option<String>>,
+    /// Removed guilds not consumed yet by the board.
+    pending_guild_removals: Mutex<Vec<GuildRemoval>>,
 }
 
 impl AppState {
@@ -62,6 +89,7 @@ impl AppState {
             local_queue: Mutex::new(VecDeque::new()),
             last_state_sent: Mutex::new(None),
             pending_board_view: Mutex::new(None),
+            pending_guild_removals: Mutex::new(Vec::new()),
         }
     }
 
@@ -325,6 +353,16 @@ impl AppState {
         self.lock_pending_board_view().take()
     }
 
+    /// Queues a removed guild for the board (also emitted as an event).
+    pub fn push_guild_removal(&self, removal: GuildRemoval) {
+        self.lock_guild_removals().push(removal);
+    }
+
+    /// Returns and clears every guild removal waiting for the board.
+    pub fn take_guild_removals(&self) -> Vec<GuildRemoval> {
+        std::mem::take(&mut *self.lock_guild_removals())
+    }
+
     /// Limite l'envoi de `playback.state` à un message par seconde (contrat v2).
     pub fn try_record_playback_state(&self) -> bool {
         let mut guard = self
@@ -379,6 +417,12 @@ impl AppState {
 
     fn lock_pending_board_view(&self) -> MutexGuard<'_, Option<String>> {
         self.pending_board_view
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    fn lock_guild_removals(&self) -> MutexGuard<'_, Vec<GuildRemoval>> {
+        self.pending_guild_removals
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
     }
@@ -478,6 +522,46 @@ mod tests {
         state.set_pending_board_view("settings");
         assert_eq!(state.take_pending_board_view().as_deref(), Some("settings"));
         assert!(state.take_pending_board_view().is_none());
+    }
+
+    #[test]
+    fn guild_removals_are_taken_once() {
+        let (_dir, store) = temp_store();
+        let state = AppState::new(store);
+        assert!(state.take_guild_removals().is_empty());
+
+        let removal = GuildRemoval {
+            guild_id: "111".to_string(),
+            guild_name: Some("Les Sardines".to_string()),
+            reason: GuildRemovalReason::GuildDeleted,
+        };
+        state.push_guild_removal(removal.clone());
+        let second = GuildRemoval {
+            guild_id: "222".to_string(),
+            guild_name: None,
+            reason: GuildRemovalReason::InvalidToken,
+        };
+        state.push_guild_removal(second.clone());
+
+        assert_eq!(state.take_guild_removals(), vec![removal, second]);
+        assert!(state.take_guild_removals().is_empty());
+    }
+
+    #[test]
+    fn guild_removal_serializes_camel_case() {
+        let removal = GuildRemoval {
+            guild_id: "111".to_string(),
+            guild_name: Some("Les Sardines".to_string()),
+            reason: GuildRemovalReason::MemberRemoved,
+        };
+        assert_eq!(
+            serde_json::to_value(&removal).expect("json"),
+            serde_json::json!({
+                "guildId": "111",
+                "guildName": "Les Sardines",
+                "reason": "member_removed",
+            })
+        );
     }
 
     #[test]

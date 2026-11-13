@@ -131,7 +131,7 @@ Authentification **avant** toute validation de corps, comme le legacy.
 | ni `url`/`media` ni `text` | 400 | `{"error":"invalid_payload"}` |
 | `saveToBoard` sans `url`/`media` | 400 | `{"error":"invalid_payload","message":"saveToBoard requires a resolvable media source"}` |
 | ingestion média en échec | 422 | `{"error":"media_ingestion_failed","code":<CODE>,"message":…}` |
-| `saveToBoard` réussi | 201 | `{"accepted":true,"savedToBoard":true,"created":bool,"guildId","mediaBoardItemId","mediaAssetId"}` (la clé legacy `memeBoardItemId` est aussi émise pour l'overlay 3.0.0) |
+| `saveToBoard` réussi | 201 | `{"accepted":true,"savedToBoard":true,"created":bool,"guildId","mediaBoardItemId","mediaAssetId"}` |
 | job créé | 201 | `{"accepted":true,"jobId","guildId","hasMedia":bool,"hasText":bool}` |
 | erreur interne (base) | 500 | `{"error":"internal_error"}` |
 
@@ -186,13 +186,15 @@ réutilisent l'instance. La limite `MEDIA_MAX_CONCURRENT_INGESTIONS` est donc
 globale au serveur, comme le legacy. Une base absente renvoie `Unavailable` →
 `503 ingest_unavailable`.
 
-Le board média (`POST /overlay/media-board/items`, alias legacy
-`/overlay/meme-board/items`) utilise la **même**
-`MediaService` (AUD-V2-S-003) : cache `READY`/`source_hash`, sémaphore, budget
-cache, `record_failure` et nettoyage `discard_partial_files` sont partagés, plus
-d'ingestion inline custom ni de `shared_pipeline_for_state` dans le handler.
-`shared_pipeline_for_state` reste exposée pour les futurs consommateurs
-(worker/phase suivante), mais le board ne l'appelle plus.
+Le board média (`POST /overlay/media-board/items` et
+`POST /overlay/media-board/upload`) utilise la **même** `MediaService`
+(AUD-V2-S-003) : cache `READY`/`source_hash`, sémaphore, budget cache,
+`record_failure` et nettoyage `discard_partial_files` sont partagés. Ces deux
+routes sont désormais **asynchrones** : elles valident la requête, enregistrent
+l'ingestion, répondent `202 {ingestionId}` puis laissent une tâche `tokio::spawn`
+détachée de la connexion HTTP exécuter le pipeline et l'insertion board. La fin
+de tâche met à jour le registre et notifie le client (`media.ingestion`) ainsi
+que la guilde (`board.changed`). Voir `docs/rust/server-overlay.md` §7.2.
 
 ### Confinement du stockage (fail-closed)
 
@@ -304,10 +306,13 @@ Le comptage « actif » (jobs `PENDING`/`PLAYING`) et « épinglé » est calcul
 requêtes SQL sur `media_asset_id` : les repositories n'offrent pas ces filtres.
 
 Le board média exposé par `http::overlay::media_board` partage ces budgets :
-`POST /overlay/media-board/items` (et l'alias legacy `/overlay/meme-board/items`)
-passe par la même `MediaService` puis `assets::pin` (expiry à +100 ans) ; la liste
-charge en une jointure bornée et la suppression est transactionnelle
-(`delete_item_and_release`). Voir `docs/rust/server-overlay.md` §7.
+`POST /overlay/media-board/items` (sans alias legacy) enregistre une ingestion
+asynchrone, répond `202 {ingestionId}` et passe dans la tâche de fond par la même
+`MediaService` puis `assets::pin` (expiry à +100 ans) ; la liste charge en une
+jointure bornée et la suppression est transactionnelle
+(`delete_item_and_release`). Un échec de la tâche produit `media.ingestion
+{ok:false}` avec `media_ingestion_failed`/`internal_error` et un message lisible.
+Voir `docs/rust/server-overlay.md` §7.2.
 
 ### `POST /overlay/media-board/upload`
 
@@ -330,12 +335,14 @@ Le corps est le fichier brut (`application/octet-stream` ou tout autre
 Le handler lit le corps en streaming avec `axum::body::Body::into_data_stream`
 (jamais tout le fichier en mémoire), écrit dans un répertoire temporaire du même
 espace que les téléchargements `lc-media`, calcule le SHA-256 au fil de l'eau et
-supprime le fichier temporaire dans tous les cas (garde RAII, y compris abandon
-du handler). La limite globale `DefaultBodyLimit` de 1 Mio ne s'applique pas à
-cette route (`Body`, pas `Bytes`/`Json`) ; les autres routes la conservent. La
-route est exemptée du timeout global (`app::is_timeout_exempt`).
+répond **après réception complète** du corps. Le répertoire temporaire est ensuite
+déplacé dans la tâche asynchrone et supprimé à sa fin, succès ou échec (garde
+RAII). Une coupure client après la réponse n'annule plus la conversion. La limite
+globale `DefaultBodyLimit` de 1 Mio ne s'applique pas à cette route (`Body`, pas
+`Bytes`/`Json`) ; les autres routes la conservent. La route est exemptée du
+timeout global (`app::is_timeout_exempt`) car la réception peut être longue.
 
-Limites et erreurs :
+Limites et erreurs synchrones (avant la réponse) :
 
 | Cas | Statut | Corps |
 | --- | --- | --- |
@@ -343,24 +350,27 @@ Limites et erreurs :
 | corps vide | 400 | `{"error":"invalid_payload",…}` |
 | corps > `MEDIA_MAX_SIZE_MB` (2048 Mo par défaut) | 413 | `{"error":"payload_too_large"}` |
 | session `invite_read_only` | 403 | `{"error":"read_only_session"}` |
-| type non reconnu (`UNSUPPORTED_SOURCE`) | 415 | `{"error":"unsupported_media"}` |
-| SVG ou autre échec d'ingestion | 422 | `{"error":"media_ingestion_failed","code":…,"message":…}` |
-| erreur base/service | 500 | `{"error":"internal_error"}` |
+| 20 ingestions `processing` déjà actives | 429 | `{"error":"too_many_ingestions"}` |
+| base/service indisponible | 500/503 | `{"error":"internal_error"}` / `database_unavailable` |
+| fichier accepté | 202 | `{"ingestionId":"<uuid>"}` |
 
-L'ingestion passe par `MediaPipeline::ingest_local_file` (ou
-`ingest_local_file_with_hash` quand le service a déjà l'empreinte) : détection
-du type par les octets, puis les mêmes contrôles de taille, transcodage,
-publication content-addressed et limiteur de concurrence que `ingest_url`. Les
-SVG sont refusés (`INVALID_MEDIA`). Une image raster locale valide peut être
-plus petite que le seuil anti-fichier-vide de 1 Kio des sources distantes
-(icône 1×1) ; ce seuil reste inchangé pour `ingest_url`.
+Après le `202`, l'ingestion passe par
+`MediaPipeline::ingest_local_file_with_hash` : détection du type par les octets,
+puis les mêmes contrôles de taille, transcodage, publication content-addressed et
+limiteur de concurrence que `ingest_url`. Les SVG sont refusés (`INVALID_MEDIA`).
+Une image raster locale valide peut être plus petite que le seuil anti-fichier-vide
+de 1 Kio des sources distantes (icône 1×1) ; ce seuil reste inchangé pour
+`ingest_url`. Les échecs sont signalés par `media.ingestion` :
+`unsupported_media` pour un type non reconnu, puis `media_ingestion_failed` /
+`internal_error` avec message lisible.
 
 La clé de cache/déduplication est `upload:sha256:<sha256 du contenu>` ; si un
 asset `READY` existe déjà pour cette clé il est réutilisé sans nouvelle
 ingestion. La colonne `media_assets.source_url` reçoit `upload:<filename>`. Les
 étapes board (quota `MEDIA_BOARD_MAX_TOTAL_MB`, dédoublonnage, épinglage 100 ans,
-insertion, auteur) sont partagées avec `create_item` : réponse `200` avec
-`{"created":true}` pour un nouvel item, `{"created":false}` si l'asset était déjà sur le board.
+insertion, auteur) sont partagées avec `create_item` : `media.ingestion` porte
+`created:true` pour un nouvel item, `created:false` si l'asset était déjà sur le
+board (aucun `board.changed` dans ce second cas).
 
 ## 7. Jobs et hook temps réel
 
@@ -388,12 +398,16 @@ Le registre de hook est un `RwLock<Option<Arc<dyn IngestHook>>>` global
 ## 8. Arrêt et annulation
 
 `lc-media` lance les processus externes avec `kill_on_drop`. Le shutdown
-gracieux d'axum abandonne les handlers en cours : les futures d'ingestion sont
-droppées, donc les processus `ffmpeg`/`yt-dlp` sont tués et l'asset reste en
-`PROCESSING` (nettoyé ensuite par le worker `media::purge` — task-42 — via
-`STALE_PROCESSING_TTL` de 2 h, comme le legacy). La publication du fichier étant
-atomique (transit `.tmp-*` + `rename`), aucune annulation ne laisse de média
-partiellement publié. Aucun endpoint de debug/shutdown n'est exposé.
+gracieux d'axum abandonne les handlers en cours : les futures d'ingestion
+synchrones (`/ingest`) sont droppées, donc les processus `ffmpeg`/`yt-dlp` sont
+tués et l'asset reste en `PROCESSING` (nettoyé ensuite par le worker
+`media::purge` — task-42 — via `STALE_PROCESSING_TTL` de 2 h, comme le legacy).
+Les tâches asynchrones du board (`tokio::spawn`) ne dépendent pas de la connexion
+HTTP : une déconnexion client ne les annule pas ; un arrêt du runtime les
+interrompt comme toute tâche Tokio, et le même worker de purge nettoie les
+`PROCESSING` orphelins. La publication du fichier étant atomique (transit
+`.tmp-*` + `rename`), aucune annulation ne laisse de média partiellement publié.
+Aucun endpoint de debug/shutdown n'est exposé.
 
 ## 9. Tests
 
@@ -433,7 +447,7 @@ Vérifications de la lane (task-49) : `cargo fmt -p lc-media -p lc-server -- --c
 | Auth `/ingest` | token de client uniquement | idem ; `INGEST_API_TOKEN` ignoré pour ces routes (écart assumé vs task) |
 | Erreur inattendue d'ingestion | `DOWNLOAD_FAILED` (classification) | 500 `internal_error` (erreur serveur, pas média) |
 | Rich tweet card | résolution oEmbed + payload riche | **hors scope 3c** (Phase 6b) ; les URLs de tweet passent par le pipeline média standard |
-| `saveToBoard` | 201 board, pas de job | idem |
+| `saveToBoard` | 201 board, pas de job | idem ; le `board.changed {change:"added"}` est diffusé si l'item est nouveau |
 | Réponse `/pair/consume` `apiBaseUrl` | `env.API_URL` | `api_url` validée, slash final retiré |
 | `deviceName` | champ libre | trimé puis tronqué à 200 caractères, comme l'overlay (AUD-A2-012) |
 | Collision `token_hash` à l'appairage | erreur 500 Prisma | réessai unique avec token régénéré, puis 500 (AUD-A2-010) |

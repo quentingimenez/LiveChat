@@ -33,6 +33,7 @@ pub mod app;
 pub mod config;
 pub mod discord;
 pub mod http;
+pub mod ingestions;
 pub mod media;
 pub mod media_url;
 pub mod shutdown;

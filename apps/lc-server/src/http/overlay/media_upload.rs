@@ -2,12 +2,16 @@
 //!
 //! The body is the raw file (no multipart, no JSON). It is streamed to a
 //! temporary directory in the same space as pipeline downloads, with a
-//! `MEDIA_MAX_SIZE_MB` cap and an incremental SHA-256. The temporary file is
-//! removed by an RAII guard in every case (success, error, handler drop).
+//! `MEDIA_MAX_SIZE_MB` cap and an incremental SHA-256. Once the whole body has
+//! been received, the route registers an ingestion and answers `202
+//! {ingestionId}`; the temporary directory is moved into the detached
+//! [`super::media_ingestion`] task and removed when that task ends (success or
+//! failure).
 //!
 //! The route does not use `Bytes`/`Json`: `axum::body::Body` does not apply the
 //! global 1 MiB `DefaultBodyLimit`, which stays active elsewhere. The route is
-//! exempt from the global timeout like the other synchronous ingestions.
+//! exempt from the global timeout because receiving a large file can exceed the
+//! ordinary request budget.
 
 use std::io;
 use std::path::PathBuf;
@@ -25,11 +29,15 @@ use tokio::io::AsyncWriteExt as _;
 use uuid::Uuid;
 
 use crate::app::AppState;
+use crate::ingestions::StartIngestionError;
 use crate::media::errors::MediaServiceError;
 use crate::media::service::MediaService;
 
 use super::auth::AuthedOverlayClient;
-use super::media_board::{complete_board_item, ensure_writable, media_service_error};
+use super::media_board::{
+    ensure_writable, media_service_error, too_many_ingestions, IngestionFailure,
+};
+use super::media_ingestion::{spawn_ingestion, IngestionInput};
 use super::{db, internal_error, json_response, now};
 
 /// Maximum filename length (Unicode scalar values).
@@ -81,10 +89,11 @@ pub async fn upload_item(
         Err(response) => return response,
     };
 
-    let db = match db(&state) {
-        Ok(db) => db,
-        Err(response) => return response,
-    };
+    // A missing database is still reported synchronously (503): the background
+    // task cannot persist the media without it.
+    if let Err(response) = db(&state) {
+        return response;
+    }
     let service = match MediaService::for_state(&state) {
         Ok(service) => service,
         Err(service_error) => return media_service_error(&service_error),
@@ -158,22 +167,35 @@ pub async fn upload_item(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    let timestamp = now(&state);
-
-    let asset = match service
-        .ingest_file(
-            &temp_path,
-            &filename,
-            content_type.as_deref(),
-            &content_sha256,
-        )
-        .await
-    {
-        Ok(asset) => asset,
-        Err(service_error) => return upload_service_error(&service_error),
+    let ingestion_id = match state.ingestions.start(
+        auth.guild_id().clone(),
+        auth.client.id.as_uuid(),
+        now(&state),
+    ) {
+        Ok(ingestion_id) => ingestion_id,
+        Err(StartIngestionError::TooManyProcessing) => return too_many_ingestions(),
     };
 
-    complete_board_item(&state, &auth, db, asset, title, message, timestamp).await
+    // The whole body is on disk before the response; the task owns the
+    // temporary directory and removes it when it finishes.
+    spawn_ingestion(
+        state,
+        auth,
+        ingestion_id.clone(),
+        IngestionInput::Upload {
+            temp,
+            filename,
+            content_type,
+            content_sha256,
+        },
+        title,
+        message,
+    );
+
+    json_response(
+        StatusCode::ACCEPTED,
+        serde_json::json!({ "ingestionId": ingestion_id }),
+    )
 }
 
 /// Validates the original filename without ever using it as a path.
@@ -208,18 +230,19 @@ fn default_title(filename: &str) -> String {
         .to_owned()
 }
 
-/// Maps upload ingestion errors.
+/// Maps upload ingestion errors for the asynchronous `media.ingestion` report.
 ///
-/// An unsupported type is distinguishable (`UNSUPPORTED_SOURCE`) → `415`; other
-/// media errors keep the board mapping (`422`, `500`).
-fn upload_service_error(service_error: &MediaServiceError) -> Response {
+/// An unsupported type is distinguishable (`UNSUPPORTED_SOURCE`) →
+/// `unsupported_media`; other media errors keep the board vocabulary
+/// (`media_ingestion_failed`, `internal_error`).
+pub(super) fn upload_service_failure(service_error: &MediaServiceError) -> IngestionFailure {
     if service_error.media_code() == Some(MediaErrorCode::UnsupportedSource) {
-        return json_response(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            serde_json::json!({"error": "unsupported_media"}),
-        );
+        return IngestionFailure {
+            code: "unsupported_media",
+            message: None,
+        };
     }
-    media_service_error(service_error)
+    super::media_board::media_service_failure(service_error)
 }
 
 /// `400 invalid_payload` with a message.
@@ -239,7 +262,10 @@ fn payload_too_large() -> Response {
 }
 
 /// Temporary upload directory, removed on drop.
-struct UploadTempDir {
+///
+/// Owned by the handler until the whole body is received, then moved into the
+/// detached ingestion task.
+pub(super) struct UploadTempDir {
     path: PathBuf,
 }
 
@@ -263,7 +289,7 @@ impl UploadTempDir {
     }
 
     /// Path of the temporary file written while streaming.
-    fn file_path(&self) -> PathBuf {
+    pub(super) fn file_path(&self) -> PathBuf {
         self.path.join("upload.bin")
     }
 }

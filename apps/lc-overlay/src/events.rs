@@ -1,5 +1,6 @@
-//! Événements `overlay://play`, `overlay://stop`, `overlay://settings` et
-//! bufferisation tout-ou-rien tant que le renderer overlay n'est pas prêt
+//! Événements `overlay://play`, `overlay://stop`, `overlay://settings`,
+//! `overlay://media-ingestion`, `overlay://board-changed` et bufferisation
+//! tout-ou-rien tant que le renderer overlay n'est pas prêt
 //! (docs/rust/overlay-bridge.md §5.3 et §8.1).
 //!
 //! La fenêtre overlay peut être masquée : on garde au plus le dernier `play`
@@ -11,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
+use lc_protocol::{BoardChangedPayload, MediaIngestionPayload};
 use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, EventTarget, Manager, Wry};
@@ -30,6 +32,10 @@ pub const EVENT_GUILD_REMOVED: &str = "overlay://guild-removed";
 pub const EVENT_QUEUE_HINT: &str = "overlay://queue-hint";
 /// In-board navigation request (e.g. the `settings` view).
 pub const EVENT_NAVIGATE: &str = "overlay://navigate";
+/// Result of an asynchronous media ingestion (board window only).
+pub const EVENT_MEDIA_INGESTION: &str = "overlay://media-ingestion";
+/// The guild's media board changed (board window only).
+pub const EVENT_BOARD_CHANGED: &str = "overlay://board-changed";
 
 /// Délai maximal de rétention des événements avant que le renderer ne soit prêt.
 pub const READY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -184,6 +190,51 @@ pub fn emit_queue_hint(app: &AppHandle<Wry>, guild_id: &str) -> tauri::Result<()
     )
 }
 
+/// `overlay://media-ingestion` payload: the ingestion result (camelCase) plus
+/// the guild it belongs to.
+fn media_ingestion_payload(payload: &MediaIngestionPayload, guild_id: &str) -> Value {
+    let mut value = serde_json::to_value(payload).unwrap_or_default();
+    if let Value::Object(map) = &mut value {
+        map.insert("guildId".to_string(), Value::String(guild_id.to_string()));
+    }
+    value
+}
+
+/// `overlay://board-changed` payload.
+fn board_changed_payload(payload: &BoardChangedPayload, guild_id: &str) -> Value {
+    serde_json::json!({
+        "guildId": guild_id,
+        "change": payload.change,
+        "itemId": payload.item_id,
+    })
+}
+
+/// Emits `overlay://media-ingestion` to the board window.
+pub fn emit_media_ingestion(
+    app: &AppHandle<Wry>,
+    guild_id: &str,
+    payload: &MediaIngestionPayload,
+) -> tauri::Result<()> {
+    app.emit_to(
+        EventTarget::labeled(BOARD_LABEL),
+        EVENT_MEDIA_INGESTION,
+        media_ingestion_payload(payload, guild_id),
+    )
+}
+
+/// Emits `overlay://board-changed` to the board window.
+pub fn emit_board_changed(
+    app: &AppHandle<Wry>,
+    guild_id: &str,
+    payload: &BoardChangedPayload,
+) -> tauri::Result<()> {
+    app.emit_to(
+        EventTarget::labeled(BOARD_LABEL),
+        EVENT_BOARD_CHANGED,
+        board_changed_payload(payload, guild_id),
+    )
+}
+
 /// `overlay://navigate` payload: the view the board must display.
 fn navigate_payload(view: &str) -> Value {
     serde_json::json!({ "view": view })
@@ -289,6 +340,7 @@ pub fn flush_pending(app: &AppHandle<Wry>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lc_protocol::{BoardChange, MediaIngestionError};
     use serde_json::json;
 
     #[test]
@@ -337,6 +389,68 @@ mod tests {
     #[test]
     fn navigate_payload_carries_the_requested_view() {
         assert_eq!(navigate_payload("settings"), json!({"view": "settings"}));
+    }
+
+    #[test]
+    fn media_ingestion_payload_is_camel_case_and_carries_the_guild() {
+        let payload = MediaIngestionPayload {
+            ingestion_id: "ing-1".to_string(),
+            ok: true,
+            created: Some(false),
+            item_id: Some("item-1".to_string()),
+            error: None,
+        };
+        assert_eq!(
+            media_ingestion_payload(&payload, "guild-1"),
+            json!({
+                "ingestionId": "ing-1",
+                "ok": true,
+                "created": false,
+                "itemId": "item-1",
+                "guildId": "guild-1",
+            })
+        );
+    }
+
+    #[test]
+    fn media_ingestion_payload_keeps_the_failure_detail() {
+        let payload = MediaIngestionPayload {
+            ingestion_id: "ing-2".to_string(),
+            ok: false,
+            created: None,
+            item_id: None,
+            error: Some(MediaIngestionError {
+                code: "unsupported_media".to_string(),
+                message: Some("format inconnu".to_string()),
+            }),
+        };
+        assert_eq!(
+            media_ingestion_payload(&payload, "guild-1"),
+            json!({
+                "ingestionId": "ing-2",
+                "ok": false,
+                "error": { "code": "unsupported_media", "message": "format inconnu" },
+                "guildId": "guild-1",
+            })
+        );
+    }
+
+    #[test]
+    fn board_changed_payload_carries_the_guild_and_change() {
+        let payload = BoardChangedPayload {
+            change: BoardChange::Added,
+            item_id: "item-1".to_string(),
+        };
+        assert_eq!(
+            board_changed_payload(&payload, "guild-1"),
+            json!({"guildId": "guild-1", "change": "added", "itemId": "item-1"})
+        );
+    }
+
+    #[test]
+    fn board_event_names_match_the_board_contract() {
+        assert_eq!(EVENT_MEDIA_INGESTION, "overlay://media-ingestion");
+        assert_eq!(EVENT_BOARD_CHANGED, "overlay://board-changed");
     }
 
     #[test]

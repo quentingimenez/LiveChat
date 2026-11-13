@@ -145,8 +145,6 @@ pub mod msg_type {
     pub const STOP_REQUEST: &str = "stop.request";
     /// C→S : déclenchement d'un média.
     pub const MEDIA_TRIGGER: &str = "media.trigger";
-    /// C→S : ancien nom du déclenchement, accepté pour l'overlay 3.0.0.
-    pub const LEGACY_MEME_TRIGGER: &str = "meme.trigger";
     /// C→S : demande de la liste des pairs.
     pub const PEERS_REQUEST: &str = "peers.request";
     /// S→C : acceptation du `hello`.
@@ -161,6 +159,10 @@ pub mod msg_type {
     pub const STOP: &str = "stop";
     /// S→C : acquittement d'un `stop.request` ou `media.trigger`.
     pub const ACK: &str = "ack";
+    /// S→C : result of a media ingestion requested by this overlay client.
+    pub const MEDIA_INGESTION: &str = "media.ingestion";
+    /// S→C : the guild's media board changed (item added, edited or deleted).
+    pub const BOARD_CHANGED: &str = "board.changed";
 }
 
 /// Indique si une trame dépasse la limite autorisée.
@@ -351,8 +353,7 @@ pub enum ClientMessage {
     #[serde(rename = "stop.request")]
     StopRequest(StopRequestPayload),
     /// Déclenchement d'un média.
-    // Legacy overlay 3.0.0 compatibility: remove in 3.1.
-    #[serde(rename = "media.trigger", alias = "meme.trigger")]
+    #[serde(rename = "media.trigger")]
     MediaTrigger(MediaTriggerPayload),
     /// Demande de la liste des pairs.
     #[serde(rename = "peers.request")]
@@ -401,6 +402,12 @@ pub enum ServerMessage {
     /// Erreur côté serveur.
     #[serde(rename = "error")]
     Error(ServerErrorPayload),
+    /// Result of a media ingestion requested by this overlay client.
+    #[serde(rename = "media.ingestion")]
+    MediaIngestion(MediaIngestionPayload),
+    /// The guild's media board changed.
+    #[serde(rename = "board.changed")]
+    BoardChanged(BoardChangedPayload),
 }
 
 impl ServerMessage {
@@ -415,6 +422,8 @@ impl ServerMessage {
             Self::Stop(_) => msg_type::STOP,
             Self::Ack(_) => msg_type::ACK,
             Self::Error(_) => msg_type::ERROR,
+            Self::MediaIngestion(_) => msg_type::MEDIA_INGESTION,
+            Self::BoardChanged(_) => msg_type::BOARD_CHANGED,
         }
     }
 }
@@ -871,6 +880,62 @@ pub struct AckPayload {
     /// Canonical id of the created playback job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_id: Option<String>,
+}
+
+/// Payload of `media.ingestion`: the end of an asynchronous media ingestion.
+///
+/// Sent only to the overlay client that requested the ingestion (`202
+/// {ingestionId}` on `POST /overlay/media-board/items` or `/upload`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaIngestionPayload {
+    /// Id returned by the `202` response.
+    pub ingestion_id: String,
+    /// Whether the media is now on the board.
+    pub ok: bool,
+    /// `false` when the media was already on the board (`ok: true`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<bool>,
+    /// Board item holding the media (`ok: true`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
+    /// Why the ingestion failed (`ok: false`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<MediaIngestionError>,
+}
+
+/// Failure detail of `media.ingestion`, with the REST error vocabulary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaIngestionError {
+    /// Machine code (`media_ingestion_failed`, `unsupported_media`,
+    /// `internal_error`, ...).
+    pub code: String,
+    /// Readable detail, when the server has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// What changed on the media board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BoardChange {
+    /// An item was added.
+    Added,
+    /// An item's title or message was edited.
+    Updated,
+    /// An item was deleted.
+    Deleted,
+}
+
+/// Payload of `board.changed`, broadcast to every overlay of the guild.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardChangedPayload {
+    /// Kind of change.
+    pub change: BoardChange,
+    /// Item concerned.
+    pub item_id: String,
 }
 
 /// Payload de `error` serveur→client.

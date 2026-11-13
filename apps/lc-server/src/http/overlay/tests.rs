@@ -998,49 +998,6 @@ async fn media_board_requires_token_and_accepts_legacy_query_token() {
 }
 
 #[tokio::test]
-async fn legacy_media_board_route_answers_like_the_new_one() {
-    let dir = TempDir::new().expect("tempdir");
-    let (app, db) = harness(dir.path()).await;
-    let client = make_client(
-        &guild(),
-        "Poste",
-        BEARER_TOKEN,
-        OverlaySessionMode::Normal,
-        Some("Alice"),
-    );
-    db.overlay_clients()
-        .create(&client)
-        .await
-        .expect("client board");
-
-    let (new_status, _, new_bytes) = send(
-        &app,
-        request(
-            Method::GET,
-            "/overlay/media-board/items",
-            Some(BEARER_TOKEN),
-            None,
-        ),
-    )
-    .await;
-    // Legacy overlay 3.0.0 compatibility: remove in 3.1.
-    let (legacy_status, _, legacy_bytes) = send(
-        &app,
-        request(
-            Method::GET,
-            "/overlay/meme-board/items",
-            Some(BEARER_TOKEN),
-            None,
-        ),
-    )
-    .await;
-
-    assert_eq!(new_status, StatusCode::OK);
-    assert_eq!(legacy_status, new_status);
-    assert_eq!(body_json(&legacy_bytes), body_json(&new_bytes));
-}
-
-#[tokio::test]
 async fn media_board_lists_filters_and_paginates() {
     let dir = TempDir::new().expect("tempdir");
     let (app, db) = harness(dir.path()).await;

@@ -1,6 +1,14 @@
 // Pure helpers for media uploads. No imports: this module must also load under
 // Node for its unit tests.
 
+// Largest file accepted by the board (100 MiB).
+export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+
+export function isUploadTooLarge(size) {
+  const bytes = Number(size);
+  return Number.isFinite(bytes) && bytes > MAX_UPLOAD_BYTES;
+}
+
 // Splits a byte size into [start, end) ranges sent one after the other.
 export function chunkRanges(size, chunkSize) {
   const total = Number(size);
@@ -28,6 +36,9 @@ export function defaultTitle(filename) {
 // imports.
 export function uploadErrorMessage(status, body, labels) {
   const code = body && body.error;
+  if (status === 429 && code === 'too_many_ingestions') {
+    return 'Trop de médias en cours de conversion. Réessaie dans un instant.';
+  }
   if (status === 413) {
     return 'Fichier trop volumineux pour le serveur.';
   }
@@ -45,4 +56,21 @@ export function uploadErrorMessage(status, body, labels) {
     return known;
   }
   return status ? `Le serveur a répondu ${status}.` : 'L’envoi a été refusé.';
+}
+
+// Readable message for a failed asynchronous conversion. `labels` is the known
+// error-label table, passed in to keep this module free of imports.
+export function ingestionErrorMessage(error, labels) {
+  const code = error && error.code;
+  if (code === 'unsupported_media') {
+    return 'Format de fichier non pris en charge.';
+  }
+  if (code === 'media_ingestion_failed') {
+    return (error && error.message) || 'Le serveur n’a pas pu convertir ce média.';
+  }
+  const known = labels && code ? labels[code] : null;
+  if (known) {
+    return known;
+  }
+  return (error && error.message) || 'La conversion a échoué.';
 }

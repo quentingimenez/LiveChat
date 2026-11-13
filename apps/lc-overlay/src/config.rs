@@ -30,11 +30,7 @@ pub const CONFIG_PATH_ENV: &str = "LIVECHAT_CONFIG_PATH";
 
 const DEFAULT_VOLUME: f64 = 1.0;
 
-/// Ancienne clé de configuration de l'overlay 3.0.0, encore lue au chargement
-/// puis réécrite sous `mediaBindings`.
-const LEGACY_MEDIA_BINDINGS_KEY: &str = "memeBindings";
-
-const KNOWN_KEYS: [&str; 20] = [
+const KNOWN_KEYS: [&str; 19] = [
     "displayId",
     "displayIndex",
     "displayKey",
@@ -51,8 +47,6 @@ const KNOWN_KEYS: [&str; 20] = [
     "authorName",
     "deviceName",
     "mediaBindings",
-    // Legacy overlay 3.0.0 compatibility: remove in 3.1.
-    "memeBindings",
     "memberships",
     "profileName",
     "profileAvatar",
@@ -83,9 +77,7 @@ pub struct Membership {
     pub guest_mode: bool,
     /// Guilde coupée : aucune connexion, donc aucun média affiché.
     pub muted: bool,
-    /// Raccourcis conservés par guilde ; l'ancienne clé JSON `memeBindings`
-    /// reste acceptée à la lecture (compatibilité overlay 3.0.0).
-    #[serde(alias = "memeBindings")]
+    /// Raccourcis conservés par guilde.
     pub media_bindings: MediaBindings,
 }
 
@@ -569,14 +561,7 @@ fn volume_field(map: &Map<String, Value>, warnings: &mut Vec<String>) -> f64 {
 }
 
 fn media_bindings_field(map: &Map<String, Value>, warnings: &mut Vec<String>) -> MediaBindings {
-    let (key, value) = match map.get("mediaBindings") {
-        Some(value) => ("mediaBindings", Some(value)),
-        None => (
-            LEGACY_MEDIA_BINDINGS_KEY,
-            map.get(LEGACY_MEDIA_BINDINGS_KEY),
-        ),
-    };
-    match value {
+    match map.get("mediaBindings") {
         None | Some(Value::Null) => MediaBindings::new(),
         Some(Value::Object(bindings)) => {
             let mut raw = MediaBindings::new();
@@ -600,7 +585,7 @@ fn media_bindings_field(map: &Map<String, Value>, warnings: &mut Vec<String>) ->
         }
         Some(other) => {
             warnings.push(format!(
-                "champ {key} ignoré (attendu: objet, reçu: {other})"
+                "champ mediaBindings ignoré (attendu: objet, reçu: {other})"
             ));
             MediaBindings::new()
         }
@@ -859,43 +844,6 @@ mod tests {
                 ("Ctrl+Shift+1".to_string(), "media-1".to_string()),
             ])
         );
-    }
-
-    /// Un fichier 3.0.0 ne contient que `memeBindings` : il doit alimenter le
-    /// nouveau champ et être réécrit sous `mediaBindings` au prochain save.
-    #[test]
-    fn legacy_meme_bindings_load_into_media_bindings_and_are_saved_renamed() {
-        let (_dir, store) = temp_store(r#"{"memeBindings":{"Ctrl+1":"item-1"}}"#);
-        let config = store.load();
-        assert_eq!(
-            config.media_bindings,
-            BTreeMap::from([("Ctrl+1".to_string(), "item-1".to_string())])
-        );
-
-        store.save(&config).expect("save");
-        let raw = fs::read_to_string(store.path()).expect("read saved config");
-        assert!(raw.contains("\"mediaBindings\""), "json: {raw}");
-        assert!(!raw.contains("memeBindings"), "json: {raw}");
-        assert_eq!(store.load().media_bindings, config.media_bindings);
-    }
-
-    #[test]
-    fn legacy_membership_bindings_are_read_through_the_serde_alias() {
-        let (config, warnings) = OverlayConfig::from_json_value(&json!({
-            "memberships": [{
-                "serverUrl": "https://example.test",
-                "guildId": "111",
-                "clientToken": "jeton",
-                "memeBindings": { "Ctrl+1": "item-1" }
-            }]
-        }));
-        assert!(warnings.is_empty(), "warnings: {warnings:?}");
-        let membership = config.membership("111").expect("adhésion");
-        assert_eq!(
-            membership.media_bindings,
-            BTreeMap::from([("Ctrl+1".to_string(), "item-1".to_string())])
-        );
-        assert_eq!(config.media_bindings, membership.media_bindings);
     }
 
     #[test]

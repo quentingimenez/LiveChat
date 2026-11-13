@@ -13,8 +13,8 @@
 > d'événements, chemin de config).
 >
 > Vague 2 « meme → media » : le bridge Tauri expose désormais `getMediaBindings`, `setMediaBindings`, `triggerMedia`,
-> `stopMediaPlayback` et les commandes `media_board_*` ; la config écrit `mediaBindings` (l'ancienne clé `memeBindings` de
-> l'overlay 3.0.0 reste lue) et le board lit les permissions `addMedia` / `editAnyMedia` (repli `addMeme` / `editAnyMeme`).
+> `stopMediaPlayback` et les commandes `media_board_*` ; la config écrit `mediaBindings` et le board lit les permissions
+> `addMedia` / `editAnyMedia`.
 > Les noms `meme-board:*`, `MemeBoard*` et les chemins `overlay/src/**/meme-*` conservés ci-dessous sont ceux de
 > l'application Electron 3.0.0, documentés à titre historique : ils ne font pas partie du nouveau contrat.
 
@@ -84,7 +84,7 @@ Remarques transverses :
 
 Types exacts (à porter en `serde` avec `rename_all = "camelCase"`) :
 
-- `OverlayConfig` — `overlay/src/shared/overlay-config.ts:3-12` : `{ serverUrl, clientToken, guildId, clientId: string|null; guestMode, showText: boolean; volume: number; mediaBindings: Record<string,string> }` (l'ancienne clé `memeBindings` de l'overlay 3.0.0 reste lue au chargement).
+- `OverlayConfig` — `overlay/src/shared/overlay-config.ts:3-12` : `{ serverUrl, clientToken, guildId, clientId: string|null; guestMode, showText: boolean; volume: number; mediaBindings: Record<string,string> }`.
   Projection renvoyée au renderer (8 champs) : `overlay-config-ipc-service.ts:25-47`.
 - `OverlaySettingsPayload = OverlayConfig` — `overlay-config.ts:14`.
 - `OverlayPlaybackStatePayload` — `:16-20` : `{ jobId: string; state: string; remainingMs: number|null }`.
@@ -265,7 +265,7 @@ aucune logique métier dans `runtime-assets/`.
 `OverlayRuntimeConfig` (`config-service.ts:4-21`), 16 champs, avec `DEFAULT_CONFIG` (`:42-59`) :
 `displayId/displayIndex/displayKey/displayLabel` `null`, `volume: 1`, `enabled: true`, `autoStart: false`,
 `guestMode: false`, `showText: true`, `serverUrl/clientToken/clientId/guildId/authorName/deviceName: null`,
-`mediaBindings: {}` (clé historique `memeBindings` encore lue). Normalisations : volume clampé `[0,1]` (`:68-74`), autoStart booléen (`:76-78`), guestMode booléen
+`mediaBindings: {}`. Normalisations : volume clampé `[0,1]` (`:68-74`), autoStart booléen (`:76-78`), guestMode booléen
 (`:80-82`), `mediaBindings` trim/drop des vides (`:84-103`), URLs trim + sans `/` final (`:105-107`). Écriture
 `JSON.stringify(config, null, 2)` (`:134-157`), lecture avec défauts si fichier absent/inexploitable (`:109-132`).
 `hasPairingConfig` = `serverUrl && clientToken && guildId` (`:159-161`).
@@ -358,6 +358,8 @@ Notes de contrat :
 | `onStop` | `overlay:stop` | `overlay://stop` | `OverlayStopPayload` | fenêtre `overlay` uniquement |
 | `onSettings` | `overlay:settings` | `overlay://settings` | `OverlaySettingsPayload` | fenêtres `overlay` **et** `board`, jamais `pairing` |
 | — | — | `overlay://guild-removed` | `GuildRemoval` (voir §13.2) | fenêtre `board` uniquement |
+| — | — | `overlay://media-ingestion` | résultat d'ingestion + `guildId` (voir §13.4) | fenêtre `board` uniquement |
+| — | — | `overlay://board-changed` | `{ guildId, change, itemId }` (voir §13.4) | fenêtre `board` uniquement |
 
 Recommandations Rust :
 
@@ -723,9 +725,9 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
 
 Cette section décrit les contrats ajoutés ou modifiés pour la board :
 déclenchement de média acquitté, retrait automatique d'une guilde, icône de
-guilde et envoi de fichiers locaux. Tous les payloads suivent la convention
-existante : arguments sous `payload`, objets en camelCase, options omises
-quand elles sont absentes.
+guilde, envoi de fichiers locaux et ingestion asynchrone. Tous les payloads
+suivent la convention existante : arguments sous `payload`, objets en
+camelCase, options omises quand elles sont absentes.
 
 ### 13.1 `media_board_trigger` : réponse acquittée
 
@@ -811,10 +813,81 @@ forme que `guild_api` : `{ "ok": bool, "status": number, "body": object|null }`.
    la réponse.
 3. `invoke('media_upload_finish', { payload: { uploadId } })`
    → `ApiResponse`. Ferme le corps, attend la tâche HTTP et relaie la réponse
-   du serveur (`200 {created, item}`, erreurs `{error}`…).
+   du serveur (`202 {ingestionId}`, erreurs `{error}`…).
 4. `invoke('media_upload_cancel', { payload: { uploadId } })` → `bool`
    (`true` si l'upload existait). Retire l'entrée et interrompt la tâche.
 
 Séquence : `start` → `chunk` (répété) → `finish`, ou `cancel` à tout moment.
 Le délai de la requête est de 30 min (conversion serveur) et le délai de
 connexion de 15 s.
+
+### 13.4 Ingestion asynchrone et rafraîchissement du board
+
+Les routes d'ajout de média répondent désormais **`202 {"ingestionId": "<uuid>"}`**
+dès que le lien est accepté (`POST /overlay/media-board/items` via `guild_api`)
+ou que le fichier est entièrement reçu (`media_upload_finish`). Le
+téléchargement et la conversion continuent en tâche de fond côté serveur. Une
+erreur avant le 202 garde son statut habituel (`400`, `403 read_only_session`,
+`413`, `415`, `422`, et `429 {"error":"too_many_ingestions"}`).
+
+Cycle d'une carte provisoire (`state.uploads`) :
+
+- `waiting` : « En attente… » ; ne consomme aucun créneau.
+- `sending` : « Envoi… » pour un fichier, « Téléchargement… » pour un lien ;
+  consomme un des `MAX_ACTIVE_UPLOADS` créneaux.
+- `converting` : « Conversion… » après le 202 ; libère immédiatement son
+  créneau. Un 202 sans `ingestionId` échoue avec « Réponse inattendue du
+  serveur. ».
+- `failed` : message d'erreur, boutons « Réessayer » et « Retirer ». Un
+  fichier de plus de 100 MiB (100 × 1024 × 1024 octets) n'est jamais envoyé :
+  la carte est créée directement en échec avec « Fichier trop volumineux :
+  100 Mo maximum. » et sans « Réessayer ».
+
+Le shell émet deux événements vers la fenêtre `board` :
+
+| Événement | Payload | Émission |
+| --- | --- | --- |
+| `overlay://media-ingestion` | résultat `media.ingestion` en camelCase + `guildId` : `{ ingestionId, ok, created?, itemId?, error?: { code, message? }, guildId }` | au client demandeur, à la fin de la conversion |
+| `overlay://board-changed` | `{ guildId, change: "added" \| "updated" \| "deleted", itemId }` | à toute la guilde, à chaque ajout/modification/suppression d'item |
+
+À la réception de `overlay://media-ingestion`, le board cherche l'entrée par
+`ingestionId`. Un résultat peut arriver avant que la réponse 202 ne soit
+traitée : le board conserve alors les résultats sans entrée (Map bornée à 50,
+les plus anciens jetés) et les applique dès l'enregistrement de l'`ingestionId`.
+
+- `ok:true, created:false` : l'entrée est retirée et « « titre » est déjà sur
+  le board. » est affiché.
+- `ok:true, created:true` (ou `created` absent) : un rechargement des items est
+  demandé ; l'entrée est retirée à la fin de ce rechargement et « « titre »
+  ajouté au board. » est affiché.
+- `ok:false` : l'entrée passe en `failed` avec le message de
+  `ingestionErrorMessage` (`unsupported_media`,
+  `media_ingestion_failed` + message serveur, libellé connu, sinon message
+  serveur, sinon « La conversion a échoué. »).
+
+Rafraîchissement du board : `overlay://board-changed` ne déclenche un
+`requestItemsReload()` que si `payload.guildId` est la guilde active. Les
+appels rapprochés sont regroupés par un délai de 300 ms en un seul
+`loadItems()` ; tous les appelants regroupés reçoivent la même promesse,
+résolue à la fin de ce chargement.
+
+Resynchronisation des conversions :
+
+- quand une guilde repasse à `connection.status === "connected"` après un
+  autre état et qu'elle a des entrées `converting`, le board lit une fois
+  `GET /overlay/media-board/ingestions` via `guild_api` ;
+- tant qu'une guilde a des entrées `converting` **et** qu'elle n'a pas de
+  WebSocket connecté (guilde en sourdine ou hors ligne), le même GET est
+  répété toutes les 15 s, uniquement pour cette guilde, et s'arrête dès
+  qu'elle n'a plus d'entrée `converting` ou redevient connectée ;
+- pour chaque entrée : `ready` → succès, `failed` → échec,
+  `processing` → rien, entrée absente de la liste → échec « Le serveur a
+  redémarré pendant la conversion. » (une ingestion absente de la liste
+  signifie un redémarrage du serveur).
+
+Tolérance du WebSocket : une trame texte qui ne se désérialise pas en
+`ServerEnvelope` est relue en JSON. Si c'est un objet dont `type` est une
+chaîne inconnue de tous les messages serveur (constantes `msg_type` de
+`lc-protocol`), un `warn` est journalisé et la session continue ; un JSON
+invalide ou un type connu avec un payload invalide termine la session
+(« trame serveur invalide »).

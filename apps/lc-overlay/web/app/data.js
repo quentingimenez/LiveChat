@@ -12,6 +12,42 @@ import { renderView } from './views/view.js';
 
 let guildRefreshTimer = null;
 let queueEndTimer = null;
+let itemsReloadTimer = null;
+let itemsReloadPromise = null;
+let itemsReloadResolve = null;
+
+// Board changes are coalesced: nearby requests share one debounced loadItems()
+// and the same promise.
+export function requestItemsReload() {
+  if (itemsReloadPromise) {
+    clearTimeout(itemsReloadTimer);
+    itemsReloadTimer = setTimeout(runItemsReload, 300);
+    return itemsReloadPromise;
+  }
+  itemsReloadPromise = new Promise((resolve) => {
+    itemsReloadResolve = resolve;
+  });
+  itemsReloadTimer = setTimeout(runItemsReload, 300);
+  return itemsReloadPromise;
+}
+
+function runItemsReload() {
+  itemsReloadTimer = null;
+  const resolve = itemsReloadResolve;
+  itemsReloadPromise = null;
+  itemsReloadResolve = null;
+  loadItems()
+    .catch(() => {})
+    .finally(() => {
+      if (resolve) {
+        resolve();
+      }
+    });
+}
+
+function guildStatus(guild) {
+  return guild && guild.connection ? guild.connection.status : null;
+}
 
 // Gives the server time to notice the closed WebSocket before reading the
 // guild's connection state again.
@@ -32,9 +68,25 @@ export function applyGuilds(payload) {
   const previous = state.activeGuildId;
   const previousGuild = activeGuild();
   const previousStatus = previousGuild && previousGuild.connection ? previousGuild.connection.status : null;
+  const previousStatuses = new Map();
+  for (const guild of state.guilds) {
+    if (guild && guild.membership) {
+      previousStatuses.set(guild.membership.guildId, guildStatus(guild));
+    }
+  }
   state.guilds = payload.guilds || [];
   state.activeGuildId = payload.activeGuildId || null;
   state.profile = payload.profile || state.profile;
+  for (const guild of state.guilds) {
+    if (!guild || !guild.membership) {
+      continue;
+    }
+    const guildId = guild.membership.guildId;
+    if (guildStatus(guild) === 'connected' && previousStatuses.get(guildId) !== 'connected') {
+      document.dispatchEvent(new CustomEvent('livechat:guild-connected', { detail: { guildId } }));
+    }
+  }
+  document.dispatchEvent(new CustomEvent('livechat:guilds-updated'));
   if (previous !== state.activeGuildId) {
     clearTimeout(guildRefreshTimer);
     guildRefreshTimer = null;

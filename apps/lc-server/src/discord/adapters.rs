@@ -31,7 +31,9 @@ use lc_domain::{
     Clock, DomainError, GuildId, MediaAsset, MediaBoardItem, MediaBoardItemId, OverlayClient,
     SystemClock,
 };
+use lc_protocol::{BoardChange, BoardChangedPayload, ServerMessage};
 
+use crate::http::admin::hub::{AdminHub, NoopAdminHub};
 use crate::Config;
 
 /// Nombre maximal d'overlays listés par `/overlays` (borne défensive : la
@@ -94,10 +96,18 @@ impl DiscordAdapters {
     /// Comme [`DiscordAdapters::placeholders`], avec une horloge injectée
     /// (utile pour les tests déterministes).
     pub fn with_clock(db: Db, clock: Arc<dyn Clock>) -> Self {
+        Self::with_clock_and_hub(db, clock, Arc::new(NoopAdminHub))
+    }
+
+    /// Comme [`DiscordAdapters::with_clock`], avec le hub WebSocket réel pour
+    /// diffuser `board.changed` après les ajouts de la commande `/media-add`.
+    pub fn with_clock_and_hub(db: Db, clock: Arc<dyn Clock>, hub: Arc<dyn AdminHub>) -> Self {
         Self {
             media: Arc::new(UnavailableMediaBackend),
             playback: Arc::new(UnavailablePlaybackBackend),
-            media_board: Arc::new(DbMediaBoardBackend::new(db.clone(), Arc::clone(&clock))),
+            media_board: Arc::new(
+                DbMediaBoardBackend::new(db.clone(), Arc::clone(&clock)).with_admin_hub(hub),
+            ),
             overlays: Arc::new(DbOverlayDirectory::new(db)),
         }
     }
@@ -177,12 +187,24 @@ impl PlaybackBackend for UnavailablePlaybackBackend {
 pub struct DbMediaBoardBackend {
     db: Db,
     clock: Arc<dyn Clock>,
+    hub: Arc<dyn AdminHub>,
 }
 
 impl DbMediaBoardBackend {
-    /// Construit l'adaptateur.
+    /// Construit l'adaptateur (hub inerte par défaut).
     pub fn new(db: Db, clock: Arc<dyn Clock>) -> Self {
-        Self { db, clock }
+        Self {
+            db,
+            clock,
+            hub: Arc::new(NoopAdminHub),
+        }
+    }
+
+    /// Injects the real WebSocket hub used to broadcast `board.changed`.
+    #[must_use]
+    pub fn with_admin_hub(mut self, hub: Arc<dyn AdminHub>) -> Self {
+        self.hub = hub;
+        self
     }
 }
 
@@ -211,7 +233,16 @@ impl MediaBoardBackend for DbMediaBoardBackend {
         };
 
         match self.db.media_board().create(&item).await {
-            Ok(()) => Ok(true),
+            Ok(()) => {
+                self.hub.broadcast_to_guild(
+                    &item.guild_id,
+                    ServerMessage::BoardChanged(BoardChangedPayload {
+                        change: BoardChange::Added,
+                        item_id: item.id.to_canonical(),
+                    }),
+                );
+                Ok(true)
+            }
             Err(error) if is_conflict(&error) => Ok(false),
             Err(error) => Err(BotError::Db(error)),
         }

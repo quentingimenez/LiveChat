@@ -219,6 +219,36 @@ impl Hub {
             .is_some_and(|connection| connection.sender.send(frame).is_ok())
     }
 
+    /// Sends one protocol message to every socket of an overlay client.
+    ///
+    /// The lookup is by `client_uuid` (not connection id): a client may hold
+    /// several sockets (up to [`MAX_SOCKETS_PER_CLIENT`]). Returns `true` when
+    /// at least one socket accepted the frame.
+    pub(crate) fn send_to_client(&self, client_id: &Uuid, message: ServerMessage) -> bool {
+        let envelope = ServerEnvelope::new(
+            self.next_message_id(message_prefix(&message)),
+            now_ms(),
+            message,
+        );
+        let text = match serde_json::to_string(&envelope) {
+            Ok(text) => text,
+            Err(error) => {
+                warn!(error = %error, "sérialisation d'un message serveur impossible");
+                return false;
+            }
+        };
+        let inner = self.lock_inner();
+        let mut delivered = false;
+        for connection in inner.connections.values() {
+            if connection.client_uuid == *client_id
+                && connection.sender.send(OutFrame::Text(text.clone())).is_ok()
+            {
+                delivered = true;
+            }
+        }
+        delivered
+    }
+
     /// Construit la liste des pairs d'une guilde (dédupliquée par client,
     /// triée par libellé puis `clientId`, tronquée à [`MAX_PEERS`]).
     pub(crate) fn peer_list(&self, guild_id: &GuildId) -> Vec<PeerInfo> {
@@ -852,6 +882,8 @@ pub(crate) fn message_prefix(message: &ServerMessage) -> &'static str {
         ServerMessage::Stop(_) => "stop",
         ServerMessage::Ack(_) => "ack",
         ServerMessage::Error(_) => "error",
+        ServerMessage::MediaIngestion(_) => "ingestion",
+        ServerMessage::BoardChanged(_) => "board",
     }
 }
 

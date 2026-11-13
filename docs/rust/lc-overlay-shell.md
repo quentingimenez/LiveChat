@@ -124,8 +124,7 @@ Au démarrage (`lib.rs::prepare_store`) :
 `autoStart`, `guestMode`, `showText`, `serverUrl`, `clientToken`, `clientId`,
 `guildId`, `authorName`, `deviceName`, `mediaBindings` ; les clés inconnues sont
 conservées dans `extra` (`#[serde(flatten)]`) pour ne pas perdre de champ
-Electron lors d'un rollback. L'ancienne clé `memeBindings` de l'overlay 3.0.0
-reste lue au chargement et est réécrite sous `mediaBindings`.
+Electron lors d'un rollback.
 
 Normalisations identiques au legacy : volume borné `[0,1]` (non fini → 1),
 `autoStart`/`guestMode` seulement si `=== true`, `mediaBindings` trimmés et

@@ -1,7 +1,7 @@
 [package]
 name = "lc-overlay"
 description = "Application overlay LiveChat (Tauri 2) : shell Rust, fenêtres, config, tray et bridge renderer."
-version.workspace = true
+version = "3.0.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

@@ -622,18 +622,23 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
   récupérés en binaire puis exposés en `blob:` object URL.
 - Le token ne doit plus apparaître dans les URLs ni dans les logs HTTP.
 
-### 12.5 Updater désactivé pour 3.0.0 (A6-005)
+### 12.5 Updater (actif depuis 3.1.1)
 
-- `updater.rs` expose `UPDATER_ENABLED_FOR_RELEASE = false` : les commandes
-  renvoient l'état `disabled` **sans** appeler le plugin (pas de requête réseau,
-  pas d'erreur de clé placeholder). L'activation exige la clé minisign réelle et
-  des artefacts signés (Phase 9, voir `docs/rust/overlay-release.md`).
-- Le menu tray ne contient plus l'entrée de mise à jour ; les helpers
-  `device_settings::update_menu_entry` (« Vérifier les mises à jour » /
-  « Mises à jour désactivées pour cette version », grisée) et
-  `device_settings::spawn_update_check` conservent la sémantique V2-O
-  (`AUD-V2-O-001`) pour la future page Paramètres : updater désactivé ⇒ retour
-  immédiat, sans appel à `tauri_plugin_updater` ni requête réseau.
+- `updater.rs` vérifie à chaque ouverture de la board (`windows::show_board`),
+  au démarrage puis toutes les 6 h (builds release), télécharge et vérifie la mise à jour en arrière-plan, puis attend un
+  clic pour l'installer (voir `docs/rust/overlay-release.md` §6).
+- `overlay_check_updates` (board) lance une vérification tout de suite et renvoie
+  l'`UpdateStatus` final ; rien ne se passe si une vérification tourne déjà ou si
+  une version attend d'être installée.
+- `overlay_install_update` (board) installe la version prête : l'installeur
+  passif quitte l'overlay et le relance. Sans version prête : erreur
+  « Aucune mise à jour prête à installer. ».
+- `UpdateStatus` = `{state, currentVersion, availableVersion, message}` avec
+  `state` ∈ `idle`, `checking`, `downloading`, `up_to_date`, `ready`, `error` ;
+  il est aussi publié dans `settings.update` à chaque changement
+  (`overlay://device-settings`).
+- Tray : entrée « Redémarrer et installer la version X » avant « Quitter » tant
+  qu'une version est prête.
 
 ### 12.6 Harnais de développement hors bundle (A6-015)
 
@@ -904,8 +909,13 @@ Aucun payload. Réponse `SettingsView` :
 
 ```json
 {
-  "version": "3.0.1",
-  "updaterEnabled": false,
+  "version": "3.1.1",
+  "update": {
+    "state": "idle",
+    "currentVersion": "3.1.1",
+    "availableVersion": null,
+    "message": "Les mises à jour sont vérifiées automatiquement."
+  },
   "displays": [
     {
       "index": 0,

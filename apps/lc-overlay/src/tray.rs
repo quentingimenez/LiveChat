@@ -21,6 +21,7 @@ use crate::device_settings;
 use crate::events;
 use crate::net::ws::ConnectionStatus;
 use crate::state::AppState;
+use crate::updater::{self, UpdaterState};
 use crate::windows;
 
 pub const TRAY_ID: &str = "main-tray";
@@ -30,6 +31,7 @@ const ID_OPEN_BOARD: &str = "tray.open_board";
 const ID_SETTINGS: &str = "tray.settings";
 const ID_GENERAL_MUTE: &str = "tray.general_mute";
 const ID_GUILD_PREFIX: &str = "tray.guild.";
+const ID_INSTALL_UPDATE: &str = "tray.install_update";
 const ID_QUIT: &str = "tray.quit";
 const GUILD_LABEL_MAX_CHARS: usize = 48;
 
@@ -161,6 +163,7 @@ fn tooltip_text(config: &OverlayConfig, statuses: &BTreeMap<String, ConnectionSt
 fn menu_model(
     config: &OverlayConfig,
     statuses: &BTreeMap<String, ConnectionStatus>,
+    ready_update: Option<&str>,
 ) -> Vec<MenuEntry> {
     let mut entries = vec![
         MenuEntry::Header(connection_summary(config, statuses)),
@@ -201,6 +204,12 @@ fn menu_model(
     }
 
     entries.push(MenuEntry::Separator);
+    if let Some(version) = ready_update {
+        entries.push(MenuEntry::Action {
+            id: ID_INSTALL_UPDATE.to_string(),
+            label: format!("Redémarrer et installer la version {version}"),
+        });
+    }
     entries.push(MenuEntry::Action {
         id: ID_QUIT.to_string(),
         label: "Quitter".to_string(),
@@ -216,8 +225,9 @@ fn tray_tooltip(state: &AppState) -> String {
 pub fn build_menu(app: &AppHandle<Wry>, state: &AppState) -> tauri::Result<Menu<Wry>> {
     let config = state.config_snapshot();
     let statuses = connection_statuses(state);
+    let ready_update = app.state::<UpdaterState>().ready_version();
     let mut items: Vec<Box<dyn IsMenuItem<Wry>>> = Vec::new();
-    for entry in menu_model(&config, &statuses) {
+    for entry in menu_model(&config, &statuses, ready_update.as_deref()) {
         let item: Box<dyn IsMenuItem<Wry>> = match entry {
             MenuEntry::Header(label) => Box::new(MenuItem::with_id(
                 app,
@@ -386,6 +396,11 @@ pub fn handle_menu_event(app: &AppHandle<Wry>, id: &str) {
         ID_OPEN_BOARD => windows::show_board(app),
         ID_SETTINGS => open_settings(app),
         ID_GENERAL_MUTE => toggle_general_mute(app),
+        ID_INSTALL_UPDATE => {
+            if let Err(error) = updater::install(app) {
+                tracing::warn!(%error, "installation de la mise à jour impossible");
+            }
+        }
         ID_QUIT => {
             app.exit(0);
             return;
@@ -402,8 +417,8 @@ pub fn handle_menu_event(app: &AppHandle<Wry>, id: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        guild_entry_label, menu_model, tooltip_text, MenuEntry, ID_GENERAL_MUTE, ID_OPEN_BOARD,
-        ID_QUIT, ID_SETTINGS,
+        guild_entry_label, menu_model, tooltip_text, MenuEntry, ID_GENERAL_MUTE, ID_INSTALL_UPDATE,
+        ID_OPEN_BOARD, ID_QUIT, ID_SETTINGS,
     };
     use crate::config::{Membership, OverlayConfig};
     use crate::net::ws::ConnectionStatus;
@@ -465,7 +480,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            menu_model(&config, &statuses),
+            menu_model(&config, &statuses, None),
             vec![
                 MenuEntry::Header("LiveChat — 1/2 guildes connectées".to_string()),
                 MenuEntry::Separator,
@@ -487,8 +502,23 @@ mod tests {
     }
 
     #[test]
+    fn a_ready_update_adds_its_install_entry_before_quit() {
+        let model = menu_model(&OverlayConfig::default(), &BTreeMap::new(), Some("3.2.0"));
+        assert_eq!(
+            &model[model.len() - 2..],
+            &[
+                action(
+                    ID_INSTALL_UPDATE,
+                    "Redémarrer et installer la version 3.2.0"
+                ),
+                action(ID_QUIT, "Quitter"),
+            ]
+        );
+    }
+
+    #[test]
     fn header_reports_no_guild() {
-        let model = menu_model(&OverlayConfig::default(), &BTreeMap::new());
+        let model = menu_model(&OverlayConfig::default(), &BTreeMap::new(), None);
         assert_eq!(
             model.first(),
             Some(&MenuEntry::Header("LiveChat — aucune guilde".to_string()))
@@ -498,7 +528,11 @@ mod tests {
     #[test]
     fn general_mute_is_checked_and_disables_guild_checks() {
         let config = config_with(vec![membership("111", Some("Alpha"), false)], false);
-        let model = menu_model(&config, &statuses(&[("111", ConnectionStatus::Connected)]));
+        let model = menu_model(
+            &config,
+            &statuses(&[("111", ConnectionStatus::Connected)]),
+            None,
+        );
 
         assert!(model.contains(&check(ID_GENERAL_MUTE, "Sourdine générale", true, true)));
         assert!(model.contains(&check("tray.guild.111", "Alpha", true, false)));
@@ -519,6 +553,7 @@ mod tests {
                 ("111", ConnectionStatus::Connected),
                 ("222", ConnectionStatus::Connecting),
             ]),
+            None,
         );
 
         assert!(model.contains(&check("tray.guild.111", "Alpha", true, true)));
@@ -529,14 +564,22 @@ mod tests {
     #[test]
     fn live_guild_that_is_not_connected_shows_its_status() {
         let config = config_with(vec![membership("111", Some("Alpha"), false)], true);
-        let model = menu_model(&config, &statuses(&[("111", ConnectionStatus::Connecting)]));
+        let model = menu_model(
+            &config,
+            &statuses(&[("111", ConnectionStatus::Connecting)]),
+            None,
+        );
         assert!(model.contains(&check("tray.guild.111", "Alpha — connexion…", true, true)));
     }
 
     #[test]
     fn general_mute_hides_the_guild_statuses() {
         let config = config_with(vec![membership("111", Some("Alpha"), false)], false);
-        let model = menu_model(&config, &statuses(&[("111", ConnectionStatus::Disabled)]));
+        let model = menu_model(
+            &config,
+            &statuses(&[("111", ConnectionStatus::Disabled)]),
+            None,
+        );
         assert!(model.contains(&check("tray.guild.111", "Alpha", true, false)));
     }
 

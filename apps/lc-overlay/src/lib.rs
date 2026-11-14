@@ -143,6 +143,7 @@ fn setup(app: &mut tauri::App<Wry>) -> Result<(), Box<dyn Error>> {
     // Le superviseur WebSocket démarre en dernier : la configuration, le tray et
     // les raccourcis sont prêts avant la première connexion.
     net::ws::start(&handle);
+    updater::start(&handle);
     Ok(())
 }
 
@@ -181,6 +182,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         // peuvent appeler des commandes dès leur chargement initial).
         .manage(AppState::new(initial_store()))
         .manage(net::upload::UploadRegistry::default())
+        .manage(updater::UpdaterState::default())
         .plugin(tauri_plugin_single_instance::init(
             |app: &tauri::AppHandle<Wry>, argv: Vec<String>, _cwd: String| {
                 handle_second_instance(app, argv);

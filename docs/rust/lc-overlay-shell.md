@@ -55,7 +55,7 @@ apps/lc-overlay/
     tray.rs               # icône + modèle de menu pur + handlers
     device_settings.rs    # réglages appareil retirés du tray (page Paramètres)
     shortcuts.rs          # global-shortcuts / mediaBindings (squelette)
-    updater.rs            # check/install (stub)
+    updater.rs            # vérification périodique, téléchargement, installation au clic
     commands.rs           # commandes bridge (config, télémétrie, appairage, médias du board) + 2 commandes update
 ```
 
@@ -278,19 +278,11 @@ la board. L'infobulle reste `tray_tooltip`.
 ## 8. Updater
 
 - Plugin `tauri-plugin-updater` + config `plugins.updater.endpoints =
-  ["https://github.com/PreviousOwner/LiveChat/releases/latest/download/latest.json"]`
+  ["https://github.com/quentingimenez/LiveChat/releases/latest/download/latest.json"]`
   (bêta : `.../releases/download/next/latest.json`).
-- `plugins.updater.pubkey` = **placeholder**
-  `RWQPLACEHOLDER_MINISIGN_PUBLIC_KEY_A_REMPLACER_EN_PHASE_9=` : la clé
-  minisign réelle est générée en Phase 9. Tant que le placeholder est en place,
-  `overlay_check_updates` renvoie un état `error` explicite et
-  `overlay_install_update` échoue proprement (pas de panic).
-- Commandes : `overlay_check_updates` → `UpdateStatus {state: "up_to_date" |
-  "available" | "error", currentVersion, availableVersion?, message}` ;
-  `overlay_install_update` → `download_and_install` puis état `installed`
-  (sous Windows, l'installateur ferme l'app).
-- Pas encore de vérification automatique au démarrage ni de lignes de statut
-  dans le tray (Phase 8b/9).
+- `plugins.updater.pubkey` = clé publique minisign du projet (depuis 3.1.1) ;
+  détail du fonctionnement, de la clé et de `latest.json` :
+  `docs/rust/overlay-release.md` §6 et `docs/rust/overlay-bridge.md` §12.5.
 
 ## 9. Global shortcuts
 
@@ -400,7 +392,7 @@ URLs média restant verbatim. Origine WebView : `http://tauri.localhost` (pas de
    fenêtre `pairing` a été retirée.
 3. `media_board_trigger/stop` sont branchés sur le client WebSocket v2 ;
    `socket_unavailable` signale désormais une guilde/superviseur indisponible.
-4. Updater : clé minisign placeholder + pas de check au démarrage.
+4. Updater : actif depuis 3.1.1 (vérification au démarrage puis toutes les 6 h).
 5. Tray : en-tête N/M guildes connectées, sans version serveur détaillée.
 6. `serverUrl` non normalisé à l'écriture (parité legacy volontaire).
 7. Autostart : collision potentielle de la valeur `Run` `livechat` avec
@@ -430,8 +422,8 @@ URLs média restant verbatim. Origine WebView : `http://tauri.localhost` (pas de
       changement de config (toggles tray, écran, volume).
 - [ ] CSP élargie `{API_URL}`/`{WS_API_URL}` ; CORS serveur pour
       `http://tauri.localhost`.
-- [ ] Updater : clé minisign réelle, `latest.json`, check au démarrage +
-      lignes de statut tray.
+- [x] Updater : clé minisign réelle, `latest.json`, check au démarrage +
+      entrée tray d'installation.
 - [ ] Single-instance : `--board`/`--from-autostart` (et `--pairing` en
       compatibilité) et remontée au board.
 - [ ] Coexistence bêta : build `tauri.beta.conf.json` + `LIVECHAT_PRODUCT_NAME`,

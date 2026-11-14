@@ -165,8 +165,9 @@ Commandes shell simulées pour les réglages :
   qu'un média passe, `{ ok: true }` sinon ; `settings_preview_layout` garde
   chaque brouillon de mise en page dans `__mock.previewLayouts` ;
   `settings_placement_start` passe `placing` à `true` et
-  `settings_placement_cancel` l'annule ; `overlay_check_updates` renvoie un
-  `UpdateStatus` (updater désactivé dans le mock).
+  `settings_placement_cancel` l'annule ; `overlay_check_updates` simule une
+  version 3.2.0 trouvée puis téléchargée (`settings.update` passe à `ready`) et
+  `overlay_install_update` échoue (pas d'installeur dans un navigateur).
 - Les items du board portent `mediaUrl` (data URI SVG) et
   `mediaUrlExpiresAt` (une heure après le chargement), comme le serveur signé.
 - `pairing_consume` répond `display_name_required` pour le code `NOPSEUDO`

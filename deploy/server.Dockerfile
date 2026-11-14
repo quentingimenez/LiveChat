@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1.7
 #
-# Image de production du serveur Rust LiveChat (`lc-server`, version workspace 3.0.0).
+# Image de production du serveur Rust LiveChat (`lc-server`, version du workspace).
 #
 # Contrat : voir `docs/rust/packaging.md`.
 # Construction (depuis la racine du dépôt) :
-#   docker build -f deploy/server.Dockerfile -t livechat-server:3.0.0 .
+#   docker build -f deploy/server.Dockerfile -t livechat-server:3.1.0 .
 #
 # Choix de cache : pas de cargo-chef. Le workspace contient `apps/lc-overlay` (Tauri 2,
 # build.rs + deps WebKit/GTK) : `cargo chef cook` travaille à l'échelle du workspace et
@@ -89,7 +89,6 @@ ARG YTDLP_SHA256=767ba9dce7052aa196f8b12652f433d76de128ba168966fa84b6394d5e6c679
 
 LABEL org.opencontainers.image.title="livechat-server" \
       org.opencontainers.image.description="Serveur LiveChat (Rust, protocole v2)" \
-      org.opencontainers.image.version="3.0.0" \
       org.opencontainers.image.licenses="MIT OR Apache-2.0"
 
 ENV DEBIAN_FRONTEND=noninteractive

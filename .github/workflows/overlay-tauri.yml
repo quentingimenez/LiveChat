@@ -4,12 +4,15 @@ name: overlay-tauri
 #
 # - push / PR touchant l'overlay : build release + installeur NSIS, smoke test
 #   d'installation silencieuse, installeur publié en artefact du run ;
-# - tag `overlay-v*` : même chose, puis brouillon de release GitHub avec
-#   l'installeur et son SHA-256 (publication à valider à la main).
+# - tag `overlay-v*` : même chose avec l'installeur signé pour l'updater
+#   (secrets `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD`), puis brouillon de release
+#   GitHub avec l'installeur, son SHA-256 et `latest.json` (publication à valider
+#   à la main : les overlays installés ne voient la version qu'une fois la
+#   release marquée Latest).
 #
-# Pas d'artefacts updater : l'auto-update est désactivé pour 3.0.0 (clé minisign
-# placeholder, voir docs/rust/overlay-release.md §6). Actions épinglées par SHA
-# (audit A7-003).
+# Hors tag, le build se fait sans artefacts updater (`tauri.unsigned.conf.json`) :
+# pas besoin de la clé privée. Voir docs/rust/overlay-release.md §6. Actions
+# épinglées par SHA (audit A7-003).
 on:
   push:
     branches: [feat/rust-rebuild, main]
@@ -84,9 +87,21 @@ jobs:
             exit 1
           }
 
-      - name: Build installer
+      - name: Build installer (unsigned for the updater)
+        if: ${{ !startsWith(github.ref, 'refs/tags/overlay-v') }}
         working-directory: apps/lc-overlay
-        run: cargo tauri build --ci
+        run: cargo tauri build --ci --config tauri.unsigned.conf.json
+
+      - name: Build installer (signed for the updater)
+        if: startsWith(github.ref, 'refs/tags/overlay-v')
+        working-directory: apps/lc-overlay
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { Write-Error "secret TAURI_SIGNING_PRIVATE_KEY absent"; exit 1 }
+          cargo tauri build --ci
 
       - name: Collect installer
         id: collect
@@ -103,6 +118,30 @@ jobs:
           Write-Host "sha256 : $hash"
           if ($installer.Length -gt 20MB) { Write-Error "installeur > 20 Mo (budget Phase 0)"; exit 1 }
           "installer-name=$($installer.Name)" >> $env:GITHUB_OUTPUT
+
+      - name: Write latest.json
+        if: startsWith(github.ref, 'refs/tags/overlay-v')
+        shell: pwsh
+        run: |
+          # The updater downloads the installer from the release and checks it
+          # against this signature before running it.
+          $installer = Get-ChildItem dist/*-setup.exe | Select-Object -First 1
+          $sig = Get-Item "target/release/bundle/nsis/$($installer.Name).sig" -ErrorAction SilentlyContinue
+          if (-not $sig) { Write-Error "signature updater absente : $($installer.Name).sig"; exit 1 }
+          $config = Get-Content apps/lc-overlay/tauri.conf.json -Raw | ConvertFrom-Json
+          $manifest = [ordered]@{
+            version   = $config.version
+            notes     = "LiveChat overlay $($config.version)"
+            pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{
+                signature = (Get-Content $sig.FullName -Raw).Trim()
+                url       = "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$($installer.Name)"
+              }
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8NoBOM dist/latest.json
+          Get-Content dist/latest.json
 
       - name: Smoke test (silent install, launch, uninstall)
         shell: pwsh
@@ -163,4 +202,4 @@ jobs:
 
             - Installation par utilisateur dans `%LOCALAPPDATA%\LiveChat`, sans droits admin.
             - Vérifier le SHA-256 avec le fichier `.sha256` joint.
-            - Pas de mise à jour automatique pour cette version : installer la nouvelle version par-dessus.
+            - Mise à jour automatique : les overlays installés la proposent dès que cette release est marquée Latest (`latest.json`).

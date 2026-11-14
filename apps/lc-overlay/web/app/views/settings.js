@@ -57,7 +57,8 @@ let identifyingDisplays = false;
 let testingMedia = false;
 let startingPlacement = false;
 let checkingUpdates = false;
-let updateMessage = null;
+let installingUpdate = false;
+let updateError = null;
 const debounceTimers = new Map();
 let previewDraft = null;
 let previewFrame = null;
@@ -547,17 +548,21 @@ function renderStartup(settings) {
 }
 
 function renderAbout(settings) {
-  const updatesDisabled = !settings.updaterEnabled;
-  const button = h(
-    'button',
-    {
-      class: 'btn',
-      type: 'button',
-      disabled: updatesDisabled || checkingUpdates,
-      onClick: checkUpdates,
-    },
-    checkingUpdates ? 'Recherche…' : 'Rechercher une mise à jour',
-  );
+  const update = settings.update || {};
+  const busy = checkingUpdates || update.state === 'checking' || update.state === 'downloading';
+  const button =
+    update.state === 'ready'
+      ? h(
+          'button',
+          { class: 'btn', type: 'button', disabled: installingUpdate, onClick: installUpdate },
+          `Redémarrer et installer la version ${update.availableVersion}`,
+        )
+      : h(
+          'button',
+          { class: 'btn', type: 'button', disabled: busy, onClick: checkUpdates },
+          busy ? 'Recherche…' : 'Rechercher une mise à jour',
+        );
+  const message = updateError || update.message;
   return section(
     'À propos',
     h(
@@ -572,10 +577,7 @@ function renderAbout(settings) {
       ),
     ),
     h('div', { class: 'settings-control is-wrap' }, button),
-    updatesDisabled
-      ? h('p', { class: 'settings-hint' }, 'Les mises à jour automatiques arrivent bientôt.')
-      : null,
-    updateMessage ? h('p', { class: 'settings-hint' }, updateMessage) : null,
+    message ? h('p', { class: 'settings-hint' }, message) : null,
   );
 }
 
@@ -739,15 +741,37 @@ async function checkUpdates() {
     return;
   }
   checkingUpdates = true;
-  updateMessage = null;
+  updateError = null;
   renderView();
   try {
     const status = await invoke('overlay_check_updates');
-    updateMessage = status && status.message ? status.message : 'Aucune mise à jour disponible.';
+    if (status && typeof status === 'object' && deviceSettings) {
+      deviceSettings.update = status;
+    }
   } catch (error) {
-    updateMessage = errorMessage(error);
+    updateError = errorMessage(error);
   } finally {
     checkingUpdates = false;
+  }
+  if (state.page === 'settings') {
+    renderView();
+  }
+}
+
+// On success LiveChat quits and the installer relaunches it.
+async function installUpdate() {
+  if (installingUpdate) {
+    return;
+  }
+  installingUpdate = true;
+  updateError = null;
+  renderView();
+  try {
+    await invoke('overlay_install_update');
+  } catch (error) {
+    updateError = errorMessage(error);
+  } finally {
+    installingUpdate = false;
   }
   if (state.page === 'settings') {
     renderView();

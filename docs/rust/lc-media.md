@@ -271,6 +271,28 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
 - En cas d'échec, l'erreur `MediaError` remonte avec le code legacy ; Phase 5b la
   persiste en `[CODE] message` sur l'asset FAILED.
 
+### Édition (`edit`)
+
+- `EditRecipe` (JSON camelCase envoyé par le board : `segments`, `speed`, `volume`,
+  `mute`, `fadeInSec`, `fadeOutSec`, `reverse`, `crop`, `rotate`, `flipH`, `flipV`,
+  `output`) ; `EditRecipe::plan(&EditSource)` la valide contre le type, la durée et la
+  présence d'une piste son, et rend un `EditPlan` (ou une phrase d'erreur). Une image
+  est refusée : elle est éditée dans le board.
+- `build_edit_args` (pur, testé) construit le `-filter_complex` : `split`/`trim`/`concat`
+  pour plusieurs plages, puis image = recadrage → rotation (`transpose`) → miroirs →
+  `reverse` → `setpts` → fondus → côtés pairs sous la hauteur maximale ; son =
+  `areverse` → `atempo` chaînés (0,5 à 2 chacun) → `volume` → `afade`. Sorties : MP4
+  H.264 yuv420p + AAC `+faststart`, MP3 192 kb/s, ou GIF avec palette (12 i/s, 480 px).
+- `apply_edit` l'exécute (repli libx264 si NVENC échoue).
+- `MediaPipeline::render_edit(input, kind, &recipe)` sonde le fichier, revalide la
+  recette sur la durée réelle, rend dans un dossier temporaire (`RenderedEdit`, supprimé
+  au drop) sous un permis d'ingestion, et calcule le SHA-256 du résultat.
+- `MediaPipeline::ingest_edited_file_with_hash` ingère ce résultat comme un envoi local,
+  **sans** `loudnorm` (la source est déjà normalisée : le volume réglé est conservé et un
+  audio n'est pas encodé deux fois) ; un GIF exporté reste une image au lieu d'être
+  converti en vidéo comme un GIF animé envoyé.
+- Tests réels (ffmpeg requis) : `cargo test -p lc-media --test edit_ffmpeg -- --ignored`.
+
 ## Parité legacy et écarts assumés
 
 - Codes, priorités, mapping HTTP et libellés JSON reproduits depuis

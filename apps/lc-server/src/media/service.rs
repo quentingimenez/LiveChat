@@ -14,8 +14,9 @@ use std::sync::{Arc, OnceLock};
 
 use lc_db::Db;
 use lc_domain::entities::MediaAsset;
-use lc_domain::Clock;
+use lc_domain::{Clock, MediaKind};
 use lc_media::config::MediaConfig;
+use lc_media::edit::EditRecipe;
 use lc_media::error::{MediaError, MediaErrorCode};
 use lc_media::ingest::MediaPipeline;
 use lc_media::source::MediaSource;
@@ -184,6 +185,55 @@ impl MediaService {
         content_type_hint: Option<&str>,
         content_sha256: &str,
     ) -> MediaServiceResult<MediaAsset> {
+        self.ingest_local(
+            path,
+            original_filename,
+            content_type_hint,
+            content_sha256,
+            false,
+        )
+        .await
+    }
+
+    /// Applies an edit recipe to a stored media file and ingests the result
+    /// as a new asset (key `upload:sha256:<hex>` of the edited file, source
+    /// `upload:<filename_stem>.<ext>`).
+    ///
+    /// The edited file lives in a temporary directory removed when this
+    /// function returns. It is ingested without loudness normalization: the
+    /// source already went through it.
+    pub async fn ingest_edit(
+        &self,
+        source_path: &Path,
+        kind: MediaKind,
+        recipe: &EditRecipe,
+        filename_stem: &str,
+    ) -> MediaServiceResult<MediaAsset> {
+        let rendered = self
+            .pipeline
+            .render_edit(source_path, kind, recipe)
+            .await
+            .map_err(MediaServiceError::Media)?;
+        let filename = format!("{filename_stem}.{}", rendered.plan.output_extension());
+        self.ingest_local(
+            &rendered.path,
+            &filename,
+            Some(rendered.plan.output_mime()),
+            &rendered.content_sha256,
+            true,
+        )
+        .await
+    }
+
+    /// Shared body of [`Self::ingest_file`] and [`Self::ingest_edit`].
+    async fn ingest_local(
+        &self,
+        path: &Path,
+        original_filename: &str,
+        content_type_hint: Option<&str>,
+        content_sha256: &str,
+        edited: bool,
+    ) -> MediaServiceResult<MediaAsset> {
         let source = MediaSource::from_upload(original_filename, content_sha256);
         let now = self.clock.now();
         let ttl = assets::cache_ttl(&self.config);
@@ -200,11 +250,26 @@ impl MediaService {
 
         let asset = assets::begin_processing(&self.db, &source, now, ttl).await?;
 
-        let ingested = match self
-            .pipeline
-            .ingest_local_file_with_hash(path, original_filename, content_type_hint, content_sha256)
-            .await
-        {
+        let pipeline_result = if edited {
+            self.pipeline
+                .ingest_edited_file_with_hash(
+                    path,
+                    original_filename,
+                    content_type_hint,
+                    content_sha256,
+                )
+                .await
+        } else {
+            self.pipeline
+                .ingest_local_file_with_hash(
+                    path,
+                    original_filename,
+                    content_type_hint,
+                    content_sha256,
+                )
+                .await
+        };
+        let ingested = match pipeline_result {
             Ok(ingested) => ingested,
             Err(error) => {
                 self.record_failure(asset.id, &error, now).await;

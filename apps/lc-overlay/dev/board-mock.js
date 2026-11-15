@@ -26,6 +26,9 @@
 // en échec, « dup » → déjà sur le board, « race » → résultat reçu avant le 202,
 // « slow » → conversion qui ne finit qu'au bout de 20 s.
 // « Sad violin » n'est pas prêt (media_not_ready).
+// Éditeur : `?media` sert une vraie vidéo et un vrai son (dev/fixtures) ;
+// POST …/items/{id}/edit et `replaceItemId` à l'envoi créent une copie ou
+// remplacent le média de l'item, comme le serveur.
 // Appairage : le code NOPSEUDO sans pseudo renvoie display_name_required.
 // Les médias ont des formats variés (portrait, carré, paysage) pour la
 // mosaïque ; « Nope » est une image portrait (1080 × 1920). La sourdine ferme la
@@ -95,6 +98,9 @@
   // masonry grid and the detail panel. Others are 1280 × 720.
   const SIZES = { 1: [1080, 1080], 3: [1080, 1920], 4: [1200, 800], 5: [720, 1280], 6: [2400, 1000], 8: [1080, 1920] };
   const sizeOf = (index) => SIZES[index] || [1280, 720];
+  // `?media` : « Chat qui tombe » and « Vine boom » are a real video and a real
+  // sound (dev/fixtures), so the editor can play, cut and draw them.
+  const realMedia = new URLSearchParams(location.search).has('media');
   const titles = ['Chat qui tombe', 'Bruh', 'Vine boom', 'Directed by Robert B. Weide', 'Stonks', 'Ah shit, here we go again', null, 'Fanfare de la victoire totale et définitive', 'Nope', 'Sad violin'];
   const kinds = ['video', 'image', 'audio', 'video', 'image', 'video', 'video', 'audio', 'image', 'audio'];
   const items = titles.map((title, index) => ({
@@ -159,6 +165,12 @@
   };
 
   function svg(index) {
+    if (realMedia && index === 0) {
+      return new URL('./fixtures/sample.mp4', location.href).href;
+    }
+    if (realMedia && index === 2) {
+      return new URL('./fixtures/sample.mp3', location.href).href;
+    }
     const hue = (index * 47) % 360;
     const [mediaWidth, mediaHeight] = sizeOf(index);
     const width = 320;
@@ -368,6 +380,23 @@
     if (path === '/overlay/media-board/ingestions' && method === 'GET') {
       return ok({ items: ingestionList(payload.guildId) });
     }
+    const editPath = /^\/overlay\/media-board\/items\/([^/?]+)\/edit$/.exec(path);
+    if (editPath && method === 'POST') {
+      const source = items.find((candidate) => candidate.id === decodeURIComponent(editPath[1]));
+      const body = payload.body || {};
+      requests.push({ method, path, body });
+      if (!source) {
+        return { ok: false, status: 404, body: { error: 'item_not_found' } };
+      }
+      if (!body.recipe || typeof body.recipe !== 'object') {
+        return { ok: false, status: 400, body: { error: 'invalid_payload', message: 'recipe is required' } };
+      }
+      const output = body.recipe.output || 'same';
+      const kind = output === 'audio' ? 'audio' : output === 'gif' ? 'image' : source.media.kind;
+      const kept = (body.recipe.segments || [[0, source.media.durationSec || 0]]).reduce((total, range) => total + (range[1] - range[0]), 0);
+      const durationSec = kind === 'image' ? null : Math.max(1, Math.ceil(kept / (body.recipe.speed || 1)));
+      return acceptIngestion({ guildId: payload.guildId, name: String(body.title || ''), title: body.title, message: source.message, contentType: kind + '/x', received: source.media.sizeBytes, replaceItemId: body.replace ? source.id : null, mediaUrl: source.mediaUrl, durationSec });
+    }
     const favoritePath = /^\/overlay\/media-board\/items\/([^/?]+)\/(favorite|artwork)$/.exec(path);
     if (favoritePath) {
       const entry = items.find((candidate) => candidate.id === decodeURIComponent(favoritePath[1]));
@@ -551,8 +580,26 @@
       Object.assign(ingestion, { status: 'failed', error: { code: 'media_ingestion_failed', message: 'la vidéo dépasse la durée maximale de 120 s' } });
     } else if (name.includes('dup')) {
       Object.assign(ingestion, { status: 'ready', created: false, itemId: items[0] ? items[0].id : 'item-0' });
+    } else if (source.replaceItemId) {
+      // An edit replacing its original: the item keeps its id, the media changes.
+      const item = items.find((candidate) => candidate.id === source.replaceItemId);
+      if (item) {
+        const assetId = 'a' + nextItem++;
+        item.mediaAssetId = assetId;
+        item.media = { ...item.media, id: assetId, durationSec: source.durationSec === undefined ? item.media.durationSec : source.durationSec, sizeBytes: source.received || item.media.sizeBytes };
+        Object.assign(ingestion, { status: 'ready', created: false, itemId: item.id });
+        boardChanged(ingestion.guildId, 'updated', item.id);
+      } else {
+        Object.assign(ingestion, { status: 'failed', error: { code: 'item_not_found' } });
+      }
     } else {
       const item = createItem(source);
+      if (source.mediaUrl) {
+        item.mediaUrl = source.mediaUrl;
+      }
+      if (source.durationSec !== undefined) {
+        item.media.durationSec = source.durationSec;
+      }
       Object.assign(ingestion, { status: 'ready', created: true, itemId: item.id });
       boardChanged(ingestion.guildId, 'added', item.id);
     }
@@ -579,7 +626,7 @@
     if (name.toLowerCase().includes('big')) {
       return { ok: false, status: 413, body: { error: 'payload_too_large' } };
     }
-    return acceptIngestion({ guildId: upload.guildId, name, title: upload.title, message: upload.message, contentType: upload.contentType, received: upload.received });
+    return acceptIngestion({ guildId: upload.guildId, name, title: upload.title, message: upload.message, contentType: upload.contentType, received: upload.received, replaceItemId: upload.replaceItemId || null });
   }
   // The shell sends a fresh copy with every event, never the object the board
   // already holds: the board compares the old and new connection states.

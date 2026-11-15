@@ -79,7 +79,8 @@ Conventions appliquées dans tout le module :
 | `GET` | `/overlay/media/{assetId}` | URL signée HMAC (`clientId`, `exp`, `sig`) | `media.rs:86` | `200`/`206`, binaire |
 | `GET` | `/overlay/media-board/items` | `Authorization: Bearer` | `media_board.rs:list_items` | `200 {total,limit,offset,items}` |
 | `POST` | `/overlay/media-board/items` | `Authorization: Bearer` | `media_board.rs:create_item` | `202 {ingestionId}` |
-| `POST` | `/overlay/media-board/upload?filename=&title=&message=` | `Authorization: Bearer` | `media_upload.rs:upload_item` | `202 {ingestionId}` |
+| `POST` | `/overlay/media-board/upload?filename=&title=&message=&replaceItemId=` | `Authorization: Bearer` | `media_upload.rs:upload_item` | `202 {ingestionId}` |
+| `POST` | `/overlay/media-board/items/{itemId}/edit` | `Authorization: Bearer` | `media_edit.rs:edit_item` | `202 {ingestionId}` |
 | `GET` | `/overlay/media-board/ingestions` | `Authorization: Bearer` | `media_board.rs:list_ingestions` | `200 {items:[…]}` |
 | `GET` | `/overlay/media-board/media/{assetId}` | URL signée (`clientId`, `exp`, `sig`) | `media_board.rs:get_media` | `200`/`206`, binaire |
 | `PATCH` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` | `media_board.rs:update_item` | `200 {updated:true,item}` |
@@ -466,7 +467,71 @@ Réponse `200` :
   `media.ingestion {ok:false, error:{code:"unsupported_media"}}` (plus de `415`
   synchrone, puisque le type n'est connu qu'après le sniffing) ;
 - `title` par défaut = nom de fichier sans extension ; `title`/`message` tronqués
-  aux limites du board.
+  aux limites du board ;
+- `replaceItemId` (facultatif) : le fichier envoyé **remplace le média** de cet
+  item au lieu de créer un item (éditeur d'image du board, « Remplacer
+  l'original »). Vérifié **avant** la lecture du corps : item hors de la guilde
+  ou identifiant invalide → `404 item_not_found`, pas le droit de modifier
+  l'item → `403 forbidden`. `title`/`message` sont alors ignorés. Résultat :
+  `media.ingestion {ok:true, created:false, itemId:<l'item>}` puis
+  `board.changed {change:"updated"}` (voir §7.2.3 pour les règles du
+  remplacement).
+
+### 7.2.3 `POST /overlay/media-board/items/{itemId}/edit` (`media_edit.rs:edit_item`)
+
+Édition ffmpeg de l'audio ou de la vidéo d'un item (les images sont éditées
+dans le board, puis renvoyées par `upload`). Corps JSON :
+
+```json
+{ "replace": false, "title": "Chat (court)", "recipe": { "segments": [[1.5, 4]], "speed": 2 } }
+```
+
+- `recipe` (objet obligatoire, tous les champs facultatifs, champs inconnus
+  ignorés) — `lc_media::edit::EditRecipe` :
+
+  | Champ | Valeurs | Effet |
+  |-------|---------|-------|
+  | `segments` | `[[début, fin], …]` en secondes de la source, croissants, sans recouvrement, 50 au plus | plages gardées ; vide = tout |
+  | `speed` | 0,25 à 4 (défaut 1) | vitesse (`setpts` + `atempo` chaînés) |
+  | `volume` | 0 à 3 (défaut 1) | gain linéaire |
+  | `mute` | booléen | vidéo : retire la piste son |
+  | `fadeInSec`, `fadeOutSec` | 0 à 10 | fondus du son, et de l'image pour une vidéo, calculés sur la durée de sortie |
+  | `reverse` | booléen | lecture à l'envers (120 s gardées au plus) |
+  | `crop` | `{x, y, width, height}` en fractions de l'image source, 2 % par côté au moins | recadrage, appliqué **avant** la rotation |
+  | `rotate` | 0, 90, 180, 270 | rotation horaire |
+  | `flipH`, `flipV` | booléens | miroirs appliqués à l'image **tournée** |
+  | `output` | `same` (défaut), `audio`, `gif` | `audio` : MP3 extrait d'une vidéo ; `gif` : GIF animé (12 i/s, 480 px de large au plus, 60 s au plus) |
+
+  Ordre de l'image : recadrage → rotation → miroirs. Sortie vidéo : MP4
+  H.264 yuv420p + AAC, que le normaliseur copie sans réencoder ; sortie audio :
+  MP3 192 kb/s, ingérée **sans** nouvelle passe `loudnorm` (le volume réglé est
+  conservé) ; un GIF exporté reste une image.
+- `replace` (défaut `false`) : `false` ajoute le résultat comme **nouvel item**
+  (`title` du corps, ≤ 240 caractères, sinon « <titre d'origine> (édité) » ;
+  message copié de l'original) ; `true` **remplace le média** de l'item, qui
+  garde son id, son titre, son message, son auteur, sa date, ses favoris et son
+  image. Un remplacement doit produire le même type de média (`output:"same"`).
+- gardes, dans l'ordre : session invitée → `403 read_only_session` ; corps
+  invalide → `400 invalid_payload` + `message` ; item hors de la guilde →
+  `404 item_not_found` ; `replace:true` sans le droit de modifier l'item, ou
+  copie sans le droit d'ajouter un média → `403 forbidden` ; média absent →
+  `404 media_not_found` / `media_not_found_on_disk` ; recette incompatible avec
+  le média (plage hors durée, image, sortie réservée à la vidéo…) →
+  `400 invalid_payload` + `message` (en anglais) ; `429 too_many_ingestions` ;
+- réponse `202 {ingestionId}` ; la route garde le timeout ordinaire. La tâche
+  de fond sonde le fichier (la recette est revalidée sur la durée réelle),
+  prend un permis d'ingestion pendant ffmpeg, écrit dans un dossier temporaire
+  toujours supprimé, puis ingère le résultat (`upload:sha256:<hex>`,
+  `source_url = upload:<titre>.<ext>`) ;
+- résultat : copie → `media.ingestion {ok:true, created:true, itemId}` +
+  `board.changed added` ; remplacement → `media.ingestion {ok:true,
+  created:false, itemId:<l'item>}` + `board.changed updated` ; échec →
+  `media.ingestion {ok:false, error:{code:"media_ingestion_failed", message}}` ;
+- règles du remplacement (aussi pour `upload?replaceItemId=`) : même type de
+  média que l'original ; refus si un autre item de la guilde montre déjà le
+  média obtenu ; quota du board vérifié sur la différence de taille ; le nouvel
+  asset est épinglé et l'ancien retrouve l'échéance du cache s'il n'est plus
+  montré par aucun item (même transaction que la mise à jour de l'item).
 
 ### 7.3 `GET`/`HEAD /overlay/media-board/media/{assetId}` (`media_board.rs:get_media`)
 

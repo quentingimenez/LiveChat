@@ -429,3 +429,57 @@ async fn max_media_time_borne_la_duree_et_le_verrou() {
     let busy = h.db.guilds().get(&guild).await.unwrap().unwrap();
     assert_eq!(datetime_to_ms(busy.busy_until.unwrap()), NOW_MS + 2_250);
 }
+
+/// An audio whose board item shows its picture on overlays carries it in the
+/// `play`; unticking the box drops it.
+#[tokio::test]
+async fn un_audio_porte_l_image_de_son_element_du_board() {
+    let h = harness(1).await;
+    let guild = h.guild_id.clone();
+
+    let mut audio = sample_media_asset(h.clock.now());
+    audio.kind = lc_domain::MediaKind::Audio;
+    audio.mime = "audio/mpeg".to_owned();
+    h.db.media_assets().insert(&audio).await.unwrap();
+    let mut picture = sample_media_asset(h.clock.now());
+    picture.kind = lc_domain::MediaKind::Image;
+    picture.mime = "image/jpeg".to_owned();
+    picture.duration_sec = None;
+    h.db.media_assets().insert(&picture).await.unwrap();
+    let item = lc_domain::MediaBoardItem {
+        id: lc_domain::MediaBoardItemId::new_v4(),
+        guild_id: guild.clone(),
+        media_asset_id: audio.id,
+        title: None,
+        message: None,
+        created_by_discord_user_id: None,
+        created_by_name: None,
+        created_at: h.clock.now(),
+        artwork_asset_id: Some(picture.id),
+        artwork_on_overlay: true,
+    };
+    h.db.media_board().create(&item).await.unwrap();
+
+    let first = sample_media_job(guild.clone(), h.clock.now(), audio.id, 3);
+    h.engine.enqueue(&first).await.unwrap();
+    let media = h.sink.play_calls()[0].media.clone().unwrap();
+    assert_eq!(media.artwork_asset_id, Some(picture.id.to_canonical()));
+
+    h.engine
+        .handle_playback_ended(PlaybackEndedEvent::new(
+            guild.clone(),
+            first.id,
+            PlaybackEndedReason::Completed,
+        ))
+        .await
+        .unwrap();
+    h.db.media_board()
+        .set_artwork_on_overlay(item.id, false)
+        .await
+        .unwrap();
+    let second = sample_media_job(guild.clone(), h.clock.now(), audio.id, 3);
+    h.engine.enqueue(&second).await.unwrap();
+    let plays = h.sink.play_calls();
+    assert_eq!(plays.len(), 2);
+    assert_eq!(plays[1].media.as_ref().unwrap().artwork_asset_id, None);
+}

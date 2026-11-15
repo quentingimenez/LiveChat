@@ -1,7 +1,29 @@
 export function createOverlayLegacyRuntimeRenderHandlersUtils() {
     function createRuntimeRenderHandlers(params) {
+        // A guild may set its own text display for its media (`showText` in
+        // the `play`); otherwise the device setting applies.
         function isTextVisible() {
+            if (typeof params.state.activeShowText === 'boolean') {
+                return params.state.activeShowText;
+            }
             return params.state.overlayConfig.showText !== false;
+        }
+        // Media sound muted for every guild or for the playing one: read from
+        // the settings at each call, so a change applies to the current media.
+        function isMediaSoundMuted() {
+            const config = params.state.overlayConfig || {};
+            if (config.mediaMuted === true) {
+                return true;
+            }
+            const guilds = Array.isArray(config.mediaMutedGuilds) ? config.mediaMutedGuilds : [];
+            return typeof params.state.activeGuildId === 'string' && guilds.includes(params.state.activeGuildId);
+        }
+        // The playing guild's own zone, else the device one.
+        function applyActiveLayout() {
+            params.bootstrapUtils.applyOverlayLayout({
+                root: params.nodes.overlayRoot,
+                layout: params.state.activeLayout || params.state.overlayConfig.layout,
+            });
         }
         function applyMediaHeaderAuthor(payload, options = { enabled: false }) {
             params.textUtils.applyMediaHeaderAuthor({
@@ -33,6 +55,9 @@ export function createOverlayLegacyRuntimeRenderHandlersUtils() {
             });
         }
         function resolveVolume() {
+            if (isMediaSoundMuted()) {
+                return 0;
+            }
             const payloadVolume = params.state.activeVolume;
             if (typeof payloadVolume === 'number' && Number.isFinite(payloadVolume) && payloadVolume >= 0 && payloadVolume <= 1) {
                 return payloadVolume;
@@ -97,6 +122,10 @@ export function createOverlayLegacyRuntimeRenderHandlersUtils() {
         }
         async function onPlay(payload) {
             params.state.activeVolume = typeof payload?.volume === 'number' ? payload.volume : null;
+            params.state.activeGuildId = typeof payload?.guildId === 'string' ? payload.guildId : null;
+            params.state.activeShowText = typeof payload?.showText === 'boolean' ? payload.showText : null;
+            params.state.activeLayout = payload?.layout && typeof payload.layout === 'object' ? payload.layout : null;
+            applyActiveLayout();
             const isLocalTest = payload?.test === true;
             await params.playFlowUtils.runPlayFlow({
                 payload: payload,
@@ -128,6 +157,10 @@ export function createOverlayLegacyRuntimeRenderHandlersUtils() {
                 nextSettings,
                 overlayRoot: params.nodes.overlayRoot,
                 onHideText: () => {
+                    // The playing guild shows its text whatever the device says.
+                    if (params.state.activeShowText === true) {
+                        return;
+                    }
                     if (params.nodes.textLayer instanceof HTMLElement) {
                         params.nodes.textLayer.innerHTML = '';
                         params.nodes.textLayer.style.display = 'none';
@@ -141,6 +174,14 @@ export function createOverlayLegacyRuntimeRenderHandlersUtils() {
                 },
                 applyVolume,
             });
+            // `applyOverlaySettings` applied the volume before the new
+            // settings were stored: apply it again so a media sound switch
+            // takes effect on the current media.
+            applyVolume();
+            // The playing guild keeps its own zone.
+            if (params.state.activeLayout) {
+                applyActiveLayout();
+            }
             // The zone may have moved: re-fit the header chips in it.
             params.scheduleMediaHeaderLayout();
         }

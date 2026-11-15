@@ -1,5 +1,5 @@
-// "Mon profil" dialog of a guild: display name, extra device, browser
-// extension pairing and leaving the guild.
+// "Mon profil" dialog of a guild: display name, Discord account, extra
+// device, browser extension pairing and leaving the guild.
 
 import { api, run } from '../core/api.js';
 import { resizeAvatar } from '../core/avatar.js';
@@ -93,9 +93,59 @@ export function openGuildDialog(guild) {
       close();
       loadGuild();
     };
+    // Linking needs a `/pair-code` code from the member's own Discord account:
+    // the bot then accepts their commands.
+    const linkDiscord = () => {
+      const code = h('input', { class: 'field', maxlength: '12', placeholder: 'K7QX-M2PD', autocomplete: 'off', spellcheck: 'false' });
+      const submit = async () => {
+        if (!code.value.trim()) {
+          code.focus();
+          return;
+        }
+        const body = await run(() => api('POST', '/overlay/profile/discord-link', { code: code.value }));
+        if (!body) {
+          return;
+        }
+        notify(body.promoted ? 'Compte Discord lié : tu es maintenant admin de la guilde.' : 'Compte Discord lié.');
+        close();
+        loadGuild();
+      };
+      code.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          submit();
+        }
+      });
+      const form = h(
+        'div',
+        { class: 'stack discord-link', hidden: true },
+        h('p', { class: 'file-hint' }, 'Sur le serveur Discord de la guilde, tape /pair-code puis saisis ici le code reçu.'),
+        h('div', { class: 'row' }, code, h('button', { class: 'btn', type: 'button', onClick: submit }, 'Lier')),
+      );
+      const open = h('button', {
+        class: 'btn is-quiet',
+        type: 'button',
+        onClick: () => {
+          open.hidden = true;
+          form.hidden = false;
+          code.focus();
+        },
+      }, 'Lier mon compte Discord');
+      return h(
+        'div',
+        { class: 'stack' },
+        h(
+          'div',
+          { class: 'row is-wrap' },
+          h('p', { class: 'file-hint' }, 'Ce pseudo et cet avatar s’affichent sur le stream quand tu lances un média. Lie ton compte Discord pour utiliser les commandes du bot.'),
+          open,
+        ),
+        form,
+      );
+    };
     const profileSource = () => {
       if (!member.discordLinked) {
-        return h('p', { class: 'file-hint' }, 'Ce pseudo et cet avatar s’affichent sur le stream quand tu lances un média.');
+        return linkDiscord();
       }
       if (followsDiscord) {
         return h(

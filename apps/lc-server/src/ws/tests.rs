@@ -462,6 +462,8 @@ async fn seed_ready_board_item(
         created_by_discord_user_id: None,
         created_by_name: Some("Auteur".to_owned()),
         created_at: now(),
+        artwork_asset_id: None,
+        artwork_on_overlay: false,
     };
     let id = item.id;
     db.media_board()
@@ -1153,6 +1155,8 @@ fn signed_play_uses_the_adaptive_media_ttl() {
             duration_sec: Some(600),
             is_vertical: false,
             start_offset_sec: Some(12),
+            artwork_asset_id: None,
+            artwork_url: None,
         }),
         text: lc_protocol::TextPayload {
             value: "texte".to_owned(),
@@ -1177,6 +1181,59 @@ fn signed_play_uses_the_adaptive_media_ttl() {
     assert!(media.url.contains("&startOffsetSec=12#t=12"));
     assert!(media.url.contains("sig="));
     assert!(media.url.contains("clientId=client-1"));
+}
+
+#[test]
+fn signed_play_signs_the_audio_picture_with_the_media_expiry() {
+    let config = Config::from_pairs(vec![
+        ("API_URL".to_owned(), "http://127.0.0.1:3000".to_owned()),
+        ("MEDIA_URL_SECRET".to_owned(), MEDIA_SECRET.to_owned()),
+    ])
+    .expect("configuration de test");
+    let payload = lc_protocol::PlayPayload {
+        job_id: "job-2".to_owned(),
+        media: Some(lc_protocol::MediaPayload {
+            asset_id: "audio-1".to_owned(),
+            url: String::new(),
+            mime: "audio/mpeg".to_owned(),
+            kind: ProtocolMediaKind::Audio,
+            duration_sec: Some(30),
+            is_vertical: false,
+            start_offset_sec: None,
+            artwork_asset_id: Some("picture-1".to_owned()),
+            artwork_url: None,
+        }),
+        duration_sec: 30,
+        ..Default::default()
+    };
+    let now_sec = 1_700_000_000;
+    let signed =
+        hub::signed_play_payload(&payload, "client-1", &config, now_sec).expect("payload signé");
+    let media = signed.media.expect("média signé");
+    let exp = media
+        .url
+        .split("exp=")
+        .nth(1)
+        .and_then(|rest| rest.split('&').next())
+        .expect("expiration")
+        .to_owned();
+    let artwork_url = media.artwork_url.expect("image signée");
+    let signature = crate::media_url::sign(
+        MEDIA_SECRET.as_bytes(),
+        "picture-1",
+        "client-1",
+        exp.parse().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        artwork_url,
+        format!(
+            "http://127.0.0.1:3000/overlay/media/picture-1?clientId=client-1&exp={exp}&sig={signature}"
+        )
+    );
+    // Without a picture the field stays off the wire.
+    let json = serde_json::to_value(&payload.media).unwrap();
+    assert!(json.get("artworkUrl").is_none());
 }
 
 #[test]

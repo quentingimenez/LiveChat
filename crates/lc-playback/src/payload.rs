@@ -81,6 +81,7 @@ pub(crate) fn persisted_timing(job: &PlaybackJob) -> PlaybackTiming {
 pub(crate) fn build_play_payload(
     job: &PlaybackJob,
     media: Option<&MediaAsset>,
+    artwork: Option<&MediaAsset>,
     timing: PlaybackTiming,
     config: &PlaybackConfig,
 ) -> PlayPayload {
@@ -102,6 +103,10 @@ pub(crate) fn build_play_payload(
             } else {
                 None
             },
+            artwork_asset_id: artwork
+                .filter(|_| asset.kind == DomainMediaKind::Audio)
+                .map(|picture| picture.id.to_canonical()),
+            artwork_url: None,
         }
     });
 

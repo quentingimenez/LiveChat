@@ -55,20 +55,6 @@ pub struct PairCodeInput {
     pub mode: PairingMode,
 }
 
-/// Options de `/config-defaut` et `/config-max`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TimeSettingInput {
-    /// Durée en minutes telle que saisie (0 ⇒ valeur par défaut).
-    pub seconds: i64,
-}
-
-/// Options de `/config-displayfull`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DisplayFullInput {
-    /// Afficher les médias en plein écran.
-    pub value: bool,
-}
-
 /// Options de `/lier` (`/link`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkInput {
@@ -101,12 +87,6 @@ pub enum CommandInput {
     Info,
     /// `/client`.
     PairCode(PairCodeInput),
-    /// `/config-defaut`.
-    SetDefaultTime(TimeSettingInput),
-    /// `/config-max`.
-    SetMaxTime(TimeSettingInput),
-    /// `/config-displayfull`.
-    SetDisplayFull(DisplayFullInput),
     /// `/stop`.
     Stop,
 }
@@ -126,9 +106,6 @@ impl CommandInput {
             Self::Help => CommandKey::Help,
             Self::Info => CommandKey::Info,
             Self::PairCode(_) => CommandKey::PairCode,
-            Self::SetDefaultTime(_) => CommandKey::SetDefaultTime,
-            Self::SetMaxTime(_) => CommandKey::SetMaxTime,
-            Self::SetDisplayFull(_) => CommandKey::SetDisplayFull,
             Self::Stop => CommandKey::Stop,
         }
     }
@@ -174,10 +151,7 @@ impl Invocation {
 mod tests {
     use lc_domain::{GuildId, PairingMode};
 
-    use super::{
-        CommandInput, DisplayFullInput, Invocation, LinkInput, MediaSubmission, PairCodeInput,
-        TalkInput,
-    };
+    use super::{CommandInput, Invocation, LinkInput, MediaSubmission, PairCodeInput, TalkInput};
     use crate::catalog::CommandKey;
     use crate::context::Author;
     use crate::i18n::Lang;
@@ -198,10 +172,6 @@ mod tests {
             })
             .command(),
             CommandKey::PairCode
-        );
-        assert_eq!(
-            CommandInput::SetDisplayFull(DisplayFullInput { value: true }).command(),
-            CommandKey::SetDisplayFull
         );
         assert_eq!(
             CommandInput::Link(LinkInput {

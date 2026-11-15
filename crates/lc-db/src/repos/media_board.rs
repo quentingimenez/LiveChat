@@ -4,7 +4,7 @@ use lc_domain::entities::MediaBoardItem;
 use lc_domain::ids::{GuildId, GuildMemberId, MediaAssetId, MediaBoardItemId};
 use sqlx::SqlitePool;
 
-use crate::convert::{decode, decode_opt, from_ms, to_ms};
+use crate::convert::{decode, decode_opt, from_bool, from_ms, to_bool, to_ms};
 use crate::error::{conflict_on_unique, DbResult};
 
 const TABLE: &str = "media_board_items";
@@ -20,6 +20,8 @@ struct MediaBoardItemRow {
     created_by_discord_user_id: Option<String>,
     created_by_name: Option<String>,
     created_at: i64,
+    artwork_asset_id: Option<String>,
+    artwork_on_overlay: i64,
 }
 
 impl MediaBoardItemRow {
@@ -38,6 +40,13 @@ impl MediaBoardItemRow {
             created_by_discord_user_id: self.created_by_discord_user_id,
             created_by_name: self.created_by_name,
             created_at: from_ms(TABLE, "created_at", self.created_at)?,
+            artwork_asset_id: decode_opt(
+                TABLE,
+                "artwork_asset_id",
+                self.artwork_asset_id.as_deref(),
+                MediaAssetId::parse,
+            )?,
+            artwork_on_overlay: from_bool(self.artwork_on_overlay),
         })
     }
 }
@@ -58,12 +67,17 @@ impl MediaBoardRepository {
     /// Traduit la contrainte `UNIQUE (guild_id, media_asset_id)` en
     /// [`lc_domain::DomainError::Conflict`] : le même média ne peut être ajouté
     /// deux fois au board d'une guilde.
+    ///
+    /// An item without a picture takes the embedded cover of its asset (an
+    /// MP3's album art), when there is one.
     pub async fn create(&self, item: &MediaBoardItem) -> DbResult<()> {
         sqlx::query(
             "INSERT INTO media_board_items ( \
                 id, guild_id, media_asset_id, title, message, \
-                created_by_discord_user_id, created_by_name, created_at \
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                created_by_discord_user_id, created_by_name, created_at, \
+                artwork_asset_id, artwork_on_overlay \
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, \
+                COALESCE(?, (SELECT cover_asset_id FROM media_assets WHERE id = ?)), ?)",
         )
         .bind(item.id.to_canonical())
         .bind(item.guild_id.as_str())
@@ -73,6 +87,9 @@ impl MediaBoardRepository {
         .bind(item.created_by_discord_user_id.as_deref())
         .bind(item.created_by_name.as_deref())
         .bind(to_ms(item.created_at))
+        .bind(item.artwork_asset_id.map(MediaAssetId::to_canonical))
+        .bind(item.media_asset_id.to_canonical())
+        .bind(to_bool(item.artwork_on_overlay))
         .execute(&self.pool)
         .await
         .map_err(|error| {
@@ -178,6 +195,126 @@ impl MediaBoardRepository {
             raw.flatten().as_deref(),
             GuildMemberId::parse,
         )
+    }
+
+    /// Sets (or clears) the picture of an item. Returns `false` if the item
+    /// does not exist.
+    pub async fn set_artwork(
+        &self,
+        id: MediaBoardItemId,
+        artwork_asset_id: Option<MediaAssetId>,
+    ) -> DbResult<bool> {
+        let result = sqlx::query("UPDATE media_board_items SET artwork_asset_id = ? WHERE id = ?")
+            .bind(artwork_asset_id.map(MediaAssetId::to_canonical))
+            .bind(id.to_canonical())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Chooses whether overlays show the item's picture during playback.
+    pub async fn set_artwork_on_overlay(
+        &self,
+        id: MediaBoardItemId,
+        on_overlay: bool,
+    ) -> DbResult<bool> {
+        let result =
+            sqlx::query("UPDATE media_board_items SET artwork_on_overlay = ? WHERE id = ?")
+                .bind(to_bool(on_overlay))
+                .bind(id.to_canonical())
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// `true` when the guild's board shows this asset, as an item's media or
+    /// as an item's picture.
+    pub async fn guild_references_asset(
+        &self,
+        guild_id: &GuildId,
+        asset_id: MediaAssetId,
+    ) -> DbResult<bool> {
+        let found: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM media_board_items \
+              WHERE guild_id = ? AND (media_asset_id = ? OR artwork_asset_id = ?) \
+              LIMIT 1",
+        )
+        .bind(guild_id.as_str())
+        .bind(asset_id.to_canonical())
+        .bind(asset_id.to_canonical())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(found.is_some())
+    }
+
+    /// Picture to show on overlays while this audio plays: the one of the
+    /// guild's oldest board item holding it with « show on overlays » ticked.
+    pub async fn overlay_artwork(
+        &self,
+        guild_id: &GuildId,
+        media_asset_id: MediaAssetId,
+    ) -> DbResult<Option<MediaAssetId>> {
+        let raw: Option<String> = sqlx::query_scalar(
+            "SELECT artwork_asset_id FROM media_board_items               WHERE guild_id = ? AND media_asset_id = ?                 AND artwork_on_overlay = 1 AND artwork_asset_id IS NOT NULL               ORDER BY created_at ASC, id ASC LIMIT 1",
+        )
+        .bind(guild_id.as_str())
+        .bind(media_asset_id.to_canonical())
+        .fetch_optional(&self.pool)
+        .await?;
+        raw.map(|value| decode(TABLE, "artwork_asset_id", &value, MediaAssetId::parse))
+            .transpose()
+    }
+
+    /// Items of a guild that a member marked as favorite.
+    pub async fn favorite_item_ids(
+        &self,
+        member_id: GuildMemberId,
+    ) -> DbResult<Vec<MediaBoardItemId>> {
+        let raw: Vec<String> = sqlx::query_scalar(
+            "SELECT item_id FROM media_board_favorites WHERE member_id = ? \
+              ORDER BY created_at ASC, item_id ASC",
+        )
+        .bind(member_id.to_canonical())
+        .fetch_all(&self.pool)
+        .await?;
+        raw.iter()
+            .map(|value| {
+                decode(
+                    "media_board_favorites",
+                    "item_id",
+                    value,
+                    MediaBoardItemId::parse,
+                )
+            })
+            .collect()
+    }
+
+    /// Adds or removes a favorite. Idempotent.
+    pub async fn set_favorite(
+        &self,
+        member_id: GuildMemberId,
+        item_id: MediaBoardItemId,
+        favorite: bool,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> DbResult<()> {
+        if favorite {
+            sqlx::query(
+                "INSERT INTO media_board_favorites (member_id, item_id, created_at) \
+                 VALUES (?, ?, ?) ON CONFLICT (member_id, item_id) DO NOTHING",
+            )
+            .bind(member_id.to_canonical())
+            .bind(item_id.to_canonical())
+            .bind(to_ms(now))
+            .execute(&self.pool)
+            .await?;
+        } else {
+            sqlx::query("DELETE FROM media_board_favorites WHERE member_id = ? AND item_id = ?")
+                .bind(member_id.to_canonical())
+                .bind(item_id.to_canonical())
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Supprime un élément du board.

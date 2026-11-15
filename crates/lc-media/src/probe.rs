@@ -36,6 +36,21 @@ pub struct ProbeInfo {
     pub has_video: bool,
     /// `true` si au moins un flux audio existe.
     pub has_audio: bool,
+    /// Embedded cover (`attached_pic` stream, e.g. an MP3's album art). Such
+    /// a stream is a still picture, never a video track: it does not count in
+    /// `has_video`.
+    pub cover: Option<ProbeCover>,
+}
+
+/// Embedded cover picture of an audio file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProbeCover {
+    /// Picture codec (`mjpeg`, `png`, …).
+    pub codec: String,
+    /// Width in pixels.
+    pub width: Option<u32>,
+    /// Height in pixels.
+    pub height: Option<u32>,
 }
 
 impl ProbeInfo {
@@ -70,6 +85,20 @@ struct RawStream {
     height: Option<u32>,
     pix_fmt: Option<String>,
     duration: Option<String>,
+    #[serde(default)]
+    disposition: RawDisposition,
+}
+
+impl RawStream {
+    fn is_attached_picture(&self) -> bool {
+        self.disposition.attached_pic == 1
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawDisposition {
+    #[serde(default)]
+    attached_pic: u8,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,7 +117,7 @@ pub fn probe_args(path: &Path) -> Vec<String> {
         "-v".to_string(),
         "error".to_string(),
         "-show_entries".to_string(),
-        "stream=codec_type,codec_name,width,height,pix_fmt,duration:format=duration,format_name"
+        "stream=codec_type,codec_name,width,height,pix_fmt,duration:stream_disposition=attached_pic:format=duration,format_name"
             .to_string(),
         "-of".to_string(),
         "json".to_string(),
@@ -128,11 +157,23 @@ pub fn parse_probe_json(json: &str) -> MediaResult<ProbeInfo> {
     if let Some(format) = &raw.format {
         info.duration_sec = format.duration.as_deref().and_then(parse_seconds);
     }
-    if let Some(stream) = raw
+    info.cover = raw
         .streams
         .iter()
-        .find(|stream| stream.codec_type.as_deref() == Some("video"))
-    {
+        .find(|stream| {
+            stream.codec_type.as_deref() == Some("video") && stream.is_attached_picture()
+        })
+        .and_then(|stream| {
+            let codec = stream.codec_name.clone().filter(|codec| codec != "none")?;
+            Some(ProbeCover {
+                codec,
+                width: stream.width.filter(|width| *width > 0),
+                height: stream.height.filter(|height| *height > 0),
+            })
+        });
+    if let Some(stream) = raw.streams.iter().find(|stream| {
+        stream.codec_type.as_deref() == Some("video") && !stream.is_attached_picture()
+    }) {
         info.has_video = true;
         info.video_codec = stream.codec_name.clone().filter(|codec| codec != "none");
         info.width = stream.width.filter(|width| *width > 0);
@@ -221,6 +262,26 @@ mod tests {
     }
 
     #[test]
+    fn an_embedded_cover_is_not_a_video_track() {
+        // MP3 with album art: ffprobe reports the cover as an `attached_pic`
+        // mjpeg "video" stream.
+        let info = parse_probe_json(
+            r#"{"streams":[
+                {"codec_type":"audio","codec_name":"mp3","disposition":{"attached_pic":0}},
+                {"codec_type":"video","codec_name":"mjpeg","width":480,"height":360,"disposition":{"attached_pic":1}}
+            ],"format":{"duration":"233.17","format_name":"mp3"}}"#,
+        )
+        .unwrap();
+        assert!(info.has_audio);
+        assert!(!info.has_video);
+        let cover = info.cover.as_ref().expect("pochette détectée");
+        assert_eq!(cover.codec, "mjpeg");
+        assert_eq!((cover.width, cover.height), (Some(480), Some(360)));
+        assert_eq!(info.width, None);
+        assert_eq!(info.duration_ceil_sec(), Some(234));
+    }
+
+    #[test]
     fn parses_colon_and_unknown_durations() {
         assert_eq!(parse_seconds("01:02:03.5"), Some(3723.5));
         assert_eq!(parse_seconds("N/A"), None);
@@ -240,7 +301,7 @@ mod tests {
         let args = probe_args(Path::new("C:\\media\\clip.mp4"));
         assert_eq!(args[0], "-v");
         assert_eq!(args[1], "error");
-        assert_eq!(args[3].split(':').count(), 2);
+        assert_eq!(args[3].split(':').count(), 3);
         assert_eq!(args[args.len() - 2], "-i");
         assert_eq!(args.last().unwrap(), "C:\\media\\clip.mp4");
     }

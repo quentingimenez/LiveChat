@@ -30,7 +30,7 @@ sha2 = { workspace = true }
 sqlx = { workspace = true }
 subtle = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["process", "io-util"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = [
     "compression-gzip",

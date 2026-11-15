@@ -130,6 +130,24 @@ impl MediaErrorCode {
         ApiErrorLabel::MediaIngestionFailed
     }
 
+    /// Message shown to people (board, extension) for this code. The raw
+    /// tool output stays in the logs.
+    pub const fn user_message_fr(self) -> &'static str {
+        match self {
+            Self::UnsupportedSource => "Ce lien ou ce format n'est pas pris en charge.",
+            Self::PrivateOrAuthRequired => "Ce média est privé ou demande une connexion.",
+            Self::DrmProtected => "Ce média est protégé (DRM) et ne peut pas être récupéré.",
+            Self::MediaNotFound => "Média introuvable à cette adresse.",
+            Self::BoardStorageLimitReached => "Le board de la guilde est plein.",
+            Self::CacheStorageLimitReached => "Le stockage du serveur est plein.",
+            Self::FileTooLarge => "Fichier trop volumineux pour le serveur.",
+            Self::InvalidMedia => "Ce fichier n'est pas un média lisible.",
+            Self::TranscodeFailed => "Le serveur n'a pas pu convertir ce média.",
+            Self::DownloadTimeout => "Le téléchargement a pris trop de temps.",
+            Self::DownloadFailed => "Le téléchargement du média a échoué.",
+        }
+    }
+
     /// Retrouve un code à partir de sa représentation textuelle.
     pub fn from_code_str(raw: &str) -> Option<Self> {
         let upper = raw.trim().to_ascii_uppercase();
@@ -285,7 +303,7 @@ impl MediaError {
     ) -> Self {
         let raw = join_outputs(stdout, stderr);
         let code = classify_code(&raw, fallback);
-        let message = first_line(&raw)
+        let message = relevant_line(&raw)
             .map(str::to_string)
             .unwrap_or_else(|| format!("échec du processus {program}"));
         Self::with_raw(code, message, raw)
@@ -388,6 +406,63 @@ fn contains_auth_signal(text: &str) -> bool {
 
 fn first_line(raw: &str) -> Option<&str> {
     raw.lines().map(str::trim).find(|line| !line.is_empty())
+}
+
+/// Most telling line of a tool's output: the first one that reads like an
+/// error, skipping ffmpeg's banner, stream listing and progress lines (the
+/// banner's first line used to be shown to users as "the error").
+fn relevant_line(raw: &str) -> Option<&str> {
+    const NOISE: [&str; 12] = [
+        "ffmpeg version",
+        "ffprobe version",
+        "built with",
+        "configuration:",
+        "lib",
+        "Input #",
+        "Output #",
+        "Stream ",
+        "Duration:",
+        "Metadata:",
+        "frame=",
+        "size=",
+    ];
+    const MARKERS: [&str; 7] = [
+        "error",
+        "invalid",
+        "could not",
+        "failed",
+        "not found",
+        "unable",
+        "denied",
+    ];
+    let candidates = raw
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| !NOISE.iter().any(|noise| line.starts_with(noise)))
+        .filter(|line| *line != "Conversion failed!")
+        .map(strip_component_prefix);
+    let mut first = None;
+    for line in candidates {
+        let lower = line.to_ascii_lowercase();
+        if MARKERS.iter().any(|marker| lower.contains(marker)) {
+            return Some(line);
+        }
+        first = first.or(Some(line));
+    }
+    first.or_else(|| first_line(raw))
+}
+
+/// Drops ffmpeg's `[component @ 0x…] ` prefix.
+fn strip_component_prefix(line: &str) -> &str {
+    if line.starts_with('[') {
+        if let Some(end) = line.find("] ") {
+            if line[..end].contains(" @ ") {
+                return line[end + 2..].trim_start();
+            }
+        }
+    }
+    line
 }
 
 fn join_outputs(stdout: &str, stderr: &str) -> String {
@@ -761,6 +836,35 @@ mod tests {
         let raw = error.raw_message().unwrap_or_default();
         assert!(raw.contains("Conversion failed!"));
         assert!(raw.contains("frame=1"));
+    }
+
+    #[test]
+    fn from_command_failure_skips_the_ffmpeg_banner() {
+        let stderr = [
+            "ffmpeg version 5.1.9-0+deb12u1 Copyright (c) 2000-2026 the FFmpeg developers",
+            "  built with gcc 12 (Debian 12.2.0-14+deb12u1)",
+            "  configuration: --prefix=/usr",
+            "  libavutil      57. 28.100 / 57. 28.100",
+            "Input #0, mp3, from 'in.mp3':",
+            "  Stream #0:0: Audio: mp3, 44100 Hz, stereo",
+            "[out#0/mp4 @ 0x55d0] Could not write header (incorrect codec parameters ?): Invalid argument",
+            "Conversion failed!",
+        ]
+        .join("\n");
+        let error = MediaError::from_command_failure(
+            "ffmpeg",
+            "",
+            &stderr,
+            MediaErrorCode::TranscodeFailed,
+        );
+        assert_eq!(
+            error.message(),
+            "Could not write header (incorrect codec parameters ?): Invalid argument"
+        );
+        assert!(error
+            .raw_message()
+            .unwrap_or_default()
+            .starts_with("ffmpeg version"));
     }
 
     #[test]

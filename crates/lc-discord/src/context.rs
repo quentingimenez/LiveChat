@@ -98,18 +98,6 @@ impl BotConfig {
     }
 }
 
-/// Mise à jour des réglages d'une guilde (`/config-defaut`, `/config-max`,
-/// `/config-displayfull`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GuildSettingsPatch {
-    /// Durée par défaut des médias, `None` pour revenir au défaut global.
-    pub default_media_time: Option<i64>,
-    /// Durée maximale des médias, `None` pour aucune limite explicite.
-    pub max_media_time: Option<i64>,
-    /// Afficher les médias en plein écran.
-    pub display_media_full: bool,
-}
-
 /// Overlay actuellement connecté (vue simplifiée pour `/overlays`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectedOverlay {
@@ -264,13 +252,6 @@ pub trait BotContext: Send + Sync {
         guild_id: &GuildId,
     ) -> Result<Vec<ConnectedOverlay>, BotError>;
 
-    /// Applique une mise à jour des réglages de la guilde.
-    async fn update_guild_settings(
-        &self,
-        guild_id: &GuildId,
-        patch: GuildSettingsPatch,
-    ) -> Result<(), BotError>;
-
     /// Génère un code d'appairage aléatoire (alphabet legacy, 6 caractères).
     fn generate_pairing_code(&self) -> PairingCode {
         use rand::Rng as _;
@@ -393,23 +374,6 @@ impl<C: Clock + Send + Sync> BotContext for DbBotContext<C> {
         guild_id: &GuildId,
     ) -> Result<Vec<ConnectedOverlay>, BotError> {
         self.overlays.list_connected(guild_id).await
-    }
-
-    async fn update_guild_settings(
-        &self,
-        guild_id: &GuildId,
-        patch: GuildSettingsPatch,
-    ) -> Result<(), BotError> {
-        self.db
-            .guilds()
-            .update_settings(
-                guild_id,
-                patch.default_media_time,
-                patch.max_media_time,
-                patch.display_media_full,
-            )
-            .await?;
-        Ok(())
     }
 }
 

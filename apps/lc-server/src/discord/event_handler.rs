@@ -25,7 +25,7 @@ use serenity::all::{
 };
 
 use lc_db::Db;
-use lc_discord::handlers::plan_deferral;
+use lc_discord::handlers::{plan_deferral, precheck};
 use lc_discord::serenity_glue::{defer, parse_invocation, respond};
 use lc_discord::{dispatch, BotConfig, DbBotContext, Lang};
 
@@ -192,8 +192,8 @@ impl DiscordEventHandler {
     }
 }
 
-/// Crée ou rafraîchit la ligne `guilds` sans écraser les réglages configurés par
-/// `/config-defaut`, `/config-max` et `/config-displayfull`.
+/// Crée ou rafraîchit la ligne `guilds` sans écraser les réglages de la guilde
+/// (onglet « Réglages » du board).
 pub async fn upsert_guild_row(
     db: &Db,
     guild_id: &lc_domain::GuildId,
@@ -359,6 +359,15 @@ impl EventHandler for DiscordEventHandler {
             return;
         };
 
+        // A refused command is answered at once and privately (never after a
+        // public acknowledgement).
+        if let Some(refused) = precheck(self.context.as_ref(), &invocation).await {
+            if let Err(error) = respond(&ctx.http, &command, &refused).await {
+                tracing::warn!(name = %command.data.name, %error, "réponse de refus impossible");
+            }
+            return;
+        }
+
         // Acknowledge before the handler touches the database: Discord allows
         // only 3 seconds to answer an interaction (`/pair-code` was seen
         // failing with "Unknown interaction").
@@ -394,7 +403,7 @@ mod tests {
 
     use lc_db::{Db, DbConfig};
     use lc_discord::inputs::{CommandInput, Invocation};
-    use lc_discord::testing::{member_author, FakeBotContext};
+    use lc_discord::testing::{admin_author, member_author, FakeBotContext};
     use lc_discord::{dispatch, Lang};
     use lc_domain::GuildId;
 
@@ -428,7 +437,7 @@ mod tests {
         let invocation = Invocation {
             guild_id: Some(guild_id()),
             lang: Lang::Fr,
-            author: member_author(),
+            author: admin_author(),
             input: CommandInput::Stop,
         };
         let outcome = dispatch(&context, invocation).await;

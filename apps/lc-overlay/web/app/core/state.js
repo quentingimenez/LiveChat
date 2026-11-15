@@ -14,7 +14,13 @@ export const state = {
   itemsLoaded: false,
   search: '',
   kind: 'all',
+  // Board filters and sort (see core/board-filters.js).
+  filters: { favorites: false, shortcut: false, author: '', source: '', duration: '', sort: 'newest' },
+  filtersOpen: false,
   selectedId: null,
+  // `true` once the detail drawer was opened by a click (it stays open);
+  // `false` while it only follows the pointer.
+  detailPinned: false,
   queue: { playing: null, pending: [], at: 0 },
   queueStale: false,
   uploads: [],
@@ -38,6 +44,7 @@ export const ERROR_LABELS = {
   pairing_code_scope_mismatch: "Ce code sert à appairer l'extension navigateur, pas un overlay.",
   guild_not_standalone: 'Seule une guilde créée hors Discord peut être liée à un serveur Discord.',
   member_required: 'Action réservée aux membres de la guilde.',
+  discord_already_linked: 'Ce compte Discord est déjà lié à un autre membre de la guilde.',
   invalid_role: 'Rôle inconnu.',
   invalid_payload: 'Valeur invalide.',
   invalid_name: 'Nom invalide.',

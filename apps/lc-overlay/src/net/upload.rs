@@ -207,6 +207,36 @@ pub(crate) async fn run_upload(
     Ok(api::read_response(response).await)
 }
 
+/// Largest picture sent for a board item (the server's limit).
+pub(crate) const MAX_ARTWORK_BYTES: usize = 10 * 1024 * 1024;
+
+/// Sends the picture of a board item (`PUT …/items/{id}/artwork`).
+pub(crate) async fn put_artwork(
+    membership: &crate::config::Membership,
+    item_id: &str,
+    filename: &str,
+    content_type: &str,
+    bytes: Vec<u8>,
+) -> Result<api::ApiResponse, String> {
+    let item_id = uuid::Uuid::parse_str(item_id.trim()).map_err(|_| "média inconnu".to_string())?;
+    let insecure = crate::net::tls::insecure_tls_enabled();
+    let mut url = api::build_url(
+        &membership.server_url,
+        &format!("/overlay/media-board/items/{item_id}/artwork"),
+        insecure,
+    )?;
+    url.query_pairs_mut().append_pair("filename", filename);
+    let response = build_client(insecure)?
+        .put(url)
+        .bearer_auth(&membership.client_token)
+        .header(reqwest::header::CONTENT_TYPE, content_type)
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|error| format!("serveur injoignable : {error}"))?;
+    Ok(api::read_response(response).await)
+}
+
 /// Response of `media_upload_start`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

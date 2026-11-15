@@ -70,6 +70,7 @@ use crate::app::AppState;
 
 mod admin;
 mod auth;
+mod board_extras;
 mod discord_link;
 pub(crate) mod guild;
 mod ingest_code;
@@ -78,16 +79,21 @@ mod media_board;
 mod media_ingestion;
 mod media_upload;
 mod pair;
+mod profile_discord;
 mod queue;
 
 pub use media::sign_media_url;
 
+#[cfg(test)]
+mod board_extras_tests;
 #[cfg(test)]
 mod guild_tests;
 #[cfg(test)]
 mod ingestion_tests;
 #[cfg(test)]
 mod media_upload_tests;
+#[cfg(test)]
+mod profile_discord_tests;
 #[cfg(test)]
 mod profile_tests;
 #[cfg(test)]
@@ -121,6 +127,14 @@ pub fn router() -> Router<AppState> {
             axum::routing::patch(media_board::update_item).delete(media_board::delete_item),
         )
         .route(
+            "/overlay/media-board/items/{item_id}/favorite",
+            axum::routing::put(board_extras::put_favorite),
+        )
+        .route(
+            "/overlay/media-board/items/{item_id}/artwork",
+            axum::routing::put(board_extras::put_artwork).delete(board_extras::delete_artwork),
+        )
+        .route(
             "/overlay/media-board/media/{asset_id}",
             get(media_board::get_media),
         )
@@ -128,6 +142,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/overlay/profile",
             axum::routing::patch(guild::update_profile),
+        )
+        .route(
+            "/overlay/profile/discord-link",
+            post(profile_discord::link_discord),
         )
         .route("/overlay/device-code", post(guild::create_device_code))
         .route(
@@ -381,6 +399,8 @@ mod session_mode_tests {
             created_by_discord_user_id: None,
             created_by_name: Some("test".to_owned()),
             created_at: fixed_now(),
+            artwork_asset_id: None,
+            artwork_on_overlay: false,
         };
         db.media_board().create(&item).await.unwrap();
         item

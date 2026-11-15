@@ -91,6 +91,18 @@ strings! {
     success: ("Succès !", "Success!"),
     error: ("Erreur !", "Error!"),
     not_allowed: ("Action non autorisée !", "Not allowed!"),
+    not_linked: (
+        "Ton compte Discord n'est lié à aucun membre LiveChat de ce serveur. Génère un code avec `/pair-code`, puis dans l'overlay ouvre Profil → « Lier mon compte Discord ».",
+        "Your Discord account is not linked to a LiveChat member of this server. Create a code with `/pair-code`, then in the overlay open Profile → “Link my Discord account”."
+    ),
+    guest_not_allowed: (
+        "Les invités ne peuvent pas utiliser cette commande.",
+        "Guests cannot use this command."
+    ),
+    admin_only: (
+        "Commande réservée aux administrateurs.",
+        "This command is for administrators only."
+    ),
 
     alive_name: ("dispo", "alive"),
     alive_description: ("Vérifiez si le bot est vivant", "Check if bot is alive"),
@@ -122,8 +134,8 @@ strings! {
         "This code grants the admin role."
     ),
     pair_code_personal: (
-        "Code personnel : l’overlay prendra ton pseudo et ton avatar Discord. Pour inviter quelqu’un d’autre, utilise le mode invité ou une invitation du board.",
-        "Personal code: the overlay will use your Discord name and avatar. To invite someone else, use the invite mode or a board invitation."
+        "Code personnel : l’overlay prendra ton pseudo et ton avatar Discord. Pour inviter quelqu’un d’autre, utilise le mode invité ou une invitation du board. Déjà membre de la guilde ? Saisis ce code dans « Mon profil » → « Lier mon compte Discord » pour lier ton compte.",
+        "Personal code: the overlay will use your Discord name and avatar. To invite someone else, use the invite mode or a board invitation. Already a guild member? Type this code in « Mon profil » → « Lier mon compte Discord » to link your account."
     ),
 
     media_add_name: ("media-add", "media-add"),
@@ -259,33 +271,6 @@ strings! {
         "Contenu reçu ! Il sera bientôt joué !",
         "Content received! It will be played soon!"
     ),
-
-    set_default_time_name: ("config-defaut", "config-defaulttime"),
-    set_default_time_description: (
-        "Définir le temps par défaut pour l'affichage (Par défaut : 5 secondes) (En secondes)",
-        "Set default time for display (Default: 5 seconds) (In seconds) | 0 will reset value to default"
-    ),
-    set_default_time_option_text: ("nombre", "number"),
-    set_default_time_option_text_description: ("Nombre de secondes", "Number of seconds"),
-    set_default_time_answer: ("Le temps par défaut est défini !", "Default time set!"),
-
-    set_max_time_name: ("config-max", "config-maxtime"),
-    set_max_time_description: (
-        "Définir le temps maximal pour l'affichage (En secondes) | 0 remet la valeur par défaut",
-        "Set max time for display (In seconds) | 0 will reset value to default"
-    ),
-    set_max_time_option_text: ("nombre", "number"),
-    set_max_time_option_text_description: ("Nombre de secondes", "Number of seconds"),
-    set_max_time_answer: ("Temps maximum défini !", "Max time set!"),
-
-    set_display_full_name: ("config-displayfull", "config-displayfull"),
-    set_display_full_description: (
-        "Option legacy (conservée pour compatibilité)",
-        "Legacy option (kept for compatibility)"
-    ),
-    set_display_full_option_text: ("value", "boolean"),
-    set_display_full_option_text_description: ("Oui / Non", "True / False"),
-    set_display_full_answer: ("Valeur définie !", "Display full set!"),
 
     overlays_name: ("overlays", "overlays"),
     overlays_description: (

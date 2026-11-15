@@ -30,6 +30,7 @@ const ID_HEADER: &str = "tray.header";
 const ID_OPEN_BOARD: &str = "tray.open_board";
 const ID_SETTINGS: &str = "tray.settings";
 const ID_GENERAL_MUTE: &str = "tray.general_mute";
+const ID_MEDIA_MUTE: &str = "tray.media_mute";
 const ID_GUILD_PREFIX: &str = "tray.guild.";
 const ID_INSTALL_UPDATE: &str = "tray.install_update";
 const ID_QUIT: &str = "tray.quit";
@@ -182,6 +183,12 @@ fn menu_model(
             label: "Sourdine générale".to_string(),
             checked: !config.enabled,
             enabled: true,
+        },
+        MenuEntry::Check {
+            id: ID_MEDIA_MUTE.to_string(),
+            label: "Couper le son des médias".to_string(),
+            checked: config.media_muted,
+            enabled: config.enabled,
         },
     ];
 
@@ -362,6 +369,23 @@ pub(crate) fn toggle_general_mute(app: &AppHandle<Wry>) {
     }
 }
 
+/// Media keep playing on screen, without their sound (live on the current
+/// one: the renderer reads it from its settings).
+pub(crate) fn toggle_media_mute(app: &AppHandle<Wry>) {
+    let state = app.state::<AppState>();
+    match state.update_config(|config| config.media_muted = !config.media_muted) {
+        Ok(config) => {
+            tracing::info!(
+                media_muted = config.media_muted,
+                "son des médias modifié depuis le tray"
+            );
+            device_settings::publish_settings(app);
+        }
+        Err(error) => tracing::warn!(%error, "échec de sauvegarde de `mediaMuted`"),
+    }
+    refresh_tray(app);
+}
+
 /// Toggles a guild's mute from the tray.
 fn toggle_guild_mute(app: &AppHandle<Wry>, guild_id: &str) {
     let state = app.state::<AppState>();
@@ -396,6 +420,7 @@ pub fn handle_menu_event(app: &AppHandle<Wry>, id: &str) {
         ID_OPEN_BOARD => windows::show_board(app),
         ID_SETTINGS => open_settings(app),
         ID_GENERAL_MUTE => toggle_general_mute(app),
+        ID_MEDIA_MUTE => toggle_media_mute(app),
         ID_INSTALL_UPDATE => {
             if let Err(error) = updater::install(app) {
                 tracing::warn!(%error, "installation de la mise à jour impossible");
@@ -418,7 +443,7 @@ pub fn handle_menu_event(app: &AppHandle<Wry>, id: &str) {
 mod tests {
     use super::{
         guild_entry_label, menu_model, tooltip_text, MenuEntry, ID_GENERAL_MUTE, ID_INSTALL_UPDATE,
-        ID_OPEN_BOARD, ID_QUIT, ID_SETTINGS,
+        ID_MEDIA_MUTE, ID_OPEN_BOARD, ID_QUIT, ID_SETTINGS,
     };
     use crate::config::{Membership, OverlayConfig};
     use crate::net::ws::ConnectionStatus;
@@ -488,6 +513,7 @@ mod tests {
                 action(ID_SETTINGS, "Paramètres…"),
                 MenuEntry::Separator,
                 check(ID_GENERAL_MUTE, "Sourdine générale", false, true),
+                check(ID_MEDIA_MUTE, "Couper le son des médias", false, true),
                 check("tray.guild.111", "Les Sardines", true, true),
                 check(
                     "tray.guild.222",
@@ -535,6 +561,12 @@ mod tests {
         );
 
         assert!(model.contains(&check(ID_GENERAL_MUTE, "Sourdine générale", true, true)));
+        assert!(model.contains(&check(
+            ID_MEDIA_MUTE,
+            "Couper le son des médias",
+            false,
+            false
+        )));
         assert!(model.contains(&check("tray.guild.111", "Alpha", true, false)));
     }
 

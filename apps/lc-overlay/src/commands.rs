@@ -89,6 +89,7 @@ const COMMAND_MATRIX: &[(&str, &[&str])] = &[
             "media_upload_chunk",
             "media_upload_finish",
             "media_upload_cancel",
+            "media_artwork_upload",
         ],
     ),
 ];
@@ -652,12 +653,19 @@ pub fn settings_preview_layout(
 pub async fn settings_placement_start(
     window: WebviewWindow<Wry>,
     app: AppHandle<Wry>,
+    payload: Option<Value>,
 ) -> Result<SettingsActionResponse, String> {
     ensure_allowed(&window, "settings_placement_start")?;
+    // `{ "guildId": "…" }` places that guild's own zone.
+    let guild_id = payload
+        .as_ref()
+        .and_then(|payload| payload.get("guildId"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let (sender, receiver) = oneshot::channel();
     let handle = app.clone();
     app.run_on_main_thread(move || {
-        let _sent = sender.send(placement::start(&handle));
+        let _sent = sender.send(placement::start(&handle, guild_id));
     })
     .map_err(|error| error.to_string())?;
     let started = receiver.await.map_err(|error| error.to_string())?;
@@ -1326,6 +1334,52 @@ pub async fn media_upload_finish(
     }
 }
 
+/// `media_artwork_upload` — sends the picture of a board item. The raw bytes
+/// are the body; `x-guild-id`, `x-item-id`, `x-filename` and
+/// `x-content-type` describe them.
+#[tauri::command]
+pub async fn media_artwork_upload(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+    state: State<'_, AppState>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<api::ApiResponse, String> {
+    ensure_allowed(&window, "media_artwork_upload")?;
+    let header = |name: &str| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+    };
+    let guild_id = target_guild(&state, header("x-guild-id").as_deref())
+        .ok_or_else(|| "guilde inconnue".to_string())?;
+    let item_id = header("x-item-id").ok_or_else(|| "média inconnu".to_string())?;
+    let filename = upload::validate_filename(header("x-filename").as_deref())?;
+    let content_type = upload::normalize_content_type(header("x-content-type").as_deref());
+    let bytes = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
+        tauri::ipc::InvokeBody::Json(_) => return Err("corps binaire attendu".to_string()),
+    };
+    if bytes.is_empty() {
+        return Err("image vide".to_string());
+    }
+    if bytes.len() > upload::MAX_ARTWORK_BYTES {
+        return Err("image trop volumineuse (10 Mo au plus)".to_string());
+    }
+    let membership = state
+        .config_snapshot()
+        .membership(&guild_id)
+        .cloned()
+        .ok_or_else(|| "guilde inconnue".to_string())?;
+    let response =
+        upload::put_artwork(&membership, &item_id, &filename, &content_type, bytes).await?;
+    reconnect_on_unauthorized(&app, &guild_id, &response);
+    Ok(response)
+}
+
 /// `media_upload_cancel` — aborts an in-flight upload (`true` if it existed).
 #[tauri::command]
 pub fn media_upload_cancel(
@@ -1397,6 +1451,7 @@ mod tests {
         assert!(command_allowed("board", "board_take_guild_removals"));
         assert!(command_allowed("board", "media_upload_start"));
         assert!(command_allowed("board", "media_upload_chunk"));
+        assert!(command_allowed("board", "media_artwork_upload"));
         assert!(command_allowed("board", "media_upload_finish"));
         assert!(command_allowed("board", "media_upload_cancel"));
         assert!(!command_allowed("board", "overlay_renderer_ready"));
@@ -1419,6 +1474,7 @@ mod tests {
             "media_upload_chunk",
             "media_upload_finish",
             "media_upload_cancel",
+            "media_artwork_upload",
         ] {
             assert!(!command_allowed("overlay", command), "{command}");
         }
@@ -1445,6 +1501,8 @@ mod tests {
                 guest_mode: false,
                 show_text: true,
                 volume: 1.0,
+                media_muted: false,
+                media_muted_guilds: Vec::new(),
                 media_bindings: MediaBindings::new(),
                 layout: crate::config::OverlayLayout::default(),
             }

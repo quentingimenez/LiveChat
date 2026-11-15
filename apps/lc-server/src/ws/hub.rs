@@ -949,9 +949,19 @@ pub(crate) fn signed_play_payload(
             ));
         }
     }
+    // The picture of an audio shares the media's expiry.
+    let artwork_url = media.artwork_asset_id.as_deref().and_then(|artwork_id| {
+        let signature =
+            media_url::sign(secret.as_bytes(), artwork_id, client_id, expires_at).ok()?;
+        Some(format!(
+            "{}/overlay/media/{artwork_id}?clientId={client_id}&exp={expires_at}&sig={signature}",
+            config.api_url.as_str().trim_end_matches('/'),
+        ))
+    });
     let mut signed = payload.clone();
     signed.media = Some(MediaPayload {
         url,
+        artwork_url,
         ..media.clone()
     });
     Some(signed)

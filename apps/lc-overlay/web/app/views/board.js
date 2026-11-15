@@ -13,7 +13,19 @@ import {
   SORT_LABELS,
   SOURCE_LABELS,
 } from '../core/board-filters.js';
-import { cardClicked, cardHovered, CLOSED_VIEW, drawerUsed, pointerLeft, pruneView, sameView, shownId } from '../core/detail-drawer.js';
+import {
+  artworkOf,
+  cardClicked,
+  cardHovered,
+  CLOSED_VIEW,
+  drawerUsed,
+  mediaPath,
+  pointerLeft,
+  previewKey,
+  pruneView,
+  sameView,
+  shownId,
+} from '../core/detail-drawer.js';
 import { h, icon, registerIcons } from '../core/dom.js';
 import { formatDuration } from '../core/format.js';
 import { cardRatio, cardStyle } from '../core/masonry.js';
@@ -131,7 +143,7 @@ const cards = new Map(); // itemId -> { node, key, item, loadedUrl }
 // renders of the view: rebuilding one reloaded its video and showed the
 // loading spinner again. Coming back from a peek finds the pinned video where
 // it was.
-const previews = new Map(); // itemId -> { path, node }
+const previews = new Map(); // itemId -> { key, node }
 
 function pausePreview(entry) {
   const media = entry.node.querySelector('audio, video');
@@ -147,20 +159,6 @@ function prunePreviews() {
       pausePreview(entry);
       previews.delete(id);
     }
-  }
-}
-
-// Path of a signed media URL, without its query: the same asset keeps the
-// same path while its signature changes every 15 minutes.
-function mediaPath(url) {
-  if (typeof url !== 'string' || !url) {
-    return null;
-  }
-  try {
-    const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return url;
   }
 }
 
@@ -335,12 +333,6 @@ function refreshUploadCards() {
     return;
   }
   grid.prepend(...nodes);
-}
-
-// An audio item shows its picture (embedded cover or chosen image).
-function artworkOf(item) {
-  const artwork = item.artwork;
-  return artwork && typeof artwork.url === 'string' && artwork.url ? artwork : null;
 }
 
 function buildCard(entry) {
@@ -878,10 +870,20 @@ function buildPreview(item) {
     return node;
   }
   if (kind === 'audio') {
+    // An audio shows its picture; without one (or when it cannot be loaded)
+    // it shows an audio mark above the player, never an empty image.
+    const glyph = h('span', { class: 'preview-glyph', 'aria-hidden': 'true' }, icon('audio'));
     const artwork = artworkOf(item);
     if (artwork) {
       node.classList.add('has-artwork');
-      node.append(h('img', { class: 'preview-artwork', src: artwork.url, alt: '' }));
+      const picture = h('img', { class: 'preview-artwork', src: artwork.url, alt: '' });
+      picture.addEventListener('error', () => {
+        node.classList.remove('has-artwork');
+        picture.replaceWith(glyph);
+      });
+      node.append(picture);
+    } else {
+      node.append(glyph);
     }
     const audio = h('audio', { src: url, controls: true, preload: 'metadata' });
     audio.volume = previewVolume(state.activeGuildId);
@@ -909,10 +911,13 @@ function buildPreview(item) {
 }
 
 function detailPreview(item) {
-  const path = mediaPath(item.mediaUrl);
+  const key = previewKey(item);
   let entry = previews.get(item.id);
-  if (!entry || entry.path !== path) {
-    entry = { path, node: buildPreview(item) };
+  if (!entry || entry.key !== key) {
+    if (entry) {
+      pausePreview(entry);
+    }
+    entry = { key, node: buildPreview(item) };
     previews.set(item.id, entry);
   }
   // A preview out of the drawer (the pinned one during a peek) goes silent

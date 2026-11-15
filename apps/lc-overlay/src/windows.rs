@@ -1,6 +1,6 @@
 //! Cycle de vie et politiques des deux fenêtres du shell :
 //! `overlay` (plein écran transparent, click-through, topmost) et `board`
-//! (1180×780, qui porte aussi l'appairage).
+//! (1400×880, qui porte aussi l'appairage).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -674,6 +674,34 @@ pub fn bootstrap_windows(app: &AppHandle<Wry>) {
 mod tests {
     use super::*;
     use crate::config::OverlayConfig;
+
+    /// `(width, height, minWidth, minHeight)` of the board window in a
+    /// Tauri configuration file.
+    fn board_window_size(raw: &str) -> (u64, u64, u64, u64) {
+        let config: serde_json::Value = serde_json::from_str(raw).expect("valid tauri config");
+        let board = config["app"]["windows"]
+            .as_array()
+            .expect("windows")
+            .iter()
+            .find(|window| window["label"] == BOARD_LABEL)
+            .expect("board window")
+            .clone();
+        let number = |key: &str| board[key].as_u64().expect("window dimension");
+        (
+            number("width"),
+            number("height"),
+            number("minWidth"),
+            number("minHeight"),
+        )
+    }
+
+    #[test]
+    fn board_window_opens_comfortably_large_in_every_channel() {
+        let stable = board_window_size(include_str!("../tauri.conf.json"));
+        let beta = board_window_size(include_str!("../tauri.beta.conf.json"));
+        assert_eq!(stable, (1400, 880, 960, 640));
+        assert_eq!(beta, stable);
+    }
 
     fn paired_config() -> OverlayConfig {
         let mut config = OverlayConfig::default();

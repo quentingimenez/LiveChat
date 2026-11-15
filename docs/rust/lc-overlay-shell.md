@@ -163,7 +163,7 @@ L'aperçu en direct de la mise en page (gabarit, échéance de 4 s) vit dans
 | Label | Taille | Politique |
 | --- | --- | --- |
 | `overlay` | écran cible plein (2560×1440 ×1.0 dans le POC) | transparente, sans décorations, always-on-top, skip taskbar, focusable=false, click-through, `WS_EX_LAYERED|TRANSPARENT|NOACTIVATE|TOOLWINDOW` |
-| `board` | 1180×780 (min 960×640) | centrée, cachée au démarrage ; porte aussi l'appairage et les paramètres ; topmost (au-dessus de l'overlay) seulement tant qu'elle est la fenêtre au premier plan |
+| `board` | 1400×880 (min 960×640) | centrée, cachée au démarrage ; porte aussi l'appairage et les paramètres ; topmost (au-dessus de l'overlay) seulement tant qu'elle est la fenêtre au premier plan |
 | `identify-<index>` | plein écran par moniteur, créée à la demande | transparente, sans décorations, always-on-top, skip taskbar, focusable=false, click-through, affichée sans activation (`SW_SHOWNOACTIVATE`) ; fermée par le shell après 3 s (`settings_identify_displays`) |
 
 Détails d'implémentation :

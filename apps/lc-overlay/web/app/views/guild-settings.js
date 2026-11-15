@@ -180,6 +180,6 @@ export function renderGuildSettings() {
     { class: 'settings' },
     h('div', { class: 'settings-head' }, h('p', { class: 'meta' }, `Réglages de ${guildLabel(guild)}.`)),
     deviceSections,
-    can('manageSettings') ? section('Serveur', h('p', { class: 'settings-hint' }, 'Pour toute la guilde, sur tous les appareils.'), renderServerSettings()) : null,
+    can('manageSettings') ? section('Serveur', h('p', { class: 'settings-hint is-lead' }, 'Pour toute la guilde, sur tous les appareils.'), renderServerSettings()) : null,
   );
 }

@@ -68,3 +68,34 @@ export function pruneView(view, exists) {
   }
   return view;
 }
+
+// --- preview of the shown media ---
+
+// Path of a signed media URL, without its query: the same asset keeps the
+// same path while its signature changes every 15 minutes.
+export function mediaPath(url) {
+  if (typeof url !== 'string' || !url) {
+    return null;
+  }
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return url;
+  }
+}
+
+// The picture of an audio item (embedded cover or chosen image), if any.
+export function artworkOf(item) {
+  const artwork = item && item.artwork;
+  return artwork && typeof artwork.url === 'string' && artwork.url ? artwork : null;
+}
+
+// What a built preview depends on: it is reused while this key is the same.
+// The picture of an audio is part of it, so adding, replacing or removing the
+// picture rebuilds the preview instead of leaving the old one in the drawer.
+export function previewKey(item) {
+  const media = (item && item.media) || {};
+  const artwork = media.kind === 'audio' ? artworkOf(item) : null;
+  return JSON.stringify([media.kind || null, mediaPath(item && item.mediaUrl), artwork ? mediaPath(artwork.url) : null]);
+}

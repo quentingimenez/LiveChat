@@ -476,7 +476,25 @@
 .detail .preview.is-audio {
   width: 100%;
   aspect-ratio: auto;
-  padding: 16px 12px;
+  max-height: none;
+  gap: 12px;
+  padding: 18px 12px 14px;
+}
+
+/* An audio without a picture: an audio mark above the player. */
+.detail .preview .preview-glyph {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--slate-700);
+  color: var(--text-soft);
+}
+
+.detail .preview .preview-glyph svg {
+  width: 26px;
+  height: 26px;
 }
 
 .detail .preview audio {

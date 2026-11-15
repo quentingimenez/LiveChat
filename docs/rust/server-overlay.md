@@ -68,6 +68,7 @@ Conventions appliquées dans tout le module :
 | `http/overlay/media_board.rs` | CRUD board, ingestion asynchrone, liste des ingestions | handlers `create_item`, `list_ingestions`, `complete_board_item` |
 | `http/overlay/media_upload.rs` | upload brut → dossier temporaire → tâche asynchrone | `upload_item`, `UploadTempDir` |
 | `http/overlay/media_ingestion.rs` | tâche `tokio::spawn` : pipeline, item, registre, WS | `spawn_ingestion`, `run_ingestion` |
+| `http/overlay/say.rs` | `POST /overlay/say` : synthèse vocale depuis le board (équivalent de `/dire` et `/cdire`) | `say`, `parse_request` ; tests `say_tests.rs` (Piper remplacé par `fixtures/fake-piper.*`) |
 | `http/overlay/tests.rs` | 15 tests in-process + 1 test unitaire | liste §11 |
 
 ## 3. Table des routes
@@ -76,6 +77,7 @@ Conventions appliquées dans tout le module :
 |---------|--------|------|---------|--------|
 | `POST` | `/overlay/pair/consume` | code d'appairage (corps) | `pair.rs:84` | `200` JSON (§5) |
 | `POST` | `/overlay/ingest-code` | `Authorization: Bearer` (membre, droit `TriggerPlayback`) | `ingest_code.rs` | `200 {code,expiresAt,apiBaseUrl}` |
+| `POST` | `/overlay/say` | `Authorization: Bearer` (droit `TriggerPlayback`, refusé en lecture seule) | `say.rs` | corps `{text, caption?, anonymous?}` : synthèse Piper de `text` (1 000 caractères au plus, comme `/dire`), `caption` affiché, `anonymous` = `/cdire` (auteur masqué) ; job de priorité 0 créé comme par la commande Discord. `200 {queued,jobId,durationSec}` ; `400 invalid_payload` / `text_too_long` (`maxChars`) ; `403 read_only_session` / `forbidden` ; `502 speech_failed` |
 | `GET` | `/overlay/media/{assetId}` | URL signée HMAC (`clientId`, `exp`, `sig`) | `media.rs:86` | `200`/`206`, binaire |
 | `GET` | `/overlay/media-board/items` | `Authorization: Bearer` | `media_board.rs:list_items` | `200 {total,limit,offset,items}` |
 | `POST` | `/overlay/media-board/items` | `Authorization: Bearer` | `media_board.rs:create_item` | `202 {ingestionId}` |

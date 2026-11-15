@@ -377,6 +377,27 @@
       const body = payload.body || {};
       return acceptIngestion({ guildId: payload.guildId, name: String(body.url || ''), title: body.title, message: body.message, contentType: 'video/mp4', received: 0 });
     }
+    if (path === '/overlay/say' && method === 'POST') {
+      // Speech synthesis (/dire). A text containing "panne" fails like a
+      // broken Piper, to preview the error state.
+      const body = payload.body || {};
+      const spoken = String(body.text || '').split(/\s+/).filter(Boolean).join(' ');
+      if (!spoken) {
+        return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+      }
+      if (Array.from(spoken).length > 1000) {
+        return { ok: false, status: 400, body: { error: 'text_too_long', maxChars: 1000 } };
+      }
+      if (spoken.includes('panne')) {
+        return delay(600).then(() => ({ ok: false, status: 502, body: { error: 'speech_failed' } }));
+      }
+      const job = { id: 'j' + nextJob++, status: 'pending', title: null, text: body.caption || null, authorName: body.anonymous ? null : 'Quentin', durationSec: Math.max(1, Math.round(spoken.length / 15)), kind: 'audio' };
+      return delay(600).then(() => {
+        queue.pending.push(job);
+        queueHint();
+        return ok({ queued: true, jobId: job.id, durationSec: job.durationSec });
+      });
+    }
     if (path === '/overlay/media-board/ingestions' && method === 'GET') {
       return ok({ items: ingestionList(payload.guildId) });
     }

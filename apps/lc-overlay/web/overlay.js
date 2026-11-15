@@ -205,7 +205,10 @@
         window.livechatOverlay.onSettings(handler);
       },
       onPlay: renderHandlers.onPlay,
-      onStop: () => playbackCountdownHandlers.clearOverlay(),
+      onStop: (payload) =>
+        playbackCountdownHandlers.clearOverlay({
+          reason: overlayLegacyPlaybackUtils.stopReportReason(payload),
+        }),
       onSettings,
       addWindowResizeListener: (handler) => {
         window.addEventListener('resize', handler);

@@ -13,12 +13,28 @@ export function jobTitle(job) {
   return job.title || job.text || (job.kind ? KIND_LABELS[job.kind] : null) || 'Média';
 }
 
-function openStopMenu(event) {
-  if (!can('stop')) {
-    openContextMenu(event, []);
-    return;
+// Stop actions offered for the playing media. « Chez moi » only clears this
+// device's overlay, so it needs no permission; « pour tous » stops the
+// guild's playback and requires the `stop` permission.
+export function stopActions(canStopForAll) {
+  const actions = [{ id: 'local', label: 'Arrêter chez moi', title: 'Arrêter le média sur cet appareil seulement', onSelect: stopPlaybackLocally }];
+  if (canStopForAll) {
+    actions.push({ id: 'all', label: 'Arrêter pour tous', title: 'Arrêter le média pour toute la guilde', onSelect: stopPlayback });
   }
-  openContextMenu(event, [{ label: 'Arrêter la lecture', icon: 'stop', onSelect: stopPlayback }]);
+  return actions;
+}
+
+function stopButtons() {
+  return stopActions(can('stop')).map((action) =>
+    h('button', { class: action.id === 'local' ? 'btn is-quiet' : 'btn', title: action.title, onClick: action.onSelect }, icon('stop'), action.label),
+  );
+}
+
+function openStopMenu(event) {
+  openContextMenu(
+    event,
+    stopActions(can('stop')).map((action) => ({ label: action.label, icon: 'stop', onSelect: action.onSelect })),
+  );
 }
 
 function openPendingMenu(event, job) {
@@ -68,7 +84,7 @@ export function renderQueue() {
           playing.authorName ? h('span', { class: 'meta' }, `par ${playing.authorName}`) : null,
           h('span', { class: 'spacer' }),
           h('span', { class: 'meta' }, `${formatDuration(Math.min(elapsed, playing.durationSec)) || '0:00'} / ${formatDuration(playing.durationSec) || '0:00'}`),
-          can('stop') ? h('button', { class: 'btn', onClick: stopPlayback }, icon('stop'), 'Arrêter') : null,
+          stopButtons(),
         ),
         h('div', { class: 'progress' }, h('span', { style: `width:${Math.round(ratio * 100)}%` })),
       ),
@@ -123,6 +139,22 @@ export async function stopPlayback() {
   setTimeout(refreshQueueAutomatically, 400);
 }
 
+// Stops the media on this device only: the guild keeps playing it, so the
+// queue is left as it is.
+export async function stopPlaybackLocally() {
+  const response = await run(() => invoke('media_board_stop_local'));
+  if (!response) {
+    return;
+  }
+  if (response.ok) {
+    notify('Média arrêté sur cet appareil.');
+  } else if (response.reason === 'nothing_playing') {
+    notify('Aucun média à l’écran sur cet appareil.');
+  } else {
+    notify(describeError(response.reason), true);
+  }
+}
+
 export async function removeJob(job) {
   await run(() => api('DELETE', `/overlay/queue/${encodeURIComponent(job.id)}`));
   loadQueue();
@@ -149,7 +181,7 @@ export function renderOnAir() {
     playing.authorName ? h('span', { class: 'meta' }, `par ${playing.authorName}`) : null,
     h('span', { class: 'spacer' }),
     state.queue.pending.length ? h('span', { class: 'meta' }, `${state.queue.pending.length} en attente`) : null,
-    can('stop') ? h('button', { class: 'btn', onClick: stopPlayback }, icon('stop'), 'Arrêter') : null,
+    ...stopButtons(),
   ];
   bar.replaceChildren(...children.filter(Boolean));
 }

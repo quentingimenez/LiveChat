@@ -69,8 +69,9 @@ export function createOverlayLegacyRuntimePlaybackCountdownHandlersUtils() {
                 emitPlaybackState,
             });
         }
-        function endPlaybackSession() {
+        function endPlaybackSession(reason) {
             params.playbackSessionUtils.endPlaybackSession({
+                reason,
                 getActivePlayback: () => params.state.activePlayback,
                 setActivePlayback: (nextPlayback) => {
                     params.state.activePlayback = nextPlayback;
@@ -136,8 +137,10 @@ export function createOverlayLegacyRuntimePlaybackCountdownHandlersUtils() {
                 scheduleMediaHeaderLayout: params.scheduleMediaHeaderLayout,
             });
         }
-        function clearOverlay() {
-            endPlaybackSession();
+        // `options.reason` is echoed in the playback-stop report (see
+        // `stopReportReason`); callers ending a playback normally pass none.
+        function clearOverlay(options) {
+            endPlaybackSession(options && typeof options.reason === 'string' ? options.reason : null);
             clearTimer();
             clearCountdown();
             params.clearMediaHeaderLayoutRaf();

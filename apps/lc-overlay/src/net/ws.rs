@@ -355,7 +355,7 @@ async fn supervise(
                 &app,
                 &guild_id,
                 ConnectionStatus::Disabled,
-                Some("guilde en sourdine".to_string()),
+                Some("guilde en pause".to_string()),
             );
             if !wait_for_command(&mut commands, &app).await {
                 return;

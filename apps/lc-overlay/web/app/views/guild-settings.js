@@ -152,7 +152,7 @@ function renderSound(settings, guild) {
     h('p', { class: 'settings-hint is-under' }, 'Multiplié par le volume général des Paramètres.'),
     controlRow('Couper le son des médias', mediaMute, 'guild-settings-media-mute'),
     h('p', { class: 'settings-hint is-under' }, 'Les médias de cette guilde restent affichés, sans leur son.'),
-    controlRow('Sourdine', mute, 'guild-settings-mute'),
+    controlRow('Mettre en pause', mute, 'guild-settings-mute'),
     h('p', { class: 'settings-hint is-under' }, 'Plus aucun média de cette guilde ne s’affiche sur cet appareil.'),
   );
 }

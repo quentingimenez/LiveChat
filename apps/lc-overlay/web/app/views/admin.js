@@ -43,7 +43,7 @@ function presenceLabel(member, selfMuted) {
     return 'En ligne';
   }
   if (member.isSelf && selfMuted) {
-    return 'En sourdine';
+    return 'En pause';
   }
   return relativeTime(member.lastSeenAt);
 }

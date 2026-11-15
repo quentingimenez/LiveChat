@@ -152,6 +152,9 @@ mod tests {
             role: GuildRole::Admin,
             created_at: fixed_now(),
             removed_at: None,
+            discord_user_id: None,
+            profile_custom: true,
+            discord_synced_at: None,
         };
         harness.db.guild_members().create(&member).await.unwrap();
         let client = OverlayClient {

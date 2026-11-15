@@ -155,6 +155,23 @@ courte localisée (« Ce code donne le rôle admin. »). La description reprend
 ensuite le texte legacy (`API URL`, code, « Expire dans N minute(s). », N = TTL
 effectif, minimum 1 minute). Embed bleu éphémère.
 
+Un code `normal` est personnel : à l'appairage, l'overlay rejoint le membre
+LiveChat lié au compte Discord de l'auteur, créé au premier appairage avec son
+pseudo et son avatar Discord (voir `guilds-roles.md`, « Profil lié au compte
+Discord »). Le code `invite` est celui à donner à quelqu'un d'autre ; la réponse
+d'un code `normal` le rappelle en une ligne (`pair_code_personal`).
+
+### Profil des membres liés
+
+Après la résolution de la guilde, `handle()` recopie le pseudo et l'avatar de
+l'auteur de **chaque** commande sur le membre lié à son compte
+(`refresh_linked_profile` → `sync_discord_profile`), tant que ce membre suit
+Discord (`profile_custom = 0`). Les noms viennent de `lc_discord::identity`
+(`display_name`, `avatar_url`, `member_name` : 40 caractères au plus), partagés
+avec la glue serenity et la lecture REST du serveur
+(`lc-server/src/discord/profiles.rs`). Un échec est journalisé et n'empêche pas
+la commande.
+
 La commande est **acquittée avant le travail en base** : `plan_deferral` renvoie
 `Deferral::Ephemeral` pour `/pair-code`, la glue envoie un `type: 5` éphémère
 puis édite la réponse d'origine avec le code (`edit_original_interaction_response`).

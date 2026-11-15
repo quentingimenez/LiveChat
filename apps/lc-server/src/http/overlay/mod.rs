@@ -89,6 +89,8 @@ mod ingestion_tests;
 #[cfg(test)]
 mod media_upload_tests;
 #[cfg(test)]
+mod profile_tests;
+#[cfg(test)]
 mod tests;
 
 /// Sous-routeur monté par `crate::http::mod` puis `crate::app::router`.

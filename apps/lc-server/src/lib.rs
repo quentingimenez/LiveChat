@@ -155,6 +155,9 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         state = state.with_discord_leaver(Arc::new(discord::guild_leave::SerenityLeaver::new(
             token.expose_secret(),
         )));
+        state = state.with_discord_profiles(Arc::new(discord::profiles::SerenityProfiles::new(
+            token.expose_secret(),
+        )));
     }
     wiring::install(&state, &hub);
 

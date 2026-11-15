@@ -133,7 +133,7 @@
     },
     {
       "id": "rate_limit_429",
-      "description": "Après 100 requêtes, le rate limit répond 429 normalisé avec ses en-têtes",
+      "description": "Après 1 000 requêtes, le rate limit répond 429 normalisé avec ses en-têtes",
       "method": "GET",
       "path": "/health",
       "require": ["rate_limit_probe"],

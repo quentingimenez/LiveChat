@@ -3,7 +3,7 @@
 import { api, run } from '../core/api.js';
 import { avatarNode, h, icon } from '../core/dom.js';
 import { formatCode, relativeTime } from '../core/format.js';
-import { can, ROLE_LABELS, state } from '../core/state.js';
+import { activeGuild, can, ROLE_LABELS, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import { confirmDialog, copyText } from '../core/ui.js';
 import { loadAdmin, loadGuild } from '../data.js';
@@ -39,10 +39,24 @@ export function renderAdmin() {
   );
 }
 
+// A muted overlay closes its socket, so the server sees it offline. For this
+// device the reason is known: say so instead of a last-seen time.
+function presenceLabel(member, selfMuted) {
+  if (member.connected) {
+    return 'En ligne';
+  }
+  if (member.isSelf && selfMuted) {
+    return 'En sourdine';
+  }
+  return relativeTime(member.lastSeenAt);
+}
+
 function renderMembers() {
   if (state.members.length === 0) {
     return h('p', { class: 'meta' }, 'Chargement des membres…');
   }
+  const guild = activeGuild();
+  const selfMuted = Boolean(guild && guild.membership.muted);
   return h(
     'div',
     { class: 'list' },
@@ -52,7 +66,7 @@ function renderMembers() {
         { class: 'line is-member' },
         avatarNode(member.displayName, member.avatar),
         h('div', { class: 'ellipsis' }, member.displayName, member.isSelf ? h('span', { class: 'sub' }, '  (toi)') : null),
-        h('span', { class: 'sub seen' }, member.connected ? 'En ligne' : relativeTime(member.lastSeenAt)),
+        h('span', { class: 'sub seen' }, presenceLabel(member, selfMuted)),
         h(
           'select',
           { class: 'field', 'aria-label': `Rôle de ${member.displayName}`, onChange: (event) => changeRole(member, event.target.value) },

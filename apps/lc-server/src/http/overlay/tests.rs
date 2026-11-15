@@ -673,7 +673,7 @@ async fn pair_consume_pair_code_falls_back_to_the_discord_author() {
 }
 
 #[tokio::test]
-async fn pair_consume_pair_code_typed_name_and_avatar_win() {
+async fn pair_consume_personal_pair_code_uses_the_discord_identity() {
     let dir = TempDir::new().expect("tempdir");
     let (app, db) = harness(dir.path()).await;
     let mut code = pairing_entry(
@@ -687,6 +687,7 @@ async fn pair_consume_pair_code_typed_name_and_avatar_win() {
     code.author_image = Some("https://cdn.example/discord.png".to_owned());
     db.pairing_codes().create(&code).await.expect("code créé");
 
+    // The overlay always sends its device profile: a personal code ignores it.
     let (status, _, bytes) = send(
         &app,
         request(
@@ -703,7 +704,7 @@ async fn pair_consume_pair_code_typed_name_and_avatar_win() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let body = body_json(&bytes);
-    assert_eq!(body["displayName"], "Léa");
+    assert_eq!(body["displayName"], "Discordeur");
 
     let member_id =
         GuildMemberId::parse(body["memberId"].as_str().expect("memberId")).expect("uuid");
@@ -713,11 +714,14 @@ async fn pair_consume_pair_code_typed_name_and_avatar_win() {
         .await
         .expect("lecture membre")
         .expect("membre créé");
-    assert_eq!(member.display_name, "Léa");
+    assert_eq!(member.display_name, "Discordeur");
     assert_eq!(
         member.avatar.as_deref(),
-        Some("https://typed.example/lea.png")
+        Some("https://cdn.example/discord.png")
     );
+    assert_eq!(member.discord_user_id.as_deref(), Some("4242"));
+    assert!(member.follows_discord());
+    assert_eq!(member.discord_synced_at, Some(fixed_now()));
 
     let client_id =
         OverlayClientId::parse(body["clientId"].as_str().expect("clientId")).expect("uuid");
@@ -727,11 +731,124 @@ async fn pair_consume_pair_code_typed_name_and_avatar_win() {
         .await
         .expect("lecture client")
         .expect("client créé");
-    assert_eq!(client.default_author_name.as_deref(), Some("Léa"));
+    assert_eq!(client.default_author_name.as_deref(), Some("Discordeur"));
     assert_eq!(
         client.default_author_image.as_deref(),
-        Some("https://typed.example/lea.png")
+        Some("https://cdn.example/discord.png")
     );
+}
+
+#[tokio::test]
+async fn pair_consume_personal_pair_code_reuses_the_linked_member() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, db) = harness(dir.path()).await;
+    for code in ["FIRST1", "AGAIN2"] {
+        db.pairing_codes()
+            .create(&pairing_entry(
+                code,
+                &guild(),
+                PairingMode::Normal,
+                false,
+                Some("Discordeur"),
+                Some(fixed_now() + Duration::minutes(5)),
+            ))
+            .await
+            .expect("code créé");
+    }
+    let pair = |code: &'static str, device: &'static str| {
+        let app = app.clone();
+        async move {
+            let (status, _, bytes) = send(
+                &app,
+                request(
+                    Method::POST,
+                    "/overlay/pair/consume",
+                    None,
+                    Some(&json!({"code": code, "deviceName": device})),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            body_json(&bytes)
+        }
+    };
+    let first = pair("FIRST1", "PC salon").await;
+    let first_member =
+        GuildMemberId::parse(first["memberId"].as_str().expect("memberId")).expect("uuid");
+    // An admin promoted the member meanwhile: pairing again keeps the role.
+    db.guild_members()
+        .set_role(first_member, GuildRole::Admin)
+        .await
+        .expect("rôle");
+
+    let second = pair("AGAIN2", "PC bureau").await;
+    assert_eq!(second["memberId"], first["memberId"]);
+    assert_eq!(second["role"], "admin");
+    let members = db
+        .guild_members()
+        .list_by_guild(&guild())
+        .await
+        .expect("membres");
+    assert_eq!(members.len(), 1, "same Discord account, same member");
+    let devices = db
+        .overlay_clients()
+        .list_active_by_member(first_member)
+        .await
+        .expect("overlays");
+    assert_eq!(devices.len(), 2);
+}
+
+#[tokio::test]
+async fn pair_consume_read_only_invitation_never_uses_its_author() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, db) = harness(dir.path()).await;
+    let code = pairing_entry(
+        "GUEST7",
+        &guild(),
+        PairingMode::InviteReadOnly,
+        false,
+        Some("Admin Discord"),
+        None,
+    );
+    db.pairing_codes().create(&code).await.expect("code créé");
+
+    // Without a typed name, the author's identity is not borrowed.
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::POST,
+            "/overlay/pair/consume",
+            None,
+            Some(&json!({"code": "GUEST7"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(&bytes)["error"], "display_name_required");
+
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::POST,
+            "/overlay/pair/consume",
+            None,
+            Some(&json!({"code": "GUEST7", "displayName": "Spectateur"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let body = body_json(&bytes);
+    assert_eq!(body["displayName"], "Spectateur");
+    let member_id =
+        GuildMemberId::parse(body["memberId"].as_str().expect("memberId")).expect("uuid");
+    let member = db
+        .guild_members()
+        .get(member_id)
+        .await
+        .expect("lecture membre")
+        .expect("membre créé");
+    assert_eq!(member.discord_user_id, None);
+    assert!(member.profile_custom);
 }
 
 #[tokio::test]
@@ -781,6 +898,9 @@ async fn pair_consume_device_code_needs_no_display_name() {
         role: GuildRole::Member,
         created_at: fixed_now() - Duration::minutes(5),
         removed_at: None,
+        discord_user_id: None,
+        profile_custom: true,
+        discord_synced_at: None,
     };
     db.guild_members()
         .create(&member)
@@ -1442,7 +1562,11 @@ async fn media_board_lists_filters_and_paginates() {
     let (status, headers, fetched) = send(&app, request(Method::GET, path, None, None)).await;
     assert_eq!(status, StatusCode::OK, "{fetched:?}");
     assert_eq!(fetched, b"ccc");
-    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    // Board media stay in the client's cache until their URL expires.
+    assert_eq!(
+        headers[header::CACHE_CONTROL],
+        "private, max-age=3600, immutable"
+    );
     let mut ranged = request(Method::GET, path, None, None);
     ranged.headers_mut().insert(
         header::RANGE,
@@ -1861,7 +1985,10 @@ async fn media_board_media_is_bound_to_the_client_guild_and_role() {
     let (status, headers, body) = send(&app, request(Method::GET, &uri, None, None)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, bytes);
-    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(
+        headers[header::CACHE_CONTROL],
+        "private, max-age=300, immutable"
+    );
     let (status, headers, head_body) = send(&app, request(Method::HEAD, &uri, None, None)).await;
     assert_eq!(status, StatusCode::OK);
     assert!(head_body.is_empty());

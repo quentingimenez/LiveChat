@@ -13,11 +13,12 @@
 
 import { installContextMenuGuard } from './core/contextmenu.js';
 import { invoke, listen } from './core/ipc.js';
-import { state } from './core/state.js';
+import { activeGuild, state } from './core/state.js';
 import { notify } from './core/toast.js';
 import {
   applyGuilds,
   clearQueueEndTimer,
+  guildInfoAge,
   loadGuildInfo,
   loadQueue,
   refreshQueueAutomatically,
@@ -46,7 +47,8 @@ initUploadIngestion();
 initGuildRemovalNotices();
 
 // The queue is refreshed on a WebSocket hint instead of polling: the server
-// limits every route to 100 requests per 15 minutes and per IP.
+// limits each IP to a fixed number of requests per 15 minutes, shared by every
+// device behind the same connection.
 let queueHintTimer = null;
 listen('overlay://queue-hint', (payload) => {
   if (!payload || payload.guildId !== state.activeGuildId) {
@@ -81,7 +83,18 @@ setInterval(() => {
   }
 }, 30000);
 
-// Focus and visibility share the same 15 s throttle.
+// Focus and visibility share one throttle. While the socket is up, its hints
+// already keep the queue current: a slower catch-up read is enough.
+const FOCUS_QUEUE_THROTTLE_MS = 15000;
+const FOCUS_QUEUE_THROTTLE_CONNECTED_MS = 60000;
+// The count of connected overlays also follows the socket's peer updates.
+const FOCUS_GUILD_THROTTLE_MS = 60000;
+
+function activeGuildConnected() {
+  const guild = activeGuild();
+  return Boolean(guild && guild.connection && guild.connection.status === 'connected');
+}
+
 let lastFocusQueueLoad = 0;
 function loadQueueOnFocus() {
   const now = Date.now();
@@ -95,25 +108,21 @@ function loadQueueOnFocus() {
     loadQueue();
     return;
   }
-  if (now - lastFocusQueueLoad < 15000) {
+  const throttle = activeGuildConnected() ? FOCUS_QUEUE_THROTTLE_CONNECTED_MS : FOCUS_QUEUE_THROTTLE_MS;
+  if (now - lastFocusQueueLoad < throttle) {
     return;
   }
   lastFocusQueueLoad = now;
   refreshQueueAutomatically();
 }
 
-// The count of connected overlays is read at most once every 15 s.
-let lastFocusGuildLoad = 0;
+// A background read: a failure keeps the last info and shows no toast, or
+// every alt-tab would show the same error again.
 function loadGuildOnFocus() {
-  if (!state.activeGuildId) {
+  if (!state.activeGuildId || guildInfoAge() < FOCUS_GUILD_THROTTLE_MS) {
     return;
   }
-  const now = Date.now();
-  if (now - lastFocusGuildLoad < 15000) {
-    return;
-  }
-  lastFocusGuildLoad = now;
-  loadGuildInfo();
+  loadGuildInfo({ quiet: true });
 }
 
 window.addEventListener('focus', () => {

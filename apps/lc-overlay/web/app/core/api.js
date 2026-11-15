@@ -1,5 +1,6 @@
 // REST calls to the active guild, through the Rust shell.
 
+import { serverStatusMessage } from './http-status.js';
 import { invoke } from './ipc.js';
 import { describeError, state } from './state.js';
 import { notify } from './toast.js';
@@ -9,7 +10,7 @@ export async function api(method, path, body) {
   const response = await invoke('guild_api', { payload: { guildId, method, path, body: body ?? null } });
   if (!response.ok) {
     const code = response.body && response.body.error;
-    const error = new Error(describeError(code, `Le serveur a répondu ${response.status}.`));
+    const error = new Error(describeError(code, serverStatusMessage(response.status)));
     error.code = code;
     error.status = response.status;
     throw error;

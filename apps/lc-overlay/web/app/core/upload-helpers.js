@@ -1,5 +1,7 @@
-// Pure helpers for media uploads. No imports: this module must also load under
-// Node for its unit tests.
+// Pure helpers for media uploads. Only pure modules are imported: this one
+// must also load under Node for its unit tests.
+
+import { serverStatusMessage } from './http-status.js';
 
 // Largest file accepted by the board (100 MiB).
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
@@ -55,7 +57,7 @@ export function uploadErrorMessage(status, body, labels) {
   if (known) {
     return known;
   }
-  return status ? `Le serveur a répondu ${status}.` : 'L’envoi a été refusé.';
+  return status ? serverStatusMessage(status) : 'L’envoi a été refusé.';
 }
 
 // Readable message for a failed asynchronous conversion. `labels` is the known

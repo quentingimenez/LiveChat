@@ -772,6 +772,21 @@ mod tests {
     }
 
     #[test]
+    fn settings_set_accepts_an_escape_shortcut() {
+        let patched = apply_settings_patch(
+            &paired_config(),
+            &json!({ "shortcuts": { "stop": "Shift+Escape", "muteAll": "CommandOrControl+Alt+Escape" } }),
+            &sample_displays(),
+        )
+        .expect("escape shortcuts");
+        assert_eq!(patched.shortcuts.stop.as_deref(), Some("Shift+Escape"));
+        assert_eq!(
+            patched.shortcuts.mute_all.as_deref(),
+            Some("CommandOrControl+Alt+Escape")
+        );
+    }
+
+    #[test]
     fn settings_set_response_matches_the_board_shape() {
         let view = build_settings_view(
             &paired_config(),

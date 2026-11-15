@@ -1,7 +1,7 @@
 //! Coquille applicative Tauri 2 de l'overlay LiveChat (Phase 8a).
 //!
 //! Cette crate construit les deux fenêtres (overlay transparent click-through,
-//! board 1180×780), le tray, le single-instance, l'autostart, le squelette des
+//! board 1400×880), le tray, le single-instance, l'autostart, le squelette des
 //! raccourcis globaux et l'updater. L'appairage se fait désormais dans la board.
 //! Le renderer existant (`web/bridge.js`) est embarqué ; le client WebSocket et
 //! la logique métier arrivent en Phase 8b sans changer le contrat exposé.

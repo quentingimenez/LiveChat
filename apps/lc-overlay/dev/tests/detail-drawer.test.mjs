@@ -9,8 +9,11 @@ import {
   cardHovered,
   CLOSED_VIEW,
   drawerUsed,
+  artworkOf,
   isPeeking,
+  mediaPath,
   pointerLeft,
+  previewKey,
   pruneView,
   sameView,
   shownId,
@@ -92,4 +95,45 @@ test('pruneView drops a peek on a deleted media', () => {
 test('sameView compares the three fields', () => {
   assert.equal(sameView(pinnedOn('a'), pinnedOn('a')), true);
   assert.equal(sameView(pinnedOn('a'), cardHovered(pinnedOn('a'), 'b')), false);
+});
+
+// --- preview of the shown media ---
+const audio = (artwork) => ({
+  id: 'a',
+  mediaUrl: 'https://srv.test/media/a1?exp=100&sig=x',
+  media: { kind: 'audio' },
+  artwork,
+});
+
+test('artworkOf: only a picture with a URL counts', () => {
+  assert.equal(artworkOf(audio(null)), null);
+  assert.equal(artworkOf(audio(undefined)), null);
+  assert.equal(artworkOf(audio({ url: '' })), null);
+  assert.equal(artworkOf(audio({ url: null, width: 1, height: 1 })), null);
+  assert.equal(artworkOf(audio({ url: 'https://srv.test/media/p1?sig=y' })).url, 'https://srv.test/media/p1?sig=y');
+});
+
+test('mediaPath drops the signature of a URL', () => {
+  assert.equal(mediaPath('https://srv.test/media/a1?exp=100&sig=x'), 'https://srv.test/media/a1');
+  assert.equal(mediaPath(''), null);
+  assert.equal(mediaPath(null), null);
+});
+
+test('previewKey: a new signature keeps the preview', () => {
+  const before = audio({ url: 'https://srv.test/media/p1?exp=100&sig=x' });
+  const after = { ...before, mediaUrl: 'https://srv.test/media/a1?exp=900&sig=z', artwork: { url: 'https://srv.test/media/p1?exp=900&sig=z' } };
+  assert.equal(previewKey(before), previewKey(after));
+});
+
+test('regression: removing, adding or replacing the picture of an audio rebuilds its preview', () => {
+  const withPicture = audio({ url: 'https://srv.test/media/p1?sig=x' });
+  const without = audio(null);
+  const replaced = audio({ url: 'https://srv.test/media/p2?sig=x' });
+  assert.notEqual(previewKey(withPicture), previewKey(without));
+  assert.notEqual(previewKey(withPicture), previewKey(replaced));
+});
+
+test('previewKey: the picture only matters for an audio', () => {
+  const video = { id: 'v', mediaUrl: 'https://srv.test/media/v1?sig=x', media: { kind: 'video' }, artwork: null };
+  assert.equal(previewKey(video), previewKey({ ...video, artwork: { url: 'https://srv.test/media/p1' } }));
 });

@@ -76,9 +76,13 @@ export function createOverlayLegacyPlaybackSessionUtils() {
         const endedJobId = activePlayback.jobId;
         params.emitPlaybackState('ended');
         if (typeof params.reportPlaybackStop === 'function') {
-            params.reportPlaybackStop({
-                jobId: endedJobId,
-            });
+            // A stop on this device only is reported as such: the shell must
+            // not end the job for the other overlays of the guild.
+            const report = { jobId: endedJobId };
+            if (typeof params.reason === 'string' && params.reason) {
+                report.reason = params.reason;
+            }
+            params.reportPlaybackStop(report);
             params.logDebug(`[OVERLAY] playback-stop sent (jobId: ${endedJobId})`);
         }
         params.setActivePlayback(null);

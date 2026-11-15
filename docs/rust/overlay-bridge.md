@@ -803,8 +803,11 @@ Quatre commandes réservées à la fenêtre `board`. Le corps est le fichier bru
 (pas de multipart) ; le jeton reste dans le shell Rust. `ApiResponse` a la même
 forme que `guild_api` : `{ "ok": bool, "status": number, "body": object|null }`.
 
-1. `invoke('media_upload_start', { payload: { guildId?, filename, title?, message?, contentType? } })`
+1. `invoke('media_upload_start', { payload: { guildId?, filename, title?, message?, contentType?, replaceItemId? } })`
    → `{ "uploadId": "uuid-v4" }`.
+   - `replaceItemId` (facultatif) : identifiant de l'item du board dont le
+     fichier envoyé remplace le média (paramètre `replaceItemId` de la route) ;
+     une valeur qui n'est pas un UUID est refusée (`"média inconnu"`).
    - `filename` obligatoire (1 à 255 caractères, sans `/`, `\` ni
      caractère de contrôle), sinon erreur `"nom de fichier invalide"`.
    - Guilde inconnue → erreur `"guilde inconnue"`.

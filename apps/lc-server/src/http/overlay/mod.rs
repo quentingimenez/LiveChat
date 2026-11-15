@@ -12,7 +12,8 @@
 //! | `GET` | `/overlay/media/{assetId}` | URL signée HMAC (`exp`, `sig`, `clientId`) |
 //! | `GET` | `/overlay/media-board/items` | `Authorization: Bearer` |
 //! | `POST` | `/overlay/media-board/items` | `Authorization: Bearer` — **écriture refusée en `invite_read_only`** |
-//! | `POST` | `/overlay/media-board/upload?filename=&title=&message=` | `Authorization: Bearer` — **writes refused in `invite_read_only`** |
+//! | `POST` | `/overlay/media-board/upload?filename=&title=&message=&replaceItemId=` | `Authorization: Bearer` — **writes refused in `invite_read_only`** |
+//! | `POST` | `/overlay/media-board/items/{itemId}/edit` | `Authorization: Bearer` — **writes refused in `invite_read_only`** |
 //! | `GET` | `/overlay/media-board/ingestions` | `Authorization: Bearer` |
 //! | `GET` | `/overlay/media-board/media/{assetId}` | URL signée (`clientId`, `exp`, `sig`) |
 //! | `PATCH` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` — **écriture refusée en `invite_read_only`** |
@@ -76,6 +77,7 @@ pub(crate) mod guild;
 mod ingest_code;
 mod media;
 mod media_board;
+mod media_edit;
 mod media_ingestion;
 mod media_upload;
 mod pair;
@@ -90,6 +92,8 @@ mod board_extras_tests;
 mod guild_tests;
 #[cfg(test)]
 mod ingestion_tests;
+#[cfg(test)]
+mod media_edit_tests;
 #[cfg(test)]
 mod media_upload_tests;
 #[cfg(test)]
@@ -125,6 +129,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/overlay/media-board/items/{item_id}",
             axum::routing::patch(media_board::update_item).delete(media_board::delete_item),
+        )
+        .route(
+            "/overlay/media-board/items/{item_id}/edit",
+            post(media_edit::edit_item),
         )
         .route(
             "/overlay/media-board/items/{item_id}/favorite",

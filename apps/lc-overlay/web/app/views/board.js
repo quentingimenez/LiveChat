@@ -23,6 +23,7 @@ import { notify } from '../core/toast.js';
 import { confirmDialog, copyText, openDialog } from '../core/ui.js';
 import { loadItems, refreshQueueAutomatically } from '../data.js';
 import { openAddDialog } from './add-media.js';
+import { canOpenEditor, openMediaEditor } from './editor/index.js';
 import { openUploadMenu, renderUploadCard, startFileUpload, uploadsForGuild } from './uploads.js';
 import { renderView } from './view.js';
 
@@ -55,7 +56,8 @@ function openCardMenu(event, item) {
     canFavorite()
       ? { label: item.favorite ? 'Retirer des favoris' : 'Ajouter aux favoris', icon: 'star', onSelect: () => toggleFavorite(item) }
       : null,
-    item.canEdit ? { label: 'Modifier…', onSelect: () => openEditDialog(item) } : null,
+    canOpenEditor(item) ? { label: 'Ouvrir dans l’éditeur…', icon: 'edit', onSelect: () => openMediaEditor(item, itemTitle(item)) } : null,
+    item.canEdit ? { label: 'Modifier les infos…', onSelect: () => openEditDialog(item) } : null,
     can('play')
       ? {
           label: shortcutFor(item.id) ? 'Changer le raccourci' : 'Définir un raccourci',
@@ -706,7 +708,7 @@ window.addEventListener('resize', () => {
 });
 
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && state.selectedId && !state.capturing && !document.querySelector('#dialog-root .dialog')) {
+  if (event.key === 'Escape' && state.selectedId && !state.capturing && !document.getElementById('dialog-root').firstElementChild) {
     closeDetail();
   }
 });
@@ -936,7 +938,8 @@ function renderDetail(item) {
       { class: 'row is-wrap' },
       can('play') ? h('button', { class: 'btn', onClick: () => startCapture(item) }, shortcut ? 'Changer le raccourci' : 'Définir un raccourci') : null,
       can('play') && shortcut ? h('button', { class: 'btn is-quiet', onClick: () => saveShortcut(item, null) }, 'Retirer') : null,
-      item.canEdit ? h('button', { class: 'btn', onClick: () => openEditDialog(item) }, 'Modifier') : null,
+      canOpenEditor(item) ? h('button', { class: 'btn', title: 'Découper, recadrer, dessiner…', onClick: () => openMediaEditor(item, itemTitle(item)) }, icon('edit'), 'Éditer') : null,
+      item.canEdit ? h('button', { class: 'btn', onClick: () => openEditDialog(item) }, 'Infos') : null,
       h('span', { class: 'spacer' }),
       item.canEdit ? h('button', { class: 'btn is-danger', onClick: () => openDeleteDialog(item) }, 'Supprimer') : null,
     ),
@@ -1141,7 +1144,7 @@ export function openEditDialog(item) {
       artworkFields,
       h('div', { class: 'actions' }, h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'), h('button', { class: 'btn', type: 'submit' }, 'Enregistrer')),
     );
-    return [h('h2', null, 'Modifier le média'), h('p', null, 'Un champ vide efface la valeur.'), form];
+    return [h('h2', null, 'Infos du média'), h('p', null, 'Un champ vide efface la valeur.'), form];
   });
 }
 

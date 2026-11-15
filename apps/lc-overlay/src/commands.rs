@@ -247,6 +247,9 @@ struct MediaUploadStartRequest {
     message: Option<String>,
     #[serde(default)]
     content_type: Option<String>,
+    /// Board item whose media the uploaded file replaces (optional).
+    #[serde(default)]
+    replace_item_id: Option<String>,
 }
 
 /// Payload of `media_upload_finish` / `media_upload_cancel`.
@@ -1249,6 +1252,7 @@ pub fn media_upload_start(
         &filename,
         parsed.title.as_deref(),
         parsed.message.as_deref(),
+        parsed.replace_item_id.as_deref(),
         insecure,
     )?;
     let content_type = upload::normalize_content_type(parsed.content_type.as_deref());

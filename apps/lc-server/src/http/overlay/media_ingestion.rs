@@ -1,4 +1,5 @@
-//! Detached background ingestion used by the two media-board write routes.
+//! Detached background ingestion used by the media-board write routes (link,
+//! upload, edit).
 //!
 //! The handlers validate the request and register an ingestion in
 //! [`crate::ingestions::IngestionRegistry`]; this module owns the Tokio task that
@@ -10,6 +11,10 @@
 //! The task holds no reference to the HTTP connection: dropping the client
 //! request (proxy timeout, closed tab) never cancels the work.
 
+use std::path::PathBuf;
+
+use lc_domain::{MediaBoardItemId, MediaKind};
+use lc_media::edit::EditRecipe;
 use lc_protocol::{
     BoardChange, BoardChangedPayload, MediaIngestionError, MediaIngestionPayload, ServerMessage,
 };
@@ -18,10 +23,22 @@ use crate::app::AppState;
 use crate::media::service::MediaService;
 
 use super::auth::AuthedOverlayClient;
-use super::media_board::{complete_board_item, media_service_failure, IngestionFailure};
+use super::media_board::{
+    complete_board_item, media_service_failure, replace_board_item_media, IngestionFailure,
+};
 use super::media_upload::{upload_service_failure, UploadTempDir};
 
-/// The two ingestion sources accepted by the board.
+/// Where an ingested media goes on the board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BoardTarget {
+    /// A new board item (or the existing one already holding this media).
+    NewItem,
+    /// The media of this existing item is replaced; the item keeps its id,
+    /// title, message, author, date, favorites and picture.
+    Replace(MediaBoardItemId),
+}
+
+/// The ingestion sources accepted by the board.
 pub(super) enum IngestionInput {
     /// Remote source from `POST /overlay/media-board/items`.
     Link {
@@ -41,6 +58,17 @@ pub(super) enum IngestionInput {
         /// SHA-256 of the received bytes (upload cache key).
         content_sha256: String,
     },
+    /// Edit of a stored media from `POST /overlay/media-board/items/{id}/edit`.
+    Edit {
+        /// Stored file of the edited asset (already confined to the storage).
+        source_path: PathBuf,
+        /// Kind of the edited asset.
+        kind: MediaKind,
+        /// Recipe, already validated against the asset's stored duration.
+        recipe: Box<EditRecipe>,
+        /// Name of the result, without extension (shown as its source).
+        filename_stem: String,
+    },
 }
 
 /// Spawns the detached ingestion task.
@@ -54,6 +82,7 @@ pub(super) fn spawn_ingestion(
     auth: AuthedOverlayClient,
     ingestion_id: String,
     input: IngestionInput,
+    target: BoardTarget,
     title: Option<String>,
     message: Option<String>,
 ) {
@@ -62,6 +91,7 @@ pub(super) fn spawn_ingestion(
         auth.clone(),
         ingestion_id.clone(),
         input,
+        target,
         title,
         message,
     ));
@@ -91,6 +121,7 @@ async fn run_ingestion(
     auth: AuthedOverlayClient,
     ingestion_id: String,
     input: IngestionInput,
+    target: BoardTarget,
     title: Option<String>,
     message: Option<String>,
 ) {
@@ -127,12 +158,21 @@ async fn run_ingestion(
             drop(temp);
             result.map_err(|service_error| upload_service_failure(&service_error))
         }
+        IngestionInput::Edit {
+            source_path,
+            kind,
+            recipe,
+            filename_stem,
+        } => service
+            .ingest_edit(&source_path, kind, &recipe, &filename_stem)
+            .await
+            .map_err(|service_error| media_service_failure(&service_error)),
     };
 
     // The item is dated when it reaches the board, not when it was requested:
     // a long conversion must not land below the media added in the meantime.
-    let completed = match ingested {
-        Ok(asset) => {
+    let completed = match (ingested, target) {
+        (Ok(asset), BoardTarget::NewItem) => {
             complete_board_item(
                 &state,
                 &auth,
@@ -144,7 +184,18 @@ async fn run_ingestion(
             )
             .await
         }
-        Err(failure) => Err(failure),
+        (Ok(asset), BoardTarget::Replace(item_id)) => {
+            replace_board_item_media(
+                &state,
+                &auth,
+                service.db(),
+                item_id,
+                asset,
+                state.clock.now(),
+            )
+            .await
+        }
+        (Err(failure), _) => Err(failure),
     };
 
     match completed {
@@ -154,7 +205,7 @@ async fn run_ingestion(
 }
 
 /// Updates the registry, sends `media.ingestion`, and broadcasts
-/// `board.changed: added` for a new item.
+/// `board.changed`: `added` for a new item, `updated` for a replaced media.
 fn finish_success(
     state: &AppState,
     auth: &AuthedOverlayClient,
@@ -181,13 +232,17 @@ fn finish_success(
         ServerMessage::MediaIngestion(payload),
     );
 
-    if completed.created {
+    let change = if completed.created {
+        Some(BoardChange::Added)
+    } else if completed.replaced {
+        Some(BoardChange::Updated)
+    } else {
+        None
+    };
+    if let Some(change) = change {
         state.admin_hub.broadcast_to_guild(
             auth.guild_id(),
-            ServerMessage::BoardChanged(BoardChangedPayload {
-                change: BoardChange::Added,
-                item_id,
-            }),
+            ServerMessage::BoardChanged(BoardChangedPayload { change, item_id }),
         );
     }
 }

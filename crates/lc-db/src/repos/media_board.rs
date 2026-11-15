@@ -165,6 +165,72 @@ impl MediaBoardRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Replaces the media of an item: its id, title, message, author, date,
+    /// favorites and picture are kept, only `media_asset_id` changes.
+    ///
+    /// In the same transaction, the previous asset gets `released_expiry` when
+    /// no board item shows it any more (as a media or as a picture), like a
+    /// deleted item's asset. Returns the previous asset, or `None` when the
+    /// guild has no such item. The `UNIQUE (guild_id, media_asset_id)`
+    /// constraint becomes [`lc_domain::DomainError::Conflict`].
+    pub async fn replace_media(
+        &self,
+        id: MediaBoardItemId,
+        guild_id: &GuildId,
+        media_asset_id: MediaAssetId,
+        now: chrono::DateTime<chrono::Utc>,
+        released_expiry: chrono::DateTime<chrono::Utc>,
+    ) -> DbResult<Option<MediaAssetId>> {
+        let mut transaction = self.pool.begin().await?;
+        let previous_raw: Option<String> = sqlx::query_scalar(
+            "SELECT media_asset_id FROM media_board_items WHERE id = ? AND guild_id = ?",
+        )
+        .bind(id.to_canonical())
+        .bind(guild_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(previous_raw) = previous_raw else {
+            return Ok(None);
+        };
+        let previous = decode(TABLE, "media_asset_id", &previous_raw, MediaAssetId::parse)?;
+        if previous == media_asset_id {
+            return Ok(Some(previous));
+        }
+        sqlx::query("UPDATE media_board_items SET media_asset_id = ? WHERE id = ?")
+            .bind(media_asset_id.to_canonical())
+            .bind(id.to_canonical())
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| {
+                conflict_on_unique(
+                    error,
+                    format!(
+                        "le média {media_asset_id} est déjà présent sur le board de la guilde {guild_id}"
+                    ),
+                )
+            })?;
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM media_board_items \
+              WHERE media_asset_id = ? OR artwork_asset_id = ?",
+        )
+        .bind(previous.to_canonical())
+        .bind(previous.to_canonical())
+        .fetch_one(&mut *transaction)
+        .await?;
+        if remaining == 0 {
+            sqlx::query(
+                "UPDATE media_assets SET last_accessed_at = ?, expires_at = ? WHERE id = ?",
+            )
+            .bind(to_ms(now))
+            .bind(to_ms(released_expiry))
+            .bind(previous.to_canonical())
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok(Some(previous))
+    }
+
     /// Enregistre le membre auteur d'un élément (droit « modifier ses propres
     /// médias »). Retourne `false` si l'élément n'existe pas.
     pub async fn set_creator_member(

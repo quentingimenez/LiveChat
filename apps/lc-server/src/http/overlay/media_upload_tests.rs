@@ -29,22 +29,29 @@ use crate::shutdown::Shutdown;
 
 use super::auth;
 
-const TOKEN: &str = "3333333333333333333333333333333333333333333333333333333333333333";
-const READ_ONLY_TOKEN: &str = "4444444444444444444444444444444444444444444444444444444444444444";
+pub(super) const TOKEN: &str = "3333333333333333333333333333333333333333333333333333333333333333";
+pub(super) const READ_ONLY_TOKEN: &str =
+    "4444444444444444444444444444444444444444444444444444444444444444";
 const GUILD: &str = "123456789012345678";
 
-fn fixed_now() -> DateTime<Utc> {
+pub(super) fn fixed_now() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 11, 10, 12, 0, 0)
         .single()
         .unwrap()
 }
 
-fn guild() -> GuildId {
+pub(super) fn guild() -> GuildId {
     GuildId::parse(GUILD).unwrap()
 }
 
 fn test_config(media_dir: &Path, max_size_mb: u64) -> Config {
-    let pairs = vec![
+    Config::from_pairs(config_pairs(media_dir, max_size_mb, false)).unwrap()
+}
+
+/// `real_tools` keeps the default `ffmpeg`/`ffprobe` binaries (tests that run
+/// them for real); otherwise both point at missing files.
+fn config_pairs(media_dir: &Path, max_size_mb: u64, real_tools: bool) -> Vec<(String, String)> {
+    let mut pairs = vec![
         ("API_URL".to_owned(), "http://127.0.0.1:8099".to_owned()),
         (
             "MEDIA_URL_SECRET".to_owned(),
@@ -56,27 +63,24 @@ fn test_config(media_dir: &Path, max_size_mb: u64) -> Config {
         ),
         ("MEDIA_BOARD_MAX_TOTAL_MB".to_owned(), "64".to_owned()),
         ("MEDIA_MAX_SIZE_MB".to_owned(), max_size_mb.to_string()),
-        (
-            "FFPROBE_BINARY".to_owned(),
-            media_dir
-                .join("missing-ffprobe")
-                .to_string_lossy()
-                .into_owned(),
-        ),
-        (
-            "FFMPEG_BINARY".to_owned(),
-            media_dir
-                .join("missing-ffmpeg")
-                .to_string_lossy()
-                .into_owned(),
-        ),
     ];
-    Config::from_pairs(pairs).unwrap()
+    if !real_tools {
+        for (key, binary) in [
+            ("FFPROBE_BINARY", "missing-ffprobe"),
+            ("FFMPEG_BINARY", "missing-ffmpeg"),
+        ] {
+            pairs.push((
+                key.to_owned(),
+                media_dir.join(binary).to_string_lossy().into_owned(),
+            ));
+        }
+    }
+    pairs
 }
 
 /// Hub fake recording every `media.ingestion` and `board.changed` frame.
 #[derive(Debug, Default)]
-struct RecordingHub {
+pub(super) struct RecordingHub {
     events: Mutex<Vec<Recorded>>,
 }
 
@@ -87,7 +91,7 @@ enum Recorded {
 }
 
 impl RecordingHub {
-    fn client_messages(&self, client_id: Uuid) -> Vec<ServerMessage> {
+    pub(super) fn client_messages(&self, client_id: Uuid) -> Vec<ServerMessage> {
         self.events
             .lock()
             .unwrap()
@@ -99,7 +103,7 @@ impl RecordingHub {
             .collect()
     }
 
-    fn guild_messages(&self, guild_id: &GuildId) -> Vec<ServerMessage> {
+    pub(super) fn guild_messages(&self, guild_id: &GuildId) -> Vec<ServerMessage> {
         self.events
             .lock()
             .unwrap()
@@ -111,13 +115,21 @@ impl RecordingHub {
             .collect()
     }
 
-    fn added_count(&self, guild_id: &GuildId) -> usize {
+    pub(super) fn added_count(&self, guild_id: &GuildId) -> usize {
+        self.change_count(guild_id, BoardChange::Added)
+    }
+
+    pub(super) fn updated_count(&self, guild_id: &GuildId) -> usize {
+        self.change_count(guild_id, BoardChange::Updated)
+    }
+
+    fn change_count(&self, guild_id: &GuildId, change: BoardChange) -> usize {
         self.guild_messages(guild_id)
             .iter()
             .filter(|message| {
                 matches!(
                     message,
-                    ServerMessage::BoardChanged(payload) if payload.change == BoardChange::Added
+                    ServerMessage::BoardChanged(payload) if payload.change == change
                 )
             })
             .count()
@@ -171,21 +183,32 @@ impl AdminHub for RecordingHub {
     }
 }
 
-async fn harness(media_dir: &Path, max_size_mb: u64) -> (Router, Db, AppState, Arc<RecordingHub>) {
+pub(super) async fn harness(
+    media_dir: &Path,
+    max_size_mb: u64,
+) -> (Router, Db, AppState, Arc<RecordingHub>) {
+    harness_with(test_config(media_dir, max_size_mb)).await
+}
+
+/// Harness running the real `ffmpeg`/`ffprobe` found on the PATH.
+pub(super) async fn harness_with_real_tools(
+    media_dir: &Path,
+    max_size_mb: u64,
+) -> (Router, Db, AppState, Arc<RecordingHub>) {
+    harness_with(Config::from_pairs(config_pairs(media_dir, max_size_mb, true)).unwrap()).await
+}
+
+async fn harness_with(config: Config) -> (Router, Db, AppState, Arc<RecordingHub>) {
     let db = Db::open_in_memory(&DbConfig::default()).await.unwrap();
     let clock: Arc<dyn lc_domain::Clock> = Arc::new(FixedClock::new(fixed_now()));
     let hub = Arc::new(RecordingHub::default());
-    let state = AppState::new(
-        Arc::new(test_config(media_dir, max_size_mb)),
-        Some(db.clone()),
-        Shutdown::detached(),
-    )
-    .with_clock(clock)
-    .with_admin_hub(hub.clone());
+    let state = AppState::new(Arc::new(config), Some(db.clone()), Shutdown::detached())
+        .with_clock(clock)
+        .with_admin_hub(hub.clone());
     (crate::app::router(state.clone()), db, state, hub)
 }
 
-async fn insert_client(db: &Db, mode: OverlaySessionMode, token: &str) -> OverlayClient {
+pub(super) async fn insert_client(db: &Db, mode: OverlaySessionMode, token: &str) -> OverlayClient {
     let client = OverlayClient {
         id: OverlayClientId::new_v4(),
         guild_id: guild(),
@@ -203,7 +226,7 @@ async fn insert_client(db: &Db, mode: OverlaySessionMode, token: &str) -> Overla
     client
 }
 
-fn upload_request(uri: &str, token: &str, body: Vec<u8>) -> Request<Body> {
+pub(super) fn upload_request(uri: &str, token: &str, body: Vec<u8>) -> Request<Body> {
     Request::builder()
         .method(Method::POST)
         .uri(uri)
@@ -212,7 +235,7 @@ fn upload_request(uri: &str, token: &str, body: Vec<u8>) -> Request<Body> {
         .unwrap()
 }
 
-fn items_request(token: &str) -> Request<Body> {
+pub(super) fn items_request(token: &str) -> Request<Body> {
     Request::builder()
         .method(Method::GET)
         .uri("/overlay/media-board/items")
@@ -221,7 +244,7 @@ fn items_request(token: &str) -> Request<Body> {
         .unwrap()
 }
 
-async fn send_json(app: &Router, request: Request<Body>) -> (StatusCode, Value) {
+pub(super) async fn send_json(app: &Router, request: Request<Body>) -> (StatusCode, Value) {
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
@@ -234,8 +257,12 @@ async fn send_json(app: &Router, request: Request<Body>) -> (StatusCode, Value) 
 }
 
 /// Waits (bounded) for the detached task to complete the registry entry.
-async fn wait_finished(state: &AppState, client_id: Uuid, ingestion_id: &str) -> IngestionEntry {
-    let deadline = Instant::now() + StdDuration::from_secs(10);
+pub(super) async fn wait_finished(
+    state: &AppState,
+    client_id: Uuid,
+    ingestion_id: &str,
+) -> IngestionEntry {
+    let deadline = Instant::now() + StdDuration::from_secs(60);
     loop {
         if let Some(entry) = state
             .ingestions
@@ -254,7 +281,7 @@ async fn wait_finished(state: &AppState, client_id: Uuid, ingestion_id: &str) ->
 }
 
 /// Waits (bounded) for the task to publish its WebSocket messages.
-async fn wait_client_messages(
+pub(super) async fn wait_client_messages(
     hub: &RecordingHub,
     client_id: Uuid,
     at_least: usize,
@@ -274,7 +301,7 @@ async fn wait_client_messages(
 }
 
 /// Valid 1×1 PNG (68 bytes), below the remote-source minimum size.
-const TINY_PNG: &[u8] = &[
+pub(super) const TINY_PNG: &[u8] = &[
     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
     0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00, 0x00, 0xB5, 0x1C, 0x0C,
     0x02, 0x00, 0x00, 0x00, 0x0B, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0x64, 0xF8, 0x0F, 0x00,
@@ -525,4 +552,229 @@ async fn upload_accepts_over_one_mib_while_json_routes_keep_the_limit() {
     let (status, body) = send_json(&app, request).await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(body["error"], "request_error");
+}
+
+/// A second valid PNG: [`TINY_PNG`] followed by bytes ignored after `IEND`.
+fn other_png() -> Vec<u8> {
+    let mut bytes = TINY_PNG.to_vec();
+    bytes.extend_from_slice(b"another picture");
+    bytes
+}
+
+/// Uploads a file and waits for its ingestion; returns the finished entry.
+async fn upload_and_wait(
+    app: &Router,
+    state: &AppState,
+    client: &OverlayClient,
+    uri: &str,
+    bytes: Vec<u8>,
+) -> IngestionEntry {
+    let (status, body) = send_json(app, upload_request(uri, TOKEN, bytes)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let ingestion_id = body["ingestionId"].as_str().unwrap().to_owned();
+    wait_finished(state, client.id.as_uuid(), &ingestion_id).await
+}
+
+#[tokio::test]
+async fn upload_with_replace_item_id_replaces_the_media_of_the_item() {
+    let dir = TempDir::new().unwrap();
+    let (app, db, state, hub) = harness(&dir.path().join("media"), 4).await;
+    let client = insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
+
+    let first = upload_and_wait(
+        &app,
+        &state,
+        &client,
+        "/overlay/media-board/upload?filename=photo.png&title=Ma%20photo&message=coucou",
+        TINY_PNG.to_vec(),
+    )
+    .await;
+    assert_eq!(first.created, Some(true));
+    let item_id = first.item_id.unwrap();
+    let (_, body) = send_json(&app, items_request(TOKEN)).await;
+    let original_asset = body["items"][0]["mediaAssetId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let created_at = body["items"][0]["createdAt"].clone();
+
+    // The edited picture replaces the media: same item, same texts.
+    let uri = format!(
+        "/overlay/media-board/upload?filename=photo-edit.png&title=Ignored&replaceItemId={item_id}"
+    );
+    let replaced = upload_and_wait(&app, &state, &client, &uri, other_png()).await;
+    assert_eq!(replaced.status, IngestionStatus::Ready, "{replaced:?}");
+    assert_eq!(replaced.created, Some(false));
+    assert_eq!(replaced.item_id.as_deref(), Some(item_id.as_str()));
+
+    let messages = wait_client_messages(&hub, client.id.as_uuid(), 2).await;
+    let payload = match &messages[1] {
+        ServerMessage::MediaIngestion(payload) => payload,
+        other => panic!("message inattendu : {other:?}"),
+    };
+    assert!(payload.ok);
+    assert_eq!(payload.created, Some(false));
+    assert_eq!(payload.item_id.as_deref(), Some(item_id.as_str()));
+    assert_eq!(hub.added_count(&guild()), 1);
+    assert_eq!(hub.updated_count(&guild()), 1);
+
+    let (_, body) = send_json(&app, items_request(TOKEN)).await;
+    assert_eq!(body["total"], 1);
+    let item = &body["items"][0];
+    assert_eq!(item["id"], item_id.as_str());
+    assert_eq!(item["title"], "Ma photo");
+    assert_eq!(item["message"], "coucou");
+    assert_eq!(item["createdAt"], created_at);
+    assert_ne!(item["mediaAssetId"], original_asset.as_str());
+    assert_eq!(item["media"]["sourceUrl"], "upload:photo-edit.png");
+
+    // The previous asset is no longer pinned: it expires with the cache.
+    let previous = db
+        .media_assets()
+        .get(original_asset.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        previous.expires_at < fixed_now() + chrono::Duration::days(365),
+        "previous asset released: {}",
+        previous.expires_at
+    );
+    let current = db
+        .media_assets()
+        .get(item["mediaAssetId"].as_str().unwrap().parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(current.expires_at > fixed_now() + chrono::Duration::days(365));
+
+    // The same bytes again: nothing to replace, no second `board.changed`.
+    let same = upload_and_wait(&app, &state, &client, &uri, other_png()).await;
+    assert_eq!(same.status, IngestionStatus::Ready);
+    assert_eq!(same.created, Some(false));
+    assert_eq!(same.item_id.as_deref(), Some(item_id.as_str()));
+    assert_eq!(hub.updated_count(&guild()), 1);
+}
+
+#[tokio::test]
+async fn replacement_upload_is_refused_for_another_kind_or_a_media_already_on_the_board() {
+    let dir = TempDir::new().unwrap();
+    let (app, db, state, hub) = harness(&dir.path().join("media"), 4).await;
+    let client = insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
+
+    let first = upload_and_wait(
+        &app,
+        &state,
+        &client,
+        "/overlay/media-board/upload?filename=a.png",
+        TINY_PNG.to_vec(),
+    )
+    .await;
+    let second = upload_and_wait(
+        &app,
+        &state,
+        &client,
+        "/overlay/media-board/upload?filename=b.png",
+        other_png(),
+    )
+    .await;
+    let second_id = second.item_id.unwrap();
+
+    // The first picture cannot also become the second item's media.
+    let uri = format!("/overlay/media-board/upload?filename=a.png&replaceItemId={second_id}");
+    let refused = upload_and_wait(&app, &state, &client, &uri, TINY_PNG.to_vec()).await;
+    assert_eq!(refused.status, IngestionStatus::Failed);
+    let error = refused.error.unwrap();
+    assert_eq!(error.code, "media_ingestion_failed");
+    assert!(
+        error
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("déjà sur le board"),
+        "{error:?}"
+    );
+
+    // A video item cannot receive a picture.
+    let video_path = state.config.media_storage_dir.join("clip.mp4");
+    tokio::fs::write(&video_path, b"0123456789").await.unwrap();
+    let video = lc_domain::MediaAsset {
+        id: lc_domain::MediaAssetId::new_v4(),
+        source_hash: "hash-clip".to_owned(),
+        source_url: "https://example.test/clip.mp4".to_owned(),
+        kind: lc_domain::MediaKind::Video,
+        mime: "video/mp4".to_owned(),
+        duration_sec: Some(30),
+        width: Some(480),
+        height: Some(360),
+        is_vertical: false,
+        storage_path: video_path.to_string_lossy().into_owned(),
+        size_bytes: 10,
+        status: MediaStatus::Ready,
+        error: None,
+        last_accessed_at: fixed_now(),
+        expires_at: fixed_now() + chrono::Duration::days(36_500),
+        created_at: fixed_now(),
+    };
+    db.media_assets().insert(&video).await.unwrap();
+    let video_item = lc_domain::MediaBoardItem {
+        id: lc_domain::MediaBoardItemId::new_v4(),
+        guild_id: guild(),
+        media_asset_id: video.id,
+        title: Some("Clip".to_owned()),
+        message: None,
+        created_by_discord_user_id: None,
+        created_by_name: Some("Alice".to_owned()),
+        created_at: fixed_now(),
+        artwork_asset_id: None,
+        artwork_on_overlay: false,
+    };
+    db.media_board().create(&video_item).await.unwrap();
+    let uri = format!(
+        "/overlay/media-board/upload?filename=c.png&replaceItemId={}",
+        video_item.id.to_canonical()
+    );
+    let mut third = other_png();
+    third.extend_from_slice(b"third");
+    let refused = upload_and_wait(&app, &state, &client, &uri, third).await;
+    assert_eq!(refused.status, IngestionStatus::Failed);
+    let error = refused.error.unwrap();
+    assert_eq!(error.code, "media_ingestion_failed");
+    assert!(
+        error.message.as_deref().unwrap().contains("même type"),
+        "{error:?}"
+    );
+    let unchanged = db.media_board().get(video_item.id).await.unwrap().unwrap();
+    assert_eq!(unchanged.media_asset_id, video.id);
+
+    assert_eq!(hub.updated_count(&guild()), 0);
+    assert_eq!(first.created, Some(true));
+}
+
+#[tokio::test]
+async fn replacement_target_is_checked_before_the_body_is_read() {
+    let dir = TempDir::new().unwrap();
+    let (app, db, _state, _hub) = harness(&dir.path().join("media"), 4).await;
+    insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
+
+    for target in [Uuid::new_v4().to_string(), "not-an-id".to_owned()] {
+        let polled = Arc::new(AtomicBool::new(false));
+        let polled_by_stream = Arc::clone(&polled);
+        let body_stream = stream::once(async move {
+            polled_by_stream.store(true, Ordering::SeqCst);
+            Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"not read"))
+        });
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(format!(
+                "/overlay/media-board/upload?filename=x.png&replaceItemId={target}"
+            ))
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .body(Body::from_stream(body_stream))
+            .unwrap();
+        let (status, body) = send_json(&app, request).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{target}");
+        assert_eq!(body["error"], "item_not_found");
+        assert!(!polled.load(Ordering::SeqCst), "body must not be polled");
+    }
 }

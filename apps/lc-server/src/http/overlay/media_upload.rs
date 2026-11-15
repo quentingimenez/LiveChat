@@ -8,6 +8,11 @@
 //! [`super::media_ingestion`] task and removed when that task ends (success or
 //! failure).
 //!
+//! With `replaceItemId`, the uploaded media replaces the media of that board
+//! item instead of creating a new one (the board's image editor saving over
+//! the original). The item and the right to edit it are checked before the
+//! body is read; `title` and `message` are then ignored.
+//!
 //! The route does not use `Bytes`/`Json`: `axum::body::Body` does not apply the
 //! global 1 MiB `DefaultBodyLimit`, which stays active elsewhere. The route is
 //! exempt from the global timeout because receiving a large file can exceed the
@@ -35,9 +40,10 @@ use crate::media::service::MediaService;
 
 use super::auth::AuthedOverlayClient;
 use super::media_board::{
-    ensure_writable, media_service_error, too_many_ingestions, IngestionFailure,
+    ensure_can_edit, ensure_writable, guild_item, media_service_error, too_many_ingestions,
+    IngestionFailure,
 };
-use super::media_ingestion::{spawn_ingestion, IngestionInput};
+use super::media_ingestion::{spawn_ingestion, BoardTarget, IngestionInput};
 use super::{db, internal_error, json_response, now};
 
 /// Maximum filename length (Unicode scalar values).
@@ -49,6 +55,7 @@ const TEMP_CREATE_ATTEMPTS: usize = 8;
 
 /// Route query parameters (`filename` is required).
 #[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct UploadQuery {
     /// Original filename (default title = filename without extension).
     #[serde(default)]
@@ -59,6 +66,9 @@ pub(super) struct UploadQuery {
     /// Display message (≤ 500 characters).
     #[serde(default)]
     message: Option<String>,
+    /// Board item whose media is replaced by the uploaded file.
+    #[serde(default)]
+    replace_item_id: Option<String>,
 }
 
 /// Handler for `POST /overlay/media-board/upload`.
@@ -91,9 +101,37 @@ pub async fn upload_item(
 
     // A missing database is still reported synchronously (503): the background
     // task cannot persist the media without it.
-    if let Err(response) = db(&state) {
-        return response;
-    }
+    let db = match db(&state) {
+        Ok(db) => db,
+        Err(response) => return response,
+    };
+    // A replacement is checked before any body read: the item must belong to
+    // the guild (404) and the caller must be allowed to edit it (403).
+    let target = match query
+        .replace_item_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(item_id_raw) => {
+            let item = match guild_item(
+                db,
+                &auth,
+                item_id_raw,
+                "overlay_media_upload.replace_lookup",
+            )
+            .await
+            {
+                Ok(item) => item,
+                Err(response) => return response,
+            };
+            if let Err(response) = ensure_can_edit(db, &auth, item.id).await {
+                return response;
+            }
+            BoardTarget::Replace(item.id)
+        }
+        None => BoardTarget::NewItem,
+    };
     let service = match MediaService::for_state(&state) {
         Ok(service) => service,
         Err(service_error) => return media_service_error(&service_error),
@@ -188,6 +226,7 @@ pub async fn upload_item(
             content_type,
             content_sha256,
         },
+        target,
         title,
         message,
     );

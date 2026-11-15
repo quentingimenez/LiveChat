@@ -61,6 +61,12 @@
   font-weight: 600;
 }
 
+/* Inside a settings section, `.settings-section h3` (more specific) removed
+   the space above a sub-title such as « Discord ». */
+.settings-section .section-title {
+  margin-top: 32px;
+}
+
 @media (max-width: 1040px) {
   .line.is-member {
     grid-template-columns: 30px minmax(0, 1fr) 120px 88px;

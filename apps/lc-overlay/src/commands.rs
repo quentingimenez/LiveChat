@@ -562,7 +562,7 @@ pub fn settings_set(
     if base.enabled != saved.enabled {
         tray::apply_general_mute_effect(&app, saved.enabled);
         if let Err(error) = events::emit_guilds_changed(&app) {
-            tracing::debug!(%error, "échec d'émission de l'état des guildes après sourdine");
+            tracing::debug!(%error, "échec d'émission de l'état des guildes après mise en pause");
         }
     }
     tray::refresh_tray(&app);

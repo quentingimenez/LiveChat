@@ -483,3 +483,85 @@ async fn un_audio_porte_l_image_de_son_element_du_board() {
     assert_eq!(plays.len(), 2);
     assert_eq!(plays[1].media.as_ref().unwrap().artwork_asset_id, None);
 }
+
+/// A one-second clip (an animated GIF converted to MP4) triggered from the
+/// board: the job carries the clip's own duration.
+async fn dispatch_video(asset_duration_sec: i64, job_duration_sec: i64) -> (u64, Option<u64>, i64) {
+    let h = harness(1).await;
+    let mut asset = sample_media_asset(h.clock.now());
+    asset.duration_sec = Some(asset_duration_sec);
+    h.db.media_assets().insert(&asset).await.unwrap();
+    let job = sample_media_job(
+        h.guild_id.clone(),
+        h.clock.now(),
+        asset.id,
+        job_duration_sec,
+    );
+    h.engine.enqueue(&job).await.unwrap();
+    let plays = h.sink.play_calls();
+    assert_eq!(plays.len(), 1);
+    let media_duration = plays[0].media.as_ref().and_then(|media| media.duration_sec);
+    (
+        plays[0].duration_sec,
+        media_duration,
+        h.stored_job(job.id).await.duration_sec,
+    )
+}
+
+#[tokio::test]
+async fn a_very_short_video_stays_on_screen_for_the_minimum_display_time() {
+    let minimum = lc_playback::MIN_SHORT_VIDEO_DISPLAY_SEC;
+    // The play lasts the minimum while the media keeps its real duration:
+    // the overlay sees that the job outlasts the clip and extends it.
+    let (play, media, stored) = dispatch_video(1, 1).await;
+    assert_eq!(play, u64::try_from(minimum).unwrap());
+    assert_eq!(media, Some(1));
+    assert_eq!(stored, minimum);
+    // Unset job duration: same floor.
+    assert_eq!(
+        dispatch_video(2, 0).await.0,
+        u64::try_from(minimum).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn the_minimum_display_time_leaves_other_durations_alone() {
+    let minimum = lc_playback::MIN_SHORT_VIDEO_DISPLAY_SEC;
+    // A video at or above the minimum plays for its own duration.
+    assert_eq!(
+        dispatch_video(minimum, minimum).await.0,
+        u64::try_from(minimum).unwrap()
+    );
+    assert_eq!(dispatch_video(12, 12).await.0, 12);
+    // An explicit duration is kept: shorter on a long video, longer on a clip.
+    assert_eq!(dispatch_video(12, 2).await.0, 2);
+    assert_eq!(dispatch_video(1, 10).await.0, 10);
+}
+
+#[tokio::test]
+async fn the_guild_cap_still_bounds_a_very_short_video() {
+    let h = harness(1).await;
+    let mut guild = sample_guild(h.guild_id.clone());
+    guild.max_media_time = Some(2);
+    h.db.guilds().upsert(&guild).await.unwrap();
+    let mut asset = sample_media_asset(h.clock.now());
+    asset.duration_sec = Some(1);
+    h.db.media_assets().insert(&asset).await.unwrap();
+    let job = sample_media_job(h.guild_id.clone(), h.clock.now(), asset.id, 1);
+    h.engine.enqueue(&job).await.unwrap();
+    assert_eq!(h.sink.play_calls()[0].duration_sec, 2);
+}
+
+#[tokio::test]
+async fn a_short_audio_or_image_is_not_extended() {
+    for kind in [lc_domain::MediaKind::Audio, lc_domain::MediaKind::Image] {
+        let h = harness(1).await;
+        let mut asset = sample_media_asset(h.clock.now());
+        asset.kind = kind;
+        asset.duration_sec = Some(1);
+        h.db.media_assets().insert(&asset).await.unwrap();
+        let job = sample_media_job(h.guild_id.clone(), h.clock.now(), asset.id, 1);
+        h.engine.enqueue(&job).await.unwrap();
+        assert_eq!(h.sink.play_calls()[0].duration_sec, 1);
+    }
+}

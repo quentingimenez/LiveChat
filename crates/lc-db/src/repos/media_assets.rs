@@ -163,6 +163,31 @@ impl MediaAssetsRepository {
         rows.into_iter().map(MediaAssetRow::into_entity).collect()
     }
 
+    /// Records the embedded cover (an image asset) of an audio asset.
+    pub async fn set_cover(&self, id: MediaAssetId, cover: Option<MediaAssetId>) -> DbResult<()> {
+        sqlx::query("UPDATE media_assets SET cover_asset_id = ? WHERE id = ?")
+            .bind(cover.map(MediaAssetId::to_canonical))
+            .bind(id.to_canonical())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Embedded cover recorded for an asset.
+    pub async fn cover_of(&self, id: MediaAssetId) -> DbResult<Option<MediaAssetId>> {
+        let raw: Option<Option<String>> =
+            sqlx::query_scalar("SELECT cover_asset_id FROM media_assets WHERE id = ?")
+                .bind(id.to_canonical())
+                .fetch_optional(&self.pool)
+                .await?;
+        crate::convert::decode_opt(
+            "media_assets",
+            "cover_asset_id",
+            raw.flatten().as_deref(),
+            MediaAssetId::parse,
+        )
+    }
+
     /// Supprime les médias expirés **non référencés**.
     ///
     /// Un média expiré est conservé (et donc non retourné) s'il est encore
@@ -184,6 +209,7 @@ impl MediaAssetsRepository {
                AND NOT EXISTS ( \
                    SELECT 1 FROM media_board_items b \
                    WHERE b.media_asset_id = media_assets.id \
+                      OR b.artwork_asset_id = media_assets.id \
                ) \
                AND NOT EXISTS ( \
                    SELECT 1 FROM playback_jobs j \

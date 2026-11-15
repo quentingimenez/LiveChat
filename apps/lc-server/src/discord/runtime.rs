@@ -237,11 +237,7 @@ impl DiscordRuntime {
 
         let status = Arc::new(DiscordStatus::default());
         let bot_config: BotConfig = bot_config_from(&config);
-        let adapters = DiscordAdapters::with_clock_and_hub(
-            db.clone(),
-            Arc::clone(&state.clock),
-            Arc::clone(&state.admin_hub),
-        );
+        let adapters = DiscordAdapters::for_state(&state, db.clone());
         let context = build_context(&db, &state, &bot_config, &adapters);
 
         let handler = DiscordEventHandler::new(db, context, bot_config, Arc::clone(&status));

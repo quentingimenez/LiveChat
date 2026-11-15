@@ -202,6 +202,22 @@ pub async fn list_items(
         })
         .collect::<Vec<_>>();
     let total = filtered.len();
+    let favorites: std::collections::HashSet<MediaBoardItemId> = match auth.member_id() {
+        Some(member_id) => match db.media_board().favorite_item_ids(member_id).await {
+            Ok(ids) => ids.into_iter().collect(),
+            Err(db_error) => return db_failure("overlay_media_board.favorites", &db_error),
+        },
+        None => std::collections::HashSet::new(),
+    };
+    let sign = |asset_id: &str| {
+        crate::media_url::sign_board_url(
+            secret.as_bytes(),
+            &state.config.api_origin(),
+            asset_id,
+            &client_id,
+            expires_at_sec,
+        )
+    };
     let mut page = Vec::new();
     for row in filtered.into_iter().skip(offset).take(limit) {
         let asset = match db.media_assets().get(row.media_asset_id()).await {
@@ -212,18 +228,32 @@ pub async fn list_items(
             }
         };
         let asset_id = asset.id.to_canonical();
-        let media_url = match crate::media_url::sign_board_url(
-            secret.as_bytes(),
-            &state.config.api_origin(),
-            &asset_id,
-            &client_id,
-            expires_at_sec,
-        ) {
+        let media_url = match sign(&asset_id) {
             Ok(url) => url,
             Err(error) => {
                 tracing::warn!(%error, "signature d'une URL du board impossible");
                 return super::internal_error();
             }
+        };
+        let artwork = match row.item.artwork_asset_id {
+            Some(artwork_id) => match db.media_assets().get(artwork_id).await {
+                Ok(Some(artwork)) if artwork.is_ready() => match sign(&artwork.id.to_canonical()) {
+                    Ok(url) => Some(serde_json::json!({
+                        "url": url,
+                        "width": artwork.width,
+                        "height": artwork.height,
+                    })),
+                    Err(error) => {
+                        tracing::warn!(%error, "signature de l'image d'un média impossible");
+                        None
+                    }
+                },
+                Ok(_) => None,
+                Err(db_error) => {
+                    return db_failure("overlay_media_board.list_item_artwork", &db_error);
+                }
+            },
+            None => None,
         };
         let mut payload = item_payload(&row.item, &asset);
         if let Some(object) = payload.as_object_mut() {
@@ -239,6 +269,15 @@ pub async fn list_items(
             object.insert(
                 "canEdit".to_owned(),
                 serde_json::json!(can_edit(&auth, row.created_by_member_id.as_deref())),
+            );
+            object.insert("artwork".to_owned(), serde_json::json!(artwork));
+            object.insert(
+                "artworkOnOverlay".to_owned(),
+                serde_json::json!(row.item.artwork_on_overlay),
+            );
+            object.insert(
+                "favorite".to_owned(),
+                serde_json::json!(favorites.contains(&row.item.id)),
             );
         }
         page.push(payload);
@@ -461,6 +500,8 @@ pub(super) async fn complete_board_item(
         created_by_discord_user_id: auth.client.created_by_discord_user_id.clone(),
         created_by_name: board_author_name(auth),
         created_at: now,
+        artwork_asset_id: None,
+        artwork_on_overlay: false,
     };
     match db.media_board().create(&item).await {
         Ok(()) => {
@@ -608,11 +649,11 @@ pub async fn get_media(
 
     match db
         .media_board()
-        .get_by_guild_and_asset(&client.guild_id, asset_id)
+        .guild_references_asset(&client.guild_id, asset_id)
         .await
     {
-        Ok(Some(_)) => {}
-        Ok(None) => return super::media::media_not_found(),
+        Ok(true) => {}
+        Ok(false) => return super::media::media_not_found(),
         Err(db_error) => return db_failure("overlay_media_board.media_binding", &db_error),
     }
     let asset = match db.media_assets().get(asset_id).await {
@@ -670,7 +711,17 @@ pub async fn update_item(
     };
     let has_title = object.contains_key("title");
     let has_message = object.contains_key("message");
-    if !has_title && !has_message {
+    let artwork_on_overlay = match object.get("artworkOnOverlay") {
+        None => None,
+        Some(serde_json::Value::Bool(value)) => Some(*value),
+        Some(_) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({"error": "invalid_payload", "message": "artworkOnOverlay must be a boolean"}),
+            );
+        }
+    };
+    if !has_title && !has_message && artwork_on_overlay.is_none() {
         return json_response(
             StatusCode::BAD_REQUEST,
             serde_json::json!({"error": "invalid_payload", "message": "title or message is required"}),
@@ -705,6 +756,15 @@ pub async fn update_item(
         existing.message.clone()
     };
 
+    if let Some(on_overlay) = artwork_on_overlay {
+        if let Err(db_error) = db
+            .media_board()
+            .set_artwork_on_overlay(item_id, on_overlay)
+            .await
+        {
+            return db_failure("overlay_media_board.patch_artwork", &db_error);
+        }
+    }
     match db
         .media_board()
         .update(item_id, title.as_deref(), message.as_deref())
@@ -726,6 +786,7 @@ pub async fn update_item(
                         "id": existing.id.to_canonical(),
                         "title": title,
                         "message": message,
+                        "artworkOnOverlay": artwork_on_overlay.unwrap_or(existing.artwork_on_overlay),
                     },
                 }),
             )
@@ -773,7 +834,7 @@ pub async fn delete_item(
         db,
         item_id,
         auth.guild_id(),
-        existing.media_asset_id,
+        &[Some(existing.media_asset_id), existing.artwork_asset_id],
         released_expiry,
     )
     .await
@@ -857,7 +918,7 @@ fn can_edit(auth: &AuthedOverlayClient, creator_member_id: Option<&str>) -> bool
 }
 
 /// Garde de modification d'un média existant (`403 forbidden` sinon).
-async fn ensure_can_edit(
+pub(super) async fn ensure_can_edit(
     db: &Db,
     auth: &AuthedOverlayClient,
     item_id: MediaBoardItemId,
@@ -958,7 +1019,7 @@ async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<Boa
     let raw_rows = sqlx::query(
         "SELECT b.id, b.guild_id, b.media_asset_id, b.title, b.message, \
                 b.created_by_discord_user_id, b.created_by_name, b.created_at, b.created_by_member_id, \
-                a.source_url \
+                b.artwork_asset_id, b.artwork_on_overlay, a.source_url \
            FROM media_board_items b \
            JOIN media_assets a ON a.id = b.media_asset_id \
           WHERE b.guild_id = ? \
@@ -989,6 +1050,17 @@ async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<Boa
         let created_by_member_id: Option<String> = raw
             .try_get("created_by_member_id")
             .map_err(lc_db::DbError::from)?;
+        let artwork_raw: Option<String> = raw
+            .try_get("artwork_asset_id")
+            .map_err(lc_db::DbError::from)?;
+        let artwork_on_overlay: i64 = raw
+            .try_get("artwork_on_overlay")
+            .map_err(lc_db::DbError::from)?;
+        let artwork_asset_id = artwork_raw
+            .as_deref()
+            .map(MediaAssetId::parse)
+            .transpose()
+            .map_err(|error| corrupt_row(format!("artwork_asset_id invalide: {error}")))?;
 
         let item_id = MediaBoardItemId::parse(&item_id_raw)
             .map_err(|error| corrupt_row(format!("id invalide ({item_id_raw}): {error}")))?;
@@ -1010,6 +1082,8 @@ async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<Boa
                 created_by_discord_user_id,
                 created_by_name,
                 created_at,
+                artwork_asset_id,
+                artwork_on_overlay: artwork_on_overlay != 0,
             },
             source_url,
             created_by_member_id,
@@ -1047,7 +1121,7 @@ async fn delete_item_and_release(
     db: &Db,
     item_id: MediaBoardItemId,
     guild_id: &GuildId,
-    media_asset_id: MediaAssetId,
+    asset_ids: &[Option<MediaAssetId>],
     released_expiry: DateTime<Utc>,
 ) -> lc_db::DbResult<bool> {
     let mut transaction = db.pool().begin().await.map_err(lc_db::DbError::from)?;
@@ -1061,10 +1135,12 @@ async fn delete_item_and_release(
         .rows_affected()
         > 0;
 
-    if deleted {
+    for media_asset_id in asset_ids.iter().flatten().filter(|_| deleted) {
         let remaining = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM media_board_items WHERE media_asset_id = ?",
+            "SELECT COUNT(*) FROM media_board_items \
+              WHERE media_asset_id = ? OR artwork_asset_id = ?",
         )
+        .bind(media_asset_id.to_canonical())
         .bind(media_asset_id.to_canonical())
         .fetch_one(&mut *transaction)
         .await
@@ -1154,11 +1230,18 @@ impl MediaErrorPayload {
 /// le board legacy qui ne documente que `422 media_ingestion_failed`).
 fn media_service_error_payload(service_error: &MediaServiceError) -> MediaErrorPayload {
     if let Some(media_error) = service_error.media_error() {
+        // The board shows a sentence for people; the technical detail (an
+        // ffmpeg line, a yt-dlp error) stays in the logs.
+        tracing::info!(
+            code = media_error.code().as_str(),
+            detail = media_error.message(),
+            "média du board refusé"
+        );
         return MediaErrorPayload {
             status: StatusCode::UNPROCESSABLE_ENTITY,
             error: "media_ingestion_failed",
             rest_code: Some(media_error.code().as_str()),
-            message: Some(media_error.message().to_owned()),
+            message: Some(media_error.code().user_message_fr().to_owned()),
             ws_code: "media_ingestion_failed",
         };
     }

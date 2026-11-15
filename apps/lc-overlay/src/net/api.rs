@@ -39,6 +39,7 @@ fn parse_method(raw: &str) -> Result<Method, String> {
         "GET" => Ok(Method::GET),
         "POST" => Ok(Method::POST),
         "PATCH" => Ok(Method::PATCH),
+        "PUT" => Ok(Method::PUT),
         "DELETE" => Ok(Method::DELETE),
         other => Err(format!("méthode non autorisée : {other}")),
     }
@@ -150,7 +151,9 @@ mod tests {
     #[test]
     fn methods_are_restricted() {
         assert!(parse_method("patch").is_ok());
-        assert!(parse_method("PUT").is_err());
+        // Favorites and pictures of board items are set with PUT.
+        assert!(parse_method("PUT").is_ok());
+        assert!(parse_method("OPTIONS").is_err());
         assert!(parse_method("CONNECT").is_err());
     }
 }

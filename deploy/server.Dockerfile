@@ -4,7 +4,7 @@
 #
 # Contrat : voir `docs/rust/packaging.md`.
 # Construction (depuis la racine du dépôt) :
-#   docker build -f deploy/server.Dockerfile -t livechat-server:3.2.0 .
+#   docker build -f deploy/server.Dockerfile -t livechat-server:3.3.0 .
 #
 # Choix de cache : pas de cargo-chef. Le workspace contient `apps/lc-overlay` (Tauri 2,
 # build.rs + deps WebKit/GTK) : `cargo chef cook` travaille à l'échelle du workspace et
@@ -86,6 +86,14 @@ FROM debian:${DEBIAN_RELEASE}-slim AS runtime
 # Mise à jour = bump des deux ARG ci-dessous, puis rebuild + smoke test.
 ARG YTDLP_VERSION=2026.10.26
 ARG YTDLP_SHA256=767ba9dce7052aa196f8b12652f433d76de128ba168966fa84b6394d5e6c6795
+# Piper (speech for /dire, /cdire): release archive and voices pinned by SHA-256.
+ARG PIPER_VERSION=2023.11.14-2
+ARG PIPER_SHA256=a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992
+ARG PIPER_VOICES_REF=v1.0.0
+ARG PIPER_VOICE_FR_SHA256=641d1ab097da2b81128c076810edb052b385decc8be3381814802a64a73baf99
+ARG PIPER_VOICE_FR_JSON_SHA256=39479916c2db192b5ac9764daddd0c744d83e023ad890c6976c0633ae4df8959
+ARG PIPER_VOICE_EN_SHA256=5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f
+ARG PIPER_VOICE_EN_JSON_SHA256=efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0
 
 LABEL org.opencontainers.image.title="livechat-server" \
       org.opencontainers.image.description="Serveur LiveChat (Rust, protocole v2)" \
@@ -109,6 +117,28 @@ RUN set -eu; \
     echo "${YTDLP_SHA256}  /usr/local/bin/yt-dlp" | sha256sum --check --status; \
     chmod 0755 /usr/local/bin/yt-dlp; \
     /usr/local/bin/yt-dlp --version
+
+RUN set -eu; \
+    curl --fail --silent --show-error --location --retry 3 --output /tmp/piper.tar.gz \
+        "https://github.com/rhasspy/piper/releases/download/${PIPER_VERSION}/piper_linux_x86_64.tar.gz"; \
+    echo "${PIPER_SHA256}  /tmp/piper.tar.gz" | sha256sum --check --status; \
+    mkdir -p /opt; \
+    tar -xzf /tmp/piper.tar.gz -C /opt; \
+    rm /tmp/piper.tar.gz; \
+    ln -s /opt/piper/piper /usr/local/bin/piper; \
+    mkdir -p /opt/piper/voices; \
+    base="https://huggingface.co/rhasspy/piper-voices/resolve/${PIPER_VOICES_REF}"; \
+    fetch() { \
+        curl --fail --silent --show-error --location --retry 3 --output "/opt/piper/voices/$2" "$base/$1/$2"; \
+        echo "$3  /opt/piper/voices/$2" | sha256sum --check --status; \
+    }; \
+    fetch fr/fr_FR/siwis/medium fr_FR-siwis-medium.onnx "${PIPER_VOICE_FR_SHA256}"; \
+    fetch fr/fr_FR/siwis/medium fr_FR-siwis-medium.onnx.json "${PIPER_VOICE_FR_JSON_SHA256}"; \
+    fetch en/en_US/lessac/medium en_US-lessac-medium.onnx "${PIPER_VOICE_EN_SHA256}"; \
+    fetch en/en_US/lessac/medium en_US-lessac-medium.onnx.json "${PIPER_VOICE_EN_JSON_SHA256}"; \
+    echo "Bonjour" | piper --model /opt/piper/voices/fr_FR-siwis-medium.onnx --output_file /tmp/check.wav; \
+    test -s /tmp/check.wav; \
+    rm /tmp/check.wav
 
 # Utilisateur non-root dédié (uid/gid 10001) et répertoire de données.
 RUN groupadd --gid 10001 livechat \

@@ -1,4 +1,4 @@
-//! Handlers des 15 commandes, indépendants de serenity.
+//! Handlers des 12 commandes, indépendants de serenity.
 //!
 //! Chaque handler reproduit le comportement du legacy
 //! (`server/src/components/**/*Command.ts`) : même texte, mêmes couleurs,
@@ -13,24 +13,27 @@ use lc_domain::{
 
 use crate::catalog::{registered_command_names, CommandKey};
 use crate::context::{
-    load_guild, Author, BotConfig, BotContext, GuildSettingsPatch, MediaAddRequest, MediaRequest,
-    PlaybackJobRequest, PAIRING_CODE_MAX_ATTEMPTS,
+    load_guild, Author, BotConfig, BotContext, MediaAddRequest, MediaRequest, PlaybackJobRequest,
+    PAIRING_CODE_MAX_ATTEMPTS,
 };
 use crate::error::{BotError, MediaError, MediaErrorCode, MediaLimits};
 use crate::i18n::{interpolate, strings, Lang};
 use crate::inputs::{
-    CommandInput, DisplayFullInput, Invocation, LinkInput, MediaSubmission, PairCodeInput,
-    TalkInput, TimeSettingInput,
+    CommandInput, Invocation, LinkInput, MediaSubmission, PairCodeInput, TalkInput,
 };
 use crate::reply::{
     CommandOutcome, Deferral, Embed, Reply, COLOR_ERROR, COLOR_INFO, COLOR_SUCCESS, COLOR_WARNING,
 };
 use crate::rich_payload::build_media_text_payload;
+use crate::rights::{self, Refusal, Requirement};
 use crate::text::{start_case, to_optional_text, youtube_start_offset_sec};
 
 /// Exécute une invocation et renvoie la réponse complète.
 pub async fn dispatch(ctx: &dyn BotContext, invocation: Invocation) -> CommandOutcome {
     let command = invocation.command();
+    if let Some(refused) = precheck(ctx, &invocation).await {
+        return refused;
+    }
     let deferral = plan_deferral(&invocation);
     let reply = match handle(ctx, invocation).await {
         Ok(reply) => reply,
@@ -44,6 +47,64 @@ pub async fn dispatch(ctx: &dyn BotContext, invocation: Invocation) -> CommandOu
         deferral,
         reply,
     }
+}
+
+/// Checks the author's rights ([`crate::rights`]). `Some` is the complete
+/// answer of a refused command, to send without acknowledging first (so it
+/// stays private).
+pub async fn precheck(ctx: &dyn BotContext, invocation: &Invocation) -> Option<CommandOutcome> {
+    let command = invocation.command();
+    let requirement = rights::requirement(command);
+    if requirement == Requirement::Anyone {
+        return None;
+    }
+    let lang = invocation.lang;
+    let refused = |reply| CommandOutcome {
+        command,
+        deferral: Deferral::None,
+        reply,
+    };
+    let guild_id = match invocation.guild_id.as_ref() {
+        Some(raw) => match ctx.db().guilds().resolve_discord(raw).await {
+            Ok(guild_id) => Some(guild_id),
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    command = command.id(),
+                    "résolution de la guilde impossible"
+                );
+                return Some(refused(generic_error_reply(lang)));
+            }
+        },
+        None => None,
+    };
+    match rights::check(ctx, guild_id.as_ref(), &invocation.author, requirement).await {
+        Ok(Ok(())) => None,
+        Ok(Err(refusal)) => Some(refused(refusal_reply(lang, refusal))),
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                command = command.id(),
+                "lecture des droits impossible"
+            );
+            Some(refused(generic_error_reply(lang)))
+        }
+    }
+}
+
+fn refusal_reply(lang: Lang, refusal: Refusal) -> Reply {
+    let dict = strings(lang);
+    let description = match refusal {
+        Refusal::NotLinked => dict.not_linked,
+        Refusal::RoleTooLow => dict.guest_not_allowed,
+        Refusal::AdminOnly => dict.admin_only,
+    };
+    Reply::ephemeral(
+        Embed::new()
+            .with_title(dict.not_allowed)
+            .with_description(description)
+            .with_color(COLOR_ERROR),
+    )
 }
 
 /// Accusé de réception à envoyer avant le traitement (comme le legacy).
@@ -75,6 +136,9 @@ pub fn plan_deferral(invocation: &Invocation) -> Deferral {
         // `/pair-code` acknowledges first: Discord only allows 3 seconds to
         // answer an interaction, and the code creation touches the database.
         CommandInput::PairCode(_) => Deferral::Ephemeral,
+        // Both talk to the playback engine or the overlay hub: acknowledged
+        // first, like `/pair-code`.
+        CommandInput::Stop | CommandInput::Overlays => Deferral::Ephemeral,
         _ => Deferral::None,
     }
 }
@@ -193,31 +257,6 @@ async fn handle(ctx: &dyn BotContext, invocation: Invocation) -> Result<Reply, B
         CommandInput::Info => Ok(handle_info(ctx, lang)),
         CommandInput::PairCode(input) => {
             handle_pair_code(ctx, lang, guild_id.as_ref(), &author, input).await
-        }
-        CommandInput::SetDefaultTime(input) => {
-            handle_time_setting(
-                ctx,
-                lang,
-                guild_id.as_ref(),
-                &author,
-                input,
-                TimeSetting::Default,
-            )
-            .await
-        }
-        CommandInput::SetMaxTime(input) => {
-            handle_time_setting(
-                ctx,
-                lang,
-                guild_id.as_ref(),
-                &author,
-                input,
-                TimeSetting::Max,
-            )
-            .await
-        }
-        CommandInput::SetDisplayFull(input) => {
-            handle_display_full(ctx, lang, guild_id.as_ref(), &author, input).await
         }
         CommandInput::Stop => handle_stop(ctx, lang, guild_id.as_ref()).await,
     }
@@ -638,82 +677,6 @@ async fn generate_unique_code(
 }
 
 // ---------------------------------------------------------------------------
-// Réglages de guilde
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TimeSetting {
-    Default,
-    Max,
-}
-
-async fn handle_time_setting(
-    ctx: &dyn BotContext,
-    lang: Lang,
-    guild_id: Option<&GuildId>,
-    author: &Author,
-    input: TimeSettingInput,
-    setting: TimeSetting,
-) -> Result<Reply, BotError> {
-    let dict = strings(lang);
-    let Some(guild_id) = guild_id else {
-        return Ok(generic_error_reply(lang));
-    };
-    if !author.is_admin {
-        return Ok(not_allowed_reply(lang));
-    }
-    let current = load_guild(ctx, guild_id).await?;
-    let requested = if input.seconds == 0 {
-        None
-    } else {
-        Some(input.seconds)
-    };
-    let mut patch = GuildSettingsPatch {
-        default_media_time: current.as_ref().and_then(|guild| guild.default_media_time),
-        max_media_time: current.as_ref().and_then(|guild| guild.max_media_time),
-        display_media_full: current
-            .as_ref()
-            .is_some_and(|guild| guild.display_media_full),
-    };
-    let answer = match setting {
-        TimeSetting::Default => {
-            patch.default_media_time = requested;
-            dict.set_default_time_answer
-        }
-        TimeSetting::Max => {
-            patch.max_media_time = requested;
-            dict.set_max_time_answer
-        }
-    };
-    ctx.update_guild_settings(guild_id, patch).await?;
-    Ok(success_reply(lang, answer, true))
-}
-
-async fn handle_display_full(
-    ctx: &dyn BotContext,
-    lang: Lang,
-    guild_id: Option<&GuildId>,
-    author: &Author,
-    input: DisplayFullInput,
-) -> Result<Reply, BotError> {
-    let dict = strings(lang);
-    let Some(guild_id) = guild_id else {
-        return Ok(generic_error_reply(lang));
-    };
-    if !author.is_admin {
-        return Ok(not_allowed_reply(lang));
-    }
-    let current = load_guild(ctx, guild_id).await?;
-    let patch = GuildSettingsPatch {
-        default_media_time: current.as_ref().and_then(|guild| guild.default_media_time),
-        max_media_time: current.as_ref().and_then(|guild| guild.max_media_time),
-        display_media_full: input.value,
-    };
-    ctx.update_guild_settings(guild_id, patch).await?;
-    Ok(success_reply(lang, dict.set_display_full_answer, true))
-}
-
-// ---------------------------------------------------------------------------
 // /lier (liaison d'un serveur Discord à une guilde indépendante)
 // ---------------------------------------------------------------------------
 
@@ -893,9 +856,7 @@ mod tests {
     use super::{dispatch, plan_deferral, Deferral, Invocation};
     use crate::context::{Author, BotContext};
     use crate::i18n::{strings, Lang};
-    use crate::inputs::{
-        CommandInput, LinkInput, MediaSubmission, PairCodeInput, TalkInput, TimeSettingInput,
-    };
+    use crate::inputs::{CommandInput, LinkInput, MediaSubmission, PairCodeInput, TalkInput};
     use crate::reply::COLOR_SUCCESS;
     use crate::testing::{admin_author, member_author, sample_now, FakeBotContext};
 
@@ -987,7 +948,7 @@ mod tests {
         );
         assert_eq!(
             plan_deferral(&invocation(CommandInput::Stop)),
-            Deferral::None
+            Deferral::Ephemeral
         );
         assert_eq!(
             plan_deferral(&invocation(CommandInput::Link(LinkInput {
@@ -1094,12 +1055,16 @@ mod tests {
 
     #[tokio::test]
     async fn commande_sur_serveur_lie_vise_la_guilde_independante() {
-        let ctx = FakeBotContext::new().await.unwrap();
+        let mut ctx = FakeBotContext::new().await.unwrap();
         let guild_id = standalone_guild(&ctx, "111", "Les Sardines").await;
         let discord = GuildId::parse("123456789012345678").unwrap();
         ctx.db()
             .guilds()
             .link_discord(&guild_id, Some(&discord))
+            .await
+            .unwrap();
+
+        ctx.link_author(&guild_id, &admin_author(), lc_domain::GuildRole::Member)
             .await
             .unwrap();
 
@@ -1109,20 +1074,18 @@ mod tests {
                 Some(discord.clone()),
                 Lang::Fr,
                 admin_author(),
-                CommandInput::SetDefaultTime(TimeSettingInput { seconds: 10 }),
+                CommandInput::Send(MediaSubmission {
+                    text: Some("salut".to_owned()),
+                    ..MediaSubmission::default()
+                }),
             ),
         )
         .await;
 
         assert_eq!(outcome.reply.embed.color, Some(COLOR_SUCCESS));
-        let row = ctx
-            .db()
-            .guilds()
-            .get(&guild_id)
-            .await
-            .unwrap()
-            .expect("ligne de la guilde indépendante");
-        assert_eq!(row.default_media_time, Some(10));
+        let requests = ctx.playback_mut().requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].guild_id, guild_id);
         assert!(ctx.db().guilds().get(&discord).await.unwrap().is_none());
     }
 }

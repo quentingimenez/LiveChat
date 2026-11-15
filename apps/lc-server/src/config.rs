@@ -248,6 +248,12 @@ pub struct Config {
     pub playback_job_retention_hours: u64,
     /// `MEDIA_STORAGE_DIR` (défaut `./data/media`).
     pub media_storage_dir: PathBuf,
+    /// `PIPER_BIN`: Piper speech engine (default `piper`, found on `PATH`).
+    pub piper_bin: String,
+    /// `PIPER_VOICE_FR`: French Piper voice (`.onnx`).
+    pub piper_voice_fr: PathBuf,
+    /// `PIPER_VOICE_EN`: English Piper voice (`.onnx`).
+    pub piper_voice_en: PathBuf,
     /// `MEDIA_CACHE_TTL_HOURS` (défaut `12`).
     pub media_cache_ttl_hours: u64,
     /// `MEDIA_CACHE_MAX_TOTAL_MB` (défaut `5120`).
@@ -386,6 +392,15 @@ impl Config {
         )?;
         let media_storage_dir =
             PathBuf::from(env.string("MEDIA_STORAGE_DIR", DEFAULT_MEDIA_STORAGE_DIR));
+        let piper_bin = env.string("PIPER_BIN", "piper");
+        let piper_voice_fr = PathBuf::from(env.string(
+            "PIPER_VOICE_FR",
+            "/opt/piper/voices/fr_FR-siwis-medium.onnx",
+        ));
+        let piper_voice_en = PathBuf::from(env.string(
+            "PIPER_VOICE_EN",
+            "/opt/piper/voices/en_US-lessac-medium.onnx",
+        ));
         let media_cache_ttl_hours =
             env.parsed("MEDIA_CACHE_TTL_HOURS", 12, "entier positif", parse_u64)?;
         let media_cache_max_total_mb = env.parsed(
@@ -506,6 +521,9 @@ impl Config {
             default_duration,
             playback_job_retention_hours,
             media_storage_dir,
+            piper_bin,
+            piper_voice_fr,
+            piper_voice_en,
             media_cache_ttl_hours,
             media_cache_max_total_mb,
             media_board_max_total_mb,

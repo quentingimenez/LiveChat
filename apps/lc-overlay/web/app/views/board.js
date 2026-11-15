@@ -37,6 +37,7 @@ import { notify } from '../core/toast.js';
 import { confirmDialog, copyText, openDialog } from '../core/ui.js';
 import { loadItems, refreshQueueAutomatically } from '../data.js';
 import { openAddDialog } from './add-media.js';
+import { openSayDialog } from './say.js';
 import { canOpenEditor, openMediaEditor } from './editor/index.js';
 import { openUploadMenu, renderUploadCard, startFileUpload, uploadsForGuild } from './uploads.js';
 import { renderView } from './view.js';
@@ -509,6 +510,7 @@ export function renderBoard() {
     ),
     h('span', { class: 'spacer' }),
     h('button', { class: 'btn is-quiet', title: 'Recharger le board', 'aria-label': 'Recharger le board', onClick: loadItems }, icon('refresh')),
+    can('play') ? h('button', { class: 'btn', title: 'Faire lire un texte à voix haute sur les overlays', onClick: () => openSayDialog() }, icon('sound'), 'Dire') : null,
     can('addMedia') ? h('button', { class: 'btn', onClick: openAddDialog }, icon('plus'), 'Ajouter un média') : null,
   );
   let content;

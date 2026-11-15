@@ -58,6 +58,22 @@ test('clicking while peeking: the peeked card gets pinned, the pinned one closes
   assert.deepEqual(cardClicked(peek, 'a'), CLOSED_VIEW);
 });
 
+test('a double click always leaves the drawer pinned on its media', () => {
+  // The browser sends click (detail 1), click (detail 2), then dblclick.
+  const twice = (view, id) => cardClicked(cardClicked(view, id, 1), id, 2);
+  assert.deepEqual(twice(CLOSED_VIEW, 'a'), pinnedOn('a'));
+  // Regression: the two clicks used to toggle twice (pin then unpin).
+  assert.deepEqual(twice(pinnedOn('a'), 'a'), pinnedOn('a'));
+  assert.deepEqual(twice(pinnedOn('b'), 'a'), pinnedOn('a'));
+  assert.deepEqual(twice(cardHovered(pinnedOn('b'), 'a'), 'a'), pinnedOn('a'));
+  assert.deepEqual(twice(cardHovered(CLOSED_VIEW, 'a'), 'a'), pinnedOn('a'));
+  // A third click of the same burst changes nothing.
+  assert.deepEqual(cardClicked(twice(CLOSED_VIEW, 'a'), 'a', 3), pinnedOn('a'));
+  // A keyboard activation (detail 0) or a call without a count toggles.
+  assert.deepEqual(cardClicked(pinnedOn('a'), 'a', 0), CLOSED_VIEW);
+  assert.deepEqual(cardClicked(pinnedOn('a'), 'a'), CLOSED_VIEW);
+});
+
 test('using the drawer pins what it shows', () => {
   assert.deepEqual(drawerUsed(cardHovered(pinnedOn('a'), 'b')), pinnedOn('b'));
   assert.deepEqual(drawerUsed(cardHovered(CLOSED_VIEW, 'a')), pinnedOn('a'));

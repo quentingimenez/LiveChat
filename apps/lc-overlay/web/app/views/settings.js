@@ -39,7 +39,8 @@ export const ALIGNMENTS = [
 ];
 
 const SHORTCUTS = [
-  ['stop', 'Arrêter le média'],
+  ['stop', 'Arrêter le média pour tous'],
+  ['stopLocal', 'Arrêter le média chez moi'],
   ['muteAll', 'Sourdine générale'],
 ];
 

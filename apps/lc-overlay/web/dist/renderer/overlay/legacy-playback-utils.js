@@ -45,6 +45,12 @@ export function createOverlayLegacyPlaybackUtils() {
             countdownLastTickAtMs: nowMs
         };
     }
+    // Reason echoed in the playback-stop report for an `overlay://stop`:
+    // only a stop on this device (`local`) is told apart, every other stop
+    // is a plain end of playback.
+    function stopReportReason(stopPayload) {
+        return stopPayload && stopPayload.reason === 'local' ? 'local' : null;
+    }
     function isActiveMediaStillRunning(playableElement) {
         if (!(playableElement instanceof HTMLMediaElement)) {
             return false;
@@ -60,6 +66,7 @@ export function createOverlayLegacyPlaybackUtils() {
         normalizeRemainingCountdownMs,
         derivePlaybackState,
         tickCountdown,
+        stopReportReason,
         isActiveMediaStillRunning,
         shouldClearOverlayAfterCountdown
     };

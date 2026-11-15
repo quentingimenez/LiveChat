@@ -212,6 +212,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             commands::media_board_set_bindings,
             commands::media_board_trigger,
             commands::media_board_stop,
+            commands::media_board_stop_local,
             commands::guilds_list,
             commands::guild_select,
             commands::guild_set_muted,

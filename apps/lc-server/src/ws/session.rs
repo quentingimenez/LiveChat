@@ -34,9 +34,9 @@ use lc_playback::{
 use lc_protocol::{
     close_code, close_reason, is_version_below, outdated_protocol_reason, AckError, AckOutcome,
     AckPayload, ClientEnvelope, ClientMessage, HelloPayload, PlaybackEndedPayload,
-    PlaybackStatePayload, ServerEnvelope, ServerErrorPayload, ServerMessage, SessionMode,
-    SettingsPayload, StopRequestSource, WelcomeConfig, WelcomePayload, HELLO_TIMEOUT_MS,
-    MAX_CLIENT_MESSAGES_PER_SECOND, MAX_FRAME_BYTES, MAX_MEDIA_TEXT_CHARS,
+    PlaybackEndedReason, PlaybackStatePayload, ServerEnvelope, ServerErrorPayload, ServerMessage,
+    SessionMode, SettingsPayload, StopRequestSource, WelcomeConfig, WelcomePayload,
+    HELLO_TIMEOUT_MS, MAX_CLIENT_MESSAGES_PER_SECOND, MAX_FRAME_BYTES, MAX_MEDIA_TEXT_CHARS,
     MAX_PLAYBACK_REMAINING_MS, PEERS_REQUEST_MIN_INTERVAL_MS, PING_INTERVAL_MS,
     PLAYBACK_STATE_MIN_INTERVAL_MS, PROTOCOL_VERSION,
 };
@@ -682,6 +682,15 @@ async fn handle_client_message(
         }
         ClientMessage::PlaybackEnded(payload) => {
             let job_id = parse_playback_ended_job_id(&payload, close_reason::BAD_PLAYBACK_STATE)?;
+            let connected = hub.connected_for_guild(&context.guild_id);
+            if !playback_ended_releases_job(payload.reason, connected) {
+                debug!(
+                    client = %context.client_id_str,
+                    connected,
+                    "playback.ended local ignoré : d'autres overlays lisent encore le job"
+                );
+                return Ok(());
+            }
             match engine
                 .handle_playback_ended(PlaybackEndedEvent::new(
                     context.guild_id.clone(),
@@ -1099,6 +1108,16 @@ fn parse_playback_job_id(
 }
 
 /// Parse le `jobId` d'un `playback.ended` ; erreur protocolaire sinon.
+/// Whether a `playback.ended` releases the job for the whole guild.
+///
+/// Any overlay finishing a job releases it, except one that stopped it on
+/// its own device only (`reason: "local"`): the other connected overlays are
+/// still playing it and one of them reports the real end. Alone in the
+/// guild, a local stop is the end of the job, so the queue moves on at once.
+fn playback_ended_releases_job(reason: PlaybackEndedReason, connected_overlays: usize) -> bool {
+    reason != PlaybackEndedReason::Local || connected_overlays <= 1
+}
+
 fn parse_playback_ended_job_id(
     payload: &PlaybackEndedPayload,
     reason: &str,

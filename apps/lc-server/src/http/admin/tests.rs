@@ -490,6 +490,9 @@ fn guild_member(guild_id: &GuildId, role: GuildRole) -> GuildMember {
         role,
         created_at: Utc::now(),
         removed_at: None,
+        discord_user_id: None,
+        profile_custom: true,
+        discord_synced_at: None,
     }
 }
 

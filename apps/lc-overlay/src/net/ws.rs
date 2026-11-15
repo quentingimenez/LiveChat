@@ -162,8 +162,15 @@ pub trait SessionEffects: Send + Sync {
 /// Fin d'une session, interprétée par le superviseur.
 #[derive(Debug)]
 pub enum SessionOutcome {
-    Closed { code: Option<u16>, reason: String },
+    Closed {
+        code: Option<u16>,
+        reason: String,
+    },
     ConnectFailed(String),
+    /// The HTTP upgrade was refused with `429`: wait at least `retry_after`.
+    RateLimited {
+        retry_after: Option<Duration>,
+    },
     Failed(String),
     Shutdown,
     ReconnectRequested,
@@ -174,6 +181,8 @@ pub enum SessionOutcome {
 enum SupervisorStep {
     Retry {
         rate_limited: bool,
+        /// Wait asked by the server (`Retry-After`), on top of the backoff.
+        min_delay: Option<Duration>,
         reason: String,
     },
     Terminal {
@@ -391,10 +400,17 @@ async fn supervise(
             }
             SessionOutcome::ConnectFailed(reason) => SupervisorStep::Retry {
                 rate_limited: false,
+                min_delay: None,
                 reason,
+            },
+            SessionOutcome::RateLimited { retry_after } => SupervisorStep::Retry {
+                rate_limited: true,
+                min_delay: retry_after,
+                reason: "limite de débit du serveur".to_string(),
             },
             SessionOutcome::Failed(reason) => SupervisorStep::Retry {
                 rate_limited: false,
+                min_delay: None,
                 reason,
             },
             SessionOutcome::Closed { code, reason } => close_step(code, &reason),
@@ -402,9 +418,10 @@ async fn supervise(
         match step {
             SupervisorStep::Retry {
                 rate_limited,
+                min_delay,
                 reason,
             } => {
-                let delay = backoff.delay(rate_limited);
+                let delay = retry_delay(backoff.delay(rate_limited), min_delay);
                 tracing::info!(
                     delay_ms = delay.as_millis(),
                     reason,
@@ -577,14 +594,17 @@ fn close_step(code: Option<u16>, reason: &str) -> SupervisorStep {
         },
         Some(4409) => SupervisorStep::Retry {
             rate_limited: true,
+            min_delay: None,
             reason: "limite de débit du serveur".to_string(),
         },
         Some(4408) => SupervisorStep::Retry {
             rate_limited: false,
+            min_delay: None,
             reason: "trame trop volumineuse".to_string(),
         },
         Some(_) | None => SupervisorStep::Retry {
             rate_limited: false,
+            min_delay: None,
             reason: if reason.trim().is_empty() {
                 "connexion interrompue".to_string()
             } else {
@@ -592,6 +612,33 @@ fn close_step(code: Option<u16>, reason: &str) -> SupervisorStep {
             },
         },
     }
+}
+
+/// Longest `Retry-After` honoured: the server's rate-limit window.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(15 * 60);
+
+/// Delay before the next attempt: the backoff, or longer when the server asked
+/// for it.
+fn retry_delay(backoff: Duration, min_delay: Option<Duration>) -> Duration {
+    min_delay.map_or(backoff, |wait| backoff.max(wait.min(MAX_RETRY_AFTER)))
+}
+
+/// Classifies a failed WebSocket connection. A `429` on the HTTP upgrade is
+/// the server's rate limit: retrying every 3 s cannot succeed before its
+/// window resets, so the supervisor waits as long as `Retry-After` says.
+fn connect_failure(error: &tungstenite::Error) -> SessionOutcome {
+    if let tungstenite::Error::Http(response) = error {
+        if response.status() == tungstenite::http::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = response
+                .headers()
+                .get(tungstenite::http::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .map(Duration::from_secs);
+            return SessionOutcome::RateLimited { retry_after };
+        }
+    }
+    SessionOutcome::ConnectFailed(format!("connexion échouée : {error}"))
 }
 
 fn outdated_reason(raw_reason: &str) -> String {
@@ -753,9 +800,7 @@ async fn run_session<E: SessionEffects>(
     let connection = connect_async_tls_with_config(request, None, false, connector);
     let (socket, _response) = match tokio::time::timeout(CONNECT_TIMEOUT, connection).await {
         Err(_) => return SessionOutcome::ConnectFailed("délai de connexion dépassé".to_string()),
-        Ok(Err(error)) => {
-            return SessionOutcome::ConnectFailed(format!("connexion échouée : {error}"))
-        }
+        Ok(Err(error)) => return connect_failure(&error),
         Ok(Ok(pair)) => pair,
     };
     let (mut sink, mut stream) = socket.split();
@@ -957,14 +1002,22 @@ async fn run_session<E: SessionEffects>(
 }
 
 /// Calcule le reprise d'un job après reconnexion (protocole §6.1.1).
+///
+/// The media resumes where the server is (elapsed offset) and only for the
+/// time left: `duration_sec` drives the on-screen countdown and the end of
+/// the display, so keeping the full duration restarted the countdown from
+/// the top after a mute or a reconnection.
 fn adopt_current_job(play: PlayPayload, remaining_ms: u64) -> PlayPayload {
     let mut play = play;
-    let remaining_sec = remaining_ms.div_ceil(1000);
+    let remaining_sec = remaining_ms
+        .div_ceil(1000)
+        .clamp(1, play.duration_sec.max(1));
     let elapsed_sec = play.duration_sec.saturating_sub(remaining_sec);
     if let Some(media) = play.media.as_mut() {
         let base = media.start_offset_sec.unwrap_or(0);
         media.start_offset_sec = Some(base.saturating_add(elapsed_sec));
     }
+    play.duration_sec = remaining_sec;
     play
 }
 
@@ -2135,9 +2188,60 @@ mod tests {
         }
         // duration 10 s, remaining 4 s -> elapsed 6 s, seek = 2 + 6 = 8 s.
         let adopted = adopt_current_job(play, 4_000);
+        // The countdown shows the 4 s left, not the full 10 s.
+        assert_eq!(adopted.duration_sec, 4);
         let media = adopted.media.expect("média conservé");
         assert_eq!(media.start_offset_sec, Some(8));
         assert_eq!(adopted.job_id, "job-1");
+    }
+
+    #[test]
+    fn adopt_current_job_keeps_at_least_one_second_and_never_grows() {
+        // A remaining time above the duration (clock skew) keeps the duration.
+        let adopted = adopt_current_job(play_payload(), 60_000);
+        assert_eq!(adopted.duration_sec, play_payload().duration_sec);
+        // A job about to end still shows for one second.
+        let adopted = adopt_current_job(play_payload(), 0);
+        assert_eq!(adopted.duration_sec, 1);
+    }
+
+    #[test]
+    fn rate_limited_upgrade_waits_for_retry_after() {
+        let response = tungstenite::http::Response::builder()
+            .status(429)
+            .header("retry-after", "139")
+            .body(None)
+            .expect("réponse 429");
+        let outcome = connect_failure(&tungstenite::Error::Http(Box::new(response)));
+        assert!(matches!(
+            outcome,
+            SessionOutcome::RateLimited {
+                retry_after: Some(wait)
+            } if wait == Duration::from_secs(139)
+        ));
+
+        let response = tungstenite::http::Response::builder()
+            .status(502)
+            .body(None)
+            .expect("réponse 502");
+        assert!(matches!(
+            connect_failure(&tungstenite::Error::Http(Box::new(response))),
+            SessionOutcome::ConnectFailed(_)
+        ));
+
+        // The server's wait wins over a shorter backoff, within one window.
+        assert_eq!(
+            retry_delay(Duration::from_secs(1), Some(Duration::from_secs(139))),
+            Duration::from_secs(139)
+        );
+        assert_eq!(
+            retry_delay(Duration::from_secs(1), Some(Duration::from_secs(86_400))),
+            MAX_RETRY_AFTER
+        );
+        assert_eq!(
+            retry_delay(Duration::from_secs(3), None),
+            Duration::from_secs(3)
+        );
     }
 
     #[test]

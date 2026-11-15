@@ -85,8 +85,17 @@ test('uploadErrorMessage: 429 too_many_ingestions', () => {
   );
 });
 
-test('uploadErrorMessage: another 429 keeps the generic message', () => {
-  assert.equal(uploadErrorMessage(429, { error: 'rate_limited' }, LABELS), 'Le serveur a répondu 429.');
+test('uploadErrorMessage: another 429 is explained as a rate limit', () => {
+  assert.equal(
+    uploadErrorMessage(429, { error: 'request_error' }, LABELS),
+    'Trop de requêtes vers le serveur (429) : réessaie dans quelques minutes.',
+  );
+});
+
+test('uploadErrorMessage: gateway failures say the server is unreachable', () => {
+  for (const status of [502, 503, 504]) {
+    assert.equal(uploadErrorMessage(status, null, LABELS), `Serveur injoignable (${status}) : réessaie dans un instant.`);
+  }
 });
 
 test('MAX_UPLOAD_BYTES is 100 MiB', () => {

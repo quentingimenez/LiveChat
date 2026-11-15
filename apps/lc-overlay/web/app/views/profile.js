@@ -64,9 +64,15 @@ export function openGuildDialog(guild) {
       preview.replaceChildren(avatarNode(name.value || '?', avatar));
       removeAvatar.disabled = true;
     });
+    const followsDiscord = member.profileSource === 'discord';
     const deviceCode = h('p', { class: 'meta', hidden: true });
     const extensionCode = h('p', { class: 'meta', hidden: true });
     const save = async () => {
+      // Saving an unchanged profile would stop it from following Discord.
+      if (name.value.trim() === initialName.trim() && !avatarChanged) {
+        close();
+        return;
+      }
       const body = { displayName: name.value };
       // Unchanged avatar is omitted; an explicit null removes it.
       if (avatarChanged) {
@@ -77,6 +83,33 @@ export function openGuildDialog(guild) {
         close();
         loadGuild();
       }
+    };
+    const useDiscord = async () => {
+      const body = await run(() => api('PATCH', '/overlay/profile', { useDiscord: true }));
+      if (!body) {
+        return;
+      }
+      notify(body.synced ? 'Profil Discord repris.' : 'Profil Discord repris : il sera lu à ta prochaine connexion.');
+      close();
+      loadGuild();
+    };
+    const profileSource = () => {
+      if (!member.discordLinked) {
+        return h('p', { class: 'file-hint' }, 'Ce pseudo et cet avatar s’affichent sur le stream quand tu lances un média.');
+      }
+      if (followsDiscord) {
+        return h(
+          'p',
+          { class: 'file-hint' },
+          'Pseudo et avatar repris de ton compte Discord, et mis à jour avec lui. Les modifier ici les fixe.',
+        );
+      }
+      return h(
+        'div',
+        { class: 'row is-wrap' },
+        h('p', { class: 'file-hint' }, 'Pseudo et avatar choisis ici : ils ne suivent plus ton compte Discord.'),
+        h('button', { class: 'btn is-quiet', type: 'button', onClick: useDiscord }, 'Reprendre mon profil Discord'),
+      );
     };
     const makeDeviceCode = async () => {
       const body = await run(() => api('POST', '/overlay/device-code'));
@@ -127,7 +160,7 @@ export function openGuildDialog(guild) {
             ),
           ),
         ),
-        h('p', { class: 'file-hint' }, 'Ce pseudo et cet avatar s’affichent sur le stream quand tu lances un média.'),
+        profileSource(),
         h(
           'div',
           { class: 'row is-wrap' },

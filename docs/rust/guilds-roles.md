@@ -43,6 +43,9 @@ La migration crée les index `idx_guilds_discord_guild_id`, `idx_guild_members_g
 | `guild_members` | `role` | `TEXT NOT NULL`, `CHECK IN ('ADMIN','MEMBER','GUEST')` |
 | `guild_members` | `created_at` | `INTEGER NOT NULL` (millisecondes epoch) |
 | `guild_members` | `removed_at` | `INTEGER` nullable ; `NULL` = membre actif |
+| `guild_members` | `discord_user_id` | `TEXT` nullable (migration 0008) ; compte Discord lié, unique par guilde parmi les membres actifs (`idx_guild_members_discord_user`) |
+| `guild_members` | `profile_custom` | `INTEGER NOT NULL DEFAULT 1` (0008) ; `0` = pseudo et avatar suivent le compte Discord lié |
+| `guild_members` | `discord_synced_at` | `INTEGER` nullable (0008) ; dernière lecture du profil sur Discord |
 | `guild_invites` | `code` | `TEXT PRIMARY KEY` (normalisé en majuscules) |
 | `guild_invites` | `guild_id` | `TEXT NOT NULL` |
 | `guild_invites` | `role` | `TEXT NOT NULL`, `CHECK IN ('ADMIN','MEMBER','GUEST')` |
@@ -69,6 +72,20 @@ La migration insère un membre pour chaque ligne de `overlay_clients` :
 - `created_at` = date de création ; `removed_at` = `revoked_at` (un overlay révoqué donne un membre retiré).
 
 `UPDATE overlay_clients SET member_id = id` rattache ensuite chaque overlay à son membre. Aucune guilde existante n'a d'admin après la migration : le premier code admin s'émet depuis le panneau serveur, ou avec `/pair-code` exécuté par un administrateur Discord en mode normal.
+
+### Profil lié au compte Discord
+
+Un `/pair-code` en mode `normal` est personnel : il lie le membre au compte Discord de son auteur (`guild_members.discord_user_id`). Le premier appairage crée le membre avec le pseudo Discord (surnom du serveur, sinon nom global, sinon nom d'utilisateur) et l'avatar Discord (avatar du serveur, sinon du compte), `profile_custom = 0`. Les appairages suivants avec un `/pair-code` du même compte ajoutent un appareil au même membre : rôle et profil sont conservés. Un code `invite` (lecture seule) est fait pour être donné à quelqu'un d'autre : l'identité de son auteur n'est jamais reprise et un pseudo saisi est exigé, comme pour une invitation du board.
+
+Tant que `profile_custom = 0`, le pseudo et l'avatar suivent Discord et sont recopiés sur les overlays du membre (`GuildMembersRepository::sync_discord_profile`) :
+
+- à chaque commande Discord tapée par le membre (`lc_discord::handlers`, sans appel réseau) ;
+- quand un de ses overlays se connecte en WebSocket, au plus toutes les 6 h (`discord::profiles::REFRESH_INTERVAL`), par `GET /guilds/{guild}/members/{user}`, qui n'exige aucun intent privilégié. Pour une guilde indépendante, le serveur Discord lu est `discord_guild_id` ; sans serveur lié, rien n'est lu ;
+- tout de suite quand le membre choisit « Reprendre mon profil Discord » (`PATCH /overlay/profile` avec `useDiscord`).
+
+Un compte parti du serveur Discord garde son dernier profil. Enregistrer « Mon profil » met `profile_custom = 1` : le choix du membre prime jusqu'à ce qu'il reprenne son profil Discord.
+
+La migration 0008 met `profile_custom = 1` pour tous les membres existants : personne ne voit son pseudo changer. Elle lie chaque membre au compte de l'auteur du plus ancien overlay `NORMAL` créé par un `/pair-code` (identifiant entièrement numérique) ; quand plusieurs membres actifs d'une guilde viennent du même compte, seul le plus ancien est lié.
 
 ### Sens de `standalone` et `discord_guild_id`
 
@@ -198,9 +215,9 @@ Réponse `200` :
 
 `clientToken` est le jeton brut, affiché une seule fois ; seul son SHA-256 est stocké dans `overlay_clients.token_hash`. `apiBaseUrl` vient de `state.config.api_origin()`. `guildName` est `null` si aucune ligne `guilds` n'existe. `authorName` reprend uniquement le nom porté par un code legacy ; il vaut `null` pour une invitation, même si `displayName` est renseigné. `protocolVersion` vaut `lc_protocol::PROTOCOL_VERSION` (2).
 
-Pour un **nouveau** membre, `displayName` normalisé est le pseudo ; à défaut, un code `/pair-code` fournit son auteur Discord (`author_name`). Sans aucun des deux, la requête est refusée `400 {"error":"display_name_required"}` **sans consommer le code**. L'avatar suit la même priorité : `avatar` de la requête, sinon l'avatar du `/pair-code`, sinon aucun. Un code « appareil » (`guild_invites.member_id`) rattache un membre existant et n'exige aucun pseudo. Les champs `default_author_name` / `default_author_image` du client créé reprennent le profil du membre.
+Un `/pair-code` en mode `normal` rattache l'overlay au membre lié au compte Discord de son auteur, créé au premier appairage avec le pseudo et l'avatar Discord ; `displayName` et `avatar` sont alors ignorés (voir « Profil lié au compte Discord »). Pour un **nouveau** membre venu d'une invitation ou d'un code `invite`, `displayName` normalisé est le pseudo ; sans pseudo, la requête est refusée `400 {"error":"display_name_required"}` **sans consommer le code**. L'avatar est `avatar` de la requête, sinon aucun. Un code « appareil » (`guild_invites.member_id`) rattache un membre existant et n'exige aucun pseudo. Les champs `default_author_name` / `default_author_image` du client créé reprennent le profil du membre.
 
-Erreurs : `400 invalid_payload` (JSON malformé ou code absent), `400 display_name_required`, `403 pairing_code_scope_mismatch` (code réservé à l'extension), `404 pairing_code_invalid_or_expired`, `409 overlay_client_conflict` (collision de hash), `500 internal_error`, `503 database_unavailable`.
+Erreurs : `400 invalid_payload` (JSON malformé ou code absent), `400 display_name_required`, `403 pairing_code_scope_mismatch` (code réservé à l'extension), `404 pairing_code_invalid_or_expired`, `409 overlay_client_conflict` (collision de hash, ou deux premiers appairages simultanés du même compte Discord), `500 internal_error`, `503 database_unavailable`.
 
 ## Routes overlay
 
@@ -237,7 +254,7 @@ Toutes les routes authentifiées acceptent uniquement `Authorization: Bearer <to
 | Route | Corps | Réponse 200 | Erreurs propres |
 |-------|-------|-------------|-----------------|
 | `GET /overlay/guild` | aucun | `{guild:{id,name,standalone,discordGuildId,guestsCanViewBoard,settings,connectedCount}, member, clientId, permissions}` | `500`, `503` |
-| `PATCH /overlay/profile` | `{"displayName":"…","avatar":"…"}` ; `avatar` absent = conservé, `null` ou vide = effacé | `{updated:true, member:{id,displayName,avatar,role}}` | `400 invalid_payload`, `400 invalid_display_name`, `409 member_required`, `404 member_not_found` |
+| `PATCH /overlay/profile` | `{"displayName":"…","avatar":"…"}` ; `avatar` absent = conservé, `null` ou vide = effacé. Ou `{"useDiscord":true}` (les autres champs sont ignorés) | `{updated:true, member}` ; avec `useDiscord`, `{updated:true, synced, member}` | `400 invalid_payload`, `400 invalid_display_name`, `409 member_required`, `409 discord_not_linked`, `404 member_not_found` |
 | `POST /overlay/device-code` | aucun | `{created:true, invite:{…}}` | `409 member_required`, `500` |
 | `POST /overlay/leave` | aucun | `{left:true}` | `409 last_admin`, `404 member_not_found` |
 | `GET /overlay/queue` | aucun | `{playing, pending, serverTime}` | aucun (les trois rôles ont `ViewQueue`) |
@@ -258,7 +275,9 @@ Toutes les routes authentifiées acceptent uniquement `Authorization: Bearer <to
 
 `GET /overlay/guild` renvoie `standalone: false`, `name: null` et des réglages `null` si la guilde n'a pas de ligne. `permissions` contient exactement `viewBoard`, `viewQueue`, `play`, `stop`, `addMedia`, `editAnyMedia`, `moderateQueue`, `manageMembers`, `manageInvites`, `manageSettings`.
 
-`PATCH /overlay/profile` exige un membre rattaché. Un pseudo vide après normalisation donne `invalid_display_name` ; un avatar non `http(s)` et non `data:image/{png,jpeg,webp,gif};base64,` est ignoré (`None`) plutôt que refusé. Le nom et l'avatar sont recopiés sur les overlays actifs du membre (`update_author_by_member`). `POST /overlay/leave` sans membre révoque seulement l'overlay courant et ferme sa session avec `4402` (`{left:true}`). Avec un membre, il applique la règle du dernier admin, marque `removed_at`, révoque les overlays actifs du membre et ferme leurs sessions WebSocket avec `4402` (`close_code::REVOKED`).
+`member` vaut `{id, displayName, avatar, role, createdAt, discordLinked, profileSource}` dans `GET /overlay/guild` et `PATCH /overlay/profile` : `discordLinked` dit si le membre est lié à un compte Discord ; `profileSource` vaut `discord` tant que pseudo et avatar suivent ce compte, sinon `custom`.
+
+`PATCH /overlay/profile` exige un membre rattaché. Un pseudo vide après normalisation donne `invalid_display_name` ; un avatar non `http(s)` et non `data:image/{png,jpeg,webp,gif};base64,` est ignoré (`None`) plutôt que refusé. Le nom et l'avatar sont recopiés sur les overlays actifs du membre (`update_author_by_member`) et le profil cesse de suivre Discord (`profile_custom = 1`). Avec `useDiscord`, un membre lié suit de nouveau son compte Discord et son profil y est lu tout de suite. `synced: false` signale que Discord n'a pas pu être lu (bot non configuré, API en échec, compte hors du serveur) : le profil reste celui d'avant jusqu'à la prochaine lecture. Un membre non lié reçoit `409 discord_not_linked`. `POST /overlay/leave` sans membre révoque seulement l'overlay courant et ferme sa session avec `4402` (`{left:true}`). Avec un membre, il applique la règle du dernier admin, marque `removed_at`, révoque les overlays actifs du membre et ferme leurs sessions WebSocket avec `4402` (`close_code::REVOKED`).
 
 `GET /overlay/queue` lit au plus 200 jobs (`QUEUE_LIMIT`) et trie `PLAYING` d'abord, puis `priority DESC`, `submission_date ASC`, `id ASC` ; `playing` est le premier job en lecture ou `null`, `pending` contient les autres, `serverTime` est une date ISO 8601 UTC en millisecondes. `DELETE /overlay/queue/{jobId}` passe un job `PENDING` de la guilde à `FAILED` avec `finished_at` ; un identifiant invalide, un job d'une autre guilde ou un job `PLAYING` renvoie `{removed:false}`. `DELETE /overlay/queue` passe tous les `PENDING` à `FAILED` et renvoie le nombre modifié. Le job en cours n'est pas retiré.
 

@@ -365,6 +365,9 @@ async fn seed_member(
         role: GuildRole::Member,
         created_at: now(),
         removed_at: None,
+        discord_user_id: None,
+        profile_custom: true,
+        discord_synced_at: None,
     };
     let id = member.id;
     db.guild_members()

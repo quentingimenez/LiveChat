@@ -263,48 +263,33 @@ fn domain_guild_id(interaction: &CommandInteraction) -> Option<GuildId> {
 
 fn parse_author(interaction: &CommandInteraction) -> Author {
     let user = &interaction.user;
-    let username = user.name.clone();
     let member = interaction.member.as_ref();
-    let nickname = member
-        .and_then(|member| member.nick.clone())
-        .filter(|nickname| !nickname.trim().is_empty());
-    let global_name = user
-        .global_name
-        .clone()
-        .filter(|global_name| !global_name.trim().is_empty());
-    let name = nickname.or(global_name).unwrap_or_else(|| username.clone());
-    let image = member
-        .and_then(|member| member.avatar.as_ref().map(ToString::to_string))
-        .and_then(|hash| guild_avatar_url(interaction, &hash))
-        .or_else(|| user_avatar_url(user));
+    let name = crate::identity::display_name(
+        member.and_then(|member| member.nick.as_deref()),
+        user.global_name.as_deref(),
+        &user.name,
+    );
+    // A server avatar only exists inside a server (never in direct messages).
+    let guild_avatar = interaction
+        .guild_id
+        .and(member.and_then(|member| member.avatar.as_ref()))
+        .map(ToString::to_string);
+    let image = crate::identity::avatar_url(
+        interaction.guild_id.map_or(0, |guild_id| guild_id.get()),
+        user.id.get(),
+        guild_avatar.as_deref(),
+        user.avatar.as_ref().map(ToString::to_string).as_deref(),
+    );
     let is_admin = member
         .and_then(|member| member.permissions)
         .is_some_and(|permissions| permissions.administrator());
     Author {
         id: user.id.get().to_string(),
-        username,
+        username: user.name.clone(),
         name,
         image,
         is_admin,
     }
-}
-
-fn guild_avatar_url(interaction: &CommandInteraction, hash: &str) -> Option<String> {
-    let guild_id = interaction.guild_id?.get();
-    let user_id = interaction.user.id.get();
-    let extension = if hash.starts_with("a_") { "gif" } else { "png" };
-    Some(format!(
-        "https://cdn.discordapp.com/guilds/{guild_id}/users/{user_id}/avatars/{hash}.{extension}?size=256"
-    ))
-}
-
-fn user_avatar_url(user: &serenity::model::user::User) -> Option<String> {
-    let hash = user.avatar.as_ref().map(ToString::to_string)?;
-    let user_id = user.id.get();
-    let extension = if hash.starts_with("a_") { "gif" } else { "png" };
-    Some(format!(
-        "https://cdn.discordapp.com/avatars/{user_id}/{hash}.{extension}?size=256"
-    ))
 }
 
 // ---------------------------------------------------------------------------

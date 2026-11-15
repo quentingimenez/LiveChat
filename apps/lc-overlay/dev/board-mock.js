@@ -27,6 +27,11 @@
 // « slow » → conversion qui ne finit qu'au bout de 20 s.
 // « Sad violin » n'est pas prêt (media_not_ready).
 // Appairage : le code NOPSEUDO sans pseudo renvoie display_name_required.
+// Les médias ont des formats variés (portrait, carré, paysage) pour la
+// mosaïque ; « Nope » est une image portrait (1080 × 1920). La sourdine ferme la
+// connexion comme le shell (disabled, puis connecting → connected au retour)
+// et le membre « toi » passe hors ligne. `__mock.requests` liste les appels
+// guild_api ({ method, path }).
 (function () {
   'use strict';
 
@@ -83,6 +88,10 @@
   };
   let pendingView = new URLSearchParams(location.search).has('settings') ? 'settings' : null;
 
+  // Media sizes (width, height): portrait, square and wide shapes for the
+  // masonry grid and the detail panel. Others are 1280 × 720.
+  const SIZES = { 1: [1080, 1080], 3: [1080, 1920], 4: [1200, 800], 5: [720, 1280], 6: [2400, 1000], 8: [1080, 1920] };
+  const sizeOf = (index) => SIZES[index] || [1280, 720];
   const titles = ['Chat qui tombe', 'Bruh', 'Vine boom', 'Directed by Robert B. Weide', 'Stonks', 'Ah shit, here we go again', null, 'Fanfare de la victoire totale et définitive', 'Nope', 'Sad violin'];
   const kinds = ['video', 'image', 'audio', 'video', 'image', 'video', 'video', 'audio', 'image', 'audio'];
   const items = titles.map((title, index) => ({
@@ -97,7 +106,7 @@
     createdByMemberId: index % 2 ? 'm-lea' : 'm-111',
     canEdit: isAdmin || (!isGuest && index % 2 === 0),
     createdAt: new Date(Date.now() - index * 86400000).toISOString(),
-    media: { id: 'a' + index, kind: kinds[index], mime: 'x', durationSec: kinds[index] === 'image' ? null : 3 + index * 7, width: 1280, height: 720, isVertical: false, sizeBytes: 420000 * (index + 1), sourceUrl: 'https://www.tiktok.com/@x/video/' + index },
+    media: { id: 'a' + index, kind: kinds[index], mime: 'x', durationSec: kinds[index] === 'image' ? null : 3 + index * 7, width: sizeOf(index)[0], height: sizeOf(index)[1], isVertical: sizeOf(index)[1] > sizeOf(index)[0], sizeBytes: 420000 * (index + 1), sourceUrl: 'https://www.tiktok.com/@x/video/' + index },
   }));
 
   const queue = {
@@ -116,7 +125,9 @@
     { id: 'm-42', displayName: 'Invité-42', avatar: null, role: 'guest', connected: false, deviceCount: 1, lastSeenAt: null, isSelf: false },
   ];
   // Guild profile edited by « Mon profil »: the mock keeps it between dialogs.
-  const memberProfile = { displayName: 'Quentin', avatar: null };
+  // It starts linked to the Discord account, as after a personal /pair-code.
+  const discordProfile = { displayName: 'Quentin', avatar: null };
+  const memberProfile = { ...discordProfile, discordLinked: true, profileSource: 'discord' };
   const invites = [
     { code: 'K7QXM2PD', role: 'member', maxUses: 1, useCount: 0, expiresAt: new Date(now + 22 * 3600000).toISOString(), revokedAt: null, isActive: true },
     { code: 'P3WN8RTA', role: 'guest', maxUses: 10, useCount: 4, expiresAt: new Date(now + 6 * 86400000).toISOString(), revokedAt: null, isActive: true },
@@ -138,7 +149,10 @@
 
   function svg(index) {
     const hue = (index * 47) % 360;
-    return 'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200"><rect width="320" height="200" fill="hsl(${hue} 35% 32%)"/><circle cx="${60 + index * 20}" cy="100" r="46" fill="hsl(${hue} 45% 52%)"/></svg>`);
+    const [mediaWidth, mediaHeight] = sizeOf(index);
+    const width = 320;
+    const height = Math.round((320 * mediaHeight) / mediaWidth);
+    return 'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="${width}" height="${height}" fill="hsl(${hue} 35% 32%)"/><circle cx="${Math.min(60 + index * 20, width - 50)}" cy="${Math.round(height / 2)}" r="46" fill="hsl(${hue} 45% 52%)"/></svg>`);
   }
 
   // Device settings: the mock validates the same fields as the Rust shell and
@@ -347,18 +361,28 @@
     }
     if (path === '/overlay/profile' && method === 'PATCH') {
       const body = payload.body || {};
+      if (body.useDiscord) {
+        if (!memberProfile.discordLinked) {
+          return { ok: false, status: 409, body: { error: 'discord_not_linked' } };
+        }
+        Object.assign(memberProfile, discordProfile, { profileSource: 'discord' });
+      }
       // Missing key keeps the value; an explicit null removes it.
-      if ('displayName' in body) {
+      if (!body.useDiscord && 'displayName' in body) {
         memberProfile.displayName = body.displayName === null ? null : String(body.displayName);
       }
-      if ('avatar' in body) {
+      if (!body.useDiscord && 'avatar' in body) {
         memberProfile.avatar = body.avatar === null ? null : String(body.avatar);
+      }
+      if (!body.useDiscord) {
+        memberProfile.profileSource = 'custom';
       }
       const self = members.find((member) => member.id === 'm-111');
       if (self) {
-        Object.assign(self, memberProfile);
+        Object.assign(self, { displayName: memberProfile.displayName, avatar: memberProfile.avatar });
       }
-      return ok({ updated: true, profile: Object.assign({}, memberProfile) });
+      const member = { id: 'm-111', ...memberProfile, role };
+      return ok(body.useDiscord ? { updated: true, synced: true, member } : { updated: true, member });
     }
     if (path === '/overlay/guild') {
       return ok({
@@ -568,7 +592,32 @@
     emit('overlay://navigate', { view: 'settings' });
   }
 
-  window.__mock = { emit, removeGuild, finishPlaying, reconnect, restartServer, openSettings: openSettingsPage, finishPlacement, settings, previewLayouts, queue, items, guilds, ingestions };
+  // Mute closes the guild's socket in the shell: the overlay goes offline for
+  // the server, and comes back through connecting → connected.
+  function applyMuted(guildId, muted) {
+    const self = members.find((member) => member.isSelf);
+    if (muted) {
+      setTimeout(() => {
+        if (guildId === '111' && self) {
+          self.connected = false;
+          self.lastSeenAt = new Date().toISOString();
+        }
+        setConnection(guildId, 'disabled', 'désactivé');
+      }, 50);
+      return;
+    }
+    setTimeout(() => setConnection(guildId, 'connecting', 'connexion…'), 50);
+    setTimeout(() => {
+      if (guildId === '111' && self) {
+        self.connected = true;
+      }
+      setConnection(guildId, 'connected', 'connecté');
+    }, 400);
+  }
+
+  const requests = [];
+
+  window.__mock = { emit, removeGuild, finishPlaying, reconnect, restartServer, openSettings: openSettingsPage, finishPlacement, settings, previewLayouts, queue, items, guilds, ingestions, requests };
 
   window.__TAURI_INTERNALS__ = {
     transformCallback(callback) {
@@ -636,6 +685,7 @@
         case 'guilds_list':
           return Promise.resolve(guildsCopy());
         case 'guild_api':
+          requests.push({ method: payload.method, path: payload.path });
           return delay(80).then(() => api(payload));
         case 'media_board_get_bindings':
           return Promise.resolve({ bindings: { 'CommandOrControl+Shift+1': 'item-0' } });
@@ -658,6 +708,7 @@
               guild.membership.muted = Boolean(payload.muted);
             }
           });
+          applyMuted(payload.guildId, Boolean(payload.muted));
           return Promise.resolve({ ok: true, guilds: guildsCopy() });
         case 'guild_leave':
           return Promise.resolve({ ok: true, guilds: guildsCopy() });

@@ -13,13 +13,18 @@
 //! - `deviceName` : facultatif ; repli legacy `Overlay-<authorName|User>` ;
 //! - `label` / `clientName` sont acceptés en alias de `deviceName` (anciens
 //!   clients) ;
-//! - `displayName` / `avatar` : profil du nouveau membre. Pour un nouveau
-//!   membre, le pseudo vaut `displayName` s'il est non vide, sinon l'auteur
-//!   Discord d'un code `/pair-code` ; sans ni l'un ni l'autre la requête est
-//!   refusée `400 display_name_required` **sans consommer le code**. L'avatar
-//!   suit la même priorité (requête, puis auteur Discord, sinon aucun). Un code
-//!   « appareil » (`guild_invites.member_id`) rattache un membre existant et
-//!   n'exige aucun pseudo ;
+//! - `displayName` / `avatar` : profil du nouveau membre venu d'une invitation
+//!   (board, panel) ou d'un code `/pair-code` en mode invité ; sans pseudo la
+//!   requête est refusée `400 display_name_required` **sans consommer le
+//!   code**. Un code « appareil » (`guild_invites.member_id`) rattache un
+//!   membre existant et n'exige aucun pseudo ;
+//! - a normal-mode `/pair-code` is personal: the overlay joins the member
+//!   linked to its author's Discord account (`guild_members.discord_user_id`),
+//!   created on the first pairing with the Discord name and avatar. That
+//!   profile then follows Discord until the member picks their own in « Mon
+//!   profil ». `displayName` / `avatar` are ignored for such a code. A
+//!   read-only invitation is handed to someone else: its author's identity is
+//!   never used;
 //! - `appVersion` / `sessionMode` sont ignorés pour la décision : le rôle vient
 //!   TOUJOURS du code persisté, jamais du client (un client ne peut pas
 //!   s'auto-attribuer un rôle).
@@ -86,12 +91,43 @@ use axum::response::Response;
 use axum::Json;
 use lc_domain::{
     GuildId, GuildMember, GuildMemberId, GuildRole, OverlayClient, OverlayClientId, PairingCode,
+    PairingCodeEntry, PairingMode,
 };
 
 use crate::app::AppState;
 
 use super::guild::{normalize_avatar, normalize_display_name};
 use super::{db, db_failure, error, is_conflict, json_response, now};
+
+/// Discord identity carried by a personal `/pair-code`.
+struct DiscordIdentity {
+    guild_id: GuildId,
+    user_id: String,
+    name: String,
+    image: Option<String>,
+}
+
+impl DiscordIdentity {
+    /// Identity of a normal-mode code issued by a Discord account. `None`
+    /// for read-only invitations (handed to someone else), browser-extension
+    /// codes (`member:` author) and codes without a usable author name.
+    fn from_code(entry: &PairingCodeEntry) -> Option<Self> {
+        let user_id = entry.created_by_discord_user_id.as_str();
+        let is_snowflake = !user_id.is_empty() && user_id.bytes().all(|byte| byte.is_ascii_digit());
+        if entry.mode != PairingMode::Normal || !is_snowflake {
+            return None;
+        }
+        Some(Self {
+            guild_id: entry.guild_id.clone(),
+            user_id: user_id.to_owned(),
+            name: entry
+                .author_name
+                .as_deref()
+                .and_then(normalize_display_name)?,
+            image: entry.author_image.as_deref().and_then(normalize_avatar),
+        })
+    }
+}
 
 /// Ce qu'un code consommé accorde, quelle que soit sa famille.
 struct Grant {
@@ -101,8 +137,6 @@ struct Grant {
     attach_member_id: Option<GuildMemberId>,
     /// Nom d'auteur porté par un code legacy.
     author_name: Option<String>,
-    /// Avatar d'auteur porté par un code legacy.
-    author_image: Option<String>,
     /// Auteur Discord d'un code legacy.
     created_by_discord_user_id: Option<String>,
 }
@@ -218,13 +252,24 @@ pub async fn consume_pairing(
         .and_then(normalize_display_name);
     let requested_avatar = payload.avatar.as_deref().and_then(normalize_avatar);
 
+    // A personal `/pair-code` brings its author's Discord identity, and the
+    // member already linked to that account, if any.
+    let discord_identity = pairing_entry.as_ref().and_then(DiscordIdentity::from_code);
+    let linked_member_id = match &discord_identity {
+        Some(identity) => match db
+            .guild_members()
+            .find_active_by_discord_user(&identity.guild_id, &identity.user_id)
+            .await
+        {
+            Ok(member) => member.map(|member| member.id),
+            Err(db_error) => return db_failure("overlay_pair.linked_member", &db_error),
+        },
+        None => None,
+    };
+
     // Un code « appareil » vise un membre existant et n'a besoin d'aucun nom.
     let attach_member_id = invite.as_ref().and_then(|invite| invite.member_id);
-    let code_author_name = pairing_entry
-        .as_ref()
-        .and_then(|entry| entry.author_name.as_deref())
-        .and_then(normalize_display_name);
-    if attach_member_id.is_none() && requested_display_name.is_none() && code_author_name.is_none()
+    if attach_member_id.is_none() && discord_identity.is_none() && requested_display_name.is_none()
     {
         return error(StatusCode::BAD_REQUEST, "display_name_required");
     }
@@ -236,7 +281,6 @@ pub async fn consume_pairing(
                 role: invite.role,
                 attach_member_id: invite.member_id,
                 author_name: None,
-                author_image: None,
                 created_by_discord_user_id: None,
             },
             Ok(None) => return error(StatusCode::NOT_FOUND, "pairing_code_invalid_or_expired"),
@@ -250,9 +294,10 @@ pub async fn consume_pairing(
                 } else {
                     GuildRole::from_pairing_mode(entry.mode)
                 },
-                attach_member_id: None,
+                // Pairing again with one's own `/pair-code` adds a device to
+                // the same member (role and profile kept).
+                attach_member_id: linked_member_id,
                 author_name: entry.author_name,
-                author_image: entry.author_image,
                 created_by_discord_user_id: Some(entry.created_by_discord_user_id),
             },
             Ok(None) => return error(StatusCode::NOT_FOUND, "pairing_code_invalid_or_expired"),
@@ -276,21 +321,17 @@ pub async fn consume_pairing(
             Err(db_error) => return db_failure("overlay_pair.member_lookup", &db_error),
         },
         None => {
-            // Nom : pseudo saisi, sinon auteur Discord du `/pair-code`. Ni le
-            // nom d'appareil, ni un libellé d'overlay, ni « User » ne servent
-            // de nom de membre.
-            let display_name = match requested_display_name.clone().or_else(|| {
-                grant
-                    .author_name
-                    .as_deref()
-                    .and_then(normalize_display_name)
-            }) {
-                Some(display_name) => display_name,
-                None => return error(StatusCode::BAD_REQUEST, "display_name_required"),
+            // Profile: the Discord identity of a personal `/pair-code`, else
+            // the name typed in the overlay. Neither the device name, an
+            // overlay label nor « User » ever names a member.
+            let (display_name, avatar, discord_user_id) = match discord_identity {
+                Some(identity) => (identity.name, identity.image, Some(identity.user_id)),
+                None => match requested_display_name.clone() {
+                    Some(display_name) => (display_name, requested_avatar.clone(), None),
+                    None => return error(StatusCode::BAD_REQUEST, "display_name_required"),
+                },
             };
-            let avatar = requested_avatar
-                .clone()
-                .or_else(|| grant.author_image.as_deref().and_then(normalize_avatar));
+            let linked = discord_user_id.is_some();
             let member = GuildMember {
                 id: GuildMemberId::new_v4(),
                 guild_id: grant.guild_id.clone(),
@@ -299,6 +340,9 @@ pub async fn consume_pairing(
                 role: grant.role,
                 created_at: now,
                 removed_at: None,
+                discord_user_id,
+                profile_custom: !linked,
+                discord_synced_at: linked.then_some(now),
             };
             (member, true)
         }
@@ -345,6 +389,10 @@ pub async fn consume_pairing(
 
     if is_new_member {
         if let Err(db_error) = db.guild_members().create(&member).await {
+            // Two first pairings of one Discord account at the same time.
+            if is_conflict(&db_error) {
+                return error(StatusCode::CONFLICT, "overlay_client_conflict");
+            }
             return db_failure("overlay_pair.create_member", &db_error);
         }
     }

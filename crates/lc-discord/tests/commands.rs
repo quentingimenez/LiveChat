@@ -165,6 +165,10 @@ async fn pair_code_normal_persiste_un_code_avec_expiration() {
         description.contains(strings(Lang::Fr).pair_code_grants_admin),
         "un admin Discord doit voir la ligne « admin » : {description}"
     );
+    assert!(
+        description.contains(strings(Lang::Fr).pair_code_personal),
+        "a normal code says it is personal: {description}"
+    );
 
     let codes = ctx.db().pairing_codes().list().await.expect("codes");
     assert_eq!(codes.len(), 1);
@@ -203,6 +207,10 @@ async fn pair_code_invite_est_sans_expiration() {
     assert!(
         !description.contains(strings(Lang::Fr).pair_code_grants_admin),
         "un code invité ne donne jamais l'admin : {description}"
+    );
+    assert!(
+        !description.contains(strings(Lang::Fr).pair_code_personal),
+        "an invite code is meant for someone else: {description}"
     );
     let codes = ctx.db().pairing_codes().list().await.expect("codes");
     assert_eq!(codes[0].mode, PairingMode::InviteReadOnly);
@@ -848,4 +856,63 @@ async fn stop_echec_du_moteur_repond_erreur_generique() {
 
     assert!(outcome.reply.ephemeral);
     assert_eq!(description(&outcome), strings(Lang::Fr).command_error);
+}
+
+// ---------------------------------------------------------------------------
+// Linked member profile
+// ---------------------------------------------------------------------------
+
+fn linked_member(discord_user_id: &str, profile_custom: bool) -> lc_domain::GuildMember {
+    lc_domain::GuildMember {
+        id: lc_domain::GuildMemberId::new_v4(),
+        guild_id: guild(),
+        display_name: "Ancien pseudo".to_owned(),
+        avatar: None,
+        role: lc_domain::GuildRole::Member,
+        created_at: sample_now(),
+        removed_at: None,
+        discord_user_id: Some(discord_user_id.to_owned()),
+        profile_custom,
+        discord_synced_at: None,
+    }
+}
+
+#[tokio::test]
+async fn any_command_refreshes_the_linked_member_profile() {
+    let ctx = FakeBotContext::new().await.expect("contexte");
+    let follows = linked_member(MEMBER_ID, false);
+    let custom = linked_member(ADMIN_ID, true);
+    ctx.db().guild_members().create(&follows).await.unwrap();
+    ctx.db().guild_members().create(&custom).await.unwrap();
+
+    for author in [member_author(), admin_author()] {
+        dispatch(
+            &ctx,
+            invocation(CommandInput::Alive, author, Some(guild()), Lang::Fr),
+        )
+        .await;
+    }
+
+    let stored = ctx
+        .db()
+        .guild_members()
+        .get(follows.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.display_name, "John");
+    assert_eq!(
+        stored.avatar.as_deref(),
+        Some("https://cdn.discordapp.com/avatars/1/abc.png?size=256")
+    );
+    assert_eq!(stored.discord_synced_at, Some(sample_now()));
+    // A member who chose their own profile keeps it.
+    let stored = ctx
+        .db()
+        .guild_members()
+        .get(custom.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.display_name, "Ancien pseudo");
 }

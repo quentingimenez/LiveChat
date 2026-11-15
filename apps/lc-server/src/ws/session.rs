@@ -253,6 +253,8 @@ async fn handle_socket(
 
     hub.broadcast_peers(&guild_id);
     info!(client = %context.client_id_str, guild = %guild_id, "overlay connecté au hub WebSocket");
+    // A member linked to Discord takes their current name and avatar.
+    crate::discord::profiles::spawn_refresh_on_connect(&state, context.client_id);
 
     let mut timers = SessionTimers::default();
     let max_messages = usize::try_from(MAX_CLIENT_MESSAGES_PER_SECOND).unwrap_or(usize::MAX);

@@ -291,12 +291,29 @@ pub struct GuildMember {
     /// Date d'exclusion ou de départ (`None` = actif).
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
     pub removed_at: Option<DateTime<Utc>>,
+    /// Discord account linked to the member (snowflake): set when the member
+    /// paired with their own `/pair-code`. At most one active member per
+    /// account and guild.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discord_user_id: Option<String>,
+    /// `true` once the member chose their own name or avatar: Discord no
+    /// longer overwrites the profile. Always `true` for an unlinked member.
+    #[serde(default)]
+    pub profile_custom: bool,
+    /// Last time the profile was read from Discord.
+    #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
+    pub discord_synced_at: Option<DateTime<Utc>>,
 }
 
 impl GuildMember {
     /// `true` si le membre n'a ni quitté la guilde ni été exclu.
     pub fn is_active(&self) -> bool {
         self.removed_at.is_none()
+    }
+
+    /// `true` while the name and avatar follow the linked Discord account.
+    pub fn follows_discord(&self) -> bool {
+        self.discord_user_id.is_some() && !self.profile_custom
     }
 }
 

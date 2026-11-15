@@ -21,6 +21,9 @@ fn member(guild_id: &GuildId, name: &str, role: GuildRole) -> GuildMember {
         role,
         created_at: common::now(),
         removed_at: None,
+        discord_user_id: None,
+        profile_custom: true,
+        discord_synced_at: None,
     }
 }
 

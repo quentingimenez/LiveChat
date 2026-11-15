@@ -79,6 +79,36 @@ pub fn plan_deferral(invocation: &Invocation) -> Deferral {
     }
 }
 
+/// A command carries a fresh read of its author's Discord name and avatar:
+/// the LiveChat member linked to that account takes them, unless they chose
+/// their own profile. A failure never blocks the command.
+async fn refresh_linked_profile(ctx: &dyn BotContext, guild_id: &GuildId, author: &Author) {
+    if author.id.is_empty() {
+        return;
+    }
+    let Some(name) = crate::identity::member_name(&author.name) else {
+        return;
+    };
+    let members = ctx.db().guild_members();
+    let member = match members
+        .find_active_by_discord_user(guild_id, &author.id)
+        .await
+    {
+        Ok(Some(member)) if member.follows_discord() => member,
+        Ok(_) => return,
+        Err(error) => {
+            tracing::warn!(?error, "lecture du membre lié au compte Discord impossible");
+            return;
+        }
+    };
+    if let Err(error) = members
+        .sync_discord_profile(member.id, &name, author.image.as_deref(), ctx.clock().now())
+        .await
+    {
+        tracing::warn!(?error, "mise à jour du profil Discord du membre impossible");
+    }
+}
+
 async fn handle(ctx: &dyn BotContext, invocation: Invocation) -> Result<Reply, BotError> {
     let lang = invocation.lang;
     let raw_guild_id = invocation.guild_id.clone();
@@ -93,6 +123,9 @@ async fn handle(ctx: &dyn BotContext, invocation: Invocation) -> Result<Reply, B
         }
         _ => raw_guild_id.clone(),
     };
+    if let Some(guild_id) = guild_id.as_ref() {
+        refresh_linked_profile(ctx, guild_id, &author).await;
+    }
     match invocation.input {
         CommandInput::Alive => Ok(alive_reply(lang, &author)),
         CommandInput::Send(submission) => {
@@ -575,6 +608,11 @@ async fn handle_pair_code(
             ("expiresIn", &expires_in),
         ],
     );
+    // A normal-mode code links the overlay to its author's Discord account.
+    if mode == PairingMode::Normal {
+        description.push_str("\n\n");
+        description.push_str(dict.pair_code_personal);
+    }
     if grants_admin {
         description.push_str("\n\n");
         description.push_str(dict.pair_code_grants_admin);

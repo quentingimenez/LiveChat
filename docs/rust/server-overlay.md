@@ -177,15 +177,21 @@ pour un item d'une autre guilde). Les écritures media board utilisent
    défaut, `pairing_codes.get(code)`, sans consommer. Un code émis par l'overlay
    (`created_by_discord_user_id` préfixé `member:`) est refusé
    `403 pairing_code_scope_mismatch` sans être consommé ;
-3. **nom du nouveau membre** (aucun code « appareil ») :
-   `displayName` normalisé s'il est non vide, sinon l'auteur Discord d'un
-   `/pair-code` (`author_name`) ; sans ni l'un ni l'autre →
+3. **`/pair-code` personnel** (mode `NORMAL`, auteur Discord numérique) :
+   l'overlay rejoint le membre actif lié à ce compte
+   (`find_active_by_discord_user`), rôle et profil conservés ; au premier
+   appairage, le membre est créé avec le pseudo et l'avatar Discord de
+   l'auteur, `discord_user_id` renseigné et `profile_custom = 0`.
+   `displayName` / `avatar` de la requête sont ignorés. Un code
+   `INVITE_READ_ONLY` n'emprunte jamais l'identité de son auteur
+   (voir `guilds-roles.md`, « Profil lié au compte Discord ») ;
+4. **nom du nouveau membre** venu d'une invitation ou d'un code invité :
+   `displayName` normalisé s'il est non vide, sinon
    `400 {"error":"display_name_required"}` **sans consommer** l'invitation ni le
    code. `deviceName`, le libellé d'overlay et « User » ne sont jamais des noms
-   de membre. Un code « appareil » (`guild_invites.member_id`) rattache un
-   membre existant et n'exige aucun nom ;
-4. **avatar** du nouveau membre : `avatar` normalisé s'il est valide, sinon
-   l'avatar d'auteur du `/pair-code`, sinon aucun ;
+   de membre. L'avatar est `avatar` normalisé s'il est valide, sinon aucun. Un
+   code « appareil » (`guild_invites.member_id`) rattache un membre existant et
+   n'exige aucun nom ;
 5. consommation atomique (`guild_invites.consume` ou
    `pairing_codes.consume`) : un code ne peut être consommé qu'une fois, y
    compris en concurrence ;
@@ -603,7 +609,9 @@ routeur **complet** via `crate::app::router` (middlewares réels) et
 | `pair_consume_revokes_previous_client_with_same_label` | révocation même libellé |
 | `pair_consume_invite_requires_a_display_name_without_consuming` | 400 `display_name_required`, `use_count` inchangé, puis 200 avec pseudo |
 | `pair_consume_pair_code_falls_back_to_the_discord_author` | pseudo + avatar = auteur Discord du `/pair-code` |
-| `pair_consume_pair_code_typed_name_and_avatar_win` | `displayName`/`avatar` de la requête priment |
+| `pair_consume_personal_pair_code_uses_the_discord_identity` | `/pair-code` personnel : identité Discord, membre lié qui suit Discord, pseudo saisi ignoré |
+| `pair_consume_personal_pair_code_reuses_the_linked_member` | même compte Discord : même membre, rôle conservé, deux appareils |
+| `pair_consume_read_only_invitation_never_uses_its_author` | code invité : pseudo exigé, membre non lié |
 | `pair_consume_pair_code_without_any_name_is_refused_without_consuming` | 400, `used_at` reste null |
 | `pair_consume_device_code_needs_no_display_name` | code « appareil » : membre existant, aucun nom requis |
 | `pair_consume_admin_pairing_code_grants_admin` | `grants_admin` → rôle `admin` |

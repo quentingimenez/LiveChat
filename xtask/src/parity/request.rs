@@ -49,8 +49,10 @@ pub const CAPTURED_HEADERS: &[&str] = &[
     "x-request-id",
 ];
 
-/// Nombre maximal de requêtes envoyées par la sonde de rate limit.
-pub const RATE_LIMIT_PROBE_MAX: usize = 120;
+/// Nombre maximal de requêtes envoyées par la sonde de rate limit : un peu
+/// plus que le budget général du serveur Rust (1 000 requêtes / 15 min / IP,
+/// `RATE_LIMIT_MAX`), auquel `/health` appartient.
+pub const RATE_LIMIT_PROBE_MAX: usize = 1_100;
 
 // `set-cookie` n'est jamais capturé : il ne figure pas dans [`CAPTURED_HEADERS`].
 

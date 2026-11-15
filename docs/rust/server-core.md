@@ -51,7 +51,7 @@ apps/lc-server/
         ├── socket_io.rs # 426 overlay_outdated (legacy socket.io)
         ├── security.rs  # CSP + en-têtes de sécurité
         ├── cors.rs      # origines explicites, tauri.localhost, loopback dev
-        ├── rate_limit.rs# 100 req / 15 min par IP, exemptions
+        ├── rate_limit.rs# 4 budgets / 15 min par IP, exemption loopback dev
         └── error.rs     # normalisation JSON des erreurs, repli 404
 ```
 
@@ -279,14 +279,26 @@ contrairement au legacy qui combinait les deux). Préflight mis en cache 600 s.
 
 ### Rate limiting
 
-- **100 requêtes / 15 minutes par IP**, fenêtre fixe, compteur en mémoire
+- fenêtre fixe de **15 minutes par IP**, compteurs en mémoire
   (`Arc<Mutex<…>>`), nettoyage opportuniste des fenêtres expirées ;
+- quatre budgets par fenêtre et par IP. **Auth** (100) : `/admin*` et la
+  consommation des codes d'appairage (`/overlay/pair/consume`,
+  `/ingest/pair/consume`), les seules routes qui vérifient un secret
+  devinable. **Média** (1 000) : `GET`/`HEAD` sur `/overlay/media/{id}` et
+  `/overlay/media-board/media/{id}` (plus l'ancien préfixe
+  `/overlay/meme-board/`) ; les vignettes du board et les requêtes `Range` des
+  vidéos épuisaient sinon le budget commun. **Legacy** (100) : `/socket.io*`,
+  sondé en boucle par les overlays 2.x qui ne reçoivent que `426`.
+  **Général** (1 000) : tout le reste (API overlay, upgrade `/ws`, ingestion
+  de l'extension, `/health`) ; ces routes exigent un jeton porteur de 256 bits.
+  Le 13 novembre 2026, l'ancien budget unique de 100 a été épuisé par un usage
+  normal du board, et l'overlay ne pouvait plus rouvrir sa WebSocket ;
 - IP lue depuis la connexion (`ConnectInfo`), ou, **seulement si**
   `TRUST_PROXY_HEADERS=true`, `X-Real-IP` puis le dernier `X-Forwarded-For`
   (le premier est écrit par le client, `http/proxy.rs`) ; les IPv4 encapsulées en IPv6
   (`::ffff:a.b.c.d`) sont normalisées ;
-- exemptions : préfixe `/admin` (l'UI admin a ses propres contrôles) et, en
-  `development`, les adresses loopback ;
+- seule exemption : les adresses loopback en `development` (l'exemption
+  `/admin` du legacy est supprimée, AUD-COR-10) ;
 - réponse `429 {"error":"request_error"}` avec `x-ratelimit-limit`,
   `x-ratelimit-remaining`, `x-ratelimit-reset` et `Retry-After` ; même
   informations sur les réponses acceptées.
@@ -410,7 +422,7 @@ L'état partagé est `AppState` (cloneable) : `config`, `db`, `clock`,
 | CORS Tauri | origines API seulement | + `http(s)://tauri.localhost` | overlay Tauri |
 | CSP script | `'self' 'unsafe-inline'` | `'self'` sans inline | correctif S4 |
 | `/health` | `{"status":"ok"}` | enrichi (`db`, `discord`, `uptimeSec`, `activeJobs`, version, protocole) ; 200 même dégradé | observabilité |
-| Rate limit | plugin `@fastify/rate-limit` (100/15 min, allowList `/admin` + loopback dev) | compteur maison en mémoire, mêmes valeurs et exemptions, en-têtes `x-ratelimit-*` + `Retry-After` | moins de dépendances, tests déterministes |
+| Rate limit | plugin `@fastify/rate-limit` (100/15 min, allowList `/admin` + loopback dev) | compteur maison en mémoire, quatre budgets (auth 100, média 1 000, legacy 100, général 1 000), plus d'exemption `/admin`, en-têtes `x-ratelimit-*` + `Retry-After` | moins de dépendances, tests déterministes |
 | Erreurs | handler Fastify (`internal_error`/`request_error`) | normalisation de toute réponse non JSON, mêmes corps | cohérence avec les réponses axum |
 | `.env` | `dotenv` | environnement du processus uniquement | le lanceur fournit l'environnement ; pas de dépendance |
 | `HIDE_COMMANDS_DISABLED` | chaîne `"false"` interprétée par le code Discord | booléen strict `false` | typage |

@@ -5,6 +5,7 @@ import { openContextMenu } from '../core/contextmenu.js';
 import { acceleratorFromEvent, acceleratorLabel } from '../core/accelerators.js';
 import { h, icon } from '../core/dom.js';
 import { formatDuration } from '../core/format.js';
+import { cardRatio, cardStyle } from '../core/masonry.js';
 import { invoke } from '../core/ipc.js';
 import { activeGuild, can, describeError, KIND_LABELS, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
@@ -67,6 +68,52 @@ function visibleItems() {
   });
 }
 
+// --- card cache ---
+// Card nodes live across renders, keyed by item id. Rebuilding them on every
+// render (mute, filter, board reload) reloaded each thumbnail and made the
+// grid flash. `entry.item` always points at the latest copy of the item, so
+// the card's handlers never act on stale data.
+const cards = new Map(); // itemId -> { node, key, item, loadedUrl }
+// The preview of the selected item, kept across renders of the view:
+// rebuilding it reloaded the video and showed the loading spinner again.
+let previewCache = null; // { itemId, path, node }
+
+// Path of a signed media URL, without its query: the same asset keeps the
+// same path while its signature changes every 15 minutes.
+function mediaPath(url) {
+  if (typeof url !== 'string' || !url) {
+    return null;
+  }
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return url;
+  }
+}
+
+// Expiry of a signed URL (`exp`, Unix seconds), in milliseconds.
+function urlExpiresAt(url) {
+  try {
+    const exp = Number(new URL(url).searchParams.get('exp'));
+    return Number.isFinite(exp) && exp > 0 ? exp * 1000 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function cardKey(item) {
+  return JSON.stringify([
+    itemTitle(item),
+    item.media.kind,
+    item.media.durationSec ?? null,
+    item.media.width ?? null,
+    item.media.height ?? null,
+    mediaPath(item.mediaUrl),
+    can('play'),
+  ]);
+}
+
 // Thumbnails load their media only when they come close to the viewport.
 const thumbObserver = new IntersectionObserver(
   (entries) => {
@@ -75,9 +122,9 @@ const thumbObserver = new IntersectionObserver(
         continue;
       }
       thumbObserver.unobserve(entry.target);
-      const { mediaUrl, kind } = entry.target.dataset;
+      const { mediaUrl, kind, itemId } = entry.target.dataset;
       if (!mediaUrl) {
-        return;
+        continue;
       }
       const media =
         kind === 'video'
@@ -86,7 +133,16 @@ const thumbObserver = new IntersectionObserver(
       // The fallback glyph goes away as soon as the thumbnail can be shown.
       const glyph = entry.target.querySelector('.glyph');
       media.addEventListener('error', () => media.remove());
-      media.addEventListener(kind === 'video' ? 'loadeddata' : 'load', () => glyph && glyph.remove());
+      media.addEventListener(kind === 'video' ? 'loadeddata' : 'load', () => {
+        if (glyph) {
+          glyph.remove();
+        }
+        // The detail panel reuses this URL: the browser already has its bytes.
+        const card = cards.get(itemId);
+        if (card) {
+          card.loadedUrl = mediaUrl;
+        }
+      });
       entry.target.prepend(media);
     }
   },
@@ -158,10 +214,6 @@ function triggerBadgeFor(itemId) {
   return queued;
 }
 
-function badgeNode(badge) {
-  return badge ? h('span', { class: `card-badge${badge.air ? ' is-air' : ''}` }, badge.label) : null;
-}
-
 // Updates badges in place: re-rendering the whole view would reload the video
 // in the detail panel.
 function refreshTriggerBadges() {
@@ -170,24 +222,7 @@ function refreshTriggerBadges() {
   }
   pruneTriggers();
   for (const card of document.querySelectorAll('.card[data-item-id]')) {
-    const frame = card.querySelector('.card-frame');
-    if (!frame) {
-      continue;
-    }
-    const badge = triggerBadgeFor(card.dataset.itemId);
-    let node = frame.querySelector('.card-badge');
-    if (!badge) {
-      if (node) {
-        node.remove();
-      }
-      continue;
-    }
-    if (!node) {
-      node = h('span', { class: 'card-badge' });
-      frame.append(node);
-    }
-    node.className = `card-badge${badge.air ? ' is-air' : ''}`;
-    node.textContent = badge.label;
+    syncBadge(card, triggerBadgeFor(card.dataset.itemId));
   }
 }
 
@@ -217,18 +252,19 @@ function refreshUploadCards() {
     renderView();
     return;
   }
-  const cards = uploadCards();
+  const nodes = uploadCards();
   for (const node of grid.querySelectorAll('.card.is-upload')) {
     node.remove();
   }
-  if (cards.length === 0 && grid.children.length === 0) {
+  if (nodes.length === 0 && grid.children.length === 0) {
     renderView();
     return;
   }
-  grid.prepend(...cards);
+  grid.prepend(...nodes);
 }
 
-function renderCard(item) {
+function buildCard(entry) {
+  const item = entry.item;
   const kind = item.media.kind;
   const mediaUrl = typeof item.mediaUrl === 'string' && item.mediaUrl ? item.mediaUrl : null;
   const thumb = h(
@@ -237,8 +273,9 @@ function renderCard(item) {
       class: 'thumb',
       'data-media-url': mediaUrl,
       'data-kind': kind,
+      'data-item-id': item.id,
       'aria-label': `Détails de ${itemTitle(item)}`,
-      onClick: () => selectItem(item.id),
+      onClick: () => selectItem(entry.item.id),
     },
     h('span', { class: 'glyph' }, icon(kind === 'audio' ? 'audio' : kind === 'image' ? 'image' : 'video')),
     formatDuration(item.media.durationSec) ? h('span', { class: 'duration' }, formatDuration(item.media.durationSec)) : null,
@@ -249,30 +286,92 @@ function renderCard(item) {
   return h(
     'div',
     {
-      class: `card${state.selectedId === item.id ? ' is-selected' : ''}`,
+      class: 'card',
       'data-item-id': item.id,
-      onContextmenu: (event) => openCardMenu(event, item),
+      // Height of the media's own shape (masonry, see core/masonry.js).
+      style: cardStyle(cardRatio(item.media)),
+      onContextmenu: (event) => openCardMenu(event, entry.item),
     },
     h(
       'div',
       { class: 'card-frame' },
       thumb,
       can('play')
-        ? h('button', { class: 'play', 'aria-label': `Jouer ${itemTitle(item)}`, title: 'Jouer sur les overlays', onClick: () => playItem(item) }, icon('play'))
+        ? h('button', { class: 'play', 'aria-label': `Jouer ${itemTitle(item)}`, title: 'Jouer sur les overlays', onClick: () => playItem(entry.item) }, icon('play'))
         : null,
-      badgeNode(triggerBadgeFor(item.id)),
     ),
     h('p', { class: 'card-title', title: itemTitle(item) }, itemTitle(item)),
   );
+}
+
+// Returns the card of an item, reusing its node while nothing it shows has
+// changed. A new signature for the same asset only refreshes the URL a
+// thumbnail will load later; a loaded thumbnail keeps its bytes.
+function renderCard(item) {
+  const key = cardKey(item);
+  let entry = cards.get(item.id);
+  if (!entry || entry.key !== key) {
+    if (entry) {
+      entry.node.querySelectorAll('.thumb').forEach((thumb) => thumbObserver.unobserve(thumb));
+    }
+    entry = { node: null, key, item, loadedUrl: null };
+    cards.set(item.id, entry);
+    entry.node = buildCard(entry);
+  } else {
+    entry.item = item;
+    const thumb = entry.node.querySelector('.thumb');
+    if (thumb && !thumb.querySelector('img, video') && item.mediaUrl) {
+      thumb.dataset.mediaUrl = item.mediaUrl;
+    }
+  }
+  entry.node.classList.toggle('is-selected', state.selectedId === item.id);
+  syncBadge(entry.node, triggerBadgeFor(item.id));
+  return entry.node;
+}
+
+// Drops the cards of items that left the board (or of another guild).
+function pruneCards() {
+  const ids = new Set(state.items.map((item) => item.id));
+  for (const [id, entry] of cards) {
+    if (!ids.has(id)) {
+      entry.node.querySelectorAll('.thumb').forEach((thumb) => thumbObserver.unobserve(thumb));
+      cards.delete(id);
+    }
+  }
+}
+
+function syncBadge(card, badge) {
+  const frame = card.querySelector('.card-frame');
+  if (!frame) {
+    return;
+  }
+  let node = frame.querySelector('.card-badge');
+  if (!badge) {
+    if (node) {
+      node.remove();
+    }
+    return;
+  }
+  if (!node) {
+    node = h('span', { class: 'card-badge' });
+    frame.append(node);
+  }
+  node.className = `card-badge${badge.air ? ' is-air' : ''}`;
+  node.textContent = badge.label;
 }
 
 export function renderBoard() {
   if (state.info && !can('viewBoard')) {
     return h('div', { class: 'empty' }, h('h2', null, 'Board réservé aux membres'), h('p', null, "Cette guilde ne montre pas son board aux invités. Tu reçois quand même les médias diffusés."));
   }
+  pruneCards();
   const items = visibleItems();
   const uploads = activeUploads();
   const selected = state.items.find((item) => item.id === state.selectedId) || null;
+  if (!selected) {
+    // A preview no longer shown must not keep its video alive.
+    previewCache = null;
+  }
   const toolbar = h(
     'div',
     { class: 'toolbar' },
@@ -283,14 +382,14 @@ export function renderBoard() {
       value: state.search,
       onInput: (event) => {
         state.search = event.target.value;
-        refreshGrid();
+        refreshGrid(true);
       },
     }),
     h(
       'div',
       { class: 'chips' },
       Object.entries(KIND_LABELS).map(([id, label]) =>
-        h('button', { class: `chip${state.kind === id ? ' is-active' : ''}`, onClick: () => { state.kind = id; renderView(); } }, label),
+        h('button', { class: `chip${state.kind === id ? ' is-active' : ''}`, 'data-kind': id, onClick: () => setKind(id) }, label),
       ),
     ),
     h('span', { class: 'spacer' }),
@@ -322,7 +421,9 @@ export function renderBoard() {
   );
 }
 
-function refreshGrid() {
+// Updates the grid in place after a search or a filter: the cards are moved,
+// never rebuilt, so their thumbnails stay on screen.
+function refreshGrid(fromSearch) {
   const grid = document.getElementById('grid');
   const items = visibleItems();
   const uploads = activeUploads();
@@ -331,7 +432,7 @@ function refreshGrid() {
     const position = input && input.selectionStart;
     renderView();
     const field = document.querySelector('.toolbar input');
-    if (field) {
+    if (fromSearch && field) {
       field.focus();
       field.setSelectionRange(position ?? field.value.length, position ?? field.value.length);
     }
@@ -340,9 +441,20 @@ function refreshGrid() {
   grid.replaceChildren(...uploads.map(uploadCard), ...items.map(renderCard));
 }
 
+function setKind(kind) {
+  state.kind = kind;
+  for (const chip of document.querySelectorAll('.toolbar .chip')) {
+    chip.classList.toggle('is-active', chip.dataset.kind === kind);
+  }
+  refreshGrid(false);
+}
+
 export function selectItem(id) {
   state.selectedId = state.selectedId === id ? null : id;
   state.capturing = false;
+  if (!previewCache || previewCache.itemId !== state.selectedId) {
+    previewCache = null;
+  }
   renderView();
 }
 
@@ -398,19 +510,99 @@ export function shortcutFor(itemId) {
   return entry ? entry[0] : null;
 }
 
-function renderDetail(item) {
-  const preview = h('div', { class: 'preview' });
-  if (item.mediaUrl) {
-    if (item.media.kind === 'video') {
-      preview.append(h('video', { src: item.mediaUrl, controls: true, preload: 'metadata' }));
-    } else if (item.media.kind === 'audio') {
-      preview.append(h('audio', { src: item.mediaUrl, controls: true }));
-    } else {
-      preview.append(h('img', { src: item.mediaUrl, alt: '' }));
-    }
-  } else {
-    preview.append(h('span', { class: 'meta' }, 'Média indisponible.'));
+// --- detail preview ---
+// A loaded thumbnail URL is reused while it stays valid long enough to watch
+// the media: the browser already has its first bytes.
+const PREVIEW_URL_MARGIN_MS = 10 * 60 * 1000;
+// Widest still copied from a thumbnail.
+const STILL_MAX_WIDTH = 640;
+function previewUrl(item) {
+  const card = cards.get(item.id);
+  const loaded = card && card.loadedUrl;
+  if (loaded && mediaPath(loaded) === mediaPath(item.mediaUrl) && urlExpiresAt(loaded) - Date.now() > PREVIEW_URL_MARGIN_MS) {
+    return loaded;
   }
+  return item.mediaUrl || null;
+}
+
+function ratioOf(width, height) {
+  return Number(width) > 0 && Number(height) > 0 ? `${Number(width)} / ${Number(height)}` : null;
+}
+
+// Copy of the frame the card already shows, laid over the detail video until
+// the video can draw its own first frame.
+function cardStill(itemId) {
+  const card = cards.get(itemId);
+  const video = card && card.node.querySelector('.thumb video');
+  if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+    return null;
+  }
+  const scale = Math.min(1, STILL_MAX_WIDTH / video.videoWidth);
+  const canvas = h('canvas', {
+    class: 'preview-still',
+    width: String(Math.round(video.videoWidth * scale)),
+    height: String(Math.round(video.videoHeight * scale)),
+    'aria-hidden': 'true',
+  });
+  try {
+    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+  } catch {
+    return null;
+  }
+  return canvas;
+}
+
+function buildPreview(item) {
+  const kind = item.media.kind;
+  const url = previewUrl(item);
+  const node = h('div', { class: `preview${kind === 'audio' ? ' is-audio' : ''}` });
+  // The box takes the media's own shape (portrait, square…) instead of 16:10.
+  const ratio = ratioOf(item.media.width, item.media.height);
+  if (ratio) {
+    node.style.setProperty('--ratio', ratio);
+  }
+  const adoptRatio = (width, height) => {
+    if (!ratio && ratioOf(width, height)) {
+      node.style.setProperty('--ratio', ratioOf(width, height));
+    }
+  };
+  if (!url) {
+    node.append(h('span', { class: 'meta' }, 'Média indisponible.'));
+    return node;
+  }
+  if (kind === 'audio') {
+    node.append(h('audio', { src: url, controls: true, preload: 'metadata' }));
+    return node;
+  }
+  if (kind === 'video') {
+    const video = h('video', { src: url, controls: true, preload: 'auto', playsinline: true });
+    video.addEventListener('loadedmetadata', () => adoptRatio(video.videoWidth, video.videoHeight));
+    node.append(video);
+    const still = cardStill(item.id);
+    if (still) {
+      node.append(still);
+      const reveal = () => still.remove();
+      video.addEventListener('loadeddata', reveal, { once: true });
+      video.addEventListener('error', reveal, { once: true });
+    }
+    return node;
+  }
+  const image = h('img', { src: url, alt: '' });
+  image.addEventListener('load', () => adoptRatio(image.naturalWidth, image.naturalHeight));
+  node.append(image);
+  return node;
+}
+
+function detailPreview(item) {
+  const path = mediaPath(item.mediaUrl);
+  if (!previewCache || previewCache.itemId !== item.id || previewCache.path !== path) {
+    previewCache = { itemId: item.id, path, node: buildPreview(item) };
+  }
+  return previewCache.node;
+}
+
+function renderDetail(item) {
+  const preview = detailPreview(item);
   let source = null;
   try {
     source = new URL(item.media.sourceUrl).hostname.replace(/^www\./, '');

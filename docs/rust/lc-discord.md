@@ -61,8 +61,10 @@ workspace.
 L'ordre ci-dessous est l'**ordre d'enregistrement legacy** (`DiscordLoader`),
 qui est aussi l'ordre affiché par `/help` :
 
-`alive, send, talk, pair-code, help, info, config-defaut, config-displayfull,
-config-max, overlays, stop, media-add, hidesend, hidetalk`
+`alive, send, talk, pair-code, help, info, overlays, stop, media-add, link,
+hidesend, hidetalk`. Les anciennes `/config-defaut`, `/config-max` et
+`/config-displayfull` sont retirées : ces réglages se font dans l'onglet
+« Réglages » de la guilde, dans le board.
 
 | Commande | Nom fr | Nom en | Options | Réponse | Couleur |
 |---|---|---|---|---|---|
@@ -72,9 +74,6 @@ config-max, overlays, stop, media-add, hidesend, hidetalk`
 | pair-code | `pair-code` | `pair-code` | `mode` (str, choix `normal`/`invite`) | defer éphémère puis édition éphémère | bleu |
 | help | `help` | `help` | — | éphémère | — |
 | info | `info` | `info` | — | éphémère | — |
-| config-defaut | `config-defaut` | `config-defaulttime` | `nombre` (int, requis) | éphémère | vert |
-| config-displayfull | `config-displayfull` | `config-displayfull` | `value` (bool, requis) | éphémère | vert |
-| config-max | `config-max` | `config-maxtime` | `nombre` (int, requis) | éphémère | vert |
 | overlays | `overlays` | `overlays` | — | éphémère | vert / jaune |
 | stop | `stop` | `stop` | — | éphémère | vert |
 | media-add | `media-add` | `media-add` | `url`, `media`, `title`, `refresh` | defer éphémère | vert |
@@ -134,6 +133,23 @@ pub fn plan_deferral(invocation: &Invocation) -> Deferral;
   - `OverlayDirectory::list_connected(&GuildId) -> Result<Vec<ConnectedOverlay>, BotError>`.
 
 ## 5. Comportement métier fidèle au legacy
+
+### Droits (`rights.rs`)
+Vérifiés avant tout defer par `handlers::precheck`, une fois la guilde
+résolue ; un refus répond en éphémère, sans defer.
+
+| Commandes | Exigence | Refus |
+|---|---|---|
+| `/msg`, `/cmsg`, `/dire`, `/cdire` | compte Discord lié à un membre actif de la guilde qui peut lancer un média (pas un invité) | `not_linked`, `guest_not_allowed` |
+| `/media-add` | compte lié à un membre qui peut ajouter au board | idem |
+| `/stop`, `/overlays` | administrateur Discord du serveur, ou membre LiveChat `admin` lié | `admin_only` |
+| `/dispo`, `/pair-code`, `/help`, `/info`, `/lier` | ouvertes (`/lier` vérifie lui-même l'administrateur) | — |
+
+Un utilisateur Discord non lié ne peut donc envoyer aucun média. Un membre
+créé depuis le panel ou une invitation lie son compte dans le board : « Mon
+profil » → « Lier mon compte Discord », avec un code `/pair-code` (mode
+normal) qu'il a lui-même demandé (`POST /overlay/profile/discord-link`). Le
+code est consommé ; un code d'administrateur Discord rend le membre `admin`.
 
 ### `/alive`
 Réponse publique, sans titre, verte : `startCase(username Discord) + ", Je suis
@@ -203,15 +219,6 @@ titre `Overlays connectés (N)`, lignes ``• `label` (`clientId`)``, triées pa
 label insensible à la casse (équivalent `localeCompare` legacy, sans collation
 ICU).
 
-### `/config-defaut`, `/config-max`, `/config-displayfull`
-Guilde obligatoire et auteur administrateur (sinon embed rouge `notAllowed`,
-sans description). **Aucune borne** n'est appliquée dans le handler (fidélité :
-le legacy stockait la valeur brute, y compris négative). Convention legacy
-respectée : `0` → `None` pour les durées (remise au défaut global), booléen
-stocké tel quel pour `displayFull`. La mise à jour passe par
-`update_guild_settings`, qui préserve les autres champs. Réponse verte
-éphémère.
-
 ### `/stop`
 Guilde obligatoire. `PlaybackBackend::stop_guild` doit reproduire
 `executeManualStopForGuild` : émission `overlay:stop` (`jobId: 'manual-stop'`),
@@ -240,10 +247,10 @@ Les erreurs d'ingestion/lecture sont rendues comme messages média localisés
 
 ### `/dire` et `/cdire`
 `voice` requis. Defer public (`/dire`) ou éphémère (`/cdire`). Synthèse via
-`MediaBackend::ingest_speech(lang, voice)` : le backend doit reproduire le
-legacy (`translate_tts`, `ie=UTF-8`, `client=tw-ob`, découpage ≤ 180
-caractères, MP3 concaténé, asset `gtts:<hash>`) — ce crate ne fait aucun
-réseau. Puis job média avec `text` brut, `showText = text non vide`, source
+`MediaBackend::ingest_speech(lang, voice)` : le serveur synthétise en local
+avec Piper (`apps/lc-server/src/media/tts.rs`, voix `PIPER_VOICE_FR` /
+`PIPER_VOICE_EN` installées dans l'image Docker), sans service externe ; le WAV
+est ingéré comme un fichier envoyé — ce crate ne fait aucun réseau. Puis job média avec `text` brut, `showText = text non vide`, source
 `discord_talk_command` / `discord_hidetalk_command`, et auteur uniquement pour
 `/dire`. Échec TTS → message `talkCommandVoiceError` ; autre échec → message
 média localisé avec repli `TRANSCODE_FAILED`.

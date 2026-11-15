@@ -401,6 +401,8 @@ fn board_item(guild_id: &GuildId, media_asset_id: MediaAssetId) -> MediaBoardIte
         created_by_discord_user_id: Some("1001".to_owned()),
         created_by_name: Some("Alice".to_owned()),
         created_at: Utc::now(),
+        artwork_asset_id: None,
+        artwork_on_overlay: false,
     }
 }
 

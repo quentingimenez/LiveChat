@@ -297,6 +297,8 @@ async fn insert_item(
         created_by_discord_user_id: Some("4242".to_owned()),
         created_by_name: Some("Alice".to_owned()),
         created_at,
+        artwork_asset_id: None,
+        artwork_on_overlay: false,
     };
     db.media_board()
         .create(&item)
@@ -1116,6 +1118,73 @@ async fn signed_media_requires_a_playback_job_in_the_client_guild() {
     let (status, _, body) = send(&app, request(Method::GET, &uri, None, None)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, b"binding");
+}
+
+#[tokio::test]
+async fn an_audio_picture_is_served_only_when_shown_on_overlays() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, db) = harness(dir.path()).await;
+    let audio = insert_asset(
+        &db,
+        dir.path(),
+        "song.mp3",
+        "audio/mpeg",
+        MediaKind::Audio,
+        b"song",
+        fixed_now() + Duration::hours(12),
+    )
+    .await;
+    let picture = insert_asset(
+        &db,
+        dir.path(),
+        "song.jpg",
+        "image/jpeg",
+        MediaKind::Image,
+        b"picture",
+        fixed_now() + Duration::hours(12),
+    )
+    .await;
+    let client = make_client(
+        &guild(),
+        "Poste",
+        "artwork-token",
+        OverlaySessionMode::Normal,
+        Some("Alice"),
+    );
+    db.overlay_clients().create(&client).await.expect("client");
+    let item = insert_item(&db, &guild(), &audio, None, None, fixed_now()).await;
+    db.media_board()
+        .set_artwork(item.id, Some(picture.id))
+        .await
+        .expect("image");
+    let uri = signed_uri(&picture, &client, fixed_now_secs() + 300);
+
+    let (status, _, _) = send(&app, request(Method::GET, &uri, None, None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "case décochée");
+
+    db.media_board()
+        .set_artwork_on_overlay(item.id, true)
+        .await
+        .expect("case cochée");
+    let (status, _, body) = send(&app, request(Method::GET, &uri, None, None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"picture");
+
+    // A client of another guild is still refused.
+    let stranger = make_client(
+        &other_guild(),
+        "Autre",
+        "artwork-stranger",
+        OverlaySessionMode::Normal,
+        None,
+    );
+    db.overlay_clients()
+        .create(&stranger)
+        .await
+        .expect("client");
+    let uri = signed_uri(&picture, &stranger, fixed_now_secs() + 300);
+    let (status, _, _) = send(&app, request(Method::GET, &uri, None, None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

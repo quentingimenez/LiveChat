@@ -178,3 +178,9 @@ body {
   height: 1px;
   opacity: 0;
 }
+
+/* The picture of an audio sits alone in the content; the hidden audio element
+   must not shift it. */
+#media-layer .overlay-media-content > .overlay-media-artwork + audio {
+  position: absolute;
+}

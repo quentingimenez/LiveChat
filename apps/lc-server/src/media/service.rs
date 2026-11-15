@@ -166,7 +166,9 @@ impl MediaService {
             return Err(error);
         }
 
-        assets::mark_ready(&self.db, asset.id, &ready, now, ttl).await
+        let ready_asset = assets::mark_ready(&self.db, asset.id, &ready, now, ttl).await?;
+        self.attach_cover(&ready_asset, &ingested).await;
+        Ok(ready_asset)
     }
 
     /// Ingests a locally uploaded file and returns the `READY` asset.
@@ -228,7 +230,24 @@ impl MediaService {
             return Err(error);
         }
 
-        assets::mark_ready(&self.db, asset.id, &ready, now, ttl).await
+        let ready_asset = assets::mark_ready(&self.db, asset.id, &ready, now, ttl).await?;
+        self.attach_cover(&ready_asset, &ingested).await;
+        Ok(ready_asset)
+    }
+
+    /// Records the embedded cover of an audio file. Best effort: without it
+    /// the audio simply has no picture.
+    async fn attach_cover(&self, audio: &MediaAsset, ingested: &lc_media::ingest::IngestedMedia) {
+        let Some(cover) = ingested.normalized.cover.as_ref() else {
+            return;
+        };
+        if let Err(error) = assets::attach_cover(&self.db, audio, cover, self.clock.now()).await {
+            tracing::warn!(
+                asset_id = %audio.id.to_canonical(),
+                error = %error,
+                "pochette de l'audio non enregistrée"
+            );
+        }
     }
 
     /// Marque l'asset en échec et journalise si même l'écriture échoue.

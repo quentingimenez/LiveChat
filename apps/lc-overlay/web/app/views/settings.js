@@ -9,6 +9,9 @@
 // (`settings_placement_start`): the overlay becomes a window the user moves
 // and resizes, and saves the zone. The alignment is previewed live through
 // `settings_preview_layout`, which shows it with a template card.
+//
+// The guild « Réglages » tab (guild-settings.js) reuses these helpers for what
+// one guild sets on this device.
 
 import { run } from '../core/api.js';
 import { acceleratorFromEvent, acceleratorLabel } from '../core/accelerators.js';
@@ -23,7 +26,7 @@ import { renderRail } from './rail.js';
 import { renderView } from './view.js';
 
 // Where a media sits in the zone when it does not have the zone's shape.
-const ALIGNMENTS = [
+export const ALIGNMENTS = [
   ['center', 'Centre'],
   ['top', 'En haut'],
   ['bottom', 'En bas'],
@@ -61,7 +64,22 @@ let installingUpdate = false;
 let updateError = null;
 const debounceTimers = new Map();
 let previewDraft = null;
+let previewGuildId = null;
 let previewFrame = null;
+
+// The device settings page, or the active guild's « Réglages » tab.
+function settingsShown() {
+  return state.page === 'settings' || (state.page === 'guild' && state.tab === 'settings' && Boolean(state.activeGuildId));
+}
+
+// Last settings view from the shell (`null` until loaded).
+export function currentDeviceSettings() {
+  return deviceSettings;
+}
+
+export function deviceSettingsError() {
+  return loadError;
+}
 
 function errorMessage(error) {
   if (!error) {
@@ -88,7 +106,7 @@ export function initDeviceSettings() {
     deviceSettings = payload;
     loadError = null;
     // Do not rebuild the controls under the pointer while a control is edited.
-    if (state.page === 'settings' && !settingsControlActive()) {
+    if (settingsShown() && !settingsControlActive()) {
       renderView();
     }
   });
@@ -105,7 +123,7 @@ export async function loadDeviceSettings() {
   }
   loading = true;
   loadError = null;
-  if (state.page === 'settings') {
+  if (settingsShown()) {
     renderView();
   }
   try {
@@ -119,7 +137,7 @@ export async function loadDeviceSettings() {
   } finally {
     loading = false;
   }
-  if (state.page === 'settings') {
+  if (settingsShown()) {
     renderView();
   }
 }
@@ -155,14 +173,14 @@ async function sendSettings(patch, options = {}) {
   }
 }
 
-async function applyPatch(patch) {
+export async function applyPatch(patch) {
   await sendSettings(patch);
-  if (state.page === 'settings' && !settingsControlActive()) {
+  if (settingsShown() && !settingsControlActive()) {
     renderView();
   }
 }
 
-function debounce(key, action) {
+export function debounce(key, action) {
   clearTimeout(debounceTimers.get(key));
   debounceTimers.set(
     key,
@@ -173,20 +191,30 @@ function debounce(key, action) {
   );
 }
 
+// Layout of a guild on this device: its own, else the device one.
+export function guildLayout(settings, guildId) {
+  const guild = guildId && settings && settings.guilds ? settings.guilds[guildId] : null;
+  return (guild && guild.layout) || (settings && settings.layout) || {};
+}
+
 // Sends the draft layout (saved layout plus `changes`) to the overlay, at most
 // once per frame. Nothing is saved here. A timer rather than
-// requestAnimationFrame, which stops while the page is hidden.
-function previewLayout(changes) {
-  const saved = (deviceSettings && deviceSettings.layout) || {};
+// requestAnimationFrame, which stops while the page is hidden. With a
+// `guildId` the draft is that guild's layout.
+export function previewLayout(changes, guildId = null) {
+  const saved = guildId ? guildLayout(deviceSettings, guildId) : (deviceSettings && deviceSettings.layout) || {};
   previewDraft = { ...saved, ...previewDraft, ...changes };
+  previewGuildId = guildId;
   if (previewFrame !== null) {
     return;
   }
   previewFrame = setTimeout(() => {
     previewFrame = null;
     const layout = previewDraft;
+    const target = previewGuildId;
     previewDraft = null;
-    invoke('settings_preview_layout', { payload: { layout } }).catch((error) => {
+    const payload = target ? { layout, guildId: target } : { layout };
+    invoke('settings_preview_layout', { payload }).catch((error) => {
       console.warn('Aperçu de la mise en page impossible :', errorMessage(error));
     });
   }, PREVIEW_FRAME_MS);
@@ -194,18 +222,18 @@ function previewLayout(changes) {
 
 // ------------------------------------------------------------------ rendering
 
-function section(title, ...children) {
+export function section(title, ...children) {
   return h('section', { class: 'settings-section' }, h('h3', null, title), ...children.flat(Infinity));
 }
 
-function controlRow(label, control, id) {
+export function controlRow(label, control, id) {
   const labelNode = id
     ? h('label', { class: 'settings-label', for: id }, label)
     : h('span', { class: 'settings-label' }, label);
   return h('div', { class: 'settings-row' }, labelNode, h('div', { class: 'settings-control' }, control));
 }
 
-function rangeControl({ id, min, max, value, format, onInput }) {
+export function rangeControl({ id, min, max, value, format, onInput }) {
   const output = h('span', { class: 'settings-value' }, format(value));
   const input = h('input', {
     id,
@@ -224,7 +252,7 @@ function rangeControl({ id, min, max, value, format, onInput }) {
   return [input, output];
 }
 
-function selectedDisplay(settings, displays) {
+export function selectedDisplay(settings, displays) {
   return (
     displays.find((display) => display.key === settings.selectedDisplayKey) ||
     displays.find((display) => display.primary) ||
@@ -233,13 +261,13 @@ function selectedDisplay(settings, displays) {
   );
 }
 
-function isWholeScreen(zone) {
+export function isWholeScreen(zone) {
   return zone.x === 0 && zone.y === 0 && zone.width === 1 && zone.height === 1;
 }
 
 // « 1280 × 720 px à 640, 360 » on the overlay screen, or fractions when its
 // size is unknown.
-function zoneSummary(zone, display) {
+export function zoneSummary(zone, display) {
   if (isWholeScreen(zone)) {
     return 'Tout l’écran';
   }
@@ -355,10 +383,18 @@ function renderSound(settings) {
     checked: Boolean(settings.generalMute),
     onChange: (event) => applyPatch({ generalMute: event.target.checked }),
   });
+  const mediaMute = h('input', {
+    id: 'settings-media-mute',
+    type: 'checkbox',
+    checked: Boolean(settings.mediaMuted),
+    onChange: (event) => applyPatch({ mediaMuted: event.target.checked }),
+  });
   const guilds = Array.isArray(state.guilds) ? state.guilds : [];
   return section(
     'Son',
     controlRow('Sourdine générale', generalMute, 'settings-general-mute'),
+    controlRow('Couper le son des médias', mediaMute, 'settings-media-mute'),
+    h('p', { class: 'settings-hint is-under' }, 'Les médias restent affichés, sans leur son. La sourdine générale, elle, n’affiche plus rien.'),
     controlRow(
       'Volume général',
       rangeControl({
@@ -383,8 +419,14 @@ function renderSound(settings) {
 function renderGuildVolume(guild, settings) {
   const guildId = guild.membership.guildId;
   const label = guildLabel(guild);
-  const stored = settings.guildVolumes && settings.guildVolumes[guildId];
-  const volume = Number.isFinite(stored) ? stored : 1;
+  const own = (settings.guilds && settings.guilds[guildId]) || {};
+  const volume = Number.isFinite(own.volume) ? own.volume : 1;
+  const mediaMute = h('input', {
+    type: 'checkbox',
+    'aria-label': `Couper le son des médias de ${label}`,
+    checked: Boolean(own.mediaMuted),
+    onChange: (event) => applyPatch({ guilds: { [guildId]: { mediaMuted: event.target.checked } } }),
+  });
   const mute = h('input', {
     type: 'checkbox',
     'aria-label': `Sourdine de ${label}`,
@@ -408,9 +450,10 @@ function renderGuildVolume(guild, settings) {
         value: Math.round(volume * 100),
         format: (value) => `${value} %`,
         onInput: (value) =>
-          debounce(`guildVolume:${guildId}`, () => applyPatch({ guildVolumes: { [guildId]: value / 100 } })),
+          debounce(`guildVolume:${guildId}`, () => applyPatch({ guilds: { [guildId]: { volume: value / 100 } } })),
       }),
       h('label', { class: 'switch settings-guild-mute' }, mute, 'Sourdine'),
+      h('label', { class: 'switch settings-guild-mute' }, mediaMute, 'Son coupé'),
     ),
   );
 }
@@ -664,20 +707,25 @@ async function testMedia() {
     notify(errorMessage(error), true);
   } finally {
     testingMedia = false;
-    if (state.page === 'settings') {
+    if (settingsShown()) {
       renderView();
     }
   }
 }
 
-async function startPlacement() {
+export function placementStarting() {
+  return startingPlacement;
+}
+
+// Places the device zone, or `guildId`'s own zone.
+export async function startPlacement(guildId = null) {
   if (startingPlacement) {
     return;
   }
   startingPlacement = true;
   renderView();
   try {
-    const response = await invoke('settings_placement_start');
+    const response = await invoke('settings_placement_start', guildId ? { payload: { guildId } } : {});
     if (response && response.ok === false) {
       notify(
         response.reason === 'overlay_not_ready'
@@ -690,13 +738,13 @@ async function startPlacement() {
     notify(errorMessage(error), true);
   } finally {
     startingPlacement = false;
-    if (state.page === 'settings') {
+    if (settingsShown()) {
       renderView();
     }
   }
 }
 
-async function cancelPlacement() {
+export async function cancelPlacement() {
   try {
     await invoke('settings_placement_cancel');
   } catch (error) {
@@ -704,7 +752,7 @@ async function cancelPlacement() {
   }
 }
 
-async function toggleGuildMute(guild, muted) {
+export async function toggleGuildMute(guild, muted) {
   const result = await run(() =>
     invoke('guild_set_muted', { payload: { guildId: guild.membership.guildId, muted } }),
   );

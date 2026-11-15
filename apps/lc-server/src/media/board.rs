@@ -79,6 +79,8 @@ pub async fn add_to_board(
         created_by_discord_user_id: normalize_optional(created_by_user_id),
         created_by_name: normalize(created_by_name, MAX_AUTHOR_NAME_CHARS),
         created_at: now,
+        artwork_asset_id: None,
+        artwork_on_overlay: false,
     };
 
     match repository.create(&item).await {
@@ -113,13 +115,16 @@ async fn pin_asset(db: &Db, asset_id: MediaAssetId, now: DateTime<Utc>) -> Media
 
     // Même condition que le legacy : ne touche pas un asset non prêt ni un asset
     // dont l'expiration est déjà plus lointaine.
+    // The embedded cover (album art) is shown with the audio: pinned with it.
     sqlx::query(
         "UPDATE media_assets \
             SET expires_at = ?, last_accessed_at = ? \
-          WHERE id = ? AND status = 'READY' AND expires_at < ?",
+          WHERE (id = ? OR id = (SELECT cover_asset_id FROM media_assets WHERE id = ?)) \
+            AND status = 'READY' AND expires_at < ?",
     )
     .bind(pinned_until)
     .bind(now_ms)
+    .bind(asset_id.to_canonical())
     .bind(asset_id.to_canonical())
     .bind(pinned_until)
     .execute(db.pool())

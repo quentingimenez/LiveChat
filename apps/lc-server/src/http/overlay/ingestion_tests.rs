@@ -208,6 +208,8 @@ impl Harness {
             created_by_discord_user_id: Some("4242".to_owned()),
             created_by_name: Some("Alice".to_owned()),
             created_at: fixed_now(),
+            artwork_asset_id: None,
+            artwork_on_overlay: false,
         };
         self.db.media_board().create(&item).await.unwrap();
         item

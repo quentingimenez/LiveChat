@@ -56,6 +56,24 @@ pub struct NormalizedMedia {
     pub storage_path: PathBuf,
     /// Taille du fichier en octets.
     pub size_bytes: u64,
+    /// Embedded cover extracted from an audio file (album art), stored next
+    /// to the audio file.
+    pub cover: Option<NormalizedCover>,
+}
+
+/// Cover picture extracted from an audio file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NormalizedCover {
+    /// MIME type of the picture (`image/jpeg`, `image/png`).
+    pub mime: String,
+    /// Width in pixels.
+    pub width: Option<u32>,
+    /// Height in pixels.
+    pub height: Option<u32>,
+    /// Path of the picture in the storage.
+    pub storage_path: PathBuf,
+    /// Size in bytes.
+    pub size_bytes: u64,
 }
 
 /// Détecte le type de média à normaliser.
@@ -346,14 +364,89 @@ pub async fn normalize_audio(
     }
     MediaStorage::commit_file(&staged, &output)?;
     let duration = probed.and_then(|probed| probed.duration_ceil_sec());
-    finalize(
+    let mut normalized = finalize(
         MediaKind::Audio,
         AUDIO_MIME,
         &output,
         probed,
         None,
         duration,
+    )?;
+    if let Some(cover) = probed.and_then(|probed| probed.cover.as_ref()) {
+        normalized.cover = extract_cover(input, output_base, cover, config).await;
+    }
+    Ok(normalized)
+}
+
+/// Smallest cover kept: below this, the "picture" is a placeholder.
+const MIN_COVER_BYTES: u64 = 256;
+
+/// Extracts the embedded cover of an audio file next to it
+/// (`<base>.cover.jpg|png`). Best effort: a failure only loses the cover.
+async fn extract_cover(
+    input: &Path,
+    output_base: &Path,
+    cover: &crate::probe::ProbeCover,
+    config: &MediaConfig,
+) -> Option<NormalizedCover> {
+    // JPEG and PNG covers are copied as they are; other codecs become PNG.
+    let (extension, mime, codec) = match cover.codec.as_str() {
+        "mjpeg" | "jpeg" => ("jpg", "image/jpeg", "copy"),
+        "png" => ("png", "image/png", "copy"),
+        _ => ("png", "image/png", "png"),
+    };
+    let output = output_base.with_extension(format!("cover.{extension}"));
+    let staged = staged_path(&output);
+    let args = build_cover_args(input, &staged, codec);
+    if let Err(error) = process::run_command(
+        &config.tools.ffmpeg,
+        &args,
+        config.download.timeout,
+        MediaErrorCode::TranscodeFailed,
     )
+    .await
+    {
+        let _removed = fs::remove_file(&staged);
+        tracing::warn!(error = %error.summary(), "extraction de la pochette impossible");
+        return None;
+    }
+    if let Err(error) = MediaStorage::commit_file(&staged, &output) {
+        let _removed = fs::remove_file(&staged);
+        tracing::warn!(error = %error.summary(), "enregistrement de la pochette impossible");
+        return None;
+    }
+    let size_bytes = MediaStorage::file_size(&output).ok()?;
+    if size_bytes < MIN_COVER_BYTES {
+        let _removed = fs::remove_file(&output);
+        return None;
+    }
+    Some(NormalizedCover {
+        mime: mime.to_string(),
+        width: cover.width,
+        height: cover.height,
+        storage_path: output,
+        size_bytes,
+    })
+}
+
+/// ffmpeg arguments extracting the first attached picture of a file.
+pub fn build_cover_args(input: &Path, output: &Path, codec: &str) -> Vec<String> {
+    vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-v".to_string(),
+        "error".to_string(),
+        "-i".to_string(),
+        input.display().to_string(),
+        "-an".to_string(),
+        "-map".to_string(),
+        "0:v:0".to_string(),
+        "-frames:v".to_string(),
+        "1".to_string(),
+        "-c:v".to_string(),
+        codec.to_string(),
+        output.display().to_string(),
+    ]
 }
 
 /// Normalise une vidéo : copie si compatible, sinon transcodage H.264/AAC.
@@ -504,6 +597,7 @@ fn finalize_with_min_size(
         is_vertical,
         storage_path: output.to_path_buf(),
         size_bytes,
+        cover: None,
     })
 }
 
@@ -596,6 +690,7 @@ pub fn build_video_transcode_args(
 ) -> Vec<String> {
     let mut args = vec![
         "-y".to_string(),
+        "-hide_banner".to_string(),
         "-i".to_string(),
         input.display().to_string(),
         "-c:v".to_string(),
@@ -628,6 +723,7 @@ pub fn build_video_transcode_args(
 pub fn build_audio_args(input: &Path, output: &Path, config: &MediaConfig) -> Vec<String> {
     let mut args = vec![
         "-y".to_string(),
+        "-hide_banner".to_string(),
         "-i".to_string(),
         input.display().to_string(),
         "-vn".to_string(),
@@ -690,7 +786,7 @@ pub fn build_carousel_video_args(
     let per_image = format!(
         "scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p"
     );
-    let mut args: Vec<String> = vec!["-y".to_string()];
+    let mut args: Vec<String> = vec!["-y".to_string(), "-hide_banner".to_string()];
     for image in images {
         args.push("-loop".to_string());
         args.push("1".to_string());
@@ -788,6 +884,7 @@ mod tests {
             pixel_format: Some("yuv420p".to_string()),
             has_video: true,
             has_audio: true,
+            cover: None,
         }
     }
 

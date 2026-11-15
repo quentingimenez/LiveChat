@@ -272,7 +272,7 @@ pub(super) struct UploadTempDir {
 impl UploadTempDir {
     /// Creates a unique directory under the system temporary directory
     /// (TMP/TEMP), the same space as `lc-media` downloads.
-    async fn create() -> io::Result<Self> {
+    pub(super) async fn create() -> io::Result<Self> {
         let base = std::env::temp_dir();
         for _ in 0..TEMP_CREATE_ATTEMPTS {
             let path = base.join(format!("{UPLOAD_TEMP_PREFIX}{}", Uuid::new_v4()));

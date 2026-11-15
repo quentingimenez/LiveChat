@@ -23,6 +23,22 @@ export function createOverlayLegacyMediaRenderUtils() {
         if (!(targetContainer instanceof HTMLElement)) {
             return;
         }
+        // An audio with a picture shows it while it plays. It comes first so
+        // the header layout measures it as the media.
+        if (mediaPayload.kind === 'audio' && typeof mediaPayload.artworkUrl === 'string' && mediaPayload.artworkUrl !== '') {
+            const artwork = document.createElement('img');
+            artwork.className = 'overlay-media-artwork';
+            artwork.alt = '';
+            artwork.addEventListener('load', () => {
+                params.scheduleMediaHeaderLayout();
+            }, { once: true });
+            artwork.addEventListener('error', () => {
+                artwork.remove();
+                params.scheduleMediaHeaderLayout();
+            }, { once: true });
+            artwork.src = params.buildAuthorizedMediaUrl(mediaPayload.artworkUrl);
+            targetContainer.appendChild(artwork);
+        }
         const attached = params.attachMediaElement({
             targetContainer,
             element,

@@ -42,8 +42,39 @@
   align-items: start;
 }
 
-.board.has-detail {
-  grid-template-columns: minmax(0, 1fr) 320px;
+/* ------------------------------------------------------------------ filters */
+.filters-toggle.is-active {
+  border-color: var(--line);
+  background: var(--slate-700);
+  color: var(--text);
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 16px;
+  margin: -6px 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--slate-700);
+}
+
+.filters .switch {
+  height: 32px;
+}
+
+.filter {
+  display: grid;
+  gap: 4px;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.filter .field {
+  min-width: 150px;
+  height: 32px;
 }
 
 /* Masonry, like Discord's GIF picker: cards keep one width whatever the
@@ -259,6 +290,68 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Favorite star: always shown once set, otherwise on hover. */
+.fav {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(23, 27, 37, 0.78);
+  color: var(--text-soft);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+
+.fav svg {
+  width: 15px;
+  height: 15px;
+}
+
+.card:hover .fav,
+.card:focus-within .fav,
+.fav.is-on {
+  opacity: 1;
+}
+
+.fav.is-on,
+.fav-toggle.is-on {
+  color: var(--amber);
+}
+
+.fav.is-on svg,
+.fav-toggle.is-on svg {
+  fill: currentColor;
+}
+
+/* An audio shown by its picture keeps a small audio mark. */
+.kind-badge {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  background: rgba(23, 27, 37, 0.85);
+  display: grid;
+  place-items: center;
+}
+
+.kind-badge svg {
+  width: 13px;
+  height: 13px;
+}
+
+.thumb.has-artwork .duration {
+  right: 32px;
+}
+
 /* Une image chargée remplace l'icône de repli. */
 .thumb img + .glyph {
   display: none;
@@ -304,13 +397,33 @@
 }
 
 /* ------------------------------------------------------------------- détail */
+/* Floating drawer on the right: it covers the grid instead of resizing it, so
+   the cards never move. `top`/`bottom` follow the view (board.js). */
 .detail {
-  position: sticky;
-  top: 0;
+  position: fixed;
+  top: 96px;
+  right: 22px;
+  bottom: 16px;
+  z-index: 6;
+  width: min(360px, calc(100vw - var(--rail) - 48px));
   padding: 16px;
+  overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-m);
   background: var(--slate-700);
+  box-shadow: 0 18px 40px rgba(8, 10, 16, 0.55);
+  animation: detail-in 120ms ease-out;
+}
+
+.detail.is-peek {
+  border-style: dashed;
+}
+
+@keyframes detail-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
 }
 
 .detail-head {
@@ -370,6 +483,46 @@
   width: 100%;
 }
 
+.detail .preview.has-artwork {
+  display: grid;
+  gap: 10px;
+  padding: 0 0 12px;
+}
+
+.detail .preview .preview-artwork {
+  position: static;
+  width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+  background: var(--slate-900);
+}
+
+.detail .preview.has-artwork audio {
+  width: calc(100% - 24px);
+  margin: 0 12px;
+}
+
+/* -------------------------------------------------------- edit: picture */
+.artwork-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.artwork-preview {
+  width: 72px;
+  height: 72px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  object-fit: cover;
+  background: var(--slate-900);
+}
+
+.field-label {
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
 .facts {
   display: grid;
   grid-template-columns: 88px minmax(0, 1fr);
@@ -387,8 +540,3 @@
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 1040px) {
-  .board.has-detail {
-    grid-template-columns: minmax(0, 1fr) 280px;
-  }
-}

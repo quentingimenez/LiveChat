@@ -93,12 +93,6 @@ pub enum CommandKey {
     Link,
     /// `/overlays`.
     Overlays,
-    /// `/config-defaulttime` (fr : `/config-defaut`).
-    SetDefaultTime,
-    /// `/config-displayfull`.
-    SetDisplayFull,
-    /// `/config-maxtime` (fr : `/config-max`).
-    SetMaxTime,
     /// `/send` (fr : `/msg`).
     Send,
     /// `/hsend` (fr : `/cmsg`).
@@ -122,9 +116,6 @@ impl CommandKey {
             Self::MediaAdd => "media-add",
             Self::Link => "link",
             Self::Overlays => "overlays",
-            Self::SetDefaultTime => "set-default-time",
-            Self::SetDisplayFull => "set-display-full",
-            Self::SetMaxTime => "set-max-time",
             Self::Send => "send",
             Self::HideSend => "hide-send",
             Self::Talk => "talk",
@@ -391,45 +382,6 @@ const HIDE_TALK_OPTIONS: &[OptionSpec] = &[
     },
 ];
 
-const INTEGER_REQUIRED_OPTION: &[OptionSpec] = &[OptionSpec {
-    name: LocalizedText::new(
-        FR.set_default_time_option_text,
-        EN.set_default_time_option_text,
-    ),
-    description: LocalizedText::new(
-        FR.set_default_time_option_text_description,
-        EN.set_default_time_option_text_description,
-    ),
-    kind: OptionKind::Integer,
-    required: true,
-    choices: &[],
-}];
-
-const MAX_TIME_OPTIONS: &[OptionSpec] = &[OptionSpec {
-    name: LocalizedText::new(FR.set_max_time_option_text, EN.set_max_time_option_text),
-    description: LocalizedText::new(
-        FR.set_max_time_option_text_description,
-        EN.set_max_time_option_text_description,
-    ),
-    kind: OptionKind::Integer,
-    required: true,
-    choices: &[],
-}];
-
-const DISPLAY_FULL_OPTIONS: &[OptionSpec] = &[OptionSpec {
-    name: LocalizedText::new(
-        FR.set_display_full_option_text,
-        EN.set_display_full_option_text,
-    ),
-    description: LocalizedText::new(
-        FR.set_display_full_option_text_description,
-        EN.set_display_full_option_text_description,
-    ),
-    kind: OptionKind::Boolean,
-    required: true,
-    choices: &[],
-}];
-
 /// Catalogue complet, dans l'**ordre d'enregistrement legacy**.
 ///
 /// `DiscordLoader.loadDiscordCommands` ajoute d'abord les 12 commandes
@@ -475,30 +427,6 @@ pub static COMMANDS: &[CommandSpec] = &[
         name: LocalizedText::new("info", "info"),
         description: LocalizedText::new("Bot Informations", "Bot Informations"),
         options: NO_OPTIONS,
-    },
-    CommandSpec {
-        key: CommandKey::SetDefaultTime,
-        name: LocalizedText::new(FR.set_default_time_name, EN.set_default_time_name),
-        description: LocalizedText::new(
-            FR.set_default_time_description,
-            EN.set_default_time_description,
-        ),
-        options: INTEGER_REQUIRED_OPTION,
-    },
-    CommandSpec {
-        key: CommandKey::SetDisplayFull,
-        name: LocalizedText::new(FR.set_display_full_name, EN.set_display_full_name),
-        description: LocalizedText::new(
-            FR.set_display_full_description,
-            EN.set_display_full_description,
-        ),
-        options: DISPLAY_FULL_OPTIONS,
-    },
-    CommandSpec {
-        key: CommandKey::SetMaxTime,
-        name: LocalizedText::new(FR.set_max_time_name, EN.set_max_time_name),
-        description: LocalizedText::new(FR.set_max_time_description, EN.set_max_time_description),
-        options: MAX_TIME_OPTIONS,
     },
     CommandSpec {
         key: CommandKey::Overlays,
@@ -595,9 +523,6 @@ mod tests {
                 "pair-code",
                 "help",
                 "info",
-                "config-defaut",
-                "config-displayfull",
-                "config-max",
                 "overlays",
                 "stop",
                 "media-add",
@@ -617,9 +542,6 @@ mod tests {
                 "pair-code",
                 "help",
                 "info",
-                "config-defaulttime",
-                "config-displayfull",
-                "config-maxtime",
                 "overlays",
                 "stop",
                 "media-add",
@@ -635,7 +557,7 @@ mod tests {
         let names = registered_command_names(Lang::En, true);
         assert!(!names.contains(&"hsend"));
         assert!(!names.contains(&"htalk"));
-        assert_eq!(names.len(), 13);
+        assert_eq!(names.len(), 10);
         assert!(find_by_name(Lang::En, true, "hsend").is_none());
         assert!(find_by_name(Lang::En, false, "hsend").is_some());
     }
@@ -661,9 +583,7 @@ mod tests {
         assert_eq!(mode.choices[1].value, "invite");
         assert_eq!(mode.choices[0].name.get(Lang::Fr), "normal");
 
-        let config = find_by_name(Lang::En, false, "config-maxtime").expect("config-maxtime");
-        assert_eq!(config.options[0].kind, OptionKind::Integer);
-        assert!(config.options[0].required);
+        assert!(find_by_name(Lang::En, false, "config-maxtime").is_none());
 
         let link = find_by_name(Lang::Fr, false, "lier").expect("lier doit exister");
         assert_eq!(link.key, CommandKey::Link);
@@ -693,8 +613,8 @@ mod tests {
     }
 
     #[test]
-    fn catalogue_contient_quinze_commandes() {
-        assert_eq!(COMMANDS.len(), 15);
+    fn catalogue_contient_douze_commandes() {
+        assert_eq!(COMMANDS.len(), 12);
         assert_eq!(
             COMMANDS
                 .iter()

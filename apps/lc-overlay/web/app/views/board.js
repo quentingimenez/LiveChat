@@ -3,17 +3,33 @@
 import { api, run } from '../core/api.js';
 import { openContextMenu } from '../core/contextmenu.js';
 import { acceleratorFromEvent, acceleratorLabel } from '../core/accelerators.js';
-import { h, icon } from '../core/dom.js';
+import {
+  activeFilterCount,
+  authorsOf,
+  DEFAULT_FILTERS,
+  droppedLink,
+  DURATION_LABELS,
+  selectItems,
+  SORT_LABELS,
+  SOURCE_LABELS,
+} from '../core/board-filters.js';
+import { h, icon, registerIcons } from '../core/dom.js';
 import { formatDuration } from '../core/format.js';
 import { cardRatio, cardStyle } from '../core/masonry.js';
 import { invoke } from '../core/ipc.js';
 import { activeGuild, can, describeError, KIND_LABELS, state } from '../core/state.js';
+import { previewVolume } from '../core/sound.js';
 import { notify } from '../core/toast.js';
 import { confirmDialog, copyText, openDialog } from '../core/ui.js';
 import { loadItems, refreshQueueAutomatically } from '../data.js';
 import { openAddDialog } from './add-media.js';
 import { openUploadMenu, renderUploadCard, startFileUpload, uploadsForGuild } from './uploads.js';
 import { renderView } from './view.js';
+
+registerIcons({
+  star: 'M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z',
+  filter: 'M4 6h16M7 12h10M10 18h4',
+});
 
 export function itemTitle(item) {
   if (item.title) {
@@ -33,15 +49,19 @@ function openCardMenu(event, item) {
     { heading: itemTitle(item) },
     can('play') ? { label: 'Jouer sur les overlays', icon: 'play', onSelect: () => playItem(item) } : null,
     {
-      label: state.selectedId === item.id ? 'Masquer les détails' : 'Afficher les détails',
+      label: state.selectedId === item.id && state.detailPinned ? 'Masquer les détails' : 'Afficher les détails',
       onSelect: () => selectItem(item.id),
     },
+    canFavorite()
+      ? { label: item.favorite ? 'Retirer des favoris' : 'Ajouter aux favoris', icon: 'star', onSelect: () => toggleFavorite(item) }
+      : null,
     item.canEdit ? { label: 'Modifier…', onSelect: () => openEditDialog(item) } : null,
     can('play')
       ? {
           label: shortcutFor(item.id) ? 'Changer le raccourci' : 'Définir un raccourci',
           onSelect: () => {
             state.selectedId = item.id;
+            state.detailPinned = true;
             state.capturing = false;
             startCapture(item);
           },
@@ -54,18 +74,49 @@ function openCardMenu(event, item) {
 }
 
 function visibleItems() {
-  const needle = state.search.trim().toLowerCase();
-  return state.items.filter((item) => {
-    if (state.kind !== 'all' && item.media.kind !== state.kind) {
-      return false;
-    }
-    if (!needle) {
-      return true;
-    }
-    return [item.title, item.message, item.createdByName, item.media.sourceUrl]
-      .filter(Boolean)
-      .some((value) => value.toLowerCase().includes(needle));
+  return selectItems(state.items, {
+    search: state.search,
+    kind: state.kind,
+    filters: state.filters,
+    shortcutItemIds: new Set(Object.values(state.bindings)),
+    titleOf: itemTitle,
   });
+}
+
+// Favorites belong to a member: a device paired without one has none.
+function canFavorite() {
+  return Boolean(state.info && state.info.member && state.info.member.id);
+}
+
+export async function toggleFavorite(item) {
+  const favorite = !item.favorite;
+  const body = await run(() => api('PUT', `/overlay/media-board/items/${encodeURIComponent(item.id)}/favorite`, { favorite }));
+  if (!body) {
+    return;
+  }
+  for (const entry of state.items) {
+    if (entry.id === item.id) {
+      entry.favorite = favorite;
+    }
+  }
+  const card = cards.get(item.id);
+  if (card) {
+    syncFavorite(card.node, favorite);
+  }
+  if (state.filters.favorites) {
+    refreshGrid(false);
+  }
+  syncDetail();
+}
+
+function syncFavorite(card, favorite) {
+  const star = card.querySelector('.fav');
+  if (!star) {
+    return;
+  }
+  star.classList.toggle('is-on', favorite);
+  star.setAttribute('aria-pressed', String(favorite));
+  star.title = favorite ? 'Retirer des favoris' : 'Ajouter aux favoris';
 }
 
 // --- card cache ---
@@ -110,7 +161,9 @@ function cardKey(item) {
     item.media.width ?? null,
     item.media.height ?? null,
     mediaPath(item.mediaUrl),
+    mediaPath(item.artwork && item.artwork.url),
     can('play'),
+    canFavorite(),
   ]);
 }
 
@@ -263,34 +316,45 @@ function refreshUploadCards() {
   grid.prepend(...nodes);
 }
 
+// An audio item shows its picture (embedded cover or chosen image).
+function artworkOf(item) {
+  const artwork = item.artwork;
+  return artwork && typeof artwork.url === 'string' && artwork.url ? artwork : null;
+}
+
 function buildCard(entry) {
   const item = entry.item;
   const kind = item.media.kind;
-  const mediaUrl = typeof item.mediaUrl === 'string' && item.mediaUrl ? item.mediaUrl : null;
+  const artwork = kind === 'audio' ? artworkOf(item) : null;
+  const mediaUrl = artwork ? artwork.url : typeof item.mediaUrl === 'string' && item.mediaUrl ? item.mediaUrl : null;
   const thumb = h(
     'button',
     {
-      class: 'thumb',
+      class: `thumb${artwork ? ' has-artwork' : ''}`,
       'data-media-url': mediaUrl,
-      'data-kind': kind,
+      'data-kind': artwork ? 'image' : kind,
       'data-item-id': item.id,
       'aria-label': `Détails de ${itemTitle(item)}`,
       onClick: () => selectItem(entry.item.id),
     },
     h('span', { class: 'glyph' }, icon(kind === 'audio' ? 'audio' : kind === 'image' ? 'image' : 'video')),
+    artwork ? h('span', { class: 'kind-badge', 'aria-hidden': 'true' }, icon('audio')) : null,
     formatDuration(item.media.durationSec) ? h('span', { class: 'duration' }, formatDuration(item.media.durationSec)) : null,
   );
-  if (kind !== 'audio' && mediaUrl) {
+  if ((kind !== 'audio' || artwork) && mediaUrl) {
     thumbObserver.observe(thumb);
   }
-  return h(
+  const ratio = artwork ? { width: artwork.width || 1, height: artwork.height || 1 } : item.media;
+  const node = h(
     'div',
     {
       class: 'card',
       'data-item-id': item.id,
       // Height of the media's own shape (masonry, see core/masonry.js).
-      style: cardStyle(cardRatio(item.media)),
+      style: cardStyle(cardRatio(ratio)),
       onContextmenu: (event) => openCardMenu(event, entry.item),
+      onMouseenter: () => hoverDetail(entry.item.id),
+      onMouseleave: leaveCard,
     },
     h(
       'div',
@@ -299,9 +363,26 @@ function buildCard(entry) {
       can('play')
         ? h('button', { class: 'play', 'aria-label': `Jouer ${itemTitle(item)}`, title: 'Jouer sur les overlays', onClick: () => playItem(entry.item) }, icon('play'))
         : null,
+      canFavorite()
+        ? h(
+            'button',
+            {
+              class: 'fav',
+              'aria-label': `Favori : ${itemTitle(item)}`,
+              'aria-pressed': 'false',
+              onClick: (event) => {
+                event.stopPropagation();
+                toggleFavorite(entry.item);
+              },
+            },
+            icon('star'),
+          )
+        : null,
     ),
     h('p', { class: 'card-title', title: itemTitle(item) }, itemTitle(item)),
   );
+  syncFavorite(node, Boolean(item.favorite));
+  return node;
 }
 
 // Returns the card of an item, reusing its node while nothing it shows has
@@ -325,6 +406,7 @@ function renderCard(item) {
     }
   }
   entry.node.classList.toggle('is-selected', state.selectedId === item.id);
+  syncFavorite(entry.node, Boolean(item.favorite));
   syncBadge(entry.node, triggerBadgeFor(item.id));
   return entry.node;
 }
@@ -372,6 +454,7 @@ export function renderBoard() {
     // A preview no longer shown must not keep its video alive.
     previewCache = null;
   }
+  const filterCount = activeFilterCount(state.filters);
   const toolbar = h(
     'div',
     { class: 'toolbar' },
@@ -392,6 +475,19 @@ export function renderBoard() {
         h('button', { class: `chip${state.kind === id ? ' is-active' : ''}`, 'data-kind': id, onClick: () => setKind(id) }, label),
       ),
     ),
+    h(
+      'button',
+      {
+        class: `btn is-quiet filters-toggle${filterCount > 0 || state.filtersOpen ? ' is-active' : ''}`,
+        'aria-expanded': String(state.filtersOpen),
+        onClick: () => {
+          state.filtersOpen = !state.filtersOpen;
+          renderView();
+        },
+      },
+      icon('filter'),
+      filterCount > 0 ? `Filtres · ${filterCount}` : 'Filtres',
+    ),
     h('span', { class: 'spacer' }),
     h('button', { class: 'btn is-quiet', title: 'Recharger le board', 'aria-label': 'Recharger le board', onClick: loadItems }, icon('refresh')),
     can('addMedia') ? h('button', { class: 'btn', onClick: openAddDialog }, icon('plus'), 'Ajouter un média') : null,
@@ -408,7 +504,7 @@ export function renderBoard() {
       can('addMedia') ? h('button', { class: 'btn', onClick: openAddDialog }, 'Ajouter un média') : null,
     );
   } else if (items.length === 0 && uploads.length === 0) {
-    content = h('p', { class: 'meta' }, 'Aucun média ne correspond à cette recherche.');
+    content = h('p', { class: 'meta' }, 'Aucun média ne correspond à cette recherche ou à ces filtres.');
   } else {
     // Provisional cards always come first, whatever the search and filter.
     content = h('div', { class: 'grid', id: 'grid' }, uploads.map(uploadCard), items.map(renderCard));
@@ -417,7 +513,58 @@ export function renderBoard() {
     'div',
     null,
     toolbar,
-    h('div', { class: `board${selected ? ' has-detail' : ''}` }, content, selected ? renderDetail(selected) : null),
+    state.filtersOpen ? renderFilters() : null,
+    h('div', { class: 'board' }, content, selected ? renderDetail(selected) : null),
+  );
+}
+
+function setFilter(patch) {
+  state.filters = { ...state.filters, ...patch };
+  renderView();
+}
+
+function filterSelect(label, value, options, onChange) {
+  return h(
+    'label',
+    { class: 'filter' },
+    h('span', null, label),
+    h(
+      'select',
+      { class: 'field', onChange: (event) => onChange(event.target.value) },
+      options.map(([id, text]) => h('option', { value: id, selected: id === value }, text)),
+    ),
+  );
+}
+
+function renderFilters() {
+  const filters = state.filters;
+  const authors = authorsOf(state.items);
+  return h(
+    'div',
+    { class: 'filters', role: 'group', 'aria-label': 'Filtres du board' },
+    canFavorite()
+      ? h(
+          'label',
+          { class: 'switch' },
+          h('input', { type: 'checkbox', checked: filters.favorites, onChange: (event) => setFilter({ favorites: event.target.checked }) }),
+          'Favoris',
+        )
+      : null,
+    can('play')
+      ? h(
+          'label',
+          { class: 'switch' },
+          h('input', { type: 'checkbox', checked: filters.shortcut, onChange: (event) => setFilter({ shortcut: event.target.checked }) }),
+          'Avec raccourci',
+        )
+      : null,
+    filterSelect('Ajouté par', filters.author, [['', 'Tout le monde'], ...authors.map((name) => [name, name])], (author) => setFilter({ author })),
+    filterSelect('Source', filters.source, [['', 'Toutes'], ...Object.entries(SOURCE_LABELS)], (source) => setFilter({ source })),
+    filterSelect('Durée', filters.duration, [['', 'Toutes'], ...Object.entries(DURATION_LABELS)], (duration) => setFilter({ duration })),
+    filterSelect('Trier', filters.sort, Object.entries(SORT_LABELS), (sort) => setFilter({ sort })),
+    activeFilterCount(filters) > 0 || filters.sort !== DEFAULT_FILTERS.sort
+      ? h('button', { class: 'btn is-quiet', onClick: () => setFilter({ ...DEFAULT_FILTERS }) }, 'Réinitialiser')
+      : null,
   );
 }
 
@@ -449,14 +596,120 @@ function setKind(kind) {
   refreshGrid(false);
 }
 
+// A click pins the drawer on a media (a second click on it closes it).
 export function selectItem(id) {
-  state.selectedId = state.selectedId === id ? null : id;
+  clearTimeout(hoverTimer);
+  clearTimeout(leaveTimer);
+  if (state.selectedId === id && state.detailPinned) {
+    state.selectedId = null;
+    state.detailPinned = false;
+  } else {
+    state.selectedId = id;
+    state.detailPinned = true;
+  }
   state.capturing = false;
-  if (!previewCache || previewCache.itemId !== state.selectedId) {
+  syncDetail();
+}
+
+export function closeDetail() {
+  clearTimeout(hoverTimer);
+  clearTimeout(leaveTimer);
+  state.selectedId = null;
+  state.detailPinned = false;
+  state.capturing = false;
+  syncDetail();
+}
+
+// --- hover: the drawer follows the pointer until it is pinned ---
+const HOVER_DELAY_MS = 450;
+const LEAVE_DELAY_MS = 300;
+let hoverTimer = null;
+let leaveTimer = null;
+
+function hoverDetail(id) {
+  clearTimeout(hoverTimer);
+  if (state.detailPinned) {
+    return;
+  }
+  clearTimeout(leaveTimer);
+  hoverTimer = setTimeout(() => {
+    hoverTimer = null;
+    if (state.detailPinned || state.selectedId === id) {
+      return;
+    }
+    state.selectedId = id;
+    syncDetail();
+  }, HOVER_DELAY_MS);
+}
+
+function leaveCard() {
+  clearTimeout(hoverTimer);
+  hoverTimer = null;
+  scheduleHoverClose();
+}
+
+function scheduleHoverClose() {
+  if (state.detailPinned || !state.selectedId) {
+    return;
+  }
+  clearTimeout(leaveTimer);
+  leaveTimer = setTimeout(() => {
+    leaveTimer = null;
+    if (!state.detailPinned) {
+      closeDetail();
+    }
+  }, LEAVE_DELAY_MS);
+}
+
+// Updates the drawer in place: the grid never moves and the preview (and its
+// video) is reused while the same media stays selected.
+function syncDetail() {
+  if (!state.selectedId || !previewCache || previewCache.itemId !== state.selectedId) {
     previewCache = null;
   }
-  renderView();
+  const board = document.querySelector('.view .board');
+  if (!board) {
+    renderView();
+    return;
+  }
+  const selected = state.items.find((item) => item.id === state.selectedId) || null;
+  const current = board.querySelector(':scope > .detail');
+  const next = selected ? renderDetail(selected) : null;
+  if (current && next) {
+    current.replaceWith(next);
+  } else if (current) {
+    current.remove();
+  } else if (next) {
+    board.append(next);
+  }
+  for (const [id, entry] of cards) {
+    entry.node.classList.toggle('is-selected', id === state.selectedId);
+  }
 }
+
+// The drawer floats over the view, between the header and the footer.
+function placeDrawer(node) {
+  const view = document.getElementById('view');
+  if (!view || !node.isConnected) {
+    return;
+  }
+  const box = view.getBoundingClientRect();
+  node.style.top = `${Math.round(box.top + 12)}px`;
+  node.style.bottom = `${Math.round(Math.max(12, window.innerHeight - box.bottom + 12))}px`;
+}
+
+window.addEventListener('resize', () => {
+  const node = document.querySelector('.view .detail');
+  if (node) {
+    placeDrawer(node);
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && state.selectedId && !state.capturing && !document.querySelector('#dialog-root .dialog')) {
+    closeDetail();
+  }
+});
 
 export async function playItem(item) {
   const guild = activeGuild();
@@ -571,11 +824,19 @@ function buildPreview(item) {
     return node;
   }
   if (kind === 'audio') {
-    node.append(h('audio', { src: url, controls: true, preload: 'metadata' }));
+    const artwork = artworkOf(item);
+    if (artwork) {
+      node.classList.add('has-artwork');
+      node.append(h('img', { class: 'preview-artwork', src: artwork.url, alt: '' }));
+    }
+    const audio = h('audio', { src: url, controls: true, preload: 'metadata' });
+    audio.volume = previewVolume(state.activeGuildId);
+    node.append(audio);
     return node;
   }
   if (kind === 'video') {
     const video = h('video', { src: url, controls: true, preload: 'auto', playsinline: true });
+    video.volume = previewVolume(state.activeGuildId);
     video.addEventListener('loadedmetadata', () => adoptRatio(video.videoWidth, video.videoHeight));
     node.append(video);
     const still = cardStill(item.id);
@@ -612,14 +873,38 @@ function renderDetail(item) {
   const shortcut = shortcutFor(item.id);
   const size = item.media.sizeBytes ? `${(item.media.sizeBytes / 1048576).toFixed(1).replace('.', ',')} Mo` : null;
   const added = new Date(item.createdAt);
-  return h(
+  const drawer = h(
     'aside',
-    { class: 'detail', 'aria-label': 'Détails du média' },
+    {
+      class: `detail${state.detailPinned ? ' is-pinned' : ' is-peek'}`,
+      'aria-label': 'Détails du média',
+      onMouseenter: () => clearTimeout(leaveTimer),
+      onMouseleave: scheduleHoverClose,
+      // Using the drawer keeps it open.
+      onPointerdown: () => {
+        if (!state.detailPinned) {
+          state.detailPinned = true;
+          drawer.classList.replace('is-peek', 'is-pinned');
+        }
+      },
+    },
     h(
       'div',
       { class: 'detail-head' },
       h('h2', null, itemTitle(item)),
-      h('button', { class: 'btn is-quiet', 'aria-label': 'Fermer les détails', onClick: () => selectItem(item.id) }, icon('close')),
+      canFavorite()
+        ? h(
+            'button',
+            {
+              class: `btn is-quiet fav-toggle${item.favorite ? ' is-on' : ''}`,
+              'aria-pressed': String(Boolean(item.favorite)),
+              title: item.favorite ? 'Retirer des favoris' : 'Ajouter aux favoris',
+              onClick: () => toggleFavorite(item),
+            },
+            icon('star'),
+          )
+        : null,
+      h('button', { class: 'btn is-quiet', 'aria-label': 'Fermer les détails', onClick: closeDetail }, icon('close')),
     ),
     preview,
     can('play') ? h('button', { class: 'btn is-air is-wide', onClick: () => playItem(item) }, icon('play'), 'Jouer sur les overlays') : null,
@@ -656,7 +941,17 @@ function renderDetail(item) {
       item.canEdit ? h('button', { class: 'btn is-danger', onClick: () => openDeleteDialog(item) }, 'Supprimer') : null,
     ),
   );
+  queueMicrotask(() => placeDrawer(drawer));
+  return drawer;
 }
+
+// The preview follows the volume sliders while it plays.
+document.addEventListener('livechat:sound', () => {
+  const media = previewCache && previewCache.node.querySelector('audio, video');
+  if (media) {
+    media.volume = previewVolume(state.activeGuildId);
+  }
+});
 
 // --- keyboard shortcuts (active guild) ---
 let captureItem = null;
@@ -710,25 +1005,140 @@ export async function saveShortcut(item, accelerator) {
 }
 
 // --- edit and delete ---
+const MAX_ARTWORK_BYTES = 10 * 1024 * 1024;
+
+function artworkExtension(file) {
+  const match = /\.([a-z0-9]{1,5})$/i.exec(file.name || '');
+  if (match) {
+    return `.${match[1].toLowerCase()}`;
+  }
+  const subtype = /^image\/([a-z0-9]+)/i.exec(file.type || '');
+  return subtype ? `.${subtype[1].toLowerCase().replace('jpeg', 'jpg')}` : '';
+}
+
+async function uploadArtwork(item, file) {
+  if (file.size > MAX_ARTWORK_BYTES) {
+    notify('Image trop volumineuse (10 Mo au plus).', true);
+    return false;
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const response = await run(() =>
+    invoke('media_artwork_upload', bytes, {
+      headers: {
+        'x-guild-id': state.activeGuildId,
+        'x-item-id': item.id,
+        // Headers are ASCII: only the extension of the name is kept.
+        'x-filename': `artwork${artworkExtension(file)}`,
+        'x-content-type': file.type || 'application/octet-stream',
+      },
+    }),
+  );
+  if (!response) {
+    return false;
+  }
+  if (!response.ok) {
+    const code = response.body && response.body.error;
+    notify(describeError(code, 'Image refusée par le serveur.'), true);
+    return false;
+  }
+  return true;
+}
+
 export function openEditDialog(item) {
   openDialog((close) => {
     const title = h('input', { class: 'field', maxlength: '240', value: item.title || '' });
     const message = h('textarea', { class: 'field', rows: '3', maxlength: '500', value: item.message || '' });
+    const isAudio = item.media.kind === 'audio';
+    let chosen = null;
+    let removeArtwork = false;
+    const current = artworkOf(item);
+    const artworkPreview = h('img', { class: 'artwork-preview', alt: '', hidden: !current, src: current ? current.url : null });
+    const artworkName = h('span', { class: 'meta' }, current ? 'Image actuelle' : 'Aucune image');
+    const artworkInput = h('input', {
+      type: 'file',
+      accept: 'image/*',
+      hidden: true,
+      onChange: () => {
+        const file = artworkInput.files && artworkInput.files[0];
+        if (!file) {
+          return;
+        }
+        chosen = file;
+        removeArtwork = false;
+        artworkName.textContent = file.name;
+        artworkPreview.src = URL.createObjectURL(file);
+        artworkPreview.hidden = false;
+        removeButton.hidden = false;
+      },
+    });
+    const removeButton = h(
+      'button',
+      {
+        class: 'btn is-quiet',
+        type: 'button',
+        hidden: !current,
+        onClick: () => {
+          chosen = null;
+          removeArtwork = true;
+          artworkPreview.hidden = true;
+          artworkName.textContent = 'Aucune image';
+          removeButton.hidden = true;
+        },
+      },
+      'Retirer',
+    );
+    const onOverlay = h('input', { type: 'checkbox', checked: Boolean(item.artworkOnOverlay) });
+    const artworkFields = isAudio
+      ? h(
+          'div',
+          { class: 'stack artwork-fields' },
+          h('span', { class: 'field-label' }, 'Image'),
+          h(
+            'div',
+            { class: 'artwork-row' },
+            artworkPreview,
+            h(
+              'div',
+              { class: 'stack' },
+              artworkName,
+              h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onClick: () => artworkInput.click() }, 'Choisir une image'), removeButton),
+            ),
+            artworkInput,
+          ),
+          h('label', { class: 'switch' }, onOverlay, 'Afficher l’image sur les overlays pendant la lecture'),
+        )
+      : null;
     const form = h(
       'form',
       {
         class: 'stack',
         onSubmit: async (event) => {
           event.preventDefault();
-          const body = await run(() => api('PATCH', `/overlay/media-board/items/${encodeURIComponent(item.id)}`, { title: title.value, message: message.value }), 'Média modifié.');
-          if (body) {
-            close();
-            loadItems();
+          const patch = { title: title.value, message: message.value };
+          if (isAudio) {
+            patch.artworkOnOverlay = onOverlay.checked;
           }
+          const body = await run(() => api('PATCH', `/overlay/media-board/items/${encodeURIComponent(item.id)}`, patch));
+          if (!body) {
+            return;
+          }
+          if (chosen && !(await uploadArtwork(item, chosen))) {
+            return;
+          }
+          if (removeArtwork && current) {
+            const removed = await run(() => api('DELETE', `/overlay/media-board/items/${encodeURIComponent(item.id)}/artwork`));
+            if (!removed) {
+              return;
+            }
+          }
+          notify('Média modifié.');
+          close();
+          loadItems();
         },
       },
       h('label', null, 'Titre', title),
       h('label', null, 'Message', message),
+      artworkFields,
       h('div', { class: 'actions' }, h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'), h('button', { class: 'btn', type: 'submit' }, 'Enregistrer')),
     );
     return [h('h2', null, 'Modifier le média'), h('p', null, 'Un champ vide efface la valeur.'), form];
@@ -739,6 +1149,7 @@ export function openDeleteDialog(item) {
   confirmDialog('Supprimer ce média ?', `« ${itemTitle(item)} » sera retiré du board de la guilde.`, 'Supprimer', async () => {
     await run(() => api('DELETE', `/overlay/media-board/items/${encodeURIComponent(item.id)}`), 'Média supprimé.');
     state.selectedId = null;
+    state.detailPinned = false;
     loadItems();
   });
 }
@@ -757,9 +1168,29 @@ document.addEventListener('livechat:uploads', () => {
 let dropVeil = null;
 let dropDismissed = false;
 
+// A drag started inside the board (a thumbnail, selected text) is not an
+// import.
+let internalDrag = false;
+document.addEventListener('dragstart', () => {
+  internalDrag = true;
+});
+document.addEventListener('dragend', () => {
+  internalDrag = false;
+});
+
 function transfersFiles(event) {
   const transfer = event.dataTransfer;
-  return Boolean(transfer && Array.from(transfer.types || []).includes('Files'));
+  if (!transfer || internalDrag) {
+    return false;
+  }
+  const types = Array.from(transfer.types || []);
+  // A link dragged from a browser (or a text holding one) opens the import
+  // dialog; files are uploaded directly.
+  return types.includes('Files') || types.includes('text/uri-list') || types.includes('text/plain');
+}
+
+function droppedFiles(event) {
+  return event.dataTransfer && event.dataTransfer.files ? Array.from(event.dataTransfer.files) : [];
 }
 
 function canDropFiles() {
@@ -776,7 +1207,7 @@ function ensureDropVeil() {
     dropVeil = h(
       'div',
       { class: 'drop-veil', hidden: true, 'aria-hidden': 'true' },
-      h('div', { class: 'drop-veil-inner' }, icon('plus'), h('p', null, 'Dépose tes fichiers pour les ajouter au board')),
+      h('div', { class: 'drop-veil-inner' }, icon('plus'), h('p', null, 'Dépose un fichier ou un lien pour l’ajouter au board')),
     );
     document.body.append(dropVeil);
   }
@@ -839,10 +1270,18 @@ document.addEventListener('drop', (event) => {
     return;
   }
   event.preventDefault();
-  const files = event.dataTransfer && event.dataTransfer.files ? Array.from(event.dataTransfer.files) : [];
+  const files = droppedFiles(event);
   const accepted = canDropFiles() && inMainArea(event.target);
   resetDropVeil();
-  if (!accepted || files.length === 0) {
+  if (!accepted) {
+    return;
+  }
+  if (files.length === 0) {
+    const transfer = event.dataTransfer;
+    const text = transfer.getData('text/uri-list') || transfer.getData('text/plain');
+    if (text && text.trim()) {
+      openAddDialog({ url: droppedLink(text) || '' });
+    }
     return;
   }
   const guildId = state.activeGuildId;

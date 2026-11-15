@@ -12,13 +12,15 @@ function formatSize(bytes) {
   return `${((bytes || 0) / 1048576).toFixed(1).replace('.', ',')} Mo`;
 }
 
-export function openAddDialog() {
+// `options.url` prefills the link (a link dropped on the board).
+export function openAddDialog(options) {
+  const prefill = options && typeof options.url === 'string' ? options.url : '';
   openDialog((close) => {
     let mode = 'link';
     let chosenFiles = [];
 
     // --- link fields ---
-    const linkUrl = h('input', { class: 'field', type: 'url', placeholder: 'https://…', required: true });
+    const linkUrl = h('input', { class: 'field', type: 'url', placeholder: 'https://…', required: true, value: prefill });
     const linkTitle = h('input', { class: 'field', placeholder: 'Chat qui tombe', maxlength: '240' });
     const linkMessage = h('textarea', { class: 'field', rows: '2', maxlength: '500', placeholder: 'Texte affiché avec le média' });
 
@@ -139,6 +141,10 @@ export function openAddDialog() {
     );
 
     setMode('link');
+    if (prefill) {
+      // The link is there: the title is the next thing to type.
+      setTimeout(() => linkTitle.focus(), 0);
+    }
     return [
       h('h2', null, 'Ajouter un média'),
       h('p', null, 'Vidéo, image ou son : lien TikTok, X, YouTube ou direct, ou fichier de ton ordinateur.'),

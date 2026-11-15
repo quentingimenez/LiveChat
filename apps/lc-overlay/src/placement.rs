@@ -7,8 +7,12 @@
 //! saves the zone or cancels; `settings_placement_cancel` (board) cancels too,
 //! in case the overlay screen cannot be reached. The overlay then goes back to
 //! a click-through layer and the board comes back to the front.
+//!
+//! A placement started for a guild edits that guild's own zone (it starts from
+//! the device layout when the guild has none yet).
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -26,6 +30,58 @@ pub const EVENT_PLACEMENT: &str = "overlay://placement";
 
 static PLACING: AtomicBool = AtomicBool::new(false);
 static TEMPLATE_SHOWN: AtomicBool = AtomicBool::new(false);
+/// Guild whose zone is being placed (`None`: the device layout).
+static TARGET_GUILD: Mutex<Option<String>> = Mutex::new(None);
+
+fn set_target(guild_id: Option<String>) {
+    if let Ok(mut target) = TARGET_GUILD.lock() {
+        *target = guild_id;
+    }
+}
+
+fn take_target() -> Option<String> {
+    TARGET_GUILD
+        .lock()
+        .ok()
+        .and_then(|mut target| target.take())
+}
+
+/// Layout a placement starts from: the guild's own, else the device one.
+pub fn starting_layout(
+    config: &crate::config::OverlayConfig,
+    guild_id: Option<&str>,
+) -> OverlayLayout {
+    guild_id
+        .and_then(|guild_id| config.membership(guild_id))
+        .map_or_else(
+            || config.layout.clone(),
+            |membership| membership.effective_layout(&config.layout).clone(),
+        )
+}
+
+/// Saves a placed zone into the guild's layout, or the device one.
+pub fn save_zone(
+    config: &mut crate::config::OverlayConfig,
+    guild_id: Option<&str>,
+    zone: LayoutZone,
+) {
+    let device = config.layout.clone();
+    match guild_id.and_then(|guild_id| {
+        config
+            .memberships
+            .iter_mut()
+            .find(|membership| membership.guild_id == guild_id)
+    }) {
+        Some(membership) => {
+            let mut layout = membership.layout.clone().unwrap_or(device);
+            layout.zone = zone;
+            membership.layout = Some(layout);
+        }
+        None if guild_id.is_none() => config.layout.zone = zone,
+        // The guild was left during the placement: nothing to save.
+        None => {}
+    }
+}
 
 /// `overlay://placement` payload.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -85,9 +141,9 @@ pub fn parse_finish(payload: &Value) -> Result<Option<LayoutZone>, String> {
     }
 }
 
-/// Starts the placement; a second call only brings the overlay back to the
-/// front.
-pub fn start(app: &AppHandle<Wry>) -> Result<(), StartError> {
+/// Starts the placement of the device zone, or of `guild_id`'s own zone; a
+/// second call only brings the overlay back to the front.
+pub fn start(app: &AppHandle<Wry>, guild_id: Option<String>) -> Result<(), StartError> {
     let state = app.state::<AppState>();
     if !state.overlay_ready() {
         return Err(StartError::OverlayNotReady);
@@ -101,6 +157,8 @@ pub fn start(app: &AppHandle<Wry>) -> Result<(), StartError> {
     windows::enter_placement(app);
 
     let config = state.config_snapshot();
+    let layout = starting_layout(&config, guild_id.as_deref());
+    set_target(guild_id);
     if state.playback_job().is_none() {
         let payload = settings::layout_preview_payload(&config);
         match events::emit_to_overlay(app, &OverlayEvent::play(payload)) {
@@ -112,7 +170,7 @@ pub fn start(app: &AppHandle<Wry>) -> Result<(), StartError> {
         app,
         &PlacementPayload {
             active: true,
-            layout: Some(config.layout),
+            layout: Some(layout),
         },
     );
     emit_board_settings(app);
@@ -126,9 +184,10 @@ pub fn finish(app: &AppHandle<Wry>, zone: Option<LayoutZone>) -> Result<(), Stri
         return Ok(());
     }
     let state = app.state::<AppState>();
+    let target = take_target();
     let saved = match zone {
         Some(zone) => state
-            .update_config(|config| config.layout.zone = zone)
+            .update_config(|config| save_zone(config, target.as_deref(), zone))
             .map(|_config| ()),
         None => Ok(()),
     };
@@ -193,6 +252,41 @@ mod tests {
                 height: 0.2,
             }
         );
+    }
+
+    #[test]
+    fn a_guild_placement_starts_from_the_device_layout_and_saves_apart() {
+        use crate::config::{LayoutAnchor, Membership, OverlayConfig};
+        let mut config = OverlayConfig::default();
+        config.layout.align = LayoutAnchor::Top;
+        config.memberships.push(Membership {
+            guild_id: "111".to_string(),
+            ..Membership::default()
+        });
+        assert_eq!(starting_layout(&config, Some("111")), config.layout);
+        let zone = LayoutZone {
+            x: 0.5,
+            y: 0.0,
+            width: 0.5,
+            height: 0.5,
+        };
+        save_zone(&mut config, Some("111"), zone);
+        let guild = config
+            .membership("111")
+            .and_then(|m| m.layout.clone())
+            .expect("guild layout");
+        assert_eq!(guild.zone, zone);
+        assert_eq!(guild.align, LayoutAnchor::Top);
+        assert_eq!(
+            config.layout.zone,
+            LayoutZone::default(),
+            "device zone untouched"
+        );
+        assert_eq!(starting_layout(&config, Some("111")), guild);
+
+        save_zone(&mut config, Some("gone"), LayoutZone::default());
+        save_zone(&mut config, None, zone);
+        assert_eq!(config.layout.zone, zone);
     }
 
     #[test]

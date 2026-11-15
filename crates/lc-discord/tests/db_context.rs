@@ -14,9 +14,7 @@ use lc_db::{Db, DbConfig};
 use lc_discord::context::{BotConfig, BotContext, DbBotContext};
 use lc_discord::handlers::dispatch;
 use lc_discord::i18n::{strings, Lang};
-use lc_discord::inputs::{
-    CommandInput, DisplayFullInput, Invocation, PairCodeInput, TimeSettingInput,
-};
+use lc_discord::inputs::{CommandInput, Invocation, MediaSubmission, PairCodeInput};
 use lc_discord::testing::{
     admin_author, member_author, sample_now, FakeMediaBackend, FakeMediaBoardBackend,
     FakeOverlayDirectory, FakePlaybackBackend,
@@ -29,8 +27,6 @@ struct Harness {
     context: Context,
     media: Arc<FakeMediaBackend>,
     playback: Arc<FakePlaybackBackend>,
-    media_board: Arc<FakeMediaBoardBackend>,
-    overlays: Arc<FakeOverlayDirectory>,
 }
 
 async fn harness() -> Harness {
@@ -48,15 +44,13 @@ async fn harness() -> Harness {
         BotConfig::new("http://localhost:3333"),
         Arc::clone(&media) as Arc<dyn lc_discord::context::MediaBackend>,
         Arc::clone(&playback) as Arc<dyn lc_discord::context::PlaybackBackend>,
-        Arc::clone(&media_board) as Arc<dyn lc_discord::context::MediaBoardBackend>,
-        Arc::clone(&overlays) as Arc<dyn lc_discord::context::OverlayDirectory>,
+        media_board as Arc<dyn lc_discord::context::MediaBoardBackend>,
+        overlays as Arc<dyn lc_discord::context::OverlayDirectory>,
     );
     Harness {
         context,
         media,
         playback,
-        media_board,
-        overlays,
     }
 }
 
@@ -155,87 +149,33 @@ async fn db_context_persiste_un_code_d_appairage_consommable() {
 }
 
 #[tokio::test]
-async fn db_context_persiste_les_reglages_de_guilde() {
-    let harness = harness().await;
-    drop(
-        dispatch(
-            &harness.context,
-            invocation(
-                CommandInput::SetDefaultTime(TimeSettingInput { seconds: 12 }),
-                true,
-            ),
-        )
-        .await,
-    );
-    drop(
-        dispatch(
-            &harness.context,
-            invocation(
-                CommandInput::SetMaxTime(TimeSettingInput { seconds: 90 }),
-                true,
-            ),
-        )
-        .await,
-    );
-    let outcome = dispatch(
-        &harness.context,
-        invocation(
-            CommandInput::SetDisplayFull(DisplayFullInput { value: true }),
-            true,
-        ),
-    )
-    .await;
-    assert_eq!(
-        outcome.reply.embed.description_text(),
-        Some(strings(Lang::Fr).set_display_full_answer)
-    );
-
-    let row = harness
-        .context
-        .db()
-        .guilds()
-        .get(&guild())
-        .await
-        .expect("guilde")
-        .expect("ligne créée");
-    assert_eq!(row.default_media_time, Some(12));
-    assert_eq!(row.max_media_time, Some(90));
-    assert!(row.display_media_full);
-}
-
-#[tokio::test]
-async fn db_context_refuse_les_reglages_sans_admin() {
+async fn db_context_refuse_les_medias_d_un_compte_non_lie() {
     let harness = harness().await;
     let outcome = dispatch(
         &harness.context,
         invocation(
-            CommandInput::SetDefaultTime(TimeSettingInput { seconds: 30 }),
+            CommandInput::Send(MediaSubmission {
+                url: Some("https://example.com/video.mp4".to_owned()),
+                ..MediaSubmission::default()
+            }),
             false,
         ),
     )
     .await;
     assert!(outcome.reply.ephemeral);
+    assert_eq!(outcome.deferral, lc_discord::Deferral::None);
     assert_eq!(
-        outcome.reply.embed.title_text(),
-        Some(strings(Lang::Fr).not_allowed)
+        outcome.reply.embed.description_text(),
+        Some(strings(Lang::Fr).not_linked)
     );
-    assert!(harness
-        .context
-        .db()
-        .guilds()
-        .get(&guild())
-        .await
-        .expect("lecture")
-        .is_none());
     assert!(harness.media.requests().is_empty());
-    assert!(harness.media_board.requests().is_empty());
-    assert!(harness.overlays.queried_guilds().is_empty());
+    assert!(harness.playback.requests().is_empty());
 }
 
 #[tokio::test]
 async fn db_context_delegue_le_stop_au_moteur_de_lecture() {
     let harness = harness().await;
-    let outcome = dispatch(&harness.context, invocation(CommandInput::Stop, false)).await;
+    let outcome = dispatch(&harness.context, invocation(CommandInput::Stop, true)).await;
     assert!(outcome.reply.ephemeral);
     assert_eq!(harness.playback.stop_calls(), vec![guild()]);
 }

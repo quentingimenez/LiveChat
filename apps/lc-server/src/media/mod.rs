@@ -37,6 +37,7 @@ pub mod quotas;
 pub mod service;
 pub mod settings;
 pub mod tokens;
+pub mod tts;
 
 pub use confinement::ensure_storage_root;
 pub use errors::{MediaServiceError, MediaServiceResult};

@@ -3,7 +3,7 @@
 //!
 //! ## Découpage
 //!
-//! - [`catalog`] : catalogue **de données pur** des 15 commandes slash legacy
+//! - [`catalog`] : catalogue **de données pur** des 12 commandes slash
 //!   (9 commandes « générales » + 5 commandes d'envoi de médias), avec leurs
 //!   noms/descriptions/options localisés fr/en et l'ordre d'enregistrement
 //!   historique.
@@ -43,6 +43,7 @@ pub mod identity;
 pub mod inputs;
 pub mod reply;
 pub mod rich_payload;
+pub mod rights;
 pub mod testing;
 pub mod text;
 
@@ -50,7 +51,7 @@ pub mod text;
 pub mod serenity_glue;
 
 pub use catalog::{CommandKey, CommandSpec, OptionKind, OptionSpec, COMMANDS};
-pub use context::{Author, BotConfig, BotContext, DbBotContext, GuildSettingsPatch};
+pub use context::{Author, BotConfig, BotContext, DbBotContext};
 pub use error::{BotError, MediaError, MediaErrorCode, SpeechFailure};
 pub use handlers::dispatch;
 pub use i18n::{strings, Lang, Strings};

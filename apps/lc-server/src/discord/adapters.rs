@@ -1,21 +1,11 @@
 //! Adaptateurs entre [`crate::AppState`] et les traits [`lc_discord`].
 //!
-//! Les handlers du bot dépendent de traits injectés (pas de `lc-media` /
-//! `lc-playback` en dur) :
-//!
-//! | trait | adaptateur réel | état Phase 6b |
-//! |---|---|---|
-//! | [`lc_discord::MediaBoardBackend`] | [`DbMediaBoardBackend`] (table `media_board_items`) | branché |
-//! | [`lc_discord::OverlayDirectory`] | [`DbOverlayDirectory`] (table `overlay_clients`) | branché (approximation du hub WS) |
-//! | [`lc_discord::MediaBackend`] | [`UnavailableMediaBackend`] | placeholder : `lc-media` en cours (task-16) |
-//! | [`lc_discord::PlaybackBackend`] | [`UnavailablePlaybackBackend`] | placeholder : `lc-playback` en cours |
-//!
-//! Les placeholders renvoient une erreur **typée et localisée** (jamais de
-//! panic) : les commandes répondent proprement « erreur d'ingestion » tant que
-//! les lanes média/playback n'exposent pas leur API. [`DiscordAdapters`]
-//! accepte des implémentations réelles via [`DiscordAdapters::with_media`] et
-//! [`DiscordAdapters::with_playback`] sans changer le runtime ; le point de
-//! branchement exact est documenté dans `docs/rust/server-discord.md`.
+//! | trait | adaptateur |
+//! |---|---|
+//! | [`lc_discord::MediaBackend`] | [`ServerMediaBackend`] : [`MediaService`] (ingestion) and [`crate::media::tts`] (speech) |
+//! | [`lc_discord::PlaybackBackend`] | [`ServerPlaybackBackend`] : `playback_jobs` + engine notification, admin stop |
+//! | [`lc_discord::MediaBoardBackend`] | [`DbMediaBoardBackend`] : [`crate::media::board::add_to_board`] (quota, pin) |
+//! | [`lc_discord::OverlayDirectory`] | [`DbOverlayDirectory`] : active `overlay_clients` with a live socket |
 
 use std::sync::Arc;
 
@@ -27,13 +17,17 @@ use lc_discord::context::{
 };
 use lc_discord::error::MediaLimits;
 use lc_discord::{BotConfig, BotError, Lang, MediaError, MediaErrorCode, SpeechFailure};
-use lc_domain::{
-    Clock, DomainError, GuildId, MediaAsset, MediaBoardItem, MediaBoardItemId, OverlayClient,
-    SystemClock,
-};
+use lc_domain::entities::PlaybackJob;
+use lc_domain::enums::JobStatus;
+use lc_domain::ids::PlaybackJobId;
+use lc_domain::{Clock, GuildId, MediaAsset, OverlayClient};
+use lc_media::config::MediaConfig;
 use lc_protocol::{BoardChange, BoardChangedPayload, ServerMessage};
 
+use crate::app::AppState;
 use crate::http::admin::hub::{AdminHub, NoopAdminHub};
+use crate::media::errors::MediaServiceError;
+use crate::media::service::MediaService;
 use crate::Config;
 
 /// Nombre maximal d'overlays listés par `/overlays` (borne défensive : la
@@ -71,8 +65,7 @@ pub struct DiscordAdapters {
 }
 
 impl DiscordAdapters {
-    /// Assemble des adaptateurs explicites (point d'injection pour les lanes
-    /// média et playback).
+    /// Assemble des adaptateurs explicites.
     pub fn new(
         media: Arc<dyn MediaBackend>,
         playback: Arc<dyn PlaybackBackend>,
@@ -87,41 +80,20 @@ impl DiscordAdapters {
         }
     }
 
-    /// Adaptateurs par défaut : board média et overlays branchés sur `lc-db`,
-    /// média et playback en attente des lanes Phase 6b.
-    pub fn placeholders(db: Db) -> Self {
-        Self::with_clock(db, Arc::new(SystemClock))
-    }
-
-    /// Comme [`DiscordAdapters::placeholders`], avec une horloge injectée
-    /// (utile pour les tests déterministes).
-    pub fn with_clock(db: Db, clock: Arc<dyn Clock>) -> Self {
-        Self::with_clock_and_hub(db, clock, Arc::new(NoopAdminHub))
-    }
-
-    /// Comme [`DiscordAdapters::with_clock`], avec le hub WebSocket réel pour
-    /// diffuser `board.changed` après les ajouts de la commande `/media-add`.
-    pub fn with_clock_and_hub(db: Db, clock: Arc<dyn Clock>, hub: Arc<dyn AdminHub>) -> Self {
+    /// The server's adapters: media service, playback queue and WebSocket hub
+    /// of `state`.
+    pub fn for_state(state: &AppState, db: Db) -> Self {
+        let hub = Arc::clone(&state.admin_hub);
         Self {
-            media: Arc::new(UnavailableMediaBackend),
-            playback: Arc::new(UnavailablePlaybackBackend),
+            media: Arc::new(ServerMediaBackend::new(state.clone())),
+            playback: Arc::new(ServerPlaybackBackend::new(state.clone(), db.clone())),
             media_board: Arc::new(
-                DbMediaBoardBackend::new(db.clone(), Arc::clone(&clock)).with_admin_hub(hub),
+                DbMediaBoardBackend::new(db.clone(), Arc::clone(&state.clock))
+                    .with_admin_hub(Arc::clone(&hub))
+                    .with_media_config(crate::media::settings::media_config(&state.config)),
             ),
-            overlays: Arc::new(DbOverlayDirectory::new(db)),
+            overlays: Arc::new(DbOverlayDirectory::new(db).with_admin_hub(hub)),
         }
-    }
-
-    /// Remplace l'adaptateur média (branchement `lc-media`, task-16).
-    pub fn with_media(mut self, media: Arc<dyn MediaBackend>) -> Self {
-        self.media = media;
-        self
-    }
-
-    /// Remplace l'adaptateur playback (branchement `lc-playback`).
-    pub fn with_playback(mut self, playback: Arc<dyn PlaybackBackend>) -> Self {
-        self.playback = playback;
-        self
     }
 
     /// Adaptateur média courant.
@@ -145,58 +117,141 @@ impl DiscordAdapters {
     }
 }
 
-/// Adaptateur média indisponible (lane `lc-media` en cours).
-pub struct UnavailableMediaBackend;
+/// Converts a media service error to the bot's localized error.
+fn bot_media_error(error: &MediaServiceError) -> MediaError {
+    match error.media_error() {
+        Some(media_error) => {
+            let wanted = media_error.code().as_str();
+            let code = MediaErrorCode::ALL
+                .iter()
+                .copied()
+                .find(|code| code.as_str() == wanted)
+                .unwrap_or(MediaErrorCode::DownloadFailed);
+            MediaError::with_detail(code, media_error.message())
+        }
+        None => MediaError::with_detail(MediaErrorCode::DownloadFailed, error.to_string()),
+    }
+}
+
+/// Ingestion through the server's [`MediaService`].
+pub struct ServerMediaBackend {
+    state: AppState,
+}
+
+impl ServerMediaBackend {
+    /// Builds the adapter.
+    pub fn new(state: AppState) -> Self {
+        Self { state }
+    }
+}
 
 #[async_trait]
-impl MediaBackend for UnavailableMediaBackend {
+impl MediaBackend for ServerMediaBackend {
     async fn ingest_from_source(
         &self,
-        _request: MediaRequest,
+        request: MediaRequest,
     ) -> Result<Option<MediaAsset>, MediaError> {
-        Err(MediaError::with_detail(
-            MediaErrorCode::UnsupportedSource,
-            "adaptateur média non branché (lc-media, task-16)",
-        ))
+        if !request.has_source() {
+            return Ok(None);
+        }
+        let service =
+            MediaService::for_state(&self.state).map_err(|error| bot_media_error(&error))?;
+        match service
+            .ingest(
+                request.url.as_deref(),
+                request.media.as_deref(),
+                request.force_refresh,
+            )
+            .await
+        {
+            Ok(asset) => Ok(Some(asset)),
+            Err(error) => {
+                tracing::warn!(%error, "ingestion d'un média Discord échouée");
+                Err(bot_media_error(&error))
+            }
+        }
     }
 
-    async fn ingest_speech(&self, _lang: Lang, _text: &str) -> Result<MediaAsset, SpeechFailure> {
-        Err(SpeechFailure::GenerationFailed)
+    async fn ingest_speech(&self, lang: Lang, text: &str) -> Result<MediaAsset, SpeechFailure> {
+        crate::media::tts::ingest_speech(&self.state, lang, text).await
     }
 }
 
-/// Adaptateur playback indisponible (lane `lc-playback` en cours).
-pub struct UnavailablePlaybackBackend;
+/// Playback queue of the server: the job is stored and the engine notified,
+/// exactly like `POST /ingest`.
+pub struct ServerPlaybackBackend {
+    state: AppState,
+    db: Db,
+}
+
+impl ServerPlaybackBackend {
+    /// Builds the adapter.
+    pub fn new(state: AppState, db: Db) -> Self {
+        Self { state, db }
+    }
+}
 
 #[async_trait]
-impl PlaybackBackend for UnavailablePlaybackBackend {
-    async fn enqueue(&self, _request: PlaybackJobRequest) -> Result<(), BotError> {
-        Err(BotError::Playback(
-            "adaptateur playback non branché (lc-playback)".to_owned(),
-        ))
+impl PlaybackBackend for ServerPlaybackBackend {
+    async fn enqueue(&self, request: PlaybackJobRequest) -> Result<(), BotError> {
+        let now = self.state.clock.now();
+        let job = PlaybackJob {
+            id: PlaybackJobId::new_v4(),
+            guild_id: request.guild_id,
+            media_asset_id: request.media_asset_id,
+            text: request.text,
+            show_text: request.show_text,
+            author_name: request.author_name,
+            author_image: request.author_image,
+            duration_sec: request.duration_sec.max(1),
+            priority: i64::from(request.priority),
+            status: JobStatus::Pending,
+            resumes_after_job_id: None,
+            resume_offset_sec: request.resume_offset_sec.max(0),
+            remaining_ms_snapshot: None,
+            last_playback_state_at: None,
+            submission_date: now,
+            execution_date: now,
+            scheduled_at: now,
+            started_at: None,
+            finished_at: None,
+        };
+        self.db.playback_jobs().create(&job).await?;
+        crate::media::hook::notify_ingested(&job).await;
+        tracing::info!(
+            job_id = %job.id.to_canonical(),
+            guild_id = job.guild_id.as_str(),
+            source = %request.source,
+            "job de lecture créé par une commande Discord"
+        );
+        Ok(())
     }
 
-    async fn stop_guild(&self, _guild_id: &GuildId) -> Result<u64, BotError> {
-        Err(BotError::Playback(
-            "adaptateur playback non branché (lc-playback)".to_owned(),
-        ))
+    async fn stop_guild(&self, guild_id: &GuildId) -> Result<u64, BotError> {
+        let stop = crate::http::admin::stop_guild_playback(&self.state, &self.db, guild_id, false)
+            .await
+            .map_err(|error| BotError::Playback(format!("{error:?}")))?;
+        Ok(stop.released_playing_jobs)
     }
 }
 
-/// Adaptateur board média sur la table `media_board_items` de `lc-db`.
+/// Adaptateur board média (`/media-add`) : same rules as the board's HTTP
+/// import (quota, pinned media, embedded cover).
 pub struct DbMediaBoardBackend {
     db: Db,
     clock: Arc<dyn Clock>,
     hub: Arc<dyn AdminHub>,
+    media_config: MediaConfig,
 }
 
 impl DbMediaBoardBackend {
-    /// Construit l'adaptateur (hub inerte par défaut).
+    /// Construit l'adaptateur (hub inerte, configuration média par défaut).
     pub fn new(db: Db, clock: Arc<dyn Clock>) -> Self {
         Self {
             db,
             clock,
             hub: Arc::new(NoopAdminHub),
+            media_config: MediaConfig::default(),
         }
     }
 
@@ -206,71 +261,71 @@ impl DbMediaBoardBackend {
         self.hub = hub;
         self
     }
+
+    /// Media configuration (board quota).
+    #[must_use]
+    pub fn with_media_config(mut self, media_config: MediaConfig) -> Self {
+        self.media_config = media_config;
+        self
+    }
 }
 
 #[async_trait]
 impl MediaBoardBackend for DbMediaBoardBackend {
     async fn add_to_board(&self, request: MediaAddRequest) -> Result<bool, BotError> {
-        if self
-            .db
-            .media_board()
-            .get_by_guild_and_asset(&request.guild_id, request.media_asset_id)
-            .await?
-            .is_some()
-        {
-            return Ok(false);
-        }
-
-        let item = MediaBoardItem {
-            id: MediaBoardItemId::new_v4(),
-            guild_id: request.guild_id,
-            media_asset_id: request.media_asset_id,
-            title: request.title,
-            message: request.message,
-            created_by_discord_user_id: request.created_by_discord_user_id,
-            created_by_name: request.created_by_name,
-            created_at: self.clock.now(),
+        let Some(asset) = self.db.media_assets().get(request.media_asset_id).await? else {
+            return Err(BotError::Media(MediaError::new(
+                MediaErrorCode::MediaNotFound,
+            )));
         };
-
-        match self.db.media_board().create(&item).await {
-            Ok(()) => {
-                self.hub.broadcast_to_guild(
-                    &item.guild_id,
-                    ServerMessage::BoardChanged(BoardChangedPayload {
-                        change: BoardChange::Added,
-                        item_id: item.id.to_canonical(),
-                    }),
-                );
-                Ok(true)
-            }
-            Err(error) if is_conflict(&error) => Ok(false),
-            Err(error) => Err(BotError::Db(error)),
+        let result = crate::media::board::add_to_board(
+            &self.db,
+            &self.media_config,
+            &request.guild_id,
+            &asset,
+            request.title.as_deref(),
+            request.message.as_deref(),
+            request.created_by_discord_user_id.as_deref(),
+            request.created_by_name.as_deref(),
+            self.clock.now(),
+        )
+        .await
+        .map_err(|error| match error {
+            MediaServiceError::Database(db_error) => BotError::Db(db_error),
+            other => BotError::Media(bot_media_error(&other)),
+        })?;
+        if result.created {
+            self.hub.broadcast_to_guild(
+                &result.item.guild_id,
+                ServerMessage::BoardChanged(BoardChangedPayload {
+                    change: BoardChange::Added,
+                    item_id: result.item.id.to_canonical(),
+                }),
+            );
         }
+        Ok(result.created)
     }
 }
 
-/// `true` si l'erreur `lc-db` est une violation d'unicité (course entre deux
-/// ajouts simultanés du même média, comme le `P2002` traité par le legacy).
-///
-/// `lc-db` convertit les violations `UNIQUE`/`PRIMARY KEY` en
-/// [`lc_domain::DomainError::Conflict`] au moment de la requête.
-fn is_conflict(error: &lc_db::DbError) -> bool {
-    matches!(error, lc_db::DbError::Domain(DomainError::Conflict(_)))
-}
-
-/// Adaptateur [`OverlayDirectory`] sur la table `overlay_clients` de `lc-db`.
-///
-/// Approximation fidèle en attendant le hub WebSocket (task-17) : un overlay est
-/// « connecté » s'il a une ligne **active** (non révoquée) dans la base. Le label
-/// vient de `overlay_clients.label`.
+/// Adaptateur [`OverlayDirectory`] : active overlay clients of the guild that
+/// have a live WebSocket on the hub. Without a hub (tests) every active client
+/// is listed.
 pub struct DbOverlayDirectory {
     db: Db,
+    hub: Option<Arc<dyn AdminHub>>,
 }
 
 impl DbOverlayDirectory {
     /// Construit l'annuaire.
     pub fn new(db: Db) -> Self {
-        Self { db }
+        Self { db, hub: None }
+    }
+
+    /// Lists only the clients connected to this hub.
+    #[must_use]
+    pub fn with_admin_hub(mut self, hub: Arc<dyn AdminHub>) -> Self {
+        self.hub = Some(hub);
+        self
     }
 }
 
@@ -282,6 +337,11 @@ impl OverlayDirectory for DbOverlayDirectory {
         Ok(clients
             .into_iter()
             .filter(OverlayClient::is_active)
+            .filter(|client| {
+                self.hub
+                    .as_ref()
+                    .is_none_or(|hub| hub.is_connected(&client.id.as_uuid()))
+            })
             .take(MAX_OVERLAYS_LISTED)
             .map(|client| ConnectedOverlay {
                 client_id: client.id.to_canonical(),
@@ -299,7 +359,7 @@ mod tests {
 
     use chrono::{DateTime, TimeZone, Utc};
     use lc_db::{Db, DbConfig};
-    use lc_discord::context::{MediaAddRequest, MediaBoardBackend, MediaRequest, OverlayDirectory};
+    use lc_discord::context::{MediaAddRequest, MediaBoardBackend, OverlayDirectory};
     use lc_discord::{BotContext, DbBotContext};
     use lc_domain::{
         FixedClock, Guild, GuildId, MediaAsset, MediaAssetId, MediaKind, MediaStatus,
@@ -308,10 +368,7 @@ mod tests {
 
     use crate::Config;
 
-    use super::{
-        bot_config_from, DbMediaBoardBackend, DbOverlayDirectory, DiscordAdapters,
-        MAX_OVERLAYS_LISTED,
-    };
+    use super::{bot_config_from, DbMediaBoardBackend, DbOverlayDirectory, DiscordAdapters};
 
     fn config_with(pairs: &[(&str, &str)]) -> Config {
         let mut entries = vec![("API_URL".to_owned(), "http://localhost:3333".to_owned())];
@@ -431,25 +488,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn adapters_placeholders_renvoient_des_erreurs_typees() {
-        let db = Db::open_in_memory(&DbConfig::default()).await.unwrap();
-        let adapters = DiscordAdapters::placeholders(db);
-        let media = adapters.media();
-        let error = media
-            .ingest_from_source(MediaRequest::new(
-                Some("https://example.test/x".to_owned()),
-                None,
-                false,
-            ))
-            .await
-            .unwrap_err();
-        assert_eq!(error.code, lc_discord::MediaErrorCode::UnsupportedSource);
-        let playback = adapters.playback();
-        assert!(playback.stop_guild(&guild_id()).await.is_err());
-        assert_eq!(MAX_OVERLAYS_LISTED, 25);
-    }
-
-    #[tokio::test]
     async fn media_board_cree_puis_detecte_le_doublon() {
         let db = Db::open_in_memory(&DbConfig::default()).await.unwrap();
         insert_guild(&db).await;
@@ -491,8 +529,11 @@ mod tests {
     #[tokio::test]
     async fn db_bot_context_utilise_les_adaptateurs() {
         let db = Db::open_in_memory(&DbConfig::default()).await.unwrap();
-        let adapters =
-            DiscordAdapters::with_clock(db.clone(), Arc::new(FixedClock::new(sample_now())));
+        let (shutdown, _signal) = crate::shutdown::Shutdown::new();
+        let state =
+            crate::app::AppState::new(Arc::new(config_with(&[])), Some(db.clone()), shutdown)
+                .with_clock(Arc::new(FixedClock::new(sample_now())));
+        let adapters = DiscordAdapters::for_state(&state, db.clone());
         let context = DbBotContext::with_clock(
             db,
             FixedClock::new(sample_now()),
@@ -505,5 +546,59 @@ mod tests {
         assert_eq!(context.config().pairing_code_ttl_minutes, 5);
         assert_eq!(context.clock().now(), sample_now());
         assert_eq!(context.config().media.max_board_total_mb, 15360);
+    }
+
+    fn test_state(db: &Db) -> crate::app::AppState {
+        let (shutdown, _signal) = crate::shutdown::Shutdown::new();
+        crate::app::AppState::new(Arc::new(config_with(&[])), Some(db.clone()), shutdown)
+            .with_clock(Arc::new(FixedClock::new(sample_now())))
+    }
+
+    #[tokio::test]
+    async fn playback_backend_queues_a_pending_job() {
+        use lc_discord::context::{PlaybackBackend, PlaybackJobRequest};
+
+        let db = Db::open_in_memory(&DbConfig::default()).await.unwrap();
+        insert_guild(&db).await;
+        let backend = super::ServerPlaybackBackend::new(test_state(&db), db.clone());
+        backend
+            .enqueue(PlaybackJobRequest {
+                guild_id: guild_id(),
+                media_asset_id: None,
+                text: Some("salut".to_owned()),
+                show_text: true,
+                author_name: Some("john".to_owned()),
+                author_image: None,
+                duration_sec: 7,
+                priority: 0,
+                resume_offset_sec: 0,
+                source: "discord_send_command".to_owned(),
+            })
+            .await
+            .unwrap();
+        let pending = db
+            .playback_jobs()
+            .list_pending_by_guild(&guild_id())
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].text.as_deref(), Some("salut"));
+        assert_eq!(pending[0].duration_sec, 7);
+        assert_eq!(pending[0].author_name.as_deref(), Some("john"));
+        assert_eq!(backend.stop_guild(&guild_id()).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn overlay_directory_lists_only_connected_clients_with_a_hub() {
+        let db = Db::open_in_memory(&DbConfig::default()).await.unwrap();
+        insert_guild(&db).await;
+        insert_overlay(&db, "Salon", OverlaySessionMode::Normal, sample_now()).await;
+        let directory = DbOverlayDirectory::new(db.clone())
+            .with_admin_hub(Arc::new(crate::http::admin::hub::NoopAdminHub));
+        assert!(directory
+            .list_connected(&guild_id())
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

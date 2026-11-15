@@ -123,8 +123,8 @@ réel. À documenter comme écart conscient avec le libellé.
 
 - payloads : `lc_discord::command_payloads(lang, hide_commands_disabled)`
   réutilisé tel quel (JSON `{name, description, options}`) ; l'ordre legacy est
-  conservé (`alive, msg, dire, pair-code, help, info, config-defaut,
-  config-displayfull, config-max, overlays, stop, media-add`, puis `lier`,
+  conservé (`alive, msg, dire, pair-code, help, info, overlays, stop,
+  media-add`, puis `lier`,
   puis `cmsg`, `cdire` si activées) ;
 - `Http::create_global_commands` exige une map `Serialize + Sized` : la tranche
   est matérialisée en `Vec<serde_json::Value>` dans `register_global_commands` ;

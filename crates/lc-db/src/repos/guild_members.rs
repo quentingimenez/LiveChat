@@ -7,7 +7,7 @@ use lc_domain::ids::{GuildId, GuildMemberId, OverlayClientId};
 use sqlx::SqlitePool;
 
 use crate::convert::{decode, from_bool, from_ms, from_opt_ms, to_bool, to_ms, to_opt_ms};
-use crate::error::DbResult;
+use crate::error::{conflict_on_unique, DbResult};
 
 const TABLE: &str = "guild_members";
 
@@ -255,6 +255,23 @@ impl GuildMembersRepository {
         .bind(id.to_canonical())
         .execute(&self.pool)
         .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Links an active member to a Discord account. The member keeps their
+    /// own profile until they choose to follow Discord.
+    ///
+    /// Returns `false` for a removed or unknown member; a conflict when the
+    /// account is already linked to another active member of the guild.
+    pub async fn link_discord(&self, id: GuildMemberId, discord_user_id: &str) -> DbResult<bool> {
+        let result = sqlx::query(
+            "UPDATE guild_members SET discord_user_id = ?              WHERE id = ? AND removed_at IS NULL",
+        )
+        .bind(discord_user_id)
+        .bind(id.to_canonical())
+        .execute(&self.pool)
+        .await
+        .map_err(|error| conflict_on_unique(error, "discord account already linked"))?;
         Ok(result.rows_affected() > 0)
     }
 

@@ -1253,18 +1253,30 @@ pub(crate) fn effective_volume(general_volume: f64, guild_volume: f64) -> f64 {
     crate::config::normalize_volume(general_volume) * crate::config::normalize_volume(guild_volume)
 }
 
-/// Serializes a `play` for the renderer and adds the computed effective volume.
+/// Serializes a `play` for the renderer with what this guild sets on the
+/// device: the effective `volume`, the `guildId` (the renderer mutes the media
+/// sound of the guilds listed in its settings, live), and the guild's own
+/// `layout` / `showText` when it has them.
 pub(crate) fn renderer_play_payload(
     payload: &PlayPayload,
-    general_volume: f64,
-    guild_volume: f64,
+    config: &crate::config::OverlayConfig,
+    guild_id: &str,
 ) -> Result<serde_json::Value, serde_json::Error> {
+    let membership = config.membership(guild_id);
+    let guild_volume = membership.map_or(1.0, |membership| membership.volume);
     let mut value = serde_json::to_value(payload)?;
     if let serde_json::Value::Object(object) = &mut value {
         object.insert(
             "volume".to_string(),
-            serde_json::json!(effective_volume(general_volume, guild_volume)),
+            serde_json::json!(effective_volume(config.volume, guild_volume)),
         );
+        object.insert("guildId".to_string(), serde_json::json!(guild_id));
+        if let Some(layout) = membership.and_then(|membership| membership.layout.as_ref()) {
+            object.insert("layout".to_string(), serde_json::to_value(layout)?);
+        }
+        if let Some(show_text) = membership.and_then(|membership| membership.show_text) {
+            object.insert("showText".to_string(), serde_json::json!(show_text));
+        }
     }
     Ok(value)
 }
@@ -1276,10 +1288,7 @@ impl AppEffects {
         let app = &self.app;
         let state = app.state::<AppState>();
         let config = state.config_snapshot();
-        let guild_volume = config
-            .membership(&self.guild_id)
-            .map_or(1.0, |membership| membership.volume);
-        let value = match renderer_play_payload(payload, config.volume, guild_volume) {
+        let value = match renderer_play_payload(payload, &config, &self.guild_id) {
             Ok(value) => value,
             Err(error) => {
                 tracing::warn!(%error, "play non sérialisable");
@@ -1432,6 +1441,8 @@ mod tests {
                 duration_sec: Some(10),
                 is_vertical: false,
                 start_offset_sec: None,
+                artwork_asset_id: None,
+                artwork_url: None,
             }),
             text: lc_protocol::TextPayload {
                 value: String::new(),
@@ -2061,6 +2072,7 @@ mod tests {
             muted: false,
             volume: 1.0,
             media_bindings: Default::default(),
+            ..Membership::default()
         }
     }
 
@@ -2316,10 +2328,33 @@ mod tests {
     }
 
     #[test]
-    fn renderer_play_payload_carries_the_effective_volume() {
+    fn renderer_play_payload_carries_the_guild_sound_and_display() {
         let play = play_payload();
-        let value = renderer_play_payload(&play, 0.8, 0.5).expect("serialize");
+        let mut config = crate::config::OverlayConfig {
+            volume: 0.8,
+            ..Default::default()
+        };
+        config.memberships.push(Membership {
+            volume: 0.5,
+            ..identity_membership()
+        });
+        let value = renderer_play_payload(&play, &config, "guild-1").expect("serialize");
         assert_eq!(value["jobId"], play.job_id);
+        assert_eq!(value["guildId"], "guild-1");
         assert!((value["volume"].as_f64().expect("volume") - 0.4).abs() < f64::EPSILON);
+        // The device layout and text setting apply.
+        assert!(value.get("layout").is_none());
+        assert!(value.get("showText").is_none());
+
+        let mut layout = crate::config::OverlayLayout::default();
+        layout.zone.width = 0.5;
+        config.memberships[0].layout = Some(layout);
+        config.memberships[0].show_text = Some(false);
+        let value = renderer_play_payload(&play, &config, "guild-1").expect("serialize");
+        assert_eq!(value["layout"]["zone"]["width"], 0.5);
+        assert_eq!(value["showText"], false);
+        // An unknown guild plays at the general volume.
+        let value = renderer_play_payload(&play, &config, "other").expect("serialize");
+        assert!((value["volume"].as_f64().expect("volume") - 0.8).abs() < f64::EPSILON);
     }
 }

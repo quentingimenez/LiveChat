@@ -65,9 +65,6 @@ mod tests {
                 "pair-code",
                 "help",
                 "info",
-                "config-defaut",
-                "config-displayfull",
-                "config-max",
                 "overlays",
                 "stop",
                 "media-add",
@@ -85,7 +82,7 @@ mod tests {
             .iter()
             .filter_map(|payload| payload.get("name").and_then(|name| name.as_str()))
             .collect();
-        assert_eq!(names.len(), 13);
+        assert_eq!(names.len(), 10);
         assert!(!names.contains(&"cmsg"));
         assert!(!names.contains(&"cdire"));
     }

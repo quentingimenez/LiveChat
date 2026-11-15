@@ -12,8 +12,8 @@ use lc_db::{Db, DbConfig};
 use lc_domain::{Clock, FixedClock, GuildId, MediaAsset, MediaAssetId, MediaKind, MediaStatus};
 
 use crate::context::{
-    Author, BotConfig, BotContext, ConnectedOverlay, GuildSettingsPatch, MediaAddRequest,
-    MediaBackend, MediaRequest, OverlayDirectory, PlaybackBackend, PlaybackJobRequest,
+    Author, BotConfig, BotContext, ConnectedOverlay, MediaAddRequest, MediaBackend, MediaRequest,
+    OverlayDirectory, PlaybackBackend, PlaybackJobRequest,
 };
 use crate::error::{BotError, MediaError, MediaErrorCode, SpeechFailure};
 use crate::i18n::Lang;
@@ -362,6 +362,29 @@ pub struct FakeBotContext {
 }
 
 impl FakeBotContext {
+    /// Links `author`'s Discord account to a new member of `guild_id`.
+    pub async fn link_author(
+        &self,
+        guild_id: &GuildId,
+        author: &Author,
+        role: lc_domain::GuildRole,
+    ) -> Result<lc_domain::GuildMember, lc_db::DbError> {
+        let member = lc_domain::GuildMember {
+            id: lc_domain::GuildMemberId::new_v4(),
+            guild_id: guild_id.clone(),
+            display_name: author.name.clone(),
+            avatar: None,
+            role,
+            created_at: sample_now(),
+            removed_at: None,
+            discord_user_id: Some(author.id.clone()),
+            profile_custom: false,
+            discord_synced_at: None,
+        };
+        self.db.guild_members().create(&member).await?;
+        Ok(member)
+    }
+
     /// Ouvre une base `lc-db` en mémoire migrée, horloge à [`sample_now`].
     pub async fn new() -> Result<Self, lc_db::DbError> {
         let db = Db::open_in_memory(&DbConfig::default()).await?;
@@ -445,23 +468,6 @@ impl BotContext for FakeBotContext {
         guild_id: &GuildId,
     ) -> Result<Vec<ConnectedOverlay>, BotError> {
         self.overlays.list_connected(guild_id).await
-    }
-
-    async fn update_guild_settings(
-        &self,
-        guild_id: &GuildId,
-        patch: GuildSettingsPatch,
-    ) -> Result<(), BotError> {
-        self.db
-            .guilds()
-            .update_settings(
-                guild_id,
-                patch.default_media_time,
-                patch.max_media_time,
-                patch.display_media_full,
-            )
-            .await?;
-        Ok(())
     }
 }
 

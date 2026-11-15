@@ -1,4 +1,5 @@
-// Administration tab: members, invites and guild settings.
+// Administration tab: members and invites. The server settings of the guild
+// (`renderServerSettings`) are shown in its « Réglages » tab.
 
 import { api, run } from '../core/api.js';
 import { avatarNode, h, icon } from '../core/dom.js';
@@ -17,14 +18,10 @@ export function renderAdmin() {
   if (can('manageInvites')) {
     tabs.push(['invites', 'Invitations']);
   }
-  if (can('manageSettings')) {
-    tabs.push(['settings', 'Réglages']);
-  }
   if (!tabs.some(([id]) => id === state.adminTab)) {
     state.adminTab = tabs.length ? tabs[0][0] : 'members';
   }
-  const body =
-    state.adminTab === 'invites' ? renderInvites() : state.adminTab === 'settings' ? renderGuildSettings() : renderMembers();
+  const body = state.adminTab === 'invites' ? renderInvites() : renderMembers();
   return h(
     'div',
     null,
@@ -171,7 +168,8 @@ async function revokeInvite(invite) {
 }
 
 // Guild-wide settings (server side), not the device settings page.
-function renderGuildSettings() {
+// Server settings of the guild (admins), shown in its « Réglages » tab.
+export function renderServerSettings() {
   const guild = (state.info && state.info.guild) || { settings: {} };
   const name = h('input', { class: 'field', id: 'set-name', value: guild.name || '', maxlength: '60' });
   const defaultTime = h('input', { class: 'field', id: 'set-default', type: 'number', min: '0', max: '86400', value: guild.settings.defaultMediaTime ?? '', placeholder: 'Valeur du serveur', style: 'max-width:160px' });

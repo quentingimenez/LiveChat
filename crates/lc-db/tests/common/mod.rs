@@ -119,6 +119,8 @@ pub fn sample_board_item(
         created_by_discord_user_id: Some("42".to_owned()),
         created_by_name: Some("Auteur".to_owned()),
         created_at: now,
+        artwork_asset_id: None,
+        artwork_on_overlay: false,
     }
 }
 

@@ -29,8 +29,7 @@ use crate::catalog::{self, CommandSpec, OptionKind};
 use crate::context::Author;
 use crate::i18n::Lang;
 use crate::inputs::{
-    CommandInput, DisplayFullInput, Invocation, LinkInput, MediaSubmission, PairCodeInput,
-    TalkInput, TimeSettingInput,
+    CommandInput, Invocation, LinkInput, MediaSubmission, PairCodeInput, TalkInput,
 };
 use crate::reply::{CommandOutcome, Deferral, Embed};
 
@@ -133,19 +132,6 @@ fn parse_input(
                 _ => PairingMode::Normal,
             },
         }),
-        crate::catalog::CommandKey::SetDefaultTime => {
-            CommandInput::SetDefaultTime(TimeSettingInput {
-                seconds: integer_option(interaction, spec, lang, 0).unwrap_or(0),
-            })
-        }
-        crate::catalog::CommandKey::SetMaxTime => CommandInput::SetMaxTime(TimeSettingInput {
-            seconds: integer_option(interaction, spec, lang, 0).unwrap_or(0),
-        }),
-        crate::catalog::CommandKey::SetDisplayFull => {
-            CommandInput::SetDisplayFull(DisplayFullInput {
-                value: boolean_option(interaction, spec, lang, 0).unwrap_or(false),
-            })
-        }
         crate::catalog::CommandKey::Send => {
             CommandInput::Send(parse_media_submission(interaction, spec, lang))
         }
@@ -211,18 +197,6 @@ fn string_option(
 ) -> Option<String> {
     match &option_at(interaction, spec, lang, index)?.value {
         CommandDataOptionValue::String(value) => Some(value.clone()),
-        _ => None,
-    }
-}
-
-fn integer_option(
-    interaction: &CommandInteraction,
-    spec: &CommandSpec,
-    lang: Lang,
-    index: usize,
-) -> Option<i64> {
-    match &option_at(interaction, spec, lang, index)?.value {
-        CommandDataOptionValue::Integer(value) => Some(*value),
         _ => None,
     }
 }

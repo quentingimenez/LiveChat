@@ -13,7 +13,7 @@ export function openJoinDialog() {
     const known = state.guilds[0] ? state.guilds[0].membership.serverUrl : '';
     const server = h('input', { class: 'field', type: 'url', placeholder: 'https://livechat.exemple.fr', value: known, required: true });
     const code = h('input', { class: 'field code', placeholder: 'K7QX-M2PD', maxlength: '40', autocomplete: 'off', spellcheck: 'false', required: true });
-    const name = h('input', { class: 'field', placeholder: 'Ton pseudo (facultatif avec un code Discord)', maxlength: '40', value: state.profile.displayName || '' });
+    const name = h('input', { class: 'field', placeholder: 'Ton pseudo (inutile avec ton propre /pair-code)', maxlength: '40', value: state.profile.displayName || '' });
     let avatar = state.profile.avatar || null;
     const avatarPreview = h('span', null, avatarNode(name.value || '?', avatar));
     const file = h('input', {
@@ -80,7 +80,7 @@ export function openJoinDialog() {
       h(
         'p',
         { class: 'file-hint' },
-        'Code /pair-code de Discord : laisse le pseudo et l’avatar vides pour reprendre ceux de Discord.',
+        'Avec un /pair-code que tu as tapé toi-même sur Discord, l’overlay reprend ton pseudo et ton avatar Discord ; tu pourras les changer dans Mon profil. Pour faire venir quelqu’un d’autre, donne-lui une invitation du board, pas ton /pair-code.',
       ),
       error,
       h('div', { class: 'actions' }, h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'), submit),

@@ -59,6 +59,7 @@ use tracing::{Level, Span};
 
 use crate::config::Config;
 use crate::discord::guild_leave::{DisabledLeaver, DiscordGuildLeaver};
+use crate::discord::profiles::{DisabledProfiles, DiscordProfileSource};
 use crate::http;
 use crate::http::admin::hub::{AdminHub, NoopAdminHub};
 use crate::http::health::{DiscordProbe, HealthProbe};
@@ -148,6 +149,9 @@ pub struct AppState {
     /// Client capable de faire quitter le bot d'un serveur Discord (panneau
     /// admin). `DisabledLeaver` par défaut quand Discord n'est pas configuré.
     pub discord_leaver: Arc<dyn DiscordGuildLeaver>,
+    /// Reads the Discord profile of linked members. `DisabledProfiles` when
+    /// Discord is not configured.
+    pub discord_profiles: Arc<dyn DiscordProfileSource>,
     /// Registre partagé des ingestions média asynchrones.
     pub ingestions: Arc<IngestionRegistry>,
 }
@@ -168,6 +172,7 @@ impl AppState {
             discord,
             admin_hub: Arc::new(NoopAdminHub),
             discord_leaver: Arc::new(DisabledLeaver),
+            discord_profiles: Arc::new(DisabledProfiles),
             ingestions: Arc::new(IngestionRegistry::new()),
         }
     }
@@ -196,6 +201,13 @@ impl AppState {
     #[must_use]
     pub fn with_discord_leaver(mut self, leaver: Arc<dyn DiscordGuildLeaver>) -> Self {
         self.discord_leaver = leaver;
+        self
+    }
+
+    /// Replaces the Discord profile reader (real client or tests).
+    #[must_use]
+    pub fn with_discord_profiles(mut self, profiles: Arc<dyn DiscordProfileSource>) -> Self {
+        self.discord_profiles = profiles;
         self
     }
 }
@@ -353,8 +365,9 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::http::rate_limit::MEDIA_RATE_LIMIT_MAX;
-    use crate::http::rate_limit::RATE_LIMIT_MAX;
+    use crate::http::rate_limit::{
+        AUTH_RATE_LIMIT_MAX, LEGACY_RATE_LIMIT_MAX, MEDIA_RATE_LIMIT_MAX, RATE_LIMIT_MAX,
+    };
 
     fn config(values: &[(&str, &str)]) -> Config {
         Config::from_pairs(
@@ -573,35 +586,71 @@ mod tests {
     #[tokio::test]
     async fn rate_limit_applique_les_routes_admin() {
         let app = router(state());
-        for index in 0..RATE_LIMIT_MAX {
+        let client = [203, 0, 113, 10];
+        // `/admin*` n'est plus exempté (AUD-COR-10) : il a le budget strict des
+        // routes à secret devinable.
+        for index in 0..AUTH_RATE_LIMIT_MAX {
             let (status, _, _) = send(
                 &app,
-                from_client(request(Method::GET, "/health"), [203, 0, 113, 10]),
+                from_client(request(Method::GET, "/admin/api/overview"), client),
             )
             .await;
-            assert_eq!(status, StatusCode::OK, "requête {index} acceptée");
+            assert_ne!(
+                status,
+                StatusCode::TOO_MANY_REQUESTS,
+                "requête {index} acceptée"
+            );
         }
-        let (status, headers, body) = send(
-            &app,
-            from_client(request(Method::GET, "/health"), [203, 0, 113, 10]),
-        )
-        .await;
+        let (status, headers, body) =
+            send(&app, from_client(request(Method::GET, "/admin"), client)).await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(body, serde_json::json!({ "error": "request_error" }));
-        assert_eq!(headers.get("x-ratelimit-limit").unwrap(), "100");
+        assert_eq!(
+            *headers.get("x-ratelimit-limit").unwrap(),
+            AUTH_RATE_LIMIT_MAX.to_string()
+        );
         assert_eq!(headers.get("x-ratelimit-remaining").unwrap(), "0");
         assert!(headers.get(header::RETRY_AFTER).is_some());
 
-        // `/admin*` n'est plus exempté (AUD-COR-10) : la requête est limitée
-        // comme les autres et reçoit 429, pas la redirection 308 du panneau.
-        let (status, headers, body) = send(
+        // Pairing codes share that budget.
+        let (status, _, _) = send(
             &app,
-            from_client(request(Method::GET, "/admin"), [203, 0, 113, 10]),
+            from_client(request(Method::POST, "/overlay/pair/consume"), client),
         )
         .await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(body, serde_json::json!({ "error": "request_error" }));
-        assert!(headers.get(header::RETRY_AFTER).is_some());
+
+        // The overlay API and the WebSocket keep their own budget.
+        let (status, headers, _) =
+            send(&app, from_client(request(Method::GET, "/health"), client)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            *headers.get("x-ratelimit-limit").unwrap(),
+            RATE_LIMIT_MAX.to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_limit_compte_les_sondes_socket_io_a_part() {
+        let app = router(state());
+        let client = [203, 0, 113, 30];
+        // A 2.x overlay polling `/socket.io/` on the same IP...
+        for _ in 0..LEGACY_RATE_LIMIT_MAX {
+            send(
+                &app,
+                from_client(request(Method::GET, "/socket.io/"), client),
+            )
+            .await;
+        }
+        let (status, _, _) = send(
+            &app,
+            from_client(request(Method::GET, "/socket.io/"), client),
+        )
+        .await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        // ...does not use up the budget of a 3.x overlay.
+        let (status, _, _) = send(&app, from_client(request(Method::GET, "/health"), client)).await;
+        assert_eq!(status, StatusCode::OK);
     }
 
     #[tokio::test]

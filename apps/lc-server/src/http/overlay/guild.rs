@@ -28,6 +28,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::app::AppState;
+use crate::discord::profiles::{refresh_member, RefreshOutcome};
 
 use super::auth::AuthedOverlayClient;
 use super::{db, db_failure, error, internal_error, is_conflict, json_response, now};
@@ -170,6 +171,10 @@ pub(crate) fn invite_payload(invite: &GuildInvite, now: DateTime<Utc>) -> Value 
 }
 
 /// Payload JSON d'un membre (profil et rôle).
+///
+/// `profileSource`: `discord` while the name and avatar follow the linked
+/// Discord account, `custom` otherwise. `discordLinked` tells whether « Mon
+/// profil » can switch back to Discord.
 pub(super) fn member_payload(member: &GuildMember) -> Value {
     json!({
         "id": member.id.to_canonical(),
@@ -177,6 +182,8 @@ pub(super) fn member_payload(member: &GuildMember) -> Value {
         "avatar": member.avatar,
         "role": member.role.as_wire_str(),
         "createdAt": iso(Some(member.created_at)),
+        "discordLinked": member.discord_user_id.is_some(),
+        "profileSource": if member.follows_discord() { "discord" } else { "custom" },
     })
 }
 
@@ -283,9 +290,15 @@ pub async fn get_guild(State(state): State<AppState>, auth: AuthedOverlayClient)
 }
 
 /// Corps `PATCH /overlay/profile`.
+///
+/// `useDiscord: true` makes a linked member follow their Discord account
+/// again (the other fields are then ignored); any other change fixes the
+/// profile the member chose.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProfileRequest {
+    #[serde(default)]
+    use_discord: bool,
     #[serde(default)]
     display_name: Option<String>,
     /// `null` ou chaîne vide efface l'avatar ; absent le conserve.
@@ -317,6 +330,9 @@ pub async fn update_profile(
         Ok(db) => db,
         Err(response) => return response,
     };
+    if payload.use_discord {
+        return follow_discord(&state, db, member).await;
+    }
 
     let display_name = match payload.display_name.as_deref() {
         Some(raw) => match normalize_display_name(raw) {
@@ -348,16 +364,58 @@ pub async fn update_profile(
         return db_failure("overlay_profile.sync_clients", &db_error);
     }
 
+    let saved = GuildMember {
+        display_name,
+        avatar,
+        profile_custom: true,
+        ..member.clone()
+    };
     json_response(
         StatusCode::OK,
         json!({
             "updated": true,
-            "member": {
-                "id": member.id.to_canonical(),
-                "displayName": display_name,
-                "avatar": avatar,
-                "role": member.role.as_wire_str(),
-            },
+            "member": member_payload(&saved),
+        }),
+    )
+}
+
+/// `PATCH /overlay/profile` with `useDiscord`: the member follows their
+/// Discord account again and their profile is read from Discord at once.
+/// `synced: false` when Discord could not be read: the next Discord command
+/// or overlay connection will.
+async fn follow_discord(state: &AppState, db: &Db, member: &GuildMember) -> Response {
+    if member.discord_user_id.is_none() {
+        return error(StatusCode::CONFLICT, "discord_not_linked");
+    }
+    match db.guild_members().follow_discord(member.id).await {
+        Ok(true) => {}
+        Ok(false) => return error(StatusCode::NOT_FOUND, "member_not_found"),
+        Err(db_error) => return db_failure("overlay_profile.follow_discord", &db_error),
+    }
+    let following = GuildMember {
+        profile_custom: false,
+        discord_synced_at: None,
+        ..member.clone()
+    };
+    let outcome = refresh_member(
+        db,
+        state.discord_profiles.as_ref(),
+        &following,
+        now(state),
+        true,
+    )
+    .await;
+    let stored = match db.guild_members().get(member.id).await {
+        Ok(Some(stored)) => stored,
+        Ok(None) => return error(StatusCode::NOT_FOUND, "member_not_found"),
+        Err(db_error) => return db_failure("overlay_profile.reload", &db_error),
+    };
+    json_response(
+        StatusCode::OK,
+        json!({
+            "updated": true,
+            "synced": outcome == RefreshOutcome::Updated,
+            "member": member_payload(&stored),
         }),
     )
 }

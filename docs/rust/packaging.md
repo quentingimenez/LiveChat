@@ -431,14 +431,23 @@ depuis le LAN**, et le reverse proxy est le seul point d'entrée public.
   d'administration (règle réseau, basic auth ou mTLS du proxy), puis passer
   `ADMIN_UI_LOCAL_ONLY=false` **avec** `ADMIN_UI_TOKEN` long et aléatoire. Le
   panneau n'accepte que `Authorization: Bearer` (AUD-COR-05) et est soumis au
-  rate limit global (AUD-COR-10).
-- **Rate limit** : 100 requêtes par fenêtre de 15 min et par IP pour toutes les
-  routes, sauf les téléchargements de médias (`GET`/`HEAD` sur
-  `/overlay/media/{id}` et `/overlay/media-board/media/{id}`, plus l'ancien préfixe `/overlay/meme-board/`), comptés à part
-  avec un budget de 1 000. Les vignettes de la mème board et les requêtes
-  `Range` des vidéos épuisaient sinon le budget commun. Plusieurs overlays
-  derrière la même IP (NAT) partagent ces deux budgets ; derrière un reverse
-  proxy, activer `TRUST_PROXY_HEADERS=true` pour compter par client réel.
+  budget « auth » du rate limit (AUD-COR-10).
+- **Rate limit** : quatre budgets par fenêtre de 15 min et par IP. **Auth** (100) : `/admin*` et la
+  consommation des codes d'appairage (`/overlay/pair/consume`,
+  `/ingest/pair/consume`), les seules routes qui vérifient un secret
+  devinable. **Média** (1 000) : `GET`/`HEAD` sur `/overlay/media/{id}` et
+  `/overlay/media-board/media/{id}` (plus l'ancien préfixe
+  `/overlay/meme-board/`) ; les vignettes du board et les requêtes `Range` des
+  vidéos épuisaient sinon le budget commun. **Legacy** (100) : `/socket.io*`,
+  sondé en boucle par les overlays 2.x qui ne reçoivent que `426`.
+  **Général** (1 000) : tout le reste (API overlay, upgrade `/ws`, ingestion
+  de l'extension, `/health`) ; ces routes exigent un jeton porteur de 256 bits.
+  Le 13 novembre 2026, l'ancien budget unique de 100 a été épuisé par un usage
+  normal du board, et l'overlay ne pouvait plus rouvrir sa WebSocket.
+  Plusieurs overlays derrière la même IP (NAT) partagent ces budgets ;
+  derrière un reverse proxy, activer `TRUST_PROXY_HEADERS=true` pour compter
+  par client réel. Le compteur est en mémoire : un redémarrage du serveur le
+  remet à zéro.
 - **Accès admin depuis l'hôte, sans proxy** : dans un conteneur bridge, le
   serveur voit l'IP de la passerelle Docker et non `127.0.0.1` ; avec
   `ADMIN_UI_LOCAL_ONLY=true`, l'API admin répond `403 admin_local_only`. Deux

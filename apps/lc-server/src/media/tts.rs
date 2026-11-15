@@ -1,4 +1,5 @@
-//! Speech synthesis for `/dire` and `/cdire`: the local Piper engine.
+//! Speech synthesis for `/dire`, `/cdire` and `POST /overlay/say`: the local
+//! Piper engine.
 //!
 //! Piper reads the text on stdin and writes a WAV file; the WAV is then
 //! ingested like an uploaded file (normalized audio, content-addressed cache:
@@ -29,9 +30,14 @@ pub const MAX_SPEECH_CHARS: usize = 1_000;
 /// Longest synthesis allowed.
 const SYNTHESIS_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Collapses every run of whitespace into one space and trims both ends.
+pub fn collapse_speech(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Collapses whitespace and bounds the length. `None` when nothing is left.
 pub fn normalize_speech(text: &str) -> Option<String> {
-    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let collapsed = collapse_speech(text);
     if collapsed.is_empty() {
         return None;
     }

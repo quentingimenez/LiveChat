@@ -13,6 +13,7 @@ import {
   SORT_LABELS,
   SOURCE_LABELS,
 } from '../core/board-filters.js';
+import { cardClicked, cardHovered, CLOSED_VIEW, drawerUsed, pointerLeft, pruneView, sameView, shownId } from '../core/detail-drawer.js';
 import { h, icon, registerIcons } from '../core/dom.js';
 import { formatDuration } from '../core/format.js';
 import { cardRatio, cardStyle } from '../core/masonry.js';
@@ -62,8 +63,7 @@ function openCardMenu(event, item) {
       ? {
           label: shortcutFor(item.id) ? 'Changer le raccourci' : 'Définir un raccourci',
           onSelect: () => {
-            state.selectedId = item.id;
-            state.detailPinned = true;
+            applyView({ selectedId: item.id, pinned: true, peekId: null });
             state.capturing = false;
             startCapture(item);
           },
@@ -127,9 +127,28 @@ function syncFavorite(card, favorite) {
 // grid flash. `entry.item` always points at the latest copy of the item, so
 // the card's handlers never act on stale data.
 const cards = new Map(); // itemId -> { node, key, item, loadedUrl }
-// The preview of the selected item, kept across renders of the view:
-// rebuilding it reloaded the video and showed the loading spinner again.
-let previewCache = null; // { itemId, path, node }
+// The previews of the pinned media and of the one being peeked, kept across
+// renders of the view: rebuilding one reloaded its video and showed the
+// loading spinner again. Coming back from a peek finds the pinned video where
+// it was.
+const previews = new Map(); // itemId -> { path, node }
+
+function pausePreview(entry) {
+  const media = entry.node.querySelector('audio, video');
+  if (media && !media.paused) {
+    media.pause();
+  }
+}
+
+// Keeps only the previews the drawer can still show without a new hover.
+function prunePreviews() {
+  for (const [id, entry] of previews) {
+    if (id !== state.selectedId && id !== peekId) {
+      pausePreview(entry);
+      previews.delete(id);
+    }
+  }
+}
 
 // Path of a signed media URL, without its query: the same asset keeps the
 // same path while its signature changes every 15 minutes.
@@ -451,11 +470,9 @@ export function renderBoard() {
   pruneCards();
   const items = visibleItems();
   const uploads = activeUploads();
-  const selected = state.items.find((item) => item.id === state.selectedId) || null;
-  if (!selected) {
-    // A preview no longer shown must not keep its video alive.
-    previewCache = null;
-  }
+  const selected = shownItem();
+  // A preview no longer shown must not keep its video alive.
+  prunePreviews();
   const filterCount = activeFilterCount(state.filters);
   const toolbar = h(
     'div',
@@ -598,48 +615,66 @@ function setKind(kind) {
   refreshGrid(false);
 }
 
-// A click pins the drawer on a media (a second click on it closes it).
-export function selectItem(id) {
+// --- drawer: pinned by a click, following the pointer otherwise ---
+// `state.selectedId` and `state.detailPinned` hold the selected media;
+// `peekId` is another media looked at by hovering while one is pinned (see
+// core/detail-drawer.js).
+const HOVER_DELAY_MS = 450;
+const LEAVE_DELAY_MS = 300;
+let hoverTimer = null;
+let leaveTimer = null;
+let peekId = null;
+
+function currentView() {
+  return { selectedId: state.selectedId, pinned: state.detailPinned, peekId };
+}
+
+function applyView(view) {
+  state.selectedId = view.selectedId;
+  state.detailPinned = view.pinned;
+  peekId = view.peekId;
+}
+
+// The media the drawer shows: the peeked one, else the selected one.
+function shownItem() {
+  applyView(pruneView(currentView(), (id) => state.items.some((item) => item.id === id)));
+  const id = shownId(currentView());
+  return (id && state.items.find((item) => item.id === id)) || null;
+}
+
+function clearDrawerTimers() {
   clearTimeout(hoverTimer);
   clearTimeout(leaveTimer);
-  if (state.selectedId === id && state.detailPinned) {
-    state.selectedId = null;
-    state.detailPinned = false;
-  } else {
-    state.selectedId = id;
-    state.detailPinned = true;
-  }
+  hoverTimer = null;
+  leaveTimer = null;
+}
+
+// A click pins the drawer on a media (a second click on it closes it).
+export function selectItem(id) {
+  clearDrawerTimers();
+  applyView(cardClicked(currentView(), id));
   state.capturing = false;
   syncDetail();
 }
 
 export function closeDetail() {
-  clearTimeout(hoverTimer);
-  clearTimeout(leaveTimer);
-  state.selectedId = null;
-  state.detailPinned = false;
+  clearDrawerTimers();
+  applyView(CLOSED_VIEW);
   state.capturing = false;
   syncDetail();
 }
 
-// --- hover: the drawer follows the pointer until it is pinned ---
-const HOVER_DELAY_MS = 450;
-const LEAVE_DELAY_MS = 300;
-let hoverTimer = null;
-let leaveTimer = null;
-
+// Hovering a card shows its details after a short delay, also while another
+// media is pinned: the drawer then peeks at the hovered one.
 function hoverDetail(id) {
-  clearTimeout(hoverTimer);
-  if (state.detailPinned) {
-    return;
-  }
-  clearTimeout(leaveTimer);
+  clearDrawerTimers();
   hoverTimer = setTimeout(() => {
     hoverTimer = null;
-    if (state.detailPinned || state.selectedId === id) {
+    const next = cardHovered(currentView(), id);
+    if (state.capturing || sameView(next, currentView())) {
       return;
     }
-    state.selectedId = id;
+    applyView(next);
     syncDetail();
   }, HOVER_DELAY_MS);
 }
@@ -650,31 +685,35 @@ function leaveCard() {
   scheduleHoverClose();
 }
 
+// Once the pointer has left the cards and the drawer, an unpinned drawer
+// closes and a peek gives the drawer back to the pinned media.
 function scheduleHoverClose() {
-  if (state.detailPinned || !state.selectedId) {
+  clearTimeout(leaveTimer);
+  leaveTimer = null;
+  if (sameView(pointerLeft(currentView()), currentView())) {
     return;
   }
-  clearTimeout(leaveTimer);
   leaveTimer = setTimeout(() => {
     leaveTimer = null;
-    if (!state.detailPinned) {
-      closeDetail();
+    const next = pointerLeft(currentView());
+    if (state.capturing || sameView(next, currentView())) {
+      return;
     }
+    applyView(next);
+    syncDetail();
   }, LEAVE_DELAY_MS);
 }
 
 // Updates the drawer in place: the grid never moves and the preview (and its
-// video) is reused while the same media stays selected.
+// video) is reused while the same media stays shown.
 function syncDetail() {
-  if (!state.selectedId || !previewCache || previewCache.itemId !== state.selectedId) {
-    previewCache = null;
-  }
   const board = document.querySelector('.view .board');
   if (!board) {
     renderView();
     return;
   }
-  const selected = state.items.find((item) => item.id === state.selectedId) || null;
+  const selected = shownItem();
+  prunePreviews();
   const current = board.querySelector(':scope > .detail');
   const next = selected ? renderDetail(selected) : null;
   if (current && next) {
@@ -684,6 +723,11 @@ function syncDetail() {
   } else if (next) {
     board.append(next);
   }
+  syncSelectedCards();
+}
+
+// The highlighted card is the selected media, not the one being peeked.
+function syncSelectedCards() {
   for (const [id, entry] of cards) {
     entry.node.classList.toggle('is-selected', id === state.selectedId);
   }
@@ -858,10 +902,19 @@ function buildPreview(item) {
 
 function detailPreview(item) {
   const path = mediaPath(item.mediaUrl);
-  if (!previewCache || previewCache.itemId !== item.id || previewCache.path !== path) {
-    previewCache = { itemId: item.id, path, node: buildPreview(item) };
+  let entry = previews.get(item.id);
+  if (!entry || entry.path !== path) {
+    entry = { path, node: buildPreview(item) };
+    previews.set(item.id, entry);
   }
-  return previewCache.node;
+  // A preview out of the drawer (the pinned one during a peek) goes silent
+  // and keeps its position.
+  for (const [id, other] of previews) {
+    if (id !== item.id) {
+      pausePreview(other);
+    }
+  }
+  return entry.node;
 }
 
 function renderDetail(item) {
@@ -878,15 +931,20 @@ function renderDetail(item) {
   const drawer = h(
     'aside',
     {
-      class: `detail${state.detailPinned ? ' is-pinned' : ' is-peek'}`,
+      class: `detail${state.detailPinned && state.selectedId === item.id ? ' is-pinned' : ' is-peek'}`,
       'aria-label': 'Détails du média',
       onMouseenter: () => clearTimeout(leaveTimer),
       onMouseleave: scheduleHoverClose,
-      // Using the drawer keeps it open.
+      // Using the drawer pins the media it shows. Only classes change: the
+      // drawer must stay in place for the click that follows.
       onPointerdown: () => {
-        if (!state.detailPinned) {
-          state.detailPinned = true;
+        const next = drawerUsed(currentView());
+        if (!sameView(next, currentView())) {
+          clearDrawerTimers();
+          applyView(next);
           drawer.classList.replace('is-peek', 'is-pinned');
+          syncSelectedCards();
+          prunePreviews();
         }
       },
     },
@@ -950,9 +1008,11 @@ function renderDetail(item) {
 
 // The preview follows the volume sliders while it plays.
 document.addEventListener('livechat:sound', () => {
-  const media = previewCache && previewCache.node.querySelector('audio, video');
-  if (media) {
-    media.volume = previewVolume(state.activeGuildId);
+  for (const entry of previews.values()) {
+    const media = entry.node.querySelector('audio, video');
+    if (media) {
+      media.volume = previewVolume(state.activeGuildId);
+    }
   }
 });
 
@@ -1151,8 +1211,7 @@ export function openEditDialog(item) {
 export function openDeleteDialog(item) {
   confirmDialog('Supprimer ce média ?', `« ${itemTitle(item)} » sera retiré du board de la guilde.`, 'Supprimer', async () => {
     await run(() => api('DELETE', `/overlay/media-board/items/${encodeURIComponent(item.id)}`), 'Média supprimé.');
-    state.selectedId = null;
-    state.detailPinned = false;
+    applyView(CLOSED_VIEW);
     loadItems();
   });
 }

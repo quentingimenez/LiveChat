@@ -1340,24 +1340,25 @@ pub fn media_upload_cancel(
     Ok(uploads.cancel(&upload_id))
 }
 
-/// `overlay_check_updates` — vérifie les mises à jour et renvoie un état lisible.
+/// `overlay_check_updates` — checks now and downloads a newer version.
 #[tauri::command]
 pub async fn overlay_check_updates(
     window: WebviewWindow<Wry>,
     app: AppHandle<Wry>,
 ) -> Result<UpdateStatus, String> {
     ensure_allowed(&window, "overlay_check_updates")?;
-    Ok(updater::check_for_update(&app).await)
+    Ok(updater::check_and_download(&app).await)
 }
 
-/// `overlay_install_update` — télécharge/installe la mise à jour disponible.
+/// `overlay_install_update` — installs the downloaded update and relaunches
+/// LiveChat (does not return on Windows when it succeeds).
 #[tauri::command]
 pub async fn overlay_install_update(
     window: WebviewWindow<Wry>,
     app: AppHandle<Wry>,
-) -> Result<UpdateStatus, String> {
+) -> Result<(), String> {
     ensure_allowed(&window, "overlay_install_update")?;
-    Ok(updater::install_update(&app).await)
+    updater::install(&app)
 }
 
 #[cfg(test)]

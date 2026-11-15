@@ -1,5 +1,12 @@
 // Keyboard accelerator capture and display (pure helpers, no DOM state).
 
+export const BARE_KEY_MESSAGE = 'Utilise Ctrl, Alt ou Maj avec une lettre, un chiffre, une touche F ou Échap.';
+
+// Escape pressed alone cancels a capture; with a modifier it is recorded.
+export function cancelsCapture(event) {
+  return event.key === 'Escape' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+}
+
 // Converts a keydown event to a Tauri accelerator. Returns null while only
 // modifiers are held, undefined for a bare key (it would capture typing in
 // every application).
@@ -30,6 +37,8 @@ export function acceleratorFromEvent(event) {
     name = `num${event.code.slice(6)}`;
   } else if (/^F([1-9]|1[0-9]|2[0-4])$/.test(key)) {
     name = key;
+  } else if (key === 'Escape') {
+    name = 'Escape';
   }
   return name ? [...parts, name].join('+') : undefined;
 }
@@ -47,6 +56,9 @@ export function acceleratorLabel(accelerator) {
       }
       if (part === 'Shift') {
         return 'Maj';
+      }
+      if (part === 'Escape') {
+        return 'Échap';
       }
       if (/^num[0-9]$/.test(part)) {
         return `Num ${part.slice(3)}`;

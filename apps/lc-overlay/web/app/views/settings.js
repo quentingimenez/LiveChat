@@ -14,7 +14,7 @@
 // one guild sets on this device.
 
 import { run } from '../core/api.js';
-import { acceleratorFromEvent, acceleratorLabel } from '../core/accelerators.js';
+import { acceleratorFromEvent, acceleratorLabel, BARE_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import { resizeAvatar } from '../core/avatar.js';
 import { avatarNode, h } from '../core/dom.js';
 import { invoke, listen } from '../core/ipc.js';
@@ -49,7 +49,6 @@ const LOGO_URL = new URL('../assets/logo.svg', import.meta.url).href;
 
 const SLIDER_DEBOUNCE_MS = 250;
 const PREVIEW_FRAME_MS = 16;
-const BARE_KEY_MESSAGE = 'Utilise Ctrl, Alt ou Maj avec une lettre, un chiffre ou une touche F.';
 
 let deviceSettings = null;
 let loading = false;
@@ -471,7 +470,7 @@ function renderShortcutRow(action, label, accelerator) {
   const key = `shortcuts.${action}`;
   const message = shortcutErrors[key];
   const value = capturing
-    ? h('span', { class: 'settings-hint is-inline' }, 'Appuie sur la combinaison… (Échap pour annuler)')
+    ? h('span', { class: 'settings-hint is-inline' }, 'Appuie sur la combinaison… (Échap seul pour annuler)')
     : accelerator
       ? h('kbd', null, acceleratorLabel(accelerator))
       : h('span', { class: 'meta' }, 'Aucun');
@@ -831,7 +830,7 @@ document.addEventListener('keydown', (event) => {
     return;
   }
   event.preventDefault();
-  if (event.key === 'Escape') {
+  if (cancelsCapture(event)) {
     shortcutCapture = null;
     renderView();
     return;

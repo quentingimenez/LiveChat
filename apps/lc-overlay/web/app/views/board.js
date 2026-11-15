@@ -2,7 +2,7 @@
 
 import { api, run } from '../core/api.js';
 import { openContextMenu } from '../core/contextmenu.js';
-import { acceleratorFromEvent, acceleratorLabel } from '../core/accelerators.js';
+import { acceleratorFromEvent, acceleratorLabel, BARE_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import {
   activeFilterCount,
   authorsOf,
@@ -923,7 +923,7 @@ function renderDetail(item) {
               'dd',
               null,
               state.capturing
-                ? h('span', { class: 'meta' }, 'Appuie sur la combinaison… (Échap pour annuler)')
+                ? h('span', { class: 'meta' }, 'Appuie sur la combinaison… (Échap seul pour annuler)')
                 : shortcut
                   ? h('kbd', null, acceleratorLabel(shortcut))
                   : h('span', { class: 'meta' }, 'Aucun'),
@@ -967,7 +967,7 @@ document.addEventListener('keydown', (event) => {
     return;
   }
   event.preventDefault();
-  if (event.key === 'Escape') {
+  if (cancelsCapture(event)) {
     state.capturing = false;
     renderView();
     return;
@@ -977,7 +977,7 @@ document.addEventListener('keydown', (event) => {
     return;
   }
   if (accelerator === undefined) {
-    notify('Utilise Ctrl, Alt ou Maj avec une lettre, un chiffre ou une touche F.', true);
+    notify(BARE_KEY_MESSAGE, true);
     return;
   }
   state.capturing = false;

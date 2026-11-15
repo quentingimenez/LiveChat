@@ -233,6 +233,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             commands::media_upload_chunk,
             commands::media_upload_finish,
             commands::media_upload_cancel,
+            commands::media_artwork_upload,
         ])
         .setup(setup)
         .build(context)?;

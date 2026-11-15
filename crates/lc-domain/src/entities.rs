@@ -152,6 +152,13 @@ pub struct MediaBoardItem {
     /// Date d'ajout au board.
     #[serde(with = "ms_required")]
     pub created_at: DateTime<Utc>,
+    /// Picture of an audio item: its embedded cover by default, or an image
+    /// chosen by a member.
+    #[serde(default)]
+    pub artwork_asset_id: Option<MediaAssetId>,
+    /// `true` when overlays also show the picture while the audio plays.
+    #[serde(default)]
+    pub artwork_on_overlay: bool,
 }
 
 /// Job de la file de lecture (scheduler).

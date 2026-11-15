@@ -186,7 +186,9 @@ pub async fn get_media(
     .await
 }
 
-/// Vérifie qu'un job de lecture de la guilde référence cet asset.
+/// Vérifie qu'un job de lecture de la guilde référence cet asset, ou que
+/// l'asset est l'image affichée sur les overlays d'un élément de la board de
+/// la guilde.
 ///
 /// AUD-A2-004 : c'est la liaison manquante entre l'URL signée (asset + client)
 /// et la lecture réelle (job de la guilde). Le legacy refuse avec `403
@@ -200,8 +202,13 @@ pub(super) async fn playback_access_exists(
         "SELECT EXISTS(\
              SELECT 1 FROM playback_jobs \
               WHERE media_asset_id = ? AND guild_id = ?\
+         ) OR EXISTS(\
+             SELECT 1 FROM media_board_items \
+              WHERE artwork_asset_id = ? AND guild_id = ? AND artwork_on_overlay = 1\
          )",
     )
+    .bind(asset_id.to_canonical())
+    .bind(guild_id.as_str())
     .bind(asset_id.to_canonical())
     .bind(guild_id.as_str())
     .fetch_one(db.pool())

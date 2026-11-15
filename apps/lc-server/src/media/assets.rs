@@ -23,6 +23,7 @@ use lc_media::config::MediaConfig;
 use lc_media::error::MediaError;
 use lc_media::ingest::IngestedMedia;
 use lc_media::source::MediaSource;
+use lc_media::transcode::NormalizedCover;
 
 use crate::media::errors::{MediaServiceError, MediaServiceResult};
 
@@ -248,13 +249,16 @@ pub async fn pin(
     now: DateTime<Utc>,
 ) -> MediaServiceResult<MediaAsset> {
     let expiry = pinned_expiry(now);
+    // The embedded cover (album art) is shown with the audio: pinned with it.
     sqlx::query(
         "UPDATE media_assets \
             SET last_accessed_at = ?, expires_at = ? \
-          WHERE id = ? AND status = 'READY' AND expires_at < ?",
+          WHERE (id = ? OR id = (SELECT cover_asset_id FROM media_assets WHERE id = ?)) \
+            AND status = 'READY' AND expires_at < ?",
     )
     .bind(datetime_to_ms(now))
     .bind(datetime_to_ms(expiry))
+    .bind(asset_id.to_canonical())
     .bind(asset_id.to_canonical())
     .bind(datetime_to_ms(expiry))
     .execute(db.pool())
@@ -268,6 +272,74 @@ pub async fn pin(
             asset_id.to_string(),
         )))
     })
+}
+
+/// Stores the embedded cover of an audio file as its own `READY` image asset
+/// and records it on the audio asset (`media_assets.cover_asset_id`).
+///
+/// The cover asset's key is the audio's source hash plus `#cover`, so a new
+/// ingestion of the same source updates it in place. It expires with the
+/// audio asset ([`pin`] pins both).
+pub async fn attach_cover(
+    db: &Db,
+    audio: &MediaAsset,
+    cover: &NormalizedCover,
+    now: DateTime<Utc>,
+) -> MediaServiceResult<MediaAssetId> {
+    let assets = db.media_assets();
+    let source_hash = format!("{}#cover", audio.source_hash);
+    let source_url = format!("{}#cover", audio.source_url);
+    let width = cover.width.map(i64::from);
+    let height = cover.height.map(i64::from);
+    let is_vertical = matches!((width, height), (Some(width), Some(height)) if height > width);
+    let storage_path = cover.storage_path.to_string_lossy().into_owned();
+    let size_bytes = i64::try_from(cover.size_bytes).unwrap_or(i64::MAX);
+    let cover_id = if let Some(existing) = assets.get_by_source_hash(&source_hash).await? {
+        sqlx::query(
+            "UPDATE media_assets \
+                SET source_url = ?, kind = 'IMAGE', mime = ?, duration_sec = NULL, \
+                    width = ?, height = ?, is_vertical = ?, storage_path = ?, size_bytes = ?, \
+                    status = 'READY', error = NULL, last_accessed_at = ?, expires_at = ? \
+              WHERE id = ?",
+        )
+        .bind(source_url.as_str())
+        .bind(cover.mime.as_str())
+        .bind(width)
+        .bind(height)
+        .bind(i64::from(is_vertical))
+        .bind(storage_path.as_str())
+        .bind(size_bytes)
+        .bind(datetime_to_ms(now))
+        .bind(datetime_to_ms(audio.expires_at))
+        .bind(existing.id.to_canonical())
+        .execute(db.pool())
+        .await
+        .map_err(lc_db::DbError::from)?;
+        existing.id
+    } else {
+        let asset = MediaAsset {
+            id: MediaAssetId::new_v4(),
+            source_hash,
+            source_url,
+            kind: MediaKind::Image,
+            mime: cover.mime.clone(),
+            duration_sec: None,
+            width,
+            height,
+            is_vertical,
+            storage_path,
+            size_bytes,
+            status: MediaStatus::Ready,
+            error: None,
+            last_accessed_at: now,
+            expires_at: audio.expires_at,
+            created_at: now,
+        };
+        assets.insert(&asset).await?;
+        asset.id
+    };
+    assets.set_cover(audio.id, Some(cover_id)).await?;
+    Ok(cover_id)
 }
 
 /// Passe un asset en `FAILED` avec `"[CODE] message"` et une expiration courte.
@@ -399,6 +471,7 @@ mod tests {
                 is_vertical: false,
                 storage_path: file,
                 size_bytes: 1_234,
+                cover: None,
             },
         }
     }

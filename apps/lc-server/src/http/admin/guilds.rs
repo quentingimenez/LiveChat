@@ -183,9 +183,9 @@ async fn issue_admin_code(
 
 /// Counters produced by [`stop_guild_playback`].
 #[derive(Debug, Clone, Copy)]
-struct PlaybackStop {
-    broadcast: usize,
-    released_playing_jobs: u64,
+pub(crate) struct PlaybackStop {
+    pub(crate) broadcast: usize,
+    pub(crate) released_playing_jobs: u64,
 }
 
 /// Stop playback for one guild: broadcast, release `PLAYING` jobs, clear
@@ -193,7 +193,7 @@ struct PlaybackStop {
 ///
 /// `purge` selects the dedicated purge broadcast; the SQL work and the lock
 /// clearing are identical for every caller.
-async fn stop_guild_playback(
+pub(crate) async fn stop_guild_playback(
     state: &AppState,
     db: &lc_db::Db,
     guild_id: &GuildId,

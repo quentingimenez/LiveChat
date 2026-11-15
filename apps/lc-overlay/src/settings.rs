@@ -45,8 +45,11 @@ pub struct SettingsView {
     pub displays: Vec<SettingsDisplay>,
     pub selected_display_key: Option<String>,
     pub volume: f64,
-    pub guild_volumes: BTreeMap<String, f64>,
+    /// What each joined guild sets on this device.
+    pub guilds: BTreeMap<String, GuildDeviceSettings>,
     pub general_mute: bool,
+    /// Every media plays without sound.
+    pub media_muted: bool,
     pub show_text: bool,
     pub auto_start: bool,
     pub shortcuts: ShortcutSettings,
@@ -54,6 +57,21 @@ pub struct SettingsView {
     /// The display zone is being placed on the overlay screen.
     pub placing: bool,
     pub profile: SettingsProfile,
+}
+
+/// Device settings of one guild.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuildDeviceSettings {
+    pub volume: f64,
+    /// No connection, so no media (`guild_set_muted`).
+    pub muted: bool,
+    /// Media shown without their sound.
+    pub media_muted: bool,
+    /// `None`: the device setting.
+    pub show_text: Option<bool>,
+    /// `None`: the device layout.
+    pub layout: Option<OverlayLayout>,
 }
 
 /// `settings_set` answer. On failure nothing has been applied.
@@ -153,12 +171,24 @@ pub fn build_settings_view(
         displays: display_views(displays, primary_index),
         selected_display_key: config.display_key.clone(),
         volume: config.volume,
-        guild_volumes: config
+        guilds: config
             .memberships
             .iter()
-            .map(|membership| (membership.guild_id.clone(), membership.volume))
+            .map(|membership| {
+                (
+                    membership.guild_id.clone(),
+                    GuildDeviceSettings {
+                        volume: membership.volume,
+                        muted: membership.muted,
+                        media_muted: membership.media_muted,
+                        show_text: membership.show_text,
+                        layout: membership.layout.clone(),
+                    },
+                )
+            })
             .collect(),
         general_mute: !config.enabled,
+        media_muted: config.media_muted,
         show_text: config.show_text,
         auto_start,
         shortcuts: config.shortcuts.clone(),
@@ -243,7 +273,10 @@ pub fn preview_layout(
     if !object.contains_key("layout") {
         return Err(SettingsError::new("layout", "objet JSON attendu"));
     }
+    // `guildId`: the draft applies to that guild's layout.
+    let guild_id = object.get("guildId").and_then(Value::as_str);
     let mut candidate = config.clone();
+    candidate.layout = crate::placement::starting_layout(config, guild_id);
     apply_layout_patch(&mut candidate, object)?;
     Ok(candidate.layout)
 }
@@ -297,26 +330,70 @@ fn apply_volume_patch(
     if let Some(volume) = number_value(object, "volume", "volume")? {
         config.volume = crate::config::normalize_volume(volume);
     }
+    Ok(())
+}
 
-    let Some(raw_guild_volumes) = object.get("guildVolumes") else {
+/// `guilds: { "<guildId>": { volume?, mediaMuted?, showText?, layout? } }`.
+/// `showText: null` / `layout: null` go back to the device setting; a
+/// `layout` object is merged into the guild's own layout, which starts from
+/// the device layout. Unknown guilds are ignored.
+fn apply_guilds_patch(
+    config: &mut OverlayConfig,
+    object: &Map<String, Value>,
+) -> Result<(), SettingsError> {
+    let Some(raw_guilds) = object.get("guilds") else {
         return Ok(());
     };
-    let Some(guild_volumes) = raw_guild_volumes.as_object() else {
-        return Err(SettingsError::new("guildVolumes", "objet JSON attendu"));
+    let Some(guilds) = raw_guilds.as_object() else {
+        return Err(SettingsError::new("guilds", "objet JSON attendu"));
     };
-    for (guild_id, raw_volume) in guild_volumes {
-        let Some(volume) = raw_volume.as_f64().filter(|number| number.is_finite()) else {
-            return Err(SettingsError::new(
-                format!("guildVolumes.{guild_id}"),
-                "volume numérique attendu",
-            ));
+    let device_layout = config.layout.clone();
+    for (guild_id, raw_patch) in guilds {
+        let prefix = format!("guilds.{guild_id}");
+        let Some(patch) = raw_patch.as_object() else {
+            return Err(SettingsError::new(prefix, "objet JSON attendu"));
         };
-        if let Some(membership) = config
+        let Some(membership) = config
             .memberships
             .iter_mut()
             .find(|membership| membership.guild_id == *guild_id)
-        {
+        else {
+            continue;
+        };
+        if let Some(volume) = number_value(patch, "volume", &format!("{prefix}.volume"))? {
             membership.volume = crate::config::normalize_volume(volume);
+        }
+        if let Some(media_muted) = bool_value(patch, "mediaMuted")? {
+            membership.media_muted = media_muted;
+        }
+        match patch.get("showText") {
+            None => {}
+            Some(Value::Null) => membership.show_text = None,
+            Some(Value::Bool(show_text)) => membership.show_text = Some(*show_text),
+            Some(_) => {
+                return Err(SettingsError::new(
+                    format!("{prefix}.showText"),
+                    "booléen ou null attendu",
+                ))
+            }
+        }
+        match patch.get("layout") {
+            None => {}
+            Some(Value::Null) => membership.layout = None,
+            Some(Value::Object(layout)) => {
+                let mut merged = membership
+                    .layout
+                    .clone()
+                    .unwrap_or_else(|| device_layout.clone());
+                patch_layout(&mut merged, layout, &format!("{prefix}.layout"))?;
+                membership.layout = Some(merged);
+            }
+            Some(_) => {
+                return Err(SettingsError::new(
+                    format!("{prefix}.layout"),
+                    "objet JSON ou null attendu",
+                ))
+            }
         }
     }
     Ok(())
@@ -364,40 +441,55 @@ fn apply_layout_patch(
     let Some(layout) = raw_layout.as_object() else {
         return Err(SettingsError::new("layout", "objet JSON attendu"));
     };
+    patch_layout(&mut config.layout, layout, "layout")
+}
+
+/// Merges a partial layout (`align`, `zone`; `null` resets either) into
+/// `target`. `field` prefixes the error fields.
+fn patch_layout(
+    target: &mut OverlayLayout,
+    layout: &Map<String, Value>,
+    field: &str,
+) -> Result<(), SettingsError> {
     if let Some(raw_align) = layout.get("align") {
         if raw_align.is_null() {
-            config.layout.align = LayoutAnchor::Center;
+            target.align = LayoutAnchor::Center;
         } else {
             match serde_json::from_value::<LayoutAnchor>(raw_align.clone()) {
-                Ok(align) => config.layout.align = align,
-                Err(_) => return Err(SettingsError::new("layout.align", "alignement inconnu")),
+                Ok(align) => target.align = align,
+                Err(_) => {
+                    return Err(SettingsError::new(
+                        format!("{field}.align"),
+                        "alignement inconnu",
+                    ))
+                }
             }
         }
     }
     match layout.get("zone") {
         None => {}
-        Some(Value::Null) => config.layout.zone = LayoutZone::default(),
+        Some(Value::Null) => target.zone = LayoutZone::default(),
         Some(Value::Object(zone)) => {
-            let target = &mut config.layout.zone;
+            let zone_target = &mut target.zone;
             for (key, slot) in [
-                ("x", &mut target.x),
-                ("y", &mut target.y),
-                ("width", &mut target.width),
-                ("height", &mut target.height),
+                ("x", &mut zone_target.x),
+                ("y", &mut zone_target.y),
+                ("width", &mut zone_target.width),
+                ("height", &mut zone_target.height),
             ] {
-                if let Some(value) = number_value(zone, key, &format!("layout.zone.{key}"))? {
+                if let Some(value) = number_value(zone, key, &format!("{field}.zone.{key}"))? {
                     *slot = value;
                 }
             }
         }
         Some(_) => {
             return Err(SettingsError::new(
-                "layout.zone",
+                format!("{field}.zone"),
                 "objet JSON ou null attendu",
             ))
         }
     }
-    config.layout.normalize();
+    target.normalize();
     Ok(())
 }
 
@@ -475,8 +567,13 @@ pub fn apply_settings_patch(
 
     apply_volume_patch(&mut config, object)?;
 
+    apply_guilds_patch(&mut config, object)?;
+
     if let Some(enabled) = bool_value(object, "generalMute")? {
         config.enabled = !enabled;
+    }
+    if let Some(media_muted) = bool_value(object, "mediaMuted")? {
+        config.media_muted = media_muted;
     }
     if let Some(show_text) = bool_value(object, "showText")? {
         config.show_text = show_text;
@@ -527,7 +624,7 @@ mod tests {
         let config = paired_config();
         let patched = apply_settings_patch(
             &config,
-            &json!({ "volume": 4.0, "guildVolumes": { "111": -2.0, "unknown": 0.5 } }),
+            &json!({ "volume": 4.0, "guilds": { "111": { "volume": -2.0 }, "unknown": { "volume": 0.5 } } }),
             &sample_displays(),
         )
         .expect("valid payload");
@@ -539,6 +636,59 @@ mod tests {
             Some(0.0)
         );
         assert_eq!(patched.memberships.len(), 1);
+    }
+
+    #[test]
+    fn settings_set_mutes_media_sound_and_sets_a_guild_display() {
+        let mut config = paired_config();
+        config.layout.align = LayoutAnchor::BottomRight;
+        let patched = apply_settings_patch(
+            &config,
+            &json!({
+                "mediaMuted": true,
+                "guilds": { "111": {
+                    "mediaMuted": true,
+                    "showText": false,
+                    "layout": { "zone": { "x": 0.5, "width": 0.5 } }
+                } }
+            }),
+            &sample_displays(),
+        )
+        .expect("valid payload");
+        assert!(patched.media_muted);
+        let guild = patched.membership("111").expect("guild");
+        assert!(guild.media_muted);
+        assert_eq!(guild.show_text, Some(false));
+        let layout = guild.layout.as_ref().expect("guild layout");
+        assert_eq!(layout.zone.x, 0.5);
+        assert_eq!(layout.zone.width, 0.5);
+        assert_eq!(
+            layout.align,
+            LayoutAnchor::BottomRight,
+            "starts from the device layout"
+        );
+        assert_eq!(patched.layout, config.layout, "device layout untouched");
+        let view = patched.view();
+        assert!(view.media_muted);
+        assert_eq!(view.media_muted_guilds, vec!["111".to_string()]);
+
+        let reset = apply_settings_patch(
+            &patched,
+            &json!({ "guilds": { "111": { "showText": null, "layout": null } } }),
+            &sample_displays(),
+        )
+        .expect("valid payload");
+        let guild = reset.membership("111").expect("guild");
+        assert_eq!(guild.show_text, None);
+        assert_eq!(guild.layout, None);
+
+        let error = apply_settings_patch(
+            &config,
+            &json!({ "guilds": { "111": { "layout": { "align": "middle" } } } }),
+            &sample_displays(),
+        )
+        .expect_err("unknown align");
+        assert_eq!(error.field, "guilds.111.layout.align");
     }
 
     #[test]
@@ -741,7 +891,8 @@ mod tests {
         let view = build_settings_view(&config, &displays, Some(0), true, idle_update());
         assert_eq!(view.version, env!("CARGO_PKG_VERSION"));
         assert!(!view.general_mute);
-        assert_eq!(view.guild_volumes.get("111"), Some(&1.0));
+        assert_eq!(view.guilds.get("111").map(|guild| guild.volume), Some(1.0));
+        assert!(!view.media_muted);
         assert_eq!(view.displays[0].label, "Écran 1 — 2560 × 1440 (principal)");
         assert!(view.displays[0].primary);
         assert_eq!(view.displays[1].label, "Écran 2 — 1920 × 1080");

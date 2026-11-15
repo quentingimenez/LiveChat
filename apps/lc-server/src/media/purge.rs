@@ -201,6 +201,8 @@ async fn purge_stale_status(
           WHERE status = ? AND last_accessed_at <= ? \
             AND id NOT IN (SELECT media_asset_id FROM media_board_items \
                             WHERE media_asset_id IS NOT NULL) \
+            AND id NOT IN (SELECT artwork_asset_id FROM media_board_items \
+                            WHERE artwork_asset_id IS NOT NULL) \
             AND id NOT IN (SELECT media_asset_id FROM playback_jobs \
                             WHERE media_asset_id IS NOT NULL \
                               AND status IN ('PENDING', 'PLAYING'))",
@@ -248,6 +250,8 @@ async fn purge_expired_ready(
           WHERE status = 'READY' AND expires_at <= ? \
             AND id NOT IN (SELECT media_asset_id FROM media_board_items \
                             WHERE media_asset_id IS NOT NULL) \
+            AND id NOT IN (SELECT artwork_asset_id FROM media_board_items \
+                            WHERE artwork_asset_id IS NOT NULL) \
             AND id NOT IN (SELECT media_asset_id FROM playback_jobs \
                             WHERE media_asset_id IS NOT NULL \
                               AND status IN ('PENDING', 'PLAYING'))",
@@ -567,6 +571,8 @@ mod tests {
             created_by_discord_user_id: None,
             created_by_name: None,
             created_at: fixture.now,
+            artwork_asset_id: None,
+            artwork_on_overlay: false,
         };
         fixture
             .db

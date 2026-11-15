@@ -77,8 +77,11 @@
     ],
     selectedDisplayKey: null,
     volume: 0.8,
-    guildVolumes: Object.fromEntries(guilds.guilds.map((guild) => [guild.membership.guildId, 1])),
+    guilds: Object.fromEntries(
+      guilds.guilds.map((guild) => [guild.membership.guildId, { volume: 1, muted: false, mediaMuted: false, showText: null, layout: null }]),
+    ),
     generalMute: false,
+    mediaMuted: false,
     showText: true,
     autoStart: false,
     shortcuts: { stop: 'CommandOrControl+Shift+S', muteAll: null },
@@ -106,7 +109,11 @@
     createdByMemberId: index % 2 ? 'm-lea' : 'm-111',
     canEdit: isAdmin || (!isGuest && index % 2 === 0),
     createdAt: new Date(Date.now() - index * 86400000).toISOString(),
-    media: { id: 'a' + index, kind: kinds[index], mime: 'x', durationSec: kinds[index] === 'image' ? null : 3 + index * 7, width: sizeOf(index)[0], height: sizeOf(index)[1], isVertical: sizeOf(index)[1] > sizeOf(index)[0], sizeBytes: 420000 * (index + 1), sourceUrl: 'https://www.tiktok.com/@x/video/' + index },
+    media: { id: 'a' + index, kind: kinds[index], mime: 'x', durationSec: kinds[index] === 'image' ? null : 3 + index * 7, width: sizeOf(index)[0], height: sizeOf(index)[1], isVertical: sizeOf(index)[1] > sizeOf(index)[0], sizeBytes: 420000 * (index + 1), sourceUrl: index === 2 ? 'upload:vine-boom.mp3' : index === 3 ? 'https://youtu.be/x' + index : 'https://www.tiktok.com/@x/video/' + index },
+    favorite: index === 1 || index === 7,
+    // « Fanfare… » (audio) has an embedded cover.
+    artwork: index === 7 ? { url: svg(4), width: 480, height: 480 } : null,
+    artworkOnOverlay: false,
   }));
 
   const queue = {
@@ -127,7 +134,11 @@
   // Guild profile edited by « Mon profil »: the mock keeps it between dialogs.
   // It starts linked to the Discord account, as after a personal /pair-code.
   const discordProfile = { displayName: 'Quentin', avatar: null };
-  const memberProfile = { ...discordProfile, discordLinked: true, profileSource: 'discord' };
+  // `?unlinked` starts with a member created without Discord (admin panel).
+  const unlinked = new URLSearchParams(location.search).has('unlinked');
+  const memberProfile = unlinked
+    ? { displayName: 'Quentin', avatar: null, discordLinked: false, profileSource: 'custom' }
+    : { ...discordProfile, discordLinked: true, profileSource: 'discord' };
   const invites = [
     { code: 'K7QXM2PD', role: 'member', maxUses: 1, useCount: 0, expiresAt: new Date(now + 22 * 3600000).toISOString(), revokedAt: null, isActive: true },
     { code: 'P3WN8RTA', role: 'guest', maxUses: 10, useCount: 4, expiresAt: new Date(now + 6 * 86400000).toISOString(), revokedAt: null, isActive: true },
@@ -206,22 +217,35 @@
       }
       next.volume = Math.min(1, Math.max(0, input.volume));
     }
-    if ('guildVolumes' in input) {
-      const volumes = input.guildVolumes;
-      if (!volumes || typeof volumes !== 'object') {
-        return settingsError('guildVolumes', 'Volumes de guilde invalides.');
+    if ('guilds' in input) {
+      const patches = input.guilds;
+      if (!patches || typeof patches !== 'object') {
+        return settingsError('guilds', 'Réglages de guilde invalides.');
       }
-      for (const [guildId, value] of Object.entries(volumes)) {
-        if (typeof value !== 'number' || !Number.isFinite(value)) {
-          return settingsError(`guildVolumes.${guildId}`, 'Volume numérique attendu.');
-        }
+      for (const [guildId, own] of Object.entries(patches)) {
         // Unknown guilds are ignored, like the shell's membership lookup.
-        if (next.guildVolumes && guildId in next.guildVolumes) {
-          next.guildVolumes[guildId] = Math.min(1, Math.max(0, value));
+        const target = next.guilds[guildId];
+        if (!target || !own || typeof own !== 'object') {
+          continue;
+        }
+        if ('volume' in own) {
+          if (typeof own.volume !== 'number' || !Number.isFinite(own.volume)) {
+            return settingsError(`guilds.${guildId}.volume`, 'Volume numérique attendu.');
+          }
+          target.volume = Math.min(1, Math.max(0, own.volume));
+        }
+        if (typeof own.mediaMuted === 'boolean') {
+          target.mediaMuted = own.mediaMuted;
+        }
+        if ('showText' in own) {
+          target.showText = own.showText === null ? null : Boolean(own.showText);
+        }
+        if ('layout' in own) {
+          target.layout = own.layout === null ? null : { ...(target.layout || next.layout), ...own.layout, zone: { ...(target.layout || next.layout).zone, ...(own.layout.zone || {}) } };
         }
       }
     }
-    for (const key of ['generalMute', 'showText', 'autoStart']) {
+    for (const key of ['generalMute', 'mediaMuted', 'showText', 'autoStart']) {
       if (!(key in input)) {
         continue;
       }
@@ -344,6 +368,22 @@
     if (path === '/overlay/media-board/ingestions' && method === 'GET') {
       return ok({ items: ingestionList(payload.guildId) });
     }
+    const favoritePath = /^\/overlay\/media-board\/items\/([^/?]+)\/(favorite|artwork)$/.exec(path);
+    if (favoritePath) {
+      const entry = items.find((candidate) => candidate.id === decodeURIComponent(favoritePath[1]));
+      if (!entry) {
+        return { ok: false, status: 404, body: { error: 'item_not_found' } };
+      }
+      if (favoritePath[2] === 'favorite' && method === 'PUT') {
+        entry.favorite = Boolean(payload.body && payload.body.favorite);
+        return ok({ itemId: entry.id, favorite: entry.favorite });
+      }
+      if (favoritePath[2] === 'artwork' && method === 'DELETE') {
+        entry.artwork = null;
+        boardChanged(payload.guildId, 'updated', entry.id);
+        return ok({ itemId: entry.id });
+      }
+    }
     const itemPath = /^\/overlay\/media-board\/items\/([^/?]+)$/.exec(path);
     if (itemPath && (method === 'PATCH' || method === 'DELETE')) {
       const itemId = decodeURIComponent(itemPath[1]);
@@ -355,9 +395,20 @@
         items.splice(index, 1);
       } else {
         Object.assign(items[index], { title: (payload.body && payload.body.title) || null, message: (payload.body && payload.body.message) || null });
+        if (payload.body && typeof payload.body.artworkOnOverlay === 'boolean') {
+          items[index].artworkOnOverlay = payload.body.artworkOnOverlay;
+        }
       }
       boardChanged(payload.guildId, method === 'DELETE' ? 'deleted' : 'updated', itemId);
       return ok(method === 'DELETE' ? { deleted: true } : { updated: true, item: items[index] });
+    }
+    if (path === '/overlay/profile/discord-link' && method === 'POST') {
+      const code = String((payload.body && payload.body.code) || '').replace(/-/g, '').toUpperCase();
+      if (code !== 'K7QXM2PD') {
+        return { ok: false, status: 404, body: { error: 'pairing_code_invalid_or_expired' } };
+      }
+      memberProfile.discordLinked = true;
+      return ok({ linked: true, promoted: false, member: memberProfile });
     }
     if (path === '/overlay/profile' && method === 'PATCH') {
       const body = payload.body || {};
@@ -576,12 +627,18 @@
   }
 
   // What the overlay does on « Valider » (a zone) or « Annuler » (null).
+  let placementGuildId = null;
+
   function finishPlacement(zone) {
     if (!settings.placing) {
       return null;
     }
     settings.placing = false;
-    if (zone) {
+    const guild = placementGuildId ? settings.guilds[placementGuildId] : null;
+    placementGuildId = null;
+    if (zone && guild) {
+      guild.layout = { ...(guild.layout || settings.layout), zone: normalizeZone(zone) };
+    } else if (zone) {
       settings.layout.zone = normalizeZone(zone);
     }
     emit('overlay://device-settings', settingsCopy());
@@ -652,6 +709,17 @@
         }
         case 'media_upload_cancel':
           return Promise.resolve(uploads.delete(payload.uploadId));
+        case 'media_artwork_upload': {
+          const headers = (options && options.headers) || {};
+          const entry = items.find((candidate) => candidate.id === headers['x-item-id']);
+          requests.push({ method: 'PUT', path: `/overlay/media-board/items/${headers['x-item-id']}/artwork`, filename: headers['x-filename'], bytes: (args && args.byteLength) || 0 });
+          if (!entry) {
+            return delay(100, { ok: false, status: 404, body: { error: 'item_not_found' } });
+          }
+          entry.artwork = { url: svg(1), width: 640, height: 360 };
+          boardChanged(headers['x-guild-id'], 'updated', entry.id);
+          return delay(200, { ok: true, status: 200, body: { itemId: entry.id } });
+        }
         case 'board_take_guild_removals':
           return Promise.resolve(removals.splice(0));
         case 'board_take_pending_view': {
@@ -668,11 +736,12 @@
         case 'settings_test_media':
           return delay(120).then(() => (queue.playing ? { ok: false, reason: 'overlay_busy' } : { ok: true }));
         case 'settings_preview_layout':
-          previewLayouts.push(JSON.parse(JSON.stringify(payload.layout)));
+          previewLayouts.push(JSON.parse(JSON.stringify(payload.guildId ? { ...payload.layout, guildId: payload.guildId } : payload.layout)));
           return Promise.resolve(null);
         case 'settings_placement_start':
           return delay(120).then(() => {
             settings.placing = true;
+            placementGuildId = (payload && payload.guildId) || null;
             emit('overlay://device-settings', settingsCopy());
             return { ok: true };
           });
@@ -708,6 +777,9 @@
               guild.membership.muted = Boolean(payload.muted);
             }
           });
+          if (settings.guilds[payload.guildId]) {
+            settings.guilds[payload.guildId].muted = Boolean(payload.muted);
+          }
           applyMuted(payload.guildId, Boolean(payload.muted));
           return Promise.resolve({ ok: true, guilds: guildsCopy() });
         case 'guild_leave':

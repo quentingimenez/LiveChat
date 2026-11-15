@@ -1,8 +1,9 @@
-// Header of the active guild: name, role, mute, profile and tabs.
+// Header of the active guild: name, role, mute, media sound, profile and tabs.
 
 import { run } from '../core/api.js';
 import { h, icon } from '../core/dom.js';
 import { invoke } from '../core/ipc.js';
+import { allMediaMuted, guildMediaMuted, setGuildMediaMuted } from '../core/sound.js';
 import { activeGuild, can, guildLabel, ROLE_LABELS, state } from '../core/state.js';
 import { applyGuilds, loadAdmin, loadQueue } from '../data.js';
 import { openGuildDialog } from './profile.js';
@@ -23,9 +24,12 @@ export function renderHeader() {
     ['board', 'Board', null],
     ['queue', "File d'attente", state.queue.pending.length || null],
   ];
-  if (can('manageMembers') || can('manageInvites') || can('manageSettings')) {
+  if (can('manageMembers') || can('manageInvites')) {
     tabs.push(['admin', 'Administration', null]);
   }
+  tabs.push(['settings', 'Réglages', null]);
+  const guildId = guild.membership.guildId;
+  const mediaMuted = guildMediaMuted(guildId);
   header.replaceChildren(
     h(
       'div',
@@ -33,6 +37,9 @@ export function renderHeader() {
       h('h1', { class: 'guild-name' }, guildLabel(guild)),
       role ? h('span', { class: `badge is-${role}` }, ROLE_LABELS[role] || role) : null,
       guild.membership.muted ? h('span', { class: 'badge is-off' }, 'En sourdine') : null,
+      !guild.membership.muted && (mediaMuted || allMediaMuted())
+        ? h('span', { class: 'badge is-off', title: allMediaMuted() && !mediaMuted ? 'Coupé pour toutes les guildes dans les Paramètres' : null }, 'Son des médias coupé')
+        : null,
       guild.connection.status !== 'connected' && !guild.membership.muted
         ? h('span', { class: 'badge is-off' }, guild.statusLabel)
         : null,
@@ -48,6 +55,18 @@ export function renderHeader() {
         icon(guild.membership.muted ? 'mute' : 'sound'),
         guild.membership.muted ? 'Rétablir' : 'Sourdine',
       ),
+      guild.membership.muted
+        ? null
+        : h(
+            'button',
+            {
+              class: 'btn is-quiet',
+              title: mediaMuted ? 'Rétablir le son des médias de cette guilde' : 'Afficher les médias de cette guilde sans leur son',
+              onClick: () => toggleMediaSound(guildId, !mediaMuted),
+            },
+            icon(mediaMuted ? 'sound' : 'mute'),
+            mediaMuted ? 'Remettre le son' : 'Couper le son',
+          ),
       h('button', { class: 'btn is-quiet', onClick: () => openGuildDialog(guild) }, 'Mon profil'),
     ),
     h(
@@ -77,6 +96,17 @@ export function setTab(tab) {
     loadQueue();
   }
 }
+
+async function toggleMediaSound(guildId, muted) {
+  const response = await run(() => setGuildMediaMuted(guildId, muted));
+  if (response && response.ok === false) {
+    return;
+  }
+  renderHeader();
+}
+
+// The device settings changed (tray, Paramètres): refresh the media sound state.
+document.addEventListener('livechat:sound', () => renderHeader());
 
 export async function toggleMute(guild) {
   const result = await run(() =>

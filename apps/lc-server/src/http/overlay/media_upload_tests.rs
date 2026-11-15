@@ -50,7 +50,11 @@ fn test_config(media_dir: &Path, max_size_mb: u64) -> Config {
 
 /// `real_tools` keeps the default `ffmpeg`/`ffprobe` binaries (tests that run
 /// them for real); otherwise both point at missing files.
-fn config_pairs(media_dir: &Path, max_size_mb: u64, real_tools: bool) -> Vec<(String, String)> {
+pub(super) fn config_pairs(
+    media_dir: &Path,
+    max_size_mb: u64,
+    real_tools: bool,
+) -> Vec<(String, String)> {
     let mut pairs = vec![
         ("API_URL".to_owned(), "http://127.0.0.1:8099".to_owned()),
         (
@@ -198,7 +202,7 @@ pub(super) async fn harness_with_real_tools(
     harness_with(Config::from_pairs(config_pairs(media_dir, max_size_mb, true)).unwrap()).await
 }
 
-async fn harness_with(config: Config) -> (Router, Db, AppState, Arc<RecordingHub>) {
+pub(super) async fn harness_with(config: Config) -> (Router, Db, AppState, Arc<RecordingHub>) {
     let db = Db::open_in_memory(&DbConfig::default()).await.unwrap();
     let clock: Arc<dyn lc_domain::Clock> = Arc::new(FixedClock::new(fixed_now()));
     let hub = Arc::new(RecordingHub::default());

@@ -18,6 +18,7 @@
 //! | `GET` | `/overlay/media-board/media/{assetId}` | URL signée (`clientId`, `exp`, `sig`) |
 //! | `PATCH` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` — **écriture refusée en `invite_read_only`** |
 //! | `DELETE` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` — **écriture refusée en `invite_read_only`** |
+//! | `POST` | `/overlay/say` | `Authorization: Bearer` — speech synthesis (`/dire`), **refused in `invite_read_only`** |
 //!
 //! `GET /overlay/config` **n'existe pas** en protocole v2 (supprimé, cf.
 //! `docs/rust/protocol-v2.md` §8) : la route tombe sur le `fallback` de
@@ -83,6 +84,7 @@ mod media_upload;
 mod pair;
 mod profile_discord;
 mod queue;
+mod say;
 
 pub use media::sign_media_url;
 
@@ -100,6 +102,8 @@ mod media_upload_tests;
 mod profile_discord_tests;
 #[cfg(test)]
 mod profile_tests;
+#[cfg(test)]
+mod say_tests;
 #[cfg(test)]
 mod tests;
 
@@ -169,6 +173,7 @@ pub fn router() -> Router<AppState> {
             "/overlay/queue/{job_id}",
             axum::routing::delete(queue::remove_job),
         )
+        .route("/overlay/say", post(say::say))
         .route("/overlay/admin/members", get(admin::list_members))
         .route(
             "/overlay/admin/members/{member_id}",

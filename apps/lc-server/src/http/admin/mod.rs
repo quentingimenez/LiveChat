@@ -35,6 +35,7 @@ mod auth;
 mod clients;
 mod error;
 mod guilds;
+pub(crate) use guilds::stop_guild_playback;
 mod ingest_authors;
 mod overview;
 mod pairings;

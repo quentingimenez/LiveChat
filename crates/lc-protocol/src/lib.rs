@@ -710,6 +710,13 @@ pub struct MediaPayload {
     pub is_vertical: bool,
     /// Offset de reprise dans l'asset (`null` si début).
     pub start_offset_sec: Option<u64>,
+    /// Picture shown while an audio plays (board item with « show on
+    /// overlays » ticked); absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artwork_asset_id: Option<String>,
+    /// Signed URL of that picture (set by the hub for each client).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artwork_url: Option<String>,
 }
 
 /// Texte affiché par un job `play`.

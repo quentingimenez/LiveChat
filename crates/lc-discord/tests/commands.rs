@@ -1,4 +1,4 @@
-//! Tests d'intégration des 14 commandes contre [`FakeBotContext`].
+//! Tests d'intégration des 12 commandes contre [`FakeBotContext`].
 //!
 //! Chaque commande est exercée une fois sur son chemin heureux et, quand le
 //! legacy a un comportement d'erreur observable, sur ce chemin aussi. Aucun
@@ -12,10 +12,7 @@ use lc_discord::context::{BotConfig, BotContext, ConnectedOverlay};
 use lc_discord::error::MediaErrorCode;
 use lc_discord::handlers::dispatch;
 use lc_discord::i18n::{strings, Lang};
-use lc_discord::inputs::{
-    CommandInput, DisplayFullInput, Invocation, MediaSubmission, PairCodeInput, TalkInput,
-    TimeSettingInput,
-};
+use lc_discord::inputs::{CommandInput, Invocation, MediaSubmission, PairCodeInput, TalkInput};
 use lc_discord::reply::{
     CommandOutcome, Deferral, COLOR_ERROR, COLOR_INFO, COLOR_SUCCESS, COLOR_WARNING,
 };
@@ -273,6 +270,9 @@ async fn pair_code_sans_guilde_renvoie_une_erreur_generique() {
 #[tokio::test]
 async fn media_add_sans_source_repond_missing_media() {
     let mut ctx = FakeBotContext::new().await.expect("contexte");
+    ctx.link_author(&guild(), &member_author(), lc_domain::GuildRole::Member)
+        .await
+        .expect("membre lié");
     let outcome = dispatch(
         &ctx,
         invocation(
@@ -299,6 +299,9 @@ async fn media_add_ingere_et_ajoute_au_board() {
     let mut ctx = FakeBotContext::with_media_asset(sample_asset(MediaKind::Image))
         .await
         .expect("contexte");
+    ctx.link_author(&guild(), &member_author(), lc_domain::GuildRole::Member)
+        .await
+        .expect("membre lié");
     ctx.media_board_mut().set_created(true);
     let submission = MediaSubmission {
         url: Some("https://example.com/media.png".to_owned()),
@@ -340,6 +343,9 @@ async fn media_add_deja_present_repond_exists() {
     let mut ctx = FakeBotContext::with_media_asset(sample_asset(MediaKind::Image))
         .await
         .expect("contexte");
+    ctx.link_author(&guild(), &member_author(), lc_domain::GuildRole::Member)
+        .await
+        .expect("membre lié");
     ctx.media_board_mut().set_created(false);
     let submission = MediaSubmission {
         media: Some("https://cdn.discordapp.com/attachments/x.png".to_owned()),
@@ -371,6 +377,9 @@ async fn send_cree_un_job_public_avec_auteur_et_texte() {
     let mut ctx = FakeBotContext::with_media_asset(sample_asset(MediaKind::Video))
         .await
         .expect("contexte");
+    ctx.link_author(&guild(), &member_author(), lc_domain::GuildRole::Member)
+        .await
+        .expect("membre lié");
     let submission = MediaSubmission {
         url: Some("https://example.com/video.mp4".to_owned()),
         text: Some("salut".to_owned()),
@@ -411,6 +420,9 @@ async fn send_cree_un_job_public_avec_auteur_et_texte() {
 #[tokio::test]
 async fn send_sans_contenu_repond_missing_content_sans_defer() {
     let ctx = FakeBotContext::new().await.expect("contexte");
+    ctx.link_author(&guild(), &member_author(), lc_domain::GuildRole::Member)
+        .await
+        .expect("membre lié");
     let outcome = dispatch(
         &ctx,
         invocation(
@@ -436,6 +448,9 @@ async fn hide_send_cree_un_job_ephemere_sans_auteur() {
     let mut ctx = FakeBotContext::with_media_asset(sample_asset(MediaKind::Video))
         .await
         .expect("contexte");
+    ctx.link_author(&guild(), &member_author(), lc_domain::GuildRole::Member)
+        .await
+        .expect("membre lié");
     let submission = MediaSubmission {
         media: Some("https://cdn.discordapp.com/attachments/x.mp4".to_owned()),
         ..MediaSubmission::default()
@@ -466,6 +481,9 @@ async fn send_erreur_de_lecture_est_localisee() {
     let mut ctx = FakeBotContext::with_media_asset(sample_asset(MediaKind::Video))
         .await
         .expect("contexte");
+    ctx.link_author(&guild(), &member_author(), lc_domain::GuildRole::Member)
+        .await
+        .expect("membre lié");
     ctx.playback_mut().set_enqueue_failure(true);
     let submission = MediaSubmission {
         url: Some("https://example.com/video.mp4".to_owned()),
@@ -500,6 +518,9 @@ async fn talk_synthetise_et_cree_un_job_public_avec_auteur() {
     let mut ctx = FakeBotContext::with_media_asset(sample_asset(MediaKind::Audio))
         .await
         .expect("contexte");
+    ctx.link_author(&guild(), &member_author(), lc_domain::GuildRole::Member)
+        .await
+        .expect("membre lié");
     let outcome = dispatch(
         &ctx,
         invocation(
@@ -535,6 +556,9 @@ async fn hide_talk_synthetise_et_cree_un_job_ephemere_sans_auteur() {
     let mut ctx = FakeBotContext::with_media_asset(sample_asset(MediaKind::Audio))
         .await
         .expect("contexte");
+    ctx.link_author(&guild(), &member_author(), lc_domain::GuildRole::Member)
+        .await
+        .expect("membre lié");
     let outcome = dispatch(
         &ctx,
         invocation(
@@ -562,6 +586,9 @@ async fn hide_talk_synthetise_et_cree_un_job_ephemere_sans_auteur() {
 #[tokio::test]
 async fn talk_echec_tts_repond_voice_error() {
     let ctx = FakeBotContext::new().await.expect("contexte");
+    ctx.link_author(&guild(), &member_author(), lc_domain::GuildRole::Member)
+        .await
+        .expect("membre lié");
     let outcome = dispatch(
         &ctx,
         invocation(
@@ -594,7 +621,7 @@ async fn overlays_vide_repond_un_avertissement() {
         &ctx,
         invocation(
             CommandInput::Overlays,
-            member_author(),
+            admin_author(),
             Some(guild()),
             Lang::Fr,
         ),
@@ -627,7 +654,7 @@ async fn overlays_liste_trie_par_label() {
         &ctx,
         invocation(
             CommandInput::Overlays,
-            member_author(),
+            admin_author(),
             Some(guild()),
             Lang::Fr,
         ),
@@ -656,7 +683,7 @@ async fn overlays_sans_guilde_repond_not_allowed() {
         title(&outcome).as_deref(),
         Some(strings(Lang::Fr).not_allowed)
     );
-    assert_eq!(outcome.reply.embed.description, None);
+    assert_eq!(description(&outcome), strings(Lang::Fr).admin_only);
 }
 
 #[tokio::test]
@@ -667,7 +694,7 @@ async fn overlays_erreur_de_l_annuaire_repond_erreur_generique() {
         &ctx,
         invocation(
             CommandInput::Overlays,
-            member_author(),
+            admin_author(),
             Some(guild()),
             Lang::Fr,
         ),
@@ -676,139 +703,6 @@ async fn overlays_erreur_de_l_annuaire_repond_erreur_generique() {
 
     assert!(outcome.reply.ephemeral);
     assert_eq!(description(&outcome), strings(Lang::Fr).command_error);
-}
-
-// ---------------------------------------------------------------------------
-// /config-defaut, /config-max, /config-displayfull
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn config_defaut_persiste_la_duree_par_defaut() {
-    let ctx = FakeBotContext::new().await.expect("contexte");
-    let outcome = dispatch(
-        &ctx,
-        invocation(
-            CommandInput::SetDefaultTime(TimeSettingInput { seconds: 10 }),
-            admin_author(),
-            Some(guild()),
-            Lang::Fr,
-        ),
-    )
-    .await;
-
-    assert!(outcome.reply.ephemeral);
-    assert_eq!(outcome.reply.embed.color, Some(COLOR_SUCCESS));
-    assert_eq!(
-        description(&outcome),
-        strings(Lang::Fr).set_default_time_answer
-    );
-
-    let row = ctx
-        .db()
-        .guilds()
-        .get(&guild())
-        .await
-        .expect("guilde")
-        .expect("ligne créée");
-    assert_eq!(row.default_media_time, Some(10));
-    assert_eq!(row.max_media_time, None);
-    assert!(!row.display_media_full);
-}
-
-#[tokio::test]
-async fn config_defaut_refuse_les_non_admins() {
-    let ctx = FakeBotContext::new().await.expect("contexte");
-    let outcome = dispatch(
-        &ctx,
-        invocation(
-            CommandInput::SetDefaultTime(TimeSettingInput { seconds: 10 }),
-            member_author(),
-            Some(guild()),
-            Lang::Fr,
-        ),
-    )
-    .await;
-
-    assert!(outcome.reply.ephemeral);
-    assert_eq!(outcome.reply.embed.color, Some(COLOR_ERROR));
-    assert_eq!(
-        title(&outcome).as_deref(),
-        Some(strings(Lang::Fr).not_allowed)
-    );
-    assert!(ctx
-        .db()
-        .guilds()
-        .get(&guild())
-        .await
-        .expect("lecture")
-        .is_none());
-}
-
-#[tokio::test]
-async fn config_max_zero_efface_la_limite() {
-    let ctx = FakeBotContext::new().await.expect("contexte");
-    drop(
-        dispatch(
-            &ctx,
-            invocation(
-                CommandInput::SetMaxTime(TimeSettingInput { seconds: 120 }),
-                admin_author(),
-                Some(guild()),
-                Lang::Fr,
-            ),
-        )
-        .await,
-    );
-    drop(
-        dispatch(
-            &ctx,
-            invocation(
-                CommandInput::SetMaxTime(TimeSettingInput { seconds: 0 }),
-                admin_author(),
-                Some(guild()),
-                Lang::Fr,
-            ),
-        )
-        .await,
-    );
-
-    let row = ctx
-        .db()
-        .guilds()
-        .get(&guild())
-        .await
-        .expect("guilde")
-        .expect("ligne");
-    assert_eq!(row.max_media_time, None);
-}
-
-#[tokio::test]
-async fn config_displayfull_persiste_le_booleen() {
-    let ctx = FakeBotContext::new().await.expect("contexte");
-    let outcome = dispatch(
-        &ctx,
-        invocation(
-            CommandInput::SetDisplayFull(DisplayFullInput { value: true }),
-            admin_author(),
-            Some(guild()),
-            Lang::Fr,
-        ),
-    )
-    .await;
-
-    assert!(outcome.reply.ephemeral);
-    assert_eq!(
-        description(&outcome),
-        strings(Lang::Fr).set_display_full_answer
-    );
-    let row = ctx
-        .db()
-        .guilds()
-        .get(&guild())
-        .await
-        .expect("guilde")
-        .expect("ligne");
-    assert!(row.display_media_full);
 }
 
 // ---------------------------------------------------------------------------
@@ -820,11 +714,11 @@ async fn stop_arrete_la_guilde_et_repond_en_ephemere() {
     let mut ctx = FakeBotContext::new().await.expect("contexte");
     let outcome = dispatch(
         &ctx,
-        invocation(CommandInput::Stop, member_author(), Some(guild()), Lang::Fr),
+        invocation(CommandInput::Stop, admin_author(), Some(guild()), Lang::Fr),
     )
     .await;
 
-    assert_eq!(outcome.deferral, Deferral::None);
+    assert_eq!(outcome.deferral, Deferral::Ephemeral);
     assert!(outcome.reply.ephemeral);
     assert_eq!(outcome.reply.embed.color, Some(COLOR_SUCCESS));
     assert_eq!(description(&outcome), strings(Lang::Fr).stop_answer);
@@ -832,7 +726,7 @@ async fn stop_arrete_la_guilde_et_repond_en_ephemere() {
 }
 
 #[tokio::test]
-async fn stop_sans_guilde_repond_erreur_generique() {
+async fn stop_sans_guilde_est_refuse() {
     let ctx = FakeBotContext::new().await.expect("contexte");
     let outcome = dispatch(
         &ctx,
@@ -841,7 +735,102 @@ async fn stop_sans_guilde_repond_erreur_generique() {
     .await;
 
     assert!(outcome.reply.ephemeral);
-    assert_eq!(description(&outcome), strings(Lang::Fr).command_error);
+    assert_eq!(description(&outcome), strings(Lang::Fr).admin_only);
+}
+
+// ---------------------------------------------------------------------------
+// Rights
+// ---------------------------------------------------------------------------
+
+fn send_text() -> CommandInput {
+    CommandInput::Send(MediaSubmission {
+        text: Some("salut".to_owned()),
+        ..MediaSubmission::default()
+    })
+}
+
+#[tokio::test]
+async fn an_unlinked_account_cannot_send_media() {
+    let mut ctx = FakeBotContext::new().await.expect("contexte");
+    for input in [
+        send_text(),
+        CommandInput::Talk(TalkInput {
+            voice: "bonjour".to_owned(),
+            text: None,
+        }),
+        CommandInput::MediaAdd(MediaSubmission {
+            url: Some("https://example.com/a.png".to_owned()),
+            ..MediaSubmission::default()
+        }),
+    ] {
+        // Even a Discord administrator needs a linked LiveChat member.
+        let outcome = dispatch(
+            &ctx,
+            invocation(input, admin_author(), Some(guild()), Lang::Fr),
+        )
+        .await;
+        assert_eq!(outcome.deferral, Deferral::None);
+        assert!(outcome.reply.ephemeral);
+        assert_eq!(description(&outcome), strings(Lang::Fr).not_linked);
+    }
+    assert!(ctx.playback_mut().requests().is_empty());
+    assert!(ctx.media_board_mut().requests().is_empty());
+}
+
+#[tokio::test]
+async fn a_linked_guest_cannot_send_media() {
+    let mut ctx = FakeBotContext::new().await.expect("contexte");
+    ctx.link_author(&guild(), &member_author(), lc_domain::GuildRole::Guest)
+        .await
+        .expect("invité lié");
+    let outcome = dispatch(
+        &ctx,
+        invocation(send_text(), member_author(), Some(guild()), Lang::Fr),
+    )
+    .await;
+    assert!(outcome.reply.ephemeral);
+    assert_eq!(description(&outcome), strings(Lang::Fr).guest_not_allowed);
+    assert!(ctx.playback_mut().requests().is_empty());
+}
+
+#[tokio::test]
+async fn a_linked_member_sends_media() {
+    let mut ctx = FakeBotContext::new().await.expect("contexte");
+    ctx.link_author(&guild(), &member_author(), lc_domain::GuildRole::Member)
+        .await
+        .expect("membre lié");
+    let outcome = dispatch(
+        &ctx,
+        invocation(send_text(), member_author(), Some(guild()), Lang::Fr),
+    )
+    .await;
+    assert_eq!(outcome.reply.embed.color, Some(COLOR_SUCCESS));
+    assert_eq!(ctx.playback_mut().requests().len(), 1);
+}
+
+#[tokio::test]
+async fn stop_needs_an_admin() {
+    let mut ctx = FakeBotContext::new().await.expect("contexte");
+    let refused = dispatch(
+        &ctx,
+        invocation(CommandInput::Stop, member_author(), Some(guild()), Lang::Fr),
+    )
+    .await;
+    assert_eq!(description(&refused), strings(Lang::Fr).admin_only);
+    assert!(ctx.playback_mut().stop_calls().is_empty());
+
+    // A LiveChat admin linked to the account may stop without the Discord
+    // Administrator permission.
+    ctx.link_author(&guild(), &member_author(), lc_domain::GuildRole::Admin)
+        .await
+        .expect("admin lié");
+    let allowed = dispatch(
+        &ctx,
+        invocation(CommandInput::Stop, member_author(), Some(guild()), Lang::Fr),
+    )
+    .await;
+    assert_eq!(description(&allowed), strings(Lang::Fr).stop_answer);
+    assert_eq!(ctx.playback_mut().stop_calls(), vec![guild()]);
 }
 
 #[tokio::test]
@@ -850,7 +839,7 @@ async fn stop_echec_du_moteur_repond_erreur_generique() {
     ctx.playback_mut().set_stop_failure(true);
     let outcome = dispatch(
         &ctx,
-        invocation(CommandInput::Stop, member_author(), Some(guild()), Lang::Fr),
+        invocation(CommandInput::Stop, admin_author(), Some(guild()), Lang::Fr),
     )
     .await;
 

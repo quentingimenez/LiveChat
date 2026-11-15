@@ -12,6 +12,7 @@
 // - `views/` : rail, header, board, queue, admin, settings and dialogs.
 
 import { installContextMenuGuard } from './core/contextmenu.js';
+import { initSound } from './core/sound.js';
 import { invoke, listen } from './core/ipc.js';
 import { activeGuild, state } from './core/state.js';
 import { notify } from './core/toast.js';
@@ -34,6 +35,7 @@ import { renderView } from './views/view.js';
 // No WebView menu (reload, print, save as): the board opens its own menus
 // on the rail, the media cards and the queue, and fields keep theirs.
 installContextMenuGuard();
+initSound();
 
 listen('overlay://guilds', applyGuilds);
 

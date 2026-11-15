@@ -539,8 +539,15 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
             );
         }
         let media = self.load_media(&job).await?;
+        let artwork = self.load_artwork(&job, media.as_ref()).await?;
         let timing = payload::persisted_timing(&job);
-        let play = payload::build_play_payload(&job, media.as_ref(), timing, &self.config);
+        let play = payload::build_play_payload(
+            &job,
+            media.as_ref(),
+            artwork.as_ref(),
+            timing,
+            &self.config,
+        );
         let started_at_ms = job
             .started_at
             .map(datetime_to_ms)
@@ -728,7 +735,14 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
             let guild = self.db.guilds().get(guild_id).await?;
             let timing =
                 payload::dispatch_timing(&job, media.as_ref(), guild.as_ref(), &self.config);
-            let play = payload::build_play_payload(&job, media.as_ref(), timing, &self.config);
+            let artwork = self.load_artwork(&job, media.as_ref()).await?;
+            let play = payload::build_play_payload(
+                &job,
+                media.as_ref(),
+                artwork.as_ref(),
+                timing,
+                &self.config,
+            );
             self.store
                 .mark_dispatched(
                     job.id,
@@ -901,6 +915,33 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
             Some(media_asset_id) => Ok(self.db.media_assets().get(media_asset_id).await?),
             None => Ok(None),
         }
+    }
+
+    /// Picture shown with an audio: the one of the guild's board item holding
+    /// this audio, when « show on overlays » is ticked and the picture is
+    /// ready. A lookup failure only drops the picture.
+    async fn load_artwork(
+        &self,
+        job: &PlaybackJob,
+        media: Option<&MediaAsset>,
+    ) -> PlaybackResult<Option<MediaAsset>> {
+        let Some(media) = media.filter(|asset| asset.kind == lc_domain::MediaKind::Audio) else {
+            return Ok(None);
+        };
+        let Some(artwork_id) = self
+            .db
+            .media_board()
+            .overlay_artwork(&job.guild_id, media.id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(self
+            .db
+            .media_assets()
+            .get(artwork_id)
+            .await?
+            .filter(|picture| picture.is_ready() && picture.kind == lc_domain::MediaKind::Image))
     }
 
     /// Estime le temps restant d'un job (`playback.state` frais, sinon horloge).

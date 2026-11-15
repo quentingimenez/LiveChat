@@ -227,6 +227,7 @@ fn apply_consume_response(
         muted: false,
         volume: 1.0,
         media_bindings: Default::default(),
+        ..Membership::default()
     });
     config.author_name = clean(response.author_name.as_deref());
     config.device_name =

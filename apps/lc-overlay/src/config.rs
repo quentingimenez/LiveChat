@@ -30,7 +30,7 @@ pub const CONFIG_PATH_ENV: &str = "LIVECHAT_CONFIG_PATH";
 
 const DEFAULT_VOLUME: f64 = 1.0;
 
-const KNOWN_KEYS: [&str; 21] = [
+const KNOWN_KEYS: [&str; 22] = [
     "displayId",
     "displayIndex",
     "displayKey",
@@ -40,6 +40,7 @@ const KNOWN_KEYS: [&str; 21] = [
     "autoStart",
     "guestMode",
     "showText",
+    "mediaMuted",
     "serverUrl",
     "clientToken",
     "clientId",
@@ -81,6 +82,12 @@ pub struct Membership {
     pub muted: bool,
     /// Guild-specific volume, multiplied by the general volume.
     pub volume: f64,
+    /// Media of this guild are still shown, without their sound.
+    pub media_muted: bool,
+    /// Text display for this guild (`None`: the device setting).
+    pub show_text: Option<bool>,
+    /// Display zone for this guild (`None`: the device layout).
+    pub layout: Option<OverlayLayout>,
     /// Raccourcis conservés par guilde.
     pub media_bindings: MediaBindings,
 }
@@ -100,12 +107,20 @@ impl Default for Membership {
             guest_mode: false,
             muted: false,
             volume: DEFAULT_VOLUME,
+            media_muted: false,
+            show_text: None,
+            layout: None,
             media_bindings: MediaBindings::new(),
         }
     }
 }
 
 impl Membership {
+    /// Layout used for this guild's media.
+    pub fn effective_layout<'a>(&'a self, device: &'a OverlayLayout) -> &'a OverlayLayout {
+        self.layout.as_ref().unwrap_or(device)
+    }
+
     fn is_valid(&self) -> bool {
         !self.server_url.trim().is_empty()
             && !self.guild_id.trim().is_empty()
@@ -250,6 +265,8 @@ pub struct OverlayConfig {
     pub auto_start: bool,
     pub guest_mode: bool,
     pub show_text: bool,
+    /// Every media is still shown, without its sound.
+    pub media_muted: bool,
     pub server_url: Option<String>,
     pub client_token: Option<String>,
     pub client_id: Option<String>,
@@ -286,6 +303,7 @@ impl Default for OverlayConfig {
             auto_start: false,
             guest_mode: false,
             show_text: true,
+            media_muted: false,
             server_url: None,
             client_token: None,
             client_id: None,
@@ -314,6 +332,10 @@ pub struct OverlayConfigView {
     pub guest_mode: bool,
     pub show_text: bool,
     pub volume: f64,
+    /// Every media plays without sound.
+    pub media_muted: bool,
+    /// Guilds whose media play without sound.
+    pub media_muted_guilds: Vec<String>,
     pub media_bindings: MediaBindings,
     pub layout: OverlayLayout,
 }
@@ -342,6 +364,7 @@ impl OverlayConfig {
             .get("guestMode")
             .is_some_and(|value| value == &Value::Bool(true));
         config.show_text = bool_field(map, "showText", true, &mut warnings);
+        config.media_muted = bool_field(map, "mediaMuted", false, &mut warnings);
         config.server_url = string_field(map, "serverUrl", &mut warnings);
         config.client_token = string_field(map, "clientToken", &mut warnings);
         config.client_id = string_field(map, "clientId", &mut warnings);
@@ -376,6 +399,9 @@ impl OverlayConfig {
         self.media_bindings = normalize_media_bindings(&self.media_bindings);
         for membership in &mut self.memberships {
             membership.volume = normalize_volume(membership.volume);
+            if let Some(layout) = membership.layout.as_mut() {
+                layout.normalize();
+            }
         }
         self.shortcuts.normalize();
         self.layout.normalize();
@@ -564,6 +590,13 @@ impl OverlayConfig {
             guest_mode: self.guest_mode,
             show_text: self.show_text,
             volume: self.volume,
+            media_muted: self.media_muted,
+            media_muted_guilds: self
+                .memberships
+                .iter()
+                .filter(|membership| membership.media_muted)
+                .map(|membership| membership.guild_id.clone())
+                .collect(),
             media_bindings: self.media_bindings.clone(),
             layout: self.layout.clone(),
         }
@@ -1395,6 +1428,8 @@ mod tests {
                 "guildId",
                 "layout",
                 "mediaBindings",
+                "mediaMuted",
+                "mediaMutedGuilds",
                 "serverUrl",
                 "showText",
                 "volume"

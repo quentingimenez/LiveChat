@@ -121,6 +121,10 @@ strings! {
         "Ce code donne le rôle admin.",
         "This code grants the admin role."
     ),
+    pair_code_personal: (
+        "Code personnel : l’overlay prendra ton pseudo et ton avatar Discord. Pour inviter quelqu’un d’autre, utilise le mode invité ou une invitation du board.",
+        "Personal code: the overlay will use your Discord name and avatar. To invite someone else, use the invite mode or a board invitation."
+    ),
 
     media_add_name: ("media-add", "media-add"),
     media_add_description: (

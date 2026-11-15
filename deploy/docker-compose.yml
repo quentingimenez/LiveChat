@@ -17,7 +17,7 @@ name: livechat
 
 services:
   lc-server:
-    image: ${LIVECHAT_IMAGE:-ghcr.io/quentingimenez/livechat-server:3.1.0}
+    image: ${LIVECHAT_IMAGE:-ghcr.io/quentingimenez/livechat-server:3.2.0}
     container_name: livechat-server
     restart: unless-stopped
     env_file:

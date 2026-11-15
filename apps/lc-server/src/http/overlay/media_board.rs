@@ -628,7 +628,17 @@ pub async fn get_media(
         Err(response) => return response,
     };
     let range = headers.get(axum::http::header::RANGE).cloned();
-    super::media::serve_file(&asset, &file_path, method, range.as_ref()).await
+    super::media::serve_file(
+        &asset,
+        &file_path,
+        method,
+        range.as_ref(),
+        super::media::MediaCache::UntilExpiry {
+            expires_at_sec: exp_sec,
+            now_sec,
+        },
+    )
+    .await
 }
 
 /// Handler `PATCH /overlay/media-board/items/{itemId}`.

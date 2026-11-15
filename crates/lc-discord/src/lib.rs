@@ -39,6 +39,7 @@ pub mod context;
 pub mod error;
 pub mod handlers;
 pub mod i18n;
+pub mod identity;
 pub mod inputs;
 pub mod reply;
 pub mod rich_payload;

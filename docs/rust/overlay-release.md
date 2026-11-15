@@ -8,10 +8,10 @@ installateurs de l'overlay Tauri (`apps/lc-overlay`). Il complète
 > État actuel : le canal stable pointe la version **3.1.0** (`LiveChat`,
 > `com.livechat`) et le canal bêta **3.0.0-beta.1** (`LiveChat Next`,
 > `com.livechat.next`, installation side-by-side avec l'Electron 2.0.1).
-> L'auto-update est **explicitement désactivé jusqu'en 3.1.0** (clé de signature
-> updater placeholder, `createUpdaterArtifacts: false` dans les deux configs,
-> pas d'artefacts updater) : voir §6 et §7. L'installeur est construit par la CI
-> `overlay-tauri.yml` (§7.1).
+> L'auto-update est **actif à partir de 3.1.1** : installateur signé par la clé
+> minisign du projet, `latest.json` joint à chaque release (§6). Les 3.0.x et 3.1.0
+> n'ont pas d'updater : ils passent une fois à la main sur une version récente.
+> L'installeur est construit par la CI `overlay-tauri.yml` (§7.1).
 
 ## 1. Canaux et identités
 
@@ -150,83 +150,81 @@ Preuves collectées sur les artefacts de la build du 2026-11-10 :
   positionné `0,0 2560×1440`, styles `0x080C0138 → 0x080C01B8`, raccourcis
   réappliqués, RSS ~46,9 Mo, aucun process résiduel après kill.
 
-## 6. Updater : signature minisign (désactivé pour 3.0.0)
+## 6. Updater : signature minisign
 
-État actuel (décision P0-4, 2026-11-10) : l'auto-update est **désactivé pour la
-version 3.0.0**, de façon cohérente sur toute la chaîne :
+### 6.1 Fonctionnement dans l'overlay
 
-- `plugins.updater.pubkey` contient un **placeholder explicite**
-  (`RWQPLACEHOLDER_MINISIGN_PUBLIC_KEY_A_REMPLACER_EN_PHASE_9=`) dans
-  `tauri.conf.json` et `tauri.beta.conf.json` ;
-- `bundle.createUpdaterArtifacts` vaut `false` dans les deux configs : les builds
-  ne produisent ni `.nsis.zip` signé ni `.sig` ;
-- les workflows legacy Electron (`overlay-release.yml` sur tag `overlay-v*` avec
-  `--latest`, `overlay-nightly.yml`) ont été supprimés en P0-4 ; le workflow Tauri
-  `overlay-tauri.yml` (§7.1) construit l'installeur NSIS sans artefacts updater et
-  ne crée qu'un **brouillon** de release : la publication reste une décision
-  manuelle (§7).
+- `plugins.updater.endpoints` pointe vers
+  `https://github.com/quentingimenez/LiveChat/releases/latest/download/latest.json` :
+  la release marquée *Latest* fait foi (bêta : `releases/download/next/latest.json`).
+- `updater.rs` vérifie dès l'ouverture de la board (à chaque ouverture), au
+  démarrage puis toutes les 6 h (ces deux-là en build release seulement ; le
+  bouton « Rechercher une mise à jour » des Paramètres marche partout). Une version
+  plus récente est téléchargée et sa signature vérifiée en arrière-plan, puis
+  gardée en mémoire.
+- L'installation reste un clic de l'utilisateur, pour ne jamais couper un live :
+  entrée tray « Redémarrer et installer la version X » ou bouton des Paramètres.
+  L'installeur NSIS tourne en mode passif (`installMode: passive`, barre de
+  progression sans question) et relance LiveChat.
+- L'état (`idle`, `checking`, `downloading`, `up_to_date`, `ready`, `error`) est
+  exposé dans `settings.update` (`overlay://device-settings`).
 
-L'application démarre normalement ; un clic sur « Vérifier les mises à jour »
-renvoie une **erreur explicite** (clé publique invalide) au lieu de planter —
-comportement voulu et documenté. Aucun client 3.0.0 ne peut donc être mis à jour
-automatiquement : c'est un choix assumé pour cette première release.
+### 6.2 Clé de signature
 
-Pour activer réellement l'updater :
+Paire minisign générée le 2026-11-14 avec
+`cargo tauri signer generate -w "$env:USERPROFILE\.tauri\livechat-overlay.key"` :
 
-1. Générer une paire de clés minisign (hors dépôt !) :
+- clé publique : `plugins.updater.pubkey` de `tauri.conf.json` et
+  `tauri.beta.conf.json` (copie dans `livechat-overlay.key.pub`) ;
+- clé privée et mot de passe : `%USERPROFILE%\.tauri\livechat-overlay.key` et
+  `livechat-overlay.key.password`, **hors dépôt**, et dans les secrets GitHub
+  Actions `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
 
-   ```powershell
-   cargo tauri signer generate -w "$env:USERPROFILE\.tauri\livechat-3x.key"
-   ```
+Perdre la clé privée coupe l'auto-update de tous les overlays installés : il
+faudrait republier une version à installer à la main avec une nouvelle clé
+publique. La garder aussi dans un gestionnaire de mots de passe.
 
-   Noter la clé publique affichée ; la clé privée reste sur la machine de release
-   (ou dans les secrets GitHub Actions `TAURI_SIGNING_PRIVATE_KEY` /
-   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`).
+### 6.3 Builds
 
-2. Renseigner `plugins.updater.pubkey` avec la clé publique dans
-   `tauri.conf.json` et `tauri.beta.conf.json`.
+`bundle.createUpdaterArtifacts` vaut `true` : `cargo tauri build` signe
+l'installeur et écrit `<installeur>.exe.sig` à côté ; sans clé privée il échoue.
+Pour un build local sans clé (devtest, essais) :
 
-3. Passer `bundle.createUpdaterArtifacts` à `true` dans les deux configs.
+```powershell
+cargo tauri build --config tauri.unsigned.conf.json   # depuis apps/lc-overlay
+```
 
-4. Builder avec la clé privée :
+Build signé local :
 
-   ```powershell
-   $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content "$env:USERPROFILE\.tauri\livechat-3x.key" -Raw
-   $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<mot de passe de la clé>"
-   cargo tauri build            # produit aussi .nsis.zip + .sig
-   cargo tauri build --config tauri.beta.conf.json
-   ```
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content "$env:USERPROFILE\.tauri\livechat-overlay.key" -Raw
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = Get-Content "$env:USERPROFILE\.tauri\livechat-overlay.key.password" -Raw
+cargo tauri build
+```
 
-   La signature updater **exige** la clé privée : sans elle, `cargo tauri build`
-   échoue quand `createUpdaterArtifacts: true`. C'est la raison pour laquelle la
-   configuration actuelle produit des installateurs non signés pour l'updater.
+### 6.4 `latest.json`
 
-5. Template `latest.json` (à publier à côté de l'installeur). La valeur
-   `signature` est le **contenu intégral du fichier `.sig`** ; l'URL pointe vers
-   l'archive `.nsis.zip` du binaire (pas l'installeur `.exe`), qui est ce que le
-   plugin updater télécharge et vérifie :
+Généré par la CI sur tag (§7.1) et joint à la release. `signature` est le contenu
+du `.sig`, `url` l'installeur `.exe` de la même release (format updater Tauri 2,
+plus de `.nsis.zip`) :
 
-   ```json
-   {
-     "version": "3.0.0",
-     "notes": "LiveChat 3.0.0",
-     "pub_date": "2026-11-10T00:00:00Z",
-     "platforms": {
-       "windows-x86_64": {
-         "signature": "<contenu de LiveChat_3.0.0_x64-setup.nsis.zip.sig>",
-         "url": "https://github.com/quentingimenez/LiveChat/releases/download/v3.0.0/LiveChat_3.0.0_x64-setup.nsis.zip"
-       }
-     }
-   }
-   ```
+```json
+{
+  "version": "3.1.1",
+  "notes": "LiveChat overlay 3.1.1",
+  "pub_date": "2026-11-14T12:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "<contenu de LiveChat_3.1.1_x64-setup.exe.sig>",
+      "url": "https://github.com/quentingimenez/LiveChat/releases/download/overlay-v3.1.1/LiveChat_3.1.1_x64-setup.exe"
+    }
+  }
+}
+```
 
-   Bêta : `version` = `3.0.0-beta.N`, architecture `windows-x86_64` identique,
-   URL sous le tag `next` ; `latest.json` placé en asset de la release `next`.
-
-6. Le client overlay vérifie l'endpoint configuré au démarrage/à la demande
-   (`overlay_check_updates`), affiche la version disponible, télécharge et
-   installe via le plugin updater (restart géré par Windows). En cas de pubkey
-   placeholder, l'erreur est remontée dans le tray.
+Tant que le brouillon n'est pas publié et marqué *Latest*, l'endpoint renvoie
+toujours l'ancienne release : la publication manuelle est le feu vert de la mise
+à jour pour tous les overlays.
 
 ## 7. Publication GitHub (dépôt `quentingimenez/LiveChat`)
 
@@ -248,9 +246,8 @@ gh release create next `
   target/release/bundle/nsis/"LiveChat Next_3.0.0-beta.1_x64-setup.exe"
 ```
 
-Avec updater signé, ajouter à chaque release les fichiers `.nsis.zip`, `.sig` et
-`latest.json` (stable : asset `latest.json` de la release `latest` ; bêta : asset
-`latest.json` de la release `next`). Le endpoint stable
+Chaque release stable porte l'installeur et `latest.json` (§6.4) ; une bêta
+publiée à la main porte son propre `latest.json` dans la release `next`. Le endpoint stable
 `.../releases/latest/download/latest.json` suit automatiquement la dernière release
 marquée « latest » (donc ne pas marquer la bêta comme latest).
 
@@ -262,25 +259,23 @@ actions épinglées par SHA) :
 - se déclenche sur push/PR touchant `apps/lc-overlay/**`, `crates/lc-protocol/**`,
   `crates/lc-domain/**`, `Cargo.*` ou le workflow lui-même, sur tag `overlay-v*`
   et à la demande ;
-- installe `tauri-cli` 2.12.4 puis lance `cargo tauri build --ci` (installeur NSIS
-  stable `LiveChat_<version>_x64-setup.exe`, sans `.nsis.zip` ni `.sig`) ;
+- installe `tauri-cli` 2.12.4 puis lance `cargo tauri build --ci` : hors tag avec
+  `--config tauri.unsigned.conf.json` (pas de clé, pas de `.sig`), sur tag avec les
+  secrets de signature (échec explicite s'ils manquent) ;
 - vérifie le budget de 20 Mo, calcule le SHA-256, puis fait un **smoke test** :
   installation silencieuse (`/S`) dans `%LOCALAPPDATA%\LiveChat`, lancement 8 s
   avec une config isolée (`LIVECHAT_CONFIG_PATH`), désinstallation silencieuse ;
 - publie l'installeur et son `.sha256` en artefact du run (14 jours) ;
 - sur tag `overlay-v<version>` : refuse un tag différent de la version de
-  `tauri.conf.json`, puis crée un **brouillon** de release GitHub avec les deux
-  fichiers (job séparé, seul à avoir `contents: write`). Publier le brouillon
-  reste manuel ; ne jamais le marquer *Latest* pour une bêta.
+  `tauri.conf.json`, écrit `latest.json` à partir du `.sig`, puis crée un
+  **brouillon** de release GitHub avec l'installeur, son `.sha256` et
+  `latest.json` (job séparé, seul à avoir `contents: write`). Publier le brouillon
+  et le marquer *Latest* déclenche la mise à jour des overlays installés ; ne
+  jamais marquer une bêta *Latest*.
 
 La CI Rust (`rust.yml`) continue de vérifier que `apps/lc-overlay` compile (clippy,
 tests) sous Linux et Windows ; le bloc Win32 (`win32.rs`, crate `windows`) n'est
 compilé que sous Windows.
-
-Pour activer l'auto-update (3.1), il faudra en plus : les secrets
-`TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`,
-`createUpdaterArtifacts: true`, la vraie clé publique (§6) et la génération de
-`latest.json` dans le job de release.
 
 ## 8. Politique de versions
 
@@ -383,9 +378,8 @@ et non `app_config_dir()` (`%APPDATA%\com.livechat`). Conséquences :
 
 ## 14. Checklist « release finale » (Phase 9)
 
-- [ ] (3.1 uniquement, auto-update désactivé en 3.0.0 — §6) Clé minisign réelle
-      générée, pubkey injecté, `createUpdaterArtifacts: true`, workflow Tauri de
-      release ajouté avec actions épinglées par SHA.
+- [x] Clé minisign réelle générée, pubkey injecté, `createUpdaterArtifacts: true`,
+      `latest.json` généré par la CI de release (§6, 2026-11-14).
 - [ ] Certificat Authenticode disponible (optionnel mais recommandé) et commande
       `signtool` intégrée au pipeline.
 - [ ] `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test -p lc-overlay` verts.
@@ -401,14 +395,9 @@ et non `app_config_dir()` (`%APPDATA%\com.livechat`). Conséquences :
 Les correctifs de la task-43 (`AUD-A6-002/003/004/005/008/015`) modifient le
 contenu et le comportement du bundle 3.0.0 :
 
-- **Updater explicitement désactivé dans le code** : en plus de
-  `createUpdaterArtifacts: false` et de la pubkey placeholder, `updater.rs`
-  expose `UPDATER_ENABLED_FOR_RELEASE = false`. Les commandes
-  `overlay_check_updates` / `overlay_install_update` renvoient l'état `disabled`
-  sans appel réseau ni erreur de clé. Pour activer l'auto-update (3.1) : clé
-  minisign réelle, `createUpdaterArtifacts: true`, artefacts `.nsis.zip`/`.sig`,
-  `latest.json` signé, puis passer la constante à `true` **et** vérifier la
-  signature de bout en bout sur VM.
+- **Updater désactivé dans le code pour 3.0.x et 3.1.0** (constante
+  `UPDATER_ENABLED_FOR_RELEASE`), retirée en 3.1.1 quand l'auto-update a été
+  activé (§6).
 - **Harnais de dev hors bundle** : `apps/lc-overlay/dev/bridge-test.html` et
   `dev/README.md` ne sont plus dans `frontendDist` ; le binaire release ne doit
   plus contenir `bridge-test.html` (vérification : scan ASCII/UTF-16 du binaire).

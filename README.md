@@ -1,106 +1,85 @@
 # LiveChat
 
-Monorepo LiveChat: envoi de médias (Discord, navigateur, raccourcis iOS) vers un overlay desktop affiché en stream.
+LiveChat affiche des médias en direct sur un stream : une vidéo, une image ou un
+tweet envoyé depuis Discord, le navigateur ou la board apparaît par-dessus le jeu,
+dans un overlay transparent posé sur l'écran du streamer.
+
+Version actuelle : **3.1** — serveur `3.1.0`, overlay Windows `3.1.0`.
 
 ```mermaid
 flowchart LR
-  discord[Discord] -->|commandes| server
+  discord[Discord<br/>commandes slash] --> server
   extension[Extension navigateur] -->|POST /ingest| server
-  ios[Raccourcis iOS] -->|POST /ingest| server
-  server[server<br/>bot Discord + API] -->|socket.io| overlay[overlay<br/>Electron]
+  board[Board de l'overlay<br/>médias, file, upload] -->|API REST| server
+  server[lc-server<br/>Rust, bot Discord + API] -->|WebSocket v2| overlay[lc-overlay<br/>Tauri 2, Windows]
 ```
 
-## Projets
+## Installer
 
-| Dossier | Rôle | Stack | Livrable |
-| --- | --- | --- | --- |
-| [`server/`](server) | Bot Discord + API (`/overlay/*`, `/ingest`, `/admin`), pipeline média (yt-dlp + ffmpeg) | Node 20, TypeScript, Fastify, Prisma/SQLite, pnpm | Image Docker `ghcr.io/quentingimenez/livechat-server` |
-| [`overlay/`](overlay) | Client desktop qui reçoit et affiche les médias | Electron, TypeScript, npm | `.exe` Windows (setup + portable) avec auto-update |
-| [`extension/`](extension) | Extension Chromium MV3 qui envoie des liens vers `/ingest` | TypeScript, Vite, npm | Zip + Chrome Web Store |
-
-Chaque projet reste autonome: son propre gestionnaire de paquets, son lockfile et son README (démarrage, configuration, build).
-
-## Démarrage
-
-Prérequis: Node 22 (Node 20 suffit pour `server/` et `extension/`), pnpm 10 (`corepack enable`), Python 3 (zip de l'extension), Docker (optionnel).
-
-```bash
-npm install          # outillage racine: hooks git (husky) + commitlint
-npm run install:all  # dépendances des 3 projets
-```
-
-Scripts racine (raccourcis vers les projets):
-
-| Script | Équivalent |
-| --- | --- |
-| `npm run server:dev` | `pnpm --dir server dev` |
-| `npm run server:test` | `pnpm --dir server test` |
-| `npm run overlay:start` | `npm --prefix overlay start` |
-| `npm run overlay:verify` | `npm --prefix overlay run verify` |
-| `npm run extension:build` | `npm --prefix extension run build` |
-| `npm run extension:check` | `npm --prefix extension run ci:check` |
-
-## CI/CD (GitHub Actions)
-
-Les workflows sont à la racine (`.github/workflows/`) et ne se déclenchent que sur les changements du projet concerné.
-
-| Workflow | Déclencheur | Résultat |
-| --- | --- | --- |
-| [`server.yml`](.github/workflows/server.yml) | PR / push `main` sur `server/**`, tag `server-v*` | Tests + image Docker poussée sur GHCR (build sans push sur PR) |
-| [`overlay-ci.yml`](.github/workflows/overlay-ci.yml) | PR / push `main` sur `overlay/**` | `npm run verify` (lint, typecheck, build, tests) |
-| [`overlay-nightly.yml`](.github/workflows/overlay-nightly.yml) | Push `main` sur `overlay/**` | Prerelease `overlay-nightly` (`.exe` portable) |
-| [`overlay-release.yml`](.github/workflows/overlay-release.yml) | Tag `overlay-vX.Y[.Z]` | Release stable marquée *Latest* (setup + portable + `latest.yml`) |
-| [`extension.yml`](.github/workflows/extension.yml) | PR / push `main` sur `extension/**`, tag `extension-v*` | Checks + zip, prerelease `extension-latest`, release + Chrome Web Store |
-
-### Tags de version
-
-| Projet | Tag | Exemple |
-| --- | --- | --- |
-| server | `server-vX.Y.Z` | `server-v1.0.0` → image `ghcr.io/quentingimenez/livechat-server:1.0.0` |
-| overlay | `overlay-vX.Y` ou `overlay-vX.Y.Z` (doit correspondre à `overlay/package.json`) | `overlay-v2.0.2` |
-| extension | `extension-vX.Y.Z` | `extension-v0.1.0` |
-
-> L'auto-update de l'overlay (`electron-updater`) lit la release **Latest** du dépôt. Seules les releases
-> stables de l'overlay sont marquées *Latest*; les autres releases sont créées en prerelease ou avec `latest=false`.
-> Ne pas marquer manuellement une autre release comme *Latest*.
-
-### Image Docker du serveur
+- **Overlay Windows** : installeur `LiveChat_<version>_x64-setup.exe` de la
+  [dernière release](https://github.com/quentingimenez/LiveChat/releases/latest),
+  installation par utilisateur sans droits admin. L'appairage avec un serveur Discord
+  se fait depuis la board.
+- **Serveur** : image Docker `ghcr.io/quentingimenez/livechat-server`
+  (`:latest` ou une version épinglée, par exemple `:3.1.0`), exemple de déploiement
+  dans [`deploy/docker-compose.yml`](deploy/docker-compose.yml) et procédure complète
+  dans [`docs/rust/packaging.md`](docs/rust/packaging.md).
 
 ```bash
 docker pull ghcr.io/quentingimenez/livechat-server:latest
 ```
 
-Exemple de déploiement: [`server/docker-compose.yml`](server/docker-compose.yml).
+## Contenu du dépôt
 
-## Conventions
-
-- Commits au format [Conventional Commits](https://www.conventionalcommits.org/), vérifiés par commitlint (`commit-msg`). Utiliser le projet en scope: `feat(server): ...`, `fix(overlay): ...`, `chore(extension): ...`.
-- `pre-commit`: tests unitaires du serveur si des fichiers `server/` sont indexés.
-- `pre-push`: `pnpm audit --prod` (niveau `critical`) sur le serveur.
-
-## Migration depuis les anciens dépôts
-
-L'historique git complet des trois dépôts a été importé dans leurs sous-dossiers (`git log -- overlay/` fonctionne).
-Les anciens tags de l'overlay sont renommés `overlay-v*`.
-
-| Ancien dépôt | Dossier |
+| Dossier | Rôle |
 | --- | --- |
-| [WardenPro/LiveChat-Bot](https://github.com/WardenPro/LiveChat-Bot) → fork [quentingimenez/LiveChat-server](https://github.com/quentingimenez/LiveChat-server) | `server/` |
-| [quentingimenez/LiveChat-Overlay](https://github.com/quentingimenez/LiveChat-Overlay) | `overlay/` |
-| [quentingimenez/LiveChat-Extension](https://github.com/quentingimenez/LiveChat-Extension) | `extension/` |
+| [`apps/lc-server`](apps/lc-server) | Serveur : bot Discord, API overlay et ingestion, WebSocket v2, panneau d'administration |
+| [`apps/lc-overlay`](apps/lc-overlay) | Overlay desktop Tauri 2 (Windows) : affichage des médias et board (médias, file, réglages, placement de la zone d'affichage) |
+| [`crates/`](crates) | Bibliothèques partagées : protocole (`lc-protocol`), domaine, base SQLite (`lc-db`), pipeline média yt-dlp + ffmpeg (`lc-media`), lecture (`lc-playback`), Discord (`lc-discord`) |
+| [`static/admin`](static/admin) | Panneau d'administration servi par le serveur sur `/admin/` |
+| [`extension/`](extension) | Extension Chromium MV3 qui envoie des liens (YouTube, TikTok, X) vers `/ingest` |
+| [`deploy/`](deploy) | Dockerfile de production et Docker Compose du serveur |
+| [`docs/`](docs) | Documentation technique (`docs/rust/`) et charte graphique (`docs/brand/`) |
+| [`xtask/`](xtask) | Outillage du workspace (harnais de parité, etc.) |
+| `server/`, `overlay/` | Ancienne version 2.x (Node + Electron), gardée comme référence de retour arrière ; plus publiée |
 
-Actions à faire une seule fois:
+## Développement
 
-1. **Visibilité de l'image GHCR**: un package GHCR est privé à sa création. Pour un `docker pull` sans authentification,
-   *Packages → livechat-server → Package settings → Change visibility → Public*.
-2. **Chrome Web Store**: ajouter les secrets `CWS_EXTENSION_ID`, `CWS_CLIENT_ID`, `CWS_CLIENT_SECRET`, `CWS_REFRESH_TOKEN` au monorepo (voir [`extension/README.md`](extension/README.md)).
-3. **Auto-update des overlays déjà installés (≤ 2.0.1)**: ils interrogent encore les releases de `LiveChat-Overlay`.
-   Après la première release `overlay-vX.Y.Z` du monorepo, republier ses fichiers (setup, portable, `latest.yml`, `*.blockmap`)
-   dans une release `X.Y.Z` de l'ancien dépôt: une fois cette version installée, les clients suivent le monorepo.
+Prérequis : Rust stable (voir [`rust-toolchain.toml`](rust-toolchain.toml)),
+`tauri-cli` 2 pour l'overlay (`cargo install tauri-cli --version ^2`), Node 20+ pour
+l'extension et les tests JS de l'overlay.
 
-   ```bash
-   gh release download overlay-v2.0.2 -R quentingimenez/LiveChat -D bridge
-   gh release create 2.0.2 bridge/* -R quentingimenez/LiveChat-Overlay --title 2.0.2 --notes "Dernière version publiée ici: les mises à jour viennent désormais de quentingimenez/LiveChat."
-   ```
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo run -p lc-server
+node --test apps/lc-overlay/dev/tests/*.mjs
+```
 
-4. Archiver les anciens dépôts une fois la migration validée.
+Overlay en local, sans clé de signature des mises à jour :
+
+```bash
+cd apps/lc-overlay
+cargo tauri build --config tauri.unsigned.conf.json
+```
+
+La board peut aussi tourner dans un navigateur, sans Tauri ni serveur, avec le harnais
+`apps/lc-overlay/dev/board-mock.html` (voir [`apps/lc-overlay/dev/README.md`](apps/lc-overlay/dev/README.md)).
+
+## Releases
+
+| Projet | Tag | Résultat |
+| --- | --- | --- |
+| Serveur | `server-vX.Y.Z` | Image `ghcr.io/quentingimenez/livechat-server:X.Y.Z` et `:latest`, après smoke test ([`server-image.yml`](.github/workflows/server-image.yml)) |
+| Overlay | `overlay-vX.Y.Z` (= `version` de `apps/lc-overlay/tauri.conf.json`) | Brouillon de release avec l'installeur signé et `latest.json` ([`overlay-tauri.yml`](.github/workflows/overlay-tauri.yml)) |
+| Extension | `extension-vX.Y.Z` | Zip et publication Chrome Web Store ([`extension.yml`](.github/workflows/extension.yml)) |
+
+L'overlay se met à jour tout seul à partir de la release marquée **Latest** : il
+vérifie à chaque ouverture de la board, télécharge la nouvelle version en arrière-plan
+et l'installe au clic de l'utilisateur. Publier le brouillon d'une release overlay et
+le marquer *Latest* déclenche donc la mise à jour de tous les overlays installés ;
+seules les releases stables de l'overlay doivent être *Latest*. Détails :
+[`docs/rust/overlay-release.md`](docs/rust/overlay-release.md).
+
+La CI Rust ([`rust.yml`](.github/workflows/rust.yml)) vérifie le formatage, clippy,
+les tests, `cargo deny` et `cargo audit` sous Linux et Windows.

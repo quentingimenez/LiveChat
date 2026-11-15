@@ -13,7 +13,7 @@ use tauri::{AppHandle, Manager, Wry};
 use crate::config::{LayoutAnchor, LayoutZone, OverlayConfig, OverlayLayout, ShortcutSettings};
 use crate::display::DisplayInfo;
 use crate::state::AppState;
-use crate::updater;
+use crate::updater::{UpdateStatus, UpdaterState};
 
 /// One display as exposed by `settings_get`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -41,7 +41,7 @@ pub struct SettingsProfile {
 #[serde(rename_all = "camelCase")]
 pub struct SettingsView {
     pub version: String,
-    pub updater_enabled: bool,
+    pub update: UpdateStatus,
     pub displays: Vec<SettingsDisplay>,
     pub selected_display_key: Option<String>,
     pub volume: f64,
@@ -145,10 +145,11 @@ pub fn build_settings_view(
     displays: &[DisplayInfo],
     primary_index: Option<usize>,
     auto_start: bool,
+    update: UpdateStatus,
 ) -> SettingsView {
     SettingsView {
         version: env!("CARGO_PKG_VERSION").to_string(),
-        updater_enabled: updater::UPDATER_ENABLED_FOR_RELEASE,
+        update,
         displays: display_views(displays, primary_index),
         selected_display_key: config.display_key.clone(),
         volume: config.volume,
@@ -175,7 +176,8 @@ pub fn settings_view(app: &AppHandle<Wry>) -> SettingsView {
     let config = app.state::<AppState>().config_snapshot();
     let (displays, primary_index) = crate::windows::collect_displays(app);
     let auto_start = crate::device_settings::autostart_enabled(app);
-    let mut view = build_settings_view(&config, &displays, primary_index, auto_start);
+    let update = app.state::<UpdaterState>().status();
+    let mut view = build_settings_view(&config, &displays, primary_index, auto_start, update);
     view.placing = crate::placement::is_active();
     view
 }
@@ -498,6 +500,10 @@ mod tests {
     use crate::config::Membership;
     use serde_json::json;
 
+    fn idle_update() -> UpdateStatus {
+        UpdaterState::default().status()
+    }
+
     pub(crate) fn sample_displays() -> Vec<DisplayInfo> {
         vec![
             DisplayInfo::new(0, Some("DISPLAY1".to_string()), 0, 0, 2560, 1440, 1.0),
@@ -617,7 +623,13 @@ mod tests {
 
     #[test]
     fn settings_set_response_matches_the_board_shape() {
-        let view = build_settings_view(&paired_config(), &sample_displays(), Some(0), false);
+        let view = build_settings_view(
+            &paired_config(),
+            &sample_displays(),
+            Some(0),
+            false,
+            idle_update(),
+        );
         let failure =
             serde_json::to_value(SettingsSetResponse::failure("volume", "test", view.clone()))
                 .expect("failure json");
@@ -726,7 +738,7 @@ mod tests {
         config.shortcuts.stop = Some("Ctrl+Shift+S".to_string());
         config.profile_name = Some("Quentin".to_string());
         let displays = sample_displays();
-        let view = build_settings_view(&config, &displays, Some(0), true);
+        let view = build_settings_view(&config, &displays, Some(0), true, idle_update());
         assert_eq!(view.version, env!("CARGO_PKG_VERSION"));
         assert!(!view.general_mute);
         assert_eq!(view.guild_volumes.get("111"), Some(&1.0));
@@ -742,5 +754,6 @@ mod tests {
         assert_eq!(value["layout"]["zone"]["width"], json!(0.7));
         assert_eq!(value["shortcuts"]["stop"], json!("Ctrl+Shift+S"));
         assert_eq!(value["profile"]["displayName"], json!("Quentin"));
+        assert_eq!(value["update"]["state"], json!("idle"));
     }
 }

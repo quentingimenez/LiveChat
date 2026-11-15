@@ -64,8 +64,8 @@
   const now = Date.now();
 
   const settings = {
-    version: '3.0.1',
-    updaterEnabled: false,
+    version: '3.1.0',
+    update: { state: 'idle', currentVersion: '3.1.0', availableVersion: null, message: 'Les mises à jour sont vérifiées automatiquement.' },
     displays: [
       { index: 0, key: 'display-0', label: 'Écran 1 — 2560 × 1440 (principal)', width: 2560, height: 1440, primary: true },
       { index: 1, key: 'display-1', label: 'Écran 2 — 1920 × 1080', width: 1920, height: 1080, primary: false },
@@ -302,11 +302,22 @@
     return { ok: true, settings: settingsCopy() };
   }
 
-  function updateCheckStatus() {
-    if (!settings.updaterEnabled) {
-      return { state: 'disabled', currentVersion: settings.version, availableVersion: null, message: 'Mises à jour désactivées pour cette version.' };
+  // Mock updater: a check finds 3.2.0, downloads it, then it waits to be installed.
+  function setUpdate(state, availableVersion, message) {
+    settings.update = { state, currentVersion: settings.version, availableVersion, message };
+    emit('overlay://device-settings', settingsCopy());
+    return { ...settings.update };
+  }
+
+  function checkForUpdate() {
+    if (settings.update.state === 'ready') {
+      return Promise.resolve({ ...settings.update });
     }
-    return { state: 'up_to_date', currentVersion: settings.version, availableVersion: null, message: 'Aucune mise à jour disponible.' };
+    setUpdate('checking', null, 'Recherche d’une mise à jour…');
+    return delay(300)
+      .then(() => setUpdate('downloading', '3.2.0', 'Téléchargement de la version 3.2.0…'))
+      .then(() => delay(600))
+      .then(() => setUpdate('ready', '3.2.0', 'La version 3.2.0 est prête à être installée.'));
   }
 
   function api(payload) {
@@ -619,7 +630,9 @@
         case 'settings_placement_cancel':
           return delay(60).then(() => finishPlacement(null));
         case 'overlay_check_updates':
-          return delay(300).then(updateCheckStatus);
+          return checkForUpdate();
+        case 'overlay_install_update':
+          return delay(200).then(() => Promise.reject('Mock : l’installeur ne peut pas être lancé dans le navigateur.'));
         case 'guilds_list':
           return Promise.resolve(guildsCopy());
         case 'guild_api':

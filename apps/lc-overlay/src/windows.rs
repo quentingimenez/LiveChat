@@ -527,8 +527,10 @@ pub fn hide_overlay(app: &AppHandle<Wry>) {
     }
 }
 
+/// Shows the board and checks for updates right away.
 pub fn show_board(app: &AppHandle<Wry>) {
     reveal(app, BOARD_LABEL, true);
+    crate::updater::check_in_background(app);
 }
 
 /// Deuxième lancement : ouverture explicite de la board.

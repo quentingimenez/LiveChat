@@ -144,3 +144,8 @@
   color: var(--red);
   font-size: 13px;
 }
+
+/* A switch keeps its box and its text on one line inside a stacked form. */
+.dialog .stack label.switch {
+  display: inline-flex;
+}

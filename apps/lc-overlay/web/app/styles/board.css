@@ -521,13 +521,45 @@
 }
 
 /* -------------------------------------------------------- edit: picture */
-.artwork-row {
+/* Picture zone: also the target of a dropped image or link. */
+.artwork-drop {
   display: flex;
   align-items: center;
   gap: 12px;
+  padding: 10px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-s);
+}
+
+.artwork-drop.is-over {
+  border-color: var(--blue);
+  background: var(--slate-700);
+}
+
+.artwork-preview.is-empty {
+  display: grid;
+  place-items: center;
+  color: var(--text-faint);
+}
+
+.artwork-preview.is-empty svg {
+  width: 24px;
+  height: 24px;
+}
+
+.dialog .artwork-hint {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.artwork-link {
+  display: flex;
+  gap: 8px;
 }
 
 .artwork-preview {
+  flex: none;
   width: 72px;
   height: 72px;
   border: 1px solid var(--line);

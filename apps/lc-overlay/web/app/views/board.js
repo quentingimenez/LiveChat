@@ -356,7 +356,14 @@ function buildCard(entry) {
       'data-kind': artwork ? 'image' : kind,
       'data-item-id': item.id,
       'aria-label': `Détails de ${itemTitle(item)}`,
-      onClick: () => selectItem(entry.item.id),
+      onClick: (event) => selectItem(entry.item.id, event.detail),
+      // A double click plays the media, like the Play button. Its two clicks
+      // leave the drawer pinned on it (see cardClicked).
+      onDblclick: () => {
+        if (can('play')) {
+          playItem(entry.item);
+        }
+      },
     },
     h('span', { class: 'glyph' }, icon(kind === 'audio' ? 'audio' : kind === 'image' ? 'image' : 'video')),
     artwork ? h('span', { class: 'kind-badge', 'aria-hidden': 'true' }, icon('audio')) : null,
@@ -650,9 +657,10 @@ function clearDrawerTimers() {
 }
 
 // A click pins the drawer on a media (a second click on it closes it).
-export function selectItem(id) {
+// `clickCount` is the `detail` of the click event, when there is one.
+export function selectItem(id, clickCount) {
   clearDrawerTimers();
-  applyView(cardClicked(currentView(), id));
+  applyView(cardClicked(currentView(), id, clickCount));
   state.capturing = false;
   syncDetail();
 }

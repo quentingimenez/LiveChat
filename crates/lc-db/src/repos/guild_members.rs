@@ -6,14 +6,15 @@ use lc_domain::enums::GuildRole;
 use lc_domain::ids::{GuildId, GuildMemberId, OverlayClientId};
 use sqlx::SqlitePool;
 
-use crate::convert::{decode, from_ms, from_opt_ms, to_ms, to_opt_ms};
+use crate::convert::{decode, from_bool, from_ms, from_opt_ms, to_bool, to_ms, to_opt_ms};
 use crate::error::DbResult;
 
 const TABLE: &str = "guild_members";
 
 /// Colonnes de `guild_members`, préfixées pour les jointures.
 const MEMBER_COLUMNS: &str = "m.id, m.guild_id, m.display_name, m.avatar, m.role, m.created_at, \
-                              m.removed_at";
+                              m.removed_at, m.discord_user_id, m.profile_custom, \
+                              m.discord_synced_at";
 
 /// Nombre d'admins actifs de la guilde du membre ciblé par l'instruction.
 const ACTIVE_ADMIN_COUNT: &str = "(SELECT COUNT(*) FROM guild_members AS other \
@@ -31,6 +32,9 @@ struct GuildMemberRow {
     role: String,
     created_at: i64,
     removed_at: Option<i64>,
+    discord_user_id: Option<String>,
+    profile_custom: i64,
+    discord_synced_at: Option<i64>,
 }
 
 impl GuildMemberRow {
@@ -43,6 +47,9 @@ impl GuildMemberRow {
             role: decode(TABLE, "role", &self.role, GuildRole::from_db_str)?,
             created_at: from_ms(TABLE, "created_at", self.created_at)?,
             removed_at: from_opt_ms(TABLE, "removed_at", self.removed_at)?,
+            discord_user_id: self.discord_user_id,
+            profile_custom: from_bool(self.profile_custom),
+            discord_synced_at: from_opt_ms(TABLE, "discord_synced_at", self.discord_synced_at)?,
         })
     }
 }
@@ -73,8 +80,9 @@ impl GuildMembersRepository {
     pub async fn create(&self, member: &GuildMember) -> DbResult<()> {
         sqlx::query(
             "INSERT INTO guild_members ( \
-                id, guild_id, display_name, avatar, role, created_at, removed_at \
-             ) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                id, guild_id, display_name, avatar, role, created_at, removed_at, \
+                discord_user_id, profile_custom, discord_synced_at \
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(member.id.to_canonical())
         .bind(member.guild_id.as_str())
@@ -83,6 +91,9 @@ impl GuildMembersRepository {
         .bind(member.role.as_db_str())
         .bind(to_ms(member.created_at))
         .bind(to_opt_ms(member.removed_at))
+        .bind(member.discord_user_id.as_deref())
+        .bind(to_bool(member.profile_custom))
+        .bind(to_opt_ms(member.discord_synced_at))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -115,6 +126,23 @@ impl GuildMembersRepository {
         row.map(GuildMemberRow::into_entity).transpose()
     }
 
+    /// Active member of a guild linked to a Discord account.
+    pub async fn find_active_by_discord_user(
+        &self,
+        guild_id: &GuildId,
+        discord_user_id: &str,
+    ) -> DbResult<Option<GuildMember>> {
+        let row = sqlx::query_as::<_, GuildMemberRow>(
+            "SELECT * FROM guild_members \
+             WHERE guild_id = ? AND discord_user_id = ? AND removed_at IS NULL",
+        )
+        .bind(guild_id.as_str())
+        .bind(discord_user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(GuildMemberRow::into_entity).transpose()
+    }
+
     /// Liste les membres actifs d'une guilde, du plus ancien au plus récent.
     pub async fn list_by_guild(&self, guild_id: &GuildId) -> DbResult<Vec<GuildMember>> {
         let rows = sqlx::query_as::<_, GuildMemberRow>(
@@ -139,7 +167,8 @@ impl GuildMembersRepository {
         Ok(count)
     }
 
-    /// Met à jour le profil (pseudo, avatar) d'un membre actif.
+    /// Sets the profile the member chose (name, avatar). From then on Discord
+    /// no longer overwrites it (`profile_custom`).
     pub async fn update_profile(
         &self,
         id: GuildMemberId,
@@ -147,11 +176,82 @@ impl GuildMembersRepository {
         avatar: Option<&str>,
     ) -> DbResult<bool> {
         let result = sqlx::query(
-            "UPDATE guild_members SET display_name = ?, avatar = ? \
+            "UPDATE guild_members SET display_name = ?, avatar = ?, profile_custom = 1 \
              WHERE id = ? AND removed_at IS NULL",
         )
         .bind(display_name)
         .bind(avatar)
+        .bind(id.to_canonical())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Writes the name and avatar read from Discord, only while the member
+    /// follows their linked account, and aligns the author shown by their
+    /// overlays. One transaction: a concurrent « Mon profil » edit wins.
+    ///
+    /// Returns `false` when nothing was written (member gone, unlinked, or
+    /// now using a custom profile).
+    pub async fn sync_discord_profile(
+        &self,
+        id: GuildMemberId,
+        display_name: &str,
+        avatar: Option<&str>,
+        synced_at: DateTime<chrono::Utc>,
+    ) -> DbResult<bool> {
+        let mut tx = self.pool.begin().await?;
+        let result = sqlx::query(
+            "UPDATE guild_members SET display_name = ?, avatar = ?, discord_synced_at = ? \
+             WHERE id = ? AND removed_at IS NULL \
+               AND discord_user_id IS NOT NULL AND profile_custom = 0",
+        )
+        .bind(display_name)
+        .bind(avatar)
+        .bind(to_ms(synced_at))
+        .bind(id.to_canonical())
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        sqlx::query(
+            "UPDATE overlay_clients SET default_author_name = ?, default_author_image = ? \
+             WHERE member_id = ? AND revoked_at IS NULL",
+        )
+        .bind(display_name)
+        .bind(avatar)
+        .bind(id.to_canonical())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// Records a Discord read that changed nothing (the account left the
+    /// server, for instance), so it is not retried at every connection.
+    pub async fn mark_discord_synced(
+        &self,
+        id: GuildMemberId,
+        synced_at: DateTime<chrono::Utc>,
+    ) -> DbResult<()> {
+        sqlx::query("UPDATE guild_members SET discord_synced_at = ? WHERE id = ?")
+            .bind(to_ms(synced_at))
+            .bind(id.to_canonical())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Makes a linked member follow their Discord account again.
+    ///
+    /// Returns `false` for an unlinked or removed member.
+    pub async fn follow_discord(&self, id: GuildMemberId) -> DbResult<bool> {
+        let result = sqlx::query(
+            "UPDATE guild_members SET profile_custom = 0, discord_synced_at = NULL \
+             WHERE id = ? AND removed_at IS NULL AND discord_user_id IS NOT NULL",
+        )
         .bind(id.to_canonical())
         .execute(&self.pool)
         .await?;

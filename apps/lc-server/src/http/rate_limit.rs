@@ -15,12 +15,24 @@
 //!   comme les autres routes et un bruteforce reçoit `429` ;
 //! - aucune dépendance supplémentaire n'est ajoutée.
 //!
-//! Les téléchargements média (`GET`/`HEAD` sur les deux routes média) ont leur
-//! propre budget, plus large ([`MEDIA_RATE_LIMIT_MAX`]) : la grille du board
-//! board charge une miniature par carte (et plusieurs requêtes `Range` par
-//! vidéo), ce qui épuiserait le budget général et ferait répondre `429` aux
-//! appels JSON. Les URLs média sont signées HMAC ou contrôlées par jeton, un
-//! budget plus large n'aide donc pas un bruteforce.
+//! Each request is counted in one of four budgets ([`Bucket`]), per client:
+//!
+//! - **auth** ([`AUTH_RATE_LIMIT_MAX`]): the routes that check a guessable
+//!   secret, pairing-code consumption and the admin panel (`/admin*`). This is
+//!   the budget that stops a brute force, so it stays at the legacy value;
+//! - **media** ([`MEDIA_RATE_LIMIT_MAX`]): `GET`/`HEAD` on the two media
+//!   routes. The board grid loads one thumbnail per card (and several `Range`
+//!   requests per video); the URLs are HMAC-signed, so a large budget does not
+//!   help a brute force;
+//! - **legacy** ([`LEGACY_RATE_LIMIT_MAX`]): `/socket.io*`, polled every few
+//!   seconds by 2.x overlays that only ever get `426`. They must not use up
+//!   the budget of a 3.x overlay on the same IP;
+//! - **general** ([`RATE_LIMIT_MAX`]): everything else, i.e. the overlay API,
+//!   the `/ws` upgrade and the extension ingestion. These routes require a
+//!   256-bit bearer token, so their budget is sized for normal board use: on
+//!   2026-11-13 an admin testing the board (mute toggles, tabs, focus) sent
+//!   102 requests in 15 minutes, hit the old shared limit of 100, and then
+//!   could not reconnect the WebSocket because `/ws` shared that budget.
 //!
 //! L'adresse IP est lue depuis `ConnectInfo<SocketAddr>` (jamais fourni par le
 //! client). Derrière un reverse proxy, `TRUST_PROXY_HEADERS=true` active la
@@ -45,12 +57,19 @@ use axum::response::Response;
 use crate::config::Config;
 use crate::http::error::{json_error, REQUEST_ERROR};
 
-/// Nombre maximal de requêtes par fenêtre et par client.
-pub const RATE_LIMIT_MAX: u32 = 100;
+/// General budget per window and per client (overlay API, `/ws`, ingestion).
+pub const RATE_LIMIT_MAX: u32 = 1000;
+
+/// Budget of the routes that check a guessable secret (pairing codes, admin
+/// panel), per window and per client.
+pub const AUTH_RATE_LIMIT_MAX: u32 = 100;
 
 /// Budget de téléchargements média (`GET`/`HEAD` sur les deux routes média) par
 /// fenêtre et par client, compté à part de [`RATE_LIMIT_MAX`].
 pub const MEDIA_RATE_LIMIT_MAX: u32 = 1000;
+
+/// Budget of the legacy `/socket.io*` probes per window and per client.
+pub const LEGACY_RATE_LIMIT_MAX: u32 = 100;
 
 /// Durée de la fenêtre de limitation.
 pub const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(15 * 60);
@@ -170,11 +189,33 @@ impl RateLimiter {
     }
 }
 
+/// Budget a request is counted in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bucket {
+    General,
+    Auth,
+    Media,
+    Legacy,
+}
+
+impl Bucket {
+    fn name(self) -> &'static str {
+        match self {
+            Self::General => "general",
+            Self::Auth => "auth",
+            Self::Media => "media",
+            Self::Legacy => "legacy",
+        }
+    }
+}
+
 /// État du middleware de limitation, clonable pour `from_fn_with_state`.
 #[derive(Debug, Clone)]
 pub struct RateLimitState {
-    limiter: RateLimiter,
+    general: RateLimiter,
+    auth: RateLimiter,
     media: RateLimiter,
+    legacy: RateLimiter,
     development: bool,
     trust_proxy_headers: bool,
 }
@@ -183,10 +224,21 @@ impl RateLimitState {
     /// Construit l'état depuis la configuration du serveur.
     pub fn from_config(config: &Config) -> Self {
         Self {
-            limiter: RateLimiter::new(RATE_LIMIT_MAX, RATE_LIMIT_WINDOW),
+            general: RateLimiter::new(RATE_LIMIT_MAX, RATE_LIMIT_WINDOW),
+            auth: RateLimiter::new(AUTH_RATE_LIMIT_MAX, RATE_LIMIT_WINDOW),
             media: RateLimiter::new(MEDIA_RATE_LIMIT_MAX, RATE_LIMIT_WINDOW),
+            legacy: RateLimiter::new(LEGACY_RATE_LIMIT_MAX, RATE_LIMIT_WINDOW),
             development: config.is_development(),
             trust_proxy_headers: config.trust_proxy_headers,
+        }
+    }
+
+    fn limiter(&self, bucket: Bucket) -> &RateLimiter {
+        match bucket {
+            Bucket::General => &self.general,
+            Bucket::Auth => &self.auth,
+            Bucket::Media => &self.media,
+            Bucket::Legacy => &self.legacy,
         }
     }
 }
@@ -202,16 +254,14 @@ pub async fn enforce(
         return next.run(request).await;
     }
 
-    let (limiter, bucket) = if is_media_request(request.method(), request.uri().path()) {
-        (&state.media, "media")
-    } else {
-        (&state.limiter, "general")
-    };
-    let decision = limiter.check_at(client_key(ip), Instant::now());
+    let bucket = bucket_for(request.method(), request.uri().path());
+    let decision = state
+        .limiter(bucket)
+        .check_at(client_key(ip), Instant::now());
     if !decision.allowed {
         tracing::warn!(
             client = ?ip,
-            bucket = %bucket,
+            bucket = %bucket.name(),
             path = %request.uri().path(),
             retry_after_secs = decision.reset_after.as_secs(),
             "limite de débit dépassée"
@@ -236,6 +286,34 @@ fn client_key(ip: Option<IpAddr>) -> ClientKey {
         Some(ip) => ClientKey::Known(ip),
         None => ClientKey::Unknown,
     }
+}
+
+/// Budget of a request, from its method and path.
+fn bucket_for(method: &Method, path: &str) -> Bucket {
+    if is_media_request(method, path) {
+        Bucket::Media
+    } else if is_auth_path(path) {
+        Bucket::Auth
+    } else if has_path_prefix(path, "/socket.io") {
+        Bucket::Legacy
+    } else {
+        Bucket::General
+    }
+}
+
+/// Routes that check a guessable secret: pairing-code consumption (overlay and
+/// extension) and the whole admin panel.
+fn is_auth_path(path: &str) -> bool {
+    has_path_prefix(path, "/admin")
+        || has_path_prefix(path, "/overlay/pair/consume")
+        || has_path_prefix(path, "/ingest/pair/consume")
+}
+
+/// `path` is `prefix` itself or a sub-path of it (`/admin`, `/admin/…`, but
+/// not `/administration`).
+fn has_path_prefix(path: &str, prefix: &str) -> bool {
+    path.strip_prefix(prefix)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
 /// Vrai pour un téléchargement média `GET`/`HEAD` : `/overlay/media/{asset_id}`
@@ -418,6 +496,33 @@ mod tests {
             (Method::GET, "/health"),
         ] {
             assert!(!is_media_request(&method, path), "{method} {path}");
+        }
+    }
+
+    #[test]
+    fn requests_are_sorted_into_buckets() {
+        for (method, path, bucket) in [
+            (Method::GET, "/overlay/media/abc", Bucket::Media),
+            (Method::GET, "/overlay/media-board/media/abc", Bucket::Media),
+            (Method::GET, "/admin", Bucket::Auth),
+            (Method::GET, "/admin/", Bucket::Auth),
+            (Method::GET, "/admin/api/overview", Bucket::Auth),
+            (Method::POST, "/overlay/pair/consume", Bucket::Auth),
+            (Method::POST, "/ingest/pair/consume", Bucket::Auth),
+            (Method::POST, "/ingest/pair/consume/", Bucket::Auth),
+            (Method::GET, "/socket.io", Bucket::Legacy),
+            (Method::GET, "/socket.io/", Bucket::Legacy),
+            (Method::POST, "/socket.io/x", Bucket::Legacy),
+            (Method::GET, "/ws", Bucket::General),
+            (Method::GET, "/overlay/guild", Bucket::General),
+            (Method::GET, "/overlay/queue", Bucket::General),
+            (Method::POST, "/overlay/media-board/upload", Bucket::General),
+            (Method::POST, "/ingest", Bucket::General),
+            (Method::GET, "/health", Bucket::General),
+            (Method::GET, "/administration", Bucket::General),
+            (Method::POST, "/overlay/pair/consumer", Bucket::General),
+        ] {
+            assert_eq!(bucket_for(&method, path), bucket, "{method} {path}");
         }
     }
 

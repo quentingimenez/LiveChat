@@ -79,7 +79,8 @@ app::router()
 Trois conséquences importantes :
 
 1. **`/admin*` n'est plus exempté du rate limit** (AUD-COR-10) : le panneau est
-   soumis au budget global (100 requêtes / 15 min / IP) et un bruteforce reçoit
+   soumis au budget « auth » (100 requêtes / 15 min / IP, partagé avec la
+   consommation des codes d'appairage) et un bruteforce reçoit
    `429 Too Many Requests` avec `Retry-After`. Seule l'exemption loopback du
    mode développement (`NODE_ENV=development`) subsiste pour les tests locaux.
 2. La couche `security.rs` globale posait ses en-têtes en **écrasant** ceux des
@@ -749,7 +750,7 @@ lock actuel : les dépendances Tauri 2 exigent ≥ 1.90 (`tauri-utils 2.10.2`,
 | 403 `admin_local_only` | accès depuis une IP non loopback (ou via proxy : le serveur voit l'IP du proxy) | accéder en local ; derrière un proxy, voir §4 « IP loopback » (`ADMIN_UI_LOCAL_ONLY=false` + exposition restreinte uniquement) |
 | 403 `invalid_origin` | mutation sans `Origin`/`Referer`, origine `null` ou étrangère (AUD-COR-14) | envoyer `Origin: <hôte du panneau>` ou `Referer` de même origine ; ne pas appeler l'API depuis un autre site |
 | 401 `unauthorized` | token absent/faux | vérifier l'en-tête `Authorization: Bearer` (le `?token=` n'est plus accepté, AUD-COR-05) |
-| 429 `request_error` | plus de 100 requêtes / 15 min / IP, **y compris `/admin*`** (AUD-COR-10) | patienter `Retry-After`, ou augmenter la fenêtre si usage légitime |
+| 429 `request_error` | plus de 100 requêtes / 15 min / IP sur `/admin*` et la consommation des codes d'appairage (budget « auth », AUD-COR-10) | patienter `Retry-After`, ou augmenter la fenêtre si usage légitime |
 | 404 `overlay_client_not_found` | identifiant non UUID | le legacy répondait 404 pour un id invalide ; conservé |
 | `admin_runtime.json` absent | jamais de PATCH | fichier créé au premier PATCH (défaut = `TIKTOK_COOKIE`) |
 | Pas de nom de guilde Discord | pas de résolution Discord en v2 | divergence §9 (nom persisté ou `Guild {id}`) |
@@ -779,7 +780,7 @@ lock actuel : les dépendances Tauri 2 exigent ≥ 1.90 (`tauri-utils 2.10.2`,
 - Retrait du champ `editableName` si le JS n'en dépend plus (E7).
 - Réduction des rafraîchissements automatiques (E11 : overview 2 s, pairing
   12 s) si la charge devient sensible ; depuis AUD-COR-10 `/admin*` est soumis
-  au rate limit global (100 req / 15 min / IP), ce plafond est donc à considérer
+  au budget « auth » du rate limit (100 req / 15 min / IP), ce plafond est donc à considérer
   avant d'augmenter la fréquence.
 - Stockage chiffré du cookie TikTok (actuellement en clair, parité v1).
 - Câblage réel du hub : fait (AUD-COR-14, `AppState::with_admin_hub`, plus de

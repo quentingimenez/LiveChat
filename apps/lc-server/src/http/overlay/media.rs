@@ -176,7 +176,14 @@ pub async fn get_media(
     touch_asset(&state, &asset, timestamp).await;
 
     let range = headers.get(header::RANGE).cloned();
-    serve_file(&asset, &file_path, method, range.as_ref()).await
+    serve_file(
+        &asset,
+        &file_path,
+        method,
+        range.as_ref(),
+        MediaCache::NoStore,
+    )
+    .await
 }
 
 /// Vérifie qu'un job de lecture de la guilde référence cet asset.
@@ -312,6 +319,34 @@ pub(super) async fn resolve_media_file(
     Ok(canonical)
 }
 
+/// How a browser may keep a served media.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum MediaCache {
+    /// Playback URLs (`/overlay/media/{id}`): never stored.
+    NoStore,
+    /// Board URLs: stored by the client only (`private`) until the signed URL
+    /// expires. An asset's bytes never change and board URLs stay identical
+    /// for a 15-minute window, so thumbnails and the detail preview are read
+    /// from the cache instead of being downloaded again on every render.
+    UntilExpiry { expires_at_sec: u64, now_sec: u64 },
+}
+
+impl MediaCache {
+    fn header_value(self) -> HeaderValue {
+        match self {
+            Self::NoStore => HeaderValue::from_static("no-store"),
+            Self::UntilExpiry {
+                expires_at_sec,
+                now_sec,
+            } => {
+                let max_age = expires_at_sec.saturating_sub(now_sec);
+                HeaderValue::from_str(&format!("private, max-age={max_age}, immutable"))
+                    .unwrap_or_else(|_| HeaderValue::from_static("no-store"))
+            }
+        }
+    }
+}
+
 /// Sert un fichier média avec `Range`/`HEAD` (mise en forme legacy conservée).
 ///
 /// Utilisé par la route média signée et par le média du board média (protégé
@@ -321,6 +356,7 @@ pub(super) async fn serve_file(
     file_path: &std::path::Path,
     method: Method,
     range: Option<&HeaderValue>,
+    cache: MediaCache,
 ) -> Response {
     let mut builder = axum::http::Request::builder().method(method).uri("/");
     if let Some(value) = range {
@@ -344,7 +380,7 @@ pub(super) async fn serve_file(
         HeaderValue::from_str(&asset.mime)
             .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
     );
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(header::CACHE_CONTROL, cache.header_value());
     headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     response
 }

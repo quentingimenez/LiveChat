@@ -11,6 +11,7 @@
 //! | [`adapters`] | adaptateurs [`lc_discord::BotContext`] au-dessus de [`crate::AppState`] |
 //! | [`message_commands`] | classification des messages entrants (no-op fidèle au legacy) |
 //! | [`guild_leave`] | départ du bot d'un serveur Discord (trait injectable) |
+//! | [`profiles`] | name and avatar of members linked to Discord (injectable trait) |
 //! | [`error`] | erreurs de démarrage/arrêt du runtime |
 //!
 //! # Câblage côté serveur (fait par le Lead, hors de ce périmètre)
@@ -56,6 +57,7 @@ pub mod error;
 pub mod event_handler;
 pub mod guild_leave;
 pub mod message_commands;
+pub mod profiles;
 pub mod registration;
 pub mod runtime;
 

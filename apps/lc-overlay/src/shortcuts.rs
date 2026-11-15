@@ -53,20 +53,27 @@ fn shortcut_matches(configured: Option<&str>, shortcut: &Shortcut) -> bool {
     })
 }
 
-/// Validates the persisted stop / mute-all shortcuts against the media
-/// bindings before anything is registered or saved.
+/// Validates the persisted global shortcuts (stop, local stop, mute-all)
+/// against the media bindings and each other before anything is registered
+/// or saved.
 pub fn validate_shortcut_settings(
     shortcuts: &ShortcutSettings,
     media_bindings: &MediaBindings,
 ) -> Result<(), ShortcutError> {
-    let entries = [
-        ("shortcuts.stop", shortcuts.stop.as_deref()),
-        ("shortcuts.muteAll", shortcuts.mute_all.as_deref()),
-    ];
-    for (field, accelerator) in entries {
+    let entries = shortcuts.entries();
+    for (index, (field, accelerator)) in entries.iter().copied().enumerate() {
         let Some(accelerator) = accelerator else {
             continue;
         };
+        let duplicate = entries[..index].iter().any(|(_, earlier)| {
+            earlier.is_some_and(|earlier| accelerators_match(accelerator, earlier))
+        });
+        if duplicate {
+            return Err(ShortcutError::new(
+                field,
+                "raccourci déjà utilisé par une autre action",
+            ));
+        }
         if parse_accelerator(accelerator).is_none() {
             return Err(ShortcutError::new(
                 field,
@@ -86,15 +93,6 @@ pub fn validate_shortcut_settings(
             return Err(ShortcutError::new(
                 field,
                 "raccourci déjà utilisé par un média du board",
-            ));
-        }
-    }
-    if let (Some(stop), Some(mute_all)) = (shortcuts.stop.as_deref(), shortcuts.mute_all.as_deref())
-    {
-        if accelerators_match(stop, mute_all) {
-            return Err(ShortcutError::new(
-                "shortcuts.muteAll",
-                "raccourci déjà utilisé par l'arrêt de lecture",
             ));
         }
     }
@@ -176,13 +174,11 @@ pub fn apply_media_bindings(
     let mut failed = Vec::new();
     for (accelerator, item_id) in &normalized {
         let reserved = configured_shortcuts
-            .stop
-            .as_deref()
-            .is_some_and(|stop| accelerators_match(accelerator, stop))
-            || configured_shortcuts
-                .mute_all
-                .as_deref()
-                .is_some_and(|mute_all| accelerators_match(accelerator, mute_all));
+            .entries()
+            .iter()
+            .any(|(_, configured)| {
+                configured.is_some_and(|configured| accelerators_match(accelerator, configured))
+            });
         if reserved {
             failed.push(accelerator.clone());
         } else if register_one(app, accelerator) {
@@ -249,6 +245,11 @@ pub fn handle_shortcut_pressed(
         tracing::info!(sent, "arrêt de lecture demandé par le raccourci global");
         return;
     }
+    if shortcut_matches(config.shortcuts.stop_local.as_deref(), shortcut) {
+        let stopped = crate::commands::stop_local_playback(app);
+        tracing::info!(stopped, "arrêt local demandé par le raccourci global");
+        return;
+    }
     let is_manual_reload = MANUAL_RELOAD_ACCELERATOR
         .parse::<tauri_plugin_global_shortcut::Shortcut>()
         .map(|manual| manual.id() == shortcut.id())
@@ -284,9 +285,10 @@ pub fn handle_shortcut_pressed(
 }
 
 fn unregister_configured_shortcuts(app: &AppHandle<Wry>, shortcuts: &ShortcutSettings) {
-    for accelerator in [shortcuts.stop.as_deref(), shortcuts.mute_all.as_deref()]
+    for accelerator in shortcuts
+        .entries()
         .into_iter()
-        .flatten()
+        .filter_map(|(_, accelerator)| accelerator)
     {
         unregister_one(app, accelerator);
     }
@@ -308,10 +310,7 @@ fn register_configured_shortcut(
 }
 
 fn restore_previous_shortcuts(app: &AppHandle<Wry>, previous: &ShortcutSettings) {
-    for (field, accelerator) in [
-        ("shortcuts.stop", previous.stop.as_deref()),
-        ("shortcuts.muteAll", previous.mute_all.as_deref()),
-    ] {
+    for (field, accelerator) in previous.entries() {
         if let Some(accelerator) = accelerator {
             if let Err(error) = register_configured_shortcut(app, field, accelerator) {
                 tracing::warn!(
@@ -339,17 +338,11 @@ pub fn replace_configured_shortcuts(
     }
     unregister_configured_shortcuts(app, previous);
     let registration = next
-        .stop
-        .as_deref()
-        .map(|accelerator| register_configured_shortcut(app, "shortcuts.stop", accelerator))
-        .unwrap_or(Ok(()))
-        .and_then(|()| {
-            next.mute_all
-                .as_deref()
-                .map(|accelerator| {
-                    register_configured_shortcut(app, "shortcuts.muteAll", accelerator)
-                })
-                .unwrap_or(Ok(()))
+        .entries()
+        .into_iter()
+        .try_for_each(|(field, accelerator)| match accelerator {
+            Some(accelerator) => register_configured_shortcut(app, field, accelerator),
+            None => Ok(()),
         });
     if let Err(error) = registration {
         unregister_configured_shortcuts(app, next);
@@ -362,10 +355,7 @@ pub fn replace_configured_shortcuts(
 /// Registers the persisted global shortcuts at startup.
 pub fn register_configured_shortcuts(app: &AppHandle<Wry>) {
     let shortcuts = app.state::<AppState>().config_snapshot().shortcuts;
-    for (field, accelerator) in [
-        ("shortcuts.stop", shortcuts.stop.as_deref()),
-        ("shortcuts.muteAll", shortcuts.mute_all.as_deref()),
-    ] {
+    for (field, accelerator) in shortcuts.entries() {
         if let Some(accelerator) = accelerator {
             if let Err(error) = register_configured_shortcut(app, field, accelerator) {
                 tracing::warn!(

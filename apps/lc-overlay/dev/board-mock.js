@@ -87,7 +87,7 @@
     mediaMuted: false,
     showText: true,
     autoStart: false,
-    shortcuts: { stop: 'CommandOrControl+Shift+S', muteAll: null },
+    shortcuts: { stop: 'CommandOrControl+Shift+S', stopLocal: null, muteAll: null },
     layout: { zone: { x: 0, y: 0, width: 1, height: 1 }, align: 'center' },
     placing: false,
     profile: { displayName: 'Quentin', avatar: null },
@@ -269,7 +269,7 @@
     if ('shortcuts' in input) {
       const shortcuts = input.shortcuts;
       if (shortcuts === null) {
-        next.shortcuts = { stop: null, muteAll: null };
+        next.shortcuts = { stop: null, stopLocal: null, muteAll: null };
       } else if (!shortcuts || typeof shortcuts !== 'object') {
         return settingsError('shortcuts', 'Raccourcis invalides.');
       } else {
@@ -283,10 +283,16 @@
           next.shortcuts[action] = value;
         }
         // Like the shell: one accelerator cannot drive two actions.
-        const { stop, muteAll } = next.shortcuts;
-        if (stop && muteAll && stop === muteAll) {
-          const field = 'stop' in shortcuts ? 'shortcuts.stop' : 'shortcuts.muteAll';
-          return settingsError(field, 'Ce raccourci sert déjà à une autre action.');
+        const taken = new Map();
+        for (const [action, value] of Object.entries(next.shortcuts)) {
+          if (!value) {
+            continue;
+          }
+          if (taken.has(value)) {
+            const field = action in shortcuts ? action : taken.get(value);
+            return settingsError(`shortcuts.${field}`, 'Ce raccourci sert déjà à une autre action.');
+          }
+          taken.set(value, action);
         }
       }
     }
@@ -544,6 +550,8 @@
     queue.pending.push(Object.assign(job, { status: 'pending' }));
     return { ok: true, outcome: 'queued', position: queue.pending.length, jobId: job.id };
   }
+  // Job stopped on this device only (`media_board_stop_local`).
+  let locallyStoppedJobId = null;
   function finishPlaying() {
     queue.playing = queue.pending.shift() || null;
     if (queue.playing) {
@@ -832,6 +840,15 @@
           return delay(250, trigger(payload.itemId));
         case 'media_board_stop':
           finishPlaying();
+          return Promise.resolve({ ok: true });
+        case 'media_board_stop_local':
+          // Like the shell: only this device's overlay is cleared, the guild
+          // keeps playing (the queue is untouched). A second stop of the same
+          // job finds nothing on screen.
+          if (!queue.playing || queue.playing.id === locallyStoppedJobId) {
+            return Promise.resolve({ ok: false, reason: 'nothing_playing' });
+          }
+          locallyStoppedJobId = queue.playing.id;
           return Promise.resolve({ ok: true });
         case 'guild_select':
           guilds.activeGuildId = payload.guildId;

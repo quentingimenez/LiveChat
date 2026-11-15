@@ -817,6 +817,88 @@ async fn stop_request_stops_the_job_and_broadcasts_stop() {
     assert_eq!(stored.status, JobStatus::Done);
 }
 
+/// Sends a `playback.ended` then waits for the session to have handled it
+/// (frames of one socket are processed in order; `peers.request` is acked).
+async fn send_playback_ended(socket: &mut WsClient, job_id: PlaybackJobId, reason: &str) {
+    send_value(
+        socket,
+        &envelope(
+            "playback.ended",
+            "cli-playback-ended-0001",
+            json!({ "jobId": job_id.to_canonical(), "reason": reason }),
+        ),
+    )
+    .await;
+    send_value(
+        socket,
+        &envelope("peers.request", "cli-peers-sync-0001", json!({})),
+    )
+    .await;
+    let ack = recv_until_type(socket, "ack").await;
+    assert_eq!(ack["payload"]["ref"], "cli-peers-sync-0001");
+}
+
+async fn job_status(db: &Db, job_id: PlaybackJobId) -> JobStatus {
+    db.playback_jobs()
+        .get(job_id)
+        .await
+        .expect("lecture du job")
+        .expect("job présent")
+        .status
+}
+
+#[tokio::test]
+async fn local_stop_of_the_only_overlay_releases_the_job() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 12).await;
+    let job_id = seed_job(
+        &server.db,
+        &guild,
+        asset_id,
+        12,
+        JobStatus::Playing,
+        Some(Utc::now()),
+    )
+    .await;
+    let mut socket = connect(server.addr).await;
+    handshake(&mut socket, TOKEN).await;
+
+    send_playback_ended(&mut socket, job_id, "local").await;
+
+    assert_eq!(job_status(&server.db, job_id).await, JobStatus::Done);
+}
+
+#[tokio::test]
+async fn local_stop_keeps_the_job_playing_for_the_other_overlays() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    seed_overlay_client(&server.db, &guild, TOKEN_B, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 12).await;
+    let job_id = seed_job(
+        &server.db,
+        &guild,
+        asset_id,
+        12,
+        JobStatus::Playing,
+        Some(Utc::now()),
+    )
+    .await;
+    let mut stopping = connect(server.addr).await;
+    handshake(&mut stopping, TOKEN).await;
+    let mut watching = connect(server.addr).await;
+    handshake(&mut watching, TOKEN_B).await;
+
+    send_playback_ended(&mut stopping, job_id, "local").await;
+    assert_eq!(job_status(&server.db, job_id).await, JobStatus::Playing);
+
+    // The overlay still playing reports the real end: the job is released.
+    send_playback_ended(&mut watching, job_id, "completed").await;
+    assert_eq!(job_status(&server.db, job_id).await, JobStatus::Done);
+}
+
 #[tokio::test]
 async fn invite_read_only_refuses_media_trigger() {
     let server = start_server().await;

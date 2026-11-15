@@ -39,6 +39,9 @@ use crate::windows;
 const TRIGGER_ACK_TIMEOUT: Duration = Duration::from_secs(10);
 /// Test card display time plus a small margin for the renderer timer.
 const TEST_MEDIA_DURATION: Duration = Duration::from_millis(5_300);
+/// `reason` of the `overlay://stop` (and of the renderer's report) for a
+/// playback stopped on this device only.
+const LOCAL_STOP_REASON: &str = "local";
 static TEST_MEDIA_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Matrice d'autorisation IPC par fenêtre (AUD-A6-008).
@@ -68,6 +71,7 @@ const COMMAND_MATRIX: &[(&str, &[&str])] = &[
             "media_board_set_bindings",
             "media_board_trigger",
             "media_board_stop",
+            "media_board_stop_local",
             "overlay_check_updates",
             "overlay_install_update",
             "pairing_consume",
@@ -349,6 +353,11 @@ fn ended_reason_from_label(label: Option<&str>) -> PlaybackEndedReason {
         Some("error") => PlaybackEndedReason::Error,
         _ => PlaybackEndedReason::Completed,
     }
+}
+
+/// The renderer reports the end of a playback stopped on this device only.
+fn is_local_stop_report(reason: Option<&str>) -> bool {
+    reason.is_some_and(|reason| reason.trim().eq_ignore_ascii_case(LOCAL_STOP_REASON))
 }
 
 /// Converts a server `ack` into the board-facing trigger response (pure).
@@ -845,6 +854,12 @@ pub fn overlay_report_playback_stop(
 ) -> Result<(), String> {
     ensure_allowed(&window, "overlay_report_playback_stop")?;
     let parsed = serde_json::from_value::<RendererPlaybackStopPayload>(payload).unwrap_or_default();
+    if is_local_stop_report(parsed.reason.as_deref()) {
+        // `stop_local_playback` already told the server and freed the screen:
+        // a `playback.ended` here would end the job for every overlay.
+        tracing::debug!("fin de lecture ignorée : arrêt local déjà signalé");
+        return Ok(());
+    }
     let state = app.state::<AppState>();
     let job_id = parsed
         .job_id
@@ -1068,6 +1083,60 @@ pub fn media_board_stop(
             None
         } else {
             Some("socket_unavailable".to_string())
+        },
+    })
+}
+
+/// Stops the media on screen on this device only (board button and
+/// `shortcuts.stopLocal`). Returns `false` when nothing is playing.
+///
+/// The owning guild is told with `playback.ended {reason: "local"}`: the
+/// server releases the job only if no other overlay is connected, so the
+/// other overlays keep playing. The screen is freed at once and the next
+/// locally queued `play` (another guild) is shown.
+pub(crate) fn stop_local_playback(app: &AppHandle<Wry>) -> bool {
+    let state = app.state::<AppState>();
+    let Some(job_id) = state.playback_job() else {
+        tracing::debug!("arrêt local ignoré : aucun média à l'écran");
+        return false;
+    };
+    // The frame leaves before the screen is freed: it must reach the guild
+    // owning the job, not the one of the next `play`.
+    send_playback_protocol(
+        app,
+        ClientMessage::PlaybackEnded(PlaybackEndedPayload {
+            job_id: job_id.clone(),
+            reason: PlaybackEndedReason::Local,
+        }),
+        "media_board_stop_local",
+    );
+    state.clear_playback();
+    let stop = events::OverlayEvent::stop(local_stop_payload(&job_id));
+    events::deliver_or_buffer(app, state.overlay_ready(), stop);
+    ws::advance_local_queue(app);
+    true
+}
+
+/// `overlay://stop` payload of a local stop. The renderer echoes `reason` in
+/// its `overlay_report_playback_stop`, which the shell then ignores.
+fn local_stop_payload(job_id: &str) -> Value {
+    serde_json::json!({ "reason": LOCAL_STOP_REASON, "jobId": job_id })
+}
+
+/// `media_board_stop_local` — stops the media on this device only.
+#[tauri::command]
+pub fn media_board_stop_local(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+) -> Result<MediaBoardActionResponse, String> {
+    ensure_allowed(&window, "media_board_stop_local")?;
+    let stopped = stop_local_playback(&app);
+    Ok(MediaBoardActionResponse {
+        ok: stopped,
+        reason: if stopped {
+            None
+        } else {
+            Some("nothing_playing".to_string())
         },
     })
 }
@@ -1421,7 +1490,31 @@ pub async fn overlay_install_update(
 
 #[cfg(test)]
 mod tests {
-    use super::command_allowed;
+    use super::{command_allowed, is_local_stop_report, local_stop_payload};
+
+    #[test]
+    fn local_stop_is_a_board_command_only() {
+        assert!(command_allowed("board", "media_board_stop_local"));
+        assert!(!command_allowed("overlay", "media_board_stop_local"));
+    }
+
+    #[test]
+    fn local_stop_payload_names_the_job_and_the_reason() {
+        let payload = local_stop_payload("job-1");
+        assert_eq!(payload["reason"], "local");
+        assert_eq!(payload["jobId"], "job-1");
+    }
+
+    #[test]
+    fn only_a_local_reason_marks_a_local_stop_report() {
+        // The renderer echoes the reason of the `overlay://stop` it obeyed.
+        let echoed = local_stop_payload("job-1");
+        assert!(is_local_stop_report(echoed["reason"].as_str()));
+        assert!(is_local_stop_report(Some(" Local ")));
+        assert!(!is_local_stop_report(Some("manual")));
+        assert!(!is_local_stop_report(Some("completed")));
+        assert!(!is_local_stop_report(None));
+    }
 
     #[test]
     fn command_matrix_is_window_scoped() {

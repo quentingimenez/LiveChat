@@ -763,7 +763,7 @@ document.addEventListener('keydown', (event) => {
 export async function playItem(item) {
   const guild = activeGuild();
   if (guild && guild.membership.muted) {
-    notify('Guilde en sourdine : rétablis-la pour jouer.', true);
+    notify('Guilde en pause : reprends-la pour jouer.', true);
     return;
   }
   let response;

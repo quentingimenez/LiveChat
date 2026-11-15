@@ -700,7 +700,7 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
 - `emit_settings` ne diffuse plus `clientToken` (redaction) vers les fenêtres
   overlay/board — cohérent avec §12.7 (le token board passe par `get_config`).
 - Tray : en-tête `N/M guildes connectées` (ou « aucune guilde »), case
-  « Sourdine générale » (cochée = `enabled == false`) qui coupe la lecture via
+  « Tout mettre en pause » (cochée = `enabled == false`) qui coupe la lecture via
   `stop_overlay_now`, et tooltip suffixé « (désactivé) ».
 - Config : écriture atomique (temp + rename) et `.bak` atomique (A6-007).
 
@@ -708,7 +708,7 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
 
 - Menu tray (ordre exact) : en-tête désactivé `LiveChat — N/M guildes
   connectées` (ou `LiveChat — aucune guilde`), séparateur, `Ouvrir la board`,
-  `Paramètres…`, séparateur, `Sourdine générale`, une case par guilde appairée,
+  `Paramètres…`, séparateur, `Tout mettre en pause`, une case par guilde appairée,
   séparateur, `Quitter`.
 - La décision est un modèle pur (`tray::menu_model` → `MenuEntry`) testé sans
   Tauri ; `tray::build_menu` le traduit en items. Les anciennes entrées de
@@ -886,7 +886,7 @@ Resynchronisation des conversions :
   autre état et qu'elle a des entrées `converting`, le board lit une fois
   `GET /overlay/media-board/ingestions` via `guild_api` ;
 - tant qu'une guilde a des entrées `converting` **et** qu'elle n'a pas de
-  WebSocket connecté (guilde en sourdine ou hors ligne), le même GET est
+  WebSocket connecté (guilde en pause ou hors ligne), le même GET est
   répété toutes les 15 s, uniquement pour cette guilde, et s'arrête dès
   qu'elle n'a plus d'entrée `converting` ou redevient connectée ;
 - pour chaque entrée : `ready` → succès, `failed` → échec,
@@ -994,11 +994,11 @@ persisté.
 
 Effets immédiats : persistance atomique, replacement de l'overlay sur l'écran
 choisi, réenregistrement des raccourcis, activation/désactivation de
-l'autostart, connexion/déconnexion de la sourdine générale comme le tray,
+l'autostart, connexion/déconnexion de la pause générale comme le tray,
 rafraîchissement du tray, envoi de `overlay://settings` à l'overlay et de
 `overlay://device-settings` au board.
 
-`overlay://device-settings` est aussi émis quand la sourdine générale change
+`overlay://device-settings` est aussi émis quand la pause générale change
 depuis le tray ou quand une guilde est rejointe/quittée (donc quand
 `guildVolumes` change).
 

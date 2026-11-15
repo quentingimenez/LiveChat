@@ -13,7 +13,7 @@
 // `__mock.openSettings()` (équivalent de l'entrée tray « Paramètres… »),
 // `__mock.settings` (réglages simulés).
 // Paramètres : settings_get/settings_set (validation des écrans, volumes,
-// sourdine, démarrage automatique, raccourcis, disposition et profil),
+// pause, démarrage automatique, raccourcis, disposition et profil),
 // settings_identify_displays, settings_test_media (overlay_busy si un média
 // passe), settings_preview_layout (dernier brouillon dans
 // `__mock.previewLayouts`), settings_placement_start / settings_placement_cancel
@@ -31,7 +31,7 @@
 // remplacent le média de l'item, comme le serveur.
 // Appairage : le code NOPSEUDO sans pseudo renvoie display_name_required.
 // Les médias ont des formats variés (portrait, carré, paysage) pour la
-// mosaïque ; « Nope » est une image portrait (1080 × 1920). La sourdine ferme la
+// mosaïque ; « Nope » est une image portrait (1080 × 1920). La mise en pause ferme la
 // connexion comme le shell (disabled, puis connecting → connected au retour)
 // et le membre « toi » passe hors ligne. `__mock.requests` liste les appels
 // guild_api ({ method, path }).

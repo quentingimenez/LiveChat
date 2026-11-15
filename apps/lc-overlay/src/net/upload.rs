@@ -150,13 +150,28 @@ pub(crate) fn normalize_content_type(raw: Option<&str>) -> String {
 }
 
 /// Builds the upload URL with the optional query parameters.
+///
+/// `replace_item_id` makes the uploaded media replace the media of that board
+/// item instead of creating a new one; it must be a board item id (UUID).
 pub(crate) fn upload_url(
     server_url: &str,
     filename: &str,
     title: Option<&str>,
     message: Option<&str>,
+    replace_item_id: Option<&str>,
     allow_insecure: bool,
 ) -> Result<Url, String> {
+    let replace_item_id = match replace_item_id
+        .map(str::trim)
+        .filter(|item_id| !item_id.is_empty())
+    {
+        Some(item_id) => Some(
+            uuid::Uuid::parse_str(item_id)
+                .map_err(|_| "média inconnu".to_string())?
+                .to_string(),
+        ),
+        None => None,
+    };
     let mut url = api::build_url(server_url, UPLOAD_PATH, allow_insecure)?;
     {
         let mut query = url.query_pairs_mut();
@@ -165,6 +180,9 @@ pub(crate) fn upload_url(
             if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
                 query.append_pair(key, value);
             }
+        }
+        if let Some(item_id) = &replace_item_id {
+            query.append_pair("replaceItemId", item_id);
         }
     }
     Ok(url)
@@ -322,6 +340,7 @@ mod tests {
             "L’Escale 🔱 & co.mp4",
             Some("  Titre  "),
             Some("   "),
+            None,
             false,
         )
         .expect("url");
@@ -337,6 +356,57 @@ mod tests {
                 ("title".to_string(), "Titre".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn upload_url_carries_the_item_to_replace() {
+        let item_id = "0f8fad5b-d9cb-469f-a165-70867728950e";
+        let url = upload_url(
+            "https://api.example.test/",
+            "photo.png",
+            None,
+            None,
+            Some(&format!("  {item_id} ")),
+            false,
+        )
+        .expect("url");
+        let pairs = url
+            .query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            pairs,
+            vec![
+                ("filename".to_string(), "photo.png".to_string()),
+                ("replaceItemId".to_string(), item_id.to_string()),
+            ]
+        );
+
+        // Blank: a plain upload. Anything that is not an item id is refused.
+        let plain = upload_url(
+            "https://api.example.test/",
+            "a.png",
+            None,
+            None,
+            Some("  "),
+            false,
+        )
+        .expect("url");
+        assert_eq!(plain.query(), Some("filename=a.png"));
+        for invalid in ["item-3", "../items", "0f8fad5b&title=x"] {
+            assert!(
+                upload_url(
+                    "https://api.example.test/",
+                    "a.png",
+                    None,
+                    None,
+                    Some(invalid),
+                    false
+                )
+                .is_err(),
+                "identifiant refusé attendu : {invalid}"
+            );
+        }
     }
 
     /// An upload still in flight: its request never ends.
@@ -490,6 +560,7 @@ mod tests {
         let url = upload_url(
             &format!("http://{address}"),
             "L’Escale 🔱 & co.mp4",
+            None,
             None,
             None,
             true,

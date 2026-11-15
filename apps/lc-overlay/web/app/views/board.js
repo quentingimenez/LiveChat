@@ -3,6 +3,7 @@
 import { api, run } from '../core/api.js';
 import { openContextMenu } from '../core/contextmenu.js';
 import { acceleratorFromEvent, acceleratorLabel, BARE_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
+import { ARTWORK_MESSAGES, artworkExtension, droppedArtworkLink, fetchArtwork, MAX_ARTWORK_BYTES, pickArtworkFile } from '../core/artwork.js';
 import {
   activeFilterCount,
   authorsOf,
@@ -1081,20 +1082,9 @@ export async function saveShortcut(item, accelerator) {
 }
 
 // --- edit and delete ---
-const MAX_ARTWORK_BYTES = 10 * 1024 * 1024;
-
-function artworkExtension(file) {
-  const match = /\.([a-z0-9]{1,5})$/i.exec(file.name || '');
-  if (match) {
-    return `.${match[1].toLowerCase()}`;
-  }
-  const subtype = /^image\/([a-z0-9]+)/i.exec(file.type || '');
-  return subtype ? `.${subtype[1].toLowerCase().replace('jpeg', 'jpg')}` : '';
-}
-
 async function uploadArtwork(item, file) {
   if (file.size > MAX_ARTWORK_BYTES) {
-    notify('Image trop volumineuse (10 Mo au plus).', true);
+    notify(ARTWORK_MESSAGES.tooLarge, true);
     return false;
   }
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -1127,24 +1117,73 @@ export function openEditDialog(item) {
     const isAudio = item.media.kind === 'audio';
     let chosen = null;
     let removeArtwork = false;
+    let previewUrl = null;
+    let importing = false;
     const current = artworkOf(item);
-    const artworkPreview = h('img', { class: 'artwork-preview', alt: '', hidden: !current, src: current ? current.url : null });
+    const artworkPreview = h('img', { class: 'artwork-preview', alt: '', draggable: 'false', hidden: !current, src: current ? current.url : null });
+    // Without a picture the zone shows an audio mark, never an empty image.
+    const artworkEmpty = h('span', { class: 'artwork-preview is-empty', 'aria-hidden': 'true', hidden: Boolean(current) }, icon('audio'));
     const artworkName = h('span', { class: 'meta' }, current ? 'Image actuelle' : 'Aucune image');
+    const submit = h('button', { class: 'btn', type: 'submit' }, 'Enregistrer');
+    const showPicture = (shown) => {
+      artworkPreview.hidden = !shown;
+      artworkEmpty.hidden = shown;
+      removeButton.hidden = !shown;
+    };
+    // The picture that will be sent on « Enregistrer ».
+    const choose = (file, label) => {
+      chosen = file;
+      removeArtwork = false;
+      if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+      }
+      previewUrl = URL.createObjectURL(file);
+      artworkPreview.src = previewUrl;
+      artworkName.textContent = label || file.name;
+      showPicture(true);
+    };
+    // Chosen, dropped or pasted files: true when one of them was handled.
+    const chooseFrom = (files) => {
+      const picked = pickArtworkFile(files);
+      if (!picked) {
+        return false;
+      }
+      if (picked.error) {
+        notify(picked.error, true);
+      } else {
+        choose(picked.file);
+      }
+      return true;
+    };
+    // A link is downloaded here, in the WebView, then sent like a file.
+    const importLink = async (link) => {
+      if (importing) {
+        return;
+      }
+      importing = true;
+      const label = artworkName.textContent;
+      artworkName.textContent = 'Téléchargement de l’image…';
+      importButton.disabled = true;
+      submit.disabled = true;
+      const result = await fetchArtwork(link);
+      importing = false;
+      importButton.disabled = false;
+      submit.disabled = false;
+      if (result.error) {
+        artworkName.textContent = label;
+        notify(result.error, true);
+        return;
+      }
+      linkField.value = '';
+      choose(result.file);
+    };
     const artworkInput = h('input', {
       type: 'file',
       accept: 'image/*',
       hidden: true,
       onChange: () => {
-        const file = artworkInput.files && artworkInput.files[0];
-        if (!file) {
-          return;
-        }
-        chosen = file;
-        removeArtwork = false;
-        artworkName.textContent = file.name;
-        artworkPreview.src = URL.createObjectURL(file);
-        artworkPreview.hidden = false;
-        removeButton.hidden = false;
+        chooseFrom(artworkInput.files);
+        artworkInput.value = '';
       },
     });
     const removeButton = h(
@@ -1156,31 +1195,111 @@ export function openEditDialog(item) {
         onClick: () => {
           chosen = null;
           removeArtwork = true;
-          artworkPreview.hidden = true;
           artworkName.textContent = 'Aucune image';
-          removeButton.hidden = true;
+          showPicture(false);
         },
       },
       'Retirer',
     );
+    const linkField = h('input', {
+      class: 'field',
+      type: 'url',
+      placeholder: 'https://…',
+      'aria-label': 'Lien d’une image',
+      onKeydown: (event) => {
+        // Enter imports the link instead of saving the dialog.
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          importLink(linkField.value);
+        }
+      },
+    });
+    const importButton = h('button', { class: 'btn', type: 'button', onClick: () => importLink(linkField.value) }, 'Importer');
+    const artworkZone = h(
+      'div',
+      { class: 'artwork-drop' },
+      artworkPreview,
+      artworkEmpty,
+      h(
+        'div',
+        { class: 'stack' },
+        artworkName,
+        h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onClick: () => artworkInput.click() }, 'Choisir une image'), removeButton),
+      ),
+      artworkInput,
+    );
     const onOverlay = h('input', { type: 'checkbox', checked: Boolean(item.artworkOnOverlay) });
+    const carriesPicture = (event) => {
+      const types = Array.from((event.dataTransfer && event.dataTransfer.types) || []);
+      return types.includes('Files') || types.includes('text/uri-list') || types.includes('text/html') || types.includes('text/plain');
+    };
+    // A drop on the picture block belongs to the picture: it stops here and
+    // never reaches the board's own drop handlers (which import new media).
+    const onDrag = (event) => {
+      if (!carriesPicture(event)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = 'copy';
+      artworkZone.classList.add('is-over');
+    };
     const artworkFields = isAudio
       ? h(
           'div',
-          { class: 'stack artwork-fields' },
+          {
+            class: 'stack artwork-fields',
+            onDragenter: onDrag,
+            onDragover: onDrag,
+            onDragleave: (event) => {
+              if (!(event.relatedTarget instanceof Node) || !artworkFields.contains(event.relatedTarget)) {
+                artworkZone.classList.remove('is-over');
+              }
+            },
+            onDrop: (event) => {
+              if (!carriesPicture(event)) {
+                return;
+              }
+              event.preventDefault();
+              event.stopPropagation();
+              artworkZone.classList.remove('is-over');
+              const transfer = event.dataTransfer;
+              if (chooseFrom(transfer.files)) {
+                return;
+              }
+              const link = droppedArtworkLink({
+                html: transfer.getData('text/html'),
+                uriList: transfer.getData('text/uri-list'),
+                text: transfer.getData('text/plain'),
+              });
+              if (link) {
+                importLink(link);
+              } else {
+                notify(ARTWORK_MESSAGES.nothingDropped, true);
+              }
+            },
+            onPaste: (event) => {
+              const data = event.clipboardData;
+              if (!data) {
+                return;
+              }
+              // A copied image is used as it is; a copied link is imported.
+              if (chooseFrom(data.files)) {
+                event.preventDefault();
+                return;
+              }
+              const link = droppedArtworkLink({ text: data.getData('text/plain') });
+              if (link) {
+                event.preventDefault();
+                linkField.value = link;
+                importLink(link);
+              }
+            },
+          },
           h('span', { class: 'field-label' }, 'Image'),
-          h(
-            'div',
-            { class: 'artwork-row' },
-            artworkPreview,
-            h(
-              'div',
-              { class: 'stack' },
-              artworkName,
-              h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onClick: () => artworkInput.click() }, 'Choisir une image'), removeButton),
-            ),
-            artworkInput,
-          ),
+          artworkZone,
+          h('p', { class: 'artwork-hint' }, 'Dépose une image ou un lien ici, ou colle le lien d’une image :'),
+          h('div', { class: 'artwork-link' }, linkField, importButton),
           h('label', { class: 'switch' }, onOverlay, 'Afficher l’image sur les overlays pendant la lecture'),
         )
       : null;
@@ -1190,6 +1309,9 @@ export function openEditDialog(item) {
         class: 'stack',
         onSubmit: async (event) => {
           event.preventDefault();
+          if (importing) {
+            return;
+          }
           const patch = { title: title.value, message: message.value };
           if (isAudio) {
             patch.artworkOnOverlay = onOverlay.checked;
@@ -1215,7 +1337,7 @@ export function openEditDialog(item) {
       h('label', null, 'Titre', title),
       h('label', null, 'Message', message),
       artworkFields,
-      h('div', { class: 'actions' }, h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'), h('button', { class: 'btn', type: 'submit' }, 'Enregistrer')),
+      h('div', { class: 'actions' }, h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'), submit),
     );
     return [h('h2', null, 'Infos du média'), h('p', null, 'Un champ vide efface la valeur.'), form];
   });

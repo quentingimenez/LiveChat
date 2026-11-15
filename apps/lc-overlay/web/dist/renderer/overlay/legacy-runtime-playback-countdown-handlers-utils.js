@@ -129,6 +129,11 @@ export function createOverlayLegacyRuntimePlaybackCountdownHandlersUtils() {
                 nowMs: params.nowMs,
             });
         }
+        // Lets the countdown clear the overlay when it reaches zero, whatever
+        // the media is doing (a video extended past its own end).
+        function setCountdownAutoClear(autoClear) {
+            params.state.countdownState.autoClear = autoClear === true;
+        }
         function clearCountdown() {
             params.countdownUtils.clearCountdown({
                 countdownState: params.state.countdownState,
@@ -161,6 +166,8 @@ export function createOverlayLegacyRuntimePlaybackCountdownHandlersUtils() {
             pauseCountdown,
             resumeCountdown,
             setPlaybackState,
+            getRemainingCountdownMs,
+            setCountdownAutoClear,
             clearOverlay,
         };
     }

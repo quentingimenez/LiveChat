@@ -117,6 +117,11 @@ export function createOverlayLegacyRuntimeRenderHandlersUtils() {
                 pauseCountdown: params.pauseCountdown,
                 setPlaybackState: params.setPlaybackState,
                 clearOverlay: params.clearOverlay,
+                videoExtensionSec: params.playbackUtils.videoExtensionSec,
+                resolveVideoEndAction: params.playbackUtils.resolveVideoEndAction,
+                videoHasAudioTrack: params.inlineVideoUtils.videoHasAudioTrack,
+                getRemainingCountdownMs: params.getRemainingCountdownMs,
+                setCountdownAutoClear: params.setCountdownAutoClear,
                 logAutoplayError: params.logError,
             });
         }

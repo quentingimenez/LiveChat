@@ -24,8 +24,13 @@ export function sameView(a, b) {
 }
 
 // A click on a card pins its media; a click on the pinned one closes the
-// drawer.
-export function cardClicked(view, id) {
+// drawer. `clickCount` is the click's `event.detail`: the second click of a
+// double click (which plays the media) must not undo the first one, so the
+// drawer always ends pinned on the media that was double-clicked.
+export function cardClicked(view, id, clickCount = 1) {
+  if (clickCount >= 2) {
+    return { selectedId: id, pinned: true, peekId: null };
+  }
   if (view.pinned && view.selectedId === id) {
     return { ...CLOSED_VIEW };
   }

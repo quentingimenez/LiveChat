@@ -4,7 +4,7 @@
 #
 # Contrat : voir `docs/rust/packaging.md`.
 # Construction (depuis la racine du dépôt) :
-#   docker build -f deploy/server.Dockerfile -t livechat-server:3.1.0 .
+#   docker build -f deploy/server.Dockerfile -t livechat-server:3.2.0 .
 #
 # Choix de cache : pas de cargo-chef. Le workspace contient `apps/lc-overlay` (Tauri 2,
 # build.rs + deps WebKit/GTK) : `cargo chef cook` travaille à l'échelle du workspace et

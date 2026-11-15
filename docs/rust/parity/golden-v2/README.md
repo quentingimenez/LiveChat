@@ -31,8 +31,8 @@ corps brut redacté. Les valeurs volatiles du rate limiting sont remplacées par
 ## Procédure
 
 1. démarrer la cible Rust avec une base migrée et une configuration
-   représentative (`NODE_ENV` laissé à `production`, donc la limite de
-   100 requêtes / 15 min s'applique aussi en loopback) ;
+   représentative (`NODE_ENV` laissé à `production`, donc le budget général
+   de 1 000 requêtes / 15 min s'applique aussi en loopback) ;
 2. exécuter `parity capture --suite v2 --base-url <url> --rate-limit-probe`
    (les jetons admin/overlay/ingest sont optionnels et n'empêchent pas la
    capture : les cas concernés sont ignorés et listés dans le manifeste) ;
@@ -44,10 +44,10 @@ corps brut redacté. Les valeurs volatiles du rate limiting sont remplacées par
 ## Rate limiting
 
 Le cas `rate_limit_429` est **le dernier** de la suite v2 : `--rate-limit-probe`
-envoie jusqu'à 120 requêtes `GET /health` pour épuiser la fenêtre de rate limit
+envoie jusqu'à 1 100 requêtes `GET /health` pour épuiser le budget général
 avant de rejouer le cas. La sonde consomme la fenêtre courante ; pour recapturer
-immédiatement, redémarrer le serveur (ou attendre 15 minutes). `/admin` est
-exempté de la limite, donc les cas admin ne perturbent pas la capture.
+immédiatement, redémarrer le serveur (ou attendre 15 minutes). `/admin*` est
+compté dans un budget à part, donc les cas admin ne perturbent pas la capture.
 
 ## Règles
 

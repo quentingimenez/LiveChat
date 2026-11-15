@@ -269,9 +269,10 @@ non-régression du serveur Rust indépendamment de la parité legacy.
 - **URL média signée** : sans `exp`/`sig`/`clientId`, la cible répond
   `403 media_url_invalid` ; la suite v2 s'appuie sur ce comportement déterministe
   et ne requiert donc pas de jeton média.
-- **Rate limiting** : la cible limite à 100 requêtes / 15 min par IP, avec
-  `NODE_ENV=production` par défaut (pas d'exemption loopback) ; `/admin` est
-  exempté et les réponses portent `x-ratelimit-*` + `retry-after`. Le cas
+- **Rate limiting** : la cible compte quatre budgets par IP et par fenêtre de
+  15 min ; `/health` appartient au budget général (1 000 requêtes), avec
+  `NODE_ENV=production` par défaut (pas d'exemption loopback). `/admin*` a son
+  propre budget de 100 et les réponses portent `x-ratelimit-*` + `retry-after`. Le cas
   `rate_limit_429` est **le dernier** de la suite v2 et exige
   `--rate-limit-probe` : la sonde épuise la fenêtre, ce qui rendrait
   non déterministes les cas suivants. La suite v1 évite les rafales.

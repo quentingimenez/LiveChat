@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use lc_domain::GuildId;
-use lc_protocol::ServerMessage;
+use lc_protocol::{DeviceSettingsStatePayload, ServerMessage, SessionMode};
 use uuid::Uuid;
 
 use crate::app::AppState;
@@ -62,10 +62,33 @@ pub trait AdminHub: Send + Sync {
         false
     }
 
+    /// Last `device.settings.state` reported by a connected overlay client.
+    ///
+    /// Kept in memory by the hub and cleared when the client disconnects.
+    fn device_settings(&self, _client_id: &Uuid) -> Option<DeviceSettingsStatePayload> {
+        None
+    }
+
+    /// Applies a new authoritative session mode to the live sockets of a
+    /// client, before the admin sends `session.changed`.
+    ///
+    /// Returns `true` when at least one socket was updated.
+    fn set_session_mode(&self, _client_id: &Uuid, _mode: SessionMode) -> bool {
+        false
+    }
+
     /// Broadcasts one protocol message to every socket of a guild.
     ///
     /// Returns the number of sockets the message was delivered to.
     fn broadcast_to_guild(&self, _guild_id: &GuildId, _message: ServerMessage) -> usize {
+        0
+    }
+
+    /// Broadcasts one protocol message to every connected overlay socket,
+    /// whichever guild it belongs to (`rights.changed`).
+    ///
+    /// Returns the number of sockets the message was delivered to.
+    fn broadcast_all(&self, _message: ServerMessage) -> usize {
         0
     }
 
@@ -126,6 +149,14 @@ impl AdminHub for NoopAdminHub {
     }
 
     fn close_client_with_reason(&self, _client_id: &Uuid, _code: u16, _reason: &str) -> bool {
+        false
+    }
+
+    fn device_settings(&self, _client_id: &Uuid) -> Option<DeviceSettingsStatePayload> {
+        None
+    }
+
+    fn set_session_mode(&self, _client_id: &Uuid, _mode: SessionMode) -> bool {
         false
     }
 

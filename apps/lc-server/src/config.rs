@@ -8,7 +8,9 @@
 //! nécessaires par les exigences du serveur 3.0 :
 //!
 //! - `DATABASE_URL` et le couple Discord (`DISCORD_TOKEN` + `DISCORD_CLIENT_ID`)
-//!   sont **facultatifs**. Le legacy refuse de démarrer sans eux (cf.
+//!   sont **facultatifs** ; `DISCORD_CLIENT_ID` peut aussi être fourni seul avec
+//!   `DISCORD_CLIENT_SECRET` et `ADMIN_DISCORD_USER_IDS` pour la connexion
+//!   Discord du panneau admin. Le legacy refuse de démarrer sans eux (cf.
 //!   `docs/rust/audit-dynamique.md`) ; le serveur Rust doit pouvoir démarrer sans
 //!   Discord, et une absence de base est exposée en `/health` (`db = "disabled"`).
 //!   Quand ils sont fournis, ils sont validés et réellement utilisés.
@@ -197,7 +199,8 @@ pub enum ConfigError {
         reason: String,
     },
 
-    /// `DISCORD_TOKEN` et `DISCORD_CLIENT_ID` doivent être fournis ensemble.
+    /// `DISCORD_TOKEN` et `DISCORD_CLIENT_ID` sont indissociables pour le bot,
+    /// sauf si l'identifiant ne sert qu'à la connexion admin Discord.
     #[error(
         "configuration Discord incomplète : {missing} doit être définie en même temps que {provided}"
     )]
@@ -232,10 +235,16 @@ pub struct Config {
     /// proxy de confiance (`X-Real-IP`, puis dernier `X-Forwarded-For`) pour le
     /// contrôle local-only admin.
     pub admin_trust_forwarded_for: bool,
+    /// `ADMIN_DISCORD_USER_IDS` : identifiants Discord autorisés à ouvrir une
+    /// session admin (liste séparée par des virgules, défaut vide).
+    pub admin_discord_user_ids: Vec<String>,
     /// `DISCORD_TOKEN` (facultatif ; absent = Discord désactivé).
     pub discord_token: Option<Secret>,
     /// `DISCORD_CLIENT_ID` (facultatif ; absent = Discord désactivé).
     pub discord_client_id: Option<String>,
+    /// `DISCORD_CLIENT_SECRET` (facultatif) : secret de l'application OAuth2
+    /// utilisée par la connexion Discord du panneau admin.
+    pub discord_client_secret: Option<Secret>,
     /// `INGEST_API_TOKEN` (défaut vide).
     pub ingest_api_token: Secret,
     /// `DATABASE_URL` (facultatif ; absent ou vide = base désactivée).
@@ -244,6 +253,8 @@ pub struct Config {
     pub hide_commands_disabled: bool,
     /// `DEFAULT_DURATION` en secondes (défaut `5`).
     pub default_duration: u64,
+    /// `TTS_ENABLED` (default `true`): Piper speech synthesis enabled.
+    pub tts_enabled: bool,
     /// `PLAYBACK_JOB_RETENTION_HOURS` (défaut `72`).
     pub playback_job_retention_hours: u64,
     /// `MEDIA_STORAGE_DIR` (défaut `./data/media`).
@@ -362,8 +373,19 @@ impl Config {
             "true ou false",
             parse_bool,
         )?;
+        let admin_discord_user_ids = env.string_list("ADMIN_DISCORD_USER_IDS");
         let discord_token = env.optional_secret("DISCORD_TOKEN");
         let discord_client_id = env.optional_string("DISCORD_CLIENT_ID");
+        let discord_client_secret = env.optional_secret("DISCORD_CLIENT_SECRET");
+        // A client id without a bot token is valid when it only serves the admin
+        // Discord login: the other two OAuth settings make that method usable.
+        let oauth_login_configured = discord_client_id
+            .as_deref()
+            .is_some_and(|id| !id.trim().is_empty())
+            && discord_client_secret
+                .as_ref()
+                .is_some_and(|secret| !secret.is_empty())
+            && !admin_discord_user_ids.is_empty();
         match (&discord_token, &discord_client_id) {
             (Some(_), None) => {
                 return Err(ConfigError::PartialDiscord {
@@ -371,7 +393,7 @@ impl Config {
                     provided: "DISCORD_TOKEN",
                 })
             }
-            (None, Some(_)) => {
+            (None, Some(_)) if !oauth_login_configured => {
                 return Err(ConfigError::PartialDiscord {
                     missing: "DISCORD_TOKEN",
                     provided: "DISCORD_CLIENT_ID",
@@ -384,6 +406,7 @@ impl Config {
         let hide_commands_disabled =
             env.parsed("HIDE_COMMANDS_DISABLED", false, "true ou false", parse_bool)?;
         let default_duration = env.parsed("DEFAULT_DURATION", 5, "entier positif", parse_u64)?;
+        let tts_enabled = env.parsed("TTS_ENABLED", true, "true ou false", parse_bool)?;
         let playback_job_retention_hours = env.parsed(
             "PLAYBACK_JOB_RETENTION_HOURS",
             72,
@@ -513,12 +536,15 @@ impl Config {
             admin_ui_token,
             admin_ui_local_only,
             admin_trust_forwarded_for,
+            admin_discord_user_ids,
             discord_token,
             discord_client_id,
+            discord_client_secret,
             ingest_api_token,
             database_url,
             hide_commands_disabled,
             default_duration,
+            tts_enabled,
             playback_job_retention_hours,
             media_storage_dir,
             piper_bin,
@@ -566,6 +592,47 @@ impl Config {
     pub fn api_origin(&self) -> String {
         self.api_url.origin().ascii_serialization()
     }
+
+    /// `true` when the fallback secret login is configured.
+    pub fn admin_secret_login_enabled(&self) -> bool {
+        !self.admin_ui_token.is_empty()
+    }
+
+    /// `true` when the Discord OAuth login can be offered.
+    ///
+    /// All three settings are required: the OAuth2 client id and secret, plus a
+    /// non-empty allow-list of Discord user ids.
+    pub fn admin_discord_login_enabled(&self) -> bool {
+        self.discord_client_id
+            .as_deref()
+            .is_some_and(|id| !id.trim().is_empty())
+            && self
+                .discord_client_secret
+                .as_ref()
+                .is_some_and(|secret| !secret.is_empty())
+            && !self.admin_discord_user_ids.is_empty()
+    }
+
+    /// `true` when at least one admin login method is configured.
+    pub fn admin_auth_enabled(&self) -> bool {
+        self.admin_secret_login_enabled() || self.admin_discord_login_enabled()
+    }
+
+    /// OAuth2 callback URL registered with Discord.
+    ///
+    /// `API_URL` usually ends with a slash (the `url` crate normalizes it), so
+    /// trailing slashes are trimmed before appending the fixed callback path.
+    pub fn admin_discord_redirect_uri(&self) -> String {
+        format!(
+            "{}/admin/auth/discord/callback",
+            self.api_url.as_str().trim_end_matches('/')
+        )
+    }
+
+    /// `true` when cookies must carry the `Secure` attribute.
+    pub fn cookies_secure(&self) -> bool {
+        self.api_url.scheme() == "https"
+    }
 }
 
 /// Lecture typée des variables, sans accès à l'environnement global.
@@ -599,6 +666,19 @@ impl EnvReader {
 
     fn optional_string(&self, name: &'static str) -> Option<String> {
         self.opt_raw(name).map(str::to_owned)
+    }
+
+    /// Comma-separated list: entries are trimmed and empty entries dropped.
+    fn string_list(&self, name: &'static str) -> Vec<String> {
+        let Some(raw) = self.vars.get(name) else {
+            return Vec::new();
+        };
+
+        raw.split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(str::to_owned)
+            .collect()
     }
 
     fn secret(&self, name: &'static str) -> Secret {
@@ -754,12 +834,19 @@ mod tests {
         assert_eq!(config.api_origin(), "http://localhost:3000");
         assert!(config.admin_ui_token.is_empty());
         assert!(config.admin_ui_local_only);
+        assert!(config.admin_discord_user_ids.is_empty());
+        assert!(!config.admin_secret_login_enabled());
+        assert!(!config.admin_discord_login_enabled());
+        assert!(!config.admin_auth_enabled());
+        assert!(!config.cookies_secure());
         assert!(config.discord_token.is_none());
         assert!(config.discord_client_id.is_none());
+        assert!(config.discord_client_secret.is_none());
         assert!(config.ingest_api_token.is_empty());
         assert_eq!(config.database_url, None);
         assert!(!config.hide_commands_disabled);
         assert_eq!(config.default_duration, 5);
+        assert!(config.tts_enabled);
         assert_eq!(config.playback_job_retention_hours, 72);
         assert_eq!(
             config.media_storage_dir,
@@ -814,12 +901,15 @@ mod tests {
             ("API_URL", "https://livechat.example.com/app"),
             ("ADMIN_UI_TOKEN", "admin-secret"),
             ("ADMIN_UI_LOCAL_ONLY", "false"),
+            ("ADMIN_DISCORD_USER_IDS", " 1001, 1002 ,, 1003 "),
             ("DISCORD_TOKEN", "discord-secret"),
             ("DISCORD_CLIENT_ID", "123456789012345678"),
+            ("DISCORD_CLIENT_SECRET", "discord-client-secret"),
             ("INGEST_API_TOKEN", "ingest-secret"),
             ("DATABASE_URL", "file:./data/livechat.db"),
             ("HIDE_COMMANDS_DISABLED", "true"),
             ("DEFAULT_DURATION", "10"),
+            ("TTS_ENABLED", "false"),
             ("PLAYBACK_JOB_RETENTION_HOURS", "48"),
             ("MEDIA_STORAGE_DIR", "D:/livechat/media"),
             ("MEDIA_CACHE_TTL_HOURS", "24"),
@@ -871,12 +961,31 @@ mod tests {
         assert_eq!(config.admin_ui_token.expose_secret(), "admin-secret");
         assert!(!config.admin_ui_local_only);
         assert_eq!(
+            config.admin_discord_user_ids,
+            vec!["1001".to_owned(), "1002".to_owned(), "1003".to_owned()]
+        );
+        assert!(config.admin_secret_login_enabled());
+        assert!(config.admin_discord_login_enabled());
+        assert!(config.admin_auth_enabled());
+        assert!(config.cookies_secure());
+        assert_eq!(
+            config.admin_discord_redirect_uri(),
+            "https://livechat.example.com/app/admin/auth/discord/callback"
+        );
+        assert_eq!(
             config.discord_token.as_ref().map(Secret::expose_secret),
             Some("discord-secret")
         );
         assert_eq!(
             config.discord_client_id.as_deref(),
             Some("123456789012345678")
+        );
+        assert_eq!(
+            config
+                .discord_client_secret
+                .as_ref()
+                .map(Secret::expose_secret),
+            Some("discord-client-secret")
         );
         assert_eq!(config.ingest_api_token.expose_secret(), "ingest-secret");
         assert_eq!(
@@ -885,6 +994,7 @@ mod tests {
         );
         assert!(config.hide_commands_disabled);
         assert_eq!(config.default_duration, 10);
+        assert!(!config.tts_enabled);
         assert_eq!(config.playback_job_retention_hours, 48);
         assert_eq!(config.media_storage_dir, PathBuf::from("D:/livechat/media"));
         assert_eq!(config.media_cache_ttl_hours, 24);
@@ -978,6 +1088,7 @@ mod tests {
             "HIDE_COMMANDS_DISABLED",
             "MEDIA_AUDIO_NORMALIZE_ENABLED",
             "TRUST_PROXY_HEADERS",
+            "TTS_ENABLED",
         ] {
             let error = Config::from_pairs(pairs(&[
                 ("API_URL", "http://localhost:3000"),
@@ -1179,16 +1290,70 @@ mod tests {
     }
 
     #[test]
+    fn admin_login_settings_enable_the_expected_methods() {
+        let secret_only = config_with(&[
+            ("API_URL", "http://localhost:3000"),
+            ("ADMIN_UI_TOKEN", "admin-secret"),
+        ]);
+        assert!(secret_only.admin_secret_login_enabled());
+        assert!(!secret_only.admin_discord_login_enabled());
+        assert!(secret_only.admin_auth_enabled());
+
+        let discord_only = config_with(&[
+            ("API_URL", "https://panel.example"),
+            ("DISCORD_TOKEN", "bot-token"),
+            ("DISCORD_CLIENT_ID", "123456789012345678"),
+            ("DISCORD_CLIENT_SECRET", "oauth-secret"),
+            ("ADMIN_DISCORD_USER_IDS", "42"),
+        ]);
+        assert!(!discord_only.admin_secret_login_enabled());
+        assert!(discord_only.admin_discord_login_enabled());
+        assert!(discord_only.admin_auth_enabled());
+        assert!(discord_only.cookies_secure());
+        assert_eq!(
+            discord_only.admin_discord_redirect_uri(),
+            "https://panel.example/admin/auth/discord/callback"
+        );
+
+        // The allow-list is part of the Discord login availability check.
+        let missing_allow_list = config_with(&[
+            ("API_URL", "http://localhost:3000"),
+            ("DISCORD_TOKEN", "bot-token"),
+            ("DISCORD_CLIENT_ID", "123456789012345678"),
+            ("DISCORD_CLIENT_SECRET", "oauth-secret"),
+            ("ADMIN_DISCORD_USER_IDS", " , "),
+        ]);
+        assert!(!missing_allow_list.admin_discord_login_enabled());
+        assert!(!missing_allow_list.admin_auth_enabled());
+
+        // Admin OAuth only: no bot token is required when the three OAuth
+        // settings make the Discord login usable.
+        let oauth_only = config_with(&[
+            ("API_URL", "http://localhost:3000"),
+            ("DISCORD_CLIENT_ID", "123456789012345678"),
+            ("DISCORD_CLIENT_SECRET", "oauth-secret"),
+            ("ADMIN_DISCORD_USER_IDS", "42"),
+        ]);
+        assert!(oauth_only.discord_token.is_none());
+        assert!(oauth_only.admin_discord_login_enabled());
+        assert!(oauth_only.admin_auth_enabled());
+    }
+
+    #[test]
     fn empty_optional_values_are_treated_as_absent() {
         let config = config_with(&[
             ("API_URL", "http://localhost:3000"),
             ("DATABASE_URL", "  "),
             ("DISCORD_TOKEN", ""),
+            ("DISCORD_CLIENT_SECRET", " "),
+            ("ADMIN_DISCORD_USER_IDS", " , , "),
             ("RUST_LOG", " "),
             ("ADDITIONAL_CORS_ORIGINS", ""),
         ]);
         assert_eq!(config.database_url, None);
         assert!(config.discord_token.is_none());
+        assert!(config.discord_client_secret.is_none());
+        assert!(config.admin_discord_user_ids.is_empty());
         assert_eq!(config.rust_log, None);
         assert!(config.additional_cors_origins.is_empty());
     }
@@ -1203,10 +1368,12 @@ mod tests {
         let config = config_with(&[
             ("API_URL", "http://localhost:3000"),
             ("ADMIN_UI_TOKEN", "admin-secret"),
+            ("DISCORD_CLIENT_SECRET", "oauth-client-secret"),
             ("DATABASE_URL", "file:./data/livechat.db"),
         ]);
         let debug = format!("{config:?}");
         assert!(!debug.contains("admin-secret"));
+        assert!(!debug.contains("oauth-client-secret"));
         assert!(debug.contains("Secret(<redacted>)"));
     }
 

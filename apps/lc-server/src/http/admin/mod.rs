@@ -1,15 +1,20 @@
 //! Panneau d'administration du serveur LiveChat (Phase 7b).
 //!
-//! Sert la page statique livrée en Phase 7a (`static/admin/`) et expose les
-//! 13 routes JSON du contrat legacy, sous `/admin/api/**`. Les contrats sont
-//! décrits dans `docs/rust/admin-panel.md` (SSOT) et `docs/rust/server-admin.md`
-//! documente l'implémentation Rust.
+//! Serves the embedded console (`apps/lc-admin-web/dist`, built by Vite and
+//! embedded with `rust-embed`), exposes the contract JSON routes under
+//! `/admin/api/**` and the session routes under `/admin/auth/**`. The contracts
+//! are described in `docs/rust/admin-console-api.md` (and
+//! `docs/rust/server-admin.md` documents the Rust implementation).
 //!
 //! # Structure
 //!
 //! - [`static_files`] : `GET /admin` (308) et `GET /admin/*` (assets) ;
-//! - [`auth`] : extracteur des routes API (503/403/401, `Authorization: Bearer`
-//!   uniquement — le repli `?token=` a été retiré, cf. AUD-COR-05) ;
+//! - [`events`] : real-time `GET /admin/api/events` stream (SSE) ;
+//! - [`auth`] : extracteur des routes API (503/403/401, cookie de session
+//!   `lc_admin_session`) ;
+//! - [`auth_routes`] : connexion secret/Discord, session courante et déconnexion ;
+//! - [`session`] : sessions en SQL brut et cookies ;
+//! - [`oauth`] : échange OAuth2 Discord derrière le trait [`AdminOAuth`] ;
 //! - [`hub`] : trait [`AdminHub`] vers les sockets WebSocket (comptage,
 //!   fermeture, diffusions d'arrêt et de réglages) ;
 //! - [`overview`], [`runtime_settings`], [`ingest_authors`], [`guilds`],
@@ -31,24 +36,51 @@
 //! du client. Ni la query string ni les en-têtes ne sont journalisés (un
 //! `?token=` ou un `Authorization` finirait en clair dans les journaux).
 
+mod audit;
 mod auth;
+mod auth_routes;
 mod clients;
+mod devices;
 mod error;
+mod events;
+mod guild_detail;
 mod guilds;
 pub(crate) use guilds::stop_guild_playback;
 mod ingest_authors;
+mod oauth;
+mod ops;
 mod overview;
 mod pairings;
 mod queries;
+mod rights;
 mod runtime_settings;
+mod session;
 mod static_files;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_devices;
+#[cfg(test)]
+mod tests_fixtures;
+#[cfg(test)]
+mod tests_guild_detail;
+#[cfg(test)]
+mod tests_live;
+#[cfg(test)]
+mod tests_ops;
+#[cfg(test)]
+mod tests_rights;
+
+pub(crate) use audit::purge_old as purge_old_audit;
+pub(crate) use ops::{BinaryProbe, SystemBinaryProbe};
 
 pub mod hub;
 
 pub use error::AdminError;
+pub use events::{AdminEvent, AdminEvents};
 pub use hub::{AdminHub, NoopAdminHub};
+pub use oauth::{AdminOAuth, DisabledOAuth, DiscordIdentity, DiscordOAuth, OAuthError};
+pub(crate) use session::purge_expired as purge_expired_sessions;
 
 use std::net::SocketAddr;
 
@@ -64,11 +96,11 @@ use serde_json::Value;
 
 use crate::app::AppState;
 
-/// CSP du panneau : aucune ressource distante hors images Discord, styles
-/// inline autorisés (deux barres de progression du JS utilisent `style="width"`),
-/// `connect-src 'self'` pour les `fetch` de `app.js`.
+/// CSP du panneau : aucune ressource distante hors images Discord, feuilles de
+/// style servies par le serveur, `connect-src 'self'` pour les `fetch` de la
+/// console.
 pub(crate) const ADMIN_CSP: &str = "default-src 'none'; script-src 'self'; \
-style-src 'self' 'unsafe-inline'; \
+style-src 'self'; \
 img-src 'self' https://cdn.discordapp.com https://media.discordapp.net; \
 connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; \
 frame-ancestors 'none'";
@@ -110,6 +142,10 @@ pub fn router() -> Router<AppState> {
             post(guilds::discord_unlink),
         )
         .route(
+            "/admin/api/guilds/{guild_id}/discord-leave",
+            post(guilds::discord_leave),
+        )
+        .route(
             "/admin/api/overlay-clients/{client_id}/revoke",
             post(clients::revoke_overlay),
         )
@@ -125,9 +161,18 @@ pub fn router() -> Router<AppState> {
         .route(
             "/admin/api/pairing-codes/{code}/revoke",
             post(pairings::revoke),
-        );
+        )
+        .merge(ops::routes())
+        .merge(audit::routes())
+        .merge(rights::routes())
+        .merge(events::routes());
 
-    secure(api).merge(static_files::router())
+    secure(
+        api.merge(guild_detail::routes())
+            .merge(devices::routes())
+            .merge(auth_routes::router()),
+    )
+    .merge(static_files::router())
 }
 
 /// Applique les en-têtes communs du panneau.
@@ -149,6 +194,10 @@ pub(crate) fn secure(router: Router<AppState>) -> Router<AppState> {
 async fn admin_headers(request: axum::extract::Request, next: middleware::Next) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
+    // The application state is inserted as a request extension by
+    // `app::router_with_hub`: the admin router itself is built before the state
+    // is applied, so this middleware cannot take a typed `State` extractor.
+    let state = request.extensions().get::<AppState>().cloned();
     let client_ip = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
@@ -164,10 +213,36 @@ async fn admin_headers(request: axum::extract::Request, next: middleware::Next) 
         method,
         Method::POST | Method::PATCH | Method::PUT | Method::DELETE
     );
-
+    // Read the actor before the handler runs: a logout deletes its session.
+    let actor = if mutating {
+        match state.as_ref() {
+            Some(state) => audit::actor_for_request(state, request.headers()).await,
+            None => None,
+        }
+    } else {
+        None
+    };
     let mut response = next.run(request).await;
 
     if mutating {
+        if let Some(state) = state.as_ref() {
+            // Signal the overview before the audit row: the SSE stream then
+            // emits the refreshed overview before the mutation's own `audit`
+            // event (the audit insert is awaited below).
+            if response.status().is_success() {
+                state.events.overview_changed();
+            }
+
+            audit::record(
+                state,
+                method.as_str(),
+                &path,
+                i64::from(response.status().as_u16()),
+                actor,
+                client_ip,
+            )
+            .await;
+        }
         tracing::info!(
             target: "lc_server::admin_audit",
             method = %method,
@@ -181,7 +256,11 @@ async fn admin_headers(request: axum::extract::Request, next: middleware::Next) 
 
     let headers = response.headers_mut();
 
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    // Static assets set their own policy (hashed files are immutable); every
+    // other admin response keeps the historical `no-store`.
+    headers
+        .entry(header::CACHE_CONTROL)
+        .or_insert(HeaderValue::from_static("no-store"));
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),

@@ -4,19 +4,21 @@
 //! repositories et les requêtes SQL sont donc exercés) et sur des backends qui
 //! enregistrent les demandes reçues.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use lc_db::{Db, DbConfig};
+use lc_domain::rights::RightsTable;
 use lc_domain::{Clock, FixedClock, GuildId, MediaAsset, MediaAssetId, MediaKind, MediaStatus};
 
 use crate::context::{
-    Author, BotConfig, BotContext, ConnectedOverlay, MediaAddRequest, MediaBackend, MediaRequest,
-    OverlayDirectory, PlaybackBackend, PlaybackJobRequest,
+    Author, BotConfig, BotConfigSource, BotContext, ConnectedOverlay, MediaAddRequest,
+    MediaBackend, MediaRequest, OverlayDirectory, PlaybackBackend, PlaybackJobRequest,
 };
 use crate::error::{BotError, MediaError, MediaErrorCode, SpeechFailure};
 use crate::i18n::Lang;
+use crate::rights::RightsSource;
 
 /// Instant de référence des tests : `2024-01-02T03:04:05.678Z`.
 pub const SAMPLE_MS: i64 = 1_704_164_645_678;
@@ -349,16 +351,58 @@ impl OverlayDirectory for FakeOverlayDirectory {
     }
 }
 
+/// Configuration source that can change while a context uses it.
+///
+/// Mirrors the server's hot settings store: every [`BotConfigSource::current`]
+/// call returns the latest configuration.
+pub struct MutableBotConfig {
+    config: Mutex<BotConfig>,
+}
+
+impl MutableBotConfig {
+    /// Builds the source from an initial configuration.
+    pub fn new(config: BotConfig) -> Self {
+        Self {
+            config: Mutex::new(config),
+        }
+    }
+
+    /// Replaces the configuration returned by the next [`Self::current`] call.
+    pub fn replace(&self, config: BotConfig) {
+        match self.config.lock() {
+            Ok(mut guard) => *guard = config,
+            Err(poisoned) => *poisoned.into_inner() = config,
+        }
+    }
+
+    /// Shortcut for tests that only change the default media duration.
+    pub fn set_default_duration_sec(&self, seconds: i64) {
+        let mut config = self.current();
+        config.default_duration_sec = seconds;
+        self.replace(config);
+    }
+}
+
+impl BotConfigSource for MutableBotConfig {
+    fn current(&self) -> BotConfig {
+        match self.config.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+}
+
 /// Contexte complet pour les tests : base mémoire + horloge figée + backends
 /// factices.
 pub struct FakeBotContext {
     db: Db,
     clock: FixedClock,
-    config: BotConfig,
+    config: Arc<dyn BotConfigSource>,
     media: FakeMediaBackend,
     playback: FakePlaybackBackend,
     media_board: FakeMediaBoardBackend,
     overlays: FakeOverlayDirectory,
+    rights: RightsTable,
 }
 
 impl FakeBotContext {
@@ -391,12 +435,22 @@ impl FakeBotContext {
         Ok(Self {
             db,
             clock: FixedClock::new(sample_now()),
-            config: BotConfig::new("http://localhost:3333"),
+            config: Arc::new(BotConfig::new("http://localhost:3333")),
             media: FakeMediaBackend::new(),
             playback: FakePlaybackBackend::new(),
             media_board: FakeMediaBoardBackend::new(),
             overlays: FakeOverlayDirectory::new(),
+            rights: RightsTable::new(),
         })
+    }
+
+    /// Context whose configuration comes from `source`, re-read on every use.
+    pub async fn with_config_source(
+        source: Arc<dyn BotConfigSource>,
+    ) -> Result<Self, lc_db::DbError> {
+        let mut context = Self::new().await?;
+        context.config = source;
+        Ok(context)
     }
 
     /// Contexte dont l'ingestion renvoie `asset`.
@@ -408,7 +462,12 @@ impl FakeBotContext {
 
     /// Remplace la configuration.
     pub fn set_config(&mut self, config: BotConfig) {
-        self.config = config;
+        self.config = Arc::new(config);
+    }
+
+    /// Replaces the live configuration source.
+    pub fn set_config_source(&mut self, source: Arc<dyn BotConfigSource>) {
+        self.config = source;
     }
 
     /// Accès mutable au backend média.
@@ -435,6 +494,16 @@ impl FakeBotContext {
     pub fn fixed_clock(&self) -> &FixedClock {
         &self.clock
     }
+
+    /// Current configurable rights table.
+    pub fn rights_table(&self) -> RightsTable {
+        self.rights.clone()
+    }
+
+    /// Replaces the configurable rights table.
+    pub fn set_rights(&mut self, rights: RightsTable) {
+        self.rights = rights;
+    }
 }
 
 #[async_trait]
@@ -447,8 +516,8 @@ impl BotContext for FakeBotContext {
         &self.clock
     }
 
-    fn config(&self) -> &BotConfig {
-        &self.config
+    fn config(&self) -> BotConfig {
+        self.config.current()
     }
 
     fn media(&self) -> &dyn MediaBackend {
@@ -463,11 +532,21 @@ impl BotContext for FakeBotContext {
         &self.media_board
     }
 
+    fn rights(&self) -> &dyn RightsSource {
+        self
+    }
+
     async fn list_connected_overlays(
         &self,
         guild_id: &GuildId,
     ) -> Result<Vec<ConnectedOverlay>, BotError> {
         self.overlays.list_connected(guild_id).await
+    }
+}
+
+impl RightsSource for FakeBotContext {
+    fn table(&self) -> RightsTable {
+        self.rights.clone()
     }
 }
 

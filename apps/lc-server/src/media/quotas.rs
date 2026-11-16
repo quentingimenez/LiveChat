@@ -146,6 +146,10 @@ pub async fn board_usage_bytes(db: &Db, guild_id: &GuildId) -> Result<i64, DbErr
 }
 
 /// Vérifie que le board média de la guilde peut accueillir un média.
+///
+/// The per-guild `guilds.board_quota_mb` override (migration 0011) replaces the
+/// server-wide `MEDIA_BOARD_MAX_TOTAL_MB` when it is set; a guild without a
+/// settings row keeps the server limit.
 pub async fn ensure_board_capacity(
     db: &Db,
     config: &MediaConfig,
@@ -153,7 +157,13 @@ pub async fn ensure_board_capacity(
     requested_bytes: i64,
 ) -> MediaServiceResult<()> {
     let current = board_usage_bytes(db, guild_id).await?;
-    let max = i64::try_from(config.storage.board_max_total_bytes).unwrap_or(i64::MAX);
+    let max = match db.guilds().board_quota_mb(guild_id).await? {
+        Some(quota_mb) => {
+            let megabytes = u64::try_from(quota_mb).unwrap_or(1).max(1);
+            i64::try_from(megabytes.saturating_mul(BYTES_PER_MEGABYTE)).unwrap_or(i64::MAX)
+        }
+        None => i64::try_from(config.storage.board_max_total_bytes).unwrap_or(i64::MAX),
+    };
 
     if requested_bytes > 0 && current.saturating_add(requested_bytes) > max {
         return Err(MediaServiceError::Media(board_limit_error(
@@ -428,5 +438,28 @@ mod tests {
         assert!(media
             .message()
             .contains("Persistent media board storage limit reached"));
+
+        // The per-guild quota overrides the (tiny) server limit.
+        fixture
+            .db
+            .guilds()
+            .set_board_quota_mb(&guild, Some(10))
+            .await
+            .expect("quota de guilde");
+        ensure_board_capacity(&fixture.db, &fixture.config, &guild, 2 * 1024 * 1024)
+            .await
+            .expect("le quota de guilde accepte 2 Mio");
+
+        fixture
+            .db
+            .guilds()
+            .set_board_quota_mb(&guild, Some(1))
+            .await
+            .expect("quota de guilde réduit");
+        let error = ensure_board_capacity(&fixture.db, &fixture.config, &guild, 2 * 1024 * 1024)
+            .await
+            .expect_err("le quota de guilde refuse 2 Mio");
+        let media = error.media_error().expect("erreur média");
+        assert_eq!(media.code(), MediaErrorCode::BoardStorageLimitReached);
     }
 }

@@ -24,6 +24,8 @@ pub struct YoutubeOEmbed {
     pub width: Option<u32>,
     /// Hauteur du lecteur.
     pub height: Option<u32>,
+    /// Thumbnail of the video.
+    pub thumbnail_url: Option<String>,
 }
 
 /// Métadonnées extraites de `yt-dlp --dump-json`.
@@ -39,6 +41,8 @@ pub struct YoutubeMetadata {
     pub width: Option<u32>,
     /// Hauteur de la meilleure piste vidéo.
     pub height: Option<u32>,
+    /// Thumbnail of the video.
+    pub thumbnail_url: Option<String>,
 }
 
 impl YoutubeMetadata {
@@ -82,6 +86,7 @@ pub async fn resolve_youtube(
             source_hash: source.source_hash.clone(),
             title: payload.title,
             author: payload.author_name,
+            thumbnail_url: payload.thumbnail_url,
             kind: Some(lc_domain::MediaKind::Video),
             ..ResolvedMedia::from_source(source)
         };
@@ -106,6 +111,7 @@ pub async fn resolve_youtube(
                 title: metadata.title,
                 author: metadata.author,
                 duration_sec: metadata.duration_sec,
+                thumbnail_url: metadata.thumbnail_url,
                 kind: Some(lc_domain::MediaKind::Video),
                 ..ResolvedMedia::from_source(source)
             };
@@ -136,6 +142,7 @@ pub fn parse_ytdlp_dump(json: &str) -> MediaResult<YoutubeMetadata> {
         duration_sec: number_field(&value, "duration"),
         width: None,
         height: None,
+        thumbnail_url: string_field(&value, "thumbnail"),
     };
     let dimensions = best_dimensions(&value);
     metadata.width = dimensions.map(|(width, _)| width);

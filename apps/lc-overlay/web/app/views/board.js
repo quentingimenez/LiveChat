@@ -17,6 +17,7 @@ import {
 import {
   artworkOf,
   cardClicked,
+  cardPicture,
   cardHovered,
   CLOSED_VIEW,
   drawerUsed,
@@ -26,6 +27,7 @@ import {
   pruneView,
   sameView,
   shownId,
+  thumbnailOf,
 } from '../core/detail-drawer.js';
 import { h, icon, registerIcons } from '../core/dom.js';
 import { formatDuration } from '../core/format.js';
@@ -189,6 +191,7 @@ function cardKey(item) {
     item.media.height ?? null,
     mediaPath(item.mediaUrl),
     mediaPath(item.artwork && item.artwork.url),
+    mediaPath(item.thumbnail && item.thumbnail.url),
     can('play'),
     canFavorite(),
   ]);
@@ -347,13 +350,14 @@ function buildCard(entry) {
   const item = entry.item;
   const kind = item.media.kind;
   const artwork = kind === 'audio' ? artworkOf(item) : null;
-  const mediaUrl = artwork ? artwork.url : typeof item.mediaUrl === 'string' && item.mediaUrl ? item.mediaUrl : null;
+  // A video with a thumbnail shows that image instead of loading the video.
+  const picture = cardPicture(item);
   const thumb = h(
     'button',
     {
       class: `thumb${artwork ? ' has-artwork' : ''}`,
-      'data-media-url': mediaUrl,
-      'data-kind': artwork ? 'image' : kind,
+      'data-media-url': picture.url,
+      'data-kind': picture.kind,
       'data-item-id': item.id,
       'aria-label': `Détails de ${itemTitle(item)}`,
       onClick: (event) => {
@@ -377,7 +381,7 @@ function buildCard(entry) {
     artwork ? h('span', { class: 'kind-badge', 'aria-hidden': 'true' }, icon('audio')) : null,
     formatDuration(item.media.durationSec) ? h('span', { class: 'duration' }, formatDuration(item.media.durationSec)) : null,
   );
-  if ((kind !== 'audio' || artwork) && mediaUrl) {
+  if (picture.url) {
     thumbObserver.observe(thumb);
   }
   const ratio = artwork ? { width: artwork.width || 1, height: artwork.height || 1 } : item.media;
@@ -441,8 +445,9 @@ function renderCard(item) {
   } else {
     entry.item = item;
     const thumb = entry.node.querySelector('.thumb');
-    if (thumb && !thumb.querySelector('img, video') && item.mediaUrl) {
-      thumb.dataset.mediaUrl = item.mediaUrl;
+    const picture = cardPicture(item);
+    if (thumb && !thumb.querySelector('img, video') && picture.url) {
+      thumb.dataset.mediaUrl = picture.url;
     }
   }
   entry.node.classList.toggle('is-selected', state.selectedId === item.id);
@@ -1062,7 +1067,9 @@ function buildPreview(item) {
     // The native controls only appear once the first frame is there: shown
     // earlier, they play their loading spinner for the few milliseconds the
     // video takes to load.
-    const video = h('video', { src: url, preload: 'auto', playsinline: true });
+    // The thumbnail stands in for the video until its first frame.
+    const thumbnail = thumbnailOf(item);
+    const video = h('video', { src: url, preload: 'auto', playsinline: true, poster: thumbnail ? thumbnail.url : null });
     video.volume = previewVolume(state.activeGuildId);
     video.addEventListener('loadedmetadata', () => adoptRatio(video.videoWidth, video.videoHeight));
     node.append(video);

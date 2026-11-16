@@ -20,6 +20,7 @@
 //! - [`board`] : ajout d'un média au board média (épinglage, doublons, budget) ;
 //! - [`jobs`] : construction des `PlaybackJob` avec la résolution de durée du
 //!   legacy (durée demandée → durée du média → réglages de guilde → défaut) ;
+//! - [`thumbnails`] : platform thumbnails of linked videos, in the background ;
 //! - [`service`] : orchestration de l'ingestion (`MediaService`).
 //!
 //! Aucune de ces fonctions ne panique : les erreurs sont typées et remontées
@@ -36,6 +37,7 @@ pub mod purge;
 pub mod quotas;
 pub mod service;
 pub mod settings;
+pub mod thumbnails;
 pub mod tokens;
 pub mod tts;
 
@@ -44,3 +46,4 @@ pub use errors::{MediaServiceError, MediaServiceResult};
 pub use hook::{install_ingest_hook, notify_ingested, IngestHook};
 pub use purge::{purge_once, spawn_purge_worker, PurgeReport, ORPHAN_GRACE, PURGE_INTERVAL};
 pub use service::{shared_pipeline_for_state, MediaService};
+pub use thumbnails::spawn_thumbnail_backfill;

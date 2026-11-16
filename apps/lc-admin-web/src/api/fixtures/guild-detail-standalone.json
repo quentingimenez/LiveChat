@@ -1,0 +1,71 @@
+{
+  "boardQuotaBytes": null,
+  "busyUntil": null,
+  "discord": {
+    "botPresent": null,
+    "kind": "none",
+    "serverId": null
+  },
+  "editableName": "Studio LiveChat",
+  "guestsCanViewBoard": true,
+  "id": "9274817583033437435",
+  "ingest": {
+    "clients": [],
+    "total": 0
+  },
+  "invites": {
+    "count": 1,
+    "items": [
+      {
+        "code": "LBDX8BL6",
+        "createdAt": "2026-11-16T05:56:30.130Z",
+        "createdByMemberId": null,
+        "expiresAt": "2026-11-23T05:56:30.130Z",
+        "isActive": true,
+        "maxUses": 1,
+        "memberId": null,
+        "revokedAt": null,
+        "role": "admin",
+        "useCount": 0
+      }
+    ]
+  },
+  "mediaBoard": {
+    "itemsCount": 0,
+    "maxBytes": 16106127360,
+    "remainingBytes": 16106127360,
+    "usedBytes": 0,
+    "usedPercent": 0.0
+  },
+  "members": {
+    "count": 0,
+    "items": []
+  },
+  "name": "Studio LiveChat",
+  "overlays": {
+    "clients": [],
+    "connectedCount": 0,
+    "total": 0
+  },
+  "playback": {
+    "done": 0,
+    "failed": 0,
+    "pending": 0,
+    "playing": 0
+  },
+  "queue": {
+    "pending": [],
+    "playing": null,
+    "serverTime": "2026-11-16T05:56:30.158Z"
+  },
+  "settings": {
+    "defaultMediaTime": 5,
+    "displayMediaFull": false,
+    "maxMediaTime": null,
+    "overrides": {
+      "defaultMediaTime": null,
+      "displayMediaFull": false,
+      "maxMediaTime": null
+    }
+  }
+}

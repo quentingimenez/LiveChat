@@ -18,6 +18,7 @@ use axum::response::Response;
 use axum::Json;
 use chrono::{DateTime, Duration, Utc};
 use lc_db::{Db, MemberChange};
+use lc_domain::rights::{Action, RightsTable, Surface};
 use lc_domain::{
     GuildAccess, GuildId, GuildInvite, GuildMember, GuildMemberId, GuildRole, PairingCode,
     Permission,
@@ -49,8 +50,16 @@ const AVATAR_DATA_MAX_LEN: usize = 96_000;
 const DEVICE_CODE_TTL_MINUTES: i64 = 10;
 
 /// Garde de permission : `403 {"error":"forbidden"}` si le rôle ne suffit pas.
-pub(super) fn require(auth: &AuthedOverlayClient, permission: Permission) -> Result<(), Response> {
-    if auth.can(permission) {
+pub(super) fn require(
+    state: &AppState,
+    auth: &AuthedOverlayClient,
+    permission: Permission,
+) -> Result<(), Response> {
+    let action = Action::from_overlay_permission(permission);
+    if state
+        .rights
+        .allowed(Surface::Overlay, action, auth.role().into())
+    {
         Ok(())
     } else {
         Err(error(StatusCode::FORBIDDEN, "forbidden"))
@@ -188,18 +197,25 @@ pub(super) fn member_payload(member: &GuildMember) -> Value {
 }
 
 /// Droits effectifs du client, pour que l'interface masque ce qui est refusé.
-fn permissions_payload(role: GuildRole, guests_can_view_board: bool) -> Value {
+fn permissions_payload(
+    rights: &RightsTable,
+    role: GuildRole,
+    guests_can_view_board: bool,
+) -> Value {
+    let rights_role = role.into();
+    let can = |action: Action| rights.allowed(Surface::Overlay, action, rights_role);
     json!({
-        "viewBoard": role.can_view_board(guests_can_view_board),
-        "viewQueue": role.can(Permission::ViewQueue),
-        "play": role.can(Permission::TriggerPlayback),
-        "stop": role.can(Permission::StopPlayback),
-        "addMedia": role.can(Permission::AddMedia),
-        "editAnyMedia": role.can(Permission::EditAnyMedia),
-        "moderateQueue": role.can(Permission::ModerateQueue),
-        "manageMembers": role.can(Permission::ManageMembers),
-        "manageInvites": role.can(Permission::ManageInvites),
-        "manageSettings": role.can(Permission::ManageSettings),
+        "viewBoard": can(Action::ViewBoard)
+            && (role != GuildRole::Guest || guests_can_view_board),
+        "viewQueue": can(Action::ViewQueue),
+        "play": can(Action::TriggerPlayback),
+        "stop": can(Action::StopPlayback),
+        "addMedia": can(Action::AddMedia),
+        "editAnyMedia": can(Action::EditAnyMedia),
+        "moderateQueue": can(Action::ModerateQueue),
+        "manageMembers": can(Action::ManageMembers),
+        "manageInvites": can(Action::ManageInvites),
+        "manageSettings": can(Action::ManageSettings),
     })
 }
 
@@ -255,6 +271,7 @@ pub async fn get_guild(State(state): State<AppState>, auth: AuthedOverlayClient)
         .as_ref()
         .is_none_or(|access| access.guests_can_view_board);
     let role = auth.role();
+    let rights = state.rights.snapshot();
 
     json_response(
         StatusCode::OK,
@@ -284,7 +301,7 @@ pub async fn get_guild(State(state): State<AppState>, auth: AuthedOverlayClient)
                 }),
             },
             "clientId": auth.client.id.to_canonical(),
-            "permissions": permissions_payload(role, guests_can_view_board),
+            "permissions": permissions_payload(&rights, role, guests_can_view_board),
         }),
     )
 }
@@ -420,6 +437,35 @@ async fn follow_discord(state: &AppState, db: &Db, member: &GuildMember) -> Resp
     )
 }
 
+/// Issues a device code binding an extra overlay to `member_id`.
+///
+/// Shared by `POST /overlay/device-code` (member of the calling client) and the
+/// admin route (member supplied in the body). `created_by_member_id` records
+/// who requested it; the admin console passes `None`.
+pub(crate) async fn create_device_code_payload(
+    state: &AppState,
+    guild_id: &GuildId,
+    member_id: GuildMemberId,
+    role: GuildRole,
+    created_by_member_id: Option<GuildMemberId>,
+) -> Result<Value, Response> {
+    let db = db(state)?;
+    let now = now(state);
+    let invite = NewInvite {
+        guild_id: guild_id.clone(),
+        role,
+        member_id: Some(member_id),
+        max_uses: Some(1),
+        created_by_member_id,
+        expires_at: Some(now + Duration::minutes(DEVICE_CODE_TTL_MINUTES)),
+    };
+    match create_invite(db, invite, now).await {
+        Ok(Some(invite)) => Ok(json!({"created": true, "invite": invite_payload(&invite, now)})),
+        Ok(None) => Err(internal_error()),
+        Err(db_error) => Err(db_failure("overlay_device_code.create", &db_error)),
+    }
+}
+
 /// Handler `POST /overlay/device-code` : code à usage unique rattachant un
 /// overlay supplémentaire au membre courant.
 pub async fn create_device_code(
@@ -429,26 +475,17 @@ pub async fn create_device_code(
     let Some(member) = auth.member.as_ref() else {
         return error(StatusCode::CONFLICT, "member_required");
     };
-    let db = match db(&state) {
-        Ok(db) => db,
-        Err(response) => return response,
-    };
-    let now = now(&state);
-    let invite = NewInvite {
-        guild_id: member.guild_id.clone(),
-        role: member.role,
-        member_id: Some(member.id),
-        max_uses: Some(1),
-        created_by_member_id: Some(member.id),
-        expires_at: Some(now + Duration::minutes(DEVICE_CODE_TTL_MINUTES)),
-    };
-    match create_invite(db, invite, now).await {
-        Ok(Some(invite)) => json_response(
-            StatusCode::OK,
-            json!({"created": true, "invite": invite_payload(&invite, now)}),
-        ),
-        Ok(None) => internal_error(),
-        Err(db_error) => db_failure("overlay_device_code.create", &db_error),
+    match create_device_code_payload(
+        &state,
+        auth.guild_id(),
+        member.id,
+        member.role,
+        Some(member.id),
+    )
+    .await
+    {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
     }
 }
 

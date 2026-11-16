@@ -36,6 +36,8 @@ pub mod http;
 pub mod ingestions;
 pub mod media;
 pub mod media_url;
+pub mod rights;
+pub mod runtime;
 pub mod shutdown;
 pub mod wiring;
 pub mod ws;
@@ -142,8 +144,46 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     // `DATABASE_URL` est fournie et inutilisable (échec explicite, pas de perte
     // silencieuse).
     let database = app::open_database(&config).await?;
+    if let Some(db) = database.as_ref() {
+        // Expired cookie sessions are deleted on read and once at startup.
+        match http::admin::purge_expired_sessions(db).await {
+            Ok(removed) if removed > 0 => {
+                info!(removed, "sessions admin expirées supprimées au démarrage");
+            }
+            Ok(_) => {}
+            Err(error) => {
+                warn!(error = %error, "nettoyage des sessions admin expirées impossible");
+            }
+        }
+        // The persistent admin audit keeps 90 days of rows.
+        match http::admin::purge_old_audit(db, chrono::Utc::now()).await {
+            Ok(removed) if removed > 0 => {
+                info!(
+                    removed,
+                    "lignes d'audit admin expirées supprimées au démarrage"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                warn!(error = %error, "nettoyage de l'audit admin impossible");
+            }
+        }
+    }
     let database_for_shutdown = database.clone();
     let mut state = AppState::new(Arc::clone(&config), database, shutdown.clone());
+
+    // Load the configurable rights: the database may contain `role_rights`
+    // overrides. A failure never blocks startup: the built-in defaults (the
+    // historical hard-coded rules) stay in force.
+    if let Some(db) = state.db.as_ref() {
+        match state.rights.reload(db).await {
+            Ok(()) => info!("configurable rights loaded"),
+            Err(error) => warn!(
+                error = %error,
+                "configurable rights could not be loaded: using defaults"
+            ),
+        }
+    }
 
     // Hub WebSocket partagé : routeur `/ws`, adaptateur `AdminHub` (injecté dans
     // l'état applicatif, AUD-COR-14) et hook média.

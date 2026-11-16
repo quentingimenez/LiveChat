@@ -1,64 +1,78 @@
-//! Authentification du panneau d'administration.
+//! Session authentication for the admin console.
 //!
-//! Reproduit fidèlement `assertAdminAccess` du legacy
-//! (`server/src/components/admin/adminRoutes.ts:197-225`) :
+//! Section 1 of `docs/rust/admin-console-api.md` replaces the legacy
+//! `Authorization: Bearer <ADMIN_UI_TOKEN>` check with a cookie session:
 //!
-//! 1. `ADMIN_UI_TOKEN` vide ⇒ `503 admin_ui_disabled` (message exact du legacy) ;
-//! 2. `ADMIN_UI_LOCAL_ONLY` vrai et client non loopback ⇒ `403 admin_local_only`
-//!    (avec `ADMIN_TRUST_FORWARDED_FOR=true`, l'IP annoncée par le proxy de
-//!    confiance — `X-Real-IP` puis dernier `X-Forwarded-For` — est prise en
-//!    compte, voir [`crate::http::proxy`]) ;
-//! 3. token absent/différent ⇒ `401 unauthorized`, comparaison à temps constant.
+//! 1. when neither the secret login nor the Discord login is configured, every
+//!    protected route answers `503 admin_ui_disabled`;
+//! 2. `ADMIN_UI_LOCAL_ONLY` (and `ADMIN_TRUST_FORWARDED_FOR`) still apply;
+//! 3. the request must carry a valid `lc_admin_session` cookie, otherwise it
+//!    receives `401 unauthorized`;
+//! 4. mutations additionally require a trusted `Origin`/`Referer` (AUD-COR-14).
 //!
-//! Le token est accepté **uniquement** en `Authorization: Bearer <token>`.
-//! L'acceptation historique de `?token=<token>` (parité legacy) a été retirée
-//! (AUD-COR-05) : un jeton en query string finit dans les journaux d'accès, les
-//! proxies et l'historique navigateur. Le panneau lit le token depuis son champ
-//! puis `localStorage` et l'envoie en en-tête (voir `static/admin/app.js`).
+//! Authentication is an extractor ([`AdminAccess`]) rather than a middleware,
+//! like before: the admin router is built without state (`Router<AppState>`) and
+//! every JSON handler takes `_: AdminAccess`, so no `/admin/api/**` route can
+//! forget the check. Static assets stay public (they contain no data).
 //!
-//! L'authentification est un extracteur ([`AdminAccess`]) plutôt qu'un
-//! middleware : le routeur admin est construit sans l'état (`Router<AppState>`)
-//! et un middleware `from_fn` ne peut pas extraire `State<AppState>` sans que
-//! l'état soit fourni à la construction. Chaque handler JSON reçoit donc
-//! `_: AdminAccess`, ce qui garantit qu'aucune route `/admin/api/**` n'oublie le
-//! contrôle. Les assets statiques restent publics (page sans donnée, décision
-//! E9 de `docs/rust/admin-panel.md`).
-//!
-//! L'ordre de lecture du token est volontaire : l'en-tête `Authorization` est la
-//! seule voie depuis AUD-COR-05 (les requêtes portant un `?token=` sont
-//! traitées comme non authentifiées, le jeton de query étant ignoré). Une
-//! différence assumée : `Ipv4Addr::is_loopback()` couvre tout
-//! `127.0.0.0/8` alors que le legacy ne testait que `127.0.0.1` — c'est plus
-//! permissif mais reste strictement local.
-//!
-//! Depuis AUD-COR-14, les **mutations** (`POST`/`PATCH`/`PUT`/`DELETE`) exigent
-//! en plus une origine vérifiée (`Origin:`, à défaut l'origine du `Referer:`).
-//! L'authentification Bearer reste prioritaire : une requête sans jeton valide
-//! reçoit `401` sans que l'origine soit évaluée. Une origine absente, `null` ou
-//! étrangère reçoit `403 {"error":"invalid_origin"}`. Les requêtes sûres (`GET`,
-//! `HEAD`, `OPTIONS`) ne sont pas concernées. L'origine est acceptée si son
-//! autorité correspond à celle de l'en-tête `Host` (même origine que le
-//! panneau) ou à l'origine publique `API_URL` (déploiement derrière un reverse
-//! proxy qui réécrit `Host`).
+//! The session is exposed to handlers through [`AdminAccess::session`] (method,
+//! display name, expiry).
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use axum::extract::{ConnectInfo, FromRequestParts};
-use axum::http::{header, request::Parts, Method, StatusCode};
+use axum::http::{header, request::Parts, HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde_json::json;
+use serde_json::{json, Value};
 use subtle::ConstantTimeEq as _;
 
 use crate::app::AppState;
 
-/// Preuve que la requête a passé le contrôle d'accès admin.
+use super::session::{self, AdminSession};
+
+/// Proof that the request passed the admin access checks.
 ///
-/// Extrait par chaque handler `/admin/api/**` : si l'extraction échoue, axum
-/// renvoie directement la réponse 503/403/401 correspondante, le handler n'est
-/// jamais exécuté.
-#[derive(Debug, Clone, Copy)]
-pub struct AdminAccess;
+/// Extracted by every `/admin/api/**` handler: when extraction fails, axum
+/// returns the corresponding 503/403/401 response and the handler never runs.
+#[derive(Debug, Clone)]
+pub struct AdminAccess {
+    /// Authenticated session (never contains the raw cookie token).
+    ///
+    /// Handlers that need the actor (audit) can read it; JSON handlers only
+    /// prove the access check today.
+    #[allow(dead_code)]
+    pub session: AdminSession,
+}
+
+/// Enabled admin login methods, as published by `GET /admin/auth/session`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AuthMethods {
+    /// Discord OAuth2 login is configured and has an allow-list.
+    pub discord: bool,
+    /// Secret login is configured (`ADMIN_UI_TOKEN` non-empty).
+    pub secret: bool,
+}
+
+impl AuthMethods {
+    /// `true` when at least one method is available.
+    pub fn any(self) -> bool {
+        self.discord || self.secret
+    }
+
+    /// JSON body of the `methods` field.
+    pub fn payload(self) -> Value {
+        json!({ "discord": self.discord, "secret": self.secret })
+    }
+}
+
+/// Current login methods for a given state.
+pub fn auth_methods(state: &AppState) -> AuthMethods {
+    AuthMethods {
+        discord: state.config.admin_discord_login_enabled(),
+        secret: state.config.admin_secret_login_enabled(),
+    }
+}
 
 impl FromRequestParts<AppState> for AdminAccess {
     type Rejection = Response;
@@ -67,56 +81,98 @@ impl FromRequestParts<AppState> for AdminAccess {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let expected = state.config.admin_ui_token.expose_secret().trim();
-
-        if expected.is_empty() {
+        if !auth_methods(state).any() {
             return Err(disabled_response());
         }
 
-        let loopback = if state.config.admin_trust_forwarded_for {
-            forwarded_loopback_parts(parts)
-        } else {
-            is_loopback_parts(parts)
-        };
-        if state.config.admin_ui_local_only && !loopback {
-            return Err(json_status(
-                StatusCode::FORBIDDEN,
-                json!({ "error": "admin_local_only" }),
-            ));
-        }
+        check_local_only(
+            state,
+            &parts.headers,
+            parts
+                .extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|info| info.0.ip()),
+        )?;
 
-        let Some(candidate) = request_token(parts) else {
-            return Err(unauthorized_response());
-        };
+        let admin_session = current_session(state, &parts.headers)
+            .await?
+            .ok_or_else(unauthorized_response)?;
 
-        if !constant_time_eq(expected, &candidate) {
-            return Err(unauthorized_response());
-        }
-
-        // AUD-COR-14 : défense CSRF en profondeur. Un site tiers ne peut pas
-        // poser `Authorization: Bearer`, mais vérifier l'origine sur les
-        // mutations est gratuit et protège le jour où une session cookie serait
-        // introduite (ou si le jeton fuitait via un autre canal).
-        if is_mutation(&parts.method) && !origin_allowed(parts, state) {
+        // AUD-COR-14: defence in depth against CSRF. Cookies are ambient
+        // credentials, so mutations must originate from the panel (or API_URL
+        // behind a reverse proxy).
+        if is_mutation(&parts.method) && !origin_allowed(&parts.headers, state) {
             return Err(invalid_origin_response());
         }
 
-        Ok(Self)
+        Ok(Self {
+            session: admin_session,
+        })
     }
 }
 
-/// Méthodes considérées comme mutantes (contrôle d'origine obligatoire).
+/// Loads the session carried by the request cookie, if any.
 ///
-/// `http::Method` n'expose pas de variante utilisable en pattern : on compare
-/// la représentation textuelle, stable majuscule pour les méthodes standard.
-fn is_mutation(method: &Method) -> bool {
+/// `Ok(None)` covers a missing cookie, an unknown token, and an expired token.
+/// Database failures become a neutral `500 internal_error` response.
+#[allow(clippy::result_large_err)]
+pub async fn current_session(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Option<AdminSession>, Response> {
+    let Some(token) = session::cookie_value(headers, session::SESSION_COOKIE_NAME) else {
+        return Ok(None);
+    };
+    let Some(db) = state.db.as_ref() else {
+        tracing::error!("admin session lookup without a configured database");
+        return Ok(None);
+    };
+    let now_ms = state.clock.now().timestamp_millis();
+
+    session::find(db, &token, now_ms).await.map_err(|error| {
+        tracing::error!(error = %error, "admin session lookup failed");
+        internal_error_response()
+    })
+}
+
+/// Applies `ADMIN_UI_LOCAL_ONLY` to auth and API routes.
+///
+/// `peer_ip` is the direct connection address (`ConnectInfo`); when
+/// `ADMIN_TRUST_FORWARDED_FOR` is enabled the trusted proxy headers decide
+/// instead. A missing peer address is treated as a remote client.
+#[allow(clippy::result_large_err)]
+pub fn check_local_only(
+    state: &AppState,
+    headers: &HeaderMap,
+    peer_ip: Option<IpAddr>,
+) -> Result<(), Response> {
+    let loopback = if state.config.admin_trust_forwarded_for {
+        crate::http::proxy::proxied_client_ip(headers).is_some_and(is_loopback)
+    } else {
+        peer_ip.is_some_and(is_loopback)
+    };
+
+    if state.config.admin_ui_local_only && !loopback {
+        return Err(json_status(
+            StatusCode::FORBIDDEN,
+            json!({ "error": "admin_local_only" }),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Methods considered mutations (mandatory origin check).
+///
+/// `http::Method` exposes no pattern-matchable variant: the uppercase textual
+/// representation is stable for standard methods.
+pub fn is_mutation(method: &Method) -> bool {
     matches!(method.as_str(), "POST" | "PATCH" | "PUT" | "DELETE")
 }
 
-/// Origine annoncée par la requête : `Origin`, sinon origine du `Referer`.
-fn request_origin(parts: &Parts) -> Option<String> {
-    if let Some(origin) = parts
-        .headers
+/// Origin announced by the request: `Origin`, otherwise the `Referer` origin.
+fn request_origin(headers: &HeaderMap) -> Option<String> {
+    if let Some(origin) = headers
         .get(header::ORIGIN)
         .and_then(|value| value.to_str().ok())
     {
@@ -126,14 +182,13 @@ fn request_origin(parts: &Parts) -> Option<String> {
         }
     }
 
-    parts
-        .headers
+    headers
         .get(header::REFERER)
         .and_then(|value| value.to_str().ok())
         .and_then(referer_origin)
 }
 
-/// Extrait `schéma://autorité` d'un `Referer` (le chemin est ignoré).
+/// Extracts `scheme://authority` from a `Referer` (the path is ignored).
 fn referer_origin(referer: &str) -> Option<String> {
     let (scheme, rest) = referer.trim().split_once("://")?;
     if scheme.is_empty() {
@@ -146,10 +201,10 @@ fn referer_origin(referer: &str) -> Option<String> {
     Some(format!("{scheme}://{authority}"))
 }
 
-/// Autorité normalisée d'une origine (`http(s)://hôte[:port]`), en minuscules.
+/// Normalized authority of an origin (`http(s)://host[:port]`), lowercase.
 ///
-/// Renvoie `None` pour une origine opaque (`null`), non HTTP(S) ou vide : ces
-/// valeurs ne peuvent jamais correspondre à une requête légitime du panneau.
+/// Returns `None` for an opaque origin (`null`), a non-HTTP(S) scheme, or an
+/// empty value: those can never match a legitimate panel request.
 fn canonical_authority(origin: &str) -> Option<String> {
     let (scheme, rest) = origin.trim().split_once("://")?;
     if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
@@ -162,9 +217,9 @@ fn canonical_authority(origin: &str) -> Option<String> {
     Some(authority.to_ascii_lowercase())
 }
 
-/// Autorité de l'en-tête `Host` (normalisée en minuscules).
-fn request_host(parts: &Parts) -> Option<String> {
-    let host = parts.headers.get(header::HOST)?.to_str().ok()?.trim();
+/// Normalized `Host` header authority (lowercase).
+fn request_host(headers: &HeaderMap) -> Option<String> {
+    let host = headers.get(header::HOST)?.to_str().ok()?.trim();
     if host.is_empty() {
         None
     } else {
@@ -172,21 +227,20 @@ fn request_host(parts: &Parts) -> Option<String> {
     }
 }
 
-/// Origine autorisée pour une mutation ?
+/// Is the mutation origin trusted?
 ///
-/// Accepte l'origine si son autorité est celle du `Host` de la requête (même
-/// origine que le panneau) ou l'origine publique dérivée de `API_URL`
-/// (déploiement derrière un reverse proxy). L'origine `null` (iframe sandbox,
-/// `data:`) est toujours refusée.
-fn origin_allowed(parts: &Parts, state: &AppState) -> bool {
-    let Some(origin) = request_origin(parts) else {
+/// Accepts the `Host` authority (same origin as the panel) or the public origin
+/// derived from `API_URL` (reverse proxy rewriting `Host`). A missing origin,
+/// `null`, or a foreign origin is rejected.
+pub fn origin_allowed(headers: &HeaderMap, state: &AppState) -> bool {
+    let Some(origin) = request_origin(headers) else {
         return false;
     };
     let Some(origin_authority) = canonical_authority(&origin) else {
         return false;
     };
 
-    if let Some(host) = request_host(parts) {
+    if let Some(host) = request_host(headers) {
         if origin_authority == host {
             return true;
         }
@@ -195,29 +249,66 @@ fn origin_allowed(parts: &Parts, state: &AppState) -> bool {
     canonical_authority(&state.config.api_origin()).is_some_and(|api| api == origin_authority)
 }
 
-fn invalid_origin_response() -> Response {
-    json_status(StatusCode::FORBIDDEN, json!({ "error": "invalid_origin" }))
-}
-
-fn disabled_response() -> Response {
+/// Response used when no admin login method is configured.
+pub fn disabled_response() -> Response {
     json_status(
         StatusCode::SERVICE_UNAVAILABLE,
         json!({
             "error": "admin_ui_disabled",
-            "message": "ADMIN_UI_TOKEN is not configured",
+            "message": "admin authentication is not configured",
         }),
     )
 }
 
-fn unauthorized_response() -> Response {
+/// Response used for a missing or invalid session.
+pub fn unauthorized_response() -> Response {
     json_status(StatusCode::UNAUTHORIZED, json!({ "error": "unauthorized" }))
 }
 
-fn json_status(status: StatusCode, body: serde_json::Value) -> Response {
+/// Response used when the shared secret does not match.
+pub fn invalid_secret_response() -> Response {
+    json_status(
+        StatusCode::UNAUTHORIZED,
+        json!({ "error": "invalid_secret" }),
+    )
+}
+
+/// Response used when a specific login method is disabled.
+pub fn method_disabled_response() -> Response {
+    json_status(StatusCode::NOT_FOUND, json!({ "error": "method_disabled" }))
+}
+
+/// Response used when a mutation origin is missing or foreign.
+pub fn invalid_origin_response() -> Response {
+    json_status(StatusCode::FORBIDDEN, json!({ "error": "invalid_origin" }))
+}
+
+/// Neutral internal error (details are only logged).
+pub fn internal_error_response() -> Response {
+    json_status(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        json!({ "error": "internal_error" }),
+    )
+}
+
+/// JSON response with the given status.
+pub fn json_status(status: StatusCode, body: Value) -> Response {
     (status, Json(body)).into_response()
 }
 
-/// Adresse loopback ? Vrai pour `127.0.0.0/8`, `::1` et `::ffff:127.0.0.1`.
+/// Constant-time comparison (length first, like the legacy check).
+pub fn constant_time_eq(expected: &str, candidate: &str) -> bool {
+    let expected = expected.as_bytes();
+    let candidate = candidate.as_bytes();
+
+    if expected.len() != candidate.len() {
+        return false;
+    }
+
+    expected.ct_eq(candidate).into()
+}
+
+/// Loopback address? True for `127.0.0.0/8`, `::1` and `::ffff:127.0.0.1`.
 fn is_loopback(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(address) => address.is_loopback(),
@@ -230,93 +321,11 @@ fn is_loopback(ip: IpAddr) -> bool {
     }
 }
 
-fn is_loopback_parts(parts: &Parts) -> bool {
-    let Some(ConnectInfo(address)) = parts.extensions.get::<ConnectInfo<SocketAddr>>() else {
-        // Aucune adresse connue (test mal câblé, proxy exotique) : on refuse,
-        // comme un client externe. Le serveur réel branche toujours
-        // `into_make_service_with_connect_info`.
-        return false;
-    };
-
-    is_loopback(address.ip())
-}
-
-/// IP annoncée par le reverse proxy de confiance (`ADMIN_TRUST_FORWARDED_FOR=true`)
-/// pour le contrôle local-only : `X-Real-IP`, puis le dernier `X-Forwarded-For`.
-/// Le premier saut est écrit par le client (un `X-Forwarded-For: 127.0.0.1` forgé
-/// ne doit pas passer pour local). En-tête absent ou illisible : « non loopback ».
-fn forwarded_loopback_parts(parts: &Parts) -> bool {
-    crate::http::proxy::proxied_client_ip(&parts.headers).is_some_and(is_loopback)
-}
-
-/// Token de la requête : `Authorization: Bearer` uniquement (AUD-COR-05).
-///
-/// Un éventuel `?token=` est volontairement ignoré : accepter un secret en
-/// query string le ferait apparaître dans les journaux d'accès, les proxies et
-/// l'historique du navigateur.
-fn request_token(parts: &Parts) -> Option<String> {
-    let value = parts.headers.get(header::AUTHORIZATION)?;
-    let value = value.to_str().ok()?;
-    let (scheme, token) = value.split_once(' ')?;
-
-    if !scheme.eq_ignore_ascii_case("bearer") {
-        return None;
-    }
-
-    let token = token.trim();
-    if token.is_empty() {
-        return None;
-    }
-
-    Some(token.to_owned())
-}
-
-/// Comparaison à temps constant (longueur d'abord, comme le legacy).
-fn constant_time_eq(expected: &str, candidate: &str) -> bool {
-    let expected = expected.as_bytes();
-    let candidate = candidate.as_bytes();
-
-    if expected.len() != candidate.len() {
-        return false;
-    }
-
-    expected.ct_eq(candidate).into()
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-
-    #[test]
-    fn token_lu_uniquement_dans_authorization_bearer() {
-        let (parts, _) = axum::http::Request::builder()
-            .uri("/admin/api/overview")
-            .header(header::AUTHORIZATION, "Bearer secret")
-            .body(())
-            .expect("requête valide")
-            .into_parts();
-        assert_eq!(request_token(&parts), Some("secret".to_owned()));
-
-        let (parts, _) = axum::http::Request::builder()
-            .uri("/admin/api/overview")
-            .header(header::AUTHORIZATION, "Basic secret")
-            .body(())
-            .expect("requête valide")
-            .into_parts();
-        assert_eq!(request_token(&parts), None);
-    }
-
-    #[test]
-    fn query_token_ignoree() {
-        let (parts, _) = axum::http::Request::builder()
-            .uri("/admin/api/overview?token=secret")
-            .body(())
-            .expect("requête valide")
-            .into_parts();
-        assert_eq!(request_token(&parts), None);
-    }
 
     #[test]
     fn comparaison_temps_constant() {
@@ -334,5 +343,32 @@ mod tests {
         assert!(is_loopback("::ffff:127.0.0.1".parse().expect("IPv6 mappé")));
         assert!(!is_loopback(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))));
         assert!(!is_loopback("fe80::1".parse().expect("IPv6 valide")));
+    }
+
+    #[test]
+    fn empty_or_null_origin_authorities_are_refused() {
+        assert_eq!(canonical_authority("http://"), None);
+        assert_eq!(canonical_authority("https:///admin"), None);
+        assert_eq!(canonical_authority("http://null"), None);
+        assert_eq!(canonical_authority("null"), None);
+        assert_eq!(
+            canonical_authority("HTTP://Admin.Example:8443/x"),
+            Some("admin.example:8443".to_owned())
+        );
+        assert_eq!(
+            canonical_authority("https://livechat.example"),
+            Some("livechat.example".to_owned())
+        );
+        assert_eq!(canonical_authority("ftp://livechat.example"), None);
+    }
+
+    #[test]
+    fn internal_errors_answer_500_without_details() {
+        let response = internal_error_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
     }
 }

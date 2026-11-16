@@ -25,7 +25,7 @@ use crate::reply::{
     CommandOutcome, Deferral, Embed, Reply, COLOR_ERROR, COLOR_INFO, COLOR_SUCCESS, COLOR_WARNING,
 };
 use crate::rich_payload::build_media_text_payload;
-use crate::rights::{self, Refusal, Requirement};
+use crate::rights::{self, Refusal};
 use crate::text::{start_case, to_optional_text, youtube_start_offset_sec};
 
 /// Exécute une invocation et renvoie la réponse complète.
@@ -54,10 +54,9 @@ pub async fn dispatch(ctx: &dyn BotContext, invocation: Invocation) -> CommandOu
 /// stays private).
 pub async fn precheck(ctx: &dyn BotContext, invocation: &Invocation) -> Option<CommandOutcome> {
     let command = invocation.command();
-    let requirement = rights::requirement(command);
-    if requirement == Requirement::Anyone {
-        return None;
-    }
+    // `/lier` is not configurable: its handler checks the Discord administrator.
+    rights::command_action(command)?;
+    let table = ctx.rights().table();
     let lang = invocation.lang;
     let refused = |reply| CommandOutcome {
         command,
@@ -78,7 +77,7 @@ pub async fn precheck(ctx: &dyn BotContext, invocation: &Invocation) -> Option<C
         },
         None => None,
     };
-    match rights::check(ctx, guild_id.as_ref(), &invocation.author, requirement).await {
+    match rights::check(ctx, guild_id.as_ref(), &invocation.author, &table, command).await {
         Ok(Ok(())) => None,
         Ok(Err(refusal)) => Some(refused(refusal_reply(lang, refusal))),
         Err(error) => {
@@ -391,7 +390,7 @@ async fn handle_media_command(
         None
     };
 
-    let base_duration = effective_duration(ctx.config(), guild.as_ref(), asset.as_ref(), None);
+    let base_duration = effective_duration(&ctx.config(), guild.as_ref(), asset.as_ref(), None);
     let (duration_sec, resume_offset_sec) =
         adjusted_duration(base_duration, offset, asset.as_ref());
 
@@ -514,7 +513,7 @@ async fn handle_talk(
             ));
         }
     };
-    let duration_sec = effective_duration(ctx.config(), guild.as_ref(), Some(&asset), None);
+    let duration_sec = effective_duration(&ctx.config(), guild.as_ref(), Some(&asset), None);
 
     let request = PlaybackJobRequest {
         guild_id: guild_id.clone(),
@@ -636,7 +635,7 @@ async fn handle_pair_code(
     };
     ctx.db().pairing_codes().create(&entry).await?;
 
-    let api_url = ctx.config().api_url.clone();
+    let api_url = ctx.config().api_url;
     let code_text = entry.code.as_str().to_owned();
     let expires_in = ttl_minutes.to_string();
     let mut description = interpolate(

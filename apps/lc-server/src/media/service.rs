@@ -25,7 +25,7 @@ use crate::app::AppState;
 use crate::media::assets::{self, ReadyAsset};
 use crate::media::errors::{MediaServiceError, MediaServiceResult};
 use crate::media::quotas;
-use crate::media::settings::media_config;
+use crate::media::settings::media_config_for_state;
 
 /// Pipeline partagé : un seul client HTTP et un seul sémaphore de concurrence
 /// par processus. La configuration serveur est immuable après le démarrage.
@@ -64,7 +64,7 @@ impl MediaService {
                 "ingestion impossible : aucune base de données configurée (DATABASE_URL)",
             )
         })?;
-        let config = media_config(&state.config);
+        let config = media_config_for_state(state);
         let pipeline = shared_pipeline(&config)?;
         let storage = lc_media::storage::MediaStorage::new(&config.storage);
 
@@ -366,7 +366,7 @@ impl MediaService {
 /// et un nouveau sémaphore, contournant les budgets de cache et le compteur de
 /// concurrence globaux (AUD-A2-006/A4-007).
 pub fn shared_pipeline_for_state(state: &AppState) -> MediaServiceResult<Arc<MediaPipeline>> {
-    shared_pipeline(&media_config(&state.config))
+    shared_pipeline(&media_config_for_state(state))
 }
 
 /// Retourne le pipeline partagé, en l'initialisant au premier usage.

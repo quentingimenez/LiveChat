@@ -1,0 +1,49 @@
+{
+  "checks": [
+    {
+      "count": null,
+      "detail": "database reachable",
+      "id": "database",
+      "status": "ok",
+      "version": null
+    },
+    {
+      "count": null,
+      "detail": "Discord is not configured",
+      "id": "discord",
+      "status": "warn",
+      "version": null
+    },
+    {
+      "count": null,
+      "detail": "test probe",
+      "id": "ffmpeg",
+      "status": "ok",
+      "version": "test"
+    },
+    {
+      "count": null,
+      "detail": "test probe",
+      "id": "ytdlp",
+      "status": "ok",
+      "version": "test"
+    },
+    {
+      "count": null,
+      "detail": "test probe",
+      "id": "piper",
+      "status": "ok",
+      "version": "test"
+    },
+    {
+      "count": 0,
+      "detail": "0 failure(s) in the last hour",
+      "id": "ingestions",
+      "status": "ok",
+      "version": null
+    }
+  ],
+  "serverVersion": "3.4.0",
+  "status": "ok",
+  "uptimeSec": 0
+}

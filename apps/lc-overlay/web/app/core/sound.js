@@ -1,8 +1,13 @@
-// Device sound settings seen by the board: the detail preview plays at the
-// same level as the overlays (general volume × guild volume), and the header
-// shows whether the guild's media sound is cut.
+// Device sound settings seen by the board: the previews play at the same
+// level as the overlay (general volume × guild volume, through the overlay's
+// perceptual curve), and the header shows whether the guild's media sound is
+// cut.
 
+import { createOverlayLegacyUtils } from '../../dist/renderer/overlay/legacy-utils.js';
 import { invoke, listen } from './ipc.js';
+
+// The overlay renderer's own curve: one implementation for both.
+const { toPerceptualGain } = createOverlayLegacyUtils();
 
 let sound = { volume: 1, mediaMuted: false, guilds: {} };
 
@@ -47,8 +52,17 @@ export async function setGuildMediaMuted(guildId, muted) {
   return response;
 }
 
+// Media element volume (0 to 1) for a general and a guild volume setting:
+// exactly what the overlay applies to a media of that guild. The shell sends
+// the product of both settings in the `play` and the renderer turns it into
+// a gain with its perceptual curve; a linear product here made the previews
+// louder than the overlay (50 % gave 0.5 instead of 0.22).
+export function mediaGain(volume, guildVolume) {
+  return toPerceptualGain(level(volume) * (guildVolume === undefined ? 1 : level(guildVolume)));
+}
+
 // Volume (0 to 1) of a preview for this guild.
 export function previewVolume(guildId) {
   const guild = guildId ? sound.guilds[guildId] : undefined;
-  return level(sound.volume * (guild && guild.volume !== undefined ? level(guild.volume) : 1));
+  return mediaGain(sound.volume, guild ? guild.volume : undefined);
 }

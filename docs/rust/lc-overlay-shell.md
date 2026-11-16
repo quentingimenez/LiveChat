@@ -16,7 +16,7 @@ Statut : shell compilé, testé et vérifié le 2026-11-10 (Windows 11, rustc/ca
 | Projet Tauri 2 complet (`cargo`, `build.rs`, `tauri.conf.json`, `tauri.beta.conf.json`) | Client WebSocket `tokio-tungstenite 0.29` + protocole v2 |
 | Config legacy 16 champs, chemin forcé `%APPDATA%\LiveChat\config.json`, `.bak`, migration | Appairage HTTP réel (`pairing_consume`) |
 | 2 fenêtres (overlay/board), click-through, topmost 2 s, styles Win32 | Renderer définitif (copie `overlay/renderer/**`, overlay.html/board.html) |
-| Tray compact (board, paramètres, sourdine générale/par guilde, quitter) | Hotkeys de médias actifs (émission socket) |
+| Tray compact (board, paramètres, pause générale/par guilde, quitter) | Hotkeys de médias actifs (émission socket) |
 | Single-instance, autostart, squelette global-shortcuts | Updater signé (clé minisign réelle), vérification au démarrage |
 | 10 commandes + 3 événements du contrat bridge (buffer 5 s) | Statut de connexion dynamique dans le tray |
 | Updater plugin (stub), capabilities, CSP | Broadcast d'état playback/erreurs vers le board |
@@ -163,7 +163,7 @@ L'aperçu en direct de la mise en page (gabarit, échéance de 4 s) vit dans
 | Label | Taille | Politique |
 | --- | --- | --- |
 | `overlay` | écran cible plein (2560×1440 ×1.0 dans le POC) | transparente, sans décorations, always-on-top, skip taskbar, focusable=false, click-through, `WS_EX_LAYERED|TRANSPARENT|NOACTIVATE|TOOLWINDOW` |
-| `board` | 1180×780 (min 960×640) | centrée, cachée au démarrage ; porte aussi l'appairage et les paramètres ; topmost (au-dessus de l'overlay) seulement tant qu'elle est la fenêtre au premier plan |
+| `board` | 1400×880 (min 960×640) | centrée, cachée au démarrage ; porte aussi l'appairage et les paramètres ; topmost (au-dessus de l'overlay) seulement tant qu'elle est la fenêtre au premier plan |
 | `identify-<index>` | plein écran par moniteur, créée à la demande | transparente, sans décorations, always-on-top, skip taskbar, focusable=false, click-through, affichée sans activation (`SW_SHOWNOACTIVATE`) ; fermée par le shell après 3 s (`settings_identify_displays`) |
 
 Détails d'implémentation :
@@ -236,10 +236,10 @@ Ordre et identifiants :
    dans `AppState::pending_board_view` (la board peut ne pas être encore
    chargée) et consommée une seule fois par `board_take_pending_view`.
 5. séparateur
-6. `tray.general_mute` — Sourdine générale : cochée = `enabled == false`.
-   Pendant la sourdine générale, les cases de guilde sont grisées.
+6. `tray.general_mute` — Tout mettre en pause : cochée = `enabled == false`.
+   Pendant la pause générale, les cases de guilde sont grisées.
 7. `tray.guild.<id>` — une case par guilde appairée : cochée = la guilde
-   diffuse (non muette), décochée = en sourdine. Le libellé reprend le nom de
+   diffuse (non muette), décochée = en pause. Le libellé reprend le nom de
    la guilde (repli `Guilde <id>`, troncature à 48 caractères) et ajoute
    ` — <statut>` si elle n'est pas connectée. Le clic passe par
    `commands::set_guild_muted`, partagé avec la commande `guild_set_muted`.
@@ -297,7 +297,7 @@ la board. L'infobulle reste `tray_tooltip`.
 - `shortcuts.stop` et `shortcuts.muteAll` sont persistés dans
   `OverlayConfig.shortcuts`, enregistrés au démarrage puis réenregistrés
   transactionnellement par `settings_set`. `stop` envoie `stop.request` à la
-  guilde active ; `muteAll` bascule la sourdine générale exactement comme le
+  guilde active ; `muteAll` bascule la pause générale exactement comme le
   tray. En cas de refus OS, les anciens raccourcis sont restaurés.
 - La validation de `settings_set` refuse un accélérateur invalide, en collision
   avec l'autre raccourci global, un binding média ou le rechargement manuel.
@@ -331,7 +331,7 @@ Commandes exposées (via `tauri::generate_handler!`) :
 `overlay_get_config`, `overlay_renderer_ready`, `overlay_report_error`,
 `overlay_report_playback_state`, `overlay_report_playback_stop`,
 `pairing_consume`, `media_board_get_bindings`, `media_board_set_bindings`,
-`media_board_trigger`, `media_board_stop`, `overlay_check_updates`,
+`media_board_trigger`, `media_board_stop`, `media_board_stop_local`, `overlay_check_updates`,
 `overlay_install_update`, `board_take_pending_view`, `settings_get`,
 `settings_set`, `settings_identify_displays`, `settings_test_media`,
 `settings_preview_layout`, `settings_placement_start`,

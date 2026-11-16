@@ -39,8 +39,9 @@ export const ALIGNMENTS = [
 ];
 
 const SHORTCUTS = [
-  ['stop', 'Arrêter le média'],
-  ['muteAll', 'Sourdine générale'],
+  ['stop', 'Arrêter le média pour tous'],
+  ['stopLocal', 'Arrêter le média chez moi'],
+  ['muteAll', 'Tout mettre en pause'],
 ];
 
 // Resolved from this module, so it works from web/board.html and from the
@@ -391,9 +392,9 @@ function renderSound(settings) {
   const guilds = Array.isArray(state.guilds) ? state.guilds : [];
   return section(
     'Son',
-    controlRow('Sourdine générale', generalMute, 'settings-general-mute'),
+    controlRow('Tout mettre en pause', generalMute, 'settings-general-mute'),
     controlRow('Couper le son des médias', mediaMute, 'settings-media-mute'),
-    h('p', { class: 'settings-hint is-under' }, 'Les médias restent affichés, sans leur son. La sourdine générale, elle, n’affiche plus rien.'),
+    h('p', { class: 'settings-hint is-under' }, 'Les médias restent affichés, sans leur son. La pause générale, elle, ferme les connexions : plus rien n’est reçu ni affiché.'),
     controlRow(
       'Volume général',
       rangeControl({
@@ -428,7 +429,7 @@ function renderGuildVolume(guild, settings) {
   });
   const mute = h('input', {
     type: 'checkbox',
-    'aria-label': `Sourdine de ${label}`,
+    'aria-label': `Mettre ${label} en pause`,
     checked: Boolean(guild.membership.muted),
     onChange: (event) => toggleGuildMute(guild, event.target.checked),
   });
@@ -451,7 +452,7 @@ function renderGuildVolume(guild, settings) {
         onInput: (value) =>
           debounce(`guildVolume:${guildId}`, () => applyPatch({ guilds: { [guildId]: { volume: value / 100 } } })),
       }),
-      h('label', { class: 'switch settings-guild-mute' }, mute, 'Sourdine'),
+      h('label', { class: 'switch settings-guild-mute' }, mute, 'En pause'),
       h('label', { class: 'switch settings-guild-mute' }, mediaMute, 'Son coupé'),
     ),
   );

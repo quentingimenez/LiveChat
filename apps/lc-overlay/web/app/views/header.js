@@ -36,7 +36,7 @@ export function renderHeader() {
       { class: 'header-top' },
       h('h1', { class: 'guild-name' }, guildLabel(guild)),
       role ? h('span', { class: `badge is-${role}` }, ROLE_LABELS[role] || role) : null,
-      guild.membership.muted ? h('span', { class: 'badge is-off' }, 'En sourdine') : null,
+      guild.membership.muted ? h('span', { class: 'badge is-off' }, 'En pause') : null,
       !guild.membership.muted && (mediaMuted || allMediaMuted())
         ? h('span', { class: 'badge is-off', title: allMediaMuted() && !mediaMuted ? 'Coupé pour toutes les guildes dans les Paramètres' : null }, 'Son des médias coupé')
         : null,
@@ -53,7 +53,7 @@ export function renderHeader() {
           onClick: () => toggleMute(guild),
         },
         icon(guild.membership.muted ? 'mute' : 'sound'),
-        guild.membership.muted ? 'Rétablir' : 'Sourdine',
+        guild.membership.muted ? 'Reprendre' : 'Mettre en pause',
       ),
       guild.membership.muted
         ? null

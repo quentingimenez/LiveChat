@@ -98,6 +98,11 @@
   color: var(--text-soft);
 }
 
+/* A hint introducing a whole section: the form below it starts further down. */
+.settings-hint.is-lead {
+  margin-bottom: 20px;
+}
+
 /* A hint about the row above, aligned with its control column. */
 .settings-hint.is-under {
   margin: -4px 0 6px 206px;

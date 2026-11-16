@@ -91,6 +91,9 @@
     resumeCountdown: playbackCountdownHandlers.resumeCountdown,
     pauseCountdown: playbackCountdownHandlers.pauseCountdown,
     setPlaybackState: playbackCountdownHandlers.setPlaybackState,
+    getRemainingCountdownMs: playbackCountdownHandlers.getRemainingCountdownMs,
+    setCountdownAutoClear: playbackCountdownHandlers.setCountdownAutoClear,
+    playbackUtils: overlayLegacyPlaybackUtils,
     setTimeout: (callback, delayMs) => setTimeout(() => callback(), delayMs),
     reportError: window.livechatOverlay?.reportError || null,
     logWarning: (message, error) => {
@@ -205,7 +208,10 @@
         window.livechatOverlay.onSettings(handler);
       },
       onPlay: renderHandlers.onPlay,
-      onStop: () => playbackCountdownHandlers.clearOverlay(),
+      onStop: (payload) =>
+        playbackCountdownHandlers.clearOverlay({
+          reason: overlayLegacyPlaybackUtils.stopReportReason(payload),
+        }),
       onSettings,
       addWindowResizeListener: (handler) => {
         window.addEventListener('resize', handler);

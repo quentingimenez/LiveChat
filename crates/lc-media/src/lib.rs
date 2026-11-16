@@ -30,6 +30,7 @@ pub use lc_domain::MediaKind;
 pub mod cache;
 pub mod config;
 pub mod download;
+pub mod edit;
 pub mod error;
 pub mod guard;
 pub mod html;
@@ -55,6 +56,9 @@ pub use crate::download::{
     download_youtube, find_downloaded_file, parse_ytdlp_output_path, sniff_kind, DownloadResult,
     YtdlpOptions,
 };
+pub use crate::edit::{
+    apply_edit, build_edit_args, CropRect, EditOutput, EditPlan, EditRecipe, EditSource,
+};
 pub use crate::error::{
     classify_code, code_from_http_status, ApiErrorLabel, MediaError, MediaErrorCode, MediaResult,
 };
@@ -63,7 +67,7 @@ pub use crate::guard::{
     MAX_REDIRECTS,
 };
 pub use crate::ingest::{
-    ingest_url, lock_source_hash, IngestLimiter, IngestedMedia, MediaPipeline,
+    ingest_url, lock_source_hash, IngestLimiter, IngestedMedia, MediaPipeline, RenderedEdit,
 };
 pub use crate::probe::{parse_probe_json, probe, probe_args, ProbeInfo};
 pub use crate::resolve::{resolve_media, ResolvedMedia, TweetCard};

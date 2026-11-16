@@ -10,7 +10,8 @@
 //! |---------|--------|------------------|---------|
 //! | `GET` | `/overlay/media-board/items?q=&limit=&offset=` | Bearer | `{total, limit, offset, items}` |
 //! | `POST` | `/overlay/media-board/items` | Bearer | `202 {ingestionId}` |
-//! | `POST` | `/overlay/media-board/upload?filename=&title=&message=` | Bearer | `202 {ingestionId}` (raw binary body) |
+//! | `POST` | `/overlay/media-board/upload?filename=&title=&message=&replaceItemId=` | Bearer | `202 {ingestionId}` (raw binary body) |
+//! | `POST` | `/overlay/media-board/items/{itemId}/edit` | Bearer | `202 {ingestionId}` (see [`super::media_edit`]) |
 //! | `GET` | `/overlay/media-board/ingestions` | Bearer | `{items:[...]}` |
 //! | `GET` | `/overlay/media-board/media/{assetId}?clientId=&exp=&sig=` | URL signée | flux binaire (`Range` supporté) |
 //! | `PATCH` | `/overlay/media-board/items/{itemId}` | Bearer | `{updated:true, item:{id,title,message}}` |
@@ -18,13 +19,20 @@
 //!
 //! ## Asynchronous ingestion
 //!
-//! `POST items` and `POST upload` validate the request, register an ingestion in
-//! [`crate::ingestions::IngestionRegistry`] and answer `202 {ingestionId}`. The
-//! download/transcode then runs in a detached Tokio task, so a client
-//! disconnection (Cloudflare's 100 s limit, Nginx's 90 s limit) can no longer
-//! cancel it. When the task finishes it updates the registry, sends
-//! `media.ingestion` to every socket of the requesting overlay client and, for a
-//! new item, broadcasts `board.changed {change:"added"}` to the guild.
+//! `POST items`, `POST upload` and `POST items/{itemId}/edit` validate the
+//! request, register an ingestion in [`crate::ingestions::IngestionRegistry`]
+//! and answer `202 {ingestionId}`. The download/transcode/edit then runs in a
+//! detached Tokio task, so a client disconnection (Cloudflare's 100 s limit,
+//! Nginx's 90 s limit) can no longer cancel it. When the task finishes it
+//! updates the registry, sends `media.ingestion` to every socket of the
+//! requesting overlay client and, for a new item, broadcasts `board.changed
+//! {change:"added"}` to the guild.
+//!
+//! An upload with `replaceItemId`, or an edit with `replace:true`, replaces the
+//! media of an existing item instead of creating one: the item keeps its id,
+//! title, message, author, date, favorites and picture. Its result is
+//! `media.ingestion {ok:true, created:false, itemId}` and `board.changed
+//! {change:"updated"}`.
 //!
 //! ## Réponses exactes
 //!
@@ -45,8 +53,8 @@
 //! ## Sessions en lecture seule (`INVITE_READ_ONLY`)
 //!
 //! Le protocole v2 (§9) réserve la session `invite_read_only` à la lecture. Les
-//! mutations du board média (`POST items`, `POST upload`, `PATCH item`,
-//! `DELETE item`) sont donc refusées avec `403 {"error":"read_only_session"}`
+//! mutations du board média (`POST items`, `POST upload`, `POST item/edit`,
+//! `PATCH item`, `DELETE item`) sont donc refusées avec `403 {"error":"read_only_session"}`
 //! **avant toute validation de charge utile**, tandis que les `GET` (`items`,
 //! `ingestions`, `media`) restent autorisés.
 //! Le mode provient de l'extracteur [`AuthedOverlayClient::is_read_only`]
@@ -73,7 +81,7 @@ use crate::media::assets;
 use crate::media::errors::MediaServiceError;
 
 use super::auth::AuthedOverlayClient;
-use super::media_ingestion::{spawn_ingestion, IngestionInput};
+use super::media_ingestion::{spawn_ingestion, BoardTarget, IngestionInput};
 use super::{db, db_failure, error, is_conflict, json_response, now};
 
 /// Alias local pour garder les signatures courtes.
@@ -355,6 +363,7 @@ pub async fn create_item(
         auth,
         ingestion_id.clone(),
         IngestionInput::Link { url, force_refresh },
+        BoardTarget::NewItem,
         payload.title,
         payload.message,
     );
@@ -391,6 +400,8 @@ pub async fn list_ingestions(State(state): State<AppState>, auth: AuthedOverlayC
 pub(super) struct CompletedBoardItem {
     /// `true` when a new board row was created.
     pub created: bool,
+    /// `true` when the media of an existing item was replaced.
+    pub replaced: bool,
     /// Board item holding the media (new or already pinned).
     pub item: MediaBoardItem,
 }
@@ -430,6 +441,7 @@ pub(super) async fn complete_board_item(
         Ok(Some(existing_item)) => {
             return Ok(CompletedBoardItem {
                 created: false,
+                replaced: false,
                 item: existing_item,
             });
         }
@@ -452,22 +464,8 @@ pub(super) async fn complete_board_item(
             ));
         }
     };
-    let limit_bytes = i64::try_from(
-        state
-            .config
-            .media_board_max_total_mb
-            .saturating_mul(MIB)
-            .max(MIB),
-    )
-    .unwrap_or(i64::MAX);
-    if used.saturating_add(asset.size_bytes) > limit_bytes {
-        return Err(IngestionFailure {
-            code: "media_ingestion_failed",
-            message: Some(format!(
-                "la board de la guilde dépasserait la limite de {} Mo",
-                state.config.media_board_max_total_mb
-            )),
-        });
+    if used.saturating_add(asset.size_bytes) > board_limit_bytes(state) {
+        return Err(board_full_failure(state));
     }
 
     // AUD-A2-007 : le service a persisté l'asset avec le TTL de cache ; le
@@ -523,6 +521,7 @@ pub(super) async fn complete_board_item(
             }
             Ok(CompletedBoardItem {
                 created: true,
+                replaced: false,
                 item,
             })
         }
@@ -533,6 +532,7 @@ pub(super) async fn complete_board_item(
         {
             Ok(Some(existing_item)) => Ok(CompletedBoardItem {
                 created: false,
+                replaced: false,
                 item: existing_item,
             }),
             Ok(None) => {
@@ -547,6 +547,166 @@ pub(super) async fn complete_board_item(
         Err(db_error) => Err(completion_db_failure(
             "overlay_media_board.insert_item",
             &db_error,
+        )),
+    }
+}
+
+/// Replaces the media of an existing board item with an ingested asset.
+///
+/// The item keeps its id, title, message, author, date, favorites and
+/// picture. The new asset must be of the same kind as the previous one and
+/// must not already be on the guild's board. The storage quota is checked on
+/// the size difference; the new asset is pinned and the previous one is
+/// released when no item shows it any more.
+pub(super) async fn replace_board_item_media(
+    state: &AppState,
+    auth: &AuthedOverlayClient,
+    db: &Db,
+    item_id: MediaBoardItemId,
+    asset: MediaAsset,
+    now: DateTime<Utc>,
+) -> Result<CompletedBoardItem, IngestionFailure> {
+    let item = match db.media_board().get(item_id).await {
+        Ok(Some(item)) if &item.guild_id == auth.guild_id() => item,
+        Ok(_) => {
+            return Err(replace_failure(
+                "le média à remplacer n'est plus sur le board",
+            ));
+        }
+        Err(db_error) => {
+            return Err(completion_db_failure(
+                "overlay_media_board.replace_lookup",
+                &db_error,
+            ));
+        }
+    };
+    if item.media_asset_id == asset.id {
+        // The edit produced the very same file: nothing to replace.
+        return Ok(CompletedBoardItem {
+            created: false,
+            replaced: false,
+            item,
+        });
+    }
+    let previous = match db.media_assets().get(item.media_asset_id).await {
+        Ok(previous) => previous,
+        Err(db_error) => {
+            return Err(completion_db_failure(
+                "overlay_media_board.replace_previous_asset",
+                &db_error,
+            ));
+        }
+    };
+    if let Some(previous) = &previous {
+        if previous.kind != asset.kind {
+            return Err(replace_failure(
+                "le média de remplacement doit être du même type que l'original (vidéo, image ou son)",
+            ));
+        }
+    }
+    match db
+        .media_board()
+        .get_by_guild_and_asset(auth.guild_id(), asset.id)
+        .await
+    {
+        Ok(Some(_)) => return Err(replace_failure(ALREADY_ON_BOARD)),
+        Ok(None) => {}
+        Err(db_error) => {
+            return Err(completion_db_failure(
+                "overlay_media_board.replace_board_lookup",
+                &db_error,
+            ));
+        }
+    }
+
+    let used = match board_total_bytes(db, auth.guild_id()).await {
+        Ok(used) => used,
+        Err(db_error) => {
+            return Err(completion_db_failure(
+                "overlay_media_board.replace_board_usage",
+                &db_error,
+            ));
+        }
+    };
+    let previous_bytes = previous.as_ref().map_or(0, |previous| previous.size_bytes);
+    let limit_bytes = board_limit_bytes(state);
+    if used
+        .saturating_sub(previous_bytes)
+        .saturating_add(asset.size_bytes)
+        > limit_bytes
+    {
+        return Err(board_full_failure(state));
+    }
+
+    let asset = match assets::pin(db, asset.id, now).await {
+        Ok(pinned) => pinned,
+        Err(MediaServiceError::Database(db_error)) => {
+            return Err(completion_db_failure(
+                "overlay_media_board.replace_pin_asset",
+                &db_error,
+            ));
+        }
+        Err(service_error) => return Err(media_service_failure(&service_error)),
+    };
+
+    let release_seconds = i64::try_from(state.config.media_cache_ttl_hours)
+        .unwrap_or(i64::MAX / 3_600)
+        .saturating_mul(3_600);
+    let released_expiry = now + chrono::Duration::seconds(release_seconds);
+    match db
+        .media_board()
+        .replace_media(item_id, auth.guild_id(), asset.id, now, released_expiry)
+        .await
+    {
+        Ok(Some(_previous)) => Ok(CompletedBoardItem {
+            created: false,
+            replaced: true,
+            item: MediaBoardItem {
+                media_asset_id: asset.id,
+                ..item
+            },
+        }),
+        Ok(None) => Err(replace_failure(
+            "le média à remplacer n'est plus sur le board",
+        )),
+        Err(db_error) if is_conflict(&db_error) => Err(replace_failure(ALREADY_ON_BOARD)),
+        Err(db_error) => Err(completion_db_failure(
+            "overlay_media_board.replace_media",
+            &db_error,
+        )),
+    }
+}
+
+/// Sentence shown when the result of a replacement is already on the board.
+const ALREADY_ON_BOARD: &str = "ce média est déjà sur le board de la guilde";
+
+/// Readable failure of a replacement (`media_ingestion_failed`).
+fn replace_failure(message: &str) -> IngestionFailure {
+    IngestionFailure {
+        code: "media_ingestion_failed",
+        message: Some(message.to_owned()),
+    }
+}
+
+/// Storage limit of a guild's board, in bytes.
+fn board_limit_bytes(state: &AppState) -> i64 {
+    i64::try_from(
+        state
+            .config
+            .media_board_max_total_mb
+            .saturating_mul(MIB)
+            .max(MIB),
+    )
+    .unwrap_or(i64::MAX)
+}
+
+/// Failure sent when a media would not fit in the guild's board.
+fn board_full_failure(state: &AppState) -> IngestionFailure {
+    IngestionFailure {
+        code: "media_ingestion_failed",
+        message: Some(format!(
+            "la board de la guilde dépasserait la limite de {} Mo",
+            state.config.media_board_max_total_mb
         )),
     }
 }
@@ -917,6 +1077,23 @@ fn can_edit(auth: &AuthedOverlayClient, creator_member_id: Option<&str>) -> bool
     }
 }
 
+/// Item of the caller's guild, or `404 item_not_found`.
+pub(super) async fn guild_item(
+    db: &Db,
+    auth: &AuthedOverlayClient,
+    item_id_raw: &str,
+    operation: &'static str,
+) -> Result<MediaBoardItem, Response> {
+    let Ok(item_id) = item_id_raw.trim().parse::<MediaBoardItemId>() else {
+        return Err(error(StatusCode::NOT_FOUND, "item_not_found"));
+    };
+    match db.media_board().get(item_id).await {
+        Ok(Some(item)) if &item.guild_id == auth.guild_id() => Ok(item),
+        Ok(_) => Err(error(StatusCode::NOT_FOUND, "item_not_found")),
+        Err(db_error) => Err(db_failure(operation, &db_error)),
+    }
+}
+
 /// Garde de modification d'un média existant (`403 forbidden` sinon).
 pub(super) async fn ensure_can_edit(
     db: &Db,
@@ -1263,7 +1440,7 @@ pub(super) fn media_service_error(service_error: &MediaServiceError) -> Response
 ///
 /// Exceeding the global limit (`DefaultBodyLimit`, 1 MiB) keeps its `413`
 /// status; other rejections remain `400 invalid_payload` (AUD-A2-009).
-fn json_rejection_error(rejection: JsonRejection) -> Response {
+pub(super) fn json_rejection_error(rejection: JsonRejection) -> Response {
     if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
         // Keep the rejection's `413` and let `normalize_errors` produce the
         // usual `{"error":"request_error"}` body.
@@ -1281,7 +1458,7 @@ fn invalid_json() -> Response {
 }
 
 /// Tronque proprement (frontières UTF-8) après trim.
-fn truncate_chars(raw: &str, max: usize) -> String {
+pub(super) fn truncate_chars(raw: &str, max: usize) -> String {
     raw.trim()
         .chars()
         .take(max)

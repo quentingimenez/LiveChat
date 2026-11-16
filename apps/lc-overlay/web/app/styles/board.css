@@ -415,6 +415,10 @@
   animation: detail-in 120ms ease-out;
 }
 
+.detail.is-refresh {
+  animation: none;
+}
+
 .detail.is-peek {
   border-style: dashed;
 }

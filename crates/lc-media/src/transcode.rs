@@ -604,10 +604,10 @@ async fn transcode_video(
         return Ok(());
     };
     let _removed = fs::remove_file(staged);
-    if encoder != "h264_nvenc" {
+    if encoder != NVENC_ENCODER {
         return Err(error);
     }
-    tracing::warn!("échec NVENC, nouvelle tentative en libx264");
+    tracing::warn!(%error, "échec NVENC, nouvelle tentative en libx264");
     let (fallback_encoder, fallback_preset) = resolve_video_encoder(&config.video, false);
     let fallback_args = build_video_transcode_args(
         input,
@@ -936,6 +936,31 @@ fn push_loudnorm(args: &mut Vec<String>, config: &MediaConfig) {
     args.push(NORMALIZED_AUDIO_RATE.to_string());
 }
 
+/// Name of the NVIDIA H.264 encoder.
+pub const NVENC_ENCODER: &str = "h264_nvenc";
+
+/// Decoding options placed before `-i` when NVENC encodes: the GPU decodes
+/// too. The CPU decode of a 1440p60 AV1 clip took 24 s on the server, the GPU
+/// one 4 s. AV1 needs FFmpeg's native decoder: the default one, libdav1d,
+/// ignores `-hwaccel`. Codecs the GPU cannot decode fall back to software.
+pub fn nvenc_decode_args(video_codec: Option<&str>) -> Vec<String> {
+    let mut args = vec!["-hwaccel".to_string(), "cuda".to_string()];
+    if video_codec == Some("av1") {
+        args.extend(["-c:v".to_string(), "av1".to_string()]);
+    }
+    args
+}
+
+/// NVENC rate control. Constant quality close to x264's default CRF 23 (the
+/// NVENC default bitrate gave a blurry 2 Mbit/s 1080p60). No B-frames: with
+/// them, the MP4 muxer rejected the timestamps of a 60.0002 fps clip
+/// ("pts/dts pair unsupported").
+pub fn nvenc_quality_args() -> Vec<String> {
+    ["-rc", "vbr", "-cq", "23", "-b:v", "0", "-bf", "0"]
+        .map(str::to_string)
+        .to_vec()
+}
+
 /// Arguments de transcodage vidéo H.264/AAC MP4 faststart.
 pub fn build_video_transcode_args(
     input: &Path,
@@ -945,18 +970,25 @@ pub fn build_video_transcode_args(
     encoder: &str,
     preset: &str,
 ) -> Vec<String> {
-    let mut args = vec![
-        "-y".to_string(),
-        "-hide_banner".to_string(),
+    let mut args = vec!["-y".to_string(), "-hide_banner".to_string()];
+    if encoder == NVENC_ENCODER {
+        args.extend(nvenc_decode_args(
+            probed.and_then(|probed| probed.video_codec.as_deref()),
+        ));
+    }
+    args.extend([
         "-i".to_string(),
         input.display().to_string(),
         "-c:v".to_string(),
         encoder.to_string(),
         "-preset".to_string(),
         preset.to_string(),
-        "-pix_fmt".to_string(),
-        "yuv420p".to_string(),
-    ];
+    ]);
+    if encoder == NVENC_ENCODER {
+        args.extend(nvenc_quality_args());
+    }
+    args.push("-pix_fmt".to_string());
+    args.push("yuv420p".to_string());
     if let Some(filter) = scale_filter(probed, config.video.max_height) {
         args.push("-vf".to_string());
         args.push(filter);
@@ -1389,6 +1421,47 @@ mod tests {
         );
         config.encoder = VideoEncoder::Auto;
         assert_eq!(resolve_video_encoder(&config, false).0, "libx264");
+    }
+
+    #[test]
+    fn nvenc_decodes_on_the_gpu_and_sets_its_quality() {
+        let config = video_config();
+        let mut probed = probed_video();
+        probed.video_codec = Some("av1".to_string());
+        let joined = build_video_transcode_args(
+            Path::new("in.mp4"),
+            Path::new("out.mp4"),
+            &config,
+            Some(&probed),
+            "h264_nvenc",
+            "p4",
+        )
+        .join(" ");
+        assert!(joined.starts_with("-y -hide_banner -hwaccel cuda -c:v av1 -i in.mp4 "));
+        assert!(joined
+            .contains("-c:v h264_nvenc -preset p4 -rc vbr -cq 23 -b:v 0 -bf 0 -pix_fmt yuv420p"));
+        probed.video_codec = Some("h264".to_string());
+        let joined = build_video_transcode_args(
+            Path::new("in.mp4"),
+            Path::new("out.mp4"),
+            &config,
+            Some(&probed),
+            "h264_nvenc",
+            "p4",
+        )
+        .join(" ");
+        assert!(joined.starts_with("-y -hide_banner -hwaccel cuda -i in.mp4 "));
+        let joined = build_video_transcode_args(
+            Path::new("in.mp4"),
+            Path::new("out.mp4"),
+            &config,
+            Some(&probed),
+            "libx264",
+            "ultrafast",
+        )
+        .join(" ");
+        assert!(!joined.contains("-hwaccel"));
+        assert!(!joined.contains("-cq"));
     }
 
     #[test]

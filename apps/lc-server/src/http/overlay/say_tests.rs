@@ -1,8 +1,9 @@
 //! In-process tests for `POST /overlay/say`.
 //!
 //! Piper is replaced by the scripts in `fixtures/` (they copy a WAV sample
-//! and record the text received on stdin); the successful cases run the real
-//! `ffmpeg`/`ffprobe` found on the `PATH`, like the upload tests.
+//! and record the text received on stdin). The successful cases run the real
+//! `ffmpeg`/`ffprobe` found on the `PATH`, so they are `#[ignore]`
+//! (`cargo test -p lc-server say_tests -- --ignored`).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};

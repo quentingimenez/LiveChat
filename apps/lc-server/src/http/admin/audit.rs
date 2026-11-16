@@ -14,7 +14,7 @@
 use std::net::IpAddr;
 
 use axum::extract::{Query, State};
-use axum::http::{header, HeaderValue};
+use axum::http::{header, HeaderValue, Method};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -28,6 +28,7 @@ use sqlx::FromRow;
 use crate::app::AppState;
 
 use super::auth::{self, AdminAccess};
+use super::session::AdminSession;
 use super::{iso_from_ms, require_db, AdminError};
 
 /// Audit retention (90 days).
@@ -73,20 +74,50 @@ pub(super) fn routes() -> Router<AppState> {
         .route("/admin/api/audit/export", get(export))
 }
 
+impl AuditActor {
+    /// Actor of an existing or freshly created session.
+    pub(crate) fn from_session(session: &AdminSession) -> Self {
+        Self {
+            method: session.method.clone(),
+            name: session
+                .display_name
+                .clone()
+                .or_else(|| Some(session.method.clone())),
+        }
+    }
+}
+
+/// Status written to the audit row instead of the HTTP status.
+///
+/// A login handler inserts it as a response extension when the HTTP status
+/// does not say how the attempt ended: the Discord callback always answers
+/// `302`, towards the dashboard or back to the login page with an error.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AuditStatus(pub u16);
+
+/// Path of the Discord OAuth2 callback, audited although it is a `GET`.
+const DISCORD_CALLBACK_PATH: &str = "/admin/auth/discord/callback";
+
+/// `true` when the request must leave an audit row: every mutation, plus the
+/// Discord callback that opens a session.
+pub(crate) fn audited_request(method: &Method, path: &str) -> bool {
+    matches!(
+        *method,
+        Method::POST | Method::PATCH | Method::PUT | Method::DELETE
+    ) || (*method == Method::GET && path == DISCORD_CALLBACK_PATH)
+}
+
 /// Resolves the audit actor from the request session, if any.
 ///
 /// Called by `admin_headers` before the handler runs: a `logout` mutation then
-/// still knows who performed it, and an unauthenticated mutation keeps a null
-/// actor.
+/// still knows who performed it. A login has no session yet: its handler
+/// attaches the actor to the response instead.
 pub(crate) async fn actor_for_request(
     state: &AppState,
     headers: &axum::http::HeaderMap,
 ) -> Option<AuditActor> {
     let session = auth::current_session(state, headers).await.ok().flatten()?;
-    Some(AuditActor {
-        method: session.method.clone(),
-        name: session.display_name.clone().or(Some(session.method)),
-    })
+    Some(AuditActor::from_session(&session))
 }
 
 /// Persists one mutation. Failures are logged and never change the response.
@@ -378,6 +409,7 @@ pub(crate) fn action_for(method: &str, path: &str) -> String {
 fn auth_action(method: &str, path: &str) -> Option<&'static str> {
     match (method, path) {
         ("POST", "/admin/auth/secret") => Some("auth.login_secret"),
+        ("GET", DISCORD_CALLBACK_PATH) => Some("auth.login_discord"),
         ("POST", "/admin/auth/logout") => Some("auth.logout"),
         _ => None,
     }
@@ -543,6 +575,23 @@ mod tests {
             "media.cache_purge"
         );
         assert_eq!(action_for("POST", "/admin/auth/logout"), "auth.logout");
+        assert_eq!(
+            action_for("GET", "/admin/auth/discord/callback"),
+            "auth.login_discord"
+        );
+    }
+
+    #[test]
+    fn mutations_and_the_discord_callback_are_audited() {
+        for method in [Method::POST, Method::PATCH, Method::PUT, Method::DELETE] {
+            assert!(audited_request(&method, "/admin/api/guilds"));
+        }
+        assert!(audited_request(
+            &Method::GET,
+            "/admin/auth/discord/callback"
+        ));
+        assert!(!audited_request(&Method::GET, "/admin/auth/discord"));
+        assert!(!audited_request(&Method::GET, "/admin/api/overview"));
     }
 
     #[test]

@@ -894,17 +894,23 @@ function buildPreview(item) {
     return node;
   }
   if (kind === 'video') {
-    const video = h('video', { src: url, controls: true, preload: 'auto', playsinline: true });
+    // The native controls only appear once the first frame is there: shown
+    // earlier, they play their loading spinner for the few milliseconds the
+    // video takes to load.
+    const video = h('video', { src: url, preload: 'auto', playsinline: true });
     video.volume = previewVolume(state.activeGuildId);
     video.addEventListener('loadedmetadata', () => adoptRatio(video.videoWidth, video.videoHeight));
     node.append(video);
     const still = cardStill(item.id);
     if (still) {
       node.append(still);
-      const reveal = () => still.remove();
-      video.addEventListener('loadeddata', reveal, { once: true });
-      video.addEventListener('error', reveal, { once: true });
     }
+    const reveal = () => {
+      video.controls = true;
+      still?.remove();
+    };
+    video.addEventListener('loadeddata', reveal, { once: true });
+    video.addEventListener('error', reveal, { once: true });
     return node;
   }
   const image = h('img', { src: url, alt: '' });

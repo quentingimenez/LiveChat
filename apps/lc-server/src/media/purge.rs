@@ -203,6 +203,9 @@ async fn purge_stale_status(
                             WHERE media_asset_id IS NOT NULL) \
             AND id NOT IN (SELECT artwork_asset_id FROM media_board_items \
                             WHERE artwork_asset_id IS NOT NULL) \
+            AND id NOT IN (SELECT a.cover_asset_id FROM media_assets a \
+                             JOIN media_board_items b ON b.media_asset_id = a.id \
+                            WHERE a.cover_asset_id IS NOT NULL) \
             AND id NOT IN (SELECT media_asset_id FROM playback_jobs \
                             WHERE media_asset_id IS NOT NULL \
                               AND status IN ('PENDING', 'PLAYING'))",
@@ -252,6 +255,9 @@ async fn purge_expired_ready(
                             WHERE media_asset_id IS NOT NULL) \
             AND id NOT IN (SELECT artwork_asset_id FROM media_board_items \
                             WHERE artwork_asset_id IS NOT NULL) \
+            AND id NOT IN (SELECT a.cover_asset_id FROM media_assets a \
+                             JOIN media_board_items b ON b.media_asset_id = a.id \
+                            WHERE a.cover_asset_id IS NOT NULL) \
             AND id NOT IN (SELECT media_asset_id FROM playback_jobs \
                             WHERE media_asset_id IS NOT NULL \
                               AND status IN ('PENDING', 'PLAYING'))",
@@ -602,6 +608,80 @@ mod tests {
             .await
             .expect("lecture")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn keeps_the_thumbnail_of_a_board_video() {
+        let fixture = fixture().await;
+        let video_file = fixture.storage.root().join("video.mp4");
+        let cover_file = fixture.storage.root().join("video.cover.jpg");
+        std::fs::write(&video_file, b"video").expect("fichier");
+        std::fs::write(&cover_file, b"cover").expect("fichier");
+        let expired = fixture.now - ChronoDuration::hours(1);
+        let stale = fixture.now - ChronoDuration::days(30);
+        let video = asset(
+            MediaStatus::Ready,
+            "video-hash",
+            &video_file,
+            stale,
+            expired,
+            stale,
+        );
+        let cover = MediaAsset {
+            kind: MediaKind::Image,
+            mime: "image/jpeg".into(),
+            duration_sec: None,
+            ..asset(
+                MediaStatus::Ready,
+                "video-hash#cover",
+                &cover_file,
+                stale,
+                expired,
+                stale,
+            )
+        };
+        let assets = fixture.db.media_assets();
+        assets.insert(&video).await.expect("vidéo");
+        assets.insert(&cover).await.expect("miniature");
+        assets
+            .set_cover(video.id, Some(cover.id))
+            .await
+            .expect("liaison");
+        let item = MediaBoardItem {
+            id: MediaBoardItemId::new_v4(),
+            guild_id: GuildId::parse("123456789012345678").expect("guilde"),
+            media_asset_id: video.id,
+            title: None,
+            message: None,
+            created_by_discord_user_id: None,
+            created_by_name: None,
+            created_at: fixture.now,
+            artwork_asset_id: None,
+            artwork_on_overlay: false,
+        };
+        fixture
+            .db
+            .media_board()
+            .create(&item)
+            .await
+            .expect("item board");
+
+        let report = purge_once(&fixture.db, &fixture.storage, fixture.now)
+            .await
+            .expect("purge");
+
+        assert_eq!(report.expired_evicted, 0);
+        assert!(cover_file.exists());
+        assert!(assets.get(cover.id).await.expect("lecture").is_some());
+        // The cover is never the item's picture.
+        let stored = fixture
+            .db
+            .media_board()
+            .get(item.id)
+            .await
+            .expect("lecture")
+            .expect("item");
+        assert_eq!(stored.artwork_asset_id, None);
     }
 
     #[tokio::test]

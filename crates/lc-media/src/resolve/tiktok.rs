@@ -71,6 +71,8 @@ pub struct TikTokPage {
     pub photo_slides: Vec<Vec<MediaCandidate>>,
     /// Candidats audio (musique de fond).
     pub audio_candidates: Vec<MediaCandidate>,
+    /// Cover picture of the post (its thumbnail), if any.
+    pub cover: Option<String>,
     /// La page exige une authentification ou est privée.
     pub auth_required: bool,
 }
@@ -94,6 +96,7 @@ impl TikTokPage {
 struct TikTokOEmbed {
     title: Option<String>,
     author_name: Option<String>,
+    thumbnail_url: Option<String>,
 }
 
 /// Construit l'URL oEmbed d'une publication TikTok.
@@ -168,6 +171,11 @@ pub async fn resolve_tiktok(
                         .as_ref()
                         .and_then(|oembed| oembed.author_name.clone())
                 }),
+                thumbnail_url: page.cover.clone().or_else(|| {
+                    oembed
+                        .as_ref()
+                        .and_then(|oembed| oembed.thumbnail_url.clone())
+                }),
                 kind: Some(kind),
                 media_url: selected.map(|candidate| candidate.url.clone()),
                 mime: selected.and_then(|candidate| candidate.mime.clone()),
@@ -181,6 +189,7 @@ pub async fn resolve_tiktok(
                 Ok(ResolvedMedia {
                     title: oembed.title,
                     author: oembed.author_name,
+                    thumbnail_url: oembed.thumbnail_url,
                     kind: Some(kind),
                     canonical_url,
                     source_hash: source.source_hash.clone(),
@@ -297,6 +306,12 @@ pub fn parse_page_html(page_html: &str, page_url: &str) -> TikTokPage {
             page.author =
                 find_string(payload, "uniqueId").or_else(|| find_string(payload, "nickname"));
         }
+        if page.cover.is_none() {
+            page.cover = ["originCover", "cover"]
+                .into_iter()
+                .filter_map(|key| find_string(payload, key))
+                .find(|url| url.starts_with("https://"));
+        }
         if find_bool(payload, "privateItem")
             || find_bool(payload, "secret")
             || find_bool(payload, "forFriend")
@@ -312,6 +327,10 @@ pub fn parse_page_html(page_html: &str, page_url: &str) -> TikTokPage {
     }
     if page.title.is_none() {
         page.title = html::meta_content(page_html, "og:title");
+    }
+    if page.cover.is_none() {
+        page.cover =
+            html::meta_content(page_html, "og:image").filter(|url| url.starts_with("https://"));
     }
     if page.item_id.is_none() {
         page.item_id = page
@@ -722,6 +741,8 @@ mod tests {
                         "video": {
                             "downloadAddr": "https://v16.test/video.mp4?tag=1",
                             "playAddr": "https://v16.test/play.mp4",
+                            "cover": "https://p16.test/cover.jpeg",
+                            "originCover": "https://p16.test/origin.jpeg",
                             "bitrateInfo": [
                                 {"PlayAddr": {"urlList": ["https://v16.test/hd.mp4"]}}
                             ]
@@ -748,6 +769,7 @@ mod tests {
             .iter()
             .any(|candidate| candidate.url == "https://v16.test/video.mp4?tag=1"));
         assert_eq!(page.audio_candidates.len(), 1);
+        assert_eq!(page.cover.as_deref(), Some("https://p16.test/origin.jpeg"));
         assert!(!page.auth_required);
         assert!(!page.should_build_carousel());
     }

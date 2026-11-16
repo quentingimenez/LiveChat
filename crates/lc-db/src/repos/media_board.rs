@@ -68,8 +68,9 @@ impl MediaBoardRepository {
     /// [`lc_domain::DomainError::Conflict`] : le même média ne peut être ajouté
     /// deux fois au board d'une guilde.
     ///
-    /// An item without a picture takes the embedded cover of its asset (an
-    /// MP3's album art), when there is one.
+    /// An audio item without a picture takes the embedded cover of its asset
+    /// (an MP3's album art), when there is one. A video's cover is its
+    /// thumbnail, shown from the asset itself, never a picture of the item.
     pub async fn create(&self, item: &MediaBoardItem) -> DbResult<()> {
         sqlx::query(
             "INSERT INTO media_board_items ( \
@@ -77,7 +78,7 @@ impl MediaBoardRepository {
                 created_by_discord_user_id, created_by_name, created_at, \
                 artwork_asset_id, artwork_on_overlay \
              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, \
-                COALESCE(?, (SELECT cover_asset_id FROM media_assets WHERE id = ?)), ?)",
+                COALESCE(?, (SELECT cover_asset_id FROM media_assets WHERE id = ? AND kind = 'AUDIO')), ?)",
         )
         .bind(item.id.to_canonical())
         .bind(item.guild_id.as_str())
@@ -293,8 +294,9 @@ impl MediaBoardRepository {
         Ok(result.rows_affected() > 0)
     }
 
-    /// `true` when the guild's board shows this asset, as an item's media or
-    /// as an item's picture.
+    /// `true` when the guild's board shows this asset, as an item's media, as
+    /// an item's picture or as the cover of an item's media (a video's
+    /// thumbnail).
     pub async fn guild_references_asset(
         &self,
         guild_id: &GuildId,
@@ -302,10 +304,12 @@ impl MediaBoardRepository {
     ) -> DbResult<bool> {
         let found: Option<i64> = sqlx::query_scalar(
             "SELECT 1 FROM media_board_items \
-              WHERE guild_id = ? AND (media_asset_id = ? OR artwork_asset_id = ?) \
+              WHERE guild_id = ? AND (media_asset_id = ? OR artwork_asset_id = ? \
+                    OR media_asset_id IN (SELECT id FROM media_assets WHERE cover_asset_id = ?)) \
               LIMIT 1",
         )
         .bind(guild_id.as_str())
+        .bind(asset_id.to_canonical())
         .bind(asset_id.to_canonical())
         .bind(asset_id.to_canonical())
         .fetch_optional(&self.pool)

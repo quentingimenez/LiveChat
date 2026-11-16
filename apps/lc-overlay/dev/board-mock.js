@@ -119,6 +119,8 @@
     favorite: index === 1 || index === 7,
     // « Fanfare… » (audio) has an embedded cover.
     artwork: index === 7 ? { url: svg(4), width: 480, height: 480 } : null,
+    // « Directed by… » (a YouTube link) has its platform thumbnail.
+    thumbnail: index === 3 ? { url: svg(5), width: 480, height: 360 } : null,
     artworkOnOverlay: false,
   }));
 

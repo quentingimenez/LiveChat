@@ -41,6 +41,7 @@ pub mod process;
 pub mod resolve;
 pub mod source;
 pub mod storage;
+pub mod thumbnail;
 pub mod transcode;
 
 pub use crate::cache::{

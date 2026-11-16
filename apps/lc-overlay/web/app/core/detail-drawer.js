@@ -91,6 +91,28 @@ export function artworkOf(item) {
   return artwork && typeof artwork.url === 'string' && artwork.url ? artwork : null;
 }
 
+// The platform's thumbnail of a linked video (YouTube, TikTok, X), once the
+// server has fetched it.
+export function thumbnailOf(item) {
+  const media = (item && item.media) || {};
+  const thumbnail = media.kind === 'video' && item.thumbnail;
+  return thumbnail && typeof thumbnail.url === 'string' && thumbnail.url ? thumbnail : null;
+}
+
+// What a board card shows: `{ url, kind }` with `kind` `image` or `video`
+// (`url` null when there is nothing to load). An audio shows its picture, a
+// video its thumbnail (a light image instead of loading the video), anything
+// else the media itself.
+export function cardPicture(item) {
+  const media = (item && item.media) || {};
+  const picture = media.kind === 'audio' ? artworkOf(item) : thumbnailOf(item);
+  if (picture) {
+    return { url: picture.url, kind: 'image' };
+  }
+  const mediaUrl = item && typeof item.mediaUrl === 'string' && item.mediaUrl ? item.mediaUrl : null;
+  return { url: media.kind === 'audio' ? null : mediaUrl, kind: media.kind === 'video' ? 'video' : 'image' };
+}
+
 // What a built preview depends on: it is reused while this key is the same.
 // The picture of an audio is part of it, so adding, replacing or removing the
 // picture rebuilds the preview instead of leaving the old one in the drawer.

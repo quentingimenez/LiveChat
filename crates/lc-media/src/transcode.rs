@@ -167,12 +167,15 @@ async fn normalize_downloaded_media_with_min_image_size(
     config: &MediaConfig,
     min_image_bytes: u64,
 ) -> MediaResult<NormalizedMedia> {
+    let started = std::time::Instant::now();
     let probed = probe::probe(&config.tools.ffprobe, input, config.download.timeout)
         .await
         .ok();
+    let probe_ms = crate::ingest::elapsed_ms(started);
     let kind = detect_kind(content_type, probed.as_ref()).ok_or_else(|| {
         MediaError::new(MediaErrorCode::InvalidMedia, "format de média non reconnu")
     })?;
+    tracing::info!(?kind, probe_ms, "normalisation : média analysé");
     if let Some(parent) = output_base.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             MediaError::from_io(
@@ -493,7 +496,10 @@ pub enum RemuxAudio {
 
 /// Chooses the cheapest way to produce the normalized MP4.
 pub fn plan_video(probed: &ProbeInfo, config: &VideoConfig) -> VideoPlan {
-    if can_copy_without_transcode(probed, config) {
+    // A file copied as it is keeps its audio as it is: with normalization on,
+    // its track goes through the same loudness filter as every other media.
+    let audio_untouched = !config.audio_normalize || !probed.has_audio;
+    if audio_untouched && can_copy_without_transcode(probed, config) {
         return VideoPlan::CopyFile;
     }
     if !video_stream_is_normalized(probed, config) {
@@ -521,6 +527,7 @@ pub async fn normalize_video(
     let plan = probed.map_or(VideoPlan::Transcode, |probed| {
         plan_video(probed, &config.video)
     });
+    let started = std::time::Instant::now();
     match plan {
         VideoPlan::CopyFile => {
             if let Err(error) = fs::copy(input, &staged) {
@@ -555,6 +562,11 @@ pub async fn normalize_video(
         VideoPlan::Transcode => transcode_video(input, &staged, probed, config).await?,
     }
     MediaStorage::commit_file(&staged, &output)?;
+    tracing::info!(
+        ?plan,
+        encode_ms = crate::ingest::elapsed_ms(started),
+        "normalisation : vidéo produite"
+    );
     // A plain copy is the probed input, byte for byte: no second probe.
     let output_probe = if plan == VideoPlan::CopyFile {
         None
@@ -1234,8 +1246,23 @@ mod tests {
     fn plans_the_cheapest_video_path() {
         let config = video_config().video;
         assert!(config.audio_normalize);
-        // Already a normalized MP4: plain copy.
-        assert_eq!(plan_video(&probed_video(), &config), VideoPlan::CopyFile);
+        // Already a normalized MP4: the video is copied, the audio still goes
+        // through loudnorm like every other media.
+        assert_eq!(
+            plan_video(&probed_video(), &config),
+            VideoPlan::CopyVideo {
+                audio: RemuxAudio::Encode
+            }
+        );
+        // Plain copy when nothing has to change: normalization off, or no
+        // audio track to normalize.
+        let mut off = config.clone();
+        off.audio_normalize = false;
+        assert_eq!(plan_video(&probed_video(), &off), VideoPlan::CopyFile);
+        let mut mute_mp4 = probed_video();
+        mute_mp4.has_audio = false;
+        mute_mp4.audio_codec = None;
+        assert_eq!(plan_video(&mute_mp4, &config), VideoPlan::CopyFile);
 
         // H.264 in another container: the video stream is copied, the audio
         // goes through loudnorm.

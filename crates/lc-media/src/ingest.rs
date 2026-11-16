@@ -175,6 +175,7 @@ impl MediaPipeline {
                 guard::validate_target(&source.canonical_url).await?;
             }
         }
+        let started = std::time::Instant::now();
         let resolved = match resolve::resolve_media(&self.config, source).await {
             Ok(resolved) => Some(resolved),
             Err(error) => {
@@ -185,6 +186,11 @@ impl MediaPipeline {
                 None
             }
         };
+        tracing::info!(
+            source_kind = ?source.source_kind,
+            resolve_ms = elapsed_ms(started),
+            "ingestion : source résolue"
+        );
         self.ingest_resolved(source, resolved).await
     }
 
@@ -194,8 +200,10 @@ impl MediaPipeline {
         source: &MediaSource,
         resolved: Option<ResolvedMedia>,
     ) -> MediaResult<IngestedMedia> {
+        let started = std::time::Instant::now();
         let _permit = self.limiter.acquire().await?;
         let _source_lock = lock_source_hash(&source.source_hash).await;
+        let wait_ms = elapsed_ms(started);
         let temp_dir = tempfile::TempDir::new().map_err(|error| {
             MediaError::from_io(
                 MediaErrorCode::DownloadFailed,
@@ -203,12 +211,24 @@ impl MediaPipeline {
                 &error,
             )
         })?;
+        let step = std::time::Instant::now();
         let download =
             download::download_source(source, resolved.as_ref(), &self.config, temp_dir.path())
                 .await?;
+        let download_ms = elapsed_ms(step);
+        let step = std::time::Instant::now();
         let normalized = self
             .normalize_and_store(source, &download, false, false)
             .await?;
+        tracing::info!(
+            source_kind = ?source.source_kind,
+            wait_ms,
+            download_ms,
+            download_bytes = download.size_bytes,
+            normalize_ms = elapsed_ms(step),
+            total_ms = elapsed_ms(started),
+            "ingestion : média prêt"
+        );
         Ok(IngestedMedia {
             source: source.clone(),
             resolved,
@@ -345,8 +365,10 @@ impl MediaPipeline {
         already_normalized: bool,
     ) -> MediaResult<IngestedMedia> {
         let source = MediaSource::from_upload(original_filename, content_sha256);
+        let started = std::time::Instant::now();
         let _permit = self.limiter.acquire().await?;
         let _source_lock = lock_source_hash(&source.source_hash).await;
+        let wait_ms = elapsed_ms(started);
 
         let size_bytes = local_file_size(path).await?;
         if size_bytes > self.config.download.max_size_bytes {
@@ -386,9 +408,17 @@ impl MediaPipeline {
             size_bytes,
             source_url: source.canonical_url.clone(),
         };
+        let step = std::time::Instant::now();
         let normalized = self
             .normalize_and_store(&source, &download, true, already_normalized)
             .await?;
+        tracing::info!(
+            wait_ms,
+            upload_bytes = size_bytes,
+            normalize_ms = elapsed_ms(step),
+            total_ms = elapsed_ms(started),
+            "ingestion locale : média prêt"
+        );
         Ok(IngestedMedia {
             source,
             resolved: None,
@@ -662,6 +692,11 @@ pub async fn ingest_url(raw: &str, config: &MediaConfig) -> MediaResult<Ingested
 /// Chemin persisté d'un média ingéré.
 pub fn stored_path(media: &IngestedMedia) -> PathBuf {
     media.normalized.storage_path.clone()
+}
+
+/// Milliseconds since `start`, for the step timings of the logs.
+pub(crate) fn elapsed_ms(start: std::time::Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

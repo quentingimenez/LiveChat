@@ -213,8 +213,9 @@ async fn admin_headers(request: axum::extract::Request, next: middleware::Next) 
         method,
         Method::POST | Method::PATCH | Method::PUT | Method::DELETE
     );
+    let audited = audit::audited_request(&method, &path);
     // Read the actor before the handler runs: a logout deletes its session.
-    let actor = if mutating {
+    let actor = if audited {
         match state.as_ref() {
             Some(state) => audit::actor_for_request(state, request.headers()).await,
             None => None,
@@ -224,20 +225,28 @@ async fn admin_headers(request: axum::extract::Request, next: middleware::Next) 
     };
     let mut response = next.run(request).await;
 
-    if mutating {
+    if audited {
         if let Some(state) = state.as_ref() {
             // Signal the overview before the audit row: the SSE stream then
             // emits the refreshed overview before the mutation's own `audit`
             // event (the audit insert is awaited below).
-            if response.status().is_success() {
+            if mutating && response.status().is_success() {
                 state.events.overview_changed();
             }
 
+            // A login opens its session inside the handler: the handler
+            // attaches the new actor and, when the HTTP status is a redirect,
+            // the real outcome.
+            let actor = actor.or_else(|| response.extensions().get::<audit::AuditActor>().cloned());
+            let status = response
+                .extensions()
+                .get::<audit::AuditStatus>()
+                .map_or(response.status().as_u16(), |status| status.0);
             audit::record(
                 state,
                 method.as_str(),
                 &path,
-                i64::from(response.status().as_u16()),
+                i64::from(status),
                 actor,
                 client_ip,
             )

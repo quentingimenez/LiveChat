@@ -39,6 +39,20 @@ export function speechCounter(text, max = SAY_MAX_CHARS) {
   };
 }
 
+// Whether a keydown in the text field sends the request: Enter alone sends,
+// Shift+Enter inserts a line break. Ignored while an IME composes a word.
+export function isSaySubmitKey(event) {
+  return (
+    Boolean(event) &&
+    event.key === 'Enter' &&
+    !event.shiftKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.metaKey &&
+    !event.isComposing
+  );
+}
+
 // Body of `POST /overlay/say`, or `null` when the text cannot be sent.
 export function sayPayload({ text, caption, anonymous } = {}) {
   if (!speechCounter(text).valid) {

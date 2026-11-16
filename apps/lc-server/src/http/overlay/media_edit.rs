@@ -52,11 +52,11 @@ use crate::ingestions::StartIngestionError;
 
 use super::auth::AuthedOverlayClient;
 use super::media_board::{
-    ensure_can_edit, ensure_writable, guild_item, json_rejection_error, too_many_ingestions,
+    ensure_actor_can_edit, ensure_writable, json_rejection_error, too_many_ingestions,
     truncate_chars,
 };
 use super::media_ingestion::{spawn_ingestion, BoardTarget, IngestionInput};
-use super::{db, db_failure, error, json_response, now};
+use super::{db, db_failure, error, json_response, now, ActorInfo};
 
 /// Longest title of a board item.
 const TITLE_MAX_CHARS: usize = 240;
@@ -77,44 +77,44 @@ struct EditRequest {
     recipe: EditRecipe,
 }
 
-/// Handler for `POST /overlay/media-board/items/{itemId}/edit`.
-pub async fn edit_item(
-    State(state): State<AppState>,
-    auth: AuthedOverlayClient,
-    Path(item_id_raw): Path<String>,
-    body: Result<Json<serde_json::Value>, JsonRejection>,
+/// Edit pipeline shared by the overlay route and the admin console.
+///
+/// The request is fully validated (and refused for a read-only actor) before
+/// the detached ingestion is registered; the response is the overlay
+/// `202 {"ingestionId"}` body.
+pub(crate) async fn start_edit(
+    state: &AppState,
+    actor: &ActorInfo,
+    item_id_raw: &str,
+    body: serde_json::Value,
 ) -> Response {
-    if let Err(response) = ensure_writable(&auth) {
-        return response;
+    if actor.is_read_only() {
+        return error(StatusCode::FORBIDDEN, "read_only_session");
     }
-    let body = match body {
-        Ok(Json(value)) => value,
-        Err(rejection) => {
-            tracing::debug!(
-                error = %rejection.body_text(),
-                "corps JSON invalide sur POST /overlay/media-board/items/{{id}}/edit"
-            );
-            return json_rejection_error(rejection);
-        }
-    };
     let request = match parse_request(body) {
         Ok(request) => request,
         Err(message) => return invalid_payload(message),
     };
 
-    let db = match db(&state) {
+    let db = match db(state) {
         Ok(db) => db,
         Err(response) => return response,
     };
-    let item = match guild_item(db, &auth, &item_id_raw, "overlay_media_edit.item_lookup").await {
-        Ok(item) => item,
-        Err(response) => return response,
+    let item = match item_id_raw.trim().parse::<lc_domain::MediaBoardItemId>() {
+        Ok(item_id) => match db.media_board().get(item_id).await {
+            Ok(Some(item)) if &item.guild_id == actor.guild_id() => item,
+            Ok(_) => return error(StatusCode::NOT_FOUND, "item_not_found"),
+            Err(db_error) => {
+                return db_failure("overlay_media_edit.item_lookup", &db_error);
+            }
+        },
+        Err(_) => return error(StatusCode::NOT_FOUND, "item_not_found"),
     };
     if request.replace {
-        if let Err(response) = ensure_can_edit(db, &auth, item.id).await {
+        if let Err(response) = ensure_actor_can_edit(db, actor, item.id).await {
             return response;
         }
-    } else if !auth.can(Permission::AddMedia) {
+    } else if !actor.can(Permission::AddMedia) {
         return error(StatusCode::FORBIDDEN, "forbidden");
     }
 
@@ -142,15 +142,17 @@ pub async fn edit_item(
             "a replacement must produce the same kind of media as the original".to_owned(),
         );
     }
-    let source_path = match super::media::resolve_media_file(&state, &asset).await {
+    let source_path = match super::media::resolve_media_file(state, &asset).await {
         Ok(path) => path,
         Err(response) => return response,
     };
 
+    let ingested_at = now(state);
+    let authed = actor.to_authed(ingested_at);
     let ingestion_id = match state.ingestions.start(
-        auth.guild_id().clone(),
-        auth.client.id.as_uuid(),
-        now(&state),
+        actor.guild_id().clone(),
+        actor.client.id.as_uuid(),
+        ingested_at,
     ) {
         Ok(ingestion_id) => ingestion_id,
         Err(StartIngestionError::TooManyProcessing) => return too_many_ingestions(),
@@ -181,8 +183,8 @@ pub async fn edit_item(
         )
     };
     spawn_ingestion(
-        state,
-        auth,
+        state.clone(),
+        authed,
         ingestion_id.clone(),
         IngestionInput::Edit {
             source_path,
@@ -199,6 +201,30 @@ pub async fn edit_item(
         StatusCode::ACCEPTED,
         serde_json::json!({ "ingestionId": ingestion_id }),
     )
+}
+
+/// Handler for `POST /overlay/media-board/items/{itemId}/edit`.
+pub async fn edit_item(
+    State(state): State<AppState>,
+    auth: AuthedOverlayClient,
+    Path(item_id_raw): Path<String>,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    if let Err(response) = ensure_writable(&auth) {
+        return response;
+    }
+    let body = match body {
+        Ok(Json(value)) => value,
+        Err(rejection) => {
+            tracing::debug!(
+                error = %rejection.body_text(),
+                "corps JSON invalide sur POST /overlay/media-board/items/{{id}}/edit"
+            );
+            return json_rejection_error(rejection);
+        }
+    };
+    let actor = ActorInfo::from_auth(&state, &auth);
+    start_edit(&state, &actor, &item_id_raw, body).await
 }
 
 /// Reads `{replace?, title?, recipe}`; the error is the `message` of the

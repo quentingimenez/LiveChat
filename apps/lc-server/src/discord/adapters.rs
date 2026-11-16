@@ -12,8 +12,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use lc_db::Db;
 use lc_discord::context::{
-    ConnectedOverlay, MediaAddRequest, MediaBackend, MediaBoardBackend, MediaRequest,
-    OverlayDirectory, PlaybackBackend, PlaybackJobRequest,
+    BotConfigSource, ConnectedOverlay, MediaAddRequest, MediaBackend, MediaBoardBackend,
+    MediaRequest, OverlayDirectory, PlaybackBackend, PlaybackJobRequest,
 };
 use lc_discord::error::MediaLimits;
 use lc_discord::{BotConfig, BotError, Lang, MediaError, MediaErrorCode, SpeechFailure};
@@ -28,31 +28,52 @@ use crate::app::AppState;
 use crate::http::admin::hub::{AdminHub, NoopAdminHub};
 use crate::media::errors::MediaServiceError;
 use crate::media::service::MediaService;
+use crate::runtime::Runtime;
 use crate::Config;
 
 /// Nombre maximal d'overlays listés par `/overlays` (borne défensive : la
 /// réponse Discord est limitée à 4096 caractères par embed).
 pub const MAX_OVERLAYS_LISTED: usize = 25;
 
-/// Construit la [`BotConfig`] du crate `lc-discord` à partir de la config
-/// serveur [`Config`] (mêmes variables d'environnement que le legacy).
-pub fn bot_config_from(config: &Config) -> BotConfig {
+/// Builds the [`BotConfig`] of the `lc-discord` crate: the frozen [`Config`]
+/// fields plus the current values of the hot [`Runtime`] store.
+pub fn bot_config_from(config: &Config, runtime: &Runtime) -> BotConfig {
     BotConfig {
         api_url: config.api_url.to_string(),
         lang: Lang::parse(&config.i18n),
         pairing_code_ttl_minutes: saturating_i64(config.pairing_code_ttl_minutes),
-        default_duration_sec: saturating_i64(config.default_duration),
+        default_duration_sec: saturating_i64(runtime.default_duration()),
         hide_commands_disabled: config.hide_commands_disabled,
         media: MediaLimits {
-            max_size_mb: saturating_i64(config.media_max_size_mb),
-            max_cache_total_mb: saturating_i64(config.media_cache_max_total_mb),
-            max_board_total_mb: saturating_i64(config.media_board_max_total_mb),
+            max_size_mb: saturating_i64(runtime.media_max_size_mb()),
+            max_cache_total_mb: saturating_i64(runtime.media_cache_max_total_mb()),
+            max_board_total_mb: saturating_i64(runtime.media_board_max_total_mb()),
         },
     }
 }
 
 fn saturating_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+/// Live [`BotConfigSource`] for the Discord runtime: the non-hot fields come
+/// from the server [`Config`], the hot ones are read from the [`Runtime`] store
+/// on every command.
+pub struct ServerBotConfigSource {
+    state: AppState,
+}
+
+impl ServerBotConfigSource {
+    /// Builds the source over the application state's config and runtime store.
+    pub fn new(state: AppState) -> Self {
+        Self { state }
+    }
+}
+
+impl BotConfigSource for ServerBotConfigSource {
+    fn current(&self) -> BotConfig {
+        bot_config_from(self.state.config.as_ref(), self.state.runtime())
+    }
 }
 
 /// Adaptateurs [`lc_discord::BotContext`] du serveur.
@@ -90,7 +111,7 @@ impl DiscordAdapters {
             media_board: Arc::new(
                 DbMediaBoardBackend::new(db.clone(), Arc::clone(&state.clock))
                     .with_admin_hub(Arc::clone(&hub))
-                    .with_media_config(crate::media::settings::media_config(&state.config)),
+                    .with_runtime_state(state.clone()),
             ),
             overlays: Arc::new(DbOverlayDirectory::new(db).with_admin_hub(hub)),
         }
@@ -242,6 +263,9 @@ pub struct DbMediaBoardBackend {
     clock: Arc<dyn Clock>,
     hub: Arc<dyn AdminHub>,
     media_config: MediaConfig,
+    /// Live application state; when set, the media config is rebuilt on every
+    /// use so the hot limits apply without restarting the bot.
+    state: Option<AppState>,
 }
 
 impl DbMediaBoardBackend {
@@ -252,6 +276,7 @@ impl DbMediaBoardBackend {
             clock,
             hub: Arc::new(NoopAdminHub),
             media_config: MediaConfig::default(),
+            state: None,
         }
     }
 
@@ -268,6 +293,20 @@ impl DbMediaBoardBackend {
         self.media_config = media_config;
         self
     }
+
+    /// Rebuilds the media configuration from this live state on every use.
+    #[must_use]
+    pub fn with_runtime_state(mut self, state: AppState) -> Self {
+        self.state = Some(state);
+        self
+    }
+
+    fn current_media_config(&self) -> MediaConfig {
+        self.state.as_ref().map_or_else(
+            || self.media_config.clone(),
+            crate::media::settings::media_config_for_state,
+        )
+    }
 }
 
 #[async_trait]
@@ -278,9 +317,10 @@ impl MediaBoardBackend for DbMediaBoardBackend {
                 MediaErrorCode::MediaNotFound,
             )));
         };
+        let media_config = self.current_media_config();
         let result = crate::media::board::add_to_board(
             &self.db,
-            &self.media_config,
+            &media_config,
             &request.guild_id,
             &asset,
             request.title.as_deref(),
@@ -360,15 +400,19 @@ mod tests {
     use chrono::{DateTime, TimeZone, Utc};
     use lc_db::{Db, DbConfig};
     use lc_discord::context::{MediaAddRequest, MediaBoardBackend, OverlayDirectory};
-    use lc_discord::{BotContext, DbBotContext};
+    use lc_discord::{BotConfigSource, BotContext, BotError, DbBotContext, MediaErrorCode};
     use lc_domain::{
         FixedClock, Guild, GuildId, MediaAsset, MediaAssetId, MediaKind, MediaStatus,
         OverlayClient, OverlayClientId, OverlaySessionMode,
     };
 
+    use crate::runtime::{Runtime, RuntimeOverrides};
     use crate::Config;
 
-    use super::{bot_config_from, DbMediaBoardBackend, DbOverlayDirectory, DiscordAdapters};
+    use super::{
+        bot_config_from, DbMediaBoardBackend, DbOverlayDirectory, DiscordAdapters,
+        ServerBotConfigSource,
+    };
 
     fn config_with(pairs: &[(&str, &str)]) -> Config {
         let mut entries = vec![("API_URL".to_owned(), "http://localhost:3333".to_owned())];
@@ -463,7 +507,8 @@ mod tests {
             ("MEDIA_CACHE_MAX_TOTAL_MB", "2048"),
             ("MEDIA_BOARD_MAX_TOTAL_MB", "4096"),
         ]);
-        let bot = bot_config_from(&config);
+        let runtime = Runtime::new(Arc::new(config.clone()));
+        let bot = bot_config_from(&config, &runtime);
         assert_eq!(bot.api_url, "http://localhost:3333/");
         assert_eq!(bot.lang, lc_discord::Lang::En);
         assert_eq!(bot.pairing_code_ttl_minutes, 12);
@@ -477,7 +522,8 @@ mod tests {
     #[test]
     fn bot_config_valeurs_par_defaut_legacy() {
         let config = config_with(&[]);
-        let bot = bot_config_from(&config);
+        let runtime = Runtime::new(Arc::new(config.clone()));
+        let bot = bot_config_from(&config, &runtime);
         assert_eq!(bot.lang, lc_discord::Lang::Fr);
         assert_eq!(bot.pairing_code_ttl_minutes, 5);
         assert_eq!(bot.default_duration_sec, 5);
@@ -485,6 +531,42 @@ mod tests {
         assert_eq!(bot.media.max_size_mb, 2048);
         assert_eq!(bot.media.max_cache_total_mb, 5120);
         assert_eq!(bot.media.max_board_total_mb, 15360);
+    }
+
+    #[test]
+    fn bot_config_follows_the_hot_runtime_values() {
+        let config = config_with(&[]);
+        let runtime = Runtime::new(Arc::new(config.clone()));
+        runtime.apply(RuntimeOverrides {
+            default_duration: Some(17),
+            media_max_size_mb: Some(11),
+            media_cache_max_total_mb: Some(22),
+            media_board_max_total_mb: Some(33),
+            ..RuntimeOverrides::default()
+        });
+
+        let bot = bot_config_from(&config, &runtime);
+        assert_eq!(bot.default_duration_sec, 17);
+        assert_eq!(bot.media.max_size_mb, 11);
+        assert_eq!(bot.media.max_cache_total_mb, 22);
+        assert_eq!(bot.media.max_board_total_mb, 33);
+    }
+
+    #[tokio::test]
+    async fn server_bot_config_source_reads_the_hot_values_on_every_use() {
+        let (shutdown, _signal) = crate::shutdown::Shutdown::new();
+        let state = crate::app::AppState::new(Arc::new(config_with(&[])), None, shutdown);
+        let source = ServerBotConfigSource::new(state.clone());
+        assert_eq!(source.current().default_duration_sec, 5);
+
+        state.runtime().apply(RuntimeOverrides {
+            default_duration: Some(21),
+            media_board_max_total_mb: Some(44),
+            ..RuntimeOverrides::default()
+        });
+        let bot = source.current();
+        assert_eq!(bot.default_duration_sec, 21);
+        assert_eq!(bot.media.max_board_total_mb, 44);
     }
 
     #[tokio::test]
@@ -511,6 +593,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn media_board_backend_follows_the_hot_board_quota() {
+        let db = Db::open_in_memory(&DbConfig::default()).await.unwrap();
+        insert_guild(&db).await;
+        let asset = insert_asset(&db, sample_now()).await;
+        let state = test_state(&db);
+        let adapters = DiscordAdapters::for_state(&state, db.clone());
+        let backend = adapters.media_board();
+        let request = MediaAddRequest {
+            guild_id: guild_id(),
+            media_asset_id: asset,
+            title: None,
+            message: None,
+            created_by_discord_user_id: None,
+            created_by_name: Some("Alice".to_owned()),
+        };
+
+        // No guild quota: the server-wide hot limit applies. Zero megabytes
+        // leaves no room for the 1 KiB asset.
+        state.runtime().apply(RuntimeOverrides {
+            media_board_max_total_mb: Some(0),
+            ..RuntimeOverrides::default()
+        });
+        let error = backend.add_to_board(request).await.unwrap_err();
+        let BotError::Media(media) = error else {
+            panic!("media error expected, got {error:?}");
+        };
+        assert_eq!(media.code, MediaErrorCode::BoardStorageLimitReached);
+    }
+
+    #[tokio::test]
     async fn overlay_directory_ignore_les_clients_revoques() {
         let db = Db::open_in_memory(&DbConfig::default()).await.unwrap();
         insert_guild(&db).await;
@@ -534,14 +646,16 @@ mod tests {
             crate::app::AppState::new(Arc::new(config_with(&[])), Some(db.clone()), shutdown)
                 .with_clock(Arc::new(FixedClock::new(sample_now())));
         let adapters = DiscordAdapters::for_state(&state, db.clone());
+        let source = Arc::new(ServerBotConfigSource::new(state));
         let context = DbBotContext::with_clock(
             db,
             FixedClock::new(sample_now()),
-            bot_config_from(&config_with(&[])),
+            source,
             adapters.media(),
             adapters.playback(),
             adapters.media_board(),
             adapters.overlays(),
+            Arc::new(lc_domain::rights::RightsTable::new()),
         );
         assert_eq!(context.config().pairing_code_ttl_minutes, 5);
         assert_eq!(context.clock().now(), sample_now());

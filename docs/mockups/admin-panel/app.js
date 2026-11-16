@@ -7,6 +7,8 @@
   const BOT_INVITE_URL =
     'https://discord.com/oauth2/authorize?client_id=1570564356108714094&scope=bot%20applications.commands&permissions=19456';
   const MIN_OVERLAY_VERSION = '3.2.0';
+  // Slash commands registered by the bot (apps/lc-server/src/discord/registration.rs).
+  const DISCORD_COMMANDS = ['dispo', 'msg', 'dire', 'pair-code', 'help', 'info', 'overlays', 'stop', 'media-add', 'lier', 'cmsg', 'cdire'];
   const GIB = 1024 * 1024 * 1024;
   const MIB = 1024 * 1024;
   const BOARD_MAX = 15 * GIB;
@@ -54,7 +56,11 @@
 
   function meter(used, max, label) {
     const percent = Math.min(100, Math.round((used / max) * 100));
-    return `<div class="meter${percent >= 85 ? ' is-high' : ''}" role="img" aria-label="${esc(label || 'Occupation')} : ${percent} %"><span style="width:${percent}%"></span></div>`;
+    return `<progress class="meter${percent >= 85 ? ' is-high' : ''}" max="100" value="${percent}" aria-label="${esc(label || 'Occupation')} : ${percent} %">${percent} %</progress>`;
+  }
+
+  function progress(percent) {
+    return `<progress class="progress" max="100" value="${percent}" aria-label="Progression de la lecture : ${percent} %">${percent} %</progress>`;
   }
 
   const initials = (name) => name.replace(/[^\p{L}\p{N} ]/gu, '').split(' ').filter(Boolean).slice(0, 2).map((part) => part[0].toUpperCase()).join('');
@@ -105,6 +111,7 @@
       name,
       role: index === 0 ? 'admin' : index === 1 && spec.members > 5 ? 'admin' : rand() < 0.22 ? 'guest' : 'member',
       discordUserId: spec.kind === 'none' && rand() < 0.6 ? null : snowflake(),
+      discordAdmin: spec.kind !== 'none' && (index === 0 || rand() < 0.08),
       joinedDays: int(3, 320),
       lastSeen: null,
     }));
@@ -120,10 +127,12 @@
           memberId: member.id,
           sessionMode: member.role === 'guest' ? 'invite_read_only' : 'normal',
           connected,
-          muted: !connected && rand() < 0.15,
+          paused: !connected && rand() < 0.15,
+          volume: pick([100, 100, 80, 60]),
+          mediaMuted: rand() < 0.1,
           lastSeen,
           createdDays: int(1, member.joinedDays),
-          version: pick(['3.3.0', '3.3.0', '3.3.0', '3.2.0', '3.1.2']),
+          version: pick(['3.4.0', '3.4.0', '3.4.0', '3.3.0', '3.2.0', '3.1.2']),
           os: pick(['Windows 11', 'Windows 11', 'Windows 10', 'macOS 15']),
         });
         member.lastSeen = member.lastSeen == null ? lastSeen : Math.min(member.lastSeen, lastSeen);
@@ -169,6 +178,9 @@
             by: pick(members).name,
             size: kind === 'video' ? int(4, 48) * MIB : int(1, 3) * MIB,
             plays: int(0, 140),
+            favorite: rand() < 0.2,
+            trimStart: 0,
+            trimEnd: null,
             addedMin: int(30, 30000),
           }))
         : [],
@@ -180,7 +192,7 @@
           kind,
           duration,
           by: pick(members).name,
-          source: pick(['Board', 'Discord /send', 'Extension']),
+          source: pick(['Board', 'Discord /msg', 'Extension']),
           status: index === 0 ? 'playing' : 'pending',
           progress: index === 0 ? int(20, 80) : 0,
         }))
@@ -195,7 +207,11 @@
       createdDays: spec.createdDays,
       lastActivity: spec.lastActivity,
       settings: { defaultMediaTime: spec.defaultMediaTime ?? null, maxMediaTime: spec.maxMediaTime ?? null, displayMediaFull: Boolean(spec.full), guestsCanViewBoard: spec.guestsBoard !== false },
-      members,
+      members: members.map((member) => ({
+        ...member,
+        discordName: member.discordUserId ? `${member.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()}_${int(10, 99)}` : null,
+        discordAdmin: Boolean(member.discordUserId) && member.discordAdmin,
+      })),
       devices,
       invites,
       pairing,
@@ -217,17 +233,19 @@
   ].map(buildGuild);
 
   const guildName = (guild) => guild.name || `Guild ${guild.id}`;
+  // Stands for the Discord server icon (migration 0006); standalone guilds have none.
+  const guildIcon = (guild) => `<span class="avatar is-guild${guild.kind === 'none' ? ' is-none' : ''}" aria-hidden="true">${esc(initials(guildName(guild)) || '?')}</span>`;
   const findGuild = (id) => guilds.find((guild) => guild.id === id);
   const memberOf = (guild, id) => guild.members.find((member) => member.id === id);
   const allDevices = () => guilds.flatMap((guild) => guild.devices.map((device) => ({ device, guild })));
 
   const server = {
-    version: '3.3.0',
+    version: '3.4.0',
     uptime: '6 j 4 h',
     cacheUsed: Math.round(3.7 * GIB),
     ingestions: [
       { title: 'Clip TikTok — danse du pingouin', guild: guilds[0], by: 'Extension (Chrome-Quentin)', status: 'processing', detail: 'Transcodage 62 %', min: 0 },
-      { title: 'https://x.com/…/status/19873…', guild: guilds[1], by: 'Discord /send — Maëlle', status: 'failed', detail: 'Vidéo introuvable (resolver Twitter)', min: 42 },
+      { title: 'https://x.com/…/status/19873…', guild: guilds[1], by: 'Discord /media-add — Maëlle', status: 'failed', detail: 'Vidéo introuvable (resolver Twitter)', min: 42 },
       { title: 'TikTok restreint (connexion requise)', guild: guilds[0], by: 'Board — Théo', status: 'failed', detail: 'Cookie TikTok requis', min: 180 },
       { title: 'Replay — le clutch de Théo', guild: guilds[4], by: 'Board — Inès', status: 'ready', detail: '31 s, 38 Mo, 1080p', min: 195 },
       { title: 'fichier_3go.mkv', guild: guilds[2], by: 'Board — Théo', status: 'failed', detail: 'Dépasse MEDIA_MAX_SIZE_MB (200)', min: 800 },
@@ -255,41 +273,98 @@
     linked: ['Indépendante, liée', 'is-info'],
     none: ['Indépendante', 'is-outline'],
   };
-  // Mirrors `Permission` / `GuildRole::can` in crates/lc-domain/src/enums.rs.
-  const PERMISSIONS = [
-    ['Recevoir les médias', 'guest'],
-    ['Voir la file d’attente', 'guest'],
-    ['Consulter le board', 'board'],
-    ['Lancer une lecture', 'member'],
-    ['Arrêter la lecture', 'member'],
-    ['Ajouter des médias', 'member'],
-    ['Modifier ses médias', 'member'],
-    ['Modifier tous les médias', 'admin'],
-    ['Modérer la file', 'admin'],
-    ['Gérer les membres', 'admin'],
-    ['Gérer les invitations', 'admin'],
-    ['Modifier les réglages', 'admin'],
-    ['Purger la guilde', 'admin'],
-  ];
-
-  function permissionGranted(level, role, mode, guestsCanViewBoard) {
+  // Effective overlay right of a device, from the rights saved on the
+  // « Rôles et droits » page. A read-only session counts as a guest.
+  function permissionGranted(key, role, mode, guestsCanViewBoard) {
     const effective = mode === 'invite_read_only' ? 'guest' : role;
-    if (level === 'guest') {
-      return true;
-    }
-    if (level === 'board') {
-      return effective !== 'guest' || guestsCanViewBoard;
-    }
-    if (level === 'member') {
-      return effective !== 'guest';
-    }
-    return effective === 'admin';
+    const value = savedRights.overlay[key][effective];
+    return value === 'guild' ? guestsCanViewBoard : value === 'fixed' || value === true;
+  }
+
+  // Rights per surface. Each row: [key, label, detail, enforcement, defaults].
+  // `defaults` maps a column to true / false, 'fixed' (always granted, not
+  // editable) or 'guild' (decided by a guild setting). Overlay rows mirror
+  // `GuildRole::can`; Discord rows mirror `requirement` in
+  // crates/lc-discord/src/rights.rs.
+  const ENFORCED = ['Vérifié par le serveur', 'is-ok'];
+  const AT_PAIRING = ['À l’appairage seulement', 'is-err'];
+  const NOT_YET = ['Non vérifié aujourd’hui', 'is-err'];
+  const all = { none: 'fixed', guest: 'fixed', member: 'fixed', admin: 'fixed' };
+  const membersUp = { guest: false, member: true, admin: 'fixed' };
+  const adminsOnly = { guest: false, member: false, admin: 'fixed' };
+  const SURFACES = {
+    overlay: {
+      label: 'Overlay',
+      columns: ['guest', 'member', 'admin'],
+      intro: 'Le rôle du membre s’applique à tous ses appareils. Un appareil en session « Lecture seule » est traité comme un invité, quel que soit le rôle.',
+      rows: [
+        ['receive', 'Recevoir les médias', '', ENFORCED, { guest: 'fixed', member: 'fixed', admin: 'fixed' }],
+        ['queue', 'Voir la file d’attente', '', ENFORCED, { guest: true, member: 'fixed', admin: 'fixed' }],
+        ['board', 'Consulter le board', '', ENFORCED, { guest: 'guild', member: 'fixed', admin: 'fixed' }],
+        ['play', 'Lancer une lecture', '', ENFORCED, membersUp],
+        ['stop', 'Arrêter la lecture', '', ENFORCED, membersUp],
+        ['add', 'Ajouter des médias', 'board, éditeur', ENFORCED, membersUp],
+        ['editOwn', 'Modifier ses médias', 'titre, découpe, illustration', ENFORCED, membersUp],
+        ['editAny', 'Modifier tous les médias', '', ENFORCED, adminsOnly],
+        ['moderate', 'Modérer la file', 'retirer, vider', ENFORCED, adminsOnly],
+        ['members', 'Gérer les membres', 'rôle, exclusion', ENFORCED, adminsOnly],
+        ['invites', 'Gérer les invitations', '', ENFORCED, adminsOnly],
+        ['settings', 'Modifier les réglages de la guilde', 'dont la liaison Discord', ENFORCED, adminsOnly],
+        ['purge', 'Purger la guilde', '', ENFORCED, adminsOnly],
+      ],
+    },
+    extension: {
+      label: 'Extension',
+      columns: ['guest', 'member', 'admin'],
+      intro: 'Une extension agit au nom de son auteur par défaut : c’est le rôle de ce membre qui compte. Aujourd’hui le rôle n’est vérifié qu’à l’appairage ; un membre rétrogradé ou exclu garde une extension qui fonctionne.',
+      rows: [
+        ['pair', 'Appairer une extension', 'code créé depuis l’overlay', ENFORCED, membersUp],
+        ['send', 'Envoyer un média à l’antenne', 'POST /ingest', AT_PAIRING, membersUp],
+        ['addBoard', 'Ranger le média dans le board', 'option de l’extension', NOT_YET, membersUp],
+        ['author', 'Signer au nom d’un autre membre', '', NOT_YET, adminsOnly],
+      ],
+    },
+    discord: {
+      label: 'Bot Discord',
+      columns: ['none', 'guest', 'member', 'admin'],
+      intro: 'Le compte Discord doit être lié à un membre de la guilde (Profil → « Lier mon compte Discord » dans l’overlay). Un compte non lié n’a que les commandes ouvertes à tous.',
+      rows: [
+        ['msg', 'Afficher un message ou un média', '/msg, /cmsg', ENFORCED, { none: false, ...membersUp }],
+        ['tts', 'Faire parler la synthèse vocale', '/dire, /cdire', ENFORCED, { none: false, ...membersUp }],
+        ['mediaAdd', 'Ajouter un média au board', '/media-add', ENFORCED, { none: false, ...membersUp }],
+        ['stop', 'Arrêter la lecture', '/stop', ENFORCED, { none: false, ...adminsOnly }],
+        ['overlays', 'Lister les overlays connectés', '/overlays', ENFORCED, { none: false, ...adminsOnly }],
+        ['pairCode', 'Obtenir un code d’appairage', '/pair-code', ENFORCED, { none: true, guest: true, member: true, admin: 'fixed' }],
+        ['info', 'Aide et informations', '/dispo, /help, /info', ENFORCED, all],
+      ],
+    },
+  };
+  const COLUMN_LABEL = { none: 'Compte non lié', guest: 'Invité', member: 'Membre', admin: 'Admin' };
+
+  function defaultRights() {
+    const rights = {};
+    Object.entries(SURFACES).forEach(([surface, spec]) => {
+      rights[surface] = {};
+      spec.rows.forEach(([key, , , , defaults]) => {
+        rights[surface][key] = { ...defaults };
+      });
+    });
+    rights.discordAdminIsAdmin = true;
+    return rights;
+  }
+
+  let savedRights = defaultRights();
+  let draftRights = JSON.parse(JSON.stringify(savedRights));
+
+  function rightAllowed(surface, key, column) {
+    const value = savedRights[surface][key][column];
+    return value === 'fixed' || value === true;
   }
 
   // -------------------------------------------------------------- app state
   const state = {
     user: null,
-    filters: { guildQuery: '', guildKind: 'all', deviceQuery: '', deviceState: 'all', codeStatus: 'all', logQuery: '' },
+    filters: { guildQuery: '', guildKind: 'all', deviceQuery: '', deviceState: 'all', codeStatus: 'all', logQuery: '', surface: 'overlay' },
   };
   try {
     state.user = JSON.parse(sessionStorage.getItem('lc-admin-mock-user') || 'null');
@@ -346,7 +421,7 @@
   function confirmDialog({ title, body, label, expect, extra, onConfirm }) {
     const typed = expect
       ? `<div class="dlg-section"><label for="confirm-text">Pour confirmer, saisis l’identifiant <span class="mono">${esc(expect)}</span></label>
-         <input class="field mono" id="confirm-text" autocomplete="off" spellcheck="false" style="margin-top:6px" data-expect="${esc(expect)}"></div>`
+         <input class="field is-after-label mono" id="confirm-text" autocomplete="off" spellcheck="false" data-expect="${esc(expect)}"></div>`
       : '';
     openDialog(
       dialogShell({
@@ -377,6 +452,7 @@
     ['Accès', [
       ['codes', 'Codes et invitations', 'key'],
       ['ingest', 'Clients d’ingestion', 'plug', () => guilds.reduce((sum, guild) => sum + guild.ingest.length, 0)],
+      ['roles', 'Rôles et droits', 'shield'],
     ]],
     ['Exploitation', [
       ['media', 'Médias et stockage', 'disk'],
@@ -434,7 +510,7 @@
       document.title = 'Connexion — LiveChat Administration';
       return;
     }
-    const pages = { dashboard, guilds: guildsPage, devices: devicesPage, codes: codesPage, ingest: ingestPage, media: mediaPage, activity: activityPage, settings: settingsPage };
+    const pages = { dashboard, guilds: guildsPage, devices: devicesPage, codes: codesPage, ingest: ingestPage, roles: rolesPage, media: mediaPage, activity: activityPage, settings: settingsPage };
     let page;
     if (parts[0] === 'guilds' && parts[1]) {
       page = guildDetail(parts[1], parts[2] || 'overview');
@@ -478,9 +554,9 @@
           <div class="or">ou</div>
           <form data-form="login-secret">
             <label for="secret">Secret d’administration</label>
-            <input class="field" id="secret" type="password" autocomplete="current-password" placeholder="ADMIN_UI_TOKEN" style="margin-top:6px">
+            <input class="field is-after-label" id="secret" type="password" autocomplete="current-password" placeholder="ADMIN_UI_TOKEN">
             <p class="hint">Accès de secours, sans Discord : la valeur de <span class="mono">ADMIN_UI_TOKEN</span> du serveur.</p>
-            <button class="btn" type="submit" style="margin-top:12px;width:100%;justify-content:center">Se connecter avec le secret</button>
+            <button class="btn is-block" type="submit">Se connecter avec le secret</button>
           </form>
           <p class="login-note">${ic('shield')}<span>Session de 12 h dans un cookie <span class="mono">HttpOnly</span>. Le secret n’est jamais stocké dans le navigateur ni placé dans une URL.</span></p>
         </div>
@@ -505,7 +581,7 @@
             const job = guild.queue[0];
             return `<div class="air"><span class="badge is-air">À l’antenne</span>
               <div><div class="title">${esc(job.title)}</div><div class="soft"><a href="#/guilds/${guild.id}/queue">${esc(guildName(guild))}</a> · ${esc(job.by)} · ${plural(guild.queue.length - 1, 'média en attente', 'médias en attente')}</div>
-              <div class="progress"><span style="width:${job.progress}%"></span></div></div>
+              ${progress(job.progress)}</div>
               <button class="btn is-small" data-act="stop" data-guild="${guild.id}">${ic('stop')}Arrêter</button></div>`;
           })
           .join('')
@@ -590,10 +666,10 @@
           .map((guild) => {
             const online = guild.devices.filter((device) => device.connected).length;
             return `<tr class="${guild.queue.length ? 'is-air' : ''}">
-              <td><a class="primary" href="#/guilds/${guild.id}">${esc(guildName(guild))}</a><span class="under mono">${guild.id}</span></td>
+              <td><div class="guild-cell">${guildIcon(guild)}<div><a class="primary" href="#/guilds/${guild.id}">${esc(guildName(guild))}</a><span class="under mono">${guild.id}</span></div></div></td>
               <td>${kindBadge(guild)}${guild.kind === 'native' && !guild.botPresent ? ' <span class="badge is-err">Bot absent</span>' : ''}</td>
               <td class="is-num">${guild.members.length}</td>
-              <td class="is-num"><span class="dot ${online ? 'is-ok' : ''}" style="display:inline-block;margin-right:6px"></span>${online} / ${guild.devices.length}</td>
+              <td class="is-num"><span class="dot is-inline ${online ? 'is-ok' : ''}"></span>${online} / ${guild.devices.length}</td>
               <td><span class="mini-meter">${meter(guild.board.usedBytes, BOARD_MAX, 'Board')}</span><span class="num soft">${bytes(guild.board.usedBytes)}</span></td>
               <td>${guild.queue.length ? `<span class="badge is-air">À l’antenne</span> <span class="soft">+${guild.queue.length - 1}</span>` : '<span class="faint">Au repos</span>'}</td>
               <td class="soft">${ago(guild.lastActivity)}</td>
@@ -635,7 +711,7 @@
     const views = { overview: guildOverview, members: guildMembers, devices: guildDevices, access: guildAccess, board: guildBoard, queue: guildQueue, settings: guildSettings, discord: guildDiscord, danger: guildDanger };
     const current = views[tab] ? tab : 'overview';
     const html = `
-      <div class="page-head"><div><h1>${esc(guildName(guild))}</h1>
+      <div class="page-head"><div><h1 class="guild-title">${guildIcon(guild)}${esc(guildName(guild))}</h1>
         <div class="guild-id">${kindBadge(guild)}${guild.queue.length ? '<span class="badge is-air">À l’antenne</span>' : ''}
           <span class="mono soft">${guild.id}</span><button class="btn is-quiet is-icon" data-act="copy" data-text="${guild.id}" aria-label="Copier l’identifiant">${ic('copy')}</button></div></div>
         <div class="actions">
@@ -654,14 +730,14 @@
     const recent = activity.filter((row) => row.guild === guild).slice(0, 4);
     return `<div class="stack">
       <div class="grid is-tiles">
-        <div class="card tile"><div class="label">${ic('guilds')}Membres</div><div class="value">${guild.members.length}</div><div class="foot">${guild.members.filter((m) => m.role === 'admin').length} admin · ${guild.members.filter((m) => m.role === 'guest').length} invités</div></div>
+        <div class="card tile"><div class="label">${ic('guilds')}Membres</div><div class="value">${guild.members.length}</div><div class="foot">${plural(guild.members.filter((m) => m.role === 'admin').length, 'admin', 'admins')} · ${plural(guild.members.filter((m) => m.role === 'guest').length, 'invité', 'invités')}</div></div>
         <div class="card tile"><div class="label">${ic('device')}Overlays en ligne</div><div class="value">${online} <small>/ ${guild.devices.length}</small></div><div class="foot"><a href="#/guilds/${guild.id}/devices">Voir les appareils</a></div></div>
-        <div class="card tile"><div class="label">${ic('disk')}Board média</div><div class="value">${guild.board.items} <small>médias</small></div><div class="foot" style="margin-top:8px">${meter(guild.board.usedBytes, BOARD_MAX, 'Board')}<span class="num">${bytes(guild.board.usedBytes)} / ${bytes(BOARD_MAX)}</span></div></div>
+        <div class="card tile"><div class="label">${ic('disk')}Board média</div><div class="value">${guild.board.items} <small>médias</small></div><div class="foot has-meter">${meter(guild.board.usedBytes, BOARD_MAX, 'Board')}<span class="num">${bytes(guild.board.usedBytes)} / ${bytes(BOARD_MAX)}</span></div></div>
         <div class="card tile"><div class="label">${ic('play')}Lectures</div><div class="value">${guild.playback.done}</div><div class="foot">${guild.playback.pending} en attente · ${guild.playback.failed} en échec</div></div>
       </div>
       <div class="grid is-2">
         <section class="card"><div class="card-head"><h2>À l’antenne</h2><span class="spacer"></span><a href="#/guilds/${guild.id}/queue">File d’attente</a></div>
-          ${job ? `<div class="air"><span class="badge is-air">En lecture</span><div><div class="title">${esc(job.title)}</div><div class="soft">${KIND_LABEL[job.kind]} · ${job.duration} s · ${esc(job.by)} · ${esc(job.source)}</div><div class="progress"><span style="width:${job.progress}%"></span></div></div><button class="btn is-small" data-act="stop" data-guild="${guild.id}">${ic('stop')}Arrêter</button></div>` : '<p class="empty">Rien à l’antenne.</p>'}
+          ${job ? `<div class="air"><span class="badge is-air">En lecture</span><div><div class="title">${esc(job.title)}</div><div class="soft">${KIND_LABEL[job.kind]} · ${job.duration} s · ${esc(job.by)} · ${esc(job.source)}</div>${progress(job.progress)}</div><button class="btn is-small" data-act="stop" data-guild="${guild.id}">${ic('stop')}Arrêter</button></div>` : '<p class="empty">Rien à l’antenne.</p>'}
         </section>
         <section class="card"><div class="card-head"><h2>Fiche</h2></div><div class="card-body"><dl class="kv">
           <dt>Type</dt><dd>${KIND_BADGE[guild.kind][0]}</dd>
@@ -683,7 +759,7 @@
   }
 
   function guildMembers(guild) {
-    return `<div class="toolbar"><p class="soft">Le rôle fixe les droits de tous les appareils du membre.</p><span class="spacer"></span>
+    return `<div class="toolbar"><p class="soft">Le rôle fixe les droits de tous les appareils du membre. Un administrateur du serveur Discord devient admin en s’appairant avec <span class="mono">/pair-code</span>.</p><span class="spacer"></span>
         <button class="btn" data-act="create-invite" data-guild="${guild.id}">${ic('plus')}Inviter un membre</button></div>
       <div class="table-wrap"><table class="tbl"><thead><tr><th>Membre</th><th>Compte Discord</th><th>Rôle</th><th class="is-num">Appareils</th><th>Présence</th><th>Arrivée</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
       ${guild.members
@@ -691,7 +767,7 @@
           const devices = guild.devices.filter((device) => device.memberId === member.id);
           const online = devices.some((device) => device.connected);
           return `<tr><td class="primary">${who(member.name)}</td>
-            <td>${member.discordUserId ? `<span class="mono soft">${member.discordUserId}</span>` : '<span class="faint">Non lié</span>'}</td>
+            <td>${member.discordUserId ? `<div class="discord-cell">${who(member.discordName)}${member.discordAdmin ? ' <span class="badge is-admin" title="Administrateur du serveur Discord : admin LiveChat à l’appairage et pour /stop, /overlays">Admin Discord</span>' : ''}</div><span class="under mono">${member.discordUserId}</span>` : '<span class="faint">Non lié</span>'}</td>
             <td>${roleSelect(guild, member)}</td>
             <td class="is-num">${devices.length}</td>
             <td>${online ? '<span class="badge is-ok"><span class="dot is-ok"></span>En ligne</span>' : `<span class="soft">${devices.length ? ago(member.lastSeen) : 'Aucun appareil'}</span>`}</td>
@@ -706,8 +782,8 @@
     const old = versionBelow(device.version, MIN_OVERLAY_VERSION);
     const presence = device.connected
       ? '<span class="badge is-ok"><span class="dot is-ok"></span>En ligne</span>'
-      : device.muted
-        ? '<span class="badge">En sourdine</span>'
+      : device.paused
+        ? '<span class="badge">En pause</span>'
         : `<span class="soft">${ago(device.lastSeen)}</span>`;
     return `<tr class="${device.connected ? '' : 'is-off'}">
       <td><span class="primary">${esc(device.label)}</span><span class="under mono">${device.id.slice(0, 13)}…</span></td>
@@ -772,7 +848,7 @@
 
   function guildAccess(guild) {
     const rows = inviteRows(guild, false) + pairingRows(guild, false);
-    return `<div class="toolbar"><p class="soft">Invitations créées dans l’overlay et codes d’appairage émis depuis Discord (<span class="mono">/overlay-code</span>).</p><span class="spacer"></span>
+    return `<div class="toolbar"><p class="soft">Invitations créées dans l’overlay et codes d’appairage émis depuis Discord (<span class="mono">/pair-code</span>).</p><span class="spacer"></span>
         <button class="btn" data-act="purge-codes" data-guild="${guild.id}">${ic('trash')}Purger les expirés</button>
         <button class="btn is-primary" data-act="create-invite" data-guild="${guild.id}">${ic('plus')}Créer une invitation</button></div>
       ${rows ? `<div class="table-wrap"><table class="tbl">${codeHead(false)}<tbody>${rows}</tbody></table></div>` : '<div class="card"><p class="empty">Aucun code pour cette guilde.</p></div>'}`;
@@ -787,13 +863,13 @@
       </div></section>
       <section class="card"><div class="card-head"><h2>Quota de cette guilde</h2></div><div class="card-body stack">
         <p class="soft">Par défaut, la limite du serveur s’applique (<span class="mono">MEDIA_BOARD_MAX_TOTAL_MB</span>, 15 Go).</p>
-        <div class="row is-wrap"><label for="quota">Quota propre (Go)</label><input class="field is-inline num" id="quota" type="number" min="1" max="200" placeholder="15" style="width:90px"><button class="btn" data-act="toast" data-text="Quota de la guilde enregistré.">Appliquer</button></div>
+        <div class="row is-wrap"><label for="quota">Quota propre (Go)</label><input class="field is-inline is-narrow num" id="quota" type="number" min="1" max="200" placeholder="15"><button class="btn" data-act="toast" data-text="Quota de la guilde enregistré.">Appliquer</button></div>
         <div class="row is-wrap"><button class="btn is-danger" data-act="clear-board" data-guild="${guild.id}">${ic('trash')}Vider le board</button></div>
       </div></section></div>
       <section class="card"><div class="card-head"><h2>Derniers ajouts</h2><span class="meta">aperçu</span></div>
         ${board.recent.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>Titre</th><th>Type</th><th class="is-num">Durée</th><th class="is-num">Taille</th><th class="is-num">Lectures</th><th>Ajouté par</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
-          ${board.recent.map((item, index) => `<tr><td class="primary">${esc(item.title)}</td><td><span class="badge">${KIND_LABEL[item.kind]}</span></td><td class="is-num">${item.duration} s</td><td class="is-num">${bytes(item.size)}</td><td class="is-num">${item.plays}</td><td class="soft">${esc(item.by)}, ${ago(item.addedMin)}</td>
-            <td class="is-actions"><button class="btn is-small is-quiet is-danger" data-act="delete-media" data-guild="${guild.id}" data-id="${index}">Supprimer</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">Board vide.</p>'}
+          ${board.recent.map((item, index) => `<tr><td class="primary">${item.favorite ? `<span class="fav" title="Favori">${ic('star')}<span class="sr-only">Favori : </span></span>` : ''}${esc(item.title)}${item.trimEnd != null || item.trimStart ? '<span class="under">découpé</span>' : ''}</td><td><span class="badge">${KIND_LABEL[item.kind]}</span></td><td class="is-num">${item.duration} s</td><td class="is-num">${bytes(item.size)}</td><td class="is-num">${item.plays}</td><td class="soft">${esc(item.by)}, ${ago(item.addedMin)}</td>
+            <td class="is-actions"><button class="btn is-small" data-act="edit-media" data-guild="${guild.id}" data-id="${index}">Modifier</button><button class="btn is-small is-quiet is-danger" data-act="delete-media" data-guild="${guild.id}" data-id="${index}">Supprimer</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">Board vide.</p>'}
       </section></div>`;
   }
 
@@ -825,14 +901,14 @@
     let body;
     if (guild.kind === 'native') {
       body = `<dl class="kv"><dt>Rattachement</dt><dd>Cette guilde <strong>est</strong> un serveur Discord.</dd><dt>Serveur</dt><dd class="mono">${guild.discordServerId}</dd>
-        <dt>Bot</dt><dd>${guild.botPresent ? '<span class="badge is-ok">Présent</span>' : '<span class="badge is-err">Absent du serveur</span>'}</dd><dt>Commandes</dt><dd><span class="mono">/send</span>, <span class="mono">/talk</span>, <span class="mono">/stop</span>, <span class="mono">/overlay-code</span> · synchronisées</dd></dl>
-        <div class="row is-wrap" style="margin-top:14px">${guild.botPresent ? `<button class="btn is-danger" data-act="leave-discord" data-guild="${guild.id}">Faire quitter le bot</button>` : `<a class="btn" href="${BOT_INVITE_URL}&guild_id=${guild.id}" target="_blank" rel="noopener">${ic('external')}Réinviter le bot</a>`}</div>`;
+        <dt>Bot</dt><dd>${guild.botPresent ? '<span class="badge is-ok">Présent</span>' : '<span class="badge is-err">Absent du serveur</span>'}</dd><dt>Commandes</dt><dd>${DISCORD_COMMANDS.map((name) => `<span class="mono">/${name}</span>`).join(', ')} · ${DISCORD_COMMANDS.length} synchronisées</dd></dl>
+        <div class="row is-wrap is-spaced">${guild.botPresent ? `<button class="btn is-danger" data-act="leave-discord" data-guild="${guild.id}">Faire quitter le bot</button>` : `<a class="btn" href="${BOT_INVITE_URL}&guild_id=${guild.id}" target="_blank" rel="noopener">${ic('external')}Réinviter le bot</a>`}</div>`;
     } else if (guild.kind === 'linked') {
       body = `<dl class="kv"><dt>Rattachement</dt><dd>Guilde indépendante liée à un serveur Discord.</dd><dt>Serveur</dt><dd>${esc(guild.discordName || '')} <span class="mono soft">${guild.discordServerId}</span></dd><dt>Bot</dt><dd><span class="badge is-ok">Présent</span></dd></dl>
-        <div class="row is-wrap" style="margin-top:14px"><button class="btn is-danger" data-act="unlink-discord" data-guild="${guild.id}">Délier le serveur Discord</button></div>`;
+        <div class="row is-wrap is-spaced"><button class="btn is-danger" data-act="unlink-discord" data-guild="${guild.id}">Délier le serveur Discord</button></div>`;
     } else {
       body = `<p class="soft">Cette guilde indépendante n’est liée à aucun serveur Discord. Pour la lier : inviter le bot sur le serveur, générer un code, puis taper la commande dans Discord.</p>
-        <div class="row is-wrap" style="margin-top:14px"><a class="btn" href="${BOT_INVITE_URL}" target="_blank" rel="noopener">${ic('external')}Inviter le bot</a>
+        <div class="row is-wrap is-spaced"><a class="btn" href="${BOT_INVITE_URL}" target="_blank" rel="noopener">${ic('external')}Inviter le bot</a>
         <button class="btn is-primary" data-act="link-code" data-guild="${guild.id}">Générer un code de liaison</button></div>`;
     }
     return `<section class="card"><div class="card-head"><h2>Liaison Discord</h2></div><div class="card-body">${body}</div></section>`;
@@ -903,16 +979,77 @@
   }
 
   // --------------------------------------------------------- global: ingest
+  // The role of the default author decides what the client may still do: a
+  // member demoted to guest, or excluded, keeps a working token today.
+  function authorRole(guild, client) {
+    const member = guild.members.find((item) => item.name === client.authorName);
+    if (!member) {
+      return '<span class="badge is-err">Exclu</span>';
+    }
+    const allowed = rightAllowed('extension', 'send', member.role);
+    return `<span class="badge ${member.role === 'admin' ? 'is-admin' : ''}">${ROLE_LABEL[member.role]}</span>${allowed ? '' : ' <span class="badge is-err" title="Ce rôle ne peut plus envoyer de médias depuis une extension">Envois refusés</span>'}`;
+  }
+
   function ingestPage() {
     const rows = guilds.flatMap((guild) => guild.ingest.map((client) => ({ guild, client })));
     const html = `<div class="page-head"><div><h1>Clients d’ingestion</h1><p class="sub">Extensions de navigateur et scripts autorisés à envoyer des médias à une guilde (<span class="mono">POST /ingest</span>).</p></div>
         <div class="actions"><button class="btn is-primary" data-act="create-ingest">${ic('plus')}Créer un client</button></div></div>
-      <div class="table-wrap"><table class="tbl"><thead><tr><th>Client</th><th>Guilde</th><th>Auteur par défaut</th><th>Dernière utilisation</th><th>Créé</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
+      <div class="table-wrap"><table class="tbl"><thead><tr><th>Client</th><th>Guilde</th><th>Auteur par défaut</th><th>Rôle de l’auteur</th><th>Dernière utilisation</th><th>Créé</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
         ${rows.map(({ guild, client }) => `<tr><td><span class="primary">${esc(client.label)}</span><span class="under mono">${client.id.slice(0, 13)}…</span></td><td><a href="#/guilds/${guild.id}">${esc(guildName(guild))}</a></td><td>${who(client.authorName)}</td>
+          <td>${authorRole(guild, client)}</td>
           <td class="soft">${ago(client.lastSeen)}</td><td class="soft">${ago(client.createdDays * 1440)}</td>
           <td class="is-actions"><button class="btn is-small is-quiet is-danger" data-act="revoke-ingest" data-guild="${guild.id}" data-id="${client.id}">Révoquer</button></td></tr>`).join('')}</tbody></table></div>
       <p class="table-foot">Le jeton d’un client n’est affiché qu’une fois, à sa création. Depuis l’overlay, un membre peut aussi appairer son extension avec un code (<span class="mono">POST /overlay/ingest-code</span>).</p>`;
     return { nav: 'ingest', title: 'Clients d’ingestion', crumbs: crumb(['Clients d’ingestion']), html };
+  }
+
+  // ---------------------------------------------------------- global: roles
+  function rightsDirty() {
+    return JSON.stringify(draftRights) !== JSON.stringify(savedRights);
+  }
+
+  function rightCell(surface, key, column) {
+    const value = draftRights[surface][key][column];
+    const row = SURFACES[surface].rows.find((item) => item[0] === key);
+    const name = `${row[1]} — ${COLUMN_LABEL[column]}`;
+    if (value === 'guild') {
+      return '<span class="cell-note" title="Réglage « Les invités peuvent consulter le board » de chaque guilde">selon la guilde</span>';
+    }
+    if (value === 'fixed') {
+      return `<span class="cell-fixed" title="Toujours accordé">${ic('check')}<span class="sr-only">${esc(name)} : toujours accordé</span></span>`;
+    }
+    const changed = value !== savedRights[surface][key][column];
+    return `<label class="cell-check${changed ? ' is-changed' : ''}"><input type="checkbox" data-right="${surface}|${key}|${column}"${value ? ' checked' : ''}><span class="sr-only">${esc(name)}</span></label>`;
+  }
+
+  function rolesPage() {
+    regionRenderer = () => {
+      const surface = state.filters.surface;
+      const spec = SURFACES[surface];
+      const discordAdmin = surface === 'discord'
+        ? `<div class="card-body rights-extra"><label class="switch"><input type="checkbox" data-right-flag="discordAdminIsAdmin"${draftRights.discordAdminIsAdmin ? ' checked' : ''}>Un administrateur du serveur Discord a les droits « Admin » de ces commandes, même sans compte lié</label>
+            <p class="hint"><span class="mono">/lier</span> n’est pas réglable : seul un administrateur du serveur Discord peut lier une guilde indépendante.</p></div>`
+        : '';
+      const dirty = rightsDirty();
+      return `<section class="card"><div class="card-head"><h2>${spec.label}</h2></div>
+          <p class="card-intro soft">${esc(spec.intro)}</p>
+          <div class="table-wrap is-flush"><table class="tbl rights"><thead><tr><th>Action</th>${spec.columns.map((column) => `<th class="is-center">${COLUMN_LABEL[column]}</th>`).join('')}<th>Contrôle</th></tr></thead><tbody>
+            ${spec.rows.map(([key, label, detail, enforcement]) => `<tr><td><span class="primary">${esc(label)}</span>${detail ? `<span class="under${detail.startsWith('/') ? ' mono' : ''}">${esc(detail)}</span>` : ''}</td>
+              ${spec.columns.map((column) => `<td class="is-center">${rightCell(surface, key, column)}</td>`).join('')}
+              <td><span class="badge ${enforcement[1]}">${enforcement[0]}</span></td></tr>`).join('')}
+          </tbody></table></div>${discordAdmin}</section>
+        <div class="savebar${dirty ? ' is-dirty' : ''}" role="status">
+          <span class="soft">${dirty ? 'Modifications non enregistrées. Elles s’appliqueront à toutes les guildes et aux sessions ouvertes.' : 'Réglage de toute l’instance, identique pour toutes les guildes.'}</span><span class="spacer"></span>
+          <button class="btn" data-act="rights-defaults">Valeurs par défaut</button>
+          <button class="btn" data-act="rights-cancel"${dirty ? '' : ' disabled'}>Annuler</button>
+          <button class="btn is-primary" data-act="rights-save"${dirty ? '' : ' disabled'}>Enregistrer</button></div>`;
+    };
+    const surfaces = Object.entries(SURFACES).map(([id, spec]) => [id, spec.label]);
+    const html = `<div class="page-head"><div><h1>Rôles et droits</h1><p class="sub">Ce que peuvent faire un invité, un membre et un admin de guilde, séparément dans l’overlay, l’extension et le bot Discord. La console elle-même reste réservée aux administrateurs du serveur.</p></div></div>
+      <div class="toolbar"><div class="seg" role="group" aria-label="Surface">${surfaces.map(([id, label]) => `<button type="button" data-seg="surface" data-value="${id}" aria-pressed="${state.filters.surface === id}">${label}</button>`).join('')}</div>
+        <span class="spacer"></span><p class="soft">Coche pleine : droit toujours accordé.</p></div>
+      <div id="region"></div>`;
+    return { nav: 'roles', title: 'Rôles et droits', crumbs: crumb(['Rôles et droits']), html };
   }
 
   // ---------------------------------------------------------- global: media
@@ -923,14 +1060,14 @@
         <div class="actions"><button class="btn is-danger" data-act="purge-cache">${ic('trash')}Purger le cache</button></div></div>
       <div class="stack">
         <div class="grid is-tiles">
-          <div class="card tile"><div class="label">Cache média</div><div class="value">${bytes(server.cacheUsed)}</div><div class="foot" style="margin-top:8px">${meter(server.cacheUsed, CACHE_MAX, 'Cache')}sur ${bytes(CACHE_MAX)} · expiration 12 h</div></div>
+          <div class="card tile"><div class="label">Cache média</div><div class="value">${bytes(server.cacheUsed)}</div><div class="foot has-meter">${meter(server.cacheUsed, CACHE_MAX, 'Cache')}sur ${bytes(CACHE_MAX)} · expiration 12 h</div></div>
           <div class="card tile"><div class="label">Boards (total)</div><div class="value">${bytes(total)}</div><div class="foot">${guilds.reduce((s, g) => s + g.board.items, 0)} médias · quota 15 Go par guilde</div></div>
-          <div class="card tile"><div class="label">Disque du volume média</div><div class="value">71 <small>%</small></div><div class="foot" style="margin-top:8px">${meter(71, 100, 'Disque')}142 Go libres sur 500 Go</div></div>
+          <div class="card tile"><div class="label">Disque du volume média</div><div class="value">71 <small>%</small></div><div class="foot has-meter">${meter(71, 100, 'Disque')}142 Go libres sur 500 Go</div></div>
           <div class="card tile"><div class="label">Fichiers orphelins</div><div class="value">3</div><div class="foot"><button class="btn is-small" data-act="toast" data-text="3 fichiers orphelins supprimés (212 Mo).">Nettoyer</button></div></div>
         </div>
         <section class="card"><div class="card-head"><h2>Occupation par guilde</h2></div><div class="table-wrap"><table class="tbl"><thead><tr><th>Guilde</th><th class="is-num">Médias</th><th>Occupation</th><th class="is-num">Quota</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
           ${guilds.slice().sort((a, b) => b.board.usedBytes - a.board.usedBytes).map((guild) => `<tr><td><a class="primary" href="#/guilds/${guild.id}/board">${esc(guildName(guild))}</a></td><td class="is-num">${guild.board.items}</td>
-            <td><span class="mini-meter" style="width:160px">${meter(guild.board.usedBytes, BOARD_MAX, 'Board')}</span><span class="num soft">${bytes(guild.board.usedBytes)} · ${Math.round((guild.board.usedBytes / BOARD_MAX) * 100)} %</span></td>
+            <td><span class="mini-meter is-wide">${meter(guild.board.usedBytes, BOARD_MAX, 'Board')}</span><span class="num soft">${bytes(guild.board.usedBytes)} · ${Math.round((guild.board.usedBytes / BOARD_MAX) * 100)} %</span></td>
             <td class="is-num soft">${bytes(BOARD_MAX)}</td><td class="is-actions"><a class="btn is-small" href="#/guilds/${guild.id}/board">Gérer</a></td></tr>`).join('')}</tbody></table></div></section>
         <section class="card"><div class="card-head"><h2>Ingestions récentes</h2><span class="meta">téléchargement et transcodage</span></div><div class="table-wrap"><table class="tbl"><thead><tr><th>Quand</th><th>Média</th><th>Guilde</th><th>Origine</th><th>État</th><th>Détail</th></tr></thead><tbody>
           ${server.ingestions.map((item) => `<tr><td class="soft">${ago(item.min)}</td><td class="primary">${esc(item.title)}</td><td><a href="#/guilds/${item.guild.id}">${esc(guildName(item.guild))}</a></td><td class="soft">${esc(item.by)}</td><td><span class="badge ${INGEST[item.status][1]}">${INGEST[item.status][0]}</span></td><td class="soft is-wrap">${esc(item.detail)}</td></tr>`).join('')}</tbody></table></div></section>
@@ -985,7 +1122,7 @@
         ['Taille maximale d’un média (Mo)', input('s-max', '200', 'type="number"'), 'MEDIA_MAX_SIZE_MB'],
         ['Hauteur vidéo maximale', `<select class="field" id="s-height"><option>720p</option><option selected>1080p</option><option>1440p</option></select>`, 'MEDIA_VIDEO_MAX_HEIGHT'],
         ['Encodeur vidéo', `<select class="field" id="s-encoder"><option>Automatique</option><option>libx264</option><option selected>h264_nvenc</option></select>`, 'MEDIA_VIDEO_ENCODER'],
-        ['Volume', toggle('s-norm', 'Normaliser le volume (loudnorm, −16 LUFS)', true), 'MEDIA_AUDIO_NORMALIZE_ENABLED'],
+        ['Volume', toggle('s-norm', 'Normaliser le volume : gain mesuré puis limiteur (−18 LUFS, crête −1,5 dBTP)', true), 'MEDIA_AUDIO_NORMALIZE_ENABLED · MEDIA_AUDIO_LOUDNORM_I · _TP'],
         ['Ingestions simultanées', input('s-concurrent', '3', 'type="number" min="1" max="16"'), 'MEDIA_MAX_CONCURRENT_INGESTIONS'],
         ['Dossier de stockage', ro('s-dir', '/data/media'), 'MEDIA_STORAGE_DIR'],
       ]],
@@ -1033,8 +1170,8 @@
 
   // ---------------------------------------------------------------- dialogs
   function permissionList(role, mode, guestsBoard) {
-    return `<ul class="perms">${PERMISSIONS.map(([label, level]) => {
-      const ok = permissionGranted(level, role, mode, guestsBoard);
+    return `<ul class="perms">${SURFACES.overlay.rows.map(([key, label]) => {
+      const ok = permissionGranted(key, role, mode, guestsBoard);
       return `<li class="${ok ? '' : 'is-no'}">${ic(ok ? 'check' : 'minus')}<span>${label}<span class="sr-only">${ok ? ' : autorisé' : ' : refusé'}</span></span></li>`;
     }).join('')}</ul>`;
   }
@@ -1049,6 +1186,14 @@
       <div class="dlg-section"><h3>Mode de session</h3>
         <label class="choice"><input type="radio" name="mode" value="normal"${device.sessionMode === 'normal' ? ' checked' : ''}><strong>Contrôle complet</strong><span>L’appareil a tous les droits du rôle de son membre (${ROLE_LABEL[member.role].toLowerCase()}).</span></label>
         <label class="choice"><input type="radio" name="mode" value="invite_read_only"${device.sessionMode === 'invite_read_only' ? ' checked' : ''}><strong>Lecture seule</strong><span>L’appareil reçoit les médias mais ne peut rien lancer, arrêter ni modifier, quel que soit le rôle du membre.</span></label></div>
+      <div class="dlg-section"><h3>Son et affichage sur cet appareil</h3>
+        <p class="hint is-lead">Les réglages « Guilde » de l’overlay, modifiés à distance. ${device.connected ? 'Appliqués tout de suite.' : 'Appliqués à sa prochaine connexion.'}</p>
+        <div class="form is-compact">
+          <label for="dev-volume">Volume de la guilde</label><div class="row"><input class="range" id="dev-volume" type="range" min="0" max="100" step="5" value="${device.volume}"><output class="num" for="dev-volume" id="dev-volume-out">${device.volume} %</output></div>
+          <span class="lbl">Son des médias</span><div><label class="switch"><input type="checkbox" id="dev-media-mute"${device.mediaMuted ? ' checked' : ''}>Couper le son</label><p class="hint">Les médias restent affichés, sans leur son.</p></div>
+          <span class="lbl">Pause</span><div><label class="switch"><input type="checkbox" id="dev-pause"${device.paused ? ' checked' : ''}>Mettre la guilde en pause</label><p class="hint">Plus aucun média de cette guilde ne s’affiche sur cet appareil.</p></div>
+        </div>
+        <p class="hint">La zone d’affichage se place depuis l’appareil lui-même (« Placer sur l’écran »).</p></div>
       <div class="dlg-section"><h3>Droits effectifs de cet appareil</h3><div id="dev-perms">${permissionList(member.role, device.sessionMode, guild.settings.guestsCanViewBoard)}</div>
         <p class="hint">Pour changer les droits sur tous les appareils de ${esc(member.name)}, modifie son rôle dans l’onglet Membres.</p></div>`;
     openDialog(
@@ -1062,6 +1207,9 @@
       (form) => {
         device.sessionMode = form.elements.mode.value;
         device.label = document.getElementById('dev-label').value.trim() || device.label;
+        device.volume = Number(document.getElementById('dev-volume').value);
+        device.mediaMuted = document.getElementById('dev-media-mute').checked;
+        device.paused = document.getElementById('dev-pause').checked;
         dialog.close();
         toast(`${device.label} : session « ${MODE_LABEL[device.sessionMode]} ».${device.connected ? ' Appliqué sans reconnexion.' : ''}`);
         render();
@@ -1072,6 +1220,36 @@
       radio.addEventListener('change', () => {
         document.getElementById('dev-perms').innerHTML = permissionList(member.role, radio.value, guild.settings.guestsCanViewBoard);
       }),
+    );
+  }
+
+  function mediaDialog(guild, index) {
+    const item = guild.board.recent[index];
+    const timed = item.kind !== 'image';
+    openDialog(
+      dialogShell({
+        title: 'Modifier le média',
+        sub: `${KIND_LABEL[item.kind]} · ${esc(guildName(guild))} · ajouté par ${esc(item.by)}`,
+        body: `<div class="stack"><div><label for="md-title">Titre</label><input class="field is-after-label" id="md-title" maxlength="120" value="${esc(item.title)}"></div>
+          ${timed ? `<div><span class="lbl">Découpe (s)</span><div class="row"><label class="sr-only" for="md-start">Début</label><input class="field is-narrow num" id="md-start" type="number" min="0" max="${item.duration}" step="0.1" value="${item.trimStart}"><span class="soft">à</span><label class="sr-only" for="md-end">Fin</label><input class="field is-narrow num" id="md-end" type="number" min="0" max="${item.duration}" step="0.1" value="${item.trimEnd ?? item.duration}"><span class="soft">sur ${item.duration} s</span></div>
+            <p class="hint">Le fichier n’est pas réencodé : seule la plage lue change. L’éditeur complet (forme d’onde, illustration) reste dans l’overlay.</p></div>` : ''}
+          <label class="switch"><input type="checkbox" id="md-fav"${item.favorite ? ' checked' : ''}>Favori de la guilde</label></div>`,
+        foot: `<button type="button" class="btn is-danger left" data-act="delete-media" data-guild="${guild.id}" data-id="${index}">Supprimer</button>
+               <button type="button" class="btn" data-act="close">Annuler</button><button type="submit" class="btn is-primary">Enregistrer</button>`,
+      }),
+      () => {
+        item.title = document.getElementById('md-title').value.trim() || item.title;
+        item.favorite = document.getElementById('md-fav').checked;
+        if (timed) {
+          const start = Math.max(0, Number(document.getElementById('md-start').value) || 0);
+          const end = Math.min(item.duration, Number(document.getElementById('md-end').value) || item.duration);
+          item.trimStart = start < end ? start : 0;
+          item.trimEnd = start < end && end < item.duration ? end : null;
+        }
+        dialog.close();
+        toast(`« ${item.title} » enregistré.`);
+        render();
+      },
     );
   }
 
@@ -1092,7 +1270,7 @@
       dialogShell({
         title: 'Créer une guilde indépendante',
         sub: 'Un groupe sans serveur Discord. Pour un serveur Discord, il suffit d’y inviter le bot.',
-        body: `<label for="ng-name">Nom de la guilde</label><input class="field" id="ng-name" maxlength="60" required style="margin-top:6px" placeholder="Soirée jeux du vendredi">
+        body: `<label for="ng-name">Nom de la guilde</label><input class="field is-after-label" id="ng-name" maxlength="60" required placeholder="Soirée jeux du vendredi">
           <p class="hint">Un code d’invitation admin, valable 24 h, est créé en même temps : transmets-le à la personne qui gérera la guilde.</p>`,
         foot: '<button type="button" class="btn" data-act="close">Annuler</button><button type="submit" class="btn is-primary">Créer la guilde</button>',
       }),
@@ -1110,7 +1288,7 @@
   }
 
   function inviteDialog(guild) {
-    const select = (id, label, options) => `<div><label for="${id}">${label}</label><select class="field" id="${id}" style="margin-top:6px">${options.map(([value, text]) => `<option value="${value}">${text}</option>`).join('')}</select></div>`;
+    const select = (id, label, options) => `<div><label for="${id}">${label}</label><select class="field is-after-label" id="${id}">${options.map(([value, text]) => `<option value="${value}">${text}</option>`).join('')}</select></div>`;
     openDialog(
       dialogShell({
         title: 'Créer une invitation',
@@ -1134,9 +1312,9 @@
       dialogShell({
         title: 'Créer un client d’ingestion',
         sub: 'Pour une extension de navigateur ou un script.',
-        body: `<div class="stack"><div><label for="ic-guild">Guilde</label><select class="field" id="ic-guild" style="margin-top:6px">${guilds.map((guild) => `<option value="${guild.id}">${esc(guildName(guild))}</option>`).join('')}</select></div>
-          <div><label for="ic-author">Auteur par défaut</label><select class="field" id="ic-author" style="margin-top:6px">${guilds[0].members.map((member) => `<option>${esc(member.name)}</option>`).join('')}</select><p class="hint">Les médias envoyés par ce client seront signés de ce nom.</p></div>
-          <div><label for="ic-label">Libellé</label><input class="field" id="ic-label" maxlength="120" value="Chrome" style="margin-top:6px"></div></div>`,
+        body: `<div class="stack"><div><label for="ic-guild">Guilde</label><select class="field is-after-label" id="ic-guild">${guilds.map((guild) => `<option value="${guild.id}">${esc(guildName(guild))}</option>`).join('')}</select></div>
+          <div><label for="ic-author">Auteur par défaut</label><select class="field is-after-label" id="ic-author">${guilds[0].members.map((member) => `<option>${esc(member.name)}</option>`).join('')}</select><p class="hint">Les médias envoyés par ce client seront signés de ce nom.</p></div>
+          <div><label for="ic-label">Libellé</label><input class="field is-after-label" id="ic-label" maxlength="120" value="Chrome"></div></div>`,
         foot: '<button type="button" class="btn" data-act="close">Annuler</button><button type="submit" class="btn is-primary">Créer le client</button>',
       }),
       () => {
@@ -1188,6 +1366,11 @@
       confirmDialog({ title: 'Régénérer le secret de secours ?', body: 'L’ancien secret cesse de fonctionner tout de suite. Les sessions Discord ne sont pas touchées.', label: 'Régénérer', onConfirm: () => secretDialog('Nouveau secret', 'Secret d’administration de secours', hex(48), 'Affiché une seule fois. Range-le dans ton gestionnaire de mots de passe.') }),
     stop: (el, event, guild) => {
       guild.queue.shift();
+      if (guild.queue.length) {
+        Object.assign(guild.queue[0], { status: 'playing', progress: 0 });
+      }
+      guild.playback.pending = Math.max(0, guild.queue.length - 1);
+      guild.playback.playing = guild.queue.length ? 1 : 0;
       toast(`Lecture arrêtée sur ${guildName(guild)}.`);
       render();
     },
@@ -1202,11 +1385,12 @@
       const member = memberOf(guild, el.dataset.id);
       confirmDialog({
         title: `Exclure ${member.name} ?`,
-        body: 'Ses overlays sont déconnectés tout de suite. Il lui faudra un nouveau code pour revenir.',
+        body: `Ses overlays sont déconnectés tout de suite${guild.ingest.some((client) => client.authorName === member.name) ? ' et ses extensions révoquées' : ''}. Il lui faudra un nouveau code pour revenir.`,
         label: 'Exclure',
         onConfirm: () => {
           guild.members = guild.members.filter((item) => item !== member);
           guild.devices = guild.devices.filter((device) => device.memberId !== member.id);
+          guild.ingest = guild.ingest.filter((client) => client.authorName !== member.name);
           toast(`${member.name} a été exclu.`);
           render();
         },
@@ -1249,7 +1433,11 @@
       const client = guild.ingest.find((item) => item.id === el.dataset.id);
       confirmDialog({ title: `Révoquer ${client.label} ?`, body: 'Son jeton cesse de fonctionner tout de suite.', label: 'Révoquer', onConfirm: () => { guild.ingest = guild.ingest.filter((item) => item !== client); toast(`${client.label} révoqué.`); render(); } });
     },
+    'edit-media': (el, event, guild) => mediaDialog(guild, Number(el.dataset.id)),
     'delete-media': (el, event, guild) => {
+      if (dialog.open) {
+        dialog.close();
+      }
       const [item] = guild.board.recent.splice(Number(el.dataset.id), 1);
       guild.board.items -= 1;
       guild.board.usedBytes -= item.size;
@@ -1291,6 +1479,19 @@
         extra: `<div class="dlg-section stack"><label class="switch"><input type="checkbox" checked>Supprimer aussi les fichiers médias orphelins</label>${guild.kind !== 'none' ? '<br><label class="switch"><input type="checkbox">Faire quitter le bot du serveur Discord</label>' : ''}</div>`,
         onConfirm: () => { guilds.splice(guilds.indexOf(guild), 1); toast(`Guilde « ${guildName(guild)} » supprimée.`); location.hash = '#/guilds'; },
       }),
+    'rights-save': () => {
+      savedRights = JSON.parse(JSON.stringify(draftRights));
+      toast('Droits enregistrés et appliqués aux sessions ouvertes.');
+      refreshRegion();
+    },
+    'rights-cancel': () => {
+      draftRights = JSON.parse(JSON.stringify(savedRights));
+      refreshRegion();
+    },
+    'rights-defaults': () => {
+      draftRights = defaultRights();
+      refreshRegion();
+    },
     'purge-cache': () =>
       confirmDialog({ title: 'Purger le cache média ?', body: `${bytes(server.cacheUsed)} de médias hors board sont supprimés. Ceux des lectures en cours sont conservés ; les autres seront retéléchargés à la demande.`, label: 'Purger le cache', onConfirm: () => { server.cacheUsed = 180 * MIB; toast('Cache purgé.'); render(); } }),
   };
@@ -1320,6 +1521,9 @@
       state.filters[target.dataset.filter] = target.value;
       refreshRegion();
     }
+    if (target.id === 'dev-volume') {
+      document.getElementById('dev-volume-out').textContent = `${target.value} %`;
+    }
     if (target.dataset.expect) {
       document.getElementById('confirm-go').disabled = target.value.trim() !== target.dataset.expect;
     }
@@ -1327,6 +1531,17 @@
 
   document.addEventListener('change', (event) => {
     const target = event.target;
+    if (target.dataset.right) {
+      const [surface, key, column] = target.dataset.right.split('|');
+      draftRights[surface][key][column] = target.checked;
+      refreshRegion();
+      return;
+    }
+    if (target.dataset.rightFlag) {
+      draftRights[target.dataset.rightFlag] = target.checked;
+      refreshRegion();
+      return;
+    }
     if (target.dataset.change === 'role') {
       const guild = findGuild(target.dataset.guild);
       const member = memberOf(guild, target.dataset.id);

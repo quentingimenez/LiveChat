@@ -5,9 +5,9 @@ installateurs de l'overlay Tauri (`apps/lc-overlay`). Il complète
 [lc-overlay-shell.md](lc-overlay-shell.md) (shell Phase 8a) et
 [lc-overlay-8b.md](lc-overlay-8b.md) (client WS / bridge / renderer Phase 8b).
 
-> État actuel : le canal stable pointe la version **3.4.0** (`LiveChat`,
+> État actuel : le canal stable pointe la version **3.5.0** (`LiveChat`,
 > `com.livechat`) et le canal bêta **3.0.0-beta.1** (`LiveChat Next`,
-> `com.livechat.next`, installation side-by-side avec l'Electron 2.0.1).
+> `com.livechat.next`, installation side-by-side avec le stable).
 > L'auto-update est **actif à partir de 3.1.1** : installateur signé par la clé
 > minisign du projet, `latest.json` joint à chaque release (§6). Les 3.0.x et 3.1.0
 > n'ont pas d'updater : ils passent une fois à la main sur une version récente.
@@ -20,7 +20,7 @@ installateurs de l'overlay Tauri (`apps/lc-overlay`). Il complète
 | Fichier de config Tauri | `tauri.conf.json` | `tauri.beta.conf.json` |
 | `productName` | `LiveChat` | `LiveChat Next` |
 | `identifier` | `com.livechat` | `com.livechat.next` |
-| Version | `3.4.0` | `3.0.0-beta.1` |
+| Version | `3.5.0` | `3.0.0-beta.1` |
 | Dossier d'installation (NSIS currentUser) | `%LOCALAPPDATA%\LiveChat` | `%LOCALAPPDATA%\LiveChat Next` |
 | Clé de désinstallation | `HKCU\...\Uninstall\LiveChat` | `HKCU\...\Uninstall\LiveChat Next` |
 | Endpoint updater | `https://github.com/quentingimenez/LiveChat/releases/latest/download/latest.json` | `https://github.com/quentingimenez/LiveChat/releases/download/next/latest.json` |
@@ -30,7 +30,7 @@ installateurs de l'overlay Tauri (`apps/lc-overlay`). Il complète
 Le bêta est volontairement une **application distincte** (productName, identifier,
 dossier, clé de désinstallation et valeur `Run` autostart — dérivée du
 `productName` — tous différents) afin de pouvoir tester la nouvelle pile à côté de
-l'installation Electron 2.0.1 sans la toucher.
+l'installation stable sans la toucher.
 
 ## 2. Prérequis
 
@@ -74,7 +74,7 @@ Le script `apps/lc-overlay/scripts/release-build.ps1` :
   `target/release/lc-overlay.exe` et les métadonnées PE (version produit) ;
 - écrit `target/release/bundle/nsis/release-summary-<canal>.json` (chemins,
   tailles, temps, notes) ;
-- **n'installe rien** et ne touche pas à l'installation Electron existante.
+- **n'installe rien**.
 
 ## 4. Artefacts produits
 
@@ -113,15 +113,13 @@ L'installeur NSIS Tauri (currentUser, `downloadBootstrapper`) contient :
 - le binaire applicatif `lc-overlay.exe` avec le frontend embarqué (tout
   `apps/lc-overlay/web/` : `overlay.html`, `board.html`, `pairing.html`,
   `bridge.js`, `renderer-errors.js`, css/js legacy, `dist/renderer/**` (shims ESM +
-  `legacy-loader.js`), `styles/**`, icônes/favicon) — pas de fichiers `overlay/src/**`
-  legacy ni de préchargement Electron ;
+  `legacy-loader.js`), `styles/**`, icônes/favicon) ;
 - l'icône d'application (`icons/icon.ico`, `icons/icon.png`) et l'icône de tray ;
 - le lanceur WebView2 (`webviewInstallMode: downloadBootstrapper` : l'installeur
   télécharge le runtime s'il manque, pas de dépendance admin) ;
 - le désinstalleur et les entrées de registre `HKCU` (clé `LiveChat`/`LiveChat Next`).
 
-Le bundle ne contient **aucun asset runtime Electron** (`runtime-assets/preload/dis`t
-Electron) : le renderer est servi depuis le binaire via `frontendDist: "web"`.
+Le renderer est servi depuis le binaire via `frontendDist: "web"`.
 Deux pages de développement (`web/bridge-test.html`, `web/README.md`) sont
 embarquées par simplicité car `frontendDist` emporte tout le dossier `web/`
 (~35 Ko, sans impact fonctionnel) ; voir §13.
@@ -210,13 +208,13 @@ plus de `.nsis.zip`) :
 
 ```json
 {
-  "version": "3.4.0",
-  "notes": "LiveChat overlay 3.4.0",
+  "version": "3.5.0",
+  "notes": "LiveChat overlay 3.5.0",
   "pub_date": "2026-11-14T12:00:00Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "<contenu de LiveChat_3.4.0_x64-setup.exe.sig>",
-      "url": "https://github.com/quentingimenez/LiveChat/releases/download/overlay-v3.4.0/LiveChat_3.4.0_x64-setup.exe"
+      "signature": "<contenu de LiveChat_3.5.0_x64-setup.exe.sig>",
+      "url": "https://github.com/quentingimenez/LiveChat/releases/download/overlay-v3.5.0/LiveChat_3.5.0_x64-setup.exe"
     }
   }
 }
@@ -291,8 +289,8 @@ compilé que sous Windows.
 
 ## 9. Smoke test de l'installeur (VM, jamais sur la machine de build)
 
-Consigne de la Phase 9d : **ne pas installer sur la machine de développement**
-(l'installation Electron 2.0.1 doit rester intacte). Utiliser une VM Windows 11
+Consigne de la Phase 9d : **ne pas installer sur la machine de développement**.
+Utiliser une VM Windows 11
 propre ou Windows Sandbox :
 
 1. Copier `LiveChat_3.0.0_x64-setup.exe` dans la VM.
@@ -307,59 +305,44 @@ propre ou Windows Sandbox :
    `%LOCALAPPDATA%\LiveChat\uninstall.exe /S`) ; vérifier que le dossier
    d'installation a disparu et que la config `%APPDATA%\LiveChat` est conservée.
 7. Bêta : mêmes étapes ; vérifier la coexistence avec l'installateur stable
-   (dossiers/clés distincts) et que l'installation Electron 2.0.1 (si présente)
-   n'a pas bougé.
+   (dossiers/clés distincts).
 
-## 10. Coexistence avec l'Electron 2.0.1 et upgrade
+## 10. Coexistence stable / bêta
 
-- Electron 2.0.1 : installé dans `%LOCALAPPDATA%\Programs\livechat`, clé
-  de désinstallation `HKCU\...\Uninstall\ec5c36a6-04f8-5099-a257-77071e875a50`,
-  autostart `HKCU\...\Run\livechat`.
-- Tauri stable 3.0.0 : `%LOCALAPPDATA%\LiveChat`, clé `LiveChat`, autostart
-  `LiveChat` (même nom que l'Electron à la casse près → les deux applications ne
-  doivent pas activer l'autostart simultanément ; le bêta utilise `LiveChat Next`,
-  donc pas de collision).
-- Un **upgrade in-place** Electron → Tauri n'est pas possible par l'installeur
-  (clés de désinstallation différentes) : le chemin officiel est
-  bêta side-by-side → validation → désinstallation explicite d'Electron 2.0.1 →
-  installation de LiveChat 3.0.0. La config `%APPDATA%\LiveChat\config.json` est
-  partagée et donc reprise automatiquement.
+- Stable : `%LOCALAPPDATA%\LiveChat`, clé `LiveChat`, autostart `LiveChat` ; bêta :
+  `LiveChat Next` partout, donc pas de collision.
 - Side-by-side stable + bêta : possible (identités distinctes) ; utile pour
   comparer, mais la config `%APPDATA%\LiveChat` est partagée (voir §11).
 
 ## 11. Configuration et migration
 
 Décision d'architecture (Phase 0/POC, conservée en 8a/8b) : le chemin de config
-est **forcé** à `%APPDATA%\LiveChat\config.json` (le même fichier que l'Electron),
-et non `app_config_dir()` (`%APPDATA%\com.livechat`). Conséquences :
+est **forcé** à `%APPDATA%\LiveChat\config.json` (le fichier qu'utilisait déjà
+l'overlay 2.x), et non `app_config_dir()` (`%APPDATA%\com.livechat`). Conséquences :
 
-- pas de migration de chemin à faire lors de l'upgrade Electron → Tauri : le
-  fichier est déjà au bon endroit, les 16 champs et normalisations legacy sont
-  repris tels quels ;
 - au premier écrit, un `.bak` one-shot (`config.json.bak`) est créé : il sert de
-  filet de sécurité et de point de restauration pour un **rollback** vers
-  Electron ;
+  filet de sécurité et de point de restauration ;
 - la variable `LIVECHAT_CONFIG_PATH` permet d'isoler complètement une instance
-  (utile pour tester le bêta sans toucher la config Electron/stable) :
+  (utile pour tester le bêta sans toucher la config stable) :
   `$env:LIVECHAT_CONFIG_PATH = "$env:TEMP\livechat-next\config.json"`.
 
 > Écart assumé vs la lettre de Task 26 : il n'y a **pas** de migration
-> `%APPDATA%\LiveChat` → `%APPDATA%\com.livechat` ; le choix du chemin partagé est
-> documenté dans `overlay-bridge.md` §8.6 et conservé pour permettre le rollback.
+> `%APPDATA%\LiveChat` → `%APPDATA%\com.livechat` ; le choix du chemin est
+> documenté dans `overlay-bridge.md` §8.6.
 
 ## 12. Rollback
 
-1. **Bêta** : désinstaller LiveChat Next (Applications installées) ; l'Electron
-   2.0.1 et le stable éventuel ne sont pas affectés.
-2. **Stable 3.0.0 → Electron 2.0.1** : désinstaller LiveChat via Applications
-   installées (per-user, pas d'admin), réinstaller `LiveChat-Setup-2.0.1.exe`
-   (electron-builder, clé GUID conservée), la config `%APPDATA%\LiveChat` est
-   intacte ; si besoin restaurer `config.json` depuis `config.json.bak`.
+1. **Bêta** : désinstaller LiveChat Next (Applications installées) ; le stable
+   éventuel n'est pas affecté.
+2. **Stable → version précédente** : désinstaller LiveChat via Applications
+   installées (per-user, pas d'admin), réinstaller l'installeur 3.x précédent depuis
+   sa release GitHub ; la config `%APPDATA%\LiveChat` est intacte ; si besoin
+   restaurer `config.json` depuis `config.json.bak`.
 3. **Config corrompue** : fermer l'app, copier `%APPDATA%\LiveChat\config.json.bak`
    vers `config.json`, relancer (les valeurs legacy par défaut sont appliquées
    sinon).
-4. Ne jamais supprimer `%APPDATA%\LiveChat` lors d'un rollback : c'est ce qui
-   permet à Electron et Tauri de partager l'appairage et les réglages.
+4. Ne jamais supprimer `%APPDATA%\LiveChat` lors d'un rollback : il contient
+   l'appairage et les réglages.
 
 ## 13. Écarts et limites connus
 
@@ -367,13 +350,11 @@ et non `app_config_dir()` (`%APPDATA%\com.livechat`). Conséquences :
 |---|---|---|
 | Signature Authenticode | absente | SmartScreen peut afficher un avertissement au premier lancement ; prévoir un certificat de signature de code en Phase 9 finale. |
 | Clé updater | placeholder (`createUpdaterArtifacts: false`, aucun workflow de release) | **auto-update explicitement désactivé pour 3.0.0** (§6) ; activation = travail 3.1 (clé réelle, artifacts signés, workflow Tauri). |
-| Workflows de release | Electron legacy supprimés (`overlay-release.yml`, `overlay-nightly.yml`) ; aucun workflow Tauri | publication 3.0.0 manuelle (§7) ; un seul propriétaire de tags par artefact (AUD-A7-003). |
+| Workflows de release | `overlay-tauri.yml` seul (§7.1) | un seul propriétaire de tags par artefact (AUD-A7-003). |
 | Installation locale | **non testée** (consigne : ne pas installer) | procédure et smoke test VM décrits §9 ; à exécuter en Phase 9 finale. |
 | WebView2 | **requis** | Windows 11 : présent. Windows 10 : `downloadBootstrapper` télécharge le runtime à l'installation (réseau requis). Variante hors-ligne possible : `webviewInstallMode: { "type": "offlineInstaller" }` (installeur plus gros, ~100 Mo). |
-| MSI / machine-wide | non produit | NSIS per-user choisi (pas d'admin, updater NSIS, cohérent avec Electron electron-builder per-user) ; `cargo tauri build --bundles msi` possible mais nécessite WiX et une stratégie d'élévation. |
+| MSI / machine-wide | non produit | NSIS per-user choisi (pas d'admin, updater NSIS) ; `cargo tauri build --bundles msi` possible mais nécessite WiX et une stratégie d'élévation. |
 | Pages de dev | hors bundle | `bridge-test.html` + `README.md` déplacés dans `apps/lc-overlay/dev/` (AUD-A6-015) ; `frontendDist` reste `web/`, vérifié par scan du binaire release. |
-| Autostart vs Electron | valeur `Run` `LiveChat` ≡ `livechat` (casse ignorée) | ne pas activer l'autostart Tauri tant qu'Electron 2.0.1 est encore installé ; bêta `LiveChat Next` sans collision. |
-| Config partagée Electron/Tauri | voulue | permet le rollback ; isoler une instance de test via `LIVECHAT_CONFIG_PATH`. |
 | Code de release | non commité | artefacts laissés dans `target/release/bundle/nsis/` pour le Lead. |
 
 ## 14. Checklist « release finale » (Phase 9)
@@ -387,8 +368,6 @@ et non `app_config_dir()` (`%APPDATA%\com.livechat`). Conséquences :
 - [ ] Smoke install VM (stable + bêta + désinstallation + config préservée).
 - [ ] Publication GitHub `quentingimenez/LiveChat` (stable releaseType release,
       bêta pré-release tag `next`).
-- [ ] Upgrade in-place validé sur VM : Electron 2.0.1 → bêta side-by-side →
-      désinstallation Electron → stable 3.0.0 → auto-update 3.0.1.
 
 ## 15. Durcissement P1-11 (audit A6) — impact release
 
@@ -425,8 +404,8 @@ modifient encore le contenu et le comportement du bundle 3.0.0 :
 - **Config atomique** : `config.json` est écrit dans un fichier temporaire voisin
   puis renommé (`replace_file`, 3 essais) ; la copie `.bak` suit le même schéma.
   Plus de fichier partiellement écrit en cas de coupure. Permissions et partage
-  du répertoire `%APPDATA%\LiveChat` : voir §11 (chemin partagé avec Electron
-  2.0.1, isolation par `LIVECHAT_CONFIG_PATH`).
+  du répertoire `%APPDATA%\LiveChat` : voir §11 (isolation par
+  `LIVECHAT_CONFIG_PATH`).
 - **CSP resserrée** : `img-src`/`media-src` conservent `http:`/`https:`/`blob:`
   (URLs média signées dynamiques) mais plus de `asset:` ni de
   `http://asset.localhost` ; `connect-src` ne liste plus `ws:`/`wss:` (le

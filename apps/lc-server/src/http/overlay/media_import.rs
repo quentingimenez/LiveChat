@@ -38,7 +38,7 @@ use super::auth::{authenticate_token, AuthedOverlayClient};
 use super::media_board::{
     complete_board_item, ensure_board_visible_for, ensure_writable, json_rejection_error,
 };
-use super::{db, error, json_response, now};
+use super::{db, error, json_response, now, ActorInfo};
 
 /// Header carrying the source overlay client's token.
 pub const SOURCE_TOKEN_HEADER: &str = "x-livechat-source-token";
@@ -63,7 +63,7 @@ pub async fn import_items(
     if let Err(response) = ensure_writable(&auth) {
         return response;
     }
-    if !auth.can(Permission::AddMedia) {
+    if !ActorInfo::from_auth(&state, &auth).can(Permission::AddMedia) {
         return error(StatusCode::FORBIDDEN, "forbidden");
     }
     let payload = match payload {
@@ -96,7 +96,9 @@ pub async fn import_items(
     if source.guild_id() == auth.guild_id() {
         return invalid_payload("source and target are the same guild");
     }
-    if let Err(response) = ensure_board_visible_for(&db, source.guild_id(), source.role()).await {
+    if let Err(response) =
+        ensure_board_visible_for(&state, &db, source.guild_id(), source.role()).await
+    {
         return response;
     }
 

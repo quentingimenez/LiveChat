@@ -1,0 +1,26 @@
+{
+  "name": "lc-admin-web",
+  "private": true,
+  "version": "0.0.0",
+  "description": "LiveChat server admin console (Preact + TypeScript, embedded in lc-server)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "preact": "^10.29.8"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "@preact/preset-vite": "^2.10.6",
+    "@testing-library/preact": "^3.2.6",
+    "jsdom": "^29.1.1",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.0"
+  }
+}

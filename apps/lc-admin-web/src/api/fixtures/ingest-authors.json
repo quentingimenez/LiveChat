@@ -1,0 +1,19 @@
+{
+  "count": 2,
+  "items": [
+    {
+      "discordUserId": "1002",
+      "displayName": "Maëlle",
+      "image": null,
+      "lastSeenAt": "2026-11-13T05:56:30.136Z",
+      "source": "ingest"
+    },
+    {
+      "discordUserId": "1001",
+      "displayName": "Quentin",
+      "image": null,
+      "lastSeenAt": "2026-11-16T05:56:30.136Z",
+      "source": "pairing"
+    }
+  ]
+}

@@ -1,0 +1,308 @@
+/* Additions to the mockup styles for the real console.
+ *
+ * Everything here is class based: the production CSP is `style-src 'self'`
+ * (no `'unsafe-inline'`), so there is no style attribute anywhere in the
+ * rendered markup. Layout that used to rely on inline styles in old versions
+ * of the panel uses these helpers instead.
+ */
+
+.spacer {
+  flex: 1;
+}
+
+.card-head .spacer,
+.toolbar .spacer,
+.savebar .spacer,
+.row .spacer {
+  flex: 1;
+}
+
+.stack.is-tight > * + * {
+  margin-top: 8px;
+}
+
+/* Boot screen while GET /admin/auth/session is in flight. */
+.splash {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 24px;
+  background: var(--slate-900);
+}
+
+.splash-box {
+  width: 100%;
+  max-width: 360px;
+  padding: 24px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-m);
+  background: var(--slate-800);
+  text-align: center;
+}
+
+.splash-box .brand {
+  justify-content: center;
+  margin-bottom: 14px;
+}
+
+.splash-box h2 {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.splash-box p {
+  margin-top: 6px;
+  color: var(--text-soft);
+}
+
+.loading {
+  padding: 28px 16px;
+  color: var(--text-soft);
+  text-align: center;
+}
+
+.inline-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(236, 106, 112, 0.4);
+  border-radius: var(--radius-s);
+  background: var(--red-wash);
+  color: var(--red);
+}
+
+.login-error {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 18px;
+  padding: 10px 12px;
+  border: 1px solid rgba(236, 106, 112, 0.4);
+  border-radius: var(--radius-s);
+  background: var(--red-wash);
+  color: var(--red);
+}
+
+.login-error svg {
+  margin-top: 2px;
+  flex: none;
+}
+
+.login-note.is-err {
+  border-color: rgba(236, 106, 112, 0.4);
+  color: var(--red);
+}
+
+.btn-discord.is-disabled {
+  opacity: 0.5;
+  cursor: default;
+  pointer-events: none;
+}
+
+.btn-discord svg {
+  fill: currentColor;
+  stroke: none;
+}
+
+.notice.is-unavailable {
+  border-left-color: var(--text-faint);
+}
+
+.notice.is-unavailable svg {
+  color: var(--text-faint);
+}
+
+.toast.is-err svg {
+  color: var(--red);
+}
+
+.toast.is-err {
+  border-color: rgba(236, 106, 112, 0.45);
+}
+
+.badge.is-warn {
+  background: var(--amber-wash);
+  color: var(--amber);
+}
+
+.dot.is-warn {
+  background: var(--amber);
+}
+
+/* Settings nav is rendered with buttons (scroll to section) instead of hash
+   links, because in this app the hash is the router. */
+.settings-nav button {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: none;
+  color: var(--text-soft);
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-nav button:hover {
+  background: var(--slate-700);
+  color: var(--text);
+}
+
+.form .hint + .hint {
+  margin-top: 6px;
+}
+
+.form > .lbl {
+  padding-top: 6px;
+}
+
+.field.is-code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.code-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.table-wrap .empty {
+  margin: 0;
+}
+
+.card > .empty {
+  margin: 0;
+}
+
+.avatar.is-user {
+  background: var(--blue-wash);
+  color: var(--blue);
+}
+
+.avatar.is-discord {
+  width: 32px;
+  height: 32px;
+}
+
+.health > div.is-warn {
+  color: var(--amber);
+}
+
+.health > div.is-error {
+  color: var(--red);
+}
+
+.kv dd.is-pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.row.is-between {
+  justify-content: space-between;
+}
+
+.row.is-end {
+  justify-content: flex-end;
+}
+
+.tile .value.is-small {
+  font-size: 20px;
+}
+
+.tile .value .mono {
+  font-size: 13px;
+}
+
+.dlg-foot .left {
+  margin-right: auto;
+}
+
+.dlg-body > .form {
+  margin-top: 4px;
+}
+
+.tabs a.is-danger:hover {
+  color: var(--red);
+}
+
+.table-foot a {
+  color: var(--text-soft);
+}
+
+.table-foot a:hover {
+  color: var(--blue);
+}
+
+.crumbs .chevron {
+  display: inline-flex;
+  color: var(--text-faint);
+}
+
+.copy-value {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.copy-value .mono {
+  overflow-wrap: anywhere;
+}
+
+.secret .btn {
+  flex: none;
+}
+
+.settings-actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-m);
+  background: var(--slate-900);
+}
+
+.form-section-meta {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.check-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.check-list li {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.icon-button-label {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.meter.is-ok {
+  color: var(--green);
+}
+
+.meter.is-warn {
+  color: var(--amber);
+}
+
+.badge.is-neutral {
+  background: var(--slate-700);
+}
+
+.nowrap {
+  white-space: nowrap;
+}

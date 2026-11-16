@@ -129,7 +129,7 @@ pub async fn put_artwork(
         Ok(_) => return error(StatusCode::NOT_FOUND, "item_not_found"),
         Err(db_error) => return db_failure("overlay_board_extras.artwork_lookup", &db_error),
     };
-    if let Err(response) = ensure_can_edit(db, &auth, item_id).await {
+    if let Err(response) = ensure_can_edit(&state, &auth, item_id).await {
         return response;
     }
     let service = match MediaService::for_state(&state) {
@@ -229,7 +229,7 @@ pub async fn delete_artwork(
         Ok(_) => return error(StatusCode::NOT_FOUND, "item_not_found"),
         Err(db_error) => return db_failure("overlay_board_extras.artwork_lookup", &db_error),
     }
-    if let Err(response) = ensure_can_edit(db, &auth, item_id).await {
+    if let Err(response) = ensure_can_edit(&state, &auth, item_id).await {
         return response;
     }
     if let Err(db_error) = db.media_board().set_artwork(item_id, None).await {

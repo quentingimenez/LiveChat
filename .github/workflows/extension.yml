@@ -58,7 +58,7 @@ jobs:
           if-no-files-found: error
 
   # Extension releases never take the repository "Latest" flag: it belongs to
-  # the overlay stable releases, which electron-updater reads for auto-update.
+  # the overlay stable releases, whose latest.json the Tauri updater reads.
   release:
     needs: build
     runs-on: ubuntu-latest

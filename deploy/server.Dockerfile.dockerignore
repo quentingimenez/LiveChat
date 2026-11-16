@@ -1,7 +1,6 @@
 # Contexte Docker minimal pour deploy/server.Dockerfile (BuildKit).
-# Le dépôt pèse ~23 Go : target/ (18 Go), spikes/ (4,7 Go), legacy server/ (350 Mo),
-# overlay/ (670 Mo), extension/ (64 Mo). Seuls les sources Rust du workspace, les
-# manifestes et la config Cargo sont envoyés au builder.
+# Only the Rust workspace sources, the manifests and the Cargo config are sent to
+# the builder: target/, spikes/ and extension/ are left out.
 
 .git
 .github
@@ -10,8 +9,6 @@
 target
 **/target
 spikes
-overlay
-server
 extension
 node_modules
 **/node_modules

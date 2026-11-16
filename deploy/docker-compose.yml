@@ -10,8 +10,6 @@
 # Prérequis : un fichier `deploy/.env` (non versionné, permissions 600) contenant au
 # moins API_URL, ADMIN_UI_TOKEN, INGEST_API_TOKEN et MEDIA_URL_SECRET. Voir le modèle
 # et la procédure complète dans `docs/rust/packaging.md` (§10 « Compose v3 »).
-#
-# Le legacy `server/docker-compose.yml` n'est pas concerné (référence de rollback 2.0.1).
 
 name: livechat
 

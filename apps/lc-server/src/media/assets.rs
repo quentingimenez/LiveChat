@@ -454,6 +454,7 @@ mod tests {
                 tweet_card: None,
                 media_url: None,
                 mime: Some("video/mp4".into()),
+                thumbnail_url: None,
             }),
             download: DownloadResult {
                 path: file.clone(),

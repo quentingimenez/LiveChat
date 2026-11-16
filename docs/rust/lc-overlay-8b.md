@@ -77,7 +77,7 @@ injectée dans les pages.
 
 - `overlay.html`, `board.html`, `pairing.html` + `overlay.css`, `board.css`,
   `overlay.js`, `board.js`, `pairing.js`, `styles/**` copiés depuis
-  `overlay/renderer/` (legacy intouché).
+  `overlay/renderer/` (legacy supprimé depuis, archivé au tag `legacy-ts-2.0.2`).
 - `web/dist/renderer/**` = shims ESM copiés depuis `overlay/dist/renderer/**`
   (loader legacy, utils, contrôleurs). Les pages chargent le module
   `../dist/renderer/<page>/index.js`, qui injecte les globals puis charge le

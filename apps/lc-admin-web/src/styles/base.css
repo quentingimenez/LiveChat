@@ -470,10 +470,13 @@ svg.ic {
   background: var(--slate-700);
 }
 
+/* The page fills the space next to the sidebar, like the top bar above it:
+   a fixed cap left most of a wide screen empty on the right. Forms and long
+   text keep their own readable widths. */
 .page {
   flex: 1;
   width: 100%;
-  max-width: 1320px;
+  min-width: 0;
   padding: 22px 24px 48px;
 }
 
@@ -1028,9 +1031,12 @@ textarea.field {
   overflow-wrap: anywhere;
 }
 
+/* Flex rather than an auto-fit grid: the seven checks share one row whenever
+   they fit, and a check that wraps stretches instead of leaving an empty gap
+   beside it. */
 .health {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 1px;
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-m);
@@ -1039,6 +1045,8 @@ textarea.field {
 }
 
 .health > div {
+  flex: 1 1 140px;
+  min-width: 0;
   padding: 10px 14px;
   box-shadow: 0 0 0 1px var(--line-soft);
 }

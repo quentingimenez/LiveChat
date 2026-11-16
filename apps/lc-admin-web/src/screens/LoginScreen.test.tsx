@@ -26,6 +26,9 @@ describe('LoginScreen', () => {
 
     expect(screen.queryByRole('link', { name: /Se connecter avec Discord/ })).toBeNull();
     expect(screen.getByLabelText(/Secret d’administration/)).toBeTruthy();
+    // The intro does not promise a Discord login that is not offered.
+    expect(screen.queryByText(/compte Discord/)).toBeNull();
+    expect(screen.getByText(/avec le secret d’administration de ce serveur/)).toBeTruthy();
   });
 
   it('shows a readable state when no method is available', () => {

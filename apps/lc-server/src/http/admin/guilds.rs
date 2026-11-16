@@ -360,12 +360,17 @@ pub(super) async fn admin_code(
 
 /// Handler `PATCH /admin/api/guilds/{guild_id}/settings`.
 ///
-/// Corps partiel : `defaultMediaTime`, `maxMediaTime`, `displayMediaFull`. Les
-/// entiers `<= 0` (ou `null`/chaîne vide) effacent le réglage. Aucun champ
-/// fourni, ou un champ mal typé, vaut `400 invalid_payload`.
+/// Partial body: `defaultMediaTime`, `maxMediaTime`, `displayMediaFull`,
+/// `name`, `guestsCanViewBoard`, `boardQuotaMb` (`null` = server quota).
+/// Integers `<= 0` (or `null`/empty string) clear a duration setting. No field
+/// at all, or a badly typed one, is `400 invalid_payload`.
+///
+/// The response is the `GET /admin/api/guilds/{guild_id}` entry, enriched with
+/// `updated` and the legacy `guild` object so existing panel callers keep
+/// working.
 pub(super) async fn update_settings(
     State(state): State<AppState>,
-    _access: AdminAccess,
+    access: AdminAccess,
     Path(raw_guild_id): Path<String>,
     payload: Json<Value>,
 ) -> Result<Response, AdminError> {
@@ -375,8 +380,26 @@ pub(super) async fn update_settings(
     let default_media_time = optional_int_field(&payload, "defaultMediaTime");
     let max_media_time = optional_int_field(&payload, "maxMediaTime");
     let display_media_full = optional_bool_field(&payload, "displayMediaFull");
+    let name = match payload.get("name") {
+        None => None,
+        Some(Value::String(raw)) => {
+            match crate::http::overlay::guild::normalize_label(raw, GUILD_NAME_MAX_CHARS) {
+                Some(name) => Some(name),
+                None => return Err(AdminError::bad_request("invalid_name")),
+            }
+        }
+        Some(_) => return Err(AdminError::bad_request("invalid_name")),
+    };
+    let guests_can_view_board = optional_bool_field(&payload, "guestsCanViewBoard");
+    let board_quota_mb = optional_quota_field(&payload, "boardQuotaMb");
 
-    if default_media_time.is_none() && max_media_time.is_none() && display_media_full.is_none() {
+    if default_media_time.is_none()
+        && max_media_time.is_none()
+        && display_media_full.is_none()
+        && name.is_none()
+        && guests_can_view_board.is_none()
+        && board_quota_mb.is_none()
+    {
         return Err(AdminError::bad_request(INVALID_PAYLOAD));
     }
 
@@ -387,6 +410,12 @@ pub(super) async fn update_settings(
         .map(|result| result.map_err(|()| AdminError::bad_request(INVALID_PAYLOAD)))
         .transpose()?;
     let display_media_full = display_media_full
+        .map(|result| result.map_err(|()| AdminError::bad_request(INVALID_PAYLOAD)))
+        .transpose()?;
+    let guests_can_view_board = guests_can_view_board
+        .map(|result| result.map_err(|()| AdminError::bad_request(INVALID_PAYLOAD)))
+        .transpose()?;
+    let board_quota_mb = board_quota_mb
         .map(|result| result.map_err(|()| AdminError::bad_request(INVALID_PAYLOAD)))
         .transpose()?;
 
@@ -409,10 +438,11 @@ pub(super) async fn update_settings(
             .as_ref()
             .is_some_and(|guild| guild.display_media_full)
     });
+    let name = name.or_else(|| existing.as_ref().and_then(|guild| guild.name.clone()));
 
     let guild = Guild {
         id: guild_id.clone(),
-        name: existing.as_ref().and_then(|guild| guild.name.clone()),
+        name,
         busy_until: existing.as_ref().and_then(|guild| guild.busy_until),
         default_media_time,
         max_media_time,
@@ -423,6 +453,18 @@ pub(super) async fn update_settings(
         .upsert(&guild)
         .await
         .map_err(|error| AdminError::db("enregistrement des réglages de guilde", error))?;
+    if let Some(allowed) = guests_can_view_board {
+        db.guilds()
+            .set_guests_can_view_board(&guild_id, allowed)
+            .await
+            .map_err(|error| AdminError::db("enregistrement des invités du board", error))?;
+    }
+    if let Some(quota_mb) = board_quota_mb {
+        db.guilds()
+            .set_board_quota_mb(&guild_id, quota_mb)
+            .await
+            .map_err(|error| AdminError::db("enregistrement du quota de board", error))?;
+    }
 
     // Relit la ligne persistée (upsert peut avoir conservé d'autres colonnes).
     let persisted = db
@@ -436,17 +478,33 @@ pub(super) async fn update_settings(
     let broadcast = hub.broadcast_settings(&guild_id).await;
     tracing::debug!(broadcast, guild_id = guild_id.as_str(), "réglages diffusés");
 
-    Ok(Json(json!({
-        "updated": true,
-        "guild": {
-            "id": guild_id.as_str(),
-            "defaultMediaTime": persisted.default_media_time,
-            "maxMediaTime": persisted.max_media_time,
-            "displayMediaFull": persisted.display_media_full,
-            "busyUntil": opt_iso(persisted.busy_until),
-        },
-    }))
-    .into_response())
+    // Full detail entry, plus the legacy `{updated, guild}` compatibility keys.
+    let entry = super::guild_detail::detail_entry(&state, access, &guild_id)
+        .await?
+        .unwrap_or_else(|| json!({ "id": guild_id.as_str() }));
+    let legacy_guild = json!({
+        "id": guild_id.as_str(),
+        "name": persisted.name,
+        "defaultMediaTime": persisted.default_media_time,
+        "maxMediaTime": persisted.max_media_time,
+        "displayMediaFull": persisted.display_media_full,
+        "busyUntil": opt_iso(persisted.busy_until),
+        "guestsCanViewBoard": entry
+            .get("guestsCanViewBoard")
+            .cloned()
+            .unwrap_or(Value::Bool(true)),
+        "boardQuotaBytes": entry
+            .get("boardQuotaBytes")
+            .cloned()
+            .unwrap_or(Value::Null),
+    });
+    let mut response = entry;
+    if let Some(object) = response.as_object_mut() {
+        object.insert("updated".to_owned(), Value::Bool(true));
+        object.insert("guild".to_owned(), legacy_guild);
+    }
+
+    Ok(Json(response).into_response())
 }
 
 /// Handler `POST /admin/api/guilds/{guild_id}/stop`.
@@ -547,6 +605,37 @@ pub(super) async fn discord_unlink(
         "discord": discord.payload(),
     }))
     .into_response())
+}
+
+/// Handler `POST /admin/api/guilds/{guild_id}/discord-leave`.
+///
+/// Body: `{"confirmGuildId":"<same id>"}`. Makes the bot leave the linked
+/// Discord server without purging the guild or unlinking the server. The
+/// outcome is the one of [`perform_discord_leave`] (never blocking).
+pub(super) async fn discord_leave(
+    State(state): State<AppState>,
+    _access: AdminAccess,
+    Path(raw_guild_id): Path<String>,
+    payload: Json<Value>,
+) -> Result<Response, AdminError> {
+    let db = require_db(&state)?;
+    let guild_id = parse_guild_id(&raw_guild_id)?;
+    require_guild_confirmation(&payload, &guild_id)?;
+
+    let access = db
+        .guilds()
+        .access(&guild_id)
+        .await
+        .map_err(|error| AdminError::db("lecture du rattachement de guilde", error))?;
+    let server_id = discord_server_id(&guild_id, access.as_ref());
+    let discord = perform_discord_leave(&state, server_id, true).await;
+    tracing::info!(
+        guild_id = guild_id.as_str(),
+        outcome = discord.outcome,
+        "départ Discord demandé depuis le panneau"
+    );
+
+    Ok(Json(json!({ "discordLeave": discord.payload() })).into_response())
 }
 
 /// Handler `POST /admin/api/guilds/{guild_id}/purge`.
@@ -876,6 +965,22 @@ fn optional_int_field(payload: &Value, key: &str) -> Option<Result<Option<i64>, 
 /// Convertit un champ booléen optionnel du corps (`Some(Err)` si mal typé).
 fn optional_bool_field(payload: &Value, key: &str) -> Option<Result<bool, ()>> {
     payload.get(key).map(|value| value.as_bool().ok_or(()))
+}
+
+/// Parses `boardQuotaMb`: absent → `None`; `null`/empty string → back to the
+/// server quota (`Some(None)`); strictly positive integer → `Some(Some)`.
+fn optional_quota_field(payload: &Value, key: &str) -> Option<Result<Option<i64>, ()>> {
+    let value = payload.get(key)?;
+
+    Some(match value {
+        Value::Null => Ok(None),
+        Value::String(text) if text.trim().is_empty() => Ok(None),
+        Value::Number(number) => match number.as_i64() {
+            Some(megabytes) if megabytes > 0 => Ok(Some(megabytes)),
+            _ => Err(()),
+        },
+        _ => Err(()),
+    })
 }
 
 /// Fusionne une valeur fournie (`Option<Option<i64>>`) avec la valeur actuelle.

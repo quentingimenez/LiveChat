@@ -1,0 +1,155 @@
+{
+  "cache": {
+    "maxBytes": 5368709120,
+    "remainingBytes": 5368709120,
+    "usedBytes": 0,
+    "usedPercent": 0.0
+  },
+  "generatedAt": "2026-11-16T05:56:30.148Z",
+  "guilds": [
+    {
+      "busyUntil": null,
+      "discord": {
+        "kind": "native",
+        "serverId": "112233445566778899"
+      },
+      "editableName": "Les Copains du Jeudi",
+      "id": "112233445566778899",
+      "ingest": {
+        "clients": [
+          {
+            "createdAt": "2026-11-13T05:56:30.136Z",
+            "id": "8ea2add8-2b47-4d4e-878a-153e17917bec",
+            "label": "Extension Firefox",
+            "lastSeenAt": "2026-11-16T03:56:30.136Z"
+          }
+        ],
+        "total": 1
+      },
+      "mediaBoard": {
+        "itemsCount": 3,
+        "maxBytes": 16106127360,
+        "remainingBytes": 16100127357,
+        "usedBytes": 6000003,
+        "usedPercent": 0.04
+      },
+      "name": "Les Copains du Jeudi",
+      "overlays": {
+        "clients": [
+          {
+            "authorImage": null,
+            "authorName": "Alice",
+            "connected": false,
+            "createdAt": "2026-11-16T05:56:30.132Z",
+            "guildSettings": null,
+            "id": "47a9da35-ffef-4bca-a24b-120e276423ce",
+            "label": "PC-Bureau",
+            "lastSeenAt": "2026-11-16T05:51:30.132Z",
+            "overlayVersion": null,
+            "platform": null,
+            "sessionMode": "normal"
+          },
+          {
+            "authorImage": null,
+            "authorName": "Alice",
+            "connected": false,
+            "createdAt": "2026-11-16T05:56:30.133Z",
+            "guildSettings": null,
+            "id": "1ce8c954-4322-4dc0-ae9a-663c656b0840",
+            "label": "PC-Portable",
+            "lastSeenAt": "2026-11-16T05:51:30.133Z",
+            "overlayVersion": null,
+            "platform": null,
+            "sessionMode": "invite_read_only"
+          },
+          {
+            "authorImage": null,
+            "authorName": "Alice",
+            "connected": false,
+            "createdAt": "2026-11-16T05:56:30.132Z",
+            "guildSettings": null,
+            "id": "8eea5b85-31e7-432a-a5fd-1c5218e0bec2",
+            "label": "PC-Salon",
+            "lastSeenAt": "2026-11-16T05:51:30.132Z",
+            "overlayVersion": null,
+            "platform": null,
+            "sessionMode": "normal"
+          }
+        ],
+        "connectedCount": 0,
+        "total": 3
+      },
+      "playback": {
+        "done": 0,
+        "failed": 0,
+        "pending": 1,
+        "playing": 1
+      },
+      "settings": {
+        "defaultMediaTime": 8,
+        "displayMediaFull": true,
+        "maxMediaTime": 120,
+        "overrides": {
+          "defaultMediaTime": 8,
+          "displayMediaFull": true,
+          "maxMediaTime": 120
+        }
+      }
+    },
+    {
+      "busyUntil": null,
+      "discord": {
+        "kind": "none",
+        "serverId": null
+      },
+      "editableName": "Studio LiveChat",
+      "id": "9274817583033437435",
+      "ingest": {
+        "clients": [],
+        "total": 0
+      },
+      "mediaBoard": {
+        "itemsCount": 0,
+        "maxBytes": 16106127360,
+        "remainingBytes": 16106127360,
+        "usedBytes": 0,
+        "usedPercent": 0.0
+      },
+      "name": "Studio LiveChat",
+      "overlays": {
+        "clients": [],
+        "connectedCount": 0,
+        "total": 0
+      },
+      "playback": {
+        "done": 0,
+        "failed": 0,
+        "pending": 0,
+        "playing": 0
+      },
+      "settings": {
+        "defaultMediaTime": 5,
+        "displayMediaFull": false,
+        "maxMediaTime": null,
+        "overrides": {
+          "defaultMediaTime": null,
+          "displayMediaFull": false,
+          "maxMediaTime": null
+        }
+      }
+    }
+  ],
+  "pairingCodes": {
+    "active": 1,
+    "expired": 1,
+    "total": 2
+  },
+  "totals": {
+    "activeInviteCount": 2,
+    "guildCount": 2,
+    "ingestClientCount": 1,
+    "overlayClientCount": 3,
+    "overlayConnectedCount": 0,
+    "pairingCodeCount": 2
+  }
+}

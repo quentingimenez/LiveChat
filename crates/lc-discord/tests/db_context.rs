@@ -41,11 +41,12 @@ async fn harness() -> Harness {
     let context = DbBotContext::with_clock(
         db,
         clock,
-        BotConfig::new("http://localhost:3333"),
+        Arc::new(BotConfig::new("http://localhost:3333")),
         Arc::clone(&media) as Arc<dyn lc_discord::context::MediaBackend>,
         Arc::clone(&playback) as Arc<dyn lc_discord::context::PlaybackBackend>,
         media_board as Arc<dyn lc_discord::context::MediaBoardBackend>,
         overlays as Arc<dyn lc_discord::context::OverlayDirectory>,
+        Arc::new(lc_domain::rights::RightsTable::new()),
     );
     Harness {
         context,

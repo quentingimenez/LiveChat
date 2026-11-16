@@ -1,0 +1,10 @@
+{
+  "discord": {
+    "error": null,
+    "outcome": "skipped",
+    "requested": false,
+    "serverId": "123456789012345678"
+  },
+  "guildId": "900000000000000001",
+  "unlinked": true
+}

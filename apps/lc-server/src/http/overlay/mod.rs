@@ -65,28 +65,162 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
+use lc_domain::rights::{Action, RightsTable, Surface};
+use lc_domain::{
+    GuildId, GuildMember, GuildMemberId, GuildRole, OverlayClient, OverlayClientId, Permission,
+};
 use serde_json::Value;
 use tracing::error;
 
 use crate::app::AppState;
 
-mod admin;
+pub(crate) mod admin;
 mod auth;
 mod board_extras;
-mod discord_link;
+pub(crate) mod discord_link;
 pub(crate) mod guild;
 mod ingest_code;
 mod media;
-mod media_board;
-mod media_edit;
+pub(crate) mod media_board;
+pub(crate) mod media_edit;
 mod media_ingestion;
 mod media_upload;
 mod pair;
 mod profile_discord;
-mod queue;
+pub(crate) mod queue;
 mod say;
 
+pub(crate) use auth::AuthedOverlayClient;
 pub use media::sign_media_url;
+
+/// Caller identity shared by the overlay handlers and the admin console.
+///
+/// The admin console uses an operator actor: no member is attached, the role
+/// is [`GuildRole::Admin`] and every guild permission check passes. Overlay
+/// handlers build the actor from their authenticated client, so the extracted
+/// logic keeps acting for the calling member.
+#[derive(Clone, Debug)]
+pub(crate) struct ActorInfo {
+    /// Overlay client owning the action (device, signing key, ingestion slot).
+    pub(crate) client: OverlayClient,
+    /// Guild member attached to the overlay client, if any.
+    pub(crate) member: Option<GuildMember>,
+    /// `true` when the server operator drives the action (admin console).
+    pub(crate) operator: bool,
+    /// Effective rights captured for this request (read from the server cache).
+    pub(crate) rights: RightsTable,
+}
+
+impl ActorInfo {
+    /// Actor of an authenticated overlay request.
+    pub(crate) fn from_auth(state: &AppState, auth: &AuthedOverlayClient) -> Self {
+        Self {
+            client: auth.client.clone(),
+            member: auth.member.clone(),
+            operator: false,
+            rights: state.rights.snapshot(),
+        }
+    }
+
+    /// Operator actor of the admin console.
+    ///
+    /// It carries an unsaved overlay client so the media ingestion tasks have a
+    /// client id and a guild; no socket is ever attached to that id.
+    pub(crate) fn operator(state: &AppState, guild_id: &GuildId) -> Self {
+        Self::operator_with_client(
+            state,
+            OverlayClient {
+                id: OverlayClientId::new_v4(),
+                guild_id: guild_id.clone(),
+                label: "Admin console".to_owned(),
+                token_hash: String::new(),
+                session_mode: lc_domain::OverlaySessionMode::Normal,
+                default_author_name: Some("Admin console".to_owned()),
+                default_author_image: None,
+                created_by_discord_user_id: None,
+                last_seen_at: None,
+                created_at: state.clock.now(),
+                revoked_at: None,
+            },
+        )
+    }
+
+    /// Operator actor backed by an existing overlay client (media URL signing).
+    pub(crate) fn operator_with_client(state: &AppState, client: OverlayClient) -> Self {
+        Self {
+            client,
+            member: None,
+            operator: true,
+            rights: state.rights.snapshot(),
+        }
+    }
+
+    /// Guild of the actor.
+    pub(crate) fn guild_id(&self) -> &GuildId {
+        &self.client.guild_id
+    }
+
+    /// Attached member id, if any.
+    pub(crate) fn member_id(&self) -> Option<GuildMemberId> {
+        self.member.as_ref().map(|member| member.id)
+    }
+
+    /// Effective guild role (an operator is always an admin).
+    pub(crate) fn role(&self) -> GuildRole {
+        if self.operator {
+            return GuildRole::Admin;
+        }
+        match &self.member {
+            Some(member) => member.role,
+            None => match self.client.session_mode {
+                lc_domain::OverlaySessionMode::InviteReadOnly => GuildRole::Guest,
+                lc_domain::OverlaySessionMode::Normal => GuildRole::Member,
+            },
+        }
+    }
+
+    /// `true` when the actor may perform `permission`.
+    pub(crate) fn can(&self, permission: Permission) -> bool {
+        if self.operator {
+            return true;
+        }
+        let action = Action::from_overlay_permission(permission);
+        self.rights
+            .allowed(Surface::Overlay, action, self.role().into())
+    }
+
+    /// `true` for a read-only overlay session (never for an operator).
+    pub(crate) fn is_read_only(&self) -> bool {
+        !self.operator && self.role() == GuildRole::Guest
+    }
+
+    /// Same rule as the overlay board: admins edit everything, members their own
+    /// media, and an item with no recorded author stays editable by members.
+    pub(crate) fn can_edit_item(&self, creator_member_id: Option<&str>) -> bool {
+        if self.operator {
+            return true;
+        }
+        if self.can(Permission::EditAnyMedia) {
+            return true;
+        }
+        if !self.can(Permission::EditOwnMedia) {
+            return false;
+        }
+        match (self.member_id(), creator_member_id) {
+            (Some(member_id), Some(creator)) => member_id.to_canonical() == creator,
+            _ => true,
+        }
+    }
+
+    /// Authenticated-client view used by the detached ingestion tasks.
+    pub(crate) fn to_authed(&self, at: DateTime<Utc>) -> AuthedOverlayClient {
+        AuthedOverlayClient {
+            client: self.client.clone(),
+            member: self.member.clone(),
+            authenticated_at: at,
+        }
+    }
+}
 
 #[cfg(test)]
 mod board_extras_tests;

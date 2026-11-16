@@ -1,7 +1,6 @@
 # Minimal Docker context for deploy/server.Dockerfile (BuildKit).
-# The repository is ~23 GB: target/ (18 GB), spikes/ (4.7 GB), legacy server/
-# (350 MB), overlay/ (670 MB), extension/ (64 MB). Only the Rust workspace
-# sources, the manifests and the Cargo configuration are sent to the builder.
+# Only the Rust workspace sources, the manifests and the Cargo config are sent to
+# the builder: target/, spikes/ and extension/ are left out.
 
 .git
 .github
@@ -10,8 +9,6 @@
 target
 **/target
 spikes
-overlay
-server
 extension
 docs
 deploy

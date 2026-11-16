@@ -51,7 +51,7 @@ pub mod text;
 pub mod serenity_glue;
 
 pub use catalog::{CommandKey, CommandSpec, OptionKind, OptionSpec, COMMANDS};
-pub use context::{Author, BotConfig, BotContext, DbBotContext};
+pub use context::{Author, BotConfig, BotConfigSource, BotContext, DbBotContext};
 pub use error::{BotError, MediaError, MediaErrorCode, SpeechFailure};
 pub use handlers::dispatch;
 pub use i18n::{strings, Lang, Strings};

@@ -44,8 +44,9 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn socket_io_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let min_overlay_version = state.runtime().min_overlay_version();
     tracing::info!(
-        min_overlay_version = %state.config.min_overlay_version,
+        min_overlay_version = %min_overlay_version,
         "tentative d'accès au protocole v1 (/socket.io) : 426 overlay_outdated"
     );
     (
@@ -53,7 +54,7 @@ async fn socket_io_handler(State(state): State<AppState>) -> impl IntoResponse {
         Json(OverlayOutdatedResponse {
             error: "overlay_outdated",
             protocol_version: lc_protocol::PROTOCOL_VERSION,
-            min_overlay_version: state.config.min_overlay_version.clone(),
+            min_overlay_version,
         }),
     )
 }

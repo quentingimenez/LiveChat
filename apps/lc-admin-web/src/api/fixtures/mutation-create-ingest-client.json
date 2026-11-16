@@ -1,0 +1,13 @@
+{
+  "client": {
+    "createdAt": "2026-11-16T05:56:30.206Z",
+    "createdByDiscordUserId": "1002",
+    "defaultAuthorImage": null,
+    "defaultAuthorName": "Maëlle",
+    "guildId": "112233445566778899",
+    "id": "0b29808b-974a-4aa5-b45f-12fa72bd6fc1",
+    "label": "Extension Chrome-Maëlle"
+  },
+  "created": true,
+  "ingestApiToken": "578a3fa80acfbad6b7bddd5d397f2f6b53deed9ea36c0998980cb588a885641e"
+}

@@ -57,12 +57,18 @@ struct GuildAggregates {
     playback: PlaybackTotals,
 }
 
-/// Handler de l'aperçu.
+/// Handler of the overview.
 pub(super) async fn overview(
     State(state): State<AppState>,
     _access: AdminAccess,
 ) -> Result<Response, AdminError> {
-    let db = require_db(&state)?;
+    Ok(Json(build_overview(&state).await?).into_response())
+}
+
+/// Builds the overview payload shared by `GET /admin/api/overview` and the
+/// live `overview` SSE event.
+pub(super) async fn build_overview(state: &AppState) -> Result<Value, AdminError> {
+    let db = require_db(state)?;
     let now = state.clock.now();
 
     let guilds = db
@@ -146,9 +152,10 @@ pub(super) async fn overview(
         entry.playback.add(status, *count);
     }
 
-    let cache_max_bytes = megabytes_to_bytes(state.config.media_cache_max_total_mb);
-    let board_max_bytes = megabytes_to_bytes(state.config.media_board_max_total_mb);
-    let hub = admin_hub(&state);
+    let cache_max_bytes = megabytes_to_bytes(state.runtime().media_cache_max_total_mb());
+    let board_max_bytes = megabytes_to_bytes(state.runtime().media_board_max_total_mb());
+    let default_duration = i64::try_from(state.runtime().default_duration()).unwrap_or(5);
+    let hub = admin_hub(state);
 
     let mut guild_payloads: Vec<Value> = Vec::with_capacity(guild_ids.len());
     let mut connected_overlay_count = 0_i64;
@@ -176,7 +183,7 @@ pub(super) async fn overview(
 
         let default_media_time = record
             .and_then(|guild| guild.default_media_time)
-            .unwrap_or_else(|| i64::try_from(state.config.default_duration).unwrap_or(5));
+            .unwrap_or(default_duration);
         let max_media_time = record.and_then(|guild| guild.max_media_time);
         let display_media_full = record
             .map(|guild| guild.display_media_full)
@@ -205,16 +212,10 @@ pub(super) async fn overview(
                 let connected = Uuid::parse_str(&overlay.id)
                     .ok()
                     .is_some_and(|client_id| hub.is_connected(&client_id));
-                json!({
-                    "id": overlay.id,
-                    "label": overlay.label,
-                    "authorName": overlay.default_author_name,
-                    "authorImage": overlay.default_author_image,
-                    "lastSeenAt": overlay.last_seen_at.and_then(iso_from_ms),
-                    "createdAt": iso_from_ms(overlay.created_at),
-                    "connected": connected,
-                    "sessionMode": session_mode_wire(&overlay.session_mode),
-                })
+                let guild_settings = Uuid::parse_str(&overlay.id)
+                    .ok()
+                    .and_then(|client_id| hub.device_settings(&client_id));
+                overlay_client_payload(overlay, connected, guild_settings.as_ref())
             })
             .collect();
 
@@ -288,6 +289,12 @@ pub(super) async fn overview(
         .count();
     let active_pairing = i64::try_from(active_pairing).unwrap_or(0);
 
+    let active_invites = db
+        .guild_invites()
+        .count_active(now)
+        .await
+        .map_err(|error| AdminError::db("invitations actives", error))?;
+
     let overlay_total = i64::try_from(overlays.len()).unwrap_or(0);
     let ingest_total = i64::try_from(ingest_clients.len()).unwrap_or(0);
     let guild_total = i64::try_from(guild_payloads.len()).unwrap_or(0);
@@ -307,6 +314,7 @@ pub(super) async fn overview(
             "overlayConnectedCount": connected_overlay_count,
             "ingestClientCount": ingest_total,
             "pairingCodeCount": total_pairing,
+            "activeInviteCount": active_invites,
         },
         "pairingCodes": {
             "active": active_pairing,
@@ -316,12 +324,34 @@ pub(super) async fn overview(
         "guilds": guild_payloads,
     });
 
-    Ok(Json(payload).into_response())
+    Ok(payload)
+}
+
+/// JSON entry of one overlay client, shared by the overview and the
+/// `PATCH /admin/api/overlay-clients/{id}` response.
+pub(super) fn overlay_client_payload(
+    overlay: &OverlayClientRow,
+    connected: bool,
+    guild_settings: Option<&lc_protocol::DeviceSettingsStatePayload>,
+) -> Value {
+    json!({
+        "id": overlay.id,
+        "label": overlay.label,
+        "authorName": overlay.default_author_name,
+        "authorImage": overlay.default_author_image,
+        "lastSeenAt": overlay.last_seen_at.and_then(iso_from_ms),
+        "createdAt": iso_from_ms(overlay.created_at),
+        "connected": connected,
+        "sessionMode": session_mode_wire(&overlay.session_mode),
+        "overlayVersion": overlay.overlay_version,
+        "platform": overlay.platform,
+        "guildSettings": guild_settings,
+    })
 }
 
 /// Mode de session au format filaire (`normal` / `invite_read_only`), tolérant
 /// aux valeurs inattendues (comme `normalizeOverlaySessionMode`).
-fn session_mode_wire(stored: &str) -> &'static str {
+pub(super) fn session_mode_wire(stored: &str) -> &'static str {
     OverlaySessionMode::from_db_str(stored)
         .map(OverlaySessionMode::as_wire_str)
         .unwrap_or("normal")

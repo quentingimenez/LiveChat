@@ -1,0 +1,8 @@
+{
+  "discordLeave": {
+    "error": null,
+    "outcome": "left",
+    "requested": true,
+    "serverId": "112233445566778899"
+  }
+}

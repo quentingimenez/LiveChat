@@ -147,6 +147,8 @@ pub mod msg_type {
     pub const MEDIA_TRIGGER: &str = "media.trigger";
     /// C→S : demande de la liste des pairs.
     pub const PEERS_REQUEST: &str = "peers.request";
+    /// C→S : dernier état connu des réglages de l'appareil pour une guilde.
+    pub const DEVICE_SETTINGS_STATE: &str = "device.settings.state";
     /// S→C : acceptation du `hello`.
     pub const WELCOME: &str = "welcome";
     /// S→C : réglages de la guilde.
@@ -163,6 +165,12 @@ pub mod msg_type {
     pub const MEDIA_INGESTION: &str = "media.ingestion";
     /// S→C : the guild's media board changed (item added, edited or deleted).
     pub const BOARD_CHANGED: &str = "board.changed";
+    /// S→C : the admin changes the device settings of a connected overlay.
+    pub const DEVICE_SETTINGS: &str = "device.settings";
+    /// S→C : the admin changed the session mode of a connected overlay.
+    pub const SESSION_CHANGED: &str = "session.changed";
+    /// S→C : the effective rights changed; the overlay reloads them.
+    pub const RIGHTS_CHANGED: &str = "rights.changed";
 }
 
 /// Indique si une trame dépasse la limite autorisée.
@@ -358,6 +366,9 @@ pub enum ClientMessage {
     /// Demande de la liste des pairs.
     #[serde(rename = "peers.request")]
     PeersRequest(PeersRequestPayload),
+    /// Dernier état connu des réglages de l'appareil pour la guilde.
+    #[serde(rename = "device.settings.state")]
+    DeviceSettingsState(DeviceSettingsStatePayload),
 }
 
 impl ClientMessage {
@@ -373,6 +384,7 @@ impl ClientMessage {
             Self::StopRequest(_) => msg_type::STOP_REQUEST,
             Self::MediaTrigger(_) => msg_type::MEDIA_TRIGGER,
             Self::PeersRequest(_) => msg_type::PEERS_REQUEST,
+            Self::DeviceSettingsState(_) => msg_type::DEVICE_SETTINGS_STATE,
         }
     }
 }
@@ -408,6 +420,15 @@ pub enum ServerMessage {
     /// The guild's media board changed.
     #[serde(rename = "board.changed")]
     BoardChanged(BoardChangedPayload),
+    /// The admin changes the device settings of a connected overlay.
+    #[serde(rename = "device.settings")]
+    DeviceSettings(DeviceSettingsPayload),
+    /// The admin changed the session mode of this overlay.
+    #[serde(rename = "session.changed")]
+    SessionChanged(SessionChangedPayload),
+    /// The overlay's effective rights changed.
+    #[serde(rename = "rights.changed")]
+    RightsChanged(RightsChangedPayload),
 }
 
 impl ServerMessage {
@@ -424,6 +445,9 @@ impl ServerMessage {
             Self::Error(_) => msg_type::ERROR,
             Self::MediaIngestion(_) => msg_type::MEDIA_INGESTION,
             Self::BoardChanged(_) => msg_type::BOARD_CHANGED,
+            Self::DeviceSettings(_) => msg_type::DEVICE_SETTINGS,
+            Self::SessionChanged(_) => msg_type::SESSION_CHANGED,
+            Self::RightsChanged(_) => msg_type::RIGHTS_CHANGED,
         }
     }
 }
@@ -436,6 +460,41 @@ pub enum SessionMode {
     Normal,
     /// Session invitée : médias et arrêt refusés (`ack` `read_only`).
     InviteReadOnly,
+}
+
+/// Operating system of an overlay, as sent in `hello.platform`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Platform {
+    /// Microsoft Windows.
+    Windows,
+    /// Apple macOS.
+    Macos,
+    /// Linux.
+    Linux,
+}
+
+impl Platform {
+    /// Lowercase wire/storage representation (`windows`, `macos`, `linux`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Windows => "windows",
+            Self::Macos => "macos",
+            Self::Linux => "linux",
+        }
+    }
+
+    /// Maps a `std::env::consts::OS` value; `None` for an unsupported system.
+    #[must_use]
+    pub fn from_os(os: &str) -> Option<Self> {
+        match os {
+            "windows" => Some(Self::Windows),
+            "macos" => Some(Self::Macos),
+            "linux" => Some(Self::Linux),
+            _ => None,
+        }
+    }
 }
 
 /// Type d'un média de la bibliothèque.
@@ -523,6 +582,9 @@ pub struct HelloPayload {
     /// Identifiant du client s'il est déjà connu.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
+    /// Operating system of the overlay (`windows`, `macos`, `linux`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<Platform>,
     /// Mode de session demandé (diagnostic ; le serveur fait autorité).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_mode: Option<SessionMode>,
@@ -605,6 +667,27 @@ pub struct MediaTriggerPayload {
 /// Payload de `peers.request` (vide).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeersRequestPayload {}
+
+/// Payload of `device.settings.state`: the last known device settings of one
+/// guild on the overlay's device.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceSettingsStatePayload {
+    /// Guild volume, in `0.0..=1.0`.
+    pub volume: f64,
+    /// The guild's media play without sound.
+    pub media_muted: bool,
+    /// The guild is paused (its media are not shown).
+    pub paused: bool,
+}
+
+impl DeviceSettingsStatePayload {
+    /// `true` when the volume is a finite number within `0.0..=1.0`.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.volume.is_finite() && (0.0..=1.0).contains(&self.volume)
+    }
+}
 
 /// Configuration de guilde transmise dans `welcome`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -948,6 +1031,44 @@ pub struct BoardChangedPayload {
     /// Item concerned.
     pub item_id: String,
 }
+
+/// Payload of `device.settings`: only the fields changed by the admin.
+///
+/// The overlay applies them, saves them and reports the resulting state with
+/// `device.settings.state`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceSettingsPayload {
+    /// Guild volume, in `0.0..=1.0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume: Option<f64>,
+    /// The guild's media play without sound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_muted: Option<bool>,
+    /// The guild is paused (its media are not shown).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<bool>,
+}
+
+impl DeviceSettingsPayload {
+    /// `true` when no field would be sent.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.volume.is_none() && self.media_muted.is_none() && self.paused.is_none()
+    }
+}
+
+/// Payload of `session.changed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionChangedPayload {
+    /// New authoritative session mode.
+    pub session_mode: SessionMode,
+}
+
+/// Payload of `rights.changed` (empty).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RightsChangedPayload {}
 
 /// Payload de `error` serveur→client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

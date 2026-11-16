@@ -1,0 +1,24 @@
+{
+  "deleted": {
+    "guildSettings": 1,
+    "ingestClients": 2,
+    "mediaBoardItems": 0,
+    "orphanMediaAssets": 0,
+    "orphanMediaFileDeleteErrors": 0,
+    "overlayClients": 3,
+    "pairingCodes": 0,
+    "playbackJobs": 2
+  },
+  "discord": {
+    "error": null,
+    "outcome": "skipped",
+    "requested": false,
+    "serverId": "112233445566778899"
+  },
+  "guildId": "112233445566778899",
+  "purged": true,
+  "stop": {
+    "disconnectedOverlaySockets": 0,
+    "releasedPlayingJobs": 0
+  }
+}

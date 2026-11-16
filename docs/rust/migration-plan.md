@@ -153,11 +153,11 @@ Ajouts : `RUST_LOG`, `MEDIA_MAX_CONCURRENT_INGESTIONS=2`, `MEDIA_URL_TTL_SEC=300
 
 | Existant | Devenir |
 |---|---|
-| `server/` | Remplacé par `crates/*` + `apps/lc-server` + `static/admin` ; supprimé après cutover |
-| `overlay/src/main`, `preload`, `shared` | Remplacés par `apps/lc-overlay` (Rust + bridge) |
-| `overlay/renderer/**` | Conservé, copié dans `apps/lc-overlay/web/` |
+| `server/` | Remplacé par `crates/*` + `apps/lc-server` + `static/admin` ; supprimé (archive : tag `legacy-ts-2.0.2`) |
+| `overlay/src/main`, `preload`, `shared` | Remplacés par `apps/lc-overlay` (Rust + bridge) ; supprimés (tag `legacy-ts-2.0.2`) |
+| `overlay/renderer/**` | Copié dans `apps/lc-overlay/web/`, puis supprimé avec `overlay/` |
 | `extension/` | Inchangé |
-| workflows server/overlay | Remplacés par `rust.yml`, `server-image.yml`, `overlay-release.yml` |
+| workflows server/overlay | Remplacés par `rust.yml`, `server-image.yml`, `overlay-tauri.yml` ; `server.yml` et `overlay-ci.yml` supprimés |
 
 ## 12. Addendum — Phase 0 exécutée (2026-11-09)
 

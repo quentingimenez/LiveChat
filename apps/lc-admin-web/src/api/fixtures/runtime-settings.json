@@ -1,0 +1,59 @@
+{
+  "hasTikTokCookie": false,
+  "readOnly": {
+    "adminDiscordUserIds": 0,
+    "adminSecretSet": true,
+    "adminTrustForwardedFor": false,
+    "adminUiLocalOnly": true,
+    "apiUrl": "http://localhost:3000/",
+    "databaseConfigured": true,
+    "discordClientSecretSet": false,
+    "discordTokenSet": false,
+    "ingestApiTokenSet": false,
+    "mediaStorageDir": "/app/data/media",
+    "port": 3000
+  },
+  "settings": {
+    "defaultDuration": {
+      "default": 5,
+      "source": "env",
+      "value": 5
+    },
+    "mediaBoardMaxTotalMb": {
+      "default": 15360,
+      "source": "env",
+      "value": 15360
+    },
+    "mediaCacheMaxTotalMb": {
+      "default": 5120,
+      "source": "env",
+      "value": 5120
+    },
+    "mediaCacheTtlHours": {
+      "default": 12,
+      "source": "env",
+      "value": 12
+    },
+    "mediaMaxSizeMb": {
+      "default": 2048,
+      "source": "env",
+      "value": 2048
+    },
+    "mediaVideoMaxHeight": {
+      "default": 1080,
+      "source": "env",
+      "value": 1080
+    },
+    "minOverlayVersion": {
+      "default": "3.0.0",
+      "source": "env",
+      "value": "3.0.0"
+    },
+    "ttsEnabled": {
+      "default": true,
+      "source": "env",
+      "value": true
+    }
+  },
+  "tiktokCookie": ""
+}

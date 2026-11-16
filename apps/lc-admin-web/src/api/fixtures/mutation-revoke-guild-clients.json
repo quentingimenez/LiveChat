@@ -1,0 +1,14 @@
+{
+  "guildId": "112233445566778899",
+  "revoked": {
+    "ingestClients": 1,
+    "invites": 4,
+    "members": 2,
+    "overlayClients": 1,
+    "pairingCodes": 0
+  },
+  "stop": {
+    "disconnectedOverlaySockets": 0,
+    "releasedPlayingJobs": 0
+  }
+}

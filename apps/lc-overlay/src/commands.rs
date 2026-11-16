@@ -21,7 +21,7 @@ use tauri::{AppHandle, Manager, State, WebviewWindow, Wry};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
-use crate::config::{LayoutZone, MediaBindings, OverlayConfigView};
+use crate::config::{LayoutZone, MediaBindings, Membership, OverlayConfigView};
 use crate::events;
 use crate::layout_preview;
 use crate::net::api;
@@ -80,6 +80,7 @@ const COMMAND_MATRIX: &[(&str, &[&str])] = &[
             "guild_set_muted",
             "guild_leave",
             "guild_api",
+            "board_import",
             "settings_get",
             "settings_set",
             "settings_identify_displays",
@@ -1313,6 +1314,84 @@ pub async fn guild_api(
     Ok(response)
 }
 
+/// Path of the server route copying board items from another guild.
+const BOARD_IMPORT_PATH: &str = "/overlay/media-board/import";
+/// Header carrying the source guild's overlay token on [`BOARD_IMPORT_PATH`].
+const SOURCE_TOKEN_HEADER: &str = "X-LiveChat-Source-Token";
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct BoardImportRequest {
+    source_guild_id: Option<String>,
+    target_guild_id: Option<String>,
+    item_ids: Vec<String>,
+}
+
+/// `true` when both memberships talk to the same server (the media files are
+/// shared only there).
+fn same_server(a: &Membership, b: &Membership) -> bool {
+    fn key(url: &str) -> String {
+        url.trim().trim_end_matches('/').to_ascii_lowercase()
+    }
+    key(&a.server_url) == key(&b.server_url)
+}
+
+/// `board_import` — copies board items of `sourceGuildId` to the board of
+/// `targetGuildId`. Both tokens stay in the shell: the target's is the bearer,
+/// the source's goes in `X-LiveChat-Source-Token`.
+#[tauri::command]
+pub async fn board_import(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+    state: State<'_, AppState>,
+    payload: Value,
+) -> Result<api::ApiResponse, String> {
+    ensure_allowed(&window, "board_import")?;
+    let parsed = serde_json::from_value::<BoardImportRequest>(payload).unwrap_or_default();
+    let config = state.config_snapshot();
+    let find = |id: Option<&str>| {
+        id.and_then(|id| config.membership(id))
+            .cloned()
+            .ok_or_else(|| "guilde inconnue".to_string())
+    };
+    let source = find(parsed.source_guild_id.as_deref())?;
+    let target = find(parsed.target_guild_id.as_deref())?;
+    if source.guild_id == target.guild_id {
+        return Err("même guilde".to_string());
+    }
+    if !same_server(&source, &target) {
+        return Err("serveurs différents".to_string());
+    }
+    let response = api::request_with_headers(
+        &target,
+        "POST",
+        BOARD_IMPORT_PATH,
+        Some(serde_json::json!({ "itemIds": parsed.item_ids })),
+        &[(SOURCE_TOKEN_HEADER, source.client_token.as_str())],
+    )
+    .await?;
+    reconnect_on_unauthorized(
+        &app,
+        import_unauthorized_guild(&source, &target, &response),
+        &response,
+    );
+    Ok(response)
+}
+
+/// Guild whose token a `401` of [`board_import`] puts in doubt: the source's
+/// when the server names its header, the target's (the bearer) otherwise.
+fn import_unauthorized_guild<'a>(
+    source: &'a Membership,
+    target: &'a Membership,
+    response: &api::ApiResponse,
+) -> &'a str {
+    if response.body.get("error").and_then(Value::as_str) == Some("invalid_source_token") {
+        &source.guild_id
+    } else {
+        &target.guild_id
+    }
+}
+
 /// `media_upload_start` — begins a raw, streamed file upload to the board.
 #[tauri::command]
 pub fn media_upload_start(
@@ -1506,7 +1585,63 @@ pub async fn overlay_install_update(
 
 #[cfg(test)]
 mod tests {
-    use super::{command_allowed, is_local_stop_report, local_stop_payload};
+    use super::{
+        command_allowed, import_unauthorized_guild, is_local_stop_report, local_stop_payload,
+        same_server,
+    };
+    use crate::config::Membership;
+    use crate::net::api::ApiResponse;
+
+    fn on(server_url: &str) -> Membership {
+        Membership {
+            server_url: server_url.to_string(),
+            ..Membership::default()
+        }
+    }
+
+    #[test]
+    fn same_server_ignores_case_and_trailing_slash() {
+        assert!(same_server(
+            &on("https://LC.example.test/"),
+            &on(" https://lc.example.test")
+        ));
+    }
+
+    #[test]
+    fn same_server_refuses_another_host() {
+        assert!(!same_server(&on("https://a.test"), &on("https://b.test")));
+    }
+
+    #[test]
+    fn a_rejected_source_token_puts_the_source_guild_in_doubt() {
+        let source = Membership {
+            guild_id: "a".to_string(),
+            ..Membership::default()
+        };
+        let target = Membership {
+            guild_id: "b".to_string(),
+            ..Membership::default()
+        };
+        let response = |error: &str| ApiResponse {
+            ok: false,
+            status: 401,
+            body: serde_json::json!({ "error": error }),
+        };
+        assert_eq!(
+            import_unauthorized_guild(&source, &target, &response("invalid_source_token")),
+            "a"
+        );
+        assert_eq!(
+            import_unauthorized_guild(&source, &target, &response("unauthorized")),
+            "b"
+        );
+    }
+
+    #[test]
+    fn board_import_is_a_board_command_only() {
+        assert!(command_allowed("board", "board_import"));
+        assert!(!command_allowed("overlay", "board_import"));
+    }
 
     #[test]
     fn local_stop_is_a_board_command_only() {

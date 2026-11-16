@@ -26,7 +26,9 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Value};
 
-use lc_domain::entities::MediaAsset;
+use lc_domain::entities::{GuildMember, IngestClient, MediaAsset};
+use lc_domain::ids::GuildMemberId;
+use lc_domain::rights::{Action, Surface};
 use lc_protocol::{BoardChange, BoardChangedPayload, ServerMessage};
 
 use crate::app::AppState;
@@ -39,6 +41,43 @@ use crate::media::MediaService;
 use super::auth::{self, IngestAuth};
 use super::body::NormalizedIngest;
 use super::{invalid_payload, media_service_error, simple_error, DEFAULT_INGEST_AUTHOR_NAME};
+
+/// Author prefix of an ingest client paired from the overlay (`member:<id>`).
+///
+/// Mirrors `overlay::ingest_code::INGEST_CODE_CREATOR_PREFIX`: the pairing code
+/// that created the client records the member id instead of a Discord
+/// snowflake.
+const MEMBER_AUTHOR_PREFIX: &str = "member:";
+
+/// Member that owns an ingest client.
+///
+/// An ingest client has no foreign key to `guild_members`: the author recorded
+/// at pairing time is the link. Overlay-issued codes store `member:<id>`; codes
+/// issued from Discord store the Discord snowflake, resolved against
+/// `guild_members.discord_user_id` (the same rule as `admin/ingest_authors.rs`
+/// uses to list known authors). A removed member resolves to `None`.
+async fn owning_member(
+    db: &lc_db::Db,
+    client: &IngestClient,
+) -> Result<Option<GuildMember>, lc_db::DbError> {
+    let author = client.created_by_discord_user_id.trim();
+    if let Some(raw_member_id) = author.strip_prefix(MEMBER_AUTHOR_PREFIX) {
+        let Ok(member_id) = GuildMemberId::parse(raw_member_id) else {
+            return Ok(None);
+        };
+        return Ok(db
+            .guild_members()
+            .get(member_id)
+            .await?
+            .filter(|member| member.is_active() && member.guild_id == client.guild_id));
+    }
+    if author.is_empty() {
+        return Ok(None);
+    }
+    db.guild_members()
+        .find_active_by_discord_user(&client.guild_id, author)
+        .await
+}
 
 /// Handler de `POST /ingest`.
 pub async fn submit(
@@ -57,6 +96,28 @@ pub async fn submit(
         }
         Err(error) => return media_service_error(error),
     };
+
+    // 1b. The extension surface re-reads the member owning the ingest client at
+    //     every submission: a removed member or a denied `extension.send` is
+    //     `403 forbidden_role`.
+    let Some(db) = state.db.as_ref() else {
+        tracing::error!("client d'ingestion authentifié sans base de données");
+        return super::internal_error();
+    };
+    let role = match owning_member(db, &client).await {
+        Ok(Some(member)) => member.role,
+        Ok(None) => return simple_error(StatusCode::FORBIDDEN, "forbidden_role"),
+        Err(error) => {
+            tracing::error!(error = %error, "reading the member of an ingest client failed");
+            return super::internal_error();
+        }
+    };
+    if !state
+        .rights
+        .allowed(Surface::Extension, Action::Send, role.into())
+    {
+        return simple_error(StatusCode::FORBIDDEN, "forbidden_role");
+    }
 
     // 2. Corps JSON : un JSON malformé est une erreur de payload dédiée, pas
     // un `request_error` générique (AUD-A2-009).
@@ -124,12 +185,6 @@ pub async fn submit(
         .default_author_image
         .clone()
         .filter(|value| !value.trim().is_empty());
-
-    let Some(db) = state.db.as_ref() else {
-        // Un client authentifié implique une base ; garde-fou défensif.
-        tracing::error!("client d'ingestion authentifié sans base de données");
-        return super::internal_error();
-    };
 
     // 7. Ingestion média (si une source est fournie).
     let mut service: Option<MediaService> = None;
@@ -220,7 +275,7 @@ pub async fn submit(
         priority: 0,
     };
 
-    match jobs::create_for_ingest(db, state.config.default_duration, spec, now).await {
+    match jobs::create_for_ingest(db, state.runtime().default_duration(), spec, now).await {
         Ok(job) => {
             hook::notify_ingested(&job).await;
             let payload = json!({
@@ -248,8 +303,9 @@ mod tests {
     use axum::Router;
     use chrono::{Duration, Utc};
     use lc_db::{Db, DbConfig};
-    use lc_domain::entities::IngestClient;
-    use lc_domain::ids::{GuildId, IngestClientId, PlaybackJobId};
+    use lc_domain::entities::{GuildMember, IngestClient};
+    use lc_domain::ids::{GuildId, GuildMemberId, IngestClientId, PlaybackJobId};
+    use lc_domain::GuildRole;
     use serde_json::{json, Value};
     use tower::ServiceExt;
 
@@ -284,9 +340,25 @@ mod tests {
 
     async fn insert_client(db: &Db) {
         let now = Utc::now();
+        let guild_id = GuildId::parse(GUILD).expect("guilde");
+        // The ingest client is linked to its author, whose guild member owns
+        // the `extension.send` right (the client has no member foreign key).
+        let member = GuildMember {
+            id: GuildMemberId::new_v4(),
+            guild_id: guild_id.clone(),
+            display_name: "Alice".into(),
+            avatar: None,
+            role: GuildRole::Member,
+            created_at: now,
+            removed_at: None,
+            discord_user_id: Some("42".to_owned()),
+            profile_custom: false,
+            discord_synced_at: None,
+        };
+        db.guild_members().create(&member).await.expect("membre");
         let client = IngestClient {
             id: IngestClientId::new_v4(),
-            guild_id: GuildId::parse(GUILD).expect("guilde"),
+            guild_id,
             label: "Extension-Test".into(),
             token_hash: hash_ingest_token(TOKEN),
             default_author_name: "LiveChat Extension".into(),

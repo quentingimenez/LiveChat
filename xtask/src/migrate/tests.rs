@@ -882,16 +882,23 @@ async fn registre_sqlx_compatible_boot_et_deuxieme_boot() {
     db.close().await;
 
     let mut target = open_readonly(&to).await;
+    let migration_files = std::fs::read_dir(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/lc-db/migrations"),
+    )
+    .expect("dossier des migrations")
+    .filter_map(Result::ok)
+    .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "sql"))
+    .count();
     assert_eq!(
         scalar_i64(&mut target, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-        9,
-        "le registre doit contenir 0001 (seedée par le migrateur), puis 0002 à 0009 \
-         (appliquées par sqlx au premier boot)"
+        i64::try_from(migration_files).expect("nombre de migrations"),
+        "le registre doit contenir 0001 (seedée par le migrateur), puis toutes les \
+         suivantes (appliquées par sqlx au premier boot), sans doublon"
     );
     assert_eq!(
         scalar_i64(&mut target, "SELECT MAX(version) FROM _sqlx_migrations").await,
-        9,
-        "0002 à 0009 doivent être appliquées au premier démarrage"
+        i64::try_from(migration_files).expect("nombre de migrations"),
+        "toutes les migrations doivent être appliquées au premier démarrage"
     );
     assert!(
         scalar_i64(&mut target, "SELECT COUNT(*) FROM media_board_items").await > 0,

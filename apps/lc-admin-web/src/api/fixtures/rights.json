@@ -1,0 +1,511 @@
+{
+  "discordAdminIsAdmin": true,
+  "surfaces": [
+    {
+      "actions": [
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "guest": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "member": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            }
+          },
+          "id": "receiveMedia"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "guest": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            },
+            "member": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            }
+          },
+          "id": "viewQueue"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "guest": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            },
+            "member": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            }
+          },
+          "id": "viewBoard"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "guest": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "member": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            }
+          },
+          "id": "triggerPlayback"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "guest": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "member": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            }
+          },
+          "id": "stopPlayback"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "guest": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "member": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            }
+          },
+          "id": "addMedia"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "guest": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "member": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            }
+          },
+          "id": "editOwnMedia"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "guest": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "member": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            }
+          },
+          "id": "editAnyMedia"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "guest": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "member": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            }
+          },
+          "id": "moderateQueue"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "guest": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "member": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            }
+          },
+          "id": "manageMembers"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "guest": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "member": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            }
+          },
+          "id": "manageInvites"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "guest": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "member": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            }
+          },
+          "id": "manageSettings"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "guest": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "member": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            }
+          },
+          "id": "purgeGuild"
+        }
+      ],
+      "columns": [
+        "guest",
+        "member",
+        "admin"
+      ],
+      "id": "overlay"
+    },
+    {
+      "actions": [
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "guest": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "member": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            }
+          },
+          "id": "pair"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "guest": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "member": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            }
+          },
+          "id": "send"
+        }
+      ],
+      "columns": [
+        "guest",
+        "member",
+        "admin"
+      ],
+      "id": "extension"
+    },
+    {
+      "actions": [
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            },
+            "guest": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "member": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            },
+            "none": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            }
+          },
+          "id": "msg"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            },
+            "guest": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "member": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            },
+            "none": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            }
+          },
+          "id": "tts"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            },
+            "guest": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "member": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            },
+            "none": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            }
+          },
+          "id": "mediaAdd"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            },
+            "guest": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "member": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "none": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            }
+          },
+          "id": "stop"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            },
+            "guest": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "member": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            },
+            "none": {
+              "allowed": false,
+              "default": false,
+              "fixed": false
+            }
+          },
+          "id": "overlays"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            },
+            "guest": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            },
+            "member": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            },
+            "none": {
+              "allowed": true,
+              "default": true,
+              "fixed": false
+            }
+          },
+          "id": "pairCode"
+        },
+        {
+          "cells": {
+            "admin": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "guest": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "member": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            },
+            "none": {
+              "allowed": true,
+              "default": true,
+              "fixed": true
+            }
+          },
+          "id": "info"
+        }
+      ],
+      "columns": [
+        "none",
+        "guest",
+        "member",
+        "admin"
+      ],
+      "id": "discord"
+    }
+  ]
+}

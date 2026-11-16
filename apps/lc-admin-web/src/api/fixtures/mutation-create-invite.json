@@ -1,0 +1,15 @@
+{
+  "created": true,
+  "invite": {
+    "code": "YMA4W7FN",
+    "createdAt": "2026-11-16T05:56:30.163Z",
+    "createdByMemberId": null,
+    "expiresAt": "2026-11-17T05:56:30.163Z",
+    "isActive": true,
+    "maxUses": null,
+    "memberId": null,
+    "revokedAt": null,
+    "role": "member",
+    "useCount": 0
+  }
+}

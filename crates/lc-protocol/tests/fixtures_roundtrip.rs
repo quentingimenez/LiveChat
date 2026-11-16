@@ -76,6 +76,11 @@ const FIXTURES: &[(&str, Direction, &str)] = &[
         Direction::Client,
         msg_type::ERROR,
     ),
+    (
+        "v2_device_settings_state.json",
+        Direction::Client,
+        msg_type::DEVICE_SETTINGS_STATE,
+    ),
     // ---- S→C ----
     (
         "v2_welcome_initial.json",
@@ -154,6 +159,21 @@ const FIXTURES: &[(&str, Direction, &str)] = &[
         "v2_board_changed.json",
         Direction::Server,
         msg_type::BOARD_CHANGED,
+    ),
+    (
+        "v2_device_settings.json",
+        Direction::Server,
+        msg_type::DEVICE_SETTINGS,
+    ),
+    (
+        "v2_session_changed.json",
+        Direction::Server,
+        msg_type::SESSION_CHANGED,
+    ),
+    (
+        "v2_rights_changed.json",
+        Direction::Server,
+        msg_type::RIGHTS_CHANGED,
     ),
 ];
 
@@ -257,7 +277,7 @@ fn every_fixture_file_is_covered_by_the_golden_table() {
     expected.sort();
     assert_eq!(
         on_disk, expected,
-        "la table des fixtures doit référencer exactement les 32 fichiers golden"
+        "la table des fixtures doit référencer exactement les fichiers golden"
     );
 }
 
@@ -590,4 +610,81 @@ fn unknown_play_and_tweet_card_fields_are_preserved() {
 
     let serialized = serde_json::to_value(&envelope).expect("re-sérialisation play");
     assert_eq!(serialized, value);
+}
+
+#[test]
+fn hello_carries_the_platform_and_omits_it_when_absent() {
+    let value = read_fixture("v2_hello_normal.json");
+    let envelope: ClientEnvelope = serde_json::from_value(value).expect("hello avec plateforme");
+    let ClientMessage::Hello(hello) = envelope.message else {
+        panic!("la fixture doit être un hello");
+    };
+    assert_eq!(hello.platform, Some(lc_protocol::Platform::Windows));
+
+    let value = read_fixture("v2_hello_minimal.json");
+    let envelope: ClientEnvelope = serde_json::from_value(value).expect("hello minimal");
+    let ClientMessage::Hello(hello) = envelope.message else {
+        panic!("la fixture minimale doit être un hello");
+    };
+    assert!(hello.platform.is_none());
+    let serialized = serde_json::to_value(ClientEnvelope::new(
+        "cli-hello-0003",
+        1_794_182_400_000,
+        ClientMessage::Hello(hello),
+    ))
+    .expect("re-sérialisation hello minimal");
+    assert!(serialized
+        .get("payload")
+        .and_then(Value::as_object)
+        .is_some_and(|payload| !payload.contains_key("platform")));
+}
+
+#[test]
+fn platform_maps_the_known_operating_systems() {
+    use lc_protocol::Platform;
+    assert_eq!(Platform::from_os("windows"), Some(Platform::Windows));
+    assert_eq!(Platform::from_os("macos"), Some(Platform::Macos));
+    assert_eq!(Platform::from_os("linux"), Some(Platform::Linux));
+    assert_eq!(Platform::from_os("freebsd"), None);
+    assert_eq!(Platform::Windows.as_str(), "windows");
+    assert_eq!(Platform::Macos.as_str(), "macos");
+    assert_eq!(Platform::Linux.as_str(), "linux");
+    assert_eq!(
+        serde_json::to_value(Platform::Macos).expect("platform"),
+        Value::String("macos".to_owned())
+    );
+}
+
+#[test]
+fn device_settings_partial_payload_omits_absent_fields() {
+    let payload: lc_protocol::DeviceSettingsPayload =
+        serde_json::from_value(serde_json::json!({"mediaMuted": true})).expect("partial payload");
+    assert!(payload.volume.is_none());
+    assert_eq!(payload.media_muted, Some(true));
+    assert!(payload.paused.is_none());
+    assert_eq!(
+        serde_json::to_value(payload).expect("sérialisation"),
+        serde_json::json!({"mediaMuted": true})
+    );
+    assert!(lc_protocol::DeviceSettingsPayload::default().is_empty());
+}
+
+#[test]
+fn new_server_messages_carry_the_expected_payloads() {
+    let value = read_fixture("v2_session_changed.json");
+    let envelope: ServerEnvelope = serde_json::from_value(value).expect("session.changed");
+    let ServerMessage::SessionChanged(payload) = envelope.message else {
+        panic!("la fixture doit être un session.changed");
+    };
+    assert_eq!(
+        payload.session_mode,
+        lc_protocol::SessionMode::InviteReadOnly
+    );
+
+    let value = read_fixture("v2_rights_changed.json");
+    let envelope: ServerEnvelope = serde_json::from_value(value).expect("rights.changed");
+    assert!(matches!(
+        envelope.message,
+        ServerMessage::RightsChanged(lc_protocol::RightsChangedPayload {})
+    ));
 }

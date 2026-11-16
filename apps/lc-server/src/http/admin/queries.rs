@@ -20,20 +20,35 @@ pub struct OverlayClientRow {
     pub default_author_name: Option<String>,
     pub default_author_image: Option<String>,
     pub session_mode: String,
+    pub overlay_version: Option<String>,
+    pub platform: Option<String>,
     pub last_seen_at: Option<i64>,
     pub created_at: i64,
 }
 
+const OVERLAY_CLIENT_COLUMNS: &str = "id, guild_id, label, default_author_name, \
+     default_author_image, session_mode, overlay_version, platform, last_seen_at, created_at";
+
 /// Clients overlay actifs, triés comme le legacy (guilde puis libellé).
 pub async fn overlay_clients(db: &Db) -> Result<Vec<OverlayClientRow>, DbError> {
-    sqlx::query_as::<_, OverlayClientRow>(
-        "SELECT id, guild_id, label, default_author_name, default_author_image, \
-                session_mode, last_seen_at, created_at \
-         FROM overlay_clients \
+    sqlx::query_as::<_, OverlayClientRow>(&format!(
+        "SELECT {OVERLAY_CLIENT_COLUMNS} FROM overlay_clients \
          WHERE revoked_at IS NULL \
-         ORDER BY guild_id ASC, label ASC",
-    )
+         ORDER BY guild_id ASC, label ASC"
+    ))
     .fetch_all(db.pool())
+    .await
+    .map_err(DbError::from)
+}
+
+/// One active overlay client by id (used by the device-control routes).
+pub async fn overlay_client(db: &Db, client_id: &str) -> Result<Option<OverlayClientRow>, DbError> {
+    sqlx::query_as::<_, OverlayClientRow>(&format!(
+        "SELECT {OVERLAY_CLIENT_COLUMNS} FROM overlay_clients \
+         WHERE id = ?1 AND revoked_at IS NULL"
+    ))
+    .bind(client_id)
+    .fetch_optional(db.pool())
     .await
     .map_err(DbError::from)
 }

@@ -21,11 +21,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use lc_domain::entities::PlaybackJob;
 use lc_domain::ids::GuildId;
-use lc_protocol::ServerMessage;
+use lc_protocol::{DeviceSettingsStatePayload, ServerMessage, SessionMode};
 use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::http::admin::hub::AdminHub;
+use crate::http::admin::AdminEvents;
 use crate::media::hook::{install_ingest_hook, IngestHook};
 use crate::ws::Hub;
 
@@ -63,6 +64,18 @@ impl AdminHub for Hub {
         Hub::broadcast_message(self, guild_id, message)
     }
 
+    fn device_settings(&self, client_id: &Uuid) -> Option<DeviceSettingsStatePayload> {
+        Hub::device_settings(self, client_id)
+    }
+
+    fn set_session_mode(&self, client_id: &Uuid, mode: SessionMode) -> bool {
+        Hub::set_session_mode(self, client_id, mode)
+    }
+
+    fn broadcast_all(&self, message: ServerMessage) -> usize {
+        Hub::broadcast_all(self, message)
+    }
+
     async fn broadcast_stop(&self, guild_id: &GuildId) -> usize {
         Hub::broadcast_stop(self, guild_id).await
     }
@@ -83,13 +96,14 @@ impl AdminHub for Hub {
 /// suivant (aucune perte, comportement legacy équivalent).
 pub struct IngestNotifier {
     hub: Arc<Hub>,
+    events: AdminEvents,
 }
 
 impl IngestNotifier {
     /// Crée le hook pour le hub donné.
     #[must_use]
-    pub fn new(hub: Arc<Hub>) -> Self {
-        Self { hub }
+    pub fn new(hub: Arc<Hub>, events: AdminEvents) -> Self {
+        Self { hub, events }
     }
 }
 
@@ -114,6 +128,8 @@ impl IngestHook for IngestNotifier {
                     "job mis en file ; moteur de lecture pas encore démarré"
                 ),
             }
+            // The queue changed: refresh the admin overview.
+            self.events.overview_changed();
         })
     }
 }
@@ -124,8 +140,10 @@ impl IngestHook for IngestNotifier {
 /// AUD-COR-14 : le hub n'est plus un `OnceLock` global ; il est injecté dans
 /// [`AppState::with_admin_hub`] par `serve()` avant la construction du routeur.
 pub fn install(state: &AppState, hub: &Arc<Hub>) {
-    let _ = state;
-    install_ingest_hook(Arc::new(IngestNotifier::new(Arc::clone(hub))));
+    install_ingest_hook(Arc::new(IngestNotifier::new(
+        Arc::clone(hub),
+        state.events.clone(),
+    )));
 }
 
 #[cfg(test)]
@@ -165,7 +183,7 @@ mod tests {
 
     #[tokio::test]
     async fn ingest_notifier_without_engine_is_a_noop() {
-        let notifier = IngestNotifier::new(hub());
+        let notifier = IngestNotifier::new(hub(), AdminEvents::new());
         let now = chrono::Utc::now();
         let job = PlaybackJob {
             id: lc_domain::ids::PlaybackJobId::new_v4(),

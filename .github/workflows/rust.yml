@@ -232,6 +232,21 @@ jobs:
       # nextest n'exécute pas les doctests : étape séparée.
       - name: doctests
         run: cargo test --workspace --doc --locked
+      # End-to-end tests of the admin console: Chromium against the real
+      # lc-server binary (fresh database, see apps/lc-admin-web/e2e/server.mjs).
+      - name: Build lc-server for the console E2E
+        if: runner.os == 'Linux'
+        run: cargo build -p lc-server --bin lc-server --locked
+      - name: Install Playwright Chromium
+        if: runner.os == 'Linux'
+        working-directory: apps/lc-admin-web
+        run: npx playwright install --with-deps chromium
+      - name: Admin console E2E
+        if: runner.os == 'Linux'
+        working-directory: apps/lc-admin-web
+        env:
+          LC_SERVER_BIN: ${{ github.workspace }}/target/debug/lc-server
+        run: npm run e2e
 
   deny:
     name: deny (bloquant)

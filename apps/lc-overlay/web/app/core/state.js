@@ -30,6 +30,11 @@ export const state = {
   invites: [],
   bindings: {},
   capturing: false,
+  // Selection mode of the board (see views/board.js): picked item ids and the
+  // last picked one, the start of a Shift+click range.
+  selecting: false,
+  selection: new Set(),
+  selectionAnchor: null,
 };
 
 export const ROLE_LABELS = { admin: 'Admin', member: 'Membre', guest: 'Invité' };

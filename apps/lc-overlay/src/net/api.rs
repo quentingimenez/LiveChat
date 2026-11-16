@@ -75,6 +75,17 @@ pub async fn request(
     path: &str,
     body: Option<Value>,
 ) -> Result<ApiResponse, String> {
+    request_with_headers(membership, method, path, body, &[]).await
+}
+
+/// [`request`] with extra request headers (e.g. a second guild's token).
+pub async fn request_with_headers(
+    membership: &Membership,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    headers: &[(&str, &str)],
+) -> Result<ApiResponse, String> {
     let method = parse_method(method)?;
     let insecure = tls::insecure_tls_enabled();
     let url = build_url(&membership.server_url, path, insecure)?;
@@ -90,6 +101,9 @@ pub async fn request(
     let mut request = client
         .request(method, url)
         .bearer_auth(&membership.client_token);
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
     if let Some(body) = body {
         request = request.json(&body);
     }

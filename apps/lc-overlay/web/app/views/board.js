@@ -30,6 +30,7 @@ import {
 import { h, icon, registerIcons } from '../core/dom.js';
 import { formatDuration } from '../core/format.js';
 import { cardRatio, cardStyle } from '../core/masonry.js';
+import { cardClickAction, escapeAction, importTargets, menuTargetIds, selectRange, toggleId } from '../core/selection.js';
 import { invoke } from '../core/ipc.js';
 import { activeGuild, can, describeError, KIND_LABELS, state } from '../core/state.js';
 import { previewVolume } from '../core/sound.js';
@@ -37,6 +38,7 @@ import { notify } from '../core/toast.js';
 import { confirmDialog, copyText, openDialog } from '../core/ui.js';
 import { loadItems, refreshQueueAutomatically } from '../data.js';
 import { openAddDialog } from './add-media.js';
+import { openImportDialog } from './import-media.js';
 import { openSayDialog } from './say.js';
 import { canOpenEditor, openMediaEditor } from './editor/index.js';
 import { openUploadMenu, renderUploadCard, startFileUpload, uploadsForGuild } from './uploads.js';
@@ -45,6 +47,7 @@ import { renderView } from './view.js';
 registerIcons({
   star: 'M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z',
   filter: 'M4 6h16M7 12h10M10 18h4',
+  check: 'M5 12.5l4.5 4.5L19 7',
 });
 
 export function itemTitle(item) {
@@ -84,6 +87,9 @@ function openCardMenu(event, item) {
         }
       : null,
     copyable ? { label: 'Copier le lien d’origine', icon: 'copy', onSelect: () => copyText(sourceUrl, 'Lien copié.') } : null,
+    importTargets(state.guilds, state.activeGuildId).length > 0
+      ? { label: 'Ajouter à une autre guilde…', onSelect: () => openImportDialog(menuItemIds(item), leaveSelection) }
+      : null,
     item.canEdit ? 'separator' : null,
     item.canEdit ? { label: 'Supprimer…', icon: 'remove', danger: true, onSelect: () => openDeleteDialog(item) } : null,
   ]);
@@ -350,16 +356,24 @@ function buildCard(entry) {
       'data-kind': artwork ? 'image' : kind,
       'data-item-id': item.id,
       'aria-label': `Détails de ${itemTitle(item)}`,
-      onClick: (event) => selectItem(entry.item.id, event.detail),
+      onClick: (event) => {
+        const action = cardClickAction({ selecting: state.selecting, shiftKey: event.shiftKey });
+        if (action === 'details') {
+          selectItem(entry.item.id, event.detail);
+        } else {
+          pickItem(entry.item.id, action === 'range');
+        }
+      },
       // A double click plays the media, like the Play button. It leaves the
       // drawer as it was (see selectItem).
       onDblclick: () => {
-        if (can('play')) {
+        if (can('play') && !state.selecting) {
           playItem(entry.item);
         }
       },
     },
     h('span', { class: 'glyph' }, icon(kind === 'audio' ? 'audio' : kind === 'image' ? 'image' : 'video')),
+    h('span', { class: 'pick', 'aria-hidden': 'true' }, icon('check')),
     artwork ? h('span', { class: 'kind-badge', 'aria-hidden': 'true' }, icon('audio')) : null,
     formatDuration(item.media.durationSec) ? h('span', { class: 'duration' }, formatDuration(item.media.durationSec)) : null,
   );
@@ -375,7 +389,11 @@ function buildCard(entry) {
       // Height of the media's own shape (masonry, see core/masonry.js).
       style: cardStyle(cardRatio(ratio)),
       onContextmenu: (event) => openCardMenu(event, entry.item),
-      onMouseenter: () => hoverDetail(entry.item.id),
+      onMouseenter: () => {
+        if (!state.selecting) {
+          hoverDetail(entry.item.id);
+        }
+      },
       onMouseleave: leaveCard,
     },
     h(
@@ -428,6 +446,7 @@ function renderCard(item) {
     }
   }
   entry.node.classList.toggle('is-selected', state.selectedId === item.id);
+  entry.node.classList.toggle('is-picked', state.selection.has(item.id));
   syncFavorite(entry.node, Boolean(item.favorite));
   syncBadge(entry.node, triggerBadgeFor(item.id));
   return entry.node;
@@ -509,6 +528,17 @@ export function renderBoard() {
       filterCount > 0 ? `Filtres · ${filterCount}` : 'Filtres',
     ),
     h('span', { class: 'spacer' }),
+    state.items.length > 0
+      ? h(
+          'button',
+          {
+            class: `btn is-quiet${state.selecting ? ' is-active' : ''}`,
+            'aria-pressed': String(state.selecting),
+            onClick: () => (state.selecting ? leaveSelection() : enterSelection()),
+          },
+          state.selecting ? 'Terminer' : 'Sélectionner',
+        )
+      : null,
     h('button', { class: 'btn is-quiet', title: 'Recharger le board', 'aria-label': 'Recharger le board', onClick: loadItems }, icon('refresh')),
     can('play') ? h('button', { class: 'btn', title: 'Faire lire un texte à voix haute sur les overlays', onClick: () => openSayDialog() }, icon('sound'), 'Dire') : null,
     can('addMedia') ? h('button', { class: 'btn', onClick: openAddDialog }, icon('plus'), 'Ajouter un média') : null,
@@ -528,7 +558,7 @@ export function renderBoard() {
     content = h('p', { class: 'meta' }, 'Aucun média ne correspond à cette recherche ou à ces filtres.');
   } else {
     // Provisional cards always come first, whatever the search and filter.
-    content = h('div', { class: 'grid', id: 'grid' }, uploads.map(uploadCard), items.map(renderCard));
+    content = h('div', { class: `grid${state.selecting ? ' is-selecting' : ''}`, id: 'grid' }, uploads.map(uploadCard), items.map(renderCard));
   }
   return h(
     'div',
@@ -536,6 +566,99 @@ export function renderBoard() {
     toolbar,
     state.filtersOpen ? renderFilters() : null,
     h('div', { class: 'board' }, content, selected ? renderDetail(selected) : null),
+    state.selecting ? renderSelectionBar() : null,
+  );
+}
+
+// --- selection mode: pick several media, then act on all of them ---
+// Bulk actions of the selection bar; each receives the picked ids in board
+// order. Later bulk actions (favorites, deletion…) plug in here.
+const SELECTION_ACTIONS = [
+  {
+    label: 'Ajouter à une autre guilde…',
+    unavailable: () => (importTargets(state.guilds, state.activeGuildId).length === 0 ? 'Aucune autre guilde sur ce serveur' : null),
+    run: (ids) => openImportDialog(ids, leaveSelection),
+  },
+];
+
+export function enterSelection() {
+  clearDrawerTimers();
+  applyView(CLOSED_VIEW);
+  state.capturing = false;
+  state.selecting = true;
+  state.selection = new Set();
+  state.selectionAnchor = null;
+  renderView();
+}
+
+export function leaveSelection() {
+  if (!state.selecting && state.selection.size === 0) {
+    return;
+  }
+  state.selecting = false;
+  state.selection = new Set();
+  state.selectionAnchor = null;
+  if (state.tab === 'board' && state.page === 'guild') {
+    renderView();
+  }
+}
+
+// Picked ids in board order (a filtered-out media stays picked).
+function pickedIds() {
+  return state.items.filter((item) => state.selection.has(item.id)).map((item) => item.id);
+}
+
+// The media a card menu acts on: the whole selection when the card is in it.
+function menuItemIds(item) {
+  return menuTargetIds({
+    selecting: state.selecting,
+    selection: state.selection,
+    itemId: item.id,
+    orderedIds: state.items.map((entry) => entry.id),
+  });
+}
+
+function pickItem(id, range) {
+  state.selection = range
+    ? selectRange(state.selection, visibleItems().map((item) => item.id), state.selectionAnchor, id)
+    : toggleId(state.selection, id);
+  state.selectionAnchor = id;
+  syncSelection();
+}
+
+function pickAllVisible() {
+  state.selection = new Set([...state.selection, ...visibleItems().map((item) => item.id)]);
+  syncSelection();
+}
+
+// Updates the cards and the bar in place (no re-render: videos keep playing).
+function syncSelection() {
+  for (const [id, entry] of cards) {
+    entry.node.classList.toggle('is-picked', state.selection.has(id));
+  }
+  const bar = document.getElementById('selection-bar');
+  if (bar) {
+    bar.replaceWith(renderSelectionBar());
+  }
+}
+
+function renderSelectionBar() {
+  const count = state.selection.size;
+  return h(
+    'div',
+    { class: 'selection-bar', id: 'selection-bar', role: 'toolbar', 'aria-label': 'Sélection' },
+    h('span', { class: 'selection-count' }, count > 1 ? `${count} sélectionnés` : `${count} sélectionné`),
+    h('button', { class: 'btn is-quiet', onClick: pickAllVisible }, 'Tout sélectionner'),
+    h('span', { class: 'spacer' }),
+    ...SELECTION_ACTIONS.map((action) => {
+      const reason = action.unavailable();
+      return h(
+        'button',
+        { class: 'btn', disabled: count === 0 || Boolean(reason), title: reason, onClick: () => action.run(pickedIds()) },
+        action.label,
+      );
+    }),
+    h('button', { class: 'btn is-quiet', onClick: leaveSelection }, 'Annuler'),
   );
 }
 
@@ -786,8 +909,19 @@ if (viewNode && typeof ResizeObserver === 'function') {
 }
 
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && state.selectedId && !state.capturing && !document.getElementById('dialog-root').firstElementChild) {
+  const action = escapeAction({
+    key: event.key,
+    // The context menu handles its own Escape (and prevents its default).
+    handled: event.defaultPrevented,
+    capturing: state.capturing,
+    dialogOpen: Boolean(document.getElementById('dialog-root').firstElementChild),
+    drawerOpen: Boolean(state.selectedId),
+    selecting: state.selecting,
+  });
+  if (action === 'closeDetail') {
     closeDetail();
+  } else if (action === 'leaveSelection') {
+    leaveSelection();
   }
 });
 

@@ -162,6 +162,19 @@ impl GuildInvitesRepository {
         rows.into_iter().map(GuildInviteRow::into_entity).collect()
     }
 
+    /// Number of invitations usable at `now`, all guilds together: not
+    /// revoked, not expired and with uses left (same rule as
+    /// [`GuildInvite::is_usable_at`]).
+    pub async fn count_active(&self, now: DateTime<chrono::Utc>) -> DbResult<i64> {
+        let count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM guild_invites              WHERE revoked_at IS NULL                AND (expires_at IS NULL OR expires_at > ?)                AND (max_uses IS NULL OR use_count < max_uses)",
+        )
+        .bind(to_ms(now))
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count)
+    }
+
     /// Supprime toutes les invitations d'une guilde (purge).
     pub async fn delete_by_guild(&self, guild_id: &GuildId) -> DbResult<u64> {
         let result = sqlx::query("DELETE FROM guild_invites WHERE guild_id = ?")

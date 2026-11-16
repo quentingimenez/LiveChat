@@ -21,6 +21,7 @@ use lc_domain::{Clock, Guild, GuildId, MediaAsset, MediaAssetId, PairingCode, Sy
 
 use crate::error::{BotError, MediaError, MediaLimits, SpeechFailure};
 use crate::i18n::Lang;
+use crate::rights::RightsSource;
 
 /// Alphabet des codes d'appairage (identique au legacy).
 pub const PAIRING_CODE_ALPHABET: &[u8; 32] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -95,6 +96,23 @@ impl BotConfig {
             api_url: api_url.into(),
             ..Self::default()
         }
+    }
+}
+
+/// Source of the bot configuration, read on every use.
+///
+/// The server implements this trait over its hot runtime settings so an admin
+/// console change is visible to the next command without restarting the bot. A
+/// fixed [`BotConfig`] is its own source for tests and callers that never
+/// change it.
+pub trait BotConfigSource: Send + Sync {
+    /// Current configuration snapshot.
+    fn current(&self) -> BotConfig;
+}
+
+impl BotConfigSource for BotConfig {
+    fn current(&self) -> BotConfig {
+        self.clone()
     }
 }
 
@@ -237,14 +255,25 @@ pub trait BotContext: Send + Sync {
     fn db(&self) -> &Db;
     /// Horloge injectée (déterminisme des tests).
     fn clock(&self) -> &dyn Clock;
-    /// Configuration du bot.
-    fn config(&self) -> &BotConfig;
+    /// Current configuration, read from the live source on every call.
+    ///
+    /// Returned by value: the source may be backed by a hot settings store, so
+    /// the previous snapshot must never be cached by a caller that wants the
+    /// current values.
+    fn config(&self) -> BotConfig;
     /// Backend d'ingestion média.
     fn media(&self) -> &dyn MediaBackend;
     /// Backend de lecture.
     fn playback(&self) -> &dyn PlaybackBackend;
     /// Backend du board média.
     fn media_board(&self) -> &dyn MediaBoardBackend;
+
+    /// Live configurable rights table.
+    ///
+    /// The server returns its `RightsStore` cache so a `PUT /admin/api/rights`
+    /// is visible to the next command; tests return a plain
+    /// [`lc_domain::rights::RightsTable`].
+    fn rights(&self) -> &dyn RightsSource;
 
     /// Overlays actuellement connectés pour la guilde.
     async fn list_connected_overlays(
@@ -276,22 +305,24 @@ pub trait BotContext: Send + Sync {
 pub struct DbBotContext<C: Clock = SystemClock> {
     db: Db,
     clock: C,
-    config: BotConfig,
+    config: Arc<dyn BotConfigSource>,
     media: Arc<dyn MediaBackend>,
     playback: Arc<dyn PlaybackBackend>,
     media_board: Arc<dyn MediaBoardBackend>,
     overlays: Arc<dyn OverlayDirectory>,
+    rights: Arc<dyn RightsSource>,
 }
 
 impl DbBotContext<SystemClock> {
     /// Construit un contexte de production.
     pub fn new(
         db: Db,
-        config: BotConfig,
+        config: Arc<dyn BotConfigSource>,
         media: Arc<dyn MediaBackend>,
         playback: Arc<dyn PlaybackBackend>,
         media_board: Arc<dyn MediaBoardBackend>,
         overlays: Arc<dyn OverlayDirectory>,
+        rights: Arc<dyn RightsSource>,
     ) -> Self {
         Self::with_clock(
             db,
@@ -301,20 +332,23 @@ impl DbBotContext<SystemClock> {
             playback,
             media_board,
             overlays,
+            rights,
         )
     }
 }
 
 impl<C: Clock> DbBotContext<C> {
     /// Construit un contexte avec une horloge explicite (tests d'intégration).
+    #[allow(clippy::too_many_arguments)]
     pub fn with_clock(
         db: Db,
         clock: C,
-        config: BotConfig,
+        config: Arc<dyn BotConfigSource>,
         media: Arc<dyn MediaBackend>,
         playback: Arc<dyn PlaybackBackend>,
         media_board: Arc<dyn MediaBoardBackend>,
         overlays: Arc<dyn OverlayDirectory>,
+        rights: Arc<dyn RightsSource>,
     ) -> Self {
         Self {
             db,
@@ -324,6 +358,7 @@ impl<C: Clock> DbBotContext<C> {
             playback,
             media_board,
             overlays,
+            rights,
         }
     }
 
@@ -337,9 +372,9 @@ impl<C: Clock> DbBotContext<C> {
         &self.clock
     }
 
-    /// Référence à la configuration.
-    pub fn config_ref(&self) -> &BotConfig {
-        &self.config
+    /// Current configuration, read from the live source.
+    pub fn config(&self) -> BotConfig {
+        self.config.current()
     }
 }
 
@@ -353,8 +388,8 @@ impl<C: Clock + Send + Sync> BotContext for DbBotContext<C> {
         &self.clock
     }
 
-    fn config(&self) -> &BotConfig {
-        &self.config
+    fn config(&self) -> BotConfig {
+        self.config.current()
     }
 
     fn media(&self) -> &dyn MediaBackend {
@@ -367,6 +402,10 @@ impl<C: Clock + Send + Sync> BotContext for DbBotContext<C> {
 
     fn media_board(&self) -> &dyn MediaBoardBackend {
         self.media_board.as_ref()
+    }
+
+    fn rights(&self) -> &dyn RightsSource {
+        self.rights.as_ref()
     }
 
     async fn list_connected_overlays(
@@ -393,8 +432,13 @@ pub fn now(ctx: &dyn BotContext) -> DateTime<Utc> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{Author, BotConfig, MediaRequest, PAIRING_CODE_ALPHABET, PAIRING_CODE_LENGTH};
+    use std::sync::Arc;
+
+    use super::{
+        Author, BotConfig, BotContext, MediaRequest, PAIRING_CODE_ALPHABET, PAIRING_CODE_LENGTH,
+    };
     use crate::i18n::Lang;
+    use crate::testing::{FakeBotContext, MutableBotConfig};
 
     #[test]
     fn config_par_defaut_comme_le_legacy() {
@@ -411,6 +455,18 @@ mod tests {
         let config = BotConfig::new("http://localhost:3333");
         assert_eq!(config.api_url, "http://localhost:3333");
         assert_eq!(config.lang, Lang::Fr);
+    }
+
+    #[tokio::test]
+    async fn a_context_built_with_a_changing_source_sees_the_new_default_duration() {
+        let source = Arc::new(MutableBotConfig::new(BotConfig::default()));
+        let context = FakeBotContext::with_config_source(source.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(context.config().default_duration_sec, 5);
+        source.set_default_duration_sec(12);
+        assert_eq!(context.config().default_duration_sec, 12);
     }
 
     #[test]

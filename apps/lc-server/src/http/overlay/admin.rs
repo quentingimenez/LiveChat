@@ -44,42 +44,44 @@ const INVITE_MAX_USES: i64 = 1_000;
 /// Longueur maximale du nom d'une guilde.
 const GUILD_NAME_MAX_CHARS: usize = 60;
 
-/// Charge un membre actif de la guilde du jeton (`404 member_not_found` sinon).
-async fn load_member(
+/// Loads an active member of the guild (`404 member_not_found` otherwise).
+pub(crate) async fn load_guild_member(
     db: &lc_db::Db,
-    auth: &AuthedOverlayClient,
+    guild_id: &lc_domain::GuildId,
     member_id_raw: &str,
 ) -> Result<GuildMember, Response> {
     let Ok(member_id) = member_id_raw.trim().parse::<GuildMemberId>() else {
         return Err(error(StatusCode::NOT_FOUND, "member_not_found"));
     };
     match db.guild_members().get(member_id).await {
-        Ok(Some(member)) if member.is_active() && &member.guild_id == auth.guild_id() => Ok(member),
+        Ok(Some(member)) if member.is_active() && &member.guild_id == guild_id => Ok(member),
         Ok(_) => Err(error(StatusCode::NOT_FOUND, "member_not_found")),
         Err(db_error) => Err(db_failure("overlay_admin.member_lookup", &db_error)),
     }
 }
 
-/// Handler `GET /overlay/admin/members`.
-pub async fn list_members(State(state): State<AppState>, auth: AuthedOverlayClient) -> Response {
-    if let Err(response) = require(&auth, Permission::ManageMembers) {
-        return response;
-    }
-    let db = match db(&state) {
-        Ok(db) => db,
-        Err(response) => return response,
-    };
-    let members = match db.guild_members().list_by_guild(auth.guild_id()).await {
-        Ok(members) => members,
-        Err(db_error) => return db_failure("overlay_admin.list_members", &db_error),
-    };
+/// Members body shared by `GET /overlay/admin/members` and the admin guild
+/// detail. `caller_member_id` only drives `isSelf`; the admin console passes
+/// `None`.
+pub(crate) async fn members_payload(
+    state: &AppState,
+    guild_id: &lc_domain::GuildId,
+    caller_member_id: Option<GuildMemberId>,
+) -> Result<Value, Response> {
+    let db = db(state)?;
+    let members = db
+        .guild_members()
+        .list_by_guild(guild_id)
+        .await
+        .map_err(|db_error| db_failure("overlay_admin.list_members", &db_error))?;
 
     let mut items = Vec::with_capacity(members.len());
     for member in &members {
-        let clients = match db.overlay_clients().list_active_by_member(member.id).await {
-            Ok(clients) => clients,
-            Err(db_error) => return db_failure("overlay_admin.member_clients", &db_error),
-        };
+        let clients = db
+            .overlay_clients()
+            .list_active_by_member(member.id)
+            .await
+            .map_err(|db_error| db_failure("overlay_admin.member_clients", &db_error))?;
         let connected = clients
             .iter()
             .any(|client| state.admin_hub.is_connected(&client.id.as_uuid()));
@@ -94,52 +96,50 @@ pub async fn list_members(State(state): State<AppState>, auth: AuthedOverlayClie
             object.insert("lastSeenAt".to_owned(), iso(last_seen_at));
             object.insert(
                 "isSelf".to_owned(),
-                json!(auth.member_id() == Some(member.id)),
+                json!(caller_member_id == Some(member.id)),
             );
         }
         items.push(payload);
     }
 
-    json_response(
-        StatusCode::OK,
-        json!({"count": items.len(), "items": items}),
-    )
+    Ok(json!({"count": items.len(), "items": items}))
 }
 
-/// Handler `PATCH /overlay/admin/members/{memberId}` (corps `{"role": "…"}`).
-pub async fn update_member(
-    State(state): State<AppState>,
-    auth: AuthedOverlayClient,
-    Path(member_id_raw): Path<String>,
-    payload: Result<Json<Value>, JsonRejection>,
-) -> Response {
-    if let Err(response) = require(&auth, Permission::ManageMembers) {
+/// Handler `GET /overlay/admin/members`.
+pub async fn list_members(State(state): State<AppState>, auth: AuthedOverlayClient) -> Response {
+    if let Err(response) = require(&state, &auth, Permission::ManageMembers) {
         return response;
     }
-    let Ok(Json(payload)) = payload else {
-        return error(StatusCode::BAD_REQUEST, "invalid_payload");
-    };
+    match members_payload(&state, auth.guild_id(), auth.member_id()).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
+    }
+}
+
+/// Updates a member role and realigns its overlay sessions.
+pub(crate) async fn update_member_payload(
+    state: &AppState,
+    guild_id: &lc_domain::GuildId,
+    member_id_raw: &str,
+    payload: &Value,
+) -> Result<Value, Response> {
     let Some(role) = payload
         .get("role")
         .and_then(Value::as_str)
         .and_then(|raw| GuildRole::from_wire_str(raw).ok())
     else {
-        return error(StatusCode::BAD_REQUEST, "invalid_role");
+        return Err(error(StatusCode::BAD_REQUEST, "invalid_role"));
     };
-    let db = match db(&state) {
-        Ok(db) => db,
-        Err(response) => return response,
-    };
-    let member = match load_member(db, &auth, &member_id_raw).await {
-        Ok(member) => member,
-        Err(response) => return response,
-    };
+    let db = db(state)?;
+    let member = load_guild_member(db, guild_id, member_id_raw).await?;
 
     match db.guild_members().set_role(member.id, role).await {
         Ok(MemberChange::Applied) => {}
-        Ok(MemberChange::LastAdmin) => return error(StatusCode::CONFLICT, "last_admin"),
-        Ok(MemberChange::NotFound) => return error(StatusCode::NOT_FOUND, "member_not_found"),
-        Err(db_error) => return db_failure("overlay_admin.set_role", &db_error),
+        Ok(MemberChange::LastAdmin) => return Err(error(StatusCode::CONFLICT, "last_admin")),
+        Ok(MemberChange::NotFound) => {
+            return Err(error(StatusCode::NOT_FOUND, "member_not_found"));
+        }
+        Err(db_error) => return Err(db_failure("overlay_admin.set_role", &db_error)),
     }
 
     if role != member.role {
@@ -148,7 +148,7 @@ pub async fn update_member(
             .update_mode_by_member(member.id, role.session_mode())
             .await
         {
-            return db_failure("overlay_admin.sync_session_mode", &db_error);
+            return Err(db_failure("overlay_admin.sync_session_mode", &db_error));
         }
         // Reconnexion immédiate des overlays du membre : le nouveau mode est
         // repris au `welcome` suivant.
@@ -160,7 +160,7 @@ pub async fn update_member(
                         .close_client(&client.id.as_uuid(), close_code::GOING_AWAY);
                 }
             }
-            Err(db_error) => return db_failure("overlay_admin.member_clients", &db_error),
+            Err(db_error) => return Err(db_failure("overlay_admin.member_clients", &db_error)),
         }
         tracing::info!(
             guild_id = %member.guild_id,
@@ -170,37 +170,44 @@ pub async fn update_member(
         );
     }
 
-    json_response(
-        StatusCode::OK,
-        json!({
-            "updated": true,
-            "member": {"id": member.id.to_canonical(), "role": role.as_wire_str()},
-        }),
-    )
+    Ok(json!({
+        "updated": true,
+        "member": {"id": member.id.to_canonical(), "role": role.as_wire_str()},
+    }))
 }
 
-/// Handler `DELETE /overlay/admin/members/{memberId}` : exclusion.
-pub async fn remove_member_handler(
+/// Handler `PATCH /overlay/admin/members/{memberId}` (corps `{"role": "…"}`).
+pub async fn update_member(
     State(state): State<AppState>,
     auth: AuthedOverlayClient,
     Path(member_id_raw): Path<String>,
+    payload: Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    if let Err(response) = require(&auth, Permission::ManageMembers) {
+    if let Err(response) = require(&state, &auth, Permission::ManageMembers) {
         return response;
     }
-    let db = match db(&state) {
-        Ok(db) => db,
-        Err(response) => return response,
+    let Ok(Json(payload)) = payload else {
+        return error(StatusCode::BAD_REQUEST, "invalid_payload");
     };
-    let member = match load_member(db, &auth, &member_id_raw).await {
-        Ok(member) => member,
-        Err(response) => return response,
-    };
+    match update_member_payload(&state, auth.guild_id(), &member_id_raw, &payload).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
+    }
+}
+
+/// Removes a member (shared by the overlay and the admin console).
+pub(crate) async fn remove_member_payload(
+    state: &AppState,
+    guild_id: &lc_domain::GuildId,
+    member_id_raw: &str,
+) -> Result<Value, Response> {
+    let db = db(state)?;
+    let member = load_guild_member(db, guild_id, member_id_raw).await?;
     match remove_member(
-        &state,
+        state,
         db,
         member.id,
-        now(&state),
+        now(state),
         close_reason::MEMBER_REMOVED,
     )
     .await
@@ -211,38 +218,59 @@ pub async fn remove_member_handler(
                 member_id = %member.id,
                 "membre exclu"
             );
-            json_response(StatusCode::OK, json!({"removed": true}))
+            Ok(json!({"removed": true}))
         }
-        Ok(MemberChange::LastAdmin) => error(StatusCode::CONFLICT, "last_admin"),
-        Ok(MemberChange::NotFound) => error(StatusCode::NOT_FOUND, "member_not_found"),
+        Ok(MemberChange::LastAdmin) => Err(error(StatusCode::CONFLICT, "last_admin")),
+        Ok(MemberChange::NotFound) => Err(error(StatusCode::NOT_FOUND, "member_not_found")),
+        Err(response) => Err(response),
+    }
+}
+
+/// Handler `DELETE /overlay/admin/members/{memberId}` : exclusion.
+pub async fn remove_member_handler(
+    State(state): State<AppState>,
+    auth: AuthedOverlayClient,
+    Path(member_id_raw): Path<String>,
+) -> Response {
+    if let Err(response) = require(&state, &auth, Permission::ManageMembers) {
+        return response;
+    }
+    match remove_member_payload(&state, auth.guild_id(), &member_id_raw).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
         Err(response) => response,
     }
 }
 
+/// Invites body shared by `GET /overlay/admin/invites` and the admin guild
+/// detail.
+pub(crate) async fn invites_payload(
+    state: &AppState,
+    guild_id: &lc_domain::GuildId,
+) -> Result<Value, Response> {
+    let db = db(state)?;
+    let now = now(state);
+    let invites = db
+        .guild_invites()
+        .list_by_guild(guild_id)
+        .await
+        .map_err(|db_error| db_failure("overlay_admin.list_invites", &db_error))?;
+    // Device codes are personal: they are never listed.
+    let items: Vec<Value> = invites
+        .iter()
+        .filter(|invite| invite.member_id.is_none())
+        .map(|invite| invite_payload(invite, now))
+        .collect();
+    Ok(json!({"count": items.len(), "items": items}))
+}
+
 /// Handler `GET /overlay/admin/invites`.
 pub async fn list_invites(State(state): State<AppState>, auth: AuthedOverlayClient) -> Response {
-    if let Err(response) = require(&auth, Permission::ManageInvites) {
+    if let Err(response) = require(&state, &auth, Permission::ManageInvites) {
         return response;
     }
-    let db = match db(&state) {
-        Ok(db) => db,
-        Err(response) => return response,
-    };
-    let now = now(&state);
-    match db.guild_invites().list_by_guild(auth.guild_id()).await {
-        Ok(invites) => {
-            // Les codes « appareil » sont personnels : ils ne sont pas listés.
-            let items: Vec<Value> = invites
-                .iter()
-                .filter(|invite| invite.member_id.is_none())
-                .map(|invite| invite_payload(invite, now))
-                .collect();
-            json_response(
-                StatusCode::OK,
-                json!({"count": items.len(), "items": items}),
-            )
-        }
-        Err(db_error) => db_failure("overlay_admin.list_invites", &db_error),
+    match invites_payload(&state, auth.guild_id()).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
     }
 }
 
@@ -258,6 +286,48 @@ fn optional_bounded(payload: &Value, key: &str, max: i64) -> Result<Option<i64>,
     }
 }
 
+/// Creates an invite for the guild (shared by the overlay and the admin
+/// console).
+pub(crate) async fn create_invite_payload(
+    state: &AppState,
+    guild_id: &lc_domain::GuildId,
+    created_by_member_id: Option<GuildMemberId>,
+    payload: &Value,
+) -> Result<Value, Response> {
+    let Some(role) = payload
+        .get("role")
+        .and_then(Value::as_str)
+        .and_then(|raw| GuildRole::from_wire_str(raw).ok())
+    else {
+        return Err(error(StatusCode::BAD_REQUEST, "invalid_role"));
+    };
+    let Ok(expires_in_hours) = optional_bounded(payload, "expiresInHours", INVITE_MAX_TTL_HOURS)
+    else {
+        return Err(error(StatusCode::BAD_REQUEST, "invalid_expiry"));
+    };
+    let Ok(max_uses) = optional_bounded(payload, "maxUses", INVITE_MAX_USES) else {
+        return Err(error(StatusCode::BAD_REQUEST, "invalid_max_uses"));
+    };
+    let db = db(state)?;
+    let now = now(state);
+    let invite = NewInvite {
+        guild_id: guild_id.clone(),
+        role,
+        member_id: None,
+        max_uses,
+        created_by_member_id,
+        expires_at: expires_in_hours.map(|hours| now + Duration::hours(hours)),
+    };
+    match create_invite(db, invite, now).await {
+        Ok(Some(invite)) => Ok(json!({
+            "created": true,
+            "invite": invite_payload(&invite, now),
+        })),
+        Ok(None) => Err(internal_error()),
+        Err(db_error) => Err(db_failure("overlay_admin.create_invite", &db_error)),
+    }
+}
+
 /// Handler `POST /overlay/admin/invites`.
 ///
 /// Corps : `{"role": "admin|member|guest", "expiresInHours": n|null,
@@ -267,46 +337,37 @@ pub async fn create_invite_handler(
     auth: AuthedOverlayClient,
     payload: Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    if let Err(response) = require(&auth, Permission::ManageInvites) {
+    if let Err(response) = require(&state, &auth, Permission::ManageInvites) {
         return response;
     }
     let Ok(Json(payload)) = payload else {
         return error(StatusCode::BAD_REQUEST, "invalid_payload");
     };
-    let Some(role) = payload
-        .get("role")
-        .and_then(Value::as_str)
-        .and_then(|raw| GuildRole::from_wire_str(raw).ok())
-    else {
-        return error(StatusCode::BAD_REQUEST, "invalid_role");
+    match create_invite_payload(&state, auth.guild_id(), auth.member_id(), &payload).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
+    }
+}
+
+/// Revokes an invite of the guild (shared by the overlay and the admin
+/// console).
+pub(crate) async fn revoke_invite_payload(
+    state: &AppState,
+    guild_id: &lc_domain::GuildId,
+    code_raw: &str,
+) -> Result<Value, Response> {
+    let Ok(code) = PairingCode::parse(&code_raw.replace('-', "")) else {
+        return Err(error(StatusCode::NOT_FOUND, "invite_not_found"));
     };
-    let Ok(expires_in_hours) = optional_bounded(&payload, "expiresInHours", INVITE_MAX_TTL_HOURS)
-    else {
-        return error(StatusCode::BAD_REQUEST, "invalid_expiry");
-    };
-    let Ok(max_uses) = optional_bounded(&payload, "maxUses", INVITE_MAX_USES) else {
-        return error(StatusCode::BAD_REQUEST, "invalid_max_uses");
-    };
-    let db = match db(&state) {
-        Ok(db) => db,
-        Err(response) => return response,
-    };
-    let now = now(&state);
-    let invite = NewInvite {
-        guild_id: auth.guild_id().clone(),
-        role,
-        member_id: None,
-        max_uses,
-        created_by_member_id: auth.member_id(),
-        expires_at: expires_in_hours.map(|hours| now + Duration::hours(hours)),
-    };
-    match create_invite(db, invite, now).await {
-        Ok(Some(invite)) => json_response(
-            StatusCode::OK,
-            json!({"created": true, "invite": invite_payload(&invite, now)}),
-        ),
-        Ok(None) => internal_error(),
-        Err(db_error) => db_failure("overlay_admin.create_invite", &db_error),
+    let db = db(state)?;
+    match db.guild_invites().get(&code).await {
+        Ok(Some(invite)) if &invite.guild_id == guild_id => {}
+        Ok(_) => return Err(error(StatusCode::NOT_FOUND, "invite_not_found")),
+        Err(db_error) => return Err(db_failure("overlay_admin.invite_lookup", &db_error)),
+    }
+    match db.guild_invites().revoke(guild_id, &code, now(state)).await {
+        Ok(revoked) => Ok(json!({"found": true, "revoked": revoked})),
+        Err(db_error) => Err(db_failure("overlay_admin.revoke_invite", &db_error)),
     }
 }
 
@@ -316,28 +377,12 @@ pub async fn revoke_invite(
     auth: AuthedOverlayClient,
     Path(code_raw): Path<String>,
 ) -> Response {
-    if let Err(response) = require(&auth, Permission::ManageInvites) {
+    if let Err(response) = require(&state, &auth, Permission::ManageInvites) {
         return response;
     }
-    let Ok(code) = PairingCode::parse(&code_raw.replace('-', "")) else {
-        return error(StatusCode::NOT_FOUND, "invite_not_found");
-    };
-    let db = match db(&state) {
-        Ok(db) => db,
-        Err(response) => return response,
-    };
-    match db.guild_invites().get(&code).await {
-        Ok(Some(invite)) if &invite.guild_id == auth.guild_id() => {}
-        Ok(_) => return error(StatusCode::NOT_FOUND, "invite_not_found"),
-        Err(db_error) => return db_failure("overlay_admin.invite_lookup", &db_error),
-    }
-    match db
-        .guild_invites()
-        .revoke(auth.guild_id(), &code, now(&state))
-        .await
-    {
-        Ok(revoked) => json_response(StatusCode::OK, json!({"found": true, "revoked": revoked})),
-        Err(db_error) => db_failure("overlay_admin.revoke_invite", &db_error),
+    match revoke_invite_payload(&state, auth.guild_id(), &code_raw).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
     }
 }
 
@@ -374,7 +419,7 @@ pub async fn update_settings(
     auth: AuthedOverlayClient,
     payload: Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    if let Err(response) = require(&auth, Permission::ManageSettings) {
+    if let Err(response) = require(&state, &auth, Permission::ManageSettings) {
         return response;
     }
     let Ok(Json(payload)) = payload else {

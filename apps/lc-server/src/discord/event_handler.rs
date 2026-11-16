@@ -27,7 +27,7 @@ use serenity::all::{
 use lc_db::Db;
 use lc_discord::handlers::{plan_deferral, precheck};
 use lc_discord::serenity_glue::{defer, parse_invocation, respond};
-use lc_discord::{dispatch, BotConfig, DbBotContext, Lang};
+use lc_discord::{dispatch, BotConfigSource, DbBotContext, Lang};
 
 use super::message_commands;
 use super::registration;
@@ -60,7 +60,7 @@ const HOW_TO_USE_EN: (&str, &str) = (
 pub struct DiscordEventHandler {
     db: Db,
     context: Arc<DbBotContext<SharedClock>>,
-    bot_config: BotConfig,
+    config: Arc<dyn BotConfigSource>,
     status: Arc<DiscordStatus>,
     registered: AtomicBool,
 }
@@ -81,13 +81,13 @@ impl DiscordEventHandler {
     pub fn new(
         db: Db,
         context: Arc<DbBotContext<SharedClock>>,
-        bot_config: BotConfig,
+        config: Arc<dyn BotConfigSource>,
         status: Arc<DiscordStatus>,
     ) -> Self {
         Self {
             db,
             context,
-            bot_config,
+            config,
             status,
             registered: AtomicBool::new(false),
         }
@@ -99,10 +99,9 @@ impl DiscordEventHandler {
             return;
         }
 
-        let payloads = registration::registration_payloads(
-            self.bot_config.lang,
-            self.bot_config.hide_commands_disabled,
-        );
+        let config = self.config.current();
+        let payloads =
+            registration::registration_payloads(config.lang, config.hide_commands_disabled);
         match registration::register_global_commands(&ctx.http, &payloads).await {
             Ok(commands) => {
                 self.status.mark_registered(commands.len());
@@ -311,7 +310,7 @@ impl EventHandler for DiscordEventHandler {
         // distingue ce cas via `is_new` (les guildes rechargées au démarrage ne
         // déclenchent donc pas de spam).
         if is_new == Some(true) {
-            match send_how_to_use(&ctx.http, guild.id, self.bot_config.lang).await {
+            match send_how_to_use(&ctx.http, guild.id, self.config.current().lang).await {
                 Ok(true) => tracing::info!(guild = guild_id.as_str(), "embed d'aide envoyé"),
                 Ok(false) => tracing::info!(
                     guild = guild_id.as_str(),
@@ -347,11 +346,10 @@ impl EventHandler for DiscordEventHandler {
             return;
         };
 
-        let Some(invocation) = parse_invocation(
-            &command,
-            self.bot_config.lang,
-            self.bot_config.hide_commands_disabled,
-        ) else {
+        let config = self.config.current();
+        let Some(invocation) =
+            parse_invocation(&command, config.lang, config.hide_commands_disabled)
+        else {
             tracing::warn!(
                 name = %command.data.name,
                 "interaction ignorée : commande inconnue du catalogue"

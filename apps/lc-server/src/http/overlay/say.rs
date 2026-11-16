@@ -128,7 +128,7 @@ pub async fn say(
     if let Err(response) = ensure_writable(&auth) {
         return response;
     }
-    if let Err(response) = require(&auth, Permission::TriggerPlayback) {
+    if let Err(response) = require(&state, &auth, Permission::TriggerPlayback) {
         return response;
     }
     let body = match payload {
@@ -173,7 +173,7 @@ pub async fn say(
         duration_sec: None,
         priority: 0,
     };
-    match jobs::create_for_ingest(db, state.config.default_duration, spec, now(&state)).await {
+    match jobs::create_for_ingest(db, state.runtime().default_duration(), spec, now(&state)).await {
         Ok(job) => {
             hook::notify_ingested(&job).await;
             tracing::info!(

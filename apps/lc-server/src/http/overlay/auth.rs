@@ -69,22 +69,19 @@ impl AuthedOverlayClient {
 
     /// Rôle du client dans sa guilde.
     ///
-    /// Celui du membre rattaché ; à défaut, l'équivalent du mode de session
-    /// persisté (`invite_read_only` → invité, `normal` → membre). Comme le mode,
-    /// il vient toujours de la base, jamais de la requête.
+    /// A session mode forced to `invite_read_only` by the admin console wins
+    /// over the attached member's role: the device is then read-only for every
+    /// REST route, without waiting for a reconnection. Otherwise the member's
+    /// role is authoritative, and an overlay without a member falls back to
+    /// the persisted session mode (`normal` → member role).
     pub fn role(&self) -> lc_domain::GuildRole {
+        if self.client.session_mode == lc_domain::OverlaySessionMode::InviteReadOnly {
+            return lc_domain::GuildRole::Guest;
+        }
         match &self.member {
             Some(member) => member.role,
-            None => match self.client.session_mode {
-                lc_domain::OverlaySessionMode::InviteReadOnly => lc_domain::GuildRole::Guest,
-                lc_domain::OverlaySessionMode::Normal => lc_domain::GuildRole::Member,
-            },
+            None => lc_domain::GuildRole::Member,
         }
-    }
-
-    /// `true` si le rôle du client autorise `permission`.
-    pub fn can(&self, permission: lc_domain::Permission) -> bool {
-        self.role().can(permission)
     }
 
     /// Identifiant du membre rattaché, s'il existe.
@@ -196,4 +193,61 @@ pub(crate) async fn authenticate_token(
         member,
         authenticated_at: now,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    fn client(session_mode: lc_domain::OverlaySessionMode) -> AuthedOverlayClient {
+        AuthedOverlayClient {
+            client: lc_domain::OverlayClient {
+                id: lc_domain::OverlayClientId::new_v4(),
+                guild_id: lc_domain::GuildId::parse("123456789012345678").expect("guilde"),
+                label: "poste".to_owned(),
+                token_hash: "hash".to_owned(),
+                session_mode,
+                default_author_name: None,
+                default_author_image: None,
+                created_by_discord_user_id: None,
+                last_seen_at: None,
+                created_at: chrono::Utc::now(),
+                revoked_at: None,
+            },
+            member: None,
+            authenticated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn member(role: lc_domain::GuildRole) -> lc_domain::GuildMember {
+        lc_domain::GuildMember {
+            id: lc_domain::GuildMemberId::new_v4(),
+            guild_id: lc_domain::GuildId::parse("123456789012345678").expect("guilde"),
+            display_name: "Alice".to_owned(),
+            avatar: None,
+            role,
+            created_at: chrono::Utc::now(),
+            removed_at: None,
+            discord_user_id: None,
+            profile_custom: true,
+            discord_synced_at: None,
+        }
+    }
+
+    #[test]
+    fn a_forced_read_only_session_overrides_the_member_role() {
+        let mut auth = client(lc_domain::OverlaySessionMode::InviteReadOnly);
+        auth.member = Some(member(lc_domain::GuildRole::Admin));
+        assert_eq!(auth.role(), lc_domain::GuildRole::Guest);
+        assert!(auth.is_read_only());
+
+        auth.client.session_mode = lc_domain::OverlaySessionMode::Normal;
+        assert_eq!(auth.role(), lc_domain::GuildRole::Admin);
+        assert!(!auth.is_read_only());
+
+        auth.member = Some(member(lc_domain::GuildRole::Guest));
+        assert_eq!(auth.role(), lc_domain::GuildRole::Guest);
+    }
 }

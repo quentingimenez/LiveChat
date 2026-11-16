@@ -1,0 +1,47 @@
+{
+  "items": [
+    {
+      "action": "guild.stop",
+      "actor": {
+        "method": "secret",
+        "name": "secret"
+      },
+      "at": "2026-11-16T05:56:30.146Z",
+      "clientIp": "127.0.0.1",
+      "guildId": "9274817583033437435",
+      "id": 3,
+      "method": "POST",
+      "path": "/admin/api/guilds/9274817583033437435/stop",
+      "status": 200
+    },
+    {
+      "action": "guild.settings",
+      "actor": {
+        "method": "secret",
+        "name": "secret"
+      },
+      "at": "2026-11-16T05:56:30.144Z",
+      "clientIp": "127.0.0.1",
+      "guildId": "112233445566778899",
+      "id": 2,
+      "method": "PATCH",
+      "path": "/admin/api/guilds/112233445566778899/settings",
+      "status": 200
+    },
+    {
+      "action": "guild.create",
+      "actor": {
+        "method": "secret",
+        "name": "secret"
+      },
+      "at": "2026-11-16T05:56:30.130Z",
+      "clientIp": "127.0.0.1",
+      "guildId": null,
+      "id": 1,
+      "method": "POST",
+      "path": "/admin/api/guilds",
+      "status": 200
+    }
+  ],
+  "nextBefore": null
+}

@@ -18,8 +18,13 @@
 //! Each request is counted in one of four budgets ([`Bucket`]), per client:
 //!
 //! - **auth** ([`AUTH_RATE_LIMIT_MAX`]): the routes that check a guessable
-//!   secret, pairing-code consumption and the admin panel (`/admin*`). This is
-//!   the budget that stops a brute force, so it stays at the legacy value;
+//!   secret: pairing-code consumption and the admin login routes
+//!   (`/admin/auth/secret`, `/admin/auth/discord*`). This is the budget that
+//!   stops a brute force, so it stays at the legacy value. The rest of the
+//!   admin console (page, assets, `/admin/api/**`, the event stream, the
+//!   session probe) is counted in the general budget: it needs a 256-bit
+//!   session cookie, and one console visit loads several assets and API
+//!   calls, which used up the auth budget in a few screens;
 //! - **media** ([`MEDIA_RATE_LIMIT_MAX`]): `GET`/`HEAD` on the two media
 //!   routes. The board grid loads one thumbnail per card (and several `Range`
 //!   requests per video); the URLs are HMAC-signed, so a large budget does not
@@ -28,7 +33,8 @@
 //!   seconds by 2.x overlays that only ever get `426`. They must not use up
 //!   the budget of a 3.x overlay on the same IP;
 //! - **general** ([`RATE_LIMIT_MAX`]): everything else, i.e. the overlay API,
-//!   the `/ws` upgrade and the extension ingestion. These routes require a
+//!   the `/ws` upgrade, the extension ingestion and the admin console behind
+//!   its login. These routes require a
 //!   256-bit bearer token, so their budget is sized for normal board use: on
 //!   2026-11-13 an admin testing the board (mute toggles, tabs, focus) sent
 //!   102 requests in 15 minutes, hit the old shared limit of 100, and then
@@ -302,9 +308,11 @@ fn bucket_for(method: &Method, path: &str) -> Bucket {
 }
 
 /// Routes that check a guessable secret: pairing-code consumption (overlay and
-/// extension) and the whole admin panel.
+/// extension) and the admin login routes (secret form, Discord OAuth start and
+/// callback).
 fn is_auth_path(path: &str) -> bool {
-    has_path_prefix(path, "/admin")
+    has_path_prefix(path, "/admin/auth/secret")
+        || has_path_prefix(path, "/admin/auth/discord")
         || has_path_prefix(path, "/overlay/pair/consume")
         || has_path_prefix(path, "/ingest/pair/consume")
 }
@@ -504,9 +512,17 @@ mod tests {
         for (method, path, bucket) in [
             (Method::GET, "/overlay/media/abc", Bucket::Media),
             (Method::GET, "/overlay/media-board/media/abc", Bucket::Media),
-            (Method::GET, "/admin", Bucket::Auth),
-            (Method::GET, "/admin/", Bucket::Auth),
-            (Method::GET, "/admin/api/overview", Bucket::Auth),
+            (Method::POST, "/admin/auth/secret", Bucket::Auth),
+            (Method::GET, "/admin/auth/discord", Bucket::Auth),
+            (Method::GET, "/admin/auth/discord/callback", Bucket::Auth),
+            (Method::GET, "/admin", Bucket::General),
+            (Method::GET, "/admin/", Bucket::General),
+            (Method::GET, "/admin/assets/index-abc.css", Bucket::General),
+            (Method::GET, "/admin/api/overview", Bucket::General),
+            (Method::GET, "/admin/api/events", Bucket::General),
+            (Method::GET, "/admin/auth/session", Bucket::General),
+            (Method::POST, "/admin/auth/logout", Bucket::General),
+            (Method::POST, "/admin/auth/secretx", Bucket::General),
             (Method::POST, "/overlay/pair/consume", Bucket::Auth),
             (Method::POST, "/ingest/pair/consume", Bucket::Auth),
             (Method::POST, "/ingest/pair/consume/", Bucket::Auth),
@@ -582,5 +598,28 @@ mod tests {
 
         let ipv6: IpAddr = "2001:db8::1".parse().expect("adresse valide");
         assert_eq!(canonical_ip(ipv6), ipv6);
+    }
+
+    #[test]
+    fn the_window_lasts_fifteen_minutes() {
+        assert_eq!(RATE_LIMIT_WINDOW, Duration::from_secs(15 * 60));
+        assert_eq!(RATE_LIMIT_WINDOW.as_secs(), 900);
+    }
+
+    #[test]
+    fn the_purge_keeps_windows_that_are_still_running() {
+        let limiter = RateLimiter::new(1, Duration::from_secs(60));
+        let start = Instant::now();
+        let _ = limiter.check_at(client(1), start);
+        let _ = limiter.check_at(client(2), start + Duration::from_secs(30));
+        // The purge runs (a window has passed since the last one): client 1
+        // is gone, client 2 (31 s old) is kept and still limited.
+        let _ = limiter.check_at(client(3), start + Duration::from_secs(61));
+        assert_eq!(limiter.tracked_clients(), 2);
+        assert!(
+            !limiter
+                .check_at(client(2), start + Duration::from_secs(61))
+                .allowed
+        );
     }
 }

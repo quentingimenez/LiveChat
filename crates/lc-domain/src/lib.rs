@@ -20,6 +20,7 @@ pub mod entities;
 pub mod enums;
 pub mod error;
 pub mod ids;
+pub mod rights;
 pub mod time;
 
 pub use clock::{Clock, FixedClock, SystemClock};
@@ -35,4 +36,5 @@ pub use ids::{
     GuildId, GuildMemberId, IngestClientId, MediaAssetId, MediaBoardItemId, OverlayClientId,
     PairingCode, PlaybackJobId,
 };
+pub use rights::{Action as RightsAction, RightsRole, RightsTable, Surface};
 pub use time::{datetime_to_ms, ms_to_datetime, now_ms};

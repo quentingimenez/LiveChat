@@ -291,6 +291,35 @@ impl GuildsRepository {
         Ok(())
     }
 
+    /// Reads the per-guild board quota override (migration 0011).
+    ///
+    /// `None` means the guild uses `MEDIA_BOARD_MAX_TOTAL_MB`, either because
+    /// the column is `NULL` or because the guild has no settings row yet.
+    pub async fn board_quota_mb(&self, id: &GuildId) -> DbResult<Option<i64>> {
+        let value: Option<Option<i64>> =
+            sqlx::query_scalar("SELECT board_quota_mb FROM guilds WHERE id = ?")
+                .bind(id.as_str())
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(value.flatten())
+    }
+
+    /// Sets (`Some`) or clears (`None`) the per-guild board quota.
+    ///
+    /// Creates the guild row when it does not exist yet, like the other column
+    /// setters of this repository.
+    pub async fn set_board_quota_mb(&self, id: &GuildId, quota_mb: Option<i64>) -> DbResult<()> {
+        sqlx::query(
+            "INSERT INTO guilds (id, board_quota_mb) VALUES (?, ?) \
+             ON CONFLICT(id) DO UPDATE SET board_quota_mb = excluded.board_quota_mb",
+        )
+        .bind(id.as_str())
+        .bind(quota_mb)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Liste toutes les guildes connues, triées par identifiant.
     pub async fn list(&self) -> DbResult<Vec<Guild>> {
         let rows = sqlx::query_as::<_, GuildRow>("SELECT * FROM guilds ORDER BY id ASC")

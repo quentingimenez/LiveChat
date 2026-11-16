@@ -557,6 +557,19 @@ pub fn settings_set(
     }
 
     let saved = state.config_snapshot();
+    // Remote device control: report the guild settings the user just changed.
+    for membership in &saved.memberships {
+        let changed = base
+            .membership(&membership.guild_id)
+            .is_none_or(|previous| {
+                previous.volume != membership.volume
+                    || previous.media_muted != membership.media_muted
+                    || previous.muted != membership.muted
+            });
+        if changed {
+            ws::publish_device_state(&app, &membership.guild_id);
+        }
+    }
     if base.display_key != saved.display_key || base.display_index != saved.display_index {
         let _positioned = windows::position_overlay_without_persisting(&app);
     }
@@ -1191,6 +1204,9 @@ pub fn set_guild_muted(app: &AppHandle<Wry>, guild_id: &str, muted: bool) -> Res
     if !known {
         return Ok(false);
     }
+    // Report the new `paused` value before a pause closes the session; an
+    // unpause reports itself again after the next `welcome`.
+    ws::publish_device_state(app, guild_id);
     ws::ensure_supervisor(app, guild_id);
     ws::send_command_to(app, guild_id, NetCommand::Reconnect);
     publish_guilds(app);

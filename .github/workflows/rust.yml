@@ -1,7 +1,6 @@
 name: rust
 
-# Gate CI du rebuild Rust (serveur + overlay Tauri). Remplace à terme server.yml
-# et overlay-ci.yml (legacy Electron/Node conservés pour le rollback 2.0.1).
+# CI gate of the Rust workspace (lc-server, lc-overlay, crates, xtask).
 #
 # Politique :
 # - actions tierces épinglées par commit SHA (audit A7-003) ;
@@ -11,7 +10,7 @@ name: rust
 #   cargo-audit ne lit pas deny.toml. Tenir les deux listes synchronisées.
 on:
   push:
-    branches: [feat/rust-rebuild, main]
+    branches: [main]
     paths:
       - "crates/**"
       - "apps/**"
@@ -24,6 +23,8 @@ on:
       - "deny.toml"
       - ".cargo/**"
       - ".github/workflows/rust.yml"
+      - "deploy/server.Dockerfile"
+      - "deploy/server.Dockerfile.dockerignore"
   pull_request:
     paths:
       - "crates/**"
@@ -37,6 +38,8 @@ on:
       - "deny.toml"
       - ".cargo/**"
       - ".github/workflows/rust.yml"
+      - "deploy/server.Dockerfile"
+      - "deploy/server.Dockerfile.dockerignore"
   workflow_dispatch:
 
 permissions:
@@ -67,6 +70,34 @@ jobs:
           components: rustfmt
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
+
+  # The admin console is embedded in the server binary by `rust-embed`; this
+  # job builds and tests the Preact/TypeScript front on its own.
+  admin-web:
+    name: admin-web
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/lc-admin-web/package-lock.json
+      - name: npm ci
+        working-directory: apps/lc-admin-web
+        run: npm ci
+      - name: npm run typecheck
+        working-directory: apps/lc-admin-web
+        run: npm run typecheck
+      - name: npm test
+        working-directory: apps/lc-admin-web
+        run: npm test
+      - name: npm run build
+        working-directory: apps/lc-admin-web
+        run: npm run build
 
   # AUD-COR-18/A7-012 : `rust-version` est déclaré à 1.85 mais les dépendances
   # Tauri 2 du workspace exigent davantage (tauri-utils 2.10.2 / tray-icon 0.25.1
@@ -178,6 +209,19 @@ jobs:
             patchelf
       - name: Rust cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      # `rust-embed` embeds apps/lc-admin-web/dist at compile time: build it
+      # before cargo so the embedded-assets tests see real files.
+      - name: Node 24 (embedded admin assets)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/lc-admin-web/package-lock.json
+      - name: Build the admin console for the embed tests
+        working-directory: apps/lc-admin-web
+        run: |
+          npm ci
+          npm run build
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
         with:
@@ -189,6 +233,97 @@ jobs:
       # nextest n'exécute pas les doctests : étape séparée.
       - name: doctests
         run: cargo test --workspace --doc --locked
+      # End-to-end tests of the admin console: Chromium against the real
+      # lc-server binary (fresh database, see apps/lc-admin-web/e2e/server.mjs).
+      - name: Build lc-server for the console E2E
+        if: runner.os == 'Linux'
+        run: cargo build -p lc-server --bin lc-server --locked
+      - name: Install Playwright Chromium
+        if: runner.os == 'Linux'
+        working-directory: apps/lc-admin-web
+        run: npx playwright install --with-deps chromium
+      - name: Admin console E2E
+        if: runner.os == 'Linux'
+        working-directory: apps/lc-admin-web
+        env:
+          LC_SERVER_BIN: ${{ github.workspace }}/target/debug/lc-server
+        run: npm run e2e
+
+  # Builds the production image on every change (without publishing it) so a
+  # broken Dockerfile shows up before the release tag, then checks that the
+  # container serves the embedded admin console and accepts a login.
+  image:
+    name: image (build + smoke)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build the image (not pushed)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: deploy/server.Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: livechat-server:ci
+          cache-from: type=gha,scope=server-image-ci
+          cache-to: type=gha,scope=server-image-ci,mode=max
+      - name: Run the container
+        run: |
+          set -euo pipefail
+          docker run --detach --name lc-server-ci \
+            --publish 127.0.0.1:3000:3000 \
+            --env API_URL=http://127.0.0.1:3000 \
+            --env ADMIN_UI_TOKEN=ci-admin-secret \
+            livechat-server:ci
+          for attempt in $(seq 1 60); do
+            if curl -fsS --max-time 2 http://127.0.0.1:3000/health > /tmp/health.json 2>/dev/null; then
+              cat /tmp/health.json; echo
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::/health did not answer within 60 s"
+          exit 1
+      - name: The embedded console and its assets are served
+        run: |
+          set -euo pipefail
+          base=http://127.0.0.1:3000
+          curl -fsS --max-time 5 "$base/admin/" > /tmp/admin.html
+          grep -q 'Administration du serveur</title>' /tmp/admin.html
+          assets="$(grep -oE '/admin/assets/[^"]+\.(js|css)' /tmp/admin.html | sort -u)"
+          test -n "$assets"
+          for asset in $assets; do
+            status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$base$asset")"
+            echo "GET $asset -> $status"
+            test "$status" = "200"
+          done
+      - name: A secret login opens a session that reaches the API
+        run: |
+          set -euo pipefail
+          base=http://127.0.0.1:3000
+          # The session cookie is sent back by hand: it may carry `Secure`,
+          # which curl's cookie jar would not replay over plain http.
+          cookie="$(curl -sS -D - -o /dev/null --max-time 5 \
+            -H "Origin: $base" -H 'Content-Type: application/json' \
+            --data '{"secret":"ci-admin-secret"}' "$base/admin/auth/secret" \
+            | grep -i '^set-cookie: lc_admin_session=' \
+            | sed -E 's/^[^:]+: ([^;]+).*/\1/' | tr -d '\r')"
+          test -n "$cookie"
+          status="$(curl -sS -o /tmp/overview.json -w '%{http_code}' --max-time 5 \
+            -H "Cookie: $cookie" "$base/admin/api/overview")"
+          echo "GET /admin/api/overview -> $status"
+          test "$status" = "200"
+          anonymous="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$base/admin/api/overview")"
+          echo "without session -> $anonymous"
+          test "$anonymous" = "401"
+      - name: Container logs
+        if: always()
+        run: docker logs lc-server-ci || true
 
   deny:
     name: deny (bloquant)

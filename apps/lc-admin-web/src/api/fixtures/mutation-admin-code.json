@@ -1,0 +1,16 @@
+{
+  "adminInvite": {
+    "code": "A4JFL76N",
+    "createdAt": "2026-11-16T05:56:30.160Z",
+    "createdByMemberId": null,
+    "expiresAt": "2026-11-23T05:56:30.160Z",
+    "isActive": true,
+    "maxUses": 1,
+    "memberId": null,
+    "revokedAt": null,
+    "role": "admin",
+    "useCount": 0
+  },
+  "created": true,
+  "guildId": "112233445566778899"
+}

@@ -80,7 +80,7 @@ pub async fn resolve_tweet(
     let status_id = tweet_status_id(&canonical_url)
         .ok_or_else(|| MediaError::new(MediaErrorCode::InvalidMedia, "URL de tweet invalide"))?;
     let card = fetch_tweet_card(&canonical_url, config).await?;
-    let (variants, dimensions) = fetch_variants(&status_id, &canonical_url, config).await;
+    let (variants, dimensions, poster) = fetch_variants(&status_id, &canonical_url, config).await;
     let selected = pick_variant(&variants).cloned();
     let (width, height) = match dimensions {
         Some((width, height)) => (Some(width), Some(height)),
@@ -93,6 +93,7 @@ pub async fn resolve_tweet(
         title: card.author_name.clone(),
         author: card.author_name.clone(),
         kind: Some(MediaKind::Video),
+        thumbnail_url: poster,
         tweet_card: Some(card),
         media_url: selected.as_ref().map(|variant| variant.url.clone()),
         mime: selected
@@ -137,10 +138,11 @@ async fn fetch_variants(
     status_id: &str,
     canonical_url: &str,
     config: &MediaConfig,
-) -> (Vec<VideoVariant>, Option<(u32, u32)>) {
+) -> (Vec<VideoVariant>, Option<(u32, u32)>, Option<String>) {
     let syndication_url = build_syndication_url(status_id, &config.resolve.language);
     let mut variants = Vec::new();
     let mut dimensions = None;
+    let mut poster = None;
     if let Ok(value) = http::get_json::<Value>(
         &config.download,
         &syndication_url,
@@ -150,6 +152,7 @@ async fn fetch_variants(
     {
         variants = collect_variants(&value);
         dimensions = extract_dimensions(&value);
+        poster = extract_poster(&value);
     }
     if variants.is_empty() {
         if let Ok(page) = http::get_text(
@@ -169,7 +172,27 @@ async fn fetch_variants(
             }
         }
     }
-    (variants, dimensions)
+    (variants, dimensions, poster)
+}
+
+/// Poster of the tweet's video in a syndication payload: `video.poster`, else
+/// the picture of the first media.
+pub fn extract_poster(value: &Value) -> Option<String> {
+    let https = |raw: Option<&Value>| {
+        raw.and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|url| url.starts_with("https://"))
+            .map(str::to_owned)
+    };
+    https(value.get("video").and_then(|video| video.get("poster"))).or_else(|| {
+        https(
+            value
+                .get("mediaDetails")
+                .and_then(Value::as_array)
+                .and_then(|details| details.first())
+                .and_then(|media| media.get("media_url_https")),
+        )
+    })
 }
 
 /// Collecte récursivement les variantes vidéo d'un payload syndication.
@@ -473,5 +496,26 @@ mod tests {
         assert!(cleaned.contains("Bonjour"));
         assert!(!cleaned.contains("script"));
         assert!(!cleaned.contains("iframe"));
+    }
+
+    #[test]
+    fn finds_the_video_poster() {
+        let payload = serde_json::json!({
+            "video": {"poster": "https://pbs.twimg.com/poster.jpg"},
+            "mediaDetails": [{"media_url_https": "https://pbs.twimg.com/media.jpg"}]
+        });
+        assert_eq!(
+            extract_poster(&payload).as_deref(),
+            Some("https://pbs.twimg.com/poster.jpg")
+        );
+        let details_only = serde_json::json!({
+            "mediaDetails": [{"media_url_https": "https://pbs.twimg.com/media.jpg"}]
+        });
+        assert_eq!(
+            extract_poster(&details_only).as_deref(),
+            Some("https://pbs.twimg.com/media.jpg")
+        );
+        let insecure = serde_json::json!({"video": {"poster": "http://pbs.twimg.com/p.jpg"}});
+        assert_eq!(extract_poster(&insecure), None);
     }
 }

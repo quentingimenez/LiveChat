@@ -10,6 +10,7 @@ import {
   CLOSED_VIEW,
   drawerUsed,
   artworkOf,
+  cardPicture,
   isPeeking,
   mediaPath,
   pointerLeft,
@@ -17,6 +18,7 @@ import {
   pruneView,
   sameView,
   shownId,
+  thumbnailOf,
 } from '../../web/app/core/detail-drawer.js';
 
 const pinnedOn = (id) => ({ selectedId: id, pinned: true, peekId: null });
@@ -131,4 +133,27 @@ test('regression: removing, adding or replacing the picture of an audio rebuilds
 test('previewKey: the picture only matters for an audio', () => {
   const video = { id: 'v', mediaUrl: 'https://srv.test/media/v1?sig=x', media: { kind: 'video' }, artwork: null };
   assert.equal(previewKey(video), previewKey({ ...video, artwork: { url: 'https://srv.test/media/p1' } }));
+});
+
+test('a video card shows its thumbnail, else the video itself', () => {
+  const video = { media: { kind: 'video' }, mediaUrl: 'https://h/m/v?sig=1' };
+  assert.equal(thumbnailOf(video), null);
+  assert.deepEqual(cardPicture(video), { url: 'https://h/m/v?sig=1', kind: 'video' });
+  const withThumbnail = { ...video, thumbnail: { url: 'https://h/m/t?sig=1', width: 480, height: 360 } };
+  assert.equal(thumbnailOf(withThumbnail).width, 480);
+  assert.deepEqual(cardPicture(withThumbnail), { url: 'https://h/m/t?sig=1', kind: 'image' });
+});
+
+test('an audio card shows only its picture, never a thumbnail', () => {
+  const audio = { media: { kind: 'audio' }, mediaUrl: 'https://h/m/a?sig=1', thumbnail: { url: 'https://h/m/t' } };
+  assert.equal(thumbnailOf(audio), null);
+  assert.deepEqual(cardPicture(audio), { url: null, kind: 'image' });
+  const withArtwork = { ...audio, artwork: { url: 'https://h/m/c?sig=1' } };
+  assert.deepEqual(cardPicture(withArtwork), { url: 'https://h/m/c?sig=1', kind: 'image' });
+});
+
+test('an image card shows the image', () => {
+  const image = { media: { kind: 'image' }, mediaUrl: 'https://h/m/i?sig=1' };
+  assert.deepEqual(cardPicture(image), { url: 'https://h/m/i?sig=1', kind: 'image' });
+  assert.deepEqual(cardPicture({ media: { kind: 'image' } }), { url: null, kind: 'image' });
 });

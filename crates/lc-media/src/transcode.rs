@@ -4,19 +4,29 @@
 //!
 //! La décision de transcoder ou de copier reprend les règles de l'ancien
 //! serveur : un MP4/MOV H.264/AAC yuv420p sous la hauteur maximale est copié.
+//!
+//! A video whose picture already is H.264 yuv420p under the maximum height,
+//! but in another container or with another audio codec (an OBS `.mkv`, a
+//! `.mov` with PCM sound, an MP4 with MP3/Opus/AC-3 sound), keeps its video
+//! stream untouched: only the audio is converted ([`VideoPlan::CopyVideo`]).
+//! Measured on 4 cores with a 30 s 1080p clip: 11.7 s for the full transcode,
+//! 0.6 s with the video stream copied (see `docs/rust/lc-media.md`).
 //! Les SVG sont refusés (contenu actif, non rasterisé ici — AUD-A4-004) et le
 //! type MIME d'une image est dérivé en priorité de la sonde ffprobe, pas du
 //! `Content-Type` distant (AUD-A4-010).
 
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
+use std::future::Future;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use lc_domain::MediaKind;
 
-use crate::config::{MediaConfig, VideoConfig, VideoEncoder};
+use crate::config::{LoudnormTargets, MediaConfig, VideoConfig, VideoEncoder};
 use crate::error::{MediaError, MediaErrorCode, MediaResult};
 use crate::probe::{self, ProbeInfo};
 use crate::process;
@@ -36,6 +46,12 @@ pub const AUDIO_BITRATE: &str = "192k";
 pub const AUDIO_MIME: &str = "audio/mpeg";
 /// Type MIME des vidéos normalisées.
 pub const VIDEO_MIME: &str = "video/mp4";
+/// Sample rate of an audio track that went through `loudnorm`.
+///
+/// The filter works at 192 kHz and leaves that rate on its output: without an
+/// explicit rate, the AAC encoder keeps 96 kHz, which doubles the audio
+/// decoding work of every overlay for no audible gain.
+pub const NORMALIZED_AUDIO_RATE: &str = "48000";
 
 /// Résultat d'une normalisation réussie.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,12 +167,15 @@ async fn normalize_downloaded_media_with_min_image_size(
     config: &MediaConfig,
     min_image_bytes: u64,
 ) -> MediaResult<NormalizedMedia> {
+    let started = std::time::Instant::now();
     let probed = probe::probe(&config.tools.ffprobe, input, config.download.timeout)
         .await
         .ok();
+    let probe_ms = crate::ingest::elapsed_ms(started);
     let kind = detect_kind(content_type, probed.as_ref()).ok_or_else(|| {
         MediaError::new(MediaErrorCode::InvalidMedia, "format de média non reconnu")
     })?;
+    tracing::info!(?kind, probe_ms, "normalisation : média analysé");
     if let Some(parent) = output_base.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             MediaError::from_io(
@@ -331,7 +350,8 @@ pub async fn normalize_audio(
 ) -> MediaResult<NormalizedMedia> {
     let output = output_base.with_extension("mp3");
     let staged = staged_path(&output);
-    let can_copy = !config.video.audio_normalize
+    let level = measure_audio_level(input, probed, config).await;
+    let can_copy = level == AudioLevel::Keep
         && probed.is_some_and(|probed| {
             probed.audio_codec.as_deref() == Some("mp3")
                 && probed
@@ -349,7 +369,7 @@ pub async fn normalize_audio(
             ));
         }
     } else {
-        let args = build_audio_args(input, &staged, config);
+        let args = build_audio_args(input, &staged, &level);
         let output_command = process::run_command(
             &config.tools.ffmpeg,
             &args,
@@ -449,6 +469,54 @@ pub fn build_cover_args(input: &Path, output: &Path, codec: &str) -> Vec<String>
     ]
 }
 
+/// How a video becomes the normalized MP4.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VideoPlan {
+    /// The file already is a normalized MP4: plain file copy.
+    CopyFile,
+    /// The video stream already is H.264 yuv420p under the maximum height:
+    /// it is copied into a new faststart MP4 and only the audio is handled.
+    CopyVideo {
+        /// What happens to the audio track.
+        audio: RemuxAudio,
+    },
+    /// Decode and encode everything.
+    Transcode,
+}
+
+/// Audio handling of [`VideoPlan::CopyVideo`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemuxAudio {
+    /// The source has no audio track.
+    None,
+    /// AAC track kept as it is (loudness normalization disabled).
+    Copy,
+    /// Track encoded to AAC, with its level change (see [`AudioLevel`]).
+    Encode,
+}
+
+/// Chooses the cheapest way to produce the normalized MP4.
+///
+/// `keep_audio` says the audio track needs no level change (see
+/// [`AudioLevel::Keep`]): only then can the file or its track be copied.
+pub fn plan_video(probed: &ProbeInfo, config: &VideoConfig, keep_audio: bool) -> VideoPlan {
+    let audio_untouched = keep_audio || !probed.has_audio;
+    if audio_untouched && can_copy_without_transcode(probed, config) {
+        return VideoPlan::CopyFile;
+    }
+    if !video_stream_is_normalized(probed, config) {
+        return VideoPlan::Transcode;
+    }
+    let audio = if !probed.has_audio {
+        RemuxAudio::None
+    } else if probed.audio_codec.as_deref() == Some("aac") && keep_audio {
+        RemuxAudio::Copy
+    } else {
+        RemuxAudio::Encode
+    };
+    VideoPlan::CopyVideo { audio }
+}
+
 /// Normalise une vidéo : copie si compatible, sinon transcodage H.264/AAC.
 pub async fn normalize_video(
     input: &Path,
@@ -458,68 +526,59 @@ pub async fn normalize_video(
 ) -> MediaResult<NormalizedMedia> {
     let output = output_base.with_extension("mp4");
     let staged = staged_path(&output);
-    let can_copy = probed
-        .as_ref()
-        .is_some_and(|probed| can_copy_without_transcode(probed, &config.video));
-    if can_copy {
-        if let Err(error) = fs::copy(input, &staged) {
-            let _removed = fs::remove_file(&staged);
-            return Err(MediaError::from_io(
-                MediaErrorCode::InvalidMedia,
-                "copie de la vidéo normalisée",
-                &error,
-            ));
-        }
-    } else {
-        let nvenc_available = match config.video.encoder {
-            VideoEncoder::LibX264 => false,
-            VideoEncoder::H264Nvenc | VideoEncoder::Auto => {
-                has_nvenc(&config.tools.ffmpeg, config.download.timeout).await
+    let level = measure_audio_level(input, probed, config).await;
+    let plan = probed.map_or(VideoPlan::Transcode, |probed| {
+        plan_video(probed, &config.video, level == AudioLevel::Keep)
+    });
+    let started = std::time::Instant::now();
+    match plan {
+        VideoPlan::CopyFile => {
+            if let Err(error) = fs::copy(input, &staged) {
+                let _removed = fs::remove_file(&staged);
+                return Err(MediaError::from_io(
+                    MediaErrorCode::InvalidMedia,
+                    "copie de la vidéo normalisée",
+                    &error,
+                ));
             }
-        };
-        let (encoder, preset) = resolve_video_encoder(&config.video, nvenc_available);
-        let args = build_video_transcode_args(input, &staged, config, probed, &encoder, &preset);
-        let first = process::run_command(
-            &config.tools.ffmpeg,
-            &args,
-            config.download.timeout,
-            MediaErrorCode::TranscodeFailed,
-        )
-        .await;
-        if let Err(error) = first {
-            let _removed = fs::remove_file(&staged);
-            if encoder == "h264_nvenc" {
-                tracing::warn!("échec NVENC, nouvelle tentative en libx264");
-                let (fallback_encoder, fallback_preset) =
-                    resolve_video_encoder(&config.video, false);
-                let fallback_args = build_video_transcode_args(
-                    input,
-                    &staged,
-                    config,
-                    probed,
-                    &fallback_encoder,
-                    &fallback_preset,
+        }
+        VideoPlan::CopyVideo { audio } => {
+            let args = build_video_remux_args(input, &staged, audio, &level);
+            let remuxed = process::run_command(
+                &config.tools.ffmpeg,
+                &args,
+                config.download.timeout,
+                MediaErrorCode::TranscodeFailed,
+            )
+            .await;
+            if let Err(error) = remuxed {
+                // Some streams cannot be moved to MP4 as they are (missing
+                // timestamps, exotic bitstreams): encode them instead.
+                let _removed = fs::remove_file(&staged);
+                tracing::warn!(
+                    error = %error.summary(),
+                    "copie du flux vidéo impossible, transcodage complet"
                 );
-                if let Err(fallback_error) = process::run_command(
-                    &config.tools.ffmpeg,
-                    &fallback_args,
-                    config.download.timeout,
-                    MediaErrorCode::TranscodeFailed,
-                )
-                .await
-                {
-                    let _removed = fs::remove_file(&staged);
-                    return Err(fallback_error);
-                }
-            } else {
-                return Err(error);
+                transcode_video(input, &staged, probed, &level, config).await?;
             }
         }
+        VideoPlan::Transcode => transcode_video(input, &staged, probed, &level, config).await?,
     }
     MediaStorage::commit_file(&staged, &output)?;
-    let output_probe = probe::probe(&config.tools.ffprobe, &output, config.download.timeout)
-        .await
-        .ok();
+    tracing::info!(
+        ?plan,
+        ?level,
+        encode_ms = crate::ingest::elapsed_ms(started),
+        "normalisation : vidéo produite"
+    );
+    // A plain copy is the probed input, byte for byte: no second probe.
+    let output_probe = if plan == VideoPlan::CopyFile {
+        None
+    } else {
+        probe::probe(&config.tools.ffprobe, &output, config.download.timeout)
+            .await
+            .ok()
+    };
     let reference = output_probe.as_ref().or(probed);
     let durations = reference
         .and_then(|reference| reference.duration_ceil_sec())
@@ -532,6 +591,62 @@ pub async fn normalize_video(
         Some(config.video.max_height),
         durations,
     )
+}
+
+/// Full transcode to `staged`, with the libx264 retry after an NVENC failure.
+/// The staged file is removed on failure.
+async fn transcode_video(
+    input: &Path,
+    staged: &Path,
+    probed: Option<&ProbeInfo>,
+    level: &AudioLevel,
+    config: &MediaConfig,
+) -> MediaResult<()> {
+    let nvenc_available = match config.video.encoder {
+        VideoEncoder::LibX264 => false,
+        VideoEncoder::H264Nvenc | VideoEncoder::Auto => {
+            has_nvenc(&config.tools.ffmpeg, config.download.timeout).await
+        }
+    };
+    let (encoder, preset) = resolve_video_encoder(&config.video, nvenc_available);
+    let args = build_video_transcode_args(input, staged, config, probed, level, &encoder, &preset);
+    let first = process::run_command(
+        &config.tools.ffmpeg,
+        &args,
+        config.download.timeout,
+        MediaErrorCode::TranscodeFailed,
+    )
+    .await;
+    let Err(error) = first else {
+        return Ok(());
+    };
+    let _removed = fs::remove_file(staged);
+    if encoder != NVENC_ENCODER {
+        return Err(error);
+    }
+    tracing::warn!(%error, "échec NVENC, nouvelle tentative en libx264");
+    let (fallback_encoder, fallback_preset) = resolve_video_encoder(&config.video, false);
+    let fallback_args = build_video_transcode_args(
+        input,
+        staged,
+        config,
+        probed,
+        level,
+        &fallback_encoder,
+        &fallback_preset,
+    );
+    if let Err(fallback_error) = process::run_command(
+        &config.tools.ffmpeg,
+        &fallback_args,
+        config.download.timeout,
+        MediaErrorCode::TranscodeFailed,
+    )
+    .await
+    {
+        let _removed = fs::remove_file(staged);
+        return Err(fallback_error);
+    }
+    Ok(())
 }
 
 /// Vérifie le résultat normalisé et construit [`NormalizedMedia`].
@@ -636,8 +751,14 @@ pub fn can_copy_without_transcode(probed: &ProbeInfo, config: &VideoConfig) -> b
             .iter()
             .any(|candidate| format.contains(candidate))
     });
-    let video_ok = probed.video_codec.as_deref() == Some("h264");
     let audio_ok = matches!(probed.audio_codec.as_deref(), None | Some("aac"));
+    container_ok && audio_ok && video_stream_is_normalized(probed, config)
+}
+
+/// `true` when the video stream needs no encoding: H.264, 4:2:0 8-bit, at
+/// most the maximum height.
+fn video_stream_is_normalized(probed: &ProbeInfo, config: &VideoConfig) -> bool {
+    let video_ok = probed.has_video && probed.video_codec.as_deref() == Some("h264");
     let pixel_ok = matches!(
         probed.pixel_format.as_deref(),
         None | Some("yuv420p" | "yuvj420p")
@@ -646,7 +767,7 @@ pub fn can_copy_without_transcode(probed: &ProbeInfo, config: &VideoConfig) -> b
         .height
         .map(|height| height <= config.max_height)
         .unwrap_or(true);
-    container_ok && video_ok && audio_ok && pixel_ok && height_ok
+    video_ok && pixel_ok && height_ok
 }
 
 /// Résout l'encodeur et le preset à utiliser.
@@ -670,13 +791,329 @@ pub fn resolve_video_encoder(config: &VideoConfig, nvenc_available: bool) -> (St
     }
 }
 
-/// `true` si ffmpeg expose l'encodeur `h264_nvenc`.
-pub async fn has_nvenc(ffmpeg: &Path, timeout: Duration) -> bool {
-    let args = vec!["-hide_banner".to_string(), "-encoders".to_string()];
-    match process::run_command(ffmpeg, &args, timeout, MediaErrorCode::TranscodeFailed).await {
-        Ok(output) => output.combined().contains("h264_nvenc"),
-        Err(_) => false,
+/// Longest wait for the NVENC capability test.
+const NVENC_TEST_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Answers of [`has_nvenc`], per ffmpeg binary, for the life of the process.
+static NVENC_CAPABILITY: CapabilityCache = CapabilityCache::new();
+
+/// Remembers a yes/no capability per binary.
+struct CapabilityCache {
+    known: Mutex<Option<HashMap<PathBuf, bool>>>,
+}
+
+impl CapabilityCache {
+    const fn new() -> Self {
+        Self {
+            known: Mutex::new(None),
+        }
     }
+
+    fn get(&self, binary: &Path) -> Option<bool> {
+        let known = self
+            .known
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        known.as_ref().and_then(|known| known.get(binary).copied())
+    }
+
+    fn set(&self, binary: &Path, available: bool) {
+        let mut known = self
+            .known
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        known
+            .get_or_insert_with(HashMap::new)
+            .insert(binary.to_path_buf(), available);
+    }
+
+    /// Cached answer, or the result of `probe` (then remembered). Two
+    /// concurrent first calls may both probe; they store the same answer.
+    async fn get_or_probe<F>(&self, binary: &Path, probe: F) -> bool
+    where
+        F: Future<Output = bool>,
+    {
+        if let Some(available) = self.get(binary) {
+            return available;
+        }
+        let available = probe.await;
+        self.set(binary, available);
+        available
+    }
+}
+
+/// `true` when this ffmpeg can really encode with `h264_nvenc`.
+///
+/// Listing the encoder is not enough: distribution builds of ffmpeg list
+/// `h264_nvenc` on machines without any NVIDIA GPU, where every transcode
+/// then started with a failed NVENC attempt. A tiny encode is run once and
+/// the answer is kept for the life of the process.
+pub async fn has_nvenc(ffmpeg: &Path, timeout: Duration) -> bool {
+    NVENC_CAPABILITY
+        .get_or_probe(ffmpeg, probe_nvenc(ffmpeg, timeout))
+        .await
+}
+
+async fn probe_nvenc(ffmpeg: &Path, timeout: Duration) -> bool {
+    let timeout = timeout.min(NVENC_TEST_TIMEOUT);
+    let list_args = vec!["-hide_banner".to_string(), "-encoders".to_string()];
+    let listed =
+        match process::run_command(ffmpeg, &list_args, timeout, MediaErrorCode::TranscodeFailed)
+            .await
+        {
+            Ok(output) => output.combined().contains("h264_nvenc"),
+            Err(_) => false,
+        };
+    if !listed {
+        return false;
+    }
+    let usable = process::run_command(
+        ffmpeg,
+        &nvenc_test_args(),
+        timeout,
+        MediaErrorCode::TranscodeFailed,
+    )
+    .await
+    .is_ok();
+    tracing::info!(usable, "encodeur h264_nvenc testé");
+    usable
+}
+
+/// ffmpeg arguments encoding a few black frames with `h264_nvenc` to nowhere.
+pub fn nvenc_test_args() -> Vec<String> {
+    [
+        "-hide_banner",
+        "-v",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=256x256:r=25:d=0.2",
+        "-c:v",
+        "h264_nvenc",
+        "-f",
+        "null",
+        "-",
+    ]
+    .iter()
+    .map(|arg| (*arg).to_string())
+    .collect()
+}
+
+/// ffmpeg arguments copying the video stream into a faststart MP4.
+///
+/// Only the first real video stream (`V`: no attached picture) and the first
+/// audio stream are kept, like the players do.
+pub fn build_video_remux_args(
+    input: &Path,
+    output: &Path,
+    audio: RemuxAudio,
+    level: &AudioLevel,
+) -> Vec<String> {
+    let mut args = vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-i".to_string(),
+        input.display().to_string(),
+        "-map".to_string(),
+        "0:V:0".to_string(),
+    ];
+    if audio != RemuxAudio::None {
+        args.push("-map".to_string());
+        args.push("0:a:0".to_string());
+    }
+    args.push("-c:v".to_string());
+    args.push("copy".to_string());
+    match audio {
+        RemuxAudio::None => args.push("-an".to_string()),
+        RemuxAudio::Copy => {
+            args.push("-c:a".to_string());
+            args.push("copy".to_string());
+        }
+        RemuxAudio::Encode => {
+            args.push("-c:a".to_string());
+            args.push("aac".to_string());
+            args.push("-b:a".to_string());
+            args.push(AUDIO_BITRATE.to_string());
+            push_audio_level(&mut args, level);
+        }
+    }
+    args.push("-movflags".to_string());
+    args.push("+faststart".to_string());
+    args.push(output.display().to_string());
+    args
+}
+
+/// What happens to the level of an audio track during normalization.
+///
+/// Every source (YouTube, TikTok, uploads...) is brought to the same
+/// loudness: the track is measured first (`ebur128`, fast), then a fixed gain
+/// moves it to the target and a limiter holds the peaks. It sounds like
+/// single-pass `loudnorm`, which also missed the target on clips of a few
+/// seconds, for a fraction of its cost.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AudioLevel {
+    /// The track stays as it is: normalization off, no audio track, silence,
+    /// or already within [`LEVEL_TOLERANCE_DB`] of the target.
+    Keep,
+    /// Fixed gain, followed by a limiter at the true-peak target.
+    Gain {
+        /// Gain applied before the limiter, dB.
+        gain_db: f64,
+        /// Limiter ceiling, linear (true-peak target).
+        limit: f64,
+    },
+    /// The measurement failed: single-pass `loudnorm` filter.
+    Loudnorm(String),
+}
+
+/// A track this close to the target loudness keeps its level.
+pub const LEVEL_TOLERANCE_DB: f64 = 0.5;
+/// At or below this integrated loudness the track is silence: no gain.
+const SILENCE_LUFS: f64 = -70.0;
+/// Lowest ceiling `alimiter` accepts.
+const MIN_LIMIT: f64 = 0.0625;
+
+/// Integrated loudness and true peak of a track.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Loudness {
+    /// Integrated loudness, LUFS.
+    pub integrated_lufs: f64,
+    /// True peak, dBTP.
+    pub true_peak_dbtp: f64,
+}
+
+/// ffmpeg arguments measuring the first audio track (summary on stderr).
+pub fn loudness_args(input: &Path) -> Vec<String> {
+    vec![
+        "-hide_banner".to_string(),
+        "-nostats".to_string(),
+        "-i".to_string(),
+        input.display().to_string(),
+        "-map".to_string(),
+        "0:a:0".to_string(),
+        "-af".to_string(),
+        "ebur128=peak=true:framelog=quiet".to_string(),
+        "-f".to_string(),
+        "null".to_string(),
+        "-".to_string(),
+    ]
+}
+
+/// Reads the `I:` and true `Peak:` values of the `ebur128` summary.
+pub fn parse_loudness(stderr: &str) -> Option<Loudness> {
+    let summary = &stderr[stderr.rfind("Summary:")?..];
+    let value = |label: &str| {
+        summary.lines().find_map(|line| {
+            let rest = line.trim().strip_prefix(label)?;
+            rest.split_whitespace().next()?.parse::<f64>().ok()
+        })
+    };
+    Some(Loudness {
+        integrated_lufs: value("I:")?,
+        true_peak_dbtp: value("Peak:")?,
+    })
+}
+
+/// Chooses the treatment of a measured track.
+pub fn level_for(measured: Loudness, targets: &LoudnormTargets) -> AudioLevel {
+    if !measured.integrated_lufs.is_finite() || measured.integrated_lufs <= SILENCE_LUFS {
+        return AudioLevel::Keep;
+    }
+    let gain_db = targets.integrated_lufs - measured.integrated_lufs;
+    let peak_ok = measured.true_peak_dbtp + gain_db.max(0.0) <= targets.true_peak_dbtp;
+    if gain_db.abs() <= LEVEL_TOLERANCE_DB && peak_ok {
+        return AudioLevel::Keep;
+    }
+    let limit = 10f64
+        .powf(targets.true_peak_dbtp / 20.0)
+        .clamp(MIN_LIMIT, 1.0);
+    AudioLevel::Gain {
+        gain_db: (gain_db * 100.0).round() / 100.0,
+        limit: (limit * 1000.0).round() / 1000.0,
+    }
+}
+
+/// Measures the track and chooses its treatment (see [`AudioLevel`]).
+pub async fn measure_audio_level(
+    input: &Path,
+    probed: Option<&ProbeInfo>,
+    config: &MediaConfig,
+) -> AudioLevel {
+    let has_audio = probed.is_none_or(|probed| probed.has_audio);
+    if !config.video.audio_normalize || !has_audio {
+        return AudioLevel::Keep;
+    }
+    let started = std::time::Instant::now();
+    let measured = process::run_command(
+        &config.tools.ffmpeg,
+        &loudness_args(input),
+        config.download.timeout,
+        MediaErrorCode::TranscodeFailed,
+    )
+    .await
+    .map(|output| parse_loudness(&output.stderr));
+    let level = match measured {
+        Ok(Some(measured)) => level_for(measured, &config.video.loudnorm),
+        Ok(None) => {
+            tracing::warn!("mesure du volume illisible, repli sur loudnorm");
+            AudioLevel::Loudnorm(config.video.loudnorm.filter())
+        }
+        Err(error) => {
+            tracing::warn!(%error, "mesure du volume impossible, repli sur loudnorm");
+            AudioLevel::Loudnorm(config.video.loudnorm.filter())
+        }
+    };
+    tracing::info!(
+        ?level,
+        measure_ms = crate::ingest::elapsed_ms(started),
+        "normalisation : volume mesuré"
+    );
+    level
+}
+
+/// Audio filter of a level (and the output rate `loudnorm` needs).
+fn push_audio_level(args: &mut Vec<String>, level: &AudioLevel) {
+    match level {
+        AudioLevel::Keep => {}
+        AudioLevel::Gain { gain_db, limit } => {
+            args.push("-af".to_string());
+            args.push(format!(
+                "volume={gain_db}dB,alimiter=limit={limit}:level=false:latency=true"
+            ));
+        }
+        AudioLevel::Loudnorm(filter) => {
+            args.push("-af".to_string());
+            args.push(filter.clone());
+            args.push("-ar".to_string());
+            args.push(NORMALIZED_AUDIO_RATE.to_string());
+        }
+    }
+}
+
+/// Name of the NVIDIA H.264 encoder.
+pub const NVENC_ENCODER: &str = "h264_nvenc";
+
+/// Decoding options placed before `-i` when NVENC encodes: the GPU decodes
+/// too. The CPU decode of a 1440p60 AV1 clip took 24 s on the server, the GPU
+/// one 4 s. AV1 needs FFmpeg's native decoder: the default one, libdav1d,
+/// ignores `-hwaccel`. Codecs the GPU cannot decode fall back to software.
+pub fn nvenc_decode_args(video_codec: Option<&str>) -> Vec<String> {
+    let mut args = vec!["-hwaccel".to_string(), "cuda".to_string()];
+    if video_codec == Some("av1") {
+        args.extend(["-c:v".to_string(), "av1".to_string()]);
+    }
+    args
+}
+
+/// NVENC rate control. Constant quality close to x264's default CRF 23 (the
+/// NVENC default bitrate gave a blurry 2 Mbit/s 1080p60). No B-frames: with
+/// them, the MP4 muxer rejected the timestamps of a 60.0002 fps clip
+/// ("pts/dts pair unsupported").
+pub fn nvenc_quality_args() -> Vec<String> {
+    ["-rc", "vbr", "-cq", "23", "-b:v", "0", "-bf", "0"]
+        .map(str::to_string)
+        .to_vec()
 }
 
 /// Arguments de transcodage vidéo H.264/AAC MP4 faststart.
@@ -685,21 +1122,29 @@ pub fn build_video_transcode_args(
     output: &Path,
     config: &MediaConfig,
     probed: Option<&ProbeInfo>,
+    level: &AudioLevel,
     encoder: &str,
     preset: &str,
 ) -> Vec<String> {
-    let mut args = vec![
-        "-y".to_string(),
-        "-hide_banner".to_string(),
+    let mut args = vec!["-y".to_string(), "-hide_banner".to_string()];
+    if encoder == NVENC_ENCODER {
+        args.extend(nvenc_decode_args(
+            probed.and_then(|probed| probed.video_codec.as_deref()),
+        ));
+    }
+    args.extend([
         "-i".to_string(),
         input.display().to_string(),
         "-c:v".to_string(),
         encoder.to_string(),
         "-preset".to_string(),
         preset.to_string(),
-        "-pix_fmt".to_string(),
-        "yuv420p".to_string(),
-    ];
+    ]);
+    if encoder == NVENC_ENCODER {
+        args.extend(nvenc_quality_args());
+    }
+    args.push("-pix_fmt".to_string());
+    args.push("yuv420p".to_string());
     if let Some(filter) = scale_filter(probed, config.video.max_height) {
         args.push("-vf".to_string());
         args.push(filter);
@@ -708,10 +1153,8 @@ pub fn build_video_transcode_args(
     args.push("aac".to_string());
     args.push("-b:a".to_string());
     args.push(AUDIO_BITRATE.to_string());
-    let has_audio = probed.map(|probed| probed.has_audio).unwrap_or(false);
-    if config.video.audio_normalize && has_audio {
-        args.push("-af".to_string());
-        args.push(config.video.loudnorm.filter());
+    if probed.is_some_and(|probed| probed.has_audio) {
+        push_audio_level(&mut args, level);
     }
     args.push("-movflags".to_string());
     args.push("+faststart".to_string());
@@ -720,7 +1163,7 @@ pub fn build_video_transcode_args(
 }
 
 /// Arguments de normalisation audio MP3.
-pub fn build_audio_args(input: &Path, output: &Path, config: &MediaConfig) -> Vec<String> {
+pub fn build_audio_args(input: &Path, output: &Path, level: &AudioLevel) -> Vec<String> {
     let mut args = vec![
         "-y".to_string(),
         "-hide_banner".to_string(),
@@ -732,17 +1175,9 @@ pub fn build_audio_args(input: &Path, output: &Path, config: &MediaConfig) -> Ve
         "-b:a".to_string(),
         AUDIO_BITRATE.to_string(),
     ];
-    if config.video.audio_normalize {
-        args.push("-af".to_string());
-        args.push(config.video.loudnorm.filter());
-    }
+    push_audio_level(&mut args, level);
     args.push(output.display().to_string());
     args
-}
-
-/// Filtre de normalisation loudness legacy.
-pub fn loudnorm_filter(config: &MediaConfig) -> String {
-    config.video.loudnorm.filter()
 }
 
 /// Filtre de mise à l'échelle (hauteur plafonnée à `max_height`).
@@ -943,6 +1378,264 @@ mod tests {
     }
 
     #[test]
+    fn plans_the_cheapest_video_path() {
+        let config = video_config().video;
+        assert!(config.audio_normalize);
+        // Already a normalized MP4: the video is copied, the audio still goes
+        // through the level change like every other media.
+        assert_eq!(
+            plan_video(&probed_video(), &config, false),
+            VideoPlan::CopyVideo {
+                audio: RemuxAudio::Encode
+            }
+        );
+        // Plain copy when nothing has to change: the audio keeps its level,
+        // or there is no audio track.
+        assert_eq!(
+            plan_video(&probed_video(), &config, true),
+            VideoPlan::CopyFile
+        );
+        let mut mute_mp4 = probed_video();
+        mute_mp4.has_audio = false;
+        mute_mp4.audio_codec = None;
+        assert_eq!(plan_video(&mute_mp4, &config, false), VideoPlan::CopyFile);
+
+        // H.264 in another container: the video stream is copied, the audio
+        // goes through the level change.
+        let mut mkv = probed_video();
+        mkv.format_name = Some("matroska,webm".to_string());
+        assert_eq!(
+            plan_video(&mkv, &config, false),
+            VideoPlan::CopyVideo {
+                audio: RemuxAudio::Encode
+            }
+        );
+        // Same file with its audio already at the target: nothing is encoded.
+        assert_eq!(
+            plan_video(&mkv, &config, true),
+            VideoPlan::CopyVideo {
+                audio: RemuxAudio::Copy
+            }
+        );
+
+        // MP4 with a non-AAC track: only the audio is encoded, whatever the
+        // level of the track.
+        let mut mp3_track = probed_video();
+        mp3_track.audio_codec = Some("mp3".to_string());
+        for keep in [false, true] {
+            assert_eq!(
+                plan_video(&mp3_track, &config, keep),
+                VideoPlan::CopyVideo {
+                    audio: RemuxAudio::Encode
+                }
+            );
+        }
+
+        // Silent H.264 outside MP4.
+        let mut silent = mkv.clone();
+        silent.has_audio = false;
+        silent.audio_codec = None;
+        assert_eq!(
+            plan_video(&silent, &config, false),
+            VideoPlan::CopyVideo {
+                audio: RemuxAudio::None
+            }
+        );
+
+        // Anything wrong with the picture itself: full transcode.
+        let mut vp9 = mkv.clone();
+        vp9.video_codec = Some("vp9".to_string());
+        assert_eq!(plan_video(&vp9, &config, false), VideoPlan::Transcode);
+        let mut too_tall = mkv.clone();
+        too_tall.height = Some(1440);
+        assert_eq!(plan_video(&too_tall, &config, false), VideoPlan::Transcode);
+        let mut ten_bit = mkv;
+        ten_bit.pixel_format = Some("yuv420p10le".to_string());
+        assert_eq!(plan_video(&ten_bit, &config, false), VideoPlan::Transcode);
+        let mut tall_mp4 = probed_video();
+        tall_mp4.height = Some(2160);
+        assert_eq!(plan_video(&tall_mp4, &config, false), VideoPlan::Transcode);
+    }
+
+    #[test]
+    fn builds_remux_args() {
+        let position = |args: &[String], value: &str| {
+            args.iter()
+                .position(|arg| arg == value)
+                .unwrap_or_else(|| panic!("{value} missing in {args:?}"))
+        };
+        let gain = AudioLevel::Gain {
+            gain_db: 4.0,
+            limit: 0.841,
+        };
+
+        let args = build_video_remux_args(
+            Path::new("in.mkv"),
+            Path::new("out.mp4"),
+            RemuxAudio::Encode,
+            &gain,
+        );
+        assert_eq!(args[position(&args, "-c:v") + 1], "copy");
+        assert_eq!(args[position(&args, "-c:a") + 1], "aac");
+        assert_eq!(args[position(&args, "-b:a") + 1], AUDIO_BITRATE);
+        assert_eq!(
+            args[position(&args, "-af") + 1],
+            "volume=4dB,alimiter=limit=0.841:level=false:latency=true"
+        );
+        assert!(!args.iter().any(|arg| arg == "-ar"));
+        assert_eq!(args[position(&args, "-movflags") + 1], "+faststart");
+        // The first real video stream and the first audio stream only.
+        let maps: Vec<&str> = args
+            .windows(2)
+            .filter(|pair| pair[0] == "-map")
+            .map(|pair| pair[1].as_str())
+            .collect();
+        assert_eq!(maps, ["0:V:0", "0:a:0"]);
+        assert_eq!(args.last().unwrap(), "out.mp4");
+        // No video encoder, no filter on the picture.
+        assert!(!args.iter().any(|arg| arg == "libx264" || arg == "-vf"));
+
+        // The loudnorm fallback brings its output rate back to 48 kHz.
+        let args = build_video_remux_args(
+            Path::new("in.mkv"),
+            Path::new("out.mp4"),
+            RemuxAudio::Encode,
+            &AudioLevel::Loudnorm("loudnorm=I=-18:LRA=11:TP=-1.5".to_string()),
+        );
+        assert_eq!(
+            args[position(&args, "-af") + 1],
+            "loudnorm=I=-18:LRA=11:TP=-1.5"
+        );
+        assert_eq!(args[position(&args, "-ar") + 1], "48000");
+
+        let args = build_video_remux_args(
+            Path::new("in.mkv"),
+            Path::new("out.mp4"),
+            RemuxAudio::Encode,
+            &AudioLevel::Keep,
+        );
+        assert!(!args.iter().any(|arg| arg == "-af" || arg == "-ar"));
+
+        let args = build_video_remux_args(
+            Path::new("in.mkv"),
+            Path::new("out.mp4"),
+            RemuxAudio::Copy,
+            &AudioLevel::Keep,
+        );
+        assert_eq!(args[position(&args, "-c:a") + 1], "copy");
+        assert!(!args.iter().any(|arg| arg == "-af" || arg == "aac"));
+
+        let args = build_video_remux_args(
+            Path::new("in.mkv"),
+            Path::new("out.mp4"),
+            RemuxAudio::None,
+            &gain,
+        );
+        assert!(args.iter().any(|arg| arg == "-an"));
+        assert!(!args.iter().any(|arg| arg == "0:a:0" || arg == "-c:a"));
+    }
+
+    #[test]
+    fn reads_the_ebur128_summary() {
+        let stderr = "[Parsed_ebur128_0 @ 0x1] t: 1 M: -20 S: -21 I: -30.0 LUFS\n\
+            [Parsed_ebur128_0 @ 0x1] Summary:\n\n  Integrated loudness:\n    I:         -22.0 LUFS\n\
+            Threshold: -32.4 LUFS\n\n  Loudness range:\n    LRA:         9.4 LU\n\n\
+            True peak:\n    Peak:       -1.8 dBFS\n";
+        assert_eq!(
+            parse_loudness(stderr),
+            Some(Loudness {
+                integrated_lufs: -22.0,
+                true_peak_dbtp: -1.8,
+            })
+        );
+        assert_eq!(parse_loudness("no summary"), None);
+        let silence = "Summary:\n    I:         -inf LUFS\n    Peak:       -inf dBFS\n";
+        let parsed = parse_loudness(silence).unwrap();
+        assert!(parsed.integrated_lufs.is_infinite());
+    }
+
+    #[test]
+    fn chooses_the_level_of_a_track() {
+        let targets = video_config().video.loudnorm;
+        let measured = |integrated_lufs, true_peak_dbtp| Loudness {
+            integrated_lufs,
+            true_peak_dbtp,
+        };
+        // A quiet clip is raised to the target, peaks held by the limiter.
+        assert_eq!(
+            level_for(measured(-22.0, -1.8), &targets),
+            AudioLevel::Gain {
+                gain_db: 4.0,
+                limit: 0.841,
+            }
+        );
+        // A loud one is lowered.
+        assert_eq!(
+            level_for(measured(-15.0, -4.3), &targets),
+            AudioLevel::Gain {
+                gain_db: -3.0,
+                limit: 0.841,
+            }
+        );
+        // Already at the target with room for its peaks: kept.
+        assert_eq!(level_for(measured(-18.3, -3.0), &targets), AudioLevel::Keep);
+        // At the target but peaking too high: limited.
+        assert!(matches!(
+            level_for(measured(-18.2, -0.5), &targets),
+            AudioLevel::Gain { .. }
+        ));
+        // Silence is never amplified.
+        assert_eq!(
+            level_for(measured(-75.0, -60.0), &targets),
+            AudioLevel::Keep
+        );
+        assert_eq!(
+            level_for(measured(f64::NEG_INFINITY, f64::NEG_INFINITY), &targets),
+            AudioLevel::Keep
+        );
+    }
+
+    #[tokio::test]
+    async fn a_capability_is_probed_once_per_binary() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let cache = CapabilityCache::new();
+        let probes = AtomicUsize::new(0);
+        let probe = |answer: bool| {
+            let probes = &probes;
+            async move {
+                probes.fetch_add(1, Ordering::SeqCst);
+                answer
+            }
+        };
+        let ffmpeg = Path::new("/usr/bin/ffmpeg");
+        assert!(!cache.get_or_probe(ffmpeg, probe(false)).await);
+        // The second answer would differ: the first one is kept.
+        assert!(!cache.get_or_probe(ffmpeg, probe(true)).await);
+        assert_eq!(probes.load(Ordering::SeqCst), 1);
+        // Another binary has its own answer.
+        assert!(
+            cache
+                .get_or_probe(Path::new("/opt/ffmpeg"), probe(true))
+                .await
+        );
+        assert_eq!(probes.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_missing_ffmpeg_has_no_nvenc() {
+        let missing = Path::new("definitely-missing-ffmpeg-binary");
+        assert!(!has_nvenc(missing, Duration::from_secs(5)).await);
+    }
+
+    #[test]
+    fn nvenc_test_encodes_to_nowhere() {
+        let args = nvenc_test_args();
+        assert!(args.contains(&"h264_nvenc".to_string()));
+        assert_eq!(&args[args.len() - 3..], ["-f", "null", "-"]);
+    }
+
+    #[test]
     fn resolves_encoder_matrix() {
         let mut config = video_config().video;
         config.cpu_preset = "ultrafast".to_string();
@@ -966,6 +1659,50 @@ mod tests {
     }
 
     #[test]
+    fn nvenc_decodes_on_the_gpu_and_sets_its_quality() {
+        let config = video_config();
+        let mut probed = probed_video();
+        probed.video_codec = Some("av1".to_string());
+        let joined = build_video_transcode_args(
+            Path::new("in.mp4"),
+            Path::new("out.mp4"),
+            &config,
+            Some(&probed),
+            &AudioLevel::Keep,
+            "h264_nvenc",
+            "p4",
+        )
+        .join(" ");
+        assert!(joined.starts_with("-y -hide_banner -hwaccel cuda -c:v av1 -i in.mp4 "));
+        assert!(joined
+            .contains("-c:v h264_nvenc -preset p4 -rc vbr -cq 23 -b:v 0 -bf 0 -pix_fmt yuv420p"));
+        probed.video_codec = Some("h264".to_string());
+        let joined = build_video_transcode_args(
+            Path::new("in.mp4"),
+            Path::new("out.mp4"),
+            &config,
+            Some(&probed),
+            &AudioLevel::Keep,
+            "h264_nvenc",
+            "p4",
+        )
+        .join(" ");
+        assert!(joined.starts_with("-y -hide_banner -hwaccel cuda -i in.mp4 "));
+        let joined = build_video_transcode_args(
+            Path::new("in.mp4"),
+            Path::new("out.mp4"),
+            &config,
+            Some(&probed),
+            &AudioLevel::Keep,
+            "libx264",
+            "ultrafast",
+        )
+        .join(" ");
+        assert!(!joined.contains("-hwaccel"));
+        assert!(!joined.contains("-cq"));
+    }
+
+    #[test]
     fn builds_video_args() {
         let config = video_config();
         let probed = probed_video();
@@ -974,6 +1711,7 @@ mod tests {
             Path::new("out.mp4"),
             &config,
             Some(&probed),
+            &AudioLevel::Keep,
             "libx264",
             "ultrafast",
         );
@@ -983,8 +1721,27 @@ mod tests {
         assert!(args.contains(&"yuv420p".to_string()));
         assert!(args.contains(&"-movflags".to_string()));
         assert!(args.contains(&"+faststart".to_string()));
-        assert!(args.contains(&"loudnorm=I=-18:LRA=11:TP=-1.5".to_string()));
         assert_eq!(args.last().unwrap(), "out.mp4");
+        assert!(!args.contains(&"-af".to_string()));
+        let gain = AudioLevel::Gain {
+            gain_db: -3.0,
+            limit: 0.841,
+        };
+        let args = build_video_transcode_args(
+            Path::new("in.mp4"),
+            Path::new("out.mp4"),
+            &config,
+            Some(&probed),
+            &gain,
+            "libx264",
+            "ultrafast",
+        );
+        let filter = args.iter().position(|arg| arg == "-af").unwrap();
+        assert_eq!(
+            args[filter + 1],
+            "volume=-3dB,alimiter=limit=0.841:level=false:latency=true"
+        );
+        // A file without audio gets no audio filter whatever the level.
         let mut no_audio = probed;
         no_audio.has_audio = false;
         let args = build_video_transcode_args(
@@ -992,20 +1749,28 @@ mod tests {
             Path::new("out.mp4"),
             &config,
             Some(&no_audio),
+            &gain,
             "h264_nvenc",
             "p4",
         );
         assert!(!args.contains(&"-af".to_string()));
+        assert!(!args.contains(&"-ar".to_string()));
     }
 
     #[test]
     fn builds_audio_args_and_loudnorm() {
-        let config = video_config();
-        let args = build_audio_args(Path::new("in.wav"), Path::new("out.mp3"), &config);
+        let level = AudioLevel::Gain {
+            gain_db: 2.5,
+            limit: 0.841,
+        };
+        let args = build_audio_args(Path::new("in.wav"), Path::new("out.mp3"), &level);
         assert!(args.contains(&"libmp3lame".to_string()));
         assert!(args.contains(&"192k".to_string()));
+        assert!(args
+            .contains(&"volume=2.5dB,alimiter=limit=0.841:level=false:latency=true".to_string()));
         assert_eq!(args.last().unwrap(), "out.mp3");
-        assert_eq!(loudnorm_filter(&config), "loudnorm=I=-18:LRA=11:TP=-1.5");
+        let args = build_audio_args(Path::new("in.wav"), Path::new("out.mp3"), &AudioLevel::Keep);
+        assert!(!args.contains(&"-af".to_string()));
         let targets = LoudnormTargets::default();
         assert!(targets.filter().contains("I=-18.0") || targets.filter().contains("I=-18"));
     }

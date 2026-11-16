@@ -412,6 +412,9 @@ fn apply_shortcuts_patch(
             if let Some(stop) = text_or_null(shortcuts, "stop", "shortcuts.stop")? {
                 config.shortcuts.stop = stop;
             }
+            if let Some(stop_local) = text_or_null(shortcuts, "stopLocal", "shortcuts.stopLocal")? {
+                config.shortcuts.stop_local = stop_local;
+            }
             if let Some(mute_all) = text_or_null(shortcuts, "muteAll", "shortcuts.muteAll")? {
                 config.shortcuts.mute_all = mute_all;
             }
@@ -753,6 +756,66 @@ mod tests {
         )
         .expect_err("duplicate shortcut");
         assert_eq!(error.field, "shortcuts.muteAll");
+    }
+
+    #[test]
+    fn settings_set_stores_and_clears_the_local_stop_shortcut() {
+        let patched = apply_settings_patch(
+            &paired_config(),
+            &json!({ "shortcuts": { "stopLocal": "  Ctrl+Shift+L " } }),
+            &sample_displays(),
+        )
+        .expect("local stop shortcut");
+        assert_eq!(
+            patched.shortcuts.stop_local.as_deref(),
+            Some("Ctrl+Shift+L")
+        );
+        let view = build_settings_view(&patched, &sample_displays(), Some(0), true, idle_update());
+        let value = serde_json::to_value(view).expect("serializable view");
+        assert_eq!(value["shortcuts"]["stopLocal"], json!("Ctrl+Shift+L"));
+
+        let cleared = apply_settings_patch(
+            &patched,
+            &json!({ "shortcuts": { "stopLocal": null } }),
+            &sample_displays(),
+        )
+        .expect("cleared shortcut");
+        assert!(cleared.shortcuts.stop_local.is_none());
+    }
+
+    #[test]
+    fn settings_set_rejects_a_local_stop_shortcut_used_by_another_action() {
+        let mut config = paired_config();
+        config.shortcuts.stop = Some("Ctrl+Shift+S".to_string());
+        config.shortcuts.mute_all = Some("Ctrl+Alt+M".to_string());
+        // `Control` is an alias of `Ctrl`: the same key combination.
+        for taken in ["Control+Shift+S", "Ctrl+Alt+M"] {
+            let error = apply_settings_patch(
+                &config,
+                &json!({ "shortcuts": { "stopLocal": taken } }),
+                &sample_displays(),
+            )
+            .expect_err("duplicate shortcut");
+            assert!(
+                error.field == "shortcuts.stopLocal" || error.field == "shortcuts.muteAll",
+                "unexpected field {}",
+                error.field
+            );
+        }
+        let error = apply_settings_patch(
+            &config,
+            &json!({ "shortcuts": { "stopLocal": "not a key" } }),
+            &sample_displays(),
+        )
+        .expect_err("invalid shortcut");
+        assert_eq!(error.field, "shortcuts.stopLocal");
+        let error = apply_settings_patch(
+            &config,
+            &json!({ "shortcuts": { "stopLocal": crate::shortcuts::MANUAL_RELOAD_ACCELERATOR } }),
+            &sample_displays(),
+        )
+        .expect_err("reserved shortcut");
+        assert_eq!(error.field, "shortcuts.stopLocal");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "LiveChat",
-  "version": "3.3.0",
+  "version": "3.4.0",
   "identifier": "com.livechat",
   "build": {
     "frontendDist": "web"
@@ -30,8 +30,8 @@
         "label": "board",
         "title": "LiveChat — Board",
         "url": "board.html",
-        "width": 1180,
-        "height": 780,
+        "width": 1400,
+        "height": 880,
         "minWidth": 960,
         "minHeight": 640,
         "center": true,

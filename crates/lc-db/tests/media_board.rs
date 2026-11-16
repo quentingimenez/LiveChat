@@ -91,6 +91,103 @@ async fn doublon_guild_et_asset_refuse() {
 }
 
 #[tokio::test]
+async fn replace_media_keeps_the_item_and_releases_the_previous_asset() {
+    let (db, _dir) = common::temp_db().await;
+    let now = common::now();
+    let pinned = common::date(common::NOW_MS + 1_000_000_000);
+    let released = common::date(common::NOW_MS + 5_000);
+    let guild = common::guild("123456789012345678");
+    let other_guild = common::guild("987654321098765432");
+
+    let mut original = common::sample_asset("replace-original", now);
+    original.expires_at = pinned;
+    let mut edited = common::sample_asset("replace-edited", now);
+    edited.expires_at = pinned;
+    let mut taken = common::sample_asset("replace-taken", now);
+    taken.expires_at = pinned;
+    for asset in [&original, &edited, &taken] {
+        db.media_assets().insert(asset).await.unwrap();
+    }
+
+    let repo = db.media_board();
+    let mut item = common::sample_board_item(&guild, original.id, now);
+    item.title = Some("Titre gardé".to_owned());
+    repo.create(&item).await.unwrap();
+    let other = common::sample_board_item(&guild, taken.id, now);
+    repo.create(&other).await.unwrap();
+
+    // Unknown item, or an item of another guild: nothing changes.
+    assert_eq!(
+        repo.replace_media(MediaBoardItemId::new_v4(), &guild, edited.id, now, released)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        repo.replace_media(item.id, &other_guild, edited.id, now, released)
+            .await
+            .unwrap(),
+        None
+    );
+
+    // The same asset: no change, nothing released.
+    assert_eq!(
+        repo.replace_media(item.id, &guild, original.id, now, released)
+            .await
+            .unwrap(),
+        Some(original.id)
+    );
+    let untouched = db.media_assets().get(original.id).await.unwrap().unwrap();
+    assert_eq!(untouched.expires_at, pinned);
+
+    // An asset already shown by another item of the guild is refused, and the
+    // transaction leaves the item as it was.
+    let error = repo
+        .replace_media(item.id, &guild, taken.id, now, released)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, DbError::Domain(DomainError::Conflict(_))),
+        "{error}"
+    );
+    assert_eq!(
+        repo.get(item.id).await.unwrap().unwrap().media_asset_id,
+        original.id
+    );
+
+    // A real replacement.
+    assert_eq!(
+        repo.replace_media(item.id, &guild, edited.id, now, released)
+            .await
+            .unwrap(),
+        Some(original.id)
+    );
+    let replaced = repo.get(item.id).await.unwrap().unwrap();
+    assert_eq!(replaced.media_asset_id, edited.id);
+    assert_eq!(replaced.id, item.id);
+    assert_eq!(replaced.title.as_deref(), Some("Titre gardé"));
+    assert_eq!(replaced.created_at, item.created_at);
+    let previous = db.media_assets().get(original.id).await.unwrap().unwrap();
+    assert_eq!(previous.expires_at, released, "previous asset released");
+    let current = db.media_assets().get(edited.id).await.unwrap().unwrap();
+    assert_eq!(current.expires_at, pinned);
+
+    // A previous asset still used as another item's picture stays pinned.
+    repo.set_artwork(other.id, Some(edited.id)).await.unwrap();
+    let mut third = common::sample_asset("replace-third", now);
+    third.expires_at = pinned;
+    db.media_assets().insert(&third).await.unwrap();
+    assert_eq!(
+        repo.replace_media(item.id, &guild, third.id, now, released)
+            .await
+            .unwrap(),
+        Some(edited.id)
+    );
+    let still_shown = db.media_assets().get(edited.id).await.unwrap().unwrap();
+    assert_eq!(still_shown.expires_at, pinned);
+}
+
+#[tokio::test]
 async fn media_asset_inexistant_refuse() {
     let (db, _dir) = common::temp_db().await;
     let now = common::now();

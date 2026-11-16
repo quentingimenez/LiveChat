@@ -470,6 +470,10 @@ pub enum PlaybackEndedReason {
     Manual,
     /// Erreur de rendu.
     Error,
+    /// Stopped on this overlay only, at its user's request. The other
+    /// overlays of the guild keep playing: the server releases the job only
+    /// when no other overlay is connected to the guild.
+    Local,
 }
 
 /// Raison d'un ordre d'arrêt serveur→client.

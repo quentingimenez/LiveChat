@@ -152,7 +152,7 @@ function renderSound(settings, guild) {
     h('p', { class: 'settings-hint is-under' }, 'Multiplié par le volume général des Paramètres.'),
     controlRow('Couper le son des médias', mediaMute, 'guild-settings-media-mute'),
     h('p', { class: 'settings-hint is-under' }, 'Les médias de cette guilde restent affichés, sans leur son.'),
-    controlRow('Sourdine', mute, 'guild-settings-mute'),
+    controlRow('Mettre en pause', mute, 'guild-settings-mute'),
     h('p', { class: 'settings-hint is-under' }, 'Plus aucun média de cette guilde ne s’affiche sur cet appareil.'),
   );
 }
@@ -180,6 +180,6 @@ export function renderGuildSettings() {
     { class: 'settings' },
     h('div', { class: 'settings-head' }, h('p', { class: 'meta' }, `Réglages de ${guildLabel(guild)}.`)),
     deviceSections,
-    can('manageSettings') ? section('Serveur', h('p', { class: 'settings-hint' }, 'Pour toute la guilde, sur tous les appareils.'), renderServerSettings()) : null,
+    can('manageSettings') ? section('Serveur', h('p', { class: 'settings-hint is-lead' }, 'Pour toute la guilde, sur tous les appareils.'), renderServerSettings()) : null,
   );
 }

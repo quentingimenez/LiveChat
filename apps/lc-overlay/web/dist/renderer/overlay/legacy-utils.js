@@ -1,3 +1,7 @@
+// Exponent of the perceptual volume curve: a volume setting (0 to 1) becomes
+// the media element gain `setting ^ gamma`. Shared by the overlay and by the
+// board's previews (web/app/core/sound.js) so both sound the same.
+export const VOLUME_CURVE_GAMMA = 2.2;
 export function createOverlayLegacyUtils() {
     function formatRemainingTime(remainingMs) {
         const remainingSec = Math.max(0, Math.ceil(remainingMs / 1000));
@@ -65,7 +69,7 @@ export function createOverlayLegacyUtils() {
         }
         return Math.min(1, Math.max(0, value));
     }
-    function toPerceptualGain(linearVolume, gamma = 2.2) {
+    function toPerceptualGain(linearVolume, gamma = VOLUME_CURVE_GAMMA) {
         const normalized = clamp01(linearVolume);
         return Math.pow(normalized, gamma);
     }

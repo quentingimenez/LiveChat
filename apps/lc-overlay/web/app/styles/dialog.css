@@ -149,3 +149,48 @@
 .dialog .stack label.switch {
   display: inline-flex;
 }
+
+/* Guild picker of « Ajouter à une autre guilde… ». */
+.guild-choices {
+  display: grid;
+  gap: 6px;
+  max-height: 280px;
+  overflow-y: auto;
+  margin: 4px 0 16px;
+}
+
+.guild-choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-m);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.guild-choice:hover {
+  background: var(--slate-700);
+}
+
+.guild-choice[aria-checked='true'] {
+  border-color: var(--line);
+  background: var(--slate-600);
+}
+
+.guild-choice-icon {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  object-fit: cover;
+  display: grid;
+  place-items: center;
+  background: var(--slate-600);
+  font-size: 12px;
+  font-weight: 600;
+}

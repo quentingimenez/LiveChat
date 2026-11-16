@@ -25,6 +25,7 @@
       "mediaUrl": "http://localhost:3000/overlay/media-board/media/98ba99b9-4ed9-4018-86ef-d91313ddae2f?clientId=47a9da35-ffef-4bca-a24b-120e276423ce&exp=1794811500&sig=c4f787a5b10f602654894bc1c9560891e6b1294732d13d94fcf999737bde3a4c",
       "mediaUrlExpiresAt": 1794811500000,
       "message": null,
+      "thumbnail": null,
       "title": "Mème"
     },
     {
@@ -52,6 +53,7 @@
       "mediaUrl": "http://localhost:3000/overlay/media-board/media/b97ab893-74b0-49a1-acc6-e0275d29e7cc?clientId=47a9da35-ffef-4bca-a24b-120e276423ce&exp=1794811500&sig=25d71591467941e386489221abfe514b6e6ad7eb31f4d4884a1795724786f783",
       "mediaUrlExpiresAt": 1794811500000,
       "message": null,
+      "thumbnail": null,
       "title": "Applaudissements"
     },
     {
@@ -79,6 +81,7 @@
       "mediaUrl": "http://localhost:3000/overlay/media-board/media/5bc3d75a-75f3-4839-a378-68c205a7c6fb?clientId=47a9da35-ffef-4bca-a24b-120e276423ce&exp=1794811500&sig=2e32fd16f9b1ecf4689c4606698fd28259c5a7212f933e24fe9075322e2ba426",
       "mediaUrlExpiresAt": 1794811500000,
       "message": null,
+      "thumbnail": null,
       "title": "Clip du but"
     }
   ],

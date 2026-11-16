@@ -199,6 +199,67 @@ async fn an_embedded_cover_becomes_the_item_picture() {
 }
 
 #[tokio::test]
+async fn a_video_shows_its_thumbnail_without_taking_it_as_picture() {
+    let harness = Harness::new().await;
+    let admin = token(
+        &harness
+            .join(&harness.server_invite(GuildRole::Admin).await, "Admin")
+            .await,
+    );
+    let video = asset(&harness, "v.mp4", MediaKind::Video, "video/mp4").await;
+    let thumbnail = asset(&harness, "v.cover.jpg", MediaKind::Image, "image/jpeg").await;
+    harness
+        .db
+        .media_assets()
+        .set_cover(video.id, Some(thumbnail.id))
+        .await
+        .unwrap();
+
+    let entry = item(&harness, &video).await;
+    let stored = harness
+        .db
+        .media_board()
+        .get(entry.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.artwork_asset_id, None);
+
+    let payload = listed(&harness, &admin, entry.id).await;
+    assert_eq!(payload["artwork"], Value::Null);
+    assert_eq!(payload["thumbnail"]["width"], 480);
+    let url = payload["thumbnail"]["url"]
+        .as_str()
+        .expect("URL de la miniature");
+    // The signed thumbnail is served to the guild.
+    let path = url.split_once("8099").map(|(_, rest)| rest).unwrap();
+    let (status, _) = harness.call(Method::GET, path, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{path}");
+}
+
+#[tokio::test]
+async fn an_audio_has_no_thumbnail() {
+    let harness = Harness::new().await;
+    let admin = token(
+        &harness
+            .join(&harness.server_invite(GuildRole::Admin).await, "Admin")
+            .await,
+    );
+    let audio = asset(&harness, "c.mp3", MediaKind::Audio, "audio/mpeg").await;
+    let cover = asset(&harness, "c.cover.jpg", MediaKind::Image, "image/jpeg").await;
+    harness
+        .db
+        .media_assets()
+        .set_cover(audio.id, Some(cover.id))
+        .await
+        .unwrap();
+    let entry = item(&harness, &audio).await;
+    let payload = listed(&harness, &admin, entry.id).await;
+    assert_eq!(payload["thumbnail"], Value::Null);
+    assert!(payload["artwork"]["url"].is_string());
+}
+
+#[tokio::test]
 async fn a_guest_cannot_change_a_picture() {
     let harness = Harness::new().await;
     let guest = token(

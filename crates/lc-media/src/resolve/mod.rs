@@ -57,6 +57,8 @@ pub struct ResolvedMedia {
     pub media_url: Option<String>,
     /// Type MIME annoncé pour `media_url`.
     pub mime: Option<String>,
+    /// Thumbnail announced by the platform (oEmbed, yt-dlp, syndication).
+    pub thumbnail_url: Option<String>,
 }
 
 impl ResolvedMedia {
@@ -76,6 +78,7 @@ impl ResolvedMedia {
             tweet_card: None,
             media_url: None,
             mime: None,
+            thumbnail_url: None,
         }
     }
 

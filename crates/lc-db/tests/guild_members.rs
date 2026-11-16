@@ -404,6 +404,17 @@ async fn invitation_usages_expiration_revocation() {
         .unwrap()
         .is_none());
 
+    // Active: `open` (unlimited) and `expired` until its expiry; `single` and
+    // `shared` are used up.
+    assert_eq!(invites.count_active(now).await.unwrap(), 2);
+    assert_eq!(
+        invites
+            .count_active(now + Duration::hours(24))
+            .await
+            .unwrap(),
+        1
+    );
+
     // Révocation, limitée à la guilde propriétaire.
     assert!(!invites
         .revoke(&common::guild("222"), &open.code, now)
@@ -412,6 +423,9 @@ async fn invitation_usages_expiration_revocation() {
     assert!(invites.revoke(&guild_id, &open.code, now).await.unwrap());
     assert!(!invites.revoke(&guild_id, &open.code, now).await.unwrap());
     assert!(invites.consume(&open.code, now).await.unwrap().is_none());
+
+    // A revoked invitation is no longer active.
+    assert_eq!(invites.count_active(now).await.unwrap(), 1);
 
     let listed = invites.list_by_guild(&guild_id).await.unwrap();
     assert_eq!(listed.len(), 4);

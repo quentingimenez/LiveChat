@@ -301,7 +301,12 @@ async fn migration_0005_renomme_la_table_et_conserve_les_elements() {
             .fetch_all(db.pool())
             .await
             .unwrap();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    // The 3.0.0 database receives the later migrations too (0011 to 0014): the historical baseline stays the same.
+    assert_eq!(&versions[..10], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    assert!(
+        [11, 12, 13, 14].iter().all(|v| versions.contains(v)),
+        "les migrations 0011 à 0014 doivent être appliquées : {versions:?}"
+    );
 
     let item = db
         .media_board()

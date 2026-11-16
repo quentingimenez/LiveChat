@@ -68,12 +68,13 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
+use lc_domain::rights::{Action, Surface};
 use lc_domain::{
-    GuildId, GuildRole, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId,
-    OverlayClientId, Permission,
+    GuildId, GuildRole, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, OverlayClientId,
 };
 use lc_protocol::{BoardChange, BoardChangedPayload, ServerMessage};
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::app::AppState;
 use crate::ingestions::{IngestionEntry, StartIngestionError};
@@ -82,7 +83,7 @@ use crate::media::errors::MediaServiceError;
 
 use super::auth::AuthedOverlayClient;
 use super::media_ingestion::{spawn_ingestion, BoardTarget, IngestionInput};
-use super::{db, db_failure, error, is_conflict, json_response, now};
+use super::{db, db_failure, error, is_conflict, json_response, now, ActorInfo};
 
 /// Alias local pour garder les signatures courtes.
 type Db = lc_db::Db;
@@ -99,19 +100,19 @@ const MIB: u64 = 1024 * 1024;
 /// Query de liste (tout optionnel, parité legacy `q/limit/offset`).
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct ListQuery {
+pub(crate) struct ListQuery {
     /// Recherche plein texte sur titre/message/auteur/URL source.
     #[serde(default)]
-    q: Option<String>,
+    pub(crate) q: Option<String>,
     /// Taille de page demandée (défaut 50, clamp 1..=200).
     #[serde(default)]
-    limit: Option<String>,
+    pub(crate) limit: Option<String>,
     /// Décalage (défaut 0).
     #[serde(default)]
-    offset: Option<String>,
+    pub(crate) offset: Option<String>,
     /// Ancien filtre admin : doit correspondre à la guilde du Bearer.
     #[serde(default)]
-    guild_id: Option<String>,
+    pub(crate) guild_id: Option<String>,
 }
 
 /// Paramètres de l'URL signée d'un média du board.
@@ -121,7 +122,7 @@ pub(super) struct ListQuery {
 /// authentifie la requête.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct BoardMediaQuery {
+pub(crate) struct BoardMediaQuery {
     /// Identifiant du client overlay auquel l'URL est liée.
     #[serde(default)]
     client_id: Option<String>,
@@ -136,7 +137,7 @@ pub(super) struct BoardMediaQuery {
 /// Corps `POST /media-board/items`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct CreateItemRequest {
+pub(crate) struct CreateItemRequest {
     /// URL source à ingérer.
     #[serde(default)]
     url: Option<String>,
@@ -149,6 +150,147 @@ pub(super) struct CreateItemRequest {
     /// Force une nouvelle ingestion même si le média est déjà en base.
     #[serde(default)]
     force_refresh: Option<serde_json::Value>,
+}
+
+/// Board list shared by `GET /overlay/media-board/items` and the admin console.
+///
+/// Signed media URLs are bound to the actor's overlay client; an admin request
+/// therefore uses one of the guild's active clients when it has one.
+pub(crate) async fn list_items_payload(
+    state: &AppState,
+    actor: &ActorInfo,
+    query: &ListQuery,
+) -> Result<Value, Response> {
+    let db = db(state)?;
+    ensure_board_visible_for(state, db, actor.guild_id(), actor.role()).await?;
+
+    let secret = state.config.media_url_secret.expose_secret();
+    if secret.is_empty() {
+        tracing::warn!("MEDIA_URL_SECRET absent : URLs du board non signables");
+        return Err(super::internal_error());
+    }
+    let expires_at_sec =
+        crate::media_url::board_url_expiry(u64::try_from(now(state).timestamp()).unwrap_or(0));
+    let client_id = actor.client.id.to_canonical();
+
+    let limit = normalize_limit(query.limit.as_deref());
+    let offset = normalize_offset(query.offset.as_deref());
+    let search = query
+        .q
+        .as_deref()
+        .map(|value| truncate_chars(value.trim(), TITLE_MAX_CHARS).to_lowercase())
+        .filter(|value| !value.is_empty());
+
+    // AUD-A2-013 : une seule requête pour lire les lignes de la board, au lieu
+    // de `list_by_guild` suivi d'un `media_assets().get` par item (N+1 non
+    // borné). La recherche et la pagination restent en Rust (board de quelques
+    // centaines d'items) ; seuls les assets de la page (≤ 200) sont rechargés.
+    let rows = load_board_rows(db, actor.guild_id())
+        .await
+        .map_err(|db_error| db_failure("overlay_media_board.list_items", &db_error))?;
+    let filtered = rows
+        .into_iter()
+        .filter(|row| {
+            search
+                .as_deref()
+                .map(|needle| row_matches(row, needle))
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    let total = filtered.len();
+    let favorites: std::collections::HashSet<MediaBoardItemId> = match actor.member_id() {
+        Some(member_id) => db
+            .media_board()
+            .favorite_item_ids(member_id)
+            .await
+            .map_err(|db_error| db_failure("overlay_media_board.favorites", &db_error))?
+            .into_iter()
+            .collect(),
+        None => std::collections::HashSet::new(),
+    };
+    let sign = |asset_id: &str| {
+        crate::media_url::sign_board_url(
+            secret.as_bytes(),
+            &state.config.api_origin(),
+            asset_id,
+            &client_id,
+            expires_at_sec,
+        )
+    };
+    let mut page = Vec::new();
+    for row in filtered.into_iter().skip(offset).take(limit) {
+        let asset = match db.media_assets().get(row.media_asset_id()).await {
+            Ok(Some(asset)) => asset,
+            Ok(None) => continue,
+            Err(db_error) => {
+                return Err(db_failure("overlay_media_board.list_item_asset", &db_error));
+            }
+        };
+        let asset_id = asset.id.to_canonical();
+        let media_url = match sign(&asset_id) {
+            Ok(url) => url,
+            Err(error) => {
+                tracing::warn!(%error, "signature d'une URL du board impossible");
+                return Err(super::internal_error());
+            }
+        };
+        let artwork = match row.item.artwork_asset_id {
+            Some(artwork_id) => match db.media_assets().get(artwork_id).await {
+                Ok(Some(artwork)) if artwork.is_ready() => match sign(&artwork.id.to_canonical()) {
+                    Ok(url) => Some(serde_json::json!({
+                        "url": url,
+                        "width": artwork.width,
+                        "height": artwork.height,
+                    })),
+                    Err(error) => {
+                        tracing::warn!(%error, "signature de l'image d'un média impossible");
+                        None
+                    }
+                },
+                Ok(_) => None,
+                Err(db_error) => {
+                    return Err(db_failure(
+                        "overlay_media_board.list_item_artwork",
+                        &db_error,
+                    ));
+                }
+            },
+            None => None,
+        };
+        let mut payload = item_payload(&row.item, &asset);
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("mediaUrl".to_owned(), serde_json::json!(media_url));
+            object.insert(
+                "mediaUrlExpiresAt".to_owned(),
+                serde_json::json!(expires_at_sec.saturating_mul(1000)),
+            );
+            object.insert(
+                "createdByMemberId".to_owned(),
+                serde_json::json!(row.created_by_member_id),
+            );
+            object.insert(
+                "canEdit".to_owned(),
+                serde_json::json!(actor.can_edit_item(row.created_by_member_id.as_deref())),
+            );
+            object.insert("artwork".to_owned(), serde_json::json!(artwork));
+            object.insert(
+                "artworkOnOverlay".to_owned(),
+                serde_json::json!(row.item.artwork_on_overlay),
+            );
+            object.insert(
+                "favorite".to_owned(),
+                serde_json::json!(favorites.contains(&row.item.id)),
+            );
+        }
+        page.push(payload);
+    }
+
+    Ok(serde_json::json!({
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": page,
+    }))
 }
 
 /// Handler `GET /overlay/media-board/items`.
@@ -167,139 +309,11 @@ pub async fn list_items(
             return error(StatusCode::FORBIDDEN, "forbidden");
         }
     }
-    let db = match db(&state) {
-        Ok(db) => db,
-        Err(response) => return response,
-    };
-    if let Err(response) = ensure_board_visible(db, &auth).await {
-        return response;
+    let actor = ActorInfo::from_auth(&state, &auth);
+    match list_items_payload(&state, &actor, &query).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
     }
-
-    let secret = state.config.media_url_secret.expose_secret();
-    if secret.is_empty() {
-        tracing::warn!("MEDIA_URL_SECRET absent : URLs du board non signables");
-        return super::internal_error();
-    }
-    let expires_at_sec =
-        crate::media_url::board_url_expiry(u64::try_from(now(&state).timestamp()).unwrap_or(0));
-    let client_id = auth.client.id.to_canonical();
-
-    let limit = normalize_limit(query.limit.as_deref());
-    let offset = normalize_offset(query.offset.as_deref());
-    let search = query
-        .q
-        .as_deref()
-        .map(|value| truncate_chars(value.trim(), TITLE_MAX_CHARS).to_lowercase())
-        .filter(|value| !value.is_empty());
-
-    // AUD-A2-013 : une seule requête pour lire les lignes de la board, au lieu
-    // de `list_by_guild` suivi d'un `media_assets().get` par item (N+1 non
-    // borné). La recherche et la pagination restent en Rust (board de quelques
-    // centaines d'items) ; seuls les assets de la page (≤ 200) sont rechargés.
-    let rows = match load_board_rows(db, auth.guild_id()).await {
-        Ok(rows) => rows,
-        Err(db_error) => return db_failure("overlay_media_board.list_items", &db_error),
-    };
-    let filtered = rows
-        .into_iter()
-        .filter(|row| {
-            search
-                .as_deref()
-                .map(|needle| row_matches(row, needle))
-                .unwrap_or(true)
-        })
-        .collect::<Vec<_>>();
-    let total = filtered.len();
-    let favorites: std::collections::HashSet<MediaBoardItemId> = match auth.member_id() {
-        Some(member_id) => match db.media_board().favorite_item_ids(member_id).await {
-            Ok(ids) => ids.into_iter().collect(),
-            Err(db_error) => return db_failure("overlay_media_board.favorites", &db_error),
-        },
-        None => std::collections::HashSet::new(),
-    };
-    let sign = |asset_id: &str| {
-        crate::media_url::sign_board_url(
-            secret.as_bytes(),
-            &state.config.api_origin(),
-            asset_id,
-            &client_id,
-            expires_at_sec,
-        )
-    };
-    let mut page = Vec::new();
-    for row in filtered.into_iter().skip(offset).take(limit) {
-        let asset = match db.media_assets().get(row.media_asset_id()).await {
-            Ok(Some(asset)) => asset,
-            Ok(None) => continue,
-            Err(db_error) => {
-                return db_failure("overlay_media_board.list_item_asset", &db_error);
-            }
-        };
-        let asset_id = asset.id.to_canonical();
-        let media_url = match sign(&asset_id) {
-            Ok(url) => url,
-            Err(error) => {
-                tracing::warn!(%error, "signature d'une URL du board impossible");
-                return super::internal_error();
-            }
-        };
-        let artwork = match row.item.artwork_asset_id {
-            Some(artwork_id) => match db.media_assets().get(artwork_id).await {
-                Ok(Some(artwork)) if artwork.is_ready() => match sign(&artwork.id.to_canonical()) {
-                    Ok(url) => Some(serde_json::json!({
-                        "url": url,
-                        "width": artwork.width,
-                        "height": artwork.height,
-                    })),
-                    Err(error) => {
-                        tracing::warn!(%error, "signature de l'image d'un média impossible");
-                        None
-                    }
-                },
-                Ok(_) => None,
-                Err(db_error) => {
-                    return db_failure("overlay_media_board.list_item_artwork", &db_error);
-                }
-            },
-            None => None,
-        };
-        let mut payload = item_payload(&row.item, &asset);
-        if let Some(object) = payload.as_object_mut() {
-            object.insert("mediaUrl".to_owned(), serde_json::json!(media_url));
-            object.insert(
-                "mediaUrlExpiresAt".to_owned(),
-                serde_json::json!(expires_at_sec.saturating_mul(1000)),
-            );
-            object.insert(
-                "createdByMemberId".to_owned(),
-                serde_json::json!(row.created_by_member_id),
-            );
-            object.insert(
-                "canEdit".to_owned(),
-                serde_json::json!(can_edit(&auth, row.created_by_member_id.as_deref())),
-            );
-            object.insert("artwork".to_owned(), serde_json::json!(artwork));
-            object.insert(
-                "artworkOnOverlay".to_owned(),
-                serde_json::json!(row.item.artwork_on_overlay),
-            );
-            object.insert(
-                "favorite".to_owned(),
-                serde_json::json!(favorites.contains(&row.item.id)),
-            );
-        }
-        page.push(payload);
-    }
-
-    json_response(
-        StatusCode::OK,
-        serde_json::json!({
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-            "items": page,
-        }),
-    )
 }
 
 /// Handler `POST /overlay/media-board/items`.
@@ -397,7 +411,7 @@ pub async fn list_ingestions(State(state): State<AppState>, auth: AuthedOverlayC
 
 /// Business outcome of a completed board ingestion.
 #[derive(Debug)]
-pub(super) struct CompletedBoardItem {
+pub(crate) struct CompletedBoardItem {
     /// `true` when a new board row was created.
     pub created: bool,
     /// `true` when the media of an existing item was replaced.
@@ -408,7 +422,7 @@ pub(super) struct CompletedBoardItem {
 
 /// Business failure of an asynchronous ingestion (protocol vocabulary).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct IngestionFailure {
+pub(crate) struct IngestionFailure {
     /// REST/protocol machine code (`media_ingestion_failed`,
     /// `unsupported_media`, `internal_error`, ...).
     pub code: &'static str,
@@ -423,7 +437,7 @@ pub(super) struct IngestionFailure {
 /// HTTP response: the same function serves the asynchronous task (which maps it
 /// to `media.ingestion`) and keeps the error vocabulary shared with the REST
 /// helpers below.
-pub(super) async fn complete_board_item(
+pub(crate) async fn complete_board_item(
     state: &AppState,
     auth: &AuthedOverlayClient,
     db: &Db,
@@ -464,8 +478,17 @@ pub(super) async fn complete_board_item(
             ));
         }
     };
-    if used.saturating_add(asset.size_bytes) > board_limit_bytes(state) {
-        return Err(board_full_failure(state));
+    let limit_bytes = match board_limit_bytes(state, db, auth.guild_id()).await {
+        Ok(limit) => limit,
+        Err(db_error) => {
+            return Err(completion_db_failure(
+                "overlay_media_board.board_limit",
+                &db_error,
+            ));
+        }
+    };
+    if used.saturating_add(asset.size_bytes) > limit_bytes {
+        return Err(board_full_failure(limit_bytes));
     }
 
     // AUD-A2-007 : le service a persisté l'asset avec le TTL de cache ; le
@@ -629,13 +652,21 @@ pub(super) async fn replace_board_item_media(
         }
     };
     let previous_bytes = previous.as_ref().map_or(0, |previous| previous.size_bytes);
-    let limit_bytes = board_limit_bytes(state);
+    let limit_bytes = match board_limit_bytes(state, db, auth.guild_id()).await {
+        Ok(limit) => limit,
+        Err(db_error) => {
+            return Err(completion_db_failure(
+                "overlay_media_board.replace_board_limit",
+                &db_error,
+            ));
+        }
+    };
     if used
         .saturating_sub(previous_bytes)
         .saturating_add(asset.size_bytes)
         > limit_bytes
     {
-        return Err(board_full_failure(state));
+        return Err(board_full_failure(limit_bytes));
     }
 
     let asset = match assets::pin(db, asset.id, now).await {
@@ -649,7 +680,7 @@ pub(super) async fn replace_board_item_media(
         Err(service_error) => return Err(media_service_failure(&service_error)),
     };
 
-    let release_seconds = i64::try_from(state.config.media_cache_ttl_hours)
+    let release_seconds = i64::try_from(state.runtime().media_cache_ttl_hours())
         .unwrap_or(i64::MAX / 3_600)
         .saturating_mul(3_600);
     let released_expiry = now + chrono::Duration::seconds(release_seconds);
@@ -689,24 +720,25 @@ fn replace_failure(message: &str) -> IngestionFailure {
 }
 
 /// Storage limit of a guild's board, in bytes.
-fn board_limit_bytes(state: &AppState) -> i64 {
-    i64::try_from(
-        state
-            .config
-            .media_board_max_total_mb
-            .saturating_mul(MIB)
-            .max(MIB),
-    )
-    .unwrap_or(i64::MAX)
+///
+/// The per-guild `board_quota_mb` column (migration 0011) overrides
+/// `MEDIA_BOARD_MAX_TOTAL_MB` when it is set. A guild without a settings row
+/// keeps the server-wide limit.
+async fn board_limit_bytes(state: &AppState, db: &Db, guild_id: &GuildId) -> lc_db::DbResult<i64> {
+    let megabytes = match db.guilds().board_quota_mb(guild_id).await? {
+        Some(quota) => u64::try_from(quota).unwrap_or(1).max(1),
+        None => state.runtime().media_board_max_total_mb().max(1),
+    };
+    Ok(i64::try_from(megabytes.saturating_mul(MIB)).unwrap_or(i64::MAX))
 }
 
 /// Failure sent when a media would not fit in the guild's board.
-fn board_full_failure(state: &AppState) -> IngestionFailure {
+fn board_full_failure(limit_bytes: i64) -> IngestionFailure {
+    let limit_mb = u64::try_from(limit_bytes / i64::try_from(MIB).unwrap_or(1)).unwrap_or(0);
     IngestionFailure {
         code: "media_ingestion_failed",
         message: Some(format!(
-            "la board de la guilde dépasserait la limite de {} Mo",
-            state.config.media_board_max_total_mb
+            "la board de la guilde dépasserait la limite de {limit_mb} Mo"
         )),
     }
 }
@@ -803,7 +835,7 @@ pub async fn get_media(
         },
         Err(db_error) => return db_failure("overlay_media_board.media_member", &db_error),
     };
-    if let Err(response) = ensure_board_visible_for(db, &client.guild_id, role).await {
+    if let Err(response) = ensure_board_visible_for(&state, db, &client.guild_id, role).await {
         return response;
     }
 
@@ -842,6 +874,104 @@ pub async fn get_media(
     .await
 }
 
+/// Board item update shared by `PATCH /overlay/media-board/items/{itemId}` and
+/// the admin console. The read-only guard runs before any payload check.
+pub(crate) async fn update_item_payload(
+    state: &AppState,
+    actor: &ActorInfo,
+    item_id_raw: &str,
+    body: Value,
+) -> Result<Value, Response> {
+    if actor.is_read_only() {
+        return Err(error(StatusCode::FORBIDDEN, "read_only_session"));
+    }
+    let Some(object) = body.as_object() else {
+        return Err(json_response(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({"error": "invalid_payload", "message": "title or message is required"}),
+        ));
+    };
+    let has_title = object.contains_key("title");
+    let has_message = object.contains_key("message");
+    let artwork_on_overlay = match object.get("artworkOnOverlay") {
+        None => None,
+        Some(serde_json::Value::Bool(value)) => Some(*value),
+        Some(_) => {
+            return Err(json_response(
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({"error": "invalid_payload", "message": "artworkOnOverlay must be a boolean"}),
+            ));
+        }
+    };
+    if !has_title && !has_message && artwork_on_overlay.is_none() {
+        return Err(json_response(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({"error": "invalid_payload", "message": "title or message is required"}),
+        ));
+    }
+    let Ok(item_id) = item_id_raw.trim().parse::<MediaBoardItemId>() else {
+        return Err(error(StatusCode::NOT_FOUND, "item_not_found"));
+    };
+    let db = db(state)?;
+    let existing = match db.media_board().get(item_id).await {
+        Ok(Some(item)) if &item.guild_id == actor.guild_id() => item,
+        Ok(_) => return Err(error(StatusCode::NOT_FOUND, "item_not_found")),
+        Err(db_error) => {
+            return Err(db_failure("overlay_media_board.patch_lookup", &db_error));
+        }
+    };
+    ensure_actor_can_edit(db, actor, item_id).await?;
+
+    // Valeur absente → on conserve ; null/vide → on efface (parité legacy
+    // `hasOwnProperty` + `toNonEmptyString`).
+    let title = if has_title {
+        normalize_optional_text(object.get("title"), TITLE_MAX_CHARS)
+    } else {
+        existing.title.clone()
+    };
+    let message = if has_message {
+        normalize_optional_text(object.get("message"), MESSAGE_MAX_CHARS)
+    } else {
+        existing.message.clone()
+    };
+
+    if let Some(on_overlay) = artwork_on_overlay {
+        if let Err(db_error) = db
+            .media_board()
+            .set_artwork_on_overlay(item_id, on_overlay)
+            .await
+        {
+            return Err(db_failure("overlay_media_board.patch_artwork", &db_error));
+        }
+    }
+    match db
+        .media_board()
+        .update(item_id, title.as_deref(), message.as_deref())
+        .await
+    {
+        Ok(true) => {
+            state.admin_hub.broadcast_to_guild(
+                actor.guild_id(),
+                ServerMessage::BoardChanged(BoardChangedPayload {
+                    change: BoardChange::Updated,
+                    item_id: item_id.to_canonical(),
+                }),
+            );
+            Ok(serde_json::json!({
+                "updated": true,
+                "item": {
+                    "id": existing.id.to_canonical(),
+                    "title": title,
+                    "message": message,
+                    "artworkOnOverlay": artwork_on_overlay.unwrap_or(existing.artwork_on_overlay),
+                },
+            }))
+        }
+        Ok(false) => Err(error(StatusCode::NOT_FOUND, "item_not_found")),
+        Err(db_error) => Err(db_failure("overlay_media_board.patch_update", &db_error)),
+    }
+}
+
 /// Handler `PATCH /overlay/media-board/items/{itemId}`.
 pub async fn update_item(
     State(state): State<AppState>,
@@ -863,97 +993,64 @@ pub async fn update_item(
             return json_rejection_error(rejection);
         }
     };
-    let Some(object) = body.as_object() else {
-        return json_response(
-            StatusCode::BAD_REQUEST,
-            serde_json::json!({"error": "invalid_payload", "message": "title or message is required"}),
-        );
-    };
-    let has_title = object.contains_key("title");
-    let has_message = object.contains_key("message");
-    let artwork_on_overlay = match object.get("artworkOnOverlay") {
-        None => None,
-        Some(serde_json::Value::Bool(value)) => Some(*value),
-        Some(_) => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                serde_json::json!({"error": "invalid_payload", "message": "artworkOnOverlay must be a boolean"}),
-            );
-        }
-    };
-    if !has_title && !has_message && artwork_on_overlay.is_none() {
-        return json_response(
-            StatusCode::BAD_REQUEST,
-            serde_json::json!({"error": "invalid_payload", "message": "title or message is required"}),
-        );
+    let actor = ActorInfo::from_auth(&state, &auth);
+    match update_item_payload(&state, &actor, &item_id_raw, body).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
+    }
+}
+
+/// Deletes a board item shared by the overlay route and the admin console.
+pub(crate) async fn delete_item_payload(
+    state: &AppState,
+    actor: &ActorInfo,
+    item_id_raw: &str,
+) -> Result<Value, Response> {
+    if actor.is_read_only() {
+        return Err(error(StatusCode::FORBIDDEN, "read_only_session"));
     }
     let Ok(item_id) = item_id_raw.trim().parse::<MediaBoardItemId>() else {
-        return error(StatusCode::NOT_FOUND, "item_not_found");
+        return Ok(serde_json::json!({"deleted": false}));
     };
-    let db = match db(&state) {
-        Ok(db) => db,
-        Err(response) => return response,
-    };
+    let db = db(state)?;
     let existing = match db.media_board().get(item_id).await {
-        Ok(Some(item)) if &item.guild_id == auth.guild_id() => item,
-        Ok(_) => return error(StatusCode::NOT_FOUND, "item_not_found"),
-        Err(db_error) => return db_failure("overlay_media_board.patch_lookup", &db_error),
+        Ok(Some(item)) if &item.guild_id == actor.guild_id() => item,
+        Ok(_) => return Ok(serde_json::json!({"deleted": false})),
+        Err(db_error) => {
+            return Err(db_failure("overlay_media_board.delete_lookup", &db_error));
+        }
     };
-    if let Err(response) = ensure_can_edit(db, &auth, item_id).await {
-        return response;
+    ensure_actor_can_edit(db, actor, item_id).await?;
+
+    // AUD-A2-013 : suppression et libération de l'expiration épinglée dans une
+    // même transaction (le comptage de références est fait côté SQL), au lieu
+    // d'un DELETE puis d'un comptage applicatif non transactionnel.
+    let now = now(state);
+    let release_seconds = i64::try_from(state.runtime().media_cache_ttl_hours())
+        .unwrap_or(i64::MAX / 3_600)
+        .saturating_mul(3_600);
+    let released_expiry = now + chrono::Duration::seconds(release_seconds);
+    let deleted = delete_item_and_release(
+        db,
+        item_id,
+        actor.guild_id(),
+        &[Some(existing.media_asset_id), existing.artwork_asset_id],
+        released_expiry,
+    )
+    .await
+    .map_err(|db_error| db_failure("overlay_media_board.delete", &db_error))?;
+
+    if deleted {
+        state.admin_hub.broadcast_to_guild(
+            actor.guild_id(),
+            ServerMessage::BoardChanged(BoardChangedPayload {
+                change: BoardChange::Deleted,
+                item_id: item_id.to_canonical(),
+            }),
+        );
     }
 
-    // Valeur absente → on conserve ; null/vide → on efface (parité legacy
-    // `hasOwnProperty` + `toNonEmptyString`).
-    let title = if has_title {
-        normalize_optional_text(object.get("title"), TITLE_MAX_CHARS)
-    } else {
-        existing.title.clone()
-    };
-    let message = if has_message {
-        normalize_optional_text(object.get("message"), MESSAGE_MAX_CHARS)
-    } else {
-        existing.message.clone()
-    };
-
-    if let Some(on_overlay) = artwork_on_overlay {
-        if let Err(db_error) = db
-            .media_board()
-            .set_artwork_on_overlay(item_id, on_overlay)
-            .await
-        {
-            return db_failure("overlay_media_board.patch_artwork", &db_error);
-        }
-    }
-    match db
-        .media_board()
-        .update(item_id, title.as_deref(), message.as_deref())
-        .await
-    {
-        Ok(true) => {
-            state.admin_hub.broadcast_to_guild(
-                auth.guild_id(),
-                ServerMessage::BoardChanged(BoardChangedPayload {
-                    change: BoardChange::Updated,
-                    item_id: item_id.to_canonical(),
-                }),
-            );
-            json_response(
-                StatusCode::OK,
-                serde_json::json!({
-                    "updated": true,
-                    "item": {
-                        "id": existing.id.to_canonical(),
-                        "title": title,
-                        "message": message,
-                        "artworkOnOverlay": artwork_on_overlay.unwrap_or(existing.artwork_on_overlay),
-                    },
-                }),
-            )
-        }
-        Ok(false) => error(StatusCode::NOT_FOUND, "item_not_found"),
-        Err(db_error) => db_failure("overlay_media_board.patch_update", &db_error),
-    }
+    Ok(serde_json::json!({"deleted": deleted}))
 }
 
 /// Handler `DELETE /overlay/media-board/items/{itemId}`.
@@ -966,54 +1063,11 @@ pub async fn delete_item(
     if let Err(response) = ensure_writable(&auth) {
         return response;
     }
-    let Ok(item_id) = item_id_raw.trim().parse::<MediaBoardItemId>() else {
-        return json_response(StatusCode::OK, serde_json::json!({"deleted": false}));
-    };
-    let db = match db(&state) {
-        Ok(db) => db,
-        Err(response) => return response,
-    };
-    let existing = match db.media_board().get(item_id).await {
-        Ok(Some(item)) if &item.guild_id == auth.guild_id() => item,
-        Ok(_) => return json_response(StatusCode::OK, serde_json::json!({"deleted": false})),
-        Err(db_error) => return db_failure("overlay_media_board.delete_lookup", &db_error),
-    };
-    if let Err(response) = ensure_can_edit(db, &auth, item_id).await {
-        return response;
+    let actor = ActorInfo::from_auth(&state, &auth);
+    match delete_item_payload(&state, &actor, &item_id_raw).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
     }
-
-    // AUD-A2-013 : suppression et libération de l'expiration épinglée dans une
-    // même transaction (le comptage de références est fait côté SQL), au lieu
-    // d'un DELETE puis d'un comptage applicatif non transactionnel.
-    let now = now(&state);
-    let release_seconds = i64::try_from(state.config.media_cache_ttl_hours)
-        .unwrap_or(i64::MAX / 3_600)
-        .saturating_mul(3_600);
-    let released_expiry = now + chrono::Duration::seconds(release_seconds);
-    let deleted = match delete_item_and_release(
-        db,
-        item_id,
-        auth.guild_id(),
-        &[Some(existing.media_asset_id), existing.artwork_asset_id],
-        released_expiry,
-    )
-    .await
-    {
-        Ok(deleted) => deleted,
-        Err(db_error) => return db_failure("overlay_media_board.delete", &db_error),
-    };
-
-    if deleted {
-        state.admin_hub.broadcast_to_guild(
-            auth.guild_id(),
-            ServerMessage::BoardChanged(BoardChangedPayload {
-                change: BoardChange::Deleted,
-                item_id: item_id.to_canonical(),
-            }),
-        );
-    }
-
-    json_response(StatusCode::OK, serde_json::json!({"deleted": deleted}))
 }
 
 /// Garde d'écriture : refuse les mutations en session `INVITE_READ_ONLY`.
@@ -1030,19 +1084,21 @@ pub(super) fn ensure_writable(auth: &AuthedOverlayClient) -> Result<(), Response
     Ok(())
 }
 
-/// Garde de lecture : un invité ne consulte le board que si la guilde
-/// l'autorise (`guilds.guests_can_view_board`, vrai par défaut).
-async fn ensure_board_visible(db: &Db, auth: &AuthedOverlayClient) -> Result<(), Response> {
-    ensure_board_visible_for(db, auth.guild_id(), auth.role()).await
-}
-
-/// Même garde pour un rôle résolu sans [`AuthedOverlayClient`] (route média
-/// signée, qui n'a pas d'authentification Bearer).
+/// Read guard: `viewBoard` comes from the rights cache; a guest must also be
+/// allowed by the guild setting (`guilds.guests_can_view_board`, true by
+/// default).
 async fn ensure_board_visible_for(
+    state: &AppState,
     db: &Db,
     guild_id: &GuildId,
     role: GuildRole,
 ) -> Result<(), Response> {
+    if !state
+        .rights
+        .allowed(Surface::Overlay, Action::ViewBoard, role.into())
+    {
+        return Err(error(StatusCode::FORBIDDEN, "forbidden"));
+    }
     if role != GuildRole::Guest {
         return Ok(());
     }
@@ -1050,7 +1106,7 @@ async fn ensure_board_visible_for(
         Ok(access) => access.is_none_or(|access| access.guests_can_view_board),
         Err(db_error) => return Err(db_failure("overlay_media_board.board_access", &db_error)),
     };
-    if role.can_view_board(guests_can_view_board) {
+    if guests_can_view_board {
         Ok(())
     } else {
         Err(error(StatusCode::FORBIDDEN, "forbidden"))
@@ -1064,11 +1120,13 @@ async fn ensure_board_visible_for(
 /// auteur enregistré (antérieur aux rôles, ou ajouté depuis Discord) reste
 /// modifiable par tout membre, comme avant ; il en va de même pour un overlay
 /// sans membre rattaché.
-fn can_edit(auth: &AuthedOverlayClient, creator_member_id: Option<&str>) -> bool {
-    if auth.can(Permission::EditAnyMedia) {
+fn can_edit(state: &AppState, auth: &AuthedOverlayClient, creator_member_id: Option<&str>) -> bool {
+    let rights = state.rights.snapshot();
+    let role = auth.role().into();
+    if rights.allowed(Surface::Overlay, Action::EditAnyMedia, role) {
         return true;
     }
-    if !auth.can(Permission::EditOwnMedia) {
+    if !rights.allowed(Surface::Overlay, Action::EditOwnMedia, role) {
         return false;
     }
     match (auth.member_id(), creator_member_id) {
@@ -1094,17 +1152,41 @@ pub(super) async fn guild_item(
     }
 }
 
+/// Garde de modification d'un média existant pour un [`ActorInfo`]
+/// (`403 forbidden` sinon).
+pub(crate) async fn ensure_actor_can_edit(
+    db: &Db,
+    actor: &ActorInfo,
+    item_id: MediaBoardItemId,
+) -> Result<(), Response> {
+    if actor.operator {
+        return Ok(());
+    }
+    let creator = match db.media_board().creator_member(item_id).await {
+        Ok(creator) => creator.map(lc_domain::GuildMemberId::to_canonical),
+        Err(db_error) => {
+            return Err(db_failure("overlay_media_board.item_author", &db_error));
+        }
+    };
+    if actor.can_edit_item(creator.as_deref()) {
+        Ok(())
+    } else {
+        Err(error(StatusCode::FORBIDDEN, "forbidden"))
+    }
+}
+
 /// Garde de modification d'un média existant (`403 forbidden` sinon).
 pub(super) async fn ensure_can_edit(
-    db: &Db,
+    state: &AppState,
     auth: &AuthedOverlayClient,
     item_id: MediaBoardItemId,
 ) -> Result<(), Response> {
+    let db = db(state)?;
     let creator = match db.media_board().creator_member(item_id).await {
         Ok(creator) => creator.map(lc_domain::GuildMemberId::to_canonical),
         Err(db_error) => return Err(db_failure("overlay_media_board.item_author", &db_error)),
     };
-    if can_edit(auth, creator.as_deref()) {
+    if can_edit(state, auth, creator.as_deref()) {
         Ok(())
     } else {
         Err(error(StatusCode::FORBIDDEN, "forbidden"))

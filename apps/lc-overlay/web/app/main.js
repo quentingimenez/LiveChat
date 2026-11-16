@@ -71,6 +71,15 @@ listen('overlay://board-changed', (payload) => {
   }
 });
 
+// The server changed this overlay's session mode or effective rights: read
+// `GET /overlay/guild` again and redraw, without reconnecting the socket.
+listen('overlay://rights-changed', (payload) => {
+  if (!payload || payload.guildId !== state.activeGuildId) {
+    return;
+  }
+  loadGuildInfo({ quiet: true }).then(() => renderView());
+});
+
 // Fallback: a slow refresh only while the queue is really visible and
 // focused. No other periodic call to loadQueue.
 setInterval(() => {

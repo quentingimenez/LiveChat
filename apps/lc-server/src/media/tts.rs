@@ -63,6 +63,12 @@ pub async fn ingest_speech(
     lang: Lang,
     text: &str,
 ) -> Result<MediaAsset, SpeechFailure> {
+    // `ttsEnabled` is hot: a disabled runtime setting must stop the next
+    // synthesis without a restart.
+    if !state.runtime().tts_enabled() {
+        tracing::warn!("speech synthesis disabled by the runtime settings (ttsEnabled=false)");
+        return Err(SpeechFailure::GenerationFailed);
+    }
     let Some(text) = normalize_speech(text) else {
         return Err(SpeechFailure::EmptyText);
     };

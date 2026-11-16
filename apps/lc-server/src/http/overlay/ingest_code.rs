@@ -23,13 +23,14 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
 use chrono::Duration;
-use lc_domain::{PairingCode, PairingCodeEntry, PairingMode, Permission};
+use lc_domain::rights::{Action, Surface};
+use lc_domain::{PairingCode, PairingCodeEntry, PairingMode};
 use serde_json::json;
 
 use crate::app::AppState;
 
 use super::auth::AuthedOverlayClient;
-use super::guild::{iso, random_invite_code, require};
+use super::guild::{iso, random_invite_code};
 use super::{db, db_failure, error, internal_error, is_conflict, json_response, now};
 
 /// Préfixe de l'auteur d'un code émis par un membre overlay (la colonne
@@ -62,8 +63,13 @@ pub async fn create_ingest_code(
     State(state): State<AppState>,
     auth: AuthedOverlayClient,
 ) -> Response {
-    if let Err(response) = require(&auth, Permission::TriggerPlayback) {
-        return response;
+    // The extension surface gates the pairing code itself (`extension.pair`),
+    // not the overlay `triggerPlayback` permission used historically.
+    if !state
+        .rights
+        .allowed(Surface::Extension, Action::Pair, auth.role().into())
+    {
+        return error(StatusCode::FORBIDDEN, "forbidden");
     }
     let Some(member) = auth.member.as_ref() else {
         return error(StatusCode::CONFLICT, "member_required");

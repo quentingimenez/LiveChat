@@ -1,4 +1,4 @@
-# Contexte Docker minimal pour deploy/server.Dockerfile (BuildKit).
+# Minimal Docker context for deploy/server.Dockerfile (BuildKit).
 # Only the Rust workspace sources, the manifests and the Cargo config are sent to
 # the builder: target/, spikes/ and extension/ are left out.
 
@@ -10,19 +10,26 @@ target
 **/target
 spikes
 extension
+docs
+deploy
+
+# Admin console: its sources are sent to the `admin-web` Vite stage, while
+# installed dependencies and build output are always rebuilt inside the image.
+apps/lc-admin-web/node_modules
+apps/lc-admin-web/dist
 node_modules
 **/node_modules
 dist
 **/dist
+
 build
 **/build
 data
 **/data
-docs
-# Seul le panneau admin (static/admin) est copié dans l'image runtime.
-static/*
-!static/admin
-deploy
+
+# The legacy static/admin panel is gone: the console is embedded by rust-embed.
+static
+
 *.log
 **/*.log
 **/*.sqlite

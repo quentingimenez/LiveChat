@@ -23,6 +23,8 @@ lc-media = { workspace = true }
 lc-playback = { workspace = true }
 lc-protocol = { workspace = true }
 rand = { workspace = true }
+reqwest = { workspace = true }
+rust-embed = { version = "8.14.0", features = ["debug-embed"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serenity = { workspace = true }

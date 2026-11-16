@@ -1,0 +1,29 @@
+{
+  "counts": {
+    "active": 1,
+    "expired": 1,
+    "total": 2
+  },
+  "items": [
+    {
+      "authorName": "Quentin",
+      "code": "JKLMNPQR",
+      "createdAt": "2026-11-16T05:56:30.136Z",
+      "createdByDiscordUserId": "1001",
+      "expiresAt": "2026-11-16T06:06:30.136Z",
+      "guildId": "112233445566778899",
+      "isActive": true,
+      "usedAt": null
+    },
+    {
+      "authorName": "Quentin",
+      "code": "STUVWXYZ",
+      "createdAt": "2026-11-16T05:56:30.136Z",
+      "createdByDiscordUserId": "1001",
+      "expiresAt": "2026-11-16T05:46:30.136Z",
+      "guildId": "112233445566778899",
+      "isActive": false,
+      "usedAt": null
+    }
+  ]
+}

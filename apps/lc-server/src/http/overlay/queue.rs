@@ -82,32 +82,77 @@ async fn load_queue(db: &Db, guild_id: &GuildId) -> Result<Vec<Value>, sqlx::Err
         .collect()
 }
 
-/// Handler `GET /overlay/queue`.
-pub async fn get_queue(State(state): State<AppState>, auth: AuthedOverlayClient) -> Response {
-    if let Err(response) = require(&auth, Permission::ViewQueue) {
-        return response;
-    }
-    let db = match db(&state) {
-        Ok(db) => db,
-        Err(response) => return response,
-    };
-    let jobs = match load_queue(db, auth.guild_id()).await {
-        Ok(jobs) => jobs,
-        Err(sqlx_error) => {
-            return db_failure("overlay_queue.list", &lc_db::DbError::from(sqlx_error));
-        }
-    };
+/// Queue body shared by `GET /overlay/queue` and the admin guild detail.
+pub(crate) async fn queue_payload(state: &AppState, guild_id: &GuildId) -> Result<Value, Response> {
+    let db = db(state)?;
+    let jobs = load_queue(db, guild_id).await.map_err(|sqlx_error| {
+        db_failure("overlay_queue.list", &lc_db::DbError::from(sqlx_error))
+    })?;
     let (playing, pending): (Vec<Value>, Vec<Value>) =
         jobs.into_iter().partition(|job| job["status"] == "playing");
 
-    json_response(
-        StatusCode::OK,
-        json!({
-            "playing": playing.into_iter().next(),
-            "pending": pending,
-            "serverTime": iso_ms(Some(now(&state).timestamp_millis())),
-        }),
+    Ok(json!({
+        "playing": playing.into_iter().next(),
+        "pending": pending,
+        "serverTime": iso_ms(Some(now(state).timestamp_millis())),
+    }))
+}
+
+/// Failure of a queue mutation, reported as the overlay route does.
+fn queue_db_failure(operation: &'static str, sqlx_error: sqlx::Error) -> Response {
+    db_failure(operation, &lc_db::DbError::from(sqlx_error))
+}
+
+/// Removes one pending job of the guild.
+pub(crate) async fn remove_job_payload(
+    state: &AppState,
+    guild_id: &GuildId,
+    job_id_raw: &str,
+) -> Result<Value, Response> {
+    let Ok(job_id) = job_id_raw.trim().parse::<PlaybackJobId>() else {
+        return Ok(json!({"removed": false}));
+    };
+    let db = db(state)?;
+    let result = sqlx::query(
+        "UPDATE playback_jobs SET status = 'FAILED', finished_at = ? \
+         WHERE id = ? AND guild_id = ? AND status = 'PENDING'",
     )
+    .bind(now(state).timestamp_millis())
+    .bind(job_id.to_canonical())
+    .bind(guild_id.as_str())
+    .execute(db.pool())
+    .await
+    .map_err(|sqlx_error| queue_db_failure("overlay_queue.remove", sqlx_error))?;
+    Ok(json!({"removed": result.rows_affected() > 0}))
+}
+
+/// Fails every pending job of the guild.
+pub(crate) async fn clear_queue_payload(
+    state: &AppState,
+    guild_id: &GuildId,
+) -> Result<Value, Response> {
+    let db = db(state)?;
+    let result = sqlx::query(
+        "UPDATE playback_jobs SET status = 'FAILED', finished_at = ? \
+         WHERE guild_id = ? AND status = 'PENDING'",
+    )
+    .bind(now(state).timestamp_millis())
+    .bind(guild_id.as_str())
+    .execute(db.pool())
+    .await
+    .map_err(|sqlx_error| queue_db_failure("overlay_queue.clear", sqlx_error))?;
+    Ok(json!({"removedCount": result.rows_affected()}))
+}
+
+/// Handler `GET /overlay/queue`.
+pub async fn get_queue(State(state): State<AppState>, auth: AuthedOverlayClient) -> Response {
+    if let Err(response) = require(&state, &auth, Permission::ViewQueue) {
+        return response;
+    }
+    match queue_payload(&state, auth.guild_id()).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
+    }
 }
 
 /// Handler `DELETE /overlay/queue/{jobId}` : retire un job en attente.
@@ -116,56 +161,22 @@ pub async fn remove_job(
     auth: AuthedOverlayClient,
     Path(job_id_raw): Path<String>,
 ) -> Response {
-    if let Err(response) = require(&auth, Permission::ModerateQueue) {
+    if let Err(response) = require(&state, &auth, Permission::ModerateQueue) {
         return response;
     }
-    let Ok(job_id) = job_id_raw.trim().parse::<PlaybackJobId>() else {
-        return json_response(StatusCode::OK, json!({"removed": false}));
-    };
-    let db = match db(&state) {
-        Ok(db) => db,
-        Err(response) => return response,
-    };
-    let result = sqlx::query(
-        "UPDATE playback_jobs SET status = 'FAILED', finished_at = ? \
-         WHERE id = ? AND guild_id = ? AND status = 'PENDING'",
-    )
-    .bind(now(&state).timestamp_millis())
-    .bind(job_id.to_canonical())
-    .bind(auth.guild_id().as_str())
-    .execute(db.pool())
-    .await;
-    match result {
-        Ok(result) => json_response(
-            StatusCode::OK,
-            json!({"removed": result.rows_affected() > 0}),
-        ),
-        Err(sqlx_error) => db_failure("overlay_queue.remove", &lc_db::DbError::from(sqlx_error)),
+    match remove_job_payload(&state, auth.guild_id(), &job_id_raw).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
     }
 }
 
 /// Handler `DELETE /overlay/queue` : vide les jobs en attente de la guilde.
 pub async fn clear_queue(State(state): State<AppState>, auth: AuthedOverlayClient) -> Response {
-    if let Err(response) = require(&auth, Permission::ModerateQueue) {
+    if let Err(response) = require(&state, &auth, Permission::ModerateQueue) {
         return response;
     }
-    let db = match db(&state) {
-        Ok(db) => db,
-        Err(response) => return response,
-    };
-    let result = sqlx::query(
-        "UPDATE playback_jobs SET status = 'FAILED', finished_at = ? \
-         WHERE guild_id = ? AND status = 'PENDING'",
-    )
-    .bind(now(&state).timestamp_millis())
-    .bind(auth.guild_id().as_str())
-    .execute(db.pool())
-    .await;
-    match result {
-        Ok(result) => json_response(
-            StatusCode::OK,
-            json!({"removedCount": result.rows_affected()}),
-        ),
-        Err(sqlx_error) => db_failure("overlay_queue.clear", &lc_db::DbError::from(sqlx_error)),
+    match clear_queue_payload(&state, auth.guild_id()).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
     }
 }

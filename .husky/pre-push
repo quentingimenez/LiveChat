@@ -1,1 +1,0 @@
-pnpm --dir server audit --audit-level=critical --prod

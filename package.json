@@ -1,14 +1,10 @@
 {
   "name": "livechat-monorepo",
   "private": true,
-  "description": "LiveChat monorepo: server (Discord bot + API), desktop overlay (Electron) and browser extension (MV3)",
+  "description": "LiveChat monorepo tooling: commit hooks and browser extension (MV3) scripts",
   "scripts": {
     "prepare": "husky",
-    "install:all": "pnpm --dir server install && npm --prefix overlay install && npm --prefix extension install",
-    "server:dev": "pnpm --dir server dev",
-    "server:test": "pnpm --dir server test",
-    "overlay:start": "npm --prefix overlay start",
-    "overlay:verify": "npm --prefix overlay run verify",
+    "extension:install": "npm --prefix extension install",
     "extension:build": "npm --prefix extension run build",
     "extension:check": "npm --prefix extension run ci:check"
   },

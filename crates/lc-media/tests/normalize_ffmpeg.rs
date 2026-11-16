@@ -203,10 +203,12 @@ async fn silent_h264_in_matroska_stays_silent() {
     assert_eq!(stream(&config, &output, "a", "codec_name"), "");
 }
 
-/// An already normalized MP4 is still copied byte for byte.
+/// An already normalized MP4 keeps its video stream; its audio goes through
+/// loudnorm like every other media. With normalization off it is copied byte
+/// for byte.
 #[tokio::test]
 #[ignore = "needs ffmpeg and ffprobe"]
-async fn normalized_mp4_is_copied_as_it_is() {
+async fn normalized_mp4_keeps_its_video_and_normalizes_its_audio() {
     let dir = tempfile::tempdir().unwrap();
     let config = config(dir.path());
     let input = sample(&config, dir.path(), "clip.mp4", Some("aac"));
@@ -215,13 +217,31 @@ async fn normalized_mp4_is_copied_as_it_is() {
         .await
         .unwrap();
 
-    assert_eq!(
+    assert_ne!(
         std::fs::read(&normalized.storage_path).unwrap(),
         std::fs::read(&input).unwrap()
+    );
+    assert_eq!(
+        packets_md5(&config, &normalized.storage_path, "0:V:0"),
+        packets_md5(&config, &input, "0:V:0")
+    );
+    assert_eq!(
+        stream(&config, &normalized.storage_path, "a", "sample_rate"),
+        "48000"
     );
     assert_eq!(normalized.duration_sec, Some(4));
     assert_eq!(normalized.width, Some(320));
     assert_eq!(normalized.height, Some(240));
+
+    let mut off = config.clone();
+    off.video.audio_normalize = false;
+    let copied = normalize_local_media(&input, None, &dir.path().join("media/copy"), &off)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(&copied.storage_path).unwrap(),
+        std::fs::read(&input).unwrap()
+    );
 }
 
 /// Another video codec is still fully transcoded, and the normalized track

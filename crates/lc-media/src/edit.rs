@@ -627,9 +627,11 @@ pub fn build_edit_args(
     }
     match plan.output_kind() {
         MediaKind::Video => {
-            args.extend(
-                ["-c:v", encoder, "-preset", preset, "-pix_fmt", "yuv420p"].map(str::to_string),
-            );
+            args.extend(["-c:v", encoder, "-preset", preset].map(str::to_string));
+            if encoder == crate::transcode::NVENC_ENCODER {
+                args.extend(crate::transcode::nvenc_quality_args());
+            }
+            args.extend(["-pix_fmt", "yuv420p"].map(str::to_string));
             if plan.with_audio {
                 args.extend(["-c:a", "aac", "-b:a", AUDIO_BITRATE].map(str::to_string));
             }
@@ -678,7 +680,7 @@ pub async fn apply_edit(
     if encoder != "h264_nvenc" {
         return Err(error);
     }
-    tracing::warn!("échec NVENC pendant une édition, nouvelle tentative en libx264");
+    tracing::warn!(%error, "échec NVENC pendant une édition, nouvelle tentative en libx264");
     let (encoder, preset) = resolve_video_encoder(&config.video, false);
     let args = build_edit_args(input, output, plan, config, &encoder, &preset);
     process::run_command(

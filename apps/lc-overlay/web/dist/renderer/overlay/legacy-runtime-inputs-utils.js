@@ -1,3 +1,4 @@
+import { VOLUME_CURVE_GAMMA } from './legacy-utils.js';
 function queryNode(documentRef, id) {
     return documentRef.getElementById(id);
 }
@@ -44,7 +45,7 @@ export function createOverlayLegacyRuntimeInputsUtils() {
             nodes,
             state,
             constants: {
-                volumeCurveGamma: 2.2,
+                volumeCurveGamma: VOLUME_CURVE_GAMMA,
             },
         };
     }

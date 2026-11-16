@@ -75,9 +75,30 @@ export function createOverlayLegacyMediaRenderUtils() {
             params.pauseCountdown();
             params.setPlaybackState('paused');
         }
+        // A job outlasting its video (very short clip, or a longer duration
+        // chosen by the sender) keeps it on screen until the job's countdown
+        // ends: a silent clip is replayed, one with sound holds its last frame.
+        const extend = params.videoExtensionSec(params.payload) > 0;
         playableElement.addEventListener('ended', () => {
-            params.clearOverlay();
-        }, { once: true });
+            const action = params.resolveVideoEndAction({
+                extend,
+                remainingMs: params.getRemainingCountdownMs(),
+                hasAudio: params.videoHasAudioTrack(playableElement),
+            });
+            if (action === 'clear') {
+                params.clearOverlay();
+                return;
+            }
+            // From now on the countdown ends the playback.
+            params.setCountdownAutoClear(true);
+            if (action === 'replay') {
+                playableElement.currentTime = 0;
+                playableElement.play().catch((error) => {
+                    params.logAutoplayError('Replay failed:', error);
+                    params.clearOverlay();
+                });
+            }
+        });
     }
     return {
         renderMedia,

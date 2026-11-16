@@ -116,7 +116,9 @@ export function startLinkUpload({ guildId, url, title = '', message = '' }) {
   return entry;
 }
 
-export function startFileUpload({ guildId, file, title = '', message = '' }) {
+// `replaceItemId`: the file replaces the media of that board item (an edited
+// picture) instead of becoming a new item.
+export function startFileUpload({ guildId, file, title = '', message = '', replaceItemId = null }) {
   if (!guildId || !file) {
     return null;
   }
@@ -130,12 +132,45 @@ export function startFileUpload({ guildId, file, title = '', message = '' }) {
     file,
     title: String(title || '').trim() || defaultTitle(label),
     message: message || '',
+    replaceItemId: replaceItemId || null,
     status: tooLarge ? 'failed' : 'waiting',
     error: tooLarge ? 'Fichier trop volumineux : 100 Mo maximum.' : null,
     uploadId: null,
     ingestionId: null,
     // An oversized file cannot be retried without choosing another file.
     retryable: !tooLarge,
+    cancelled: false,
+  };
+  state.uploads.push(entry);
+  uploadsChanged(entry);
+  pump();
+  return entry;
+}
+
+// An audio or a video edited on the board: the server applies `recipe` to the
+// media of `itemId`, then adds the result (`replace: false`) or puts it in
+// place of the original. `mediaKind` is the kind of the result.
+export function startEditJob({ guildId, itemId, title = '', recipe, replace = false, mediaKind = 'video' }) {
+  if (!guildId || !itemId || !recipe) {
+    return null;
+  }
+  const entry = {
+    id: newId(),
+    guildId,
+    kind: 'edit',
+    label: title || 'Montage',
+    itemId,
+    recipe,
+    replace: Boolean(replace),
+    mediaKind,
+    title: String(title || '').trim(),
+    message: '',
+    replaceItemId: replace ? itemId : null,
+    status: 'waiting',
+    error: null,
+    uploadId: null,
+    ingestionId: null,
+    retryable: true,
     cancelled: false,
   };
   state.uploads.push(entry);
@@ -204,6 +239,21 @@ function finishIngestion(entry, result) {
     return;
   }
   const title = uploadTitle(entry);
+  // An edit replacing its original creates nothing: the item changed media.
+  if (entry.replaceItemId) {
+    const done = () => {
+      if (isLive(entry)) {
+        removeEntry(entry);
+        notify(`« ${title} » a été mis à jour.`);
+      }
+    };
+    if (entry.guildId === state.activeGuildId) {
+      requestItemsReload().then(done);
+    } else {
+      done();
+    }
+    return;
+  }
   if (result.created === false) {
     removeEntry(entry);
     notify(`« ${title} » est déjà sur le board.`);
@@ -400,6 +450,8 @@ async function runUpload(entry) {
   try {
     if (entry.kind === 'link') {
       await sendLink(entry);
+    } else if (entry.kind === 'edit') {
+      await sendEdit(entry);
     } else {
       await sendFile(entry);
     }
@@ -439,6 +491,34 @@ async function sendLink(entry) {
   acceptIngestion(entry, response);
 }
 
+async function sendEdit(entry) {
+  let response;
+  try {
+    response = await invoke('guild_api', {
+      payload: {
+        guildId: entry.guildId,
+        method: 'POST',
+        path: `/overlay/media-board/items/${encodeURIComponent(entry.itemId)}/edit`,
+        body: { replace: entry.replace, title: entry.title, recipe: entry.recipe },
+      },
+    });
+  } catch (error) {
+    fail(entry, rejectionMessage(error));
+    return;
+  }
+  if (!isLive(entry) || entry.cancelled) {
+    return;
+  }
+  if (!response || !response.ok || response.status !== 202) {
+    const body = response && response.body;
+    // The server explains a refused recipe in `message`.
+    const detail = response && response.status === 400 && body && body.message ? `Montage refusé : ${body.message}` : null;
+    fail(entry, detail || uploadErrorMessage(response && response.status, body, ERROR_LABELS));
+    return;
+  }
+  acceptIngestion(entry, response);
+}
+
 async function sendFile(entry) {
   let started;
   try {
@@ -449,6 +529,7 @@ async function sendFile(entry) {
         title: entry.title,
         message: entry.message,
         contentType: entry.file.type || null,
+        replaceItemId: entry.replaceItemId || null,
       },
     });
   } catch (error) {
@@ -575,6 +656,9 @@ function uploadKind(entry) {
   if (entry.kind === 'link') {
     return 'link';
   }
+  if (entry.kind === 'edit') {
+    return entry.mediaKind;
+  }
   const type = (entry.file && entry.file.type) || '';
   if (type.startsWith('video/')) {
     return 'video';
@@ -608,7 +692,7 @@ function uploadStateNode(entry) {
   if (entry.status === 'sending') {
     label = entry.kind === 'link' ? 'Téléchargement…' : 'Envoi…';
   } else if (entry.status === 'converting') {
-    label = 'Conversion…';
+    label = entry.kind === 'edit' ? 'Montage…' : 'Conversion…';
   }
   return h('div', { class: 'upload-state', 'aria-live': 'polite' }, label);
 }

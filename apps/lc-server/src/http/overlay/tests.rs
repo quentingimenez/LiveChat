@@ -2063,6 +2063,61 @@ async fn media_board_media_is_bound_to_the_client_guild_and_role() {
     assert!(head_body.is_empty());
     assert_eq!(headers[header::CONTENT_LENGTH], bytes.len().to_string());
 
+    // The board's editor reads the bytes with `fetch` from the Tauri webview
+    // (canvas, audio decoding): the signed route must answer cross-origin
+    // requests, with or without `Range`, and never a foreign origin.
+    for range in [None, Some("bytes=0-3")] {
+        let mut builder = Request::builder()
+            .method(Method::GET)
+            .uri(&uri)
+            .header(header::ORIGIN, "http://tauri.localhost");
+        if let Some(range) = range {
+            builder = builder.header(header::RANGE, range);
+        }
+        let (status, headers, body) =
+            send(&app, builder.body(Body::empty()).expect("requête")).await;
+        assert_eq!(
+            headers[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+            "http://tauri.localhost"
+        );
+        match range {
+            None => {
+                assert_eq!(status, StatusCode::OK);
+                assert_eq!(body, bytes);
+            }
+            Some(_) => {
+                assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+                assert_eq!(body, &bytes[..4]);
+            }
+        }
+    }
+    let foreign = Request::builder()
+        .method(Method::GET)
+        .uri(&uri)
+        .header(header::ORIGIN, "https://evil.example")
+        .body(Body::empty())
+        .expect("requête");
+    let (_, headers, _) = send(&app, foreign).await;
+    assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+    let preflight = Request::builder()
+        .method(Method::OPTIONS)
+        .uri(&uri)
+        .header(header::ORIGIN, "http://tauri.localhost")
+        .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+        .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "range")
+        .body(Body::empty())
+        .expect("requête");
+    let (status, headers, _) = send(&app, preflight).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+        "http://tauri.localhost"
+    );
+    assert!(headers[header::ACCESS_CONTROL_ALLOW_HEADERS]
+        .to_str()
+        .expect("en-têtes")
+        .contains("range"));
+
     // Asset du board d'une autre guilde : refus.
     let other_uri = signed_board_uri(&asset, &other, exp);
     let (status, _, body) = send(&app, request(Method::GET, &other_uri, None, None)).await;

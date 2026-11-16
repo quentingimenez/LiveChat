@@ -17,8 +17,10 @@ use lc_domain::MediaKind;
 
 use crate::config::MediaConfig;
 use crate::download::{self, DownloadResult};
+use crate::edit::{self, EditPlan, EditRecipe, EditSource};
 use crate::error::{MediaError, MediaErrorCode, MediaResult};
 use crate::guard;
+use crate::probe;
 use crate::resolve::{self, ResolvedMedia};
 use crate::source::{self, kind_from_mime, mime_from_extension, MediaSource, SourceKind};
 use crate::storage::MediaStorage;
@@ -35,6 +37,19 @@ pub struct IngestedMedia {
     pub download: DownloadResult,
     /// Média normalisé persisté dans le stockage média.
     pub normalized: NormalizedMedia,
+}
+
+/// An edit rendered to a temporary file, removed when this value is dropped.
+#[derive(Debug)]
+pub struct RenderedEdit {
+    /// Temporary directory holding the file.
+    _directory: tempfile::TempDir,
+    /// Path of the rendered file.
+    pub path: PathBuf,
+    /// SHA-256 of the rendered file (lowercase hex).
+    pub content_sha256: String,
+    /// The plan that was applied.
+    pub plan: EditPlan,
 }
 
 /// Limiteur de concurrence du pipeline d'ingestion.
@@ -160,6 +175,7 @@ impl MediaPipeline {
                 guard::validate_target(&source.canonical_url).await?;
             }
         }
+        let started = std::time::Instant::now();
         let resolved = match resolve::resolve_media(&self.config, source).await {
             Ok(resolved) => Some(resolved),
             Err(error) => {
@@ -170,6 +186,11 @@ impl MediaPipeline {
                 None
             }
         };
+        tracing::info!(
+            source_kind = ?source.source_kind,
+            resolve_ms = elapsed_ms(started),
+            "ingestion : source résolue"
+        );
         self.ingest_resolved(source, resolved).await
     }
 
@@ -179,8 +200,10 @@ impl MediaPipeline {
         source: &MediaSource,
         resolved: Option<ResolvedMedia>,
     ) -> MediaResult<IngestedMedia> {
+        let started = std::time::Instant::now();
         let _permit = self.limiter.acquire().await?;
         let _source_lock = lock_source_hash(&source.source_hash).await;
+        let wait_ms = elapsed_ms(started);
         let temp_dir = tempfile::TempDir::new().map_err(|error| {
             MediaError::from_io(
                 MediaErrorCode::DownloadFailed,
@@ -188,10 +211,24 @@ impl MediaPipeline {
                 &error,
             )
         })?;
+        let step = std::time::Instant::now();
         let download =
             download::download_source(source, resolved.as_ref(), &self.config, temp_dir.path())
                 .await?;
-        let normalized = self.normalize_and_store(source, &download, false).await?;
+        let download_ms = elapsed_ms(step);
+        let step = std::time::Instant::now();
+        let normalized = self
+            .normalize_and_store(source, &download, false, false)
+            .await?;
+        tracing::info!(
+            source_kind = ?source.source_kind,
+            wait_ms,
+            download_ms,
+            download_bytes = download.size_bytes,
+            normalize_ms = elapsed_ms(step),
+            total_ms = elapsed_ms(started),
+            "ingestion : média prêt"
+        );
         Ok(IngestedMedia {
             source: source.clone(),
             resolved,
@@ -238,9 +275,100 @@ impl MediaPipeline {
         content_type_hint: Option<&str>,
         content_sha256: &str,
     ) -> MediaResult<IngestedMedia> {
+        self.ingest_local(
+            path,
+            original_filename,
+            content_type_hint,
+            content_sha256,
+            false,
+        )
+        .await
+    }
+
+    /// Ingests a file rendered by [`Self::render_edit`].
+    ///
+    /// Same as [`Self::ingest_local_file_with_hash`], without the loudness
+    /// normalization: the source was already normalized, and normalizing again
+    /// would undo a volume change and encode an audio a second time.
+    pub async fn ingest_edited_file_with_hash(
+        &self,
+        path: &Path,
+        original_filename: &str,
+        content_type_hint: Option<&str>,
+        content_sha256: &str,
+    ) -> MediaResult<IngestedMedia> {
+        self.ingest_local(
+            path,
+            original_filename,
+            content_type_hint,
+            content_sha256,
+            true,
+        )
+        .await
+    }
+
+    /// Applies an edit recipe to a stored media and writes the result to a
+    /// temporary file.
+    ///
+    /// The file is probed first: the recipe is validated against its real
+    /// duration and streams. An ingestion permit is held while ffmpeg runs and
+    /// released before returning, so the caller can ingest the result.
+    pub async fn render_edit(
+        &self,
+        input: &Path,
+        kind: MediaKind,
+        recipe: &EditRecipe,
+    ) -> MediaResult<RenderedEdit> {
+        let permit = self.limiter.acquire().await?;
+        let probed = probe::probe(&self.config.tools.ffprobe, input, probe::PROBE_TIMEOUT).await?;
+        let source = EditSource {
+            kind,
+            duration_sec: probed.duration_sec.unwrap_or(0.0),
+            has_audio: probed.has_audio,
+        };
+        let plan = recipe.plan(&source).map_err(edit::recipe_error)?;
+        let directory = tempfile::TempDir::new().map_err(|error| {
+            MediaError::from_io(
+                MediaErrorCode::TranscodeFailed,
+                "création du dossier temporaire d'édition",
+                &error,
+            )
+        })?;
+        let path = directory
+            .path()
+            .join(format!("edit.{}", plan.output_extension()));
+        edit::apply_edit(input, &path, &plan, &self.config).await?;
+        drop(permit);
+        let size_bytes = local_file_size(&path).await?;
+        if size_bytes > self.config.download.max_size_bytes {
+            return Err(MediaError::new(
+                MediaErrorCode::FileTooLarge,
+                "le média édité dépasse la taille maximale autorisée",
+            ));
+        }
+        let content_sha256 = hash_local_file(&path).await?;
+        Ok(RenderedEdit {
+            _directory: directory,
+            path,
+            content_sha256,
+            plan,
+        })
+    }
+
+    /// Shared body of the local-file ingestions.
+    async fn ingest_local(
+        &self,
+        path: &Path,
+        original_filename: &str,
+        content_type_hint: Option<&str>,
+        content_sha256: &str,
+        already_normalized: bool,
+    ) -> MediaResult<IngestedMedia> {
         let source = MediaSource::from_upload(original_filename, content_sha256);
+        let started = std::time::Instant::now();
         let _permit = self.limiter.acquire().await?;
         let _source_lock = lock_source_hash(&source.source_hash).await;
+        let wait_ms = elapsed_ms(started);
 
         let size_bytes = local_file_size(path).await?;
         if size_bytes > self.config.download.max_size_bytes {
@@ -280,7 +408,17 @@ impl MediaPipeline {
             size_bytes,
             source_url: source.canonical_url.clone(),
         };
-        let normalized = self.normalize_and_store(&source, &download, true).await?;
+        let step = std::time::Instant::now();
+        let normalized = self
+            .normalize_and_store(&source, &download, true, already_normalized)
+            .await?;
+        tracing::info!(
+            wait_ms,
+            upload_bytes = size_bytes,
+            normalize_ms = elapsed_ms(step),
+            total_ms = elapsed_ms(started),
+            "ingestion locale : média prêt"
+        );
         Ok(IngestedMedia {
             source,
             resolved: None,
@@ -294,12 +432,14 @@ impl MediaPipeline {
     /// Shared by `ingest_url` and `ingest_local_file`: size checks, canonical
     /// storage root, transcoding and stale-variant cleanup. Local uploads allow
     /// small raster images; remote sources keep the stricter guard. The input is
-    /// never removed here.
+    /// never removed here. `already_normalized` skips the loudness
+    /// normalization (output of an edit).
     async fn normalize_and_store(
         &self,
         source: &MediaSource,
         download: &DownloadResult,
         local_upload: bool,
+        already_normalized: bool,
     ) -> MediaResult<NormalizedMedia> {
         if download.size_bytes > self.config.download.max_size_bytes {
             return Err(MediaError::new(
@@ -313,12 +453,35 @@ impl MediaPipeline {
         let canonical_root = storage.ensure_canonical()?;
         let storage = MediaStorage::from_root(canonical_root);
         let output_base = storage.output_base_path(&source.source_hash);
-        let normalized = if local_upload {
+        let unnormalized_config;
+        let config = if already_normalized {
+            let mut config = self.config.clone();
+            config.video.audio_normalize = false;
+            unnormalized_config = config;
+            &unnormalized_config
+        } else {
+            &self.config
+        };
+        let rendered_gif = already_normalized && download.mime.as_deref() == Some("image/gif");
+        let normalized = if rendered_gif {
+            // An animated GIF has a duration and would be detected as a video
+            // (then encoded as a silent MP4): a GIF exported by an edit is
+            // kept as the image it was asked to be.
+            let probed = probe::probe(&config.tools.ffprobe, &download.path, probe::PROBE_TIMEOUT)
+                .await
+                .ok();
+            transcode::normalize_image(
+                &download.path,
+                download.mime.as_deref(),
+                &output_base,
+                probed.as_ref(),
+            )?
+        } else if local_upload {
             transcode::normalize_local_media(
                 &download.path,
                 download.mime.as_deref(),
                 &output_base,
-                &self.config,
+                config,
             )
             .await?
         } else {
@@ -326,7 +489,7 @@ impl MediaPipeline {
                 &download.path,
                 download.mime.as_deref(),
                 &output_base,
-                &self.config,
+                config,
             )
             .await?
         };
@@ -529,6 +692,11 @@ pub async fn ingest_url(raw: &str, config: &MediaConfig) -> MediaResult<Ingested
 /// Chemin persisté d'un média ingéré.
 pub fn stored_path(media: &IngestedMedia) -> PathBuf {
     media.normalized.storage_path.clone()
+}
+
+/// Milliseconds since `start`, for the step timings of the logs.
+pub(crate) fn elapsed_ms(start: std::time::Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

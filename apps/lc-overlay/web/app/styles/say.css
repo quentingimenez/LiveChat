@@ -1,0 +1,27 @@
+/* ------------------------------------------------------ say a text */
+.say-text {
+  min-height: 96px;
+}
+
+.say-meta {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -8px;
+}
+
+.say-counter {
+  color: var(--text-faint);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.say-counter.is-over {
+  color: var(--red);
+}
+
+.dialog .stack label.say-anonymous {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}

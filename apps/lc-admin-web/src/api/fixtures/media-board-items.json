@@ -1,0 +1,88 @@
+{
+  "items": [
+    {
+      "artwork": null,
+      "artworkOnOverlay": false,
+      "canEdit": true,
+      "createdAt": "2026-11-16T05:56:30.136Z",
+      "createdByMemberId": null,
+      "createdByName": "Alice",
+      "favorite": false,
+      "guildId": "112233445566778899",
+      "id": "e5a0df6c-d0d8-4b29-ab34-b150e2ebaf7a",
+      "media": {
+        "durationSec": null,
+        "height": 360,
+        "id": "98ba99b9-4ed9-4018-86ef-d91313ddae2f",
+        "isVertical": false,
+        "kind": "image",
+        "mime": "image/png",
+        "sizeBytes": 2000002,
+        "sourceUrl": "https://example.invalid/media.png",
+        "width": 640
+      },
+      "mediaAssetId": "98ba99b9-4ed9-4018-86ef-d91313ddae2f",
+      "mediaUrl": "http://localhost:3000/overlay/media-board/media/98ba99b9-4ed9-4018-86ef-d91313ddae2f?clientId=47a9da35-ffef-4bca-a24b-120e276423ce&exp=1794811500&sig=c4f787a5b10f602654894bc1c9560891e6b1294732d13d94fcf999737bde3a4c",
+      "mediaUrlExpiresAt": 1794811500000,
+      "message": null,
+      "title": "Mème"
+    },
+    {
+      "artwork": null,
+      "artworkOnOverlay": false,
+      "canEdit": true,
+      "createdAt": "2026-11-16T05:56:30.135Z",
+      "createdByMemberId": null,
+      "createdByName": "Alice",
+      "favorite": false,
+      "guildId": "112233445566778899",
+      "id": "309d16eb-91c0-4416-8c40-40b33a34e26e",
+      "media": {
+        "durationSec": null,
+        "height": 360,
+        "id": "b97ab893-74b0-49a1-acc6-e0275d29e7cc",
+        "isVertical": false,
+        "kind": "audio",
+        "mime": "image/png",
+        "sizeBytes": 2000001,
+        "sourceUrl": "https://example.invalid/media.png",
+        "width": 640
+      },
+      "mediaAssetId": "b97ab893-74b0-49a1-acc6-e0275d29e7cc",
+      "mediaUrl": "http://localhost:3000/overlay/media-board/media/b97ab893-74b0-49a1-acc6-e0275d29e7cc?clientId=47a9da35-ffef-4bca-a24b-120e276423ce&exp=1794811500&sig=25d71591467941e386489221abfe514b6e6ad7eb31f4d4884a1795724786f783",
+      "mediaUrlExpiresAt": 1794811500000,
+      "message": null,
+      "title": "Applaudissements"
+    },
+    {
+      "artwork": null,
+      "artworkOnOverlay": false,
+      "canEdit": true,
+      "createdAt": "2026-11-16T05:56:30.134Z",
+      "createdByMemberId": null,
+      "createdByName": "Alice",
+      "favorite": false,
+      "guildId": "112233445566778899",
+      "id": "613dd901-f706-4f1e-8670-93288dd14d7f",
+      "media": {
+        "durationSec": null,
+        "height": 360,
+        "id": "5bc3d75a-75f3-4839-a378-68c205a7c6fb",
+        "isVertical": false,
+        "kind": "video",
+        "mime": "image/png",
+        "sizeBytes": 2000000,
+        "sourceUrl": "https://example.invalid/media.png",
+        "width": 640
+      },
+      "mediaAssetId": "5bc3d75a-75f3-4839-a378-68c205a7c6fb",
+      "mediaUrl": "http://localhost:3000/overlay/media-board/media/5bc3d75a-75f3-4839-a378-68c205a7c6fb?clientId=47a9da35-ffef-4bca-a24b-120e276423ce&exp=1794811500&sig=2e32fd16f9b1ecf4689c4606698fd28259c5a7212f933e24fe9075322e2ba426",
+      "mediaUrlExpiresAt": 1794811500000,
+      "message": null,
+      "title": "Clip du but"
+    }
+  ],
+  "limit": 50,
+  "offset": 0,
+  "total": 3
+}

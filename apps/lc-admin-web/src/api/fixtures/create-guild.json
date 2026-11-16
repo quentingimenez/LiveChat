@@ -1,0 +1,19 @@
+{
+  "adminInvite": {
+    "code": "LBDX8BL6",
+    "createdAt": "2026-11-16T05:56:30.130Z",
+    "createdByMemberId": null,
+    "expiresAt": "2026-11-23T05:56:30.130Z",
+    "isActive": true,
+    "maxUses": 1,
+    "memberId": null,
+    "revokedAt": null,
+    "role": "admin",
+    "useCount": 0
+  },
+  "created": true,
+  "guild": {
+    "id": "9274817583033437435",
+    "name": "Studio LiveChat"
+  }
+}

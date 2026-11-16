@@ -20,9 +20,9 @@ use lc_domain::{
 };
 use lc_playback::{PlaybackConfig, PlaybackEngine, PlaybackSink};
 use lc_protocol::{
-    close_code, close_reason, CurrentJobPayload, MediaKind as ProtocolMediaKind, MediaPayload,
-    PeerInfo, PeersPayload, PlayPayload, ServerEnvelope, ServerMessage, SessionMode,
-    SettingsPayload, StopPayload, StopReason,
+    close_code, close_reason, CurrentJobPayload, DeviceSettingsStatePayload,
+    MediaKind as ProtocolMediaKind, MediaPayload, PeerInfo, PeersPayload, PlayPayload,
+    ServerEnvelope, ServerMessage, SessionMode, SettingsPayload, StopPayload, StopReason,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, OnceCell};
@@ -32,7 +32,9 @@ use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::config::Config;
+use crate::http::admin::AdminEvents;
 use crate::media_url;
+use crate::runtime::Runtime;
 
 /// Nombre maximal de pairs renvoyés dans un payload `peers`.
 pub const MAX_PEERS: usize = 8;
@@ -96,6 +98,8 @@ struct Connection {
 struct HubInner {
     connections: HashMap<Uuid, Connection>,
     guilds: HashMap<GuildId, BTreeSet<Uuid>>,
+    /// Last `device.settings.state` per connected overlay client.
+    device_settings: HashMap<Uuid, DeviceSettingsStatePayload>,
 }
 
 /// Hub WebSocket v2 : registre des overlays, diffusion et API admin.
@@ -104,6 +108,8 @@ pub struct Hub {
     engine: OnceCell<Arc<HubEngine>>,
     db: OnceCell<Db>,
     config: OnceCell<Arc<Config>>,
+    events: OnceCell<AdminEvents>,
+    runtime: OnceCell<Arc<Runtime>>,
     ids: AtomicU64,
 }
 
@@ -122,7 +128,28 @@ impl Hub {
             engine: OnceCell::new(),
             db: OnceCell::new(),
             config: OnceCell::new(),
+            events: OnceCell::new(),
+            runtime: OnceCell::new(),
             ids: AtomicU64::new(0),
+        }
+    }
+
+    /// Installs the admin event channel used by the live SSE stream.
+    ///
+    /// Called by the router wiring before any overlay can connect.
+    pub(crate) fn install_admin_events(&self, events: AdminEvents) {
+        drop(self.events.set(events));
+    }
+
+    /// Installs the hot runtime settings (default media duration, …).
+    pub(crate) fn install_runtime(&self, runtime: Arc<Runtime>) {
+        drop(self.runtime.set(runtime));
+    }
+
+    /// Signals a change that the admin overview must reflect.
+    fn overview_changed(&self) {
+        if let Some(events) = self.events.get() {
+            events.overview_changed();
         }
     }
 
@@ -190,6 +217,9 @@ impl Hub {
             .or_default()
             .insert(connection_id);
         inner.connections.insert(connection_id, connection);
+        drop(inner);
+        // An overlay connects: the admin overview's connected counts change.
+        self.overview_changed();
         Ok(connection_id)
     }
 
@@ -207,6 +237,18 @@ impl Hub {
         if empty_room {
             inner.guilds.remove(&connection.guild_id);
         }
+        // The settings state is per client, not per socket: keep it while the
+        // client still has another connected socket.
+        let still_connected = inner
+            .connections
+            .values()
+            .any(|other| other.client_uuid == connection.client_uuid);
+        if !still_connected {
+            inner.device_settings.remove(&connection.client_uuid);
+        }
+        drop(inner);
+        // An overlay disconnects: the admin overview's connected counts change.
+        self.overview_changed();
         true
     }
 
@@ -294,6 +336,10 @@ impl Hub {
 
     /// Diffuse un message texte à la room d'une guilde.
     pub(crate) fn broadcast_message(&self, guild_id: &GuildId, message: ServerMessage) -> usize {
+        // The board ("board.changed") is part of the admin overview.
+        if matches!(&message, ServerMessage::BoardChanged(_)) {
+            self.overview_changed();
+        }
         let envelope = ServerEnvelope::new(
             self.next_message_id(message_prefix(&message)),
             now_ms(),
@@ -320,6 +366,36 @@ impl Hub {
             let Some(connection) = inner.connections.get(connection_id) else {
                 continue;
             };
+            if connection.sender.send(OutFrame::Text(text.clone())).is_ok() {
+                delivered += 1;
+            }
+        }
+        delivered
+    }
+
+    /// Broadcasts a server message to every connection, whichever guild it
+    /// belongs to (`rights.changed`); returns the number of sockets served.
+    pub(crate) fn broadcast_all(&self, message: ServerMessage) -> usize {
+        let envelope = ServerEnvelope::new(
+            self.next_message_id(message_prefix(&message)),
+            now_ms(),
+            message,
+        );
+        let text = match serde_json::to_string(&envelope) {
+            Ok(text) => text,
+            Err(error) => {
+                warn!(error = %error, "sérialisation d'un message serveur impossible");
+                return 0;
+            }
+        };
+        self.send_text_to_all(text)
+    }
+
+    /// Sends an already serialized JSON text to every connection.
+    fn send_text_to_all(&self, text: String) -> usize {
+        let inner = self.lock_inner();
+        let mut delivered = 0;
+        for connection in inner.connections.values() {
             if connection.sender.send(OutFrame::Text(text.clone())).is_ok() {
                 delivered += 1;
             }
@@ -378,6 +454,8 @@ impl Hub {
 
     /// Diffuse un `stop` à la room ; retourne le nombre de sockets servis.
     pub(crate) fn broadcast_stop_frame(&self, guild_id: &GuildId, payload: StopPayload) -> usize {
+        // Stopping a job changes the playback counters of the overview.
+        self.overview_changed();
         self.broadcast_message(guild_id, ServerMessage::Stop(payload))
     }
 
@@ -404,12 +482,16 @@ impl Hub {
 
     /// Valeurs de configuration de guilde utilisées par `welcome`/`settings`.
     pub(crate) async fn guild_defaults(&self, guild_id: &GuildId) -> (bool, u64, Option<u64>) {
-        let fallback = self
-            .config
-            .get()
-            .map_or(default_media_time_fallback(), |config| {
-                config.default_duration
-            });
+        let fallback = self.runtime.get().map_or_else(
+            || {
+                self.config
+                    .get()
+                    .map_or(default_media_time_fallback(), |config| {
+                        config.default_duration
+                    })
+            },
+            |runtime| runtime.default_duration(),
+        );
         let Some(db) = self.db.get() else {
             return (true, fallback, None);
         };
@@ -491,6 +573,14 @@ impl Hub {
         let weak_hub = Arc::downgrade(self);
         let engine_db = db.clone();
         let engine_config = Arc::clone(&config);
+        // The engine config is frozen at creation, so seed it with the current
+        // hot value. Jobs created afterwards carry their own resolved duration.
+        let default_duration = self
+            .runtime
+            .get()
+            .map_or(engine_config.default_duration, |runtime| {
+                runtime.default_duration()
+            });
         let engine = self
             .engine
             .get_or_try_init(|| async move {
@@ -503,7 +593,7 @@ impl Hub {
                             .to_owned(),
                     )
                     .with_default_duration_sec(
-                        i64::try_from(engine_config.default_duration).unwrap_or(i64::MAX),
+                        i64::try_from(default_duration).unwrap_or(i64::MAX),
                     )
                     .with_retention(chrono::Duration::hours(
                         i64::try_from(engine_config.playback_job_retention_hours)
@@ -594,6 +684,43 @@ impl Hub {
             .connections
             .values()
             .any(|connection| connection.client_uuid == *client_id)
+    }
+
+    /// Last `device.settings.state` reported by a connected client.
+    #[must_use]
+    pub fn device_settings(&self, client_id: &Uuid) -> Option<DeviceSettingsStatePayload> {
+        self.lock_inner().device_settings.get(client_id).copied()
+    }
+
+    /// Stores the state reported by a client socket.
+    pub(crate) fn set_device_settings(&self, client_id: &Uuid, state: DeviceSettingsStatePayload) {
+        self.lock_inner().device_settings.insert(*client_id, state);
+    }
+
+    /// Session mode of one live connection (authoritative for read-only
+    /// checks), or `None` if the connection is unknown.
+    #[must_use]
+    pub(crate) fn connection_session_mode(&self, connection_id: Uuid) -> Option<SessionMode> {
+        self.lock_inner()
+            .connections
+            .get(&connection_id)
+            .map(|connection| connection.session_mode)
+    }
+
+    /// Applies a new session mode to every live socket of a client.
+    ///
+    /// The WS session reads this value for each command, so a mode change is
+    /// effective immediately without reconnecting.
+    pub(crate) fn set_session_mode(&self, client_id: &Uuid, mode: SessionMode) -> bool {
+        let mut inner = self.lock_inner();
+        let mut updated = false;
+        for connection in inner.connections.values_mut() {
+            if connection.client_uuid == *client_id {
+                connection.session_mode = mode;
+                updated = true;
+            }
+        }
+        updated
     }
 
     /// Ferme toutes les connexions d'un client avec le code donné.
@@ -760,6 +887,8 @@ impl PlaybackSink for HubSink {
                 return 0;
             };
             let delivered = hub.unicast_play(&guild_id, &payload);
+            // A job started playing: the admin playback counters changed.
+            hub.overview_changed();
             if delivered == 0 && hub.connected_for_guild(&guild_id) > 0 {
                 // Des sockets existent mais aucune n'a pu recevoir le média
                 // (URL non signable, configuration absente…) : `lc-playback`
@@ -884,6 +1013,9 @@ pub(crate) fn message_prefix(message: &ServerMessage) -> &'static str {
         ServerMessage::Error(_) => "error",
         ServerMessage::MediaIngestion(_) => "ingestion",
         ServerMessage::BoardChanged(_) => "board",
+        ServerMessage::DeviceSettings(_) => "device-settings",
+        ServerMessage::SessionChanged(_) => "session-changed",
+        ServerMessage::RightsChanged(_) => "rights-changed",
     }
 }
 
@@ -992,4 +1124,76 @@ fn default_media_time_fallback() -> u64 {
 /// Heure murale en secondes Unix (signature des URLs média).
 fn current_unix_seconds() -> u64 {
     u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use lc_protocol::{RightsChangedPayload, SessionChangedPayload};
+
+    fn registered_hub() -> (Arc<Hub>, Uuid, Uuid) {
+        let hub = Arc::new(Hub::new());
+        let guild = GuildId::parse("123456789012345678").expect("guilde");
+        let client = OverlayClientId::new_v4();
+        let (sender, _receiver) = mpsc::unbounded_channel();
+        let connection = hub
+            .register(
+                guild,
+                client,
+                client.to_canonical(),
+                "poste".to_owned(),
+                SessionMode::Normal,
+                Some("Auteur".to_owned()),
+                None,
+                sender,
+            )
+            .expect("connexion enregistrée");
+        (hub, connection, client.as_uuid())
+    }
+
+    #[test]
+    fn session_mode_is_live_and_device_settings_are_cleared_on_disconnect() {
+        let (hub, connection, client) = registered_hub();
+        assert_eq!(
+            hub.connection_session_mode(connection),
+            Some(SessionMode::Normal)
+        );
+        assert!(hub.set_session_mode(&client, SessionMode::InviteReadOnly));
+        assert_eq!(
+            hub.connection_session_mode(connection),
+            Some(SessionMode::InviteReadOnly)
+        );
+
+        let state = DeviceSettingsStatePayload {
+            volume: 0.5,
+            media_muted: true,
+            paused: false,
+        };
+        hub.set_device_settings(&client, state);
+        assert_eq!(hub.device_settings(&client), Some(state));
+
+        assert!(hub.unregister(connection));
+        assert_eq!(hub.device_settings(&client), None);
+        assert_eq!(hub.connection_session_mode(connection), None);
+    }
+
+    #[test]
+    fn new_server_messages_have_a_stable_prefix() {
+        assert_eq!(
+            message_prefix(&ServerMessage::DeviceSettings(Default::default())),
+            "device-settings"
+        );
+        assert_eq!(
+            message_prefix(&ServerMessage::SessionChanged(SessionChangedPayload {
+                session_mode: SessionMode::Normal,
+            })),
+            "session-changed"
+        );
+        assert_eq!(
+            message_prefix(&ServerMessage::RightsChanged(RightsChangedPayload {})),
+            "rights-changed"
+        );
+    }
 }

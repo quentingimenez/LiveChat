@@ -19,7 +19,8 @@ actions principales sont en bleu, les actions destructrices en rouge.
 | Détail d'une guilde | `#/guilds/{id}/{onglet}` | 9 onglets, voir ci-dessous |
 | Overlays | `#/devices` | tous les appareils de toutes les guildes, filtres (en ligne, lecture seule, obsolètes) |
 | Codes et invitations | `#/codes` | invitations d'overlay et codes d'appairage Discord, purge des expirés |
-| Clients d'ingestion | `#/ingest` | extensions de navigateur, création (jeton affiché une fois), révocation |
+| Clients d'ingestion | `#/ingest` | extensions de navigateur, rôle de l'auteur (signale ceux qui ne devraient plus envoyer), création (jeton affiché une fois), révocation |
+| Rôles et droits | `#/roles` | matrice invité / membre / admin, séparée pour l'overlay, l'extension et le bot Discord ; colonne « Contrôle » qui dit ce que le serveur vérifie vraiment aujourd'hui |
 | Médias et stockage | `#/media` | cache, occupation par guilde, disque, ingestions récentes et leurs échecs |
 | Journal | `#/activity` | audit des actions d'administration, recherche, export |
 | Paramètres du serveur | `#/settings` | accès, Discord, lecture, médias et quotas, sources, overlays, synthèse vocale, réseau |
@@ -31,9 +32,19 @@ retrait, vidage), Réglages (les mêmes que dans l'overlay), Discord (liaison,
 présence du bot), Zone de danger.
 
 Dialogue « Droits » d'un overlay : renommer l'appareil, choisir le mode de
-session (`normal` / `invite_read_only`), voir en direct les droits effectifs
-(les 13 `Permission` de `crates/lc-domain/src/enums.rs`, croisés avec le rôle du
-membre et le réglage « les invités voient le board »), révoquer.
+session (`normal` / `invite_read_only`), régler à distance le son et la pause
+de la guilde sur cet appareil (volume, son des médias coupé, pause), voir en
+direct les droits effectifs (les 13 `Permission` de
+`crates/lc-domain/src/enums.rs`, tels que réglés dans « Rôles et droits »,
+croisés avec le rôle du membre et le réglage « les invités voient le board »),
+révoquer.
+
+Page « Rôles et droits » : les valeurs par défaut reprennent `GuildRole::can`
+(overlay) et `requirement` de `crates/lc-discord/src/rights.rs` (bot). Les
+cases pleines sont des droits toujours accordés (un admin garde tout, tout le
+monde reçoit les médias) ; `/lier` reste réservé aux administrateurs Discord.
+Côté extension, le rôle n'est vérifié qu'à l'appairage
+(`POST /overlay/ingest-code`) : la page le signale au lieu de le masquer.
 
 Les suppressions irréversibles (vider le board, révoquer tous les accès,
 supprimer la guilde) demandent de saisir l'identifiant de la guilde, comme le
@@ -72,7 +83,7 @@ l'authentification de la console.
 | Code de liaison Discord | `POST /overlay/admin/discord-link-code` |
 | File d'attente : lire, retirer, vider | `GET` / `DELETE /overlay/queue`, `DELETE /overlay/queue/{jobId}` |
 | Code d'appairage d'un appareil | `POST /overlay/device-code` |
-| Board : lister, supprimer un média | `GET /overlay/media-board/items`, `DELETE …/items/{id}` |
+| Board : lister, modifier (titre, découpe, favori), supprimer un média | `GET /overlay/media-board/items`, routes de `media_edit.rs`, `DELETE …/items/{id}` |
 
 ### À créer
 
@@ -89,6 +100,9 @@ l'authentification de la console.
 | Purger le cache, nettoyer les orphelins | `POST /admin/api/media/cache/purge`, `…/orphans/clean` |
 | Journal consultable | persister l'audit `lc_server::admin_audit` (aujourd'hui dans les logs seulement) + `GET /admin/api/audit` |
 | Paramètres du serveur modifiables à chaud | étendre `admin_runtime.json` au-delà du cookie TikTok ; les secrets, chemins et ports restent dans l'environnement (en lecture seule dans la maquette) |
+| Droits par surface réglables | table `role_rights (surface, action, role, allowed)` lue par `GuildRole::can`, `lc_discord::rights::requirement` et `/ingest` ; `GET` / `PUT /admin/api/rights` ; notifier les sessions ouvertes |
+| Vérifier le rôle à chaque envoi d'une extension | dans `POST /ingest`, relire le rôle de l'auteur du client (exclu ou invité : 403) |
+| Réglages d'un appareil à distance | `PATCH /admin/api/overlay-clients/{id}/guild-settings` `{volume, mediaMuted, paused}` + message WebSocket ; aujourd'hui ces réglages ne se changent que depuis l'appareil |
 | Mises à jour en direct | un flux WebSocket ou SSE d'administration plutôt que le rafraîchissement toutes les 2 s (budget de 100 requêtes / 15 min) |
 
 ## Quelle pile pour la vraie implémentation ?
@@ -112,9 +126,8 @@ réel.
 
 Indépendamment de l'option : remplacer le jeton en `localStorage` par un cookie
 de session `HttpOnly; SameSite=Strict` (la défense CSRF par `Origin` existe
-déjà), et retirer `style-src 'unsafe-inline'` de la CSP en passant les largeurs
-de jauge par des classes ou `<progress>` (la maquette utilise encore
-`style="width"`).
+déjà), et retirer `style-src 'unsafe-inline'` de la CSP : la maquette n'a plus
+aucun attribut `style` (jauges en `<progress>` natifs, mise en page par classes).
 
 ## Limites de la maquette
 

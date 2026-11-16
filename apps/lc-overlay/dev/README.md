@@ -5,7 +5,7 @@
 > sont plus embarqués dans l'application ni dans l'installeur release.
 
 Ce dossier contient les outils de développement du bridge Tauri 2 ; les pages
-HTML, le CSS et le JS du renderer Electron existant sont dans
+HTML, le CSS et le JS hérités du renderer Electron 2.x sont dans
 `apps/lc-overlay/web/` et un fichier **`bridge.js`** y réinstalle l'API publique
 `window.livechatOverlay` que ces pages attendent.
 

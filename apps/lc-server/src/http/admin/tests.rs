@@ -13,6 +13,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use axum::body::{to_bytes, Body};
@@ -27,14 +28,16 @@ use lc_domain::{
     MediaKind, MediaStatus, OverlayClient, OverlayClientId, OverlaySessionMode, PairingCode,
     PairingCodeEntry, PairingMode, PlaybackJob, PlaybackJobId,
 };
-use lc_protocol::close_code;
+use lc_protocol::{close_code, DeviceSettingsStatePayload, ServerMessage, SessionMode};
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
 use super::hub::{admin_hub, AdminHub, NoopAdminHub};
+use super::oauth::{AdminOAuth, DiscordIdentity, OAuthError};
 use super::runtime_settings::SETTINGS_FILE_NAME;
+use super::session;
 use super::ADMIN_CSP;
 use crate::app::{router, AppState};
 use crate::config::Config;
@@ -42,15 +45,15 @@ use crate::discord::guild_leave::{DiscordGuildLeaver, LeaveError, LeaveOutcome};
 use crate::http::security::{CONTENT_SECURITY_POLICY, PERMISSIONS_POLICY};
 use crate::shutdown::Shutdown;
 
-const TOKEN: &str = "jeton-admin-de-test";
+pub(super) const TOKEN: &str = "jeton-admin-de-test";
 /// `Host` envoyé par les requêtes du harnais (origine du panneau en test).
-const TEST_HOST: &str = "127.0.0.1:40000";
+pub(super) const TEST_HOST: &str = "127.0.0.1:40000";
 /// Origine correspondant à `TEST_HOST`, utilisée pour les mutations (CSRF).
-const TEST_ORIGIN: &str = "http://127.0.0.1:40000";
+pub(super) const TEST_ORIGIN: &str = "http://127.0.0.1:40000";
 
 /// Issue configurée d'un [`FakeLeaver`].
 #[derive(Debug, Clone, Copy)]
-enum FakeLeaveResult {
+pub(super) enum FakeLeaveResult {
     Left,
     NotMember,
     Api,
@@ -58,20 +61,20 @@ enum FakeLeaveResult {
 
 /// Leaver factice : enregistre les identifiants reçus, sans réseau.
 #[derive(Debug)]
-struct FakeLeaver {
+pub(super) struct FakeLeaver {
     calls: Mutex<Vec<String>>,
     result: FakeLeaveResult,
 }
 
 impl FakeLeaver {
-    fn new(result: FakeLeaveResult) -> Arc<Self> {
+    pub(super) fn new(result: FakeLeaveResult) -> Arc<Self> {
         Arc::new(Self {
             calls: Mutex::new(Vec::new()),
             result,
         })
     }
 
-    fn calls(&self) -> Vec<String> {
+    pub(super) fn calls(&self) -> Vec<String> {
         self.calls.lock().expect("verrou du leaver").clone()
     }
 }
@@ -91,15 +94,98 @@ impl DiscordGuildLeaver for FakeLeaver {
     }
 }
 
-/// Admin hub fake that records close calls.
+/// Fake Discord OAuth client: records exchanges and returns a fixed identity
+/// (or a simulated failure when `identity` is `None`).
+#[derive(Debug)]
+struct FakeOAuth {
+    calls: Mutex<Vec<(String, String)>>,
+    identity: Option<DiscordIdentity>,
+}
+
+impl FakeOAuth {
+    fn returning(identity: DiscordIdentity) -> Arc<Self> {
+        Arc::new(Self {
+            calls: Mutex::new(Vec::new()),
+            identity: Some(identity),
+        })
+    }
+
+    fn failing() -> Arc<Self> {
+        Arc::new(Self {
+            calls: Mutex::new(Vec::new()),
+            identity: None,
+        })
+    }
+
+    fn calls(&self) -> Vec<(String, String)> {
+        self.calls.lock().expect("verrou OAuth").clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl AdminOAuth for FakeOAuth {
+    async fn exchange(
+        &self,
+        code: &str,
+        redirect_uri: &str,
+    ) -> Result<DiscordIdentity, OAuthError> {
+        self.calls
+            .lock()
+            .expect("verrou OAuth")
+            .push((code.to_owned(), redirect_uri.to_owned()));
+        match &self.identity {
+            Some(identity) => Ok(identity.clone()),
+            None => Err(OAuthError::Exchange("échange Discord simulé".to_owned())),
+        }
+    }
+}
+
+/// Admin hub fake that records close calls, sent frames and device state.
 #[derive(Debug, Default)]
-struct RecordingAdminHub {
+pub(super) struct RecordingAdminHub {
     closes: Mutex<Vec<(uuid::Uuid, u16)>>,
+    sent: Mutex<Vec<(uuid::Uuid, ServerMessage)>>,
+    device_settings: Mutex<std::collections::HashMap<uuid::Uuid, DeviceSettingsStatePayload>>,
+    session_modes: Mutex<std::collections::HashMap<uuid::Uuid, SessionMode>>,
+    connected: AtomicBool,
+    deliver: AtomicBool,
 }
 
 impl RecordingAdminHub {
     fn closes(&self) -> Vec<(uuid::Uuid, u16)> {
         self.closes.lock().expect("verrou du hub").clone()
+    }
+
+    /// Frames sent through [`AdminHub::send_to_client`], in order.
+    pub(super) fn sent(&self) -> Vec<(uuid::Uuid, ServerMessage)> {
+        self.sent.lock().expect("verrou du hub").clone()
+    }
+
+    /// Session modes applied by [`AdminHub::set_session_mode`].
+    pub(super) fn session_modes(&self) -> std::collections::HashMap<uuid::Uuid, SessionMode> {
+        self.session_modes.lock().expect("verrou du hub").clone()
+    }
+
+    /// Sets whether [`AdminHub::is_connected`] reports the client online.
+    pub(super) fn set_connected(&self, connected: bool) {
+        self.connected.store(connected, Ordering::SeqCst);
+    }
+
+    /// Sets whether [`AdminHub::send_to_client`] reports a delivery.
+    pub(super) fn set_deliver(&self, deliver: bool) {
+        self.deliver.store(deliver, Ordering::SeqCst);
+    }
+
+    /// Publishes a `device.settings.state` for an overlay client.
+    pub(super) fn set_device_settings(
+        &self,
+        client_id: uuid::Uuid,
+        state: DeviceSettingsStatePayload,
+    ) {
+        self.device_settings
+            .lock()
+            .expect("verrou du hub")
+            .insert(client_id, state);
     }
 }
 
@@ -114,7 +200,7 @@ impl AdminHub for RecordingAdminHub {
     }
 
     fn is_connected(&self, _client_id: &uuid::Uuid) -> bool {
-        false
+        self.connected.load(Ordering::SeqCst)
     }
 
     fn close_client(&self, client_id: &uuid::Uuid, code: u16) -> bool {
@@ -129,6 +215,30 @@ impl AdminHub for RecordingAdminHub {
         self.close_client(client_id, code)
     }
 
+    fn send_to_client(&self, client_id: &uuid::Uuid, message: ServerMessage) -> bool {
+        self.sent
+            .lock()
+            .expect("verrou du hub")
+            .push((*client_id, message));
+        self.deliver.load(Ordering::SeqCst)
+    }
+
+    fn device_settings(&self, client_id: &uuid::Uuid) -> Option<DeviceSettingsStatePayload> {
+        self.device_settings
+            .lock()
+            .expect("verrou du hub")
+            .get(client_id)
+            .copied()
+    }
+
+    fn set_session_mode(&self, client_id: &uuid::Uuid, mode: SessionMode) -> bool {
+        self.session_modes
+            .lock()
+            .expect("verrou du hub")
+            .insert(*client_id, mode);
+        true
+    }
+
     async fn broadcast_stop(&self, _guild_id: &GuildId) -> usize {
         0
     }
@@ -139,29 +249,61 @@ impl AdminHub for RecordingAdminHub {
 }
 
 /// Environnement de test : dossier temporaire, base mémoire et routeur complet.
-struct Harness {
-    dir: TempDir,
-    state: AppState,
-    db: Db,
-    app: Router,
+pub(super) struct Harness {
+    pub(super) dir: TempDir,
+    pub(super) state: AppState,
+    pub(super) db: Db,
+    pub(super) app: Router,
+    /// Raw cookie token of the session created for the harness (if any login
+    /// method is configured). Most tests use it implicitly.
+    pub(super) session_token: Option<String>,
 }
 
 impl Harness {
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         Self::with_pairs(&[]).await
     }
 
-    async fn with_pairs(extra: &[(&str, &str)]) -> Self {
+    pub(super) async fn with_pairs(extra: &[(&str, &str)]) -> Self {
         Self::with_pairs_and_leaver(extra, None).await
     }
 
-    async fn with_leaver(leaver: Arc<dyn DiscordGuildLeaver>) -> Self {
+    pub(super) async fn with_leaver(leaver: Arc<dyn DiscordGuildLeaver>) -> Self {
         Self::with_pairs_and_leaver(&[], Some(leaver)).await
     }
 
-    async fn with_pairs_and_leaver(
+    /// Harness with an injected admin hub (device-control tests).
+    pub(super) async fn with_hub(hub: Arc<dyn AdminHub>) -> Self {
+        Self::build_with_hub(&[], None, None, Some(hub)).await
+    }
+
+    pub(super) async fn with_pairs_and_leaver(
         extra: &[(&str, &str)],
         leaver: Option<Arc<dyn DiscordGuildLeaver>>,
+    ) -> Self {
+        Self::build(extra, leaver, None).await
+    }
+
+    pub(super) async fn with_pairs_and_oauth(
+        extra: &[(&str, &str)],
+        oauth: Arc<dyn AdminOAuth>,
+    ) -> Self {
+        Self::build(extra, None, Some(oauth)).await
+    }
+
+    pub(super) async fn build(
+        extra: &[(&str, &str)],
+        leaver: Option<Arc<dyn DiscordGuildLeaver>>,
+        oauth: Option<Arc<dyn AdminOAuth>>,
+    ) -> Self {
+        Self::build_with_hub(extra, leaver, oauth, None).await
+    }
+
+    async fn build_with_hub(
+        extra: &[(&str, &str)],
+        leaver: Option<Arc<dyn DiscordGuildLeaver>>,
+        oauth: Option<Arc<dyn AdminOAuth>>,
+        hub: Option<Arc<dyn AdminHub>>,
     ) -> Self {
         let dir = tempfile::tempdir().expect("dossier temporaire");
         let database_path = dir.path().join("livechat.sqlite3");
@@ -189,9 +331,28 @@ impl Harness {
         let db = Db::open_in_memory(&DbConfig::default())
             .await
             .expect("base de test en mémoire");
+        // Log in once like the browser would: the raw token is kept by the
+        // harness and every request carries it as a cookie. Tests that verify
+        // the 401 path build requests without it explicitly.
+        let session_token = if config.admin_auth_enabled() {
+            Some(
+                session::create_secret(&db, Utc::now().timestamp_millis())
+                    .await
+                    .expect("session de test")
+                    .0,
+            )
+        } else {
+            None
+        };
         let mut state = AppState::new(Arc::new(config), Some(db.clone()), Shutdown::detached());
         if let Some(leaver) = leaver {
             state = state.with_discord_leaver(leaver);
+        }
+        if let Some(oauth) = oauth {
+            state = state.with_admin_oauth(oauth);
+        }
+        if let Some(hub) = hub {
+            state = state.with_admin_hub(hub);
         }
         let app = router(state.clone());
 
@@ -200,34 +361,80 @@ impl Harness {
             state,
             db,
             app,
+            session_token,
         }
     }
 
-    fn path(&self, name: &str) -> PathBuf {
+    pub(super) fn path(&self, name: &str) -> PathBuf {
         self.dir.path().join(name)
     }
 
-    fn request(&self, method: Method, path: &str) -> HttpRequest<Body> {
+    pub(super) fn session_cookie(&self) -> Option<String> {
+        self.session_token
+            .as_ref()
+            .map(|token| format!("{}={token}", session::SESSION_COOKIE_NAME))
+    }
+
+    pub(super) fn apply_session_cookie(&self, request: &mut HttpRequest<Body>) {
+        if let Some(cookie) = self.session_cookie() {
+            request.headers_mut().insert(
+                header::COOKIE,
+                header::HeaderValue::from_str(&cookie).expect("cookie valide"),
+            );
+        }
+    }
+
+    pub(super) fn request(&self, method: Method, path: &str) -> HttpRequest<Body> {
         self.request_from(method, path, IpAddr::V4(Ipv4Addr::LOCALHOST))
     }
 
-    fn request_from(&self, method: Method, path: &str, ip: IpAddr) -> HttpRequest<Body> {
+    pub(super) fn request_from(&self, method: Method, path: &str, ip: IpAddr) -> HttpRequest<Body> {
         let mut request = HttpRequest::builder()
             .method(method)
             .uri(path)
             .header(header::HOST, TEST_HOST)
             .header(header::ORIGIN, TEST_ORIGIN)
-            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
             .body(Body::empty())
             .expect("requête de test valide");
+        self.apply_session_cookie(&mut request);
         request
             .extensions_mut()
             .insert(ConnectInfo(SocketAddr::new(ip, 40_000)));
         request
     }
 
+    /// Request with no session cookie (used to assert 401 responses).
+    pub(super) fn request_without_session(&self, method: Method, path: &str) -> HttpRequest<Body> {
+        let mut request = HttpRequest::builder()
+            .method(method)
+            .uri(path)
+            .header(header::HOST, TEST_HOST)
+            .header(header::ORIGIN, TEST_ORIGIN)
+            .body(Body::empty())
+            .expect("requête de test valide");
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))));
+        request
+    }
+
+    /// Request with an arbitrary `Cookie` header.
+    pub(super) fn request_with_cookie(
+        &self,
+        method: Method,
+        path: &str,
+        cookie: &str,
+    ) -> HttpRequest<Body> {
+        let mut request = self.request_without_session(method, path);
+        request.headers_mut().insert(
+            header::COOKIE,
+            header::HeaderValue::from_str(cookie).expect("cookie valide"),
+        );
+        request
+    }
+
     /// Requête de mutation avec origine explicite (`None` = origine absente).
-    fn request_with_origin(
+    pub(super) fn request_with_origin(
         &self,
         method: Method,
         path: &str,
@@ -236,12 +443,12 @@ impl Harness {
         let mut builder = HttpRequest::builder()
             .method(method)
             .uri(path)
-            .header(header::HOST, TEST_HOST)
-            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"));
+            .header(header::HOST, TEST_HOST);
         if let Some(origin) = origin {
             builder = builder.header(header::ORIGIN, origin);
         }
         let mut request = builder.body(Body::empty()).expect("requête de test valide");
+        self.apply_session_cookie(&mut request);
         request
             .extensions_mut()
             .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))));
@@ -249,22 +456,43 @@ impl Harness {
     }
 
     /// Requête de mutation avec un `Referer` (et sans `Origin`).
-    fn request_with_referer(&self, method: Method, path: &str, referer: &str) -> HttpRequest<Body> {
+    pub(super) fn request_with_referer(
+        &self,
+        method: Method,
+        path: &str,
+        referer: &str,
+    ) -> HttpRequest<Body> {
         let mut request = HttpRequest::builder()
             .method(method)
             .uri(path)
             .header(header::HOST, TEST_HOST)
             .header(header::REFERER, referer)
-            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
             .body(Body::empty())
             .expect("requête de test valide");
+        self.apply_session_cookie(&mut request);
         request
             .extensions_mut()
             .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))));
         request
     }
 
-    fn request_json(&self, method: Method, path: &str, body: &Value) -> HttpRequest<Body> {
+    pub(super) fn request_json(
+        &self,
+        method: Method,
+        path: &str,
+        body: &Value,
+    ) -> HttpRequest<Body> {
+        let mut request = self.request_json_without_session(method, path, body);
+        self.apply_session_cookie(&mut request);
+        request
+    }
+
+    pub(super) fn request_json_without_session(
+        &self,
+        method: Method,
+        path: &str,
+        body: &Value,
+    ) -> HttpRequest<Body> {
         let payload = serde_json::to_vec(body).expect("corps JSON sérialisable");
         let mut request = HttpRequest::builder()
             .method(method)
@@ -272,7 +500,6 @@ impl Harness {
             .header(header::HOST, TEST_HOST)
             .header(header::ORIGIN, TEST_ORIGIN)
             .header(header::CONTENT_TYPE, "application/json")
-            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
             .body(Body::from(payload))
             .expect("requête de test valide");
         request
@@ -281,7 +508,10 @@ impl Harness {
         request
     }
 
-    async fn send(&self, request: HttpRequest<Body>) -> (StatusCode, HeaderMap, Vec<u8>) {
+    pub(super) async fn send(
+        &self,
+        request: HttpRequest<Body>,
+    ) -> (StatusCode, HeaderMap, Vec<u8>) {
         let response = self
             .app
             .clone()
@@ -296,17 +526,22 @@ impl Harness {
         (status, headers, bytes.to_vec())
     }
 
-    async fn call(&self, method: Method, path: &str) -> (StatusCode, Value) {
+    pub(super) async fn call(&self, method: Method, path: &str) -> (StatusCode, Value) {
         let (status, _, bytes) = self.send(self.request(method, path)).await;
         (status, json_or_null(&bytes))
     }
 
-    async fn call_json(&self, method: Method, path: &str, body: &Value) -> (StatusCode, Value) {
+    pub(super) async fn call_json(
+        &self,
+        method: Method,
+        path: &str,
+        body: &Value,
+    ) -> (StatusCode, Value) {
         let (status, _, bytes) = self.send(self.request_json(method, path, body)).await;
         (status, json_or_null(&bytes))
     }
 
-    async fn call_with_headers(
+    pub(super) async fn call_with_headers(
         &self,
         method: Method,
         path: &str,
@@ -314,12 +549,16 @@ impl Harness {
         self.send(self.request(method, path)).await
     }
 
-    fn db(&self) -> &Db {
+    pub(super) fn db(&self) -> &Db {
         &self.db
+    }
+
+    pub(super) fn state(&self) -> &AppState {
+        &self.state
     }
 }
 
-fn json_or_null(bytes: &[u8]) -> Value {
+pub(super) fn json_or_null(bytes: &[u8]) -> Value {
     serde_json::from_slice(bytes).unwrap_or(Value::Null)
 }
 
@@ -327,11 +566,42 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
+pub(super) fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get(name)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned)
+}
+
+/// All `Set-Cookie` headers whose name matches `name` (attributes included).
+fn set_cookie_headers(headers: &HeaderMap, name: &str) -> Vec<String> {
+    let prefix = format!("{name}=");
+    headers
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .filter(|value| value.starts_with(&prefix))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Value of the first matching `Set-Cookie` header.
+fn set_cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    set_cookie_headers(headers, name)
+        .first()
+        .and_then(|header| header.split(';').next())
+        .and_then(|pair| pair.split_once('='))
+        .map(|(_, value)| value.to_owned())
+}
+
+/// Query parameter of a `Location` header (absolute URLs only).
+fn location_query_param(headers: &HeaderMap, name: &str) -> Option<String> {
+    let location = header_value(headers, "location")?;
+    let url = url::Url::parse(&location).ok()?;
+
+    url.query_pairs()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.into_owned())
 }
 
 fn sha256_hex(value: &str) -> String {
@@ -344,7 +614,7 @@ fn sha256_hex(value: &str) -> String {
         .collect()
 }
 
-fn guild(id: &str) -> Guild {
+pub(super) fn guild(id: &str) -> Guild {
     Guild {
         id: GuildId::parse(id).expect("identifiant de guilde valide"),
         name: Some(format!("Guilde {id}")),
@@ -356,7 +626,7 @@ fn guild(id: &str) -> Guild {
 }
 
 /// Crée une guilde indépendante liée à `discord_guild_id`.
-async fn create_linked_standalone(db: &Db, guild_id: &GuildId, discord_guild_id: &str) {
+pub(super) async fn create_linked_standalone(db: &Db, guild_id: &GuildId, discord_guild_id: &str) {
     db.guilds()
         .create_standalone(guild_id, "Indépendante", Utc::now())
         .await
@@ -369,7 +639,7 @@ async fn create_linked_standalone(db: &Db, guild_id: &GuildId, discord_guild_id:
         .expect("liaison Discord"));
 }
 
-fn media_asset(size_bytes: i64, storage_path: &Path) -> MediaAsset {
+pub(super) fn media_asset(size_bytes: i64, storage_path: &Path) -> MediaAsset {
     let now = Utc::now();
     MediaAsset {
         id: MediaAssetId::new_v4(),
@@ -391,7 +661,7 @@ fn media_asset(size_bytes: i64, storage_path: &Path) -> MediaAsset {
     }
 }
 
-fn board_item(guild_id: &GuildId, media_asset_id: MediaAssetId) -> MediaBoardItem {
+pub(super) fn board_item(guild_id: &GuildId, media_asset_id: MediaAssetId) -> MediaBoardItem {
     MediaBoardItem {
         id: MediaBoardItemId::new_v4(),
         guild_id: guild_id.clone(),
@@ -406,7 +676,7 @@ fn board_item(guild_id: &GuildId, media_asset_id: MediaAssetId) -> MediaBoardIte
     }
 }
 
-fn playback_job(guild_id: &GuildId, status: JobStatus) -> PlaybackJob {
+pub(super) fn playback_job(guild_id: &GuildId, status: JobStatus) -> PlaybackJob {
     let now = Utc::now();
     PlaybackJob {
         id: PlaybackJobId::new_v4(),
@@ -431,7 +701,10 @@ fn playback_job(guild_id: &GuildId, status: JobStatus) -> PlaybackJob {
     }
 }
 
-fn overlay_client(guild_id: &GuildId, session_mode: OverlaySessionMode) -> OverlayClient {
+pub(super) fn overlay_client(
+    guild_id: &GuildId,
+    session_mode: OverlaySessionMode,
+) -> OverlayClient {
     OverlayClient {
         id: OverlayClientId::new_v4(),
         guild_id: guild_id.clone(),
@@ -483,7 +756,7 @@ fn pairing_code(
     }
 }
 
-fn guild_member(guild_id: &GuildId, role: GuildRole) -> GuildMember {
+pub(super) fn guild_member(guild_id: &GuildId, role: GuildRole) -> GuildMember {
     GuildMember {
         id: GuildMemberId::new_v4(),
         guild_id: guild_id.clone(),
@@ -498,7 +771,7 @@ fn guild_member(guild_id: &GuildId, role: GuildRole) -> GuildMember {
     }
 }
 
-fn guild_invite(code: &str, guild_id: &GuildId) -> GuildInvite {
+pub(super) fn guild_invite(code: &str, guild_id: &GuildId) -> GuildInvite {
     GuildInvite {
         code: PairingCode::parse(code).expect("code d'invitation valide"),
         guild_id: guild_id.clone(),
@@ -518,14 +791,37 @@ fn guild_invite(code: &str, guild_id: &GuildId) -> GuildInvite {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn auth_503_quand_le_token_n_est_pas_configure() {
+async fn auth_503_when_no_method_is_configured() {
     let harness = Harness::with_pairs(&[("ADMIN_UI_TOKEN", "")]).await;
 
-    let (status, body) = harness.call(Method::GET, "/admin/api/overview").await;
+    for (method, path) in [
+        (Method::GET, "/admin/api/overview"),
+        (Method::POST, "/admin/api/guilds/42/stop"),
+        (Method::POST, "/admin/auth/secret"),
+        (Method::GET, "/admin/auth/discord"),
+        (Method::POST, "/admin/auth/logout"),
+    ] {
+        let (status, body) = harness.call(method.clone(), path).await;
+        assert_eq!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "route {method} {path}"
+        );
+        assert_eq!(body["error"], "admin_ui_disabled");
+    }
 
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(body["error"], "admin_ui_disabled");
-    assert_eq!(body["message"], "ADMIN_UI_TOKEN is not configured");
+    // The session endpoint is the sole exception: it still reports which
+    // methods are available (none here).
+    let (status, _, bytes) = harness
+        .send(harness.request_without_session(Method::GET, "/admin/auth/session"))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let body = json_or_null(&bytes);
+    assert_eq!(body["error"], "unauthorized");
+    assert_eq!(
+        body["methods"],
+        json!({ "discord": false, "secret": false })
+    );
 }
 
 #[tokio::test]
@@ -544,46 +840,561 @@ async fn auth_403_pour_un_client_non_loopback() {
 }
 
 #[tokio::test]
-async fn auth_401_sans_token() {
+async fn auth_401_without_session_and_bearer_ignored() {
     let harness = Harness::new().await;
-    let request = HttpRequest::builder()
-        .method(Method::GET)
-        .uri("/admin/api/overview")
-        .body(Body::empty())
-        .expect("requête valide");
-    let mut request = request;
-    request
-        .extensions_mut()
-        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))));
-
-    let (status, _, bytes) = harness.send(request).await;
-
+    let (status, _, bytes) = harness
+        .send(harness.request_without_session(Method::GET, "/admin/api/overview"))
+        .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(json_or_null(&bytes)["error"], "unauthorized");
+
+    // The legacy Bearer token is gone entirely.
+    let mut request = harness.request_without_session(Method::GET, "/admin/api/overview");
+    request.headers_mut().insert(
+        header::AUTHORIZATION,
+        header::HeaderValue::from_str(&format!("Bearer {TOKEN}")).expect("en-tête valide"),
+    );
+    let (status, _, bytes) = harness.send(request).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(json_or_null(&bytes)["error"], "unauthorized");
+
+    // The session endpoint reports the configured methods.
+    let (status, _, bytes) = harness
+        .send(harness.request_without_session(Method::GET, "/admin/auth/session"))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let body = json_or_null(&bytes);
+    assert_eq!(body["error"], "unauthorized");
+    assert_eq!(body["methods"], json!({ "discord": false, "secret": true }));
 }
 
 #[tokio::test]
-async fn auth_refuse_le_token_en_query_string() {
+async fn auth_secret_login_sets_cookie_and_returns_session() {
+    let harness = Harness::new().await;
+    let (status, headers, bytes) = harness
+        .send(harness.request_json_without_session(
+            Method::POST,
+            "/admin/auth/secret",
+            &json!({ "secret": TOKEN }),
+        ))
+        .await;
+
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(bytes.is_empty());
+    let headers_for_cookie = set_cookie_headers(&headers, session::SESSION_COOKIE_NAME);
+    assert_eq!(headers_for_cookie.len(), 1, "un seul cookie de session");
+    let cookie = headers_for_cookie[0].as_str();
+    assert!(cookie.contains("HttpOnly"));
+    assert!(cookie.contains("SameSite=Strict"));
+    assert!(cookie.contains("Path=/admin"));
+    assert!(cookie.contains("Max-Age=604800"));
+    assert!(!cookie.contains("Secure"), "API_URL est en http");
+
+    let token = set_cookie_value(&headers, session::SESSION_COOKIE_NAME).expect("token de session");
+    assert!(!token.is_empty());
+    let stored: String =
+        sqlx::query_scalar("SELECT token_hash FROM admin_sessions WHERE token_hash = ?1")
+            .bind(sha256_hex(&token))
+            .fetch_one(harness.db().pool())
+            .await
+            .expect("hash stocké");
+    assert_eq!(stored, sha256_hex(&token), "seul le SHA-256 est stocké");
+    assert_ne!(stored, token);
+
+    let session_request = harness.request_with_cookie(
+        Method::GET,
+        "/admin/auth/session",
+        &format!("{}={token}", session::SESSION_COOKIE_NAME),
+    );
+    let (status, _, bytes) = harness.send(session_request).await;
+    assert_eq!(status, StatusCode::OK);
+    let body = json_or_null(&bytes);
+    assert_eq!(body["method"], "secret");
+    assert!(body["user"].is_null());
+    assert!(body["expiresAt"]
+        .as_str()
+        .is_some_and(|date| date.ends_with('Z')));
+}
+
+#[tokio::test]
+async fn auth_secret_login_rejects_a_wrong_secret() {
+    let harness = Harness::new().await;
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            "/admin/auth/secret",
+            &json!({ "secret": "mauvais-secret" }),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"], "invalid_secret");
+}
+
+#[tokio::test]
+async fn auth_secret_login_is_404_when_only_disabled() {
+    let harness = Harness::with_pairs(&[
+        ("ADMIN_UI_TOKEN", ""),
+        ("DISCORD_CLIENT_ID", "123456789012345678"),
+        ("DISCORD_CLIENT_SECRET", "oauth-secret"),
+        ("ADMIN_DISCORD_USER_IDS", "1001"),
+    ])
+    .await;
+
+    let (status, _, body) = harness
+        .send(harness.request_json_without_session(
+            Method::POST,
+            "/admin/auth/secret",
+            &json!({ "secret": TOKEN }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json_or_null(&body)["error"], "method_disabled");
+}
+
+#[tokio::test]
+async fn auth_logout_deletes_the_session_and_clears_the_cookie() {
+    let harness = Harness::new().await;
+    let token = harness.session_token.clone().expect("session du harnais");
+    let (status, headers, _) = harness
+        .send(harness.request_with_origin(Method::POST, "/admin/auth/logout", Some(TEST_ORIGIN)))
+        .await;
+
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let cleared = set_cookie_headers(&headers, session::SESSION_COOKIE_NAME);
+    assert_eq!(cleared.len(), 1);
+    assert!(cleared[0].contains("Max-Age=0"));
+
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM admin_sessions WHERE token_hash = ?1")
+            .bind(sha256_hex(&token))
+            .fetch_one(harness.db().pool())
+            .await
+            .expect("comptage des sessions");
+    assert_eq!(count, 0, "la session est supprimée");
+
+    let (status, _, _) = harness
+        .send(harness.request_with_cookie(
+            Method::GET,
+            "/admin/auth/session",
+            &format!("{}={token}", session::SESSION_COOKIE_NAME),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn auth_expired_session_is_refused_and_deleted() {
+    let harness = Harness::new().await;
+    let token = harness.session_token.clone().expect("session du harnais");
+    sqlx::query("UPDATE admin_sessions SET expires_at = 0 WHERE token_hash = ?1")
+        .bind(sha256_hex(&token))
+        .execute(harness.db().pool())
+        .await
+        .expect("expiration forcée");
+
+    let (status, _, _) = harness
+        .send(harness.request_with_cookie(
+            Method::GET,
+            "/admin/auth/session",
+            &format!("{}={token}", session::SESSION_COOKIE_NAME),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = harness.call(Method::GET, "/admin/api/overview").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM admin_sessions WHERE token_hash = ?1")
+            .bind(sha256_hex(&token))
+            .fetch_one(harness.db().pool())
+            .await
+            .expect("comptage des sessions");
+    assert_eq!(count, 0, "la session expirée est supprimée à la lecture");
+}
+
+#[tokio::test]
+async fn auth_expired_sessions_are_purged_at_startup() {
+    let harness = Harness::new().await;
+    let token = harness.session_token.clone().expect("session du harnais");
+    sqlx::query("UPDATE admin_sessions SET expires_at = 0 WHERE token_hash = ?1")
+        .bind(sha256_hex(&token))
+        .execute(harness.db().pool())
+        .await
+        .expect("expiration forcée");
+
+    let removed = super::purge_expired_sessions(harness.db())
+        .await
+        .expect("nettoyage de démarrage");
+    assert_eq!(removed, 1);
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM admin_sessions")
+        .fetch_one(harness.db().pool())
+        .await
+        .expect("comptage des sessions");
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn auth_session_cookie_has_the_contract_attributes() {
+    let harness = Harness::with_pairs(&[("API_URL", "https://panel.example")]).await;
+    let (status, headers, _) = harness
+        .send(harness.request_json_without_session(
+            Method::POST,
+            "/admin/auth/secret",
+            &json!({ "secret": TOKEN }),
+        ))
+        .await;
+
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let cookie = set_cookie_headers(&headers, session::SESSION_COOKIE_NAME);
+    assert_eq!(cookie.len(), 1);
+    for attribute in [
+        "HttpOnly",
+        "SameSite=Strict",
+        "Path=/admin",
+        "Max-Age=604800",
+        "Secure",
+    ] {
+        assert!(
+            cookie[0].contains(attribute),
+            "attribut {attribute} absent de {}",
+            cookie[0]
+        );
+    }
+}
+
+#[tokio::test]
+async fn auth_secret_and_logout_require_an_origin() {
     let harness = Harness::new().await;
 
-    let (status, _) = harness.call(Method::GET, "/admin/api/ingest-authors").await;
+    let secret_request = harness.request_json_without_session(
+        Method::POST,
+        "/admin/auth/secret",
+        &json!({ "secret": TOKEN }),
+    );
+    let mut secret_request = secret_request;
+    secret_request.headers_mut().remove(header::ORIGIN);
+    let (status, _, bytes) = harness.send(secret_request).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(json_or_null(&bytes)["error"], "invalid_origin");
+
+    let logout_request = harness.request_with_origin(Method::POST, "/admin/auth/logout", None);
+    let (status, _, bytes) = harness.send(logout_request).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(json_or_null(&bytes)["error"], "invalid_origin");
+}
+
+fn discord_identity(id: &str, name: &str) -> DiscordIdentity {
+    DiscordIdentity {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        avatar_url: Some(format!(
+            "https://cdn.discordapp.com/avatars/{id}/avatar-hash.png"
+        )),
+    }
+}
+
+async fn discord_harness(oauth: Arc<dyn AdminOAuth>, allowed_ids: &str) -> Harness {
+    Harness::with_pairs_and_oauth(
+        &[
+            ("DISCORD_CLIENT_ID", "123456789012345678"),
+            ("DISCORD_CLIENT_SECRET", "oauth-secret"),
+            ("ADMIN_DISCORD_USER_IDS", allowed_ids),
+        ],
+        oauth,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn auth_discord_login_redirects_with_state_and_scope() {
+    let oauth = FakeOAuth::returning(discord_identity("1001", "Alice"));
+    let harness = discord_harness(oauth.clone(), "1001").await;
+
+    let (status, headers, _) = harness
+        .send(harness.request_without_session(Method::GET, "/admin/auth/discord"))
+        .await;
+
+    assert_eq!(status, StatusCode::FOUND);
+    let location = header_value(&headers, "location").expect("Location");
+    let url = url::Url::parse(&location).expect("URL Discord");
+    assert_eq!(url.host_str(), Some("discord.com"));
+    assert_eq!(url.path(), "/oauth2/authorize");
+    assert_eq!(
+        location_query_param(&headers, "client_id").as_deref(),
+        Some("123456789012345678")
+    );
+    assert_eq!(
+        location_query_param(&headers, "scope").as_deref(),
+        Some("identify")
+    );
+    assert_eq!(
+        location_query_param(&headers, "redirect_uri").as_deref(),
+        Some("http://localhost:3000/admin/auth/discord/callback")
+    );
+    let state = location_query_param(&headers, "state").expect("state");
+    assert_eq!(state.len(), 43);
+
+    let state_cookies = set_cookie_headers(&headers, session::OAUTH_STATE_COOKIE_NAME);
+    assert_eq!(state_cookies.len(), 1);
+    for attribute in [
+        "HttpOnly",
+        "SameSite=Lax",
+        "Path=/admin/auth",
+        "Max-Age=600",
+    ] {
+        assert!(
+            state_cookies[0].contains(attribute),
+            "attribut {attribute} absent de {}",
+            state_cookies[0]
+        );
+    }
+    assert_eq!(
+        set_cookie_value(&headers, session::OAUTH_STATE_COOKIE_NAME).as_deref(),
+        Some(state.as_str())
+    );
+    assert!(oauth.calls().is_empty(), "aucun échange avant le callback");
+}
+
+#[tokio::test]
+async fn auth_discord_callback_bad_state_redirects_to_login() {
+    let oauth = FakeOAuth::returning(discord_identity("1001", "Alice"));
+    let harness = discord_harness(oauth.clone(), "1001").await;
+
+    for cookie in [None, Some("lc_admin_oauth_state=attendu")] {
+        let request = match cookie {
+            Some(cookie) => harness.request_with_cookie(
+                Method::GET,
+                "/admin/auth/discord/callback?code=code-1&state=fourni",
+                cookie,
+            ),
+            None => harness.request_without_session(
+                Method::GET,
+                "/admin/auth/discord/callback?code=code-1&state=fourni",
+            ),
+        };
+        let (status, headers, _) = harness.send(request).await;
+        assert_eq!(status, StatusCode::FOUND);
+        assert_eq!(
+            header_value(&headers, "location").as_deref(),
+            Some("/admin/#/login?error=oauth_state")
+        );
+    }
+    assert!(oauth.calls().is_empty(), "le code n'est jamais échangé");
+}
+
+#[tokio::test]
+async fn auth_discord_callback_oauth_failed_redirects_to_login() {
+    let oauth = FakeOAuth::failing();
+    let harness = discord_harness(oauth.clone(), "1001").await;
+    let request = harness.request_with_cookie(
+        Method::GET,
+        "/admin/auth/discord/callback?code=code-1&state=state-1",
+        "lc_admin_oauth_state=state-1",
+    );
+
+    let (status, headers, _) = harness.send(request).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert_eq!(
+        header_value(&headers, "location").as_deref(),
+        Some("/admin/#/login?error=oauth_failed")
+    );
+    assert_eq!(
+        oauth.calls(),
+        vec![(
+            "code-1".to_owned(),
+            "http://localhost:3000/admin/auth/discord/callback".to_owned()
+        )]
+    );
+    assert!(
+        set_cookie_headers(&headers, session::SESSION_COOKIE_NAME).is_empty(),
+        "aucune session en cas d'échec"
+    );
+}
+
+#[tokio::test]
+async fn auth_discord_callback_rejects_an_id_outside_the_list() {
+    let oauth = FakeOAuth::returning(discord_identity("9999", "Mallory"));
+    let harness = discord_harness(oauth, "1001").await;
+    let request = harness.request_with_cookie(
+        Method::GET,
+        "/admin/auth/discord/callback?code=code-1&state=state-1",
+        "lc_admin_oauth_state=state-1",
+    );
+
+    let (status, headers, _) = harness.send(request).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert_eq!(
+        header_value(&headers, "location").as_deref(),
+        Some("/admin/#/login?error=not_allowed")
+    );
+    assert!(
+        set_cookie_headers(&headers, session::SESSION_COOKIE_NAME).is_empty(),
+        "aucune session pour un id refusé"
+    );
+}
+
+#[tokio::test]
+async fn auth_discord_callback_allowed_creates_a_session() {
+    let identity = discord_identity("1001", "Alice");
+    let oauth = FakeOAuth::returning(identity.clone());
+    let harness = discord_harness(oauth.clone(), "1001").await;
+    let request = harness.request_with_cookie(
+        Method::GET,
+        "/admin/auth/discord/callback?code=code-1&state=state-1",
+        "lc_admin_oauth_state=state-1",
+    );
+
+    let (status, headers, _) = harness.send(request).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert_eq!(
+        header_value(&headers, "location").as_deref(),
+        Some("/admin/#/dashboard")
+    );
+    let cookies = set_cookie_headers(&headers, session::SESSION_COOKIE_NAME);
+    assert_eq!(cookies.len(), 1);
+    for attribute in [
+        "HttpOnly",
+        "SameSite=Strict",
+        "Path=/admin",
+        "Max-Age=604800",
+    ] {
+        assert!(cookies[0].contains(attribute), "attribut {attribute}");
+    }
+    let token = set_cookie_value(&headers, session::SESSION_COOKIE_NAME).expect("token");
+    assert_eq!(
+        oauth.calls(),
+        vec![(
+            "code-1".to_owned(),
+            "http://localhost:3000/admin/auth/discord/callback".to_owned()
+        )]
+    );
+
+    let session_request = harness.request_with_cookie(
+        Method::GET,
+        "/admin/auth/session",
+        &format!("{}={token}", session::SESSION_COOKIE_NAME),
+    );
+    let (status, _, bytes) = harness.send(session_request).await;
     assert_eq!(status, StatusCode::OK);
+    let body = json_or_null(&bytes);
+    assert_eq!(body["method"], "discord");
+    assert_eq!(body["user"]["id"], identity.id);
+    assert_eq!(body["user"]["name"], identity.name);
+    assert_eq!(
+        body["user"]["avatarUrl"].as_str(),
+        identity.avatar_url.as_deref()
+    );
+}
 
-    // AUD-COR-05 : le jeton n'est plus accepté en query string, même si app.js
-    // le lisait autrefois dans `?token=` pour en faire un Bearer.
-    let request = HttpRequest::builder()
-        .method(Method::GET)
-        .uri(format!("/admin/api/ingest-authors?token={TOKEN}"))
-        .body(Body::empty())
-        .expect("requête valide");
-    let mut request = request;
-    request
-        .extensions_mut()
-        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))));
+/// `(actor_method, actor_name, action, status)` of every audit row, oldest first.
+async fn login_audit_rows(harness: &Harness) -> Vec<(Option<String>, Option<String>, String, i64)> {
+    sqlx::query_as("SELECT actor_method, actor_name, action, status FROM admin_audit ORDER BY id")
+        .fetch_all(harness.db().pool())
+        .await
+        .expect("audit rows")
+}
 
-    let (status, _, bytes) = harness.send(request).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert_eq!(json_or_null(&bytes)["error"], "unauthorized");
+#[tokio::test]
+async fn a_secret_login_is_journaled_with_its_actor() {
+    let harness = Harness::new().await;
+    let (status, _, _) = harness
+        .send(harness.request_json_without_session(
+            Method::POST,
+            "/admin/auth/secret",
+            &json!({ "secret": TOKEN }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    assert_eq!(
+        login_audit_rows(&harness).await,
+        vec![(
+            Some("secret".to_owned()),
+            Some("secret".to_owned()),
+            "auth.login_secret".to_owned(),
+            204
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_discord_login_is_journaled_with_the_discord_name() {
+    let oauth = FakeOAuth::returning(discord_identity("1001", "Alice"));
+    let harness = discord_harness(oauth, "1001").await;
+    let (status, _, _) = harness
+        .send(harness.request_with_cookie(
+            Method::GET,
+            "/admin/auth/discord/callback?code=code-1&state=state-1",
+            "lc_admin_oauth_state=state-1",
+        ))
+        .await;
+    assert_eq!(status, StatusCode::FOUND);
+
+    assert_eq!(
+        login_audit_rows(&harness).await,
+        vec![(
+            Some("discord".to_owned()),
+            Some("Alice".to_owned()),
+            "auth.login_discord".to_owned(),
+            200
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_refused_discord_account_is_journaled_by_name() {
+    let oauth = FakeOAuth::returning(discord_identity("9999", "Mallory"));
+    let harness = discord_harness(oauth, "1001").await;
+    harness
+        .send(harness.request_with_cookie(
+            Method::GET,
+            "/admin/auth/discord/callback?code=code-1&state=state-1",
+            "lc_admin_oauth_state=state-1",
+        ))
+        .await;
+
+    assert_eq!(
+        login_audit_rows(&harness).await,
+        vec![(
+            Some("discord".to_owned()),
+            Some("Mallory".to_owned()),
+            "auth.login_discord".to_owned(),
+            403
+        )]
+    );
+}
+
+#[tokio::test]
+async fn failed_discord_callbacks_are_journaled_without_an_actor() {
+    let harness = discord_harness(FakeOAuth::failing(), "1001").await;
+    // Bad `state`, then a code Discord refuses to exchange.
+    harness
+        .send(harness.request_without_session(
+            Method::GET,
+            "/admin/auth/discord/callback?code=code-1&state=state-1",
+        ))
+        .await;
+    harness
+        .send(harness.request_with_cookie(
+            Method::GET,
+            "/admin/auth/discord/callback?code=code-1&state=state-1",
+            "lc_admin_oauth_state=state-1",
+        ))
+        .await;
+    // Starting the login is not journaled: nothing happened yet.
+    harness
+        .send(harness.request_without_session(Method::GET, "/admin/auth/discord"))
+        .await;
+
+    assert_eq!(
+        login_audit_rows(&harness).await,
+        vec![
+            (None, None, "auth.login_discord".to_owned(), 400),
+            (None, None, "auth.login_discord".to_owned(), 502),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -748,6 +1559,10 @@ async fn statique_sert_index_avec_no_store_et_csp_admin() {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
+        header_value(&headers, "content-type").as_deref(),
+        Some("text/html; charset=utf-8")
+    );
+    assert_eq!(
         header_value(&headers, "cache-control").as_deref(),
         Some("no-store")
     );
@@ -766,7 +1581,74 @@ async fn statique_sert_index_avec_no_store_et_csp_admin() {
         header_value(&headers, "x-frame-options").as_deref(),
         Some("DENY")
     );
-    assert!(text(&bytes).contains("styles.css"));
+    assert!(text(&bytes).contains("/admin/assets/"));
+}
+
+#[tokio::test]
+async fn statique_sert_les_assets_hashes_avec_mime_et_cache_immutable() {
+    let harness = Harness::new().await;
+    let assets = super::static_files::embedded_files();
+    let javascript = assets
+        .iter()
+        .find(|path| path.starts_with("assets/") && path.ends_with(".js"))
+        .expect("the built console ships a hashed JavaScript asset");
+    let stylesheet = assets
+        .iter()
+        .find(|path| path.starts_with("assets/") && path.ends_with(".css"))
+        .expect("the built console ships a hashed CSS asset");
+
+    for (asset, content_type) in [
+        (javascript, "text/javascript; charset=utf-8"),
+        (stylesheet, "text/css; charset=utf-8"),
+    ] {
+        let (status, headers, bytes) = harness
+            .call_with_headers(Method::GET, &format!("/admin/{asset}"))
+            .await;
+        assert_eq!(status, StatusCode::OK, "asset {asset}");
+        assert_eq!(
+            header_value(&headers, "content-type").as_deref(),
+            Some(content_type),
+            "MIME type of {asset}"
+        );
+        assert_eq!(
+            header_value(&headers, "cache-control").as_deref(),
+            Some("public, max-age=31536000, immutable"),
+            "cache policy of {asset}"
+        );
+        assert!(!bytes.is_empty(), "asset {asset} is not empty");
+        // Security headers are not lost on immutable assets.
+        assert_eq!(
+            header_value(&headers, "content-security-policy").as_deref(),
+            Some(ADMIN_CSP)
+        );
+        assert_eq!(
+            header_value(&headers, "x-content-type-options").as_deref(),
+            Some("nosniff")
+        );
+        assert_eq!(
+            header_value(&headers, "x-frame-options").as_deref(),
+            Some("DENY")
+        );
+    }
+}
+
+#[tokio::test]
+async fn statique_chemin_inconnu_renvoie_404_sans_index() {
+    let harness = Harness::new().await;
+
+    let (status, headers, bytes) = harness
+        .call_with_headers(Method::GET, "/admin/assets/missing-file.js")
+        .await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        header_value(&headers, "cache-control").as_deref(),
+        Some("no-store")
+    );
+    assert!(
+        !text(&bytes).contains("<!doctype html>"),
+        "an unknown asset must never fall back to index.html"
+    );
 }
 
 #[tokio::test]
@@ -823,7 +1705,7 @@ async fn runtime_settings_valeurs_par_defaut_puis_persistance() {
     assert_eq!(body["tiktokCookie"], "abc123");
     assert_eq!(body["hasTikTokCookie"], true);
 
-    // Relecture : le fichier est relu à chaque GET.
+    // Read back: the value applied in memory is returned.
     let (status, body) = harness
         .call(Method::GET, "/admin/api/runtime-settings")
         .await;
@@ -1687,28 +2569,6 @@ async fn revoke_clients_rejects_wrong_confirmation() {
 }
 
 #[tokio::test]
-async fn revoke_clients_requires_admin_token() {
-    let harness = Harness::new().await;
-    let request = HttpRequest::builder()
-        .method(Method::POST)
-        .uri("/admin/api/guilds/42/revoke-clients")
-        .header(header::HOST, TEST_HOST)
-        .header(header::ORIGIN, TEST_ORIGIN)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(r#"{"confirmGuildId":"42"}"#))
-        .expect("requête valide");
-    let mut request = request;
-    request
-        .extensions_mut()
-        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))));
-
-    let (status, _, bytes) = harness.send(request).await;
-
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert_eq!(json_or_null(&bytes)["error"], "unauthorized");
-}
-
-#[tokio::test]
 async fn clear_media_board_deletes_items_and_only_orphan_media() {
     let harness = Harness::new().await;
     let db = harness.db();
@@ -2501,32 +3361,4 @@ async fn hub_noop_par_defaut_et_injectable() {
         .clone()
         .with_admin_hub(Arc::new(NoopAdminHub::new()));
     assert!(!admin_hub(&state).is_connected(&uuid::Uuid::nil()));
-}
-
-/// AUD-COR-05 : le JavaScript du panneau ne doit plus lire ni propager le jeton
-/// via l'URL (le jeton reste dans le champ et/ou `localStorage`, puis part en
-/// `Authorization: Bearer`).
-#[test]
-fn app_js_ne_propage_pas_le_jeton_dans_l_url() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../static/admin/app.js");
-    let source = std::fs::read_to_string(&path).expect("static/admin/app.js lisible");
-
-    for interdit in [
-        "syncTokenInUrl",
-        "history.replaceState",
-        "searchParams.set('token'",
-        "searchParams.set(\"token\"",
-        "searchParams.delete('token'",
-        "location.search",
-    ] {
-        assert!(
-            !source.contains(interdit),
-            "app.js ne doit plus contenir {interdit:?} (AUD-COR-05)"
-        );
-    }
-
-    assert!(
-        source.contains("localStorage.getItem('livechat_admin_token')"),
-        "le jeton doit être lu depuis localStorage"
-    );
 }

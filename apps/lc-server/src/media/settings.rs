@@ -17,7 +17,27 @@ use lc_media::config::{
     VideoConfig, VideoEncoder,
 };
 
+use crate::app::AppState;
 use crate::config::{Config, VideoEncoder as ServerVideoEncoder};
+use crate::runtime::Runtime;
+
+/// Builds the media pipeline configuration from the application state,
+/// applying the hot runtime overrides.
+pub fn media_config_for_state(state: &AppState) -> MediaConfig {
+    media_config_with_runtime(&state.config, state.runtime())
+}
+
+/// Builds the media pipeline configuration from the environment values, then
+/// overrides the settings that may change while the server runs.
+pub fn media_config_with_runtime(config: &Config, runtime: &Runtime) -> MediaConfig {
+    let mut media = media_config(config);
+    media.storage.cache_ttl = duration_from_hours(runtime.media_cache_ttl_hours());
+    media.storage.cache_max_total_bytes = megabytes_to_bytes(runtime.media_cache_max_total_mb());
+    media.storage.board_max_total_bytes = megabytes_to_bytes(runtime.media_board_max_total_mb());
+    media.download.max_size_bytes = megabytes_to_bytes(runtime.media_max_size_mb());
+    media.video.max_height = runtime.media_video_max_height();
+    media
+}
 
 /// Construit la configuration du pipeline média depuis celle du serveur.
 pub fn media_config(config: &Config) -> MediaConfig {
@@ -178,6 +198,38 @@ mod tests {
         let media = media_config(&server);
 
         assert!(media.tools.tiktok_cookie.is_none());
+    }
+
+    #[test]
+    fn runtime_overrides_replace_the_environment_values() {
+        use std::sync::Arc;
+
+        use crate::runtime::{Runtime, RuntimeOverrides};
+
+        let server = config(&[
+            ("API_URL", "http://localhost:3000"),
+            ("MEDIA_CACHE_TTL_HOURS", "6"),
+            ("MEDIA_CACHE_MAX_TOTAL_MB", "10"),
+            ("MEDIA_BOARD_MAX_TOTAL_MB", "20"),
+            ("MEDIA_MAX_SIZE_MB", "7"),
+            ("MEDIA_VIDEO_MAX_HEIGHT", "1080"),
+        ]);
+        let runtime = Runtime::new(Arc::new(server.clone()));
+        runtime.apply(RuntimeOverrides {
+            media_cache_ttl_hours: Some(2),
+            media_cache_max_total_mb: Some(3),
+            media_board_max_total_mb: Some(4),
+            media_max_size_mb: Some(5),
+            media_video_max_height: Some(480),
+            ..RuntimeOverrides::default()
+        });
+
+        let media = media_config_with_runtime(&server, &runtime);
+        assert_eq!(media.storage.cache_ttl, Duration::from_secs(2 * 3600));
+        assert_eq!(media.storage.cache_max_total_bytes, 3 * 1024 * 1024);
+        assert_eq!(media.storage.board_max_total_bytes, 4 * 1024 * 1024);
+        assert_eq!(media.download.max_size_bytes, 5 * 1024 * 1024);
+        assert_eq!(media.video.max_height, 480);
     }
 
     #[test]

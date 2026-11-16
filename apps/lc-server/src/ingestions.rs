@@ -16,19 +16,24 @@
 //!
 //! Entries are purged lazily on insert and read; no background timer is needed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, Duration, Utc};
 use lc_domain::GuildId;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use uuid::Uuid;
+
+use crate::http::admin::AdminEvents;
 
 /// Maximum number of `processing` ingestions per overlay client.
 pub const MAX_PROCESSING_PER_CLIENT: usize = 20;
 
 /// How long a finished ingestion stays available to the board.
 pub const FINISHED_RETENTION: Duration = Duration::hours(1);
+
+/// Number of finished ingestions kept in the admin history.
+pub const HISTORY_LIMIT: usize = 200;
 
 /// Lifecycle of an ingestion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +126,29 @@ impl IngestionEntry {
     }
 }
 
+/// One finished ingestion, retained for the admin console.
+///
+/// Unlike [`IngestionEntry`], this history outlives [`FINISHED_RETENTION`] and
+/// is bounded by [`HISTORY_LIMIT`]. It deliberately stores no model payload:
+/// the admin handler resolves the guild name and the source URL from SQLite.
+#[derive(Debug, Clone)]
+pub struct FinishedIngestion {
+    /// Identifier returned by the `202` response.
+    pub ingestion_id: String,
+    /// Guild of the authenticated overlay client.
+    pub guild_id: GuildId,
+    /// Board item holding the media, when the ingestion succeeded.
+    pub item_id: Option<String>,
+    /// Terminal lifecycle state (`Ready` or `Failed`).
+    pub status: IngestionStatus,
+    /// Why the ingestion failed, if it did.
+    pub error: Option<IngestionErrorInfo>,
+    /// Instant the ingestion was accepted.
+    pub started_at: DateTime<Utc>,
+    /// Instant the background task finished.
+    pub finished_at: DateTime<Utc>,
+}
+
 /// Why a new ingestion cannot start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartIngestionError {
@@ -132,6 +160,10 @@ pub enum StartIngestionError {
 #[derive(Debug, Default)]
 pub struct IngestionRegistry {
     entries: Mutex<HashMap<String, IngestionEntry>>,
+    /// Bounded history of finished ingestions, oldest first.
+    history: Mutex<VecDeque<FinishedIngestion>>,
+    /// Optional admin event channel (`ingestion` SSE events).
+    events: Option<AdminEvents>,
 }
 
 impl IngestionRegistry {
@@ -141,9 +173,26 @@ impl IngestionRegistry {
         Self::default()
     }
 
+    /// Creates an empty registry publishing `ingestion` events.
+    #[must_use]
+    pub fn with_events(events: AdminEvents) -> Self {
+        Self {
+            events: Some(events),
+            ..Self::default()
+        }
+    }
+
     /// Locks the registry, tolerating a poisoned mutex.
     fn lock(&self) -> MutexGuard<'_, HashMap<String, IngestionEntry>> {
         match self.entries.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    /// Locks the finished history, tolerating a poisoned mutex.
+    fn lock_history(&self) -> MutexGuard<'_, VecDeque<FinishedIngestion>> {
+        match self.history.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         }
@@ -199,12 +248,29 @@ impl IngestionRegistry {
     ) {
         let mut entries = self.lock();
         purge_finished(&mut entries, now);
-        if let Some(entry) = entries.get_mut(ingestion_id) {
+        let finished = {
+            let Some(entry) = entries.get_mut(ingestion_id) else {
+                return;
+            };
+            let already_finished = entry.finished_at.is_some();
             entry.status = IngestionStatus::Ready;
             entry.created = Some(created);
-            entry.item_id = Some(item_id);
+            entry.item_id = Some(item_id.clone());
             entry.error = None;
             entry.finished_at = Some(now);
+            (!already_finished).then(|| FinishedIngestion {
+                ingestion_id: entry.ingestion_id.clone(),
+                guild_id: entry.guild_id.clone(),
+                item_id: Some(item_id),
+                status: IngestionStatus::Ready,
+                error: None,
+                started_at: entry.created_at,
+                finished_at: now,
+            })
+        };
+        drop(entries);
+        if let Some(finished) = finished {
+            self.push_history(finished);
         }
     }
 
@@ -217,13 +283,76 @@ impl IngestionRegistry {
     ) {
         let mut entries = self.lock();
         purge_finished(&mut entries, now);
-        if let Some(entry) = entries.get_mut(ingestion_id) {
+        let finished = {
+            let Some(entry) = entries.get_mut(ingestion_id) else {
+                return;
+            };
+            let already_finished = entry.finished_at.is_some();
             entry.status = IngestionStatus::Failed;
             entry.created = None;
             entry.item_id = None;
-            entry.error = Some(error);
+            entry.error = Some(error.clone());
             entry.finished_at = Some(now);
+            (!already_finished).then(|| FinishedIngestion {
+                ingestion_id: entry.ingestion_id.clone(),
+                guild_id: entry.guild_id.clone(),
+                item_id: None,
+                status: IngestionStatus::Failed,
+                error: Some(error),
+                started_at: entry.created_at,
+                finished_at: now,
+            })
+        };
+        drop(entries);
+        if let Some(finished) = finished {
+            self.push_history(finished);
         }
+    }
+
+    /// Appends a finished ingestion, keeping at most [`HISTORY_LIMIT`] rows.
+    fn push_history(&self, finished: FinishedIngestion) {
+        if let Some(events) = self.events.as_ref() {
+            events.ingestion(ingestion_event(&finished));
+        }
+        let mut history = self.lock_history();
+        if history.len() >= HISTORY_LIMIT {
+            history.pop_front();
+        }
+        history.push_back(finished);
+    }
+
+    /// Returns the finished ingestion history, oldest first.
+    #[must_use]
+    pub fn finished(&self) -> Vec<FinishedIngestion> {
+        self.lock_history().iter().cloned().collect()
+    }
+
+    /// Returns the ingestions still being processed, newest first.
+    #[must_use]
+    pub fn active(&self, now: DateTime<Utc>) -> Vec<IngestionEntry> {
+        let mut entries = self.lock();
+        purge_finished(&mut entries, now);
+        let mut active: Vec<IngestionEntry> = entries
+            .values()
+            .filter(|entry| entry.status == IngestionStatus::Processing)
+            .cloned()
+            .collect();
+        active.sort_by(|left, right| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then_with(|| right.ingestion_id.cmp(&left.ingestion_id))
+        });
+        active
+    }
+
+    /// Counts failures finished at or after `since`.
+    #[must_use]
+    pub fn failure_count_since(&self, since: DateTime<Utc>) -> usize {
+        self.lock_history()
+            .iter()
+            .filter(|entry| entry.status == IngestionStatus::Failed && entry.finished_at >= since)
+            .count()
     }
 
     /// Returns one ingestion owned by `client_id`, if it is still retained.
@@ -262,6 +391,45 @@ impl IngestionRegistry {
         });
         listed
     }
+}
+
+/// JSON payload of one `ingestion` admin event.
+///
+/// It follows the shape of an item of `GET /admin/api/ingestions`; the guild
+/// name and the source URL require database lookups and are therefore left
+/// empty (`guildName: null`, `source: "unknown"`).
+fn ingestion_event(finished: &FinishedIngestion) -> Value {
+    let status = match finished.status {
+        IngestionStatus::Ready => "done",
+        IngestionStatus::Failed => "failed",
+        IngestionStatus::Processing => "running",
+    };
+    let error = finished
+        .error
+        .as_ref()
+        .map(|error| error.message.clone().unwrap_or_else(|| error.code.clone()));
+    let duration_ms = finished
+        .finished_at
+        .signed_duration_since(finished.started_at)
+        .num_milliseconds()
+        .max(0);
+
+    json!({
+        "id": finished.ingestion_id,
+        "guildId": finished.guild_id.as_str(),
+        "guildName": Value::Null,
+        "source": "unknown",
+        "url": "",
+        "status": status,
+        "error": error,
+        "startedAt": finished
+            .started_at
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        "finishedAt": finished
+            .finished_at
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        "durationMs": duration_ms,
+    })
 }
 
 /// Drops finished entries whose retention window elapsed.
@@ -336,6 +504,66 @@ mod tests {
         assert_eq!(listed[0].ingestion_id, first_id);
         assert!(registry.get(first, &second_id, now()).is_none());
         assert!(registry.get(second, &second_id, now()).is_some());
+    }
+
+    #[test]
+    fn history_keeps_the_last_two_hundred_finished_ingestions() {
+        let registry = IngestionRegistry::new();
+        let client = Uuid::new_v4();
+        let mut ids = Vec::new();
+        for index in 0..(HISTORY_LIMIT + 5) {
+            let started = now() + Duration::seconds(i64::try_from(index).unwrap_or(0));
+            let id = registry.start(guild(), client, started).unwrap();
+            registry.complete_failure(
+                &id,
+                IngestionErrorInfo {
+                    code: "internal_error".to_owned(),
+                    message: None,
+                },
+                started + Duration::seconds(1),
+            );
+            ids.push(id);
+        }
+
+        let history = registry.finished();
+        assert_eq!(history.len(), HISTORY_LIMIT);
+        assert_eq!(
+            history[0].ingestion_id, ids[5],
+            "oldest entries are dropped"
+        );
+        assert_eq!(
+            history[HISTORY_LIMIT - 1].ingestion_id,
+            ids[HISTORY_LIMIT + 4]
+        );
+    }
+
+    #[tokio::test]
+    async fn finished_ingestions_are_published_as_admin_events() {
+        use crate::http::admin::AdminEvent;
+
+        let events = AdminEvents::new();
+        let mut receiver = events.subscribe();
+        let registry = IngestionRegistry::with_events(events);
+        let client = Uuid::new_v4();
+        let id = registry.start(guild(), client, now()).unwrap();
+        registry.complete_failure(
+            &id,
+            IngestionErrorInfo {
+                code: "unsupported_media".to_owned(),
+                message: Some("source non supportée".to_owned()),
+            },
+            now(),
+        );
+
+        match receiver.recv().await.expect("ingestion event") {
+            AdminEvent::Ingestion(entry) => {
+                assert_eq!(entry["id"], id);
+                assert_eq!(entry["guildId"], "123456789012345678");
+                assert_eq!(entry["status"], "failed");
+                assert_eq!(entry["error"], "source non supportée");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[test]

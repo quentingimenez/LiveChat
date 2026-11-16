@@ -594,3 +594,69 @@
   overflow-wrap: anywhere;
 }
 
+
+/* ---------------------------------------------------------------- selection */
+/* Selection mode: a check circle on every card, the play and favorite
+   buttons step aside, and picked cards are outlined. */
+.pick {
+  display: none;
+}
+
+.grid.is-selecting .pick {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 1;
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--text);
+  border-radius: 50%;
+  background: rgba(23, 27, 37, 0.6);
+  display: grid;
+  place-items: center;
+}
+
+.grid.is-selecting .pick svg {
+  width: 14px;
+  height: 14px;
+  opacity: 0;
+}
+
+.grid.is-selecting .card.is-picked .pick {
+  border-color: var(--amber);
+  background: var(--amber);
+  color: var(--amber-ink);
+}
+
+.grid.is-selecting .card.is-picked .pick svg {
+  opacity: 1;
+}
+
+.grid.is-selecting .card.is-picked .thumb {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 1px var(--amber);
+}
+
+.grid.is-selecting .play,
+.grid.is-selecting .fav {
+  display: none;
+}
+
+.selection-bar {
+  position: sticky;
+  bottom: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--slate-700);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.selection-count {
+  font-variant-numeric: tabular-nums;
+}

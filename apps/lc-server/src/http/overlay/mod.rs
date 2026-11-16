@@ -14,6 +14,7 @@
 //! | `POST` | `/overlay/media-board/items` | `Authorization: Bearer` — **écriture refusée en `invite_read_only`** |
 //! | `POST` | `/overlay/media-board/upload?filename=&title=&message=&replaceItemId=` | `Authorization: Bearer` — **writes refused in `invite_read_only`** |
 //! | `POST` | `/overlay/media-board/items/{itemId}/edit` | `Authorization: Bearer` — **writes refused in `invite_read_only`** |
+//! | `POST` | `/overlay/media-board/import` | `Authorization: Bearer` (target) + `X-LiveChat-Source-Token` (source) — **writes refused in `invite_read_only`** |
 //! | `GET` | `/overlay/media-board/ingestions` | `Authorization: Bearer` |
 //! | `GET` | `/overlay/media-board/media/{assetId}` | URL signée (`clientId`, `exp`, `sig`) |
 //! | `PATCH` | `/overlay/media-board/items/{itemId}` | `Authorization: Bearer` — **écriture refusée en `invite_read_only`** |
@@ -83,6 +84,7 @@ mod ingest_code;
 mod media;
 pub(crate) mod media_board;
 pub(crate) mod media_edit;
+mod media_import;
 mod media_ingestion;
 mod media_upload;
 mod pair;
@@ -231,6 +233,8 @@ mod ingestion_tests;
 #[cfg(test)]
 mod media_edit_tests;
 #[cfg(test)]
+mod media_import_tests;
+#[cfg(test)]
 mod media_upload_tests;
 #[cfg(test)]
 mod profile_discord_tests;
@@ -259,6 +263,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/overlay/media-board/upload",
             post(media_upload::upload_item),
+        )
+        .route(
+            "/overlay/media-board/import",
+            post(media_import::import_items),
         )
         .route(
             "/overlay/media-board/ingestions",

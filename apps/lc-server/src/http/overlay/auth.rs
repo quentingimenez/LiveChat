@@ -150,34 +150,49 @@ impl FromRequestParts<AppState> for AuthedOverlayClient {
             let Some(db) = db else {
                 return Err(database_unavailable());
             };
-            let token_hash = hash_token(&token);
-            let client = match db.overlay_clients().get_by_token_hash(&token_hash).await {
-                Ok(Some(client)) => client,
-                Ok(None) => {
-                    debug!("jeton overlay inconnu : authentification refusée");
-                    return Err(unauthorized());
-                }
-                Err(error) => return Err(db_failure("overlay_auth.client_lookup", &error)),
-            };
-            let client_id = client.id;
-
-            // Mise à jour best-effort : ne doit jamais faire échouer la requête.
-            if let Err(error) = db.overlay_clients().touch_last_seen(client_id, now).await {
-                warn!(error = %error, "mise à jour de last_seen_at impossible");
+            match authenticate_token(&db, &token, now).await? {
+                Some(authed) => Ok(authed),
+                None => Err(unauthorized()),
             }
-
-            let member = match db.guild_members().get_for_overlay_client(client_id).await {
-                Ok(member) => member,
-                Err(error) => return Err(db_failure("overlay_auth.member_lookup", &error)),
-            };
-
-            Ok(Self {
-                client,
-                member,
-                authenticated_at: now,
-            })
         }
     }
+}
+
+/// Authenticates an overlay client token (bearer or any other header).
+///
+/// `Ok(None)` when the token is unknown or revoked; `Err` only for a database
+/// failure (`500 internal_error`). Refreshes `last_seen_at` best-effort.
+pub(crate) async fn authenticate_token(
+    db: &lc_db::Db,
+    token: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<AuthedOverlayClient>, Response> {
+    let token_hash = hash_token(token);
+    let client = match db.overlay_clients().get_by_token_hash(&token_hash).await {
+        Ok(Some(client)) => client,
+        Ok(None) => {
+            debug!("jeton overlay inconnu : authentification refusée");
+            return Ok(None);
+        }
+        Err(error) => return Err(db_failure("overlay_auth.client_lookup", &error)),
+    };
+    let client_id = client.id;
+
+    // Mise à jour best-effort : ne doit jamais faire échouer la requête.
+    if let Err(error) = db.overlay_clients().touch_last_seen(client_id, now).await {
+        warn!(error = %error, "mise à jour de last_seen_at impossible");
+    }
+
+    let member = match db.guild_members().get_for_overlay_client(client_id).await {
+        Ok(member) => member,
+        Err(error) => return Err(db_failure("overlay_auth.member_lookup", &error)),
+    };
+
+    Ok(Some(AuthedOverlayClient {
+        client,
+        member,
+        authenticated_at: now,
+    }))
 }
 
 #[cfg(test)]

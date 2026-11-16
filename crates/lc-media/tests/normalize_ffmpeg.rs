@@ -57,6 +57,23 @@ fn sample(config: &MediaConfig, directory: &Path, name: &str, audio: Option<&str
     path
 }
 
+/// The first audio track of `path` is within 1 LU of the loudness target.
+fn assert_at_target(config: &MediaConfig, path: &Path) {
+    let output = std::process::Command::new(&config.tools.ffmpeg)
+        .args(lc_media::transcode::loudness_args(path))
+        .output()
+        .unwrap();
+    let measured =
+        lc_media::transcode::parse_loudness(&String::from_utf8_lossy(&output.stderr)).unwrap();
+    let target = config.video.loudnorm.integrated_lufs;
+    assert!(
+        (measured.integrated_lufs - target).abs() <= 1.0,
+        "{} LUFS, target {target}",
+        measured.integrated_lufs
+    );
+    assert!(measured.true_peak_dbtp <= config.video.loudnorm.true_peak_dbtp + 0.5);
+}
+
 /// `codec_name,…` of the first stream of a kind (`v` or `a`); empty when
 /// there is none.
 fn stream(config: &MediaConfig, path: &Path, kind: &str, entries: &str) -> String {
@@ -160,10 +177,12 @@ async fn mp4_with_an_mp3_track_only_converts_the_audio() {
         packets_md5(&config, &output, "0:V:0"),
         packets_md5(&config, &input, "0:V:0")
     );
+    // A fixed gain keeps the source rate (loudnorm used to need 48 kHz).
     assert_eq!(
         stream(&config, &output, "a", "codec_name,sample_rate"),
-        "aac,48000"
+        "aac,44100"
     );
+    assert_at_target(&config, &output);
 }
 
 /// Normalization off and an AAC track: nothing is encoded at all.
@@ -227,8 +246,9 @@ async fn normalized_mp4_keeps_its_video_and_normalizes_its_audio() {
     );
     assert_eq!(
         stream(&config, &normalized.storage_path, "a", "sample_rate"),
-        "48000"
+        "44100"
     );
+    assert_at_target(&config, &normalized.storage_path);
     assert_eq!(normalized.duration_sec, Some(4));
     assert_eq!(normalized.width, Some(320));
     assert_eq!(normalized.height, Some(240));

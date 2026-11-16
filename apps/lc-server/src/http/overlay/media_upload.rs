@@ -125,7 +125,7 @@ pub async fn upload_item(
                 Ok(item) => item,
                 Err(response) => return response,
             };
-            if let Err(response) = ensure_can_edit(db, &auth, item.id).await {
+            if let Err(response) = ensure_can_edit(&state, &auth, item.id).await {
                 return response;
             }
             BoardTarget::Replace(item.id)

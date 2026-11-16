@@ -17,6 +17,23 @@ ARG RUST_VERSION=1.99.1
 ARG DEBIAN_RELEASE=bookworm
 
 # ============================================================================
+# Stage 0 — admin console: Vite build embedded in the Rust binary
+# ============================================================================
+# The console is a Preact/TypeScript app built by Vite. `rust-embed` embeds
+# `apps/lc-admin-web/dist/` at compile time, so the front must be built before
+# the final `cargo build` of the builder stage.
+FROM node:24-bookworm-slim AS admin-web
+
+WORKDIR /app/apps/lc-admin-web
+
+# Dependency layer: only invalidated when the lockfile changes.
+COPY apps/lc-admin-web/package.json apps/lc-admin-web/package-lock.json ./
+RUN npm ci
+
+COPY apps/lc-admin-web/ ./
+RUN npm run build
+
+# ============================================================================
 # Stage 1 — builder : dépendances (cache) puis binaire release `lc-server`
 # ============================================================================
 FROM rust:${RUST_VERSION}-${DEBIAN_RELEASE} AS builder
@@ -70,6 +87,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 COPY crates ./crates
 COPY apps ./apps
 COPY xtask ./xtask
+# `apps/lc-admin-web/dist` is excluded from the build context (dockerignore):
+# take the Vite output from the dedicated stage. `rust-embed` needs it while
+# compiling `static_files.rs`.
+COPY --from=admin-web /app/apps/lc-admin-web/dist apps/lc-admin-web/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     find crates apps xtask -type f -exec touch {} + \
@@ -148,9 +169,8 @@ RUN groupadd --gid 10001 livechat \
     && chown -R 10001:10001 /app
 
 COPY --from=builder --chown=10001:10001 /app/target/release/lc-server /usr/local/bin/lc-server
-# Panneau d'administration : `lc-server` cherche `static/admin` relatif au
-# répertoire courant (WORKDIR /app), voir apps/lc-server/src/http/admin/static_files.rs.
-COPY --chown=10001:10001 static/admin /app/static/admin
+# The admin console is embedded in the binary by `rust-embed`: no static folder
+# is copied into the runtime image.
 
 # Défauts du conteneur (tous surchargeables par `docker run -e` / orchestration).
 #  - API_URL est OBLIGATOIRE pour `lc-server` (origine CORS + base des URL médias) ;

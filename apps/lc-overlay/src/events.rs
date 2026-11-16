@@ -38,6 +38,8 @@ pub const EVENT_NAVIGATE: &str = "overlay://navigate";
 pub const EVENT_MEDIA_INGESTION: &str = "overlay://media-ingestion";
 /// The guild's media board changed (board window only).
 pub const EVENT_BOARD_CHANGED: &str = "overlay://board-changed";
+/// The overlay's effective guild rights changed (board window only).
+pub const EVENT_RIGHTS_CHANGED: &str = "overlay://rights-changed";
 
 /// Délai maximal de rétention des événements avant que le renderer ne soit prêt.
 pub const READY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -243,6 +245,16 @@ pub fn emit_board_changed(
         EventTarget::labeled(BOARD_LABEL),
         EVENT_BOARD_CHANGED,
         board_changed_payload(payload, guild_id),
+    )
+}
+
+/// Asks the board to reload `GET /overlay/guild` for `guild_id` (session mode
+/// or effective rights changed server-side).
+pub fn emit_rights_changed(app: &AppHandle<Wry>, guild_id: &str) -> tauri::Result<()> {
+    app.emit_to(
+        EventTarget::labeled(BOARD_LABEL),
+        EVENT_RIGHTS_CHANGED,
+        serde_json::json!({ "guildId": guild_id }),
     )
 }
 
@@ -463,6 +475,7 @@ mod tests {
     fn board_event_names_match_the_board_contract() {
         assert_eq!(EVENT_MEDIA_INGESTION, "overlay://media-ingestion");
         assert_eq!(EVENT_BOARD_CHANGED, "overlay://board-changed");
+        assert_eq!(EVENT_RIGHTS_CHANGED, "overlay://rights-changed");
     }
 
     #[test]

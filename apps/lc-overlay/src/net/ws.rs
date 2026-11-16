@@ -18,10 +18,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
 use lc_protocol::{
-    AckPayload, BoardChangedPayload, ClientEnvelope, ClientMessage, HeartbeatPayload, HelloPayload,
-    MediaIngestionPayload, PeersPayload, PlayPayload, PlaybackState, PlaybackStatePayload,
-    ServerEnvelope, ServerErrorPayload, ServerMessage, SessionMode, SettingsPayload, StopPayload,
-    WelcomePayload,
+    AckPayload, BoardChangedPayload, ClientEnvelope, ClientMessage, DeviceSettingsPayload,
+    DeviceSettingsStatePayload, HeartbeatPayload, HelloPayload, MediaIngestionPayload,
+    PeersPayload, Platform, PlayPayload, PlaybackState, PlaybackStatePayload, RightsChangedPayload,
+    ServerEnvelope, ServerErrorPayload, ServerMessage, SessionChangedPayload, SessionMode,
+    SettingsPayload, StopPayload, WelcomePayload,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Wry};
@@ -48,7 +49,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 /// Cadence du keep-alive des `play` en file locale (avant leur affichage).
 const QUEUED_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(3);
 /// Every server message type known by this client.
-const KNOWN_SERVER_MESSAGE_TYPES: [&str; 9] = [
+const KNOWN_SERVER_MESSAGE_TYPES: [&str; 12] = [
     lc_protocol::msg_type::WELCOME,
     lc_protocol::msg_type::SETTINGS,
     lc_protocol::msg_type::PEERS,
@@ -58,6 +59,9 @@ const KNOWN_SERVER_MESSAGE_TYPES: [&str; 9] = [
     lc_protocol::msg_type::ERROR,
     lc_protocol::msg_type::MEDIA_INGESTION,
     lc_protocol::msg_type::BOARD_CHANGED,
+    lc_protocol::msg_type::DEVICE_SETTINGS,
+    lc_protocol::msg_type::SESSION_CHANGED,
+    lc_protocol::msg_type::RIGHTS_CHANGED,
 ];
 
 /// Statut de connexion affiché dans le tray et exposé au bridge.
@@ -155,6 +159,22 @@ pub trait SessionEffects: Send + Sync {
     fn on_media_ingestion(&self, payload: &MediaIngestionPayload);
     /// The guild's media board changed.
     fn on_board_changed(&self, payload: &BoardChangedPayload);
+    /// Applies `device.settings` (admin remote control) through the same path
+    /// as the board settings page, then returns the resulting state to report.
+    fn on_device_settings(
+        &self,
+        _payload: &DeviceSettingsPayload,
+    ) -> Option<DeviceSettingsStatePayload> {
+        None
+    }
+    /// The server changed the session mode; reload the effective rights.
+    fn on_session_changed(&self, _payload: SessionChangedPayload) {}
+    /// The effective rights changed; reload `GET /overlay/guild`.
+    fn on_rights_changed(&self, _payload: RightsChangedPayload) {}
+    /// Current device settings of this session's guild, sent after `welcome`.
+    fn device_settings_state(&self) -> Option<DeviceSettingsStatePayload> {
+        None
+    }
     /// `(job_id, durée ms)` des `play` de cette guilde en file locale.
     fn queued_jobs(&self) -> Vec<(String, u64)>;
 }
@@ -656,6 +676,11 @@ fn outdated_reason(raw_reason: &str) -> String {
     }
 }
 
+/// Maps `std::env::consts::OS` to the protocol platform.
+fn protocol_platform(os: &str) -> Option<Platform> {
+    Platform::from_os(os)
+}
+
 fn build_session_config(membership: &Membership) -> Result<SessionConfig, String> {
     let server_url = membership.server_url.as_str();
     let token = Some(membership.client_token.as_str())
@@ -674,6 +699,7 @@ fn build_session_config(membership: &Membership) -> Result<SessionConfig, String
             token: token.to_string(),
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             client_id: membership.client_id.clone(),
+            platform: protocol_platform(std::env::consts::OS),
             session_mode: Some(session_mode),
         },
         insecure_tls,
@@ -872,6 +898,23 @@ async fn run_session<E: SessionEffects>(
                                                 reason: format!("envoi du heartbeat impossible : {error}"),
                                             };
                                         }
+                                        // The admin console's `guildSettings`
+                                        // mirrors the device state reported for
+                                        // this guild.
+                                        if let Some(state) = effects.device_settings_state() {
+                                            let frame =
+                                                ClientMessage::DeviceSettingsState(state);
+                                            if let Err(error) =
+                                                send_message(&mut sink, frame).await
+                                            {
+                                                return SessionOutcome::Closed {
+                                                    code: None,
+                                                    reason: format!(
+                                                        "envoi de device.settings.state impossible : {error}"
+                                                    ),
+                                                };
+                                            }
+                                        }
                                         if let Some(current) = &payload.current_job {
                                             tracing::info!(
                                                 job_id = %current.play.job_id,
@@ -902,6 +945,33 @@ async fn run_session<E: SessionEffects>(
                                     }
                                     ServerMessage::BoardChanged(payload) => {
                                         effects.on_board_changed(&payload)
+                                    }
+                                    ServerMessage::DeviceSettings(payload) => {
+                                        if let Some(state) = effects.on_device_settings(&payload) {
+                                            let frame =
+                                                ClientMessage::DeviceSettingsState(state);
+                                            if let Err(error) =
+                                                send_message(&mut sink, frame).await
+                                            {
+                                                return SessionOutcome::Closed {
+                                                    code: None,
+                                                    reason: format!(
+                                                        "envoi de device.settings.state impossible : {error}"
+                                                    ),
+                                                };
+                                            }
+                                        }
+                                    }
+                                    ServerMessage::SessionChanged(payload) => {
+                                        effects.on_session_changed(payload);
+                                        if let Some(ClientMessage::Heartbeat(heartbeat)) =
+                                            heartbeat_frame.as_mut()
+                                        {
+                                            heartbeat.session_mode = Some(payload.session_mode);
+                                        }
+                                    }
+                                    ServerMessage::RightsChanged(payload) => {
+                                        effects.on_rights_changed(payload)
                                     }
                                 }
                             }
@@ -1104,6 +1174,85 @@ struct AppEffects {
     guild_id: String,
 }
 
+/// Sends the current device state of `guild_id` to its live session.
+///
+/// Called whenever the user changes that guild's volume, media mute or pause.
+/// A disconnected guild will report its state again after `welcome`.
+pub(crate) fn publish_device_state(app: &AppHandle<Wry>, guild_id: &str) {
+    let state = app.state::<AppState>();
+    let Some(membership) = state.config_snapshot().membership(guild_id).cloned() else {
+        return;
+    };
+    let command = NetCommand::Send(ClientMessage::DeviceSettingsState(
+        DeviceSettingsStatePayload {
+            volume: membership.volume,
+            media_muted: membership.media_muted,
+            paused: membership.muted,
+        },
+    ));
+    if !send_command_to(app, guild_id, command) {
+        tracing::debug!(
+            guild_id,
+            "device.settings.state non envoyé : guilde non connectée"
+        );
+    }
+}
+
+/// Applies an admin `device.settings` through the board settings pipeline
+/// (validation and persistence by [`crate::settings::apply_settings_patch`]),
+/// then returns the saved state for the report.
+fn apply_remote_device_settings(
+    app: &AppHandle<Wry>,
+    guild_id: &str,
+    payload: &DeviceSettingsPayload,
+) -> Result<DeviceSettingsStatePayload, String> {
+    let state = app.state::<AppState>();
+    let mut guild_patch = serde_json::Map::new();
+    if let Some(volume) = payload.volume {
+        guild_patch.insert("volume".to_owned(), serde_json::json!(volume));
+    }
+    if let Some(media_muted) = payload.media_muted {
+        guild_patch.insert("mediaMuted".to_owned(), serde_json::json!(media_muted));
+    }
+    if !guild_patch.is_empty() {
+        let base = state.config_snapshot();
+        let patch = serde_json::json!({ "guilds": { guild_id: guild_patch } });
+        let (displays, _) = windows::collect_displays(app);
+        let candidate = crate::settings::apply_settings_patch(&base, &patch, &displays)
+            .map_err(|error| format!("{}: {}", error.field, error.message))?;
+        state
+            .update_config(|config| *config = candidate)
+            .map_err(|error| format!("sauvegarde des réglages impossible : {error}"))?;
+        crate::shortcuts::reapply_for_session(app);
+        if state.overlay_ready() {
+            if let Err(error) = events::emit_settings(app, &state.view()) {
+                tracing::debug!(%error, "échec d'émission des settings après device.settings");
+            }
+        }
+        if let Err(error) = events::emit_device_settings(app) {
+            tracing::debug!(%error, "échec d'émission de overlay://device-settings");
+        }
+        tray::refresh_tray(app);
+    }
+
+    // `paused` is the guild's `muted` flag: same path as the tray/board pause.
+    if let Some(paused) = payload.paused {
+        if !crate::commands::set_guild_muted(app, guild_id, paused)? {
+            return Err("guilde inconnue".to_string());
+        }
+    }
+
+    let config = state.config_snapshot();
+    let membership = config
+        .membership(guild_id)
+        .ok_or_else(|| "guilde inconnue".to_string())?;
+    Ok(DeviceSettingsStatePayload {
+        volume: membership.volume,
+        media_muted: membership.media_muted,
+        paused: membership.muted,
+    })
+}
+
 impl SessionEffects for AppEffects {
     fn on_welcome(&self, payload: &WelcomePayload) {
         let app = &self.app;
@@ -1243,6 +1392,64 @@ impl SessionEffects for AppEffects {
         }
     }
 
+    fn on_device_settings(
+        &self,
+        payload: &DeviceSettingsPayload,
+    ) -> Option<DeviceSettingsStatePayload> {
+        match apply_remote_device_settings(&self.app, &self.guild_id, payload) {
+            Ok(state) => Some(state),
+            Err(error) => {
+                tracing::warn!(
+                    guild_id = %self.guild_id,
+                    %error,
+                    "application de device.settings impossible"
+                );
+                None
+            }
+        }
+    }
+
+    fn on_session_changed(&self, payload: SessionChangedPayload) {
+        let app = &self.app;
+        let state = app.state::<AppState>();
+        let guild_id = self.guild_id.as_str();
+        let guest_mode = payload.session_mode == SessionMode::InviteReadOnly;
+        if let Err(error) = state.update_config(|config| {
+            config.update_membership(guild_id, |membership| {
+                membership.guest_mode = guest_mode;
+            });
+        }) {
+            tracing::warn!(%error, guild_id, "échec de sauvegarde du mode de session");
+        }
+        state.set_net_settings_summary(guild_id, payload.session_mode);
+        crate::shortcuts::reapply_for_session(app);
+        if state.overlay_ready() {
+            if let Err(error) = events::emit_settings(app, &state.view()) {
+                tracing::debug!(%error, "échec d'émission des settings après session.changed");
+            }
+        }
+        if let Err(error) = events::emit_rights_changed(app, guild_id) {
+            tracing::debug!(%error, "échec d'émission de overlay://rights-changed");
+        }
+        refresh_tray_from_any_thread(app);
+    }
+
+    fn on_rights_changed(&self, _payload: RightsChangedPayload) {
+        if let Err(error) = events::emit_rights_changed(&self.app, &self.guild_id) {
+            tracing::debug!(%error, "échec d'émission de overlay://rights-changed");
+        }
+    }
+
+    fn device_settings_state(&self) -> Option<DeviceSettingsStatePayload> {
+        let config = self.app.state::<AppState>().config_snapshot();
+        let membership = config.membership(&self.guild_id)?;
+        Some(DeviceSettingsStatePayload {
+            volume: membership.volume,
+            media_muted: membership.media_muted,
+            paused: membership.muted,
+        })
+    }
+
     fn queued_jobs(&self) -> Vec<(String, u64)> {
         self.app.state::<AppState>().queued_jobs_for(&self.guild_id)
     }
@@ -1349,6 +1556,10 @@ mod tests {
         acks: StdMutex<u32>,
         media_ingestions: StdMutex<Vec<MediaIngestionPayload>>,
         board_changes: StdMutex<Vec<BoardChangedPayload>>,
+        device_settings: StdMutex<Vec<DeviceSettingsPayload>>,
+        device_state: StdMutex<Option<DeviceSettingsStatePayload>>,
+        session_changes: StdMutex<Vec<SessionMode>>,
+        rights_changes: StdMutex<u32>,
         queued: StdMutex<Vec<(String, u64)>>,
     }
 
@@ -1401,6 +1612,32 @@ mod tests {
             if let Ok(mut received) = self.board_changes.lock() {
                 received.push(payload.clone());
             }
+        }
+
+        fn on_device_settings(
+            &self,
+            payload: &DeviceSettingsPayload,
+        ) -> Option<DeviceSettingsStatePayload> {
+            if let Ok(mut received) = self.device_settings.lock() {
+                received.push(*payload);
+            }
+            self.device_state.lock().ok().and_then(|state| *state)
+        }
+
+        fn on_session_changed(&self, payload: SessionChangedPayload) {
+            if let Ok(mut received) = self.session_changes.lock() {
+                received.push(payload.session_mode);
+            }
+        }
+
+        fn on_rights_changed(&self, _payload: RightsChangedPayload) {
+            if let Ok(mut counter) = self.rights_changes.lock() {
+                *counter += 1;
+            }
+        }
+
+        fn device_settings_state(&self) -> Option<DeviceSettingsStatePayload> {
+            self.device_state.lock().ok().and_then(|state| *state)
         }
 
         fn queued_jobs(&self) -> Vec<(String, u64)> {
@@ -1487,6 +1724,7 @@ mod tests {
                 token: "token-test".to_string(),
                 app_version: "3.0.0".to_string(),
                 client_id: Some("client-1".to_string()),
+                platform: Some(Platform::Windows),
                 session_mode: Some(SessionMode::Normal),
             },
             insecure_tls: false,
@@ -1573,6 +1811,7 @@ mod tests {
                 token: "token-test".to_string(),
                 app_version: "3.0.0".to_string(),
                 client_id: Some("client-1".to_string()),
+                platform: Some(Platform::Windows),
                 session_mode: Some(SessionMode::Normal),
             },
             insecure_tls: false,
@@ -1663,6 +1902,127 @@ mod tests {
         );
         drop(sender);
         server.await.expect("serveur mock");
+    }
+
+    #[tokio::test]
+    async fn device_settings_are_applied_and_reported_and_changes_are_dispatched() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("adresse locale");
+        let server = tokio::spawn(async move {
+            let (stream, _peer) = listener.accept().await.expect("accept");
+            let mut socket = accept_async(stream).await.expect("handshake serveur");
+            let hello = next_client_message(&mut socket).await;
+            assert!(matches!(hello, Some(ClientMessage::Hello(_))));
+            send_server_message(
+                &mut socket,
+                "srv-welcome",
+                ServerMessage::Welcome(welcome_payload()),
+            )
+            .await;
+            // The state is reported right after the welcome (after heartbeat).
+            let reported = loop {
+                match next_client_message(&mut socket).await {
+                    Some(ClientMessage::DeviceSettingsState(state)) => break state,
+                    Some(_) => continue,
+                    None => panic!("flux fermé avant l'état initial"),
+                }
+            };
+            assert_eq!(reported.volume, 0.25);
+            assert!(reported.media_muted);
+            assert!(!reported.paused);
+
+            send_server_message(
+                &mut socket,
+                "srv-device-settings",
+                ServerMessage::DeviceSettings(DeviceSettingsPayload {
+                    volume: Some(0.75),
+                    media_muted: Some(false),
+                    paused: Some(true),
+                }),
+            )
+            .await;
+            let after_apply = loop {
+                match next_client_message(&mut socket).await {
+                    Some(ClientMessage::DeviceSettingsState(state)) => break state,
+                    Some(_) => continue,
+                    None => panic!("flux fermé avant l'état appliqué"),
+                }
+            };
+            assert_eq!(after_apply.volume, 0.25, "le mock garde son état");
+
+            send_server_message(
+                &mut socket,
+                "srv-session-changed",
+                ServerMessage::SessionChanged(SessionChangedPayload {
+                    session_mode: SessionMode::InviteReadOnly,
+                }),
+            )
+            .await;
+            send_server_message(
+                &mut socket,
+                "srv-rights-changed",
+                ServerMessage::RightsChanged(RightsChangedPayload {}),
+            )
+            .await;
+            socket
+                .send(Message::Close(Some(CloseFrame {
+                    code: CloseCode::Normal,
+                    reason: "bye".into(),
+                })))
+                .await
+                .expect("close serveur");
+            let _closed = socket.close(None).await;
+        });
+
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<NetCommand>();
+        let session = session_config(address);
+        let effects = RecordingEffects::default();
+        *effects.device_state.lock().expect("state") = Some(DeviceSettingsStatePayload {
+            volume: 0.25,
+            media_muted: true,
+            paused: false,
+        });
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_session(&effects, &session, &mut receiver),
+        )
+        .await
+        .expect("session non bloquée");
+        match outcome {
+            SessionOutcome::Closed { code, .. } => assert_eq!(code, Some(1000)),
+            other => panic!("fin de session inattendue : {other:?}"),
+        }
+        assert_eq!(
+            effects
+                .device_settings
+                .lock()
+                .expect("device settings")
+                .as_slice(),
+            &[DeviceSettingsPayload {
+                volume: Some(0.75),
+                media_muted: Some(false),
+                paused: Some(true),
+            }]
+        );
+        assert_eq!(
+            effects
+                .session_changes
+                .lock()
+                .expect("session changes")
+                .as_slice(),
+            [SessionMode::InviteReadOnly]
+        );
+        assert_eq!(*effects.rights_changes.lock().expect("rights"), 1);
+        drop(sender);
+        server.await.expect("serveur mock");
+    }
+
+    #[test]
+    fn platform_maps_the_compilation_os() {
+        assert_eq!(protocol_platform("windows"), Some(Platform::Windows));
+        assert_eq!(protocol_platform("macos"), Some(Platform::Macos));
+        assert_eq!(protocol_platform("linux"), Some(Platform::Linux));
+        assert_eq!(protocol_platform("freebsd"), None);
     }
 
     #[tokio::test]
@@ -1813,6 +2173,7 @@ mod tests {
                 token: "token-test".to_string(),
                 app_version: "3.0.0".to_string(),
                 client_id: Some("client-1".to_string()),
+                platform: Some(Platform::Windows),
                 session_mode: Some(SessionMode::Normal),
             },
             insecure_tls: false,
@@ -1903,6 +2264,7 @@ mod tests {
                 token: "token-test".to_string(),
                 app_version: "3.0.0".to_string(),
                 client_id: Some("client-1".to_string()),
+                platform: Some(Platform::Windows),
                 session_mode: Some(SessionMode::Normal),
             },
             insecure_tls: false,
@@ -1976,6 +2338,7 @@ mod tests {
                 token: "token-test".to_string(),
                 app_version: "3.0.0".to_string(),
                 client_id: Some("client-1".to_string()),
+                platform: Some(Platform::Windows),
                 session_mode: Some(SessionMode::Normal),
             },
             insecure_tls: false,

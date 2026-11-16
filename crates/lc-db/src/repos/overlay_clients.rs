@@ -263,4 +263,48 @@ impl OverlayClientsRepository {
         .await?;
         Ok(result.rows_affected() > 0)
     }
+
+    /// Change le libellé d'un overlay actif.
+    pub async fn update_label(&self, id: OverlayClientId, label: &str) -> DbResult<bool> {
+        let result =
+            sqlx::query("UPDATE overlay_clients SET label = ? WHERE id = ? AND revoked_at IS NULL")
+                .bind(label)
+                .bind(id.to_canonical())
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Records the `appVersion` and `platform` announced by a successful
+    /// `hello`. `None` clears the column (an old client announces no platform).
+    pub async fn update_client_info(
+        &self,
+        id: OverlayClientId,
+        overlay_version: Option<&str>,
+        platform: Option<&str>,
+    ) -> DbResult<bool> {
+        let result = sqlx::query(
+            "UPDATE overlay_clients SET overlay_version = ?, platform = ? WHERE id = ?",
+        )
+        .bind(overlay_version)
+        .bind(platform)
+        .bind(id.to_canonical())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Returns the stored `(overlay_version, platform)` of an overlay.
+    pub async fn client_info(
+        &self,
+        id: OverlayClientId,
+    ) -> DbResult<Option<(Option<String>, Option<String>)>> {
+        let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "SELECT overlay_version, platform FROM overlay_clients WHERE id = ?",
+        )
+        .bind(id.to_canonical())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
 }

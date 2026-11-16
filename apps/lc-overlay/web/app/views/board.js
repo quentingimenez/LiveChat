@@ -770,12 +770,20 @@ function placeDrawer(node) {
   node.style.bottom = `${Math.round(Math.max(12, window.innerHeight - box.bottom + 12))}px`;
 }
 
-window.addEventListener('resize', () => {
+// The view shrinks when the on-air bar shows up (a playback started after the
+// drawer opened): follow its box, not only the window's.
+function replaceDrawer() {
   const node = document.querySelector('.view .detail');
   if (node) {
     placeDrawer(node);
   }
-});
+}
+
+window.addEventListener('resize', replaceDrawer);
+const viewNode = document.getElementById('view');
+if (viewNode && typeof ResizeObserver === 'function') {
+  new ResizeObserver(replaceDrawer).observe(viewNode);
+}
 
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && state.selectedId && !state.capturing && !document.getElementById('dialog-root').firstElementChild) {

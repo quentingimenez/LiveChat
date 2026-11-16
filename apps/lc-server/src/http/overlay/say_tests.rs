@@ -225,6 +225,7 @@ async fn a_failed_synthesis_answers_502_and_queues_nothing() {
 /// Success: the job is the one `/dire` creates (speech asset, caption shown,
 /// author, priority 0, duration of the audio).
 #[tokio::test]
+#[ignore = "nécessite ffmpeg/ffprobe installés"]
 async fn saying_a_text_queues_the_speech_job_of_dire() {
     let fixture = fixture(Some(fake_piper()), true).await;
 
@@ -274,6 +275,7 @@ async fn saying_a_text_queues_the_speech_job_of_dire() {
 /// `anonymous` is `/cdire`: same job without the author, and no caption
 /// means no text shown.
 #[tokio::test]
+#[ignore = "nécessite ffmpeg/ffprobe installés"]
 async fn an_anonymous_text_hides_the_author_like_cdire() {
     let fixture = fixture(Some(fake_piper()), true).await;
 

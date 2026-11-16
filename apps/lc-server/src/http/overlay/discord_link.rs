@@ -18,7 +18,7 @@ use axum::response::Response;
 use chrono::Duration;
 use lc_domain::entities::DiscordLinkCode;
 use lc_domain::{PairingCode, Permission};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::app::AppState;
 
@@ -32,17 +32,59 @@ const LINK_CODE_ATTEMPTS: usize = 5;
 /// Erreur applicative : la guilde n'est pas indépendante.
 const GUILD_NOT_STANDALONE: &str = "guild_not_standalone";
 
-/// Vérifie que la guilde de l'overlay est indépendante.
+/// Vérifie que la guilde est indépendante.
 async fn ensure_standalone<'a>(
     state: &'a AppState,
-    auth: &AuthedOverlayClient,
+    guild_id: &lc_domain::GuildId,
 ) -> Result<&'a lc_db::Db, Response> {
     let db = db(state)?;
-    match db.guilds().access(auth.guild_id()).await {
+    match db.guilds().access(guild_id).await {
         Ok(Some(access)) if access.standalone => Ok(db),
         Ok(_) => Err(error(StatusCode::CONFLICT, GUILD_NOT_STANDALONE)),
         Err(db_error) => Err(db_failure("overlay_discord_link.access", &db_error)),
     }
+}
+
+/// Issues a Discord link code for a standalone guild.
+///
+/// Shared by `POST /overlay/admin/discord-link-code` and the admin console;
+/// `created_by_member_id` is the requesting overlay member, or `None` for a
+/// server operator.
+pub(crate) async fn create_link_code_payload(
+    state: &AppState,
+    guild_id: &lc_domain::GuildId,
+    created_by_member_id: Option<lc_domain::GuildMemberId>,
+) -> Result<Value, Response> {
+    let db = ensure_standalone(state, guild_id).await?;
+    let created_at = now(state);
+    let expires_at = created_at + Duration::minutes(LINK_CODE_TTL_MINUTES);
+    for _ in 0..LINK_CODE_ATTEMPTS {
+        let Ok(code) = PairingCode::parse(&super::guild::random_invite_code()) else {
+            continue;
+        };
+        let link = DiscordLinkCode {
+            code: code.clone(),
+            guild_id: guild_id.clone(),
+            created_by_member_id,
+            expires_at,
+            used_at: None,
+            created_at,
+        };
+        match db.discord_link_codes().replace_for_guild(&link).await {
+            Ok(()) => {
+                return Ok(json!({
+                    "code": code.as_str(),
+                    "expiresAt": super::guild::iso(Some(expires_at)),
+                    "commands": ["/lier", "/link"],
+                }));
+            }
+            Err(db_error) if is_conflict(&db_error) => {}
+            Err(db_error) => {
+                return Err(db_failure("overlay_discord_link.create_code", &db_error));
+            }
+        }
+    }
+    Err(internal_error())
 }
 
 /// Handler `POST /overlay/admin/discord-link-code`.
@@ -53,43 +95,13 @@ pub async fn create_link_code(
     State(state): State<AppState>,
     auth: AuthedOverlayClient,
 ) -> Response {
-    if let Err(response) = super::guild::require(&auth, Permission::ManageSettings) {
+    if let Err(response) = super::guild::require(&state, &auth, Permission::ManageSettings) {
         return response;
     }
-    let db = match ensure_standalone(&state, &auth).await {
-        Ok(db) => db,
-        Err(response) => return response,
-    };
-    let created_at = now(&state);
-    let expires_at = created_at + Duration::minutes(LINK_CODE_TTL_MINUTES);
-    for _ in 0..LINK_CODE_ATTEMPTS {
-        let Ok(code) = PairingCode::parse(&super::guild::random_invite_code()) else {
-            continue;
-        };
-        let link = DiscordLinkCode {
-            code: code.clone(),
-            guild_id: auth.guild_id().clone(),
-            created_by_member_id: auth.member_id(),
-            expires_at,
-            used_at: None,
-            created_at,
-        };
-        match db.discord_link_codes().replace_for_guild(&link).await {
-            Ok(()) => {
-                return json_response(
-                    StatusCode::OK,
-                    json!({
-                        "code": code.as_str(),
-                        "expiresAt": super::guild::iso(Some(expires_at)),
-                        "commands": ["/lier", "/link"],
-                    }),
-                );
-            }
-            Err(db_error) if is_conflict(&db_error) => {}
-            Err(db_error) => return db_failure("overlay_discord_link.create_code", &db_error),
-        }
+    match create_link_code_payload(&state, auth.guild_id(), auth.member_id()).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
     }
-    internal_error()
 }
 
 /// Handler `DELETE /overlay/admin/discord-link`.
@@ -98,10 +110,10 @@ pub async fn create_link_code(
 /// observable côté serveur Discord, sinon que ses commandes visent à nouveau
 /// son snowflake natif.
 pub async fn unlink(State(state): State<AppState>, auth: AuthedOverlayClient) -> Response {
-    if let Err(response) = super::guild::require(&auth, Permission::ManageSettings) {
+    if let Err(response) = super::guild::require(&state, &auth, Permission::ManageSettings) {
         return response;
     }
-    let db = match ensure_standalone(&state, &auth).await {
+    let db = match ensure_standalone(&state, auth.guild_id()).await {
         Ok(db) => db,
         Err(response) => return response,
     };

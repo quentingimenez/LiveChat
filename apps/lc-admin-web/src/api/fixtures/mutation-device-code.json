@@ -1,0 +1,15 @@
+{
+  "created": true,
+  "invite": {
+    "code": "XU723NHZ",
+    "createdAt": "2026-11-16T05:56:30.171Z",
+    "createdByMemberId": null,
+    "expiresAt": "2026-11-16T06:06:30.171Z",
+    "isActive": true,
+    "maxUses": 1,
+    "memberId": "de42fdd7-23da-4c6e-978d-520fe5eeec2d",
+    "revokedAt": null,
+    "role": "guest",
+    "useCount": 0
+  }
+}

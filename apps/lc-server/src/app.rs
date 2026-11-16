@@ -62,9 +62,14 @@ use crate::discord::guild_leave::{DisabledLeaver, DiscordGuildLeaver};
 use crate::discord::profiles::{DisabledProfiles, DiscordProfileSource};
 use crate::http;
 use crate::http::admin::hub::{AdminHub, NoopAdminHub};
+use crate::http::admin::{
+    AdminEvents, AdminOAuth, BinaryProbe, DisabledOAuth, DiscordOAuth, SystemBinaryProbe,
+};
 use crate::http::health::{DiscordProbe, HealthProbe};
 use crate::http::rate_limit::RateLimitState;
 use crate::ingestions::IngestionRegistry;
+use crate::rights::RightsStore;
+use crate::runtime::Runtime;
 use crate::shutdown::Shutdown;
 
 /// Limite de taille du corps des requêtes (1 Mio, défaut Fastify du legacy).
@@ -152,8 +157,22 @@ pub struct AppState {
     /// Reads the Discord profile of linked members. `DisabledProfiles` when
     /// Discord is not configured.
     pub discord_profiles: Arc<dyn DiscordProfileSource>,
+    /// Discord OAuth2 client used by the admin login (`DisabledOAuth` when the
+    /// Discord login is not configured; injectable in tests).
+    pub admin_oauth: Arc<dyn AdminOAuth>,
     /// Registre partagé des ingestions média asynchrones.
     pub ingestions: Arc<IngestionRegistry>,
+    /// Configurable rights cache (`role_rights`), reloaded after `PUT
+    /// /admin/api/rights`.
+    pub rights: RightsStore,
+    /// Version probe used by the admin health route. Tests inject a fake so no
+    /// real binary is ever spawned.
+    pub(crate) binary_probe: Arc<dyn BinaryProbe>,
+    /// Hot settings loaded from `admin_runtime.json` and updated by the admin
+    /// `PATCH /admin/api/runtime-settings`.
+    runtime: Arc<Runtime>,
+    /// Broadcast channel of the live admin event stream.
+    pub events: AdminEvents,
 }
 
 impl AppState {
@@ -162,7 +181,21 @@ impl AppState {
     pub fn new(config: Arc<Config>, db: Option<Db>, shutdown: Shutdown) -> Self {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let discord: Arc<dyn HealthProbe> = Arc::new(DiscordProbe::from_config(&config));
+        let admin_oauth: Arc<dyn AdminOAuth> = if config.admin_discord_login_enabled() {
+            Arc::new(DiscordOAuth::new(
+                config
+                    .discord_client_id
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim(),
+                config.discord_client_secret.clone().unwrap_or_default(),
+            ))
+        } else {
+            Arc::new(DisabledOAuth)
+        };
         let started_at = clock.now();
+        let runtime = Arc::new(Runtime::new(Arc::clone(&config)));
+        let events = AdminEvents::new();
         Self {
             config,
             db,
@@ -173,8 +206,19 @@ impl AppState {
             admin_hub: Arc::new(NoopAdminHub),
             discord_leaver: Arc::new(DisabledLeaver),
             discord_profiles: Arc::new(DisabledProfiles),
-            ingestions: Arc::new(IngestionRegistry::new()),
+            admin_oauth,
+            ingestions: Arc::new(IngestionRegistry::with_events(events.clone())),
+            rights: RightsStore::new(),
+            binary_probe: Arc::new(SystemBinaryProbe::new()),
+            runtime,
+            events,
         }
+    }
+
+    /// Hot settings shared by the handlers (`state.runtime().default_duration()`).
+    #[must_use]
+    pub fn runtime(&self) -> &Runtime {
+        &self.runtime
     }
 
     /// Remplace l'horloge (tests déterministes ; recale `started_at`).
@@ -208,6 +252,28 @@ impl AppState {
     #[must_use]
     pub fn with_discord_profiles(mut self, profiles: Arc<dyn DiscordProfileSource>) -> Self {
         self.discord_profiles = profiles;
+        self
+    }
+
+    /// Replaces the Discord OAuth2 client used by the admin login (tests).
+    #[must_use]
+    pub fn with_admin_oauth(mut self, oauth: Arc<dyn AdminOAuth>) -> Self {
+        self.admin_oauth = oauth;
+        self
+    }
+
+    /// Replaces the configurable rights cache (tests or a preloaded store).
+    #[must_use]
+    pub fn with_rights_store(mut self, rights: RightsStore) -> Self {
+        self.rights = rights;
+        self
+    }
+
+    /// Replaces the binary version probe used by the admin health route (tests).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_binary_probe(mut self, probe: Arc<dyn BinaryProbe>) -> Self {
+        self.binary_probe = probe;
         self
     }
 }
@@ -255,7 +321,10 @@ fn compression_predicate(
         .map(|value| value.to_ascii_lowercase());
     match content_type {
         Some(value) => {
-            !(value.starts_with("video/")
+            // `text/event-stream` must never be compressed: gzip buffers the
+            // fragments and breaks the live admin stream.
+            !(value.starts_with("text/event-stream")
+                || value.starts_with("video/")
                 || value.starts_with("audio/")
                 || value.starts_with("application/octet-stream")
                 || value.starts_with("multipart/"))
@@ -284,6 +353,10 @@ pub fn router_with_hub(state: AppState, hub: Arc<crate::ws::Hub>) -> Router {
     let config = Arc::clone(&state.config);
     let rate_limit = RateLimitState::from_config(&config);
     let cors = http::cors::layer(&config);
+    // The WebSocket hub signals overlay connections and board/queue changes to
+    // the admin SSE stream, and reads the hot default duration.
+    hub.install_admin_events(state.events.clone());
+    hub.install_runtime(Arc::clone(&state.runtime));
     let trace = TraceLayer::new_for_http()
         .make_span_with(make_span)
         .on_request(DefaultOnRequest::new().level(Level::INFO))
@@ -318,6 +391,10 @@ pub fn router_with_hub(state: AppState, hub: Arc<crate::ws::Hub>) -> Router {
         .layer(trace)
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+        // The admin audit middleware reads the shared state from the request
+        // extensions (it cannot take `State` because the admin router is built
+        // before the application state is applied).
+        .layer(axum::Extension(state.clone()))
         .with_state(state)
 }
 
@@ -584,25 +661,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limit_applique_les_routes_admin() {
+    async fn rate_limit_applies_the_strict_budget_to_admin_logins_only() {
         let app = router(state());
         let client = [203, 0, 113, 10];
-        // `/admin*` n'est plus exempté (AUD-COR-10) : il a le budget strict des
-        // routes à secret devinable.
+        // The secret login checks a guessable secret: strict budget.
         for index in 0..AUTH_RATE_LIMIT_MAX {
             let (status, _, _) = send(
                 &app,
-                from_client(request(Method::GET, "/admin/api/overview"), client),
+                from_client(request(Method::POST, "/admin/auth/secret"), client),
             )
             .await;
             assert_ne!(
                 status,
                 StatusCode::TOO_MANY_REQUESTS,
-                "requête {index} acceptée"
+                "request {index} accepted"
             );
         }
-        let (status, headers, body) =
-            send(&app, from_client(request(Method::GET, "/admin"), client)).await;
+        let (status, headers, body) = send(
+            &app,
+            from_client(request(Method::POST, "/admin/auth/secret"), client),
+        )
+        .await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(body, serde_json::json!({ "error": "request_error" }));
         assert_eq!(
@@ -612,7 +691,11 @@ mod tests {
         assert_eq!(headers.get("x-ratelimit-remaining").unwrap(), "0");
         assert!(headers.get(header::RETRY_AFTER).is_some());
 
-        // Pairing codes share that budget.
+        // The Discord login and the pairing codes share that budget.
+        for path in ["/admin/auth/discord", "/admin/auth/discord/callback"] {
+            let (status, _, _) = send(&app, from_client(request(Method::GET, path), client)).await;
+            assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{path}");
+        }
         let (status, _, _) = send(
             &app,
             from_client(request(Method::POST, "/overlay/pair/consume"), client),
@@ -620,14 +703,44 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
 
-        // The overlay API and the WebSocket keep their own budget.
-        let (status, headers, _) =
-            send(&app, from_client(request(Method::GET, "/health"), client)).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(
-            *headers.get("x-ratelimit-limit").unwrap(),
-            RATE_LIMIT_MAX.to_string()
-        );
+        // The console behind the login (page, API, session probe) and the
+        // overlay API keep the general budget.
+        for path in [
+            "/admin/",
+            "/admin/api/overview",
+            "/admin/auth/session",
+            "/health",
+        ] {
+            let (status, headers, _) =
+                send(&app, from_client(request(Method::GET, path), client)).await;
+            assert_ne!(status, StatusCode::TOO_MANY_REQUESTS, "{path}");
+            assert_eq!(
+                *headers.get("x-ratelimit-limit").unwrap(),
+                RATE_LIMIT_MAX.to_string(),
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rate_limit_lets_a_console_visit_load_more_than_the_auth_budget() {
+        let app = router(state());
+        let client = [203, 0, 113, 11];
+        // One visit loads the page, its assets and many API calls; twice the
+        // strict budget must still go through.
+        for index in 0..AUTH_RATE_LIMIT_MAX * 2 {
+            let path = if index % 2 == 0 {
+                "/admin/api/overview"
+            } else {
+                "/admin/assets/index.css"
+            };
+            let (status, _, _) = send(&app, from_client(request(Method::GET, path), client)).await;
+            assert_ne!(
+                status,
+                StatusCode::TOO_MANY_REQUESTS,
+                "request {index} {path}"
+            );
+        }
     }
 
     #[tokio::test]

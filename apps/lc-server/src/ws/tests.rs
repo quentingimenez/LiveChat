@@ -161,7 +161,7 @@ async fn send_hello(socket: &mut WsClient, token: &str, app_version: &str) {
         &envelope(
             "hello",
             "cli-hello-0001",
-            json!({ "token": token, "appVersion": app_version }),
+            json!({ "token": token, "appVersion": app_version, "platform": "windows" }),
         ),
     )
     .await;
@@ -770,6 +770,103 @@ async fn dispatched_play_carries_a_verifiable_signature() {
         signature,
     ));
     assert_eq!(signature, expected_signature);
+}
+
+#[tokio::test]
+async fn hello_stores_version_and_platform_and_device_state_is_kept() {
+    let server = start_server().await;
+    let guild_id = seed_guild(&server.db).await;
+    let client_id =
+        seed_overlay_client(&server.db, &guild_id, TOKEN, OverlaySessionMode::Normal).await;
+
+    let mut socket = connect(server.addr).await;
+    let _welcome = handshake(&mut socket, TOKEN).await;
+
+    let info = server
+        .db
+        .overlay_clients()
+        .client_info(client_id)
+        .await
+        .expect("lecture des informations client")
+        .expect("client présent");
+    assert_eq!(
+        info,
+        (Some(APP_VERSION.to_owned()), Some("windows".to_owned())),
+        "le hello doit stocker appVersion et platform"
+    );
+
+    send_value(
+        &mut socket,
+        &envelope(
+            "device.settings.state",
+            "cli-device-settings-0001",
+            json!({ "volume": 0.5, "mediaMuted": true, "paused": false }),
+        ),
+    )
+    .await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let state = loop {
+        if let Some(state) = server.hub.device_settings(&client_id.as_uuid()) {
+            break state;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "device.settings.state non mémorisé par le hub"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert!((state.volume - 0.5).abs() < f64::EPSILON);
+    assert!(state.media_muted);
+    assert!(!state.paused);
+
+    socket
+        .send(Message::Close(Some(
+            tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                reason: "bye".into(),
+            },
+        )))
+        .await
+        .expect("fermeture cliente");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while server.hub.is_connected(&client_id.as_uuid()) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "socket toujours enregistrée après la fermeture"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        server.hub.device_settings(&client_id.as_uuid()).is_none(),
+        "l'état doit être oublié à la déconnexion"
+    );
+}
+
+#[tokio::test]
+async fn invalid_device_settings_state_is_ignored() {
+    let server = start_server().await;
+    let guild_id = seed_guild(&server.db).await;
+    let client_id =
+        seed_overlay_client(&server.db, &guild_id, TOKEN, OverlaySessionMode::Normal).await;
+    let mut socket = connect(server.addr).await;
+    let _welcome = handshake(&mut socket, TOKEN).await;
+
+    send_value(
+        &mut socket,
+        &envelope(
+            "device.settings.state",
+            "cli-device-settings-invalid",
+            json!({ "volume": 2.0, "mediaMuted": false, "paused": false }),
+        ),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(
+        server.hub.device_settings(&client_id.as_uuid()).is_none(),
+        "un volume hors de 0..1 est ignoré"
+    );
 }
 
 #[tokio::test]

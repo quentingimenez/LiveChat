@@ -25,14 +25,14 @@ use serenity::all::{Client, GatewayIntents, ShardManager};
 use tokio::task::JoinHandle;
 
 use lc_db::Db;
-use lc_discord::{BotConfig, DbBotContext};
+use lc_discord::{BotConfigSource, DbBotContext};
 use lc_domain::Clock;
 
 use crate::http::health::{HealthProbe, HealthState};
 use crate::shutdown::{Shutdown, DRAIN_TIMEOUT};
 use crate::{AppState, Config};
 
-use super::adapters::{bot_config_from, DiscordAdapters};
+use super::adapters::{DiscordAdapters, ServerBotConfigSource};
 use super::event_handler::DiscordEventHandler;
 use super::DiscordError;
 
@@ -236,11 +236,12 @@ impl DiscordRuntime {
         let db: Db = state.db.clone().ok_or(DiscordError::DatabaseUnavailable)?;
 
         let status = Arc::new(DiscordStatus::default());
-        let bot_config: BotConfig = bot_config_from(&config);
+        let config_source: Arc<dyn BotConfigSource> =
+            Arc::new(ServerBotConfigSource::new(state.clone()));
         let adapters = DiscordAdapters::for_state(&state, db.clone());
-        let context = build_context(&db, &state, &bot_config, &adapters);
+        let context = build_context(&db, &state, Arc::clone(&config_source), &adapters);
 
-        let handler = DiscordEventHandler::new(db, context, bot_config, Arc::clone(&status));
+        let handler = DiscordEventHandler::new(db, context, config_source, Arc::clone(&status));
 
         let mut client = Client::builder(token, GatewayIntents::GUILDS)
             .event_handler(handler)
@@ -287,17 +288,19 @@ impl DiscordRuntime {
 fn build_context(
     db: &Db,
     state: &AppState,
-    bot_config: &BotConfig,
+    source: Arc<dyn BotConfigSource>,
     adapters: &DiscordAdapters,
 ) -> Arc<DbBotContext<SharedClock>> {
+    let rights: Arc<dyn lc_discord::rights::RightsSource> = Arc::new(state.rights.clone());
     Arc::new(DbBotContext::with_clock(
         db.clone(),
         SharedClock::new(Arc::clone(&state.clock)),
-        bot_config.clone(),
+        source,
         adapters.media(),
         adapters.playback(),
         adapters.media_board(),
         adapters.overlays(),
+        rights,
     ))
 }
 

@@ -1,0 +1,190 @@
+{
+  "boardQuotaBytes": null,
+  "busyUntil": null,
+  "discord": {
+    "botPresent": null,
+    "kind": "native",
+    "serverId": "112233445566778899"
+  },
+  "editableName": "Les Copains du Jeudi",
+  "guestsCanViewBoard": true,
+  "id": "112233445566778899",
+  "ingest": {
+    "clients": [
+      {
+        "createdAt": "2026-11-13T05:56:30.136Z",
+        "id": "8ea2add8-2b47-4d4e-878a-153e17917bec",
+        "label": "Extension Firefox",
+        "lastSeenAt": "2026-11-16T03:56:30.136Z"
+      }
+    ],
+    "total": 1
+  },
+  "invites": {
+    "count": 1,
+    "items": [
+      {
+        "code": "ABCDEFGH",
+        "createdAt": "2026-11-16T05:56:30.133Z",
+        "createdByMemberId": null,
+        "expiresAt": null,
+        "isActive": true,
+        "maxUses": 1,
+        "memberId": null,
+        "revokedAt": null,
+        "role": "member",
+        "useCount": 0
+      }
+    ]
+  },
+  "mediaBoard": {
+    "itemsCount": 3,
+    "maxBytes": 16106127360,
+    "remainingBytes": 16100127357,
+    "usedBytes": 6000003,
+    "usedPercent": 0.04
+  },
+  "members": {
+    "count": 3,
+    "items": [
+      {
+        "avatar": null,
+        "connected": false,
+        "createdAt": "2026-11-16T05:56:30.132Z",
+        "deviceCount": 1,
+        "discordLinked": false,
+        "displayName": "Théo",
+        "id": "1070def1-384f-44fb-8871-456b9c7c6577",
+        "isSelf": false,
+        "lastSeenAt": "2026-11-16T05:51:30.133Z",
+        "profileSource": "custom",
+        "role": "guest"
+      },
+      {
+        "avatar": null,
+        "connected": false,
+        "createdAt": "2026-11-16T05:56:30.132Z",
+        "deviceCount": 1,
+        "discordLinked": false,
+        "displayName": "Maëlle",
+        "id": "3c0db260-7878-4b55-b67f-6ef4ebe79b67",
+        "isSelf": false,
+        "lastSeenAt": "2026-11-16T05:51:30.132Z",
+        "profileSource": "custom",
+        "role": "member"
+      },
+      {
+        "avatar": null,
+        "connected": false,
+        "createdAt": "2026-11-16T05:56:30.132Z",
+        "deviceCount": 1,
+        "discordLinked": false,
+        "displayName": "Quentin",
+        "id": "ecc789c8-45bb-4f92-a306-eb56d24d25d3",
+        "isSelf": false,
+        "lastSeenAt": "2026-11-16T05:51:30.132Z",
+        "profileSource": "custom",
+        "role": "admin"
+      }
+    ]
+  },
+  "name": "Les Copains du Jeudi",
+  "overlays": {
+    "clients": [
+      {
+        "authorImage": null,
+        "authorName": "Alice",
+        "connected": false,
+        "createdAt": "2026-11-16T05:56:30.132Z",
+        "guildSettings": null,
+        "id": "47a9da35-ffef-4bca-a24b-120e276423ce",
+        "label": "PC-Bureau",
+        "lastSeenAt": "2026-11-16T05:51:30.132Z",
+        "memberId": "3c0db260-7878-4b55-b67f-6ef4ebe79b67",
+        "overlayVersion": null,
+        "platform": null,
+        "role": "member",
+        "sessionMode": "normal"
+      },
+      {
+        "authorImage": null,
+        "authorName": "Alice",
+        "connected": false,
+        "createdAt": "2026-11-16T05:56:30.133Z",
+        "guildSettings": null,
+        "id": "1ce8c954-4322-4dc0-ae9a-663c656b0840",
+        "label": "PC-Portable",
+        "lastSeenAt": "2026-11-16T05:51:30.133Z",
+        "memberId": "1070def1-384f-44fb-8871-456b9c7c6577",
+        "overlayVersion": null,
+        "platform": null,
+        "role": "guest",
+        "sessionMode": "invite_read_only"
+      },
+      {
+        "authorImage": null,
+        "authorName": "Alice",
+        "connected": false,
+        "createdAt": "2026-11-16T05:56:30.132Z",
+        "guildSettings": null,
+        "id": "8eea5b85-31e7-432a-a5fd-1c5218e0bec2",
+        "label": "PC-Salon",
+        "lastSeenAt": "2026-11-16T05:51:30.132Z",
+        "memberId": "ecc789c8-45bb-4f92-a306-eb56d24d25d3",
+        "overlayVersion": null,
+        "platform": null,
+        "role": "admin",
+        "sessionMode": "normal"
+      }
+    ],
+    "connectedCount": 0,
+    "total": 3
+  },
+  "playback": {
+    "done": 0,
+    "failed": 0,
+    "pending": 1,
+    "playing": 1
+  },
+  "queue": {
+    "pending": [
+      {
+        "authorImage": null,
+        "authorName": "Alice",
+        "durationSec": 12,
+        "id": "20c1ea42-f8dd-4d60-ba86-3a728594685c",
+        "kind": null,
+        "mediaAssetId": null,
+        "startedAt": null,
+        "status": "pending",
+        "submittedAt": "2026-11-16T05:56:30.136Z",
+        "text": null,
+        "title": null
+      }
+    ],
+    "playing": {
+      "authorImage": null,
+      "authorName": "Alice",
+      "durationSec": 12,
+      "id": "bdd3c76d-1a28-4e05-9fba-43b4895199ca",
+      "kind": null,
+      "mediaAssetId": null,
+      "startedAt": "2026-11-16T05:56:27.136Z",
+      "status": "playing",
+      "submittedAt": "2026-11-16T05:56:30.136Z",
+      "text": "Bonne soirée à tous",
+      "title": null
+    },
+    "serverTime": "2026-11-16T05:56:30.154Z"
+  },
+  "settings": {
+    "defaultMediaTime": 8,
+    "displayMediaFull": true,
+    "maxMediaTime": 120,
+    "overrides": {
+      "defaultMediaTime": 8,
+      "displayMediaFull": true,
+      "maxMediaTime": 120
+    }
+  }
+}

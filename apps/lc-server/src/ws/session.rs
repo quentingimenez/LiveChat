@@ -153,7 +153,8 @@ async fn handle_socket(
         return;
     }
 
-    let hello = match wait_for_hello(&mut stream, state.config.min_overlay_version.as_str()).await {
+    let min_overlay_version = state.runtime().min_overlay_version();
+    let hello = match wait_for_hello(&mut stream, min_overlay_version.as_str()).await {
         Ok(hello) => hello,
         Err(info) => {
             close_sink(&mut sink, &info).await;
@@ -190,16 +191,25 @@ async fn handle_socket(
         }
     }
 
-    if is_version_below(
-        hello.app_version.as_str(),
-        state.config.min_overlay_version.as_str(),
-    ) {
-        let info = CloseInfo::new(
-            close_code::OUTDATED_PROTOCOL,
-            outdated_protocol_reason(state.config.min_overlay_version.as_str()).as_str(),
-        );
+    if is_version_below(hello.app_version.as_str(), min_overlay_version.as_str()) {
+        let reason = outdated_protocol_reason(min_overlay_version.as_str());
+        let info = CloseInfo::new(close_code::OUTDATED_PROTOCOL, reason.as_str());
         close_sink(&mut sink, &info).await;
         return;
+    }
+
+    // `appVersion` and `platform` are accepted with this `hello`: store them
+    // for the admin console (`overlayVersion` / `platform`).
+    if let Err(error) = db
+        .overlay_clients()
+        .update_client_info(
+            client.id,
+            Some(hello.app_version.as_str()),
+            hello.platform.map(lc_protocol::Platform::as_str),
+        )
+        .await
+    {
+        warn!(error = %error, client = %client_id_str, "enregistrement des informations du client impossible");
     }
 
     let engine = match hub.ensure_runtime(&state).await {
@@ -306,12 +316,11 @@ async fn handle_socket(
                             }
                         };
                         if envelope.v != PROTOCOL_VERSION {
+                            let min_overlay_version = state.runtime().min_overlay_version();
+                            let reason = outdated_protocol_reason(min_overlay_version.as_str());
                             close_info = Some(CloseInfo::new(
                                 close_code::OUTDATED_PROTOCOL,
-                                outdated_protocol_reason(
-                                    state.config.min_overlay_version.as_str(),
-                                )
-                                .as_str(),
+                                reason.as_str(),
                             ));
                             break;
                         }
@@ -631,6 +640,11 @@ async fn handle_client_message(
     message: ClientMessage,
     timers: &mut SessionTimers,
 ) -> Result<(), CloseInfo> {
+    // The admin may change the mode of this live connection: always read the
+    // hub's current value instead of the mode captured at `hello`.
+    let session_mode = hub
+        .connection_session_mode(connection_id)
+        .unwrap_or(context.session_mode);
     match message {
         ClientMessage::Heartbeat(heartbeat) => {
             if let Err(error) = db
@@ -641,7 +655,7 @@ async fn handle_client_message(
                 warn!(error = %error, client = %context.client_id_str, "mise à jour last_seen impossible");
             }
             if let Some(mode) = heartbeat.session_mode {
-                if mode != context.session_mode {
+                if mode != session_mode {
                     debug!(
                         client = %context.client_id_str,
                         "sessionMode du heartbeat divergent du welcome (serveur autoritaire)"
@@ -699,11 +713,15 @@ async fn handle_client_message(
                 ))
                 .await
             {
-                Ok(outcome) => debug!(
-                    released = outcome.released,
-                    next_started = outcome.next_started,
-                    "playback.ended traité"
-                ),
+                Ok(outcome) => {
+                    debug!(
+                        released = outcome.released,
+                        next_started = outcome.next_started,
+                        "playback.ended traité"
+                    );
+                    // The job is finished and the queue may have moved on.
+                    state.events.overview_changed();
+                }
                 Err(error) => warn!(error = %error, "échec du traitement de playback.ended"),
             }
         }
@@ -717,7 +735,7 @@ async fn handle_client_message(
             );
         }
         ClientMessage::StopRequest(payload) => {
-            if context.session_mode == SessionMode::InviteReadOnly {
+            if session_mode == SessionMode::InviteReadOnly {
                 send_ack(
                     hub,
                     connection_id,
@@ -773,7 +791,7 @@ async fn handle_client_message(
             }
         }
         ClientMessage::MediaTrigger(payload) => {
-            if context.session_mode == SessionMode::InviteReadOnly {
+            if session_mode == SessionMode::InviteReadOnly {
                 send_ack(
                     hub,
                     connection_id,
@@ -948,6 +966,8 @@ async fn handle_client_message(
                         position,
                         Some(job.id.to_canonical()),
                     );
+                    // The playback queue changed: refresh the admin overview.
+                    state.events.overview_changed();
                     debug!(
                         item = %payload.item_id,
                         "média déclenché",
@@ -979,6 +999,24 @@ async fn handle_client_message(
             }
             send_ack(hub, connection_id, request_id.as_str(), true, None);
             hub.broadcast_peers(&context.guild_id);
+        }
+        ClientMessage::DeviceSettingsState(payload) => {
+            if !payload.is_valid() {
+                debug!(
+                    client = %context.client_id_str,
+                    volume = payload.volume,
+                    "device.settings.state ignoré : volume hors de 0..1"
+                );
+                return Ok(());
+            }
+            hub.set_device_settings(&context.client_id.as_uuid(), payload);
+            debug!(
+                client = %context.client_id_str,
+                volume = payload.volume,
+                media_muted = payload.media_muted,
+                paused = payload.paused,
+                "device.settings.state mémorisé"
+            );
         }
         ClientMessage::Hello(_) => {
             debug!(client = %context.client_id_str, "hello répété : fermeture 1002");

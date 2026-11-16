@@ -30,6 +30,7 @@ use url::Url;
 
 use crate::app::AppState;
 
+use super::audit::{AuditActor, AuditStatus};
 use super::auth::{self, AuthMethods};
 use super::oauth;
 use super::session;
@@ -150,13 +151,19 @@ async fn secret_login(
     };
     let now_ms = state.clock.now().timestamp_millis();
     match session::create_secret(db, now_ms).await {
-        Ok((token, _session)) => with_cookies(
-            StatusCode::NO_CONTENT,
-            &[session::session_cookie(
-                &token,
-                state.config.cookies_secure(),
-            )],
-        ),
+        Ok((token, admin_session)) => {
+            let mut response = with_cookies(
+                StatusCode::NO_CONTENT,
+                &[session::session_cookie(
+                    &token,
+                    state.config.cookies_secure(),
+                )],
+            );
+            response
+                .extensions_mut()
+                .insert(AuditActor::from_session(&admin_session));
+            response
+        }
         Err(error) => {
             tracing::error!(error = %error, "admin secret session creation failed");
             auth::internal_error_response()
@@ -228,7 +235,7 @@ async fn discord_callback(
         _ => false,
     };
     if !state_matches {
-        return login_error(&state, "oauth_state");
+        return login_error(&state, "oauth_state", StatusCode::BAD_REQUEST);
     }
 
     let Some(code) = query
@@ -237,14 +244,14 @@ async fn discord_callback(
         .map(str::trim)
         .filter(|c| !c.is_empty())
     else {
-        return login_error(&state, "oauth_failed");
+        return login_error(&state, "oauth_failed", StatusCode::BAD_REQUEST);
     };
     let redirect_uri = state.config.admin_discord_redirect_uri();
     let identity = match state.admin_oauth.exchange(code, &redirect_uri).await {
         Ok(identity) => identity,
         Err(error) => {
             tracing::warn!(error = %error, "Discord admin login exchange failed");
-            return login_error(&state, "oauth_failed");
+            return login_error(&state, "oauth_failed", StatusCode::BAD_GATEWAY);
         }
     };
 
@@ -258,7 +265,14 @@ async fn discord_callback(
             discord_user_id = %identity.id,
             "Discord account not allowed to open an admin session"
         );
-        return login_error(&state, "not_allowed");
+        // The journal names the refused account: a refused login is exactly
+        // what an administrator wants to see.
+        let mut response = login_error(&state, "not_allowed", StatusCode::FORBIDDEN);
+        response.extensions_mut().insert(AuditActor {
+            method: "discord".to_owned(),
+            name: Some(identity.name.clone()),
+        });
+        return response;
     }
 
     let Some(db) = state.db.as_ref() else {
@@ -267,15 +281,22 @@ async fn discord_callback(
     };
     let now_ms = state.clock.now().timestamp_millis();
     match session::create_discord(db, &identity, now_ms).await {
-        Ok((token, _session)) => {
+        Ok((token, admin_session)) => {
             let secure = state.config.cookies_secure();
-            redirect_response(
+            let mut response = redirect_response(
                 "/admin/#/dashboard",
                 &[
                     session::session_cookie(&token, secure),
                     session::clear_oauth_state_cookie(secure),
                 ],
-            )
+            );
+            response
+                .extensions_mut()
+                .insert(AuditActor::from_session(&admin_session));
+            response
+                .extensions_mut()
+                .insert(AuditStatus(StatusCode::OK.as_u16()));
+            response
         }
         Err(error) => {
             tracing::error!(error = %error, "admin Discord session creation failed");
@@ -330,13 +351,19 @@ fn unauthorized_session(methods: AuthMethods) -> Response {
 }
 
 /// Redirects to the console login page with the given error code.
-fn login_error(state: &AppState, code: &str) -> Response {
-    redirect_response(
+/// Redirect back to the login page with `error=<code>`. `outcome` is the
+/// status written to the journal: the HTTP status is always `302`.
+fn login_error(state: &AppState, code: &str, outcome: StatusCode) -> Response {
+    let mut response = redirect_response(
         &format!("/admin/#/login?error={code}"),
         &[session::clear_oauth_state_cookie(
             state.config.cookies_secure(),
         )],
-    )
+    );
+    response
+        .extensions_mut()
+        .insert(AuditStatus(outcome.as_u16()));
+    response
 }
 
 /// `302 Found` with one or more `Set-Cookie` headers.

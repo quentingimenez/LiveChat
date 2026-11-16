@@ -832,6 +832,20 @@
         case 'guild_api':
           requests.push({ method: payload.method, path: payload.path });
           return delay(80).then(() => api(payload));
+        case 'board_import':
+          // Like the server: the first media is already on the target board,
+          // the others are copied.
+          requests.push({ method: 'POST', path: '/overlay/media-board/import', payload });
+          return delay(150).then(() => ({
+            ok: true,
+            status: 200,
+            body: {
+              results: (payload.itemIds || []).map((id, index) =>
+                index === 0 && payload.itemIds.length > 1
+                  ? { sourceItemId: id, status: 'already', itemId: `copy-${id}` }
+                  : { sourceItemId: id, status: 'added', itemId: `copy-${id}` }),
+            },
+          }));
         case 'media_board_get_bindings':
           return Promise.resolve({ bindings: { 'CommandOrControl+Shift+1': 'item-0' } });
         case 'media_board_set_bindings':

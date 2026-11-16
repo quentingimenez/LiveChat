@@ -142,15 +142,31 @@ impl Harness {
         token: Option<&str>,
         body: Option<Value>,
     ) -> (StatusCode, Value) {
-        call_app(&self.app, method, uri, token, body).await
+        call_app(&self.app, method, uri, token, &[], body).await
     }
 
     /// Code émis comme le ferait le panel serveur (aucun membre créateur).
     pub(super) async fn server_invite(&self, role: GuildRole) -> String {
+        self.invite_for(&self.guild_id, role).await
+    }
+
+    /// Creates another standalone guild in the same database.
+    pub(super) async fn second_guild(&self, name: &str) -> GuildId {
+        let guild_id = GuildId::generate();
+        self.db
+            .guilds()
+            .create_standalone(&guild_id, name, fixed_now())
+            .await
+            .unwrap();
+        guild_id
+    }
+
+    /// Single-use invite code for `guild_id`, as issued by the server panel.
+    pub(super) async fn invite_for(&self, guild_id: &GuildId, role: GuildRole) -> String {
         let invite = create_invite(
             &self.db,
             NewInvite {
-                guild_id: self.guild_id.clone(),
+                guild_id: guild_id.clone(),
                 role,
                 member_id: None,
                 max_uses: Some(1),
@@ -196,16 +212,20 @@ impl Harness {
 }
 
 /// Calls a router with the same request shape as [`Harness::call`].
-async fn call_app(
+pub(super) async fn call_app(
     app: &Router,
     method: Method,
     uri: &str,
     token: Option<&str>,
+    headers: &[(&str, &str)],
     body: Option<Value>,
 ) -> (StatusCode, Value) {
     let mut builder = Request::builder().method(method).uri(uri);
     if let Some(token) = token {
         builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
     }
     let request = match body {
         Some(body) => builder
@@ -511,6 +531,7 @@ async fn member_removal_and_leave_use_distinct_close_reasons() {
         Method::DELETE,
         &format!("/overlay/admin/members/{guest_id}"),
         Some(&admin_token),
+        &[],
         None,
     )
     .await;
@@ -532,6 +553,7 @@ async fn member_removal_and_leave_use_distinct_close_reasons() {
         Method::POST,
         "/overlay/leave",
         Some(&leaver_token),
+        &[],
         None,
     )
     .await;

@@ -12,6 +12,7 @@
 //! | `POST` | `/overlay/media-board/items` | Bearer | `202 {ingestionId}` |
 //! | `POST` | `/overlay/media-board/upload?filename=&title=&message=&replaceItemId=` | Bearer | `202 {ingestionId}` (raw binary body) |
 //! | `POST` | `/overlay/media-board/items/{itemId}/edit` | Bearer | `202 {ingestionId}` (see [`super::media_edit`]) |
+//! | `POST` | `/overlay/media-board/import` | Bearer + `X-LiveChat-Source-Token` | `{results:[...]}` (see [`super::media_import`]) |
 //! | `GET` | `/overlay/media-board/ingestions` | Bearer | `{items:[...]}` |
 //! | `GET` | `/overlay/media-board/media/{assetId}?clientId=&exp=&sig=` | URL signée | flux binaire (`Range` supporté) |
 //! | `PATCH` | `/overlay/media-board/items/{itemId}` | Bearer | `{updated:true, item:{id,title,message}}` |
@@ -1038,7 +1039,7 @@ async fn ensure_board_visible(db: &Db, auth: &AuthedOverlayClient) -> Result<(),
 
 /// Même garde pour un rôle résolu sans [`AuthedOverlayClient`] (route média
 /// signée, qui n'a pas d'authentification Bearer).
-async fn ensure_board_visible_for(
+pub(super) async fn ensure_board_visible_for(
     db: &Db,
     guild_id: &GuildId,
     role: GuildRole,

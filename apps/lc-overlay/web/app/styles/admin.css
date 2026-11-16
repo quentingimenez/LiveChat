@@ -1,11 +1,20 @@
 /* -------------------------------------------------------------------- admin */
 
+/* Each row is a grid of its own: a content-sized track (`auto`) would take a
+   different width in a row without its button (the current member has no
+   « Exclure », a used invite no « Révoquer ») and shift its other columns.
+   Action tracks therefore have a fixed width. */
 .line.is-member {
-  grid-template-columns: 30px minmax(0, 1fr) 150px 130px auto;
+  grid-template-columns: 30px minmax(0, 1fr) 150px 130px 88px;
 }
 
 .line.is-invite {
-  grid-template-columns: 110px 90px minmax(0, 1fr) auto auto;
+  grid-template-columns: 110px 90px minmax(0, 1fr) 42px 96px;
+}
+
+.line.is-member > .btn,
+.line.is-invite > .btn {
+  justify-self: end;
 }
 
 .subtabs {
@@ -52,9 +61,15 @@
   font-weight: 600;
 }
 
+/* Inside a settings section, `.settings-section h3` (more specific) removed
+   the space above a sub-title such as « Discord ». */
+.settings-section .section-title {
+  margin-top: 32px;
+}
+
 @media (max-width: 1040px) {
   .line.is-member {
-    grid-template-columns: 30px minmax(0, 1fr) 120px auto;
+    grid-template-columns: 30px minmax(0, 1fr) 120px 88px;
   }
 
   .line.is-member .seen {

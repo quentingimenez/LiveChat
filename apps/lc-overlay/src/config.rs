@@ -154,6 +154,8 @@ pub type MediaBindings = BTreeMap<String, String>;
 pub struct ShortcutSettings {
     /// Stop the current board media.
     pub stop: Option<String>,
+    /// Stop the current media on this device only.
+    pub stop_local: Option<String>,
     /// Toggle the general mute (same action as the tray entry).
     pub mute_all: Option<String>,
 }
@@ -161,7 +163,17 @@ pub struct ShortcutSettings {
 impl ShortcutSettings {
     fn normalize(&mut self) {
         self.stop = normalized_shortcut(self.stop.take());
+        self.stop_local = normalized_shortcut(self.stop_local.take());
         self.mute_all = normalized_shortcut(self.mute_all.take());
+    }
+
+    /// Every action as `(settings field, accelerator)`, in registration order.
+    pub fn entries(&self) -> [(&'static str, Option<&str>); 3] {
+        [
+            ("shortcuts.stop", self.stop.as_deref()),
+            ("shortcuts.stopLocal", self.stop_local.as_deref()),
+            ("shortcuts.muteAll", self.mute_all.as_deref()),
+        ]
     }
 }
 
@@ -786,6 +798,7 @@ fn shortcut_settings_field(
     };
     ShortcutSettings {
         stop: string_field(object, "stop", warnings),
+        stop_local: string_field(object, "stopLocal", warnings),
         mute_all: string_field(object, "muteAll", warnings),
     }
 }

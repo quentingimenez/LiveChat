@@ -6,6 +6,7 @@
 import { h } from '../core/dom.js';
 import { state } from '../core/state.js';
 import { openDialog } from '../core/ui.js';
+import { openFileImageEditor } from './editor/index.js';
 import { startFileUpload, startLinkUpload } from './uploads.js';
 
 function formatSize(bytes) {
@@ -81,11 +82,27 @@ export function openAddDialog(options) {
 
     function renderFileList() {
       fileList.replaceChildren(
-        ...chosenFiles.map((file) =>
+        ...chosenFiles.map((file, index) =>
           h(
             'li',
             null,
             h('span', { class: 'file-name ellipsis', title: file.name }, file.name),
+            // A picture can be cropped or annotated before it is sent.
+            file.type.startsWith('image/')
+              ? h(
+                  'button',
+                  {
+                    class: 'btn file-edit',
+                    type: 'button',
+                    onClick: () =>
+                      openFileImageEditor(file, (edited) => {
+                        chosenFiles[index] = edited;
+                        renderFileList();
+                      }),
+                  },
+                  'Retoucher',
+                )
+              : null,
             h('span', { class: 'file-size' }, formatSize(file.size)),
           ),
         ),
@@ -141,10 +158,8 @@ export function openAddDialog(options) {
     );
 
     setMode('link');
-    if (prefill) {
-      // The link is there: the title is the next thing to type.
-      setTimeout(() => linkTitle.focus(), 0);
-    }
+    // The link is the first thing to type; once prefilled, the title is next.
+    setTimeout(() => (prefill ? linkTitle : linkUrl).focus(), 0);
     return [
       h('h2', null, 'Ajouter un média'),
       h('p', null, 'Vidéo, image ou son : lien TikTok, X, YouTube ou direct, ou fichier de ton ordinateur.'),

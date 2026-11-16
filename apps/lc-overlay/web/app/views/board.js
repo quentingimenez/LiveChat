@@ -3,6 +3,7 @@
 import { api, run } from '../core/api.js';
 import { openContextMenu } from '../core/contextmenu.js';
 import { acceleratorFromEvent, acceleratorLabel, BARE_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
+import { ARTWORK_MESSAGES, artworkExtension, droppedArtworkLink, fetchArtwork, MAX_ARTWORK_BYTES, pickArtworkFile } from '../core/artwork.js';
 import {
   activeFilterCount,
   authorsOf,
@@ -13,6 +14,19 @@ import {
   SORT_LABELS,
   SOURCE_LABELS,
 } from '../core/board-filters.js';
+import {
+  artworkOf,
+  cardClicked,
+  cardHovered,
+  CLOSED_VIEW,
+  drawerUsed,
+  mediaPath,
+  pointerLeft,
+  previewKey,
+  pruneView,
+  sameView,
+  shownId,
+} from '../core/detail-drawer.js';
 import { h, icon, registerIcons } from '../core/dom.js';
 import { formatDuration } from '../core/format.js';
 import { cardRatio, cardStyle } from '../core/masonry.js';
@@ -23,6 +37,8 @@ import { notify } from '../core/toast.js';
 import { confirmDialog, copyText, openDialog } from '../core/ui.js';
 import { loadItems, refreshQueueAutomatically } from '../data.js';
 import { openAddDialog } from './add-media.js';
+import { openSayDialog } from './say.js';
+import { canOpenEditor, openMediaEditor } from './editor/index.js';
 import { openUploadMenu, renderUploadCard, startFileUpload, uploadsForGuild } from './uploads.js';
 import { renderView } from './view.js';
 
@@ -55,13 +71,13 @@ function openCardMenu(event, item) {
     canFavorite()
       ? { label: item.favorite ? 'Retirer des favoris' : 'Ajouter aux favoris', icon: 'star', onSelect: () => toggleFavorite(item) }
       : null,
-    item.canEdit ? { label: 'Modifier…', onSelect: () => openEditDialog(item) } : null,
+    canOpenEditor(item) ? { label: 'Ouvrir dans l’éditeur…', icon: 'edit', onSelect: () => openMediaEditor(item, itemTitle(item)) } : null,
+    item.canEdit ? { label: 'Modifier les infos…', onSelect: () => openEditDialog(item) } : null,
     can('play')
       ? {
           label: shortcutFor(item.id) ? 'Changer le raccourci' : 'Définir un raccourci',
           onSelect: () => {
-            state.selectedId = item.id;
-            state.detailPinned = true;
+            applyView({ selectedId: item.id, pinned: true, peekId: null });
             state.capturing = false;
             startCapture(item);
           },
@@ -125,21 +141,26 @@ function syncFavorite(card, favorite) {
 // grid flash. `entry.item` always points at the latest copy of the item, so
 // the card's handlers never act on stale data.
 const cards = new Map(); // itemId -> { node, key, item, loadedUrl }
-// The preview of the selected item, kept across renders of the view:
-// rebuilding it reloaded the video and showed the loading spinner again.
-let previewCache = null; // { itemId, path, node }
+// The previews of the pinned media and of the one being peeked, kept across
+// renders of the view: rebuilding one reloaded its video and showed the
+// loading spinner again. Coming back from a peek finds the pinned video where
+// it was.
+const previews = new Map(); // itemId -> { key, node }
 
-// Path of a signed media URL, without its query: the same asset keeps the
-// same path while its signature changes every 15 minutes.
-function mediaPath(url) {
-  if (typeof url !== 'string' || !url) {
-    return null;
+function pausePreview(entry) {
+  const media = entry.node.querySelector('audio, video');
+  if (media && !media.paused) {
+    media.pause();
   }
-  try {
-    const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return url;
+}
+
+// Keeps only the previews the drawer can still show without a new hover.
+function prunePreviews() {
+  for (const [id, entry] of previews) {
+    if (id !== state.selectedId && id !== peekId) {
+      pausePreview(entry);
+      previews.delete(id);
+    }
   }
 }
 
@@ -316,12 +337,6 @@ function refreshUploadCards() {
   grid.prepend(...nodes);
 }
 
-// An audio item shows its picture (embedded cover or chosen image).
-function artworkOf(item) {
-  const artwork = item.artwork;
-  return artwork && typeof artwork.url === 'string' && artwork.url ? artwork : null;
-}
-
 function buildCard(entry) {
   const item = entry.item;
   const kind = item.media.kind;
@@ -335,7 +350,14 @@ function buildCard(entry) {
       'data-kind': artwork ? 'image' : kind,
       'data-item-id': item.id,
       'aria-label': `Détails de ${itemTitle(item)}`,
-      onClick: () => selectItem(entry.item.id),
+      onClick: (event) => selectItem(entry.item.id, event.detail),
+      // A double click plays the media, like the Play button. It leaves the
+      // drawer as it was (see selectItem).
+      onDblclick: () => {
+        if (can('play')) {
+          playItem(entry.item);
+        }
+      },
     },
     h('span', { class: 'glyph' }, icon(kind === 'audio' ? 'audio' : kind === 'image' ? 'image' : 'video')),
     artwork ? h('span', { class: 'kind-badge', 'aria-hidden': 'true' }, icon('audio')) : null,
@@ -449,11 +471,9 @@ export function renderBoard() {
   pruneCards();
   const items = visibleItems();
   const uploads = activeUploads();
-  const selected = state.items.find((item) => item.id === state.selectedId) || null;
-  if (!selected) {
-    // A preview no longer shown must not keep its video alive.
-    previewCache = null;
-  }
+  const selected = shownItem();
+  // A preview no longer shown must not keep its video alive.
+  prunePreviews();
   const filterCount = activeFilterCount(state.filters);
   const toolbar = h(
     'div',
@@ -490,6 +510,7 @@ export function renderBoard() {
     ),
     h('span', { class: 'spacer' }),
     h('button', { class: 'btn is-quiet', title: 'Recharger le board', 'aria-label': 'Recharger le board', onClick: loadItems }, icon('refresh')),
+    can('play') ? h('button', { class: 'btn', title: 'Faire lire un texte à voix haute sur les overlays', onClick: () => openSayDialog() }, icon('sound'), 'Dire') : null,
     can('addMedia') ? h('button', { class: 'btn', onClick: openAddDialog }, icon('plus'), 'Ajouter un média') : null,
   );
   let content;
@@ -596,48 +617,85 @@ function setKind(kind) {
   refreshGrid(false);
 }
 
-// A click pins the drawer on a media (a second click on it closes it).
-export function selectItem(id) {
+// --- drawer: pinned by a click, following the pointer otherwise ---
+// `state.selectedId` and `state.detailPinned` hold the selected media;
+// `peekId` is another media looked at by hovering while one is pinned (see
+// core/detail-drawer.js).
+const HOVER_DELAY_MS = 450;
+const LEAVE_DELAY_MS = 300;
+let hoverTimer = null;
+let leaveTimer = null;
+let peekId = null;
+
+function currentView() {
+  return { selectedId: state.selectedId, pinned: state.detailPinned, peekId };
+}
+
+function applyView(view) {
+  state.selectedId = view.selectedId;
+  state.detailPinned = view.pinned;
+  peekId = view.peekId;
+}
+
+// The media the drawer shows: the peeked one, else the selected one.
+function shownItem() {
+  applyView(pruneView(currentView(), (id) => state.items.some((item) => item.id === id)));
+  const id = shownId(currentView());
+  return (id && state.items.find((item) => item.id === id)) || null;
+}
+
+function clearDrawerTimers() {
   clearTimeout(hoverTimer);
   clearTimeout(leaveTimer);
-  if (state.selectedId === id && state.detailPinned) {
-    state.selectedId = null;
-    state.detailPinned = false;
-  } else {
-    state.selectedId = id;
-    state.detailPinned = true;
+  hoverTimer = null;
+  leaveTimer = null;
+}
+
+// A mouse click waits this long before toggling the drawer, so that a double
+// click (which plays the media) neither opens nor closes it.
+const DOUBLE_CLICK_MS = 250;
+let clickTimer = null;
+
+// A click pins the drawer on a media (a second click on it closes it).
+// `clickCount` is the `detail` of the click event, when there is one.
+export function selectItem(id, clickCount) {
+  clearTimeout(clickTimer);
+  clickTimer = null;
+  if (clickCount === 1) {
+    clickTimer = setTimeout(() => {
+      clickTimer = null;
+      toggleDetail(id, 1);
+    }, DOUBLE_CLICK_MS);
+    return;
   }
+  toggleDetail(id, clickCount);
+}
+
+function toggleDetail(id, clickCount) {
+  clearDrawerTimers();
+  applyView(cardClicked(currentView(), id, clickCount));
   state.capturing = false;
   syncDetail();
 }
 
 export function closeDetail() {
-  clearTimeout(hoverTimer);
-  clearTimeout(leaveTimer);
-  state.selectedId = null;
-  state.detailPinned = false;
+  clearDrawerTimers();
+  applyView(CLOSED_VIEW);
   state.capturing = false;
   syncDetail();
 }
 
-// --- hover: the drawer follows the pointer until it is pinned ---
-const HOVER_DELAY_MS = 450;
-const LEAVE_DELAY_MS = 300;
-let hoverTimer = null;
-let leaveTimer = null;
-
+// Hovering a card shows its details after a short delay, also while another
+// media is pinned: the drawer then peeks at the hovered one.
 function hoverDetail(id) {
-  clearTimeout(hoverTimer);
-  if (state.detailPinned) {
-    return;
-  }
-  clearTimeout(leaveTimer);
+  clearDrawerTimers();
   hoverTimer = setTimeout(() => {
     hoverTimer = null;
-    if (state.detailPinned || state.selectedId === id) {
+    const next = cardHovered(currentView(), id);
+    if (state.capturing || sameView(next, currentView())) {
       return;
     }
-    state.selectedId = id;
+    applyView(next);
     syncDetail();
   }, HOVER_DELAY_MS);
 }
@@ -648,40 +706,54 @@ function leaveCard() {
   scheduleHoverClose();
 }
 
+// Once the pointer has left the cards and the drawer, an unpinned drawer
+// closes and a peek gives the drawer back to the pinned media.
 function scheduleHoverClose() {
-  if (state.detailPinned || !state.selectedId) {
+  clearTimeout(leaveTimer);
+  leaveTimer = null;
+  if (sameView(pointerLeft(currentView()), currentView())) {
     return;
   }
-  clearTimeout(leaveTimer);
   leaveTimer = setTimeout(() => {
     leaveTimer = null;
-    if (!state.detailPinned) {
-      closeDetail();
+    const next = pointerLeft(currentView());
+    if (state.capturing || sameView(next, currentView())) {
+      return;
     }
+    applyView(next);
+    syncDetail();
   }, LEAVE_DELAY_MS);
 }
 
 // Updates the drawer in place: the grid never moves and the preview (and its
-// video) is reused while the same media stays selected.
+// video) is reused while the same media stays shown.
 function syncDetail() {
-  if (!state.selectedId || !previewCache || previewCache.itemId !== state.selectedId) {
-    previewCache = null;
-  }
   const board = document.querySelector('.view .board');
   if (!board) {
     renderView();
     return;
   }
-  const selected = state.items.find((item) => item.id === state.selectedId) || null;
+  const selected = shownItem();
+  prunePreviews();
   const current = board.querySelector(':scope > .detail');
   const next = selected ? renderDetail(selected) : null;
   if (current && next) {
+    // A refresh of the same media (a playback badge, a favorite) must not
+    // replay the drawer's entry animation.
+    if (current.dataset.itemId === next.dataset.itemId) {
+      next.classList.add('is-refresh');
+    }
     current.replaceWith(next);
   } else if (current) {
     current.remove();
   } else if (next) {
     board.append(next);
   }
+  syncSelectedCards();
+}
+
+// The highlighted card is the selected media, not the one being peeked.
+function syncSelectedCards() {
   for (const [id, entry] of cards) {
     entry.node.classList.toggle('is-selected', id === state.selectedId);
   }
@@ -698,15 +770,23 @@ function placeDrawer(node) {
   node.style.bottom = `${Math.round(Math.max(12, window.innerHeight - box.bottom + 12))}px`;
 }
 
-window.addEventListener('resize', () => {
+// The view shrinks when the on-air bar shows up (a playback started after the
+// drawer opened): follow its box, not only the window's.
+function replaceDrawer() {
   const node = document.querySelector('.view .detail');
   if (node) {
     placeDrawer(node);
   }
-});
+}
+
+window.addEventListener('resize', replaceDrawer);
+const viewNode = document.getElementById('view');
+if (viewNode && typeof ResizeObserver === 'function') {
+  new ResizeObserver(replaceDrawer).observe(viewNode);
+}
 
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && state.selectedId && !state.capturing && !document.querySelector('#dialog-root .dialog')) {
+  if (event.key === 'Escape' && state.selectedId && !state.capturing && !document.getElementById('dialog-root').firstElementChild) {
     closeDetail();
   }
 });
@@ -714,7 +794,7 @@ document.addEventListener('keydown', (event) => {
 export async function playItem(item) {
   const guild = activeGuild();
   if (guild && guild.membership.muted) {
-    notify('Guilde en sourdine : rétablis-la pour jouer.', true);
+    notify('Guilde en pause : reprends-la pour jouer.', true);
     return;
   }
   let response;
@@ -824,10 +904,20 @@ function buildPreview(item) {
     return node;
   }
   if (kind === 'audio') {
+    // An audio shows its picture; without one (or when it cannot be loaded)
+    // it shows an audio mark above the player, never an empty image.
+    const glyph = h('span', { class: 'preview-glyph', 'aria-hidden': 'true' }, icon('audio'));
     const artwork = artworkOf(item);
     if (artwork) {
       node.classList.add('has-artwork');
-      node.append(h('img', { class: 'preview-artwork', src: artwork.url, alt: '' }));
+      const picture = h('img', { class: 'preview-artwork', src: artwork.url, alt: '' });
+      picture.addEventListener('error', () => {
+        node.classList.remove('has-artwork');
+        picture.replaceWith(glyph);
+      });
+      node.append(picture);
+    } else {
+      node.append(glyph);
     }
     const audio = h('audio', { src: url, controls: true, preload: 'metadata' });
     audio.volume = previewVolume(state.activeGuildId);
@@ -835,17 +925,23 @@ function buildPreview(item) {
     return node;
   }
   if (kind === 'video') {
-    const video = h('video', { src: url, controls: true, preload: 'auto', playsinline: true });
+    // The native controls only appear once the first frame is there: shown
+    // earlier, they play their loading spinner for the few milliseconds the
+    // video takes to load.
+    const video = h('video', { src: url, preload: 'auto', playsinline: true });
     video.volume = previewVolume(state.activeGuildId);
     video.addEventListener('loadedmetadata', () => adoptRatio(video.videoWidth, video.videoHeight));
     node.append(video);
     const still = cardStill(item.id);
     if (still) {
       node.append(still);
-      const reveal = () => still.remove();
-      video.addEventListener('loadeddata', reveal, { once: true });
-      video.addEventListener('error', reveal, { once: true });
     }
+    const reveal = () => {
+      video.controls = true;
+      still?.remove();
+    };
+    video.addEventListener('loadeddata', reveal, { once: true });
+    video.addEventListener('error', reveal, { once: true });
     return node;
   }
   const image = h('img', { src: url, alt: '' });
@@ -855,11 +951,23 @@ function buildPreview(item) {
 }
 
 function detailPreview(item) {
-  const path = mediaPath(item.mediaUrl);
-  if (!previewCache || previewCache.itemId !== item.id || previewCache.path !== path) {
-    previewCache = { itemId: item.id, path, node: buildPreview(item) };
+  const key = previewKey(item);
+  let entry = previews.get(item.id);
+  if (!entry || entry.key !== key) {
+    if (entry) {
+      pausePreview(entry);
+    }
+    entry = { key, node: buildPreview(item) };
+    previews.set(item.id, entry);
   }
-  return previewCache.node;
+  // A preview out of the drawer (the pinned one during a peek) goes silent
+  // and keeps its position.
+  for (const [id, other] of previews) {
+    if (id !== item.id) {
+      pausePreview(other);
+    }
+  }
+  return entry.node;
 }
 
 function renderDetail(item) {
@@ -876,15 +984,21 @@ function renderDetail(item) {
   const drawer = h(
     'aside',
     {
-      class: `detail${state.detailPinned ? ' is-pinned' : ' is-peek'}`,
+      class: `detail${state.detailPinned && state.selectedId === item.id ? ' is-pinned' : ' is-peek'}`,
+      'data-item-id': item.id,
       'aria-label': 'Détails du média',
       onMouseenter: () => clearTimeout(leaveTimer),
       onMouseleave: scheduleHoverClose,
-      // Using the drawer keeps it open.
+      // Using the drawer pins the media it shows. Only classes change: the
+      // drawer must stay in place for the click that follows.
       onPointerdown: () => {
-        if (!state.detailPinned) {
-          state.detailPinned = true;
+        const next = drawerUsed(currentView());
+        if (!sameView(next, currentView())) {
+          clearDrawerTimers();
+          applyView(next);
           drawer.classList.replace('is-peek', 'is-pinned');
+          syncSelectedCards();
+          prunePreviews();
         }
       },
     },
@@ -936,7 +1050,8 @@ function renderDetail(item) {
       { class: 'row is-wrap' },
       can('play') ? h('button', { class: 'btn', onClick: () => startCapture(item) }, shortcut ? 'Changer le raccourci' : 'Définir un raccourci') : null,
       can('play') && shortcut ? h('button', { class: 'btn is-quiet', onClick: () => saveShortcut(item, null) }, 'Retirer') : null,
-      item.canEdit ? h('button', { class: 'btn', onClick: () => openEditDialog(item) }, 'Modifier') : null,
+      canOpenEditor(item) ? h('button', { class: 'btn', title: 'Découper, recadrer, dessiner…', onClick: () => openMediaEditor(item, itemTitle(item)) }, icon('edit'), 'Éditer') : null,
+      item.canEdit ? h('button', { class: 'btn', onClick: () => openEditDialog(item) }, 'Infos') : null,
       h('span', { class: 'spacer' }),
       item.canEdit ? h('button', { class: 'btn is-danger', onClick: () => openDeleteDialog(item) }, 'Supprimer') : null,
     ),
@@ -947,9 +1062,11 @@ function renderDetail(item) {
 
 // The preview follows the volume sliders while it plays.
 document.addEventListener('livechat:sound', () => {
-  const media = previewCache && previewCache.node.querySelector('audio, video');
-  if (media) {
-    media.volume = previewVolume(state.activeGuildId);
+  for (const entry of previews.values()) {
+    const media = entry.node.querySelector('audio, video');
+    if (media) {
+      media.volume = previewVolume(state.activeGuildId);
+    }
   }
 });
 
@@ -1005,20 +1122,9 @@ export async function saveShortcut(item, accelerator) {
 }
 
 // --- edit and delete ---
-const MAX_ARTWORK_BYTES = 10 * 1024 * 1024;
-
-function artworkExtension(file) {
-  const match = /\.([a-z0-9]{1,5})$/i.exec(file.name || '');
-  if (match) {
-    return `.${match[1].toLowerCase()}`;
-  }
-  const subtype = /^image\/([a-z0-9]+)/i.exec(file.type || '');
-  return subtype ? `.${subtype[1].toLowerCase().replace('jpeg', 'jpg')}` : '';
-}
-
 async function uploadArtwork(item, file) {
   if (file.size > MAX_ARTWORK_BYTES) {
-    notify('Image trop volumineuse (10 Mo au plus).', true);
+    notify(ARTWORK_MESSAGES.tooLarge, true);
     return false;
   }
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -1051,24 +1157,73 @@ export function openEditDialog(item) {
     const isAudio = item.media.kind === 'audio';
     let chosen = null;
     let removeArtwork = false;
+    let previewUrl = null;
+    let importing = false;
     const current = artworkOf(item);
-    const artworkPreview = h('img', { class: 'artwork-preview', alt: '', hidden: !current, src: current ? current.url : null });
+    const artworkPreview = h('img', { class: 'artwork-preview', alt: '', draggable: 'false', hidden: !current, src: current ? current.url : null });
+    // Without a picture the zone shows an audio mark, never an empty image.
+    const artworkEmpty = h('span', { class: 'artwork-preview is-empty', 'aria-hidden': 'true', hidden: Boolean(current) }, icon('audio'));
     const artworkName = h('span', { class: 'meta' }, current ? 'Image actuelle' : 'Aucune image');
+    const submit = h('button', { class: 'btn', type: 'submit' }, 'Enregistrer');
+    const showPicture = (shown) => {
+      artworkPreview.hidden = !shown;
+      artworkEmpty.hidden = shown;
+      removeButton.hidden = !shown;
+    };
+    // The picture that will be sent on « Enregistrer ».
+    const choose = (file, label) => {
+      chosen = file;
+      removeArtwork = false;
+      if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+      }
+      previewUrl = URL.createObjectURL(file);
+      artworkPreview.src = previewUrl;
+      artworkName.textContent = label || file.name;
+      showPicture(true);
+    };
+    // Chosen, dropped or pasted files: true when one of them was handled.
+    const chooseFrom = (files) => {
+      const picked = pickArtworkFile(files);
+      if (!picked) {
+        return false;
+      }
+      if (picked.error) {
+        notify(picked.error, true);
+      } else {
+        choose(picked.file);
+      }
+      return true;
+    };
+    // A link is downloaded here, in the WebView, then sent like a file.
+    const importLink = async (link) => {
+      if (importing) {
+        return;
+      }
+      importing = true;
+      const label = artworkName.textContent;
+      artworkName.textContent = 'Téléchargement de l’image…';
+      importButton.disabled = true;
+      submit.disabled = true;
+      const result = await fetchArtwork(link);
+      importing = false;
+      importButton.disabled = false;
+      submit.disabled = false;
+      if (result.error) {
+        artworkName.textContent = label;
+        notify(result.error, true);
+        return;
+      }
+      linkField.value = '';
+      choose(result.file);
+    };
     const artworkInput = h('input', {
       type: 'file',
       accept: 'image/*',
       hidden: true,
       onChange: () => {
-        const file = artworkInput.files && artworkInput.files[0];
-        if (!file) {
-          return;
-        }
-        chosen = file;
-        removeArtwork = false;
-        artworkName.textContent = file.name;
-        artworkPreview.src = URL.createObjectURL(file);
-        artworkPreview.hidden = false;
-        removeButton.hidden = false;
+        chooseFrom(artworkInput.files);
+        artworkInput.value = '';
       },
     });
     const removeButton = h(
@@ -1080,31 +1235,111 @@ export function openEditDialog(item) {
         onClick: () => {
           chosen = null;
           removeArtwork = true;
-          artworkPreview.hidden = true;
           artworkName.textContent = 'Aucune image';
-          removeButton.hidden = true;
+          showPicture(false);
         },
       },
       'Retirer',
     );
+    const linkField = h('input', {
+      class: 'field',
+      type: 'url',
+      placeholder: 'https://…',
+      'aria-label': 'Lien d’une image',
+      onKeydown: (event) => {
+        // Enter imports the link instead of saving the dialog.
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          importLink(linkField.value);
+        }
+      },
+    });
+    const importButton = h('button', { class: 'btn', type: 'button', onClick: () => importLink(linkField.value) }, 'Importer');
+    const artworkZone = h(
+      'div',
+      { class: 'artwork-drop' },
+      artworkPreview,
+      artworkEmpty,
+      h(
+        'div',
+        { class: 'stack' },
+        artworkName,
+        h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onClick: () => artworkInput.click() }, 'Choisir une image'), removeButton),
+      ),
+      artworkInput,
+    );
     const onOverlay = h('input', { type: 'checkbox', checked: Boolean(item.artworkOnOverlay) });
+    const carriesPicture = (event) => {
+      const types = Array.from((event.dataTransfer && event.dataTransfer.types) || []);
+      return types.includes('Files') || types.includes('text/uri-list') || types.includes('text/html') || types.includes('text/plain');
+    };
+    // A drop on the picture block belongs to the picture: it stops here and
+    // never reaches the board's own drop handlers (which import new media).
+    const onDrag = (event) => {
+      if (!carriesPicture(event)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = 'copy';
+      artworkZone.classList.add('is-over');
+    };
     const artworkFields = isAudio
       ? h(
           'div',
-          { class: 'stack artwork-fields' },
+          {
+            class: 'stack artwork-fields',
+            onDragenter: onDrag,
+            onDragover: onDrag,
+            onDragleave: (event) => {
+              if (!(event.relatedTarget instanceof Node) || !artworkFields.contains(event.relatedTarget)) {
+                artworkZone.classList.remove('is-over');
+              }
+            },
+            onDrop: (event) => {
+              if (!carriesPicture(event)) {
+                return;
+              }
+              event.preventDefault();
+              event.stopPropagation();
+              artworkZone.classList.remove('is-over');
+              const transfer = event.dataTransfer;
+              if (chooseFrom(transfer.files)) {
+                return;
+              }
+              const link = droppedArtworkLink({
+                html: transfer.getData('text/html'),
+                uriList: transfer.getData('text/uri-list'),
+                text: transfer.getData('text/plain'),
+              });
+              if (link) {
+                importLink(link);
+              } else {
+                notify(ARTWORK_MESSAGES.nothingDropped, true);
+              }
+            },
+            onPaste: (event) => {
+              const data = event.clipboardData;
+              if (!data) {
+                return;
+              }
+              // A copied image is used as it is; a copied link is imported.
+              if (chooseFrom(data.files)) {
+                event.preventDefault();
+                return;
+              }
+              const link = droppedArtworkLink({ text: data.getData('text/plain') });
+              if (link) {
+                event.preventDefault();
+                linkField.value = link;
+                importLink(link);
+              }
+            },
+          },
           h('span', { class: 'field-label' }, 'Image'),
-          h(
-            'div',
-            { class: 'artwork-row' },
-            artworkPreview,
-            h(
-              'div',
-              { class: 'stack' },
-              artworkName,
-              h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onClick: () => artworkInput.click() }, 'Choisir une image'), removeButton),
-            ),
-            artworkInput,
-          ),
+          artworkZone,
+          h('p', { class: 'artwork-hint' }, 'Dépose une image ou un lien ici, ou colle le lien d’une image :'),
+          h('div', { class: 'artwork-link' }, linkField, importButton),
           h('label', { class: 'switch' }, onOverlay, 'Afficher l’image sur les overlays pendant la lecture'),
         )
       : null;
@@ -1114,6 +1349,9 @@ export function openEditDialog(item) {
         class: 'stack',
         onSubmit: async (event) => {
           event.preventDefault();
+          if (importing) {
+            return;
+          }
           const patch = { title: title.value, message: message.value };
           if (isAudio) {
             patch.artworkOnOverlay = onOverlay.checked;
@@ -1139,17 +1377,16 @@ export function openEditDialog(item) {
       h('label', null, 'Titre', title),
       h('label', null, 'Message', message),
       artworkFields,
-      h('div', { class: 'actions' }, h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'), h('button', { class: 'btn', type: 'submit' }, 'Enregistrer')),
+      h('div', { class: 'actions' }, h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'), submit),
     );
-    return [h('h2', null, 'Modifier le média'), h('p', null, 'Un champ vide efface la valeur.'), form];
+    return [h('h2', null, 'Infos du média'), h('p', null, 'Un champ vide efface la valeur.'), form];
   });
 }
 
 export function openDeleteDialog(item) {
   confirmDialog('Supprimer ce média ?', `« ${itemTitle(item)} » sera retiré du board de la guilde.`, 'Supprimer', async () => {
     await run(() => api('DELETE', `/overlay/media-board/items/${encodeURIComponent(item.id)}`), 'Média supprimé.');
-    state.selectedId = null;
-    state.detailPinned = false;
+    applyView(CLOSED_VIEW);
     loadItems();
   });
 }

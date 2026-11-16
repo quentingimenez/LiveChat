@@ -12,6 +12,7 @@ use lc_protocol::{
 };
 
 use crate::config::PlaybackConfig;
+use crate::MIN_SHORT_VIDEO_DISPLAY_SEC;
 
 /// Durées d'un job au moment du dispatch (ou de la reprise).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,6 +26,9 @@ pub(crate) struct PlaybackTiming {
 }
 
 /// Calcule les durées d'un job au moment de son dispatch.
+///
+/// A video shorter than [`MIN_SHORT_VIDEO_DISPLAY_SEC`] gets at least that
+/// duration (before the guild cap).
 ///
 /// Base : `job.duration_sec` s'il est positif, sinon la durée du média, sinon
 /// la durée par défaut de la configuration. Le total est borné par
@@ -44,6 +48,14 @@ pub(crate) fn dispatch_timing(
     } else {
         media_duration.unwrap_or(config.default_duration_sec)
     };
+    // A very short video must be seen: its job lasts at least the minimum
+    // display time (the overlay extends the clip until the job ends). A
+    // resumed job keeps the duration fixed at its first dispatch.
+    let is_short_video = media.is_some_and(|asset| asset.kind == DomainMediaKind::Video)
+        && media_duration.is_some_and(|duration| duration < MIN_SHORT_VIDEO_DISPLAY_SEC);
+    if is_short_video && job.resume_offset_sec <= 0 {
+        total_duration_sec = total_duration_sec.max(MIN_SHORT_VIDEO_DISPLAY_SEC);
+    }
     if let Some(max_media_time) = guild
         .and_then(|guild| guild.max_media_time)
         .filter(|max| *max > 0)

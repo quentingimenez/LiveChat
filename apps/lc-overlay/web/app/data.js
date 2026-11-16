@@ -1,6 +1,7 @@
 // Loading and refreshing guild data (guild info, board items, queue, admin
 // lists) and applying the shell's guild list.
 
+import { pruneSelection } from './core/selection.js';
 import { api } from './core/api.js';
 import { mediaRefreshDelay } from './core/format.js';
 import { invoke } from './core/ipc.js';
@@ -179,6 +180,9 @@ function resetGuildData() {
   state.invites = [];
   state.search = '';
   state.kind = 'all';
+  state.selecting = false;
+  state.selection = new Set();
+  state.selectionAnchor = null;
   clearTimeout(itemsRefreshTimer);
   itemsRefreshTimer = null;
   itemsRefreshPending = false;
@@ -243,6 +247,7 @@ export async function loadItems(options) {
       return;
     }
     state.items = body.items || [];
+    state.selection = pruneSelection(state.selection, state.items.map((item) => item.id));
   } catch (error) {
     if (guildId !== state.activeGuildId) {
       return;

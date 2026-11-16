@@ -26,6 +26,7 @@ use crate::media::assets::{self, ReadyAsset};
 use crate::media::errors::{MediaServiceError, MediaServiceResult};
 use crate::media::quotas;
 use crate::media::settings::media_config_for_state;
+use crate::media::thumbnails::{spawn_thumbnail_fetch, ThumbnailContext};
 
 /// Pipeline partagé : un seul client HTTP et un seul sémaphore de concurrence
 /// par processus. La configuration serveur est immuable après le démarrage.
@@ -38,6 +39,8 @@ pub struct MediaService {
     storage: lc_media::storage::MediaStorage,
     db: Db,
     clock: Arc<dyn Clock>,
+    /// Hub told when a video gets its thumbnail (`None`: nobody to tell).
+    hub: Option<Arc<dyn crate::http::admin::hub::AdminHub>>,
 }
 
 impl MediaService {
@@ -51,6 +54,7 @@ impl MediaService {
             storage,
             db,
             clock,
+            hub: None,
         })
     }
 
@@ -74,6 +78,7 @@ impl MediaService {
             storage,
             db,
             clock: state.clock.clone(),
+            hub: Some(Arc::clone(&state.admin_hub)),
         })
     }
 
@@ -132,6 +137,8 @@ impl MediaService {
                     source_hash = %cached.source_hash,
                     "asset média réutilisé depuis le cache"
                 );
+                // A video cached before thumbnails existed gets one now.
+                spawn_thumbnail_fetch(&self.thumbnail_context(), &cached, source, None);
                 return Ok(cached);
             }
         }
@@ -169,7 +176,26 @@ impl MediaService {
 
         let ready_asset = assets::mark_ready(&self.db, asset.id, &ready, now, ttl).await?;
         self.attach_cover(&ready_asset, &ingested).await;
+        // The platform's thumbnail never delays the media: it is fetched on
+        // its own task once the media is ready.
+        spawn_thumbnail_fetch(
+            &self.thumbnail_context(),
+            &ready_asset,
+            ingested.source.clone(),
+            ingested.resolved.clone(),
+        );
         Ok(ready_asset)
+    }
+
+    /// What the background thumbnail tasks need.
+    fn thumbnail_context(&self) -> ThumbnailContext {
+        ThumbnailContext {
+            config: Arc::clone(&self.config),
+            storage: self.storage.clone(),
+            db: self.db.clone(),
+            clock: Arc::clone(&self.clock),
+            hub: self.hub.clone(),
+        }
     }
 
     /// Ingests a locally uploaded file and returns the `READY` asset.

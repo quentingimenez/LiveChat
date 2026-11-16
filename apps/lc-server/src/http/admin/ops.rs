@@ -655,6 +655,9 @@ pub(super) async fn purge_cache(
                             WHERE media_asset_id IS NOT NULL) \
             AND id NOT IN (SELECT artwork_asset_id FROM media_board_items \
                             WHERE artwork_asset_id IS NOT NULL) \
+            AND id NOT IN (SELECT a.cover_asset_id FROM media_assets a \
+                             JOIN media_board_items b ON b.media_asset_id = a.id \
+                            WHERE a.cover_asset_id IS NOT NULL) \
             AND id NOT IN (SELECT media_asset_id FROM playback_jobs \
                             WHERE media_asset_id IS NOT NULL \
                               AND status IN ('PENDING', 'PLAYING')) \

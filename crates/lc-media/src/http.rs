@@ -134,6 +134,40 @@ pub async fn get_text(
     })
 }
 
+/// Binary body of an HTTP response, read through the guarded client.
+#[derive(Debug)]
+pub struct HttpBytes {
+    /// Body bytes (at most the caller's limit).
+    pub body: Vec<u8>,
+    /// `Content-Type` of the final response, if any.
+    pub content_type: Option<String>,
+}
+
+/// Downloads a small binary body (a picture) through the guarded client.
+/// A body over `limit` bytes is an error.
+pub async fn get_bytes(
+    config: &DownloadConfig,
+    raw_url: &str,
+    timeout: Duration,
+    limit: u64,
+) -> MediaResult<HttpBytes> {
+    let (response, final_url) = send_guarded(config, Method::GET, raw_url, timeout, &[]).await?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(request_error_for_status(
+            status.as_u16(),
+            final_url.as_str(),
+        ));
+    }
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let body = read_body_bounded(response, limit, true).await?;
+    Ok(HttpBytes { body, content_type })
+}
+
 /// Récupère et désérialise une réponse JSON via le client gardé.
 pub async fn get_json<T: DeserializeOwned>(
     config: &DownloadConfig,

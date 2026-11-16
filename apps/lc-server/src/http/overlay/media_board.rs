@@ -258,6 +258,41 @@ pub(crate) async fn list_items_payload(
             },
             None => None,
         };
+        // A video's thumbnail: the platform's picture of a link, fetched in
+        // the background after the import (see `media::thumbnails`).
+        let thumbnail_id = if asset.kind == lc_domain::MediaKind::Video {
+            db.media_assets()
+                .cover_of(asset.id)
+                .await
+                .map_err(|db_error| {
+                    db_failure("overlay_media_board.list_item_thumbnail", &db_error)
+                })?
+        } else {
+            None
+        };
+        let thumbnail = match thumbnail_id {
+            Some(thumbnail_id) => match db.media_assets().get(thumbnail_id).await {
+                Ok(Some(picture)) if picture.is_ready() => match sign(&picture.id.to_canonical()) {
+                    Ok(url) => Some(serde_json::json!({
+                        "url": url,
+                        "width": picture.width,
+                        "height": picture.height,
+                    })),
+                    Err(error) => {
+                        tracing::warn!(%error, "signature de la miniature d'une vidéo impossible");
+                        None
+                    }
+                },
+                Ok(_) => None,
+                Err(db_error) => {
+                    return Err(db_failure(
+                        "overlay_media_board.list_item_thumbnail",
+                        &db_error,
+                    ));
+                }
+            },
+            None => None,
+        };
         let mut payload = item_payload(&row.item, &asset);
         if let Some(object) = payload.as_object_mut() {
             object.insert("mediaUrl".to_owned(), serde_json::json!(media_url));
@@ -274,6 +309,7 @@ pub(crate) async fn list_items_payload(
                 serde_json::json!(actor.can_edit_item(row.created_by_member_id.as_deref())),
             );
             object.insert("artwork".to_owned(), serde_json::json!(artwork));
+            object.insert("thumbnail".to_owned(), serde_json::json!(thumbnail));
             object.insert(
                 "artworkOnOverlay".to_owned(),
                 serde_json::json!(row.item.artwork_on_overlay),
@@ -1411,6 +1447,20 @@ async fn delete_item_and_release(
             // connexion pour rester atomique avec la suppression.
             sqlx::query(
                 "UPDATE media_assets SET last_accessed_at = ?, expires_at = ? WHERE id = ?",
+            )
+            .bind(lc_domain::time::datetime_to_ms(Utc::now()))
+            .bind(lc_domain::time::datetime_to_ms(released_expiry))
+            .bind(media_asset_id.to_canonical())
+            .execute(&mut *transaction)
+            .await
+            .map_err(lc_db::DbError::from)?;
+            // Its cover (a video's thumbnail, an audio's album art) was
+            // pinned with it, unless an item still shows it as its picture.
+            sqlx::query(
+                "UPDATE media_assets SET last_accessed_at = ?, expires_at = ? \
+                  WHERE id = (SELECT cover_asset_id FROM media_assets WHERE id = ?) \
+                    AND id NOT IN (SELECT artwork_asset_id FROM media_board_items \
+                                    WHERE artwork_asset_id IS NOT NULL)",
             )
             .bind(lc_domain::time::datetime_to_ms(Utc::now()))
             .bind(lc_domain::time::datetime_to_ms(released_expiry))

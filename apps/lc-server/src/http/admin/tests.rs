@@ -1288,6 +1288,115 @@ async fn auth_discord_callback_allowed_creates_a_session() {
     );
 }
 
+/// `(actor_method, actor_name, action, status)` of every audit row, oldest first.
+async fn login_audit_rows(harness: &Harness) -> Vec<(Option<String>, Option<String>, String, i64)> {
+    sqlx::query_as("SELECT actor_method, actor_name, action, status FROM admin_audit ORDER BY id")
+        .fetch_all(harness.db().pool())
+        .await
+        .expect("audit rows")
+}
+
+#[tokio::test]
+async fn a_secret_login_is_journaled_with_its_actor() {
+    let harness = Harness::new().await;
+    let (status, _, _) = harness
+        .send(harness.request_json_without_session(
+            Method::POST,
+            "/admin/auth/secret",
+            &json!({ "secret": TOKEN }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    assert_eq!(
+        login_audit_rows(&harness).await,
+        vec![(
+            Some("secret".to_owned()),
+            Some("secret".to_owned()),
+            "auth.login_secret".to_owned(),
+            204
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_discord_login_is_journaled_with_the_discord_name() {
+    let oauth = FakeOAuth::returning(discord_identity("1001", "Alice"));
+    let harness = discord_harness(oauth, "1001").await;
+    let (status, _, _) = harness
+        .send(harness.request_with_cookie(
+            Method::GET,
+            "/admin/auth/discord/callback?code=code-1&state=state-1",
+            "lc_admin_oauth_state=state-1",
+        ))
+        .await;
+    assert_eq!(status, StatusCode::FOUND);
+
+    assert_eq!(
+        login_audit_rows(&harness).await,
+        vec![(
+            Some("discord".to_owned()),
+            Some("Alice".to_owned()),
+            "auth.login_discord".to_owned(),
+            200
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_refused_discord_account_is_journaled_by_name() {
+    let oauth = FakeOAuth::returning(discord_identity("9999", "Mallory"));
+    let harness = discord_harness(oauth, "1001").await;
+    harness
+        .send(harness.request_with_cookie(
+            Method::GET,
+            "/admin/auth/discord/callback?code=code-1&state=state-1",
+            "lc_admin_oauth_state=state-1",
+        ))
+        .await;
+
+    assert_eq!(
+        login_audit_rows(&harness).await,
+        vec![(
+            Some("discord".to_owned()),
+            Some("Mallory".to_owned()),
+            "auth.login_discord".to_owned(),
+            403
+        )]
+    );
+}
+
+#[tokio::test]
+async fn failed_discord_callbacks_are_journaled_without_an_actor() {
+    let harness = discord_harness(FakeOAuth::failing(), "1001").await;
+    // Bad `state`, then a code Discord refuses to exchange.
+    harness
+        .send(harness.request_without_session(
+            Method::GET,
+            "/admin/auth/discord/callback?code=code-1&state=state-1",
+        ))
+        .await;
+    harness
+        .send(harness.request_with_cookie(
+            Method::GET,
+            "/admin/auth/discord/callback?code=code-1&state=state-1",
+            "lc_admin_oauth_state=state-1",
+        ))
+        .await;
+    // Starting the login is not journaled: nothing happened yet.
+    harness
+        .send(harness.request_without_session(Method::GET, "/admin/auth/discord"))
+        .await;
+
+    assert_eq!(
+        login_audit_rows(&harness).await,
+        vec![
+            (None, None, "auth.login_discord".to_owned(), 400),
+            (None, None, "auth.login_discord".to_owned(), 502),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn trusted_proxy_ignores_a_forged_first_forwarded_hop() {
     let harness = Harness::with_pairs(&[("ADMIN_TRUST_FORWARDED_FOR", "true")]).await;

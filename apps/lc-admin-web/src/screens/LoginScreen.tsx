@@ -81,7 +81,11 @@ export function LoginScreen({ methods, errorCode, serverError, onSubmitSecret }:
       <main class="login-main" id="content">
         <div class="login-box">
           <h2>Connexion</h2>
-          <p>Connecte-toi avec le compte Discord déclaré comme administrateur de ce serveur.</p>
+          {discordAvailable ? (
+            <p>Connecte-toi avec le compte Discord déclaré comme administrateur de ce serveur.</p>
+          ) : secretAvailable ? (
+            <p>Connecte-toi avec le secret d’administration de ce serveur.</p>
+          ) : null}
 
           {queryError ? (
             <div class="login-error" role="alert">

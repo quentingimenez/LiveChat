@@ -41,7 +41,6 @@ docker pull ghcr.io/quentingimenez/livechat-server:latest
 | [`deploy/`](deploy) | Dockerfile de production et Docker Compose du serveur |
 | [`docs/`](docs) | Documentation technique (`docs/rust/`) et charte graphique (`docs/brand/`) |
 | [`xtask/`](xtask) | Outillage du workspace (harnais de parité, etc.) |
-| `server/`, `overlay/` | Ancienne version 2.x (Node + Electron), gardée comme référence de retour arrière ; plus publiée |
 
 ## Développement
 
@@ -83,3 +82,10 @@ seules les releases stables de l'overlay doivent être *Latest*. Détails :
 
 La CI Rust ([`rust.yml`](.github/workflows/rust.yml)) vérifie le formatage, clippy,
 les tests, `cargo deny` et `cargo audit` sous Linux et Windows.
+
+## Historique
+
+L'ancienne version 2.x (serveur Node/Prisma et overlay Electron) a été retirée du dépôt ;
+ses sources sont archivées au tag `legacy-ts-2.0.2`
+(`git checkout legacy-ts-2.0.2 -- server overlay`). Les chemins `server/…` et
+`overlay/…` cités en commentaire dans le code Rust renvoient à ce tag.

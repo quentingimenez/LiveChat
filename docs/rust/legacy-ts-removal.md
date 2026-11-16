@@ -1,6 +1,13 @@
 # Suppression du legacy TypeScript — inventaire, mapping et checklist (Phase 9c)
 
-> **Statut :** stratégie prête, **aucune suppression effectuée** (task-25, 2026-11-10).
+> **Statut :** **suppression effectuée le 2026-11-16** (branche `chore/remove-legacy-ts`).
+> `server/`, `overlay/`, `.github/workflows/{server,overlay-ci}.yml` et les hooks husky
+> `pre-commit`/`pre-push` sont supprimés ; l'état d'avant est archivé au tag
+> `legacy-ts-2.0.2` (commit `9747b85`). Les goldens de parité (§4.1) n'ont jamais été
+> capturés : `cargo xtask parity compare` ne peut plus servir que contre une image 2.x
+> encore disponible. Les chemins `server/…` et `overlay/…` cités dans les commentaires du
+> code Rust et dans les docs de lane sont des références de provenance vers ce tag.
+> La suite du document est l'inventaire et la checklist d'origine (task-25, 2026-11-10).
 > **Périmètre de ce document :** préparation de la suppression réversible de `server/` et
 > `overlay/` après la bascule 3.0.0, avec inventaire, mapping vers Rust, références
 > d'outillage/CI/docs et critères go/no-go à 7 jours.

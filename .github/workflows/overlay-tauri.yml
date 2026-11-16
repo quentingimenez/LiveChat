@@ -15,7 +15,7 @@ name: overlay-tauri
 # épinglées par SHA (audit A7-003).
 on:
   push:
-    branches: [feat/rust-rebuild, main]
+    branches: [main]
     tags:
       - "overlay-v*"
     paths:

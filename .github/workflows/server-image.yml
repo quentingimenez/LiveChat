@@ -1,9 +1,8 @@
 name: server-image (GHCR — propriétaire unique)
 
 # Phase 9b — publication de l'image de production du serveur Rust (`lc-server`).
-# PROPRIÉTAIRE UNIQUE des tags `ghcr.io/<owner>/livechat-server` : l'ancien
-# workflow `server.yml` ne publie plus d'image (tests legacy uniquement), pour
-# éviter les tags concurrents (audit A7-003).
+# Sole owner of the `ghcr.io/<owner>/livechat-server` tags: no other workflow
+# publishes this image, so tags never compete (audit A7-003).
 # Déclencheurs : tag `server-v*` (release) ou lancement manuel avec `version`.
 # Non-régression locale : voir `deploy/server.Dockerfile` et `docs/rust/packaging.md`.
 

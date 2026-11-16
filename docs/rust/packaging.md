@@ -8,7 +8,7 @@
 
 ## 1. Objectif et périmètre
 
-L'image legacy `server/Dockerfile` (Node 20 + `pnpm dev`) est un des problèmes de l'audit
+L'ancienne image Node 2.x (Node 20 + `pnpm dev`, archivée au tag `legacy-ts-2.0.2`) était un des problèmes de l'audit
 (migration-plan, S7) : image de développement, pas de healthcheck, pas de migration au
 boot, exécution en root. La Phase 9b la remplace par une image de production :
 
@@ -35,14 +35,9 @@ proxy, le serveur écoute en HTTP sur le réseau interne).
 | `.github/workflows/server-image.yml` | CI : buildx amd64, push GHCR (**propriétaire unique des tags `livechat-server`**), provenance, smoke test ; actions épinglées par SHA. |
 | `docs/rust/packaging.md` | Ce document (contrat, runbooks, mesures, limites). |
 
-Le legacy `server/Dockerfile` et `server/docker-compose.yml` ne sont **pas** modifiés :
-ils restent la référence de rollback (image 2.0.1).
-
-Chaîne de release P0-4 : `server-image.yml` est le **seul** workflow autorisé à publier
-l'image GHCR ; `server.yml` (legacy Node) ne fait que tester et les workflows de release
-Electron (`overlay-release.yml`, `overlay-nightly.yml`) ont été retirés. Le canal overlay
-3.0.0 a son auto-update **explicitement désactivé** (voir
-[docs/rust/overlay-release.md](overlay-release.md) §6-§7).
+Chaîne de release : `server-image.yml` est le **seul** workflow qui publie l'image GHCR.
+Le serveur Node et l'overlay Electron 2.x, ainsi que leurs workflows, ont été supprimés du
+dépôt ; leurs sources restent consultables au tag `legacy-ts-2.0.2`.
 
 ## 3. Contrat de l'image
 
@@ -233,9 +228,8 @@ Dockerfile est inchangé ; en CI, le build se fait toujours sur un checkout prop
 
 ## 6. Publication CI et politique de tags
 
-**Propriétaire unique des tags GHCR.** Depuis P0-4 (A7-003), `server.yml` (Node legacy)
-ne publie plus d'image : seul `.github/workflows/server-image.yml` pousse
-`ghcr.io/<owner>/livechat-server`. Toutes les actions tierces des workflows CI/release
+**Propriétaire unique des tags GHCR.** Seul `.github/workflows/server-image.yml` pousse
+`ghcr.io/<owner>/livechat-server` (A7-003). Toutes les actions tierces des workflows CI/release
 sont épinglées par commit SHA.
 
 `.github/workflows/server-image.yml` :
@@ -278,18 +272,15 @@ réécriture).
 
 ### 7.2 Rollback
 
-Rollback = **image 2.0.1 (legacy Node) + base legacy sauvegardée**, conformément à
-migration-plan §5 et §9 : la migration de données écrivant dans un fichier neuf laisse la
-base legacy intacte. Procédure :
+Rollback = **image 3.x précédente + sauvegarde du volume prise avant l'upgrade** (§7.1
+étape 2) : les migrations au boot ne sont pas réversibles, l'ancienne image ne doit donc
+jamais redémarrer sur une base déjà migrée. Procédure :
 
-1. arrêter le conteneur 3.0.0 ;
-2. remettre en place la base legacy sauvegardée (fichier `sqlite.db` + éventuels
-   `-wal`/`-shm`) dans le volume attendu par l'image 2.0.1 ;
-3. redémarrer l'image `2.0.1` (legacy) et vérifier `/health` ;
-4. conserver les données 3.0.0 (ne pas écraser) pour analyse ; publier un correctif
-   avant toute nouvelle tentative.
-
-Le rollback ne dépend pas de la base 3.0.0 : c'est la base legacy qui fait foi.
+1. arrêter le conteneur de la nouvelle version ;
+2. mettre de côté son volume `/app/data` (ne pas écraser) pour analyse ;
+3. restaurer la sauvegarde (SQLite + éventuels `-wal`/`-shm`, médias) ;
+4. redémarrer l'image précédente, épinglée par version, et vérifier `/health` ;
+5. publier un correctif avant toute nouvelle tentative.
 
 ## 8. Limites, risques et dette
 
@@ -322,14 +313,11 @@ Le rollback ne dépend pas de la base 3.0.0 : c'est la base legacy qui fait foi.
   celui de `ffmpeg` Debian et de ses dépendances (~468 Mo). **Accepté pour la 3.0.0 par
   le Lead** (déviation documentée, voir §11) ; follow-up 3.1 : ffmpeg statique minimal ou
   worker média séparé.
-- Le legacy `server/Dockerfile` et `server/docker-compose.yml` n'ont pas été modifiés
-  (périmètre) ; la suppression/dépréciation se fera à la bascule.
 
 ## 10. Compose de production (v3)
 
 `deploy/docker-compose.yml` décrit le service `lc-server` en Compose Specification
-(Docker Compose v2.40+ ; pas de clé `version:` obsolète). Il ne remplace pas le legacy
-`server/docker-compose.yml` (référence de rollback 2.0.1).
+(Docker Compose v2.40+ ; pas de clé `version:` obsolète).
 
 ### 10.1 Contrat du service
 

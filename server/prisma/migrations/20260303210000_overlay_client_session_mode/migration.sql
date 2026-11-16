@@ -1,1 +1,0 @@
-ALTER TABLE "OverlayClient" ADD COLUMN "sessionMode" TEXT NOT NULL DEFAULT 'NORMAL';

@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import {
   SAY_CAPTION_MAX_CHARS,
   SAY_MAX_CHARS,
+  isSaySubmitKey,
   normalizeSpeech,
   sayErrorMessage,
   sayPayload,
@@ -95,4 +96,13 @@ test('sayErrorMessage: unknown code keeps the message already built', () => {
 test('sayErrorMessage: no code and no message falls back to the status', () => {
   assert.equal(sayErrorMessage(429), 'Trop de requêtes vers le serveur (429) : réessaie dans quelques minutes.');
   assert.equal(sayErrorMessage(undefined), 'La demande a été refusée.');
+});
+
+test('isSaySubmitKey: Enter sends, Shift+Enter and composition do not', () => {
+  assert.equal(isSaySubmitKey({ key: 'Enter' }), true);
+  assert.equal(isSaySubmitKey({ key: 'Enter', shiftKey: true }), false);
+  assert.equal(isSaySubmitKey({ key: 'Enter', ctrlKey: true }), false);
+  assert.equal(isSaySubmitKey({ key: 'Enter', isComposing: true }), false);
+  assert.equal(isSaySubmitKey({ key: 'a' }), false);
+  assert.equal(isSaySubmitKey(undefined), false);
 });

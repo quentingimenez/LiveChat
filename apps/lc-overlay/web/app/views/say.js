@@ -4,7 +4,7 @@
 
 import { api } from '../core/api.js';
 import { h } from '../core/dom.js';
-import { SAY_CAPTION_MAX_CHARS, sayErrorMessage, sayPayload, speechCounter } from '../core/say-helpers.js';
+import { SAY_CAPTION_MAX_CHARS, isSaySubmitKey, sayErrorMessage, sayPayload, speechCounter } from '../core/say-helpers.js';
 import { state } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import { openDialog } from '../core/ui.js';
@@ -17,7 +17,7 @@ export function openSayDialog() {
       class: 'field say-text',
       rows: '5',
       required: true,
-      placeholder: 'Ce que le bot va dire à voix haute',
+      placeholder: 'Ce que le bot va dire à voix haute (Maj+Entrée : retour à la ligne)',
       'aria-describedby': 'say-counter',
     });
     const counter = h('span', { id: 'say-counter', class: 'say-counter', 'aria-live': 'polite' });
@@ -45,6 +45,17 @@ export function openSayDialog() {
     text.addEventListener('input', () => {
       showError('');
       refresh();
+    });
+
+    // Enter sends, Shift+Enter adds a line break.
+    text.addEventListener('keydown', (event) => {
+      if (!isSaySubmitKey(event)) {
+        return;
+      }
+      event.preventDefault();
+      if (!submit.disabled) {
+        form.requestSubmit();
+      }
     });
 
     const form = h(

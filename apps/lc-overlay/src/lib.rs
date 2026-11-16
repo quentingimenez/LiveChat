@@ -218,6 +218,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             commands::guild_set_muted,
             commands::guild_leave,
             commands::guild_api,
+            commands::board_import,
             commands::settings_get,
             commands::settings_set,
             commands::settings_identify_displays,

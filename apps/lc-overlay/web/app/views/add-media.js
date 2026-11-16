@@ -158,10 +158,8 @@ export function openAddDialog(options) {
     );
 
     setMode('link');
-    if (prefill) {
-      // The link is there: the title is the next thing to type.
-      setTimeout(() => linkTitle.focus(), 0);
-    }
+    // The link is the first thing to type; once prefilled, the title is next.
+    setTimeout(() => (prefill ? linkTitle : linkUrl).focus(), 0);
     return [
       h('h2', null, 'Ajouter un média'),
       h('p', null, 'Vidéo, image ou son : lien TikTok, X, YouTube ou direct, ou fichier de ton ordinateur.'),

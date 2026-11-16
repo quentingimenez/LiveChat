@@ -351,8 +351,8 @@ function buildCard(entry) {
       'data-item-id': item.id,
       'aria-label': `Détails de ${itemTitle(item)}`,
       onClick: (event) => selectItem(entry.item.id, event.detail),
-      // A double click plays the media, like the Play button. Its two clicks
-      // leave the drawer pinned on it (see cardClicked).
+      // A double click plays the media, like the Play button. It leaves the
+      // drawer as it was (see selectItem).
       onDblclick: () => {
         if (can('play')) {
           playItem(entry.item);
@@ -651,9 +651,27 @@ function clearDrawerTimers() {
   leaveTimer = null;
 }
 
+// A mouse click waits this long before toggling the drawer, so that a double
+// click (which plays the media) neither opens nor closes it.
+const DOUBLE_CLICK_MS = 250;
+let clickTimer = null;
+
 // A click pins the drawer on a media (a second click on it closes it).
 // `clickCount` is the `detail` of the click event, when there is one.
 export function selectItem(id, clickCount) {
+  clearTimeout(clickTimer);
+  clickTimer = null;
+  if (clickCount === 1) {
+    clickTimer = setTimeout(() => {
+      clickTimer = null;
+      toggleDetail(id, 1);
+    }, DOUBLE_CLICK_MS);
+    return;
+  }
+  toggleDetail(id, clickCount);
+}
+
+function toggleDetail(id, clickCount) {
   clearDrawerTimers();
   applyView(cardClicked(currentView(), id, clickCount));
   state.capturing = false;
@@ -720,6 +738,11 @@ function syncDetail() {
   const current = board.querySelector(':scope > .detail');
   const next = selected ? renderDetail(selected) : null;
   if (current && next) {
+    // A refresh of the same media (a playback badge, a favorite) must not
+    // replay the drawer's entry animation.
+    if (current.dataset.itemId === next.dataset.itemId) {
+      next.classList.add('is-refresh');
+    }
     current.replaceWith(next);
   } else if (current) {
     current.remove();
@@ -954,6 +977,7 @@ function renderDetail(item) {
     'aside',
     {
       class: `detail${state.detailPinned && state.selectedId === item.id ? ' is-pinned' : ' is-peek'}`,
+      'data-item-id': item.id,
       'aria-label': 'Détails du média',
       onMouseenter: () => clearTimeout(leaveTimer),
       onMouseleave: scheduleHoverClose,

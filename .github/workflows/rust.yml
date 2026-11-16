@@ -1,7 +1,6 @@
 name: rust
 
-# Gate CI du rebuild Rust (serveur + overlay Tauri). Remplace à terme server.yml
-# et overlay-ci.yml (legacy Electron/Node conservés pour le rollback 2.0.1).
+# CI gate of the Rust workspace (lc-server, lc-overlay, crates, xtask).
 #
 # Politique :
 # - actions tierces épinglées par commit SHA (audit A7-003) ;
@@ -11,11 +10,10 @@ name: rust
 #   cargo-audit ne lit pas deny.toml. Tenir les deux listes synchronisées.
 on:
   push:
-    branches: [feat/rust-rebuild, main]
+    branches: [main]
     paths:
       - "crates/**"
       - "apps/**"
-      - "apps/lc-admin-web/**"
       - "xtask/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -31,7 +29,6 @@ on:
     paths:
       - "crates/**"
       - "apps/**"
-      - "apps/lc-admin-web/**"
       - "xtask/**"
       - "Cargo.toml"
       - "Cargo.lock"

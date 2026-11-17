@@ -48,6 +48,8 @@ pub struct ReadyAsset {
     pub source_hash: String,
     /// URL canonique de la source résolue.
     pub source_url: String,
+    /// Titre réel de la source (vidéo, tweet, nom de fichier…), si connu.
+    pub source_title: Option<String>,
     /// Type média normalisé.
     pub kind: MediaKind,
     /// Type MIME du fichier persisté.
@@ -73,6 +75,11 @@ impl ReadyAsset {
         Self {
             source_hash: ingested.source.source_hash.clone(),
             source_url: ingested.source.canonical_url.clone(),
+            source_title: lc_media::title::source_title(
+                &ingested.source,
+                ingested.resolved.as_ref(),
+                ingested.download.title.as_deref(),
+            ),
             kind: normalized.kind,
             mime: normalized.mime.clone(),
             duration_sec: normalized.duration_sec,
@@ -166,6 +173,9 @@ pub async fn begin_processing(
         id: MediaAssetId::new_v4(),
         source_hash: source.source_hash.clone(),
         source_url: source.canonical_url.clone(),
+        // Le titre source n'est connu qu'une fois le pipeline terminé : il est
+        // écrit par `mark_ready`.
+        source_title: None,
         // Le legacy créait la ligne provisoire en `VIDEO` /
         // `application/octet-stream` avant correction par le pipeline.
         kind: MediaKind::Video,
@@ -207,13 +217,15 @@ pub async fn mark_ready(
 ) -> MediaServiceResult<MediaAsset> {
     sqlx::query(
         "UPDATE media_assets \
-            SET source_hash = ?, source_url = ?, kind = ?, mime = ?, duration_sec = ?, \
-                width = ?, height = ?, is_vertical = ?, storage_path = ?, size_bytes = ?, \
-                status = 'READY', error = NULL, last_accessed_at = ?, expires_at = ? \
+            SET source_hash = ?, source_url = ?, source_title = ?, kind = ?, mime = ?, \
+                duration_sec = ?, width = ?, height = ?, is_vertical = ?, storage_path = ?, \
+                size_bytes = ?, status = 'READY', error = NULL, last_accessed_at = ?, \
+                expires_at = ? \
           WHERE id = ?",
     )
     .bind(ready.source_hash.as_str())
     .bind(ready.source_url.as_str())
+    .bind(ready.source_title.as_deref())
     .bind(ready.kind.as_db_str())
     .bind(ready.mime.as_str())
     .bind(ready.duration_sec)
@@ -321,6 +333,7 @@ pub async fn attach_cover(
             id: MediaAssetId::new_v4(),
             source_hash,
             source_url,
+            source_title: None,
             kind: MediaKind::Image,
             mime: cover.mime.clone(),
             duration_sec: None,
@@ -462,6 +475,7 @@ mod tests {
                 mime: Some("video/mp4".into()),
                 size_bytes: 1_234,
                 source_url: url.to_owned(),
+                title: None,
             },
             normalized: NormalizedMedia {
                 kind: MediaKind::Video,
@@ -504,6 +518,8 @@ mod tests {
         assert_eq!(asset.height, Some(720));
         assert_eq!(asset.size_bytes, 1_234);
         assert_eq!(asset.storage_path, "/tmp/video.mp4");
+        // Source directe : le titre est le nom de fichier de l'URL.
+        assert_eq!(asset.source_title.as_deref(), Some("video"));
         assert!(asset.error.is_none());
         assert!(asset.is_ready());
     }
@@ -584,6 +600,7 @@ mod tests {
         let ready = ReadyAsset {
             source_hash: source.source_hash.clone(),
             source_url: source.canonical_url.clone(),
+            source_title: Some("Clip en cache".into()),
             kind: MediaKind::Video,
             mime: "video/mp4".into(),
             duration_sec: Some(10),
@@ -602,6 +619,8 @@ mod tests {
             .expect("recherche")
             .expect("asset réutilisable");
         assert_eq!(reused.id, asset.id);
+        // Un hit de cache garde le titre source écrit au passage READY.
+        assert_eq!(reused.source_title.as_deref(), Some("Clip en cache"));
 
         // Fichier absent : pas de réutilisation.
         tokio::fs::remove_file(&path).await.expect("suppression");
@@ -627,6 +646,7 @@ mod tests {
             id: MediaAssetId::new_v4(),
             source_hash: "hash".into(),
             source_url: "https://example.com".into(),
+            source_title: None,
             kind: MediaKind::Image,
             mime: "image/jpeg".into(),
             duration_sec: None,

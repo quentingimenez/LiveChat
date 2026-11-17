@@ -407,6 +407,7 @@ impl MediaPipeline {
             mime: Some(mime),
             size_bytes,
             source_url: source.canonical_url.clone(),
+            title: None,
         };
         let step = std::time::Instant::now();
         let normalized = self

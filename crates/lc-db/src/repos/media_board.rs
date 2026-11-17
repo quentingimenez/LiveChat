@@ -231,19 +231,23 @@ impl MediaBoardRepository {
         if previous == media_asset_id {
             return Ok(Some(previous));
         }
-        sqlx::query("UPDATE media_board_items SET media_asset_id = ? WHERE id = ?")
+        let updated = sqlx::query("UPDATE media_board_items SET media_asset_id = ? WHERE id = ?")
             .bind(media_asset_id.to_canonical())
             .bind(id.to_canonical())
             .execute(&mut *transaction)
-            .await
-            .map_err(|error| {
-                conflict_on_unique(
-                    error,
-                    format!(
-                        "le média {media_asset_id} est déjà présent sur le board de la guilde {guild_id}"
-                    ),
-                )
-            })?;
+            .await;
+        if let Err(error) = updated {
+            // Roll back now: a dropped transaction is only rolled back once its
+            // connection is reused, and until then it keeps the write lock, so
+            // the next write could fail with "database is locked".
+            transaction.rollback().await?;
+            return Err(conflict_on_unique(
+                error,
+                format!(
+                    "le média {media_asset_id} est déjà présent sur le board de la guilde {guild_id}"
+                ),
+            ));
+        }
         let remaining: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM media_board_items \
               WHERE media_asset_id = ? OR artwork_asset_id = ?",

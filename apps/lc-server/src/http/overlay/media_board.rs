@@ -476,6 +476,38 @@ pub(crate) struct CompletedBoardItem {
     pub item: MediaBoardItem,
 }
 
+/// Titre demandé pour le nouvel item d'un board.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ItemTitle {
+    /// Titre saisi par le membre (lien, téléversement, édition) : laissé vide,
+    /// il est remplacé par le titre source de l'asset — le vrai titre du lien.
+    Requested(Option<String>),
+    /// Titre d'un item copié depuis le board d'une autre guilde : conservé
+    /// tel quel, même vide (l'import doit garder le titre de l'item source).
+    Copied(Option<String>),
+}
+
+impl ItemTitle {
+    /// Titre final de l'item, avec le repli éventuel sur le titre source.
+    fn resolve(self, source_title: Option<&str>) -> Option<String> {
+        let (requested, use_source_title) = match self {
+            Self::Requested(title) => (title, true),
+            Self::Copied(title) => (title, false),
+        };
+        let typed = requested
+            .as_deref()
+            .map(|value| truncate_chars(value.trim(), TITLE_MAX_CHARS))
+            .filter(|value| !value.is_empty());
+        match typed {
+            Some(title) => Some(title),
+            // Empty title: the link's real title, already normalized by the
+            // pipeline (trimmed, whitespace collapsed, at most 240 characters).
+            None if use_source_title => source_title.map(str::to_owned),
+            None => None,
+        }
+    }
+}
+
 /// Business failure of an asynchronous ingestion (protocol vocabulary).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IngestionFailure {
@@ -498,7 +530,7 @@ pub(crate) async fn complete_board_item(
     auth: &AuthedOverlayClient,
     db: &Db,
     asset: MediaAsset,
-    title: Option<String>,
+    title: ItemTitle,
     message: Option<String>,
     now: UtcDateTime,
 ) -> Result<CompletedBoardItem, IngestionFailure> {
@@ -566,10 +598,8 @@ pub(crate) async fn complete_board_item(
         id: MediaBoardItemId::new_v4(),
         guild_id: auth.guild_id().clone(),
         media_asset_id: asset.id,
-        title: title
-            .as_deref()
-            .map(|value| truncate_chars(value.trim(), TITLE_MAX_CHARS))
-            .filter(|value| !value.is_empty()),
+        // Empty title: the asset's source title (see [`ItemTitle::resolve`]).
+        title: title.resolve(asset.source_title.as_deref()),
         message: message
             .as_deref()
             .map(|value| truncate_chars(value.trim(), MESSAGE_MAX_CHARS))
@@ -1683,8 +1713,43 @@ fn coerce_flag(value: Option<&serde_json::Value>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::coerce_flag;
+    use super::{coerce_flag, ItemTitle};
     use serde_json::json;
+
+    #[test]
+    fn a_requested_title_falls_back_to_the_source_title_when_empty() {
+        let source = Some("Titre de la vidéo");
+        assert_eq!(
+            ItemTitle::Requested(None).resolve(source).as_deref(),
+            source
+        );
+        assert_eq!(
+            ItemTitle::Requested(Some("   ".to_owned()))
+                .resolve(source)
+                .as_deref(),
+            source
+        );
+        // A typed title always wins.
+        assert_eq!(
+            ItemTitle::Requested(Some("  Mon titre ".to_owned()))
+                .resolve(source)
+                .as_deref(),
+            Some("Mon titre")
+        );
+        assert_eq!(ItemTitle::Requested(None).resolve(None), None);
+    }
+
+    #[test]
+    fn a_copied_title_never_takes_the_source_title() {
+        let source = Some("Titre de la vidéo");
+        assert_eq!(ItemTitle::Copied(None).resolve(source), None);
+        assert_eq!(
+            ItemTitle::Copied(Some("Titre copié".to_owned()))
+                .resolve(source)
+                .as_deref(),
+            Some("Titre copié")
+        );
+    }
 
     #[test]
     fn coerce_flag_accepts_legacy_truthy_values() {

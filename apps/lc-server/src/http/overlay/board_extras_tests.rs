@@ -21,6 +21,7 @@ async fn asset(harness: &Harness, name: &str, kind: MediaKind, mime: &str) -> Me
         id: MediaAssetId::new_v4(),
         source_hash: format!("hash-{name}"),
         source_url: format!("https://example.test/{name}"),
+        source_title: None,
         kind,
         mime: mime.to_owned(),
         duration_sec: (kind != MediaKind::Image).then_some(30),

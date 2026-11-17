@@ -383,6 +383,7 @@ async fn seed_media_asset(db: &Db, duration_sec: i64) -> MediaAssetId {
         id: MediaAssetId::new_v4(),
         source_hash: format!("hash-{}", MediaAssetId::new_v4()),
         source_url: "https://example.invalid/video.mp4".to_owned(),
+        source_title: None,
         kind: DomainMediaKind::Video,
         mime: "video/mp4".to_owned(),
         duration_sec: Some(duration_sec),

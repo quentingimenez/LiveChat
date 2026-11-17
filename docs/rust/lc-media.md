@@ -281,7 +281,12 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
 - `build_edit_args` (pur, testé) construit le `-filter_complex` : `split`/`trim`/`concat`
   pour plusieurs plages, puis image = recadrage → rotation (`transpose`) → miroirs →
   `reverse` → `setpts` → fondus → côtés pairs sous la hauteur maximale ; son =
-  `areverse` → `atempo` chaînés (0,5 à 2 chacun) → `volume` → `afade`. Sorties : MP4
+  `areverse` → `atempo` chaînés (0,5 à 2 chacun) → `volume` → `afade`. `reverse`
+  garde toutes les images en mémoire : une vidéo inversée de plus de 5 s
+  (`REVERSE_PIECE_SEC`) est découpée en morceaux égaux, chacun recadré et inversé
+  par son propre ffmpeg (MKV H.264 CRF 14 + PCM), recollés du dernier au premier
+  par le démultiplexeur concat ; vitesse, volume, fondus et format s'appliquent
+  ensuite à l'ensemble. Sorties : MP4
   H.264 yuv420p + AAC `+faststart`, MP3 192 kb/s, ou GIF avec palette (12 i/s, 480 px).
 - `apply_edit` l'exécute (repli libx264 si NVENC échoue).
 - `MediaPipeline::render_edit(input, kind, &recipe)` sonde le fichier, revalide la

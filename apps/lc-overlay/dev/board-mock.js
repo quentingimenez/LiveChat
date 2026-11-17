@@ -5,7 +5,9 @@
 //
 // Options de l'URL : ?role=admin|member|guest, ?empty (aucune guilde),
 // ?removed (un retrait de guilde en attente au démarrage), ?settings (la page
-// Paramètres est demandée au démarrage via board_take_pending_view).
+// Paramètres est demandée au démarrage via board_take_pending_view),
+// ?update=ready|downloading (état de l'updater au démarrage, pour voir le
+// bandeau de mise à jour de la board).
 // Depuis la console : `__mock.emit(event, payload)`,
 // `__mock.removeGuild(guildId, reason)`, `__mock.finishPlaying()`,
 // `__mock.reconnect(guildId)` (coupure puis retour du WebSocket),
@@ -71,9 +73,27 @@
 
   const now = Date.now();
 
+  // `?update=ready|downloading` : état de l'updater au démarrage, pour prévoir
+  // le bandeau de mise à jour de la board (« Plus tard » et l'erreur
+  // d'installation sont testables aussi).
+  const UPDATE_VERSION = '3.2.0';
+
+  function initialUpdate() {
+    const flag = new URLSearchParams(location.search).get('update');
+    if (flag !== 'ready' && flag !== 'downloading') {
+      return { state: 'idle', currentVersion: '3.1.0', availableVersion: null, message: 'Les mises à jour sont vérifiées automatiquement.' };
+    }
+    return {
+      state: flag,
+      currentVersion: '3.1.0',
+      availableVersion: UPDATE_VERSION,
+      message: flag === 'ready' ? `La version ${UPDATE_VERSION} est prête à être installée.` : `Téléchargement de la version ${UPDATE_VERSION}…`,
+    };
+  }
+
   const settings = {
     version: '3.1.0',
-    update: { state: 'idle', currentVersion: '3.1.0', availableVersion: null, message: 'Les mises à jour sont vérifiées automatiquement.' },
+    update: initialUpdate(),
     displays: [
       { index: 0, key: 'display-0', label: 'Écran 1 — 2560 × 1440 (principal)', width: 2560, height: 1440, primary: true },
       { index: 1, key: 'display-1', label: 'Écran 2 — 1920 × 1080', width: 1920, height: 1080, primary: false },

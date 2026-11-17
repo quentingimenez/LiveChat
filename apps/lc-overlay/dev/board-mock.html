@@ -6,7 +6,8 @@
     <title>LiveChat — harnais board</title>
     <!-- Harnais de dev : même structure que web/board.html, shell Tauri simulé.
          Options : ?role=admin|member|guest, ?empty (aucune guilde),
-         ?settings (page Paramètres demandée au démarrage). -->
+         ?settings (page Paramètres demandée au démarrage),
+         ?update=ready|downloading (bandeau de mise à jour). -->
     <link rel="stylesheet" href="../web/app/app.css" />
     <script src="./board-mock.js"></script>
   </head>
@@ -14,6 +15,7 @@
     <div id="app" class="app">
       <nav id="rail" class="rail" aria-label="Guildes"></nav>
       <div class="main">
+        <div id="update-notice" class="update-notice" role="status" hidden></div>
         <header id="header" class="header"></header>
         <main id="view" class="view"></main>
         <footer id="onair" class="onair" hidden></footer>

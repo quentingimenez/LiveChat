@@ -20,6 +20,7 @@ import { avatarNode, h } from '../core/dom.js';
 import { invoke, listen } from '../core/ipc.js';
 import { guildLabel, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
+import { currentUpdateStatus, setUpdateStatus } from '../core/update-status.js';
 import { applyGuilds } from '../data.js';
 import { renderHeader } from './header.js';
 import { renderRail } from './rail.js';
@@ -104,6 +105,9 @@ export function initDeviceSettings() {
       return;
     }
     deviceSettings = payload;
+    // The update status lives in core/update-status.js: the Settings page and
+    // the board banner read the same value.
+    setUpdateStatus(payload.update);
     loadError = null;
     // Do not rebuild the controls under the pointer while a control is edited.
     if (settingsShown() && !settingsControlActive()) {
@@ -132,6 +136,7 @@ export async function loadDeviceSettings() {
       throw new Error('Réponse inattendue du shell.');
     }
     deviceSettings = view;
+    setUpdateStatus(view.update);
   } catch (error) {
     loadError = errorMessage(error);
   } finally {
@@ -591,7 +596,7 @@ function renderStartup(settings) {
 }
 
 function renderAbout(settings) {
-  const update = settings.update || {};
+  const update = currentUpdateStatus() || {};
   const busy = checkingUpdates || update.state === 'checking' || update.state === 'downloading';
   const button =
     update.state === 'ready'
@@ -793,8 +798,8 @@ async function checkUpdates() {
   renderView();
   try {
     const status = await invoke('overlay_check_updates');
-    if (status && typeof status === 'object' && deviceSettings) {
-      deviceSettings.update = status;
+    if (status && typeof status === 'object') {
+      setUpdateStatus(status);
     }
   } catch (error) {
     updateError = errorMessage(error);

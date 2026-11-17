@@ -10,16 +10,26 @@
 //!
 //! The task holds no reference to the HTTP connection: dropping the client
 //! request (proxy timeout, closed tab) never cancels the work.
+//!
+//! A `playOnce` ingestion ([`BoardTarget::PlayOnce`]) skips the board entirely:
+//! the ready asset becomes a playback job for the guild's overlays (the same
+//! creation as `http/ingest/submit.rs` without `saveToBoard`), the registry
+//! keeps the `jobId` and only the requesting client is notified — no
+//! `board.changed`, since no item was added.
 
 use std::path::PathBuf;
 
+use lc_domain::entities::{MediaAsset, PlaybackJob};
 use lc_domain::{MediaBoardItemId, MediaKind};
 use lc_media::edit::EditRecipe;
 use lc_protocol::{
     BoardChange, BoardChangedPayload, MediaIngestionError, MediaIngestionPayload, ServerMessage,
+    MAX_MEDIA_TEXT_CHARS,
 };
 
 use crate::app::AppState;
+use crate::media::hook;
+use crate::media::jobs::{self, JobSpec};
 use crate::media::service::MediaService;
 
 use super::auth::AuthedOverlayClient;
@@ -37,6 +47,8 @@ pub(super) enum BoardTarget {
     /// The media of this existing item is replaced; the item keeps its id,
     /// title, message, author, date, favorites and picture.
     Replace(MediaBoardItemId),
+    /// No board item: the media is played once on the guild's overlays.
+    PlayOnce,
 }
 
 /// The ingestion sources accepted by the board.
@@ -173,36 +185,109 @@ async fn run_ingestion(
     // The item is dated when it reaches the board, not when it was requested:
     // a long conversion must not land below the media added in the meantime.
     let completed = match (ingested, target) {
-        (Ok(asset), BoardTarget::NewItem) => {
-            complete_board_item(
-                &state,
-                &auth,
-                service.db(),
-                asset,
-                // Titre vide → titre source de l'asset (vrai titre du lien).
-                ItemTitle::Requested(title),
-                message,
-                state.clock.now(),
-            )
-            .await
-        }
-        (Ok(asset), BoardTarget::Replace(item_id)) => {
-            replace_board_item_media(
-                &state,
-                &auth,
-                service.db(),
-                item_id,
-                asset,
-                state.clock.now(),
-            )
-            .await
-        }
+        (Ok(asset), BoardTarget::NewItem) => complete_board_item(
+            &state,
+            &auth,
+            service.db(),
+            asset,
+            // An empty title falls back to the asset's source title.
+            ItemTitle::Requested(title),
+            message,
+            state.clock.now(),
+        )
+        .await
+        .map(CompletedIngestion::BoardItem),
+        (Ok(asset), BoardTarget::Replace(item_id)) => replace_board_item_media(
+            &state,
+            &auth,
+            service.db(),
+            item_id,
+            asset,
+            state.clock.now(),
+        )
+        .await
+        .map(CompletedIngestion::BoardItem),
+        (Ok(asset), BoardTarget::PlayOnce) => complete_play_once(
+            &state,
+            &auth,
+            service.db(),
+            asset,
+            message,
+            state.clock.now(),
+        )
+        .await
+        .map(CompletedIngestion::PlaybackJob),
         (Err(failure), _) => Err(failure),
     };
 
     match completed {
-        Ok(completed) => finish_success(&state, &auth, &ingestion_id, completed),
+        Ok(CompletedIngestion::BoardItem(completed)) => {
+            finish_success(&state, &auth, &ingestion_id, completed)
+        }
+        Ok(CompletedIngestion::PlaybackJob(job)) => {
+            finish_play_once(&state, &auth, &ingestion_id, job)
+        }
         Err(failure) => finish_failure(&state, &auth, &ingestion_id, failure),
+    }
+}
+
+/// Business outcome of a completed ingestion.
+#[derive(Debug)]
+enum CompletedIngestion {
+    /// The media reached the board (new, deduplicated or replaced item).
+    BoardItem(super::media_board::CompletedBoardItem),
+    /// The media became a playback job without any board item (play once).
+    PlaybackJob(PlaybackJob),
+}
+
+/// Author shown with a play-once job: the overlay member's live profile, else
+/// the client's default author (same rule as a board playback request).
+fn play_once_author(auth: &AuthedOverlayClient) -> (Option<String>, Option<String>) {
+    match &auth.member {
+        Some(member) => (Some(member.display_name.clone()), member.avatar.clone()),
+        None => (
+            auth.client.default_author_name.clone(),
+            auth.client.default_author_image.clone(),
+        ),
+    }
+}
+
+/// Creates the playback job of a play-once ingestion (no board item).
+///
+/// Mirrors `http/ingest/submit.rs` when `saveToBoard` is false: the ready asset
+/// becomes a `PENDING` job for the guild — no quota check, no pinning — the
+/// message is shown with it, the overlay member is the author, and the realtime
+/// hook is notified so the playback engine picks the job up at once.
+async fn complete_play_once(
+    state: &AppState,
+    auth: &AuthedOverlayClient,
+    db: &lc_db::Db,
+    asset: MediaAsset,
+    message: Option<String>,
+    now: time::UtcDateTime,
+) -> Result<PlaybackJob, IngestionFailure> {
+    let (author_name, author_image) = play_once_author(auth);
+    let text = message
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| text.chars().take(MAX_MEDIA_TEXT_CHARS).collect::<String>());
+    let spec = JobSpec {
+        guild_id: auth.guild_id().clone(),
+        media: Some(&asset),
+        text: text.as_deref(),
+        show_text: text.is_some(),
+        author_name: author_name.as_deref(),
+        author_image: author_image.as_deref(),
+        duration_sec: None,
+        priority: 0,
+    };
+    match jobs::create_for_ingest(db, state.runtime().default_duration(), spec, now).await {
+        Ok(job) => {
+            hook::notify_ingested(&job).await;
+            Ok(job)
+        }
+        Err(service_error) => Err(media_service_failure(&service_error)),
     }
 }
 
@@ -227,6 +312,7 @@ fn finish_success(
         ok: true,
         created: Some(completed.created),
         item_id: Some(item_id.clone()),
+        job_id: None,
         error: None,
     };
     state.admin_hub.send_to_client(
@@ -247,6 +333,35 @@ fn finish_success(
             ServerMessage::BoardChanged(BoardChangedPayload { change, item_id }),
         );
     }
+}
+
+/// Updates the registry and sends the `media.ingestion` payload of a
+/// play-once, carrying the created job instead of a board item.
+///
+/// Nothing was added to the board, so no `board.changed` is broadcast.
+fn finish_play_once(
+    state: &AppState,
+    auth: &AuthedOverlayClient,
+    ingestion_id: &str,
+    job: PlaybackJob,
+) {
+    let job_id = job.id.to_canonical();
+    state
+        .ingestions
+        .complete_job(ingestion_id, job_id.clone(), state.clock.now());
+
+    let payload = MediaIngestionPayload {
+        ingestion_id: ingestion_id.to_owned(),
+        ok: true,
+        created: Some(false),
+        item_id: None,
+        job_id: Some(job_id),
+        error: None,
+    };
+    state.admin_hub.send_to_client(
+        &auth.client.id.as_uuid(),
+        ServerMessage::MediaIngestion(payload),
+    );
 }
 
 /// Updates the registry and sends the failed `media.ingestion` payload.
@@ -270,6 +385,7 @@ fn finish_failure(
         ok: false,
         created: None,
         item_id: None,
+        job_id: None,
         error: Some(MediaIngestionError {
             code: failure.code.to_owned(),
             message: failure.message,

@@ -938,7 +938,7 @@ mod tests {
         assert_eq!(output.path, Some(download.clone()));
         assert_eq!(output.title.as_deref(), Some("download.mp4"));
 
-        // Titre vide puis chemin : aucun titre.
+        // Empty title then path: no title.
         let stdout = format!("\n{}\n", download.to_string_lossy());
         assert_eq!(parse_ytdlp_output(&stdout, temp_dir).title, None);
     }

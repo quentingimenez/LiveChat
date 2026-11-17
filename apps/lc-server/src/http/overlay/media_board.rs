@@ -71,7 +71,7 @@ use axum::Json;
 use lc_domain::rights::{Action, Surface};
 use lc_domain::{
     GuildId, GuildRole, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, MediaKind,
-    OverlayClientId,
+    OverlayClientId, Permission,
 };
 use lc_protocol::{BoardChange, BoardChangedPayload, ServerMessage};
 use serde::Deserialize;
@@ -84,6 +84,7 @@ use crate::media::assets;
 use crate::media::errors::MediaServiceError;
 
 use super::auth::AuthedOverlayClient;
+use super::guild::require;
 use super::media_ingestion::{spawn_ingestion, BoardTarget, IngestionInput};
 use super::{db, db_failure, error, is_conflict, json_response, now, ActorInfo};
 
@@ -152,6 +153,10 @@ pub(crate) struct CreateItemRequest {
     /// Force une nouvelle ingestion même si le média est déjà en base.
     #[serde(default)]
     force_refresh: Option<serde_json::Value>,
+    /// `true` : le média est joué une fois sur les overlays de la guilde sans
+    /// créer d'item de board (droit `TriggerPlayback` au lieu d'`AddMedia`).
+    #[serde(default)]
+    play_once: bool,
 }
 
 /// Board list shared by `GET /overlay/media-board/items` and the admin console.
@@ -381,6 +386,14 @@ pub async fn create_item(
             return json_rejection_error(rejection);
         }
     };
+    // « Jouer une fois » déclenche une lecture au lieu d'ajouter au board :
+    // c'est le droit d'un déclenchement manuel (`TriggerPlayback`), pas
+    // `AddMedia` (403 comme les autres refus).
+    if payload.play_once {
+        if let Err(response) = require(&state, &auth, Permission::TriggerPlayback) {
+            return response;
+        }
+    }
     let url = payload
         .url
         .as_deref()
@@ -410,12 +423,17 @@ pub async fn create_item(
         Err(StartIngestionError::TooManyProcessing) => return too_many_ingestions(),
     };
 
+    let target = if payload.play_once {
+        BoardTarget::PlayOnce
+    } else {
+        BoardTarget::NewItem
+    };
     spawn_ingestion(
         state,
         auth,
         ingestion_id.clone(),
         IngestionInput::Link { url, force_refresh },
-        BoardTarget::NewItem,
+        target,
         payload.title,
         payload.message,
     );
@@ -482,8 +500,8 @@ impl ItemTitle {
             .filter(|value| !value.is_empty());
         match typed {
             Some(title) => Some(title),
-            // Titre vide : le vrai titre du lien, déjà normalisé par le
-            // pipeline (trim, espaces collapseés, ≤ 240 caractères).
+            // Empty title: the link's real title, already normalized by the
+            // pipeline (trimmed, whitespace collapsed, at most 240 characters).
             None if use_source_title => source_title.map(str::to_owned),
             None => None,
         }
@@ -580,7 +598,7 @@ pub(crate) async fn complete_board_item(
         id: MediaBoardItemId::new_v4(),
         guild_id: auth.guild_id().clone(),
         media_asset_id: asset.id,
-        // Titre vide → titre source de l'asset (voir [`ItemTitle::resolve`]).
+        // Empty title: the asset's source title (see [`ItemTitle::resolve`]).
         title: title.resolve(asset.source_title.as_deref()),
         message: message
             .as_deref()

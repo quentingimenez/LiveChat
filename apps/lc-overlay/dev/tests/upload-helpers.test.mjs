@@ -7,6 +7,7 @@ import {
   formatSizeLimit,
   ingestionErrorMessage,
   uploadErrorMessage,
+  uploadStatusLabel,
 } from '../../web/app/core/upload-helpers.js';
 
 test('chunkRanges: empty file', () => {
@@ -39,6 +40,26 @@ test('defaultTitle: a leading dot is not an extension', () => {
 
 test('defaultTitle: no extension', () => {
   assert.equal(defaultTitle('son'), 'son');
+});
+
+test('uploadStatusLabel: waiting, sending and converting states', () => {
+  assert.equal(uploadStatusLabel({ status: 'waiting', kind: 'link' }), 'En attente…');
+  assert.equal(uploadStatusLabel({ status: 'sending', kind: 'link' }), 'Téléchargement…');
+  assert.equal(uploadStatusLabel({ status: 'sending', kind: 'file' }), 'Envoi…');
+  assert.equal(uploadStatusLabel({ status: 'converting', kind: 'file' }), 'Conversion…');
+  assert.equal(uploadStatusLabel({ status: 'converting', kind: 'edit' }), 'Montage…');
+});
+
+test('uploadStatusLabel: a play-once says it is being read, whatever the kind', () => {
+  assert.equal(uploadStatusLabel({ status: 'converting', kind: 'link', playOnce: true }), 'Lecture…');
+  assert.equal(uploadStatusLabel({ status: 'converting', kind: 'file', playOnce: true }), 'Lecture…');
+  assert.equal(uploadStatusLabel({ status: 'converting', kind: 'edit', playOnce: true }), 'Lecture…');
+  // The transfer states keep their own wording.
+  assert.equal(uploadStatusLabel({ status: 'waiting', kind: 'file', playOnce: true }), 'En attente…');
+  assert.equal(uploadStatusLabel({ status: 'sending', kind: 'file', playOnce: true }), 'Envoi…');
+  assert.equal(uploadStatusLabel({ status: 'sending', kind: 'link', playOnce: true }), 'Téléchargement…');
+  // Without playOnce, the conversion keeps its wording.
+  assert.equal(uploadStatusLabel({ status: 'converting', kind: 'file', playOnce: false }), 'Conversion…');
 });
 
 const LABELS = { invalid_payload: 'Valeur invalide.' };

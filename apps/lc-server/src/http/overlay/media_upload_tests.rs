@@ -11,6 +11,7 @@ use axum::http::{header, Method, Request, StatusCode};
 use axum::Router;
 use futures_util::stream;
 use lc_db::{Db, DbConfig};
+use lc_domain::rights::{Action, RightsRole, RightsTable, Surface};
 use lc_domain::{
     FixedClock, GuildId, MediaStatus, OverlayClient, OverlayClientId, OverlaySessionMode,
 };
@@ -997,5 +998,104 @@ async fn replacement_target_is_checked_when_the_upload_opens() {
         assert_eq!(status, StatusCode::NOT_FOUND, "{target}");
         assert_eq!(body["error"], "item_not_found");
     }
+    assert!(state.uploads.is_empty());
+}
+
+/// « Jouer une fois » par fichier : l'envoi complet crée un job de lecture et
+/// aucun item de board ; la guilde n'apprend rien.
+#[tokio::test]
+async fn play_once_upload_creates_a_job_and_no_item() {
+    let dir = TempDir::new().unwrap();
+    let (app, db, state, hub) = harness(&dir.path().join("media"), 4).await;
+    let client = insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
+
+    let description = json!({"filename": "photo.png", "title": "Ma photo", "message": "coucou", "playOnce": true});
+    let (status, body) = upload_file(&app, TOKEN, description, TINY_PNG).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let ingestion_id = body["ingestionId"].as_str().unwrap().to_owned();
+
+    let entry = wait_finished(&state, client.id.as_uuid(), &ingestion_id).await;
+    assert_eq!(entry.status, IngestionStatus::Ready, "{entry:?}");
+    assert_eq!(entry.created, Some(false));
+    assert_eq!(entry.item_id, None);
+    let job_id = entry.job_id.clone().expect("jobId de l'ingestion");
+
+    // The ingested file became a playback job, carrying the message.
+    let pending = db
+        .playback_jobs()
+        .list_pending_by_guild(&guild())
+        .await
+        .unwrap();
+    let job = pending
+        .iter()
+        .find(|job| job.id.to_canonical() == job_id)
+        .expect("job persisté");
+    assert!(job.media_asset_id.is_some());
+    assert_eq!(job.text.as_deref(), Some("coucou"));
+    assert!(job.show_text);
+
+    // No board item, no `board.changed`.
+    assert!(db
+        .media_board()
+        .list_by_guild(&guild())
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(hub.added_count(&guild()), 0);
+    assert_eq!(hub.updated_count(&guild()), 0);
+
+    let messages = wait_client_messages(&hub, client.id.as_uuid(), 1).await;
+    let payload = match &messages[0] {
+        ServerMessage::MediaIngestion(payload) => payload,
+        other => panic!("message inattendu : {other:?}"),
+    };
+    assert!(payload.ok);
+    assert_eq!(payload.ingestion_id, ingestion_id);
+    assert_eq!(payload.created, Some(false));
+    assert!(payload.item_id.is_none());
+    assert_eq!(payload.job_id.as_deref(), Some(job_id.as_str()));
+}
+
+/// « Jouer une fois » par fichier exige `TriggerPlayback` (403 comme les
+/// autres refus), et refuse un `replaceItemId` : rien ne remplacera un item
+/// d'un média qui ne rejoindra pas le board.
+#[tokio::test]
+async fn play_once_upload_checks_the_right_and_refuses_a_replacement() {
+    let dir = TempDir::new().unwrap();
+    let (app, db, state, _hub) = harness(&dir.path().join("media"), 4).await;
+    insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
+
+    let mut table = RightsTable::new();
+    table.set_override(
+        Surface::Overlay,
+        Action::TriggerPlayback,
+        RightsRole::Member,
+        false,
+    );
+    state.rights.replace(table);
+    let description = json!({"filename": "photo.png", "size": 10, "playOnce": true});
+    let (status, body) = send_json(&app, create_request(TOKEN, &description)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "forbidden");
+    assert!(state.uploads.is_empty());
+
+    let mut table = RightsTable::new();
+    table.set_override(
+        Surface::Overlay,
+        Action::TriggerPlayback,
+        RightsRole::Member,
+        true,
+    );
+    state.rights.replace(table);
+    let description = json!({
+        "filename": "photo.png",
+        "size": 10,
+        "playOnce": true,
+        "replaceItemId": Uuid::new_v4().to_string(),
+    });
+    let (status, body) = send_json(&app, create_request(TOKEN, &description)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_payload");
+    assert_eq!(body["message"], "playOnce cannot replace a board item");
     assert!(state.uploads.is_empty());
 }

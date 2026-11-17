@@ -995,6 +995,9 @@ pub struct MediaIngestionPayload {
     /// Board item holding the media (`ok: true`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item_id: Option<String>,
+    /// Playback job created instead of a board item (`ok: true`, play once).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
     /// Why the ingestion failed (`ok: false`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<MediaIngestionError>,

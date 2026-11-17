@@ -541,7 +541,7 @@ dans le board, puis renvoyées par `upload`). Corps JSON :
   | `volume` | 0 à 3 (défaut 1) | gain linéaire |
   | `mute` | booléen | vidéo : retire la piste son |
   | `fadeInSec`, `fadeOutSec` | 0 à 10 | fondus du son, et de l'image pour une vidéo, calculés sur la durée de sortie |
-  | `reverse` | booléen | lecture à l'envers (120 s gardées au plus) |
+  | `reverse` | booléen | lecture à l'envers (sans limite de durée ; une vidéo de plus de 5 s est inversée par morceaux) |
   | `crop` | `{x, y, width, height}` en fractions de l'image source, 2 % par côté au moins | recadrage, appliqué **avant** la rotation |
   | `rotate` | 0, 90, 180, 270 | rotation horaire |
   | `flipH`, `flipV` | booléens | miroirs appliqués à l'image **tournée** |

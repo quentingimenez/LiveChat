@@ -36,7 +36,7 @@ use crate::media::assets;
 
 use super::auth::{authenticate_token, AuthedOverlayClient};
 use super::media_board::{
-    complete_board_item, ensure_board_visible_for, ensure_writable, json_rejection_error,
+    complete_board_item, ensure_board_visible_for, ensure_writable, json_rejection_error, ItemTitle,
 };
 use super::{db, error, json_response, now, ActorInfo};
 
@@ -140,7 +140,9 @@ async fn import_one(
         auth,
         db,
         asset,
-        item.title.clone(),
+        // L'import garde le titre de l'item source, même vide : pas de repli
+        // sur le titre source de l'asset.
+        ItemTitle::Copied(item.title.clone()),
         item.message.clone(),
         at,
     )

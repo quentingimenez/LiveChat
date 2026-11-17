@@ -16,7 +16,7 @@ use super::tests::{
     board_item, create_linked_standalone, guild, guild_invite, guild_member, media_asset,
     overlay_client, playback_job, FakeLeaveResult, FakeLeaver, Harness,
 };
-use crate::http::overlay::media_board::complete_board_item;
+use crate::http::overlay::media_board::{complete_board_item, ItemTitle};
 use crate::http::overlay::ActorInfo;
 
 const GUILD: &str = "123456789012345678";
@@ -521,9 +521,17 @@ async fn guild_board_quota_is_enforced_when_adding_media() {
     let actor = ActorInfo::operator(harness.state(), &guild_id);
     let authed = actor.to_authed(now);
 
-    let failure = complete_board_item(harness.state(), &authed, db, asset.clone(), None, None, now)
-        .await
-        .expect_err("the guild quota must refuse the asset");
+    let failure = complete_board_item(
+        harness.state(),
+        &authed,
+        db,
+        asset.clone(),
+        ItemTitle::Requested(None),
+        None,
+        now,
+    )
+    .await
+    .expect_err("the guild quota must refuse the asset");
     assert_eq!(failure.code, "media_ingestion_failed");
     assert!(
         failure
@@ -538,9 +546,17 @@ async fn guild_board_quota_is_enforced_when_adding_media() {
         .set_board_quota_mb(&guild_id, None)
         .await
         .unwrap();
-    let completed = complete_board_item(harness.state(), &authed, db, asset, None, None, now)
-        .await
-        .expect("the server quota must accept the asset");
+    let completed = complete_board_item(
+        harness.state(),
+        &authed,
+        db,
+        asset,
+        ItemTitle::Requested(None),
+        None,
+        now,
+    )
+    .await
+    .expect("the server quota must accept the asset");
     assert!(completed.created);
 }
 

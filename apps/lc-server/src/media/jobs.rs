@@ -194,6 +194,7 @@ mod tests {
             id: MediaAssetId::new_v4(),
             source_hash: format!("hash-{}", MediaAssetId::new_v4().to_canonical()),
             source_url: "https://example.com/video".into(),
+            source_title: None,
             kind,
             mime: "video/mp4".into(),
             duration_sec,

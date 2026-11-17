@@ -72,6 +72,7 @@ async fn asset(harness: &Harness, name: &str, kind: MediaKind, size_bytes: i64) 
         id: MediaAssetId::new_v4(),
         source_hash: format!("hash-{name}"),
         source_url: format!("https://example.test/{name}"),
+        source_title: None,
         kind,
         mime: if kind == MediaKind::Image {
             "image/png".to_owned()

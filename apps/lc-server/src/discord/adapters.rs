@@ -454,6 +454,7 @@ mod tests {
                 id,
                 source_hash: format!("hash-{id}"),
                 source_url: "https://example.test/media.png".to_owned(),
+                source_title: None,
                 kind: MediaKind::Image,
                 mime: "image/png".to_owned(),
                 duration_sec: None,

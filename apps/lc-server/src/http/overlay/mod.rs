@@ -551,6 +551,7 @@ mod session_mode_tests {
             id: MediaAssetId::new_v4(),
             source_hash: "hash-test-session-mode".to_owned(),
             source_url: "https://example.com/media.mp4".to_owned(),
+            source_title: None,
             kind: MediaKind::Video,
             mime: "video/mp4".to_owned(),
             duration_sec: Some(30),

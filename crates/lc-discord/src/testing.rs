@@ -47,6 +47,7 @@ pub fn sample_asset(kind: MediaKind) -> MediaAsset {
         id: MediaAssetId::new_v4(),
         source_hash: "fake-source-hash".to_owned(),
         source_url: "https://example.com/media".to_owned(),
+        source_title: None,
         kind,
         mime: mime.to_owned(),
         duration_sec,

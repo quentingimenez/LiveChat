@@ -61,6 +61,7 @@ pub fn sample_media_asset(now: UtcDateTime) -> MediaAsset {
         id,
         source_hash: format!("hash-{}", id.to_canonical()),
         source_url: "https://example.test/media".to_owned(),
+        source_title: None,
         kind: MediaKind::Video,
         mime: "video/mp4".to_owned(),
         duration_sec: Some(12),

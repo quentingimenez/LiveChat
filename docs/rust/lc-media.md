@@ -176,7 +176,10 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
   un échec de format rejoue avec un sélecteur relâché.
 - `download_tiktok` : vidéo d'abord, puis carrousel photo (assemblage ffmpeg en 9:16),
   remontée prioritaire des erreurs `FILE_TOO_LARGE` / `PRIVATE_OR_AUTH_REQUIRED`.
-- `DownloadResult { path, kind, mime, size_bytes, source_url }`.
+- `yt-dlp` imprime aussi le titre de la source (`--print after_move:%(title)s` avant
+  `after_move:filepath`) : `parse_ytdlp_output` renvoie `YtdlpOutput { path, title }`
+  (`NA`/vide → `None`), le titre atterrit dans `DownloadResult.title`.
+- `DownloadResult { path, kind, mime, size_bytes, source_url, title }`.
 
 ### Sonde (`probe`)
 

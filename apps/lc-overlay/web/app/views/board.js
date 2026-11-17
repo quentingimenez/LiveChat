@@ -1271,23 +1271,13 @@ function renderDetail(item) {
       can('play')
         ? [
             h('dt', null, 'Raccourci'),
-            h(
-              'dd',
-              null,
-              state.capturing
-                ? h('span', { class: 'meta' }, 'Appuie sur la combinaison… (Échap seul pour annuler)')
-                : shortcut
-                  ? h('kbd', null, acceleratorLabel(shortcut))
-                  : h('span', { class: 'meta' }, 'Aucun'),
-            ),
+            h('dd', { class: 'shortcut-cell' }, shortcutControl(item, shortcut)),
           ]
         : null,
     ),
     h(
       'div',
       { class: 'row is-wrap' },
-      can('play') ? h('button', { class: 'btn', onClick: () => startCapture(item) }, shortcut ? 'Changer le raccourci' : 'Définir un raccourci') : null,
-      can('play') && shortcut ? h('button', { class: 'btn is-quiet', onClick: () => saveShortcut(item, null) }, 'Retirer') : null,
       canOpenEditor(item) ? h('button', { class: 'btn', title: 'Découper, recadrer, dessiner…', onClick: () => openMediaEditor(item, itemTitle(item)) }, icon('edit'), 'Éditer') : null,
       h('button', { class: 'btn', onClick: () => openInfoDialog(item) }, 'Infos'),
       h('span', { class: 'spacer' }),
@@ -1315,6 +1305,57 @@ export function startCapture(item) {
   captureItem = item;
   state.capturing = true;
   renderView();
+}
+
+function cancelCapture() {
+  state.capturing = false;
+  renderView();
+}
+
+// The shortcut value is itself the button that records a new one; a small
+// cross next to it clears it.
+function shortcutControl(item, shortcut) {
+  const capturing = state.capturing && captureItem && captureItem.id === item.id;
+  if (capturing) {
+    return h(
+      'button',
+      {
+        class: 'shortcut-key is-capturing',
+        type: 'button',
+        title: 'Annuler',
+        onClick: cancelCapture,
+      },
+      'Appuie sur la combinaison…',
+      h('kbd', null, 'Échap'),
+    );
+  }
+  if (!shortcut) {
+    return h(
+      'button',
+      { class: 'shortcut-key is-empty', type: 'button', onClick: () => startCapture(item) },
+      icon('plus'),
+      'Définir',
+    );
+  }
+  return [
+    h(
+      'button',
+      { class: 'shortcut-key', type: 'button', title: 'Changer le raccourci', onClick: () => startCapture(item) },
+      h('kbd', null, acceleratorLabel(shortcut)),
+      icon('edit'),
+    ),
+    h(
+      'button',
+      {
+        class: 'btn is-quiet shortcut-clear',
+        type: 'button',
+        title: 'Retirer le raccourci',
+        'aria-label': 'Retirer le raccourci',
+        onClick: () => saveShortcut(item, null),
+      },
+      icon('close'),
+    ),
+  ];
 }
 
 document.addEventListener('keydown', (event) => {

@@ -1,0 +1,29 @@
+name: release-check
+
+# Every released component (server, overlay, extension) must carry one version
+# in all its files, and the release tooling's own tests must pass under pwsh 7
+# (the tooling also runs under Windows PowerShell 5.1 on the maintainer's box).
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: versions & release tooling
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+
+      - name: Check version consistency
+        run: pwsh -NoProfile -File scripts/release.ps1 check
+
+      - name: Test the release tooling
+        run: pwsh -NoProfile -File scripts/release/tests/run-tests.ps1

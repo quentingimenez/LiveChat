@@ -65,12 +65,12 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::{DateTime, Utc};
 use lc_domain::rights::{Action, RightsTable, Surface};
 use lc_domain::{
     GuildId, GuildMember, GuildMemberId, GuildRole, OverlayClient, OverlayClientId, Permission,
 };
 use serde_json::Value;
+use time::UtcDateTime;
 use tracing::error;
 
 use crate::app::AppState;
@@ -215,7 +215,7 @@ impl ActorInfo {
     }
 
     /// Authenticated-client view used by the detached ingestion tasks.
-    pub(crate) fn to_authed(&self, at: DateTime<Utc>) -> AuthedOverlayClient {
+    pub(crate) fn to_authed(&self, at: UtcDateTime) -> AuthedOverlayClient {
         AuthedOverlayClient {
             client: self.client.clone(),
             member: self.member.clone(),
@@ -360,7 +360,7 @@ pub fn router() -> Router<AppState> {
 }
 
 /// Instant courant, toujours lu depuis l'horloge injectée.
-fn now(state: &AppState) -> DateTime<Utc> {
+fn now(state: &AppState) -> UtcDateTime {
     state.clock.now()
 }
 
@@ -430,7 +430,6 @@ mod session_mode_tests {
     use axum::body::{to_bytes, Body};
     use axum::http::{header, Method, Request, StatusCode};
     use axum::Router;
-    use chrono::{DateTime, TimeZone, Utc};
     use lc_db::{Db, DbConfig};
     use lc_domain::{
         FixedClock, GuildId, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, MediaKind,
@@ -438,6 +437,7 @@ mod session_mode_tests {
     };
     use serde_json::{json, Value};
     use tempfile::TempDir;
+    use time::UtcDateTime;
     use tower::ServiceExt as _;
 
     use crate::app::AppState;
@@ -454,10 +454,8 @@ mod session_mode_tests {
     /// Guilde unique des tests de session.
     const GUILD: &str = "123456789012345678";
 
-    fn fixed_now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 11, 10, 12, 0, 0)
-            .single()
-            .unwrap()
+    fn fixed_now() -> UtcDateTime {
+        time::macros::utc_datetime!(2026-11-10 12:00:00)
     }
 
     fn guild() -> GuildId {
@@ -548,7 +546,7 @@ mod session_mode_tests {
             status: MediaStatus::Ready,
             error: None,
             last_accessed_at: now,
-            expires_at: now + chrono::Duration::days(1),
+            expires_at: now + time::Duration::days(1),
             created_at: now,
         };
         db.media_assets().insert(&asset).await.unwrap();
@@ -632,7 +630,7 @@ mod session_mode_tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["items"].as_array().map(Vec::len), Some(1));
-        let exp = u64::try_from(fixed_now().timestamp()).unwrap() + 300;
+        let exp = u64::try_from(fixed_now().unix_timestamp()).unwrap() + 300;
         let media_uri = signed_board_uri(&asset, &client, exp);
         let status = send_status(&app, request(Method::GET, &media_uri, None, None)).await;
         assert_eq!(status, StatusCode::OK);

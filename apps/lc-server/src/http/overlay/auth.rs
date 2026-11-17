@@ -35,9 +35,9 @@ use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap};
 use axum::response::Response;
-use chrono::{DateTime, Utc};
 use rand::RngCore as _;
 use sha2::{Digest as _, Sha256};
+use time::UtcDateTime;
 use tracing::{debug, warn};
 
 use crate::app::AppState;
@@ -58,7 +58,7 @@ pub struct AuthedOverlayClient {
     /// Horodatage de la résolution du client (conservé pour l'audit et les
     /// handlers qui voudront borner la fraîcheur d'un token).
     #[allow(dead_code)]
-    pub authenticated_at: DateTime<Utc>,
+    pub authenticated_at: UtcDateTime,
 }
 
 impl AuthedOverlayClient {
@@ -165,7 +165,7 @@ impl FromRequestParts<AppState> for AuthedOverlayClient {
 pub(crate) async fn authenticate_token(
     db: &lc_db::Db,
     token: &str,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
 ) -> Result<Option<AuthedOverlayClient>, Response> {
     let token_hash = hash_token(token);
     let client = match db.overlay_clients().get_by_token_hash(&token_hash).await {
@@ -213,11 +213,11 @@ mod tests {
                 default_author_image: None,
                 created_by_discord_user_id: None,
                 last_seen_at: None,
-                created_at: chrono::Utc::now(),
+                created_at: time::UtcDateTime::now(),
                 revoked_at: None,
             },
             member: None,
-            authenticated_at: chrono::Utc::now(),
+            authenticated_at: time::UtcDateTime::now(),
         }
     }
 
@@ -228,7 +228,7 @@ mod tests {
             display_name: "Alice".to_owned(),
             avatar: None,
             role,
-            created_at: chrono::Utc::now(),
+            created_at: time::UtcDateTime::now(),
             removed_at: None,
             discord_user_id: None,
             profile_custom: true,

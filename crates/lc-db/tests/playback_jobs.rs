@@ -4,9 +4,9 @@
 
 mod common;
 
-use chrono::Duration;
 use lc_db::DbError;
 use lc_domain::{DomainError, JobStatus, PlaybackJobId};
+use time::Duration;
 
 #[tokio::test]
 async fn creation_get_et_listes() {

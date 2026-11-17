@@ -184,7 +184,7 @@ mod tests {
     #[tokio::test]
     async fn ingest_notifier_without_engine_is_a_noop() {
         let notifier = IngestNotifier::new(hub(), AdminEvents::new());
-        let now = chrono::Utc::now();
+        let now = time::UtcDateTime::now();
         let job = PlaybackJob {
             id: lc_domain::ids::PlaybackJobId::new_v4(),
             guild_id: GuildId::parse("123456789012345678").expect("guild id valide"),

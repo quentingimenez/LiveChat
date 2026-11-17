@@ -213,8 +213,8 @@ impl MediaBoardRepository {
         id: MediaBoardItemId,
         guild_id: &GuildId,
         media_asset_id: MediaAssetId,
-        now: chrono::DateTime<chrono::Utc>,
-        released_expiry: chrono::DateTime<chrono::Utc>,
+        now: time::UtcDateTime,
+        released_expiry: time::UtcDateTime,
     ) -> DbResult<Option<MediaAssetId>> {
         let mut transaction = self.pool.begin().await?;
         let previous_raw: Option<String> = sqlx::query_scalar(
@@ -399,7 +399,7 @@ impl MediaBoardRepository {
         member_id: GuildMemberId,
         item_id: MediaBoardItemId,
         favorite: bool,
-        now: chrono::DateTime<chrono::Utc>,
+        now: time::UtcDateTime,
     ) -> DbResult<()> {
         if favorite {
             sqlx::query(

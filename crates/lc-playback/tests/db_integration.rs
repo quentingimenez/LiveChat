@@ -4,8 +4,8 @@
 
 mod support;
 
-use chrono::Duration as ChronoDuration;
 use lc_domain::JobStatus;
+use time::Duration as TimeDuration;
 
 use support::{guild_id, memory_db, now, sample_job};
 
@@ -16,7 +16,7 @@ async fn claim_next_respecte_priorite_et_soumission() {
     let now = now();
 
     let low = sample_job(guild.clone(), now);
-    let mut high = sample_job(guild.clone(), now + ChronoDuration::milliseconds(10));
+    let mut high = sample_job(guild.clone(), now + TimeDuration::milliseconds(10));
     high.priority = 5;
     high.execution_date = now;
     high.scheduled_at = now;
@@ -61,7 +61,7 @@ async fn busy_until_bloque_le_claim_puis_le_libere() {
         .await
         .unwrap();
     db.guilds()
-        .set_busy_until(&guild, Some(now + ChronoDuration::seconds(5)))
+        .set_busy_until(&guild, Some(now + TimeDuration::seconds(5)))
         .await
         .unwrap();
     assert!(
@@ -83,7 +83,7 @@ async fn reprise_eligible_seulement_apres_terminaison_du_parent() {
     let child = sample_job(guild.clone(), now);
     db.playback_jobs().create(&child).await.unwrap();
 
-    let mut parent = sample_job(guild.clone(), now + ChronoDuration::milliseconds(1));
+    let mut parent = sample_job(guild.clone(), now + TimeDuration::milliseconds(1));
     parent.resumes_after_job_id = Some(child.id);
     parent.execution_date = now;
     parent.scheduled_at = now;

@@ -346,7 +346,7 @@ impl MediaService {
         &self,
         asset_id: lc_domain::ids::MediaAssetId,
         error: &MediaError,
-        now: chrono::DateTime<chrono::Utc>,
+        now: time::UtcDateTime,
     ) {
         if let Err(failure) = assets::mark_failed(&self.db, asset_id, error, now).await {
             tracing::warn!(
@@ -424,7 +424,6 @@ fn shared_pipeline(config: &MediaConfig) -> MediaServiceResult<Arc<MediaPipeline
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use chrono::{Duration, Utc};
     use lc_db::DbConfig;
     use lc_domain::entities::MediaAsset;
     use lc_domain::enums::{MediaKind, MediaStatus};
@@ -432,6 +431,7 @@ mod tests {
     use lc_domain::SystemClock;
     use lc_media::error::MediaErrorCode;
     use lc_media::source::source_hash;
+    use time::{Duration, UtcDateTime};
 
     use super::*;
 
@@ -460,7 +460,7 @@ mod tests {
         hash: &str,
         storage_path: &std::path::Path,
     ) -> MediaAsset {
-        let now = Utc::now();
+        let now = UtcDateTime::now();
         let asset = MediaAsset {
             id: MediaAssetId::new_v4(),
             source_hash: hash.to_owned(),

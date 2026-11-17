@@ -1,10 +1,10 @@
 //! Repository `discord_link_codes` (liaison d'une guilde indépendante à un
 //! serveur Discord).
 
-use chrono::DateTime;
 use lc_domain::entities::DiscordLinkCode;
 use lc_domain::ids::{GuildId, GuildMemberId, PairingCode as PairingCodeValue};
 use sqlx::SqlitePool;
+use time::UtcDateTime;
 
 use crate::convert::{decode, decode_opt, from_bool, from_ms, from_opt_ms, to_ms};
 use crate::error::{conflict_on_unique, DbResult};
@@ -116,7 +116,7 @@ impl DiscordLinkCodesRepository {
         &self,
         code: &PairingCodeValue,
         discord_guild_id: &GuildId,
-        now: DateTime<chrono::Utc>,
+        now: UtcDateTime,
     ) -> DbResult<LinkOutcome> {
         let mut transaction = self.pool.begin().await?;
         let row = sqlx::query_as::<_, DiscordLinkCodeRow>(

@@ -17,12 +17,12 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use axum::http::{Method, StatusCode};
-use chrono::{Duration, Utc};
 use lc_domain::{
     GuildBan, GuildBanId, GuildId, GuildMemberId, GuildRole, IngestClient, IngestClientId,
     JobStatus, MediaKind, OverlaySessionMode, PairingCode, PairingCodeEntry, PairingMode,
 };
 use serde_json::{json, Value};
+use time::{Duration, UtcDateTime};
 
 use super::tests::{
     board_item, create_linked_standalone, guild, guild_invite, guild_member, media_asset,
@@ -137,7 +137,7 @@ async fn seeded_harness() -> (Harness, String) {
         };
         let mut client = overlay_client(&guild_id, mode);
         client.label = format!("PC-{}", ["Salon", "Bureau", "Portable"][index]);
-        client.last_seen_at = Some(Utc::now() - Duration::minutes(5));
+        client.last_seen_at = Some(UtcDateTime::now() - Duration::minutes(5));
         db.overlay_clients().create(&client).await.unwrap();
         db.overlay_clients()
             .set_member(client.id, member.id)
@@ -158,7 +158,7 @@ async fn seeded_harness() -> (Harness, String) {
             display_name: "Ancien membre".to_owned(),
             avatar: None,
             banned_by: Some("Quentin".to_owned()),
-            created_at: Utc::now() - Duration::days(1),
+            created_at: UtcDateTime::now() - Duration::days(1),
         })
         .await
         .unwrap();
@@ -181,7 +181,7 @@ async fn seeded_harness() -> (Harness, String) {
     }
 
     let mut playing = playback_job(&guild_id, JobStatus::Playing);
-    playing.started_at = Some(Utc::now() - Duration::seconds(3));
+    playing.started_at = Some(UtcDateTime::now() - Duration::seconds(3));
     playing.text = Some("Bonne soirée à tous".to_owned());
     db.playback_jobs().create(&playing).await.unwrap();
     db.playback_jobs()
@@ -189,7 +189,7 @@ async fn seeded_harness() -> (Harness, String) {
         .await
         .unwrap();
 
-    let now = Utc::now();
+    let now = UtcDateTime::now();
     for (code, expires, used) in [
         ("JKLMNPQR", Some(now + Duration::minutes(10)), None),
         ("STUVWXYZ", Some(now - Duration::minutes(10)), None),
@@ -441,13 +441,22 @@ async fn admin_console_mutation_fixtures() {
     // the item is deleted, so the cache purge below never meets a file the
     // edit still holds open (Windows refuses to delete it).
     for _ in 0..500 {
-        if harness.state().ingestions.active(Utc::now()).is_empty() {
+        if harness
+            .state()
+            .ingestions
+            .active(UtcDateTime::now())
+            .is_empty()
+        {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     assert!(
-        harness.state().ingestions.active(Utc::now()).is_empty(),
+        harness
+            .state()
+            .ingestions
+            .active(UtcDateTime::now())
+            .is_empty(),
         "the board edit is still running"
     );
     record(

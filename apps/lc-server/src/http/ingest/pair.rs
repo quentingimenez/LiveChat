@@ -230,11 +230,11 @@ mod tests {
     use axum::body::{to_bytes, Body};
     use axum::http::Request as HttpRequest;
     use axum::Router;
-    use chrono::{Duration, Utc};
     use lc_db::{Db, DbConfig};
     use lc_domain::entities::PairingCodeEntry;
     use lc_domain::ids::GuildId;
     use serde_json::Value;
+    use time::{Duration, UtcDateTime};
     use tower::ServiceExt;
 
     use crate::config::Config;
@@ -271,9 +271,9 @@ mod tests {
         guild_id: &GuildId,
         code: &str,
         mode: PairingMode,
-        expires_at: Option<chrono::DateTime<Utc>>,
+        expires_at: Option<time::UtcDateTime>,
     ) -> PairingCodeEntry {
-        let now = Utc::now();
+        let now = UtcDateTime::now();
         PairingCodeEntry {
             code: PairingCode::parse(code).expect("code"),
             guild_id: guild_id.clone(),
@@ -359,7 +359,7 @@ mod tests {
     #[tokio::test]
     async fn expired_or_unknown_code_is_rejected() {
         let fixture = fixture().await;
-        let expired = Utc::now() - Duration::minutes(1);
+        let expired = UtcDateTime::now() - Duration::minutes(1);
         fixture
             .db
             .pairing_codes()

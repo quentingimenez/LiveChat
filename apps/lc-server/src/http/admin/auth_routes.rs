@@ -149,7 +149,7 @@ async fn secret_login(
         tracing::error!("secret admin login without a configured database");
         return auth::internal_error_response();
     };
-    let now_ms = state.clock.now().timestamp_millis();
+    let now_ms = lc_domain::datetime_to_ms(state.clock.now());
     match session::create_secret(db, now_ms).await {
         Ok((token, admin_session)) => {
             let mut response = with_cookies(
@@ -279,7 +279,7 @@ async fn discord_callback(
         tracing::error!("Discord admin login without a configured database");
         return auth::internal_error_response();
     };
-    let now_ms = state.clock.now().timestamp_millis();
+    let now_ms = lc_domain::datetime_to_ms(state.clock.now());
     match session::create_discord(db, &identity, now_ms).await {
         Ok((token, admin_session)) => {
             let secure = state.config.cookies_secure();

@@ -595,7 +595,7 @@ impl Hub {
                     .with_default_duration_sec(
                         i64::try_from(default_duration).unwrap_or(i64::MAX),
                     )
-                    .with_retention(chrono::Duration::hours(
+                    .with_retention(time::Duration::hours(
                         i64::try_from(engine_config.playback_job_retention_hours)
                             .unwrap_or(i64::MAX),
                     ));
@@ -626,7 +626,7 @@ impl Hub {
                         tokio::select! {
                             () = &mut shutdown => break,
                             _ = ticker.tick() => {
-                                let now = chrono::Utc::now();
+                                let now = time::UtcDateTime::now();
                                 match purge_engine.purge(now).await {
                                     Ok(report) => debug!(
                                         playback_jobs = report.playback_jobs,
@@ -1123,7 +1123,7 @@ fn default_media_time_fallback() -> u64 {
 
 /// Heure murale en secondes Unix (signature des URLs média).
 fn current_unix_seconds() -> u64 {
-    u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0)
+    u64::try_from(time::UtcDateTime::now().unix_timestamp()).unwrap_or(0)
 }
 
 #[cfg(test)]

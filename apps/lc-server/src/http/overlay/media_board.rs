@@ -68,7 +68,6 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use chrono::{DateTime, Utc};
 use lc_domain::rights::{Action, Surface};
 use lc_domain::{
     GuildId, GuildRole, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, MediaKind,
@@ -77,6 +76,7 @@ use lc_domain::{
 use lc_protocol::{BoardChange, BoardChangedPayload, ServerMessage};
 use serde::Deserialize;
 use serde_json::Value;
+use time::UtcDateTime;
 
 use crate::app::AppState;
 use crate::ingestions::{IngestionEntry, StartIngestionError};
@@ -172,7 +172,7 @@ pub(crate) async fn list_items_payload(
         return Err(super::internal_error());
     }
     let expires_at_sec =
-        crate::media_url::board_url_expiry(u64::try_from(now(state).timestamp()).unwrap_or(0));
+        crate::media_url::board_url_expiry(u64::try_from(now(state).unix_timestamp()).unwrap_or(0));
     let client_id = actor.client.id.to_canonical();
 
     let limit = normalize_limit(query.limit.as_deref());
@@ -482,7 +482,7 @@ pub(crate) async fn complete_board_item(
     asset: MediaAsset,
     title: Option<String>,
     message: Option<String>,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
 ) -> Result<CompletedBoardItem, IngestionFailure> {
     // Dédoublonnage board : (guilde, asset) déjà épinglé → `created:false`.
     match db
@@ -626,7 +626,7 @@ pub(super) async fn replace_board_item_media(
     db: &Db,
     item_id: MediaBoardItemId,
     asset: MediaAsset,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
 ) -> Result<CompletedBoardItem, IngestionFailure> {
     let item = match db.media_board().get(item_id).await {
         Ok(Some(item)) if &item.guild_id == auth.guild_id() => item,
@@ -722,7 +722,7 @@ pub(super) async fn replace_board_item_media(
     let release_seconds = i64::try_from(state.runtime().media_cache_ttl_hours())
         .unwrap_or(i64::MAX / 3_600)
         .saturating_mul(3_600);
-    let released_expiry = now + chrono::Duration::seconds(release_seconds);
+    let released_expiry = now + time::Duration::seconds(release_seconds);
     match db
         .media_board()
         .replace_media(item_id, auth.guild_id(), asset.id, now, released_expiry)
@@ -838,7 +838,7 @@ pub async fn get_media(
     }
 
     let timestamp = now(&state);
-    let now_sec = u64::try_from(timestamp.timestamp()).unwrap_or(0);
+    let now_sec = u64::try_from(timestamp.unix_timestamp()).unwrap_or(0);
     if !crate::media_url::is_expiry_within_max(exp_sec, now_sec) {
         tracing::warn!(
             asset_id = %asset_key,
@@ -1084,7 +1084,7 @@ pub(crate) async fn delete_item_payload(
     let release_seconds = i64::try_from(state.runtime().media_cache_ttl_hours())
         .unwrap_or(i64::MAX / 3_600)
         .saturating_mul(3_600);
-    let released_expiry = now + chrono::Duration::seconds(release_seconds);
+    let released_expiry = now + time::Duration::seconds(release_seconds);
     let deleted = delete_item_and_release(
         db,
         item_id,
@@ -1269,7 +1269,7 @@ fn item_payload(item: &MediaBoardItem, asset: &MediaAsset) -> serde_json::Value 
         "title": item.title,
         "message": item.message,
         "createdByName": item.created_by_name,
-        "createdAt": item.created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        "createdAt": lc_domain::time::to_rfc3339_millis(item.created_at),
         "displayDurationSec": item.display_duration_sec,
         "media": {
             "id": asset.id.to_canonical(),
@@ -1453,7 +1453,7 @@ async fn delete_item_and_release(
     item_id: MediaBoardItemId,
     guild_id: &GuildId,
     asset_ids: &[Option<MediaAssetId>],
-    released_expiry: DateTime<Utc>,
+    released_expiry: UtcDateTime,
 ) -> lc_db::DbResult<bool> {
     let mut transaction = db.pool().begin().await.map_err(lc_db::DbError::from)?;
 
@@ -1483,7 +1483,7 @@ async fn delete_item_and_release(
             sqlx::query(
                 "UPDATE media_assets SET last_accessed_at = ?, expires_at = ? WHERE id = ?",
             )
-            .bind(lc_domain::time::datetime_to_ms(Utc::now()))
+            .bind(lc_domain::time::datetime_to_ms(UtcDateTime::now()))
             .bind(lc_domain::time::datetime_to_ms(released_expiry))
             .bind(media_asset_id.to_canonical())
             .execute(&mut *transaction)
@@ -1497,7 +1497,7 @@ async fn delete_item_and_release(
                     AND id NOT IN (SELECT artwork_asset_id FROM media_board_items \
                                     WHERE artwork_asset_id IS NOT NULL)",
             )
-            .bind(lc_domain::time::datetime_to_ms(Utc::now()))
+            .bind(lc_domain::time::datetime_to_ms(UtcDateTime::now()))
             .bind(lc_domain::time::datetime_to_ms(released_expiry))
             .bind(media_asset_id.to_canonical())
             .execute(&mut *transaction)

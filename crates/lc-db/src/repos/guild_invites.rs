@@ -1,10 +1,10 @@
 //! Repository `guild_invites` (codes d'invitation porteurs d'un rôle).
 
-use chrono::DateTime;
 use lc_domain::entities::GuildInvite;
 use lc_domain::enums::GuildRole;
 use lc_domain::ids::{GuildId, GuildMemberId, PairingCode as PairingCodeValue};
 use sqlx::SqlitePool;
+use time::UtcDateTime;
 
 use crate::convert::{decode, decode_opt, from_ms, from_opt_ms, to_ms, to_opt_ms};
 use crate::error::{conflict_on_unique, DbResult};
@@ -111,7 +111,7 @@ impl GuildInvitesRepository {
     pub async fn consume(
         &self,
         code: &PairingCodeValue,
-        now: DateTime<chrono::Utc>,
+        now: UtcDateTime,
     ) -> DbResult<Option<GuildInvite>> {
         let row = sqlx::query_as::<_, GuildInviteRow>(
             "UPDATE guild_invites SET use_count = use_count + 1 \
@@ -136,7 +136,7 @@ impl GuildInvitesRepository {
         &self,
         guild_id: &GuildId,
         code: &PairingCodeValue,
-        revoked_at: DateTime<chrono::Utc>,
+        revoked_at: UtcDateTime,
     ) -> DbResult<bool> {
         let result = sqlx::query(
             "UPDATE guild_invites SET revoked_at = ? \
@@ -156,7 +156,7 @@ impl GuildInvitesRepository {
         &self,
         guild_id: &GuildId,
         member_id: GuildMemberId,
-        revoked_at: DateTime<chrono::Utc>,
+        revoked_at: UtcDateTime,
     ) -> DbResult<u64> {
         let result = sqlx::query(
             "UPDATE guild_invites SET revoked_at = ? \
@@ -187,7 +187,7 @@ impl GuildInvitesRepository {
     /// Number of invitations usable at `now`, all guilds together: not
     /// revoked, not expired and with uses left (same rule as
     /// [`GuildInvite::is_usable_at`]).
-    pub async fn count_active(&self, now: DateTime<chrono::Utc>) -> DbResult<i64> {
+    pub async fn count_active(&self, now: UtcDateTime) -> DbResult<i64> {
         let count = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM guild_invites              WHERE revoked_at IS NULL                AND (expires_at IS NULL OR expires_at > ?)                AND (max_uses IS NULL OR use_count < max_uses)",
         )

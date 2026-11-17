@@ -17,11 +17,11 @@ use std::collections::BTreeMap;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use chrono::{DateTime, Utc};
 use lc_domain::{GuildId, IngestClient, IngestClientId};
 use rand::RngCore as _;
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
+use time::UtcDateTime;
 
 use super::auth::AdminAccess;
 use super::{require_db, to_iso, to_non_empty_string, AdminError};
@@ -40,7 +40,7 @@ struct AuthorRecord {
     discord_user_id: String,
     display_name: Option<String>,
     image: Option<String>,
-    last_seen_at: Option<DateTime<Utc>>,
+    last_seen_at: Option<UtcDateTime>,
     seen_via_pairing: bool,
     seen_via_ingest: bool,
 }
@@ -244,7 +244,7 @@ fn upsert_author(
     discord_user_id: &str,
     display_name: Option<String>,
     image: Option<String>,
-    created_at: DateTime<Utc>,
+    created_at: UtcDateTime,
     source: AuthorSource,
 ) {
     let Some(existing) = authors.get_mut(discord_user_id) else {
@@ -315,12 +315,10 @@ fn hash_token(token: &str) -> String {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use chrono::TimeZone as _;
-
     use super::*;
 
-    fn at(seconds: i64) -> DateTime<Utc> {
-        Utc.timestamp_opt(seconds, 0).single().expect("date valide")
+    fn at(seconds: i64) -> UtcDateTime {
+        UtcDateTime::from_unix_timestamp(seconds).expect("date valide")
     }
 
     #[test]

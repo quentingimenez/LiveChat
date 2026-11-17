@@ -229,8 +229,8 @@ pub(super) async fn build_overview(state: &AppState) -> Result<Value, AdminError
                 json!({
                     "id": client.id.to_canonical(),
                     "label": client.label,
-                    "lastSeenAt": opt_iso_ms(client.last_seen_at.map(|date| date.timestamp_millis())),
-                    "createdAt": iso_from_ms(client.created_at.timestamp_millis()),
+                    "lastSeenAt": opt_iso_ms(client.last_seen_at.map(lc_domain::datetime_to_ms)),
+                    "createdAt": iso_from_ms(lc_domain::datetime_to_ms(client.created_at)),
                 })
             })
             .collect();
@@ -255,7 +255,7 @@ pub(super) async fn build_overview(state: &AppState) -> Result<Value, AdminError
             "name": display_name,
             "editableName": editable_name,
             "discord": discord,
-            "busyUntil": opt_iso_ms(record.and_then(|guild| guild.busy_until.map(|date| date.timestamp_millis()))),
+            "busyUntil": opt_iso_ms(record.and_then(|guild| guild.busy_until.map(lc_domain::datetime_to_ms))),
             "settings": settings,
             "overlays": {
                 "total": overlay_clients.len(),

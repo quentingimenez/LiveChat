@@ -6,13 +6,13 @@
 use std::sync::Arc;
 
 use axum::http::{Method, StatusCode};
-use chrono::Duration;
 use lc_domain::{
     GuildId, GuildMemberId, GuildRole, IngestClient, IngestClientId, PairingCode, PairingCodeEntry,
     PairingMode,
 };
 use lc_protocol::close_code;
 use serde_json::json;
+use time::Duration;
 
 use super::guild_tests::{call_app, fixed_now, token, Harness, RecordingAdminHub};
 use crate::http::admin::hub::AdminHub;

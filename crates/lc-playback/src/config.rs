@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use chrono::Duration as ChronoDuration;
+use time::Duration as TimeDuration;
 
 use crate::{
     DEFAULT_PLAYBACK_DURATION_SEC, DEFAULT_RETENTION_HOURS, GUILD_RUN_MAX_ITERATIONS,
@@ -24,7 +24,7 @@ pub struct PlaybackConfig {
     /// Durée de lecture par défaut quand un job n'a ni durée ni média.
     pub default_duration_sec: i64,
     /// Rétention des jobs terminés avant purge.
-    pub retention: ChronoDuration,
+    pub retention: TimeDuration,
     /// Priorité déclenchant une préemption (média du board).
     pub media_board_priority: i64,
     /// Base des URLs média (`{base}/overlay/media/{assetId}`).
@@ -48,7 +48,7 @@ impl Default for PlaybackConfig {
         Self {
             tick_interval: Duration::from_millis(500),
             default_duration_sec: DEFAULT_PLAYBACK_DURATION_SEC,
-            retention: ChronoDuration::hours(DEFAULT_RETENTION_HOURS),
+            retention: TimeDuration::hours(DEFAULT_RETENTION_HOURS),
             media_board_priority: MEDIA_BOARD_JOB_PRIORITY,
             api_base_url: "http://127.0.0.1:3000".to_owned(),
             state_persist_min_interval: Duration::from_secs(1),
@@ -75,7 +75,7 @@ impl PlaybackConfig {
     }
 
     /// Remplace la rétention des jobs terminés.
-    pub fn with_retention(mut self, retention: ChronoDuration) -> Self {
+    pub fn with_retention(mut self, retention: TimeDuration) -> Self {
         self.retention = retention;
         self
     }

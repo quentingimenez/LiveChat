@@ -4,6 +4,8 @@ import { test } from 'node:test';
 import {
   NEUTRAL_ADJUST,
   avEditProblem,
+  formatSpeed,
+  parseSpeed,
   buildRecipe,
   centeredCrop,
   cssFilter,
@@ -146,11 +148,24 @@ test('buildRecipe: a full-frame crop is no crop', () => {
   assert.deepEqual(buildRecipe(edit, 10), {});
 });
 
-test('avEditProblem: refuses an empty result and a long reverse', () => {
+test('avEditProblem: refuses an empty result, never a long reverse', () => {
   assert.equal(avEditProblem(defaultAvEdit(10), 10), null);
   assert.match(avEditProblem({ ...defaultAvEdit(10), segments: [] }, 10), /presque rien/);
-  assert.match(avEditProblem({ ...defaultAvEdit(300), reverse: true }, 300), /2 minutes/);
-  assert.equal(avEditProblem({ ...defaultAvEdit(300), reverse: true, segments: [[0, 60]] }, 300), null);
+  assert.equal(avEditProblem({ ...defaultAvEdit(3600), reverse: true }, 3600), null);
+});
+
+test('parseSpeed reads a typed speed inside the accepted range', () => {
+  assert.equal(parseSpeed('1,3'), 1.3);
+  assert.equal(parseSpeed('0.8'), 0.8);
+  assert.equal(parseSpeed(' 2x '), 2);
+  assert.equal(parseSpeed('1,333'), 1.33);
+  assert.equal(parseSpeed('10'), 4);
+  assert.equal(parseSpeed('0,1'), 0.25);
+  assert.equal(parseSpeed('0'), null);
+  assert.equal(parseSpeed('vite'), null);
+  assert.equal(parseSpeed(''), null);
+  assert.equal(formatSpeed(1.25), '1,25×');
+  assert.equal(formatSpeed(2), '2×');
 });
 
 test('formatClock and parseClock agree', () => {

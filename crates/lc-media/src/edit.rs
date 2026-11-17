@@ -7,7 +7,13 @@
 //! builder [`build_edit_args`]. [`apply_edit`] runs the result.
 //!
 //! Order of the picture operations: crop (on the source frame), rotation, then
-//! the two flips (in the rotated frame). The output of a video edit is
+//! the two flips (in the rotated frame).
+//!
+//! ffmpeg's `reverse` keeps every decoded frame of its input in memory, so a
+//! video longer than [`REVERSE_PIECE_SEC`] is reversed piece by piece: each
+//! piece is cut, framed and reversed by its own ffmpeg run, then the pieces are
+//! joined in reverse order and the rest of the edit (speed, volume, fades,
+//! size, format) is applied to the whole. The output of a video edit is
 //! H.264 yuv420p + AAC in MP4, under the configured maximum height, so the
 //! normalizer copies it instead of encoding it a second time.
 
@@ -31,8 +37,9 @@ pub const MAX_VOLUME: f64 = 3.0;
 pub const MAX_FADE_SEC: f64 = 10.0;
 /// Shortest media an edit may produce, in source seconds kept.
 pub const MIN_KEPT_SEC: f64 = 0.1;
-/// Longest kept duration that may be reversed (`reverse` buffers every frame).
-pub const MAX_REVERSE_SEC: f64 = 120.0;
+/// Longest kept duration of a video reversed by a single ffmpeg run; a
+/// longer one is reversed in pieces of at most this length.
+pub const REVERSE_PIECE_SEC: f64 = 5.0;
 /// Longest GIF an edit may produce, in output seconds.
 pub const MAX_GIF_SEC: f64 = 60.0;
 /// Most kept ranges accepted in one recipe.
@@ -174,6 +181,52 @@ pub struct EditPlan {
 }
 
 impl EditPlan {
+    /// `true` when the picture is reversed in pieces (see [`reverse_pieces`]).
+    pub fn reverses_in_pieces(&self) -> bool {
+        self.reverse && self.with_video && self.kept_duration_sec > REVERSE_PIECE_SEC
+    }
+
+    /// Kept ranges in source seconds, the whole media included.
+    fn kept_ranges(&self) -> Vec<(f64, f64)> {
+        if self.segments.is_empty() {
+            vec![(0.0, self.kept_duration_sec)]
+        } else {
+            self.segments.clone()
+        }
+    }
+
+    /// The edit of one reversed piece: cut, crop, rotation, flips and reverse
+    /// on `ranges`, in piece seconds (the piece starts at its first range).
+    fn reversed_piece(&self, ranges: &[(f64, f64)]) -> EditPlan {
+        let kept: f64 = ranges.iter().map(|(start, end)| end - start).sum();
+        EditPlan {
+            segments: ranges.to_vec(),
+            speed: 1.0,
+            volume: 1.0,
+            fade_in_sec: 0.0,
+            fade_out_sec: 0.0,
+            reverse: true,
+            output: EditOutput::Same,
+            with_video: true,
+            kept_duration_sec: kept,
+            output_duration_sec: kept,
+            ..self.clone()
+        }
+    }
+
+    /// What is left to apply once the reversed pieces are joined.
+    fn after_reversed_pieces(&self) -> EditPlan {
+        EditPlan {
+            segments: Vec::new(),
+            reverse: false,
+            crop: None,
+            rotate: 0,
+            flip_h: false,
+            flip_v: false,
+            ..self.clone()
+        }
+    }
+
     /// Kind of the media produced.
     pub fn output_kind(&self) -> MediaKind {
         if !self.with_video {
@@ -253,11 +306,6 @@ impl EditRecipe {
         };
         if kept < MIN_KEPT_SEC {
             return Err(format!("at least {MIN_KEPT_SEC} s must be kept"));
-        }
-        if self.reverse && kept > MAX_REVERSE_SEC {
-            return Err(format!(
-                "reverse is limited to {MAX_REVERSE_SEC} s of kept media"
-            ));
         }
         let output_duration = kept / speed;
         if self.output == EditOutput::Gif && output_duration > MAX_GIF_SEC {
@@ -605,16 +653,30 @@ pub fn build_edit_args(
     encoder: &str,
     preset: &str,
 ) -> Vec<String> {
-    let mut args = vec![
-        "-y".to_string(),
-        "-hide_banner".to_string(),
-        "-v".to_string(),
-        "error".to_string(),
+    edit_args(&[], input, output, plan, config, encoder, preset)
+}
+
+/// [`build_edit_args`] with options placed before `-i` (an input format).
+fn edit_args(
+    input_options: &[&str],
+    input: &Path,
+    output: &Path,
+    plan: &EditPlan,
+    config: &MediaConfig,
+    encoder: &str,
+    preset: &str,
+) -> Vec<String> {
+    let mut args: Vec<String> = ["-y", "-hide_banner", "-v", "error"]
+        .iter()
+        .chain(input_options)
+        .map(|arg| (*arg).to_string())
+        .collect();
+    args.extend([
         "-i".to_string(),
         input.display().to_string(),
         "-filter_complex".to_string(),
         build_filter_graph(plan, config.video.max_height),
-    ];
+    ]);
     if plan.with_video {
         args.push("-map".to_string());
         args.push("[v]".to_string());
@@ -648,10 +710,168 @@ pub fn build_edit_args(
     args
 }
 
+/// Splits the kept ranges into pieces of equal kept length, at most
+/// `piece_sec` each, in the order of the reversed result: the end of the media
+/// first. The ranges inside a piece stay ascending.
+pub fn reverse_pieces(ranges: &[(f64, f64)], piece_sec: f64) -> Vec<Vec<(f64, f64)>> {
+    let kept: f64 = ranges.iter().map(|(start, end)| end - start).sum();
+    if kept <= 0.0 || piece_sec <= 0.0 {
+        return Vec::new();
+    }
+    // Equal pieces: no sliver of a few frames at the start of the media.
+    let count = ((kept / piece_sec) - 1e-9).ceil().max(1.0) as usize;
+    let size = kept / count as f64;
+    let mut pieces: Vec<Vec<(f64, f64)>> = Vec::with_capacity(count);
+    let mut current: Vec<(f64, f64)> = Vec::new();
+    let mut room = size;
+    for &(start, end) in ranges.iter().rev() {
+        let mut end = end;
+        while end - start > 1e-6 {
+            // The last piece takes everything left (rounding).
+            let last = pieces.len() + 1 >= count;
+            let from = if last { start } else { (end - room).max(start) };
+            current.insert(0, (from, end));
+            room -= end - from;
+            end = from;
+            if !last && room <= 1e-6 {
+                pieces.push(std::mem::take(&mut current));
+                room = size;
+            }
+        }
+    }
+    if !current.is_empty() {
+        pieces.push(current);
+    }
+    pieces
+}
+
+/// ffmpeg arguments writing one reversed piece of `plan` (see
+/// [`reverse_pieces`]) to `output`, an MKV kept for the final pass: H.264 at
+/// a near-lossless quality and PCM sound, so the join adds no gap.
+pub fn build_reverse_piece_args(
+    input: &Path,
+    output: &Path,
+    plan: &EditPlan,
+    piece: &[(f64, f64)],
+    max_height: u32,
+) -> Vec<String> {
+    let seek = piece.first().map_or(0.0, |range| range.0);
+    let until = piece.last().map_or(0.0, |range| range.1);
+    let ranges: Vec<(f64, f64)> = piece
+        .iter()
+        .map(|(start, end)| (start - seek, end - seek))
+        .collect();
+    let piece_plan = plan.reversed_piece(&ranges);
+    let mut args: Vec<String> = ["-y", "-hide_banner", "-v", "error", "-ss"]
+        .map(str::to_string)
+        .to_vec();
+    args.extend([
+        num(seek),
+        "-t".to_string(),
+        num(until - seek),
+        "-i".to_string(),
+        input.display().to_string(),
+        "-filter_complex".to_string(),
+        build_filter_graph(&piece_plan, max_height),
+        "-map".to_string(),
+        "[v]".to_string(),
+    ]);
+    if piece_plan.with_audio {
+        args.extend(["-map", "[a]", "-c:a", "pcm_s16le"].map(str::to_string));
+    } else {
+        args.push("-an".to_string());
+    }
+    args.extend(
+        [
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p",
+        ]
+        .map(str::to_string),
+    );
+    args.push(output.display().to_string());
+    args
+}
+
+/// Concat list joining the reversed pieces, named relative to the list.
+fn reverse_concat_list(names: &[String]) -> String {
+    let mut list = String::from("ffconcat version 1.0\n");
+    for name in names {
+        list.push_str(&format!("file '{name}'\n"));
+    }
+    list
+}
+
 /// Runs the edit and writes `output` (its extension must be
 /// [`EditPlan::output_extension`]). A failed NVENC encode is tried again with
 /// libx264, like the normalizer.
+///
+/// A long reversed video is cut into pieces written next to `output`; they
+/// are removed afterwards.
 pub async fn apply_edit(
+    input: &Path,
+    output: &Path,
+    plan: &EditPlan,
+    config: &MediaConfig,
+) -> MediaResult<()> {
+    if !plan.reverses_in_pieces() {
+        return encode_edit(&[], input, output, plan, config).await;
+    }
+    let directory = output.parent().unwrap_or_else(|| Path::new("."));
+    let pieces = reverse_pieces(&plan.kept_ranges(), REVERSE_PIECE_SEC);
+    let names: Vec<String> = (0..pieces.len())
+        .map(|index| format!("reverse-piece-{index}.mkv"))
+        .collect();
+    let list_path = directory.join("reverse-pieces.ffconcat");
+    let result = async {
+        for (piece, name) in pieces.iter().zip(&names) {
+            let args = build_reverse_piece_args(
+                input,
+                &directory.join(name),
+                plan,
+                piece,
+                config.video.max_height,
+            );
+            process::run_command(
+                &config.tools.ffmpeg,
+                &args,
+                config.download.timeout,
+                MediaErrorCode::TranscodeFailed,
+            )
+            .await?;
+        }
+        std::fs::write(&list_path, reverse_concat_list(&names)).map_err(|error| {
+            MediaError::from_io(
+                MediaErrorCode::TranscodeFailed,
+                "écriture de la liste des morceaux inversés",
+                &error,
+            )
+        })?;
+        encode_edit(
+            &["-f", "concat", "-safe", "0"],
+            &list_path,
+            output,
+            &plan.after_reversed_pieces(),
+            config,
+        )
+        .await
+    }
+    .await;
+    for path in names
+        .iter()
+        .map(|name| directory.join(name))
+        .chain([list_path])
+    {
+        if let Err(error) = std::fs::remove_file(&path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(%error, path = %path.display(), "morceau inversé non supprimé");
+            }
+        }
+    }
+    result
+}
+
+/// One ffmpeg run of `plan`, with the NVENC fallback.
+async fn encode_edit(
+    input_options: &[&str],
     input: &Path,
     output: &Path,
     plan: &EditPlan,
@@ -666,7 +886,15 @@ pub async fn apply_edit(
             }
         };
     let (encoder, preset) = resolve_video_encoder(&config.video, nvenc_available);
-    let args = build_edit_args(input, output, plan, config, &encoder, &preset);
+    let args = edit_args(
+        input_options,
+        input,
+        output,
+        plan,
+        config,
+        &encoder,
+        &preset,
+    );
     let first = process::run_command(
         &config.tools.ffmpeg,
         &args,
@@ -682,7 +910,15 @@ pub async fn apply_edit(
     }
     tracing::warn!(%error, "échec NVENC pendant une édition, nouvelle tentative en libx264");
     let (encoder, preset) = resolve_video_encoder(&config.video, false);
-    let args = build_edit_args(input, output, plan, config, &encoder, &preset);
+    let args = edit_args(
+        input_options,
+        input,
+        output,
+        plan,
+        config,
+        &encoder,
+        &preset,
+    );
     process::run_command(
         &config.tools.ffmpeg,
         &args,
@@ -857,11 +1093,19 @@ mod tests {
     }
 
     #[test]
-    fn reverse_and_gif_have_a_duration_limit() {
-        assert!(recipe(r#"{"reverse":true}"#).plan(&video(121.0)).is_err());
-        assert!(recipe(r#"{"reverse":true,"segments":[[0,100]]}"#)
-            .plan(&video(300.0))
-            .is_ok());
+    fn reverse_has_no_duration_limit_and_gif_has_one() {
+        let long = recipe(r#"{"reverse":true}"#).plan(&video(3600.0)).unwrap();
+        assert!(long.reverses_in_pieces());
+        let short = recipe(r#"{"reverse":true,"segments":[[0,5]]}"#)
+            .plan(&video(3600.0))
+            .unwrap();
+        assert!(!short.reverses_in_pieces());
+        let sound = recipe(r#"{"reverse":true}"#).plan(&audio(3600.0)).unwrap();
+        assert!(!sound.reverses_in_pieces());
+        let extracted = recipe(r#"{"reverse":true,"output":"audio"}"#)
+            .plan(&video(3600.0))
+            .unwrap();
+        assert!(!extracted.reverses_in_pieces());
         assert!(recipe(r#"{"output":"gif"}"#).plan(&video(61.0)).is_err());
         assert!(recipe(r#"{"output":"gif","speed":2}"#)
             .plan(&video(100.0))
@@ -1036,6 +1280,109 @@ mod tests {
         ));
         assert!(!graph.contains("atrim"));
         assert!(args.join(" ").ends_with("-map [v] -an -loop 0 out.gif"));
+    }
+
+    fn total(pieces: &[Vec<(f64, f64)>]) -> f64 {
+        pieces
+            .iter()
+            .flatten()
+            .map(|(start, end)| end - start)
+            .sum()
+    }
+
+    #[test]
+    fn reverse_pieces_start_from_the_end_in_equal_parts() {
+        let pieces = reverse_pieces(&[(0.0, 12.0)], 5.0);
+        assert_eq!(
+            pieces,
+            vec![vec![(8.0, 12.0)], vec![(4.0, 8.0)], vec![(0.0, 4.0)]]
+        );
+        assert_eq!(reverse_pieces(&[(1.0, 4.0)], 5.0), vec![vec![(1.0, 4.0)]]);
+        assert_eq!(
+            reverse_pieces(&[(0.0, 10.0)], 5.0),
+            vec![vec![(5.0, 10.0)], vec![(0.0, 5.0)]]
+        );
+        assert!(reverse_pieces(&[], 5.0).is_empty());
+    }
+
+    #[test]
+    fn reverse_pieces_span_the_cuts_and_keep_everything() {
+        let ranges = [(0.0, 3.0), (10.0, 14.0), (20.0, 23.3)];
+        let pieces = reverse_pieces(&ranges, 5.0);
+        assert_eq!(pieces.len(), 3);
+        assert!((total(&pieces) - 10.3).abs() < 1e-9);
+        for piece in &pieces {
+            let kept: f64 = piece.iter().map(|(start, end)| end - start).sum();
+            assert!(kept <= 5.0 + 1e-9, "{piece:?}");
+            assert!(piece.windows(2).all(|pair| pair[0].1 <= pair[1].0));
+        }
+        assert_eq!(pieces[0].last().unwrap().1, 23.3);
+        assert_eq!(pieces[2].first().unwrap().0, 0.0);
+        // Ascending pieces once put back in source order, without overlap.
+        let flat: Vec<(f64, f64)> = pieces.iter().rev().flatten().copied().collect();
+        assert!(flat.windows(2).all(|pair| pair[0].1 <= pair[1].0 + 1e-9));
+        // A long media: pieces of at most 5 s.
+        let long = reverse_pieces(&[(0.0, 3600.0)], 5.0);
+        assert_eq!(long.len(), 720);
+        assert!((total(&long) - 3600.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_reversed_piece_is_framed_reversed_and_joined_later() {
+        let plan = recipe(
+            r#"{"segments":[[2,7],[8,20]],"speed":2,"volume":2,"fadeInSec":1,
+                "reverse":true,"crop":{"x":0,"y":0,"width":0.5,"height":0.5},"rotate":90}"#,
+        )
+        .plan(&video(30.0))
+        .unwrap();
+        assert!(plan.reverses_in_pieces());
+        let pieces = reverse_pieces(&plan.kept_ranges(), REVERSE_PIECE_SEC);
+        assert_eq!(pieces.len(), 4);
+        // The piece that spans the cut: [6.25, 7] then [8, 11.5].
+        assert_eq!(pieces[2], vec![(6.25, 7.0), (8.0, 11.5)]);
+        let args = build_reverse_piece_args(
+            &PathBuf::from("in.mp4"),
+            &PathBuf::from("piece.mkv"),
+            &plan,
+            &pieces[2],
+            720,
+        );
+        let joined = args.join(" ");
+        assert!(joined.starts_with("-y -hide_banner -v error -ss 6.25 -t 5.25 -i in.mp4"));
+        let graph = graph_of(&args);
+        assert!(graph.contains("trim=start=0:end=0.75,"), "{graph}");
+        assert!(graph.contains("trim=start=1.75:end=5.25,"), "{graph}");
+        assert!(graph.contains("transpose=1,reverse,scale="), "{graph}");
+        assert!(graph.contains("[ac]areverse[a]"), "{graph}");
+        assert!(!graph.contains("setpts=PTS/2") && !graph.contains("fade"));
+        assert!(joined.ends_with(
+            "-c:a pcm_s16le -c:v libx264 -preset veryfast -crf 14 -pix_fmt yuv420p piece.mkv"
+        ));
+
+        let rest = plan.after_reversed_pieces();
+        let args = edit_args(
+            &["-f", "concat", "-safe", "0"],
+            &PathBuf::from("pieces.ffconcat"),
+            &PathBuf::from("out.mp4"),
+            &rest,
+            &MediaConfig::default(),
+            "libx264",
+            "ultrafast",
+        );
+        assert!(args
+            .join(" ")
+            .starts_with("-y -hide_banner -v error -f concat -safe 0 -i pieces.ffconcat"));
+        let graph = graph_of(&args);
+        assert!(!graph.contains("trim") && !graph.contains("reverse") && !graph.contains("crop"));
+        assert!(graph.contains("setpts=PTS/2,fade=t=in:st=0:d=1"), "{graph}");
+        assert!(
+            graph.contains("atempo=2,volume=2,afade=t=in:st=0:d=1"),
+            "{graph}"
+        );
+        assert_eq!(
+            reverse_concat_list(&["a.mkv".to_string(), "b.mkv".to_string()]),
+            "ffconcat version 1.0\nfile 'a.mkv'\nfile 'b.mkv'\n"
+        );
     }
 
     #[test]

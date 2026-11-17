@@ -9,6 +9,8 @@ import { h, icon, registerIcons } from '../../core/dom.js';
 import {
   CROP_RATIOS,
   MIN_KEEP_SEC,
+  MAX_SPEED,
+  MIN_SPEED,
   SPEEDS,
   avEditProblem,
   buildRecipe,
@@ -18,6 +20,7 @@ import {
   defaultAvEdit,
   fadeGain,
   formatClock,
+  formatSpeed,
   isWhole,
   keepRange,
   keptDuration,
@@ -25,6 +28,7 @@ import {
   normalizeSegments,
   outputDuration,
   parseClock,
+  parseSpeed,
   removedRanges,
   rotatedSize,
   sourceToOutputTime,
@@ -648,6 +652,34 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   }
 
   // --- panel ---
+  function setSpeed(speed) {
+    edit.speed = speed;
+    commit();
+    renderPanel();
+  }
+
+  // Any speed the server accepts, typed as "1,3" or "0.8".
+  function speedField() {
+    const custom = !SPEEDS.includes(edit.speed);
+    const field = h('input', {
+      class: `field speed-field${custom ? ' is-active' : ''}`,
+      inputmode: 'decimal',
+      'aria-label': `Vitesse personnalisée (de ${formatSpeed(MIN_SPEED)} à ${formatSpeed(MAX_SPEED)})`,
+      title: `De ${formatSpeed(MIN_SPEED)} à ${formatSpeed(MAX_SPEED)}`,
+      placeholder: '1,3',
+      value: custom ? String(edit.speed).replace('.', ',') : '',
+      onChange: () => {
+        const speed = parseSpeed(field.value);
+        if (speed === null) {
+          field.value = custom ? String(edit.speed).replace('.', ',') : '';
+          return;
+        }
+        setSpeed(speed);
+      },
+    });
+    return h('label', { class: 'row' }, h('span', { class: 'meta' }, 'Autre vitesse'), field, h('span', { class: 'meta' }, '×'));
+  }
+
   function renderPanel() {
     const sound = edit.output !== 'gif';
     const picture = isVideo && edit.output !== 'audio';
@@ -667,7 +699,8 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
       ),
       section(
         'Vitesse',
-        choices(SPEEDS.map((speed) => [speed, `${String(speed).replace('.', ',')}×`]), edit.speed, (speed) => { edit.speed = speed; commit(); renderPanel(); }, 'Vitesse de lecture'),
+        choices(SPEEDS.map((speed) => [speed, formatSpeed(speed)]), edit.speed, setSpeed, 'Vitesse de lecture'),
+        speedField(),
         toggle('Lire à l’envers', edit.reverse, (reverse) => { edit.reverse = reverse; commit(); renderPanel(); }),
         edit.reverse ? h('p', { class: 'meta' }, 'L’aperçu reste à l’endroit ; le résultat sera inversé.') : null,
       ),

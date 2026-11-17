@@ -30,10 +30,19 @@ fn parses_tiktok_video_page() {
     assert_eq!(page.author.as_deref(), Some("livechat"));
     assert!(!page.auth_required);
     assert!(!page.should_build_carousel());
-    assert!(page
+    // `downloadAddr` (video.mp4) est la version filigranée : exclue.
+    let urls: Vec<&str> = page
         .video_candidates
         .iter()
-        .any(|candidate| candidate.url.contains("video.mp4")));
+        .map(|candidate| candidate.url.as_str())
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            "https://v16-webapp.tiktok.com/play.mp4?x=1",
+            "https://v16-webapp.tiktok.com/bitrate-720.mp4?x=1",
+        ]
+    );
     assert!(!page.audio_candidates.is_empty());
 }
 

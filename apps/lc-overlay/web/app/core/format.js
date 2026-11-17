@@ -111,3 +111,24 @@ export function mediaRefreshDelay(items, now = Date.now()) {
   }
   return Math.max(0, earliest - MEDIA_URL_REFRESH_MARGIN_MS - now);
 }
+
+// Longest display time a member can choose for an image, in seconds.
+export const MAX_DISPLAY_DURATION_SEC = 600;
+export const INVALID_DURATION_MESSAGE = 'La durée doit être un nombre entier entre 1 et 600.';
+
+// Image display time typed in a form: empty means "guild default" (`null`),
+// else whole seconds from 1 to MAX_DISPLAY_DURATION_SEC.
+export function parseDisplayDuration(raw) {
+  const text = raw === null || raw === undefined ? '' : String(raw).trim();
+  if (text === '') {
+    return { ok: true, value: null };
+  }
+  if (!/^\d+$/.test(text)) {
+    return { ok: false };
+  }
+  const value = Number(text);
+  if (value < 1 || value > MAX_DISPLAY_DURATION_SEC) {
+    return { ok: false };
+  }
+  return { ok: true, value };
+}

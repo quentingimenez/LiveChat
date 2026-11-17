@@ -122,6 +122,7 @@
     // « Directed by… » (a YouTube link) has its platform thumbnail.
     thumbnail: index === 3 ? { url: svg(5), width: 480, height: 360 } : null,
     artworkOnOverlay: false,
+    displayDurationSec: null,
   }));
 
   const queue = {
@@ -455,6 +456,14 @@
         Object.assign(items[index], { title: (payload.body && payload.body.title) || null, message: (payload.body && payload.body.message) || null });
         if (payload.body && typeof payload.body.artworkOnOverlay === 'boolean') {
           items[index].artworkOnOverlay = payload.body.artworkOnOverlay;
+        }
+        if (payload.body && 'displayDurationSec' in payload.body) {
+          const seconds = payload.body.displayDurationSec;
+          const valid = seconds === null || (Number.isInteger(seconds) && seconds >= 1 && seconds <= 600);
+          if (!valid || (seconds !== null && items[index].media.kind !== 'image')) {
+            return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+          }
+          items[index].displayDurationSec = seconds;
         }
       }
       boardChanged(payload.guildId, method === 'DELETE' ? 'deleted' : 'updated', itemId);

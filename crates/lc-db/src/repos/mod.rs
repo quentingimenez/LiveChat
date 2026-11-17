@@ -22,7 +22,7 @@ pub use guild_members::{GuildMembersRepository, MemberChange};
 pub use guilds::GuildsRepository;
 pub use ingest_clients::IngestClientsRepository;
 pub use media_assets::MediaAssetsRepository;
-pub use media_board::MediaBoardRepository;
+pub use media_board::{BoardItemEdit, MediaBoardRepository};
 pub use metadata::MetadataRepository;
 pub use overlay_clients::OverlayClientsRepository;
 pub use pairing_codes::PairingCodesRepository;

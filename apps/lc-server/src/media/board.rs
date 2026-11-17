@@ -12,6 +12,7 @@
 use chrono::{DateTime, Utc};
 use lc_db::{Db, DbError};
 use lc_domain::entities::{MediaAsset, MediaBoardItem};
+use lc_domain::enums::MediaKind;
 use lc_domain::ids::{GuildId, MediaAssetId, MediaBoardItemId};
 use lc_domain::time::datetime_to_ms;
 use lc_media::config::MediaConfig;
@@ -38,7 +39,7 @@ pub struct BoardAddResult {
 ///
 /// L'asset doit déjà être `READY` ; l'appelant a vérifié le média et les
 /// permissions. `title`, `message`, `created_by_*` sont optionnels et tronqués
-/// aux limites legacy.
+/// aux limites legacy. `display_duration_sec` is kept only on a new image item.
 #[allow(clippy::too_many_arguments)]
 pub async fn add_to_board(
     db: &Db,
@@ -49,6 +50,7 @@ pub async fn add_to_board(
     message: Option<&str>,
     created_by_user_id: Option<&str>,
     created_by_name: Option<&str>,
+    display_duration_sec: Option<i64>,
     now: DateTime<Utc>,
 ) -> MediaServiceResult<BoardAddResult> {
     let repository = db.media_board();
@@ -81,6 +83,7 @@ pub async fn add_to_board(
         created_at: now,
         artwork_asset_id: None,
         artwork_on_overlay: false,
+        display_duration_sec: display_duration_sec.filter(|_| asset.kind == MediaKind::Image),
     };
 
     match repository.create(&item).await {
@@ -185,11 +188,20 @@ mod tests {
     }
 
     async fn insert_asset(fixture: &Fixture, hash: &str, size_bytes: i64) -> MediaAsset {
+        insert_asset_of(fixture, hash, size_bytes, MediaKind::Video).await
+    }
+
+    async fn insert_asset_of(
+        fixture: &Fixture,
+        hash: &str,
+        size_bytes: i64,
+        kind: MediaKind,
+    ) -> MediaAsset {
         let asset = MediaAsset {
             id: MediaAssetId::new_v4(),
             source_hash: hash.to_owned(),
             source_url: format!("https://example.com/{hash}"),
-            kind: MediaKind::Video,
+            kind,
             mime: "video/mp4".into(),
             duration_sec: Some(5),
             width: None,
@@ -227,6 +239,7 @@ mod tests {
             Some("message"),
             Some("42"),
             Some("auteur"),
+            None,
             fixture.now,
         )
         .await
@@ -254,6 +267,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             fixture.now,
         )
         .await
@@ -273,6 +287,7 @@ mod tests {
             &fixture.config,
             &guild,
             &asset,
+            None,
             None,
             None,
             None,
@@ -314,10 +329,49 @@ mod tests {
             None,
             None,
             None,
+            None,
             fixture.now,
         )
         .await
         .expect_err("base fermée");
         assert!(matches!(error, MediaServiceError::Database(_)));
+    }
+
+    #[tokio::test]
+    async fn add_to_board_stores_duration_for_new_image_only() {
+        let fixture = fixture(1_000).await;
+        let guild = GuildId::parse("123456789012345678").expect("guilde");
+        let image = insert_asset_of(&fixture, "hash-image", 10, MediaKind::Image).await;
+        let add = |asset: MediaAsset, seconds: Option<i64>| {
+            let fixture = &fixture;
+            let guild = guild.clone();
+            async move {
+                add_to_board(
+                    &fixture.db,
+                    &fixture.config,
+                    &guild,
+                    &asset,
+                    None,
+                    None,
+                    None,
+                    None,
+                    seconds,
+                    fixture.now,
+                )
+                .await
+                .expect("ajout")
+            }
+        };
+
+        let first = add(image.clone(), Some(8)).await;
+        assert!(first.created);
+        assert_eq!(first.item.display_duration_sec, Some(8));
+
+        let again = add(image.clone(), Some(20)).await;
+        assert!(!again.created);
+        assert_eq!(again.item.display_duration_sec, Some(8));
+
+        let video = insert_asset_of(&fixture, "hash-video", 10, MediaKind::Video).await;
+        assert_eq!(add(video, Some(8)).await.item.display_duration_sec, None);
     }
 }

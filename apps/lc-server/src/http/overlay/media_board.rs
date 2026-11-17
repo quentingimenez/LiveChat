@@ -10,7 +10,7 @@
 //! |---------|--------|------------------|---------|
 //! | `GET` | `/overlay/media-board/items?q=&limit=&offset=` | Bearer | `{total, limit, offset, items}` |
 //! | `POST` | `/overlay/media-board/items` | Bearer | `202 {ingestionId}` |
-//! | `POST` | `/overlay/media-board/upload?filename=&title=&message=&replaceItemId=` | Bearer | `202 {ingestionId}` (raw binary body) |
+//! | `POST` | `/overlay/media-board/uploads` (+ `PUT …/{uploadId}/parts`, `POST …/{uploadId}/complete`) | Bearer | `202 {ingestionId}` on completion (see `media_upload`) |
 //! | `POST` | `/overlay/media-board/items/{itemId}/edit` | Bearer | `202 {ingestionId}` (see [`super::media_edit`]) |
 //! | `POST` | `/overlay/media-board/import` | Bearer + `X-LiveChat-Source-Token` | `{results:[...]}` (see [`super::media_import`]) |
 //! | `GET` | `/overlay/media-board/ingestions` | Bearer | `{items:[...]}` |

@@ -12,7 +12,10 @@
 //! | `GET` | `/overlay/media/{assetId}` | URL signée HMAC (`exp`, `sig`, `clientId`) |
 //! | `GET` | `/overlay/media-board/items` | `Authorization: Bearer` |
 //! | `POST` | `/overlay/media-board/items` | `Authorization: Bearer` — **écriture refusée en `invite_read_only`** |
-//! | `POST` | `/overlay/media-board/upload?filename=&title=&message=&replaceItemId=` | `Authorization: Bearer` — **writes refused in `invite_read_only`** |
+//! | `POST` | `/overlay/media-board/uploads` | `Authorization: Bearer` — **writes refused in `invite_read_only`** |
+//! | `PUT` | `/overlay/media-board/uploads/{uploadId}/parts?offset=` | `Authorization: Bearer` — **writes refused in `invite_read_only`** |
+//! | `POST` | `/overlay/media-board/uploads/{uploadId}/complete` | `Authorization: Bearer` — **writes refused in `invite_read_only`** |
+//! | `DELETE` | `/overlay/media-board/uploads/{uploadId}` | `Authorization: Bearer` |
 //! | `POST` | `/overlay/media-board/items/{itemId}/edit` | `Authorization: Bearer` — **writes refused in `invite_read_only`** |
 //! | `POST` | `/overlay/media-board/import` | `Authorization: Bearer` (target) + `X-LiveChat-Source-Token` (source) — **writes refused in `invite_read_only`** |
 //! | `GET` | `/overlay/media-board/ingestions` | `Authorization: Bearer` |
@@ -87,6 +90,7 @@ pub(crate) mod media_edit;
 mod media_import;
 mod media_ingestion;
 mod media_upload;
+pub use media_upload::{UploadSessions, MAX_PART_BYTES};
 mod pair;
 mod profile_discord;
 pub(crate) mod queue;
@@ -263,8 +267,20 @@ pub fn router() -> Router<AppState> {
             get(media_board::list_items).post(media_board::create_item),
         )
         .route(
-            "/overlay/media-board/upload",
-            post(media_upload::upload_item),
+            "/overlay/media-board/uploads",
+            post(media_upload::create_upload),
+        )
+        .route(
+            "/overlay/media-board/uploads/{upload_id}",
+            axum::routing::delete(media_upload::cancel_upload),
+        )
+        .route(
+            "/overlay/media-board/uploads/{upload_id}/parts",
+            axum::routing::put(media_upload::put_part),
+        )
+        .route(
+            "/overlay/media-board/uploads/{upload_id}/complete",
+            post(media_upload::complete_upload),
         )
         .route(
             "/overlay/media-board/import",

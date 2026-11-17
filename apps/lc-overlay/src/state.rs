@@ -28,6 +28,8 @@ pub enum GuildRemovalReason {
     GuildDeleted,
     /// The member was removed from the guild.
     MemberRemoved,
+    /// The member was banned from the guild.
+    MemberBanned,
     /// The overlay device was revoked.
     Revoked,
     /// The guild token is no longer valid.

@@ -85,6 +85,16 @@ pub async fn link_discord(
     {
         return error(StatusCode::NOT_FOUND, CODE_INVALID);
     }
+    // A banned account cannot come back by being linked to another member.
+    match db
+        .guild_bans()
+        .is_discord_user_banned(&member.guild_id, &user_id)
+        .await
+    {
+        Ok(true) => return error(StatusCode::FORBIDDEN, "member_banned"),
+        Ok(false) => {}
+        Err(db_error) => return db_failure("overlay_discord_profile.ban_lookup", &db_error),
+    }
     match db
         .guild_members()
         .find_active_by_discord_user(&member.guild_id, &user_id)

@@ -3,7 +3,7 @@
 //! Section 3 of `docs/rust/admin-console-api.md`:
 //!
 //! - `GET /admin/api/guilds/{id}`: one `overview.guilds[]` entry enriched with
-//!   the guild member/invite/queue lists and the board quota;
+//!   the guild member/invite/ban/queue lists and the board quota;
 //! - `GET /admin/api/guilds/{id}/media-board/items`: the overlay board list.
 //!
 //! Section 4, "Transposées de l'overlay": the ten routes below reuse the body
@@ -123,6 +123,9 @@ pub(super) async fn detail_entry(
     let invites = overlay_admin::invites_payload(state, guild_id)
         .await
         .map_err(|_| AdminError::Internal)?;
+    let bans = overlay_admin::bans_payload(state, guild_id)
+        .await
+        .map_err(|_| AdminError::Internal)?;
     let queue = overlay_queue::queue_payload(state, guild_id)
         .await
         .map_err(|_| AdminError::Internal)?;
@@ -180,6 +183,7 @@ pub(super) async fn detail_entry(
         .map_or(Value::Null, |bytes| json!(bytes));
     entry["members"] = members;
     entry["invites"] = invites;
+    entry["bans"] = bans;
     entry["queue"] = queue;
 
     Ok(Some(entry))
@@ -244,6 +248,34 @@ pub(super) async fn remove_member(
 ) -> Result<Response, AdminError> {
     let guild_id = parse_guild_id(&raw_guild_id)?;
     to_admin_response(overlay_admin::remove_member_payload(&state, &guild_id, &member_id_raw).await)
+}
+
+/// Handler `POST /admin/api/guilds/{id}/members/{memberId}/ban`.
+pub(super) async fn ban_member(
+    State(state): State<AppState>,
+    _access: AdminAccess,
+    Path((raw_guild_id, member_id_raw)): Path<(String, String)>,
+) -> Result<Response, AdminError> {
+    let guild_id = parse_guild_id(&raw_guild_id)?;
+    to_admin_response(
+        overlay_admin::ban_member_payload(
+            &state,
+            &guild_id,
+            &member_id_raw,
+            overlay_admin::BanActor::Operator,
+        )
+        .await,
+    )
+}
+
+/// Handler `DELETE /admin/api/guilds/{id}/bans/{banId}`.
+pub(super) async fn unban(
+    State(state): State<AppState>,
+    _access: AdminAccess,
+    Path((raw_guild_id, ban_id_raw)): Path<(String, String)>,
+) -> Result<Response, AdminError> {
+    let guild_id = parse_guild_id(&raw_guild_id)?;
+    to_admin_response(overlay_admin::unban_payload(&state, &guild_id, &ban_id_raw).await)
 }
 
 /// Handler `POST /admin/api/guilds/{id}/invites`.
@@ -373,6 +405,11 @@ pub(super) fn routes() -> Router<AppState> {
             "/admin/api/guilds/{guild_id}/members/{member_id}",
             patch(update_member).delete(remove_member),
         )
+        .route(
+            "/admin/api/guilds/{guild_id}/members/{member_id}/ban",
+            post(ban_member),
+        )
+        .route("/admin/api/guilds/{guild_id}/bans/{ban_id}", delete(unban))
         .route("/admin/api/guilds/{guild_id}/invites", post(create_invite))
         .route(
             "/admin/api/guilds/{guild_id}/invites/{code}/revoke",

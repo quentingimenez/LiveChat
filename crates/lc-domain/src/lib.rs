@@ -25,16 +25,16 @@ pub mod time;
 
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use entities::{
-    DiscordLinkCode, Guild, GuildAccess, GuildInvite, GuildMember, IngestClient, MediaAsset,
-    MediaBoardItem, OverlayClient, PairingCodeEntry, PlaybackJob,
+    DiscordLinkCode, Guild, GuildAccess, GuildBan, GuildInvite, GuildMember, IngestClient,
+    MediaAsset, MediaBoardItem, OverlayClient, PairingCodeEntry, PlaybackJob,
 };
 pub use enums::{
     GuildRole, JobStatus, MediaKind, MediaStatus, OverlaySessionMode, PairingMode, Permission,
 };
 pub use error::DomainError;
 pub use ids::{
-    GuildId, GuildMemberId, IngestClientId, MediaAssetId, MediaBoardItemId, OverlayClientId,
-    PairingCode, PlaybackJobId,
+    GuildBanId, GuildId, GuildMemberId, IngestClientId, MediaAssetId, MediaBoardItemId,
+    OverlayClientId, PairingCode, PlaybackJobId,
 };
 pub use rights::{Action as RightsAction, RightsRole, RightsTable, Surface};
 pub use time::{datetime_to_ms, ms_to_datetime, now_ms};

@@ -28,6 +28,7 @@ export const state = {
   triggerHints: new Map(), // jobId -> { outcome, position, at } until the queue is read again
   members: [],
   invites: [],
+  bans: [],
   bindings: {},
   capturing: false,
   // Selection mode of the board (see views/board.js): picked item ids and the
@@ -50,6 +51,9 @@ export const ERROR_LABELS = {
   guild_not_standalone: 'Seule une guilde créée hors Discord peut être liée à un serveur Discord.',
   member_required: 'Action réservée aux membres de la guilde.',
   discord_already_linked: 'Ce compte Discord est déjà lié à un autre membre de la guilde.',
+  member_banned: 'Ce compte Discord est banni de la guilde.',
+  cannot_ban_self: 'Tu ne peux pas te bannir toi-même.',
+  ban_not_found: 'Ce bannissement a déjà été levé.',
   invalid_role: 'Rôle inconnu.',
   invalid_payload: 'Valeur invalide.',
   invalid_name: 'Nom invalide.',

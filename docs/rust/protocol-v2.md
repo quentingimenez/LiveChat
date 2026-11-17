@@ -219,7 +219,7 @@ Règles générales :
 | **1008** | `POLICY_VIOLATION` | en-tête `Origin` absent de l'allowlist `/ws` (pré-hello) | `origin_not_allowed` | non (configuration serveur ; ne pas retenter tant que l'origine n'est pas autorisée) |
 | 1011 | `INTERNAL_ERROR` | erreur interne inattendue (DB, dispatch) | `internal_error` | oui (backoff) |
 | **4401** | `UNAUTHORIZED` | auth impossible : token absent/invalide, `hello` trop tardif ou absent, clientId incohérent | `missing_token`, `invalid_token`, `auth_timeout`, `hello_required` | non (sauf config modifiée) |
-| **4402** | `REVOKED` | token révoqué (`revoked_at` non nul), exclusion d'un membre ou départ volontaire | `revoked`, `member_removed` | non (re-pairing requis) |
+| **4402** | `REVOKED` | token révoqué (`revoked_at` non nul), exclusion ou bannissement d'un membre, départ volontaire | `revoked`, `member_removed`, `member_banned` | non (re-pairing requis) |
 | **4403** | `OUTDATED_PROTOCOL` | `v` ≠ 2, `hello` v1, `appVersion` < `MIN_OVERLAY_VERSION` | JSON `{"minVersion":"x.y.z"}` (§1.6) | non (mise à jour overlay) |
 | **4404** | `GUILD_DELETED` | guilde supprimée par le panneau d'administration | `guild_deleted` | non (guilde supprimée) |
 | 4408 | `FRAME_TOO_LARGE` | trame > 64 Kio | `frame_too_large` | oui, bug à corriger |
@@ -233,7 +233,8 @@ Pour `4403`, la `reason` de fermeture est **le JSON compact** `{"minVersion":"<x
 Le client mappe :
 - `4401` → état `error` avec message « jeton invalide » ;
 - `4402` → état terminal « appareil révoqué » (pas de retry, re-pairing) ; la `reason`
-  distingue `member_removed` (exclusion) de `revoked` (départ volontaire ou révocation admin) ;
+  distingue `member_removed` (exclusion), `member_banned` (bannissement) et `revoked` (départ
+  volontaire ou révocation admin) ;
 - `4403` → état terminal « overlay obsolète » (pas de retry, mise à jour) ; le client **parse la
   `reason` JSON** pour afficher `minVersion` ;
 - `4404` → état terminal « guilde supprimée » (pas de retry) ;

@@ -5,7 +5,11 @@
    « Exclure », a used invite no « Révoquer ») and shift its other columns.
    Action tracks therefore have a fixed width. */
 .line.is-member {
-  grid-template-columns: 30px minmax(0, 1fr) 150px 130px 88px;
+  grid-template-columns: 30px minmax(0, 1fr) 150px 130px 176px;
+}
+
+.line.is-ban {
+  grid-template-columns: 30px minmax(0, 1fr) minmax(0, 220px) 88px;
 }
 
 .line.is-invite {
@@ -13,8 +17,14 @@
 }
 
 .line.is-member > .btn,
-.line.is-invite > .btn {
+.line.is-member > .row,
+.line.is-invite > .btn,
+.line.is-ban > .btn {
   justify-self: end;
+}
+
+.line.is-member > .row {
+  gap: 4px;
 }
 
 .subtabs {
@@ -69,7 +79,7 @@
 
 @media (max-width: 1040px) {
   .line.is-member {
-    grid-template-columns: 30px minmax(0, 1fr) 120px 88px;
+    grid-template-columns: 30px minmax(0, 1fr) 120px 176px;
   }
 
   .line.is-member .seen {

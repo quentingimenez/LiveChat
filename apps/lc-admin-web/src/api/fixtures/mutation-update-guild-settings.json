@@ -1,4 +1,18 @@
 {
+  "bans": {
+    "count": 1,
+    "items": [
+      {
+        "avatar": null,
+        "bannedBy": "Quentin",
+        "createdAt": "2026-11-16T06:22:02.274Z",
+        "discordUserId": "1009",
+        "displayName": "Ancien membre",
+        "id": "9ace9da8-8c6f-4929-8e62-33ddaa9f0103",
+        "memberId": "e898622e-3f78-46df-a665-9566535662b6"
+      }
+    ]
+  },
   "boardQuotaBytes": null,
   "busyUntil": null,
   "discord": {
@@ -22,10 +36,10 @@
   "ingest": {
     "clients": [
       {
-        "createdAt": "2026-11-13T05:56:30.137Z",
-        "id": "f506886c-2a3a-4b8f-8168-aea768b15b38",
+        "createdAt": "2026-11-14T06:22:02.277Z",
+        "id": "253be414-52cc-4ba9-9f16-d838f50b0c00",
         "label": "Extension Firefox",
-        "lastSeenAt": "2026-11-16T03:56:30.137Z"
+        "lastSeenAt": "2026-11-17T04:22:02.277Z"
       }
     ],
     "total": 1
@@ -35,7 +49,7 @@
     "items": [
       {
         "code": "ABCDEFGH",
-        "createdAt": "2026-11-16T05:56:30.133Z",
+        "createdAt": "2026-11-17T06:22:02.274Z",
         "createdByMemberId": null,
         "expiresAt": null,
         "isActive": true,
@@ -60,41 +74,41 @@
       {
         "avatar": null,
         "connected": false,
-        "createdAt": "2026-11-16T05:56:30.131Z",
+        "createdAt": "2026-11-17T06:22:02.273Z",
         "deviceCount": 1,
         "discordLinked": false,
-        "displayName": "Quentin",
-        "id": "2b48b88b-4df3-449a-8549-3b043e27c1d6",
+        "displayName": "Théo",
+        "id": "74463eb1-2bcf-4267-80ec-a57ffb761770",
         "isSelf": false,
-        "lastSeenAt": "2026-11-16T05:51:30.132Z",
+        "lastSeenAt": "2026-11-17T06:17:02.274Z",
         "profileSource": "custom",
-        "role": "admin"
+        "role": "guest"
       },
       {
         "avatar": null,
         "connected": false,
-        "createdAt": "2026-11-16T05:56:30.132Z",
+        "createdAt": "2026-11-17T06:22:02.273Z",
         "deviceCount": 1,
         "discordLinked": false,
         "displayName": "Maëlle",
-        "id": "a685b96a-9ff2-4f17-96fe-27ebc4eee009",
+        "id": "a37e9c68-a585-4dbd-b3ed-cff1808a40bc",
         "isSelf": false,
-        "lastSeenAt": "2026-11-16T05:51:30.132Z",
+        "lastSeenAt": "2026-11-17T06:17:02.274Z",
         "profileSource": "custom",
         "role": "member"
       },
       {
         "avatar": null,
         "connected": false,
-        "createdAt": "2026-11-16T05:56:30.132Z",
+        "createdAt": "2026-11-17T06:22:02.273Z",
         "deviceCount": 1,
         "discordLinked": false,
-        "displayName": "Théo",
-        "id": "de42fdd7-23da-4c6e-978d-520fe5eeec2d",
+        "displayName": "Quentin",
+        "id": "c8993307-e071-4765-b4ad-dd5c63aaa3d3",
         "isSelf": false,
-        "lastSeenAt": "2026-11-16T05:51:30.133Z",
+        "lastSeenAt": "2026-11-17T06:17:02.273Z",
         "profileSource": "custom",
-        "role": "guest"
+        "role": "admin"
       }
     ]
   },
@@ -105,12 +119,12 @@
         "authorImage": null,
         "authorName": "Alice",
         "connected": false,
-        "createdAt": "2026-11-16T05:56:30.132Z",
+        "createdAt": "2026-11-17T06:22:02.274Z",
         "guildSettings": null,
-        "id": "5dc90163-2835-4ce9-b868-4a1aeac972e1",
+        "id": "a3657b40-00c3-46a1-a6d9-793f8b5cff15",
         "label": "PC-Bureau",
-        "lastSeenAt": "2026-11-16T05:51:30.132Z",
-        "memberId": "a685b96a-9ff2-4f17-96fe-27ebc4eee009",
+        "lastSeenAt": "2026-11-17T06:17:02.274Z",
+        "memberId": "a37e9c68-a585-4dbd-b3ed-cff1808a40bc",
         "overlayVersion": null,
         "platform": null,
         "role": "member",
@@ -120,12 +134,12 @@
         "authorImage": null,
         "authorName": "Alice",
         "connected": false,
-        "createdAt": "2026-11-16T05:56:30.133Z",
+        "createdAt": "2026-11-17T06:22:02.274Z",
         "guildSettings": null,
-        "id": "6324301f-948f-4af4-ad8b-d1e459ce2ea8",
+        "id": "1ef28627-cecb-4a1f-aff4-f04b33eb5c5d",
         "label": "PC-Portable",
-        "lastSeenAt": "2026-11-16T05:51:30.133Z",
-        "memberId": "de42fdd7-23da-4c6e-978d-520fe5eeec2d",
+        "lastSeenAt": "2026-11-17T06:17:02.274Z",
+        "memberId": "74463eb1-2bcf-4267-80ec-a57ffb761770",
         "overlayVersion": null,
         "platform": null,
         "role": "guest",
@@ -135,12 +149,12 @@
         "authorImage": null,
         "authorName": "Alice",
         "connected": false,
-        "createdAt": "2026-11-16T05:56:30.132Z",
+        "createdAt": "2026-11-17T06:22:02.273Z",
         "guildSettings": null,
-        "id": "cfc52004-7e76-4d1b-afd3-641fbfa32336",
+        "id": "48ea3f73-2b26-45aa-8adf-70b70f5faf0b",
         "label": "PC-Salon",
-        "lastSeenAt": "2026-11-16T05:51:30.132Z",
-        "memberId": "2b48b88b-4df3-449a-8549-3b043e27c1d6",
+        "lastSeenAt": "2026-11-17T06:17:02.273Z",
+        "memberId": "c8993307-e071-4765-b4ad-dd5c63aaa3d3",
         "overlayVersion": null,
         "platform": null,
         "role": "admin",
@@ -162,12 +176,12 @@
         "authorImage": null,
         "authorName": "Alice",
         "durationSec": 12,
-        "id": "064bbb38-535d-464d-9acc-4c31046293d1",
+        "id": "212807f5-aeb2-4e37-8db7-a35fba9c8ba6",
         "kind": null,
         "mediaAssetId": null,
         "startedAt": null,
         "status": "pending",
-        "submittedAt": "2026-11-16T05:56:30.137Z",
+        "submittedAt": "2026-11-17T06:22:02.277Z",
         "text": null,
         "title": null
       }
@@ -176,16 +190,16 @@
       "authorImage": null,
       "authorName": "Alice",
       "durationSec": 12,
-      "id": "8c2a78ca-065a-408e-b417-e2d88c63f913",
+      "id": "61da4916-4b5f-4b0e-812b-8739a112b41d",
       "kind": null,
       "mediaAssetId": null,
-      "startedAt": "2026-11-16T05:56:27.137Z",
+      "startedAt": "2026-11-17T06:21:59.277Z",
       "status": "playing",
-      "submittedAt": "2026-11-16T05:56:30.137Z",
+      "submittedAt": "2026-11-17T06:22:02.277Z",
       "text": "Bonne soirée à tous",
       "title": null
     },
-    "serverTime": "2026-11-16T05:56:30.157Z"
+    "serverTime": "2026-11-17T06:22:02.294Z"
   },
   "settings": {
     "defaultMediaTime": 7,

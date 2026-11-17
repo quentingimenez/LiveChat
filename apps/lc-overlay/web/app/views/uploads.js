@@ -16,7 +16,6 @@ import {
   chunkRanges,
   defaultTitle,
   ingestionErrorMessage,
-  isUploadTooLarge,
   uploadErrorMessage,
 } from '../core/upload-helpers.js';
 import { requestItemsReload } from '../data.js';
@@ -123,7 +122,6 @@ export function startFileUpload({ guildId, file, title = '', message = '', repla
     return null;
   }
   const label = file.name || 'Fichier';
-  const tooLarge = isUploadTooLarge(file.size);
   const entry = {
     id: newId(),
     guildId,
@@ -133,12 +131,11 @@ export function startFileUpload({ guildId, file, title = '', message = '', repla
     title: String(title || '').trim() || defaultTitle(label),
     message: message || '',
     replaceItemId: replaceItemId || null,
-    status: tooLarge ? 'failed' : 'waiting',
-    error: tooLarge ? 'Fichier trop volumineux : 100 Mo maximum.' : null,
+    status: 'waiting',
+    error: null,
     uploadId: null,
     ingestionId: null,
-    // An oversized file cannot be retried without choosing another file.
-    retryable: !tooLarge,
+    retryable: true,
     cancelled: false,
   };
   state.uploads.push(entry);
@@ -529,6 +526,7 @@ async function sendFile(entry) {
         title: entry.title,
         message: entry.message,
         contentType: entry.file.type || null,
+        size: entry.file.size,
         replaceItemId: entry.replaceItemId || null,
       },
     });

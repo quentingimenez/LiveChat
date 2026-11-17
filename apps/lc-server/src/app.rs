@@ -105,9 +105,12 @@ fn is_timeout_exempt(method: &Method, path: &str) -> bool {
     if path.starts_with("/overlay/media/") || path.starts_with("/overlay/media-board/media/") {
         return true;
     }
-    // A board upload streams a potentially large body before answering `202`.
-    // Adding a link answers `202` at once: it keeps the ordinary timeout.
-    method == Method::POST && path == "/overlay/media-board/upload"
+    // A board upload part streams up to 90 MiB before answering. Opening and
+    // completing an upload, or adding a link, keep the ordinary timeout.
+    method == Method::PUT
+        && path
+            .strip_prefix("/overlay/media-board/uploads/")
+            .is_some_and(|rest| rest.ends_with("/parts"))
 }
 
 /// Middleware de timeout de requête (jamais appliqué aux routes exemptées).
@@ -162,6 +165,8 @@ pub struct AppState {
     pub admin_oauth: Arc<dyn AdminOAuth>,
     /// Registre partagé des ingestions média asynchrones.
     pub ingestions: Arc<IngestionRegistry>,
+    /// Board uploads being received in parts.
+    pub uploads: Arc<crate::http::overlay::UploadSessions>,
     /// Configurable rights cache (`role_rights`), reloaded after `PUT
     /// /admin/api/rights`.
     pub rights: RightsStore,
@@ -208,6 +213,7 @@ impl AppState {
             discord_profiles: Arc::new(DisabledProfiles),
             admin_oauth,
             ingestions: Arc::new(IngestionRegistry::with_events(events.clone())),
+            uploads: Arc::default(),
             rights: RightsStore::new(),
             binary_probe: Arc::new(SystemBinaryProbe::new()),
             runtime,
@@ -820,7 +826,11 @@ mod tests {
             .route("/overlay/media/abc", axum::routing::get(slow))
             .route("/overlay/media-board/media/abc", axum::routing::get(slow))
             .route("/overlay/media-board/items", axum::routing::post(slow))
-            .route("/overlay/media-board/upload", axum::routing::post(slow))
+            .route("/overlay/media-board/uploads", axum::routing::post(slow))
+            .route(
+                "/overlay/media-board/uploads/abc/parts",
+                axum::routing::put(slow),
+            )
             .route("/ingest", axum::routing::post(slow))
             .layer(middleware::from_fn_with_state(
                 std::time::Duration::from_millis(20),
@@ -836,6 +846,7 @@ mod tests {
         for (method, path) in [
             (Method::GET, "/admin/api/overview"),
             (Method::POST, "/overlay/media-board/items"),
+            (Method::POST, "/overlay/media-board/uploads"),
         ] {
             let (status, _, _) = send(&app, request(method, path)).await;
             assert_eq!(status, StatusCode::REQUEST_TIMEOUT, "route {path}");
@@ -845,7 +856,7 @@ mod tests {
         for (method, path) in [
             (Method::GET, "/overlay/media/abc"),
             (Method::GET, "/overlay/media-board/media/abc"),
-            (Method::POST, "/overlay/media-board/upload"),
+            (Method::PUT, "/overlay/media-board/uploads/abc/parts"),
             (Method::POST, "/ingest"),
         ] {
             let (status, _, _) = send(&app, request(method, path)).await;

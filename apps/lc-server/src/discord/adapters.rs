@@ -327,6 +327,7 @@ impl MediaBoardBackend for DbMediaBoardBackend {
             request.message.as_deref(),
             request.created_by_discord_user_id.as_deref(),
             request.created_by_name.as_deref(),
+            request.display_duration_sec,
             self.clock.now(),
         )
         .await
@@ -582,6 +583,7 @@ mod tests {
             message: None,
             created_by_discord_user_id: Some("424242424242424242".to_owned()),
             created_by_name: Some("Alice".to_owned()),
+            display_duration_sec: None,
         };
         assert!(backend.add_to_board(request.clone()).await.unwrap());
         assert!(!backend.add_to_board(request).await.unwrap());
@@ -607,6 +609,7 @@ mod tests {
             message: None,
             created_by_discord_user_id: None,
             created_by_name: Some("Alice".to_owned()),
+            display_duration_sec: None,
         };
 
         // No guild quota: the server-wide hot limit applies. Zero megabytes

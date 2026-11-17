@@ -1,4 +1,4 @@
-//! Migration 0015: guild bans and the revocations a ban relies on.
+//! Migration 0016: guild bans and the revocations a ban relies on.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

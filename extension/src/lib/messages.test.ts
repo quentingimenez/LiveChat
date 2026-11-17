@@ -33,6 +33,13 @@ describe('message guards', () => {
     ).toBe(true);
   });
 
+  it("valide la durée d'un message compose", () => {
+    const base = { type: MESSAGE_TYPES.SEND_COMPOSE, url: 'https://x.com/livechat/status/123' };
+    expect(isSendComposeRequest({ ...base, durationSec: 8 })).toBe(true);
+    expect(isSendComposeRequest(base)).toBe(true);
+    expect(isSendComposeRequest({ ...base, durationSec: '8' })).toBe(false);
+  });
+
   it('valide un message get compose state', () => {
     expect(
       isGetComposeStateRequest({

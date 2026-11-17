@@ -64,7 +64,7 @@ pub use retry::with_busy_retry;
 pub const MIGRATION_SQL: &str = include_str!("../migrations/0001_init.sql");
 
 pub use repos::{
-    DiscordLinkCodesRepository, GuildBansRepository, GuildInvitesRepository,
+    BoardItemEdit, DiscordLinkCodesRepository, GuildBansRepository, GuildInvitesRepository,
     GuildMembersRepository, GuildsRepository, IngestClientsRepository, LinkOutcome,
     MediaAssetsRepository, MediaBoardRepository, MemberChange, MetadataRepository,
     OverlayClientsRepository, PairingCodesRepository, PlaybackJobsRepository,

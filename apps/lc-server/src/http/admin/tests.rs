@@ -20,7 +20,6 @@ use axum::body::{to_bytes, Body};
 use axum::extract::ConnectInfo;
 use axum::http::{header, HeaderMap, Method, Request as HttpRequest, StatusCode};
 use axum::Router;
-use chrono::{Duration, Utc};
 use lc_db::{Db, DbConfig};
 use lc_domain::{
     Guild, GuildId, GuildInvite, GuildMember, GuildMemberId, GuildRole, IngestClient,
@@ -32,6 +31,7 @@ use lc_protocol::{close_code, DeviceSettingsStatePayload, ServerMessage, Session
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
+use time::{Duration, UtcDateTime};
 use tower::ServiceExt;
 
 use super::hub::{admin_hub, AdminHub, NoopAdminHub};
@@ -336,7 +336,7 @@ impl Harness {
         // the 401 path build requests without it explicitly.
         let session_token = if config.admin_auth_enabled() {
             Some(
-                session::create_secret(&db, Utc::now().timestamp_millis())
+                session::create_secret(&db, lc_domain::datetime_to_ms(UtcDateTime::now()))
                     .await
                     .expect("session de test")
                     .0,
@@ -628,7 +628,7 @@ pub(super) fn guild(id: &str) -> Guild {
 /// Crée une guilde indépendante liée à `discord_guild_id`.
 pub(super) async fn create_linked_standalone(db: &Db, guild_id: &GuildId, discord_guild_id: &str) {
     db.guilds()
-        .create_standalone(guild_id, "Indépendante", Utc::now())
+        .create_standalone(guild_id, "Indépendante", UtcDateTime::now())
         .await
         .expect("guilde indépendante");
     let discord_guild_id = GuildId::parse(discord_guild_id).expect("serveur Discord valide");
@@ -640,7 +640,7 @@ pub(super) async fn create_linked_standalone(db: &Db, guild_id: &GuildId, discor
 }
 
 pub(super) fn media_asset(size_bytes: i64, storage_path: &Path) -> MediaAsset {
-    let now = Utc::now();
+    let now = UtcDateTime::now();
     MediaAsset {
         id: MediaAssetId::new_v4(),
         source_hash: format!("hash-{}", MediaAssetId::new_v4()),
@@ -670,7 +670,7 @@ pub(super) fn board_item(guild_id: &GuildId, media_asset_id: MediaAssetId) -> Me
         message: None,
         created_by_discord_user_id: Some("1001".to_owned()),
         created_by_name: Some("Alice".to_owned()),
-        created_at: Utc::now(),
+        created_at: UtcDateTime::now(),
         artwork_asset_id: None,
         artwork_on_overlay: false,
         display_duration_sec: None,
@@ -678,7 +678,7 @@ pub(super) fn board_item(guild_id: &GuildId, media_asset_id: MediaAssetId) -> Me
 }
 
 pub(super) fn playback_job(guild_id: &GuildId, status: JobStatus) -> PlaybackJob {
-    let now = Utc::now();
+    let now = UtcDateTime::now();
     PlaybackJob {
         id: PlaybackJobId::new_v4(),
         guild_id: guild_id.clone(),
@@ -716,7 +716,7 @@ pub(super) fn overlay_client(
         default_author_image: None,
         created_by_discord_user_id: Some("1001".to_owned()),
         last_seen_at: None,
-        created_at: Utc::now(),
+        created_at: UtcDateTime::now(),
         revoked_at: None,
     }
 }
@@ -731,7 +731,7 @@ fn ingest_client(guild_id: &GuildId, discord_user_id: &str, label: &str) -> Inge
         default_author_image: None,
         created_by_discord_user_id: discord_user_id.to_owned(),
         last_seen_at: None,
-        created_at: Utc::now(),
+        created_at: UtcDateTime::now(),
         revoked_at: None,
     }
 }
@@ -739,8 +739,8 @@ fn ingest_client(guild_id: &GuildId, discord_user_id: &str, label: &str) -> Inge
 fn pairing_code(
     code: &str,
     guild_id: &GuildId,
-    expires_at: Option<chrono::DateTime<Utc>>,
-    used_at: Option<chrono::DateTime<Utc>>,
+    expires_at: Option<time::UtcDateTime>,
+    used_at: Option<time::UtcDateTime>,
     created_by: &str,
 ) -> PairingCodeEntry {
     PairingCodeEntry {
@@ -753,7 +753,7 @@ fn pairing_code(
         author_image: None,
         expires_at,
         used_at,
-        created_at: Utc::now(),
+        created_at: UtcDateTime::now(),
     }
 }
 
@@ -764,7 +764,7 @@ pub(super) fn guild_member(guild_id: &GuildId, role: GuildRole) -> GuildMember {
         display_name: "Alice".to_owned(),
         avatar: None,
         role,
-        created_at: Utc::now(),
+        created_at: UtcDateTime::now(),
         removed_at: None,
         discord_user_id: None,
         profile_custom: true,
@@ -783,7 +783,7 @@ pub(super) fn guild_invite(code: &str, guild_id: &GuildId) -> GuildInvite {
         created_by_member_id: None,
         expires_at: None,
         revoked_at: None,
-        created_at: Utc::now(),
+        created_at: UtcDateTime::now(),
     }
 }
 
@@ -1778,7 +1778,7 @@ async fn overview_vide_renvoie_les_bornes_de_configuration() {
 async fn overview_agrege_guildes_medias_et_playback() {
     let harness = Harness::new().await;
     let db = harness.db();
-    let now = Utc::now();
+    let now = UtcDateTime::now();
 
     let guild_id = GuildId::parse("42").expect("guilde valide");
     db.guilds().upsert(&guild("42")).await.expect("guilde");
@@ -1886,7 +1886,7 @@ async fn overview_liste_les_clients_actifs_uniquement() {
         .await
         .expect("client overlay");
     let mut revoked_overlay = overlay_client(&guild_id, OverlaySessionMode::Normal);
-    revoked_overlay.revoked_at = Some(Utc::now());
+    revoked_overlay.revoked_at = Some(UtcDateTime::now());
     db.overlay_clients()
         .create(&revoked_overlay)
         .await
@@ -1897,7 +1897,7 @@ async fn overview_liste_les_clients_actifs_uniquement() {
         .await
         .expect("client ingest");
     let mut revoked_ingest = ingest_client(&guild_id, "1002", "Firefox");
-    revoked_ingest.revoked_at = Some(Utc::now());
+    revoked_ingest.revoked_at = Some(UtcDateTime::now());
     db.ingest_clients()
         .create(&revoked_ingest)
         .await
@@ -2248,8 +2248,8 @@ async fn revoke_clients_revokes_guild_clients_and_keeps_guild_data() {
         .upsert(&guild("43"))
         .await
         .expect("autre guilde");
-    let now = Utc::now();
-    let pre_revoked_at_ms = (now - Duration::minutes(5)).timestamp_millis();
+    let now = UtcDateTime::now();
+    let pre_revoked_at_ms = lc_domain::datetime_to_ms(now - Duration::minutes(5));
     db.guilds()
         .set_busy_until(&guild_id, Some(now + Duration::hours(1)))
         .await
@@ -2379,7 +2379,9 @@ async fn revoke_clients_revokes_guild_clients_and_keeps_guild_data() {
         .expect("lecture overlay")
         .expect("overlay présent");
     assert_eq!(
-        stored.revoked_at.map(|date| date.timestamp_millis()),
+        stored
+            .revoked_at
+            .map(lc_domain::datetime_to_ms),
         Some(pre_revoked_at_ms)
     );
     let stored = db
@@ -2406,7 +2408,9 @@ async fn revoke_clients_revokes_guild_clients_and_keeps_guild_data() {
         .expect("lecture ingest")
         .expect("ingest présent");
     assert_eq!(
-        stored.revoked_at.map(|date| date.timestamp_millis()),
+        stored
+            .revoked_at
+            .map(lc_domain::datetime_to_ms),
         Some(pre_revoked_at_ms)
     );
     let stored = db
@@ -2924,7 +2928,7 @@ async fn discord_unlink_refuse_une_guilde_non_liee() {
     harness
         .db()
         .guilds()
-        .create_standalone(&guild_id, "Indépendante", Utc::now())
+        .create_standalone(&guild_id, "Indépendante", UtcDateTime::now())
         .await
         .expect("guilde indépendante");
 
@@ -2974,7 +2978,7 @@ async fn overview_expose_le_rattachement_discord() {
 
     let unlinked_id = GuildId::parse("900000000000000002").expect("guilde non liée");
     db.guilds()
-        .create_standalone(&unlinked_id, "Non liée", Utc::now())
+        .create_standalone(&unlinked_id, "Non liée", UtcDateTime::now())
         .await
         .expect("guilde non liée");
 
@@ -3081,7 +3085,7 @@ async fn pairing_liste_filtre_et_compte() {
     let harness = Harness::new().await;
     let db = harness.db();
     let guild_id = GuildId::parse("42").expect("guilde");
-    let now = Utc::now();
+    let now = UtcDateTime::now();
 
     db.pairing_codes()
         .create(&pairing_code(
@@ -3140,7 +3144,7 @@ async fn pairing_supprime_les_expires_et_revoque_un_code() {
     let harness = Harness::new().await;
     let db = harness.db();
     let guild_id = GuildId::parse("42").expect("guilde");
-    let now = Utc::now();
+    let now = UtcDateTime::now();
 
     db.pairing_codes()
         .create(&pairing_code(

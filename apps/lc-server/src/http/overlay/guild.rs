@@ -16,7 +16,6 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::Json;
-use chrono::{DateTime, Duration, Utc};
 use lc_db::{Db, MemberChange};
 use lc_domain::rights::{Action, RightsTable, Surface};
 use lc_domain::{
@@ -27,6 +26,7 @@ use lc_protocol::{close_code, close_reason};
 use rand::Rng as _;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use time::{Duration, UtcDateTime};
 
 use crate::app::AppState;
 use crate::discord::profiles::{refresh_member, RefreshOutcome};
@@ -114,7 +114,7 @@ pub(crate) struct NewInvite {
     pub member_id: Option<GuildMemberId>,
     pub max_uses: Option<i64>,
     pub created_by_member_id: Option<GuildMemberId>,
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<UtcDateTime>,
 }
 
 /// Crée une invitation avec un code neuf.
@@ -125,7 +125,7 @@ pub(crate) struct NewInvite {
 pub(crate) async fn create_invite(
     db: &Db,
     invite: NewInvite,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
 ) -> lc_db::DbResult<Option<GuildInvite>> {
     for _ in 0..INVITE_CODE_ATTEMPTS {
         let Ok(code) = PairingCode::parse(&random_invite_code()) else {
@@ -156,15 +156,15 @@ pub(crate) async fn create_invite(
 }
 
 /// Date ISO 8601 (millisecondes, UTC) ou `null`.
-pub(super) fn iso(date: Option<DateTime<Utc>>) -> Value {
+pub(super) fn iso(date: Option<UtcDateTime>) -> Value {
     match date {
-        Some(date) => json!(date.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+        Some(date) => json!(lc_domain::time::to_rfc3339_millis(date)),
         None => Value::Null,
     }
 }
 
 /// Payload JSON d'une invitation.
-pub(crate) fn invite_payload(invite: &GuildInvite, now: DateTime<Utc>) -> Value {
+pub(crate) fn invite_payload(invite: &GuildInvite, now: UtcDateTime) -> Value {
     json!({
         "code": invite.code.as_str(),
         "role": invite.role.as_wire_str(),
@@ -514,7 +514,7 @@ pub(super) async fn remove_member(
     state: &AppState,
     db: &Db,
     member: &GuildMember,
-    at: DateTime<Utc>,
+    at: UtcDateTime,
     close_reason: &str,
 ) -> Result<MemberChange, Response> {
     let change = db

@@ -14,7 +14,6 @@
 
 use std::collections::HashSet;
 
-use chrono::{DateTime, Utc};
 use lc_db::{Db, DbError};
 use lc_domain::enums::MediaStatus;
 use lc_domain::ids::GuildId;
@@ -22,6 +21,7 @@ use lc_media::cache::{plan_cache_eviction, CacheEntry, CacheEvictionPlan};
 use lc_media::config::MediaConfig;
 use lc_media::error::{MediaError, MediaErrorCode};
 use lc_media::storage::MediaStorage;
+use time::UtcDateTime;
 
 use crate::media::assets::cache_entry;
 use crate::media::errors::{MediaServiceError, MediaServiceResult};
@@ -200,7 +200,7 @@ fn bytes_to_megabytes(bytes: u64) -> u64 {
 pub async fn purge_candidates(
     db: &Db,
     config: &MediaConfig,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
 ) -> MediaServiceResult<Vec<String>> {
     let entries = cache_entries(db).await?;
     let ttl_ms = i64::try_from(config.storage.cache_ttl.as_millis()).unwrap_or(i64::MAX);
@@ -246,13 +246,13 @@ pub fn asset_size_bytes(asset: &lc_domain::entities::MediaAsset) -> u64 {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use chrono::Duration;
     use lc_db::DbConfig;
     use lc_domain::entities::{MediaAsset, PlaybackJob};
     use lc_domain::enums::{JobStatus, MediaKind};
     use lc_domain::ids::{GuildId, MediaAssetId, PlaybackJobId};
     use lc_domain::time::datetime_to_ms;
     use lc_media::storage::MediaStorage;
+    use time::Duration;
     use uuid::Uuid;
 
     use super::*;
@@ -262,7 +262,7 @@ mod tests {
         db: Db,
         storage: MediaStorage,
         config: MediaConfig,
-        now: DateTime<Utc>,
+        now: UtcDateTime,
     }
 
     async fn fixture(cache_max_bytes: u64, board_max_bytes: u64) -> Fixture {
@@ -281,7 +281,7 @@ mod tests {
             db,
             storage,
             config,
-            now: Utc::now(),
+            now: UtcDateTime::now(),
         }
     }
 
@@ -290,7 +290,7 @@ mod tests {
         dir: &std::path::Path,
         hash: &str,
         size: i64,
-        last_accessed_at: DateTime<Utc>,
+        last_accessed_at: UtcDateTime,
     ) -> MediaAsset {
         let path = dir.join(format!("{hash}.mp4"));
         tokio::fs::write(&path, vec![0_u8; usize::try_from(size).unwrap()])

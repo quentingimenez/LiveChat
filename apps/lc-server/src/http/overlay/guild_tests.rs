@@ -12,12 +12,12 @@ use std::sync::{Arc, Mutex};
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Method, Request, StatusCode};
 use axum::Router;
-use chrono::{DateTime, TimeZone, Utc};
 use lc_db::{Db, DbConfig};
 use lc_domain::{FixedClock, GuildId, GuildRole};
 use lc_protocol::{close_code, close_reason};
 use serde_json::{json, Value};
 use tempfile::TempDir;
+use time::UtcDateTime;
 use tower::ServiceExt as _;
 
 use crate::app::AppState;
@@ -27,10 +27,8 @@ use crate::shutdown::Shutdown;
 
 use super::guild::{create_invite, NewInvite};
 
-pub(super) fn fixed_now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 11, 10, 12, 0, 0)
-        .single()
-        .unwrap()
+pub(super) fn fixed_now() -> UtcDateTime {
+    time::macros::utc_datetime!(2026-11-10 12:00:00)
 }
 
 fn test_config(media_dir: &Path) -> Config {
@@ -780,7 +778,7 @@ async fn file_d_attente_lue_et_moderee() {
         .await;
     let admin_token = token(&admin);
 
-    let now_ms = fixed_now().timestamp_millis();
+    let now_ms = lc_domain::datetime_to_ms(fixed_now());
     for (index, (id, status)) in [
         (uuid::Uuid::new_v4(), "PLAYING"),
         (uuid::Uuid::new_v4(), "PENDING"),

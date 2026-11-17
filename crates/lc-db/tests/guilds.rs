@@ -4,7 +4,7 @@
 
 mod common;
 
-use chrono::Duration;
+use time::Duration;
 
 #[tokio::test]
 async fn upsert_get_et_liste() {

@@ -24,12 +24,12 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
-use chrono::{DateTime, Utc};
 use lc_db::Db;
 use lc_domain::{MediaBoardItem, MediaBoardItemId, Permission};
 use lc_protocol::{BoardChange, BoardChangedPayload, ServerMessage};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use time::UtcDateTime;
 
 use crate::app::AppState;
 use crate::media::assets;
@@ -166,7 +166,7 @@ async fn import_one(
 
 /// Gives the copy the source item's picture and display time. The copy is already on the
 /// board, so a failure here is logged and does not fail the import.
-async fn copy_artwork(db: &Db, source: &MediaBoardItem, copy: &MediaBoardItem, at: DateTime<Utc>) {
+async fn copy_artwork(db: &Db, source: &MediaBoardItem, copy: &MediaBoardItem, at: UtcDateTime) {
     if let Some(artwork_id) = source.artwork_asset_id {
         if let Err(pin_error) = assets::pin(db, artwork_id, at).await {
             tracing::warn!(error = %pin_error, "cannot pin the picture of an imported item");

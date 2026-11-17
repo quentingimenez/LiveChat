@@ -12,7 +12,6 @@
 //! (`crates/lc-db/migrations/0001_init.sql`). C'est documenté dans
 //! `docs/rust/server-ingest.md`.
 
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use lc_db::Db;
 use lc_domain::entities::MediaAsset;
 use lc_domain::enums::{MediaKind, MediaStatus};
@@ -24,16 +23,17 @@ use lc_media::error::MediaError;
 use lc_media::ingest::IngestedMedia;
 use lc_media::source::MediaSource;
 use lc_media::transcode::NormalizedCover;
+use time::{Duration as TimeDuration, UtcDateTime};
 
 use crate::media::errors::{MediaServiceError, MediaServiceResult};
 
 /// Durée pendant laquelle un asset `FAILED`/`PROCESSING` abandonné est conservé
 /// (`2 h` côté legacy avant purge du worker).
-pub const STALE_PROCESSING_TTL: ChronoDuration = ChronoDuration::hours(2);
+pub const STALE_PROCESSING_TTL: TimeDuration = TimeDuration::hours(2);
 
 /// Durée de conservation d'un asset `FAILED` : elle laisse le temps au code
 /// d'erreur d'être consulté sans hacher immédiatement le cache.
-pub const FAILED_TTL: ChronoDuration = ChronoDuration::hours(1);
+pub const FAILED_TTL: TimeDuration = TimeDuration::hours(1);
 
 /// Durée d'épinglage d'un élément du board média (100 ans, comme le legacy).
 pub const PINNED_TTL_DAYS: i64 = 36_500;
@@ -90,9 +90,9 @@ impl ReadyAsset {
     }
 }
 
-/// Conversion d'une durée de configuration en durée chrono, saturante.
-pub fn cache_ttl(config: &MediaConfig) -> ChronoDuration {
-    ChronoDuration::seconds(i64::try_from(config.storage.cache_ttl.as_secs()).unwrap_or(i64::MAX))
+/// Conversion d'une durée de configuration en durée `time`, saturante.
+pub fn cache_ttl(config: &MediaConfig) -> TimeDuration {
+    TimeDuration::seconds(i64::try_from(config.storage.cache_ttl.as_secs()).unwrap_or(i64::MAX))
 }
 
 /// Cherche un asset réutilisable pour cette empreinte de source.
@@ -104,7 +104,7 @@ pub async fn find_reusable(
     db: &Db,
     config: &MediaConfig,
     source_hash: &str,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
 ) -> MediaServiceResult<Option<MediaAsset>> {
     let assets = db.media_assets();
     let Some(asset) = assets.get_by_source_hash(source_hash).await? else {
@@ -138,8 +138,8 @@ pub async fn find_reusable(
 pub async fn begin_processing(
     db: &Db,
     source: &MediaSource,
-    now: DateTime<Utc>,
-    ttl: ChronoDuration,
+    now: UtcDateTime,
+    ttl: TimeDuration,
 ) -> MediaServiceResult<MediaAsset> {
     let assets = db.media_assets();
     let expires_at = now + ttl;
@@ -202,8 +202,8 @@ pub async fn mark_ready(
     db: &Db,
     asset_id: MediaAssetId,
     ready: &ReadyAsset,
-    now: DateTime<Utc>,
-    ttl: ChronoDuration,
+    now: UtcDateTime,
+    ttl: TimeDuration,
 ) -> MediaServiceResult<MediaAsset> {
     sqlx::query(
         "UPDATE media_assets \
@@ -246,7 +246,7 @@ pub async fn mark_ready(
 pub async fn pin(
     db: &Db,
     asset_id: MediaAssetId,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
 ) -> MediaServiceResult<MediaAsset> {
     let expiry = pinned_expiry(now);
     // The embedded cover (album art) is shown with the audio: pinned with it.
@@ -284,7 +284,7 @@ pub async fn attach_cover(
     db: &Db,
     audio: &MediaAsset,
     cover: &NormalizedCover,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
 ) -> MediaServiceResult<MediaAssetId> {
     let assets = db.media_assets();
     let source_hash = format!("{}#cover", audio.source_hash);
@@ -347,7 +347,7 @@ pub async fn mark_failed(
     db: &Db,
     asset_id: MediaAssetId,
     error: &MediaError,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
 ) -> MediaServiceResult<()> {
     let detail = failure_detail(error);
 
@@ -392,8 +392,8 @@ pub fn cache_entry(asset: &MediaAsset, pinned: bool, active: bool) -> CacheEntry
 }
 
 /// Échéance d'épinglage d'un élément du board média (100 ans).
-pub fn pinned_expiry(now: DateTime<Utc>) -> DateTime<Utc> {
-    now + ChronoDuration::days(PINNED_TTL_DAYS)
+pub fn pinned_expiry(now: UtcDateTime) -> UtcDateTime {
+    now + TimeDuration::days(PINNED_TTL_DAYS)
 }
 
 #[cfg(test)]
@@ -402,7 +402,6 @@ mod tests {
 
     use std::path::PathBuf;
 
-    use chrono::{Duration, SubsecRound};
     use lc_db::DbConfig;
     use lc_domain::ids::MediaAssetId;
     use lc_media::download::DownloadResult;
@@ -410,6 +409,7 @@ mod tests {
     use lc_media::resolve::ResolvedMedia;
     use lc_media::source::SourceKind;
     use lc_media::transcode::NormalizedMedia;
+    use time::Duration;
 
     use super::*;
 
@@ -428,8 +428,8 @@ mod tests {
     /// Horodatage de test aligné sur la précision du schéma (millisecondes) :
     /// SQLite stocke les dates en millisecondes, comparer avec des nanosecondes
     /// fait échouer les assertions d'aller-retour.
-    fn test_now() -> DateTime<Utc> {
-        Utc::now().trunc_subsecs(3)
+    fn test_now() -> UtcDateTime {
+        lc_domain::ms_to_datetime(lc_domain::now_ms()).expect("date courante valide")
     }
 
     fn source(url: &str) -> MediaSource {
@@ -514,16 +514,16 @@ mod tests {
         let source = source("https://example.com/reuse.mp4");
         let now = test_now();
 
-        let first = begin_processing(&db, &source, now, ChronoDuration::hours(1))
+        let first = begin_processing(&db, &source, now, TimeDuration::hours(1))
             .await
             .expect("première ligne");
-        let second = begin_processing(&db, &source, now, ChronoDuration::hours(2))
+        let second = begin_processing(&db, &source, now, TimeDuration::hours(2))
             .await
             .expect("seconde ligne");
 
         assert_eq!(first.id, second.id);
         assert_eq!(second.status, MediaStatus::Processing);
-        assert_eq!(second.expires_at, now + ChronoDuration::hours(2));
+        assert_eq!(second.expires_at, now + TimeDuration::hours(2));
     }
 
     #[tokio::test]
@@ -531,7 +531,7 @@ mod tests {
         let (_dir, db) = database().await;
         let source = source("https://example.com/broken.mp4");
         let now = test_now();
-        let asset = begin_processing(&db, &source, now, ChronoDuration::hours(1))
+        let asset = begin_processing(&db, &source, now, TimeDuration::hours(1))
             .await
             .expect("ligne PROCESSING");
 
@@ -578,7 +578,7 @@ mod tests {
             .expect("écriture fichier");
         let source = source("https://example.com/cached.mp4");
 
-        let asset = begin_processing(&db, &source, now, ChronoDuration::hours(1))
+        let asset = begin_processing(&db, &source, now, TimeDuration::hours(1))
             .await
             .expect("ligne");
         let ready = ReadyAsset {
@@ -593,7 +593,7 @@ mod tests {
             storage_path: path.to_string_lossy().into_owned(),
             size_bytes: 5,
         };
-        mark_ready(&db, asset.id, &ready, now, ChronoDuration::hours(1))
+        mark_ready(&db, asset.id, &ready, now, TimeDuration::hours(1))
             .await
             .expect("READY");
 
@@ -613,7 +613,7 @@ mod tests {
         // Fichier présent mais asset expiré : pas de réutilisation. La première
         // recherche a repoussé l'expiration à `now + cache_ttl`, on va au-delà.
         tokio::fs::write(&path, b"media").await.expect("écriture");
-        let later = now + cache_ttl(&config()) + ChronoDuration::hours(1);
+        let later = now + cache_ttl(&config()) + TimeDuration::hours(1);
         assert!(find_reusable(&db, &config(), &source.source_hash, later)
             .await
             .expect("recherche")
@@ -655,7 +655,7 @@ mod tests {
         let now = test_now();
         assert_eq!(
             pinned_expiry(now),
-            now + ChronoDuration::days(PINNED_TTL_DAYS)
+            now + TimeDuration::days(PINNED_TTL_DAYS)
         );
     }
 }

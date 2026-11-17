@@ -5,12 +5,12 @@
 //! plusieurs workers/tasks sans jamais démarrer deux fois le même job ni deux
 //! jobs en parallèle sur une même guilde.
 
-use chrono::{DateTime, Utc};
 use lc_domain::entities::PlaybackJob;
 use lc_domain::enums::JobStatus;
 use lc_domain::ids::{GuildId, MediaAssetId, PlaybackJobId};
 use lc_domain::DomainError;
 use sqlx::SqlitePool;
+use time::UtcDateTime;
 
 use crate::convert::{
     decode, decode_opt, from_bool, from_ms, from_opt_ms, to_bool, to_ms, to_opt_ms,
@@ -159,7 +159,7 @@ impl PlaybackJobsRepository {
     /// transitoire ne doit pas arrêter la boucle du scheduler. Une violation de
     /// l'index unique partiel `idx_playback_jobs_single_playing` (course entre
     /// deux instances) est traduite en `None`.
-    pub async fn claim_next(&self, now: DateTime<Utc>) -> DbResult<Option<PlaybackJob>> {
+    pub async fn claim_next(&self, now: UtcDateTime) -> DbResult<Option<PlaybackJob>> {
         let now_ms = to_ms(now);
         let pool = self.pool.clone();
         let row = match crate::with_busy_retry(|| {
@@ -252,7 +252,7 @@ impl PlaybackJobsRepository {
         &self,
         id: PlaybackJobId,
         status: JobStatus,
-        finished_at: DateTime<Utc>,
+        finished_at: UtcDateTime,
     ) -> DbResult<bool> {
         if !status.is_terminal() {
             return Err(DbError::Domain(DomainError::validation(
@@ -296,7 +296,7 @@ impl PlaybackJobsRepository {
     /// antérieur ou égal à `cutoff`.
     ///
     /// Retourne le nombre de jobs supprimés.
-    pub async fn purge_done_before(&self, cutoff: DateTime<Utc>) -> DbResult<u64> {
+    pub async fn purge_done_before(&self, cutoff: UtcDateTime) -> DbResult<u64> {
         let result = sqlx::query(
             "DELETE FROM playback_jobs \
              WHERE status IN ('DONE', 'FAILED') \
@@ -319,7 +319,7 @@ impl PlaybackJobsRepository {
         id: PlaybackJobId,
         resume_offset_sec: i64,
         remaining_ms_snapshot: Option<i64>,
-        last_playback_state_at: DateTime<Utc>,
+        last_playback_state_at: UtcDateTime,
     ) -> DbResult<bool> {
         let result = sqlx::query(
             "UPDATE playback_jobs \
@@ -341,7 +341,7 @@ impl PlaybackJobsRepository {
     /// Efface `started_at`/`finished_at` ; conserve la priorité, les données
     /// auteur et le lien de reprise. Utile pour relancer un job échoué ou
     /// rejouer le dernier média.
-    pub async fn requeue(&self, id: PlaybackJobId, scheduled_at: DateTime<Utc>) -> DbResult<bool> {
+    pub async fn requeue(&self, id: PlaybackJobId, scheduled_at: UtcDateTime) -> DbResult<bool> {
         let result = sqlx::query(
             "UPDATE playback_jobs \
              SET status = 'PENDING', started_at = NULL, finished_at = NULL, scheduled_at = ? \

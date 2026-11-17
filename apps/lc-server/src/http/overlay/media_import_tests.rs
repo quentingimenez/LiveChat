@@ -6,12 +6,12 @@ use std::sync::Arc;
 
 use axum::http::{Method, StatusCode};
 use axum::Router;
-use chrono::Duration;
 use lc_domain::{
     GuildId, GuildRole, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, MediaKind,
     MediaStatus,
 };
 use serde_json::{json, Value};
+use time::Duration;
 
 use crate::http::admin::hub::AdminHub;
 

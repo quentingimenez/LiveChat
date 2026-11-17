@@ -2,15 +2,15 @@
 //!
 //! - noms de champs : `snake_case` comme en base (pas de renommage de colonne
 //!   caché dans `lc-db`) ;
-//! - dates : [`chrono::DateTime<Utc>`] en mémoire, sérialisées en millisecondes
+//! - dates : [`time::UtcDateTime`] en mémoire, sérialisées en millisecondes
 //!   epoch UTF lorsque l'entité est exposée en JSON (`camelCase`) ;
 //! - booléens : `bool` Rust, stockés `INTEGER 0/1` avec `CHECK` côté base.
 //!
 //! Aucune entité ne contient de logique de persistance : les repositories
 //! `lc-db` convertissent `row <-> entité`.
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use time::UtcDateTime;
 
 use crate::enums::{GuildRole, JobStatus, MediaKind, MediaStatus, OverlaySessionMode, PairingMode};
 use crate::ids::{
@@ -20,48 +20,50 @@ use crate::ids::{
 
 /// Module serde pour les dates obligatoires en ms epoch UTC.
 mod ms_required {
-    use chrono::{DateTime, Utc};
     use serde::{Deserialize, Deserializer, Serializer};
+    use time::UtcDateTime;
 
-    pub fn serialize<S>(value: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(value: &UtcDateTime, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        Serializer::serialize_i64(serializer, value.timestamp_millis())
+        Serializer::serialize_i64(serializer, crate::time::datetime_to_ms(*value))
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<UtcDateTime, D::Error>
     where
         D: Deserializer<'de>,
     {
         let millis = i64::deserialize(deserializer)?;
-        DateTime::from_timestamp_millis(millis)
+        crate::time::ms_to_datetime(millis)
             .ok_or_else(|| serde::de::Error::custom(format!("horodatage hors plage : {millis} ms")))
     }
 }
 
 /// Module serde pour les dates optionnelles en ms epoch UTC (`null` = absent).
 mod ms_optional {
-    use chrono::{DateTime, Utc};
     use serde::{Deserialize, Deserializer, Serializer};
+    use time::UtcDateTime;
 
-    pub fn serialize<S>(value: &Option<DateTime<Utc>>, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(value: &Option<UtcDateTime>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         match value {
-            Some(date) => Serializer::serialize_some(serializer, &date.timestamp_millis()),
+            Some(date) => {
+                Serializer::serialize_some(serializer, &crate::time::datetime_to_ms(*date))
+            }
             None => Serializer::serialize_none(serializer),
         }
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<UtcDateTime>, D::Error>
     where
         D: Deserializer<'de>,
     {
         let millis = Option::<i64>::deserialize(deserializer)?;
         match millis {
-            Some(millis) => DateTime::from_timestamp_millis(millis)
+            Some(millis) => crate::time::ms_to_datetime(millis)
                 .map(Some)
                 .ok_or_else(|| {
                     serde::de::Error::custom(format!("horodatage hors plage : {millis} ms"))
@@ -106,13 +108,13 @@ pub struct MediaAsset {
     pub error: Option<String>,
     /// Dernier accès (TTL glissant du cache).
     #[serde(with = "ms_required")]
-    pub last_accessed_at: DateTime<Utc>,
+    pub last_accessed_at: UtcDateTime,
     /// Date d'expiration du cache.
     #[serde(with = "ms_required")]
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: UtcDateTime,
     /// Date de création de la ligne.
     #[serde(with = "ms_required")]
-    pub created_at: DateTime<Utc>,
+    pub created_at: UtcDateTime,
 }
 
 impl MediaAsset {
@@ -122,7 +124,7 @@ impl MediaAsset {
     }
 
     /// `true` si le média est expiré à l'instant `now`.
-    pub fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_expired_at(&self, now: UtcDateTime) -> bool {
         self.expires_at <= now
     }
 }
@@ -151,7 +153,7 @@ pub struct MediaBoardItem {
     pub created_by_name: Option<String>,
     /// Date d'ajout au board.
     #[serde(with = "ms_required")]
-    pub created_at: DateTime<Utc>,
+    pub created_at: UtcDateTime,
     /// Picture of an audio item: its embedded cover by default, or an image
     /// chosen by a member.
     #[serde(default)]
@@ -213,22 +215,22 @@ pub struct PlaybackJob {
     pub remaining_ms_snapshot: Option<i64>,
     /// Dernier `playback.state` reçu (`playing`/`paused`).
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
-    pub last_playback_state_at: Option<DateTime<Utc>>,
+    pub last_playback_state_at: Option<UtcDateTime>,
     /// Date de soumission (ordre FIFO secondaire).
     #[serde(with = "ms_required")]
-    pub submission_date: DateTime<Utc>,
+    pub submission_date: UtcDateTime,
     /// Date d'exécution planifiée par le scheduler (legacy `executionDate`).
     #[serde(with = "ms_required")]
-    pub execution_date: DateTime<Utc>,
+    pub execution_date: UtcDateTime,
     /// Date à partir de laquelle le job est éligible au claim.
     #[serde(with = "ms_required")]
-    pub scheduled_at: DateTime<Utc>,
+    pub scheduled_at: UtcDateTime,
     /// Date de passage effectif en `Playing`.
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<DateTime<Utc>>,
+    pub started_at: Option<UtcDateTime>,
     /// Date de passage en état terminal.
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
-    pub finished_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<UtcDateTime>,
 }
 
 impl PlaybackJob {
@@ -239,7 +241,7 @@ impl PlaybackJob {
 
     /// `true` si le job est éligible au claim à l'instant `now`
     /// (état `Pending` et `scheduled_at` atteint).
-    pub fn is_claimable_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_claimable_at(&self, now: UtcDateTime) -> bool {
         self.status == JobStatus::Pending && self.scheduled_at <= now
     }
 }
@@ -257,7 +259,7 @@ pub struct Guild {
     pub name: Option<String>,
     /// Verrou anti-collision : un nouveau job ne peut démarrer avant.
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
-    pub busy_until: Option<DateTime<Utc>>,
+    pub busy_until: Option<UtcDateTime>,
     /// Durée d'affichage par défaut d'un média (secondes), si surchargée.
     pub default_media_time: Option<i64>,
     /// Durée maximale autorisée d'un média (secondes), si surchargée.
@@ -288,7 +290,7 @@ pub struct GuildAccess {
     pub guests_can_view_board: bool,
     /// Date de création (`None` pour une guilde antérieure à la migration 0003).
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<DateTime<Utc>>,
+    pub created_at: Option<UtcDateTime>,
 }
 
 /// Membre d'une guilde : un profil (pseudo, avatar) et un rôle.
@@ -309,10 +311,10 @@ pub struct GuildMember {
     pub role: GuildRole,
     /// Date d'arrivée.
     #[serde(with = "ms_required")]
-    pub created_at: DateTime<Utc>,
+    pub created_at: UtcDateTime,
     /// Date d'exclusion ou de départ (`None` = actif).
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
-    pub removed_at: Option<DateTime<Utc>>,
+    pub removed_at: Option<UtcDateTime>,
     /// Discord account linked to the member (snowflake): set when the member
     /// paired with their own `/pair-code`. At most one active member per
     /// account and guild.
@@ -324,7 +326,7 @@ pub struct GuildMember {
     pub profile_custom: bool,
     /// Last time the profile was read from Discord.
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
-    pub discord_synced_at: Option<DateTime<Utc>>,
+    pub discord_synced_at: Option<UtcDateTime>,
 }
 
 impl GuildMember {
@@ -362,18 +364,18 @@ pub struct GuildInvite {
     pub created_by_member_id: Option<GuildMemberId>,
     /// Expiration (`None` = jamais).
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<UtcDateTime>,
     /// Date de révocation (`None` = non révoquée).
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
-    pub revoked_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<UtcDateTime>,
     /// Date de création.
     #[serde(with = "ms_required")]
-    pub created_at: DateTime<Utc>,
+    pub created_at: UtcDateTime,
 }
 
 impl GuildInvite {
     /// `true` si l'invitation peut encore être utilisée à l'instant `now`.
-    pub fn is_usable_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_usable_at(&self, now: UtcDateTime) -> bool {
         self.revoked_at.is_none()
             && self.expires_at.is_none_or(|expires_at| expires_at > now)
             && self
@@ -408,7 +410,7 @@ pub struct GuildBan {
     pub banned_by: Option<String>,
     /// Ban date.
     #[serde(with = "ms_required")]
-    pub created_at: DateTime<Utc>,
+    pub created_at: UtcDateTime,
 }
 
 /// Code de liaison Discord émis par l'overlay d'une guilde indépendante.
@@ -428,18 +430,18 @@ pub struct DiscordLinkCode {
     pub created_by_member_id: Option<GuildMemberId>,
     /// Expiration (obligatoire, TTL court).
     #[serde(with = "ms_required")]
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: UtcDateTime,
     /// Date de consommation (`None` = pas encore utilisé).
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
-    pub used_at: Option<DateTime<Utc>>,
+    pub used_at: Option<UtcDateTime>,
     /// Date de création.
     #[serde(with = "ms_required")]
-    pub created_at: DateTime<Utc>,
+    pub created_at: UtcDateTime,
 }
 
 impl DiscordLinkCode {
     /// `true` si le code peut encore être consommé à l'instant `now`.
-    pub fn is_usable_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_usable_at(&self, now: UtcDateTime) -> bool {
         self.used_at.is_none() && self.expires_at > now
     }
 }
@@ -469,13 +471,13 @@ pub struct OverlayClient {
     pub created_by_discord_user_id: Option<String>,
     /// Dernier heartbeat applicatif.
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
-    pub last_seen_at: Option<DateTime<Utc>>,
+    pub last_seen_at: Option<UtcDateTime>,
     /// Date de création.
     #[serde(with = "ms_required")]
-    pub created_at: DateTime<Utc>,
+    pub created_at: UtcDateTime,
     /// Date de révocation (`None` = actif).
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
-    pub revoked_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<UtcDateTime>,
 }
 
 impl OverlayClient {
@@ -505,13 +507,13 @@ pub struct IngestClient {
     pub created_by_discord_user_id: String,
     /// Dernier heartbeat applicatif.
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
-    pub last_seen_at: Option<DateTime<Utc>>,
+    pub last_seen_at: Option<UtcDateTime>,
     /// Date de création.
     #[serde(with = "ms_required")]
-    pub created_at: DateTime<Utc>,
+    pub created_at: UtcDateTime,
     /// Date de révocation (`None` = actif).
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
-    pub revoked_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<UtcDateTime>,
 }
 
 impl IngestClient {
@@ -552,18 +554,18 @@ pub struct PairingCodeEntry {
     pub author_image: Option<String>,
     /// Expiration (`None` = permanent/invité).
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<UtcDateTime>,
     /// Date de consommation (`None` = pas encore utilisé).
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
-    pub used_at: Option<DateTime<Utc>>,
+    pub used_at: Option<UtcDateTime>,
     /// Date de création.
     #[serde(with = "ms_required")]
-    pub created_at: DateTime<Utc>,
+    pub created_at: UtcDateTime,
 }
 
 impl PairingCodeEntry {
     /// `true` si le code peut encore être consommé à l'instant `now`.
-    pub fn is_usable_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_usable_at(&self, now: UtcDateTime) -> bool {
         self.used_at.is_none()
             && match self.expires_at {
                 Some(expires_at) => expires_at > now,
@@ -580,7 +582,7 @@ mod tests {
     use crate::ids::{GuildId, MediaAssetId, PairingCode as PairingCodeId};
     use crate::time::ms_to_datetime;
 
-    fn date(ms: i64) -> chrono::DateTime<chrono::Utc> {
+    fn date(ms: i64) -> time::UtcDateTime {
         ms_to_datetime(ms).unwrap()
     }
 

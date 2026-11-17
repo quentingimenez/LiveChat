@@ -157,11 +157,11 @@ let state = AppState { db: db.clone(), /* … */ };
 ### Exemple : boucle du scheduler (Phase 3)
 
 ```rust
-let now = chrono::Utc::now();
+let now = time::UtcDateTime::now();
 if let Some(job) = db.playback_jobs().claim_next(now).await? {
     // Le job est atomiquement passé PLAYING et n'appartient qu'à ce worker.
     dispatch_to_overlay(&job).await?;
-    db.playback_jobs().finish(job.id, JobStatus::Done, chrono::Utc::now()).await?;
+    db.playback_jobs().finish(job.id, JobStatus::Done, time::UtcDateTime::now()).await?;
 }
 ```
 
@@ -287,6 +287,8 @@ migrations comprises) et n'utilise pas de base partagée.
 3. **Dates du domaine** : la consigne de board mentionnait `i64` ms dans les
    entités ; la consigne directe exige `chrono::DateTime<Utc>` — c'est la
    seconde qui est appliquée, la conversion ms se fait dans `lc-db`.
+   Depuis 2026-11, le type est `time::UtcDateTime` (chrono déclaré non
+   maintenu, RUSTSEC-2026-0543) ; stockage et JSON inchangés.
 4. **`set_busy_until`/`update_settings`** font un upsert (et non un `UPDATE`)
    pour respecter le legacy où `guilds` est créée par `prisma.guild.upsert`.
 5. **`Cargo.lock`** : le premier build a ajouté sqlx/chrono/uuid/tokio/thiserror

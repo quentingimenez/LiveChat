@@ -17,7 +17,6 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
-use chrono::{DateTime, Utc};
 use lc_db::Db;
 use lc_domain::{GuildId, Permission, PlaybackJobId};
 use serde_json::{json, Value};
@@ -35,8 +34,8 @@ const QUEUE_LIMIT: i64 = 200;
 /// Date ISO 8601 à partir de millisecondes epoch, ou `null`.
 fn iso_ms(millis: Option<i64>) -> Value {
     millis
-        .and_then(DateTime::<Utc>::from_timestamp_millis)
-        .map(|date| json!(date.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)))
+        .and_then(lc_domain::ms_to_datetime)
+        .map(|date| json!(lc_domain::time::to_rfc3339_millis(date)))
         .unwrap_or(Value::Null)
 }
 
@@ -94,7 +93,7 @@ pub(crate) async fn queue_payload(state: &AppState, guild_id: &GuildId) -> Resul
     Ok(json!({
         "playing": playing.into_iter().next(),
         "pending": pending,
-        "serverTime": iso_ms(Some(now(state).timestamp_millis())),
+        "serverTime": iso_ms(Some(lc_domain::datetime_to_ms(now(state)))),
     }))
 }
 
@@ -117,7 +116,7 @@ pub(crate) async fn remove_job_payload(
         "UPDATE playback_jobs SET status = 'FAILED', finished_at = ? \
          WHERE id = ? AND guild_id = ? AND status = 'PENDING'",
     )
-    .bind(now(state).timestamp_millis())
+    .bind(lc_domain::datetime_to_ms(now(state)))
     .bind(job_id.to_canonical())
     .bind(guild_id.as_str())
     .execute(db.pool())
@@ -136,7 +135,7 @@ pub(crate) async fn clear_queue_payload(
         "UPDATE playback_jobs SET status = 'FAILED', finished_at = ? \
          WHERE guild_id = ? AND status = 'PENDING'",
     )
-    .bind(now(state).timestamp_millis())
+    .bind(lc_domain::datetime_to_ms(now(state)))
     .bind(guild_id.as_str())
     .execute(db.pool())
     .await

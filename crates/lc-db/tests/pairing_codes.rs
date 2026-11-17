@@ -5,9 +5,9 @@
 
 mod common;
 
-use chrono::Duration;
 use lc_db::DbError;
 use lc_domain::{DomainError, PairingCode as PairingCodeValue};
+use time::Duration;
 
 #[tokio::test]
 async fn crud_normalisation_et_doublon() {

@@ -16,9 +16,9 @@
 //! `lc-db` (elles seraient utiles au serveur), cf.
 //! `docs/rust/lc-playback.md`.
 
-use chrono::{DateTime, Utc};
 use lc_db::{Db, DbError, DbResult};
 use lc_domain::{datetime_to_ms, GuildId, PlaybackJob, PlaybackJobId};
+use time::UtcDateTime;
 
 /// Accès SQLite complémentaire, adossé au pool de `lc-db`.
 pub(crate) struct PlaybackStore {
@@ -74,7 +74,7 @@ impl PlaybackStore {
         &self,
         job_id: PlaybackJobId,
         guild_id: &GuildId,
-        now: DateTime<Utc>,
+        now: UtcDateTime,
     ) -> DbResult<Option<PlaybackJob>> {
         let now_ms = datetime_to_ms(now);
         let pool = self.db.pool().clone();
@@ -136,7 +136,7 @@ impl PlaybackStore {
     pub(crate) async fn claim_next_for_guild(
         &self,
         guild_id: &GuildId,
-        now: DateTime<Utc>,
+        now: UtcDateTime,
     ) -> DbResult<Option<PlaybackJob>> {
         let now_ms = datetime_to_ms(now);
         let pool = self.db.pool().clone();
@@ -195,7 +195,7 @@ impl PlaybackStore {
         job_id: PlaybackJobId,
         duration_sec: i64,
         resume_offset_sec: i64,
-        now: DateTime<Utc>,
+        now: UtcDateTime,
     ) -> DbResult<bool> {
         let now_ms = datetime_to_ms(now);
         let result = sqlx::query(
@@ -222,7 +222,7 @@ impl PlaybackStore {
         preempting: Option<PlaybackJobId>,
         resume_offset_sec: i64,
         remaining_ms: i64,
-        now: DateTime<Utc>,
+        now: UtcDateTime,
     ) -> DbResult<bool> {
         let now_ms = datetime_to_ms(now);
         let result = sqlx::query(
@@ -250,7 +250,7 @@ impl PlaybackStore {
         &self,
         guild_id: &GuildId,
         target: Option<PlaybackJobId>,
-        now: DateTime<Utc>,
+        now: UtcDateTime,
     ) -> DbResult<Vec<PlaybackJobId>> {
         let rows: Vec<String> = match target {
             Some(job_id) => {
@@ -309,7 +309,7 @@ mod tests {
 
     use super::*;
 
-    fn sample_job(guild_id: GuildId, now: DateTime<Utc>) -> PlaybackJob {
+    fn sample_job(guild_id: GuildId, now: UtcDateTime) -> PlaybackJob {
         PlaybackJob {
             id: PlaybackJobId::new_v4(),
             guild_id,
@@ -341,7 +341,7 @@ mod tests {
         let db = Db::open(dir.path().join("busy.sqlite"), &config)
             .await
             .expect("base de test");
-        let now = Utc::now();
+        let now = UtcDateTime::now();
         let guild = GuildId::parse("123456789012345678").expect("guild id");
         let job = sample_job(guild.clone(), now);
         db.playback_jobs().create(&job).await.expect("job de test");
@@ -361,7 +361,9 @@ mod tests {
             .expect("verrou d'écriture");
 
         let claim =
-            tokio::spawn(async move { store.claim_next_for_guild(&guild, Utc::now()).await });
+            tokio::spawn(
+                async move { store.claim_next_for_guild(&guild, UtcDateTime::now()).await },
+            );
         tokio::time::sleep(Duration::from_millis(250)).await;
         sqlx::query("COMMIT")
             .execute(&mut *holder)
@@ -391,7 +393,7 @@ mod tests {
 
         let started = std::time::Instant::now();
         let error = store
-            .claim_next_for_guild(&guild, Utc::now())
+            .claim_next_for_guild(&guild, UtcDateTime::now())
             .await
             .expect_err("le claim doit échouer tant que le verrou persiste");
         assert!(error.is_busy(), "erreur attendue BUSY, obtenue : {error}");
@@ -414,7 +416,10 @@ mod tests {
         // Décalage explicite : deux jobs créés dans la même milliseconde ont la
         // même `submission_date`, et l'ordre de claim retombe alors sur `id ASC`
         // (UUID v4 aléatoires → test non déterministe, cf. AUD-A5).
-        let second = sample_job(guild.clone(), Utc::now() + chrono::Duration::seconds(1));
+        let second = sample_job(
+            guild.clone(),
+            UtcDateTime::now() + time::Duration::seconds(1),
+        );
         db.playback_jobs()
             .create(&second)
             .await
@@ -422,7 +427,7 @@ mod tests {
         let store = PlaybackStore::new(db.clone());
 
         let claimed = store
-            .claim_next_for_guild(&guild, Utc::now())
+            .claim_next_for_guild(&guild, UtcDateTime::now())
             .await
             .expect("claim")
             .expect("un job doit être réclamé");
@@ -430,7 +435,7 @@ mod tests {
         assert_eq!(claimed.status, JobStatus::Playing);
 
         let blocked = store
-            .claim_next_for_guild(&guild, Utc::now())
+            .claim_next_for_guild(&guild, UtcDateTime::now())
             .await
             .expect("claim suivant");
         assert!(blocked.is_none(), "un second PLAYING est interdit");

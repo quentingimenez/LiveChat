@@ -388,6 +388,9 @@ export async function loadAdmin(options) {
   if (state.adminTab === 'members' && can('manageMembers')) {
     state.members = (await readList('/overlay/admin/members', quiet)) || state.members;
   }
+  if (state.adminTab === 'bans' && can('manageMembers')) {
+    state.bans = (await readList('/overlay/admin/bans', quiet)) || state.bans;
+  }
   if (state.adminTab === 'invites' && can('manageInvites')) {
     state.invites = (await readList('/overlay/admin/invites', quiet)) || state.invites;
   }

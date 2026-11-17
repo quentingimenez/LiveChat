@@ -597,6 +597,13 @@ fn close_step(code: Option<u16>, reason: &str) -> SupervisorStep {
                 purge: Some(GuildRemovalReason::MemberRemoved),
             }
         }
+        Some(4402) if reason == lc_protocol::close_reason::MEMBER_BANNED => {
+            SupervisorStep::Terminal {
+                status: ConnectionStatus::Revoked,
+                reason: "membre banni de la guilde".to_string(),
+                purge: Some(GuildRemovalReason::MemberBanned),
+            }
+        }
         Some(4402) => SupervisorStep::Terminal {
             status: ConnectionStatus::Revoked,
             reason: "appareil révoqué — réappairage nécessaire".to_string(),
@@ -2382,6 +2389,14 @@ mod tests {
             SupervisorStep::Terminal {
                 status: ConnectionStatus::Revoked,
                 purge: Some(GuildRemovalReason::MemberRemoved),
+                ..
+            }
+        ));
+        assert!(matches!(
+            close_step(Some(4402), "member_banned"),
+            SupervisorStep::Terminal {
+                status: ConnectionStatus::Revoked,
+                purge: Some(GuildRemovalReason::MemberBanned),
                 ..
             }
         ));

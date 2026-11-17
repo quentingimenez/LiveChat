@@ -150,6 +150,28 @@ impl GuildInvitesRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Revokes the invitations of a guild that a member created or that
+    /// target them (device codes). Returns the number of revoked invitations.
+    pub async fn revoke_by_member(
+        &self,
+        guild_id: &GuildId,
+        member_id: GuildMemberId,
+        revoked_at: DateTime<chrono::Utc>,
+    ) -> DbResult<u64> {
+        let result = sqlx::query(
+            "UPDATE guild_invites SET revoked_at = ? \
+             WHERE guild_id = ? AND revoked_at IS NULL \
+               AND (created_by_member_id = ? OR member_id = ?)",
+        )
+        .bind(to_ms(revoked_at))
+        .bind(guild_id.as_str())
+        .bind(member_id.to_canonical())
+        .bind(member_id.to_canonical())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Liste les invitations d'une guilde, de la plus récente à la plus
     /// ancienne.
     pub async fn list_by_guild(&self, guild_id: &GuildId) -> DbResult<Vec<GuildInvite>> {

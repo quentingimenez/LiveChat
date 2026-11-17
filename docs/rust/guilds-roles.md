@@ -137,6 +137,31 @@ WHERE id = ? AND removed_at IS NULL
 
 Une guilde conserve donc au moins un admin actif ; la vérification est faite dans l'instruction de mise à jour, donc deux rétrogradations concurrentes ne peuvent pas vider la guilde de ses admins. Si aucune ligne n'est modifiée, `classify` distingue `NotFound` (membre inconnu ou déjà retiré) de `LastAdmin` (membre actif protégé). Les handlers traduisent `LastAdmin` en `409 {"error":"last_admin"}` sur `PATCH` et `DELETE /overlay/admin/members/{memberId}`, ainsi que sur `POST /overlay/leave` pour le départ du dernier admin (`apps/lc-server/src/http/overlay/admin.rs`, `guild.rs`).
 
+### Exclusion et bannissement
+
+Retirer un membre (exclusion, départ, bannissement : `remove_member`,
+`apps/lc-server/src/http/overlay/guild.rs`) marque `removed_at`, révoque ses
+overlays et ferme leurs sessions (`4402`), révoque ses extensions d'ingestion
+et ses codes `pairing_codes` non utilisés (auteur `member:<id>` ou son compte
+Discord lié) ainsi que les invitations qu'il a émises ou qui le visent.
+
+Un bannissement (`POST /overlay/admin/members/{memberId}/ban`, table
+`guild_bans`, migration 0016) fait la même chose avec la raison de fermeture
+`member_banned`, puis garde le compte Discord lié hors de la guilde :
+
+- `POST /overlay/pair/consume` et `POST /ingest/pair/consume` refusent un code
+  émis par ce compte (`403 member_banned`, code non consommé) ;
+- `POST /overlay/profile/discord-link` refuse de le lier à un autre membre
+  (`403 member_banned`) ;
+- le bot refuse toutes ses commandes sauf `/alive`, `/help` et `/info`, même
+  pour un administrateur du serveur Discord.
+
+Un membre sans compte Discord lié n'est identifiable par rien d'autre : son
+bannissement se réduit à l'exclusion (il reviendrait avec une nouvelle
+invitation). On ne peut pas se bannir soi-même (`409 cannot_ban_self`) ; la
+règle du dernier admin s'applique. `DELETE /overlay/admin/bans/{banId}` lève
+le bannissement ; les anciens appareils restent révoqués.
+
 ### Modification des médias (`can_edit`)
 
 `can_edit` (`apps/lc-server/src/http/overlay/media_board.rs`) décide si un client peut modifier ou supprimer un média :
@@ -242,6 +267,9 @@ Toutes les routes authentifiées acceptent uniquement `Authorization: Bearer <to
 | `GET` | `/overlay/admin/members` | `ManageMembers` |
 | `PATCH` | `/overlay/admin/members/{memberId}` | `ManageMembers` |
 | `DELETE` | `/overlay/admin/members/{memberId}` | `ManageMembers` |
+| `POST` | `/overlay/admin/members/{memberId}/ban` | `ManageMembers` |
+| `GET` | `/overlay/admin/bans` | `ManageMembers` |
+| `DELETE` | `/overlay/admin/bans/{banId}` | `ManageMembers` |
 | `GET` | `/overlay/admin/invites` | `ManageInvites` |
 | `POST` | `/overlay/admin/invites` | `ManageInvites` |
 | `POST` | `/overlay/admin/invites/{code}/revoke` | `ManageInvites` |

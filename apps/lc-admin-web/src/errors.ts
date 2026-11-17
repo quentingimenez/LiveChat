@@ -12,6 +12,7 @@ const CODE_MESSAGES: Record<string, string> = {
   last_admin: 'Impossible de retirer le dernier administrateur de la guilde.',
   guild_not_found: 'Cette guilde n’existe plus.',
   member_not_found: 'Ce membre n’existe plus.',
+  ban_not_found: 'Ce bannissement a déjà été levé.',
   overlay_client_not_found: 'Cet overlay n’existe plus.',
   ingest_client_not_found: 'Ce client d’ingestion n’existe plus.',
   pairing_code_not_found: 'Ce code d’appairage n’existe plus.',

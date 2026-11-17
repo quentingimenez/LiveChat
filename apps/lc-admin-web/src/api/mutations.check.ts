@@ -4,6 +4,7 @@
 
 import type {
   AdminCodeResponse,
+  BanMemberResponse,
   CleanOrphansResponse,
   ClearMediaBoardResponse,
   ClearQueueResponse,
@@ -22,6 +23,7 @@ import type {
   PurgeGuildResponse,
   RemoveJobResponse,
   RemoveMemberResponse,
+  UnbanResponse,
   RevokeClientResponse,
   RevokeClientsResponse,
   RevokeInviteResponse,
@@ -50,6 +52,8 @@ import mutationPatchMember from './fixtures/mutation-patch-member.json';
 import mutationPurgeGuild from './fixtures/mutation-purge-guild.json';
 import mutationPurgeMediaCache from './fixtures/mutation-purge-media-cache.json';
 import mutationRemoveMember from './fixtures/mutation-remove-member.json';
+import mutationBanMember from './fixtures/mutation-ban-member.json';
+import mutationUnban from './fixtures/mutation-unban.json';
 import mutationRemoveQueueJob from './fixtures/mutation-remove-queue-job.json';
 import mutationRevokeGuildClients from './fixtures/mutation-revoke-guild-clients.json';
 import mutationRevokeIngestClient from './fixtures/mutation-revoke-ingest-client.json';
@@ -90,6 +94,8 @@ export const recordedMutationResponses = {
   purgeGuild: mutationPurgeGuild satisfies Widen<PurgeGuildResponse>,
   purgeMediaCache: mutationPurgeMediaCache satisfies Widen<PurgeCacheResponse>,
   removeMember: mutationRemoveMember satisfies Widen<RemoveMemberResponse>,
+  banMember: mutationBanMember satisfies Widen<BanMemberResponse>,
+  unbanMember: mutationUnban satisfies Widen<UnbanResponse>,
   removeQueueJob: mutationRemoveQueueJob satisfies Widen<RemoveJobResponse>,
   revokeGuildClients: mutationRevokeGuildClients satisfies Widen<RevokeClientsResponse>,
   revokeIngestClient: mutationRevokeIngestClient satisfies Widen<RevokeClientResponse>,

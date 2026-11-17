@@ -10,6 +10,7 @@
 
 import type {
   AdminCodeResponse,
+  BanMemberResponse,
   AuditResponse,
   AuthMethods,
   ClearMediaBoardResponse,
@@ -48,6 +49,7 @@ import type {
   PurgeGuildResponse,
   RemoveJobResponse,
   RemoveMemberResponse,
+  UnbanResponse,
   RevokeClientResponse,
   RevokeClientsResponse,
   RevokeInviteResponse,
@@ -389,6 +391,20 @@ export function removeMember(guildId: string, memberId: string): Promise<RemoveM
   return json<RemoveMemberResponse>(
     'DELETE',
     `${API_BASE}/api/guilds/${encodeURIComponent(guildId)}/members/${encodeURIComponent(memberId)}`,
+  );
+}
+
+export function banMember(guildId: string, memberId: string): Promise<BanMemberResponse> {
+  return json<BanMemberResponse>(
+    'POST',
+    `${API_BASE}/api/guilds/${encodeURIComponent(guildId)}/members/${encodeURIComponent(memberId)}/ban`,
+  );
+}
+
+export function unbanMember(guildId: string, banId: string): Promise<UnbanResponse> {
+  return json<UnbanResponse>(
+    'DELETE',
+    `${API_BASE}/api/guilds/${encodeURIComponent(guildId)}/bans/${encodeURIComponent(banId)}`,
   );
 }
 

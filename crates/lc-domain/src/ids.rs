@@ -129,6 +129,12 @@ uuid_id!(
     "guild_member"
 );
 
+uuid_id!(
+    /// Identifier of a guild ban (`guild_bans.id`).
+    GuildBanId,
+    "guild_ban"
+);
+
 /// Identifiant de guilde (numérique, stocké `TEXT`).
 ///
 /// Historiquement un snowflake Discord ; une guilde créée hors Discord reçoit

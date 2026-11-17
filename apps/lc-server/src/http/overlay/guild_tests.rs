@@ -51,12 +51,12 @@ fn test_config(media_dir: &Path) -> Config {
 
 /// Admin hub fake recording close codes and reasons.
 #[derive(Debug, Default)]
-struct RecordingAdminHub {
+pub(super) struct RecordingAdminHub {
     closes: Mutex<Vec<(uuid::Uuid, u16, String)>>,
 }
 
 impl RecordingAdminHub {
-    fn closes(&self) -> Vec<(uuid::Uuid, u16, String)> {
+    pub(super) fn closes(&self) -> Vec<(uuid::Uuid, u16, String)> {
         self.closes.lock().expect("verrou du hub").clone()
     }
 }

@@ -69,6 +69,10 @@ test('removalMessage names the guild for every removal reason', () => {
     'Un admin t’a retiré de « Les Sardines ». La guilde est retirée de LiveChat.',
   );
   assert.equal(
+    removalMessage({ guildName: 'Les Sardines', reason: 'member_banned' }),
+    'Un admin t’a banni de « Les Sardines ». La guilde est retirée de LiveChat.',
+  );
+  assert.equal(
     removalMessage({ guildName: 'Les Sardines', reason: 'revoked' }),
     'Cet appareil a été révoqué dans « Les Sardines ». La guilde est retirée de LiveChat.',
   );

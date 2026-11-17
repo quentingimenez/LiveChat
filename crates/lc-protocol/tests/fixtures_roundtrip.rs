@@ -325,6 +325,7 @@ fn close_codes_and_reasons_are_frozen() {
     assert_eq!(close_reason::HELLO_REQUIRED, "hello_required");
     assert_eq!(close_reason::OUTDATED_PROTOCOL, "outdated_protocol");
     assert_eq!(close_reason::MEMBER_REMOVED, "member_removed");
+    assert_eq!(close_reason::MEMBER_BANNED, "member_banned");
     assert_eq!(close_reason::GUILD_DELETED, "guild_deleted");
 }
 

@@ -191,11 +191,16 @@ jobs:
           name: livechat-overlay-windows
           path: dist
 
+      # Release title "LiveChat overlay X.Y.Z": the version without the tag prefix.
+      - name: Read version from tag
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#overlay-v}" >> "$GITHUB_OUTPUT"
+
       - name: Draft GitHub release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           draft: true
-          name: LiveChat overlay ${{ github.ref_name }}
+          name: LiveChat overlay ${{ steps.version.outputs.value }}
           files: dist/*
           body: |
             Installeur Windows de l'overlay LiveChat (Tauri).

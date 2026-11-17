@@ -26,7 +26,8 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use lc_db::Db;
 use lc_domain::{
-    now_ms, GuildId, JobStatus, MediaBoardItemId, OverlayClientId, PlaybackJob, PlaybackJobId,
+    now_ms, GuildId, JobStatus, MediaBoardItemId, MediaKind, OverlayClientId, PlaybackJob,
+    PlaybackJobId,
 };
 use lc_playback::{
     PlaybackEndedEvent, PlaybackStateEvent, PlaybackStateOutcome, MEDIA_BOARD_JOB_PRIORITY,
@@ -894,10 +895,23 @@ async fn handle_client_message(
             // for a reconnection.
             let (author_name, author_image) = trigger_author(db, context.client_id).await;
             let author_name = author_name.or_else(|| item.created_by_name.clone());
-            let duration_sec = media
-                .duration_sec
-                .filter(|duration| *duration > 0)
-                .unwrap_or(0);
+            // An image has no length of its own: the time chosen for the item,
+            // else the guild default. The guild cap applies at dispatch.
+            let duration_sec = if media.kind == MediaKind::Image {
+                match item.display_duration_sec {
+                    Some(seconds) => seconds,
+                    None => {
+                        let (_, default_media_time, _) =
+                            hub.guild_defaults(&context.guild_id).await;
+                        i64::try_from(default_media_time).unwrap_or(i64::MAX)
+                    }
+                }
+            } else {
+                media
+                    .duration_sec
+                    .filter(|duration| *duration > 0)
+                    .unwrap_or(0)
+            };
             let job = PlaybackJob {
                 id: PlaybackJobId::new_v4(),
                 guild_id: context.guild_id.clone(),

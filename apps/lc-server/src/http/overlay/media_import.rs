@@ -164,7 +164,7 @@ async fn import_one(
     json!({ "sourceItemId": source_item_id, "status": "added", "itemId": new_id })
 }
 
-/// Gives the copy the source item's picture. The copy is already on the
+/// Gives the copy the source item's picture and display time. The copy is already on the
 /// board, so a failure here is logged and does not fail the import.
 async fn copy_artwork(db: &Db, source: &MediaBoardItem, copy: &MediaBoardItem, at: DateTime<Utc>) {
     if let Some(artwork_id) = source.artwork_asset_id {
@@ -184,6 +184,15 @@ async fn copy_artwork(db: &Db, source: &MediaBoardItem, copy: &MediaBoardItem, a
     if source.artwork_on_overlay {
         if let Err(db_error) = db.media_board().set_artwork_on_overlay(copy.id, true).await {
             tracing::warn!(error = %db_error, "picture option of an imported item not copied");
+        }
+    }
+    if source.display_duration_sec.is_some() {
+        if let Err(db_error) = db
+            .media_board()
+            .set_display_duration(copy.id, source.display_duration_sec)
+            .await
+        {
+            tracing::warn!(error = %db_error, "display time of an imported item not copied");
         }
     }
 }

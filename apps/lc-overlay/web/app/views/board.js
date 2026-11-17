@@ -30,7 +30,7 @@ import {
   thumbnailOf,
 } from '../core/detail-drawer.js';
 import { h, icon, registerIcons } from '../core/dom.js';
-import { formatDuration } from '../core/format.js';
+import { formatDuration, INVALID_DURATION_MESSAGE, MAX_DISPLAY_DURATION_SEC, parseDisplayDuration } from '../core/format.js';
 import { cardRatio, cardStyle } from '../core/masonry.js';
 import { cardClickAction, escapeAction, importTargets, menuTargetIds, selectRange, toggleId } from '../core/selection.js';
 import { invoke } from '../core/ipc.js';
@@ -186,7 +186,7 @@ function cardKey(item) {
   return JSON.stringify([
     itemTitle(item),
     item.media.kind,
-    item.media.durationSec ?? null,
+    shownDuration(item),
     item.media.width ?? null,
     item.media.height ?? null,
     mediaPath(item.mediaUrl),
@@ -379,7 +379,7 @@ function buildCard(entry) {
     h('span', { class: 'glyph' }, icon(kind === 'audio' ? 'audio' : kind === 'image' ? 'image' : 'video')),
     h('span', { class: 'pick', 'aria-hidden': 'true' }, icon('check')),
     artwork ? h('span', { class: 'kind-badge', 'aria-hidden': 'true' }, icon('audio')) : null,
-    formatDuration(item.media.durationSec) ? h('span', { class: 'duration' }, formatDuration(item.media.durationSec)) : null,
+    formatDuration(shownDuration(item)) ? h('span', { class: 'duration' }, formatDuration(shownDuration(item))) : null,
   );
   if (picture.url) {
     thumbObserver.observe(thumb);
@@ -1170,7 +1170,7 @@ function renderDetail(item) {
       [h('dt', null, 'Ajouté par'), h('dd', null, item.createdByName || 'Inconnu')],
       [h('dt', null, 'Le'), h('dd', null, Number.isNaN(added.getTime()) ? '—' : added.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }))],
       source ? [h('dt', null, 'Source'), h('dd', null, source)] : null,
-      [h('dt', null, 'Format'), h('dd', null, [KIND_LABELS[item.media.kind] || item.media.kind, formatDuration(item.media.durationSec), size].filter(Boolean).join(', '))],
+      [h('dt', null, 'Format'), h('dd', null, [KIND_LABELS[item.media.kind] || item.media.kind, formatDuration(shownDuration(item)), size].filter(Boolean).join(', '))],
       can('play')
         ? [
             h('dt', null, 'Raccourci'),
@@ -1291,11 +1291,38 @@ async function uploadArtwork(item, file) {
   return true;
 }
 
+// Length shown for an item: the media length, or for an image the display
+// time chosen for it (none when it uses the guild default).
+function shownDuration(item) {
+  return item.media.kind === 'image' ? item.displayDurationSec ?? null : item.media.durationSec;
+}
+
+// Placeholder of the display time field: the guild default when known.
+function defaultDurationHint() {
+  const settings = state.info && state.info.guild && state.info.guild.settings;
+  const seconds = settings && settings.defaultMediaTime;
+  return Number.isFinite(seconds) && seconds > 0 ? `Par défaut (${seconds} s)` : 'Par défaut';
+}
+
 export function openEditDialog(item) {
   openDialog((close) => {
     const title = h('input', { class: 'field', maxlength: '240', value: item.title || '' });
     const message = h('textarea', { class: 'field', rows: '3', maxlength: '500', value: item.message || '' });
     const isAudio = item.media.kind === 'audio';
+    const isImage = item.media.kind === 'image';
+    const displayDuration = isImage
+      ? h('input', {
+          class: 'field',
+          type: 'number',
+          min: '1',
+          max: String(MAX_DISPLAY_DURATION_SEC),
+          step: '1',
+          inputmode: 'numeric',
+          value: item.displayDurationSec ?? '',
+          placeholder: defaultDurationHint(),
+          style: 'max-width:160px',
+        })
+      : null;
     let chosen = null;
     let removeArtwork = false;
     let previewUrl = null;
@@ -1497,6 +1524,16 @@ export function openEditDialog(item) {
           if (isAudio) {
             patch.artworkOnOverlay = onOverlay.checked;
           }
+          if (isImage) {
+            const parsed = parseDisplayDuration(displayDuration.value);
+            if (!parsed.ok) {
+              notify(INVALID_DURATION_MESSAGE, true);
+              return;
+            }
+            if (parsed.value !== (item.displayDurationSec ?? null)) {
+              patch.displayDurationSec = parsed.value;
+            }
+          }
           const body = await run(() => api('PATCH', `/overlay/media-board/items/${encodeURIComponent(item.id)}`, patch));
           if (!body) {
             return;
@@ -1517,6 +1554,7 @@ export function openEditDialog(item) {
       },
       h('label', null, 'Titre', title),
       h('label', null, 'Message', message),
+      displayDuration ? h('label', null, 'Durée d’affichage (s)', displayDuration) : null,
       artworkFields,
       h('div', { class: 'actions' }, h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'), submit),
     );

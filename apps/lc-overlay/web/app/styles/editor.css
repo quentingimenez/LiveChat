@@ -444,6 +444,16 @@
   font-variant-numeric: tabular-nums;
 }
 
+.field.speed-field {
+  width: 64px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.field.speed-field.is-active {
+  border-color: var(--blue);
+}
+
 /* -------------------------------------------- confirmation, attente, erreur */
 .editor-veil {
   position: absolute;

@@ -379,3 +379,95 @@ async fn edited_files_are_ingested_without_a_second_encode() {
     assert_eq!(ingested.normalized.kind, MediaKind::Image);
     assert_eq!(ingested.normalized.mime, "image/gif");
 }
+
+/// Mean luminance (0..255) of the frame at `time`.
+fn brightness(config: &MediaConfig, path: &Path, time: &str) -> f64 {
+    let output = std::process::Command::new(&config.tools.ffmpeg)
+        .args(["-hide_banner", "-v", "error", "-ss", time, "-i"])
+        .arg(path)
+        .args([
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=32:24",
+            "-pix_fmt",
+            "gray",
+            "-f",
+            "rawvideo",
+            "-",
+        ])
+        .output()
+        .expect("ffmpeg lancé");
+    assert!(output.status.success(), "image de {path:?} à {time}");
+    assert_eq!(output.stdout.len(), 32 * 24);
+    let sum: u64 = output.stdout.iter().map(|value| u64::from(*value)).sum();
+    sum as f64 / output.stdout.len() as f64
+}
+
+#[tokio::test]
+#[ignore = "nécessite ffmpeg/ffprobe installés"]
+async fn a_long_video_is_reversed_in_pieces() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let config = config(directory.path());
+    let pipeline = MediaPipeline::new(config.clone()).unwrap();
+    // 12 s whose picture gets brighter every second, with a sine track.
+    let video = directory.path().join("long.mp4");
+    ffmpeg(
+        &config,
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=320x240:r=30:d=12,format=yuv420p,geq=lum='16+T*18':cb=128:cr=128",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=12",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            video.to_str().unwrap(),
+        ],
+    );
+
+    // 11 s kept over a cut: three pieces of about 3.7 s.
+    let (probed, path, rendered) = render(
+        &pipeline,
+        &video,
+        MediaKind::Video,
+        r#"{"segments":[[0,5],[6,12]],"reverse":true}"#,
+    )
+    .await;
+    assert!(rendered.plan.reverses_in_pieces());
+    assert!(probed.has_video && probed.has_audio);
+    assert_eq!(probed.video_codec.as_deref(), Some("h264"));
+    assert_duration(&probed, 11.0);
+
+    // Result time → source time: 0 → 11.95, 2 → 10 (first piece),
+    // 5 → 7 (second piece), 7.3 → 3.7 (across the cut), 10.9 → 0.1.
+    for (result, source) in [
+        ("0", "11.95"),
+        ("2", "10"),
+        ("5", "7"),
+        ("7.3", "3.7"),
+        ("10.9", "0.1"),
+    ] {
+        let got = brightness(&config, &path, result);
+        let expected = brightness(&config, &video, source);
+        assert!(
+            (got - expected).abs() < 4.0,
+            "à {result} s : luminosité {got:.1} au lieu de {expected:.1} (source à {source} s)"
+        );
+    }
+
+    // Only the result is left next to it.
+    let left: Vec<String> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(left, vec!["edit.mp4".to_string()]);
+}

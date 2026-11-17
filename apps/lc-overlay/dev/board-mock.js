@@ -25,6 +25,8 @@
 // fichier ou le lien : « big » → 413 pendant l'envoi, « fail » → conversion
 // en échec, « dup » → déjà sur le board, « race » → résultat reçu avant le 202,
 // « slow » → conversion qui ne finit qu'au bout de 20 s.
+// « Jouer une fois » (playOnce) : le média devient un job de lecture, sans
+// item de board ni `board.changed`, et le résultat porte `jobId`.
 // « Sad violin » n'est pas prêt (media_not_ready).
 // Éditeur : `?media` sert une vraie vidéo et un vrai son (dev/fixtures) ;
 // POST …/items/{id}/edit et `replaceItemId` à l'envoi créent une copie ou
@@ -384,7 +386,7 @@
     const ok = (body) => ({ ok: true, status: 200, body });
     if (path === '/overlay/media-board/items' && method === 'POST') {
       const body = payload.body || {};
-      return acceptIngestion({ guildId: payload.guildId, name: String(body.url || ''), title: body.title, message: body.message, contentType: 'video/mp4', received: 0 });
+      return acceptIngestion({ guildId: payload.guildId, name: String(body.url || ''), title: body.title, message: body.message, contentType: 'video/mp4', received: 0, playOnce: Boolean(body.playOnce) });
     }
     if (path === '/overlay/say' && method === 'POST') {
       // Speech synthesis (/dire). A text containing "panne" fails like a
@@ -593,7 +595,7 @@
   function ingestionList(guildId) {
     return Array.from(ingestions.values())
       .filter((entry) => entry.guildId === (guildId || '111'))
-      .map(({ ingestionId, status, created, itemId, error }) => ({ ingestionId, status, created, itemId, error }));
+      .map(({ ingestionId, status, created, itemId, jobId, error }) => ({ ingestionId, status, created, itemId, jobId, error }));
   }
   function createItem(source) {
     const index = nextItem++;
@@ -624,6 +626,19 @@
     const name = source.name.toLowerCase();
     if (name.includes('fail')) {
       Object.assign(ingestion, { status: 'failed', error: { code: 'media_ingestion_failed', message: 'la vidéo dépasse la durée maximale de 120 s' } });
+    } else if (source.playOnce) {
+      // Like the server: the ready media becomes a playback job, no board
+      // item and no `board.changed`.
+      const kind = String(source.contentType || '').split('/')[0];
+      const job = { id: 'j' + nextJob++, title: source.title || null, text: source.message || null, authorName: 'Quentin', durationSec: kind === 'image' ? 8 : 6, kind: ['video', 'image', 'audio'].includes(kind) ? kind : 'video', status: 'pending' };
+      queueHint();
+      if (!queue.playing) {
+        const at = new Date().toISOString();
+        queue.playing = Object.assign(job, { status: 'playing', startedAt: at, submittedAt: at });
+      } else {
+        queue.pending.push(job);
+      }
+      Object.assign(ingestion, { status: 'ready', created: false, jobId: job.id });
     } else if (name.includes('dup')) {
       Object.assign(ingestion, { status: 'ready', created: false, itemId: items[0] ? items[0].id : 'item-0' });
     } else if (source.replaceItemId) {
@@ -651,8 +666,8 @@
     }
     const guild = guilds.guilds.find((entry) => entry.membership.guildId === ingestion.guildId);
     if (guild && guild.connection.status === 'connected') {
-      const { ingestionId, status, created, itemId, error } = ingestion;
-      emit('overlay://media-ingestion', { guildId: ingestion.guildId, ingestionId, ok: status === 'ready', created, itemId, error });
+      const { ingestionId, status, created, itemId, jobId, error } = ingestion;
+      emit('overlay://media-ingestion', { guildId: ingestion.guildId, ingestionId, ok: status === 'ready', created, itemId, jobId, error });
     }
   }
   function acceptIngestion(source) {
@@ -672,7 +687,7 @@
     if (name.toLowerCase().includes('big')) {
       return { ok: false, status: 413, body: { error: 'payload_too_large', maxBytes: 2048 * 1024 * 1024 } };
     }
-    return acceptIngestion({ guildId: upload.guildId, name, title: upload.title, message: upload.message, contentType: upload.contentType, received: upload.received, replaceItemId: upload.replaceItemId || null });
+    return acceptIngestion({ guildId: upload.guildId, name, title: upload.title, message: upload.message, contentType: upload.contentType, received: upload.received, replaceItemId: upload.replaceItemId || null, playOnce: Boolean(upload.playOnce) });
   }
   // The shell sends a fresh copy with every event, never the object the board
   // already holds: the board compares the old and new connection states.

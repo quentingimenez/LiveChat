@@ -258,6 +258,9 @@ struct MediaUploadStartRequest {
     /// Board item whose media the uploaded file replaces (optional).
     #[serde(default)]
     replace_item_id: Option<String>,
+    /// The file is played once on the overlays instead of joining the board.
+    #[serde(default)]
+    play_once: bool,
 }
 
 /// Payload of `media_upload_finish` / `media_upload_cancel`.
@@ -1420,6 +1423,7 @@ pub fn media_upload_start(
         message: parsed.message.as_deref(),
         content_type: parsed.content_type.as_deref(),
         replace_item_id: parsed.replace_item_id.as_deref(),
+        play_once: parsed.play_once,
     })?;
     let insecure = crate::net::tls::insecure_tls_enabled();
     let target = upload::UploadTarget {

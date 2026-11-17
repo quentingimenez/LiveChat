@@ -160,6 +160,8 @@ pub(crate) struct UploadFile<'a> {
     /// Board item whose media the uploaded file replaces; it must be a board
     /// item id (UUID).
     pub(crate) replace_item_id: Option<&'a str>,
+    /// The file is played once on the overlays instead of joining the board.
+    pub(crate) play_once: bool,
 }
 
 /// Builds the JSON body opening the upload; blank texts are left out.
@@ -185,6 +187,9 @@ pub(crate) fn upload_description(file: &UploadFile<'_>) -> Result<Value, String>
     {
         let item_id = uuid::Uuid::parse_str(item_id).map_err(|_| "média inconnu".to_string())?;
         description.insert("replaceItemId".to_string(), item_id.to_string().into());
+    }
+    if file.play_once {
+        description.insert("playOnce".to_string(), true.into());
     }
     Ok(Value::Object(description))
 }
@@ -485,6 +490,7 @@ mod tests {
             message: Some("   "),
             content_type: Some("video/mp4"),
             replace_item_id: Some("  "),
+            play_once: false,
         })
         .expect("description");
         assert_eq!(
@@ -502,6 +508,29 @@ mod tests {
             ..UploadFile::default()
         })
         .is_err());
+    }
+
+    #[test]
+    fn description_carries_play_once_only_when_asked() {
+        let description = upload_description(&UploadFile {
+            filename: "photo.png",
+            size: 10,
+            play_once: true,
+            ..UploadFile::default()
+        })
+        .expect("description");
+        assert_eq!(
+            description,
+            json!({"filename": "photo.png", "size": 10, "playOnce": true})
+        );
+        // An ordinary upload keeps its body unchanged.
+        let description = upload_description(&UploadFile {
+            filename: "photo.png",
+            size: 10,
+            ..UploadFile::default()
+        })
+        .expect("description");
+        assert_eq!(description, json!({"filename": "photo.png", "size": 10}));
     }
 
     #[test]

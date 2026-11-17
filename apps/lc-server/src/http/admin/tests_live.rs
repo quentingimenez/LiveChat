@@ -625,12 +625,35 @@ async fn media_board_quota_fallback_refuses_an_upload_over_the_hot_limit() {
     assert_eq!(body["settings"]["mediaBoardMaxTotalMb"]["value"], 1);
 
     // 2 MiB is accepted by the media pipeline but no longer fits the board.
+    let bytes = png_bytes(2 * 1024 * 1024);
     let request = Request::builder()
         .method(Method::POST)
-        .uri("/overlay/media-board/upload?filename=big.png")
+        .uri("/overlay/media-board/uploads")
         .header(header::AUTHORIZATION, format!("Bearer {OVERLAY_TOKEN}"))
-        .body(Body::from(png_bytes(2 * 1024 * 1024)))
-        .expect("upload request");
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({ "filename": "big.png", "size": bytes.len() }).to_string(),
+        ))
+        .expect("create upload request");
+    let (status, body) = send_json_request(&harness, request).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let upload_id = body["uploadId"].as_str().expect("upload id").to_owned();
+    let request = Request::builder()
+        .method(Method::PUT)
+        .uri(format!(
+            "/overlay/media-board/uploads/{upload_id}/parts?offset=0"
+        ))
+        .header(header::AUTHORIZATION, format!("Bearer {OVERLAY_TOKEN}"))
+        .body(Body::from(bytes))
+        .expect("part request");
+    let (status, body) = send_json_request(&harness, request).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/overlay/media-board/uploads/{upload_id}/complete"))
+        .header(header::AUTHORIZATION, format!("Bearer {OVERLAY_TOKEN}"))
+        .body(Body::empty())
+        .expect("complete request");
     let (status, body) = send_json_request(&harness, request).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     let ingestion_id = body["ingestionId"].as_str().expect("ingestion id");

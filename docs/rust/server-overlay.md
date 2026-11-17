@@ -81,7 +81,10 @@ Conventions appliquées dans tout le module :
 | `GET` | `/overlay/media/{assetId}` | URL signée HMAC (`clientId`, `exp`, `sig`) | `media.rs:86` | `200`/`206`, binaire |
 | `GET` | `/overlay/media-board/items` | `Authorization: Bearer` | `media_board.rs:list_items` | `200 {total,limit,offset,items}` |
 | `POST` | `/overlay/media-board/items` | `Authorization: Bearer` | `media_board.rs:create_item` | `202 {ingestionId}` |
-| `POST` | `/overlay/media-board/upload?filename=&title=&message=&replaceItemId=` | `Authorization: Bearer` | `media_upload.rs:upload_item` | `202 {ingestionId}` |
+| `POST` | `/overlay/media-board/uploads` | `Authorization: Bearer` | `media_upload.rs:create_upload` | `201 {uploadId}` |
+| `PUT` | `/overlay/media-board/uploads/{uploadId}/parts?offset=` | `Authorization: Bearer` | `media_upload.rs:put_part` | `200 {received}` |
+| `POST` | `/overlay/media-board/uploads/{uploadId}/complete` | `Authorization: Bearer` | `media_upload.rs:complete_upload` | `202 {ingestionId}` |
+| `DELETE` | `/overlay/media-board/uploads/{uploadId}` | `Authorization: Bearer` | `media_upload.rs:cancel_upload` | `204` |
 | `POST` | `/overlay/media-board/items/{itemId}/edit` | `Authorization: Bearer` | `media_edit.rs:edit_item` | `202 {ingestionId}` |
 | `GET` | `/overlay/media-board/ingestions` | `Authorization: Bearer` | `media_board.rs:list_ingestions` | `200 {items:[…]}` |
 | `GET` | `/overlay/media-board/media/{assetId}` | URL signée (`clientId`, `exp`, `sig`) | `media_board.rs:get_media` | `200`/`206`, binaire |
@@ -450,34 +453,74 @@ Réponse `200` :
 - but : après une reconnexion WebSocket, le board récupère un `media.ingestion`
   manqué. La purge est paresseuse (insertion/lecture), aucun timer.
 
-### 7.2.2 `POST /overlay/media-board/upload?filename=&title=&message=`
+### 7.2.2 `/overlay/media-board/uploads` (`media_upload.rs`)
 
-- corps brut (pas de multipart), `filename` obligatoire : trim non vide,
-  ≤ 255 caractères, sans `/`, `\`, `..` ni caractère de contrôle → sinon
-  `400 {"error":"invalid_payload","message":…}` ;
-- session invitée → `403 read_only_session` **avant** toute lecture du corps ;
-- corps vide → `400 invalid_payload` ; dépassement
-  `MEDIA_MAX_SIZE_MB` pendant la réception → `413 {"error":"payload_too_large"}` ;
-- le fichier est écrit **entièrement** dans un dossier temporaire
-  (`UploadTempDir`, `lc-media-upload-<uuid>`) avec un SHA-256 incrémental avant
-  la réponse ; ce dossier est ensuite possédé par la tâche de fond et supprimé à
-  sa fin (succès, échec, `created:false`) ;
-- mêmes étapes que §7.2 (registre, `202`, quota 20, dédoublonnage, quota board,
-  épinglage, `media.ingestion`, `board.changed`) ; le cache upload utilise
-  `upload:sha256:<hex>` et `media_assets.source_url = upload:<filename>` ;
-- un type non supporté est signalé asynchronement par
-  `media.ingestion {ok:false, error:{code:"unsupported_media"}}` (plus de `415`
-  synchrone, puisque le type n'est connu qu'après le sniffing) ;
+Un fichier voyage en plusieurs requêtes, pour qu'aucun corps ne dépasse la
+limite d'un proxy placé devant le serveur (Cloudflare refuse plus de 100 Mo
+sur son offre gratuite) :
+
+1. `POST /overlay/media-board/uploads`, corps JSON
+   `{filename, size, title?, message?, contentType?, replaceItemId?}` : ouvre
+   une session d'envoi → `201 {"uploadId":"<uuid>"}`.
+2. `PUT /overlay/media-board/uploads/{uploadId}/parts?offset=N`, corps brut
+   d'au plus 90 Mio : ajoute une partie à l'octet `N`, qui doit valoir le
+   nombre d'octets déjà reçus → `200 {"received":<octets>}`.
+3. `POST /overlay/media-board/uploads/{uploadId}/complete` : vérifie que
+   `size` octets ont été reçus, enregistre l'ingestion →
+   `202 {"ingestionId":"<uuid>"}`.
+4. `DELETE /overlay/media-board/uploads/{uploadId}` : abandonne la session →
+   `204`.
+
+Une session appartient au client overlay qui l'a ouverte (`404
+upload_not_found` pour tout autre). Les parties sont écrites en streaming
+(`axum::body::Body::into_data_stream`, jamais tout le fichier en mémoire) dans
+un répertoire temporaire du même espace que les téléchargements `lc-media`,
+avec un SHA-256 incrémental. Le hachage ne pouvant pas revenir en arrière,
+toute partie en erreur (corps coupé, trop grande, au-delà de `size`) met fin à
+la session : le client recommence l'envoi. Une session sans requête depuis
+15 min est supprimée (purge paresseuse à l'ouverture et à chaque accès) ; un
+client a au plus 8 sessions ouvertes. Le répertoire temporaire passe dans la
+tâche asynchrone à la complétion et est supprimé à sa fin, succès ou échec
+(garde RAII). La limite globale `DefaultBodyLimit` de 1 Mio ne s'applique pas
+aux parties (`Body`, pas `Bytes`) ; seules les parties sont exemptées du
+timeout global (`app::is_timeout_exempt`).
+
+Limites et erreurs synchrones :
+
+| Cas | Statut | Corps |
+| --- | --- | --- |
+| `filename` absent, vide, trop long ou interdit (ouverture) | 400 | `{"error":"invalid_payload","message":…}` |
+| `size` absent ou nul (ouverture) | 400 | `{"error":"invalid_payload",…}` |
+| `size` > `MEDIA_MAX_SIZE_MB` (2048 Mo par défaut), avant tout octet | 413 | `{"error":"payload_too_large","maxBytes":…}` |
+| `replaceItemId` hors de la guilde ou invalide / droit d'édition absent (ouverture) | 404 / 403 | `item_not_found` / `forbidden` |
+| session `invite_read_only` (avant lecture du corps) | 403 | `{"error":"read_only_session"}` |
+| 8 sessions déjà ouvertes par le client | 429 | `{"error":"too_many_uploads"}` |
+| `offset` absent | 400 | `{"error":"invalid_payload",…}` |
+| `offset` différent des octets reçus (la session continue) | 409 | `{"error":"upload_offset_mismatch","received":…}` |
+| partie en cours sur la même session | 409 | `{"error":"upload_busy"}` |
+| partie > 90 Mio (fin de session) | 413 | `{"error":"part_too_large","maxBytes":…}` |
+| plus d'octets que `size` (fin de session) | 400 | `{"error":"invalid_payload",…}` |
+| complétion avant `size` octets (fin de session) | 400 | `{"error":"invalid_payload",…}` |
+| session inconnue, terminée ou d'un autre client | 404 | `{"error":"upload_not_found"}` |
+| 20 ingestions `processing` déjà actives (complétion) | 429 | `{"error":"too_many_ingestions"}` |
+| base/service indisponible | 500/503 | `{"error":"internal_error"}` / `database_unavailable` |
+| fichier complet | 202 | `{"ingestionId":"<uuid>"}` |
+
 - `title` par défaut = nom de fichier sans extension ; `title`/`message` tronqués
   aux limites du board ;
+- mêmes étapes que §7.2 après la complétion (registre, `202`, quota 20,
+  dédoublonnage, quota board, épinglage, `media.ingestion`, `board.changed`) ;
+  le cache upload utilise `upload:sha256:<hex>` et
+  `media_assets.source_url = upload:<filename>` ;
+- un type non supporté est signalé asynchronement par
+  `media.ingestion {ok:false, error:{code:"unsupported_media"}}` (le type n'est
+  connu qu'après le sniffing) ;
 - `replaceItemId` (facultatif) : le fichier envoyé **remplace le média** de cet
   item au lieu de créer un item (éditeur d'image du board, « Remplacer
-  l'original »). Vérifié **avant** la lecture du corps : item hors de la guilde
-  ou identifiant invalide → `404 item_not_found`, pas le droit de modifier
-  l'item → `403 forbidden`. `title`/`message` sont alors ignorés. Résultat :
-  `media.ingestion {ok:true, created:false, itemId:<l'item>}` puis
-  `board.changed {change:"updated"}` (voir §7.2.3 pour les règles du
-  remplacement).
+  l'original »). Vérifié **à l'ouverture**, avant tout octet. `title`/`message`
+  sont alors ignorés. Résultat : `media.ingestion {ok:true, created:false,
+  itemId:<l'item>}` puis `board.changed {change:"updated"}` (voir §7.2.3 pour
+  les règles du remplacement).
 
 ### 7.2.3 `POST /overlay/media-board/items/{itemId}/edit` (`media_edit.rs:edit_item`)
 

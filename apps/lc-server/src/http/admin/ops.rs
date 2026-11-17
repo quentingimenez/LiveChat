@@ -695,10 +695,8 @@ pub(super) async fn purge_cache(
         if !last_reference {
             continue;
         }
-        let removed = storage
-            .remove_path(Path::new(&asset.storage_path))
-            .map_err(|error| AdminError::db("removing a cached media file", error))?;
-        if removed {
+        // The row is gone: a file still open is left to the orphan cleanup.
+        if crate::media::purge::remove_or_skip(&storage, Path::new(&asset.storage_path)) {
             report.removed_files = report.removed_files.saturating_add(1);
             // The stored size is the canonical cache accounting (same value as
             // `overview.cache.usedBytes`), even when the file itself is missing
@@ -761,10 +759,7 @@ pub(super) async fn clean_orphans(
         if is_staged_file_name(name) && now_ms.saturating_sub(variant.modified_ms) < grace_ms {
             continue;
         }
-        let removed = storage
-            .remove_path(&variant.path)
-            .map_err(|error| AdminError::db("removing an orphan media file", error))?;
-        if removed {
+        if crate::media::purge::remove_or_skip(&storage, &variant.path) {
             report.removed_files = report.removed_files.saturating_add(1);
             report.freed_bytes = report.freed_bytes.saturating_add(variant.size_bytes);
         }

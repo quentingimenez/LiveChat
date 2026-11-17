@@ -437,6 +437,19 @@ async fn admin_console_mutation_fixtures() {
         )
         .await,
     );
+    // The edit runs in the background on the video file: let it finish before
+    // the item is deleted, so the cache purge below never meets a file the
+    // edit still holds open (Windows refuses to delete it).
+    for _ in 0..500 {
+        if harness.state().ingestions.active(Utc::now()).is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        harness.state().ingestions.active(Utc::now()).is_empty(),
+        "the board edit is still running"
+    );
     record(
         "delete-board-item",
         &mutate(

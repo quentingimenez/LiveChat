@@ -1,0 +1,90 @@
+name: release
+
+# Tags and builds a release when a `release/*` pull request is merged into main
+# (see .claude/skills/release/SKILL.md). Any other push does nothing, even one
+# that changes a version by hand: a release always goes through the release PR.
+#
+# For every component whose version changed in this push, it pushes the
+# annotated tag `<component>-v<version>` on the merged commit (unless a re-run
+# finds it already there), then starts the build workflow on that tag. A
+# re-run of this job therefore retries a failed build dispatch. Tags pushed with the
+# GITHUB_TOKEN do not trigger workflows, but `workflow_dispatch` does, and a
+# dispatch on a tag ref runs exactly like a tag push (`github.ref` is the tag).
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: write
+  pull-requests: read
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: tag & build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Check this push is a release merge
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The commit -> pull request association is eventually consistent:
+          # retry before concluding this push is not a release merge.
+          head=""
+          for attempt in 1 2 3 4 5 6; do
+            head="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
+              --jq '[.[] | select(.merged_at != null and .base.ref == "main")][0].head.ref // ""')"
+            [ -n "$head" ] && break
+            sleep 10
+          done
+          echo "merged branch: ${head:-none}"
+          if [[ "$head" == release/* ]]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "not a release merge: nothing to tag"
+          fi
+
+      - name: Tag and start the builds
+        if: steps.gate.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          pending="$(pwsh -NoProfile -File scripts/release.ps1 pending-tags "$BEFORE" -Json)"
+          echo "$pending"
+          if [ "$(echo "$pending" | jq 'length')" -eq 0 ]; then
+            echo "::warning::release merge without any version change: nothing tagged"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "$pending" | jq -c '.[]' | while read -r entry; do
+            component="$(echo "$entry" | jq -r .Component)"
+            version="$(echo "$entry" | jq -r .Version)"
+            tag="$(echo "$entry" | jq -r .Tag)"
+            if [ "$(echo "$entry" | jq -r .TagExists)" != "true" ]; then
+              git tag -a "$tag" -m "$component $version" "$GITHUB_SHA"
+              git push origin "refs/tags/$tag"
+            fi
+            case "$component" in
+              server) gh workflow run server-image.yml --ref "$tag" -f version="$version" -f update_latest=true ;;
+              overlay) gh workflow run overlay-tauri.yml --ref "$tag" ;;
+              extension) gh workflow run extension.yml --ref "$tag" ;;
+              *) echo "::error::unknown component $component"; exit 1 ;;
+            esac
+            echo "::notice::$tag pushed, build started"
+          done

@@ -4,11 +4,19 @@ import { test } from 'node:test';
 import {
   batches,
   cardClickAction,
+  copiedLinksSummary,
+  deletableIds,
+  deleteDialogText,
+  deleteSummary,
   escapeAction,
+  favoritePlan,
   importSummary,
   importTargets,
   menuTargetIds,
+  originLinks,
+  playSummary,
   pruneSelection,
+  selectAllAction,
   selectRange,
   toggleId,
 } from '../../web/app/core/selection.js';
@@ -134,4 +142,115 @@ test('menuTargetIds acts on the whole selection only from a picked card', () => 
   assert.deepEqual(menuTargetIds({ selecting: true, selection: picked, itemId: 'c', orderedIds: order }), ['a', 'c']);
   assert.deepEqual(menuTargetIds({ selecting: true, selection: picked, itemId: 'b', orderedIds: order }), ['b']);
   assert.deepEqual(menuTargetIds({ selecting: false, selection: picked, itemId: 'c', orderedIds: order }), ['c']);
+});
+
+// --- bulk actions of the selection bar ---
+
+// A board item, as the selection bar sees it.
+const item = (id, { favorite = false, canEdit = false, sourceUrl = null } = {}) => ({
+  id,
+  favorite,
+  canEdit,
+  media: { sourceUrl },
+});
+
+test('favoritePlan removes only when every picked media is a favorite', () => {
+  const plan = favoritePlan([item('a', { favorite: true }), item('b', { favorite: true })]);
+  assert.equal(plan.label, 'Retirer des favoris');
+  assert.equal(plan.favorite, false);
+  assert.deepEqual(plan.ids, ['a', 'b']);
+});
+
+test('favoritePlan adds the favorites missing from the selection', () => {
+  const plan = favoritePlan([item('a', { favorite: true }), item('b'), item('c')]);
+  assert.equal(plan.label, 'Ajouter aux favoris');
+  assert.equal(plan.favorite, true);
+  assert.deepEqual(plan.ids, ['b', 'c']);
+  assert.deepEqual(favoritePlan([]).ids, [], 'an empty selection has nothing to add');
+});
+
+test('deletableIds keeps the media the member may edit', () => {
+  const items = [item('a', { canEdit: true }), item('b'), item('c', { canEdit: true })];
+  assert.deepEqual(deletableIds(items), ['a', 'c']);
+  assert.deepEqual(deletableIds([item('b')]), []);
+});
+
+test('originLinks keeps the http(s) links, one per media, in board order', () => {
+  const items = [
+    item('a', { sourceUrl: 'https://example.test/a' }),
+    item('b'),
+    item('c', { sourceUrl: 'http://example.test/c' }),
+    item('d', { sourceUrl: 'file:///tmp/d' }),
+    item('e', { sourceUrl: 'https://example.test/e' }),
+  ];
+  assert.deepEqual(originLinks(items), ['https://example.test/a', 'http://example.test/c', 'https://example.test/e']);
+  assert.deepEqual(originLinks([{ id: 'z' }]), [], 'a media without a source counts as linkless');
+});
+
+test('playSummary counts the media sent to the overlays', () => {
+  assert.deepEqual(playSummary(3, 0), { message: '3 médias envoyés aux overlays.', isError: false });
+  assert.deepEqual(playSummary(1, 0), { message: '1 média envoyé aux overlays.', isError: false });
+});
+
+test('playSummary reports the failures', () => {
+  assert.deepEqual(playSummary(2, 1), { message: '2 médias envoyés aux overlays. · 1 échec', isError: true });
+  assert.deepEqual(playSummary(0, 3), { message: 'Aucun média envoyé aux overlays : 3 échecs', isError: true });
+});
+
+test('deleteDialogText lists the count and the media without the right', () => {
+  assert.deepEqual(deleteDialogText(4, 0), {
+    title: 'Supprimer 4 médias ?',
+    text: 'Ils seront retirés du board de la guilde.',
+  });
+  assert.deepEqual(deleteDialogText(4, 2), {
+    title: 'Supprimer 4 médias ?',
+    text: 'Ils seront retirés du board de la guilde. 2 médias ne peuvent pas être supprimés (droits).',
+  });
+  assert.deepEqual(deleteDialogText(1, 3), {
+    title: 'Supprimer ce média ?',
+    text: 'Ce média sera retiré du board de la guilde. 3 médias ne peuvent pas être supprimés (droits).',
+  });
+});
+
+test('deleteSummary counts the deletions and the failures', () => {
+  assert.deepEqual(deleteSummary(4, 0), { message: '4 médias supprimés.', isError: false });
+  assert.deepEqual(deleteSummary(1, 0), { message: '1 média supprimé.', isError: false });
+  assert.deepEqual(deleteSummary(3, 2), { message: '3 médias supprimés. · 2 échecs', isError: true });
+  assert.deepEqual(deleteSummary(0, 2), { message: 'Aucun média supprimé : 2 échecs', isError: true });
+});
+
+test('copiedLinksSummary counts the copied links', () => {
+  assert.equal(copiedLinksSummary(2), '2 liens copiés.');
+  assert.equal(copiedLinksSummary(1), '1 lien copié.');
+});
+
+const selectAllState = (overrides = {}) => ({
+  key: 'a',
+  ctrl: true,
+  meta: false,
+  handled: false,
+  capturing: false,
+  dialogOpen: false,
+  selecting: true,
+  editableTarget: false,
+  ...overrides,
+});
+
+test('selectAllAction picks every visible card on Ctrl+A while selecting', () => {
+  assert.equal(selectAllAction(selectAllState()), 'selectAll');
+  assert.equal(selectAllAction(selectAllState({ key: 'A' })), 'selectAll');
+  assert.equal(selectAllAction(selectAllState({ ctrl: false, meta: true })), 'selectAll');
+});
+
+test('selectAllAction leaves other keys, modes and modifiers alone', () => {
+  assert.equal(selectAllAction(selectAllState({ selecting: false })), null);
+  assert.equal(selectAllAction(selectAllState({ key: 'z' })), null);
+  assert.equal(selectAllAction(selectAllState({ ctrl: false, meta: false })), null);
+});
+
+test('selectAllAction keeps handled keys, dialogs, captures and fields', () => {
+  assert.equal(selectAllAction(selectAllState({ handled: true })), null);
+  assert.equal(selectAllAction(selectAllState({ dialogOpen: true })), null);
+  assert.equal(selectAllAction(selectAllState({ capturing: true })), null);
+  assert.equal(selectAllAction(selectAllState({ editableTarget: true })), null);
 });

@@ -453,7 +453,13 @@
       if (method === 'DELETE') {
         items.splice(index, 1);
       } else {
-        Object.assign(items[index], { title: (payload.body && payload.body.title) || null, message: (payload.body && payload.body.message) || null });
+        // Like the server: an absent field is kept, an empty one is cleared.
+        const patch = payload.body || {};
+        for (const field of ['title', 'message']) {
+          if (field in patch) {
+            items[index][field] = (typeof patch[field] === 'string' && patch[field].trim()) || null;
+          }
+        }
         if (payload.body && typeof payload.body.artworkOnOverlay === 'boolean') {
           items[index].artworkOnOverlay = payload.body.artworkOnOverlay;
         }

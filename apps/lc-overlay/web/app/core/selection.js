@@ -138,3 +138,102 @@ export function menuTargetIds({ selecting, selection, itemId, orderedIds }) {
   }
   return [itemId];
 }
+
+// --- bulk actions of the selection bar ---
+
+/**
+ * The favorite action over the picked items: removing them all when every
+ * one already is a favorite, adding only the missing ones otherwise.
+ */
+export function favoritePlan(items) {
+  if (items.length > 0 && items.every((item) => item.favorite)) {
+    return { label: 'Retirer des favoris', favorite: false, ids: items.map((item) => item.id) };
+  }
+  return {
+    label: 'Ajouter aux favoris',
+    favorite: true,
+    ids: items.filter((item) => !item.favorite).map((item) => item.id),
+  };
+}
+
+/** Picked items the member has the right to delete, in board order. */
+export function deletableIds(items) {
+  return items.filter((item) => item.canEdit).map((item) => item.id);
+}
+
+/**
+ * Origin links of the picked items, one per media in board order, http(s)
+ * only: an uploaded file has no page to paste.
+ */
+export function originLinks(items) {
+  const links = [];
+  for (const item of items) {
+    const url = item.media && item.media.sourceUrl;
+    if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
+      links.push(url);
+    }
+  }
+  return links;
+}
+
+/** Toast text describing the outcome of playing the picked media in a row. */
+export function playSummary(sent, failed) {
+  const parts = [];
+  if (failed > 0) {
+    parts.push(count(failed, 'échec', 'échecs'));
+  }
+  if (sent === 0) {
+    return { message: `Aucun média envoyé aux overlays${parts.length ? ` : ${parts.join(' · ')}` : '.'}`, isError: true };
+  }
+  return {
+    message: [`${count(sent, 'média envoyé', 'médias envoyés')} aux overlays.`, ...parts].join(' · '),
+    isError: failed > 0,
+  };
+}
+
+/** Toast text describing the outcome of a bulk delete. */
+export function deleteSummary(deleted, failed) {
+  const parts = [];
+  if (failed > 0) {
+    parts.push(count(failed, 'échec', 'échecs'));
+  }
+  if (deleted === 0) {
+    return { message: `Aucun média supprimé${parts.length ? ` : ${parts.join(' · ')}` : '.'}`, isError: true };
+  }
+  return {
+    message: [`${count(deleted, 'média supprimé', 'médias supprimés')}.`, ...parts].join(' · '),
+    isError: failed > 0,
+  };
+}
+
+/** Toast text after the origin links of the picked media were copied. */
+export function copiedLinksSummary(linkCount) {
+  return `${count(linkCount, 'lien copié', 'liens copiés')}.`;
+}
+
+/**
+ * Title and text of the bulk delete confirmation: how many media will go,
+ * and how many picked ones cannot be deleted (the member lacks the right).
+ */
+export function deleteDialogText(deletableCount, forbiddenCount) {
+  const title = deletableCount > 1 ? `Supprimer ${deletableCount} médias ?` : 'Supprimer ce média ?';
+  const parts = [
+    deletableCount > 1 ? 'Ils seront retirés du board de la guilde.' : 'Ce média sera retiré du board de la guilde.',
+  ];
+  if (forbiddenCount > 0) {
+    parts.push(`${count(forbiddenCount, 'média ne peut pas être supprimé', 'médias ne peuvent pas être supprimés')} (droits).`);
+  }
+  return { title, text: parts.join(' ') };
+}
+
+/**
+ * Whether the key press picks every visible card: Ctrl+A (or Cmd+A) in the
+ * selection mode only. A key a context menu already handled, an open dialog,
+ * a shortcut capture or a field being edited keeps its normal effect.
+ */
+export function selectAllAction({ key, ctrl, meta, handled, capturing, dialogOpen, selecting, editableTarget }) {
+  if (!selecting || !(ctrl || meta) || handled || capturing || dialogOpen || editableTarget) {
+    return null;
+  }
+  return key === 'a' || key === 'A' ? 'selectAll' : null;
+}

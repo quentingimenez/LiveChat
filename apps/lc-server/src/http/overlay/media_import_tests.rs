@@ -106,6 +106,7 @@ async fn item_in(harness: &Harness, guild_id: &GuildId, media: &MediaAsset) -> M
         created_at: fixed_now(),
         artwork_asset_id: None,
         artwork_on_overlay: false,
+        display_duration_sec: None,
     };
     harness.db.media_board().create(&item).await.unwrap();
     item
@@ -333,4 +334,30 @@ async fn artwork_is_copied_with_the_item() {
         .unwrap();
     assert_eq!(copy.artwork_asset_id, Some(cover.id));
     assert!(copy.artwork_on_overlay);
+}
+
+#[tokio::test]
+async fn import_keeps_display_duration() {
+    let s = setup().await;
+    let photo = asset(&s.harness, "photo.png", MediaKind::Image, 10).await;
+    let source = item_in(&s.harness, &s.a, &photo).await;
+    s.harness
+        .db
+        .media_board()
+        .set_display_duration(source.id, Some(9))
+        .await
+        .unwrap();
+
+    let (status, body) = import(&s, &s.b_token, Some(&s.a_token), ids(&[&source])).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let copy = s
+        .harness
+        .db
+        .media_board()
+        .get_by_guild_and_asset(&s.b, photo.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(copy.display_duration_sec, Some(9));
 }

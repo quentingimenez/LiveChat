@@ -15,6 +15,7 @@ export interface ComposeIngestRequest {
   text?: string;
   forceRefresh?: boolean;
   saveToBoard?: boolean;
+  durationSec?: number;
 }
 
 export type IngestRequest = QuickIngestRequest | ComposeIngestRequest;
@@ -39,6 +40,7 @@ type IngestPayload = {
   text?: string;
   forceRefresh?: boolean;
   saveToBoard?: boolean;
+  durationSec?: number;
 };
 
 const toNonEmptyString = (value: unknown): string | null => {
@@ -98,6 +100,10 @@ export const buildIngestPayload = (request: IngestRequest, settings: ExtensionSe
 
     payload.forceRefresh = !!request.forceRefresh;
     payload.saveToBoard = !!request.saveToBoard;
+
+    if (typeof request.durationSec === 'number') {
+      payload.durationSec = request.durationSec;
+    }
   }
 
   return payload;

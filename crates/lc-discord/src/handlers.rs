@@ -354,6 +354,9 @@ async fn handle_media_command(
         // Le legacy répond immédiatement (avant tout defer) en éphémère.
         return Ok(error_reply(lang, dict.send_missing_content, true));
     }
+    if !duration_in_bounds(submission.duration_sec) {
+        return Ok(error_reply(lang, dict.send_invalid_duration, true));
+    }
     let Some(guild_id) = guild_id else {
         // Le legacy déréférençait `interaction.guildId!` juste après le defer :
         // l'erreur tombait dans le catch et produisait l'erreur média générique.
@@ -390,7 +393,12 @@ async fn handle_media_command(
         None
     };
 
-    let base_duration = effective_duration(&ctx.config(), guild.as_ref(), asset.as_ref(), None);
+    let base_duration = effective_duration(
+        &ctx.config(),
+        guild.as_ref(),
+        asset.as_ref(),
+        submission.duration_sec,
+    );
     let (duration_sec, resume_offset_sec) =
         adjusted_duration(base_duration, offset, asset.as_ref());
 
@@ -439,6 +447,9 @@ async fn handle_media_add(
     if !submission.has_source() {
         return Ok(error_reply(lang, dict.media_add_missing_media, true));
     }
+    if !duration_in_bounds(submission.duration_sec) {
+        return Ok(error_reply(lang, dict.send_invalid_duration, true));
+    }
     let asset = match ingest_asset(ctx, lang, &submission, true).await {
         Ok(asset) => asset,
         Err(reply) => return Ok(reply),
@@ -452,6 +463,9 @@ async fn handle_media_add(
         message: None,
         created_by_discord_user_id: Some(author.id.clone()),
         created_by_name: Some(author.name.clone()),
+        display_duration_sec: submission
+            .duration_sec
+            .filter(|_| asset.kind == MediaKind::Image),
     };
     match ctx.media_board().add_to_board(request).await {
         Ok(created) => {
@@ -743,28 +757,33 @@ async fn handle_stop(
 // Calculs de durée (fidèles à `createPlaybackJob` + `getDurationFromGuildId`)
 // ---------------------------------------------------------------------------
 
+/// Job duration: video/audio play their own length (`explicit` is ignored);
+/// an image or a text uses `explicit`, else the guild default, else the bot
+/// default. The guild cap applies last.
 fn effective_duration(
     config: &BotConfig,
     guild: Option<&Guild>,
     media: Option<&MediaAsset>,
     explicit: Option<i64>,
 ) -> i64 {
-    let candidate = explicit
-        .or_else(|| {
-            media.and_then(|asset| match asset.kind {
-                MediaKind::Image => None,
-                _ => asset.duration_sec,
-            })
-        })
-        .or_else(|| media.map(|_| config.default_duration_sec.max(1)));
-    let base = candidate
-        .or_else(|| guild.and_then(|guild| guild.default_media_time))
-        .unwrap_or(config.default_duration_sec)
-        .max(1);
+    let base = match media {
+        Some(asset) if asset.kind != MediaKind::Image => {
+            asset.duration_sec.unwrap_or(config.default_duration_sec)
+        }
+        _ => explicit
+            .or_else(|| guild.and_then(|guild| guild.default_media_time))
+            .unwrap_or(config.default_duration_sec),
+    }
+    .max(1);
     match guild.and_then(|guild| guild.max_media_time) {
         Some(max) if base > max => max.max(1),
         _ => base,
     }
+}
+
+/// `true` when no duration is given or it is a valid display time.
+fn duration_in_bounds(duration_sec: Option<i64>) -> bool {
+    duration_sec.is_none_or(lc_domain::entities::is_valid_display_duration)
 }
 
 fn adjusted_duration(base: i64, offset: Option<i64>, media: Option<&MediaAsset>) -> (i64, i64) {

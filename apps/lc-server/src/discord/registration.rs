@@ -102,11 +102,26 @@ mod tests {
             .get("options")
             .and_then(|value| value.as_array())
             .unwrap();
-        assert_eq!(options.len(), 4);
+        assert_eq!(options.len(), 5);
         let types: Vec<u64> = options
             .iter()
             .filter_map(|option| option.get("type").and_then(|value| value.as_u64()))
             .collect();
-        assert_eq!(types, vec![3, 11, 3, 5]);
+        assert_eq!(types, vec![3, 11, 3, 5, 4]);
+    }
+
+    #[test]
+    fn duration_option_declares_discord_bounds() {
+        let payloads = registration_payloads(Lang::En, false);
+        for name in ["send", "hsend", "media-add"] {
+            let command = payloads
+                .iter()
+                .find(|payload| payload.get("name").and_then(|value| value.as_str()) == Some(name))
+                .unwrap();
+            let duration = &command["options"][4];
+            assert_eq!(duration["name"], "duration", "{name}");
+            assert_eq!(duration["min_value"], 1, "{name}");
+            assert_eq!(duration["max_value"], 600, "{name}");
+        }
     }
 }

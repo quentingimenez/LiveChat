@@ -1,9 +1,12 @@
 //! Création des jobs de lecture déclenchés par l'ingestion.
 //!
 //! Reproduit `createPlaybackJob` du legacy : la durée est résolue dans l'ordre
-//! `durationSec` explicite → durée du média (sauf image) → `DEFAULT_DURATION`,
-//! puis la guilde peut la réduire (`maxMediaTime`) ou fournir une durée par
-//! défaut (`defaultMediaTime`). L'offset de départ d'une URL YouTube est encodé
+//! - video/audio: the media length, else `DEFAULT_DURATION` (a requested
+//!   `durationSec` is ignored);
+//! - image or text only: the requested `durationSec`, else the guild
+//!   `defaultMediaTime`, else `DEFAULT_DURATION`;
+//!
+//! then the guild cap (`maxMediaTime`) applies. L'offset de départ d'une URL YouTube est encodé
 //! dans un payload riche par la route : la durée du job est alors réduite
 //! d'autant et `resumeOffsetSec` porte l'offset.
 //!
@@ -104,31 +107,23 @@ pub async fn create_for_ingest(
     Ok(job)
 }
 
-/// Résout la durée du job selon la priorité legacy, puis applique les limites
-/// de la guilde.
+/// Resolves the job duration (see the module doc), then applies the guild
+/// cap.
 fn resolve_duration(
     spec: &JobSpec<'_>,
     is_image: bool,
     default_duration: i64,
     guild: Option<&lc_domain::entities::Guild>,
 ) -> i64 {
-    let explicit = spec.duration_sec;
-    let media_duration = if is_image {
-        None
-    } else {
-        spec.media.and_then(|asset| asset.duration_sec)
-    };
-    let fallback = if spec.media.is_some() {
-        Some(default_duration.max(1))
-    } else {
-        None
-    };
-
-    let mut duration = explicit.or(media_duration).or(fallback).unwrap_or_else(|| {
+    let guild_default = || {
         guild
             .and_then(|guild| guild.default_media_time)
             .unwrap_or(default_duration)
-    });
+    };
+    let mut duration = match spec.media {
+        Some(asset) if !is_image => asset.duration_sec.unwrap_or(default_duration),
+        _ => spec.duration_sec.unwrap_or_else(guild_default),
+    };
 
     if let Some(max) = guild.and_then(|guild| guild.max_media_time) {
         duration = duration.min(max);
@@ -279,31 +274,54 @@ mod tests {
         assert_eq!(job.media_asset_id, Some(media.id));
     }
 
-    #[tokio::test]
-    async fn explicit_duration_wins_over_media_duration() {
-        let fixture = fixture().await;
-        insert_guild(&fixture, None, None).await;
-        let media = insert_media(&fixture, MediaKind::Video, Some(20)).await;
-
-        let job = create_for_ingest(
+    /// Job duration for `media` (or text only) with `explicit` requested.
+    async fn duration_for(
+        fixture: &Fixture,
+        media: Option<&MediaAsset>,
+        explicit: Option<i64>,
+    ) -> i64 {
+        create_for_ingest(
             &fixture.db,
             30,
             JobSpec {
                 guild_id: fixture.guild_id.clone(),
-                media: Some(&media),
-                text: None,
-                show_text: false,
+                media,
+                text: media.is_none().then_some("bonjour"),
+                show_text: media.is_none(),
                 author_name: None,
                 author_image: None,
-                duration_sec: Some(7),
+                duration_sec: explicit,
                 priority: 0,
             },
             fixture.now,
         )
         .await
-        .expect("job");
+        .expect("job")
+        .duration_sec
+    }
 
-        assert_eq!(job.duration_sec, 7);
+    #[tokio::test]
+    async fn video_ignores_explicit_duration() {
+        let fixture = fixture().await;
+        insert_guild(&fixture, None, None).await;
+        let media = insert_media(&fixture, MediaKind::Video, Some(20)).await;
+        assert_eq!(duration_for(&fixture, Some(&media), Some(5)).await, 20);
+    }
+
+    #[tokio::test]
+    async fn image_uses_explicit_then_guild_default() {
+        let fixture = fixture().await;
+        insert_guild(&fixture, Some(12), None).await;
+        let media = insert_media(&fixture, MediaKind::Image, None).await;
+        assert_eq!(duration_for(&fixture, Some(&media), Some(7)).await, 7);
+        assert_eq!(duration_for(&fixture, Some(&media), None).await, 12);
+    }
+
+    #[tokio::test]
+    async fn text_only_keeps_explicit_duration() {
+        let fixture = fixture().await;
+        insert_guild(&fixture, None, None).await;
+        assert_eq!(duration_for(&fixture, None, Some(9)).await, 9);
     }
 
     #[tokio::test]

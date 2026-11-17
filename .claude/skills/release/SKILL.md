@@ -108,13 +108,24 @@ l'erreur.
    sauvegarde et la commande `ROLLBACK` (template + base) à lancer sur l'hôte. La
    rapporter telle quelle à l'utilisateur, ne pas la lancer sans son accord (elle
    remet une base plus ancienne), et **ne pas publier l'overlay**.
-2. **Overlay** (si publié), seulement après un serveur vérifié (ou sans release
+2. **Notes de version** (overlay et extension publiés) : la CI ne met qu'un texte
+   fixe (installation). Ajouter **devant**, en français, un bloc
+   `Changements depuis <version précédente> :` puis des sections (`Board`,
+   `Overlay`, `Serveur` pour l'overlay ; `Extension`, et `Serveur` si utile, pour
+   l'extension), une ligne par changement visible, rédigée pour l'utilisateur à
+   partir des commits et diffs lus à l'étape 1 (pas les titres de commit
+   anglais). Pour l'overlay, finir par la compatibilité (« Les overlays X.Y.Z
+   continuent de fonctionner avec un serveur A.B.C. » ou la coupure annoncée).
+   Écrire le corps complet (bloc + texte fixe existant) dans un fichier, puis
+   `gh release edit <tag> --notes-file <fichier>`. Modèle : `overlay-v3.5.0`.
+3. **Overlay** (si publié), seulement après un serveur vérifié (ou sans release
    serveur : vérifier `https://livechat.example.com/health`) :
    `gh release edit overlay-vX.Y.Z --draft=false --latest`. C'est ce qui déclenche
    la mise à jour de tous les overlays installés.
-3. **Extension** : rien à faire, la release GitHub avec le zip est créée par la CI.
-   Pas de Chrome Web Store pour l'instant. Ne jamais la marquer *Latest*.
-4. Compte rendu : versions sorties, liens des releases, image déployée, dossier de
+4. **Extension** : la release GitHub avec le zip est créée par la CI (notes
+   ajoutées au point 2). Pas de Chrome Web Store pour l'instant. Ne jamais la
+   marquer *Latest*.
+5. Compte rendu : versions sorties, liens des releases, image déployée, dossier de
    sauvegarde, ce qui n'a pas pu être vérifié.
 
 ## Interdits

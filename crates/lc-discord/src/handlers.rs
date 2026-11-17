@@ -5,11 +5,11 @@
 //! mêmes réponses éphémères, mêmes erreurs localisées. Le seul écart
 //! volontaire est l'enrichissement des tweets de `/send` (réseau, Phase 6b).
 
-use chrono::Duration as ChronoDuration;
 use lc_db::LinkOutcome;
 use lc_domain::{
     Guild, GuildId, MediaAsset, MediaKind, PairingCode, PairingCodeEntry, PairingMode,
 };
+use time::Duration as TimeDuration;
 
 use crate::catalog::{registered_command_names, CommandKey};
 use crate::context::{
@@ -300,7 +300,7 @@ fn handle_help(ctx: &dyn BotContext, lang: Lang) -> Reply {
 }
 
 fn handle_info(ctx: &dyn BotContext, _lang: Lang) -> Reply {
-    let year = ctx.clock().now().format("%Y").to_string();
+    let year = ctx.clock().now().year().to_string();
     let title = format!("LiveChat Server - {year}");
     let description = "[GitHub Repository](https://github.com/quentingimenez/LiveChat)";
     Reply::ephemeral(Embed::new().with_title(title).with_description(description))
@@ -623,7 +623,7 @@ async fn handle_pair_code(
     let (mode, expires_at, template) = match input.mode {
         PairingMode::Normal => (
             PairingMode::Normal,
-            Some(now + ChronoDuration::minutes(ttl_minutes)),
+            Some(now + TimeDuration::minutes(ttl_minutes)),
             dict.pair_code_answer_description,
         ),
         PairingMode::InviteReadOnly => (
@@ -867,10 +867,10 @@ fn generic_error_reply(lang: Lang) -> Reply {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use chrono::Duration as ChronoDuration;
     use lc_domain::entities::DiscordLinkCode;
     use lc_domain::ids::{GuildId, PairingCode};
     use lc_domain::PairingMode;
+    use time::Duration as TimeDuration;
 
     use super::{dispatch, plan_deferral, Deferral, Invocation};
     use crate::context::{Author, BotContext};
@@ -901,7 +901,7 @@ mod tests {
                 code: PairingCode::parse(raw).unwrap(),
                 guild_id: guild_id.clone(),
                 created_by_member_id: None,
-                expires_at: now + ChronoDuration::minutes(10),
+                expires_at: now + TimeDuration::minutes(10),
                 used_at: None,
                 created_at: now,
             })

@@ -18,12 +18,12 @@ use axum::http::{header, HeaderValue, Method};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use lc_db::{Db, DbError};
 use lc_domain::GuildId;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::FromRow;
+use time::{Duration as TimeDuration, UtcDateTime};
 
 use crate::app::AppState;
 
@@ -138,7 +138,7 @@ pub(crate) async fn record(
 
     let action = action_for(method, path);
     let guild_id = guild_id_from_path(path);
-    let at = state.clock.now().timestamp_millis();
+    let at = lc_domain::datetime_to_ms(state.clock.now());
     let client_ip = client_ip.map(|ip| ip.to_string());
     let (actor_method, actor_name) =
         actor.map_or((None, None), |actor| (Some(actor.method), actor.name));
@@ -187,8 +187,8 @@ fn audited_path(path: &str) -> bool {
 }
 
 /// Deletes rows older than [`AUDIT_RETENTION_DAYS`]; returns the number removed.
-pub(crate) async fn purge_old(db: &Db, now: DateTime<Utc>) -> Result<u64, DbError> {
-    let cutoff = (now - ChronoDuration::days(AUDIT_RETENTION_DAYS)).timestamp_millis();
+pub(crate) async fn purge_old(db: &Db, now: UtcDateTime) -> Result<u64, DbError> {
+    let cutoff = lc_domain::datetime_to_ms(now - TimeDuration::days(AUDIT_RETENTION_DAYS));
     let result = sqlx::query("DELETE FROM admin_audit WHERE at < ?1")
         .bind(cutoff)
         .execute(db.pool())

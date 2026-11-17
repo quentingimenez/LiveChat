@@ -48,9 +48,9 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use axum::Router;
-use chrono::{DateTime, Utc};
 use lc_db::{Db, DbConfig};
 use lc_domain::{Clock, SystemClock};
+use time::UtcDateTime;
 use tower_http::compression::predicate::{DefaultPredicate, Predicate};
 use tower_http::compression::CompressionLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
@@ -144,7 +144,7 @@ pub struct AppState {
     /// Horloge injectable (les tests utilisent [`lc_domain::FixedClock`]).
     pub clock: Arc<dyn Clock>,
     /// Instant du démarrage (au format horloge), base de `uptimeSec`.
-    pub started_at: DateTime<Utc>,
+    pub started_at: UtcDateTime,
     /// Signal d'arrêt partagé avec les workers et le serveur HTTP.
     pub shutdown: Shutdown,
     /// Sonde d'état Discord (remplacée en Phase 6 par l'état réel du bot).
@@ -436,9 +436,9 @@ mod tests {
     use axum::http::{header, HeaderMap, Method, Request as HttpRequest, StatusCode};
     use axum::routing::post;
     use axum::Router;
-    use chrono::{Duration, Utc};
     use lc_domain::FixedClock;
     use serde_json::Value;
+    use time::{Duration, UtcDateTime};
     use tower::ServiceExt;
 
     use super::*;
@@ -565,7 +565,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_uptime_follows_injected_clock() {
-        let fixed = Arc::new(FixedClock::new(Utc::now()));
+        let fixed = Arc::new(FixedClock::new(UtcDateTime::now()));
         let app = router(state().with_clock(fixed.clone()));
 
         let (_, _, body) = send(&app, request(Method::GET, "/health")).await;

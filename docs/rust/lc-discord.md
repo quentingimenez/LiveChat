@@ -52,7 +52,7 @@ Non-objectifs assumés de cette phase :
 | `tests/db_context.rs` | 4 tests du contexte réel (`lc-db` en mémoire + horloge figée). |
 
 Dépendances ajoutées dans `crates/lc-discord/Cargo.toml` : `async-trait`,
-`base64`, `rand`, plus `serenity 0.12` **optionnelle**. `chrono`, `serde`,
+`base64`, `rand`, plus `serenity 0.12` **optionnelle**. `time`, `serde`,
 `serde_json`, `thiserror`, `tracing`, `lc-db`, `lc-domain` viennent du
 workspace.
 

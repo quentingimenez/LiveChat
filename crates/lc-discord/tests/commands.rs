@@ -6,7 +6,6 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use chrono::Duration as ChronoDuration;
 use lc_discord::catalog::CommandKey;
 use lc_discord::context::{BotConfig, BotContext, ConnectedOverlay};
 use lc_discord::error::MediaErrorCode;
@@ -18,6 +17,7 @@ use lc_discord::reply::{
 };
 use lc_discord::testing::{admin_author, member_author, sample_asset, sample_now, FakeBotContext};
 use lc_domain::{GuildId, MediaKind, PairingMode};
+use time::Duration as TimeDuration;
 
 const ADMIN_ID: &str = "424242424242424242";
 const MEMBER_ID: &str = "515151515151515151";
@@ -177,7 +177,7 @@ async fn pair_code_normal_persiste_un_code_avec_expiration() {
     assert_eq!(entry.author_name.as_deref(), Some("Admin"));
     assert_eq!(
         entry.expires_at,
-        Some(sample_now() + ChronoDuration::minutes(5))
+        Some(sample_now() + TimeDuration::minutes(5))
     );
     assert!(entry.used_at.is_none());
 }

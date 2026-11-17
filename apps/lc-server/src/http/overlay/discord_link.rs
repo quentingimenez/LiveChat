@@ -15,10 +15,10 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
-use chrono::Duration;
 use lc_domain::entities::DiscordLinkCode;
 use lc_domain::{PairingCode, Permission};
 use serde_json::{json, Value};
+use time::Duration;
 
 use crate::app::AppState;
 
@@ -128,12 +128,12 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use axum::http::{Method, StatusCode};
-    use chrono::Duration;
     use lc_domain::{
         GuildId, GuildMember, GuildMemberId, GuildRole, OverlayClient, OverlayClientId,
         OverlaySessionMode,
     };
     use serde_json::json;
+    use time::Duration;
 
     use super::super::auth;
     use super::super::guild_tests::{fixed_now, token, Harness};
@@ -221,7 +221,7 @@ mod tests {
         assert_eq!(stored.0, code);
         assert_eq!(
             stored.1,
-            (fixed_now() + Duration::minutes(10)).timestamp_millis()
+            lc_domain::datetime_to_ms(fixed_now() + Duration::minutes(10))
         );
         assert_eq!(stored.2, None);
 

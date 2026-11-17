@@ -12,7 +12,7 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { version = "0.8", features = ["ws"] }
 base64 = { workspace = true }
-chrono = { workspace = true }
+time = { workspace = true }
 futures-util = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }

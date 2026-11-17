@@ -1,10 +1,10 @@
 //! Repository `overlay_clients` (overlays appairés, authentifiés par hash).
 
-use chrono::DateTime;
 use lc_domain::entities::OverlayClient;
 use lc_domain::enums::OverlaySessionMode;
 use lc_domain::ids::{GuildId, GuildMemberId, OverlayClientId};
 use sqlx::SqlitePool;
+use time::UtcDateTime;
 
 use crate::convert::{decode, from_ms, from_opt_ms, to_ms, to_opt_ms};
 use crate::error::{conflict_on_unique, DbResult};
@@ -129,7 +129,7 @@ impl OverlayClientsRepository {
     pub async fn touch_last_seen(
         &self,
         id: OverlayClientId,
-        last_seen_at: DateTime<chrono::Utc>,
+        last_seen_at: UtcDateTime,
     ) -> DbResult<bool> {
         let result = sqlx::query("UPDATE overlay_clients SET last_seen_at = ? WHERE id = ?")
             .bind(to_ms(last_seen_at))
@@ -142,11 +142,7 @@ impl OverlayClientsRepository {
     /// Révoque l'overlay.
     ///
     /// Retourne `false` s'il n'existe pas ou s'il était déjà révoqué.
-    pub async fn revoke(
-        &self,
-        id: OverlayClientId,
-        revoked_at: DateTime<chrono::Utc>,
-    ) -> DbResult<bool> {
+    pub async fn revoke(&self, id: OverlayClientId, revoked_at: UtcDateTime) -> DbResult<bool> {
         let result = sqlx::query(
             "UPDATE overlay_clients SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
         )
@@ -194,7 +190,7 @@ impl OverlayClientsRepository {
     pub async fn revoke_by_member(
         &self,
         member_id: GuildMemberId,
-        revoked_at: DateTime<chrono::Utc>,
+        revoked_at: UtcDateTime,
     ) -> DbResult<Vec<OverlayClientId>> {
         let ids: Vec<String> = sqlx::query_scalar(
             "UPDATE overlay_clients SET revoked_at = ? \

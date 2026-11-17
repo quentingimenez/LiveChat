@@ -8,14 +8,14 @@
 
 use std::sync::RwLock;
 
-use chrono::{DateTime, Duration, Utc};
+use time::{Duration, UtcDateTime};
 
 use crate::time::datetime_to_ms;
 
 /// Source de temps injectable.
 pub trait Clock: Send + Sync {
     /// Instant courant.
-    fn now(&self) -> DateTime<Utc>;
+    fn now(&self) -> UtcDateTime;
 
     /// Instant courant en millisecondes epoch UTC.
     fn now_ms(&self) -> i64 {
@@ -23,13 +23,13 @@ pub trait Clock: Send + Sync {
     }
 }
 
-/// Horloge système réelle (`Utc::now()`).
+/// Horloge système réelle (`UtcDateTime::now()`).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemClock;
 
 impl Clock for SystemClock {
-    fn now(&self) -> DateTime<Utc> {
-        Utc::now()
+    fn now(&self) -> UtcDateTime {
+        UtcDateTime::now()
     }
 }
 
@@ -40,19 +40,19 @@ impl Clock for SystemClock {
 /// casser les autres tests qui partagent l'horloge.
 #[derive(Debug)]
 pub struct FixedClock {
-    now: RwLock<DateTime<Utc>>,
+    now: RwLock<UtcDateTime>,
 }
 
 impl FixedClock {
     /// Fige l'horloge à `at`.
-    pub fn new(at: DateTime<Utc>) -> Self {
+    pub fn new(at: UtcDateTime) -> Self {
         Self {
             now: RwLock::new(at),
         }
     }
 
     /// Fixe l'instant courant.
-    pub fn set(&self, at: DateTime<Utc>) {
+    pub fn set(&self, at: UtcDateTime) {
         let mut guard = match self.now.write() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -62,20 +62,20 @@ impl FixedClock {
 
     /// Avance l'horloge de `delta` (valeurs négatives acceptées).
     ///
-    /// Si l'addition déborde de la plage `chrono`, l'horloge reste inchangée.
+    /// Si l'addition déborde de la plage `time`, l'horloge reste inchangée.
     pub fn advance(&self, delta: Duration) {
         let mut guard = match self.now.write() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Some(next) = guard.checked_add_signed(delta) {
+        if let Some(next) = guard.checked_add(delta) {
             *guard = next;
         }
     }
 }
 
 impl Clock for FixedClock {
-    fn now(&self) -> DateTime<Utc> {
+    fn now(&self) -> UtcDateTime {
         match self.now.read() {
             Ok(guard) => *guard,
             Err(poisoned) => *poisoned.into_inner(),
@@ -88,7 +88,7 @@ impl Clock for FixedClock {
 mod tests {
     use super::{Clock, FixedClock, SystemClock};
     use crate::time::{datetime_to_ms, ms_to_datetime};
-    use chrono::Duration;
+    use time::Duration;
 
     #[test]
     fn fixed_clock_reste_stable_puis_avance() {
@@ -115,7 +115,7 @@ mod tests {
     fn system_clock_est_proche_du_present() {
         let clock = SystemClock;
         let now = clock.now();
-        let delta = (chrono::Utc::now() - now).num_seconds().abs();
+        let delta = (time::UtcDateTime::now() - now).whole_seconds().abs();
         assert!(delta < 5, "horloge système incohérente : {delta}s d'écart");
         assert!(clock.now_ms() > 0);
     }

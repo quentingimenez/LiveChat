@@ -309,12 +309,12 @@ mod tests {
     use axum::http::Request as HttpRequest;
     use axum::http::StatusCode;
     use axum::Router;
-    use chrono::{Duration, Utc};
     use lc_db::{Db, DbConfig};
     use lc_domain::entities::{GuildMember, IngestClient};
     use lc_domain::ids::{GuildId, GuildMemberId, IngestClientId, PlaybackJobId};
     use lc_domain::GuildRole;
     use serde_json::{json, Value};
+    use time::{Duration, UtcDateTime};
     use tower::ServiceExt;
 
     use crate::app::AppState;
@@ -347,7 +347,7 @@ mod tests {
     }
 
     async fn insert_client(db: &Db) {
-        let now = Utc::now();
+        let now = UtcDateTime::now();
         let guild_id = GuildId::parse(GUILD).expect("guilde");
         // The ingest client is linked to its author, whose guild member owns
         // the `extension.send` right (the client has no member foreign key).
@@ -555,7 +555,7 @@ mod tests {
         use lc_domain::{MediaAsset, MediaKind, MediaStatus};
         let path = fixture._dir.path().join("cached.png");
         tokio::fs::write(&path, b"png-body").await.unwrap();
-        let now = Utc::now();
+        let now = UtcDateTime::now();
         let canonical = lc_media::source::canonicalize_source_url(url);
         let asset = MediaAsset {
             id: lc_domain::ids::MediaAssetId::new_v4(),
@@ -664,7 +664,7 @@ mod tests {
         fixture
             .db
             .ingest_clients()
-            .revoke(client.id, Utc::now() + Duration::seconds(1))
+            .revoke(client.id, UtcDateTime::now() + Duration::seconds(1))
             .await
             .expect("révocation");
 

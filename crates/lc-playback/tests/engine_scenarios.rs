@@ -4,12 +4,12 @@
 
 mod support;
 
-use chrono::Duration as ChronoDuration;
 use lc_domain::{datetime_to_ms, Clock, JobStatus};
 use lc_playback::{
     PlaybackEndedEvent, PlaybackStateEvent, PlaybackStateOutcome, MEDIA_BOARD_JOB_PRIORITY,
 };
 use lc_protocol::{PlaybackEndedReason, PlaybackState, StopReason, StopRequestSource};
+use time::Duration as TimeDuration;
 
 use support::{harness, sample_guild, sample_job, sample_media_asset, sample_media_job, NOW_MS};
 
@@ -132,7 +132,7 @@ async fn ordre_priorite_puis_soumission() {
     let now = h.clock.now();
 
     let low = sample_job(guild.clone(), now);
-    let mut high = sample_job(guild.clone(), now + ChronoDuration::milliseconds(5));
+    let mut high = sample_job(guild.clone(), now + TimeDuration::milliseconds(5));
     high.priority = 5;
     high.duration_sec = 1;
     high.execution_date = now;
@@ -274,7 +274,7 @@ async fn busy_until_futur_bloque_puis_expire() {
     let guild = h.guild_id.clone();
     let now = h.clock.now();
     h.db.guilds()
-        .set_busy_until(&guild, Some(now + ChronoDuration::seconds(10)))
+        .set_busy_until(&guild, Some(now + TimeDuration::seconds(10)))
         .await
         .unwrap();
 
@@ -314,14 +314,14 @@ async fn purge_respecte_la_retention() {
     let old = sample_job(guild.clone(), now);
     h.db.playback_jobs().create(&old).await.unwrap();
     h.db.playback_jobs()
-        .finish(old.id, JobStatus::Done, now - ChronoDuration::hours(48))
+        .finish(old.id, JobStatus::Done, now - TimeDuration::hours(48))
         .await
         .unwrap();
 
     let recent = sample_job(guild.clone(), now);
     h.db.playback_jobs().create(&recent).await.unwrap();
     h.db.playback_jobs()
-        .finish(recent.id, JobStatus::Done, now - ChronoDuration::hours(1))
+        .finish(recent.id, JobStatus::Done, now - TimeDuration::hours(1))
         .await
         .unwrap();
 
@@ -399,9 +399,9 @@ async fn watchdog_recupere_un_job_stale_apres_crash() {
 
     let mut job = sample_job(guild.clone(), now);
     job.status = JobStatus::Playing;
-    job.started_at = Some(now - ChronoDuration::seconds(60));
-    job.execution_date = now - ChronoDuration::seconds(60);
-    job.scheduled_at = now - ChronoDuration::seconds(60);
+    job.started_at = Some(now - TimeDuration::seconds(60));
+    job.execution_date = now - TimeDuration::seconds(60);
+    job.scheduled_at = now - TimeDuration::seconds(60);
     h.db.playback_jobs().create(&job).await.unwrap();
 
     h.engine.tick().await.unwrap();

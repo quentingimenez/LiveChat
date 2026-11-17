@@ -4,9 +4,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use axum::http::{Method, StatusCode};
-use chrono::Duration;
 use lc_domain::{GuildId, GuildRole, PairingCode, PairingCodeEntry, PairingMode};
 use serde_json::json;
+use time::Duration;
 
 use super::guild_tests::{fixed_now, token, Harness};
 

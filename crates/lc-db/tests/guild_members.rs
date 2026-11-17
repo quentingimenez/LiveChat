@@ -4,13 +4,13 @@
 
 mod common;
 
-use chrono::Duration;
 use lc_db::MemberChange;
 use lc_domain::entities::{GuildInvite, GuildMember};
 use lc_domain::enums::{GuildRole, OverlaySessionMode};
 use lc_domain::ids::{GuildId, GuildMemberId, PairingCode};
 use lc_domain::DomainError;
 use sqlx::sqlite::SqlitePoolOptions;
+use time::Duration;
 
 fn member(guild_id: &GuildId, name: &str, role: GuildRole) -> GuildMember {
     GuildMember {

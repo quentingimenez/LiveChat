@@ -127,7 +127,7 @@ pub async fn current_session(
         tracing::error!("admin session lookup without a configured database");
         return Ok(None);
     };
-    let now_ms = state.clock.now().timestamp_millis();
+    let now_ms = lc_domain::datetime_to_ms(state.clock.now());
 
     session::find(db, &token, now_ms).await.map_err(|error| {
         tracing::error!(error = %error, "admin session lookup failed");

@@ -13,7 +13,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use lc_db::Db;
 use lc_domain::{
     datetime_to_ms, Clock, GuildId, JobStatus, MediaAsset, PlaybackJob, PlaybackJobId,
@@ -22,6 +21,7 @@ use lc_protocol::{
     CurrentJobPayload, PlaybackEndedReason, PlaybackState, StopPayload, StopReason,
     StopRequestSource, MAX_PLAYBACK_REMAINING_MS,
 };
+use time::{Duration as TimeDuration, UtcDateTime};
 use tokio::sync::{Mutex, Notify};
 use tracing::{info, warn};
 
@@ -140,7 +140,7 @@ struct Inner {
     /// Dernier job terminé par guilde (pour la reprise après préemption).
     just_finished: BTreeMap<GuildId, PlaybackJobId>,
     /// Dernier checkpoint `playback.state` persisté par job (débit 1/s).
-    state_persisted_at: BTreeMap<PlaybackJobId, DateTime<Utc>>,
+    state_persisted_at: BTreeMap<PlaybackJobId, UtcDateTime>,
 }
 
 /// Bilan interne d'un passage sur une guilde.
@@ -274,7 +274,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
             .unwrap_or(0)
             .max(self.config.min_busy_lock_ms)
             + self.config.lock_padding_ms;
-        let busy_until = now + ChronoDuration::milliseconds(busy_for_ms);
+        let busy_until = now + TimeDuration::milliseconds(busy_for_ms);
         self.db
             .guilds()
             .set_busy_until(&event.guild_id, Some(busy_until))
@@ -290,8 +290,8 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
                 .map(|job| job.id)
                 .collect(),
         };
-        let min_interval = ChronoDuration::from_std(self.config.state_persist_min_interval)
-            .unwrap_or_else(|_| ChronoDuration::milliseconds(0));
+        let min_interval = TimeDuration::try_from(self.config.state_persist_min_interval)
+            .unwrap_or_else(|_| TimeDuration::milliseconds(0));
         let mut outcome = PlaybackStateOutcome::Ignored;
         for job_id in job_ids {
             let last_persisted = self
@@ -562,7 +562,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
 
     /// Purge la rétention : jobs terminés plus vieux que `retention` et codes
     /// d'appairage expirés/consommés.
-    pub async fn purge(&self, now: DateTime<Utc>) -> PlaybackResult<PurgeReport> {
+    pub async fn purge(&self, now: UtcDateTime) -> PlaybackResult<PurgeReport> {
         let cutoff = now - self.config.retention;
         let playback_jobs = self.db.playback_jobs().purge_done_before(cutoff).await?;
         let pairing_codes = self.db.pairing_codes().delete_expired(now).await?;
@@ -752,7 +752,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
                 )
                 .await?;
             let busy_until = now
-                + ChronoDuration::milliseconds(
+                + TimeDuration::milliseconds(
                     timing.play_duration_sec * 1_000 + self.config.lock_padding_ms,
                 );
             self.db
@@ -798,7 +798,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
         inner: &mut Inner,
         guild_id: &GuildId,
         playing: &[PlaybackJob],
-        now: DateTime<Utc>,
+        now: UtcDateTime,
     ) -> PlaybackResult<()> {
         if playing.len() <= 1 {
             return Ok(());
@@ -825,7 +825,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
         guild_id: &GuildId,
         active: &PlaybackJob,
         preemptor: &PlaybackJob,
-        now: DateTime<Utc>,
+        now: UtcDateTime,
     ) -> PlaybackResult<()> {
         let timing = payload::persisted_timing(active);
         let remaining_ms = self.estimated_remaining_ms(active, now).max(0);
@@ -861,7 +861,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
         &self,
         guild_id: &GuildId,
         active: &PlaybackJob,
-        now: DateTime<Utc>,
+        now: UtcDateTime,
     ) -> PlaybackResult<Option<PlaybackJob>> {
         let pending = self
             .db
@@ -882,7 +882,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
         &self,
         guild_id: &GuildId,
         preferred: Option<PlaybackJobId>,
-        now: DateTime<Utc>,
+        now: UtcDateTime,
     ) -> PlaybackResult<Option<PlaybackJob>> {
         if let Some(preferred_id) = preferred {
             if let Some(job) = self
@@ -945,7 +945,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
     }
 
     /// Estime le temps restant d'un job (`playback.state` frais, sinon horloge).
-    fn estimated_remaining_ms(&self, job: &PlaybackJob, now: DateTime<Utc>) -> i64 {
+    fn estimated_remaining_ms(&self, job: &PlaybackJob, now: UtcDateTime) -> i64 {
         let now_ms = datetime_to_ms(now);
         if let (Some(snapshot), Some(at)) = (job.remaining_ms_snapshot, job.last_playback_state_at)
         {
@@ -966,7 +966,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
 
     /// Purge un verrou `busy_until` déjà expiré, sans toucher aux verrous
     /// futurs posés par un autre composant ou entre deux jobs.
-    async fn clear_stale_busy(&self, guild_id: &GuildId, now: DateTime<Utc>) -> PlaybackResult<()> {
+    async fn clear_stale_busy(&self, guild_id: &GuildId, now: UtcDateTime) -> PlaybackResult<()> {
         let Some(guild) = self.db.guilds().get(guild_id).await? else {
             return Ok(());
         };

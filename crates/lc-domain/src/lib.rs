@@ -5,11 +5,11 @@
 //! `lc-admin` et le serveur (`apps/lc-server`).
 //!
 //! Conventions :
-//! - dates en mémoire : [`chrono::DateTime<Utc>`] (conversion ms epoch dans
+//! - dates en mémoire : [`time::UtcDateTime`] (conversion ms epoch dans
 //!   [`time`], la base stocke des `INTEGER` ms — voir `docs/rust/lc-db.md`) ;
 //! - chaînes « de base » : enums stockés en `TEXT` MAJUSCULE (`IMAGE`,
 //!   `INVITE_READ_ONLY`…), conversions centralisées dans [`enums`] ;
-//! - JSON : `camelCase`, dates en ms epoch (`chrono::serde::ts_milliseconds`)
+//! - JSON : `camelCase`, dates en ms epoch (modules serde `ms_required`/`ms_optional` de [`entities`])
 //!   pour rester compatible avec les payloads de reprise v2 ;
 //! - identifiants : newtypes typés dans [`ids`], jamais de `String` brut dans
 //!   les signatures publiques.

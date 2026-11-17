@@ -7,10 +7,10 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use lc_db::{Db, DbConfig};
 use lc_domain::rights::RightsTable;
 use lc_domain::{Clock, FixedClock, GuildId, MediaAsset, MediaAssetId, MediaKind, MediaStatus};
+use time::{Duration as TimeDuration, UtcDateTime};
 
 use crate::context::{
     Author, BotConfig, BotConfigSource, BotContext, ConnectedOverlay, MediaAddRequest,
@@ -24,17 +24,17 @@ use crate::rights::RightsSource;
 pub const SAMPLE_MS: i64 = 1_704_164_645_678;
 
 /// Date fixe des tests, construite sans panique possible.
-pub fn sample_now() -> DateTime<Utc> {
+pub fn sample_now() -> UtcDateTime {
     match lc_domain::time::ms_to_datetime(SAMPLE_MS) {
         Some(at) => at,
-        None => DateTime::<Utc>::UNIX_EPOCH,
+        None => UtcDateTime::UNIX_EPOCH,
     }
 }
 
 /// Construit un média prêt à lire, daté de [`sample_now`].
 pub fn sample_asset(kind: MediaKind) -> MediaAsset {
     let created_at = sample_now();
-    let expires_at = match created_at.checked_add_signed(ChronoDuration::hours(12)) {
+    let expires_at = match created_at.checked_add(TimeDuration::hours(12)) {
         Some(at) => at,
         None => created_at,
     };

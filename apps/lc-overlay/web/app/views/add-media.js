@@ -1,10 +1,14 @@
 // "Add media" dialog: a link, or one or more local files.
 //
 // Submitting closes the dialog immediately: the uploads run in the background
-// and show as provisional cards on the board (see views/uploads.js).
+// and show as provisional cards on the board (see views/uploads.js). The
+// "Jouer une fois" action sends the media to the overlays without adding it
+// to the board; a member without `addMedia` but with `play` only gets that
+// action.
 
 import { h } from '../core/dom.js';
-import { state } from '../core/state.js';
+import { activeGuild, can, state } from '../core/state.js';
+import { notify } from '../core/toast.js';
 import { openDialog } from '../core/ui.js';
 import { openFileImageEditor } from './editor/index.js';
 import { startFileUpload, startLinkUpload } from './uploads.js';
@@ -19,6 +23,12 @@ export function openAddDialog(options) {
   openDialog((close) => {
     let mode = 'link';
     let chosenFiles = [];
+    // The action the form submits with: adding to the board, or playing once.
+    // A member who cannot add only gets "Jouer une fois", so it is also the
+    // Enter key's action.
+    const canAdd = can('addMedia');
+    const canPlay = can('play');
+    let playOnce = !canAdd && canPlay;
 
     // --- link fields ---
     const linkUrl = h('input', { class: 'field', type: 'url', placeholder: 'https://…', required: true, value: prefill });
@@ -61,10 +71,17 @@ export function openAddDialog(options) {
 
     const linkButton = h('button', { class: 'btn mode-choice', type: 'button', 'aria-pressed': 'true', onClick: () => setMode('link') }, 'Lien');
     const fileButton = h('button', { class: 'btn mode-choice', type: 'button', 'aria-pressed': 'false', onClick: () => setMode('file') }, 'Fichier');
-    const submit = h('button', { class: 'btn', type: 'submit' }, 'Ajouter au board');
+    const submit = h('button', { class: 'btn', type: 'submit', onClick: () => { playOnce = false; } }, 'Ajouter au board');
+    const submitOnce = h('button', { class: 'btn', type: 'submit', onClick: () => { playOnce = true; } }, 'Jouer une fois');
 
     function updateSubmit() {
-      submit.disabled = mode === 'file' && chosenFiles.length === 0;
+      const empty = mode === 'file' && chosenFiles.length === 0;
+      if (canAdd) {
+        submit.disabled = empty;
+      }
+      if (canPlay) {
+        submitOnce.disabled = empty;
+      }
     }
 
     function setMode(next) {
@@ -125,13 +142,22 @@ export function openAddDialog(options) {
             close();
             return;
           }
+          // A play-once is a playback request: a paused guild refuses it the
+          // same way a board trigger does (playItem).
+          if (playOnce) {
+            const guild = activeGuild();
+            if (guild && guild.membership.muted) {
+              notify('Guilde en pause : reprends-la pour jouer.', true);
+              return;
+            }
+          }
           if (mode === 'link') {
             const url = linkUrl.value.trim();
             if (!url) {
               linkUrl.reportValidity();
               return;
             }
-            const payload = { guildId, url, title: linkTitle.value.trim(), message: linkMessage.value };
+            const payload = { guildId, url, title: linkTitle.value.trim(), message: linkMessage.value, playOnce };
             close();
             startLinkUpload(payload);
             return;
@@ -144,6 +170,7 @@ export function openAddDialog(options) {
             file,
             title: chosenFiles.length === 1 ? fileTitle.value.trim() : '',
             message: fileMessage.value,
+            playOnce,
           }));
           close();
           for (const payload of payloads) {
@@ -154,7 +181,13 @@ export function openAddDialog(options) {
       h('div', { class: 'add-media-modes', role: 'group', 'aria-label': 'Type d’ajout' }, linkButton, fileButton),
       linkPanel,
       filePanel,
-      h('div', { class: 'actions' }, h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'), submit),
+      h(
+        'div',
+        { class: 'actions' },
+        h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'),
+        canAdd ? submit : null,
+        canPlay ? submitOnce : null,
+      ),
     );
 
     setMode('link');

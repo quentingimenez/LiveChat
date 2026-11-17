@@ -546,6 +546,9 @@ export function renderBoard() {
       : null,
     h('button', { class: 'btn is-quiet', title: 'Recharger le board', 'aria-label': 'Recharger le board', onClick: loadItems }, icon('refresh')),
     can('play') ? h('button', { class: 'btn', title: 'Faire lire un texte à voix haute sur les overlays', onClick: () => openSayDialog() }, icon('sound'), 'Dire') : null,
+    // A member who cannot add but can play still opens the dialog, with its
+    // "Jouer une fois" action only.
+    !can('addMedia') && can('play') ? h('button', { class: 'btn', onClick: openAddDialog }, icon('play'), 'Jouer un média') : null,
     can('addMedia') ? h('button', { class: 'btn', onClick: openAddDialog }, icon('plus'), 'Ajouter un média') : null,
   );
   let content;

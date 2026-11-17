@@ -7,6 +7,7 @@ import {
   firstGrapheme,
   initials,
   mediaRefreshDelay,
+  parseDisplayDuration,
   removalMessage,
 } from '../../web/app/core/format.js';
 
@@ -103,4 +104,14 @@ test('removalMessage falls back when the guild name is missing', () => {
     removalMessage(),
     'Une guilde ne reconnaît plus cet appareil. La guilde est retirée de LiveChat.',
   );
+});
+
+test('parseDisplayDuration reads whole seconds from 1 to 600, empty as default', () => {
+  assert.deepEqual(parseDisplayDuration(''), { ok: true, value: null });
+  assert.deepEqual(parseDisplayDuration('  '), { ok: true, value: null });
+  assert.deepEqual(parseDisplayDuration('8'), { ok: true, value: 8 });
+  assert.deepEqual(parseDisplayDuration(' 600 '), { ok: true, value: 600 });
+  for (const raw of ['0', '601', '8.5', 'abc', '-3', '1e2']) {
+    assert.deepEqual(parseDisplayDuration(raw), { ok: false }, raw);
+  }
 });

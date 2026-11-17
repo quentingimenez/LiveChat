@@ -68,6 +68,64 @@ async fn crud_media_board() {
 }
 
 #[tokio::test]
+async fn display_duration_round_trips() {
+    let (db, _dir) = common::temp_db().await;
+    let now = common::now();
+    let guild = common::guild("123456789012345678");
+    let asset = common::sample_asset("media-asset", now);
+    db.media_assets().insert(&asset).await.unwrap();
+    let repo = db.media_board();
+    let mut item = common::sample_board_item(&guild, asset.id, now);
+    item.display_duration_sec = Some(8);
+    repo.create(&item).await.unwrap();
+    assert_eq!(
+        repo.get(item.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .display_duration_sec,
+        Some(8)
+    );
+
+    assert!(repo.set_display_duration(item.id, None).await.unwrap());
+    assert_eq!(
+        repo.get(item.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .display_duration_sec,
+        None
+    );
+    assert!(repo.set_display_duration(item.id, Some(600)).await.unwrap());
+    assert_eq!(
+        repo.get(item.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .display_duration_sec,
+        Some(600)
+    );
+    assert!(!repo
+        .set_display_duration(MediaBoardItemId::new_v4(), Some(8))
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn display_duration_check_rejects_out_of_range() {
+    let (db, _dir) = common::temp_db().await;
+    let now = common::now();
+    let guild = common::guild("123456789012345678");
+    let asset = common::sample_asset("media-asset", now);
+    db.media_assets().insert(&asset).await.unwrap();
+    let repo = db.media_board();
+    let item = common::sample_board_item(&guild, asset.id, now);
+    repo.create(&item).await.unwrap();
+    assert!(repo.set_display_duration(item.id, Some(0)).await.is_err());
+    assert!(repo.set_display_duration(item.id, Some(601)).await.is_err());
+}
+
+#[tokio::test]
 async fn doublon_guild_et_asset_refuse() {
     let (db, _dir) = common::temp_db().await;
     let now = common::now();

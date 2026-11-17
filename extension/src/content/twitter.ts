@@ -765,6 +765,7 @@ const sendCompose = async (payload: ComposeSubmitPayload): Promise<ComposeSubmit
       text: payload.text,
       forceRefresh: payload.forceRefresh,
       saveToBoard: payload.saveToBoard,
+      durationSec: payload.durationSec ?? undefined,
     })) as { ok?: unknown; message?: unknown };
 
     if (!response || typeof response.ok !== 'boolean' || typeof response.message !== 'string') {
@@ -959,6 +960,7 @@ const createActionButton = (article: HTMLElement): HTMLButtonElement => {
           text,
           forceRefresh: false,
           saveToBoard: false,
+          durationSec: null,
         });
         setButtonState(button, response.ok ? 'success' : 'error', response.message);
         if (!response.ok) {
@@ -1042,6 +1044,7 @@ const createFloatingButton = (): HTMLButtonElement => {
           text,
           forceRefresh: false,
           saveToBoard: false,
+          durationSec: null,
         });
         setButtonState(button, response.ok ? 'success' : 'error', response.message);
         if (!response.ok) {

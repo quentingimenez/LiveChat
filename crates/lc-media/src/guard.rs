@@ -289,9 +289,11 @@ pub fn build_pinned_client(
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy();
     if target.host.parse::<IpAddr>().is_err() {
-        for addr in &target.addrs {
-            builder = builder.resolve(&target.host, *addr);
-        }
+        // All the validated addresses at once: `resolve()` replaces the
+        // previous override, so calling it per address kept only the last
+        // one (an IPv6 address listed after the IPv4 ones, unreachable on a
+        // server without an IPv6 route).
+        builder = builder.resolve_to_addrs(&target.host, &target.addrs);
     }
     builder.build().map_err(|error| {
         MediaError::new(
@@ -505,5 +507,53 @@ mod tests {
             addrs: vec![SocketAddr::from(([93, 184, 216, 34], 443))],
         };
         assert!(build_pinned_client(&config, &target).is_ok());
+    }
+
+    /// A host resolving to an unreachable address after a reachable one (an
+    /// IPv6 address on a server without IPv6 route, listed after its IPv4
+    /// ones) must still be reached: the client keeps every validated address,
+    /// not only the last one.
+    #[tokio::test]
+    async fn pinned_client_keeps_every_validated_address() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let port = listener.local_addr().expect("address").port();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = [0_u8; 1024];
+            let _read = socket.read(&mut request).await.expect("read");
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+                .await
+                .expect("write");
+        });
+        let config = DownloadConfig {
+            timeout: Duration::from_secs(5),
+            short_url_timeout: Duration::from_secs(3),
+            max_size_bytes: 1024,
+            max_concurrent_ingestions: 1,
+            user_agent: "lc-media-test".to_owned(),
+        };
+        // Reachable address first, then one nothing listens on.
+        let target = ValidatedTarget {
+            url: Url::parse(&format!("http://media.test:{port}/clip.mp4")).expect("URL"),
+            host: "media.test".to_owned(),
+            port,
+            addrs: vec![
+                SocketAddr::from(([127, 0, 0, 1], port)),
+                SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
+            ],
+        };
+        let client = build_pinned_client(&config, &target).expect("client");
+        let response = client
+            .get(target.url.clone())
+            .send()
+            .await
+            .expect("the reachable address must be used");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        server.await.expect("server");
     }
 }

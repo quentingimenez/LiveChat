@@ -13,11 +13,12 @@ use serde_json::Value;
 use lc_protocol::{
     close_code, close_reason, is_frame_too_large, is_version_below, media_signature_input,
     media_url_ttl_sec, msg_type, outdated_protocol_reason, parse_simple_version, AckOutcome,
-    AckPayload, ClientEnvelope, ClientMessage, Envelope, MediaKind, ServerEnvelope, ServerMessage,
-    StopRequestSource, DEFAULT_MIN_OVERLAY_VERSION, HEARTBEAT_INTERVAL_MS, HELLO_TIMEOUT_MS,
-    HTTP_UPGRADE_REQUIRED, LEGACY_SOCKET_IO_PATH, MAX_CLIENT_MESSAGES_PER_SECOND, MAX_FRAME_BYTES,
-    MAX_MEDIA_TEXT_CHARS, MAX_PLAYBACK_REMAINING_MS, MEDIA_URL_EXPIRY_MARGIN_SEC,
-    MEDIA_URL_TTL_MAX_SEC, MEDIA_URL_TTL_SEC, PEERS_REQUEST_MIN_INTERVAL_MS, PING_INTERVAL_MS,
+    AckPayload, ClientEnvelope, ClientMessage, Envelope, MediaIngestionPayload, MediaKind,
+    ServerEnvelope, ServerMessage, StopRequestSource, DEFAULT_MIN_OVERLAY_VERSION,
+    HEARTBEAT_INTERVAL_MS, HELLO_TIMEOUT_MS, HTTP_UPGRADE_REQUIRED, LEGACY_SOCKET_IO_PATH,
+    MAX_CLIENT_MESSAGES_PER_SECOND, MAX_FRAME_BYTES, MAX_MEDIA_TEXT_CHARS,
+    MAX_PLAYBACK_REMAINING_MS, MEDIA_URL_EXPIRY_MARGIN_SEC, MEDIA_URL_TTL_MAX_SEC,
+    MEDIA_URL_TTL_SEC, PEERS_REQUEST_MIN_INTERVAL_MS, PING_INTERVAL_MS,
     PLAYBACK_STATE_MIN_INTERVAL_MS, PONG_TIMEOUT_MS, PROTOCOL_VERSION, WS_PATH,
 };
 
@@ -30,7 +31,7 @@ enum Direction {
     Server,
 }
 
-/// Table de référence des 32 fixtures golden : (fichier, sens, type attendu).
+/// Table de référence des 33 fixtures golden : (fichier, sens, type attendu).
 const FIXTURES: &[(&str, Direction, &str)] = &[
     // ---- C→S ----
     ("v2_hello_normal.json", Direction::Client, msg_type::HELLO),
@@ -152,6 +153,11 @@ const FIXTURES: &[(&str, Direction, &str)] = &[
     ),
     (
         "v2_media_ingestion_failed.json",
+        Direction::Server,
+        msg_type::MEDIA_INGESTION,
+    ),
+    (
+        "v2_media_ingestion_play_once.json",
         Direction::Server,
         msg_type::MEDIA_INGESTION,
     ),
@@ -428,6 +434,34 @@ fn ack_trigger_outcome_roundtrips() {
         serde_json::to_value(&ack).expect("sérialisation ack"),
         value
     );
+}
+
+/// « Jouer une fois » : `media.ingestion` porte le job créé au lieu de l'item,
+/// et le champ `jobId` reste absent pour une ingestion de board normale.
+#[test]
+fn media_ingestion_play_once_carries_a_job_and_omits_it_by_default() {
+    let value = read_fixture("v2_media_ingestion_play_once.json");
+    let envelope: ServerEnvelope =
+        serde_json::from_value(value).expect("media.ingestion play-once");
+    let ServerMessage::MediaIngestion(payload) = envelope.message else {
+        panic!("la fixture doit être un media.ingestion");
+    };
+    assert!(payload.ok);
+    assert_eq!(payload.created, Some(false));
+    assert!(payload.item_id.is_none());
+    assert_eq!(payload.job_id.as_deref(), Some("clx7q2x0b0007abcd1234efgh"));
+
+    let board: MediaIngestionPayload = serde_json::from_value(serde_json::json!({
+        "ingestionId": "ing-1",
+        "ok": true,
+        "created": true,
+        "itemId": "item-1"
+    }))
+    .expect("media.ingestion board");
+    assert!(board.job_id.is_none());
+    let serialized = serde_json::to_value(&board).expect("sérialisation media.ingestion");
+    let object = serialized.as_object().expect("payload objet");
+    assert!(!object.contains_key("jobId"));
 }
 
 #[test]

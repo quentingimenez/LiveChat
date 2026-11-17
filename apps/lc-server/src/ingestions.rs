@@ -86,6 +86,9 @@ pub struct IngestionEntry {
     pub created: Option<bool>,
     /// Board item holding the media; only set once the ingestion is `ready`.
     pub item_id: Option<String>,
+    /// Playback job created instead of a board item (play once); only set
+    /// once the ingestion is `ready`.
+    pub job_id: Option<String>,
     /// Why the ingestion failed; only set once the ingestion is `failed`.
     pub error: Option<IngestionErrorInfo>,
     /// Instant the background task finished (success or failure).
@@ -113,6 +116,9 @@ impl IngestionEntry {
         }
         if let Some(item_id) = &self.item_id {
             object.insert("itemId".to_owned(), Value::String(item_id.clone()));
+        }
+        if let Some(job_id) = &self.job_id {
+            object.insert("jobId".to_owned(), Value::String(job_id.clone()));
         }
         if let Some(error) = &self.error {
             let mut error_object = Map::new();
@@ -231,6 +237,7 @@ impl IngestionRegistry {
                 created_at: now,
                 created: None,
                 item_id: None,
+                job_id: None,
                 error: None,
                 finished_at: None,
             },
@@ -256,12 +263,47 @@ impl IngestionRegistry {
             entry.status = IngestionStatus::Ready;
             entry.created = Some(created);
             entry.item_id = Some(item_id.clone());
+            entry.job_id = None;
             entry.error = None;
             entry.finished_at = Some(now);
             (!already_finished).then(|| FinishedIngestion {
                 ingestion_id: entry.ingestion_id.clone(),
                 guild_id: entry.guild_id.clone(),
                 item_id: Some(item_id),
+                status: IngestionStatus::Ready,
+                error: None,
+                started_at: entry.created_at,
+                finished_at: now,
+            })
+        };
+        drop(entries);
+        if let Some(finished) = finished {
+            self.push_history(finished);
+        }
+    }
+
+    /// Marks a play-once ingestion as `ready` with the job it created.
+    ///
+    /// No board item exists for such an ingestion: `created` is `false` and
+    /// `jobId` replaces `itemId` in `GET /overlay/media-board/ingestions`.
+    pub fn complete_job(&self, ingestion_id: &str, job_id: String, now: UtcDateTime) {
+        let mut entries = self.lock();
+        purge_finished(&mut entries, now);
+        let finished = {
+            let Some(entry) = entries.get_mut(ingestion_id) else {
+                return;
+            };
+            let already_finished = entry.finished_at.is_some();
+            entry.status = IngestionStatus::Ready;
+            entry.created = Some(false);
+            entry.item_id = None;
+            entry.job_id = Some(job_id);
+            entry.error = None;
+            entry.finished_at = Some(now);
+            (!already_finished).then(|| FinishedIngestion {
+                ingestion_id: entry.ingestion_id.clone(),
+                guild_id: entry.guild_id.clone(),
+                item_id: None,
                 status: IngestionStatus::Ready,
                 error: None,
                 started_at: entry.created_at,
@@ -291,6 +333,7 @@ impl IngestionRegistry {
             entry.status = IngestionStatus::Failed;
             entry.created = None;
             entry.item_id = None;
+            entry.job_id = None;
             entry.error = Some(error.clone());
             entry.finished_at = Some(now);
             (!already_finished).then(|| FinishedIngestion {
@@ -576,6 +619,28 @@ mod tests {
                 "ingestionId": id,
                 "status": "failed",
                 "error": { "code": "unsupported_media" },
+            })
+        );
+    }
+
+    #[test]
+    fn play_once_payload_carries_the_job_and_no_item() {
+        let registry = IngestionRegistry::new();
+        let client = Uuid::new_v4();
+        let id = registry.start(guild(), client, now()).unwrap();
+        registry.complete_job(&id, "job-1".to_owned(), now());
+        let entry = registry.get(client, &id, now()).unwrap();
+        assert_eq!(entry.status, IngestionStatus::Ready);
+        assert_eq!(entry.created, Some(false));
+        assert_eq!(entry.item_id, None);
+        assert_eq!(entry.job_id.as_deref(), Some("job-1"));
+        assert_eq!(
+            entry.payload(),
+            json!({
+                "ingestionId": id,
+                "status": "ready",
+                "created": false,
+                "jobId": "job-1",
             })
         );
     }

@@ -471,22 +471,24 @@ pub async fn download_http(
 }
 
 /// Télécharge une publication TikTok (vidéo, image ou carrousel assemblé).
+///
+/// Les URL signées du CDN exigent les cookies de session de la page et un
+/// Referer, et le CDN répond parfois 403 à un candidat valide : chaque
+/// candidat est essayé, puis `yt-dlp` sert de repli pour les vidéos.
 pub async fn download_tiktok(
     source: &MediaSource,
     config: &MediaConfig,
     temp_dir: &Path,
 ) -> MediaResult<DownloadResult> {
     let page = tiktok::fetch_tiktok_page(config, &source.canonical_url).await?;
-    let owned_headers = tiktok::tiktok_headers(config);
+    let owned_headers = tiktok::media_headers(config, &page);
     let headers = tiktok::header_pairs(&owned_headers);
     let mut last_error: Option<MediaError> = None;
     for candidate in &page.video_candidates {
         match download_http(config, &candidate.url, temp_dir, &headers).await {
             Ok(download) => return Ok(download),
             Err(error) => {
-                if error.is(MediaErrorCode::FileTooLarge)
-                    || error.is(MediaErrorCode::PrivateOrAuthRequired)
-                {
+                if error.is(MediaErrorCode::FileTooLarge) {
                     return Err(error);
                 }
                 last_error = Some(match last_error {
@@ -500,6 +502,18 @@ pub async fn download_tiktok(
         match download_tiktok_carousel(&page, config, temp_dir).await {
             Ok(download) => return Ok(download),
             Err(error) => {
+                last_error = Some(match last_error {
+                    Some(previous) => previous.most_relevant(error),
+                    None => error,
+                });
+            }
+        }
+    } else {
+        let options = YtdlpOptions::default();
+        match download_with_ytdlp(config, &source.canonical_url, temp_dir, &options).await {
+            Ok(download) => return Ok(download),
+            Err(error) => {
+                tracing::debug!("repli yt-dlp TikTok échoué : {error}");
                 last_error = Some(match last_error {
                     Some(previous) => previous.most_relevant(error),
                     None => error,
@@ -526,7 +540,7 @@ async fn download_tiktok_carousel(
     config: &MediaConfig,
     temp_dir: &Path,
 ) -> MediaResult<DownloadResult> {
-    let owned_headers = tiktok::tiktok_headers(config);
+    let owned_headers = tiktok::media_headers(config, page);
     let headers = tiktok::header_pairs(&owned_headers);
     let mut images: Vec<PathBuf> = Vec::new();
     let mut last_error: Option<MediaError> = None;

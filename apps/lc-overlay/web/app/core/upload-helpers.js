@@ -3,14 +3,6 @@
 
 import { serverStatusMessage } from './http-status.js';
 
-// Largest file accepted by the board (100 MiB).
-export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
-
-export function isUploadTooLarge(size) {
-  const bytes = Number(size);
-  return Number.isFinite(bytes) && bytes > MAX_UPLOAD_BYTES;
-}
-
 // Splits a byte size into [start, end) ranges sent one after the other.
 export function chunkRanges(size, chunkSize) {
   const total = Number(size);
@@ -33,6 +25,15 @@ export function defaultTitle(filename) {
   return dot > 0 ? name.slice(0, dot) : name;
 }
 
+// A byte limit in mebibytes, or gibibytes from 1 Gio: "500 Mo", "2 Go".
+export function formatSizeLimit(bytes) {
+  const mebibytes = Number(bytes) / (1024 * 1024);
+  if (mebibytes >= 1024) {
+    return `${Math.round((mebibytes / 1024) * 10) / 10} Go`.replace('.', ',');
+  }
+  return `${Math.round(mebibytes)} Mo`;
+}
+
 // Readable message for an upload rejected by the server. `labels` is the
 // known error-label table (ERROR_LABELS), passed in to keep this module free of
 // imports.
@@ -41,8 +42,14 @@ export function uploadErrorMessage(status, body, labels) {
   if (status === 429 && code === 'too_many_ingestions') {
     return 'Trop de médias en cours de conversion. Réessaie dans un instant.';
   }
+  if (status === 429 && code === 'too_many_uploads') {
+    return 'Trop d’envois en cours. Réessaie dans un instant.';
+  }
   if (status === 413) {
-    return 'Fichier trop volumineux pour le serveur.';
+    const limit = Number(body && body.maxBytes);
+    return Number.isFinite(limit) && limit > 0
+      ? `Fichier trop volumineux : ${formatSizeLimit(limit)} maximum.`
+      : 'Fichier trop volumineux pour le serveur.';
   }
   if (status === 415) {
     return 'Format de fichier non pris en charge.';

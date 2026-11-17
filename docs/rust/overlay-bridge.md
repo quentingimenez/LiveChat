@@ -799,45 +799,55 @@ accepté que s'il commence par `https://cdn.discordapp.com/`.
 
 ### 13.3 `media_upload_*` : envoi d'un fichier local
 
-Quatre commandes réservées à la fenêtre `board`. Le corps est le fichier brut
-(pas de multipart) ; le jeton reste dans le shell Rust. `ApiResponse` a la même
-forme que `guild_api` : `{ "ok": bool, "status": number, "body": object|null }`.
+Quatre commandes réservées à la fenêtre `board`. Le jeton reste dans le shell
+Rust. `ApiResponse` a la même forme que `guild_api` :
+`{ "ok": bool, "status": number, "body": object|null }`.
 
-1. `invoke('media_upload_start', { payload: { guildId?, filename, title?, message?, contentType?, replaceItemId? } })`
-   → `{ "uploadId": "uuid-v4" }`.
+Le shell envoie le fichier en plusieurs requêtes (`docs/rust/server-ingest.md`,
+`/overlay/media-board/uploads`) : il ouvre l'envoi, transmet les morceaux de la
+board en parties brutes qui se terminent avec le morceau atteignant 64 Mio
+(72 Mio au plus, sous les 100 Mo de Cloudflare), puis le termine.
+
+1. `invoke('media_upload_start', { payload: { guildId?, filename, size, title?, message?, contentType?, replaceItemId? } })`
+   → `{ "uploadId": "uuid-v4" }` (identifiant local du shell).
+   - `size` : taille du fichier en octets ; nulle ou absente → `"fichier vide"`.
+     Le serveur refuse dès l'ouverture un fichier plus gros que sa limite
+     (`413 {error:"payload_too_large", maxBytes}`, lu par `media_upload_finish`).
    - `replaceItemId` (facultatif) : identifiant de l'item du board dont le
-     fichier envoyé remplace le média (paramètre `replaceItemId` de la route) ;
-     une valeur qui n'est pas un UUID est refusée (`"média inconnu"`).
+     fichier envoyé remplace le média ; une valeur qui n'est pas un UUID est
+     refusée (`"média inconnu"`).
    - `filename` obligatoire (1 à 255 caractères, sans `/`, `\` ni
      caractère de contrôle), sinon erreur `"nom de fichier invalide"`.
    - Guilde inconnue → erreur `"guilde inconnue"`.
    - Au plus **8 uploads simultanés**, sinon `"trop d'envois en cours"`.
-   - `contentType` n'est conservé que sous la forme `type/sous-type` ASCII
-     imprimable sans espace ni `;` ; sinon `application/octet-stream`.
+   - `contentType` n'est transmis que sous la forme `type/sous-type` ASCII
+     imprimable sans espace ni `;`.
 2. `invoke('media_upload_chunk', <Uint8Array>, { headers: { 'x-upload-id': uploadId } })`
    → `null`. Morceau vide ou > 8 Mio refusé ; corps JSON refusé
-   (`"corps binaire attendu"`) ; id inconnu (`"envoi inconnu"`). Si la requête
-   HTTP s'est déjà terminée (413, serveur injoignable…), renvoie
-   `"upload_closed"` : la board appelle alors `media_upload_finish` pour lire
-   la réponse.
+   (`"corps binaire attendu"`) ; id inconnu (`"envoi inconnu"`). Si l'envoi
+   s'est déjà terminé (ouverture ou partie refusée, serveur injoignable…),
+   renvoie `"upload_closed"` : la board appelle alors `media_upload_finish`
+   pour lire la réponse.
 3. `invoke('media_upload_finish', { payload: { uploadId } })`
-   → `ApiResponse`. Ferme le corps, attend la tâche HTTP et relaie la réponse
-   du serveur (`202 {ingestionId}`, erreurs `{error}`…).
+   → `ApiResponse`. Termine le fichier (dernière partie puis complétion) et
+   relaie la réponse du serveur (`202 {ingestionId}`, ou la première réponse
+   refusée `{error}`).
 4. `invoke('media_upload_cancel', { payload: { uploadId } })` → `bool`
-   (`true` si l'upload existait). Retire l'entrée et interrompt la tâche.
+   (`true` si l'upload existait). Retire l'entrée et interrompt la tâche ;
+   l'envoi ouvert sur le serveur est abandonné (`DELETE`).
 
 Séquence : `start` → `chunk` (répété) → `finish`, ou `cancel` à tout moment.
-Le délai de la requête est de 30 min (conversion serveur) et le délai de
-connexion de 15 s.
+Chaque requête a un délai de 30 min et un délai de connexion de 15 s.
 
 ### 13.4 Ingestion asynchrone et rafraîchissement du board
 
 Les routes d'ajout de média répondent désormais **`202 {"ingestionId": "<uuid>"}`**
 dès que le lien est accepté (`POST /overlay/media-board/items` via `guild_api`)
-ou que le fichier est entièrement reçu (`media_upload_finish`). Le
+ou que l'envoi d'un fichier est terminé (`media_upload_finish`). Le
 téléchargement et la conversion continuent en tâche de fond côté serveur. Une
 erreur avant le 202 garde son statut habituel (`400`, `403 read_only_session`,
-`413`, `415`, `422`, et `429 {"error":"too_many_ingestions"}`).
+`413`, `415`, `422`, `429 {"error":"too_many_uploads"}` et
+`429 {"error":"too_many_ingestions"}`).
 
 Cycle d'une carte provisoire (`state.uploads`) :
 
@@ -848,9 +858,9 @@ Cycle d'une carte provisoire (`state.uploads`) :
   créneau. Un 202 sans `ingestionId` échoue avec « Réponse inattendue du
   serveur. ».
 - `failed` : message d'erreur, boutons « Réessayer » et « Retirer ». Un
-  fichier de plus de 100 MiB (100 × 1024 × 1024 octets) n'est jamais envoyé :
-  la carte est créée directement en échec avec « Fichier trop volumineux :
-  100 Mo maximum. » et sans « Réessayer ».
+  fichier plus gros que la limite du serveur est refusé dès l'ouverture de
+  l'envoi : « Fichier trop volumineux : 2 Go maximum. » (limite lue dans
+  `maxBytes`).
 
 Le shell émet deux événements vers la fenêtre `board` :
 

@@ -1,4 +1,4 @@
-//! In-process tests for `POST /overlay/media-board/upload`.
+//! In-process tests for the board uploads sent in parts (`/overlay/media-board/uploads`).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;
@@ -228,13 +228,95 @@ pub(super) async fn insert_client(db: &Db, mode: OverlaySessionMode, token: &str
     client
 }
 
-pub(super) fn upload_request(uri: &str, token: &str, body: Vec<u8>) -> Request<Body> {
+pub(super) fn create_request(token: &str, description: &Value) -> Request<Body> {
     Request::builder()
         .method(Method::POST)
-        .uri(uri)
+        .uri("/overlay/media-board/uploads")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .body(Body::from(body))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(description.to_string()))
         .unwrap()
+}
+
+pub(super) fn part_request(
+    token: &str,
+    upload_id: &str,
+    offset: usize,
+    body: Body,
+) -> Request<Body> {
+    Request::builder()
+        .method(Method::PUT)
+        .uri(format!(
+            "/overlay/media-board/uploads/{upload_id}/parts?offset={offset}"
+        ))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(body)
+        .unwrap()
+}
+
+fn upload_id_request(method: Method, token: &str, upload_id: &str, suffix: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(format!("/overlay/media-board/uploads/{upload_id}{suffix}"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+pub(super) fn complete_request(token: &str, upload_id: &str) -> Request<Body> {
+    upload_id_request(Method::POST, token, upload_id, "/complete")
+}
+
+fn cancel_request(token: &str, upload_id: &str) -> Request<Body> {
+    upload_id_request(Method::DELETE, token, upload_id, "")
+}
+
+/// Opens an upload of `size` bytes and returns its id.
+async fn open_upload(app: &Router, token: &str, description: Value) -> String {
+    let (status, body) = send_json(app, create_request(token, &description)).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    body["uploadId"].as_str().unwrap().to_owned()
+}
+
+/// Sends a file through the three upload steps, `part_size` bytes per part.
+/// `size` defaults to the file length. Returns the first refused answer, or
+/// the completion answer.
+pub(super) async fn upload_parts(
+    app: &Router,
+    token: &str,
+    mut description: Value,
+    bytes: &[u8],
+    part_size: usize,
+) -> (StatusCode, Value) {
+    if description.get("size").is_none() {
+        description["size"] = json!(bytes.len());
+    }
+    let (status, body) = send_json(app, create_request(token, &description)).await;
+    if status != StatusCode::CREATED {
+        return (status, body);
+    }
+    let upload_id = body["uploadId"].as_str().unwrap().to_owned();
+    let mut offset = 0;
+    for part in bytes.chunks(part_size) {
+        let request = part_request(token, &upload_id, offset, Body::from(part.to_vec()));
+        let (status, body) = send_json(app, request).await;
+        if status != StatusCode::OK {
+            return (status, body);
+        }
+        offset += part.len();
+        assert_eq!(body["received"], offset);
+    }
+    send_json(app, complete_request(token, &upload_id)).await
+}
+
+/// [`upload_parts`] with 64 KiB parts.
+pub(super) async fn upload_file(
+    app: &Router,
+    token: &str,
+    description: Value,
+    bytes: &[u8],
+) -> (StatusCode, Value) {
+    upload_parts(app, token, description, bytes, 64 * 1024).await
 }
 
 pub(super) fn items_request(token: &str) -> Request<Body> {
@@ -324,9 +406,10 @@ async fn upload_png_is_ingested_asynchronously_and_reuses_asset() {
     let (app, db, state, hub) = harness(&dir.path().join("media"), 4).await;
     let client = insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
 
+    // Sent in parts of 10 bytes: the hash covers the whole file.
     let bytes = TINY_PNG.to_vec();
-    let uri = "/overlay/media-board/upload?filename=photo.png";
-    let (status, body) = send_json(&app, upload_request(uri, TOKEN, bytes.clone())).await;
+    let description = json!({"filename": "photo.png"});
+    let (status, body) = upload_parts(&app, TOKEN, description.clone(), &bytes, 10).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     let ingestion_id = body["ingestionId"].as_str().unwrap().to_owned();
 
@@ -362,8 +445,9 @@ async fn upload_png_is_ingested_asynchronously_and_reuses_asset() {
     assert_eq!(ready.len(), 1);
     assert!(ready[0].source_hash.starts_with("upload:sha256:"));
 
-    // Same bytes: the cached asset is reused and the item is deduplicated.
-    let (status, body) = send_json(&app, upload_request(uri, TOKEN, bytes)).await;
+    // Same bytes in one part: the cached asset is reused and the item is
+    // deduplicated.
+    let (status, body) = upload_file(&app, TOKEN, description, &bytes).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     let duplicate_id = body["ingestionId"].as_str().unwrap().to_owned();
     let duplicate = wait_finished(&state, client.id.as_uuid(), &duplicate_id).await;
@@ -397,13 +481,11 @@ async fn failed_upload_reports_a_code_and_a_readable_message() {
     let (app, db, state, hub) = harness(&dir.path().join("media"), 4).await;
     let client = insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
 
-    let (status, body) = send_json(
+    let (status, body) = upload_file(
         &app,
-        upload_request(
-            "/overlay/media-board/upload?filename=note.txt",
-            TOKEN,
-            b"this is not a media".to_vec(),
-        ),
+        TOKEN,
+        json!({"filename": "note.txt"}),
+        b"this is not a media",
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
@@ -426,15 +508,7 @@ async fn failed_upload_reports_a_code_and_a_readable_message() {
     // A recognisable but rejected media (SVG) keeps the REST error vocabulary
     // and carries the readable pipeline message.
     let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>";
-    let (status, body) = send_json(
-        &app,
-        upload_request(
-            "/overlay/media-board/upload?filename=x.svg",
-            TOKEN,
-            svg.to_vec(),
-        ),
-    )
-    .await;
+    let (status, body) = upload_file(&app, TOKEN, json!({"filename": "x.svg"}), svg).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     let invalid_id = body["ingestionId"].as_str().unwrap().to_owned();
     let entry = wait_finished(&state, client.id.as_uuid(), &invalid_id).await;
@@ -452,22 +526,34 @@ async fn failed_upload_reports_a_code_and_a_readable_message() {
 }
 
 #[tokio::test]
-async fn upload_over_size_limit_returns_413() {
+async fn declared_size_over_the_limit_is_refused_before_any_byte() {
     let dir = TempDir::new().unwrap();
-    let (app, db, _state, _hub) = harness(&dir.path().join("media"), 1).await;
+    let (app, db, state, _hub) = harness(&dir.path().join("media"), 1).await;
     insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
 
-    let bytes = png_bytes(MAX_REQUEST_BODY_BYTES + 1);
     let (status, body) = send_json(
         &app,
-        upload_request("/overlay/media-board/upload?filename=big.png", TOKEN, bytes),
+        create_request(
+            TOKEN,
+            &json!({"filename": "big.png", "size": 1024 * 1024 + 1}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
-    assert_eq!(body, json!({"error": "payload_too_large"}));
+    assert_eq!(
+        body,
+        json!({"error": "payload_too_large", "maxBytes": 1024 * 1024})
+    );
+    assert!(state.uploads.is_empty());
 
-    let (_, body) = send_json(&app, items_request(TOKEN)).await;
-    assert_eq!(body["total"], 0);
+    for (description, message) in [
+        (json!({"filename": "a.png"}), "size is required"),
+        (json!({"filename": "a.png", "size": 0}), "file is empty"),
+    ] {
+        let (status, body) = send_json(&app, create_request(TOKEN, &description)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{description}");
+        assert_eq!(body["message"], message);
+    }
 }
 
 #[tokio::test]
@@ -475,47 +561,45 @@ async fn upload_rejects_missing_or_unsafe_filename() {
     let dir = TempDir::new().unwrap();
     let (app, db, _state, _hub) = harness(&dir.path().join("media"), 4).await;
     insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
-    let bytes = png_bytes(2048);
 
-    let (status, body) = send_json(
-        &app,
-        upload_request("/overlay/media-board/upload", TOKEN, bytes.clone()),
-    )
-    .await;
+    let (status, body) = send_json(&app, create_request(TOKEN, &json!({"size": 10}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], "invalid_payload");
     assert_eq!(body["message"], "filename is required");
 
-    for uri in [
-        "/overlay/media-board/upload?filename=..%2Fx.png",
-        "/overlay/media-board/upload?filename=%00x.png",
-        "/overlay/media-board/upload?filename=x%5Cy.png",
-    ] {
-        let (status, body) = send_json(&app, upload_request(uri, TOKEN, bytes.clone())).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
-        assert_eq!(body["error"], "invalid_payload", "{uri}");
+    for filename in ["../x.png", "\u{0}x.png", "x\\y.png"] {
+        let description = json!({"filename": filename, "size": 10});
+        let (status, body) = send_json(&app, create_request(TOKEN, &description)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{filename}");
+        assert_eq!(body["error"], "invalid_payload", "{filename}");
     }
 }
 
 #[tokio::test]
-async fn read_only_session_is_rejected_before_body_read() {
+async fn read_only_session_is_rejected() {
     let dir = TempDir::new().unwrap();
-    let (app, db, _state, _hub) = harness(&dir.path().join("media"), 4).await;
+    let (app, db, state, _hub) = harness(&dir.path().join("media"), 4).await;
     insert_client(&db, OverlaySessionMode::InviteReadOnly, READ_ONLY_TOKEN).await;
 
+    let description = json!({"filename": "x.png", "size": 10});
+    let (status, body) = send_json(&app, create_request(READ_ONLY_TOKEN, &description)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"], "read_only_session");
+    assert!(state.uploads.is_empty());
+
+    // A part is refused before its body is read.
     let polled = Arc::new(AtomicBool::new(false));
     let polled_by_stream = Arc::clone(&polled);
     let body_stream = stream::once(async move {
         polled_by_stream.store(true, Ordering::SeqCst);
         Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"not read"))
     });
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri("/overlay/media-board/upload?filename=x.png")
-        .header(header::AUTHORIZATION, format!("Bearer {READ_ONLY_TOKEN}"))
-        .body(Body::from_stream(body_stream))
-        .unwrap();
-
+    let request = part_request(
+        READ_ONLY_TOKEN,
+        &Uuid::new_v4().to_string(),
+        0,
+        Body::from_stream(body_stream),
+    );
     let (status, body) = send_json(&app, request).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"], "read_only_session");
@@ -523,19 +607,18 @@ async fn read_only_session_is_rejected_before_body_read() {
 }
 
 #[tokio::test]
-async fn upload_accepts_over_one_mib_while_json_routes_keep_the_limit() {
+async fn parts_accept_over_one_mib_while_json_routes_keep_the_limit() {
     let dir = TempDir::new().unwrap();
     let (app, db, state, _hub) = harness(&dir.path().join("media"), 4).await;
     let client = insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
 
     let bytes = png_bytes(MAX_REQUEST_BODY_BYTES + 2048);
-    let (status, body) = send_json(
+    let (status, body) = upload_parts(
         &app,
-        upload_request(
-            "/overlay/media-board/upload?filename=large.png",
-            TOKEN,
-            bytes,
-        ),
+        TOKEN,
+        json!({"filename": "large.png"}),
+        &bytes,
+        bytes.len(),
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
@@ -556,6 +639,157 @@ async fn upload_accepts_over_one_mib_while_json_routes_keep_the_limit() {
     assert_eq!(body["error"], "request_error");
 }
 
+#[tokio::test]
+async fn a_part_over_the_part_limit_is_refused_and_ends_the_upload() {
+    let dir = TempDir::new().unwrap();
+    let (app, db, state, _hub) = harness(&dir.path().join("media"), 200).await;
+    insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
+    let max_part = usize::try_from(super::MAX_PART_BYTES).unwrap();
+    let upload_id = open_upload(
+        &app,
+        TOKEN,
+        json!({"filename": "big.mp4", "size": max_part + 1024 * 1024}),
+    )
+    .await;
+
+    let mebibyte = axum::body::Bytes::from(vec![0_u8; 1024 * 1024]);
+    let pieces = max_part / (1024 * 1024) + 1;
+    let body_stream =
+        stream::iter((0..pieces).map(move |_| Ok::<_, std::io::Error>(mebibyte.clone())));
+    let request = part_request(TOKEN, &upload_id, 0, Body::from_stream(body_stream));
+    let (status, body) = send_json(&app, request).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        body,
+        json!({"error": "part_too_large", "maxBytes": super::MAX_PART_BYTES})
+    );
+    assert!(state.uploads.is_empty());
+    let (status, _) = send_json(&app, complete_request(TOKEN, &upload_id)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn parts_must_follow_each_other_and_fill_the_declared_size() {
+    let dir = TempDir::new().unwrap();
+    let (app, db, state, _hub) = harness(&dir.path().join("media"), 4).await;
+    insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
+    let description = json!({"filename": "photo.png", "size": TINY_PNG.len()});
+    let upload_id = open_upload(&app, TOKEN, description.clone()).await;
+
+    let (status, body) = send_json(
+        &app,
+        part_request(TOKEN, &upload_id, 0, Body::from(TINY_PNG[..20].to_vec())),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["received"], 20);
+
+    // A part sent again, or ahead of the received bytes, is refused without
+    // ending the upload.
+    for offset in [0, 30] {
+        let (status, body) = send_json(
+            &app,
+            part_request(TOKEN, &upload_id, offset, Body::from(vec![1_u8; 4])),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "offset {offset}");
+        assert_eq!(
+            body,
+            json!({"error": "upload_offset_mismatch", "received": 20})
+        );
+    }
+    let request = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/overlay/media-board/uploads/{upload_id}/parts"))
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .body(Body::from(vec![1_u8; 4]))
+        .unwrap();
+    let (status, body) = send_json(&app, request).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["message"], "offset is required");
+
+    // Completing before the declared size was received ends the upload.
+    let (status, body) = send_json(&app, complete_request(TOKEN, &upload_id)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["message"], "the file was not fully received");
+    assert!(state.uploads.is_empty());
+
+    // More bytes than declared end the upload too.
+    let upload_id = open_upload(&app, TOKEN, description).await;
+    let mut too_long = TINY_PNG.to_vec();
+    too_long.push(0);
+    let (status, body) = send_json(
+        &app,
+        part_request(TOKEN, &upload_id, 0, Body::from(too_long)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["message"], "more bytes than the declared size");
+    assert!(state.uploads.is_empty());
+}
+
+#[tokio::test]
+async fn an_upload_belongs_to_its_client_and_can_be_cancelled() {
+    let dir = TempDir::new().unwrap();
+    let (app, db, state, _hub) = harness(&dir.path().join("media"), 4).await;
+    insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
+    let other_token = "5555555555555555555555555555555555555555555555555555555555555555";
+    insert_client(&db, OverlaySessionMode::Normal, other_token).await;
+    let upload_id = open_upload(
+        &app,
+        TOKEN,
+        json!({"filename": "photo.png", "size": TINY_PNG.len()}),
+    )
+    .await;
+
+    for request in [
+        part_request(other_token, &upload_id, 0, Body::from(TINY_PNG.to_vec())),
+        complete_request(other_token, &upload_id),
+        cancel_request(other_token, &upload_id),
+    ] {
+        let (status, body) = send_json(&app, request).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "upload_not_found");
+    }
+    assert_eq!(state.uploads.len(), 1);
+
+    let (status, _) = send_json(&app, cancel_request(TOKEN, &upload_id)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(state.uploads.is_empty());
+    let (status, _) = send_json(
+        &app,
+        part_request(TOKEN, &upload_id, 0, Body::from(TINY_PNG.to_vec())),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn open_uploads_are_limited_per_client_and_expire_when_idle() {
+    let dir = TempDir::new().unwrap();
+    let (app, db, state, _hub) = harness(&dir.path().join("media"), 4).await;
+    insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
+    let description = json!({"filename": "photo.png", "size": 10});
+    for _ in 0..super::media_upload::MAX_SESSIONS_PER_CLIENT {
+        open_upload(&app, TOKEN, description.clone()).await;
+    }
+    let (status, body) = send_json(&app, create_request(TOKEN, &description)).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"], "too_many_uploads");
+
+    let idle = super::media_upload::IDLE_TIMEOUT;
+    state
+        .uploads
+        .purge_idle(Instant::now() + idle - StdDuration::from_secs(5));
+    assert_eq!(
+        state.uploads.len(),
+        super::media_upload::MAX_SESSIONS_PER_CLIENT
+    );
+    state.uploads.purge_idle(Instant::now() + idle);
+    assert!(state.uploads.is_empty());
+    open_upload(&app, TOKEN, description).await;
+}
+
 /// A second valid PNG: [`TINY_PNG`] followed by bytes ignored after `IEND`.
 fn other_png() -> Vec<u8> {
     let mut bytes = TINY_PNG.to_vec();
@@ -568,10 +802,10 @@ async fn upload_and_wait(
     app: &Router,
     state: &AppState,
     client: &OverlayClient,
-    uri: &str,
+    description: Value,
     bytes: Vec<u8>,
 ) -> IngestionEntry {
-    let (status, body) = send_json(app, upload_request(uri, TOKEN, bytes)).await;
+    let (status, body) = upload_file(app, TOKEN, description, &bytes).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     let ingestion_id = body["ingestionId"].as_str().unwrap().to_owned();
     wait_finished(state, client.id.as_uuid(), &ingestion_id).await
@@ -587,7 +821,7 @@ async fn upload_with_replace_item_id_replaces_the_media_of_the_item() {
         &app,
         &state,
         &client,
-        "/overlay/media-board/upload?filename=photo.png&title=Ma%20photo&message=coucou",
+        json!({"filename": "photo.png", "title": "Ma photo", "message": "coucou"}),
         TINY_PNG.to_vec(),
     )
     .await;
@@ -601,10 +835,9 @@ async fn upload_with_replace_item_id_replaces_the_media_of_the_item() {
     let created_at = body["items"][0]["createdAt"].clone();
 
     // The edited picture replaces the media: same item, same texts.
-    let uri = format!(
-        "/overlay/media-board/upload?filename=photo-edit.png&title=Ignored&replaceItemId={item_id}"
-    );
-    let replaced = upload_and_wait(&app, &state, &client, &uri, other_png()).await;
+    let description =
+        json!({"filename": "photo-edit.png", "title": "Ignored", "replaceItemId": item_id});
+    let replaced = upload_and_wait(&app, &state, &client, description.clone(), other_png()).await;
     assert_eq!(replaced.status, IngestionStatus::Ready, "{replaced:?}");
     assert_eq!(replaced.created, Some(false));
     assert_eq!(replaced.item_id.as_deref(), Some(item_id.as_str()));
@@ -651,7 +884,7 @@ async fn upload_with_replace_item_id_replaces_the_media_of_the_item() {
     assert!(current.expires_at > fixed_now() + time::Duration::days(365));
 
     // The same bytes again: nothing to replace, no second `board.changed`.
-    let same = upload_and_wait(&app, &state, &client, &uri, other_png()).await;
+    let same = upload_and_wait(&app, &state, &client, description, other_png()).await;
     assert_eq!(same.status, IngestionStatus::Ready);
     assert_eq!(same.created, Some(false));
     assert_eq!(same.item_id.as_deref(), Some(item_id.as_str()));
@@ -668,7 +901,7 @@ async fn replacement_upload_is_refused_for_another_kind_or_a_media_already_on_th
         &app,
         &state,
         &client,
-        "/overlay/media-board/upload?filename=a.png",
+        json!({"filename": "a.png"}),
         TINY_PNG.to_vec(),
     )
     .await;
@@ -676,15 +909,15 @@ async fn replacement_upload_is_refused_for_another_kind_or_a_media_already_on_th
         &app,
         &state,
         &client,
-        "/overlay/media-board/upload?filename=b.png",
+        json!({"filename": "b.png"}),
         other_png(),
     )
     .await;
     let second_id = second.item_id.unwrap();
 
     // The first picture cannot also become the second item's media.
-    let uri = format!("/overlay/media-board/upload?filename=a.png&replaceItemId={second_id}");
-    let refused = upload_and_wait(&app, &state, &client, &uri, TINY_PNG.to_vec()).await;
+    let description = json!({"filename": "a.png", "replaceItemId": second_id});
+    let refused = upload_and_wait(&app, &state, &client, description, TINY_PNG.to_vec()).await;
     assert_eq!(refused.status, IngestionStatus::Failed);
     let error = refused.error.unwrap();
     assert_eq!(error.code, "media_ingestion_failed");
@@ -733,13 +966,10 @@ async fn replacement_upload_is_refused_for_another_kind_or_a_media_already_on_th
         display_duration_sec: None,
     };
     db.media_board().create(&video_item).await.unwrap();
-    let uri = format!(
-        "/overlay/media-board/upload?filename=c.png&replaceItemId={}",
-        video_item.id.to_canonical()
-    );
+    let description = json!({"filename": "c.png", "replaceItemId": video_item.id.to_canonical()});
     let mut third = other_png();
     third.extend_from_slice(b"third");
-    let refused = upload_and_wait(&app, &state, &client, &uri, third).await;
+    let refused = upload_and_wait(&app, &state, &client, description, third).await;
     assert_eq!(refused.status, IngestionStatus::Failed);
     let error = refused.error.unwrap();
     assert_eq!(error.code, "media_ingestion_failed");
@@ -755,29 +985,16 @@ async fn replacement_upload_is_refused_for_another_kind_or_a_media_already_on_th
 }
 
 #[tokio::test]
-async fn replacement_target_is_checked_before_the_body_is_read() {
+async fn replacement_target_is_checked_when_the_upload_opens() {
     let dir = TempDir::new().unwrap();
-    let (app, db, _state, _hub) = harness(&dir.path().join("media"), 4).await;
+    let (app, db, state, _hub) = harness(&dir.path().join("media"), 4).await;
     insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
 
     for target in [Uuid::new_v4().to_string(), "not-an-id".to_owned()] {
-        let polled = Arc::new(AtomicBool::new(false));
-        let polled_by_stream = Arc::clone(&polled);
-        let body_stream = stream::once(async move {
-            polled_by_stream.store(true, Ordering::SeqCst);
-            Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"not read"))
-        });
-        let request = Request::builder()
-            .method(Method::POST)
-            .uri(format!(
-                "/overlay/media-board/upload?filename=x.png&replaceItemId={target}"
-            ))
-            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
-            .body(Body::from_stream(body_stream))
-            .unwrap();
-        let (status, body) = send_json(&app, request).await;
+        let description = json!({"filename": "x.png", "size": 10, "replaceItemId": target});
+        let (status, body) = send_json(&app, create_request(TOKEN, &description)).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{target}");
         assert_eq!(body["error"], "item_not_found");
-        assert!(!polled.load(Ordering::SeqCst), "body must not be polled");
     }
+    assert!(state.uploads.is_empty());
 }

@@ -77,7 +77,7 @@ function openCardMenu(event, item) {
       ? { label: item.favorite ? 'Retirer des favoris' : 'Ajouter aux favoris', icon: 'star', onSelect: () => toggleFavorite(item) }
       : null,
     canOpenEditor(item) ? { label: 'Ouvrir dans l’éditeur…', icon: 'edit', onSelect: () => openMediaEditor(item, itemTitle(item)) } : null,
-    item.canEdit ? { label: 'Modifier les infos…', onSelect: () => openEditDialog(item) } : null,
+    { label: 'Infos…', onSelect: () => openInfoDialog(item) },
     can('play')
       ? {
           label: shortcutFor(item.id) ? 'Changer le raccourci' : 'Définir un raccourci',
@@ -1111,17 +1111,118 @@ function detailPreview(item) {
   return entry.node;
 }
 
+// --- title and message edited in place ---
+// The field being edited survives a re-render of the board (a refresh pushed
+// by the server while typing must not lose the draft).
+let inlineEdit = null;
+
+const INLINE_FIELDS = {
+  title: { label: 'le titre', max: '240', empty: 'Ajouter un titre' },
+  message: { label: 'le message', max: '500', empty: 'Ajouter un message' },
+};
+
+async function commitInline(item, field, value) {
+  inlineEdit = null;
+  const before = item[field] || '';
+  if (value.trim() === before.trim()) {
+    syncDetail();
+    return;
+  }
+  const body = await run(() => api('PATCH', `/overlay/media-board/items/${encodeURIComponent(item.id)}`, { [field]: value }));
+  if (body) {
+    item[field] = body.item && field in body.item ? body.item[field] : value.trim() || null;
+    loadItems({ quiet: true });
+  }
+  syncDetail();
+}
+
+function inlineInput(item, field) {
+  const spec = INLINE_FIELDS[field];
+  const isTitle = field === 'title';
+  const input = h(isTitle ? 'input' : 'textarea', {
+    class: `field inline-input is-${field}`,
+    maxlength: spec.max,
+    rows: isTitle ? null : '3',
+    'aria-label': `Modifier ${spec.label}`,
+    value: inlineEdit.value,
+  });
+  let settled = false;
+  const settle = (save) => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    if (save) {
+      commitInline(item, field, input.value);
+    } else {
+      inlineEdit = null;
+      syncDetail();
+    }
+  };
+  input.addEventListener('input', () => {
+    inlineEdit.value = input.value;
+  });
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      // Handled here: the drawer stays open.
+      event.preventDefault();
+      settle(false);
+    } else if (event.key === 'Enter' && (isTitle || event.ctrlKey) && !event.isComposing) {
+      event.preventDefault();
+      settle(true);
+    }
+  });
+  // A re-render removes the field without the user leaving it: only a real
+  // blur (the field still in the page) saves.
+  input.addEventListener('blur', () => {
+    setTimeout(() => {
+      if (input.isConnected) {
+        settle(true);
+      }
+    });
+  });
+  queueMicrotask(() => {
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  });
+  return input;
+}
+
+function inlineField(item, field) {
+  const spec = INLINE_FIELDS[field];
+  const isTitle = field === 'title';
+  const text = isTitle ? itemTitle(item) : item.message || '';
+  if (!item.canEdit) {
+    if (isTitle) {
+      return h('h2', { class: 'detail-title' }, text);
+    }
+    return text ? h('p', { class: 'detail-message' }, text) : null;
+  }
+  if (inlineEdit && inlineEdit.itemId === item.id && inlineEdit.field === field) {
+    return inlineInput(item, field);
+  }
+  return h(
+    'button',
+    {
+      class: `inline-edit is-${field}${text ? '' : ' is-empty'}`,
+      type: 'button',
+      title: `Modifier ${spec.label}`,
+      onClick: () => {
+        inlineEdit = { itemId: item.id, field, value: item[field] || '' };
+        syncDetail();
+      },
+    },
+    h(isTitle ? 'h2' : 'span', { class: 'inline-text' }, text || spec.empty),
+    icon('edit'),
+  );
+}
+
 function renderDetail(item) {
   const preview = detailPreview(item);
-  let source = null;
-  try {
-    source = new URL(item.media.sourceUrl).hostname.replace(/^www\./, '');
-  } catch {
-    source = null;
+  if (inlineEdit && inlineEdit.itemId !== item.id) {
+    inlineEdit = null;
   }
   const shortcut = shortcutFor(item.id);
-  const size = item.media.sizeBytes ? `${(item.media.sizeBytes / 1048576).toFixed(1).replace('.', ',')} Mo` : null;
-  const added = new Date(item.createdAt);
   const drawer = h(
     'aside',
     {
@@ -1146,7 +1247,7 @@ function renderDetail(item) {
     h(
       'div',
       { class: 'detail-head' },
-      h('h2', null, itemTitle(item)),
+      inlineField(item, 'title'),
       canFavorite()
         ? h(
             'button',
@@ -1163,14 +1264,10 @@ function renderDetail(item) {
     ),
     preview,
     can('play') ? h('button', { class: 'btn is-air is-wide', onClick: () => playItem(item) }, icon('play'), 'Jouer sur les overlays') : null,
+    inlineField(item, 'message'),
     h(
       'dl',
       { class: 'facts' },
-      item.message ? [h('dt', null, 'Message'), h('dd', null, item.message)] : null,
-      [h('dt', null, 'Ajouté par'), h('dd', null, item.createdByName || 'Inconnu')],
-      [h('dt', null, 'Le'), h('dd', null, Number.isNaN(added.getTime()) ? '—' : added.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }))],
-      source ? [h('dt', null, 'Source'), h('dd', null, source)] : null,
-      [h('dt', null, 'Format'), h('dd', null, [KIND_LABELS[item.media.kind] || item.media.kind, formatDuration(shownDuration(item)), size].filter(Boolean).join(', '))],
       can('play')
         ? [
             h('dt', null, 'Raccourci'),
@@ -1192,7 +1289,7 @@ function renderDetail(item) {
       can('play') ? h('button', { class: 'btn', onClick: () => startCapture(item) }, shortcut ? 'Changer le raccourci' : 'Définir un raccourci') : null,
       can('play') && shortcut ? h('button', { class: 'btn is-quiet', onClick: () => saveShortcut(item, null) }, 'Retirer') : null,
       canOpenEditor(item) ? h('button', { class: 'btn', title: 'Découper, recadrer, dessiner…', onClick: () => openMediaEditor(item, itemTitle(item)) }, icon('edit'), 'Éditer') : null,
-      item.canEdit ? h('button', { class: 'btn', onClick: () => openEditDialog(item) }, 'Infos') : null,
+      h('button', { class: 'btn', onClick: () => openInfoDialog(item) }, 'Infos'),
       h('span', { class: 'spacer' }),
       item.canEdit ? h('button', { class: 'btn is-danger', onClick: () => openDeleteDialog(item) }, 'Supprimer') : null,
     ),
@@ -1304,12 +1401,39 @@ function defaultDurationHint() {
   return Number.isFinite(seconds) && seconds > 0 ? `Par défaut (${seconds} s)` : 'Par défaut';
 }
 
-export function openEditDialog(item) {
+function infoFacts(item) {
+  let source = null;
+  try {
+    source = new URL(item.media.sourceUrl).hostname.replace(/^www\./, '');
+  } catch {
+    source = null;
+  }
+  const size = item.media.sizeBytes ? `${(item.media.sizeBytes / 1048576).toFixed(1).replace('.', ',')} Mo` : null;
+  const added = new Date(item.createdAt);
+  return h(
+    'dl',
+    { class: 'facts' },
+    [h('dt', null, 'Ajouté par'), h('dd', null, item.createdByName || 'Inconnu')],
+    [h('dt', null, 'Le'), h('dd', null, Number.isNaN(added.getTime()) ? '—' : added.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }))],
+    source ? [h('dt', null, 'Source'), h('dd', null, source)] : null,
+    [h('dt', null, 'Format'), h('dd', null, [KIND_LABELS[item.media.kind] || item.media.kind, formatDuration(shownDuration(item)), size].filter(Boolean).join(', '))],
+  );
+}
+
+// The media's secondary facts. A media the user can edit also gets here what
+// is not edited in the drawer: an audio's picture, an image's display time.
+export function openInfoDialog(item) {
+  const isAudio = item.media.kind === 'audio';
+  const isImage = item.media.kind === 'image';
+  if (!item.canEdit || !(isAudio || isImage)) {
+    openDialog((close) => [
+      h('h2', null, itemTitle(item)),
+      infoFacts(item),
+      h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'button', onClick: close }, 'Fermer')),
+    ]);
+    return;
+  }
   openDialog((close) => {
-    const title = h('input', { class: 'field', maxlength: '240', value: item.title || '' });
-    const message = h('textarea', { class: 'field', rows: '3', maxlength: '500', value: item.message || '' });
-    const isAudio = item.media.kind === 'audio';
-    const isImage = item.media.kind === 'image';
     const displayDuration = isImage
       ? h('input', {
           class: 'field',
@@ -1520,8 +1644,8 @@ export function openEditDialog(item) {
           if (importing) {
             return;
           }
-          const patch = { title: title.value, message: message.value };
-          if (isAudio) {
+          const patch = {};
+          if (isAudio && onOverlay.checked !== Boolean(item.artworkOnOverlay)) {
             patch.artworkOnOverlay = onOverlay.checked;
           }
           if (isImage) {
@@ -1534,9 +1658,11 @@ export function openEditDialog(item) {
               patch.displayDurationSec = parsed.value;
             }
           }
-          const body = await run(() => api('PATCH', `/overlay/media-board/items/${encodeURIComponent(item.id)}`, patch));
-          if (!body) {
-            return;
+          if (Object.keys(patch).length > 0) {
+            const body = await run(() => api('PATCH', `/overlay/media-board/items/${encodeURIComponent(item.id)}`, patch));
+            if (!body) {
+              return;
+            }
           }
           if (chosen && !(await uploadArtwork(item, chosen))) {
             return;
@@ -1552,13 +1678,11 @@ export function openEditDialog(item) {
           loadItems();
         },
       },
-      h('label', null, 'Titre', title),
-      h('label', null, 'Message', message),
       displayDuration ? h('label', null, 'Durée d’affichage (s)', displayDuration) : null,
       artworkFields,
       h('div', { class: 'actions' }, h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'), submit),
     );
-    return [h('h2', null, 'Infos du média'), h('p', null, 'Un champ vide efface la valeur.'), form];
+    return [h('h2', null, itemTitle(item)), infoFacts(item), form];
   });
 }
 

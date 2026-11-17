@@ -155,6 +155,12 @@ pub async fn submit(
     if request.save_to_board && !has_source {
         return invalid_payload(Some("saveToBoard requires a resolvable media source"));
     }
+    if request
+        .duration_sec
+        .is_some_and(|seconds| !lc_domain::entities::is_valid_display_duration(seconds))
+    {
+        return invalid_payload(Some("durationSec must be between 1 and 600"));
+    }
 
     // 5b. Politique de source (garde SSRF/LFI) : une source refusée est
     //     rejetée AVANT toute création d'asset, avec le même format d'erreur
@@ -234,6 +240,7 @@ pub async fn submit(
             None,
             Some(client.created_by_discord_user_id.as_str()),
             Some(job_author_name.as_str()),
+            request.duration_sec,
             now,
         )
         .await;
@@ -479,6 +486,37 @@ mod tests {
         let (status, body) = post(fixture.app.clone(), Some(TOKEN), json!({})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(body["error"], "invalid_payload");
+    }
+
+    #[tokio::test]
+    async fn ingest_rejects_duration_above_max() {
+        let fixture = fixture().await;
+        insert_client(&fixture.db).await;
+        let (status, body) = post(
+            fixture.app.clone(),
+            Some(TOKEN),
+            json!({ "text": "bonjour", "durationSec": 601 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "invalid_payload");
+        assert!(body["message"]
+            .as_str()
+            .expect("message")
+            .contains("durationSec"));
+    }
+
+    #[tokio::test]
+    async fn ingest_accepts_duration_at_max() {
+        let fixture = fixture().await;
+        insert_client(&fixture.db).await;
+        let (status, body) = post(
+            fixture.app.clone(),
+            Some(TOKEN),
+            json!({ "text": "bonjour", "durationSec": 600 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
     }
 
     #[tokio::test]

@@ -22,6 +22,7 @@ struct MediaBoardItemRow {
     created_at: i64,
     artwork_asset_id: Option<String>,
     artwork_on_overlay: i64,
+    display_duration_sec: Option<i64>,
 }
 
 impl MediaBoardItemRow {
@@ -47,6 +48,7 @@ impl MediaBoardItemRow {
                 MediaAssetId::parse,
             )?,
             artwork_on_overlay: from_bool(self.artwork_on_overlay),
+            display_duration_sec: self.display_duration_sec,
         })
     }
 }
@@ -76,9 +78,9 @@ impl MediaBoardRepository {
             "INSERT INTO media_board_items ( \
                 id, guild_id, media_asset_id, title, message, \
                 created_by_discord_user_id, created_by_name, created_at, \
-                artwork_asset_id, artwork_on_overlay \
+                artwork_asset_id, artwork_on_overlay, display_duration_sec \
              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, \
-                COALESCE(?, (SELECT cover_asset_id FROM media_assets WHERE id = ? AND kind = 'AUDIO')), ?)",
+                COALESCE(?, (SELECT cover_asset_id FROM media_assets WHERE id = ? AND kind = 'AUDIO')), ?, ?)",
         )
         .bind(item.id.to_canonical())
         .bind(item.guild_id.as_str())
@@ -91,6 +93,7 @@ impl MediaBoardRepository {
         .bind(item.artwork_asset_id.map(MediaAssetId::to_canonical))
         .bind(item.media_asset_id.to_canonical())
         .bind(to_bool(item.artwork_on_overlay))
+        .bind(item.display_duration_sec)
         .execute(&self.pool)
         .await
         .map_err(|error| {
@@ -160,6 +163,22 @@ impl MediaBoardRepository {
             sqlx::query("UPDATE media_board_items SET title = ?, message = ? WHERE id = ?")
                 .bind(title)
                 .bind(message)
+                .bind(id.to_canonical())
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Sets (or clears with `None`) the display time of an item, in seconds.
+    /// Returns `false` if the item does not exist.
+    pub async fn set_display_duration(
+        &self,
+        id: MediaBoardItemId,
+        seconds: Option<i64>,
+    ) -> DbResult<bool> {
+        let result =
+            sqlx::query("UPDATE media_board_items SET display_duration_sec = ? WHERE id = ?")
+                .bind(seconds)
                 .bind(id.to_canonical())
                 .execute(&self.pool)
                 .await?;

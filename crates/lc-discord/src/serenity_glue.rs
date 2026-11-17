@@ -170,6 +170,7 @@ fn parse_media_submission(
         media: attachment_option(interaction, spec, lang, 1),
         text: string_option(interaction, spec, lang, 2),
         force_refresh: boolean_option(interaction, spec, lang, 3).unwrap_or(false),
+        duration_sec: integer_option(interaction, spec, lang, 4),
     }
 }
 
@@ -209,6 +210,18 @@ fn boolean_option(
 ) -> Option<bool> {
     match &option_at(interaction, spec, lang, index)?.value {
         CommandDataOptionValue::Boolean(value) => Some(*value),
+        _ => None,
+    }
+}
+
+fn integer_option(
+    interaction: &CommandInteraction,
+    spec: &CommandSpec,
+    lang: Lang,
+    index: usize,
+) -> Option<i64> {
+    match &option_at(interaction, spec, lang, index)?.value {
+        CommandDataOptionValue::Integer(value) => Some(*value),
         _ => None,
     }
 }

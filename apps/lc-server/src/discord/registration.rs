@@ -102,11 +102,11 @@ mod tests {
             .get("options")
             .and_then(|value| value.as_array())
             .unwrap();
-        assert_eq!(options.len(), 4);
+        assert_eq!(options.len(), 5);
         let types: Vec<u64> = options
             .iter()
             .filter_map(|option| option.get("type").and_then(|value| value.as_u64()))
             .collect();
-        assert_eq!(types, vec![3, 11, 3, 5]);
+        assert_eq!(types, vec![3, 11, 3, 5, 4]);
     }
 }

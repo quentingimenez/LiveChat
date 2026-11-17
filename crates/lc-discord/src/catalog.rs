@@ -240,6 +240,16 @@ const SEND_OPTIONS: &[OptionSpec] = &[
         required: false,
         choices: &[],
     },
+    OptionSpec {
+        name: LocalizedText::new(FR.option_duration, EN.option_duration),
+        description: LocalizedText::new(
+            FR.option_duration_description,
+            EN.option_duration_description,
+        ),
+        kind: OptionKind::Integer,
+        required: false,
+        choices: &[],
+    },
 ];
 
 const HIDE_SEND_OPTIONS: &[OptionSpec] = &[
@@ -286,6 +296,16 @@ const HIDE_SEND_OPTIONS: &[OptionSpec] = &[
         required: false,
         choices: &[],
     },
+    OptionSpec {
+        name: LocalizedText::new(FR.option_duration, EN.option_duration),
+        description: LocalizedText::new(
+            FR.option_duration_description,
+            EN.option_duration_description,
+        ),
+        kind: OptionKind::Integer,
+        required: false,
+        choices: &[],
+    },
 ];
 
 const MEDIA_ADD_OPTIONS: &[OptionSpec] = &[
@@ -329,6 +349,16 @@ const MEDIA_ADD_OPTIONS: &[OptionSpec] = &[
             EN.media_add_option_force_refresh_description,
         ),
         kind: OptionKind::Boolean,
+        required: false,
+        choices: &[],
+    },
+    OptionSpec {
+        name: LocalizedText::new(FR.option_duration, EN.option_duration),
+        description: LocalizedText::new(
+            FR.option_duration_description,
+            EN.option_duration_description,
+        ),
+        kind: OptionKind::Integer,
         required: false,
         choices: &[],
     },
@@ -566,7 +596,7 @@ mod tests {
     fn ordre_et_types_doptions() {
         let send = find_by_name(Lang::En, false, "send").expect("send doit exister");
         assert_eq!(send.key, CommandKey::Send);
-        assert_eq!(send.options.len(), 4);
+        assert_eq!(send.options.len(), 5);
         assert_eq!(send.options[1].kind, OptionKind::Attachment);
         assert!(!send.options.iter().any(|option| option.required));
 
@@ -592,6 +622,18 @@ mod tests {
         assert!(link.options[0].required);
         assert_eq!(link.options[0].name.get(Lang::Fr), "code");
         assert_eq!(link.options[0].name.get(Lang::En), "code");
+    }
+
+    #[test]
+    fn duration_option_is_the_fifth_of_send_hidden_send_and_media_add() {
+        for name in ["send", "hsend", "media-add"] {
+            let spec = find_by_name(Lang::En, false, name).expect("command exists");
+            let duration = &spec.options[4];
+            assert_eq!(duration.kind, OptionKind::Integer, "{name}");
+            assert!(!duration.required, "{name}");
+            assert_eq!(duration.name.get(Lang::Fr), "durée", "{name}");
+            assert_eq!(duration.name.get(Lang::En), "duration", "{name}");
+        }
     }
 
     /// Discord rejects the whole bulk registration ("Required options must be

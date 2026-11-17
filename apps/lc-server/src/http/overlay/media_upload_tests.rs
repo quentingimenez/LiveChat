@@ -732,6 +732,7 @@ async fn replacement_upload_is_refused_for_another_kind_or_a_media_already_on_th
         created_at: fixed_now(),
         artwork_asset_id: None,
         artwork_on_overlay: false,
+        display_duration_sec: None,
     };
     db.media_board().create(&video_item).await.unwrap();
     let uri = format!(

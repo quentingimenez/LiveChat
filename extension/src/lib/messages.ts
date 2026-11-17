@@ -26,6 +26,7 @@ export interface SendComposeRequestMessage {
   text?: string;
   forceRefresh?: boolean;
   saveToBoard?: boolean;
+  durationSec?: number;
 }
 
 export interface GetComposeStateRequestMessage {
@@ -116,6 +117,10 @@ export const isSendComposeRequest = (value: unknown): value is SendComposeReques
   }
 
   if (value.saveToBoard !== undefined && typeof value.saveToBoard !== 'boolean') {
+    return false;
+  }
+
+  if (value.durationSec !== undefined && typeof value.durationSec !== 'number') {
     return false;
   }
 

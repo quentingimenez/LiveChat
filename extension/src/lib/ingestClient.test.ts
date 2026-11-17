@@ -45,6 +45,31 @@ describe('ingest client', () => {
     });
   });
 
+  it('envoie durationSec en mode compose quand elle est fournie', () => {
+    const payload = buildIngestPayload(
+      {
+        mode: 'compose',
+        url: 'https://x.com/livechat/status/1',
+        durationSec: 8,
+      },
+      settings,
+    );
+
+    expect(payload?.durationSec).toBe(8);
+  });
+
+  it("n'envoie pas durationSec sans durée", () => {
+    const payload = buildIngestPayload(
+      {
+        mode: 'compose',
+        url: 'https://x.com/livechat/status/1',
+      },
+      settings,
+    );
+
+    expect(payload).not.toHaveProperty('durationSec');
+  });
+
   it('construit le payload compose avec forceRefresh', () => {
     const payload = buildIngestPayload(
       {

@@ -579,6 +579,7 @@ mod tests {
             created_at: fixture.now,
             artwork_asset_id: None,
             artwork_on_overlay: false,
+            display_duration_sec: None,
         };
         fixture
             .db
@@ -658,6 +659,7 @@ mod tests {
             created_at: fixture.now,
             artwork_asset_id: None,
             artwork_on_overlay: false,
+            display_duration_sec: None,
         };
         fixture
             .db

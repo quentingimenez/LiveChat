@@ -42,6 +42,19 @@
               rows="4"
             ></textarea>
 
+            <label class="field-label" for="compose-duration">Durée d'affichage des images (s)</label>
+            <input
+              id="compose-duration"
+              name="durationSec"
+              class="field-input"
+              type="number"
+              min="1"
+              max="600"
+              step="1"
+              inputmode="numeric"
+              placeholder="Par défaut"
+            />
+
             <label class="field-checkbox">
               <input id="compose-force-refresh" name="forceRefresh" type="checkbox" />
               Ignorer le cache serveur (`forceRefresh`)

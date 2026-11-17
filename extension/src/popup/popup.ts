@@ -1,3 +1,4 @@
+import { INVALID_DURATION_MESSAGE, parseDisplayDuration } from '../lib/duration';
 import { MESSAGE_TYPES, type ActionResponse, type ComposeStateResponse } from '../lib/messages';
 import '../styles/popup.css';
 
@@ -10,6 +11,7 @@ const urlInput = document.getElementById('compose-url') as HTMLInputElement;
 const textInput = document.getElementById('compose-text') as HTMLTextAreaElement;
 const forceRefreshInput = document.getElementById('compose-force-refresh') as HTMLInputElement;
 const saveToBoardInput = document.getElementById('compose-save-to-board') as HTMLInputElement;
+const durationInput = document.getElementById('compose-duration') as HTMLInputElement;
 const sendButton = document.getElementById('send-button') as HTMLButtonElement;
 const settingsWarning = document.getElementById('settings-warning') as HTMLParagraphElement;
 const statusNode = document.getElementById('popup-status') as HTMLParagraphElement;
@@ -115,6 +117,12 @@ form.addEventListener('submit', (event) => {
       return;
     }
 
+    const duration = parseDisplayDuration(durationInput.value);
+    if (!duration.ok) {
+      setStatus(INVALID_DURATION_MESSAGE, 'error');
+      return;
+    }
+
     setBusy(true);
 
     try {
@@ -124,6 +132,7 @@ form.addEventListener('submit', (event) => {
         text: textInput.value,
         forceRefresh: forceRefreshInput.checked,
         saveToBoard: saveToBoardInput.checked,
+        durationSec: duration.value ?? undefined,
       })) as ActionResponse;
 
       if (!response || typeof response.ok !== 'boolean') {
@@ -136,6 +145,7 @@ form.addEventListener('submit', (event) => {
         textInput.value = '';
         forceRefreshInput.checked = false;
         saveToBoardInput.checked = false;
+        durationInput.value = '';
       } else {
         setStatus(response.message, 'error');
       }

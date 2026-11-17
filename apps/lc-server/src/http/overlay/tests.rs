@@ -299,6 +299,7 @@ async fn insert_item(
         created_at,
         artwork_asset_id: None,
         artwork_on_overlay: false,
+        display_duration_sec: None,
     };
     db.media_board()
         .create(&item)
@@ -2287,4 +2288,122 @@ async fn media_board_patch_rejects_malformed_json() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body_json(&bytes)["error"], "invalid_payload");
+}
+
+async fn display_duration_fixture(
+    dir: &std::path::Path,
+    kind: MediaKind,
+) -> (axum::Router, lc_db::Db, String) {
+    let (app, db) = harness(dir).await;
+    let client = make_client(
+        &guild(),
+        "Poste",
+        BEARER_TOKEN,
+        OverlaySessionMode::Normal,
+        Some("Alice"),
+    );
+    db.overlay_clients().create(&client).await.expect("client");
+    let (name, mime) = match kind {
+        MediaKind::Image => ("photo.png", "image/png"),
+        _ => ("clip.mp4", "video/mp4"),
+    };
+    let asset = insert_asset(
+        &db,
+        dir,
+        name,
+        mime,
+        kind,
+        b"aaa",
+        fixed_now() + Duration::hours(12),
+    )
+    .await;
+    let item = insert_item(&db, &guild(), &asset, Some("Titre"), None, fixed_now()).await;
+    let uri = format!("/overlay/media-board/items/{}", item.id.to_canonical());
+    (app, db, uri)
+}
+
+async fn listed_display_duration(app: &axum::Router) -> Value {
+    let (status, _, bytes) = send(
+        app,
+        request(
+            Method::GET,
+            "/overlay/media-board/items",
+            Some(BEARER_TOKEN),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    body_json(&bytes)["items"][0]["displayDurationSec"].clone()
+}
+
+#[tokio::test]
+async fn media_board_patch_sets_and_clears_display_duration() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, _db, uri) = display_duration_fixture(dir.path(), MediaKind::Image).await;
+    assert_eq!(listed_display_duration(&app).await, Value::Null);
+
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::PATCH,
+            &uri,
+            Some(BEARER_TOKEN),
+            Some(&json!({"displayDurationSec": 8})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body_json(&bytes)["item"]["displayDurationSec"], 8);
+    assert_eq!(listed_display_duration(&app).await, json!(8));
+
+    let (status, _, _) = send(
+        &app,
+        request(
+            Method::PATCH,
+            &uri,
+            Some(BEARER_TOKEN),
+            Some(&json!({"displayDurationSec": null})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed_display_duration(&app).await, Value::Null);
+}
+
+#[tokio::test]
+async fn media_board_patch_rejects_bad_display_duration() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, _db, uri) = display_duration_fixture(dir.path(), MediaKind::Image).await;
+    for bad in [json!("8"), json!(8.5), json!(0), json!(601)] {
+        let (status, _, bytes) = send(
+            &app,
+            request(
+                Method::PATCH,
+                &uri,
+                Some(BEARER_TOKEN),
+                Some(&json!({"displayDurationSec": bad})),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        assert_eq!(body_json(&bytes)["error"], "invalid_payload");
+    }
+    assert_eq!(listed_display_duration(&app).await, Value::Null);
+
+    let video_dir = TempDir::new().expect("tempdir");
+    let (app, _db, uri) = display_duration_fixture(video_dir.path(), MediaKind::Video).await;
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::PATCH,
+            &uri,
+            Some(BEARER_TOKEN),
+            Some(&json!({"displayDurationSec": 8})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(&bytes)["error"], "invalid_payload");
+    assert_eq!(listed_display_duration(&app).await, Value::Null);
 }

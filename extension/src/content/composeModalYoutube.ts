@@ -1,3 +1,5 @@
+import { INVALID_DURATION_MESSAGE, parseDisplayDuration } from '../lib/duration';
+
 const MODAL_STYLE_ID = 'lce-compose-modal-style';
 const MODAL_OVERLAY_ID = 'lce-compose-modal-overlay';
 
@@ -6,6 +8,8 @@ export interface ComposeSubmitPayload {
   text: string;
   forceRefresh: boolean;
   saveToBoard: boolean;
+  /** Image display time in seconds; `null` uses the guild default. */
+  durationSec: number | null;
 }
 
 export interface ComposeSubmitResult {
@@ -29,6 +33,7 @@ interface ComposeModalRefs {
   textInput: HTMLTextAreaElement;
   forceRefreshInput: HTMLInputElement;
   saveToBoardInput: HTMLInputElement;
+  durationInput: HTMLInputElement;
   submitButton: HTMLButtonElement;
   cancelButton: HTMLButtonElement;
   closeButton: HTMLButtonElement;
@@ -229,6 +234,7 @@ const setBusy = (busy: boolean): void => {
   modalRefs.textInput.disabled = busy;
   modalRefs.forceRefreshInput.disabled = busy;
   modalRefs.saveToBoardInput.disabled = busy;
+  modalRefs.durationInput.disabled = busy;
   modalRefs.submitButton.textContent = busy ? 'Envoi...' : 'Envoyer';
 };
 
@@ -262,11 +268,17 @@ const onSubmit = (): void => {
   }
 
   const { onSubmit: submit, onSuccess, onError } = activeParams;
+  const duration = parseDisplayDuration(modalRefs.durationInput.value);
+  if (!duration.ok) {
+    setErrorStatus(INVALID_DURATION_MESSAGE);
+    return;
+  }
   const payload: ComposeSubmitPayload = {
     url: modalRefs.urlInput.value.trim(),
     text: modalRefs.textInput.value,
     forceRefresh: modalRefs.forceRefreshInput.checked,
     saveToBoard: modalRefs.saveToBoardInput.checked,
+    durationSec: duration.value,
   };
 
   if (!payload.url) {
@@ -336,6 +348,18 @@ const ensureModal = (): ComposeModalRefs => {
       placeholder="Ton message LiveChat"
     ></textarea>
 
+    <label class="lce-compose-modal-label" for="lce-compose-modal-duration">Durée d'affichage des images (s)</label>
+    <input
+      id="lce-compose-modal-duration"
+      class="lce-compose-modal-input"
+      type="number"
+      min="1"
+      max="600"
+      step="1"
+      inputmode="numeric"
+      placeholder="Par défaut"
+    />
+
     <label class="lce-compose-modal-checkbox">
       <input id="lce-compose-modal-force-refresh" type="checkbox" />
       Ignorer le cache serveur (forceRefresh)
@@ -368,6 +392,7 @@ const ensureModal = (): ComposeModalRefs => {
   const textInput = overlay.querySelector<HTMLTextAreaElement>('#lce-compose-modal-text');
   const forceRefreshInput = overlay.querySelector<HTMLInputElement>('#lce-compose-modal-force-refresh');
   const saveToBoardInput = overlay.querySelector<HTMLInputElement>('#lce-compose-modal-save-to-board');
+  const durationInput = overlay.querySelector<HTMLInputElement>('#lce-compose-modal-duration');
   const submitButton = overlay.querySelector<HTMLButtonElement>('[data-lce-compose-submit]');
   const cancelButton = overlay.querySelector<HTMLButtonElement>('[data-lce-compose-cancel]');
   const closeButton = overlay.querySelector<HTMLButtonElement>('[data-lce-compose-close]');
@@ -380,6 +405,7 @@ const ensureModal = (): ComposeModalRefs => {
     !textInput ||
     !forceRefreshInput ||
     !saveToBoardInput ||
+    !durationInput ||
     !submitButton ||
     !cancelButton ||
     !closeButton ||
@@ -425,6 +451,7 @@ const ensureModal = (): ComposeModalRefs => {
     textInput,
     forceRefreshInput,
     saveToBoardInput,
+    durationInput,
     submitButton,
     cancelButton,
     closeButton,
@@ -443,6 +470,7 @@ export const openComposeModal = (params: OpenComposeModalParams): void => {
   refs.textInput.value = '';
   refs.forceRefreshInput.checked = false;
   refs.saveToBoardInput.checked = false;
+  refs.durationInput.value = '';
 
   clearStatus();
   setBusy(false);

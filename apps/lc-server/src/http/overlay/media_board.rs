@@ -71,7 +71,8 @@ use axum::Json;
 use chrono::{DateTime, Utc};
 use lc_domain::rights::{Action, Surface};
 use lc_domain::{
-    GuildId, GuildRole, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, OverlayClientId,
+    GuildId, GuildRole, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, MediaKind,
+    OverlayClientId,
 };
 use lc_protocol::{BoardChange, BoardChangedPayload, ServerMessage};
 use serde::Deserialize;
@@ -313,6 +314,10 @@ pub(crate) async fn list_items_payload(
             object.insert(
                 "artworkOnOverlay".to_owned(),
                 serde_json::json!(row.item.artwork_on_overlay),
+            );
+            object.insert(
+                "displayDurationSec".to_owned(),
+                serde_json::json!(row.item.display_duration_sec),
             );
             object.insert(
                 "favorite".to_owned(),
@@ -560,6 +565,7 @@ pub(crate) async fn complete_board_item(
         created_at: now,
         artwork_asset_id: None,
         artwork_on_overlay: false,
+        display_duration_sec: None,
     };
     match db.media_board().create(&item).await {
         Ok(()) => {
@@ -940,7 +946,18 @@ pub(crate) async fn update_item_payload(
             ));
         }
     };
-    if !has_title && !has_message && artwork_on_overlay.is_none() {
+    // Absent → kept; `null` → cleared; else an integer within the bounds.
+    let display_duration = match object.get("displayDurationSec") {
+        None => None,
+        Some(serde_json::Value::Null) => Some(None),
+        Some(value) => match value.as_i64() {
+            Some(seconds) if lc_domain::entities::is_valid_display_duration(seconds) => {
+                Some(Some(seconds))
+            }
+            _ => return Err(invalid_display_duration()),
+        },
+    };
+    if !has_title && !has_message && artwork_on_overlay.is_none() && display_duration.is_none() {
         return Err(json_response(
             StatusCode::BAD_REQUEST,
             serde_json::json!({"error": "invalid_payload", "message": "title or message is required"}),
@@ -958,6 +975,17 @@ pub(crate) async fn update_item_payload(
         }
     };
     ensure_actor_can_edit(db, actor, item_id).await?;
+
+    // Only an image takes a chosen display time.
+    if matches!(display_duration, Some(Some(_))) {
+        match db.media_assets().get(existing.media_asset_id).await {
+            Ok(Some(asset)) if asset.kind == MediaKind::Image => {}
+            Ok(_) => return Err(invalid_display_duration()),
+            Err(db_error) => {
+                return Err(db_failure("overlay_media_board.patch_asset", &db_error));
+            }
+        }
+    }
 
     // Valeur absente → on conserve ; null/vide → on efface (parité legacy
     // `hasOwnProperty` + `toNonEmptyString`).
@@ -981,6 +1009,15 @@ pub(crate) async fn update_item_payload(
             return Err(db_failure("overlay_media_board.patch_artwork", &db_error));
         }
     }
+    if let Some(seconds) = display_duration {
+        if let Err(db_error) = db
+            .media_board()
+            .set_display_duration(item_id, seconds)
+            .await
+        {
+            return Err(db_failure("overlay_media_board.patch_duration", &db_error));
+        }
+    }
     match db
         .media_board()
         .update(item_id, title.as_deref(), message.as_deref())
@@ -1001,6 +1038,7 @@ pub(crate) async fn update_item_payload(
                     "title": title,
                     "message": message,
                     "artworkOnOverlay": artwork_on_overlay.unwrap_or(existing.artwork_on_overlay),
+                    "displayDurationSec": display_duration.unwrap_or(existing.display_duration_sec),
                 },
             }))
         }
@@ -1230,6 +1268,18 @@ pub(super) async fn ensure_can_edit(
     }
 }
 
+/// `400 invalid_payload` for a display time out of bounds, not an integer, or
+/// set on a media that is not an image.
+fn invalid_display_duration() -> Response {
+    json_response(
+        StatusCode::BAD_REQUEST,
+        serde_json::json!({
+            "error": "invalid_payload",
+            "message": "displayDurationSec must be an integer between 1 and 600, or null, on an image",
+        }),
+    )
+}
+
 /// Payload JSON d'un item de board (format legacy exact).
 fn item_payload(item: &MediaBoardItem, asset: &MediaAsset) -> serde_json::Value {
     serde_json::json!({
@@ -1240,6 +1290,7 @@ fn item_payload(item: &MediaBoardItem, asset: &MediaAsset) -> serde_json::Value 
         "message": item.message,
         "createdByName": item.created_by_name,
         "createdAt": item.created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        "displayDurationSec": item.display_duration_sec,
         "media": {
             "id": asset.id.to_canonical(),
             "kind": asset.kind.as_wire_str(),
@@ -1315,7 +1366,7 @@ async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<Boa
     let raw_rows = sqlx::query(
         "SELECT b.id, b.guild_id, b.media_asset_id, b.title, b.message, \
                 b.created_by_discord_user_id, b.created_by_name, b.created_at, b.created_by_member_id, \
-                b.artwork_asset_id, b.artwork_on_overlay, a.source_url \
+                b.artwork_asset_id, b.artwork_on_overlay, b.display_duration_sec, a.source_url \
            FROM media_board_items b \
            JOIN media_assets a ON a.id = b.media_asset_id \
           WHERE b.guild_id = ? \
@@ -1352,6 +1403,9 @@ async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<Boa
         let artwork_on_overlay: i64 = raw
             .try_get("artwork_on_overlay")
             .map_err(lc_db::DbError::from)?;
+        let display_duration_sec: Option<i64> = raw
+            .try_get("display_duration_sec")
+            .map_err(lc_db::DbError::from)?;
         let artwork_asset_id = artwork_raw
             .as_deref()
             .map(MediaAssetId::parse)
@@ -1380,6 +1434,7 @@ async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<Boa
                 created_at,
                 artwork_asset_id,
                 artwork_on_overlay: artwork_on_overlay != 0,
+                display_duration_sec,
             },
             source_url,
             created_by_member_id,

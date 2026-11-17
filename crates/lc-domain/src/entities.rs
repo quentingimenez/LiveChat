@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::enums::{GuildRole, JobStatus, MediaKind, MediaStatus, OverlaySessionMode, PairingMode};
 use crate::ids::{
-    GuildId, GuildMemberId, IngestClientId, MediaAssetId, MediaBoardItemId, OverlayClientId,
-    PairingCode as PairingCodeValue, PlaybackJobId,
+    GuildBanId, GuildId, GuildMemberId, IngestClientId, MediaAssetId, MediaBoardItemId,
+    OverlayClientId, PairingCode as PairingCodeValue, PlaybackJobId,
 };
 
 /// Module serde pour les dates obligatoires en ms epoch UTC.
@@ -365,6 +365,35 @@ impl GuildInvite {
                 .max_uses
                 .is_none_or(|max_uses| self.use_count < max_uses)
     }
+}
+
+/// Ban of a person from a guild.
+///
+/// Banning removes the member and revokes their overlays, ingest clients and
+/// pending codes. The Discord account, when the member had linked one, is the
+/// lasting identity: it can no longer obtain or redeem a code for this guild,
+/// nor run the bot commands. A member without a linked account is only
+/// removed: nothing identifies them on a later invitation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuildBan {
+    /// Primary key (UUID).
+    pub id: GuildBanId,
+    /// Guild the person is banned from.
+    pub guild_id: GuildId,
+    /// Member that was banned (no foreign key: kept for history).
+    pub member_id: Option<GuildMemberId>,
+    /// Banned Discord account (snowflake), when the member had linked one.
+    pub discord_user_id: Option<String>,
+    /// Name of the member at ban time.
+    pub display_name: String,
+    /// Avatar of the member at ban time.
+    pub avatar: Option<String>,
+    /// Name of who banned (`None` = the server operator console).
+    pub banned_by: Option<String>,
+    /// Ban date.
+    #[serde(with = "ms_required")]
+    pub created_at: DateTime<Utc>,
 }
 
 /// Code de liaison Discord émis par l'overlay d'une guilde indépendante.

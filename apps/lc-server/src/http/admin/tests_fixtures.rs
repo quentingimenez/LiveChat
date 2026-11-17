@@ -19,8 +19,8 @@ use std::path::PathBuf;
 use axum::http::{Method, StatusCode};
 use chrono::{Duration, Utc};
 use lc_domain::{
-    GuildId, GuildRole, IngestClient, IngestClientId, JobStatus, MediaKind, OverlaySessionMode,
-    PairingCode, PairingCodeEntry, PairingMode,
+    GuildBan, GuildBanId, GuildId, GuildMemberId, GuildRole, IngestClient, IngestClientId,
+    JobStatus, MediaKind, OverlaySessionMode, PairingCode, PairingCodeEntry, PairingMode,
 };
 use serde_json::{json, Value};
 
@@ -147,6 +147,19 @@ async fn seeded_harness() -> (Harness, String) {
 
     db.guild_invites()
         .create(&guild_invite("ABCDEFGH", &guild_id))
+        .await
+        .unwrap();
+    db.guild_bans()
+        .create(&GuildBan {
+            id: GuildBanId::new_v4(),
+            guild_id: guild_id.clone(),
+            member_id: Some(GuildMemberId::new_v4()),
+            discord_user_id: Some("1009".to_owned()),
+            display_name: "Ancien membre".to_owned(),
+            avatar: None,
+            banned_by: Some("Quentin".to_owned()),
+            created_at: Utc::now() - Duration::days(1),
+        })
         .await
         .unwrap();
 
@@ -542,6 +555,33 @@ async fn admin_console_mutation_fixtures() {
         &mutate(&harness, Method::POST, &format!("{base}/stop"), None).await,
     );
     let confirm = Some(json!({ "confirmGuildId": GUILD }));
+    let banned = detail["members"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["role"] == "member")
+        .and_then(|entry| entry["id"].as_str())
+        .unwrap()
+        .to_owned();
+    let ban = mutate(
+        &harness,
+        Method::POST,
+        &format!("{base}/members/{banned}/ban"),
+        None,
+    )
+    .await;
+    record("ban-member", &ban);
+    let ban_id = ban["ban"]["id"].as_str().unwrap().to_owned();
+    record(
+        "unban",
+        &mutate(
+            &harness,
+            Method::DELETE,
+            &format!("{base}/bans/{ban_id}"),
+            None,
+        )
+        .await,
+    );
     record(
         "remove-member",
         &mutate(

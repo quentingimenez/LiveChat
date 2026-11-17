@@ -5,6 +5,9 @@
 //! | `GET` | `/overlay/admin/members` | `ManageMembers` |
 //! | `PATCH` | `/overlay/admin/members/{memberId}` | `ManageMembers` |
 //! | `DELETE` | `/overlay/admin/members/{memberId}` | `ManageMembers` |
+//! | `POST` | `/overlay/admin/members/{memberId}/ban` | `ManageMembers` |
+//! | `GET` | `/overlay/admin/bans` | `ManageMembers` |
+//! | `DELETE` | `/overlay/admin/bans/{banId}` | `ManageMembers` |
 //! | `GET` | `/overlay/admin/invites` | `ManageInvites` |
 //! | `POST` | `/overlay/admin/invites` | `ManageInvites` |
 //! | `POST` | `/overlay/admin/invites/{code}/revoke` | `ManageInvites` |
@@ -12,6 +15,12 @@
 //!
 //! Toutes les routes sont bornées à la guilde du jeton : un identifiant de
 //! membre ou un code d'une autre guilde répond « introuvable ».
+//!
+//! Bannir retire le membre comme une exclusion (fermeture `4402
+//! member_banned`) et garde son compte Discord lié hors de la guilde : plus
+//! de `/pair-code`, de code consommé ni de commande du bot. Un membre sans
+//! compte Discord lié n'est identifiable par rien d'autre : le bannissement
+//! se réduit alors à l'exclusion.
 //!
 //! Changer un rôle aligne `overlay_clients.session_mode` puis ferme les
 //! sessions WS du membre (`1001`) : ses overlays se reconnectent aussitôt et
@@ -24,7 +33,9 @@ use axum::response::Response;
 use axum::Json;
 use chrono::Duration;
 use lc_db::MemberChange;
-use lc_domain::{Guild, GuildMember, GuildMemberId, GuildRole, PairingCode, Permission};
+use lc_domain::{
+    Guild, GuildBan, GuildBanId, GuildMember, GuildMemberId, GuildRole, PairingCode, Permission,
+};
 use lc_protocol::{close_code, close_reason};
 use serde_json::{json, Value};
 
@@ -35,7 +46,7 @@ use super::guild::{
     create_invite, invite_payload, iso, member_payload, normalize_label, remove_member, require,
     NewInvite,
 };
-use super::{db, db_failure, error, internal_error, json_response, now};
+use super::{db, db_failure, error, internal_error, is_conflict, json_response, now};
 
 /// Durée de vie maximale d'une invitation (un an).
 const INVITE_MAX_TTL_HOURS: i64 = 24 * 365;
@@ -203,15 +214,7 @@ pub(crate) async fn remove_member_payload(
 ) -> Result<Value, Response> {
     let db = db(state)?;
     let member = load_guild_member(db, guild_id, member_id_raw).await?;
-    match remove_member(
-        state,
-        db,
-        member.id,
-        now(state),
-        close_reason::MEMBER_REMOVED,
-    )
-    .await
-    {
+    match remove_member(state, db, &member, now(state), close_reason::MEMBER_REMOVED).await {
         Ok(MemberChange::Applied) => {
             tracing::info!(
                 guild_id = %member.guild_id,
@@ -236,6 +239,165 @@ pub async fn remove_member_handler(
         return response;
     }
     match remove_member_payload(&state, auth.guild_id(), &member_id_raw).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
+    }
+}
+
+/// Who bans: the calling member (overlay) or the server operator (console).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum BanActor<'a> {
+    /// An admin of the guild, from their overlay.
+    Member(&'a GuildMember),
+    /// The server operator, from the admin console.
+    Operator,
+}
+
+/// JSON of a ban.
+fn ban_payload(ban: &GuildBan) -> Value {
+    json!({
+        "id": ban.id.to_canonical(),
+        "memberId": ban.member_id.map(GuildMemberId::to_canonical),
+        "displayName": ban.display_name,
+        "avatar": ban.avatar,
+        "discordUserId": ban.discord_user_id,
+        "bannedBy": ban.banned_by,
+        "createdAt": iso(Some(ban.created_at)),
+    })
+}
+
+/// Bans a member (shared by the overlay and the admin console): removes them
+/// like an exclusion, then records the ban.
+pub(crate) async fn ban_member_payload(
+    state: &AppState,
+    guild_id: &lc_domain::GuildId,
+    member_id_raw: &str,
+    actor: BanActor<'_>,
+) -> Result<Value, Response> {
+    let db = db(state)?;
+    let member = load_guild_member(db, guild_id, member_id_raw).await?;
+    if let BanActor::Member(caller) = actor {
+        if caller.id == member.id {
+            return Err(error(StatusCode::CONFLICT, "cannot_ban_self"));
+        }
+    }
+    let at = now(state);
+    match remove_member(state, db, &member, at, close_reason::MEMBER_BANNED).await? {
+        MemberChange::Applied => {}
+        MemberChange::LastAdmin => return Err(error(StatusCode::CONFLICT, "last_admin")),
+        MemberChange::NotFound => return Err(error(StatusCode::NOT_FOUND, "member_not_found")),
+    }
+    let ban = GuildBan {
+        id: GuildBanId::new_v4(),
+        guild_id: member.guild_id.clone(),
+        member_id: Some(member.id),
+        discord_user_id: member.discord_user_id.clone(),
+        display_name: member.display_name.clone(),
+        avatar: member.avatar.clone(),
+        banned_by: match actor {
+            BanActor::Member(caller) => Some(caller.display_name.clone()),
+            BanActor::Operator => None,
+        },
+        created_at: at,
+    };
+    match db.guild_bans().create(&ban).await {
+        Ok(()) => {}
+        // The account was already banned (a ban lifted then a concurrent
+        // one): the member is removed, the existing ban stands.
+        Err(db_error) if is_conflict(&db_error) => {}
+        Err(db_error) => return Err(db_failure("overlay_admin.create_ban", &db_error)),
+    }
+    tracing::info!(
+        guild_id = %member.guild_id,
+        member_id = %member.id,
+        discord_linked = member.discord_user_id.is_some(),
+        "membre banni"
+    );
+    Ok(json!({"banned": true, "ban": ban_payload(&ban)}))
+}
+
+/// Handler `POST /overlay/admin/members/{memberId}/ban`.
+pub async fn ban_member_handler(
+    State(state): State<AppState>,
+    auth: AuthedOverlayClient,
+    Path(member_id_raw): Path<String>,
+) -> Response {
+    if let Err(response) = require(&state, &auth, Permission::ManageMembers) {
+        return response;
+    }
+    let Some(caller) = auth.member.as_ref() else {
+        return error(StatusCode::CONFLICT, "member_required");
+    };
+    match ban_member_payload(
+        &state,
+        auth.guild_id(),
+        &member_id_raw,
+        BanActor::Member(caller),
+    )
+    .await
+    {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
+    }
+}
+
+/// Bans body shared by `GET /overlay/admin/bans` and the admin guild detail.
+pub(crate) async fn bans_payload(
+    state: &AppState,
+    guild_id: &lc_domain::GuildId,
+) -> Result<Value, Response> {
+    let db = db(state)?;
+    let bans = db
+        .guild_bans()
+        .list_by_guild(guild_id)
+        .await
+        .map_err(|db_error| db_failure("overlay_admin.list_bans", &db_error))?;
+    let items: Vec<Value> = bans.iter().map(ban_payload).collect();
+    Ok(json!({"count": items.len(), "items": items}))
+}
+
+/// Handler `GET /overlay/admin/bans`.
+pub async fn list_bans(State(state): State<AppState>, auth: AuthedOverlayClient) -> Response {
+    if let Err(response) = require(&state, &auth, Permission::ManageMembers) {
+        return response;
+    }
+    match bans_payload(&state, auth.guild_id()).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
+    }
+}
+
+/// Lifts a ban (shared by the overlay and the admin console). The person
+/// needs a new code to come back.
+pub(crate) async fn unban_payload(
+    state: &AppState,
+    guild_id: &lc_domain::GuildId,
+    ban_id_raw: &str,
+) -> Result<Value, Response> {
+    let db = db(state)?;
+    let Ok(ban_id) = ban_id_raw.trim().parse::<GuildBanId>() else {
+        return Err(error(StatusCode::NOT_FOUND, "ban_not_found"));
+    };
+    match db.guild_bans().delete(guild_id, ban_id).await {
+        Ok(true) => {
+            tracing::info!(guild_id = %guild_id, ban_id = %ban_id, "bannissement levé");
+            Ok(json!({"unbanned": true}))
+        }
+        Ok(false) => Err(error(StatusCode::NOT_FOUND, "ban_not_found")),
+        Err(db_error) => Err(db_failure("overlay_admin.delete_ban", &db_error)),
+    }
+}
+
+/// Handler `DELETE /overlay/admin/bans/{banId}`.
+pub async fn unban_handler(
+    State(state): State<AppState>,
+    auth: AuthedOverlayClient,
+    Path(ban_id_raw): Path<String>,
+) -> Response {
+    if let Err(response) = require(&state, &auth, Permission::ManageMembers) {
+        return response;
+    }
+    match unban_payload(&state, auth.guild_id(), &ban_id_raw).await {
         Ok(payload) => json_response(StatusCode::OK, payload),
         Err(response) => response,
     }

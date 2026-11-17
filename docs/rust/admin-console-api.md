@@ -80,7 +80,7 @@ CSP : `style-src 'self'` (plus de `'unsafe-inline'`).
 | Route | Contenu |
 |---|---|
 | `GET /admin/api/overview` | existant, inchangé (tableau de bord, listes) |
-| `GET /admin/api/guilds/{id}` | une entrée de `overview.guilds[]` enrichie : `guestsCanViewBoard`, `boardQuotaBytes` (`null` = quota du serveur), `discord.botPresent` (`bool\|null`), `members` (= `GET /overlay/admin/members`), `invites` (= `GET /overlay/admin/invites`), `queue` (= `GET /overlay/queue`), `overlays.clients[]` enrichis de `memberId`, `role`, `overlayVersion`, `platform`, `guildSettings` (§ 6) ; `404 guild_not_found` |
+| `GET /admin/api/guilds/{id}` | une entrée de `overview.guilds[]` enrichie : `guestsCanViewBoard`, `boardQuotaBytes` (`null` = quota du serveur), `discord.botPresent` (`bool\|null`), `members` (= `GET /overlay/admin/members`), `invites` (= `GET /overlay/admin/invites`), `bans` (= `GET /overlay/admin/bans`), `queue` (= `GET /overlay/queue`), `overlays.clients[]` enrichis de `memberId`, `role`, `overlayVersion`, `platform`, `guildSettings` (§ 6) ; `404 guild_not_found` |
 | `GET /admin/api/guilds/{id}/media-board/items` | = `GET /overlay/media-board/items` |
 | `GET /admin/api/health` | `{"status":"ok"\|"degraded","checks":[{"id":"database"\|"discord"\|"ffmpeg"\|"ytdlp"\|"piper"\|"ingestions","status":"ok"\|"warn"\|"error","detail":string,"version":string\|null}],"uptimeSec","serverVersion"}` |
 | `GET /admin/api/ingestions?limit=50` | `{"items":[{"id","guildId","guildName","source","url","status":"pending"\|"running"\|"done"\|"failed","error":string\|null,"startedAt","finishedAt","durationMs"}]}` (registre en mémoire `IngestionRegistry` + historique gardé en mémoire, 200 dernières) |
@@ -97,6 +97,8 @@ Transposées de l'overlay (même corps, même réponse, mêmes codes d'erreur) :
 |---|---|
 | `PATCH /admin/api/guilds/{id}/members/{memberId}` | `PATCH /overlay/admin/members/{id}` |
 | `DELETE /admin/api/guilds/{id}/members/{memberId}` | `DELETE /overlay/admin/members/{id}` |
+| `POST /admin/api/guilds/{id}/members/{memberId}/ban` | `POST /overlay/admin/members/{id}/ban` (`bannedBy` = `null` : la console) |
+| `DELETE /admin/api/guilds/{id}/bans/{banId}` | `DELETE /overlay/admin/bans/{id}` |
 | `POST /admin/api/guilds/{id}/invites` | `POST /overlay/admin/invites` |
 | `POST /admin/api/guilds/{id}/invites/{code}/revoke` | `POST /overlay/admin/invites/{code}/revoke` |
 | `POST /admin/api/guilds/{id}/discord-link-code` | `POST /overlay/admin/discord-link-code` |

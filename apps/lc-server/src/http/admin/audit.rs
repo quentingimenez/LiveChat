@@ -438,6 +438,8 @@ fn guild_action(method: &str, path: &str) -> Option<&'static str> {
         ("POST", ["invites", _, "revoke"]) => Some("guild.invite_revoke"),
         ("PATCH", ["members", _]) => Some("guild.member_update"),
         ("DELETE", ["members", _]) => Some("guild.member_remove"),
+        ("POST", ["members", _, "ban"]) => Some("guild.member_ban"),
+        ("DELETE", ["bans", _]) => Some("guild.ban_remove"),
         ("DELETE", ["queue"]) => Some("guild.queue_clear"),
         ("DELETE", ["queue", _]) => Some("guild.queue_remove"),
         ("PATCH", ["media-board", "items", _]) => Some("guild.media_update"),

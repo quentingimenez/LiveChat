@@ -14,6 +14,9 @@
 //! | `/pair-code`, `/alive`, `/help`, `/info` | `pairCode` / `info` | everyone |
 //! | `/lier` | — | Discord administrator (not configurable) |
 //!
+//! A Discord account banned from the guild is refused every command but
+//! `info` (`/alive`, `/help`, `/info`), whatever its Discord permissions.
+//!
 //! An unlinked author maps to the `none` role. `discordAdminIsAdmin` (default
 //! `true`) keeps the historical `author.is_admin` shortcut: a Discord server
 //! administrator counts as the `admin` role. For commands that historically
@@ -51,6 +54,8 @@ pub enum Refusal {
     RoleTooLow,
     /// The command is for administrators.
     AdminOnly,
+    /// The Discord account is banned from the guild.
+    Banned,
 }
 
 /// Historical requirement of each command.
@@ -118,6 +123,19 @@ pub async fn check(
         return Ok(Ok(()));
     };
 
+    if action != Action::Info {
+        if let Some(guild_id) = guild_id.filter(|_| !author.id.is_empty()) {
+            if ctx
+                .db()
+                .guild_bans()
+                .is_discord_user_banned(guild_id, &author.id)
+                .await?
+            {
+                return Ok(Err(Refusal::Banned));
+            }
+        }
+    }
+
     let admin_only = matches!(action, Action::Stop | Action::Overlays);
     // A direct message has no guild: there is no member to link, so the author
     // maps to `none` (which is enough for `info` and `pairCode` by default).
@@ -165,6 +183,7 @@ mod tests {
 
     use super::{check, command_action, requirement, Refusal, Requirement};
     use crate::catalog::{CommandKey, COMMANDS};
+    use crate::context::BotContext as _;
     use crate::testing::{admin_author, member_author, FakeBotContext};
     use lc_domain::GuildId;
 
@@ -412,6 +431,57 @@ mod tests {
                 &member_author(),
                 &table,
                 CommandKey::Send
+            )
+            .await
+            .unwrap(),
+            Ok(())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_banned_account_only_keeps_the_info_commands() {
+        let ctx = FakeBotContext::new().await.unwrap();
+        // Even a linked LiveChat admin who is a Discord administrator.
+        ctx.link_author(&guild(), &admin_author(), GuildRole::Admin)
+            .await
+            .unwrap();
+        ctx.db()
+            .guild_bans()
+            .create(&lc_domain::GuildBan {
+                id: lc_domain::GuildBanId::new_v4(),
+                guild_id: guild(),
+                member_id: None,
+                discord_user_id: Some(admin_author().id),
+                display_name: "Banni".to_owned(),
+                avatar: None,
+                banned_by: None,
+                created_at: chrono::Utc::now(),
+            })
+            .await
+            .unwrap();
+        let table = ctx.rights_table();
+        for command in COMMANDS {
+            let expected = match command_action(command.key) {
+                Some(Action::Info) | None => Ok(()),
+                Some(_) => Err(Refusal::Banned),
+            };
+            assert_eq!(
+                check(&ctx, Some(&guild()), &admin_author(), &table, command.key)
+                    .await
+                    .unwrap(),
+                expected,
+                "{}",
+                command.key.id()
+            );
+        }
+        // The ban belongs to its guild.
+        assert_eq!(
+            check(
+                &ctx,
+                Some(&GuildId::parse("999999999999999999").unwrap()),
+                &admin_author(),
+                &table,
+                CommandKey::PairCode
             )
             .await
             .unwrap(),

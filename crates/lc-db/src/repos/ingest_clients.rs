@@ -139,6 +139,31 @@ impl IngestClientsRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Revokes the active ingest clients of a guild paired by one of
+    /// `authors` (`created_by_discord_user_id`: a Discord snowflake or
+    /// `member:<id>`). Returns the number of revoked clients.
+    pub async fn revoke_by_authors(
+        &self,
+        guild_id: &GuildId,
+        authors: &[String],
+        revoked_at: DateTime<chrono::Utc>,
+    ) -> DbResult<u64> {
+        let mut revoked = 0;
+        for author in authors {
+            let result = sqlx::query(
+                "UPDATE ingest_clients SET revoked_at = ? \
+                 WHERE guild_id = ? AND created_by_discord_user_id = ? AND revoked_at IS NULL",
+            )
+            .bind(to_ms(revoked_at))
+            .bind(guild_id.as_str())
+            .bind(author.as_str())
+            .execute(&self.pool)
+            .await?;
+            revoked += result.rows_affected();
+        }
+        Ok(revoked)
+    }
+
     /// Révoque le client.
     ///
     /// Retourne `false` s'il n'existe pas ou s'il était déjà révoqué.

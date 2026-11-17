@@ -1,6 +1,6 @@
 import { useState } from 'preact/hooks';
-import { isUnavailable, patchMember, removeMember } from '../../api/client';
-import type { GuildInvite, GuildMember, GuildRole } from '../../api/types';
+import { banMember, isUnavailable, patchMember, removeMember, unbanMember } from '../../api/client';
+import type { GuildBan, GuildInvite, GuildMember, GuildRole } from '../../api/types';
 import { ConfirmDialog, SecretDialog } from '../../components/Dialog';
 import { Icon } from '../../components/icons';
 import {
@@ -23,11 +23,15 @@ export function MembersTab({ guild, detail, detailUnavailable, refresh, notify }
   const [busyMember, setBusyMember] = useState<string | null>(null);
   const [kickTarget, setKickTarget] = useState<GuildMember | null>(null);
   const [kickBusy, setKickBusy] = useState(false);
+  const [banTarget, setBanTarget] = useState<GuildMember | null>(null);
+  const [unbanTarget, setUnbanTarget] = useState<GuildBan | null>(null);
+  const [banBusy, setBanBusy] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [createdInvite, setCreatedInvite] = useState<GuildInvite | null>(null);
   const [actionError, setActionError] = useState<unknown>(null);
 
   const members = detail?.members?.items ?? [];
+  const bans = detail?.bans?.items ?? [];
 
   const changeRole = async (member: GuildMember, role: GuildRole) => {
     if (busyMember || role === member.role) {
@@ -65,6 +69,46 @@ export function MembersTab({ guild, detail, detailUnavailable, refresh, notify }
       await refresh();
     } finally {
       setKickBusy(false);
+    }
+  };
+
+  const ban = async () => {
+    if (!banTarget || banBusy) {
+      return;
+    }
+    setBanBusy(true);
+    setActionError(null);
+    try {
+      await banMember(guild.id, banTarget.id);
+      notify(`${banTarget.displayName} a été banni.`);
+      setBanTarget(null);
+      await refresh();
+    } catch (error) {
+      setActionError(error);
+      notify(describeError(error), 'error');
+      await refresh();
+    } finally {
+      setBanBusy(false);
+    }
+  };
+
+  const unban = async () => {
+    if (!unbanTarget || banBusy) {
+      return;
+    }
+    setBanBusy(true);
+    setActionError(null);
+    try {
+      await unbanMember(guild.id, unbanTarget.id);
+      notify(`Le bannissement de ${unbanTarget.displayName} est levé.`);
+      setUnbanTarget(null);
+      await refresh();
+    } catch (error) {
+      setActionError(error);
+      notify(describeError(error), 'error');
+      await refresh();
+    } finally {
+      setBanBusy(false);
     }
   };
 
@@ -176,6 +220,13 @@ export function MembersTab({ guild, detail, detailUnavailable, refresh, notify }
                   >
                     Exclure
                   </button>
+                  <button
+                    class="btn is-small is-quiet is-danger"
+                    type="button"
+                    onClick={() => setBanTarget(member)}
+                  >
+                    Bannir
+                  </button>
                 </td>
               </tr>
             );
@@ -207,6 +258,17 @@ export function MembersTab({ guild, detail, detailUnavailable, refresh, notify }
 
       {body}
 
+      {detail ? (
+        <p class="table-foot">
+          {plural(members.length, 'membre', 'membres')} ·{' '}
+          {plural(
+            members.reduce((sum, member) => sum + (member.deviceCount ?? 0), 0),
+            'appareil',
+            'appareils',
+          )}
+        </p>
+      ) : null}
+
       <ConfirmDialog
         open={kickTarget !== null}
         title={kickTarget ? `Exclure ${kickTarget.displayName} ?` : 'Exclure ce membre ?'}
@@ -220,6 +282,84 @@ export function MembersTab({ guild, detail, detailUnavailable, refresh, notify }
         busy={kickBusy}
         onCancel={() => setKickTarget(null)}
         onConfirm={() => void kick()}
+      />
+
+      {detail && bans.length ? (
+        <>
+          <h3 class="section-title">Bannis</h3>
+          <Table>
+            <thead>
+              <tr>
+                <th>Personne</th>
+                <th>Compte Discord</th>
+                <th>Banni</th>
+                <th>Par</th>
+                <th>
+                  <span class="sr-only">Actions</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {bans.map((entry) => (
+                <tr key={entry.id}>
+                  <td class="primary">
+                    <span class="who">
+                      <Avatar name={entry.displayName} />
+                      {entry.displayName}
+                    </span>
+                  </td>
+                  <td>
+                    {entry.discordUserId ? (
+                      <span class="mono">{entry.discordUserId}</span>
+                    ) : (
+                      <span class="faint">Non lié</span>
+                    )}
+                  </td>
+                  <td class="soft">{ago(entry.createdAt)}</td>
+                  <td class="soft">{entry.bannedBy ?? 'Console'}</td>
+                  <td class="is-actions">
+                    <button
+                      class="btn is-small is-quiet"
+                      type="button"
+                      onClick={() => setUnbanTarget(entry)}
+                    >
+                      Lever
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        </>
+      ) : null}
+
+      <ConfirmDialog
+        open={banTarget !== null}
+        title={banTarget ? `Bannir ${banTarget.displayName} ?` : 'Bannir ce membre ?'}
+        body={
+          banTarget?.discordLinked
+            ? 'Ses overlays et ses extensions sont révoqués tout de suite. Son compte Discord ne pourra plus obtenir de code ni utiliser le bot sur cette guilde.'
+            : 'Ses overlays et ses extensions sont révoqués tout de suite. Sans compte Discord lié, rien ne l’empêche de revenir avec une nouvelle invitation.'
+        }
+        confirmLabel="Bannir"
+        danger
+        busy={banBusy}
+        onCancel={() => setBanTarget(null)}
+        onConfirm={() => void ban()}
+      />
+
+      <ConfirmDialog
+        open={unbanTarget !== null}
+        title={
+          unbanTarget
+            ? `Lever le bannissement de ${unbanTarget.displayName} ?`
+            : 'Lever ce bannissement ?'
+        }
+        body="Il pourra revenir avec un nouveau code. Ses anciens appareils restent révoqués."
+        confirmLabel="Lever"
+        busy={banBusy}
+        onCancel={() => setUnbanTarget(null)}
+        onConfirm={() => void unban()}
       />
 
       <CreateInviteDialog
@@ -243,16 +383,6 @@ export function MembersTab({ guild, detail, detailUnavailable, refresh, notify }
         onClose={() => setCreatedInvite(null)}
       />
 
-      {detail ? (
-        <p class="table-foot">
-          {plural(members.length, 'membre', 'membres')} ·{' '}
-          {plural(
-            members.reduce((sum, member) => sum + (member.deviceCount ?? 0), 0),
-            'appareil',
-            'appareils',
-          )}
-        </p>
-      ) : null}
     </>
   );
 }

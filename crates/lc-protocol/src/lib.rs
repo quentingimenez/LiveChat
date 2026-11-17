@@ -119,6 +119,8 @@ pub mod close_reason {
     pub const REVOKED: &str = "revoked";
     /// Member removed from the guild by an administrator.
     pub const MEMBER_REMOVED: &str = "member_removed";
+    /// Member banned from the guild by an administrator.
+    pub const MEMBER_BANNED: &str = "member_banned";
     /// Guild deleted by an administrator.
     pub const GUILD_DELETED: &str = "guild_deleted";
     /// Client d'une version d'overlay trop ancienne.

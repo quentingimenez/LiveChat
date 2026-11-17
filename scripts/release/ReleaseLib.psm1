@@ -456,8 +456,19 @@ function Get-DeployResult {
 
 function Invoke-RemoteBash {
     param([string]$Script)
-    $out = $Script | & $script:SshExe -o BatchMode=yes $script:SshHost 'bash -s' 2>&1
-    $code = $LASTEXITCODE
+    # Windows PowerShell 5.1 writes piped text with the console input encoding:
+    # when it is UTF-8 it carries a BOM, which breaks the script's first line.
+    $savedInput = [Console]::InputEncoding
+    $savedOutput = $OutputEncoding
+    try {
+        [Console]::InputEncoding = $script:Utf8NoBom
+        $OutputEncoding = $script:Utf8NoBom
+        $out = $Script | & $script:SshExe -o BatchMode=yes $script:SshHost 'bash -s' 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        [Console]::InputEncoding = $savedInput
+        $OutputEncoding = $savedOutput
+    }
     $text = @($out | ForEach-Object { "$_" })
     $text | ForEach-Object { Write-Host "  [host] $_" }
     if ($code -ne 0) { throw "remote script failed (exit $code)" }
@@ -466,7 +477,8 @@ function Invoke-RemoteBash {
 
 function Wait-ServerHealth {
     param([string]$Version, [int]$TimeoutSec = 120)
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    # The public proxy requires TLS 1.3, which Windows PowerShell 5.1 leaves off.
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]'Tls12, Tls13'
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     $last = 'no answer'
     while ((Get-Date) -lt $deadline) {

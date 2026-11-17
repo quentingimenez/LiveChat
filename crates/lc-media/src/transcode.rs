@@ -984,6 +984,11 @@ pub struct Loudness {
 }
 
 /// ffmpeg arguments measuring the first audio track (summary on stderr).
+///
+/// `framelog=verbose` hides the per-frame lines at the default log level
+/// while the summary stays at `info`. `framelog=quiet` would do the same but
+/// does not exist before FFmpeg 6: the server's Debian FFmpeg 5.1 rejected
+/// it, so every measurement failed and fell back to `loudnorm`.
 pub fn loudness_args(input: &Path) -> Vec<String> {
     vec![
         "-hide_banner".to_string(),
@@ -993,7 +998,7 @@ pub fn loudness_args(input: &Path) -> Vec<String> {
         "-map".to_string(),
         "0:a:0".to_string(),
         "-af".to_string(),
-        "ebur128=peak=true:framelog=quiet".to_string(),
+        "ebur128=peak=true:framelog=verbose".to_string(),
         "-f".to_string(),
         "null".to_string(),
         "-".to_string(),
@@ -1533,6 +1538,15 @@ mod tests {
         );
         assert!(args.iter().any(|arg| arg == "-an"));
         assert!(!args.iter().any(|arg| arg == "0:a:0" || arg == "-c:a"));
+    }
+
+    #[test]
+    fn measures_loudness_with_options_ffmpeg_5_accepts() {
+        let args = loudness_args(Path::new("in.mp4"));
+        let filter = &args[args.iter().position(|arg| arg == "-af").unwrap() + 1];
+        assert_eq!(filter, "ebur128=peak=true:framelog=verbose");
+        assert!(args.windows(2).any(|pair| pair == ["-map", "0:a:0"]));
+        assert!(args.ends_with(&["-f".to_string(), "null".to_string(), "-".to_string()]));
     }
 
     #[test]

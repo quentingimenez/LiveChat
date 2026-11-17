@@ -5,11 +5,12 @@
 //! requests:
 //!
 //! 1. `POST /overlay/media-board/uploads` (JSON: `filename`, `size`, optional
-//!    `title`, `message`, `contentType`, `replaceItemId`) opens an upload
-//!    session and answers `201 {uploadId}`. The declared size is checked
+//!    `title`, `message`, `contentType`, `replaceItemId`, `playOnce`) opens an
+//!    upload session and answers `201 {uploadId}`. The declared size is checked
 //!    against `MEDIA_MAX_SIZE_MB` before any byte is sent (`413
 //!    {error: payload_too_large, maxBytes}`), and a replaced item and the right
-//!    to edit it are checked here.
+//!    to edit it are checked here. `playOnce` (right `TriggerPlayback`) keeps
+//!    the media off the board: it is played once on the guild's overlays.
 //! 2. `PUT /overlay/media-board/uploads/{uploadId}/parts?offset=N` appends a
 //!    raw body of at most [`MAX_PART_BYTES`] at byte `N`, which must be the
 //!    number of bytes already received. It answers `200 {received}`.
@@ -42,7 +43,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse as _, Response};
 use axum::Json;
 use futures_util::StreamExt as _;
-use lc_domain::GuildId;
+use lc_domain::{GuildId, Permission};
 use lc_media::error::MediaErrorCode;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -55,6 +56,7 @@ use crate::media::errors::MediaServiceError;
 use crate::media::service::MediaService;
 
 use super::auth::AuthedOverlayClient;
+use super::guild::require;
 use super::media_board::{
     ensure_can_edit, ensure_writable, guild_item, media_service_error, too_many_ingestions,
     IngestionFailure,
@@ -97,6 +99,11 @@ pub(super) struct CreateUploadBody {
     /// Board item whose media is replaced by the uploaded file.
     #[serde(default)]
     replace_item_id: Option<String>,
+    /// `true` : le fichier est joué une fois sur les overlays de la guilde
+    /// sans créer d'item de board (droit `TriggerPlayback` au lieu
+    /// d'`AddMedia`).
+    #[serde(default)]
+    play_once: bool,
 }
 
 /// Query of `PUT /overlay/media-board/uploads/{uploadId}/parts`.
@@ -110,6 +117,8 @@ pub(super) struct PartQuery {
 /// An upload being received.
 struct UploadSession {
     target: BoardTarget,
+    /// The media is played once instead of reaching the board.
+    play_once: bool,
     filename: String,
     content_type: Option<String>,
     title: Option<String>,
@@ -251,6 +260,14 @@ pub async fn create_upload(
             return invalid_payload("invalid upload description");
         }
     };
+    // « Jouer une fois » déclenche une lecture au lieu d'ajouter au board :
+    // c'est le droit d'un déclenchement manuel (`TriggerPlayback`), pas
+    // `AddMedia` (403 comme les autres refus).
+    if body.play_once {
+        if let Err(response) = require(&state, &auth, Permission::TriggerPlayback) {
+            return response;
+        }
+    }
     let filename = match validate_filename(body.filename.as_deref()) {
         Ok(filename) => filename,
         Err(response) => return response,
@@ -275,14 +292,18 @@ pub async fn create_upload(
     if size > max_size_bytes {
         return payload_too_large(max_size_bytes);
     }
-    // A replacement is checked before any byte is sent: the item must belong
-    // to the guild (404) and the caller must be allowed to edit it (403).
-    let target = match body
+    // A play-once never touches the board, so it has nothing to replace.
+    let replace_item_id = body
         .replace_item_id
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
+        .filter(|value| !value.is_empty());
+    if body.play_once && replace_item_id.is_some() {
+        return invalid_payload("playOnce cannot replace a board item");
+    }
+    // A replacement is checked before any byte is sent: the item must belong
+    // to the guild (404) and the caller must be allowed to edit it (403).
+    let target = match replace_item_id {
         Some(item_id_raw) => {
             let item = match guild_item(
                 db,
@@ -319,6 +340,7 @@ pub async fn create_upload(
     };
     let session = UploadSession {
         target,
+        play_once: body.play_once,
         title: non_blank(body.title.as_deref()).or_else(|| Some(default_title(&filename))),
         message: non_blank(body.message.as_deref()),
         content_type: non_blank(body.content_type.as_deref()),
@@ -445,6 +467,7 @@ pub async fn complete_upload(
     }
     let UploadSession {
         target,
+        play_once,
         filename,
         content_type,
         title,
@@ -455,6 +478,13 @@ pub async fn complete_upload(
         ..
     } = session;
     drop(file);
+    // A play-once keeps the media off the board: the ingestion turns it into
+    // a playback job instead of an item.
+    let target = if play_once {
+        BoardTarget::PlayOnce
+    } else {
+        target
+    };
 
     let ingestion_id = match state.ingestions.start(
         auth.guild_id().clone(),

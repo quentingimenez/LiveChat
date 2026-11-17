@@ -25,6 +25,21 @@ export function defaultTitle(filename) {
   return dot > 0 ? name.slice(0, dot) : name;
 }
 
+// Status label of a provisional upload card. A play-once says "Lecture…"
+// while it is prepared: nothing will join the board.
+export function uploadStatusLabel(entry) {
+  if (entry.status === 'sending') {
+    return entry.kind === 'link' ? 'Téléchargement…' : 'Envoi…';
+  }
+  if (entry.status === 'converting') {
+    if (entry.playOnce) {
+      return 'Lecture…';
+    }
+    return entry.kind === 'edit' ? 'Montage…' : 'Conversion…';
+  }
+  return 'En attente…';
+}
+
 // A byte limit in mebibytes, or gibibytes from 1 Gio: "500 Mo", "2 Go".
 export function formatSizeLimit(bytes) {
   const mebibytes = Number(bytes) / (1024 * 1024);

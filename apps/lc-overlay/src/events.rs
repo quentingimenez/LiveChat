@@ -422,6 +422,7 @@ mod tests {
             ok: true,
             created: Some(false),
             item_id: Some("item-1".to_string()),
+            job_id: None,
             error: None,
         };
         assert_eq!(
@@ -437,12 +438,35 @@ mod tests {
     }
 
     #[test]
+    fn media_ingestion_payload_carries_a_play_once_job() {
+        let payload = MediaIngestionPayload {
+            ingestion_id: "ing-3".to_string(),
+            ok: true,
+            created: Some(false),
+            item_id: None,
+            job_id: Some("job-1".to_string()),
+            error: None,
+        };
+        assert_eq!(
+            media_ingestion_payload(&payload, "guild-1"),
+            json!({
+                "ingestionId": "ing-3",
+                "ok": true,
+                "created": false,
+                "jobId": "job-1",
+                "guildId": "guild-1",
+            })
+        );
+    }
+
+    #[test]
     fn media_ingestion_payload_keeps_the_failure_detail() {
         let payload = MediaIngestionPayload {
             ingestion_id: "ing-2".to_string(),
             ok: false,
             created: None,
             item_id: None,
+            job_id: None,
             error: Some(MediaIngestionError {
                 code: "unsupported_media".to_string(),
                 message: Some("format inconnu".to_string()),

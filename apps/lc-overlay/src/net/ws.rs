@@ -1709,6 +1709,7 @@ mod tests {
             ok: false,
             created: None,
             item_id: None,
+            job_id: None,
             error: Some(MediaIngestionError {
                 code: "unsupported_media".to_string(),
                 message: Some("format inconnu".to_string()),

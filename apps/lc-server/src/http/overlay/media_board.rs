@@ -316,10 +316,6 @@ pub(crate) async fn list_items_payload(
                 serde_json::json!(row.item.artwork_on_overlay),
             );
             object.insert(
-                "displayDurationSec".to_owned(),
-                serde_json::json!(row.item.display_duration_sec),
-            );
-            object.insert(
                 "favorite".to_owned(),
                 serde_json::json!(favorites.contains(&row.item.id)),
             );
@@ -1000,29 +996,13 @@ pub(crate) async fn update_item_payload(
         existing.message.clone()
     };
 
-    if let Some(on_overlay) = artwork_on_overlay {
-        if let Err(db_error) = db
-            .media_board()
-            .set_artwork_on_overlay(item_id, on_overlay)
-            .await
-        {
-            return Err(db_failure("overlay_media_board.patch_artwork", &db_error));
-        }
-    }
-    if let Some(seconds) = display_duration {
-        if let Err(db_error) = db
-            .media_board()
-            .set_display_duration(item_id, seconds)
-            .await
-        {
-            return Err(db_failure("overlay_media_board.patch_duration", &db_error));
-        }
-    }
-    match db
-        .media_board()
-        .update(item_id, title.as_deref(), message.as_deref())
-        .await
-    {
+    let edit = lc_db::BoardItemEdit {
+        title: title.as_deref(),
+        message: message.as_deref(),
+        artwork_on_overlay,
+        display_duration_sec: display_duration,
+    };
+    match db.media_board().update(item_id, &edit).await {
         Ok(true) => {
             state.admin_hub.broadcast_to_guild(
                 actor.guild_id(),

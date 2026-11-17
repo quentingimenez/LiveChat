@@ -62,6 +62,10 @@ pub fn command_payload(spec: &CommandSpec, lang: Lang) -> Value {
                     .collect();
                 payload["choices"] = Value::Array(choices);
             }
+            if let Some((min, max)) = option.range {
+                payload["min_value"] = json!(min);
+                payload["max_value"] = json!(max);
+            }
             payload
         })
         .collect();

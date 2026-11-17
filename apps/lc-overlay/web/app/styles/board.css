@@ -445,6 +445,80 @@
   overflow-wrap: anywhere;
 }
 
+/* Title and message edited in place: a framed block with a pencil says it
+   can be clicked; the field that replaces it keeps the same box. */
+.inline-edit {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-s);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: text;
+}
+
+.inline-edit:hover {
+  border-style: solid;
+  border-color: var(--text-faint);
+  background: var(--slate-800);
+}
+
+.inline-edit .icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  color: var(--text-faint);
+}
+
+.inline-edit:hover .icon {
+  color: var(--text);
+}
+
+.inline-edit .inline-text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.inline-edit.is-empty .inline-text {
+  color: var(--text-faint);
+  font-style: italic;
+  font-weight: 400;
+}
+
+.detail-head .inline-edit,
+.detail-head .inline-input {
+  flex: 1;
+}
+
+.inline-input.is-title {
+  height: auto;
+  padding: 5px 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.inline-edit.is-message,
+.inline-input.is-message,
+.detail-message {
+  margin: 12px 0 0;
+  font-size: 13px;
+}
+
+.detail-message {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* The box takes the media's own ratio (`--ratio`, set from its size). A tall
    media is capped in height and narrowed to keep that ratio, never cropped. */
 .detail .preview {

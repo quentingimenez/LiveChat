@@ -134,6 +134,30 @@ impl PairingCodesRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Revokes the unused codes of a guild issued by one of `authors`
+    /// (`created_by_discord_user_id`). Returns the number of revoked codes.
+    pub async fn revoke_by_authors(
+        &self,
+        guild_id: &GuildId,
+        authors: &[String],
+        revoked_at: DateTime<chrono::Utc>,
+    ) -> DbResult<u64> {
+        let mut revoked = 0;
+        for author in authors {
+            let result = sqlx::query(
+                "UPDATE pairing_codes SET used_at = ? \
+                 WHERE guild_id = ? AND created_by_discord_user_id = ? AND used_at IS NULL",
+            )
+            .bind(to_ms(revoked_at))
+            .bind(guild_id.as_str())
+            .bind(author.as_str())
+            .execute(&self.pool)
+            .await?;
+            revoked += result.rows_affected();
+        }
+        Ok(revoked)
+    }
+
     /// Supprime les codes inutilisables : consommés/révoqués ou expirés.
     ///
     /// Retourne le nombre de codes supprimés.

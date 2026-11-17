@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/preact';
+import { fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './app';
 import {
@@ -24,7 +24,7 @@ function response(body: unknown, status = 200): Response {
 }
 
 function mockAdminApi() {
-  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     const url = String(input);
     if (url === '/admin/auth/session') {
       return response(session);
@@ -43,6 +43,12 @@ function mockAdminApi() {
     }
     if (url === `/admin/api/guilds/${guildFixture.id}`) {
       return response(guildDetailFixture);
+    }
+    if (url.endsWith('/members/member-2/ban')) {
+      return response({ banned: true, ban: guildDetailFixture.bans.items[0] });
+    }
+    if (url.endsWith('/bans/ban-1')) {
+      return response({ unbanned: true });
     }
     return response({ error: 'not_found' }, 404);
   });
@@ -98,6 +104,50 @@ describe('App', () => {
         ).toBeTruthy(),
       );
     }
+  });
+
+  it('bans a member and lifts a ban from the members tab', async () => {
+    const fetchMock = mockAdminApi();
+    window.scrollTo = vi.fn();
+    window.location.hash = `#/guilds/${guildFixture.id}/members`;
+
+    render(<App />);
+
+    // The banned person is listed with who banned them.
+    expect(await screen.findByText('Troll')).toBeTruthy();
+    expect(screen.getByText('999999999999999999')).toBeTruthy();
+
+    const banButtons = await screen.findAllByRole('button', { name: 'Bannir' });
+    fireEvent.click(banButtons[1]);
+    expect(await screen.findByText('Bannir Yanis ?')).toBeTruthy();
+    // Yanis has no Discord account: the dialog says a ban cannot keep them out.
+    expect(screen.getByText(/Sans compte Discord lié/)).toBeTruthy();
+    const confirmBan = screen.getAllByRole('button', { name: 'Bannir' }).at(-1);
+    fireEvent.click(confirmBan as HTMLElement);
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, init]) =>
+            String(url) === `/admin/api/guilds/${guildFixture.id}/members/member-2/ban` &&
+            (init as RequestInit | undefined)?.method === 'POST',
+        ),
+      ).toBe(true),
+    );
+
+    await waitFor(() => expect(screen.queryByText('Bannir Yanis ?')).toBeNull());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Lever' }));
+    expect(await screen.findByText('Lever le bannissement de Troll ?')).toBeTruthy();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Lever' }).at(-1) as HTMLElement);
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, init]) =>
+            String(url) === `/admin/api/guilds/${guildFixture.id}/bans/ban-1` &&
+            (init as RequestInit | undefined)?.method === 'DELETE',
+        ),
+      ).toBe(true),
+    );
   });
 
   it('renders every top-level screen without crashing', async () => {

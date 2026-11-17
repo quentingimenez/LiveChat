@@ -173,6 +173,10 @@ const getPairingFailureMessage = (params: {
   const { status, endpoint, body } = params;
   const remoteError = toNonEmptyString(body?.error) || toNonEmptyString(body?.message);
 
+  if (status === 403 && body?.error === 'member_banned') {
+    return 'Ce compte Discord est banni de la guilde : il ne peut plus appairer d’extension.';
+  }
+
   if (status === 404 && body?.error === 'pairing_code_invalid_or_expired') {
     return 'Code invalide ou expiré. Regénère un code depuis l’overlay (Mon profil → Appairer l’extension navigateur) ou avec /pair-code sur Discord.';
   }

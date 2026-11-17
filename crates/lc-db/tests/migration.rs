@@ -31,6 +31,7 @@ async fn migration_fraiche_puis_idempotente() {
         "admin_sessions",
         "app_metadata",
         "discord_link_codes",
+        "guild_bans",
         "guild_invites",
         "guild_members",
         "guilds",
@@ -49,7 +50,7 @@ async fn migration_fraiche_puis_idempotente() {
             "table `{expected}` absente (tables : {tables:?})"
         );
     }
-    assert_eq!(tables.len(), 16, "tables inattendues : {tables:?}");
+    assert_eq!(tables.len(), 17, "tables inattendues : {tables:?}");
 
     // L'invariant « un seul PLAYING par guilde » est porté par un index unique
     // partiel créé par la migration 0002.

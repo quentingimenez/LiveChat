@@ -1,4 +1,8 @@
 {
+  "bans": {
+    "count": 0,
+    "items": []
+  },
   "boardQuotaBytes": null,
   "busyUntil": null,
   "discord": {
@@ -8,7 +12,7 @@
   },
   "editableName": "Studio LiveChat",
   "guestsCanViewBoard": true,
-  "id": "9274817583033437435",
+  "id": "9961597321398483050",
   "ingest": {
     "clients": [],
     "total": 0
@@ -17,10 +21,10 @@
     "count": 1,
     "items": [
       {
-        "code": "LBDX8BL6",
-        "createdAt": "2026-11-16T05:56:30.130Z",
+        "code": "2H3358GA",
+        "createdAt": "2026-11-17T06:22:02.272Z",
         "createdByMemberId": null,
-        "expiresAt": "2026-11-23T05:56:30.130Z",
+        "expiresAt": "2026-11-24T06:22:02.272Z",
         "isActive": true,
         "maxUses": 1,
         "memberId": null,
@@ -56,7 +60,7 @@
   "queue": {
     "pending": [],
     "playing": null,
-    "serverTime": "2026-11-16T05:56:30.158Z"
+    "serverTime": "2026-11-17T06:22:02.294Z"
   },
   "settings": {
     "defaultMediaTime": 5,

@@ -125,6 +125,20 @@ export const guildDetailFixture: GuildDetail = {
       },
     ],
   },
+  bans: {
+    count: 1,
+    items: [
+      {
+        id: 'ban-1',
+        memberId: 'member-9',
+        displayName: 'Troll',
+        avatar: null,
+        discordUserId: '999999999999999999',
+        bannedBy: 'Quentin',
+        createdAt: '2026-11-10T10:00:00.000Z',
+      },
+    ],
+  },
   invites: {
     count: 1,
     items: [

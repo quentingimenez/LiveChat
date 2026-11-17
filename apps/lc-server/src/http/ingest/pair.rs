@@ -93,6 +93,18 @@ pub async fn consume(
         return simple_error(StatusCode::FORBIDDEN, "pairing_code_scope_mismatch");
     }
 
+    // A Discord account banned from the guild cannot pair an extension, even
+    // with a code issued before the ban.
+    match db
+        .guild_bans()
+        .is_discord_user_banned(&entry.guild_id, &entry.created_by_discord_user_id)
+        .await
+    {
+        Ok(true) => return simple_error(StatusCode::FORBIDDEN, "member_banned"),
+        Ok(false) => {}
+        Err(error) => return media_service_error(error.into()),
+    }
+
     let entry = match codes.consume(&code, now).await {
         Ok(Some(entry)) => entry,
         Ok(None) => return pairing_code_invalid(),

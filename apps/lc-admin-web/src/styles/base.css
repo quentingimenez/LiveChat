@@ -1170,6 +1170,7 @@ table.tbl {
 .tbl td.is-actions {
   width: 1%;
   text-align: right;
+  white-space: nowrap;
 }
 
 .tbl td.is-wrap {
@@ -1218,6 +1219,10 @@ table.tbl {
   margin-top: 8px;
   color: var(--text-faint);
   font-size: 12.5px;
+}
+
+.section-title {
+  margin: 28px 0 10px;
 }
 
 /* --------------------------------------------------------------------- tabs */

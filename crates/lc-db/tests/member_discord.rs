@@ -5,11 +5,11 @@
 
 mod common;
 
-use chrono::Duration;
 use lc_domain::entities::GuildMember;
 use lc_domain::enums::GuildRole;
 use lc_domain::ids::{GuildId, GuildMemberId};
 use sqlx::sqlite::SqlitePoolOptions;
+use time::Duration;
 
 const MIGRATIONS_BEFORE_0008: [&str; 7] = [
     include_str!("../migrations/0001_init.sql"),

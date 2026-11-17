@@ -9,7 +9,6 @@ use std::time::{Duration as StdDuration, Instant};
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Method, Request, StatusCode};
 use axum::Router;
-use chrono::{DateTime, Duration, TimeZone, Utc};
 use lc_db::{Db, DbConfig};
 use lc_domain::{
     FixedClock, GuildId, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, MediaKind,
@@ -18,6 +17,7 @@ use lc_domain::{
 use lc_protocol::{BoardChange, ServerMessage};
 use serde_json::{json, Value};
 use tempfile::TempDir;
+use time::{Duration, UtcDateTime};
 use tower::ServiceExt as _;
 use uuid::Uuid;
 
@@ -33,10 +33,8 @@ const OTHER_TOKEN: &str = "66666666666666666666666666666666666666666666666666666
 const GUEST_TOKEN: &str = "7777777777777777777777777777777777777777777777777777777777777777";
 const GUILD: &str = "123456789012345678";
 
-fn fixed_now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 11, 10, 12, 0, 0)
-        .single()
-        .unwrap()
+fn fixed_now() -> UtcDateTime {
+    time::macros::utc_datetime!(2026-11-10 12:00:00)
 }
 
 fn guild() -> GuildId {

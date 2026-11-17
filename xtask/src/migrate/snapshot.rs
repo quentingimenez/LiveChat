@@ -24,7 +24,6 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use chrono::Utc;
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{Connection, SqliteConnection};
 use tempfile::TempDir;
@@ -222,7 +221,7 @@ async fn attempt_snapshot(source: &Path, attempt: u32) -> Result<Result<Snapshot
     let meta = SnapshotMeta {
         sha256,
         bytes,
-        created_at_ms: Utc::now().timestamp_millis(),
+        created_at_ms: super::dates::now_millis(),
         schema_version,
         source: final_signature,
         attempts: attempt,

@@ -10,7 +10,6 @@ use async_trait::async_trait;
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Method, Request, StatusCode};
 use axum::Router;
-use chrono::{DateTime, Duration, TimeZone, Utc};
 use lc_db::{Db, DbConfig};
 use lc_domain::{
     FixedClock, GuildId, GuildMember, GuildMemberId, GuildRole, PairingCode, PairingCodeEntry,
@@ -18,6 +17,7 @@ use lc_domain::{
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
+use time::{Duration, UtcDateTime};
 use tower::ServiceExt as _;
 
 use crate::app::AppState;
@@ -32,10 +32,8 @@ const DISCORD_GUILD: &str = "123456789012345678";
 /// Discord account issuing the personal `/pair-code`.
 const DISCORD_USER: &str = "4242";
 
-fn fixed_now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 11, 10, 12, 0, 0)
-        .single()
-        .unwrap()
+fn fixed_now() -> UtcDateTime {
+    time::macros::utc_datetime!(2026-11-10 12:00:00)
 }
 
 fn native_guild() -> GuildId {
@@ -322,7 +320,7 @@ async fn an_unlinked_member_cannot_follow_discord() {
 async fn following_member(
     db: &Db,
     guild_id: &GuildId,
-    synced_at: Option<DateTime<Utc>>,
+    synced_at: Option<UtcDateTime>,
 ) -> GuildMember {
     let member = GuildMember {
         id: GuildMemberId::new_v4(),

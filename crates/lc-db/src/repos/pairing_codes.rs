@@ -1,10 +1,10 @@
 //! Repository `pairing_codes` (codes d'appairage à usage unique).
 
-use chrono::DateTime;
 use lc_domain::entities::PairingCodeEntry;
 use lc_domain::enums::PairingMode;
 use lc_domain::ids::{GuildId, PairingCode as PairingCodeValue};
 use sqlx::SqlitePool;
+use time::UtcDateTime;
 
 use crate::convert::{decode, from_ms, from_opt_ms, to_ms};
 use crate::error::{conflict_on_unique, DbResult};
@@ -100,7 +100,7 @@ impl PairingCodesRepository {
     pub async fn consume(
         &self,
         code: &PairingCodeValue,
-        now: DateTime<chrono::Utc>,
+        now: UtcDateTime,
     ) -> DbResult<Option<PairingCodeEntry>> {
         let row = sqlx::query_as::<_, PairingCodeRow>(
             "UPDATE pairing_codes SET used_at = ? \
@@ -120,11 +120,7 @@ impl PairingCodesRepository {
     /// Révoque un code non encore consommé (pose `used_at` sans le consommer).
     ///
     /// Retourne `false` si le code n'existe pas ou s'il était déjà consommé.
-    pub async fn revoke(
-        &self,
-        code: &PairingCodeValue,
-        revoked_at: DateTime<chrono::Utc>,
-    ) -> DbResult<bool> {
+    pub async fn revoke(&self, code: &PairingCodeValue, revoked_at: UtcDateTime) -> DbResult<bool> {
         let result =
             sqlx::query("UPDATE pairing_codes SET used_at = ? WHERE code = ? AND used_at IS NULL")
                 .bind(to_ms(revoked_at))
@@ -140,7 +136,7 @@ impl PairingCodesRepository {
         &self,
         guild_id: &GuildId,
         authors: &[String],
-        revoked_at: DateTime<chrono::Utc>,
+        revoked_at: UtcDateTime,
     ) -> DbResult<u64> {
         let mut revoked = 0;
         for author in authors {
@@ -161,7 +157,7 @@ impl PairingCodesRepository {
     /// Supprime les codes inutilisables : consommés/révoqués ou expirés.
     ///
     /// Retourne le nombre de codes supprimés.
-    pub async fn delete_expired(&self, now: DateTime<chrono::Utc>) -> DbResult<u64> {
+    pub async fn delete_expired(&self, now: UtcDateTime) -> DbResult<u64> {
         let result = sqlx::query(
             "DELETE FROM pairing_codes \
              WHERE used_at IS NOT NULL \

@@ -29,9 +29,9 @@
 //! ## Conventions
 //!
 //! - Les dates sont des `INTEGER` epoch **millisecondes UTC** en base et des
-//!   [`chrono::DateTime<Utc>`] dans le domaine ; les fonctions de repository qui
+//!   [`time::UtcDateTime`] dans le domaine ; les fonctions de repository qui
 //!   ont besoin du temps courant le reçoivent en paramètre (jamais d'appel caché
-//!   à `Utc::now()`), ce qui rend les tests et le scheduler déterministes.
+//!   à `UtcDateTime::now()`), ce qui rend les tests et le scheduler déterministes.
 //! - Les booléens sont stockés `INTEGER 0/1` (contrainte `CHECK`) et exposés
 //!   `bool`.
 //! - Les enums métier sont stockés en `TEXT` MAJUSCULE (`'READY'`, `'PENDING'`…)

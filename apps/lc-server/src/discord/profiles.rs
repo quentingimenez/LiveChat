@@ -20,12 +20,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Duration, Utc};
 use lc_db::Db;
 use lc_discord::identity;
 use lc_domain::{GuildMember, OverlayClientId};
 use serenity::http::Http;
 use serenity::model::id::{GuildId, UserId};
+use time::{Duration, UtcDateTime};
 
 use crate::app::AppState;
 
@@ -178,7 +178,7 @@ pub async fn refresh_member(
     db: &Db,
     source: &dyn DiscordProfileSource,
     member: &GuildMember,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
     force: bool,
 ) -> RefreshOutcome {
     let Some(user_id) = member.discord_user_id.as_deref() else {

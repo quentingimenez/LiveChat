@@ -14,13 +14,13 @@ use async_trait::async_trait;
 use axum::extract::{Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use lc_db::Db;
 use lc_domain::GuildId;
 use lc_media::storage::{is_staged_file_name, MediaStorage};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::FromRow;
+use time::{Duration as TimeDuration, UtcDateTime};
 
 use crate::app::AppState;
 use crate::http::health::{HealthState, DATABASE_CHECK_TIMEOUT};
@@ -39,7 +39,7 @@ const INGESTIONS_DEFAULT_LIMIT: usize = 50;
 const VERSION_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Lifetime of a cached binary version.
-const VERSION_CACHE_TTL: ChronoDuration = ChronoDuration::seconds(60);
+const VERSION_CACHE_TTL: TimeDuration = TimeDuration::seconds(60);
 
 /// Number of ingestion failures in the last hour that degrades the status to
 /// `warn`.
@@ -81,13 +81,13 @@ impl BinaryProbeResult {
 #[async_trait]
 pub(crate) trait BinaryProbe: Send + Sync {
     /// Probes `binary` (`--version`, then `-version`).
-    async fn probe(&self, binary: &str, now: DateTime<Utc>) -> BinaryProbeResult;
+    async fn probe(&self, binary: &str, now: UtcDateTime) -> BinaryProbeResult;
 }
 
 /// Cached result of one binary probe.
 #[derive(Debug, Clone)]
 struct CachedProbe {
-    at: DateTime<Utc>,
+    at: UtcDateTime,
     result: BinaryProbeResult,
 }
 
@@ -103,13 +103,13 @@ impl SystemBinaryProbe {
         Self::default()
     }
 
-    fn cached(&self, binary: &str, now: DateTime<Utc>) -> Option<BinaryProbeResult> {
+    fn cached(&self, binary: &str, now: UtcDateTime) -> Option<BinaryProbeResult> {
         let cache = self.cache.lock().ok()?;
         let cached = cache.get(binary)?;
         (now - cached.at < VERSION_CACHE_TTL).then(|| cached.result.clone())
     }
 
-    fn store(&self, binary: &str, now: DateTime<Utc>, result: &BinaryProbeResult) {
+    fn store(&self, binary: &str, now: UtcDateTime, result: &BinaryProbeResult) {
         if let Ok(mut cache) = self.cache.lock() {
             cache.insert(
                 binary.to_owned(),
@@ -124,7 +124,7 @@ impl SystemBinaryProbe {
 
 #[async_trait]
 impl BinaryProbe for SystemBinaryProbe {
-    async fn probe(&self, binary: &str, now: DateTime<Utc>) -> BinaryProbeResult {
+    async fn probe(&self, binary: &str, now: UtcDateTime) -> BinaryProbeResult {
         if let Some(cached) = self.cached(binary, now) {
             return cached;
         }
@@ -284,7 +284,7 @@ pub(super) async fn health(
     Json(HealthResponse {
         status: if degraded { "degraded" } else { "ok" },
         checks,
-        uptime_sec: (now - state.started_at).num_seconds().max(0),
+        uptime_sec: (now - state.started_at).whole_seconds().max(0),
         server_version: env!("CARGO_PKG_VERSION"),
     })
 }
@@ -368,7 +368,7 @@ async fn binary_check(
     id: &'static str,
     binary: &str,
     probe: &dyn BinaryProbe,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
 ) -> HealthCheck {
     let result = probe.probe(binary, now).await;
     HealthCheck {
@@ -381,8 +381,8 @@ async fn binary_check(
 }
 
 /// Warns when more than three ingestions failed during the last hour.
-fn ingestions_check(state: &AppState, now: DateTime<Utc>) -> HealthCheck {
-    let since = now - ChronoDuration::hours(1);
+fn ingestions_check(state: &AppState, now: UtcDateTime) -> HealthCheck {
+    let since = now - TimeDuration::hours(1);
     let failures = state.ingestions.failure_count_since(since);
     let status = if failures > INGESTION_FAILURE_WARN_THRESHOLD {
         "warn"
@@ -411,8 +411,8 @@ struct IngestionRow {
     item_id: Option<String>,
     status: &'static str,
     error: Option<String>,
-    started_at: DateTime<Utc>,
-    finished_at: Option<DateTime<Utc>>,
+    started_at: UtcDateTime,
+    finished_at: Option<UtcDateTime>,
 }
 
 /// `GET /admin/api/ingestions?limit=50`.
@@ -461,12 +461,9 @@ pub(super) async fn ingestions(
             } else {
                 "link"
             };
-            let duration_ms = row
-                .finished_at
-                .unwrap_or(now)
-                .signed_duration_since(row.started_at)
-                .num_milliseconds()
-                .max(0);
+            let duration_ms =
+                lc_domain::time::duration_to_ms(row.finished_at.unwrap_or(now) - row.started_at)
+                    .max(0);
             json!({
                 "id": row.id,
                 "guildId": row.guild_id.as_str(),
@@ -735,8 +732,8 @@ pub(super) async fn clean_orphans(
         .filter_map(|path| reference_key(&root, path))
         .collect();
 
-    let now_ms = state.clock.now().timestamp_millis();
-    let grace_ms = crate::media::purge::ORPHAN_GRACE.num_milliseconds();
+    let now_ms = lc_domain::datetime_to_ms(state.clock.now());
+    let grace_ms = lc_domain::time::duration_to_ms(crate::media::purge::ORPHAN_GRACE);
     let variants = storage
         .list_variants()
         .map_err(|error| AdminError::db("listing stored media files", error))?;

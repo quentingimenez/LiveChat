@@ -10,13 +10,13 @@
 use std::time::{Duration as StdDuration, Instant};
 
 use axum::http::{Method, StatusCode};
-use chrono::Duration;
 use lc_domain::{
     GuildRole, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, MediaKind, MediaStatus,
     OverlaySessionMode,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
+use time::Duration;
 
 use crate::ingestions::IngestionStatus;
 

@@ -18,7 +18,9 @@
 
 use std::fmt;
 
-use chrono::{DateTime, NaiveDateTime, Utc};
+use time::format_description::well_known::Rfc3339;
+use time::macros::format_description;
+use time::{OffsetDateTime, PrimitiveDateTime, UtcDateTime};
 
 /// Borne basse acceptée : `0001-01-01T00:00:00Z` en millisecondes.
 ///
@@ -125,33 +127,59 @@ fn parse_space_datetime(value: &str) -> Result<(i64, DateFormat), String> {
                 .to_string(),
         );
     }
-    let naive = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").map_err(|err| {
+    let naive = PrimitiveDateTime::parse(
+        value,
+        format_description!("[year]-[month]-[day] [hour]:[minute]:[second]"),
+    )
+    .map_err(|err| {
         format!(
             "format TEXT non reconnu ({err}) ; attendu « AAAA-MM-JJ HH:MM:SS » UTC, \
              RFC 3339 avec fuseau, ou INTEGER epoch ms"
         )
     })?;
     Ok((
-        naive.and_utc().timestamp_millis(),
+        utc_millis(naive.assume_utc().to_utc()),
         DateFormat::TextSpaceUtcSeconds,
     ))
 }
 
 /// RFC 3339 avec fuseau explicite (`Z` ou `±HH:MM`).
 fn parse_rfc3339(value: &str) -> Result<(i64, DateFormat), String> {
-    let parsed = DateTime::parse_from_rfc3339(value).map_err(|err| {
+    let parsed = OffsetDateTime::parse(value, &Rfc3339).map_err(|err| {
         format!("RFC 3339 invalide ({err}) ; un fuseau explicite (Z ou ±HH:MM) est obligatoire")
     })?;
-    let millis = parsed.timestamp_millis();
+    let millis = utc_millis(parsed.to_utc());
     check_integer(millis)?;
     Ok((millis, DateFormat::Rfc3339))
 }
 
+/// Epoch milliseconds of a UTC date (floor, like the RFC 3339 parse expects).
+fn utc_millis(value: UtcDateTime) -> i64 {
+    value.unix_timestamp() * 1000 + i64::from(value.millisecond())
+}
+
+/// Current time in epoch milliseconds, UTC.
+pub fn now_millis() -> i64 {
+    utc_millis(UtcDateTime::now())
+}
+
 /// Formate des millisecondes epoch pour les messages de vérification.
 pub fn format_millis(millis: i64) -> String {
-    match DateTime::<Utc>::from_timestamp_millis(millis) {
-        Some(value) => value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        None => format!("{millis} ms (hors plage chrono)"),
+    let nanos = i128::from(millis) * 1_000_000;
+    match UtcDateTime::from_unix_timestamp_nanos(nanos) {
+        // Same bytes as `lc_domain::time::to_rfc3339_millis` (xtask does not
+        // depend on lc-domain): always three decimals, `Z` suffix.
+        Ok(value) => format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+            value.year(),
+            u8::from(value.month()),
+            value.day(),
+            value.hour(),
+            value.minute(),
+            value.second(),
+            value.millisecond()
+        ),
+        Err(_) => format!("{millis} ms (hors plage)"),
     }
 }
 

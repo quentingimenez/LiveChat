@@ -21,7 +21,6 @@ use axum::extract::{Extension, State};
 use axum::http::{header::ORIGIN, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use chrono::Utc;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use lc_db::Db;
@@ -41,6 +40,7 @@ use lc_protocol::{
     MAX_PLAYBACK_REMAINING_MS, PEERS_REQUEST_MIN_INTERVAL_MS, PING_INTERVAL_MS,
     PLAYBACK_STATE_MIN_INTERVAL_MS, PROTOCOL_VERSION,
 };
+use time::UtcDateTime;
 use tokio::sync::mpsc;
 use tokio::time::{interval, sleep, MissedTickBehavior};
 use tracing::{debug, info, warn};
@@ -560,7 +560,7 @@ async fn send_welcome(
     };
     let current_job = match engine.current_job(&context.guild_id).await {
         Ok(Some(current_job)) => {
-            let now_sec = u64::try_from(Utc::now().timestamp()).unwrap_or(0);
+            let now_sec = u64::try_from(UtcDateTime::now().unix_timestamp()).unwrap_or(0);
             hub.signed_current_job(&current_job, &context.client_id_str, now_sec)
         }
         Ok(None) => None,

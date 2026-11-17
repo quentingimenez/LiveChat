@@ -15,9 +15,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use lc_db::Db;
 use lc_domain::{Clock, Guild, GuildId, MediaAsset, MediaAssetId, PairingCode, SystemClock};
+use time::UtcDateTime;
 
 use crate::error::{BotError, MediaError, MediaLimits, SpeechFailure};
 use crate::i18n::Lang;
@@ -427,7 +427,7 @@ pub async fn load_guild(
 }
 
 /// Horodatage courant fourni par l'horloge injectée.
-pub fn now(ctx: &dyn BotContext) -> DateTime<Utc> {
+pub fn now(ctx: &dyn BotContext) -> UtcDateTime {
     ctx.clock().now()
 }
 

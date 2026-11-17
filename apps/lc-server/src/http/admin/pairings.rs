@@ -115,7 +115,7 @@ pub(super) async fn delete_expired(
 ) -> Result<Response, AdminError> {
     let db = require_db(&state)?;
     let guild_filter = non_empty_string(query.guild_id.as_deref());
-    let now_ms = state.clock.now().timestamp_millis();
+    let now_ms = lc_domain::datetime_to_ms(state.clock.now());
 
     let deleted = queries::delete_expired_pairing_codes(db, guild_filter.as_deref(), now_ms)
         .await
@@ -150,7 +150,7 @@ pub(super) async fn revoke(
         .map_err(|error| AdminError::db("lecture du code de pairing", error))?
         .ok_or_else(|| AdminError::not_found("pairing_code_not_found"))?;
 
-    let now_ms = state.clock.now().timestamp_millis();
+    let now_ms = lc_domain::datetime_to_ms(state.clock.now());
     let revoked = queries::revoke_pairing_code(db, code.as_str(), now_ms)
         .await
         .map_err(|error| AdminError::db("révocation du code de pairing", error))?;

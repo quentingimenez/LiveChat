@@ -156,7 +156,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
             }
         }
         // The persistent admin audit keeps 90 days of rows.
-        match http::admin::purge_old_audit(db, chrono::Utc::now()).await {
+        match http::admin::purge_old_audit(db, time::UtcDateTime::now()).await {
             Ok(removed) if removed > 0 => {
                 info!(
                     removed,

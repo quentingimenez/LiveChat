@@ -18,7 +18,6 @@ use std::time::Duration;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
-use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use lc_db::Db;
 use lc_domain::{
@@ -33,6 +32,7 @@ use lc_protocol::{
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
+use time::UtcDateTime;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -304,7 +304,7 @@ fn guild_id() -> GuildId {
 }
 
 /// Renvoie la date fixe des tests.
-fn now() -> chrono::DateTime<Utc> {
+fn now() -> time::UtcDateTime {
     lc_domain::ms_to_datetime(TS).expect("date de test")
 }
 
@@ -394,7 +394,7 @@ async fn seed_media_asset(db: &Db, duration_sec: i64) -> MediaAssetId {
         status: MediaStatus::Ready,
         error: None,
         last_accessed_at: now(),
-        expires_at: now() + chrono::Duration::hours(24),
+        expires_at: now() + time::Duration::hours(24),
         created_at: now(),
     };
     let id = asset.id;
@@ -413,7 +413,7 @@ async fn seed_job(
     media_asset_id: MediaAssetId,
     duration_sec: i64,
     status: JobStatus,
-    started_at: Option<chrono::DateTime<Utc>>,
+    started_at: Option<time::UtcDateTime>,
 ) -> PlaybackJobId {
     let job = PlaybackJob {
         id: PlaybackJobId::new_v4(),
@@ -448,7 +448,9 @@ async fn seed_ready_board_item(
     media_asset_id: MediaAssetId,
 ) -> MediaBoardItemId {
     sqlx::query("UPDATE media_assets SET expires_at = ? WHERE id = ?")
-        .bind((Utc::now() + chrono::Duration::hours(24)).timestamp_millis())
+        .bind(lc_domain::datetime_to_ms(
+            UtcDateTime::now() + time::Duration::hours(24),
+        ))
         .bind(media_asset_id.to_canonical())
         .execute(db.pool())
         .await
@@ -538,7 +540,7 @@ async fn revoked_client_closes_with_4402() {
     server
         .db
         .overlay_clients()
-        .revoke(client_id, Utc::now())
+        .revoke(client_id, UtcDateTime::now())
         .await
         .expect("révocation de test");
     let mut socket = connect(server.addr).await;
@@ -657,7 +659,7 @@ async fn welcome_exposes_current_job_with_signed_url() {
         asset_id,
         20,
         JobStatus::Playing,
-        Some(Utc::now()),
+        Some(UtcDateTime::now()),
     )
     .await;
 
@@ -882,7 +884,7 @@ async fn stop_request_stops_the_job_and_broadcasts_stop() {
         asset_id,
         12,
         JobStatus::Playing,
-        Some(Utc::now()),
+        Some(UtcDateTime::now()),
     )
     .await;
     let mut socket = connect(server.addr).await;
@@ -957,7 +959,7 @@ async fn local_stop_of_the_only_overlay_releases_the_job() {
         asset_id,
         12,
         JobStatus::Playing,
-        Some(Utc::now()),
+        Some(UtcDateTime::now()),
     )
     .await;
     let mut socket = connect(server.addr).await;
@@ -981,7 +983,7 @@ async fn local_stop_keeps_the_job_playing_for_the_other_overlays() {
         asset_id,
         12,
         JobStatus::Playing,
-        Some(Utc::now()),
+        Some(UtcDateTime::now()),
     )
     .await;
     let mut stopping = connect(server.addr).await;
@@ -1251,7 +1253,7 @@ async fn playback_state_is_persisted_for_a_corresponding_job() {
         asset_id,
         12,
         JobStatus::Playing,
-        Some(Utc::now()),
+        Some(UtcDateTime::now()),
     )
     .await;
     let mut socket = connect(server.addr).await;
@@ -1584,7 +1586,7 @@ fn text_only_job(guild_id: &GuildId, status: JobStatus) -> PlaybackJob {
         started_at: if status == JobStatus::Playing {
             // Horloge réelle : un `started_at` figé dans le passé (TS) serait
             // libéré par le watchdog « stale » du moteur au bootstrap.
-            Some(Utc::now())
+            Some(UtcDateTime::now())
         } else {
             None
         },
@@ -1669,7 +1671,7 @@ async fn revocation_emits_stop_revoked_before_close_4402() {
         asset,
         20,
         JobStatus::Playing,
-        Some(Utc::now()),
+        Some(UtcDateTime::now()),
     )
     .await;
     let mut socket_a = connect(server.addr).await;
@@ -1767,7 +1769,7 @@ async fn purge_stop_has_a_dedicated_reason() {
         asset,
         20,
         JobStatus::Playing,
-        Some(Utc::now()),
+        Some(UtcDateTime::now()),
     )
     .await;
     let mut socket = connect(server.addr).await;

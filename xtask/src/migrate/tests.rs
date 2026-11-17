@@ -199,9 +199,9 @@ INSERT INTO "PairingCode" (
 
 /// Date RFC 3339 -> millisecondes epoch UTC (référence indépendante du code testé).
 fn ms(rfc3339: &str) -> i64 {
-    chrono::DateTime::parse_from_rfc3339(rfc3339)
-        .expect("date de référence valide")
-        .timestamp_millis()
+    let date = time::OffsetDateTime::parse(rfc3339, &time::format_description::well_known::Rfc3339)
+        .expect("date de référence valide");
+    i64::try_from(date.unix_timestamp_nanos() / 1_000_000).expect("ms dans la plage i64")
 }
 
 /// Options prêtes à exécuter.

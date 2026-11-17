@@ -1,9 +1,9 @@
 //! Repository `guilds` (réglages et verrou `busy_until`).
 
-use chrono::DateTime;
 use lc_domain::entities::{Guild, GuildAccess};
 use lc_domain::ids::GuildId;
 use sqlx::SqlitePool;
+use time::UtcDateTime;
 
 use crate::convert::{decode, from_bool, from_opt_ms, to_bool, to_ms, to_opt_ms};
 use crate::error::{conflict_on_unique, DbResult};
@@ -122,7 +122,7 @@ impl GuildsRepository {
     pub async fn set_busy_until(
         &self,
         id: &GuildId,
-        busy_until: Option<DateTime<chrono::Utc>>,
+        busy_until: Option<UtcDateTime>,
     ) -> DbResult<()> {
         sqlx::query(
             "INSERT INTO guilds (id, busy_until) VALUES (?, ?) \
@@ -171,7 +171,7 @@ impl GuildsRepository {
         &self,
         id: &GuildId,
         name: &str,
-        created_at: DateTime<chrono::Utc>,
+        created_at: UtcDateTime,
     ) -> DbResult<()> {
         sqlx::query("INSERT INTO guilds (id, name, standalone, created_at) VALUES (?, ?, 1, ?)")
             .bind(id.as_str())

@@ -9,13 +9,13 @@
 //! - le média est épinglé puis l'élément est créé ; une course sur la contrainte
 //!   d'unicité `(guild_id, media_asset_id)` est rattrapée en relisant la ligne.
 
-use chrono::{DateTime, Utc};
 use lc_db::{Db, DbError};
 use lc_domain::entities::{MediaAsset, MediaBoardItem};
 use lc_domain::enums::MediaKind;
 use lc_domain::ids::{GuildId, MediaAssetId, MediaBoardItemId};
 use lc_domain::time::datetime_to_ms;
 use lc_media::config::MediaConfig;
+use time::UtcDateTime;
 
 use crate::media::assets::pinned_expiry;
 use crate::media::errors::{MediaServiceError, MediaServiceResult};
@@ -51,7 +51,7 @@ pub async fn add_to_board(
     created_by_user_id: Option<&str>,
     created_by_name: Option<&str>,
     display_duration_sec: Option<i64>,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
 ) -> MediaServiceResult<BoardAddResult> {
     let repository = db.media_board();
 
@@ -112,7 +112,7 @@ pub async fn add_to_board(
 }
 
 /// Épingle un asset prêt : expiration lointaine et dernier accès à maintenant.
-async fn pin_asset(db: &Db, asset_id: MediaAssetId, now: DateTime<Utc>) -> MediaServiceResult<()> {
+async fn pin_asset(db: &Db, asset_id: MediaAssetId, now: UtcDateTime) -> MediaServiceResult<()> {
     let pinned_until = datetime_to_ms(pinned_expiry(now));
     let now_ms = datetime_to_ms(now);
 
@@ -155,11 +155,11 @@ fn normalize_optional(value: Option<&str>) -> Option<String> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use chrono::Duration;
     use lc_db::DbConfig;
     use lc_domain::enums::MediaKind;
     use lc_domain::ids::MediaAssetId;
     use lc_media::error::MediaErrorCode;
+    use time::Duration;
 
     use super::*;
     use crate::media::errors::MediaServiceError;
@@ -168,7 +168,7 @@ mod tests {
         _dir: tempfile::TempDir,
         db: Db,
         config: MediaConfig,
-        now: DateTime<Utc>,
+        now: UtcDateTime,
     }
 
     async fn fixture(board_max_bytes: u64) -> Fixture {
@@ -183,7 +183,7 @@ mod tests {
             _dir: dir,
             db,
             config,
-            now: Utc::now(),
+            now: UtcDateTime::now(),
         }
     }
 

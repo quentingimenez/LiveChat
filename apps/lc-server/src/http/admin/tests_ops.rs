@@ -8,9 +8,9 @@
 use std::sync::Arc;
 
 use axum::http::{Method, StatusCode};
-use chrono::{Duration, TimeZone, Utc};
 use lc_domain::{GuildId, JobStatus};
 use serde_json::Value;
+use time::{Duration, UtcDateTime};
 
 use super::ops::{BinaryProbe, BinaryProbeResult};
 use super::tests::{board_item, media_asset, playback_job, Harness};
@@ -37,7 +37,7 @@ impl FakeProbe {
 
 #[async_trait::async_trait]
 impl BinaryProbe for FakeProbe {
-    async fn probe(&self, binary: &str, _now: chrono::DateTime<Utc>) -> BinaryProbeResult {
+    async fn probe(&self, binary: &str, _now: time::UtcDateTime) -> BinaryProbeResult {
         if self.failing.contains(&binary) {
             BinaryProbeResult {
                 ok: false,
@@ -158,10 +158,7 @@ async fn ingestions_history_is_newest_first_and_limited() {
         .await
         .expect("board item");
 
-    let base = Utc
-        .with_ymd_and_hms(2026, 11, 10, 12, 0, 0)
-        .single()
-        .expect("fixed date");
+    let base = time::macros::utc_datetime!(2026-11-10 12:00:00);
     let client = uuid::Uuid::new_v4();
     let mut ids = Vec::new();
     for index in 0..3 {
@@ -462,7 +459,7 @@ async fn insert_audit(
 #[tokio::test]
 async fn audit_query_matches_action_and_exposes_the_id_cursor() {
     let harness = Harness::new().await;
-    let now = Utc::now().timestamp_millis();
+    let now = lc_domain::datetime_to_ms(UtcDateTime::now());
     insert_audit(
         &harness,
         now - 3_000,
@@ -536,7 +533,7 @@ async fn audit_csv_export_has_the_expected_headers_and_content() {
     let harness = Harness::new().await;
     insert_audit(
         &harness,
-        Utc::now().timestamp_millis(),
+        lc_domain::datetime_to_ms(UtcDateTime::now()),
         "Alice",
         "guild.purge",
         "POST",

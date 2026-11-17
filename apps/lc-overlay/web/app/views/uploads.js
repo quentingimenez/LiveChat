@@ -17,6 +17,7 @@ import {
   defaultTitle,
   ingestionErrorMessage,
   uploadErrorMessage,
+  uploadStatusLabel,
 } from '../core/upload-helpers.js';
 import { requestItemsReload } from '../data.js';
 
@@ -90,7 +91,9 @@ export function uploadsForGuild(guildId) {
   return state.uploads.filter((entry) => entry.guildId === guildId);
 }
 
-export function startLinkUpload({ guildId, url, title = '', message = '' }) {
+// `playOnce: true` sends the link to the overlays without adding it to the
+// board: the provisional card disappears once the playback job is created.
+export function startLinkUpload({ guildId, url, title = '', message = '', playOnce = false }) {
   if (!guildId || !url) {
     return null;
   }
@@ -102,6 +105,7 @@ export function startLinkUpload({ guildId, url, title = '', message = '' }) {
     url,
     title: String(title || '').trim(),
     message: message || '',
+    playOnce: Boolean(playOnce),
     status: 'waiting',
     error: null,
     uploadId: null,
@@ -116,8 +120,16 @@ export function startLinkUpload({ guildId, url, title = '', message = '' }) {
 }
 
 // `replaceItemId`: the file replaces the media of that board item (an edited
-// picture) instead of becoming a new item.
-export function startFileUpload({ guildId, file, title = '', message = '', replaceItemId = null }) {
+// picture) instead of becoming a new item. `playOnce: true` sends it to the
+// overlays without adding it to the board.
+export function startFileUpload({
+  guildId,
+  file,
+  title = '',
+  message = '',
+  replaceItemId = null,
+  playOnce = false,
+}) {
   if (!guildId || !file) {
     return null;
   }
@@ -131,6 +143,7 @@ export function startFileUpload({ guildId, file, title = '', message = '', repla
     title: String(title || '').trim() || defaultTitle(label),
     message: message || '',
     replaceItemId: replaceItemId || null,
+    playOnce: Boolean(playOnce),
     status: 'waiting',
     error: null,
     uploadId: null,
@@ -163,6 +176,7 @@ export function startEditJob({ guildId, itemId, title = '', recipe, replace = fa
     title: String(title || '').trim(),
     message: '',
     replaceItemId: replace ? itemId : null,
+    playOnce: false,
     status: 'waiting',
     error: null,
     uploadId: null,
@@ -236,6 +250,13 @@ function finishIngestion(entry, result) {
     return;
   }
   const title = uploadTitle(entry);
+  // A play-once never joins the board: the job it created is on its way to the
+  // overlays, the provisional card goes away with a toast.
+  if (entry.playOnce) {
+    removeEntry(entry);
+    notify(`« ${title} » envoyé aux overlays.`);
+    return;
+  }
   // An edit replacing its original creates nothing: the item changed media.
   if (entry.replaceItemId) {
     const done = () => {
@@ -389,6 +410,7 @@ async function resyncGuild(guildId) {
           ok: true,
           created: item.created,
           itemId: item.itemId,
+          jobId: item.jobId,
         });
       } else if (item.status === 'failed') {
         applyIngestionResult(entry, {
@@ -462,12 +484,16 @@ async function runUpload(entry) {
 async function sendLink(entry) {
   let response;
   try {
+    const body = { url: entry.url, title: entry.title, message: entry.message };
+    if (entry.playOnce) {
+      body.playOnce = true;
+    }
     response = await invoke('guild_api', {
       payload: {
         guildId: entry.guildId,
         method: 'POST',
         path: '/overlay/media-board/items',
-        body: { url: entry.url, title: entry.title, message: entry.message },
+        body,
       },
     });
   } catch (error) {
@@ -528,6 +554,7 @@ async function sendFile(entry) {
         contentType: entry.file.type || null,
         size: entry.file.size,
         replaceItemId: entry.replaceItemId || null,
+        playOnce: Boolean(entry.playOnce),
       },
     });
   } catch (error) {
@@ -686,12 +713,7 @@ function uploadStateNode(entry) {
       ),
     );
   }
-  let label = 'En attente…';
-  if (entry.status === 'sending') {
-    label = entry.kind === 'link' ? 'Téléchargement…' : 'Envoi…';
-  } else if (entry.status === 'converting') {
-    label = entry.kind === 'edit' ? 'Montage…' : 'Conversion…';
-  }
+  let label = uploadStatusLabel(entry);
   return h('div', { class: 'upload-state', 'aria-live': 'polite' }, label);
 }
 

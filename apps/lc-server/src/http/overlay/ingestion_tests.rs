@@ -10,9 +10,11 @@ use axum::body::{to_bytes, Body};
 use axum::http::{header, Method, Request, StatusCode};
 use axum::Router;
 use lc_db::{Db, DbConfig};
+use lc_domain::rights::{Action, RightsRole, RightsTable, Surface};
 use lc_domain::{
-    FixedClock, GuildId, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, MediaKind,
-    MediaStatus, OverlayClient, OverlayClientId, OverlaySessionMode,
+    FixedClock, GuildId, GuildMember, GuildMemberId, GuildRole, MediaAsset, MediaAssetId,
+    MediaBoardItem, MediaBoardItemId, MediaKind, MediaStatus, OverlayClient, OverlayClientId,
+    OverlaySessionMode,
 };
 use lc_protocol::{BoardChange, ServerMessage};
 use serde_json::{json, Value};
@@ -24,6 +26,7 @@ use uuid::Uuid;
 use crate::app::AppState;
 use crate::config::Config;
 use crate::http::admin::hub::AdminHub;
+use crate::ingestions::{IngestionEntry, IngestionStatus};
 use crate::shutdown::Shutdown;
 
 use super::auth;
@@ -60,6 +63,7 @@ fn test_config(media_dir: &Path) -> Config {
 #[derive(Debug, Default)]
 struct RecordingHub {
     broadcasts: Mutex<Vec<(GuildId, ServerMessage)>>,
+    sent: Mutex<Vec<(Uuid, ServerMessage)>>,
 }
 
 impl RecordingHub {
@@ -69,6 +73,16 @@ impl RecordingHub {
             .unwrap()
             .iter()
             .filter(|(target, _)| target == guild_id)
+            .map(|(_, message)| message.clone())
+            .collect()
+    }
+
+    fn client_messages(&self, client_id: &Uuid) -> Vec<ServerMessage> {
+        self.sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(target, _)| target == client_id)
             .map(|(_, message)| message.clone())
             .collect()
     }
@@ -94,6 +108,11 @@ impl AdminHub for RecordingHub {
 
     fn close_client_with_reason(&self, _client_id: &Uuid, _code: u16, _reason: &str) -> bool {
         false
+    }
+
+    fn send_to_client(&self, client_id: &Uuid, message: ServerMessage) -> bool {
+        self.sent.lock().unwrap().push((*client_id, message));
+        true
     }
 
     fn broadcast_to_guild(&self, guild_id: &GuildId, message: ServerMessage) -> usize {
@@ -213,6 +232,60 @@ impl Harness {
         };
         self.db.media_board().create(&item).await.unwrap();
         item
+    }
+
+    /// Attaches a guild member to an overlay client: its profile becomes the
+    /// author of what the client triggers.
+    async fn attach_member(&self, client: &OverlayClient, display_name: &str) -> GuildMember {
+        let member = GuildMember {
+            id: GuildMemberId::new_v4(),
+            guild_id: guild(),
+            display_name: display_name.to_owned(),
+            avatar: Some("https://example.test/lea.png".to_owned()),
+            role: GuildRole::Member,
+            created_at: fixed_now(),
+            removed_at: None,
+            discord_user_id: None,
+            profile_custom: false,
+            discord_synced_at: None,
+        };
+        self.db.guild_members().create(&member).await.unwrap();
+        self.db
+            .overlay_clients()
+            .set_member(client.id, member.id)
+            .await
+            .unwrap();
+        member
+    }
+
+    /// Puts a ready image in the media cache for `url`, so an ingestion of
+    /// that link reuses it without any download (an IP literal also skips the
+    /// DNS lookup). Returns the asset id.
+    async fn insert_cached_image(&self, url: &str) -> MediaAssetId {
+        let path = self._media.path().join("cached.png");
+        tokio::fs::write(&path, b"png-body").await.unwrap();
+        let canonical = lc_media::source::canonicalize_source_url(url);
+        let asset = MediaAsset {
+            id: MediaAssetId::new_v4(),
+            source_hash: lc_media::source::source_hash(&canonical),
+            source_url: url.to_owned(),
+            source_title: None,
+            kind: MediaKind::Image,
+            mime: "image/png".to_owned(),
+            duration_sec: None,
+            width: Some(10),
+            height: Some(10),
+            is_vertical: false,
+            storage_path: path.to_string_lossy().into_owned(),
+            size_bytes: 8,
+            status: MediaStatus::Ready,
+            error: None,
+            last_accessed_at: fixed_now(),
+            expires_at: fixed_now() + Duration::days(1),
+            created_at: fixed_now(),
+        };
+        self.db.media_assets().insert(&asset).await.unwrap();
+        asset.id
     }
 }
 
@@ -406,6 +479,191 @@ async fn finished_ingestions_are_purged_after_one_hour() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, json!({ "items": [] }));
+}
+
+/// Waits (bounded) for the detached task to finish an ingestion of the client.
+async fn wait_ingestion(state: &AppState, client_id: Uuid, ingestion_id: &str) -> IngestionEntry {
+    let deadline = Instant::now() + StdDuration::from_secs(30);
+    loop {
+        if let Some(entry) = state
+            .ingestions
+            .get(client_id, ingestion_id, state.clock.now())
+        {
+            if entry.status != IngestionStatus::Processing {
+                return entry;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "ingestion {ingestion_id} non terminée dans le délai"
+        );
+        tokio::time::sleep(StdDuration::from_millis(10)).await;
+    }
+}
+
+/// The cached image of the play-once tests: the ingestion of that link reuses
+/// it without any network access.
+const PLAY_ONCE_URL: &str = "https://93.184.215.14/play-once.png";
+
+/// « Jouer une fois » par lien : la tâche détachée crée un job de lecture et
+/// aucun item de board, la guilde n'apprend rien (`board.changed` absent).
+#[tokio::test]
+async fn play_once_link_creates_a_job_and_no_board_item() {
+    let harness = Harness::new().await;
+    let client = harness
+        .insert_client(OverlaySessionMode::Normal, TOKEN, &guild())
+        .await;
+    let member = harness.attach_member(&client, "Léa").await;
+    let asset_id = harness.insert_cached_image(PLAY_ONCE_URL).await;
+
+    let (status, body) = send_json(
+        &harness.app,
+        request(
+            Method::POST,
+            "/overlay/media-board/items",
+            Some(TOKEN),
+            Some(&json!({
+                "url": PLAY_ONCE_URL,
+                "title": "Chat qui tombe",
+                "message": "coucou",
+                "playOnce": true,
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let ingestion_id = body["ingestionId"].as_str().unwrap().to_owned();
+
+    let entry = wait_ingestion(&harness.state, client.id.as_uuid(), &ingestion_id).await;
+    assert_eq!(entry.status, IngestionStatus::Ready, "{entry:?}");
+    assert_eq!(entry.created, Some(false));
+    assert_eq!(entry.item_id, None);
+    let job_id = entry.job_id.clone().expect("jobId de l'ingestion");
+
+    // The ready asset became a playback job for the guild, authored by the
+    // overlay member like a UI trigger.
+    let pending = harness
+        .db
+        .playback_jobs()
+        .list_pending_by_guild(&guild())
+        .await
+        .unwrap();
+    let job = pending
+        .iter()
+        .find(|job| job.id.to_canonical() == job_id)
+        .expect("job persisté");
+    assert_eq!(job.media_asset_id, Some(asset_id));
+    assert_eq!(job.author_name.as_deref(), Some("Léa"));
+    assert_eq!(
+        job.author_image.as_deref(),
+        member.avatar.as_deref(),
+        "l'avatar du membre est celui du job"
+    );
+    assert_eq!(job.text.as_deref(), Some("coucou"));
+    assert!(job.show_text);
+
+    // No board item, no broadcast to the guild.
+    assert!(harness
+        .db
+        .media_board()
+        .list_by_guild(&guild())
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(harness.hub.messages(&guild()).is_empty());
+
+    // `media.ingestion` carries the job to the requesting client only.
+    let messages = harness.hub.client_messages(&client.id.as_uuid());
+    let payload = match messages.first() {
+        Some(ServerMessage::MediaIngestion(payload)) => payload,
+        other => panic!("message inattendu : {other:?}"),
+    };
+    assert!(payload.ok);
+    assert_eq!(payload.ingestion_id, ingestion_id);
+    assert_eq!(payload.created, Some(false));
+    assert!(payload.item_id.is_none());
+    assert_eq!(payload.job_id.as_deref(), Some(job_id.as_str()));
+}
+
+/// « Jouer une fois » exige le droit d'un déclenchement manuel : sans
+/// `TriggerPlayback` la requête est refusée (403 `forbidden`).
+#[tokio::test]
+async fn play_once_link_is_refused_without_the_trigger_playback_right() {
+    let harness = Harness::new().await;
+    harness
+        .insert_client(OverlaySessionMode::Normal, TOKEN, &guild())
+        .await;
+    let mut table = RightsTable::new();
+    table.set_override(
+        Surface::Overlay,
+        Action::TriggerPlayback,
+        RightsRole::Member,
+        false,
+    );
+    harness.state.rights.replace(table);
+
+    let (status, body) = send_json(
+        &harness.app,
+        request(
+            Method::POST,
+            "/overlay/media-board/items",
+            Some(TOKEN),
+            Some(&json!({ "url": PLAY_ONCE_URL, "playOnce": true })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "forbidden");
+
+    // No ingestion was registered for the refused request.
+    let refused_client = harness
+        .db
+        .overlay_clients()
+        .get_by_token_hash(&auth::hash_token(TOKEN))
+        .await
+        .unwrap()
+        .expect("client");
+    assert!(harness
+        .state
+        .ingestions
+        .list_for_client(refused_client.id.as_uuid(), fixed_now())
+        .is_empty());
+}
+
+/// Un membre sans `AddMedia` peut quand même jouer une fois : le droit exigé
+/// est `TriggerPlayback`, pas celui d'un ajout au board.
+#[tokio::test]
+async fn play_once_link_is_accepted_without_the_add_media_right() {
+    let harness = Harness::new().await;
+    let client = harness
+        .insert_client(OverlaySessionMode::Normal, TOKEN, &guild())
+        .await;
+    harness.insert_cached_image(PLAY_ONCE_URL).await;
+    let mut table = RightsTable::new();
+    table.set_override(
+        Surface::Overlay,
+        Action::AddMedia,
+        RightsRole::Member,
+        false,
+    );
+    harness.state.rights.replace(table);
+
+    let (status, body) = send_json(
+        &harness.app,
+        request(
+            Method::POST,
+            "/overlay/media-board/items",
+            Some(TOKEN),
+            Some(&json!({ "url": PLAY_ONCE_URL, "playOnce": true })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let ingestion_id = body["ingestionId"].as_str().unwrap().to_owned();
+
+    let entry = wait_ingestion(&harness.state, client.id.as_uuid(), &ingestion_id).await;
+    assert_eq!(entry.status, IngestionStatus::Ready, "{entry:?}");
+    assert!(entry.job_id.is_some());
 }
 
 #[tokio::test]

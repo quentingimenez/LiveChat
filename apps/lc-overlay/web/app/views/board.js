@@ -1,7 +1,7 @@
 // Media board: grid, cards, detail panel, play, shortcuts, edit and delete.
 
 import { api, run } from '../core/api.js';
-import { openContextMenu } from '../core/contextmenu.js';
+import { isEditable, openContextMenu } from '../core/contextmenu.js';
 import { acceleratorFromEvent, acceleratorLabel, BARE_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import { ARTWORK_MESSAGES, artworkExtension, droppedArtworkLink, fetchArtwork, MAX_ARTWORK_BYTES, pickArtworkFile } from '../core/artwork.js';
 import {
@@ -32,7 +32,22 @@ import {
 import { h, icon, registerIcons } from '../core/dom.js';
 import { formatDuration, INVALID_DURATION_MESSAGE, MAX_DISPLAY_DURATION_SEC, parseDisplayDuration } from '../core/format.js';
 import { cardRatio, cardStyle } from '../core/masonry.js';
-import { cardClickAction, escapeAction, importTargets, menuTargetIds, selectRange, toggleId } from '../core/selection.js';
+import {
+  cardClickAction,
+  copiedLinksSummary,
+  deletableIds,
+  deleteDialogText,
+  deleteSummary,
+  escapeAction,
+  favoritePlan,
+  importTargets,
+  menuTargetIds,
+  originLinks,
+  playSummary,
+  selectAllAction,
+  selectRange,
+  toggleId,
+} from '../core/selection.js';
 import { invoke } from '../core/ipc.js';
 import { activeGuild, can, describeError, KIND_LABELS, state } from '../core/state.js';
 import { previewVolume } from '../core/sound.js';
@@ -118,19 +133,24 @@ export async function toggleFavorite(item) {
   if (!body) {
     return;
   }
-  for (const entry of state.items) {
-    if (entry.id === item.id) {
-      entry.favorite = favorite;
-    }
-  }
-  const card = cards.get(item.id);
-  if (card) {
-    syncFavorite(card.node, favorite);
-  }
+  applyFavorite(item.id, favorite);
   if (state.filters.favorites) {
     refreshGrid(false);
   }
   syncDetail();
+}
+
+// Applies a favorite change to the item copies, its card and the drawer.
+function applyFavorite(id, favorite) {
+  for (const entry of state.items) {
+    if (entry.id === id) {
+      entry.favorite = favorite;
+    }
+  }
+  const card = cards.get(id);
+  if (card) {
+    syncFavorite(card.node, favorite);
+  }
 }
 
 function syncFavorite(card, favorite) {
@@ -546,6 +566,9 @@ export function renderBoard() {
       : null,
     h('button', { class: 'btn is-quiet', title: 'Recharger le board', 'aria-label': 'Recharger le board', onClick: loadItems }, icon('refresh')),
     can('play') ? h('button', { class: 'btn', title: 'Faire lire un texte à voix haute sur les overlays', onClick: () => openSayDialog() }, icon('sound'), 'Dire') : null,
+    // A member who cannot add but can play still opens the dialog, with its
+    // "Jouer une fois" action only.
+    !can('addMedia') && can('play') ? h('button', { class: 'btn', onClick: openAddDialog }, icon('play'), 'Jouer un média') : null,
     can('addMedia') ? h('button', { class: 'btn', onClick: openAddDialog }, icon('plus'), 'Ajouter un média') : null,
   );
   let content;
@@ -576,15 +599,118 @@ export function renderBoard() {
 }
 
 // --- selection mode: pick several media, then act on all of them ---
-// Bulk actions of the selection bar; each receives the picked ids in board
-// order. Later bulk actions (favorites, deletion…) plug in here.
+// Bulk actions of the selection bar; each receives the picked media in
+// board order. A `label` may follow that selection (the favorite toggle
+// flips between adding and removing), `unavailable` returns the tooltip
+// explaining a disabled button, and `danger` draws the destructive style.
 const SELECTION_ACTIONS = [
+  {
+    label: 'Jouer à la suite',
+    unavailable: () => (can('play') ? null : 'Ton rôle ne permet pas de lancer des médias'),
+    run: playSelection,
+  },
+  {
+    label: (items) => favoritePlan(items).label,
+    unavailable: () => (canFavorite() ? null : 'Les favoris ne sont pas disponibles sur cet appareil'),
+    run: favoriteSelection,
+  },
+  {
+    label: 'Copier les liens',
+    unavailable: (items) => (originLinks(items).length > 0 ? null : 'Aucun lien d’origine dans la sélection'),
+    run: copySelectionLinks,
+  },
   {
     label: 'Ajouter à une autre guilde…',
     unavailable: () => (importTargets(state.guilds, state.activeGuildId).length === 0 ? 'Aucune autre guilde sur ce serveur' : null),
-    run: (ids) => openImportDialog(ids, leaveSelection),
+    run: (items) => openImportDialog(items.map((item) => item.id), leaveSelection),
+  },
+  {
+    label: 'Supprimer…',
+    danger: true,
+    unavailable: (items) => (deletableIds(items).length > 0 ? null : 'Aucun média supprimable (droits)'),
+    run: deleteSelection,
   },
 ];
+
+// Plays the picked media one after the other, in board order, and reports
+// the outcome in one summary toast. A muted guild refuses like `playItem`.
+async function playSelection(items) {
+  const guild = activeGuild();
+  if (guild && guild.membership.muted) {
+    notify('Guilde en pause : reprends-la pour jouer.', true);
+    return;
+  }
+  let sent = 0;
+  let failed = 0;
+  for (const item of items) {
+    const response = await sendTrigger(item);
+    if (response && response.ok) {
+      sent += 1;
+    } else {
+      failed += 1;
+    }
+  }
+  const summary = playSummary(sent, failed);
+  notify(summary.message, summary.isError);
+  refreshTriggerBadges();
+  setTimeout(refreshQueueAutomatically, 400);
+}
+
+// Adds the favorites missing from the picked media — or removes them all
+// when every one already is a favorite — updating the cards in place.
+async function favoriteSelection(items) {
+  const plan = favoritePlan(items);
+  for (const id of plan.ids) {
+    const body = await run(() => api('PUT', `/overlay/media-board/items/${encodeURIComponent(id)}/favorite`, { favorite: plan.favorite }));
+    if (!body) {
+      // The error is already shown; the media left can be retried.
+      break;
+    }
+    applyFavorite(id, plan.favorite);
+  }
+  if (state.filters.favorites) {
+    refreshGrid(false);
+  }
+  // The bar's favorite button follows what is left to add or remove.
+  syncSelection();
+  syncDetail();
+}
+
+// Copies the origin links of the picked media, one per line.
+function copySelectionLinks(items) {
+  const links = originLinks(items);
+  if (links.length === 0) {
+    return;
+  }
+  copyText(links.join('\n'), copiedLinksSummary(links.length));
+}
+
+// Deletes the picked media the member may edit, after one confirmation
+// listing what will go (and what cannot), then leaves the selection mode.
+function deleteSelection(items) {
+  const deletable = deletableIds(items);
+  if (deletable.length === 0) {
+    return;
+  }
+  const dialog = deleteDialogText(deletable.length, items.length - deletable.length);
+  confirmDialog(dialog.title, dialog.text, 'Supprimer', async () => {
+    let deleted = 0;
+    let failed = 0;
+    for (const id of deletable) {
+      try {
+        await api('DELETE', `/overlay/media-board/items/${encodeURIComponent(id)}`);
+        deleted += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    const summary = deleteSummary(deleted, failed);
+    notify(summary.message, summary.isError);
+    applyView(CLOSED_VIEW);
+    leaveSelection();
+    loadItems();
+  });
+}
 
 export function enterSelection() {
   clearDrawerTimers();
@@ -608,9 +734,9 @@ export function leaveSelection() {
   }
 }
 
-// Picked ids in board order (a filtered-out media stays picked).
-function pickedIds() {
-  return state.items.filter((item) => state.selection.has(item.id)).map((item) => item.id);
+// Picked media in board order (a filtered-out media stays picked).
+function pickedItems() {
+  return state.items.filter((item) => state.selection.has(item.id));
 }
 
 // The media a card menu acts on: the whole selection when the card is in it.
@@ -649,6 +775,7 @@ function syncSelection() {
 
 function renderSelectionBar() {
   const count = state.selection.size;
+  const items = pickedItems();
   return h(
     'div',
     { class: 'selection-bar', id: 'selection-bar', role: 'toolbar', 'aria-label': 'Sélection' },
@@ -656,11 +783,16 @@ function renderSelectionBar() {
     h('button', { class: 'btn is-quiet', onClick: pickAllVisible }, 'Tout sélectionner'),
     h('span', { class: 'spacer' }),
     ...SELECTION_ACTIONS.map((action) => {
-      const reason = action.unavailable();
+      const reason = action.unavailable(items);
       return h(
         'button',
-        { class: 'btn', disabled: count === 0 || Boolean(reason), title: reason, onClick: () => action.run(pickedIds()) },
-        action.label,
+        {
+          class: `btn${action.danger ? ' is-danger' : ''}`,
+          disabled: count === 0 || Boolean(reason),
+          title: reason,
+          onClick: () => action.run(items),
+        },
+        typeof action.label === 'function' ? action.label(items) : action.label,
       );
     }),
     h('button', { class: 'btn is-quiet', onClick: leaveSelection }, 'Annuler'),
@@ -937,27 +1069,38 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-export async function playItem(item) {
-  const guild = activeGuild();
-  if (guild && guild.membership.muted) {
-    notify('Guilde en pause : reprends-la pour jouer.', true);
-    return;
+// In the selection mode, Ctrl+A picks every visible card (like the « Tout
+// sélectionner » button); a field being edited keeps its own text selection.
+document.addEventListener('keydown', (event) => {
+  const action = selectAllAction({
+    key: event.key,
+    ctrl: event.ctrlKey,
+    meta: event.metaKey,
+    // The context menu and the shortcut capture handle their own keys (and
+    // prevent their default).
+    handled: event.defaultPrevented,
+    capturing: state.capturing,
+    dialogOpen: Boolean(document.getElementById('dialog-root').firstElementChild),
+    selecting: state.selecting,
+    editableTarget: isEditable(event.target),
+  });
+  if (action === 'selectAll') {
+    event.preventDefault();
+    pickAllVisible();
   }
+});
+
+// Sends one media to the overlays and records its queue badge. Returns the
+// command's response, a refusal `{ ok: false, message }` when the command
+// itself failed, or `null` when it answered nothing.
+async function sendTrigger(item) {
   let response;
   try {
     response = await invoke('media_board_trigger', { payload: { itemId: item.id, guildId: state.activeGuildId, trigger: 'ui' } });
   } catch (error) {
-    notify(typeof error === 'string' ? error : error.message || 'Action impossible.', true);
-    return;
+    return { ok: false, message: typeof error === 'string' ? error : error.message || 'Action impossible.' };
   }
-  if (!response) {
-    return;
-  }
-  if (!response.ok) {
-    notify(describeError(response.reason, response.message), true);
-    return;
-  }
-  if (response.jobId && (response.outcome === 'playing' || response.outcome === 'queued')) {
+  if (response && response.jobId && (response.outcome === 'playing' || response.outcome === 'queued')) {
     // One badge per media: a new trigger replaces the previous job of that
     // item.
     for (const [jobId, mappedItemId] of state.triggers) {
@@ -972,6 +1115,23 @@ export async function playItem(item) {
       position: response.position || null,
       at: Date.now(),
     });
+  }
+  return response || null;
+}
+
+export async function playItem(item) {
+  const guild = activeGuild();
+  if (guild && guild.membership.muted) {
+    notify('Guilde en pause : reprends-la pour jouer.', true);
+    return;
+  }
+  const response = await sendTrigger(item);
+  if (!response) {
+    return;
+  }
+  if (!response.ok) {
+    notify(describeError(response.reason, response.message), true);
+    return;
   }
   if (response.outcome === 'playing') {
     notify(`« ${itemTitle(item)} » passe à l’écran.`);

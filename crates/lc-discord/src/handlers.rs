@@ -97,6 +97,7 @@ fn refusal_reply(lang: Lang, refusal: Refusal) -> Reply {
         Refusal::NotLinked => dict.not_linked,
         Refusal::RoleTooLow => dict.guest_not_allowed,
         Refusal::AdminOnly => dict.admin_only,
+        Refusal::Banned => dict.banned,
     };
     Reply::ephemeral(
         Embed::new()

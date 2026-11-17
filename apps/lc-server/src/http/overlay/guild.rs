@@ -489,22 +489,37 @@ pub async fn create_device_code(
     }
 }
 
-/// Retire un membre : marque le départ, révoque ses overlays, ferme leurs
-/// sessions WS (`4402 revoked`).
+/// Authors under which a member's ingest clients and pending codes are
+/// recorded: `member:<id>` for codes issued from the overlay, plus the linked
+/// Discord account for codes issued with `/pair-code`.
+pub(crate) fn member_code_authors(member: &GuildMember) -> Vec<String> {
+    let mut authors = vec![format!(
+        "{}{}",
+        super::ingest_code::INGEST_CODE_CREATOR_PREFIX,
+        member.id.to_canonical()
+    )];
+    if let Some(discord_user_id) = member.discord_user_id.as_deref() {
+        authors.push(discord_user_id.to_owned());
+    }
+    authors
+}
+
+/// Retire un membre : marque le départ, révoque ses overlays et ferme leurs
+/// sessions WS (`4402`), révoque ses extensions d'ingestion, ses codes en
+/// attente et les invitations qu'il a émises.
 ///
-/// Partagé par le départ volontaire et l'exclusion ([`super::admin`]).
-///
-/// The close reason is supplied by the caller.
+/// Partagé par le départ volontaire, l'exclusion et le bannissement
+/// ([`super::admin`]). The close reason is supplied by the caller.
 pub(super) async fn remove_member(
     state: &AppState,
     db: &Db,
-    member_id: GuildMemberId,
+    member: &GuildMember,
     at: DateTime<Utc>,
     close_reason: &str,
 ) -> Result<MemberChange, Response> {
     let change = db
         .guild_members()
-        .remove(member_id, at)
+        .remove(member.id, at)
         .await
         .map_err(|db_error| db_failure("overlay_member.remove", &db_error))?;
     if change != MemberChange::Applied {
@@ -512,7 +527,7 @@ pub(super) async fn remove_member(
     }
     let revoked = db
         .overlay_clients()
-        .revoke_by_member(member_id, at)
+        .revoke_by_member(member.id, at)
         .await
         .map_err(|db_error| db_failure("overlay_member.revoke_clients", &db_error))?;
     for client_id in revoked {
@@ -522,6 +537,19 @@ pub(super) async fn remove_member(
             close_reason,
         );
     }
+    let authors = member_code_authors(member);
+    db.ingest_clients()
+        .revoke_by_authors(&member.guild_id, &authors, at)
+        .await
+        .map_err(|db_error| db_failure("overlay_member.revoke_ingest_clients", &db_error))?;
+    db.pairing_codes()
+        .revoke_by_authors(&member.guild_id, &authors, at)
+        .await
+        .map_err(|db_error| db_failure("overlay_member.revoke_pairing_codes", &db_error))?;
+    db.guild_invites()
+        .revoke_by_member(&member.guild_id, member.id, at)
+        .await
+        .map_err(|db_error| db_failure("overlay_member.revoke_invites", &db_error))?;
     Ok(change)
 }
 
@@ -548,7 +576,7 @@ pub async fn leave(State(state): State<AppState>, auth: AuthedOverlayClient) -> 
         };
     };
 
-    match remove_member(&state, db, member.id, now, close_reason::REVOKED).await {
+    match remove_member(&state, db, member, now, close_reason::REVOKED).await {
         Ok(MemberChange::Applied) => json_response(StatusCode::OK, json!({"left": true})),
         Ok(MemberChange::LastAdmin) => error(StatusCode::CONFLICT, "last_admin"),
         Ok(MemberChange::NotFound) => error(StatusCode::NOT_FOUND, "member_not_found"),

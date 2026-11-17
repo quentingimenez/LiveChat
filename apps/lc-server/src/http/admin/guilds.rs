@@ -737,6 +737,10 @@ pub(super) async fn purge(
         .delete_by_guild(&guild_id)
         .await
         .map_err(|error| AdminError::db("suppression des membres", error))?;
+    db.guild_bans()
+        .delete_by_guild(&guild_id)
+        .await
+        .map_err(|error| AdminError::db("suppression des bannissements", error))?;
     let deleted_pairing_codes = queries::delete_pairing_codes_for_guild(db, guild_id.as_str())
         .await
         .map_err(|error| AdminError::db("suppression des codes de pairing", error))?;

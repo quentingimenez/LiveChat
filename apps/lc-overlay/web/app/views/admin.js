@@ -1,4 +1,4 @@
-// Administration tab: members and invites. The server settings of the guild
+// Administration tab: members, bans and invites. The server settings of the guild
 // (`renderServerSettings`) are shown in its « Réglages » tab.
 
 import { api, run } from '../core/api.js';
@@ -18,10 +18,14 @@ export function renderAdmin() {
   if (can('manageInvites')) {
     tabs.push(['invites', 'Invitations']);
   }
+  if (can('manageMembers')) {
+    tabs.push(['bans', 'Bannis']);
+  }
   if (!tabs.some(([id]) => id === state.adminTab)) {
     state.adminTab = tabs.length ? tabs[0][0] : 'members';
   }
-  const body = state.adminTab === 'invites' ? renderInvites() : renderMembers();
+  const views = { invites: renderInvites, bans: renderBans };
+  const body = (views[state.adminTab] || renderMembers)();
   return h(
     'div',
     null,
@@ -71,7 +75,12 @@ function renderMembers() {
         ),
         member.isSelf
           ? h('span')
-          : h('button', { class: 'btn is-quiet is-danger', onClick: () => openKickDialog(member) }, 'Exclure'),
+          : h(
+              'span',
+              { class: 'row' },
+              h('button', { class: 'btn is-quiet is-danger', onClick: () => openKickDialog(member) }, 'Exclure'),
+              h('button', { class: 'btn is-quiet is-danger', onClick: () => openBanDialog(member) }, 'Bannir'),
+            ),
       ),
     ),
   );
@@ -88,6 +97,43 @@ async function changeRole(member, role) {
 function openKickDialog(member) {
   confirmDialog(`Exclure ${member.displayName} ?`, 'Ses overlays sont déconnectés tout de suite. Il lui faudra un nouveau code pour revenir.', 'Exclure', async () => {
     await run(() => api('DELETE', `/overlay/admin/members/${encodeURIComponent(member.id)}`), `${member.displayName} a été exclu.`);
+    loadAdmin();
+  });
+}
+
+function openBanDialog(member) {
+  const text = member.discordLinked
+    ? 'Ses overlays et ses extensions sont révoqués tout de suite. Son compte Discord ne pourra plus obtenir de code ni utiliser le bot sur cette guilde.'
+    : 'Ses overlays et ses extensions sont révoqués tout de suite. Sans compte Discord lié, rien ne l’empêche de revenir avec une nouvelle invitation : ne lui en donne pas.';
+  confirmDialog(`Bannir ${member.displayName} ?`, text, 'Bannir', async () => {
+    await run(() => api('POST', `/overlay/admin/members/${encodeURIComponent(member.id)}/ban`), `${member.displayName} a été banni.`);
+    loadAdmin();
+  });
+}
+
+function renderBans() {
+  if (state.bans.length === 0) {
+    return h('p', { class: 'meta' }, 'Personne n’est banni de cette guilde.');
+  }
+  return h(
+    'div',
+    { class: 'list' },
+    state.bans.map((ban) =>
+      h(
+        'div',
+        { class: 'line is-ban' },
+        avatarNode(ban.displayName, ban.avatar),
+        h('div', { class: 'ellipsis' }, ban.displayName, ban.discordUserId ? null : h('span', { class: 'sub' }, '  (sans compte Discord)')),
+        h('span', { class: 'sub seen' }, `${relativeTime(ban.createdAt)}${ban.bannedBy ? `, par ${ban.bannedBy}` : ''}`),
+        h('button', { class: 'btn is-quiet', onClick: () => openUnbanDialog(ban) }, 'Lever'),
+      ),
+    ),
+  );
+}
+
+function openUnbanDialog(ban) {
+  confirmDialog(`Lever le bannissement de ${ban.displayName} ?`, 'Il pourra revenir avec un nouveau code. Ses anciens appareils restent révoqués.', 'Lever', async () => {
+    await run(() => api('DELETE', `/overlay/admin/bans/${encodeURIComponent(ban.id)}`), `Le bannissement de ${ban.displayName} est levé.`);
     loadAdmin();
   });
 }

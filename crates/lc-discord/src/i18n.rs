@@ -103,6 +103,10 @@ strings! {
         "Commande réservée aux administrateurs.",
         "This command is for administrators only."
     ),
+    banned: (
+        "Tu as été banni de LiveChat sur ce serveur.",
+        "You have been banned from LiveChat on this server."
+    ),
 
     alive_name: ("dispo", "alive"),
     alive_description: ("Vérifiez si le bot est vivant", "Check if bot is alive"),

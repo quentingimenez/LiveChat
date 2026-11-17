@@ -1,4 +1,4 @@
-// Layout rule of the administration lists (members, invites). Each row is its
+// Layout rule of the administration lists (members, invites, bans). Each row is its
 // own grid, so a content-sized track gets a different width in a row that has
 // no button in it (the current member has no « Exclure ») and the columns no
 // longer line up from row to row.
@@ -27,7 +27,7 @@ function columnTemplates(selector) {
   return templates;
 }
 
-for (const selector of ['.line.is-member', '.line.is-invite']) {
+for (const selector of ['.line.is-member', '.line.is-invite', '.line.is-ban']) {
   test(`${selector}: no track depends on the content of the row`, () => {
     const templates = columnTemplates(selector);
     assert.ok(templates.length > 0, `no grid template found for ${selector}`);

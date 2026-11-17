@@ -53,6 +53,8 @@ export function removalMessage(removal = {}) {
       return `${quoted('Une guilde')} a été supprimée par un admin et retirée de LiveChat.`;
     case 'member_removed':
       return `Un admin t’a retiré de ${quoted('une guilde')}. La guilde est retirée de LiveChat.`;
+    case 'member_banned':
+      return `Un admin t’a banni de ${quoted('une guilde')}. La guilde est retirée de LiveChat.`;
     case 'revoked':
       return `Cet appareil a été révoqué dans ${quoted('une guilde')}. La guilde est retirée de LiveChat.`;
     case 'invalid_token':

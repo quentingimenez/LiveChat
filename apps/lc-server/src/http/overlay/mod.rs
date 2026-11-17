@@ -225,6 +225,8 @@ impl ActorInfo {
 }
 
 #[cfg(test)]
+mod ban_tests;
+#[cfg(test)]
 mod board_extras_tests;
 #[cfg(test)]
 mod guild_tests;
@@ -320,6 +322,15 @@ pub fn router() -> Router<AppState> {
         .route(
             "/overlay/admin/members/{member_id}",
             axum::routing::patch(admin::update_member).delete(admin::remove_member_handler),
+        )
+        .route(
+            "/overlay/admin/members/{member_id}/ban",
+            post(admin::ban_member_handler),
+        )
+        .route("/overlay/admin/bans", get(admin::list_bans))
+        .route(
+            "/overlay/admin/bans/{ban_id}",
+            axum::routing::delete(admin::unban_handler),
         )
         .route(
             "/overlay/admin/invites",

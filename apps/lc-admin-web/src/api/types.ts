@@ -155,6 +155,16 @@ export interface GuildInvite {
   isActive: boolean;
 }
 
+export interface GuildBan {
+  id: string;
+  memberId: string | null;
+  displayName: string;
+  avatar: string | null;
+  discordUserId: string | null;
+  bannedBy: string | null;
+  createdAt: IsoDate;
+}
+
 export interface QueueJob {
   id: string;
   status: 'playing' | 'pending' | string;
@@ -186,6 +196,10 @@ export interface GuildDetail extends GuildEntry {
   invites: {
     count: number;
     items: GuildInvite[];
+  };
+  bans: {
+    count: number;
+    items: GuildBan[];
   };
   queue: QueueState;
 }
@@ -458,6 +472,15 @@ export interface PatchMemberResponse {
 
 export interface RemoveMemberResponse {
   removed: true;
+}
+
+export interface BanMemberResponse {
+  banned: true;
+  ban: GuildBan;
+}
+
+export interface UnbanResponse {
+  unbanned: true;
 }
 
 export interface CreatedInviteResponse {

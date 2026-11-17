@@ -10,9 +10,10 @@ use sqlx::SqlitePool;
 use crate::config::DbConfig;
 use crate::error::{DbError, DbResult};
 use crate::repos::{
-    DiscordLinkCodesRepository, GuildInvitesRepository, GuildMembersRepository, GuildsRepository,
-    IngestClientsRepository, MediaAssetsRepository, MediaBoardRepository, MetadataRepository,
-    OverlayClientsRepository, PairingCodesRepository, PlaybackJobsRepository,
+    DiscordLinkCodesRepository, GuildBansRepository, GuildInvitesRepository,
+    GuildMembersRepository, GuildsRepository, IngestClientsRepository, MediaAssetsRepository,
+    MediaBoardRepository, MetadataRepository, OverlayClientsRepository, PairingCodesRepository,
+    PlaybackJobsRepository,
 };
 
 /// Version du schéma attendue dans `app_metadata.schema_version`.
@@ -225,6 +226,11 @@ impl Db {
     /// Repository `guild_members`.
     pub fn guild_members(&self) -> GuildMembersRepository {
         GuildMembersRepository::new(self.pool.clone())
+    }
+
+    /// Repository `guild_bans`.
+    pub fn guild_bans(&self) -> GuildBansRepository {
+        GuildBansRepository::new(self.pool.clone())
     }
 
     /// Repository `guild_invites`.

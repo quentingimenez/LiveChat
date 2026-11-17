@@ -79,6 +79,7 @@
 //! | 400 | `{"error":"invalid_payload"}` (code absent) |
 //! | 400 | `{"error":"display_name_required"}` (nouveau membre sans pseudo utilisable) |
 //! | 403 | `{"error":"pairing_code_scope_mismatch"}` (code réservé à l'extension) |
+//! | 403 | `{"error":"member_banned"}` (code émis par un compte Discord banni de la guilde) |
 //! | 404 | `{"error":"pairing_code_invalid_or_expired"}` |
 //! | 409 | `{"error":"overlay_client_conflict"}` (collision de token, très improbable) |
 //! | 500 | `{"error":"internal_error"}` |
@@ -235,6 +236,18 @@ pub async fn consume_pairing(
                     .starts_with(super::ingest_code::INGEST_CODE_CREATOR_PREFIX)
                 {
                     return error(StatusCode::FORBIDDEN, "pairing_code_scope_mismatch");
+                }
+                // A code issued by a banned Discord account (a read-only
+                // invitation it made for itself, or one issued before the
+                // ban) never lets that person back in.
+                match db
+                    .guild_bans()
+                    .is_discord_user_banned(&entry.guild_id, &entry.created_by_discord_user_id)
+                    .await
+                {
+                    Ok(true) => return error(StatusCode::FORBIDDEN, "member_banned"),
+                    Ok(false) => {}
+                    Err(db_error) => return db_failure("overlay_pair.ban_lookup", &db_error),
                 }
                 Some(entry)
             }

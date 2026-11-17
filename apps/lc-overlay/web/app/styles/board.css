@@ -668,6 +668,92 @@
   overflow-wrap: anywhere;
 }
 
+/* Shortcut row: the value is the button that records a new one. */
+.facts dt:has(+ .shortcut-cell) {
+  align-self: center;
+}
+
+.shortcut-cell {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.shortcut-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-s);
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.shortcut-key svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  color: var(--text-faint);
+}
+
+.shortcut-key:hover {
+  border-color: var(--line);
+  background: var(--slate-700);
+}
+
+.shortcut-key:hover svg {
+  color: var(--text);
+}
+
+.shortcut-key.is-empty {
+  border: 1px dashed var(--line);
+  color: var(--text-soft);
+}
+
+.shortcut-key.is-empty:hover {
+  border-style: solid;
+  color: var(--text);
+}
+
+.shortcut-key.is-capturing {
+  border-color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 14%, transparent);
+  color: var(--text);
+  animation: shortcut-listen 1.4s ease-in-out infinite;
+}
+
+.shortcut-key.is-capturing kbd {
+  color: var(--text-soft);
+}
+
+@keyframes shortcut-listen {
+  50% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 25%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shortcut-key.is-capturing {
+    animation: none;
+  }
+}
+
+.shortcut-clear.btn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  justify-content: center;
+}
+
+.shortcut-clear.btn svg {
+  width: 14px;
+  height: 14px;
+}
+
 
 /* ---------------------------------------------------------------- selection */
 /* Selection mode: a check circle on every card, the play and favorite

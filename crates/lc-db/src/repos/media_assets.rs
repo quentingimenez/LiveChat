@@ -17,6 +17,7 @@ struct MediaAssetRow {
     id: String,
     source_hash: String,
     source_url: String,
+    source_title: Option<String>,
     kind: String,
     mime: String,
     duration_sec: Option<i64>,
@@ -38,6 +39,7 @@ impl MediaAssetRow {
             id: decode(TABLE, "id", &self.id, MediaAssetId::parse)?,
             source_hash: self.source_hash,
             source_url: self.source_url,
+            source_title: self.source_title,
             kind: decode(TABLE, "kind", &self.kind, MediaKind::from_db_str)?,
             mime: self.mime,
             duration_sec: self.duration_sec,
@@ -70,14 +72,15 @@ impl MediaAssetsRepository {
     pub async fn insert(&self, asset: &MediaAsset) -> DbResult<()> {
         sqlx::query(
             "INSERT INTO media_assets ( \
-                id, source_hash, source_url, kind, mime, duration_sec, width, height, \
-                is_vertical, storage_path, size_bytes, status, error, last_accessed_at, \
+                id, source_hash, source_url, source_title, kind, mime, duration_sec, width, \
+                height, is_vertical, storage_path, size_bytes, status, error, last_accessed_at, \
                 expires_at, created_at \
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(asset.id.to_canonical())
         .bind(asset.source_hash.as_str())
         .bind(asset.source_url.as_str())
+        .bind(asset.source_title.as_deref())
         .bind(asset.kind.as_db_str())
         .bind(asset.mime.as_str())
         .bind(asset.duration_sec)
@@ -249,5 +252,80 @@ impl MediaAssetsRepository {
             .await?
         };
         rows.into_iter().map(MediaAssetRow::into_entity).collect()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use time::{Duration, UtcDateTime};
+
+    use super::*;
+    use crate::{Db, DbConfig};
+
+    /// Un asset prêt avec un titre source, persisté puis relu.
+    #[tokio::test]
+    async fn source_title_round_trips() {
+        let dir = tempfile::tempdir().expect("dossier temporaire");
+        let db = Db::open(dir.path().join("test.db"), &DbConfig::default())
+            .await
+            .expect("base de test");
+        let now = UtcDateTime::now();
+        let mut asset = sample_asset(now);
+        asset.source_title = Some("Chat qui tombe".to_owned());
+        db.media_assets().insert(&asset).await.expect("insertion");
+
+        let stored = db
+            .media_assets()
+            .get(asset.id)
+            .await
+            .expect("lecture par id")
+            .expect("asset présent");
+        assert_eq!(stored.source_title.as_deref(), Some("Chat qui tombe"));
+
+        let by_hash = db
+            .media_assets()
+            .get_by_source_hash(&asset.source_hash)
+            .await
+            .expect("lecture par hash")
+            .expect("asset présent");
+        assert_eq!(by_hash.source_title, asset.source_title);
+
+        // `NULL` reste `NULL` (assets antérieurs à la colonne).
+        let mut untitled = sample_asset(now + Duration::hours(1));
+        untitled.source_title = None;
+        db.media_assets()
+            .insert(&untitled)
+            .await
+            .expect("insertion");
+        let stored = db
+            .media_assets()
+            .get(untitled.id)
+            .await
+            .expect("lecture")
+            .expect("asset présent");
+        assert_eq!(stored.source_title, None);
+    }
+
+    fn sample_asset(now: UtcDateTime) -> MediaAsset {
+        MediaAsset {
+            id: MediaAssetId::new_v4(),
+            source_hash: format!("hash-{}", MediaAssetId::new_v4()),
+            source_url: "https://example.com/clip.mp4".to_owned(),
+            source_title: None,
+            kind: MediaKind::Video,
+            mime: "video/mp4".to_owned(),
+            duration_sec: Some(12),
+            width: None,
+            height: None,
+            is_vertical: false,
+            storage_path: "/tmp/clip.mp4".to_owned(),
+            size_bytes: 4_096,
+            status: MediaStatus::Ready,
+            error: None,
+            last_accessed_at: now,
+            expires_at: now + Duration::hours(1),
+            created_at: now,
+        }
     }
 }

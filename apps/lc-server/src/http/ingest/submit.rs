@@ -561,6 +561,7 @@ mod tests {
             id: lc_domain::ids::MediaAssetId::new_v4(),
             source_hash: lc_media::source::source_hash(&canonical),
             source_url: url.to_owned(),
+            source_title: None,
             kind: MediaKind::Image,
             mime: "image/png".to_owned(),
             duration_sec: None,

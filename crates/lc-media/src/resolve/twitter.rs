@@ -80,9 +80,9 @@ pub async fn resolve_tweet(
     let status_id = tweet_status_id(&canonical_url)
         .ok_or_else(|| MediaError::new(MediaErrorCode::InvalidMedia, "URL de tweet invalide"))?;
     let card = fetch_tweet_card(&canonical_url, config).await?;
-    let (variants, dimensions, poster) = fetch_variants(&status_id, &canonical_url, config).await;
-    let selected = pick_variant(&variants).cloned();
-    let (width, height) = match dimensions {
+    let media = fetch_tweet_media(&status_id, &canonical_url, config).await;
+    let selected = pick_variant(&media.variants).cloned();
+    let (width, height) = match media.dimensions {
         Some((width, height)) => (Some(width), Some(height)),
         None => (None, None),
     };
@@ -90,10 +90,13 @@ pub async fn resolve_tweet(
         source_kind: SourceKind::Twitter,
         canonical_url,
         source_hash: source.source_hash.clone(),
-        title: card.author_name.clone(),
+        // Un tweet n'a pas de titre : le texte de la publication (connu quand
+        // l'API de syndication a répondu) en tient lieu ; l'auteur reste
+        // disponible pour le repli « Post de <auteur> ».
+        title: media.text,
         author: card.author_name.clone(),
         kind: Some(MediaKind::Video),
-        thumbnail_url: poster,
+        thumbnail_url: media.poster,
         tweet_card: Some(card),
         media_url: selected.as_ref().map(|variant| variant.url.clone()),
         mime: selected
@@ -134,15 +137,27 @@ async fn fetch_tweet_card(canonical_url: &str, config: &MediaConfig) -> MediaRes
     })
 }
 
-async fn fetch_variants(
+/// Ce que la résolution d'un tweet retire du réseau (API syndication puis
+/// repli vxtwitter).
+#[derive(Clone, Debug, Default)]
+struct TweetMedia {
+    /// Variantes vidéo annoncées.
+    variants: Vec<VideoVariant>,
+    /// Dimensions annoncées.
+    dimensions: Option<(u32, u32)>,
+    /// Poster de la vidéo.
+    poster: Option<String>,
+    /// Texte du tweet, si l'API de syndication l'a donné.
+    text: Option<String>,
+}
+
+async fn fetch_tweet_media(
     status_id: &str,
     canonical_url: &str,
     config: &MediaConfig,
-) -> (Vec<VideoVariant>, Option<(u32, u32)>, Option<String>) {
+) -> TweetMedia {
     let syndication_url = build_syndication_url(status_id, &config.resolve.language);
-    let mut variants = Vec::new();
-    let mut dimensions = None;
-    let mut poster = None;
+    let mut media = TweetMedia::default();
     if let Ok(value) = http::get_json::<Value>(
         &config.download,
         &syndication_url,
@@ -150,11 +165,12 @@ async fn fetch_variants(
     )
     .await
     {
-        variants = collect_variants(&value);
-        dimensions = extract_dimensions(&value);
-        poster = extract_poster(&value);
+        media.variants = collect_variants(&value);
+        media.dimensions = extract_dimensions(&value);
+        media.poster = extract_poster(&value);
+        media.text = extract_tweet_text(&value);
     }
-    if variants.is_empty() {
+    if media.variants.is_empty() {
         if let Ok(page) = http::get_text(
             &config.download,
             &build_fallback_url(
@@ -166,13 +182,23 @@ async fn fetch_variants(
         )
         .await
         {
-            variants = variants_from_html(&page.body);
-            if dimensions.is_none() {
-                dimensions = dimensions_from_html(&page.body);
+            media.variants = variants_from_html(&page.body);
+            if media.dimensions.is_none() {
+                media.dimensions = dimensions_from_html(&page.body);
             }
         }
     }
-    (variants, dimensions, poster)
+    media
+}
+
+/// Texte d'un tweet dans un payload de syndication (servira de titre).
+pub fn extract_tweet_text(value: &Value) -> Option<String> {
+    value
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
 }
 
 /// Poster of the tweet's video in a syndication payload: `video.poster`, else
@@ -517,5 +543,24 @@ mod tests {
         );
         let insecure = serde_json::json!({"video": {"poster": "http://pbs.twimg.com/p.jpg"}});
         assert_eq!(extract_poster(&insecure), None);
+    }
+
+    #[test]
+    fn extracts_the_tweet_text_ignoring_blank_values() {
+        let payload = serde_json::json!({
+            "id_str": "123",
+            "text": "Regardez ce chat trop mignon !\nSuite du tweet…",
+            "user": {"name": "Jeanne"}
+        });
+        assert_eq!(
+            extract_tweet_text(&payload).as_deref(),
+            Some("Regardez ce chat trop mignon !\nSuite du tweet…")
+        );
+        assert_eq!(
+            extract_tweet_text(&serde_json::json!({"text": "   "})),
+            None
+        );
+        assert_eq!(extract_tweet_text(&serde_json::json!({})), None);
+        assert_eq!(extract_tweet_text(&serde_json::json!({"text": 42})), None);
     }
 }

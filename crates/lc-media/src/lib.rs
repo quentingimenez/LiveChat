@@ -42,6 +42,7 @@ pub mod resolve;
 pub mod source;
 pub mod storage;
 pub mod thumbnail;
+pub mod title;
 pub mod transcode;
 
 pub use crate::cache::{
@@ -78,6 +79,9 @@ pub use crate::source::{
 };
 pub use crate::storage::{
     is_staged_file_name, resolve_storage_reference, staged_path, MediaStorage, StoredVariant,
+};
+pub use crate::title::{
+    direct_media_title, normalize_title, source_title, tweet_title, TITLE_MAX_CHARS,
 };
 pub use crate::transcode::{
     build_audio_args, build_carousel_video, build_carousel_video_args, build_video_transcode_args,

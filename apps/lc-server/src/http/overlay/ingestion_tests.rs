@@ -178,6 +178,7 @@ impl Harness {
             id: MediaAssetId::new_v4(),
             source_hash: "hash-board-item".to_owned(),
             source_url: "https://example.test/board-item.mp4".to_owned(),
+            source_title: None,
             kind: MediaKind::Video,
             mime: "video/mp4".to_owned(),
             duration_sec: Some(10),

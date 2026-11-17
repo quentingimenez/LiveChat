@@ -86,6 +86,10 @@ pub struct MediaAsset {
     pub source_hash: String,
     /// URL d'origine (plateforme, CDN…).
     pub source_url: String,
+    /// Titre réel de la source (titre de la vidéo, texte du tweet, nom de
+    /// fichier…), si le pipeline l'a trouvé. Sert de titre par défaut à un
+    /// élément de board ajouté depuis un lien sans titre saisi.
+    pub source_title: Option<String>,
     /// Famille du média.
     pub kind: MediaKind,
     /// Type MIME servi (`video/mp4`, `image/gif`…).
@@ -591,6 +595,7 @@ mod tests {
             id: MediaAssetId::new_v4(),
             source_hash: "abc123".to_owned(),
             source_url: "https://example.test/clip.mp4".to_owned(),
+            source_title: Some("Un clip de test".to_owned()),
             kind: MediaKind::Video,
             mime: "video/mp4".to_owned(),
             duration_sec: Some(12),
@@ -614,6 +619,7 @@ mod tests {
 
         assert_eq!(json["id"], asset.id.to_string());
         assert_eq!(json["sourceHash"], "abc123");
+        assert_eq!(json["sourceTitle"], "Un clip de test");
         assert_eq!(json["isVertical"], false);
         assert_eq!(json["expiresAt"], 1_700_000_600_000_i64);
         assert_eq!(json["kind"], "video");

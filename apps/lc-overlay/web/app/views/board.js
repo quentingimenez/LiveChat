@@ -887,14 +887,18 @@ function syncSelectedCards() {
   }
 }
 
-// The drawer floats over the view, between the header and the footer.
+// The drawer floats over the view, between the header and the footer. While
+// the toolbar (and the filters panel) is on screen, it starts below them so
+// their buttons stay reachable; scrolled past, it climbs to the view's top.
 function placeDrawer(node) {
   const view = document.getElementById('view');
   if (!view || !node.isConnected) {
     return;
   }
   const box = view.getBoundingClientRect();
-  node.style.top = `${Math.round(box.top + 12)}px`;
+  const board = node.closest('.board');
+  const boardTop = board ? board.getBoundingClientRect().top : box.top;
+  node.style.top = `${Math.round(Math.max(box.top + 12, boardTop))}px`;
   node.style.bottom = `${Math.round(Math.max(12, window.innerHeight - box.bottom + 12))}px`;
 }
 
@@ -909,6 +913,9 @@ function replaceDrawer() {
 
 window.addEventListener('resize', replaceDrawer);
 const viewNode = document.getElementById('view');
+if (viewNode) {
+  viewNode.addEventListener('scroll', replaceDrawer, { passive: true });
+}
 if (viewNode && typeof ResizeObserver === 'function') {
   new ResizeObserver(replaceDrawer).observe(viewNode);
 }

@@ -670,7 +670,7 @@
   function finishUpload(upload) {
     const name = String(upload.filename || '');
     if (name.toLowerCase().includes('big')) {
-      return { ok: false, status: 413, body: { error: 'payload_too_large' } };
+      return { ok: false, status: 413, body: { error: 'payload_too_large', maxBytes: 2048 * 1024 * 1024 } };
     }
     return acceptIngestion({ guildId: upload.guildId, name, title: upload.title, message: upload.message, contentType: upload.contentType, received: upload.received, replaceItemId: upload.replaceItemId || null });
   }

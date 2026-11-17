@@ -2,11 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  MAX_UPLOAD_BYTES,
   chunkRanges,
   defaultTitle,
+  formatSizeLimit,
   ingestionErrorMessage,
-  isUploadTooLarge,
   uploadErrorMessage,
 } from '../../web/app/core/upload-helpers.js';
 
@@ -98,21 +97,22 @@ test('uploadErrorMessage: gateway failures say the server is unreachable', () =>
   }
 });
 
-test('MAX_UPLOAD_BYTES is 100 MiB', () => {
-  assert.equal(MAX_UPLOAD_BYTES, 100 * 1024 * 1024);
+test('uploadErrorMessage: 413 names the server limit when it is known', () => {
+  const body = { error: 'payload_too_large', maxBytes: 2048 * 1024 * 1024 };
+  assert.equal(uploadErrorMessage(413, body, LABELS), 'Fichier trop volumineux : 2 Go maximum.');
 });
 
-test('isUploadTooLarge: exactly 100 MiB is accepted', () => {
-  assert.equal(isUploadTooLarge(MAX_UPLOAD_BYTES), false);
+test('uploadErrorMessage: too_many_uploads', () => {
+  assert.equal(
+    uploadErrorMessage(429, { error: 'too_many_uploads' }, LABELS),
+    'Trop d’envois en cours. Réessaie dans un instant.',
+  );
 });
 
-test('isUploadTooLarge: one byte over the limit is refused', () => {
-  assert.equal(isUploadTooLarge(MAX_UPLOAD_BYTES + 1), true);
-});
-
-test('isUploadTooLarge: non-numeric sizes are not considered too large', () => {
-  assert.equal(isUploadTooLarge(undefined), false);
-  assert.equal(isUploadTooLarge('not-a-number'), false);
+test('formatSizeLimit: mebibytes under 1 GiB, gibibytes above', () => {
+  assert.equal(formatSizeLimit(500 * 1024 * 1024), '500 Mo');
+  assert.equal(formatSizeLimit(1024 * 1024 * 1024), '1 Go');
+  assert.equal(formatSizeLimit(1536 * 1024 * 1024), '1,5 Go');
 });
 
 test('ingestionErrorMessage: unsupported_media', () => {

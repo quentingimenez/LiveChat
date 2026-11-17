@@ -532,7 +532,11 @@ mod tests {
             (Method::GET, "/ws", Bucket::General),
             (Method::GET, "/overlay/guild", Bucket::General),
             (Method::GET, "/overlay/queue", Bucket::General),
-            (Method::POST, "/overlay/media-board/upload", Bucket::General),
+            (
+                Method::PUT,
+                "/overlay/media-board/uploads/abc/parts",
+                Bucket::General,
+            ),
             (Method::POST, "/ingest", Bucket::General),
             (Method::GET, "/health", Bucket::General),
             (Method::GET, "/administration", Bucket::General),

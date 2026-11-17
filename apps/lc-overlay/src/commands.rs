@@ -252,6 +252,9 @@ struct MediaUploadStartRequest {
     message: Option<String>,
     #[serde(default)]
     content_type: Option<String>,
+    /// Size of the file, in bytes.
+    #[serde(default)]
+    size: Option<u64>,
     /// Board item whose media the uploaded file replaces (optional).
     #[serde(default)]
     replace_item_id: Option<String>,
@@ -1392,7 +1395,7 @@ fn import_unauthorized_guild<'a>(
     }
 }
 
-/// `media_upload_start` — begins a raw, streamed file upload to the board.
+/// `media_upload_start` — begins a file upload to the board, sent in parts.
 #[tauri::command]
 pub fn media_upload_start(
     window: WebviewWindow<Wry>,
@@ -1410,22 +1413,24 @@ pub fn media_upload_start(
         .cloned()
         .ok_or_else(|| "guilde inconnue".to_string())?;
     let filename = upload::validate_filename(parsed.filename.as_deref())?;
+    let description = upload::upload_description(&upload::UploadFile {
+        filename: &filename,
+        size: parsed.size.unwrap_or_default(),
+        title: parsed.title.as_deref(),
+        message: parsed.message.as_deref(),
+        content_type: parsed.content_type.as_deref(),
+        replace_item_id: parsed.replace_item_id.as_deref(),
+    })?;
     let insecure = crate::net::tls::insecure_tls_enabled();
-    let url = upload::upload_url(
-        &membership.server_url,
-        &filename,
-        parsed.title.as_deref(),
-        parsed.message.as_deref(),
-        parsed.replace_item_id.as_deref(),
-        insecure,
-    )?;
-    let content_type = upload::normalize_content_type(parsed.content_type.as_deref());
-    let client = upload::build_client(insecure)?;
+    let target = upload::UploadTarget {
+        client: upload::build_client(insecure)?,
+        server_url: membership.server_url,
+        allow_insecure: insecure,
+        token: membership.client_token,
+        part_target: upload::PART_TARGET_BYTES,
+    };
     let (sender, receiver) = mpsc::channel::<upload::UploadChunk>(4);
-    let token = membership.client_token;
-    let task = tauri::async_runtime::spawn(async move {
-        upload::run_upload(client, url, &token, &content_type, receiver).await
-    });
+    let task = tauri::async_runtime::spawn(upload::run_upload(target, description, receiver));
     let upload_id = Uuid::new_v4().to_string();
     uploads.insert(
         upload_id.clone(),
@@ -1467,7 +1472,7 @@ pub async fn media_upload_chunk(
     // The registry lock is released before awaiting the send.
     let sender = uploads.sender(&upload_id)?;
     sender
-        .send(Ok(bytes))
+        .send(bytes)
         .await
         .map_err(|_| "upload_closed".to_string())
 }
@@ -1490,7 +1495,7 @@ pub async fn media_upload_finish(
     } = uploads
         .take(&upload_id)
         .ok_or_else(|| "envoi inconnu".to_string())?;
-    // Closing the sender terminates the streamed request body.
+    // Closing the sender ends the file: the last part, then the completion.
     drop(sender);
     match task.await {
         Ok(Ok(response)) => {
@@ -1526,7 +1531,8 @@ pub async fn media_artwork_upload(
         .ok_or_else(|| "guilde inconnue".to_string())?;
     let item_id = header("x-item-id").ok_or_else(|| "média inconnu".to_string())?;
     let filename = upload::validate_filename(header("x-filename").as_deref())?;
-    let content_type = upload::normalize_content_type(header("x-content-type").as_deref());
+    let content_type = upload::normalize_content_type(header("x-content-type").as_deref())
+        .unwrap_or_else(|| "application/octet-stream".to_string());
     let bytes = match request.body() {
         tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
         tauri::ipc::InvokeBody::Json(_) => return Err("corps binaire attendu".to_string()),

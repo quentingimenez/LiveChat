@@ -47,7 +47,7 @@ pub(super) enum IngestionInput {
         /// Ignore the media cache and ingest again.
         force_refresh: bool,
     },
-    /// Raw file already fully received from `POST /overlay/media-board/upload`.
+    /// Raw file fully received through `/overlay/media-board/uploads`.
     Upload {
         /// Temporary directory owned by the task and removed when it ends.
         temp: UploadTempDir,

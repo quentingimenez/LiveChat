@@ -187,7 +187,7 @@ globale au serveur, comme le legacy. Une base absente renvoie `Unavailable` →
 `503 ingest_unavailable`.
 
 Le board média (`POST /overlay/media-board/items` et
-`POST /overlay/media-board/upload`) utilise la **même** `MediaService`
+les envois `/overlay/media-board/uploads`) utilise la **même** `MediaService`
 (AUD-V2-S-003) : cache `READY`/`source_hash`, sémaphore, budget cache,
 `record_failure` et nettoyage `discard_partial_files` sont partagés. Ces deux
 routes sont désormais **asynchrones** : elles valident la requête, enregistrent
@@ -314,45 +314,60 @@ jointure bornée et la suppression est transactionnelle
 {ok:false}` avec `media_ingestion_failed`/`internal_error` et un message lisible.
 Voir `docs/rust/server-overlay.md` §7.2.
 
-### `POST /overlay/media-board/upload`
+### `/overlay/media-board/uploads` : envoi en plusieurs parties
 
 Ajout d'un média au board depuis un fichier local, sans URL ni multipart.
 
-Paramètres de query :
+Un fichier voyage en plusieurs requêtes, pour qu'aucun corps ne dépasse la
+limite d'un proxy placé devant le serveur (Cloudflare refuse plus de 100 Mo
+sur son offre gratuite) :
 
-| Paramètre | Obligatoire | Contrainte |
-| --- | --- | --- |
-| `filename` | oui | 1 à 255 caractères, sans `/`, `\`, `..` ni caractère de contrôle |
-| `title` | non | tronqué à 240 caractères ; défaut = nom du fichier sans extension |
-| `message` | non | tronqué à 500 caractères |
+1. `POST /overlay/media-board/uploads`, corps JSON
+   `{filename, size, title?, message?, contentType?, replaceItemId?}` : ouvre
+   une session d'envoi → `201 {"uploadId":"<uuid>"}`.
+2. `PUT /overlay/media-board/uploads/{uploadId}/parts?offset=N`, corps brut
+   d'au plus 90 Mio : ajoute une partie à l'octet `N`, qui doit valoir le
+   nombre d'octets déjà reçus → `200 {"received":<octets>}`.
+3. `POST /overlay/media-board/uploads/{uploadId}/complete` : vérifie que
+   `size` octets ont été reçus, enregistre l'ingestion →
+   `202 {"ingestionId":"<uuid>"}`.
+4. `DELETE /overlay/media-board/uploads/{uploadId}` : abandonne la session →
+   `204`.
 
-Le corps est le fichier brut (`application/octet-stream` ou tout autre
-`Content-Type`, utilisé seulement comme indice). L'authentification et la garde
-`invite_read_only` sont évaluées **avant** toute lecture du corps
-(`403 read_only_session`). Un `filename` absent/invalide répond
-`400 {"error":"invalid_payload","message":…}`.
+Une session appartient au client overlay qui l'a ouverte (`404
+upload_not_found` pour tout autre). Les parties sont écrites en streaming
+(`axum::body::Body::into_data_stream`, jamais tout le fichier en mémoire) dans
+un répertoire temporaire du même espace que les téléchargements `lc-media`,
+avec un SHA-256 incrémental. Le hachage ne pouvant pas revenir en arrière,
+toute partie en erreur (corps coupé, trop grande, au-delà de `size`) met fin à
+la session : le client recommence l'envoi. Une session sans requête depuis
+15 min est supprimée (purge paresseuse à l'ouverture et à chaque accès) ; un
+client a au plus 8 sessions ouvertes. Le répertoire temporaire passe dans la
+tâche asynchrone à la complétion et est supprimé à sa fin, succès ou échec
+(garde RAII). La limite globale `DefaultBodyLimit` de 1 Mio ne s'applique pas
+aux parties (`Body`, pas `Bytes`) ; seules les parties sont exemptées du
+timeout global (`app::is_timeout_exempt`).
 
-Le handler lit le corps en streaming avec `axum::body::Body::into_data_stream`
-(jamais tout le fichier en mémoire), écrit dans un répertoire temporaire du même
-espace que les téléchargements `lc-media`, calcule le SHA-256 au fil de l'eau et
-répond **après réception complète** du corps. Le répertoire temporaire est ensuite
-déplacé dans la tâche asynchrone et supprimé à sa fin, succès ou échec (garde
-RAII). Une coupure client après la réponse n'annule plus la conversion. La limite
-globale `DefaultBodyLimit` de 1 Mio ne s'applique pas à cette route (`Body`, pas
-`Bytes`/`Json`) ; les autres routes la conservent. La route est exemptée du
-timeout global (`app::is_timeout_exempt`) car la réception peut être longue.
-
-Limites et erreurs synchrones (avant la réponse) :
+Limites et erreurs synchrones :
 
 | Cas | Statut | Corps |
 | --- | --- | --- |
-| `filename` absent, vide, trop long ou interdit | 400 | `{"error":"invalid_payload","message":…}` |
-| corps vide | 400 | `{"error":"invalid_payload",…}` |
-| corps > `MEDIA_MAX_SIZE_MB` (2048 Mo par défaut) | 413 | `{"error":"payload_too_large"}` |
-| session `invite_read_only` | 403 | `{"error":"read_only_session"}` |
-| 20 ingestions `processing` déjà actives | 429 | `{"error":"too_many_ingestions"}` |
+| `filename` absent, vide, trop long ou interdit (ouverture) | 400 | `{"error":"invalid_payload","message":…}` |
+| `size` absent ou nul (ouverture) | 400 | `{"error":"invalid_payload",…}` |
+| `size` > `MEDIA_MAX_SIZE_MB` (2048 Mo par défaut), avant tout octet | 413 | `{"error":"payload_too_large","maxBytes":…}` |
+| `replaceItemId` hors de la guilde ou invalide / droit d'édition absent (ouverture) | 404 / 403 | `item_not_found` / `forbidden` |
+| session `invite_read_only` (avant lecture du corps) | 403 | `{"error":"read_only_session"}` |
+| 8 sessions déjà ouvertes par le client | 429 | `{"error":"too_many_uploads"}` |
+| `offset` absent | 400 | `{"error":"invalid_payload",…}` |
+| `offset` différent des octets reçus (la session continue) | 409 | `{"error":"upload_offset_mismatch","received":…}` |
+| partie en cours sur la même session | 409 | `{"error":"upload_busy"}` |
+| partie > 90 Mio (fin de session) | 413 | `{"error":"part_too_large","maxBytes":…}` |
+| plus d'octets que `size` (fin de session) | 400 | `{"error":"invalid_payload",…}` |
+| complétion avant `size` octets (fin de session) | 400 | `{"error":"invalid_payload",…}` |
+| session inconnue, terminée ou d'un autre client | 404 | `{"error":"upload_not_found"}` |
+| 20 ingestions `processing` déjà actives (complétion) | 429 | `{"error":"too_many_ingestions"}` |
 | base/service indisponible | 500/503 | `{"error":"internal_error"}` / `database_unavailable` |
-| fichier accepté | 202 | `{"ingestionId":"<uuid>"}` |
+| fichier complet | 202 | `{"ingestionId":"<uuid>"}` |
 
 Après le `202`, l'ingestion passe par
 `MediaPipeline::ingest_local_file_with_hash` : détection du type par les octets,

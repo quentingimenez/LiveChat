@@ -904,7 +904,7 @@ Aucune clé ne change de casse ; le renderer conservé lit les mêmes noms qu'en
 REST conservé hors WS (rév. 2 : inventaire **22 → 21 endpoints**, `GET /overlay/config` supprimé) :
 `POST /overlay/pair/consume` (renvoie `clientToken`, `guildId`, `sessionMode` ;
 `overlayRoutes.ts:202-291`), `GET|POST /overlay/media-board/items`,
-`GET /overlay/media-board/ingestions`, `POST /overlay/media-board/upload`,
+`GET /overlay/media-board/ingestions`, `/overlay/media-board/uploads` (envoi en parties),
 `GET /overlay/media-board/media/:assetId`, `/health`, admin
 (`docs/rust/migration-plan.md:135-140` — l'annexe A du plan doit être alignée sur ce retrait).
 

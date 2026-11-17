@@ -10,7 +10,6 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use lc_db::{Db, DbConfig};
 use lc_domain::{
     ms_to_datetime, Clock, FixedClock, Guild, GuildId, JobStatus, MediaAsset, MediaAssetId,
@@ -18,17 +17,18 @@ use lc_domain::{
 };
 use lc_playback::{PlaybackConfig, PlaybackEngine, PlaybackSink};
 use lc_protocol::{PlayPayload, StopPayload};
+use time::{Duration as TimeDuration, UtcDateTime};
 
 /// Instant de référence des tests (2023-11-14T22:13:20Z).
 pub const NOW_MS: i64 = 1_700_000_000_000;
 
 /// Instant de référence.
-pub fn now() -> DateTime<Utc> {
+pub fn now() -> UtcDateTime {
     ms_to_datetime(NOW_MS).unwrap()
 }
 
 /// Date depuis un timestamp en millisecondes.
-pub fn date(ms: i64) -> DateTime<Utc> {
+pub fn date(ms: i64) -> UtcDateTime {
     ms_to_datetime(ms).unwrap()
 }
 
@@ -55,7 +55,7 @@ pub fn sample_guild(id: GuildId) -> Guild {
 }
 
 /// Média vidéo prêt à être lu (durée 12 s).
-pub fn sample_media_asset(now: DateTime<Utc>) -> MediaAsset {
+pub fn sample_media_asset(now: UtcDateTime) -> MediaAsset {
     let id = MediaAssetId::new_v4();
     MediaAsset {
         id,
@@ -72,13 +72,13 @@ pub fn sample_media_asset(now: DateTime<Utc>) -> MediaAsset {
         status: MediaStatus::Ready,
         error: None,
         last_accessed_at: now,
-        expires_at: now + ChronoDuration::hours(24),
+        expires_at: now + TimeDuration::hours(24),
         created_at: now,
     }
 }
 
 /// Job texte seul (5 s, priorité 0).
-pub fn sample_job(guild_id: GuildId, submission: DateTime<Utc>) -> PlaybackJob {
+pub fn sample_job(guild_id: GuildId, submission: UtcDateTime) -> PlaybackJob {
     PlaybackJob {
         id: PlaybackJobId::new_v4(),
         guild_id,
@@ -105,7 +105,7 @@ pub fn sample_job(guild_id: GuildId, submission: DateTime<Utc>) -> PlaybackJob {
 /// Job média (durée demandée en secondes).
 pub fn sample_media_job(
     guild_id: GuildId,
-    submission: DateTime<Utc>,
+    submission: UtcDateTime,
     media_asset_id: MediaAssetId,
     duration_sec: i64,
 ) -> PlaybackJob {
@@ -123,23 +123,23 @@ pub struct SharedClock(Arc<FixedClock>);
 
 impl SharedClock {
     /// Fige l'horloge à `at`.
-    pub fn new(at: DateTime<Utc>) -> Self {
+    pub fn new(at: UtcDateTime) -> Self {
         Self(Arc::new(FixedClock::new(at)))
     }
 
     /// Fixe l'instant courant.
-    pub fn set(&self, at: DateTime<Utc>) {
+    pub fn set(&self, at: UtcDateTime) {
         self.0.set(at);
     }
 
     /// Avance l'horloge.
-    pub fn advance(&self, delta: ChronoDuration) {
+    pub fn advance(&self, delta: TimeDuration) {
         self.0.advance(delta);
     }
 }
 
 impl Clock for SharedClock {
-    fn now(&self) -> DateTime<Utc> {
+    fn now(&self) -> UtcDateTime {
         self.0.now()
     }
 }
@@ -290,7 +290,7 @@ pub async fn harness(recipients: usize) -> Harness {
 impl Harness {
     /// Avance l'horloge de `ms` millisecondes.
     pub fn advance(&self, ms: i64) {
-        self.clock.advance(ChronoDuration::milliseconds(ms));
+        self.clock.advance(TimeDuration::milliseconds(ms));
     }
 
     /// Relit un job depuis la base.

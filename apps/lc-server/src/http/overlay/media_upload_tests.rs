@@ -9,7 +9,6 @@ use std::time::{Duration as StdDuration, Instant};
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Method, Request, StatusCode};
 use axum::Router;
-use chrono::{DateTime, TimeZone, Utc};
 use futures_util::stream;
 use lc_db::{Db, DbConfig};
 use lc_domain::{
@@ -18,6 +17,7 @@ use lc_domain::{
 use lc_protocol::{BoardChange, MediaIngestionPayload, ServerMessage};
 use serde_json::{json, Value};
 use tempfile::TempDir;
+use time::UtcDateTime;
 use tower::ServiceExt as _;
 use uuid::Uuid;
 
@@ -34,10 +34,8 @@ pub(super) const READ_ONLY_TOKEN: &str =
     "4444444444444444444444444444444444444444444444444444444444444444";
 const GUILD: &str = "123456789012345678";
 
-pub(super) fn fixed_now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 11, 10, 12, 0, 0)
-        .single()
-        .unwrap()
+pub(super) fn fixed_now() -> UtcDateTime {
+    time::macros::utc_datetime!(2026-11-10 12:00:00)
 }
 
 pub(super) fn guild() -> GuildId {
@@ -640,7 +638,7 @@ async fn upload_with_replace_item_id_replaces_the_media_of_the_item() {
         .unwrap()
         .unwrap();
     assert!(
-        previous.expires_at < fixed_now() + chrono::Duration::days(365),
+        previous.expires_at < fixed_now() + time::Duration::days(365),
         "previous asset released: {}",
         previous.expires_at
     );
@@ -650,7 +648,7 @@ async fn upload_with_replace_item_id_replaces_the_media_of_the_item() {
         .await
         .unwrap()
         .unwrap();
-    assert!(current.expires_at > fixed_now() + chrono::Duration::days(365));
+    assert!(current.expires_at > fixed_now() + time::Duration::days(365));
 
     // The same bytes again: nothing to replace, no second `board.changed`.
     let same = upload_and_wait(&app, &state, &client, &uri, other_png()).await;
@@ -717,7 +715,7 @@ async fn replacement_upload_is_refused_for_another_kind_or_a_media_already_on_th
         status: MediaStatus::Ready,
         error: None,
         last_accessed_at: fixed_now(),
-        expires_at: fixed_now() + chrono::Duration::days(36_500),
+        expires_at: fixed_now() + time::Duration::days(36_500),
         created_at: fixed_now(),
     };
     db.media_assets().insert(&video).await.unwrap();

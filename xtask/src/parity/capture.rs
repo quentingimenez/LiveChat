@@ -3,7 +3,6 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -268,7 +267,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 /// Horodatage RFC 3339 en millisecondes, UTC.
 pub fn timestamp() -> String {
-    Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    crate::migrate::dates::format_millis(crate::migrate::dates::now_millis())
 }
 
 /// URL de base sans slash final, sans partie sensible.

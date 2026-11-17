@@ -11,12 +11,12 @@ use std::time::{Duration, Instant};
 
 use axum::body::{to_bytes, Body, BodyDataStream};
 use axum::http::{header, HeaderMap, Method, Request, StatusCode};
-use chrono::Utc;
 use futures_util::StreamExt as _;
 use lc_domain::{Guild, GuildId, OverlayClient, OverlayClientId, OverlaySessionMode};
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
+use time::UtcDateTime;
 use tower::ServiceExt as _;
 
 use crate::ingestions::{IngestionEntry, IngestionStatus};
@@ -483,7 +483,7 @@ async fn insert_overlay_client(harness: &Harness) -> OverlayClient {
         default_author_image: None,
         created_by_discord_user_id: None,
         last_seen_at: None,
-        created_at: Utc::now(),
+        created_at: UtcDateTime::now(),
         revoked_at: None,
     };
     harness

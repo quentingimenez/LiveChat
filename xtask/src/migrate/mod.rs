@@ -20,7 +20,7 @@
 //! `VACUUM INTO` ([`snapshot`]). La cible n'est écrite qu'après lecture complète
 //! en mémoire : la migration est rejouable depuis la source d'origine.
 
-mod dates;
+pub(crate) mod dates;
 mod ledger;
 mod legacy;
 mod read;

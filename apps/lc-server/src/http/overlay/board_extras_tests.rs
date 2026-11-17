@@ -4,11 +4,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use axum::http::{Method, StatusCode};
-use chrono::Duration;
 use lc_domain::{
     GuildRole, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, MediaKind, MediaStatus,
 };
 use serde_json::{json, Value};
+use time::Duration;
 
 use super::guild_tests::{fixed_now, token, Harness};
 

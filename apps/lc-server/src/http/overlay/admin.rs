@@ -31,13 +31,13 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::Json;
-use chrono::Duration;
 use lc_db::MemberChange;
 use lc_domain::{
     Guild, GuildBan, GuildBanId, GuildMember, GuildMemberId, GuildRole, PairingCode, Permission,
 };
 use lc_protocol::{close_code, close_reason};
 use serde_json::{json, Value};
+use time::Duration;
 
 use crate::app::AppState;
 

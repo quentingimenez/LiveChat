@@ -172,7 +172,7 @@ async fn issue_admin_code(
         member_id: None,
         max_uses: Some(1),
         created_by_member_id: None,
-        expires_at: Some(now + chrono::Duration::hours(ADMIN_CODE_TTL_HOURS)),
+        expires_at: Some(now + time::Duration::hours(ADMIN_CODE_TTL_HOURS)),
     };
     match create_invite(db, invite, now).await {
         Ok(Some(invite)) => Ok(invite_payload(&invite, now)),
@@ -205,7 +205,7 @@ pub(crate) async fn stop_guild_playback(
     } else {
         hub.broadcast_stop(guild_id).await
     };
-    let now_ms = state.clock.now().timestamp_millis();
+    let now_ms = lc_domain::datetime_to_ms(state.clock.now());
     let released_playing_jobs = queries::release_playing_jobs(db, guild_id.as_str(), now_ms)
         .await
         .map_err(|error| AdminError::db("releasing playback jobs", error))?;
@@ -521,7 +521,7 @@ pub(super) async fn stop(
     let hub = admin_hub(&state);
 
     let broadcast = hub.broadcast_stop(&guild_id).await;
-    let now_ms = state.clock.now().timestamp_millis();
+    let now_ms = lc_domain::datetime_to_ms(state.clock.now());
     let released = queries::release_playing_jobs(db, guild_id.as_str(), now_ms)
         .await
         .map_err(|error| AdminError::db("libération des jobs de playback", error))?;
@@ -813,7 +813,7 @@ pub(super) async fn revoke_clients(
     // lists guilds that only exist through their clients, and those must be
     // revocable too (an unknown guild simply yields zero counts).
     let stop = stop_guild_playback(&state, db, &guild_id, false).await?;
-    let now_ms = state.clock.now().timestamp_millis();
+    let now_ms = lc_domain::datetime_to_ms(state.clock.now());
 
     let revoked_overlay_ids =
         queries::revoke_overlay_clients_for_guild(db, guild_id.as_str(), now_ms)

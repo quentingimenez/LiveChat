@@ -1,10 +1,10 @@
 //! Repository `media_assets` (cache média et cycle de vie du pipeline).
 
-use chrono::{DateTime, Utc};
 use lc_domain::entities::MediaAsset;
 use lc_domain::enums::{MediaKind, MediaStatus};
 use lc_domain::ids::MediaAssetId;
 use sqlx::SqlitePool;
+use time::UtcDateTime;
 
 use crate::convert::{decode, from_bool, from_ms, to_bool, to_ms};
 use crate::error::DbResult;
@@ -138,8 +138,8 @@ impl MediaAssetsRepository {
     pub async fn touch_last_accessed(
         &self,
         id: MediaAssetId,
-        last_accessed_at: DateTime<Utc>,
-        expires_at: DateTime<Utc>,
+        last_accessed_at: UtcDateTime,
+        expires_at: UtcDateTime,
     ) -> DbResult<bool> {
         let result = sqlx::query(
             "UPDATE media_assets SET last_accessed_at = ?, expires_at = ? WHERE id = ?",
@@ -153,7 +153,7 @@ impl MediaAssetsRepository {
     }
 
     /// Liste les médias expirés à l'instant `now`, les plus anciens d'abord.
-    pub async fn list_expired(&self, now: DateTime<Utc>) -> DbResult<Vec<MediaAsset>> {
+    pub async fn list_expired(&self, now: UtcDateTime) -> DbResult<Vec<MediaAsset>> {
         let rows = sqlx::query_as::<_, MediaAssetRow>(
             "SELECT * FROM media_assets WHERE expires_at <= ? ORDER BY expires_at ASC, id ASC",
         )
@@ -202,7 +202,7 @@ impl MediaAssetsRepository {
     ///
     /// AUD-A5-007 : l'ancienne version `DELETE … WHERE expires_at <= ?` pouvait
     /// supprimer en cascade des `media_board_items` épinglés.
-    pub async fn purge_expired(&self, now: DateTime<Utc>) -> DbResult<Vec<MediaAsset>> {
+    pub async fn purge_expired(&self, now: UtcDateTime) -> DbResult<Vec<MediaAsset>> {
         let rows = sqlx::query_as::<_, MediaAssetRow>(
             "DELETE FROM media_assets \
              WHERE expires_at <= ? \

@@ -139,7 +139,9 @@ async fn health_handler(State(state): State<AppState>) -> Response {
         protocol_version: lc_protocol::PROTOCOL_VERSION,
         db,
         discord,
-        uptime_sec: (state.clock.now() - state.started_at).num_seconds().max(0),
+        uptime_sec: (state.clock.now() - state.started_at)
+            .whole_seconds()
+            .max(0),
         active_jobs,
     };
     (StatusCode::OK, Json(response)).into_response()

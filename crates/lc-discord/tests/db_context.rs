@@ -9,7 +9,6 @@
 
 use std::sync::Arc;
 
-use chrono::Duration as ChronoDuration;
 use lc_db::{Db, DbConfig};
 use lc_discord::context::{BotConfig, BotContext, DbBotContext};
 use lc_discord::handlers::dispatch;
@@ -20,6 +19,7 @@ use lc_discord::testing::{
     FakeOverlayDirectory, FakePlaybackBackend,
 };
 use lc_domain::{FixedClock, GuildId, PairingMode};
+use time::Duration as TimeDuration;
 
 type Context = DbBotContext<FixedClock>;
 
@@ -117,7 +117,7 @@ async fn db_context_persiste_un_code_d_appairage_consommable() {
     assert_eq!(entry.mode, PairingMode::Normal);
     assert_eq!(
         entry.expires_at,
-        Some(sample_now() + ChronoDuration::minutes(5))
+        Some(sample_now() + TimeDuration::minutes(5))
     );
     assert!(entry.used_at.is_none());
 

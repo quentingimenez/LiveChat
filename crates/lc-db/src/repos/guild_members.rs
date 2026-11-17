@@ -1,10 +1,10 @@
 //! Repository `guild_members` (profils et rôles par guilde).
 
-use chrono::DateTime;
 use lc_domain::entities::GuildMember;
 use lc_domain::enums::GuildRole;
 use lc_domain::ids::{GuildId, GuildMemberId, OverlayClientId};
 use sqlx::SqlitePool;
+use time::UtcDateTime;
 
 use crate::convert::{decode, from_bool, from_ms, from_opt_ms, to_bool, to_ms, to_opt_ms};
 use crate::error::{conflict_on_unique, DbResult};
@@ -198,7 +198,7 @@ impl GuildMembersRepository {
         id: GuildMemberId,
         display_name: &str,
         avatar: Option<&str>,
-        synced_at: DateTime<chrono::Utc>,
+        synced_at: UtcDateTime,
     ) -> DbResult<bool> {
         let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
@@ -234,7 +234,7 @@ impl GuildMembersRepository {
     pub async fn mark_discord_synced(
         &self,
         id: GuildMemberId,
-        synced_at: DateTime<chrono::Utc>,
+        synced_at: UtcDateTime,
     ) -> DbResult<()> {
         sqlx::query("UPDATE guild_members SET discord_synced_at = ? WHERE id = ?")
             .bind(to_ms(synced_at))
@@ -302,7 +302,7 @@ impl GuildMembersRepository {
     pub async fn remove(
         &self,
         id: GuildMemberId,
-        removed_at: DateTime<chrono::Utc>,
+        removed_at: UtcDateTime,
     ) -> DbResult<MemberChange> {
         let result = sqlx::query(&format!(
             "UPDATE guild_members SET removed_at = ? \

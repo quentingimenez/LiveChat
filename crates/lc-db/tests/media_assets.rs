@@ -4,9 +4,9 @@
 
 mod common;
 
-use chrono::Duration;
 use lc_db::DbError;
 use lc_domain::{JobStatus, MediaAssetId, MediaStatus};
+use time::Duration;
 
 #[tokio::test]
 async fn crud_media_asset() {
@@ -191,7 +191,7 @@ async fn dates_ms_roundtrip_valeurs_limites() {
 
         let fetched = repo.get(asset.id).await.unwrap().unwrap();
         assert_eq!(fetched.created_at, timestamp);
-        assert_eq!(fetched.created_at.timestamp_millis(), millis);
+        assert_eq!(lc_domain::datetime_to_ms(fetched.created_at), millis);
         assert_eq!(fetched.last_accessed_at, timestamp);
         assert_eq!(fetched.expires_at, timestamp);
     }

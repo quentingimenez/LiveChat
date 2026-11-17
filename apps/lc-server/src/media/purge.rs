@@ -15,12 +15,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use lc_db::Db;
 use lc_domain::time::datetime_to_ms;
 use lc_media::ingest::lock_source_hash;
 use lc_media::storage::{is_staged_file_name, MediaStorage};
 use sqlx::Row as _;
+use time::{Duration as TimeDuration, UtcDateTime};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
@@ -35,7 +35,7 @@ pub const PURGE_INTERVAL: Duration = Duration::from_secs(10 * 60);
 /// Grâce avant de supprimer un fichier inconnu de la base ou un fichier de
 /// transit : un fichier peut être écrit juste avant sa persistance en base, ou
 /// être en cours d'écriture par une ingestion concurrente.
-pub const ORPHAN_GRACE: ChronoDuration = ChronoDuration::hours(1);
+pub const ORPHAN_GRACE: TimeDuration = TimeDuration::hours(1);
 
 /// Compteurs d'une passe de purge.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -73,7 +73,7 @@ impl PurgeReport {
 pub async fn purge_once(
     db: &Db,
     storage: &MediaStorage,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
 ) -> MediaServiceResult<PurgeReport> {
     // Toute suppression de fichier exige une racine canonicalisable : si elle
     // ne l'est pas, on ne supprime rien plutôt que de comparer des chemins
@@ -311,7 +311,7 @@ async fn purge_storage_files(
     db: &Db,
     storage: &MediaStorage,
     root: &Path,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
 ) -> MediaServiceResult<(usize, usize)> {
     let known_rows = sqlx::query("SELECT storage_path FROM media_assets WHERE storage_path != ''")
         .fetch_all(db.pool())
@@ -329,7 +329,7 @@ async fn purge_storage_files(
         known.insert(reference_key(root, Path::new(&storage_path)));
     }
 
-    let grace_ms = ORPHAN_GRACE.num_milliseconds();
+    let grace_ms = lc_domain::time::duration_to_ms(ORPHAN_GRACE);
     let now_ms = datetime_to_ms(now);
 
     let mut staged = 0;
@@ -431,13 +431,13 @@ mod tests {
 
     use std::path::Path as StdPath;
 
-    use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use lc_db::DbConfig;
     use lc_domain::entities::{MediaAsset, MediaBoardItem};
     use lc_domain::enums::{MediaKind, MediaStatus};
     use lc_domain::ids::{GuildId, MediaAssetId, MediaBoardItemId};
     use lc_media::config::MediaConfig;
     use lc_media::storage::MediaStorage;
+    use time::{Duration as TimeDuration, UtcDateTime};
 
     use super::*;
 
@@ -445,7 +445,7 @@ mod tests {
         _dir: tempfile::TempDir,
         db: Db,
         storage: MediaStorage,
-        now: DateTime<Utc>,
+        now: UtcDateTime,
     }
 
     async fn fixture() -> Fixture {
@@ -461,7 +461,7 @@ mod tests {
             _dir: dir,
             db,
             storage,
-            now: Utc::now(),
+            now: UtcDateTime::now(),
         }
     }
 
@@ -469,9 +469,9 @@ mod tests {
         status: MediaStatus,
         source_hash: &str,
         storage_path: &StdPath,
-        last_accessed_at: DateTime<Utc>,
-        expires_at: DateTime<Utc>,
-        created_at: DateTime<Utc>,
+        last_accessed_at: UtcDateTime,
+        expires_at: UtcDateTime,
+        created_at: UtcDateTime,
     ) -> MediaAsset {
         MediaAsset {
             id: MediaAssetId::new_v4(),
@@ -503,17 +503,17 @@ mod tests {
             MediaStatus::Failed,
             "failed-hash",
             &file,
-            fixture.now - ChronoDuration::hours(3),
+            fixture.now - TimeDuration::hours(3),
             fixture.now,
-            fixture.now - ChronoDuration::hours(4),
+            fixture.now - TimeDuration::hours(4),
         );
         let processing = asset(
             MediaStatus::Processing,
             "processing-hash",
             StdPath::new(""),
-            fixture.now - ChronoDuration::hours(3),
+            fixture.now - TimeDuration::hours(3),
             fixture.now,
-            fixture.now - ChronoDuration::hours(4),
+            fixture.now - TimeDuration::hours(4),
         );
         fixture
             .db
@@ -563,17 +563,17 @@ mod tests {
             MediaStatus::Ready,
             "pinned-hash",
             &pinned_file,
-            fixture.now - ChronoDuration::hours(2),
-            fixture.now - ChronoDuration::hours(1),
-            fixture.now - ChronoDuration::hours(3),
+            fixture.now - TimeDuration::hours(2),
+            fixture.now - TimeDuration::hours(1),
+            fixture.now - TimeDuration::hours(3),
         );
         let expired = asset(
             MediaStatus::Ready,
             "expired-hash",
             &expired_file,
-            fixture.now - ChronoDuration::hours(2),
-            fixture.now - ChronoDuration::hours(1),
-            fixture.now - ChronoDuration::hours(3),
+            fixture.now - TimeDuration::hours(2),
+            fixture.now - TimeDuration::hours(1),
+            fixture.now - TimeDuration::hours(3),
         );
         fixture
             .db
@@ -638,8 +638,8 @@ mod tests {
         let cover_file = fixture.storage.root().join("video.cover.jpg");
         std::fs::write(&video_file, b"video").expect("fichier");
         std::fs::write(&cover_file, b"cover").expect("fichier");
-        let expired = fixture.now - ChronoDuration::hours(1);
-        let stale = fixture.now - ChronoDuration::days(30);
+        let expired = fixture.now - TimeDuration::hours(1);
+        let stale = fixture.now - TimeDuration::days(30);
         let video = asset(
             MediaStatus::Ready,
             "video-hash",
@@ -722,7 +722,7 @@ mod tests {
         assert!(orphan.exists());
         assert!(staged.exists());
 
-        let later = fixture.now + ORPHAN_GRACE + ChronoDuration::minutes(1);
+        let later = fixture.now + ORPHAN_GRACE + TimeDuration::minutes(1);
         let report = purge_once(&fixture.db, &fixture.storage, later)
             .await
             .expect("purge différée");
@@ -750,9 +750,9 @@ mod tests {
             MediaStatus::Ready,
             "legacy-import-hash",
             StdPath::new(&raw),
-            fixture.now - ChronoDuration::hours(3),
-            fixture.now + ChronoDuration::days(30),
-            fixture.now - ChronoDuration::hours(4),
+            fixture.now - TimeDuration::hours(3),
+            fixture.now + TimeDuration::days(30),
+            fixture.now - TimeDuration::hours(4),
         );
         fixture
             .db
@@ -761,7 +761,7 @@ mod tests {
             .await
             .expect("asset READY");
 
-        let later = fixture.now + ORPHAN_GRACE + ChronoDuration::minutes(1);
+        let later = fixture.now + ORPHAN_GRACE + TimeDuration::minutes(1);
         let report = purge_once(&fixture.db, &fixture.storage, later)
             .await
             .expect("purge différée");
@@ -799,17 +799,17 @@ mod tests {
             MediaStatus::Ready,
             "relative-referenced-hash",
             StdPath::new("./data/media/relative-referenced.mp4"),
-            fixture.now - ChronoDuration::hours(3),
-            fixture.now + ChronoDuration::days(30),
-            fixture.now - ChronoDuration::hours(4),
+            fixture.now - TimeDuration::hours(3),
+            fixture.now + TimeDuration::days(30),
+            fixture.now - TimeDuration::hours(4),
         );
         let failed = asset(
             MediaStatus::Failed,
             "relative-stale-hash",
             StdPath::new("data\\media\\relative-stale.mp4"),
-            fixture.now - ChronoDuration::hours(3),
+            fixture.now - TimeDuration::hours(3),
             fixture.now,
-            fixture.now - ChronoDuration::hours(4),
+            fixture.now - TimeDuration::hours(4),
         );
         fixture
             .db
@@ -824,7 +824,7 @@ mod tests {
             .await
             .expect("asset relatif périmé");
 
-        let later = fixture.now + ORPHAN_GRACE + ChronoDuration::minutes(1);
+        let later = fixture.now + ORPHAN_GRACE + TimeDuration::minutes(1);
         let report = purge_once(&fixture.db, &fixture.storage, later)
             .await
             .expect("purge");
@@ -854,9 +854,9 @@ mod tests {
             MediaStatus::Ready,
             "outside-hash",
             &secret,
-            fixture.now - ChronoDuration::hours(2),
-            fixture.now - ChronoDuration::hours(1),
-            fixture.now - ChronoDuration::hours(3),
+            fixture.now - TimeDuration::hours(2),
+            fixture.now - TimeDuration::hours(1),
+            fixture.now - TimeDuration::hours(3),
         );
         fixture
             .db
@@ -888,17 +888,17 @@ mod tests {
             MediaStatus::Ready,
             "shared-expired-hash",
             &shared,
-            fixture.now - ChronoDuration::hours(2),
-            fixture.now - ChronoDuration::hours(1),
-            fixture.now - ChronoDuration::hours(3),
+            fixture.now - TimeDuration::hours(2),
+            fixture.now - TimeDuration::hours(1),
+            fixture.now - TimeDuration::hours(3),
         );
         let active = asset(
             MediaStatus::Ready,
             "shared-active-hash",
             &shared,
             fixture.now,
-            fixture.now + ChronoDuration::days(30),
-            fixture.now - ChronoDuration::hours(1),
+            fixture.now + TimeDuration::days(30),
+            fixture.now - TimeDuration::hours(1),
         );
         fixture
             .db
@@ -946,7 +946,7 @@ mod tests {
             return;
         }
 
-        let later = fixture.now + ORPHAN_GRACE + ChronoDuration::minutes(1);
+        let later = fixture.now + ORPHAN_GRACE + TimeDuration::minutes(1);
         let report = purge_once(&fixture.db, &fixture.storage, later)
             .await
             .expect("purge");

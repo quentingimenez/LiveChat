@@ -9,13 +9,13 @@
 
 use axum::body::Body;
 use axum::http::{header, Method, Request as HttpRequest, StatusCode};
-use chrono::Utc;
 use lc_domain::{
     GuildId, GuildMember, GuildMemberId, GuildRole, IngestClient, IngestClientId, OverlayClient,
     OverlaySessionMode, PairingCode,
 };
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
+use time::UtcDateTime;
 
 use super::tests::{guild_member, json_or_null, overlay_client, Harness};
 
@@ -65,7 +65,7 @@ async fn ingest_fixture(harness: &Harness) -> (GuildMember, String) {
         display_name: "Alice".to_owned(),
         avatar: None,
         role: GuildRole::Member,
-        created_at: Utc::now(),
+        created_at: UtcDateTime::now(),
         removed_at: None,
         discord_user_id: Some("1001".to_owned()),
         profile_custom: false,
@@ -87,7 +87,7 @@ async fn ingest_fixture(harness: &Harness) -> (GuildMember, String) {
         default_author_image: None,
         created_by_discord_user_id: "1001".to_owned(),
         last_seen_at: None,
-        created_at: Utc::now(),
+        created_at: UtcDateTime::now(),
         revoked_at: None,
     };
     harness
@@ -408,7 +408,7 @@ async fn ingest_is_refused_when_extension_send_is_denied_or_the_member_is_remove
     harness
         .db
         .guild_members()
-        .remove(member.id, Utc::now())
+        .remove(member.id, UtcDateTime::now())
         .await
         .expect("exclusion du membre");
     let (status, _, bytes) = harness.send(ingest_request(&token, &payload)).await;

@@ -67,11 +67,20 @@ La board peut aussi tourner dans un navigateur, sans Tauri ni serveur, avec le h
 
 ## Releases
 
+Une release se prépare avec [`scripts/release.ps1`](scripts/release.ps1) (`plan`,
+`bump`, `check`, `deploy-server`) en suivant le skill
+[`/release`](.claude/skills/release/SKILL.md) : PR `release/*` qui change les
+versions, puis au merge [`release.yml`](.github/workflows/release.yml) pose les tags
+ci-dessous sur le commit de merge et lance les builds. Le serveur est ensuite
+déployé sur Unraid, puis la release overlay publiée en *Latest*.
+[`release-check.yml`](.github/workflows/release-check.yml) refuse une PR où un
+composant n'a pas la même version dans tous ses fichiers.
+
 | Projet | Tag | Résultat |
 | --- | --- | --- |
 | Serveur | `server-vX.Y.Z` | Image `ghcr.io/quentingimenez/livechat-server:X.Y.Z` et `:latest`, après smoke test ([`server-image.yml`](.github/workflows/server-image.yml)) |
 | Overlay | `overlay-vX.Y.Z` (= `version` de `apps/lc-overlay/tauri.conf.json`) | Brouillon de release avec l'installeur signé et `latest.json` ([`overlay-tauri.yml`](.github/workflows/overlay-tauri.yml)) |
-| Extension | `extension-vX.Y.Z` | Zip et publication Chrome Web Store ([`extension.yml`](.github/workflows/extension.yml)) |
+| Extension | `extension-vX.Y.Z` (= `version` de `extension/public/manifest.json`) | Release GitHub avec le zip, pas de Chrome Web Store pour l'instant ([`extension.yml`](.github/workflows/extension.yml)) |
 
 L'overlay se met à jour tout seul à partir de la release marquée **Latest** : il
 vérifie à chaque ouverture de la board, télécharge la nouvelle version en arrière-plan

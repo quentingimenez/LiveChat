@@ -645,6 +645,7 @@ pub(super) fn media_asset(size_bytes: i64, storage_path: &Path) -> MediaAsset {
         id: MediaAssetId::new_v4(),
         source_hash: format!("hash-{}", MediaAssetId::new_v4()),
         source_url: "https://example.invalid/media.png".to_owned(),
+        source_title: None,
         kind: MediaKind::Image,
         mime: "image/png".to_owned(),
         duration_sec: None,

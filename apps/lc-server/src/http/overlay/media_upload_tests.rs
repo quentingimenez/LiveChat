@@ -937,6 +937,7 @@ async fn replacement_upload_is_refused_for_another_kind_or_a_media_already_on_th
         id: lc_domain::MediaAssetId::new_v4(),
         source_hash: "hash-clip".to_owned(),
         source_url: "https://example.test/clip.mp4".to_owned(),
+        source_title: None,
         kind: lc_domain::MediaKind::Video,
         mime: "video/mp4".to_owned(),
         duration_sec: Some(30),

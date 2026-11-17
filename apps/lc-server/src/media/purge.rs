@@ -477,6 +477,7 @@ mod tests {
             id: MediaAssetId::new_v4(),
             source_hash: source_hash.to_owned(),
             source_url: format!("https://example.com/{source_hash}.mp4"),
+            source_title: None,
             kind: MediaKind::Video,
             mime: "video/mp4".into(),
             duration_sec: Some(10),

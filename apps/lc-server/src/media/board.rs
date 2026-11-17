@@ -8,6 +8,10 @@
 //!   toute écriture (`BOARD_STORAGE_LIMIT_REACHED` en cas de dépassement) ;
 //! - le média est épinglé puis l'élément est créé ; une course sur la contrainte
 //!   d'unicité `(guild_id, media_asset_id)` est rattrapée en relisant la ligne.
+//!
+//! Titre : un titre vide laisse la place au titre source de l'asset (le vrai
+//! titre du lien, extrait par le pipeline), ce qui couvre l'extension
+//! `saveToBoard` et la commande Discord `/media add`.
 
 use lc_db::{Db, DbError};
 use lc_domain::entities::{MediaAsset, MediaBoardItem};
@@ -39,7 +43,8 @@ pub struct BoardAddResult {
 ///
 /// L'asset doit déjà être `READY` ; l'appelant a vérifié le média et les
 /// permissions. `title`, `message`, `created_by_*` sont optionnels et tronqués
-/// aux limites legacy. `display_duration_sec` is kept only on a new image item.
+/// aux limites legacy ; un titre vide (ou blanc) est remplacé par le titre
+/// source de l'asset. `display_duration_sec` is kept only on a new image item.
 #[allow(clippy::too_many_arguments)]
 pub async fn add_to_board(
     db: &Db,
@@ -76,7 +81,9 @@ pub async fn add_to_board(
         id: MediaBoardItemId::new_v4(),
         guild_id: guild_id.clone(),
         media_asset_id: asset.id,
-        title: normalize(title, MAX_TITLE_CHARS),
+        title: normalize(title, MAX_TITLE_CHARS)
+            // Titre laissé vide par le membre : le vrai titre du lien.
+            .or_else(|| normalize(asset.source_title.as_deref(), MAX_TITLE_CHARS)),
         message: normalize(message, MAX_MESSAGE_CHARS),
         created_by_discord_user_id: normalize_optional(created_by_user_id),
         created_by_name: normalize(created_by_name, MAX_AUTHOR_NAME_CHARS),
@@ -197,10 +204,21 @@ mod tests {
         size_bytes: i64,
         kind: MediaKind,
     ) -> MediaAsset {
+        insert_asset_titled(fixture, hash, size_bytes, kind, None).await
+    }
+
+    async fn insert_asset_titled(
+        fixture: &Fixture,
+        hash: &str,
+        size_bytes: i64,
+        kind: MediaKind,
+        source_title: Option<&str>,
+    ) -> MediaAsset {
         let asset = MediaAsset {
             id: MediaAssetId::new_v4(),
             source_hash: hash.to_owned(),
             source_url: format!("https://example.com/{hash}"),
+            source_title: source_title.map(str::to_owned),
             kind,
             mime: "video/mp4".into(),
             duration_sec: Some(5),
@@ -274,6 +292,105 @@ mod tests {
         .expect("second ajout");
         assert!(!second.created);
         assert_eq!(second.item.id, first.item.id);
+    }
+
+    #[tokio::test]
+    async fn empty_title_falls_back_to_the_asset_source_title() {
+        let fixture = fixture(1_000).await;
+        let guild = GuildId::parse("123456789012345678").expect("guilde");
+        let asset = insert_asset_titled(
+            &fixture,
+            "hash-linked",
+            10,
+            MediaKind::Video,
+            Some("Chat qui tombe"),
+        )
+        .await;
+
+        // Titre laissé vide par le membre : le vrai titre du lien est utilisé.
+        let added = add_to_board(
+            &fixture.db,
+            &fixture.config,
+            &guild,
+            &asset,
+            None,
+            None,
+            None,
+            Some("auteur"),
+            None,
+            fixture.now,
+        )
+        .await
+        .expect("ajout sans titre");
+        assert!(added.created);
+        assert_eq!(added.item.title.as_deref(), Some("Chat qui tombe"));
+
+        // Un titre blanc compte comme vide.
+        let blank = insert_asset_titled(
+            &fixture,
+            "hash-blank",
+            10,
+            MediaKind::Video,
+            Some("Titre source"),
+        )
+        .await;
+        let added = add_to_board(
+            &fixture.db,
+            &fixture.config,
+            &guild,
+            &blank,
+            Some("   "),
+            None,
+            None,
+            None,
+            None,
+            fixture.now,
+        )
+        .await
+        .expect("ajout titre blanc");
+        assert_eq!(added.item.title.as_deref(), Some("Titre source"));
+
+        // Un titre saisi gagne toujours, et sans titre source l'item n'en a pas.
+        let typed = insert_asset_titled(
+            &fixture,
+            "hash-typed",
+            10,
+            MediaKind::Video,
+            Some("Titre source"),
+        )
+        .await;
+        let added = add_to_board(
+            &fixture.db,
+            &fixture.config,
+            &guild,
+            &typed,
+            Some("  Mon titre  "),
+            None,
+            None,
+            None,
+            None,
+            fixture.now,
+        )
+        .await
+        .expect("ajout avec titre");
+        assert_eq!(added.item.title.as_deref(), Some("Mon titre"));
+
+        let untitled = insert_asset(&fixture, "hash-untitled", 10).await;
+        let added = add_to_board(
+            &fixture.db,
+            &fixture.config,
+            &guild,
+            &untitled,
+            None,
+            None,
+            None,
+            None,
+            None,
+            fixture.now,
+        )
+        .await
+        .expect("ajout");
+        assert_eq!(added.item.title, None);
     }
 
     #[tokio::test]

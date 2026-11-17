@@ -22,7 +22,7 @@ export function openAddDialog(options) {
 
     // --- link fields ---
     const linkUrl = h('input', { class: 'field', type: 'url', placeholder: 'https://…', required: true, value: prefill });
-    const linkTitle = h('input', { class: 'field', placeholder: 'Chat qui tombe', maxlength: '240' });
+    const linkTitle = h('input', { class: 'field', placeholder: 'Titre de la vidéo ou du lien si vide', maxlength: '240' });
     const linkMessage = h('textarea', { class: 'field', rows: '2', maxlength: '500', placeholder: 'Texte affiché avec le média' });
 
     // --- file fields ---

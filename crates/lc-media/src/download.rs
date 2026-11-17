@@ -36,6 +36,9 @@ pub struct DownloadResult {
     pub size_bytes: u64,
     /// URL source effectivement téléchargée.
     pub source_url: String,
+    /// Titre de la source imprimé par `yt-dlp` pendant le téléchargement,
+    /// si le téléchargement est passé par lui et qu'un titre est connu.
+    pub title: Option<String>,
 }
 
 /// Options de lancement de `yt-dlp`.
@@ -191,6 +194,11 @@ pub fn build_ytdlp_args(
         "--no-playlist".to_string(),
         "--no-progress".to_string(),
         "--no-warnings".to_string(),
+        // Le titre est imprimé AVANT le chemin : le parseur du chemin lit la
+        // sortie en partant de la fin, la ligne de chemin reste donc la
+        // dernière candidate, et le titre est ce qui précède.
+        "--print".to_string(),
+        "after_move:%(title)s".to_string(),
         "--print".to_string(),
         "after_move:filepath".to_string(),
         "--max-filesize".to_string(),
@@ -216,32 +224,89 @@ pub fn build_ytdlp_args(
     args
 }
 
+/// Sorties `--print` analysées d'un téléchargement `yt-dlp`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct YtdlpOutput {
+    /// Chemin du fichier téléchargé, imprimé par `yt-dlp`.
+    pub path: Option<PathBuf>,
+    /// Titre de la source imprimé par `yt-dlp` (`NA` ou vide → `None`).
+    pub title: Option<String>,
+}
+
+/// Analyse la sortie `--print` de `yt-dlp` : le titre puis le chemin, dans cet
+/// ordre (voir [`build_ytdlp_args`]).
+///
+/// Le chemin est reconnu en partant de la fin (dernière ligne non technique
+/// qui ressemble à un chemin), donc une ligne de titre ressemblant à un chemin
+/// ne peut pas le détourner ; le titre est l'ensemble des lignes non techniques
+/// qui précèdent la ligne de chemin — un titre contenant des retours à la
+/// ligne est réassemblé.
+pub fn parse_ytdlp_output(stdout: &str, temp_dir: &Path) -> YtdlpOutput {
+    let lines: Vec<&str> = stdout.lines().map(str::trim).collect();
+    let mut path = None;
+    let mut title = None;
+    for (index, line) in lines.iter().enumerate().rev() {
+        if is_ytdlp_junk_line(line) {
+            continue;
+        }
+        if let Some(recognized) = ytdlp_path_from_line(line, temp_dir) {
+            path = Some(recognized);
+            title = ytdlp_title_from_lines(&lines[..index]);
+            break;
+        }
+    }
+    YtdlpOutput { path, title }
+}
+
 /// Parse le chemin de sortie imprimé par `yt-dlp`.
 pub fn parse_ytdlp_output_path(stdout: &str, temp_dir: &Path) -> Option<PathBuf> {
-    for line in stdout.lines().rev() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('[') {
-            continue;
-        }
-        if trimmed.starts_with('{') {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if let Some(path) = value.get("_filename").and_then(|path| path.as_str()) {
-                    let path = PathBuf::from(path.trim());
-                    if path.is_absolute() {
-                        return Some(path);
-                    }
-                    return Some(temp_dir.join(path));
-                }
-            }
-            continue;
-        }
-        if trimmed.starts_with("download.") {
-            return Some(temp_dir.join(trimmed));
-        }
-        let path = PathBuf::from(trimmed);
-        if path.is_absolute() || path.exists() {
+    parse_ytdlp_output(stdout, temp_dir).path
+}
+
+/// Titre d'une ligne imprimée par `yt-dlp` : `NA` (champ absent) ou vide → `None`.
+fn ytdlp_print_title(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed == "NA" {
+        return None;
+    }
+    Some(trimmed.to_owned())
+}
+
+/// Titre imprimé avant la ligne de chemin : lignes non techniques jointes
+/// (réassemblage d'un titre multi-lignes), filtrées des valeurs vides.
+fn ytdlp_title_from_lines(before: &[&str]) -> Option<String> {
+    let joined = before
+        .iter()
+        .filter(|line| !is_ytdlp_junk_line(line))
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n");
+    ytdlp_print_title(&joined)
+}
+
+/// Ligne de sortie à ignorer (vide, ou journal `yt-dlp` en `[...]`).
+fn is_ytdlp_junk_line(line: &str) -> bool {
+    line.is_empty() || line.starts_with('[')
+}
+
+/// Reconnaît une ligne de chemin : JSON `_filename`, sortie `download.<ext>`
+/// relative au dossier temporaire, ou chemin absolu/existant.
+fn ytdlp_path_from_line(trimmed: &str, temp_dir: &Path) -> Option<PathBuf> {
+    if trimmed.starts_with('{') {
+        let value = serde_json::from_str::<serde_json::Value>(trimmed).ok()?;
+        let path = value.get("_filename").and_then(|path| path.as_str())?;
+        let path = PathBuf::from(path.trim());
+        if path.is_absolute() {
             return Some(path);
         }
+        return Some(temp_dir.join(path));
+    }
+    if trimmed.starts_with("download.") {
+        return Some(temp_dir.join(trimmed));
+    }
+    let path = PathBuf::from(trimmed);
+    if path.is_absolute() || path.exists() {
+        return Some(path);
     }
     None
 }
@@ -316,7 +381,8 @@ pub async fn download_with_ytdlp(
         MediaErrorCode::DownloadFailed,
     )
     .await?;
-    let path = match parse_ytdlp_output_path(&output.stdout, temp_dir) {
+    let parsed = parse_ytdlp_output(&output.stdout, temp_dir);
+    let path = match parsed.path {
         Some(path) if path.exists() => path,
         _ => find_downloaded_file(temp_dir)?.ok_or_else(|| {
             MediaError::new(
@@ -347,6 +413,7 @@ pub async fn download_with_ytdlp(
         mime,
         size_bytes,
         source_url: url.to_string(),
+        title: parsed.title,
     })
 }
 
@@ -467,6 +534,7 @@ pub async fn download_http(
         mime,
         size_bytes: total,
         source_url: final_url.to_string(),
+        title: None,
     })
 }
 
@@ -584,6 +652,7 @@ async fn download_tiktok_carousel(
                 .canonical_url
                 .clone()
                 .unwrap_or_else(|| "tiktok".to_string()),
+            title: None,
         });
     }
     let mut audio: Option<PathBuf> = None;
@@ -619,6 +688,7 @@ async fn download_tiktok_carousel(
             .canonical_url
             .clone()
             .unwrap_or_else(|| "tiktok".to_string()),
+        title: None,
     })
 }
 
@@ -752,7 +822,18 @@ mod tests {
         );
         assert!(args.contains(&"--no-playlist".to_string()));
         assert!(args.contains(&"--no-progress".to_string()));
-        assert!(args.contains(&"after_move:filepath".to_string()));
+        assert!(args.contains(&"--no-warnings".to_string()));
+        // Le titre est imprimé avant le chemin : la recherche du chemin part
+        // de la fin, la ligne de chemin reste donc la dernière candidate.
+        let title_print = args
+            .windows(2)
+            .position(|pair| pair[0] == "--print" && pair[1] == "after_move:%(title)s")
+            .expect("print du titre");
+        let path_print = args
+            .windows(2)
+            .position(|pair| pair[0] == "--print" && pair[1] == "after_move:filepath")
+            .expect("print du chemin");
+        assert!(title_print < path_print, "ordre des --print : {args:?}");
         assert!(args.contains(&"--merge-output-format".to_string()));
         assert!(args.contains(&"2048M".to_string()));
         assert!(args
@@ -794,6 +875,72 @@ mod tests {
             None
         );
         assert_eq!(parse_ytdlp_output_path("", temp_dir), None);
+    }
+
+    #[test]
+    fn parses_ytdlp_titles_with_paths() {
+        let temp_dir_buf = std::env::temp_dir().join("lc-media");
+        let temp_dir = temp_dir_buf.as_path();
+        let download = temp_dir.join("download.mp4");
+
+        // Sortie attendue : titre puis chemin.
+        let stdout = format!("Chat qui tombe\n{}\n", download.to_string_lossy());
+        assert_eq!(
+            parse_ytdlp_output(&stdout, temp_dir),
+            YtdlpOutput {
+                path: Some(download.clone()),
+                title: Some("Chat qui tombe".to_string()),
+            }
+        );
+
+        // Titre absent (champ inconnu de yt-dlp) : « NA ».
+        let stdout = format!("NA\n{}\n", download.to_string_lossy());
+        assert_eq!(
+            parse_ytdlp_output(&stdout, temp_dir),
+            YtdlpOutput {
+                path: Some(download),
+                title: None,
+            }
+        );
+
+        // Journal yt-dlp seul : ni chemin ni titre.
+        assert_eq!(
+            parse_ytdlp_output("[youtube] abc: downloading webpage\n", temp_dir),
+            YtdlpOutput {
+                path: None,
+                title: None,
+            }
+        );
+
+        // Chemin relatif `download.<ext>` : le titre est la ligne précédente.
+        let output = parse_ytdlp_output("Mon titre\n\ndownload.webm\n", temp_dir);
+        assert_eq!(output.path, Some(temp_dir.join("download.webm")));
+        assert_eq!(output.title.as_deref(), Some("Mon titre"));
+    }
+
+    #[test]
+    fn parses_ytdlp_titles_robustly() {
+        let temp_dir_buf = std::env::temp_dir().join("lc-media");
+        let temp_dir = temp_dir_buf.as_path();
+        let download = temp_dir.join("download.mp4");
+
+        // Un titre multi-ligne est réassemblé.
+        let stdout = format!("ligne une\nligne deux\n{}\n", download.to_string_lossy());
+        assert_eq!(
+            parse_ytdlp_output(&stdout, temp_dir).title.as_deref(),
+            Some("ligne une\nligne deux")
+        );
+
+        // Un titre ressemblant à un chemin ne détourne pas la recherche du
+        // chemin, qui part de la fin.
+        let stdout = format!("download.mp4\n{}\n", download.to_string_lossy());
+        let output = parse_ytdlp_output(&stdout, temp_dir);
+        assert_eq!(output.path, Some(download.clone()));
+        assert_eq!(output.title.as_deref(), Some("download.mp4"));
+
+        // Titre vide puis chemin : aucun titre.
+        let stdout = format!("\n{}\n", download.to_string_lossy());
+        assert_eq!(parse_ytdlp_output(&stdout, temp_dir).title, None);
     }
 
     #[test]

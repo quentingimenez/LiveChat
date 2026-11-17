@@ -63,6 +63,7 @@ pub fn sample_asset(source_hash: &str, now: UtcDateTime) -> MediaAsset {
         id: MediaAssetId::new_v4(),
         source_hash: source_hash.to_owned(),
         source_url: format!("https://example.test/{source_hash}.mp4"),
+        source_title: None,
         kind: MediaKind::Video,
         mime: "video/mp4".to_owned(),
         duration_sec: Some(12),

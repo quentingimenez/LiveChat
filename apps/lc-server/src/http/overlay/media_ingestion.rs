@@ -25,6 +25,7 @@ use crate::media::service::MediaService;
 use super::auth::AuthedOverlayClient;
 use super::media_board::{
     complete_board_item, media_service_failure, replace_board_item_media, IngestionFailure,
+    ItemTitle,
 };
 use super::media_upload::{upload_service_failure, UploadTempDir};
 
@@ -178,7 +179,8 @@ async fn run_ingestion(
                 &auth,
                 service.db(),
                 asset,
-                title,
+                // Titre vide → titre source de l'asset (vrai titre du lien).
+                ItemTitle::Requested(title),
                 message,
                 state.clock.now(),
             )

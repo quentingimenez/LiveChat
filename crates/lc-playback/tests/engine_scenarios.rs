@@ -457,6 +457,7 @@ async fn un_audio_porte_l_image_de_son_element_du_board() {
         created_at: h.clock.now(),
         artwork_asset_id: Some(picture.id),
         artwork_on_overlay: true,
+        display_duration_sec: None,
     };
     h.db.media_board().create(&item).await.unwrap();
 

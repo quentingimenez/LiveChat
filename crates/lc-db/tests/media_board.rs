@@ -7,7 +7,7 @@ mod common;
 
 use std::borrow::Cow;
 
-use lc_db::{Db, DbConfig, DbError};
+use lc_db::{BoardItemEdit, Db, DbConfig, DbError};
 use lc_domain::{DomainError, MediaAssetId, MediaBoardItemId};
 use sqlx::migrate::{Migration, Migrator};
 use sqlx::sqlite::SqlitePoolOptions;
@@ -40,14 +40,20 @@ async fn crud_media_board() {
 
     // Mise à jour : `None` efface la colonne.
     assert!(repo
-        .update(item.id, Some("nouveau titre"), None)
+        .update(
+            item.id,
+            &BoardItemEdit {
+                title: Some("nouveau titre"),
+                ..BoardItemEdit::default()
+            },
+        )
         .await
         .unwrap());
     let updated = repo.get(item.id).await.unwrap().unwrap();
     assert_eq!(updated.title.as_deref(), Some("nouveau titre"));
     assert_eq!(updated.message, None);
     assert!(!repo
-        .update(MediaBoardItemId::new_v4(), None, None)
+        .update(MediaBoardItemId::new_v4(), &BoardItemEdit::default())
         .await
         .unwrap());
 
@@ -65,6 +71,121 @@ async fn crud_media_board() {
     assert!(repo.get(item.id).await.unwrap().is_none());
     assert!(!repo.delete(item.id).await.unwrap());
     assert!(repo.list_by_guild(&guild).await.unwrap().len() == 1);
+}
+
+#[tokio::test]
+async fn display_duration_round_trips() {
+    let (db, _dir) = common::temp_db().await;
+    let now = common::now();
+    let guild = common::guild("123456789012345678");
+    let asset = common::sample_asset("media-asset", now);
+    db.media_assets().insert(&asset).await.unwrap();
+    let repo = db.media_board();
+    let mut item = common::sample_board_item(&guild, asset.id, now);
+    item.display_duration_sec = Some(8);
+    repo.create(&item).await.unwrap();
+    assert_eq!(
+        repo.get(item.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .display_duration_sec,
+        Some(8)
+    );
+
+    assert!(repo.set_display_duration(item.id, None).await.unwrap());
+    assert_eq!(
+        repo.get(item.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .display_duration_sec,
+        None
+    );
+    assert!(repo.set_display_duration(item.id, Some(600)).await.unwrap());
+    assert_eq!(
+        repo.get(item.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .display_duration_sec,
+        Some(600)
+    );
+    assert!(!repo
+        .set_display_duration(MediaBoardItemId::new_v4(), Some(8))
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn display_duration_check_rejects_out_of_range() {
+    let (db, _dir) = common::temp_db().await;
+    let now = common::now();
+    let guild = common::guild("123456789012345678");
+    let asset = common::sample_asset("media-asset", now);
+    db.media_assets().insert(&asset).await.unwrap();
+    let repo = db.media_board();
+    let item = common::sample_board_item(&guild, asset.id, now);
+    repo.create(&item).await.unwrap();
+    assert!(repo.set_display_duration(item.id, Some(0)).await.is_err());
+    assert!(repo.set_display_duration(item.id, Some(601)).await.is_err());
+}
+
+#[tokio::test]
+async fn update_applies_every_field_or_none() {
+    let (db, _dir) = common::temp_db().await;
+    let now = common::now();
+    let guild = common::guild("123456789012345678");
+    let asset = common::sample_asset("media-asset", now);
+    db.media_assets().insert(&asset).await.unwrap();
+    let repo = db.media_board();
+    let item = common::sample_board_item(&guild, asset.id, now);
+    repo.create(&item).await.unwrap();
+
+    let edit = BoardItemEdit {
+        title: Some("Titre"),
+        message: Some("Message"),
+        artwork_on_overlay: Some(true),
+        display_duration_sec: Some(Some(8)),
+    };
+    assert!(repo.update(item.id, &edit).await.unwrap());
+    let saved = repo.get(item.id).await.unwrap().unwrap();
+    assert_eq!(saved.title.as_deref(), Some("Titre"));
+    assert_eq!(saved.message.as_deref(), Some("Message"));
+    assert!(saved.artwork_on_overlay);
+    assert_eq!(saved.display_duration_sec, Some(8));
+
+    // Absent fields are kept.
+    let keep = BoardItemEdit {
+        title: Some("Autre"),
+        message: None,
+        artwork_on_overlay: None,
+        display_duration_sec: None,
+    };
+    assert!(repo.update(item.id, &keep).await.unwrap());
+    let saved = repo.get(item.id).await.unwrap().unwrap();
+    assert_eq!(saved.title.as_deref(), Some("Autre"));
+    assert!(saved.message.is_none());
+    assert!(saved.artwork_on_overlay);
+    assert_eq!(saved.display_duration_sec, Some(8));
+
+    // A value the database refuses leaves the whole item untouched.
+    let refused = BoardItemEdit {
+        title: Some("Jamais"),
+        message: None,
+        artwork_on_overlay: Some(false),
+        display_duration_sec: Some(Some(0)),
+    };
+    assert!(repo.update(item.id, &refused).await.is_err());
+    let saved = repo.get(item.id).await.unwrap().unwrap();
+    assert_eq!(saved.title.as_deref(), Some("Autre"));
+    assert!(saved.artwork_on_overlay);
+    assert_eq!(saved.display_duration_sec, Some(8));
+
+    assert!(!repo
+        .update(MediaBoardItemId::new_v4(), &keep)
+        .await
+        .unwrap());
 }
 
 #[tokio::test]

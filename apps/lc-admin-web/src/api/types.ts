@@ -533,6 +533,8 @@ export interface MediaBoardItem {
   message: string | null;
   createdByName: string;
   createdAt: IsoDate;
+  /* Display time chosen for an image item, in seconds (null: guild default). */
+  displayDurationSec: number | null;
   media: MediaAssetSummary;
   /* Favorite of the caller; the console is not a member, so always false. */
   favorite: boolean;
@@ -659,6 +661,7 @@ export interface PatchMediaBoardItemResponse {
     title: string;
     message: string | null;
     artworkOnOverlay: boolean;
+    displayDurationSec: number | null;
   };
 }
 

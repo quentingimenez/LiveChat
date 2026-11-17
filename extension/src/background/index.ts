@@ -318,6 +318,7 @@ const sendComposeAction = async (params: {
   text?: string;
   forceRefresh?: boolean;
   saveToBoard?: boolean;
+  durationSec?: number;
 }): Promise<ActionResponse> => {
   const normalizedUrl = resolveIngestTargetUrl(params.url);
 
@@ -336,6 +337,7 @@ const sendComposeAction = async (params: {
     text: params.text,
     forceRefresh: !!params.forceRefresh,
     saveToBoard: !!params.saveToBoard,
+    durationSec: params.durationSec,
   });
 
   if (result.ok) {
@@ -507,6 +509,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
           text: message.text,
           forceRefresh: message.forceRefresh,
           saveToBoard: message.saveToBoard,
+          durationSec: message.durationSec,
         }),
       );
       return;

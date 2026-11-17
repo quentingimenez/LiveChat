@@ -155,6 +155,13 @@ pub async fn submit(
     if request.save_to_board && !has_source {
         return invalid_payload(Some("saveToBoard requires a resolvable media source"));
     }
+    if request.duration_sec_unusable
+        || request
+            .duration_sec
+            .is_some_and(|seconds| !lc_domain::entities::is_valid_display_duration(seconds))
+    {
+        return invalid_payload(Some("durationSec must be between 1 and 600"));
+    }
 
     // 5b. Politique de source (garde SSRF/LFI) : une source refusée est
     //     rejetée AVANT toute création d'asset, avec le même format d'erreur
@@ -234,6 +241,7 @@ pub async fn submit(
             None,
             Some(client.created_by_discord_user_id.as_str()),
             Some(job_author_name.as_str()),
+            request.duration_sec,
             now,
         )
         .await;
@@ -479,6 +487,119 @@ mod tests {
         let (status, body) = post(fixture.app.clone(), Some(TOKEN), json!({})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(body["error"], "invalid_payload");
+    }
+
+    #[tokio::test]
+    async fn ingest_rejects_duration_above_max() {
+        let fixture = fixture().await;
+        insert_client(&fixture.db).await;
+        let (status, body) = post(
+            fixture.app.clone(),
+            Some(TOKEN),
+            json!({ "text": "bonjour", "durationSec": 601 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "invalid_payload");
+        assert!(body["message"]
+            .as_str()
+            .expect("message")
+            .contains("durationSec"));
+    }
+
+    #[tokio::test]
+    async fn ingest_rejects_unusable_duration_values() {
+        let fixture = fixture().await;
+        insert_client(&fixture.db).await;
+        for duration in [json!(0), json!(-3), json!("8"), json!(true)] {
+            let (status, body) = post(
+                fixture.app.clone(),
+                Some(TOKEN),
+                json!({ "text": "bonjour", "durationSec": duration }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{duration}: {body}");
+            assert_eq!(body["error"], "invalid_payload", "{duration}");
+        }
+    }
+
+    #[tokio::test]
+    async fn ingest_accepts_null_duration() {
+        let fixture = fixture().await;
+        insert_client(&fixture.db).await;
+        let (status, body) = post(
+            fixture.app.clone(),
+            Some(TOKEN),
+            json!({ "text": "bonjour", "durationSec": null }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+
+    #[tokio::test]
+    async fn ingest_accepts_duration_at_max() {
+        let fixture = fixture().await;
+        insert_client(&fixture.db).await;
+        let (status, body) = post(
+            fixture.app.clone(),
+            Some(TOKEN),
+            json!({ "text": "bonjour", "durationSec": 600 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+
+    /// Puts a ready image in the media cache for `url`, so `/ingest` reuses it
+    /// without any download (an IP literal also skips the DNS lookup).
+    async fn insert_cached_image(fixture: &Fixture, url: &str) {
+        use lc_domain::{MediaAsset, MediaKind, MediaStatus};
+        let path = fixture._dir.path().join("cached.png");
+        tokio::fs::write(&path, b"png-body").await.unwrap();
+        let now = Utc::now();
+        let canonical = lc_media::source::canonicalize_source_url(url);
+        let asset = MediaAsset {
+            id: lc_domain::ids::MediaAssetId::new_v4(),
+            source_hash: lc_media::source::source_hash(&canonical),
+            source_url: url.to_owned(),
+            kind: MediaKind::Image,
+            mime: "image/png".to_owned(),
+            duration_sec: None,
+            width: Some(10),
+            height: Some(10),
+            is_vertical: false,
+            storage_path: path.to_string_lossy().into_owned(),
+            size_bytes: 8,
+            status: MediaStatus::Ready,
+            error: None,
+            last_accessed_at: now,
+            expires_at: now + Duration::days(1),
+            created_at: now,
+        };
+        fixture.db.media_assets().insert(&asset).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn save_to_board_keeps_the_requested_image_duration() {
+        let fixture = fixture().await;
+        insert_client(&fixture.db).await;
+        let url = "https://93.184.215.14/cached.png";
+        insert_cached_image(&fixture, url).await;
+        let (status, body) = post(
+            fixture.app.clone(),
+            Some(TOKEN),
+            json!({ "url": url, "saveToBoard": true, "durationSec": 12 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let guild = GuildId::parse(GUILD).unwrap();
+        let items = fixture
+            .db
+            .media_board()
+            .list_by_guild(&guild)
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 1, "{body}");
+        assert_eq!(items[0].display_duration_sec, Some(12));
     }
 
     #[tokio::test]

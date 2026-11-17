@@ -464,6 +464,7 @@ async fn seed_ready_board_item(
         created_at: now(),
         artwork_asset_id: None,
         artwork_on_overlay: false,
+        display_duration_sec: None,
     };
     let id = item.id;
     db.media_board()
@@ -1930,4 +1931,119 @@ async fn dispatch_failure_emits_non_fatal_error_frame() {
     let ack = recv_until_type(&mut socket, "ack").await;
     assert_eq!(ack["payload"]["ref"], "cli-peers-after-error");
     assert_eq!(ack["payload"]["ok"], true);
+}
+
+/// Turns a seeded video asset into an image (no media duration).
+async fn make_image(db: &Db, asset_id: MediaAssetId) {
+    sqlx::query("UPDATE media_assets SET kind = 'IMAGE', mime = 'image/png', duration_sec = NULL WHERE id = ?")
+        .bind(asset_id.to_canonical())
+        .execute(db.pool())
+        .await
+        .expect("image de test");
+}
+
+/// Triggers a board item and returns the `durationSec` of the `play` sent.
+async fn played_duration(server_addr: SocketAddr, item_id: MediaBoardItemId) -> Value {
+    let mut socket = connect(server_addr).await;
+    handshake(&mut socket, TOKEN).await;
+    send_value(
+        &mut socket,
+        &envelope(
+            "media.trigger",
+            "cli-media-trigger-duration",
+            json!({ "itemId": item_id.to_canonical(), "trigger": "shortcut" }),
+        ),
+    )
+    .await;
+    let play = recv_until_type(&mut socket, "play").await;
+    play["payload"]["durationSec"].clone()
+}
+
+async fn set_guild_times(db: &Db, default_media_time: Option<i64>, max_media_time: Option<i64>) {
+    db.guilds()
+        .upsert(&Guild {
+            id: guild_id(),
+            name: Some("Guilde de test".to_owned()),
+            busy_until: None,
+            default_media_time,
+            max_media_time,
+            display_media_full: false,
+        })
+        .await
+        .expect("réglages de guilde");
+}
+
+#[tokio::test]
+async fn board_image_trigger_uses_item_duration() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 120).await;
+    make_image(&server.db, asset_id).await;
+    let item_id = seed_ready_board_item(&server.db, &guild, asset_id).await;
+    server
+        .db
+        .media_board()
+        .set_display_duration(item_id, Some(8))
+        .await
+        .expect("durée");
+    assert_eq!(played_duration(server.addr, item_id).await, json!(8));
+}
+
+#[tokio::test]
+async fn board_image_trigger_falls_back_to_guild_default() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    set_guild_times(&server.db, Some(12), None).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 120).await;
+    make_image(&server.db, asset_id).await;
+    let item_id = seed_ready_board_item(&server.db, &guild, asset_id).await;
+    assert_eq!(played_duration(server.addr, item_id).await, json!(12));
+}
+
+#[tokio::test]
+async fn board_image_trigger_without_guild_default_uses_runtime_default() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 120).await;
+    make_image(&server.db, asset_id).await;
+    let item_id = seed_ready_board_item(&server.db, &guild, asset_id).await;
+    let expected = server.state.runtime().default_duration();
+    assert_eq!(played_duration(server.addr, item_id).await, json!(expected));
+}
+
+#[tokio::test]
+async fn board_image_trigger_is_capped_by_max_media_time() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    set_guild_times(&server.db, None, Some(10)).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 120).await;
+    make_image(&server.db, asset_id).await;
+    let item_id = seed_ready_board_item(&server.db, &guild, asset_id).await;
+    server
+        .db
+        .media_board()
+        .set_display_duration(item_id, Some(30))
+        .await
+        .expect("durée");
+    assert_eq!(played_duration(server.addr, item_id).await, json!(10));
+}
+
+#[tokio::test]
+async fn board_video_trigger_ignores_stored_duration() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 20).await;
+    let item_id = seed_ready_board_item(&server.db, &guild, asset_id).await;
+    // A stored duration left over from an image the item used to show.
+    sqlx::query("UPDATE media_board_items SET display_duration_sec = 8 WHERE id = ?")
+        .bind(item_id.to_canonical())
+        .execute(server.db.pool())
+        .await
+        .expect("durée restante");
+    assert_eq!(played_duration(server.addr, item_id).await, json!(20));
 }

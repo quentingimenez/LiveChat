@@ -146,7 +146,7 @@ et ses codes `pairing_codes` non utilisés (auteur `member:<id>` ou son compte
 Discord lié) ainsi que les invitations qu'il a émises ou qui le visent.
 
 Un bannissement (`POST /overlay/admin/members/{memberId}/ban`, table
-`guild_bans`, migration 0015) fait la même chose avec la raison de fermeture
+`guild_bans`, migration 0016) fait la même chose avec la raison de fermeture
 `member_banned`, puis garde le compte Discord lié hors de la guilde :
 
 - `POST /overlay/pair/consume` et `POST /ingest/pair/consume` refusent un code

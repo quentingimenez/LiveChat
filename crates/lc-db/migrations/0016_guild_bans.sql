@@ -1,4 +1,4 @@
--- Migration 0015 — guild bans.
+-- Migration 0016 — guild bans.
 --
 -- Removing a member used to be the only sanction: the person could get a new
 -- `/pair-code` from Discord and come back. A ban keeps the Discord account

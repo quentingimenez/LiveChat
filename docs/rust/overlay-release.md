@@ -226,6 +226,14 @@ toujours l'ancienne release : la publication manuelle est le feu vert de la mise
 
 ## 7. Publication GitHub (dépôt `quentingimenez/LiveChat`)
 
+Chemin normal depuis 2026-11-17 : skill [`/release`](../../.claude/skills/release/SKILL.md)
+et `scripts/release.ps1`. La PR `release/*` change la version (`bump overlay X.Y.Z`
+écrit `tauri.conf.json`, `apps/lc-overlay/Cargo.toml` et `Cargo.lock`) ; au merge,
+`release.yml` pose `overlay-vX.Y.Z` et lance `overlay-tauri.yml` sur ce tag (§7.1),
+qui crée le brouillon ; Claude le publie en *Latest* une fois le serveur déployé et
+vérifié. Les commandes ci-dessous restent valables pour une publication manuelle
+(bêta `next`, reprise d'un incident).
+
 ```powershell
 gh auth status   # doit être authentifié sur le dépôt
 

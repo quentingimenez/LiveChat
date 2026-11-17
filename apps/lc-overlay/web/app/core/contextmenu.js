@@ -13,7 +13,12 @@ import { h, icon } from './dom.js';
 
 let current = null;
 
-function isEditable(target) {
+/**
+ * Whether `target` sits in a field the page keeps for text editing (its
+ * cut, copy, paste and Ctrl+A text selection): a text-like input, a
+ * textarea or something contenteditable.
+ */
+export function isEditable(target) {
   if (!(target instanceof Element)) {
     return false;
   }

@@ -802,11 +802,13 @@
   display: none;
 }
 
+/* The buttons wrap on a narrow window: every action stays reachable. */
 .selection-bar {
   position: sticky;
   bottom: 12px;
   z-index: 5;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   margin-top: 16px;

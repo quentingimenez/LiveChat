@@ -392,13 +392,11 @@ async fn a_video_is_edited_as_a_copy_then_replaced_with_real_ffmpeg() {
         "-shortest",
         sample.to_str().unwrap(),
     ]);
-    let (status, body) = upload::send_json(
+    let (status, body) = upload::upload_file(
         &app,
-        upload::upload_request(
-            "/overlay/media-board/upload?filename=chat.mp4&title=Chat&message=miaou",
-            upload::TOKEN,
-            std::fs::read(&sample).unwrap(),
-        ),
+        upload::TOKEN,
+        json!({"filename": "chat.mp4", "title": "Chat", "message": "miaou"}),
+        &std::fs::read(&sample).unwrap(),
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
@@ -543,13 +541,11 @@ async fn an_audio_keeps_its_edited_volume_with_real_ffmpeg() {
         "libmp3lame",
         sample.to_str().unwrap(),
     ]);
-    let (status, body) = upload::send_json(
+    let (status, body) = upload::upload_file(
         &app,
-        upload::upload_request(
-            "/overlay/media-board/upload?filename=bip.mp3",
-            upload::TOKEN,
-            std::fs::read(&sample).unwrap(),
-        ),
+        upload::TOKEN,
+        json!({"filename": "bip.mp3"}),
+        &std::fs::read(&sample).unwrap(),
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");

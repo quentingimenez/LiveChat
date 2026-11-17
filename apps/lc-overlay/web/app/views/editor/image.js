@@ -479,10 +479,12 @@ export async function createImageEditor({ blob, frame, onChange }) {
     return null;
   }
 
+  // Updates the object in place: the selection panel holds a reference to it
+  // (its text field and size slider write to that object).
   function replaceObject(next) {
-    const index = doc.objects.findIndex((object) => object.id === next.id);
-    if (index !== -1) {
-      doc.objects[index] = next;
+    const current = doc.objects.find((object) => object.id === next.id);
+    if (current) {
+      Object.assign(current, next);
     }
   }
 

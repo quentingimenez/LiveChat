@@ -5,10 +5,11 @@
 // Shortest range worth keeping, in seconds (the server refuses less).
 export const MIN_KEEP_SEC = 0.1;
 export const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+// Speed range the server accepts.
+export const MIN_SPEED = 0.25;
+export const MAX_SPEED = 4;
 export const MAX_VOLUME = 3;
 export const MAX_FADE_SEC = 10;
-// Longest result the server accepts to play backwards.
-export const MAX_REVERSE_SEC = 120;
 
 export function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -228,15 +229,30 @@ export function recipeIsNoop(recipe) {
 
 // Why an edit cannot be saved, or `null`.
 export function avEditProblem(edit, duration) {
-  const segments = normalizeSegments(edit.segments, duration);
-  const kept = keptDuration(segments);
+  const kept = keptDuration(normalizeSegments(edit.segments, duration));
   if (kept < MIN_KEEP_SEC) {
     return 'Il ne reste presque rien : garde au moins un dixième de seconde.';
   }
-  if (edit.reverse && kept > MAX_REVERSE_SEC) {
-    return 'La lecture à l’envers est limitée à 2 minutes : raccourcis le média.';
-  }
   return null;
+}
+
+// Reads a typed speed ("1,3", "0.8", "2x"): rounded to the hundredth and
+// kept inside the accepted range; `null` when unreadable.
+export function parseSpeed(text) {
+  const raw = String(text ?? '').trim().replace(',', '.').replace(/\s*[x×]$/i, '');
+  if (!/^\d*\.?\d+$/.test(raw)) {
+    return null;
+  }
+  const value = Number(raw);
+  if (!(value > 0)) {
+    return null;
+  }
+  return Math.round(clamp(value, MIN_SPEED, MAX_SPEED) * 100) / 100;
+}
+
+// "1,25×".
+export function formatSpeed(speed) {
+  return `${String(Math.round(speed * 100) / 100).replace('.', ',')}×`;
 }
 
 // --- time ----------------------------------------------------------------

@@ -2379,9 +2379,7 @@ async fn revoke_clients_revokes_guild_clients_and_keeps_guild_data() {
         .expect("lecture overlay")
         .expect("overlay présent");
     assert_eq!(
-        stored
-            .revoked_at
-            .map(lc_domain::datetime_to_ms),
+        stored.revoked_at.map(lc_domain::datetime_to_ms),
         Some(pre_revoked_at_ms)
     );
     let stored = db
@@ -2408,9 +2406,7 @@ async fn revoke_clients_revokes_guild_clients_and_keeps_guild_data() {
         .expect("lecture ingest")
         .expect("ingest présent");
     assert_eq!(
-        stored
-            .revoked_at
-            .map(lc_domain::datetime_to_ms),
+        stored.revoked_at.map(lc_domain::datetime_to_ms),
         Some(pre_revoked_at_ms)
     );
     let stored = db

@@ -2427,7 +2427,7 @@ dependencies = [
 
 [[package]]
 name = "lc-db"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "lc-domain",
  "sqlx",
@@ -2440,7 +2440,7 @@ dependencies = [
 
 [[package]]
 name = "lc-discord"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2459,7 +2459,7 @@ dependencies = [
 
 [[package]]
 name = "lc-domain"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2470,7 +2470,7 @@ dependencies = [
 
 [[package]]
 name = "lc-media"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "lc-domain",
  "regex",
@@ -2487,7 +2487,7 @@ dependencies = [
 
 [[package]]
 name = "lc-overlay"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "futures-util",
  "lc-domain",
@@ -2517,7 +2517,7 @@ dependencies = [
 
 [[package]]
 name = "lc-playback"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "lc-db",
  "lc-domain",
@@ -2532,7 +2532,7 @@ dependencies = [
 
 [[package]]
 name = "lc-protocol"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2540,7 +2540,7 @@ dependencies = [
 
 [[package]]
 name = "lc-server"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6957,7 +6957,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "lc-db",
  "regex",

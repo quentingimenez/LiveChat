@@ -1,0 +1,45 @@
+/* ------------------------------------------- bandeau « mise à jour » board */
+/* Slim update banner pinned at the top of the main column, above the toolbar.
+   It lives in the layout (it never covers the header) and disappears
+   entirely when there is nothing to say. */
+.update-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 6px 20px 6px 24px;
+  border-bottom: 1px solid var(--line);
+  background: var(--slate-700);
+  font-size: 13px;
+}
+
+.update-notice .icon {
+  flex: none;
+  color: var(--blue);
+}
+
+.update-notice-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.update-notice.is-downloading .update-notice-text {
+  color: var(--text-soft);
+}
+
+.update-notice-error {
+  flex: none;
+  color: var(--red);
+}
+
+/* Slimmer than the page buttons: the banner stays one quiet line. */
+.update-notice .btn {
+  flex: none;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}

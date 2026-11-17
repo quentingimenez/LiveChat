@@ -22,6 +22,7 @@ struct MediaBoardItemRow {
     created_at: i64,
     artwork_asset_id: Option<String>,
     artwork_on_overlay: i64,
+    display_duration_sec: Option<i64>,
 }
 
 impl MediaBoardItemRow {
@@ -47,8 +48,22 @@ impl MediaBoardItemRow {
                 MediaAssetId::parse,
             )?,
             artwork_on_overlay: from_bool(self.artwork_on_overlay),
+            display_duration_sec: self.display_duration_sec,
         })
     }
+}
+
+/// Edit of a board item applied by [`MediaBoardRepository::update`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BoardItemEdit<'a> {
+    /// New title (`None` clears it).
+    pub title: Option<&'a str>,
+    /// New message (`None` clears it).
+    pub message: Option<&'a str>,
+    /// New picture-on-overlay flag (`None` keeps it).
+    pub artwork_on_overlay: Option<bool>,
+    /// New display time: `None` keeps it, `Some(None)` clears it.
+    pub display_duration_sec: Option<Option<i64>>,
 }
 
 /// Repository du board média.
@@ -76,9 +91,9 @@ impl MediaBoardRepository {
             "INSERT INTO media_board_items ( \
                 id, guild_id, media_asset_id, title, message, \
                 created_by_discord_user_id, created_by_name, created_at, \
-                artwork_asset_id, artwork_on_overlay \
+                artwork_asset_id, artwork_on_overlay, display_duration_sec \
              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, \
-                COALESCE(?, (SELECT cover_asset_id FROM media_assets WHERE id = ? AND kind = 'AUDIO')), ?)",
+                COALESCE(?, (SELECT cover_asset_id FROM media_assets WHERE id = ? AND kind = 'AUDIO')), ?, ?)",
         )
         .bind(item.id.to_canonical())
         .bind(item.guild_id.as_str())
@@ -91,6 +106,7 @@ impl MediaBoardRepository {
         .bind(item.artwork_asset_id.map(MediaAssetId::to_canonical))
         .bind(item.media_asset_id.to_canonical())
         .bind(to_bool(item.artwork_on_overlay))
+        .bind(item.display_duration_sec)
         .execute(&self.pool)
         .await
         .map_err(|error| {
@@ -145,21 +161,39 @@ impl MediaBoardRepository {
             .collect()
     }
 
-    /// Met à jour le titre et le message d'un élément.
-    ///
-    /// `title`/`message` à `None` **effacent** la colonne (pas de sémantique
-    /// « ne pas toucher ») : l'appelant relit l'entité s'il veut conserver
-    /// l'existant. Retourne `false` si l'élément n'existe pas.
-    pub async fn update(
+    /// Applies a board item edit in one statement, so either every field is
+    /// written or none is. `title` and `message` are always replaced (`None`
+    /// clears them); `artwork_on_overlay` and `display_duration_sec` are kept
+    /// when `None`. Returns `false` if the item does not exist.
+    pub async fn update(&self, id: MediaBoardItemId, edit: &BoardItemEdit<'_>) -> DbResult<bool> {
+        let (set_duration, duration) = match edit.display_duration_sec {
+            Some(seconds) => (true, seconds),
+            None => (false, None),
+        };
+        let result = sqlx::query(
+            "UPDATE media_board_items SET title = ?, message = ?,              artwork_on_overlay = COALESCE(?, artwork_on_overlay),              display_duration_sec = CASE WHEN ? THEN ? ELSE display_duration_sec END              WHERE id = ?",
+        )
+        .bind(edit.title)
+        .bind(edit.message)
+        .bind(edit.artwork_on_overlay.map(to_bool))
+        .bind(set_duration)
+        .bind(duration)
+        .bind(id.to_canonical())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Sets (or clears with `None`) the display time of an item, in seconds.
+    /// Returns `false` if the item does not exist.
+    pub async fn set_display_duration(
         &self,
         id: MediaBoardItemId,
-        title: Option<&str>,
-        message: Option<&str>,
+        seconds: Option<i64>,
     ) -> DbResult<bool> {
         let result =
-            sqlx::query("UPDATE media_board_items SET title = ?, message = ? WHERE id = ?")
-                .bind(title)
-                .bind(message)
+            sqlx::query("UPDATE media_board_items SET display_duration_sec = ? WHERE id = ?")
+                .bind(seconds)
                 .bind(id.to_canonical())
                 .execute(&self.pool)
                 .await?;

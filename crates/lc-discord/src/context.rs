@@ -198,6 +198,8 @@ pub struct MediaAddRequest {
     pub created_by_discord_user_id: Option<String>,
     /// Nom affiché de l'auteur.
     pub created_by_name: Option<String>,
+    /// Display time chosen for an image item, in seconds.
+    pub display_duration_sec: Option<i64>,
 }
 
 /// Backend d'ingestion média (adaptateur `lc-media` en Phase 6b).

@@ -905,3 +905,110 @@ async fn any_command_refreshes_the_linked_member_profile() {
         .unwrap();
     assert_eq!(stored.display_name, "Ancien pseudo");
 }
+
+// ---------------------------------------------------------------------------
+// Display duration option (`durée`)
+// ---------------------------------------------------------------------------
+
+async fn duration_ctx(kind: MediaKind, default_media_time: Option<i64>) -> FakeBotContext {
+    let ctx = FakeBotContext::with_media_asset(sample_asset(kind))
+        .await
+        .expect("contexte");
+    ctx.link_author(&guild(), &member_author(), lc_domain::GuildRole::Member)
+        .await
+        .expect("membre lié");
+    ctx.db()
+        .guilds()
+        .upsert(&lc_domain::Guild {
+            id: guild(),
+            name: None,
+            busy_until: None,
+            default_media_time,
+            max_media_time: None,
+            display_media_full: false,
+        })
+        .await
+        .expect("guilde");
+    ctx
+}
+
+async fn send_with_duration(ctx: &FakeBotContext, duration_sec: Option<i64>) -> CommandOutcome {
+    let submission = MediaSubmission {
+        url: Some("https://example.com/media".to_owned()),
+        duration_sec,
+        ..MediaSubmission::default()
+    };
+    dispatch(
+        ctx,
+        invocation(
+            CommandInput::Send(submission),
+            member_author(),
+            Some(guild()),
+            Lang::Fr,
+        ),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn send_image_with_duration_enqueues_it() {
+    let mut ctx = duration_ctx(MediaKind::Image, None).await;
+    send_with_duration(&ctx, Some(8)).await;
+    assert_eq!(ctx.playback_mut().requests()[0].duration_sec, 8);
+}
+
+#[tokio::test]
+async fn send_image_without_duration_uses_guild_default() {
+    let mut ctx = duration_ctx(MediaKind::Image, Some(12)).await;
+    send_with_duration(&ctx, None).await;
+    assert_eq!(ctx.playback_mut().requests()[0].duration_sec, 12);
+}
+
+#[tokio::test]
+async fn send_video_ignores_duration() {
+    let mut ctx = duration_ctx(MediaKind::Video, None).await;
+    send_with_duration(&ctx, Some(8)).await;
+    // `sample_asset(Video)` lasts 30 s.
+    assert_eq!(ctx.playback_mut().requests()[0].duration_sec, 30);
+}
+
+#[tokio::test]
+async fn send_rejects_out_of_range_duration() {
+    for bad in [0, 601] {
+        let mut ctx = duration_ctx(MediaKind::Image, None).await;
+        let outcome = send_with_duration(&ctx, Some(bad)).await;
+        assert!(outcome.reply.ephemeral, "{bad}");
+        assert_eq!(outcome.reply.embed.color, Some(COLOR_ERROR));
+        assert_eq!(
+            description(&outcome),
+            strings(Lang::Fr).send_invalid_duration
+        );
+        assert!(ctx.playback_mut().requests().is_empty());
+        assert!(ctx.media_mut().requests().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn media_add_passes_duration() {
+    let mut ctx = duration_ctx(MediaKind::Image, None).await;
+    ctx.media_board_mut().set_created(true);
+    let submission = MediaSubmission {
+        url: Some("https://example.com/media.png".to_owned()),
+        duration_sec: Some(8),
+        ..MediaSubmission::default()
+    };
+    dispatch(
+        &ctx,
+        invocation(
+            CommandInput::MediaAdd(submission),
+            member_author(),
+            Some(guild()),
+            Lang::Fr,
+        ),
+    )
+    .await;
+    assert_eq!(
+        ctx.media_board_mut().requests()[0].display_duration_sec,
+        Some(8)
+    );
+}

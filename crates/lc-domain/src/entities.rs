@@ -159,6 +159,21 @@ pub struct MediaBoardItem {
     /// `true` when overlays also show the picture while the audio plays.
     #[serde(default)]
     pub artwork_on_overlay: bool,
+    /// Display time chosen for an image item, in seconds
+    /// ([`MIN_DISPLAY_DURATION_SEC`]..=[`MAX_DISPLAY_DURATION_SEC`]); `None`
+    /// uses the guild default. Ignored for video and audio.
+    #[serde(default)]
+    pub display_duration_sec: Option<i64>,
+}
+
+/// Shortest display time a member can choose for an image, in seconds.
+pub const MIN_DISPLAY_DURATION_SEC: i64 = 1;
+/// Longest display time a member can choose for an image, in seconds.
+pub const MAX_DISPLAY_DURATION_SEC: i64 = 600;
+
+/// `true` when `seconds` is a display time a member may choose.
+pub fn is_valid_display_duration(seconds: i64) -> bool {
+    (MIN_DISPLAY_DURATION_SEC..=MAX_DISPLAY_DURATION_SEC).contains(&seconds)
 }
 
 /// Job de la file de lecture (scheduler).

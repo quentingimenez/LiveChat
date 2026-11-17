@@ -556,6 +556,7 @@ mod session_mode_tests {
             created_at: fixed_now(),
             artwork_asset_id: None,
             artwork_on_overlay: false,
+            display_duration_sec: None,
         };
         db.media_board().create(&item).await.unwrap();
         item

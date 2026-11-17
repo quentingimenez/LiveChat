@@ -7,7 +7,8 @@
 //! `saveToBoard`), et les durées sont des nombres finis strictement positifs
 //! arrondis au supérieur.
 //!
-//! Aucun rejet ici : la validation applicative (champs obligatoires, conflits)
+//! Aucun rejet ici (une durée inutilisable est seulement signalée par
+//! `duration_sec_unusable`) : la validation applicative (champs obligatoires, conflits)
 //! reste dans le handler pour préserver l'ordre exact des réponses legacy.
 
 use serde_json::Value;
@@ -35,6 +36,8 @@ pub struct NormalizedIngest {
     pub author_image: Option<String>,
     /// Durée demandée en secondes (ceil, > 0).
     pub duration_sec: Option<i64>,
+    /// `durationSec` was sent (not `null`) but is not a positive number.
+    pub duration_sec_unusable: bool,
 }
 
 impl NormalizedIngest {
@@ -51,6 +54,9 @@ impl NormalizedIngest {
             author_name: non_empty_string(value.get("authorName")),
             author_image: non_empty_string(value.get("authorImage")),
             duration_sec: optional_duration_sec(value.get("durationSec")),
+            duration_sec_unusable: value
+                .get("durationSec")
+                .is_some_and(|raw| !raw.is_null() && optional_duration_sec(Some(raw)).is_none()),
         }
     }
 }
@@ -151,6 +157,7 @@ mod tests {
         assert!(normalized.url.is_none());
         assert!(normalized.show_text.is_none());
         assert!(normalized.duration_sec.is_none());
+        assert!(normalized.duration_sec_unusable);
         assert!(normalized.author_name.is_none());
     }
 

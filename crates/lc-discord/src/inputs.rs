@@ -24,6 +24,8 @@ pub struct MediaSubmission {
     pub text: Option<String>,
     /// Option `refresh`.
     pub force_refresh: bool,
+    /// Option `durée`: display time of an image, in seconds.
+    pub duration_sec: Option<i64>,
 }
 
 impl MediaSubmission {

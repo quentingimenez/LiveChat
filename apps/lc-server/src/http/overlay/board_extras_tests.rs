@@ -51,6 +51,7 @@ async fn item(harness: &Harness, media: &MediaAsset) -> MediaBoardItem {
         created_at: fixed_now(),
         artwork_asset_id: None,
         artwork_on_overlay: false,
+        display_duration_sec: None,
     };
     harness.db.media_board().create(&item).await.unwrap();
     item

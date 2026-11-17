@@ -210,6 +210,15 @@ strings! {
         "Ignorer le cache média et re-télécharger/re-transcoder la source",
         "Bypass media cache and re-download/re-transcode this source"
     ),
+    option_duration: ("durée", "duration"),
+    option_duration_description: (
+        "Durée d'affichage d'une image, en secondes (1 à 600)",
+        "Image display time in seconds (1 to 600)"
+    ),
+    send_invalid_duration: (
+        "La durée doit être comprise entre 1 et 600 secondes.",
+        "The duration must be between 1 and 600 seconds."
+    ),
     send_answer: (
         "Contenu reçu ! Il sera bientôt joué !",
         "Content received! It will be played soon!"

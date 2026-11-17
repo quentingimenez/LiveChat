@@ -28,6 +28,7 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained (fusionné dans zbus 6) : dépendance Linux uniquement via tauri-plugin-single-instance. Pas d'impact Windows ; bump Tauri attendu, suivi P1." },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained (fusionné dans zbus 6), Linux uniquement via tauri-plugin-single-instance. Suivi P1." },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained (fusionné dans zbus 6), Linux uniquement via tauri-plugin-single-instance. Suivi P1." },
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained (aucune version corrigée) : avis de maintenance, pas de vulnérabilité. Utilisé par nos crates (lc-db, lc-domain, lc-discord, lc-playback, lc-server, lc-overlay, xtask) et par sqlx 0.8. Migration vers jiff ou time à planifier, suivi P1." },
 ]
 # Une entrée d'ignore qui ne matche plus rien doit être nettoyée (visible en CI).
 unused-ignored-advisory = "warn"

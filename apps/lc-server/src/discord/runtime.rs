@@ -204,7 +204,7 @@ impl std::fmt::Debug for SharedClock {
 }
 
 impl Clock for SharedClock {
-    fn now(&self) -> chrono::DateTime<chrono::Utc> {
+    fn now(&self) -> time::UtcDateTime {
         self.0.now()
     }
 }
@@ -310,7 +310,6 @@ mod tests {
 
     use std::sync::Arc;
 
-    use chrono::{TimeZone, Utc};
     use lc_domain::FixedClock;
 
     use crate::shutdown::Shutdown;
@@ -369,7 +368,7 @@ mod tests {
 
     #[test]
     fn shared_clock_delegue_a_l_horloge_du_serveur() {
-        let at = Utc.with_ymd_and_hms(2024, 1, 2, 3, 4, 5).unwrap();
+        let at = time::macros::utc_datetime!(2024-01-02 3:04:05);
         let clock = SharedClock::new(Arc::new(FixedClock::new(at)));
         assert_eq!(clock.now(), at);
     }

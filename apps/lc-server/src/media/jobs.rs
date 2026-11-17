@@ -14,11 +14,11 @@
 //! la route via [`crate::media::hook::notify_ingested`] (contrat Phase 4b :
 //! `PlaybackEngine::notify`, jamais `enqueue` qui réinsère le job).
 
-use chrono::{DateTime, Utc};
 use lc_db::Db;
 use lc_domain::entities::{MediaAsset, PlaybackJob};
 use lc_domain::enums::{JobStatus, MediaKind};
 use lc_domain::ids::{GuildId, PlaybackJobId};
+use time::UtcDateTime;
 
 use crate::media::errors::MediaServiceResult;
 
@@ -49,7 +49,7 @@ pub async fn create_for_ingest(
     db: &Db,
     default_duration: u64,
     spec: JobSpec<'_>,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
 ) -> MediaServiceResult<PlaybackJob> {
     let guild = db.guilds().get(&spec.guild_id).await?;
     let default_duration = i64::try_from(default_duration).unwrap_or(i64::MAX);
@@ -136,11 +136,11 @@ fn resolve_duration(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use chrono::Duration;
     use lc_db::DbConfig;
     use lc_domain::entities::Guild;
     use lc_domain::enums::{JobStatus, MediaKind, MediaStatus};
     use lc_domain::ids::MediaAssetId;
+    use time::Duration;
 
     use super::*;
 
@@ -148,7 +148,7 @@ mod tests {
         _dir: tempfile::TempDir,
         db: Db,
         guild_id: GuildId,
-        now: DateTime<Utc>,
+        now: UtcDateTime,
     }
 
     async fn fixture() -> Fixture {
@@ -160,7 +160,7 @@ mod tests {
             _dir: dir,
             db,
             guild_id: GuildId::parse("123456789012345678").expect("guilde"),
-            now: Utc::now(),
+            now: UtcDateTime::now(),
         }
     }
 

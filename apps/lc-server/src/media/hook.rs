@@ -112,7 +112,7 @@ mod tests {
     }
 
     fn job() -> PlaybackJob {
-        let now = chrono::Utc::now();
+        let now = time::UtcDateTime::now();
         PlaybackJob {
             id: PlaybackJobId::new_v4(),
             guild_id: GuildId::parse("123456789012345678").expect("guild id valide"),

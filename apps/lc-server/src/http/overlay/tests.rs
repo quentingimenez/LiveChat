@@ -16,7 +16,6 @@ use std::sync::Arc;
 use axum::body::{to_bytes, Body};
 use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::Router;
-use chrono::{DateTime, Duration, TimeZone, Utc};
 use lc_db::{Db, DbConfig};
 use lc_domain::{
     FixedClock, GuildId, GuildInvite, GuildMember, GuildMemberId, GuildRole, JobStatus, MediaAsset,
@@ -26,6 +25,7 @@ use lc_domain::{
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
+use time::{Duration, UtcDateTime};
 use tower::ServiceExt as _;
 
 use crate::app::AppState;
@@ -42,15 +42,13 @@ const BEARER_TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123
 const OTHER_TOKEN: &str = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 
 /// Instant figé des tests (2026-11-10T12:00:00Z).
-fn fixed_now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 11, 10, 12, 0, 0)
-        .single()
-        .expect("instant de test valide")
+fn fixed_now() -> UtcDateTime {
+    time::macros::utc_datetime!(2026-11-10 12:00:00)
 }
 
 /// Secondes UNIX de l'horloge de test.
 fn fixed_now_secs() -> u64 {
-    u64::try_from(fixed_now().timestamp()).expect("horodatage positif")
+    u64::try_from(fixed_now().unix_timestamp()).expect("horodatage positif")
 }
 
 /// Guilde principale des tests.
@@ -170,7 +168,7 @@ fn pairing_entry(
     mode: PairingMode,
     grants_admin: bool,
     author: Option<&str>,
-    expires_at: Option<DateTime<Utc>>,
+    expires_at: Option<UtcDateTime>,
 ) -> PairingCodeEntry {
     PairingCodeEntry {
         code: PairingCode::parse(code).expect("code valide"),
@@ -216,7 +214,7 @@ async fn insert_asset(
     mime: &str,
     kind: MediaKind,
     bytes: &[u8],
-    expires_at: DateTime<Utc>,
+    expires_at: UtcDateTime,
 ) -> MediaAsset {
     let path = media_dir.join(file_name);
     tokio::fs::write(&path, bytes)
@@ -286,7 +284,7 @@ async fn insert_item(
     asset: &MediaAsset,
     title: Option<&str>,
     message: Option<&str>,
-    created_at: DateTime<Utc>,
+    created_at: UtcDateTime,
 ) -> MediaBoardItem {
     let item = MediaBoardItem {
         id: MediaBoardItemId::new_v4(),

@@ -49,9 +49,10 @@ sqlx = { version = "0.8", default-features = false, features = [
     "sqlite",
     "migrate",
     "macros",
-    "chrono",
 ] }
-chrono = { version = "0.4", features = ["serde"] }
+# Dates: `UtcDateTime` + `Duration`. No `serde` feature on purpose: dates are
+# serialized explicitly (epoch ms or RFC 3339 millis, see `lc_domain::time`).
+time = { version = "0.3.38", features = ["std", "formatting", "parsing", "macros"] }
 tempfile = "3"
 
 # ---- Identifiants / crypto / encodage ----

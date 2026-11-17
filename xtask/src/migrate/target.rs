@@ -81,7 +81,7 @@ async fn insert_metadata(
     source: &SourceMeta,
     snapshot: &SnapshotMeta,
 ) -> Result<(), Error> {
-    let imported_at = chrono::Utc::now().timestamp_millis().to_string();
+    let imported_at = super::dates::now_millis().to_string();
     let source_path = source.path.display().to_string();
     let tool = concat!("xtask ", env!("CARGO_PKG_VERSION"), " migrate-legacy");
     let entries: [(&'static str, String); 10] = [

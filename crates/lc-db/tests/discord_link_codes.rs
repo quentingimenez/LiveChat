@@ -4,12 +4,12 @@
 
 mod common;
 
-use chrono::{DateTime, Duration, Utc};
 use lc_db::{Db, LinkOutcome};
 use lc_domain::entities::DiscordLinkCode;
 use lc_domain::ids::{GuildId, PairingCode};
+use time::{Duration, UtcDateTime};
 
-fn link_code(guild_id: &GuildId, raw: &str, now: DateTime<Utc>) -> DiscordLinkCode {
+fn link_code(guild_id: &GuildId, raw: &str, now: UtcDateTime) -> DiscordLinkCode {
     DiscordLinkCode {
         code: PairingCode::parse(raw).unwrap(),
         guild_id: guild_id.clone(),

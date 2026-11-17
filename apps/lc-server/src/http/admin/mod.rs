@@ -90,9 +90,9 @@ use axum::middleware;
 use axum::response::Response;
 use axum::routing::{delete, get, patch, post};
 use axum::Router;
-use chrono::{DateTime, SecondsFormat, Utc};
 use lc_db::Db;
 use serde_json::Value;
+use time::UtcDateTime;
 
 use crate::app::AppState;
 
@@ -296,18 +296,18 @@ pub(crate) fn require_db(state: &AppState) -> Result<&Db, AdminError> {
 }
 
 /// Date ISO 8601 UTC avec millisecondes (`2026-11-09T22:49:44.000Z`).
-pub(crate) fn to_iso(date_time: DateTime<Utc>) -> String {
-    date_time.to_rfc3339_opts(SecondsFormat::Millis, true)
+pub(crate) fn to_iso(date_time: UtcDateTime) -> String {
+    lc_domain::time::to_rfc3339_millis(date_time)
 }
 
 /// Variante `Option` de [`to_iso`] (JSON `null` si absent).
-pub(crate) fn opt_iso(date_time: Option<DateTime<Utc>>) -> Option<String> {
+pub(crate) fn opt_iso(date_time: Option<UtcDateTime>) -> Option<String> {
     date_time.map(to_iso)
 }
 
 /// Convertit un entier millisecondes (stockage SQLite) en ISO 8601.
 pub(crate) fn iso_from_ms(milliseconds: i64) -> Option<String> {
-    DateTime::<Utc>::from_timestamp_millis(milliseconds).map(to_iso)
+    lc_domain::ms_to_datetime(milliseconds).map(to_iso)
 }
 
 /// Pourcentage arrondi à 2 décimales et borné à `[0, 100]`, comme `toPercent`.

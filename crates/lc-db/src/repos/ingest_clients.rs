@@ -1,9 +1,9 @@
 //! Repository `ingest_clients` (extensions d'ingestion appairées).
 
-use chrono::DateTime;
 use lc_domain::entities::IngestClient;
 use lc_domain::ids::{GuildId, IngestClientId};
 use sqlx::SqlitePool;
+use time::UtcDateTime;
 
 use crate::convert::{decode, from_ms, from_opt_ms, to_ms, to_opt_ms};
 use crate::error::{conflict_on_unique, DbResult};
@@ -129,7 +129,7 @@ impl IngestClientsRepository {
     pub async fn touch_last_seen(
         &self,
         id: IngestClientId,
-        last_seen_at: DateTime<chrono::Utc>,
+        last_seen_at: UtcDateTime,
     ) -> DbResult<bool> {
         let result = sqlx::query("UPDATE ingest_clients SET last_seen_at = ? WHERE id = ?")
             .bind(to_ms(last_seen_at))
@@ -146,7 +146,7 @@ impl IngestClientsRepository {
         &self,
         guild_id: &GuildId,
         authors: &[String],
-        revoked_at: DateTime<chrono::Utc>,
+        revoked_at: UtcDateTime,
     ) -> DbResult<u64> {
         let mut revoked = 0;
         for author in authors {
@@ -167,11 +167,7 @@ impl IngestClientsRepository {
     /// Révoque le client.
     ///
     /// Retourne `false` s'il n'existe pas ou s'il était déjà révoqué.
-    pub async fn revoke(
-        &self,
-        id: IngestClientId,
-        revoked_at: DateTime<chrono::Utc>,
-    ) -> DbResult<bool> {
+    pub async fn revoke(&self, id: IngestClientId, revoked_at: UtcDateTime) -> DbResult<bool> {
         let result = sqlx::query(
             "UPDATE ingest_clients SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
         )

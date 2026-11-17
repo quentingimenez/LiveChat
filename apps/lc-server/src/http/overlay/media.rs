@@ -119,7 +119,7 @@ pub async fn get_media(
     }
 
     let timestamp = now(&state);
-    let now_sec = u64::try_from(timestamp.timestamp()).unwrap_or(0);
+    let now_sec = u64::try_from(timestamp.unix_timestamp()).unwrap_or(0);
     // AUD-A2-002 : une URL signée ne peut pas porter une expiration au-delà de
     // la politique serveur (défense contre un `exp` forgé/prolongé).
     if !media_url::is_expiry_within_max(exp_sec, now_sec) {
@@ -401,7 +401,7 @@ pub(super) async fn serve_file(
 pub(super) async fn touch_asset(
     state: &AppState,
     asset: &MediaAsset,
-    timestamp: chrono::DateTime<chrono::Utc>,
+    timestamp: time::UtcDateTime,
 ) {
     let Some(db) = state.db.as_ref() else {
         return;

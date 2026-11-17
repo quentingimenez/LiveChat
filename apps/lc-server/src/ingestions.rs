@@ -19,9 +19,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, MutexGuard};
 
-use chrono::{DateTime, Duration, Utc};
 use lc_domain::GuildId;
 use serde_json::{json, Map, Value};
+use time::{Duration, UtcDateTime};
 use uuid::Uuid;
 
 use crate::http::admin::AdminEvents;
@@ -80,7 +80,7 @@ pub struct IngestionEntry {
     /// Current lifecycle state.
     pub status: IngestionStatus,
     /// Instant the ingestion was accepted.
-    pub created_at: DateTime<Utc>,
+    pub created_at: UtcDateTime,
     /// `true` when a new board item was created, `false` when the media was
     /// already pinned; only set once the ingestion is `ready`.
     pub created: Option<bool>,
@@ -89,7 +89,7 @@ pub struct IngestionEntry {
     /// Why the ingestion failed; only set once the ingestion is `failed`.
     pub error: Option<IngestionErrorInfo>,
     /// Instant the background task finished (success or failure).
-    pub finished_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<UtcDateTime>,
 }
 
 impl IngestionEntry {
@@ -144,9 +144,9 @@ pub struct FinishedIngestion {
     /// Why the ingestion failed, if it did.
     pub error: Option<IngestionErrorInfo>,
     /// Instant the ingestion was accepted.
-    pub started_at: DateTime<Utc>,
+    pub started_at: UtcDateTime,
     /// Instant the background task finished.
-    pub finished_at: DateTime<Utc>,
+    pub finished_at: UtcDateTime,
 }
 
 /// Why a new ingestion cannot start.
@@ -207,7 +207,7 @@ impl IngestionRegistry {
         &self,
         guild_id: GuildId,
         client_id: Uuid,
-        now: DateTime<Utc>,
+        now: UtcDateTime,
     ) -> Result<String, StartIngestionError> {
         let ingestion_id = Uuid::new_v4().to_string();
         let mut entries = self.lock();
@@ -244,7 +244,7 @@ impl IngestionRegistry {
         ingestion_id: &str,
         created: bool,
         item_id: String,
-        now: DateTime<Utc>,
+        now: UtcDateTime,
     ) {
         let mut entries = self.lock();
         purge_finished(&mut entries, now);
@@ -279,7 +279,7 @@ impl IngestionRegistry {
         &self,
         ingestion_id: &str,
         error: IngestionErrorInfo,
-        now: DateTime<Utc>,
+        now: UtcDateTime,
     ) {
         let mut entries = self.lock();
         purge_finished(&mut entries, now);
@@ -329,7 +329,7 @@ impl IngestionRegistry {
 
     /// Returns the ingestions still being processed, newest first.
     #[must_use]
-    pub fn active(&self, now: DateTime<Utc>) -> Vec<IngestionEntry> {
+    pub fn active(&self, now: UtcDateTime) -> Vec<IngestionEntry> {
         let mut entries = self.lock();
         purge_finished(&mut entries, now);
         let mut active: Vec<IngestionEntry> = entries
@@ -348,7 +348,7 @@ impl IngestionRegistry {
 
     /// Counts failures finished at or after `since`.
     #[must_use]
-    pub fn failure_count_since(&self, since: DateTime<Utc>) -> usize {
+    pub fn failure_count_since(&self, since: UtcDateTime) -> usize {
         self.lock_history()
             .iter()
             .filter(|entry| entry.status == IngestionStatus::Failed && entry.finished_at >= since)
@@ -363,7 +363,7 @@ impl IngestionRegistry {
         &self,
         client_id: Uuid,
         ingestion_id: &str,
-        now: DateTime<Utc>,
+        now: UtcDateTime,
     ) -> Option<IngestionEntry> {
         let mut entries = self.lock();
         purge_finished(&mut entries, now);
@@ -375,7 +375,7 @@ impl IngestionRegistry {
 
     /// Lists the retained ingestions of one overlay client, newest first.
     #[must_use]
-    pub fn list_for_client(&self, client_id: Uuid, now: DateTime<Utc>) -> Vec<IngestionEntry> {
+    pub fn list_for_client(&self, client_id: Uuid, now: UtcDateTime) -> Vec<IngestionEntry> {
         let mut entries = self.lock();
         purge_finished(&mut entries, now);
         let mut listed: Vec<IngestionEntry> = entries
@@ -408,11 +408,8 @@ fn ingestion_event(finished: &FinishedIngestion) -> Value {
         .error
         .as_ref()
         .map(|error| error.message.clone().unwrap_or_else(|| error.code.clone()));
-    let duration_ms = finished
-        .finished_at
-        .signed_duration_since(finished.started_at)
-        .num_milliseconds()
-        .max(0);
+    let duration_ms =
+        lc_domain::time::duration_to_ms(finished.finished_at - finished.started_at).max(0);
 
     json!({
         "id": finished.ingestion_id,
@@ -422,18 +419,14 @@ fn ingestion_event(finished: &FinishedIngestion) -> Value {
         "url": "",
         "status": status,
         "error": error,
-        "startedAt": finished
-            .started_at
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        "finishedAt": finished
-            .finished_at
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        "startedAt": lc_domain::time::to_rfc3339_millis(finished.started_at),
+        "finishedAt": lc_domain::time::to_rfc3339_millis(finished.finished_at),
         "durationMs": duration_ms,
     })
 }
 
 /// Drops finished entries whose retention window elapsed.
-fn purge_finished(entries: &mut HashMap<String, IngestionEntry>, now: DateTime<Utc>) {
+fn purge_finished(entries: &mut HashMap<String, IngestionEntry>, now: UtcDateTime) {
     entries.retain(|_, entry| {
         entry
             .finished_at
@@ -445,15 +438,11 @@ fn purge_finished(entries: &mut HashMap<String, IngestionEntry>, now: DateTime<U
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use chrono::TimeZone as _;
-
     use super::*;
     use serde_json::json;
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 11, 10, 12, 0, 0)
-            .single()
-            .unwrap()
+    fn now() -> UtcDateTime {
+        time::macros::utc_datetime!(2026-11-10 12:00:00)
     }
 
     fn guild() -> GuildId {

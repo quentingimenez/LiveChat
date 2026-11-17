@@ -398,7 +398,6 @@ mod tests {
 
     use std::sync::Arc;
 
-    use chrono::{DateTime, TimeZone, Utc};
     use lc_db::{Db, DbConfig};
     use lc_discord::context::{MediaAddRequest, MediaBoardBackend, OverlayDirectory};
     use lc_discord::{BotConfigSource, BotContext, BotError, DbBotContext, MediaErrorCode};
@@ -406,6 +405,7 @@ mod tests {
         FixedClock, Guild, GuildId, MediaAsset, MediaAssetId, MediaKind, MediaStatus,
         OverlayClient, OverlayClientId, OverlaySessionMode,
     };
+    use time::UtcDateTime;
 
     use crate::runtime::{Runtime, RuntimeOverrides};
     use crate::Config;
@@ -425,8 +425,8 @@ mod tests {
         Config::from_pairs(entries).unwrap()
     }
 
-    fn sample_now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2024, 1, 2, 3, 4, 5).unwrap()
+    fn sample_now() -> UtcDateTime {
+        time::macros::utc_datetime!(2024-01-02 3:04:05)
     }
 
     fn guild_id() -> GuildId {
@@ -447,7 +447,7 @@ mod tests {
             .unwrap();
     }
 
-    async fn insert_asset(db: &Db, at: DateTime<Utc>) -> MediaAssetId {
+    async fn insert_asset(db: &Db, at: UtcDateTime) -> MediaAssetId {
         let id = MediaAssetId::new_v4();
         db.media_assets()
             .insert(&MediaAsset {
@@ -465,7 +465,7 @@ mod tests {
                 status: MediaStatus::Ready,
                 error: None,
                 last_accessed_at: at,
-                expires_at: at + chrono::Duration::days(1),
+                expires_at: at + time::Duration::days(1),
                 created_at: at,
             })
             .await
@@ -477,7 +477,7 @@ mod tests {
         db: &Db,
         label: &str,
         mode: OverlaySessionMode,
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) -> OverlayClientId {
         let client = OverlayClient {
             id: OverlayClientId::new_v4(),

@@ -4,9 +4,9 @@
 
 mod common;
 
-use chrono::Duration;
 use lc_db::DbError;
 use lc_domain::{DomainError, OverlaySessionMode};
+use time::Duration;
 
 #[tokio::test]
 async fn overlay_crud_et_revocation() {

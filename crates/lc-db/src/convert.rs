@@ -5,8 +5,8 @@
 //! [`DbError::Corrupt`] : une valeur illisible en base ne doit jamais faire
 //! paniquer le serveur ni être silencieusement remplacée.
 
-use chrono::{DateTime, Utc};
 use lc_domain::{datetime_to_ms, ms_to_datetime, DomainError};
+use time::UtcDateTime;
 
 use crate::error::{DbError, DbResult};
 
@@ -19,12 +19,12 @@ pub(crate) fn corrupt(table: &'static str, detail: impl Into<String>) -> DbError
 }
 
 /// Convertit une date du domaine en millisecondes epoch UTC (stockage).
-pub(crate) fn to_ms(value: DateTime<Utc>) -> i64 {
+pub(crate) fn to_ms(value: UtcDateTime) -> i64 {
     datetime_to_ms(value)
 }
 
 /// Convertit une date optionnelle en millisecondes epoch UTC (stockage).
-pub(crate) fn to_opt_ms(value: Option<DateTime<Utc>>) -> Option<i64> {
+pub(crate) fn to_opt_ms(value: Option<UtcDateTime>) -> Option<i64> {
     value.map(datetime_to_ms)
 }
 
@@ -33,7 +33,7 @@ pub(crate) fn from_ms(
     table: &'static str,
     column: &'static str,
     millis: i64,
-) -> DbResult<DateTime<Utc>> {
+) -> DbResult<UtcDateTime> {
     ms_to_datetime(millis).ok_or_else(|| {
         corrupt(
             table,
@@ -47,7 +47,7 @@ pub(crate) fn from_opt_ms(
     table: &'static str,
     column: &'static str,
     millis: Option<i64>,
-) -> DbResult<Option<DateTime<Utc>>> {
+) -> DbResult<Option<UtcDateTime>> {
     match millis {
         Some(millis) => from_ms(table, column, millis).map(Some),
         None => Ok(None),

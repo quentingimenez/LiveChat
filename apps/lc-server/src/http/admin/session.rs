@@ -11,11 +11,11 @@
 //! `lc-db` have no session entity: the table exists only for the admin panel.
 
 use axum::http::{header, HeaderMap};
-use chrono::Utc;
 use lc_db::{Db, DbError};
 use rand::RngCore as _;
 use sha2::{Digest as _, Sha256};
 use sqlx::FromRow;
+use time::UtcDateTime;
 
 use super::oauth::DiscordIdentity;
 
@@ -187,7 +187,7 @@ pub async fn delete_expired(db: &Db, now_ms: i64) -> Result<u64, DbError> {
 
 /// Startup cleanup: expired sessions are removed when the server starts.
 pub async fn purge_expired(db: &Db) -> Result<u64, DbError> {
-    delete_expired(db, Utc::now().timestamp_millis()).await
+    delete_expired(db, lc_domain::datetime_to_ms(UtcDateTime::now())).await
 }
 
 async fn delete_token_hash(db: &Db, token_hash: &str) -> Result<u64, DbError> {

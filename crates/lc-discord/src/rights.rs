@@ -455,7 +455,7 @@ mod tests {
                 display_name: "Banni".to_owned(),
                 avatar: None,
                 banned_by: None,
-                created_at: chrono::Utc::now(),
+                created_at: time::UtcDateTime::now(),
             })
             .await
             .unwrap();

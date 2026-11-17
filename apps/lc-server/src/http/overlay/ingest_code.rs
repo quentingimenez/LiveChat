@@ -22,10 +22,10 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
-use chrono::Duration;
 use lc_domain::rights::{Action, Surface};
 use lc_domain::{PairingCode, PairingCodeEntry, PairingMode};
 use serde_json::json;
+use time::Duration;
 
 use crate::app::AppState;
 
@@ -136,9 +136,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use axum::http::{Method, StatusCode};
-    use chrono::{Duration, SecondsFormat};
     use lc_domain::{GuildRole, PairingCode, PairingCodeEntry, PairingMode};
     use serde_json::{json, Value};
+    use time::Duration;
 
     use super::super::guild_tests::{fixed_now, token, Harness};
     use super::INGEST_CODE_CREATOR_PREFIX;
@@ -162,7 +162,7 @@ mod tests {
 
         assert_eq!(issued["apiBaseUrl"], "http://127.0.0.1:8099");
         let expected_expiry =
-            (fixed_now() + Duration::minutes(10)).to_rfc3339_opts(SecondsFormat::Millis, true);
+            lc_domain::time::to_rfc3339_millis(fixed_now() + Duration::minutes(10));
         assert_eq!(issued["expiresAt"], expected_expiry);
 
         let code = PairingCode::parse(issued["code"].as_str().unwrap()).unwrap();

@@ -7,7 +7,6 @@
 #![allow(dead_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use chrono::{DateTime, Duration, Utc};
 use lc_db::{Db, DbConfig};
 use lc_domain::entities::{
     Guild, IngestClient, MediaAsset, MediaBoardItem, OverlayClient, PairingCodeEntry, PlaybackJob,
@@ -18,17 +17,18 @@ use lc_domain::ids::{
     PairingCode as PairingCodeValue, PlaybackJobId,
 };
 use lc_domain::ms_to_datetime;
+use time::{Duration, UtcDateTime};
 
 /// Instant fixe de référence des tests (`2023-11-14T22:13:20Z`).
 pub const NOW_MS: i64 = 1_700_000_000_000;
 
 /// Convertit des millisecondes epoch en date (panique si hors plage : bug de test).
-pub fn date(millis: i64) -> DateTime<Utc> {
+pub fn date(millis: i64) -> UtcDateTime {
     ms_to_datetime(millis).expect("horodatage de test valide")
 }
 
 /// Instant fixe [`NOW_MS`].
-pub fn now() -> DateTime<Utc> {
+pub fn now() -> UtcDateTime {
     date(NOW_MS)
 }
 
@@ -58,7 +58,7 @@ pub async fn memory_db() -> Db {
 }
 
 /// Média `READY` minimal, expirant à `now`.
-pub fn sample_asset(source_hash: &str, now: DateTime<Utc>) -> MediaAsset {
+pub fn sample_asset(source_hash: &str, now: UtcDateTime) -> MediaAsset {
     MediaAsset {
         id: MediaAssetId::new_v4(),
         source_hash: source_hash.to_owned(),
@@ -80,7 +80,7 @@ pub fn sample_asset(source_hash: &str, now: DateTime<Utc>) -> MediaAsset {
 }
 
 /// Job de lecture `PENDING` éligible à `now`.
-pub fn sample_job(guild_id: &GuildId, now: DateTime<Utc>) -> PlaybackJob {
+pub fn sample_job(guild_id: &GuildId, now: UtcDateTime) -> PlaybackJob {
     PlaybackJob {
         id: PlaybackJobId::new_v4(),
         guild_id: guild_id.clone(),
@@ -108,7 +108,7 @@ pub fn sample_job(guild_id: &GuildId, now: DateTime<Utc>) -> PlaybackJob {
 pub fn sample_board_item(
     guild_id: &GuildId,
     media_asset_id: MediaAssetId,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
 ) -> MediaBoardItem {
     MediaBoardItem {
         id: MediaBoardItemId::new_v4(),
@@ -138,7 +138,7 @@ pub fn sample_guild(id: &GuildId) -> Guild {
 }
 
 /// Overlay appairé actif.
-pub fn sample_overlay(guild_id: &GuildId, token_hash: &str, now: DateTime<Utc>) -> OverlayClient {
+pub fn sample_overlay(guild_id: &GuildId, token_hash: &str, now: UtcDateTime) -> OverlayClient {
     OverlayClient {
         id: OverlayClientId::new_v4(),
         guild_id: guild_id.clone(),
@@ -155,7 +155,7 @@ pub fn sample_overlay(guild_id: &GuildId, token_hash: &str, now: DateTime<Utc>) 
 }
 
 /// Client d'ingestion appairé actif.
-pub fn sample_ingest(guild_id: &GuildId, token_hash: &str, now: DateTime<Utc>) -> IngestClient {
+pub fn sample_ingest(guild_id: &GuildId, token_hash: &str, now: UtcDateTime) -> IngestClient {
     IngestClient {
         id: IngestClientId::new_v4(),
         guild_id: guild_id.clone(),
@@ -171,7 +171,7 @@ pub fn sample_ingest(guild_id: &GuildId, token_hash: &str, now: DateTime<Utc>) -
 }
 
 /// Code d'appairage normal (expire dans 10 minutes).
-pub fn sample_pairing(code: &str, guild_id: &GuildId, now: DateTime<Utc>) -> PairingCodeEntry {
+pub fn sample_pairing(code: &str, guild_id: &GuildId, now: UtcDateTime) -> PairingCodeEntry {
     PairingCodeEntry {
         code: PairingCodeValue::parse(code).expect("code d'appairage de test valide"),
         guild_id: guild_id.clone(),

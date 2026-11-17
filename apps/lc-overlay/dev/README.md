@@ -138,6 +138,8 @@ Options de l'URL :
 | `?settings` | `board_take_pending_view` renvoie `settings` une fois au démarrage : la page Paramètres s'ouvre, comme après l'entrée tray « Paramètres… ». |
 | `?removed` | Met un retrait de guilde en attente au démarrage. |
 | `?media` | « Chat qui tombe » et « Vine boom » deviennent une vraie vidéo et un vrai son (`dev/fixtures/`), pour essayer l'éditeur de média (frise, découpe, recadrage). |
+| `?update=ready` | L'updater démarre sur `ready` (version 3.2.0 disponible) : le bandeau de mise à jour s'affiche en haut de la fenêtre, sur toutes les pages. « Plus tard » le masque pour cette version (localStorage) ; « Redémarrer et installer » échoue et montre l'erreur dans le bandeau. |
+| `?update=downloading` | L'updater démarre sur `downloading` (version 3.2.0) : le bandeau montre « Téléchargement de LiveChat 3.2.0… » sans bouton. |
 
 Depuis la console :
 

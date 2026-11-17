@@ -97,3 +97,22 @@ async fn resolves_tiktok_page_online() {
     .await;
     assert!(source.is_ok());
 }
+
+#[tokio::test]
+#[ignore = "nécessite un accès réseau"]
+async fn downloads_public_tiktok_video_from_cdn() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let config = MediaConfig::default();
+    let source = lc_media::source::resolve_source(
+        &config,
+        "https://www.tiktok.com/@tiktok/video/7106594312292453675",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let download = lc_media::download::download_tiktok(&source, &config, temp.path())
+        .await
+        .unwrap();
+    assert_eq!(download.kind, Some(MediaKind::Video));
+    assert!(download.size_bytes > 10 * 1024);
+}

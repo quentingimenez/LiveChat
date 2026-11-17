@@ -14,6 +14,7 @@
 //! convertit ces données en `CreateCommand`.
 
 use crate::i18n::{Lang, EN, FR};
+use lc_domain::entities::{MAX_DISPLAY_DURATION_SEC, MIN_DISPLAY_DURATION_SEC};
 
 /// Texte disponible en français et en anglais.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,6 +75,8 @@ pub struct OptionSpec {
     pub required: bool,
     /// Choix imposés (tableau vide sinon).
     pub choices: &'static [ChoiceSpec],
+    /// Bornes `min_value`/`max_value` déclarées à Discord (options entières).
+    pub range: Option<(i64, i64)>,
 }
 
 /// Identité stable d'une commande, indépendante de la langue.
@@ -175,6 +178,7 @@ const LINK_OPTIONS: &[OptionSpec] = &[OptionSpec {
     kind: OptionKind::String,
     required: true,
     choices: &[],
+    range: None,
 }];
 
 const PAIR_CODE_CHOICES: &[ChoiceSpec] = &[
@@ -197,6 +201,7 @@ const PAIR_CODE_OPTIONS: &[OptionSpec] = &[OptionSpec {
     kind: OptionKind::String,
     required: false,
     choices: PAIR_CODE_CHOICES,
+    range: None,
 }];
 
 const SEND_OPTIONS: &[OptionSpec] = &[
@@ -209,6 +214,7 @@ const SEND_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::String,
         required: false,
         choices: &[],
+        range: None,
     },
     OptionSpec {
         name: LocalizedText::new(FR.send_option_media, EN.send_option_media),
@@ -219,6 +225,7 @@ const SEND_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Attachment,
         required: false,
         choices: &[],
+        range: None,
     },
     OptionSpec {
         name: LocalizedText::new(FR.send_option_text, EN.send_option_text),
@@ -229,6 +236,7 @@ const SEND_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::String,
         required: false,
         choices: &[],
+        range: None,
     },
     OptionSpec {
         name: LocalizedText::new(FR.send_option_force_refresh, EN.send_option_force_refresh),
@@ -239,6 +247,7 @@ const SEND_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Boolean,
         required: false,
         choices: &[],
+        range: None,
     },
     OptionSpec {
         name: LocalizedText::new(FR.option_duration, EN.option_duration),
@@ -249,6 +258,7 @@ const SEND_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Integer,
         required: false,
         choices: &[],
+        range: Some((MIN_DISPLAY_DURATION_SEC, MAX_DISPLAY_DURATION_SEC)),
     },
 ];
 
@@ -262,6 +272,7 @@ const HIDE_SEND_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::String,
         required: false,
         choices: &[],
+        range: None,
     },
     OptionSpec {
         name: LocalizedText::new(FR.hide_send_option_media, EN.hide_send_option_media),
@@ -272,6 +283,7 @@ const HIDE_SEND_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Attachment,
         required: false,
         choices: &[],
+        range: None,
     },
     OptionSpec {
         name: LocalizedText::new(FR.hide_send_option_text, EN.hide_send_option_text),
@@ -282,6 +294,7 @@ const HIDE_SEND_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::String,
         required: false,
         choices: &[],
+        range: None,
     },
     OptionSpec {
         name: LocalizedText::new(
@@ -295,6 +308,7 @@ const HIDE_SEND_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Boolean,
         required: false,
         choices: &[],
+        range: None,
     },
     OptionSpec {
         name: LocalizedText::new(FR.option_duration, EN.option_duration),
@@ -305,6 +319,7 @@ const HIDE_SEND_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Integer,
         required: false,
         choices: &[],
+        range: Some((MIN_DISPLAY_DURATION_SEC, MAX_DISPLAY_DURATION_SEC)),
     },
 ];
 
@@ -318,6 +333,7 @@ const MEDIA_ADD_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::String,
         required: false,
         choices: &[],
+        range: None,
     },
     OptionSpec {
         name: LocalizedText::new(FR.media_add_option_media, EN.media_add_option_media),
@@ -328,6 +344,7 @@ const MEDIA_ADD_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Attachment,
         required: false,
         choices: &[],
+        range: None,
     },
     OptionSpec {
         name: LocalizedText::new(FR.media_add_option_title, EN.media_add_option_title),
@@ -338,6 +355,7 @@ const MEDIA_ADD_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::String,
         required: false,
         choices: &[],
+        range: None,
     },
     OptionSpec {
         name: LocalizedText::new(
@@ -351,6 +369,7 @@ const MEDIA_ADD_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Boolean,
         required: false,
         choices: &[],
+        range: None,
     },
     OptionSpec {
         name: LocalizedText::new(FR.option_duration, EN.option_duration),
@@ -361,6 +380,7 @@ const MEDIA_ADD_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::Integer,
         required: false,
         choices: &[],
+        range: Some((MIN_DISPLAY_DURATION_SEC, MAX_DISPLAY_DURATION_SEC)),
     },
 ];
 
@@ -374,6 +394,7 @@ const TALK_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::String,
         required: true,
         choices: &[],
+        range: None,
     },
     OptionSpec {
         name: LocalizedText::new(FR.talk_option_text, EN.talk_option_text),
@@ -384,6 +405,7 @@ const TALK_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::String,
         required: false,
         choices: &[],
+        range: None,
     },
 ];
 
@@ -399,6 +421,7 @@ const HIDE_TALK_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::String,
         required: true,
         choices: &[],
+        range: None,
     },
     OptionSpec {
         name: LocalizedText::new(FR.hide_talk_option_text, EN.hide_talk_option_text),
@@ -409,6 +432,7 @@ const HIDE_TALK_OPTIONS: &[OptionSpec] = &[
         kind: OptionKind::String,
         required: false,
         choices: &[],
+        range: None,
     },
 ];
 

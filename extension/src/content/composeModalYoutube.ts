@@ -352,10 +352,7 @@ const ensureModal = (): ComposeModalRefs => {
     <input
       id="lce-compose-modal-duration"
       class="lce-compose-modal-input"
-      type="number"
-      min="1"
-      max="600"
-      step="1"
+      type="text"
       inputmode="numeric"
       placeholder="Par défaut"
     />

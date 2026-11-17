@@ -53,6 +53,19 @@ impl MediaBoardItemRow {
     }
 }
 
+/// Edit of a board item applied by [`MediaBoardRepository::update`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BoardItemEdit<'a> {
+    /// New title (`None` clears it).
+    pub title: Option<&'a str>,
+    /// New message (`None` clears it).
+    pub message: Option<&'a str>,
+    /// New picture-on-overlay flag (`None` keeps it).
+    pub artwork_on_overlay: Option<bool>,
+    /// New display time: `None` keeps it, `Some(None)` clears it.
+    pub display_duration_sec: Option<Option<i64>>,
+}
+
 /// Repository du board média.
 #[derive(Clone, Debug)]
 pub struct MediaBoardRepository {
@@ -148,24 +161,26 @@ impl MediaBoardRepository {
             .collect()
     }
 
-    /// Met à jour le titre et le message d'un élément.
-    ///
-    /// `title`/`message` à `None` **effacent** la colonne (pas de sémantique
-    /// « ne pas toucher ») : l'appelant relit l'entité s'il veut conserver
-    /// l'existant. Retourne `false` si l'élément n'existe pas.
-    pub async fn update(
-        &self,
-        id: MediaBoardItemId,
-        title: Option<&str>,
-        message: Option<&str>,
-    ) -> DbResult<bool> {
-        let result =
-            sqlx::query("UPDATE media_board_items SET title = ?, message = ? WHERE id = ?")
-                .bind(title)
-                .bind(message)
-                .bind(id.to_canonical())
-                .execute(&self.pool)
-                .await?;
+    /// Applies a board item edit in one statement, so either every field is
+    /// written or none is. `title` and `message` are always replaced (`None`
+    /// clears them); `artwork_on_overlay` and `display_duration_sec` are kept
+    /// when `None`. Returns `false` if the item does not exist.
+    pub async fn update(&self, id: MediaBoardItemId, edit: &BoardItemEdit<'_>) -> DbResult<bool> {
+        let (set_duration, duration) = match edit.display_duration_sec {
+            Some(seconds) => (true, seconds),
+            None => (false, None),
+        };
+        let result = sqlx::query(
+            "UPDATE media_board_items SET title = ?, message = ?,              artwork_on_overlay = COALESCE(?, artwork_on_overlay),              display_duration_sec = CASE WHEN ? THEN ? ELSE display_duration_sec END              WHERE id = ?",
+        )
+        .bind(edit.title)
+        .bind(edit.message)
+        .bind(edit.artwork_on_overlay.map(to_bool))
+        .bind(set_duration)
+        .bind(duration)
+        .bind(id.to_canonical())
+        .execute(&self.pool)
+        .await?;
         Ok(result.rows_affected() > 0)
     }
 

@@ -98,7 +98,15 @@ jobs:
           name: LiveChat Extension ${{ steps.version.outputs.value }}
           make_latest: false
           files: release/*.zip
-          generate_release_notes: true
+          # The French "Changements depuis X.Y.Z" section is added by the
+          # release process (.claude/skills/release); GitHub's generated notes
+          # list every PR of the monorepo, in English.
+          body: |
+            Extension navigateur LiveChat (Chrome / Edge).
+
+            - Installation : décompresser le zip, ouvrir `chrome://extensions`, activer le mode développeur, puis « Charger l'extension non empaquetée » sur le dossier.
+            - Configuration : dans les options de l'extension, l'URL du serveur et le code donné par l'overlay (Mon profil → Appairer l'extension navigateur) ou par `/pair-code` sur Discord.
+            - Pas de publication sur le Chrome Web Store pour l'instant.
 
       - name: Create/Update GitHub Release (latest build)
         if: github.ref == 'refs/heads/main'

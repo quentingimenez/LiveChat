@@ -314,6 +314,87 @@ async fn orphan_cleanup_removes_unreferenced_files_but_keeps_fresh_staged_files(
     );
 }
 
+/// Opens a file the way a reader that does not share deletion does (ffmpeg,
+/// most Windows programs): until it is closed, Windows refuses to delete it.
+#[cfg(windows)]
+fn hold_open(path: &std::path::Path) -> std::fs::File {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    const FILE_SHARE_READ: u32 = 0x1;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
+        .expect("open without delete sharing")
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn cache_purge_skips_a_file_still_open_and_purges_the_rest() {
+    let harness = Harness::new().await;
+    let open_path = harness.path("media/open.png");
+    let free_path = harness.path("media/free.png");
+    std::fs::write(&open_path, b"open").expect("open file");
+    std::fs::write(&free_path, b"free!").expect("free file");
+    let open_asset = media_asset(4, &open_path);
+    let free_asset = media_asset(5, &free_path);
+    for asset in [&open_asset, &free_asset] {
+        harness
+            .db()
+            .media_assets()
+            .insert(asset)
+            .await
+            .expect("media asset");
+    }
+
+    let reader = hold_open(&open_path);
+    let (status, body) = harness
+        .call(Method::POST, "/admin/api/media/cache/purge")
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["removedFiles"], 1);
+    assert_eq!(body["freedBytes"], 5);
+    assert!(!free_path.exists(), "the other media is still purged");
+    assert!(open_path.exists(), "the open file is left in place");
+    for id in [open_asset.id, free_asset.id] {
+        assert!(harness
+            .db()
+            .media_assets()
+            .get(id)
+            .await
+            .expect("asset lookup")
+            .is_none());
+    }
+
+    // Once closed, the leftover file is an orphan: the cleanup removes it.
+    drop(reader);
+    let (status, body) = harness
+        .call(Method::POST, "/admin/api/media/orphans/clean")
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["removedFiles"], 1);
+    assert!(!open_path.exists());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn orphan_cleanup_skips_a_file_still_open_and_cleans_the_rest() {
+    let harness = Harness::new().await;
+    let open_path = harness.path("media/open-orphan.png");
+    let free_path = harness.path("media/free-orphan.png");
+    std::fs::write(&open_path, b"open").expect("open file");
+    std::fs::write(&free_path, b"free!").expect("free file");
+
+    let _reader = hold_open(&open_path);
+    let (status, body) = harness
+        .call(Method::POST, "/admin/api/media/orphans/clean")
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["removedFiles"], 1);
+    assert_eq!(body["freedBytes"], 5);
+    assert!(!free_path.exists());
+    assert!(open_path.exists());
+}
+
 #[tokio::test]
 #[allow(clippy::type_complexity)]
 async fn audit_row_is_written_for_a_mutation_with_the_actor_but_not_for_a_get() {

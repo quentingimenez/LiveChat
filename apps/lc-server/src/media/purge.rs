@@ -345,19 +345,39 @@ async fn purge_storage_files(
             .and_then(|name| name.to_str())
             .unwrap_or_default();
         if is_staged_file_name(name) {
-            if storage.remove_path(&variant.path)? {
+            if remove_or_skip(storage, &variant.path) {
                 staged += 1;
             }
             continue;
         }
         let variant_path =
             std::fs::canonicalize(&variant.path).unwrap_or_else(|_| variant.path.to_path_buf());
-        if !known.contains(&variant_path) && storage.remove_path(&variant.path)? {
+        if !known.contains(&variant_path) && remove_or_skip(storage, &variant.path) {
             orphans += 1;
         }
     }
 
     Ok((staged, orphans))
+}
+
+/// Removes a stored file during a cleanup sweep. A file that cannot be
+/// removed is logged and skipped: on Windows a file still open (an edit or a
+/// stream reading it, an antivirus scan) refuses deletion, and one such file
+/// must not stop the sweep. The file is retried by the next orphan sweep.
+///
+/// Returns `true` when the file was removed.
+pub(crate) fn remove_or_skip(storage: &MediaStorage, path: &Path) -> bool {
+    match storage.remove_path(path) {
+        Ok(removed) => removed,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %error,
+                "media file not removed, left for the next cleanup"
+            );
+            false
+        }
+    }
 }
 
 /// Démarre le worker de purge en arrière-plan (une passe immédiate puis toutes

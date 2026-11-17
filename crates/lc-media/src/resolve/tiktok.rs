@@ -493,14 +493,9 @@ fn collect_video_urls(value: &Value, out: &mut Vec<String>, depth: usize) {
     }
     match value {
         Value::Object(map) => {
-            for key in [
-                "downloadAddr",
-                "playAddr",
-                "download_addr",
-                "play_addr",
-                "DownloadAddrStruct",
-                "playAddrStruct",
-            ] {
+            // Les adresses `downloadAddr` servent la version filigranée
+            // (logo TikTok + pseudo) : seules les adresses de lecture comptent.
+            for key in ["playAddr", "play_addr", "playAddrStruct"] {
                 if let Some(found) = map.get(key) {
                     urls_from_value(found, out);
                 }
@@ -835,11 +830,16 @@ mod tests {
         assert_eq!(page.title.as_deref(), Some("Un chat rigolo"));
         assert_eq!(page.author.as_deref(), Some("chat_officiel"));
         assert_eq!(page.item_id.as_deref(), Some("7311111111111111111"));
-        assert_eq!(page.video_candidates.len(), 3);
-        assert!(page
+        // `downloadAddr` porte le filigrane TikTok : jamais candidat.
+        let urls: Vec<&str> = page
             .video_candidates
             .iter()
-            .any(|candidate| candidate.url == "https://v16.test/video.mp4?tag=1"));
+            .map(|candidate| candidate.url.as_str())
+            .collect();
+        assert_eq!(
+            urls,
+            ["https://v16.test/play.mp4", "https://v16.test/hd.mp4"]
+        );
         assert_eq!(page.audio_candidates.len(), 1);
         assert_eq!(page.cover.as_deref(), Some("https://p16.test/origin.jpeg"));
         assert!(!page.auth_required);
@@ -992,7 +992,7 @@ mod tests {
         );
         embedded.auth_required = false;
         page.merge(embedded);
-        assert_eq!(page.video_candidates.len(), 3);
+        assert_eq!(page.video_candidates.len(), 2);
         assert_eq!(page.item_id.as_deref(), Some("7311111111111111111"));
     }
 }

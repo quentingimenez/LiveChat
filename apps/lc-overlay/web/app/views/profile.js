@@ -3,7 +3,7 @@
 
 import { api, run } from '../core/api.js';
 import { resizeAvatar } from '../core/avatar.js';
-import { avatarNode, h } from '../core/dom.js';
+import { avatarNode, h, icon } from '../core/dom.js';
 import { formatCode } from '../core/format.js';
 import { invoke } from '../core/ipc.js';
 import { can, describeError, guildLabel, ROLE_LABELS, state } from '../core/state.js';
@@ -35,8 +35,8 @@ export function openGuildDialog(guild) {
     name.addEventListener('input', () => preview.replaceChildren(avatarNode(name.value || '?', avatar)));
     const removeAvatar = h(
       'button',
-      { class: 'btn is-quiet', type: 'button', disabled: !avatar },
-      'Retirer l’avatar',
+      { class: 'btn is-quiet profile-small', type: 'button', disabled: !avatar },
+      'Retirer',
     );
     const file = h('input', {
       type: 'file',
@@ -65,8 +65,6 @@ export function openGuildDialog(guild) {
       removeAvatar.disabled = true;
     });
     const followsDiscord = member.profileSource === 'discord';
-    const deviceCode = h('p', { class: 'meta', hidden: true });
-    const extensionCode = h('p', { class: 'meta', hidden: true });
     const save = async () => {
       // Saving an unchanged profile would stop it from following Discord.
       if (name.value.trim() === initialName.trim() && !avatarChanged) {
@@ -93,140 +91,247 @@ export function openGuildDialog(guild) {
       close();
       loadGuild();
     };
-    // Linking needs a `/pair-code` code from the member's own Discord account:
-    // the bot then accepts their commands.
-    const linkDiscord = () => {
-      const code = h('input', { class: 'field', maxlength: '12', placeholder: 'K7QX-M2PD', autocomplete: 'off', spellcheck: 'false' });
-      const submit = async () => {
-        if (!code.value.trim()) {
-          code.focus();
-          return;
-        }
-        const body = await run(() => api('POST', '/overlay/profile/discord-link', { code: code.value }));
-        if (!body) {
-          return;
-        }
-        notify(body.promoted ? 'Compte Discord lié : tu es maintenant admin de la guilde.' : 'Compte Discord lié.');
-        close();
-        loadGuild();
-      };
-      code.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          submit();
-        }
-      });
-      const form = h(
-        'div',
-        { class: 'stack discord-link', hidden: true },
-        h('p', { class: 'file-hint' }, 'Sur le serveur Discord de la guilde, tape /pair-code puis saisis ici le code reçu.'),
-        h('div', { class: 'row' }, code, h('button', { class: 'btn', type: 'button', onClick: submit }, 'Lier')),
-      );
-      const open = h('button', {
-        class: 'btn is-quiet',
-        type: 'button',
-        onClick: () => {
-          open.hidden = true;
-          form.hidden = false;
-          code.focus();
+    // Copies the text returned by `textOf`, read at click time: a code panel
+    // exists before the code it will show.
+    const copyButton = (label, message, textOf) =>
+      h(
+        'button',
+        {
+          class: 'btn is-quiet profile-copy',
+          type: 'button',
+          'aria-label': label,
+          title: label,
+          onClick: () => copyText(textOf(), message),
         },
-      }, 'Lier mon compte Discord');
-      return h(
-        'div',
-        { class: 'stack' },
-        h(
-          'div',
-          { class: 'row is-wrap' },
-          h('p', { class: 'file-hint' }, 'Ce pseudo et cet avatar s’affichent sur le stream quand tu lances un média. Lie ton compte Discord pour utiliser les commandes du bot.'),
-          open,
-        ),
-        form,
+        icon('copy'),
       );
-    };
-    const profileSource = () => {
-      if (!member.discordLinked) {
-        return linkDiscord();
-      }
-      if (followsDiscord) {
-        return h(
-          'p',
-          { class: 'file-hint' },
-          'Pseudo et avatar repris de ton compte Discord, et mis à jour avec lui. Les modifier ici les fixe.',
-        );
-      }
-      return h(
+
+    // --- another device ---
+    let deviceText = '';
+    const deviceValue = h('span', { class: 'profile-code' });
+    const devicePanel = h(
+      'div',
+      { class: 'profile-code-panel', hidden: true },
+      h(
         'div',
-        { class: 'row is-wrap' },
-        h('p', { class: 'file-hint' }, 'Pseudo et avatar choisis ici : ils ne suivent plus ton compte Discord.'),
-        h('button', { class: 'btn is-quiet', type: 'button', onClick: useDiscord }, 'Reprendre mon profil Discord'),
-      );
-    };
+        { class: 'profile-code-main' },
+        deviceValue,
+        copyButton('Copier le code', 'Code de l’appareil copié.', () => deviceText),
+        h('span', { class: 'profile-code-expiry' }, 'Expire dans 10 min'),
+      ),
+    );
     const makeDeviceCode = async () => {
       const body = await run(() => api('POST', '/overlay/device-code'));
       if (body && body.invite) {
-        deviceCode.replaceChildren('Code valable 10 minutes : ', h('span', { class: 'code' }, formatCode(body.invite.code)));
-        deviceCode.hidden = false;
+        deviceText = formatCode(body.invite.code);
+        deviceValue.textContent = deviceText;
+        devicePanel.hidden = false;
       }
     };
+    // --- browser extension ---
+    let extensionUrlText = '';
+    let extensionCodeText = '';
+    const extensionUrl = h('span', { class: 'profile-value' });
+    const extensionValue = h('span', { class: 'profile-code' });
+    const extensionPanel = h(
+      'div',
+      { class: 'profile-code-panel', hidden: true },
+      h(
+        'div',
+        { class: 'profile-field' },
+        h('span', { class: 'profile-field-label' }, 'Adresse du serveur'),
+        h(
+          'div',
+          { class: 'profile-field-value' },
+          extensionUrl,
+          copyButton('Copier l’adresse du serveur', 'Adresse du serveur copiée.', () => extensionUrlText),
+        ),
+      ),
+      h(
+        'div',
+        { class: 'profile-field' },
+        h('span', { class: 'profile-field-label' }, 'Code'),
+        h(
+          'div',
+          { class: 'profile-field-value' },
+          extensionValue,
+          copyButton('Copier le code', 'Code de l’extension copié.', () => extensionCodeText),
+        ),
+      ),
+      h('p', { class: 'profile-code-note' }, 'À saisir dans les options de l’extension. Expire dans 10 min.'),
+    );
     const makeExtensionCode = async () => {
       const body = await run(() => api('POST', '/overlay/ingest-code'));
       if (!body || !body.code) {
         return;
       }
-      extensionCode.replaceChildren(
-        'Dans les options de l’extension, saisis l’URL ',
-        h('span', { class: 'code' }, body.apiBaseUrl),
-        ' et le code ',
-        h('span', { class: 'code' }, body.code),
-        '. Valable 10 minutes.',
-      );
-      extensionCode.hidden = false;
+      extensionUrlText = body.apiBaseUrl;
+      extensionCodeText = body.code;
+      extensionUrl.textContent = body.apiBaseUrl;
+      extensionValue.textContent = body.code;
+      extensionPanel.hidden = false;
       copyText(body.code, 'Code de l’extension copié.');
+    };
+    // Linking needs a `/pair-code` code from the member's own Discord account:
+    // the bot then accepts their commands.
+    const profileSource = () => {
+      if (!member.discordLinked) {
+        const code = h('input', { class: 'field', maxlength: '12', placeholder: 'K7QX-M2PD', autocomplete: 'off', spellcheck: 'false' });
+        const submit = async () => {
+          if (!code.value.trim()) {
+            code.focus();
+            return;
+          }
+          const body = await run(() => api('POST', '/overlay/profile/discord-link', { code: code.value }));
+          if (!body) {
+            return;
+          }
+          notify(body.promoted ? 'Compte Discord lié : tu es maintenant admin de la guilde.' : 'Compte Discord lié.');
+          close();
+          loadGuild();
+        };
+        code.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            submit();
+          }
+        });
+        const form = h(
+          'div',
+          { class: 'profile-link-form', hidden: true },
+          h('p', { class: 'file-hint' }, 'Sur le serveur Discord de la guilde, tape /pair-code puis saisis ici le code reçu.'),
+          h(
+            'div',
+            { class: 'profile-link-row' },
+            code,
+            h('button', { class: 'btn', type: 'button', onClick: submit }, 'Lier'),
+          ),
+        );
+        const open = h(
+          'button',
+          {
+            class: 'btn is-quiet',
+            type: 'button',
+            onClick: () => {
+              open.hidden = true;
+              form.hidden = false;
+              code.focus();
+            },
+          },
+          'Lier mon compte Discord',
+        );
+        return h(
+          'div',
+          { class: 'profile-callout' },
+          h('p', { class: 'profile-callout-text' }, 'Lie ton compte Discord pour utiliser les commandes du bot.'),
+          open,
+          form,
+        );
+      }
+      if (followsDiscord) {
+        return h(
+          'div',
+          { class: 'profile-callout' },
+          h('p', { class: 'profile-callout-text' }, 'Compte Discord lié : ton pseudo et ton avatar en sont repris. Les modifier ici les fixe.'),
+        );
+      }
+      return h(
+        'div',
+        { class: 'profile-callout' },
+        h('p', { class: 'profile-callout-text' }, 'Pseudo et avatar choisis ici : ils ne suivent plus ton compte Discord.'),
+        h('button', { class: 'btn is-quiet', type: 'button', onClick: useDiscord }, 'Reprendre mon profil Discord'),
+      );
     };
     const leave = () => {
       close();
       confirmLeaveGuild(guild);
     };
-    return [
-      h('h2', null, 'Mon profil'),
-      h('p', null, `Dans ${guildLabel(guild)}, en tant que ${(ROLE_LABELS[member.role] || 'membre').toLowerCase()}.`),
+    const identity = h(
+      'section',
+      { class: 'profile-section' },
+      h('h3', { class: 'profile-section-title' }, 'Identité'),
       h(
         'div',
-        { class: 'stack' },
+        { class: 'profile-identity' },
+        preview,
         h(
           'div',
-          { class: 'row is-wrap profile-avatar' },
-          preview,
+          { class: 'profile-identity-fields' },
+          h('label', { class: 'profile-label' }, 'Pseudo', name),
           h(
             'div',
-            { class: 'stack profile-fields' },
-            h('label', null, 'Pseudo', name),
-            h(
-              'div',
-              { class: 'row is-wrap' },
-              h('button', { class: 'btn', type: 'button', onClick: () => file.click() }, 'Choisir un avatar'),
-              removeAvatar,
-              file,
-            ),
+            { class: 'profile-identity-actions' },
+            h('button', { class: 'btn is-quiet profile-small', type: 'button', onClick: () => file.click() }, 'Changer l’avatar'),
+            removeAvatar,
+            file,
           ),
         ),
-        profileSource(),
-        h(
-          'div',
-          { class: 'row is-wrap' },
-          h('button', { class: 'btn', onClick: makeDeviceCode }, 'Ajouter un autre appareil'),
-          can('play') ? h('button', { class: 'btn', onClick: makeExtensionCode }, 'Appairer l’extension navigateur') : null,
-        ),
-        deviceCode,
-        can('play') ? extensionCode : null,
       ),
+    );
+    const devices = h(
+      'section',
+      { class: 'profile-section' },
+      h('h3', { class: 'profile-section-title' }, 'Appareils'),
       h(
         'div',
-        { class: 'actions' },
-        h('button', { class: 'btn is-quiet is-danger', onClick: leave }, 'Quitter la guilde'),
-        h('span', { class: 'spacer' }),
-        h('button', { class: 'btn is-quiet', onClick: close }, 'Fermer'),
-        h('button', { class: 'btn', onClick: save }, 'Enregistrer'),
+        { class: 'profile-devices' },
+        h(
+          'div',
+          { class: 'profile-device' },
+          h(
+            'div',
+            { class: 'profile-device-row' },
+            h(
+              'div',
+              { class: 'profile-device-text' },
+              h('p', { class: 'profile-device-title' }, 'Autre appareil'),
+              h('p', { class: 'profile-device-desc' }, 'Rattache un autre PC à ton profil.'),
+            ),
+            h('button', { class: 'btn', type: 'button', onClick: makeDeviceCode }, 'Créer un code'),
+          ),
+          devicePanel,
+        ),
+        can('play')
+          ? h(
+              'div',
+              { class: 'profile-device' },
+              h(
+                'div',
+                { class: 'profile-device-row' },
+                h(
+                  'div',
+                  { class: 'profile-device-text' },
+                  h('p', { class: 'profile-device-title' }, 'Extension navigateur'),
+                  h('p', { class: 'profile-device-desc' }, 'Envoie des médias depuis ton navigateur.'),
+                ),
+                h('button', { class: 'btn', type: 'button', onClick: makeExtensionCode }, 'Créer un code'),
+              ),
+              extensionPanel,
+            )
+          : null,
+      ),
+    );
+    return [
+      h(
+        'div',
+        { class: 'profile-dialog' },
+        h(
+          'header',
+          { class: 'profile-head' },
+          h('h2', null, 'Mon profil'),
+          h('p', { class: 'profile-subtitle' }, `${guildLabel(guild)} · ${(ROLE_LABELS[member.role] || 'membre').toLowerCase()}`),
+        ),
+        identity,
+        profileSource(),
+        devices,
+        h(
+          'div',
+          { class: 'actions' },
+          h('button', { class: 'btn is-quiet is-danger', onClick: leave }, 'Quitter la guilde'),
+          h('span', { class: 'spacer' }),
+          h('button', { class: 'btn is-quiet', onClick: close }, 'Fermer'),
+          h('button', { class: 'btn', onClick: save }, 'Enregistrer'),
+        ),
       ),
     ];
   });

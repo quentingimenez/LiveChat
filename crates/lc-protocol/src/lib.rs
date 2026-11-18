@@ -806,6 +806,10 @@ pub struct MediaPayload {
     /// Signed URL of that picture (set by the hub for each client).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artwork_url: Option<String>,
+    /// Scale chosen for an image, in percent of its natural size (`None`:
+    /// natural size). Other kinds never carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_scale_percent: Option<i64>,
 }
 
 /// Texte affiché par un job `play`.

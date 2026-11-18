@@ -407,6 +407,71 @@ export function adjustIsNeutral(adjust) {
   return cssFilter(adjust) === 'none';
 }
 
+// --- display scale -------------------------------------------------------
+// How big an image shows on the overlay, in percent of its natural size. The
+// file is untouched: this is a display setting stored with the board item.
+export const MIN_DISPLAY_SCALE_PERCENT = 10;
+export const MAX_DISPLAY_SCALE_PERCENT = 1000;
+export const DEFAULT_DISPLAY_SCALE_PERCENT = 100;
+
+// Whole percent inside the accepted range; an absent or unreadable value is
+// 100 %.
+export function normalizeDisplayScale(percent) {
+  if (percent === null || percent === undefined || percent === '') {
+    return DEFAULT_DISPLAY_SCALE_PERCENT;
+  }
+  const value = Number(percent);
+  if (!Number.isFinite(value)) {
+    return DEFAULT_DISPLAY_SCALE_PERCENT;
+  }
+  return Math.round(clamp(value, MIN_DISPLAY_SCALE_PERCENT, MAX_DISPLAY_SCALE_PERCENT));
+}
+
+// Value sent to the server: 100 % is the natural size, stored as `null`.
+export function displayScaleForStorage(percent) {
+  const value = normalizeDisplayScale(percent);
+  return value === DEFAULT_DISPLAY_SCALE_PERCENT ? null : value;
+}
+
+// Reads the numeric field: a whole percent from 10 to 1000.
+export function parseDisplayScale(raw) {
+  const text = String(raw ?? '').trim();
+  if (!/^\d+$/.test(text)) {
+    return { ok: false };
+  }
+  const value = Number(text);
+  if (value < MIN_DISPLAY_SCALE_PERCENT || value > MAX_DISPLAY_SCALE_PERCENT) {
+    return { ok: false };
+  }
+  return { ok: true, value };
+}
+
+// Box of a picture `scalePercent` of its natural size, kept inside
+// `maxWidth` × `maxHeight` with its aspect ratio. `capped` tells whether the
+// zone limit shrank it.
+export function displayedImageSize({ width, height, scalePercent, maxWidth, maxHeight }) {
+  const factor = normalizeDisplayScale(scalePercent) / 100;
+  const naturalWidth = Number(width);
+  const naturalHeight = Number(height);
+  if (!(naturalWidth > 0) || !(naturalHeight > 0)) {
+    return { width: 0, height: 0, capped: false };
+  }
+  let nextWidth = naturalWidth * factor;
+  let nextHeight = naturalHeight * factor;
+  const hasLimit = (value) =>
+    value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+  const limitWidth = hasLimit(maxWidth) ? Math.max(0, Number(maxWidth)) : Infinity;
+  const limitHeight = hasLimit(maxHeight) ? Math.max(0, Number(maxHeight)) : Infinity;
+  const fit = Math.min(1, limitWidth / nextWidth, limitHeight / nextHeight);
+  nextWidth *= fit;
+  nextHeight *= fit;
+  return {
+    width: Math.max(1, Math.round(nextWidth)),
+    height: Math.max(1, Math.round(nextHeight)),
+    capped: fit < 1,
+  };
+}
+
 // --- naming --------------------------------------------------------------
 // A JPEG stays a JPEG (no transparency to keep); everything else is saved as
 // a PNG.

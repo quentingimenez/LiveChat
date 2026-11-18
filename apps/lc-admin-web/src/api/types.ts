@@ -535,6 +535,8 @@ export interface MediaBoardItem {
   createdAt: IsoDate;
   /* Display time chosen for an image item, in seconds (null: guild default). */
   displayDurationSec: number | null;
+  /* Scale chosen for an image item, in percent (null: natural size). */
+  displayScalePercent: number | null;
   media: MediaAssetSummary;
   /* Favorite of the caller; the console is not a member, so always false. */
   favorite: boolean;
@@ -652,6 +654,7 @@ export interface PatchMediaBoardItemRequest {
   title?: string;
   message?: string | null;
   artworkOnOverlay?: boolean;
+  displayScalePercent?: number | null;
 }
 
 export interface PatchMediaBoardItemResponse {
@@ -662,6 +665,7 @@ export interface PatchMediaBoardItemResponse {
     message: string | null;
     artworkOnOverlay: boolean;
     displayDurationSec: number | null;
+    displayScalePercent: number | null;
   };
 }
 

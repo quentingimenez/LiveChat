@@ -37,8 +37,13 @@ export function cardClicked(view, id, clickCount = 1) {
   return { selectedId: id, pinned: true, peekId: null };
 }
 
-// The pointer stayed on a card for the hover delay.
-export function cardHovered(view, id) {
+// The pointer stayed on a card for the hover delay. `enabled` is the device
+// setting « Afficher les détails au survol »: when it is off, hovering keeps
+// the drawer exactly as it is.
+export function cardHovered(view, id, enabled = true) {
+  if (!enabled) {
+    return view;
+  }
   if (!view.pinned) {
     return { selectedId: id, pinned: false, peekId: null };
   }

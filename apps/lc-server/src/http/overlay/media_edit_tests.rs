@@ -63,6 +63,7 @@ async fn item(harness: &Harness, media: &MediaAsset) -> MediaBoardItem {
         artwork_asset_id: None,
         artwork_on_overlay: false,
         display_duration_sec: None,
+        display_scale_percent: None,
     };
     harness.db.media_board().create(&item).await.unwrap();
     item

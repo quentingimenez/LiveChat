@@ -166,8 +166,9 @@ async fn import_one(
     json!({ "sourceItemId": source_item_id, "status": "added", "itemId": new_id })
 }
 
-/// Gives the copy the source item's picture and display time. The copy is already on the
-/// board, so a failure here is logged and does not fail the import.
+/// Gives the copy the source item's picture, display time and display scale.
+/// The copy is already on the board, so a failure here is logged and does not
+/// fail the import.
 async fn copy_artwork(db: &Db, source: &MediaBoardItem, copy: &MediaBoardItem, at: UtcDateTime) {
     if let Some(artwork_id) = source.artwork_asset_id {
         if let Err(pin_error) = assets::pin(db, artwork_id, at).await {
@@ -195,6 +196,15 @@ async fn copy_artwork(db: &Db, source: &MediaBoardItem, copy: &MediaBoardItem, a
             .await
         {
             tracing::warn!(error = %db_error, "display time of an imported item not copied");
+        }
+    }
+    if source.display_scale_percent.is_some() {
+        if let Err(db_error) = db
+            .media_board()
+            .set_display_scale(copy.id, source.display_scale_percent)
+            .await
+        {
+            tracing::warn!(error = %db_error, "display scale of an imported item not copied");
         }
     }
 }

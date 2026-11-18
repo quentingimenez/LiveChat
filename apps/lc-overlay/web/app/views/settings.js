@@ -357,6 +357,13 @@ function renderDisplay(settings) {
     onChange: (event) => applyPatch({ showText: event.target.checked }),
   });
 
+  const hoverDetails = h('input', {
+    id: 'settings-hover-details',
+    type: 'checkbox',
+    checked: settings.hoverDetails !== false,
+    onChange: (event) => applyPatch({ hoverDetails: event.target.checked }),
+  });
+
   const testButton = h(
     'button',
     { class: 'btn', type: 'button', disabled: testingMedia || placing, onClick: testMedia },
@@ -376,6 +383,8 @@ function renderDisplay(settings) {
     ),
     controlRow('Alignement dans la zone', alignment, 'settings-align'),
     controlRow('Afficher le texte des médias', showText, 'settings-show-text'),
+    controlRow('Afficher les détails au survol', hoverDetails, 'settings-hover-details'),
+    h('p', { class: 'settings-hint is-under' }, 'Sinon, les détails s’ouvrent seulement au clic.'),
     controlRow('Média de test', testButton),
   );
 }

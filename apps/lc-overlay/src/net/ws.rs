@@ -1687,6 +1687,7 @@ mod tests {
                 start_offset_sec: None,
                 artwork_asset_id: None,
                 artwork_url: None,
+                display_scale_percent: None,
             }),
             text: lc_protocol::TextPayload {
                 value: String::new(),
@@ -2735,5 +2736,13 @@ mod tests {
         // An unknown guild plays at the general volume.
         let value = renderer_play_payload(&play, &config, "other").expect("serialize");
         assert!((value["volume"].as_f64().expect("volume") - 0.8).abs() < f64::EPSILON);
+
+        // The scale chosen for an image reaches the overlay page.
+        let mut scaled = play;
+        if let Some(media) = scaled.media.as_mut() {
+            media.display_scale_percent = Some(250);
+        }
+        let value = renderer_play_payload(&scaled, &config, "guild-1").expect("serialize");
+        assert_eq!(value["media"]["displayScalePercent"], 250);
     }
 }

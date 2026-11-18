@@ -468,6 +468,7 @@ async fn seed_ready_board_item(
         artwork_asset_id: None,
         artwork_on_overlay: false,
         display_duration_sec: None,
+        display_scale_percent: None,
     };
     let id = item.id;
     db.media_board()
@@ -1398,6 +1399,7 @@ fn signed_play_uses_the_adaptive_media_ttl() {
             start_offset_sec: Some(12),
             artwork_asset_id: None,
             artwork_url: None,
+            display_scale_percent: None,
         }),
         text: lc_protocol::TextPayload {
             value: "texte".to_owned(),
@@ -1443,6 +1445,7 @@ fn signed_play_signs_the_audio_picture_with_the_media_expiry() {
             start_offset_sec: None,
             artwork_asset_id: Some("picture-1".to_owned()),
             artwork_url: None,
+            display_scale_percent: None,
         }),
         duration_sec: 30,
         ..Default::default()
@@ -2003,8 +2006,8 @@ async fn make_image(db: &Db, asset_id: MediaAssetId) {
         .expect("image de test");
 }
 
-/// Triggers a board item and returns the `durationSec` of the `play` sent.
-async fn played_duration(server_addr: SocketAddr, item_id: MediaBoardItemId) -> Value {
+/// Triggers a board item and returns the `play` payload sent.
+async fn played_payload(server_addr: SocketAddr, item_id: MediaBoardItemId) -> Value {
     let mut socket = connect(server_addr).await;
     handshake(&mut socket, TOKEN).await;
     send_value(
@@ -2017,7 +2020,12 @@ async fn played_duration(server_addr: SocketAddr, item_id: MediaBoardItemId) -> 
     )
     .await;
     let play = recv_until_type(&mut socket, "play").await;
-    play["payload"]["durationSec"].clone()
+    play["payload"].clone()
+}
+
+/// Triggers a board item and returns the `durationSec` of the `play` sent.
+async fn played_duration(server_addr: SocketAddr, item_id: MediaBoardItemId) -> Value {
+    played_payload(server_addr, item_id).await["durationSec"].clone()
 }
 
 async fn set_guild_times(db: &Db, default_media_time: Option<i64>, max_media_time: Option<i64>) {
@@ -2107,4 +2115,34 @@ async fn board_video_trigger_ignores_stored_duration() {
         .await
         .expect("durée restante");
     assert_eq!(played_duration(server.addr, item_id).await, json!(20));
+}
+
+#[tokio::test]
+async fn board_image_play_carries_its_display_scale() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 120).await;
+    make_image(&server.db, asset_id).await;
+    let item_id = seed_ready_board_item(&server.db, &guild, asset_id).await;
+    server
+        .db
+        .media_board()
+        .set_display_scale(item_id, Some(250))
+        .await
+        .expect("échelle");
+    let play = played_payload(server.addr, item_id).await;
+    assert_eq!(play["media"]["displayScalePercent"], 250);
+}
+
+#[tokio::test]
+async fn board_image_without_scale_omits_the_field() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 120).await;
+    make_image(&server.db, asset_id).await;
+    let item_id = seed_ready_board_item(&server.db, &guild, asset_id).await;
+    let play = played_payload(server.addr, item_id).await;
+    assert!(play["media"].get("displayScalePercent").is_none());
 }

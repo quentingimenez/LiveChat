@@ -122,6 +122,7 @@
     generalMute: false,
     mediaMuted: false,
     showText: true,
+    hoverDetails: true,
     autoStart: false,
     shortcuts: { stop: 'CommandOrControl+Shift+S', stopLocal: null, muteAll: null },
     layout: { zone: { x: 0, y: 0, width: 1, height: 1 }, align: 'center' },
@@ -159,6 +160,7 @@
     thumbnail: index === 3 ? { url: svg(5), width: 480, height: 360 } : null,
     artworkOnOverlay: false,
     displayDurationSec: null,
+    displayScalePercent: null,
   }));
 
   const queue = {
@@ -352,7 +354,7 @@
         }
       }
     }
-    for (const key of ['generalMute', 'mediaMuted', 'showText', 'autoStart']) {
+    for (const key of ['generalMute', 'mediaMuted', 'showText', 'hoverDetails', 'autoStart']) {
       if (!(key in input)) {
         continue;
       }
@@ -562,6 +564,14 @@
             return { ok: false, status: 400, body: { error: 'invalid_payload' } };
           }
           items[index].displayDurationSec = seconds;
+        }
+        if (payload.body && 'displayScalePercent' in payload.body) {
+          const percent = payload.body.displayScalePercent;
+          const valid = percent === null || (Number.isInteger(percent) && percent >= 10 && percent <= 1000);
+          if (!valid || (percent !== null && items[index].media.kind !== 'image')) {
+            return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+          }
+          items[index].displayScalePercent = percent;
         }
       }
       boardChanged(payload.guildId, method === 'DELETE' ? 'deleted' : 'updated', itemId);
@@ -937,6 +947,8 @@
       canEdit: true,
       createdAt: new Date().toISOString(),
       media: { id: 'a' + index, kind: ['video', 'image', 'audio'].includes(kind) ? kind : 'video', mime: source.contentType || 'x', durationSec: kind === 'image' ? null : 6, width: 1280, height: 720, isVertical: false, sizeBytes: source.received, sourceUrl: null },
+      displayDurationSec: null,
+      displayScalePercent: null,
     };
     items.unshift(item);
     return item;

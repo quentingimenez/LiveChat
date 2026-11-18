@@ -132,6 +132,64 @@ async fn display_duration_check_rejects_out_of_range() {
 }
 
 #[tokio::test]
+async fn display_scale_round_trips() {
+    let (db, _dir) = common::temp_db().await;
+    let now = common::now();
+    let guild = common::guild("123456789012345678");
+    let asset = common::sample_asset("media-asset", now);
+    db.media_assets().insert(&asset).await.unwrap();
+    let repo = db.media_board();
+    let mut item = common::sample_board_item(&guild, asset.id, now);
+    item.display_scale_percent = Some(200);
+    repo.create(&item).await.unwrap();
+    assert_eq!(
+        repo.get(item.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .display_scale_percent,
+        Some(200)
+    );
+
+    assert!(repo.set_display_scale(item.id, None).await.unwrap());
+    assert_eq!(
+        repo.get(item.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .display_scale_percent,
+        None
+    );
+    assert!(repo.set_display_scale(item.id, Some(1000)).await.unwrap());
+    assert_eq!(
+        repo.get(item.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .display_scale_percent,
+        Some(1000)
+    );
+    assert!(!repo
+        .set_display_scale(MediaBoardItemId::new_v4(), Some(200))
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn display_scale_check_rejects_out_of_range() {
+    let (db, _dir) = common::temp_db().await;
+    let now = common::now();
+    let guild = common::guild("123456789012345678");
+    let asset = common::sample_asset("media-asset", now);
+    db.media_assets().insert(&asset).await.unwrap();
+    let repo = db.media_board();
+    let item = common::sample_board_item(&guild, asset.id, now);
+    repo.create(&item).await.unwrap();
+    assert!(repo.set_display_scale(item.id, Some(9)).await.is_err());
+    assert!(repo.set_display_scale(item.id, Some(1001)).await.is_err());
+}
+
+#[tokio::test]
 async fn update_applies_every_field_or_none() {
     let (db, _dir) = common::temp_db().await;
     let now = common::now();
@@ -147,6 +205,7 @@ async fn update_applies_every_field_or_none() {
         message: Some("Message"),
         artwork_on_overlay: Some(true),
         display_duration_sec: Some(Some(8)),
+        display_scale_percent: Some(Some(250)),
     };
     assert!(repo.update(item.id, &edit).await.unwrap());
     let saved = repo.get(item.id).await.unwrap().unwrap();
@@ -154,6 +213,7 @@ async fn update_applies_every_field_or_none() {
     assert_eq!(saved.message.as_deref(), Some("Message"));
     assert!(saved.artwork_on_overlay);
     assert_eq!(saved.display_duration_sec, Some(8));
+    assert_eq!(saved.display_scale_percent, Some(250));
 
     // Absent fields are kept.
     let keep = BoardItemEdit {
@@ -161,6 +221,7 @@ async fn update_applies_every_field_or_none() {
         message: None,
         artwork_on_overlay: None,
         display_duration_sec: None,
+        display_scale_percent: None,
     };
     assert!(repo.update(item.id, &keep).await.unwrap());
     let saved = repo.get(item.id).await.unwrap().unwrap();
@@ -168,6 +229,7 @@ async fn update_applies_every_field_or_none() {
     assert!(saved.message.is_none());
     assert!(saved.artwork_on_overlay);
     assert_eq!(saved.display_duration_sec, Some(8));
+    assert_eq!(saved.display_scale_percent, Some(250));
 
     // A value the database refuses leaves the whole item untouched.
     let refused = BoardItemEdit {
@@ -175,12 +237,14 @@ async fn update_applies_every_field_or_none() {
         message: None,
         artwork_on_overlay: Some(false),
         display_duration_sec: Some(Some(0)),
+        display_scale_percent: None,
     };
     assert!(repo.update(item.id, &refused).await.is_err());
     let saved = repo.get(item.id).await.unwrap().unwrap();
     assert_eq!(saved.title.as_deref(), Some("Autre"));
     assert!(saved.artwork_on_overlay);
     assert_eq!(saved.display_duration_sec, Some(8));
+    assert_eq!(saved.display_scale_percent, Some(250));
 
     assert!(!repo
         .update(MediaBoardItemId::new_v4(), &keep)

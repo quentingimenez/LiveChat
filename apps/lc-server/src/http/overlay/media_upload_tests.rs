@@ -1018,6 +1018,7 @@ async fn replacement_upload_is_refused_for_another_kind_or_a_media_already_on_th
         artwork_asset_id: None,
         artwork_on_overlay: false,
         display_duration_sec: None,
+        display_scale_percent: None,
     };
     db.media_board().create(&video_item).await.unwrap();
     let description = json!({"filename": "c.png", "replaceItemId": video_item.id.to_canonical()});

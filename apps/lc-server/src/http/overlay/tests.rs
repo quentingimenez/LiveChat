@@ -299,6 +299,7 @@ async fn insert_item(
         artwork_asset_id: None,
         artwork_on_overlay: false,
         display_duration_sec: None,
+        display_scale_percent: None,
     };
     db.media_board()
         .create(&item)
@@ -2407,4 +2408,90 @@ async fn media_board_patch_rejects_bad_display_duration() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body_json(&bytes)["error"], "invalid_payload");
     assert_eq!(listed_display_duration(&app).await, Value::Null);
+}
+
+async fn listed_display_scale(app: &axum::Router) -> Value {
+    let (status, _, bytes) = send(
+        app,
+        request(
+            Method::GET,
+            "/overlay/media-board/items",
+            Some(BEARER_TOKEN),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    body_json(&bytes)["items"][0]["displayScalePercent"].clone()
+}
+
+#[tokio::test]
+async fn media_board_patch_sets_and_clears_display_scale() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, _db, uri) = display_duration_fixture(dir.path(), MediaKind::Image).await;
+    assert_eq!(listed_display_scale(&app).await, Value::Null);
+
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::PATCH,
+            &uri,
+            Some(BEARER_TOKEN),
+            Some(&json!({"displayScalePercent": 250})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body_json(&bytes)["item"]["displayScalePercent"], 250);
+    assert_eq!(listed_display_scale(&app).await, json!(250));
+
+    let (status, _, _) = send(
+        &app,
+        request(
+            Method::PATCH,
+            &uri,
+            Some(BEARER_TOKEN),
+            Some(&json!({"displayScalePercent": null})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed_display_scale(&app).await, Value::Null);
+}
+
+#[tokio::test]
+async fn media_board_patch_rejects_bad_display_scale() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, _db, uri) = display_duration_fixture(dir.path(), MediaKind::Image).await;
+    for bad in [json!("200"), json!(200.5), json!(9), json!(1001)] {
+        let (status, _, bytes) = send(
+            &app,
+            request(
+                Method::PATCH,
+                &uri,
+                Some(BEARER_TOKEN),
+                Some(&json!({"displayScalePercent": bad})),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        assert_eq!(body_json(&bytes)["error"], "invalid_payload");
+    }
+    assert_eq!(listed_display_scale(&app).await, Value::Null);
+
+    let video_dir = TempDir::new().expect("tempdir");
+    let (app, _db, uri) = display_duration_fixture(video_dir.path(), MediaKind::Video).await;
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::PATCH,
+            &uri,
+            Some(BEARER_TOKEN),
+            Some(&json!({"displayScalePercent": 200})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(&bytes)["error"], "invalid_payload");
+    assert_eq!(listed_display_scale(&app).await, Value::Null);
 }

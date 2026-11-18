@@ -8,7 +8,22 @@
 // walk through them.
 
 import { h, icon, registerIcons } from '../../core/dom.js';
-import { CROP_RATIOS, FILTER_PRESETS, NEUTRAL_ADJUST, centeredCrop, clamp, cssFilter, fitScale } from '../../core/editor-helpers.js';
+import {
+  CROP_RATIOS,
+  DEFAULT_DISPLAY_SCALE_PERCENT,
+  FILTER_PRESETS,
+  MAX_DISPLAY_SCALE_PERCENT,
+  MIN_DISPLAY_SCALE_PERCENT,
+  NEUTRAL_ADJUST,
+  centeredCrop,
+  clamp,
+  cssFilter,
+  displayScaleForStorage,
+  displayedImageSize,
+  fitScale,
+  normalizeDisplayScale,
+  parseDisplayScale,
+} from '../../core/editor-helpers.js';
 import { createCropOverlay } from './crop-overlay.js';
 import { choices, section, slider, toggle } from './frame.js';
 
@@ -19,6 +34,7 @@ registerIcons({
   smile: 'M21 12a9 9 0 11-18 0 9 9 0 0118 0zM8.5 14.5a4.5 4.5 0 007 0M9 9.5v.5M15 9.5v.5',
   pixels: 'M4 4h5v5H4zM14 4h6v5h-6zM9 9h5v6H9zM4 15h5v5H4zM14 15h6v5h-6z',
   sliders: 'M4 7h10M18 7h2M4 17h2M10 17h10M16 5v4M8 15v4',
+  display: 'M4 9V4h5M20 15v5h-5M4 15v5h5M16 4h4v5',
   eraser: 'M4 16l9-9 6 6-6 6H8zM9 11l6 6',
   marker: 'M5 20h14M8 16l8-10 3 2.5-8 10H8z',
   arrow: 'M5 19L19 5M10 5h9v9',
@@ -49,6 +65,7 @@ const TOOLS = [
   ['emoji', 'Emoji', 'smile'],
   ['blur', 'Masquer', 'pixels'],
   ['adjust', 'Réglages', 'sliders'],
+  ['display', 'Taille à l’affichage', 'display'],
 ];
 const TOOL_HINTS = {
   select: 'Clique un élément pour le déplacer, le redimensionner ou le supprimer.',
@@ -59,6 +76,7 @@ const TOOL_HINTS = {
   emoji: 'Choisis un emoji : il se pose au centre, déplace-le ensuite.',
   blur: 'Trace un rectangle sur la zone à cacher.',
   adjust: 'Les réglages s’appliquent à toute l’image.',
+  display: 'Agrandit l’image sur l’overlay sans toucher au fichier.',
 };
 
 function makeCanvas(width, height) {
@@ -276,9 +294,18 @@ async function loadBase(blob) {
 }
 
 // Builds the editor inside `frame`. `onChange()` fires after every committed
-// action. Resolves to the editor's controls; rejects when the picture cannot
-// be decoded.
-export async function createImageEditor({ blob, frame, onChange }) {
+// action. `allowDisplayScale` adds the tool setting how big the picture shows
+// on the overlay (from a board item's `displayScalePercent`); `displayZone`
+// is the display zone size in CSS pixels when known. Resolves to the editor's
+// controls; rejects when the picture cannot be decoded.
+export async function createImageEditor({
+  blob,
+  frame,
+  onChange,
+  allowDisplayScale = false,
+  displayScalePercent = null,
+  displayZone = null,
+}) {
   const doc = { base: await loadBase(blob), objects: [], adjust: { ...NEUTRAL_ADJUST } };
   let nextId = 1;
   let tool = 'select';
@@ -286,6 +313,10 @@ export async function createImageEditor({ blob, frame, onChange }) {
   let drag = null;
   let cropRatio = 'free';
   let paintQueued = false;
+  // Display scale is a setting of the board item, not a pixel edit: it stays
+  // out of the undo history.
+  const initialScale = normalizeDisplayScale(displayScalePercent);
+  let displayScale = initialScale;
   const style = { color: '#ec6a70', stroke: 4, drawMode: 'pen', shape: 'arrow', fill: false, font: 'meme', textSize: 30, outline: true, textColor: '#ffffff', maskMode: 'pixel', maskStrength: 6 };
 
   const scratch = makeCanvas(1, 1);
@@ -844,6 +875,94 @@ export async function createImageEditor({ blob, frame, onChange }) {
     repaint();
   }
 
+  // --- display scale (board item setting, no pixel change) ---
+  let syncScaleFields = null;
+
+  function setDisplayScale(next) {
+    const value = normalizeDisplayScale(next);
+    if (value === displayScale) {
+      return;
+    }
+    displayScale = value;
+    if (syncScaleFields) {
+      syncScaleFields();
+    }
+    if (onChange) {
+      onChange();
+    }
+  }
+
+  function displayScaleLine() {
+    const size = displayedImageSize({
+      width: doc.base.width,
+      height: doc.base.height,
+      scalePercent: displayScale,
+      maxWidth: displayZone && displayZone.width,
+      maxHeight: displayZone && displayZone.height,
+    });
+    return `À l’écran : ${size.width} × ${size.height} px${size.capped ? ' (limité par la zone d’affichage)' : ''}`;
+  }
+
+  function displayScalePanel() {
+    const line = h('p', { class: 'meta' }, displayScaleLine());
+    const value = h('span', { class: 'editor-value' }, `${displayScale} %`);
+    const range = h('input', {
+      type: 'range',
+      min: '25',
+      max: '400',
+      step: '1',
+      value: String(clamp(displayScale, 25, 400)),
+      onInput: () => setDisplayScale(Number(range.value)),
+    });
+    const number = h('input', {
+      class: 'field',
+      type: 'number',
+      min: String(MIN_DISPLAY_SCALE_PERCENT),
+      max: String(MAX_DISPLAY_SCALE_PERCENT),
+      step: '1',
+      inputmode: 'numeric',
+      value: String(displayScale),
+      style: 'max-width:110px',
+      onInput: () => {
+        const parsed = parseDisplayScale(number.value);
+        if (parsed.ok) {
+          setDisplayScale(parsed.value);
+        }
+      },
+      onChange: () => {
+        const parsed = parseDisplayScale(number.value);
+        if (!parsed.ok) {
+          number.value = String(displayScale);
+        }
+      },
+    });
+    // Both controls and the live size follow any change, whichever one moved.
+    syncScaleFields = () => {
+      value.textContent = `${displayScale} %`;
+      range.value = String(clamp(displayScale, 25, 400));
+      number.value = String(displayScale);
+      line.textContent = displayScaleLine();
+    };
+    const preset = (percent, label) =>
+      h('button', { class: 'btn', type: 'button', onClick: () => setDisplayScale(percent) }, label);
+    return section(
+      'Taille à l’affichage',
+      h('p', { class: 'meta' }, TOOL_HINTS.display),
+      h('label', { class: 'editor-slider' }, h('span', { class: 'editor-slider-head' }, 'Échelle', value), range),
+      h('label', null, 'Valeur (%)', number),
+      h(
+        'div',
+        { class: 'row is-wrap' },
+        preset(150, '150 %'),
+        preset(200, '200 %'),
+        preset(300, '300 %'),
+        preset(MAX_DISPLAY_SCALE_PERCENT, 'Remplir la zone'),
+        preset(DEFAULT_DISPLAY_SCALE_PERCENT, 'Taille d’origine'),
+      ),
+      line,
+    );
+  }
+
   function toolPanel() {
     const hint = h('p', { class: 'meta' }, TOOL_HINTS[tool]);
     if (tool === 'crop') {
@@ -934,6 +1053,9 @@ export async function createImageEditor({ blob, frame, onChange }) {
         slider({ label: 'Intensité', min: 2, max: 20, value: style.maskStrength, onInput: (value) => { style.maskStrength = value; } }),
       );
     }
+    if (tool === 'display') {
+      return displayScalePanel();
+    }
     if (tool === 'adjust') {
       const adjustSlider = (label, key, min, max) =>
         slider({
@@ -964,7 +1086,7 @@ export async function createImageEditor({ blob, frame, onChange }) {
     frame.panel.replaceChildren(...[toolPanel(), object ? selectionPanel(object) : null].filter(Boolean));
     frame.panel.hidden = false;
     frame.rail.replaceChildren(
-      ...TOOLS.map(([id, label, glyph]) =>
+      ...TOOLS.filter(([id]) => id !== 'display' || allowDisplayScale).map(([id, label, glyph]) =>
         h('button', { class: `tool${tool === id ? ' is-active' : ''}`, type: 'button', 'aria-pressed': String(tool === id), onClick: () => setTool(id) }, icon(glyph), h('span', null, label)),
       ),
     );
@@ -1003,7 +1125,10 @@ export async function createImageEditor({ blob, frame, onChange }) {
         restore(historyIndex + 1);
       }
     },
-    isDirty: () => history[historyIndex] !== initial,
+    isDirty: () => history[historyIndex] !== initial || displayScale !== initialScale,
+    pixelsDirty: () => history[historyIndex] !== initial,
+    scaleDirty: () => displayScale !== initialScale,
+    displayScalePercent: () => displayScaleForStorage(displayScale),
     onKey(event, typing) {
       if (typing) {
         return false;

@@ -778,7 +778,21 @@ async fn handle_client_message(
             let source = payload.source.unwrap_or(StopRequestSource::User);
             send_ack(hub, connection_id, request_id.as_str(), true, None);
             match engine.stop(&context.guild_id, job_id, source).await {
-                Ok(outcome) => debug!(stopped = outcome.stopped.len(), "stop.request appliqué"),
+                Ok(outcome) => {
+                    debug!(stopped = outcome.stopped.len(), "stop.request appliqué");
+                    // A stop without a job id stops the guild's playback for
+                    // everyone: journal it like the console's stop route.
+                    if job_id.is_none() {
+                        crate::http::overlay::record_playback_stop(
+                            state,
+                            db,
+                            &context.guild_id,
+                            context.client_id,
+                            outcome.stopped.len(),
+                        )
+                        .await;
+                    }
+                }
                 Err(error) => {
                     warn!(error = %error, "échec de stop.request");
                     send_server_error(

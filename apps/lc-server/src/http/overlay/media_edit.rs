@@ -56,7 +56,7 @@ use super::media_board::{
     truncate_chars,
 };
 use super::media_ingestion::{spawn_ingestion, BoardTarget, IngestionInput};
-use super::{db, db_failure, error, json_response, now, ActorInfo};
+use super::{audit as overlay_audit, db, db_failure, error, json_response, now, ActorInfo};
 
 /// Longest title of a board item.
 const TITLE_MAX_CHARS: usize = 240;
@@ -196,6 +196,19 @@ pub(crate) async fn start_edit(
         title,
         message,
     );
+
+    if request.replace {
+        let creator = overlay_audit::creator_member(db, item.id).await;
+        overlay_audit::record_moderation(
+            state,
+            actor,
+            creator,
+            "overlay.media_edit",
+            "POST",
+            &format!("/overlay/media-board/items/{}/edit", item.id.to_canonical()),
+        )
+        .await;
+    }
 
     json_response(
         StatusCode::ACCEPTED,

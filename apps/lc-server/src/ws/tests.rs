@@ -918,6 +918,64 @@ async fn stop_request_stops_the_job_and_broadcasts_stop() {
     assert_eq!(stored.status, JobStatus::Done);
 }
 
+#[tokio::test]
+async fn stop_for_everyone_is_journalled_as_an_overlay_action() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 12).await;
+    seed_job(
+        &server.db,
+        &guild,
+        asset_id,
+        12,
+        JobStatus::Playing,
+        Some(UtcDateTime::now()),
+    )
+    .await;
+    let mut socket = connect(server.addr).await;
+    handshake(&mut socket, TOKEN).await;
+
+    // No `jobId`: the whole guild's playback stops.
+    send_value(
+        &mut socket,
+        &envelope(
+            "stop.request",
+            "cli-stop-all-0001",
+            json!({ "source": "admin" }),
+        ),
+    )
+    .await;
+    let ack = recv_until_type(&mut socket, "ack").await;
+    assert_eq!(ack["payload"]["ok"], true);
+    // The engine may broadcast one stop frame per stopped job; the journal is
+    // what this test checks.
+    let _stop = recv_until_type(&mut socket, "stop").await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let rows: Vec<(Option<String>, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT actor_method, method, path, guild_id FROM admin_audit \
+              WHERE action = 'overlay.playback_stop'",
+        )
+        .fetch_all(server.db.pool())
+        .await
+        .expect("lecture du journal");
+        if let Some((actor_method, method, path, guild_id)) = rows.first() {
+            assert_eq!(actor_method.as_deref(), Some("overlay"));
+            assert_eq!(method, "WS");
+            assert_eq!(path, "/ws");
+            assert_eq!(guild_id.as_deref(), Some(guild.as_str()));
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "la ligne d'audit de l'arrêt global manque"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// Sends a `playback.ended` then waits for the session to have handled it
 /// (frames of one socket are processed in order; `peers.request` is acked).
 async fn send_playback_ended(socket: &mut WsClient, job_id: PlaybackJobId, reason: &str) {

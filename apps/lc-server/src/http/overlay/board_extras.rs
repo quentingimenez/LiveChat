@@ -32,7 +32,7 @@ use crate::media::service::MediaService;
 use super::auth::AuthedOverlayClient;
 use super::media_board::{ensure_can_edit, ensure_writable, media_service_error};
 use super::media_upload::UploadTempDir;
-use super::{db, db_failure, error, internal_error, json_response, now};
+use super::{audit as overlay_audit, db, db_failure, error, internal_error, json_response, now};
 
 /// Largest picture accepted for an item (bytes).
 pub(super) const MAX_ARTWORK_BYTES: u64 = 10 * 1024 * 1024;
@@ -202,6 +202,20 @@ pub async fn put_artwork(
         return db_failure("overlay_board_extras.artwork_save", &db_error);
     }
     broadcast_updated(&state, &auth, item_id);
+    let actor = super::ActorInfo::from_auth(&state, &auth);
+    let creator = overlay_audit::creator_member(db, item.id).await;
+    overlay_audit::record_moderation(
+        &state,
+        &actor,
+        creator,
+        "overlay.media_artwork",
+        "PUT",
+        &format!(
+            "/overlay/media-board/items/{}/artwork",
+            item.id.to_canonical()
+        ),
+    )
+    .await;
     json_response(
         StatusCode::OK,
         serde_json::json!({ "itemId": item_id.to_canonical(), "artworkAssetId": asset.id.to_canonical() }),
@@ -236,6 +250,20 @@ pub async fn delete_artwork(
         return db_failure("overlay_board_extras.artwork_clear", &db_error);
     }
     broadcast_updated(&state, &auth, item_id);
+    let actor = super::ActorInfo::from_auth(&state, &auth);
+    let creator = overlay_audit::creator_member(db, item_id).await;
+    overlay_audit::record_moderation(
+        &state,
+        &actor,
+        creator,
+        "overlay.media_artwork",
+        "DELETE",
+        &format!(
+            "/overlay/media-board/items/{}/artwork",
+            item_id.to_canonical()
+        ),
+    )
+    .await;
     json_response(
         StatusCode::OK,
         serde_json::json!({ "itemId": item_id.to_canonical() }),

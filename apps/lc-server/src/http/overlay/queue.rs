@@ -28,7 +28,7 @@ use crate::app::AppState;
 
 use super::auth::AuthedOverlayClient;
 use super::guild::require;
-use super::{db, db_failure, json_response, now};
+use super::{audit as overlay_audit, db, db_failure, json_response, now};
 
 /// Nombre maximal de jobs renvoyés (garde-fou d'affichage).
 const QUEUE_LIMIT: i64 = 200;
@@ -268,7 +268,18 @@ pub async fn remove_job(
         return response;
     }
     match remove_job_payload(&state, auth.guild_id(), &job_id_raw).await {
-        Ok(payload) => json_response(StatusCode::OK, payload),
+        Ok(payload) => {
+            if payload.get("removed").and_then(Value::as_bool) == Some(true) {
+                overlay_audit::record_queue_action(
+                    &state,
+                    &auth,
+                    "overlay.queue_remove",
+                    &format!("/overlay/queue/{job_id_raw}"),
+                )
+                .await;
+            }
+            json_response(StatusCode::OK, payload)
+        }
         Err(response) => response,
     }
 }
@@ -279,7 +290,22 @@ pub async fn clear_queue(State(state): State<AppState>, auth: AuthedOverlayClien
         return response;
     }
     match clear_queue_payload(&state, auth.guild_id()).await {
-        Ok(payload) => json_response(StatusCode::OK, payload),
+        Ok(payload) => {
+            if payload
+                .get("removedCount")
+                .and_then(Value::as_i64)
+                .is_some_and(|count| count > 0)
+            {
+                overlay_audit::record_queue_action(
+                    &state,
+                    &auth,
+                    "overlay.queue_clear",
+                    "/overlay/queue",
+                )
+                .await;
+            }
+            json_response(StatusCode::OK, payload)
+        }
         Err(response) => response,
     }
 }

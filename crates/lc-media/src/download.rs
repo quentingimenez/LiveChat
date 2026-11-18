@@ -13,13 +13,16 @@ use crate::config::{MediaConfig, BYTES_PER_MB, YOUTUBE_RELAXED_YTDLP_FORMAT};
 use crate::error::{MediaError, MediaErrorCode, MediaResult};
 use crate::guard;
 use crate::http;
+use crate::process;
 use crate::resolve::tiktok;
+use crate::resolve::twitter;
 use crate::source::{
     classify_source, extension_from_mime, is_tiktok_url, is_youtube_url, kind_from_mime,
-    kind_from_url, mime_from_extension, MediaSource, SourceKind,
+    kind_from_url, mime_from_extension, tweet_status_id, MediaSource, SourceKind,
 };
 use crate::storage::MediaStorage;
 use crate::transcode;
+use crate::tweet_card;
 
 static DOWNLOAD_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -113,12 +116,19 @@ async fn ensure_download_allowed(source: &MediaSource) -> MediaResult<()> {
     }
 }
 
+/// Télécharge le média d'un tweet : vidéo, photo seule, carrousel de photos ou
+/// carte rendue quand le tweet ne contient aucun média.
+///
+/// `yt-dlp` n'est appelé qu'en dernier recours, quand aucun média direct n'a pu
+/// être téléchargé (payload indisponible ou variantes vidéo inaccessibles) : il
+/// ne sait ni télécharger une photo ni rendre une carte.
 async fn download_twitter(
     source: &MediaSource,
     resolved: Option<&crate::resolve::ResolvedMedia>,
     config: &MediaConfig,
     temp_dir: &Path,
 ) -> MediaResult<DownloadResult> {
+    // 1. Vidéo (ou photo seule) déjà annoncée par le résolveur.
     if let Some(media_url) = resolved.and_then(|resolved| resolved.media_url.clone()) {
         match download_http(config, &media_url, temp_dir, &[]).await {
             Ok(download) => return Ok(download),
@@ -127,8 +137,223 @@ async fn download_twitter(
             }
         }
     }
+    // 2. Le résolveur ne transporte pas le payload : on le relit pour choisir
+    //    entre vidéo, photo, carrousel et carte.
+    let payload = match tweet_status_id(&source.canonical_url) {
+        Some(status_id) => twitter::fetch_syndication_payload(config, &status_id).await,
+        None => None,
+    };
+    if let Some(value) = payload.as_ref() {
+        let variants = twitter::collect_variants(value);
+        let has_video = !variants.is_empty();
+        if let Some(best) = twitter::pick_variant(&variants).cloned() {
+            match download_http(config, &best.url, temp_dir, &[]).await {
+                Ok(download) => return Ok(download),
+                Err(error) => {
+                    tracing::debug!(url = %best.url, "téléchargement de la vidéo du tweet échoué : {error}");
+                }
+            }
+        }
+        let photos = twitter::collect_photos(value);
+        if !photos.is_empty() {
+            return match photos.len() {
+                1 => download_tweet_photo(config, &photos[0], temp_dir).await,
+                _ => {
+                    download_tweet_carousel(value, &photos, config, temp_dir, &source.canonical_url)
+                        .await
+                }
+            };
+        }
+        if !has_video {
+            return download_tweet_card(value, config, temp_dir, &source.canonical_url).await;
+        }
+    }
+    // 3. Vidéo dont aucune variante n'a pu être téléchargée, ou payload
+    //    indisponible : comportement historique (yt-dlp sait télécharger une
+    //    vidéo).
+    tracing::debug!(
+        source = %source.canonical_url,
+        "aucun média du tweet téléchargeable directement, repli yt-dlp"
+    );
     let options = YtdlpOptions::default();
     download_with_ytdlp(config, &source.canonical_url, temp_dir, &options).await
+}
+
+/// Télécharge une photo de tweet en taille originale, repli sur l'URL nue.
+async fn download_tweet_photo(
+    config: &MediaConfig,
+    url: &str,
+    temp_dir: &Path,
+) -> MediaResult<DownloadResult> {
+    let original = twitter::photo_original_url(url);
+    if original != url {
+        match download_http(config, &original, temp_dir, &[]).await {
+            Ok(download) => return Ok(download),
+            Err(error) => {
+                tracing::debug!(
+                    url = %original,
+                    "photo de tweet en taille originale indisponible : {error}"
+                );
+            }
+        }
+    }
+    download_http(config, url, temp_dir, &[]).await
+}
+
+/// Assemble les photos d'un tweet en carrousel vidéo muet.
+async fn download_tweet_carousel(
+    value: &serde_json::Value,
+    photos: &[String],
+    config: &MediaConfig,
+    temp_dir: &Path,
+    canonical_url: &str,
+) -> MediaResult<DownloadResult> {
+    let mut images: Vec<PathBuf> = Vec::new();
+    let mut last_error: Option<MediaError> = None;
+    for photo in photos.iter().take(twitter::MAX_TWEET_PHOTOS) {
+        match download_tweet_photo(config, photo, temp_dir).await {
+            Ok(download) => images.push(download.path),
+            Err(error) => {
+                last_error = Some(match last_error {
+                    Some(previous) => previous.most_relevant(error),
+                    None => error,
+                });
+            }
+        }
+    }
+    if images.is_empty() {
+        return Err(last_error.unwrap_or_else(|| {
+            MediaError::new(
+                MediaErrorCode::DownloadFailed,
+                "aucune photo de tweet téléchargeable",
+            )
+        }));
+    }
+    let is_vertical = twitter::extract_dimensions(value)
+        .map(|(width, height)| height >= width)
+        .unwrap_or(true);
+    build_carousel_download(
+        config,
+        temp_dir,
+        &images,
+        None,
+        is_vertical,
+        canonical_url.to_string(),
+        None,
+    )
+    .await
+}
+
+/// Rend la carte d'un tweet sans média et l'écrit dans le dossier temporaire.
+async fn download_tweet_card(
+    value: &serde_json::Value,
+    config: &MediaConfig,
+    temp_dir: &Path,
+    canonical_url: &str,
+) -> MediaResult<DownloadResult> {
+    let mut content = twitter::tweet_card_content(value);
+    content.avatar = download_tweet_avatar(config, value, temp_dir).await;
+    let png = tweet_card::render_tweet_card(&content)?;
+    let path = temp_dir.join("tweet-card.png");
+    fs::write(&path, &png).map_err(|error| {
+        MediaError::from_io(
+            MediaErrorCode::DownloadFailed,
+            "écriture de la carte tweet",
+            &error,
+        )
+    })?;
+    Ok(DownloadResult {
+        path,
+        kind: Some(MediaKind::Image),
+        mime: Some("image/png".to_string()),
+        size_bytes: png.len() as u64,
+        source_url: canonical_url.to_string(),
+        title: None,
+    })
+}
+
+/// Télécharge l'avatar de l'auteur et le convertit en PNG 192×192.
+///
+/// Twitter sert des JPEG (aucun décodeur JPEG n'est embarqué) : ffmpeg fait la
+/// conversion. Toute erreur rend `None` (cercle avec l'initiale) et n'échoue
+/// jamais le téléchargement.
+async fn download_tweet_avatar(
+    config: &MediaConfig,
+    value: &serde_json::Value,
+    temp_dir: &Path,
+) -> Option<Vec<u8>> {
+    let url = twitter::extract_avatar_url(value)?;
+    let input = match download_http(config, &url, temp_dir, &[]).await {
+        Ok(download) => download.path,
+        Err(error) => {
+            tracing::debug!(%url, "avatar du tweet indisponible : {error}");
+            return None;
+        }
+    };
+    let output = temp_dir.join("tweet-avatar.png");
+    let args = vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-v".to_string(),
+        "error".to_string(),
+        "-i".to_string(),
+        input.display().to_string(),
+        "-vf".to_string(),
+        "scale=192:192".to_string(),
+        "-frames:v".to_string(),
+        "1".to_string(),
+        output.display().to_string(),
+    ];
+    if let Err(error) = process::run_command(
+        &config.tools.ffmpeg,
+        &args,
+        config.download.timeout,
+        MediaErrorCode::TranscodeFailed,
+    )
+    .await
+    {
+        tracing::debug!("conversion de l'avatar du tweet impossible : {error}");
+        return None;
+    }
+    match fs::read(&output) {
+        Ok(bytes) => Some(bytes),
+        Err(error) => {
+            tracing::debug!("lecture de l'avatar du tweet impossible : {error}");
+            None
+        }
+    }
+}
+
+/// Assemble des images en vidéo de carrousel et renvoie le téléchargement prêt.
+async fn build_carousel_download(
+    config: &MediaConfig,
+    temp_dir: &Path,
+    images: &[PathBuf],
+    audio: Option<&Path>,
+    is_vertical: bool,
+    source_url: String,
+    title: Option<String>,
+) -> MediaResult<DownloadResult> {
+    let output = temp_dir.join("carousel.mp4");
+    let dimensions = transcode::carousel_dimensions(config.video.max_height, is_vertical);
+    transcode::build_carousel_video(
+        &config.tools.ffmpeg,
+        images,
+        audio,
+        &output,
+        dimensions,
+        config,
+    )
+    .await?;
+    let size_bytes = MediaStorage::file_size(&output)?;
+    Ok(DownloadResult {
+        path: output,
+        kind: Some(MediaKind::Video),
+        mime: Some("video/mp4".to_string()),
+        size_bytes,
+        source_url,
+        title,
+    })
 }
 
 /// Télécharge via `yt-dlp` avec les replis YouTube.
@@ -693,29 +918,18 @@ async fn download_tiktok_carousel(
             }
         }
     }
-    let output = temp_dir.join("carousel.mp4");
-    let dimensions = transcode::carousel_dimensions(config.video.max_height, true);
-    transcode::build_carousel_video(
-        &config.tools.ffmpeg,
+    build_carousel_download(
+        config,
+        temp_dir,
         &images,
         audio.as_deref(),
-        &output,
-        dimensions,
-        config,
-    )
-    .await?;
-    let size_bytes = MediaStorage::file_size(&output)?;
-    Ok(DownloadResult {
-        path: output,
-        kind: Some(MediaKind::Video),
-        mime: Some("video/mp4".to_string()),
-        size_bytes,
-        source_url: page
-            .canonical_url
+        true,
+        page.canonical_url
             .clone()
             .unwrap_or_else(|| "tiktok".to_string()),
-        title: None,
-    })
+        None,
+    )
+    .await
 }
 
 /// Écrit un fichier de cookies Netscape pour `yt-dlp` à partir d'un en-tête Cookie.

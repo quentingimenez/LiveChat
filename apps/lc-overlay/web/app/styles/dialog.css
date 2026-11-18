@@ -122,20 +122,236 @@
   margin-top: 20px;
 }
 
-/* Mon profil : avatar and pseudo side by side. */
-.profile-avatar {
-  align-items: flex-start;
+/* Mon profil : identity grid, Discord callout and device pairing codes. */
+/* The rows below put a text and an action side by side; the plain 420 px form
+   dialog would wrap every one of them. */
+.dialog:has(> .profile-dialog) {
+  width: min(480px, calc(100vw - 32px));
 }
 
-.profile-avatar .avatar {
-  width: 52px;
-  height: 52px;
-  font-size: 18px;
+.profile-dialog {
+  display: grid;
+  gap: 20px;
 }
 
-.profile-fields {
+.profile-dialog .profile-head {
+  display: grid;
+  gap: 2px;
+}
+
+.profile-dialog .profile-subtitle {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+.profile-dialog .profile-section {
+  display: grid;
+  gap: 12px;
+}
+
+.profile-dialog .profile-section-title {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.profile-dialog .profile-identity {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.profile-dialog .profile-identity .avatar {
+  width: 64px;
+  height: 64px;
+  font-size: 22px;
+}
+
+.profile-dialog .profile-identity-fields {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.profile-dialog .profile-label {
+  display: grid;
+  gap: 4px;
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.profile-dialog .profile-identity-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.profile-dialog .profile-small {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+/* Discord status: one row, its action pushed to the right. */
+.profile-dialog .profile-callout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border-radius: var(--radius-m);
+  background: var(--slate-700);
+}
+
+.profile-dialog .profile-callout-text {
+  flex: 1 1 180px;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.profile-dialog .profile-callout > .btn {
+  flex: none;
+  margin-left: auto;
+}
+
+.profile-dialog .profile-link-form {
+  display: grid;
+  flex-basis: 100%;
+  gap: 8px;
+}
+
+.profile-dialog .profile-link-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.profile-dialog .profile-link-row .field {
+  flex: 1 1 140px;
+  width: auto;
+  min-width: 0;
+}
+
+/* Device rows: title and description left, "Créer un code" right. */
+.profile-dialog .profile-devices {
+  display: grid;
+  gap: 12px;
+}
+
+.profile-dialog .profile-device {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+}
+
+.profile-dialog .profile-device-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.profile-dialog .profile-device-text {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.profile-dialog .profile-device-title,
+.profile-dialog .profile-device-desc {
+  margin: 0;
+}
+
+.profile-dialog .profile-device-title {
+  font-size: 14px;
+}
+
+.profile-dialog .profile-device-desc {
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.profile-dialog .profile-device-row > .btn {
+  flex: none;
+  margin-left: auto;
+}
+
+/* A created code expands under its row. */
+.profile-dialog .profile-code-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: var(--radius-s);
+  background: var(--slate-900);
+}
+
+.profile-dialog .profile-code-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.profile-dialog .profile-code {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 22px;
+  letter-spacing: 0.06em;
+}
+
+.profile-dialog .profile-code-expiry {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.profile-dialog .profile-copy {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  justify-content: center;
+}
+
+.profile-dialog .profile-field {
+  display: grid;
+  gap: 4px;
+}
+
+.profile-dialog .profile-field-label {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.profile-dialog .profile-field-value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* The server URL keeps the UI font: it must stay readable and wrap anywhere. */
+.profile-dialog .profile-value {
   flex: 1;
   min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.profile-dialog .profile-code-note {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+/* `.dialog .actions` adds its own top margin; the grid gap already spaces it. */
+.profile-dialog .actions {
+  margin-top: 0;
 }
 
 /* `.dialog p` would otherwise turn an error paragraph grey. */

@@ -445,6 +445,9 @@ pub fn build_ytdlp_args(
     }
     args.push("-o".to_string());
     args.push(temp_dir.join("download.%(ext)s").display().to_string());
+    // Option terminator: guarantees the url that follows can never be read
+    // as a yt-dlp option, even when it starts with a dash.
+    args.push("--".to_string());
     args.push(url.to_string());
     args
 }

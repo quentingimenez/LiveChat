@@ -1,8 +1,9 @@
 //! Résolution TikTok : oEmbed puis extraction de la page HTML (carrousels
 //! photo/vidéo). La logique reprend l'ancien serveur : données
 //! `__UNIVERSAL_DATA_FOR_REHYDRATION__`, repli `__FRONTITY_CONNECT_STATE__`,
-//! page embed, puis repérage des images `~tplv-photomode-image` dans le HTML
-//! brut pour les carrousels.
+//! nouvelle tentative `/video/` pour les pages `/photo/`, page embed, puis
+//! repérage des images `~tplv-photomode-image` dans le HTML brut pour les
+//! carrousels.
 
 use std::sync::OnceLock;
 
@@ -115,6 +116,25 @@ pub fn build_oembed_url(url: &str) -> String {
 /// Construit l'URL de la page embed d'une publication.
 pub fn build_embed_url(item_id: &str) -> String {
     format!("{TIKTOK_EMBED_ENDPOINT}/{item_id}")
+}
+
+/// Remplace le segment `photo` d'une URL TikTok par `video`.
+///
+/// La page `/photo/<id>` ne sert plus les données de la publication ; la
+/// variante `/video/<id>` (même compte, même identifiant) les contient
+/// encore. La query string et le fragment sont abandonnés. Renvoie `None`
+/// quand l'URL n'est pas de la forme `/photo/<chiffres>`.
+pub fn photo_to_video_url(url: &str) -> Option<String> {
+    let mut parsed = url::Url::parse(url.trim()).ok()?;
+    let mut segments: Vec<String> = parsed.path_segments()?.map(str::to_string).collect();
+    let index = segments
+        .windows(2)
+        .position(|pair| pair[0] == "photo" && is_digits(&pair[1]))?;
+    segments[index] = "video".to_string();
+    parsed.set_path(&format!("/{}", segments.join("/")));
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    Some(parsed.to_string())
 }
 
 /// En-têtes HTTP utilisés pour les requêtes TikTok.
@@ -271,7 +291,7 @@ async fn fetch_oembed(canonical_url: &str, config: &MediaConfig) -> MediaResult<
     .await
 }
 
-/// Récupère et analyse la page TikTok (avec repli page embed).
+/// Récupère et analyse la page TikTok (repli `/video/` puis page embed).
 pub async fn fetch_tiktok_page(
     config: &MediaConfig,
     canonical_url: &str,
@@ -286,6 +306,24 @@ pub async fn fetch_tiktok_page(
     .await?;
     let mut parsed = parse_page_html(&page.body, &page.final_url);
     parsed.session_cookies = session_cookies_from_headers(&page.headers);
+    // Une page `/photo/` ne sert plus les données de la publication : on
+    // retente la même publication en `/video/` avant le repli embed.
+    if parsed.is_empty() {
+        if let Some(video_url) = photo_to_video_url(canonical_url) {
+            if let Ok(video_page) = http::get_text(
+                &config.download,
+                &video_url,
+                config.download.timeout,
+                &header_pairs(&headers),
+            )
+            .await
+            {
+                let mut parsed_video = parse_page_html(&video_page.body, &video_page.final_url);
+                parsed_video.session_cookies = session_cookies_from_headers(&video_page.headers);
+                parsed.merge(parsed_video);
+            }
+        }
+    }
     let needs_embed = parsed.auth_required || parsed.is_empty();
     if needs_embed {
         if let Some(item_id) = parsed.item_id.clone() {
@@ -994,5 +1032,27 @@ mod tests {
         page.merge(embedded);
         assert_eq!(page.video_candidates.len(), 2);
         assert_eq!(page.item_id.as_deref(), Some("7311111111111111111"));
+    }
+
+    #[test]
+    fn converts_photo_urls_to_video_urls() {
+        assert_eq!(
+            photo_to_video_url("https://www.tiktok.com/@chat_officiel/photo/7312222222222222222"),
+            Some("https://www.tiktok.com/@chat_officiel/video/7312222222222222222".to_string())
+        );
+        assert_eq!(
+            photo_to_video_url(
+                "https://www.tiktok.com/@chat_officiel/photo/7312222222222222222?is_from_webapp=1"
+            ),
+            Some("https://www.tiktok.com/@chat_officiel/video/7312222222222222222".to_string())
+        );
+        assert_eq!(
+            photo_to_video_url("https://www.tiktok.com/@chat_officiel/video/7312222222222222222"),
+            None
+        );
+        assert_eq!(
+            photo_to_video_url("https://www.tiktok.com/@chat_officiel/gallery/7312222222222222222"),
+            None
+        );
     }
 }

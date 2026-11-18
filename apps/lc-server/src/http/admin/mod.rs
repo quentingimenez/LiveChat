@@ -40,7 +40,7 @@ mod audit;
 mod auth;
 mod auth_routes;
 mod clients;
-mod devices;
+pub(crate) mod devices;
 mod error;
 mod events;
 mod guild_detail;
@@ -49,9 +49,9 @@ pub(crate) use guilds::stop_guild_playback;
 mod ingest_authors;
 mod oauth;
 mod ops;
-mod overview;
+pub(crate) mod overview;
 mod pairings;
-mod queries;
+pub(crate) mod queries;
 mod rights;
 mod runtime_settings;
 mod session;
@@ -71,8 +71,14 @@ mod tests_ops;
 #[cfg(test)]
 mod tests_rights;
 
+pub(crate) use audit::action_for as audit_action_for;
+pub(crate) use audit::guild_rows as audit_rows_for_guild;
 pub(crate) use audit::purge_old as purge_old_audit;
+pub(crate) use audit::record_overlay as record_overlay_audit;
+pub(crate) use guilds::remove_orphan_media;
 pub(crate) use ops::{BinaryProbe, SystemBinaryProbe};
+#[cfg(test)]
+pub(crate) use session::{create_secret as create_secret_session, SESSION_COOKIE_NAME};
 
 pub mod hub;
 

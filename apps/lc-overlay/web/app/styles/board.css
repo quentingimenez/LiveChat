@@ -10,6 +10,10 @@
   max-width: 320px;
 }
 
+.toolbar-usage {
+  white-space: nowrap;
+}
+
 .chips {
   display: flex;
   gap: 4px;

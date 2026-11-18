@@ -1,11 +1,14 @@
 //! Persistent audit log of admin mutations.
 //!
 //! Every mutating request under `/admin/api/**` or `/admin/auth/**` is written
-//! to `admin_audit` by the `admin_headers` middleware. Only stable metadata is
-//! stored: action name, HTTP method, path (never the query string), response
-//! status, actor (from the session cookie when authenticated), optional guild id
-//! parsed from the path and the client IP. Headers and request bodies are never
-//! persisted: they may contain secrets.
+//! to `admin_audit` by the `admin_headers` middleware. The same journal also
+//! receives the successful administrative actions done from an overlay (guild
+//! admins acting from the board app), so both the owner console and the
+//! overlay's Journal tab render one history. Only stable metadata is stored:
+//! action name, HTTP method, path (never the query string), response status,
+//! actor (from the session cookie when authenticated, from the overlay token
+//! otherwise), optional guild id and the client IP. Headers and request bodies
+//! are never persisted: they may contain secrets.
 //!
 //! The action name is derived from the method and the route template (for
 //! instance `guild.purge`), so it stays stable when a parameter changes.
@@ -43,10 +46,16 @@ const AUDIT_MAX_LIMIT: usize = 500;
 /// Maximum number of rows exported as CSV.
 const AUDIT_EXPORT_LIMIT: usize = 10_000;
 
+/// Actor kind of a mutation performed by a member from their overlay.
+///
+/// Console sessions use `secret` or `discord`; `overlay` is the third kind, so
+/// the journal (and its UI) can tell where an action came from.
+pub(crate) const OVERLAY_ACTOR_METHOD: &str = "overlay";
+
 /// Actor of an authenticated mutation.
 #[derive(Debug, Clone)]
 pub(crate) struct AuditActor {
-    /// Session method (`secret` or `discord`).
+    /// Session method (`secret`, `discord` or `overlay`).
     pub method: String,
     /// Display name; the session method is used when the session has no name.
     pub name: Option<String>,
@@ -83,6 +92,14 @@ impl AuditActor {
                 .display_name
                 .clone()
                 .or_else(|| Some(session.method.clone())),
+        }
+    }
+
+    /// Actor of a guild member acting from their overlay.
+    pub(crate) fn from_overlay(name: &str) -> Self {
+        Self {
+            method: OVERLAY_ACTOR_METHOD.to_owned(),
+            name: Some(name.to_owned()),
         }
     }
 }
@@ -132,12 +149,58 @@ pub(crate) async fn record(
     if !audited_path(path) {
         return;
     }
+    let action = action_for(method, path);
+    let guild_id = guild_id_from_path(path);
+    insert(
+        state, guild_id, &action, method, path, status, actor, client_ip,
+    )
+    .await;
+}
+
+/// Persists one successful administrative action done from an overlay.
+///
+/// The guild comes from the overlay token (the routes carry no guild id), and
+/// the action is either derived with [`action_for`] or supplied by a board
+/// moderation path. Callers only invoke it on a successful response or after a
+/// real change: 4xx/5xx responses and read-only requests leave no row.
+pub(crate) async fn record_overlay(
+    state: &AppState,
+    guild_id: &GuildId,
+    action: &str,
+    actor_name: &str,
+    method: &str,
+    path: &str,
+    status: u16,
+    client_ip: Option<IpAddr>,
+) {
+    insert(
+        state,
+        Some(guild_id.as_str().to_owned()),
+        action,
+        method,
+        path,
+        i64::from(status),
+        Some(AuditActor::from_overlay(actor_name)),
+        client_ip,
+    )
+    .await;
+}
+
+/// Shared insert: one row plus one `audit` SSE event, exactly as listed.
+async fn insert(
+    state: &AppState,
+    guild_id: Option<String>,
+    action: &str,
+    method: &str,
+    path: &str,
+    status: i64,
+    actor: Option<AuditActor>,
+    client_ip: Option<IpAddr>,
+) {
     let Some(db) = state.db.as_ref() else {
         return;
     };
 
-    let action = action_for(method, path);
-    let guild_id = guild_id_from_path(path);
     let at = lc_domain::datetime_to_ms(state.clock.now());
     let client_ip = client_ip.map(|ip| ip.to_string());
     let (actor_method, actor_name) =
@@ -151,7 +214,7 @@ pub(crate) async fn record(
     .bind(at)
     .bind(actor_method.as_deref())
     .bind(actor_name.as_deref())
-    .bind(&action)
+    .bind(action)
     .bind(method)
     .bind(path)
     .bind(status)
@@ -345,6 +408,30 @@ fn row_payload(row: &AuditRow) -> Value {
     })
 }
 
+/// Rows of one guild, newest first, for `GET /overlay/admin/audit`.
+///
+/// Only the guild id column is filtered; the payload is exactly the one of
+/// `GET /admin/api/audit`, so both surfaces render the same entries.
+pub(crate) async fn guild_rows(
+    db: &Db,
+    guild_id: &str,
+    limit: usize,
+) -> Result<Vec<Value>, DbError> {
+    let rows = sqlx::query_as::<_, AuditRow>(
+        "SELECT id, at, actor_method, actor_name, action, method, path, status, \
+                guild_id, client_ip \
+           FROM admin_audit \
+          WHERE guild_id = ?1 \
+          ORDER BY id DESC \
+          LIMIT ?2",
+    )
+    .bind(guild_id)
+    .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+    .fetch_all(db.pool())
+    .await?;
+    Ok(rows.iter().map(row_payload).collect())
+}
+
 /// Escapes one CSV field (quotes doubled when needed).
 ///
 /// Formula-leading values are prefixed with `'`: the actor name comes from
@@ -401,6 +488,9 @@ pub(crate) fn action_for(method: &str, path: &str) -> String {
         return action.to_owned();
     }
     if let Some(action) = media_action(method, path) {
+        return action.to_owned();
+    }
+    if let Some(action) = overlay_admin_action(method, path) {
         return action.to_owned();
     }
     fallback_action(method, path)
@@ -498,10 +588,45 @@ fn media_action(method: &str, path: &str) -> Option<&'static str> {
     }
 }
 
+/// Administrative routes of an overlay (`/overlay/admin/**`).
+///
+/// The action names mirror the console ones (`guild.*`) but keep the origin
+/// visible: the same journal lists both surfaces.
+fn overlay_admin_action(method: &str, path: &str) -> Option<&'static str> {
+    match (method, path) {
+        ("POST", "/overlay/admin/invites") => return Some("overlay.invite_create"),
+        ("POST", "/overlay/admin/device-codes") => return Some("overlay.device_code"),
+        ("PATCH", "/overlay/admin/settings") => return Some("overlay.settings"),
+        ("POST", "/overlay/admin/media-board/clear") => return Some("overlay.board_clear"),
+        ("POST", "/overlay/admin/discord-link-code") => return Some("overlay.discord_link_code"),
+        ("DELETE", "/overlay/admin/discord-link") => return Some("overlay.discord_unlink"),
+        ("DELETE", "/overlay/admin/pairing-codes/expired") => {
+            return Some("overlay.pairing_expired_clean");
+        }
+        _ => {}
+    }
+    let rest = path.strip_prefix("/overlay/admin/")?;
+    let segments: Vec<&str> = rest.split('/').collect();
+    match (method, segments.as_slice()) {
+        ("PATCH", ["members", _]) => Some("overlay.member_update"),
+        ("DELETE", ["members", _]) => Some("overlay.member_remove"),
+        ("POST", ["members", _, "ban"]) => Some("overlay.member_ban"),
+        ("DELETE", ["bans", _]) => Some("overlay.ban_remove"),
+        ("PATCH", ["devices", _]) => Some("overlay.device_update"),
+        ("DELETE", ["devices", _]) => Some("overlay.device_revoke"),
+        ("PATCH", ["devices", _, "guild-settings"]) => Some("overlay.device_guild_settings"),
+        ("POST", ["invites", _, "revoke"]) => Some("overlay.invite_revoke"),
+        ("POST", ["pairing-codes", _, "revoke"]) => Some("overlay.pairing_revoke"),
+        _ => None,
+    }
+}
+
 /// Conservative fallback for routes added later: `admin.<last segment>`.
 fn fallback_action(method: &str, path: &str) -> String {
     let prefix = if path.starts_with("/admin/auth/") {
         "auth"
+    } else if path.starts_with("/overlay/") {
+        "overlay"
     } else {
         "admin"
     };
@@ -580,6 +705,70 @@ mod tests {
         assert_eq!(
             action_for("GET", "/admin/auth/discord/callback"),
             "auth.login_discord"
+        );
+        assert_eq!(
+            action_for("PATCH", "/overlay/admin/members/member-1"),
+            "overlay.member_update"
+        );
+        assert_eq!(
+            action_for("DELETE", "/overlay/admin/members/member-1"),
+            "overlay.member_remove"
+        );
+        assert_eq!(
+            action_for("POST", "/overlay/admin/members/member-1/ban"),
+            "overlay.member_ban"
+        );
+        assert_eq!(
+            action_for("DELETE", "/overlay/admin/bans/ban-1"),
+            "overlay.ban_remove"
+        );
+        assert_eq!(
+            action_for("PATCH", "/overlay/admin/devices/client-1"),
+            "overlay.device_update"
+        );
+        assert_eq!(
+            action_for("DELETE", "/overlay/admin/devices/client-1"),
+            "overlay.device_revoke"
+        );
+        assert_eq!(
+            action_for("PATCH", "/overlay/admin/devices/client-1/guild-settings"),
+            "overlay.device_guild_settings"
+        );
+        assert_eq!(
+            action_for("POST", "/overlay/admin/device-codes"),
+            "overlay.device_code"
+        );
+        assert_eq!(
+            action_for("POST", "/overlay/admin/invites"),
+            "overlay.invite_create"
+        );
+        assert_eq!(
+            action_for("POST", "/overlay/admin/invites/CODE/revoke"),
+            "overlay.invite_revoke"
+        );
+        assert_eq!(
+            action_for("DELETE", "/overlay/admin/pairing-codes/expired"),
+            "overlay.pairing_expired_clean"
+        );
+        assert_eq!(
+            action_for("POST", "/overlay/admin/pairing-codes/CODE/revoke"),
+            "overlay.pairing_revoke"
+        );
+        assert_eq!(
+            action_for("PATCH", "/overlay/admin/settings"),
+            "overlay.settings"
+        );
+        assert_eq!(
+            action_for("POST", "/overlay/admin/media-board/clear"),
+            "overlay.board_clear"
+        );
+        assert_eq!(
+            action_for("POST", "/overlay/admin/discord-link-code"),
+            "overlay.discord_link_code"
+        );
+        assert_eq!(
+            action_for("DELETE", "/overlay/admin/discord-link"),
+            "overlay.discord_unlink"
         );
     }
 

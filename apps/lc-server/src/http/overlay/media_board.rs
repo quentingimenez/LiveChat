@@ -86,7 +86,9 @@ use crate::media::errors::MediaServiceError;
 use super::auth::AuthedOverlayClient;
 use super::guild::require;
 use super::media_ingestion::{spawn_ingestion, BoardTarget, IngestionInput};
-use super::{db, db_failure, error, is_conflict, json_response, now, ActorInfo};
+use super::{
+    audit as overlay_audit, db, db_failure, error, is_conflict, json_response, now, ActorInfo,
+};
 
 /// Alias local pour garder les signatures courtes.
 type Db = lc_db::Db;
@@ -1050,6 +1052,9 @@ pub(crate) async fn update_item_payload(
         artwork_on_overlay,
         display_duration_sec: display_duration,
     };
+    // Read before the update: the author is what makes this a moderation of
+    // another member's media (the item itself is not removed here).
+    let creator = overlay_audit::creator_member(db, item_id).await;
     match db.media_board().update(item_id, &edit).await {
         Ok(true) => {
             state.admin_hub.broadcast_to_guild(
@@ -1059,6 +1064,15 @@ pub(crate) async fn update_item_payload(
                     item_id: item_id.to_canonical(),
                 }),
             );
+            overlay_audit::record_moderation(
+                state,
+                actor,
+                creator,
+                "overlay.media_update",
+                "PATCH",
+                &format!("/overlay/media-board/items/{}", item_id.to_canonical()),
+            )
+            .await;
             Ok(serde_json::json!({
                 "updated": true,
                 "item": {
@@ -1128,6 +1142,9 @@ pub(crate) async fn delete_item_payload(
     // AUD-A2-013 : suppression et libération de l'expiration épinglée dans une
     // même transaction (le comptage de références est fait côté SQL), au lieu
     // d'un DELETE puis d'un comptage applicatif non transactionnel.
+    // L'auteur est lu avant la suppression : c'est lui qui distingue une
+    // modération d'un simple retrait de son propre média.
+    let creator = overlay_audit::creator_member(db, item_id).await;
     let now = now(state);
     let release_seconds = i64::try_from(state.runtime().media_cache_ttl_hours())
         .unwrap_or(i64::MAX / 3_600)
@@ -1151,6 +1168,15 @@ pub(crate) async fn delete_item_payload(
                 item_id: item_id.to_canonical(),
             }),
         );
+        overlay_audit::record_moderation(
+            state,
+            actor,
+            creator,
+            "overlay.media_remove",
+            "DELETE",
+            &format!("/overlay/media-board/items/{}", item_id.to_canonical()),
+        )
+        .await;
     }
 
     Ok(serde_json::json!({"deleted": deleted}))

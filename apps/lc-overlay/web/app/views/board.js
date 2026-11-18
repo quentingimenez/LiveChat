@@ -30,7 +30,7 @@ import {
   thumbnailOf,
 } from '../core/detail-drawer.js';
 import { h, icon, registerIcons } from '../core/dom.js';
-import { formatDuration, INVALID_DURATION_MESSAGE, MAX_DISPLAY_DURATION_SEC, parseDisplayDuration } from '../core/format.js';
+import { formatDuration, formatBytes, INVALID_DURATION_MESSAGE, MAX_DISPLAY_DURATION_SEC, parseDisplayDuration } from '../core/format.js';
 import { cardRatio, cardStyle } from '../core/masonry.js';
 import {
   cardClickAction,
@@ -521,6 +521,13 @@ export function renderBoard() {
   // A preview no longer shown must not keep its video alive.
   prunePreviews();
   const filterCount = activeFilterCount(state.filters);
+  // Occupation du board (`GET /overlay/guild`): hidden while unknown, e.g. for
+  // a role without the `viewBoard` right.
+  const mediaBoard = state.info && state.info.guild ? state.info.guild.mediaBoard : null;
+  const boardUsage =
+    mediaBoard && Number.isFinite(Number(mediaBoard.maxBytes))
+      ? `${mediaBoard.itemsCount || 0} média${mediaBoard.itemsCount === 1 ? '' : 's'} · ${formatBytes(mediaBoard.usedBytes)} / ${formatBytes(mediaBoard.maxBytes)}`
+      : null;
   const toolbar = h(
     'div',
     { class: 'toolbar' },
@@ -554,6 +561,9 @@ export function renderBoard() {
       icon('filter'),
       filterCount > 0 ? `Filtres · ${filterCount}` : 'Filtres',
     ),
+    boardUsage
+      ? h('span', { class: 'meta toolbar-usage', title: 'Occupation du board de la guilde' }, boardUsage)
+      : null,
     h('span', { class: 'spacer' }),
     state.items.length > 0
       ? h(

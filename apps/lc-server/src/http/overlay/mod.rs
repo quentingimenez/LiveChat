@@ -79,8 +79,11 @@ use tracing::error;
 use crate::app::AppState;
 
 pub(crate) mod admin;
+mod audit;
 mod auth;
+pub(crate) mod board_clear;
 mod board_extras;
+pub(crate) mod devices;
 pub(crate) mod discord_link;
 pub(crate) mod guild;
 mod ingest_code;
@@ -96,6 +99,7 @@ mod profile_discord;
 pub(crate) mod queue;
 mod say;
 
+pub(crate) use audit::record_playback_stop;
 pub(crate) use auth::AuthedOverlayClient;
 pub use media::sign_media_url;
 
@@ -233,6 +237,10 @@ mod ban_tests;
 #[cfg(test)]
 mod board_extras_tests;
 #[cfg(test)]
+mod device_admin_tests;
+#[cfg(test)]
+mod guild_admin_tests;
+#[cfg(test)]
 mod guild_tests;
 #[cfg(test)]
 mod ingestion_tests;
@@ -242,6 +250,8 @@ mod media_edit_tests;
 mod media_import_tests;
 #[cfg(test)]
 mod media_upload_tests;
+#[cfg(test)]
+mod overlay_audit_tests;
 #[cfg(test)]
 mod profile_discord_tests;
 #[cfg(test)]
@@ -329,11 +339,16 @@ pub fn router() -> Router<AppState> {
             "/overlay/queue",
             get(queue::get_queue).delete(queue::clear_queue),
         )
+        .route("/overlay/queue/history", get(queue::get_history))
         .route(
             "/overlay/queue/{job_id}",
             axum::routing::delete(queue::remove_job),
         )
-        .route("/overlay/say", post(say::say))
+        .route("/overlay/say", post(say::say));
+
+    // Administrative routes of the guild: one audit layer journals each
+    // successful mutation with the token's guild and member (see `audit`).
+    let admin = Router::new()
         .route("/overlay/admin/members", get(admin::list_members))
         .route(
             "/overlay/admin/members/{member_id}",
@@ -348,6 +363,19 @@ pub fn router() -> Router<AppState> {
             "/overlay/admin/bans/{ban_id}",
             axum::routing::delete(admin::unban_handler),
         )
+        .route("/overlay/admin/devices", get(devices::list_devices))
+        .route(
+            "/overlay/admin/devices/{client_id}",
+            axum::routing::patch(devices::update_device).delete(devices::revoke_device),
+        )
+        .route(
+            "/overlay/admin/devices/{client_id}/guild-settings",
+            axum::routing::patch(devices::update_guild_settings),
+        )
+        .route(
+            "/overlay/admin/device-codes",
+            post(devices::create_device_code),
+        )
         .route(
             "/overlay/admin/invites",
             get(admin::list_invites).post(admin::create_invite_handler),
@@ -357,9 +385,26 @@ pub fn router() -> Router<AppState> {
             post(admin::revoke_invite),
         )
         .route(
+            "/overlay/admin/pairing-codes",
+            get(admin::list_pairing_codes),
+        )
+        .route(
+            "/overlay/admin/pairing-codes/expired",
+            axum::routing::delete(admin::purge_pairing_codes),
+        )
+        .route(
+            "/overlay/admin/pairing-codes/{code}/revoke",
+            post(admin::revoke_pairing_code),
+        )
+        .route(
             "/overlay/admin/settings",
             axum::routing::patch(admin::update_settings),
         )
+        .route(
+            "/overlay/admin/media-board/clear",
+            post(admin::clear_media_board),
+        )
+        .route("/overlay/admin/audit", get(admin::list_audit))
         .route(
             "/overlay/admin/discord-link-code",
             post(discord_link::create_link_code),
@@ -367,12 +412,14 @@ pub fn router() -> Router<AppState> {
         .route(
             "/overlay/admin/discord-link",
             axum::routing::delete(discord_link::unlink),
-        );
+        )
+        .layer(axum::middleware::from_fn(audit::overlay_admin_audit));
 
     Router::new()
         .route("/overlay/pair/consume", post(pair::consume_pairing))
         .route("/overlay/media/{asset_id}", get(media::get_media))
         .merge(authed)
+        .merge(admin)
 }
 
 /// Instant courant, toujours lu depuis l'horloge injectée.

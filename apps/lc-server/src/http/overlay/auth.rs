@@ -140,10 +140,17 @@ impl FromRequestParts<AppState> for AuthedOverlayClient {
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
         // Un seul mécanisme : l'en-tête `Authorization: Bearer`. Aucun repli
         // `?token=` (supprimé avec AUD-COR-05).
+        // The overlay admin audit middleware authenticates once and inserts the
+        // client in the request extensions: reuse it instead of a second
+        // database round-trip (and a second `last_seen_at` touch).
+        let cached = parts.extensions.get::<AuthedOverlayClient>().cloned();
         let token = bearer_token(&parts.headers);
         let db = state.db.clone();
         let now = state.clock.now();
         async move {
+            if let Some(authed) = cached {
+                return Ok(authed);
+            }
             let Some(token) = token else {
                 return Err(unauthorized());
             };

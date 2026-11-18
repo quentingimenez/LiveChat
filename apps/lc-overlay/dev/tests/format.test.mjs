@@ -5,6 +5,7 @@ import test from 'node:test';
 
 import {
   firstGrapheme,
+  formatBytes,
   initials,
   mediaRefreshDelay,
   parseDisplayDuration,
@@ -118,4 +119,15 @@ test('parseDisplayDuration reads whole seconds from 1 to 600, empty as default',
   for (const raw of ['0', '601', '8.5', 'abc', '-3', '1e2']) {
     assert.deepEqual(parseDisplayDuration(raw), { ok: false }, raw);
   }
+});
+
+test('formatBytes shows Go and Mo with French decimals', () => {
+  assert.equal(formatBytes(0), '0 Ko');
+  assert.equal(formatBytes(512 * 1024), '512 Ko');
+  assert.equal(formatBytes(1024 * 1024), '1 Mo');
+  assert.equal(formatBytes(1.5 * 1024 * 1024), '1,5 Mo');
+  assert.equal(formatBytes(5 * 1024 * 1024 * 1024), '5 Go');
+  assert.equal(formatBytes(1.2 * 1024 * 1024 * 1024), '1,2 Go');
+  assert.equal(formatBytes(null), null);
+  assert.equal(formatBytes(-1), null);
 });

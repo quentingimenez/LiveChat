@@ -4,6 +4,45 @@
   grid-template-columns: 24px minmax(0, 1fr) auto auto;
 }
 
+.queue-origin {
+  margin-left: 6px;
+  padding: 0 6px;
+  font-size: 11px;
+  vertical-align: middle;
+}
+
+.queue-history {
+  margin-top: 22px;
+}
+
+.queue-history > summary {
+  cursor: pointer;
+  color: var(--text-soft);
+  font-weight: 600;
+}
+
+.line.is-history {
+  grid-template-columns: 24px minmax(0, 1fr) 160px 110px;
+}
+
+.history-status {
+  display: grid;
+  place-items: center;
+}
+
+.history-status .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.history-status.is-ok {
+  color: #7fd1a2;
+}
+
+.history-status.is-err {
+  color: #f0b4b4;
+}
+
 .now {
   margin-bottom: 18px;
   padding: 14px 16px;

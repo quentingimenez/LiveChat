@@ -11,6 +11,9 @@
 //! | `GET` | `/overlay/admin/invites` | `ManageInvites` |
 //! | `POST` | `/overlay/admin/invites` | `ManageInvites` |
 //! | `POST` | `/overlay/admin/invites/{code}/revoke` | `ManageInvites` |
+//! | `GET` | `/overlay/admin/pairing-codes` | `ManageInvites` |
+//! | `POST` | `/overlay/admin/pairing-codes/{code}/revoke` | `ManageInvites` |
+//! | `DELETE` | `/overlay/admin/pairing-codes/expired` | `ManageInvites` |
 //! | `PATCH` | `/overlay/admin/settings` | `ManageSettings` |
 //!
 //! Toutes les routes sont bornées à la guilde du jeton : un identifiant de
@@ -33,10 +36,12 @@ use axum::response::Response;
 use axum::Json;
 use lc_db::MemberChange;
 use lc_domain::{
-    Guild, GuildBan, GuildBanId, GuildMember, GuildMemberId, GuildRole, PairingCode, Permission,
+    Guild, GuildBan, GuildBanId, GuildMember, GuildMemberId, GuildRole, PairingCode,
+    PairingCodeEntry, Permission,
 };
 use lc_protocol::{close_code, close_reason};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use time::Duration;
 
 use crate::app::AppState;
@@ -46,7 +51,9 @@ use super::guild::{
     create_invite, invite_payload, iso, member_payload, normalize_label, remove_member, require,
     NewInvite,
 };
+use super::ingest_code::INGEST_CODE_CREATOR_PREFIX;
 use super::{db, db_failure, error, internal_error, is_conflict, json_response, now};
+use crate::http::pairing_codes;
 
 /// Durée de vie maximale d'une invitation (un an).
 const INVITE_MAX_TTL_HOURS: i64 = 24 * 365;
@@ -545,6 +552,146 @@ pub async fn revoke_invite(
     match revoke_invite_payload(&state, auth.guild_id(), &code_raw).await {
         Ok(payload) => json_response(StatusCode::OK, payload),
         Err(response) => response,
+    }
+}
+
+/// Nature d'un code d'appairage telle que l'overlay l'affiche : `extension`
+/// pour un code émis depuis un overlay (auteur `member:<id>`), `discord` pour
+/// un code `/pair-code` émis par le bot.
+fn pairing_kind(code: &PairingCodeEntry) -> &'static str {
+    if code
+        .created_by_discord_user_id
+        .starts_with(INGEST_CODE_CREATOR_PREFIX)
+    {
+        "extension"
+    } else {
+        "discord"
+    }
+}
+
+/// Codes body shared by `GET /overlay/admin/pairing-codes`: every code of the
+/// guild (Discord `/pair-code` and browser-extension codes), newest first,
+/// with its kind and the member display name of an extension code's author.
+async fn pairing_codes_payload(
+    state: &AppState,
+    guild_id: &lc_domain::GuildId,
+) -> Result<Value, Response> {
+    let db = db(state)?;
+    let now = now(state);
+    let codes = pairing_codes::list(db, Some(guild_id))
+        .await
+        .map_err(|db_error| db_failure("overlay_admin.list_pairing_codes", &db_error))?;
+    let members = db
+        .guild_members()
+        .list_by_guild(guild_id)
+        .await
+        .map_err(|db_error| db_failure("overlay_admin.pairing_members", &db_error))?;
+    let names: HashMap<String, String> = members
+        .into_iter()
+        .map(|member| (member.id.to_canonical(), member.display_name))
+        .collect();
+
+    let items: Vec<Value> = codes
+        .iter()
+        .map(|code| {
+            let kind = pairing_kind(code);
+            let author_name = if kind == "extension" {
+                code.created_by_discord_user_id
+                    .strip_prefix(INGEST_CODE_CREATOR_PREFIX)
+                    .and_then(|member_id| names.get(member_id).cloned())
+                    .or_else(|| code.author_name.clone())
+            } else {
+                code.author_name.clone()
+            };
+            let mut payload = pairing_codes::payload(code, now);
+            payload["kind"] = json!(kind);
+            // The current member name wins over the one stored at issue time.
+            payload["authorName"] = json!(author_name);
+            payload
+        })
+        .collect();
+
+    Ok(json!({"count": items.len(), "items": items}))
+}
+
+/// Handler `GET /overlay/admin/pairing-codes`.
+pub async fn list_pairing_codes(
+    State(state): State<AppState>,
+    auth: AuthedOverlayClient,
+) -> Response {
+    if let Err(response) = require(&state, &auth, Permission::ManageInvites) {
+        return response;
+    }
+    match pairing_codes_payload(&state, auth.guild_id()).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
+    }
+}
+
+/// Revokes a pairing code of the guild (overlay side).
+///
+/// A code belonging to another guild answers exactly like an unknown code
+/// (`404 pairing_code_not_found`): the route never reveals that it exists.
+async fn revoke_pairing_code_payload(
+    state: &AppState,
+    guild_id: &lc_domain::GuildId,
+    code_raw: &str,
+) -> Result<Value, Response> {
+    let Ok(code) = PairingCode::parse(code_raw) else {
+        return Err(error(StatusCode::NOT_FOUND, "pairing_code_not_found"));
+    };
+    let db = db(state)?;
+    let entry = match db.pairing_codes().get(&code).await {
+        Ok(Some(entry)) if &entry.guild_id == guild_id => entry,
+        Ok(_) => return Err(error(StatusCode::NOT_FOUND, "pairing_code_not_found")),
+        Err(db_error) => return Err(db_failure("overlay_admin.pairing_lookup", &db_error)),
+    };
+    let now_ms = lc_domain::datetime_to_ms(now(state));
+    let revoked = pairing_codes::revoke(db, code.as_str(), now_ms)
+        .await
+        .map_err(|db_error| db_failure("overlay_admin.revoke_pairing_code", &db_error))?;
+    if revoked > 0 {
+        tracing::info!(
+            code = code.as_str(),
+            guild_id = %entry.guild_id,
+            "code de pairing révoqué depuis l'overlay"
+        );
+    }
+    Ok(json!({"revoked": revoked > 0}))
+}
+
+/// Handler `POST /overlay/admin/pairing-codes/{code}/revoke`.
+pub async fn revoke_pairing_code(
+    State(state): State<AppState>,
+    auth: AuthedOverlayClient,
+    Path(code_raw): Path<String>,
+) -> Response {
+    if let Err(response) = require(&state, &auth, Permission::ManageInvites) {
+        return response;
+    }
+    match revoke_pairing_code_payload(&state, auth.guild_id(), &code_raw).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
+    }
+}
+
+/// Handler `DELETE /overlay/admin/pairing-codes/expired` : purge des codes de
+/// la guilde qui sont utilisés ou expirés.
+pub async fn purge_pairing_codes(
+    State(state): State<AppState>,
+    auth: AuthedOverlayClient,
+) -> Response {
+    if let Err(response) = require(&state, &auth, Permission::ManageInvites) {
+        return response;
+    }
+    let db = match db(&state) {
+        Ok(db) => db,
+        Err(response) => return response,
+    };
+    let now_ms = lc_domain::datetime_to_ms(now(&state));
+    match pairing_codes::delete_expired(db, Some(auth.guild_id().as_str()), now_ms).await {
+        Ok(deleted) => json_response(StatusCode::OK, json!({"deleted": deleted})),
+        Err(db_error) => db_failure("overlay_admin.purge_pairing_codes", &db_error),
     }
 }
 

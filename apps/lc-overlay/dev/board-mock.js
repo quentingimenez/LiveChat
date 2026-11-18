@@ -34,6 +34,9 @@
 // POST …/items/{id}/edit et `replaceItemId` à l'envoi créent une copie ou
 // remplacent le média de l'item, comme le serveur.
 // Appairage : le code NOPSEUDO sans pseudo renvoie display_name_required.
+// Codes d'appairage : GET /overlay/admin/pairing-codes sert un code Discord
+// actif et un code d'extension expiré ; la révocation et la purge modifient
+// cette liste en mémoire. Les membres portent discordUserId.
 // Les médias ont des formats variés (portrait, carré, paysage) pour la
 // mosaïque ; « Nope » est une image portrait (1080 × 1920). La mise en pause ferme la
 // connexion comme le shell (disabled, puis connecting → connected au retour)
@@ -157,10 +160,10 @@
   };
 
   const members = [
-    { id: 'm-111', displayName: 'Quentin', avatar: null, role: 'admin', connected: true, deviceCount: 2, lastSeenAt: new Date().toISOString(), isSelf: true },
-    { id: 'm-lea', displayName: 'Léa', avatar: null, role: 'member', connected: true, deviceCount: 1, lastSeenAt: new Date().toISOString(), isSelf: false },
-    { id: 'm-max', displayName: 'Max', avatar: null, role: 'member', connected: false, deviceCount: 1, lastSeenAt: new Date(now - 7200000).toISOString(), isSelf: false },
-    { id: 'm-42', displayName: 'Invité-42', avatar: null, role: 'guest', connected: false, deviceCount: 1, lastSeenAt: null, isSelf: false },
+    { id: 'm-111', displayName: 'Quentin', avatar: null, role: 'admin', connected: true, deviceCount: 2, lastSeenAt: new Date().toISOString(), createdAt: new Date(now - 90 * 86400000).toISOString(), discordLinked: true, discordUserId: '123456789012345678', isSelf: true },
+    { id: 'm-lea', displayName: 'Léa', avatar: null, role: 'member', connected: true, deviceCount: 1, lastSeenAt: new Date().toISOString(), createdAt: new Date(now - 30 * 86400000).toISOString(), discordLinked: true, discordUserId: '234567890123456789', isSelf: false },
+    { id: 'm-max', displayName: 'Max', avatar: null, role: 'member', connected: false, deviceCount: 1, lastSeenAt: new Date(now - 7200000).toISOString(), createdAt: new Date(now - 7 * 86400000).toISOString(), discordLinked: false, discordUserId: null, isSelf: false },
+    { id: 'm-42', displayName: 'Invité-42', avatar: null, role: 'guest', connected: false, deviceCount: 1, lastSeenAt: null, createdAt: new Date(now - 86400000).toISOString(), discordLinked: false, discordUserId: null, isSelf: false },
   ];
   // Guild profile edited by « Mon profil »: the mock keeps it between dialogs.
   // It starts linked to the Discord account, as after a personal /pair-code.
@@ -168,13 +171,22 @@
   // `?unlinked` starts with a member created without Discord (admin panel).
   const unlinked = new URLSearchParams(location.search).has('unlinked');
   const memberProfile = unlinked
-    ? { displayName: 'Quentin', avatar: null, discordLinked: false, profileSource: 'custom' }
-    : { ...discordProfile, discordLinked: true, profileSource: 'discord' };
+    ? { displayName: 'Quentin', avatar: null, discordLinked: false, discordUserId: null, profileSource: 'custom' }
+    : { ...discordProfile, discordLinked: true, discordUserId: '123456789012345678', profileSource: 'discord' };
   const invites = [
     { code: 'K7QXM2PD', role: 'member', maxUses: 1, useCount: 0, expiresAt: new Date(now + 22 * 3600000).toISOString(), revokedAt: null, isActive: true },
     { code: 'P3WN8RTA', role: 'guest', maxUses: 10, useCount: 4, expiresAt: new Date(now + 6 * 86400000).toISOString(), revokedAt: null, isActive: true },
     { code: 'Z9LCV5HE', role: 'admin', maxUses: 1, useCount: 1, expiresAt: null, revokedAt: null, isActive: false },
   ];
+  // Codes d'appairage (`pairing_codes`), comme les sert
+  // `GET /overlay/admin/pairing-codes` : un code Discord actif et un code
+  // d'extension expiré. La purge et la révocation modifient cette liste.
+  const pairingCodes = [
+    { code: 'PAIR42', guildId: '111', createdByDiscordUserId: '1001', authorName: 'Discordeur', expiresAt: new Date(now + 10 * 60000).toISOString(), usedAt: null, createdAt: new Date(now - 60000).toISOString(), kind: 'discord' },
+    { code: 'EXT789', guildId: '111', createdByDiscordUserId: 'member:m-lea', authorName: 'Léa', expiresAt: new Date(now - 60000).toISOString(), usedAt: null, createdAt: new Date(now - 3600000).toISOString(), kind: 'extension' },
+  ];
+  const pairingCodeActive = (entry) => !entry.usedAt && (!entry.expiresAt || new Date(entry.expiresAt).getTime() > Date.now());
+  const pairingCodePayload = (entry) => ({ ...entry, isActive: pairingCodeActive(entry) });
 
   const permissions = {
     viewBoard: true,
@@ -553,6 +565,35 @@
     if (path === '/overlay/device-code') {
       return ok({ created: true, invite: { code: 'D3V1C3AB' } });
     }
+    if (path === '/overlay/admin/pairing-codes' && method === 'GET') {
+      const items = pairingCodes.map(pairingCodePayload);
+      return ok({ count: items.length, items });
+    }
+    const pairingCodeRevoke = /^\/overlay\/admin\/pairing-codes\/([^/?]+)\/revoke$/.exec(path);
+    if (pairingCodeRevoke && method === 'POST') {
+      const code = decodeURIComponent(pairingCodeRevoke[1]);
+      const entry = pairingCodes.find((candidate) => candidate.code === code);
+      if (!entry) {
+        return { ok: false, status: 404, body: { error: 'pairing_code_not_found' } };
+      }
+      const revoked = pairingCodeActive(entry);
+      if (revoked) {
+        const at = new Date().toISOString();
+        entry.usedAt = at;
+        entry.expiresAt = at;
+      }
+      return ok({ revoked });
+    }
+    if (path === '/overlay/admin/pairing-codes/expired' && method === 'DELETE') {
+      let deleted = 0;
+      for (let index = pairingCodes.length - 1; index >= 0; index -= 1) {
+        if (!pairingCodeActive(pairingCodes[index])) {
+          pairingCodes.splice(index, 1);
+          deleted += 1;
+        }
+      }
+      return ok({ deleted });
+    }
     return ok({ created: true, updated: true, removed: true, deleted: true, invite: invites[0] });
   }
 
@@ -802,7 +843,7 @@
 
   const requests = [];
 
-  window.__mock = { emit, removeGuild, finishPlaying, reconnect, restartServer, openSettings: openSettingsPage, finishPlacement, settings, previewLayouts, queue, items, guilds, ingestions, requests };
+  window.__mock = { emit, removeGuild, finishPlaying, reconnect, restartServer, openSettings: openSettingsPage, finishPlacement, settings, previewLayouts, queue, items, guilds, ingestions, invites, pairingCodes, requests };
 
   window.__TAURI_INTERNALS__ = {
     transformCallback(callback) {

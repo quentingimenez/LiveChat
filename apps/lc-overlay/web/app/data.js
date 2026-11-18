@@ -178,6 +178,7 @@ function resetGuildData() {
   state.triggerHints.clear();
   state.members = [];
   state.invites = [];
+  state.pairingCodes = [];
   state.search = '';
   state.kind = 'all';
   state.selecting = false;
@@ -391,8 +392,13 @@ export async function loadAdmin(options) {
   if (state.adminTab === 'bans' && can('manageMembers')) {
     state.bans = (await readList('/overlay/admin/bans', quiet)) || state.bans;
   }
-  if (state.adminTab === 'invites' && can('manageInvites')) {
+  if (state.adminTab === 'codes' && can('manageInvites')) {
     state.invites = (await readList('/overlay/admin/invites', quiet)) || state.invites;
+    state.pairingCodes = (await readList('/overlay/admin/pairing-codes', quiet)) || state.pairingCodes;
+    // Authors of invitations are resolved from the members list.
+    if (can('manageMembers')) {
+      state.members = (await readList('/overlay/admin/members', quiet)) || state.members;
+    }
   }
   if (state.tab === 'admin' && state.page === 'guild') {
     renderView();

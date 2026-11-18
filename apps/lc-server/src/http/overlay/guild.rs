@@ -192,6 +192,7 @@ pub(super) fn member_payload(member: &GuildMember) -> Value {
         "role": member.role.as_wire_str(),
         "createdAt": iso(Some(member.created_at)),
         "discordLinked": member.discord_user_id.is_some(),
+        "discordUserId": member.discord_user_id,
         "profileSource": if member.follows_discord() { "discord" } else { "custom" },
     })
 }

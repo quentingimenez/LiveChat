@@ -18,9 +18,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::auth::AdminAccess;
-use super::queries;
-use super::{opt_iso, require_db, to_iso, AdminError};
+use super::require_db;
+use super::AdminError;
 use crate::app::AppState;
+use crate::http::pairing_codes;
 
 /// Paramètres de requête des routes de lecture.
 #[derive(Debug, Default, Deserialize)]
@@ -40,29 +41,19 @@ pub(super) async fn list(
     let now = state.clock.now();
     let guild_filter = non_empty_string(query.guild_id.as_deref());
 
-    let mut codes = match guild_filter.as_deref() {
+    let codes = match guild_filter.as_deref() {
         Some(raw_guild_id) => match GuildId::parse(raw_guild_id) {
-            Ok(guild_id) => db
-                .pairing_codes()
-                .list_by_guild(&guild_id)
+            Ok(guild_id) => pairing_codes::list(db, Some(&guild_id))
                 .await
                 .map_err(|error| AdminError::db("codes de pairing de la guilde", error))?,
             // Identifiant de filtre invalide : aucun résultat, comme le
             // `where guildId = "..."` du legacy.
             Err(_) => Vec::new(),
         },
-        None => db
-            .pairing_codes()
-            .list()
+        None => pairing_codes::list(db, None)
             .await
             .map_err(|error| AdminError::db("codes de pairing", error))?,
     };
-    codes.sort_by(|left, right| {
-        right
-            .created_at
-            .cmp(&left.created_at)
-            .then_with(|| left.code.as_str().cmp(right.code.as_str()))
-    });
 
     let status = non_empty_string(query.status.as_deref()).unwrap_or_else(|| "all".to_owned());
     let mut items: Vec<Value> = Vec::with_capacity(codes.len());
@@ -82,16 +73,7 @@ pub(super) async fn list(
             active += 1;
         }
 
-        items.push(json!({
-            "code": code.code.as_str(),
-            "guildId": code.guild_id.as_str(),
-            "createdByDiscordUserId": code.created_by_discord_user_id,
-            "authorName": code.author_name,
-            "expiresAt": opt_iso(code.expires_at),
-            "usedAt": opt_iso(code.used_at),
-            "createdAt": to_iso(code.created_at),
-            "isActive": is_active,
-        }));
+        items.push(pairing_codes::payload(code, now));
     }
 
     let total = i64::try_from(items.len()).unwrap_or(0);
@@ -117,7 +99,7 @@ pub(super) async fn delete_expired(
     let guild_filter = non_empty_string(query.guild_id.as_deref());
     let now_ms = lc_domain::datetime_to_ms(state.clock.now());
 
-    let deleted = queries::delete_expired_pairing_codes(db, guild_filter.as_deref(), now_ms)
+    let deleted = pairing_codes::delete_expired(db, guild_filter.as_deref(), now_ms)
         .await
         .map_err(|error| AdminError::db("suppression des codes de pairing expirés", error))?;
 
@@ -151,7 +133,7 @@ pub(super) async fn revoke(
         .ok_or_else(|| AdminError::not_found("pairing_code_not_found"))?;
 
     let now_ms = lc_domain::datetime_to_ms(state.clock.now());
-    let revoked = queries::revoke_pairing_code(db, code.as_str(), now_ms)
+    let revoked = pairing_codes::revoke(db, code.as_str(), now_ms)
         .await
         .map_err(|error| AdminError::db("révocation du code de pairing", error))?;
 

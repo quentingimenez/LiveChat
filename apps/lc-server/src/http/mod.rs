@@ -22,6 +22,7 @@ pub mod error;
 pub mod health;
 pub mod ingest;
 pub mod overlay;
+pub(crate) mod pairing_codes;
 pub mod proxy;
 pub mod rate_limit;
 pub mod root;

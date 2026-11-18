@@ -28,6 +28,7 @@ export const state = {
   triggerHints: new Map(), // jobId -> { outcome, position, at } until the queue is read again
   members: [],
   invites: [],
+  pairingCodes: [],
   bans: [],
   bindings: {},
   capturing: false,

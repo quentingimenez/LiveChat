@@ -13,7 +13,7 @@ use axum::body::{to_bytes, Body};
 use axum::http::{header, Method, Request, StatusCode};
 use axum::Router;
 use lc_db::{Db, DbConfig};
-use lc_domain::{FixedClock, GuildId, GuildRole};
+use lc_domain::{FixedClock, GuildId, GuildRole, PairingCode, PairingCodeEntry, PairingMode};
 use lc_protocol::{close_code, close_reason};
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -850,4 +850,363 @@ async fn file_d_attente_lue_et_moderee() {
         .await;
     assert_eq!(body["pending"].as_array().unwrap().len(), 0);
     assert_eq!(body["playing"]["id"], playing_id.as_str());
+}
+
+/// Inserts a `pairing_codes` row as the bot or `/overlay/ingest-code` would.
+async fn insert_pairing_code(
+    harness: &Harness,
+    guild_id: &GuildId,
+    code: &str,
+    author: &str,
+    author_name: Option<&str>,
+    expires_at: Option<UtcDateTime>,
+    used_at: Option<UtcDateTime>,
+) {
+    harness
+        .db
+        .pairing_codes()
+        .create(&PairingCodeEntry {
+            code: PairingCode::parse(code).unwrap(),
+            guild_id: guild_id.clone(),
+            mode: PairingMode::Normal,
+            grants_admin: false,
+            created_by_discord_user_id: author.to_owned(),
+            author_name: author_name.map(str::to_owned),
+            author_image: None,
+            expires_at,
+            used_at,
+            created_at: fixed_now(),
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn codes_d_appairage_listes_avec_nature_et_auteur() {
+    let harness = Harness::new().await;
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Alice")
+        .await;
+    let admin_token = token(&admin);
+    let member_id = admin["memberId"].as_str().unwrap();
+    let expires_at = fixed_now() + time::Duration::minutes(10);
+    insert_pairing_code(
+        &harness,
+        &harness.guild_id,
+        "DISC42",
+        "123456789012345678",
+        Some("Discordeur"),
+        Some(expires_at),
+        None,
+    )
+    .await;
+    insert_pairing_code(
+        &harness,
+        &harness.guild_id,
+        "EXT123",
+        &format!("member:{member_id}"),
+        Some("Ancien nom"),
+        Some(expires_at),
+        None,
+    )
+    .await;
+
+    let (status, body) = harness
+        .call(
+            Method::GET,
+            "/overlay/admin/pairing-codes",
+            Some(&admin_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["count"], 2);
+    let items = body["items"].as_array().unwrap();
+
+    let discord = items
+        .iter()
+        .find(|item| item["code"] == "DISC42")
+        .expect("code Discord listé");
+    assert_eq!(discord["kind"], "discord");
+    assert_eq!(discord["authorName"], "Discordeur");
+    assert_eq!(discord["isActive"], true);
+    assert_eq!(
+        discord["expiresAt"],
+        lc_domain::time::to_rfc3339_millis(expires_at)
+    );
+    assert_eq!(
+        discord["createdAt"],
+        lc_domain::time::to_rfc3339_millis(fixed_now())
+    );
+
+    let extension = items
+        .iter()
+        .find(|item| item["code"] == "EXT123")
+        .expect("code d'extension listé");
+    assert_eq!(extension["kind"], "extension");
+    // Le nom courant du membre prime sur celui enregistré à l'émission.
+    assert_eq!(extension["authorName"], "Alice");
+    assert_eq!(extension["isActive"], true);
+}
+
+#[tokio::test]
+async fn code_d_une_autre_guilde_ni_liste_ni_revocable() {
+    let harness = Harness::new().await;
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Alice")
+        .await;
+    let admin_token = token(&admin);
+    let other_guild = harness.second_guild("Autre guilde").await;
+    insert_pairing_code(
+        &harness,
+        &other_guild,
+        "OTHER1",
+        "123456789012345678",
+        Some("Ailleurs"),
+        Some(fixed_now() + time::Duration::minutes(10)),
+        None,
+    )
+    .await;
+
+    let (status, body) = harness
+        .call(
+            Method::GET,
+            "/overlay/admin/pairing-codes",
+            Some(&admin_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["count"], 0);
+
+    // Même réponse qu'un code inconnu : aucune fuite d'existence.
+    for code in ["OTHER1", "ZZZZ99"] {
+        let (status, body) = harness
+            .call(
+                Method::POST,
+                &format!("/overlay/admin/pairing-codes/{code}/revoke"),
+                Some(&admin_token),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{code} : {body}");
+        assert_eq!(body["error"], "pairing_code_not_found");
+    }
+
+    let stored = harness
+        .db
+        .pairing_codes()
+        .get(&PairingCode::parse("OTHER1").unwrap())
+        .await
+        .unwrap()
+        .expect("code de l'autre guilde conservé");
+    assert_eq!(stored.used_at, None);
+}
+
+#[tokio::test]
+async fn codes_d_appairage_reserves_au_droit_manage_invites() {
+    let harness = Harness::new().await;
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Alice")
+        .await;
+    let member = harness
+        .invite_and_join(&token(&admin), "member", "Léa")
+        .await;
+    let member_token = token(&member);
+
+    for (method, uri) in [
+        (Method::GET, "/overlay/admin/pairing-codes"),
+        (Method::POST, "/overlay/admin/pairing-codes/ABCDEF/revoke"),
+        (Method::DELETE, "/overlay/admin/pairing-codes/expired"),
+    ] {
+        let (status, body) = harness.call(method, uri, Some(&member_token), None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri} : {body}");
+        assert_eq!(body["error"], "forbidden");
+    }
+}
+
+#[tokio::test]
+async fn revocation_et_purge_des_codes_d_appairage() {
+    let harness = Harness::new().await;
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Alice")
+        .await;
+    let admin_token = token(&admin);
+    let other_guild = harness.second_guild("Autre guilde").await;
+
+    insert_pairing_code(
+        &harness,
+        &harness.guild_id,
+        "OLD001",
+        "123456789012345678",
+        Some("Discordeur"),
+        Some(fixed_now() - time::Duration::minutes(1)),
+        None,
+    )
+    .await;
+    insert_pairing_code(
+        &harness,
+        &harness.guild_id,
+        "USED01",
+        "123456789012345678",
+        Some("Discordeur"),
+        None,
+        Some(fixed_now()),
+    )
+    .await;
+    insert_pairing_code(
+        &harness,
+        &harness.guild_id,
+        "LIVE01",
+        "123456789012345678",
+        Some("Discordeur"),
+        None,
+        None,
+    )
+    .await;
+    insert_pairing_code(
+        &harness,
+        &other_guild,
+        "FOREIG",
+        "123456789012345678",
+        Some("Ailleurs"),
+        Some(fixed_now() - time::Duration::minutes(1)),
+        None,
+    )
+    .await;
+
+    // Purge : expirés et utilisés de la guilde seulement.
+    let (status, body) = harness
+        .call(
+            Method::DELETE,
+            "/overlay/admin/pairing-codes/expired",
+            Some(&admin_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["deleted"], 2);
+
+    let (_, listed) = harness
+        .call(
+            Method::GET,
+            "/overlay/admin/pairing-codes",
+            Some(&admin_token),
+            None,
+        )
+        .await;
+    let remaining: Vec<&str> = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["code"].as_str())
+        .collect();
+    assert_eq!(remaining, vec!["LIVE01"]);
+
+    let foreign = harness
+        .db
+        .pairing_codes()
+        .get(&PairingCode::parse("FOREIG").unwrap())
+        .await
+        .unwrap()
+        .expect("code de l'autre guilde intact");
+    assert_eq!(foreign.guild_id, other_guild);
+
+    // Révocation d'un code actif : inutilisable ensuite.
+    insert_pairing_code(
+        &harness,
+        &harness.guild_id,
+        "REVOK1",
+        "123456789012345678",
+        Some("Discordeur"),
+        Some(fixed_now() + time::Duration::minutes(10)),
+        None,
+    )
+    .await;
+    let (status, body) = harness
+        .call(
+            Method::POST,
+            "/overlay/admin/pairing-codes/REVOK1/revoke",
+            Some(&admin_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["revoked"], true);
+
+    let (_, listed) = harness
+        .call(
+            Method::GET,
+            "/overlay/admin/pairing-codes",
+            Some(&admin_token),
+            None,
+        )
+        .await;
+    let revoked = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["code"] == "REVOK1")
+        .unwrap();
+    assert_eq!(revoked["isActive"], false);
+    assert!(!revoked["usedAt"].is_null());
+
+    // Le code révoqué ne s'appaire plus (`POST /overlay/pair/consume` purge au
+    // passage les codes inutilisables, d'où la vérification du code étranger
+    // plus haut).
+    let (status, body) = harness
+        .call(
+            Method::POST,
+            "/overlay/pair/consume",
+            None,
+            Some(json!({"code": "REVOK1", "displayName": "Intrus"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+}
+
+#[tokio::test]
+async fn member_payload_expose_le_compte_discord() {
+    let harness = Harness::new().await;
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Alice")
+        .await;
+    let admin_token = token(&admin);
+    let member_id = admin["memberId"]
+        .as_str()
+        .unwrap()
+        .parse::<lc_domain::GuildMemberId>()
+        .unwrap();
+    assert!(harness
+        .db
+        .guild_members()
+        .link_discord(member_id, "987654321098765432")
+        .await
+        .unwrap());
+
+    let (status, members) = harness
+        .call(
+            Method::GET,
+            "/overlay/admin/members",
+            Some(&admin_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{members}");
+    let me = members["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["displayName"] == "Alice")
+        .unwrap();
+    assert_eq!(me["discordLinked"], true);
+    assert_eq!(me["discordUserId"], "987654321098765432");
+    assert_eq!(me["deviceCount"], 1);
+    assert!(!me["createdAt"].is_null());
+
+    let (status, guild) = harness
+        .call(Method::GET, "/overlay/guild", Some(&admin_token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{guild}");
+    assert_eq!(guild["member"]["discordUserId"], "987654321098765432");
 }

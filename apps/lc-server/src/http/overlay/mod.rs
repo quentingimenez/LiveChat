@@ -357,6 +357,18 @@ pub fn router() -> Router<AppState> {
             post(admin::revoke_invite),
         )
         .route(
+            "/overlay/admin/pairing-codes",
+            get(admin::list_pairing_codes),
+        )
+        .route(
+            "/overlay/admin/pairing-codes/expired",
+            axum::routing::delete(admin::purge_pairing_codes),
+        )
+        .route(
+            "/overlay/admin/pairing-codes/{code}/revoke",
+            post(admin::revoke_pairing_code),
+        )
+        .route(
             "/overlay/admin/settings",
             axum::routing::patch(admin::update_settings),
         )

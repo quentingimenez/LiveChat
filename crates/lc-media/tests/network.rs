@@ -56,6 +56,36 @@ async fn resolves_tweet_card() {
 }
 
 #[tokio::test]
+#[ignore = "nécessite un accès réseau"]
+async fn ingests_photo_tweet_as_an_image() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut config = MediaConfig::default();
+    config.storage.directory = temp.path().join("media");
+    let pipeline = MediaPipeline::new(config).unwrap();
+    let media = pipeline
+        .ingest_url("https://x.com/i/status/2122725457946718290")
+        .await
+        .unwrap();
+    assert_eq!(media.normalized.kind, MediaKind::Image);
+    assert!(media.normalized.storage_path.exists());
+}
+
+#[tokio::test]
+#[ignore = "nécessite un accès réseau"]
+async fn ingests_text_tweet_as_a_card_image() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut config = MediaConfig::default();
+    config.storage.directory = temp.path().join("media");
+    let pipeline = MediaPipeline::new(config).unwrap();
+    let media = pipeline
+        .ingest_url("https://x.com/jack/status/20")
+        .await
+        .unwrap();
+    assert_eq!(media.normalized.kind, MediaKind::Image);
+    assert!(media.normalized.storage_path.exists());
+}
+
+#[tokio::test]
 #[ignore = "nécessite ffmpeg/ffprobe installés"]
 async fn normalizes_generated_sample_with_ffmpeg() {
     let temp = tempfile::TempDir::new().unwrap();

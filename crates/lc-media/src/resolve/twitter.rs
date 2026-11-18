@@ -1,5 +1,5 @@
-//! Résolution X/Twitter : carte oEmbed, variantes vidéo via l'API syndication,
-//! repli sur le rendu vxtwitter.
+//! Résolution X/Twitter : carte oEmbed, variantes vidéo et photos via l'API
+//! syndication, repli sur le rendu vxtwitter.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -11,6 +11,7 @@ use crate::error::{MediaError, MediaErrorCode, MediaResult};
 use crate::html;
 use crate::http;
 use crate::source::{tweet_status_id, MediaSource, SourceKind};
+use crate::tweet_card::TweetCardContent;
 
 use super::{encode_query_component, ResolvedMedia, TweetCard};
 
@@ -71,7 +72,7 @@ pub fn sanitize_card_html(payload_html: &str) -> String {
     html::sanitize_embed_html(payload_html).trim().to_string()
 }
 
-/// Résout un tweet : carte oEmbed + meilleure variante vidéo connue.
+/// Résout un tweet : carte oEmbed + média connu (vidéo, photo ou carte).
 pub async fn resolve_tweet(
     source: &MediaSource,
     config: &MediaConfig,
@@ -86,6 +87,27 @@ pub async fn resolve_tweet(
         Some((width, height)) => (Some(width), Some(height)),
         None => (None, None),
     };
+    let has_video = selected.is_some();
+    let kind = tweet_media_kind(has_video, media.photos.len());
+    // Une photo seule se télécharge en taille originale ; 2 à 4 photos
+    // deviennent un carrousel vidéo assemblé au téléchargement (media_url
+    // reste vide), et une carte est rendue quand il n'y a aucun média.
+    let media_url = selected
+        .as_ref()
+        .map(|variant| variant.url.clone())
+        .or_else(|| {
+            (kind == MediaKind::Image && media.photos.len() == 1)
+                .then(|| photo_original_url(&media.photos[0]))
+        });
+    let mime = selected
+        .as_ref()
+        .map(|variant| variant.content_type.clone())
+        .or_else(|| (kind == MediaKind::Image).then(|| "image/jpeg".to_string()))
+        .or_else(|| (kind == MediaKind::Video).then(|| "video/mp4".to_string()));
+    let thumbnail_url = media
+        .poster
+        .clone()
+        .or_else(|| media.photos.first().cloned());
     let mut resolved = ResolvedMedia {
         source_kind: SourceKind::Twitter,
         canonical_url,
@@ -95,19 +117,66 @@ pub async fn resolve_tweet(
         // disponible pour le repli « Post de <auteur> ».
         title: media.text,
         author: card.author_name.clone(),
-        kind: Some(MediaKind::Video),
-        thumbnail_url: media.poster,
+        kind: Some(kind),
+        thumbnail_url,
         tweet_card: Some(card),
-        media_url: selected.as_ref().map(|variant| variant.url.clone()),
-        mime: selected
-            .as_ref()
-            .map(|variant| variant.content_type.clone()),
+        media_url,
+        mime,
         ..ResolvedMedia::from_source(source)
     };
     if width.is_some() || height.is_some() {
         resolved = resolved.with_dimensions(width, height);
     }
     Ok(resolved)
+}
+
+/// Nombre maximal de photos conservées pour un carrousel de tweet.
+pub const MAX_TWEET_PHOTOS: usize = 4;
+
+/// Nombre minimal de photos pour assembler un carrousel vidéo.
+pub const CAROUSEL_MIN_PHOTOS: usize = 2;
+
+/// Type de média d'un tweet selon ce que l'API de syndication a annoncé.
+///
+/// Une vidéo reste une vidéo ; une photo seule est une image ; 2 à 4 photos
+/// deviennent un carrousel vidéo ; sans aucun média le tweet devient une carte
+/// rendue en image.
+pub fn tweet_media_kind(has_video: bool, photo_count: usize) -> MediaKind {
+    if has_video || photo_count >= CAROUSEL_MIN_PHOTOS {
+        MediaKind::Video
+    } else {
+        MediaKind::Image
+    }
+}
+
+/// URL d'une photo de tweet en taille originale (`?format=<ext>&name=orig`).
+///
+/// Les URL `pbs.twimg.com` servent une miniature par défaut : la forme
+/// `name=orig` demande l'original. Toute autre URL est renvoyée telle quelle.
+pub fn photo_original_url(url: &str) -> String {
+    let Ok(mut parsed) = url::Url::parse(url.trim()) else {
+        return url.to_string();
+    };
+    if parsed.host_str() != Some("pbs.twimg.com") {
+        return url.to_string();
+    }
+    let extension = parsed
+        .path()
+        .rsplit('.')
+        .next()
+        .map(str::to_ascii_lowercase)
+        .filter(|extension| matches!(extension.as_str(), "jpg" | "jpeg" | "png" | "webp" | "gif"))
+        .map(|extension| {
+            if extension == "jpeg" {
+                "jpg".to_string()
+            } else {
+                extension
+            }
+        })
+        .unwrap_or_else(|| "jpg".to_string());
+    let query = format!("format={extension}&name=orig");
+    parsed.set_query(Some(&query));
+    parsed.to_string()
 }
 
 async fn fetch_tweet_card(canonical_url: &str, config: &MediaConfig) -> MediaResult<TweetCard> {
@@ -149,6 +218,19 @@ struct TweetMedia {
     poster: Option<String>,
     /// Texte du tweet, si l'API de syndication l'a donné.
     text: Option<String>,
+    /// Photos du tweet (une seule ou carrousel).
+    photos: Vec<String>,
+}
+
+/// Récupère le payload de l'API syndication d'un tweet (aucune erreur levée).
+pub(crate) async fn fetch_syndication_payload(
+    config: &MediaConfig,
+    status_id: &str,
+) -> Option<Value> {
+    let url = build_syndication_url(status_id, &config.resolve.language);
+    http::get_json::<Value>(&config.download, &url, config.resolve.oembed_timeout)
+        .await
+        .ok()
 }
 
 async fn fetch_tweet_media(
@@ -156,19 +238,13 @@ async fn fetch_tweet_media(
     canonical_url: &str,
     config: &MediaConfig,
 ) -> TweetMedia {
-    let syndication_url = build_syndication_url(status_id, &config.resolve.language);
     let mut media = TweetMedia::default();
-    if let Ok(value) = http::get_json::<Value>(
-        &config.download,
-        &syndication_url,
-        config.resolve.oembed_timeout,
-    )
-    .await
-    {
+    if let Some(value) = fetch_syndication_payload(config, status_id).await {
         media.variants = collect_variants(&value);
         media.dimensions = extract_dimensions(&value);
         media.poster = extract_poster(&value);
         media.text = extract_tweet_text(&value);
+        media.photos = collect_photos(&value);
     }
     if media.variants.is_empty() {
         if let Ok(page) = http::get_text(
@@ -198,6 +274,103 @@ pub fn extract_tweet_text(value: &Value) -> Option<String> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|text| !text.is_empty())
+        .map(str::to_owned)
+}
+
+/// Texte complet d'un tweet : `note_tweet.text` s'il est présent (tweets
+/// longs), sinon `text`.
+pub fn extract_full_tweet_text(value: &Value) -> Option<String> {
+    let note = value
+        .get("note_tweet")
+        .and_then(|note| note.get("text"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned);
+    note.or_else(|| extract_tweet_text(value))
+}
+
+/// Nom d'affichage de l'auteur d'un tweet.
+pub fn extract_author_name(value: &Value) -> Option<String> {
+    non_empty_str(value.get("user").and_then(|user| user.get("name")))
+}
+
+/// Identifiant (`@handle`) de l'auteur d'un tweet.
+pub fn extract_author_handle(value: &Value) -> Option<String> {
+    non_empty_str(value.get("user").and_then(|user| user.get("screen_name")))
+}
+
+/// Date de publication ISO 8601 annoncée par l'API de syndication.
+pub fn extract_created_at(value: &Value) -> Option<String> {
+    non_empty_str(value.get("created_at"))
+}
+
+/// URL de l'avatar de l'auteur, en 400×400 quand Twitter utilise `_normal.`.
+pub fn extract_avatar_url(value: &Value) -> Option<String> {
+    let url = value
+        .get("user")
+        .and_then(|user| user.get("profile_image_url_https"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|url| url.starts_with("https://"))?;
+    Some(url.replace("_normal.", "_400x400."))
+}
+
+/// Collecte les photos d'un tweet : `mediaDetails[]` de type `photo`
+/// (`media_url_https`), sinon `photos[].url`. Dédupliquées, 4 au maximum.
+pub fn collect_photos(value: &Value) -> Vec<String> {
+    let mut photos: Vec<String> = Vec::new();
+    if let Some(details) = value.get("mediaDetails").and_then(Value::as_array) {
+        for media in details {
+            if media.get("type").and_then(Value::as_str) == Some("photo") {
+                push_photo(&mut photos, media.get("media_url_https"));
+            }
+        }
+    }
+    if photos.is_empty() {
+        if let Some(list) = value.get("photos").and_then(Value::as_array) {
+            for photo in list {
+                push_photo(&mut photos, photo.get("url"));
+            }
+        }
+    }
+    photos
+}
+
+/// Ajoute une photo HTTPS dédupliquée, sans dépasser [`MAX_TWEET_PHOTOS`].
+fn push_photo(photos: &mut Vec<String>, raw: Option<&Value>) {
+    let Some(url) = https_url(raw) else {
+        return;
+    };
+    if photos.len() < MAX_TWEET_PHOTOS && !photos.contains(&url) {
+        photos.push(url);
+    }
+}
+
+/// Contenu textuel d'une carte tweet construit depuis un payload syndication.
+pub fn tweet_card_content(value: &Value) -> TweetCardContent {
+    TweetCardContent {
+        author_name: extract_author_name(value).unwrap_or_default(),
+        author_handle: extract_author_handle(value).unwrap_or_default(),
+        text: extract_full_tweet_text(value).unwrap_or_default(),
+        created_at: extract_created_at(value),
+        avatar: None,
+    }
+}
+
+/// Chaîne non vide d'une valeur JSON optionnelle.
+fn non_empty_str(raw: Option<&Value>) -> Option<String> {
+    raw.and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+/// URL HTTPS non vide d'une valeur JSON optionnelle.
+fn https_url(raw: Option<&Value>) -> Option<String> {
+    raw.and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|url| url.starts_with("https://"))
         .map(str::to_owned)
 }
 
@@ -562,5 +735,140 @@ mod tests {
         );
         assert_eq!(extract_tweet_text(&serde_json::json!({})), None);
         assert_eq!(extract_tweet_text(&serde_json::json!({"text": 42})), None);
+    }
+
+    const PHOTO_FIXTURE: &str = include_str!("../../tests/fixtures/twitter_syndication_photo.json");
+    const TEXT_FIXTURE: &str = include_str!("../../tests/fixtures/twitter_syndication_text.json");
+    const VIDEO_FIXTURE: &str = include_str!("../../tests/fixtures/twitter_syndication_video.json");
+
+    fn fixture(raw: &str) -> Value {
+        serde_json::from_str(raw).unwrap()
+    }
+
+    #[test]
+    fn collects_photos_from_the_syndication_payload() {
+        let photo = fixture(PHOTO_FIXTURE);
+        let photos = collect_photos(&photo);
+        assert_eq!(photos.len(), 1);
+        assert_eq!(photos[0], "https://pbs.twimg.com/media/HXVvi--WQAALdVX.jpg");
+
+        assert!(collect_photos(&fixture(TEXT_FIXTURE)).is_empty());
+        // La fixture vidéo n'a qu'une entrée `mediaDetails` de type vidéo et
+        // un tableau `photos` vide.
+        assert!(collect_photos(&fixture(VIDEO_FIXTURE)).is_empty());
+
+        // Deux photos construites depuis la fixture photo, doublon compris.
+        let mut two = photo;
+        let first = two["mediaDetails"][0].clone();
+        let mut second = first.clone();
+        second["media_url_https"] = Value::String("https://pbs.twimg.com/media/second.jpg".into());
+        let details = two["mediaDetails"].as_array_mut().unwrap();
+        details.push(second);
+        details.push(first);
+        let photos = collect_photos(&two);
+        assert_eq!(photos.len(), 2);
+        assert_eq!(photos[1], "https://pbs.twimg.com/media/second.jpg");
+    }
+
+    #[test]
+    fn caps_photo_collection_at_four() {
+        let mut payload = serde_json::json!({"mediaDetails": []});
+        let details = payload["mediaDetails"].as_array_mut().unwrap();
+        for index in 0..6 {
+            details.push(serde_json::json!({
+                "type": "photo",
+                "media_url_https": format!("https://pbs.twimg.com/media/{index}.jpg")
+            }));
+        }
+        assert_eq!(collect_photos(&payload).len(), MAX_TWEET_PHOTOS);
+    }
+
+    #[test]
+    fn falls_back_to_the_photos_array() {
+        let payload = serde_json::json!({
+            "mediaDetails": [{"type": "video"}],
+            "photos": [
+                {"url": "https://pbs.twimg.com/media/a.jpg"},
+                {"url": "http://pbs.twimg.com/media/b.jpg"}
+            ]
+        });
+        assert_eq!(
+            collect_photos(&payload),
+            vec!["https://pbs.twimg.com/media/a.jpg".to_string()]
+        );
+    }
+
+    #[test]
+    fn decides_the_media_kind_from_the_payload() {
+        assert_eq!(tweet_media_kind(true, 0), MediaKind::Video);
+        assert_eq!(tweet_media_kind(true, 1), MediaKind::Video);
+        assert_eq!(tweet_media_kind(false, 0), MediaKind::Image);
+        assert_eq!(tweet_media_kind(false, 1), MediaKind::Image);
+        assert_eq!(tweet_media_kind(false, 2), MediaKind::Video);
+        assert_eq!(tweet_media_kind(false, 4), MediaKind::Video);
+    }
+
+    #[test]
+    fn builds_original_photo_urls() {
+        assert_eq!(
+            photo_original_url("https://pbs.twimg.com/media/HXVvi--WQAALdVX.jpg"),
+            "https://pbs.twimg.com/media/HXVvi--WQAALdVX.jpg?format=jpg&name=orig"
+        );
+        assert_eq!(
+            photo_original_url("https://pbs.twimg.com/media/x.png?tag=1"),
+            "https://pbs.twimg.com/media/x.png?format=png&name=orig"
+        );
+        // Une URL déjà paramétrée est réécrite proprement.
+        assert_eq!(
+            photo_original_url("https://pbs.twimg.com/media/x.jpeg?name=small"),
+            "https://pbs.twimg.com/media/x.jpeg?format=jpg&name=orig"
+        );
+        // Hors pbs.twimg.com : inchangée.
+        assert_eq!(
+            photo_original_url("https://example.com/photo.jpg"),
+            "https://example.com/photo.jpg"
+        );
+        assert_eq!(photo_original_url("pas une url"), "pas une url");
+    }
+
+    #[test]
+    fn extracts_the_card_author_and_date() {
+        let text = fixture(TEXT_FIXTURE);
+        assert_eq!(extract_author_name(&text).as_deref(), Some("jack"));
+        assert_eq!(extract_author_handle(&text).as_deref(), Some("jack"));
+        assert_eq!(
+            extract_created_at(&text).as_deref(),
+            Some("2006-03-21T20:50:14.000Z")
+        );
+        assert_eq!(
+            extract_avatar_url(&text).as_deref(),
+            Some("https://pbs.twimg.com/profile_images/1661201415899951105/azNjKOSH_400x400.jpg")
+        );
+        let content = tweet_card_content(&text);
+        assert_eq!(content.author_name, "jack");
+        assert_eq!(content.author_handle, "jack");
+        assert_eq!(content.text, "just setting up my twttr");
+        assert_eq!(
+            content.created_at.as_deref(),
+            Some("2006-03-21T20:50:14.000Z")
+        );
+        assert_eq!(content.avatar, None);
+    }
+
+    #[test]
+    fn prefers_the_note_tweet_text() {
+        let payload = serde_json::json!({
+            "text": "Début…",
+            "note_tweet": {"text": "Texte long complet"}
+        });
+        assert_eq!(
+            extract_full_tweet_text(&payload).as_deref(),
+            Some("Texte long complet")
+        );
+        assert_eq!(
+            extract_full_tweet_text(&serde_json::json!({"text": "court"})).as_deref(),
+            Some("court")
+        );
+        assert_eq!(extract_full_tweet_text(&serde_json::json!({})), None);
     }
 }

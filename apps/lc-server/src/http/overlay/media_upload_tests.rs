@@ -813,6 +813,36 @@ async fn upload_and_wait(
 }
 
 #[tokio::test]
+async fn upload_text_is_not_stored_on_the_board() {
+    let dir = TempDir::new().unwrap();
+    let (app, db, state, _hub) = harness(&dir.path().join("media"), 4).await;
+    let client = insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
+
+    let entry = upload_and_wait(
+        &app,
+        &state,
+        &client,
+        json!({"filename": "photo.png", "title": "Ma photo", "message": "coucou"}),
+        TINY_PNG.to_vec(),
+    )
+    .await;
+    assert_eq!(entry.status, IngestionStatus::Ready, "{entry:?}");
+    assert_eq!(entry.created, Some(true));
+
+    let items = db.media_board().list_by_guild(&guild()).await.unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].title.as_deref(), Some("Ma photo"));
+    assert_eq!(items[0].message, None);
+    // Nothing was played: the text did not become a job either.
+    assert!(db
+        .playback_jobs()
+        .list_pending_by_guild(&guild())
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
 async fn upload_with_replace_item_id_replaces_the_media_of_the_item() {
     let dir = TempDir::new().unwrap();
     let (app, db, state, hub) = harness(&dir.path().join("media"), 4).await;
@@ -834,6 +864,28 @@ async fn upload_with_replace_item_id_replaces_the_media_of_the_item() {
         .unwrap()
         .to_owned();
     let created_at = body["items"][0]["createdAt"].clone();
+    // The text sent with an uploaded media is not a board message.
+    assert!(body["items"][0]["message"].is_null());
+
+    // A message written on the board by hand is kept when the media changes.
+    let stored = db
+        .media_board()
+        .get(item_id.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    db.media_board()
+        .update(
+            stored.id,
+            &lc_db::BoardItemEdit {
+                title: stored.title.as_deref(),
+                message: Some("coucou"),
+                artwork_on_overlay: None,
+                display_duration_sec: None,
+            },
+        )
+        .await
+        .unwrap();
 
     // The edited picture replaces the media: same item, same texts.
     let description =

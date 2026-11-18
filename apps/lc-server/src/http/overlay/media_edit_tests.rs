@@ -412,6 +412,27 @@ async fn a_video_is_edited_as_a_copy_then_replaced_with_real_ffmpeg() {
         .to_owned();
     assert_eq!(listed(&items, &original_id)["media"]["durationSec"], 6);
 
+    // The upload text is not a board message; write one by hand, like the
+    // board's inline field, so the edited copy can be checked against it.
+    let stored = db
+        .media_board()
+        .get(original_id.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    db.media_board()
+        .update(
+            stored.id,
+            &lc_db::BoardItemEdit {
+                title: stored.title.as_deref(),
+                message: Some("miaou"),
+                artwork_on_overlay: None,
+                display_duration_sec: None,
+            },
+        )
+        .await
+        .unwrap();
+
     // --- an edited copy: two ranges, half the frame, turned on its side.
     let (status, body) = post_edit(
         &app,

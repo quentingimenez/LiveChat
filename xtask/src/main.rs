@@ -9,6 +9,9 @@
 //! - `parity capture|compare` : harnais de parité HTTP entre le serveur legacy
 //!   TypeScript et la cible Rust (goldens, normalisation, rapport). Voir
 //!   `docs/rust/parity-harness.md`.
+//! - `verify [--offline] [--mutants]` : local verification pipeline (fmt,
+//!   clippy, tests, doctests, deny, plus mutants with `--mutants`) with one
+//!   verdict line per stage; the exit code is the number of failed stages.
 //!
 //! `--help` affiche l'aide. La CLI est analysée à la main, volontairement :
 //! `clap` n'appartient pas aux dépendances du workspace (deux sous-commandes,
@@ -17,6 +20,7 @@
 
 mod migrate;
 mod parity;
+mod verify;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -30,10 +34,12 @@ USAGE :
     cargo run -p xtask -- migrate-legacy --from <legacy.sqlite> --to <nouvelle.sqlite> [--dry-run] [--force]
     cargo run -p xtask -- parity capture --base-url <URL> [OPTIONS]
     cargo run -p xtask -- parity compare --base-url <URL> --golden <DIR> [OPTIONS]
+    cargo run -p xtask -- verify [--offline] [--mutants]
 
 COMMANDES :
     migrate-legacy    Migre une base SQLite legacy (serveur Prisma 5.22) vers le schéma 3.0.
     parity            Harnais de parité HTTP legacy TS ↔ cible Rust (`parity help` pour l'aide).
+    verify            Local verification pipeline (fmt, clippy, tests, doctests, deny).
 
 OPTIONS (migrate-legacy) :
     --from <PATH>     Base legacy à lire (ouverture strictement en lecture seule).
@@ -42,8 +48,16 @@ OPTIONS (migrate-legacy) :
     --force           Autorise le remplacement d'un fichier cible déjà existant.
     -h, --help        Affiche cette aide.
 
+OPTIONS (verify) :
+    --offline         Adds --offline to every cargo stage that accepts it.
+    --mutants         Adds the mutants stage: cargo-mutants over the Rust
+                      diff since origin/main.
+    -h, --help        Shows this help.
+
 CODES DE SORTIE :
     0  succès ; 1  migration ou vérification échouée ; 2  arguments invalides.
+    verify : 0 when every executed stage passes, otherwise the number of
+    failed stages.
 ";
 
 /// Sous-commande demandée sur la ligne de commande.
@@ -52,6 +66,7 @@ enum Command {
     Help,
     MigrateLegacy(Options),
     Parity(parity::ParityCommand),
+    Verify(verify::Options),
 }
 
 /// Erreurs d'analyse de la ligne de commande (code de sortie 2).
@@ -59,7 +74,7 @@ enum Command {
 enum CliError {
     #[error("commande inconnue : {0} (voir --help)")]
     UnknownCommand(String),
-    #[error("argument inconnu pour migrate-legacy : {0} (voir --help)")]
+    #[error("argument inconnu : {0} (voir --help)")]
     UnknownArgument(String),
     #[error("valeur manquante pour {0}")]
     MissingValue(&'static str),
@@ -99,6 +114,7 @@ async fn main() -> ExitCode {
             }
         },
         Command::Parity(command) => ExitCode::from(parity::execute(command).await),
+        Command::Verify(options) => ExitCode::from(verify::execute(options)),
     }
 }
 
@@ -114,6 +130,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, CliErro
         "parity" => parity::cli::parse(args)
             .map(Command::Parity)
             .map_err(CliError::ParityArguments),
+        "verify" => parse_verify(args),
         other => Err(CliError::UnknownCommand(other.to_string())),
     }
 }
@@ -165,6 +182,39 @@ fn parse_migrate_legacy(args: impl Iterator<Item = String>) -> Result<Command, C
         dry_run,
         force,
     }))
+}
+
+/// Parses the arguments of `verify`.
+fn parse_verify(args: impl Iterator<Item = String>) -> Result<Command, CliError> {
+    let mut offline = false;
+    let mut mutants = false;
+
+    for arg in args {
+        let (flag, inline) = match arg.split_once('=') {
+            Some((flag, value)) => (flag, Some(value.to_string())),
+            None => (arg.as_str(), None),
+        };
+        match flag {
+            "-h" | "--help" => return Ok(Command::Help),
+            "--offline" => {
+                reject_inline_value("--offline", inline.as_deref())?;
+                if offline {
+                    return Err(CliError::DuplicateValue("--offline"));
+                }
+                offline = true;
+            }
+            "--mutants" => {
+                reject_inline_value("--mutants", inline.as_deref())?;
+                if mutants {
+                    return Err(CliError::DuplicateValue("--mutants"));
+                }
+                mutants = true;
+            }
+            other => return Err(CliError::UnknownArgument(other.to_string())),
+        }
+    }
+
+    Ok(Command::Verify(verify::Options { offline, mutants }))
 }
 
 /// Récupère la valeur d'une option qui attend un chemin.
@@ -226,8 +276,7 @@ mod tests {
                 assert!(options.dry_run);
                 assert!(options.force);
             }
-            Command::Help => panic!("migrate-legacy attendu"),
-            Command::Parity(_) => panic!("migrate-legacy attendu"),
+            _ => panic!("migrate-legacy attendu"),
         }
     }
 
@@ -246,8 +295,7 @@ mod tests {
                 assert!(!options.dry_run);
                 assert!(!options.force);
             }
-            Command::Help => panic!("migrate-legacy attendu"),
-            Command::Parity(_) => panic!("migrate-legacy attendu"),
+            _ => panic!("migrate-legacy attendu"),
         }
     }
 
@@ -305,6 +353,51 @@ mod tests {
                 "c"
             ])),
             Err(CliError::DuplicateValue("--from"))
+        ));
+    }
+
+    #[test]
+    fn verify_parses_offline_and_mutants() {
+        assert!(matches!(
+            parse_args(args(&["verify"])),
+            Ok(Command::Verify(verify::Options {
+                offline: false,
+                mutants: false
+            }))
+        ));
+        assert!(matches!(
+            parse_args(args(&["verify", "--offline", "--mutants"])),
+            Ok(Command::Verify(verify::Options {
+                offline: true,
+                mutants: true
+            }))
+        ));
+        assert!(matches!(
+            parse_args(args(&["verify", "--mutants", "--offline"])),
+            Ok(Command::Verify(verify::Options {
+                offline: true,
+                mutants: true
+            }))
+        ));
+    }
+
+    #[test]
+    fn verify_rejects_unknown_flag() {
+        assert!(matches!(
+            parse_args(args(&["verify", "--full"])),
+            Err(CliError::UnknownArgument(_))
+        ));
+        assert!(matches!(
+            parse_args(args(&["verify", "--inconnu"])),
+            Err(CliError::UnknownArgument(_))
+        ));
+        assert!(matches!(
+            parse_args(args(&["verify", "--offline=oui"])),
+            Err(CliError::UnknownArgument(_))
+        ));
+        assert!(matches!(
+            parse_args(args(&["verify", "--offline", "--offline"])),
+            Err(CliError::DuplicateValue("--offline"))
         ));
     }
 }

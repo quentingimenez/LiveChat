@@ -7,3 +7,7 @@ jobs = 8
 [net]
 # Réseau instable / registre distant : quelques retentissements.
 retry = 3
+
+[alias]
+# `cargo xtask <task>`: workspace tooling (verify, loadtest, migrate-legacy, parity).
+xtask = "run --package xtask --locked --"

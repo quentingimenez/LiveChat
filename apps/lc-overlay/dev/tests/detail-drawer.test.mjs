@@ -49,6 +49,15 @@ test('regression: hovering another card still shows its details once a media is 
   assert.equal(shownId(cardHovered(peek, 'c')), 'c');
 });
 
+test('details on hover off: a hover changes nothing, a pinned drawer keeps its media', () => {
+  assert.deepEqual(cardHovered(CLOSED_VIEW, 'a', false), CLOSED_VIEW);
+  assert.deepEqual(cardHovered(pinnedOn('a'), 'b', false), pinnedOn('a'));
+  assert.deepEqual(cardHovered(pinnedOn('a'), 'a', false), pinnedOn('a'));
+  // Clicking and leaving behave as before: the setting only removes the hover.
+  assert.deepEqual(cardClicked(CLOSED_VIEW, 'a'), pinnedOn('a'));
+  assert.deepEqual(pointerLeft(pinnedOn('a')), pinnedOn('a'));
+});
+
 test('the drawer returns to the pinned media when the pointer leaves or comes back on its card', () => {
   const peek = cardHovered(pinnedOn('a'), 'b');
   assert.deepEqual(pointerLeft(peek), pinnedOn('a'));

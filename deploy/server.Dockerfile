@@ -125,12 +125,15 @@ LABEL org.opencontainers.image.title="livechat-server" \
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# ffmpeg/ffprobe = sondage et transcodage médias ; curl = HEALTHCHECK ; tini = PID 1.
+# ffmpeg/ffprobe = sondage et transcodage médias ; polices Noto = rendu des cartes
+# tweet (texte multilingue, emoji couleur) ; curl = HEALTHCHECK ; tini = PID 1.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         ffmpeg \
+        fonts-noto-color-emoji \
+        fonts-noto-core \
         tini \
     && rm -rf /var/lib/apt/lists/*
 

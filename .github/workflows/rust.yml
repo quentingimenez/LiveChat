@@ -14,6 +14,7 @@ on:
     paths:
       - "crates/**"
       - "apps/**"
+      - "tools/bombadil/**"
       - "xtask/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -29,6 +30,7 @@ on:
     paths:
       - "crates/**"
       - "apps/**"
+      - "tools/bombadil/**"
       - "xtask/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -251,6 +253,43 @@ jobs:
         env:
           LC_SERVER_BIN: ${{ github.workspace }}/target/debug/lc-server
         run: npm run e2e
+      # Property-based exploration with Bombadil (tools/bombadil): random
+      # clicks, typing and navigation on the admin console (real lc-server)
+      # and on the overlay board (Tauri shell mock), checking for JS errors,
+      # HTTP errors and leaked `undefined`/`NaN` on screen. Not blocking yet:
+      # a violation shows as a failed step and its trace is uploaded.
+      # Bombadil drives the runner's preinstalled Google Chrome.
+      - name: Bombadil dependencies
+        if: runner.os == 'Linux'
+        working-directory: tools/bombadil
+        run: |
+          npm ci
+          npm run typecheck
+      - name: Bombadil — admin console
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        working-directory: tools/bombadil
+        env:
+          LC_SERVER_BIN: ${{ github.workspace }}/target/debug/lc-server
+          BOMBADIL_TIME_LIMIT: 3m
+          BOMBADIL_NO_SANDBOX: "1"
+        run: npm run admin
+      - name: Bombadil — overlay board
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        working-directory: tools/bombadil
+        env:
+          BOMBADIL_TIME_LIMIT: 3m
+          BOMBADIL_NO_SANDBOX: "1"
+        run: npm run board
+      - name: Upload the Bombadil traces
+        if: runner.os == 'Linux' && always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bombadil-traces
+          path: tools/bombadil/out/
+          if-no-files-found: ignore
+          retention-days: 7
 
   # Builds the production image on every change (without publishing it) so a
   # broken Dockerfile shows up before the release tag, then checks that the

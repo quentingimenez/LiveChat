@@ -71,6 +71,26 @@ export function formatDuration(seconds) {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
+// Human-readable size in French: "1,2 Go", "512 Mo", "0 o". Decimals are only
+// kept when they carry information ("5 Go", not "5,0 Go").
+export function formatBytes(bytes) {
+  if (bytes === null || bytes === undefined) {
+    return null;
+  }
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) {
+    return null;
+  }
+  if (value < 1024 * 1024) {
+    return `${Math.round(value / 1024)} Ko`;
+  }
+  const gigabytes = value / (1024 * 1024 * 1024);
+  if (gigabytes >= 1) {
+    return `${gigabytes.toLocaleString('fr-FR', { maximumFractionDigits: 1 })} Go`;
+  }
+  return `${(value / (1024 * 1024)).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} Mo`;
+}
+
 export function relativeTime(iso) {
   if (!iso) {
     return 'Jamais vu';

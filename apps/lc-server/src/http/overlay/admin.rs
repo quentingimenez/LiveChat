@@ -11,7 +11,12 @@
 //! | `GET` | `/overlay/admin/invites` | `ManageInvites` |
 //! | `POST` | `/overlay/admin/invites` | `ManageInvites` |
 //! | `POST` | `/overlay/admin/invites/{code}/revoke` | `ManageInvites` |
+//! | `GET` | `/overlay/admin/pairing-codes` | `ManageInvites` |
+//! | `POST` | `/overlay/admin/pairing-codes/{code}/revoke` | `ManageInvites` |
+//! | `DELETE` | `/overlay/admin/pairing-codes/expired` | `ManageInvites` |
 //! | `PATCH` | `/overlay/admin/settings` | `ManageSettings` |
+//! | `POST` | `/overlay/admin/media-board/clear` | `ManageSettings` |
+//! | `GET` | `/overlay/admin/audit` | `ManageSettings` |
 //!
 //! Toutes les routes sont bornées à la guilde du jeton : un identifiant de
 //! membre ou un code d'une autre guilde répond « introuvable ».
@@ -27,26 +32,32 @@
 //! reprennent leur mode à jour dans `welcome`.
 
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::Json;
 use lc_db::MemberChange;
 use lc_domain::{
-    Guild, GuildBan, GuildBanId, GuildMember, GuildMemberId, GuildRole, PairingCode, Permission,
+    Guild, GuildBan, GuildBanId, GuildMember, GuildMemberId, GuildRole, PairingCode,
+    PairingCodeEntry, Permission,
 };
 use lc_protocol::{close_code, close_reason};
+use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use time::Duration;
 
 use crate::app::AppState;
 
 use super::auth::AuthedOverlayClient;
+use super::board_clear;
 use super::guild::{
     create_invite, invite_payload, iso, member_payload, normalize_label, remove_member, require,
     NewInvite,
 };
+use super::ingest_code::INGEST_CODE_CREATOR_PREFIX;
 use super::{db, db_failure, error, internal_error, is_conflict, json_response, now};
+use crate::http::pairing_codes;
 
 /// Durée de vie maximale d'une invitation (un an).
 const INVITE_MAX_TTL_HOURS: i64 = 24 * 365;
@@ -54,6 +65,10 @@ const INVITE_MAX_TTL_HOURS: i64 = 24 * 365;
 const INVITE_MAX_USES: i64 = 1_000;
 /// Longueur maximale du nom d'une guilde.
 const GUILD_NAME_MAX_CHARS: usize = 60;
+/// Taille de page par défaut du journal de la guilde.
+const AUDIT_DEFAULT_LIMIT: usize = 50;
+/// Taille de page maximale du journal de la guilde.
+const AUDIT_MAX_LIMIT: usize = 200;
 
 /// Loads an active member of the guild (`404 member_not_found` otherwise).
 pub(crate) async fn load_guild_member(
@@ -548,6 +563,146 @@ pub async fn revoke_invite(
     }
 }
 
+/// Nature d'un code d'appairage telle que l'overlay l'affiche : `extension`
+/// pour un code émis depuis un overlay (auteur `member:<id>`), `discord` pour
+/// un code `/pair-code` émis par le bot.
+fn pairing_kind(code: &PairingCodeEntry) -> &'static str {
+    if code
+        .created_by_discord_user_id
+        .starts_with(INGEST_CODE_CREATOR_PREFIX)
+    {
+        "extension"
+    } else {
+        "discord"
+    }
+}
+
+/// Codes body shared by `GET /overlay/admin/pairing-codes`: every code of the
+/// guild (Discord `/pair-code` and browser-extension codes), newest first,
+/// with its kind and the member display name of an extension code's author.
+async fn pairing_codes_payload(
+    state: &AppState,
+    guild_id: &lc_domain::GuildId,
+) -> Result<Value, Response> {
+    let db = db(state)?;
+    let now = now(state);
+    let codes = pairing_codes::list(db, Some(guild_id))
+        .await
+        .map_err(|db_error| db_failure("overlay_admin.list_pairing_codes", &db_error))?;
+    let members = db
+        .guild_members()
+        .list_by_guild(guild_id)
+        .await
+        .map_err(|db_error| db_failure("overlay_admin.pairing_members", &db_error))?;
+    let names: HashMap<String, String> = members
+        .into_iter()
+        .map(|member| (member.id.to_canonical(), member.display_name))
+        .collect();
+
+    let items: Vec<Value> = codes
+        .iter()
+        .map(|code| {
+            let kind = pairing_kind(code);
+            let author_name = if kind == "extension" {
+                code.created_by_discord_user_id
+                    .strip_prefix(INGEST_CODE_CREATOR_PREFIX)
+                    .and_then(|member_id| names.get(member_id).cloned())
+                    .or_else(|| code.author_name.clone())
+            } else {
+                code.author_name.clone()
+            };
+            let mut payload = pairing_codes::payload(code, now);
+            payload["kind"] = json!(kind);
+            // The current member name wins over the one stored at issue time.
+            payload["authorName"] = json!(author_name);
+            payload
+        })
+        .collect();
+
+    Ok(json!({"count": items.len(), "items": items}))
+}
+
+/// Handler `GET /overlay/admin/pairing-codes`.
+pub async fn list_pairing_codes(
+    State(state): State<AppState>,
+    auth: AuthedOverlayClient,
+) -> Response {
+    if let Err(response) = require(&state, &auth, Permission::ManageInvites) {
+        return response;
+    }
+    match pairing_codes_payload(&state, auth.guild_id()).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
+    }
+}
+
+/// Revokes a pairing code of the guild (overlay side).
+///
+/// A code belonging to another guild answers exactly like an unknown code
+/// (`404 pairing_code_not_found`): the route never reveals that it exists.
+async fn revoke_pairing_code_payload(
+    state: &AppState,
+    guild_id: &lc_domain::GuildId,
+    code_raw: &str,
+) -> Result<Value, Response> {
+    let Ok(code) = PairingCode::parse(code_raw) else {
+        return Err(error(StatusCode::NOT_FOUND, "pairing_code_not_found"));
+    };
+    let db = db(state)?;
+    let entry = match db.pairing_codes().get(&code).await {
+        Ok(Some(entry)) if &entry.guild_id == guild_id => entry,
+        Ok(_) => return Err(error(StatusCode::NOT_FOUND, "pairing_code_not_found")),
+        Err(db_error) => return Err(db_failure("overlay_admin.pairing_lookup", &db_error)),
+    };
+    let now_ms = lc_domain::datetime_to_ms(now(state));
+    let revoked = pairing_codes::revoke(db, code.as_str(), now_ms)
+        .await
+        .map_err(|db_error| db_failure("overlay_admin.revoke_pairing_code", &db_error))?;
+    if revoked > 0 {
+        tracing::info!(
+            code = code.as_str(),
+            guild_id = %entry.guild_id,
+            "code de pairing révoqué depuis l'overlay"
+        );
+    }
+    Ok(json!({"revoked": revoked > 0}))
+}
+
+/// Handler `POST /overlay/admin/pairing-codes/{code}/revoke`.
+pub async fn revoke_pairing_code(
+    State(state): State<AppState>,
+    auth: AuthedOverlayClient,
+    Path(code_raw): Path<String>,
+) -> Response {
+    if let Err(response) = require(&state, &auth, Permission::ManageInvites) {
+        return response;
+    }
+    match revoke_pairing_code_payload(&state, auth.guild_id(), &code_raw).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(response) => response,
+    }
+}
+
+/// Handler `DELETE /overlay/admin/pairing-codes/expired` : purge des codes de
+/// la guilde qui sont utilisés ou expirés.
+pub async fn purge_pairing_codes(
+    State(state): State<AppState>,
+    auth: AuthedOverlayClient,
+) -> Response {
+    if let Err(response) = require(&state, &auth, Permission::ManageInvites) {
+        return response;
+    }
+    let db = match db(&state) {
+        Ok(db) => db,
+        Err(response) => return response,
+    };
+    let now_ms = lc_domain::datetime_to_ms(now(&state));
+    match pairing_codes::delete_expired(db, Some(auth.guild_id().as_str()), now_ms).await {
+        Ok(deleted) => json_response(StatusCode::OK, json!({"deleted": deleted})),
+        Err(db_error) => db_failure("overlay_admin.purge_pairing_codes", &db_error),
+    }
+}
+
 /// Lit une durée optionnelle : absent → `None` ; `null` ou `<= 0` efface
 /// (`Some(None)`) ; entier positif → `Some(Some(n))` ; autre → erreur.
 fn duration_field(payload: &Value, key: &str) -> Result<Option<Option<i64>>, ()> {
@@ -571,11 +726,31 @@ fn bool_field(payload: &Value, key: &str) -> Result<Option<bool>, ()> {
     }
 }
 
+/// Lit `boardQuotaMb` : absent → `None` ; `null` ou chaîne vide → retour au
+/// quota du serveur (`Some(None)`) ; entier strictement positif → `Some(Some)`.
+///
+/// Mêmes règles que la console du propriétaire (`PATCH
+/// /admin/api/guilds/{id}/settings`) ; la borne haute (quota du serveur) est
+/// vérifiée par l'appelant.
+fn board_quota_field(payload: &Value) -> Result<Option<Option<i64>>, ()> {
+    match payload.get("boardQuotaMb") {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(raw)) if raw.trim().is_empty() => Ok(Some(None)),
+        Some(Value::Number(number)) => match number.as_i64() {
+            Some(megabytes) if megabytes > 0 => Ok(Some(Some(megabytes))),
+            _ => Err(()),
+        },
+        Some(_) => Err(()),
+    }
+}
+
 /// Handler `PATCH /overlay/admin/settings`.
 ///
 /// Corps partiel : `name`, `defaultMediaTime`, `maxMediaTime`,
-/// `displayMediaFull`, `guestsCanViewBoard`. Les réglages de lecture sont
-/// rediffusés aux overlays connectés (`settings`).
+/// `displayMediaFull`, `guestsCanViewBoard`, `boardQuotaMb` (`null` = quota du
+/// serveur, entier en Mo sinon, jamais au-dessus de la limite du serveur). Les
+/// réglages de lecture sont rediffusés aux overlays connectés (`settings`).
 pub async fn update_settings(
     State(state): State<AppState>,
     auth: AuthedOverlayClient,
@@ -600,11 +775,12 @@ pub async fn update_settings(
         }
         Some(_) => return error(StatusCode::BAD_REQUEST, "invalid_name"),
     };
-    let (Ok(default_media_time), Ok(max_media_time), Ok(display_media_full), Ok(guests)) = (
+    let (Ok(default_media_time), Ok(max_media_time), Ok(display_media_full), Ok(guests), Ok(quota)) = (
         duration_field(&payload, "defaultMediaTime"),
         duration_field(&payload, "maxMediaTime"),
         bool_field(&payload, "displayMediaFull"),
         bool_field(&payload, "guestsCanViewBoard"),
+        board_quota_field(&payload),
     ) else {
         return error(StatusCode::BAD_REQUEST, "invalid_payload");
     };
@@ -613,8 +789,19 @@ pub async fn update_settings(
         && max_media_time.is_none()
         && display_media_full.is_none()
         && guests.is_none()
+        && quota.is_none()
     {
         return error(StatusCode::BAD_REQUEST, "invalid_payload");
+    }
+    // Le quota du serveur reste le plafond : une guilde peut le réduire, jamais
+    // le dépasser (contrairement à la console propriétaire, qui édite la limite
+    // de l'instance elle-même).
+    let server_quota_mb =
+        i64::try_from(state.runtime().media_board_max_total_mb()).unwrap_or(i64::MAX);
+    if let Some(Some(megabytes)) = quota {
+        if megabytes > server_quota_mb {
+            return error(StatusCode::BAD_REQUEST, "invalid_board_quota");
+        }
     }
 
     let db = match db(&state) {
@@ -657,6 +844,11 @@ pub async fn update_settings(
             return db_failure("overlay_admin.settings_guests", &db_error);
         }
     }
+    if let Some(quota_mb) = quota {
+        if let Err(db_error) = db.guilds().set_board_quota_mb(guild_id, quota_mb).await {
+            return db_failure("overlay_admin.settings_quota", &db_error);
+        }
+    }
     if playback_changed {
         state.admin_hub.broadcast_settings(guild_id).await;
     }
@@ -664,6 +856,10 @@ pub async fn update_settings(
     let guests_can_view_board = match db.guilds().access(guild_id).await {
         Ok(access) => access.is_none_or(|access| access.guests_can_view_board),
         Err(db_error) => return db_failure("overlay_admin.settings_reload", &db_error),
+    };
+    let board_quota_mb = match db.guilds().board_quota_mb(guild_id).await {
+        Ok(quota_mb) => quota_mb,
+        Err(db_error) => return db_failure("overlay_admin.settings_quota_reload", &db_error),
     };
     json_response(
         StatusCode::OK,
@@ -678,7 +874,109 @@ pub async fn update_settings(
                     "maxMediaTime": guild.max_media_time,
                     "displayMediaFull": guild.display_media_full,
                 },
+                "boardQuotaMb": board_quota_mb,
             },
         }),
     )
+}
+
+/// Handler `POST /overlay/admin/media-board/clear`.
+///
+/// Corps `{"confirm": "<nom de la guilde>"}` : le nom doit correspondre
+/// exactement (`400 confirmation_mismatch` sinon), à la manière de la
+/// confirmation forte de la console. Le vidage lui-même est partagé avec la
+/// route propriétaire (`board_clear::clear_board`).
+pub async fn clear_media_board(
+    State(state): State<AppState>,
+    auth: AuthedOverlayClient,
+    payload: Result<Json<Value>, JsonRejection>,
+) -> Response {
+    if let Err(response) = require(&state, &auth, Permission::ManageSettings) {
+        return response;
+    }
+    let Ok(Json(payload)) = payload else {
+        return error(StatusCode::BAD_REQUEST, "invalid_payload");
+    };
+    let db = match db(&state) {
+        Ok(db) => db,
+        Err(response) => return response,
+    };
+    let guild_name = match db.guilds().access(auth.guild_id()).await {
+        Ok(access) => access.and_then(|access| access.name),
+        Err(db_error) => return db_failure("overlay_admin.board_clear_access", &db_error),
+    };
+    let confirmation = payload.get("confirm").and_then(Value::as_str);
+    // Nom inconnu : rien ne peut correspondre, la confirmation est refusée.
+    if guild_name.as_deref().is_none() || confirmation != guild_name.as_deref() {
+        return error(StatusCode::BAD_REQUEST, "confirmation_mismatch");
+    }
+    match board_clear::clear_board(&state, auth.guild_id()).await {
+        Ok(report) => json_response(
+            StatusCode::OK,
+            json!({
+                "guildId": auth.guild_id().as_str(),
+                "stop": {
+                    "releasedPlayingJobs": report.released_playing_jobs,
+                    "broadcast": report.broadcast,
+                },
+                "deleted": {
+                    "mediaBoardItems": report.media_board_items,
+                    "orphanMediaAssets": report.orphan_media_assets,
+                    "orphanMediaFileDeleteErrors": report.orphan_media_file_delete_errors,
+                },
+            }),
+        ),
+        Err(response) => response,
+    }
+}
+
+/// Query parameters of `GET /overlay/admin/audit`.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct AuditQuery {
+    limit: Option<String>,
+}
+
+impl AuditQuery {
+    /// Taille de page demandée, bornée à `[1, AUDIT_MAX_LIMIT]`.
+    fn limit(&self) -> Result<usize, Response> {
+        let Some(raw) = self
+            .limit
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(AUDIT_DEFAULT_LIMIT);
+        };
+        let Ok(value) = raw.parse::<usize>() else {
+            return Err(error(StatusCode::BAD_REQUEST, "invalid_limit"));
+        };
+        Ok(value.clamp(1, AUDIT_MAX_LIMIT))
+    }
+}
+
+/// Handler `GET /overlay/admin/audit?limit=50` : journal d'administration de
+/// cette guilde, du plus récent au plus ancien.
+pub async fn list_audit(
+    State(state): State<AppState>,
+    auth: AuthedOverlayClient,
+    Query(query): Query<AuditQuery>,
+) -> Response {
+    if let Err(response) = require(&state, &auth, Permission::ManageSettings) {
+        return response;
+    }
+    let limit = match query.limit() {
+        Ok(limit) => limit,
+        Err(response) => return response,
+    };
+    let db = match db(&state) {
+        Ok(db) => db,
+        Err(response) => return response,
+    };
+    match crate::http::admin::audit_rows_for_guild(db, auth.guild_id().as_str(), limit).await {
+        Ok(items) => json_response(
+            StatusCode::OK,
+            json!({"count": items.len(), "items": items}),
+        ),
+        Err(db_error) => db_failure("overlay_admin.audit", &db_error),
+    }
 }

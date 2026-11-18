@@ -34,11 +34,25 @@
 // POST …/items/{id}/edit et `replaceItemId` à l'envoi créent une copie ou
 // remplacent le média de l'item, comme le serveur.
 // Appairage : le code NOPSEUDO sans pseudo renvoie display_name_required.
+// Codes d'appairage : GET /overlay/admin/pairing-codes sert un code Discord
+// actif et un code d'extension expiré ; la révocation et la purge modifient
+// cette liste en mémoire. Les membres portent discordUserId.
+// Appareils : GET/PATCH/DELETE /overlay/admin/devices et
+// POST /overlay/admin/device-codes servent quatre appareils sur trois membres
+// (un hors ligne, un obsolète), avec renommage, réglages et révocation en
+// mémoire ; l'appareil « toi » refuse sa propre révocation.
 // Les médias ont des formats variés (portrait, carré, paysage) pour la
 // mosaïque ; « Nope » est une image portrait (1080 × 1920). La mise en pause ferme la
 // connexion comme le shell (disabled, puis connecting → connected au retour)
 // et le membre « toi » passe hors ligne. `__mock.requests` liste les appels
 // guild_api ({ method, path }).
+// Administration de guilde : GET /overlay/guild porte `mediaBoard` (occupation,
+// quota propre, limite serveur) et `playback` ; PATCH /overlay/admin/settings
+// accepte `boardQuotaMb` (refus au-dessus de la limite serveur) ;
+// POST /overlay/admin/media-board/clear vide le board, arrête la lecture et
+// demande le nom exact de la guilde ; GET /overlay/admin/audit sert un journal
+// borné à la guilde ; GET /overlay/queue/history sert les lectures terminées et
+// en échec ; les jobs de la file portent `origin` (`board` ou `direct`).
 (function () {
   'use strict';
 
@@ -148,33 +162,89 @@
   }));
 
   const queue = {
-    playing: { id: 'j0', status: 'playing', title: 'Chat qui tombe', text: null, authorName: 'Léa', durationSec: 30, kind: 'video', startedAt: new Date(now - 12000).toISOString(), submittedAt: new Date(now - 20000).toISOString() },
+    playing: { id: 'j0', status: 'playing', title: 'Chat qui tombe', text: null, authorName: 'Léa', durationSec: 30, kind: 'video', origin: 'board', startedAt: new Date(now - 12000).toISOString(), submittedAt: new Date(now - 20000).toISOString() },
     pending: [
-      { id: 'j1', status: 'pending', title: 'Stonks', authorName: 'Max', durationSec: 10, kind: 'image' },
-      { id: 'j2', status: 'pending', title: null, text: 'gg les gars', authorName: 'Léa', durationSec: 5, kind: null },
-      { id: 'j3', status: 'pending', title: 'Directed by Robert B. Weide', authorName: 'Invité-42', durationSec: 8, kind: 'video' },
+      { id: 'j1', status: 'pending', title: 'Stonks', authorName: 'Max', durationSec: 10, kind: 'image', origin: 'board' },
+      { id: 'j2', status: 'pending', title: null, text: 'gg les gars', authorName: 'Léa', durationSec: 5, kind: null, origin: 'direct' },
+      { id: 'j3', status: 'pending', title: 'Directed by Robert B. Weide', authorName: 'Invité-42', durationSec: 8, kind: 'video', origin: 'board' },
     ],
   };
+  // `GET /overlay/queue/history` : lectures terminées et échecs, du plus récent
+  // au plus ancien. Les lectures finies pendant la session s'y ajoutent.
+  const queueHistory = [
+    { id: 'h1', status: 'done', title: 'Bruh', text: null, authorName: 'Léa', durationSec: 4, kind: 'image', origin: 'board', finishedAt: new Date(now - 12 * 60000).toISOString() },
+    { id: 'h2', status: 'failed', title: null, text: 'gg les gars', authorName: 'Max', durationSec: 5, kind: null, origin: 'direct', finishedAt: new Date(now - 48 * 60000).toISOString() },
+    { id: 'h3', status: 'done', title: 'Vine boom', text: null, authorName: 'Quentin', durationSec: 3, kind: 'audio', origin: 'board', finishedAt: new Date(now - 3 * 3600000).toISOString() },
+  ];
+
+  // Guild settings edited from « Réglages » (`PATCH /overlay/admin/settings`).
+  let guildName = 'Les Sardines';
+  let guestsCanViewBoard = true;
+  const guildSettings = { defaultMediaTime: 30, maxMediaTime: null, displayMediaFull: false };
+  // Quota propre de la guilde (`null` = limite du serveur).
+  const SERVER_BOARD_MAX_BYTES = 5 * 1024 * 1024 * 1024;
+  let boardQuotaMb = null;
+
+  function mediaBoardPayload() {
+    const usedBytes = items.reduce((sum, item) => sum + (Number(item.media && item.media.sizeBytes) || 0), 0);
+    const maxBytes = boardQuotaMb ? boardQuotaMb * 1024 * 1024 : SERVER_BOARD_MAX_BYTES;
+    return {
+      itemsCount: items.length,
+      usedBytes,
+      maxBytes,
+      remainingBytes: Math.max(0, maxBytes - usedBytes),
+      quotaMb: boardQuotaMb,
+      serverMaxBytes: SERVER_BOARD_MAX_BYTES,
+    };
+  }
+
+  // `GET /overlay/admin/audit` : journal d'administration de la guilde, tenu
+  // par le panneau serveur et par l'overlay (`actor.method === 'overlay'`).
+  const auditEntries = [
+    { id: 6, at: new Date(now - 60000).toISOString(), actor: { method: 'overlay', name: 'Quentin' }, action: 'overlay.member_update', method: 'PATCH', path: '/overlay/admin/members/m-lea', status: 200, guildId: '111', clientIp: null },
+    { id: 5, at: new Date(now - 8 * 60000).toISOString(), actor: { method: 'secret', name: 'Owner' }, action: 'guild.settings', method: 'PATCH', path: '/admin/api/guilds/111/settings', status: 200, guildId: '111', clientIp: null },
+    { id: 4, at: new Date(now - 2 * 3600000).toISOString(), actor: { method: 'discord', name: 'Admin Discord' }, action: 'guild.board_clear', method: 'POST', path: '/admin/api/guilds/111/media-board/clear', status: 200, guildId: '111', clientIp: null },
+    { id: 3, at: new Date(now - 26 * 3600000).toISOString(), actor: { method: 'secret', name: 'Owner' }, action: 'guild.member_ban', method: 'POST', path: '/admin/api/guilds/111/members/m-42/ban', status: 200, guildId: '111', clientIp: null },
+    { id: 2, at: new Date(now - 3 * 86400000).toISOString(), actor: { method: 'secret', name: 'Owner' }, action: 'guild.invite_create', method: 'POST', path: '/admin/api/guilds/111/invites', status: 200, guildId: '111', clientIp: null },
+  ];
 
   const members = [
-    { id: 'm-111', displayName: 'Quentin', avatar: null, role: 'admin', connected: true, deviceCount: 2, lastSeenAt: new Date().toISOString(), isSelf: true },
-    { id: 'm-lea', displayName: 'Léa', avatar: null, role: 'member', connected: true, deviceCount: 1, lastSeenAt: new Date().toISOString(), isSelf: false },
-    { id: 'm-max', displayName: 'Max', avatar: null, role: 'member', connected: false, deviceCount: 1, lastSeenAt: new Date(now - 7200000).toISOString(), isSelf: false },
-    { id: 'm-42', displayName: 'Invité-42', avatar: null, role: 'guest', connected: false, deviceCount: 1, lastSeenAt: null, isSelf: false },
+    { id: 'm-111', displayName: 'Quentin', avatar: null, role: 'admin', connected: true, deviceCount: 2, lastSeenAt: new Date().toISOString(), createdAt: new Date(now - 90 * 86400000).toISOString(), discordLinked: true, discordUserId: '123456789012345678', isSelf: true },
+    { id: 'm-lea', displayName: 'Léa', avatar: null, role: 'member', connected: true, deviceCount: 1, lastSeenAt: new Date().toISOString(), createdAt: new Date(now - 30 * 86400000).toISOString(), discordLinked: true, discordUserId: '234567890123456789', isSelf: false },
+    { id: 'm-max', displayName: 'Max', avatar: null, role: 'member', connected: false, deviceCount: 1, lastSeenAt: new Date(now - 7200000).toISOString(), createdAt: new Date(now - 7 * 86400000).toISOString(), discordLinked: false, discordUserId: null, isSelf: false },
+    { id: 'm-42', displayName: 'Invité-42', avatar: null, role: 'guest', connected: false, deviceCount: 1, lastSeenAt: null, createdAt: new Date(now - 86400000).toISOString(), discordLinked: false, discordUserId: null, isSelf: false },
   ];
+  // Appareils de la guilde (`GET /overlay/admin/devices`) : quatre appareils
+  // sur trois membres, un hors ligne (Max, en 3.5.2) et donc obsolète.
+  const devices = [
+    { id: 'd-111', label: 'Salon principal', memberId: 'm-111', memberName: 'Quentin', role: 'admin', sessionMode: 'normal', connected: true, lastSeenAt: new Date().toISOString(), overlayVersion: '3.7.0', platform: 'windows', guildSettings: { volume: 0.8, mediaMuted: false, paused: false }, isSelf: true },
+    { id: 'd-lea', label: 'PC de Léa', memberId: 'm-lea', memberName: 'Léa', role: 'member', sessionMode: 'normal', connected: true, lastSeenAt: new Date(now - 5 * 60000).toISOString(), overlayVersion: '3.7.0', platform: 'windows', guildSettings: { volume: 1, mediaMuted: false, paused: false }, isSelf: false },
+    { id: 'd-max', label: 'Salon', memberId: 'm-max', memberName: 'Max', role: 'member', sessionMode: 'normal', connected: false, lastSeenAt: new Date(now - 3 * 3600000).toISOString(), overlayVersion: '3.5.2', platform: 'linux', guildSettings: null, isSelf: false },
+    { id: 'd-max-2', label: 'Portable de Max', memberId: 'm-max', memberName: 'Max', role: 'member', sessionMode: 'invite_read_only', connected: true, lastSeenAt: new Date(now - 2 * 60000).toISOString(), overlayVersion: '3.7.0', platform: 'macos', guildSettings: { volume: 0.6, mediaMuted: false, paused: true }, isSelf: false },
+  ];
+  let nextDeviceCode = 1;
   // Guild profile edited by « Mon profil »: the mock keeps it between dialogs.
   // It starts linked to the Discord account, as after a personal /pair-code.
   const discordProfile = { displayName: 'Quentin', avatar: null };
   // `?unlinked` starts with a member created without Discord (admin panel).
   const unlinked = new URLSearchParams(location.search).has('unlinked');
   const memberProfile = unlinked
-    ? { displayName: 'Quentin', avatar: null, discordLinked: false, profileSource: 'custom' }
-    : { ...discordProfile, discordLinked: true, profileSource: 'discord' };
+    ? { displayName: 'Quentin', avatar: null, discordLinked: false, discordUserId: null, profileSource: 'custom' }
+    : { ...discordProfile, discordLinked: true, discordUserId: '123456789012345678', profileSource: 'discord' };
   const invites = [
     { code: 'K7QXM2PD', role: 'member', maxUses: 1, useCount: 0, expiresAt: new Date(now + 22 * 3600000).toISOString(), revokedAt: null, isActive: true },
     { code: 'P3WN8RTA', role: 'guest', maxUses: 10, useCount: 4, expiresAt: new Date(now + 6 * 86400000).toISOString(), revokedAt: null, isActive: true },
     { code: 'Z9LCV5HE', role: 'admin', maxUses: 1, useCount: 1, expiresAt: null, revokedAt: null, isActive: false },
   ];
+  // Codes d'appairage (`pairing_codes`), comme les sert
+  // `GET /overlay/admin/pairing-codes` : un code Discord actif et un code
+  // d'extension expiré. La purge et la révocation modifient cette liste.
+  const pairingCodes = [
+    { code: 'PAIR42', guildId: '111', createdByDiscordUserId: '1001', authorName: 'Discordeur', expiresAt: new Date(now + 10 * 60000).toISOString(), usedAt: null, createdAt: new Date(now - 60000).toISOString(), kind: 'discord' },
+    { code: 'EXT789', guildId: '111', createdByDiscordUserId: 'member:m-lea', authorName: 'Léa', expiresAt: new Date(now - 60000).toISOString(), usedAt: null, createdAt: new Date(now - 3600000).toISOString(), kind: 'extension' },
+  ];
+  const pairingCodeActive = (entry) => !entry.usedAt && (!entry.expiresAt || new Date(entry.expiresAt).getTime() > Date.now());
+  const pairingCodePayload = (entry) => ({ ...entry, isActive: pairingCodeActive(entry) });
 
   const permissions = {
     viewBoard: true,
@@ -422,7 +492,7 @@
       if (spoken.includes('panne')) {
         return delay(600).then(() => ({ ok: false, status: 502, body: { error: 'speech_failed' } }));
       }
-      const job = { id: 'j' + nextJob++, status: 'pending', title: null, text: body.caption || null, authorName: body.anonymous ? null : 'Quentin', durationSec: Math.max(1, Math.round(spoken.length / 15)), kind: 'audio' };
+      const job = { id: 'j' + nextJob++, status: 'pending', title: null, text: body.caption || null, authorName: body.anonymous ? null : 'Quentin', durationSec: Math.max(1, Math.round(spoken.length / 15)), kind: 'audio', origin: 'direct' };
       return delay(600).then(() => {
         queue.pending.push(job);
         queueHint();
@@ -530,9 +600,121 @@
       const member = { id: 'm-111', ...memberProfile, role };
       return ok(body.useDiscord ? { updated: true, synced: true, member } : { updated: true, member });
     }
-    if (path === '/overlay/guild') {
+    if (path === '/overlay/admin/settings' && method === 'PATCH') {
+      const body = payload.body || {};
+      if (!body || typeof body !== 'object') {
+        return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+      }
+      if ('name' in body) {
+        const next = String(body.name || '').trim();
+        if (!next) {
+          return { ok: false, status: 400, body: { error: 'invalid_name' } };
+        }
+        guildName = next;
+        const active = guilds.guilds.find((guild) => guild.membership.guildId === '111');
+        if (active) {
+          active.membership.guildName = next;
+        }
+      }
+      if ('defaultMediaTime' in body) {
+        guildSettings.defaultMediaTime = body.defaultMediaTime === null ? null : Math.max(0, Number(body.defaultMediaTime) || 0);
+      }
+      if ('maxMediaTime' in body) {
+        guildSettings.maxMediaTime = body.maxMediaTime === null ? null : Math.max(0, Number(body.maxMediaTime) || 0);
+      }
+      if ('displayMediaFull' in body) {
+        guildSettings.displayMediaFull = Boolean(body.displayMediaFull);
+      }
+      if ('guestsCanViewBoard' in body) {
+        guestsCanViewBoard = Boolean(body.guestsCanViewBoard);
+      }
+      if ('boardQuotaMb' in body) {
+        const quota = body.boardQuotaMb;
+        if (quota === null || quota === '') {
+          boardQuotaMb = null;
+        } else if (typeof quota === 'number' && Number.isInteger(quota) && quota > 0) {
+          if (quota > SERVER_BOARD_MAX_BYTES / (1024 * 1024)) {
+            return { ok: false, status: 400, body: { error: 'invalid_board_quota' } };
+          }
+          boardQuotaMb = quota;
+        } else {
+          return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+        }
+      }
       return ok({
-        guild: { id: '111', name: 'Les Sardines', standalone: true, discordGuildId: null, guestsCanViewBoard: true, settings: { defaultMediaTime: 30, maxMediaTime: null, displayMediaFull: false }, connectedCount: 6 },
+        updated: true,
+        guild: {
+          id: '111',
+          name: guildName,
+          guestsCanViewBoard,
+          settings: { ...guildSettings },
+          boardQuotaMb,
+        },
+      });
+    }
+    if (path === '/overlay/admin/media-board/clear' && method === 'POST') {
+      const body = payload.body || {};
+      if (body.confirm !== guildName) {
+        return { ok: false, status: 400, body: { error: 'confirmation_mismatch' } };
+      }
+      let releasedPlayingJobs = 0;
+      if (queue.playing) {
+        releasedPlayingJobs = 1;
+        queueHistory.unshift({
+          id: queue.playing.id,
+          status: 'done',
+          title: queue.playing.title,
+          text: queue.playing.text,
+          authorName: queue.playing.authorName,
+          durationSec: queue.playing.durationSec,
+          kind: queue.playing.kind,
+          origin: queue.playing.origin || 'board',
+          finishedAt: new Date().toISOString(),
+        });
+        queue.playing = null;
+      }
+      queue.pending = [];
+      const removed = items.splice(0, items.length).length;
+      boardChanged('111', 'deleted', null);
+      return ok({
+        guildId: '111',
+        stop: { releasedPlayingJobs, broadcast: 0 },
+        deleted: { mediaBoardItems: removed, orphanMediaAssets: removed, orphanMediaFileDeleteErrors: 0 },
+      });
+    }
+    if (path.startsWith('/overlay/admin/audit') && method === 'GET') {
+      const rawLimit = new URLSearchParams(path.split('?')[1] || '').get('limit');
+      const parsed = rawLimit === null ? 50 : Number(rawLimit);
+      const limit = Number.isFinite(parsed) ? Math.min(200, Math.max(1, Math.trunc(parsed))) : 50;
+      const entries = auditEntries.slice(0, limit);
+      return ok({ count: entries.length, items: entries });
+    }
+    if (path.startsWith('/overlay/queue/history') && method === 'GET') {
+      const rawLimit = new URLSearchParams(path.split('?')[1] || '').get('limit');
+      const parsed = rawLimit === null ? 30 : Number(rawLimit);
+      const limit = Number.isFinite(parsed) ? Math.min(100, Math.max(1, Math.trunc(parsed))) : 30;
+      const entries = queueHistory.slice(0, limit);
+      return ok({ count: entries.length, items: entries });
+    }
+    if (path === '/overlay/guild') {
+      const effectiveDefault = guildSettings.defaultMediaTime ?? 5;
+      return ok({
+        guild: {
+          id: '111',
+          name: guildName,
+          standalone: true,
+          discordGuildId: null,
+          guestsCanViewBoard,
+          settings: {
+            defaultMediaTime: guildSettings.defaultMediaTime,
+            maxMediaTime: guildSettings.maxMediaTime,
+            displayMediaFull: guildSettings.displayMediaFull,
+            effective: { defaultMediaTime: effectiveDefault, maxMediaTime: guildSettings.maxMediaTime },
+          },
+          mediaBoard: mediaBoardPayload(),
+          playback: { done: 12, failed: 1, pending: queue.pending.length, busyUntil: null },
+          connectedCount: 6,
+        },
         member: { id: 'm-111', ...memberProfile, role },
         permissions,
       });
@@ -547,11 +729,120 @@
     if (path === '/overlay/admin/members') {
       return ok({ count: members.length, items: members });
     }
+    if (path === '/overlay/admin/devices' && method === 'GET') {
+      return ok(JSON.parse(JSON.stringify({ count: devices.length, items: devices })));
+    }
+    const devicePath = /^\/overlay\/admin\/devices\/([^/?]+)(\/guild-settings)?$/.exec(path);
+    if (devicePath) {
+      const entry = devices.find((candidate) => candidate.id === decodeURIComponent(devicePath[1]));
+      if (!entry) {
+        return { ok: false, status: 404, body: { error: 'device_not_found' } };
+      }
+      if (devicePath[2] === '/guild-settings' && method === 'PATCH') {
+        const body = payload.body || {};
+        const fields = ['volume', 'mediaMuted', 'paused'];
+        if (!fields.some((field) => field in body)) {
+          return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+        }
+        if ('volume' in body && (typeof body.volume !== 'number' || !Number.isFinite(body.volume) || body.volume < 0 || body.volume > 1)) {
+          return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+        }
+        if ('mediaMuted' in body && typeof body.mediaMuted !== 'boolean') {
+          return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+        }
+        if ('paused' in body && typeof body.paused !== 'boolean') {
+          return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+        }
+        entry.guildSettings = {
+          volume: 'volume' in body ? body.volume : (entry.guildSettings || {}).volume ?? 1,
+          mediaMuted: 'mediaMuted' in body ? body.mediaMuted : Boolean((entry.guildSettings || {}).mediaMuted),
+          paused: 'paused' in body ? body.paused : Boolean((entry.guildSettings || {}).paused),
+        };
+        return ok({ delivered: entry.connected });
+      }
+      if (devicePath[2]) {
+        return { ok: false, status: 404, body: { error: 'request_error' } };
+      }
+      if (method === 'DELETE') {
+        if (entry.isSelf) {
+          return { ok: false, status: 409, body: { error: 'cannot_revoke_self' } };
+        }
+        devices.splice(devices.indexOf(entry), 1);
+        return ok({ found: true, revoked: true });
+      }
+      if (method === 'PATCH') {
+        const body = payload.body || {};
+        const hasLabel = 'label' in body;
+        const hasMode = 'sessionMode' in body;
+        if (!hasLabel && !hasMode) {
+          return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+        }
+        if (hasLabel) {
+          if (typeof body.label !== 'string') {
+            return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+          }
+          const label = body.label.trim();
+          if (!label || Array.from(label).length > 40) {
+            return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+          }
+          entry.label = label;
+        }
+        if (hasMode) {
+          if (body.sessionMode !== 'normal' && body.sessionMode !== 'invite_read_only') {
+            return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+          }
+          entry.sessionMode = body.sessionMode;
+        }
+        return ok(entry);
+      }
+    }
+    if (path === '/overlay/admin/device-codes' && method === 'POST') {
+      const memberId = payload.body && payload.body.memberId;
+      const member = members.find((candidate) => candidate.id === memberId);
+      if (!member) {
+        return { ok: false, status: 404, body: { error: 'member_not_found' } };
+      }
+      const suffix = String(nextDeviceCode++).padStart(5, '0');
+      const at = new Date().toISOString();
+      return ok({
+        created: true,
+        invite: { code: `D3V${suffix}`, role: member.role, memberId: member.id, maxUses: 1, useCount: 0, createdByMemberId: 'm-111', expiresAt: new Date(Date.now() + 10 * 60000).toISOString(), revokedAt: null, createdAt: at, isActive: true },
+      });
+    }
     if (path === '/overlay/admin/invites' && method === 'GET') {
       return ok({ count: invites.length, items: invites });
     }
     if (path === '/overlay/device-code') {
       return ok({ created: true, invite: { code: 'D3V1C3AB' } });
+    }
+    if (path === '/overlay/admin/pairing-codes' && method === 'GET') {
+      const items = pairingCodes.map(pairingCodePayload);
+      return ok({ count: items.length, items });
+    }
+    const pairingCodeRevoke = /^\/overlay\/admin\/pairing-codes\/([^/?]+)\/revoke$/.exec(path);
+    if (pairingCodeRevoke && method === 'POST') {
+      const code = decodeURIComponent(pairingCodeRevoke[1]);
+      const entry = pairingCodes.find((candidate) => candidate.code === code);
+      if (!entry) {
+        return { ok: false, status: 404, body: { error: 'pairing_code_not_found' } };
+      }
+      const revoked = pairingCodeActive(entry);
+      if (revoked) {
+        const at = new Date().toISOString();
+        entry.usedAt = at;
+        entry.expiresAt = at;
+      }
+      return ok({ revoked });
+    }
+    if (path === '/overlay/admin/pairing-codes/expired' && method === 'DELETE') {
+      let deleted = 0;
+      for (let index = pairingCodes.length - 1; index >= 0; index -= 1) {
+        if (!pairingCodeActive(pairingCodes[index])) {
+          pairingCodes.splice(index, 1);
+          deleted += 1;
+        }
+      }
+      return ok({ deleted });
     }
     return ok({ created: true, updated: true, removed: true, deleted: true, invite: invites[0] });
   }
@@ -579,7 +870,7 @@
     if (item.title === 'Sad violin') {
       return { ok: false, reason: 'media_not_ready' };
     }
-    const job = { id: 'j' + nextJob++, title: item.title, text: item.message, authorName: 'Quentin', durationSec: item.media.durationSec || 8, kind: item.media.kind };
+    const job = { id: 'j' + nextJob++, title: item.title, text: item.message, authorName: 'Quentin', durationSec: item.media.durationSec || 8, kind: item.media.kind, origin: 'board' };
     queueHint();
     if (!queue.playing) {
       const at = new Date().toISOString();
@@ -592,6 +883,19 @@
   // Job stopped on this device only (`media_board_stop_local`).
   let locallyStoppedJobId = null;
   function finishPlaying() {
+    if (queue.playing) {
+      queueHistory.unshift({
+        id: queue.playing.id,
+        status: 'done',
+        title: queue.playing.title,
+        text: queue.playing.text,
+        authorName: queue.playing.authorName,
+        durationSec: queue.playing.durationSec,
+        kind: queue.playing.kind,
+        origin: queue.playing.origin || 'board',
+        finishedAt: new Date().toISOString(),
+      });
+    }
     queue.playing = queue.pending.shift() || null;
     if (queue.playing) {
       Object.assign(queue.playing, { status: 'playing', startedAt: new Date().toISOString() });
@@ -650,7 +954,7 @@
       // Like the server: the ready media becomes a playback job, no board
       // item and no `board.changed`.
       const kind = String(source.contentType || '').split('/')[0];
-      const job = { id: 'j' + nextJob++, title: source.title || null, text: source.message || null, authorName: 'Quentin', durationSec: kind === 'image' ? 8 : 6, kind: ['video', 'image', 'audio'].includes(kind) ? kind : 'video', status: 'pending' };
+      const job = { id: 'j' + nextJob++, title: source.title || null, text: source.message || null, authorName: 'Quentin', durationSec: kind === 'image' ? 8 : 6, kind: ['video', 'image', 'audio'].includes(kind) ? kind : 'video', status: 'pending', origin: 'direct' };
       queueHint();
       if (!queue.playing) {
         const at = new Date().toISOString();
@@ -802,7 +1106,7 @@
 
   const requests = [];
 
-  window.__mock = { emit, removeGuild, finishPlaying, reconnect, restartServer, openSettings: openSettingsPage, finishPlacement, settings, previewLayouts, queue, items, guilds, ingestions, requests };
+  window.__mock = { emit, removeGuild, finishPlaying, reconnect, restartServer, openSettings: openSettingsPage, finishPlacement, settings, previewLayouts, queue, items, guilds, ingestions, invites, pairingCodes, devices, requests };
 
   window.__TAURI_INTERNALS__ = {
     transformCallback(callback) {

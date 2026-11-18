@@ -327,9 +327,10 @@ pub(super) async fn build_overview(state: &AppState) -> Result<Value, AdminError
     Ok(payload)
 }
 
-/// JSON entry of one overlay client, shared by the overview and the
-/// `PATCH /admin/api/overlay-clients/{id}` response.
-pub(super) fn overlay_client_payload(
+/// JSON entry of one overlay client, shared by the overview, the
+/// `PATCH /admin/api/overlay-clients/{id}` response and the overlay's device
+/// screen.
+pub(crate) fn overlay_client_payload(
     overlay: &OverlayClientRow,
     connected: bool,
     guild_settings: Option<&lc_protocol::DeviceSettingsStatePayload>,
@@ -351,7 +352,7 @@ pub(super) fn overlay_client_payload(
 
 /// Mode de session au format filaire (`normal` / `invite_read_only`), tolérant
 /// aux valeurs inattendues (comme `normalizeOverlaySessionMode`).
-pub(super) fn session_mode_wire(stored: &str) -> &'static str {
+pub(crate) fn session_mode_wire(stored: &str) -> &'static str {
     OverlaySessionMode::from_db_str(stored)
         .map(OverlaySessionMode::as_wire_str)
         .unwrap_or("normal")

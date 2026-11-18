@@ -169,6 +169,13 @@ body {
   max-height: var(--overlay-media-max-height);
 }
 
+/* An image with a display scale gets its box set inline (natural size times
+   the scale, already capped by the zone above): keep the browser's smooth
+   upscaling. */
+#media-layer .overlay-media-content > img {
+  image-rendering: auto;
+}
+
 #media-layer .overlay-media-content > .overlay-tweet-card {
   max-height: min(84vh, 1500px, var(--overlay-media-max-height));
 }

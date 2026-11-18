@@ -601,6 +601,7 @@ mod tests {
             artwork_asset_id: None,
             artwork_on_overlay: false,
             display_duration_sec: None,
+            display_scale_percent: None,
         };
         fixture
             .db
@@ -681,6 +682,7 @@ mod tests {
             artwork_asset_id: None,
             artwork_on_overlay: false,
             display_duration_sec: None,
+            display_scale_percent: None,
         };
         fixture
             .db

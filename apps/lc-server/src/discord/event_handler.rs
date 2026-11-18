@@ -17,6 +17,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use serenity::all::{
@@ -25,9 +26,11 @@ use serenity::all::{
 };
 
 use lc_db::Db;
-use lc_discord::handlers::{plan_deferral, precheck};
-use lc_discord::serenity_glue::{defer, parse_invocation, respond};
-use lc_discord::{dispatch, BotConfigSource, DbBotContext, Lang};
+use lc_discord::handlers::{plan_deferral, precheck, refusal_delivery, RefusalDelivery};
+use lc_discord::serenity_glue::{
+    defer, parse_invocation, replace_deferred_with_ephemeral, respond,
+};
+use lc_discord::{dispatch, BotConfigSource, DbBotContext, Deferral, Lang};
 
 use super::message_commands;
 use super::registration;
@@ -226,6 +229,24 @@ pub async fn native_upsert_target(
     Ok((resolved == *discord_guild_id).then_some(resolved))
 }
 
+/// Discord epoch in milliseconds (2015-01-01T00:00:00Z): the base of every
+/// snowflake.
+const DISCORD_EPOCH_MS: u64 = 1_420_070_400_000;
+
+/// Milliseconds elapsed since Discord created the interaction.
+///
+/// The interaction id is a snowflake whose high bits hold the creation time
+/// (`InteractionId::created_at` in serenity), at millisecond precision. Logged
+/// when an acknowledgement or a direct response fails (`Unknown interaction`
+/// once the 3 s budget is spent).
+fn interaction_age_ms(interaction_id: u64, now: SystemTime) -> u64 {
+    let created_ms = (interaction_id >> 22) + DISCORD_EPOCH_MS;
+    let now_ms = now.duration_since(UNIX_EPOCH).map_or(0, |elapsed| {
+        u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+    });
+    now_ms.saturating_sub(created_ms)
+}
+
 /// Envoie l'embed d'aide legacy dans le premier salon textuel où le bot peut
 /// écrire.
 async fn send_how_to_use(
@@ -357,27 +378,80 @@ impl EventHandler for DiscordEventHandler {
             return;
         };
 
-        // A refused command is answered at once and privately (never after a
-        // public acknowledgement).
-        if let Some(refused) = precheck(self.context.as_ref(), &invocation).await {
-            if let Err(error) = respond(&ctx.http, &command, &refused).await {
-                tracing::warn!(name = %command.data.name, %error, "réponse de refus impossible");
+        // Acknowledge before anything touches the database: Discord allows
+        // only 3 seconds to answer an interaction (`/pair-code` was seen
+        // failing with "Unknown interaction" when the rights check ran first).
+        let deferral = plan_deferral(&invocation);
+        if let Err(error) = defer(&ctx.http, &command, deferral).await {
+            tracing::warn!(
+                name = %command.data.name,
+                age_ms = interaction_age_ms(command.id.get(), SystemTime::now()),
+                %error,
+                "accusé de réception d'interaction échoué"
+            );
+            return;
+        }
+
+        // Rights are checked once the interaction is acknowledged: a refusal
+        // is delivered according to the acknowledgement already sent, so it
+        // always stays private.
+        let started = Instant::now();
+        let refused = precheck(self.context.as_ref(), &invocation).await;
+        tracing::debug!(
+            name = %command.data.name,
+            elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "vérification des droits terminée"
+        );
+        if let Some(mut refused) = refused {
+            match refusal_delivery(deferral) {
+                RefusalDelivery::ReplaceWithEphemeralFollowup => {
+                    if let Err(error) =
+                        replace_deferred_with_ephemeral(&ctx.http, &command, &refused).await
+                    {
+                        tracing::warn!(
+                            name = %command.data.name,
+                            age_ms = interaction_age_ms(command.id.get(), SystemTime::now()),
+                            %error,
+                            "remplacement de l'accusé de réception par un refus éphémère échoué"
+                        );
+                    }
+                }
+                // Direct type-4 response or edit of an ephemeral deferred
+                // message: both keep the refusal private.
+                RefusalDelivery::Direct | RefusalDelivery::EditDeferred => {
+                    refused.deferral = deferral;
+                    if let Err(error) = respond(&ctx.http, &command, &refused).await {
+                        tracing::warn!(
+                            name = %command.data.name,
+                            age_ms = interaction_age_ms(command.id.get(), SystemTime::now()),
+                            %error,
+                            "réponse de refus impossible"
+                        );
+                    }
+                }
             }
             return;
         }
 
-        // Acknowledge before the handler touches the database: Discord allows
-        // only 3 seconds to answer an interaction (`/pair-code` was seen
-        // failing with "Unknown interaction").
-        let deferral = plan_deferral(&invocation);
-        if let Err(error) = defer(&ctx.http, &command, deferral).await {
-            tracing::warn!(name = %command.data.name, %error, "accusé de réception d'interaction échoué");
-            return;
-        }
-
-        let outcome = dispatch(self.context.as_ref(), invocation).await;
-        if let Err(error) = respond(&ctx.http, &command, &outcome).await {
-            tracing::warn!(name = %command.data.name, %error, "réponse d'interaction échouée");
+        let mut outcome = dispatch(self.context.as_ref(), invocation).await;
+        // The response must match the acknowledgement actually sent: a race
+        // could otherwise make `dispatch` take the refusal path with no
+        // deferral of its own.
+        outcome.deferral = deferral;
+        let delivered = if deferral == Deferral::Public && outcome.reply.ephemeral {
+            // An ephemeral answer cannot replace a public placeholder in
+            // place: delete it and answer privately.
+            replace_deferred_with_ephemeral(&ctx.http, &command, &outcome).await
+        } else {
+            respond(&ctx.http, &command, &outcome).await
+        };
+        if let Err(error) = delivered {
+            tracing::warn!(
+                name = %command.data.name,
+                age_ms = interaction_age_ms(command.id.get(), SystemTime::now()),
+                %error,
+                "réponse d'interaction échouée"
+            );
         }
     }
 
@@ -406,7 +480,8 @@ mod tests {
     use lc_domain::GuildId;
 
     use super::{
-        how_to_use_texts, native_upsert_target, upsert_guild_row, HOW_TO_USE_EN, HOW_TO_USE_FR,
+        how_to_use_texts, interaction_age_ms, native_upsert_target, upsert_guild_row,
+        HOW_TO_USE_EN, HOW_TO_USE_FR,
     };
 
     fn guild_id() -> GuildId {
@@ -497,6 +572,22 @@ mod tests {
             .unwrap();
         assert_eq!(native_upsert_target(&db, &guild_id()).await.unwrap(), None);
         assert!(db.guilds().get(&guild_id()).await.unwrap().is_none());
+    }
+
+    #[test]
+    fn age_d_une_interaction_depuis_le_snowflake() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        // Snowflake used by serenity's own `created_at` test
+        // (`2016-04-30T11:18:25.796Z`).
+        let id = 175_928_847_299_117_063;
+        let created_ms = 1_462_015_105_796;
+        let now = UNIX_EPOCH + Duration::from_millis(created_ms + 2_500);
+        assert_eq!(interaction_age_ms(id, now), 2_500);
+
+        // A clock behind the interaction never yields a negative age.
+        let before = UNIX_EPOCH + Duration::from_millis(created_ms - 1_000);
+        assert_eq!(interaction_age_ms(id, before), 0);
     }
 
     #[test]

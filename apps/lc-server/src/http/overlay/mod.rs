@@ -630,6 +630,7 @@ mod session_mode_tests {
             artwork_asset_id: None,
             artwork_on_overlay: false,
             display_duration_sec: None,
+            display_scale_percent: None,
         };
         db.media_board().create(&item).await.unwrap();
         item

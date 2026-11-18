@@ -19,8 +19,8 @@
 use lc_domain::{GuildId, PairingMode};
 use serde_json::{json, Value};
 use serenity::builder::{
-    CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
-    EditInteractionResponse,
+    CreateEmbed, CreateInteractionResponse, CreateInteractionResponseFollowup,
+    CreateInteractionResponseMessage, EditInteractionResponse,
 };
 use serenity::http::Http;
 use serenity::model::application::{CommandDataOption, CommandDataOptionValue, CommandInteraction};
@@ -363,6 +363,11 @@ pub async fn defer(
         .map_err(Box::new)
 }
 
+/// `true` when the embed has something Discord will display.
+fn has_visible_embed(embed: &Embed) -> bool {
+    embed.title.is_some() || embed.description.is_some()
+}
+
 /// Envoie la réponse finale d'une interaction.
 ///
 /// Sans accusé de réception, la réponse est un `type: 4` classique. Après un
@@ -377,8 +382,7 @@ pub async fn respond(
     interaction: &CommandInteraction,
     outcome: &CommandOutcome,
 ) -> Result<(), Box<serenity::Error>> {
-    let has_embed =
-        outcome.reply.embed.title.is_some() || outcome.reply.embed.description.is_some();
+    let has_embed = has_visible_embed(&outcome.reply.embed);
 
     if outcome.deferral != Deferral::None {
         // The deferred acknowledgement is already displayed: edit it. The
@@ -406,4 +410,28 @@ pub async fn respond(
             .await
             .map_err(Box::new)
     }
+}
+
+/// Replaces a public deferred acknowledgement with a private answer.
+///
+/// A refusal must never stay visible in the channel. Discord does not allow a
+/// second initial response, and editing the deferred message cannot make it
+/// ephemeral, so the placeholder is deleted and the answer is sent as an
+/// ephemeral follow-up.
+pub async fn replace_deferred_with_ephemeral(
+    http: &Http,
+    interaction: &CommandInteraction,
+    outcome: &CommandOutcome,
+) -> Result<(), Box<serenity::Error>> {
+    http.delete_original_interaction_response(&interaction.token)
+        .await
+        .map_err(Box::new)?;
+    let mut message = CreateInteractionResponseFollowup::new().ephemeral(true);
+    if has_visible_embed(&outcome.reply.embed) {
+        message = message.embed(create_embed(&outcome.reply.embed));
+    }
+    http.create_followup_message(&interaction.token, &message, Vec::new())
+        .await
+        .map(|_| ())
+        .map_err(Box::new)
 }

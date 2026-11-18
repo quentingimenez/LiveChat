@@ -675,6 +675,7 @@ pub(super) fn board_item(guild_id: &GuildId, media_asset_id: MediaAssetId) -> Me
         artwork_asset_id: None,
         artwork_on_overlay: false,
         display_duration_sec: None,
+        display_scale_percent: None,
     }
 }
 

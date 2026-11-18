@@ -50,8 +50,9 @@ pub async fn dispatch(ctx: &dyn BotContext, invocation: Invocation) -> CommandOu
 }
 
 /// Checks the author's rights ([`crate::rights`]). `Some` is the complete
-/// answer of a refused command, to send without acknowledging first (so it
-/// stays private).
+/// answer of a refused command; the caller delivers it with
+/// [`refusal_delivery`] so a refusal stays private (the invocation may already
+/// have been acknowledged).
 pub async fn precheck(ctx: &dyn BotContext, invocation: &Invocation) -> Option<CommandOutcome> {
     let command = invocation.command();
     // `/lier` is not configurable: its handler checks the Discord administrator.
@@ -140,6 +141,30 @@ pub fn plan_deferral(invocation: &Invocation) -> Deferral {
         // first, like `/pair-code`.
         CommandInput::Stop | CommandInput::Overlays => Deferral::Ephemeral,
         _ => Deferral::None,
+    }
+}
+
+/// How the refusal of an invocation is delivered to Discord.
+///
+/// A refusal always ends up private; the acknowledgement already sent decides
+/// how (see [`refusal_delivery`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefusalDelivery {
+    /// Nothing was acknowledged: answer with a direct type-4 response.
+    Direct,
+    /// The deferred response is ephemeral: edit it in place.
+    EditDeferred,
+    /// The deferred response is public: delete it and replace it with an
+    /// ephemeral follow-up.
+    ReplaceWithEphemeralFollowup,
+}
+
+/// Picks the refusal delivery matching the acknowledgement already sent.
+pub const fn refusal_delivery(deferral: Deferral) -> RefusalDelivery {
+    match deferral {
+        Deferral::None => RefusalDelivery::Direct,
+        Deferral::Ephemeral => RefusalDelivery::EditDeferred,
+        Deferral::Public => RefusalDelivery::ReplaceWithEphemeralFollowup,
     }
 }
 
@@ -871,7 +896,7 @@ mod tests {
     use lc_domain::PairingMode;
     use time::Duration as TimeDuration;
 
-    use super::{dispatch, plan_deferral, Deferral, Invocation};
+    use super::{dispatch, plan_deferral, refusal_delivery, Deferral, Invocation, RefusalDelivery};
     use crate::context::{Author, BotContext};
     use crate::i18n::{strings, Lang};
     use crate::inputs::{CommandInput, LinkInput, MediaSubmission, PairCodeInput, TalkInput};
@@ -956,6 +981,23 @@ mod tests {
             mode: PairingMode::Normal,
         }));
         assert_eq!(plan_deferral(&pair), Deferral::Ephemeral);
+    }
+
+    #[test]
+    fn refus_livre_selon_l_accuse_deja_envoye() {
+        // Sans accusé, le refus est une réponse initiale éphémère directe.
+        assert_eq!(refusal_delivery(Deferral::None), RefusalDelivery::Direct);
+        // Accusé éphémère : l'édition de la réponse différée reste privée.
+        assert_eq!(
+            refusal_delivery(Deferral::Ephemeral),
+            RefusalDelivery::EditDeferred
+        );
+        // Accusé public : la réponse différée doit être supprimée puis
+        // remplacée par un suivi éphémère.
+        assert_eq!(
+            refusal_delivery(Deferral::Public),
+            RefusalDelivery::ReplaceWithEphemeralFollowup
+        );
     }
 
     #[test]

@@ -23,6 +23,7 @@ struct MediaBoardItemRow {
     artwork_asset_id: Option<String>,
     artwork_on_overlay: i64,
     display_duration_sec: Option<i64>,
+    display_scale_percent: Option<i64>,
 }
 
 impl MediaBoardItemRow {
@@ -49,6 +50,7 @@ impl MediaBoardItemRow {
             )?,
             artwork_on_overlay: from_bool(self.artwork_on_overlay),
             display_duration_sec: self.display_duration_sec,
+            display_scale_percent: self.display_scale_percent,
         })
     }
 }
@@ -64,6 +66,8 @@ pub struct BoardItemEdit<'a> {
     pub artwork_on_overlay: Option<bool>,
     /// New display time: `None` keeps it, `Some(None)` clears it.
     pub display_duration_sec: Option<Option<i64>>,
+    /// New display scale: `None` keeps it, `Some(None)` clears it.
+    pub display_scale_percent: Option<Option<i64>>,
 }
 
 /// Repository du board média.
@@ -91,9 +95,10 @@ impl MediaBoardRepository {
             "INSERT INTO media_board_items ( \
                 id, guild_id, media_asset_id, title, message, \
                 created_by_discord_user_id, created_by_name, created_at, \
-                artwork_asset_id, artwork_on_overlay, display_duration_sec \
+                artwork_asset_id, artwork_on_overlay, display_duration_sec, \
+                display_scale_percent \
              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, \
-                COALESCE(?, (SELECT cover_asset_id FROM media_assets WHERE id = ? AND kind = 'AUDIO')), ?, ?)",
+                COALESCE(?, (SELECT cover_asset_id FROM media_assets WHERE id = ? AND kind = 'AUDIO')), ?, ?, ?)",
         )
         .bind(item.id.to_canonical())
         .bind(item.guild_id.as_str())
@@ -107,6 +112,7 @@ impl MediaBoardRepository {
         .bind(item.media_asset_id.to_canonical())
         .bind(to_bool(item.artwork_on_overlay))
         .bind(item.display_duration_sec)
+        .bind(item.display_scale_percent)
         .execute(&self.pool)
         .await
         .map_err(|error| {
@@ -163,21 +169,28 @@ impl MediaBoardRepository {
 
     /// Applies a board item edit in one statement, so either every field is
     /// written or none is. `title` and `message` are always replaced (`None`
-    /// clears them); `artwork_on_overlay` and `display_duration_sec` are kept
-    /// when `None`. Returns `false` if the item does not exist.
+    /// clears them); `artwork_on_overlay`, `display_duration_sec` and
+    /// `display_scale_percent` are kept when `None`. Returns `false` if the
+    /// item does not exist.
     pub async fn update(&self, id: MediaBoardItemId, edit: &BoardItemEdit<'_>) -> DbResult<bool> {
         let (set_duration, duration) = match edit.display_duration_sec {
             Some(seconds) => (true, seconds),
             None => (false, None),
         };
+        let (set_scale, scale) = match edit.display_scale_percent {
+            Some(percent) => (true, percent),
+            None => (false, None),
+        };
         let result = sqlx::query(
-            "UPDATE media_board_items SET title = ?, message = ?,              artwork_on_overlay = COALESCE(?, artwork_on_overlay),              display_duration_sec = CASE WHEN ? THEN ? ELSE display_duration_sec END              WHERE id = ?",
+            "UPDATE media_board_items SET title = ?, message = ?,              artwork_on_overlay = COALESCE(?, artwork_on_overlay),              display_duration_sec = CASE WHEN ? THEN ? ELSE display_duration_sec END,              display_scale_percent = CASE WHEN ? THEN ? ELSE display_scale_percent END              WHERE id = ?",
         )
         .bind(edit.title)
         .bind(edit.message)
         .bind(edit.artwork_on_overlay.map(to_bool))
         .bind(set_duration)
         .bind(duration)
+        .bind(set_scale)
+        .bind(scale)
         .bind(id.to_canonical())
         .execute(&self.pool)
         .await?;
@@ -194,6 +207,22 @@ impl MediaBoardRepository {
         let result =
             sqlx::query("UPDATE media_board_items SET display_duration_sec = ? WHERE id = ?")
                 .bind(seconds)
+                .bind(id.to_canonical())
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Sets (or clears with `None`) the display scale of an item, in percent.
+    /// Returns `false` if the item does not exist.
+    pub async fn set_display_scale(
+        &self,
+        id: MediaBoardItemId,
+        percent: Option<i64>,
+    ) -> DbResult<bool> {
+        let result =
+            sqlx::query("UPDATE media_board_items SET display_scale_percent = ? WHERE id = ?")
+                .bind(percent)
                 .bind(id.to_canonical())
                 .execute(&self.pool)
                 .await?;

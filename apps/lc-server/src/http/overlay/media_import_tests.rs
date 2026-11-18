@@ -108,6 +108,7 @@ async fn item_in(harness: &Harness, guild_id: &GuildId, media: &MediaAsset) -> M
         artwork_asset_id: None,
         artwork_on_overlay: false,
         display_duration_sec: None,
+        display_scale_percent: None,
     };
     harness.db.media_board().create(&item).await.unwrap();
     item
@@ -338,7 +339,7 @@ async fn artwork_is_copied_with_the_item() {
 }
 
 #[tokio::test]
-async fn import_keeps_display_duration() {
+async fn import_keeps_display_settings() {
     let s = setup().await;
     let photo = asset(&s.harness, "photo.png", MediaKind::Image, 10).await;
     let source = item_in(&s.harness, &s.a, &photo).await;
@@ -346,6 +347,12 @@ async fn import_keeps_display_duration() {
         .db
         .media_board()
         .set_display_duration(source.id, Some(9))
+        .await
+        .unwrap();
+    s.harness
+        .db
+        .media_board()
+        .set_display_scale(source.id, Some(250))
         .await
         .unwrap();
 
@@ -361,4 +368,5 @@ async fn import_keeps_display_duration() {
         .unwrap()
         .unwrap();
     assert_eq!(copy.display_duration_sec, Some(9));
+    assert_eq!(copy.display_scale_percent, Some(250));
 }

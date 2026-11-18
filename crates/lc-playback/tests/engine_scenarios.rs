@@ -458,6 +458,7 @@ async fn un_audio_porte_l_image_de_son_element_du_board() {
         artwork_asset_id: Some(picture.id),
         artwork_on_overlay: true,
         display_duration_sec: None,
+        display_scale_percent: None,
     };
     h.db.media_board().create(&item).await.unwrap();
 
@@ -483,6 +484,64 @@ async fn un_audio_porte_l_image_de_son_element_du_board() {
     let plays = h.sink.play_calls();
     assert_eq!(plays.len(), 2);
     assert_eq!(plays[1].media.as_ref().unwrap().artwork_asset_id, None);
+}
+
+/// An image's board item carries the scale chosen for it in the `play`; a
+/// media played outside the board keeps its natural size.
+#[tokio::test]
+async fn une_image_porte_l_echelle_choisie_sur_le_board() {
+    let h = harness(1).await;
+    let guild = h.guild_id.clone();
+
+    let mut image = sample_media_asset(h.clock.now());
+    image.kind = lc_domain::MediaKind::Image;
+    image.mime = "image/png".to_owned();
+    image.duration_sec = None;
+    h.db.media_assets().insert(&image).await.unwrap();
+    let item = lc_domain::MediaBoardItem {
+        id: lc_domain::MediaBoardItemId::new_v4(),
+        guild_id: guild.clone(),
+        media_asset_id: image.id,
+        title: None,
+        message: None,
+        created_by_discord_user_id: None,
+        created_by_name: None,
+        created_at: h.clock.now(),
+        artwork_asset_id: None,
+        artwork_on_overlay: false,
+        display_duration_sec: None,
+        display_scale_percent: Some(250),
+    };
+    h.db.media_board().create(&item).await.unwrap();
+
+    let first = sample_media_job(guild.clone(), h.clock.now(), image.id, 5);
+    h.engine.enqueue(&first).await.unwrap();
+    assert_eq!(
+        h.sink.play_calls()[0]
+            .media
+            .as_ref()
+            .unwrap()
+            .display_scale_percent,
+        Some(250)
+    );
+
+    h.engine
+        .handle_playback_ended(PlaybackEndedEvent::new(
+            guild.clone(),
+            first.id,
+            PlaybackEndedReason::Completed,
+        ))
+        .await
+        .unwrap();
+    h.db.media_board()
+        .set_display_scale(item.id, None)
+        .await
+        .unwrap();
+    let second = sample_media_job(guild.clone(), h.clock.now(), image.id, 5);
+    h.engine.enqueue(&second).await.unwrap();
+    let plays = h.sink.play_calls();
+    assert_eq!(plays.len(), 2);
+    assert_eq!(plays[1].media.as_ref().unwrap().display_scale_percent, None);
 }
 
 /// A one-second clip (an animated GIF converted to MP4) triggered from the

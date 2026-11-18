@@ -116,3 +116,41 @@ async fn downloads_public_tiktok_video_from_cdn() {
     assert_eq!(download.kind, Some(MediaKind::Video));
     assert!(download.size_bytes > 10 * 1024);
 }
+
+#[tokio::test]
+#[ignore = "nécessite un accès réseau"]
+async fn downloads_a_second_public_tiktok_video_from_cdn() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let config = MediaConfig::default();
+    let source = lc_media::source::resolve_source(
+        &config,
+        "https://www.tiktok.com/@tiktok/video/7532540099460893983",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let download = lc_media::download::download_tiktok(&source, &config, temp.path())
+        .await
+        .unwrap();
+    assert_eq!(download.kind, Some(MediaKind::Video));
+    assert!(download.size_bytes > 10 * 1024);
+}
+
+#[tokio::test]
+#[ignore = "nécessite un accès réseau"]
+async fn downloads_tiktok_photo_post_with_audio() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let config = MediaConfig::default();
+    let source = lc_media::source::resolve_source(
+        &config,
+        "https://www.tiktok.com/@nightshade.sisters/photo/7437832857160109345",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let download = lc_media::download::download_tiktok(&source, &config, temp.path())
+        .await
+        .unwrap();
+    assert_eq!(download.kind, Some(MediaKind::Video));
+    assert!(download.size_bytes > 10 * 1024);
+}

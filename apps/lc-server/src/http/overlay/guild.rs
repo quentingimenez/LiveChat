@@ -253,6 +253,66 @@ pub(crate) fn guild_icon_url(access: &GuildAccess) -> Option<String> {
     discord_icon_url(discord_guild_id, icon_hash)
 }
 
+/// Board occupancy of one guild (`GET /overlay/guild`, right `viewBoard`).
+///
+/// `quotaMb` is the guild's own quota (migration 0011), `null` when the
+/// server-wide limit applies. `serverMaxBytes` always carries the server-wide
+/// ceiling, even when the guild overrides it, so the settings screen can show
+/// it as a hint. Same source as the owner console: the hot runtime setting
+/// `MEDIA_BOARD_MAX_TOTAL_MB`.
+async fn board_usage_payload(state: &AppState, guild_id: &GuildId) -> Result<Value, Response> {
+    let db = db(state)?;
+    let (items_count, used_bytes) =
+        crate::http::admin::queries::guild_board_usage(db, guild_id.as_str())
+            .await
+            .map_err(|db_error| db_failure("overlay_guild.board_usage", &db_error))?;
+    let quota_mb = db
+        .guilds()
+        .board_quota_mb(guild_id)
+        .await
+        .map_err(|db_error| db_failure("overlay_guild.board_quota", &db_error))?;
+    let server_max_bytes =
+        crate::http::admin::megabytes_to_bytes(state.runtime().media_board_max_total_mb());
+    let max_bytes = match quota_mb {
+        Some(megabytes) => {
+            crate::http::admin::megabytes_to_bytes(u64::try_from(megabytes).unwrap_or(1).max(1))
+        }
+        None => server_max_bytes,
+    };
+    Ok(json!({
+        "itemsCount": items_count,
+        "usedBytes": used_bytes,
+        "maxBytes": max_bytes,
+        "remainingBytes": (max_bytes - used_bytes).max(0),
+        "quotaMb": quota_mb,
+        "serverMaxBytes": server_max_bytes,
+    }))
+}
+
+/// Playback counters of one guild (`GET /overlay/guild`, right `viewQueue`).
+async fn playback_payload(
+    state: &AppState,
+    guild_id: &GuildId,
+    busy_until: Option<time::UtcDateTime>,
+) -> Result<Value, Response> {
+    let db = db(state)?;
+    let counts = crate::http::admin::queries::playback_counts_for_guild(db, guild_id.as_str())
+        .await
+        .map_err(|db_error| db_failure("overlay_guild.playback", &db_error))?;
+    let count = |wanted: &str| {
+        counts
+            .iter()
+            .find(|(status, _)| status == wanted)
+            .map_or(0, |(_, count)| *count)
+    };
+    Ok(json!({
+        "done": count("DONE"),
+        "failed": count("FAILED"),
+        "pending": count("PENDING"),
+        "busyUntil": iso(busy_until),
+    }))
+}
+
 /// Handler `GET /overlay/guild`.
 pub async fn get_guild(State(state): State<AppState>, auth: AuthedOverlayClient) -> Response {
     let db = match db(&state) {
@@ -273,6 +333,39 @@ pub async fn get_guild(State(state): State<AppState>, auth: AuthedOverlayClient)
         .is_none_or(|access| access.guests_can_view_board);
     let role = auth.role();
     let rights = state.rights.snapshot();
+    let rights_role = role.into();
+    let can = |action: Action| rights.allowed(Surface::Overlay, action, rights_role);
+    let view_board = can(Action::ViewBoard) && (role != GuildRole::Guest || guests_can_view_board);
+    let view_queue = can(Action::ViewQueue);
+
+    // Board and playback blocks are only readable with their right: the other
+    // roles receive `null`, exactly like a forbidden list.
+    let media_board = if view_board {
+        match board_usage_payload(&state, guild_id).await {
+            Ok(payload) => payload,
+            Err(response) => return response,
+        }
+    } else {
+        Value::Null
+    };
+    let playback = if view_queue {
+        match playback_payload(
+            &state,
+            guild_id,
+            settings.as_ref().and_then(|guild| guild.busy_until),
+        )
+        .await
+        {
+            Ok(payload) => payload,
+            Err(response) => return response,
+        }
+    } else {
+        Value::Null
+    };
+
+    let own_default = settings.as_ref().and_then(|guild| guild.default_media_time);
+    let own_max = settings.as_ref().and_then(|guild| guild.max_media_time);
+    let server_default = i64::try_from(state.runtime().default_duration()).unwrap_or(5);
 
     json_response(
         StatusCode::OK,
@@ -285,10 +378,19 @@ pub async fn get_guild(State(state): State<AppState>, auth: AuthedOverlayClient)
                 "iconUrl": access.as_ref().and_then(guild_icon_url),
                 "guestsCanViewBoard": guests_can_view_board,
                 "settings": {
-                    "defaultMediaTime": settings.as_ref().and_then(|guild| guild.default_media_time),
-                    "maxMediaTime": settings.as_ref().and_then(|guild| guild.max_media_time),
+                    "defaultMediaTime": own_default,
+                    "maxMediaTime": own_max,
                     "displayMediaFull": settings.as_ref().is_some_and(|guild| guild.display_media_full),
+                    // Valeurs effectives montrées par la console du propriétaire :
+                    // la durée par défaut du serveur comble l'absence de réglage,
+                    // la durée maximale n'a pas de défaut serveur (`null` = sans limite).
+                    "effective": {
+                        "defaultMediaTime": own_default.unwrap_or(server_default),
+                        "maxMediaTime": own_max,
+                    },
                 },
+                "mediaBoard": media_board,
+                "playback": playback,
                 "connectedCount": state.admin_hub.connected_for_guild(guild_id),
             },
             "member": match &auth.member {

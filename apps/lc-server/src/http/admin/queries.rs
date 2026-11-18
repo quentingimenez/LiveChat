@@ -77,6 +77,37 @@ pub async fn playback_counts(db: &Db) -> Result<Vec<(String, String, i64)>, DbEr
     .map_err(DbError::from)
 }
 
+/// Compteurs de playback d'une seule guilde : `(status, count)`.
+pub async fn playback_counts_for_guild(
+    db: &Db,
+    guild_id: &str,
+) -> Result<Vec<(String, i64)>, DbError> {
+    sqlx::query_as::<_, (String, i64)>(
+        "SELECT status, COUNT(*) \
+         FROM playback_jobs \
+         WHERE guild_id = ?1 \
+         GROUP BY status",
+    )
+    .bind(guild_id)
+    .fetch_all(db.pool())
+    .await
+    .map_err(DbError::from)
+}
+
+/// Occupation du board média d'une guilde : `(items, used_bytes)`.
+pub async fn guild_board_usage(db: &Db, guild_id: &str) -> Result<(i64, i64), DbError> {
+    sqlx::query_as::<_, (i64, i64)>(
+        "SELECT COUNT(*), COALESCE(SUM(assets.size_bytes), 0) \
+           FROM media_board_items AS items \
+           JOIN media_assets AS assets ON assets.id = items.media_asset_id \
+          WHERE items.guild_id = ?1",
+    )
+    .bind(guild_id)
+    .fetch_one(db.pool())
+    .await
+    .map_err(DbError::from)
+}
+
 /// Octets occupés par le cache : médias `READY` absents du board média.
 ///
 /// Même définition que l'agrégat legacy (`status: READY`,

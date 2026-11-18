@@ -3,7 +3,7 @@
 import { api, run } from '../core/api.js';
 import { openContextMenu } from '../core/contextmenu.js';
 import { h, icon } from '../core/dom.js';
-import { formatDuration } from '../core/format.js';
+import { formatDuration, relativeTime } from '../core/format.js';
 import { invoke } from '../core/ipc.js';
 import { can, describeError, KIND_LABELS, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
@@ -11,6 +11,16 @@ import { loadQueue, refreshQueueAutomatically } from '../data.js';
 
 export function jobTitle(job) {
   return job.title || job.text || (job.kind ? KIND_LABELS[job.kind] : null) || 'Média';
+}
+
+// Where the job comes from: a board item (`mediaAssetId`, "board") or a
+// one-off play / text sent straight to the queue ("direct"). Hidden when the
+// server does not say (older server).
+function originBadge(job) {
+  if (job.origin !== 'board' && job.origin !== 'direct') {
+    return null;
+  }
+  return h('span', { class: 'badge queue-origin' }, job.origin === 'direct' ? 'Direct' : 'Board');
 }
 
 // Stop actions offered for the playing media. « Chez moi » only clears this
@@ -81,6 +91,7 @@ export function renderQueue() {
           'div',
           { class: 'row' },
           h('strong', { class: 'ellipsis' }, jobTitle(playing)),
+          originBadge(playing),
           playing.authorName ? h('span', { class: 'meta' }, `par ${playing.authorName}`) : null,
           h('span', { class: 'spacer' }),
           h('span', { class: 'meta' }, `${formatDuration(Math.min(elapsed, playing.durationSec)) || '0:00'} / ${formatDuration(playing.durationSec) || '0:00'}`),
@@ -110,7 +121,7 @@ export function renderQueue() {
             'div',
             { class: 'line is-queue', onContextMenu: (event) => openPendingMenu(event, job) },
             h('span', { class: 'meta' }, index + 1),
-            h('div', { class: 'ellipsis' }, jobTitle(job), job.authorName ? h('span', { class: 'sub' }, `  par ${job.authorName}`) : null),
+            h('div', { class: 'ellipsis' }, jobTitle(job), originBadge(job), job.authorName ? h('span', { class: 'sub' }, `  par ${job.authorName}`) : null),
             h('span', { class: 'meta' }, formatDuration(job.durationSec) || ''),
             can('moderateQueue')
               ? h('button', { class: 'btn is-quiet', 'aria-label': `Retirer ${jobTitle(job)} de la file`, title: 'Retirer de la file', onClick: () => removeJob(job) }, icon('close'))
@@ -128,7 +139,33 @@ export function renderQueue() {
       ),
     );
   }
-  return h('div', null, blocks);
+  return h('div', null, blocks, renderHistory());
+}
+
+// Last finished/failed plays of the guild, collapsed by default. The status is
+// drawn as a coloured glyph so the row stays readable without an icon font.
+function renderHistory() {
+  if (!can('viewQueue') || state.queueHistory.length === 0) {
+    return null;
+  }
+  const items = state.queueHistory.slice(0, 30);
+  const rows = items.map((job) => {
+    const failed = job.status === 'failed';
+    return h(
+      'div',
+      { class: 'line is-history' },
+      h('span', { class: `history-status ${failed ? 'is-err' : 'is-ok'}`, title: failed ? 'Échec' : 'Terminé' }, failed ? icon('close') : icon('check')),
+      h('div', { class: 'ellipsis' }, jobTitle(job), originBadge(job)),
+      h('span', { class: 'sub ellipsis' }, job.authorName ? `par ${job.authorName}` : '—'),
+      h('span', { class: 'sub', title: job.finishedAt || '' }, relativeTime(job.finishedAt)),
+    );
+  });
+  return h(
+    'details',
+    { class: 'queue-history' },
+    h('summary', null, `Historique (${items.length})`),
+    h('div', { class: 'list' }, rows),
+  );
 }
 
 export async function stopPlayback() {

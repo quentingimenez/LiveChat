@@ -206,6 +206,11 @@ impl Harness {
         self.invite_for(&self.guild_id, role).await
     }
 
+    /// Path of a file inside the harness media directory.
+    pub(super) fn media_path(&self, name: &str) -> std::path::PathBuf {
+        self._media.path().join(name)
+    }
+
     /// Creates another standalone guild in the same database.
     pub(super) async fn second_guild(&self, name: &str) -> GuildId {
         let guild_id = GuildId::generate();

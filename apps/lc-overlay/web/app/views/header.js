@@ -24,7 +24,7 @@ export function renderHeader() {
     ['board', 'Board', null],
     ['queue', "File d'attente", state.queue.pending.length || null],
   ];
-  if (can('manageMembers') || can('manageInvites')) {
+  if (can('manageMembers') || can('manageInvites') || can('manageSettings')) {
     tabs.push(['admin', 'Administration', null]);
   }
   tabs.push(['settings', 'Réglages', null]);

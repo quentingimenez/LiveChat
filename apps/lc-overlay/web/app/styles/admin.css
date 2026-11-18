@@ -113,6 +113,22 @@
   gap: 4px;
 }
 
+/* Journal: date, actor, action and target path of each admin mutation. */
+.line.is-audit {
+  grid-template-columns: 120px 180px minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.line.is-audit .mono {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 12px;
+}
+
+.chip .count {
+  margin-left: 6px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
 .subtabs {
   display: flex;
   gap: 4px;

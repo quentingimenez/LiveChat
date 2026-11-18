@@ -80,6 +80,7 @@ use crate::app::AppState;
 
 pub(crate) mod admin;
 mod auth;
+pub(crate) mod board_clear;
 mod board_extras;
 pub(crate) mod devices;
 pub(crate) mod discord_link;
@@ -236,6 +237,8 @@ mod board_extras_tests;
 #[cfg(test)]
 mod device_admin_tests;
 #[cfg(test)]
+mod guild_admin_tests;
+#[cfg(test)]
 mod guild_tests;
 #[cfg(test)]
 mod ingestion_tests;
@@ -332,6 +335,7 @@ pub fn router() -> Router<AppState> {
             "/overlay/queue",
             get(queue::get_queue).delete(queue::clear_queue),
         )
+        .route("/overlay/queue/history", get(queue::get_history))
         .route(
             "/overlay/queue/{job_id}",
             axum::routing::delete(queue::remove_job),
@@ -388,6 +392,11 @@ pub fn router() -> Router<AppState> {
             "/overlay/admin/settings",
             axum::routing::patch(admin::update_settings),
         )
+        .route(
+            "/overlay/admin/media-board/clear",
+            post(admin::clear_media_board),
+        )
+        .route("/overlay/admin/audit", get(admin::list_audit))
         .route(
             "/overlay/admin/discord-link-code",
             post(discord_link::create_link_code),

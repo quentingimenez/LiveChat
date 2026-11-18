@@ -5,9 +5,15 @@
 // its own. Its zone is placed on the overlay screen like the device one
 // (`settings_placement_start` with `guildId`), its alignment previewed live.
 
+import { api, run } from '../core/api.js';
 import { h } from '../core/dom.js';
-import { activeGuild, can, guildLabel } from '../core/state.js';
+import { formatBytes } from '../core/format.js';
+import { activeGuild, can, guildLabel, state } from '../core/state.js';
+import { notify } from '../core/toast.js';
+import { openDialog } from '../core/ui.js';
+import { loadGuild, loadGuildInfo } from '../data.js';
 import { renderServerSettings } from './admin.js';
+import { renderView } from './view.js';
 import {
   ALIGNMENTS,
   applyPatch,
@@ -157,6 +163,144 @@ function renderSound(settings, guild) {
   );
 }
 
+// ------------------------------------------------------------- board (admin)
+
+// Guild quota in Go, one decimal at most; empty when the server limit applies.
+function quotaInGo(mediaBoard) {
+  if (!mediaBoard || mediaBoard.quotaMb == null) {
+    return '';
+  }
+  return String(Math.round((mediaBoard.quotaMb / 1024) * 10) / 10);
+}
+
+function mediaCount(mediaBoard) {
+  const count = Number(mediaBoard.itemsCount) || 0;
+  return `${count} média${count === 1 ? '' : 's'}`;
+}
+
+// « Vider le board » asks the guild name, like the server console's strong
+// confirmation. The server compares it exactly (`confirmation_mismatch`).
+function openClearBoardDialog(guildName) {
+  openDialog((close) => {
+    const field = h('input', {
+      class: 'field',
+      id: 'clear-board-name',
+      'aria-label': 'Nom de la guilde',
+      autocomplete: 'off',
+      placeholder: guildName,
+    });
+    const mismatch = h('p', { class: 'meta', hidden: true }, 'Le nom ne correspond pas.');
+    const confirm = async () => {
+      if (field.value !== guildName) {
+        mismatch.hidden = false;
+        field.focus();
+        return;
+      }
+      const body = await run(() => api('POST', '/overlay/admin/media-board/clear', { confirm: field.value }));
+      if (!body) {
+        return;
+      }
+      close();
+      const deleted = Number((body.deleted && body.deleted.mediaBoardItems) || 0);
+      notify(`Board vidé : ${deleted} média${deleted === 1 ? '' : 's'} supprimé${deleted === 1 ? '' : 's'}.`);
+      await loadGuild();
+      renderView();
+    };
+    field.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        confirm();
+      }
+    });
+    return [
+      h('h2', null, 'Vider le board ?'),
+      h(
+        'p',
+        null,
+        `Tous les médias de ${guildName} sont supprimés, la lecture est arrêtée et les fichiers orphelins sont effacés. Action immédiate et définitive.`,
+      ),
+      h('label', { for: 'clear-board-name' }, `Saisis « ${guildName} » pour confirmer.`),
+      field,
+      mismatch,
+      h(
+        'div',
+        { class: 'actions' },
+        h('button', { class: 'btn is-quiet', onClick: close }, 'Annuler'),
+        h('button', { class: 'btn is-danger', onClick: confirm }, 'Vider le board'),
+      ),
+    ];
+  });
+}
+
+function renderBoardSettings() {
+  const guild = (state.info && state.info.guild) || {};
+  const mediaBoard = guild.mediaBoard || null;
+  const serverMaxBytes = mediaBoard && Number.isFinite(Number(mediaBoard.serverMaxBytes)) ? Number(mediaBoard.serverMaxBytes) : null;
+  const serverMaxGo = serverMaxBytes ? Math.floor(serverMaxBytes / (1024 * 1024 * 1024)) : null;
+  const quota = h('input', {
+    class: 'field',
+    id: 'set-board-quota',
+    type: 'number',
+    min: '1',
+    max: serverMaxGo && serverMaxGo >= 1 ? String(serverMaxGo) : null,
+    step: '1',
+    value: quotaInGo(mediaBoard),
+    placeholder: serverMaxGo && serverMaxGo >= 1 ? String(serverMaxGo) : '',
+    style: 'max-width:160px',
+  });
+  const save = async () => {
+    const raw = quota.value.trim().replace(',', '.');
+    const gigabytes = raw === '' ? null : Number(raw);
+    if (gigabytes !== null && (!Number.isFinite(gigabytes) || gigabytes <= 0)) {
+      notify('Quota invalide : indique un nombre de Go supérieur à 0.', true);
+      quota.focus();
+      return;
+    }
+    const boardQuotaMb = gigabytes === null ? null : Math.max(1, Math.round(gigabytes * 1024));
+    const body = await run(
+      () => api('PATCH', '/overlay/admin/settings', { boardQuotaMb }),
+      'Quota du board enregistré.',
+    );
+    if (!body) {
+      return;
+    }
+    await loadGuildInfo();
+    renderView();
+  };
+  const usage = mediaBoard
+    ? `${mediaCount(mediaBoard)} · ${formatBytes(mediaBoard.usedBytes)} / ${formatBytes(mediaBoard.maxBytes)}`
+    : 'Occupation inconnue';
+  return section(
+    'Board',
+    h('p', { class: 'settings-hint is-lead' }, `Occupation : ${usage}.`),
+    h(
+      'p',
+      { class: 'settings-hint' },
+      serverMaxBytes
+        ? `Sans quota propre, la limite du serveur s’applique (${formatBytes(serverMaxBytes)}). Le quota d’une guilde ne peut pas la dépasser.`
+        : 'Sans quota propre, la limite du serveur s’applique.',
+    ),
+    controlRow(
+      'Quota propre (Go)',
+      h(
+        'div',
+        { class: 'row is-wrap' },
+        quota,
+        h('button', { class: 'btn', type: 'button', onClick: save }, 'Enregistrer'),
+      ),
+      'set-board-quota',
+    ),
+    h('p', { class: 'settings-hint is-under' }, 'Vide = quota du serveur.'),
+    h(
+      'div',
+      { class: 'row is-wrap settings-row-actions' },
+      guild.name
+        ? h('button', { class: 'btn is-quiet is-danger', type: 'button', onClick: () => openClearBoardDialog(guild.name) }, 'Vider le board')
+        : h('span', { class: 'settings-hint' }, 'Le nom de la guilde est inconnu : le vidage demande son nom, il est donc indisponible.'),
+    ),
+  );
+}
+
 export function renderGuildSettings() {
   const guild = activeGuild();
   const settings = currentDeviceSettings();
@@ -181,5 +325,6 @@ export function renderGuildSettings() {
     h('div', { class: 'settings-head' }, h('p', { class: 'meta' }, `Réglages de ${guildLabel(guild)}.`)),
     deviceSections,
     can('manageSettings') ? section('Serveur', h('p', { class: 'settings-hint is-lead' }, 'Pour toute la guilde, sur tous les appareils.'), renderServerSettings()) : null,
+    can('manageSettings') ? renderBoardSettings() : null,
   );
 }

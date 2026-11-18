@@ -446,8 +446,11 @@ pub async fn download_http(
         .is_some_and(|content_type| content_type.to_ascii_lowercase().contains("text/html"))
     {
         return Err(MediaError::new(
-            MediaErrorCode::UnsupportedSource,
-            "URL points to an HTML page, not a direct media file",
+            MediaErrorCode::DownloadFailed,
+            format!(
+                "la source a renvoyé une page HTML au lieu d'un média (HTTP {})",
+                status.as_u16()
+            ),
         ));
     }
     let extension = content_type
@@ -549,10 +552,10 @@ pub async fn download_tiktok(
     temp_dir: &Path,
 ) -> MediaResult<DownloadResult> {
     let page = tiktok::fetch_tiktok_page(config, &source.canonical_url).await?;
-    let owned_headers = tiktok::media_headers(config, &page);
-    let headers = tiktok::header_pairs(&owned_headers);
     let mut last_error: Option<MediaError> = None;
     for candidate in &page.video_candidates {
+        let owned_headers = tiktok::media_headers(config, &page, candidate);
+        let headers = tiktok::header_pairs(&owned_headers);
         match download_http(config, &candidate.url, temp_dir, &headers).await {
             Ok(download) => return Ok(download),
             Err(error) => {
@@ -595,12 +598,33 @@ pub async fn download_tiktok(
             "contenu TikTok privé ou nécessitant une connexion",
         ));
     }
-    Err(last_error.unwrap_or_else(|| {
-        MediaError::new(
-            MediaErrorCode::DownloadFailed,
-            "aucun média TikTok téléchargeable",
-        )
-    }))
+    Err(classify_public_tiktok_failure(last_error.unwrap_or_else(
+        || {
+            MediaError::new(
+                MediaErrorCode::DownloadFailed,
+                "aucun média TikTok téléchargeable",
+            )
+        },
+    )))
+}
+
+/// Reclasse l'échec d'une page publique dont le CDN a refusé l'URL signée.
+///
+/// Un `401`/`403` HTTP du CDN donne `PrivateOrAuthRequired` par défaut ; sur
+/// une page publique ce n'est pas un contenu privé mais un téléchargement
+/// refusé (cookies de session absents ou invalides). Le message conserve le
+/// statut HTTP pour les journaux. Un contenu réellement privé signalé par
+/// `yt-dlp` (« Private video ») n'est pas un refus HTTP et reste inchangé.
+fn classify_public_tiktok_failure(error: MediaError) -> MediaError {
+    let http_refusal = error.message().contains("HTTP 401") || error.message().contains("HTTP 403");
+    if !error.is(MediaErrorCode::PrivateOrAuthRequired) || !http_refusal {
+        return error;
+    }
+    MediaError::with_raw(
+        MediaErrorCode::DownloadFailed,
+        error.message().to_string(),
+        error.raw_message().unwrap_or_default(),
+    )
 }
 
 async fn download_tiktok_carousel(
@@ -608,8 +632,6 @@ async fn download_tiktok_carousel(
     config: &MediaConfig,
     temp_dir: &Path,
 ) -> MediaResult<DownloadResult> {
-    let owned_headers = tiktok::media_headers(config, page);
-    let headers = tiktok::header_pairs(&owned_headers);
     let mut images: Vec<PathBuf> = Vec::new();
     let mut last_error: Option<MediaError> = None;
     for slide in &page.photo_slides {
@@ -617,6 +639,8 @@ async fn download_tiktok_carousel(
             break;
         }
         for candidate in slide {
+            let owned_headers = tiktok::media_headers(config, page, candidate);
+            let headers = tiktok::header_pairs(&owned_headers);
             match download_http(config, &candidate.url, temp_dir, &headers).await {
                 Ok(download) => {
                     images.push(download.path);
@@ -657,6 +681,8 @@ async fn download_tiktok_carousel(
     }
     let mut audio: Option<PathBuf> = None;
     for candidate in &page.audio_candidates {
+        let owned_headers = tiktok::media_headers(config, page, candidate);
+        let headers = tiktok::header_pairs(&owned_headers);
         match download_http(config, &candidate.url, temp_dir, &headers).await {
             Ok(download) => {
                 audio = Some(download.path);
@@ -998,6 +1024,29 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains(".tiktok.com\tTRUE\t/\tTRUE\t2147483647\tsessionid\tabc"));
         assert!(content.contains("sid_tt\tdef"));
+    }
+
+    #[test]
+    fn public_cdn_rejection_is_a_download_failure_with_its_status() {
+        let forbidden = MediaError::with_raw(
+            MediaErrorCode::PrivateOrAuthRequired,
+            "la source a répondu HTTP 403 (https://v16.test/play.mp4)",
+            "forbidden",
+        );
+        let classified = classify_public_tiktok_failure(forbidden);
+        assert_eq!(classified.code(), MediaErrorCode::DownloadFailed);
+        assert!(classified.message().contains("HTTP 403"));
+        assert_eq!(classified.raw_message(), Some("forbidden"));
+
+        let timeout = MediaError::new(MediaErrorCode::DownloadTimeout, "trop long");
+        assert_eq!(classify_public_tiktok_failure(timeout.clone()), timeout);
+
+        // Un contenu réellement privé signalé par yt-dlp reste classé privé.
+        let private = MediaError::new(
+            MediaErrorCode::PrivateOrAuthRequired,
+            "ERROR: [tiktok] 123: Private video. Sign in if you've been granted access",
+        );
+        assert_eq!(classify_public_tiktok_failure(private.clone()), private);
     }
 
     #[test]

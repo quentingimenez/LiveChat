@@ -27,8 +27,21 @@ serveur, entrée tray « Paramètres… ».
 ## Lancer
 
 Bombadil ne tourne que sous Linux et macOS (pas de binaire Windows) ; il pilote
-le Chrome ou Chromium trouvé sur le `PATH`. En CI : job `test (ubuntu-latest)`
-de `rust.yml`, pas encore bloquant, traces en artefact `bombadil-traces`.
+le Chrome ou Chromium trouvé sur le `PATH`. En CI :
+
+- à chaque changement : job `test (ubuntu-latest)` de `rust.yml`, 3 min par
+  cible, pas encore bloquant, traces en artefact `bombadil-traces` ;
+- chaque nuit (et à la demande, *Run workflow* avec la durée en minutes) :
+  `bombadil-nightly.yml`, 20 min par cible, le board dans cinq modes du mock
+  (`admin`, `member`, `guest`, `empty`, `removed`), avec les specs `*-soak.ts`.
+  Les traces ne sont téléversées qu'en cas d'échec.
+
+Les specs `*-soak.ts` ajoutent `noDomNodeLeak` et `noListenerLeak`
+(`specs/leaks.ts`) : sur 2 minutes, le nombre de nœuds DOM ou d'écouteurs ne
+doit pas exploser. Bombadil mesure sans forcer le ramasse-miettes, et la
+croissance normale atteint déjà des milliers d'écouteurs en quelques secondes ;
+les seuils, à environ trois fois le maximum observé, n'attrapent donc qu'une
+fuite qui s'emballe.
 
 ```sh
 npm ci
@@ -43,7 +56,10 @@ npm run board
 Variables : `BOMBADIL_TIME_LIMIT` (`3m`), `BOMBADIL_NO_SANDBOX=1` (Chromium sans
 sandbox, utile en conteneur ou en CI), `BOMBADIL_CMD` (commande de Bombadil en
 tableau JSON, par exemple `["wsl.exe","-d","Ubuntu","--","bombadil"]`),
-`LC_BOMBADIL_ADMIN_PORT` (39417), `LC_BOMBADIL_BOARD_PORT` (39418).
+`LC_BOMBADIL_ADMIN_PORT` (39417), `LC_BOMBADIL_BOARD_PORT` (39418),
+`LC_BOMBADIL_BOARD_QUERY` (options du mock, `media` ; par exemple
+`role=guest&media`), `BOMBADIL_SPEC` et `BOMBADIL_OUTPUT` (spec et dossier de
+sortie, par défaut ceux de la cible).
 
 Le serveur de la console tourne en `NODE_ENV=development` : c'est ce qui
 exempte les clients loopback des limites de débit, que l'explorateur, bien plus

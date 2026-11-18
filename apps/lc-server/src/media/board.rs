@@ -91,6 +91,7 @@ pub async fn add_to_board(
         artwork_asset_id: None,
         artwork_on_overlay: false,
         display_duration_sec: display_duration_sec.filter(|_| asset.kind == MediaKind::Image),
+        display_scale_percent: None,
     };
 
     match repository.create(&item).await {

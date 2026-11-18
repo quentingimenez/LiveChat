@@ -170,6 +170,11 @@ pub struct MediaBoardItem {
     /// uses the guild default. Ignored for video and audio.
     #[serde(default)]
     pub display_duration_sec: Option<i64>,
+    /// Scale chosen for an image item, in percent
+    /// ([`MIN_DISPLAY_SCALE_PERCENT`]..=[`MAX_DISPLAY_SCALE_PERCENT`]) of its
+    /// natural size on the overlay. `None` is 100 %, today's behaviour.
+    #[serde(default)]
+    pub display_scale_percent: Option<i64>,
 }
 
 /// Shortest display time a member can choose for an image, in seconds.
@@ -180,6 +185,16 @@ pub const MAX_DISPLAY_DURATION_SEC: i64 = 600;
 /// `true` when `seconds` is a display time a member may choose.
 pub fn is_valid_display_duration(seconds: i64) -> bool {
     (MIN_DISPLAY_DURATION_SEC..=MAX_DISPLAY_DURATION_SEC).contains(&seconds)
+}
+
+/// Smallest scale an image can be shown at, in percent of its natural size.
+pub const MIN_DISPLAY_SCALE_PERCENT: i64 = 10;
+/// Largest scale an image can be shown at, in percent of its natural size.
+pub const MAX_DISPLAY_SCALE_PERCENT: i64 = 1000;
+
+/// `true` when `percent` is a scale a member may choose.
+pub fn is_valid_display_scale(percent: i64) -> bool {
+    (MIN_DISPLAY_SCALE_PERCENT..=MAX_DISPLAY_SCALE_PERCENT).contains(&percent)
 }
 
 /// Job de la file de lecture (scheduler).

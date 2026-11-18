@@ -540,11 +540,13 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
         }
         let media = self.load_media(&job).await?;
         let artwork = self.load_artwork(&job, media.as_ref()).await?;
+        let display_scale = self.load_display_scale(&job, media.as_ref()).await?;
         let timing = payload::persisted_timing(&job);
         let play = payload::build_play_payload(
             &job,
             media.as_ref(),
             artwork.as_ref(),
+            display_scale,
             timing,
             &self.config,
         );
@@ -736,10 +738,12 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
             let timing =
                 payload::dispatch_timing(&job, media.as_ref(), guild.as_ref(), &self.config);
             let artwork = self.load_artwork(&job, media.as_ref()).await?;
+            let display_scale = self.load_display_scale(&job, media.as_ref()).await?;
             let play = payload::build_play_payload(
                 &job,
                 media.as_ref(),
                 artwork.as_ref(),
+                display_scale,
                 timing,
                 &self.config,
             );
@@ -942,6 +946,32 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
             .get(artwork_id)
             .await?
             .filter(|picture| picture.is_ready() && picture.kind == lc_domain::MediaKind::Image))
+    }
+
+    /// Scale chosen for this image on the guild's board, in percent. A missing
+    /// board item (a media played outside the board) or a lookup failure only
+    /// means natural size.
+    async fn load_display_scale(
+        &self,
+        job: &PlaybackJob,
+        media: Option<&MediaAsset>,
+    ) -> PlaybackResult<Option<i64>> {
+        let Some(media) = media.filter(|asset| asset.kind == lc_domain::MediaKind::Image) else {
+            return Ok(None);
+        };
+        let item = match self
+            .db
+            .media_board()
+            .get_by_guild_and_asset(&job.guild_id, media.id)
+            .await
+        {
+            Ok(item) => item,
+            Err(error) => {
+                warn!(%error, "lecture de l'échelle d'affichage impossible : taille naturelle");
+                return Ok(None);
+            }
+        };
+        Ok(item.and_then(|item| item.display_scale_percent))
     }
 
     /// Estime le temps restant d'un job (`playback.state` frais, sinon horloge).

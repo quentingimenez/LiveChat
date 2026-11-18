@@ -1,3 +1,28 @@
+/**
+ * Box of a picture shown at `scalePercent` of its natural size, kept inside
+ * `maxWidth` × `maxHeight` with its aspect ratio. `capped` tells whether the
+ * display zone shrank it. Also loaded by the Node unit tests.
+ */
+export function computeDisplayedImageSize({ naturalWidth, naturalHeight, scalePercent, maxWidth, maxHeight }) {
+    const natural = [Number(naturalWidth), Number(naturalHeight)];
+    const percent = Number(scalePercent);
+    if (!(natural[0] > 0) || !(natural[1] > 0) || !(percent > 0)) {
+        return { width: 0, height: 0, capped: false };
+    }
+    const factor = percent / 100;
+    let width = natural[0] * factor;
+    let height = natural[1] * factor;
+    const limitWidth = Number.isFinite(Number(maxWidth)) ? Math.max(0, Number(maxWidth)) : Number.POSITIVE_INFINITY;
+    const limitHeight = Number.isFinite(Number(maxHeight)) ? Math.max(0, Number(maxHeight)) : Number.POSITIVE_INFINITY;
+    const fit = Math.min(1, limitWidth / width, limitHeight / height);
+    width *= fit;
+    height *= fit;
+    return {
+        width: Math.max(1, Math.round(width)),
+        height: Math.max(1, Math.round(height)),
+        capped: fit < 1
+    };
+}
 function resolveJobId(jobId) {
     if (typeof jobId !== 'string' || jobId.trim() === '') {
         return 'unknown-job';
@@ -5,6 +30,61 @@ function resolveJobId(jobId) {
     return jobId;
 }
 export function createOverlayLegacyMediaRenderUtils() {
+    // Space left in the display zone for the media itself: the zone minus the
+    // header (author chip + countdown) and the caption footer.
+    function mediaZoneLimits(params, targetContainer) {
+        const frame = targetContainer.parentElement;
+        const header = frame ? frame.querySelector('.overlay-media-header') : null;
+        let headerHeight = 0;
+        if (header instanceof HTMLElement) {
+            const style = window.getComputedStyle(header);
+            headerHeight = header.getBoundingClientRect().height + (Number.parseFloat(style.marginBottom) || 0);
+        }
+        const footerHeight = frame instanceof HTMLElement
+            ? Number.parseFloat(frame.style.getPropertyValue('--overlay-media-footer-height')) || 0
+            : 0;
+        const layer = params.mediaLayer;
+        const width = layer instanceof HTMLElement ? layer.clientWidth : window.innerWidth;
+        const height = layer instanceof HTMLElement ? layer.clientHeight : window.innerHeight;
+        return { maxWidth: width, maxHeight: Math.max(0, height - headerHeight - footerHeight) };
+    }
+    // An image with a chosen scale takes natural size × scale / 100, still
+    // capped by the zone. Without the field it keeps today's CSS fit.
+    function applyImageDisplayScale(params, element, targetContainer, mediaPayload) {
+        const percent = Number(mediaPayload.displayScalePercent);
+        if (!Number.isFinite(percent) || percent <= 0) {
+            return;
+        }
+        const apply = () => {
+            if (!(element instanceof HTMLImageElement) || !element.isConnected) {
+                return;
+            }
+            const limits = mediaZoneLimits(params, targetContainer);
+            const size = computeDisplayedImageSize({
+                naturalWidth: element.naturalWidth,
+                naturalHeight: element.naturalHeight,
+                scalePercent: percent,
+                ...limits
+            });
+            if (size.width > 0 && size.height > 0) {
+                element.style.width = `${size.width}px`;
+                element.style.height = `${size.height}px`;
+            }
+            params.scheduleMediaHeaderLayout();
+        };
+        if (element.complete && element.naturalWidth > 0) {
+            // Let the caption footer be laid out before measuring the zone.
+            if (typeof window.requestAnimationFrame === 'function') {
+                window.requestAnimationFrame(apply);
+            }
+            else {
+                setTimeout(apply, 0);
+            }
+        }
+        else {
+            element.addEventListener('load', apply, { once: true });
+        }
+    }
     async function renderMedia(params) {
         const mediaPayload = params.payload?.media;
         if (!mediaPayload) {
@@ -51,6 +131,7 @@ export function createOverlayLegacyMediaRenderUtils() {
         params.scheduleMediaHeaderLayout();
         params.applyVolume();
         if (mediaPayload.kind === 'image') {
+            applyImageDisplayScale(params, element, targetContainer, mediaPayload);
             return;
         }
         const playableElement = element;

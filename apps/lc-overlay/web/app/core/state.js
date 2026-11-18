@@ -27,6 +27,7 @@ export const state = {
   triggers: new Map(), // jobId -> itemId, for the playback badges
   triggerHints: new Map(), // jobId -> { outcome, position, at } until the queue is read again
   members: [],
+  devices: [],
   invites: [],
   pairingCodes: [],
   bans: [],
@@ -54,6 +55,8 @@ export const ERROR_LABELS = {
   discord_already_linked: 'Ce compte Discord est déjà lié à un autre membre de la guilde.',
   member_banned: 'Ce compte Discord est banni de la guilde.',
   cannot_ban_self: 'Tu ne peux pas te bannir toi-même.',
+  cannot_revoke_self: 'Tu ne peux pas révoquer cet appareil : c’est celui que tu utilises.',
+  device_not_found: 'Cet appareil n’existe plus.',
   ban_not_found: 'Ce bannissement a déjà été levé.',
   invalid_role: 'Rôle inconnu.',
   invalid_payload: 'Valeur invalide.',

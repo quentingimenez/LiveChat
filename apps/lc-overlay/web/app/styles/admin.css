@@ -5,7 +5,7 @@
    « Exclure », a used invite no « Révoquer ») and shift its other columns.
    Action tracks therefore have a fixed width. */
 .line.is-member {
-  grid-template-columns: 30px minmax(0, 1fr) 150px 130px 176px;
+  grid-template-columns: 30px minmax(0, 1fr) 150px 130px 320px;
 }
 
 .line.is-ban {
@@ -25,6 +25,64 @@
 .line.is-code > .row {
   justify-self: end;
   gap: 4px;
+}
+
+/* Device list: label (member + role underneath), version/platform, presence,
+   session mode, then the actions. Same fixed-track rule as the other lists. */
+.line.is-device {
+  grid-template-columns: 30px minmax(0, 1fr) 150px 140px 130px 300px;
+}
+
+.line.is-device .device-actions {
+  justify-self: end;
+  gap: 4px;
+}
+
+.device-cell {
+  min-width: 0;
+}
+
+.device-version {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.device-version .badge {
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+.badge.is-obsolete {
+  background: #4a2c2c;
+  color: #f0b4b4;
+}
+
+.device-platform {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.line.is-device.is-off .avatar {
+  opacity: 0.55;
+}
+
+.device-range input[type='range'] {
+  flex: 1;
+  accent-color: var(--blue);
+}
+
+.device-range output {
+  min-width: 44px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.dialog .device-hint {
+  margin: -6px 0 0;
+  color: var(--text-faint);
+  font-size: 12px;
 }
 
 .member-cell {
@@ -107,10 +165,18 @@
 
 @media (max-width: 1040px) {
   .line.is-member {
-    grid-template-columns: 30px minmax(0, 1fr) 120px 176px;
+    grid-template-columns: 30px minmax(0, 1fr) 120px 320px;
   }
 
   .line.is-member .seen {
+    display: none;
+  }
+
+  .line.is-device {
+    grid-template-columns: 30px minmax(0, 1fr) 140px 130px 300px;
+  }
+
+  .line.is-device .device-version {
     display: none;
   }
 }

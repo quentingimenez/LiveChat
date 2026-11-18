@@ -69,6 +69,10 @@ function membersShown() {
   return state.page === 'guild' && state.tab === 'admin' && state.adminTab === 'members';
 }
 
+function devicesShown() {
+  return state.page === 'guild' && state.tab === 'admin' && state.adminTab === 'devices';
+}
+
 // Back online: what changed while the socket was closed is read once. The
 // delay lets the server register the new connection first.
 function scheduleGuildRefresh() {
@@ -78,7 +82,7 @@ function scheduleGuildRefresh() {
   guildRefreshTimer = setTimeout(async () => {
     guildRefreshTimer = null;
     await loadGuild({ quiet: true });
-    if (membersShown()) {
+    if (membersShown() || devicesShown()) {
       loadAdmin({ quiet: true });
     }
   }, 800);
@@ -96,7 +100,7 @@ function schedulePresenceRefresh() {
       return;
     }
     loadGuildInfo({ quiet: true });
-    if (membersShown()) {
+    if (membersShown() || devicesShown()) {
       loadAdmin({ quiet: true });
     }
   }, 1000);
@@ -177,6 +181,7 @@ function resetGuildData() {
   state.triggers.clear();
   state.triggerHints.clear();
   state.members = [];
+  state.devices = [];
   state.invites = [];
   state.pairingCodes = [];
   state.search = '';
@@ -388,6 +393,9 @@ export async function loadAdmin(options) {
   const quiet = Boolean(options && options.quiet === true);
   if (state.adminTab === 'members' && can('manageMembers')) {
     state.members = (await readList('/overlay/admin/members', quiet)) || state.members;
+  }
+  if (state.adminTab === 'devices' && can('manageMembers')) {
+    state.devices = (await readList('/overlay/admin/devices', quiet)) || state.devices;
   }
   if (state.adminTab === 'bans' && can('manageMembers')) {
     state.bans = (await readList('/overlay/admin/bans', quiet)) || state.bans;

@@ -30,7 +30,7 @@ pub const CONFIG_PATH_ENV: &str = "LIVECHAT_CONFIG_PATH";
 
 const DEFAULT_VOLUME: f64 = 1.0;
 
-const KNOWN_KEYS: [&str; 22] = [
+const KNOWN_KEYS: [&str; 23] = [
     "displayId",
     "displayIndex",
     "displayKey",
@@ -41,6 +41,7 @@ const KNOWN_KEYS: [&str; 22] = [
     "guestMode",
     "showText",
     "mediaMuted",
+    "hoverDetails",
     "serverUrl",
     "clientToken",
     "clientId",
@@ -279,6 +280,8 @@ pub struct OverlayConfig {
     pub show_text: bool,
     /// Every media is still shown, without its sound.
     pub media_muted: bool,
+    /// A board card shows its details when the pointer stays on it.
+    pub hover_details: bool,
     pub server_url: Option<String>,
     pub client_token: Option<String>,
     pub client_id: Option<String>,
@@ -316,6 +319,7 @@ impl Default for OverlayConfig {
             guest_mode: false,
             show_text: true,
             media_muted: false,
+            hover_details: true,
             server_url: None,
             client_token: None,
             client_id: None,
@@ -377,6 +381,7 @@ impl OverlayConfig {
             .is_some_and(|value| value == &Value::Bool(true));
         config.show_text = bool_field(map, "showText", true, &mut warnings);
         config.media_muted = bool_field(map, "mediaMuted", false, &mut warnings);
+        config.hover_details = bool_field(map, "hoverDetails", true, &mut warnings);
         config.server_url = string_field(map, "serverUrl", &mut warnings);
         config.client_token = string_field(map, "clientToken", &mut warnings);
         config.client_id = string_field(map, "clientId", &mut warnings);
@@ -1045,6 +1050,7 @@ mod tests {
         assert!(!config.auto_start);
         assert!(!config.guest_mode);
         assert!(config.show_text);
+        assert!(config.hover_details);
         assert_eq!(config.display_id, None);
         assert_eq!(config.display_index, None);
         assert_eq!(config.display_key, None);
@@ -1069,6 +1075,22 @@ mod tests {
         assert!(!config.enabled);
         assert!(config.show_text);
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn an_old_settings_json_without_hover_details_loads_with_it_enabled() {
+        let (config, warnings) = OverlayConfig::from_json_value(&json!({
+            "volume": 0.5,
+            "showText": false,
+            "shortcuts": { "stop": "Ctrl+Shift+S" }
+        }));
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        assert!(config.hover_details, "missing field defaults to true");
+        assert!(!config.show_text);
+        assert!(
+            !config.extra.contains_key("hoverDetails"),
+            "a known field is not kept as an unknown extra"
+        );
     }
 
     #[test]
@@ -1207,6 +1229,7 @@ mod tests {
         assert!(!config.auto_start);
         assert!(!config.guest_mode);
         assert!(config.show_text);
+        assert!(config.hover_details);
         assert_eq!(config.display_id, None);
         assert_eq!(config.server_url, None);
         assert!(warnings.len() >= 5, "warnings: {warnings:?}");

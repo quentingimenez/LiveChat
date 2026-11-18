@@ -11,5 +11,9 @@ publish.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+[dev-dependencies]
+# Property-based tests (tests/properties.rs): frozen-contract invariants.
+proptest = "1"
+
 [lints]
 workspace = true

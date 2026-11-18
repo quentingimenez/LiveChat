@@ -198,8 +198,10 @@
     };
   }
 
-  // `GET /overlay/admin/audit` : journal du panneau serveur pour cette guilde.
+  // `GET /overlay/admin/audit` : journal d'administration de la guilde, tenu
+  // par le panneau serveur et par l'overlay (`actor.method === 'overlay'`).
   const auditEntries = [
+    { id: 6, at: new Date(now - 60000).toISOString(), actor: { method: 'overlay', name: 'Quentin' }, action: 'overlay.member_update', method: 'PATCH', path: '/overlay/admin/members/m-lea', status: 200, guildId: '111', clientIp: null },
     { id: 5, at: new Date(now - 8 * 60000).toISOString(), actor: { method: 'secret', name: 'Owner' }, action: 'guild.settings', method: 'PATCH', path: '/admin/api/guilds/111/settings', status: 200, guildId: '111', clientIp: null },
     { id: 4, at: new Date(now - 2 * 3600000).toISOString(), actor: { method: 'discord', name: 'Admin Discord' }, action: 'guild.board_clear', method: 'POST', path: '/admin/api/guilds/111/media-board/clear', status: 200, guildId: '111', clientIp: null },
     { id: 3, at: new Date(now - 26 * 3600000).toISOString(), actor: { method: 'secret', name: 'Owner' }, action: 'guild.member_ban', method: 'POST', path: '/admin/api/guilds/111/members/m-42/ban', status: 200, guildId: '111', clientIp: null },

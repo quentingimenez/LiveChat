@@ -219,7 +219,9 @@ function openUnbanDialog(ban) {
 // ---------------------------------------------------------------- journal
 
 // French labels of the actions written by the server audit middleware
-// (`apps/lc-server/src/http/admin/audit.rs`). Unknown actions are shown raw.
+// (`apps/lc-server/src/http/admin/audit.rs`). Console actions keep their
+// `guild.*` / `auth.*` ids, overlay ones use `overlay.*`. Unknown actions are
+// shown raw.
 const AUDIT_ACTION_LABELS = {
   'auth.login_secret': 'Connexion par secret',
   'auth.login_discord': 'Connexion Discord',
@@ -249,6 +251,29 @@ const AUDIT_ACTION_LABELS = {
   'overlay.revoke': 'Appareil révoqué',
   'overlay.update': 'Appareil modifié',
   'overlay.guild_settings': 'Réglages d’appareil',
+  'overlay.member_update': 'Rôle modifié',
+  'overlay.member_remove': 'Membre exclu',
+  'overlay.member_ban': 'Membre banni',
+  'overlay.ban_remove': 'Bannissement levé',
+  'overlay.device_update': 'Appareil modifié',
+  'overlay.device_revoke': 'Appareil révoqué',
+  'overlay.device_guild_settings': 'Réglages d’appareil',
+  'overlay.device_code': 'Code d’appareil émis',
+  'overlay.invite_create': 'Invitation créée',
+  'overlay.invite_revoke': 'Invitation révoquée',
+  'overlay.pairing_expired_clean': 'Codes expirés purgés',
+  'overlay.pairing_revoke': 'Code d’appairage révoqué',
+  'overlay.settings': 'Réglages de la guilde modifiés',
+  'overlay.board_clear': 'Board vidé',
+  'overlay.discord_link_code': 'Code de liaison Discord',
+  'overlay.discord_unlink': 'Discord délié',
+  'overlay.media_update': 'Média modifié',
+  'overlay.media_remove': 'Média supprimé',
+  'overlay.media_edit': 'Média réencodé',
+  'overlay.media_artwork': 'Image du média modifiée',
+  'overlay.queue_remove': 'Média retiré de la file',
+  'overlay.queue_clear': 'File vidée',
+  'overlay.playback_stop': 'Lecture arrêtée pour tous',
   'ingest_client.create': 'Client d’ingestion créé',
   'ingest_client.revoke': 'Client d’ingestion révoqué',
   'pairing.expired_clean': 'Codes expirés purgés',
@@ -261,6 +286,12 @@ const AUDIT_ACTION_LABELS = {
 
 function auditActionLabel(action) {
   return AUDIT_ACTION_LABELS[action] || action;
+}
+
+// Where the entry comes from. Console sessions use `secret` or `discord`;
+// guild admins acting from the board app use the `overlay` actor kind.
+function auditOrigin(entry) {
+  return entry.actor && entry.actor.method === 'overlay' ? 'Overlay' : 'Panneau';
 }
 
 // Path of the mutation relative to the guild, so the column stays short:
@@ -285,7 +316,7 @@ function renderAudit() {
   return h(
     'div',
     null,
-    h('p', { class: 'meta' }, 'Dernières actions du panneau serveur sur cette guilde, de la plus récente à la plus ancienne.'),
+    h('p', { class: 'meta' }, 'Dernières actions d’administration sur cette guilde, depuis le panneau serveur ou l’overlay.'),
     h(
       'div',
       { class: 'list' },
@@ -294,6 +325,7 @@ function renderAudit() {
           'div',
           { class: 'line is-audit' },
           h('span', { class: 'sub', title: auditDate(entry) }, relativeTime(entry.at)),
+          h('span', { class: 'badge' }, auditOrigin(entry)),
           h('span', { class: 'ellipsis', title: (entry.actor && (entry.actor.name || entry.actor.method)) || '' }, (entry.actor && (entry.actor.name || entry.actor.method)) || '—'),
           h('span', { class: 'ellipsis' }, auditActionLabel(entry.action)),
           h('span', { class: 'sub ellipsis mono', title: entry.path || '' }, auditTarget(entry.path)),

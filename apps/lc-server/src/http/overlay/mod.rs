@@ -79,6 +79,7 @@ use tracing::error;
 use crate::app::AppState;
 
 pub(crate) mod admin;
+mod audit;
 mod auth;
 pub(crate) mod board_clear;
 mod board_extras;
@@ -98,6 +99,7 @@ mod profile_discord;
 pub(crate) mod queue;
 mod say;
 
+pub(crate) use audit::record_playback_stop;
 pub(crate) use auth::AuthedOverlayClient;
 pub use media::sign_media_url;
 
@@ -249,6 +251,8 @@ mod media_import_tests;
 #[cfg(test)]
 mod media_upload_tests;
 #[cfg(test)]
+mod overlay_audit_tests;
+#[cfg(test)]
 mod profile_discord_tests;
 #[cfg(test)]
 mod profile_tests;
@@ -340,7 +344,11 @@ pub fn router() -> Router<AppState> {
             "/overlay/queue/{job_id}",
             axum::routing::delete(queue::remove_job),
         )
-        .route("/overlay/say", post(say::say))
+        .route("/overlay/say", post(say::say));
+
+    // Administrative routes of the guild: one audit layer journals each
+    // successful mutation with the token's guild and member (see `audit`).
+    let admin = Router::new()
         .route("/overlay/admin/members", get(admin::list_members))
         .route(
             "/overlay/admin/members/{member_id}",
@@ -404,12 +412,14 @@ pub fn router() -> Router<AppState> {
         .route(
             "/overlay/admin/discord-link",
             axum::routing::delete(discord_link::unlink),
-        );
+        )
+        .layer(axum::middleware::from_fn(audit::overlay_admin_audit));
 
     Router::new()
         .route("/overlay/pair/consume", post(pair::consume_pairing))
         .route("/overlay/media/{asset_id}", get(media::get_media))
         .merge(authed)
+        .merge(admin)
 }
 
 /// Instant courant, toujours lu depuis l'horloge injectée.

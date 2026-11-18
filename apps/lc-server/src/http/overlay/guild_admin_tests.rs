@@ -26,7 +26,7 @@ fn iso(date: UtcDateTime) -> String {
 }
 
 /// Un média prêt de `size_bytes` octets, avec son fichier sous la racine média.
-async fn seed_asset(
+pub(super) async fn seed_asset(
     harness: &Harness,
     name: &str,
     size_bytes: i64,
@@ -56,7 +56,7 @@ async fn seed_asset(
     (asset, path)
 }
 
-async fn seed_item(
+pub(super) async fn seed_item(
     harness: &Harness,
     guild_id: &GuildId,
     asset: &MediaAsset,

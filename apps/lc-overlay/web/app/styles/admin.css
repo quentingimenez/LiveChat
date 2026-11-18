@@ -113,9 +113,10 @@
   gap: 4px;
 }
 
-/* Journal: date, actor, action and target path of each admin mutation. */
+/* Journal: date, origin (overlay or owner console), actor, action and target
+   path of each admin mutation. */
 .line.is-audit {
-  grid-template-columns: 120px 180px minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: 120px 84px 160px minmax(0, 1fr) minmax(0, 1fr);
 }
 
 .line.is-audit .mono {

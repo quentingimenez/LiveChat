@@ -43,6 +43,8 @@ fn test_config(media_dir: &Path) -> Config {
             media_dir.to_string_lossy().into_owned(),
         ),
         ("MEDIA_BOARD_MAX_TOTAL_MB".to_owned(), "64".to_owned()),
+        ("ADMIN_UI_TOKEN".to_owned(), "admin-secret".to_owned()),
+        ("ADMIN_UI_LOCAL_ONLY".to_owned(), "false".to_owned()),
     ])
     .unwrap()
 }

@@ -99,7 +99,10 @@ pub fn detect_kind(content_type: Option<&str>, probed: Option<&ProbeInfo>) -> Op
             return Some(MediaKind::Video);
         }
         if probed.has_video {
-            if probed.duration_ceil_sec().is_none() && is_image_codec(probed.video_codec.as_deref())
+            // Une image fixe a un codec d'image et, selon FFmpeg, pas de durée
+            // (ou une durée d'une image dans le démultiplexeur `image2`).
+            if is_image_codec(probed.video_codec.as_deref())
+                && (probed.duration_ceil_sec().is_none() || still_image_format(probed))
             {
                 return Some(MediaKind::Image);
             }
@@ -110,6 +113,21 @@ pub fn detect_kind(content_type: Option<&str>, probed: Option<&ProbeInfo>) -> Op
         }
     }
     content_type.and_then(kind_from_mime)
+}
+
+/// `true` si ffprobe a lu le fichier avec un démultiplexeur d'image fixe.
+///
+/// FFmpeg 9 annonce une durée d'une image (1/25 s) pour un JPEG ouvert par
+/// `image2` : sans cette distinction, une photo était classée vidéo.
+fn still_image_format(probed: &ProbeInfo) -> bool {
+    probed.format_name.as_deref().is_some_and(|format| {
+        format.split(',').map(str::trim).any(|name| {
+            matches!(
+                name,
+                "image2" | "image2pipe" | "jpeg_pipe" | "png_pipe" | "webp_pipe" | "bmp_pipe"
+            )
+        })
+    })
 }
 
 /// `true` si le codec vidéo correspond vraisemblablement à une image.
@@ -1348,6 +1366,24 @@ mod tests {
             ..ProbeInfo::default()
         };
         assert_eq!(detect_kind(None, Some(&image)), Some(MediaKind::Image));
+        // FFmpeg 9 annonce une durée d'une image pour un JPEG `image2`.
+        let jpeg = ProbeInfo {
+            has_video: true,
+            video_codec: Some("mjpeg".to_string()),
+            duration_sec: Some(0.04),
+            format_name: Some("image2".to_string()),
+            width: Some(1264),
+            height: Some(1626),
+            ..ProbeInfo::default()
+        };
+        assert_eq!(detect_kind(None, Some(&jpeg)), Some(MediaKind::Image));
+        // Un vrai conteneur vidéo avec un codec d'image reste une vidéo.
+        let slideshow = ProbeInfo {
+            duration_sec: Some(3.0),
+            format_name: Some("mov,mp4,m4a,3gp,3g2,mj2".to_string()),
+            ..jpeg
+        };
+        assert_eq!(detect_kind(None, Some(&slideshow)), Some(MediaKind::Video));
         assert_eq!(
             detect_kind(Some("image/webp"), None),
             Some(MediaKind::Image)

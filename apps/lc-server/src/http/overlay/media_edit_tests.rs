@@ -429,6 +429,7 @@ async fn a_video_is_edited_as_a_copy_then_replaced_with_real_ffmpeg() {
                 message: Some("miaou"),
                 artwork_on_overlay: None,
                 display_duration_sec: None,
+                display_scale_percent: None,
             },
         )
         .await

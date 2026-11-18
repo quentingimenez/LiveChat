@@ -882,6 +882,7 @@ async fn upload_with_replace_item_id_replaces_the_media_of_the_item() {
                 message: Some("coucou"),
                 artwork_on_overlay: None,
                 display_duration_sec: None,
+                display_scale_percent: None,
             },
         )
         .await

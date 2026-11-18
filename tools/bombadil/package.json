@@ -1,0 +1,15 @@
+{
+  "name": "lc-bombadil",
+  "private": true,
+  "description": "Property-based exploration of the admin console and the overlay board with Bombadil",
+  "type": "module",
+  "scripts": {
+    "admin": "node run-admin.mjs",
+    "board": "node run-board.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@antithesishq/bombadil": "0.7.10",
+    "typescript": "^5.9.3"
+  }
+}

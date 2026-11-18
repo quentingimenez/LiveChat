@@ -48,7 +48,7 @@ import {
   selectRange,
   toggleId,
 } from '../core/selection.js';
-import { invoke } from '../core/ipc.js';
+import { invoke, listen } from '../core/ipc.js';
 import { activeGuild, can, describeError, KIND_LABELS, state } from '../core/state.js';
 import { previewVolume } from '../core/sound.js';
 import { notify } from '../core/toast.js';
@@ -416,7 +416,7 @@ function buildCard(entry) {
       style: cardStyle(cardRatio(ratio)),
       onContextmenu: (event) => openCardMenu(event, entry.item),
       onMouseenter: () => {
-        if (!state.selecting) {
+        if (!state.selecting && hoverDetails) {
           hoverDetail(entry.item.id);
         }
       },
@@ -899,6 +899,29 @@ let hoverTimer = null;
 let leaveTimer = null;
 let peekId = null;
 
+// « Afficher les détails au survol » is a device setting (Paramètres ›
+// Affichage). Read once, then kept current by `overlay://device-settings`,
+// like core/sound.js does for the sound settings.
+let hoverDetails = true;
+
+// Turning the setting off closes a drawer opened by a hover and drops a peek;
+// a drawer pinned by a click stays. Turning it back on needs nothing.
+function applyHoverDetails(view) {
+  if (!view || typeof view !== 'object') {
+    return;
+  }
+  hoverDetails = view.hoverDetails !== false;
+  if (hoverDetails) {
+    return;
+  }
+  clearDrawerTimers();
+  const next = pointerLeft(currentView());
+  if (!sameView(next, currentView())) {
+    applyView(next);
+    syncDetail();
+  }
+}
+
 function currentView() {
   return { selectedId: state.selectedId, pinned: state.detailPinned, peekId };
 }
@@ -958,12 +981,19 @@ export function closeDetail() {
 }
 
 // Hovering a card shows its details after a short delay, also while another
-// media is pinned: the drawer then peeks at the hovered one.
+// media is pinned: the drawer then peeks at the hovered one. With the device
+// setting off, a hover does nothing.
 function hoverDetail(id) {
+  if (!hoverDetails) {
+    return;
+  }
   clearDrawerTimers();
   hoverTimer = setTimeout(() => {
     hoverTimer = null;
-    const next = cardHovered(currentView(), id);
+    if (!hoverDetails) {
+      return;
+    }
+    const next = cardHovered(currentView(), id, hoverDetails);
     if (state.capturing || sameView(next, currentView())) {
       return;
     }
@@ -1030,6 +1060,11 @@ function syncSelectedCards() {
     entry.node.classList.toggle('is-selected', id === state.selectedId);
   }
 }
+
+// The shell keeps the device settings: read them once (the board may start
+// with details on hover off) and follow every change without a restart.
+invoke('settings_get').then(applyHoverDetails).catch(() => {});
+listen('overlay://device-settings', applyHoverDetails);
 
 // The drawer floats over the view, between the header and the footer. While
 // the toolbar (and the filters panel) is on screen, it starts below them so

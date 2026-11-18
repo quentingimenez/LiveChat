@@ -122,6 +122,7 @@
     generalMute: false,
     mediaMuted: false,
     showText: true,
+    hoverDetails: true,
     autoStart: false,
     shortcuts: { stop: 'CommandOrControl+Shift+S', stopLocal: null, muteAll: null },
     layout: { zone: { x: 0, y: 0, width: 1, height: 1 }, align: 'center' },
@@ -352,7 +353,7 @@
         }
       }
     }
-    for (const key of ['generalMute', 'mediaMuted', 'showText', 'autoStart']) {
+    for (const key of ['generalMute', 'mediaMuted', 'showText', 'hoverDetails', 'autoStart']) {
       if (!(key in input)) {
         continue;
       }

@@ -1,5 +1,6 @@
-// Administration tab: members, bans and invites. The server settings of the guild
-// (`renderServerSettings`) are shown in its « Réglages » tab.
+// Administration tab: members, bans and codes (invitations and pairing codes).
+// The server settings of the guild (`renderServerSettings`) are shown in its
+// « Réglages » tab.
 
 import { api, run } from '../core/api.js';
 import { avatarNode, h, icon } from '../core/dom.js';
@@ -16,7 +17,7 @@ export function renderAdmin() {
     tabs.push(['members', 'Membres']);
   }
   if (can('manageInvites')) {
-    tabs.push(['invites', 'Invitations']);
+    tabs.push(['codes', 'Codes']);
   }
   if (can('manageMembers')) {
     tabs.push(['bans', 'Bannis']);
@@ -24,7 +25,7 @@ export function renderAdmin() {
   if (!tabs.some(([id]) => id === state.adminTab)) {
     state.adminTab = tabs.length ? tabs[0][0] : 'members';
   }
-  const views = { invites: renderInvites, bans: renderBans };
+  const views = { codes: renderCodes, bans: renderBans };
   const body = (views[state.adminTab] || renderMembers)();
   return h(
     'div',
@@ -52,6 +53,30 @@ function presenceLabel(member, selfMuted) {
   return relativeTime(member.lastSeenAt);
 }
 
+function memberDevices(member) {
+  const count = Number(member.deviceCount) || 0;
+  return `${count} appareil${count > 1 ? 's' : ''}`;
+}
+
+function joinDate(iso) {
+  if (!iso) {
+    return 'date inconnue';
+  }
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? 'date inconnue' : date.toLocaleDateString('fr-FR');
+}
+
+function memberMeta(member) {
+  return h(
+    'div',
+    { class: 'sub member-meta' },
+    `${memberDevices(member)} · arrivé le ${joinDate(member.createdAt)}`,
+    member.discordLinked
+      ? h('span', { class: 'badge', title: member.discordUserId || 'Compte Discord lié' }, 'Discord')
+      : null,
+  );
+}
+
 function renderMembers() {
   if (state.members.length === 0) {
     return h('p', { class: 'meta' }, 'Chargement des membres…');
@@ -66,7 +91,12 @@ function renderMembers() {
         'div',
         { class: 'line is-member' },
         avatarNode(member.displayName, member.avatar),
-        h('div', { class: 'ellipsis' }, member.displayName, member.isSelf ? h('span', { class: 'sub' }, '  (toi)') : null),
+        h(
+          'div',
+          { class: 'member-cell' },
+          h('div', { class: 'ellipsis' }, member.displayName, member.isSelf ? h('span', { class: 'sub' }, '  (toi)') : null),
+          memberMeta(member),
+        ),
         h('span', { class: 'sub seen' }, presenceLabel(member, selfMuted)),
         h(
           'select',
@@ -138,22 +168,115 @@ function openUnbanDialog(ban) {
   });
 }
 
-function inviteStatus(invite) {
-  if (invite.revokedAt) {
-    return 'Révoquée';
+// Expiry of a code, with the same wording for invitations and pairing codes.
+function remainingTime(iso) {
+  const delay = new Date(iso).getTime() - Date.now();
+  if (!Number.isFinite(delay) || delay <= 0) {
+    return null;
   }
-  const uses = invite.maxUses ? `${invite.useCount} / ${invite.maxUses} utilisations` : `${invite.useCount} utilisation${invite.useCount > 1 ? 's' : ''}`;
-  if (!invite.isActive) {
-    return invite.maxUses && invite.useCount >= invite.maxUses ? `Épuisée, ${uses}` : `Expirée, ${uses}`;
+  const minutes = Math.max(1, Math.round(delay / 60000));
+  if (minutes < 60) {
+    return `Expire dans ${minutes} min`;
   }
-  if (!invite.expiresAt) {
-    return `Sans expiration, ${uses}`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) {
+    return `Expire dans ${hours} h`;
   }
-  const hours = Math.max(1, Math.round((new Date(invite.expiresAt).getTime() - Date.now()) / 3600000));
-  return `Expire dans ${hours >= 48 ? `${Math.round(hours / 24)} j` : `${hours} h`}, ${uses}`;
+  return `Expire dans ${Math.round(hours / 24)} j`;
 }
 
-function renderInvites() {
+function inviteExpiry(invite) {
+  if (invite.revokedAt) {
+    return 'Révoqué';
+  }
+  if (!invite.isActive) {
+    return invite.maxUses && invite.useCount >= invite.maxUses ? 'Utilisé' : 'Expiré';
+  }
+  return invite.expiresAt ? remainingTime(invite.expiresAt) || 'Expiré' : 'Sans expiration';
+}
+
+function pairingCodeExpiry(code) {
+  if (code.usedAt) {
+    return 'Utilisé';
+  }
+  if (!code.isActive) {
+    return 'Expiré';
+  }
+  return code.expiresAt ? remainingTime(code.expiresAt) || 'Expiré' : 'Sans expiration';
+}
+
+function inviteUses(invite) {
+  return invite.maxUses ? `${invite.useCount} / ${invite.maxUses}` : String(invite.useCount);
+}
+
+// Invitations and pairing codes share one list; each row wraps one of them.
+function codeValue(row) {
+  return row.invite ? row.invite.code : row.code.code;
+}
+
+function codeIsActive(row) {
+  return Boolean(row.invite ? row.invite.isActive : row.code.isActive);
+}
+
+function codeCreatedAt(row) {
+  const time = new Date(row.invite ? row.invite.createdAt : row.code.createdAt).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function codeRows() {
+  const rows = [...state.invites.map((invite) => ({ invite })), ...state.pairingCodes.map((code) => ({ code }))];
+  return rows.sort((left, right) => {
+    const byDate = codeCreatedAt(right) - codeCreatedAt(left);
+    return byDate !== 0 ? byDate : codeValue(left).localeCompare(codeValue(right));
+  });
+}
+
+function codeBadge(row) {
+  if (row.invite) {
+    const role = row.invite.role;
+    return h('span', { class: `badge is-${role}` }, `Invitation · ${ROLE_LABELS[role] || role}`);
+  }
+  return h('span', { class: 'badge' }, row.code.kind === 'extension' ? 'Extension' : '/pair-code');
+}
+
+function codeAuthor(row) {
+  if (!row.invite) {
+    return row.code.authorName || '—';
+  }
+  if (!row.invite.createdByMemberId) {
+    return '—';
+  }
+  const member = state.members.find((entry) => entry.id === row.invite.createdByMemberId);
+  return member ? member.displayName : '—';
+}
+
+function codeExpiry(row) {
+  return row.invite ? inviteExpiry(row.invite) : pairingCodeExpiry(row.code);
+}
+
+function renderCodeRow(row) {
+  const code = codeValue(row);
+  const active = codeIsActive(row);
+  return h(
+    'div',
+    { class: 'line is-code' },
+    h('span', { class: 'code' }, formatCode(code)),
+    codeBadge(row),
+    h('span', { class: 'sub ellipsis code-author' }, codeAuthor(row)),
+    h('span', { class: 'sub' }, codeExpiry(row)),
+    h('span', { class: 'sub' }, row.invite ? inviteUses(row.invite) : ''),
+    h(
+      'span',
+      { class: 'row' },
+      active
+        ? h('button', { class: 'btn is-quiet', 'aria-label': `Copier le code ${code}`, title: 'Copier le code', onClick: () => copyText(formatCode(code), 'Code copié.') }, icon('copy'))
+        : null,
+      active ? h('button', { class: 'btn is-quiet is-danger', onClick: () => openRevokeDialog(row) }, 'Révoquer') : null,
+    ),
+  );
+}
+
+function renderCodes() {
   const role = h('select', { class: 'field', 'aria-label': 'Rôle accordé' }, [
     h('option', { value: 'member' }, 'Membre'),
     h('option', { value: 'guest' }, 'Invité'),
@@ -182,34 +305,54 @@ function renderInvites() {
       loadAdmin();
     }
   };
+  const purge = async () => {
+    const body = await run(() => api('DELETE', '/overlay/admin/pairing-codes/expired'));
+    if (!body) {
+      return;
+    }
+    const deleted = Number(body.deleted) || 0;
+    notify(deleted > 0 ? `${deleted} code${deleted > 1 ? 's' : ''} supprimé${deleted > 1 ? 's' : ''}.` : 'Aucun code expiré à supprimer.');
+    loadAdmin();
+  };
+  const rows = codeRows();
   return h(
     'div',
     null,
-    h('div', { class: 'panel row is-wrap' }, role, expiry, uses, h('span', { class: 'spacer' }), h('button', { class: 'btn', onClick: create }, icon('plus'), 'Créer un code')),
-    state.invites.length === 0
-      ? h('p', { class: 'meta' }, 'Aucune invitation pour le moment.')
-      : h(
-          'div',
-          { class: 'list' },
-          state.invites.map((invite) =>
-            h(
-              'div',
-              { class: 'line is-invite' },
-              h('span', { class: 'code' }, formatCode(invite.code)),
-              h('span', null, h('span', { class: `badge is-${invite.role}` }, ROLE_LABELS[invite.role] || invite.role)),
-              h('span', { class: 'sub ellipsis' }, inviteStatus(invite)),
-              invite.isActive
-                ? h('button', { class: 'btn is-quiet', 'aria-label': `Copier le code ${invite.code}`, title: 'Copier le code', onClick: () => copyText(formatCode(invite.code), 'Code copié.') }, icon('copy'))
-                : h('span'),
-              invite.isActive ? h('button', { class: 'btn is-quiet is-danger', onClick: () => revokeInvite(invite) }, 'Révoquer') : h('span'),
-            ),
-          ),
-        ),
+    h(
+      'div',
+      { class: 'panel row is-wrap' },
+      role,
+      expiry,
+      uses,
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn is-quiet', title: 'Supprime les codes d’appairage expirés ou utilisés.', onClick: purge }, 'Purger les codes expirés'),
+      h('button', { class: 'btn', onClick: create }, icon('plus'), 'Créer un code'),
+    ),
+    rows.length === 0
+      ? h('p', { class: 'meta' }, 'Aucun code pour le moment.')
+      : h('div', { class: 'list' }, rows.map(renderCodeRow)),
   );
 }
 
-async function revokeInvite(invite) {
-  await run(() => api('POST', `/overlay/admin/invites/${encodeURIComponent(invite.code)}/revoke`), 'Invitation révoquée.');
+function openRevokeDialog(row) {
+  const code = codeValue(row);
+  confirmDialog(`Révoquer le code ${formatCode(code)} ?`, 'Il ne pourra plus être utilisé. Cette action est immédiate.', 'Révoquer', () => revokeCode(row));
+}
+
+async function revokeCode(row) {
+  const code = codeValue(row);
+  const path = row.invite
+    ? `/overlay/admin/invites/${encodeURIComponent(code)}/revoke`
+    : `/overlay/admin/pairing-codes/${encodeURIComponent(code)}/revoke`;
+  const body = await run(() => api('POST', path));
+  if (!body) {
+    return;
+  }
+  if (body.revoked === false) {
+    notify('Ce code n’était plus actif.', true);
+  } else {
+    notify(row.invite ? 'Invitation révoquée.' : 'Code révoqué.');
+  }
   loadAdmin();
 }
 

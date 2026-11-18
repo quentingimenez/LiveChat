@@ -2,8 +2,8 @@
 //!
 //! Les repositories de `lc-db` couvrent les opérations métier ; le panneau a en
 //! plus besoin d'agrégats toutes guildes confondues et de suppressions en masse
-//! (purge d'une guilde, codes de pairing expirés, médias orphelins) qui n'ont
-//! pas leur place dans les repositories. Ces requêtes passent par le pool
+//! (purge d'une guilde, médias orphelins) qui n'ont pas leur place dans les
+//! repositories. Ces requêtes passent par le pool
 //! exposé par [`lc_db::Db`] et restent volontairement simples : pas de
 //! transaction multi-tables ici (l'orchestration et les compteurs vivent dans
 //! les handlers).
@@ -280,65 +280,6 @@ pub async fn delete_media_asset(db: &Db, id: &str) -> Result<u64, DbError> {
         .bind(id)
         .execute(db.pool())
         .await?;
-
-    Ok(result.rows_affected())
-}
-
-/// Supprime les codes de pairing expirés ou utilisés.
-///
-/// `guild_id` restreint la suppression à une guilde (le legacy le fait avec un
-/// `where` optionnel) ; `now_ms` est comparé à `expires_at`.
-pub async fn delete_expired_pairing_codes(
-    db: &Db,
-    guild_id: Option<&str>,
-    now_ms: i64,
-) -> Result<u64, DbError> {
-    let result = match guild_id {
-        Some(guild_id) => {
-            sqlx::query(
-                "DELETE FROM pairing_codes \
-                 WHERE guild_id = ?1 \
-                   AND (used_at IS NOT NULL \
-                        OR (expires_at IS NOT NULL AND expires_at <= ?2))",
-            )
-            .bind(guild_id)
-            .bind(now_ms)
-            .execute(db.pool())
-            .await?
-        }
-        None => {
-            sqlx::query(
-                "DELETE FROM pairing_codes \
-                 WHERE used_at IS NOT NULL \
-                    OR (expires_at IS NOT NULL AND expires_at <= ?1)",
-            )
-            .bind(now_ms)
-            .execute(db.pool())
-            .await?
-        }
-    };
-
-    Ok(result.rows_affected())
-}
-
-/// Révoque un code de pairing actif en le marquant utilisé et expiré.
-///
-/// Équivalent du `updateMany` legacy : condition `used_at IS NULL` et
-/// `expires_at` nul ou futur ; le repository `PairingCodesRepository::revoke`
-/// ne pose pas `expires_at`, d'où ce SQL brut. Retourne le nombre de lignes
-/// touchées (0 si le code n'était plus actif).
-pub async fn revoke_pairing_code(db: &Db, code: &str, now_ms: i64) -> Result<u64, DbError> {
-    let result = sqlx::query(
-        "UPDATE pairing_codes \
-         SET used_at = ?1, expires_at = ?1 \
-         WHERE code = ?2 \
-           AND used_at IS NULL \
-           AND (expires_at IS NULL OR expires_at > ?1)",
-    )
-    .bind(now_ms)
-    .bind(code)
-    .execute(db.pool())
-    .await?;
 
     Ok(result.rows_affected())
 }

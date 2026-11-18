@@ -16,6 +16,34 @@
   grid-template-columns: 110px 90px minmax(0, 1fr) 42px 96px;
 }
 
+/* Unified list of invitations and pairing codes: code, kind, author, expiry,
+   uses (invitations only), copy and revoke. */
+.line.is-code {
+  grid-template-columns: 110px 150px minmax(0, 1fr) 160px 84px 144px;
+}
+
+.line.is-code > .row {
+  justify-self: end;
+  gap: 4px;
+}
+
+.member-cell {
+  min-width: 0;
+}
+
+.member-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.member-meta .badge {
+  padding: 0 6px;
+  font-size: 11px;
+}
+
 .line.is-member > .btn,
 .line.is-member > .row,
 .line.is-invite > .btn,

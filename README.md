@@ -63,6 +63,12 @@ cargo run -p lc-server
 node --test apps/lc-overlay/dev/tests/*.mjs
 ```
 
+`cargo build`/`cargo test` sur `lc-server` construit la console d'administration
+automatiquement (`npm ci` puis `npm run build` depuis `apps/lc-server/build.rs`) quand
+`apps/lc-admin-web` a changé ; sans Node, l'étape est ignorée avec un avertissement et le
+serveur sert la page « console non construite ». `LC_ADMIN_WEB_BUILD=0` désactive cette
+construction (l'image Docker fournit `dist/`).
+
 Overlay en local, sans clé de signature des mises à jour :
 
 ```bash

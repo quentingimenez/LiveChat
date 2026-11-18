@@ -13,7 +13,9 @@
 //! back to `index.html`: the console router is hash based, so a missing file is
 //! a real error.
 //!
-//! When the front was not built before compilation (`dist/` absent), `/admin/`
+//! `build.rs` builds the front with npm before compilation when the toolchain
+//! is available (`LC_ADMIN_WEB_BUILD=0` or `skip` disables it when `dist/` is
+//! provided, as in the Docker image). When `dist/` is still absent, `/admin/`
 //! answers a minimal "console was not built" page without inline style or
 //! script (the console CSP has no `'unsafe-inline'`).
 //!

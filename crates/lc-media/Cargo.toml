@@ -31,6 +31,11 @@ reqwest = { version = "0.12", default-features = false, features = [
     "charset",
 ] }
 
+# Rendu des cartes de tweet texte en PNG (mise en forme, bidi, emoji couleur)
+parley = "0.13"
+swash = "0.2"
+tiny-skia = "0.12"
+
 [dev-dependencies]
 tokio = { workspace = true }
 tempfile = { workspace = true }

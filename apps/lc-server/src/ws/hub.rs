@@ -1196,4 +1196,52 @@ mod tests {
             "rights-changed"
         );
     }
+
+    #[test]
+    fn close_reason_for_code_is_total_and_non_empty() {
+        // The mapping backs every `close_client_with_reason` call: each u16
+        // code, documented or not, must resolve to a non-empty reason string.
+        for code in 0..=u16::MAX {
+            assert!(
+                !close_reason_for_code(code).is_empty(),
+                "close_reason_for_code({code}) returned an empty reason"
+            );
+        }
+    }
+
+    #[test]
+    fn documented_close_codes_map_to_their_reason() {
+        // The eight documented code-to-reason pairs of `close_reason_for_code`.
+        let pairs = [
+            (close_code::NORMAL, close_reason::CLIENT_SHUTDOWN),
+            (close_code::GOING_AWAY, close_reason::SERVER_SHUTDOWN),
+            (close_code::UNAUTHORIZED, close_reason::INVALID_TOKEN),
+            (close_code::REVOKED, close_reason::REVOKED),
+            (
+                close_code::OUTDATED_PROTOCOL,
+                close_reason::OUTDATED_PROTOCOL,
+            ),
+            (close_code::GUILD_DELETED, close_reason::GUILD_DELETED),
+            (close_code::FRAME_TOO_LARGE, close_reason::FRAME_TOO_LARGE),
+            (close_code::RATE_LIMITED, close_reason::RATE_LIMITED),
+        ];
+        for &(code, reason) in &pairs {
+            assert_eq!(
+                close_reason_for_code(code),
+                reason,
+                "close_reason_for_code({code})"
+            );
+        }
+        // Every other u16 code — documented close codes without a dedicated
+        // arm and all undocumented values — falls back to INTERNAL_ERROR.
+        for code in 0..=u16::MAX {
+            if !pairs.iter().any(|&(mapped, _)| mapped == code) {
+                assert_eq!(
+                    close_reason_for_code(code),
+                    close_reason::INTERNAL_ERROR,
+                    "close_reason_for_code({code}) should fall back to INTERNAL_ERROR"
+                );
+            }
+        }
+    }
 }

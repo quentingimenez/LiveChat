@@ -26,17 +26,16 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use lc_protocol::{
-    close_code, close_reason, is_frame_too_large, is_version_below, media_signature_input,
-    parse_simple_version, AckError, AckOutcome, AckPayload, AuthorPayload, BoardChange,
-    BoardChangedPayload, ClientErrorPayload, ClientMessage, CurrentJobPayload,
-    DeviceSettingsPayload, DeviceSettingsStatePayload, Envelope, HeartbeatPayload, HelloPayload,
-    MediaIngestionError, MediaIngestionPayload, MediaKind, MediaPayload, MediaTrigger,
-    MediaTriggerPayload, PeerInfo, PeersPayload, PeersRequestPayload, Platform, PlayPayload,
-    PlaybackEndedPayload, PlaybackEndedReason, PlaybackState, PlaybackStatePayload,
-    RightsChangedPayload, ServerErrorPayload, ServerMessage, SessionChangedPayload, SessionMode,
-    SettingsPayload, StopPayload, StopReason, StopRequestPayload, StopRequestSource, TextPayload,
-    TweetCardPayload, TweetCardVideo, WelcomeConfig, WelcomePayload, MAX_FRAME_BYTES,
-    PROTOCOL_VERSION,
+    is_frame_too_large, is_version_below, media_signature_input, parse_simple_version, AckError,
+    AckOutcome, AckPayload, AuthorPayload, BoardChange, BoardChangedPayload, ClientErrorPayload,
+    ClientMessage, CurrentJobPayload, DeviceSettingsPayload, DeviceSettingsStatePayload, Envelope,
+    HeartbeatPayload, HelloPayload, MediaIngestionError, MediaIngestionPayload, MediaKind,
+    MediaPayload, MediaTrigger, MediaTriggerPayload, PeerInfo, PeersPayload, PeersRequestPayload,
+    Platform, PlayPayload, PlaybackEndedPayload, PlaybackEndedReason, PlaybackState,
+    PlaybackStatePayload, RightsChangedPayload, ServerErrorPayload, ServerMessage,
+    SessionChangedPayload, SessionMode, SettingsPayload, StopPayload, StopReason,
+    StopRequestPayload, StopRequestSource, TextPayload, TweetCardPayload, TweetCardVideo,
+    WelcomeConfig, WelcomePayload, MAX_FRAME_BYTES, PROTOCOL_VERSION,
 };
 
 // ---------------------------------------------------------------------------
@@ -65,6 +64,19 @@ fn cuid() -> impl Strategy<Value = String> {
             .map(|byte| ALPHABET[usize::from(*byte) % ALPHABET.len()] as char)
             .collect();
         format!("clx7q2x0b{suffix}")
+    })
+}
+
+/// Identifier drawn from the frozen id vocabulary `[a-z0-9-]{1,40}` used by
+/// asset and client ids. That vocabulary excludes `|`, which is what keeps
+/// the `assetId|clientId|exp` signature input unambiguous.
+fn signature_id() -> impl Strategy<Value = String> {
+    const ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz-";
+    vec(any::<u8>(), 1..=40).prop_map(|bytes| {
+        bytes
+            .iter()
+            .map(|byte| ALPHABET[usize::from(*byte) % ALPHABET.len()] as char)
+            .collect()
     })
 }
 
@@ -694,63 +706,6 @@ proptest! {
     }
 }
 
-/// Total close-code to reason mapping, mirrored from the repo's only such
-/// function (`apps/lc-server/src/ws/hub.rs::close_reason_for_code`), which
-/// every `close_client_with_reason` call uses.
-///
-/// Contract read from the source before writing this property:
-/// - `lc_protocol::close_code` and `lc_protocol::close_reason` are frozen
-///   constant modules; this crate exposes no `close_reason(code)` function.
-/// - The server mapping is total over all u16: undocumented codes fall back
-///   to `close_reason::INTERNAL_ERROR` (the `_` arm in hub.rs).
-/// - Documented exceptions — codes whose close reason may be empty: NONE.
-///   Every `close_reason` constant is a non-empty literal. The only
-///   empty-reason close in the repo is an lc-server device-admin behavior
-///   (`close_client` without a reason, pinned by
-///   `apps/lc-server/src/http/overlay/device_admin_tests.rs`) and lives
-///   outside this crate's frozen contract. `close_code::OUTDATED_PROTOCOL`
-///   may carry a JSON reason built by `outdated_protocol_reason` in session
-///   flows, but its paired constant is still a non-empty string.
-fn close_reason_for_code(code: u16) -> &'static str {
-    match code {
-        close_code::NORMAL => close_reason::CLIENT_SHUTDOWN,
-        close_code::GOING_AWAY => close_reason::SERVER_SHUTDOWN,
-        close_code::UNAUTHORIZED => close_reason::INVALID_TOKEN,
-        close_code::REVOKED => close_reason::REVOKED,
-        close_code::OUTDATED_PROTOCOL => close_reason::OUTDATED_PROTOCOL,
-        close_code::GUILD_DELETED => close_reason::GUILD_DELETED,
-        close_code::FRAME_TOO_LARGE => close_reason::FRAME_TOO_LARGE,
-        close_code::RATE_LIMITED => close_reason::RATE_LIMITED,
-        _ => close_reason::INTERNAL_ERROR,
-    }
-}
-
-/// Close codes: the documented frozen constants plus arbitrary out-of-set
-/// u16 codes (which the server mapping answers with its fallback arm).
-fn close_code_values() -> impl Strategy<Value = u16> {
-    prop_oneof![
-        1 => Just(close_code::NORMAL),
-        1 => Just(close_code::GOING_AWAY),
-        1 => Just(close_code::PROTOCOL_ERROR),
-        1 => Just(close_code::UNSUPPORTED_FRAME),
-        1 => Just(close_code::INTERNAL_ERROR),
-        1 => Just(close_code::UNAUTHORIZED),
-        1 => Just(close_code::REVOKED),
-        1 => Just(close_code::OUTDATED_PROTOCOL),
-        1 => Just(close_code::GUILD_DELETED),
-        1 => Just(close_code::FRAME_TOO_LARGE),
-        1 => Just(close_code::RATE_LIMITED),
-        8 => 0u16..=u16::MAX,
-    ]
-}
-
-proptest! {
-    #[test]
-    fn close_code_reason_total(code in close_code_values()) {
-        prop_assert!(!close_reason_for_code(code).is_empty());
-    }
-}
-
 /// Serializes, deserializes and re-serializes an envelope, asserting
 /// `serde_json::Value` equality exactly the way `fixtures_roundtrip.rs` pins
 /// the golden fixtures, plus structural equality of the parsed envelope.
@@ -785,21 +740,34 @@ proptest! {
 proptest! {
     /// `media_signature_input(asset_id: &str, client_id: &str, exp_sec: u64)`
     /// builds the frozen HMAC input `assetId|clientId|exp` (src/lib.rs, doc
-    /// §8). It is a pure function of its arguments: equal inputs must produce
-    /// equal strings, and the output keeps the documented three-part shape.
+    /// §8). Ids come from the frozen vocabulary `[a-z0-9-]{1,40}`, which
+    /// cannot contain the `|` separator; under that constraint the input is
+    /// injective — two different tuples can never share a signature input,
+    /// so a signature minted for one (asset, client, expiry) triple cannot
+    /// be replayed for another.
     #[test]
-    fn media_signature_input_deterministic(
-        asset_id in cuid(),
-        client_id in cuid(),
-        exp_sec in any::<u64>(),
+    fn media_signature_input_is_injective_without_separator(
+        first in (signature_id(), signature_id(), any::<u64>()),
+        second in (signature_id(), signature_id(), any::<u64>()),
     ) {
-        let first = media_signature_input(&asset_id, &client_id, exp_sec);
-        let second = media_signature_input(&asset_id, &client_id, exp_sec);
+        let first_input = media_signature_input(&first.0, &first.1, first.2);
+        let second_input = media_signature_input(&second.0, &second.1, second.2);
 
-        prop_assert_eq!(first.as_str(), second.as_str());
-        prop_assert!(first.starts_with(&asset_id));
-        prop_assert!(first.ends_with(&exp_sec.to_string()));
-        prop_assert!(first.contains(&client_id));
-        prop_assert_eq!(first.matches('|').count(), 2);
+        if first != second {
+            prop_assert_ne!(first_input, second_input);
+        }
     }
+}
+
+/// Frozen, not fixed: the `|` separator makes the input ambiguous when an id
+/// is allowed to contain it — `("a|b", "c", 1)` and `("a", "b|c", 1)` build
+/// the same string. This documents why ids must never contain `|` (the
+/// frozen id vocabulary `[a-z0-9-]{1,40}` excludes it) rather than changing
+/// the frozen signature format.
+#[test]
+fn separator_in_ids_makes_inputs_ambiguous() {
+    assert_eq!(
+        media_signature_input("a|b", "c", 1),
+        media_signature_input("a", "b|c", 1)
+    );
 }

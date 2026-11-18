@@ -30,6 +30,7 @@ interface ComposeModalRefs {
   form: HTMLFormElement;
   sourceNode: HTMLSpanElement;
   urlInput: HTMLInputElement;
+  textLabel: HTMLLabelElement;
   textInput: HTMLTextAreaElement;
   forceRefreshInput: HTMLInputElement;
   saveToBoardInput: HTMLInputElement;
@@ -246,6 +247,21 @@ const isVisible = (): boolean => {
   return !modalRefs.overlay.classList.contains('is-hidden');
 };
 
+// The text is the caption of a play sent now. A save-to-board keeps no text,
+// so the field disappears in that mode (and its value is never submitted).
+const syncSaveToBoard = (): void => {
+  if (!modalRefs) {
+    return;
+  }
+
+  const saving = modalRefs.saveToBoardInput.checked;
+  modalRefs.textLabel.hidden = saving;
+  modalRefs.textInput.hidden = saving;
+  if (saving) {
+    modalRefs.textInput.value = '';
+  }
+};
+
 const closeModal = (force = false): void => {
   if (!modalRefs) {
     return;
@@ -340,7 +356,7 @@ const ensureModal = (): ComposeModalRefs => {
     <label class="lce-compose-modal-label" for="lce-compose-modal-url">URL media</label>
     <input id="lce-compose-modal-url" class="lce-compose-modal-input" type="url" required placeholder="https://..." />
 
-    <label class="lce-compose-modal-label" for="lce-compose-modal-text">Texte (optionnel)</label>
+    <label class="lce-compose-modal-label" for="lce-compose-modal-text" id="lce-compose-modal-text-label">Texte (optionnel)</label>
     <textarea
       id="lce-compose-modal-text"
       class="lce-compose-modal-textarea"
@@ -386,6 +402,7 @@ const ensureModal = (): ComposeModalRefs => {
   const form = overlay.querySelector<HTMLFormElement>('[data-lce-compose-form]');
   const sourceNode = overlay.querySelector<HTMLSpanElement>('[data-lce-compose-source]');
   const urlInput = overlay.querySelector<HTMLInputElement>('#lce-compose-modal-url');
+  const textLabel = overlay.querySelector<HTMLLabelElement>('#lce-compose-modal-text-label');
   const textInput = overlay.querySelector<HTMLTextAreaElement>('#lce-compose-modal-text');
   const forceRefreshInput = overlay.querySelector<HTMLInputElement>('#lce-compose-modal-force-refresh');
   const saveToBoardInput = overlay.querySelector<HTMLInputElement>('#lce-compose-modal-save-to-board');
@@ -399,6 +416,7 @@ const ensureModal = (): ComposeModalRefs => {
     !form ||
     !sourceNode ||
     !urlInput ||
+    !textLabel ||
     !textInput ||
     !forceRefreshInput ||
     !saveToBoardInput ||
@@ -431,6 +449,8 @@ const ensureModal = (): ComposeModalRefs => {
     onSubmit();
   });
 
+  saveToBoardInput.addEventListener('change', syncSaveToBoard);
+
   if (!keydownListenerRegistered) {
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && isVisible()) {
@@ -445,6 +465,7 @@ const ensureModal = (): ComposeModalRefs => {
     form,
     sourceNode,
     urlInput,
+    textLabel,
     textInput,
     forceRefreshInput,
     saveToBoardInput,
@@ -468,7 +489,7 @@ export const openComposeModal = (params: OpenComposeModalParams): void => {
   refs.forceRefreshInput.checked = false;
   refs.saveToBoardInput.checked = false;
   refs.durationInput.value = '';
-
+  syncSaveToBoard();
   clearStatus();
   setBusy(false);
 

@@ -86,6 +86,11 @@ pub(super) enum IngestionInput {
 
 /// Spawns the detached ingestion task.
 ///
+/// `message` is the text carried by the ingestion: the caption of a
+/// [`BoardTarget::PlayOnce`] play, or the hand-written board message copied by
+/// an edit's new item ([`BoardTarget::NewItem`]). Uploads and links pass `None`
+/// for a board add: a text sent with a media is never stored on the board.
+///
 /// The caller has already reserved an entry in `state.ingestions`; the task is
 /// responsible for completing it in every path. A panic inside the task is
 /// reported as `internal_error`: otherwise the entry would stay `processing`

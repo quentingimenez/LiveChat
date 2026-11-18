@@ -232,12 +232,14 @@ pub async fn submit(
             ));
         };
 
+        // The item keeps the media's own title (falling back to the asset's
+        // source title): the text sent with the media belongs to that play
+        // only and is never stored on the board.
         let added = board::add_to_board(
             db,
             media_service.config(),
             &guild_id,
             asset,
-            job_text.as_deref(),
             None,
             Some(client.created_by_discord_user_id.as_str()),
             Some(job_author_name.as_str()),
@@ -601,6 +603,73 @@ mod tests {
             .unwrap();
         assert_eq!(items.len(), 1, "{body}");
         assert_eq!(items[0].display_duration_sec, Some(12));
+    }
+
+    #[tokio::test]
+    async fn save_to_board_with_a_text_stores_no_message() {
+        let fixture = fixture().await;
+        insert_client(&fixture.db).await;
+        let url = "https://93.184.215.14/cached.png";
+        insert_cached_image(&fixture, url).await;
+        let (status, body) = post(
+            fixture.app.clone(),
+            Some(TOKEN),
+            json!({ "url": url, "text": "bonjour", "saveToBoard": true }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(body["savedToBoard"], true);
+
+        let guild = GuildId::parse(GUILD).unwrap();
+        let items = fixture
+            .db
+            .media_board()
+            .list_by_guild(&guild)
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 1, "{body}");
+        // The text sent with a media belongs to that play only: it is neither
+        // the item's message nor its title.
+        assert_eq!(items[0].message, None);
+        assert_eq!(items[0].title, None);
+    }
+
+    #[tokio::test]
+    async fn sending_a_media_with_a_text_keeps_the_text_on_the_job() {
+        let fixture = fixture().await;
+        insert_client(&fixture.db).await;
+        let url = "https://93.184.215.14/cached.png";
+        insert_cached_image(&fixture, url).await;
+        let (status, body) = post(
+            fixture.app.clone(),
+            Some(TOKEN),
+            json!({ "url": url, "text": "bonjour", "showText": true }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(body["hasMedia"], true);
+        assert_eq!(body["hasText"], true);
+
+        let job_id = body["jobId"].as_str().expect("jobId");
+        let job = fixture
+            .db
+            .playback_jobs()
+            .get(PlaybackJobId::parse(job_id).expect("uuid"))
+            .await
+            .expect("lecture")
+            .expect("job persisté");
+        assert_eq!(job.text.as_deref(), Some("bonjour"));
+        assert!(job.show_text);
+
+        // A play never writes the text on the board.
+        let guild = GuildId::parse(GUILD).unwrap();
+        assert!(fixture
+            .db
+            .media_board()
+            .list_by_guild(&guild)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

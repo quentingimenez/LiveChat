@@ -506,6 +506,54 @@ async fn wait_ingestion(state: &AppState, client_id: Uuid, ingestion_id: &str) -
 /// it without any network access.
 const PLAY_ONCE_URL: &str = "https://93.184.215.14/play-once.png";
 
+/// Un ajout au board par lien ignore le texte saisi : il n'est jamais stocké
+/// comme message de l'item (seul un `playOnce` le reçoit, pour cette lecture).
+#[tokio::test]
+async fn link_add_ignores_the_play_text() {
+    let harness = Harness::new().await;
+    let client = harness
+        .insert_client(OverlaySessionMode::Normal, TOKEN, &guild())
+        .await;
+    harness.insert_cached_image(PLAY_ONCE_URL).await;
+
+    let (status, body) = send_json(
+        &harness.app,
+        request(
+            Method::POST,
+            "/overlay/media-board/items",
+            Some(TOKEN),
+            Some(&json!({
+                "url": PLAY_ONCE_URL,
+                "title": "Chat qui tombe",
+                "message": "coucou",
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let ingestion_id = body["ingestionId"].as_str().unwrap().to_owned();
+    let entry = wait_ingestion(&harness.state, client.id.as_uuid(), &ingestion_id).await;
+    assert_eq!(entry.status, IngestionStatus::Ready, "{entry:?}");
+    let item_id = entry.item_id.expect("item de board");
+
+    let item = harness
+        .db
+        .media_board()
+        .get(item_id.parse().unwrap())
+        .await
+        .unwrap()
+        .expect("item persisté");
+    assert_eq!(item.title.as_deref(), Some("Chat qui tombe"));
+    assert_eq!(item.message, None);
+    assert!(harness
+        .db
+        .playback_jobs()
+        .list_pending_by_guild(&guild())
+        .await
+        .unwrap()
+        .is_empty());
+}
+
 /// « Jouer une fois » par lien : la tâche détachée crée un job de lecture et
 /// aucun item de board, la guilde n'apprend rien (`board.changed` absent).
 #[tokio::test]

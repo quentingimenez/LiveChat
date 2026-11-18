@@ -323,8 +323,10 @@ limite d'un proxy placé devant le serveur (Cloudflare refuse plus de 100 Mo
 sur son offre gratuite) :
 
 1. `POST /overlay/media-board/uploads`, corps JSON
-   `{filename, size, title?, message?, contentType?, replaceItemId?}` : ouvre
-   une session d'envoi → `201 {"uploadId":"<uuid>"}`.
+   `{filename, size, title?, message?, contentType?, replaceItemId?, playOnce?}` :
+   ouvre une session d'envoi → `201 {"uploadId":"<uuid>"}`. `message` n'est lu
+   que pour un `playOnce` (texte affiché pour cette lecture) : il n'est jamais
+   stocké sur l'item du board.
 2. `PUT /overlay/media-board/uploads/{uploadId}/parts?offset=N`, corps brut
    d'au plus 90 Mio : ajoute une partie à l'octet `N`, qui doit valoir le
    nombre d'octets déjà reçus → `200 {"received":<octets>}`.
@@ -447,7 +449,7 @@ et in-process, base SQLite temporaire `tempfile::tempdir()`, aucun réseau réel
 | `http::ingest::body` | 4 | normalisation, types, drapeaux, durées |
 | `http::ingest::auth` | 1 | parsing Bearer |
 | `http::ingest::pair` | 6 | succès + hash + code consommé, expiré/inconnu, scope invité, code absent, JSON illisible, deviceName long tronqué à 200 |
-| `http::ingest::submit` | 9 | 503/401, job texte, guild mismatch, champs auteur, corps vide, saveToBoard sans média, révocation, JSON illisible |
+| `http::ingest::submit` | 11 | 503/401, job texte, guild mismatch, champs auteur, corps vide, saveToBoard sans média, texte jamais stocké sur le board, texte conservé sur le job, révocation, JSON illisible |
 | `http::ingest::mod` | 1 | montage des deux variantes de slash |
 
 Vérifications de la lane (task-49) : `cargo fmt -p lc-media -p lc-server -- --check`,

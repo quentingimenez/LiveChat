@@ -1,10 +1,8 @@
-//! Fuzz target `media_url`: placeholder written with the dependency setup;
-//! Task 4 of `docs/superpowers/plans/2026-11-18-verification-pipeline.md`
-//! replaces the body.
+//! Fuzz target `media_url`: exercises the SSRF guard on arbitrary input.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    let _ = data;
+    livechat_fuzz::media_url(data);
 });

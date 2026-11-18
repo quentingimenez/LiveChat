@@ -1,10 +1,8 @@
-//! Fuzz target `html_parsers`: placeholder written with the dependency setup;
-//! Task 4 of `docs/superpowers/plans/2026-11-18-verification-pipeline.md`
-//! replaces the body.
+//! Fuzz target `html_parsers`: feeds arbitrary input to the third-party HTML/JSON parsers.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    let _ = data;
+    livechat_fuzz::html_parsers(data);
 });

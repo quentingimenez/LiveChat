@@ -1,0 +1,68 @@
+name: verification-nightly
+
+# `schedule` and `workflow_dispatch` only take effect once this file is on the
+# default branch; the `pull_request` trigger runs it on the PR meanwhile.
+on:
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/verification-nightly.yml"
+      - "fuzz/**"
+      - "scripts/mutants-baseline.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verification-nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [protocol_frame, media_url, html_parsers]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install nightly toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: nightly
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: "fuzz -> target"
+      # Fallback if the tool is unknown to taiki-e: cargo install cargo-fuzz --locked
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: cargo-fuzz
+      - name: Seed the fuzz corpus
+        run: |
+          mkdir -p fuzz/corpus/${{ matrix.target }}/
+          if [ "${{ matrix.target }}" = "protocol_frame" ]; then
+            cp crates/lc-protocol/tests/fixtures/* fuzz/corpus/protocol_frame/
+          elif [ "${{ matrix.target }}" = "html_parsers" ]; then
+            cp crates/lc-media/tests/fixtures/* fuzz/corpus/html_parsers/
+          else
+            printf '%s' 'https://www.tiktok.com/@a/video/1' > fuzz/corpus/media_url/tiktok-url
+            printf '%s' 'http://0x7f.1/' > fuzz/corpus/media_url/short-host
+            printf '%s' 'http://[::ffff:127.0.0.1]/' > fuzz/corpus/media_url/mapped-v4
+            printf '%s' 'https://youtu.be/abc' > fuzz/corpus/media_url/youtu-be
+          fi
+      # fuzz/ is its own workspace excluded from the root one; cargo-fuzz
+      # finds it from the repo root.
+      - name: Fuzz
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=45
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/

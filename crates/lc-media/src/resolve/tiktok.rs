@@ -1,8 +1,9 @@
 //! Résolution TikTok : oEmbed puis extraction de la page HTML (carrousels
 //! photo/vidéo). La logique reprend l'ancien serveur : données
 //! `__UNIVERSAL_DATA_FOR_REHYDRATION__`, repli `__FRONTITY_CONNECT_STATE__`,
-//! page embed, puis repérage des images `~tplv-photomode-image` dans le HTML
-//! brut pour les carrousels.
+//! nouvelle tentative `/video/` pour les pages `/photo/`, page embed, puis
+//! repérage des images `~tplv-photomode-image` dans le HTML brut pour les
+//! carrousels.
 
 use std::sync::OnceLock;
 
@@ -54,6 +55,13 @@ pub struct MediaCandidate {
     pub kind: MediaKind,
     /// Type MIME attendu, si connu.
     pub mime: Option<String>,
+    /// Cookies de la réponse HTTP qui a servi cette URL.
+    ///
+    /// Une URL `playAddr` porte `tk=tt_chain_token` : le CDN valide ce jeton
+    /// contre la réponse qui a signé l'URL. Les cookies d'une autre réponse
+    /// (page embed, nouvel essai `/video/`) ne valent donc pas pour elle et
+    /// déclenchent un 403.
+    pub session_cookies: Vec<(String, String)>,
 }
 
 /// Données extraites d'une page TikTok.
@@ -77,9 +85,6 @@ pub struct TikTokPage {
     pub cover: Option<String>,
     /// La page exige une authentification ou est privée.
     pub auth_required: bool,
-    /// Cookies posés par la page (`Set-Cookie`), dont `tt_chain_token` :
-    /// le CDN TikTok refuse (403) les URL signées sans eux.
-    pub session_cookies: Vec<(String, String)>,
 }
 
 impl TikTokPage {
@@ -117,6 +122,25 @@ pub fn build_embed_url(item_id: &str) -> String {
     format!("{TIKTOK_EMBED_ENDPOINT}/{item_id}")
 }
 
+/// Remplace le segment `photo` d'une URL TikTok par `video`.
+///
+/// La page `/photo/<id>` ne sert plus les données de la publication ; la
+/// variante `/video/<id>` (même compte, même identifiant) les contient
+/// encore. La query string et le fragment sont abandonnés. Renvoie `None`
+/// quand l'URL n'est pas de la forme `/photo/<chiffres>`.
+pub fn photo_to_video_url(url: &str) -> Option<String> {
+    let mut parsed = url::Url::parse(url.trim()).ok()?;
+    let mut segments: Vec<String> = parsed.path_segments()?.map(str::to_string).collect();
+    let index = segments
+        .windows(2)
+        .position(|pair| pair[0] == "photo" && is_digits(&pair[1]))?;
+    segments[index] = "video".to_string();
+    parsed.set_path(&format!("/{}", segments.join("/")));
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    Some(parsed.to_string())
+}
+
 /// En-têtes HTTP utilisés pour les requêtes TikTok.
 pub fn tiktok_headers(config: &MediaConfig) -> Vec<(String, String)> {
     let mut headers = vec![
@@ -137,10 +161,14 @@ pub fn tiktok_headers(config: &MediaConfig) -> Vec<(String, String)> {
 /// Referer de repli pour le CDN TikTok (sans URL canonique de publication).
 pub const TIKTOK_REFERER: &str = "https://www.tiktok.com/";
 
-/// En-têtes pour télécharger un média du CDN TikTok : ceux de la page, plus
-/// le Referer (URL de la publication) et les cookies de session posés par la
-/// page (prioritaires sur `TIKTOK_COOKIE`). Sans eux le CDN répond 403.
-pub fn media_headers(config: &MediaConfig, page: &TikTokPage) -> Vec<(String, String)> {
+/// En-têtes pour télécharger un candidat : ceux de la page, plus le Referer
+/// (URL de la publication) et les cookies de la réponse qui a fourni l'URL
+/// (prioritaires sur `TIKTOK_COOKIE`). Sans eux le CDN répond 403.
+pub fn media_headers(
+    config: &MediaConfig,
+    page: &TikTokPage,
+    candidate: &MediaCandidate,
+) -> Vec<(String, String)> {
     let mut headers: Vec<(String, String)> = tiktok_headers(config)
         .into_iter()
         .filter(|(name, _)| !name.eq_ignore_ascii_case("Cookie"))
@@ -157,7 +185,7 @@ pub fn media_headers(config: &MediaConfig, page: &TikTokPage) -> Vec<(String, St
         .as_deref()
         .map(parse_cookie_pairs)
         .unwrap_or_default();
-    for (name, value) in &page.session_cookies {
+    for (name, value) in &candidate.session_cookies {
         match cookies.iter_mut().find(|(known, _)| known == name) {
             Some(existing) => existing.1.clone_from(value),
             None => cookies.push((name.clone(), value.clone())),
@@ -271,34 +299,36 @@ async fn fetch_oembed(canonical_url: &str, config: &MediaConfig) -> MediaResult<
     .await
 }
 
-/// Récupère et analyse la page TikTok (avec repli page embed).
+/// Récupère et analyse la page TikTok (repli `/video/` puis page embed).
 pub async fn fetch_tiktok_page(
     config: &MediaConfig,
     canonical_url: &str,
 ) -> MediaResult<TikTokPage> {
     let headers = tiktok_headers(config);
-    let page = http::get_text(
-        &config.download,
-        canonical_url,
-        config.download.timeout,
-        &header_pairs(&headers),
-    )
-    .await?;
-    let mut parsed = parse_page_html(&page.body, &page.final_url);
-    parsed.session_cookies = session_cookies_from_headers(&page.headers);
+    let mut parsed =
+        fetch_page_with_session(config, canonical_url, config.download.timeout, &headers).await?;
+    // Une page `/photo/` ne sert plus les données de la publication : on
+    // retente la même publication en `/video/` avant le repli embed.
+    if parsed.is_empty() {
+        if let Some(video_url) = photo_to_video_url(canonical_url) {
+            if let Ok(video_page) =
+                fetch_page_with_session(config, &video_url, config.download.timeout, &headers).await
+            {
+                parsed.merge(video_page);
+            }
+        }
+    }
     let needs_embed = parsed.auth_required || parsed.is_empty();
     if needs_embed {
         if let Some(item_id) = parsed.item_id.clone() {
-            if let Ok(embed) = http::get_text(
-                &config.download,
+            if let Ok(embed_page) = fetch_page_with_session(
+                config,
                 &build_embed_url(&item_id),
                 config.resolve.oembed_timeout,
-                &header_pairs(&headers),
+                &headers,
             )
             .await
             {
-                let mut embed_page = parse_page_html(&embed.body, &embed.final_url);
-                embed_page.session_cookies = session_cookies_from_headers(&embed.headers);
                 parsed.merge(embed_page);
             }
         }
@@ -306,7 +336,138 @@ pub async fn fetch_tiktok_page(
     Ok(parsed)
 }
 
+/// Récupère une page et lui associe les cookies de sa réponse.
+async fn fetch_page_with_session(
+    config: &MediaConfig,
+    url: &str,
+    timeout: std::time::Duration,
+    headers: &[(String, String)],
+) -> MediaResult<TikTokPage> {
+    let page = fetch_parsed_page(config, url, timeout, headers, &[]).await?;
+    let configured_cookies = config
+        .tools
+        .tiktok_cookie
+        .as_deref()
+        .map(parse_cookie_pairs)
+        .unwrap_or_default();
+    let has_ttwid = page.has_session_cookie("ttwid")
+        || configured_cookies.iter().any(|(name, _)| name == "ttwid");
+    if page.is_empty() || has_ttwid {
+        return Ok(page);
+    }
+    // TikTok sert parfois une session anonyme incomplète (aucun `ttwid`) :
+    // son `tt_chain_token` n'est pas reconnu par le CDN et toutes les URL
+    // signées répondent 403. Un `ttwid` de navigateur force une session
+    // complète, stable sur les tentatives suivantes.
+    let Some(ttwid) = fetch_ttwid(config).await else {
+        return Ok(page);
+    };
+    let mut session_headers = headers.to_vec();
+    append_cookie(&mut session_headers, "ttwid", &ttwid);
+    let inherited = [("ttwid".to_string(), ttwid)];
+    match fetch_parsed_page(config, url, timeout, &session_headers, &inherited).await {
+        Ok(retry) if !retry.is_empty() => Ok(retry),
+        _ => Ok(page),
+    }
+}
+
+/// Obtient un `ttwid` depuis la page d'accueil TikTok (quelques tentatives :
+/// la réponse peut elle aussi omettre le cookie).
+async fn fetch_ttwid(config: &MediaConfig) -> Option<String> {
+    let headers = tiktok_headers(config);
+    for _ in 0..4 {
+        let response = match http::get_text(
+            &config.download,
+            TIKTOK_REFERER,
+            config.download.timeout,
+            &header_pairs(&headers),
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(_) => continue,
+        };
+        if let Some((_, value)) = session_cookies_from_headers(&response.headers)
+            .into_iter()
+            .find(|(name, _)| name == "ttwid")
+        {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// Ajoute `nom=valeur` à l'en-tête `Cookie` existant, ou le crée.
+fn append_cookie(headers: &mut Vec<(String, String)>, name: &str, value: &str) {
+    match headers
+        .iter_mut()
+        .find(|(key, _)| key.eq_ignore_ascii_case("Cookie"))
+    {
+        Some((_, existing)) => {
+            if !existing.trim().is_empty() {
+                existing.push_str("; ");
+            }
+            existing.push_str(name);
+            existing.push('=');
+            existing.push_str(value);
+        }
+        None => headers.push(("Cookie".to_string(), format!("{name}={value}"))),
+    }
+}
+
+async fn fetch_parsed_page(
+    config: &MediaConfig,
+    url: &str,
+    timeout: std::time::Duration,
+    headers: &[(String, String)],
+    inherited_cookies: &[(String, String)],
+) -> MediaResult<TikTokPage> {
+    let response = http::get_text(&config.download, url, timeout, &header_pairs(headers)).await?;
+    let mut cookies = inherited_cookies.to_vec();
+    for (name, value) in session_cookies_from_headers(&response.headers) {
+        match cookies.iter_mut().find(|(known, _)| *known == name) {
+            Some(existing) => existing.1 = value,
+            None => cookies.push((name, value)),
+        }
+    }
+    let mut page = parse_page_html(&response.body, &response.final_url);
+    page.attach_session_cookies(cookies);
+    Ok(page)
+}
+
 impl TikTokPage {
+    /// `true` si au moins un candidat porte ce cookie de session.
+    fn has_session_cookie(&self, name: &str) -> bool {
+        self.video_candidates
+            .iter()
+            .chain(self.audio_candidates.iter())
+            .chain(self.photo_slides.iter().flatten())
+            .any(|candidate| {
+                candidate
+                    .session_cookies
+                    .iter()
+                    .any(|(cookie_name, _)| cookie_name == name)
+            })
+    }
+
+    /// Associe à chaque candidat les cookies de la réponse qui l'a fourni.
+    ///
+    /// Une réponse TikTok signe ses URL avec son propre `tt_chain_token` :
+    /// les cookies doivent donc voyager avec les candidats, pas avec la page.
+    fn attach_session_cookies(&mut self, cookies: Vec<(String, String)>) {
+        for candidate in &mut self.video_candidates {
+            candidate.session_cookies.clone_from(&cookies);
+        }
+        for candidate in &mut self.audio_candidates {
+            candidate.session_cookies.clone_from(&cookies);
+        }
+        for slide in &mut self.photo_slides {
+            for candidate in slide {
+                candidate.session_cookies.clone_from(&cookies);
+            }
+        }
+    }
+
     fn merge(&mut self, other: TikTokPage) {
         if self.canonical_url.is_none() {
             self.canonical_url = other.canonical_url;
@@ -321,16 +482,8 @@ impl TikTokPage {
             self.author = other.author;
         }
         self.auth_required = self.auth_required && other.auth_required;
-        for (name, value) in other.session_cookies {
-            match self
-                .session_cookies
-                .iter_mut()
-                .find(|(known, _)| *known == name)
-            {
-                Some(existing) => existing.1 = value,
-                None => self.session_cookies.push((name, value)),
-            }
-        }
+        // Chaque candidat garde les cookies de sa propre réponse : ceux de
+        // `other` ne doivent jamais remplacer ceux déjà collectés.
         push_candidates(&mut self.video_candidates, other.video_candidates);
         push_candidates(&mut self.audio_candidates, other.audio_candidates);
         for slide in other.photo_slides {
@@ -415,9 +568,13 @@ pub fn parse_page_html(page_html: &str, page_url: &str) -> TikTokPage {
         page.photo_slides = photo_slides_from_raw_html(page_html);
     }
     let lowered = page_html.to_ascii_lowercase();
-    if AUTH_REQUIRED_MARKERS
-        .iter()
-        .any(|marker| lowered.contains(marker))
+    // Les libellés de connexion vivent aussi dans le bundle i18n de TikTok :
+    // un marqueur textuel ne prouve une page de connexion que si la page n'a
+    // livré aucun média exploitable.
+    if page.is_empty()
+        && AUTH_REQUIRED_MARKERS
+            .iter()
+            .any(|marker| lowered.contains(marker))
     {
         page.auth_required = true;
     }
@@ -482,6 +639,7 @@ fn collect_video_candidates(value: &Value, out: &mut Vec<MediaCandidate>) {
                 url,
                 kind: MediaKind::Video,
                 mime: Some("video/mp4".to_string()),
+                session_cookies: Vec::new(),
             });
         }
     }
@@ -554,6 +712,7 @@ fn collect_audio_candidates(value: &Value, out: &mut Vec<MediaCandidate>) {
                 url,
                 kind: MediaKind::Audio,
                 mime: Some("audio/mpeg".to_string()),
+                session_cookies: Vec::new(),
             });
         }
     }
@@ -611,6 +770,7 @@ fn collect_photo_slides(value: &Value, out: &mut Vec<Vec<MediaCandidate>>, depth
                                 mime: Some(infer_image_mime(&url).to_string()),
                                 kind: MediaKind::Image,
                                 url,
+                                session_cookies: Vec::new(),
                             });
                         }
                         slide.truncate(MAX_CANDIDATES_PER_SLIDE);
@@ -694,6 +854,7 @@ pub fn photo_slides_from_raw_html(page_html: &str) -> Vec<Vec<MediaCandidate>> {
                     mime: Some(infer_image_mime(&url).to_string()),
                     kind: MediaKind::Image,
                     url,
+                    session_cookies: Vec::new(),
                 })
                 .collect()
         })
@@ -956,16 +1117,28 @@ mod tests {
         );
     }
 
+    fn candidate(url: &str, cookies: &[(&str, &str)]) -> MediaCandidate {
+        MediaCandidate {
+            url: url.to_string(),
+            kind: MediaKind::Video,
+            mime: Some("video/mp4".to_string()),
+            session_cookies: cookies
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+                .collect(),
+        }
+    }
+
     #[test]
-    fn media_headers_send_page_cookies_and_referer() {
+    fn media_headers_send_candidate_cookies_and_referer() {
         let config =
             MediaConfig::from_pairs([("TIKTOK_COOKIE", "sessionid=s; tt_chain_token=old")]);
         let page = TikTokPage {
             canonical_url: Some("https://www.tiktok.com/@a/video/1".to_string()),
-            session_cookies: vec![("tt_chain_token".to_string(), "fresh".to_string())],
             ..TikTokPage::default()
         };
-        let headers = media_headers(&config, &page);
+        let fresh = candidate("https://v16.test/play.mp4", &[("tt_chain_token", "fresh")]);
+        let headers = media_headers(&config, &page, &fresh);
         let get = |name: &str| {
             headers
                 .iter()
@@ -976,11 +1149,124 @@ mod tests {
         assert_eq!(get("Cookie"), Some("sessionid=s; tt_chain_token=fresh"));
         assert!(get("User-Agent").is_some());
 
-        let anonymous = media_headers(&MediaConfig::default(), &TikTokPage::default());
+        let anonymous = media_headers(
+            &MediaConfig::default(),
+            &TikTokPage::default(),
+            &candidate("https://v16.test/x.mp4", &[]),
+        );
         assert!(!anonymous.iter().any(|(key, _)| key == "Cookie"));
         assert!(anonymous
             .iter()
             .any(|(key, value)| key == "Referer" && value == TIKTOK_REFERER));
+    }
+
+    #[test]
+    fn candidates_keep_the_cookies_of_the_response_that_signed_them() {
+        let main_url = "https://www.tiktok.com/@a/video/7311111111111111111";
+        let mut main = parse_page_html(&universal_page(VIDEO_PAYLOAD), main_url);
+        main.attach_session_cookies(vec![("tt_chain_token".to_string(), "main".to_string())]);
+        let mut embedded = parse_page_html(
+            &universal_page(
+                r#"{"itemStruct":{"id":"7311111111111111111","video":{"playAddr":"https://v16.test/embed.mp4"}}}"#,
+            ),
+            "https://www.tiktok.com/embed/v2/7311111111111111111",
+        );
+        embedded.attach_session_cookies(vec![("tt_chain_token".to_string(), "embed".to_string())]);
+        main.merge(embedded);
+        assert_eq!(main.video_candidates.len(), 3);
+        // La réponse principale a signé ses deux URL avec `main` ; l'URL de
+        // la page embed garde le jeton de la page embed.
+        assert_eq!(
+            main.video_candidates[0].session_cookies,
+            vec![("tt_chain_token".to_string(), "main".to_string())]
+        );
+        assert_eq!(
+            main.video_candidates[1].session_cookies,
+            vec![("tt_chain_token".to_string(), "main".to_string())]
+        );
+        assert_eq!(
+            main.video_candidates[2].session_cookies,
+            vec![("tt_chain_token".to_string(), "embed".to_string())]
+        );
+        let cookie_for = |candidate: &MediaCandidate| {
+            media_headers(&MediaConfig::default(), &main, candidate)
+                .into_iter()
+                .find(|(name, _)| name == "Cookie")
+                .map(|(_, value)| value)
+        };
+        assert_eq!(
+            cookie_for(&main.video_candidates[0]).as_deref(),
+            Some("tt_chain_token=main")
+        );
+        assert_eq!(
+            cookie_for(&main.video_candidates[2]).as_deref(),
+            Some("tt_chain_token=embed")
+        );
+    }
+
+    #[test]
+    fn detects_a_complete_anonymous_session() {
+        let mut page = parse_page_html(
+            &universal_page(VIDEO_PAYLOAD),
+            "https://www.tiktok.com/@a/video/7311111111111111111",
+        );
+        assert!(!page.has_session_cookie("ttwid"));
+        page.attach_session_cookies(vec![
+            ("ttwid".to_string(), "device".to_string()),
+            ("tt_chain_token".to_string(), "token".to_string()),
+        ]);
+        assert!(page.has_session_cookie("ttwid"));
+        assert!(page.has_session_cookie("tt_chain_token"));
+        assert!(!page.has_session_cookie("msToken"));
+
+        let empty = TikTokPage::default();
+        assert!(!empty.has_session_cookie("ttwid"));
+    }
+
+    #[test]
+    fn login_labels_do_not_flag_a_page_that_served_media() {
+        let with_label = universal_page(VIDEO_PAYLOAD)
+            .replace("</body>", "<div>Connecte-toi à TikTok</div></body>");
+        let page = parse_page_html(
+            &with_label,
+            "https://www.tiktok.com/@a/video/7311111111111111111",
+        );
+        assert!(!page.auth_required);
+        assert!(!page.video_candidates.is_empty());
+
+        let wall = parse_page_html(
+            "<html><body>Connecte-toi à TikTok pour continuer</body></html>",
+            "https://www.tiktok.com/@a/video/7311111111111111111",
+        );
+        assert!(wall.auth_required);
+        assert!(wall.is_empty());
+    }
+
+    #[test]
+    fn appends_cookies_to_the_existing_header() {
+        let mut headers = vec![("User-Agent".to_string(), "ua".to_string())];
+        append_cookie(&mut headers, "ttwid", "device");
+        append_cookie(&mut headers, "msToken", "token");
+        assert_eq!(
+            headers,
+            vec![
+                ("User-Agent".to_string(), "ua".to_string()),
+                (
+                    "Cookie".to_string(),
+                    "ttwid=device; msToken=token".to_string()
+                ),
+            ]
+        );
+
+        let mut with_session = vec![("Cookie".to_string(), "sessionid=s".to_string())];
+        append_cookie(&mut with_session, "ttwid", "device");
+        assert_eq!(
+            with_session,
+            vec![(
+                "Cookie".to_string(),
+                "sessionid=s; ttwid=device".to_string()
+            )]
+        );
     }
 
     #[test]
@@ -994,5 +1280,27 @@ mod tests {
         page.merge(embedded);
         assert_eq!(page.video_candidates.len(), 2);
         assert_eq!(page.item_id.as_deref(), Some("7311111111111111111"));
+    }
+
+    #[test]
+    fn converts_photo_urls_to_video_urls() {
+        assert_eq!(
+            photo_to_video_url("https://www.tiktok.com/@chat_officiel/photo/7312222222222222222"),
+            Some("https://www.tiktok.com/@chat_officiel/video/7312222222222222222".to_string())
+        );
+        assert_eq!(
+            photo_to_video_url(
+                "https://www.tiktok.com/@chat_officiel/photo/7312222222222222222?is_from_webapp=1"
+            ),
+            Some("https://www.tiktok.com/@chat_officiel/video/7312222222222222222".to_string())
+        );
+        assert_eq!(
+            photo_to_video_url("https://www.tiktok.com/@chat_officiel/video/7312222222222222222"),
+            None
+        );
+        assert_eq!(
+            photo_to_video_url("https://www.tiktok.com/@chat_officiel/gallery/7312222222222222222"),
+            None
+        );
     }
 }

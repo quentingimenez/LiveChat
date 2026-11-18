@@ -1215,6 +1215,12 @@ pub fn carousel_dimensions(max_height: u32, is_vertical: bool) -> (u32, u32) {
 }
 
 /// Arguments ffmpeg pour assembler une vidéo de carrousel TikTok.
+///
+/// Une image seule est mappée explicitement (`-map 0:v:0`) : dès qu'un `-map`
+/// audio est présent, ffmpeg ne produit que les flux mappés et la vidéo serait
+/// perdue. Avec de la musique, l'image est bouclée sans `-t 3` et `-shortest`
+/// arrête le fichier à la fin de l'audio ; sans musique, et pour un carrousel
+/// de plusieurs images, chaque image dure 3 s.
 pub fn build_carousel_video_args(
     images: &[PathBuf],
     audio: Option<&Path>,
@@ -1226,12 +1232,18 @@ pub fn build_carousel_video_args(
     let per_image = format!(
         "scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p"
     );
+    // Une photo unique accompagnée de musique doit durer aussi longtemps
+    // qu'elle : `-loop 1` sans `-t 3` et `-shortest` coupe le fichier avec
+    // l'audio.
+    let picture_follows_music = images.len() == 1 && audio.is_some();
     let mut args: Vec<String> = vec!["-y".to_string(), "-hide_banner".to_string()];
     for image in images {
         args.push("-loop".to_string());
         args.push("1".to_string());
-        args.push("-t".to_string());
-        args.push("3".to_string());
+        if !picture_follows_music {
+            args.push("-t".to_string());
+            args.push("3".to_string());
+        }
         args.push("-i".to_string());
         args.push(image.display().to_string());
     }
@@ -1258,6 +1270,10 @@ pub fn build_carousel_video_args(
     } else {
         args.push("-vf".to_string());
         args.push(per_image);
+        // Sans ce mapping explicite, le `-map` audio plus bas ferait
+        // disparaître le flux vidéo de la sortie.
+        args.push("-map".to_string());
+        args.push("0:v:0".to_string());
     }
     args.push("-c:v".to_string());
     args.push("libx264".to_string());
@@ -1907,6 +1923,43 @@ mod tests {
         );
         assert!(single.contains(&"-vf".to_string()));
         assert!(single.contains(&"-an".to_string()));
+    }
+
+    #[test]
+    fn single_photo_carousel_keeps_video_and_follows_music() {
+        let config = video_config();
+        let images = vec![PathBuf::from("a.jpg")];
+        let with_audio = build_carousel_video_args(
+            &images,
+            Some(Path::new("music.mp3")),
+            Path::new("out.mp4"),
+            (608, 1080),
+            &config,
+        );
+        assert!(with_audio.windows(2).any(|pair| pair == ["-map", "0:v:0"]));
+        assert!(with_audio.windows(2).any(|pair| pair == ["-map", "1:a:0"]));
+        let image_input = with_audio.iter().position(|arg| arg == "a.jpg").unwrap();
+        assert!(!with_audio[..image_input].contains(&"-t".to_string()));
+
+        let without_audio =
+            build_carousel_video_args(&images, None, Path::new("out.mp4"), (608, 1080), &config);
+        assert!(without_audio
+            .windows(2)
+            .any(|pair| pair == ["-map", "0:v:0"]));
+        assert!(without_audio.contains(&"-an".to_string()));
+        assert!(without_audio.windows(2).any(|pair| pair == ["-t", "3"]));
+
+        let images = vec![PathBuf::from("a.jpg"), PathBuf::from("b.jpg")];
+        let multi = build_carousel_video_args(
+            &images,
+            Some(Path::new("music.mp3")),
+            Path::new("out.mp4"),
+            (608, 1080),
+            &config,
+        );
+        assert!(multi.contains(&"-filter_complex".to_string()));
+        assert!(multi.windows(2).any(|pair| pair == ["-map", "[v]"]));
+        assert!(multi.windows(2).any(|pair| pair == ["-map", "2:a:0"]));
     }
 
     #[test]

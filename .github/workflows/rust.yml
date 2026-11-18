@@ -54,6 +54,9 @@ env:
   RUST_BACKTRACE: "1"
   # Les deps du workspace varient entre Linux et Windows : le cache est clé par OS.
   CARGO_INCREMENTAL: "0"
+  # lc-server's build.rs builds the admin console with npm; CI jobs that need
+  # the embedded console build it themselves in an explicit step.
+  LC_ADMIN_WEB_BUILD: "0"
 
 jobs:
   fmt:

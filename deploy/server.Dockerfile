@@ -47,6 +47,9 @@ ENV RUSTUP_TOOLCHAIN=${RUST_VERSION} \
     RUST_BACKTRACE=1
 WORKDIR /app
 
+# The console is built in the `admin-web` stage and copied as `dist/`: never run npm here.
+ENV LC_ADMIN_WEB_BUILD=0
+
 # --- 1a) Manifestes seuls : cette couche ne s'invalide que si un Cargo.toml ou
 #         Cargo.lock change (pas à chaque modification de source).
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./

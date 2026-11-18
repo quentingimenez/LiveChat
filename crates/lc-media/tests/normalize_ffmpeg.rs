@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use lc_media::transcode::normalize_local_media;
+use lc_media::transcode::{build_carousel_video, carousel_dimensions, normalize_local_media};
 use lc_media::{MediaConfig, MediaKind, VideoEncoder};
 
 fn config(directory: &Path) -> MediaConfig {
@@ -361,4 +361,73 @@ async fn a_refused_stream_copy_falls_back_to_the_transcode() {
         "h264,yuv420p"
     );
     assert!(is_faststart(&normalized.storage_path));
+}
+
+/// Une photo unique et 5 s de musique : la vidéo de carrousel garde un flux
+/// vidéo et dure aussi longtemps que l'audio (et non 3 s).
+#[tokio::test]
+#[ignore = "needs ffmpeg and ffprobe"]
+async fn builds_single_photo_carousel_with_audio() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = config(dir.path());
+    let image = dir.path().join("photo.png");
+    run(
+        &config.tools.ffmpeg,
+        &[
+            "-y",
+            "-hide_banner",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=360x640:d=1",
+            "-frames:v",
+            "1",
+            image.to_str().unwrap(),
+        ],
+    );
+    let audio = dir.path().join("music.m4a");
+    run(
+        &config.tools.ffmpeg,
+        &[
+            "-y",
+            "-hide_banner",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=5",
+            "-c:a",
+            "aac",
+            audio.to_str().unwrap(),
+        ],
+    );
+    let output = dir.path().join("carousel.mp4");
+    let images = [image];
+    build_carousel_video(
+        &config.tools.ffmpeg,
+        &images,
+        Some(&audio),
+        &output,
+        carousel_dimensions(320, true),
+        &config,
+    )
+    .await
+    .expect("carrousel construit");
+    let probed = lc_media::probe::probe(
+        &config.tools.ffprobe,
+        &output,
+        lc_media::probe::PROBE_TIMEOUT,
+    )
+    .await
+    .unwrap();
+    assert!(probed.has_video, "le carrousel doit garder un flux vidéo");
+    assert!(probed.has_audio, "le carrousel doit garder la musique");
+    let duration = probed.duration_sec.expect("durée sondée");
+    assert!(
+        (4.0..=6.0).contains(&duration),
+        "durée {duration}, attendu ~5 s"
+    );
 }

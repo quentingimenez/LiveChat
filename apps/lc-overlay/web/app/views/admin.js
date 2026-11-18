@@ -1,13 +1,14 @@
-// Administration tab: members, bans and codes (invitations and pairing codes).
-// The server settings of the guild (`renderServerSettings`) are shown in its
-// « Réglages » tab.
+// Administration tab: members, devices, bans and codes (invitations and
+// pairing codes). The server settings of the guild (`renderServerSettings`)
+// are shown in its « Réglages » tab.
 
 import { api, run } from '../core/api.js';
+import { isObsolete, newestVersion, platformLabel, presenceLabel as devicePresenceLabel, sessionModeLabel } from '../core/device-helpers.js';
 import { avatarNode, h, icon } from '../core/dom.js';
 import { formatCode, relativeTime } from '../core/format.js';
 import { activeGuild, can, ROLE_LABELS, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
-import { confirmDialog, copyText } from '../core/ui.js';
+import { confirmDialog, copyText, openDialog } from '../core/ui.js';
 import { loadAdmin, loadGuild } from '../data.js';
 import { renderView } from './view.js';
 
@@ -15,6 +16,7 @@ export function renderAdmin() {
   const tabs = [];
   if (can('manageMembers')) {
     tabs.push(['members', 'Membres']);
+    tabs.push(['devices', 'Appareils']);
   }
   if (can('manageInvites')) {
     tabs.push(['codes', 'Codes']);
@@ -25,7 +27,7 @@ export function renderAdmin() {
   if (!tabs.some(([id]) => id === state.adminTab)) {
     state.adminTab = tabs.length ? tabs[0][0] : 'members';
   }
-  const views = { codes: renderCodes, bans: renderBans };
+  const views = { codes: renderCodes, bans: renderBans, devices: renderDevices };
   const body = (views[state.adminTab] || renderMembers)();
   return h(
     'div',
@@ -103,14 +105,21 @@ function renderMembers() {
           { class: 'field', 'aria-label': `Rôle de ${member.displayName}`, onChange: (event) => changeRole(member, event.target.value) },
           Object.entries(ROLE_LABELS).map(([id, label]) => h('option', { value: id, selected: member.role === id }, label)),
         ),
-        member.isSelf
-          ? h('span')
-          : h(
-              'span',
-              { class: 'row' },
-              h('button', { class: 'btn is-quiet is-danger', onClick: () => openKickDialog(member) }, 'Exclure'),
-              h('button', { class: 'btn is-quiet is-danger', onClick: () => openBanDialog(member) }, 'Bannir'),
-            ),
+        h(
+          'span',
+          { class: 'row member-actions' },
+          h(
+            'button',
+            { class: 'btn is-quiet', title: 'Créer un code pour rattacher un appareil à ce membre.', onClick: () => openDeviceCodeDialog(member) },
+            'Code d’appareil',
+          ),
+          member.isSelf
+            ? null
+            : h('button', { class: 'btn is-quiet is-danger', onClick: () => openKickDialog(member) }, 'Exclure'),
+          member.isSelf
+            ? null
+            : h('button', { class: 'btn is-quiet is-danger', onClick: () => openBanDialog(member) }, 'Bannir'),
+        ),
       ),
     ),
   );
@@ -141,6 +150,28 @@ function openBanDialog(member) {
   });
 }
 
+// Code d'appareil for another member: a single-use code that attaches a new
+// overlay to that member's account. The admin reads it out to them.
+async function openDeviceCodeDialog(member) {
+  const body = await run(() => api('POST', '/overlay/admin/device-codes', { memberId: member.id }));
+  if (!body || !body.invite) {
+    return;
+  }
+  const code = formatCode(body.invite.code);
+  openDialog((close) => [
+    h('h2', null, 'Code d’appareil'),
+    h('p', null, `Pour ${member.displayName} : à saisir dans l’overlay pour rattacher un nouvel appareil à son compte.`),
+    h(
+      'div',
+      { class: 'row is-wrap' },
+      h('span', { class: 'code' }, code),
+      h('button', { class: 'btn', onClick: () => copyText(code, 'Code copié.') }, icon('copy'), 'Copier'),
+    ),
+    h('p', { class: 'meta' }, 'Expire dans 10 min. Une seule utilisation.'),
+    h('div', { class: 'actions' }, h('button', { class: 'btn', onClick: close }, 'Fermer')),
+  ]);
+}
+
 function renderBans() {
   if (state.bans.length === 0) {
     return h('p', { class: 'meta' }, 'Personne n’est banni de cette guilde.');
@@ -166,6 +197,171 @@ function openUnbanDialog(ban) {
     await run(() => api('DELETE', `/overlay/admin/bans/${encodeURIComponent(ban.id)}`), `Le bannissement de ${ban.displayName} est levé.`);
     loadAdmin();
   });
+}
+
+// ---------------------------------------------------------------- devices
+
+function deviceRoleBadge(device) {
+  const role = device.role || 'member';
+  return h('span', { class: `badge is-${role}` }, ROLE_LABELS[role] || role);
+}
+
+function renderDevices() {
+  if (state.devices.length === 0) {
+    return h('p', { class: 'meta' }, 'Chargement des appareils…');
+  }
+  const newest = newestVersion(state.devices);
+  return h(
+    'div',
+    null,
+    h('p', { class: 'meta' }, 'Chaque overlay appairé à cette guilde. « Régler » modifie le son et la pause de cet appareil.'),
+    h('div', { class: 'list' }, state.devices.map((device) => renderDevice(device, newest))),
+  );
+}
+
+function renderDevice(device, newest) {
+  const platform = platformLabel(device.platform);
+  return h(
+    'div',
+    { class: `line is-device${device.connected ? '' : ' is-off'}` },
+    avatarNode(device.memberName || device.label, null),
+    h(
+      'div',
+      { class: 'device-cell' },
+      h('div', { class: 'ellipsis' }, device.label, device.isSelf ? h('span', { class: 'sub' }, '  · cet appareil') : null),
+      h('div', { class: 'sub member-meta' }, device.memberName || 'Sans membre', deviceRoleBadge(device)),
+    ),
+    h(
+      'div',
+      { class: 'sub device-version' },
+      h('span', null, device.overlayVersion || 'version inconnue'),
+      isObsolete(device.overlayVersion, newest) ? h('span', { class: 'badge is-obsolete' }, 'Obsolète') : null,
+      platform ? h('span', { class: 'device-platform' }, platform) : null,
+    ),
+    h('span', { class: 'sub seen' }, devicePresenceLabel(device)),
+    h('span', { class: 'badge' }, sessionModeLabel(device.sessionMode)),
+    h(
+      'span',
+      { class: 'row device-actions' },
+      h('button', { class: 'btn is-quiet', onClick: () => openDeviceSettingsDialog(device) }, 'Régler'),
+      h('button', { class: 'btn is-quiet', onClick: () => openRenameDeviceDialog(device) }, 'Renommer'),
+      device.isSelf
+        ? h('span', { class: 'badge is-off' }, 'Cet appareil')
+        : h('button', { class: 'btn is-quiet is-danger', onClick: () => openRevokeDeviceDialog(device) }, 'Révoquer'),
+    ),
+  );
+}
+
+// Same semantics as the server console's device dialog: guild volume (0–100 %
+// on top of a 0..1 value), media sound and pause, pushed to the device.
+function openDeviceSettingsDialog(device) {
+  openDialog((close) => {
+    const current = device.guildSettings || { volume: 1, mediaMuted: false, paused: false };
+    const initial = Math.round((Number(current.volume) || 0) * 100);
+    const volume = h('input', {
+      type: 'range',
+      min: '0',
+      max: '100',
+      step: '5',
+      value: String(initial),
+      'aria-label': 'Volume de la guilde',
+    });
+    const output = h('output', { class: 'sub' }, `${initial} %`);
+    volume.addEventListener('input', () => {
+      output.textContent = `${volume.value} %`;
+    });
+    const muted = h('input', { type: 'checkbox', checked: Boolean(current.mediaMuted) });
+    const paused = h('input', { type: 'checkbox', checked: Boolean(current.paused) });
+    const save = async () => {
+      const body = await run(() =>
+        api('PATCH', `/overlay/admin/devices/${encodeURIComponent(device.id)}/guild-settings`, {
+          volume: Number(volume.value) / 100,
+          mediaMuted: muted.checked,
+          paused: paused.checked,
+        }),
+      );
+      if (!body) {
+        return;
+      }
+      notify(body.delivered ? 'Réglages appliqués.' : 'Réglages enregistrés : ils s’appliqueront à sa prochaine connexion.');
+      close();
+      loadAdmin();
+    };
+    return [
+      h('h2', null, `Régler ${device.label}`),
+      h(
+        'p',
+        null,
+        device.connected
+          ? 'L’appareil est en ligne : les réglages s’appliquent tout de suite.'
+          : 'L’appareil est hors ligne : les réglages s’appliqueront à sa prochaine connexion.',
+      ),
+      h(
+        'div',
+        { class: 'stack' },
+        h('label', null, 'Volume de la guilde', h('div', { class: 'row device-range' }, volume, output)),
+        h('p', { class: 'device-hint' }, 'Multiplié par le volume général de l’appareil.'),
+        h('label', { class: 'switch' }, muted, 'Couper le son des médias'),
+        h('p', { class: 'device-hint' }, 'Les médias restent affichés, sans leur son.'),
+        h('label', { class: 'switch' }, paused, 'Mettre la guilde en pause'),
+        h('p', { class: 'device-hint' }, 'Plus aucun média de cette guilde ne s’affiche sur cet appareil.'),
+      ),
+      h(
+        'div',
+        { class: 'actions' },
+        h('button', { class: 'btn is-quiet', onClick: close }, 'Annuler'),
+        h('button', { class: 'btn', onClick: save }, 'Enregistrer'),
+      ),
+    ];
+  });
+}
+
+function openRenameDeviceDialog(device) {
+  openDialog((close) => {
+    const field = h('input', { class: 'field', maxlength: '40', value: device.label, 'aria-label': 'Nom de l’appareil' });
+    const save = async () => {
+      const label = field.value.trim();
+      if (!label) {
+        field.focus();
+        return;
+      }
+      const body = await run(() => api('PATCH', `/overlay/admin/devices/${encodeURIComponent(device.id)}`, { label }), 'Appareil renommé.');
+      if (!body) {
+        return;
+      }
+      close();
+      loadAdmin();
+    };
+    field.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        save();
+      }
+    });
+    return [
+      h('h2', null, 'Renommer l’appareil'),
+      h('p', null, 'Le nom affiché dans la liste des appareils de la guilde (40 caractères au plus).'),
+      h('div', { class: 'stack' }, h('label', null, 'Nom de l’appareil', field)),
+      h(
+        'div',
+        { class: 'actions' },
+        h('button', { class: 'btn is-quiet', onClick: close }, 'Annuler'),
+        h('button', { class: 'btn', onClick: save }, 'Enregistrer'),
+      ),
+    ];
+  });
+}
+
+function openRevokeDeviceDialog(device) {
+  confirmDialog(
+    `Révoquer ${device.label} ?`,
+    'L’appareil est déconnecté et son jeton invalidé. Le membre reste dans la guilde et peut appairer un nouvel appareil.',
+    'Révoquer l’appareil',
+    async () => {
+      await run(() => api('DELETE', `/overlay/admin/devices/${encodeURIComponent(device.id)}`), `${device.label} a été révoqué.`);
+      loadAdmin();
+    },
+  );
 }
 
 // Expiry of a code, with the same wording for invitations and pairing codes.

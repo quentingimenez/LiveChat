@@ -81,6 +81,7 @@ use crate::app::AppState;
 pub(crate) mod admin;
 mod auth;
 mod board_extras;
+pub(crate) mod devices;
 pub(crate) mod discord_link;
 pub(crate) mod guild;
 mod ingest_code;
@@ -233,6 +234,8 @@ mod ban_tests;
 #[cfg(test)]
 mod board_extras_tests;
 #[cfg(test)]
+mod device_admin_tests;
+#[cfg(test)]
 mod guild_tests;
 #[cfg(test)]
 mod ingestion_tests;
@@ -347,6 +350,19 @@ pub fn router() -> Router<AppState> {
         .route(
             "/overlay/admin/bans/{ban_id}",
             axum::routing::delete(admin::unban_handler),
+        )
+        .route("/overlay/admin/devices", get(devices::list_devices))
+        .route(
+            "/overlay/admin/devices/{client_id}",
+            axum::routing::patch(devices::update_device).delete(devices::revoke_device),
+        )
+        .route(
+            "/overlay/admin/devices/{client_id}/guild-settings",
+            axum::routing::patch(devices::update_guild_settings),
+        )
+        .route(
+            "/overlay/admin/device-codes",
+            post(devices::create_device_code),
         )
         .route(
             "/overlay/admin/invites",

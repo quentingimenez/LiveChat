@@ -37,6 +37,10 @@
 // Codes d'appairage : GET /overlay/admin/pairing-codes sert un code Discord
 // actif et un code d'extension expiré ; la révocation et la purge modifient
 // cette liste en mémoire. Les membres portent discordUserId.
+// Appareils : GET/PATCH/DELETE /overlay/admin/devices et
+// POST /overlay/admin/device-codes servent quatre appareils sur trois membres
+// (un hors ligne, un obsolète), avec renommage, réglages et révocation en
+// mémoire ; l'appareil « toi » refuse sa propre révocation.
 // Les médias ont des formats variés (portrait, carré, paysage) pour la
 // mosaïque ; « Nope » est une image portrait (1080 × 1920). La mise en pause ferme la
 // connexion comme le shell (disabled, puis connecting → connected au retour)
@@ -165,6 +169,15 @@
     { id: 'm-max', displayName: 'Max', avatar: null, role: 'member', connected: false, deviceCount: 1, lastSeenAt: new Date(now - 7200000).toISOString(), createdAt: new Date(now - 7 * 86400000).toISOString(), discordLinked: false, discordUserId: null, isSelf: false },
     { id: 'm-42', displayName: 'Invité-42', avatar: null, role: 'guest', connected: false, deviceCount: 1, lastSeenAt: null, createdAt: new Date(now - 86400000).toISOString(), discordLinked: false, discordUserId: null, isSelf: false },
   ];
+  // Appareils de la guilde (`GET /overlay/admin/devices`) : quatre appareils
+  // sur trois membres, un hors ligne (Max, en 3.5.2) et donc obsolète.
+  const devices = [
+    { id: 'd-111', label: 'Salon principal', memberId: 'm-111', memberName: 'Quentin', role: 'admin', sessionMode: 'normal', connected: true, lastSeenAt: new Date().toISOString(), overlayVersion: '3.7.0', platform: 'windows', guildSettings: { volume: 0.8, mediaMuted: false, paused: false }, isSelf: true },
+    { id: 'd-lea', label: 'PC de Léa', memberId: 'm-lea', memberName: 'Léa', role: 'member', sessionMode: 'normal', connected: true, lastSeenAt: new Date(now - 5 * 60000).toISOString(), overlayVersion: '3.7.0', platform: 'windows', guildSettings: { volume: 1, mediaMuted: false, paused: false }, isSelf: false },
+    { id: 'd-max', label: 'Salon', memberId: 'm-max', memberName: 'Max', role: 'member', sessionMode: 'normal', connected: false, lastSeenAt: new Date(now - 3 * 3600000).toISOString(), overlayVersion: '3.5.2', platform: 'linux', guildSettings: null, isSelf: false },
+    { id: 'd-max-2', label: 'Portable de Max', memberId: 'm-max', memberName: 'Max', role: 'member', sessionMode: 'invite_read_only', connected: true, lastSeenAt: new Date(now - 2 * 60000).toISOString(), overlayVersion: '3.7.0', platform: 'macos', guildSettings: { volume: 0.6, mediaMuted: false, paused: true }, isSelf: false },
+  ];
+  let nextDeviceCode = 1;
   // Guild profile edited by « Mon profil »: the mock keeps it between dialogs.
   // It starts linked to the Discord account, as after a personal /pair-code.
   const discordProfile = { displayName: 'Quentin', avatar: null };
@@ -559,6 +572,86 @@
     if (path === '/overlay/admin/members') {
       return ok({ count: members.length, items: members });
     }
+    if (path === '/overlay/admin/devices' && method === 'GET') {
+      return ok(JSON.parse(JSON.stringify({ count: devices.length, items: devices })));
+    }
+    const devicePath = /^\/overlay\/admin\/devices\/([^/?]+)(\/guild-settings)?$/.exec(path);
+    if (devicePath) {
+      const entry = devices.find((candidate) => candidate.id === decodeURIComponent(devicePath[1]));
+      if (!entry) {
+        return { ok: false, status: 404, body: { error: 'device_not_found' } };
+      }
+      if (devicePath[2] === '/guild-settings' && method === 'PATCH') {
+        const body = payload.body || {};
+        const fields = ['volume', 'mediaMuted', 'paused'];
+        if (!fields.some((field) => field in body)) {
+          return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+        }
+        if ('volume' in body && (typeof body.volume !== 'number' || !Number.isFinite(body.volume) || body.volume < 0 || body.volume > 1)) {
+          return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+        }
+        if ('mediaMuted' in body && typeof body.mediaMuted !== 'boolean') {
+          return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+        }
+        if ('paused' in body && typeof body.paused !== 'boolean') {
+          return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+        }
+        entry.guildSettings = {
+          volume: 'volume' in body ? body.volume : (entry.guildSettings || {}).volume ?? 1,
+          mediaMuted: 'mediaMuted' in body ? body.mediaMuted : Boolean((entry.guildSettings || {}).mediaMuted),
+          paused: 'paused' in body ? body.paused : Boolean((entry.guildSettings || {}).paused),
+        };
+        return ok({ delivered: entry.connected });
+      }
+      if (devicePath[2]) {
+        return { ok: false, status: 404, body: { error: 'request_error' } };
+      }
+      if (method === 'DELETE') {
+        if (entry.isSelf) {
+          return { ok: false, status: 409, body: { error: 'cannot_revoke_self' } };
+        }
+        devices.splice(devices.indexOf(entry), 1);
+        return ok({ found: true, revoked: true });
+      }
+      if (method === 'PATCH') {
+        const body = payload.body || {};
+        const hasLabel = 'label' in body;
+        const hasMode = 'sessionMode' in body;
+        if (!hasLabel && !hasMode) {
+          return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+        }
+        if (hasLabel) {
+          if (typeof body.label !== 'string') {
+            return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+          }
+          const label = body.label.trim();
+          if (!label || Array.from(label).length > 40) {
+            return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+          }
+          entry.label = label;
+        }
+        if (hasMode) {
+          if (body.sessionMode !== 'normal' && body.sessionMode !== 'invite_read_only') {
+            return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+          }
+          entry.sessionMode = body.sessionMode;
+        }
+        return ok(entry);
+      }
+    }
+    if (path === '/overlay/admin/device-codes' && method === 'POST') {
+      const memberId = payload.body && payload.body.memberId;
+      const member = members.find((candidate) => candidate.id === memberId);
+      if (!member) {
+        return { ok: false, status: 404, body: { error: 'member_not_found' } };
+      }
+      const suffix = String(nextDeviceCode++).padStart(5, '0');
+      const at = new Date().toISOString();
+      return ok({
+        created: true,
+        invite: { code: `D3V${suffix}`, role: member.role, memberId: member.id, maxUses: 1, useCount: 0, createdByMemberId: 'm-111', expiresAt: new Date(Date.now() + 10 * 60000).toISOString(), revokedAt: null, createdAt: at, isActive: true },
+      });
+    }
     if (path === '/overlay/admin/invites' && method === 'GET') {
       return ok({ count: invites.length, items: invites });
     }
@@ -843,7 +936,7 @@
 
   const requests = [];
 
-  window.__mock = { emit, removeGuild, finishPlaying, reconnect, restartServer, openSettings: openSettingsPage, finishPlacement, settings, previewLayouts, queue, items, guilds, ingestions, invites, pairingCodes, requests };
+  window.__mock = { emit, removeGuild, finishPlaying, reconnect, restartServer, openSettings: openSettingsPage, finishPlacement, settings, previewLayouts, queue, items, guilds, ingestions, invites, pairingCodes, devices, requests };
 
   window.__TAURI_INTERNALS__ = {
     transformCallback(callback) {

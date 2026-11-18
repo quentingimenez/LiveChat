@@ -62,15 +62,18 @@ struct UpdateClientRequest {
 }
 
 /// Body of `PATCH /admin/api/overlay-clients/{id}/guild-settings`.
+///
+/// Shared with the overlay's `PATCH /overlay/admin/devices/{id}/guild-settings`
+/// so both surfaces validate the same fields the same way.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct GuildSettingsRequest {
+pub(crate) struct GuildSettingsRequest {
     #[serde(default)]
-    volume: Option<f64>,
+    pub(crate) volume: Option<f64>,
     #[serde(default)]
-    media_muted: Option<bool>,
+    pub(crate) media_muted: Option<bool>,
     #[serde(default)]
-    paused: Option<bool>,
+    pub(crate) paused: Option<bool>,
 }
 
 /// Resolves an active overlay client from the raw path segment.
@@ -105,9 +108,10 @@ async fn update_client(
     }
 
     let label = match payload.label.as_deref() {
-        Some(raw) => {
-            Some(normalize_label(raw).ok_or_else(|| AdminError::bad_request(INVALID_PAYLOAD))?)
-        }
+        Some(raw) => Some(
+            normalize_device_label(raw, LABEL_MAX_CHARS)
+                .ok_or_else(|| AdminError::bad_request(INVALID_PAYLOAD))?,
+        ),
         None => None,
     };
 
@@ -172,7 +176,8 @@ async fn update_guild_settings(
     let Ok(Json(payload)) = payload else {
         return Err(AdminError::bad_request(INVALID_PAYLOAD));
     };
-    let device_settings = validate_guild_settings(payload)?;
+    let device_settings =
+        validate_guild_settings(payload).map_err(|()| AdminError::bad_request(INVALID_PAYLOAD))?;
 
     let client_id =
         OverlayClientId::parse(&client.id).map_err(|_| AdminError::not_found(OVERLAY_NOT_FOUND))?;
@@ -194,15 +199,18 @@ async fn update_guild_settings(
 }
 
 /// Validates the guild-settings body and builds the `device.settings` payload.
-fn validate_guild_settings(
+///
+/// Shared with the overlay route: `Err(())` always maps to
+/// `400 invalid_payload`.
+pub(crate) fn validate_guild_settings(
     payload: GuildSettingsRequest,
-) -> Result<DeviceSettingsPayload, AdminError> {
+) -> Result<DeviceSettingsPayload, ()> {
     if payload.volume.is_none() && payload.media_muted.is_none() && payload.paused.is_none() {
-        return Err(AdminError::bad_request(INVALID_PAYLOAD));
+        return Err(());
     }
     if let Some(volume) = payload.volume {
         if !volume.is_finite() || !(0.0..=1.0).contains(&volume) {
-            return Err(AdminError::bad_request(INVALID_PAYLOAD));
+            return Err(());
         }
     }
     Ok(DeviceSettingsPayload {
@@ -212,17 +220,20 @@ fn validate_guild_settings(
     })
 }
 
-/// Trims and validates an overlay label (`1..=64` characters).
-fn normalize_label(raw: &str) -> Option<String> {
+/// Trims an overlay label and bounds it to `max_chars` characters.
+///
+/// The console accepts 64 characters; the overlay's own device screen uses a
+/// shorter limit, so the bound is a parameter instead of a copy.
+pub(crate) fn normalize_device_label(raw: &str, max_chars: usize) -> Option<String> {
     let trimmed = raw.trim();
     let length = trimmed.chars().count();
-    (1..=LABEL_MAX_CHARS)
+    (1..=max_chars)
         .contains(&length)
         .then(|| trimmed.to_owned())
 }
 
 /// Domain session mode stored on the overlay client row.
-fn domain_session_mode(mode: SessionMode) -> OverlaySessionMode {
+pub(crate) fn domain_session_mode(mode: SessionMode) -> OverlaySessionMode {
     match mode {
         SessionMode::Normal => OverlaySessionMode::Normal,
         SessionMode::InviteReadOnly => OverlaySessionMode::InviteReadOnly,
@@ -239,14 +250,25 @@ mod tests {
     #[test]
     fn labels_are_trimmed_and_bounded() {
         assert_eq!(
-            normalize_label("  Salon principal  ").as_deref(),
+            normalize_device_label("  Salon principal  ", LABEL_MAX_CHARS).as_deref(),
             Some("Salon principal")
         );
-        assert_eq!(normalize_label("   "), None);
-        assert_eq!(normalize_label(&"x".repeat(64)), Some("x".repeat(64)));
-        assert_eq!(normalize_label(&"x".repeat(65)), None);
+        assert_eq!(normalize_device_label("   ", LABEL_MAX_CHARS), None);
         assert_eq!(
-            normalize_label("Salon\nprincipal"),
+            normalize_device_label(&"x".repeat(64), LABEL_MAX_CHARS),
+            Some("x".repeat(64))
+        );
+        assert_eq!(
+            normalize_device_label(&"x".repeat(65), LABEL_MAX_CHARS),
+            None
+        );
+        assert_eq!(
+            normalize_device_label(&"x".repeat(40), 40),
+            Some("x".repeat(40))
+        );
+        assert_eq!(normalize_device_label(&"x".repeat(41), 40), None);
+        assert_eq!(
+            normalize_device_label("Salon\nprincipal", LABEL_MAX_CHARS),
             Some("Salon\nprincipal".to_owned())
         );
     }

@@ -47,30 +47,65 @@ fn test_config(media_dir: &Path) -> Config {
     .unwrap()
 }
 
-/// Admin hub fake recording close codes and reasons.
+/// Admin hub fake recording close codes, reasons and sent protocol messages.
 #[derive(Debug, Default)]
 pub(super) struct RecordingAdminHub {
     closes: Mutex<Vec<(uuid::Uuid, u16, String)>>,
+    sent: Mutex<Vec<(uuid::Uuid, lc_protocol::ServerMessage)>>,
+    connected: Mutex<Vec<uuid::Uuid>>,
+    device_states:
+        Mutex<std::collections::HashMap<uuid::Uuid, lc_protocol::DeviceSettingsStatePayload>>,
+    deliver: Mutex<bool>,
 }
 
 impl RecordingAdminHub {
     pub(super) fn closes(&self) -> Vec<(uuid::Uuid, u16, String)> {
         self.closes.lock().expect("verrou du hub").clone()
     }
+
+    pub(super) fn sent(&self) -> Vec<(uuid::Uuid, lc_protocol::ServerMessage)> {
+        self.sent.lock().expect("verrou du hub").clone()
+    }
+
+    pub(super) fn set_connected(&self, client_id: uuid::Uuid, connected: bool) {
+        let mut ids = self.connected.lock().expect("verrou du hub");
+        ids.retain(|id| *id != client_id);
+        if connected {
+            ids.push(client_id);
+        }
+    }
+
+    pub(super) fn set_device_settings(
+        &self,
+        client_id: uuid::Uuid,
+        settings: lc_protocol::DeviceSettingsStatePayload,
+    ) {
+        self.device_states
+            .lock()
+            .expect("verrou du hub")
+            .insert(client_id, settings);
+    }
+
+    pub(super) fn set_deliver(&self, deliver: bool) {
+        *self.deliver.lock().expect("verrou du hub") = deliver;
+    }
 }
 
 #[async_trait::async_trait]
 impl AdminHub for RecordingAdminHub {
     fn connected_count(&self) -> usize {
-        0
+        self.connected.lock().expect("verrou du hub").len()
     }
 
     fn connected_for_guild(&self, _guild_id: &GuildId) -> usize {
         0
     }
 
-    fn is_connected(&self, _client_id: &uuid::Uuid) -> bool {
-        false
+    fn is_connected(&self, client_id: &uuid::Uuid) -> bool {
+        self.connected
+            .lock()
+            .expect("verrou du hub")
+            .contains(client_id)
     }
 
     fn close_client(&self, client_id: &uuid::Uuid, code: u16) -> bool {
@@ -87,6 +122,29 @@ impl AdminHub for RecordingAdminHub {
             .expect("verrou du hub")
             .push((*client_id, code, reason.to_owned()));
         true
+    }
+
+    fn send_to_client(&self, client_id: &uuid::Uuid, message: lc_protocol::ServerMessage) -> bool {
+        self.sent
+            .lock()
+            .expect("verrou du hub")
+            .push((*client_id, message));
+        *self.deliver.lock().expect("verrou du hub")
+    }
+
+    fn device_settings(
+        &self,
+        client_id: &uuid::Uuid,
+    ) -> Option<lc_protocol::DeviceSettingsStatePayload> {
+        self.device_states
+            .lock()
+            .expect("verrou du hub")
+            .get(client_id)
+            .copied()
+    }
+
+    fn set_session_mode(&self, client_id: &uuid::Uuid, _mode: lc_protocol::SessionMode) -> bool {
+        self.is_connected(client_id)
     }
 
     async fn broadcast_stop(&self, _guild_id: &GuildId) -> usize {

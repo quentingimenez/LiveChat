@@ -121,7 +121,9 @@ export function startLinkUpload({ guildId, url, title = '', message = '', playOn
 
 // `replaceItemId`: the file replaces the media of that board item (an edited
 // picture) instead of becoming a new item. `playOnce: true` sends it to the
-// overlays without adding it to the board.
+// overlays without adding it to the board. `itemPatch` (board item fields, such
+// as the display scale chosen in the image editor) is applied to the replaced
+// item, or to the copy once it exists.
 export function startFileUpload({
   guildId,
   file,
@@ -129,6 +131,7 @@ export function startFileUpload({
   message = '',
   replaceItemId = null,
   playOnce = false,
+  itemPatch = null,
 }) {
   if (!guildId || !file) {
     return null;
@@ -143,6 +146,7 @@ export function startFileUpload({
     title: String(title || '').trim() || defaultTitle(label),
     message: message || '',
     replaceItemId: replaceItemId || null,
+    itemPatch: itemPatch && Object.keys(itemPatch).length ? itemPatch : null,
     playOnce: Boolean(playOnce),
     status: 'waiting',
     error: null,
@@ -245,10 +249,34 @@ function markConverting(entry, ingestionId) {
   }
 }
 
-function finishIngestion(entry, result) {
-  if (!isLive(entry) || entry.cancelled || entry.status !== 'converting') {
+// Applies `itemPatch` to the item the upload created or replaced. The media
+// itself is already saved: a failure only warns.
+async function applyItemPatch(entry, itemId) {
+  if (!entry.itemPatch) {
     return;
   }
+  try {
+    const response = await invoke('guild_api', {
+      payload: {
+        guildId: entry.guildId,
+        method: 'PATCH',
+        path: `/overlay/media-board/items/${encodeURIComponent(itemId)}`,
+        body: entry.itemPatch,
+      },
+    });
+    if (!response || !response.ok) {
+      notify('Les réglages de la copie n’ont pas pu être enregistrés.', true);
+    }
+  } catch {
+    notify('Les réglages de la copie n’ont pas pu être enregistrés.', true);
+  }
+}
+
+async function finishIngestion(entry, result) {
+  if (!isLive(entry) || entry.cancelled || entry.status !== 'converting' || entry.finishing) {
+    return;
+  }
+  entry.finishing = true;
   const title = uploadTitle(entry);
   // A play-once never joins the board: the job it created is on its way to the
   // overlays, the provisional card goes away with a toast.
@@ -259,6 +287,7 @@ function finishIngestion(entry, result) {
   }
   // An edit replacing its original creates nothing: the item changed media.
   if (entry.replaceItemId) {
+    await applyItemPatch(entry, entry.replaceItemId);
     const done = () => {
       if (isLive(entry)) {
         removeEntry(entry);
@@ -276,6 +305,10 @@ function finishIngestion(entry, result) {
     removeEntry(entry);
     notify(`« ${title} » est déjà sur le board.`);
     return;
+  }
+  // The copy starts with the settings chosen in the editor.
+  if (result.itemId) {
+    await applyItemPatch(entry, result.itemId);
   }
   // Another guild's board is not on screen: nothing to reload.
   if (entry.guildId !== state.activeGuildId) {
@@ -301,7 +334,9 @@ function applyIngestionResult(entry, result) {
     failIngestion(entry, result && result.error);
     return;
   }
-  finishIngestion(entry, result);
+  void finishIngestion(entry, result).catch(() => {
+    fail(entry, 'Le média n’a pas pu être ajouté au board.');
+  });
 }
 
 function acceptIngestion(entry, response) {
@@ -648,6 +683,7 @@ export function retryUpload(id) {
   entry.uploadId = null;
   entry.ingestionId = null;
   entry.cancelled = false;
+  entry.finishing = false;
   uploadsChanged(entry);
   pump();
 }

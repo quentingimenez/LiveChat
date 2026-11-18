@@ -2,6 +2,7 @@
   "item": {
     "artworkOnOverlay": false,
     "displayDurationSec": null,
+    "displayScalePercent": null,
     "id": "bb74ee9f-8eef-4ce1-8437-f4fb4c9eb5f0",
     "message": null,
     "title": "Nouveau titre"

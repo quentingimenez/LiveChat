@@ -612,6 +612,7 @@ pub(crate) async fn complete_board_item(
         artwork_asset_id: None,
         artwork_on_overlay: false,
         display_duration_sec: None,
+        display_scale_percent: None,
     };
     match db.media_board().create(&item).await {
         Ok(()) => {
@@ -1003,7 +1004,23 @@ pub(crate) async fn update_item_payload(
             _ => return Err(invalid_display_duration()),
         },
     };
-    if !has_title && !has_message && artwork_on_overlay.is_none() && display_duration.is_none() {
+    // Absent → kept; `null` → cleared; else an integer within the bounds.
+    let display_scale = match object.get("displayScalePercent") {
+        None => None,
+        Some(serde_json::Value::Null) => Some(None),
+        Some(value) => match value.as_i64() {
+            Some(percent) if lc_domain::entities::is_valid_display_scale(percent) => {
+                Some(Some(percent))
+            }
+            _ => return Err(invalid_display_scale()),
+        },
+    };
+    if !has_title
+        && !has_message
+        && artwork_on_overlay.is_none()
+        && display_duration.is_none()
+        && display_scale.is_none()
+    {
         return Err(json_response(
             StatusCode::BAD_REQUEST,
             serde_json::json!({"error": "invalid_payload", "message": "title or message is required"}),
@@ -1022,11 +1039,19 @@ pub(crate) async fn update_item_payload(
     };
     ensure_actor_can_edit(db, actor, item_id).await?;
 
-    // Only an image takes a chosen display time.
-    if matches!(display_duration, Some(Some(_))) {
+    // Only an image takes a chosen display time or scale.
+    let sets_duration = matches!(display_duration, Some(Some(_)));
+    let sets_scale = matches!(display_scale, Some(Some(_)));
+    if sets_duration || sets_scale {
         match db.media_assets().get(existing.media_asset_id).await {
             Ok(Some(asset)) if asset.kind == MediaKind::Image => {}
-            Ok(_) => return Err(invalid_display_duration()),
+            Ok(_) => {
+                return Err(if sets_duration {
+                    invalid_display_duration()
+                } else {
+                    invalid_display_scale()
+                });
+            }
             Err(db_error) => {
                 return Err(db_failure("overlay_media_board.patch_asset", &db_error));
             }
@@ -1051,6 +1076,7 @@ pub(crate) async fn update_item_payload(
         message: message.as_deref(),
         artwork_on_overlay,
         display_duration_sec: display_duration,
+        display_scale_percent: display_scale,
     };
     // Read before the update: the author is what makes this a moderation of
     // another member's media (the item itself is not removed here).
@@ -1081,6 +1107,7 @@ pub(crate) async fn update_item_payload(
                     "message": message,
                     "artworkOnOverlay": artwork_on_overlay.unwrap_or(existing.artwork_on_overlay),
                     "displayDurationSec": display_duration.unwrap_or(existing.display_duration_sec),
+                    "displayScalePercent": display_scale.unwrap_or(existing.display_scale_percent),
                 },
             }))
         }
@@ -1334,6 +1361,18 @@ fn invalid_display_duration() -> Response {
     )
 }
 
+/// `400 invalid_payload` for a display scale out of bounds, not an integer, or
+/// set on a media that is not an image.
+fn invalid_display_scale() -> Response {
+    json_response(
+        StatusCode::BAD_REQUEST,
+        serde_json::json!({
+            "error": "invalid_payload",
+            "message": "displayScalePercent must be an integer between 10 and 1000, or null, on an image",
+        }),
+    )
+}
+
 /// Payload JSON d'un item de board (format legacy exact).
 fn item_payload(item: &MediaBoardItem, asset: &MediaAsset) -> serde_json::Value {
     serde_json::json!({
@@ -1345,6 +1384,7 @@ fn item_payload(item: &MediaBoardItem, asset: &MediaAsset) -> serde_json::Value 
         "createdByName": item.created_by_name,
         "createdAt": lc_domain::time::to_rfc3339_millis(item.created_at),
         "displayDurationSec": item.display_duration_sec,
+        "displayScalePercent": item.display_scale_percent,
         "media": {
             "id": asset.id.to_canonical(),
             "kind": asset.kind.as_wire_str(),
@@ -1420,7 +1460,7 @@ async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<Boa
     let raw_rows = sqlx::query(
         "SELECT b.id, b.guild_id, b.media_asset_id, b.title, b.message, \
                 b.created_by_discord_user_id, b.created_by_name, b.created_at, b.created_by_member_id, \
-                b.artwork_asset_id, b.artwork_on_overlay, b.display_duration_sec, a.source_url \
+                b.artwork_asset_id, b.artwork_on_overlay, b.display_duration_sec, b.display_scale_percent, a.source_url \
            FROM media_board_items b \
            JOIN media_assets a ON a.id = b.media_asset_id \
           WHERE b.guild_id = ? \
@@ -1460,6 +1500,9 @@ async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<Boa
         let display_duration_sec: Option<i64> = raw
             .try_get("display_duration_sec")
             .map_err(lc_db::DbError::from)?;
+        let display_scale_percent: Option<i64> = raw
+            .try_get("display_scale_percent")
+            .map_err(lc_db::DbError::from)?;
         let artwork_asset_id = artwork_raw
             .as_deref()
             .map(MediaAssetId::parse)
@@ -1489,6 +1532,7 @@ async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<Boa
                 artwork_asset_id,
                 artwork_on_overlay: artwork_on_overlay != 0,
                 display_duration_sec,
+                display_scale_percent,
             },
             source_url,
             created_by_member_id,

@@ -6,9 +6,12 @@
 // becomes a new media of the board, or replaces the original.
 
 import { editedFileName, editedTitle, exportMimeFor, recipeIsNoop } from '../../core/editor-helpers.js';
+import { api } from '../../core/api.js';
 import { can, state } from '../../core/state.js';
 import { notify } from '../../core/toast.js';
+import { requestItemsReload } from '../../data.js';
 import { startEditJob, startFileUpload } from '../uploads.js';
+import { currentDeviceSettings, guildLayout, loadDeviceSettings, selectedDisplay } from '../settings.js';
 import { createAvEditor } from './av.js';
 import { openEditorFrame } from './frame.js';
 import { createImageEditor } from './image.js';
@@ -29,9 +32,68 @@ export function canOpenEditor(item) {
   return Boolean(item && item.mediaUrl && (can('addMedia') || item.canEdit));
 }
 
+// Size of the active guild's display zone on this device, in physical pixels,
+// when the shell knows it. `null` hides the capping hint in the editor.
+async function displayZoneFor(guildId) {
+  try {
+    await loadDeviceSettings();
+    const settings = currentDeviceSettings();
+    if (!settings) {
+      return null;
+    }
+    const displays = Array.isArray(settings.displays) ? settings.displays : [];
+    const display = selectedDisplay(settings, displays);
+    if (!display || !display.width || !display.height) {
+      return null;
+    }
+    const layout = guildLayout(settings, guildId);
+    const zone = { x: 0, y: 0, width: 1, height: 1, ...(layout.zone || {}) };
+    return {
+      width: Math.max(1, Math.round(zone.width * display.width)),
+      height: Math.max(1, Math.round(zone.height * display.height)),
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function editImage({ frame, item, title, blob, guildId }) {
   let editor = null;
   const mime = exportMimeFor(item.media.mime || blob.type);
+  const displayZone = await displayZoneFor(guildId);
+  if (frame.isClosed()) {
+    return;
+  }
+
+  async function saveScale() {
+    frame.setBusy('Enregistrement de la taille…');
+    try {
+      await api('PATCH', `/overlay/media-board/items/${encodeURIComponent(item.id)}`, {
+        displayScalePercent: editor.displayScalePercent(),
+      });
+    } catch (error) {
+      frame.setBusy(null);
+      notify(error.message, true);
+      return;
+    }
+    frame.close();
+    requestItemsReload();
+    notify('Taille d’affichage enregistrée.');
+  }
+
+  // Board fields given to the saved picture. A replaced item keeps its own
+  // fields, only a changed scale is written. A copy takes the scale chosen here
+  // and the original's message, which an upload never stores itself.
+  function copiedFields(replace) {
+    const fields = {};
+    if (!replace || editor.scaleDirty()) {
+      fields.displayScalePercent = editor.displayScalePercent();
+    }
+    if (!replace && item.message) {
+      fields.message = item.message;
+    }
+    return fields;
+  }
 
   async function save(replace) {
     frame.setBusy('Préparation de l’image…');
@@ -49,21 +111,43 @@ async function editImage({ frame, item, title, blob, guildId }) {
       guildId,
       file,
       title: replace ? title : editedTitle(title),
-      message: item.message || '',
       replaceItemId: replace ? item.id : null,
+      itemPatch: copiedFields(replace),
     });
   }
 
   function refresh() {
-    const dirty = editor.isDirty();
+    const pixels = editor.pixelsDirty();
+    const scale = editor.scaleDirty();
+    // Only the display size changed: no file to upload, just the item field.
+    if (!pixels && scale) {
+      frame.setActions(
+        item.canEdit
+          ? [{
+              label: 'Enregistrer la taille',
+              title: 'Agrandit l’image sur l’overlay sans toucher au fichier',
+              primary: true,
+              onClick: saveScale,
+            }]
+          : [],
+      );
+      return;
+    }
     frame.setActions([
-      item.canEdit ? { label: 'Remplacer l’original', title: 'Le média garde son titre, ses favoris et son raccourci', disabled: !dirty, onClick: () => save(true) } : null,
-      can('addMedia') ? { label: 'Enregistrer une copie', title: 'Ajoute le résultat au board sans toucher à l’original', primary: true, disabled: !dirty, onClick: () => save(false) } : null,
+      item.canEdit ? { label: 'Remplacer l’original', title: 'Le média garde son titre, ses favoris et son raccourci', disabled: !pixels, onClick: () => save(true) } : null,
+      can('addMedia') ? { label: 'Enregistrer une copie', title: 'Ajoute le résultat au board sans toucher à l’original', primary: true, disabled: !pixels, onClick: () => save(false) } : null,
     ].filter(Boolean));
   }
 
   try {
-    editor = await createImageEditor({ blob, frame, onChange: refresh });
+    editor = await createImageEditor({
+      blob,
+      frame,
+      onChange: refresh,
+      allowDisplayScale: true,
+      displayScalePercent: item.displayScalePercent ?? null,
+      displayZone,
+    });
   } catch {
     frame.showError('Ce format d’image ne peut pas être ouvert dans l’éditeur.');
     return;

@@ -1,8 +1,5 @@
 {
-  "lc-protocol": {
-    "caught_pct": 85
-  },
-  "lc-media-guard": {
-    "caught_pct": 65
-  }
+  "lc-protocol": { "caught_pct": 99, "min_mutants": 47 },
+  "lc-media-guard": { "caught_pct": 97, "min_mutants": 86 },
+  "lc-db-queue": { "caught_pct": 93, "min_mutants": 92 }
 }

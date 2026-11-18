@@ -89,12 +89,35 @@ jobs:
           mkdir -p target/mutants
           cargo mutants -p lc-protocol --test-tool nextest -j 2 --output target/mutants/lc-protocol || true
           cargo mutants -p lc-media --file crates/lc-media/src/guard.rs --test-tool nextest -j 2 --output target/mutants/lc-media-guard -- -E 'kind(lib) | binary(ssrf_guard) | binary(properties)' || true
+          cargo mutants -p lc-db --file crates/lc-db/src/repos/playback_jobs.rs --test-tool nextest -j 2 --output target/mutants/lc-db-queue || true
+          # A scope that produced nothing must fail the job instead of
+          # silently passing with an empty score.
           compare() {
             scope="$1"
             outcomes="target/mutants/$scope/mutants.out/outcomes.json"
+            if [ ! -f "$outcomes" ]; then
+              echo "::error::$scope produced no outcomes.json (run interrupted?)"
+              FAILED=1
+              return
+            fi
             actual=$(jq -r '[.outcomes[].summary] | (map(select(. == "CaughtMutant")) | length) as $c | (map(select(. == "MissedMutant")) | length) as $m | (map(select(. == "MissedTimeout")) | length) as $t | (if ($c + $m + $t) > 0 then ((100 * $c) / ($c + $m + $t) | floor) else 0 end)' "$outcomes")
             baseline=$(jq -r --arg s "$scope" '.[$s].caught_pct' scripts/mutants-baseline.json)
-            echo "$scope: caught_pct=$actual, baseline=$baseline"
+            min_mutants=$(jq -r --arg s "$scope" '.[$s].min_mutants' scripts/mutants-baseline.json)
+            total=$(jq -r '.outcomes | length' "$outcomes")
+            # A missing baseline key makes jq print "null"; comparing it
+            # would error out and silently pass. Require plain integers.
+            for value in "$actual" "$baseline" "$min_mutants" "$total"; do
+              if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+                echo "::error::$scope produced a non-integer value where a number was expected: '$value'"
+                FAILED=1
+                return
+              fi
+            done
+            echo "$scope: caught_pct=$actual, baseline=$baseline, mutants=$total"
+            if [ "$total" -lt "$min_mutants" ]; then
+              echo "::error::$scope measured only $total mutants (expected at least $min_mutants)"
+              FAILED=1
+            fi
             if [ "$actual" -lt "$baseline" ]; then
               echo "::error::$scope mutation score $actual dropped below the baseline $baseline"
               FAILED=1
@@ -103,6 +126,7 @@ jobs:
           FAILED=0
           compare lc-protocol
           compare lc-media-guard
+          compare lc-db-queue
           exit "$FAILED"
       - name: Upload mutation reports
         if: always()
@@ -112,3 +136,4 @@ jobs:
           path: |
             target/mutants/lc-protocol/mutants.out
             target/mutants/lc-media-guard/mutants.out
+            target/mutants/lc-db-queue/mutants.out

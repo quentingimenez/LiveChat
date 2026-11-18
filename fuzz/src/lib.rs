@@ -6,11 +6,13 @@ use lc_protocol::{ClientMessage, Envelope, ServerMessage};
 
 /// Envelope round-trip contract shared by both protocol message enums.
 ///
-/// `serde` is not a direct dependency of this crate and `fuzz/Cargo.toml` is
-/// frozen, so `serde::Serialize` / `serde::de::DeserializeOwned` cannot be
-/// named in a where clause. Passing the three `serde_json` entry points as
-/// function pointers carries their bounds from the concrete call sites while
-/// keeping a single generic body for both message types.
+/// `serde` is not a direct dependency of this crate: the helper stays within
+/// the dependencies already declared in `fuzz/Cargo.toml` (`libfuzzer-sys`,
+/// `lc-protocol`, `lc-media`, `serde_json`), so `serde::Serialize` /
+/// `serde::de::DeserializeOwned` cannot be named in a where clause. Passing
+/// the three `serde_json` entry points as function pointers carries their
+/// bounds from the concrete call sites while keeping a single generic body
+/// for both message types.
 fn envelope_roundtrip<M>(
     text: &str,
     parse: fn(&str) -> Result<Envelope<M>, serde_json::Error>,
@@ -110,6 +112,8 @@ pub fn html_parsers(data: &[u8]) {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+    use lc_protocol::{ClientMessage, Envelope, ServerMessage};
+
     use super::{html_parsers, media_url, protocol_frame};
 
     fn read_seed_dir(dir: &str) -> Vec<std::path::PathBuf> {
@@ -148,6 +152,53 @@ mod tests {
             "https://youtu.be/abc",
         ] {
             media_url(url.as_bytes());
+        }
+    }
+
+    /// Every protocol fixture must reserialize to exactly its committed
+    /// golden value: the on-wire shape is pinned by the fixture files, not
+    /// by the product code alone. A coherent product-side serde drift (a
+    /// renamed field, a changed serialization attribute) that keeps the
+    /// `Envelope<M>` round-trip STABILITY intact — everything the old
+    /// `seeds_do_not_panic_or_violate_contracts` invariant can see — is
+    /// caught here, because the reserialized envelope no longer equals the
+    /// golden file value.
+    #[test]
+    fn golden_protocol_fixtures_match_their_file_value() {
+        let protocol_dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../crates/lc-protocol/tests/fixtures"
+        );
+        for path in read_seed_dir(protocol_dir) {
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("failed to read fixture {}: {err}", path.display()));
+            let file_value: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|err| {
+                panic!("fixture {} is not valid JSON: {err}", path.display())
+            });
+            let reserialized = if let Ok(envelope) =
+                serde_json::from_str::<Envelope<ClientMessage>>(&text)
+            {
+                serde_json::to_value(&envelope).unwrap_or_else(|err| {
+                    panic!("fixture {} failed to reserialize: {err}", path.display())
+                })
+            } else if let Ok(envelope) = serde_json::from_str::<Envelope<ServerMessage>>(&text) {
+                serde_json::to_value(&envelope).unwrap_or_else(|err| {
+                    panic!("fixture {} failed to reserialize: {err}", path.display())
+                })
+            } else {
+                panic!(
+                        "fixture {} parses as neither Envelope<ClientMessage> nor Envelope<ServerMessage>",
+                        path.display()
+                    );
+            };
+            assert_eq!(
+                reserialized,
+                file_value,
+                "fixture {} drifted from its golden file value: reserialized {} vs file {}",
+                path.display(),
+                reserialized,
+                file_value
+            );
         }
     }
 }

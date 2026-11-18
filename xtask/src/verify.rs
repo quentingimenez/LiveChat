@@ -129,9 +129,11 @@ pub fn execute(options: Options) -> u8 {
 }
 
 /// Cargo arguments of a stage, copied verbatim from `rust.yml` so the local
-/// battery stays pinned to CI. `--offline` is inserted only when `offline` is
-/// true and the stage accepts it (not `fmt`); an unknown stage name yields
-/// an empty argument list.
+/// battery stays pinned to CI. The pin is enforced by the
+/// `stage_argv_mirrors_rust_yml` test, which reads `rust.yml` and fails if
+/// any stage command line drifts away from it. `--offline` is inserted only
+/// when `offline` is true and the stage accepts it (not `fmt`); an unknown
+/// stage name yields an empty argument list.
 pub(crate) fn stage_argv(stage: &str, offline: bool) -> Vec<&'static str> {
     let mut argv: Vec<&'static str> = match stage {
         "fmt" => return vec!["fmt", "--all", "--", "--check"],
@@ -401,5 +403,30 @@ mod tests {
         );
         assert_eq!(stage_argv("deny", false), ["deny", "check"]);
         assert_eq!(stage_argv("deny", true), ["deny", "--offline", "check"]);
+
+        // The hardcoded arrays above pin the shape of `stage_argv`; this
+        // second half pins it to CI itself: each non-offline command line
+        // must appear verbatim in `.github/workflows/rust.yml`, so a future
+        // edit of one side without the other fails here instead of letting
+        // the local battery drift away from CI. `--offline` variants are
+        // local-only (CI never needs them), so they are not searched.
+        const RUST_YML: &str = include_str!("../../.github/workflows/rust.yml");
+
+        fn assert_pinned_to_rust_yml(stage: &str, argv: &[&str]) {
+            let command = format!("cargo {}", argv.join(" "));
+            assert!(
+                RUST_YML.contains(&command),
+                "stage {stage} runs `{command}`, which is not pinned verbatim in .github/workflows/rust.yml"
+            );
+        }
+
+        assert_pinned_to_rust_yml("fmt", &stage_argv("fmt", false));
+        assert_pinned_to_rust_yml("clippy", &stage_argv("clippy", false));
+        assert_pinned_to_rust_yml("tests", &stage_argv("tests", false));
+        assert_pinned_to_rust_yml("doctests", &stage_argv("doctests", false));
+        // `deny` has no literal cargo line in rust.yml (CI runs the pinned
+        // EmbarkStudios cargo-deny-action), so pin its step name instead:
+        // the action is documented as running `cargo deny check`.
+        assert!(RUST_YML.contains("cargo deny check"));
     }
 }

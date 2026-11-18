@@ -152,3 +152,175 @@ proptest! {
         }
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+
+    /// `claim_next` drains a guild's queue in `priority DESC,
+    /// submission_date ASC, id ASC` order: with every job at the same
+    /// priority and strictly increasing submission dates, the k-th claim
+    /// is the k-th created job. While one job is `PLAYING` the busy-guild
+    /// check hides the rest of the queue (`claim_next` returns `None`), and
+    /// finishing the job frees the slot for the next one.
+    #[test]
+    fn claim_next_returns_the_earliest_pending_job(k in 1usize..=10) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread tokio runtime");
+        let now = common::now();
+        let guild = common::guild("100000000000000003");
+        let db = runtime.block_on(common::memory_db());
+
+        let mut expected: Vec<PlaybackJobId> = Vec::new();
+        for index in 1..=k {
+            let mut job = common::sample_job(&guild, now);
+            job.submission_date =
+                common::date(common::NOW_MS + (index as i64 + 1) * 1000);
+            let job_id = job.id;
+            let outcome = runtime.block_on(db.playback_jobs().create(&job));
+            prop_assert!(
+                outcome.is_ok(),
+                "unexpected create error: {:?}",
+                outcome.as_ref().err()
+            );
+            expected.push(job_id);
+        }
+
+        for expected_id in expected {
+            let outcome = runtime.block_on(db.playback_jobs().claim_next(now));
+            prop_assert!(
+                outcome.is_ok(),
+                "unexpected claim_next error: {:?}",
+                outcome.as_ref().err()
+            );
+            let claimed = outcome.unwrap();
+            prop_assert!(
+                claimed.is_some(),
+                "claim_next returned None while {k} jobs were pending"
+            );
+            let job = claimed.unwrap();
+            prop_assert_eq!(
+                job.id,
+                expected_id,
+                "claim_next did not return the earliest pending job"
+            );
+            let busy = runtime.block_on(db.playback_jobs().claim_next(now));
+            prop_assert!(
+                busy.is_ok(),
+                "unexpected claim_next error: {:?}",
+                busy.as_ref().err()
+            );
+            prop_assert!(
+                busy.unwrap().is_none(),
+                "claim_next returned a job while the guild already had one PLAYING"
+            );
+            let finished =
+                runtime.block_on(db.playback_jobs().finish(job.id, JobStatus::Done, now));
+            prop_assert!(
+                finished.is_ok(),
+                "unexpected finish error: {:?}",
+                finished.as_ref().err()
+            );
+        }
+
+        let drained = runtime.block_on(db.playback_jobs().claim_next(now));
+        prop_assert!(
+            drained.is_ok(),
+            "unexpected claim_next error: {:?}",
+            drained.as_ref().err()
+        );
+        prop_assert!(
+            drained.unwrap().is_none(),
+            "claim_next returned a job after the queue was drained"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Missed-mutant kills: error surfacing and no-op reporting
+// ---------------------------------------------------------------------------
+
+/// A raw backend failure must surface as `Err`: `claim_next` may not
+/// swallow a broken table into `Ok(None)` (a match guard weakened to
+/// `true`), and `set_status` may not translate a NON-unique failure into
+/// a `Domain` error (a weakened `&&`). Dropping the table forces exactly
+/// one such failure per call.
+///
+/// The unique-violation arm of `claim_next` itself is race-only — two
+/// concurrent claims selecting the same pending job — and the in-memory
+/// test backend forces a single connection, so that arm is justified as
+/// unreachable rather than killed: `Ok(None)` on a race is the
+/// conservative retry, and any other backend error still fails here.
+#[test]
+fn raw_db_errors_are_not_silenced_nor_mistranslated() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread tokio runtime");
+    let now = common::now();
+    let guild = common::guild("100000000000000005");
+    let db = runtime.block_on(common::memory_db());
+    let job = common::sample_job(&guild, now);
+    runtime
+        .block_on(db.playback_jobs().create(&job))
+        .expect("job create");
+
+    runtime
+        .block_on(sqlx::query("DROP TABLE playback_jobs").execute(db.pool()))
+        .expect("drop table");
+
+    let claimed = runtime.block_on(db.playback_jobs().claim_next(now));
+    assert!(
+        claimed.is_err(),
+        "claim_next on a broken backend must fail, not return Ok"
+    );
+
+    match runtime.block_on(db.playback_jobs().set_status(job.id, JobStatus::Playing)) {
+        Ok(_) => panic!("set_status on a broken backend must fail"),
+        Err(DbError::Domain(_)) => {
+            panic!("set_status translated a non-unique backend failure into a Domain error")
+        }
+        Err(_) => {}
+    }
+}
+
+/// `finish` and `requeue` report a missing job as `Ok(false)`; a row
+/// count compared with `>= 0` instead of `> 0` would claim success on a
+/// nonexistent id.
+#[test]
+fn finish_and_requeue_report_missing_jobs_as_no_op() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread tokio runtime");
+    let now = common::now();
+    let guild = common::guild("100000000000000006");
+    let db = runtime.block_on(common::memory_db());
+    let job = common::sample_job(&guild, now);
+    runtime
+        .block_on(db.playback_jobs().create(&job))
+        .expect("job create");
+
+    let missing = PlaybackJobId::new_v4();
+    match runtime.block_on(db.playback_jobs().finish(missing, JobStatus::Done, now)) {
+        Ok(false) => {}
+        Ok(true) => panic!("finish on a missing job claimed success"),
+        Err(_) => panic!("finish on a missing job must be Ok(false)"),
+    }
+    match runtime.block_on(db.playback_jobs().requeue(missing, now)) {
+        Ok(false) => {}
+        Ok(true) => panic!("requeue on a missing job claimed success"),
+        Err(_) => panic!("requeue on a missing job must be Ok(false)"),
+    }
+
+    // The real job is genuinely finished and requeued, not ignored.
+    match runtime.block_on(db.playback_jobs().finish(job.id, JobStatus::Done, now)) {
+        Ok(true) => {}
+        _ => panic!("finish on an existing job must be Ok(true)"),
+    }
+    match runtime.block_on(db.playback_jobs().requeue(job.id, now)) {
+        Ok(true) => {}
+        _ => panic!("requeue on an existing job must be Ok(true)"),
+    }
+}

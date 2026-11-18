@@ -23,7 +23,7 @@ use proptest::prelude::*;
 use proptest::test_runner::{TestCaseError, TestCaseResult};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use lc_protocol::{
     is_frame_too_large, is_version_below, media_signature_input, parse_simple_version, AckError,
@@ -706,9 +706,13 @@ proptest! {
     }
 }
 
-/// Serializes, deserializes and re-serializes an envelope, asserting
-/// `serde_json::Value` equality exactly the way `fixtures_roundtrip.rs` pins
-/// the golden fixtures, plus structural equality of the parsed envelope.
+/// Serializes, deserializes and re-serializes an envelope, asserting the
+/// round-trip STABILITY of the reserialization (`serde_json::Value`
+/// equality between the two serializations) plus structural equality of the
+/// parsed envelope. Only the golden files pin the on-wire shape:
+/// `tests/fixtures_roundtrip.rs` and the fuzz crate's
+/// `golden_protocol_fixtures_match_their_file_value` compare the
+/// reserialization against the committed fixture values.
 fn assert_envelope_roundtrips<M>(envelope: &Envelope<M>) -> TestCaseResult
 where
     M: Serialize + DeserializeOwned + PartialEq + Debug,
@@ -770,4 +774,102 @@ fn separator_in_ids_makes_inputs_ambiguous() {
         media_signature_input("a|b", "c", 1),
         media_signature_input("a", "b|c", 1)
     );
+}
+
+// ---------------------------------------------------------------------------
+// device.settings.state / device.settings acceptance
+// ---------------------------------------------------------------------------
+
+/// Volumes for the `device.settings.state` payload: the documented
+/// `0.0..=1.0` unit range plus the values the guard must refuse — NaN, both
+/// infinities and finite volumes on either side of the range.
+fn state_volume() -> impl Strategy<Value = f64> {
+    prop_oneof![
+        4 => 0.0f64..=1.0,
+        1 => Just(f64::NAN),
+        1 => Just(f64::INFINITY),
+        1 => Just(f64::NEG_INFINITY),
+        2 => -10.0f64..-0.0001,
+        2 => 1.0001f64..=10.0,
+    ]
+}
+
+proptest! {
+    /// `DeviceSettingsStatePayload::is_valid` mirrors the documented finite
+    /// `0.0..=1.0` unit range of the `volume` field (src/lib.rs), but unlike
+    /// a dead mirror the generator REACHES the invalid values (NaN, ±∞ and
+    /// out-of-range volumes), so both a guard that always returns `true`
+    /// and a guard whose `&&` was weakened to `||` fail.
+    #[test]
+    fn device_settings_state_validity_pins_the_finite_unit_range(
+        volume in state_volume(),
+    ) {
+        let payload = DeviceSettingsStatePayload {
+            volume,
+            media_muted: false,
+            paused: false,
+        };
+        prop_assert_eq!(
+            payload.is_valid(),
+            volume.is_finite() && (0.0..=1.0).contains(&volume)
+        );
+    }
+
+    /// An all-`None` `DeviceSettingsPayload` is empty and serializes to a
+    /// bare `{}` JSON object; a payload with any field set is not empty and
+    /// its wire value is a non-empty JSON object (every field is
+    /// `skip_serializing_if = "Option::is_none"`, src/lib.rs).
+    #[test]
+    fn empty_device_settings_serializes_to_empty_object(
+        payload in device_settings_payload(),
+    ) {
+        let expected_empty = payload.volume.is_none()
+            && payload.media_muted.is_none()
+            && payload.paused.is_none();
+        prop_assert_eq!(payload.is_empty(), expected_empty);
+        let value = serde_json::to_value(payload).map_err(|error| {
+            TestCaseError::fail(format!("device settings serialization failed: {error}"))
+        })?;
+        if payload.is_empty() {
+            prop_assert_eq!(value, json!({}));
+        } else {
+            let object = value.as_object().ok_or_else(|| {
+                TestCaseError::fail("device settings did not serialize to a JSON object")
+            })?;
+            prop_assert!(
+                !object.is_empty(),
+                "non-empty payload serialized to an empty object"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unreadable versions
+// ---------------------------------------------------------------------------
+
+proptest! {
+    /// An app version `parse_simple_version` cannot read is below any
+    /// readable minimum, and an unreadable minimum also refuses a readable
+    /// app version: both directions fall back to the `_ => true` arm of
+    /// `is_version_below` (frozen rule §1.6: unreadable means obsolete,
+    /// refuse by safety).
+    #[test]
+    fn unreadable_app_version_is_always_below(s in any::<String>()) {
+        prop_assume!(parse_simple_version(&s).is_none());
+        prop_assert!(
+            is_version_below(&s, "1.0.0"),
+            "unreadable app version {s:?} was not below 1.0.0"
+        );
+        prop_assert!(
+            is_version_below("1.0.0", &s),
+            "unreadable minimum version {s:?} did not refuse 1.0.0"
+        );
+        for malformed in ["", "abc", "1", "1.2", "1.2.3.4", "x.y.z"] {
+            prop_assert!(
+                is_version_below(malformed, "1.0.0"),
+                "malformed version {malformed:?} was not below 1.0.0"
+            );
+        }
+    }
 }

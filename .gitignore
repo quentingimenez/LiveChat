@@ -9,6 +9,12 @@ Thumbs.db
 /target
 /.phase0/
 
+# cargo-fuzz (fuzz/ is its own workspace; corpora are seeded at run time)
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/corpus/
+/fuzz/coverage/
+
 # POC spikes : sources et artefacts d'essai hors dépôt (synthèse dans docs/rust/)
 /spikes/
 

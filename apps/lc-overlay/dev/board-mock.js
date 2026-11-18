@@ -476,7 +476,7 @@
     const ok = (body) => ({ ok: true, status: 200, body });
     if (path === '/overlay/media-board/items' && method === 'POST') {
       const body = payload.body || {};
-      return acceptIngestion({ guildId: payload.guildId, name: String(body.url || ''), title: body.title, message: body.message, contentType: 'video/mp4', received: 0, playOnce: Boolean(body.playOnce) });
+      return acceptIngestion({ guildId: payload.guildId, name: String(body.url || ''), title: body.title, message: body.playOnce ? body.message : null, contentType: 'video/mp4', received: 0, playOnce: Boolean(body.playOnce) });
     }
     if (path === '/overlay/say' && method === 'POST') {
       // Speech synthesis (/dire). A text containing "panne" fails like a
@@ -1011,7 +1011,7 @@
     if (name.toLowerCase().includes('big')) {
       return { ok: false, status: 413, body: { error: 'payload_too_large', maxBytes: 2048 * 1024 * 1024 } };
     }
-    return acceptIngestion({ guildId: upload.guildId, name, title: upload.title, message: upload.message, contentType: upload.contentType, received: upload.received, replaceItemId: upload.replaceItemId || null, playOnce: Boolean(upload.playOnce) });
+    return acceptIngestion({ guildId: upload.guildId, name, title: upload.title, message: upload.playOnce ? upload.message : null, contentType: upload.contentType, received: upload.received, replaceItemId: upload.replaceItemId || null, playOnce: Boolean(upload.playOnce) });
   }
   // The shell sends a fresh copy with every event, never the object the board
   // already holds: the board compares the old and new connection states.

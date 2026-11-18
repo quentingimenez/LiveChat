@@ -8,6 +8,7 @@ const setupView = document.getElementById('setup-view') as HTMLElement;
 const setupMessage = document.getElementById('setup-message') as HTMLParagraphElement;
 const setupOpenOptionsButton = document.getElementById('setup-open-options') as HTMLButtonElement;
 const urlInput = document.getElementById('compose-url') as HTMLInputElement;
+const textLabel = document.getElementById('compose-text-label') as HTMLLabelElement;
 const textInput = document.getElementById('compose-text') as HTMLTextAreaElement;
 const forceRefreshInput = document.getElementById('compose-force-refresh') as HTMLInputElement;
 const saveToBoardInput = document.getElementById('compose-save-to-board') as HTMLInputElement;
@@ -74,6 +75,17 @@ const updateSettingsWarning = (message: string | null): void => {
   settingsWarning.classList.remove('hidden');
 };
 
+// The text is the caption of a play sent now. A save-to-board keeps no text,
+// so the field disappears in that mode (and its value is never submitted).
+const syncSaveToBoard = (): void => {
+  const saving = saveToBoardInput.checked;
+  textLabel.hidden = saving;
+  textInput.hidden = saving;
+  if (saving) {
+    textInput.value = '';
+  }
+};
+
 const loadComposeState = async (): Promise<void> => {
   clearStatus();
 
@@ -91,6 +103,7 @@ const loadComposeState = async (): Promise<void> => {
     textInput.value = state.text;
     forceRefreshInput.checked = state.forceRefresh;
     saveToBoardInput.checked = state.saveToBoard;
+    syncSaveToBoard();
 
     if (!state.hasSettings) {
       showSetupView(state.settingsError || 'Configuration incomplète. Ouvre les options.');
@@ -104,6 +117,8 @@ const loadComposeState = async (): Promise<void> => {
     showSetupView(error instanceof Error ? error.message : 'Erreur de communication avec le service worker.');
   }
 };
+
+saveToBoardInput.addEventListener('change', syncSaveToBoard);
 
 form.addEventListener('submit', (event) => {
   event.preventDefault();
@@ -146,6 +161,7 @@ form.addEventListener('submit', (event) => {
         forceRefreshInput.checked = false;
         saveToBoardInput.checked = false;
         durationInput.value = '';
+        syncSaveToBoard();
       } else {
         setStatus(response.message, 'error');
       }

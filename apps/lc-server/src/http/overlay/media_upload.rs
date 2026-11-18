@@ -90,7 +90,8 @@ pub(super) struct CreateUploadBody {
     /// Display title (≤ 240 characters, truncated like existing titles).
     #[serde(default)]
     title: Option<String>,
-    /// Display message (≤ 500 characters).
+    /// Text shown for a play-once only (≤ 500 characters). It is never stored
+    /// on the board: an add-to-board ignores it.
     #[serde(default)]
     message: Option<String>,
     /// Content type hint of the file.
@@ -122,7 +123,8 @@ struct UploadSession {
     filename: String,
     content_type: Option<String>,
     title: Option<String>,
-    message: Option<String>,
+    /// Caption of a play-once; `None` for anything that joins the board.
+    play_text: Option<String>,
     /// Declared total size.
     size: u64,
     /// Bytes written so far.
@@ -342,7 +344,12 @@ pub async fn create_upload(
         target,
         play_once: body.play_once,
         title: non_blank(body.title.as_deref()).or_else(|| Some(default_title(&filename))),
-        message: non_blank(body.message.as_deref()),
+        // The text only belongs to a play-once; a board add keeps none.
+        play_text: if body.play_once {
+            non_blank(body.message.as_deref())
+        } else {
+            None
+        },
         content_type: non_blank(body.content_type.as_deref()),
         filename,
         size,
@@ -471,7 +478,7 @@ pub async fn complete_upload(
         filename,
         content_type,
         title,
-        message,
+        play_text,
         hasher,
         file,
         temp,
@@ -507,7 +514,7 @@ pub async fn complete_upload(
         },
         target,
         title,
-        message,
+        play_text,
     );
     json_response(
         StatusCode::ACCEPTED,

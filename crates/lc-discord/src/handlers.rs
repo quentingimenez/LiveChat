@@ -461,7 +461,6 @@ async fn handle_media_add(
         guild_id: guild_id.clone(),
         media_asset_id: asset.id,
         title,
-        message: None,
         created_by_discord_user_id: Some(author.id.clone()),
         created_by_name: Some(author.name.clone()),
         display_duration_sec: submission

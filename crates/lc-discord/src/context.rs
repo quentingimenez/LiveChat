@@ -192,8 +192,6 @@ pub struct MediaAddRequest {
     pub media_asset_id: MediaAssetId,
     /// Titre optionnel (tronqué à 240 caractères).
     pub title: Option<String>,
-    /// Message optionnel (tronqué à 500 caractères).
-    pub message: Option<String>,
     /// Identifiant Discord de l'auteur.
     pub created_by_discord_user_id: Option<String>,
     /// Nom affiché de l'auteur.

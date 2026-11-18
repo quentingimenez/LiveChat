@@ -34,6 +34,9 @@ export function openAddDialog(options) {
     const linkUrl = h('input', { class: 'field', type: 'url', placeholder: 'https://…', required: true, value: prefill });
     const linkTitle = h('input', { class: 'field', placeholder: 'Titre de la vidéo ou du lien si vide', maxlength: '240' });
     const linkMessage = h('textarea', { class: 'field', rows: '2', maxlength: '500', placeholder: 'Texte affiché avec le média' });
+    // The text belongs to the play only: it is only shown (and sent) for
+    // "Jouer une fois", never stored on the board item.
+    const linkMessageLabel = h('label', { hidden: true }, 'Texte affiché pour cette lecture (facultatif)', linkMessage);
 
     // --- file fields ---
     const fileInput = h('input', {
@@ -51,13 +54,14 @@ export function openAddDialog(options) {
     const fileTitleLabel = h('label', { hidden: true }, 'Titre (facultatif)', fileTitle);
     const multipleHint = h('p', { class: 'file-hint', hidden: true }, 'Chaque fichier utilisera son nom comme titre.');
     const fileMessage = h('textarea', { class: 'field', rows: '2', maxlength: '500', placeholder: 'Texte affiché avec chaque média' });
+    const fileMessageLabel = h('label', { hidden: true }, 'Texte affiché pour cette lecture (facultatif)', fileMessage);
 
     const linkPanel = h(
       'div',
       { class: 'stack' },
       h('label', null, 'Lien du média', linkUrl),
       h('label', null, 'Titre (facultatif)', linkTitle),
-      h('label', null, 'Message (facultatif)', linkMessage),
+      linkMessageLabel,
     );
     const filePanel = h(
       'div',
@@ -66,22 +70,32 @@ export function openAddDialog(options) {
       fileList,
       fileTitleLabel,
       multipleHint,
-      h('label', null, 'Message (facultatif)', fileMessage),
+      fileMessageLabel,
     );
 
     const linkButton = h('button', { class: 'btn mode-choice', type: 'button', 'aria-pressed': 'true', onClick: () => setMode('link') }, 'Lien');
     const fileButton = h('button', { class: 'btn mode-choice', type: 'button', 'aria-pressed': 'false', onClick: () => setMode('file') }, 'Fichier');
-    const submit = h('button', { class: 'btn', type: 'submit', onClick: () => { playOnce = false; } }, 'Ajouter au board');
-    const submitOnce = h('button', { class: 'btn', type: 'submit', onClick: () => { playOnce = true; } }, 'Jouer une fois');
+    // Only a member allowed to add may choose; otherwise the only action is a
+    // play-once for the overlays.
+    const playOnceInput = h('input', {
+      type: 'checkbox',
+      onChange: () => {
+        playOnce = playOnceInput.checked;
+        updateSubmit();
+      },
+    });
+    const playOnceLabel = h('label', { class: 'switch', hidden: !(canAdd && canPlay) }, playOnceInput, 'Jouer une fois, sans ajouter au board');
+    const submit = h('button', { class: 'btn', type: 'submit' }, canAdd ? 'Ajouter au board' : 'Jouer une fois');
 
     function updateSubmit() {
       const empty = mode === 'file' && chosenFiles.length === 0;
-      if (canAdd) {
-        submit.disabled = empty;
-      }
-      if (canPlay) {
-        submitOnce.disabled = empty;
-      }
+      submit.disabled = empty;
+      submit.textContent = playOnce ? 'Jouer une fois' : 'Ajouter au board';
+      // The text is a play caption: hidden (and not sent) for a board add.
+      linkMessageLabel.hidden = !playOnce;
+      fileMessageLabel.hidden = !playOnce;
+      playOnceInput.checked = playOnce;
+      playOnceLabel.hidden = !(canAdd && canPlay);
     }
 
     function setMode(next) {
@@ -157,7 +171,7 @@ export function openAddDialog(options) {
               linkUrl.reportValidity();
               return;
             }
-            const payload = { guildId, url, title: linkTitle.value.trim(), message: linkMessage.value, playOnce };
+            const payload = { guildId, url, title: linkTitle.value.trim(), message: playOnce ? linkMessage.value : '', playOnce };
             close();
             startLinkUpload(payload);
             return;
@@ -169,7 +183,7 @@ export function openAddDialog(options) {
             guildId,
             file,
             title: chosenFiles.length === 1 ? fileTitle.value.trim() : '',
-            message: fileMessage.value,
+            message: playOnce ? fileMessage.value : '',
             playOnce,
           }));
           close();
@@ -181,12 +195,12 @@ export function openAddDialog(options) {
       h('div', { class: 'add-media-modes', role: 'group', 'aria-label': 'Type d’ajout' }, linkButton, fileButton),
       linkPanel,
       filePanel,
+      playOnceLabel,
       h(
         'div',
         { class: 'actions' },
         h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'),
-        canAdd ? submit : null,
-        canPlay ? submitOnce : null,
+        submit,
       ),
     );
 

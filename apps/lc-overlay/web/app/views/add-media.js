@@ -1,10 +1,11 @@
 // "Add media" dialog: a link, or one or more local files.
 //
 // Submitting closes the dialog immediately: the uploads run in the background
-// and show as provisional cards on the board (see views/uploads.js). The
-// "Jouer une fois" action sends the media to the overlays without adding it
-// to the board; a member without `addMedia` but with `play` only gets that
-// action.
+// and show as provisional cards on the board (see views/uploads.js). The two
+// submit buttons each carry their action: "Ajouter au board" stores the media,
+// "Jouer une fois" sends it to the overlays without adding it to the board.
+// A member without `addMedia` but with `play` only gets "Jouer une fois". The
+// Enter key uses the first submit button, so a member who can add adds.
 
 import { h } from '../core/dom.js';
 import { activeGuild, can, state } from '../core/state.js';
@@ -23,20 +24,22 @@ export function openAddDialog(options) {
   openDialog((close) => {
     let mode = 'link';
     let chosenFiles = [];
-    // The action the form submits with: adding to the board, or playing once.
-    // A member who cannot add only gets "Jouer une fois", so it is also the
-    // Enter key's action.
+    // The action the chosen submit button sets: adding to the board, or
+    // playing once. A member who cannot add only gets "Jouer une fois", so it
+    // is also the Enter key's action.
     const canAdd = can('addMedia');
     const canPlay = can('play');
     let playOnce = !canAdd && canPlay;
+    // The text is a play caption: only a member who can play may type one,
+    // and it is sent for "Jouer une fois" only, never stored on the board
+    // item. It stays visible so nothing appears mid-dialog.
+    const showMessage = canPlay;
 
     // --- link fields ---
     const linkUrl = h('input', { class: 'field', type: 'url', placeholder: 'https://…', required: true, value: prefill });
     const linkTitle = h('input', { class: 'field', placeholder: 'Titre de la vidéo ou du lien si vide', maxlength: '240' });
     const linkMessage = h('textarea', { class: 'field', rows: '2', maxlength: '500', placeholder: 'Texte affiché avec le média' });
-    // The text belongs to the play only: it is only shown (and sent) for
-    // "Jouer une fois", never stored on the board item.
-    const linkMessageLabel = h('label', { hidden: true }, 'Texte affiché pour cette lecture (facultatif)', linkMessage);
+    const linkMessageLabel = h('label', { hidden: !showMessage }, 'Texte affiché sur les overlays (facultatif, pour « Jouer une fois »)', linkMessage);
 
     // --- file fields ---
     const fileInput = h('input', {
@@ -54,7 +57,7 @@ export function openAddDialog(options) {
     const fileTitleLabel = h('label', { hidden: true }, 'Titre (facultatif)', fileTitle);
     const multipleHint = h('p', { class: 'file-hint', hidden: true }, 'Chaque fichier utilisera son nom comme titre.');
     const fileMessage = h('textarea', { class: 'field', rows: '2', maxlength: '500', placeholder: 'Texte affiché avec chaque média' });
-    const fileMessageLabel = h('label', { hidden: true }, 'Texte affiché pour cette lecture (facultatif)', fileMessage);
+    const fileMessageLabel = h('label', { hidden: !showMessage }, 'Texte affiché sur les overlays (facultatif, pour « Jouer une fois »)', fileMessage);
 
     const linkPanel = h(
       'div',
@@ -75,27 +78,23 @@ export function openAddDialog(options) {
 
     const linkButton = h('button', { class: 'btn mode-choice', type: 'button', 'aria-pressed': 'true', onClick: () => setMode('link') }, 'Lien');
     const fileButton = h('button', { class: 'btn mode-choice', type: 'button', 'aria-pressed': 'false', onClick: () => setMode('file') }, 'Fichier');
-    // Only a member allowed to add may choose; otherwise the only action is a
-    // play-once for the overlays.
-    const playOnceInput = h('input', {
-      type: 'checkbox',
-      onChange: () => {
-        playOnce = playOnceInput.checked;
-        updateSubmit();
-      },
-    });
-    const playOnceLabel = h('label', { class: 'switch', hidden: !(canAdd && canPlay) }, playOnceInput, 'Jouer une fois, sans ajouter au board');
-    const submit = h('button', { class: 'btn', type: 'submit' }, canAdd ? 'Ajouter au board' : 'Jouer une fois');
+    // Each submit button carries its action. A member who cannot add only
+    // gets "Jouer une fois"; a member who cannot play only adds.
+    const submitAdd = canAdd
+      ? h('button', { class: 'btn', type: 'submit', onClick: () => { playOnce = false; } }, 'Ajouter au board')
+      : null;
+    const submitOnce = canPlay
+      ? h('button', { class: 'btn', type: 'submit', onClick: () => { playOnce = true; } }, 'Jouer une fois')
+      : null;
 
     function updateSubmit() {
       const empty = mode === 'file' && chosenFiles.length === 0;
-      submit.disabled = empty;
-      submit.textContent = playOnce ? 'Jouer une fois' : 'Ajouter au board';
-      // The text is a play caption: hidden (and not sent) for a board add.
-      linkMessageLabel.hidden = !playOnce;
-      fileMessageLabel.hidden = !playOnce;
-      playOnceInput.checked = playOnce;
-      playOnceLabel.hidden = !(canAdd && canPlay);
+      if (submitAdd) {
+        submitAdd.disabled = empty;
+      }
+      if (submitOnce) {
+        submitOnce.disabled = empty;
+      }
     }
 
     function setMode(next) {
@@ -195,12 +194,12 @@ export function openAddDialog(options) {
       h('div', { class: 'add-media-modes', role: 'group', 'aria-label': 'Type d’ajout' }, linkButton, fileButton),
       linkPanel,
       filePanel,
-      playOnceLabel,
       h(
         'div',
         { class: 'actions' },
         h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'),
-        submit,
+        submitAdd,
+        submitOnce,
       ),
     );
 

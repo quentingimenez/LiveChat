@@ -92,10 +92,13 @@ export const buildIngestPayload = (request: IngestRequest, settings: ExtensionSe
   };
 
   if (request.mode === 'compose') {
-    const text = toNonEmptyString(request.text);
+    // A save-to-board stores no sent text: only a play keeps a caption.
+    if (!request.saveToBoard) {
+      const text = toNonEmptyString(request.text);
 
-    if (text) {
-      payload.text = text;
+      if (text) {
+        payload.text = text;
+      }
     }
 
     payload.forceRefresh = !!request.forceRefresh;

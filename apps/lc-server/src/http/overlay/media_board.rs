@@ -149,7 +149,8 @@ pub(crate) struct CreateItemRequest {
     /// Titre affiché (≤ 240 caractères).
     #[serde(default)]
     title: Option<String>,
-    /// Message affiché (≤ 500 caractères).
+    /// Text shown for a play-once only (≤ 500 characters). It is never stored
+    /// on the board: an add-to-board ignores it.
     #[serde(default)]
     message: Option<String>,
     /// Force une nouvelle ingestion même si le média est déjà en base.
@@ -430,6 +431,9 @@ pub async fn create_item(
     } else {
         BoardTarget::NewItem
     };
+    // The text is the caption of that play only: an add-to-board never
+    // receives it, so nothing sent with a media can reach the item.
+    let play_text = payload.play_once.then_some(payload.message).flatten();
     spawn_ingestion(
         state,
         auth,
@@ -437,7 +441,7 @@ pub async fn create_item(
         IngestionInput::Link { url, force_refresh },
         target,
         payload.title,
-        payload.message,
+        play_text,
     );
 
     json_response(

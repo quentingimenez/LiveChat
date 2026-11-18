@@ -90,6 +90,21 @@ describe('ingest client', () => {
     });
   });
 
+  it("n'envoie pas le texte quand le média va sur le board", () => {
+    const payload = buildIngestPayload(
+      {
+        mode: 'compose',
+        url: 'https://x.com/livechat/status/2020921090097164393',
+        text: 'hello',
+        saveToBoard: true,
+      },
+      settings,
+    );
+
+    expect(payload).not.toHaveProperty('text');
+    expect(payload?.saveToBoard).toBe(true);
+  });
+
   it('mappe une erreur 401', async () => {
     vi.stubGlobal(
       'fetch',

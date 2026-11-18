@@ -104,7 +104,8 @@ export function startLinkUpload({ guildId, url, title = '', message = '', playOn
     label: url,
     url,
     title: String(title || '').trim(),
-    message: message || '',
+    // The text is the caption of a play-once; a board add keeps none.
+    message: playOnce ? message || '' : '',
     playOnce: Boolean(playOnce),
     status: 'waiting',
     error: null,
@@ -144,7 +145,8 @@ export function startFileUpload({
     label,
     file,
     title: String(title || '').trim() || defaultTitle(label),
-    message: message || '',
+    // The text is the caption of a play-once; a board add keeps none.
+    message: playOnce ? message || '' : '',
     replaceItemId: replaceItemId || null,
     itemPatch: itemPatch && Object.keys(itemPatch).length ? itemPatch : null,
     playOnce: Boolean(playOnce),
@@ -519,9 +521,10 @@ async function runUpload(entry) {
 async function sendLink(entry) {
   let response;
   try {
-    const body = { url: entry.url, title: entry.title, message: entry.message };
+    const body = { url: entry.url, title: entry.title };
     if (entry.playOnce) {
       body.playOnce = true;
+      body.message = entry.message;
     }
     response = await invoke('guild_api', {
       payload: {
@@ -585,7 +588,7 @@ async function sendFile(entry) {
         guildId: entry.guildId,
         filename: entry.label,
         title: entry.title,
-        message: entry.message,
+        message: entry.playOnce ? entry.message : null,
         contentType: entry.file.type || null,
         size: entry.file.size,
         replaceItemId: entry.replaceItemId || null,

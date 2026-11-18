@@ -12,6 +12,10 @@
 //! Titre : un titre vide laisse la place au titre source de l'asset (le vrai
 //! titre du lien, extrait par le pipeline), ce qui couvre l'extension
 //! `saveToBoard` et la commande Discord `/media add`.
+//!
+//! Message : un ajout au board ne stocke jamais de message. Le texte envoyé
+//! avec un média n'est affiché que pour cette lecture (texte du
+//! `PlaybackJob`) ; le message d'un item ne s'écrit qu'à la main ensuite.
 
 use lc_db::{Db, DbError};
 use lc_domain::entities::{MediaAsset, MediaBoardItem};
@@ -27,7 +31,6 @@ use crate::media::quotas;
 
 /// Longueurs maximales héritées du legacy (troncature, pas de rejet).
 const MAX_TITLE_CHARS: usize = 240;
-const MAX_MESSAGE_CHARS: usize = 500;
 const MAX_AUTHOR_NAME_CHARS: usize = 120;
 
 /// Résultat d'un ajout au board média.
@@ -42,9 +45,11 @@ pub struct BoardAddResult {
 /// Ajoute (ou retrouve) un média sur le board média d'une guilde.
 ///
 /// L'asset doit déjà être `READY` ; l'appelant a vérifié le média et les
-/// permissions. `title`, `message`, `created_by_*` sont optionnels et tronqués
-/// aux limites legacy ; un titre vide (ou blanc) est remplacé par le titre
-/// source de l'asset. `display_duration_sec` is kept only on a new image item.
+/// permissions. `title` et `created_by_*` sont optionnels et tronqués aux
+/// limites legacy ; un titre vide (ou blanc) est remplacé par le titre source
+/// de l'asset. The item never stores a message: a text sent with a media is
+/// only shown for that play, never persisted on the board.
+/// `display_duration_sec` is kept only on a new image item.
 #[allow(clippy::too_many_arguments)]
 pub async fn add_to_board(
     db: &Db,
@@ -52,7 +57,6 @@ pub async fn add_to_board(
     guild_id: &GuildId,
     asset: &MediaAsset,
     title: Option<&str>,
-    message: Option<&str>,
     created_by_user_id: Option<&str>,
     created_by_name: Option<&str>,
     display_duration_sec: Option<i64>,
@@ -84,7 +88,7 @@ pub async fn add_to_board(
         title: normalize(title, MAX_TITLE_CHARS)
             // Titre laissé vide par le membre : le vrai titre du lien.
             .or_else(|| normalize(asset.source_title.as_deref(), MAX_TITLE_CHARS)),
-        message: normalize(message, MAX_MESSAGE_CHARS),
+        message: None,
         created_by_discord_user_id: normalize_optional(created_by_user_id),
         created_by_name: normalize(created_by_name, MAX_AUTHOR_NAME_CHARS),
         created_at: now,
@@ -255,7 +259,6 @@ mod tests {
             &guild,
             &asset,
             Some("  un titre  "),
-            Some("message"),
             Some("42"),
             Some("auteur"),
             None,
@@ -267,6 +270,7 @@ mod tests {
         assert!(first.created);
         assert_eq!(first.item.title.as_deref(), Some("un titre"));
         assert_eq!(first.item.created_by_discord_user_id.as_deref(), Some("42"));
+        assert_eq!(first.item.message, None);
 
         let pinned = fixture
             .db
@@ -282,7 +286,6 @@ mod tests {
             &fixture.config,
             &guild,
             &asset,
-            None,
             None,
             None,
             None,
@@ -316,7 +319,6 @@ mod tests {
             &asset,
             None,
             None,
-            None,
             Some("auteur"),
             None,
             fixture.now,
@@ -344,7 +346,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             fixture.now,
         )
         .await
@@ -369,7 +370,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             fixture.now,
         )
         .await
@@ -382,7 +382,6 @@ mod tests {
             &fixture.config,
             &guild,
             &untitled,
-            None,
             None,
             None,
             None,
@@ -405,7 +404,6 @@ mod tests {
             &fixture.config,
             &guild,
             &asset,
-            None,
             None,
             None,
             None,
@@ -447,7 +445,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             fixture.now,
         )
         .await
@@ -469,7 +466,6 @@ mod tests {
                     &fixture.config,
                     &guild,
                     &asset,
-                    None,
                     None,
                     None,
                     None,

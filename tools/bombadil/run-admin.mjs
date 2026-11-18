@@ -8,6 +8,7 @@
 // `cargo build -p lc-server` (the binary embeds the console at compile time).
 //
 // Environment: LC_SERVER_BIN (binary path), LC_BOMBADIL_ADMIN_PORT (39417),
+// BOMBADIL_SPEC (`specs/admin-console.ts`), BOMBADIL_OUTPUT (`out/admin`),
 // BOMBADIL_TIME_LIMIT (3m), BOMBADIL_CMD, BOMBADIL_NO_SANDBOX (see lib.mjs).
 
 import { spawn } from 'node:child_process';
@@ -69,8 +70,8 @@ try {
   await seed(session);
   code = await runBombadil({
     origin: `${base}/admin/`,
-    spec: 'specs/admin-console.ts',
-    output: 'out/admin',
+    spec: process.env.BOMBADIL_SPEC ?? 'specs/admin-console.ts',
+    output: process.env.BOMBADIL_OUTPUT ?? 'out/admin',
     allowUrl: `${base}/admin/*`,
     cookies: [`${session}; Path=/admin; HttpOnly`],
   });

@@ -5,7 +5,9 @@
 // and a real sound. Nothing reaches the network: the mock answers every shell
 // command and server call.
 //
-// Environment: LC_BOMBADIL_BOARD_PORT (39418), BOMBADIL_TIME_LIMIT (3m),
+// Environment: LC_BOMBADIL_BOARD_PORT (39418), LC_BOMBADIL_BOARD_QUERY (the
+// mock options, `media`; e.g. `role=guest&media` or `empty`), BOMBADIL_SPEC
+// (`specs/board.ts`), BOMBADIL_OUTPUT (`out/board`), BOMBADIL_TIME_LIMIT (3m),
 // BOMBADIL_CMD, BOMBADIL_NO_SANDBOX (see lib.mjs).
 
 import { createReadStream, statSync } from 'node:fs';
@@ -64,10 +66,11 @@ const server = createServer((request, response) => {
 await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
 
 const base = `http://127.0.0.1:${port}`;
+const query = process.env.LC_BOMBADIL_BOARD_QUERY ?? 'media';
 const code = await runBombadil({
-  origin: `${base}/dev/board-mock.html?media`,
-  spec: 'specs/board.ts',
-  output: 'out/board',
+  origin: `${base}/dev/board-mock.html${query ? `?${query}` : ''}`,
+  spec: process.env.BOMBADIL_SPEC ?? 'specs/board.ts',
+  output: process.env.BOMBADIL_OUTPUT ?? 'out/board',
   // Keeps the explorer on the board: the other dev pages are not under test.
   allowUrl: `${base}/dev/board-mock.html*`,
 });

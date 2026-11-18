@@ -1,0 +1,122 @@
+name: bombadil-nightly
+
+# Long Bombadil explorations (tools/bombadil), off the PR path: the rust
+# workflow already runs 3 minutes per target on every change. Here each target
+# runs for longer, the board under several mock modes (each starts in other
+# code paths), and the soak specs add resource-leak properties that only make
+# sense over long runs. Traces are uploaded on failure only: a long run writes
+# hundreds of MB of screenshots.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: Exploration time per target, in minutes
+        required: false
+        default: "20"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bombadil-nightly
+  cancel-in-progress: true
+
+env:
+  BOMBADIL_TIME_LIMIT: ${{ github.event.inputs.minutes || '20' }}m
+  BOMBADIL_NO_SANDBOX: "1"
+
+jobs:
+  board:
+    name: board (${{ matrix.mode.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        mode:
+          - { name: admin, query: "media" }
+          - { name: member, query: "role=member&media" }
+          - { name: guest, query: "role=guest&media" }
+          - { name: empty, query: "empty" }
+          - { name: removed, query: "removed&media" }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tools/bombadil/package-lock.json
+      - name: Bombadil dependencies
+        working-directory: tools/bombadil
+        run: |
+          npm ci
+          npm run typecheck
+      - name: Explore the board
+        working-directory: tools/bombadil
+        env:
+          LC_BOMBADIL_BOARD_QUERY: ${{ matrix.mode.query }}
+          BOMBADIL_SPEC: specs/board-soak.ts
+        run: npm run board
+      - name: Upload the trace
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bombadil-board-${{ matrix.mode.name }}
+          path: tools/bombadil/out/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  admin:
+    name: admin console
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: Rust cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            apps/lc-admin-web/package-lock.json
+            tools/bombadil/package-lock.json
+      # `rust-embed` embeds apps/lc-admin-web/dist at compile time.
+      - name: Build the admin console
+        working-directory: apps/lc-admin-web
+        run: |
+          npm ci
+          npm run build
+      - name: Build lc-server
+        env:
+          LC_ADMIN_WEB_BUILD: "0"
+        run: cargo build -p lc-server --bin lc-server --locked
+      - name: Bombadil dependencies
+        working-directory: tools/bombadil
+        run: |
+          npm ci
+          npm run typecheck
+      - name: Explore the admin console
+        working-directory: tools/bombadil
+        env:
+          LC_SERVER_BIN: ${{ github.workspace }}/target/debug/lc-server
+          BOMBADIL_SPEC: specs/admin-console-soak.ts
+        run: npm run admin
+      - name: Upload the trace
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bombadil-admin
+          path: tools/bombadil/out/
+          if-no-files-found: ignore
+          retention-days: 7

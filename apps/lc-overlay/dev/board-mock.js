@@ -46,6 +46,13 @@
 // connexion comme le shell (disabled, puis connecting → connected au retour)
 // et le membre « toi » passe hors ligne. `__mock.requests` liste les appels
 // guild_api ({ method, path }).
+// Administration de guilde : GET /overlay/guild porte `mediaBoard` (occupation,
+// quota propre, limite serveur) et `playback` ; PATCH /overlay/admin/settings
+// accepte `boardQuotaMb` (refus au-dessus de la limite serveur) ;
+// POST /overlay/admin/media-board/clear vide le board, arrête la lecture et
+// demande le nom exact de la guilde ; GET /overlay/admin/audit sert un journal
+// borné à la guilde ; GET /overlay/queue/history sert les lectures terminées et
+// en échec ; les jobs de la file portent `origin` (`board` ou `direct`).
 (function () {
   'use strict';
 
@@ -155,13 +162,49 @@
   }));
 
   const queue = {
-    playing: { id: 'j0', status: 'playing', title: 'Chat qui tombe', text: null, authorName: 'Léa', durationSec: 30, kind: 'video', startedAt: new Date(now - 12000).toISOString(), submittedAt: new Date(now - 20000).toISOString() },
+    playing: { id: 'j0', status: 'playing', title: 'Chat qui tombe', text: null, authorName: 'Léa', durationSec: 30, kind: 'video', origin: 'board', startedAt: new Date(now - 12000).toISOString(), submittedAt: new Date(now - 20000).toISOString() },
     pending: [
-      { id: 'j1', status: 'pending', title: 'Stonks', authorName: 'Max', durationSec: 10, kind: 'image' },
-      { id: 'j2', status: 'pending', title: null, text: 'gg les gars', authorName: 'Léa', durationSec: 5, kind: null },
-      { id: 'j3', status: 'pending', title: 'Directed by Robert B. Weide', authorName: 'Invité-42', durationSec: 8, kind: 'video' },
+      { id: 'j1', status: 'pending', title: 'Stonks', authorName: 'Max', durationSec: 10, kind: 'image', origin: 'board' },
+      { id: 'j2', status: 'pending', title: null, text: 'gg les gars', authorName: 'Léa', durationSec: 5, kind: null, origin: 'direct' },
+      { id: 'j3', status: 'pending', title: 'Directed by Robert B. Weide', authorName: 'Invité-42', durationSec: 8, kind: 'video', origin: 'board' },
     ],
   };
+  // `GET /overlay/queue/history` : lectures terminées et échecs, du plus récent
+  // au plus ancien. Les lectures finies pendant la session s'y ajoutent.
+  const queueHistory = [
+    { id: 'h1', status: 'done', title: 'Bruh', text: null, authorName: 'Léa', durationSec: 4, kind: 'image', origin: 'board', finishedAt: new Date(now - 12 * 60000).toISOString() },
+    { id: 'h2', status: 'failed', title: null, text: 'gg les gars', authorName: 'Max', durationSec: 5, kind: null, origin: 'direct', finishedAt: new Date(now - 48 * 60000).toISOString() },
+    { id: 'h3', status: 'done', title: 'Vine boom', text: null, authorName: 'Quentin', durationSec: 3, kind: 'audio', origin: 'board', finishedAt: new Date(now - 3 * 3600000).toISOString() },
+  ];
+
+  // Guild settings edited from « Réglages » (`PATCH /overlay/admin/settings`).
+  let guildName = 'Les Sardines';
+  let guestsCanViewBoard = true;
+  const guildSettings = { defaultMediaTime: 30, maxMediaTime: null, displayMediaFull: false };
+  // Quota propre de la guilde (`null` = limite du serveur).
+  const SERVER_BOARD_MAX_BYTES = 5 * 1024 * 1024 * 1024;
+  let boardQuotaMb = null;
+
+  function mediaBoardPayload() {
+    const usedBytes = items.reduce((sum, item) => sum + (Number(item.media && item.media.sizeBytes) || 0), 0);
+    const maxBytes = boardQuotaMb ? boardQuotaMb * 1024 * 1024 : SERVER_BOARD_MAX_BYTES;
+    return {
+      itemsCount: items.length,
+      usedBytes,
+      maxBytes,
+      remainingBytes: Math.max(0, maxBytes - usedBytes),
+      quotaMb: boardQuotaMb,
+      serverMaxBytes: SERVER_BOARD_MAX_BYTES,
+    };
+  }
+
+  // `GET /overlay/admin/audit` : journal du panneau serveur pour cette guilde.
+  const auditEntries = [
+    { id: 5, at: new Date(now - 8 * 60000).toISOString(), actor: { method: 'secret', name: 'Owner' }, action: 'guild.settings', method: 'PATCH', path: '/admin/api/guilds/111/settings', status: 200, guildId: '111', clientIp: null },
+    { id: 4, at: new Date(now - 2 * 3600000).toISOString(), actor: { method: 'discord', name: 'Admin Discord' }, action: 'guild.board_clear', method: 'POST', path: '/admin/api/guilds/111/media-board/clear', status: 200, guildId: '111', clientIp: null },
+    { id: 3, at: new Date(now - 26 * 3600000).toISOString(), actor: { method: 'secret', name: 'Owner' }, action: 'guild.member_ban', method: 'POST', path: '/admin/api/guilds/111/members/m-42/ban', status: 200, guildId: '111', clientIp: null },
+    { id: 2, at: new Date(now - 3 * 86400000).toISOString(), actor: { method: 'secret', name: 'Owner' }, action: 'guild.invite_create', method: 'POST', path: '/admin/api/guilds/111/invites', status: 200, guildId: '111', clientIp: null },
+  ];
 
   const members = [
     { id: 'm-111', displayName: 'Quentin', avatar: null, role: 'admin', connected: true, deviceCount: 2, lastSeenAt: new Date().toISOString(), createdAt: new Date(now - 90 * 86400000).toISOString(), discordLinked: true, discordUserId: '123456789012345678', isSelf: true },
@@ -447,7 +490,7 @@
       if (spoken.includes('panne')) {
         return delay(600).then(() => ({ ok: false, status: 502, body: { error: 'speech_failed' } }));
       }
-      const job = { id: 'j' + nextJob++, status: 'pending', title: null, text: body.caption || null, authorName: body.anonymous ? null : 'Quentin', durationSec: Math.max(1, Math.round(spoken.length / 15)), kind: 'audio' };
+      const job = { id: 'j' + nextJob++, status: 'pending', title: null, text: body.caption || null, authorName: body.anonymous ? null : 'Quentin', durationSec: Math.max(1, Math.round(spoken.length / 15)), kind: 'audio', origin: 'direct' };
       return delay(600).then(() => {
         queue.pending.push(job);
         queueHint();
@@ -555,9 +598,121 @@
       const member = { id: 'm-111', ...memberProfile, role };
       return ok(body.useDiscord ? { updated: true, synced: true, member } : { updated: true, member });
     }
-    if (path === '/overlay/guild') {
+    if (path === '/overlay/admin/settings' && method === 'PATCH') {
+      const body = payload.body || {};
+      if (!body || typeof body !== 'object') {
+        return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+      }
+      if ('name' in body) {
+        const next = String(body.name || '').trim();
+        if (!next) {
+          return { ok: false, status: 400, body: { error: 'invalid_name' } };
+        }
+        guildName = next;
+        const active = guilds.guilds.find((guild) => guild.membership.guildId === '111');
+        if (active) {
+          active.membership.guildName = next;
+        }
+      }
+      if ('defaultMediaTime' in body) {
+        guildSettings.defaultMediaTime = body.defaultMediaTime === null ? null : Math.max(0, Number(body.defaultMediaTime) || 0);
+      }
+      if ('maxMediaTime' in body) {
+        guildSettings.maxMediaTime = body.maxMediaTime === null ? null : Math.max(0, Number(body.maxMediaTime) || 0);
+      }
+      if ('displayMediaFull' in body) {
+        guildSettings.displayMediaFull = Boolean(body.displayMediaFull);
+      }
+      if ('guestsCanViewBoard' in body) {
+        guestsCanViewBoard = Boolean(body.guestsCanViewBoard);
+      }
+      if ('boardQuotaMb' in body) {
+        const quota = body.boardQuotaMb;
+        if (quota === null || quota === '') {
+          boardQuotaMb = null;
+        } else if (typeof quota === 'number' && Number.isInteger(quota) && quota > 0) {
+          if (quota > SERVER_BOARD_MAX_BYTES / (1024 * 1024)) {
+            return { ok: false, status: 400, body: { error: 'invalid_board_quota' } };
+          }
+          boardQuotaMb = quota;
+        } else {
+          return { ok: false, status: 400, body: { error: 'invalid_payload' } };
+        }
+      }
       return ok({
-        guild: { id: '111', name: 'Les Sardines', standalone: true, discordGuildId: null, guestsCanViewBoard: true, settings: { defaultMediaTime: 30, maxMediaTime: null, displayMediaFull: false }, connectedCount: 6 },
+        updated: true,
+        guild: {
+          id: '111',
+          name: guildName,
+          guestsCanViewBoard,
+          settings: { ...guildSettings },
+          boardQuotaMb,
+        },
+      });
+    }
+    if (path === '/overlay/admin/media-board/clear' && method === 'POST') {
+      const body = payload.body || {};
+      if (body.confirm !== guildName) {
+        return { ok: false, status: 400, body: { error: 'confirmation_mismatch' } };
+      }
+      let releasedPlayingJobs = 0;
+      if (queue.playing) {
+        releasedPlayingJobs = 1;
+        queueHistory.unshift({
+          id: queue.playing.id,
+          status: 'done',
+          title: queue.playing.title,
+          text: queue.playing.text,
+          authorName: queue.playing.authorName,
+          durationSec: queue.playing.durationSec,
+          kind: queue.playing.kind,
+          origin: queue.playing.origin || 'board',
+          finishedAt: new Date().toISOString(),
+        });
+        queue.playing = null;
+      }
+      queue.pending = [];
+      const removed = items.splice(0, items.length).length;
+      boardChanged('111', 'deleted', null);
+      return ok({
+        guildId: '111',
+        stop: { releasedPlayingJobs, broadcast: 0 },
+        deleted: { mediaBoardItems: removed, orphanMediaAssets: removed, orphanMediaFileDeleteErrors: 0 },
+      });
+    }
+    if (path.startsWith('/overlay/admin/audit') && method === 'GET') {
+      const rawLimit = new URLSearchParams(path.split('?')[1] || '').get('limit');
+      const parsed = rawLimit === null ? 50 : Number(rawLimit);
+      const limit = Number.isFinite(parsed) ? Math.min(200, Math.max(1, Math.trunc(parsed))) : 50;
+      const entries = auditEntries.slice(0, limit);
+      return ok({ count: entries.length, items: entries });
+    }
+    if (path.startsWith('/overlay/queue/history') && method === 'GET') {
+      const rawLimit = new URLSearchParams(path.split('?')[1] || '').get('limit');
+      const parsed = rawLimit === null ? 30 : Number(rawLimit);
+      const limit = Number.isFinite(parsed) ? Math.min(100, Math.max(1, Math.trunc(parsed))) : 30;
+      const entries = queueHistory.slice(0, limit);
+      return ok({ count: entries.length, items: entries });
+    }
+    if (path === '/overlay/guild') {
+      const effectiveDefault = guildSettings.defaultMediaTime ?? 5;
+      return ok({
+        guild: {
+          id: '111',
+          name: guildName,
+          standalone: true,
+          discordGuildId: null,
+          guestsCanViewBoard,
+          settings: {
+            defaultMediaTime: guildSettings.defaultMediaTime,
+            maxMediaTime: guildSettings.maxMediaTime,
+            displayMediaFull: guildSettings.displayMediaFull,
+            effective: { defaultMediaTime: effectiveDefault, maxMediaTime: guildSettings.maxMediaTime },
+          },
+          mediaBoard: mediaBoardPayload(),
+          playback: { done: 12, failed: 1, pending: queue.pending.length, busyUntil: null },
+          connectedCount: 6,
+        },
         member: { id: 'm-111', ...memberProfile, role },
         permissions,
       });
@@ -713,7 +868,7 @@
     if (item.title === 'Sad violin') {
       return { ok: false, reason: 'media_not_ready' };
     }
-    const job = { id: 'j' + nextJob++, title: item.title, text: item.message, authorName: 'Quentin', durationSec: item.media.durationSec || 8, kind: item.media.kind };
+    const job = { id: 'j' + nextJob++, title: item.title, text: item.message, authorName: 'Quentin', durationSec: item.media.durationSec || 8, kind: item.media.kind, origin: 'board' };
     queueHint();
     if (!queue.playing) {
       const at = new Date().toISOString();
@@ -726,6 +881,19 @@
   // Job stopped on this device only (`media_board_stop_local`).
   let locallyStoppedJobId = null;
   function finishPlaying() {
+    if (queue.playing) {
+      queueHistory.unshift({
+        id: queue.playing.id,
+        status: 'done',
+        title: queue.playing.title,
+        text: queue.playing.text,
+        authorName: queue.playing.authorName,
+        durationSec: queue.playing.durationSec,
+        kind: queue.playing.kind,
+        origin: queue.playing.origin || 'board',
+        finishedAt: new Date().toISOString(),
+      });
+    }
     queue.playing = queue.pending.shift() || null;
     if (queue.playing) {
       Object.assign(queue.playing, { status: 'playing', startedAt: new Date().toISOString() });
@@ -784,7 +952,7 @@
       // Like the server: the ready media becomes a playback job, no board
       // item and no `board.changed`.
       const kind = String(source.contentType || '').split('/')[0];
-      const job = { id: 'j' + nextJob++, title: source.title || null, text: source.message || null, authorName: 'Quentin', durationSec: kind === 'image' ? 8 : 6, kind: ['video', 'image', 'audio'].includes(kind) ? kind : 'video', status: 'pending' };
+      const job = { id: 'j' + nextJob++, title: source.title || null, text: source.message || null, authorName: 'Quentin', durationSec: kind === 'image' ? 8 : 6, kind: ['video', 'image', 'audio'].includes(kind) ? kind : 'video', status: 'pending', origin: 'direct' };
       queueHint();
       if (!queue.playing) {
         const at = new Date().toISOString();

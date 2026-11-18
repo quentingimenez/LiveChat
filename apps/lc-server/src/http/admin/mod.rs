@@ -71,7 +71,9 @@ mod tests_ops;
 #[cfg(test)]
 mod tests_rights;
 
+pub(crate) use audit::guild_rows as audit_rows_for_guild;
 pub(crate) use audit::purge_old as purge_old_audit;
+pub(crate) use guilds::remove_orphan_media;
 pub(crate) use ops::{BinaryProbe, SystemBinaryProbe};
 
 pub mod hub;

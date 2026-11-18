@@ -178,12 +178,15 @@ function resetGuildData() {
   state.selectedId = null;
   state.queue = { playing: null, pending: [], at: 0 };
   state.queueStale = false;
+  state.queueHistory = [];
   state.triggers.clear();
   state.triggerHints.clear();
   state.members = [];
   state.devices = [];
   state.invites = [];
   state.pairingCodes = [];
+  state.bans = [];
+  state.auditEntries = [];
   state.search = '';
   state.kind = 'all';
   state.selecting = false;
@@ -368,6 +371,18 @@ export async function loadQueue() {
   } catch {
     return;
   }
+  // The history only matters on its own tab: reading it on every background
+  // queue refresh would spend a request per played media.
+  if (state.tab === 'queue' && state.page === 'guild' && can('viewQueue')) {
+    try {
+      const body = await api('GET', '/overlay/queue/history?limit=30');
+      if (guildId === state.activeGuildId) {
+        state.queueHistory = body.items || [];
+      }
+    } catch {
+      // A failed history read keeps the list already shown.
+    }
+  }
   renderHeader();
   renderOnAir();
   if (state.tab === 'queue' && state.page === 'guild') {
@@ -391,22 +406,21 @@ async function readList(path, quiet) {
 
 export async function loadAdmin(options) {
   const quiet = Boolean(options && options.quiet === true);
-  if (state.adminTab === 'members' && can('manageMembers')) {
+  // Counts of the sub-tabs are known before opening them: members, devices and
+  // active codes are read together.
+  if (can('manageMembers')) {
     state.members = (await readList('/overlay/admin/members', quiet)) || state.members;
-  }
-  if (state.adminTab === 'devices' && can('manageMembers')) {
     state.devices = (await readList('/overlay/admin/devices', quiet)) || state.devices;
+  }
+  if (can('manageInvites')) {
+    state.invites = (await readList('/overlay/admin/invites', quiet)) || state.invites;
+    state.pairingCodes = (await readList('/overlay/admin/pairing-codes', quiet)) || state.pairingCodes;
   }
   if (state.adminTab === 'bans' && can('manageMembers')) {
     state.bans = (await readList('/overlay/admin/bans', quiet)) || state.bans;
   }
-  if (state.adminTab === 'codes' && can('manageInvites')) {
-    state.invites = (await readList('/overlay/admin/invites', quiet)) || state.invites;
-    state.pairingCodes = (await readList('/overlay/admin/pairing-codes', quiet)) || state.pairingCodes;
-    // Authors of invitations are resolved from the members list.
-    if (can('manageMembers')) {
-      state.members = (await readList('/overlay/admin/members', quiet)) || state.members;
-    }
+  if (state.adminTab === 'audit' && can('manageSettings')) {
+    state.auditEntries = (await readList('/overlay/admin/audit?limit=50', quiet)) || state.auditEntries;
   }
   if (state.tab === 'admin' && state.page === 'guild') {
     renderView();

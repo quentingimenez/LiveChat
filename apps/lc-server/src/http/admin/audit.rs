@@ -345,6 +345,30 @@ fn row_payload(row: &AuditRow) -> Value {
     })
 }
 
+/// Rows of one guild, newest first, for `GET /overlay/admin/audit`.
+///
+/// Only the guild id column is filtered; the payload is exactly the one of
+/// `GET /admin/api/audit`, so both surfaces render the same entries.
+pub(crate) async fn guild_rows(
+    db: &Db,
+    guild_id: &str,
+    limit: usize,
+) -> Result<Vec<Value>, DbError> {
+    let rows = sqlx::query_as::<_, AuditRow>(
+        "SELECT id, at, actor_method, actor_name, action, method, path, status, \
+                guild_id, client_ip \
+           FROM admin_audit \
+          WHERE guild_id = ?1 \
+          ORDER BY id DESC \
+          LIMIT ?2",
+    )
+    .bind(guild_id)
+    .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+    .fetch_all(db.pool())
+    .await?;
+    Ok(rows.iter().map(row_payload).collect())
+}
+
 /// Escapes one CSV field (quotes doubled when needed).
 ///
 /// Formula-leading values are prefixed with `'`: the actor name comes from

@@ -15,19 +15,22 @@ import { renderView } from './view.js';
 export function renderAdmin() {
   const tabs = [];
   if (can('manageMembers')) {
-    tabs.push(['members', 'Membres']);
-    tabs.push(['devices', 'Appareils']);
+    tabs.push(['members', 'Membres', state.members.length]);
+    tabs.push(['devices', 'Appareils', state.devices.length]);
   }
   if (can('manageInvites')) {
-    tabs.push(['codes', 'Codes']);
+    tabs.push(['codes', 'Codes', activeCodeCount()]);
   }
   if (can('manageMembers')) {
-    tabs.push(['bans', 'Bannis']);
+    tabs.push(['bans', 'Bannis', null]);
+  }
+  if (can('manageSettings')) {
+    tabs.push(['audit', 'Journal', null]);
   }
   if (!tabs.some(([id]) => id === state.adminTab)) {
     state.adminTab = tabs.length ? tabs[0][0] : 'members';
   }
-  const views = { codes: renderCodes, bans: renderBans, devices: renderDevices };
+  const views = { codes: renderCodes, bans: renderBans, devices: renderDevices, audit: renderAudit };
   const body = (views[state.adminTab] || renderMembers)();
   return h(
     'div',
@@ -35,11 +38,25 @@ export function renderAdmin() {
     h(
       'div',
       { class: 'subtabs' },
-      tabs.map(([id, label]) =>
-        h('button', { class: `chip${state.adminTab === id ? ' is-active' : ''}`, onClick: () => { state.adminTab = id; renderView(); loadAdmin(); } }, label),
+      tabs.map(([id, label, count]) =>
+        h(
+          'button',
+          { class: `chip${state.adminTab === id ? ' is-active' : ''}`, onClick: () => { state.adminTab = id; renderView(); loadAdmin(); } },
+          label,
+          count !== null ? h('span', { class: 'count' }, count) : null,
+        ),
       ),
     ),
     body,
+  );
+}
+
+// Active codes of both families (invitations and pairing codes), as the
+// « Codes » tab lists them.
+function activeCodeCount() {
+  return (
+    state.invites.filter((invite) => invite.isActive).length +
+    state.pairingCodes.filter((code) => code.isActive).length
   );
 }
 
@@ -197,6 +214,93 @@ function openUnbanDialog(ban) {
     await run(() => api('DELETE', `/overlay/admin/bans/${encodeURIComponent(ban.id)}`), `Le bannissement de ${ban.displayName} est levé.`);
     loadAdmin();
   });
+}
+
+// ---------------------------------------------------------------- journal
+
+// French labels of the actions written by the server audit middleware
+// (`apps/lc-server/src/http/admin/audit.rs`). Unknown actions are shown raw.
+const AUDIT_ACTION_LABELS = {
+  'auth.login_secret': 'Connexion par secret',
+  'auth.login_discord': 'Connexion Discord',
+  'auth.logout': 'Déconnexion',
+  'guild.create': 'Guilde créée',
+  'guild.admin_code': 'Code admin émis',
+  'guild.settings': 'Réglages modifiés',
+  'guild.stop': 'Lecture arrêtée',
+  'guild.purge': 'Guilde supprimée',
+  'guild.revoke_clients': 'Accès révoqués',
+  'guild.board_clear': 'Board vidé',
+  'guild.discord_unlink': 'Discord délié',
+  'guild.discord_leave': 'Bot retiré du serveur',
+  'guild.discord_link_code': 'Code de liaison Discord',
+  'guild.device_code': 'Code d’appareil émis',
+  'guild.invite_create': 'Invitation créée',
+  'guild.invite_revoke': 'Invitation révoquée',
+  'guild.member_update': 'Rôle modifié',
+  'guild.member_remove': 'Membre exclu',
+  'guild.member_ban': 'Membre banni',
+  'guild.ban_remove': 'Bannissement levé',
+  'guild.queue_clear': 'File vidée',
+  'guild.queue_remove': 'Média retiré de la file',
+  'guild.media_update': 'Média modifié',
+  'guild.media_remove': 'Média supprimé',
+  'guild.media_edit': 'Média réencodé',
+  'overlay.revoke': 'Appareil révoqué',
+  'overlay.update': 'Appareil modifié',
+  'overlay.guild_settings': 'Réglages d’appareil',
+  'ingest_client.create': 'Client d’ingestion créé',
+  'ingest_client.revoke': 'Client d’ingestion révoqué',
+  'pairing.expired_clean': 'Codes expirés purgés',
+  'pairing.revoke': 'Code d’appairage révoqué',
+  'media.cache_purge': 'Cache purgé',
+  'media.orphans_clean': 'Médias orphelins purgés',
+  'settings.update': 'Réglages du serveur modifiés',
+  'rights.update': 'Matrice des droits modifiée',
+};
+
+function auditActionLabel(action) {
+  return AUDIT_ACTION_LABELS[action] || action;
+}
+
+// Path of the mutation relative to the guild, so the column stays short:
+// `/admin/api/guilds/42/settings` → `/settings`.
+function auditTarget(path) {
+  if (!path) {
+    return '—';
+  }
+  const stripped = path.replace(/^\/admin\/api\/guilds\/[^/]+/, '');
+  return stripped || '/';
+}
+
+function auditDate(entry) {
+  const date = new Date(entry.at);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('fr-FR');
+}
+
+function renderAudit() {
+  if (state.auditEntries.length === 0) {
+    return h('p', { class: 'meta' }, 'Aucune action enregistrée pour cette guilde.');
+  }
+  return h(
+    'div',
+    null,
+    h('p', { class: 'meta' }, 'Dernières actions du panneau serveur sur cette guilde, de la plus récente à la plus ancienne.'),
+    h(
+      'div',
+      { class: 'list' },
+      state.auditEntries.map((entry) =>
+        h(
+          'div',
+          { class: 'line is-audit' },
+          h('span', { class: 'sub', title: auditDate(entry) }, relativeTime(entry.at)),
+          h('span', { class: 'ellipsis', title: (entry.actor && (entry.actor.name || entry.actor.method)) || '' }, (entry.actor && (entry.actor.name || entry.actor.method)) || '—'),
+          h('span', { class: 'ellipsis' }, auditActionLabel(entry.action)),
+          h('span', { class: 'sub ellipsis mono', title: entry.path || '' }, auditTarget(entry.path)),
+        ),
+      ),
+    ),
+  );
 }
 
 // ---------------------------------------------------------------- devices
@@ -554,11 +658,29 @@ async function revokeCode(row) {
 
 // Guild-wide settings (server side), not the device settings page.
 // Server settings of the guild (admins), shown in its « Réglages » tab.
+// Slash commands registered by the bot, copied from the server console
+// (`apps/lc-admin-web/src/constants.ts`).
+const DISCORD_COMMANDS = [
+  'dispo',
+  'msg',
+  'dire',
+  'pair-code',
+  'help',
+  'info',
+  'overlays',
+  'stop',
+  'media-add',
+  'lier',
+  'cmsg',
+  'cdire',
+];
+
 export function renderServerSettings() {
   const guild = (state.info && state.info.guild) || { settings: {} };
+  const effective = (guild.settings && guild.settings.effective) || {};
   const name = h('input', { class: 'field', id: 'set-name', value: guild.name || '', maxlength: '60' });
-  const defaultTime = h('input', { class: 'field', id: 'set-default', type: 'number', min: '0', max: '86400', value: guild.settings.defaultMediaTime ?? '', placeholder: 'Valeur du serveur', style: 'max-width:160px' });
-  const maxTime = h('input', { class: 'field', id: 'set-max', type: 'number', min: '0', max: '86400', value: guild.settings.maxMediaTime ?? '', placeholder: 'Sans limite', style: 'max-width:160px' });
+  const defaultTime = h('input', { class: 'field', id: 'set-default', type: 'number', min: '0', max: '86400', value: guild.settings.defaultMediaTime ?? '', placeholder: `Valeur du serveur (${effective.defaultMediaTime ?? '—'} s)`, style: 'max-width:160px' });
+  const maxTime = h('input', { class: 'field', id: 'set-max', type: 'number', min: '0', max: '86400', value: guild.settings.maxMediaTime ?? '', placeholder: effective.maxMediaTime != null ? `Valeur du serveur (${effective.maxMediaTime} s)` : 'Sans limite', style: 'max-width:160px' });
   const full = h('input', { type: 'checkbox', id: 'set-full', checked: Boolean(guild.settings.displayMediaFull) });
   const guests = h('input', { type: 'checkbox', id: 'set-guests', checked: guild.guestsCanViewBoard !== false });
   const save = async () => {
@@ -581,6 +703,11 @@ export function renderServerSettings() {
   const discord = [
     h('h3', { class: 'section-title' }, 'Discord'),
     h('p', { class: 'meta' }, guild.discordGuildId ? `Guilde liée au serveur Discord ${guild.discordGuildId}.` : guild.standalone ? 'Cette guilde n’est liée à aucun serveur Discord.' : 'Cette guilde est un serveur Discord.'),
+    h(
+      'p',
+      { class: 'meta' },
+      `Commandes du bot : ${DISCORD_COMMANDS.map((command) => `/${command}`).join(', ')} (${DISCORD_COMMANDS.length} synchronisées).`,
+    ),
   ];
   if (guild.standalone && can('manageSettings')) {
     if (guild.discordGuildId) {

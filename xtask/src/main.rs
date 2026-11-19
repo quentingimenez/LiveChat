@@ -614,4 +614,22 @@ mod tests {
             Err(CliError::DuplicateValue("--offline"))
         ));
     }
+
+    #[test]
+    fn default_server_bin_pins_the_debug_path() {
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                default_server_bin(),
+                PathBuf::from(r"target\debug\lc-server.exe")
+            );
+        }
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                default_server_bin(),
+                PathBuf::from("target/debug/lc-server")
+            );
+        }
+    }
 }

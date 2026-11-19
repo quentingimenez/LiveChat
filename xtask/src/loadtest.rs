@@ -235,7 +235,7 @@ async fn run(options: &Options) -> Result<u8, LoadtestError> {
             }
             _ = sleep_until(end) => break,
             _ = sleep_until(fd_deadline), if fd_sampling && fd_due.is_some() => {
-                fd_start = server_pid.and_then(count_server_fds);
+                fd_start = server_pid.and_then(|pid| read_fd_count(format!("/proc/{pid}/fd")));
                 fd_due = None;
             }
         }
@@ -261,9 +261,9 @@ async fn run(options: &Options) -> Result<u8, LoadtestError> {
     // fd_start here as well — both states are the loaded server.
     if fd_sampling {
         if fd_start.is_none() {
-            fd_start = server_pid.and_then(count_server_fds);
+            fd_start = server_pid.and_then(|pid| read_fd_count(format!("/proc/{pid}/fd")));
         }
-        fd_end = server_pid.and_then(count_server_fds);
+        fd_end = server_pid.and_then(|pid| read_fd_count(format!("/proc/{pid}/fd")));
     }
 
     // Clients stop themselves at `client_stop`; abort any straggler past
@@ -319,13 +319,16 @@ async fn run(options: &Options) -> Result<u8, LoadtestError> {
 
     let mut failures = 0;
     let passed = report.hello_p95_ms <= options.max_hello_p95_ms;
-    budget(
-        "hello_p95_ms",
-        passed,
-        format!(
-            "{} ms <= {} ms",
-            report.hello_p95_ms, options.max_hello_p95_ms
-        ),
+    println!(
+        "{}",
+        budget_line(
+            "hello_p95_ms",
+            passed,
+            format!(
+                "{} ms <= {} ms",
+                report.hello_p95_ms, options.max_hello_p95_ms
+            )
+        )
     );
     failures += u32::from(!passed);
 
@@ -333,38 +336,53 @@ async fn run(options: &Options) -> Result<u8, LoadtestError> {
     // never answers would report zero percentiles and pass; only the
     // welcomed count exposes the stall.
     let passed = welcomes == options.clients;
-    budget(
-        "welcomed_clients",
-        passed,
-        format!("{welcomes} == {}", options.clients),
+    println!(
+        "{}",
+        budget_line(
+            "welcomed_clients",
+            passed,
+            format!("{welcomes} == {}", options.clients),
+        )
     );
     failures += u32::from(!passed);
 
     let passed = report.ws_errors == 0;
-    budget("ws_errors", passed, format!("{} == 0", report.ws_errors));
+    println!(
+        "{}",
+        budget_line("ws_errors", passed, format!("{} == 0", report.ws_errors))
+    );
     failures += u32::from(!passed);
 
     let passed = report.disconnects == 0;
-    budget(
-        "disconnects",
-        passed,
-        format!("{} == 0", report.disconnects),
+    println!(
+        "{}",
+        budget_line(
+            "disconnects",
+            passed,
+            format!("{} == 0", report.disconnects),
+        )
     );
     failures += u32::from(!passed);
 
     let passed = report.ingest_errors == 0;
-    budget(
-        "ingest_errors",
-        passed,
-        format!("{} == 0", report.ingest_errors),
+    println!(
+        "{}",
+        budget_line(
+            "ingest_errors",
+            passed,
+            format!("{} == 0", report.ingest_errors),
+        )
     );
     failures += u32::from(!passed);
 
     let passed = report.ingest_rate_limited == 0;
-    budget(
-        "ingest_rate_limited",
-        passed,
-        format!("{} == 0", report.ingest_rate_limited),
+    println!(
+        "{}",
+        budget_line(
+            "ingest_rate_limited",
+            passed,
+            format!("{} == 0", report.ingest_rate_limited),
+        )
     );
     failures += u32::from(!passed);
 
@@ -374,7 +392,7 @@ async fn run(options: &Options) -> Result<u8, LoadtestError> {
     } else {
         "exited during the run".to_owned()
     };
-    budget("server_alive", passed, detail);
+    println!("{}", budget_line("server_alive", passed, detail));
     failures += u32::from(!passed);
 
     if fd_sampling {
@@ -393,7 +411,7 @@ async fn run(options: &Options) -> Result<u8, LoadtestError> {
             ),
             (None, None) => (false, "fd samples unavailable".to_owned()),
         };
-        budget("fd_growth", fd_passed, detail);
+        println!("{}", budget_line("fd_growth", fd_passed, detail));
         failures += u32::from(!fd_passed);
     }
 
@@ -612,10 +630,10 @@ struct Report {
     fd_end: Option<u64>,
 }
 
-/// Prints one budget verdict line in the style of `verify`.
-fn budget(name: &str, passed: bool, detail: String) {
+/// Renders one budget verdict line in the style of `verify`.
+fn budget_line(name: &str, passed: bool, detail: String) -> String {
     let label = if passed { "PASS" } else { "FAIL" };
-    println!("{label} {name} ({detail})");
+    format!("{label} {name} ({detail})")
 }
 
 /// Nearest-rank percentile of a slice already sorted in ascending order.
@@ -815,10 +833,11 @@ async fn wait_healthy(port: u16, guard: &mut ServerGuard) -> Result<(), Loadtest
     Err(LoadtestError::Unhealthy)
 }
 
-/// Counts the open file descriptors of a process through `/proc`
-/// (Linux only; `None` on any other platform or when the process is gone).
-fn count_server_fds(pid: u32) -> Option<u64> {
-    let entries = std::fs::read_dir(format!("/proc/{pid}/fd")).ok()?;
+/// Counts the entries of a directory — the `/proc/<pid>/fd` directory on
+/// Linux — and `None` when it cannot be read (any other platform, or a
+/// process that is already gone).
+fn read_fd_count(dir: impl AsRef<Path>) -> Option<u64> {
+    let entries = std::fs::read_dir(dir).ok()?;
     let count = entries.filter_map(|entry| entry.ok()).count() as u64;
     Some(count)
 }
@@ -925,5 +944,387 @@ mod tests {
         assert_eq!(envelope["payload"]["clientId"], "client-7");
         assert_eq!(envelope["payload"]["guildId"], "123456789012345678");
         assert_eq!(envelope["payload"]["appVersion"], "3.0.0");
+    }
+
+    #[test]
+    fn report_socket_end_classifies_the_socket_end() {
+        let (events, mut received) = mpsc::unbounded_channel();
+        report_socket_end(&events, true);
+        assert!(matches!(received.try_recv(), Ok(ClientEvent::Disconnected)));
+        assert!(
+            received.try_recv().is_err(),
+            "exactly one event must be sent per socket end"
+        );
+
+        let (events, mut received) = mpsc::unbounded_channel();
+        report_socket_end(&events, false);
+        assert!(matches!(received.try_recv(), Ok(ClientEvent::WsError)));
+        assert!(
+            received.try_recv().is_err(),
+            "exactly one event must be sent per socket end"
+        );
+    }
+
+    #[test]
+    fn budget_line_renders_pass_and_fail_verdicts() {
+        assert_eq!(
+            budget_line("hello_p95_ms", true, "42 ms <= 250".to_owned()),
+            "PASS hello_p95_ms (42 ms <= 250)"
+        );
+        assert_eq!(
+            budget_line("hello_p95_ms", false, "321 ms <= 250".to_owned()),
+            "FAIL hello_p95_ms (321 ms <= 250)"
+        );
+    }
+
+    #[tokio::test]
+    async fn reserve_port_returns_live_ephemeral_ports() {
+        let first = reserve_port().await.unwrap();
+        let second = reserve_port().await.unwrap();
+        for port in [first, second] {
+            assert_ne!(port, 0, "an ephemeral port is never 0");
+            // The OS assigns ephemeral ports from its dynamic range
+            // (>= 32768 on Linux, >= 49152 on Windows): a stubbed port
+            // (0 or 1) can never pass the 1024 floor.
+            assert!(port > 1024, "port {port} is outside the ephemeral range");
+        }
+    }
+
+    async fn overlay_client_guild(db: &lc_db::Db, token: &str) -> String {
+        sqlx::query_scalar("SELECT guild_id FROM overlay_clients WHERE token_hash = ?")
+            .bind(hash_token(token))
+            .fetch_one(db.pool())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn seed_database_shards_clients_over_guilds_and_hashes_tokens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("livechat.sqlite");
+        seed_database(&db_path, 20).await.unwrap();
+
+        let db = lc_db::Db::open(&db_path, &lc_db::DbConfig::default())
+            .await
+            .unwrap();
+        let guilds: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM guilds")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            guilds, 2,
+            "20 clients over a 16-socket guild cap => 2 shards"
+        );
+
+        let overlay_clients: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM overlay_clients")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(overlay_clients, 20);
+
+        let members: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM guild_members")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(members, 1);
+
+        let ingest_clients: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ingest_clients")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(ingest_clients, 1);
+
+        let first_guild = format!("{}", BASE_GUILD_ID);
+        let second_guild = format!("{}", BASE_GUILD_ID + 1);
+
+        // Block sharding: the first 16 clients live in the first guild,
+        // the last 4 in the second one.
+        let mut shards: Vec<(String, i64)> =
+            sqlx::query_as("SELECT guild_id, COUNT(*) FROM overlay_clients GROUP BY guild_id")
+                .fetch_all(db.pool())
+                .await
+                .unwrap();
+        shards.sort();
+        assert_eq!(
+            shards,
+            vec![(first_guild.clone(), 16), (second_guild.clone(), 4)]
+        );
+
+        // The per-client mapping of the sharding: tokens 000..=015 resolve
+        // to the first guild, 016..=019 to the second one.
+        for index in [0usize, 5, 15] {
+            let token = format!("{OVERLAY_TOKEN_PREFIX}{index:03}");
+            assert_eq!(
+                overlay_client_guild(&db, &token).await,
+                first_guild,
+                "client {index} must sit in the first shard"
+            );
+        }
+        for index in [16usize, 19] {
+            let token = format!("{OVERLAY_TOKEN_PREFIX}{index:03}");
+            assert_eq!(
+                overlay_client_guild(&db, &token).await,
+                second_guild,
+                "client {index} must sit in the second shard"
+            );
+        }
+
+        // The guild display name is seeded.
+        let guild_name: Option<String> = sqlx::query_scalar("SELECT name FROM guilds WHERE id = ?")
+            .bind(first_guild.as_str())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(guild_name.as_deref(), Some("Load Guild"));
+
+        // Both residents of the first guild: the author member and the
+        // ingest client.
+        let member_guild: String = sqlx::query_scalar("SELECT guild_id FROM guild_members")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(member_guild, first_guild);
+        let ingest_guild: String = sqlx::query_scalar("SELECT guild_id FROM ingest_clients")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(ingest_guild, first_guild);
+
+        // Token hashes: client 0 and the ingest client store the SHA-256 of
+        // their pairing tokens.
+        let overlay_hash: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM overlay_clients WHERE token_hash = ?")
+                .bind(hash_token(&format!("{OVERLAY_TOKEN_PREFIX}000")))
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            overlay_hash, 1,
+            "client 0 must store the hash of load-overlay-000"
+        );
+
+        let ingest_hash: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM ingest_clients WHERE token_hash = ?")
+                .bind(hash_token(INGEST_TOKEN))
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            ingest_hash, 1,
+            "the ingest client must store the hash of its token"
+        );
+
+        // Release the SQLite file (and its WAL) before the tempdir drops.
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn seed_database_with_one_client_uses_a_single_guild() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("livechat.sqlite");
+        seed_database(&db_path, 1).await.unwrap();
+
+        let db = lc_db::Db::open(&db_path, &lc_db::DbConfig::default())
+            .await
+            .unwrap();
+        let guilds: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM guilds")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(guilds, 1);
+        let overlay_clients: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM overlay_clients")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(overlay_clients, 1);
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn seed_database_without_clients_still_seeds_one_guild() {
+        // The CLI rejects `--clients 0`, but the seeding helper must keep
+        // its floor of one guild: the ingest author still needs a home.
+        // This is the only client count that pins the `.max(1)` of the
+        // guild count (for any count >= 1, div_ceil already yields >= 1).
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("livechat.sqlite");
+        seed_database(&db_path, 0).await.unwrap();
+
+        let db = lc_db::Db::open(&db_path, &lc_db::DbConfig::default())
+            .await
+            .unwrap();
+        let guilds: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM guilds")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(guilds, 1, "the guild count has a floor of 1");
+        let overlay_clients: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM overlay_clients")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(overlay_clients, 0);
+        db.close().await;
+    }
+
+    #[test]
+    fn read_fd_count_counts_entries_and_reports_missing_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_fd_count(dir.path()), Some(0));
+        std::fs::write(dir.path().join("fd-0"), b"").unwrap();
+        std::fs::write(dir.path().join("fd-1"), b"").unwrap();
+        std::fs::create_dir(dir.path().join("fd-2")).unwrap();
+        assert_eq!(read_fd_count(dir.path()), Some(3));
+        let missing = dir.path().join("definitely-not-a-dir");
+        assert_eq!(read_fd_count(missing), None);
+    }
+
+    #[cfg(windows)]
+    fn spawn_exiting_child() -> Child {
+        Command::new("cmd")
+            .args(["/C", "exit", "0"])
+            .spawn()
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    fn spawn_exiting_child() -> Child {
+        Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap()
+    }
+
+    #[cfg(windows)]
+    fn spawn_sleeping_child() -> Child {
+        Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .spawn()
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    fn spawn_sleeping_child() -> Child {
+        Command::new("sleep").args(["30"]).spawn().unwrap()
+    }
+
+    #[test]
+    fn server_guard_reports_the_pid_and_reaps_a_short_lived_child() {
+        let mut guard = ServerGuard {
+            child: Some(spawn_exiting_child()),
+        };
+        let pid = guard.pid().expect("a live child has a pid");
+        assert_ne!(pid, 0, "Child::id is never 0");
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match guard.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => {}
+                Err(error) => panic!("try_wait failed: {error}"),
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the short-lived child was not reaped within 2 s"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn server_guard_shutdown_kills_a_living_child_once() {
+        let mut guard = ServerGuard {
+            child: Some(spawn_sleeping_child()),
+        };
+        let before = std::time::Instant::now();
+        guard.shutdown();
+        assert!(
+            before.elapsed() < Duration::from_secs(10),
+            "shutdown must not wait out the sleeping child"
+        );
+        assert!(
+            guard.pid().is_none(),
+            "shutdown takes the child out of the guard"
+        );
+        assert_eq!(
+            guard.try_wait().unwrap(),
+            None,
+            "an emptied guard reports no child"
+        );
+        // Idempotent: a second shutdown is a no-op, not a panic.
+        guard.shutdown();
+        guard.shutdown();
+    }
+
+    #[test]
+    fn server_guard_without_child_is_inert() {
+        let mut guard = ServerGuard { child: None };
+        assert!(guard.pid().is_none());
+        assert_eq!(guard.try_wait().unwrap(), None);
+        guard.shutdown();
+        // Reaching the end of the scope drops the guard without a panic;
+        // a childless guard has nothing to kill.
+    }
+
+    /// Environment switch of the guard-helper branch (see
+    /// [`server_guard_drop_kills_the_child_before_it_writes_its_marker`]).
+    const GUARD_HELPER_ENV: &str = "LOADTEST_GUARD_HELPER";
+    /// Marker path, passed to the helper through its own variable.
+    const GUARD_HELPER_MARKER_ENV: &str = "LOADTEST_GUARD_HELPER_MARKER";
+    /// Full name of the ignored test that carries the helper branch.
+    const GUARD_HELPER_TEST: &str = "loadtest::tests::loadtest_guard_helper";
+
+    fn spawn_guard_helper(marker: &Path) -> Child {
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "--ignored", GUARD_HELPER_TEST])
+            .env(GUARD_HELPER_ENV, "1")
+            .env(GUARD_HELPER_MARKER_ENV, marker)
+            .spawn()
+            .unwrap()
+    }
+
+    #[test]
+    fn server_guard_drop_kills_the_child_before_it_writes_its_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("guard-helper-ran");
+
+        // Positive control: an unguarded helper child does write the
+        // marker — otherwise a broken Drop could hide behind a broken
+        // marker mechanism.
+        let mut unguarded = spawn_guard_helper(&marker);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the unguarded helper never wrote its marker"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        unguarded.kill().ok();
+        unguarded.wait().ok();
+
+        // The guarded child is killed by Drop long before its 800 ms sleep
+        // ends: no marker may ever appear.
+        std::fs::remove_file(&marker).unwrap();
+        let guard = ServerGuard {
+            child: Some(spawn_guard_helper(&marker)),
+        };
+        drop(guard);
+        std::thread::sleep(Duration::from_secs(2));
+        assert!(
+            !marker.exists(),
+            "Drop must kill the guarded child before it writes its marker"
+        );
+    }
+
+    /// Helper branch of `server_guard_drop_kills_the_child_before_it_writes_its_marker`:
+    /// sleeps 800 ms, writes the marker, exits 0. Ignored by every runner
+    /// (nextest, cargo test); only the spawn above ever executes it, gated
+    /// by [`GUARD_HELPER_ENV`].
+    #[ignore = "guard-helper branch, spawned by the Drop test only"]
+    #[test]
+    fn loadtest_guard_helper() {
+        if std::env::var_os(GUARD_HELPER_ENV).is_none() {
+            return;
+        }
+        let marker = std::env::var(GUARD_HELPER_MARKER_ENV).unwrap();
+        std::thread::sleep(Duration::from_millis(800));
+        std::fs::write(&marker, b"alive").unwrap();
+        std::process::exit(0);
     }
 }

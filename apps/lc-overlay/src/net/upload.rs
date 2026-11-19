@@ -162,6 +162,9 @@ pub(crate) struct UploadFile<'a> {
     pub(crate) replace_item_id: Option<&'a str>,
     /// The file is played once on the overlays instead of joining the board.
     pub(crate) play_once: bool,
+    /// Display time of that play, in whole seconds. Only used for an image:
+    /// the server keeps the file's own length for a video or an audio.
+    pub(crate) display_duration_sec: Option<i64>,
 }
 
 /// Builds the JSON body opening the upload; blank texts are left out.
@@ -190,6 +193,9 @@ pub(crate) fn upload_description(file: &UploadFile<'_>) -> Result<Value, String>
     }
     if file.play_once {
         description.insert("playOnce".to_string(), true.into());
+        if let Some(seconds) = file.display_duration_sec {
+            description.insert("displayDurationSec".to_string(), seconds.into());
+        }
     }
     Ok(Value::Object(description))
 }
@@ -491,6 +497,7 @@ mod tests {
             content_type: Some("video/mp4"),
             replace_item_id: Some("  "),
             play_once: false,
+            display_duration_sec: None,
         })
         .expect("description");
         assert_eq!(
@@ -527,6 +534,37 @@ mod tests {
         let description = upload_description(&UploadFile {
             filename: "photo.png",
             size: 10,
+            ..UploadFile::default()
+        })
+        .expect("description");
+        assert_eq!(description, json!({"filename": "photo.png", "size": 10}));
+    }
+
+    #[test]
+    fn description_carries_the_play_once_display_time() {
+        let description = upload_description(&UploadFile {
+            filename: "photo.png",
+            size: 10,
+            play_once: true,
+            display_duration_sec: Some(12),
+            ..UploadFile::default()
+        })
+        .expect("description");
+        assert_eq!(
+            description,
+            json!({
+                "filename": "photo.png",
+                "size": 10,
+                "playOnce": true,
+                "displayDurationSec": 12,
+            })
+        );
+        // Without a play once, the time is not part of the body: the server
+        // would reject it.
+        let description = upload_description(&UploadFile {
+            filename: "photo.png",
+            size: 10,
+            display_duration_sec: Some(12),
             ..UploadFile::default()
         })
         .expect("description");

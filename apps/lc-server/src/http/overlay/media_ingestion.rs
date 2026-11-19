@@ -48,7 +48,9 @@ pub(super) enum BoardTarget {
     /// title, message, author, date, favorites and picture.
     Replace(MediaBoardItemId),
     /// No board item: the media is played once on the guild's overlays.
-    PlayOnce,
+    /// `display_duration_sec` is the display time requested with the play
+    /// (1..=600 s); it is ignored unless the ready asset is an image.
+    PlayOnce { display_duration_sec: Option<i64> },
 }
 
 /// The ingestion sources accepted by the board.
@@ -212,12 +214,18 @@ async fn run_ingestion(
         )
         .await
         .map(CompletedIngestion::BoardItem),
-        (Ok(asset), BoardTarget::PlayOnce) => complete_play_once(
+        (
+            Ok(asset),
+            BoardTarget::PlayOnce {
+                display_duration_sec,
+            },
+        ) => complete_play_once(
             &state,
             &auth,
             service.db(),
             asset,
             message,
+            display_duration_sec,
             state.clock.now(),
         )
         .await
@@ -263,12 +271,17 @@ fn play_once_author(auth: &AuthedOverlayClient) -> (Option<String>, Option<Strin
 /// becomes a `PENDING` job for the guild — no quota check, no pinning — the
 /// message is shown with it, the overlay member is the author, and the realtime
 /// hook is notified so the playback engine picks the job up at once.
+///
+/// `display_duration_sec` is the display time chosen with the play. It only
+/// applies to an image: a video or an audio keeps its own length (and
+/// [`jobs::resolve_duration`] ignores it for them anyway).
 async fn complete_play_once(
     state: &AppState,
     auth: &AuthedOverlayClient,
     db: &lc_db::Db,
     asset: MediaAsset,
     message: Option<String>,
+    display_duration_sec: Option<i64>,
     now: time::UtcDateTime,
 ) -> Result<PlaybackJob, IngestionFailure> {
     let (author_name, author_image) = play_once_author(auth);
@@ -277,6 +290,7 @@ async fn complete_play_once(
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(|text| text.chars().take(MAX_MEDIA_TEXT_CHARS).collect::<String>());
+    let duration_sec = display_duration_sec.filter(|_| asset.kind == MediaKind::Image);
     let spec = JobSpec {
         guild_id: auth.guild_id().clone(),
         media: Some(&asset),
@@ -284,7 +298,7 @@ async fn complete_play_once(
         show_text: text.is_some(),
         author_name: author_name.as_deref(),
         author_image: author_image.as_deref(),
-        duration_sec: None,
+        duration_sec,
         priority: 0,
     };
     match jobs::create_for_ingest(db, state.runtime().default_duration(), spec, now).await {

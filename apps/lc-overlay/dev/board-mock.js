@@ -486,7 +486,11 @@
     const ok = (body) => ({ ok: true, status: 200, body });
     if (path === '/overlay/media-board/items' && method === 'POST') {
       const body = payload.body || {};
-      return acceptIngestion({ guildId: payload.guildId, name: String(body.url || ''), title: body.title, message: body.playOnce ? body.message : null, contentType: 'video/mp4', received: 0, playOnce: Boolean(body.playOnce) });
+      const duration = playOnceDisplayDuration(body);
+      if (!duration.ok) {
+        return { ok: false, status: 400, body: { error: 'invalid_payload', message: duration.message } };
+      }
+      return acceptIngestion({ guildId: payload.guildId, name: String(body.url || ''), title: body.title, message: body.playOnce ? body.message : null, contentType: 'video/mp4', received: 0, playOnce: Boolean(body.playOnce), displayDurationSec: duration.value });
     }
     if (path === '/overlay/say' && method === 'POST') {
       // Speech synthesis (/dire). A text containing "panne" fails like a
@@ -972,9 +976,11 @@
       Object.assign(ingestion, { status: 'failed', error: { code: 'media_ingestion_failed', message: 'la vidéo dépasse la durée maximale de 120 s' } });
     } else if (source.playOnce) {
       // Like the server: the ready media becomes a playback job, no board
-      // item and no `board.changed`.
+      // item and no `board.changed`. The chosen display time only applies to
+      // an image; a video or an audio keeps its own length.
       const kind = String(source.contentType || '').split('/')[0];
-      const job = { id: 'j' + nextJob++, title: source.title || null, text: source.message || null, authorName: 'Quentin', durationSec: kind === 'image' ? 8 : 6, kind: ['video', 'image', 'audio'].includes(kind) ? kind : 'video', status: 'pending', origin: 'direct' };
+      const durationSec = kind === 'image' ? source.displayDurationSec || 8 : 6;
+      const job = { id: 'j' + nextJob++, title: source.title || null, text: source.message || null, authorName: 'Quentin', durationSec, kind: ['video', 'image', 'audio'].includes(kind) ? kind : 'video', status: 'pending', origin: 'direct' };
       queueHint();
       if (!queue.playing) {
         const at = new Date().toISOString();
@@ -1026,12 +1032,32 @@
     setTimeout(() => completeIngestion(ingestion, source), name.includes('slow') ? 20000 : 2500);
     return accepted;
   }
+  // `displayDurationSec` only belongs to a play once. A link's kind is unknown
+  // before the download, so the mock checks the bounds only, like the server;
+  // the kind filter happens when the ingestion completes.
+  function playOnceDisplayDuration(body) {
+    const raw = body && body.displayDurationSec;
+    if (raw === undefined || raw === null) {
+      return { ok: true, value: null };
+    }
+    if (!body.playOnce) {
+      return { ok: false, message: 'displayDurationSec is only allowed for a play once' };
+    }
+    if (!Number.isInteger(raw) || raw < 1 || raw > 600) {
+      return { ok: false, message: 'displayDurationSec must be an integer between 1 and 600, or null' };
+    }
+    return { ok: true, value: raw };
+  }
   function finishUpload(upload) {
     const name = String(upload.filename || '');
+    const duration = playOnceDisplayDuration(upload);
+    if (!duration.ok) {
+      return { ok: false, status: 400, body: { error: 'invalid_payload', message: duration.message } };
+    }
     if (name.toLowerCase().includes('big')) {
       return { ok: false, status: 413, body: { error: 'payload_too_large', maxBytes: 2048 * 1024 * 1024 } };
     }
-    return acceptIngestion({ guildId: upload.guildId, name, title: upload.title, message: upload.playOnce ? upload.message : null, contentType: upload.contentType, received: upload.received, replaceItemId: upload.replaceItemId || null, playOnce: Boolean(upload.playOnce) });
+    return acceptIngestion({ guildId: upload.guildId, name, title: upload.title, message: upload.playOnce ? upload.message : null, contentType: upload.contentType, received: upload.received, replaceItemId: upload.replaceItemId || null, playOnce: Boolean(upload.playOnce), displayDurationSec: duration.value });
   }
   // The shell sends a fresh copy with every event, never the object the board
   // already holds: the board compares the old and new connection states.

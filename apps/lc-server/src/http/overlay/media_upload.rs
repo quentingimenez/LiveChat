@@ -105,6 +105,11 @@ pub(super) struct CreateUploadBody {
     /// d'`AddMedia`).
     #[serde(default)]
     play_once: bool,
+    /// Durée d'affichage demandée pour le « Jouer une fois » (1 à 600 s).
+    /// Absente ou `null` : durée par défaut de la guilde. Appliquée à une
+    /// image seulement, une vidéo ou un son garde sa propre durée.
+    #[serde(default)]
+    display_duration_sec: Option<serde_json::Value>,
 }
 
 /// Query of `PUT /overlay/media-board/uploads/{uploadId}/parts`.
@@ -125,6 +130,9 @@ struct UploadSession {
     title: Option<String>,
     /// Caption of a play-once; `None` for anything that joins the board.
     play_text: Option<String>,
+    /// Display time chosen for a play-once image; the guild default when
+    /// `None`. A video or an audio keeps its own length.
+    display_duration_sec: Option<i64>,
     /// Declared total size.
     size: u64,
     /// Bytes written so far.
@@ -270,6 +278,16 @@ pub async fn create_upload(
             return response;
         }
     }
+    // The display time only belongs to a play once. The file kind is decided
+    // by the ingestion, so only the bounds are checked here.
+    if !body.play_once && body.display_duration_sec.is_some() {
+        return invalid_payload("displayDurationSec is only allowed for a play once");
+    }
+    let display_duration_sec =
+        match super::media_board::play_once_display_duration(body.display_duration_sec.as_ref()) {
+            Ok(seconds) => seconds,
+            Err(response) => return response,
+        };
     let filename = match validate_filename(body.filename.as_deref()) {
         Ok(filename) => filename,
         Err(response) => return response,
@@ -347,6 +365,12 @@ pub async fn create_upload(
         // The text only belongs to a play-once; a board add keeps none.
         play_text: if body.play_once {
             non_blank(body.message.as_deref())
+        } else {
+            None
+        },
+        // Likewise, a display time only belongs to a play-once.
+        display_duration_sec: if body.play_once {
+            display_duration_sec
         } else {
             None
         },
@@ -479,6 +503,7 @@ pub async fn complete_upload(
         content_type,
         title,
         play_text,
+        display_duration_sec,
         hasher,
         file,
         temp,
@@ -488,7 +513,9 @@ pub async fn complete_upload(
     // A play-once keeps the media off the board: the ingestion turns it into
     // a playback job instead of an item.
     let target = if play_once {
-        BoardTarget::PlayOnce
+        BoardTarget::PlayOnce {
+            display_duration_sec,
+        }
     } else {
         target
     };

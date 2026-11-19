@@ -288,6 +288,35 @@ impl Harness {
         self.db.media_assets().insert(&asset).await.unwrap();
         asset.id
     }
+
+    /// Same as [`Self::insert_cached_image`] for a video: its own length makes
+    /// the difference for a play-once display time.
+    async fn insert_cached_video(&self, url: &str) -> MediaAssetId {
+        let path = self._media.path().join("cached.mp4");
+        tokio::fs::write(&path, b"mp4-body").await.unwrap();
+        let canonical = lc_media::source::canonicalize_source_url(url);
+        let asset = MediaAsset {
+            id: MediaAssetId::new_v4(),
+            source_hash: lc_media::source::source_hash(&canonical),
+            source_url: url.to_owned(),
+            source_title: None,
+            kind: MediaKind::Video,
+            mime: "video/mp4".to_owned(),
+            duration_sec: Some(20),
+            width: Some(640),
+            height: Some(360),
+            is_vertical: false,
+            storage_path: path.to_string_lossy().into_owned(),
+            size_bytes: 8,
+            status: MediaStatus::Ready,
+            error: None,
+            last_accessed_at: fixed_now(),
+            expires_at: fixed_now() + Duration::days(1),
+            created_at: fixed_now(),
+        };
+        self.db.media_assets().insert(&asset).await.unwrap();
+        asset.id
+    }
 }
 
 fn request(method: Method, uri: &str, token: Option<&str>, body: Option<&Value>) -> Request<Body> {
@@ -506,6 +535,9 @@ async fn wait_ingestion(state: &AppState, client_id: Uuid, ingestion_id: &str) -
 /// it without any network access.
 const PLAY_ONCE_URL: &str = "https://93.184.215.14/play-once.png";
 
+/// The cached video of the play-once tests: a video keeps its own length.
+const PLAY_ONCE_VIDEO_URL: &str = "https://93.184.215.14/play-once.mp4";
+
 /// Un ajout au board par lien ignore le texte saisi : il n'est jamais stocké
 /// comme message de l'item (seul un `playOnce` le reçoit, pour cette lecture).
 #[tokio::test]
@@ -632,6 +664,162 @@ async fn play_once_link_creates_a_job_and_no_board_item() {
     assert_eq!(payload.created, Some(false));
     assert!(payload.item_id.is_none());
     assert_eq!(payload.job_id.as_deref(), Some(job_id.as_str()));
+}
+
+/// « Jouer une fois » d'une image : le temps d'affichage demandé porte la durée
+/// du job au lieu de la valeur par défaut de la guilde.
+#[tokio::test]
+async fn play_once_link_uses_the_display_time_of_an_image() {
+    let harness = Harness::new().await;
+    let client = harness
+        .insert_client(OverlaySessionMode::Normal, TOKEN, &guild())
+        .await;
+    harness.insert_cached_image(PLAY_ONCE_URL).await;
+
+    let (status, body) = send_json(
+        &harness.app,
+        request(
+            Method::POST,
+            "/overlay/media-board/items",
+            Some(TOKEN),
+            Some(&json!({
+                "url": PLAY_ONCE_URL,
+                "playOnce": true,
+                "displayDurationSec": 12,
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let ingestion_id = body["ingestionId"].as_str().unwrap().to_owned();
+    let entry = wait_ingestion(&harness.state, client.id.as_uuid(), &ingestion_id).await;
+    assert_eq!(entry.status, IngestionStatus::Ready, "{entry:?}");
+    let job_id = entry.job_id.clone().expect("jobId de l'ingestion");
+
+    let pending = harness
+        .db
+        .playback_jobs()
+        .list_pending_by_guild(&guild())
+        .await
+        .unwrap();
+    let job = pending
+        .iter()
+        .find(|job| job.id.to_canonical() == job_id)
+        .expect("job persisté");
+    assert_eq!(job.duration_sec, 12, "la durée demandée est celle du job");
+}
+
+/// « Jouer une fois » d'une vidéo : elle garde sa propre durée, le temps
+/// d'affichage demandé est ignoré.
+#[tokio::test]
+async fn play_once_link_ignores_the_display_time_of_a_video() {
+    let harness = Harness::new().await;
+    let client = harness
+        .insert_client(OverlaySessionMode::Normal, TOKEN, &guild())
+        .await;
+    harness.insert_cached_video(PLAY_ONCE_VIDEO_URL).await;
+
+    let (status, body) = send_json(
+        &harness.app,
+        request(
+            Method::POST,
+            "/overlay/media-board/items",
+            Some(TOKEN),
+            Some(&json!({
+                "url": PLAY_ONCE_VIDEO_URL,
+                "playOnce": true,
+                "displayDurationSec": 12,
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let ingestion_id = body["ingestionId"].as_str().unwrap().to_owned();
+    let entry = wait_ingestion(&harness.state, client.id.as_uuid(), &ingestion_id).await;
+    assert_eq!(entry.status, IngestionStatus::Ready, "{entry:?}");
+    let job_id = entry.job_id.clone().expect("jobId de l'ingestion");
+
+    let pending = harness
+        .db
+        .playback_jobs()
+        .list_pending_by_guild(&guild())
+        .await
+        .unwrap();
+    let job = pending
+        .iter()
+        .find(|job| job.id.to_canonical() == job_id)
+        .expect("job persisté");
+    assert_eq!(job.duration_sec, 20, "la vidéo garde sa durée");
+}
+
+/// Le temps d'affichage d'un « Jouer une fois » est borné à 1..=600 s entiers :
+/// une valeur hors bornes est refusée avant toute ingestion.
+#[tokio::test]
+async fn play_once_link_refuses_an_out_of_bounds_display_time() {
+    let harness = Harness::new().await;
+    let client = harness
+        .insert_client(OverlaySessionMode::Normal, TOKEN, &guild())
+        .await;
+    harness.insert_cached_image(PLAY_ONCE_URL).await;
+
+    for seconds in [json!(0), json!(601), json!(1.5), json!("12")] {
+        let (status, body) = send_json(
+            &harness.app,
+            request(
+                Method::POST,
+                "/overlay/media-board/items",
+                Some(TOKEN),
+                Some(&json!({
+                    "url": PLAY_ONCE_URL,
+                    "playOnce": true,
+                    "displayDurationSec": seconds,
+                })),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{seconds} : {body}");
+        assert_eq!(body["error"], "invalid_payload", "{seconds} : {body}");
+        assert_eq!(
+            body["message"], "displayDurationSec must be an integer between 1 and 600, or null",
+            "{seconds} : {body}"
+        );
+    }
+    assert!(harness
+        .state
+        .ingestions
+        .list_for_client(client.id.as_uuid(), fixed_now())
+        .is_empty());
+}
+
+/// Un temps d'affichage n'a de sens que pour un « Jouer une fois » : un ajout
+/// au board le refuse.
+#[tokio::test]
+async fn display_time_is_refused_without_a_play_once() {
+    let harness = Harness::new().await;
+    harness
+        .insert_client(OverlaySessionMode::Normal, TOKEN, &guild())
+        .await;
+    harness.insert_cached_image(PLAY_ONCE_URL).await;
+
+    let (status, body) = send_json(
+        &harness.app,
+        request(
+            Method::POST,
+            "/overlay/media-board/items",
+            Some(TOKEN),
+            Some(&json!({
+                "url": PLAY_ONCE_URL,
+                "displayDurationSec": 12,
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_payload");
+    assert_eq!(
+        body["message"],
+        "displayDurationSec is only allowed for a play once"
+    );
 }
 
 /// « Jouer une fois » exige le droit d'un déclenchement manuel : sans

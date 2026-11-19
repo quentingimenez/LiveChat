@@ -93,7 +93,15 @@ export function uploadsForGuild(guildId) {
 
 // `playOnce: true` sends the link to the overlays without adding it to the
 // board: the provisional card disappears once the playback job is created.
-export function startLinkUpload({ guildId, url, title = '', message = '', playOnce = false }) {
+// `displayDurationSec` is the display time of that play, for an image only.
+export function startLinkUpload({
+  guildId,
+  url,
+  title = '',
+  message = '',
+  playOnce = false,
+  displayDurationSec = null,
+}) {
   if (!guildId || !url) {
     return null;
   }
@@ -106,6 +114,8 @@ export function startLinkUpload({ guildId, url, title = '', message = '', playOn
     title: String(title || '').trim(),
     // The text is the caption of a play-once; a board add keeps none.
     message: playOnce ? message || '' : '',
+    // Likewise, a display time only belongs to a play-once.
+    displayDurationSec: playOnce ? displayDurationSec ?? null : null,
     playOnce: Boolean(playOnce),
     status: 'waiting',
     error: null,
@@ -132,6 +142,7 @@ export function startFileUpload({
   message = '',
   replaceItemId = null,
   playOnce = false,
+  displayDurationSec = null,
   itemPatch = null,
 }) {
   if (!guildId || !file) {
@@ -147,6 +158,8 @@ export function startFileUpload({
     title: String(title || '').trim() || defaultTitle(label),
     // The text is the caption of a play-once; a board add keeps none.
     message: playOnce ? message || '' : '',
+    // Likewise, a display time only belongs to a play-once.
+    displayDurationSec: playOnce ? displayDurationSec ?? null : null,
     replaceItemId: replaceItemId || null,
     itemPatch: itemPatch && Object.keys(itemPatch).length ? itemPatch : null,
     playOnce: Boolean(playOnce),
@@ -525,6 +538,9 @@ async function sendLink(entry) {
     if (entry.playOnce) {
       body.playOnce = true;
       body.message = entry.message;
+      if (entry.displayDurationSec) {
+        body.displayDurationSec = entry.displayDurationSec;
+      }
     }
     response = await invoke('guild_api', {
       payload: {
@@ -593,6 +609,7 @@ async function sendFile(entry) {
         size: entry.file.size,
         replaceItemId: entry.replaceItemId || null,
         playOnce: Boolean(entry.playOnce),
+        displayDurationSec: entry.playOnce ? entry.displayDurationSec : null,
       },
     });
   } catch (error) {

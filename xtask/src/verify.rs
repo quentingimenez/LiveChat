@@ -31,6 +31,7 @@
 //! itself; an interrupted run leaves a mutated file behind.
 
 use std::fs;
+use std::io::Write;
 use std::process::{Command, Stdio};
 
 /// Options of the `verify` subcommand.
@@ -73,6 +74,16 @@ struct Stage {
 /// Runs the verification pipeline and returns the process exit code:
 /// the number of failed stages (`0` when every stage passes).
 pub fn execute(options: Options) -> u8 {
+    drive(
+        &default_stages(options.mutants),
+        options.offline,
+        &mut std::io::stdout(),
+    )
+}
+
+/// The five CI stages, plus the `mutants` stage when `--mutants` was
+/// requested.
+fn default_stages(mutants: bool) -> Vec<Stage> {
     let mut stages = vec![
         Stage {
             name: "fmt",
@@ -95,19 +106,25 @@ pub fn execute(options: Options) -> u8 {
             run: stage_deny,
         },
     ];
-    if options.mutants {
+    if mutants {
         stages.push(Stage {
             name: "mutants",
             run: stage_mutants,
         });
     }
+    stages
+}
 
+/// Runs every stage sequentially, writing one verdict line per stage plus
+/// the summary line to `out`, and returns the number of failed stages as
+/// the exit code.
+fn drive(stages: &[Stage], offline: bool, out: &mut impl Write) -> u8 {
     let mut passed: Vec<&'static str> = Vec::new();
     let mut failed: Vec<&'static str> = Vec::new();
 
-    for stage in &stages {
-        let verdict = (stage.run)(options.offline);
-        print_verdict(stage.name, &verdict);
+    for stage in stages {
+        let verdict = (stage.run)(offline);
+        writeln!(out, "{}", verdict_line(stage.name, &verdict)).ok();
         match verdict {
             Verdict::Pass(_) => passed.push(stage.name),
             Verdict::Fail(_) => failed.push(stage.name),
@@ -115,14 +132,16 @@ pub fn execute(options: Options) -> u8 {
     }
 
     if failed.is_empty() {
-        println!("verify: {} passed, 0 failed", passed.len());
+        writeln!(out, "verify: {} passed, 0 failed", passed.len()).ok();
     } else {
-        println!(
+        writeln!(
+            out,
             "verify: {} passed, {} failed ({})",
             passed.len(),
             failed.len(),
             failed.join(", ")
-        );
+        )
+        .ok();
     }
 
     u8::try_from(failed.len()).unwrap_or(u8::MAX)
@@ -178,12 +197,25 @@ fn stage_clippy(offline: bool) -> Verdict {
     verdict_of(run_cargo(&stage_argv("clippy", offline)))
 }
 
+/// Gate shared by the tool-dependent stages: a missing tool is a failed
+/// stage, with a note naming the tool.
+fn require_tool(tool: &str, installed: bool) -> Option<Verdict> {
+    if installed {
+        None
+    } else {
+        Some(Verdict::Fail(Some(format!("{tool} not installed"))))
+    }
+}
+
 /// `tests` stage: `cargo nextest run --workspace --all-features --locked
 /// --no-fail-fast`. No fallback: a missing cargo-nextest fails the stage
 /// rather than silently running a weaker battery than CI.
 fn stage_tests(offline: bool) -> Verdict {
-    if !cargo_subcommand_installed("nextest") {
-        return Verdict::Fail(Some("cargo-nextest not installed".to_string()));
+    if let Some(fail) = require_tool(
+        "cargo-nextest",
+        probe_installed("cargo", &["nextest", "--version"]),
+    ) {
+        return fail;
     }
     verdict_of(run_cargo(&stage_argv("tests", offline)))
 }
@@ -197,8 +229,11 @@ fn stage_doctests(offline: bool) -> Verdict {
 /// `deny` stage: `cargo deny check`. No skip: CI (`rust.yml`) enforces it,
 /// so a missing cargo-deny fails the stage.
 fn stage_deny(offline: bool) -> Verdict {
-    if !cargo_subcommand_installed("deny") {
-        return Verdict::Fail(Some("cargo-deny not installed".to_string()));
+    if let Some(fail) = require_tool(
+        "cargo-deny",
+        probe_installed("cargo", &["deny", "--version"]),
+    ) {
+        return fail;
     }
     verdict_of(run_cargo(&stage_argv("deny", offline)))
 }
@@ -213,8 +248,11 @@ fn stage_deny(offline: bool) -> Verdict {
 /// never interrupt it — cargo-mutants restores the mutated files itself, an
 /// interrupted run does not.
 fn stage_mutants(_offline: bool) -> Verdict {
-    if !cargo_subcommand_installed("mutants") {
-        return Verdict::Fail(Some("cargo-mutants not installed".to_string()));
+    if let Some(fail) = require_tool(
+        "cargo-mutants",
+        probe_installed("cargo", &["mutants", "--version"]),
+    ) {
+        return fail;
     }
 
     // The merge base of HEAD and origin/main scopes the diff.
@@ -278,15 +316,16 @@ fn verdict_of(success: bool) -> Verdict {
     }
 }
 
-/// Prints the single verdict line of a stage.
-fn print_verdict(name: &str, verdict: &Verdict) {
+/// Renders the single verdict line of a stage: `PASS <name>` or
+/// `FAIL <name>`, with the optional note in parentheses.
+fn verdict_line(name: &str, verdict: &Verdict) -> String {
     let note = match verdict {
         Verdict::Pass(note) => note.as_deref(),
         Verdict::Fail(note) => note.as_deref(),
     };
     match note {
-        Some(note) => println!("{} {} ({})", verdict.label(), name, note),
-        None => println!("{} {}", verdict.label(), name),
+        Some(note) => format!("{} {} ({})", verdict.label(), name, note),
+        None => format!("{} {}", verdict.label(), name),
     }
 }
 
@@ -321,12 +360,13 @@ fn git_output(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Probes `cargo <subcommand> --version` quietly to detect an installed
-/// cargo subcommand.
-fn cargo_subcommand_installed(subcommand: &str) -> bool {
-    Command::new("cargo")
-        .arg(subcommand)
-        .arg("--version")
+/// Probes `program args…` quietly: true when the program runs and exits 0.
+/// Used for `cargo <subcommand> --version` door checks; kept as a pure
+/// program probe so the decision logic is testable without depending on
+/// which tools happen to be installed in the environment.
+fn probe_installed(program: &str, args: &[&str]) -> bool {
+    Command::new(program)
+        .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -337,7 +377,10 @@ fn cargo_subcommand_installed(subcommand: &str) -> bool {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use super::stage_argv;
+    use super::{
+        default_stages, drive, git_output, probe_installed, require_tool, run_cargo, stage_argv,
+        verdict_line, Stage, Verdict,
+    };
 
     #[test]
     fn stage_argv_mirrors_rust_yml() {
@@ -428,5 +471,242 @@ mod tests {
         // EmbarkStudios cargo-deny-action), so pin its step name instead:
         // the action is documented as running `cargo deny check`.
         assert!(RUST_YML.contains("cargo deny check"));
+    }
+
+    fn always_pass(_offline: bool) -> Verdict {
+        Verdict::Pass(None)
+    }
+
+    fn always_fail(_offline: bool) -> Verdict {
+        Verdict::Fail(None)
+    }
+
+    fn panic_unless_offline(offline: bool) -> Verdict {
+        assert!(offline, "the runner must receive the offline flag verbatim");
+        Verdict::Pass(None)
+    }
+
+    fn mutants_missed(_offline: bool) -> Verdict {
+        Verdict::Fail(Some("see target/verify/mutants.out/missed.txt".to_owned()))
+    }
+
+    fn run_drive(stages: &[Stage], offline: bool) -> (String, u8) {
+        let mut out: Vec<u8> = Vec::new();
+        let code = drive(stages, offline, &mut out);
+        (String::from_utf8(out).unwrap(), code)
+    }
+
+    #[test]
+    fn default_stages_without_mutants_are_the_five_ci_stages() {
+        let names: Vec<&'static str> = default_stages(false).iter().map(|s| s.name).collect();
+        assert_eq!(names, ["fmt", "clippy", "tests", "doctests", "deny"]);
+    }
+
+    #[test]
+    fn default_stages_with_mutants_appends_the_mutants_stage() {
+        let names: Vec<&'static str> = default_stages(true).iter().map(|s| s.name).collect();
+        assert_eq!(
+            names,
+            ["fmt", "clippy", "tests", "doctests", "deny", "mutants"]
+        );
+    }
+
+    #[test]
+    fn drive_prints_verdict_lines_and_the_plural_failure_summary() {
+        let stages = vec![
+            Stage {
+                name: "fmt",
+                run: always_pass,
+            },
+            Stage {
+                name: "tests",
+                run: always_fail,
+            },
+            Stage {
+                name: "deny",
+                run: always_fail,
+            },
+        ];
+        let (output, code) = run_drive(&stages, true);
+        assert_eq!(
+            output,
+            "PASS fmt\nFAIL tests\nFAIL deny\nverify: 1 passed, 2 failed (tests, deny)\n"
+        );
+        assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn drive_prints_the_zero_failure_summary_when_every_stage_passes() {
+        let stages = vec![
+            Stage {
+                name: "fmt",
+                run: always_pass,
+            },
+            Stage {
+                name: "deny",
+                run: always_pass,
+            },
+        ];
+        let (output, code) = run_drive(&stages, false);
+        assert_eq!(output, "PASS fmt\nPASS deny\nverify: 2 passed, 0 failed\n");
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn drive_renders_verdict_notes_verbatim() {
+        let stages = vec![
+            Stage {
+                name: "fmt",
+                run: always_pass,
+            },
+            Stage {
+                name: "tests",
+                run: always_fail,
+            },
+            Stage {
+                name: "mutants",
+                run: mutants_missed,
+            },
+        ];
+        let (output, code) = run_drive(&stages, true);
+        assert_eq!(
+            output,
+            "PASS fmt\nFAIL tests\n\
+             FAIL mutants (see target/verify/mutants.out/missed.txt)\n\
+             verify: 1 passed, 2 failed (tests, mutants)\n"
+        );
+        assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn drive_forwards_the_offline_flag_to_every_runner() {
+        let stages = vec![
+            Stage {
+                name: "probe-a",
+                run: panic_unless_offline,
+            },
+            Stage {
+                name: "probe-b",
+                run: panic_unless_offline,
+            },
+        ];
+        let (output, code) = run_drive(&stages, true);
+        assert_eq!(
+            output,
+            "PASS probe-a\nPASS probe-b\nverify: 2 passed, 0 failed\n"
+        );
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn require_tool_lets_an_installed_tool_through() {
+        assert!(require_tool("cargo-nextest", true).is_none());
+    }
+
+    #[test]
+    fn require_tool_fails_a_missing_tool_with_its_name() {
+        match require_tool("cargo-nextest", false) {
+            Some(Verdict::Fail(Some(note))) => assert_eq!(note, "cargo-nextest not installed"),
+            other => panic!("expected a failing verdict with a note, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_cargo_reports_a_missing_subcommand_as_a_failure() {
+        assert!(!run_cargo(&["definitely-not-a-subcommand-xyzzy"]));
+    }
+
+    #[test]
+    fn run_cargo_reports_a_builtin_subcommand_as_a_success() {
+        // Measured locally: `cargo version` prints the version and exits 0
+        // (no builtin cargo subcommand answers `--version`).
+        assert!(run_cargo(&["version"]));
+    }
+
+    #[test]
+    fn probe_installed_detects_a_program_that_answers_zero() {
+        // The test binary itself is a libtest harness: `--list` always
+        // exits 0, cross-platform, under both `cargo test` and nextest.
+        let exe = std::env::current_exe().unwrap();
+        let exe = exe.to_str().unwrap();
+        assert!(probe_installed(exe, &["--list"]));
+    }
+
+    #[test]
+    fn probe_installed_rejects_a_program_that_answers_nonzero() {
+        // The same libtest harness exits nonzero on an unknown flag.
+        let exe = std::env::current_exe().unwrap();
+        let exe = exe.to_str().unwrap();
+        assert!(!probe_installed(exe, &["--definitely-not-a-libtest-flag"]));
+    }
+
+    #[test]
+    fn probe_installed_rejects_a_missing_program() {
+        // Spawning a nonexistent program is an Err, not a nonzero exit.
+        assert!(!probe_installed("definitely-not-a-program-xyz", &[]));
+    }
+
+    #[test]
+    fn probe_installed_rejects_an_unknown_cargo_subcommand() {
+        // Door-level semantics: cargo exits 101 on an unknown subcommand,
+        // deterministically.
+        assert!(!probe_installed(
+            "cargo",
+            &["definitely-not-a-subcommand-xyzzy", "--version"]
+        ));
+    }
+
+    #[test]
+    fn git_output_returns_stdout_on_success() {
+        // Hermetic fixture: a throwaway repository in a tempdir, reached
+        // through `git -C`, so the test passes both in the work tree and in
+        // cargo-mutants' source copy (which carries no .git).
+        let repo = tempfile::tempdir().unwrap();
+        let path = repo.path().to_str().unwrap();
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet", path])
+            .status()
+            .unwrap();
+        assert!(init.success(), "git init must succeed for the fixture");
+        let inside = git_output(&["-C", path, "rev-parse", "--is-inside-work-tree"]).unwrap();
+        assert_eq!(inside.trim(), "true");
+    }
+
+    #[test]
+    fn git_output_surfaces_the_first_stderr_line_on_failure() {
+        let error = git_output(&["definitely-not-a-git-command-xyzzy"])
+            .expect_err("an unknown subcommand must fail");
+        assert!(
+            error.starts_with("git definitely-not-a-git-command-xyzzy failed: "),
+            "the error must carry the git prefix and the failed subcommand: {error}"
+        );
+        assert!(
+            error.contains("is not a git command"),
+            "the first non-empty stderr line must surface: {error}"
+        );
+    }
+
+    #[test]
+    fn git_output_fails_on_an_unknown_revision() {
+        let result = git_output(&[
+            "rev-parse",
+            "--verify",
+            "refs/heads/definitely-not-a-branch-xyzzy",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verdict_line_renders_every_verdict_shape() {
+        assert_eq!(verdict_line("fmt", &Verdict::Pass(None)), "PASS fmt");
+        assert_eq!(
+            verdict_line("fmt", &Verdict::Pass(Some("n".to_owned()))),
+            "PASS fmt (n)"
+        );
+        assert_eq!(verdict_line("fmt", &Verdict::Fail(None)), "FAIL fmt");
+        assert_eq!(
+            verdict_line("fmt", &Verdict::Fail(Some("why".to_owned()))),
+            "FAIL fmt (why)"
+        );
     }
 }

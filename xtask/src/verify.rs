@@ -64,26 +64,16 @@ impl Verdict {
 
 /// One pipeline stage: display name and runner. The runner receives the
 /// `--offline` flag; the `mutants` stage ignores it.
-struct Stage {
+pub(crate) struct Stage {
     /// Name used in the verdict line.
     name: &'static str,
     /// Runs the stage and returns its verdict.
     run: fn(offline: bool) -> Verdict,
 }
 
-/// Runs the verification pipeline and returns the process exit code:
-/// the number of failed stages (`0` when every stage passes).
-pub fn execute(options: Options) -> u8 {
-    drive(
-        &default_stages(options.mutants),
-        options.offline,
-        &mut std::io::stdout(),
-    )
-}
-
 /// The five CI stages, plus the `mutants` stage when `--mutants` was
 /// requested.
-fn default_stages(mutants: bool) -> Vec<Stage> {
+pub(crate) fn default_stages(mutants: bool) -> Vec<Stage> {
     let mut stages = vec![
         Stage {
             name: "fmt",
@@ -117,8 +107,8 @@ fn default_stages(mutants: bool) -> Vec<Stage> {
 
 /// Runs every stage sequentially, writing one verdict line per stage plus
 /// the summary line to `out`, and returns the number of failed stages as
-/// the exit code.
-fn drive(stages: &[Stage], offline: bool, out: &mut impl Write) -> u8 {
+/// the exit code. `main` is the only caller: it also owns the `stdout` sink.
+pub(crate) fn drive(stages: &[Stage], offline: bool, out: &mut impl Write) -> u8 {
     let mut passed: Vec<&'static str> = Vec::new();
     let mut failed: Vec<&'static str> = Vec::new();
 

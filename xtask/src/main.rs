@@ -130,7 +130,11 @@ async fn main() -> ExitCode {
             }
         },
         Command::Parity(command) => ExitCode::from(parity::execute(command).await),
-        Command::Verify(options) => ExitCode::from(verify::execute(options)),
+        Command::Verify(options) => ExitCode::from(verify::drive(
+            &verify::default_stages(options.mutants),
+            options.offline,
+            &mut std::io::stdout(),
+        )),
         Command::Loadtest(options) => ExitCode::from(match loadtest::run(&options).await {
             Ok(code) => code,
             Err(err) => {

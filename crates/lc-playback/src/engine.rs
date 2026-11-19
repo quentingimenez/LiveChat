@@ -948,7 +948,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
             .filter(|picture| picture.is_ready() && picture.kind == lc_domain::MediaKind::Image))
     }
 
-    /// Scale chosen for this image on the guild's board, in percent. A missing
+    /// Scale chosen for this media on the guild's board, in percent. A missing
     /// board item (a media played outside the board) or a lookup failure only
     /// means natural size.
     async fn load_display_scale(
@@ -956,7 +956,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
         job: &PlaybackJob,
         media: Option<&MediaAsset>,
     ) -> PlaybackResult<Option<i64>> {
-        let Some(media) = media.filter(|asset| asset.kind == lc_domain::MediaKind::Image) else {
+        let Some(media) = media else {
             return Ok(None);
         };
         let item = match self

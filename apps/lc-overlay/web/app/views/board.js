@@ -1671,7 +1671,7 @@ function infoFacts(item) {
     [h('dt', null, 'Ajouté par'), h('dd', null, item.createdByName || 'Inconnu')],
     [h('dt', null, 'Le'), h('dd', null, Number.isNaN(added.getTime()) ? '—' : added.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }))],
     source ? [h('dt', null, 'Source'), h('dd', null, source)] : null,
-    [h('dt', null, 'Format'), h('dd', null, [KIND_LABELS[item.media.kind] || item.media.kind, formatDuration(shownDuration(item)), size, item.media.kind === 'image' && item.displayScalePercent ? `affichée à ${item.displayScalePercent} %` : null].filter(Boolean).join(', '))],
+    [h('dt', null, 'Format'), h('dd', null, [KIND_LABELS[item.media.kind] || item.media.kind, formatDuration(shownDuration(item)), size, item.displayScalePercent ? `affiché à ${item.displayScalePercent} %` : null].filter(Boolean).join(', '))],
   );
 }
 

@@ -166,11 +166,49 @@ async function editImage({ frame, item, title, blob, guildId }) {
 async function editAudioVideo({ frame, item, title, blob, guildId }) {
   const kind = item.media.kind;
   const objectUrl = blob ? URL.createObjectURL(blob) : null;
+  const displayZone = await displayZoneFor(guildId);
   let editor = null;
+  if (frame.isClosed()) {
+    if (objectUrl) {
+      URL.revokeObjectURL(objectUrl);
+    }
+    return;
+  }
+
+  async function saveScale() {
+    frame.setBusy('Enregistrement de la taille…');
+    try {
+      await api('PATCH', `/overlay/media-board/items/${encodeURIComponent(item.id)}`, {
+        displayScalePercent: editor.displayScalePercent(),
+      });
+    } catch (error) {
+      frame.setBusy(null);
+      notify(error.message, true);
+      return;
+    }
+    frame.close();
+    requestItemsReload();
+    notify('Taille d’affichage enregistrée.');
+  }
+
+  // Board fields given to the saved result. A replaced item keeps its own
+  // fields, only a changed scale is written. A copy takes the scale chosen here
+  // and the original's message, which a job never stores itself.
+  function copiedFields(replace) {
+    const fields = {};
+    if (!replace || editor.scaleDirty()) {
+      fields.displayScalePercent = editor.displayScalePercent();
+    }
+    if (!replace && item.message) {
+      fields.message = item.message;
+    }
+    return fields;
+  }
 
   function save(replace) {
     const recipe = editor.recipe();
     const output = editor.output();
+    const itemPatch = copiedFields(replace);
     frame.close();
     startEditJob({
       guildId,
@@ -179,6 +217,7 @@ async function editAudioVideo({ frame, item, title, blob, guildId }) {
       recipe,
       replace,
       mediaKind: output === 'audio' ? 'audio' : output === 'gif' ? 'image' : kind,
+      itemPatch,
     });
   }
 
@@ -188,8 +227,23 @@ async function editAudioVideo({ frame, item, title, blob, guildId }) {
       return;
     }
     const problem = editor.problem();
-    const blocked = Boolean(problem) || recipeIsNoop(editor.recipe());
+    const edited = !recipeIsNoop(editor.recipe());
+    const blocked = Boolean(problem) || !edited;
     frame.setStatus(problem || '');
+    // Only the display size changed: nothing to encode, just the item field.
+    if (!edited && !problem && editor.scaleDirty()) {
+      frame.setActions(
+        item.canEdit
+          ? [{
+              label: 'Enregistrer la taille',
+              title: 'Agrandit le média sur l’overlay sans le réencoder',
+              primary: true,
+              onClick: saveScale,
+            }]
+          : [],
+      );
+      return;
+    }
     frame.setActions([
       item.canEdit && editor.output() === 'same'
         ? { label: 'Remplacer l’original', title: 'Le média garde son titre, ses favoris et son raccourci', disabled: blocked, onClick: () => save(true) }
@@ -208,6 +262,9 @@ async function editAudioVideo({ frame, item, title, blob, guildId }) {
       title,
       frame,
       onChange: refresh,
+      allowDisplayScale: true,
+      displayScalePercent: item.displayScalePercent ?? null,
+      displayZone,
     });
   } catch {
     if (objectUrl) {

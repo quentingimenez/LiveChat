@@ -15,8 +15,6 @@ import {
   MAX_DISPLAY_SCALE_PERCENT,
   MIN_DISPLAY_SCALE_PERCENT,
   NEUTRAL_ADJUST,
-  OVERLAY_MEDIA_HEADER_GAP,
-  OVERLAY_MEDIA_HEADER_HEIGHT,
   OVERLAY_MEDIA_RESERVED_HEIGHT,
   centeredCrop,
   clamp,
@@ -29,6 +27,7 @@ import {
   parseDisplayScale,
 } from '../../core/editor-helpers.js';
 import { createCropOverlay } from './crop-overlay.js';
+import { createDisplayPreview } from './display-preview.js';
 import { choices, section, slider, toggle } from './frame.js';
 
 registerIcons({
@@ -50,13 +49,6 @@ registerIcons({
 // Largest side kept while editing: a bigger picture is scaled down once.
 const MAX_SIDE = 4096;
 const HISTORY_LIMIT = 40;
-// Zone assumed by the display preview when the shell does not know the real
-// one: a 1080p screen, so the cap still shows.
-const FALLBACK_DISPLAY_ZONE = { width: 1920, height: 1080 };
-// Longest side of the preview canvas buffer. It is drawn at the size the
-// overlay would use, then the browser resamples it, like the overlay does with
-// the saved picture.
-const PREVIEW_BUFFER_MAX_SIDE = 2048;
 const COLORS = ['#ffffff', '#000000', '#ec6a70', '#f2b544', '#f7e04b', '#5fc9a3', '#7fa8f5', '#c58af9'];
 const EMOJIS = ['😂', '🤣', '😭', '💀', '😎', '🥶', '🤡', '😱', '🤔', '😡', '🥵', '🤯', '👀', '🔥', '💯', '❤️', '👍', '👎', '🙏', '💩', '🎉', '⭐', '❌', '✅', '⚠️', '➡️', '⬅️', '⬆️', '⬇️', '❓', '❗', '💬'];
 const FONTS = {
@@ -345,35 +337,15 @@ export async function createImageEditor({
   // display zone minus the author header, and the browser resamples it. The
   // preview rebuilds that frame at the stage's own scale, so a scale change is
   // seen at once instead of on the next play.
-  const knownZone = displayZone && Number(displayZone.width) > 0 && Number(displayZone.height) > 0;
-  const zone = knownZone
-    ? { width: Math.round(Number(displayZone.width)), height: Math.round(Number(displayZone.height)), known: true }
-    : { width: FALLBACK_DISPLAY_ZONE.width, height: FALLBACK_DISPLAY_ZONE.height, known: false };
-  let previewZoom = 'fit';
-  let previewNeedsLayout = true;
-  const previewCanvas = h('canvas', { class: 'display-preview-image' });
-  const previewHeader = h('div', { class: 'display-preview-header' });
-  const previewScreen = h('div', { class: 'display-preview-screen' }, previewHeader, previewCanvas);
-  const previewZone = h('span', { class: 'display-preview-zone' });
-  const previewZoomButtons = new Map();
-  const zoomButton = (id, label) => {
-    const button = h('button', { class: 'btn', type: 'button', onClick: () => setPreviewZoom(id) }, label);
-    previewZoomButtons.set(id, button);
-    return button;
-  };
-  const previewBar = h(
-    'div',
-    { class: 'display-preview-bar' },
-    h('span', { class: 'display-preview-title' }, 'Aperçu sur l’overlay'),
-    previewZone,
-    h('span', { class: 'spacer' }),
-    zoomButton('fit', 'Ajuster'),
-    zoomButton('100', '100 %'),
-  );
-  const previewScroll = h('div', { class: 'display-preview-scroll' }, previewScreen);
-  const previewWrap = h('div', { class: 'display-preview', hidden: true }, previewBar, previewScroll);
+  const preview = createDisplayPreview({
+    stage: frame.stage,
+    displayZone,
+    frame: () => ({ width: doc.base.width, height: doc.base.height, scalePercent: displayScale }),
+    paint: (target) => compose(target, doc.adjust),
+  });
+  const zone = preview.zone;
 
-  frame.stage.replaceChildren(wrap, previewWrap);
+  frame.stage.replaceChildren(wrap, preview.node);
 
   // One length unit follows the picture: a stroke looks the same on a small
   // and on a large picture.
@@ -514,84 +486,18 @@ export async function createImageEditor({
   }
 
   // Stage pixels per overlay pixel: the whole zone fits, or 1:1 for 100 %.
-  function previewScale() {
-    if (previewZoom === '100') {
-      return 1;
-    }
-    const width = previewScroll.clientWidth - 32;
-    const height = previewScroll.clientHeight - 32;
-    if (!(width > 0) || !(height > 0)) {
-      return 0;
-    }
-    return Math.min(1, width / zone.width, height / zone.height);
-  }
-
-  // Lays the screen, the header band and the picture out at the stage's scale.
-  function sizePreview() {
-    const scale = previewScale();
-    if (!(scale > 0)) {
-      return false;
-    }
-    const screenWidth = Math.max(1, Math.round(zone.width * scale));
-    const screenHeight = Math.max(1, Math.round(zone.height * scale));
-    const headerHeight = Math.max(1, Math.round(OVERLAY_MEDIA_HEADER_HEIGHT * scale));
-    const headerGap = Math.max(0, Math.round(OVERLAY_MEDIA_HEADER_GAP * scale));
-    const size = displayedSize();
-    const pictureWidth = Math.max(1, Math.round(Math.min(size.width, zone.width) * scale));
-    const pictureHeight = Math.max(1, Math.round(Math.min(size.height, zone.height) * scale));
-    // Header and picture are one block, centred: that is where the overlay
-    // puts the frame. The header is as wide as the frame, so it stops with the
-    // picture instead of spanning the whole zone.
-    const top = Math.max(0, Math.round((screenHeight - headerHeight - headerGap - pictureHeight) / 2));
-    const left = Math.max(0, Math.round((screenWidth - pictureWidth) / 2));
-    previewScreen.style.width = `${screenWidth}px`;
-    previewScreen.style.height = `${screenHeight}px`;
-    previewHeader.style.top = `${top}px`;
-    previewHeader.style.left = `${left}px`;
-    previewHeader.style.width = `${Math.max(1, Math.min(pictureWidth, screenWidth))}px`;
-    previewHeader.style.height = `${headerHeight}px`;
-    previewHeader.textContent = headerHeight >= 20 && pictureWidth >= 150 ? 'En-tête de l’overlay' : '';
-    previewCanvas.style.top = `${top + headerHeight + headerGap}px`;
-    previewCanvas.style.left = `${left}px`;
-    previewCanvas.style.width = `${pictureWidth}px`;
-    previewCanvas.style.height = `${pictureHeight}px`;
-    const ratio = Math.min(window.devicePixelRatio || 1, 2, PREVIEW_BUFFER_MAX_SIDE / Math.max(pictureWidth, pictureHeight));
-    ensureSize(previewCanvas, Math.max(1, Math.round(pictureWidth * ratio)), Math.max(1, Math.round(pictureHeight * ratio)));
-    return true;
-  }
-
-  function syncPreviewChrome() {
-    previewZone.textContent = zone.known
-      ? `Zone ${zone.width} × ${zone.height} px · en-tête ${OVERLAY_MEDIA_RESERVED_HEIGHT} px`
-      : `Zone inconnue, aperçu sur ${zone.width} × ${zone.height} px`;
-    for (const [id, button] of previewZoomButtons) {
-      const active = previewZoom === id;
-      button.classList.toggle('is-on', active);
-      button.setAttribute('aria-pressed', String(active));
-    }
-  }
-
-  function setPreviewZoom(next) {
-    if (next !== 'fit' && next !== '100') {
-      return;
-    }
-    previewZoom = next;
-    previewNeedsLayout = true;
-    syncPreviewChrome();
-    repaint();
-  }
-
   // Shows the preview instead of the editing canvas while the display tool is
   // open: the picture is no longer edited there, it is rendered like the
   // overlay will render it.
   function syncStage() {
-    const preview = previewVisible();
-    wrap.hidden = preview;
-    previewWrap.hidden = !preview;
-    if (preview) {
-      previewNeedsLayout = true;
+    const shown = previewVisible();
+    wrap.hidden = shown;
+    if (shown) {
+      preview.show();
+    } else {
+      preview.hide();
+      repaint();
     }
-    repaint();
   }
 
   function repaint() {
@@ -605,12 +511,7 @@ export async function createImageEditor({
         return;
       }
       if (previewVisible()) {
-        if (previewNeedsLayout) {
-          previewNeedsLayout = !sizePreview();
-        }
-        if (!previewNeedsLayout) {
-          compose(previewCanvas, doc.adjust);
-        }
+        preview.requestPaint();
         return;
       }
       compose(view, doc.adjust);
@@ -632,7 +533,7 @@ export async function createImageEditor({
     const ratio = Math.min(window.devicePixelRatio || 1, 2);
     ensureSize(view, Math.round(cssWidth * ratio), Math.round(cssHeight * ratio));
     frame.setStatus(`${doc.base.width} × ${doc.base.height} px`);
-    previewNeedsLayout = true;
+    preview.invalidate();
     repaint();
   }
 
@@ -1046,7 +947,7 @@ export async function createImageEditor({
       syncScaleFields();
     }
     // The preview is the point of this setting: it follows every move.
-    previewNeedsLayout = true;
+    preview.invalidate();
     repaint();
     if (onChange) {
       onChange();
@@ -1282,7 +1183,6 @@ export async function createImageEditor({
     syncStage();
   }
 
-  syncPreviewChrome();
   setTool('select');
   layout();
 
@@ -1356,6 +1256,7 @@ export async function createImageEditor({
     },
     destroy() {
       resizeObserver.disconnect();
+      preview.destroy();
       stopCrop();
     },
   };

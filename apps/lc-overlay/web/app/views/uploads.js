@@ -178,8 +178,17 @@ export function startFileUpload({
 
 // An audio or a video edited on the board: the server applies `recipe` to the
 // media of `itemId`, then adds the result (`replace: false`) or puts it in
-// place of the original. `mediaKind` is the kind of the result.
-export function startEditJob({ guildId, itemId, title = '', recipe, replace = false, mediaKind = 'video' }) {
+// place of the original. `mediaKind` is the kind of the result, `itemPatch`
+// the board item fields chosen in the editor (the display scale).
+export function startEditJob({
+  guildId,
+  itemId,
+  title = '',
+  recipe,
+  replace = false,
+  mediaKind = 'video',
+  itemPatch = null,
+}) {
   if (!guildId || !itemId || !recipe) {
     return null;
   }
@@ -194,6 +203,7 @@ export function startEditJob({ guildId, itemId, title = '', recipe, replace = fa
     mediaKind,
     title: String(title || '').trim(),
     message: '',
+    itemPatch: itemPatch && Object.keys(itemPatch).length ? itemPatch : null,
     replaceItemId: replace ? itemId : null,
     playOnce: false,
     status: 'waiting',

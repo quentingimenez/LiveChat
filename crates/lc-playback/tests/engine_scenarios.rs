@@ -544,6 +544,46 @@ async fn une_image_porte_l_echelle_choisie_sur_le_board() {
     assert_eq!(plays[1].media.as_ref().unwrap().display_scale_percent, None);
 }
 
+/// A video's board item carries its scale too: the overlay sizes the picture
+/// of a video like a still.
+#[tokio::test]
+async fn une_video_porte_l_echelle_choisie_sur_le_board() {
+    let h = harness(1).await;
+    let guild = h.guild_id.clone();
+
+    let mut video = sample_media_asset(h.clock.now());
+    video.kind = lc_domain::MediaKind::Video;
+    video.mime = "video/mp4".to_owned();
+    video.duration_sec = Some(10);
+    h.db.media_assets().insert(&video).await.unwrap();
+    let item = lc_domain::MediaBoardItem {
+        id: lc_domain::MediaBoardItemId::new_v4(),
+        guild_id: guild.clone(),
+        media_asset_id: video.id,
+        title: None,
+        message: None,
+        created_by_discord_user_id: None,
+        created_by_name: None,
+        created_at: h.clock.now(),
+        artwork_asset_id: None,
+        artwork_on_overlay: false,
+        display_duration_sec: None,
+        display_scale_percent: Some(300),
+    };
+    h.db.media_board().create(&item).await.unwrap();
+
+    let job = sample_media_job(guild, h.clock.now(), video.id, 10);
+    h.engine.enqueue(&job).await.unwrap();
+    assert_eq!(
+        h.sink.play_calls()[0]
+            .media
+            .as_ref()
+            .unwrap()
+            .display_scale_percent,
+        Some(300)
+    );
+}
+
 /// A one-second clip (an animated GIF converted to MP4) triggered from the
 /// board: the job carries the clip's own duration.
 async fn dispatch_video(asset_duration_sec: i64, job_duration_sec: i64) -> (u64, Option<u64>, i64) {

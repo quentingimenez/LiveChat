@@ -379,12 +379,41 @@ async fn download_tweet_avatar(
     }
 }
 
+/// Filtre ffmpeg de conversion des photos de tweet : au plus 1800 px par côté,
+/// jamais agrandies.
+///
+/// `scale=1800:1800:force_original_aspect_ratio=decrease` agrandissait les
+/// images plus petites que la boîte (une photo 1234×1326 devenait 1675×1800),
+/// soit plusieurs mégaoctets de PNG pour une carte qui l'affiche sur 984 px de
+/// large. Les bornes `min(iw,1800)`/`min(ih,1800)` laissent ffmpeg réduire les
+/// grandes images et garder les petites à leur taille d'origine.
+const TWEET_PHOTO_SCALE_FILTER: &str =
+    "scale=w='min(iw,1800)':h='min(ih,1800)':force_original_aspect_ratio=decrease";
+
+/// Construit les arguments ffmpeg de conversion d'une photo de tweet en PNG
+/// (fonction pure, testable).
+fn tweet_photo_png_args(input: &Path, output: &Path) -> Vec<String> {
+    vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-v".to_string(),
+        "error".to_string(),
+        "-i".to_string(),
+        input.display().to_string(),
+        "-vf".to_string(),
+        TWEET_PHOTO_SCALE_FILTER.to_string(),
+        "-frames:v".to_string(),
+        "1".to_string(),
+        output.display().to_string(),
+    ]
+}
+
 /// Télécharge une photo de tweet et la convertit en PNG pour la carte.
 ///
 /// L'originale (`name=orig`) est demandée d'abord ; à défaut, l'URL telle
-/// quelle. ffmpeg borne l'image à 1800 px par côté (aucun décodeur JPEG n'est
-/// embarqué). Toute erreur rend `None` (photo absente de la carte) et n'échoue
-/// jamais le téléchargement.
+/// quelle. ffmpeg borne l'image à 1800 px par côté sans jamais l'agrandir
+/// (aucun décodeur JPEG n'est embarqué). Toute erreur rend `None` (photo
+/// absente de la carte) et n'échoue jamais le téléchargement.
 async fn download_tweet_photo_png(
     config: &MediaConfig,
     url: &str,
@@ -406,19 +435,7 @@ async fn download_tweet_photo_png(
         }
     };
     let output = temp_dir.join(format!("{name}.png"));
-    let args = vec![
-        "-y".to_string(),
-        "-hide_banner".to_string(),
-        "-v".to_string(),
-        "error".to_string(),
-        "-i".to_string(),
-        input.display().to_string(),
-        "-vf".to_string(),
-        "scale=1800:1800:force_original_aspect_ratio=decrease".to_string(),
-        "-frames:v".to_string(),
-        "1".to_string(),
-        output.display().to_string(),
-    ];
+    let args = tweet_photo_png_args(&input, &output);
     if let Err(error) = process::run_command(
         &config.tools.ffmpeg,
         &args,
@@ -1184,6 +1201,26 @@ fn read_header_bytes(path: &Path, length: usize) -> Vec<u8> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tweet_photo_conversion_keeps_small_images_at_their_size() {
+        let args = tweet_photo_png_args(Path::new("photo.jpg"), Path::new("photo.png"));
+        let filter = args
+            .windows(2)
+            .find(|pair| pair[0] == "-vf")
+            .map(|pair| pair[1].as_str())
+            .unwrap();
+        assert_eq!(filter, TWEET_PHOTO_SCALE_FILTER);
+        // Régression : `scale=1800:1800:force_original_aspect_ratio=decrease`
+        // agrandissait les images plus petites que la boîte (1234×1326 devenait
+        // 1675×1800). Les bornes doivent rester relatives à l'image source.
+        assert!(filter.contains("min(iw,1800)") && filter.contains("min(ih,1800)"));
+        assert!(
+            !filter.contains("1800:1800"),
+            "filtre agrandissant : {filter}"
+        );
+        assert_eq!(args.last().unwrap(), "photo.png");
+    }
 
     #[test]
     fn builds_ytdlp_args_with_flags() {

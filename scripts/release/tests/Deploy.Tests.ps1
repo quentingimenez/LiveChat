@@ -96,3 +96,53 @@ Test-Case 'Admin check uses the public host' {
 Test-Case 'Admin check needs the public URL' {
     Assert-Throws { Get-ServerCheckScript -PublicUrl '' } 'LIVECHAT_PUBLIC_URL'
 }
+
+# The repository root .env holds the deployment settings (see SKILL.md); the
+# release tool loads it before running any command, so the variables do not
+# have to be exported in every shell.
+function New-DotEnvDir {
+    $dir = Join-Path ([IO.Path]::GetTempPath()) ('lc-dotenv-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
+    New-Item -ItemType Directory -Path $dir | Out-Null
+    [void]$script:TempDirs.Add($dir)
+    return $dir
+}
+
+Test-Case 'DotEnv loads the deployment settings' {
+    $dir = New-DotEnvDir
+    [IO.File]::WriteAllText((Join-Path $dir '.env'), @"
+# deployment settings
+export LIVECHAT_SSH_HOST="root@unraid"
+LIVECHAT_PUBLIC_URL = https://livechat.example.com
+"@)
+    $savedHost = $env:LIVECHAT_SSH_HOST
+    $savedUrl = $env:LIVECHAT_PUBLIC_URL
+    try {
+        Remove-Item Env:LIVECHAT_SSH_HOST -ErrorAction SilentlyContinue
+        Remove-Item Env:LIVECHAT_PUBLIC_URL -ErrorAction SilentlyContinue
+        Import-DotEnv -Root $dir
+        Assert-Equal 'root@unraid' $env:LIVECHAT_SSH_HOST 'host from the file'
+        Assert-Equal 'https://livechat.example.com' $env:LIVECHAT_PUBLIC_URL 'url from the file'
+    } finally {
+        $env:LIVECHAT_SSH_HOST = $savedHost
+        $env:LIVECHAT_PUBLIC_URL = $savedUrl
+    }
+}
+
+Test-Case 'DotEnv keeps the environment value' {
+    $dir = New-DotEnvDir
+    [IO.File]::WriteAllText((Join-Path $dir '.env'), "LIVECHAT_SSH_HOST=root@from-file`n")
+    $savedHost = $env:LIVECHAT_SSH_HOST
+    try {
+        $env:LIVECHAT_SSH_HOST = 'root@from-shell'
+        Import-DotEnv -Root $dir
+        Assert-Equal 'root@from-shell' $env:LIVECHAT_SSH_HOST 'the environment wins'
+    } finally {
+        $env:LIVECHAT_SSH_HOST = $savedHost
+    }
+}
+
+Test-Case 'DotEnv ignores a missing file' {
+    $dir = New-DotEnvDir
+    Import-DotEnv -Root $dir
+    Assert-True $true 'a missing file is a no-op'
+}

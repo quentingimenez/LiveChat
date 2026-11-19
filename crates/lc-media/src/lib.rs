@@ -90,5 +90,6 @@ pub use crate::transcode::{
     NormalizedMedia,
 };
 pub use crate::tweet_card::{
-    format_tweet_date, render_tweet_card, QuoteImageFocus, QuotedTweetContent, TweetCardContent,
+    format_tweet_date, render_tweet_card, QuoteImageFocus, QuotedTweetContent, QuotedTweetImage,
+    TweetCardContent,
 };

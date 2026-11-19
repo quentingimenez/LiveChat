@@ -79,8 +79,12 @@ const QUOTE_TEXT_SIZE: f32 = 34.0;
 const QUOTE_TEXT_LINE_HEIGHT: f32 = QUOTE_TEXT_SIZE * 1.35;
 /// Nombre maximal de lignes du texte cité.
 const QUOTE_MAX_TEXT_LINES: usize = 6;
-/// Hauteur du cadre de l'image citée, déduite du rapport 16:9.
+/// Rapport largeur/hauteur du cadre d'une image citée seule (façon X).
 const QUOTE_IMAGE_ASPECT: f32 = 16.0 / 9.0;
+/// Bornes du rapport d'une image citée dans une paire : une photo portrait
+/// n'est pas étirée au-delà, une photo paysage n'est pas écrasée en dessous.
+const QUOTE_IMAGE_MIN_ASPECT: f32 = 0.7;
+const QUOTE_IMAGE_MAX_ASPECT: f32 = 1.6;
 /// Rayon des coins de l'image citée.
 const QUOTE_IMAGE_RADIUS: f32 = 14.0;
 
@@ -144,6 +148,17 @@ pub struct QuoteImageFocus {
     pub height: f32,
 }
 
+/// Photo jointe à un tweet cité, avec son recadrage suggéré par X.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct QuotedTweetImage {
+    /// URL source de la photo, consommée par le téléchargement.
+    pub source_url: String,
+    /// Octets PNG de la photo, `None` tant qu'elle n'a pas été téléchargée.
+    pub data: Option<Vec<u8>>,
+    /// Recadrages suggérés par X pour cette photo, vides s'il n'en fournit pas.
+    pub focus: Vec<QuoteImageFocus>,
+}
+
 /// Contenu d'un tweet cité, rendu dans un bloc encadré sous le texte.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct QuotedTweetContent {
@@ -153,11 +168,9 @@ pub struct QuotedTweetContent {
     pub author_handle: String,
     /// Texte du tweet cité.
     pub text: String,
-    /// Image jointe au tweet cité (photo ou poster de vidéo) en PNG, déjà
-    /// redimensionnée par l'appelant.
-    pub image: Option<Vec<u8>>,
-    /// Recadrages suggérés pour l'image citée, vides si X n'en fournit pas.
-    pub image_focus: Vec<QuoteImageFocus>,
+    /// Photos jointes au tweet cité (ou poster d'une vidéo citée), déjà
+    /// téléchargées et converties en PNG par l'appelant.
+    pub images: Vec<QuotedTweetImage>,
 }
 
 /// Contenu textuel d'une carte tweet.
@@ -230,6 +243,14 @@ struct QuoteImage {
     offset_y: f32,
 }
 
+/// Ligne d'images du bloc de citation : une image pleine largeur ou une paire.
+struct QuoteImageRow {
+    /// Images de la ligne, de gauche à droite.
+    images: Vec<QuoteImage>,
+    /// Hauteur de la ligne, commune à ses images.
+    height: f32,
+}
+
 /// Disposition du bloc de citation, calculée avant le corps pour réserver la
 /// hauteur nécessaire.
 struct QuoteLayout {
@@ -237,8 +258,8 @@ struct QuoteLayout {
     header: Option<QuoteHeader>,
     /// Texte cité, vide si la citation n'a pas de texte.
     text: BodyLayout,
-    /// Image citée, si la citation en porte une.
-    image: Option<QuoteImage>,
+    /// Photos citées, disposées en lignes façon X.
+    rows: Vec<QuoteImageRow>,
     /// Hauteur totale du bloc, marges et bordure comprises.
     height: f32,
     /// Largeur intérieure disponible pour le contenu.
@@ -690,10 +711,7 @@ fn layout_quote(engine: &mut TextEngine, quoted: &QuotedTweetContent, width: f32
             QUOTE_MAX_TEXT_LINES as f32 * QUOTE_TEXT_LINE_HEIGHT,
         )
     };
-    let image = quoted
-        .image
-        .as_deref()
-        .and_then(|bytes| decode_quote_image(bytes, inner_width, &quoted.image_focus));
+    let rows = layout_quote_images(&quoted.images, inner_width);
     let mut height = 2.0 * (QUOTE_BORDER_WIDTH + QUOTE_PADDING);
     if let Some(header) = &header {
         height += header.height;
@@ -705,80 +723,152 @@ fn layout_quote(engine: &mut TextEngine, quoted: &QuotedTweetContent, width: f32
         }
         height += text_layout.height;
     }
-    if let Some(image) = &image {
+    if !rows.is_empty() {
         if header.is_some() || has_text {
             height += QUOTE_INNER_GAP;
         }
-        height += image.height as f32;
+        let images_height: f32 = rows.iter().map(|row| row.height).sum();
+        height += images_height + QUOTE_INNER_GAP * rows.len().saturating_sub(1) as f32;
     }
     QuoteLayout {
         header,
         text: text_layout,
-        image,
+        rows,
         height,
         inner_width,
     }
 }
 
-/// Décode l'image citée et la recadre dans un cadre de `box_width` de large au
-/// rapport [`QUOTE_IMAGE_ASPECT`], façon carte X.
-///
-/// Le recadrage est centré sur le rectangle de `focus_rects` dont le rapport
-/// ressemble le plus au cadre (X suggère ainsi les zones à ne pas couper) ;
-/// sans suggestion, le centre de l'image est utilisé. Une vignette plus petite
-/// que la moitié du cadre garde sa taille (pas d'agrandissement d'une image de
-/// mauvaise qualité) ; une image invalide est ignorée et le bloc reste textuel.
-fn decode_quote_image(
-    bytes: &[u8],
-    box_width: f32,
-    focus_rects: &[QuoteImageFocus],
-) -> Option<QuoteImage> {
-    let pixmap = Pixmap::decode_png(bytes).ok()?;
-    let image_width = pixmap.width() as f32;
-    let image_height = pixmap.height() as f32;
-    if image_width <= 0.0 || image_height <= 0.0 {
-        return None;
+/// Image citée décodée, avant mise à l'échelle dans sa cellule.
+struct DecodedQuoteImage {
+    pixmap: Pixmap,
+    width: f32,
+    height: f32,
+    focus: Vec<QuoteImageFocus>,
+}
+
+/// Dispose les photos citées en lignes façon X : une image seule occupe toute
+/// la largeur au rapport [`QUOTE_IMAGE_ASPECT`] ; à partir de deux, elles vont
+/// par paires côte à côte (trois photos : une large puis deux, quatre : deux
+/// lignes de deux).
+fn layout_quote_images(images: &[QuotedTweetImage], inner_width: f32) -> Vec<QuoteImageRow> {
+    let mut decoded = Vec::new();
+    for image in images {
+        let Some(bytes) = image.data.as_deref() else {
+            continue;
+        };
+        let Ok(pixmap) = Pixmap::decode_png(bytes) else {
+            continue;
+        };
+        let (width, height) = (pixmap.width() as f32, pixmap.height() as f32);
+        if width <= 0.0 || height <= 0.0 {
+            continue;
+        }
+        decoded.push(DecodedQuoteImage {
+            pixmap,
+            width,
+            height,
+            focus: image.focus.clone(),
+        });
     }
-    let box_height = box_width / QUOTE_IMAGE_ASPECT;
-    let tiny = image_width < box_width * 0.5 && image_height < box_height * 0.5;
-    let (width, height) = if tiny {
-        (image_width, image_height)
-    } else {
-        (box_width, box_height)
-    };
-    // Couverture : l'image remplit le cadre et le surplus est recadré.
-    let scale = (width / image_width).max(height / image_height);
-    let scaled_width = image_width * scale;
-    let scaled_height = image_height * scale;
-    let mut offset_x = (width - scaled_width) / 2.0;
-    let mut offset_y = (height - scaled_height) / 2.0;
-    if !tiny {
-        if let Some(focus) = closest_focus_rect(focus_rects, image_width, image_height) {
-            let center_x = (focus.x + focus.width / 2.0) * image_width;
-            let center_y = (focus.y + focus.height / 2.0) * image_height;
-            offset_x = (width / 2.0 - center_x * scale).clamp(width - scaled_width, 0.0);
-            offset_y = (height / 2.0 - center_y * scale).clamp(height - scaled_height, 0.0);
+    let mut rows = Vec::new();
+    match decoded.len() {
+        0 => {}
+        1 => rows.push(full_width_row(&decoded[0], inner_width)),
+        2 => rows.push(paired_row(&decoded[0..2], inner_width)),
+        3 => {
+            rows.push(full_width_row(&decoded[0], inner_width));
+            rows.push(paired_row(&decoded[1..3], inner_width));
+        }
+        _ => {
+            rows.push(paired_row(&decoded[0..2], inner_width));
+            rows.push(paired_row(&decoded[2..4], inner_width));
         }
     }
-    Some(QuoteImage {
-        pixmap,
-        width: (width.round() as u32).max(1),
-        height: (height.round() as u32).max(1),
+    rows
+}
+
+/// Ligne d'une image pleine largeur, au rapport [`QUOTE_IMAGE_ASPECT`].
+fn full_width_row(image: &DecodedQuoteImage, inner_width: f32) -> QuoteImageRow {
+    let box_height = inner_width / QUOTE_IMAGE_ASPECT;
+    QuoteImageRow {
+        images: vec![cover_quote_image(image, inner_width, box_height)],
+        height: box_height,
+    }
+}
+
+/// Ligne de deux images de largeur égale, à la hauteur de la première (bornée
+/// par [`QUOTE_IMAGE_MIN_ASPECT`] et [`QUOTE_IMAGE_MAX_ASPECT`]).
+fn paired_row(images: &[DecodedQuoteImage], inner_width: f32) -> QuoteImageRow {
+    let cell_width = ((inner_width - QUOTE_INNER_GAP) / 2.0).max(1.0);
+    let first = &images[0];
+    let aspect = (first.width / first.height).clamp(QUOTE_IMAGE_MIN_ASPECT, QUOTE_IMAGE_MAX_ASPECT);
+    let cell_height = cell_width / aspect;
+    QuoteImageRow {
+        images: images
+            .iter()
+            .map(|image| cover_quote_image(image, cell_width, cell_height))
+            .collect(),
+        height: cell_height,
+    }
+}
+
+/// Met une image citée à l'échelle de sa cellule (couverture) et la recadre
+/// autour du rectangle de `focus_rects` le plus proche du rapport de la
+/// cellule, pour ne pas couper le sujet.
+///
+/// Une vignette plus petite que la moitié de la cellule garde sa taille (pas
+/// d'agrandissement d'une image de mauvaise qualité).
+fn cover_quote_image(image: &DecodedQuoteImage, box_width: f32, box_height: f32) -> QuoteImage {
+    let tiny = image.width < box_width * 0.5 && image.height < box_height * 0.5;
+    if tiny {
+        return QuoteImage {
+            pixmap: image.pixmap.clone(),
+            width: (image.width.round() as u32).max(1),
+            height: (image.height.round() as u32).max(1),
+            scale_x: 1.0,
+            scale_y: 1.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        };
+    }
+    // Couverture : l'image remplit la cellule et le surplus est recadré.
+    let scale = (box_width / image.width).max(box_height / image.height);
+    let scaled_width = image.width * scale;
+    let scaled_height = image.height * scale;
+    let mut offset_x = (box_width - scaled_width) / 2.0;
+    let mut offset_y = (box_height - scaled_height) / 2.0;
+    if let Some(focus) = closest_focus_rect(
+        &image.focus,
+        image.width,
+        image.height,
+        box_width / box_height,
+    ) {
+        let center_x = (focus.x + focus.width / 2.0) * image.width;
+        let center_y = (focus.y + focus.height / 2.0) * image.height;
+        offset_x = (box_width / 2.0 - center_x * scale).clamp(box_width - scaled_width, 0.0);
+        offset_y = (box_height / 2.0 - center_y * scale).clamp(box_height - scaled_height, 0.0);
+    }
+    QuoteImage {
+        pixmap: image.pixmap.clone(),
+        width: (box_width.round() as u32).max(1),
+        height: (box_height.round() as u32).max(1),
         scale_x: scale,
         scale_y: scale,
         offset_x,
         offset_y,
-    })
+    }
 }
 
 /// Retourne le recadrage suggéré dont le rapport largeur/hauteur est le plus
-/// proche de celui du cadre de citation.
+/// proche de celui de la cellule de citation.
 fn closest_focus_rect(
     focus_rects: &[QuoteImageFocus],
     image_width: f32,
     image_height: f32,
+    target_aspect: f32,
 ) -> Option<QuoteImageFocus> {
-    let target = QUOTE_IMAGE_ASPECT.ln();
+    let target = target_aspect.ln();
     focus_rects
         .iter()
         .filter(|focus| focus.width > 0.0 && focus.height > 0.0)
@@ -857,12 +947,33 @@ fn draw_quote(
         draw_body(pixmap, &quote.text, engine, (content_x, top), TEXT_COLOR);
         top += quote.text.height;
     }
-    if let Some(image) = &quote.image {
+    if !quote.rows.is_empty() {
         if quote.header.is_some() || !quote.text.paragraphs.is_empty() {
             top += QUOTE_INNER_GAP;
         }
-        let left = content_x + (quote.inner_width - image.width as f32) / 2.0;
-        draw_quote_image(pixmap, image, left, top);
+        for (index, row) in quote.rows.iter().enumerate() {
+            if index > 0 {
+                top += QUOTE_INNER_GAP;
+            }
+            let gaps = QUOTE_INNER_GAP * row.images.len().saturating_sub(1) as f32;
+            let row_width: f32 = row
+                .images
+                .iter()
+                .map(|image| image.width as f32)
+                .sum::<f32>()
+                + gaps;
+            let mut left = content_x + (quote.inner_width - row_width) / 2.0;
+            for image in &row.images {
+                draw_quote_image(
+                    pixmap,
+                    image,
+                    left,
+                    top + (row.height - image.height as f32) / 2.0,
+                );
+                left += image.width as f32 + QUOTE_INNER_GAP;
+            }
+            top += row.height;
+        }
     }
 }
 
@@ -1442,10 +1553,26 @@ mod tests {
         assert_valid_card(&png);
     }
 
-    /// Petit PNG uni, pour vérifier le rendu d'une image citée.
+    /// Photo citée prête à rendre, à partir d'un PNG de test.
+    fn quoted_image(png: Vec<u8>) -> QuotedTweetImage {
+        QuotedTweetImage {
+            source_url: "https://pbs.twimg.com/media/test.jpg".to_string(),
+            data: Some(png),
+            focus: Vec::new(),
+        }
+    }
+
+    /// Petit PNG uni bleu, pour vérifier le rendu d'une image citée.
     fn solid_png(width: u32, height: u32) -> Vec<u8> {
+        solid_color_png(width, height, (0x40, 0x80, 0xc0))
+    }
+
+    /// Petit PNG d'une couleur unie.
+    fn solid_color_png(width: u32, height: u32, color: (u8, u8, u8)) -> Vec<u8> {
         let mut pixmap = Pixmap::new(width, height).unwrap();
-        pixmap.fill(tiny_skia::Color::from_rgba8(0x40, 0x80, 0xc0, 0xff));
+        pixmap.fill(tiny_skia::Color::from_rgba8(
+            color.0, color.1, color.2, 0xff,
+        ));
         pixmap.encode_png().unwrap()
     }
 
@@ -1493,8 +1620,10 @@ mod tests {
         let quoted = content.quoted.as_ref().unwrap();
         assert_eq!(quoted.author_name, "berkani");
         assert_eq!(quoted.author_handle, "inconnu95267");
-        assert_eq!(quoted.text, "Allez wAllah https://t.co/tq8tJizsjk");
-        assert_eq!(quoted.image, None);
+        assert_eq!(quoted.text, "Allez wAllah");
+        // La fixture porte deux photos, pas encore téléchargées.
+        assert_eq!(quoted.images.len(), 2);
+        assert!(quoted.images.iter().all(|image| image.data.is_none()));
         let with_quote = render_tweet_card(&content).unwrap();
         assert_valid_card(&with_quote);
 
@@ -1513,12 +1642,12 @@ mod tests {
     #[test]
     fn renders_a_quoted_tweet_with_an_image() {
         let mut content = content_from(QUOTE_FIXTURE);
-        content.quoted.as_mut().unwrap().image = Some(solid_png(320, 200));
+        content.quoted.as_mut().unwrap().images = vec![quoted_image(solid_png(320, 200))];
         let png = render_tweet_card(&content).unwrap();
         let (_, with_image) = assert_valid_card(&png);
 
         let mut text_only = content.clone();
-        text_only.quoted.as_mut().unwrap().image = None;
+        text_only.quoted.as_mut().unwrap().images.clear();
         let (_, without_image) = assert_valid_card(&render_tweet_card(&text_only).unwrap());
         assert!(
             with_image > without_image,
@@ -1527,9 +1656,51 @@ mod tests {
     }
 
     #[test]
+    fn renders_two_quoted_photos_side_by_side() {
+        let mut content = content_from(QUOTE_FIXTURE);
+        // Avatar neutre : ni rouge ni vert, pour ne pas fausser la détection
+        // des deux photos dans les pixels.
+        content.avatar = Some(solid_color_png(96, 96, (0x50, 0x50, 0x50)));
+        {
+            let quoted = content.quoted.as_mut().unwrap();
+            quoted.text = String::new();
+            quoted.images = vec![
+                quoted_image(solid_color_png(400, 400, (0xd0, 0x30, 0x30))),
+                quoted_image(solid_color_png(400, 400, (0x30, 0xc0, 0x50))),
+            ];
+        }
+        let png = render_tweet_card(&content).unwrap();
+        assert_valid_card(&png);
+        let pixmap = Pixmap::decode_png(&png).unwrap();
+        let (mut red_max_x, mut green_min_x, mut green_max_x) = (0_u32, u32::MAX, 0_u32);
+        for (index, pixel) in pixmap.pixels().iter().enumerate() {
+            let x = index as u32 % pixmap.width();
+            let (r, g) = (pixel.red(), pixel.green());
+            if r > g.saturating_add(40) {
+                red_max_x = red_max_x.max(x);
+            } else if g > r.saturating_add(40) {
+                green_min_x = green_min_x.min(x);
+                green_max_x = green_max_x.max(x);
+            }
+        }
+        assert!(
+            red_max_x > 0 && green_max_x > 0,
+            "les deux photos ne sont pas rendues (rouge jusqu'à {red_max_x}, vert jusqu'à {green_max_x})"
+        );
+        assert!(
+            red_max_x < green_min_x,
+            "les photos ne sont pas côte à côte : rouge jusqu'à {red_max_x}, vert à partir de {green_min_x}"
+        );
+    }
+
+    #[test]
     fn ignores_an_invalid_quoted_image() {
         let mut content = content_from(QUOTE_FIXTURE);
-        content.quoted.as_mut().unwrap().image = Some(b"pas un PNG".to_vec());
+        content.quoted.as_mut().unwrap().images = vec![QuotedTweetImage {
+            source_url: "https://pbs.twimg.com/media/invalide.jpg".to_string(),
+            data: Some(b"pas un PNG".to_vec()),
+            focus: Vec::new(),
+        }];
         let png = render_tweet_card(&content).unwrap();
         assert_valid_card(&png);
     }
@@ -1546,8 +1717,7 @@ mod tests {
                 author_name: String::new(),
                 author_handle: String::new(),
                 text: String::new(),
-                image: Some(solid_png(200, 120)),
-                image_focus: Vec::new(),
+                images: vec![quoted_image(solid_png(200, 120))],
             }),
         };
         let png = render_tweet_card(&content).unwrap();
@@ -1559,14 +1729,17 @@ mod tests {
         let mut content = content_from(QUOTE_FIXTURE);
         {
             let quoted = content.quoted.as_mut().unwrap();
-            quoted.image = Some(split_png(400, 400));
-            // X suggère de cadrer le bas de la photo : le recadrage doit
-            // suivre cette suggestion plutôt que le centre de l'image.
-            quoted.image_focus = vec![QuoteImageFocus {
-                x: 0.0,
-                y: 0.5,
-                width: 1.0,
-                height: 0.5,
+            quoted.images = vec![QuotedTweetImage {
+                source_url: "https://pbs.twimg.com/media/focus.jpg".to_string(),
+                data: Some(split_png(400, 400)),
+                // X suggère de cadrer le bas de la photo : le recadrage doit
+                // suivre cette suggestion plutôt que le centre de l'image.
+                focus: vec![QuoteImageFocus {
+                    x: 0.0,
+                    y: 0.5,
+                    width: 1.0,
+                    height: 0.5,
+                }],
             }];
         }
         let png = render_tweet_card(&content).unwrap();

@@ -254,8 +254,9 @@ async fn download_tweet_card(
     let mut content = twitter::tweet_card_content(value);
     content.avatar = download_tweet_avatar(config, value, temp_dir).await;
     if let Some(quoted) = content.quoted.as_mut() {
-        if let Some(url) = twitter::quoted_tweet_image_url(value) {
-            quoted.image = download_tweet_quote_image(config, &url, temp_dir).await;
+        for (index, image) in quoted.images.iter_mut().enumerate() {
+            image.data =
+                download_tweet_quote_image(config, &image.source_url, temp_dir, index).await;
         }
     }
     let png = tweet_card::render_tweet_card(&content)?;
@@ -329,7 +330,7 @@ async fn download_tweet_avatar(
     }
 }
 
-/// Télécharge l'image du tweet cité et la convertit en PNG pour le bloc de
+/// Télécharge une photo du tweet cité et la convertit en PNG pour le bloc de
 /// citation.
 ///
 /// L'originale (`name=orig`) est demandée d'abord ; à défaut, l'URL telle
@@ -340,6 +341,7 @@ async fn download_tweet_quote_image(
     config: &MediaConfig,
     url: &str,
     temp_dir: &Path,
+    index: usize,
 ) -> Option<Vec<u8>> {
     let original = twitter::photo_original_url(url);
     let input = match download_http(config, &original, temp_dir, &[]).await {
@@ -355,7 +357,7 @@ async fn download_tweet_quote_image(
             }
         }
     };
-    let output = temp_dir.join("tweet-quote.png");
+    let output = temp_dir.join(format!("tweet-quote-{index}.png"));
     let args = vec![
         "-y".to_string(),
         "-hide_banner".to_string(),

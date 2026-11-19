@@ -2160,13 +2160,13 @@ async fn hello_version_matrix_against_min_3_0_0() {
     let guild = seed_guild(&server.db).await;
     seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
 
-    for case in ["2.9.9", "3", "garbage"] {
+    for case in ["2.9.9", "3", "garbage", "3.0", "3.0.0.0"] {
         let mut socket = connect(server.addr).await;
         send_hello(&mut socket, TOKEN, case).await;
         expect_close(&mut socket, close_code::OUTDATED_PROTOCOL).await;
     }
 
-    for case in ["3.0.0", "3.0.0-beta.1", "3.8.0", "10.0.0"] {
+    for case in ["3.0.0", "3.0.0-beta.1", "3.0.0+build.1", "3.8.0", "10.0.0"] {
         let mut socket = connect(server.addr).await;
         send_hello(&mut socket, TOKEN, case).await;
         let first = recv_value(&mut socket).await;

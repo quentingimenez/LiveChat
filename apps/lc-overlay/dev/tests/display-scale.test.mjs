@@ -6,7 +6,9 @@ import test from 'node:test';
 
 import {
   DEFAULT_DISPLAY_SCALE_PERCENT,
+  OVERLAY_MEDIA_RESERVED_HEIGHT,
   displayScaleForStorage,
+  displayZoneLimits,
   displayedImageSize,
   normalizeDisplayScale,
   parseDisplayScale,
@@ -67,6 +69,34 @@ test('displayedImageSize caps to the zone and reports it', () => {
     displayedImageSize({ width: 100, height: 50, scalePercent: 1000, maxWidth: 1920, maxHeight: 1080 }),
     { width: 1000, height: 500, capped: false },
   );
+});
+
+test('displayZoneLimits leaves room for the overlay header', () => {
+  // 54 px of author header plus its 10 px gap, like the overlay's
+  // --overlay-media-max-height.
+  assert.equal(OVERLAY_MEDIA_RESERVED_HEIGHT, 64);
+  assert.deepEqual(displayZoneLimits({ zoneWidth: 2560, zoneHeight: 1440 }), { maxWidth: 2560, maxHeight: 1376 });
+  assert.deepEqual(displayZoneLimits({ zoneWidth: 1000, zoneHeight: 1000, reservedHeight: 0 }), { maxWidth: 1000, maxHeight: 1000 });
+  assert.deepEqual(displayZoneLimits({ zoneWidth: 800, zoneHeight: 40 }), { maxWidth: 800, maxHeight: 0 });
+  // An unknown zone never caps.
+  assert.deepEqual(displayZoneLimits({ zoneWidth: null, zoneHeight: 1080 }), { maxWidth: null, maxHeight: null });
+  assert.deepEqual(displayZoneLimits(), { maxWidth: null, maxHeight: null });
+});
+
+test('the display size reserves the header of the overlay', () => {
+  const zone = displayZoneLimits({ zoneWidth: 1000, zoneHeight: 1000 });
+  // A square picture at 100 % would fill the zone: the header pushes it down.
+  assert.deepEqual(displayedImageSize({ width: 1000, height: 1000, scalePercent: 100, ...zone }), {
+    width: 936,
+    height: 936,
+    capped: true,
+  });
+  // Without the header the same picture fills the zone exactly.
+  assert.deepEqual(displayedImageSize({ width: 1000, height: 1000, scalePercent: 100, maxWidth: 1000, maxHeight: 1000 }), {
+    width: 1000,
+    height: 1000,
+    capped: false,
+  });
 });
 
 test('computeDisplayedImageSize behaves like the editor helper', () => {

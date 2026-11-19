@@ -15,10 +15,14 @@ import {
   MAX_DISPLAY_SCALE_PERCENT,
   MIN_DISPLAY_SCALE_PERCENT,
   NEUTRAL_ADJUST,
+  OVERLAY_MEDIA_HEADER_GAP,
+  OVERLAY_MEDIA_HEADER_HEIGHT,
+  OVERLAY_MEDIA_RESERVED_HEIGHT,
   centeredCrop,
   clamp,
   cssFilter,
   displayScaleForStorage,
+  displayZoneLimits,
   displayedImageSize,
   fitScale,
   normalizeDisplayScale,
@@ -46,6 +50,13 @@ registerIcons({
 // Largest side kept while editing: a bigger picture is scaled down once.
 const MAX_SIDE = 4096;
 const HISTORY_LIMIT = 40;
+// Zone assumed by the display preview when the shell does not know the real
+// one: a 1080p screen, so the cap still shows.
+const FALLBACK_DISPLAY_ZONE = { width: 1920, height: 1080 };
+// Longest side of the preview canvas buffer. It is drawn at the size the
+// overlay would use, then the browser resamples it, like the overlay does with
+// the saved picture.
+const PREVIEW_BUFFER_MAX_SIDE = 2048;
 const COLORS = ['#ffffff', '#000000', '#ec6a70', '#f2b544', '#f7e04b', '#5fc9a3', '#7fa8f5', '#c58af9'];
 const EMOJIS = ['😂', '🤣', '😭', '💀', '😎', '🥶', '🤡', '😱', '🤔', '😡', '🥵', '🤯', '👀', '🔥', '💯', '❤️', '👍', '👎', '🙏', '💩', '🎉', '⭐', '❌', '✅', '⚠️', '➡️', '⬅️', '⬆️', '⬇️', '❓', '❗', '💬'];
 const FONTS = {
@@ -76,7 +87,7 @@ const TOOL_HINTS = {
   emoji: 'Choisis un emoji : il se pose au centre, déplace-le ensuite.',
   blur: 'Trace un rectangle sur la zone à cacher.',
   adjust: 'Les réglages s’appliquent à toute l’image.',
-  display: 'Agrandit l’image sur l’overlay sans toucher au fichier.',
+  display: 'Choisis la taille sur l’overlay : l’aperçu se met à jour pendant le réglage.',
 };
 
 function makeCanvas(width, height) {
@@ -328,7 +339,41 @@ export async function createImageEditor({
   const view = h('canvas', { class: 'img-canvas' });
   const selBox = h('div', { class: 'sel-box', hidden: true }, h('span', { class: 'sel-handle' }));
   const wrap = h('div', { class: 'img-wrap' }, view, selBox);
-  frame.stage.replaceChildren(wrap);
+
+  // --- live preview of the display size ---
+  // The overlay draws the picture at `natural size × scale`, capped by the
+  // display zone minus the author header, and the browser resamples it. The
+  // preview rebuilds that frame at the stage's own scale, so a scale change is
+  // seen at once instead of on the next play.
+  const knownZone = displayZone && Number(displayZone.width) > 0 && Number(displayZone.height) > 0;
+  const zone = knownZone
+    ? { width: Math.round(Number(displayZone.width)), height: Math.round(Number(displayZone.height)), known: true }
+    : { width: FALLBACK_DISPLAY_ZONE.width, height: FALLBACK_DISPLAY_ZONE.height, known: false };
+  let previewZoom = 'fit';
+  let previewNeedsLayout = true;
+  const previewCanvas = h('canvas', { class: 'display-preview-image' });
+  const previewHeader = h('div', { class: 'display-preview-header' });
+  const previewScreen = h('div', { class: 'display-preview-screen' }, previewHeader, previewCanvas);
+  const previewZone = h('span', { class: 'display-preview-zone' });
+  const previewZoomButtons = new Map();
+  const zoomButton = (id, label) => {
+    const button = h('button', { class: 'btn', type: 'button', onClick: () => setPreviewZoom(id) }, label);
+    previewZoomButtons.set(id, button);
+    return button;
+  };
+  const previewBar = h(
+    'div',
+    { class: 'display-preview-bar' },
+    h('span', { class: 'display-preview-title' }, 'Aperçu sur l’overlay'),
+    previewZone,
+    h('span', { class: 'spacer' }),
+    zoomButton('fit', 'Ajuster'),
+    zoomButton('100', '100 %'),
+  );
+  const previewScroll = h('div', { class: 'display-preview-scroll' }, previewScreen);
+  const previewWrap = h('div', { class: 'display-preview', hidden: true }, previewBar, previewScroll);
+
+  frame.stage.replaceChildren(wrap, previewWrap);
 
   // One length unit follows the picture: a stroke looks the same on a small
   // and on a large picture.
@@ -452,6 +497,103 @@ export async function createImageEditor({
     selBox.style.height = `${(box.h / doc.base.height) * 100}%`;
   }
 
+  // --- display preview ---
+  function previewVisible() {
+    return allowDisplayScale && tool === 'display';
+  }
+
+  // Size the picture takes on the overlay: natural size × scale, capped by the
+  // display zone minus its header.
+  function displayedSize() {
+    return displayedImageSize({
+      width: doc.base.width,
+      height: doc.base.height,
+      scalePercent: displayScale,
+      ...displayZoneLimits({ zoneWidth: zone.width, zoneHeight: zone.height }),
+    });
+  }
+
+  // Stage pixels per overlay pixel: the whole zone fits, or 1:1 for 100 %.
+  function previewScale() {
+    if (previewZoom === '100') {
+      return 1;
+    }
+    const width = previewScroll.clientWidth - 32;
+    const height = previewScroll.clientHeight - 32;
+    if (!(width > 0) || !(height > 0)) {
+      return 0;
+    }
+    return Math.min(1, width / zone.width, height / zone.height);
+  }
+
+  // Lays the screen, the header band and the picture out at the stage's scale.
+  function sizePreview() {
+    const scale = previewScale();
+    if (!(scale > 0)) {
+      return false;
+    }
+    const screenWidth = Math.max(1, Math.round(zone.width * scale));
+    const screenHeight = Math.max(1, Math.round(zone.height * scale));
+    const headerHeight = Math.max(1, Math.round(OVERLAY_MEDIA_HEADER_HEIGHT * scale));
+    const headerGap = Math.max(0, Math.round(OVERLAY_MEDIA_HEADER_GAP * scale));
+    const size = displayedSize();
+    const pictureWidth = Math.max(1, Math.round(Math.min(size.width, zone.width) * scale));
+    const pictureHeight = Math.max(1, Math.round(Math.min(size.height, zone.height) * scale));
+    // Header and picture are one block, centred: that is where the overlay
+    // puts the frame. The header is as wide as the frame, so it stops with the
+    // picture instead of spanning the whole zone.
+    const top = Math.max(0, Math.round((screenHeight - headerHeight - headerGap - pictureHeight) / 2));
+    const left = Math.max(0, Math.round((screenWidth - pictureWidth) / 2));
+    previewScreen.style.width = `${screenWidth}px`;
+    previewScreen.style.height = `${screenHeight}px`;
+    previewHeader.style.top = `${top}px`;
+    previewHeader.style.left = `${left}px`;
+    previewHeader.style.width = `${Math.max(1, Math.min(pictureWidth, screenWidth))}px`;
+    previewHeader.style.height = `${headerHeight}px`;
+    previewHeader.textContent = headerHeight >= 20 && pictureWidth >= 150 ? 'En-tête de l’overlay' : '';
+    previewCanvas.style.top = `${top + headerHeight + headerGap}px`;
+    previewCanvas.style.left = `${left}px`;
+    previewCanvas.style.width = `${pictureWidth}px`;
+    previewCanvas.style.height = `${pictureHeight}px`;
+    const ratio = Math.min(window.devicePixelRatio || 1, 2, PREVIEW_BUFFER_MAX_SIDE / Math.max(pictureWidth, pictureHeight));
+    ensureSize(previewCanvas, Math.max(1, Math.round(pictureWidth * ratio)), Math.max(1, Math.round(pictureHeight * ratio)));
+    return true;
+  }
+
+  function syncPreviewChrome() {
+    previewZone.textContent = zone.known
+      ? `Zone ${zone.width} × ${zone.height} px · en-tête ${OVERLAY_MEDIA_RESERVED_HEIGHT} px`
+      : `Zone inconnue, aperçu sur ${zone.width} × ${zone.height} px`;
+    for (const [id, button] of previewZoomButtons) {
+      const active = previewZoom === id;
+      button.classList.toggle('is-on', active);
+      button.setAttribute('aria-pressed', String(active));
+    }
+  }
+
+  function setPreviewZoom(next) {
+    if (next !== 'fit' && next !== '100') {
+      return;
+    }
+    previewZoom = next;
+    previewNeedsLayout = true;
+    syncPreviewChrome();
+    repaint();
+  }
+
+  // Shows the preview instead of the editing canvas while the display tool is
+  // open: the picture is no longer edited there, it is rendered like the
+  // overlay will render it.
+  function syncStage() {
+    const preview = previewVisible();
+    wrap.hidden = preview;
+    previewWrap.hidden = !preview;
+    if (preview) {
+      previewNeedsLayout = true;
+    }
+    repaint();
+  }
+
   function repaint() {
     if (paintQueued) {
       return;
@@ -460,6 +602,15 @@ export async function createImageEditor({
     requestAnimationFrame(() => {
       paintQueued = false;
       if (frame.isClosed()) {
+        return;
+      }
+      if (previewVisible()) {
+        if (previewNeedsLayout) {
+          previewNeedsLayout = !sizePreview();
+        }
+        if (!previewNeedsLayout) {
+          compose(previewCanvas, doc.adjust);
+        }
         return;
       }
       compose(view, doc.adjust);
@@ -481,6 +632,7 @@ export async function createImageEditor({
     const ratio = Math.min(window.devicePixelRatio || 1, 2);
     ensureSize(view, Math.round(cssWidth * ratio), Math.round(cssHeight * ratio));
     frame.setStatus(`${doc.base.width} × ${doc.base.height} px`);
+    previewNeedsLayout = true;
     repaint();
   }
 
@@ -893,31 +1045,36 @@ export async function createImageEditor({
     if (syncScaleFields) {
       syncScaleFields();
     }
+    // The preview is the point of this setting: it follows every move.
+    previewNeedsLayout = true;
+    repaint();
     if (onChange) {
       onChange();
     }
   }
 
   function displayScaleLine() {
-    const size = displayedImageSize({
-      width: doc.base.width,
-      height: doc.base.height,
-      scalePercent: displayScale,
-      maxWidth: displayZone && displayZone.width,
-      maxHeight: displayZone && displayZone.height,
-    });
-    return `À l’écran : ${size.width} × ${size.height} px${size.capped ? ' (limité par la zone d’affichage)' : ''}`;
+    const size = displayedSize();
+    // Without a known zone the numbers come from the assumed 1080p screen, so
+    // they are an estimate rather than a cap the overlay will apply.
+    const note = zone.known
+      ? size.capped
+        ? ' (plafonné par la zone, en-tête compris)'
+        : ''
+      : ` (estimation sur une zone ${zone.width} × ${zone.height} px)`;
+    return `À l’écran : ${size.width} × ${size.height} px${note}`;
   }
 
   function displayScalePanel() {
     const line = h('p', { class: 'meta' }, displayScaleLine());
     const value = h('span', { class: 'editor-value' }, `${displayScale} %`);
+    // Same span as the number field, so the presets never push the cursor out of range.
     const range = h('input', {
       type: 'range',
-      min: '25',
-      max: '400',
+      min: String(MIN_DISPLAY_SCALE_PERCENT),
+      max: String(MAX_DISPLAY_SCALE_PERCENT),
       step: '1',
-      value: String(clamp(displayScale, 25, 400)),
+      value: String(clamp(displayScale, MIN_DISPLAY_SCALE_PERCENT, MAX_DISPLAY_SCALE_PERCENT)),
       onInput: () => setDisplayScale(Number(range.value)),
     });
     resetOnDoubleClick(range, DEFAULT_DISPLAY_SCALE_PERCENT);
@@ -946,7 +1103,7 @@ export async function createImageEditor({
     // Both controls and the live size follow any change, whichever one moved.
     syncScaleFields = () => {
       value.textContent = `${displayScale} %`;
-      range.value = String(clamp(displayScale, 25, 400));
+      range.value = String(clamp(displayScale, MIN_DISPLAY_SCALE_PERCENT, MAX_DISPLAY_SCALE_PERCENT));
       number.value = String(displayScale);
       line.textContent = displayScaleLine();
     };
@@ -955,6 +1112,12 @@ export async function createImageEditor({
     return section(
       'Taille à l’affichage',
       h('p', { class: 'meta' }, TOOL_HINTS.display),
+      h(
+        'p',
+        { class: 'meta' },
+        `Image : ${doc.base.width} × ${doc.base.height} px · `,
+        zone.known ? `zone : ${zone.width} × ${zone.height} px` : 'zone d’affichage inconnue',
+      ),
       h('label', { class: 'editor-slider' }, h('span', { class: 'editor-slider-head' }, 'Échelle', value), range),
       h('label', null, 'Valeur (%)', number),
       h(
@@ -967,6 +1130,7 @@ export async function createImageEditor({
         preset(DEFAULT_DISPLAY_SCALE_PERCENT, 'Taille d’origine'),
       ),
       line,
+      h('p', { class: 'meta' }, `L’aperçu de l’éditeur montre l’image sur l’overlay, en-tête de ${OVERLAY_MEDIA_RESERVED_HEIGHT} px compris. Une légende sous l’image n’y est pas représentée.`),
     );
   }
 
@@ -1106,7 +1270,7 @@ export async function createImageEditor({
       stopCrop();
     }
     tool = next;
-    if (['draw', 'shape', 'blur', 'text', 'crop'].includes(tool)) {
+    if (['draw', 'shape', 'blur', 'text', 'crop', 'display'].includes(tool)) {
       selectedId = null;
     }
     wrap.dataset.tool = tool;
@@ -1115,8 +1279,10 @@ export async function createImageEditor({
     }
     renderPanel();
     placeSelection();
+    syncStage();
   }
 
+  syncPreviewChrome();
   setTool('select');
   layout();
 

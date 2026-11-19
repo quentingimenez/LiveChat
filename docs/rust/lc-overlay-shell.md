@@ -321,8 +321,11 @@ la board. L'infobulle reste `tray_tooltip`.
 | `overlay://placement` | fenêtre `overlay` | `{ "active": true, "layout" }` au début d'un placement, `{ "active": false }` à la fin |
 
 Le volume effectif ajouté à `overlay://play` vaut volume général × volume de la
-guilde propriétaire du média. Le renderer utilise `payload.volume` seulement
-quand il est fini et dans `[0,1]`, sinon le volume de configuration.
+guilde propriétaire du média. `overlay://settings` porte aussi `guildVolumes`
+(volume de chaque guilde rejointe) : à chaque changement de réglage, le renderer
+recalcule le volume effectif du média en cours et l'applique immédiatement. Le
+`volume` du `play` ne sert que de repli quand les réglages ne décrivent pas la
+guilde (payload antérieur, guilde absente).
 
 Bufferisation (décision §8.1 de `overlay-bridge.md`) : tant que l'overlay n'a
 pas appelé `overlay_renderer_ready`, les événements play/stop sont coalescés

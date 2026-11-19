@@ -1781,6 +1781,7 @@ mod tests {
                 guest_mode: false,
                 show_text: true,
                 volume: 1.0,
+                guild_volumes: Default::default(),
                 media_muted: false,
                 media_muted_guilds: Vec::new(),
                 media_bindings: MediaBindings::new(),

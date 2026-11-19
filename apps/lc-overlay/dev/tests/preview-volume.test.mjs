@@ -1,15 +1,22 @@
 // The board's previews must sound exactly like the overlay: both turn the
-// general and guild volume settings into the same media element volume.
+// general and guild volume settings into the same media element volume. The
+// overlay also has to re-apply that volume to the media already playing when a
+// setting changes (general volume, guild volume, media mute).
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createOverlayLegacyBootstrapUtils } from '../../web/dist/renderer/overlay/legacy-bootstrap-utils.js';
 import { createOverlayLegacyMediaDomUtils } from '../../web/dist/renderer/overlay/legacy-media-dom-utils.js';
-import { createOverlayLegacyRuntimeInputsUtils } from '../../web/dist/renderer/overlay/legacy-runtime-inputs-utils.js';
-import { createOverlayLegacyUtils } from '../../web/dist/renderer/overlay/legacy-utils.js';
+import { createOverlayLegacyRuntimeRenderHandlersUtils } from '../../web/dist/renderer/overlay/legacy-runtime-render-handlers-utils.js';
+import { createOverlayLegacyUtils, VOLUME_CURVE_GAMMA } from '../../web/dist/renderer/overlay/legacy-utils.js';
 
 // Minimal DOM stand-ins for the renderer's `instanceof` checks.
-class FakeElement {}
+class FakeElement {
+  constructor() {
+    this.style = { setProperty() {} };
+  }
+}
 class FakeMediaElement extends FakeElement {
   constructor() {
     super();
@@ -25,22 +32,47 @@ globalThis.window = {};
 const { mediaGain, previewVolume } = await import('../../web/app/core/sound.js');
 
 const overlayUtils = createOverlayLegacyUtils();
-const { applyMediaVolume } = createOverlayLegacyMediaDomUtils();
-const { constants } = createOverlayLegacyRuntimeInputsUtils().createRuntimeInputs({ getElementById: () => null });
+const bootstrapUtils = createOverlayLegacyBootstrapUtils();
+const mediaDomUtils = createOverlayLegacyMediaDomUtils();
+const { createRuntimeRenderHandlers } = createOverlayLegacyRuntimeRenderHandlersUtils();
 
-// What the overlay sets on its media element: the shell sends
-// `clamp(general × guild)` in the `play` (`effective_volume` in
-// src/net/ws.rs) and the renderer applies its perceptual curve.
-function overlayElementVolume(general, guild) {
-  const playVolume = Math.min(1, Math.max(0, general * guild));
+// The overlay renderer around one media of guild `g1`, as the shell's
+// `overlay://play` and `overlay://settings` describe it.
+function createOverlayRenderer() {
   const element = new FakeMediaElement();
-  const root = new FakeElement();
-  root.querySelectorAll = () => [element];
-  applyMediaVolume({
-    root,
-    perceptualGain: overlayUtils.toPerceptualGain(playVolume, constants.volumeCurveGamma),
+  const mediaLayer = new FakeElement();
+  mediaLayer.querySelectorAll = () => [element];
+  const state = {
+    overlayConfig: { volume: 1, showText: true },
+    activeGuildId: 'g1',
+    activeVolume: null,
+    activeShowText: null,
+    activeLayout: null,
+    mediaFrameState: {},
+  };
+  const handlers = createRuntimeRenderHandlers({
+    nodes: { overlayRoot: new FakeElement(), mediaLayer, textLayer: null, countdownLayer: null },
+    state,
+    constants: { volumeCurveGamma: VOLUME_CURVE_GAMMA },
+    utils: overlayUtils,
+    mediaDomUtils,
+    bootstrapUtils,
+    textUtils: {},
+    scheduleMediaHeaderLayout: () => {},
+    ensureMediaFrame: () => null,
+    setTimeout: () => 0,
+    clearTimeout: () => {},
   });
-  return element.volume;
+  return { element, state, applySettings: handlers.onSettings };
+}
+
+// What the overlay sets on its media element: the shell's settings carry the
+// general and per-guild volumes (`guildVolumes` in src/config.rs); the
+// renderer applies their product through its perceptual curve.
+function overlayElementVolume(general, guild) {
+  const renderer = createOverlayRenderer();
+  renderer.applySettings({ volume: general, guildVolumes: { g1: guild } });
+  return renderer.element.volume;
 }
 
 test('a preview plays at the level the overlay gives the same settings', () => {
@@ -69,4 +101,37 @@ test('missing or out-of-range settings are clamped like on the overlay', () => {
   // Default device settings: full volume for any guild.
   assert.equal(previewVolume('unknown-guild'), 1);
   assert.equal(previewVolume(null), 1);
+});
+
+test('a settings change re-applies the volume to the media already playing', () => {
+  const renderer = createOverlayRenderer();
+  // The play was rendered at 50 %: the shell sent that effective volume.
+  renderer.state.activeVolume = 0.5;
+
+  // General slider to 100 %: the live settings describe the playing guild.
+  renderer.applySettings({ volume: 1, guildVolumes: { g1: 1 } });
+  assert.equal(renderer.element.volume, 1);
+
+  // Guild slider to 50 % on top of the general 100 %.
+  renderer.applySettings({ volume: 1, guildVolumes: { g1: 0.5 } });
+  assert.ok(Math.abs(renderer.element.volume - mediaGain(1, 0.5)) < 1e-12);
+
+  // General slider to 30 % on top of the guild 50 %.
+  renderer.applySettings({ volume: 0.3, guildVolumes: { g1: 0.5 } });
+  assert.ok(Math.abs(renderer.element.volume - mediaGain(0.3, 0.5)) < 1e-12);
+
+  // « Couper le son » applies to the current media too, and lifts again.
+  renderer.applySettings({ volume: 0.3, guildVolumes: { g1: 0.5 }, mediaMuted: true });
+  assert.equal(renderer.element.volume, 0);
+  renderer.applySettings({ volume: 0.3, guildVolumes: { g1: 0.5 }, mediaMuted: false });
+  assert.ok(Math.abs(renderer.element.volume - mediaGain(0.3, 0.5)) < 1e-12);
+});
+
+test('a play keeps its own volume when the settings do not describe its guild', () => {
+  const renderer = createOverlayRenderer();
+  // Older shell payload: no `guildVolumes`, the play's volume stays the source.
+  renderer.state.activeVolume = 0.5;
+  renderer.state.activeGuildId = 'gone';
+  renderer.applySettings({ volume: 1 });
+  assert.ok(Math.abs(renderer.element.volume - mediaGain(0.5, 1)) < 1e-12);
 });

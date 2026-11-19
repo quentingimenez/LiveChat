@@ -352,6 +352,9 @@ pub struct OverlayConfigView {
     pub guest_mode: bool,
     pub show_text: bool,
     pub volume: f64,
+    /// Volume of every joined guild, so the renderer can recompute the live
+    /// effective volume (`volume × guild`) when the settings change mid-play.
+    pub guild_volumes: BTreeMap<String, f64>,
     /// Every media plays without sound.
     pub media_muted: bool,
     /// Guilds whose media play without sound.
@@ -611,6 +614,11 @@ impl OverlayConfig {
             guest_mode: self.guest_mode,
             show_text: self.show_text,
             volume: self.volume,
+            guild_volumes: self
+                .memberships
+                .iter()
+                .map(|membership| (membership.guild_id.clone(), membership.volume))
+                .collect(),
             media_muted: self.media_muted,
             media_muted_guilds: self
                 .memberships
@@ -1460,6 +1468,13 @@ mod tests {
         config.client_token = Some("jeton".to_string());
         config.guild_id = Some("guilde".to_string());
         config.media_bindings = BTreeMap::from([("Ctrl+1".to_string(), "id-1".to_string())]);
+        config.memberships.push(Membership {
+            server_url: "https://example.test".to_string(),
+            guild_id: "111".to_string(),
+            client_token: "jeton-guilde".to_string(),
+            volume: 0.5,
+            ..Membership::default()
+        });
         config.layout.align = LayoutAnchor::BottomRight;
         config.layout.zone.width = 0.5;
         let value = serde_json::to_value(config.view()).expect("serialize view");
@@ -1473,6 +1488,7 @@ mod tests {
                 "clientToken",
                 "guestMode",
                 "guildId",
+                "guildVolumes",
                 "layout",
                 "mediaBindings",
                 "mediaMuted",
@@ -1483,6 +1499,11 @@ mod tests {
             ]
         );
         assert_eq!(object["serverUrl"], json!("http://localhost:3000"));
+        assert_eq!(
+            object["guildVolumes"],
+            json!({ "111": 0.5 }),
+            "le renderer recalcule le volume effectif à chaque changement"
+        );
         assert_eq!(
             object["layout"],
             json!({

@@ -18,6 +18,30 @@ powershell -NoProfile -File scripts/release.ps1 check           # une seule vers
 powershell -NoProfile -File scripts/release.ps1 deploy-server 3.6.0
 ```
 
+## 0. Configuration du déploiement
+
+Le dépôt est public : l'hôte SSH et l'URL publique ne sont **pas** versionnés (les
+valeurs du code sont des placeholders `192.0.2.59` / `livechat.example.com`).
+`deploy-server` les lit dans l'environnement et refuse de tourner s'ils manquent :
+
+| Variable | Rôle |
+| --- | --- |
+| `LIVECHAT_SSH_HOST` | hôte SSH du serveur Unraid, ex. `root@unraid.lan` (requis) |
+| `LIVECHAT_PUBLIC_URL` | URL publique vérifiée après déploiement, ex. `https://livechat.example.com` (requis) |
+| `LIVECHAT_SSH_EXE` | chemin de `ssh.exe` (facultatif) |
+| `LIVECHAT_IMAGE_NAME` | image serveur (facultatif, pour un fork) |
+
+Les définir avant le déploiement, par exemple dans le shell courant :
+
+```powershell
+$env:LIVECHAT_SSH_HOST = 'root@unraid.lan'
+$env:LIVECHAT_PUBLIC_URL = 'https://livechat.example.com'
+powershell -NoProfile -File scripts/release.ps1 deploy-server 3.6.0
+```
+
+Ne jamais committer ces valeurs ni les afficher (hôte = information
+d'infrastructure, et le template du conteneur contient des secrets).
+
 ## 1. Plan
 
 1. `git fetch --tags origin`, puis `release.ps1 plan` sur `origin/main` à jour
@@ -96,7 +120,8 @@ l'erreur.
 
 ## 6. Finir (dans cet ordre)
 
-1. **Serveur** (si publié) : `release.ps1 deploy-server X.Y.Z`. Le script
+1. **Serveur** (si publié) : définir `LIVECHAT_SSH_HOST` et `LIVECHAT_PUBLIC_URL`
+   dans l'environnement (section 0), puis `release.ps1 deploy-server X.Y.Z`. Le script
    télécharge l'image, arrête proprement le conteneur, sauvegarde la base et le
    template dans `/mnt/user/appdata/livechat-backups/before-X.Y.Z-<date>/` (vérifiés
    avec `cmp`), change l'image du template, lance `update_container` puis

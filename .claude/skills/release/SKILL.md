@@ -31,7 +31,18 @@ valeurs du code sont des placeholders `192.0.2.59` / `livechat.example.com`).
 | `LIVECHAT_SSH_EXE` | chemin de `ssh.exe` (facultatif) |
 | `LIVECHAT_IMAGE_NAME` | image serveur (facultatif, pour un fork) |
 
-Les définir avant le déploiement, par exemple dans le shell courant :
+Les définir une fois dans un fichier `.env` à la racine du dépôt (ignoré par
+git, jamais versionné, voir `.env.example`) :
+
+```
+LIVECHAT_SSH_HOST=root@unraid.lan
+LIVECHAT_PUBLIC_URL=https://livechat.example.com
+```
+
+`scripts/release.ps1` charge ce fichier au démarrage (`Import-DotEnv`) : les
+commandes `plan`, `check` et `deploy-server` fonctionnent ensuite sans rien
+exporter. Une variable déjà présente dans l'environnement garde la priorité,
+pour une surcharge ponctuelle :
 
 ```powershell
 $env:LIVECHAT_SSH_HOST = 'root@unraid.lan'

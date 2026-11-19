@@ -532,6 +532,9 @@ export interface MediaBoardItem {
   title: string;
   message: string | null;
   createdByName: string;
+  /* Stable author identity (`member:<uuid>`, `discord:<id>` or `name:<nickname>`);
+     a member and their linked Discord account share one id. */
+  createdByAuthorId?: string | null;
   createdAt: IsoDate;
   /* Display time chosen for an image item, in seconds (null: guild default). */
   displayDurationSec: number | null;

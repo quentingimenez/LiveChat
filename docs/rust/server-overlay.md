@@ -351,7 +351,8 @@ Query : `q`, `limit`, `offset`, `guildId`.
 - `limit` : défaut 50, clamp `1..=200` (`media_board.rs:565-570`) ;
 - `offset` : défaut 0, négatif ramené à 0 (`:567`) ;
 - `q` : trim, max 240 caractères, insensible à la casse, filtre `contains` sur
-  `title`, `message`, `createdByName`, `media.sourceUrl` (`row_matches`) ;
+  `title`, `message`, le nom d'auteur figé (`created_name`), le nom courant de
+  l'auteur résolu et `media.sourceUrl` (`row_matches`) ;
 - `guildId` : s'il est fourni et diffère de la guilde du Bearer →
   `403 {"error":"forbidden"}` (défense en profondeur) ;
 - **chargement borné (AUD-A2-013)** : une requête SQL join unique
@@ -362,12 +363,15 @@ Query : `q`, `limit`, `offset`, `guildId`.
   toute la guilde ni de double parcours repo+Rust ;
 - réponse : `{"total": n, "limit": l, "offset": o, "items": [...]}`.
 
-Payload d'un item (`item_payload`, `media_board.rs:531-552`) :
+Payload d'un item (`item_payload`, `media_board.rs:1457-1480`, complété par
+`list_items_payload`) :
 
 ```json
 {
   "id": "<uuid>", "guildId": "…", "mediaAssetId": "<uuid>",
-  "title": "…" | null, "message": "…" | null, "createdByName": "…" | null,
+  "title": "…" | null, "message": "…" | null,
+  "createdByName": "…" | null,
+  "createdByAuthorId": "member:<uuid>" | "discord:<snowflake>" | "name:<nom>" | null,
   "createdAt": "2026-11-10T12:00:00.000Z",
   "mediaUrl": "https://api…/overlay/media-board/media/<uuid>?clientId=…&exp=…&sig=…",
   "mediaUrlExpiresAt": 1762785600000,
@@ -377,6 +381,19 @@ Payload d'un item (`item_payload`, `media_board.rs:531-552`) :
              "sourceUrl": "https://…" }
 }
 ```
+
+`createdByAuthorId` est l'identité **stable** de l'auteur et `createdByName` son
+nom **courant** : un membre et son compte Discord lié produisent une seule
+identité, même si les médias ont été ajoutés sous deux pseudos différents
+(`BoardAuthors`, `media_board.rs:1531-1592`). La résolution essaie le membre
+enregistré à l'ajout (`created_by_member_id`), puis le membre actif dont
+`discord_user_id` égale celui enregistré sur l'item (au plus un, index unique
+partiel de la migration 0008), et ne retombe sur `name:<nom figé>` que si
+aucun membre ne correspond. `createdByName` est alors le nom courant du membre
+(`display_name`), sinon le nom figé. Le filtre « Ajouté par » du board overlay
+groupe sur cette clé, pas sur le nom affiché. `createdByMemberId` et `canEdit`
+ne changent pas : un média ajouté depuis Discord reste sans membre auteur et
+modifiable par tout membre.
 
 `createdAt` est en ISO-8601 UTC avec millisecondes (`to_rfc3339_opts(Millis,
 true)`) : le legacy renvoyait la sérialisation JSON de `Date` (ISO), pas un

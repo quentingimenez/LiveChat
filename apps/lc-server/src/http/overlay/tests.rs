@@ -308,6 +308,43 @@ async fn insert_item(
     item
 }
 
+/// Insère un item de board dont l'auteur est un membre et/ou un compte Discord.
+async fn insert_item_by(
+    db: &Db,
+    guild_id: &GuildId,
+    asset: &MediaAsset,
+    title: &str,
+    created_by_discord_user_id: Option<&str>,
+    created_by_name: &str,
+    created_by_member_id: Option<GuildMemberId>,
+) -> MediaBoardItem {
+    let item = MediaBoardItem {
+        id: MediaBoardItemId::new_v4(),
+        guild_id: guild_id.clone(),
+        media_asset_id: asset.id,
+        title: Some(title.to_owned()),
+        message: None,
+        created_by_discord_user_id: created_by_discord_user_id.map(str::to_owned),
+        created_by_name: Some(created_by_name.to_owned()),
+        created_at: fixed_now(),
+        artwork_asset_id: None,
+        artwork_on_overlay: false,
+        display_duration_sec: None,
+        display_scale_percent: None,
+    };
+    db.media_board()
+        .create(&item)
+        .await
+        .expect("insertion item");
+    if let Some(member_id) = created_by_member_id {
+        db.media_board()
+            .set_creator_member(item.id, member_id)
+            .await
+            .expect("auteur membre");
+    }
+    item
+}
+
 /// URL média signée (format protocole v2).
 fn signed_uri(asset: &MediaAsset, client: &OverlayClient, exp: u64) -> String {
     let signature = crate::media_url::sign(
@@ -1717,6 +1754,162 @@ async fn media_board_lists_filters_and_paginates() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body_json(&bytes)["limit"], 200);
+}
+
+/// Le board doit voir un membre et son compte Discord lié comme un seul auteur :
+/// le filtre « Ajouté par » du client s'appuie sur `createdByAuthorId`, et le nom
+/// affiché est le nom courant du membre, pas le pseudo figé à l'ajout.
+#[tokio::test]
+async fn media_board_merges_a_member_with_the_linked_discord_account() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, db) = harness(dir.path()).await;
+    let client = make_client(
+        &guild(),
+        "Poste",
+        BEARER_TOKEN,
+        OverlaySessionMode::Normal,
+        Some("Quentin"),
+    );
+    db.overlay_clients()
+        .create(&client)
+        .await
+        .expect("client board");
+
+    // The member linked their Discord account and now follows its profile.
+    let member = GuildMember {
+        id: GuildMemberId::new_v4(),
+        guild_id: guild(),
+        display_name: "Quentin".to_owned(),
+        avatar: None,
+        role: GuildRole::Member,
+        created_at: fixed_now() - Duration::minutes(10),
+        removed_at: None,
+        discord_user_id: Some("4242".to_owned()),
+        profile_custom: false,
+        discord_synced_at: None,
+    };
+    db.guild_members()
+        .create(&member)
+        .await
+        .expect("membre créé");
+
+    let before = insert_asset(
+        &db,
+        dir.path(),
+        "before.mp4",
+        "video/mp4",
+        MediaKind::Video,
+        b"before",
+        fixed_now() + Duration::hours(12),
+    )
+    .await;
+    let after = insert_asset(
+        &db,
+        dir.path(),
+        "after.mp4",
+        "video/mp4",
+        MediaKind::Video,
+        b"after",
+        fixed_now() + Duration::hours(12),
+    )
+    .await;
+    let stranger = insert_asset(
+        &db,
+        dir.path(),
+        "stranger.mp4",
+        "video/mp4",
+        MediaKind::Video,
+        b"stranger",
+        fixed_now() + Duration::hours(12),
+    )
+    .await;
+    // Added before linking: the member is recorded, the old nickname is frozen.
+    insert_item_by(
+        &db,
+        &guild(),
+        &before,
+        "Avant",
+        None,
+        "Ancien pseudo",
+        Some(member.id),
+    )
+    .await;
+    // Added from Discord after linking: only the Discord account is recorded.
+    insert_item_by(
+        &db,
+        &guild(),
+        &after,
+        "Après",
+        Some("4242"),
+        "quentin_discord",
+        None,
+    )
+    .await;
+    // Another Discord account's media stays a separate author.
+    insert_item_by(
+        &db,
+        &guild(),
+        &stranger,
+        "Autre",
+        Some("9999"),
+        "Inconnu",
+        None,
+    )
+    .await;
+
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::GET,
+            "/overlay/media-board/items",
+            Some(BEARER_TOKEN),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let body = body_json(&bytes);
+    let items = body["items"].as_array().expect("items");
+    assert_eq!(items.len(), 3);
+    let item = |title: &str| {
+        items
+            .iter()
+            .find(|item| item["title"] == json!(title))
+            .expect("item listé")
+    };
+    let key = json!(format!("member:{}", member.id.to_canonical()));
+    for title in ["Avant", "Après"] {
+        assert_eq!(item(title)["createdByAuthorId"], key, "{title}");
+        assert_eq!(item(title)["createdByName"], json!("Quentin"), "{title}");
+    }
+    assert_eq!(item("Autre")["createdByAuthorId"], json!("discord:9999"));
+    assert_eq!(item("Autre")["createdByName"], json!("Inconnu"));
+
+    // The merged name is searchable, like the frozen nickname still is.
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::GET,
+            "/overlay/media-board/items?q=quentin",
+            Some(BEARER_TOKEN),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body_json(&bytes)["total"], 2);
+    let (status, _, bytes) = send(
+        &app,
+        request(
+            Method::GET,
+            "/overlay/media-board/items?q=ancien",
+            Some(BEARER_TOKEN),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body_json(&bytes)["total"], 1);
 }
 
 #[tokio::test]

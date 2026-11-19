@@ -63,6 +63,8 @@
 //! peut pas être influencé par le corps de requête. Le flux média signé applique
 //! la même règle de visibilité à partir du rôle du client.
 
+use std::collections::HashMap;
+
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -70,8 +72,8 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use lc_domain::rights::{Action, Surface};
 use lc_domain::{
-    GuildId, GuildRole, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, MediaKind,
-    OverlayClientId, Permission,
+    GuildId, GuildMember, GuildRole, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId,
+    MediaKind, OverlayClientId, Permission,
 };
 use lc_protocol::{BoardChange, BoardChangedPayload, ServerMessage};
 use serde::Deserialize;
@@ -201,9 +203,20 @@ pub(crate) async fn list_items_payload(
     // de `list_by_guild` suivi d'un `media_assets().get` par item (N+1 non
     // borné). La recherche et la pagination restent en Rust (board de quelques
     // centaines d'items) ; seuls les assets de la page (≤ 200) sont rechargés.
-    let rows = load_board_rows(db, actor.guild_id())
+    let mut rows = load_board_rows(db, actor.guild_id())
         .await
         .map_err(|db_error| db_failure("overlay_media_board.list_items", &db_error))?;
+    // L'auteur est résolu une fois pour toute la board : le filtre « Ajouté par »
+    // regroupe les médias d'un même membre, même renommé ou lié à Discord.
+    let members = db
+        .guild_members()
+        .list_by_guild(actor.guild_id())
+        .await
+        .map_err(|db_error| db_failure("overlay_media_board.list_members", &db_error))?;
+    let authors = BoardAuthors::new(&members);
+    for row in &mut rows {
+        row.author = authors.resolve(row);
+    }
     let filtered = rows
         .into_iter()
         .filter(|row| {
@@ -319,6 +332,19 @@ pub(crate) async fn list_items_payload(
                 "createdByMemberId".to_owned(),
                 serde_json::json!(row.created_by_member_id),
             );
+            // Identité stable de l'auteur (membre, compte Discord, ou nom
+            // historique) : le filtre du board s'appuie dessus pour ne pas
+            // séparer un membre de son compte Discord lié.
+            object.insert(
+                "createdByAuthorId".to_owned(),
+                serde_json::json!(row.author.as_ref().map(|author| author.key.as_str())),
+            );
+            if let Some(author) = &row.author {
+                object.insert(
+                    "createdByName".to_owned(),
+                    serde_json::json!(author.name.as_str()),
+                );
+            }
             object.insert(
                 "canEdit".to_owned(),
                 serde_json::json!(actor.can_edit_item(row.created_by_member_id.as_deref())),
@@ -1484,6 +1510,8 @@ struct BoardRow {
     source_url: String,
     /// Membre auteur (`media_board_items.created_by_member_id`), s'il est connu.
     created_by_member_id: Option<String>,
+    /// Auteur résolu pour l'affichage et le filtre (voir [`BoardAuthors`]).
+    author: Option<BoardAuthor>,
 }
 
 impl BoardRow {
@@ -1493,12 +1521,84 @@ impl BoardRow {
     }
 }
 
+/// Auteur canonique d'un média du board.
+///
+/// Le nom recopié à l'ajout (`created_by_name`) ne sert que de repli : dès que
+/// le média peut être rattaché à un membre, c'est son identité et son nom
+/// courant qui comptent. Un membre qui reprend son profil Discord (ou ajoute
+/// des médias depuis Discord) ne forme donc qu'une seule entrée dans le filtre
+/// « Ajouté par », au lieu d'une par pseudo rencontré.
+struct BoardAuthor {
+    /// Identité stable : `member:<uuid>`, `discord:<snowflake>` ou `name:<nom>`.
+    key: String,
+    /// Nom affiché.
+    name: String,
+}
+
+/// Index des membres actifs de la guilde, pour attribuer chaque média à son
+/// auteur.
+struct BoardAuthors<'a> {
+    by_member_id: HashMap<String, &'a GuildMember>,
+    by_discord_user_id: HashMap<String, &'a GuildMember>,
+}
+
+impl<'a> BoardAuthors<'a> {
+    fn new(members: &'a [GuildMember]) -> Self {
+        let mut by_member_id = HashMap::with_capacity(members.len());
+        let mut by_discord_user_id = HashMap::new();
+        for member in members {
+            by_member_id.insert(member.id.to_canonical(), member);
+            if let Some(discord_user_id) = member.discord_user_id.as_deref() {
+                by_discord_user_id.insert(discord_user_id.to_owned(), member);
+            }
+        }
+        Self {
+            by_member_id,
+            by_discord_user_id,
+        }
+    }
+
+    /// Auteur d'une ligne : le membre créateur, sinon le membre actif lié au
+    /// compte Discord auteur, sinon l'identité recopiée à l'ajout.
+    fn resolve(&self, row: &BoardRow) -> Option<BoardAuthor> {
+        let member = row
+            .created_by_member_id
+            .as_deref()
+            .and_then(|member_id| self.by_member_id.get(member_id).copied())
+            .or_else(|| {
+                row.item
+                    .created_by_discord_user_id
+                    .as_deref()
+                    .and_then(|discord_user_id| {
+                        self.by_discord_user_id.get(discord_user_id).copied()
+                    })
+            });
+        if let Some(member) = member {
+            return Some(BoardAuthor {
+                key: format!("member:{}", member.id.to_canonical()),
+                name: member.display_name.clone(),
+            });
+        }
+        let name = row.item.created_by_name.clone()?;
+        let key = match (
+            row.created_by_member_id.as_deref(),
+            row.item.created_by_discord_user_id.as_deref(),
+        ) {
+            (Some(member_id), _) => format!("member:{member_id}"),
+            (None, Some(discord_user_id)) => format!("discord:{discord_user_id}"),
+            (None, None) => format!("name:{name}"),
+        };
+        Some(BoardAuthor { key, name })
+    }
+}
+
 /// Filtre `q` (insensible à la casse) sur les champs exposés par le legacy.
 fn row_matches(row: &BoardRow, search: &str) -> bool {
     let fields = [
         row.item.title.as_deref(),
         row.item.message.as_deref(),
         row.item.created_by_name.as_deref(),
+        row.author.as_ref().map(|author| author.name.as_str()),
         Some(row.source_url.as_str()),
     ];
     fields
@@ -1590,6 +1690,7 @@ async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<Boa
             },
             source_url,
             created_by_member_id,
+            author: None,
         });
     }
     Ok(rows)

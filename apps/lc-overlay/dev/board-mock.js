@@ -157,6 +157,7 @@
     title,
     message: index === 0 ? 'aïe' : null,
     createdByName: index % 2 ? 'Léa' : 'Quentin',
+    createdByAuthorId: index % 2 ? 'member:m-lea' : 'member:m-111',
     createdByMemberId: index % 2 ? 'm-lea' : 'm-111',
     canEdit: isAdmin || (!isGuest && index % 2 === 0),
     createdAt: new Date(Date.now() - index * 86400000).toISOString(),

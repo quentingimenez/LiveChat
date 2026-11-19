@@ -70,15 +70,26 @@ export function durationBucket(durationSec) {
   return seconds <= 60 ? 'medium' : 'long';
 }
 
+// Stable identity of the item's author: the member (or Discord account) behind
+// `createdByName`. A member renamed after linking Discord keeps one identity, so
+// the author filter stays on one entry. Items without it fall back to the name.
+export function authorIdOf(item) {
+  if (item.createdByAuthorId) {
+    return item.createdByAuthorId;
+  }
+  return item.createdByName ? `name:${item.createdByName}` : null;
+}
+
 // Authors that added at least one item, sorted by name.
 export function authorsOf(items) {
-  const names = new Set();
+  const authors = new Map();
   for (const item of items) {
-    if (item.createdByName) {
-      names.add(item.createdByName);
+    const id = authorIdOf(item);
+    if (id && item.createdByName && !authors.has(id)) {
+      authors.set(id, item.createdByName);
     }
   }
-  return Array.from(names).sort((a, b) => a.localeCompare(b, 'fr', { sensitivity: 'base' }));
+  return Array.from(authors, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'fr', { sensitivity: 'base' }));
 }
 
 // Number of filters that differ from the defaults (sort excluded).
@@ -109,7 +120,7 @@ export function selectItems(items, options) {
     if (filters.shortcut && !shortcutItemIds.has(item.id)) {
       return false;
     }
-    if (filters.author && item.createdByName !== filters.author) {
+    if (filters.author && authorIdOf(item) !== filters.author) {
       return false;
     }
     if (filters.source && mediaSource(media.sourceUrl) !== filters.source) {

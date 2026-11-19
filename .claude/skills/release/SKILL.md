@@ -147,7 +147,9 @@ powershell -NoProfile -File scripts/release.ps1 deploy-server X.Y.Z -Canary
 
 **Coût** : environ 90 s de downtime supplémentaire au maximum en pratique (le conteneur principal est déjà arrêté pendant la vérification) ; le pire cas théorique est ~315 s (45 sondes × (5 s de timeout curl + 2 s de sommeil)).
 
-**En cas d'échec** : le script affiche `CANARY FAILED`, supprime **toujours** le conteneur canary et redémarre le conteneur principal **sur l'ancienne image** (template non modifié) — le déploiement est abandonné avant tout changement au template.
+**En cas d'échec du script** : le script affiche `CANARY FAILED`, supprime le conteneur canary et redémarre le conteneur principal **sur l'ancienne image** (template non modifié) — le déploiement est abandonné avant tout changement au template. Cette garantie vaut pour toute erreur **du script** ; une interruption brutale n'y est pas soumise (voir ci-dessous).
+
+**Fenêtre d'interruption (résiduelle)** : le script ne piège que les erreurs (`ERR`), pas les signaux (`INT`/`TERM`/`HUP`). Une interruption brutale de l'opérateur (SSH coupé, Ctrl-C, reboot de l'hôte) pendant la fenêtre canary — jusqu'à ~315 s de sondes au pire — peut donc laisser le conteneur principal arrêté et le canary vivant, sans nettoyage ni restauration automatiques. Cette exposition préexistait au canary (chaque déploiement s'écoule entre `docker stop LiveChat` et `docker start LiveChat`, ~20 s) ; le canary ne fait que l'élargir. Reprise manuelle : `docker rm -f LiveChat-canary` (échoue sans conséquence si le conteneur n'existe plus), puis `docker start LiveChat` ; si le `sed` du template avait déjà eu lieu, rétablir d'abord l'image précédente (rappelée par la valeur `PREV_IMAGE` du message de rollback) avant de relancer le conteneur.
 
 ## Interdits
 

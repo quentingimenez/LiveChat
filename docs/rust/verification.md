@@ -141,6 +141,14 @@ exhaustive par catégorie ci-dessous ; les positions ligne par ligne vivent dans
   collision impossible quel que soit l'état des artefacts ; coût : un build release de
   xtask (~2-4 min la première fois, incrémental ensuite). Ne pas repasser l'alias en
   debug sans avoir lu ce paragraphe.
+- **Un kill probabiliste n'est pas un kill** : une propriété dont la stratégie ne
+  tire un voisin frontière qu'avec une faible probabilité par run n'est pas une
+  garantie — cas réel : `guard.rs:153:45` (`&&`→`||` interne de la plage de
+  documentation 198.51.100) a survécu un run nightly complet (score 98 < 99) :
+  ses 256 cas aléatoires ont manqué le tirage que chaque run local avait
+  touché. Épingler les littéraux exacts, un par bras de mutant, comme
+  `documentation_range_neighbors_pin_the_boundary_literals`
+  (`crates/lc-media/tests/properties.rs`).
 - Nits acceptées en revue B : TOCTOU de `reserve_port` (`loadtest.rs:637`, flake rare),
   alphabet du pin UNC sans `:` ni `\` (`properties.rs`), `-Canary` ignoré en silence par
   les autres sous-commandes de `release.ps1`, borne `uptimeSec >= 0` faible

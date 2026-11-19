@@ -45,7 +45,7 @@ test('default selection is newest first', () => {
 test('filters combine', () => {
   const favorites = { ...DEFAULT_FILTERS, favorites: true };
   assert.deepEqual(ids(selectItems(items, { filters: favorites })), ['d', 'a']);
-  const lea = { ...DEFAULT_FILTERS, author: 'Léa' };
+  const lea = { ...DEFAULT_FILTERS, author: 'name:Léa' };
   assert.deepEqual(ids(selectItems(items, { filters: lea })), ['a', 'c']);
   const file = { ...DEFAULT_FILTERS, source: 'file' };
   assert.deepEqual(ids(selectItems(items, { filters: file })), ['b']);
@@ -64,9 +64,30 @@ test('sorts by title, age and duration', () => {
 });
 
 test('authors and active filter count', () => {
-  assert.deepEqual(authorsOf(items), ['Léa', 'Marc']);
+  assert.deepEqual(authorsOf(items), [
+    { id: 'name:Léa', name: 'Léa' },
+    { id: 'name:Marc', name: 'Marc' },
+  ]);
   assert.equal(activeFilterCount(DEFAULT_FILTERS), 0);
   assert.equal(activeFilterCount({ ...DEFAULT_FILTERS, favorites: true, source: 'x', sort: 'title' }), 2);
+});
+
+test('one author entry per identity, even after a rename or a Discord link', () => {
+  const merged = [
+    { id: 'a', title: 'Un', createdByAuthorId: 'member:m-1', createdByName: 'Quentin', createdAt: '2026-01-01T00:00:00Z', media: { kind: 'image', durationSec: null, sourceUrl: 'upload:a.png' } },
+    // Same member, renamed after linking Discord: no second entry.
+    { id: 'b', title: 'Deux', createdByAuthorId: 'member:m-1', createdByName: 'quentin_discord', createdAt: '2026-01-02T00:00:00Z', media: { kind: 'image', durationSec: null, sourceUrl: 'upload:b.png' } },
+    // Another member with the same displayed name: a separate entry.
+    { id: 'c', title: 'Trois', createdByAuthorId: 'member:m-2', createdByName: 'Quentin', createdAt: '2026-01-03T00:00:00Z', media: { kind: 'image', durationSec: null, sourceUrl: 'upload:c.png' } },
+  ];
+  assert.deepEqual(authorsOf(merged), [
+    { id: 'member:m-1', name: 'Quentin' },
+    { id: 'member:m-2', name: 'Quentin' },
+  ]);
+  const first = { ...DEFAULT_FILTERS, author: 'member:m-1' };
+  assert.deepEqual(ids(selectItems(merged, { filters: first })), ['b', 'a']);
+  const second = { ...DEFAULT_FILTERS, author: 'member:m-2' };
+  assert.deepEqual(ids(selectItems(merged, { filters: second })), ['c']);
 });
 
 test('droppedLink takes the first web URL', () => {

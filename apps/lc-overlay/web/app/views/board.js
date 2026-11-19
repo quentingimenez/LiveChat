@@ -851,7 +851,7 @@ function renderFilters() {
           'Avec raccourci',
         )
       : null,
-    filterSelect('Ajouté par', filters.author, [['', 'Tout le monde'], ...authors.map((name) => [name, name])], (author) => setFilter({ author })),
+    filterSelect('Ajouté par', filters.author, [['', 'Tout le monde'], ...authors.map((author) => [author.id, author.name])], (author) => setFilter({ author })),
     filterSelect('Source', filters.source, [['', 'Toutes'], ...Object.entries(SOURCE_LABELS)], (source) => setFilter({ source })),
     filterSelect('Durée', filters.duration, [['', 'Toutes'], ...Object.entries(DURATION_LABELS)], (duration) => setFilter({ duration })),
     filterSelect('Trier', filters.sort, Object.entries(SORT_LABELS), (sort) => setFilter({ sort })),

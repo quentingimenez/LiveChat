@@ -253,6 +253,12 @@ async fn download_tweet_card(
 ) -> MediaResult<DownloadResult> {
     let mut content = twitter::tweet_card_content(value);
     content.avatar = download_tweet_avatar(config, value, temp_dir).await;
+    if let Some(quoted) = content.quoted.as_mut() {
+        for (index, image) in quoted.images.iter_mut().enumerate() {
+            image.data =
+                download_tweet_quote_image(config, &image.source_url, temp_dir, index).await;
+        }
+    }
     let png = tweet_card::render_tweet_card(&content)?;
     let path = temp_dir.join("tweet-card.png");
     fs::write(&path, &png).map_err(|error| {
@@ -319,6 +325,67 @@ async fn download_tweet_avatar(
         Ok(bytes) => Some(bytes),
         Err(error) => {
             tracing::debug!("lecture de l'avatar du tweet impossible : {error}");
+            None
+        }
+    }
+}
+
+/// Télécharge une photo du tweet cité et la convertit en PNG pour le bloc de
+/// citation.
+///
+/// L'originale (`name=orig`) est demandée d'abord ; à défaut, l'URL telle
+/// quelle. ffmpeg borne l'image à 1800 px par côté (aucun décodeur JPEG n'est
+/// embarqué). Toute erreur rend `None` (bloc de citation textuel) et n'échoue
+/// jamais le téléchargement.
+async fn download_tweet_quote_image(
+    config: &MediaConfig,
+    url: &str,
+    temp_dir: &Path,
+    index: usize,
+) -> Option<Vec<u8>> {
+    let original = twitter::photo_original_url(url);
+    let input = match download_http(config, &original, temp_dir, &[]).await {
+        Ok(download) => download.path,
+        Err(error) => {
+            tracing::debug!(%url, "image du tweet cité indisponible : {error}");
+            match download_http(config, url, temp_dir, &[]).await {
+                Ok(download) => download.path,
+                Err(error) => {
+                    tracing::debug!(%url, "image du tweet cité indisponible : {error}");
+                    return None;
+                }
+            }
+        }
+    };
+    let output = temp_dir.join(format!("tweet-quote-{index}.png"));
+    let args = vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-v".to_string(),
+        "error".to_string(),
+        "-i".to_string(),
+        input.display().to_string(),
+        "-vf".to_string(),
+        "scale=1800:1800:force_original_aspect_ratio=decrease".to_string(),
+        "-frames:v".to_string(),
+        "1".to_string(),
+        output.display().to_string(),
+    ];
+    if let Err(error) = process::run_command(
+        &config.tools.ffmpeg,
+        &args,
+        config.download.timeout,
+        MediaErrorCode::TranscodeFailed,
+    )
+    .await
+    {
+        tracing::debug!("conversion de l'image du tweet cité impossible : {error}");
+        return None;
+    }
+    match fs::read(&output) {
+        Ok(bytes) => Some(bytes),
+        Err(error) => {
+            tracing::debug!("lecture de l'image du tweet cité impossible : {error}");
             None
         }
     }

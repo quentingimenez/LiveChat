@@ -89,4 +89,7 @@ pub use crate::transcode::{
     carousel_dimensions, normalize_downloaded_media, normalize_local_media, resolve_video_encoder,
     NormalizedMedia,
 };
-pub use crate::tweet_card::{format_tweet_date, render_tweet_card, TweetCardContent};
+pub use crate::tweet_card::{
+    format_tweet_date, render_tweet_card, QuoteImageFocus, QuotedTweetContent, QuotedTweetImage,
+    TweetCardContent,
+};

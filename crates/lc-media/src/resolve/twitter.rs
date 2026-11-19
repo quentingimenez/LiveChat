@@ -11,7 +11,7 @@ use crate::error::{MediaError, MediaErrorCode, MediaResult};
 use crate::html;
 use crate::http;
 use crate::source::{tweet_status_id, MediaSource, SourceKind};
-use crate::tweet_card::TweetCardContent;
+use crate::tweet_card::{QuoteImageFocus, QuotedTweetContent, TweetCardContent};
 
 use super::{encode_query_component, ResolvedMedia, TweetCard};
 
@@ -355,7 +355,146 @@ pub fn tweet_card_content(value: &Value) -> TweetCardContent {
         text: extract_full_tweet_text(value).unwrap_or_default(),
         created_at: extract_created_at(value),
         avatar: None,
+        quoted: quoted_tweet_content(value),
     }
+}
+
+/// Contenu du tweet cité (`quoted_tweet`) d'un payload syndication.
+///
+/// `None` quand le payload ne cite aucun tweet, ou quand la citation ne porte
+/// ni auteur, ni texte, ni image.
+pub fn quoted_tweet_content(value: &Value) -> Option<QuotedTweetContent> {
+    let quoted = value.get("quoted_tweet")?;
+    let author_name = extract_author_name(quoted).unwrap_or_default();
+    let author_handle = extract_author_handle(quoted).unwrap_or_default();
+    let text = extract_full_tweet_text(quoted).unwrap_or_default();
+    let image = quoted_tweet_image_url(value);
+    if author_name.is_empty() && author_handle.is_empty() && text.is_empty() && image.is_none() {
+        return None;
+    }
+    Some(QuotedTweetContent {
+        author_name,
+        author_handle,
+        text,
+        // L'image est téléchargée et convertie en PNG au téléchargement.
+        image: None,
+        image_focus: quoted_tweet_focus_rects(value),
+    })
+}
+
+/// Recadrages suggérés par X pour l'image du tweet cité.
+///
+/// Ils vivent dans `quoted_tweet.mediaDetails[].original_info.focus_rects`
+/// (clés `x`, `y`, `w`, `h`) et servent au rendu de la carte à ne pas couper le
+/// sujet de la photo. Vides quand le payload n'en fournit pas.
+pub fn quoted_tweet_focus_rects(value: &Value) -> Vec<QuoteImageFocus> {
+    let Some(quoted) = value.get("quoted_tweet") else {
+        return Vec::new();
+    };
+    let media: Vec<&Value> = quoted
+        .get("mediaDetails")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .chain(
+            quoted
+                .get("photos")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten(),
+        )
+        .collect();
+    // L'image du bloc est la première photo : ses recadrages priment sur ceux
+    // d'une vidéo ou d'un média suivant.
+    media
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("photo"))
+        .find_map(|item| non_empty_focus_rects(item.get("original_info")))
+        .or_else(|| {
+            media
+                .iter()
+                .find_map(|item| non_empty_focus_rects(item.get("original_info")))
+        })
+        .unwrap_or_default()
+}
+
+/// Recadrages d'un média, seulement s'il en propose au moins un.
+fn non_empty_focus_rects(original_info: Option<&Value>) -> Option<Vec<QuoteImageFocus>> {
+    let rects = parse_focus_rects(original_info);
+    (!rects.is_empty()).then_some(rects)
+}
+
+/// Lit `original_info.focus_rects` en rectangles relatifs (0.0 à 1.0).
+fn parse_focus_rects(original_info: Option<&Value>) -> Vec<QuoteImageFocus> {
+    let Some(info) = original_info else {
+        return Vec::new();
+    };
+    let Some(rects) = info.get("focus_rects").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let field = |rect: &Value, name: &str| -> Option<u32> {
+        let value = rect.get(name).and_then(Value::as_u64)?;
+        u32::try_from(value).ok()
+    };
+    let parsed: Vec<(u32, u32, u32, u32)> = rects
+        .iter()
+        .filter_map(|rect| {
+            Some((
+                field(rect, "x")?,
+                field(rect, "y")?,
+                field(rect, "w")?,
+                field(rect, "h")?,
+            ))
+        })
+        .filter(|(_, _, width, height)| *width > 0 && *height > 0)
+        .collect();
+    if parsed.is_empty() {
+        return Vec::new();
+    }
+    // Les dimensions déclarées priment ; à défaut, le plus grand rectangle
+    // couvre l'image entière.
+    let declared = |name: &str| {
+        info.get(name)
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value > 0)
+    };
+    let width = declared("width").unwrap_or_else(|| {
+        parsed
+            .iter()
+            .map(|(x, _, rect_width, _)| x + rect_width)
+            .max()
+            .unwrap_or(0)
+    });
+    let height = declared("height").unwrap_or_else(|| {
+        parsed
+            .iter()
+            .map(|(_, y, _, rect_height)| y + rect_height)
+            .max()
+            .unwrap_or(0)
+    });
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let (width, height) = (width as f32, height as f32);
+    parsed
+        .iter()
+        .map(|(x, y, rect_width, rect_height)| QuoteImageFocus {
+            x: *x as f32 / width,
+            y: *y as f32 / height,
+            width: *rect_width as f32 / width,
+            height: *rect_height as f32 / height,
+        })
+        .collect()
+}
+
+/// URL de l'image du tweet cité : première photo, sinon poster d'une vidéo.
+pub fn quoted_tweet_image_url(value: &Value) -> Option<String> {
+    let quoted = value.get("quoted_tweet")?;
+    collect_photos(quoted)
+        .first()
+        .cloned()
+        .or_else(|| extract_poster(quoted))
 }
 
 /// Chaîne non vide d'une valeur JSON optionnelle.
@@ -740,6 +879,7 @@ mod tests {
     const PHOTO_FIXTURE: &str = include_str!("../../tests/fixtures/twitter_syndication_photo.json");
     const TEXT_FIXTURE: &str = include_str!("../../tests/fixtures/twitter_syndication_text.json");
     const VIDEO_FIXTURE: &str = include_str!("../../tests/fixtures/twitter_syndication_video.json");
+    const QUOTE_FIXTURE: &str = include_str!("../../tests/fixtures/twitter_syndication_quote.json");
 
     fn fixture(raw: &str) -> Value {
         serde_json::from_str(raw).unwrap()
@@ -870,5 +1010,146 @@ mod tests {
             Some("court")
         );
         assert_eq!(extract_full_tweet_text(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn extracts_the_quoted_tweet() {
+        let quote = fixture(QUOTE_FIXTURE);
+        let content = tweet_card_content(&quote);
+        let quoted = content.quoted.as_ref().unwrap();
+        assert_eq!(quoted.author_name, "berkani");
+        assert_eq!(quoted.author_handle, "inconnu95267");
+        assert_eq!(quoted.text, "Allez wAllah https://t.co/tq8tJizsjk");
+        // Le tweet parent n'a aucun média : sa carte doit citer l'image du
+        // tweet cité.
+        assert!(collect_photos(&quote).is_empty());
+        assert_eq!(
+            quoted_tweet_image_url(&quote).as_deref(),
+            Some("https://pbs.twimg.com/media/HXUsq5hWEAA20_W.jpg")
+        );
+        // X suggère plusieurs recadrages : la carte en choisit un pour ne pas
+        // couper le sujet. Les coordonnées sont relatives à l'image source.
+        let (width, height) = (1152.0_f32, 2048.0_f32);
+        assert_eq!(
+            quoted.image_focus,
+            vec![
+                QuoteImageFocus {
+                    x: 0.0,
+                    y: 958.0 / height,
+                    width: 1.0,
+                    height: 645.0 / height,
+                },
+                QuoteImageFocus {
+                    x: 0.0,
+                    y: 704.0 / height,
+                    width: 1.0,
+                    height: 1152.0 / height,
+                },
+                QuoteImageFocus {
+                    x: 0.0,
+                    y: 624.0 / height,
+                    width: 1.0,
+                    height: 1313.0 / height,
+                },
+                QuoteImageFocus {
+                    x: 51.0 / width,
+                    y: 0.0,
+                    width: 1024.0 / width,
+                    height: 1.0,
+                },
+                QuoteImageFocus {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1.0,
+                    height: 1.0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn ignores_focus_rects_outside_the_quoted_media() {
+        let payload = serde_json::json!({
+            "mediaDetails": [{
+                "type": "photo",
+                "original_info": {"focus_rects": [{"x": 0, "y": 0, "w": 100, "h": 100}]}
+            }],
+            "quoted_tweet": {
+                "text": "Sans focus",
+                "user": {"name": "berkani", "screen_name": "inconnu95267"}
+            }
+        });
+        assert!(quoted_tweet_focus_rects(&payload).is_empty());
+    }
+
+    #[test]
+    fn prefers_the_focus_rects_of_the_quoted_photo() {
+        // Une vidéo citée peut porter des recadrages elle aussi : l'image du
+        // bloc étant la photo, ce sont les siens qui doivent être retenus.
+        let payload = serde_json::json!({
+            "quoted_tweet": {
+                "text": "Deux médias",
+                "user": {"name": "berkani", "screen_name": "inconnu95267"},
+                "mediaDetails": [
+                    {
+                        "type": "video",
+                        "original_info": {
+                            "width": 100,
+                            "height": 100,
+                            "focus_rects": [{"x": 0, "y": 0, "w": 100, "h": 100}]
+                        }
+                    },
+                    {
+                        "type": "photo",
+                        "media_url_https": "https://pbs.twimg.com/media/photo.jpg",
+                        "original_info": {
+                            "width": 200,
+                            "height": 100,
+                            "focus_rects": [{"x": 50, "y": 0, "w": 100, "h": 100}]
+                        }
+                    }
+                ]
+            }
+        });
+        let rects = quoted_tweet_focus_rects(&payload);
+        assert_eq!(rects.len(), 1);
+        assert_eq!(rects[0].x, 0.25);
+        assert_eq!(rects[0].width, 0.5);
+        assert_eq!(rects[0].height, 1.0);
+    }
+
+    #[test]
+    fn ignores_a_payload_without_quoted_tweet() {
+        let text = fixture(TEXT_FIXTURE);
+        assert!(quoted_tweet_content(&text).is_none());
+        assert!(quoted_tweet_image_url(&text).is_none());
+        assert!(tweet_card_content(&text).quoted.is_none());
+    }
+
+    #[test]
+    fn falls_back_to_the_quoted_video_poster() {
+        let payload = serde_json::json!({
+            "quoted_tweet": {
+                "text": "Regarde ça",
+                "user": {"name": "berkani", "screen_name": "inconnu95267"},
+                "mediaDetails": [{
+                    "type": "video",
+                    "media_url_https": "https://pbs.twimg.com/amplify_video_thumb/1/img/x.jpg"
+                }]
+            }
+        });
+        assert_eq!(
+            quoted_tweet_image_url(&payload).as_deref(),
+            Some("https://pbs.twimg.com/amplify_video_thumb/1/img/x.jpg")
+        );
+        let quoted = quoted_tweet_content(&payload).unwrap();
+        assert_eq!(quoted.text, "Regarde ça");
+        assert_eq!(quoted.image, None);
+    }
+
+    #[test]
+    fn ignores_an_empty_quoted_tweet() {
+        let payload = serde_json::json!({"quoted_tweet": {"id_str": "42"}});
+        assert!(quoted_tweet_content(&payload).is_none());
     }
 }

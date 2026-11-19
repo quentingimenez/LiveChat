@@ -86,6 +86,37 @@ async fn ingests_text_tweet_as_a_card_image() {
 }
 
 #[tokio::test]
+#[ignore = "nécessite un accès réseau"]
+async fn ingests_a_quoted_tweet_as_a_card_image() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut config = MediaConfig::default();
+    config.storage.directory = temp.path().join("media");
+    let pipeline = MediaPipeline::new(config).unwrap();
+    let media = pipeline
+        .ingest_url("https://x.com/jspjspbref/status/2122727570772811781")
+        .await
+        .unwrap();
+    // Le tweet parent n'a pas de média propre : la carte doit intégrer le
+    // tweet cité (auteur, texte et photo), donc être plus haute qu'une carte
+    // de texte seule.
+    assert_eq!(media.normalized.kind, MediaKind::Image);
+    assert!(media.normalized.storage_path.exists());
+    assert_eq!(
+        media
+            .resolved
+            .as_ref()
+            .and_then(|resolved| resolved.title.as_deref()),
+        Some("essaie de reclipser ta portière")
+    );
+    let bytes = std::fs::read(&media.normalized.storage_path).unwrap();
+    let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    assert!(
+        height > 600,
+        "la carte ne contient pas le tweet cité : {height} px de haut"
+    );
+}
+
+#[tokio::test]
 #[ignore = "nécessite ffmpeg/ffprobe installés"]
 async fn normalizes_generated_sample_with_ffmpeg() {
     let temp = tempfile::TempDir::new().unwrap();

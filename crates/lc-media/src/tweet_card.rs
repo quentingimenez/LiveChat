@@ -3,10 +3,12 @@
 //!
 //! La carte reprend l'aspect sombre de l'overlay : fond arrondi transparent
 //! autour de `#171b25`, avatar circulaire, nom en gras, identifiant et date en
-//! couleur secondaire, puis le texte du tweet. La découverte et le repli des
-//! polices, la mise en forme, la césure et le bidirectionnel sont confiés à
-//! parley (fontique) ; swash rastérise les glyphes (dont les emoji couleur) et
-//! tiny-skia ne sert qu'au fond, aux arrondis et à l'encodage PNG.
+//! couleur secondaire, puis le texte du tweet. Un tweet cité ajoute un bloc
+//! encadré (nom, identifiant, texte et image de la citation) sous le texte.
+//! La découverte et le repli des polices, la mise en forme, la césure et le
+//! bidirectionnel sont confiés à parley (fontique) ; swash rastérise les
+//! glyphes (dont les emoji couleur) et tiny-skia ne sert qu'au fond, aux
+//! arrondis et à l'encodage PNG.
 
 use std::sync::{Mutex, OnceLock};
 
@@ -18,7 +20,9 @@ use swash::scale::image::{Content as SwashContent, Image as SwashImage};
 use swash::scale::{Render, ScaleContext, Source, StrikeWith};
 use swash::zeno::{Format, Vector};
 use swash::FontRef;
-use tiny_skia::{FillRule, Mask, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Rect, Transform};
+use tiny_skia::{
+    FillRule, Mask, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke, Transform,
+};
 
 use crate::error::{MediaError, MediaErrorCode, MediaResult};
 
@@ -51,6 +55,39 @@ const TEXT_LINE_HEIGHT: f32 = TEXT_SIZE * 1.35;
 /// Taille de l'initiale affichée à la place d'un avatar absent.
 const INITIAL_SIZE: f32 = 48.0;
 const INITIAL_LINE_HEIGHT: f32 = 56.0;
+
+/// Marge intérieure du bloc de citation.
+const QUOTE_PADDING: f32 = 26.0;
+/// Rayon des coins du bloc de citation.
+const QUOTE_CORNER_RADIUS: f32 = 20.0;
+/// Épaisseur de la bordure du bloc de citation.
+const QUOTE_BORDER_WIDTH: f32 = 2.0;
+/// Espace entre le texte du tweet et le bloc de citation.
+const QUOTE_GAP: f32 = 28.0;
+/// Espace vertical entre les éléments du bloc de citation.
+const QUOTE_INNER_GAP: f32 = 16.0;
+/// Espace entre le nom et l'identifiant de l'auteur cité.
+const QUOTE_HANDLE_GAP: f32 = 10.0;
+/// Taille du nom de l'auteur cité.
+const QUOTE_NAME_SIZE: f32 = 30.0;
+const QUOTE_NAME_LINE_HEIGHT: f32 = 40.0;
+/// Taille de l'identifiant de l'auteur cité.
+const QUOTE_HANDLE_SIZE: f32 = 28.0;
+const QUOTE_HANDLE_LINE_HEIGHT: f32 = 38.0;
+/// Taille du texte cité (interligne 1,35).
+const QUOTE_TEXT_SIZE: f32 = 34.0;
+const QUOTE_TEXT_LINE_HEIGHT: f32 = QUOTE_TEXT_SIZE * 1.35;
+/// Nombre maximal de lignes du texte cité.
+const QUOTE_MAX_TEXT_LINES: usize = 6;
+/// Hauteur du cadre de l'image citée, déduite du rapport 16:9.
+const QUOTE_IMAGE_ASPECT: f32 = 16.0 / 9.0;
+/// Rayon des coins de l'image citée.
+const QUOTE_IMAGE_RADIUS: f32 = 14.0;
+
+/// Fond du bloc de citation, un peu plus clair que la carte.
+const QUOTE_BACKGROUND: (u8, u8, u8) = (0x20, 0x25, 0x32);
+/// Bordure du bloc de citation.
+const QUOTE_BORDER_COLOR: (u8, u8, u8) = (0x35, 0x3d, 0x4f);
 
 /// Espace entre l'avatar et le bloc nom/identifiant.
 const HEADER_TEXT_GAP: f32 = 24.0;
@@ -88,8 +125,43 @@ const FRENCH_MONTHS: [&str; 12] = [
     "décembre",
 ];
 
+/// Rectangle de recadrage suggéré par X pour une image citée.
+///
+/// Coordonnées relatives à l'image source (0.0 à 1.0) : le rendu les applique
+/// à la taille réelle du PNG reçu, quel que soit le redimensionnement opéré
+/// au téléchargement. X publie plusieurs rectangles (un par format courant) ;
+/// le rendu retient celui qui ressemble le plus au cadre du bloc de citation
+/// pour ne pas couper le sujet de la photo.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct QuoteImageFocus {
+    /// Abscisse relative du coin supérieur gauche.
+    pub x: f32,
+    /// Ordonnée relative du coin supérieur gauche.
+    pub y: f32,
+    /// Largeur relative.
+    pub width: f32,
+    /// Hauteur relative.
+    pub height: f32,
+}
+
+/// Contenu d'un tweet cité, rendu dans un bloc encadré sous le texte.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct QuotedTweetContent {
+    /// Nom d'affichage de l'auteur cité.
+    pub author_name: String,
+    /// Identifiant sans `@` de l'auteur cité.
+    pub author_handle: String,
+    /// Texte du tweet cité.
+    pub text: String,
+    /// Image jointe au tweet cité (photo ou poster de vidéo) en PNG, déjà
+    /// redimensionnée par l'appelant.
+    pub image: Option<Vec<u8>>,
+    /// Recadrages suggérés pour l'image citée, vides si X n'en fournit pas.
+    pub image_focus: Vec<QuoteImageFocus>,
+}
+
 /// Contenu textuel d'une carte tweet.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TweetCardContent {
     /// Nom d'affichage de l'auteur (« jack »).
     pub author_name: String,
@@ -101,6 +173,8 @@ pub struct TweetCardContent {
     pub created_at: Option<String>,
     /// Octets bruts d'un avatar PNG 192×192, si disponible.
     pub avatar: Option<Vec<u8>>,
+    /// Tweet cité par la publication, si elle en cite un.
+    pub quoted: Option<QuotedTweetContent>,
 }
 
 /// Contexte de mise en forme et de rastérisation partagé.
@@ -126,6 +200,49 @@ struct TextStyleSpec {
     line_height: f32,
     bold: bool,
     align: Alignment,
+}
+
+/// En-tête « nom @identifiant » de l'auteur cité.
+struct QuoteHeader {
+    /// Nom de l'auteur cité.
+    name: CardLayout,
+    /// Largeur du nom, pour placer l'identifiant à sa suite.
+    name_width: f32,
+    /// Identifiant (`@handle`) de l'auteur cité, absent quand le nom prend
+    /// toute la largeur.
+    handle: Option<CardLayout>,
+    /// Hauteur de la ligne d'en-tête.
+    height: f32,
+}
+
+/// Image du tweet cité, déjà mise à l'échelle pour la carte.
+struct QuoteImage {
+    pixmap: Pixmap,
+    /// Largeur du cadre affiché.
+    width: u32,
+    /// Hauteur du cadre affiché.
+    height: u32,
+    /// Échelle appliquée à l'image source.
+    scale_x: f32,
+    scale_y: f32,
+    /// Décalage de l'image dans le cadre (recadrage centré).
+    offset_x: f32,
+    offset_y: f32,
+}
+
+/// Disposition du bloc de citation, calculée avant le corps pour réserver la
+/// hauteur nécessaire.
+struct QuoteLayout {
+    /// En-tête de l'auteur cité, absent si le payload n'a ni nom ni handle.
+    header: Option<QuoteHeader>,
+    /// Texte cité, vide si la citation n'a pas de texte.
+    text: BodyLayout,
+    /// Image citée, si la citation en porte une.
+    image: Option<QuoteImage>,
+    /// Hauteur totale du bloc, marges et bordure comprises.
+    height: f32,
+    /// Largeur intérieure disponible pour le contenu.
+    inner_width: f32,
 }
 
 /// Rendu synchrone d'une carte tweet en PNG.
@@ -178,7 +295,15 @@ fn render_with_engine(content: &TweetCardContent, engine: &mut TextEngine) -> Me
     };
     let body_top = PADDING + AVATAR_SIZE + HEADER_GAP;
     let text_width = CARD_WIDTH as f32 - 2.0 * PADDING;
-    let max_text_height = CARD_MAX_HEIGHT as f32 - body_top - footer_height - PADDING;
+    // Le bloc de citation est disposé avant le corps : sa hauteur réduit celle
+    // qui reste au texte du tweet parent.
+    let quote = content
+        .quoted
+        .as_ref()
+        .map(|quoted| layout_quote(engine, quoted, text_width));
+    let quote_height = quote.as_ref().map_or(0.0, |quote| QUOTE_GAP + quote.height);
+    let max_text_height =
+        (CARD_MAX_HEIGHT as f32 - body_top - footer_height - PADDING - quote_height).max(0.0);
     let text = normalized_text(&content.text);
     let body_style = TextStyleSpec {
         size: TEXT_SIZE,
@@ -188,7 +313,7 @@ fn render_with_engine(content: &TweetCardContent, engine: &mut TextEngine) -> Me
         align: Alignment::Start,
     };
     let body = layout_body(engine, &text, body_style, text_width, max_text_height);
-    let content_height = body_top + body.height + footer_height + PADDING;
+    let content_height = body_top + body.height + quote_height + footer_height + PADDING;
     let height = if body.clamped {
         CARD_MAX_HEIGHT
     } else {
@@ -246,6 +371,15 @@ fn render_with_engine(content: &TweetCardContent, engine: &mut TextEngine) -> Me
         SECONDARY_COLOR,
     );
     draw_body(&mut pixmap, &body, engine, (PADDING, body_top), TEXT_COLOR);
+    if let Some(quote) = quote.as_ref() {
+        draw_quote(
+            &mut pixmap,
+            quote,
+            engine,
+            (PADDING, body_top + body.height + QUOTE_GAP),
+            text_width,
+        );
+    }
     if let Some(date) = date {
         let date_layout = single_line_layout(
             engine,
@@ -475,6 +609,301 @@ fn draw_body(
         draw_text(pixmap, paragraph, engine, (origin.0, top), base);
         top += paragraph.height();
     }
+}
+
+/// Dispose le bloc de citation (en-tête, texte et image) pour une largeur
+/// donnée.
+///
+/// La hauteur du bloc est calculée avant le texte du parent : elle sert à
+/// réserver la place, et le texte cité est tronqué à
+/// [`QUOTE_MAX_TEXT_LINES`] lignes pour garder une carte lisible.
+fn layout_quote(engine: &mut TextEngine, quoted: &QuotedTweetContent, width: f32) -> QuoteLayout {
+    let inner_width = (width - 2.0 * (QUOTE_BORDER_WIDTH + QUOTE_PADDING)).max(1.0);
+    let name = quoted.author_name.trim().to_string();
+    let handle = {
+        let handle = quoted.author_handle.trim().trim_start_matches('@');
+        if handle.is_empty() {
+            String::new()
+        } else {
+            format!("@{handle}")
+        }
+    };
+    let name_style = TextStyleSpec {
+        size: QUOTE_NAME_SIZE,
+        line_height: QUOTE_NAME_LINE_HEIGHT,
+        bold: true,
+        align: Alignment::Left,
+    };
+    let header = if name.is_empty() && handle.is_empty() {
+        None
+    } else if name.is_empty() {
+        // Sans nom, l'identifiant tient lieu d'en-tête.
+        let layout = single_line_layout(engine, &handle, name_style, inner_width);
+        Some(QuoteHeader {
+            name_width: layout.width(),
+            name: layout,
+            handle: None,
+            height: QUOTE_NAME_LINE_HEIGHT,
+        })
+    } else {
+        let name_layout = single_line_layout(engine, &name, name_style, inner_width);
+        let name_width = name_layout.width();
+        let remaining = inner_width - name_width - QUOTE_HANDLE_GAP;
+        let handle_layout = (!handle.is_empty() && remaining > 48.0).then(|| {
+            single_line_layout(
+                engine,
+                &handle,
+                TextStyleSpec {
+                    size: QUOTE_HANDLE_SIZE,
+                    line_height: QUOTE_HANDLE_LINE_HEIGHT,
+                    bold: false,
+                    align: Alignment::Left,
+                },
+                remaining,
+            )
+        });
+        Some(QuoteHeader {
+            name: name_layout,
+            name_width,
+            handle: handle_layout,
+            height: QUOTE_NAME_LINE_HEIGHT,
+        })
+    };
+    let text = normalized_text(&quoted.text);
+    let text_layout = if text.is_empty() {
+        BodyLayout {
+            paragraphs: Vec::new(),
+            height: 0.0,
+            clamped: false,
+        }
+    } else {
+        layout_body(
+            engine,
+            &text,
+            TextStyleSpec {
+                size: QUOTE_TEXT_SIZE,
+                line_height: QUOTE_TEXT_LINE_HEIGHT,
+                bold: false,
+                align: Alignment::Start,
+            },
+            inner_width,
+            QUOTE_MAX_TEXT_LINES as f32 * QUOTE_TEXT_LINE_HEIGHT,
+        )
+    };
+    let image = quoted
+        .image
+        .as_deref()
+        .and_then(|bytes| decode_quote_image(bytes, inner_width, &quoted.image_focus));
+    let mut height = 2.0 * (QUOTE_BORDER_WIDTH + QUOTE_PADDING);
+    if let Some(header) = &header {
+        height += header.height;
+    }
+    let has_text = !text_layout.paragraphs.is_empty() && text_layout.height > 0.0;
+    if has_text {
+        if header.is_some() {
+            height += QUOTE_INNER_GAP;
+        }
+        height += text_layout.height;
+    }
+    if let Some(image) = &image {
+        if header.is_some() || has_text {
+            height += QUOTE_INNER_GAP;
+        }
+        height += image.height as f32;
+    }
+    QuoteLayout {
+        header,
+        text: text_layout,
+        image,
+        height,
+        inner_width,
+    }
+}
+
+/// Décode l'image citée et la recadre dans un cadre de `box_width` de large au
+/// rapport [`QUOTE_IMAGE_ASPECT`], façon carte X.
+///
+/// Le recadrage est centré sur le rectangle de `focus_rects` dont le rapport
+/// ressemble le plus au cadre (X suggère ainsi les zones à ne pas couper) ;
+/// sans suggestion, le centre de l'image est utilisé. Une vignette plus petite
+/// que la moitié du cadre garde sa taille (pas d'agrandissement d'une image de
+/// mauvaise qualité) ; une image invalide est ignorée et le bloc reste textuel.
+fn decode_quote_image(
+    bytes: &[u8],
+    box_width: f32,
+    focus_rects: &[QuoteImageFocus],
+) -> Option<QuoteImage> {
+    let pixmap = Pixmap::decode_png(bytes).ok()?;
+    let image_width = pixmap.width() as f32;
+    let image_height = pixmap.height() as f32;
+    if image_width <= 0.0 || image_height <= 0.0 {
+        return None;
+    }
+    let box_height = box_width / QUOTE_IMAGE_ASPECT;
+    let tiny = image_width < box_width * 0.5 && image_height < box_height * 0.5;
+    let (width, height) = if tiny {
+        (image_width, image_height)
+    } else {
+        (box_width, box_height)
+    };
+    // Couverture : l'image remplit le cadre et le surplus est recadré.
+    let scale = (width / image_width).max(height / image_height);
+    let scaled_width = image_width * scale;
+    let scaled_height = image_height * scale;
+    let mut offset_x = (width - scaled_width) / 2.0;
+    let mut offset_y = (height - scaled_height) / 2.0;
+    if !tiny {
+        if let Some(focus) = closest_focus_rect(focus_rects, image_width, image_height) {
+            let center_x = (focus.x + focus.width / 2.0) * image_width;
+            let center_y = (focus.y + focus.height / 2.0) * image_height;
+            offset_x = (width / 2.0 - center_x * scale).clamp(width - scaled_width, 0.0);
+            offset_y = (height / 2.0 - center_y * scale).clamp(height - scaled_height, 0.0);
+        }
+    }
+    Some(QuoteImage {
+        pixmap,
+        width: (width.round() as u32).max(1),
+        height: (height.round() as u32).max(1),
+        scale_x: scale,
+        scale_y: scale,
+        offset_x,
+        offset_y,
+    })
+}
+
+/// Retourne le recadrage suggéré dont le rapport largeur/hauteur est le plus
+/// proche de celui du cadre de citation.
+fn closest_focus_rect(
+    focus_rects: &[QuoteImageFocus],
+    image_width: f32,
+    image_height: f32,
+) -> Option<QuoteImageFocus> {
+    let target = QUOTE_IMAGE_ASPECT.ln();
+    focus_rects
+        .iter()
+        .filter(|focus| focus.width > 0.0 && focus.height > 0.0)
+        .min_by(|left, right| {
+            let ratio = |focus: &QuoteImageFocus| {
+                (focus.width * image_width / (focus.height * image_height)).ln() - target
+            };
+            ratio(left)
+                .abs()
+                .partial_cmp(&ratio(right).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .copied()
+}
+
+/// Peint le bloc de citation : cadre arrondi, en-tête, texte puis image.
+fn draw_quote(
+    pixmap: &mut Pixmap,
+    quote: &QuoteLayout,
+    engine: &mut TextEngine,
+    origin: (f32, f32),
+    width: f32,
+) {
+    let Some(rect) = Rect::from_xywh(origin.0, origin.1, width, quote.height) else {
+        return;
+    };
+    let Some(path) = rounded_rect_path(rect, QUOTE_CORNER_RADIUS) else {
+        return;
+    };
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(
+        QUOTE_BACKGROUND.0,
+        QUOTE_BACKGROUND.1,
+        QUOTE_BACKGROUND.2,
+        255,
+    );
+    paint.anti_alias = true;
+    pixmap.fill_path(
+        &path,
+        &paint,
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
+    paint.set_color_rgba8(
+        QUOTE_BORDER_COLOR.0,
+        QUOTE_BORDER_COLOR.1,
+        QUOTE_BORDER_COLOR.2,
+        255,
+    );
+    let stroke = Stroke {
+        width: QUOTE_BORDER_WIDTH,
+        ..Stroke::default()
+    };
+    pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+
+    let content_x = origin.0 + QUOTE_BORDER_WIDTH + QUOTE_PADDING;
+    let mut top = origin.1 + QUOTE_BORDER_WIDTH + QUOTE_PADDING;
+    if let Some(header) = &quote.header {
+        draw_text(pixmap, &header.name, engine, (content_x, top), TEXT_COLOR);
+        if let Some(handle) = &header.handle {
+            draw_text(
+                pixmap,
+                handle,
+                engine,
+                (content_x + header.name_width + QUOTE_HANDLE_GAP, top),
+                SECONDARY_COLOR,
+            );
+        }
+        top += header.height;
+    }
+    if !quote.text.paragraphs.is_empty() {
+        if quote.header.is_some() {
+            top += QUOTE_INNER_GAP;
+        }
+        draw_body(pixmap, &quote.text, engine, (content_x, top), TEXT_COLOR);
+        top += quote.text.height;
+    }
+    if let Some(image) = &quote.image {
+        if quote.header.is_some() || !quote.text.paragraphs.is_empty() {
+            top += QUOTE_INNER_GAP;
+        }
+        let left = content_x + (quote.inner_width - image.width as f32) / 2.0;
+        draw_quote_image(pixmap, image, left, top);
+    }
+}
+
+/// Peint l'image citée avec des coins arrondis, centrée par l'appelant.
+fn draw_quote_image(pixmap: &mut Pixmap, image: &QuoteImage, left: f32, top: f32) {
+    if image.width == 0 || image.height == 0 {
+        return;
+    }
+    let Some(mut layer) = Pixmap::new(image.width, image.height) else {
+        return;
+    };
+    let paint = PixmapPaint {
+        quality: tiny_skia::FilterQuality::Bicubic,
+        ..PixmapPaint::default()
+    };
+    let scale_x = image.scale_x;
+    let scale_y = image.scale_y;
+    layer.draw_pixmap(
+        0,
+        0,
+        image.pixmap.as_ref(),
+        &paint,
+        Transform::from_row(scale_x, 0.0, 0.0, scale_y, image.offset_x, image.offset_y),
+        None,
+    );
+    if let Some(mut mask) = Mask::new(image.width, image.height) {
+        if let Some(rect) = Rect::from_xywh(0.0, 0.0, image.width as f32, image.height as f32) {
+            if let Some(path) = rounded_rect_path(rect, QUOTE_IMAGE_RADIUS) {
+                mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+                layer.apply_mask(&mask);
+            }
+        }
+    }
+    pixmap.draw_pixmap(
+        left.round() as i32,
+        top.round() as i32,
+        layer.as_ref(),
+        &paint,
+        Transform::identity(),
+        None,
+    );
 }
 
 /// Peint le fond arrondi de la carte.
@@ -844,6 +1273,7 @@ mod tests {
 
     const TEXT_FIXTURE: &str = include_str!("../tests/fixtures/twitter_syndication_text.json");
     const PHOTO_FIXTURE: &str = include_str!("../tests/fixtures/twitter_syndication_photo.json");
+    const QUOTE_FIXTURE: &str = include_str!("../tests/fixtures/twitter_syndication_quote.json");
     const PREVIEW_PATH: &str = r"C:\Users\SUPERK~1\AppData\Local\Temp\claude\68a8acc7ef5015a3\60808cc6-e051-4c46-99bd-bf2036662783\scratchpad\tweet-card-preview.png";
 
     fn content_from(raw: &str) -> TweetCardContent {
@@ -888,6 +1318,7 @@ mod tests {
             text: "مرحبا بالعالم 🚨🚀\nسطر جديد مع emoji 🎉".to_string(),
             created_at: Some("2026-11-17T16:16:02.000Z".to_string()),
             avatar: None,
+            quoted: None,
         };
         let png = render_tweet_card(&content).unwrap();
         assert_valid_card(&png);
@@ -907,6 +1338,7 @@ mod tests {
             text: "🚨 قنبلة نووية في عالم الذكاء الاصطناعي: إسقاط كامل 🔥🔥\nLigne française mêlée avec des emoji 😂👍.".to_string(),
             created_at: Some("2026-11-18T10:00:00.000Z".to_string()),
             avatar: None,
+            quoted: None,
         };
         let png = render_tweet_card(&content).unwrap();
         let card = Pixmap::decode_png(&png).unwrap();
@@ -959,6 +1391,7 @@ mod tests {
             text: "un tweet interminable ".repeat(2000),
             created_at: Some("2006-03-21T20:50:14.000Z".to_string()),
             avatar: None,
+            quoted: None,
         };
         let png = render_tweet_card(&content).unwrap();
         let (_, height) = assert_valid_card(&png);
@@ -973,6 +1406,7 @@ mod tests {
             text: "Une photo de remplacement".to_string(),
             created_at: None,
             avatar: Some(b"pas un PNG".to_vec()),
+            quoted: None,
         };
         let png = render_tweet_card(&content).unwrap();
         assert_valid_card(&png);
@@ -1006,6 +1440,142 @@ mod tests {
         assert!(!content.text.is_empty());
         let png = render_tweet_card(&content).unwrap();
         assert_valid_card(&png);
+    }
+
+    /// Petit PNG uni, pour vérifier le rendu d'une image citée.
+    fn solid_png(width: u32, height: u32) -> Vec<u8> {
+        let mut pixmap = Pixmap::new(width, height).unwrap();
+        pixmap.fill(tiny_skia::Color::from_rgba8(0x40, 0x80, 0xc0, 0xff));
+        pixmap.encode_png().unwrap()
+    }
+
+    /// PNG de `width`×`height` : moitié haute rouge, moitié basse verte.
+    fn split_png(width: u32, height: u32) -> Vec<u8> {
+        let mut pixmap = Pixmap::new(width, height).unwrap();
+        let mut paint = Paint {
+            anti_alias: false,
+            ..Paint::default()
+        };
+        paint.set_color_rgba8(0xd0, 0x30, 0x30, 0xff);
+        let top = Rect::from_xywh(0.0, 0.0, width as f32, (height / 2) as f32).unwrap();
+        pixmap.fill_rect(top, &paint, Transform::identity(), None);
+        paint.set_color_rgba8(0x30, 0xc0, 0x50, 0xff);
+        let bottom = Rect::from_xywh(
+            0.0,
+            (height / 2) as f32,
+            width as f32,
+            (height - height / 2) as f32,
+        )
+        .unwrap();
+        pixmap.fill_rect(bottom, &paint, Transform::identity(), None);
+        pixmap.encode_png().unwrap()
+    }
+
+    /// Compte les pixels franchement rouges et verts d'une carte rendue.
+    fn tone_counts(png: &[u8]) -> (usize, usize) {
+        let pixmap = Pixmap::decode_png(png).unwrap();
+        let mut red = 0;
+        let mut green = 0;
+        for pixel in pixmap.pixels() {
+            let (r, g) = (pixel.red(), pixel.green());
+            if r > g.saturating_add(40) {
+                red += 1;
+            } else if g > r.saturating_add(40) {
+                green += 1;
+            }
+        }
+        (red, green)
+    }
+
+    #[test]
+    fn renders_a_quoted_tweet_block_from_the_fixture() {
+        let content = content_from(QUOTE_FIXTURE);
+        let quoted = content.quoted.as_ref().unwrap();
+        assert_eq!(quoted.author_name, "berkani");
+        assert_eq!(quoted.author_handle, "inconnu95267");
+        assert_eq!(quoted.text, "Allez wAllah https://t.co/tq8tJizsjk");
+        assert_eq!(quoted.image, None);
+        let with_quote = render_tweet_card(&content).unwrap();
+        assert_valid_card(&with_quote);
+
+        // Le bloc de citation ajoute de la hauteur sous le texte du parent.
+        let mut bare = content.clone();
+        bare.quoted = None;
+        let without_quote = render_tweet_card(&bare).unwrap();
+        let (_, with_height) = png_dimensions(&with_quote);
+        let (_, without_height) = png_dimensions(&without_quote);
+        assert!(
+            with_height > without_height,
+            "citation non rendue : {with_height} px contre {without_height} px sans citation"
+        );
+    }
+
+    #[test]
+    fn renders_a_quoted_tweet_with_an_image() {
+        let mut content = content_from(QUOTE_FIXTURE);
+        content.quoted.as_mut().unwrap().image = Some(solid_png(320, 200));
+        let png = render_tweet_card(&content).unwrap();
+        let (_, with_image) = assert_valid_card(&png);
+
+        let mut text_only = content.clone();
+        text_only.quoted.as_mut().unwrap().image = None;
+        let (_, without_image) = assert_valid_card(&render_tweet_card(&text_only).unwrap());
+        assert!(
+            with_image > without_image,
+            "image citée non rendue : {with_image} px contre {without_image} px sans image"
+        );
+    }
+
+    #[test]
+    fn ignores_an_invalid_quoted_image() {
+        let mut content = content_from(QUOTE_FIXTURE);
+        content.quoted.as_mut().unwrap().image = Some(b"pas un PNG".to_vec());
+        let png = render_tweet_card(&content).unwrap();
+        assert_valid_card(&png);
+    }
+
+    #[test]
+    fn renders_a_quoted_tweet_without_author_or_text() {
+        let content = TweetCardContent {
+            author_name: "jack".to_string(),
+            author_handle: "jack".to_string(),
+            text: "un tweet qui cite une image".to_string(),
+            created_at: None,
+            avatar: None,
+            quoted: Some(QuotedTweetContent {
+                author_name: String::new(),
+                author_handle: String::new(),
+                text: String::new(),
+                image: Some(solid_png(200, 120)),
+                image_focus: Vec::new(),
+            }),
+        };
+        let png = render_tweet_card(&content).unwrap();
+        assert_valid_card(&png);
+    }
+
+    #[test]
+    fn crops_the_quoted_image_on_the_suggested_focus() {
+        let mut content = content_from(QUOTE_FIXTURE);
+        {
+            let quoted = content.quoted.as_mut().unwrap();
+            quoted.image = Some(split_png(400, 400));
+            // X suggère de cadrer le bas de la photo : le recadrage doit
+            // suivre cette suggestion plutôt que le centre de l'image.
+            quoted.image_focus = vec![QuoteImageFocus {
+                x: 0.0,
+                y: 0.5,
+                width: 1.0,
+                height: 0.5,
+            }];
+        }
+        let png = render_tweet_card(&content).unwrap();
+        assert_valid_card(&png);
+        let (red, green) = tone_counts(&png);
+        assert!(
+            green > red * 3,
+            "recadrage non aligné sur le focus : {green} pixels verts contre {red} rouges"
+        );
     }
 
     #[test]

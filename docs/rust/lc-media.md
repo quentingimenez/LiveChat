@@ -159,7 +159,11 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
   par slide, 5 candidats audio) et des URL brutes `~tplv-photomode-image`.
 - X/Twitter : carte oEmbed (HTML assaini) + variantes vidéo via
   `cdn.syndication.twimg.com/tweet-result`, repli sur les balises `og:video:*` et
-  `video.twimg.com` ; `TweetCard { url, html, author_name, author_url }`.
+  `video.twimg.com` ; `TweetCard { url, html, author_name, author_url }`. Le payload
+  nourrit aussi `tweet_card_content` : auteur, texte (`note_tweet` en priorité), date,
+  et le tweet cité (`quoted_tweet`) — auteur, texte, première photo (ou poster de
+  vidéo) et ses `original_info.focus_rects` convertis en rectangles relatifs
+  (`QuoteImageFocus`).
 
 ### Téléchargement (`download`)
 
@@ -179,6 +183,17 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
 - `yt-dlp` imprime aussi le titre de la source (`--print after_move:%(title)s` avant
   `after_move:filepath`) : `parse_ytdlp_output` renvoie `YtdlpOutput { path, title }`
   (`NA`/vide → `None`), le titre atterrit dans `DownloadResult.title`.
+- `download_twitter` : vidéo d'abord (variantes du payload), puis photo unique, carrousel
+  (≥ 2 photos), sinon carte tweet PNG. La carte est rendue par `tweet_card` (parley +
+  swash + tiny-skia) : en-tête avatar/nom/@handle, texte du parent, date, et depuis la
+  correction « tweets cités » un bloc de citation encadré — nom/@handle du tweet cité,
+  son texte, et son image (photo ou poster de vidéo) téléchargée puis convertie en PNG
+  par ffmpeg (tiny-skia ne décode que le PNG) et recadrée en 16:9 sur le
+  `focus_rects` suggéré par X. L'avatar et l'image citée sont facultatifs : toute
+  erreur les omet sans faire échouer le téléchargement. Limite connue : quand le
+  tweet parent porte lui-même une photo ou une vidéo, c'est ce média qui est joué
+  (la citation n'est rendue que par la carte, donc uniquement pour les tweets sans
+  média propre).
 - `DownloadResult { path, kind, mime, size_bytes, source_url, title }`.
 
 ### Sonde (`probe`)
@@ -357,7 +372,7 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
 
 ## Tests
 
-- 130 tests unitaires dans la crate (URL/hash, résolution offline sur fixtures, parsing
+- 218 tests unitaires dans la crate (URL/hash, résolution offline sur fixtures, parsing
   HTML/JSON, arguments ffmpeg, décisions de copie, éviction LRU, configuration, erreurs,
   garde SSRF : schémas/UNC, plages IPv4/IPv6, redirections ; stockage : racine
   canonicalisée fail-closed, chemins de transit, publication atomique, purge ciblée des
@@ -367,6 +382,10 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
   `probe_args` protégeant un chemin en `-…`, sortie de commande plafonnée
   (`oversized_output_is_rejected`), validation du cookie TikTok (contrôle de
   caractères, taille), et sanitizer HTML allowlist (XSS, blocs actifs, `rel`/`target`).
+  Le rendu des cartes tweet couvre le bloc de citation : extraction du
+  `quoted_tweet` (auteur, texte, photo, poster de vidéo, `focus_rects`), image
+  citée en PNG, recadrage sur le focus suggéré, et absence de casse quand l'auteur,
+  le texte ou l'image de la citation manquent.
 - `tests/offline.rs` : 7 tests sur fixtures (`tiktok_video.html`, `tiktok_photo.html`,
   `twitter_syndication.json`, `yt_dlp_dump.json`, `youtube_oembed.json`,
   `tiktok_oembed.json`).
@@ -374,8 +393,9 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
   connexion** (sentinelle `TcpListener` + `accept()`/`WouldBlock`), schémas/UNC refusés,
   redirection interne refusée, IP publique littérale acceptée sans DNS, plages
   privées/métadonnées refusées.
-- `tests/network.rs` : 4 tests marqués `#[ignore]` (YouTube e2e, TikTok en ligne, carte
-  tweet, échantillon `testsrc` ffmpeg) ; ils nécessitent réseau + `ffmpeg`/`yt-dlp`.
+- `tests/network.rs` : 10 tests marqués `#[ignore]` (YouTube e2e, TikTok en ligne,
+  cartes tweet — texte, photo, tweet cité —, échantillon `testsrc` ffmpeg) ; ils
+  nécessitent réseau + `ffmpeg`/`yt-dlp`.
 - Doctest de la crate : 1.
 
 Commandes :

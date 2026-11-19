@@ -137,7 +137,7 @@ Options de l'URL :
 | `?empty` | Démarre sans aucune guilde : la page Paramètres et le rail restent utilisables. |
 | `?settings` | `board_take_pending_view` renvoie `settings` une fois au démarrage : la page Paramètres s'ouvre, comme après l'entrée tray « Paramètres… ». |
 | `?removed` | Met un retrait de guilde en attente au démarrage. |
-| `?media` | « Chat qui tombe » et « Vine boom » deviennent une vraie vidéo et un vrai son (`dev/fixtures/`), pour essayer l'éditeur de média (frise, découpe, recadrage). |
+| `?media` | Chaque carte sert un média réel distinct de `dev/fixtures/` (vidéo, images JPEG, son avec pochette) et les guildes du rail affichent leurs icônes : vignettes, éditeur de média (frise, découpe, recadrage) et captures du README rendent comme la vraie board. |
 | `?update=ready` | L'updater démarre sur `ready` (version 3.2.0 disponible) : le bandeau de mise à jour s'affiche en haut de la fenêtre, sur toutes les pages. « Plus tard » le masque pour cette version (localStorage) ; « Redémarrer et installer » échoue et montre l'erreur dans le bandeau. |
 | `?update=downloading` | L'updater démarre sur `downloading` (version 3.2.0) : le bandeau montre « Téléchargement de LiveChat 3.2.0… » sans bouton. |
 

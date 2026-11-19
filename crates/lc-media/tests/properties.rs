@@ -487,6 +487,33 @@ proptest! {
     }
 }
 
+/// The random neighbor property above only kills the over-block mutants
+/// probabilistically: its 256 cases may or may not draw an address with a
+/// 51, 100 or 2 octet, and a nightly runner can miss the draw (this
+/// actually happened: guard.rs:153:45 `&&` -> `||` survived a full CI run).
+/// These literal neighbors pin the exact boundaries such a mutant
+/// over-blocks, deterministically and per arm.
+#[test]
+fn documentation_range_neighbors_pin_the_boundary_literals() {
+    let neighbors = [
+        "192.0.3.1",    // a block keyed on 192.x.x.x alone rejects it
+        "192.0.5.1",    // a block keyed on 192.0.x.x alone rejects it
+        "192.169.2.1",  // a block keyed on any x.x.2 octet alone rejects it
+        "198.51.101.1", // a block keyed on 198.51.x.x alone rejects it
+        "198.52.100.1", // a block keyed on 198.x.x.100 alone rejects it
+        "203.0.114.1",  // a block keyed on 203.x.x.x alone rejects it
+        "203.5.113.1",  // a block keyed on 203.x.x.113 alone rejects it
+    ];
+    for ip in neighbors {
+        let parsed: Ipv4Addr = ip.parse().unwrap();
+        assert_eq!(
+            ip_block_reason(IpAddr::V4(parsed)),
+            None,
+            "public IPv4 {ip} neighboring a blocked range was rejected"
+        );
+    }
+}
+
 /// The IPv6 reason labels are user-facing policy text, and they keep a
 /// plain loopback distinct from an IPv4-mapped one: deleting a mapped
 /// arm of `ipv6_block_reason`, or weakening the mapped detection itself

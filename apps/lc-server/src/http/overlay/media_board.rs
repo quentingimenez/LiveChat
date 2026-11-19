@@ -160,6 +160,12 @@ pub(crate) struct CreateItemRequest {
     /// créer d'item de board (droit `TriggerPlayback` au lieu d'`AddMedia`).
     #[serde(default)]
     play_once: bool,
+    /// Durée d'affichage demandée pour le « Jouer une fois » (1 à 600 s).
+    /// Absente ou `null` : durée par défaut de la guilde. Le genre du média
+    /// n'est connu qu'après l'ingestion : la valeur n'est appliquée qu'à une
+    /// image (une vidéo ou un son garde sa propre durée).
+    #[serde(default)]
+    display_duration_sec: Option<serde_json::Value>,
 }
 
 /// Board list shared by `GET /overlay/media-board/items` and the admin console.
@@ -397,6 +403,22 @@ pub async fn create_item(
             return response;
         }
     }
+    // The display time only belongs to a play once; its media kind is unknown
+    // until the ingestion, so only the bounds are checked here.
+    if !payload.play_once && payload.display_duration_sec.is_some() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({
+                "error": "invalid_payload",
+                "message": "displayDurationSec is only allowed for a play once",
+            }),
+        );
+    }
+    let display_duration_sec =
+        match play_once_display_duration(payload.display_duration_sec.as_ref()) {
+            Ok(seconds) => seconds,
+            Err(response) => return response,
+        };
     let url = payload
         .url
         .as_deref()
@@ -427,7 +449,9 @@ pub async fn create_item(
     };
 
     let target = if payload.play_once {
-        BoardTarget::PlayOnce
+        BoardTarget::PlayOnce {
+            display_duration_sec,
+        }
     } else {
         BoardTarget::NewItem
     };
@@ -1355,6 +1379,39 @@ fn invalid_display_duration() -> Response {
         serde_json::json!({
             "error": "invalid_payload",
             "message": "displayDurationSec must be an integer between 1 and 600, or null, on an image",
+        }),
+    )
+}
+
+/// Reads the optional `displayDurationSec` sent with a play once.
+///
+/// Absent or `null` → `None` (the guild default). The media kind is unknown
+/// before the ingestion, so only the bounds are checked here: the value is
+/// applied to the playback job when the ready asset is an image (see
+/// [`super::media_ingestion`]).
+pub(super) fn play_once_display_duration(
+    raw: Option<&serde_json::Value>,
+) -> Result<Option<i64>, Response> {
+    match raw {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => match value.as_i64() {
+            Some(seconds) if lc_domain::entities::is_valid_display_duration(seconds) => {
+                Ok(Some(seconds))
+            }
+            _ => Err(invalid_play_once_duration()),
+        },
+    }
+}
+
+/// `400 invalid_payload` for a play-once display time out of bounds or not an
+/// integer. The media kind is not known yet, so this message never mentions
+/// the kind.
+pub(super) fn invalid_play_once_duration() -> Response {
+    json_response(
+        StatusCode::BAD_REQUEST,
+        serde_json::json!({
+            "error": "invalid_payload",
+            "message": "displayDurationSec must be an integer between 1 and 600, or null",
         }),
     )
 }

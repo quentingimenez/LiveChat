@@ -261,6 +261,9 @@ struct MediaUploadStartRequest {
     /// The file is played once on the overlays instead of joining the board.
     #[serde(default)]
     play_once: bool,
+    /// Display time of the play once, in whole seconds (1..=600).
+    #[serde(default)]
+    display_duration_sec: Option<Value>,
 }
 
 /// Payload of `media_upload_finish` / `media_upload_cancel`.
@@ -1408,6 +1411,20 @@ pub fn media_upload_start(
 ) -> Result<upload::MediaUploadStartResponse, String> {
     ensure_allowed(&window, "media_upload_start")?;
     let parsed = serde_json::from_value::<MediaUploadStartRequest>(payload).unwrap_or_default();
+    // The display time only belongs to a play once; its media kind is decided
+    // by the server's ingestion, so only the bounds are checked here.
+    let display_duration_sec = match parsed.display_duration_sec.as_ref() {
+        None | Some(Value::Null) => None,
+        Some(value) => match value.as_i64() {
+            Some(seconds) if lc_domain::entities::is_valid_display_duration(seconds) => {
+                Some(seconds)
+            }
+            _ => return Err("durée d'affichage invalide".to_string()),
+        },
+    };
+    if !parsed.play_once && display_duration_sec.is_some() {
+        return Err("durée d'affichage réservée au « Jouer une fois »".to_string());
+    }
     let guild_id = target_guild(&state, parsed.guild_id.as_deref())
         .ok_or_else(|| "guilde inconnue".to_string())?;
     let membership = state
@@ -1424,6 +1441,11 @@ pub fn media_upload_start(
         content_type: parsed.content_type.as_deref(),
         replace_item_id: parsed.replace_item_id.as_deref(),
         play_once: parsed.play_once,
+        display_duration_sec: if parsed.play_once {
+            display_duration_sec
+        } else {
+            None
+        },
     })?;
     let insecure = crate::net::tls::insecure_tls_enabled();
     let target = upload::UploadTarget {

@@ -1110,6 +1110,71 @@ async fn play_once_upload_creates_a_job_and_no_item() {
     assert_eq!(payload.job_id.as_deref(), Some(job_id.as_str()));
 }
 
+/// « Jouer une fois » d'un fichier image : le temps d'affichage demandé porte
+/// la durée du job de lecture.
+#[tokio::test]
+async fn play_once_upload_uses_the_display_time_of_an_image() {
+    let dir = TempDir::new().unwrap();
+    let (app, db, state, _hub) = harness(&dir.path().join("media"), 4).await;
+    let client = insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
+
+    let description = json!({
+        "filename": "photo.png",
+        "playOnce": true,
+        "displayDurationSec": 12,
+    });
+    let (status, body) = upload_file(&app, TOKEN, description, TINY_PNG).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let ingestion_id = body["ingestionId"].as_str().unwrap().to_owned();
+
+    let entry = wait_finished(&state, client.id.as_uuid(), &ingestion_id).await;
+    assert_eq!(entry.status, IngestionStatus::Ready, "{entry:?}");
+    let job_id = entry.job_id.clone().expect("jobId de l'ingestion");
+    let pending = db
+        .playback_jobs()
+        .list_pending_by_guild(&guild())
+        .await
+        .unwrap();
+    let job = pending
+        .iter()
+        .find(|job| job.id.to_canonical() == job_id)
+        .expect("job persisté");
+    assert_eq!(job.duration_sec, 12);
+}
+
+/// Le temps d'affichage d'un envoi est borné à 1..=600 s entiers et n'est
+/// accepté qu'avec « Jouer une fois » : rien n'est enregistré sinon.
+#[tokio::test]
+async fn play_once_upload_validates_the_display_time() {
+    let dir = TempDir::new().unwrap();
+    let (app, db, state, _hub) = harness(&dir.path().join("media"), 4).await;
+    insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
+
+    for seconds in [json!(0), json!(601), json!(1.5)] {
+        let description = json!({
+            "filename": "photo.png",
+            "size": 10,
+            "playOnce": true,
+            "displayDurationSec": seconds,
+        });
+        let (status, body) = send_json(&app, create_request(TOKEN, &description)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{seconds} : {body}");
+        assert_eq!(body["error"], "invalid_payload", "{seconds} : {body}");
+    }
+    let description = json!({
+        "filename": "photo.png",
+        "size": 10,
+        "displayDurationSec": 12,
+    });
+    let (status, body) = send_json(&app, create_request(TOKEN, &description)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["message"],
+        "displayDurationSec is only allowed for a play once"
+    );
+    assert!(state.uploads.is_empty());
+}
+
 /// « Jouer une fois » par fichier exige `TriggerPlayback` (403 comme les
 /// autres refus), et refuse un `replaceItemId` : rien ne remplacera un item
 /// d'un média qui ne rejoindra pas le board.

@@ -2161,11 +2161,11 @@ mod tests {
 
     #[test]
     fn places_a_photo_one_ulp_wider_than_its_cell_without_panicking() {
-        // Régression : le filtre ffmpeg `scale=1800:1800:force_original_aspect_
-        // ratio=decrease` agrandit les petites images, donc une photo 1234×1326
-        // arrive à 1675×1800. Dans une cellule de 984 × 553,5 px,
-        // `1675,0 * scale` vaut 983,99994 : la borne basse du recadrage valait
-        // +6,1e-5 au lieu d'être négative et `f32::clamp(min, 0.0)` paniquait
+        // Régression : une photo de 1675×1800 (petite photo agrandie à 1800 px
+        // par l'ancien filtre ffmpeg `scale=1800:1800:force_original_aspect_
+        // ratio=decrease`) dans une cellule de 984 × 553,5 px : `1675,0 * scale`
+        // vaut 983,99994, la borne basse du recadrage valait +6,1e-5 au lieu
+        // d'être négative et `f32::clamp(min, 0.0)` paniquait
         // (« min > max, or either was NaN »), faisant échouer toute l'ingestion.
         let mut content = content_from(PHOTO_FIXTURE);
         content.photos = vec![TweetPhoto {

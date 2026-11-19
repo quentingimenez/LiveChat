@@ -28,11 +28,14 @@ Le protocole v2 est **gelé** ([`docs/rust/protocol-v2.md`](../../../docs/rust/p
    cargo xtask verify --offline --mutants
    ```
    Le stage mutants termine en FAIL/exit 1 tant qu'il reste un mutant manqué :
-   **kill-or-justify** — chaque mutant manqué tué par un test, ou justifié
-   équivalent (exemple canonique : `playback_jobs.rs:211`, bras race-only, voir
-   `docs/rust/verification.md` §5-6). La règle : 0 mutant produit manqué **non
-   justifié** en `crates/` et `apps/` dans le stage local (diff de branche) ; les
-   missed xtask sont tolérés mais comptés.
+   **kill-or-justify** — chaque mutant manqué tué par un test, ou justifié avec
+   `fichier:ligne` + catégorie + risque résiduel (exemple canonique :
+   `playback_jobs.rs:211`, bras race-only, voir
+   `docs/rust/verification.md` §5-6). La règle : **0 mutant manqué non
+   justifié**. En `crates/` et `apps/` du stage local (diff de branche), rien
+   ne survit sans justification ; pour `xtask/`, la liste exacte des survivants
+   justifiés et leurs catégories vit dans `docs/rust/verification.md` §5 —
+   aucun survivant n'y est toléré sans raison tracée.
 5. **Sabotage** : casser volontairement l'invariant **produit** (jamais le harnais),
    regarder le test nommé échouer avec un message exploitable, puis réverté
    byte-identique (vérifier le hash/MD5 du fichier). Consigner la preuve dans le

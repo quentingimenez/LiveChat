@@ -126,7 +126,7 @@
     showText: true,
     hoverDetails: true,
     autoStart: false,
-    shortcuts: { stop: 'CommandOrControl+Shift+S', stopLocal: null, muteAll: null },
+    shortcuts: { stop: 'CommandOrControl+Shift+S', stopLocal: null, muteAll: null, openBoard: null },
     layout: { zone: { x: 0, y: 0, width: 1, height: 1 }, align: 'center' },
     placing: false,
     profile: { displayName: 'Quentin', avatar: null },
@@ -380,7 +380,7 @@
     if ('shortcuts' in input) {
       const shortcuts = input.shortcuts;
       if (shortcuts === null) {
-        next.shortcuts = { stop: null, stopLocal: null, muteAll: null };
+        next.shortcuts = { stop: null, stopLocal: null, muteAll: null, openBoard: null };
       } else if (!shortcuts || typeof shortcuts !== 'object') {
         return settingsError('shortcuts', 'Raccourcis invalides.');
       } else {

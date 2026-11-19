@@ -44,6 +44,7 @@ const SHORTCUTS = [
   ['stop', 'Arrêter le média pour tous'],
   ['stopLocal', 'Arrêter le média chez moi'],
   ['muteAll', 'Tout mettre en pause'],
+  ['openBoard', 'Ouvrir la board'],
 ];
 
 // Resolved from this module, so it works from web/board.html and from the

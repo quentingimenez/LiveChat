@@ -421,6 +421,9 @@ fn apply_shortcuts_patch(
             if let Some(mute_all) = text_or_null(shortcuts, "muteAll", "shortcuts.muteAll")? {
                 config.shortcuts.mute_all = mute_all;
             }
+            if let Some(open_board) = text_or_null(shortcuts, "openBoard", "shortcuts.openBoard")? {
+                config.shortcuts.open_board = open_board;
+            }
         }
         _ => {
             return Err(SettingsError::new(
@@ -817,6 +820,44 @@ mod tests {
         )
         .expect("cleared shortcut");
         assert!(cleared.shortcuts.stop_local.is_none());
+    }
+
+    #[test]
+    fn settings_set_stores_and_clears_the_open_board_shortcut() {
+        let patched = apply_settings_patch(
+            &paired_config(),
+            &json!({ "shortcuts": { "openBoard": " Ctrl+Shift+B " } }),
+            &sample_displays(),
+        )
+        .expect("open board shortcut");
+        assert_eq!(
+            patched.shortcuts.open_board.as_deref(),
+            Some("Ctrl+Shift+B")
+        );
+        let view = build_settings_view(&patched, &sample_displays(), Some(0), true, idle_update());
+        let value = serde_json::to_value(view).expect("serializable view");
+        assert_eq!(value["shortcuts"]["openBoard"], json!("Ctrl+Shift+B"));
+
+        let cleared = apply_settings_patch(
+            &patched,
+            &json!({ "shortcuts": { "openBoard": null } }),
+            &sample_displays(),
+        )
+        .expect("cleared shortcut");
+        assert!(cleared.shortcuts.open_board.is_none());
+    }
+
+    #[test]
+    fn settings_set_rejects_an_open_board_shortcut_used_by_another_action() {
+        let mut config = paired_config();
+        config.shortcuts.stop = Some("Ctrl+Shift+S".to_string());
+        let error = apply_settings_patch(
+            &config,
+            &json!({ "shortcuts": { "openBoard": "Control+Shift+S" } }),
+            &sample_displays(),
+        )
+        .expect_err("duplicate shortcut");
+        assert_eq!(error.field, "shortcuts.openBoard");
     }
 
     #[test]

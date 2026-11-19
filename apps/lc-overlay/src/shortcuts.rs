@@ -53,9 +53,9 @@ fn shortcut_matches(configured: Option<&str>, shortcut: &Shortcut) -> bool {
     })
 }
 
-/// Validates the persisted global shortcuts (stop, local stop, mute-all)
-/// against the media bindings and each other before anything is registered
-/// or saved.
+/// Validates the persisted global shortcuts (stop, local stop, mute-all, open
+/// board) against the media bindings and each other before anything is
+/// registered or saved.
 pub fn validate_shortcut_settings(
     shortcuts: &ShortcutSettings,
     media_bindings: &MediaBindings,
@@ -235,6 +235,11 @@ pub fn handle_shortcut_pressed(
     shortcut: &tauri_plugin_global_shortcut::Shortcut,
 ) {
     let config = app.state::<AppState>().config_snapshot();
+    if shortcut_matches(config.shortcuts.open_board.as_deref(), shortcut) {
+        crate::windows::show_board(app);
+        tracing::info!("ouverture de la board demandée par le raccourci global");
+        return;
+    }
     if shortcut_matches(config.shortcuts.mute_all.as_deref(), shortcut) {
         crate::tray::toggle_general_mute(app);
         crate::tray::refresh_tray(app);
@@ -323,11 +328,11 @@ fn restore_previous_shortcuts(app: &AppHandle<Wry>, previous: &ShortcutSettings)
     }
 }
 
-/// Replaces the configured stop / mute-all registrations transactionally.
+/// Replaces the configured stop / mute-all / open-board registrations transactionally.
 ///
 /// The previous shortcuts are unregistered first so shortcuts can be moved
-/// between the two actions. If the OS refuses a new accelerator, every new
-/// registration is removed and the previous ones are restored.
+/// between the configured actions. If the OS refuses a new accelerator, every
+/// new registration is removed and the previous ones are restored.
 pub fn replace_configured_shortcuts(
     app: &AppHandle<Wry>,
     previous: &ShortcutSettings,

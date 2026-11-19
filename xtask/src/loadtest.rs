@@ -31,6 +31,7 @@
 //! connected, which is what the harness must measure.
 
 use std::{
+    future::Future,
     io,
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
@@ -113,8 +114,6 @@ pub enum LoadtestError {
     EarlyExit(Option<ExitStatus>),
     #[error("server never reported a healthy database within 30 s")]
     Unhealthy,
-    #[error("health probe error: {0}")]
-    Health(String),
     #[error("could not serialize the report: {0}")]
     Serialize(#[from] serde_json::Error),
     #[error("could not write the report to `{}`: {}", .0.display(), .1)]
@@ -122,23 +121,9 @@ pub enum LoadtestError {
 }
 
 /// Runs the harness. Returns the process exit code: 0 when every budget
-/// passes, 1 otherwise (a harness failure also maps to 1).
-pub async fn execute(options: Options) -> u8 {
-    match run(&options).await {
-        Ok(code) => code,
-        Err(err) => {
-            eprintln!("xtask loadtest: {err}");
-            1
-        }
-    }
-}
-
-async fn run(options: &Options) -> Result<u8, LoadtestError> {
-    if !options.server_bin.is_file() {
-        return Err(LoadtestError::ServerBinaryMissing(
-            options.server_bin.clone(),
-        ));
-    }
+/// passes, 1 otherwise (a harness failure is reported by the caller).
+pub(crate) async fn run(options: &Options) -> Result<u8, LoadtestError> {
+    check_server_binary(&options.server_bin)?;
 
     // Fresh database in a throwaway directory: seeding happens before the
     // server process opens the same file through DATABASE_URL.
@@ -160,7 +145,41 @@ async fn run(options: &Options) -> Result<u8, LoadtestError> {
                 .map_err(LoadtestError::Spawn)?,
         ),
     };
-    wait_healthy(port, &mut guard).await?;
+    // Readiness gate: probe /health until the database is reported healthy,
+    // the child exits, or HEALTH_TIMEOUT elapses.
+    let deadline = health_deadline(Instant::now());
+    let probe_client = reqwest::Client::new();
+    let health_url = format!("http://127.0.0.1:{port}/health");
+    let probe = || {
+        let client = probe_client.clone();
+        let url = health_url.clone();
+        async move {
+            // `Client::new()` cannot fail for this harness: its only error
+            // mode is a TLS/rustls backend init failure, and the old builder
+            // path mapped that to a `Health` error that was unreachable in
+            // practice. A transport or JSON error keeps the retry loop
+            // running until the deadline, as before.
+            match client
+                .get(&url)
+                .timeout(Duration::from_secs(2))
+                .send()
+                .await
+            {
+                Ok(response) => match response.json::<Value>().await {
+                    Ok(payload) => Ok(is_healthy_body(&payload)),
+                    Err(_) => Ok(false),
+                },
+                Err(_) => Ok(false),
+            }
+        }
+    };
+    wait_healthy_with(
+        probe,
+        || guard.try_wait().ok().flatten(),
+        deadline,
+        HEALTH_POLL_INTERVAL,
+    )
+    .await?;
     let server_pid = guard.pid();
 
     // The measured window starts now: the ingest poster stops at `end`,
@@ -193,17 +212,13 @@ async fn run(options: &Options) -> Result<u8, LoadtestError> {
     ));
 
     let fd_sampling = cfg!(target_os = "linux");
-    let mut hello_ms: Vec<u64> = Vec::new();
-    let mut ws_errors: u64 = 0;
-    let mut disconnects: u64 = 0;
-    let mut hello_sent: usize = 0;
-    let mut welcomes: usize = 0;
+    let mut tally = Tally::default();
     let mut fd_start: Option<u64> = None;
     let mut fd_end: Option<u64> = None;
     let mut fd_due: Option<Instant> = None;
 
     loop {
-        if Instant::now() >= end {
+        if window_has_ended(Instant::now(), end) {
             break;
         }
         // Placeholder when no fd deadline is armed: the branch guard stays
@@ -213,24 +228,24 @@ async fn run(options: &Options) -> Result<u8, LoadtestError> {
             event = event_rx.recv() => {
                 match event {
                     None => break,
-                    Some(ClientEvent::HelloSent) => {
-                        hello_sent += 1;
-                        if fd_sampling && fd_start.is_none() && hello_sent == options.clients && welcomes == 0 {
-                            // No welcome will ever arm the timer: fall back
-                            // to the last HELLO.
-                            fd_due = Some(Instant::now() + FD_SAMPLE_DELAY);
-                        }
-                    }
-                    Some(ClientEvent::Welcomed { latency_ms }) => {
-                        hello_ms.push(latency_ms);
-                        welcomes += 1;
+                    Some(event) => {
+                        let was_hello_sent = matches!(&event, ClientEvent::HelloSent);
+                        let was_welcomed = matches!(&event, ClientEvent::Welcomed { .. });
+                        tally.record(event);
                         if fd_sampling && fd_start.is_none() {
-                            // Five seconds after the LAST welcome wins.
-                            fd_due = Some(Instant::now() + FD_SAMPLE_DELAY);
+                            if was_welcomed {
+                                // Five seconds after the LAST welcome wins.
+                                fd_due = Some(Instant::now() + FD_SAMPLE_DELAY);
+                            } else if was_hello_sent
+                                && tally.hello_sent == options.clients
+                                && tally.welcomes == 0
+                            {
+                                // No welcome will ever arm the timer: fall
+                                // back to the last HELLO.
+                                fd_due = Some(Instant::now() + FD_SAMPLE_DELAY);
+                            }
                         }
                     }
-                    Some(ClientEvent::WsError) => ws_errors += 1,
-                    Some(ClientEvent::Disconnected) => disconnects += 1,
                 }
             }
             _ = sleep_until(end) => break,
@@ -242,17 +257,7 @@ async fn run(options: &Options) -> Result<u8, LoadtestError> {
     }
 
     // Tally any events that raced the end of the window.
-    while let Ok(event) = event_rx.try_recv() {
-        match event {
-            ClientEvent::HelloSent => {}
-            ClientEvent::Welcomed { latency_ms } => {
-                hello_ms.push(latency_ms);
-                welcomes += 1;
-            }
-            ClientEvent::WsError => ws_errors += 1,
-            ClientEvent::Disconnected => disconnects += 1,
-        }
-    }
+    tally.drain(&mut event_rx);
 
     // Sample fd_end NOW, while the clients are still connected (they
     // linger `CLIENT_STOP_GRACE` past the window): sampling after the
@@ -269,7 +274,7 @@ async fn run(options: &Options) -> Result<u8, LoadtestError> {
     // Clients stop themselves at `client_stop`; abort any straggler past
     // the grace period (its socket closes on abort either way).
     for mut handle in client_handles {
-        if tokio::time::timeout(CLIENT_STOP_GRACE + Duration::from_secs(5), &mut handle)
+        if tokio::time::timeout(straggler_timeout(), &mut handle)
             .await
             .is_err()
         {
@@ -290,7 +295,7 @@ async fn run(options: &Options) -> Result<u8, LoadtestError> {
     // Never leave the server running: kill it in every path from here on.
     guard.shutdown();
 
-    let mut sorted = hello_ms.clone();
+    let mut sorted = tally.hello_ms.clone();
     sorted.sort_unstable();
     let report = Report {
         clients: options.clients,
@@ -298,8 +303,8 @@ async fn run(options: &Options) -> Result<u8, LoadtestError> {
         hello_p50_ms: percentile(&sorted, 50.0),
         hello_p95_ms: percentile(&sorted, 95.0),
         hello_max_ms: sorted.last().copied().unwrap_or(0),
-        ws_errors,
-        disconnects,
+        ws_errors: tally.ws_errors,
+        disconnects: tally.disconnects,
         ingest_sent: stats.sent,
         ingest_created: stats.created,
         ingest_rate_limited: stats.rate_limited,
@@ -317,86 +322,142 @@ async fn run(options: &Options) -> Result<u8, LoadtestError> {
     println!("{report_json}");
     println!();
 
-    let mut failures = 0;
-    let passed = report.hello_p95_ms <= options.max_hello_p95_ms;
-    println!(
-        "{}",
-        budget_line(
-            "hello_p95_ms",
-            passed,
-            format!(
-                "{} ms <= {} ms",
-                report.hello_p95_ms, options.max_hello_p95_ms
-            )
-        )
-    );
-    failures += u32::from(!passed);
+    let lines = budget_lines(&report, options, tally.welcomes, fd_sampling);
+    print_budgets(&lines, &mut std::io::stdout())?;
+    Ok(exit_code(count_failures(&lines)))
+}
+
+/// A single budget verdict, rendered as one `PASS`/`FAIL` line.
+#[derive(Debug)]
+struct BudgetLine {
+    name: &'static str,
+    passed: bool,
+    detail: String,
+}
+
+/// Checks that the configured server binary is a file.
+fn check_server_binary(path: &Path) -> Result<(), LoadtestError> {
+    if !path.is_file() {
+        return Err(LoadtestError::ServerBinaryMissing(path.to_path_buf()));
+    }
+    Ok(())
+}
+
+/// Whether the measured window closed at `now`.
+fn window_has_ended(now: Instant, end: Instant) -> bool {
+    now >= end
+}
+
+/// Health-gate deadline: [`HEALTH_TIMEOUT`] after `now`.
+fn health_deadline(now: Instant) -> Instant {
+    now + HEALTH_TIMEOUT
+}
+
+/// How long a client task may linger past the window before being aborted.
+fn straggler_timeout() -> Duration {
+    CLIENT_STOP_GRACE + Duration::from_secs(5)
+}
+
+/// Tick period of the ingest poster for `rate_per_sec` requests per second.
+fn ingest_tick_interval(rate_per_sec: u64) -> Duration {
+    Duration::from_secs_f64(1.0 / rate_per_sec as f64)
+}
+
+/// Whether a `/health` payload reports a healthy database.
+fn is_healthy_body(payload: &Value) -> bool {
+    payload.get("db").and_then(Value::as_str) == Some("ok")
+}
+
+/// Polls `probe` until it reports healthy, the child exits, or the deadline
+/// passes. `child_exit` is consulted before every probe.
+async fn wait_healthy_with<P, PF, C>(
+    mut probe: P,
+    mut child_exit: C,
+    deadline: Instant,
+    poll: Duration,
+) -> Result<(), LoadtestError>
+where
+    P: FnMut() -> PF,
+    PF: Future<Output = Result<bool, LoadtestError>>,
+    C: FnMut() -> Option<ExitStatus>,
+{
+    while !window_has_ended(Instant::now(), deadline) {
+        if let Some(status) = child_exit() {
+            return Err(LoadtestError::EarlyExit(Some(status)));
+        }
+        if probe().await? {
+            return Ok(());
+        }
+        tokio::time::sleep(poll).await;
+    }
+    if let Some(status) = child_exit() {
+        return Err(LoadtestError::EarlyExit(Some(status)));
+    }
+    Err(LoadtestError::Unhealthy)
+}
+
+/// Evaluates the documented budgets, in report order.
+fn budget_lines(
+    report: &Report,
+    options: &Options,
+    welcomes: usize,
+    fd_sampling: bool,
+) -> Vec<BudgetLine> {
+    let mut lines = Vec::with_capacity(if fd_sampling { 8 } else { 7 });
+    lines.push(BudgetLine {
+        name: "hello_p95_ms",
+        passed: report.hello_p95_ms <= options.max_hello_p95_ms,
+        detail: format!(
+            "{} ms <= {} ms",
+            report.hello_p95_ms, options.max_hello_p95_ms
+        ),
+    });
 
     // Second-control hardening (R2): a server that accepts HELLOs but
     // never answers would report zero percentiles and pass; only the
     // welcomed count exposes the stall.
-    let passed = welcomes == options.clients;
-    println!(
-        "{}",
-        budget_line(
-            "welcomed_clients",
-            passed,
-            format!("{welcomes} == {}", options.clients),
-        )
-    );
-    failures += u32::from(!passed);
+    lines.push(BudgetLine {
+        name: "welcomed_clients",
+        passed: welcomes == options.clients,
+        detail: format!("{welcomes} == {}", options.clients),
+    });
 
-    let passed = report.ws_errors == 0;
-    println!(
-        "{}",
-        budget_line("ws_errors", passed, format!("{} == 0", report.ws_errors))
-    );
-    failures += u32::from(!passed);
+    lines.push(BudgetLine {
+        name: "ws_errors",
+        passed: report.ws_errors == 0,
+        detail: format!("{} == 0", report.ws_errors),
+    });
 
-    let passed = report.disconnects == 0;
-    println!(
-        "{}",
-        budget_line(
-            "disconnects",
-            passed,
-            format!("{} == 0", report.disconnects),
-        )
-    );
-    failures += u32::from(!passed);
+    lines.push(BudgetLine {
+        name: "disconnects",
+        passed: report.disconnects == 0,
+        detail: format!("{} == 0", report.disconnects),
+    });
 
-    let passed = report.ingest_errors == 0;
-    println!(
-        "{}",
-        budget_line(
-            "ingest_errors",
-            passed,
-            format!("{} == 0", report.ingest_errors),
-        )
-    );
-    failures += u32::from(!passed);
+    lines.push(BudgetLine {
+        name: "ingest_errors",
+        passed: report.ingest_errors == 0,
+        detail: format!("{} == 0", report.ingest_errors),
+    });
 
-    let passed = report.ingest_rate_limited == 0;
-    println!(
-        "{}",
-        budget_line(
-            "ingest_rate_limited",
-            passed,
-            format!("{} == 0", report.ingest_rate_limited),
-        )
-    );
-    failures += u32::from(!passed);
+    lines.push(BudgetLine {
+        name: "ingest_rate_limited",
+        passed: report.ingest_rate_limited == 0,
+        detail: format!("{} == 0", report.ingest_rate_limited),
+    });
 
-    let passed = report.server_alive;
-    let detail = if report.server_alive {
-        "still running at the end".to_owned()
-    } else {
-        "exited during the run".to_owned()
-    };
-    println!("{}", budget_line("server_alive", passed, detail));
-    failures += u32::from(!passed);
+    lines.push(BudgetLine {
+        name: "server_alive",
+        passed: report.server_alive,
+        detail: if report.server_alive {
+            "still running at the end".to_owned()
+        } else {
+            "exited during the run".to_owned()
+        },
+    });
 
     if fd_sampling {
-        let (fd_passed, detail) = match (report.fd_start, report.fd_end) {
+        let (passed, detail) = match (report.fd_start, report.fd_end) {
             (Some(start), Some(end_fds)) => (
                 end_fds <= start + FD_GROWTH_BUDGET,
                 format!("{end_fds} <= {start} + {FD_GROWTH_BUDGET}"),
@@ -411,11 +472,40 @@ async fn run(options: &Options) -> Result<u8, LoadtestError> {
             ),
             (None, None) => (false, "fd samples unavailable".to_owned()),
         };
-        println!("{}", budget_line("fd_growth", fd_passed, detail));
-        failures += u32::from(!fd_passed);
+        lines.push(BudgetLine {
+            name: "fd_growth",
+            passed,
+            detail,
+        });
     }
 
-    Ok(if failures == 0 { 0 } else { 1 })
+    lines
+}
+
+/// Number of failed budget lines.
+fn count_failures(lines: &[BudgetLine]) -> u32 {
+    lines.iter().filter(|line| !line.passed).count() as u32
+}
+
+/// Process exit code of the harness: 0 when every budget passed, else 1.
+fn exit_code(failures: u32) -> u8 {
+    if failures == 0 {
+        0
+    } else {
+        1
+    }
+}
+
+/// Prints one `PASS`/`FAIL` budget line per entry.
+fn print_budgets(lines: &[BudgetLine], out: &mut impl io::Write) -> io::Result<()> {
+    for line in lines {
+        writeln!(
+            out,
+            "{}",
+            budget_line(line.name, line.passed, line.detail.clone())
+        )?;
+    }
+    Ok(())
 }
 
 /// Events reported by one overlay client task to the orchestrator.
@@ -429,6 +519,39 @@ enum ClientEvent {
     WsError,
     /// A welcomed client whose socket closed or errored before the end.
     Disconnected,
+}
+
+/// Running tallies of the events reported by the client tasks.
+#[derive(Default)]
+struct Tally {
+    hello_ms: Vec<u64>,
+    hello_sent: usize,
+    welcomes: usize,
+    ws_errors: u64,
+    disconnects: u64,
+}
+
+impl Tally {
+    /// Folds one client event into the tallies.
+    fn record(&mut self, event: ClientEvent) {
+        match event {
+            ClientEvent::HelloSent => self.hello_sent += 1,
+            ClientEvent::Welcomed { latency_ms } => {
+                self.hello_ms.push(latency_ms);
+                self.welcomes += 1;
+            }
+            ClientEvent::WsError => self.ws_errors += 1,
+            ClientEvent::Disconnected => self.disconnects += 1,
+        }
+    }
+
+    /// Folds every event that is already queued (the ones that raced the end
+    /// of the window).
+    fn drain(&mut self, events: &mut mpsc::UnboundedReceiver<ClientEvent>) {
+        while let Ok(event) = events.try_recv() {
+            self.record(event);
+        }
+    }
 }
 
 /// Drives one overlay client: connect, HELLO, wait for `welcome`, then keep
@@ -557,44 +680,61 @@ fn report_socket_end(events: &mpsc::UnboundedSender<ClientEvent>, had_welcome: b
     let _ = events.send(event);
 }
 
+/// Outcome of one `/ingest` POST.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IngestOutcome {
+    /// 201: the server created the message.
+    Created,
+    /// 429: the rate limiter rejected the request.
+    RateLimited,
+    /// Any other status, or a transport failure.
+    Error,
+}
+
+/// Maps an HTTP status to the tally bucket it feeds.
+fn classify_ingest_status(status: u16) -> IngestOutcome {
+    match status {
+        201 => IngestOutcome::Created,
+        429 => IngestOutcome::RateLimited,
+        _ => IngestOutcome::Error,
+    }
+}
+
+/// Posts one message to `/ingest` and classifies the result.
+async fn post_ingest(client: &reqwest::Client, base_url: &str, counter: u64) -> IngestOutcome {
+    let request = client
+        .post(format!("{base_url}/ingest"))
+        .timeout(Duration::from_secs(5))
+        .bearer_auth(INGEST_TOKEN)
+        .json(&json!({ "text": format!("load {counter}") }));
+    match request.send().await {
+        Ok(response) => classify_ingest_status(response.status().as_u16()),
+        Err(_) => IngestOutcome::Error,
+    }
+}
+
 /// Ingest poster: `POST /ingest` with the seeded bearer token, spread at
 /// `rate_per_sec` requests per second until `end`.
 async fn run_ingest(base_url: String, rate_per_sec: u64, end: Instant) -> IngestStats {
     let mut stats = IngestStats::default();
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => {
-            stats.errors += 1;
-            return stats;
-        }
-    };
-    let mut ticker = interval(Duration::from_secs_f64(1.0 / rate_per_sec as f64));
+    // `Client::new()` cannot fail for this harness: its only error mode is a
+    // TLS/rustls backend init failure, which the old builder mapped to a
+    // counter that was unreachable in practice.
+    let client = reqwest::Client::new();
+    let mut ticker = interval(ingest_tick_interval(rate_per_sec));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     ticker.tick().await; // the first tick completes immediately: skip it
     let mut counter: u64 = 0;
     loop {
-        if Instant::now() >= end {
+        if window_has_ended(Instant::now(), end) {
             break;
         }
         tokio::select! {
             _ = ticker.tick() => {
                 counter += 1;
                 stats.sent += 1;
-                let request = client
-                    .post(format!("{base_url}/ingest"))
-                    .bearer_auth(INGEST_TOKEN)
-                    .json(&json!({ "text": format!("load {counter}") }));
-                match request.send().await {
-                    Ok(response) => match response.status().as_u16() {
-                        201 => stats.created += 1,
-                        429 => stats.rate_limited += 1,
-                        _ => stats.errors += 1,
-                    },
-                    Err(_) => stats.errors += 1,
-                }
+                let outcome = post_ingest(&client, &base_url, counter).await;
+                stats.record(outcome);
             }
             _ = sleep_until(end) => break,
         }
@@ -603,12 +743,24 @@ async fn run_ingest(base_url: String, rate_per_sec: u64, end: Instant) -> Ingest
 }
 
 /// Tallies of the ingest poster.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct IngestStats {
     sent: u64,
     created: u64,
     rate_limited: u64,
     errors: u64,
+}
+
+impl IngestStats {
+    /// Folds one request outcome into the tallies (`sent` is bumped by the
+    /// poster at every tick, before the request).
+    fn record(&mut self, outcome: IngestOutcome) {
+        match outcome {
+            IngestOutcome::Created => self.created += 1,
+            IngestOutcome::RateLimited => self.rate_limited += 1,
+            IngestOutcome::Error => self.errors += 1,
+        }
+    }
 }
 
 /// The JSON report written to `--report` and printed to stdout.
@@ -802,35 +954,6 @@ fn spawn_server(
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .spawn()
-}
-
-/// Waits until `GET /health` reports `"db": "ok"`, polling every 250 ms for
-/// at most 30 s. Fails early if the child process exits first.
-async fn wait_healthy(port: u16, guard: &mut ServerGuard) -> Result<(), LoadtestError> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-        .map_err(|err| LoadtestError::Health(err.to_string()))?;
-    let health_url = format!("http://127.0.0.1:{port}/health");
-    let deadline = Instant::now() + HEALTH_TIMEOUT;
-    while Instant::now() < deadline {
-        if let Ok(Some(status)) = guard.try_wait() {
-            return Err(LoadtestError::EarlyExit(Some(status)));
-        }
-        let probe = client.get(&health_url).send().await;
-        if let Ok(response) = probe {
-            if let Ok(payload) = response.json::<Value>().await {
-                if payload.get("db").and_then(Value::as_str) == Some("ok") {
-                    return Ok(());
-                }
-            }
-        }
-        tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
-    }
-    if let Ok(Some(status)) = guard.try_wait() {
-        return Err(LoadtestError::EarlyExit(Some(status)));
-    }
-    Err(LoadtestError::Unhealthy)
 }
 
 /// Counts the entries of a directory — the `/proc/<pid>/fd` directory on
@@ -1326,5 +1449,600 @@ mod tests {
         std::thread::sleep(Duration::from_millis(800));
         std::fs::write(&marker, b"alive").unwrap();
         std::process::exit(0);
+    }
+
+    // ------------------------------------------------------------------
+    // Seam tests: helpers extracted out of `run` so every surviving
+    // mutation is killed by a deterministic local test.
+    // ------------------------------------------------------------------
+
+    use std::io::{Read, Write};
+    use std::net::TcpListener as StdTcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    fn test_options(server_bin: PathBuf) -> Options {
+        Options {
+            server_bin,
+            clients: 16,
+            duration_secs: 10,
+            ingest_rate: 10,
+            max_hello_p95_ms: 250,
+            report: None,
+        }
+    }
+
+    fn green_report() -> Report {
+        Report {
+            clients: 16,
+            duration_secs: 10,
+            hello_p50_ms: 10,
+            hello_p95_ms: 100,
+            hello_max_ms: 120,
+            ws_errors: 0,
+            disconnects: 0,
+            ingest_sent: 100,
+            ingest_created: 100,
+            ingest_rate_limited: 0,
+            ingest_errors: 0,
+            server_alive: true,
+            fd_start: Some(10),
+            fd_end: Some(20),
+        }
+    }
+
+    fn line_names(lines: &[BudgetLine]) -> Vec<&'static str> {
+        lines.iter().map(|line| line.name).collect()
+    }
+
+    fn read_http_request(stream: &mut impl Read) -> Vec<u8> {
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 1024];
+        let mut expected: Option<usize> = None;
+        loop {
+            if let Some(total) = expected {
+                if request.len() >= total {
+                    return request;
+                }
+            } else if let Some(position) =
+                request.windows(4).position(|window| window == b"\r\n\r\n")
+            {
+                let header_len = position + 4;
+                let headers = String::from_utf8_lossy(&request[..position]);
+                let content_length = headers
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                    .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                expected = Some(header_len + content_length);
+                continue;
+            }
+            match stream.read(&mut chunk) {
+                Ok(0) | Err(_) => return request,
+                Ok(read) => request.extend_from_slice(&chunk[..read]),
+            }
+        }
+    }
+
+    /// Minimal HTTP/1.1 server for the `/ingest` seams: answers the `n`-th
+    /// request with `statuses[n % statuses.len()]`, then closes the
+    /// connection. Returns the base URL to point the harness at.
+    fn spawn_ingest_server(statuses: Vec<u16>) -> String {
+        assert!(!statuses.is_empty(), "the fake server needs a status");
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let served = Arc::new(AtomicUsize::new(0));
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                drop(read_http_request(&mut stream));
+                let index = served.fetch_add(1, Ordering::SeqCst);
+                let status = statuses[index % statuses.len()];
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} Status\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .ok();
+                stream.flush().ok();
+            }
+        });
+        base_url
+    }
+
+    #[tokio::test]
+    async fn run_reports_a_missing_server_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("definitely-not-a-server-binary");
+        let options = test_options(missing.clone());
+        let error = run(&options).await.expect_err("a missing binary must fail");
+        match error {
+            LoadtestError::ServerBinaryMissing(path) => assert_eq!(path, missing),
+            other => panic!("expected ServerBinaryMissing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_server_binary_accepts_a_file_and_rejects_a_missing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lc-server");
+        std::fs::write(&file, b"").unwrap();
+        check_server_binary(&file).expect("an existing file must pass");
+
+        let missing = dir.path().join("missing-lc-server");
+        match check_server_binary(&missing) {
+            Err(LoadtestError::ServerBinaryMissing(path)) => assert_eq!(path, missing),
+            other => panic!("expected ServerBinaryMissing, got {other:?}"),
+        }
+
+        // A directory is not a file either.
+        match check_server_binary(dir.path()) {
+            Err(LoadtestError::ServerBinaryMissing(path)) => assert_eq!(path, dir.path()),
+            other => panic!("expected ServerBinaryMissing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn window_has_ended_only_at_or_after_the_deadline() {
+        let base = Instant::now();
+        let end = base + Duration::from_millis(10);
+        assert!(!window_has_ended(base, end), "strictly before the deadline");
+        assert!(
+            !window_has_ended(end - Duration::from_millis(1), end),
+            "one millisecond before the deadline"
+        );
+        assert!(window_has_ended(end, end), "exactly at the deadline");
+        assert!(
+            window_has_ended(end + Duration::from_millis(1), end),
+            "after the deadline"
+        );
+    }
+
+    #[test]
+    fn straggler_timeout_is_the_grace_plus_five_seconds() {
+        assert_eq!(straggler_timeout(), Duration::from_secs(7));
+        assert_eq!(
+            straggler_timeout(),
+            CLIENT_STOP_GRACE + Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn ingest_tick_interval_divides_one_second_by_the_rate() {
+        assert_eq!(ingest_tick_interval(1), Duration::from_secs(1));
+        assert_eq!(ingest_tick_interval(2), Duration::from_millis(500));
+        assert_eq!(ingest_tick_interval(4), Duration::from_millis(250));
+        assert_eq!(ingest_tick_interval(8), Duration::from_millis(125));
+    }
+
+    #[test]
+    fn health_deadline_is_thirty_seconds_after_now() {
+        let now = Instant::now();
+        let deadline = health_deadline(now);
+        assert_eq!(deadline, now + HEALTH_TIMEOUT);
+        assert_eq!(deadline - now, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn tally_records_every_client_event() {
+        let mut tally = Tally::default();
+        tally.record(ClientEvent::HelloSent);
+        tally.record(ClientEvent::Welcomed { latency_ms: 42 });
+        tally.record(ClientEvent::Welcomed { latency_ms: 7 });
+        tally.record(ClientEvent::WsError);
+        tally.record(ClientEvent::Disconnected);
+        assert_eq!(tally.hello_sent, 1);
+        assert_eq!(
+            tally.hello_ms,
+            vec![42, 7],
+            "latencies are appended in arrival order"
+        );
+        assert_eq!(tally.welcomes, 2);
+        assert_eq!(tally.ws_errors, 1);
+        assert_eq!(tally.disconnects, 1);
+    }
+
+    #[test]
+    fn tally_drains_events_that_raced_the_window() {
+        let (events, mut receiver) = mpsc::unbounded_channel();
+        events.send(ClientEvent::HelloSent).unwrap();
+        events
+            .send(ClientEvent::Welcomed { latency_ms: 5 })
+            .unwrap();
+        events.send(ClientEvent::WsError).unwrap();
+        drop(events);
+
+        let mut tally = Tally::default();
+        tally.drain(&mut receiver);
+        assert_eq!(tally.hello_sent, 1);
+        assert_eq!(tally.hello_ms, vec![5]);
+        assert_eq!(tally.welcomes, 1);
+        assert_eq!(tally.ws_errors, 1);
+        assert_eq!(tally.disconnects, 0);
+        assert!(
+            receiver.try_recv().is_err(),
+            "the queue is empty after a drain"
+        );
+
+        // Draining an empty queue is a no-op, not an underflow or a panic.
+        tally.drain(&mut receiver);
+        assert_eq!(tally.hello_sent, 1);
+    }
+
+    #[test]
+    fn budget_lines_pass_an_all_green_report() {
+        let report = green_report();
+        let options = test_options(PathBuf::from("target/debug/lc-server"));
+
+        let with_fd = budget_lines(&report, &options, options.clients, true);
+        assert_eq!(
+            line_names(&with_fd),
+            vec![
+                "hello_p95_ms",
+                "welcomed_clients",
+                "ws_errors",
+                "disconnects",
+                "ingest_errors",
+                "ingest_rate_limited",
+                "server_alive",
+                "fd_growth",
+            ]
+        );
+        assert!(with_fd.iter().all(|line| line.passed), "{with_fd:?}");
+        assert_eq!(count_failures(&with_fd), 0);
+        assert_eq!(exit_code(count_failures(&with_fd)), 0);
+
+        let without_fd = budget_lines(&report, &options, options.clients, false);
+        assert_eq!(without_fd.len(), 7, "no fd budget off Linux");
+        assert_eq!(
+            line_names(&without_fd),
+            &line_names(&with_fd)[..7],
+            "the fd budget is always evaluated last"
+        );
+        assert!(without_fd.iter().all(|line| line.passed), "{without_fd:?}");
+        assert_eq!(count_failures(&without_fd), 0);
+    }
+
+    #[test]
+    fn budget_lines_flag_each_violated_budget() {
+        let options = test_options(PathBuf::from("target/debug/lc-server"));
+        let clients = options.clients;
+
+        let mut cases: Vec<(&'static str, Report, usize)> = Vec::new();
+
+        let mut report = green_report();
+        report.hello_p95_ms = options.max_hello_p95_ms + 1;
+        cases.push(("hello_p95_ms", report, clients));
+
+        cases.push(("welcomed_clients", green_report(), clients - 1));
+
+        let mut report = green_report();
+        report.ws_errors = 1;
+        cases.push(("ws_errors", report, clients));
+
+        let mut report = green_report();
+        report.disconnects = 1;
+        cases.push(("disconnects", report, clients));
+
+        let mut report = green_report();
+        report.ingest_errors = 1;
+        cases.push(("ingest_errors", report, clients));
+
+        let mut report = green_report();
+        report.ingest_rate_limited = 1;
+        cases.push(("ingest_rate_limited", report, clients));
+
+        let mut report = green_report();
+        report.server_alive = false;
+        cases.push(("server_alive", report, clients));
+
+        for (name, report, welcomes) in cases {
+            for fd_sampling in [true, false] {
+                let lines = budget_lines(&report, &options, welcomes, fd_sampling);
+                let failed: Vec<&str> = lines
+                    .iter()
+                    .filter(|line| !line.passed)
+                    .map(|line| line.name)
+                    .collect();
+                assert_eq!(
+                    failed,
+                    vec![name],
+                    "budget {name} (fd_sampling {fd_sampling})"
+                );
+                assert_eq!(count_failures(&lines), 1);
+                assert_eq!(exit_code(count_failures(&lines)), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn budget_lines_flag_every_fd_sampling_case() {
+        let options = test_options(PathBuf::from("target/debug/lc-server"));
+        let clients = options.clients;
+
+        let mut report = green_report();
+
+        // Inside the budget: 20 <= 10 + 10.
+        let lines = budget_lines(&report, &options, clients, true);
+        let fd = lines.last().unwrap();
+        assert_eq!(fd.name, "fd_growth");
+        assert!(fd.passed);
+        assert_eq!(fd.detail, "20 <= 10 + 10");
+
+        // One fd over the budget.
+        report.fd_end = Some(21);
+        let lines = budget_lines(&report, &options, clients, true);
+        let fd = lines.last().unwrap();
+        assert!(!fd.passed, "21 grows past the 10-fd budget");
+        assert!(fd.detail.contains("21 <= 10 + 10"), "{}", fd.detail);
+        assert_eq!(count_failures(&lines), 1);
+
+        // fd_end missing: the server exited before the end sample.
+        report.fd_start = Some(10);
+        report.fd_end = None;
+        let lines = budget_lines(&report, &options, clients, true);
+        let fd = lines.last().unwrap();
+        assert!(!fd.passed);
+        assert!(
+            fd.detail.contains("fd_end unavailable (fd_start 10)"),
+            "{}",
+            fd.detail
+        );
+
+        // fd_start never sampled.
+        report.fd_start = None;
+        report.fd_end = Some(7);
+        let lines = budget_lines(&report, &options, clients, true);
+        let fd = lines.last().unwrap();
+        assert!(!fd.passed);
+        assert!(
+            fd.detail.contains("fd_start was never sampled (fd_end 7)"),
+            "{}",
+            fd.detail
+        );
+
+        // Neither sample available.
+        report.fd_start = None;
+        report.fd_end = None;
+        let lines = budget_lines(&report, &options, clients, true);
+        let fd = lines.last().unwrap();
+        assert!(!fd.passed);
+        assert_eq!(fd.detail, "fd samples unavailable");
+        assert_eq!(count_failures(&lines), 1);
+    }
+
+    #[test]
+    fn exit_code_counts_any_failure_as_one() {
+        assert_eq!(exit_code(0), 0);
+        for failures in [1u32, 2, 7, u32::MAX] {
+            assert_eq!(exit_code(failures), 1, "{failures} failure(s)");
+        }
+    }
+
+    #[test]
+    fn print_budgets_renders_one_line_per_verdict() {
+        let lines = vec![
+            BudgetLine {
+                name: "hello_p95_ms",
+                passed: true,
+                detail: "42 ms <= 250 ms".to_owned(),
+            },
+            BudgetLine {
+                name: "fd_growth",
+                passed: false,
+                detail: "21 <= 10 + 10".to_owned(),
+            },
+        ];
+        let mut out = Vec::new();
+        print_budgets(&lines, &mut out).expect("writing to a Vec cannot fail");
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "PASS hello_p95_ms (42 ms <= 250 ms)\nFAIL fd_growth (21 <= 10 + 10)\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_client_reports_a_failed_connection() {
+        // A port that was just released: the connect is refused immediately.
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let (events, mut receiver) = mpsc::unbounded_channel();
+        let handle = tokio::spawn(run_client(
+            0,
+            format!("ws://127.0.0.1:{port}/ws"),
+            "load-overlay-000".to_owned(),
+            Instant::now() + Duration::from_secs(5),
+            events,
+        ));
+
+        let event = tokio::time::timeout(Duration::from_secs(5), receiver.recv())
+            .await
+            .expect("the client must report its failure within 5 s")
+            .expect("the client must send exactly one event");
+        assert!(
+            matches!(event, ClientEvent::WsError),
+            "a refused connection is a ws error"
+        );
+        handle.await.unwrap();
+    }
+
+    #[test]
+    fn classify_ingest_status_maps_the_documented_statuses() {
+        assert_eq!(classify_ingest_status(201), IngestOutcome::Created);
+        assert_eq!(classify_ingest_status(429), IngestOutcome::RateLimited);
+        for status in [200u16, 400, 404, 500, 503] {
+            assert_eq!(
+                classify_ingest_status(status),
+                IngestOutcome::Error,
+                "status {status}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn post_ingest_classifies_a_sequenced_server() {
+        let base_url = spawn_ingest_server(vec![201, 429, 500]);
+        let client = reqwest::Client::new();
+        assert_eq!(
+            post_ingest(&client, &base_url, 1).await,
+            IngestOutcome::Created
+        );
+        assert_eq!(
+            post_ingest(&client, &base_url, 2).await,
+            IngestOutcome::RateLimited
+        );
+        assert_eq!(
+            post_ingest(&client, &base_url, 3).await,
+            IngestOutcome::Error
+        );
+    }
+
+    #[tokio::test]
+    async fn post_ingest_reports_a_transport_failure() {
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let client = reqwest::Client::new();
+        let outcome = post_ingest(&client, &format!("http://127.0.0.1:{port}"), 1).await;
+        assert_eq!(outcome, IngestOutcome::Error);
+    }
+
+    #[test]
+    fn ingest_stats_record_tallies_each_outcome() {
+        let mut stats = IngestStats::default();
+        assert_eq!(stats.sent, 0, "the poster bumps `sent`, not the tally");
+        stats.record(IngestOutcome::Created);
+        stats.record(IngestOutcome::RateLimited);
+        stats.record(IngestOutcome::Error);
+        stats.record(IngestOutcome::Created);
+        assert_eq!(stats.created, 2);
+        assert_eq!(stats.rate_limited, 1);
+        assert_eq!(stats.errors, 1);
+        assert_eq!(stats.sent, 0);
+    }
+
+    #[tokio::test]
+    async fn run_ingest_counts_created_responses() {
+        let base_url = spawn_ingest_server(vec![201]);
+        let stats = run_ingest(base_url, 50, Instant::now() + Duration::from_millis(300)).await;
+        assert!(stats.sent >= 1, "the poster must send at least one request");
+        assert_eq!(stats.created, stats.sent);
+        assert_eq!(stats.rate_limited, 0);
+        assert_eq!(stats.errors, 0);
+    }
+
+    #[tokio::test]
+    async fn run_ingest_counts_rate_limited_responses() {
+        let base_url = spawn_ingest_server(vec![429]);
+        let stats = run_ingest(base_url, 50, Instant::now() + Duration::from_millis(300)).await;
+        assert!(stats.sent >= 1, "the poster must send at least one request");
+        assert_eq!(stats.rate_limited, stats.sent);
+        assert_eq!(stats.created, 0);
+        assert_eq!(stats.errors, 0);
+    }
+
+    #[tokio::test]
+    async fn wait_healthy_with_returns_ok_on_the_first_healthy_probe() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let probe_calls = Arc::clone(&calls);
+        let started = Instant::now();
+        let result = wait_healthy_with(
+            move || {
+                probe_calls.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(Ok::<bool, LoadtestError>(true))
+            },
+            || None,
+            health_deadline(Instant::now()),
+            HEALTH_POLL_INTERVAL,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "a healthy first probe must pass: {result:?}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn wait_healthy_with_fails_when_the_engine_never_gets_healthy() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let probe_calls = Arc::clone(&calls);
+        let started = Instant::now();
+        // The outer timeout is a test harness bound, not part of the gate: the
+        // gate itself gives up at its deadline (250 ms below). Without it, a
+        // deadline check that never fires would hang the whole test run
+        // instead of failing it (`window_has_ended -> false` mutant).
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            wait_healthy_with(
+                move || {
+                    probe_calls.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Ok::<bool, LoadtestError>(false))
+                },
+                || None,
+                Instant::now() + Duration::from_millis(250),
+                Duration::from_millis(50),
+            ),
+        )
+        .await
+        .expect("the readiness gate must give up at its deadline, not poll forever");
+        match result {
+            Err(LoadtestError::Unhealthy) => {}
+            other => panic!("expected Unhealthy, got {other:?}"),
+        }
+        assert!(
+            calls.load(Ordering::SeqCst) >= 2,
+            "an unhealthy engine must be retried until the deadline"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn wait_healthy_with_reports_an_early_child_exit() {
+        let status = spawn_exiting_child().wait().unwrap();
+        let expected_code = status.code();
+        let mut child_status = Some(status);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let probe_calls = Arc::clone(&calls);
+        let started = Instant::now();
+        let result = wait_healthy_with(
+            move || {
+                probe_calls.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(Ok::<bool, LoadtestError>(true))
+            },
+            move || child_status.take(),
+            health_deadline(Instant::now()),
+            HEALTH_POLL_INTERVAL,
+        )
+        .await;
+        match result {
+            Err(LoadtestError::EarlyExit(Some(reported))) => {
+                assert_eq!(reported.code(), expected_code);
+            }
+            other => panic!("expected EarlyExit with a status, got {other:?}"),
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "the probe must not run when the child already exited"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn is_healthy_body_only_accepts_the_documented_payload() {
+        assert!(is_healthy_body(&json!({ "db": "ok" })));
+        assert!(is_healthy_body(&json!({ "db": "ok", "version": "3.0.0" })));
+        assert!(!is_healthy_body(&json!({ "db": "down" })));
+        assert!(!is_healthy_body(&json!({ "db": 1 })));
+        assert!(!is_healthy_body(&json!({})));
+        assert!(!is_healthy_body(&json!({ "healthy": true })));
+        assert!(!is_healthy_body(&Value::Null));
     }
 }

@@ -131,7 +131,13 @@ async fn main() -> ExitCode {
         },
         Command::Parity(command) => ExitCode::from(parity::execute(command).await),
         Command::Verify(options) => ExitCode::from(verify::execute(options)),
-        Command::Loadtest(options) => ExitCode::from(loadtest::execute(options).await),
+        Command::Loadtest(options) => ExitCode::from(match loadtest::run(&options).await {
+            Ok(code) => code,
+            Err(err) => {
+                eprintln!("xtask loadtest: {err}");
+                1
+            }
+        }),
     }
 }
 

@@ -130,11 +130,11 @@ sont conservées dans `extra` (`#[serde(flatten)]`) pour ne pas perdre de champ
 Electron lors d'un rollback.
 
 `Membership` porte un `volume` par guilde (défaut `1.0`, borné `[0,1]`).
-`shortcuts = { stop, muteAll }` et `layout = { zone: { x, y, width, height },
-align }` sont les clés persistées camelCase des réglages de l'appareil. Elles
-sont normalisées à la lecture : accélérateurs trimmés/vides retirés ; zone en
-fractions de l'écran choisi, côtés bornés 0,05..1, gardée sur l'écran et
-arrondie au 1/10 000 (non finie → écran entier) ; alignement
+`shortcuts = { stop, stopLocal, muteAll, openBoard }` et `layout = { zone: { x,
+y, width, height }, align }` sont les clés persistées camelCase des réglages de
+l'appareil. Elles sont normalisées à la lecture : accélérateurs trimmés/vides
+retirés ; zone en fractions de l'écran choisi, côtés bornés 0,05..1, gardée sur
+l'écran et arrondie au 1/10 000 (non finie → écran entier) ; alignement
 `center|top|bottom|left|right|top-left|top-right|bottom-left|bottom-right`
 (inconnu → `center`). Les anciennes clés `anchor`, `maxWidth`, `maxHeight` et
 `margin` sont ignorées.
@@ -294,13 +294,16 @@ la board. L'infobulle reste `tray_tooltip`.
   accélérateur est refusé, réponse `{ok, appliedBindings, failedAccelerators}`.
   Les accélérateurs réservés aux raccourcis globaux sont signalés dans
   `failedAccelerators`.
-- `shortcuts.stop` et `shortcuts.muteAll` sont persistés dans
-  `OverlayConfig.shortcuts`, enregistrés au démarrage puis réenregistrés
-  transactionnellement par `settings_set`. `stop` envoie `stop.request` à la
-  guilde active ; `muteAll` bascule la pause générale exactement comme le
-  tray. En cas de refus OS, les anciens raccourcis sont restaurés.
+- `shortcuts.stop`, `shortcuts.stopLocal`, `shortcuts.muteAll` et
+  `shortcuts.openBoard` sont persistés dans `OverlayConfig.shortcuts`,
+  enregistrés au démarrage puis réenregistrés transactionnellement par
+  `settings_set`. `stop` envoie `stop.request` à la guilde active ;
+  `stopLocal` arrête la lecture sur ce poste ; `muteAll` bascule la pause
+  générale exactement comme le tray ; `openBoard` affiche la board et lui donne
+  le focus, comme l'entrée de tray « Ouvrir la board » (sans la masquer si elle
+  est déjà visible). En cas de refus OS, les anciens raccourcis sont restaurés.
 - La validation de `settings_set` refuse un accélérateur invalide, en collision
-  avec l'autre raccourci global, un binding média ou le rechargement manuel.
+  avec un autre raccourci global, un binding média ou le rechargement manuel.
 - Commandes bridge `media_board_get_bindings` / `media_board_set_bindings`,
   `media_board_trigger` / `media_board_stop` opérationnelles sur le socket v2.
 

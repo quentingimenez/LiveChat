@@ -159,6 +159,8 @@ pub struct ShortcutSettings {
     pub stop_local: Option<String>,
     /// Toggle the general mute (same action as the tray entry).
     pub mute_all: Option<String>,
+    /// Show the board and give it the focus (same action as the tray entry).
+    pub open_board: Option<String>,
 }
 
 impl ShortcutSettings {
@@ -166,14 +168,16 @@ impl ShortcutSettings {
         self.stop = normalized_shortcut(self.stop.take());
         self.stop_local = normalized_shortcut(self.stop_local.take());
         self.mute_all = normalized_shortcut(self.mute_all.take());
+        self.open_board = normalized_shortcut(self.open_board.take());
     }
 
     /// Every action as `(settings field, accelerator)`, in registration order.
-    pub fn entries(&self) -> [(&'static str, Option<&str>); 3] {
+    pub fn entries(&self) -> [(&'static str, Option<&str>); 4] {
         [
             ("shortcuts.stop", self.stop.as_deref()),
             ("shortcuts.stopLocal", self.stop_local.as_deref()),
             ("shortcuts.muteAll", self.mute_all.as_deref()),
+            ("shortcuts.openBoard", self.open_board.as_deref()),
         ]
     }
 }
@@ -296,7 +300,7 @@ pub struct OverlayConfig {
     pub profile_name: Option<String>,
     /// Avatar du profil local.
     pub profile_avatar: Option<String>,
-    /// Global stop / mute-all shortcuts.
+    /// Global shell shortcuts (stop, local stop, general mute, open board).
     pub shortcuts: ShortcutSettings,
     /// Media frame placement sent to the renderer.
     pub layout: OverlayLayout,
@@ -805,6 +809,7 @@ fn shortcut_settings_field(
         stop: string_field(object, "stop", warnings),
         stop_local: string_field(object, "stopLocal", warnings),
         mute_all: string_field(object, "muteAll", warnings),
+        open_board: string_field(object, "openBoard", warnings),
     }
 }
 
@@ -1098,7 +1103,8 @@ mod tests {
         let (config, warnings) = OverlayConfig::from_json_value(&json!({
             "shortcuts": {
                 "stop": "  Ctrl+Shift+S  ",
-                "muteAll": "   "
+                "muteAll": "   ",
+                "openBoard": " CommandOrControl+Shift+B "
             },
             "layout": {
                 "align": "top-left",
@@ -1108,6 +1114,10 @@ mod tests {
         assert!(warnings.is_empty(), "warnings: {warnings:?}");
         assert_eq!(config.shortcuts.stop.as_deref(), Some("Ctrl+Shift+S"));
         assert!(config.shortcuts.mute_all.is_none());
+        assert_eq!(
+            config.shortcuts.open_board.as_deref(),
+            Some("CommandOrControl+Shift+B")
+        );
         assert_eq!(config.layout.align, LayoutAnchor::TopLeft);
         assert_eq!(
             config.layout.zone,
@@ -1163,6 +1173,7 @@ mod tests {
         let mut config = store.load();
         config.shortcuts.stop = Some("Ctrl+Shift+S".to_string());
         config.shortcuts.mute_all = Some("Ctrl+Alt+M".to_string());
+        config.shortcuts.open_board = Some("Ctrl+Shift+B".to_string());
         config.layout = OverlayLayout {
             zone: LayoutZone {
                 x: 0.5,

@@ -945,7 +945,7 @@ Aucun payload. Réponse `SettingsView` :
   "generalMute": false,
   "showText": true,
   "autoStart": false,
-  "shortcuts": { "stop": "CommandOrControl+Shift+S", "muteAll": null },
+  "shortcuts": { "stop": "CommandOrControl+Shift+S", "stopLocal": null, "muteAll": null, "openBoard": null },
   "layout": {
     "zone": { "x": 0, "y": 0, "width": 1, "height": 1 },
     "align": "center"
@@ -972,8 +972,9 @@ fractions arrondies au 1/10 000 ; une valeur non finie remet l'écran entier.
 
 Le payload est un objet partiel. Seules les clés présentes sont modifiées :
 `selectedDisplayKey`, `volume`, `guildVolumes` (fusion par guilde),
-`generalMute`, `showText`, `autoStart`, `shortcuts` (partiel ; `null` efface un
-accélérateur), `layout` (partiel), `profile` (partiel ; `null` efface un champ).
+`generalMute`, `showText`, `autoStart`, `shortcuts` (partiel : `stop`,
+`stopLocal`, `muteAll`, `openBoard` ; `null` efface un accélérateur), `layout`
+(partiel), `profile` (partiel ; `null` efface un champ).
 
 Réponse en succès :
 

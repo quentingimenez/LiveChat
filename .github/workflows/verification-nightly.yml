@@ -30,6 +30,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # lc-media depends on parley (Cargo.toml) whose yeslogic-fontconfig-sys
+      # build script needs the system fontconfig headers on Linux; the fuzz
+      # targets link lc-media.
+      - name: Install Linux fontconfig
+        run: |
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev
       - name: Install nightly toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -64,9 +71,18 @@ jobs:
             printf '%s' 'https://youtu.be/abc' > fuzz/corpus/media_url/youtu-be
           fi
       # fuzz/ is its own workspace excluded from the root one; cargo-fuzz
-      # finds it from the repo root.
+      # finds it from the repo root. The repo rust-toolchain.toml pins
+      # stable: RUSTUP_TOOLCHAIN overrides that file pin for this step
+      # only, because cargo-fuzz passes -Zsanitizer=address (nightly
+      # only). The gnu target is forced because the prebuilt cargo-fuzz
+      # binary is a static musl binary whose default target is musl:
+      # building for musl would try to link the glibc fontconfig and
+      # cross-compile ring's C code, neither of which works on the
+      # runner. Do not "simplify" this back to the default target.
       - name: Fuzz
-        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=45
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=45
+        env:
+          RUSTUP_TOOLCHAIN: nightly
       - name: Upload crash artifacts
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -82,6 +98,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # lc-media depends on parley (Cargo.toml) whose yeslogic-fontconfig-sys
+      # build script needs the system fontconfig headers on Linux; the
+      # lc-media-guard scope builds lc-media.
+      - name: Install Linux fontconfig
+        run: |
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - name: Cache cargo
@@ -194,6 +217,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # lc-media depends on parley (Cargo.toml) whose yeslogic-fontconfig-sys
+      # build script needs the system fontconfig headers on Linux; building
+      # the whole lc-server pulls lc-media in.
+      - name: Install Linux fontconfig
+        run: |
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - name: Cache cargo

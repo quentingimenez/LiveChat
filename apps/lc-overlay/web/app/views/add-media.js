@@ -6,8 +6,16 @@
 // "Jouer une fois" sends it to the overlays without adding it to the board.
 // A member without `addMedia` but with `play` only gets "Jouer une fois". The
 // Enter key uses the first submit button, so a member who can add adds.
+//
+// "Jouer une fois" also takes a display time, for an image only: a video or an
+// audio keeps its own length and the server ignores the value for it.
 
 import { h } from '../core/dom.js';
+import {
+  INVALID_DURATION_MESSAGE,
+  MAX_DISPLAY_DURATION_SEC,
+  parseDisplayDuration,
+} from '../core/format.js';
 import { activeGuild, can, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import { openDialog } from '../core/ui.js';
@@ -40,6 +48,31 @@ export function openAddDialog(options) {
     const linkTitle = h('input', { class: 'field', placeholder: 'Titre de la vidéo ou du lien si vide', maxlength: '240' });
     const linkMessage = h('textarea', { class: 'field', rows: '2', maxlength: '500', placeholder: 'Texte affiché avec le média' });
     const linkMessageLabel = h('label', { hidden: !showMessage }, 'Texte affiché sur les overlays (facultatif, pour « Jouer une fois »)', linkMessage);
+    // The display time is the length of a play-once image; a video or an audio
+    // keeps its own length, so the field only shows when the media may be an
+    // image. A chosen file reveals its kind in its MIME type, while a link's is
+    // unknown until the server downloads it (the server decides then).
+    const durationPlaceholder = (() => {
+      const settings = state.info && state.info.guild && state.info.guild.settings;
+      const seconds = settings && settings.defaultMediaTime;
+      return Number.isFinite(seconds) && seconds > 0 ? `Par défaut (${seconds} s)` : 'Par défaut';
+    })();
+    const mayBeImage = (file) => !file.type || file.type.startsWith('image/');
+    const durationInput = () =>
+      h('input', {
+        class: 'field',
+        type: 'number',
+        min: '1',
+        max: String(MAX_DISPLAY_DURATION_SEC),
+        step: '1',
+        inputmode: 'numeric',
+        placeholder: durationPlaceholder,
+        style: 'max-width:160px',
+      });
+    const durationLabel = (input) => h('label', null, 'Durée d’affichage pour « Jouer une fois » (s)', input);
+    const durationHint = () => h('p', { class: 'file-hint' }, 'Images uniquement : une vidéo ou un son garde sa durée.');
+    const linkDuration = durationInput();
+    const linkDurationField = h('div', { class: 'stack', hidden: !canPlay }, durationLabel(linkDuration), durationHint());
 
     // --- file fields ---
     const fileInput = h('input', {
@@ -58,6 +91,8 @@ export function openAddDialog(options) {
     const multipleHint = h('p', { class: 'file-hint', hidden: true }, 'Chaque fichier utilisera son nom comme titre.');
     const fileMessage = h('textarea', { class: 'field', rows: '2', maxlength: '500', placeholder: 'Texte affiché avec chaque média' });
     const fileMessageLabel = h('label', { hidden: !showMessage }, 'Texte affiché sur les overlays (facultatif, pour « Jouer une fois »)', fileMessage);
+    const fileDuration = durationInput();
+    const fileDurationField = h('div', { class: 'stack', hidden: true }, durationLabel(fileDuration), durationHint());
 
     const linkPanel = h(
       'div',
@@ -65,6 +100,7 @@ export function openAddDialog(options) {
       h('label', null, 'Lien du média', linkUrl),
       h('label', null, 'Titre (facultatif)', linkTitle),
       linkMessageLabel,
+      linkDurationField,
     );
     const filePanel = h(
       'div',
@@ -74,6 +110,7 @@ export function openAddDialog(options) {
       fileTitleLabel,
       multipleHint,
       fileMessageLabel,
+      fileDurationField,
     );
 
     const linkButton = h('button', { class: 'btn mode-choice', type: 'button', 'aria-pressed': 'true', onClick: () => setMode('link') }, 'Lien');
@@ -97,6 +134,18 @@ export function openAddDialog(options) {
       }
     }
 
+    // A duration field that does not apply is hidden *and* disabled: an
+    // invalid value typed before a mode switch (0, 700…) would otherwise still
+    // block the form's native validation.
+    function syncDuration() {
+      const showLink = canPlay && mode === 'link';
+      linkDuration.disabled = !showLink;
+      linkDurationField.hidden = !canPlay;
+      const showFile = canPlay && mode === 'file' && chosenFiles.some(mayBeImage);
+      fileDuration.disabled = !showFile;
+      fileDurationField.hidden = !showFile;
+    }
+
     function setMode(next) {
       mode = next;
       const isLink = mode === 'link';
@@ -108,6 +157,7 @@ export function openAddDialog(options) {
       filePanel.hidden = isLink;
       linkUrl.disabled = !isLink;
       updateSubmit();
+      syncDuration();
     }
 
     function renderFileList() {
@@ -142,6 +192,7 @@ export function openAddDialog(options) {
       fileTitleLabel.hidden = chosenFiles.length !== 1;
       multipleHint.hidden = chosenFiles.length <= 1;
       updateSubmit();
+      syncDuration();
     }
 
     const form = h(
@@ -164,13 +215,36 @@ export function openAddDialog(options) {
               return;
             }
           }
+          // The display time only applies to a play-once image. A field hidden
+          // for the current media is ignored, like its stale value.
+          let displayDurationSec = null;
+          if (playOnce) {
+            const applies = mode === 'link' ? canPlay : !fileDurationField.hidden;
+            if (applies) {
+              const input = mode === 'link' ? linkDuration : fileDuration;
+              const parsed = parseDisplayDuration(input.value);
+              if (!parsed.ok) {
+                notify(INVALID_DURATION_MESSAGE, true);
+                input.focus();
+                return;
+              }
+              displayDurationSec = parsed.value;
+            }
+          }
           if (mode === 'link') {
             const url = linkUrl.value.trim();
             if (!url) {
               linkUrl.reportValidity();
               return;
             }
-            const payload = { guildId, url, title: linkTitle.value.trim(), message: playOnce ? linkMessage.value : '', playOnce };
+            const payload = {
+              guildId,
+              url,
+              title: linkTitle.value.trim(),
+              message: playOnce ? linkMessage.value : '',
+              playOnce,
+              displayDurationSec,
+            };
             close();
             startLinkUpload(payload);
             return;
@@ -184,6 +258,8 @@ export function openAddDialog(options) {
             title: chosenFiles.length === 1 ? fileTitle.value.trim() : '',
             message: playOnce ? fileMessage.value : '',
             playOnce,
+            // A video or an audio keeps its own length.
+            displayDurationSec: mayBeImage(file) ? displayDurationSec : null,
           }));
           close();
           for (const payload of payloads) {

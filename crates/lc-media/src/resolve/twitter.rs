@@ -11,7 +11,9 @@ use crate::error::{MediaError, MediaErrorCode, MediaResult};
 use crate::html;
 use crate::http;
 use crate::source::{tweet_status_id, MediaSource, SourceKind};
-use crate::tweet_card::{QuoteImageFocus, QuotedTweetContent, QuotedTweetImage, TweetCardContent};
+use crate::tweet_card::{
+    QuoteImageFocus, QuotedTweetContent, TweetCardContent, TweetPhoto, TweetVideo,
+};
 
 use super::{encode_query_component, ResolvedMedia, TweetCard};
 
@@ -82,32 +84,24 @@ pub async fn resolve_tweet(
         .ok_or_else(|| MediaError::new(MediaErrorCode::InvalidMedia, "URL de tweet invalide"))?;
     let card = fetch_tweet_card(&canonical_url, config).await?;
     let media = fetch_tweet_media(&status_id, &canonical_url, config).await;
-    let selected = pick_variant(&media.variants).cloned();
+    let selected = pick_variant(&media.video_variants).cloned();
     let (width, height) = match media.dimensions {
         Some((width, height)) => (Some(width), Some(height)),
         None => (None, None),
     };
     let has_video = selected.is_some();
-    let kind = tweet_media_kind(has_video, media.photos.len());
-    // Une photo seule se télécharge en taille originale ; 2 à 4 photos
-    // deviennent un carrousel vidéo assemblé au téléchargement (media_url
-    // reste vide), et une carte est rendue quand il n'y a aucun média.
-    let media_url = selected
-        .as_ref()
-        .map(|variant| variant.url.clone())
-        .or_else(|| {
-            (kind == MediaKind::Image && media.photos.len() == 1)
-                .then(|| photo_original_url(&media.photos[0]))
-        });
+    let kind = tweet_media_kind(has_video);
+    // Une vidéo se télécharge telle quelle ; les photos et le texte deviennent
+    // une carte rendue au téléchargement (media_url reste vide), sauf repli.
+    let media_url = selected.as_ref().map(|variant| variant.url.clone());
     let mime = selected
         .as_ref()
         .map(|variant| variant.content_type.clone())
-        .or_else(|| (kind == MediaKind::Image).then(|| "image/jpeg".to_string()))
-        .or_else(|| (kind == MediaKind::Video).then(|| "video/mp4".to_string()));
+        .or_else(|| (kind == MediaKind::Image).then(|| "image/png".to_string()));
     let thumbnail_url = media
         .poster
         .clone()
-        .or_else(|| media.photos.first().cloned());
+        .or_else(|| media.photos.first().map(|photo| photo.source_url.clone()));
     let mut resolved = ResolvedMedia {
         source_kind: SourceKind::Twitter,
         canonical_url,
@@ -130,19 +124,15 @@ pub async fn resolve_tweet(
     Ok(resolved)
 }
 
-/// Nombre maximal de photos conservées pour un carrousel de tweet.
+/// Nombre maximal de photos conservées pour une carte de tweet.
 pub const MAX_TWEET_PHOTOS: usize = 4;
-
-/// Nombre minimal de photos pour assembler un carrousel vidéo.
-pub const CAROUSEL_MIN_PHOTOS: usize = 2;
 
 /// Type de média d'un tweet selon ce que l'API de syndication a annoncé.
 ///
-/// Une vidéo reste une vidéo ; une photo seule est une image ; 2 à 4 photos
-/// deviennent un carrousel vidéo ; sans aucun média le tweet devient une carte
-/// rendue en image.
-pub fn tweet_media_kind(has_video: bool, photo_count: usize) -> MediaKind {
-    if has_video || photo_count >= CAROUSEL_MIN_PHOTOS {
+/// Une vidéo reste une vidéo ; les photos (une à quatre) et le texte seul
+/// deviennent une carte rendue au téléchargement, jouée comme une image.
+pub fn tweet_media_kind(has_video: bool) -> MediaKind {
+    if has_video {
         MediaKind::Video
     } else {
         MediaKind::Image
@@ -210,16 +200,18 @@ async fn fetch_tweet_card(canonical_url: &str, config: &MediaConfig) -> MediaRes
 /// repli vxtwitter).
 #[derive(Clone, Debug, Default)]
 struct TweetMedia {
-    /// Variantes vidéo annoncées.
-    variants: Vec<VideoVariant>,
+    /// Variantes vidéo du tweet lui-même (jamais celles d'un tweet cité).
+    video_variants: Vec<VideoVariant>,
+    /// Rapport largeur/hauteur de la vidéo du tweet, si connue.
+    video_aspect: Option<f32>,
     /// Dimensions annoncées.
     dimensions: Option<(u32, u32)>,
     /// Poster de la vidéo.
     poster: Option<String>,
     /// Texte du tweet, si l'API de syndication l'a donné.
     text: Option<String>,
-    /// Photos du tweet (une seule ou carrousel).
-    photos: Vec<String>,
+    /// Photos du tweet (une seule ou grille façon X).
+    photos: Vec<TweetPhoto>,
 }
 
 /// Récupère le payload de l'API syndication d'un tweet (aucune erreur levée).
@@ -240,13 +232,14 @@ async fn fetch_tweet_media(
 ) -> TweetMedia {
     let mut media = TweetMedia::default();
     if let Some(value) = fetch_syndication_payload(config, status_id).await {
-        media.variants = collect_variants(&value);
+        media.video_variants = tweet_video_variants(&value);
+        media.video_aspect = tweet_video_aspect(&value);
         media.dimensions = extract_dimensions(&value);
         media.poster = extract_poster(&value);
         media.text = extract_tweet_text(&value);
-        media.photos = collect_photos(&value);
+        media.photos = tweet_photos(&value);
     }
-    if media.variants.is_empty() {
+    if media.video_variants.is_empty() {
         if let Ok(page) = http::get_text(
             &config.download,
             &build_fallback_url(
@@ -258,7 +251,7 @@ async fn fetch_tweet_media(
         )
         .await
         {
-            media.variants = variants_from_html(&page.body);
+            media.video_variants = variants_from_html(&page.body);
             if media.dimensions.is_none() {
                 media.dimensions = dimensions_from_html(&page.body);
             }
@@ -343,21 +336,25 @@ pub fn extract_avatar_url(value: &Value) -> Option<String> {
     Some(url.replace("_normal.", "_400x400."))
 }
 
-/// Collecte les photos d'un tweet : `mediaDetails[]` de type `photo`
-/// (`media_url_https`), sinon `photos[].url`. Dédupliquées, 4 au maximum.
-pub fn collect_photos(value: &Value) -> Vec<String> {
-    let mut photos: Vec<String> = Vec::new();
+/// Photos d'un tweet : `mediaDetails[]` de type `photo` (`media_url_https`),
+/// sinon `photos[].url`. Dédupliquées, 4 au maximum.
+pub fn tweet_photos(value: &Value) -> Vec<TweetPhoto> {
+    let mut photos: Vec<TweetPhoto> = Vec::new();
     if let Some(details) = value.get("mediaDetails").and_then(Value::as_array) {
         for media in details {
             if media.get("type").and_then(Value::as_str) == Some("photo") {
-                push_photo(&mut photos, media.get("media_url_https"));
+                push_photo(
+                    &mut photos,
+                    media.get("media_url_https"),
+                    media.get("original_info"),
+                );
             }
         }
     }
     if photos.is_empty() {
         if let Some(list) = value.get("photos").and_then(Value::as_array) {
             for photo in list {
-                push_photo(&mut photos, photo.get("url"));
+                push_photo(&mut photos, photo.get("url"), None);
             }
         }
     }
@@ -365,16 +362,96 @@ pub fn collect_photos(value: &Value) -> Vec<String> {
 }
 
 /// Ajoute une photo HTTPS dédupliquée, sans dépasser [`MAX_TWEET_PHOTOS`].
-fn push_photo(photos: &mut Vec<String>, raw: Option<&Value>) {
+fn push_photo(photos: &mut Vec<TweetPhoto>, raw: Option<&Value>, original_info: Option<&Value>) {
     let Some(url) = https_url(raw) else {
         return;
     };
-    if photos.len() < MAX_TWEET_PHOTOS && !photos.contains(&url) {
-        photos.push(url);
+    if photos.len() < MAX_TWEET_PHOTOS && !photos.iter().any(|photo| photo.source_url == url) {
+        photos.push(TweetPhoto {
+            source_url: url,
+            data: None,
+            focus: parse_focus_rects(original_info),
+        });
     }
 }
 
-/// Contenu textuel d'une carte tweet construit depuis un payload syndication.
+/// URLs des photos d'un tweet (miniature et métadonnées).
+pub fn collect_photos(value: &Value) -> Vec<String> {
+    tweet_photos(value)
+        .into_iter()
+        .map(|photo| photo.source_url)
+        .collect()
+}
+
+/// Variantes vidéo du tweet lui-même (premier niveau uniquement).
+pub fn tweet_video_variants(value: &Value) -> Vec<VideoVariant> {
+    let mut variants = Vec::new();
+    if let Some(details) = value.get("mediaDetails").and_then(Value::as_array) {
+        for media in details {
+            if media.get("type").and_then(Value::as_str) == Some("video") {
+                collect_variants_into(media, &mut variants, 0);
+            }
+        }
+    }
+    dedupe_variants(variants)
+}
+
+/// Rapport largeur/hauteur de la vidéo du tweet, si connue.
+pub fn tweet_video_aspect(value: &Value) -> Option<f32> {
+    media_video_aspect(value)
+}
+
+/// Variantes vidéo du tweet cité (premier niveau de la citation uniquement).
+pub fn quoted_tweet_video_variants(value: &Value) -> Vec<VideoVariant> {
+    value
+        .get("quoted_tweet")
+        .map(tweet_video_variants)
+        .unwrap_or_default()
+}
+
+/// Rapport largeur/hauteur de la vidéo du tweet cité, si connue.
+pub fn quoted_tweet_video_aspect(value: &Value) -> Option<f32> {
+    value.get("quoted_tweet").and_then(media_video_aspect)
+}
+
+/// Rapport largeur/hauteur d'une vidéo annoncée dans `mediaDetails`.
+fn media_video_aspect(value: &Value) -> Option<f32> {
+    let details = value.get("mediaDetails").and_then(Value::as_array)?;
+    for media in details {
+        if media.get("type").and_then(Value::as_str) != Some("video") {
+            continue;
+        }
+        if let Some(aspect) = media
+            .get("video_info")
+            .and_then(|info| info.get("aspect_ratio"))
+            .and_then(Value::as_array)
+        {
+            if aspect.len() == 2 {
+                let width = aspect[0].as_f64().unwrap_or_default();
+                let height = aspect[1].as_f64().unwrap_or_default();
+                if width > 0.0 && height > 0.0 {
+                    return Some((width / height) as f32);
+                }
+            }
+        }
+        if let Some(info) = media.get("original_info") {
+            let width = info
+                .get("width")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            let height = info
+                .get("height")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            if width > 0 && height > 0 {
+                return Some(width as f32 / height as f32);
+            }
+        }
+    }
+    None
+}
+
+/// Contenu d'une carte tweet construit depuis un payload syndication.
 pub fn tweet_card_content(value: &Value) -> TweetCardContent {
     TweetCardContent {
         author_name: extract_author_name(value).unwrap_or_default(),
@@ -382,6 +459,8 @@ pub fn tweet_card_content(value: &Value) -> TweetCardContent {
         text: extract_full_tweet_text(value).unwrap_or_default(),
         created_at: extract_created_at(value),
         avatar: None,
+        photos: tweet_photos(value),
+        video: tweet_video_aspect(value).map(|aspect| TweetVideo { aspect }),
         quoted: quoted_tweet_content(value),
     }
 }
@@ -389,14 +468,26 @@ pub fn tweet_card_content(value: &Value) -> TweetCardContent {
 /// Contenu du tweet cité (`quoted_tweet`) d'un payload syndication.
 ///
 /// `None` quand le payload ne cite aucun tweet, ou quand la citation ne porte
-/// ni auteur, ni texte, ni image.
+/// ni auteur, ni texte, ni média.
 pub fn quoted_tweet_content(value: &Value) -> Option<QuotedTweetContent> {
     let quoted = value.get("quoted_tweet")?;
     let author_name = extract_author_name(quoted).unwrap_or_default();
     let author_handle = extract_author_handle(quoted).unwrap_or_default();
     let text = extract_full_tweet_text(quoted).unwrap_or_default();
-    let images = quoted_tweet_images(value);
-    if author_name.is_empty() && author_handle.is_empty() && text.is_empty() && images.is_empty() {
+    let video = quoted_tweet_video_aspect(value).map(|aspect| TweetVideo { aspect });
+    // Une vidéo citée remplace ses photos : le poster ne sert qu'au repli quand
+    // la vidéo n'a pas pu être téléchargée.
+    let images = if video.is_some() {
+        Vec::new()
+    } else {
+        quoted_tweet_images(value)
+    };
+    if author_name.is_empty()
+        && author_handle.is_empty()
+        && text.is_empty()
+        && images.is_empty()
+        && video.is_none()
+    {
         return None;
     }
     Some(QuotedTweetContent {
@@ -404,6 +495,7 @@ pub fn quoted_tweet_content(value: &Value) -> Option<QuotedTweetContent> {
         author_handle,
         text,
         images,
+        video,
     })
 }
 
@@ -412,44 +504,14 @@ pub fn quoted_tweet_content(value: &Value) -> Option<QuotedTweetContent> {
 /// Retourne au plus [`MAX_TWEET_PHOTOS`] photos ; une vidéo citée fournit son
 /// poster en repli pour que le bloc de citation garde une vignette. Les octets
 /// PNG sont récupérés plus tard, au téléchargement du média.
-pub fn quoted_tweet_images(value: &Value) -> Vec<QuotedTweetImage> {
+pub fn quoted_tweet_images(value: &Value) -> Vec<TweetPhoto> {
     let Some(quoted) = value.get("quoted_tweet") else {
         return Vec::new();
     };
-    let mut images: Vec<QuotedTweetImage> = quoted
-        .get("mediaDetails")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|item| item.get("type").and_then(Value::as_str) == Some("photo"))
-        .filter_map(|item| {
-            Some(QuotedTweetImage {
-                source_url: https_url(item.get("media_url_https"))?,
-                data: None,
-                focus: parse_focus_rects(item.get("original_info")),
-            })
-        })
-        .take(MAX_TWEET_PHOTOS)
-        .collect();
-    if images.is_empty() {
-        images = quoted
-            .get("photos")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|photo| {
-                Some(QuotedTweetImage {
-                    source_url: https_url(photo.get("url"))?,
-                    data: None,
-                    focus: Vec::new(),
-                })
-            })
-            .take(MAX_TWEET_PHOTOS)
-            .collect();
-    }
+    let mut images = tweet_photos(quoted);
     if images.is_empty() {
         if let Some(poster) = extract_poster(quoted) {
-            images.push(QuotedTweetImage {
+            images.push(TweetPhoto {
                 source_url: poster,
                 data: None,
                 focus: Vec::new(),
@@ -966,12 +1028,10 @@ mod tests {
 
     #[test]
     fn decides_the_media_kind_from_the_payload() {
-        assert_eq!(tweet_media_kind(true, 0), MediaKind::Video);
-        assert_eq!(tweet_media_kind(true, 1), MediaKind::Video);
-        assert_eq!(tweet_media_kind(false, 0), MediaKind::Image);
-        assert_eq!(tweet_media_kind(false, 1), MediaKind::Image);
-        assert_eq!(tweet_media_kind(false, 2), MediaKind::Video);
-        assert_eq!(tweet_media_kind(false, 4), MediaKind::Video);
+        assert_eq!(tweet_media_kind(true), MediaKind::Video);
+        // Les photos deviennent des cartes : seul le tweet parent porte une
+        // vidéo qui change le type du média.
+        assert_eq!(tweet_media_kind(false), MediaKind::Image);
     }
 
     #[test]
@@ -1234,5 +1294,108 @@ mod tests {
     fn ignores_an_empty_quoted_tweet() {
         let payload = serde_json::json!({"quoted_tweet": {"id_str": "42"}});
         assert!(quoted_tweet_content(&payload).is_none());
+    }
+
+    #[test]
+    fn extracts_the_tweet_photos() {
+        let photo = fixture(PHOTO_FIXTURE);
+        let photos = tweet_photos(&photo);
+        assert_eq!(photos.len(), 1);
+        assert_eq!(
+            photos[0].source_url,
+            "https://pbs.twimg.com/media/HXVvi--WQAALdVX.jpg"
+        );
+        assert!(photos[0].data.is_none());
+        // X suggère plusieurs recadrages pour la photo du tweet parent aussi.
+        assert_eq!(photos[0].focus.len(), 5);
+        let content = tweet_card_content(&photo);
+        assert_eq!(content.photos.len(), 1);
+        assert!(content.video.is_none());
+    }
+
+    #[test]
+    fn extracts_the_tweet_video() {
+        let video = fixture(VIDEO_FIXTURE);
+        let variants = tweet_video_variants(&video);
+        assert!(!variants.is_empty());
+        assert!(variants.iter().any(|variant| variant
+            .url
+            .ends_with("1920x1080/aeoVUvTgj4wHShhN.mp4?tag=14")));
+        assert_eq!(tweet_video_aspect(&video), Some(16.0 / 9.0));
+        // Une vidéo n'alimente pas la grille de photos.
+        assert!(tweet_photos(&video).is_empty());
+        let content = tweet_card_content(&video);
+        assert!(content.photos.is_empty());
+        assert_eq!(content.video, Some(TweetVideo { aspect: 16.0 / 9.0 }));
+    }
+
+    #[test]
+    fn extracts_the_quoted_tweet_video() {
+        let payload = serde_json::json!({
+            "quoted_tweet": {
+                "text": "Regarde ça",
+                "user": {"name": "berkani", "screen_name": "inconnu95267"},
+                "mediaDetails": [{
+                    "type": "video",
+                    "media_url_https": "https://pbs.twimg.com/amplify_video_thumb/1/img/x.jpg",
+                    "video_info": {
+                        "aspect_ratio": [9, 16],
+                        "variants": [{
+                            "content_type": "video/mp4",
+                            "bitrate": 832000,
+                            "url": "https://video.twimg.com/quoted.mp4"
+                        }]
+                    }
+                }]
+            }
+        });
+        assert_eq!(quoted_tweet_video_aspect(&payload), Some(9.0 / 16.0));
+        let variants = quoted_tweet_video_variants(&payload);
+        assert_eq!(variants.len(), 1);
+        assert_eq!(variants[0].url, "https://video.twimg.com/quoted.mp4");
+        let quoted = quoted_tweet_content(&payload).unwrap();
+        assert_eq!(quoted.video, Some(TweetVideo { aspect: 9.0 / 16.0 }));
+        // La vidéo citée remplace le poster : pas de photo fixe en dessous.
+        assert!(quoted.images.is_empty());
+    }
+
+    #[test]
+    fn keeps_the_parent_and_quoted_videos_apart() {
+        let payload = serde_json::json!({
+            "mediaDetails": [{
+                "type": "video",
+                "media_url_https": "https://pbs.twimg.com/parent.jpg",
+                "video_info": {
+                    "aspect_ratio": [16, 9],
+                    "variants": [{
+                        "content_type": "video/mp4",
+                        "url": "https://video.twimg.com/parent.mp4"
+                    }]
+                }
+            }],
+            "quoted_tweet": {
+                "text": "Regarde ça",
+                "user": {"name": "berkani", "screen_name": "inconnu95267"},
+                "mediaDetails": [{
+                    "type": "video",
+                    "media_url_https": "https://pbs.twimg.com/quoted.jpg",
+                    "video_info": {
+                        "aspect_ratio": [9, 16],
+                        "variants": [{
+                            "content_type": "video/mp4",
+                            "url": "https://video.twimg.com/quoted.mp4"
+                        }]
+                    }
+                }]
+            }
+        });
+        let parent = tweet_video_variants(&payload);
+        assert_eq!(parent.len(), 1);
+        assert_eq!(parent[0].url, "https://video.twimg.com/parent.mp4");
+        let quoted = quoted_tweet_video_variants(&payload);
+        assert_eq!(quoted.len(), 1);
+        assert_eq!(quoted[0].url, "https://video.twimg.com/quoted.mp4");
+        assert_eq!(tweet_video_aspect(&payload), Some(16.0 / 9.0));
+        assert_eq!(quoted_tweet_video_aspect(&payload), Some(9.0 / 16.0));
     }
 }

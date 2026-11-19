@@ -45,6 +45,7 @@ pub mod thumbnail;
 pub mod title;
 pub mod transcode;
 pub mod tweet_card;
+pub mod tweet_card_video;
 
 pub use crate::cache::{
     board_total_bytes, cache_total_bytes, plan_board_eviction, plan_cache_eviction,
@@ -90,6 +91,8 @@ pub use crate::transcode::{
     NormalizedMedia,
 };
 pub use crate::tweet_card::{
-    format_tweet_date, render_tweet_card, QuoteImageFocus, QuotedTweetContent, QuotedTweetImage,
-    TweetCardContent,
+    build_video_mask_png, format_tweet_date, render_tweet_card, render_tweet_card_with_slots,
+    CardVideoSlot, CardVideoTarget, QuoteImageFocus, QuotedTweetContent, RenderedCard,
+    TweetCardContent, TweetPhoto, TweetVideo,
 };
+pub use crate::tweet_card_video::compose_tweet_card_video;

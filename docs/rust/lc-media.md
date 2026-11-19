@@ -157,14 +157,16 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
   `__FRONTITY_CONNECT_STATE__`), détection des murs d'authentification, secours sur
   l'embed `/embed/v2/<id>`, extraction des carrousels photo (max 35 slides, 3 candidats
   par slide, 5 candidats audio) et des URL brutes `~tplv-photomode-image`.
-- X/Twitter : carte oEmbed (HTML assaini) + variantes vidéo via
-  `cdn.syndication.twimg.com/tweet-result`, repli sur les balises `og:video:*` et
-  `video.twimg.com` ; `TweetCard { url, html, author_name, author_url }`. Le payload
-  nourrit aussi `tweet_card_content` : auteur, texte (`note_tweet` en priorité, lien
-  média `t.co` retiré via `display_text_range`), date, et le tweet cité
-  (`quoted_tweet`) — auteur, texte, photos (max 4, avec repli sur le poster d'une
-  vidéo citée) et leurs `original_info.focus_rects` convertis en rectangles relatifs
-  (`QuoteImageFocus`).
+- X/Twitter : carte oEmbed (HTML assaini) + payload
+  `cdn.syndication.twimg.com/tweet-result` : variantes vidéo, photos du tweet et
+  `TweetCard { url, html, author_name, author_url }` ; repli sur les balises
+  `og:video:*` et `video.twimg.com`. Le payload nourrit aussi `tweet_card_content` :
+  auteur, texte (`note_tweet` en priorité, lien média `t.co` retiré via
+  `display_text_range`), date, photos du parent (`TweetPhoto`, max 4, avec leurs
+  `original_info.focus_rects` convertis en rectangles relatifs `QuoteImageFocus`),
+  vidéo du parent (`TweetVideo { aspect }` depuis `video_info.aspect_ratio`), et le
+  tweet cité (`quoted_tweet`) — auteur, texte, photos (max 4, avec repli sur le poster
+  d'une vidéo citée) et sa propre vidéo (`quoted_tweet_video_variants`).
 
 ### Téléchargement (`download`)
 
@@ -184,19 +186,40 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
 - `yt-dlp` imprime aussi le titre de la source (`--print after_move:%(title)s` avant
   `after_move:filepath`) : `parse_ytdlp_output` renvoie `YtdlpOutput { path, title }`
   (`NA`/vide → `None`), le titre atterrit dans `DownloadResult.title`.
-- `download_twitter` : vidéo d'abord (variantes du payload), puis photo unique, carrousel
-  (≥ 2 photos), sinon carte tweet PNG. La carte est rendue par `tweet_card` (parley +
-  swash + tiny-skia) : en-tête avatar/nom/@handle, texte du parent, date, et depuis la
-  correction « tweets cités » un bloc de citation encadré — nom/@handle du tweet cité,
-  son texte, et ses photos téléchargées puis converties en PNG par ffmpeg (tiny-skia ne
-  décode que le PNG), recadrées en couverture sur le `focus_rects` suggéré par X. Les
-  photos citées suivent la disposition de X : une photo en 16:9 pleine largeur, deux
-  photos côte à côte, trois ou quatre en lignes (max 4). L'avatar et les images citées
-  sont facultatifs : toute erreur les omet sans faire échouer le téléchargement. Limite
-  connue : quand le tweet parent porte lui-même une photo ou une vidéo, c'est ce média
-  qui est joué (la citation n'est rendue que par la carte, donc uniquement pour les
-  tweets sans média propre).
+- `download_twitter` : le payload syndication pilote le rendu. Vidéo du parent →
+  téléchargée puis incrustée dans une carte vidéo MP4 (fond PNG de la carte + zone
+  arrondie où la vidéo est recadrée en couverture, audio du tweet conservé, durée =
+  celle de la vidéo) ; photos du parent (1 à 4) → carte tweet PNG façon X (une photo
+  en 16:9 pleine largeur, deux côte à côte, trois ou quatre en grille) ; sinon carte
+  texte. La carte est rendue par `tweet_card` (parley + swash + tiny-skia) : en-tête
+  avatar/nom/@handle, texte du parent, média, date, et bloc de citation encadré —
+  nom/@handle, texte et média du tweet cité : ses photos sont téléchargées puis
+  converties en PNG par ffmpeg (tiny-skia ne décode que le PNG), recadrées en
+  couverture sur le `focus_rects` suggéré par X, et sa vidéo est incrustée dans le
+  bloc. `CARD_MEDIA_MAX_HEIGHT` (3200 px) laisse la place aux vidéos verticales 9:16
+  sans recadrage. L'avatar, les photos et les vidéos sont facultatifs : toute erreur
+  les omet sans faire échouer le téléchargement (une carte sans vidéo parente
+  retombe sur le PNG si la composition échoue). Replis : vidéo brute puis première
+  photo du payload si le rendu de la carte échoue, puis `yt-dlp`. Le carrousel
+  Twitter a disparu : les photos passent toujours par la carte.
 - `DownloadResult { path, kind, mime, size_bytes, source_url, title }`.
+
+### Cartes tweet (`tweet_card`, `tweet_card_video`)
+
+`tweet_card::render_tweet_card(&TweetCardContent)` rend la carte PNG (1080 px de
+large, hauteur 360 à 3200 px) : en-tête avatar/nom/@handle, texte, photos du tweet
+ou zone vidéo, date, et bloc de citation. `render_tweet_card_with_slots` renvoie en
+plus les zones vidéo (`CardVideoSlot { x, y, width, height, radius, target }`,
+`CardVideoTarget::{Parent, Quoted}`) et `build_video_mask_png(width, height, radius)`
+produit le masque arrondi correspondant.
+
+`tweet_card_video::compose_tweet_card_video(config, temp_dir, &RenderedCard,
+parent_video, quoted_video)` incruste les vidéos dans un MP4 : fond PNG de la carte,
+`scale`/`crop` en couverture puis `alphamerge` du masque et `overlay` aux positions
+des slots, H.264 `yuv420p` + `faststart`, audio du tweet conservé, durée fixée par la
+zone primaire (la vidéo parente). Le masque reste une image unique : `alphamerge` la
+répète puis s'arrête avec la vidéo — un masque bouclé produisait un flux infini qui
+ne terminait jamais.
 
 ### Sonde (`probe`)
 
@@ -374,7 +397,7 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
 
 ## Tests
 
-- 221 tests unitaires dans la crate (URL/hash, résolution offline sur fixtures, parsing
+- 232 tests unitaires dans la crate (URL/hash, résolution offline sur fixtures, parsing
   HTML/JSON, arguments ffmpeg, décisions de copie, éviction LRU, configuration, erreurs,
   garde SSRF : schémas/UNC, plages IPv4/IPv6, redirections ; stockage : racine
   canonicalisée fail-closed, chemins de transit, publication atomique, purge ciblée des
@@ -384,11 +407,13 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
   `probe_args` protégeant un chemin en `-…`, sortie de commande plafonnée
   (`oversized_output_is_rejected`), validation du cookie TikTok (contrôle de
   caractères, taille), et sanitizer HTML allowlist (XSS, blocs actifs, `rel`/`target`).
-  Le rendu des cartes tweet couvre le bloc de citation : extraction du
-  `quoted_tweet` (auteur, texte, photos multiples et poster de vidéo, `focus_rects`),
-  disposition en lignes façon X (1 photo 16:9, 2 côte à côte, 3-4 en grille), images
-  citées en PNG, recadrage sur le focus suggéré, et absence de casse quand l'auteur,
-  le texte ou les images de la citation manquent.
+  Le rendu des cartes tweet couvre le média et la citation : photos du parent sous le
+  texte, zone vidéo verticale 9:16 (dims paires, carte jusqu'à `CARD_MEDIA_MAX_HEIGHT`),
+  vidéo citée placée dans le bloc de citation, masque arrondi, extraction du
+  `quoted_tweet` (auteur, texte, photos multiples et vidéo, `focus_rects`), disposition
+  en lignes façon X (1 photo 16:9, 2 côte à côte, 3-4 en grille), images citées en PNG,
+  recadrage sur le focus suggéré, et absence de casse quand l'auteur, le texte ou les
+  médias de la citation manquent.
 - `tests/offline.rs` : 7 tests sur fixtures (`tiktok_video.html`, `tiktok_photo.html`,
   `twitter_syndication.json`, `yt_dlp_dump.json`, `youtube_oembed.json`,
   `tiktok_oembed.json`).
@@ -396,9 +421,12 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
   connexion** (sentinelle `TcpListener` + `accept()`/`WouldBlock`), schémas/UNC refusés,
   redirection interne refusée, IP publique littérale acceptée sans DNS, plages
   privées/métadonnées refusées.
-- `tests/network.rs` : 10 tests marqués `#[ignore]` (YouTube e2e, TikTok en ligne,
-  cartes tweet — texte, photo, tweet cité —, échantillon `testsrc` ffmpeg) ; ils
-  nécessitent réseau + `ffmpeg`/`yt-dlp`.
+- `tests/tweet_card_ffmpeg.rs` : 2 tests `#[ignore]` de composition réelle — vidéo 16:9
+  et vidéo verticale 9:16 incrustées dans la carte (durée conservée, largeur de carte
+  1080, H.264) ; nécessitent `ffmpeg`.
+- `tests/network.rs` : 11 tests marqués `#[ignore]` (YouTube e2e, TikTok en ligne,
+  cartes tweet — texte, photo, tweet cité, vidéo —, échantillon `testsrc` ffmpeg) ;
+  ils nécessitent réseau + `ffmpeg`/`yt-dlp`.
 - Doctest de la crate : 1.
 
 Commandes :

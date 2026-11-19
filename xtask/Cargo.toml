@@ -9,7 +9,10 @@ publish.workspace = true
 
 [dependencies]
 time.workspace = true
+futures-util.workspace = true
 lc-db = { path = "../crates/lc-db" }
+lc-domain.workspace = true
+lc-protocol.workspace = true
 regex = "1"
 reqwest.workspace = true
 serde.workspace = true
@@ -19,6 +22,7 @@ sqlx.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

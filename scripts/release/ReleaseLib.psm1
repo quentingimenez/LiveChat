@@ -423,7 +423,7 @@ function Assert-DeploySettings {
 # update, container recreate. On any error the container is started again
 # and the rollback commands are printed.
 function Get-ServerDeployScript {
-    param([string]$Version, [string]$Stamp)
+    param([string]$Version, [string]$Stamp, [switch]$Canary)
     if (-not (Test-ReleaseVersion $Version)) { throw "invalid version '$Version' (expected X.Y.Z)" }
     if ($Stamp -notmatch '^\d{8}-\d{6}$') { throw "invalid stamp '$Stamp' (expected yyyyMMdd-HHmmss)" }
     $lines = @(
@@ -468,6 +468,77 @@ function Get-ServerDeployScript {
         # PowerShell appends a CRLF after piped text: exit before bash reads it.
         'exit 0'
     )
+    if ($Canary) {
+        # Canary gate: boot the new image as LiveChat-canary on a copy of the
+        # backup, on the test bot env file, health-check it on 127.0.0.1:3001,
+        # and only then let the deploy touch the template. The env file is
+        # created once by the user on the host, never by this script
+        # (.claude/skills/release/SKILL.md).
+        $canaryVars = [string[]]@(
+            "CANARY_DIR='/mnt/user/appdata/livechat-canary'",
+            "CANARY_ENV='/mnt/user/appdata/livechat-canary.env'",
+            'CANARY=0'
+        )
+        $envGate = [string[]]@(
+            'if [ -f "$CANARY_ENV" ]; then',
+            '  :',
+            'else',
+            '  echo "canary env file $CANARY_ENV missing - see the release skill" >&2',
+            '  exit 1',
+            'fi'
+        )
+        $canaryCleanup = [string[]]@(
+            '  if [ "$CANARY" = 1 ]; then',
+            '    echo "CANARY FAILED" >&2',
+            '    docker rm -f LiveChat-canary >/dev/null 2>&1 || true',
+            '  fi'
+        )
+        $canaryGate = [string[]]@(
+            'docker rm -f LiveChat-canary >/dev/null 2>&1 || true',
+            'rm -rf "$CANARY_DIR"',
+            'mkdir -p "$CANARY_DIR/media"',
+            'cp -a "$BACKUP"/livechat.sqlite* "$CANARY_DIR"/',
+            'chown -R 10001:10001 "$CANARY_DIR"',
+            'CANARY=1',
+            'docker run -d --name LiveChat-canary -p 127.0.0.1:3001:3000 -v "$CANARY_DIR":/app/data --env-file "$CANARY_ENV" -e API_URL=http://127.0.0.1:3001 "$IMAGE"',
+            'body=""',
+            'canary_ok=0',
+            'for i in $(seq 1 45); do',
+            '  body="$(curl -fsS --max-time 5 http://127.0.0.1:3001/health 2>/dev/null || true)"',
+            '  if echo "$body" | grep -q "\"version\":\"$VERSION\"" && echo "$body" | grep -q ''"db":"ok"'' && echo "$body" | grep -q ''"discord":"ok"''; then',
+            '    canary_ok=1',
+            '    break',
+            '  fi',
+            '  sleep 2',
+            'done',
+            'if [ "$canary_ok" != 1 ]; then',
+            '  echo "canary health check failed" >&2',
+            '  false',
+            'fi',
+            'if [ "$(docker logs LiveChat-canary 2>&1 | grep -c ''Discord pr'')" -lt 1 ]; then',
+            '  echo "canary did not log in to discord" >&2',
+            '  false',
+            'fi',
+            'docker rm -f LiveChat-canary >/dev/null 2>&1 || true',
+            'CANARY=0',
+            'echo "CANARY OK $VERSION"'
+        )
+        $varsAdded = $false
+        $withCanary = New-Object System.Collections.Generic.List[string]
+        foreach ($line in $lines) {
+            if ($line -ceq 'sed -i "s|<Repository>.*</Repository>|<Repository>$IMAGE</Repository>|" "$TEMPLATE"') { $withCanary.AddRange($canaryGate) }
+            $withCanary.Add($line)
+            if (-not $varsAdded -and $line -ceq 'UPDATING=0') {
+                $varsAdded = $true
+                $withCanary.AddRange($canaryVars)
+            } elseif ($line -ceq '[ -n "$PREV_IMAGE" ]') {
+                $withCanary.AddRange($envGate)
+            } elseif ($line -ceq '  echo "DEPLOY FAILED (line $1)" >&2') {
+                $withCanary.AddRange($canaryCleanup)
+            }
+        }
+        $lines = $withCanary.ToArray()
+    }
     return ($lines -join "`n") + "`n"
 }
 
@@ -555,7 +626,7 @@ function Wait-ServerHealth {
 # Deploys server image Version on the Unraid host, then checks /health, the
 # Discord login and the /admin/ restriction. Throws on the first failure.
 function Invoke-ServerDeploy {
-    param([string]$Version)
+    param([string]$Version, [switch]$Canary)
     # L'environnement est relu ici : un shell qui vient de definir les variables
     # n'a pas besoin de reimporter le module.
     if ($env:LIVECHAT_SSH_HOST) { $script:SshHost = $env:LIVECHAT_SSH_HOST }
@@ -563,7 +634,7 @@ function Invoke-ServerDeploy {
     if ($env:LIVECHAT_IMAGE_NAME) { $script:ImageName = $env:LIVECHAT_IMAGE_NAME }
     Assert-DeploySettings
     $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
-    $script = Get-ServerDeployScript -Version $Version -Stamp $stamp
+    $script = Get-ServerDeployScript -Version $Version -Stamp $stamp -Canary:$Canary
     Write-Host "Deploying $($script:ImageName):$Version on $($script:SshHost)"
     $result = Get-DeployResult -Lines (Invoke-RemoteBash $script)
     try {

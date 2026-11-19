@@ -40,6 +40,7 @@ tiny-skia = "0.12"
 tokio = { workspace = true }
 tempfile = { workspace = true }
 serde_json = { workspace = true }
+proptest = { workspace = true }
 
 [lints]
 workspace = true

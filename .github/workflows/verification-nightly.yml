@@ -1,0 +1,244 @@
+name: verification-nightly
+
+# `schedule` and `workflow_dispatch` only take effect once this file is on the
+# default branch; the `pull_request` trigger runs it on the PR meanwhile.
+on:
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/verification-nightly.yml"
+      - "fuzz/**"
+      - "scripts/mutants-baseline.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verification-nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [protocol_frame, media_url, html_parsers]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # lc-media depends on parley (Cargo.toml) whose yeslogic-fontconfig-sys
+      # build script needs the system fontconfig headers on Linux; the fuzz
+      # targets link lc-media.
+      - name: Install Linux fontconfig
+        run: |
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev
+      - name: Install nightly toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: nightly
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: "fuzz -> target"
+      # Fallback if the tool is unknown to taiki-e: cargo install cargo-fuzz --locked
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: cargo-fuzz
+      # fuzz/ is its own workspace excluded from the root one: no other
+      # job runs the seed and golden tests in fuzz/src/lib.rs, so they run
+      # here before any fuzzing. They read the repo fixtures directly
+      # (CARGO_MANIFEST_DIR), so one matrix leg is enough.
+      - name: Run the fuzz seed and golden tests
+        if: matrix.target == 'protocol_frame'
+        run: cargo test --manifest-path fuzz/Cargo.toml --no-default-features --lib --locked
+      - name: Seed the fuzz corpus
+        run: |
+          mkdir -p fuzz/corpus/${{ matrix.target }}/
+          if [ "${{ matrix.target }}" = "protocol_frame" ]; then
+            cp crates/lc-protocol/tests/fixtures/* fuzz/corpus/protocol_frame/
+          elif [ "${{ matrix.target }}" = "html_parsers" ]; then
+            cp crates/lc-media/tests/fixtures/* fuzz/corpus/html_parsers/
+          else
+            printf '%s' 'https://www.tiktok.com/@a/video/1' > fuzz/corpus/media_url/tiktok-url
+            printf '%s' 'http://0x7f.1/' > fuzz/corpus/media_url/short-host
+            printf '%s' 'http://[::ffff:127.0.0.1]/' > fuzz/corpus/media_url/mapped-v4
+            printf '%s' 'https://youtu.be/abc' > fuzz/corpus/media_url/youtu-be
+          fi
+      # fuzz/ is its own workspace excluded from the root one; cargo-fuzz
+      # finds it from the repo root. The repo rust-toolchain.toml pins
+      # stable: RUSTUP_TOOLCHAIN overrides that file pin for this step
+      # only, because cargo-fuzz passes -Zsanitizer=address (nightly
+      # only). The gnu target is forced because the prebuilt cargo-fuzz
+      # binary is a static musl binary whose default target is musl:
+      # building for musl would try to link the glibc fontconfig and
+      # cross-compile ring's C code, neither of which works on the
+      # runner. Do not "simplify" this back to the default target.
+      - name: Fuzz
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=45
+        env:
+          RUSTUP_TOOLCHAIN: nightly
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+
+  # A red nightly is not a merge gate: this job is advisory and only fails
+  # when a mutation score drops below the baseline.
+  mutants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # lc-media depends on parley (Cargo.toml) whose yeslogic-fontconfig-sys
+      # build script needs the system fontconfig headers on Linux; the
+      # lc-media-guard scope builds lc-media.
+      - name: Install Linux fontconfig
+        run: |
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      # Pin the exact tool versions the baselines were measured with
+      # (scripts/mutants-baseline.json, cargo-mutants 27.1.0 on Windows).
+      # A drifting version could move min_mutants and the scores without
+      # any code regression.
+      - name: Install cargo-mutants and nextest
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: cargo-mutants@27.1.0,nextest@0.9.151
+      # cargo-mutants does not create the output parent directory itself.
+      - name: Run the mutation scopes and compare with the baseline
+        run: |
+          # rust-cache can restore stale outcomes from target/mutants:
+          # every nightly starts from a clean slate.
+          rm -rf target/mutants
+          mkdir -p target/mutants
+          FAILED=0
+          # 0 = all mutants caught; 2 = FoundProblems (missed mutants).
+          # Both proceed to the score comparison. Any other exit code is a
+          # broken run (1 usage, 3 timeout, 4 baseline failed, 5/6 filter
+          # diff, 70 internal): outcomes.json is written incrementally, so
+          # a partial file must never score as a green run.
+          run_scope() {
+            local scope="$1"
+            local rc
+            shift
+            set +e
+            cargo mutants --output "target/mutants/$scope" "$@"
+            rc=$?
+            set -e
+            if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+              echo "::error::cargo mutants for $scope exited $rc (expected 0 or 2)"
+              FAILED=1
+            fi
+          }
+          run_scope lc-protocol -p lc-protocol --test-tool nextest -j 2
+          run_scope lc-media-guard -p lc-media --file crates/lc-media/src/guard.rs --test-tool nextest -j 2 -- -E 'kind(lib) | binary(ssrf_guard) | binary(properties)'
+          run_scope lc-db-queue -p lc-db --file crates/lc-db/src/repos/playback_jobs.rs --test-tool nextest -j 2
+          # A scope that produced nothing must fail the job instead of
+          # silently passing with an empty score.
+          compare() {
+            scope="$1"
+            outcomes="target/mutants/$scope/mutants.out/outcomes.json"
+            if [ ! -f "$outcomes" ]; then
+              echo "::error::$scope produced no outcomes.json (run interrupted?)"
+              FAILED=1
+              return
+            fi
+            # cargo-mutants 27.1.0 summary values are Success, CaughtMutant,
+            # MissedMutant, Timeout, Unviable, Failure. Timeout outcomes
+            # count as missed in the denominator; Failure is an unclassified
+            # broken run and fails the job below.
+            actual=$(jq -r '[.outcomes[].summary] | (map(select(. == "CaughtMutant")) | length) as $c | (map(select(. == "MissedMutant")) | length) as $m | (map(select(. == "Timeout")) | length) as $t | (if ($c + $m + $t) > 0 then ((100 * $c) / ($c + $m + $t) | floor) else 0 end)' "$outcomes")
+            baseline=$(jq -r --arg s "$scope" '.[$s].caught_pct' scripts/mutants-baseline.json)
+            min_mutants=$(jq -r --arg s "$scope" '.[$s].min_mutants' scripts/mutants-baseline.json)
+            total=$(jq -r '.outcomes | length' "$outcomes")
+            failures=$(jq -r '[.outcomes[].summary] | map(select(. == "Failure")) | length' "$outcomes")
+            # A missing baseline key makes jq print "null"; comparing it
+            # would error out and silently pass. Require plain integers.
+            for value in "$actual" "$baseline" "$min_mutants" "$total" "$failures"; do
+              if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+                echo "::error::$scope produced a non-integer value where a number was expected: '$value'"
+                FAILED=1
+                return
+              fi
+            done
+            echo "$scope: caught_pct=$actual, baseline=$baseline, mutants=$total"
+            # cargo-mutants does NOT change its exit code for Failure
+            # outcomes (outcome.rs exit_code() looks only at baseline,
+            # timeout and missed): this check is the only guard against
+            # unclassified broken runs passing as green.
+            if [ "$failures" -gt 0 ]; then
+              echo "::error::$scope recorded $failures unclassified Failure outcome(s)"
+              FAILED=1
+            fi
+            if [ "$total" -lt "$min_mutants" ]; then
+              echo "::error::$scope measured only $total mutants (expected at least $min_mutants)"
+              FAILED=1
+            fi
+            if [ "$actual" -lt "$baseline" ]; then
+              echo "::error::$scope mutation score $actual dropped below the baseline $baseline"
+              FAILED=1
+            fi
+          }
+          compare lc-protocol
+          compare lc-media-guard
+          compare lc-db-queue
+          exit "$FAILED"
+      - name: Upload mutation reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutants-reports
+          path: |
+            target/mutants/lc-protocol/mutants.out
+            target/mutants/lc-media-guard/mutants.out
+            target/mutants/lc-db-queue/mutants.out
+
+  # WebSocket load harness: boots a real lc-server against a fresh seeded
+  # database, drives 50 overlay clients plus an ingest poster for 60 s, and
+  # fails when any latency/socket/ingest budget fails.
+  load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # lc-media depends on parley (Cargo.toml) whose yeslogic-fontconfig-sys
+      # build script needs the system fontconfig headers on Linux; building
+      # the whole lc-server pulls lc-media in.
+      - name: Install Linux fontconfig
+        run: |
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      # The loadtest only exercises the WebSocket and ingest paths: skip
+      # the admin web UI build.
+      - name: Build lc-server
+        run: cargo build -p lc-server --release --locked
+        env:
+          LC_ADMIN_WEB_BUILD: "0"
+      - name: Run the WebSocket load harness
+        run: cargo run -p xtask --release --locked -- loadtest --server-bin target/release/lc-server --clients 50 --duration-secs 60 --report target/load-report.json
+      - name: Upload load report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: load-report
+          path: target/load-report.json

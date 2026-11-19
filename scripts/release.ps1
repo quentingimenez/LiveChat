@@ -4,11 +4,12 @@
 #   release.ps1 plan [-Json]                  changes per component since its last release tag
 #   release.ps1 bump <component> <X.Y.Z>      write a new version in every file of a component
 #   release.ps1 pending-tags <baseRef> [-Json] tags to create for versions bumped since baseRef
-#   release.ps1 deploy-server <X.Y.Z>         deploy the server image on Unraid (SSH)
+#   release.ps1 deploy-server <X.Y.Z> [-Canary] deploy the server image on Unraid (SSH)
 param(
     [Parameter(Position = 0)][string]$Command,
     [Parameter(Position = 1, ValueFromRemainingArguments = $true)][string[]]$Rest,
-    [switch]$Json
+    [switch]$Json,
+    [switch]$Canary
 )
 
 $ErrorActionPreference = 'Stop'
@@ -63,11 +64,11 @@ switch ($Command) {
         foreach ($p in $pending) { Write-Output "$($p.Component) $($p.Tag)" }
     }
     'deploy-server' {
-        if ($Rest.Count -ne 1) { throw 'usage: release.ps1 deploy-server <X.Y.Z>' }
-        Invoke-ServerDeploy -Version $Rest[0]
+        if ($Rest.Count -ne 1) { throw 'usage: release.ps1 deploy-server <X.Y.Z> [-Canary]' }
+        Invoke-ServerDeploy -Version $Rest[0] -Canary:$Canary
     }
     default {
-        Write-Output 'usage: release.ps1 check | plan [-Json] | bump <component> <X.Y.Z> | pending-tags <baseRef> [-Json] | deploy-server <X.Y.Z>'
+        Write-Output 'usage: release.ps1 check | plan [-Json] | bump <component> <X.Y.Z> | pending-tags <baseRef> [-Json] | deploy-server <X.Y.Z> [-Canary]'
         exit 2
     }
 }

@@ -1,0 +1,52 @@
+[package]
+name = "livechat-fuzz"
+description = "cargo-fuzz targets of the LiveChat workspace (nightly toolchain, run by verification-nightly.yml)."
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Own workspace: the root workspace excludes fuzz/, which keeps its own Cargo.lock
+# and target/ so the msrv, clippy and deny jobs never see nightly-only code.
+[workspace]
+members = ["."]
+
+# `link_libfuzzer` (default feature of libfuzzer-sys) builds the C++ libFuzzer
+# runtime. It is re-exposed as this crate's default feature, so that
+# `cargo check --manifest-path fuzz/Cargo.toml --no-default-features` type-checks
+# the targets on the stable toolchain without a C++ build.
+[features]
+default = ["libfuzzer-sys/link_libfuzzer"]
+
+[dependencies]
+libfuzzer-sys = { version = "0.4", default-features = false }
+lc-protocol = { path = "../crates/lc-protocol" }
+lc-media = { path = "../crates/lc-media" }
+serde_json = "1"
+
+[[bin]]
+name = "protocol_frame"
+path = "fuzz_targets/protocol_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "media_url"
+path = "fuzz_targets/media_url.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "html_parsers"
+path = "fuzz_targets/html_parsers.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

@@ -164,6 +164,29 @@ l'erreur.
 5. Compte rendu : versions sorties, liens des releases, image déployée, dossier de
    sauvegarde, ce qui n'a pas pu être vérifié.
 
+## Canary (optionnel)
+
+**Mise en place unique** (une seule fois, jamais répétée) :
+
+1. Créer un **bot de TEST** dans le portail développeur Discord (jamais le bot de production) et noter son `DISCORD_CLIENT_ID`.
+2. Inviter ce bot de test dans un **guild de TEST**.
+3. Sur l'hôte Unraid, créer **une seule fois** le fichier `/mnt/user/appdata/livechat-canary.env` (en root, `chmod 600`) contenant le `DISCORD_TOKEN` et le `DISCORD_CLIENT_ID` du bot de test, plus un `ADMIN_UI_TOKEN` et un `MEDIA_URL_SECRET` réservés au canary. **Ce skill n'affiche ni ne crée jamais ce fichier** : il est créé manuellement, une seule fois, par l'utilisateur sur l'hôte.
+4. Vérifier que le port 3001 est libre sur l'hôte : `ss -ltn | grep ':3001 '`.
+
+**Utilisation** :
+
+```powershell
+powershell -NoProfile -File scripts/release.ps1 deploy-server X.Y.Z -Canary
+```
+
+**Ce que ça prouve** : la nouvelle image démarre en conteneur `LiveChat-canary` (port `127.0.0.1:3001`) sur une **copie** des vraies données (sqlite sauvegardées), avec le fichier d'env du bot de test. Le script vérifie que le serveur démarre, que `/health` répond (nouvelle version + db ok + discord ok) et que le bot se connecte à Discord — **avant** de toucher au conteneur principal. En cas de succès, le canary est supprimé et le déploiement principal continue.
+
+**Coût** : environ 90 s de downtime supplémentaire au maximum en pratique (le conteneur principal est déjà arrêté pendant la vérification) ; le pire cas théorique est ~315 s (45 sondes × (5 s de timeout curl + 2 s de sommeil)).
+
+**En cas d'échec du script** : le script affiche `CANARY FAILED`, supprime le conteneur canary et redémarre le conteneur principal **sur l'ancienne image** (template non modifié) — le déploiement est abandonné avant tout changement au template. Cette garantie vaut pour toute erreur **du script** ; une interruption brutale n'y est pas soumise (voir ci-dessous).
+
+**Fenêtre d'interruption (résiduelle)** : le script ne piège que les erreurs (`ERR`), pas les signaux (`INT`/`TERM`/`HUP`). Une interruption brutale de l'opérateur (SSH coupé, Ctrl-C, reboot de l'hôte) pendant la fenêtre canary — jusqu'à ~315 s de sondes au pire — peut donc laisser le conteneur principal arrêté et le canary vivant, sans nettoyage ni restauration automatiques. Cette exposition préexistait au canary (chaque déploiement s'écoule entre `docker stop LiveChat` et `docker start LiveChat`, ~20 s) ; le canary ne fait que l'élargir. Reprise manuelle : `docker rm -f LiveChat-canary` (échoue sans conséquence si le conteneur n'existe plus), puis `docker start LiveChat` ; si le `sed` du template avait déjà eu lieu, rétablir d'abord l'image précédente (rappelée par la valeur `PREV_IMAGE` du message de rollback) avant de relancer le conteneur.
+
 ## Interdits
 
 - Rien ne part sans le « go » de l'utilisateur pour cette release.

@@ -47,10 +47,10 @@ Test-Case 'Deploy refuses invalid version' {
 Test-Case 'Remote scripts are ASCII only' {
     # Non-ASCII bytes are mangled by the PowerShell -> ssh pipe and by the
     # host's C locale (`.` matches one byte, an e-circumflex is two bytes in UTF-8).
-    foreach ($s in (Get-ServerDeployScript -Version '3.6.0' -Stamp '20261117-120000'), (Get-ServerCheckScript)) {
+    foreach ($s in (Get-ServerDeployScript -Version '3.6.0' -Stamp '20261117-120000'), (Get-ServerCheckScript -PublicUrl 'https://livechat.example.com')) {
         Assert-True ($s -notmatch '[^\x00-\x7F]') 'non-ASCII character in a remote script'
     }
-    Assert-True ((Get-ServerCheckScript).Contains("grep -c 'Discord pr'")) 'Discord login check'
+    Assert-True ((Get-ServerCheckScript -PublicUrl 'https://livechat.example.com').Contains("grep -c 'Discord pr'")) 'Discord login check'
 }
 
 Test-Case 'Deploy error after update restores the template and recreates' {
@@ -84,4 +84,15 @@ Test-Case 'Deploy refuses to run without the deployment settings' {
     Assert-Throws { Assert-DeploySettings -SshHost 'root@unraid' -PublicUrl '' } 'LIVECHAT_PUBLIC_URL'
     Assert-Throws { Assert-DeploySettings -SshHost '' -PublicUrl 'https://livechat.example.com' } 'LIVECHAT_SSH_HOST'
     Assert-True ($null -eq (Assert-DeploySettings -SshHost 'root@unraid' -PublicUrl 'https://livechat.example.com')) 'accepts a complete configuration'
+}
+
+Test-Case 'Admin check uses the public host' {
+    $s = Get-ServerCheckScript -PublicUrl 'https://livechat.singesupreme.fr'
+    Assert-True ($s.Contains('--resolve livechat.singesupreme.fr:4433:127.0.0.1')) 'local proxy resolve'
+    Assert-True ($s.Contains('https://livechat.singesupreme.fr:4433/admin/')) 'admin URL'
+    Assert-True (-not $s.Contains('livechat.example.com')) 'no placeholder host'
+}
+
+Test-Case 'Admin check needs the public URL' {
+    Assert-Throws { Get-ServerCheckScript -PublicUrl '' } 'LIVECHAT_PUBLIC_URL'
 }

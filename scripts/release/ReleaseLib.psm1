@@ -447,11 +447,19 @@ function Get-ServerDeployScript {
 # bot logged in, and /admin/ is refused for a non-allowed source address.
 # ASCII only: `Discord pr` matches the "Discord pret" line without
 # depending on the host locale.
+# Checks run on the host after the container restart. The /admin/ probe goes
+# through the host's local TLS proxy (port 4433) with the public host name, so
+# it reaches the app without depending on NAT hairpin. The host name comes from
+# the public URL (LIVECHAT_PUBLIC_URL), never from a placeholder.
 function Get-ServerCheckScript {
+    param([string]$PublicUrl = $script:PublicUrl)
+    if (-not $PublicUrl) { throw 'LIVECHAT_PUBLIC_URL is required for the admin check' }
+    $publicHost = ([Uri]$PublicUrl).Host
+    if (-not $publicHost) { throw "invalid public URL '$PublicUrl' (expected https://host)" }
     return (@(
             'set -u',
             'echo "discord_ready=$(docker logs --since 15m LiveChat 2>&1 | grep -c ''Discord pr'' || true)"',
-            'echo "admin_status=$(curl -sk -o /dev/null -w ''%{http_code}'' --resolve livechat.example.com:4433:127.0.0.1 https://livechat.example.com:4433/admin/ || true)"',
+            "echo `"admin_status=`$(curl -sk -o /dev/null -w '%{http_code}' --resolve ${publicHost}:4433:127.0.0.1 https://${publicHost}:4433/admin/ || true)`"",
             'exit 0'
         ) -join "`n") + "`n"
 }

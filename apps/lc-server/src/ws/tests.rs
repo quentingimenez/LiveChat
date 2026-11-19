@@ -2146,3 +2146,34 @@ async fn board_image_without_scale_omits_the_field() {
     let play = played_payload(server.addr, item_id).await;
     assert!(play["media"].get("displayScalePercent").is_none());
 }
+
+/// Pins the frozen `hello` version gate against `MIN_OVERLAY_VERSION` 3.0.0.
+///
+/// Frozen rule: pre-release suffixes and build metadata are ignored
+/// (`3.0.0-beta.1` reads as `3.0.0`), versions compare as numeric
+/// `(major, minor, patch)` triplets (so `10.0.0` is above `3.0.0`, unlike a
+/// string comparison), and any `appVersion` that does not read as three
+/// numeric dotted parts (`3`, `garbage`) is rejected as outdated.
+#[tokio::test]
+async fn hello_version_matrix_against_min_3_0_0() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+
+    for case in ["2.9.9", "3", "garbage"] {
+        let mut socket = connect(server.addr).await;
+        send_hello(&mut socket, TOKEN, case).await;
+        expect_close(&mut socket, close_code::OUTDATED_PROTOCOL).await;
+    }
+
+    for case in ["3.0.0", "3.0.0-beta.1", "3.8.0", "10.0.0"] {
+        let mut socket = connect(server.addr).await;
+        send_hello(&mut socket, TOKEN, case).await;
+        let first = recv_value(&mut socket).await;
+        assert_eq!(
+            first.get("type").and_then(Value::as_str),
+            Some("welcome"),
+            "case {case}"
+        );
+    }
+}

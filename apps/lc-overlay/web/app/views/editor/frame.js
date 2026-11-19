@@ -1,7 +1,7 @@
 // Full-window frame shared by the image editor and the audio/video editor:
 // title bar, undo/redo, stage, side panel, optional timeline, save actions.
 
-import { h, icon, registerIcons } from '../../core/dom.js';
+import { h, icon, registerIcons, resetOnDoubleClick } from '../../core/dom.js';
 
 registerIcons({
   undo: 'M8 8L4 12l4 4M4 12h10a5 5 0 010 10h-2',
@@ -224,8 +224,9 @@ export function choices(options, current, onPick, label) {
 }
 
 // A labelled slider. `onInput` follows the thumb, `onCommit` fires when it
-// is released; `format` renders the value shown next to the label.
-export function slider({ label, min, max, step, value, format, onInput, onCommit }) {
+// is released; `format` renders the value shown next to the label. A double
+// click puts the slider back to `defaultValue`.
+export function slider({ label, min, max, step, value, format, onInput, onCommit, defaultValue }) {
   const output = h('span', { class: 'editor-value' }, format ? format(value) : String(value));
   const input = h('input', {
     type: 'range',
@@ -244,6 +245,7 @@ export function slider({ label, min, max, step, value, format, onInput, onCommit
       }
     },
   });
+  resetOnDoubleClick(input, defaultValue);
   return h('label', { class: 'editor-slider' }, h('span', { class: 'editor-slider-head' }, label, output), input);
 }
 

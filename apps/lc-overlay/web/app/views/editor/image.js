@@ -7,7 +7,7 @@
 // a new base picture. Every committed action is a snapshot: undo and redo
 // walk through them.
 
-import { h, icon, registerIcons } from '../../core/dom.js';
+import { h, icon, registerIcons, resetOnDoubleClick } from '../../core/dom.js';
 import {
   CROP_RATIOS,
   DEFAULT_DISPLAY_SCALE_PERCENT,
@@ -318,6 +318,9 @@ export async function createImageEditor({
   const initialScale = normalizeDisplayScale(displayScalePercent);
   let displayScale = initialScale;
   const style = { color: '#ec6a70', stroke: 4, drawMode: 'pen', shape: 'arrow', fill: false, font: 'meme', textSize: 30, outline: true, textColor: '#ffffff', maskMode: 'pixel', maskStrength: 6 };
+  // Shipped defaults of the tools: a double click on one of their sliders
+  // puts it back there.
+  const styleDefaults = { ...style };
 
   const scratch = makeCanvas(1, 1);
   const layer = makeCanvas(1, 1);
@@ -798,6 +801,7 @@ export async function createImageEditor({
           min: 4,
           max: 160,
           value: clamp(Math.round(object.size / unit()), 4, 160),
+          defaultValue: styleDefaults.textSize,
           onInput: (value) => { object.size = value * unit(); repaint(); },
           onCommit: commit,
         }),
@@ -811,6 +815,7 @@ export async function createImageEditor({
           min: 1,
           max: 40,
           value: clamp(Math.round(object.width / unit()), 1, 40),
+          defaultValue: styleDefaults.stroke,
           onInput: (value) => { object.width = value * unit(); repaint(); },
           onCommit: commit,
         }),
@@ -824,6 +829,7 @@ export async function createImageEditor({
           min: 2,
           max: 20,
           value: clamp(Math.round(object.strength / unit()), 2, 20),
+          defaultValue: styleDefaults.maskStrength,
           onInput: (value) => { object.strength = value * unit(); repaint(); },
           onCommit: commit,
         }),
@@ -914,6 +920,7 @@ export async function createImageEditor({
       value: String(clamp(displayScale, 25, 400)),
       onInput: () => setDisplayScale(Number(range.value)),
     });
+    resetOnDoubleClick(range, DEFAULT_DISPLAY_SCALE_PERCENT);
     const number = h('input', {
       class: 'field',
       type: 'number',
@@ -987,7 +994,7 @@ export async function createImageEditor({
         hint,
         choices([['pen', 'Pinceau', 'edit'], ['marker', 'Surligneur', 'marker'], ['eraser', 'Gomme', 'eraser']], style.drawMode, (mode) => { style.drawMode = mode; renderPanel(); }, 'Outil de dessin'),
         style.drawMode === 'eraser' ? h('p', { class: 'meta' }, 'La gomme efface ce que tu as ajouté, jamais l’image.') : colorRow(style.color, (color) => { style.color = color; renderPanel(); }),
-        slider({ label: 'Épaisseur', min: 1, max: 40, value: style.stroke, onInput: (value) => { style.stroke = value; } }),
+        slider({ label: 'Épaisseur', min: 1, max: 40, value: style.stroke, defaultValue: styleDefaults.stroke, onInput: (value) => { style.stroke = value; } }),
       );
     }
     if (tool === 'shape') {
@@ -996,7 +1003,7 @@ export async function createImageEditor({
         hint,
         choices([['arrow', 'Flèche', 'arrow'], ['rect', 'Rectangle', 'rect'], ['ellipse', 'Ellipse', 'ellipse'], ['line', 'Trait', 'line']], style.shape, (shape) => { style.shape = shape; renderPanel(); }, 'Forme'),
         colorRow(style.color, (color) => { style.color = color; renderPanel(); }),
-        slider({ label: 'Épaisseur', min: 1, max: 40, value: style.stroke, onInput: (value) => { style.stroke = value; } }),
+        slider({ label: 'Épaisseur', min: 1, max: 40, value: style.stroke, defaultValue: styleDefaults.stroke, onInput: (value) => { style.stroke = value; } }),
         style.shape === 'rect' || style.shape === 'ellipse' ? toggle('Forme pleine', style.fill, (fill) => { style.fill = fill; }) : null,
       );
     }
@@ -1018,7 +1025,7 @@ export async function createImageEditor({
         ),
         choices(FONT_LABELS, style.font, (font) => { style.font = font; renderPanel(); }, 'Police'),
         colorRow(style.textColor, (color) => { style.textColor = color; renderPanel(); }),
-        slider({ label: 'Taille', min: 4, max: 160, value: style.textSize, onInput: (value) => { style.textSize = value; } }),
+        slider({ label: 'Taille', min: 4, max: 160, value: style.textSize, defaultValue: styleDefaults.textSize, onInput: (value) => { style.textSize = value; } }),
         toggle('Contour', style.outline, (outline) => { style.outline = outline; }),
       );
     }
@@ -1050,7 +1057,7 @@ export async function createImageEditor({
         'Masquer une zone',
         hint,
         choices([['pixel', 'Pixels'], ['blur', 'Flou']], style.maskMode, (mode) => { style.maskMode = mode; renderPanel(); }, 'Type de masque'),
-        slider({ label: 'Intensité', min: 2, max: 20, value: style.maskStrength, onInput: (value) => { style.maskStrength = value; } }),
+        slider({ label: 'Intensité', min: 2, max: 20, value: style.maskStrength, defaultValue: styleDefaults.maskStrength, onInput: (value) => { style.maskStrength = value; } }),
       );
     }
     if (tool === 'display') {
@@ -1063,6 +1070,7 @@ export async function createImageEditor({
           min,
           max,
           value: doc.adjust[key],
+          defaultValue: NEUTRAL_ADJUST[key],
           format: key === 'blur' ? (value) => String(value) : (value) => `${value} %`,
           onInput: (value) => { doc.adjust[key] = value; repaint(); },
           onCommit: commit,

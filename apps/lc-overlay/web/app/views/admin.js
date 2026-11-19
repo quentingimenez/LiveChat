@@ -4,9 +4,10 @@
 
 import { api, run } from '../core/api.js';
 import { isObsolete, newestVersion, platformLabel, presenceLabel as devicePresenceLabel, sessionModeLabel } from '../core/device-helpers.js';
-import { avatarNode, h, icon } from '../core/dom.js';
+import { avatarNode, h, icon, resetOnDoubleClick } from '../core/dom.js';
 import { formatCode, relativeTime } from '../core/format.js';
 import { activeGuild, can, ROLE_LABELS, state } from '../core/state.js';
+import { DEFAULT_VOLUME_PERCENT } from '../core/sound.js';
 import { notify } from '../core/toast.js';
 import { confirmDialog, copyText, openDialog } from '../core/ui.js';
 import { loadAdmin, loadGuild } from '../data.js';
@@ -406,6 +407,7 @@ function openDeviceSettingsDialog(device) {
     volume.addEventListener('input', () => {
       output.textContent = `${volume.value} %`;
     });
+    resetOnDoubleClick(volume, DEFAULT_VOLUME_PERCENT);
     const muted = h('input', { type: 'checkbox', checked: Boolean(current.mediaMuted) });
     const paused = h('input', { type: 'checkbox', checked: Boolean(current.paused) });
     const save = async () => {

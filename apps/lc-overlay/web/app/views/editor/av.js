@@ -33,7 +33,7 @@ import {
   rotatedSize,
   sourceToOutputTime,
 } from '../../core/editor-helpers.js';
-import { previewVolume } from '../../core/sound.js';
+import { DEFAULT_VOLUME_PERCENT, previewVolume } from '../../core/sound.js';
 import { state } from '../../core/state.js';
 import { createCropOverlay } from './crop-overlay.js';
 import { choices, section, slider, toggle } from './frame.js';
@@ -711,9 +711,9 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
             edit.mute
               ? null
               : [
-                  slider({ label: 'Volume', min: 0, max: 300, step: 5, value: Math.round(edit.volume * 100), format: (value) => `${value} %`, onInput: (value) => { edit.volume = value / 100; }, onCommit: commit }),
-                  slider({ label: 'Fondu d’entrée', min: 0, max: 5, step: 0.1, value: edit.fadeIn, format: (value) => `${value.toFixed(1).replace('.', ',')} s`, onInput: (value) => { edit.fadeIn = value; }, onCommit: commit }),
-                  slider({ label: 'Fondu de sortie', min: 0, max: 5, step: 0.1, value: edit.fadeOut, format: (value) => `${value.toFixed(1).replace('.', ',')} s`, onInput: (value) => { edit.fadeOut = value; }, onCommit: commit }),
+                  slider({ label: 'Volume', min: 0, max: 300, step: 5, value: Math.round(edit.volume * 100), defaultValue: DEFAULT_VOLUME_PERCENT, format: (value) => `${value} %`, onInput: (value) => { edit.volume = value / 100; }, onCommit: commit }),
+                  slider({ label: 'Fondu d’entrée', min: 0, max: 5, step: 0.1, value: edit.fadeIn, defaultValue: 0, format: (value) => `${value.toFixed(1).replace('.', ',')} s`, onInput: (value) => { edit.fadeIn = value; }, onCommit: commit }),
+                  slider({ label: 'Fondu de sortie', min: 0, max: 5, step: 0.1, value: edit.fadeOut, defaultValue: 0, format: (value) => `${value.toFixed(1).replace('.', ',')} s`, onInput: (value) => { edit.fadeOut = value; }, onCommit: commit }),
                 ],
           )
         : section('Son', h('p', { class: 'meta' }, 'Un GIF n’a pas de son.')),

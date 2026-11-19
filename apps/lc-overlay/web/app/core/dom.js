@@ -28,6 +28,33 @@ export function h(tag, props, ...children) {
   return node;
 }
 
+// Hint shown on a slider whose double click puts it back to its default.
+export const SLIDER_RESET_HINT = 'Double-clic : revenir à la valeur par défaut';
+
+// A double click on a slider resets it to the default of the setting it
+// drives. Assigning `value` alone would leave the page behind (the number next
+// to the slider, the stored setting, the undo history): dispatching the
+// `input` and `change` events goes through the listeners that already handle
+// every manual move.
+export function resetOnDoubleClick(input, defaultValue) {
+  const value = Number(defaultValue);
+  if (!Number.isFinite(value)) {
+    return;
+  }
+  const text = String(value);
+  if (!input.title) {
+    input.title = SLIDER_RESET_HINT;
+  }
+  input.addEventListener('dblclick', () => {
+    if (input.value === text) {
+      return;
+    }
+    input.value = text;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
 const ICONS = {
   play: 'M7 4.5v15l12-7.5z',
   stop: 'M6 6h12v12H6z',

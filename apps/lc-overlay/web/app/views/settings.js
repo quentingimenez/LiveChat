@@ -16,8 +16,9 @@
 import { run } from '../core/api.js';
 import { acceleratorFromEvent, acceleratorLabel, BARE_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import { resizeAvatar } from '../core/avatar.js';
-import { avatarNode, h } from '../core/dom.js';
+import { avatarNode, h, resetOnDoubleClick } from '../core/dom.js';
 import { invoke, listen } from '../core/ipc.js';
+import { DEFAULT_VOLUME_PERCENT } from '../core/sound.js';
 import { guildLabel, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import { currentUpdateStatus, setUpdateStatus } from '../core/update-status.js';
@@ -238,7 +239,7 @@ export function controlRow(label, control, id) {
   return h('div', { class: 'settings-row' }, labelNode, h('div', { class: 'settings-control' }, control));
 }
 
-export function rangeControl({ id, min, max, value, format, onInput }) {
+export function rangeControl({ id, min, max, value, format, onInput, defaultValue }) {
   const output = h('span', { class: 'settings-value' }, format(value));
   const input = h('input', {
     id,
@@ -254,6 +255,7 @@ export function rangeControl({ id, min, max, value, format, onInput }) {
       onInput(next);
     },
   });
+  resetOnDoubleClick(input, defaultValue);
   return [input, output];
 }
 
@@ -417,6 +419,7 @@ function renderSound(settings) {
         max: 100,
         value: Math.round(volume * 100),
         format: (value) => `${value} %`,
+        defaultValue: DEFAULT_VOLUME_PERCENT,
         onInput: (value) => debounce('volume', () => applyPatch({ volume: value / 100 })),
       }),
       'settings-volume',
@@ -463,6 +466,7 @@ function renderGuildVolume(guild, settings) {
         max: 100,
         value: Math.round(volume * 100),
         format: (value) => `${value} %`,
+        defaultValue: DEFAULT_VOLUME_PERCENT,
         onInput: (value) =>
           debounce(`guildVolume:${guildId}`, () => applyPatch({ guilds: { [guildId]: { volume: value / 100 } } })),
       }),

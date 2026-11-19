@@ -9,6 +9,7 @@ import { api, run } from '../core/api.js';
 import { h } from '../core/dom.js';
 import { formatBytes } from '../core/format.js';
 import { activeGuild, can, guildLabel, state } from '../core/state.js';
+import { DEFAULT_VOLUME_PERCENT } from '../core/sound.js';
 import { notify } from '../core/toast.js';
 import { openDialog } from '../core/ui.js';
 import { loadGuild, loadGuildInfo } from '../data.js';
@@ -151,6 +152,7 @@ function renderSound(settings, guild) {
         max: 100,
         value: Math.round(volume * 100),
         format: (value) => `${value} %`,
+        defaultValue: DEFAULT_VOLUME_PERCENT,
         onInput: (value) => debounce(`guildVolume:${guildId}`, () => patchGuild(guildId, { volume: value / 100 })),
       }),
       'guild-settings-volume',

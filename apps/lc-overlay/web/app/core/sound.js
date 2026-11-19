@@ -11,6 +11,10 @@ const { toPerceptualGain } = createOverlayLegacyUtils();
 
 let sound = { volume: 1, mediaMuted: false, guilds: {} };
 
+// Both volumes start at 100 %: the shell stores them as 0..1 with a default of
+// 1 (`DEFAULT_VOLUME` in the overlay's config.rs).
+export const DEFAULT_VOLUME_PERCENT = 100;
+
 function level(value) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.min(1, Math.max(0, number)) : 1;

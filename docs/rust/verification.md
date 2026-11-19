@@ -44,57 +44,79 @@
 
 ```powershell
 cargo xtask verify --offline                                              # fmt, clippy, nextest, doctests, cargo deny
-cargo xtask verify --offline --mutants                                    # + mutation du diff ; FAIL/exit 1 attendu (§5)
+cargo xtask verify --offline --mutants                                    # + mutation du diff (kill-or-justify, §5)
 cargo xtask loadtest --clients 20 --duration-secs 20                      # harnais de charge + budgets
 powershell -NoProfile -File scripts/release/tests/run-tests.ps1            # harnais PowerShell de release (Canary inclus)
 cargo test --manifest-path fuzz/Cargo.toml --no-default-features --lib --locked --offline  # seeds + golden fuzz
 ```
 
-## 5. Le stage mutants échoue localement — c'est voulu
+## 5. Le stage mutants : kill-or-justify, zéro survivant
 
 `cargo xtask verify --offline --mutants` termine en `FAIL mutants (exit 1)` dès
 qu'il reste un mutant manqué : l'exigence n'est pas « vert », elle est
 **kill-or-justify** — chaque mutant manqué tué par un test, ou justifié avec
 `file:line` + catégorie + risque résiduel. Aucun survivant toléré sans raison
-tracée.
+tracée. Depuis le round du 20/11, **`xtask/` n'a plus aucun survivant** : le
+stage local est vert (`59 mutants tested in 8m: 52 caught, 7 unviable`,
+**0 manqué, 0 timeout** → `PASS mutants`, `verify: 6 passed, 0 failed`).
 
-- Stage local (round kill-or-justify xtask du 19/11, cargo-mutants 27.1.0) :
-  **144 outcomes = 1 baseline + 65 caught + 62 missed + 16 unviable**
-  (« 143 mutants tested in 18m ») ; missed **tous dans xtask**
-  (`loadtest.rs` 60, `verify.rs` 2) — **0 manqué en `crates/` et `apps/`**
-  dans le stage local (diff de branche) : le seul manqué produit connu,
+- Stage local du 20/11 (cargo-mutants 27.1.0) :
+  **`59 mutants tested in 8m: 52 caught, 7 unviable`**, **0 manqué, 0 timeout**
+  → `PASS mutants`, `verify: 6 passed, 0 failed`. Le `--in-diff` du stage ne
+  mute que les lignes du diff de branche : 59 et non 141.
+- Historique : le stage du 19/11 finissait rouge sur **62 survivants `xtask/`**
+  (`144 outcomes = 1 baseline + 65 caught + 62 missed + 16 unviable`,
+  « 143 mutants tested in 18m » ; `loadtest.rs` 60, `verify.rs` 2) — **0 manqué
+  en `crates/` et `apps/`** dans le stage local : le seul manqué produit connu,
   `playback_jobs.rs:211` (justifié, §6), vit dans le scope nightly
-  `lc-db-queue`, hors diff local — critère décisif, respecté dans tous les
-  runs de la branche.
-- Mesures par scope (copy mode hors repo, `--cargo-arg=--offline`) :
-  `verify.rs` 39 = 1 + 26 caught + 2 missed + 10 unviable ; `loadtest.rs`
-  94 = 1 + 30 + 60 + 3 ; `main.rs` 13 = 1 + 7 + **0 missed** + 5 (main
-  entièrement couvert) ; `download.rs` 3/3 CaughtMutant.
-- Les compteurs xtask bougent de quelques unités d'un run à l'autre
-  (reclassements caught/unviable/missed des mêmes lignes ; les runs C4/DoD#5
-  pré-round avaient compté 86 puis 77 missed) : seul le critère « 0 missed
-  produit non justifié » est stable, c'est lui qui fait foi.
+  `lc-db-queue`, hors diff local. Critère décisif, respecté dans tous les runs
+  de la branche. Les compteurs bruts d'`xtask/` bougeaient d'un run à l'autre
+  (reclassements caught/unviable/missed des mêmes lignes : 86 puis 77 missed
+  sur les runs C4/DoD#5) : seul le critère « 0 manqué » fait foi.
+- Ces 62 survivants sont **éteints** depuis le round du 20/11 :
+  - **30 éliminés par refactor** (structural-first) : `execute()` dissous des
+    deux côtés (`main.rs` appelle `verify::drive(&verify::default_stages(..))`
+    et `loadtest::run(..)`), agrégation des 8 budgets remplacée par
+    `budget_lines`/`count_failures`/`print_budgets` (typée, testable), et la
+    construction faillible `reqwest::Client::builder().build()` remplacée par
+    `Client::new()` (infaillible ; le timeout de 5 s par requête passe dans
+    `post_ingest`) — la branche `Err` inatteignable disparaît au lieu d'être
+    justifiée.
+  - **32 tués par 25 tests** via des seams injectables : `check_server_binary`,
+    `window_has_ended`, `health_deadline`, `straggler_timeout`,
+    `wait_healthy_with`, `is_healthy_body`, `Tally`, `ingest_tick_interval`,
+    `classify_ingest_status`, `post_ingest`, `IngestStats::record`,
+    `budget_lines`, `print_budgets`, `exit_code` (+ test process-level de
+    `cli_exit_codes.rs`).
+- Mesures par scope en copy mode hors repo après le round
+  (`--cargo-arg=--offline`) : `loadtest.rs` **94 outcomes = 1 baseline +
+  93 mutants (86 caught + 0 manqué + 7 unviable)** ; `verify.rs`
+  **37 outcomes = 1 baseline + 36 mutants (27 caught + 0 manqué + 9 unviable)**
+  (36 et non 38 : les 2 mutants `execute` ont disparu avec la fonction) ;
+  `main.rs` **13 outcomes = 1 baseline + 12 mutants (7 caught + 0 manqué +
+  5 unviable)** ; `download.rs` 3/3 CaughtMutant. Total : **141 mutants,
+  120 caught, 21 unviable, 0 manqué, 0 timeout**. Les 21 « unviable » sont des
+  mutations qui ne compilent pas (types sans `Default`, `+`→`*` sur des
+  `Duration`/`Instant`) : éliminées par le compilateur, pas à justifier.
 
-**Liste exacte des 62 survivants justifiés** (tous `xtask/`) — répartition
-exhaustive par catégorie ci-dessous ; les positions ligne par ligne vivent dans
-`target/verify/mutants.out/missed.txt` du run de stage :
-
-| Catégorie | Mutants | Pourquoi aucun test rapide ne les tue | Risque résiduel |
-|---|---|---|---|
-| Call-site (4) | `verify.rs:77` `execute->0/1`, `loadtest.rs:127` `execute->0/1` | `execute` ne fait que déléguer : verify → `drive` (verdicts, notes et résumé épinglés octet par octet), loadtest → `run` (budgets end-to-end). Tuer la valeur de retour exigerait de muter le point d'entrée process lui-même. | nul — le délégué est intégralement épinglé |
-| End-to-end, boucle d'événement (45) | `loadtest.rs` `run` : tally `+=/-=/*=`, comparaisons de budgets, `delete !` | colle de synchronisation exercée par le vrai serveur : sabotage 300 ms avant welcome → `hello_p95_ms` FAIL (~321-346 ms vs 42) ; sabotage stall → `welcomed_clients` FAIL (0 == 20). Un test unitaire du timing exigerait de réintégrer le harnais. | un budget inversé dans `run` ne serait vu qu'au prochain run de charge (nightly `load`) |
-| End-to-end, ingest (6) | `loadtest.rs` `run_ingest`, dont `-> Default::default()` | compteurs contraints par les budgets réels (ingest envoyés/acceptés, `ingest_errors`, `ingest_rate_limited`) ; la première impulsion du ticker est ignorée par construction (le premier tick est consommé avant la boucle, `loadtest.rs:576`). | idem — visible au prochain nightly |
-| End-to-end, readiness (6) | `loadtest.rs` `wait_healthy`, dont `-> Ok(())` | le contrat « le serveur répond /health » reste asserté par le budget `server_alive` ; la boucle de polling n'est que du timing, un kill ciblé exigerait un serveur volontairement malade, hors périmètre du harnais de charge. | une régression de la gate de readiness passerait verte tant que le serveur est sain |
-| Process-entry (1) | `loadtest.rs:446` `run_client -> ()` | démarrer le client WS est la raison d'être du harnais ; couvert par les budgets `welcomed_clients`/`disconnects` sur le vrai serveur. | idem end-to-end |
-
-- Seuls **4 fichiers du diff produisent des mutants** (loadtest 94, verify 39,
-  main 13, download 3) sur les `.rs` du diff de branche : les fichiers de test
+- Seuls **4 fichiers du diff produisent des mutants** (loadtest 93, verify 36,
+  main 12, download 3) sur les `.rs` du diff de branche : les fichiers de test
   ne sont pas mutés (`kill_recover.rs`, `contracts.rs`,
   `xtask/tests/cli_exit_codes.rs` → 0 mutant).
 - Preuve produit : les 3 mutants du **retour de `build_ytdlp_args`**
   (`crates/lc-media/src/download.rs:413` : `vec![]`, `vec![String::new()]`,
   `vec!["xyzzy".into()]`) sont CaughtMutant — la fonction production modifiée par
   le pipeline (insertion de `--` avant l'URL) est exercée et contrainte.
+- Preuve à joindre : le `target/verify/mutants.out/missed.txt` du stage du 20/11
+  est **vide** (idem `timeout.txt`). Si un futur diff réintroduit un survivant,
+  le stage repasse rouge et `missed.txt` en liste les positions : le tuer, ou le
+  justifier ici même avec `file:line` + catégorie + risque résiduel — jamais le
+  tolérer en silence.
+- **Risque résiduel assumé (hors garantie mutation)** : les corps des bras
+  `tokio::select!` de `run` (armement du timer fd, comparaisons hello/welcomes
+  dans la macro) ne sont pas visités par cargo-mutants — une invocation de macro
+  n'est pas mutée. Ces branches restent couvertes uniquement par le run de charge
+  **nightly `load`**, pas par le kill-or-justify.
 
 ## 6. Nightly mutants : baselines et fragilité
 
@@ -120,7 +142,8 @@ exhaustive par catégorie ci-dessous ; les positions ligne par ligne vivent dans
   validée ici — utiliser la restauration byte-pure ci-dessous. **Plus grave :
   un run `--in-place` tué en plein vol (crash, reboot) laisse le mutant EN COURS
   appliqué dans l'arbre** — le restart DSH du 19/11 a laissé un `p % 100.0` dans
-  `xtask/src/loadtest.rs:627`, fmt/tests/mutants rouges au run suivant. Après toute
+  le calcul de percentile de `xtask/src/loadtest.rs`, fmt/tests/mutants rouges au
+  run suivant. Après toute
   interruption : `git diff` (pas seulement `git status`) sur les fichiers du scope
   AVANT de relancer ; restaurer via `git --no-pager show HEAD:<fichier>` redirigé
   par `cmd /c` (byte-pure, pas de couche d'encodage PowerShell) + conversion
@@ -149,7 +172,7 @@ exhaustive par catégorie ci-dessous ; les positions ligne par ligne vivent dans
   touché. Épingler les littéraux exacts, un par bras de mutant, comme
   `documentation_range_neighbors_pin_the_boundary_literals`
   (`crates/lc-media/tests/properties.rs`).
-- Nits acceptées en revue B : TOCTOU de `reserve_port` (`loadtest.rs:637`, flake rare),
+- Nits acceptées en revue B : TOCTOU de `reserve_port` (`loadtest.rs:807`, flake rare),
   alphabet du pin UNC sans `:` ni `\` (`properties.rs`), `-Canary` ignoré en silence par
   les autres sous-commandes de `release.ps1`, borne `uptimeSec >= 0` faible
   (`contracts.rs`).
@@ -167,13 +190,20 @@ la présente section fait foi.
 
 **Round kill-or-justify xtask** (directive du 19/11, post-T10) : gates de
 `verify.rs` couverts (execute → `drive` testé octet par octet, `require_tool`
-sans `!`, `probe_installed` déterministe, 2 survivants call-site) ; helpers
-`loadtest.rs` dissous/épinglés (report_socket_end, budget_line,
-read_fd_count, reserve_port, seed_database, ServerGuard) ; `main.rs`
-entièrement couvert (0 missed) ; tests process-level
-(`tests/cli_exit_codes.rs`) ; 62 survivants justifiés par catégorie
-(§5) ; alias `cargo xtask` passé en release pour la collision
-`xtask.exe` (§7).
+sans `!`, `probe_installed` déterministe), helpers `loadtest.rs`
+dissous/épinglés, `main.rs` entièrement couvert, tests process-level
+(`tests/cli_exit_codes.rs`), alias `cargo xtask` passé en release pour la
+collision `xtask.exe` (§7) ; restaient 62 survivants justifiés (§5), éteints au
+round suivant.
+
+**Round « tuer les mutants xtask »** (20/11, post-merge) : les 62 survivants du
+round précédent sont éteints — 30 par refactor (executes dissous, budgets typés,
+branche `reqwest` infaillible supprimée), 32 par 25 tests via des seams
+injectables (§5) — mesures copy-mode `loadtest.rs` 93 / `verify.rs` 36 /
+`main.rs` 12 = **0 manqué, 0 timeout**, et le stage local `--mutants` passe
+**vert** pour la première fois (`59 mutants, 52 caught, 7 unviable`,
+`verify: 6 passed, 0 failed`) ; `scripts/mutants-baseline.json` inchangé (`xtask`
+n'est pas un scope nightly).
 
 ## 9. Skill agent
 

@@ -45,3 +45,28 @@ fn help_exits_0_with_usage_on_stdout() {
     );
     assert!(output.stderr.is_empty(), "--help must not write to stderr");
 }
+
+/// `loadtest` used to swallow its harness errors through a `pub fn execute`
+/// wrapper; its error path is now inlined in `main`, so this pins the
+/// process-level contract: exit 1 and a `xtask loadtest:` line on stderr.
+#[test]
+fn loadtest_with_a_missing_server_binary_exits_one() {
+    let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .args([
+            "loadtest",
+            "--server-bin",
+            "definitely-not-a-server-binary-xyzzy",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("xtask loadtest:"),
+        "stderr must name the failing harness: {stderr}"
+    );
+    assert!(
+        stderr.contains("definitely-not-a-server-binary-xyzzy"),
+        "stderr must name the missing binary: {stderr}"
+    );
+}

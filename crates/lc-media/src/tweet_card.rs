@@ -1042,8 +1042,15 @@ fn cover_quote_image(
     ) {
         let center_x = (focus.x + focus.width / 2.0) * image.width;
         let center_y = (focus.y + focus.height / 2.0) * image.height;
-        offset_x = (box_width / 2.0 - center_x * scale).clamp(box_width - scaled_width, 0.0);
-        offset_y = (box_height / 2.0 - center_y * scale).clamp(box_height - scaled_height, 0.0);
+        // En mode couverture, `scaled_width` et `scaled_height` sont au moins
+        // égaux à la cellule, mais leur arrondi f32 peut les placer un ULP
+        // au-dessus : `box_width - scaled_width` vaut alors +6,1e-5 au lieu de
+        // 0.0, et `f32::clamp` panique quand sa borne basse dépasse sa borne
+        // haute (« min > max, or either was NaN »).
+        let min_x = (box_width - scaled_width).min(0.0);
+        let min_y = (box_height - scaled_height).min(0.0);
+        offset_x = (box_width / 2.0 - center_x * scale).clamp(min_x, 0.0);
+        offset_y = (box_height / 2.0 - center_y * scale).clamp(min_y, 0.0);
     }
     QuoteImage {
         pixmap: image.pixmap.clone(),
@@ -2150,6 +2157,29 @@ mod tests {
             center.blue() > 120 && center.green() > 80,
             "zone photo vide au centre de la carte"
         );
+    }
+
+    #[test]
+    fn places_a_photo_one_ulp_wider_than_its_cell_without_panicking() {
+        // Régression : le filtre ffmpeg `scale=1800:1800:force_original_aspect_
+        // ratio=decrease` agrandit les petites images, donc une photo 1234×1326
+        // arrive à 1675×1800. Dans une cellule de 984 × 553,5 px,
+        // `1675,0 * scale` vaut 983,99994 : la borne basse du recadrage valait
+        // +6,1e-5 au lieu d'être négative et `f32::clamp(min, 0.0)` paniquait
+        // (« min > max, or either was NaN »), faisant échouer toute l'ingestion.
+        let mut content = content_from(PHOTO_FIXTURE);
+        content.photos = vec![TweetPhoto {
+            source_url: "https://pbs.twimg.com/media/une-pixel-de-trop.jpg".to_string(),
+            data: Some(solid_png(1675, 1800)),
+            focus: vec![QuoteImageFocus {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+            }],
+        }];
+        let png = render_tweet_card(&content).unwrap();
+        assert_valid_card(&png);
     }
 
     #[test]

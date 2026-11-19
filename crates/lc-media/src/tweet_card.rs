@@ -1,10 +1,12 @@
-//! Rendu d'une « carte tweet » PNG : la publication sans photo ni vidéo
-//! devient elle-même le média.
+//! Rendu d'une « carte tweet » : la publication devient elle-même le média.
 //!
 //! La carte reprend l'aspect sombre de l'overlay : fond arrondi transparent
 //! autour de `#171b25`, avatar circulaire, nom en gras, identifiant et date en
-//! couleur secondaire, puis le texte du tweet. Un tweet cité ajoute un bloc
-//! encadré (nom, identifiant, texte et image de la citation) sous le texte.
+//! couleur secondaire, puis le texte du tweet et ses photos (grille façon X)
+//! ou sa vidéo (zone réservée, composée ensuite en MP4). Un tweet cité ajoute
+//! un bloc encadré (nom, identifiant, texte, photos et vidéo de la citation)
+//! sous le média du tweet parent.
+//!
 //! La découverte et le repli des polices, la mise en forme, la césure et le
 //! bidirectionnel sont confiés à parley (fontique) ; swash rastérise les
 //! glyphes (dont les emoji couleur) et tiny-skia ne sert qu'au fond, aux
@@ -32,6 +34,9 @@ pub const CARD_WIDTH: u32 = 1080;
 pub const CARD_MIN_HEIGHT: u32 = 360;
 /// Hauteur maximale d'une carte tweet (le texte est tronqué au-delà).
 pub const CARD_MAX_HEIGHT: u32 = 1920;
+/// Hauteur maximale d'une carte tweet qui porte un média : une vidéo verticale
+/// 9:16 occupe presque toute la largeur, la carte dépasse donc 1920 px.
+pub const CARD_MEDIA_MAX_HEIGHT: u32 = 3200;
 
 /// Marge intérieure de la carte.
 const PADDING: f32 = 48.0;
@@ -87,6 +92,18 @@ const QUOTE_IMAGE_MIN_ASPECT: f32 = 0.7;
 const QUOTE_IMAGE_MAX_ASPECT: f32 = 1.6;
 /// Rayon des coins de l'image citée.
 const QUOTE_IMAGE_RADIUS: f32 = 14.0;
+
+/// Espace entre le texte du tweet et ses photos ou sa vidéo.
+const MEDIA_GAP: f32 = 28.0;
+/// Espace entre deux photos d'une même ligne.
+const MEDIA_IMAGE_GAP: f32 = 12.0;
+/// Rayon des coins des photos et des vidéos du tweet parent.
+const MEDIA_IMAGE_RADIUS: f32 = 18.0;
+/// Bornes du rapport largeur/hauteur d'une vidéo : 9:16 (vertical) à 16:9.
+const MEDIA_VIDEO_MIN_ASPECT: f32 = 9.0 / 16.0;
+const MEDIA_VIDEO_MAX_ASPECT: f32 = 16.0 / 9.0;
+/// Fond de la zone réservée à la vidéo, avant composition.
+const MEDIA_VIDEO_BACKGROUND: (u8, u8, u8) = (0x0b, 0x0e, 0x14);
 
 /// Fond du bloc de citation, un peu plus clair que la carte.
 const QUOTE_BACKGROUND: (u8, u8, u8) = (0x20, 0x25, 0x32);
@@ -148,15 +165,22 @@ pub struct QuoteImageFocus {
     pub height: f32,
 }
 
-/// Photo jointe à un tweet cité, avec son recadrage suggéré par X.
+/// Photo jointe à un tweet (ou au tweet cité), avec son recadrage suggéré par X.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct QuotedTweetImage {
+pub struct TweetPhoto {
     /// URL source de la photo, consommée par le téléchargement.
     pub source_url: String,
     /// Octets PNG de la photo, `None` tant qu'elle n'a pas été téléchargée.
     pub data: Option<Vec<u8>>,
     /// Recadrages suggérés par X pour cette photo, vides s'il n'en fournit pas.
     pub focus: Vec<QuoteImageFocus>,
+}
+
+/// Vidéo jointe à un tweet, incrustée dans la carte au téléchargement.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TweetVideo {
+    /// Rapport largeur/hauteur de la vidéo (0,5625 pour du 9:16 vertical).
+    pub aspect: f32,
 }
 
 /// Contenu d'un tweet cité, rendu dans un bloc encadré sous le texte.
@@ -170,7 +194,9 @@ pub struct QuotedTweetContent {
     pub text: String,
     /// Photos jointes au tweet cité (ou poster d'une vidéo citée), déjà
     /// téléchargées et converties en PNG par l'appelant.
-    pub images: Vec<QuotedTweetImage>,
+    pub images: Vec<TweetPhoto>,
+    /// Vidéo du tweet cité, jouée dans le bloc quand elle a pu être téléchargée.
+    pub video: Option<TweetVideo>,
 }
 
 /// Contenu textuel d'une carte tweet.
@@ -186,6 +212,10 @@ pub struct TweetCardContent {
     pub created_at: Option<String>,
     /// Octets bruts d'un avatar PNG 192×192, si disponible.
     pub avatar: Option<Vec<u8>>,
+    /// Photos jointes au tweet, déjà téléchargées et converties en PNG.
+    pub photos: Vec<TweetPhoto>,
+    /// Vidéo jointe au tweet, incrustée dans la carte au téléchargement.
+    pub video: Option<TweetVideo>,
     /// Tweet cité par la publication, si elle en cite un.
     pub quoted: Option<QuotedTweetContent>,
 }
@@ -241,6 +271,8 @@ struct QuoteImage {
     /// Décalage de l'image dans le cadre (recadrage centré).
     offset_x: f32,
     offset_y: f32,
+    /// Rayon des coins du cadre.
+    radius: f32,
 }
 
 /// Ligne d'images du bloc de citation : une image pleine largeur ou une paire.
@@ -249,6 +281,16 @@ struct QuoteImageRow {
     images: Vec<QuoteImage>,
     /// Hauteur de la ligne, commune à ses images.
     height: f32,
+}
+
+/// Zone vidéo du bloc de citation, position relative au bloc.
+struct QuoteVideoArea {
+    /// Ordonnée du haut de la zone, depuis le haut du bloc.
+    top: f32,
+    /// Largeur de la zone.
+    width: u32,
+    /// Hauteur de la zone.
+    height: u32,
 }
 
 /// Disposition du bloc de citation, calculée avant le corps pour réserver la
@@ -260,17 +302,83 @@ struct QuoteLayout {
     text: BodyLayout,
     /// Photos citées, disposées en lignes façon X.
     rows: Vec<QuoteImageRow>,
+    /// Vidéo citée, absente si la citation n'en porte pas ou si elle a échoué.
+    video: Option<QuoteVideoArea>,
     /// Hauteur totale du bloc, marges et bordure comprises.
     height: f32,
     /// Largeur intérieure disponible pour le contenu.
     inner_width: f32,
 }
 
+/// Vidéo du tweet parent, disposée sous son texte.
+struct MediaVideo {
+    /// Largeur du cadre, pleine largeur intérieure de la carte.
+    width: u32,
+    /// Hauteur du cadre, déduite du rapport de la vidéo.
+    height: u32,
+    /// Rayon des coins du cadre.
+    radius: f32,
+}
+
+/// Média du tweet parent : ses photos en lignes façon X ou sa vidéo.
+struct CardMediaLayout {
+    /// Photos disposées en lignes.
+    rows: Vec<QuoteImageRow>,
+    /// Zone réservée à la vidéo, absente si le tweet n'en porte pas.
+    video: Option<MediaVideo>,
+    /// Hauteur totale du média, espaces entre lignes compris.
+    height: f32,
+}
+
+/// Cible d'une zone vidéo composée dans la carte.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardVideoTarget {
+    /// Vidéo du tweet lui-même.
+    Parent,
+    /// Vidéo du tweet cité.
+    Quoted,
+}
+
+/// Zone vidéo de la carte, en pixels de l'image rendue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CardVideoSlot {
+    /// Abscisse du coin supérieur gauche.
+    pub x: u32,
+    /// Ordonnée du coin supérieur gauche.
+    pub y: u32,
+    /// Largeur de la zone.
+    pub width: u32,
+    /// Hauteur de la zone.
+    pub height: u32,
+    /// Rayon des coins de la zone.
+    pub radius: u32,
+    /// Média dont la vidéo doit être incrustée dans cette zone.
+    pub target: CardVideoTarget,
+}
+
+/// Carte rendue : le PNG de fond et les zones vidéo à composer par-dessus.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenderedCard {
+    /// Image PNG de la carte, zones vidéo remplies d'un fond sombre.
+    pub png: Vec<u8>,
+    /// Zones où incruster une vidéo, dans l'ordre de composition.
+    pub video_slots: Vec<CardVideoSlot>,
+}
+
 /// Rendu synchrone d'une carte tweet en PNG.
 ///
-/// La hauteur s'adapte au texte entre [`CARD_MIN_HEIGHT`] et
-/// [`CARD_MAX_HEIGHT`] ; au-delà, le texte est tronqué avec une ellipsis.
+/// La hauteur s'adapte au contenu entre [`CARD_MIN_HEIGHT`] et
+/// [`CARD_MAX_HEIGHT`] — jusqu'à [`CARD_MEDIA_MAX_HEIGHT`] quand la carte porte
+/// un média ; au-delà, le texte est tronqué avec une ellipsis.
 pub fn render_tweet_card(content: &TweetCardContent) -> MediaResult<Vec<u8>> {
+    render_tweet_card_with_slots(content).map(|card| card.png)
+}
+
+/// Rendu synchrone d'une carte tweet, avec les zones vidéo à composer.
+///
+/// Les zones vidéo sont peintes en sombre dans le PNG : l'appelant y incruste
+/// ensuite la vidéo du tweet ou de la citation pour produire un MP4.
+pub fn render_tweet_card_with_slots(content: &TweetCardContent) -> MediaResult<RenderedCard> {
     let mutex = TEXT_ENGINE.get_or_init(|| {
         Mutex::new(TextEngine {
             font_cx: FontContext::new(),
@@ -307,7 +415,10 @@ pub fn format_tweet_date(created_at: &str) -> Option<String> {
     Some(format!("{day} {name} {year}"))
 }
 
-fn render_with_engine(content: &TweetCardContent, engine: &mut TextEngine) -> MediaResult<Vec<u8>> {
+fn render_with_engine(
+    content: &TweetCardContent,
+    engine: &mut TextEngine,
+) -> MediaResult<RenderedCard> {
     let date = content.created_at.as_deref().and_then(format_tweet_date);
     let footer_height = if date.is_some() {
         FOOTER_GAP + SECONDARY_LINE_HEIGHT
@@ -316,16 +427,30 @@ fn render_with_engine(content: &TweetCardContent, engine: &mut TextEngine) -> Me
     };
     let body_top = PADDING + AVATAR_SIZE + HEADER_GAP;
     let text_width = CARD_WIDTH as f32 - 2.0 * PADDING;
-    // Le bloc de citation est disposé avant le corps : sa hauteur réduit celle
-    // qui reste au texte du tweet parent.
+    // Le média et le bloc de citation sont disposés avant le corps : leur
+    // hauteur réduit celle qui reste au texte du tweet parent.
+    let media = layout_card_media(&content.photos, content.video, text_width);
     let quote = content
         .quoted
         .as_ref()
         .map(|quoted| layout_quote(engine, quoted, text_width));
-    let quote_height = quote.as_ref().map_or(0.0, |quote| QUOTE_GAP + quote.height);
-    let max_text_height =
-        (CARD_MAX_HEIGHT as f32 - body_top - footer_height - PADDING - quote_height).max(0.0);
     let text = normalized_text(&content.text);
+    let media_gap = if media.height > 0.0 && !text.is_empty() {
+        MEDIA_GAP
+    } else {
+        0.0
+    };
+    let quote_height = quote.as_ref().map_or(0.0, |quote| QUOTE_GAP + quote.height);
+    // Une carte qui porte un média peut dépasser la hauteur d'une carte de
+    // texte : une vidéo verticale occupe presque toute la largeur.
+    let max_card_height = if media.height > 0.0 {
+        CARD_MEDIA_MAX_HEIGHT
+    } else {
+        CARD_MAX_HEIGHT
+    };
+    let reserved_height = media_gap + media.height + quote_height;
+    let max_text_height =
+        (max_card_height as f32 - body_top - footer_height - PADDING - reserved_height).max(0.0);
     let body_style = TextStyleSpec {
         size: TEXT_SIZE,
         line_height: TEXT_LINE_HEIGHT,
@@ -334,11 +459,13 @@ fn render_with_engine(content: &TweetCardContent, engine: &mut TextEngine) -> Me
         align: Alignment::Start,
     };
     let body = layout_body(engine, &text, body_style, text_width, max_text_height);
-    let content_height = body_top + body.height + quote_height + footer_height + PADDING;
+    let media_top = body_top + body.height + media_gap;
+    let quote_top = media_top + media.height + QUOTE_GAP;
+    let content_height = body_top + body.height + reserved_height + footer_height + PADDING;
     let height = if body.clamped {
-        CARD_MAX_HEIGHT
+        max_card_height
     } else {
-        (content_height.ceil() as u32).clamp(CARD_MIN_HEIGHT, CARD_MAX_HEIGHT)
+        (content_height.ceil() as u32).clamp(CARD_MIN_HEIGHT, max_card_height)
     };
     let mut pixmap = Pixmap::new(CARD_WIDTH, height)
         .ok_or_else(|| card_error("allocation du calque impossible"))?;
@@ -392,14 +519,11 @@ fn render_with_engine(content: &TweetCardContent, engine: &mut TextEngine) -> Me
         SECONDARY_COLOR,
     );
     draw_body(&mut pixmap, &body, engine, (PADDING, body_top), TEXT_COLOR);
+    if media.height > 0.0 {
+        draw_card_media(&mut pixmap, &media, (PADDING, media_top));
+    }
     if let Some(quote) = quote.as_ref() {
-        draw_quote(
-            &mut pixmap,
-            quote,
-            engine,
-            (PADDING, body_top + body.height + QUOTE_GAP),
-            text_width,
-        );
+        draw_quote(&mut pixmap, quote, engine, (PADDING, quote_top), text_width);
     }
     if let Some(date) = date {
         let date_layout = single_line_layout(
@@ -421,9 +545,31 @@ fn render_with_engine(content: &TweetCardContent, engine: &mut TextEngine) -> Me
             SECONDARY_COLOR,
         );
     }
-    pixmap
+    let mut video_slots = Vec::new();
+    if let Some(video) = &media.video {
+        video_slots.push(CardVideoSlot {
+            x: PADDING.round() as u32,
+            y: media_top.round() as u32,
+            width: video.width,
+            height: video.height,
+            radius: video.radius.round() as u32,
+            target: CardVideoTarget::Parent,
+        });
+    }
+    if let Some(video) = quote.as_ref().and_then(|quote| quote.video.as_ref()) {
+        video_slots.push(CardVideoSlot {
+            x: (PADDING + QUOTE_BORDER_WIDTH + QUOTE_PADDING).round() as u32,
+            y: (quote_top + video.top).round() as u32,
+            width: video.width,
+            height: video.height,
+            radius: QUOTE_IMAGE_RADIUS.round() as u32,
+            target: CardVideoTarget::Quoted,
+        });
+    }
+    let png = pixmap
         .encode_png()
-        .map_err(|error| card_error(&format!("encodage PNG impossible : {error}")))
+        .map_err(|error| card_error(&format!("encodage PNG impossible : {error}")))?;
+    Ok(RenderedCard { png, video_slots })
 }
 
 /// Normalise les fins de ligne du texte.
@@ -711,7 +857,21 @@ fn layout_quote(engine: &mut TextEngine, quoted: &QuotedTweetContent, width: f32
             QUOTE_MAX_TEXT_LINES as f32 * QUOTE_TEXT_LINE_HEIGHT,
         )
     };
-    let rows = layout_quote_images(&quoted.images, inner_width);
+    // Une vidéo citée remplace les photos : le poster n'est qu'un repli quand
+    // la vidéo n'a pas pu être téléchargée.
+    let video_dims = quoted
+        .video
+        .map(|video| media_video_dimensions(video, inner_width));
+    let rows = if video_dims.is_some() {
+        Vec::new()
+    } else {
+        layout_photo_rows(
+            &quoted.images,
+            inner_width,
+            QUOTE_INNER_GAP,
+            QUOTE_IMAGE_RADIUS,
+        )
+    };
     let mut height = 2.0 * (QUOTE_BORDER_WIDTH + QUOTE_PADDING);
     if let Some(header) = &header {
         height += header.height;
@@ -723,17 +883,29 @@ fn layout_quote(engine: &mut TextEngine, quoted: &QuotedTweetContent, width: f32
         }
         height += text_layout.height;
     }
+    let mut video = None;
+    if let Some((video_width, video_height)) = video_dims {
+        if header.is_some() || has_text {
+            height += QUOTE_INNER_GAP;
+        }
+        video = Some(QuoteVideoArea {
+            top: height,
+            width: video_width,
+            height: video_height,
+        });
+        height += video_height as f32;
+    }
     if !rows.is_empty() {
         if header.is_some() || has_text {
             height += QUOTE_INNER_GAP;
         }
-        let images_height: f32 = rows.iter().map(|row| row.height).sum();
-        height += images_height + QUOTE_INNER_GAP * rows.len().saturating_sub(1) as f32;
+        height += rows_height(&rows, QUOTE_INNER_GAP);
     }
     QuoteLayout {
         header,
         text: text_layout,
         rows,
+        video,
         height,
         inner_width,
     }
@@ -747,11 +919,16 @@ struct DecodedQuoteImage {
     focus: Vec<QuoteImageFocus>,
 }
 
-/// Dispose les photos citées en lignes façon X : une image seule occupe toute
-/// la largeur au rapport [`QUOTE_IMAGE_ASPECT`] ; à partir de deux, elles vont
-/// par paires côte à côte (trois photos : une large puis deux, quatre : deux
-/// lignes de deux).
-fn layout_quote_images(images: &[QuotedTweetImage], inner_width: f32) -> Vec<QuoteImageRow> {
+/// Dispose les photos en lignes façon X : une image seule occupe toute la
+/// largeur au rapport [`QUOTE_IMAGE_ASPECT`] ; à partir de deux, elles vont par
+/// paires côte à côte (trois photos : une large puis deux, quatre : deux lignes
+/// de deux).
+fn layout_photo_rows(
+    images: &[TweetPhoto],
+    inner_width: f32,
+    gap: f32,
+    radius: f32,
+) -> Vec<QuoteImageRow> {
     let mut decoded = Vec::new();
     for image in images {
         let Some(bytes) = image.data.as_deref() else {
@@ -774,52 +951,70 @@ fn layout_quote_images(images: &[QuotedTweetImage], inner_width: f32) -> Vec<Quo
     let mut rows = Vec::new();
     match decoded.len() {
         0 => {}
-        1 => rows.push(full_width_row(&decoded[0], inner_width)),
-        2 => rows.push(paired_row(&decoded[0..2], inner_width)),
+        1 => rows.push(full_width_row(&decoded[0], inner_width, radius)),
+        2 => rows.push(paired_row(&decoded[0..2], inner_width, gap, radius)),
         3 => {
-            rows.push(full_width_row(&decoded[0], inner_width));
-            rows.push(paired_row(&decoded[1..3], inner_width));
+            rows.push(full_width_row(&decoded[0], inner_width, radius));
+            rows.push(paired_row(&decoded[1..3], inner_width, gap, radius));
         }
         _ => {
-            rows.push(paired_row(&decoded[0..2], inner_width));
-            rows.push(paired_row(&decoded[2..4], inner_width));
+            rows.push(paired_row(&decoded[0..2], inner_width, gap, radius));
+            rows.push(paired_row(&decoded[2..4], inner_width, gap, radius));
         }
     }
     rows
 }
 
+/// Hauteur totale de lignes de photos, espaces entre lignes compris.
+fn rows_height(rows: &[QuoteImageRow], gap: f32) -> f32 {
+    if rows.is_empty() {
+        return 0.0;
+    }
+    rows.iter().map(|row| row.height).sum::<f32>() + gap * rows.len().saturating_sub(1) as f32
+}
+
 /// Ligne d'une image pleine largeur, au rapport [`QUOTE_IMAGE_ASPECT`].
-fn full_width_row(image: &DecodedQuoteImage, inner_width: f32) -> QuoteImageRow {
+fn full_width_row(image: &DecodedQuoteImage, inner_width: f32, radius: f32) -> QuoteImageRow {
     let box_height = inner_width / QUOTE_IMAGE_ASPECT;
     QuoteImageRow {
-        images: vec![cover_quote_image(image, inner_width, box_height)],
+        images: vec![cover_quote_image(image, inner_width, box_height, radius)],
         height: box_height,
     }
 }
 
 /// Ligne de deux images de largeur égale, à la hauteur de la première (bornée
 /// par [`QUOTE_IMAGE_MIN_ASPECT`] et [`QUOTE_IMAGE_MAX_ASPECT`]).
-fn paired_row(images: &[DecodedQuoteImage], inner_width: f32) -> QuoteImageRow {
-    let cell_width = ((inner_width - QUOTE_INNER_GAP) / 2.0).max(1.0);
+fn paired_row(
+    images: &[DecodedQuoteImage],
+    inner_width: f32,
+    gap: f32,
+    radius: f32,
+) -> QuoteImageRow {
+    let cell_width = ((inner_width - gap) / 2.0).max(1.0);
     let first = &images[0];
     let aspect = (first.width / first.height).clamp(QUOTE_IMAGE_MIN_ASPECT, QUOTE_IMAGE_MAX_ASPECT);
     let cell_height = cell_width / aspect;
     QuoteImageRow {
         images: images
             .iter()
-            .map(|image| cover_quote_image(image, cell_width, cell_height))
+            .map(|image| cover_quote_image(image, cell_width, cell_height, radius))
             .collect(),
         height: cell_height,
     }
 }
 
-/// Met une image citée à l'échelle de sa cellule (couverture) et la recadre
-/// autour du rectangle de `focus_rects` le plus proche du rapport de la
-/// cellule, pour ne pas couper le sujet.
+/// Met une image à l'échelle de sa cellule (couverture) et la recadre autour du
+/// rectangle de `focus_rects` le plus proche du rapport de la cellule, pour ne
+/// pas couper le sujet.
 ///
 /// Une vignette plus petite que la moitié de la cellule garde sa taille (pas
 /// d'agrandissement d'une image de mauvaise qualité).
-fn cover_quote_image(image: &DecodedQuoteImage, box_width: f32, box_height: f32) -> QuoteImage {
+fn cover_quote_image(
+    image: &DecodedQuoteImage,
+    box_width: f32,
+    box_height: f32,
+    radius: f32,
+) -> QuoteImage {
     let tiny = image.width < box_width * 0.5 && image.height < box_height * 0.5;
     if tiny {
         return QuoteImage {
@@ -830,6 +1025,7 @@ fn cover_quote_image(image: &DecodedQuoteImage, box_width: f32, box_height: f32)
             scale_y: 1.0,
             offset_x: 0.0,
             offset_y: 0.0,
+            radius,
         };
     }
     // Couverture : l'image remplit la cellule et le surplus est recadré.
@@ -857,6 +1053,7 @@ fn cover_quote_image(image: &DecodedQuoteImage, box_width: f32, box_height: f32)
         scale_y: scale,
         offset_x,
         offset_y,
+        radius,
     }
 }
 
@@ -882,6 +1079,165 @@ fn closest_focus_rect(
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
         .copied()
+}
+
+/// Dispose le média du tweet parent : ses photos en lignes façon X, ou sa
+/// vidéo en pleine largeur.
+fn layout_card_media(
+    photos: &[TweetPhoto],
+    video: Option<TweetVideo>,
+    inner_width: f32,
+) -> CardMediaLayout {
+    if let Some(video) = video {
+        let (width, height) = media_video_dimensions(video, inner_width);
+        return CardMediaLayout {
+            rows: Vec::new(),
+            video: Some(MediaVideo {
+                width,
+                height,
+                radius: MEDIA_IMAGE_RADIUS,
+            }),
+            height: height as f32,
+        };
+    }
+    let rows = layout_photo_rows(photos, inner_width, MEDIA_IMAGE_GAP, MEDIA_IMAGE_RADIUS);
+    let height = rows_height(&rows, MEDIA_IMAGE_GAP);
+    CardMediaLayout {
+        rows,
+        video: None,
+        height,
+    }
+}
+
+/// Dimensions du cadre d'une vidéo : pleine largeur, hauteur déduite du rapport
+/// borné entre 9:16 et 16:9, en pixels pairs pour l'encodage H.264.
+fn media_video_dimensions(video: TweetVideo, inner_width: f32) -> (u32, u32) {
+    let width = even_dimension(inner_width);
+    let aspect = if video.aspect.is_finite() && video.aspect > 0.0 {
+        video.aspect
+    } else {
+        MEDIA_VIDEO_MAX_ASPECT
+    };
+    let aspect = aspect.clamp(MEDIA_VIDEO_MIN_ASPECT, MEDIA_VIDEO_MAX_ASPECT);
+    let height = even_dimension(width as f32 / aspect);
+    (width, height)
+}
+
+/// Arrondit une dimension à la valeur paire la plus proche (au moins 2).
+fn even_dimension(value: f32) -> u32 {
+    let rounded = value.round().max(2.0) as u32;
+    rounded - rounded % 2
+}
+
+/// Peint le média du tweet parent sous son texte.
+fn draw_card_media(pixmap: &mut Pixmap, media: &CardMediaLayout, origin: (f32, f32)) {
+    if let Some(video) = &media.video {
+        draw_video_area(
+            pixmap,
+            origin.0,
+            origin.1,
+            video.width,
+            video.height,
+            video.radius,
+        );
+        return;
+    }
+    draw_photo_rows(
+        pixmap,
+        &media.rows,
+        origin.0,
+        origin.1,
+        CARD_WIDTH as f32 - 2.0 * PADDING,
+        MEDIA_IMAGE_GAP,
+    );
+}
+
+/// Peint des lignes de photos centrées horizontalement, à la suite.
+fn draw_photo_rows(
+    pixmap: &mut Pixmap,
+    rows: &[QuoteImageRow],
+    left: f32,
+    top: f32,
+    inner_width: f32,
+    gap: f32,
+) {
+    let mut top = top;
+    for (index, row) in rows.iter().enumerate() {
+        if index > 0 {
+            top += gap;
+        }
+        let gaps = gap * row.images.len().saturating_sub(1) as f32;
+        let row_width: f32 = row
+            .images
+            .iter()
+            .map(|image| image.width as f32)
+            .sum::<f32>()
+            + gaps;
+        let mut cursor = left + (inner_width - row_width) / 2.0;
+        for image in &row.images {
+            draw_quote_image(
+                pixmap,
+                image,
+                cursor,
+                top + (row.height - image.height as f32) / 2.0,
+            );
+            cursor += image.width as f32 + gap;
+        }
+        top += row.height;
+    }
+}
+
+/// Peint la zone réservée à une vidéo : un rectangle arrondi sombre, recouvert
+/// ensuite par l'incrustation ffmpeg.
+fn draw_video_area(pixmap: &mut Pixmap, left: f32, top: f32, width: u32, height: u32, radius: f32) {
+    let Some(rect) = Rect::from_xywh(left, top, width as f32, height as f32) else {
+        return;
+    };
+    let Some(path) = rounded_rect_path(rect, radius) else {
+        return;
+    };
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(
+        MEDIA_VIDEO_BACKGROUND.0,
+        MEDIA_VIDEO_BACKGROUND.1,
+        MEDIA_VIDEO_BACKGROUND.2,
+        255,
+    );
+    paint.anti_alias = true;
+    pixmap.fill_path(
+        &path,
+        &paint,
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
+}
+
+/// Construit le masque PNG d'une zone vidéo : rectangle blanc arrondi sur fond
+/// noir, consommé par `alphamerge` lors de la composition ffmpeg.
+pub fn build_video_mask_png(width: u32, height: u32, radius: u32) -> MediaResult<Vec<u8>> {
+    let width = width.max(2);
+    let height = height.max(2);
+    let mut pixmap = Pixmap::new(width, height)
+        .ok_or_else(|| card_error("allocation du masque vidéo impossible"))?;
+    pixmap.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
+    let rect = Rect::from_xywh(0.0, 0.0, width as f32, height as f32)
+        .ok_or_else(|| card_error("dimensions du masque vidéo invalides"))?;
+    let path = rounded_rect_path(rect, radius as f32)
+        .ok_or_else(|| card_error("tracé du masque vidéo invalide"))?;
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(255, 255, 255, 255);
+    paint.anti_alias = true;
+    pixmap.fill_path(
+        &path,
+        &paint,
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
+    pixmap
+        .encode_png()
+        .map_err(|error| card_error(&format!("encodage du masque vidéo impossible : {error}")))
 }
 
 /// Peint le bloc de citation : cadre arrondi, en-tête, texte puis image.
@@ -947,33 +1303,28 @@ fn draw_quote(
         draw_body(pixmap, &quote.text, engine, (content_x, top), TEXT_COLOR);
         top += quote.text.height;
     }
+    if let Some(video) = &quote.video {
+        draw_video_area(
+            pixmap,
+            content_x,
+            origin.1 + video.top,
+            video.width,
+            video.height,
+            QUOTE_IMAGE_RADIUS,
+        );
+    }
     if !quote.rows.is_empty() {
         if quote.header.is_some() || !quote.text.paragraphs.is_empty() {
             top += QUOTE_INNER_GAP;
         }
-        for (index, row) in quote.rows.iter().enumerate() {
-            if index > 0 {
-                top += QUOTE_INNER_GAP;
-            }
-            let gaps = QUOTE_INNER_GAP * row.images.len().saturating_sub(1) as f32;
-            let row_width: f32 = row
-                .images
-                .iter()
-                .map(|image| image.width as f32)
-                .sum::<f32>()
-                + gaps;
-            let mut left = content_x + (quote.inner_width - row_width) / 2.0;
-            for image in &row.images {
-                draw_quote_image(
-                    pixmap,
-                    image,
-                    left,
-                    top + (row.height - image.height as f32) / 2.0,
-                );
-                left += image.width as f32 + QUOTE_INNER_GAP;
-            }
-            top += row.height;
-        }
+        draw_photo_rows(
+            pixmap,
+            &quote.rows,
+            content_x,
+            top,
+            quote.inner_width,
+            QUOTE_INNER_GAP,
+        );
     }
 }
 
@@ -1001,7 +1352,7 @@ fn draw_quote_image(pixmap: &mut Pixmap, image: &QuoteImage, left: f32, top: f32
     );
     if let Some(mut mask) = Mask::new(image.width, image.height) {
         if let Some(rect) = Rect::from_xywh(0.0, 0.0, image.width as f32, image.height as f32) {
-            if let Some(path) = rounded_rect_path(rect, QUOTE_IMAGE_RADIUS) {
+            if let Some(path) = rounded_rect_path(rect, image.radius) {
                 mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
                 layer.apply_mask(&mask);
             }
@@ -1404,7 +1755,7 @@ mod tests {
         let (width, height) = png_dimensions(bytes);
         assert_eq!(width, CARD_WIDTH);
         assert!(
-            (CARD_MIN_HEIGHT..=CARD_MAX_HEIGHT).contains(&height),
+            (CARD_MIN_HEIGHT..=CARD_MEDIA_MAX_HEIGHT).contains(&height),
             "hauteur hors bornes : {height}"
         );
         (width, height)
@@ -1429,6 +1780,8 @@ mod tests {
             text: "مرحبا بالعالم 🚨🚀\nسطر جديد مع emoji 🎉".to_string(),
             created_at: Some("2026-11-17T16:16:02.000Z".to_string()),
             avatar: None,
+            photos: Vec::new(),
+            video: None,
             quoted: None,
         };
         let png = render_tweet_card(&content).unwrap();
@@ -1449,6 +1802,8 @@ mod tests {
             text: "🚨 قنبلة نووية في عالم الذكاء الاصطناعي: إسقاط كامل 🔥🔥\nLigne française mêlée avec des emoji 😂👍.".to_string(),
             created_at: Some("2026-11-18T10:00:00.000Z".to_string()),
             avatar: None,
+            photos: Vec::new(),
+            video: None,
             quoted: None,
         };
         let png = render_tweet_card(&content).unwrap();
@@ -1502,6 +1857,8 @@ mod tests {
             text: "un tweet interminable ".repeat(2000),
             created_at: Some("2006-03-21T20:50:14.000Z".to_string()),
             avatar: None,
+            photos: Vec::new(),
+            video: None,
             quoted: None,
         };
         let png = render_tweet_card(&content).unwrap();
@@ -1517,6 +1874,8 @@ mod tests {
             text: "Une photo de remplacement".to_string(),
             created_at: None,
             avatar: Some(b"pas un PNG".to_vec()),
+            photos: Vec::new(),
+            video: None,
             quoted: None,
         };
         let png = render_tweet_card(&content).unwrap();
@@ -1554,8 +1913,8 @@ mod tests {
     }
 
     /// Photo citée prête à rendre, à partir d'un PNG de test.
-    fn quoted_image(png: Vec<u8>) -> QuotedTweetImage {
-        QuotedTweetImage {
+    fn quoted_image(png: Vec<u8>) -> TweetPhoto {
+        TweetPhoto {
             source_url: "https://pbs.twimg.com/media/test.jpg".to_string(),
             data: Some(png),
             focus: Vec::new(),
@@ -1696,7 +2055,7 @@ mod tests {
     #[test]
     fn ignores_an_invalid_quoted_image() {
         let mut content = content_from(QUOTE_FIXTURE);
-        content.quoted.as_mut().unwrap().images = vec![QuotedTweetImage {
+        content.quoted.as_mut().unwrap().images = vec![TweetPhoto {
             source_url: "https://pbs.twimg.com/media/invalide.jpg".to_string(),
             data: Some(b"pas un PNG".to_vec()),
             focus: Vec::new(),
@@ -1713,11 +2072,14 @@ mod tests {
             text: "un tweet qui cite une image".to_string(),
             created_at: None,
             avatar: None,
+            photos: Vec::new(),
+            video: None,
             quoted: Some(QuotedTweetContent {
                 author_name: String::new(),
                 author_handle: String::new(),
                 text: String::new(),
                 images: vec![quoted_image(solid_png(200, 120))],
+                video: None,
             }),
         };
         let png = render_tweet_card(&content).unwrap();
@@ -1729,7 +2091,7 @@ mod tests {
         let mut content = content_from(QUOTE_FIXTURE);
         {
             let quoted = content.quoted.as_mut().unwrap();
-            quoted.images = vec![QuotedTweetImage {
+            quoted.images = vec![TweetPhoto {
                 source_url: "https://pbs.twimg.com/media/focus.jpg".to_string(),
                 data: Some(split_png(400, 400)),
                 // X suggère de cadrer le bas de la photo : le recadrage doit
@@ -1759,5 +2121,106 @@ mod tests {
         std::fs::write(PREVIEW_PATH, &png).expect("écriture de l'aperçu");
         assert_valid_card(&png);
         assert!(std::path::Path::new(PREVIEW_PATH).exists());
+    }
+
+    #[test]
+    fn renders_the_tweet_photo_under_the_text() {
+        let mut content = content_from(PHOTO_FIXTURE);
+        content.photos = vec![TweetPhoto {
+            source_url: "https://pbs.twimg.com/media/test.jpg".to_string(),
+            data: Some(solid_png(400, 300)),
+            focus: Vec::new(),
+        }];
+        let png = render_tweet_card(&content).unwrap();
+        let (_, with_photo) = assert_valid_card(&png);
+
+        let mut text_only = content;
+        text_only.photos.clear();
+        let (_, without_photo) = png_dimensions(&render_tweet_card(&text_only).unwrap());
+        assert!(
+            with_photo > without_photo + 200,
+            "photo du tweet non rendue : {with_photo} px contre {without_photo} px sans photo"
+        );
+        // La photo occupe la largeur de la carte (moins les marges).
+        let pixmap = Pixmap::decode_png(&png).unwrap();
+        let center = pixmap
+            .pixel(CARD_WIDTH / 2, with_photo - PADDING as u32 - 120)
+            .unwrap();
+        assert!(
+            center.blue() > 120 && center.green() > 80,
+            "zone photo vide au centre de la carte"
+        );
+    }
+
+    #[test]
+    fn reserves_a_vertical_video_area_for_a_tweet_video() {
+        let mut content = content_from(TEXT_FIXTURE);
+        content.video = Some(TweetVideo { aspect: 9.0 / 16.0 });
+        let card = render_tweet_card_with_slots(&content).unwrap();
+        assert_eq!(card.video_slots.len(), 1);
+        let slot = &card.video_slots[0];
+        assert_eq!(slot.target, CardVideoTarget::Parent);
+        assert_eq!(slot.x, PADDING as u32);
+        assert_eq!(slot.width % 2, 0, "largeur impaire refusée par H.264");
+        assert_eq!(slot.height % 2, 0, "hauteur impaire refusée par H.264");
+        // La zone vidéo garde le rapport 9:16 sans recadrage.
+        let expected = slot.width as f32 / (9.0 / 16.0);
+        assert!(
+            (slot.height as f32 - expected).abs() <= 2.0,
+            "zone vidéo {}×{} au lieu de {} px de haut",
+            slot.width,
+            slot.height,
+            expected
+        );
+        let (_, height) = assert_valid_card(&card.png);
+        assert!(
+            height > CARD_MAX_HEIGHT,
+            "carte vidéo trop courte : {height}"
+        );
+        assert!(height <= CARD_MEDIA_MAX_HEIGHT);
+    }
+
+    #[test]
+    fn places_the_quoted_video_inside_the_quote_block() {
+        let mut content = content_from(QUOTE_FIXTURE);
+        {
+            let quoted = content.quoted.as_mut().unwrap();
+            quoted.images.clear();
+            quoted.video = Some(TweetVideo { aspect: 16.0 / 9.0 });
+        }
+        let card = render_tweet_card_with_slots(&content).unwrap();
+        assert_eq!(card.video_slots.len(), 1);
+        let slot = &card.video_slots[0];
+        assert_eq!(slot.target, CardVideoTarget::Quoted);
+        // Largeur utile du bloc de citation : carte moins marges et cadre.
+        let inner = CARD_WIDTH as f32 - 2.0 * PADDING - 2.0 * (QUOTE_BORDER_WIDTH + QUOTE_PADDING);
+        assert!(
+            (slot.width as f32 - inner).abs() <= 2.0,
+            "zone vidéo citée de {} px au lieu de {inner}",
+            slot.width
+        );
+        assert!(slot.x > PADDING as u32, "zone vidéo citée hors du bloc");
+        assert!(slot.y > AVATAR_SIZE as u32, "zone vidéo citée trop haute");
+        let (_, with_video) = assert_valid_card(&card.png);
+        let mut text_only = content.clone();
+        text_only.quoted.as_mut().unwrap().video = None;
+        let (_, without_video) = png_dimensions(&render_tweet_card(&text_only).unwrap());
+        assert!(
+            with_video > without_video,
+            "vidéo citée non rendue : {with_video} px contre {without_video} px sans vidéo"
+        );
+    }
+
+    #[test]
+    fn builds_a_rounded_video_mask() {
+        let png = build_video_mask_png(200, 100, 20).unwrap();
+        let mask = Pixmap::decode_png(&png).unwrap();
+        assert_eq!((mask.width(), mask.height()), (200, 100));
+        // Coin hors du rayon : noir (zone masquée), centre : blanc (visible).
+        let corner = mask.pixel(0, 0).unwrap();
+        assert!(corner.red() < 10, "coin du masque non noir");
+        assert_eq!(corner.alpha(), 255);
+        let center = mask.pixel(100, 50).unwrap();
+        assert!(center.red() > 240, "centre du masque non blanc");
     }
 }

@@ -22,7 +22,8 @@ use crate::source::{
 };
 use crate::storage::MediaStorage;
 use crate::transcode;
-use crate::tweet_card;
+use crate::tweet_card::{self, CardVideoTarget};
+use crate::tweet_card_video;
 
 static DOWNLOAD_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -116,56 +117,69 @@ async fn ensure_download_allowed(source: &MediaSource) -> MediaResult<()> {
     }
 }
 
-/// Télécharge le média d'un tweet : vidéo, photo seule, carrousel de photos ou
-/// carte rendue quand le tweet ne contient aucun média.
+/// Télécharge le média d'un tweet : la carte du tweet (texte, photos ou vidéo,
+/// tweet cité compris), avec repli sur la vidéo brute puis `yt-dlp`.
 ///
-/// `yt-dlp` n'est appelé qu'en dernier recours, quand aucun média direct n'a pu
-/// être téléchargé (payload indisponible ou variantes vidéo inaccessibles) : il
-/// ne sait ni télécharger une photo ni rendre une carte.
+/// `yt-dlp` n'est appelé qu'en dernier recours, quand aucune variante vidéo n'a
+/// pu être téléchargée (payload indisponible ou flux inaccessibles) : il ne
+/// sait ni télécharger une photo ni rendre une carte.
 async fn download_twitter(
     source: &MediaSource,
     resolved: Option<&crate::resolve::ResolvedMedia>,
     config: &MediaConfig,
     temp_dir: &Path,
 ) -> MediaResult<DownloadResult> {
-    // 1. Vidéo (ou photo seule) déjà annoncée par le résolveur.
+    // 1. Le résolveur ne transporte pas le payload : on le relit pour rendre la
+    //    carte du tweet (texte, photos, vidéo) et télécharger ses médias.
+    let payload = match tweet_status_id(&source.canonical_url) {
+        Some(status_id) => twitter::fetch_syndication_payload(config, &status_id).await,
+        None => None,
+    };
+    if let Some(value) = payload.as_ref() {
+        let variants = twitter::tweet_video_variants(value);
+        let has_video = !variants.is_empty();
+        let video = match twitter::pick_variant(&variants) {
+            Some(best) => match download_http(config, &best.url, temp_dir, &[]).await {
+                Ok(download) => Some(download),
+                Err(error) => {
+                    tracing::debug!(url = %best.url, "téléchargement de la vidéo du tweet échoué : {error}");
+                    None
+                }
+            },
+            None => None,
+        };
+        if has_video && video.is_none() {
+            tracing::debug!("vidéo du tweet inaccessible, repli yt-dlp");
+        } else {
+            match download_tweet_card(
+                value,
+                config,
+                temp_dir,
+                &source.canonical_url,
+                video.as_ref(),
+            )
+            .await
+            {
+                Ok(download) => return Ok(download),
+                Err(error) => {
+                    tracing::debug!("rendu de la carte tweet impossible : {error}");
+                    if let Some(video) = video {
+                        return Ok(video);
+                    }
+                    if let Some(photo) = twitter::tweet_photos(value).first() {
+                        return download_tweet_photo(config, &photo.source_url, temp_dir).await;
+                    }
+                }
+            }
+        }
+    }
+    // 2. Média déjà annoncé par le résolveur (vidéo).
     if let Some(media_url) = resolved.and_then(|resolved| resolved.media_url.clone()) {
         match download_http(config, &media_url, temp_dir, &[]).await {
             Ok(download) => return Ok(download),
             Err(error) => {
                 tracing::debug!(%media_url, "téléchargement direct du tweet échoué : {error}");
             }
-        }
-    }
-    // 2. Le résolveur ne transporte pas le payload : on le relit pour choisir
-    //    entre vidéo, photo, carrousel et carte.
-    let payload = match tweet_status_id(&source.canonical_url) {
-        Some(status_id) => twitter::fetch_syndication_payload(config, &status_id).await,
-        None => None,
-    };
-    if let Some(value) = payload.as_ref() {
-        let variants = twitter::collect_variants(value);
-        let has_video = !variants.is_empty();
-        if let Some(best) = twitter::pick_variant(&variants).cloned() {
-            match download_http(config, &best.url, temp_dir, &[]).await {
-                Ok(download) => return Ok(download),
-                Err(error) => {
-                    tracing::debug!(url = %best.url, "téléchargement de la vidéo du tweet échoué : {error}");
-                }
-            }
-        }
-        let photos = twitter::collect_photos(value);
-        if !photos.is_empty() {
-            return match photos.len() {
-                1 => download_tweet_photo(config, &photos[0], temp_dir).await,
-                _ => {
-                    download_tweet_carousel(value, &photos, config, temp_dir, &source.canonical_url)
-                        .await
-                }
-            };
-        }
-        if !has_video {
-            return download_tweet_card(value, config, temp_dir, &source.canonical_url).await;
         }
     }
     // 3. Vidéo dont aucune variante n'a pu être téléchargée, ou payload
@@ -200,68 +214,103 @@ async fn download_tweet_photo(
     download_http(config, url, temp_dir, &[]).await
 }
 
-/// Assemble les photos d'un tweet en carrousel vidéo muet.
-async fn download_tweet_carousel(
-    value: &serde_json::Value,
-    photos: &[String],
-    config: &MediaConfig,
-    temp_dir: &Path,
-    canonical_url: &str,
-) -> MediaResult<DownloadResult> {
-    let mut images: Vec<PathBuf> = Vec::new();
-    let mut last_error: Option<MediaError> = None;
-    for photo in photos.iter().take(twitter::MAX_TWEET_PHOTOS) {
-        match download_tweet_photo(config, photo, temp_dir).await {
-            Ok(download) => images.push(download.path),
-            Err(error) => {
-                last_error = Some(match last_error {
-                    Some(previous) => previous.most_relevant(error),
-                    None => error,
-                });
-            }
-        }
-    }
-    if images.is_empty() {
-        return Err(last_error.unwrap_or_else(|| {
-            MediaError::new(
-                MediaErrorCode::DownloadFailed,
-                "aucune photo de tweet téléchargeable",
-            )
-        }));
-    }
-    let is_vertical = twitter::extract_dimensions(value)
-        .map(|(width, height)| height >= width)
-        .unwrap_or(true);
-    build_carousel_download(
-        config,
-        temp_dir,
-        &images,
-        None,
-        is_vertical,
-        canonical_url.to_string(),
-        None,
-    )
-    .await
-}
-
-/// Rend la carte d'un tweet sans média et l'écrit dans le dossier temporaire.
+/// Rend la carte d'un tweet (texte, photos, vidéo, tweet cité) et l'écrit dans
+/// le dossier temporaire : PNG seul, ou MP4 quand une vidéo est incrustée.
 async fn download_tweet_card(
     value: &serde_json::Value,
     config: &MediaConfig,
     temp_dir: &Path,
     canonical_url: &str,
+    parent_video: Option<&DownloadResult>,
 ) -> MediaResult<DownloadResult> {
     let mut content = twitter::tweet_card_content(value);
     content.avatar = download_tweet_avatar(config, value, temp_dir).await;
+    if parent_video.is_none() {
+        // Aucune vidéo téléchargée : pas de zone noire dans la carte.
+        content.video = None;
+    }
+    for (index, photo) in content.photos.iter_mut().enumerate() {
+        photo.data = download_tweet_photo_png(
+            config,
+            &photo.source_url,
+            temp_dir,
+            &format!("tweet-photo-{index}"),
+        )
+        .await;
+    }
+    let mut quoted_video: Option<PathBuf> = None;
     if let Some(quoted) = content.quoted.as_mut() {
         for (index, image) in quoted.images.iter_mut().enumerate() {
-            image.data =
-                download_tweet_quote_image(config, &image.source_url, temp_dir, index).await;
+            image.data = download_tweet_photo_png(
+                config,
+                &image.source_url,
+                temp_dir,
+                &format!("tweet-quote-{index}"),
+            )
+            .await;
+        }
+        if quoted.video.is_some() {
+            quoted_video = download_tweet_quoted_video(value, config, temp_dir).await;
+            if quoted_video.is_none() {
+                // Vidéo citée inaccessible : le bloc garde ses photos ou son
+                // poster, sans zone noire.
+                quoted.video = None;
+            }
         }
     }
-    let png = tweet_card::render_tweet_card(&content)?;
+    let card = tweet_card::render_tweet_card_with_slots(&content)?;
+    let has_parent = card
+        .video_slots
+        .iter()
+        .any(|slot| slot.target == CardVideoTarget::Parent);
+    let has_quoted = card
+        .video_slots
+        .iter()
+        .any(|slot| slot.target == CardVideoTarget::Quoted);
+    if !has_parent && !has_quoted {
+        return write_tweet_card_png(temp_dir, &card.png, canonical_url);
+    }
+    match tweet_card_video::compose_tweet_card_video(
+        config,
+        temp_dir,
+        &card,
+        parent_video.map(|video| video.path.as_path()),
+        quoted_video.as_deref(),
+    )
+    .await
+    {
+        Ok(path) => {
+            let size_bytes = MediaStorage::file_size(&path)?;
+            Ok(DownloadResult {
+                path,
+                kind: Some(MediaKind::Video),
+                mime: Some("video/mp4".to_string()),
+                size_bytes,
+                source_url: canonical_url.to_string(),
+                title: None,
+            })
+        }
+        // Seule la vidéo citée manquait : la carte PNG reste valable.
+        Err(error) if !has_parent => {
+            tracing::debug!("composition de la vidéo citée impossible : {error}");
+            if let Some(quoted) = content.quoted.as_mut() {
+                quoted.video = None;
+            }
+            let card = tweet_card::render_tweet_card_with_slots(&content)?;
+            write_tweet_card_png(temp_dir, &card.png, canonical_url)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Écrit la carte PNG et renvoie le téléchargement prêt à normaliser.
+fn write_tweet_card_png(
+    temp_dir: &Path,
+    png: &[u8],
+    canonical_url: &str,
+) -> MediaResult<DownloadResult> {
     let path = temp_dir.join("tweet-card.png");
-    fs::write(&path, &png).map_err(|error| {
+    fs::write(&path, png).map_err(|error| {
         MediaError::from_io(
             MediaErrorCode::DownloadFailed,
             "écriture de la carte tweet",
@@ -330,34 +379,33 @@ async fn download_tweet_avatar(
     }
 }
 
-/// Télécharge une photo du tweet cité et la convertit en PNG pour le bloc de
-/// citation.
+/// Télécharge une photo de tweet et la convertit en PNG pour la carte.
 ///
 /// L'originale (`name=orig`) est demandée d'abord ; à défaut, l'URL telle
 /// quelle. ffmpeg borne l'image à 1800 px par côté (aucun décodeur JPEG n'est
-/// embarqué). Toute erreur rend `None` (bloc de citation textuel) et n'échoue
+/// embarqué). Toute erreur rend `None` (photo absente de la carte) et n'échoue
 /// jamais le téléchargement.
-async fn download_tweet_quote_image(
+async fn download_tweet_photo_png(
     config: &MediaConfig,
     url: &str,
     temp_dir: &Path,
-    index: usize,
+    name: &str,
 ) -> Option<Vec<u8>> {
     let original = twitter::photo_original_url(url);
     let input = match download_http(config, &original, temp_dir, &[]).await {
         Ok(download) => download.path,
         Err(error) => {
-            tracing::debug!(%url, "image du tweet cité indisponible : {error}");
+            tracing::debug!(%url, "image du tweet indisponible : {error}");
             match download_http(config, url, temp_dir, &[]).await {
                 Ok(download) => download.path,
                 Err(error) => {
-                    tracing::debug!(%url, "image du tweet cité indisponible : {error}");
+                    tracing::debug!(%url, "image du tweet indisponible : {error}");
                     return None;
                 }
             }
         }
     };
-    let output = temp_dir.join(format!("tweet-quote-{index}.png"));
+    let output = temp_dir.join(format!("{name}.png"));
     let args = vec![
         "-y".to_string(),
         "-hide_banner".to_string(),
@@ -379,13 +427,33 @@ async fn download_tweet_quote_image(
     )
     .await
     {
-        tracing::debug!("conversion de l'image du tweet cité impossible : {error}");
+        tracing::debug!("conversion de l'image du tweet impossible : {error}");
         return None;
     }
     match fs::read(&output) {
         Ok(bytes) => Some(bytes),
         Err(error) => {
-            tracing::debug!("lecture de l'image du tweet cité impossible : {error}");
+            tracing::debug!("lecture de l'image du tweet impossible : {error}");
+            None
+        }
+    }
+}
+
+/// Télécharge la vidéo du tweet cité, jouée dans le bloc de citation.
+async fn download_tweet_quoted_video(
+    value: &serde_json::Value,
+    config: &MediaConfig,
+    temp_dir: &Path,
+) -> Option<PathBuf> {
+    let variants = twitter::quoted_tweet_video_variants(value);
+    let best = twitter::pick_variant(&variants)?;
+    match download_http(config, &best.url, temp_dir, &[]).await {
+        Ok(download) => Some(download.path),
+        Err(error) => {
+            tracing::debug!(
+                url = %best.url,
+                "téléchargement de la vidéo du tweet cité échoué : {error}"
+            );
             None
         }
     }

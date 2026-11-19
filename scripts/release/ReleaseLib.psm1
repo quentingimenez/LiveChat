@@ -374,6 +374,34 @@ $script:SshExe = if ($env:LIVECHAT_SSH_EXE) { $env:LIVECHAT_SSH_EXE } else { 'C:
 $script:SshHost = $env:LIVECHAT_SSH_HOST
 $script:PublicUrl = $env:LIVECHAT_PUBLIC_URL
 $script:ImageName = if ($env:LIVECHAT_IMAGE_NAME) { $env:LIVECHAT_IMAGE_NAME } else { 'ghcr.io/quentingimenez/livechat-server' }
+# Charge les variables de deploiement depuis `.env` a la racine du depot (fichier
+# non versionne, ignore par .gitignore). Format KEY=VALUE, commentaires `#`,
+# guillemets optionnels. Les variables deja presentes dans l'environnement
+# gagnent, pour permettre une surcharge ponctuelle dans un shell.
+function Import-DotEnv {
+    param([string]$Root)
+    if (-not $Root) { throw 'missing repository root for .env' }
+    $path = Join-Path $Root '.env'
+    if (-not (Test-Path -LiteralPath $path)) { return }
+    foreach ($line in Get-Content -LiteralPath $path) {
+        $trimmed = $line.Trim()
+        if (-not $trimmed -or $trimmed.StartsWith('#')) { continue }
+        $m = [regex]::Match($trimmed, '^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$')
+        if (-not $m.Success) { continue }
+        $name = $m.Groups[1].Value
+        $value = $m.Groups[2].Value.Trim()
+        if ($value.Length -ge 2) {
+            $first = $value[0]
+            $last = $value[$value.Length - 1]
+            if (($first -eq '"' -and $last -eq '"') -or ($first -eq "'" -and $last -eq "'")) {
+                $value = $value.Substring(1, $value.Length - 2)
+            }
+        }
+        if (-not [Environment]::GetEnvironmentVariable($name, 'Process')) {
+            [Environment]::SetEnvironmentVariable($name, $value, 'Process')
+        }
+    }
+}
 
 # Refuse un deploiement sans hote ni URL publique, avec un message qui nomme
 # les variables d'environnement attendues.
@@ -518,11 +546,19 @@ function Get-ServerDeployScript {
 # bot logged in, and /admin/ is refused for a non-allowed source address.
 # ASCII only: `Discord pr` matches the "Discord pret" line without
 # depending on the host locale.
+# Checks run on the host after the container restart. The /admin/ probe goes
+# through the host's local TLS proxy (port 4433) with the public host name, so
+# it reaches the app without depending on NAT hairpin. The host name comes from
+# the public URL (LIVECHAT_PUBLIC_URL), never from a placeholder.
 function Get-ServerCheckScript {
+    param([string]$PublicUrl = $script:PublicUrl)
+    if (-not $PublicUrl) { throw 'LIVECHAT_PUBLIC_URL is required for the admin check' }
+    $publicHost = ([Uri]$PublicUrl).Host
+    if (-not $publicHost) { throw "invalid public URL '$PublicUrl' (expected https://host)" }
     return (@(
             'set -u',
             'echo "discord_ready=$(docker logs --since 15m LiveChat 2>&1 | grep -c ''Discord pr'' || true)"',
-            'echo "admin_status=$(curl -sk -o /dev/null -w ''%{http_code}'' --resolve livechat.example.com:4433:127.0.0.1 https://livechat.example.com:4433/admin/ || true)"',
+            "echo `"admin_status=`$(curl -sk -o /dev/null -w '%{http_code}' --resolve ${publicHost}:4433:127.0.0.1 https://${publicHost}:4433/admin/ || true)`"",
             'exit 0'
         ) -join "`n") + "`n"
 }
@@ -621,4 +657,4 @@ function Invoke-ServerDeploy {
 Export-ModuleMember -Function Get-ReleaseComponents, Get-ComponentVersionSources, Get-ComponentVersion,
     Get-ServerWorkspaceMembers, Get-VersionLocations, Test-VersionConsistency, Test-ReleaseVersion,
     Compare-SemVer, Get-LastReleaseTag, Get-TagPrefix, Set-ComponentVersion,
-    Get-ComponentChanges, Get-PendingReleaseTags, Get-ServerDeployScript, Get-ServerCheckScript, Get-ServerRollbackCommand, Get-DeployResult, Assert-DeploySettings, Invoke-ServerDeploy
+    Get-ComponentChanges, Get-PendingReleaseTags, Get-ServerDeployScript, Get-ServerCheckScript, Get-ServerRollbackCommand, Get-DeployResult, Assert-DeploySettings, Import-DotEnv, Invoke-ServerDeploy

@@ -15,6 +15,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Import-Module ([IO.Path]::Combine($PSScriptRoot, 'release', 'ReleaseLib.psm1')) -Force
 $root = (& git -C $PSScriptRoot rev-parse --show-toplevel).Trim()
+try { Import-DotEnv -Root $root } catch { Write-Warning "could not read .env: $($_.Exception.Message)" }
 if ($null -eq $Rest) { $Rest = @() }
 
 function Invoke-Check {

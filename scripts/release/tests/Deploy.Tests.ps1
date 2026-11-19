@@ -47,10 +47,10 @@ Test-Case 'Deploy refuses invalid version' {
 Test-Case 'Remote scripts are ASCII only' {
     # Non-ASCII bytes are mangled by the PowerShell -> ssh pipe and by the
     # host's C locale (`.` matches one byte, an e-circumflex is two bytes in UTF-8).
-    foreach ($s in (Get-ServerDeployScript -Version '3.6.0' -Stamp '20261117-120000'), (Get-ServerCheckScript)) {
+    foreach ($s in (Get-ServerDeployScript -Version '3.6.0' -Stamp '20261117-120000'), (Get-ServerCheckScript -PublicUrl 'https://livechat.example.com')) {
         Assert-True ($s -notmatch '[^\x00-\x7F]') 'non-ASCII character in a remote script'
     }
-    Assert-True ((Get-ServerCheckScript).Contains("grep -c 'Discord pr'")) 'Discord login check'
+    Assert-True ((Get-ServerCheckScript -PublicUrl 'https://livechat.example.com').Contains("grep -c 'Discord pr'")) 'Discord login check'
 }
 
 Test-Case 'Deploy error after update restores the template and recreates' {
@@ -84,4 +84,65 @@ Test-Case 'Deploy refuses to run without the deployment settings' {
     Assert-Throws { Assert-DeploySettings -SshHost 'root@unraid' -PublicUrl '' } 'LIVECHAT_PUBLIC_URL'
     Assert-Throws { Assert-DeploySettings -SshHost '' -PublicUrl 'https://livechat.example.com' } 'LIVECHAT_SSH_HOST'
     Assert-True ($null -eq (Assert-DeploySettings -SshHost 'root@unraid' -PublicUrl 'https://livechat.example.com')) 'accepts a complete configuration'
+}
+
+Test-Case 'Admin check uses the public host' {
+    $s = Get-ServerCheckScript -PublicUrl 'https://livechat.singesupreme.fr'
+    Assert-True ($s.Contains('--resolve livechat.singesupreme.fr:4433:127.0.0.1')) 'local proxy resolve'
+    Assert-True ($s.Contains('https://livechat.singesupreme.fr:4433/admin/')) 'admin URL'
+    Assert-True (-not $s.Contains('livechat.example.com')) 'no placeholder host'
+}
+
+Test-Case 'Admin check needs the public URL' {
+    Assert-Throws { Get-ServerCheckScript -PublicUrl '' } 'LIVECHAT_PUBLIC_URL'
+}
+
+# The repository root .env holds the deployment settings (see SKILL.md); the
+# release tool loads it before running any command, so the variables do not
+# have to be exported in every shell.
+function New-DotEnvDir {
+    $dir = Join-Path ([IO.Path]::GetTempPath()) ('lc-dotenv-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
+    New-Item -ItemType Directory -Path $dir | Out-Null
+    [void]$script:TempDirs.Add($dir)
+    return $dir
+}
+
+Test-Case 'DotEnv loads the deployment settings' {
+    $dir = New-DotEnvDir
+    [IO.File]::WriteAllText((Join-Path $dir '.env'), @"
+# deployment settings
+export LIVECHAT_SSH_HOST="root@unraid"
+LIVECHAT_PUBLIC_URL = https://livechat.example.com
+"@)
+    $savedHost = $env:LIVECHAT_SSH_HOST
+    $savedUrl = $env:LIVECHAT_PUBLIC_URL
+    try {
+        Remove-Item Env:LIVECHAT_SSH_HOST -ErrorAction SilentlyContinue
+        Remove-Item Env:LIVECHAT_PUBLIC_URL -ErrorAction SilentlyContinue
+        Import-DotEnv -Root $dir
+        Assert-Equal 'root@unraid' $env:LIVECHAT_SSH_HOST 'host from the file'
+        Assert-Equal 'https://livechat.example.com' $env:LIVECHAT_PUBLIC_URL 'url from the file'
+    } finally {
+        $env:LIVECHAT_SSH_HOST = $savedHost
+        $env:LIVECHAT_PUBLIC_URL = $savedUrl
+    }
+}
+
+Test-Case 'DotEnv keeps the environment value' {
+    $dir = New-DotEnvDir
+    [IO.File]::WriteAllText((Join-Path $dir '.env'), "LIVECHAT_SSH_HOST=root@from-file`n")
+    $savedHost = $env:LIVECHAT_SSH_HOST
+    try {
+        $env:LIVECHAT_SSH_HOST = 'root@from-shell'
+        Import-DotEnv -Root $dir
+        Assert-Equal 'root@from-shell' $env:LIVECHAT_SSH_HOST 'the environment wins'
+    } finally {
+        $env:LIVECHAT_SSH_HOST = $savedHost
+    }
+}
+
+Test-Case 'DotEnv ignores a missing file' {
+    $dir = New-DotEnvDir
+    Import-DotEnv -Root $dir
+    Assert-True $true 'a missing file is a no-op'
 }

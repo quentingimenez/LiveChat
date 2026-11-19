@@ -363,11 +363,33 @@ function Get-PendingReleaseTags {
 }
 
 # ---------------------------------------------------------------- Unraid deploy
+#
+# Le depot est public : l'hote SSH et l'URL publique ne sont pas versionnes.
+# `deploy-server` les lit dans l'environnement (LIVECHAT_SSH_HOST,
+# LIVECHAT_PUBLIC_URL) et refuse de tourner s'ils manquent ; `plan`, `bump` et
+# `check` n'en ont pas besoin. LIVECHAT_SSH_EXE et LIVECHAT_IMAGE_NAME sont
+# facultatifs (utiles pour un fork ou un autre emplacement de ssh.exe).
 
-$script:SshExe = 'C:/Windows/System32/OpenSSH/ssh.exe'
-$script:SshHost = 'root@192.0.2.59'
-$script:PublicUrl = 'https://livechat.example.com'
-$script:ImageName = 'ghcr.io/quentingimenez/livechat-server'
+$script:SshExe = if ($env:LIVECHAT_SSH_EXE) { $env:LIVECHAT_SSH_EXE } else { 'C:/Windows/System32/OpenSSH/ssh.exe' }
+$script:SshHost = $env:LIVECHAT_SSH_HOST
+$script:PublicUrl = $env:LIVECHAT_PUBLIC_URL
+$script:ImageName = if ($env:LIVECHAT_IMAGE_NAME) { $env:LIVECHAT_IMAGE_NAME } else { 'ghcr.io/quentingimenez/livechat-server' }
+
+# Refuse un deploiement sans hote ni URL publique, avec un message qui nomme
+# les variables d'environnement attendues.
+function Assert-DeploySettings {
+    param(
+        [string]$SshHost = $script:SshHost,
+        [string]$PublicUrl = $script:PublicUrl
+    )
+    $missing = @(
+        if (-not $SshHost) { 'LIVECHAT_SSH_HOST' }
+        if (-not $PublicUrl) { 'LIVECHAT_PUBLIC_URL' }
+    )
+    if ($missing.Count -gt 0) {
+        throw "missing environment variable(s) for deploy-server: $($missing -join ', ')"
+    }
+}
 
 # Bash run on the Unraid host (stdin of `ssh ... bash -s`): backup, template
 # update, container recreate. On any error the container is started again
@@ -569,6 +591,12 @@ function Wait-ServerHealth {
 # Discord login and the /admin/ restriction. Throws on the first failure.
 function Invoke-ServerDeploy {
     param([string]$Version, [switch]$Canary)
+    # L'environnement est relu ici : un shell qui vient de definir les variables
+    # n'a pas besoin de reimporter le module.
+    if ($env:LIVECHAT_SSH_HOST) { $script:SshHost = $env:LIVECHAT_SSH_HOST }
+    if ($env:LIVECHAT_PUBLIC_URL) { $script:PublicUrl = $env:LIVECHAT_PUBLIC_URL }
+    if ($env:LIVECHAT_IMAGE_NAME) { $script:ImageName = $env:LIVECHAT_IMAGE_NAME }
+    Assert-DeploySettings
     $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
     $script = Get-ServerDeployScript -Version $Version -Stamp $stamp -Canary:$Canary
     Write-Host "Deploying $($script:ImageName):$Version on $($script:SshHost)"
@@ -593,4 +621,4 @@ function Invoke-ServerDeploy {
 Export-ModuleMember -Function Get-ReleaseComponents, Get-ComponentVersionSources, Get-ComponentVersion,
     Get-ServerWorkspaceMembers, Get-VersionLocations, Test-VersionConsistency, Test-ReleaseVersion,
     Compare-SemVer, Get-LastReleaseTag, Get-TagPrefix, Set-ComponentVersion,
-    Get-ComponentChanges, Get-PendingReleaseTags, Get-ServerDeployScript, Get-ServerCheckScript, Get-ServerRollbackCommand, Get-DeployResult, Invoke-ServerDeploy
+    Get-ComponentChanges, Get-PendingReleaseTags, Get-ServerDeployScript, Get-ServerCheckScript, Get-ServerRollbackCommand, Get-DeployResult, Assert-DeploySettings, Invoke-ServerDeploy

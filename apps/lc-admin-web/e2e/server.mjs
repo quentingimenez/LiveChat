@@ -26,7 +26,10 @@ const child = spawn(binary, [], {
   stdio: 'inherit',
   env: {
     ...process.env,
-    NODE_ENV: 'test',
+    // `development` exempts loopback clients from the rate limits; the
+    // Bombadil runner (tools/bombadil) needs it, as it clicks far faster
+    // than a person.
+    NODE_ENV: process.env.LC_E2E_NODE_ENV ?? 'test',
     PORT: port,
     API_URL: `http://127.0.0.1:${port}`,
     DATABASE_URL: `sqlite://${databasePath}`,

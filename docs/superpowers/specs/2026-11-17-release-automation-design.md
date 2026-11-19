@@ -64,8 +64,10 @@ et de **choisir lui-même le chiffre à incrémenter** de chaque composant.
   modifications), messages de commit en anglais à l'impératif, pas de
   `Co-Authored-By`, pas de mention Claude dans les PR.
 - Déploiement Unraid : procédure de la mémoire `unraid-deployment-livechat`
-  (SSH `root@192.0.2.59`, sauvegarde avant, `update_container LiveChat` puis
-  `docker start LiveChat`, secrets jamais affichés).
+  (hôte SSH lu dans `LIVECHAT_SSH_HOST` et URL publique dans `LIVECHAT_PUBLIC_URL`
+  — le dépôt public ne versionne pas l'infrastructure ; sauvegarde avant,
+  `update_container LiveChat` puis `docker start LiveChat`, secrets jamais
+  affichés).
 
 ## Approches envisagées
 

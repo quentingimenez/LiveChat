@@ -68,9 +68,9 @@
     );
   const connection = (status) => ({ status, reason: null, serverVersion: '3.0.0', minVersion: null, guildId: null, clientId: null, sessionMode: 'normal', peers: [], lastError: null });
 
-  function guildIcon(hue) {
-    return 'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><rect width="128" height="128" fill="hsl(${hue} 55% 45%)"/><path d="M34 88 64 34l30 54z" fill="hsl(${hue} 80% 85%)"/></svg>`);
-  }
+  // Guild icons: real image files from dev/fixtures (Discord-style tiles), so
+  // the rail shows actual pictures like the paired Discord guilds.
+  const guildIconUrl = (name) => new URL('./fixtures/' + name, location.href).href;
 
   const guilds = {
     activeGuildId: empty ? null : '111',
@@ -79,9 +79,9 @@
     guilds: empty
       ? []
       : [
-          { membership: membership('111', 'Les Sardines', { active: true }), connection: connection('connected'), statusLabel: 'connecté', playing: true },
-          { membership: membership('222', 'GG Squad', { guildIconUrl: guildIcon(200) }), connection: connection('reconnecting'), statusLabel: 'reconnexion…', playing: false },
-          { membership: membership('333', 'TV du salon', { muted: true, guildIconUrl: guildIcon(30) }), connection: connection('disabled'), statusLabel: 'désactivé', playing: false },
+          { membership: membership('111', 'Les Sardines', { active: true, guildIconUrl: guildIconUrl('guild-111.png') }), connection: connection('connected'), statusLabel: 'connecté', playing: true },
+          { membership: membership('222', 'GG Squad', { guildIconUrl: guildIconUrl('guild-222.png') }), connection: connection('reconnecting'), statusLabel: 'reconnexion…', playing: false },
+          { membership: membership('333', 'TV du salon', { muted: true, guildIconUrl: guildIconUrl('guild-333.png') }), connection: connection('disabled'), statusLabel: 'désactivé', playing: false },
           // An icon that fails to load: the rail falls back to the initials.
           { membership: membership('444', 'L’Escale 🔱', { guildIconUrl: 'https://cdn.discordapp.com/icons/0/missing.png' }), connection: connection('connected'), statusLabel: 'connecté', playing: false },
         ],
@@ -135,9 +135,11 @@
   // masonry grid and the detail panel. Others are 1280 × 720.
   const SIZES = { 1: [1080, 1080], 3: [1080, 1920], 4: [1200, 800], 5: [720, 1280], 6: [2400, 1000], 8: [1080, 1920] };
   const sizeOf = (index) => SIZES[index] || [1280, 720];
-  // `?media` : « Chat qui tombe » and « Vine boom » are a real video and a real
-  // sound (dev/fixtures), so the editor can play, cut and draw them.
+  // `?media` : every card serves a real fixture from dev/fixtures (frames cut
+  // from sample.mp4, JPEG stills and audio artwork), so thumbnails, the editor
+  // and the README screenshots render like the real board.
   const realMedia = new URLSearchParams(location.search).has('media');
+  const REAL_MEDIA = { 0: 'sample.mp4', 1: 'media-1.jpg', 2: 'sample.mp3', 3: 'seg-3.mp4', 4: 'media-4.jpg', 5: 'seg-5.mp4', 6: 'seg-6.mp4', 8: 'media-8.jpg' };
   const titles = ['Chat qui tombe', 'Bruh', 'Vine boom', 'Directed by Robert B. Weide', 'Stonks', 'Ah shit, here we go again', null, 'Fanfare de la victoire totale et définitive', 'Nope', 'Sad violin'];
   const kinds = ['video', 'image', 'audio', 'video', 'image', 'video', 'video', 'audio', 'image', 'audio'];
   const items = titles.map((title, index) => ({
@@ -154,10 +156,13 @@
     createdAt: new Date(Date.now() - index * 86400000).toISOString(),
     media: { id: 'a' + index, kind: kinds[index], mime: 'x', durationSec: kinds[index] === 'image' ? null : 3 + index * 7, width: sizeOf(index)[0], height: sizeOf(index)[1], isVertical: sizeOf(index)[1] > sizeOf(index)[0], sizeBytes: 420000 * (index + 1), sourceUrl: index === 2 ? 'upload:vine-boom.mp3' : index === 3 ? 'https://youtu.be/x' + index : 'https://www.tiktok.com/@x/video/' + index },
     favorite: index === 1 || index === 7,
-    // « Fanfare… » (audio) has an embedded cover.
-    artwork: index === 7 ? { url: svg(4), width: 480, height: 480 } : null,
-    // « Directed by… » (a YouTube link) has its platform thumbnail.
-    thumbnail: index === 3 ? { url: svg(5), width: 480, height: 360 } : null,
+    // « Fanfare… » and « Vine boom » (audio) have an embedded cover.
+    artwork: index === 7 || (realMedia && index === 2)
+      ? { url: realMedia ? new URL(index === 7 ? './fixtures/art-7.jpg' : './fixtures/art-2.jpg', location.href).href : placeholder(4), width: 480, height: 480 }
+      : null,
+    // « Directed by… » (a YouTube link) has its platform thumbnail; with
+    // `?media` its real video (seg-3.mp4) is shown instead.
+    thumbnail: index === 3 && !realMedia ? { url: placeholder(5), width: 480, height: 360 } : null,
     artworkOnOverlay: false,
     displayDurationSec: null,
     displayScalePercent: null,
@@ -262,12 +267,15 @@
   };
 
   function svg(index) {
-    if (realMedia && index === 0) {
-      return new URL('./fixtures/sample.mp4', location.href).href;
+    if (realMedia && REAL_MEDIA[index]) {
+      return new URL('./fixtures/' + REAL_MEDIA[index], location.href).href;
     }
-    if (realMedia && index === 2) {
-      return new URL('./fixtures/sample.mp3', location.href).href;
-    }
+    return placeholder(index);
+  }
+
+  // Generated image (never a fixture): used for covers and thumbnails, which
+  // must stay images even when `?media` maps the media itself to a video.
+  function placeholder(index) {
     const hue = (index * 47) % 360;
     const [mediaWidth, mediaHeight] = sizeOf(index);
     const width = 320;

@@ -78,3 +78,10 @@ Test-Case 'Deploy result is parsed from the host output' {
     Assert-Equal 'ghcr.io/quentingimenez/livechat-server:3.5.1' $r.Previous 'previous'
     Assert-Throws { Get-DeployResult -Lines @('nothing') } 'DEPLOYED'
 }
+
+Test-Case 'Deploy refuses to run without the deployment settings' {
+    Assert-Throws { Assert-DeploySettings -SshHost '' -PublicUrl '' } 'LIVECHAT_SSH_HOST'
+    Assert-Throws { Assert-DeploySettings -SshHost 'root@unraid' -PublicUrl '' } 'LIVECHAT_PUBLIC_URL'
+    Assert-Throws { Assert-DeploySettings -SshHost '' -PublicUrl 'https://livechat.example.com' } 'LIVECHAT_SSH_HOST'
+    Assert-True ($null -eq (Assert-DeploySettings -SshHost 'root@unraid' -PublicUrl 'https://livechat.example.com')) 'accepts a complete configuration'
+}

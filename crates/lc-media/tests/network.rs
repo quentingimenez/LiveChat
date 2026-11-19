@@ -57,7 +57,7 @@ async fn resolves_tweet_card() {
 
 #[tokio::test]
 #[ignore = "nécessite un accès réseau"]
-async fn ingests_photo_tweet_as_an_image() {
+async fn ingests_photo_tweet_as_a_card_image() {
     let temp = tempfile::TempDir::new().unwrap();
     let mut config = MediaConfig::default();
     config.storage.directory = temp.path().join("media");
@@ -66,7 +66,37 @@ async fn ingests_photo_tweet_as_an_image() {
         .ingest_url("https://x.com/i/status/2122725457946718290")
         .await
         .unwrap();
+    // Un tweet avec photo garde l'habillage façon X : la carte PNG contient
+    // l'en-tête, le texte et la photo, pas seulement la photo brute.
     assert_eq!(media.normalized.kind, MediaKind::Image);
+    assert_eq!(media.normalized.mime, "image/png");
+    assert!(media.normalized.storage_path.exists());
+    let bytes = std::fs::read(&media.normalized.storage_path).unwrap();
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "pas une carte PNG");
+    let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    assert!(
+        height > 600,
+        "la carte ne contient pas la photo du tweet : {height} px de haut"
+    );
+}
+
+#[tokio::test]
+#[ignore = "nécessite un accès réseau + ffmpeg"]
+async fn ingests_a_video_tweet_as_a_card_video() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut config = MediaConfig::default();
+    config.storage.directory = temp.path().join("media");
+    let pipeline = MediaPipeline::new(config).unwrap();
+    let media = pipeline
+        .ingest_url("https://x.com/elonmusk/status/1585341984679469056")
+        .await
+        .unwrap();
+    // La vidéo du tweet est incrustée dans la carte (en-tête, texte, date) :
+    // le média joué est un MP4 1080 de large et non la vidéo brute 1920×1080.
+    assert_eq!(media.normalized.kind, MediaKind::Video);
+    assert_eq!(media.normalized.mime, "video/mp4");
+    assert_eq!(media.normalized.width, Some(1080));
+    assert!(media.normalized.height.is_some_and(|height| height > 600));
     assert!(media.normalized.storage_path.exists());
 }
 
@@ -83,6 +113,37 @@ async fn ingests_text_tweet_as_a_card_image() {
         .unwrap();
     assert_eq!(media.normalized.kind, MediaKind::Image);
     assert!(media.normalized.storage_path.exists());
+}
+
+#[tokio::test]
+#[ignore = "nécessite un accès réseau"]
+async fn ingests_a_quoted_tweet_as_a_card_image() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut config = MediaConfig::default();
+    config.storage.directory = temp.path().join("media");
+    let pipeline = MediaPipeline::new(config).unwrap();
+    let media = pipeline
+        .ingest_url("https://x.com/jspjspbref/status/2122727570772811781")
+        .await
+        .unwrap();
+    // Le tweet parent n'a pas de média propre : la carte doit intégrer le
+    // tweet cité (auteur, texte et photo), donc être plus haute qu'une carte
+    // de texte seule.
+    assert_eq!(media.normalized.kind, MediaKind::Image);
+    assert!(media.normalized.storage_path.exists());
+    assert_eq!(
+        media
+            .resolved
+            .as_ref()
+            .and_then(|resolved| resolved.title.as_deref()),
+        Some("essaie de reclipser ta portière")
+    );
+    let bytes = std::fs::read(&media.normalized.storage_path).unwrap();
+    let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    assert!(
+        height > 600,
+        "la carte ne contient pas le tweet cité : {height} px de haut"
+    );
 }
 
 #[tokio::test]

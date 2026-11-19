@@ -6,6 +6,8 @@
 // Options de l'URL : ?role=admin|member|guest, ?empty (aucune guilde),
 // ?removed (un retrait de guilde en attente au démarrage), ?settings (la page
 // Paramètres est demandée au démarrage via board_take_pending_view),
+// ?nozone (le shell ne connaît aucun écran : l'éditeur image n'a alors pas de
+// zone d'affichage et retombe sur son estimation 1920 × 1080),
 // ?update=ready|downloading (état de l'updater au démarrage, pour voir le
 // bandeau de mise à jour de la board).
 // Depuis la console : `__mock.emit(event, payload)`,
@@ -129,6 +131,10 @@
     placing: false,
     profile: { displayName: 'Quentin', avatar: null },
   };
+  // `?nozone` : aucun écran connu, donc aucune zone d'affichage côté éditeur.
+  if (new URLSearchParams(location.search).has('nozone')) {
+    settings.displays = [];
+  }
   let pendingView = new URLSearchParams(location.search).has('settings') ? 'settings' : null;
 
   // Media sizes (width, height): portrait, square and wide shapes for the

@@ -286,6 +286,96 @@
   height: 100%;
 }
 
+/* ------------------------------------------- display size live preview */
+.display-preview {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: #0b0e14;
+}
+
+.display-preview[hidden] {
+  display: none;
+}
+
+.display-preview-bar {
+  display: flex;
+  flex: none;
+  gap: 10px;
+  align-items: center;
+  min-height: 42px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--slate-800);
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.display-preview-title {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.display-preview-zone {
+  font-variant-numeric: tabular-nums;
+}
+
+.display-preview-bar .btn {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.display-preview-scroll {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  padding: 16px;
+  scrollbar-gutter: stable;
+  overflow: auto;
+}
+
+.display-preview-screen {
+  position: relative;
+  flex: none;
+  margin: auto;
+  overflow: hidden;
+  border-radius: 4px;
+  background:
+    repeating-conic-gradient(#2a3040 0% 25%, #222736 0% 50%) 0 0 / 20px 20px;
+  box-shadow:
+    0 0 0 1px var(--line),
+    0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
+/* Placeholder for the author header the overlay keeps above the picture. Its
+   width is set to the picture's, like the frame it belongs to. */
+.display-preview-header {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.3);
+  background: repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.06) 0 6px, transparent 6px 12px);
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* The picture as the overlay shows it: the browser resamples it. */
+.display-preview-image {
+  position: absolute;
+  display: block;
+  image-rendering: auto;
+}
+
 .sel-box {
   position: absolute;
   border: 1.5px dashed #fff;

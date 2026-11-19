@@ -472,6 +472,33 @@ export function displayedImageSize({ width, height, scalePercent, maxWidth, maxH
   };
 }
 
+// Height the overlay keeps above a picture: the author chip
+// (`--overlay-media-header-height: 54px`) and its gap to the picture
+// (`--overlay-media-header-gap: 10px`), see styles/overlay/base.css. The
+// legend under the picture is not part of this budget.
+export const OVERLAY_MEDIA_HEADER_HEIGHT = 54;
+export const OVERLAY_MEDIA_HEADER_GAP = 10;
+export const OVERLAY_MEDIA_RESERVED_HEIGHT = OVERLAY_MEDIA_HEADER_HEIGHT + OVERLAY_MEDIA_HEADER_GAP;
+
+// Room the overlay leaves for the picture inside its display zone, in the same
+// pixels as the zone. `null` means no limit (unknown zone).
+export function displayZoneLimits({
+  zoneWidth,
+  zoneHeight,
+  reservedHeight = OVERLAY_MEDIA_RESERVED_HEIGHT,
+} = {}) {
+  const width = Number(zoneWidth);
+  const height = Number(zoneHeight);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return { maxWidth: null, maxHeight: null };
+  }
+  const reserved = Number.isFinite(Number(reservedHeight)) ? Math.max(0, Number(reservedHeight)) : OVERLAY_MEDIA_RESERVED_HEIGHT;
+  return {
+    maxWidth: Math.round(width),
+    maxHeight: Math.max(0, Math.round(height) - reserved),
+  };
+}
+
 // --- naming --------------------------------------------------------------
 // A JPEG stays a JPEG (no transparency to keep); everything else is saved as
 // a PNG.

@@ -79,6 +79,16 @@ cargo tauri build --config tauri.unsigned.conf.json
 La board peut aussi tourner dans un navigateur, sans Tauri ni serveur, avec le harnais
 `apps/lc-overlay/dev/board-mock.html` (voir [`apps/lc-overlay/dev/README.md`](apps/lc-overlay/dev/README.md)).
 
+## Vérification
+
+Le pipeline de vérification (propriétés, contrats, fuzz, mutation, charge, chaos,
+canary) est décrit dans [`docs/rust/verification.md`](docs/rust/verification.md) :
+la batterie locale tient en `cargo xtask verify --offline` (plus `--mutants` pour la
+mutation, kill-or-justify), le nightly [`verification-nightly.yml`](.github/workflows/verification-nightly.yml)
+note les scores contre [`scripts/mutants-baseline.json`](scripts/mutants-baseline.json),
+et le skill [`/verify`](.claude/skills/verify/SKILL.md) encadre tout changement écrit
+par un agent jusqu'au canary, avant tout déploiement.
+
 ## Releases
 
 Une release se prépare avec [`scripts/release.ps1`](scripts/release.ps1) (`plan`,

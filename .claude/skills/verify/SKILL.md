@@ -53,6 +53,12 @@ Le protocole v2 est **gelé** ([`docs/rust/protocol-v2.md`](../../../docs/rust/p
 
 - cargo-mutants `--in-place` restaure les fichiers en LF → statuts fantômes ` M` à
   diff vide : normaliser en CRLF byte-level, ne jamais « git checkout ».
+- `cargo xtask` lance le binaire en **release** (alias dans `.cargo/config.toml`) :
+  le stage tests de la batterie relink `target\debug\xtask.exe` pendant que le
+  processus batterie tourne ; si l'alias lançait le debug, Windows refuserait de
+  remplacer l'image en cours (« failed to remove xtask.exe »). L'alias release
+  disjoint les chemins — ne pas le « simplifier » en debug (voir
+  `docs/rust/verification.md` §7).
 - proptest écrit `*.proptest-regressions*` à côté des tests : purger après un
   sabotage.
 - PS 5.1 : pas de `&&` ; le compte `.Count` sur un objet unique ment — préférer

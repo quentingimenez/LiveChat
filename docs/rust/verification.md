@@ -117,6 +117,16 @@ qu'il reste un mutant manqué : l'exigence n'est pas « vert », elle est
   compteurs (préférer `Group-Object`).
 - Le job `load` nightly n'a **jamais tourné sur Linux** : le premier nightly sera la
   première exécution du budget fd (risque accepté, surveiller le premier run).
+- **`cargo xtask` tourne en `--release`** (alias dans [.cargo/config.toml](../../.cargo/config.toml)) :
+  dès que xtask a un test d'intégration (`tests/cli_exit_codes.rs`, binaire
+  `CARGO_BIN_EXE_xtask`), le stage tests de la batterie
+  (`cargo test --no-run --workspace --all-features`) relink `target\debug\xtask.exe`
+  **pendant que le processus batterie l'exécute** → Windows refuse de remplacer l'image
+  en cours (« failed to remove xtask.exe ») si l'alias lance le debug. L'alias release
+  disjoint les chemins (batterie = `target\release\`, stage tests = `target\debug\`),
+  collision impossible quel que soit l'état des artefacts ; coût : un build release de
+  xtask (~2-4 min la première fois, incrémental ensuite). Ne pas repasser l'alias en
+  debug sans avoir lu ce paragraphe.
 - Nits acceptées en revue B : TOCTOU de `reserve_port` (`loadtest.rs:637`, flake rare),
   alphabet du pin UNC sans `:` ni `\` (`properties.rs`), `-Canary` ignoré en silence par
   les autres sous-commandes de `release.ps1`, borne `uptimeSec >= 0` faible

@@ -10,4 +10,12 @@ retry = 3
 
 [alias]
 # `cargo xtask <task>`: workspace tooling (verify, loadtest, migrate-legacy, parity).
-xtask = "run --package xtask --locked --"
+# --release is not cosmetic: the `verify` battery runs this binary while its
+# own tests stage (`cargo test --no-run --workspace --all-features`) relinks
+# target\debug\xtask.exe; in debug, Windows refuses to replace the running
+# image ("failed to remove xtask.exe") as soon as xtask has an integration
+# test (tests/cli_exit_codes.rs). In release the battery process lives in
+# target\release\ while the tests stage relinks target\debug\: disjoint
+# paths, no collision regardless of artifact state.
+# Do not "simplify" this alias back to debug.
+xtask = "run --release --package xtask --locked --"

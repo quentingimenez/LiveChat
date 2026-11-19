@@ -648,6 +648,12 @@ mod tests {
             Some(0.0)
         );
         assert_eq!(patched.memberships.len(), 1);
+        // The renderer receives the guild volumes at each settings change: it
+        // recomputes the volume of the media already playing from them.
+        assert_eq!(
+            patched.view().guild_volumes,
+            std::collections::BTreeMap::from([("111".to_string(), 0.0)])
+        );
     }
 
     #[test]

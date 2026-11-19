@@ -1468,9 +1468,10 @@ pub(crate) fn effective_volume(general_volume: f64, guild_volume: f64) -> f64 {
 }
 
 /// Serializes a `play` for the renderer with what this guild sets on the
-/// device: the effective `volume`, the `guildId` (the renderer mutes the media
-/// sound of the guilds listed in its settings, live), and the guild's own
-/// `layout` / `showText` when it has them.
+/// device: the effective `volume` at play time (a fallback: the renderer
+/// recomputes it from `guildVolumes` when the settings change mid-play), the
+/// `guildId` (the renderer mutes the media sound of the guilds listed in its
+/// settings, live), and the guild's own `layout` / `showText` when it has them.
 pub(crate) fn renderer_play_payload(
     payload: &PlayPayload,
     config: &crate::config::OverlayConfig,

@@ -54,15 +54,39 @@ export function createOverlayLegacyRuntimeRenderHandlersUtils() {
                 attachTextToMedia: options.attachTextToMedia === true,
             });
         }
+        // The playing guild's own volume, from the live device settings.
+        // `null` when the settings do not describe it (unknown id, older
+        // payload): the play's own effective volume then remains the source.
+        function resolveGuildVolume() {
+            const config = params.state.overlayConfig || {};
+            const guildVolumes = config.guildVolumes;
+            const guildId = params.state.activeGuildId;
+            if (typeof guildId !== 'string' || !guildVolumes || typeof guildVolumes !== 'object') {
+                return null;
+            }
+            const value = guildVolumes[guildId];
+            return typeof value === 'number' && Number.isFinite(value) ? params.utils.clamp01(value) : null;
+        }
+        // Effective volume, recomputed at each call so a general or guild
+        // volume change applies to the media already playing. Falls back to
+        // the play's effective volume, then to the general setting.
         function resolveVolume() {
             if (isMediaSoundMuted()) {
                 return 0;
+            }
+            const config = params.state.overlayConfig || {};
+            const general = typeof config.volume === 'number' && Number.isFinite(config.volume)
+                ? params.utils.clamp01(config.volume)
+                : null;
+            const guild = resolveGuildVolume();
+            if (general !== null && guild !== null) {
+                return general * guild;
             }
             const payloadVolume = params.state.activeVolume;
             if (typeof payloadVolume === 'number' && Number.isFinite(payloadVolume) && payloadVolume >= 0 && payloadVolume <= 1) {
                 return payloadVolume;
             }
-            return params.state.overlayConfig.volume;
+            return general !== null ? general : 1;
         }
         function applyVolume() {
             params.mediaDomUtils.applyMediaVolume({

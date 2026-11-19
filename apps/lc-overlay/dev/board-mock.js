@@ -50,9 +50,9 @@
     );
   const connection = (status) => ({ status, reason: null, serverVersion: '3.0.0', minVersion: null, guildId: null, clientId: null, sessionMode: 'normal', peers: [], lastError: null });
 
-  function guildIcon(hue) {
-    return 'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><rect width="128" height="128" fill="hsl(${hue} 55% 45%)"/><path d="M34 88 64 34l30 54z" fill="hsl(${hue} 80% 85%)"/></svg>`);
-  }
+  // Guild icons: real image files from dev/fixtures (Discord-style tiles), so
+  // the rail shows actual pictures like the paired Discord guilds.
+  const guildIconUrl = (name) => new URL('./fixtures/' + name, location.href).href;
 
   const guilds = {
     activeGuildId: empty ? null : '111',
@@ -61,9 +61,9 @@
     guilds: empty
       ? []
       : [
-          { membership: membership('111', 'Les Sardines', { active: true }), connection: connection('connected'), statusLabel: 'connecté', playing: true },
-          { membership: membership('222', 'GG Squad', { guildIconUrl: guildIcon(200) }), connection: connection('reconnecting'), statusLabel: 'reconnexion…', playing: false },
-          { membership: membership('333', 'TV du salon', { muted: true, guildIconUrl: guildIcon(30) }), connection: connection('disabled'), statusLabel: 'désactivé', playing: false },
+          { membership: membership('111', 'Les Sardines', { active: true, guildIconUrl: guildIconUrl('guild-111.png') }), connection: connection('connected'), statusLabel: 'connecté', playing: true },
+          { membership: membership('222', 'GG Squad', { guildIconUrl: guildIconUrl('guild-222.png') }), connection: connection('reconnecting'), statusLabel: 'reconnexion…', playing: false },
+          { membership: membership('333', 'TV du salon', { muted: true, guildIconUrl: guildIconUrl('guild-333.png') }), connection: connection('disabled'), statusLabel: 'désactivé', playing: false },
           // An icon that fails to load: the rail falls back to the initials.
           { membership: membership('444', 'L’Escale 🔱', { guildIconUrl: 'https://cdn.discordapp.com/icons/0/missing.png' }), connection: connection('connected'), statusLabel: 'connecté', playing: false },
         ],

@@ -137,7 +137,7 @@ Options de l'URL :
 | `?empty` | Démarre sans aucune guilde : la page Paramètres et le rail restent utilisables. |
 | `?settings` | `board_take_pending_view` renvoie `settings` une fois au démarrage : la page Paramètres s'ouvre, comme après l'entrée tray « Paramètres… ». |
 | `?removed` | Met un retrait de guilde en attente au démarrage. |
-| `?media` | chaque carte sert un média réel de `dev/fixtures/` (frames de `sample.mp4`, images JPEG, pochettes audio) : vignettes, éditeur de média et captures d'écran rendent comme la vraie board. |
+| `?media` | chaque carte sert un média réel distinct de `dev/fixtures/` (vidéo, images JPEG, pochettes audio) et les guildes du rail affichent leurs icônes : vignettes, éditeur de média et captures d'écran rendent comme la vraie board. |
 
 Depuis la console :
 

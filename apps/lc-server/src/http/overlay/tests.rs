@@ -2479,19 +2479,23 @@ async fn media_board_patch_rejects_bad_display_scale() {
     }
     assert_eq!(listed_display_scale(&app).await, Value::Null);
 
-    let video_dir = TempDir::new().expect("tempdir");
-    let (app, _db, uri) = display_duration_fixture(video_dir.path(), MediaKind::Video).await;
-    let (status, _, bytes) = send(
-        &app,
-        request(
-            Method::PATCH,
-            &uri,
-            Some(BEARER_TOKEN),
-            Some(&json!({"displayScalePercent": 200})),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body_json(&bytes)["error"], "invalid_payload");
-    assert_eq!(listed_display_scale(&app).await, Value::Null);
+    // The overlay sizes the picture of a video, and the artwork of a sound,
+    // like a picture: every kind takes a scale.
+    for kind in [MediaKind::Video, MediaKind::Audio] {
+        let kind_dir = TempDir::new().expect("tempdir");
+        let (app, _db, uri) = display_duration_fixture(kind_dir.path(), kind).await;
+        let (status, _, bytes) = send(
+            &app,
+            request(
+                Method::PATCH,
+                &uri,
+                Some(BEARER_TOKEN),
+                Some(&json!({"displayScalePercent": 200})),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{kind:?}");
+        assert_eq!(body_json(&bytes)["item"]["displayScalePercent"], 200);
+        assert_eq!(listed_display_scale(&app).await, json!(200));
+    }
 }

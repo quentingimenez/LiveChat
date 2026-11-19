@@ -5,12 +5,16 @@
 // element (skipping what was removed, at the chosen speed and volume) and
 // produces a recipe; the server applies it with ffmpeg.
 
-import { h, icon, registerIcons } from '../../core/dom.js';
+import { h, icon, registerIcons, resetOnDoubleClick } from '../../core/dom.js';
 import {
   CROP_RATIOS,
+  DEFAULT_DISPLAY_SCALE_PERCENT,
+  MAX_DISPLAY_SCALE_PERCENT,
+  MIN_DISPLAY_SCALE_PERCENT,
   MIN_KEEP_SEC,
   MAX_SPEED,
   MIN_SPEED,
+  OVERLAY_MEDIA_RESERVED_HEIGHT,
   SPEEDS,
   avEditProblem,
   buildRecipe,
@@ -18,6 +22,9 @@ import {
   clamp,
   cutRange,
   defaultAvEdit,
+  displayScaleForStorage,
+  displayZoneLimits,
+  displayedImageSize,
   fadeGain,
   formatClock,
   formatSpeed,
@@ -25,9 +32,11 @@ import {
   keepRange,
   keptDuration,
   nextKeptTime,
+  normalizeDisplayScale,
   normalizeSegments,
   outputDuration,
   parseClock,
+  parseDisplayScale,
   parseSpeed,
   removedRanges,
   rotatedSize,
@@ -36,6 +45,7 @@ import {
 import { DEFAULT_VOLUME_PERCENT, previewVolume } from '../../core/sound.js';
 import { state } from '../../core/state.js';
 import { createCropOverlay } from './crop-overlay.js';
+import { createDisplayPreview } from './display-preview.js';
 import { choices, section, slider, toggle } from './frame.js';
 
 registerIcons({
@@ -91,8 +101,9 @@ async function readPeaks(blob) {
 
 // Builds the editor inside `frame`. `src` plays the media (an object URL of
 // `blob` when its bytes could be read). `onChange()` fires after every
-// committed action. Rejects when the media cannot be played.
-export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl, title, frame, onChange }) {
+// committed action. `allowDisplayScale` adds the size the media takes on the
+// overlay, with a live preview of it. Rejects when the media cannot be played.
+export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl, title, frame, onChange, allowDisplayScale = false, displayScalePercent = null, displayZone = null }) {
   const isVideo = kind === 'video';
   const media = h(isVideo ? 'video' : 'audio', { src, preload: 'auto', playsinline: true });
   await loadMetadata(media);
@@ -114,6 +125,16 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   let graph = null; // { context, gain } once playback has started
   let lastPaintKey = '';
 
+  // --- display scale (board item setting, no re-encode) ---
+  let displayScale = normalizeDisplayScale(displayScalePercent);
+  const initialScale = displayScale;
+  let syncScaleFields = null;
+  let syncPreviewToggle = null;
+  let previewShown = false;
+  // The artwork of a sound is its picture on the overlay: it is what a scale
+  // sizes.
+  const artwork = !isVideo && artworkUrl ? h('img', { class: 'av-artwork', src: artworkUrl, alt: '' }) : null;
+
   // --- stage ---
   const inner = h('div', { class: 'av-inner' }, isVideo ? media : null);
   const videoFrame = h('div', { class: 'av-frame' }, inner);
@@ -124,11 +145,106 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     : h(
         'div',
         { class: 'av-audio' },
-        artworkUrl ? h('img', { class: 'av-artwork', src: artworkUrl, alt: '' }) : h('span', { class: 'av-glyph' }, icon('audio')),
+        artwork || h('span', { class: 'av-glyph' }, icon('audio')),
         h('p', { class: 'ellipsis' }, title || ''),
         media,
       );
-  frame.stage.replaceChildren(isVideo ? videoFrame : audioStage);
+  const stageContent = isVideo ? videoFrame : audioStage;
+  frame.stage.replaceChildren(stageContent);
+
+  // --- display preview ---
+  // The overlay sizes the picture of a video, and the artwork of a sound, the
+  // same way: natural size × the scale chosen on the board, capped by the zone.
+  function resultCrop() {
+    return !cropMode && edit.crop ? edit.crop : { x: 0, y: 0, width: 1, height: 1 };
+  }
+
+  function resultTurns() {
+    return cropMode ? 0 : edit.rotate / 90;
+  }
+
+  // Size of the picture once the recipe is applied: the crop, turned.
+  function resultPictureSize() {
+    if (!isVideo) {
+      const width = artwork && artwork.naturalWidth > 0 ? artwork.naturalWidth : 0;
+      const height = artwork && artwork.naturalHeight > 0 ? artwork.naturalHeight : 0;
+      // A sound without artwork shows nothing to size; the card stands in for
+      // it so the frame still reads.
+      return width > 0 && height > 0 ? { width, height } : { width: 480, height: 480 };
+    }
+    const width = media.videoWidth || 0;
+    const height = media.videoHeight || 0;
+    if (!(width > 0) || !(height > 0)) {
+      return null;
+    }
+    const crop = resultCrop();
+    return rotatedSize(crop.width * width, crop.height * height, resultTurns());
+  }
+
+  function paintPreview(target) {
+    const context = target.getContext('2d');
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.clearRect(0, 0, target.width, target.height);
+    if (!isVideo) {
+      if (artwork && artwork.naturalWidth > 0) {
+        context.drawImage(artwork, 0, 0, target.width, target.height);
+      }
+      return;
+    }
+    if (!(media.videoWidth > 0) || !(media.videoHeight > 0)) {
+      return;
+    }
+    const crop = resultCrop();
+    const turns = ((resultTurns() % 4) + 4) % 4;
+    const flipH = !cropMode && edit.flipH;
+    const flipV = !cropMode && edit.flipV;
+    const sourceWidth = crop.width * media.videoWidth;
+    const sourceHeight = crop.height * media.videoHeight;
+    // Buffer pixels per result pixel.
+    const scale = target.width / rotatedSize(sourceWidth, sourceHeight, turns).width;
+    context.save();
+    context.translate(target.width / 2, target.height / 2);
+    context.rotate(turns * (Math.PI / 2));
+    context.scale(flipH ? -1 : 1, flipV ? -1 : 1);
+    context.drawImage(
+      media,
+      crop.x * media.videoWidth,
+      crop.y * media.videoHeight,
+      sourceWidth,
+      sourceHeight,
+      -(sourceWidth * scale) / 2,
+      -(sourceHeight * scale) / 2,
+      sourceWidth * scale,
+      sourceHeight * scale,
+    );
+    context.restore();
+  }
+
+  const preview = allowDisplayScale
+    ? createDisplayPreview({
+        stage: frame.stage,
+        displayZone,
+        frame: () => {
+          const size = resultPictureSize();
+          return size ? { ...size, scalePercent: displayScale } : null;
+        },
+        paint: paintPreview,
+      })
+    : null;
+  if (preview) {
+    frame.stage.append(preview.node);
+    // The picture in the preview follows the playback, like a small overlay.
+    const refreshPreview = () => {
+      if (previewShown) {
+        preview.requestPaint();
+      }
+    };
+    media.addEventListener('timeupdate', refreshPreview);
+    media.addEventListener('seeked', refreshPreview);
+    if (artwork) {
+      artwork.addEventListener('load', () => preview.invalidate(), { once: true });
+    }
+  }
 
   function layoutVideo() {
     if (!isVideo) {
@@ -403,6 +519,11 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     layoutVideo();
     updateCutControls();
     paintTimeline(true);
+    // A crop or a rotation changes the size the overlay will size, and the
+    // chosen scale follows it.
+    if (preview) {
+      preview.invalidate();
+    }
     frame.refreshHistory();
     if (onChange) {
       onChange();
@@ -680,6 +801,153 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     return h('label', { class: 'row' }, h('span', { class: 'meta' }, 'Autre vitesse'), field, h('span', { class: 'meta' }, '×'));
   }
 
+  // --- display scale (board item setting, no re-encode) ---
+  function setPreviewShown(next) {
+    if (!preview) {
+      return;
+    }
+    previewShown = next;
+    // The preview takes the stage over, like the picture editor does while its
+    // display tool is open.
+    stageContent.hidden = previewShown;
+    if (previewShown) {
+      preview.show();
+    } else {
+      preview.hide();
+    }
+    if (syncPreviewToggle) {
+      syncPreviewToggle();
+    }
+  }
+
+  function setDisplayScale(next) {
+    const value = normalizeDisplayScale(next);
+    if (value === displayScale) {
+      return;
+    }
+    displayScale = value;
+    if (syncScaleFields) {
+      syncScaleFields();
+    }
+    // The preview is the point of this setting: it follows every move.
+    if (preview) {
+      preview.invalidate();
+    }
+    afterChange();
+  }
+
+  // Size the media takes on the overlay: natural size × scale, capped by the
+  // display zone minus its header.
+  function displaySizeLine() {
+    const size = resultPictureSize();
+    if (!size || !preview) {
+      return '';
+    }
+    const shown = displayedImageSize({
+      width: size.width,
+      height: size.height,
+      scalePercent: displayScale,
+      ...displayZoneLimits({ zoneWidth: preview.zone.width, zoneHeight: preview.zone.height }),
+    });
+    // Without a known zone the numbers come from the assumed 1080p screen, so
+    // they are an estimate rather than a cap the overlay will apply.
+    const note = preview.zone.known
+      ? shown.capped
+        ? ' (plafonné par la zone, en-tête compris)'
+        : ''
+      : ` (estimation sur une zone ${preview.zone.width} × ${preview.zone.height} px)`;
+    return `À l’écran : ${shown.width} × ${shown.height} px${note}`;
+  }
+
+  function sizePanel() {
+    const picture = resultPictureSize() || { width: 0, height: 0 };
+    const line = h('p', { class: 'meta' }, displaySizeLine());
+    const value = h('span', { class: 'editor-value' }, `${displayScale} %`);
+    // Same span as the number field, so the presets never push the cursor out of range.
+    const range = h('input', {
+      type: 'range',
+      min: String(MIN_DISPLAY_SCALE_PERCENT),
+      max: String(MAX_DISPLAY_SCALE_PERCENT),
+      step: '1',
+      value: String(clamp(displayScale, MIN_DISPLAY_SCALE_PERCENT, MAX_DISPLAY_SCALE_PERCENT)),
+      onInput: () => setDisplayScale(Number(range.value)),
+    });
+    resetOnDoubleClick(range, DEFAULT_DISPLAY_SCALE_PERCENT);
+    const number = h('input', {
+      class: 'field',
+      type: 'number',
+      min: String(MIN_DISPLAY_SCALE_PERCENT),
+      max: String(MAX_DISPLAY_SCALE_PERCENT),
+      step: '1',
+      inputmode: 'numeric',
+      value: String(displayScale),
+      style: 'max-width:110px',
+      onInput: () => {
+        const parsed = parseDisplayScale(number.value);
+        if (parsed.ok) {
+          setDisplayScale(parsed.value);
+        }
+      },
+      onChange: () => {
+        const parsed = parseDisplayScale(number.value);
+        if (!parsed.ok) {
+          number.value = String(displayScale);
+        }
+      },
+    });
+    // Both controls and the live size follow any change, whichever one moved.
+    syncScaleFields = () => {
+      value.textContent = `${displayScale} %`;
+      range.value = String(clamp(displayScale, MIN_DISPLAY_SCALE_PERCENT, MAX_DISPLAY_SCALE_PERCENT));
+      number.value = String(displayScale);
+      line.textContent = displaySizeLine();
+    };
+    const preset = (percent, label) =>
+      h('button', { class: 'btn', type: 'button', onClick: () => setDisplayScale(percent) }, label);
+    // Switching between the montage and the overlay preview swaps the stage, so
+    // the button and its note are updated in place instead of rebuilding the
+    // panel under the pointer.
+    const toggle = h('button', { class: 'btn is-wide', type: 'button', onClick: () => setPreviewShown(!previewShown) });
+    const note = h('p', { class: 'meta' });
+    syncPreviewToggle = () => {
+      toggle.textContent = previewShown ? 'Revenir au montage' : 'Aperçu sur l’overlay';
+      toggle.classList.toggle('is-on', previewShown);
+      toggle.setAttribute('aria-pressed', String(previewShown));
+      note.hidden = !previewShown;
+      note.textContent = `L’aperçu montre le média sur l’overlay, en-tête de ${OVERLAY_MEDIA_RESERVED_HEIGHT} px compris. Une légende sous le média n’y est pas représentée.`;
+    };
+    syncPreviewToggle();
+    return section(
+      'Taille à l’affichage',
+      h('p', { class: 'meta' }, 'Agrandit ou réduit le média sur l’overlay, sans le réencoder.'),
+      h(
+        'p',
+        { class: 'meta' },
+        `${isVideo ? 'Vidéo' : 'Pochette'} : ${picture.width} × ${picture.height} px · `,
+        preview && preview.zone.known
+          ? `zone : ${preview.zone.width} × ${preview.zone.height} px`
+          : 'zone d’affichage inconnue',
+      ),
+      !isVideo && !(artwork && artwork.naturalWidth > 0)
+        ? h('p', { class: 'meta' }, 'Ce son n’a pas de pochette : l’échelle ne changera rien à l’écran.')
+        : null,
+      h('label', { class: 'editor-slider' }, h('span', { class: 'editor-slider-head' }, 'Échelle', value), range),
+      h('label', null, 'Valeur (%)', number),
+      h(
+        'div',
+        { class: 'row is-wrap' },
+        preset(150, '150 %'),
+        preset(200, '200 %'),
+        preset(300, '300 %'),
+        preset(MAX_DISPLAY_SCALE_PERCENT, 'Remplir la zone'),
+        preset(DEFAULT_DISPLAY_SCALE_PERCENT, 'Taille d’origine'),
+      ),
+      line,
+      toggle,
+      note,
+    );
+  }
+
   function renderPanel() {
     const sound = edit.output !== 'gif';
     const picture = isVideo && edit.output !== 'audio';
@@ -744,6 +1012,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
             ),
           )
         : null,
+      preview ? sizePanel() : null,
       isVideo
         ? section(
             'Enregistrer en',
@@ -797,7 +1066,10 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
         restore(historyIndex + 1);
       }
     },
-    isDirty: () => history[historyIndex] !== history[0],
+    isDirty: () => history[historyIndex] !== history[0] || displayScale !== initialScale,
+    pixelsDirty: () => history[historyIndex] !== history[0],
+    scaleDirty: () => displayScale !== initialScale,
+    displayScalePercent: () => displayScaleForStorage(displayScale),
     recipe: () => buildRecipe(edit, duration),
     problem: () => avEditProblem(edit, duration),
     output: () => edit.output,
@@ -850,6 +1122,9 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     destroy() {
       destroyed = true;
       resizeObserver.disconnect();
+      if (preview) {
+        preview.destroy();
+      }
       media.pause();
       media.removeAttribute('src');
       media.load();

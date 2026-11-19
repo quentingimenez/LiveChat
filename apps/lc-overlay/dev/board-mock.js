@@ -581,8 +581,10 @@
         }
         if (payload.body && 'displayScalePercent' in payload.body) {
           const percent = payload.body.displayScalePercent;
+          // Like the server: every kind takes a scale, only an image takes a
+          // chosen display time.
           const valid = percent === null || (Number.isInteger(percent) && percent >= 10 && percent <= 1000);
-          if (!valid || (percent !== null && items[index].media.kind !== 'image')) {
+          if (!valid) {
             return { ok: false, status: 400, body: { error: 'invalid_payload' } };
           }
           items[index].displayScalePercent = percent;

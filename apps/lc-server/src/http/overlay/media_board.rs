@@ -1043,19 +1043,13 @@ pub(crate) async fn update_item_payload(
     };
     ensure_actor_can_edit(db, actor, item_id).await?;
 
-    // Only an image takes a chosen display time or scale.
-    let sets_duration = matches!(display_duration, Some(Some(_)));
-    let sets_scale = matches!(display_scale, Some(Some(_)));
-    if sets_duration || sets_scale {
+    // Only an image takes a chosen display time. A scale applies to every
+    // kind: the overlay sizes the picture of a video, and the artwork of a
+    // sound, exactly like a picture.
+    if matches!(display_duration, Some(Some(_))) {
         match db.media_assets().get(existing.media_asset_id).await {
             Ok(Some(asset)) if asset.kind == MediaKind::Image => {}
-            Ok(_) => {
-                return Err(if sets_duration {
-                    invalid_display_duration()
-                } else {
-                    invalid_display_scale()
-                });
-            }
+            Ok(_) => return Err(invalid_display_duration()),
             Err(db_error) => {
                 return Err(db_failure("overlay_media_board.patch_asset", &db_error));
             }
@@ -1365,14 +1359,13 @@ fn invalid_display_duration() -> Response {
     )
 }
 
-/// `400 invalid_payload` for a display scale out of bounds, not an integer, or
-/// set on a media that is not an image.
+/// `400 invalid_payload` for a display scale out of bounds, or not an integer.
 fn invalid_display_scale() -> Response {
     json_response(
         StatusCode::BAD_REQUEST,
         serde_json::json!({
             "error": "invalid_payload",
-            "message": "displayScalePercent must be an integer between 10 and 1000, or null, on an image",
+            "message": "displayScalePercent must be an integer between 10 and 1000, or null",
         }),
     )
 }

@@ -90,7 +90,8 @@ pub(crate) fn persisted_timing(job: &PlaybackJob) -> PlaybackTiming {
 /// L'URL média est **canonique et non signée** ; le hub la remplace par une URL
 /// signée par client avant émission (§8). `media.startOffsetSec` n'est émis
 /// que pour un média seekable (audio/vidéo) avec un offset positif.
-/// `display_scale_percent` only rides an image's payload.
+/// `display_scale_percent` rides every kind's payload: the overlay sizes a
+/// picture, the picture of a video, and the artwork of a sound alike.
 pub(crate) fn build_play_payload(
     job: &PlaybackJob,
     media: Option<&MediaAsset>,
@@ -121,8 +122,7 @@ pub(crate) fn build_play_payload(
                 .filter(|_| asset.kind == DomainMediaKind::Audio)
                 .map(|picture| picture.id.to_canonical()),
             artwork_url: None,
-            display_scale_percent: display_scale_percent
-                .filter(|_| asset.kind == DomainMediaKind::Image),
+            display_scale_percent,
         }
     });
 

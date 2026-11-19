@@ -384,6 +384,43 @@ proptest! {
             }
         }
     }
+
+    /// UNC paths and scheme-relative URLs keep their own refusal message:
+    /// losing the leading `\\` / `//` check would still end in an error
+    /// from `Url::parse`, but with a different reason. The message is part
+    /// of the guard's contract with the user, so it is pinned.
+    #[test]
+    fn unc_and_scheme_relative_urls_keep_their_refusal_reason(
+        tail in "[a-zA-Z0-9./_@-]{0,40}",
+    ) {
+        for prefix in ["//", "\\\\"] {
+            match parse_media_url(&format!("{prefix}{tail}")) {
+                Ok(_) => {
+                    return Err(TestCaseError::fail(format!(
+                        "UNC or scheme-relative URL was accepted: {prefix}{tail}"
+                    )));
+                }
+                Err(error) => {
+                    prop_assert_eq!(
+                        error.code(),
+                        MediaErrorCode::UnsupportedSource,
+                        "{}{} was rejected with the wrong code: {}",
+                        prefix,
+                        tail,
+                        error
+                    );
+                    prop_assert_eq!(
+                        error.message(),
+                        "les chemins UNC et les URL relatives sont refusés par la politique média",
+                        "{}{} was rejected for the wrong reason: {}",
+                        prefix,
+                        tail,
+                        error
+                    );
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

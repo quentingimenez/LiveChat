@@ -60,6 +60,58 @@ attendu :
    branche locale, et rapporter à l'utilisateur : branche, URL de la PR, checks,
    commit de merge.
 
+## Tests obligatoires avec chaque correctif ou fonctionnalité
+
+Aucun `fix` ni `feat` ne part en PR sans les tests qui le prouvent : le test
+fait partie du diff et de la même PR — jamais une PR de suivi, jamais « plus
+tard ». La logique est celle du skill `verify`
+([`.claude/skills/verify/SKILL.md`](.claude/skills/verify/SKILL.md)) : **le test
+d'abord**, il échoue sur l'ancien code, il passe avec le changement.
+
+- **Correctif (`fix`)** : un test qui reproduit le bug tel qu'il se produisait
+  avant le correctif, puis passe avec. Sans reproduction testée, le bug n'est
+  pas réputé corrigé.
+- **Fonctionnalité (`feat`)** : le comportement nominal, au moins un cas limite
+  (entrée vide, valeur inconnue, échec réseau, concurrence…) et le cas où la
+  nouveauté ne doit rien changer.
+- **Vérifier que le test mord** : le lancer contre le code d'avant — ou casser
+  volontairement l'invariant produit comme dans le skill `verify` — et le voir
+  échouer avec un message exploitable. Un test qui ne peut pas échouer n'est
+  pas un test.
+
+### Où vit le test (suivre l'existant, ne pas inventer un harnais)
+
+| Zone | Emplacement et style |
+| --- | --- |
+| Rust, logique privée | `#[cfg(test)] mod tests` en fin de module |
+| Rust, comportement de crate | `crates/<crate>/tests/<sujet>.rs`, nommé par comportement (`invariants.rs`, `properties.rs`) |
+| Rust, invariants et bornes | proptest dans `tests/properties.rs`, littéraux frontière épinglés (pas de kill probabiliste) |
+| Overlay (JS) | `apps/lc-overlay/dev/tests/<feature>.test.mjs` : `node:test` + `node:assert/strict`, en-tête disant ce que le fichier protège, invariants plutôt que valeurs recopiées |
+| Extension | `extension/src/**/<module>.test.ts` à côté du module, vitest (`describe`/`it` en français) |
+| Console admin | `apps/lc-admin-web/src/**/<module>.test.ts(x)`, vitest + `@testing-library/preact` |
+| Outils et release | `scripts/release/tests/*.Tests.ps1`, exécutés par `run-tests.ps1` |
+
+Pour un changement Rust de fond, la batterie complète reste le gate :
+`cargo xtask verify --offline` (propriétés, mutation kill-or-justify, voir
+[`docs/rust/verification.md`](docs/rust/verification.md)).
+
+### Interdits
+
+- Affaiblir, `skip`/`ignore` ou supprimer un test existant pour faire passer le
+  code ; un test désactivé exige une justification `fichier:ligne` dans la PR.
+- Assertions recopiées de l'implémentation (le test refait le calcul), tests qui
+  ne peuvent pas échouer, harnais testé à la place du produit.
+- Un test ajouté que la CI ne lance pas sans le dire : à ce jour la CI ne lance
+  pas les tests JS de l'overlay (`apps/lc-overlay/dev/tests/*.mjs`) — les lancer
+  à la main et le mentionner.
+
+### Dans la PR
+
+`## Tests` liste les tests ajoutés (fichier + nom) et les commandes lancées avec
+leur résultat ; aucun `## Tests` vide. Changement réellement non testable (doc,
+commentaire, config de CI) : l'écrire (`Non applicable : …`) au lieu de laisser
+croire qu'il est couvert.
+
 ## Tests locaux avant d'ouvrir la PR
 
 Lancer ce qui couvre le changement et le dire dans `## Tests` :

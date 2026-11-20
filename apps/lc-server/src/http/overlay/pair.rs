@@ -22,9 +22,11 @@
 //!   linked to its author's Discord account (`guild_members.discord_user_id`),
 //!   created on the first pairing with the Discord name and avatar. That
 //!   profile then follows Discord until the member picks their own in « Mon
-//!   profil ». `displayName` / `avatar` are ignored for such a code. A
-//!   read-only invitation is handed to someone else: its author's identity is
-//!   never used;
+//!   profil »; pairing the same account again makes it follow Discord with the
+//!   identity the new code carries, so a profile chosen before is replaced.
+//!   `displayName` / `avatar` are ignored for such a code. A read-only
+//!   invitation is handed to someone else: its author's identity is never
+//!   used;
 //! - `appVersion` / `sessionMode` sont ignorés pour la décision : le rôle vient
 //!   TOUJOURS du code persisté, jamais du client (un client ne peut pas
 //!   s'auto-attribuer un rôle).
@@ -94,6 +96,7 @@ use lc_domain::{
     GuildId, GuildMember, GuildMemberId, GuildRole, OverlayClient, OverlayClientId, PairingCode,
     PairingCodeEntry, PairingMode,
 };
+use time::UtcDateTime;
 
 use crate::app::AppState;
 
@@ -101,18 +104,21 @@ use super::guild::{normalize_avatar, normalize_display_name};
 use super::{db, db_failure, error, is_conflict, json_response, now};
 
 /// Discord identity carried by a personal `/pair-code`.
-struct DiscordIdentity {
-    guild_id: GuildId,
-    user_id: String,
-    name: String,
-    image: Option<String>,
+///
+/// Shared with `profile_discord`: « Lier mon compte Discord » adopts the same
+/// identity as a pairing.
+pub(super) struct DiscordIdentity {
+    pub(super) guild_id: GuildId,
+    pub(super) user_id: String,
+    pub(super) name: String,
+    pub(super) image: Option<String>,
 }
 
 impl DiscordIdentity {
     /// Identity of a normal-mode code issued by a Discord account. `None`
     /// for read-only invitations (handed to someone else), browser-extension
     /// codes (`member:` author) and codes without a usable author name.
-    fn from_code(entry: &PairingCodeEntry) -> Option<Self> {
+    pub(super) fn from_code(entry: &PairingCodeEntry) -> Option<Self> {
         let user_id = entry.created_by_discord_user_id.as_str();
         let is_snowflake = !user_id.is_empty() && user_id.bytes().all(|byte| byte.is_ascii_digit());
         if entry.mode != PairingMode::Normal || !is_snowflake {
@@ -308,7 +314,7 @@ pub async fn consume_pairing(
                     GuildRole::from_pairing_mode(entry.mode)
                 },
                 // Pairing again with one's own `/pair-code` adds a device to
-                // the same member (role and profile kept).
+                // the same member (role kept, profile back to Discord).
                 attach_member_id: linked_member_id,
                 author_name: entry.author_name,
                 created_by_discord_user_id: Some(entry.created_by_discord_user_id),
@@ -328,11 +334,23 @@ pub async fn consume_pairing(
 
     // Membre propriétaire de l'overlay : existant (code « appareil ») ou neuf.
     let (member, is_new_member) = match grant.attach_member_id {
-        Some(member_id) => match db.guild_members().get(member_id).await {
-            Ok(Some(member)) if member.is_active() => (member, false),
-            Ok(_) => return error(StatusCode::NOT_FOUND, "pairing_code_invalid_or_expired"),
-            Err(db_error) => return db_failure("overlay_pair.member_lookup", &db_error),
-        },
+        Some(member_id) => {
+            let member = match db.guild_members().get(member_id).await {
+                Ok(Some(member)) if member.is_active() => member,
+                Ok(_) => return error(StatusCode::NOT_FOUND, "pairing_code_invalid_or_expired"),
+                Err(db_error) => return db_failure("overlay_pair.member_lookup", &db_error),
+            };
+            // Un `/pair-code` personnel re-prouve le compte Discord : le profil
+            // se remet à suivre Discord, rôle et appareils conservés.
+            let member = match &discord_identity {
+                Some(identity) => match adopt_linked_profile(db, member, identity, now).await {
+                    Ok(member) => member,
+                    Err(response) => return response,
+                },
+                None => member,
+            };
+            (member, false)
+        }
         None => {
             // Profile: the Discord identity of a personal `/pair-code`, else
             // the name typed in the overlay. Neither the device name, an
@@ -466,6 +484,41 @@ pub async fn consume_pairing(
             "protocolVersion": lc_protocol::PROTOCOL_VERSION,
         }),
     )
+}
+
+/// Un `/pair-code` personnel re-prouve le compte Discord du membre : son profil
+/// se remet à suivre Discord avec l'identité que porte le code, comme l'annonce
+/// l'écran « Rejoindre une guilde ». Le rôle et les appareils ne bougent pas.
+///
+/// `Err` porte la réponse à renvoyer (code invalidé entre-temps, échec base).
+async fn adopt_linked_profile(
+    db: &lc_db::Db,
+    member: GuildMember,
+    identity: &DiscordIdentity,
+    now: UtcDateTime,
+) -> Result<GuildMember, Response> {
+    match db
+        .guild_members()
+        .adopt_discord_profile(member.id, &identity.name, identity.image.as_deref(), now)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(error(
+                StatusCode::NOT_FOUND,
+                "pairing_code_invalid_or_expired",
+            ))
+        }
+        Err(db_error) => return Err(db_failure("overlay_pair.adopt_profile", &db_error)),
+    }
+    match db.guild_members().get(member.id).await {
+        Ok(Some(updated)) => Ok(updated),
+        Ok(None) => Err(error(
+            StatusCode::NOT_FOUND,
+            "pairing_code_invalid_or_expired",
+        )),
+        Err(db_error) => Err(db_failure("overlay_pair.reload_member", &db_error)),
+    }
 }
 
 /// Tronque un libellé en respectant les frontières de caractères UTF-8.

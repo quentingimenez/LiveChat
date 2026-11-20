@@ -6,6 +6,10 @@
 //! Discord and type the code in « Mon profil »: the code's author becomes the
 //! member's Discord account. No overlay is paired.
 //!
+//! The code also proves that account is theirs, so the profile follows Discord
+//! again: the pseudo and avatar the code carries replace the typed ones, as on
+//! a first pairing. The member can save their own profile again later.
+//!
 //! Body: `{"code": "K7QX-M2PD"}` (dashes and case ignored).
 //!
 //! | Status | Body |
@@ -33,6 +37,7 @@ use crate::app::AppState;
 
 use super::auth::AuthedOverlayClient;
 use super::guild::member_payload;
+use super::pair::DiscordIdentity;
 use super::{db, db_failure, error, is_conflict, json_response, now};
 
 const CODE_INVALID: &str = "pairing_code_invalid_or_expired";
@@ -119,6 +124,24 @@ pub async fn link_discord(
             return error(StatusCode::CONFLICT, "discord_already_linked");
         }
         Err(db_error) => return db_failure("overlay_discord_profile.link", &db_error),
+    }
+    // Le code prouve que ce compte Discord est celui du membre : comme au
+    // premier appairage, son profil se remet à suivre Discord avec l'identité
+    // portée par le code (il peut enregistrer son propre profil ensuite). Un
+    // code sans nom d'auteur remet seulement le profil à suivre Discord, lu à
+    // la prochaine connexion.
+    let adopted = match DiscordIdentity::from_code(&entry) {
+        Some(identity) => {
+            db.guild_members()
+                .adopt_discord_profile(member.id, &identity.name, identity.image.as_deref(), now)
+                .await
+        }
+        None => db.guild_members().follow_discord(member.id).await,
+    };
+    match adopted {
+        Ok(true) => {}
+        Ok(false) => return error(StatusCode::NOT_FOUND, "member_not_found"),
+        Err(db_error) => return db_failure("overlay_discord_profile.profile", &db_error),
     }
     let promoted = entry.grants_admin && member.role != GuildRole::Admin;
     if promoted {

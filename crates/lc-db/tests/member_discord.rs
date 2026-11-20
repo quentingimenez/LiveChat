@@ -228,6 +228,74 @@ async fn discord_sync_stops_once_the_member_chooses_a_profile() {
 }
 
 #[tokio::test]
+async fn a_proven_discord_account_takes_the_profile_back() {
+    let db = common::memory_db().await;
+    let guild = common::guild("111");
+    let member = linked_member(&guild, "Pseudo maison", Some("4242"));
+    db.guild_members().create(&member).await.unwrap();
+    let mut overlay = common::sample_overlay(&guild, "hash-adopt", common::now());
+    overlay.default_author_name = Some("Pseudo maison".to_owned());
+    db.overlay_clients().create(&overlay).await.unwrap();
+    db.overlay_clients()
+        .set_member(overlay.id, member.id)
+        .await
+        .unwrap();
+    // « Mon profil »: the member chose their own profile earlier.
+    db.guild_members()
+        .update_profile(member.id, "Pseudo maison", None)
+        .await
+        .unwrap();
+
+    // The `/pair-code` proving the account hands the profile back to Discord.
+    let synced_at = common::now() + Duration::hours(1);
+    assert!(db
+        .guild_members()
+        .adopt_discord_profile(
+            member.id,
+            "Pseudo Discord",
+            Some("https://cdn.test/b.png"),
+            synced_at
+        )
+        .await
+        .unwrap());
+    let stored = db.guild_members().get(member.id).await.unwrap().unwrap();
+    assert_eq!(stored.display_name, "Pseudo Discord");
+    assert_eq!(stored.avatar.as_deref(), Some("https://cdn.test/b.png"));
+    assert!(stored.follows_discord());
+    assert_eq!(stored.discord_synced_at, Some(synced_at));
+    // The overlays play under the Discord name.
+    let client = db.overlay_clients().get(overlay.id).await.unwrap().unwrap();
+    assert_eq!(
+        client.default_author_name.as_deref(),
+        Some("Pseudo Discord")
+    );
+    assert_eq!(
+        client.default_author_image.as_deref(),
+        Some("https://cdn.test/b.png")
+    );
+
+    // The member can pick their own profile again: adoption is not permanent.
+    db.guild_members()
+        .update_profile(member.id, "Rechoisi", None)
+        .await
+        .unwrap();
+    assert!(!db
+        .guild_members()
+        .sync_discord_profile(member.id, "Pseudo Discord", None, synced_at)
+        .await
+        .unwrap());
+
+    // An unlinked member never adopts a Discord profile.
+    let guest = linked_member(&guild, "Invité", None);
+    db.guild_members().create(&guest).await.unwrap();
+    assert!(!db
+        .guild_members()
+        .adopt_discord_profile(guest.id, "Pseudo Discord", None, synced_at)
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
 async fn an_unlinked_member_never_follows_discord() {
     let db = common::memory_db().await;
     let guild = common::guild("111");

@@ -229,6 +229,34 @@ impl GuildMembersRepository {
         Ok(true)
     }
 
+    /// Donne le profil au compte Discord lié avec l'identité portée par le
+    /// `/pair-code` qui vient de prouver au membre que ce compte est le sien
+    /// (appairage d'un overlay ou « Lier mon compte Discord »).
+    ///
+    /// Le membre se remet à suivre Discord (`profile_custom = 0`) et reçoit le
+    /// pseudo et l'avatar que Discord affichait au moment du code, recopiés sur
+    /// ses overlays. Il peut ensuite enregistrer son propre profil dans « Mon
+    /// profil », qui reprend alors le dessus.
+    ///
+    /// `follow_discord` puis `sync_discord_profile` : un profil enregistré par
+    /// le membre entre les deux instructions reste son choix.
+    ///
+    /// Retourne `false` pour un membre retiré ou non lié.
+    pub async fn adopt_discord_profile(
+        &self,
+        id: GuildMemberId,
+        display_name: &str,
+        avatar: Option<&str>,
+        synced_at: UtcDateTime,
+    ) -> DbResult<bool> {
+        if !self.follow_discord(id).await? {
+            return Ok(false);
+        }
+        self.sync_discord_profile(id, display_name, avatar, synced_at)
+            .await?;
+        Ok(true)
+    }
+
     /// Records a Discord read that changed nothing (the account left the
     /// server, for instance), so it is not retried at every connection.
     pub async fn mark_discord_synced(

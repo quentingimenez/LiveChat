@@ -199,7 +199,11 @@ export function openGuildDialog(guild) {
         const form = h(
           'div',
           { class: 'profile-link-form', hidden: true },
-          h('p', { class: 'file-hint' }, 'Sur le serveur Discord de la guilde, tape /pair-code puis saisis ici le code reçu.'),
+          h(
+            'p',
+            { class: 'file-hint' },
+            'Sur le serveur Discord de la guilde, tape /pair-code puis saisis ici le code reçu : ton pseudo et ton avatar Discord remplaceront ceux affichés ici.',
+          ),
           h(
             'div',
             { class: 'profile-link-row' },

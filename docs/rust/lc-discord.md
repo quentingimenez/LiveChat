@@ -150,6 +150,8 @@ créé depuis le panel ou une invitation lie son compte dans le board : « Mon
 profil » → « Lier mon compte Discord », avec un code `/pair-code` (mode
 normal) qu'il a lui-même demandé (`POST /overlay/profile/discord-link`). Le
 code est consommé ; un code d'administrateur Discord rend le membre `admin`.
+Le code prouve le compte : le pseudo et l'avatar qu'il porte remplacent ceux
+du membre, comme au premier appairage, et le profil suit de nouveau Discord.
 
 ### `/alive`
 Réponse publique, sans titre, verte : `startCase(username Discord) + ", Je suis

@@ -185,9 +185,11 @@ pour un item d'une autre guilde). Les écritures media board utilisent
    `403 pairing_code_scope_mismatch` sans être consommé ;
 3. **`/pair-code` personnel** (mode `NORMAL`, auteur Discord numérique) :
    l'overlay rejoint le membre actif lié à ce compte
-   (`find_active_by_discord_user`), rôle et profil conservés ; au premier
+   (`find_active_by_discord_user`), appareils et rôle conservés ; au premier
    appairage, le membre est créé avec le pseudo et l'avatar Discord de
-   l'auteur, `discord_user_id` renseigné et `profile_custom = 0`.
+   l'auteur, `discord_user_id` renseigné et `profile_custom = 0`. Chaque
+   appairage suivant reprouve le compte : le profil se remet à suivre Discord
+   avec l'identité que porte le code (`adopt_discord_profile`).
    `displayName` / `avatar` de la requête sont ignorés. Un code
    `INVITE_READ_ONLY` n'emprunte jamais l'identité de son auteur
    (voir `guilds-roles.md`, « Profil lié au compte Discord ») ;

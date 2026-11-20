@@ -108,6 +108,24 @@
   margin: -4px 0 6px 206px;
 }
 
+/* One-line state of a section, right under its title and above the hint that
+   explains the settings below (board occupation, for instance). */
+.settings-hint.is-summary {
+  margin: 0 0 4px;
+  color: var(--text-soft);
+}
+
+/* Destructive action of a section, set apart from its form by a rule. */
+.settings-danger {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin-top: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
 .settings-control .error-text {
   flex-basis: 100%;
   margin: 0;

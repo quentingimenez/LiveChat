@@ -274,30 +274,32 @@ function renderBoardSettings() {
     : 'Occupation inconnue';
   return section(
     'Board',
-    h('p', { class: 'settings-hint is-lead' }, `Occupation : ${usage}.`),
+    // What the board holds right now, then what the quota below changes.
+    h('p', { class: 'settings-hint is-summary' }, `Occupation : ${usage}.`),
     h(
       'p',
-      { class: 'settings-hint' },
+      { class: 'settings-hint is-lead' },
       serverMaxBytes
         ? `Sans quota propre, la limite du serveur s’applique (${formatBytes(serverMaxBytes)}). Le quota d’une guilde ne peut pas la dépasser.`
         : 'Sans quota propre, la limite du serveur s’applique.',
     ),
+    // The input and its save button share the control column, like the
+    // « Placer sur l’écran » button next to the display zone.
     controlRow(
       'Quota propre (Go)',
-      h(
-        'div',
-        { class: 'row is-wrap' },
-        quota,
-        h('button', { class: 'btn', type: 'button', onClick: save }, 'Enregistrer'),
-      ),
+      [quota, h('button', { class: 'btn', type: 'button', onClick: save }, 'Enregistrer')],
       'set-board-quota',
     ),
     h('p', { class: 'settings-hint is-under' }, 'Vide = quota du serveur.'),
+    // Destructive action, set apart from the form above it.
     h(
       'div',
-      { class: 'row is-wrap settings-row-actions' },
+      { class: 'settings-danger' },
       guild.name
-        ? h('button', { class: 'btn is-quiet is-danger', type: 'button', onClick: () => openClearBoardDialog(guild.name) }, 'Vider le board')
+        ? [
+            h('p', { class: 'settings-hint' }, 'Supprime tous les médias du board et les fichiers orphelins.'),
+            h('button', { class: 'btn is-danger', type: 'button', onClick: () => openClearBoardDialog(guild.name) }, 'Vider le board'),
+          ]
         : h('span', { class: 'settings-hint' }, 'Le nom de la guilde est inconnu : le vidage demande son nom, il est donc indisponible.'),
     ),
   );

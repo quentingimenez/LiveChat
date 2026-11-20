@@ -132,6 +132,20 @@ autorisé.
    Le navigateur s'ouvre sur l'écran de consentement ; accepter le scope
    `chromewebstore` : le script affiche le refresh token à copier dans GitHub.
 
+## Remplir la fiche dans la console
+
+- **URL officielle** : laisser le champ vide. Un dépôt GitHub y est refusé
+  (« Le site Web officiel n'est pas valide »), et la console attend un domaine
+  rattaché au compte ; garder le dépôt dans *Page d'accueil* et *Assistance*.
+- **Captures d'écran** : jamais de données personnelles (pas de page connectée
+  à son propre compte, pas de nom ou d'avatar perso). Prendre les captures dans
+  un profil neuf, déconnecté, avec un cadrage réduit autour du lecteur et des
+  boutons ; format 640×400 ou 1 280×800, 24 bits, sans transparence, 5 maximum.
+- Après **Envoyer pour examen**, l'article passe en *En attente d'examen* et la
+  fiche devient en lecture seule. Pour la corriger, annuler la soumission
+  (`POST .../items/<item>:cancelSubmission`), la version publiée reste en ligne
+  pendant ce temps.
+
 ## Envoyer une version
 
 - Un tag `extension-v*` (créé par la CI de release) envoie le zip et le soumet à

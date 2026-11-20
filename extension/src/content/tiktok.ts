@@ -1524,10 +1524,11 @@ const resolveActionContainer = (): HTMLElement | null => {
     while (node && node !== document.body) {
       const rect = node.getBoundingClientRect();
 
-      // La colonne d'actions TikTok ne fait que ~29 px de large sur les rendus
-      // récents : un seuil à 40 px écartait justement la bonne colonne et
-      // retombait sur la rangée qui l'englobe (le bouton finissait à côté).
-      if (rect.width >= 24 && rect.height >= 80 && rect.width <= 480 && rect.height <= window.innerHeight) {
+      // La colonne d'actions TikTok est étroite : 22 px sur le fil, 29 px sur
+      // la page vidéo. Un seuil à 40 px écartait la bonne colonne et retombait
+      // sur la rangée qui l'englobe (le bouton finissait à côté des icônes) ;
+      // les libellés des boutons ne font qu'une vingtaine de pixels de large.
+      if (rect.width >= 16 && rect.height >= 80 && rect.width <= 480 && rect.height <= window.innerHeight) {
         const anchorCount = getAnchorsInRoot(node).filter((candidate) => isElementVisible(candidate)).length;
 
         if (anchorCount >= 2) {

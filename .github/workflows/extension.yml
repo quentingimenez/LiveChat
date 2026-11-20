@@ -14,6 +14,11 @@ on:
     tags:
       - "extension-v*"
   workflow_dispatch:
+    inputs:
+      publish_to_webstore:
+        description: "Publier ce build sur le Chrome Web Store"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -69,8 +74,8 @@ jobs:
 
   # Extension releases never take the repository "Latest" flag: it belongs to
   # the overlay stable releases, whose latest.json the Tauri updater reads.
-  # The extension is not on the Chrome Web Store for now: a release is the
-  # GitHub release with the zip.
+  # A tag also publishes the build to the Chrome Web Store (job below), which
+  # is what updates the installed extensions.
   release:
     needs: build
     runs-on: ubuntu-latest
@@ -106,7 +111,7 @@ jobs:
 
             - Installation : décompresser le zip, ouvrir `chrome://extensions`, activer le mode développeur, puis « Charger l'extension non empaquetée » sur le dossier.
             - Configuration : dans les options de l'extension, l'URL du serveur et le code donné par l'overlay (Mon profil → Appairer l'extension navigateur) ou par `/pair-code` sur Discord.
-            - Pas de publication sur le Chrome Web Store pour l'instant.
+            - Mise à jour : la version publiée sur le Chrome Web Store se met à jour toute seule (envoi automatique du zip par la CI à chaque tag).
 
       - name: Create/Update GitHub Release (latest build)
         if: github.ref == 'refs/heads/main'
@@ -121,3 +126,132 @@ jobs:
           append_body: false
           body: |
             Automatic latest extension build from `main`.
+
+  # Chrome Web Store (API v2): upload the package, then submit it for review.
+  # The listing itself (logo, screenshots, texts, privacy) is edited by hand in
+  # the developer dashboard, see docs/store/README.md.
+  # Runs on an `extension-v*` tag, or on a manual run with `publish_to_webstore`.
+  publish-webstore:
+    needs: build
+    runs-on: ubuntu-latest
+    if: >-
+      startsWith(github.ref, 'refs/tags/extension-v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish_to_webstore)
+    env:
+      CWS_PUBLISHER_ID: ${{ secrets.CWS_PUBLISHER_ID }}
+      CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+      CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+      CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+      CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+      CWS_API: https://chromewebstore.googleapis.com
+
+    steps:
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          for var in CWS_PUBLISHER_ID CWS_EXTENSION_ID CWS_CLIENT_ID CWS_CLIENT_SECRET CWS_REFRESH_TOKEN; do
+            if [ -z "${!var:-}" ]; then
+              echo "::error::missing repository secret: $var (see docs/store/README.md)"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ]
+
+      - name: Download package artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: livechat-extension-package
+          path: release
+
+      - name: Resolve package path
+        run: |
+          set -euo pipefail
+          zip_path="$(ls -1 release/*.zip | head -n 1)"
+          [ -n "$zip_path" ] || { echo "::error::no zip found in release/"; exit 1; }
+          echo "ZIP_PATH=$zip_path" >> "$GITHUB_ENV"
+          echo "Package: $zip_path"
+
+      - name: Get an OAuth access token
+        run: |
+          set -euo pipefail
+          token_response="$(curl -sS -X POST "https://oauth2.googleapis.com/token" \
+            -d "client_id=${CWS_CLIENT_ID}" \
+            -d "client_secret=${CWS_CLIENT_SECRET}" \
+            -d "refresh_token=${CWS_REFRESH_TOKEN}" \
+            -d "grant_type=refresh_token")"
+          access_token="$(echo "$token_response" | jq -r '.access_token // empty')"
+          if [ -z "$access_token" ]; then
+            echo "::error::OAuth token exchange failed"
+            echo "$token_response"
+            exit 1
+          fi
+          echo "::add-mask::$access_token"
+          echo "CWS_ACCESS_TOKEN=$access_token" >> "$GITHUB_ENV"
+
+      - name: Upload the package
+        run: |
+          set -euo pipefail
+          url="${CWS_API}/upload/v2/publishers/${CWS_PUBLISHER_ID}/items/${CWS_EXTENSION_ID}:upload?uploadType=media"
+          upload_response="$(curl -sS -X POST \
+            -H "Authorization: Bearer ${CWS_ACCESS_TOKEN}" \
+            -H "Content-Type: application/zip" \
+            --data-binary "@${ZIP_PATH}" \
+            "$url")"
+          echo "$upload_response" | jq -r '"upload: \(.uploadState // "?") — version \(.crxVersion // "?")"'
+          upload_state="$(echo "$upload_response" | jq -r '.uploadState // empty')"
+          case "$upload_state" in
+            SUCCEEDED | IN_PROGRESS) ;;
+            *)
+              echo "::error::Chrome Web Store upload failed"
+              echo "$upload_response"
+              exit 1
+              ;;
+          esac
+
+      - name: Wait for the upload to be processed
+        run: |
+          set -euo pipefail
+          url="${CWS_API}/v2/publishers/${CWS_PUBLISHER_ID}/items/${CWS_EXTENSION_ID}:fetchStatus"
+          for _ in $(seq 1 30); do
+            status_response="$(curl -sS -H "Authorization: Bearer ${CWS_ACCESS_TOKEN}" "$url")"
+            upload_state="$(echo "$status_response" | jq -r '.lastAsyncUploadState // empty')"
+            case "$upload_state" in
+              SUCCEEDED)
+                echo "upload processed"
+                exit 0
+                ;;
+              FAILED | NOT_FOUND)
+                echo "::error::the uploaded package was rejected"
+                echo "$status_response"
+                exit 1
+                ;;
+            esac
+            sleep 10
+          done
+          echo "::error::the upload was not processed within 5 minutes"
+          exit 1
+
+      - name: Submit the new version for review
+        run: |
+          set -euo pipefail
+          url="${CWS_API}/v2/publishers/${CWS_PUBLISHER_ID}/items/${CWS_EXTENSION_ID}:publish"
+          publish_response="$(curl -sS -X POST \
+            -H "Authorization: Bearer ${CWS_ACCESS_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"publishType":"DEFAULT_PUBLISH"}' \
+            "$url")"
+          echo "$publish_response" | jq -r '"submission: \(.state // "?") — item \(.itemId // "?")"'
+          state="$(echo "$publish_response" | jq -r '.state // empty')"
+          case "$state" in
+            PENDING_REVIEW | STAGED | PUBLISHED | PUBLISHED_TO_TESTERS)
+              echo "Submission accepted: the review can take a few hours."
+              ;;
+            *)
+              echo "::error::Chrome Web Store submission failed"
+              echo "$publish_response"
+              exit 1
+              ;;
+          esac
+          warning_info="$(echo "$publish_response" | jq -c '.warningInfo // empty')"
+          [ -z "$warning_info" ] || echo "::warning::Chrome Web Store warnings: $warning_info"

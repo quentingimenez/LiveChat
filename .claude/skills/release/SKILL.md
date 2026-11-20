@@ -159,8 +159,13 @@ l'erreur.
    `gh release edit overlay-vX.Y.Z --draft=false --latest`. C'est ce qui déclenche
    la mise à jour de tous les overlays installés.
 4. **Extension** : la release GitHub avec le zip est créée par la CI (notes
-   ajoutées au point 2). Pas de Chrome Web Store pour l'instant. Ne jamais la
-   marquer *Latest*.
+   ajoutées au point 2) ; le même run envoie le zip au Chrome Web Store et
+   soumet la version à la relecture (job `publish-webstore`). Vérifier dans le log
+   `submission: PENDING_REVIEW` ; l'approbation peut prendre quelques heures et
+   c'est elle qui met à jour les extensions installées. L'API ne touche pas la
+   fiche (logo, captures, description) : rappeler à l'utilisateur ce qui reste à
+   modifier dans la console, textes prêts dans `docs/store/`. Ne jamais la marquer
+   *Latest*.
 5. Compte rendu : versions sorties, liens des releases, image déployée, dossier de
    sauvegarde, ce qui n'a pas pu être vérifié.
 

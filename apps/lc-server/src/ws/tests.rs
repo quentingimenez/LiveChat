@@ -2006,6 +2006,18 @@ async fn make_image(db: &Db, asset_id: MediaAssetId) {
         .expect("image de test");
 }
 
+/// Turns an image asset into a tweet card carrying `chars` characters of text.
+async fn make_tweet_card(db: &Db, asset_id: MediaAssetId, chars: usize) {
+    make_image(db, asset_id).await;
+    sqlx::query("UPDATE media_assets SET source_url = ?, source_title = ? WHERE id = ?")
+        .bind("https://x.com/jeanne/status/1234567890")
+        .bind("a".repeat(chars))
+        .bind(asset_id.to_canonical())
+        .execute(db.pool())
+        .await
+        .expect("carte tweet de test");
+}
+
 /// Triggers a board item and returns the `play` payload sent.
 async fn played_payload(server_addr: SocketAddr, item_id: MediaBoardItemId) -> Value {
     let mut socket = connect(server_addr).await;
@@ -2069,6 +2081,17 @@ async fn board_image_trigger_falls_back_to_guild_default() {
     make_image(&server.db, asset_id).await;
     let item_id = seed_ready_board_item(&server.db, &guild, asset_id).await;
     assert_eq!(played_duration(server.addr, item_id).await, json!(12));
+}
+
+#[tokio::test]
+async fn board_tweet_image_trigger_scales_with_its_text() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 120).await;
+    make_tweet_card(&server.db, asset_id, 120).await;
+    let item_id = seed_ready_board_item(&server.db, &guild, asset_id).await;
+    assert_eq!(played_duration(server.addr, item_id).await, json!(15));
 }
 
 #[tokio::test]

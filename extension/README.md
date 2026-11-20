@@ -45,6 +45,8 @@ npm run test
 npm run build
 ```
 
+Les content scripts sont bundlés chacun en IIFE autonome (`scripts/build.mjs`): Chrome les exécute comme des scripts classiques, donc un `import`/`export` en tête de fichier les fait rejeter (« Cannot use import statement outside a module ») et plus aucun bouton n'est injecté. `npm run verify:dist` — inclus dans `ci:check` et `release:build` — échoue si un content script du build redevient un module ES.
+
 ## Build propre et package
 
 ```bash
@@ -61,6 +63,8 @@ Note: le zip est généré via `python3` (`scripts/package.py`).
 Commandes utiles:
 - `npm run clean`
 - `npm run build:clean`
+- `npm run dev` (rebuild en continu)
+- `npm run verify:dist`
 - `npm run package`
 - `npm run ci:check`
 

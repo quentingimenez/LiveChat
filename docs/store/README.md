@@ -96,6 +96,13 @@ l'utilisateur.
 **Données** : l'extension n'envoie des données qu'au serveur LiveChat configuré
 par l'utilisateur ; rien n'est vendu, revendu ni transmis à un tiers.
 
+**Politique de confidentialité** : `docs/store/privacy.md` (publiée à
+<https://github.com/quentingimenez/LiveChat/blob/main/docs/store/privacy.md>).
+C'est l'URL à coller dans *Privacy practices* de la fiche et dans *Branding* du
+projet Google Cloud ; elle devra passer sur le domaine du serveur
+(`https://livechat.singesupreme.fr/privacy`) quand la console exigera un domaine
+autorisé.
+
 ## Secrets GitHub (une seule fois)
 
 `Settings > Secrets and variables > Actions` :
@@ -132,7 +139,11 @@ par l'utilisateur ; rien n'est vendu, revendu ni transmis à un tiers.
 - Sans nouveau tag : *Actions* → **Extension Build and Release** →
   *Run workflow* → cocher **publier sur le Chrome Web Store**.
 
-La version du manifest doit être strictement supérieure à celle publiée (0.1.x
-actuellement), sinon l'upload est refusé. La relecture prend en général quelques
-heures à quelques jours ; le job affiche `submission: PENDING_REVIEW` quand tout
-est accepté.
+La version du manifest doit être strictement supérieure à celle publiée
+(0.2.2 est en relecture), sinon l'upload est refusé. La relecture prend en
+général quelques heures à quelques jours ; le job affiche
+`submission: PENDING_REVIEW` quand tout est accepté.
+
+Le refresh token expire au bout de 7 jours tant que l'application OAuth reste en
+mode *Testing* : republier le client en *Production* (onglet *Audience*) ou
+relancer le script de refresh token avant expiration.

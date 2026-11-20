@@ -67,7 +67,7 @@ const TOOLS = [
   ['shape', 'Formes', 'shapes'],
   ['text', 'Texte', 'text'],
   ['emoji', 'Emoji', 'smile'],
-  ['blur', 'Masquer', 'pixels'],
+  ['blur', 'Masquer une zone', 'pixels'],
   ['adjust', 'Réglages', 'sliders'],
   ['display', 'Taille à l’affichage', 'display'],
 ];
@@ -1026,8 +1026,7 @@ export async function createImageEditor({
       h(
         'p',
         { class: 'meta' },
-        `Image\u00A0: ${doc.base.width}\u00A0×\u00A0${doc.base.height}\u00A0px · `,
-        zone.known ? `zone\u00A0: ${zone.width}\u00A0×\u00A0${zone.height}\u00A0px` : 'zone d’affichage inconnue',
+        zone.known ? `Zone\u00A0: ${zone.width}\u00A0×\u00A0${zone.height}\u00A0px` : 'Zone d’affichage inconnue',
       ),
       h('label', { class: 'editor-slider' }, h('span', { class: 'editor-slider-head' }, 'Échelle', value), range),
       h('label', { class: 'editor-field' }, h('span', null, 'Valeur\u00A0(%)'), number),
@@ -1050,16 +1049,14 @@ export async function createImageEditor({
   }
 
   // Nothing selected: the panel tells what can be done and what the media is,
-  // instead of leaving an empty column.
+  // instead of leaving an empty column. The top bar already shows the image's
+  // dimensions, so only the duration is repeated here.
   function emptySelectionPanel() {
     const duration = Number(durationSec);
     return section(
       'Aucune sélection',
       h('p', { class: 'editor-hint' }, TOOL_HINTS.select),
-      facts([
-        ['Dimensions', `${doc.base.width}\u00A0×\u00A0${doc.base.height}\u00A0px`],
-        Number.isFinite(duration) && duration > 0 ? ['Durée', formatDuration(duration)] : null,
-      ]),
+      Number.isFinite(duration) && duration > 0 ? facts([['Durée', formatDuration(duration)]]) : null,
     );
   }
 

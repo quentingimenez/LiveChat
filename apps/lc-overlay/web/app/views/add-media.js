@@ -114,10 +114,15 @@ export function openAddDialog(options) {
       linkMessageLabel,
       linkDurationField,
     );
+    // Formats and per-file limit the server really accepts: the picker only
+    // proposes media, and MEDIA_MAX_SIZE_MB defaults to 2048 Mo
+    // (apps/lc-server/src/config.rs). A server that overrides it answers 413
+    // with the real limit, which uploadErrorMessage displays.
     const filePanel = h(
       'div',
       { class: 'stack', hidden: true },
       h('div', { class: 'file-picker' }, h('button', { class: 'btn', type: 'button', onClick: () => fileInput.click() }, 'Choisir des fichiers'), fileInput),
+      h('p', { class: 'file-hint' }, 'Vidéos, images et sons : jusqu’à 2 Go par fichier.'),
       fileList,
       fileTitleLabel,
       multipleHint,

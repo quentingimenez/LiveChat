@@ -31,13 +31,17 @@
   gap: var(--space-1);
 }
 
+/* Chips are 32 px targets. Every chip keeps the same 600 weight so that
+   pressing one only changes colours (the transparent border is already
+   reserved): the row never reflows when the active chip changes. */
 .chip {
-  height: 28px;
-  padding: 0 10px;
+  height: 32px;
+  padding: 0 12px;
   border: 1px solid transparent;
-  border-radius: 14px;
+  border-radius: 16px;
   background: none;
   color: var(--text-soft);
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -47,9 +51,10 @@
 
 .chip.is-active,
 .chip[aria-pressed='true'] {
-  border-color: var(--line);
-  background: var(--slate-700);
+  border-color: var(--text-soft);
+  background: var(--slate-600);
   color: var(--text);
+  font-weight: 600;
 }
 
 .board {
@@ -77,6 +82,14 @@
   border: 1px solid var(--line);
   border-radius: var(--radius-m);
   background: var(--slate-700);
+}
+
+.filters-title {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .filters .switch {
@@ -118,6 +131,7 @@
 
 .card {
   min-width: 0;
+  cursor: pointer;
 }
 
 .grid > .card {
@@ -315,14 +329,14 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Favorite star: always shown once set, otherwise on hover. */
+/* Favorite star: always shown once set, otherwise on hover. A 32 px target. */
 .fav {
   position: absolute;
   top: 6px;
   right: 6px;
   z-index: 1;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border: 0;
   border-radius: 50%;
   background: var(--scrim-soft);
@@ -334,9 +348,8 @@
   transition: opacity 100ms ease;
 }
 
-/* An even icon lands on whole pixels: a 15px star in this 28px circle sat on a
-   half-pixel column and row, so the rasteriser pushed it half a pixel right and
-   down and the star read off-centre. */
+/* An even icon lands on whole pixels: a 16px star centred in this 32px circle
+   sits on an integer column and row instead of a half-pixel one. */
 .fav svg {
   width: 16px;
   height: 16px;
@@ -348,9 +361,17 @@
   opacity: 1;
 }
 
+/* editor.css loads after this file and styles every `.btn.is-on` in blue.
+   Scoped to the drawer and outranking the quiet-button hover, the star keeps
+   its amber — including while hovered. */
 .fav.is-on,
-.fav-toggle.is-on {
+.detail .btn.fav-toggle.is-on,
+.detail .btn.fav-toggle.is-on:hover {
   color: var(--amber-text);
+}
+
+.detail .btn.fav-toggle.is-on {
+  border-color: transparent;
 }
 
 .fav.is-on svg,
@@ -453,6 +474,18 @@
   min-height: 0;
   overflow-y: auto;
   padding: var(--space-4);
+  /* A discrete shadow marks the edge that still has hidden content: the two
+     `local` gradients scroll with the content and cover the `scroll` shadows
+     once the top or the bottom is reached. Nothing moves when the body does
+     not overflow. The fixed foot stays outside this box. */
+  background:
+    linear-gradient(var(--slate-700) 35%, transparent) center top,
+    linear-gradient(transparent, var(--slate-700) 65%) center bottom,
+    radial-gradient(farthest-side at 50% 0, rgb(0 0 0 / 0.28), transparent) center top,
+    radial-gradient(farthest-side at 50% 100%, rgb(0 0 0 / 0.28), transparent) center bottom;
+  background-repeat: no-repeat;
+  background-size: 100% 40px, 100% 40px, 100% 14px, 100% 14px;
+  background-attachment: local, local, scroll, scroll;
 }
 
 /* The play action and the media actions stay visible: the body scrolls, never
@@ -493,10 +526,18 @@
 }
 
 .detail-head {
+  /* The title, the favorite star and the close button stay reachable while
+     the body scrolls: the head sticks to the top and masks the content with
+     the drawer's own background. The negative margins make it full-bleed. */
+  position: sticky;
+  top: calc(-1 * var(--space-4));
+  z-index: 2;
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  margin-bottom: 12px;
+  margin: calc(-1 * var(--space-4)) calc(-1 * var(--space-4)) var(--space-3);
+  padding: var(--space-4) var(--space-4) var(--space-2);
+  background: var(--slate-700);
 }
 
 .detail-head h2,

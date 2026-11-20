@@ -45,6 +45,7 @@ import {
   originLinks,
   playSummary,
   selectAllAction,
+  selectAllToggle,
   selectRange,
   toggleId,
 } from '../core/selection.js';
@@ -416,6 +417,20 @@ function buildCard(entry) {
       // Height of the media's own shape (masonry, see core/masonry.js).
       style: cardStyle(cardRatio(ratio)),
       onContextmenu: (event) => openCardMenu(event, entry.item),
+      // The thumbnail and the card's own buttons handle their click; the
+      // title and the card's background open the drawer too (or pick the
+      // media in the selection mode).
+      onClick: (event) => {
+        if (event.target.closest('button')) {
+          return;
+        }
+        const action = cardClickAction({ selecting: state.selecting, shiftKey: event.shiftKey });
+        if (action === 'details') {
+          selectItem(entry.item.id, event.detail);
+        } else {
+          pickItem(entry.item.id, action === 'range');
+        }
+      },
       onMouseenter: () => {
         if (!state.selecting && hoverDetails) {
           hoverDetail(entry.item.id);
@@ -428,7 +443,19 @@ function buildCard(entry) {
       { class: 'card-frame' },
       thumb,
       can('play')
-        ? h('button', { class: 'play', 'aria-label': `Jouer ${itemTitle(item)}`, title: 'Jouer sur les overlays', onClick: () => playItem(entry.item) }, icon('play'))
+        ? h(
+            'button',
+            {
+              class: 'play',
+              'aria-label': `Jouer ${itemTitle(item)}`,
+              title: 'Jouer sur les overlays',
+              onClick: (event) => {
+                event.stopPropagation();
+                playItem(entry.item);
+              },
+            },
+            icon('play'),
+          )
         : null,
       canFavorite()
         ? h(
@@ -796,6 +823,16 @@ function pickAllVisible() {
   syncSelection();
 }
 
+// The bar's button is a toggle: it clears the selection once every visible
+// media is picked, and selects them all otherwise.
+function toggleAllVisible() {
+  const ids = visibleItems().map((item) => item.id);
+  const { selectAll } = selectAllToggle({ orderedIds: ids, selection: state.selection });
+  state.selection = selectAll ? new Set([...state.selection, ...ids]) : new Set();
+  state.selectionAnchor = null;
+  syncSelection();
+}
+
 // Updates the cards and the bar in place (no re-render: videos keep playing).
 function syncSelection() {
   for (const [id, entry] of cards) {
@@ -810,6 +847,8 @@ function syncSelection() {
 function renderSelectionBar() {
   const count = state.selection.size;
   const items = pickedItems();
+  const visibleIds = visibleItems().map((item) => item.id);
+  const allToggle = selectAllToggle({ orderedIds: visibleIds, selection: state.selection });
   return h(
     'div',
     { class: 'selection-bar', id: 'selection-bar', role: 'toolbar', 'aria-label': 'Sélection' },
@@ -826,7 +865,7 @@ function renderSelectionBar() {
           { class: 'selection-count' },
           count === 0 ? 'Aucun média sélectionné' : count === 1 ? '1 média sélectionné' : `${count} médias sélectionnés`,
         ),
-        h('button', { class: 'btn is-quiet', onClick: pickAllVisible }, 'Tout sélectionner'),
+        h('button', { class: 'btn is-quiet', onClick: toggleAllVisible }, allToggle.label),
       ),
     ),
     h(
@@ -878,9 +917,11 @@ function filterSelect(label, value, options, onChange) {
 function renderFilters() {
   const filters = state.filters;
   const authors = authorsOf(state.items);
+  const hasActiveFilters = activeFilterCount(filters) > 0 || filters.sort !== DEFAULT_FILTERS.sort;
   return h(
     'div',
     { class: 'filters', role: 'group', 'aria-label': 'Filtres du board' },
+    h('h2', { class: 'filters-title' }, 'Filtres'),
     canFavorite()
       ? h(
           'label',
@@ -901,9 +942,15 @@ function renderFilters() {
     filterSelect('Source', filters.source, [['', 'Toutes'], ...Object.entries(SOURCE_LABELS)], (source) => setFilter({ source })),
     filterSelect('Durée', filters.duration, [['', 'Toutes'], ...Object.entries(DURATION_LABELS)], (duration) => setFilter({ duration })),
     filterSelect('Trier', filters.sort, Object.entries(SORT_LABELS), (sort) => setFilter({ sort })),
-    activeFilterCount(filters) > 0 || filters.sort !== DEFAULT_FILTERS.sort
-      ? h('button', { class: 'btn is-quiet filters-reset', onClick: () => setFilter({ ...DEFAULT_FILTERS }) }, 'Réinitialiser')
-      : null,
+    h(
+      'button',
+      {
+        class: 'btn is-quiet filters-reset',
+        disabled: !hasActiveFilters,
+        onClick: () => setFilter({ ...DEFAULT_FILTERS }),
+      },
+      'Réinitialiser',
+    ),
   );
 }
 
@@ -947,8 +994,9 @@ let peekId = null;
 
 // « Afficher les détails au survol » is a device setting (Paramètres ›
 // Affichage). Read once, then kept current by `overlay://device-settings`,
-// like core/sound.js does for the sound settings.
-let hoverDetails = true;
+// like core/sound.js does for the sound settings. Off by default: a hover
+// only opens the drawer when that setting is explicitly on.
+let hoverDetails = false;
 
 // Turning the setting off closes a drawer opened by a hover and drops a peek;
 // a drawer pinned by a click stays. Turning it back on needs nothing.
@@ -956,7 +1004,7 @@ function applyHoverDetails(view) {
   if (!view || typeof view !== 'object') {
     return;
   }
-  hoverDetails = view.hoverDetails !== false;
+  hoverDetails = view.hoverDetails === true;
   if (hoverDetails) {
     return;
   }
@@ -1021,6 +1069,10 @@ function toggleDetail(id, clickCount) {
 
 export function closeDetail() {
   clearDrawerTimers();
+  // A single card click waits to see whether it starts a double click: an
+  // explicit close cancels its pending opening.
+  clearTimeout(clickTimer);
+  clickTimer = null;
   applyView(CLOSED_VIEW);
   state.capturing = false;
   syncDetail();
@@ -1182,6 +1234,27 @@ document.addEventListener('keydown', (event) => {
     pickAllVisible();
   }
 });
+
+// A click outside the drawer and outside a card closes it. The drawer's own
+// controls, a card (which opens or picks), an open dialog and a context menu
+// keep it: the drawer may stay behind the dialog it opened, and « Afficher les
+// détails » must not close the drawer it just opened. Capture phase: a control
+// inside the drawer may re-render it on click, and a later check would then see
+// a drawer that no longer contains the clicked element.
+document.addEventListener(
+  'click',
+  (event) => {
+    const drawer = document.querySelector('.view .detail');
+    if (!drawer || !(event.target instanceof Element)) {
+      return;
+    }
+    if (drawer.contains(event.target) || event.target.closest('.card, #dialog-root, .ctx-menu')) {
+      return;
+    }
+    closeDetail();
+  },
+  true,
+);
 
 // Sends one media to the overlays and records its queue badge. Returns the
 // command's response, a refusal `{ ok: false, message }` when the command

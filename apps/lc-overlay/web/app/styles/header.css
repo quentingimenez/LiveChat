@@ -75,7 +75,8 @@
 }
 
 .tab .count {
-  margin-left: 6px;
+  /* Keep the badge clearly detached from the label (« File d’attente »). */
+  margin-left: 8px;
   padding: 0 6px;
   border-radius: 9px;
   background: var(--slate-600);

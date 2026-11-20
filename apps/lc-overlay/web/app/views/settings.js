@@ -421,10 +421,11 @@ function renderDisplay(settings) {
     onChange: (event) => applyPatch({ showText: event.target.checked }),
   });
 
+  // Off by default: only an explicit `true` turns hover previews on.
   const hoverDetails = h('input', {
     id: 'settings-hover-details',
     type: 'checkbox',
-    checked: settings.hoverDetails !== false,
+    checked: settings.hoverDetails === true,
     onChange: (event) => applyPatch({ hoverDetails: event.target.checked }),
   });
 
@@ -457,7 +458,12 @@ function renderDisplay(settings) {
     ]),
     controlRow('Alignement dans la zone', alignment, 'settings-align'),
     switchRow('Texte des médias', showText, 'settings-show-text'),
-    switchRow('Détails au survol', hoverDetails, 'settings-hover-details', 'Sinon, les détails s’ouvrent seulement au clic.'),
+    switchRow(
+      'Ouvrir l’aperçu au survol',
+      hoverDetails,
+      'settings-hover-details',
+      'Désactivé : clique une carte pour ouvrir l’aperçu.',
+    ),
     controlRow('Média de test', [
       testButton,
       hint('Vérifie que les médias s’affichent et que le son sort.'),

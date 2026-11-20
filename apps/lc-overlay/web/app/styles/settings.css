@@ -22,6 +22,19 @@
   margin: 0 0 var(--space-1) calc(-1 * var(--space-3));
 }
 
+/* From the guild settings, a quiet way back to the device ones. Its padding is
+   pulled back like « Retour », so its label lines up with the heading. */
+.settings-device-link {
+  margin: var(--space-3) 0 0 calc(-1 * var(--space-3));
+  color: var(--text-soft);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.settings-device-link:hover {
+  color: var(--text);
+}
+
 .settings-head h2 {
   margin: 0 0 var(--space-1);
   font-family: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;

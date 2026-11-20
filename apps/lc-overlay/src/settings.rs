@@ -713,22 +713,22 @@ mod tests {
     fn settings_set_round_trips_hover_details_from_an_old_config() {
         let (config, warnings) = OverlayConfig::from_json_value(&json!({ "volume": 0.6 }));
         assert!(warnings.is_empty(), "warnings: {warnings:?}");
-        assert!(config.hover_details, "an old file has details on hover");
+        assert!(!config.hover_details, "hover previews start off");
 
         let view = build_settings_view(&config, &sample_displays(), Some(0), true, idle_update());
         let value = serde_json::to_value(view).expect("serializable view");
-        assert_eq!(value["hoverDetails"], json!(true));
+        assert_eq!(value["hoverDetails"], json!(false));
 
         let patched = apply_settings_patch(
             &config,
-            &json!({ "hoverDetails": false }),
+            &json!({ "hoverDetails": true }),
             &sample_displays(),
         )
         .expect("valid payload");
-        assert!(!patched.hover_details);
+        assert!(patched.hover_details);
         let view = build_settings_view(&patched, &sample_displays(), Some(0), true, idle_update());
         let value = serde_json::to_value(view).expect("serializable view");
-        assert_eq!(value["hoverDetails"], json!(false));
+        assert_eq!(value["hoverDetails"], json!(true));
 
         let error = apply_settings_patch(
             &config,

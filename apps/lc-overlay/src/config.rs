@@ -388,7 +388,7 @@ impl OverlayConfig {
             .is_some_and(|value| value == &Value::Bool(true));
         config.show_text = bool_field(map, "showText", true, &mut warnings);
         config.media_muted = bool_field(map, "mediaMuted", false, &mut warnings);
-        config.hover_details = bool_field(map, "hoverDetails", true, &mut warnings);
+        config.hover_details = bool_field(map, "hoverDetails", false, &mut warnings);
         config.server_url = string_field(map, "serverUrl", &mut warnings);
         config.client_token = string_field(map, "clientToken", &mut warnings);
         config.client_id = string_field(map, "clientId", &mut warnings);

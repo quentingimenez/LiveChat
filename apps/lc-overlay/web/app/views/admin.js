@@ -173,6 +173,14 @@ function listState(phase, tab, empty) {
   return h('p', { class: 'list-state is-empty' }, empty);
 }
 
+// A cell keeps the label of its column: the desktop head names the track, and
+// below 1120px the same label is shown above the value when the row folds into
+// a card. The wrapper is transparent on desktop, so the value stays in the
+// shared grid.
+function listCell(label, ...children) {
+  return h('div', { class: 'list-cell', 'data-label': label }, ...children);
+}
+
 // A muted overlay closes its socket, so the server sees it offline. For this
 // device the reason is known: say so instead of a last-seen time.
 function presenceLabel(member, selfMuted) {
@@ -234,33 +242,45 @@ function renderMembers(status) {
         'div',
         { class: 'line-main' },
         avatarNode(member.displayName, member.avatar),
-        h(
-          'div',
-          { class: 'member-cell' },
-          h('div', { class: 'ellipsis' }, member.displayName, member.isSelf ? h('span', { class: 'sub' }, '\u00a0(toi)') : null),
-          memberMeta(member),
+        listCell(
+          'Membre',
+          h(
+            'div',
+            { class: 'member-cell' },
+            h('div', { class: 'ellipsis' }, member.displayName, member.isSelf ? h('span', { class: 'sub' }, '\u00a0(toi)') : null),
+            memberMeta(member),
+          ),
         ),
       ),
       h(
         'div',
         { class: 'line-meta' },
-        h('span', { class: 'sub seen' }, presenceLabel(member, selfMuted)),
-        h(
-          'select',
-          { class: 'field', 'aria-label': `Rôle de ${member.displayName}`, onChange: (event) => changeRole(member, event.target.value) },
-          Object.entries(ROLE_LABELS).map(([id, label]) => h('option', { value: id, selected: member.role === id }, label)),
+        listCell('Vu', h('span', { class: 'sub seen' }, presenceLabel(member, selfMuted))),
+        listCell(
+          'Rôle',
+          h(
+            'select',
+            { class: 'field', 'aria-label': `Rôle de ${member.displayName}`, onChange: (event) => onRoleChange(member, event) },
+            Object.entries(ROLE_LABELS).map(([id, label]) => h('option', { value: id, selected: member.role === id }, label)),
+          ),
         ),
       ),
       h(
         'div',
-        { class: 'line-actions' },
+        { class: 'line-actions', 'data-label': 'Action' },
         h(
           'button',
           { class: 'btn is-quiet', type: 'button', title: 'Créer un code pour rattacher un appareil à ce membre.', onClick: () => openDeviceCodeDialog(member) },
           'Code d’appairage…',
         ),
-        member.isSelf ? null : h('button', { class: 'btn is-quiet is-danger', type: 'button', onClick: () => openKickDialog(member) }, 'Exclure…'),
-        member.isSelf ? null : h('button', { class: 'btn is-quiet is-danger', type: 'button', onClick: () => openBanDialog(member) }, 'Bannir…'),
+        member.isSelf
+          ? null
+          : h(
+              'div',
+              { class: 'line-danger' },
+              h('button', { class: 'btn is-quiet is-danger', type: 'button', onClick: () => openKickDialog(member) }, 'Exclure…'),
+              h('button', { class: 'btn is-quiet is-danger', type: 'button', onClick: () => openBanDialog(member) }, 'Bannir…'),
+            ),
       ),
     ),
   );
@@ -274,6 +294,31 @@ function renderMembers(status) {
     rows,
     empty: 'Aucun membre dans cette guilde pour le moment.',
   });
+}
+
+// A role change on one's own account is not blocked (the server protects the
+// last admin), but it asks first. The row keeps its current role while the
+// dialog is open, so cancelling leaves the screen truthful.
+function onRoleChange(member, event) {
+  const select = event.target;
+  const role = select.value;
+  if (role === member.role) {
+    return;
+  }
+  if (!member.isSelf) {
+    changeRole(member, role);
+    return;
+  }
+  select.value = member.role;
+  const current = ROLE_LABELS[member.role] || member.role;
+  const next = ROLE_LABELS[role] || role;
+  confirmDialog(
+    'Changer ton propre rôle\u00a0?',
+    `Tu vas passer de «\u00a0${current}\u00a0» à «\u00a0${next}\u00a0». Si tu n’es plus admin, tu perdras l’accès à cette administration.`,
+    'Changer mon rôle',
+    () => changeRole(member, role),
+    { tone: 'neutral' },
+  );
 }
 
 async function changeRole(member, role) {
@@ -335,17 +380,20 @@ function renderBans(status) {
         'div',
         { class: 'line-main' },
         avatarNode(ban.displayName, ban.avatar),
-        h('div', { class: 'ellipsis' }, ban.displayName, ban.discordUserId ? null : h('span', { class: 'sub' }, '\u00a0(sans compte Discord)')),
+        listCell(
+          'Banni',
+          h('div', { class: 'ellipsis' }, ban.displayName, ban.discordUserId ? null : h('span', { class: 'sub' }, '\u00a0(sans compte Discord)')),
+        ),
       ),
       h(
         'div',
         { class: 'line-meta' },
-        h('span', { class: 'sub', title: absoluteDate(ban.createdAt) }, relativeTime(ban.createdAt)),
-        h('span', { class: 'sub ellipsis', title: ban.bannedBy || '' }, ban.bannedBy || '—'),
+        listCell('Date', h('span', { class: 'sub', title: absoluteDate(ban.createdAt) }, relativeTime(ban.createdAt))),
+        listCell('Banni par', h('span', { class: 'sub ellipsis', title: ban.bannedBy || '' }, ban.bannedBy || '—')),
       ),
       h(
         'div',
-        { class: 'line-actions' },
+        { class: 'line-actions', 'data-label': 'Action' },
         h('button', { class: 'btn is-quiet', type: 'button', onClick: () => openUnbanDialog(ban) }, 'Lever le bannissement'),
       ),
     ),
@@ -406,31 +454,37 @@ function renderDevice(device, newest) {
       'div',
       { class: 'line-main' },
       avatarNode(device.memberName || device.label, null),
-      h(
-        'div',
-        { class: 'device-cell' },
-        h('div', { class: 'ellipsis' }, device.label),
-        h('div', { class: 'sub member-meta' }, device.memberName || 'Sans membre', deviceRoleBadge(device)),
+      listCell(
+        'Appareil',
+        h(
+          'div',
+          { class: 'device-cell' },
+          h('div', { class: 'ellipsis' }, device.label),
+          h('div', { class: 'sub member-meta' }, device.memberName || 'Sans membre', deviceRoleBadge(device)),
+        ),
       ),
     ),
     h(
       'div',
       { class: 'line-meta' },
-      h(
-        'div',
-        { class: 'sub device-version' },
-        h('span', null, device.overlayVersion || 'version inconnue'),
-        isObsolete(device.overlayVersion, newest) ? h('span', { class: 'badge is-obsolete' }, 'Obsolète') : null,
-        platform ? h('span', { class: 'device-platform' }, platform) : null,
+      listCell(
+        'Version',
+        h(
+          'div',
+          { class: 'sub device-version' },
+          h('span', null, device.overlayVersion || 'version inconnue'),
+          isObsolete(device.overlayVersion, newest) ? h('span', { class: 'badge is-obsolete' }, 'Obsolète') : null,
+          platform ? h('span', { class: 'device-platform' }, platform) : null,
+        ),
       ),
-      h('span', { class: 'sub seen' }, devicePresenceLabel(device)),
-      h('span', { class: 'badge' }, sessionModeLabel(device.sessionMode)),
+      listCell('Vu', h('span', { class: 'sub seen' }, devicePresenceLabel(device))),
+      listCell('Session', h('span', { class: 'badge' }, sessionModeLabel(device.sessionMode))),
     ),
     h(
       'div',
-      { class: 'line-actions' },
+      { class: 'line-actions', 'data-label': 'Action' },
       h('button', { class: 'btn is-quiet', type: 'button', onClick: () => openDeviceSettingsDialog(device) }, 'Régler'),
-      h('button', { class: 'btn is-quiet', type: 'button', onClick: () => openRenameDeviceDialog(device) }, 'Renommer'),
+      h('button', { class: 'btn is-quiet', type: 'button', onClick: () => openRenameDeviceDialog(device) }, 'Renommer…'),
       device.isSelf
         ? h('span', { class: 'badge is-off' }, 'Cet appareil')
         : h('button', { class: 'btn is-quiet is-danger', type: 'button', onClick: () => openRevokeDeviceDialog(device) }, 'Révoquer…'),
@@ -650,19 +704,19 @@ function renderCodeRow(row) {
     h(
       'div',
       { class: 'line-main' },
-      h('span', { class: 'code' }, formatCode(code)),
-      codeBadge(row),
+      listCell('Code', h('span', { class: 'code' }, formatCode(code))),
+      listCell('Type', codeBadge(row)),
     ),
     h(
       'div',
       { class: 'line-meta' },
-      h('span', { class: 'sub ellipsis code-author' }, codeAuthor(row)),
-      h('span', { class: 'sub' }, codeExpiry(row)),
-      h('span', { class: 'sub' }, row.invite ? inviteUses(row.invite) : '—'),
+      listCell('Auteur', h('span', { class: 'sub ellipsis code-author' }, codeAuthor(row))),
+      listCell('Expiration', h('span', { class: 'sub' }, codeExpiry(row))),
+      listCell('Utilisations', h('span', { class: 'sub' }, row.invite ? inviteUses(row.invite) : '—')),
     ),
     h(
       'div',
-      { class: 'line-actions' },
+      { class: 'line-actions', 'data-label': 'Action' },
       active
         ? h(
             'button',
@@ -865,17 +919,12 @@ function auditActor(entry) {
   if (!entry.actor) {
     return '—';
   }
-  return entry.actor.name || entry.actor.method || '—';
-}
-
-// Path of the mutation relative to the guild, so the column stays short:
-// `/admin/api/guilds/42/settings` → `/settings`.
-function auditTarget(path) {
-  if (!path) {
-    return '—';
+  // The owner console authenticates with the shared secret and carries no
+  // member name: name it in French instead of showing the technical value.
+  if (entry.actor.method === 'secret') {
+    return 'Propriétaire';
   }
-  const stripped = path.replace(/^\/admin\/api\/guilds\/[^/]+/, '');
-  return stripped || '/';
+  return entry.actor.name || entry.actor.method || '—';
 }
 
 function renderAudit(status) {
@@ -887,15 +936,14 @@ function renderAudit(status) {
       h(
         'div',
         { class: 'line-main' },
-        h('span', { class: 'sub', title: absoluteDate(entry.at) }, relativeTime(entry.at)),
-        h('span', { class: 'badge' }, auditOrigin(entry)),
+        listCell('Date', h('time', { class: 'sub journal-date', datetime: entry.at || null }, absoluteDate(entry.at))),
+        listCell('Origine', h('span', { class: 'badge' }, auditOrigin(entry))),
       ),
       h(
         'div',
         { class: 'line-meta' },
-        h('span', { class: 'ellipsis', title: actor === '—' ? '' : actor }, actor),
-        h('span', { class: 'ellipsis' }, auditActionLabel(entry.action)),
-        h('span', { class: 'sub ellipsis mono', title: entry.path || '' }, auditTarget(entry.path)),
+        listCell('Auteur', h('span', { class: 'ellipsis', title: actor === '—' ? '' : actor }, actor)),
+        listCell('Action', h('span', { class: 'ellipsis' }, auditActionLabel(entry.action))),
       ),
     );
   });
@@ -905,7 +953,7 @@ function renderAudit(status) {
     status,
     count: state.auditEntries.length,
     intro: 'Les actions d’administration récentes de la guilde, depuis l’overlay ou le panneau serveur. Tu peux y suivre qui a modifié quoi.',
-    labels: ['Date', 'Origine', 'Auteur', 'Action', 'Chemin'],
+    labels: ['Date', 'Origine', 'Auteur', 'Action'],
     rows,
     empty: 'Aucune action d’administration enregistrée pour cette guilde.',
   });

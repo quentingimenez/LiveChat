@@ -27,7 +27,8 @@ export function renderHeader() {
   if (can('manageMembers') || can('manageInvites') || can('manageSettings')) {
     tabs.push(['admin', 'Administration', null]);
   }
-  tabs.push(['settings', 'Réglages', null]);
+  // The visible label stays short; the accessible name says which settings.
+  tabs.push(['settings', 'Réglages', null, 'Réglages de la guilde']);
   const guildId = guild.membership.guildId;
   const mediaMuted = guildMediaMuted(guildId);
   header.replaceChildren(
@@ -85,10 +86,17 @@ export function renderHeader() {
     h(
       'div',
       { class: 'tabs', role: 'tablist' },
-      tabs.map(([id, label, count]) =>
+      tabs.map(([id, label, count, accessibleLabel]) =>
         h(
           'button',
-          { class: `tab${state.tab === id ? ' is-active' : ''}`, role: 'tab', 'aria-selected': state.tab === id, onClick: () => setTab(id) },
+          {
+            class: `tab${state.tab === id ? ' is-active' : ''}`,
+            role: 'tab',
+            title: accessibleLabel || null,
+            'aria-label': accessibleLabel || (count ? `${label} (${count})` : null),
+            'aria-selected': state.tab === id ? 'true' : 'false',
+            onClick: () => setTab(id),
+          },
           label,
           count ? h('span', { class: 'count' }, count) : null,
         ),

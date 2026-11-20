@@ -1,12 +1,15 @@
-// Contraste des tokens de texte, dans les deux thèmes.
+// Contraste des tokens de l'interface, dans les deux thèmes.
 //
 // Les couleurs ne sont pas recopiées : le test lit les valeurs déclarées par
 // base.css (thème sombre) et theme-light.css (surcharges claires), puis
-// applique le calcul WCAG 2.2. Les tokens de texte sont utilisés en 12–14 px :
-// le seuil est donc 4,5:1 (SC 1.4.3), pas 3:1.
+// applique le calcul WCAG 2.2. Deux familles :
+//  - texte (12–14 px) : 4,5:1 (SC 1.4.3) ;
+//  - bordure des champs : 3:1 (SC 1.4.11), des deux côtés du trait (fond du
+//    champ et surface qui le porte).
 //
 // Ce test mord : remettre l'ancien --text-faint (#717a93 en sombre, #6f7a90 en
-// clair) le fait échouer.
+// clair) le fait échouer, et remettre l'ancienne bordure --line (#3a4259 en
+// sombre, #d5dce8 en clair) dans --field-line aussi.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -80,6 +83,14 @@ const PAIRS = [
   ['--badge-guest-text', '--badge-guest-bg', 'badge invité'],
 ];
 
+// [bordure, fond, pourquoi] — la bordure d'un champ doit tenir 3:1 des deux
+// côtés du trait : sur le fond du champ et sur la surface qui le porte.
+const FIELD_PAIRS = [
+  ['--field-line', '--slate-900', 'bordure de champ sur le fond du champ'],
+  ['--field-line', '--slate-800', 'bordure de champ sur une carte ou un dialogue'],
+  ['--field-line', '--slate-700', 'bordure de champ sur une surface surélevée'],
+];
+
 function assertTheme(name, tokens) {
   for (const [foreground, background, purpose] of PAIRS) {
     const fg = tokens.get(foreground);
@@ -95,6 +106,21 @@ function assertTheme(name, tokens) {
   }
 }
 
+function assertFieldBoundaries(name, tokens) {
+  for (const [border, background, purpose] of FIELD_PAIRS) {
+    const line = tokens.get(border);
+    const bg = tokens.get(background);
+    assert.ok(line, `${name} : ${border} n'est pas déclaré`);
+    assert.ok(bg, `${name} : ${background} n'est pas déclaré`);
+    const ratio = contrast(line, bg);
+    assert.ok(
+      ratio >= 3,
+      `${name} : ${border} (${line}) sur ${background} (${bg}) = ${ratio.toFixed(2)}:1, ` +
+        `sous 3:1 — ${purpose}`,
+    );
+  }
+}
+
 test('thème sombre : chaque couple texte/fond atteint 4,5:1', () => {
   assertTheme('sombre', dark);
 });
@@ -106,5 +132,28 @@ test('thème clair : chaque couple texte/fond atteint 4,5:1', () => {
 test('le thème clair surcharge bien les tokens de texte', () => {
   for (const token of ['--text', '--text-soft', '--text-faint', '--amber-text', '--red-text', '--green-text', '--blue-text']) {
     assert.notEqual(light.get(token), dark.get(token), `${token} doit être redéfini par le thème clair`);
+  }
+});
+
+test('thème sombre : les bordures de champ atteignent 3:1', () => {
+  assertFieldBoundaries('sombre', dark);
+});
+
+test('thème clair : les bordures de champ atteignent 3:1', () => {
+  assertFieldBoundaries('clair', light);
+});
+
+test('le thème clair surcharge aussi la bordure des champs', () => {
+  assert.notEqual(light.get('--field-line'), dark.get('--field-line'), '--field-line doit être redéfini par le thème clair');
+});
+
+// Sans ce branchement, les couples ci-dessus passeraient alors que les champs
+// gardent l'ancienne bordure --line.
+test('les contrôles de saisie peignent leur bordure avec --field-line', () => {
+  const css = read('styles/base.css');
+  for (const selector of ['.field', ".switch input[type='checkbox']"]) {
+    const rule = ruleOf(css, selector);
+    assert.ok(rule, `règle ${selector} introuvable`);
+    assert.match(rule, /border[^;]*var\(--field-line\)/, `${selector} doit utiliser --field-line pour sa bordure`);
   }
 });

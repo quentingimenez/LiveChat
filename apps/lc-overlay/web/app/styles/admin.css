@@ -89,6 +89,21 @@
   justify-self: end;
 }
 
+/* A labelled cell: the desktop head names the track, the card layout below
+   1120px names the value. The wrapper is transparent on desktop. */
+.list-cell {
+  display: contents;
+}
+
+/* Two destructive actions side by side must not read as one control: the
+   16px gap inside this group separates « Exclure… » from « Bannir… ». */
+.line-danger {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+
 /* Member: avatar, name, presence, role, actions. */
 .line.is-member,
 .list-head.is-member {
@@ -119,10 +134,16 @@
   grid-template-columns: 30px minmax(0, 1fr) 150px 140px 130px 300px;
 }
 
-/* Journal: date, origin, actor, action, path. */
+/* Journal: date, origin, actor, action. */
 .line.is-audit,
 .list-head.is-audit {
-  grid-template-columns: 120px 116px 160px minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: 140px 116px 160px minmax(0, 1fr);
+}
+
+/* Absolute dates keep a stable width and never wrap mid-value. */
+.journal-date {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .list-head.is-member > :last-child,
@@ -195,11 +216,6 @@
 
 .code-author {
   min-width: 0;
-}
-
-.line.is-audit .mono {
-  font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 12px;
 }
 
 /* ---------------------------------------------------------- code creation */
@@ -309,7 +325,7 @@
   .line.is-code,
   .line.is-ban,
   .line.is-invite {
-    grid-template-columns: minmax(0, 1fr) 320px;
+    grid-template-columns: minmax(0, 1fr) 340px;
     grid-template-areas:
       'main actions'
       'meta meta';
@@ -337,10 +353,41 @@
   .line-meta {
     display: flex;
     flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
+    align-items: start;
+    gap: 8px 16px;
     min-width: 0;
     grid-area: meta;
+  }
+
+  /* The column heads are hidden: every value carries its own label, inline,
+     except the identity cell (the avatar and name say who it is) and the
+     action cell (the buttons speak for themselves). */
+  .list-cell {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px 8px;
+    min-width: 0;
+  }
+
+  .line-main .list-cell {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .list-cell::before {
+    content: attr(data-label);
+    flex: none;
+    color: var(--text-faint);
+    font-size: var(--text-xs);
+    line-height: 1.2;
+  }
+
+  .line-main .list-cell::before,
+  .line-actions::before {
+    display: none;
   }
 
   .line-actions {
@@ -371,5 +418,9 @@
 
   .line-actions {
     justify-content: flex-start;
+  }
+
+  .line-actions[data-label]::before {
+    text-align: left;
   }
 }

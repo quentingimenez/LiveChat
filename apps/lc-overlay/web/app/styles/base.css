@@ -10,6 +10,10 @@
   --slate-700: #262c3c;
   --slate-600: #30384c;
   --line: #3a4259;
+  /* Bordure des champs de saisie : ≥ 3,3:1 sur les surfaces adjacentes
+     (WCAG 1.4.11, couples testés dans theme-contrast.test.mjs). --line reste
+     réservé aux contours de cartes et de boutons. */
+  --field-line: #737d98;
   --text: #e9ebf3;
   --text-soft: #a3abc2;
   /* Assez clair pour tenir 4,5:1 sur les trois surfaces (WCAG AA, testé). */
@@ -234,7 +238,7 @@ textarea {
   position: relative;
   width: 36px;
   height: 20px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--field-line);
   border-radius: 999px;
   background: var(--slate-900);
   appearance: none;
@@ -275,7 +279,7 @@ textarea {
   width: 100%;
   height: 32px;
   padding: 0 10px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--field-line);
   border-radius: var(--radius-s);
   background: var(--slate-900);
 }
@@ -305,6 +309,14 @@ select.field:disabled {
 
 .field::placeholder {
   color: var(--text-faint);
+}
+
+/* Édition en ligne du board : sa bordure n'apparaît qu'au survol et au focus,
+   mais elle délimite bien un champ ; le sélecteur est plus spécifique que
+   board.css pour lui donner le token de champ. */
+.board .inline-edit:hover,
+.board .inline-edit:focus-visible {
+  border-color: var(--field-line);
 }
 
 /* One checkbox size for the whole board: settings, guild sound and admin. */

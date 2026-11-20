@@ -112,12 +112,13 @@ Dans l'app **Raccourcis** :
      **Obtenir le fichier** → **Obtenir les détails du fichier** → **Nom** ;
    - **fichier** : **Obtenir les détails du fichier** → **Nom**.
 5. Ajoute **Obtenir le contenu de l'URL** :
-   - **URL** : `https://livechat.example.com/ingest/file?filename=<Nom>&text=<Légende>`
+   - **URL** : `https://livechat.example.com/ingest/file?filename=<Nom>`
+     (ajoute `&text=<Légende>` seulement si tu as une légende)
    - **Méthode** : `POST`
    - **En-têtes** : `Authorization` = `Bearer <Jeton>` ; ajoute aussi
      `Content-Type` si tu connais le type (`image/jpeg` pour une photo,
-     `video/mp4` pour une vidéo). Sinon le serveur détecte le format à partir du
-     fichier.
+     `video/mp4` ou `video/quicktime` pour une vidéo). Sinon le serveur détecte
+     le format à partir du fichier.
    - **Corps de la requête** : `Fichier`
    - **Fichier** : le fichier partagé (ou le fichier converti à l'étape 4).
 6. Pour une légende, ajoute **Demander une entrée** (texte) avant l'URL, puis

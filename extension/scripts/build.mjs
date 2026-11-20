@@ -33,14 +33,18 @@ const CONTENT_SCRIPTS = {
   'twitter-content': 'src/content/twitter.ts'
 };
 
-/** Background service worker (`"type": "module"`), popup et options. */
-const appConfig = {
+/**
+ * Background service worker (`"type": "module"`), popup et options.
+ * `emptyOutDir` n'est activé que pour le build complet : en veille, vider `dist`
+ * effacerait les fichiers écrits par les trois autres passes.
+ */
+const appConfig = (emptyOutDir) => ({
   configFile: false,
   root,
   publicDir: resolve(root, 'public'),
   build: {
     outDir,
-    emptyOutDir: true,
+    emptyOutDir,
     rollupOptions: {
       input: {
         background: resolve(root, 'src/background/index.ts'),
@@ -50,7 +54,7 @@ const appConfig = {
       output: outputNames
     }
   }
-};
+});
 
 /** Un content script = un IIFE autonome, sans chunk partagé ni import. */
 const contentScriptConfig = (name, entry) => ({
@@ -72,17 +76,32 @@ const contentScriptConfig = (name, entry) => ({
   }
 });
 
-const configs = [appConfig, ...Object.entries(CONTENT_SCRIPTS).map(([name, entry]) => contentScriptConfig(name, entry))];
+const contentScriptConfigs = () =>
+  Object.entries(CONTENT_SCRIPTS).map(([name, entry]) => contentScriptConfig(name, entry));
+
+const buildAll = async (emptyOutDir) => {
+  for (const config of [appConfig(emptyOutDir), ...contentScriptConfigs()]) {
+    await build(config);
+  }
+};
+
+const watchAll = async () => {
+  for (const config of [appConfig(false), ...contentScriptConfigs()]) {
+    await build({ ...config, build: { ...config.build, watch: {} } });
+  }
+};
 
 try {
-  for (const config of configs) {
-    await build(watch ? { ...config, build: { ...config.build, watch: {} } } : config);
+  // Un build complet d'abord : en veille, les quatre passes démarrent en
+  // parallèle et `dist` doit déjà contenir tous les fichiers. Les veilleurs
+  // n'effacent ensuite jamais `dist` (emptyOutDir désactivé).
+  await buildAll(true);
+
+  if (watch) {
+    await watchAll();
+    console.log('Veille active sur dist/ — Ctrl+C pour arrêter.');
   }
 } catch (error) {
   console.error(`Build de l'extension échoué : ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
-}
-
-if (watch) {
-  console.log('Veille active sur dist/ — Ctrl+C pour arrêter.');
 }

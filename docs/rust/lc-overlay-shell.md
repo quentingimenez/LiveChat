@@ -302,6 +302,12 @@ la board. L'infobulle reste `tray_tooltip`.
   générale exactement comme le tray ; `openBoard` affiche la board et lui donne
   le focus, comme l'entrée de tray « Ouvrir la board » (sans la masquer si elle
   est déjà visible). En cas de refus OS, les anciens raccourcis sont restaurés.
+- Alt droite : sur un clavier qui la mappe en AltGr (français), la webview la
+  reçoit comme `AltGraph` (Ctrl+Alt). La capture la traite comme modificateur et
+  enregistre `CommandOrControl+Alt+<touche>` ; l'API Windows `RegisterHotKey`
+  (utilisée par le plugin global-shortcut) ne distingue pas Alt gauche et
+  droite, donc le raccourci se déclenche aussi avec Ctrl+Alt gauches. Un
+  « Alt droite seule » strict imposerait un hook clavier bas niveau, écarté.
 - La validation de `settings_set` refuse un accélérateur invalide, en collision
   avec un autre raccourci global, un binding média ou le rechargement manuel.
 - Commandes bridge `media_board_get_bindings` / `media_board_set_bindings`,

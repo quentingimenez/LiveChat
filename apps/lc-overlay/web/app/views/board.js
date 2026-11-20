@@ -2,7 +2,7 @@
 
 import { api, run } from '../core/api.js';
 import { isEditable, openContextMenu } from '../core/contextmenu.js';
-import { acceleratorFromEvent, acceleratorLabel, BARE_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
+import { acceleratorFromEvent, acceleratorLabel, ALTGR_HINT, BARE_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import { ARTWORK_MESSAGES, artworkExtension, droppedArtworkLink, fetchArtwork, MAX_ARTWORK_BYTES, pickArtworkFile } from '../core/artwork.js';
 import {
   activeFilterCount,
@@ -1490,6 +1490,7 @@ function renderDetail(item) {
           ]
         : null,
     ),
+    can('play') ? h('p', { class: 'shortcut-hint' }, ALTGR_HINT) : null,
     h(
       'div',
       { class: 'row is-wrap' },

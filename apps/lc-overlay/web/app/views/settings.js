@@ -14,7 +14,7 @@
 // one guild sets on this device.
 
 import { run } from '../core/api.js';
-import { acceleratorFromEvent, acceleratorLabel, BARE_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
+import { acceleratorFromEvent, acceleratorLabel, ALTGR_HINT, BARE_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import { resizeAvatar } from '../core/avatar.js';
 import { avatarNode, h, resetOnDoubleClick } from '../core/dom.js';
 import { invoke, listen } from '../core/ipc.js';
@@ -482,6 +482,7 @@ function renderShortcuts(settings) {
   return section(
     'Raccourcis',
     SHORTCUTS.map(([action, label]) => renderShortcutRow(action, label, shortcuts[action] || null)),
+    h('p', { class: 'settings-hint' }, ALTGR_HINT),
   );
 }
 

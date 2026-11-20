@@ -42,6 +42,30 @@ test('a frame anchored to the right edge pushes the whole overflow to the left',
   );
 });
 
+test('the countdown stays right of the author chip above an audio without artwork', () => {
+  // An audio element is not rendered by the user agent (display: none), so an
+  // audio-only frame lays out at zero width and both header anchors land on
+  // the same point: only the shifts can keep the chip and the countdown apart.
+  const shift = computeHeaderShift({
+    mediaWidth: 0,
+    leftWidth: 297,
+    rightWidth: 103,
+    minGapPx: 14,
+    leftRoomPx: 1280,
+    rightRoomPx: 1280,
+  });
+
+  // Frame coordinates: the frame is a single point at 0, the chip leaves from
+  // that point towards the left and the countdown arrives at it from the right.
+  const authorRightPx = -shift.leftShiftPx + 297;
+  const countdownLeftPx = -103 + shift.rightShiftPx;
+
+  assert.ok(
+    countdownLeftPx - authorRightPx >= 14,
+    `the countdown must sit at least 14px right of the author (gap ${countdownLeftPx - authorRightPx}px)`,
+  );
+});
+
 test('what no side can absorb is reported as unresolved', () => {
   assert.deepEqual(
     computeHeaderShift({

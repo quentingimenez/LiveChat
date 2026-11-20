@@ -15,9 +15,9 @@
 //!   directement le plafond ;
 //! - jamais moins que le défaut applicable (guilde ou serveur).
 //!
-//! Seules les cartes **image** sont concernées : une carte vidéo de tweet
-//! garde la durée de la vidéo, et un média non-carte garde la résolution
-//! habituelle.
+//! Seules les cartes **image** sont concernées : une carte vidéo (tweet ou
+//! commentaire TikTok partagé) garde la durée de sa vidéo, et un média non-carte
+//! garde la résolution habituelle.
 
 use lc_domain::entities::MediaAsset;
 use lc_domain::enums::MediaKind;

@@ -956,6 +956,19 @@ pub async fn download_tiktok(
             ),
         }
     }
+    download_tiktok_media(source, config, temp_dir, false).await
+}
+
+/// Télécharge le média d'une page TikTok (vidéo, yt-dlp ou carrousel).
+///
+/// `prefer_video` force un carrousel photo en vidéo (diaporama), pour pouvoir
+/// l'incruster dans une carte de commentaire.
+pub(crate) async fn download_tiktok_media(
+    source: &MediaSource,
+    config: &MediaConfig,
+    temp_dir: &Path,
+    prefer_video: bool,
+) -> MediaResult<DownloadResult> {
     let page = tiktok::fetch_tiktok_page(config, &source.canonical_url).await?;
     let mut last_error: Option<MediaError> = None;
     for candidate in &page.video_candidates {
@@ -975,7 +988,7 @@ pub async fn download_tiktok(
         }
     }
     if !page.photo_slides.is_empty() {
-        match download_tiktok_carousel(&page, config, temp_dir).await {
+        match download_tiktok_carousel(&page, config, temp_dir, prefer_video).await {
             Ok(download) => return Ok(download),
             Err(error) => {
                 last_error = Some(match last_error {
@@ -1036,6 +1049,7 @@ async fn download_tiktok_carousel(
     page: &tiktok::TikTokPage,
     config: &MediaConfig,
     temp_dir: &Path,
+    force_video: bool,
 ) -> MediaResult<DownloadResult> {
     let mut images: Vec<PathBuf> = Vec::new();
     let mut last_error: Option<MediaError> = None;
@@ -1068,7 +1082,7 @@ async fn download_tiktok_carousel(
             )
         }));
     }
-    if images.len() == 1 && page.audio_candidates.is_empty() {
+    if images.len() == 1 && page.audio_candidates.is_empty() && !force_video {
         let path = images.remove(0);
         let size_bytes = MediaStorage::file_size(&path)?;
         let header = read_header_bytes(&path, 32);

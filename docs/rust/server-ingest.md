@@ -149,12 +149,14 @@ dans le texte du job par `lc_discord::rich_payload::build_media_text_payload`.
 `saveToBoard` ne crée **pas** de `PlaybackJob` (retour anticipé du legacy).
 
 Un lien de partage de commentaire TikTok (URL vidéo avec `share_comment_id`, y
-compris après redirection d'un lien court) produit une **image** : la carte du
-commentaire rendue par `lc_media::tiktok_comment` (avatar, texte, images, likes,
-réponses). Le titre du média reprend le texte du commentaire, ce qui module sa
-durée d'affichage (§7). L'API tierce reste un point de défaillance : si le
-commentaire n'est pas retrouvé ou si l'API limite/échoue, le pipeline retombe
-sur la vidéo TikTok d'origine, sans échec d'ingestion.
+compris après redirection d'un lien court) produit une **carte vidéo** : la
+carte du commentaire rendue par `lc_media::tiktok_comment` (avatar, texte,
+images, likes, réponses) avec sous l'en-tête la vidéo TikTok, ou le diaporama
+assemblé pour une publication photo/carrousel, et l'audio d'origine. Le titre
+du média reprend le texte du commentaire. L'API tierce reste un point de
+défaillance : si le commentaire n'est pas retrouvé ou si l'API limite/échoue, le
+pipeline retombe sur la vidéo TikTok d'origine, sans échec d'ingestion ; si le
+média lui-même est indisponible, la carte reste une image PNG statique.
 
 ## 4. Authentification
 

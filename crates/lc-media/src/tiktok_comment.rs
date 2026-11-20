@@ -1,12 +1,13 @@
-//! Carte PNG d'un commentaire TikTok partagé depuis l'application mobile.
+//! Carte d'un commentaire TikTok partagé depuis l'application mobile.
 //!
 //! L'application ne partage pas le commentaire lui-même : elle partage l'URL de
 //! la vidéo avec `share_comment_id`, le commentaire ciblé. TikTok ne rend ce
 //! commentaire ni dans le HTML de la page ni dans son API publique non signée ;
 //! le service tikwm (`/api/comment/list`) est la source interrogée, à défaut de
 //! signature mobile. Une fois le commentaire retrouvé, son auteur, son texte,
-//! ses likes, son avatar et ses éventuelles images sont rendus en PNG, puis
-//! téléchargés comme n'importe quel autre média par le pipeline.
+//! ses likes, son avatar et ses éventuelles images sont rendus autour du média
+//! de la vidéo (vidéo, diaporama photo ou carrousel), puis téléchargés comme
+//! n'importe quel autre média par le pipeline.
 
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -26,14 +27,18 @@ use crate::download::{download_card_image_png, DownloadResult};
 use crate::error::{MediaError, MediaErrorCode, MediaResult};
 use crate::http;
 use crate::resolve::tiktok;
+use crate::tweet_card::{CardVideoSlot, CardVideoTarget, RenderedCard};
 use crate::{source, MediaKind};
 
 /// Largeur fixe de la carte, alignée sur la carte de tweet.
 pub const CARD_WIDTH: u32 = 1080;
 /// Hauteur minimale d'une carte (un commentaire court garde une carte pleine).
 pub const CARD_MIN_HEIGHT: u32 = 420;
-/// Hauteur maximale : le texte est tronqué avant, les images peuvent être hautes.
+/// Hauteur maximale sans vidéo : le texte est tronqué avant, les images peuvent
+/// être hautes.
 pub const CARD_MAX_HEIGHT: u32 = 2800;
+/// Hauteur maximale avec la vidéo : une zone portrait de 1280 px s'ajoute.
+pub const CARD_VIDEO_MAX_HEIGHT: u32 = 3200;
 
 const PADDING: f32 = 48.0;
 const CONTENT_WIDTH: f32 = CARD_WIDTH as f32 - 2.0 * PADDING;
@@ -46,12 +51,19 @@ const COMMENT_TOP: f32 = HEADER_TOP + AVATAR_SIZE + 36.0;
 const COMMENT_TEXT_SIZE: f32 = 46.0;
 const COMMENT_TEXT_LINE_HEIGHT: f32 = 62.0;
 const COMMENT_TEXT_MAX_HEIGHT: f32 = 900.0;
+const VIDEO_MAX_WIDTH_PORTRAIT: f32 = 720.0;
+const VIDEO_MAX_HEIGHT_PORTRAIT: f32 = 1280.0;
+const VIDEO_MAX_WIDTH_LANDSCAPE: f32 = CONTENT_WIDTH;
+const VIDEO_MAX_HEIGHT_LANDSCAPE: f32 = 554.0;
+const VIDEO_RADIUS: u32 = 20;
+const VIDEO_GAP: f32 = 34.0;
 const IMAGE_GAP: f32 = 16.0;
 const IMAGE_RADIUS: f32 = 20.0;
 const ENGAGEMENT_HEIGHT: f32 = 44.0;
 const FOOTER_HEIGHT: f32 = 34.0;
 
 const BACKGROUND: (u8, u8, u8) = (0x17, 0x1b, 0x25);
+const VIDEO_BACKGROUND: (u8, u8, u8) = (0x0e, 0x11, 0x17);
 const TEXT_COLOR: (u8, u8, u8) = (0xe8, 0xeb, 0xf2);
 const SECONDARY_COLOR: (u8, u8, u8) = (0x9a, 0xa3, 0xb5);
 const SEPARATOR_COLOR: (u8, u8, u8) = (0x2b, 0x31, 0x40);
@@ -68,6 +80,15 @@ const COMMENT_REQUEST_INTERVAL: Duration = Duration::from_millis(1_200);
 const TIKWM_USER_AGENT: &str = concat!("LiveChat/", env!("CARGO_PKG_VERSION"));
 /// Nombre maximal d'images conservées dans la carte.
 const MAX_CARD_IMAGES: usize = 4;
+
+/// Dimensions du média TikTok affiché au-dessus du commentaire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommentVideo {
+    /// Largeur en pixels de la vidéo ou du diaporama.
+    pub width: u32,
+    /// Hauteur en pixels de la vidéo ou du diaporama.
+    pub height: u32,
+}
 
 /// Contenu prêt à rendre d'une carte de commentaire.
 #[derive(Clone, Debug, Default)]
@@ -92,6 +113,8 @@ pub struct TikTokCommentCard {
     pub images_png: Vec<Vec<u8>>,
     /// Auteur de la vidéo sous laquelle le commentaire a été publié.
     pub video_author: Option<String>,
+    /// Dimensions du média TikTok à incruster au-dessus du commentaire.
+    pub video: Option<CommentVideo>,
 }
 
 /// Réponse de tikwm pour une page de commentaires.
@@ -150,7 +173,15 @@ struct TikwmCommentUser {
 
 /// Rend la carte PNG d'un commentaire.
 pub fn render_tiktok_comment_card(comment: &TikTokCommentCard) -> MediaResult<Vec<u8>> {
-    render_at(comment, unix_now())
+    render_at(comment, unix_now()).map(|card| card.png)
+}
+
+/// Rend la carte avec la zone où incruster le média TikTok.
+fn render_tiktok_comment_card_with_slots(
+    comment: &TikTokCommentCard,
+    now: i64,
+) -> MediaResult<RenderedCard> {
+    render_at(comment, now)
 }
 
 /// Télécharge le commentaire partagé et rend sa carte comme média.
@@ -203,16 +234,62 @@ pub async fn download_tiktok_comment(
         }
     }
 
-    let png = render_tiktok_comment_card(&card)?;
-    let path = temp_dir.join("tiktok-comment.png");
-    std::fs::write(&path, &png).map_err(|error| {
-        MediaError::with_raw(
-            MediaErrorCode::TranscodeFailed,
-            "écriture de la carte de commentaire impossible",
-            error.to_string(),
+    // Le média de la vidéo est incrusté dans la carte. S'il échoue, le
+    // commentaire reste lisible en carte PNG plutôt que de disparaître.
+    let media_path =
+        match crate::download::download_tiktok_media(media_source, config, temp_dir, true).await {
+            Ok(media) => match crate::probe::probe(
+                &config.tools.ffprobe,
+                &media.path,
+                config.download.timeout,
+            )
+            .await
+            {
+                Ok(probe) if probe.has_video => {
+                    card.video = Some(CommentVideo {
+                        width: probe.width.unwrap_or(CARD_WIDTH),
+                        height: probe.height.unwrap_or(1920),
+                    });
+                    Some(media.path)
+                }
+                Ok(_) => {
+                    tracing::warn!("média TikTok sans flux vidéo, carte de commentaire sans média");
+                    None
+                }
+                Err(error) => {
+                    tracing::warn!("dimensions du média TikTok illisibles : {error}");
+                    None
+                }
+            },
+            Err(error) => {
+                tracing::warn!("média TikTok indisponible pour la carte de commentaire : {error}");
+                None
+            }
+        };
+
+    let rendered = render_tiktok_comment_card_with_slots(&card, unix_now())?;
+    let (path, kind, mime) = if let (Some(media_path), Some(_)) = (&media_path, &card.video) {
+        let video = crate::tweet_card_video::compose_tweet_card_video(
+            config,
+            temp_dir,
+            &rendered,
+            Some(media_path),
+            None,
         )
-    })?;
-    let size_bytes = png.len() as u64;
+        .await?;
+        (video, MediaKind::Video, "video/mp4")
+    } else {
+        let path = temp_dir.join("tiktok-comment.png");
+        std::fs::write(&path, &rendered.png).map_err(|error| {
+            MediaError::with_raw(
+                MediaErrorCode::TranscodeFailed,
+                "écriture de la carte de commentaire impossible",
+                error.to_string(),
+            )
+        })?;
+        (path, MediaKind::Image, "image/png")
+    };
+    let size_bytes = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
     let title = if !card.text.trim().is_empty() {
         card.text.trim().to_string()
     } else if card.author_handle.is_empty() {
@@ -222,8 +299,8 @@ pub async fn download_tiktok_comment(
     };
     Ok(DownloadResult {
         path,
-        kind: Some(MediaKind::Image),
-        mime: Some("image/png".to_string()),
+        kind: Some(kind),
+        mime: Some(mime.to_string()),
         size_bytes,
         source_url: media_source.canonical_url.clone(),
         title: Some(title),
@@ -253,6 +330,7 @@ impl TikTokCommentCard {
             avatar_png: None,
             images_png: Vec::new(),
             video_author: None,
+            video: None,
         }
     }
 }
@@ -343,13 +421,31 @@ fn comment_list_url(endpoint: &str, video_url: &str, count: u32, cursor: u64) ->
     format!("{}/list?{}", endpoint.trim_end_matches('/'), query.finish())
 }
 
-fn render_at(comment: &TikTokCommentCard, now: i64) -> MediaResult<Vec<u8>> {
+fn render_at(comment: &TikTokCommentCard, now: i64) -> MediaResult<RenderedCard> {
     with_text_engine(|engine| {
         let raw_text = normalized_text(&comment.text);
         let text = if raw_text.is_empty() {
             String::from("(commentaire vide)")
         } else {
             raw_text
+        };
+        let images: Vec<&[u8]> = comment
+            .images_png
+            .iter()
+            .filter(|png| decode_png(png).is_some())
+            .map(Vec::as_slice)
+            .take(MAX_CARD_IMAGES)
+            .collect();
+        let (boxes, grid_height) = image_grid(images.len());
+        let video_slot = comment.video.map(video_slot);
+        let text_max_height = if video_slot.is_some() {
+            if boxes.is_empty() {
+                620.0
+            } else {
+                420.0
+            }
+        } else {
+            COMMENT_TEXT_MAX_HEIGHT
         };
         let body = layout_body(
             engine,
@@ -361,27 +457,29 @@ fn render_at(comment: &TikTokCommentCard, now: i64) -> MediaResult<Vec<u8>> {
                 align: Alignment::Left,
             },
             CONTENT_WIDTH,
-            COMMENT_TEXT_MAX_HEIGHT,
+            text_max_height,
         );
-        let images: Vec<&[u8]> = comment
-            .images_png
-            .iter()
-            .filter(|png| decode_png(png).is_some())
-            .map(Vec::as_slice)
-            .take(MAX_CARD_IMAGES)
-            .collect();
-        let (boxes, grid_height) = image_grid(images.len());
 
-        let mut bottom = COMMENT_TOP + body.height + 34.0;
+        // La vidéo occupe le haut de la carte, sous l'en-tête auteur ; le texte
+        // du commentaire et ses images suivent.
+        let content_top = video_slot
+            .map(|slot| slot.y as f32 + slot.height as f32 + VIDEO_GAP)
+            .unwrap_or(COMMENT_TOP);
+        let mut bottom = content_top + body.height + 34.0;
         if !boxes.is_empty() {
             bottom += grid_height + 30.0;
         }
         let engagement_top = bottom;
         let separator_y = engagement_top + ENGAGEMENT_HEIGHT + 22.0;
         let footer_top = separator_y + 20.0;
+        let max_height = if video_slot.is_some() {
+            CARD_VIDEO_MAX_HEIGHT
+        } else {
+            CARD_MAX_HEIGHT
+        };
         let height = (footer_top + FOOTER_HEIGHT + 44.0)
             .ceil()
-            .clamp(CARD_MIN_HEIGHT as f32, CARD_MAX_HEIGHT as f32) as u32;
+            .clamp(CARD_MIN_HEIGHT as f32, max_height as f32) as u32;
 
         let mut pixmap = Pixmap::new(CARD_WIDTH, height).ok_or_else(|| {
             MediaError::new(
@@ -399,15 +497,28 @@ fn render_at(comment: &TikTokCommentCard, now: i64) -> MediaResult<Vec<u8>> {
 
         draw_brand(&mut pixmap, engine);
         draw_header(&mut pixmap, engine, comment, now);
+        if let Some(slot) = video_slot {
+            let _ = draw_rounded_rect(
+                &mut pixmap,
+                rect(
+                    slot.x as f32,
+                    slot.y as f32,
+                    slot.width as f32,
+                    slot.height as f32,
+                ),
+                slot.radius as f32,
+                VIDEO_BACKGROUND,
+            );
+        }
         draw_body(
             &mut pixmap,
             &body,
             engine,
-            (PADDING, COMMENT_TOP),
+            (PADDING, content_top),
             TEXT_COLOR,
         );
         if !boxes.is_empty() {
-            let image_top = COMMENT_TOP + body.height + 34.0;
+            let image_top = content_top + body.height + 34.0;
             for (png, box_rect) in images.iter().zip(boxes.iter()) {
                 let image_rect = rect(
                     PADDING + box_rect.left(),
@@ -427,14 +538,45 @@ fn render_at(comment: &TikTokCommentCard, now: i64) -> MediaResult<Vec<u8>> {
         );
         draw_footer(&mut pixmap, engine, comment, footer_top);
 
-        pixmap.encode_png().map_err(|error| {
+        let png = pixmap.encode_png().map_err(|error| {
             MediaError::with_raw(
                 MediaErrorCode::TranscodeFailed,
                 "encodage de la carte de commentaire impossible",
                 error.to_string(),
             )
+        })?;
+        Ok(RenderedCard {
+            png,
+            video_slots: video_slot.into_iter().collect(),
         })
     })
+}
+
+/// Place le média TikTok sous l'en-tête, centré et dans la limite de la carte.
+fn video_slot(video: CommentVideo) -> CardVideoSlot {
+    let width = video.width.max(1) as f32;
+    let height = video.height.max(1) as f32;
+    let (max_width, max_height) = if height > width {
+        (VIDEO_MAX_WIDTH_PORTRAIT, VIDEO_MAX_HEIGHT_PORTRAIT)
+    } else {
+        (VIDEO_MAX_WIDTH_LANDSCAPE, VIDEO_MAX_HEIGHT_LANDSCAPE)
+    };
+    let scale = (max_width / width).min(max_height / height);
+    let slot_width = even_pixels(width * scale);
+    let slot_height = even_pixels(height * scale);
+    CardVideoSlot {
+        x: (PADDING + (CONTENT_WIDTH - slot_width as f32) / 2.0).round() as u32,
+        y: COMMENT_TOP.round() as u32,
+        width: slot_width,
+        height: slot_height,
+        radius: VIDEO_RADIUS,
+        target: CardVideoTarget::Parent,
+    }
+}
+
+/// Arrondit une dimension à un nombre pair de pixels (attendu par yuv420p).
+fn even_pixels(value: f32) -> u32 {
+    ((value.floor() as u32) & !1).max(2)
 }
 
 fn draw_brand(pixmap: &mut Pixmap, engine: &mut TextEngine) {
@@ -852,6 +994,7 @@ mod tests {
             avatar_png: None,
             images_png: Vec::new(),
             video_author: Some("bingo83865".to_string()),
+            video: None,
         }
     }
 
@@ -904,11 +1047,59 @@ mod tests {
 
     #[test]
     fn renders_a_text_comment_card() {
-        let png = render_at(&sample(), 1_800_000_000).expect("carte rendue");
+        let png = render_tiktok_comment_card(&sample()).expect("carte rendue");
         let pixmap = Pixmap::decode_png(&png).expect("PNG décodable");
         assert_eq!(pixmap.width(), CARD_WIDTH);
         assert!(pixmap.height() >= CARD_MIN_HEIGHT);
         assert!(pixmap.height() <= CARD_MAX_HEIGHT);
+    }
+
+    #[test]
+    fn renders_the_video_above_the_comment() {
+        let mut comment = sample();
+        comment.video = Some(CommentVideo {
+            width: 1080,
+            height: 1920,
+        });
+        let card = render_at(&comment, 1_800_000_000).expect("carte rendue");
+        assert_eq!(card.video_slots.len(), 1);
+        let slot = card.video_slots[0];
+        assert_eq!((slot.width, slot.height), (720, 1280));
+        assert_eq!(slot.y, COMMENT_TOP as u32);
+        assert_eq!(slot.target, CardVideoTarget::Parent);
+        let pixmap = Pixmap::decode_png(&card.png).expect("PNG décodable");
+        assert!(pixmap.height() > COMMENT_TOP as u32 + slot.height);
+        assert!(pixmap.height() <= CARD_VIDEO_MAX_HEIGHT);
+
+        comment.video = Some(CommentVideo {
+            width: 1920,
+            height: 1080,
+        });
+        let card = render_at(&comment, 1_800_000_000).expect("carte paysage rendue");
+        assert_eq!(card.video_slots[0].width, CONTENT_WIDTH as u32);
+        assert!(card.video_slots[0].height <= 554);
+    }
+
+    #[test]
+    fn keeps_a_video_card_with_four_images_within_the_limit() {
+        let mut comment = sample();
+        comment.text = "Un commentaire assez long pour remplir la zone texte au-dessus des images, avec plusieurs phrases et des détails.".repeat(4);
+        comment.video = Some(CommentVideo {
+            width: 1080,
+            height: 1920,
+        });
+        for index in 0..4 {
+            comment.images_png.push(image_png(
+                900,
+                700,
+                Color::from_rgba8(30 + index as u8 * 50, 60, 180, 255),
+            ));
+        }
+        let card = render_at(&comment, 1_800_000_000).expect("carte vidéo et images rendue");
+        assert_eq!(card.video_slots.len(), 1);
+        let pixmap = Pixmap::decode_png(&card.png).expect("PNG décodable");
+        assert!(pixmap.height() > 2_800);
+        assert!(pixmap.height() <= CARD_VIDEO_MAX_HEIGHT);
     }
 
     #[test]
@@ -923,7 +1114,7 @@ mod tests {
                     Color::from_rgba8(20 + index as u8 * 40, 90, 200, 255),
                 ));
             }
-            let png = render_at(&comment, 1_800_000_000).expect("carte rendue");
+            let png = render_tiktok_comment_card(&comment).expect("carte rendue");
             let pixmap = Pixmap::decode_png(&png).expect("PNG décodable");
             assert_eq!(pixmap.width(), CARD_WIDTH);
         }
@@ -936,7 +1127,7 @@ mod tests {
         comment.likes = 1_200_000;
         comment.replies = 12_000;
         comment.verified = true;
-        let png = render_at(&comment, 1_800_000_000).expect("carte rendue");
+        let png = render_tiktok_comment_card(&comment).expect("carte rendue");
         let pixmap = Pixmap::decode_png(&png).expect("PNG décodable");
         assert!(pixmap.height() <= CARD_MAX_HEIGHT);
     }
@@ -945,7 +1136,7 @@ mod tests {
     fn renders_rtl_and_emoji_text() {
         let mut comment = sample();
         comment.text = "شكراً 🙏🏽 جربت هذا الكومنت 👌".to_string();
-        let png = render_at(&comment, 1_800_000_000).expect("carte rendue");
+        let png = render_tiktok_comment_card(&comment).expect("carte rendue");
         assert!(!png.is_empty());
     }
 
@@ -956,7 +1147,7 @@ mod tests {
         comment.likes = 0;
         comment.replies = 0;
         comment.created_at = None;
-        let png = render_at(&comment, 1_800_000_000).expect("carte rendue");
+        let png = render_tiktok_comment_card(&comment).expect("carte rendue");
         assert!(!png.is_empty());
     }
 
@@ -1005,8 +1196,23 @@ mod tests {
             cards.push((name, card));
         }
 
+        let mut portrait = sample();
+        portrait.text = "La vidéo est maintenant incrustée au-dessus du commentaire.".to_string();
+        portrait.video = Some(CommentVideo {
+            width: 1080,
+            height: 1920,
+        });
+        cards.push(("10-video-portrait".to_string(), portrait));
+        let mut landscape = sample();
+        landscape.text = "Même carte avec une vidéo au format paysage.".to_string();
+        landscape.video = Some(CommentVideo {
+            width: 1920,
+            height: 1080,
+        });
+        cards.push(("11-video-paysage".to_string(), landscape));
+
         for (name, comment) in cards {
-            let png = render_at(&comment, 1_800_000_000).expect("carte rendue");
+            let png = render_tiktok_comment_card(&comment).expect("carte rendue");
             let path = directory.join(format!("{name}.png"));
             std::fs::write(&path, png).expect("écriture de la carte");
             println!("{}", path.display());
@@ -1024,16 +1230,73 @@ mod tests {
         let download = download_tiktok_comment(&source, &comment_id, &config, temp.path())
             .await
             .expect("carte téléchargée");
-        assert_eq!(download.mime.as_deref(), Some("image/png"));
-        let png = std::fs::read(&download.path).expect("carte lisible");
-        let pixmap = Pixmap::decode_png(&png).expect("PNG décodable");
-        assert_eq!(pixmap.width(), CARD_WIDTH);
+        assert_eq!(download.kind, Some(MediaKind::Video));
+        assert_eq!(download.mime.as_deref(), Some("video/mp4"));
+        let probe = crate::probe::probe(
+            &config.tools.ffprobe,
+            &download.path,
+            config.download.timeout,
+        )
+        .await
+        .expect("vidéo de la carte lisible");
+        assert_eq!(probe.width, Some(CARD_WIDTH));
+        assert!(probe.height.unwrap_or(0) > 1_500);
+        assert!(probe.has_video);
         let directory =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tiktok-comment-gallery");
         std::fs::create_dir_all(&directory).expect("création de la galerie");
-        let target = directory.join("00-lien-utilisateur.png");
-        std::fs::write(&target, png).expect("écriture de la carte du lien");
-        println!("{}", target.display());
+        let video = directory.join("00-lien-utilisateur.mp4");
+        std::fs::copy(&download.path, &video).expect("copie de la carte vidéo");
+        let frame = directory.join("00-lien-utilisateur.png");
+        let status = std::process::Command::new(&config.tools.ffmpeg)
+            .args([
+                "-y",
+                "-hide_banner",
+                "-v",
+                "error",
+                "-i",
+                &video.display().to_string(),
+                "-frames:v",
+                "1",
+                &frame.display().to_string(),
+            ])
+            .status()
+            .expect("extraction de l'image de la carte");
+        assert!(status.success());
+        println!("{}", video.display());
+        println!("{}", frame.display());
+    }
+
+    #[tokio::test]
+    #[ignore = "réseau réel : carrousel photo TikTok"]
+    async fn renders_a_carousel_comment() {
+        let config = MediaConfig::default();
+        let canonical = "https://www.tiktok.com/@dar_py/photo/7345826946913258785?share_comment_id=7347337313477493505";
+        let comment_id = source::tiktok_comment_id(canonical).expect("identifiant du commentaire");
+        let temp = tempfile::tempdir().expect("dossier temporaire");
+        let media_source = source::MediaSource::from_canonical(canonical, canonical);
+        let download = download_tiktok_comment(&media_source, &comment_id, &config, temp.path())
+            .await
+            .expect("carte carrousel téléchargée");
+        assert_eq!(download.kind, Some(MediaKind::Video));
+        assert_eq!(download.mime.as_deref(), Some("video/mp4"));
+        let probe = crate::probe::probe(
+            &config.tools.ffprobe,
+            &download.path,
+            config.download.timeout,
+        )
+        .await
+        .expect("diaporama lisible");
+        assert_eq!(probe.width, Some(CARD_WIDTH));
+        assert!(probe.has_video);
+        assert!(probe.has_audio);
+        assert!(probe.duration_sec.unwrap_or(0.0) >= 20.0);
+        let directory =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tiktok-comment-gallery");
+        std::fs::create_dir_all(&directory).expect("création de la galerie");
+        let video = directory.join("12-carrousel-photo.mp4");
+        std::fs::copy(&download.path, &video).expect("copie du diaporama");
+        println!("{}", video.display());
     }
 
     #[tokio::test]
@@ -1053,7 +1316,7 @@ mod tests {
         let download = crate::download::download_source(&media_source, None, &config, temp.path())
             .await
             .expect("téléchargement de la carte");
-        assert_eq!(download.kind, Some(MediaKind::Image));
-        assert_eq!(download.mime.as_deref(), Some("image/png"));
+        assert_eq!(download.kind, Some(MediaKind::Video));
+        assert_eq!(download.mime.as_deref(), Some("video/mp4"));
     }
 }

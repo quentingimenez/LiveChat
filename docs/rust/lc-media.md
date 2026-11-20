@@ -234,11 +234,21 @@ ne terminait jamais.
 
 Un partage mobile de commentaire TikTok (`vm.tiktok.com/…` redirigé vers
 `/@auteur/video/<id>?share_comment_id=<commentaire>`) est rendu comme une carte
-PNG 1080 px, au même format sombre que la carte tweet : accent cyan/rose et
-libellé « COMMENTAIRE TIKTOK », avatar, nom, `@handle`, date relative française,
-texte du commentaire (46 px, hauteur bornée), grille d'images 1 à 4, cœur et
-compteur de « j'aime », bulle et nombre de réponses, pied « Commentaire partagé
-depuis TikTok ». La hauteur varie de 420 à 2800 px selon le texte et les images.
+1080 px, au même format sombre que la carte tweet : accent cyan/rose et libellé
+« COMMENTAIRE TIKTOK », avatar, nom, `@handle`, date relative française, texte
+du commentaire (46 px, hauteur bornée), grille d'images 1 à 4, cœur et compteur
+de « j'aime », bulle et nombre de réponses, pied « Commentaire partagé depuis
+TikTok ». La hauteur varie de 420 à 2800 px selon le texte et les images.
+
+La carte inclut le média TikTok sous l'en-tête auteur : la vidéo est sondée
+(`probe`), sa zone est calculée (portrait 720×1280 max, paysage 984×554 max,
+coins arrondis 20 px, centrée) puis incrustée par `compose_tweet_card_video`
+dans un MP4 1080 px avec l'audio d'origine. Les publications photo et carrousel
+sont d'abord assemblées en diaporama MP4 par `build_carousel_video` (3 s par
+image, musique d'origine quand elle existe), ce qui traite aussi une photo
+simple comme une vidéo. La hauteur de carte monte alors jusqu'à 3200 px. Si le
+média ou la sonde échoue, la carte reste une **image** PNG statique et
+l'ingestion continue.
 
 `tiktok_comment::download_tiktok_comment(source, comment_id, config, temp_dir)`
 interroge `resolve.tiktok_comment_endpoint` (tikwm, source tierce non
@@ -250,7 +260,9 @@ et images (URL CDN signées) sont téléchargés puis convertis en PNG par ffmpe
 Une API indisponible ou un commentaire absent des pages consultées fait échouer
 la carte sans casser l'ingestion : `download_tiktok` reprend la vidéo normale.
 Le titre du média contient le texte du commentaire, ce qui permet au serveur de
-calculer sa durée d'affichage (`apps/lc-server/src/media/display_duration.rs`).
+calculer sa durée d'affichage quand la carte retombe en image
+(`apps/lc-server/src/media/display_duration.rs`) ; une carte vidéo garde la
+durée du média TikTok.
 
 Les primitives de rendu communes (moteur parley, corps de texte, rectangles
 arrondis, avatar, image en couverture) sont dans `card_canvas`, partagé avec
@@ -449,11 +461,12 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
   en lignes façon X (1 photo 16:9, 2 côte à côte, 3-4 en grille), images citées en PNG,
   recadrage sur le focus suggéré, et absence de casse quand l'auteur, le texte ou les
   médias de la citation manquent.
-- Cartes commentaire TikTok : 8 tests unitaires (compteurs français, dates
+- Cartes commentaire TikTok : 10 tests unitaires (compteurs français, dates
   relatives, URL de page, carte texte, 0 à 4 images, texte long, RTL/emoji,
-  commentaire vide) et 2 tests `#[ignore]` — galerie de rendus écrite dans
-  `target/tiktok-comment-gallery/`, et parcours réseau réel lien court →
-  commentaire → carte.
+  commentaire vide, position de la zone vidéo portrait/paysage, carte vidéo
+  avec quatre images sous la limite) et 4 tests `#[ignore]` — galerie de rendus
+  écrite dans `target/tiktok-comment-gallery/`, lien court réel → carte vidéo,
+  commentaire partagé réel, et carrousel photo TikTok avec diaporama et audio.
 - `tests/offline.rs` : 7 tests sur fixtures (`tiktok_video.html`, `tiktok_photo.html`,
   `twitter_syndication.json`, `yt_dlp_dump.json`, `youtube_oembed.json`,
   `tiktok_oembed.json`).

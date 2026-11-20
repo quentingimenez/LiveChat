@@ -5,6 +5,8 @@
 //!   `durationSec` is ignored);
 //! - image or text only: the requested `durationSec`, else the guild
 //!   `defaultMediaTime`, else `DEFAULT_DURATION`;
+//! - tweet card image sans durée demandée : durée calculée à partir de la
+//!   quantité de texte (voir [`super::display_duration`]) ;
 //!
 //! then the guild cap (`maxMediaTime`) applies. L'offset de départ d'une URL YouTube est encodé
 //! dans un payload riche par la route : la durée du job est alors réduite
@@ -20,6 +22,7 @@ use lc_domain::enums::{JobStatus, MediaKind};
 use lc_domain::ids::{GuildId, PlaybackJobId};
 use time::UtcDateTime;
 
+use crate::media::display_duration::tweet_card_duration_sec;
 use crate::media::errors::MediaServiceResult;
 
 /// Spécification d'un job de lecture issu d'une requête d'ingestion.
@@ -115,14 +118,16 @@ fn resolve_duration(
     default_duration: i64,
     guild: Option<&lc_domain::entities::Guild>,
 ) -> i64 {
-    let guild_default = || {
-        guild
-            .and_then(|guild| guild.default_media_time)
-            .unwrap_or(default_duration)
-    };
+    let guild_default = guild
+        .and_then(|guild| guild.default_media_time)
+        .unwrap_or(default_duration);
     let mut duration = match spec.media {
         Some(asset) if !is_image => asset.duration_sec.unwrap_or(default_duration),
-        _ => spec.duration_sec.unwrap_or_else(guild_default),
+        Some(asset) => spec
+            .duration_sec
+            .or_else(|| tweet_card_duration_sec(asset, guild_default))
+            .unwrap_or(guild_default),
+        None => spec.duration_sec.unwrap_or(guild_default),
     };
 
     if let Some(max) = guild.and_then(|guild| guild.max_media_time) {
@@ -190,11 +195,28 @@ mod tests {
         kind: MediaKind,
         duration_sec: Option<i64>,
     ) -> MediaAsset {
+        insert_asset(
+            fixture,
+            kind,
+            duration_sec,
+            "https://example.com/video",
+            None,
+        )
+        .await
+    }
+
+    async fn insert_asset(
+        fixture: &Fixture,
+        kind: MediaKind,
+        duration_sec: Option<i64>,
+        source_url: &str,
+        source_title: Option<&str>,
+    ) -> MediaAsset {
         let asset = MediaAsset {
             id: MediaAssetId::new_v4(),
             source_hash: format!("hash-{}", MediaAssetId::new_v4().to_canonical()),
-            source_url: "https://example.com/video".into(),
-            source_title: None,
+            source_url: source_url.into(),
+            source_title: source_title.map(str::to_owned),
             kind,
             mime: "video/mp4".into(),
             duration_sec,
@@ -281,9 +303,18 @@ mod tests {
         media: Option<&MediaAsset>,
         explicit: Option<i64>,
     ) -> i64 {
+        duration_for_with_default(fixture, media, explicit, 30).await
+    }
+
+    async fn duration_for_with_default(
+        fixture: &Fixture,
+        media: Option<&MediaAsset>,
+        explicit: Option<i64>,
+        default_duration: u64,
+    ) -> i64 {
         create_for_ingest(
             &fixture.db,
-            30,
+            default_duration,
             JobSpec {
                 guild_id: fixture.guild_id.clone(),
                 media,
@@ -350,6 +381,64 @@ mod tests {
         .expect("job");
 
         assert_eq!(job.duration_sec, 30);
+    }
+
+    #[tokio::test]
+    async fn tweet_card_duration_follows_its_text_length() {
+        let fixture = fixture().await;
+        insert_guild(&fixture, None, None).await;
+        let tweet_url = "https://x.com/jeanne/status/1234567890";
+        let short =
+            insert_asset(&fixture, MediaKind::Image, None, tweet_url, Some("Bonjour")).await;
+        let long_text = "a".repeat(120);
+        let long = insert_asset(
+            &fixture,
+            MediaKind::Image,
+            None,
+            "https://x.com/jeanne/status/9876543210",
+            Some(&long_text),
+        )
+        .await;
+
+        assert_eq!(
+            duration_for_with_default(&fixture, Some(&short), None, 5).await,
+            6
+        );
+        assert_eq!(
+            duration_for_with_default(&fixture, Some(&long), None, 5).await,
+            15
+        );
+        // A requested duration still has priority over the text-based one.
+        assert_eq!(duration_for(&fixture, Some(&long), Some(9)).await, 9);
+    }
+
+    #[tokio::test]
+    async fn tweet_card_duration_respects_the_guild_default_and_cap() {
+        let fixture = fixture().await;
+        insert_guild(&fixture, Some(12), Some(18)).await;
+        let tweet_url = "https://x.com/jeanne/status/1234567890";
+        let short =
+            insert_asset(&fixture, MediaKind::Image, None, tweet_url, Some("Bonjour")).await;
+        let long_text = "a".repeat(240);
+        let long = insert_asset(
+            &fixture,
+            MediaKind::Image,
+            None,
+            "https://x.com/jeanne/status/9876543210",
+            Some(&long_text),
+        )
+        .await;
+
+        // The guild default is a floor: 6 s computed, but 12 s configured.
+        assert_eq!(
+            duration_for_with_default(&fixture, Some(&short), None, 5).await,
+            12
+        );
+        // The guild cap still wins over the text-based duration (30 s > 18 s).
+        assert_eq!(
+            duration_for_with_default(&fixture, Some(&long), None, 5).await,
+            18
+        );
     }
 
     #[tokio::test]

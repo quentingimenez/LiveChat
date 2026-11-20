@@ -48,6 +48,7 @@ use uuid::Uuid;
 
 use super::hub::{self, AuthError, Hub, HubEngine, OutFrame, TOO_MANY_CONNECTIONS_REASON};
 use crate::http::overlay::guild::guild_icon_url;
+use crate::media::display_duration::tweet_card_duration_sec;
 
 /// Borne dure de transport de l'upgrade : volontairement supérieure à la
 /// limite applicative (64 Kio) afin de pouvoir répondre `4408` aux trames
@@ -910,14 +911,16 @@ async fn handle_client_message(
             let (author_name, author_image) = trigger_author(db, context.client_id).await;
             let author_name = author_name.or_else(|| item.created_by_name.clone());
             // An image has no length of its own: the time chosen for the item,
-            // else the guild default. The guild cap applies at dispatch.
+            // else the guild default (a tweet card scales with its text). The
+            // guild cap applies at dispatch.
             let duration_sec = if media.kind == MediaKind::Image {
                 match item.display_duration_sec {
                     Some(seconds) => seconds,
                     None => {
                         let (_, default_media_time, _) =
                             hub.guild_defaults(&context.guild_id).await;
-                        i64::try_from(default_media_time).unwrap_or(i64::MAX)
+                        let guild_default = i64::try_from(default_media_time).unwrap_or(i64::MAX);
+                        tweet_card_duration_sec(&media, guild_default).unwrap_or(guild_default)
                     }
                 }
             } else {

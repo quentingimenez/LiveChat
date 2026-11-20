@@ -202,6 +202,9 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
   retombe sur le PNG si la composition échoue). Replis : vidéo brute puis première
   photo du payload si le rendu de la carte échoue, puis `yt-dlp`. Le carrousel
   Twitter a disparu : les photos passent toujours par la carte.
+  La durée d'affichage d'une carte tweet image n'est pas portée par le média :
+  le serveur la déduit de la quantité de texte stockée dans `source_title`
+  (voir `docs/rust/server-ingest.md`, §7).
 - `DownloadResult { path, kind, mime, size_bytes, source_url, title }`.
 
 ### Cartes tweet (`tweet_card`, `tweet_card_video`)

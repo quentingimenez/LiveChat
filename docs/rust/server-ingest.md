@@ -44,6 +44,7 @@ apps/lc-server/src/
     ├── assets.rs    cycle PROCESSING/READY/FAILED + réutilisation + TTL
     ├── quotas.rs    budgets cache (LRU) et board média
     ├── board.rs     ajout au board média (épinglage 100 ans)
+    ├── display_duration.rs  durée des cartes tweet selon leur texte
     ├── jobs.rs      création du PlaybackJob (règles de durée legacy)
     └── service.rs   MediaService : pipeline lc-media + persistance
 ```
@@ -395,7 +396,10 @@ board (aucun `board.changed` dans ce second cas).
 
 1. durée candidate = durée explicite → durée de l'asset (médias non-image) →
    `DEFAULT_DURATION` du serveur si média → `default_media_time` de la guilde →
-   défaut serveur ;
+   défaut serveur ; pour une carte tweet image sans durée explicite, la durée
+   est calculée à partir de la quantité de texte du tweet (5 s + 1 s par
+   tranche de 12 caractères, plafond 30 s ; un titre tronqué prend le plafond),
+   sans descendre sous le défaut de guilde ;
 2. clamp au `max_media_time` de la guilde s'il est défini ;
 3. si média non-image et offset YouTube intégré au texte : durée réduite de
    l'offset, `resume_offset_sec` = offset ;

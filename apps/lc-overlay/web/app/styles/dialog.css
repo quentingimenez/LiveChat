@@ -335,6 +335,13 @@
   min-width: 0;
 }
 
+/* The copy button closes the field on the right edge, for the server URL and
+   for the code alike: the URL fills the row, the code does not. */
+.profile-dialog .profile-field-value > .profile-copy {
+  flex: none;
+  margin-left: auto;
+}
+
 /* The server URL keeps the UI font: it must stay readable and wrap anywhere. */
 .profile-dialog .profile-value {
   flex: 1;

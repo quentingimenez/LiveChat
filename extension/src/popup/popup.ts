@@ -1,6 +1,8 @@
 import { INVALID_DURATION_MESSAGE, parseDisplayDuration } from '../lib/duration';
 import { MESSAGE_TYPES, type ActionResponse, type ComposeStateResponse } from '../lib/messages';
+import { initTheme } from '../lib/theme';
 import '../styles/popup.css';
+import '../styles/theme-light.css';
 
 const form = document.getElementById('compose-form') as HTMLFormElement;
 const composeView = document.getElementById('compose-view') as HTMLDivElement;
@@ -180,4 +182,7 @@ const openOptions = (): void => {
 openOptionsButton.addEventListener('click', openOptions);
 setupOpenOptionsButton.addEventListener('click', openOptions);
 
+// Le thème est déjà posé par theme-guard.js : ici on le garde en phase avec le
+// réglage partagé (storage) et avec le thème du navigateur.
+void initTheme();
 void loadComposeState();

@@ -1,4 +1,5 @@
 import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModalTiktok';
+import { initInpageTheme } from './inpage-theme';
 
 const STYLE_ID = 'lce-tiktok-style';
 const INLINE_BUTTON_ID = 'lce-tiktok-inline-button';
@@ -1757,6 +1758,7 @@ const startObservedScanner = (scan: () => void | Promise<void>): void => {
   queueScan();
 };
 
+void initInpageTheme();
 registerActiveMediaUrlListener();
 registerToastListener();
 startObservedScanner(scanTikTokPage);

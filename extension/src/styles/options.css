@@ -12,10 +12,14 @@
   --text-faint: #717a93;
   --accent: #e9ebf3;
   --accent-ink: #171b25;
+  --accent-hover: #ffffff;
   --amber: #f2b544;
+  --amber-ink: #2a1d02;
+  --amber-hover: #f7c466;
   --red: #ec6a70;
   --green: #5fc9a3;
   --blue: #7fa8f5;
+  --shadow-card: 0 16px 36px rgba(0, 0, 0, 0.35);
 }
 
 * {
@@ -50,7 +54,7 @@ body {
   border-radius: 16px;
   background: var(--surface);
   border: 1px solid var(--line);
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-card);
   padding: 20px 20px 16px;
 }
 
@@ -109,6 +113,11 @@ body {
 
 .manual-panel {
   border-color: var(--line);
+}
+
+/* Le thème vaut pour les deux panneaux : il occupe la ligne entière. */
+.theme-panel {
+  grid-column: 1 / -1;
 }
 
 .options-form {
@@ -229,7 +238,7 @@ body {
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #ffffff;
+  background: var(--accent-hover);
 }
 
 .btn-ghost {

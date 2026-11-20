@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LiveChat Extension - Options</title>
+    <script src="/theme-guard.js"></script>
   </head>
   <body>
     <main class="options-shell">
@@ -77,6 +78,26 @@
               <button id="test-button" class="btn btn-ghost" type="button">Tester la config</button>
             </div>
           </form>
+
+          <section class="options-panel theme-panel">
+            <div class="panel-head">
+              <p class="panel-tag">Apparence</p>
+              <h2 class="section-title">Thème</h2>
+              <p class="section-subtitle">
+                S’applique au popup, à cette page et aux fenêtres LiveChat injectées dans les pages.
+              </p>
+            </div>
+
+            <div class="field-group">
+              <label class="field-label" for="theme-select">Thème de l’interface</label>
+              <select id="theme-select" class="field-input">
+                <option value="dark">Sombre</option>
+                <option value="light">Clair</option>
+                <option value="system">Système</option>
+              </select>
+              <p class="field-hint">« Système » suit le thème clair/sombre du navigateur.</p>
+            </div>
+          </section>
         </section>
 
         <p id="options-status" class="status status-info hidden"></p>

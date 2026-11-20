@@ -9,8 +9,16 @@ import {
   type ExtensionSettings,
 } from '../lib/settings';
 import { normalizeApiUrl } from '../lib/url';
+import {
+  applyThemePreference,
+  initTheme,
+  normalizeThemePreference,
+  readThemePreference,
+  saveThemePreference,
+} from '../lib/theme';
 import { toNonEmptyString } from '../lib/utils';
 import '../styles/options.css';
+import '../styles/theme-light.css';
 
 interface PairingConsumeSuccessResponse {
   apiBaseUrl?: unknown;
@@ -41,6 +49,7 @@ const permissionStateNode = document.getElementById('permission-state') as HTMLP
 const saveButton = document.getElementById('save-button') as HTMLButtonElement;
 const testButton = document.getElementById('test-button') as HTMLButtonElement;
 const statusNode = document.getElementById('options-status') as HTMLParagraphElement;
+const themeSelect = document.getElementById('theme-select') as HTMLSelectElement | null;
 
 const STATUS_CLASS_MAP = {
   info: 'status-info',
@@ -391,4 +400,22 @@ manualApiUrlInput.addEventListener('input', () => {
   void refreshPermissionState();
 });
 
+// Thème : la préférence est partagée par le popup et les widgets injectés, le
+// sélecteur ne fait que la refléter puis l'enregistrer.
+const syncThemeControl = async (): Promise<void> => {
+  if (!themeSelect) {
+    return;
+  }
+
+  themeSelect.value = await readThemePreference();
+};
+
+themeSelect?.addEventListener('change', () => {
+  const preference = normalizeThemePreference(themeSelect.value);
+  void saveThemePreference(preference);
+  void applyThemePreference(preference);
+});
+
+void initTheme();
+void syncThemeControl();
 void loadExistingSettings();

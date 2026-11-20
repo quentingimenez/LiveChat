@@ -1,4 +1,5 @@
 import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModalYoutube';
+import { initInpageTheme } from './inpage-theme';
 
 const STYLE_ID = 'lce-youtube-style';
 const BUTTON_ATTRIBUTE = 'data-lce-youtube-button';
@@ -477,12 +478,14 @@ const inpageStyles = `
   letter-spacing: 0.02em;
   cursor: pointer;
   pointer-events: auto;
-  background: #272727;
-  color: #fff;
+  /* Puce neutre : elle emprunte la couleur du texte de la page et un fond
+     translucide, donc elle reste lisible sur YouTube clair comme sombre. */
+  background: rgba(127, 127, 127, 0.16);
+  color: inherit;
   transition: transform 120ms ease, background-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
 }
 .lce-button-youtube:hover {
-  background: #272727;
+  background: rgba(127, 127, 127, 0.28);
 }
 .lce-button-youtube:disabled {
   opacity: 1;
@@ -498,15 +501,19 @@ const inpageStyles = `
   width: 48px;
   height: 48px;
 }
-.lce-button-youtube-shorts-floating {
-  position: fixed;
-  z-index: 2147483646;
-  pointer-events: auto !important;
-}
+.lce-button-youtube-shorts-floating,
 .lce-button-youtube-watch-floating {
   position: fixed;
   z-index: 2147483646;
   pointer-events: auto !important;
+  /* Posée sur le lecteur, la puce garde son fond sombre quel que soit le
+     thème de la page. */
+  background: #272727;
+  color: #fff;
+}
+.lce-button-youtube-shorts-floating:hover,
+.lce-button-youtube-watch-floating:hover {
+  background: #303030;
 }
 .lce-youtube-shorts-slot {
   display: flex;
@@ -1524,5 +1531,6 @@ const startObservedScanner = (scan: () => void | Promise<void>): void => {
   queueScan();
 };
 
+void initInpageTheme();
 registerToastListener();
 startObservedScanner(scanYoutubeTargets);

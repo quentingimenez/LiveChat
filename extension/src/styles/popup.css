@@ -6,17 +6,21 @@
   --surface: #1e2330;
   --surface-strong: #171b25;
   --surface-soft: #171b25;
+  --surface-raised: #262c3c;
   --line: #3a4259;
   --text-main: #e9ebf3;
   --text-muted: #a3abc2;
   --text-faint: #717a93;
   --accent: #e9ebf3;
   --accent-ink: #171b25;
+  --accent-hover: #ffffff;
   --amber: #f2b544;
   --amber-ink: #2a1d02;
+  --amber-hover: #f7c466;
   --red: #ec6a70;
   --green: #5fc9a3;
   --blue: #7fa8f5;
+  --shadow-card: 0 12px 28px rgba(0, 0, 0, 0.35);
 }
 
 body {
@@ -39,7 +43,7 @@ body {
   border-radius: 12px;
   background: var(--surface);
   border: 1px solid var(--line);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-card);
   padding: 14px;
 }
 
@@ -174,7 +178,7 @@ body {
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #ffffff;
+  background: var(--accent-hover);
 }
 
 .btn-air {
@@ -183,7 +187,7 @@ body {
 }
 
 .btn-air:hover:not(:disabled) {
-  background: #f7c466;
+  background: var(--amber-hover);
 }
 
 .btn-ghost {
@@ -193,7 +197,7 @@ body {
 }
 
 .btn-ghost:hover:not(:disabled) {
-  background: #262c3c;
+  background: var(--surface-raised);
 }
 
 .status {

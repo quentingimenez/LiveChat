@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -12,6 +13,7 @@ import {
   MAX_RATIO,
   MIN_RATIO,
   ROW_PX,
+  TITLE_LINES,
   TITLE_PX,
 } from '../../web/app/core/masonry.js';
 
@@ -45,4 +47,30 @@ test('cardSpan covers the thumbnail, the title and the gap', () => {
 
 test('cardStyle sets the ratio and the span', () => {
   assert.equal(cardStyle(1), `--ratio: 1.0000; --span: ${cardSpan(1)}`);
+});
+
+// The title block is what keeps the masonry columns aligned: the CSS clamps the
+// title to TITLE_LINES lines and the JS must reserve their height (13 px,
+// line-height 1.3, plus the 6 px top margin). A drift makes cards overlap.
+test('le titre de carte réserve exactement les lignes affichées', () => {
+  assert.equal(TITLE_LINES, 2);
+  const needed = TITLE_LINES * 13 * 1.3 + 6;
+  assert.ok(TITLE_PX >= needed, `TITLE_PX ${TITLE_PX} < ${needed}`);
+  assert.ok(TITLE_PX < needed + 8, `TITLE_PX ${TITLE_PX} réserve trop de vide`);
+});
+
+test('board.css borne le titre au même nombre de lignes que le masonry', () => {
+  const css = readFileSync(new URL('../../web/app/styles/board.css', import.meta.url), 'utf8');
+  const rule = /([^{}]+)\{([^{}]*)\}/g;
+  let match;
+  let title = null;
+  while ((match = rule.exec(css)) !== null) {
+    if (match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim() === '.card-title') {
+      title = match[2];
+    }
+  }
+  assert.ok(title, '.card-title doit exister dans board.css');
+  assert.match(title, new RegExp(`-webkit-line-clamp:\\s*${TITLE_LINES}\\b`));
+  assert.match(title, /line-height:\s*1\.3\b/);
+  assert.match(title, /min-height:\s*2\.6em\b/);
 });

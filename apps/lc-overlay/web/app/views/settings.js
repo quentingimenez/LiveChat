@@ -16,7 +16,7 @@
 import { run } from '../core/api.js';
 import { acceleratorFromEvent, acceleratorLabel, ALTGR_HINT, BARE_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import { resizeAvatar } from '../core/avatar.js';
-import { avatarNode, h, resetOnDoubleClick } from '../core/dom.js';
+import { avatarNode, h, icon, registerIcons, resetOnDoubleClick, SLIDER_RESET_HINT } from '../core/dom.js';
 import { invoke, listen } from '../core/ipc.js';
 import { DEFAULT_VOLUME_PERCENT } from '../core/sound.js';
 import { guildLabel, state } from '../core/state.js';
@@ -25,7 +25,7 @@ import { notify } from '../core/toast.js';
 import { currentUpdateStatus, setUpdateStatus } from '../core/update-status.js';
 import { applyGuilds } from '../data.js';
 import { renderHeader } from './header.js';
-import { renderRail } from './rail.js';
+import { renderRail, selectGuild } from './rail.js';
 import { renderView } from './view.js';
 
 // Where a media sits in the zone when it does not have the zone's shape.
@@ -53,6 +53,9 @@ const SHORTCUTS = [
 // dark board, Ardoise on the light one (docs/brand/README.md).
 const LOGO_URL = new URL('../assets/logo.svg', import.meta.url).href;
 const LOGO_LIGHT_URL = new URL('../assets/logo-light.svg', import.meta.url).href;
+
+// The shared icon set has no « back » chevron; the page head needs one.
+registerIcons({ back: 'M15 6l-6 6 6 6' });
 
 const SLIDER_DEBOUNCE_MS = 250;
 const PREVIEW_FRAME_MS = 16;
@@ -249,7 +252,46 @@ export function previewLayout(changes, guildId = null) {
 // ------------------------------------------------------------------ rendering
 
 export function section(title, ...children) {
-  return h('section', { class: 'settings-section' }, h('h3', null, title), ...children.flat(Infinity));
+  const id = sectionId(title);
+  return h(
+    'section',
+    { class: 'settings-section', 'aria-labelledby': id },
+    h('h3', { class: 'settings-title', id }, title),
+    ...children.flat(Infinity),
+  );
+}
+
+// Accent- and case-insensitive id, so a section can name the heading it holds.
+function sectionId(title) {
+  return `settings-${title
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')}`;
+}
+
+// One sentence saying what the section sets, under its title.
+export function sectionDesc(text) {
+  return h('p', { class: 'settings-desc' }, text);
+}
+
+// These sections save as the control is used: they say so instead of ending
+// with a save button.
+export function immediateNote() {
+  return h('p', { class: 'settings-tag' }, 'Appliqué immédiatement');
+}
+
+// An explanation, inside the control column of the control it belongs to.
+// The wrapper spans the flex line so the sentence always starts a new line
+// under its control, while `--measure` keeps it readable.
+export function hint(text) {
+  return h('div', { class: 'settings-hint-wrap' }, h('p', { class: 'settings-hint' }, text));
+}
+
+// Boolean setting: the row label names it, `.switch` draws the state.
+export function switchRow(label, input, id, text) {
+  return controlRow(label, [h('label', { class: 'switch' }, input), text ? hint(text) : null], id);
 }
 
 export function controlRow(label, control, id) {
@@ -316,7 +358,7 @@ function renderDisplay(settings) {
     'select',
     {
       id: 'settings-screen',
-      class: 'field',
+      class: 'field is-long',
       disabled: placing,
       // The overlay moves once the screen is saved: preview it there.
       onChange: (event) =>
@@ -342,7 +384,7 @@ function renderDisplay(settings) {
         h('span', { class: 'settings-zone' }, zoneSummary(zone, selectedDisplay(settings, displays))),
         h(
           'button',
-          { class: 'btn is-air', type: 'button', disabled: startingPlacement, onClick: startPlacement },
+          { class: 'btn is-primary', type: 'button', disabled: startingPlacement, onClick: startPlacement },
           startingPlacement ? 'Ouverture…' : 'Placer sur l’écran',
         ),
         isWholeScreen(zone)
@@ -379,10 +421,11 @@ function renderDisplay(settings) {
     onChange: (event) => applyPatch({ showText: event.target.checked }),
   });
 
+  // Off by default: only an explicit `true` turns hover previews on.
   const hoverDetails = h('input', {
     id: 'settings-hover-details',
     type: 'checkbox',
-    checked: settings.hoverDetails !== false,
+    checked: settings.hoverDetails === true,
     onChange: (event) => applyPatch({ hoverDetails: event.target.checked }),
   });
 
@@ -394,20 +437,37 @@ function renderDisplay(settings) {
 
   return section(
     'Affichage',
-    controlRow('Écran', [screen, identify], 'settings-screen'),
-    controlRow('Zone d’affichage', zoneControls),
-    h(
-      'p',
-      { class: 'settings-hint is-under' },
-      placing
-        ? 'Déplace la zone et tire ses coins sur l’écran de l’overlay, puis valide (Entrée) ou annule (Échap).'
-        : 'Les médias, leur auteur et leur légende restent dans cette zone. Place-la directement sur l’écran, comme une fenêtre.',
+    sectionDesc('Où et comment les médias s’affichent sur ton stream.'),
+    immediateNote(),
+    controlRow(
+      'Écran',
+      [
+        screen,
+        identify,
+        hint('Affiche un numéro sur chaque écran pendant quelques secondes.'),
+      ],
+      'settings-screen',
     ),
+    controlRow('Zone d’affichage', [
+      ...zoneControls,
+      hint(
+        placing
+          ? 'Déplace la zone et tire ses coins sur l’écran de l’overlay, puis valide (Entrée) ou annule (Échap).'
+          : 'Les médias, leur auteur et leur légende restent dans cette zone. Place-la directement sur l’écran, comme une fenêtre.',
+      ),
+    ]),
     controlRow('Alignement dans la zone', alignment, 'settings-align'),
-    controlRow('Afficher le texte des médias', showText, 'settings-show-text'),
-    controlRow('Afficher les détails au survol', hoverDetails, 'settings-hover-details'),
-    h('p', { class: 'settings-hint is-under' }, 'Sinon, les détails s’ouvrent seulement au clic.'),
-    controlRow('Média de test', testButton),
+    switchRow('Texte des médias', showText, 'settings-show-text'),
+    switchRow(
+      'Ouvrir l’aperçu au survol',
+      hoverDetails,
+      'settings-hover-details',
+      'Désactivé : clique une carte pour ouvrir l’aperçu.',
+    ),
+    controlRow('Média de test', [
+      testButton,
+      hint('Vérifie que les médias s’affichent et que le son sort.'),
+    ]),
   );
 }
 
@@ -428,24 +488,33 @@ function renderSound(settings) {
   const guilds = Array.isArray(state.guilds) ? state.guilds : [];
   return section(
     'Son',
-    controlRow('Tout mettre en pause', generalMute, 'settings-general-mute'),
-    controlRow('Couper le son des médias', mediaMute, 'settings-media-mute'),
-    h('p', { class: 'settings-hint is-under' }, 'Les médias restent affichés, sans leur son. La pause générale, elle, ferme les connexions : plus rien n’est reçu ni affiché.'),
+    sectionDesc('Le son de tous tes overlays, guilde par guilde.'),
+    immediateNote(),
     controlRow(
       'Volume général',
-      rangeControl({
-        id: 'settings-volume',
-        min: 0,
-        max: 100,
-        value: Math.round(volume * 100),
-        format: (value) => `${value} %`,
-        defaultValue: DEFAULT_VOLUME_PERCENT,
-        onInput: (value) => debounce('volume', () => applyPatch({ volume: value / 100 })),
-      }),
+      [
+        ...rangeControl({
+          id: 'settings-volume',
+          min: 0,
+          max: 100,
+          value: Math.round(volume * 100),
+          format: (value) => `${value} %`,
+          defaultValue: DEFAULT_VOLUME_PERCENT,
+          onInput: (value) => debounce('volume', () => applyPatch({ volume: value / 100 })),
+        }),
+        hint(SLIDER_RESET_HINT),
+      ],
       'settings-volume',
     ),
+    switchRow('Son coupé', mediaMute, 'settings-media-mute', 'Les médias restent affichés, sans leur son.'),
+    switchRow(
+      'Tout mettre en pause',
+      generalMute,
+      'settings-general-mute',
+      'Ferme les connexions : plus rien n’est reçu ni affiché.',
+    ),
     guilds.length === 0
-      ? h('p', { class: 'settings-hint' }, 'Aucune guilde rejointe pour le moment.')
+      ? hint('Aucune guilde rejointe pour le moment.')
       : [
           h('p', { class: 'settings-subtitle' }, 'Volume par guilde'),
           guilds.map((guild) => renderGuildVolume(guild, settings)),
@@ -472,7 +541,7 @@ function renderGuildVolume(guild, settings) {
   });
   const sliderId = `settings-guild-volume-${guildId}`;
   // Same grid as the rows above, so the guild slider and its value line up
-  // with « Volume général »; the guild mute follows the value.
+  // with « Volume général »; the guild switches follow the value.
   return h(
     'div',
     { class: 'settings-row' },
@@ -480,7 +549,7 @@ function renderGuildVolume(guild, settings) {
     h(
       'div',
       { class: 'settings-control' },
-      rangeControl({
+      ...rangeControl({
         id: sliderId,
         min: 0,
         max: 100,
@@ -500,8 +569,9 @@ function renderShortcuts(settings) {
   const shortcuts = settings.shortcuts || {};
   return section(
     'Raccourcis',
+    sectionDesc('Des touches pour agir sur l’overlay sans quitter ton jeu.'),
     SHORTCUTS.map(([action, label]) => renderShortcutRow(action, label, shortcuts[action] || null)),
-    h('p', { class: 'settings-hint' }, ALTGR_HINT),
+    hint(ALTGR_HINT),
   );
 }
 
@@ -573,10 +643,11 @@ function renderProfile(settings) {
       }
     },
   });
+  const pick = h('button', { class: 'btn', type: 'button', onClick: () => file.click() }, 'Changer l’avatar');
   const remove = h(
     'button',
     {
-      class: 'btn is-quiet',
+      class: 'btn is-quiet is-danger',
       type: 'button',
       disabled: !avatar,
       onClick: async () => {
@@ -588,31 +659,23 @@ function renderProfile(settings) {
     },
     'Retirer l’avatar',
   );
+  // The avatar sits in the label column, the field and its buttons in the
+  // control column: the name lines up with every other setting.
   return section(
     'Profil',
+    sectionDesc('Ton pseudo et ton avatar par défaut, dans chaque guilde que tu rejoins.'),
     h(
       'div',
-      { class: 'settings-profile' },
-      preview,
+      { class: 'settings-row' },
       h(
         'div',
-        { class: 'settings-profile-fields' },
-        h('label', { class: 'settings-field-label', for: 'settings-profile-name' }, 'Pseudo par défaut'),
-        name,
-        h(
-          'div',
-          { class: 'settings-control is-wrap' },
-          h('button', { class: 'btn', type: 'button', onClick: () => file.click() }, 'Choisir un avatar'),
-          remove,
-          file,
-        ),
+        { class: 'settings-profile-id' },
+        preview,
+        h('label', { class: 'settings-label', for: 'settings-profile-name' }, 'Pseudo'),
       ),
+      h('div', { class: 'settings-control' }, name, pick, remove, file),
     ),
-    h(
-      'p',
-      { class: 'settings-hint' },
-      'Ce pseudo et cet avatar servent par défaut aux prochaines guildes que tu rejoins. Chaque guilde a son propre profil, modifiable dans « Mon profil ».',
-    ),
+    hint('Chaque guilde garde son propre profil, modifiable dans « Mon profil ».'),
   );
 }
 
@@ -625,7 +688,14 @@ function renderStartup(settings) {
   });
   return section(
     'Démarrage',
-    controlRow('Lancer LiveChat au démarrage de Windows', autoStart, 'settings-auto-start'),
+    sectionDesc('LiveChat s’ouvre avec Windows, pour que tes overlays soient prêts.'),
+    immediateNote(),
+    switchRow(
+      'Lancer avec Windows',
+      autoStart,
+      'settings-auto-start',
+      'Sans avoir à lancer LiveChat toi-même après chaque redémarrage.',
+    ),
   );
 }
 
@@ -646,8 +716,9 @@ function renderAppearance() {
   theme.value = currentThemePreference();
   return section(
     'Apparence',
-    controlRow('Thème de la board', theme, 'settings-theme'),
-    h('p', { class: 'settings-hint' }, '« Système » suit le thème clair/sombre de Windows.'),
+    sectionDesc('Le thème des fenêtres LiveChat et de la board.'),
+    immediateNote(),
+    controlRow('Thème', [theme, hint('« Système » suit le thème clair/sombre de Windows.')], 'settings-theme'),
   );
 }
 
@@ -669,6 +740,7 @@ function renderAbout(settings) {
   const message = updateError || update.message;
   return section(
     'À propos',
+    sectionDesc('La version installée et ses mises à jour.'),
     h(
       'div',
       { class: 'settings-about' },
@@ -680,8 +752,25 @@ function renderAbout(settings) {
         h('p', { class: 'meta' }, `Version ${settings.version || '—'}`),
       ),
     ),
-    h('div', { class: 'settings-control is-wrap' }, button),
-    message ? h('p', { class: 'settings-hint' }, message) : null,
+    h('div', { class: 'settings-control' }, button),
+    message ? hint(message) : null,
+  );
+}
+
+// Page head, shared by the three states of the page (loaded, loading,
+// unavailable): the way back to the guild or board, then what the page is.
+function renderHead() {
+  return h(
+    'div',
+    { class: 'settings-head' },
+    h(
+      'button',
+      { class: 'btn is-quiet settings-back', type: 'button', onClick: () => selectGuild(state.activeGuildId) },
+      icon('back'),
+      'Retour',
+    ),
+    h('h2', null, 'Paramètres'),
+    h('p', { class: 'settings-intro' }, 'Réglages de cet appareil, appliqués à tous tes overlays.'),
   );
 }
 
@@ -691,7 +780,7 @@ export function renderSettings() {
       return h(
         'div',
         { class: 'settings' },
-        h('div', { class: 'settings-head' }, h('h2', null, 'Paramètres')),
+        renderHead(),
         h(
           'div',
           { class: 'empty' },
@@ -701,23 +790,15 @@ export function renderSettings() {
         ),
       );
     }
-    return h(
-      'div',
-      { class: 'settings' },
-      h('div', { class: 'settings-head' }, h('h2', null, 'Paramètres')),
-      h('p', { class: 'meta' }, 'Chargement des paramètres…'),
-    );
+    return h('div', { class: 'settings' }, renderHead(), h('p', { class: 'meta' }, 'Chargement des paramètres…'));
   }
   const settings = deviceSettings;
+  // The order of the sections is fixed (theme.test.mjs pins Démarrage,
+  // Apparence and À propos): Apparence stays between the two.
   return h(
     'div',
     { class: 'settings' },
-    h(
-      'div',
-      { class: 'settings-head' },
-      h('h2', null, 'Paramètres'),
-      h('p', { class: 'meta' }, 'Réglages de cet appareil, appliqués à tous tes overlays.'),
-    ),
+    renderHead(),
     renderDisplay(settings),
     renderSound(settings),
     renderShortcuts(settings),

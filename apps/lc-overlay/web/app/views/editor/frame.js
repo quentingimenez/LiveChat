@@ -28,6 +28,19 @@ function isTyping(target) {
   return !['range', 'checkbox', 'color', 'button'].includes(target.type);
 }
 
+// The bar quotes the title. A title is free text and may already carry its own
+// guillemets: quoting it unconditionally adds a second closing one (« Bruh » »).
+// Only the missing quote is added, so the title itself is never altered.
+function titleLabel(title) {
+  const text = String(title ?? '');
+  if (!text) {
+    return 'Modifier le média';
+  }
+  const open = text.startsWith('«') ? '' : `«\u00A0`;
+  const close = text.endsWith('»') ? '' : `\u00A0»`;
+  return `Modifier ${open}${text}${close}`;
+}
+
 // Opens the frame. `title` names the media. Returns the frame's slots and
 // controls; the editor fills them once its media is loaded.
 export function openEditorFrame({ title }) {
@@ -35,28 +48,30 @@ export function openEditorFrame({ title }) {
   let editor = null; // { onKey(event, typing) -> handled, isDirty(), undo(), redo(), canUndo(), canRedo(), destroy() }
   let closed = false;
 
-  const undoButton = h('button', { class: 'btn is-quiet', title: 'Annuler (Ctrl+Z)', 'aria-label': 'Annuler la dernière action', disabled: true, onClick: () => editor && editor.undo() }, icon('undo'));
-  const redoButton = h('button', { class: 'btn is-quiet', title: 'Rétablir (Ctrl+Y)', 'aria-label': 'Rétablir', disabled: true, onClick: () => editor && editor.redo() }, icon('redo'));
+  const undoButton = h('button', { class: 'btn is-quiet icon-btn', type: 'button', title: 'Annuler (Ctrl+Z)', 'aria-label': 'Annuler la dernière action', disabled: true, onClick: () => editor && editor.undo() }, icon('undo'));
+  const redoButton = h('button', { class: 'btn is-quiet icon-btn', type: 'button', title: 'Rétablir (Ctrl+Y)', 'aria-label': 'Rétablir', disabled: true, onClick: () => editor && editor.redo() }, icon('redo'));
   const status = h('span', { class: 'editor-status', 'aria-live': 'polite' });
   const actions = h('div', { class: 'editor-actions' });
   const stage = h('div', { class: 'editor-stage' }, h('p', { class: 'editor-loading' }, 'Chargement du média…'));
-  const rail = h('div', { class: 'editor-rail', hidden: true });
+  const rail = h('div', { class: 'editor-rail', role: 'toolbar', 'aria-orientation': 'vertical', 'aria-label': 'Outils', hidden: true });
   const panel = h('aside', { class: 'editor-panel', hidden: true });
   const timeline = h('footer', { class: 'editor-timeline', hidden: true });
   const veil = h('div', { class: 'editor-veil', hidden: true });
 
   const node = h(
     'div',
-    { class: 'editor', role: 'dialog', 'aria-modal': 'true', 'aria-label': `Éditeur : ${title}`, tabindex: '-1' },
+    { class: 'editor', role: 'dialog', 'aria-modal': 'true', 'aria-label': `Éditeur\u00A0: ${title}`, tabindex: '-1' },
     h(
       'header',
       { class: 'editor-bar' },
-      h('h2', { class: 'ellipsis', title }, icon('edit'), `Éditer « ${title} »`),
-      undoButton,
-      redoButton,
-      status,
-      h('span', { class: 'spacer' }),
-      actions,
+      h(
+        'div',
+        { class: 'editor-bar-lead' },
+        h('button', { class: 'btn is-quiet icon-btn', type: 'button', 'aria-label': 'Fermer l’éditeur', title: 'Fermer l’éditeur (Échap)', onClick: requestClose }, icon('close')),
+        h('h2', { title }, h('span', { class: 'editor-bar-title ellipsis' }, titleLabel(title))),
+      ),
+      h('div', { class: 'editor-history', role: 'group', 'aria-label': 'Historique des modifications' }, undoButton, redoButton),
+      h('div', { class: 'editor-bar-trail' }, status, actions),
     ),
     h('div', { class: 'editor-body' }, rail, stage, panel),
     timeline,
@@ -76,28 +91,58 @@ export function openEditorFrame({ title }) {
     node.remove();
   }
 
+  // Shows one dialog over the editor. The first button takes the focus; Échap
+  // closes the veil without running anything.
+  function showVeil(content) {
+    veil.replaceChildren(content);
+    veil.hidden = false;
+    const target = veil.querySelector('button');
+    (target || node).focus();
+  }
+
+  function hideVeil() {
+    veil.hidden = true;
+    node.focus();
+  }
+
+  // Asks before a destructive action. `action` runs only once confirmed.
+  function askConfirm({ title, text, confirmLabel, cancelLabel = 'Annuler' }, action) {
+    showVeil(
+      h(
+        'div',
+        { class: 'editor-confirm', role: 'alertdialog', 'aria-label': title },
+        h('h3', null, title),
+        h('p', null, text),
+        h(
+          'div',
+          { class: 'actions' },
+          h('button', { class: 'btn is-quiet', type: 'button', onClick: hideVeil }, cancelLabel),
+          h('button', { class: 'btn is-danger', type: 'button', onClick: () => { hideVeil(); action(); } }, confirmLabel),
+        ),
+      ),
+    );
+  }
+
   // Leaving with unsaved work asks first.
   function requestClose() {
     if (!editor || !editor.isDirty()) {
       close();
       return;
     }
-    veil.replaceChildren(
+    showVeil(
       h(
         'div',
         { class: 'editor-confirm', role: 'alertdialog', 'aria-label': 'Abandonner les modifications' },
-        h('h3', null, 'Abandonner les modifications ?'),
+        h('h3', null, 'Abandonner les modifications\u00A0?'),
         h('p', null, 'Ce que tu as fait dans l’éditeur ne sera pas enregistré.'),
         h(
           'div',
           { class: 'actions' },
-          h('button', { class: 'btn', onClick: () => { veil.hidden = true; node.focus(); } }, 'Continuer l’édition'),
-          h('button', { class: 'btn is-danger', onClick: close }, 'Abandonner'),
+          h('button', { class: 'btn is-quiet', type: 'button', onClick: hideVeil }, 'Continuer l’édition'),
+          h('button', { class: 'btn is-danger', type: 'button', onClick: close }, 'Abandonner'),
         ),
       ),
     );
-    veil.hidden = false;
-    veil.querySelector('button').focus();
   }
 
   // Keys are handled here, before the board's own shortcuts (drawer, capture).
@@ -109,8 +154,7 @@ export function openEditorFrame({ title }) {
     if (!veil.hidden) {
       if (event.key === 'Escape') {
         event.preventDefault();
-        veil.hidden = true;
-        node.focus();
+        hideVeil();
       }
       return;
     }
@@ -170,15 +214,20 @@ export function openEditorFrame({ title }) {
     setStatus(text) {
       status.textContent = text || '';
     },
-    // `buttons`: [{ label, title, primary, disabled, onClick }]. « Fermer » is
-    // always there.
+    // `buttons`: [{ label, title, primary, danger, disabled, onClick }]. A
+    // secondary action is quiet; a danger one stays red on hover.
     setActions(buttons) {
       actions.replaceChildren(
-        h('button', { class: 'btn is-quiet', onClick: requestClose }, 'Fermer'),
         ...(buttons || []).map((button) =>
           h(
             'button',
-            { class: `btn${button.primary ? ' is-primary' : ''}`, title: button.title || null, disabled: Boolean(button.disabled), onClick: button.onClick },
+            {
+              class: `btn${button.primary ? ' is-primary' : ' is-quiet'}${button.danger ? ' is-danger' : ''}`,
+              type: 'button',
+              title: button.title || null,
+              disabled: Boolean(button.disabled),
+              onClick: button.onClick,
+            },
             button.label,
           ),
         ),
@@ -193,6 +242,8 @@ export function openEditorFrame({ title }) {
       veil.replaceChildren(h('div', { class: 'editor-confirm' }, h('p', null, text)));
       veil.hidden = false;
     },
+    // A confirmation over the editor; `action` runs only once confirmed.
+    confirm: askConfirm,
     showError(text) {
       stage.replaceChildren(h('div', { class: 'empty' }, h('h2', null, 'Média illisible'), h('p', null, text)));
       frame.setActions([]);
@@ -207,11 +258,21 @@ export function section(title, ...children) {
   return h('section', { class: 'editor-section' }, title ? h('h3', null, title) : null, ...children);
 }
 
+// Read-only facts about the media (dimensions, duration), aligned in the panel.
+export function facts(entries) {
+  return h(
+    'dl',
+    { class: 'editor-facts' },
+    entries.filter(Boolean).map(([label, value]) => h('div', null, h('dt', null, label), h('dd', null, value))),
+  );
+}
+
 // A row of exclusive choices. `options`: [[value, label, iconName?]].
-export function choices(options, current, onPick, label) {
+// `className` adds a layout modifier (`is-grid-2`, `is-grid-3`).
+export function choices(options, current, onPick, label, className = '') {
   return h(
     'div',
-    { class: 'editor-choices', role: 'group', 'aria-label': label || null },
+    { class: `editor-choices${className ? ` ${className}` : ''}`, role: 'group', 'aria-label': label || null },
     options.map(([value, text, glyph]) =>
       h(
         'button',

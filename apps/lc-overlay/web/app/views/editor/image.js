@@ -8,6 +8,7 @@
 // walk through them.
 
 import { h, icon, registerIcons, resetOnDoubleClick } from '../../core/dom.js';
+import { formatDuration } from '../../core/format.js';
 import {
   CROP_RATIOS,
   DEFAULT_DISPLAY_SCALE_PERCENT,
@@ -28,7 +29,7 @@ import {
 } from '../../core/editor-helpers.js';
 import { createCropOverlay } from './crop-overlay.js';
 import { createDisplayPreview } from './display-preview.js';
-import { choices, section, slider, toggle } from './frame.js';
+import { choices, facts, section, slider, toggle } from './frame.js';
 
 registerIcons({
   cursor: 'M6 4l12 8-5 1.5L10.5 19z',
@@ -66,21 +67,30 @@ const TOOLS = [
   ['shape', 'Formes', 'shapes'],
   ['text', 'Texte', 'text'],
   ['emoji', 'Emoji', 'smile'],
-  ['blur', 'Masquer', 'pixels'],
+  ['blur', 'Masquer une zone', 'pixels'],
   ['adjust', 'Réglages', 'sliders'],
   ['display', 'Taille à l’affichage', 'display'],
 ];
 const TOOL_HINTS = {
-  select: 'Clique un élément pour le déplacer, le redimensionner ou le supprimer.',
+  select: 'Sélectionne un élément pour le déplacer, le redimensionner ou le modifier.',
   crop: 'Déplace les poignées, puis applique. Entrée valide.',
   draw: 'Dessine directement sur l’image.',
   shape: 'Trace la forme en glissant sur l’image.',
   text: 'Clique sur l’image pour y poser un texte.',
-  emoji: 'Choisis un emoji : il se pose au centre, déplace-le ensuite.',
+  emoji: 'Choisis un emoji\u00A0: il se pose au centre, déplace-le ensuite.',
   blur: 'Trace un rectangle sur la zone à cacher.',
   adjust: 'Les réglages s’appliquent à toute l’image.',
-  display: 'Choisis la taille sur l’overlay : l’aperçu se met à jour pendant le réglage.',
+  display: 'Choisis la taille sur l’overlay\u00A0: l’aperçu se met à jour pendant le réglage.',
 };
+
+// The rail reads in three groups: what transforms the picture, what decorates
+// it, what masks it, then the size it takes on the overlay.
+const TOOL_GROUPS = [
+  ['select', 'crop'],
+  ['draw', 'shape', 'text', 'emoji', 'adjust'],
+  ['blur'],
+  ['display'],
+];
 
 function makeCanvas(width, height) {
   const canvas = document.createElement('canvas');
@@ -308,6 +318,7 @@ export async function createImageEditor({
   allowDisplayScale = false,
   displayScalePercent = null,
   displayZone = null,
+  durationSec = null,
 }) {
   const doc = { base: await loadBase(blob), objects: [], adjust: { ...NEUTRAL_ADJUST } };
   let nextId = 1;
@@ -532,7 +543,7 @@ export async function createImageEditor({
     wrap.style.height = `${cssHeight}px`;
     const ratio = Math.min(window.devicePixelRatio || 1, 2);
     ensureSize(view, Math.round(cssWidth * ratio), Math.round(cssHeight * ratio));
-    frame.setStatus(`${doc.base.width} × ${doc.base.height} px`);
+    frame.setStatus(`${doc.base.width}\u00A0×\u00A0${doc.base.height}\u00A0px`);
     preview.invalidate();
     repaint();
   }
@@ -962,13 +973,13 @@ export async function createImageEditor({
       ? size.capped
         ? ' (plafonné par la zone, en-tête compris)'
         : ''
-      : ` (estimation sur une zone ${zone.width} × ${zone.height} px)`;
-    return `À l’écran : ${size.width} × ${size.height} px${note}`;
+      : ` (estimation sur une zone ${zone.width}\u00A0×\u00A0${zone.height}\u00A0px)`;
+    return `À l’écran\u00A0: ${size.width}\u00A0×\u00A0${size.height}\u00A0px${note}`;
   }
 
   function displayScalePanel() {
     const line = h('p', { class: 'meta' }, displayScaleLine());
-    const value = h('span', { class: 'editor-value' }, `${displayScale} %`);
+    const value = h('span', { class: 'editor-value' }, `${displayScale}\u00A0%`);
     // Same span as the number field, so the presets never push the cursor out of range.
     const range = h('input', {
       type: 'range',
@@ -987,7 +998,6 @@ export async function createImageEditor({
       step: '1',
       inputmode: 'numeric',
       value: String(displayScale),
-      style: 'max-width:110px',
       onInput: () => {
         const parsed = parseDisplayScale(number.value);
         if (parsed.ok) {
@@ -1003,7 +1013,7 @@ export async function createImageEditor({
     });
     // Both controls and the live size follow any change, whichever one moved.
     syncScaleFields = () => {
-      value.textContent = `${displayScale} %`;
+      value.textContent = `${displayScale}\u00A0%`;
       range.value = String(clamp(displayScale, MIN_DISPLAY_SCALE_PERCENT, MAX_DISPLAY_SCALE_PERCENT));
       number.value = String(displayScale);
       line.textContent = displayScaleLine();
@@ -1016,22 +1026,37 @@ export async function createImageEditor({
       h(
         'p',
         { class: 'meta' },
-        `Image : ${doc.base.width} × ${doc.base.height} px · `,
-        zone.known ? `zone : ${zone.width} × ${zone.height} px` : 'zone d’affichage inconnue',
+        zone.known ? `Zone\u00A0: ${zone.width}\u00A0×\u00A0${zone.height}\u00A0px` : 'Zone d’affichage inconnue',
       ),
       h('label', { class: 'editor-slider' }, h('span', { class: 'editor-slider-head' }, 'Échelle', value), range),
-      h('label', null, 'Valeur (%)', number),
+      h('label', { class: 'editor-field' }, h('span', null, 'Valeur\u00A0(%)'), number),
       h(
         'div',
-        { class: 'row is-wrap' },
-        preset(150, '150 %'),
-        preset(200, '200 %'),
-        preset(300, '300 %'),
+        { class: 'editor-presets is-three' },
+        preset(150, '150\u00A0%'),
+        preset(200, '200\u00A0%'),
+        preset(300, '300\u00A0%'),
+      ),
+      h(
+        'div',
+        { class: 'editor-presets is-two' },
         preset(MAX_DISPLAY_SCALE_PERCENT, 'Remplir la zone'),
         preset(DEFAULT_DISPLAY_SCALE_PERCENT, 'Taille d’origine'),
       ),
       line,
-      h('p', { class: 'meta' }, `L’aperçu de l’éditeur montre l’image sur l’overlay, en-tête de ${OVERLAY_MEDIA_RESERVED_HEIGHT} px compris. Une légende sous l’image n’y est pas représentée.`),
+      h('p', { class: 'meta' }, `L’aperçu de l’éditeur montre l’image sur l’overlay, en-tête de ${OVERLAY_MEDIA_RESERVED_HEIGHT}\u00A0px compris. Une légende sous l’image n’y est pas représentée.`),
+    );
+  }
+
+  // Nothing selected: the panel tells what can be done and what the media is,
+  // instead of leaving an empty column. The top bar already shows the image's
+  // dimensions, so only the duration is repeated here.
+  function emptySelectionPanel() {
+    const duration = Number(durationSec);
+    return section(
+      'Aucune sélection',
+      h('p', { class: 'editor-hint' }, TOOL_HINTS.select),
+      Number.isFinite(duration) && duration > 0 ? facts([['Durée', formatDuration(duration)]]) : null,
     );
   }
 
@@ -1041,7 +1066,7 @@ export async function createImageEditor({
       return section(
         'Recadrer et pivoter',
         hint,
-        choices(CROP_RATIOS.map((entry) => [entry.id, entry.label]), cropRatio, (id) => { cropRatio = id; startCrop(); renderPanel(); }, 'Format du recadrage'),
+        choices(CROP_RATIOS.map((entry) => [entry.id, entry.label]), cropRatio, (id) => { cropRatio = id; startCrop(); renderPanel(); }, 'Format du recadrage', 'is-grid-3'),
         h('button', { class: 'btn is-primary is-wide', type: 'button', onClick: applyCrop }, icon('crop'), 'Appliquer le recadrage'),
         h(
           'div',
@@ -1066,7 +1091,7 @@ export async function createImageEditor({
       return section(
         'Formes',
         hint,
-        choices([['arrow', 'Flèche', 'arrow'], ['rect', 'Rectangle', 'rect'], ['ellipse', 'Ellipse', 'ellipse'], ['line', 'Trait', 'line']], style.shape, (shape) => { style.shape = shape; renderPanel(); }, 'Forme'),
+        choices([['arrow', 'Flèche', 'arrow'], ['rect', 'Rectangle', 'rect'], ['ellipse', 'Ellipse', 'ellipse'], ['line', 'Trait', 'line']], style.shape, (shape) => { style.shape = shape; renderPanel(); }, 'Forme', 'is-grid-2'),
         colorRow(style.color, (color) => { style.color = color; renderPanel(); }),
         slider({ label: 'Épaisseur', min: 1, max: 40, value: style.stroke, defaultValue: styleDefaults.stroke, onInput: (value) => { style.stroke = value; } }),
         style.shape === 'rect' || style.shape === 'ellipse' ? toggle('Forme pleine', style.fill, (fill) => { style.fill = fill; }) : null,
@@ -1084,11 +1109,11 @@ export async function createImageEditor({
         hint,
         h(
           'div',
-          { class: 'row is-wrap' },
+          { class: 'editor-pair' },
           h('button', { class: 'btn', type: 'button', onClick: () => meme('Texte du haut', true) }, 'Texte en haut'),
           h('button', { class: 'btn', type: 'button', onClick: () => meme('Texte du bas', false) }, 'Texte en bas'),
         ),
-        choices(FONT_LABELS, style.font, (font) => { style.font = font; renderPanel(); }, 'Police'),
+        choices(FONT_LABELS, style.font, (font) => { style.font = font; renderPanel(); }, 'Police', 'is-grid-2'),
         colorRow(style.textColor, (color) => { style.textColor = color; renderPanel(); }),
         slider({ label: 'Taille', min: 4, max: 160, value: style.textSize, defaultValue: styleDefaults.textSize, onInput: (value) => { style.textSize = value; } }),
         toggle('Contour', style.outline, (outline) => { style.outline = outline; }),
@@ -1121,7 +1146,7 @@ export async function createImageEditor({
       return section(
         'Masquer une zone',
         hint,
-        choices([['pixel', 'Pixels'], ['blur', 'Flou']], style.maskMode, (mode) => { style.maskMode = mode; renderPanel(); }, 'Type de masque'),
+        choices([['pixel', 'Pixels'], ['blur', 'Flou']], style.maskMode, (mode) => { style.maskMode = mode; renderPanel(); }, 'Type de masque', 'is-grid-2'),
         slider({ label: 'Intensité', min: 2, max: 20, value: style.maskStrength, defaultValue: styleDefaults.maskStrength, onInput: (value) => { style.maskStrength = value; } }),
       );
     }
@@ -1136,14 +1161,14 @@ export async function createImageEditor({
           max,
           value: doc.adjust[key],
           defaultValue: NEUTRAL_ADJUST[key],
-          format: key === 'blur' ? (value) => String(value) : (value) => `${value} %`,
+          format: key === 'blur' ? (value) => String(value) : (value) => `${value}\u00A0%`,
           onInput: (value) => { doc.adjust[key] = value; repaint(); },
           onCommit: commit,
         });
       return section(
         'Réglages',
         hint,
-        choices(FILTER_PRESETS.map((preset) => [preset.id, preset.label]), doc.adjust.preset, (preset) => { doc.adjust.preset = preset; commit(); repaint(); renderPanel(); }, 'Filtre'),
+        choices(FILTER_PRESETS.map((preset) => [preset.id, preset.label]), doc.adjust.preset, (preset) => { doc.adjust.preset = preset; commit(); repaint(); renderPanel(); }, 'Filtre', 'is-grid-2'),
         adjustSlider('Luminosité', 'brightness', 40, 160),
         adjustSlider('Contraste', 'contrast', 40, 160),
         adjustSlider('Saturation', 'saturate', 0, 200),
@@ -1151,18 +1176,38 @@ export async function createImageEditor({
         h('button', { class: 'btn', type: 'button', onClick: () => { doc.adjust = { ...NEUTRAL_ADJUST }; commit(); repaint(); renderPanel(); } }, 'Réinitialiser les réglages'),
       );
     }
-    return section('Sélection', hint);
+    return emptySelectionPanel();
   }
 
   function renderPanel() {
     const object = selected();
-    frame.panel.replaceChildren(...[toolPanel(), object ? selectionPanel(object) : null].filter(Boolean));
+    const sections = [];
+    if (tool !== 'select' || !object) {
+      sections.push(toolPanel());
+    }
+    if (object) {
+      sections.push(selectionPanel(object));
+    }
+    frame.panel.replaceChildren(...sections.filter(Boolean));
     frame.panel.hidden = false;
-    frame.rail.replaceChildren(
-      ...TOOLS.filter(([id]) => id !== 'display' || allowDisplayScale).map(([id, label, glyph]) =>
-        h('button', { class: `tool${tool === id ? ' is-active' : ''}`, type: 'button', 'aria-pressed': String(tool === id), onClick: () => setTool(id) }, icon(glyph), h('span', null, label)),
-      ),
-    );
+
+    const available = new Map(TOOLS.filter(([id]) => id !== 'display' || allowDisplayScale).map((entry) => [entry[0], entry]));
+    const rail = [];
+    for (const group of TOOL_GROUPS) {
+      const entries = group.map((id) => available.get(id)).filter(Boolean);
+      if (!entries.length) {
+        continue;
+      }
+      if (rail.length) {
+        rail.push(h('div', { class: 'tool-sep', role: 'separator' }));
+      }
+      rail.push(
+        ...entries.map(([id, label, glyph]) =>
+          h('button', { class: `tool${tool === id ? ' is-active' : ''}`, type: 'button', 'aria-pressed': String(tool === id), onClick: () => setTool(id) }, icon(glyph), h('span', null, label)),
+        ),
+      );
+    }
+    frame.rail.replaceChildren(...rail);
     frame.rail.hidden = false;
   }
 

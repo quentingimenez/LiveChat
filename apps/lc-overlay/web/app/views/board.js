@@ -30,7 +30,7 @@ import {
   thumbnailOf,
 } from '../core/detail-drawer.js';
 import { h, icon, registerIcons } from '../core/dom.js';
-import { formatDuration, formatBytes, INVALID_DURATION_MESSAGE, MAX_DISPLAY_DURATION_SEC, parseDisplayDuration } from '../core/format.js';
+import { formatBoardUsage, formatDuration, formatBytes, INVALID_DURATION_MESSAGE, MAX_DISPLAY_DURATION_SEC, parseDisplayDuration } from '../core/format.js';
 import { cardRatio, cardStyle } from '../core/masonry.js';
 import {
   cardClickAction,
@@ -45,6 +45,7 @@ import {
   originLinks,
   playSummary,
   selectAllAction,
+  selectAllToggle,
   selectRange,
   toggleId,
 } from '../core/selection.js';
@@ -416,6 +417,20 @@ function buildCard(entry) {
       // Height of the media's own shape (masonry, see core/masonry.js).
       style: cardStyle(cardRatio(ratio)),
       onContextmenu: (event) => openCardMenu(event, entry.item),
+      // The thumbnail and the card's own buttons handle their click; the
+      // title and the card's background open the drawer too (or pick the
+      // media in the selection mode).
+      onClick: (event) => {
+        if (event.target.closest('button')) {
+          return;
+        }
+        const action = cardClickAction({ selecting: state.selecting, shiftKey: event.shiftKey });
+        if (action === 'details') {
+          selectItem(entry.item.id, event.detail);
+        } else {
+          pickItem(entry.item.id, action === 'range');
+        }
+      },
       onMouseenter: () => {
         if (!state.selecting && hoverDetails) {
           hoverDetail(entry.item.id);
@@ -428,7 +443,19 @@ function buildCard(entry) {
       { class: 'card-frame' },
       thumb,
       can('play')
-        ? h('button', { class: 'play', 'aria-label': `Jouer ${itemTitle(item)}`, title: 'Jouer sur les overlays', onClick: () => playItem(entry.item) }, icon('play'))
+        ? h(
+            'button',
+            {
+              class: 'play',
+              'aria-label': `Jouer ${itemTitle(item)}`,
+              title: 'Jouer sur les overlays',
+              onClick: (event) => {
+                event.stopPropagation();
+                playItem(entry.item);
+              },
+            },
+            icon('play'),
+          )
         : null,
       canFavorite()
         ? h(
@@ -525,65 +552,79 @@ export function renderBoard() {
   // Occupation du board (`GET /overlay/guild`): hidden while unknown, e.g. for
   // a role without the `viewBoard` right.
   const mediaBoard = state.info && state.info.guild ? state.info.guild.mediaBoard : null;
-  const boardUsage =
-    mediaBoard && Number.isFinite(Number(mediaBoard.maxBytes))
-      ? `${mediaBoard.itemsCount || 0} média${mediaBoard.itemsCount === 1 ? '' : 's'} · ${formatBytes(mediaBoard.usedBytes)} / ${formatBytes(mediaBoard.maxBytes)}`
-      : null;
+  const boardUsage = formatBoardUsage(mediaBoard);
   const toolbar = h(
     'div',
-    { class: 'toolbar' },
-    h('input', {
-      class: 'field',
-      type: 'search',
-      placeholder: 'Rechercher un média',
-      value: state.search,
-      onInput: (event) => {
-        state.search = event.target.value;
-        refreshGrid(true);
-      },
-    }),
+    { class: 'board-toolbar' },
     h(
       'div',
-      { class: 'chips' },
-      Object.entries(KIND_LABELS).map(([id, label]) =>
-        h('button', { class: `chip${state.kind === id ? ' is-active' : ''}`, 'data-kind': id, onClick: () => setKind(id) }, label),
+      { class: 'board-tools' },
+      h('input', {
+        class: 'field board-search',
+        type: 'search',
+        'aria-label': 'Rechercher un média',
+        placeholder: 'Rechercher un média',
+        value: state.search,
+        onInput: (event) => {
+          state.search = event.target.value;
+          refreshGrid(true);
+        },
+      }),
+      h(
+        'div',
+        { class: 'chips', role: 'group', 'aria-label': 'Filtrer par type de média' },
+        Object.entries(KIND_LABELS).map(([id, label]) =>
+          h(
+            'button',
+            {
+              class: `chip${state.kind === id ? ' is-active' : ''}`,
+              'data-kind': id,
+              'aria-pressed': String(state.kind === id),
+              onClick: () => setKind(id),
+            },
+            label,
+          ),
+        ),
+      ),
+      h(
+        'button',
+        {
+          class: `btn is-quiet filters-toggle${filterCount > 0 || state.filtersOpen ? ' is-active' : ''}`,
+          'aria-expanded': String(state.filtersOpen),
+          onClick: () => {
+            state.filtersOpen = !state.filtersOpen;
+            renderView();
+          },
+        },
+        icon('filter'),
+        filterCount > 0 ? `Filtres · ${filterCount}` : 'Filtres',
       ),
     ),
     h(
-      'button',
-      {
-        class: `btn is-quiet filters-toggle${filterCount > 0 || state.filtersOpen ? ' is-active' : ''}`,
-        'aria-expanded': String(state.filtersOpen),
-        onClick: () => {
-          state.filtersOpen = !state.filtersOpen;
-          renderView();
-        },
-      },
-      icon('filter'),
-      filterCount > 0 ? `Filtres · ${filterCount}` : 'Filtres',
+      'div',
+      { class: 'board-actions' },
+      boardUsage ? h('span', { class: 'meta board-usage', title: 'Occupation du board de la guilde' }, boardUsage) : null,
+      h('span', { class: 'spacer' }),
+      state.items.length > 0
+        ? h(
+            'button',
+            {
+              class: 'btn is-quiet',
+              'aria-pressed': String(state.selecting),
+              onClick: () => (state.selecting ? leaveSelection() : enterSelection()),
+            },
+            state.selecting ? 'Terminer' : 'Sélectionner',
+          )
+        : null,
+      h('button', { class: 'btn is-quiet icon-btn', title: 'Recharger le board', 'aria-label': 'Recharger le board', onClick: loadItems }, icon('refresh')),
+      can('play') ? h('button', { class: 'btn is-quiet', title: 'Faire lire un texte à voix haute sur les overlays', onClick: () => openSayDialog() }, icon('sound'), 'Faire lire un texte') : null,
+      // A member who cannot add but can play still opens the dialog, with its
+      // "Jouer une fois" action only.
+      !can('addMedia') && can('play') ? h('button', { class: 'btn is-primary', onClick: openAddDialog }, icon('play'), 'Jouer un média') : null,
+      can('addMedia') ? h('button', { class: 'btn is-primary', onClick: openAddDialog }, icon('plus'), 'Ajouter un média') : null,
     ),
-    boardUsage
-      ? h('span', { class: 'meta toolbar-usage', title: 'Occupation du board de la guilde' }, boardUsage)
-      : null,
-    h('span', { class: 'spacer' }),
-    state.items.length > 0
-      ? h(
-          'button',
-          {
-            class: `btn is-quiet${state.selecting ? ' is-active' : ''}`,
-            'aria-pressed': String(state.selecting),
-            onClick: () => (state.selecting ? leaveSelection() : enterSelection()),
-          },
-          state.selecting ? 'Terminer' : 'Sélectionner',
-        )
-      : null,
-    h('button', { class: 'btn is-quiet', title: 'Recharger le board', 'aria-label': 'Recharger le board', onClick: loadItems }, icon('refresh')),
-    can('play') ? h('button', { class: 'btn', title: 'Faire lire un texte à voix haute sur les overlays', onClick: () => openSayDialog() }, icon('sound'), 'Dire') : null,
-    // A member who cannot add but can play still opens the dialog, with its
-    // "Jouer une fois" action only.
-    !can('addMedia') && can('play') ? h('button', { class: 'btn', onClick: openAddDialog }, icon('play'), 'Jouer un média') : null,
-    can('addMedia') ? h('button', { class: 'btn', onClick: openAddDialog }, icon('plus'), 'Ajouter un média') : null,
   );
+
   let content;
   if (!state.itemsLoaded && uploads.length === 0) {
     content = h('p', { class: 'meta' }, 'Chargement du board…');
@@ -592,11 +633,17 @@ export function renderBoard() {
       'div',
       { class: 'empty' },
       h('h2', null, 'Le board est vide'),
-      h('p', null, 'Colle le lien d’une vidéo, d’une image ou d’un son pour créer le premier média.'),
-      can('addMedia') ? h('button', { class: 'btn', onClick: openAddDialog }, 'Ajouter un média') : null,
+      h('p', null, 'Ajoute une vidéo, une image ou un son : colle un lien ou choisis un fichier.'),
+      can('addMedia') ? h('button', { class: 'btn is-primary', onClick: openAddDialog }, 'Ajouter un média') : null,
     );
   } else if (items.length === 0 && uploads.length === 0) {
-    content = h('p', { class: 'meta' }, 'Aucun média ne correspond à cette recherche ou à ces filtres.');
+    content = h(
+      'div',
+      { class: 'empty' },
+      h('h2', null, 'Aucun média trouvé'),
+      h('p', null, 'Aucun média ne correspond à cette recherche ou à ces filtres.'),
+      h('button', { class: 'btn', onClick: resetBoardFilters }, 'Réinitialiser la recherche et les filtres'),
+    );
   } else {
     // Provisional cards always come first, whatever the search and filter.
     content = h('div', { class: `grid${state.selecting ? ' is-selecting' : ''}`, id: 'grid' }, uploads.map(uploadCard), items.map(renderCard));
@@ -619,6 +666,7 @@ export function renderBoard() {
 const SELECTION_ACTIONS = [
   {
     label: 'Jouer à la suite',
+    air: true,
     unavailable: () => (can('play') ? null : 'Ton rôle ne permet pas de lancer des médias'),
     run: playSelection,
   },
@@ -775,6 +823,16 @@ function pickAllVisible() {
   syncSelection();
 }
 
+// The bar's button is a toggle: it clears the selection once every visible
+// media is picked, and selects them all otherwise.
+function toggleAllVisible() {
+  const ids = visibleItems().map((item) => item.id);
+  const { selectAll } = selectAllToggle({ orderedIds: ids, selection: state.selection });
+  state.selection = selectAll ? new Set([...state.selection, ...ids]) : new Set();
+  state.selectionAnchor = null;
+  syncSelection();
+}
+
 // Updates the cards and the bar in place (no re-render: videos keep playing).
 function syncSelection() {
   for (const [id, entry] of cards) {
@@ -789,27 +847,53 @@ function syncSelection() {
 function renderSelectionBar() {
   const count = state.selection.size;
   const items = pickedItems();
+  const visibleIds = visibleItems().map((item) => item.id);
+  const allToggle = selectAllToggle({ orderedIds: visibleIds, selection: state.selection });
   return h(
     'div',
     { class: 'selection-bar', id: 'selection-bar', role: 'toolbar', 'aria-label': 'Sélection' },
-    h('span', { class: 'selection-count' }, count > 1 ? `${count} sélectionnés` : `${count} sélectionné`),
-    h('button', { class: 'btn is-quiet', onClick: pickAllVisible }, 'Tout sélectionner'),
-    h('span', { class: 'spacer' }),
-    ...SELECTION_ACTIONS.map((action) => {
-      const reason = action.unavailable(items);
-      return h(
-        'button',
-        {
-          class: `btn${action.danger ? ' is-danger' : ''}`,
-          disabled: count === 0 || Boolean(reason),
-          title: reason,
-          onClick: () => action.run(items),
-        },
-        typeof action.label === 'function' ? action.label(items) : action.label,
-      );
-    }),
-    h('button', { class: 'btn is-quiet', onClick: leaveSelection }, 'Annuler'),
+    // The count sits on its own line above the actions; leaving the mode stays
+    // on the toolbar button that opened it, so there is only one way out.
+    h(
+      'div',
+      { class: 'selection-head' },
+      h(
+        'div',
+        { class: 'selection-group' },
+        h(
+          'span',
+          { class: 'selection-count' },
+          count === 0 ? 'Aucun média sélectionné' : count === 1 ? '1 média sélectionné' : `${count} médias sélectionnés`,
+        ),
+        h('button', { class: 'btn is-quiet', onClick: toggleAllVisible }, allToggle.label),
+      ),
+    ),
+    h(
+      'div',
+      { class: 'selection-actions' },
+      ...SELECTION_ACTIONS.map((action) => {
+        const reason = action.unavailable(items);
+        return h(
+          'button',
+          {
+            class: `btn${action.air ? ' is-air' : action.danger ? ' is-danger' : ' is-quiet'}`,
+            disabled: count === 0 || Boolean(reason),
+            title: reason,
+            onClick: () => action.run(items),
+          },
+          typeof action.label === 'function' ? action.label(items) : action.label,
+        );
+      }),
+    ),
   );
+}
+
+function resetBoardFilters() {
+  state.search = '';
+  state.kind = 'all';
+  state.filters = { ...DEFAULT_FILTERS };
+  state.filtersOpen = false;
+  renderView();
 }
 
 function setFilter(patch) {
@@ -833,9 +917,11 @@ function filterSelect(label, value, options, onChange) {
 function renderFilters() {
   const filters = state.filters;
   const authors = authorsOf(state.items);
+  const hasActiveFilters = activeFilterCount(filters) > 0 || filters.sort !== DEFAULT_FILTERS.sort;
   return h(
     'div',
     { class: 'filters', role: 'group', 'aria-label': 'Filtres du board' },
+    h('h2', { class: 'filters-title' }, 'Filtres'),
     canFavorite()
       ? h(
           'label',
@@ -856,9 +942,15 @@ function renderFilters() {
     filterSelect('Source', filters.source, [['', 'Toutes'], ...Object.entries(SOURCE_LABELS)], (source) => setFilter({ source })),
     filterSelect('Durée', filters.duration, [['', 'Toutes'], ...Object.entries(DURATION_LABELS)], (duration) => setFilter({ duration })),
     filterSelect('Trier', filters.sort, Object.entries(SORT_LABELS), (sort) => setFilter({ sort })),
-    activeFilterCount(filters) > 0 || filters.sort !== DEFAULT_FILTERS.sort
-      ? h('button', { class: 'btn is-quiet', onClick: () => setFilter({ ...DEFAULT_FILTERS }) }, 'Réinitialiser')
-      : null,
+    h(
+      'button',
+      {
+        class: 'btn is-quiet filters-reset',
+        disabled: !hasActiveFilters,
+        onClick: () => setFilter({ ...DEFAULT_FILTERS }),
+      },
+      'Réinitialiser',
+    ),
   );
 }
 
@@ -872,7 +964,7 @@ function refreshGrid(fromSearch) {
     const input = document.activeElement;
     const position = input && input.selectionStart;
     renderView();
-    const field = document.querySelector('.toolbar input');
+    const field = document.querySelector('.board-search');
     if (fromSearch && field) {
       field.focus();
       field.setSelectionRange(position ?? field.value.length, position ?? field.value.length);
@@ -884,7 +976,7 @@ function refreshGrid(fromSearch) {
 
 function setKind(kind) {
   state.kind = kind;
-  for (const chip of document.querySelectorAll('.toolbar .chip')) {
+  for (const chip of document.querySelectorAll('.board-toolbar .chip')) {
     chip.classList.toggle('is-active', chip.dataset.kind === kind);
   }
   refreshGrid(false);
@@ -902,8 +994,9 @@ let peekId = null;
 
 // « Afficher les détails au survol » is a device setting (Paramètres ›
 // Affichage). Read once, then kept current by `overlay://device-settings`,
-// like core/sound.js does for the sound settings.
-let hoverDetails = true;
+// like core/sound.js does for the sound settings. Off by default: a hover
+// only opens the drawer when that setting is explicitly on.
+let hoverDetails = false;
 
 // Turning the setting off closes a drawer opened by a hover and drops a peek;
 // a drawer pinned by a click stays. Turning it back on needs nothing.
@@ -911,7 +1004,7 @@ function applyHoverDetails(view) {
   if (!view || typeof view !== 'object') {
     return;
   }
-  hoverDetails = view.hoverDetails !== false;
+  hoverDetails = view.hoverDetails === true;
   if (hoverDetails) {
     return;
   }
@@ -976,6 +1069,10 @@ function toggleDetail(id, clickCount) {
 
 export function closeDetail() {
   clearDrawerTimers();
+  // A single card click waits to see whether it starts a double click: an
+  // explicit close cancels its pending opening.
+  clearTimeout(clickTimer);
+  clickTimer = null;
   applyView(CLOSED_VIEW);
   state.capturing = false;
   syncDetail();
@@ -1137,6 +1234,27 @@ document.addEventListener('keydown', (event) => {
     pickAllVisible();
   }
 });
+
+// A click outside the drawer and outside a card closes it. The drawer's own
+// controls, a card (which opens or picks), an open dialog and a context menu
+// keep it: the drawer may stay behind the dialog it opened, and « Afficher les
+// détails » must not close the drawer it just opened. Capture phase: a control
+// inside the drawer may re-render it on click, and a later check would then see
+// a drawer that no longer contains the clicked element.
+document.addEventListener(
+  'click',
+  (event) => {
+    const drawer = document.querySelector('.view .detail');
+    if (!drawer || !(event.target instanceof Element)) {
+      return;
+    }
+    if (drawer.contains(event.target) || event.target.closest('.card, #dialog-root, .ctx-menu')) {
+      return;
+    }
+    closeDetail();
+  },
+  true,
+);
 
 // Sends one media to the overlays and records its queue badge. Returns the
 // command's response, a refusal `{ ok: false, message }` when the command
@@ -1333,7 +1451,7 @@ let inlineEdit = null;
 
 const INLINE_FIELDS = {
   title: { label: 'le titre', max: '240', empty: 'Ajouter un titre' },
-  message: { label: 'le message', max: '500', empty: 'Ajouter un message' },
+  message: { label: 'la légende', max: '500', empty: 'Ajouter une légende' },
 };
 
 async function commitInline(item, field, value) {
@@ -1427,7 +1545,7 @@ function inlineField(item, field) {
         syncDetail();
       },
     },
-    h(isTitle ? 'h2' : 'span', { class: 'inline-text' }, text || spec.empty),
+    h('span', { class: `inline-text${isTitle ? ' is-title' : ''}` }, text || spec.empty),
     icon('edit'),
   );
 }
@@ -1461,43 +1579,53 @@ function renderDetail(item) {
     },
     h(
       'div',
-      { class: 'detail-head' },
-      inlineField(item, 'title'),
-      canFavorite()
-        ? h(
-            'button',
-            {
-              class: `btn is-quiet fav-toggle${item.favorite ? ' is-on' : ''}`,
-              'aria-pressed': String(Boolean(item.favorite)),
-              title: item.favorite ? 'Retirer des favoris' : 'Ajouter aux favoris',
-              onClick: () => toggleFavorite(item),
-            },
-            icon('star'),
-          )
-        : null,
-      h('button', { class: 'btn is-quiet', 'aria-label': 'Fermer les détails', onClick: closeDetail }, icon('close')),
+      { class: 'detail-body' },
+      h(
+        'div',
+        { class: 'detail-head' },
+        inlineField(item, 'title'),
+        canFavorite()
+          ? h(
+              'button',
+              {
+                class: `btn is-quiet fav-toggle${item.favorite ? ' is-on' : ''}`,
+                'aria-pressed': String(Boolean(item.favorite)),
+                title: item.favorite ? 'Retirer des favoris' : 'Ajouter aux favoris',
+                onClick: () => toggleFavorite(item),
+              },
+              icon('star'),
+            )
+          : null,
+        h('button', { class: 'btn is-quiet icon-btn', 'aria-label': 'Fermer les détails', onClick: closeDetail }, icon('close')),
+      ),
+      preview,
+      h(
+        'dl',
+        { class: 'facts' },
+        // The caption shown on the overlays, then the shortcut that plays it.
+        item.canEdit || item.message
+          ? [h('dt', null, 'Légende'), h('dd', null, inlineField(item, 'message'))]
+          : null,
+        can('play')
+          ? [
+              h('dt', null, 'Raccourci'),
+              h('dd', { class: 'shortcut-cell' }, shortcutControl(item, shortcut)),
+            ]
+          : null,
+      ),
+      can('play') ? h('p', { class: 'shortcut-hint' }, ALTGR_HINT) : null,
     ),
-    preview,
-    can('play') ? h('button', { class: 'btn is-air is-wide', onClick: () => playItem(item) }, icon('play'), 'Jouer sur les overlays') : null,
-    inlineField(item, 'message'),
-    h(
-      'dl',
-      { class: 'facts' },
-      can('play')
-        ? [
-            h('dt', null, 'Raccourci'),
-            h('dd', { class: 'shortcut-cell' }, shortcutControl(item, shortcut)),
-          ]
-        : null,
-    ),
-    can('play') ? h('p', { class: 'shortcut-hint' }, ALTGR_HINT) : null,
     h(
       'div',
-      { class: 'row is-wrap' },
-      canOpenEditor(item) ? h('button', { class: 'btn', title: 'Découper, recadrer, dessiner…', onClick: () => openMediaEditor(item, itemTitle(item)) }, icon('edit'), 'Éditer') : null,
-      h('button', { class: 'btn', onClick: () => openInfoDialog(item) }, 'Infos'),
-      h('span', { class: 'spacer' }),
-      item.canEdit ? h('button', { class: 'btn is-danger', onClick: () => openDeleteDialog(item) }, 'Supprimer') : null,
+      { class: 'detail-foot' },
+      can('play') ? h('button', { class: 'btn is-air is-wide', onClick: () => playItem(item) }, icon('play'), 'Jouer sur les overlays') : null,
+      h(
+        'div',
+        { class: 'detail-actions' },
+        canOpenEditor(item) ? h('button', { class: 'btn is-quiet', title: 'Découper, recadrer, dessiner…', onClick: () => openMediaEditor(item, itemTitle(item)) }, icon('edit'), 'Modifier') : null,
+        h('button', { class: 'btn is-quiet', onClick: () => openInfoDialog(item) }, 'Informations'),
+        item.canEdit ? h('button', { class: 'btn is-quiet is-danger', onClick: () => openDeleteDialog(item) }, 'Supprimer…') : null,
+      ),
     ),
   );
   queueMicrotask(() => placeDrawer(drawer));

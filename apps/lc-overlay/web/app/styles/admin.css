@@ -1,56 +1,185 @@
-/* -------------------------------------------------------------------- admin */
+/* Administration lists. Each list is a grid whose row tracks are shared with
+   its column head; below 1120px the same markup folds into a card. */
 
-/* Each row is a grid of its own: a content-sized track (`auto`) would take a
-   different width in a row without its button (the current member has no
-   « Exclure », a used invite no « Révoquer ») and shift its other columns.
-   Action tracks therefore have a fixed width. */
-.line.is-member {
+/* ---------------------------------------------------------------- subtabs */
+
+.subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-bottom: var(--space-4);
+}
+
+.subtabs .chip {
+  flex: none;
+  white-space: nowrap;
+}
+
+.chip .count {
+  margin-left: 6px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------ intro */
+
+.list-intro {
+  max-width: var(--measure);
+  margin: 0 0 var(--space-3);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  text-wrap: pretty;
+}
+
+/* ------------------------------------------------------ loading and errors */
+
+.list-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  max-width: var(--measure);
+  margin: var(--space-4) 0;
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+}
+
+.list-state p {
+  margin: 0;
+  text-wrap: pretty;
+}
+
+.list-state.is-loading {
+  color: var(--text-faint);
+}
+
+.list-state.is-error p {
+  color: var(--red-text);
+}
+
+/* --------------------------------------------------------- columns and rows */
+
+.list-head {
+  display: grid;
+  gap: 12px;
+  align-items: end;
+  padding: 0 2px 6px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+}
+
+.list-head + .list {
+  border-top: 0;
+}
+
+/* The wrappers are transparent on desktop: their children are the grid items,
+   in the same tracks as the head. They become flex rows in the card layout. */
+.line-main,
+.line-meta {
+  display: contents;
+}
+
+.line-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  justify-self: end;
+}
+
+/* A labelled cell: the desktop head names the track, the card layout below
+   1120px names the value. The wrapper is transparent on desktop. */
+.list-cell {
+  display: contents;
+}
+
+/* Two destructive actions side by side must not read as one control: the
+   16px gap inside this group separates « Exclure… » from « Bannir… ». */
+.line-danger {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* Member: avatar, name, presence, role, actions. */
+.line.is-member,
+.list-head.is-member {
   grid-template-columns: 30px minmax(0, 1fr) 150px 130px 320px;
 }
 
-.line.is-ban {
-  grid-template-columns: 30px minmax(0, 1fr) minmax(0, 220px) 88px;
+/* Ban: avatar, name, date, author, actions. */
+.line.is-ban,
+.list-head.is-ban {
+  grid-template-columns: 30px minmax(0, 1fr) 150px 150px 180px;
 }
 
+/* Invitations are not listed by this view, but their track definition stays
+   here: it is the canonical grid for an invitation row. */
 .line.is-invite {
   grid-template-columns: 110px 90px minmax(0, 1fr) 42px 96px;
 }
 
-/* Unified list of invitations and pairing codes: code, kind, author, expiry,
-   uses (invitations only), copy and revoke. */
-.line.is-code {
+/* Code: code, type, author, expiry, uses, actions. */
+.line.is-code,
+.list-head.is-code {
   grid-template-columns: 110px 150px minmax(0, 1fr) 160px 84px 144px;
 }
 
-.line.is-code > .row {
-  justify-self: end;
-  gap: 4px;
-}
-
-/* Device list: label (member + role underneath), version/platform, presence,
-   session mode, then the actions. Same fixed-track rule as the other lists. */
-.line.is-device {
+/* Device: avatar, label, version, presence, session, actions. */
+.line.is-device,
+.list-head.is-device {
   grid-template-columns: 30px minmax(0, 1fr) 150px 140px 130px 300px;
 }
 
-.line.is-device .device-actions {
-  justify-self: end;
-  gap: 4px;
+/* Journal: date, origin, actor, action. */
+.line.is-audit,
+.list-head.is-audit {
+  grid-template-columns: 140px 116px 160px minmax(0, 1fr);
 }
 
+/* Absolute dates keep a stable width and never wrap mid-value. */
+.journal-date {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.list-head.is-member > :last-child,
+.list-head.is-device > :last-child,
+.list-head.is-code > :last-child,
+.list-head.is-ban > :last-child {
+  justify-self: end;
+}
+
+.member-cell,
 .device-cell {
   min-width: 0;
 }
 
+.member-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.member-meta .badge {
+  font-size: 11px;
+}
+
+/* Version and platform share the version column; the « Obsolète » badge stays
+   visible at every width, wrapped under the version when needed. */
 .device-version {
   display: flex;
-  align-items: center;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
 }
 
 .device-version .badge {
-  padding: 0 6px;
   font-size: 11px;
 }
 
@@ -68,73 +197,28 @@
   opacity: 0.55;
 }
 
-.device-range input[type='range'] {
-  flex: 1;
-  accent-color: var(--blue);
+.device-range {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-.device-range output {
-  min-width: 44px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
+.device-range input {
+  flex: 1;
 }
 
 .dialog .device-hint {
-  margin: -6px 0 0;
+  margin: -2px 0 6px;
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  text-wrap: pretty;
 }
 
-.member-cell {
+.code-author {
   min-width: 0;
 }
 
-.member-meta {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 2px;
-}
-
-.member-meta .badge {
-  padding: 0 6px;
-  font-size: 11px;
-}
-
-.line.is-member > .btn,
-.line.is-member > .row,
-.line.is-invite > .btn,
-.line.is-ban > .btn {
-  justify-self: end;
-}
-
-.line.is-member > .row {
-  gap: 4px;
-}
-
-/* Journal: date, origin (overlay or owner console), actor, action and target
-   path of each admin mutation. */
-.line.is-audit {
-  grid-template-columns: 120px 84px 160px minmax(0, 1fr) minmax(0, 1fr);
-}
-
-.line.is-audit .mono {
-  font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 12px;
-}
-
-.chip .count {
-  margin-left: 6px;
-  color: var(--text-faint);
-  font-variant-numeric: tabular-nums;
-}
-
-.subtabs {
-  display: flex;
-  gap: 4px;
-  margin-bottom: 18px;
-}
+/* ---------------------------------------------------------- code creation */
 
 .panel {
   margin-bottom: 16px;
@@ -143,29 +227,67 @@
   background: var(--slate-700);
 }
 
-.form {
-  display: grid;
-  grid-template-columns: 190px minmax(0, 420px);
-  gap: 12px 16px;
-  align-items: center;
+.code-create {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3) var(--space-5);
 }
 
-.form label {
+.code-fields {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3) var(--space-4);
+}
+
+.code-field {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.code-field-label {
   color: var(--text-soft);
+  font-size: var(--text-xs);
+}
+
+.code-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+/* --------------------------------------------------------- server settings */
+
+.form {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 460px);
+  align-items: center;
+  gap: var(--space-3) var(--space-4);
+}
+
+.form > label {
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+}
+
+.form .field {
+  max-width: 256px;
 }
 
 .form .hint {
   grid-column: 2;
-  margin-top: -8px;
+  margin-top: calc(var(--space-2) * -1);
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  max-width: var(--measure);
+  text-wrap: pretty;
 }
 
-.switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
+.form-actions {
+  margin-top: var(--space-5);
 }
 
 .section-title {
@@ -174,26 +296,131 @@
   font-weight: 600;
 }
 
-/* Inside a settings section, `.settings-section h3` (more specific) removed
-   the space above a sub-title such as « Discord ». */
 .settings-section .section-title {
   margin-top: 32px;
 }
 
-@media (max-width: 1040px) {
-  .line.is-member {
-    grid-template-columns: 30px minmax(0, 1fr) 120px 320px;
-  }
+/* ------------------------------------------------------------- card layout */
 
-  .line.is-member .seen {
+/* Each row becomes a card: identity and actions on the first line, the
+   secondary columns on a second one. */
+@media (max-width: 1120px) {
+  .list-head {
     display: none;
   }
 
-  .line.is-device {
-    grid-template-columns: 30px minmax(0, 1fr) 140px 130px 300px;
+  .line.is-member,
+  .line.is-device,
+  .line.is-code,
+  .line.is-ban,
+  .line.is-invite,
+  .line.is-audit {
+    align-items: start;
+    row-gap: 8px;
+    padding: 12px 0;
   }
 
-  .line.is-device .device-version {
+  .line.is-member,
+  .line.is-device,
+  .line.is-code,
+  .line.is-ban,
+  .line.is-invite {
+    grid-template-columns: minmax(0, 1fr) 340px;
+    grid-template-areas:
+      'main actions'
+      'meta meta';
+  }
+
+  .line.is-audit {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'main'
+      'meta';
+  }
+
+  .line-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    grid-area: main;
+  }
+
+  .line-main .avatar {
+    flex: none;
+  }
+
+  .line-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: start;
+    gap: 8px 16px;
+    min-width: 0;
+    grid-area: meta;
+  }
+
+  /* The column heads are hidden: every value carries its own label, inline,
+     except the identity cell (the avatar and name say who it is) and the
+     action cell (the buttons speak for themselves). */
+  .list-cell {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px 8px;
+    min-width: 0;
+  }
+
+  .line-main .list-cell {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .list-cell::before {
+    content: attr(data-label);
+    flex: none;
+    color: var(--text-faint);
+    font-size: var(--text-xs);
+    line-height: 1.2;
+  }
+
+  .line-main .list-cell::before,
+  .line-actions::before {
     display: none;
+  }
+
+  .line-actions {
+    grid-area: actions;
+    justify-content: flex-end;
+  }
+}
+
+@media (max-width: 720px) {
+  .line.is-member,
+  .line.is-device,
+  .line.is-code,
+  .line.is-ban,
+  .line.is-invite {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'main'
+      'meta'
+      'actions';
+  }
+
+  .line.is-audit {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'main'
+      'meta';
+  }
+
+  .line-actions {
+    justify-content: flex-start;
+  }
+
+  .line-actions[data-label]::before {
+    text-align: left;
   }
 }

@@ -6,8 +6,10 @@ import { h, icon } from '../core/dom.js';
 import { formatDuration, relativeTime } from '../core/format.js';
 import { invoke } from '../core/ipc.js';
 import { jobMeta, jobOriginLabel, jobOriginTitle, jobTitle } from '../core/job-format.js';
+import { queueClock } from '../core/queue-clock.js';
 import { can, describeError, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
+import { confirmDialog } from '../core/ui.js';
 import { loadQueue, refreshQueueAutomatically } from '../data.js';
 
 // Where the job comes from: a board item ("board"), a one-off play / client
@@ -25,7 +27,7 @@ function originBadge(job) {
 // and/or the media details (`jobMeta`), so a one-off play or an ingest keeps
 // its format, size and source in the queue and in the history.
 function jobWhat(job, author) {
-  const details = [author ? `par ${author}` : null, jobMeta(job)].filter(Boolean).join(' · ');
+  const details = [author ? `Ajouté par ${author}` : null, jobMeta(job)].filter(Boolean).join(' · ');
   return h(
     'div',
     { class: 'queue-what' },
@@ -34,20 +36,25 @@ function jobWhat(job, author) {
   );
 }
 
-// Stop actions offered for the playing media. « Chez moi » only clears this
-// device's overlay, so it needs no permission; « pour tous » stops the
+// Stop actions offered for the playing media. « Ici » only clears this
+// device's overlay, so it needs no permission; « pour la guilde » stops the
 // guild's playback and requires the `stop` permission.
 export function stopActions(canStopForAll) {
-  const actions = [{ id: 'local', label: 'Arrêter chez moi', title: 'Arrêter le média sur cet appareil seulement', onSelect: stopPlaybackLocally }];
+  const actions = [{ id: 'local', label: 'Arrêter ici', title: 'Arrête la lecture sur cet appareil seulement', onSelect: stopPlaybackLocally }];
   if (canStopForAll) {
-    actions.push({ id: 'all', label: 'Arrêter pour tous', title: 'Arrêter le média pour toute la guilde', onSelect: stopPlayback });
+    actions.push({ id: 'all', label: 'Arrêter pour la guilde', title: 'Arrête la lecture pour tous les overlays de la guilde', onSelect: stopPlayback });
   }
   return actions;
 }
 
 function stopButtons() {
   return stopActions(can('stop')).map((action) =>
-    h('button', { class: action.id === 'local' ? 'btn is-quiet' : 'btn', title: action.title, onClick: action.onSelect }, icon('stop'), action.label),
+    h(
+      'button',
+      { class: action.id === 'local' ? 'btn is-quiet' : 'btn is-danger', title: action.title, onClick: action.onSelect },
+      icon('stop'),
+      action.label,
+    ),
   );
 }
 
@@ -75,6 +82,29 @@ function openPendingMenu(event, job) {
 // The on-air bar is reused (only its children are replaced): bind its menu once.
 let onAirMenuBound = false;
 
+// The history is a <details> rebuilt on every queue render: remember whether the
+// user opened it (and for which guild) so a refresh does not close it.
+let historyOpenGuildId = null;
+let historyOpen = false;
+
+// One-second tick: update only the clock and the progress bar. A full
+// `renderView()` here would close an open history and drop keyboard focus.
+export function tickQueueClock(now = Date.now()) {
+  const playing = state.queue.playing;
+  if (!playing) {
+    return;
+  }
+  const clock = queueClock(playing, now);
+  const time = document.querySelector('[data-queue-clock]');
+  if (time) {
+    time.textContent = clock.text;
+  }
+  const bar = document.querySelector('[data-queue-progress]');
+  if (bar) {
+    bar.style.width = `${Math.round(clock.ratio * 100)}%`;
+  }
+}
+
 function bindOnAirMenu() {
   if (onAirMenuBound) {
     return;
@@ -91,9 +121,7 @@ export function renderQueue() {
   const { playing, pending } = state.queue;
   const blocks = [];
   if (playing) {
-    const started = playing.startedAt ? new Date(playing.startedAt).getTime() : null;
-    const elapsed = started ? Math.max(0, (Date.now() - started) / 1000) : 0;
-    const ratio = playing.durationSec > 0 ? Math.min(1, elapsed / playing.durationSec) : 0;
+    const clock = queueClock(playing);
     blocks.push(
       h(
         'div',
@@ -105,11 +133,10 @@ export function renderQueue() {
           originBadge(playing),
           playing.authorName ? h('span', { class: 'meta' }, `par ${playing.authorName}`) : null,
           h('span', { class: 'spacer' }),
-          h('span', { class: 'meta' }, `${formatDuration(Math.min(elapsed, playing.durationSec)) || '0:00'} / ${formatDuration(playing.durationSec) || '0:00'}`),
-          stopButtons(),
+          h('span', { class: 'meta queue-time', 'data-queue-clock': '' }, clock.text),
         ),
         jobMeta(playing) ? h('div', { class: 'sub ellipsis' }, jobMeta(playing)) : null,
-        h('div', { class: 'progress' }, h('span', { style: `width:${Math.round(ratio * 100)}%` })),
+        h('div', { class: 'progress' }, h('span', { 'data-queue-progress': '', style: `width:${Math.round(clock.ratio * 100)}%` })),
       ),
     );
   }
@@ -136,18 +163,33 @@ export function renderQueue() {
             jobWhat(job, job.authorName),
             h('span', { class: 'meta' }, formatDuration(job.durationSec) || ''),
             can('moderateQueue')
-              ? h('button', { class: 'btn is-quiet', 'aria-label': `Retirer ${jobTitle(job)} de la file`, title: 'Retirer de la file', onClick: () => removeJob(job) }, icon('close'))
+              ? h(
+                  'button',
+                  {
+                    class: 'btn is-quiet icon-btn',
+                    'aria-label': `Retirer ${jobTitle(job)} de la file`,
+                    title: 'Retirer de la file',
+                    onClick: () => removeJob(job),
+                  },
+                  icon('close'),
+                )
               : h('span'),
           ),
         ),
       ),
       h(
         'div',
-        { class: 'row', style: 'margin-top:14px' },
+        { class: 'row is-wrap queue-foot' },
         // Pending jobs often have no duration yet (it is fixed when playback starts).
-        h('span', { class: 'meta' }, formatDuration(total) ? `${pending.length} en attente, ${formatDuration(total)} au total` : `${pending.length} en attente`),
+        h(
+          'span',
+          { class: 'meta' },
+          formatDuration(total)
+            ? `${pending.length} média${pending.length > 1 ? 's' : ''} en attente · ${formatDuration(total)} au total`
+            : `${pending.length} média${pending.length > 1 ? 's' : ''} en attente`,
+        ),
         h('span', { class: 'spacer' }),
-        can('moderateQueue') ? h('button', { class: 'btn is-danger', onClick: clearQueue }, 'Vider la file') : null,
+        can('moderateQueue') ? h('button', { class: 'btn is-danger', onClick: clearQueue }, 'Vider la file…') : null,
       ),
     );
   }
@@ -159,6 +201,10 @@ export function renderQueue() {
 function renderHistory() {
   if (!can('viewQueue') || state.queueHistory.length === 0) {
     return null;
+  }
+  if (state.activeGuildId !== historyOpenGuildId) {
+    historyOpenGuildId = state.activeGuildId;
+    historyOpen = false;
   }
   const items = state.queueHistory.slice(0, 30);
   const rows = items.map((job) => {
@@ -174,7 +220,15 @@ function renderHistory() {
   });
   return h(
     'details',
-    { class: 'queue-history' },
+    {
+      class: 'queue-history',
+      open: historyOpen,
+      onToggle: (event) => {
+        if (event.target === event.currentTarget) {
+          historyOpen = event.currentTarget.open;
+        }
+      },
+    },
     h('summary', null, `Historique (${items.length})`),
     h('div', { class: 'list' }, rows),
   );
@@ -210,8 +264,20 @@ export async function removeJob(job) {
 }
 
 export async function clearQueue() {
-  await run(() => api('DELETE', '/overlay/queue'), 'File vidée.');
-  loadQueue();
+  const count = state.queue.pending.length;
+  if (count === 0) {
+    return;
+  }
+  const plural = count > 1;
+  confirmDialog(
+    'Vider la file d’attente ?',
+    `Les ${count} média${plural ? 's' : ''} en attente ser${plural ? 'ont' : 'a'} retiré${plural ? 's' : ''}. Le média à l’antenne n’est pas concerné.`,
+    'Vider la file',
+    async () => {
+      await run(() => api('DELETE', '/overlay/queue'), 'File vidée.');
+      loadQueue();
+    },
+  );
 }
 
 export function renderOnAir() {
@@ -226,10 +292,16 @@ export function renderOnAir() {
   // replaceChildren() would render a null child as the text "null": filter first.
   const children = [
     h('span', { class: 'pulse' }),
-    h('span', { class: 'title ellipsis' }, jobTitle(playing)),
-    playing.authorName ? h('span', { class: 'meta' }, `par ${playing.authorName}`) : null,
+    h('span', { class: 'title ellipsis', title: jobTitle(playing) }, jobTitle(playing)),
+    playing.authorName ? h('span', { class: 'meta onair-author' }, `par ${playing.authorName}`) : null,
     h('span', { class: 'spacer' }),
-    state.queue.pending.length ? h('span', { class: 'meta' }, `${state.queue.pending.length} en attente`) : null,
+    state.queue.pending.length
+      ? h(
+          'span',
+          { class: 'meta', title: `${state.queue.pending.length} média${state.queue.pending.length > 1 ? 's' : ''} en attente` },
+          `${state.queue.pending.length} média${state.queue.pending.length > 1 ? 's' : ''} en attente`,
+        )
+      : null,
     ...stopButtons(),
   ];
   bar.replaceChildren(...children.filter(Boolean));

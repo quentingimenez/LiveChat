@@ -227,6 +227,20 @@ export function deleteDialogText(deletableCount, forbiddenCount) {
 }
 
 /**
+ * The selection bar's « Tout sélectionner » button is a toggle: when every
+ * visible media is already picked it offers to clear the selection, otherwise
+ * to pick them all. Hidden picks do not count, since the button only talks
+ * about the cards on screen. An empty board never offers to clear.
+ */
+export function selectAllToggle({ orderedIds, selection }) {
+  const ids = Array.isArray(orderedIds) ? orderedIds : [];
+  const everyVisiblePicked = ids.length > 0 && ids.every((id) => selection.has(id));
+  return everyVisiblePicked
+    ? { label: 'Tout désélectionner', selectAll: false }
+    : { label: 'Tout sélectionner', selectAll: true };
+}
+
+/**
  * Whether the key press picks every visible card: Ctrl+A (or Cmd+A) in the
  * selection mode only. A key a context menu already handled, an open dialog,
  * a shortcut capture or a field being edited keeps its normal effect.

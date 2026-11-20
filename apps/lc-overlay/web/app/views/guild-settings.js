@@ -7,8 +7,8 @@
 
 import { api, run } from '../core/api.js';
 import { h } from '../core/dom.js';
-import { formatBytes } from '../core/format.js';
-import { activeGuild, can, guildLabel, state } from '../core/state.js';
+import { formatBoardUsage, formatBytes } from '../core/format.js';
+import { activeGuild, can, state } from '../core/state.js';
 import { DEFAULT_VOLUME_PERCENT } from '../core/sound.js';
 import { notify } from '../core/toast.js';
 import { openDialog } from '../core/ui.js';
@@ -24,13 +24,18 @@ import {
   debounce,
   deviceSettingsError,
   guildLayout,
+  hint,
+  immediateNote,
   loadDeviceSettings,
+  openSettings,
   placementStarting,
   previewLayout,
   rangeControl,
   section,
+  sectionDesc,
   selectedDisplay,
   startPlacement,
+  switchRow,
   toggleGuildMute,
   zoneSummary,
 } from './settings.js';
@@ -68,7 +73,7 @@ function renderDisplay(settings, guildId) {
         ),
         h(
           'button',
-          { class: 'btn is-air', type: 'button', disabled: starting, onClick: () => startPlacement(guildId) },
+          { class: 'btn is-primary', type: 'button', disabled: starting, onClick: () => startPlacement(guildId) },
           starting ? 'Ouverture…' : 'Placer sur l’écran',
         ),
       ];
@@ -104,25 +109,31 @@ function renderDisplay(settings, guildId) {
 
   return section(
     'Affichage sur cet appareil',
-    h(
-      'p',
-      { class: 'settings-hint' },
-      'Où et comment les médias de cette guilde s’affichent sur ton stream. Sans réglage propre, la guilde suit les Paramètres de l’appareil.',
-    ),
-    controlRow('Zone d’affichage', zoneControls),
-    controlRow('Alignement dans la zone', alignment, 'guild-settings-align'),
+    sectionDesc('Où et comment les médias de cette guilde s’affichent sur ton stream.'),
+    immediateNote(),
+    controlRow('Zone d’affichage', [
+      ...zoneControls,
+      hint(
+        hasOwnLayout
+          ? 'Cette guilde a sa propre zone et son propre alignement.'
+          : 'Sans réglage propre, la guilde suit la zone des Paramètres de l’appareil.',
+      ),
+    ]),
+    // Back to the device layout: a named action, with its one-line explanation.
     hasOwnLayout && !placing
       ? h(
           'div',
-          { class: 'row is-wrap settings-row-actions' },
+          { class: 'settings-action' },
           h(
             'button',
             { class: 'btn is-quiet', type: 'button', onClick: () => patchGuild(guildId, { layout: null }) },
-            'Suivre l’affichage de l’appareil',
+            'Suivre l’affichage de cet appareil',
           ),
+          hint('Revient à la zone et à l’alignement des Paramètres de l’appareil.'),
         )
       : null,
-    controlRow('Texte des médias', text, 'guild-settings-text'),
+    controlRow('Alignement dans la zone', alignment, 'guild-settings-align'),
+    controlRow('Texte des médias', [text, hint('« Comme sur l’appareil » suit les Paramètres.')], 'guild-settings-text'),
   );
 }
 
@@ -144,24 +155,31 @@ function renderSound(settings, guild) {
   });
   return section(
     'Son sur cet appareil',
+    sectionDesc('Le niveau de cette guilde, appliqué par-dessus le volume général.'),
+    immediateNote(),
     controlRow(
       'Volume de la guilde',
-      rangeControl({
-        id: 'guild-settings-volume',
-        min: 0,
-        max: 100,
-        value: Math.round(volume * 100),
-        format: (value) => `${value} %`,
-        defaultValue: DEFAULT_VOLUME_PERCENT,
-        onInput: (value) => debounce(`guildVolume:${guildId}`, () => patchGuild(guildId, { volume: value / 100 })),
-      }),
+      [
+        ...rangeControl({
+          id: 'guild-settings-volume',
+          min: 0,
+          max: 100,
+          value: Math.round(volume * 100),
+          format: (value) => `${value} %`,
+          defaultValue: DEFAULT_VOLUME_PERCENT,
+          onInput: (value) => debounce(`guildVolume:${guildId}`, () => patchGuild(guildId, { volume: value / 100 })),
+        }),
+        hint('Multiplié par le volume général des Paramètres.'),
+      ],
       'guild-settings-volume',
     ),
-    h('p', { class: 'settings-hint is-under' }, 'Multiplié par le volume général des Paramètres.'),
-    controlRow('Couper le son des médias', mediaMute, 'guild-settings-media-mute'),
-    h('p', { class: 'settings-hint is-under' }, 'Les médias de cette guilde restent affichés, sans leur son.'),
-    controlRow('Mettre en pause', mute, 'guild-settings-mute'),
-    h('p', { class: 'settings-hint is-under' }, 'Plus aucun média de cette guilde ne s’affiche sur cet appareil.'),
+    switchRow(
+      'Son coupé',
+      mediaMute,
+      'guild-settings-media-mute',
+      'Les médias de cette guilde restent affichés, sans leur son.',
+    ),
+    switchRow('Mettre en pause', mute, 'guild-settings-mute', 'Plus aucun média de cette guilde ne s’affiche sur cet appareil.'),
   );
 }
 
@@ -175,11 +193,6 @@ function quotaInGo(mediaBoard) {
   return String(Math.round((mediaBoard.quotaMb / 1024) * 10) / 10);
 }
 
-function mediaCount(mediaBoard) {
-  const count = Number(mediaBoard.itemsCount) || 0;
-  return `${count} média${count === 1 ? '' : 's'}`;
-}
-
 // « Vider le board » asks the guild name, like the server console's strong
 // confirmation. The server compares it exactly (`confirmation_mismatch`).
 function openClearBoardDialog(guildName) {
@@ -191,15 +204,33 @@ function openClearBoardDialog(guildName) {
       autocomplete: 'off',
       placeholder: guildName,
     });
-    const mismatch = h('p', { class: 'meta', hidden: true }, 'Le nom ne correspond pas.');
+    // The name is the confirmation: the button only unlocks once it matches
+    // exactly, and Enter never submits anything else.
+    const matches = () => field.value.trim() === guildName;
+    const error = h('p', { class: 'error-text', role: 'alert', hidden: true }, 'Le nom ne correspond pas.');
+    let busy = false;
+    const confirmButton = h('button', { class: 'btn is-danger', type: 'button', disabled: true }, 'Vider le board');
+    const sync = () => {
+      confirmButton.disabled = busy || !matches();
+      if (matches()) {
+        error.hidden = true;
+      }
+    };
     const confirm = async () => {
-      if (field.value !== guildName) {
-        mismatch.hidden = false;
+      if (busy || !matches()) {
+        error.hidden = false;
         field.focus();
         return;
       }
+      busy = true;
+      field.disabled = true;
+      confirmButton.disabled = true;
       const body = await run(() => api('POST', '/overlay/admin/media-board/clear', { confirm: field.value }));
       if (!body) {
+        // run() already reported the failure: let the user try again.
+        busy = false;
+        field.disabled = false;
+        sync();
         return;
       }
       close();
@@ -208,10 +239,17 @@ function openClearBoardDialog(guildName) {
       await loadGuild();
       renderView();
     };
+    confirmButton.addEventListener('click', confirm);
+    field.addEventListener('input', sync);
     field.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') {
-        event.preventDefault();
+      if (event.key !== 'Enter') {
+        return;
+      }
+      event.preventDefault();
+      if (matches()) {
         confirm();
+      } else {
+        error.hidden = false;
       }
     });
     return [
@@ -219,16 +257,16 @@ function openClearBoardDialog(guildName) {
       h(
         'p',
         null,
-        `Tous les médias de ${guildName} sont supprimés, la lecture est arrêtée et les fichiers orphelins sont effacés. Action immédiate et définitive.`,
+        'Tous les médias sont supprimés, la lecture est arrêtée et les fichiers orphelins sont effacés. Action immédiate et définitive.',
       ),
       h('label', { for: 'clear-board-name' }, `Saisis « ${guildName} » pour confirmer.`),
       field,
-      mismatch,
+      error,
       h(
         'div',
         { class: 'actions' },
         h('button', { class: 'btn is-quiet', onClick: close }, 'Annuler'),
-        h('button', { class: 'btn is-danger', onClick: confirm }, 'Vider le board'),
+        confirmButton,
       ),
     ];
   });
@@ -248,7 +286,6 @@ function renderBoardSettings() {
     step: '1',
     value: quotaInGo(mediaBoard),
     placeholder: serverMaxGo && serverMaxGo >= 1 ? String(serverMaxGo) : '',
-    style: 'max-width:160px',
   });
   const save = async () => {
     const raw = quota.value.trim().replace(',', '.');
@@ -269,11 +306,12 @@ function renderBoardSettings() {
     await loadGuildInfo();
     renderView();
   };
-  const usage = mediaBoard
-    ? `${mediaCount(mediaBoard)} · ${formatBytes(mediaBoard.usedBytes)} / ${formatBytes(mediaBoard.maxBytes)}`
-    : 'Occupation inconnue';
+  // The guild settings show what the board holds even before a quota is set:
+  // the quota field right below is where that limit is chosen.
+  const usage = (mediaBoard && formatBoardUsage(mediaBoard, { requireMax: false })) || 'inconnue';
   return section(
-    'Board',
+    'Board de la guilde',
+    sectionDesc('Les médias partagés par la guilde, hébergés sur le serveur.'),
     // What the board holds right now, then what the quota below changes.
     h('p', { class: 'settings-hint is-summary' }, `Occupation : ${usage}.`),
     h(
@@ -283,24 +321,40 @@ function renderBoardSettings() {
         ? `Sans quota propre, la limite du serveur s’applique (${formatBytes(serverMaxBytes)}). Le quota d’une guilde ne peut pas la dépasser.`
         : 'Sans quota propre, la limite du serveur s’applique.',
     ),
-    // The input and its save button share the control column, like the
-    // « Placer sur l’écran » button next to the display zone.
+    // The input, its named save button and the hint share the control column,
+    // like the « Placer sur l’écran » button next to the display zone.
     controlRow(
       'Quota propre (Go)',
-      [quota, h('button', { class: 'btn', type: 'button', onClick: save }, 'Enregistrer')],
+      [quota, h('button', { class: 'btn', type: 'button', onClick: save }, 'Enregistrer le board'), hint('Vide = quota du serveur.')],
       'set-board-quota',
     ),
-    h('p', { class: 'settings-hint is-under' }, 'Vide = quota du serveur.'),
     // Destructive action, set apart from the form above it.
     h(
       'div',
       { class: 'settings-danger' },
-      guild.name
-        ? [
-            h('p', { class: 'settings-hint' }, 'Supprime tous les médias du board et les fichiers orphelins.'),
-            h('button', { class: 'btn is-danger', type: 'button', onClick: () => openClearBoardDialog(guild.name) }, 'Vider le board'),
-          ]
-        : h('span', { class: 'settings-hint' }, 'Le nom de la guilde est inconnu : le vidage demande son nom, il est donc indisponible.'),
+      h(
+        'div',
+        { class: 'settings-danger-body' },
+        h('p', { class: 'settings-danger-title' }, 'Vider le board ?'),
+        guild.name
+          ? [
+              h(
+                'p',
+                { class: 'settings-hint' },
+                'Supprime tous les médias du board et les fichiers orphelins. Action immédiate et définitive.',
+              ),
+              h(
+                'button',
+                { class: 'btn is-danger', type: 'button', onClick: () => openClearBoardDialog(guild.name) },
+                'Vider le board',
+              ),
+            ]
+          : h(
+              'p',
+              { class: 'settings-hint' },
+              'Le nom de la guilde est inconnu : le vidage demande son nom, il est donc indisponible.',
+            ),
+      ),
     ),
   );
 }
@@ -326,9 +380,21 @@ export function renderGuildSettings() {
   return h(
     'div',
     { class: 'settings' },
-    h('div', { class: 'settings-head' }, h('p', { class: 'meta' }, `Réglages de ${guildLabel(guild)}.`)),
+    // Scope first: what this device sets for the guild, then what the guild
+    // sets on the server.
+    h(
+      'div',
+      { class: 'settings-head' },
+      h('h2', null, 'Réglages de la guilde'),
+      h('p', { class: 'settings-intro' }, 'Guilde et cet appareil.'),
+      h(
+        'button',
+        { class: 'btn is-quiet settings-device-link', type: 'button', onClick: openSettings },
+        'Paramètres de cet appareil',
+      ),
+    ),
     deviceSections,
-    can('manageSettings') ? section('Serveur', h('p', { class: 'settings-hint is-lead' }, 'Pour toute la guilde, sur tous les appareils.'), renderServerSettings()) : null,
+    can('manageSettings') ? section('Serveur de la guilde', h('p', { class: 'settings-hint is-lead' }, 'Pour toute la guilde, sur tous les appareils.'), renderServerSettings()) : null,
     can('manageSettings') ? renderBoardSettings() : null,
   );
 }

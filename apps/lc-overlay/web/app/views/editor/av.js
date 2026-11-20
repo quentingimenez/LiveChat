@@ -40,6 +40,7 @@ import {
   parseSpeed,
   removedRanges,
   rotatedSize,
+  showsDisplaySize,
   sourceToOutputTime,
 } from '../../core/editor-helpers.js';
 import { DEFAULT_VOLUME_PERCENT, previewVolume } from '../../core/sound.js';
@@ -531,7 +532,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   function afterChange() {
     media.playbackRate = edit.speed;
     const kept = outputDuration(edit.segments, edit.speed);
-    result.textContent = isWhole(edit.segments, duration) && edit.speed === 1 ? `Durée : ${formatClock(duration)}` : `Résultat : ${formatClock(kept)} (au lieu de ${formatClock(duration)})`;
+    result.textContent = isWhole(edit.segments, duration) && edit.speed === 1 ? `Durée\u00A0: ${formatClock(duration)}` : `Résultat\u00A0: ${formatClock(kept)} (au lieu de ${formatClock(duration)})`;
     layoutVideo();
     updateCutControls();
     paintTimeline(true);
@@ -814,7 +815,12 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
         setSpeed(speed);
       },
     });
-    return h('label', { class: 'row' }, h('span', { class: 'meta' }, 'Autre vitesse'), field, h('span', { class: 'meta' }, '×'));
+    return h(
+      'label',
+      { class: 'editor-field' },
+      h('span', null, 'Autre vitesse'),
+      h('span', { class: 'editor-field-tail' }, field, h('span', { class: 'meta' }, '×')),
+    );
   }
 
   // --- display scale (board item setting, no re-encode) ---
@@ -873,14 +879,14 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
       ? shown.capped
         ? ' (plafonné par la zone, en-tête compris)'
         : ''
-      : ` (estimation sur une zone ${preview.zone.width} × ${preview.zone.height} px)`;
-    return `À l’écran : ${shown.width} × ${shown.height} px${note}`;
+      : ` (estimation sur une zone ${preview.zone.width}\u00A0×\u00A0${preview.zone.height}\u00A0px)`;
+    return `À l’écran\u00A0: ${shown.width}\u00A0×\u00A0${shown.height}\u00A0px${note}`;
   }
 
   function sizePanel() {
     const picture = resultPictureSize() || { width: 0, height: 0 };
     const line = h('p', { class: 'meta' }, displaySizeLine());
-    const value = h('span', { class: 'editor-value' }, `${displayScale} %`);
+    const value = h('span', { class: 'editor-value' }, `${displayScale}\u00A0%`);
     // Same span as the number field, so the presets never push the cursor out of range.
     const range = h('input', {
       type: 'range',
@@ -899,7 +905,6 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
       step: '1',
       inputmode: 'numeric',
       value: String(displayScale),
-      style: 'max-width:110px',
       onInput: () => {
         const parsed = parseDisplayScale(number.value);
         if (parsed.ok) {
@@ -915,7 +920,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     });
     // Both controls and the live size follow any change, whichever one moved.
     syncScaleFields = () => {
-      value.textContent = `${displayScale} %`;
+      value.textContent = `${displayScale}\u00A0%`;
       range.value = String(clamp(displayScale, MIN_DISPLAY_SCALE_PERCENT, MAX_DISPLAY_SCALE_PERCENT));
       number.value = String(displayScale);
       line.textContent = displaySizeLine();
@@ -932,7 +937,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
       toggle.classList.toggle('is-on', previewShown);
       toggle.setAttribute('aria-pressed', String(previewShown));
       note.hidden = !previewShown;
-      note.textContent = `L’aperçu montre le média sur l’overlay, en-tête de ${OVERLAY_MEDIA_RESERVED_HEIGHT} px compris. Une légende sous le média n’y est pas représentée.`;
+      note.textContent = `L’aperçu montre le média sur l’overlay, en-tête de ${OVERLAY_MEDIA_RESERVED_HEIGHT}\u00A0px compris. Une légende sous le média n’y est pas représentée.`;
     };
     syncPreviewToggle();
     return section(
@@ -941,22 +946,26 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
       h(
         'p',
         { class: 'meta' },
-        `${isVideo ? 'Vidéo' : 'Pochette'} : ${picture.width} × ${picture.height} px · `,
+        `${isVideo ? 'Vidéo' : 'Pochette'}\u00A0: ${picture.width}\u00A0×\u00A0${picture.height}\u00A0px · `,
         preview && preview.zone.known
-          ? `zone : ${preview.zone.width} × ${preview.zone.height} px`
+          ? `zone\u00A0: ${preview.zone.width}\u00A0×\u00A0${preview.zone.height}\u00A0px`
           : 'zone d’affichage inconnue',
       ),
       !isVideo && !(artwork && artwork.naturalWidth > 0)
-        ? h('p', { class: 'meta' }, 'Ce son n’a pas de pochette : l’échelle ne changera rien à l’écran.')
+        ? h('p', { class: 'meta' }, 'Ce son n’a pas de pochette\u00A0: l’échelle ne changera rien à l’écran.')
         : null,
       h('label', { class: 'editor-slider' }, h('span', { class: 'editor-slider-head' }, 'Échelle', value), range),
-      h('label', null, 'Valeur (%)', number),
+      h('label', { class: 'editor-field' }, h('span', null, 'Valeur\u00A0(%)'), number),
       h(
         'div',
-        { class: 'row is-wrap' },
-        preset(150, '150 %'),
-        preset(200, '200 %'),
-        preset(300, '300 %'),
+        { class: 'editor-presets is-three' },
+        preset(150, '150\u00A0%'),
+        preset(200, '200\u00A0%'),
+        preset(300, '300\u00A0%'),
+      ),
+      h(
+        'div',
+        { class: 'editor-presets is-two' },
         preset(MAX_DISPLAY_SCALE_PERCENT, 'Remplir la zone'),
         preset(DEFAULT_DISPLAY_SCALE_PERCENT, 'Taille d’origine'),
       ),
@@ -976,16 +985,16 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
         h('div', { class: 'row' }, startField, h('span', { class: 'meta' }, '→'), endField),
         h(
           'div',
-          { class: 'row is-wrap' },
+          { class: 'editor-pair' },
           h('button', { class: 'btn', type: 'button', title: 'La sélection commence à la tête de lecture (I)', onClick: () => markSelection('start') }, 'Début ici'),
           h('button', { class: 'btn', type: 'button', title: 'La sélection finit à la tête de lecture (O)', onClick: () => markSelection('end') }, 'Fin ici'),
         ),
-        h('div', { class: 'row is-wrap' }, keepButton, cutButton),
+        h('div', { class: 'editor-stack' }, keepButton, cutButton),
         resetCutButton,
       ),
       section(
         'Vitesse',
-        choices(SPEEDS.map((speed) => [speed, formatSpeed(speed)]), edit.speed, setSpeed, 'Vitesse de lecture'),
+        choices(SPEEDS.map((speed) => [speed, formatSpeed(speed)]), edit.speed, setSpeed, 'Vitesse de lecture', 'is-grid-3'),
         speedField(),
         toggle('Lire à l’envers', edit.reverse, (reverse) => { edit.reverse = reverse; commit(); renderPanel(); }),
         edit.reverse ? h('p', { class: 'meta' }, 'L’aperçu reste à l’endroit ; le résultat sera inversé.') : null,
@@ -997,9 +1006,9 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
             edit.mute
               ? null
               : [
-                  slider({ label: 'Volume', min: 0, max: 300, step: 5, value: Math.round(edit.volume * 100), defaultValue: DEFAULT_VOLUME_PERCENT, format: (value) => `${value} %`, onInput: (value) => { edit.volume = value / 100; }, onCommit: commit }),
-                  slider({ label: 'Fondu d’entrée', min: 0, max: 5, step: 0.1, value: edit.fadeIn, defaultValue: 0, format: (value) => `${value.toFixed(1).replace('.', ',')} s`, onInput: (value) => { edit.fadeIn = value; }, onCommit: commit }),
-                  slider({ label: 'Fondu de sortie', min: 0, max: 5, step: 0.1, value: edit.fadeOut, defaultValue: 0, format: (value) => `${value.toFixed(1).replace('.', ',')} s`, onInput: (value) => { edit.fadeOut = value; }, onCommit: commit }),
+                  slider({ label: 'Volume', min: 0, max: 300, step: 5, value: Math.round(edit.volume * 100), defaultValue: DEFAULT_VOLUME_PERCENT, format: (value) => `${value}\u00A0%`, onInput: (value) => { edit.volume = value / 100; }, onCommit: commit }),
+                  slider({ label: 'Fondu d’entrée', min: 0, max: 5, step: 0.1, value: edit.fadeIn, defaultValue: 0, format: (value) => `${value.toFixed(1).replace('.', ',')}\u00A0s`, onInput: (value) => { edit.fadeIn = value; }, onCommit: commit }),
+                  slider({ label: 'Fondu de sortie', min: 0, max: 5, step: 0.1, value: edit.fadeOut, defaultValue: 0, format: (value) => `${value.toFixed(1).replace('.', ',')}\u00A0s`, onInput: (value) => { edit.fadeOut = value; }, onCommit: commit }),
                 ],
           )
         : section('Son', h('p', { class: 'meta' }, 'Un GIF n’a pas de son.')),
@@ -1018,7 +1027,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
                   storeCrop(centeredCrop(cropAspect(), media.videoWidth, media.videoHeight));
                   commit();
                   setCropMode(true);
-                }, 'Format du recadrage')
+                }, 'Format du recadrage', 'is-grid-3')
               : null,
             h(
               'div',
@@ -1030,18 +1039,22 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
             ),
           )
         : null,
-      preview ? sizePanel() : null,
+      // A sound without artwork has no picture to size; the card that stands in
+      // for it ignores the scale, so the setting would do nothing.
+      preview && showsDisplaySize({ isVideo, output: edit.output, hasArtwork: Boolean(artworkUrl) })
+        ? sizePanel()
+        : null,
       isVideo
         ? section(
             'Enregistrer en',
-            choices([['same', 'Vidéo', 'video'], ['audio', 'Son seul', 'audio'], ['gif', 'GIF animé', 'image']], edit.output, (output) => {
+            choices([['same', 'Vidéo', 'video'], ['audio', 'Son', 'audio'], ['gif', 'GIF', 'image']], edit.output, (output) => {
               edit.output = output;
               if (output === 'audio') {
                 setCropMode(false, true);
               }
               commit();
               renderPanel();
-            }, 'Format du résultat'),
+            }, 'Format du résultat', 'is-grid-3'),
           )
         : null,
     ];

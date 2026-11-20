@@ -127,7 +127,7 @@
     generalMute: false,
     mediaMuted: false,
     showText: true,
-    hoverDetails: true,
+    hoverDetails: false,
     autoStart: false,
     shortcuts: { stop: 'CommandOrControl+Shift+S', stopLocal: null, muteAll: null, openBoard: null },
     layout: { zone: { x: 0, y: 0, width: 1, height: 1 }, align: 'center' },

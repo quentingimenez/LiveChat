@@ -93,18 +93,37 @@ export function renderRail() {
       const label = guild.membership.guildName || 'Guilde';
       const active = guild.membership.guildId === state.activeGuildId && state.page !== 'settings';
       const hasIcon = Boolean(guild.membership.guildIconUrl);
+      // The wrapper keeps the tile's 44 px footprint so the rail rhythm does
+      // not change; the menu button is a sibling, never a button in a button.
       return h(
-        'button',
-        {
-          class: `guild${active ? ' is-active' : ''}${guild.membership.muted ? ' is-muted' : ''}${hasIcon ? ' has-icon' : ''}`,
-          title: `${label} — ${guild.membership.muted ? 'en pause' : guild.statusLabel}`,
-          'aria-label': label,
-          'aria-current': active ? 'true' : null,
-          onClick: () => selectGuild(guild.membership.guildId),
-          onContextMenu: (event) => openGuildMenu(event, guild),
-        },
-        guildFace(label, guild.membership.guildIconUrl),
-        h('span', { class: `dot ${dotClass(guild)}` }),
+        'div',
+        { class: 'guild-slot' },
+        h(
+          'button',
+          {
+            class: `guild${active ? ' is-active' : ''}${guild.membership.muted ? ' is-muted' : ''}${hasIcon ? ' has-icon' : ''}`,
+            title: `${label} — ${guild.membership.muted ? 'en pause' : guild.statusLabel}`,
+            'aria-label': label,
+            'aria-current': active ? 'true' : null,
+            onClick: () => selectGuild(guild.membership.guildId),
+            onContextMenu: (event) => openGuildMenu(event, guild),
+          },
+          guildFace(label, guild.membership.guildIconUrl),
+          h('span', { class: `dot ${dotClass(guild)}` }),
+        ),
+        h(
+          'button',
+          {
+            class: 'guild-menu',
+            type: 'button',
+            title: `Actions de ${label}`,
+            'aria-label': `Actions de ${label}`,
+            'aria-haspopup': 'menu',
+            onClick: (event) => openGuildMenu(event, guild),
+            onContextMenu: (event) => openGuildMenu(event, guild),
+          },
+          '⋯',
+        ),
       );
     }),
     h('button', { class: 'guild is-add', title: 'Rejoindre une guilde', 'aria-label': 'Rejoindre une guilde', onClick: openJoinDialog }, icon('plus')),

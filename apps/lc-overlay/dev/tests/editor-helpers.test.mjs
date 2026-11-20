@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import {
@@ -28,6 +29,7 @@ import {
   recipeIsNoop,
   removedRanges,
   rotatedSize,
+  showsDisplaySize,
   sourceToOutputTime,
   wholeSegments,
 } from '../../web/app/core/editor-helpers.js';
@@ -244,4 +246,18 @@ test('edited names: title suffix, export type and a safe file name', () => {
   assert.equal(editedFileName('a/b\\c: d?', 'image/png'), 'a b c d.png');
   assert.equal(editedFileName('wait for it....', 'image/jpeg'), 'wait for it..jpg');
   assert.equal(editedFileName('', 'image/png'), 'image.png');
+});
+
+test('showsDisplaySize: seule une sortie avec image a une taille à régler', () => {
+  assert.equal(showsDisplaySize({ isVideo: true, output: 'same', hasArtwork: false }), true);
+  assert.equal(showsDisplaySize({ isVideo: true, output: 'gif', hasArtwork: false }), true);
+  assert.equal(showsDisplaySize({ isVideo: true, output: 'audio', hasArtwork: false }), false);
+  assert.equal(showsDisplaySize({ isVideo: false, output: 'same', hasArtwork: true }), true);
+  assert.equal(showsDisplaySize({ isVideo: false, output: 'same', hasArtwork: false }), false);
+});
+
+test('éditeur audio : la section Taille à l’affichage disparaît sans pochette', () => {
+  const source = readFileSync(new URL('../../web/app/views/editor/av.js', import.meta.url), 'utf8');
+  assert.match(source, /showsDisplaySize\(\{ isVideo, output: edit\.output, hasArtwork: Boolean\(artworkUrl\) \}\)/);
+  assert.doesNotMatch(source, /preview \? sizePanel\(\) : null/);
 });

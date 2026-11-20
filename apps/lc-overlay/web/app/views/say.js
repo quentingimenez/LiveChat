@@ -17,18 +17,18 @@ export function openSayDialog() {
       class: 'field say-text',
       rows: '5',
       required: true,
-      placeholder: 'Ce que le bot va dire à voix haute (Maj+Entrée : retour à la ligne)',
+      placeholder: 'Le texte à lire à voix haute (Maj+Entrée\u00a0: retour à la ligne)',
       'aria-describedby': 'say-counter',
     });
     const counter = h('span', { id: 'say-counter', class: 'say-counter', 'aria-live': 'polite' });
     const caption = h('input', {
       class: 'field',
       maxlength: String(SAY_CAPTION_MAX_CHARS),
-      placeholder: 'Texte affiché à l’écran pendant la lecture',
+      placeholder: 'Légende affichée pendant la lecture',
     });
     const anonymous = h('input', { type: 'checkbox' });
     const error = h('p', { class: 'error-text', role: 'alert', hidden: true });
-    const submit = h('button', { class: 'btn', type: 'submit' }, 'Faire dire');
+    const submit = h('button', { class: 'btn is-primary', type: 'submit' }, 'Faire lire');
 
     function refresh() {
       const count = speechCounter(text.value);
@@ -88,20 +88,20 @@ export function openSayDialog() {
             // The dialog stays open with the text, so it can be fixed and resent.
             showError(sayErrorMessage(failure && failure.status, failure && failure.code, failure && failure.message));
             sending = false;
-            submit.textContent = 'Faire dire';
+            submit.textContent = 'Faire lire';
             refresh();
           }
         },
       },
-      h('label', null, 'Texte à dire', text),
+      h('label', null, 'Texte à lire', text),
       h('div', { class: 'say-meta' }, counter),
-      h('label', null, 'Texte affiché (facultatif)', caption),
-      h('label', { class: 'say-anonymous' }, anonymous, h('span', null, 'Anonyme : ne pas afficher mon nom')),
+      h('label', null, 'Légende affichée (facultatif)', caption),
+      h('label', { class: 'switch say-anonymous' }, anonymous, h('span', null, 'Rester anonyme')),
       error,
       h('div', { class: 'actions' }, h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'), submit),
     );
 
     refresh();
-    return [h('h2', null, 'Faire dire un texte'), h('p', null, 'Une voix de synthèse lit ton texte sur les overlays de la guilde.'), form];
+    return [h('h2', null, 'Faire lire un texte'), h('p', null, 'Une voix de synthèse lit ton texte sur les overlays de la guilde.'), form];
   });
 }

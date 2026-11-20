@@ -12,9 +12,13 @@
   --slate-700: #f1f4fa;
   --slate-600: #e3e9f3;
   --line: #d5dce8;
+  /* Bordure des champs : ≥ 3,3:1 sur les surfaces claires (WCAG 1.4.11,
+     testé dans theme-contrast.test.mjs). */
+  --field-line: #7a849c;
   --text: #171b25;
   --text-soft: #4f5972;
-  --text-faint: #6f7a90;
+  /* 4,5:1 sur blanc et sur les surfaces claires (testé). */
+  --text-faint: #5a6478;
   /* Accents : teintes de la charte, assombries juste ce qu'il faut pour tenir
      le contraste sur blanc (≥ 4,5:1 en texte, ≥ 3:1 en trait de focus). */
   --amber-text: #8a5a06;

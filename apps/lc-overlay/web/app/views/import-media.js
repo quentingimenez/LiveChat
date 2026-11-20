@@ -68,7 +68,7 @@ export function openImportDialog(itemIds, onDone) {
   const sourceGuildId = state.activeGuildId;
   let chosen = targets.length === 1 ? targets[0].membership.guildId : null;
   openDialog((close) => {
-    const submit = h('button', { class: 'btn', type: 'button', disabled: chosen === null }, 'Ajouter');
+    const submit = h('button', { class: 'btn is-primary', type: 'button', disabled: chosen === null }, 'Ajouter à la guilde');
     const list = h('div', { class: 'guild-choices', role: 'radiogroup', 'aria-label': 'Guilde' });
     const renderChoices = () => {
       list.replaceChildren(
@@ -87,7 +87,7 @@ export function openImportDialog(itemIds, onDone) {
         return;
       }
       submit.disabled = true;
-      submit.textContent = 'Ajout…';
+      submit.textContent = 'Ajout en cours…';
       const results = await runImport(sourceGuildId, target, itemIds);
       close();
       if (results === null) {
@@ -100,9 +100,16 @@ export function openImportDialog(itemIds, onDone) {
       }
     });
     const count = itemIds.length;
+    const plural = count > 1;
     return [
-      h('h2', null, count > 1 ? `Ajouter ${count} médias à une autre guilde` : 'Ajouter à une autre guilde'),
-      h('p', null, 'Le média est ajouté au board de la guilde choisie, avec son titre, son texte et son image.'),
+      h('h2', null, plural ? `Ajouter ${count} médias à une autre guilde` : 'Ajouter ce média à une autre guilde'),
+      h(
+        'p',
+        null,
+        plural
+          ? 'Les médias sont ajoutés au board de la guilde choisie, avec leur titre, leur légende et leur image.'
+          : 'Le média est ajouté au board de la guilde choisie, avec son titre, sa légende et son image.',
+      ),
       list,
       h(
         'div',

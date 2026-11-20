@@ -17,11 +17,12 @@ Le Raccourci n'a aucun droit d'administration : il utilise un **jeton
 d'ingestion** limité à l'envoi de médias (`Surface::Extension`,
 `Action::Send`). Ce jeton est révocable à tout moment.
 
-> **Fichiers prêts à importer** — Trois raccourcis signés sont fournis dans
-> [`ios/`](../ios/) : `LiveChat-Photo.shortcut`, `LiveChat-Video.shortcut` et
-> `LiveChat-Lien.shortcut` (YouTube, TikTok, X…). Ouvre-les sur l'iPhone et
-> remplace `TON-SERVEUR` et `TON_JETON` après l'import. La procédure ci-dessous
-> reste utile pour créer une variante (board, légende) ou comprendre les actions.
+> **Fichiers prêts à importer** — Quatre raccourcis signés sont fournis dans
+> [`ios/`](../ios/) : `LiveChat.shortcut` (menu **Photo / Video / Lien**, le plus
+> simple), puis `LiveChat-Photo.shortcut`, `LiveChat-Video.shortcut` et
+> `LiveChat-Lien.shortcut`. Ouvre-les sur l'iPhone et remplace `TON-SERVEUR` et
+> `TON_JETON` après l'import. La procédure ci-dessous reste utile pour créer une
+> variante (board, légende) ou comprendre les actions.
 
 ## Prérequis
 

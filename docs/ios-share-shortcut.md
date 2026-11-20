@@ -97,17 +97,20 @@ Dans l'app **Raccourcis** :
 
 1. **+** → nomme le raccourci `Jouer sur LiveChat`.
 2. Ouvre les réglages du raccourci (icône ⓘ) → active **Afficher dans le menu
-   Partage** → dans **Recevoir**, choisis **Images**, **Fichiers** et **URL**
-   (ou crée un raccourci par type si tu préfères).
+   Partage** → dans **Recevoir**, choisis **Images** (et **Vidéos** si proposé).
+   Pour les fichiers, crée une variante du raccourci avec **Recevoir** =
+   **Fichiers** ; pour les URL, voir la section 5.
 3. Ajoute **Obtenir le contenu du fichier** et sélectionne
    `iCloud Drive/LiveChat/ingest-token.txt`. Ajoute ensuite une action de
    nettoyage (`Rogner les espaces` / Trim) pour retirer le retour à la ligne
    final, puis garde le résultat dans une variable `Jeton`.
 4. Récupère le nom du fichier partagé :
-   - pour un fichier : **Obtenir les détails du fichier** → **Nom** ;
-   - pour une image : ajoute **Convertir l'image** (JPEG, qualité moyenne), puis
-     **Enregistrer le fichier** dans un dossier temporaire, **Obtenir le
-     fichier**, et **Obtenir les détails du fichier** → **Nom**.
+   - **photo** : **Convertir l'image** (JPEG, qualité moyenne) →
+     **Enregistrer le fichier** dans un dossier temporaire → **Obtenir le
+     fichier** → **Obtenir les détails du fichier** → **Nom** ;
+   - **vidéo** : **Encoder le média** (720p) → **Enregistrer le fichier** →
+     **Obtenir le fichier** → **Obtenir les détails du fichier** → **Nom** ;
+   - **fichier** : **Obtenir les détails du fichier** → **Nom**.
 5. Ajoute **Obtenir le contenu de l'URL** :
    - **URL** : `https://livechat.example.com/ingest/file?filename=<Nom>&text=<Légende>`
    - **Méthode** : `POST`
@@ -118,9 +121,9 @@ Dans l'app **Raccourcis** :
    - **Corps de la requête** : `Fichier`
    - **Fichier** : le fichier partagé (ou le fichier converti à l'étape 4).
 6. Pour une légende, ajoute **Demander une entrée** (texte) avant l'URL, puis
-   insère la réponse dans `text=`. Applique **Encoder l'URL** au nom et à la
-   légende avant de les insérer : les espaces, accents et `&` cassent sinon la
-   query.
+   insère la réponse dans `text=`. Applique **Encoder l'URL** au nom, à la
+   légende et au titre avant de les insérer : les espaces, accents et `&` cassent
+   sinon la query.
 7. Termine par **Afficher le résultat** (facultatif) pour voir le `jobId` et
    les champs `hasMedia` / `hasText` renvoyés par le serveur.
 
@@ -144,8 +147,9 @@ https://livechat.example.com/ingest/file?filename=<Nom>&saveToBoard=true&title=<
 
 ## 5. Partager un lien YouTube, TikTok ou X
 
-Le fichier binaire ne concerne que les médias locaux. Pour un lien, garde le
-même Raccourci mais envoie une requête JSON à `/ingest` :
+Le fichier binaire ne concerne que les médias locaux. Crée un second Raccourci
+(`Lien sur LiveChat`) avec **Recevoir** = **URL**, puis envoie une requête JSON à
+`/ingest` :
 
 - **URL** : `https://livechat.example.com/ingest`
 - **Méthode** : `POST`

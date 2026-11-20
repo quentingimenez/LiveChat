@@ -62,9 +62,10 @@ import { openUploadMenu, renderUploadCard, startFileUpload, uploadsForGuild } fr
 import { renderView } from './view.js';
 
 registerIcons({
-  // Optically centred in its box: the bounding box now spans y 4.35..20.45
-  // (centre 12.4), so the star no longer reads too high in its circle.
-  star: 'M12 4.35l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z',
+  // The star's ink is bottom heavy: its area centroid sits 1.26 units below the
+  // centre of its box (y 3.09..19.19), so the glyph is raised by that much to
+  // read centred in the circle of the favourite button.
+  star: 'M12 3.09l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z',
   filter: 'M4 6h16M7 12h10M10 18h4',
   check: 'M5 12.5l4.5 4.5L19 7',
 });

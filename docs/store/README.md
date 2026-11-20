@@ -99,9 +99,9 @@ par l'utilisateur ; rien n'est vendu, revendu ni transmis à un tiers.
 **Politique de confidentialité** : `docs/store/privacy.md` (publiée à
 <https://github.com/quentingimenez/LiveChat/blob/main/docs/store/privacy.md>).
 C'est l'URL à coller dans *Privacy practices* de la fiche et dans *Branding* du
-projet Google Cloud ; elle devra passer sur le domaine du serveur
-(`https://livechat.singesupreme.fr/privacy`) quand la console exigera un domaine
-autorisé.
+projet Google Cloud ; le domaine `github.com` y est enregistré comme domaine
+autorisé. Une URL sur le domaine du serveur
+(`https://livechat.singesupreme.fr/privacy`) serait acceptée aussi.
 
 ## Secrets GitHub (une seule fois)
 
@@ -119,10 +119,16 @@ autorisé.
 
 1. Google Cloud Console → nouveau projet (ou projet existant) → *APIs & Services*
    → activer **Chrome Web Store API**.
-2. *OAuth consent screen* → type *External*, ajouter son compte dans *Test users*.
-3. *Credentials* → *Create credentials* → *OAuth client ID* → type
+2. *Google Auth Platform* → *Audience* → type *External*, ajouter son compte dans
+   *Test users*.
+3. *Branding* : nom de l'application, e-mail d'assistance, page d'accueil, règles
+   de confidentialité (`docs/store/privacy.md`) et domaine autorisé (`github.com`).
+   Ces champs sont obligatoires pour publier l'application.
+4. *Audience* → **Publier l'application** (état *En production*). Tant que l'état
+   reste *Test*, le refresh token expire au bout de 7 jours.
+5. *Credentials* → *Create credentials* → *OAuth client ID* → type
    **Desktop app** → noter `CWS_CLIENT_ID` et `CWS_CLIENT_SECRET`.
-4. Depuis la racine du dépôt :
+6. Depuis la racine du dépôt :
 
    ```powershell
    pwsh -NoProfile -File scripts/webstore-refresh-token.ps1 `
@@ -158,6 +164,10 @@ La version du manifest doit être strictement supérieure à celle publiée
 général quelques heures à quelques jours ; le job affiche
 `submission: PENDING_REVIEW` quand tout est accepté.
 
-Le refresh token expire au bout de 7 jours tant que l'application OAuth reste en
-mode *Testing* : republier le client en *Production* (onglet *Audience*) ou
-relancer le script de refresh token avant expiration.
+Le refresh token n'expire plus : l'application OAuth `LiveChat Extension` est
+publiée en *Production*. Le scope `chromewebstore` reste classé sensible, donc
+tant que Google n'a pas validé l'application, l'écran de consentement affiche
+« Google n'a pas validé cette application » — le publieur peut continuer à
+l'autoriser. Si un nouveau refresh token est nécessaire (révocation, changement
+de client), relancer `scripts/webstore-refresh-token.ps1` et mettre à jour
+`CWS_REFRESH_TOKEN`.

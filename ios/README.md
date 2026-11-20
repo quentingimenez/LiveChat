@@ -22,8 +22,9 @@ d'ingestion comme `Authorization: Bearer ...`.
 1. Ouvre le lien du raccourci dans Safari. Le fichier se télécharge dans
    l'app **Fichiers**.
 2. Touche le fichier téléchargé : iOS propose **Ajouter le raccourci**.
-3. Ouvre le raccourci dans l'app **Raccourcis** et remplace les deux valeurs
-   de configuration (voir ci-dessous).
+3. iOS demande **Adresse du serveur** puis **Jeton d'ingestion iOS** : colle
+   les valeurs affichées par la board (voir ci-dessous). Ces deux questions
+   d'import évitent d'éditer les actions du raccourci.
 
 Si iOS refuse l'import, active **Réglages → Apps → Raccourcis → Autoriser les
 raccourcis non fiables**, puis réessaie. Les fichiers de ce dossier sont déjà
@@ -31,13 +32,15 @@ signés ; cette option ne devrait pas être nécessaire.
 
 ## Configurer après l'import
 
-Dans l'éditeur de chaque raccourci, remplace :
+Dans la board : **Mon profil → Appareils → Raccourci iOS → Configurer**. La
+board crée un jeton dédié et affiche une seule fois :
 
-- `TON-SERVEUR` par l'hôte public de LiveChat, sans slash final
-  (par exemple `livechat.example.com`) ;
-- `TON_JETON` par le jeton d'ingestion créé depuis la board
-  (Mon profil → Extension navigateur → Créer un code, puis
-  `POST /ingest/pair/consume`).
+- l'adresse publique du serveur (par exemple `https://livechat.example.com`) ;
+- le jeton d'ingestion.
+
+Colle ces deux valeurs dans les questions posées par iOS à l'import. Le client
+s'appelle `Raccourci iOS - <pseudo>` ; le reconfigurer révoque l'ancien jeton et
+en crée un nouveau.
 
 Le raccourci apparaît ensuite dans le menu de partage iOS :
 
@@ -54,9 +57,9 @@ du raccourci (`LiveChat Lien`), ou consulte la documentation détaillée.
 
 ## Sécurité et signature
 
-Le jeton n'est **pas** présent dans les fichiers : il est saisi après l'import,
-dans l'éditeur du raccourci. Ne partage pas un raccourci dans lequel tu as mis
-ton jeton ; utilise plutôt un jeton dédié, révocable depuis la console
+Le jeton n'est **pas** présent dans les fichiers : il est saisi une fois à
+l'import, dans les questions du raccourci. Le service de signature ne reçoit que
+le modèle sans jeton. Utilise un jeton dédié, révocable depuis la console
 d'administration → **Clients d'ingestion**.
 
 Les trois fichiers distribués ici sont signés par le service

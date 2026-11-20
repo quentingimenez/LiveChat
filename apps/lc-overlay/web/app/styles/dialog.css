@@ -349,6 +349,16 @@
   font-size: 12px;
 }
 
+.profile-dialog .profile-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.profile-dialog .profile-shortcuts a {
+  text-decoration: none;
+}
+
 /* `.dialog .actions` adds its own top margin; the grid gap already spaces it. */
 .profile-dialog .actions {
   margin-top: 0;

@@ -89,8 +89,9 @@ chargement en mode développeur, voir [`extension/README.md`](extension/README.m
 ### Raccourci iOS
 
 Le menu Partage d'iOS peut envoyer un média à LiveChat via un Raccourci, sans
-app native ni compte Apple Developer : appairage, création du Raccourci, limites
-et révocation dans [`docs/ios-share-shortcut.md`](docs/ios-share-shortcut.md).
+app native ni compte Apple Developer : configuration depuis la board, import des
+raccourcis signés, limites et révocation dans
+[`docs/ios-share-shortcut.md`](docs/ios-share-shortcut.md).
 
 ## Contenu du dépôt
 

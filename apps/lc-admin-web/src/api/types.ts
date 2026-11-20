@@ -165,18 +165,36 @@ export interface GuildBan {
   createdAt: IsoDate;
 }
 
+export interface QueueMedia {
+  id: string | null;
+  kind: 'video' | 'audio' | 'image' | string;
+  mime: string | null;
+  durationSec: number | null;
+  width: number | null;
+  height: number | null;
+  isVertical: boolean;
+  sizeBytes: number | null;
+  sourceUrl: string | null;
+}
+
 export interface QueueJob {
   id: string;
   status: 'playing' | 'pending' | string;
   title: string | null;
+  /** Titre de la source quand le média n'a pas d'item de board. */
+  sourceTitle: string | null;
   text: string | null;
   authorName: string | null;
   authorImage: string | null;
   durationSec: number;
   mediaAssetId: string | null;
+  /** `board` (item de board), `once` (média hors board) ou `direct` (texte). */
+  origin: 'board' | 'once' | 'direct' | string | null;
   kind: 'video' | 'audio' | 'image' | string | null;
+  media: QueueMedia | null;
   submittedAt: IsoDate | null;
   startedAt: IsoDate | null;
+  finishedAt: IsoDate | null;
 }
 
 export interface QueueState {

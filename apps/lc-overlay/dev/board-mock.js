@@ -176,19 +176,24 @@
   }));
 
   const queue = {
-    playing: { id: 'j0', status: 'playing', title: 'Chat qui tombe', text: null, authorName: 'Léa', durationSec: 30, kind: 'video', origin: 'board', startedAt: new Date(now - 12000).toISOString(), submittedAt: new Date(now - 20000).toISOString() },
+    playing: { id: 'j0', status: 'playing', title: 'Chat qui tombe', sourceTitle: null, text: null, authorName: 'Léa', durationSec: 30, kind: 'video', origin: 'board', mediaAssetId: 'a0', media: items[0].media, startedAt: new Date(now - 12000).toISOString(), submittedAt: new Date(now - 20000).toISOString() },
     pending: [
-      { id: 'j1', status: 'pending', title: 'Stonks', authorName: 'Max', durationSec: 10, kind: 'image', origin: 'board' },
-      { id: 'j2', status: 'pending', title: null, text: 'gg les gars', authorName: 'Léa', durationSec: 5, kind: null, origin: 'direct' },
-      { id: 'j3', status: 'pending', title: 'Directed by Robert B. Weide', authorName: 'Invité-42', durationSec: 8, kind: 'video', origin: 'board' },
+      { id: 'j1', status: 'pending', title: 'Stonks', sourceTitle: null, text: null, authorName: 'Max', durationSec: 10, kind: 'image', origin: 'board', mediaAssetId: 'a4', media: items[4].media },
+      { id: 'j2', status: 'pending', title: null, sourceTitle: null, text: 'gg les gars', authorName: 'Léa', durationSec: 5, kind: null, origin: 'direct', media: null },
+      { id: 'j3', status: 'pending', title: 'Directed by Robert B. Weide', sourceTitle: null, text: null, authorName: 'Invité-42', durationSec: 8, kind: 'video', origin: 'board', mediaAssetId: 'a3', media: items[3].media },
+      // Média joué une fois (ou ingéré par un client) : aucun item de board,
+      // donc pas de titre de board, mais le titre de la source et les détails
+      // du média restent affichés.
+      { id: 'j4', status: 'pending', title: null, sourceTitle: 'Vidéo envoyée par un client', text: null, authorName: 'Max', durationSec: 12, kind: 'video', origin: 'once', media: { id: 'a-once', kind: 'video', mime: 'video/mp4', durationSec: 212, width: 1920, height: 1080, isVertical: false, sizeBytes: 12 * 1024 * 1024, sourceUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' } },
     ],
   };
   // `GET /overlay/queue/history` : lectures terminées et échecs, du plus récent
   // au plus ancien. Les lectures finies pendant la session s'y ajoutent.
   const queueHistory = [
-    { id: 'h1', status: 'done', title: 'Bruh', text: null, authorName: 'Léa', durationSec: 4, kind: 'image', origin: 'board', finishedAt: new Date(now - 12 * 60000).toISOString() },
-    { id: 'h2', status: 'failed', title: null, text: 'gg les gars', authorName: 'Max', durationSec: 5, kind: null, origin: 'direct', finishedAt: new Date(now - 48 * 60000).toISOString() },
-    { id: 'h3', status: 'done', title: 'Vine boom', text: null, authorName: 'Quentin', durationSec: 3, kind: 'audio', origin: 'board', finishedAt: new Date(now - 3 * 3600000).toISOString() },
+    { id: 'h0', status: 'done', title: null, sourceTitle: 'Clip envoyé une fois', text: null, authorName: 'Max', durationSec: 12, kind: 'video', origin: 'once', media: { id: 'a-once', kind: 'video', mime: 'video/mp4', durationSec: 95, width: 1920, height: 1080, isVertical: false, sizeBytes: 8 * 1024 * 1024, sourceUrl: 'https://youtu.be/dQw4w9WgXcQ' }, finishedAt: new Date(now - 6 * 60000).toISOString() },
+    { id: 'h1', status: 'done', title: 'Bruh', sourceTitle: null, text: null, authorName: 'Léa', durationSec: 4, kind: 'image', origin: 'board', media: items[1].media, finishedAt: new Date(now - 12 * 60000).toISOString() },
+    { id: 'h2', status: 'failed', title: null, sourceTitle: null, text: 'gg les gars', authorName: 'Max', durationSec: 5, kind: null, origin: 'direct', media: null, finishedAt: new Date(now - 48 * 60000).toISOString() },
+    { id: 'h3', status: 'done', title: 'Vine boom', sourceTitle: null, text: null, authorName: 'Quentin', durationSec: 3, kind: 'audio', origin: 'board', media: items[2].media, finishedAt: new Date(now - 3 * 3600000).toISOString() },
   ];
 
   // Guild settings edited from « Réglages » (`PATCH /overlay/admin/settings`).
@@ -695,11 +700,14 @@
           id: queue.playing.id,
           status: 'done',
           title: queue.playing.title,
+          sourceTitle: queue.playing.sourceTitle || null,
           text: queue.playing.text,
           authorName: queue.playing.authorName,
           durationSec: queue.playing.durationSec,
           kind: queue.playing.kind,
-          origin: queue.playing.origin || 'board',
+          origin: queue.playing.origin || null,
+          mediaAssetId: queue.playing.mediaAssetId || null,
+          media: queue.playing.media || null,
           finishedAt: new Date().toISOString(),
         });
         queue.playing = null;
@@ -901,7 +909,7 @@
     if (item.title === 'Sad violin') {
       return { ok: false, reason: 'media_not_ready' };
     }
-    const job = { id: 'j' + nextJob++, title: item.title, text: item.message, authorName: 'Quentin', durationSec: item.media.durationSec || 8, kind: item.media.kind, origin: 'board' };
+    const job = { id: 'j' + nextJob++, title: item.title, sourceTitle: null, text: item.message, authorName: 'Quentin', durationSec: item.media.durationSec || 8, kind: item.media.kind, origin: 'board', mediaAssetId: item.mediaAssetId, media: item.media };
     queueHint();
     if (!queue.playing) {
       const at = new Date().toISOString();
@@ -919,11 +927,14 @@
         id: queue.playing.id,
         status: 'done',
         title: queue.playing.title,
+        sourceTitle: queue.playing.sourceTitle || null,
         text: queue.playing.text,
         authorName: queue.playing.authorName,
         durationSec: queue.playing.durationSec,
         kind: queue.playing.kind,
-        origin: queue.playing.origin || 'board',
+        origin: queue.playing.origin || null,
+        mediaAssetId: queue.playing.mediaAssetId || null,
+        media: queue.playing.media || null,
         finishedAt: new Date().toISOString(),
       });
     }
@@ -988,8 +999,31 @@
       // item and no `board.changed`. The chosen display time only applies to
       // an image; a video or an audio keeps its own length.
       const kind = String(source.contentType || '').split('/')[0];
+      const mediaKind = ['video', 'image', 'audio'].includes(kind) ? kind : 'video';
       const durationSec = kind === 'image' ? source.displayDurationSec || 8 : 6;
-      const job = { id: 'j' + nextJob++, title: source.title || null, text: source.message || null, authorName: 'Quentin', durationSec, kind: ['video', 'image', 'audio'].includes(kind) ? kind : 'video', status: 'pending', origin: 'direct' };
+      const job = {
+        id: 'j' + nextJob++,
+        title: null,
+        sourceTitle: source.title || null,
+        text: source.message || null,
+        authorName: 'Quentin',
+        durationSec,
+        kind: mediaKind,
+        origin: 'once',
+        mediaAssetId: 'a' + nextJob,
+        media: {
+          id: 'a' + nextJob,
+          kind: mediaKind,
+          mime: source.contentType || 'video/mp4',
+          durationSec,
+          width: 1280,
+          height: 720,
+          isVertical: false,
+          sizeBytes: source.received || null,
+          sourceUrl: source.url || (name.startsWith('http') ? source.name : null),
+        },
+        status: 'pending',
+      };
       queueHint();
       if (!queue.playing) {
         const at = new Date().toISOString();

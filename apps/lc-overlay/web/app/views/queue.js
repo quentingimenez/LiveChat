@@ -5,22 +5,33 @@ import { openContextMenu } from '../core/contextmenu.js';
 import { h, icon } from '../core/dom.js';
 import { formatDuration, relativeTime } from '../core/format.js';
 import { invoke } from '../core/ipc.js';
-import { can, describeError, KIND_LABELS, state } from '../core/state.js';
+import { jobMeta, jobOriginLabel, jobOriginTitle, jobTitle } from '../core/job-format.js';
+import { can, describeError, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import { loadQueue, refreshQueueAutomatically } from '../data.js';
 
-export function jobTitle(job) {
-  return job.title || job.text || (job.kind ? KIND_LABELS[job.kind] : null) || 'Média';
-}
-
-// Where the job comes from: a board item (`mediaAssetId`, "board") or a
-// one-off play / text sent straight to the queue ("direct"). Hidden when the
-// server does not say (older server).
+// Where the job comes from: a board item ("board"), a one-off play / client
+// ingest without a board item ("once") or a text sent straight to the queue
+// ("direct"). Hidden when the server does not say (older server).
 function originBadge(job) {
-  if (job.origin !== 'board' && job.origin !== 'direct') {
+  const label = jobOriginLabel(job);
+  if (!label) {
     return null;
   }
-  return h('span', { class: 'badge queue-origin' }, job.origin === 'direct' ? 'Direct' : 'Board');
+  return h('span', { class: 'badge queue-origin', title: jobOriginTitle(job) || '' }, label);
+}
+
+// First line: the resolved title and its origin. Second line: the author
+// and/or the media details (`jobMeta`), so a one-off play or an ingest keeps
+// its format, size and source in the queue and in the history.
+function jobWhat(job, author) {
+  const details = [author ? `par ${author}` : null, jobMeta(job)].filter(Boolean).join(' · ');
+  return h(
+    'div',
+    { class: 'queue-what' },
+    h('div', { class: 'queue-title' }, h('span', { class: 'ellipsis' }, jobTitle(job)), originBadge(job)),
+    details ? h('div', { class: 'sub ellipsis' }, details) : null,
+  );
 }
 
 // Stop actions offered for the playing media. « Chez moi » only clears this
@@ -97,6 +108,7 @@ export function renderQueue() {
           h('span', { class: 'meta' }, `${formatDuration(Math.min(elapsed, playing.durationSec)) || '0:00'} / ${formatDuration(playing.durationSec) || '0:00'}`),
           stopButtons(),
         ),
+        jobMeta(playing) ? h('div', { class: 'sub ellipsis' }, jobMeta(playing)) : null,
         h('div', { class: 'progress' }, h('span', { style: `width:${Math.round(ratio * 100)}%` })),
       ),
     );
@@ -121,7 +133,7 @@ export function renderQueue() {
             'div',
             { class: 'line is-queue', onContextMenu: (event) => openPendingMenu(event, job) },
             h('span', { class: 'meta' }, index + 1),
-            h('div', { class: 'ellipsis' }, jobTitle(job), originBadge(job), job.authorName ? h('span', { class: 'sub' }, `  par ${job.authorName}`) : null),
+            jobWhat(job, job.authorName),
             h('span', { class: 'meta' }, formatDuration(job.durationSec) || ''),
             can('moderateQueue')
               ? h('button', { class: 'btn is-quiet', 'aria-label': `Retirer ${jobTitle(job)} de la file`, title: 'Retirer de la file', onClick: () => removeJob(job) }, icon('close'))
@@ -155,7 +167,7 @@ function renderHistory() {
       'div',
       { class: 'line is-history' },
       h('span', { class: `history-status ${failed ? 'is-err' : 'is-ok'}`, title: failed ? 'Échec' : 'Terminé' }, failed ? icon('close') : icon('check')),
-      h('div', { class: 'ellipsis' }, jobTitle(job), originBadge(job)),
+      jobWhat(job, null),
       h('span', { class: 'sub ellipsis' }, job.authorName ? `par ${job.authorName}` : '—'),
       h('span', { class: 'sub', title: job.finishedAt || '' }, relativeTime(job.finishedAt)),
     );

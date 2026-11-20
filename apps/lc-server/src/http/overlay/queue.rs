@@ -10,6 +10,12 @@
 //! La file est lue dans l'ordre du scheduler (`priority DESC`,
 //! `submission_date ASC`, `id ASC`), le job `PLAYING` en tête.
 //!
+//! L'`origin` d'un job dit d'où il vient : `board` (item de board), `once`
+//! (média joué une fois ou ingéré par un client, donc sans item de board) ou
+//! `direct` (texte seul). Un job sans item de board n'a pas de `title` : le
+//! payload porte `sourceTitle` et un objet `media` (format, dimensions,
+//! taille, source) pour que l'historique reste lisible.
+//!
 //! Retirer un job en attente le passe `FAILED` : c'est la seule transition
 //! `PENDING → terminal` admise par la machine d'état
 //! (`JobStatus::can_transition_to`). Le job en cours ne se retire pas ici : il
@@ -22,6 +28,7 @@ use lc_db::Db;
 use lc_domain::{GuildId, Permission, PlaybackJobId};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sqlx::sqlite::SqliteRow;
 use sqlx::Row as _;
 
 use crate::app::AppState;
@@ -45,55 +52,103 @@ fn iso_ms(millis: Option<i64>) -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// Colonnes communes à la file et à l'historique : le job, son média et
+/// l'item de board éventuel dont il provient.
+///
+/// `media_board_items` est unique par `(guild_id, media_asset_id)` : la
+/// jointure renvoie au plus une ligne et ne duplique jamais un job. Un média
+/// joué une fois (`once`) ou ingéré par un client n'a pas d'item de board :
+/// `board_item_id` et `title` sont alors `NULL`, `source_title` portant le
+/// titre de la source.
+const JOB_SELECT: &str = "SELECT j.id, j.status, j.text, j.author_name, \
+        j.author_image, j.duration_sec, j.submission_date, j.started_at, \
+        j.finished_at, j.media_asset_id, \
+        b.id AS board_item_id, b.title AS title, \
+        a.kind AS media_kind, a.source_title, a.mime, \
+        a.duration_sec AS media_duration_sec, a.width, a.height, \
+        a.is_vertical, a.size_bytes, a.source_url \
+   FROM playback_jobs j \
+   LEFT JOIN media_assets a ON a.id = j.media_asset_id \
+   LEFT JOIN media_board_items b ON b.guild_id = j.guild_id \
+                               AND b.media_asset_id = j.media_asset_id";
+
+/// Origine d'un job : `board` (item de board), `once` (média joué une fois ou
+/// ingéré par un client, sans item de board) ou `direct` (texte seul).
+fn job_origin(media_asset_id: Option<&str>, board_item_id: Option<&str>) -> &'static str {
+    if board_item_id.is_some() {
+        "board"
+    } else if media_asset_id.is_some() {
+        "once"
+    } else {
+        "direct"
+    }
+}
+
+/// Média d'un job, sous la même forme que le média d'un item de board, ou
+/// `null` pour un job direct.
+fn media_payload(row: &SqliteRow) -> Result<Value, sqlx::Error> {
+    let Some(kind) = row.try_get::<Option<String>, _>("media_kind")? else {
+        return Ok(Value::Null);
+    };
+    let is_vertical = row
+        .try_get::<Option<i64>, _>("is_vertical")?
+        .is_some_and(|value| value != 0);
+    Ok(json!({
+        "id": row.try_get::<Option<String>, _>("media_asset_id")?,
+        "kind": kind.to_ascii_lowercase(),
+        "mime": row.try_get::<Option<String>, _>("mime")?,
+        "durationSec": row.try_get::<Option<i64>, _>("media_duration_sec")?,
+        "width": row.try_get::<Option<i64>, _>("width")?,
+        "height": row.try_get::<Option<i64>, _>("height")?,
+        "isVertical": is_vertical,
+        "sizeBytes": row.try_get::<Option<i64>, _>("size_bytes")?,
+        "sourceUrl": row.try_get::<Option<String>, _>("source_url")?,
+    }))
+}
+
+/// Job de la file ou de l'historique : origine, titre résolu et détails du
+/// média. Un job sans item de board n'a pas de `title` mais garde
+/// `sourceTitle` et `media`.
+fn job_payload(row: &SqliteRow) -> Result<Value, sqlx::Error> {
+    let status: String = row.try_get("status")?;
+    let media_asset_id: Option<String> = row.try_get("media_asset_id")?;
+    let board_item_id: Option<String> = row.try_get("board_item_id")?;
+    let kind: Option<String> = row.try_get("media_kind")?;
+    let origin = job_origin(media_asset_id.as_deref(), board_item_id.as_deref());
+    Ok(json!({
+        "id": row.try_get::<String, _>("id")?,
+        "status": status.to_ascii_lowercase(),
+        "title": row.try_get::<Option<String>, _>("title")?,
+        "sourceTitle": row.try_get::<Option<String>, _>("source_title")?,
+        "text": row.try_get::<Option<String>, _>("text")?,
+        "authorName": row.try_get::<Option<String>, _>("author_name")?,
+        "authorImage": row.try_get::<Option<String>, _>("author_image")?,
+        "durationSec": row.try_get::<i64, _>("duration_sec")?,
+        "mediaAssetId": media_asset_id,
+        "origin": origin,
+        "kind": kind.map(|kind| kind.to_ascii_lowercase()),
+        "media": media_payload(row)?,
+        "submittedAt": iso_ms(Some(row.try_get::<i64, _>("submission_date")?)),
+        "startedAt": iso_ms(row.try_get::<Option<i64>, _>("started_at")?),
+        "finishedAt": iso_ms(row.try_get::<Option<i64>, _>("finished_at")?),
+    }))
+}
+
 /// Lit la file (job en cours puis jobs en attente) en une requête.
 async fn load_queue(db: &Db, guild_id: &GuildId) -> Result<Vec<Value>, sqlx::Error> {
-    let rows = sqlx::query(
-        "SELECT j.id, j.status, j.text, j.author_name, j.author_image, j.duration_sec, \
-                j.submission_date, j.started_at, j.media_asset_id, \
-                a.kind AS media_kind, \
-                (SELECT b.title FROM media_board_items b \
-                  WHERE b.guild_id = j.guild_id AND b.media_asset_id = j.media_asset_id) \
-                    AS title \
-           FROM playback_jobs j \
-           LEFT JOIN media_assets a ON a.id = j.media_asset_id \
+    let rows = sqlx::query(&format!(
+        "{JOB_SELECT} \
           WHERE j.guild_id = ? AND j.status IN ('PLAYING', 'PENDING') \
           ORDER BY CASE j.status WHEN 'PLAYING' THEN 0 ELSE 1 END, \
                    j.priority DESC, j.submission_date ASC, j.id ASC \
-          LIMIT ?",
-    )
+          LIMIT ?"
+    ))
     .bind(guild_id.as_str())
     .bind(QUEUE_LIMIT)
     .fetch_all(db.pool())
     .await?;
 
-    rows.iter()
-        .map(|row| {
-            let status: String = row.try_get("status")?;
-            let kind: Option<String> = row.try_get("media_kind")?;
-            let media_asset_id: Option<String> = row.try_get("media_asset_id")?;
-            // Origin of the media: a board item (`mediaAssetId`) or a one-off
-            // play / text job sent straight to the queue.
-            let origin = if media_asset_id.is_some() {
-                "board"
-            } else {
-                "direct"
-            };
-            Ok(json!({
-                "id": row.try_get::<String, _>("id")?,
-                "status": status.to_ascii_lowercase(),
-                "title": row.try_get::<Option<String>, _>("title")?,
-                "text": row.try_get::<Option<String>, _>("text")?,
-                "authorName": row.try_get::<Option<String>, _>("author_name")?,
-                "authorImage": row.try_get::<Option<String>, _>("author_image")?,
-                "durationSec": row.try_get::<i64, _>("duration_sec")?,
-                "mediaAssetId": media_asset_id,
-                "origin": origin,
-                "kind": kind.map(|kind| kind.to_ascii_lowercase()),
-                "submittedAt": iso_ms(Some(row.try_get::<i64, _>("submission_date")?)),
-                "startedAt": iso_ms(row.try_get::<Option<i64>, _>("started_at")?),
-            }))
-        })
-        .collect()
+    rows.iter().map(job_payload).collect()
 }
 
 /// Queue body shared by `GET /overlay/queue` and the admin guild detail.
@@ -191,23 +246,17 @@ impl HistoryQuery {
     }
 }
 
-/// Last finished/failed plays of the guild, newest first:
-/// `{count, items: [{id, status, title, text, authorName, kind, origin,
-/// finishedAt}]}`.
+/// Dernières lectures terminées ou échouées de la guilde, de la plus récente
+/// à la plus ancienne : `{count, items: [job_payload]}`, chaque item portant
+/// son `origin`, son `sourceTitle` et son `media`.
 async fn history_payload(db: &Db, guild_id: &GuildId, limit: i64) -> Result<Value, sqlx::Error> {
-    let rows = sqlx::query(
-        "SELECT j.id, j.status, j.text, j.author_name, j.duration_sec, j.finished_at, \
-                j.media_asset_id, a.kind AS media_kind, \
-                (SELECT b.title FROM media_board_items b \
-                  WHERE b.guild_id = j.guild_id AND b.media_asset_id = j.media_asset_id) \
-                    AS title \
-           FROM playback_jobs j \
-           LEFT JOIN media_assets a ON a.id = j.media_asset_id \
+    let rows = sqlx::query(&format!(
+        "{JOB_SELECT} \
           WHERE j.guild_id = ? AND j.status IN ('DONE', 'FAILED') \
             AND j.finished_at IS NOT NULL \
           ORDER BY j.finished_at DESC, j.id DESC \
-          LIMIT ?",
-    )
+          LIMIT ?"
+    ))
     .bind(guild_id.as_str())
     .bind(limit)
     .fetch_all(db.pool())
@@ -215,22 +264,7 @@ async fn history_payload(db: &Db, guild_id: &GuildId, limit: i64) -> Result<Valu
 
     let items: Vec<Value> = rows
         .iter()
-        .map(|row| {
-            let status: String = row.try_get("status")?;
-            let media_asset_id: Option<String> = row.try_get("media_asset_id")?;
-            let kind: Option<String> = row.try_get("media_kind")?;
-            Ok(json!({
-                "id": row.try_get::<String, _>("id")?,
-                "status": status.to_ascii_lowercase(),
-                "title": row.try_get::<Option<String>, _>("title")?,
-                "text": row.try_get::<Option<String>, _>("text")?,
-                "authorName": row.try_get::<Option<String>, _>("author_name")?,
-                "durationSec": row.try_get::<i64, _>("duration_sec")?,
-                "kind": kind.map(|kind| kind.to_ascii_lowercase()),
-                "origin": if media_asset_id.is_some() { "board" } else { "direct" },
-                "finishedAt": iso_ms(row.try_get::<Option<i64>, _>("finished_at")?),
-            }))
-        })
+        .map(job_payload)
         .collect::<Result<Vec<Value>, sqlx::Error>>()?;
 
     Ok(json!({"count": items.len(), "items": items}))

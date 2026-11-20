@@ -5,10 +5,23 @@
 }
 
 .queue-origin {
-  margin-left: 6px;
   padding: 0 6px;
   font-size: 11px;
   vertical-align: middle;
+}
+
+/* Titre + origine, puis la ligne de détails du média (`jobMeta`). */
+.queue-what {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.queue-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .queue-history {
@@ -57,6 +70,13 @@
   border-radius: 2px;
   background: var(--slate-600);
   overflow: hidden;
+}
+
+/* Détails du média sous la rangée du média en cours. */
+.now .sub {
+  margin-top: 6px;
+  color: var(--text-soft);
+  font-size: 13px;
 }
 
 .progress > span {

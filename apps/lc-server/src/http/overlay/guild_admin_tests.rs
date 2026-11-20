@@ -574,16 +574,42 @@ async fn queue_origin_and_history_are_guild_bounded() {
     let admin_token = token(&admin);
     let (asset, _) = seed_asset(&harness, "queued.bin", 1024).await;
     seed_item(&harness, &harness.guild_id, &asset, "Chat qui tombe").await;
+    // Un média joué une fois (ou ingéré par un client) : l'asset existe mais
+    // aucun item de board ne lui donne de titre, seul `source_title` en porte un.
+    let (once_asset, _) = seed_asset(&harness, "played-once.bin", 2048).await;
+    sqlx::query("UPDATE media_assets SET source_title = ? WHERE id = ?")
+        .bind("Vidéo vue une fois")
+        .bind(once_asset.id.to_string())
+        .execute(harness.db.pool())
+        .await
+        .unwrap();
 
-    // Un job venu du board (média) et un job direct (texte seul). La priorité
-    // fixe l'ordre de la file (`priority DESC`), indépendamment des UUID.
+    // Un job venu du board (média), un média joué une fois et un job direct
+    // (texte seul). La priorité fixe l'ordre de la file (`priority DESC`),
+    // indépendamment des UUID.
     let mut board_job = playback_job(&harness.guild_id, JobStatus::Pending, Some(asset.id), None);
     board_job.priority = 1;
     seed_job(&harness, &board_job).await;
+    let mut once_job = playback_job(
+        &harness.guild_id,
+        JobStatus::Pending,
+        Some(once_asset.id),
+        None,
+    );
+    once_job.priority = 2;
+    seed_job(&harness, &once_job).await;
     let direct_job = playback_job(&harness.guild_id, JobStatus::Pending, None, None);
     seed_job(&harness, &direct_job).await;
 
-    // Historique : un terminé et un échec, plus une autre guilde.
+    // Historique : un média joué une fois (le plus récent), un terminé du
+    // board et un échec direct, plus une autre guilde.
+    let once_done = playback_job(
+        &harness.guild_id,
+        JobStatus::Done,
+        Some(once_asset.id),
+        Some(fixed_now() - Duration::seconds(30)),
+    );
+    seed_job(&harness, &once_done).await;
     let done = playback_job(
         &harness.guild_id,
         JobStatus::Done,
@@ -610,12 +636,30 @@ async fn queue_origin_and_history_are_guild_bounded() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let pending = body["pending"].as_array().unwrap();
-    assert_eq!(pending.len(), 2);
+    assert_eq!(pending.len(), 3);
     let origins: Vec<&str> = pending
         .iter()
         .map(|job| job["origin"].as_str().unwrap())
         .collect();
-    assert_eq!(origins, vec!["board", "direct"]);
+    assert_eq!(origins, vec!["once", "board", "direct"]);
+    // Un média sans item de board garde ses détails, sans titre de board.
+    let once = &pending[0];
+    assert_eq!(once["mediaAssetId"], once_asset.id.to_string());
+    assert!(once["title"].is_null());
+    assert_eq!(once["sourceTitle"], "Vidéo vue une fois");
+    assert_eq!(once["media"]["kind"], "video");
+    assert_eq!(once["media"]["durationSec"], 10);
+    assert_eq!(once["media"]["width"], 1280);
+    assert_eq!(once["media"]["height"], 720);
+    assert_eq!(once["media"]["isVertical"], false);
+    assert_eq!(once["media"]["sizeBytes"], 2048);
+    assert_eq!(
+        once["media"]["sourceUrl"],
+        "https://example.test/played-once.bin"
+    );
+    // Un job direct (texte) n'a ni média ni source.
+    assert!(pending[2]["media"].is_null());
+    assert!(pending[2]["sourceTitle"].is_null());
 
     let (status, body) = harness
         .call(
@@ -626,18 +670,30 @@ async fn queue_origin_and_history_are_guild_bounded() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["count"], 2);
+    assert_eq!(body["count"], 3);
     let items = body["items"].as_array().unwrap();
     assert_eq!(items[0]["status"], "done");
-    assert_eq!(items[0]["title"], "Chat qui tombe");
-    assert_eq!(items[0]["authorName"], "Léa");
-    assert_eq!(items[0]["origin"], "board");
+    assert_eq!(items[0]["origin"], "once");
+    assert!(items[0]["title"].is_null());
+    assert_eq!(items[0]["sourceTitle"], "Vidéo vue une fois");
+    assert_eq!(items[0]["media"]["sizeBytes"], 2048);
     assert_eq!(
         items[0]["finishedAt"],
+        iso(fixed_now() - Duration::seconds(30))
+    );
+    assert_eq!(items[1]["status"], "done");
+    assert_eq!(items[1]["title"], "Chat qui tombe");
+    assert_eq!(items[1]["authorName"], "Léa");
+    assert_eq!(items[1]["origin"], "board");
+    assert!(items[1]["sourceTitle"].is_null());
+    assert_eq!(items[1]["media"]["kind"], "video");
+    assert_eq!(
+        items[1]["finishedAt"],
         iso(fixed_now() - Duration::minutes(1))
     );
-    assert_eq!(items[1]["status"], "failed");
-    assert_eq!(items[1]["origin"], "direct");
+    assert_eq!(items[2]["status"], "failed");
+    assert_eq!(items[2]["origin"], "direct");
+    assert!(items[2]["media"].is_null());
 
     let (status, body) = harness
         .call(
@@ -650,6 +706,7 @@ async fn queue_origin_and_history_are_guild_bounded() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["count"], 1);
     assert_eq!(body["items"][0]["status"], "done");
+    assert_eq!(body["items"][0]["origin"], "once");
 
     let (status, body) = harness
         .call(

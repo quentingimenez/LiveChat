@@ -47,6 +47,7 @@ import { state } from '../../core/state.js';
 import { createCropOverlay } from './crop-overlay.js';
 import { createDisplayPreview } from './display-preview.js';
 import { choices, section, slider, toggle } from './frame.js';
+import { createPreviewFramePump } from './preview-frames.js';
 
 registerIcons({
   scissors: 'M8.5 8.5L20 20M8.5 15.5L20 4M9 6.5a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0zM9 17.5a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z',
@@ -131,6 +132,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   let syncScaleFields = null;
   let syncPreviewToggle = null;
   let previewShown = false;
+  let previewFrames = null;
   // The artwork of a sound is its picture on the overlay: it is what a scale
   // sizes.
   const artwork = !isVideo && artworkUrl ? h('img', { class: 'av-artwork', src: artworkUrl, alt: '' }) : null;
@@ -241,6 +243,15 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     };
     media.addEventListener('timeupdate', refreshPreview);
     media.addEventListener('seeked', refreshPreview);
+    // A video is painted for every frame it presents: `timeupdate` alone only
+    // repaints it about four times a second, which plays like 4 fps.
+    previewFrames = createPreviewFramePump({
+      media,
+      onFrame: () => preview.requestPaint(),
+      isActive: () => previewShown && !destroyed,
+    });
+    media.addEventListener('play', () => previewFrames.start());
+    media.addEventListener('pause', () => previewFrames.stop());
     if (artwork) {
       artwork.addEventListener('load', () => preview.invalidate(), { once: true });
     }
@@ -504,6 +515,11 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
       } else if (next > media.currentTime + 0.02) {
         seek(next);
       }
+    }
+    // Without `requestVideoFrameCallback` the animation loop redraws the
+    // preview while it plays.
+    if (isVideo && preview && previewShown && !media.paused && !previewFrames.supported) {
+      preview.requestPaint();
     }
     applyGain();
     updateClock();
@@ -812,7 +828,9 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     stageContent.hidden = previewShown;
     if (previewShown) {
       preview.show();
+      previewFrames.start();
     } else {
+      previewFrames.stop();
       preview.hide();
     }
     if (syncPreviewToggle) {
@@ -1123,6 +1141,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
       destroyed = true;
       resizeObserver.disconnect();
       if (preview) {
+        previewFrames.stop();
         preview.destroy();
       }
       media.pause();

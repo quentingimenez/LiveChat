@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LiveChat Extension",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Envoi rapide de liens media vers LiveChat /ingest.",
   "icons": {
     "16": "icons/icon-16.png",

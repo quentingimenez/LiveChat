@@ -81,6 +81,18 @@ function Find-LockPackageVersion {
     return New-Location $Label $m.Groups[1]
 }
 
+# Same, for the packages of a list that a lockfile actually contains: a lockfile
+# only lists the packages of its own graph (fuzz/Cargo.lock has lc-domain,
+# lc-media and lc-protocol, not the other server members), so the absent ones
+# are skipped instead of failing.
+function Find-LockPackageVersions {
+    param([string]$Text, [string[]]$Packages, [string]$Label)
+    foreach ($package in $Packages) {
+        if ($Text -notmatch ('(?m)^name = "' + [regex]::Escape($package) + '"\r?$')) { continue }
+        Find-LockPackageVersion $Text $package "$Label $package"
+    }
+}
+
 # Top-level `"version"` of a JSON file indented with two spaces.
 function Find-JsonTopVersion {
     param([string]$Text, [string]$Label)
@@ -134,6 +146,16 @@ function Get-ComponentFiles {
                 @{ File = 'Cargo.lock'; Locate = {
                         param($t, $members)
                         foreach ($p in $members) { Find-LockPackageVersion $t $p "Cargo.lock $p" }
+                    }
+                },
+                # fuzz/ is its own workspace: its lockfile repeats the version of
+                # the server crates it links. verification-nightly runs
+                # `cargo test --manifest-path fuzz/Cargo.toml --locked`, which
+                # fails when a bump leaves those entries behind, so they belong
+                # to the server component too.
+                @{ File = 'fuzz/Cargo.lock'; Locate = {
+                        param($t, $members)
+                        Find-LockPackageVersions $t $members 'fuzz/Cargo.lock'
                     }
                 }
             )

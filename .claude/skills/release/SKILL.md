@@ -104,6 +104,10 @@ puis le résumé des changements. **Attendre « go »** (ou un numéro corrigé)
    `origin/main`, dans un worktree si l'arbre courant a des modifications (jamais de
    lien vers `node_modules` du dépôt principal).
 2. `release.ps1 bump <composant> <version>` pour chaque composant, puis `check`.
+   Un bump serveur réécrit aussi `fuzz/Cargo.lock` : `fuzz/` est un workspace à
+   part qui répète la version des crates serveur qu'il lie, et
+   `verification-nightly` le teste en `--locked`. Committer ce fichier avec le
+   bump, sinon la nightly casse (le `check` de la PR le signale).
 3. Tests : `cargo test --workspace --offline` si serveur ou overlay ; dans
    `extension/`, `npm ci` puis `npm run ci:check` si extension.
 4. Commit `Release server 3.6.0 and overlay 3.6.0` (anglais, impératif, sans

@@ -62,6 +62,20 @@ Test-Case 'Bump keeps BOM and line endings' {
     }
 }
 
+Test-Case 'Bump server updates the fuzz lockfile' {
+    # fuzz/ is its own workspace; its lockfile repeats the version of the
+    # server crates the fuzz targets link, and the nightly runs it with
+    # --locked.
+    $repo = New-TestRepo
+    $written = @(Set-ComponentVersion -Root $repo -Component server -Version '9.0.0')
+    Assert-True ($written -contains 'fuzz/Cargo.lock') "written: $($written -join ', ')"
+    $lock = [IO.File]::ReadAllText((Join-Path $repo 'fuzz/Cargo.lock'))
+    foreach ($package in 'lc-domain', 'lc-media', 'lc-protocol') {
+        Assert-True ($lock -match ('(?m)^name = "' + $package + '"\r?\nversion = "9\.0\.0"')) "$package bumped"
+    }
+    Assert-Equal 1 @(Get-Versions $repo server).Count 'server consistent'
+}
+
 Test-Case 'Bump extension updates the lockfile' {
     $repo = New-TestRepo
     $lockPath = Join-Path $repo 'extension/package-lock.json'

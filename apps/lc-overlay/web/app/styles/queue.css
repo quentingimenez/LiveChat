@@ -1,7 +1,17 @@
 /* --------------------------------------------------------------------- file */
 
 .line.is-queue {
-  grid-template-columns: 24px minmax(0, 1fr) auto auto;
+  grid-template-columns: 24px minmax(0, 1fr) 64px 32px;
+}
+
+.queue-time {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.queue-foot {
+  margin-top: 14px;
+  gap: 8px 12px;
 }
 
 .queue-origin {
@@ -88,9 +98,11 @@
 /* --------------------------------------------------------------- à l'antenne */
 .onair {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  padding: 10px 24px;
+  gap: 6px 12px;
+  min-height: 44px;
+  padding: 8px 24px;
   border-top: 1px solid var(--line);
   background: var(--slate-900);
   font-size: 13px;
@@ -104,5 +116,21 @@
 }
 
 .onair .title {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(46vw, 420px);
   font-weight: 600;
+}
+
+/* The author is the first detail to go: the title and the stops stay. */
+@media (max-width: 1100px) {
+  .onair-author {
+    display: none;
+  }
+}
+
+@media (max-width: 1024px) {
+  .onair {
+    padding: 8px 16px;
+  }
 }

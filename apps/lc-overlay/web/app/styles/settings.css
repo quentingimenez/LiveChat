@@ -1,20 +1,29 @@
-/* ------------------------------------------------------------ page Paramètres */
-/* Device-wide settings: a plain page in the main area, with the rail kept
-   visible and no guild header. */
+/* ------------------------------------------------------- les deux pages réglages */
+/* « Paramètres » (roue du rail) et l’onglet « Réglages » de la guilde partagent
+   un seul rythme : colonne de libellés de 190 px, gouttière de 16 px, premier
+   contrôle de 256 px. Les lignes s’alignent donc d’une section à l’autre. */
+
 .settings {
   /* One width for the first control of a row (selects, sliders, the zone
      summary), so the buttons after it line up from row to row. */
   --settings-field-width: 256px;
-  max-width: 820px;
+  max-width: 880px;
   margin: 0 auto;
 }
 
+/* ------------------------------------------------------------------ en-tête */
 .settings-head {
-  margin-bottom: 20px;
+  margin-bottom: var(--space-5);
+}
+
+/* « Retour » is a quiet button above the title: its padding is pulled back so
+   its label lines up with the heading. */
+.settings-back {
+  margin: 0 0 var(--space-1) calc(-1 * var(--space-3));
 }
 
 .settings-head h2 {
-  margin: 0 0 4px;
+  margin: 0 0 var(--space-1);
   font-family: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
   font-size: 22px;
   font-weight: 600;
@@ -24,43 +33,125 @@
   margin: 0;
 }
 
+/* What the page sets, in one sentence. */
+.settings-intro {
+  max-width: var(--measure);
+  color: var(--text-soft);
+  text-wrap: pretty;
+}
+
+/* ------------------------------------------------------------------- sections */
 .settings-section {
-  margin-bottom: 16px;
-  padding: 16px 18px;
+  margin-bottom: var(--settings-gap);
+  padding: var(--space-4) var(--space-5);
   border: 1px solid var(--line);
   border-radius: var(--radius-m);
   background: var(--slate-700);
 }
 
+/* The server form (admin.js) puts its « Discord » sub-title in this section:
+   the margin reset must stay, so that sub-title keeps its own spacing. */
 .settings-section h3 {
   margin: 0 0 10px;
   font-size: 14px;
   font-weight: 600;
 }
 
+/* Section headings carry the scope of what the section holds. */
+.settings-section h3.settings-title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  text-wrap: pretty;
+}
+
+/* One sentence saying what the section sets, under its title. */
+.settings-desc {
+  max-width: var(--measure);
+  margin: 0 0 var(--space-3);
+  color: var(--text-soft);
+  text-wrap: pretty;
+}
+
+/* « Appliqué immédiatement »: these sections save as the control is used, so
+   they say it instead of ending with a save button. */
+.settings-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 var(--space-3);
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+}
+
+.settings-tag::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+/* ----------------------------------------------------------------------- rows */
+/* The label belongs to the first line of its control, not to the middle of a
+   taller group (a full-width choice followed by a button and an explanation). */
 .settings-row {
   display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
-  gap: 8px 16px;
-  align-items: center;
+  grid-template-columns: var(--settings-label) minmax(0, 1fr);
+  gap: var(--space-2) var(--settings-gap);
+  align-items: start;
   padding: 7px 0;
 }
 
+/* On that line, the label text is centred on a 32 px control. */
 .settings-label {
+  padding-top: calc((var(--control-h) - var(--leading-base) * 1em) / 2);
   color: var(--text-soft);
+  text-wrap: pretty;
 }
 
 .settings-control {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: var(--space-2) 10px;
   min-width: 0;
+}
+
+/* A boolean control takes the height of the other controls, so its label keeps
+   the same vertical rhythm. */
+.settings-control .switch {
+  min-height: var(--control-h);
 }
 
 .settings-control > .field {
   width: var(--settings-field-width);
   max-width: 100%;
+}
+
+/* A long choice (the screen list) gets more room than a short field, without
+   stretching across the whole control column. */
+.settings-control > .field.is-long {
+  width: 100%;
+  max-width: 420px;
+}
+
+/* An explanation of the control above it: its own line, under that control.
+   The wrapper takes a whole flex line (a `flex-basis: 100%` on the hint itself
+   would be clamped by its `--measure` max-width and sit next to the control). */
+.settings-hint-wrap {
+  flex-basis: 100%;
+}
+
+/* In an action row, the sentence stays beside its button. */
+.settings-action .settings-hint-wrap {
+  flex-basis: auto;
+  min-width: 0;
+}
+
+.settings-control .error-text {
+  flex-basis: 100%;
+  margin: 0;
 }
 
 .settings-value {
@@ -88,10 +179,24 @@
   font-weight: 600;
 }
 
+/* A named action under the control it belongs to, with the sentence that
+   explains it. It starts on the control column, like the rows above. */
+.settings-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  margin: 0 0 var(--space-1) calc(var(--settings-label) + var(--settings-gap));
+}
+
+/* ---------------------------------------------------------------------- hints */
 .settings-hint {
+  max-width: var(--measure);
   margin: 0;
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-base);
+  text-wrap: pretty;
 }
 
 .settings-hint.is-inline {
@@ -103,11 +208,6 @@
   margin-bottom: 20px;
 }
 
-/* A hint about the row above, aligned with its control column. */
-.settings-hint.is-under {
-  margin: -4px 0 6px 206px;
-}
-
 /* One-line state of a section, right under its title and above the hint that
    explains the settings below (board occupation, for instance). */
 .settings-hint.is-summary {
@@ -115,30 +215,46 @@
   color: var(--text-soft);
 }
 
-/* Destructive action of a section, set apart from its form by a rule. */
+/* A section-closing hint (shortcut modifier, update message). */
+.settings-section > .settings-hint-wrap:last-child {
+  margin-top: var(--space-1);
+}
+
+/* --------------------------------------------------------------- zone dangereuse */
+/* Destructive action of a section: a divider, then its own frame. */
 .settings-danger {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 12px;
-  margin-top: 10px;
-  padding-top: 12px;
+  margin-top: var(--settings-gap);
+  padding-top: var(--space-3);
   border-top: 1px solid var(--line);
 }
 
-.settings-control .error-text {
-  flex-basis: 100%;
-  margin: 0;
+.settings-danger-body {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--red);
+  border-radius: var(--radius-m);
+  background: var(--danger-bg);
 }
 
-.settings-subtitle {
-  margin: 16px 0 2px;
-  color: var(--text-soft);
-  font-size: 13px;
+/* The frame and the button carry the danger; the title stays readable on the
+   tinted background (red on `danger-bg` is under 4.5:1). */
+.settings-danger-title {
+  margin: 0 0 var(--space-1);
+  color: var(--text);
   font-weight: 600;
 }
 
-/* ------------------------------------------------------------- per-guild sound */
+.settings-danger-body .settings-hint {
+  margin-bottom: var(--space-3);
+}
+
+/* ------------------------------------------------------------- volume par guilde */
+.settings-subtitle {
+  margin: var(--space-4) 0 var(--space-1);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
 /* Guild rows are plain settings rows: no rule of their own above them, so each
    one sits in the middle of its band like the general sound rows. */
 .settings-guild-name {
@@ -149,38 +265,29 @@
   color: var(--text-soft);
 }
 
-/* -------------------------------------------------------------------- profil */
-.settings-profile {
+/* --------------------------------------------------------------------- profil */
+/* The avatar sits in the label column and the name in the control column, so
+   the field lines up with every other setting. */
+.settings-profile-id {
   display: flex;
-  align-items: flex-start;
-  gap: 14px;
-  padding: 2px 0 10px;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  padding-top: 2px;
 }
 
 .settings-avatar .avatar {
-  width: 56px;
-  height: 56px;
-  font-size: 20px;
-}
-
-.settings-profile-fields {
-  display: grid;
-  flex: 1;
-  gap: 8px;
-  min-width: 0;
-}
-
-.settings-field-label {
-  color: var(--text-soft);
-  font-size: 13px;
+  width: 48px;
+  height: 48px;
+  font-size: var(--text-lg);
 }
 
 /* ------------------------------------------------------------------ à propos */
 .settings-about {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 14px;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
 }
 
 .settings-logo {
@@ -190,21 +297,10 @@
 
 .settings-about-name {
   margin: 0;
-  font-size: 17px;
+  font-size: var(--text-lg);
   font-weight: 600;
 }
 
 .settings-about .meta {
   margin: 0;
-}
-
-@media (max-width: 720px) {
-  .settings-row {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 6px;
-  }
-
-  .settings-hint.is-under {
-    margin-left: 0;
-  }
 }

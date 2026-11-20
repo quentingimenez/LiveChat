@@ -26,6 +26,14 @@ async function fetchBlob(url) {
   return response.blob();
 }
 
+// A replaced media is overwritten for good: the bar asks before it happens.
+const REPLACE_CONFIRM = {
+  title: 'Remplacer l’original\u00A0?',
+  text: 'Le média du board sera écrasé définitivement. Son titre, ses favoris et son raccourci sont conservés, mais l’ancien fichier ne pourra pas être récupéré.',
+  confirmLabel: 'Remplacer définitivement',
+  cancelLabel: 'Garder l’original',
+};
+
 // A media can be edited by whoever may add its result to the board, or
 // replace it.
 export function canOpenEditor(item) {
@@ -134,7 +142,9 @@ async function editImage({ frame, item, title, blob, guildId }) {
       return;
     }
     frame.setActions([
-      item.canEdit ? { label: 'Remplacer l’original', title: 'Le média garde son titre, ses favoris et son raccourci', disabled: !pixels, onClick: () => save(true) } : null,
+      item.canEdit
+        ? { label: 'Remplacer l’original…', title: 'Écrase le média du board ; son titre, ses favoris et son raccourci sont conservés', danger: true, disabled: !pixels, onClick: () => frame.confirm(REPLACE_CONFIRM, () => save(true)) }
+        : null,
       can('addMedia') ? { label: 'Enregistrer une copie', title: 'Ajoute le résultat au board sans toucher à l’original', primary: true, disabled: !pixels, onClick: () => save(false) } : null,
     ].filter(Boolean));
   }
@@ -147,6 +157,7 @@ async function editImage({ frame, item, title, blob, guildId }) {
       allowDisplayScale: true,
       displayScalePercent: item.displayScalePercent ?? null,
       displayZone,
+      durationSec: item.media.durationSec ?? null,
     });
   } catch {
     frame.showError('Ce format d’image ne peut pas être ouvert dans l’éditeur.');
@@ -159,7 +170,7 @@ async function editImage({ frame, item, title, blob, guildId }) {
   frame.setEditor(editor);
   refresh();
   if (/gif/i.test(item.media.mime || blob.type || '')) {
-    notify('GIF animé : l’éditeur ne garde que sa première image.');
+    notify('GIF animé\u00A0: l’éditeur ne garde que sa première image.');
   }
 }
 
@@ -246,7 +257,7 @@ async function editAudioVideo({ frame, item, title, blob, guildId }) {
     }
     frame.setActions([
       item.canEdit && editor.output() === 'same'
-        ? { label: 'Remplacer l’original', title: 'Le média garde son titre, ses favoris et son raccourci', disabled: blocked, onClick: () => save(true) }
+        ? { label: 'Remplacer l’original…', title: 'Écrase le média du board ; son titre, ses favoris et son raccourci sont conservés', danger: true, disabled: blocked, onClick: () => frame.confirm(REPLACE_CONFIRM, () => save(true)) }
         : null,
       can('addMedia') ? { label: 'Enregistrer une copie', title: 'Ajoute le résultat au board sans toucher à l’original', primary: true, disabled: blocked, onClick: () => save(false) } : null,
     ].filter(Boolean));

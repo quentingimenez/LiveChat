@@ -124,6 +124,26 @@ export function formatBytes(bytes) {
   return `${(value / (1024 * 1024)).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} Mo`;
 }
 
+// Occupation du board de la guilde: "10 médias · 22 Mo sur 5 Go". `requireMax`
+// is false where the line must still show what the board holds before a quota
+// is set (the guild settings); the board toolbar hides the line instead.
+export function formatBoardUsage(mediaBoard, { requireMax = true } = {}) {
+  if (!mediaBoard) {
+    return null;
+  }
+  const maxBytes = Number(mediaBoard.maxBytes);
+  const max = Number.isFinite(maxBytes) && maxBytes > 0 ? formatBytes(maxBytes) : null;
+  if (!max && requireMax) {
+    return null;
+  }
+  const used = formatBytes(mediaBoard.usedBytes);
+  if (!used) {
+    return null;
+  }
+  const count = Number(mediaBoard.itemsCount) || 0;
+  return `${count} média${count > 1 ? 's' : ''} · ${used}${max ? ` sur ${max}` : ''}`;
+}
+
 export function relativeTime(iso) {
   if (!iso) {
     return 'Jamais vu';

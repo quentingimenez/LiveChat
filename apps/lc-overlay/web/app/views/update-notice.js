@@ -98,8 +98,8 @@ function renderUpdateNotice() {
       ? [
           h(
             'button',
-            { class: 'btn', type: 'button', disabled: installing, onClick: installUpdate },
-            installing ? 'Redémarrer et installer…' : 'Redémarrer et installer',
+            { class: 'btn is-primary', type: 'button', disabled: installing, onClick: installUpdate },
+            installing ? 'Installation…' : 'Redémarrer pour installer',
           ),
           h('button', { class: 'btn is-quiet', type: 'button', onClick: () => postpone(shown.version) }, 'Plus tard'),
         ]

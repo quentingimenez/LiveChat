@@ -8,8 +8,11 @@
 export const CARD_WIDTH_PX = 196;
 export const ROW_PX = 2;
 export const GAP_PX = 14;
-// `.card-title` under the thumbnail: top margin and one line of text.
-export const TITLE_PX = 25;
+// `.card-title` under the thumbnail: top margin and two lines of text (the
+// title clamps to two lines, see styles/board.css). The height is fixed so the
+// masonry span stays computable without a layout pass.
+export const TITLE_LINES = 2;
+export const TITLE_PX = 40;
 
 // Very tall or very wide media are cropped to these ratios (width / height):
 // a 9:16 phone video is shown whole, a panorama does not shrink to a strip.

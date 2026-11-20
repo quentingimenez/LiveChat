@@ -12,7 +12,8 @@
   --line: #3a4259;
   --text: #e9ebf3;
   --text-soft: #a3abc2;
-  --text-faint: #717a93;
+  /* Assez clair pour tenir 4,5:1 sur les trois surfaces (WCAG AA, testé). */
+  --text-faint: #8b95ad;
   --amber: #f2b544;
   --amber-ink: #2a1d02;
   --red: #ec6a70;
@@ -50,6 +51,28 @@
   --radius-s: 6px;
   --radius-m: 10px;
   --rail: 68px;
+  /* Échelle d'espacement et de texte : les nouvelles règles s'y rattachent,
+     l'existant est migré au fil des écrans touchés. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-lg: 17px;
+  --text-xl: 20px;
+  --leading-tight: 1.25;
+  --leading-base: 1.45;
+  --measure: 62ch;
+  --control-h: 32px;
+  --control-h-lg: 38px;
+  --settings-label: 190px;
+  --settings-gap: 16px;
   font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
   font-size: 14px;
   line-height: 1.45;
@@ -140,13 +163,37 @@ textarea {
   color: var(--text-soft);
 }
 
-.btn.is-quiet:hover {
+.btn.is-quiet:not(.is-danger):hover {
   background: var(--slate-700);
   color: var(--text);
 }
 
 .btn.is-danger {
   color: var(--red-text);
+}
+
+/* Un destructif reste rouge au survol, même en quiet. */
+.btn.is-danger:hover,
+.btn.is-quiet.is-danger:hover {
+  background: var(--slate-700);
+  color: var(--red-text);
+}
+
+/* Action principale d'un écran : une seule à la fois, bleu de focus/lien. */
+.btn.is-primary {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.btn.is-primary:hover {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+}
+
+.btn.is-primary:focus-visible {
+  outline-color: var(--text);
 }
 
 .btn.is-air {
@@ -163,7 +210,58 @@ textarea {
 .btn.is-wide {
   width: 100%;
   justify-content: center;
-  height: 38px;
+  height: var(--control-h-lg);
+}
+
+/* Bouton icône seul : 32 px, cible confortable et libellé accessible. */
+.icon-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  justify-content: center;
+  flex: none;
+}
+
+/* Interrupteur visuel : la case reste le contrôle, le rendu est un rail. */
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.switch input[type='checkbox'] {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--slate-900);
+  appearance: none;
+  -webkit-appearance: none;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.switch input[type='checkbox']::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-soft);
+  transition: transform 120ms ease, background 120ms ease;
+}
+
+.switch input[type='checkbox']:checked {
+  border-color: var(--blue);
+  background: var(--blue);
+}
+
+.switch input[type='checkbox']:checked::after {
+  background: var(--accent-ink);
+  transform: translateX(16px);
 }
 
 .btn svg,

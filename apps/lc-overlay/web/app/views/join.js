@@ -28,8 +28,8 @@ export function openJoinDialog() {
         }
       },
     });
-    const error = h('p', { class: 'error-text', hidden: true });
-    const submit = h('button', { class: 'btn is-air', type: 'submit' }, 'Rejoindre');
+    const error = h('p', { class: 'error-text', role: 'alert', hidden: true });
+    const submit = h('button', { class: 'btn is-primary', type: 'submit' }, 'Rejoindre');
     const form = h(
       'form',
       {
@@ -74,9 +74,9 @@ export function openJoinDialog() {
         },
       },
       h('label', null, 'Serveur', server),
-      h('label', null, "Code d'invitation", code),
+      h('label', null, 'Code d’invitation', code),
       h('label', null, 'Pseudo', name),
-      h('div', { class: 'row' }, avatarPreview, h('button', { class: 'btn', type: 'button', onClick: () => file.click() }, 'Choisir un avatar'), file),
+      h('div', { class: 'row' }, avatarPreview, h('button', { class: 'btn is-quiet', type: 'button', onClick: () => file.click() }, 'Choisir un avatar'), file),
       h(
         'p',
         { class: 'file-hint' },

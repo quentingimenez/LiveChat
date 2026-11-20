@@ -5,7 +5,7 @@
 // submit buttons each carry their action: "Ajouter au board" stores the media,
 // "Jouer une fois" sends it to the overlays without adding it to the board.
 // A member without `addMedia` but with `play` only gets "Jouer une fois". The
-// Enter key uses the first submit button, so a member who can add adds.
+// Enter key always picks the primary action: adding when the member may add.
 //
 // "Jouer une fois" also takes a display time, for an image only: a video or an
 // audio keeps its own length and the server ignores the value for it.
@@ -45,9 +45,15 @@ export function openAddDialog(options) {
 
     // --- link fields ---
     const linkUrl = h('input', { class: 'field', type: 'url', placeholder: 'https://…', required: true, value: prefill });
-    const linkTitle = h('input', { class: 'field', placeholder: 'Titre de la vidéo ou du lien si vide', maxlength: '240' });
-    const linkMessage = h('textarea', { class: 'field', rows: '2', maxlength: '500', placeholder: 'Texte affiché avec le média' });
-    const linkMessageLabel = h('label', { hidden: !showMessage }, 'Texte affiché sur les overlays (facultatif, pour « Jouer une fois »)', linkMessage);
+    const linkTitle = h('input', { class: 'field', placeholder: 'Titre du média', maxlength: '240' });
+    const linkMessage = h('textarea', { class: 'field', rows: '2', maxlength: '500', placeholder: 'Légende affichée sur les overlays' });
+    const linkMessageLabel = h(
+      'label',
+      { hidden: !showMessage },
+      'Légende (facultatif)',
+      linkMessage,
+      h('span', { class: 'file-hint' }, 'Affichée sur les overlays pendant « Jouer une fois ».'),
+    );
     // The display time is the length of a play-once image; a video or an audio
     // keeps its own length, so the field only shows when the media may be an
     // image. A chosen file reveals its kind in its MIME type, while a link's is
@@ -55,22 +61,21 @@ export function openAddDialog(options) {
     const durationPlaceholder = (() => {
       const settings = state.info && state.info.guild && state.info.guild.settings;
       const seconds = settings && settings.defaultMediaTime;
-      return Number.isFinite(seconds) && seconds > 0 ? `Par défaut (${seconds} s)` : 'Par défaut';
+      return Number.isFinite(seconds) && seconds > 0 ? `Par défaut (${seconds}\u00a0s)` : 'Par défaut';
     })();
     const mayBeImage = (file) => !file.type || file.type.startsWith('image/');
     const durationInput = () =>
       h('input', {
-        class: 'field',
+        class: 'field is-narrow',
         type: 'number',
         min: '1',
         max: String(MAX_DISPLAY_DURATION_SEC),
         step: '1',
         inputmode: 'numeric',
         placeholder: durationPlaceholder,
-        style: 'max-width:160px',
       });
-    const durationLabel = (input) => h('label', null, 'Durée d’affichage pour « Jouer une fois » (s)', input);
-    const durationHint = () => h('p', { class: 'file-hint' }, 'Images uniquement : une vidéo ou un son garde sa durée.');
+    const durationLabel = (input) => h('label', null, 'Durée d’affichage (s)', input);
+    const durationHint = () => h('p', { class: 'file-hint' }, 'Une image reste affichée ce temps\u00a0; une vidéo ou un son garde sa durée.');
     const linkDuration = durationInput();
     const linkDurationField = h('div', { class: 'stack', hidden: !canPlay }, durationLabel(linkDuration), durationHint());
 
@@ -89,8 +94,14 @@ export function openAddDialog(options) {
     const fileTitle = h('input', { class: 'field', placeholder: 'Nom du fichier par défaut', maxlength: '240' });
     const fileTitleLabel = h('label', { hidden: true }, 'Titre (facultatif)', fileTitle);
     const multipleHint = h('p', { class: 'file-hint', hidden: true }, 'Chaque fichier utilisera son nom comme titre.');
-    const fileMessage = h('textarea', { class: 'field', rows: '2', maxlength: '500', placeholder: 'Texte affiché avec chaque média' });
-    const fileMessageLabel = h('label', { hidden: !showMessage }, 'Texte affiché sur les overlays (facultatif, pour « Jouer une fois »)', fileMessage);
+    const fileMessage = h('textarea', { class: 'field', rows: '2', maxlength: '500', placeholder: 'Légende affichée sur les overlays' });
+    const fileMessageLabel = h(
+      'label',
+      { hidden: !showMessage },
+      'Légende (facultatif)',
+      fileMessage,
+      h('span', { class: 'file-hint' }, 'Affichée sur les overlays pendant « Jouer une fois ».'),
+    );
     const fileDuration = durationInput();
     const fileDurationField = h('div', { class: 'stack', hidden: true }, durationLabel(fileDuration), durationHint());
 
@@ -116,9 +127,11 @@ export function openAddDialog(options) {
     const linkButton = h('button', { class: 'btn mode-choice', type: 'button', 'aria-pressed': 'true', onClick: () => setMode('link') }, 'Lien');
     const fileButton = h('button', { class: 'btn mode-choice', type: 'button', 'aria-pressed': 'false', onClick: () => setMode('file') }, 'Fichier');
     // Each submit button carries its action. A member who cannot add only
-    // gets "Jouer une fois"; a member who cannot play only adds.
+    // gets "Jouer une fois"; a member who cannot play only adds. The DOM order
+    // matches the visual order (secondary action, then primary); Enter is
+    // handled below so it still picks the primary action.
     const submitAdd = canAdd
-      ? h('button', { class: 'btn', type: 'submit', onClick: () => { playOnce = false; } }, 'Ajouter au board')
+      ? h('button', { class: 'btn is-primary', type: 'submit', onClick: () => { playOnce = false; } }, 'Ajouter au board')
       : null;
     const submitOnce = canPlay
       ? h('button', { class: 'btn', type: 'submit', onClick: () => { playOnce = true; } }, 'Jouer une fois')
@@ -180,7 +193,7 @@ export function openAddDialog(options) {
                         renderFileList();
                       }),
                   },
-                  'Retoucher',
+                  'Modifier l’image',
                 )
               : null,
             h('span', { class: 'file-size' }, formatSize(file.size)),
@@ -199,6 +212,22 @@ export function openAddDialog(options) {
       'form',
       {
         class: 'stack',
+        // Enter in a single-line field submits, like the form's default
+        // behaviour, but always with the primary action. Buttons and the
+        // textarea keep their native behaviour.
+        onKeydown: (event) => {
+          if (event.key !== 'Enter' || event.target.tagName !== 'INPUT') {
+            return;
+          }
+          event.preventDefault();
+          if (submitAdd) {
+            playOnce = false;
+            form.requestSubmit(submitAdd);
+          } else if (submitOnce) {
+            playOnce = true;
+            form.requestSubmit(submitOnce);
+          }
+        },
         onSubmit: (event) => {
           event.preventDefault();
           const guildId = state.activeGuildId;
@@ -274,8 +303,8 @@ export function openAddDialog(options) {
         'div',
         { class: 'actions' },
         h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'),
-        submitAdd,
         submitOnce,
+        submitAdd,
       ),
     );
 
@@ -284,8 +313,8 @@ export function openAddDialog(options) {
     setTimeout(() => (prefill ? linkTitle : linkUrl).focus(), 0);
     return [
       h('h2', null, 'Ajouter un média'),
-      h('p', null, 'Vidéo, image ou son : lien TikTok, X, YouTube ou direct, ou fichier de ton ordinateur.'),
+      h('p', null, 'Ajoute une vidéo, une image ou un son depuis un lien ou un fichier.'),
       form,
     ];
-  });
+  }, { width: 'wide' });
 }

@@ -140,6 +140,37 @@ Libellés en français, en casse de phrase (« Ouvrir la board », pas « Ouvrir
 Board »), sans majuscules décoratives. Un bouton dit ce qu'il fait ; le
 message qui suit reprend le même verbe.
 
+## Mise en page et rédaction
+
+Les composants ne choisissent plus leurs marges ni leurs tailles au cas par
+cas : `base.css` porte les tokens, les feuilles de fonctionnalité les
+consomment.
+
+- Espacement : `--space-1` à `--space-8` (4, 8, 12, 16, 20, 24, 32, 40 px).
+  Les écrans composent avec ces pas, pas avec des valeurs inventées.
+- Texte : `--text-xs` à `--text-xl` (12, 13, 14, 17, 20 px) ; interlignage
+  `--leading-tight` (1,25) pour les titres, `--leading-base` (1,45) pour le
+  corps.
+- Longueur de ligne : `--measure` (62 caractères) pour les descriptions et les
+  aides. Au-delà, l'œil perd le début de la ligne suivante.
+- Retours à la ligne : `text-wrap: balance` sur les titres,
+  `text-wrap: pretty` sur les paragraphes, espaces insécables avant `: ; ! ?`
+  et entre un nombre et son unité. Pas de `text-align: justify` : à 62
+  caractères, la justification crée des lézardes.
+- Titres de cartes : deux lignes maximum (`-webkit-line-clamp: 2`), coupées à
+  la fin d'un mot ; le titre complet reste dans l'infobulle et le tiroir de
+  détail. La hauteur réservée est celle calculée par `masonry.js` : les deux
+  doivent rester d'accord.
+- Un seul bouton primaire (`is-primary`, bleu) par écran ou dialogue. L'ambre
+  reste réservé à ce qui passe à l'antenne ; un formulaire n'a jamais d'ambre.
+- Cibles d'au moins 32 px de haut, icônes seules toujours accompagnées d'un
+  `aria-label` et d'une infobulle.
+- Dialogues : en-tête et pied fixes, corps seul défilant, bouton de fermeture
+  en haut à droite, action principale visible sans défiler.
+- Rédaction : casse de phrase, registre « tu », un terme par concept
+  (« média », « légende », « appareil », « écran »). Un bouton dit ce qu'il
+  fait ; le message qui suit reprend le même verbe.
+
 ## Fichiers
 
 Sources (dans `logo/`) :

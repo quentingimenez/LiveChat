@@ -1,22 +1,34 @@
 /* -------------------------------------------------------------------- board */
-.toolbar {
+/* Two stable rows: search, type chips and filters; then usage and actions.
+   The toolbar wraps instead of squeezing the search field down to nothing. */
+.board-toolbar {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 16px;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
 }
 
-.toolbar .field {
+.board-tools,
+.board-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.board-search {
+  flex: 1 1 220px;
   max-width: 320px;
 }
 
-.toolbar-usage {
+.board-usage {
   white-space: nowrap;
 }
 
 .chips {
   display: flex;
-  gap: 4px;
+  flex-wrap: wrap;
+  gap: var(--space-1);
 }
 
 .chip {
@@ -33,7 +45,8 @@
   color: var(--text);
 }
 
-.chip.is-active {
+.chip.is-active,
+.chip[aria-pressed='true'] {
   border-color: var(--line);
   background: var(--slate-700);
   color: var(--text);
@@ -54,18 +67,20 @@
 }
 
 .filters {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 10px 16px;
-  margin: -6px 0 16px;
-  padding: 12px 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  align-items: end;
+  gap: var(--space-3) var(--space-4);
+  max-width: 720px;
+  margin: calc(var(--space-2) * -1) 0 var(--space-4);
+  padding: var(--space-3) var(--space-4);
   border: 1px solid var(--line);
   border-radius: var(--radius-m);
   background: var(--slate-700);
 }
 
 .filters .switch {
+  align-self: end;
   height: 32px;
 }
 
@@ -77,8 +92,14 @@
 }
 
 .filter .field {
-  min-width: 150px;
+  width: 100%;
+  min-width: 0;
   height: 32px;
+}
+
+.filters .filters-reset {
+  grid-column: 1 / -1;
+  justify-self: start;
 }
 
 /* Masonry, like Discord's GIF picker: cards keep one width whatever the
@@ -398,9 +419,13 @@
 .card-title {
   margin: 6px 2px 0;
   font-size: 13px;
-  white-space: nowrap;
+  line-height: 1.3;
+  min-height: 2.6em;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 /* ------------------------------------------------------------------- détail */
@@ -412,14 +437,44 @@
   right: 22px;
   bottom: 16px;
   z-index: 6;
+  display: flex;
+  flex-direction: column;
   width: min(360px, calc(100vw - var(--rail) - 48px));
-  padding: 16px;
-  overflow-y: auto;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-m);
   background: var(--slate-700);
   box-shadow: var(--shadow-detail);
   animation: detail-in 120ms ease-out;
+}
+
+.detail-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-4);
+}
+
+/* The play action and the media actions stay visible: the body scrolls, never
+   the buttons. */
+.detail-foot {
+  flex: none;
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  border-top: 1px solid var(--line);
+  background: var(--slate-700);
+}
+
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.detail-actions .is-danger {
+  margin-left: auto;
 }
 
 .detail.is-refresh {
@@ -444,16 +499,18 @@
   margin-bottom: 12px;
 }
 
-.detail-head h2 {
+.detail-head h2,
+.detail-head .inline-text.is-title {
   flex: 1;
   margin: 0;
+  font-family: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
   font-size: 15px;
   font-weight: 600;
   overflow-wrap: anywhere;
 }
 
-/* Title and message edited in place: a framed block with a pencil says it
-   can be clicked; the field that replaces it keeps the same box. */
+/* Title and message edited in place: plain text with a pencil that appears on
+   hover or keyboard focus; the field that replaces it keeps a framed box. */
 .inline-edit {
   display: flex;
   align-items: flex-start;
@@ -461,7 +518,7 @@
   width: 100%;
   min-width: 0;
   padding: 5px 8px;
-  border: 1px dashed var(--line);
+  border: 1px solid transparent;
   border-radius: var(--radius-s);
   background: none;
   color: inherit;
@@ -470,9 +527,9 @@
   cursor: text;
 }
 
-.inline-edit:hover {
-  border-style: solid;
-  border-color: var(--text-faint);
+.inline-edit:hover,
+.inline-edit:focus-visible {
+  border-color: var(--line);
   background: var(--slate-800);
 }
 
@@ -482,10 +539,13 @@
   height: 14px;
   margin-top: 2px;
   color: var(--text-faint);
+  opacity: 0;
+  transition: opacity 100ms ease;
 }
 
-.inline-edit:hover .icon {
-  color: var(--text);
+.inline-edit:hover .icon,
+.inline-edit:focus-visible .icon {
+  opacity: 1;
 }
 
 .inline-edit .inline-text {
@@ -675,6 +735,12 @@
   overflow-wrap: anywhere;
 }
 
+/* The caption edited in place sits on the value column, like the shortcut. */
+.facts .inline-edit {
+  margin: 0;
+  padding: 2px 0;
+}
+
 /* Shortcut row: the value is the button that records a new one. */
 .facts dt:has(+ .shortcut-cell) {
   align-self: center;
@@ -815,16 +881,22 @@
   display: none;
 }
 
+/* The bar floats above the on-air footer, but `.view` has a 28 px bottom
+   padding: a negative offset cancels it so the bar sits 12 px above the
+   footer. The extra bottom padding keeps the last row scrollable above it. */
+.board:has(+ .selection-bar) {
+  padding-bottom: 104px;
+}
+
 /* The buttons wrap on a narrow window: every action stays reachable. */
 .selection-bar {
   position: sticky;
-  bottom: 12px;
+  bottom: -16px;
   z-index: 5;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  margin-top: 16px;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
   padding: 10px 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius-m);
@@ -832,6 +904,40 @@
   box-shadow: var(--shadow-bar);
 }
 
+.selection-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+}
+
+.selection-group,
+.selection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .selection-count {
   font-variant-numeric: tabular-nums;
+}
+
+/* The destructive action sits apart from the others, at the far right. */
+.selection-actions .is-danger {
+  margin-left: auto;
+}
+
+/* Below 1200 px the drawer keeps its place but narrows; the toolbar and the
+   selection bar wrap rather than overflow. */
+@media (max-width: 1200px) {
+  .detail {
+    width: min(320px, calc(100vw - var(--rail) - 48px));
+  }
+}
+
+@media (max-width: 1024px) {
+  .board-search {
+    max-width: 260px;
+  }
 }

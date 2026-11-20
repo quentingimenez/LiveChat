@@ -22,7 +22,7 @@ export function renderHeader() {
   const connected = state.info && state.info.guild ? state.info.guild.connectedCount : null;
   const tabs = [
     ['board', 'Board', null],
-    ['queue', "File d'attente", state.queue.pending.length || null],
+    ['queue', 'File d’attente', state.queue.pending.length || null],
   ];
   if (can('manageMembers') || can('manageInvites') || can('manageSettings')) {
     tabs.push(['admin', 'Administration', null]);
@@ -34,40 +34,53 @@ export function renderHeader() {
     h(
       'div',
       { class: 'header-top' },
-      h('h1', { class: 'guild-name' }, guildLabel(guild)),
-      role ? h('span', { class: `badge is-${role}` }, ROLE_LABELS[role] || role) : null,
-      guild.membership.muted ? h('span', { class: 'badge is-off' }, 'En pause') : null,
-      !guild.membership.muted && (mediaMuted || allMediaMuted())
-        ? h('span', { class: 'badge is-off', title: allMediaMuted() && !mediaMuted ? 'Coupé pour toutes les guildes dans les Paramètres' : null }, 'Son des médias coupé')
-        : null,
-      guild.connection.status !== 'connected' && !guild.membership.muted
-        ? h('span', { class: 'badge is-off' }, guild.statusLabel)
-        : null,
-      h('span', { class: 'spacer' }),
-      connected !== null ? h('span', { class: 'meta' }, `${connected} overlay${connected > 1 ? 's' : ''} connecté${connected > 1 ? 's' : ''}`) : null,
       h(
-        'button',
-        {
-          class: 'btn is-quiet',
-          title: guild.membership.muted ? 'Recevoir à nouveau les médias de cette guilde' : 'Ne plus recevoir les médias de cette guilde',
-          onClick: () => toggleMute(guild),
-        },
-        icon(guild.membership.muted ? 'mute' : 'sound'),
-        guild.membership.muted ? 'Reprendre' : 'Mettre en pause',
+        'div',
+        { class: 'header-title' },
+        h('h1', { class: 'guild-name' }, guildLabel(guild)),
+        role ? h('span', { class: `badge is-${role}` }, ROLE_LABELS[role] || role) : null,
+        guild.membership.muted ? h('span', { class: 'badge is-off' }, 'En pause') : null,
+        !guild.membership.muted && (mediaMuted || allMediaMuted())
+          ? h(
+              'span',
+              { class: 'badge is-off', title: allMediaMuted() && !mediaMuted ? 'Coupé pour toutes les guildes dans les Paramètres' : null },
+              'Son coupé',
+            )
+          : null,
+        guild.connection.status !== 'connected' && !guild.membership.muted
+          ? h('span', { class: 'badge is-off' }, guild.statusLabel)
+          : null,
       ),
-      guild.membership.muted
-        ? null
-        : h(
-            'button',
-            {
-              class: 'btn is-quiet',
-              title: mediaMuted ? 'Rétablir le son des médias de cette guilde' : 'Afficher les médias de cette guilde sans leur son',
-              onClick: () => toggleMediaSound(guildId, !mediaMuted),
-            },
-            icon(mediaMuted ? 'sound' : 'mute'),
-            mediaMuted ? 'Remettre le son' : 'Couper le son',
-          ),
-      h('button', { class: 'btn is-quiet', onClick: () => openGuildDialog(guild) }, 'Mon profil'),
+      h(
+        'div',
+        { class: 'header-actions' },
+        connected !== null
+          ? h('span', { class: 'meta header-connection' }, `${connected} overlay${connected > 1 ? 's' : ''} connecté${connected > 1 ? 's' : ''}`)
+          : null,
+        h(
+          'button',
+          {
+            class: 'btn is-quiet',
+            title: guild.membership.muted ? 'Recevoir à nouveau les médias de cette guilde' : 'Ne plus recevoir les médias de cette guilde',
+            onClick: () => toggleMute(guild),
+          },
+          icon(guild.membership.muted ? 'mute' : 'sound'),
+          guild.membership.muted ? 'Reprendre' : 'Mettre en pause',
+        ),
+        guild.membership.muted
+          ? null
+          : h(
+              'button',
+              {
+                class: 'btn is-quiet',
+                title: mediaMuted ? 'Rétablir le son des médias de cette guilde' : 'Afficher les médias de cette guilde sans leur son',
+                onClick: () => toggleMediaSound(guildId, !mediaMuted),
+              },
+              icon(mediaMuted ? 'sound' : 'mute'),
+              mediaMuted ? 'Rétablir le son' : 'Couper le son',
+            ),
+        h('button', { class: 'btn is-quiet', onClick: () => openGuildDialog(guild) }, 'Profil'),
+      ),
     ),
     h(
       'div',

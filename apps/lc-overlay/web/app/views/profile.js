@@ -123,7 +123,7 @@ export function openGuildDialog(guild) {
         { class: 'profile-code-main' },
         deviceValue,
         copyButton('Copier le code', 'Code de l’appareil copié.', () => deviceText),
-        h('span', { class: 'profile-code-expiry' }, 'Expire dans 10 min'),
+        h('span', { class: 'profile-code-expiry' }, 'Expire dans 10\u00a0min'),
       ),
     );
     const makeDeviceCode = async () => {
@@ -164,7 +164,7 @@ export function openGuildDialog(guild) {
           copyButton('Copier le code', 'Code de l’extension copié.', () => extensionCodeText),
         ),
       ),
-      h('p', { class: 'profile-code-note' }, 'À saisir dans les options de l’extension. Expire dans 10 min.'),
+      h('p', { class: 'profile-code-note' }, 'À saisir dans les options de l’extension. Expire dans 10\u00a0min.'),
     );
     const makeExtensionCode = async () => {
       const body = await run(() => api('POST', '/overlay/ingest-code'));
@@ -486,6 +486,7 @@ export function openGuildDialog(guild) {
       h('h3', { class: 'profile-section-title' }, 'Appareils'),
       personalDevices,
       h('h4', { class: 'profile-personal-add' }, 'Ajouter un appareil'),
+      h('p', { class: 'profile-device-desc profile-add-intro' }, 'Associe un autre PC, ton navigateur ou un raccourci iOS.'),
       h(
         'div',
         { class: 'profile-devices' },
@@ -544,15 +545,11 @@ export function openGuildDialog(guild) {
       ),
     );
     return [
+      h('h2', null, 'Mon profil'),
+      h('p', { class: 'profile-subtitle' }, `${guildLabel(guild)} · ${(ROLE_LABELS[member.role] || 'membre').toLowerCase()}`),
       h(
         'div',
         { class: 'profile-dialog' },
-        h(
-          'header',
-          { class: 'profile-head' },
-          h('h2', null, 'Mon profil'),
-          h('p', { class: 'profile-subtitle' }, `${guildLabel(guild)} · ${(ROLE_LABELS[member.role] || 'membre').toLowerCase()}`),
-        ),
         identity,
         profileSource(),
         devices,
@@ -561,10 +558,10 @@ export function openGuildDialog(guild) {
           { class: 'actions' },
           h('button', { class: 'btn is-quiet is-danger', onClick: leave }, 'Quitter la guilde'),
           h('span', { class: 'spacer' }),
-          h('button', { class: 'btn is-quiet', onClick: close }, 'Fermer'),
-          h('button', { class: 'btn', onClick: save }, 'Enregistrer'),
+          h('button', { class: 'btn is-quiet', onClick: close }, 'Annuler'),
+          h('button', { class: 'btn is-primary', onClick: save }, 'Enregistrer'),
         ),
       ),
     ];
-  });
+  }, { width: 'wide' });
 }

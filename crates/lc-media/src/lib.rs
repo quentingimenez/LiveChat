@@ -28,6 +28,7 @@
 pub use lc_domain::MediaKind;
 
 pub mod cache;
+pub mod card_canvas;
 pub mod config;
 pub mod download;
 pub mod edit;
@@ -42,6 +43,7 @@ pub mod resolve;
 pub mod source;
 pub mod storage;
 pub mod thumbnail;
+pub mod tiktok_comment;
 pub mod title;
 pub mod transcode;
 pub mod tweet_card;
@@ -81,6 +83,9 @@ pub use crate::source::{
 };
 pub use crate::storage::{
     is_staged_file_name, resolve_storage_reference, staged_path, MediaStorage, StoredVariant,
+};
+pub use crate::tiktok_comment::{
+    download_tiktok_comment, render_tiktok_comment_card, TikTokCommentCard,
 };
 pub use crate::title::{
     direct_media_title, normalize_title, source_title, tweet_title, TITLE_MAX_CHARS,

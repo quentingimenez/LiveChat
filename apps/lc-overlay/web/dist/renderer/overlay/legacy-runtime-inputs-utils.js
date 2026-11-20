@@ -32,6 +32,9 @@ export function createOverlayLegacyRuntimeInputsUtils() {
             activePlayback: null,
             activeObjectUrl: null,
             activeVolume: null,
+            // Re-fits a scaled media after a window resize (display resolution
+            // change); set by the render handlers for every media played.
+            activeMediaRelayout: null,
             mediaFrameState: {
                 activeMediaFrame: null,
                 activeMediaContent: null,

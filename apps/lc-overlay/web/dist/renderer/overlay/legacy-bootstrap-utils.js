@@ -92,6 +92,12 @@ export function createOverlayLegacyBootstrapUtils() {
         params.registerOnStop(params.onStop);
         params.registerOnSettings(params.onSettings);
         params.addWindowResizeListener(() => {
+            // The shell re-fits the window to the screen (display resolution
+            // change): the scaled media and the header chips follow the new
+            // zone.
+            if (typeof params.relayoutActiveMedia === 'function') {
+                params.relayoutActiveMedia();
+            }
             params.scheduleMediaHeaderLayout();
         });
         void params.ensureTwitterWidgets().catch(() => undefined);

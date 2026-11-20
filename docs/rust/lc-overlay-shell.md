@@ -171,6 +171,13 @@ Détails d'implémentation :
 - `overlay` est positionnée sur l'écran mémorisé (`displayKey` → `displayIndex`
   → primaire → premier) et la sélection est réécrite dans la config si elle a
   changé (`windows::persist_display_selection`).
+- Chaque tick de la garde topmost compare la géométrie réelle de `overlay`
+  (`outer_position` + `inner_size`) aux bornes de l'écran sélectionné
+  (`windows::sync_overlay_geometry`, décision pure dans `display::geometry_sync`).
+  Après un changement de résolution ou une réorganisation des écrans, la
+  fenêtre est replacée et redimensionnée, et la clé d'écran mémorisée réécrite
+  puisqu'elle contient la taille : sans cela, l'overlay restait à l'ancienne
+  géométrie physique (média décalé, ou hors écran donc plus rien d'affiché).
 - `apply_overlay_flags` : `set_ignore_cursor_events(true)`,
   `set_focusable(false)`, `set_always_on_top(true)`, `set_skip_taskbar(true)`,
   puis `GetWindowLongPtrW(GWL_EXSTYLE)` + `SetWindowLongPtrW` pour forcer les

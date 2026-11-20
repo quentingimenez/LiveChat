@@ -41,6 +41,39 @@ export function initials(name) {
   return letters.toLocaleUpperCase('fr-FR');
 }
 
+// Discord's guild-icon acronym: the first letter of every word, in the case the
+// name was typed in, with the English possessive dropped ("Serveur de babz" →
+// "Sdb", "Bob's server" → "Bs"). Punctuation and emoji between the words stay,
+// as in Discord ("Jean-Pierre" → "J-P", "L’Escale 🔱" → "L’E🔱"). Discord only
+// knows [A-Za-z0-9_] as word characters; Unicode letters and digits count here
+// too, so an accented name keeps its letter ("Été" → "É"), and the name is
+// normalized first ("𝐒𝐮𝐩𝐞𝐫" → "S"). The empty string is Discord's answer for a
+// missing name: callers choose their own fallback tile.
+const ACRONYM_WORD = /[\p{L}\p{N}_]+/gu;
+const ACRONYM_POSSESSIVE = /'s /g;
+
+export function guildAcronym(name) {
+  const text = name === null || name === undefined ? '' : String(name).normalize('NFKC');
+  if (!text) {
+    return '';
+  }
+  return text
+    .replace(ACRONYM_POSSESSIVE, ' ')
+    .replace(ACRONYM_WORD, (word) => firstGrapheme(word))
+    .replace(/\s+/gu, '');
+}
+
+// An acronym has one letter per word, so a long name no longer fits the 44 px
+// rail tile at its usual size: past four letters it shrinks like Discord's guild
+// icon (16, 16, 14, 14, 12, 10, 8 px on Discord's 40 px tile). Four letters keep
+// the rail's 13 px, the size of the initials before the acronym.
+const ACRONYM_FONT_SIZES = [13, 13, 13, 13, 13, 11, 10, 8];
+
+export function guildAcronymFontSize(acronym) {
+  const length = graphemes(acronym === null || acronym === undefined ? '' : String(acronym)).length;
+  return ACRONYM_FONT_SIZES[Math.min(length, ACRONYM_FONT_SIZES.length - 1)];
+}
+
 // Message of a guild removal notice. The shell removes a guild on its own when
 // it is deleted, when the member is removed or when the device is revoked.
 export function removalMessage(removal = {}) {

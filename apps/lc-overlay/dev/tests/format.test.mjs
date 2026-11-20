@@ -6,6 +6,8 @@ import test from 'node:test';
 import {
   firstGrapheme,
   formatBytes,
+  guildAcronym,
+  guildAcronymFontSize,
   initials,
   mediaRefreshDelay,
   parseDisplayDuration,
@@ -46,6 +48,50 @@ test('firstGrapheme keeps a whole grapheme for avatar letters', () => {
   for (const [input, expected] of cases) {
     assert.equal(firstGrapheme(initials(input)), expected, `firstGrapheme(initials(${JSON.stringify(input)})`);
   }
+});
+
+test('guildAcronym keeps one letter per word in the typed case, like Discord', () => {
+  const cases = [
+    // The reported case: Discord shows "Sdb", not the initials "SD".
+    ['Serveur de babz', 'Sdb'],
+    ['Les Sardines', 'LS'],
+    ['GG Squad', 'GS'],
+    // Discord does not uppercase: "gaming" gives one lowercase letter.
+    ['gaming', 'g'],
+    // The English possessive is dropped ("Bob's server" has two words).
+    ["Bob's server", 'Bs'],
+    // Only the ASCII "'s " rule, as in Discord: the typographic apostrophe keeps
+    // its word ("Bob’s server" → "B’ss", not "Bs").
+    ['Bob’s server', 'B’ss'],
+    // Punctuation and emoji between the words are kept as Discord does.
+    ['Jean-Pierre', 'J-P'],
+    ['L’Escale 🔱', 'L’E🔱'],
+    ['R2D2', 'R'],
+    // Unicode letters count as word characters (Discord only knows [A-Za-z0-9_]).
+    ['Été', 'É'],
+    ['𝐒𝐮𝐩𝐞𝐫', 'S'],
+    // No length limit: one letter per word, whatever the word count.
+    ['Le serveur des amis du soir', 'Lsdads'],
+    ['', ''],
+    [null, ''],
+    [undefined, ''],
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(guildAcronym(input), expected, `guildAcronym(${JSON.stringify(input) ?? 'undefined'})`);
+  }
+});
+
+test('guildAcronymFontSize shrinks a long acronym like Discord', () => {
+  // Four letters keep the rail's usual size; then Discord's steps apply.
+  for (const short of ['S', 'SD', 'Sdb', 'LSDA', '']) {
+    assert.equal(guildAcronymFontSize(short), 13, short);
+  }
+  assert.equal(guildAcronymFontSize('LSDAD'), 11);
+  assert.equal(guildAcronymFontSize('LSDADS'), 10);
+  assert.equal(guildAcronymFontSize('LSDADSL'), 8);
+  assert.equal(guildAcronymFontSize('LSDADSLD'), 8);
+  // A grapheme counts once, whatever its number of code units.
+  assert.equal(guildAcronymFontSize('🔱🔱🔱🔱🔱'), 11);
 });
 
 test('mediaRefreshDelay reloads five minutes before the earliest signed URL expiry', () => {

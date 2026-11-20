@@ -19,6 +19,7 @@
   width: 44px;
   height: 44px;
   border: 0;
+  padding: 0;
   border-radius: 14px;
   background: var(--slate-700);
   color: var(--text-soft);
@@ -46,16 +47,24 @@
 
 /* Guild icon: the button itself must not clip the status dot, so only the
    image is rounded. The active ring is drawn outside the button. */
-.guild.has-icon {
-  padding: 0;
-}
-
 .guild .guild-icon {
   display: block;
   width: 44px;
   height: 44px;
   border-radius: 14px;
   object-fit: cover;
+}
+
+/* Icon fallback: Discord's acronym, one line, clipped inside the tile when the
+   name has many words (the shrink comes from the inline font size). */
+.guild .guild-acronym {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .guild.is-active .guild-icon {

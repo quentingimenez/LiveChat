@@ -122,7 +122,8 @@
   margin-top: 20px;
 }
 
-/* Mon profil : identity grid, Discord callout and device pairing codes. */
+/* Mon profil : identity grid, Discord callout, personal devices and pairing
+   codes. */
 /* The rows below put a text and an action side by side; the plain 420 px form
    dialog would wrap every one of them. */
 .dialog:has(> .profile-dialog) {
@@ -282,6 +283,122 @@
 .profile-dialog .profile-device-row > .btn {
   flex: none;
   margin-left: auto;
+}
+
+/* Personal devices: the member's own list, above the add-device cards. */
+.profile-dialog .profile-personal {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+}
+
+.profile-dialog .profile-personal-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.profile-dialog .profile-personal-intro {
+  min-width: 0;
+}
+
+.profile-dialog .profile-personal-title {
+  margin: 0 0 2px;
+  font-size: 14px;
+}
+
+.profile-dialog .profile-personal-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.profile-dialog .profile-personal-count {
+  color: var(--text-soft);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.profile-dialog .profile-personal-list {
+  display: grid;
+  gap: 8px;
+}
+
+.profile-dialog .profile-personal-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.profile-dialog .profile-personal-row:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.profile-dialog .profile-personal-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.profile-dialog .profile-personal-confirm-text {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.profile-dialog .profile-personal-text {
+  display: grid;
+  flex: 1 1 180px;
+  gap: 2px;
+  min-width: 0;
+}
+
+.profile-dialog .profile-personal-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.profile-dialog .profile-personal-name > span:not(.badge) {
+  overflow-wrap: anywhere;
+}
+
+.profile-dialog .profile-personal-meta {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.profile-dialog .profile-personal-row > .btn {
+  flex: none;
+  margin-left: auto;
+}
+
+.profile-dialog .profile-personal-empty {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.profile-dialog .profile-personal-add {
+  margin: 14px 0 8px;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 /* A created code expands under its row. */

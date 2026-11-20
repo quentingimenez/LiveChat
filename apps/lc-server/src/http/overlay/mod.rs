@@ -95,6 +95,7 @@ mod media_ingestion;
 mod media_upload;
 pub use media_upload::{UploadSessions, MAX_PART_BYTES};
 mod pair;
+mod personal_devices;
 mod profile_discord;
 pub(crate) mod queue;
 mod say;
@@ -253,6 +254,8 @@ mod media_upload_tests;
 #[cfg(test)]
 mod overlay_audit_tests;
 #[cfg(test)]
+mod personal_devices_tests;
+#[cfg(test)]
 mod profile_discord_tests;
 #[cfg(test)]
 mod profile_tests;
@@ -337,6 +340,18 @@ pub fn router() -> Router<AppState> {
         .route(
             "/overlay/ingest-client",
             post(ingest_code::create_ingest_client),
+        )
+        .route(
+            "/overlay/devices",
+            get(personal_devices::list_personal_devices),
+        )
+        .route(
+            "/overlay/devices/overlay/{client_id}",
+            axum::routing::delete(personal_devices::revoke_personal_overlay),
+        )
+        .route(
+            "/overlay/devices/ingest/{client_id}",
+            axum::routing::delete(personal_devices::revoke_personal_ingest),
         )
         .route("/overlay/leave", post(guild::leave))
         .route(

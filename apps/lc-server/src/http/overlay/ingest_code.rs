@@ -137,6 +137,21 @@ pub async fn create_ingest_code(
 /// Libellé du client d'ingestion créé pour un raccourci iOS.
 const IOS_SHORTCUT_LABEL: &str = "Raccourci iOS";
 
+/// Type d'un client d'ingestion, pour la liste personnelle des appareils.
+///
+/// La table `ingest_clients` n'a pas de colonne de type : le préfixe du libellé,
+/// écrit uniquement par [`create_ingest_client`], distingue un raccourci iOS
+/// d'une extension. Une extension dont le libellé commencerait par le même
+/// préfixe serait affichée comme un raccourci iOS ; ce n'est qu'une étiquette,
+/// sans effet sur la révocation.
+pub(super) fn ingest_client_kind(label: &str) -> &'static str {
+    if label.starts_with(IOS_SHORTCUT_LABEL) {
+        "ios"
+    } else {
+        "extension"
+    }
+}
+
 /// Handler `POST /overlay/ingest-client`.
 ///
 /// Crée directement un client d'ingestion pour le membre courant, sans code

@@ -51,13 +51,15 @@ d'ingestion** limité à l'envoi de médias (`Surface::Extension`,
    **Créer un client**, puis utilise l'URL du serveur et le jeton affiché.
 
 Le client s'appelle `Raccourci iOS - <pseudo>` : le reconfigurer révoque l'ancien
-jeton et en crée un nouveau. Pour plusieurs téléphones, crée des clients séparés
-dans la console d'administration.
+jeton et en crée un nouveau. Les clients actifs apparaissent dans **Mon profil**
+→ **Mes appareils**, où chacun peut être révoqué sans passer par la console
+d'administration. Pour plusieurs téléphones, crée des clients séparés dans la
+console d'administration.
 
 > **Sécurité** — ce jeton permet d'envoyer des médias et d'ajouter des éléments
 > à la board. Il ne permet pas d'administrer le serveur. Ne le partage pas, ne
-> le commit pas, et révoque-le depuis la console d'administration → **Clients
-> d'ingestion** si tu le perds.
+> le commit pas, et révoque-le depuis **Mon profil** → **Mes appareils**, ou
+> depuis la console d'administration → **Clients d'ingestion** si tu le perds.
 
 ## 2. Importer un raccourci signé
 

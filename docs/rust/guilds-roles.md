@@ -257,6 +257,9 @@ Toutes les routes authentifiées acceptent uniquement `Authorization: Bearer <to
 | `GET` | `/overlay/guild` | tout overlay authentifié |
 | `PATCH` | `/overlay/profile` | tout membre (son propre profil) |
 | `POST` | `/overlay/device-code` | tout membre |
+| `GET` | `/overlay/devices` | tout membre (ses propres appareils) |
+| `DELETE` | `/overlay/devices/overlay/{clientId}` | tout membre (son propre appareil) |
+| `DELETE` | `/overlay/devices/ingest/{clientId}` | tout membre (son propre client d'ingestion) |
 | `POST` | `/overlay/leave` | tout overlay authentifié |
 | `GET` | `/overlay/queue` | `ViewQueue` (tous les rôles) |
 | `DELETE` | `/overlay/queue/{jobId}` | `ModerateQueue` (admin) |
@@ -286,6 +289,9 @@ Toutes les routes authentifiées acceptent uniquement `Authorization: Bearer <to
 | `GET /overlay/guild` | aucun | `{guild:{id,name,standalone,discordGuildId,guestsCanViewBoard,settings,connectedCount}, member, clientId, permissions}` | `500`, `503` |
 | `PATCH /overlay/profile` | `{"displayName":"…","avatar":"…"}` ; `avatar` absent = conservé, `null` ou vide = effacé. Ou `{"useDiscord":true}` (les autres champs sont ignorés) | `{updated:true, member}` ; avec `useDiscord`, `{updated:true, synced, member}` | `400 invalid_payload`, `400 invalid_display_name`, `409 member_required`, `409 discord_not_linked`, `404 member_not_found` |
 | `POST /overlay/device-code` | aucun | `{created:true, invite:{…}}` | `409 member_required`, `500` |
+| `GET /overlay/devices` | aucun | `{count, items}` : appareils actifs du membre, `kind` valant `overlay`, `extension` ou `ios` | `409 member_required`, `500`, `503` |
+| `DELETE /overlay/devices/overlay/{clientId}` | aucun | `{found:true, revoked}` ; ferme la socket `4402` | `404 device_not_found`, `409 cannot_revoke_self`, `500`, `503` |
+| `DELETE /overlay/devices/ingest/{clientId}` | aucun | `{found:true, revoked}` | `404 device_not_found`, `500`, `503` |
 | `POST /overlay/leave` | aucun | `{left:true}` | `409 last_admin`, `404 member_not_found` |
 | `GET /overlay/queue` | aucun | `{playing, pending, serverTime}` | aucun (les trois rôles ont `ViewQueue`) |
 | `DELETE /overlay/queue/{jobId}` | aucun | `{removed:true ou false}` | `403 forbidden` (non-admin) |
@@ -302,6 +308,8 @@ Toutes les routes authentifiées acceptent uniquement `Authorization: Bearer <to
 | `POST /overlay/admin/invites` | `{"role":"…","expiresInHours":24,"maxUses":10}` | `{created:true, invite}` | `400 invalid_payload`, `400 invalid_role`, `400 invalid_expiry`, `400 invalid_max_uses`, `403 forbidden` |
 | `POST /overlay/admin/invites/{code}/revoke` | aucun | `{found:true, revoked:true ou false}` | `403 forbidden`, `404 invite_not_found` |
 | `PATCH /overlay/admin/settings` | champs partiels `name`, `defaultMediaTime`, `maxMediaTime`, `displayMediaFull`, `guestsCanViewBoard` | `{updated:true, guild}` | `400 invalid_payload`, `400 invalid_name`, `403 forbidden` |
+
+`GET /overlay/devices` ne demande aucun droit de gestion : chaque membre voit ses propres overlays (`overlay_clients.member_id`), ainsi que les clients d'ingestion dont `created_by_discord_user_id` vaut `member:<memberId>` ou son identifiant Discord lié. Un overlay de la liste porte `connected`, `sessionMode`, `overlayVersion` et `platform` ; un client d'ingestion porte seulement `lastSeenAt` et un `kind` déduit du préfixe de son libellé (`Raccourci iOS` pour iOS, `extension` sinon), la table `ingest_clients` n'ayant pas de colonne de type. Un appareil d'un autre membre ou d'une autre guilde, un identifiant inconnu et un appareil déjà révoqué répondent tous `404 device_not_found`. Le dialogue « Mon profil » masque l'action de révocation pour l'appareil appelant (`isSelf`), et le serveur la refuse aussi par `409 cannot_revoke_self`.
 
 `GET /overlay/guild` renvoie `standalone: false`, `name: null` et des réglages `null` si la guilde n'a pas de ligne. `permissions` contient exactement `viewBoard`, `viewQueue`, `play`, `stop`, `addMedia`, `editAnyMedia`, `moderateQueue`, `manageMembers`, `manageInvites`, `manageSettings`.
 

@@ -1,11 +1,17 @@
-// "Mon profil" dialog of a guild: display name, Discord account, extra
-// device, browser extension pairing and leaving the guild.
+// "Mon profil" dialog of a guild: display name, Discord account, personal
+// devices (overlays, browser extension, iOS) and leaving the guild.
 
 import { api, run } from '../core/api.js';
 import { resizeAvatar } from '../core/avatar.js';
 import { avatarNode, h, icon } from '../core/dom.js';
 import { formatCode } from '../core/format.js';
 import { invoke } from '../core/ipc.js';
+import {
+  canRevokePersonalDevice,
+  personalDeviceCountLabel,
+  personalDeviceKindLabel,
+  personalDeviceSummary,
+} from '../core/personal-devices.js';
 import { can, describeError, guildLabel, ROLE_LABELS, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import { confirmDialog, copyText, openDialog } from '../core/ui.js';
@@ -239,7 +245,141 @@ export function openGuildDialog(guild) {
       iosToken.textContent = iosTokenText;
       iosPanel.hidden = false;
       copyText(iosTokenText, 'Jeton iOS copié.');
+      loadPersonalDevices();
     };
+    // --- personal devices ---
+    // The same dialog administers the member's own devices: overlays, paired
+    // extensions and iOS ingest clients. The server scopes the list to the
+    // token's guild and member, and refuses to revoke the calling session.
+    const personalList = h('div', { class: 'profile-personal-list' });
+    const personalStatus = h('p', { class: 'profile-personal-empty' }, 'Chargement des appareils…');
+    const personalCount = h('span', { class: 'profile-personal-count' });
+    const personalDeviceRow = (device) => {
+      const label = device.label || 'Appareil sans nom';
+      const actions = h('div', { class: 'profile-personal-confirm' });
+      let confirming = false;
+      const renderActions = () => {
+        actions.replaceChildren();
+        if (!canRevokePersonalDevice(device)) {
+          return;
+        }
+        if (!confirming) {
+          actions.append(
+            h(
+              'button',
+              {
+                class: 'btn is-quiet is-danger profile-small',
+                type: 'button',
+                onClick: () => {
+                  confirming = true;
+                  renderActions();
+                },
+              },
+              'Révoquer',
+            ),
+          );
+          return;
+        }
+        actions.append(
+          h('span', { class: 'profile-personal-confirm-text' }, 'Révoquer ?'),
+          h(
+            'button',
+            {
+              class: 'btn is-quiet profile-small',
+              type: 'button',
+              onClick: () => {
+                confirming = false;
+                renderActions();
+              },
+            },
+            'Annuler',
+          ),
+          h(
+            'button',
+            {
+              class: 'btn is-danger profile-small',
+              type: 'button',
+              onClick: async () => {
+                const result = await run(
+                  () =>
+                    api(
+                      'DELETE',
+                      `/overlay/devices/${device.kind === 'overlay' ? 'overlay' : 'ingest'}/${encodeURIComponent(device.id)}`,
+                    ),
+                  'Appareil révoqué.',
+                );
+                if (result) {
+                  loadPersonalDevices();
+                  return;
+                }
+                confirming = false;
+                renderActions();
+              },
+            },
+            'Révoquer',
+          ),
+        );
+      };
+      renderActions();
+      return h(
+        'div',
+        { class: 'profile-personal-row' },
+        h(
+          'div',
+          { class: 'profile-personal-text' },
+          h(
+            'div',
+            { class: 'profile-personal-name' },
+            h('span', { class: 'badge' }, personalDeviceKindLabel(device.kind)),
+            h('span', null, label),
+            device.isSelf ? h('span', { class: 'badge is-off' }, 'Cet appareil') : null,
+          ),
+          h('p', { class: 'profile-personal-meta' }, personalDeviceSummary(device)),
+        ),
+        actions,
+      );
+    };
+    const loadPersonalDevices = async () => {
+      personalStatus.hidden = false;
+      personalStatus.textContent = 'Chargement des appareils…';
+      personalList.replaceChildren();
+      const body = await run(() => api('GET', '/overlay/devices'));
+      if (!body) {
+        personalStatus.textContent = 'Impossible de charger tes appareils.';
+        return;
+      }
+      const items = Array.isArray(body.items) ? body.items : [];
+      personalCount.textContent = personalDeviceCountLabel(items.length);
+      if (items.length === 0) {
+        personalStatus.textContent = 'Aucun appareil rattaché à ton profil.';
+        return;
+      }
+      personalStatus.hidden = true;
+      personalList.replaceChildren(...items.map(personalDeviceRow));
+    };
+    const personalDevices = h(
+      'div',
+      { class: 'profile-personal' },
+      h(
+        'div',
+        { class: 'profile-personal-head' },
+        h(
+          'div',
+          { class: 'profile-personal-intro' },
+          h('h4', { class: 'profile-personal-title' }, 'Mes appareils'),
+          h('p', { class: 'profile-device-desc' }, 'Les appareils connectés à ton profil. Révoque ceux que tu ne reconnais pas.'),
+        ),
+        h(
+          'div',
+          { class: 'profile-personal-actions' },
+          personalCount,
+          h('button', { class: 'btn is-quiet profile-small', type: 'button', onClick: loadPersonalDevices }, 'Actualiser'),
+        ),
+      ),
+      personalStatus,
+      personalList,
+    );
+    loadPersonalDevices();
     // Linking needs a `/pair-code` code from the member's own Discord account:
     // the bot then accepts their commands.
     const profileSource = () => {
@@ -344,6 +484,8 @@ export function openGuildDialog(guild) {
       'section',
       { class: 'profile-section' },
       h('h3', { class: 'profile-section-title' }, 'Appareils'),
+      personalDevices,
+      h('h4', { class: 'profile-personal-add' }, 'Ajouter un appareil'),
       h(
         'div',
         { class: 'profile-devices' },

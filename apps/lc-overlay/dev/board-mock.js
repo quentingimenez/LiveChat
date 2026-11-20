@@ -242,6 +242,15 @@
     { id: 'd-max-2', label: 'Portable de Max', memberId: 'm-max', memberName: 'Max', role: 'member', sessionMode: 'invite_read_only', connected: true, lastSeenAt: new Date(now - 2 * 60000).toISOString(), overlayVersion: '3.7.0', platform: 'macos', guildSettings: { volume: 0.6, mediaMuted: false, paused: true }, isSelf: false },
   ];
   let nextDeviceCode = 1;
+  // Appareils personnels (`GET /overlay/devices`) : ce que « Mon profil » voit
+  // pour le membre courant. Ils sont distincts de `devices` (vue admin) pour
+  // pouvoir révoquer sans fausser la console d'administration.
+  const personalDevices = [
+    { id: 'd-111', kind: 'overlay', label: 'Salon principal', connected: true, lastSeenAt: new Date().toISOString(), createdAt: new Date(now - 120 * 86400000).toISOString(), sessionMode: 'normal', overlayVersion: '3.7.0', platform: 'windows', isSelf: true },
+    { id: 'd-perso-2', kind: 'overlay', label: 'Portable', connected: false, lastSeenAt: new Date(now - 4 * 86400000).toISOString(), createdAt: new Date(now - 45 * 86400000).toISOString(), sessionMode: 'normal', overlayVersion: '3.6.4', platform: 'macos', isSelf: false },
+    { id: 'i-ext', kind: 'extension', label: 'Extension — Brave', connected: false, lastSeenAt: new Date(now - 2 * 3600000).toISOString(), createdAt: new Date(now - 6 * 86400000).toISOString(), isSelf: false },
+    { id: 'i-ios', kind: 'ios', label: 'Raccourci iOS - Quentin', connected: false, lastSeenAt: new Date(now - 20 * 60000).toISOString(), createdAt: new Date(now - 3 * 86400000).toISOString(), isSelf: false },
+  ];
   // Guild profile edited by « Mon profil »: the mock keeps it between dialogs.
   // It starts linked to the Discord account, as after a personal /pair-code.
   const discordProfile = { displayName: 'Quentin', avatar: null };
@@ -767,6 +776,23 @@
     }
     if (path === '/overlay/admin/members') {
       return ok({ count: members.length, items: members });
+    }
+    if (path === '/overlay/devices' && method === 'GET') {
+      return ok(JSON.parse(JSON.stringify({ count: personalDevices.length, items: personalDevices })));
+    }
+    const personalDevicePath = /^\/overlay\/devices\/(overlay|ingest)\/([^/?]+)$/.exec(path);
+    if (personalDevicePath && method === 'DELETE') {
+      const kind = personalDevicePath[1];
+      const id = decodeURIComponent(personalDevicePath[2]);
+      const entry = personalDevices.find((candidate) => candidate.id === id && (kind === 'overlay' ? candidate.kind === 'overlay' : candidate.kind !== 'overlay'));
+      if (!entry) {
+        return { ok: false, status: 404, body: { error: 'device_not_found' } };
+      }
+      if (entry.isSelf) {
+        return { ok: false, status: 409, body: { error: 'cannot_revoke_self' } };
+      }
+      personalDevices.splice(personalDevices.indexOf(entry), 1);
+      return ok({ found: true, revoked: true });
     }
     if (path === '/overlay/admin/devices' && method === 'GET') {
       return ok(JSON.parse(JSON.stringify({ count: devices.length, items: devices })));

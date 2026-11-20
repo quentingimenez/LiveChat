@@ -35,6 +35,12 @@ pub fn source_title(
     ytdlp_title: Option<&str>,
 ) -> Option<String> {
     match source.source_kind {
+        // Une carte de commentaire porte le texte du commentaire dans le titre
+        // du téléchargement : il prime sur la description de la vidéo.
+        SourceKind::TikTok if crate::source::tiktok_comment_id(&source.canonical_url).is_some() => {
+            normalized(ytdlp_title)
+                .or_else(|| normalized(resolved.and_then(|resolved| resolved.title.as_deref())))
+        }
         // Le résolveur de la plateforme a déjà le titre (oEmbed YouTube,
         // page TikTok) ; sinon le téléchargement yt-dlp l'a peut-être imprimé.
         SourceKind::YouTube | SourceKind::TikTok => {
@@ -259,6 +265,35 @@ mod tests {
             title: title.map(str::to_owned),
             ..ResolvedMedia::from_source(&source)
         }
+    }
+
+    #[test]
+    fn tiktok_comment_title_prefers_the_comment_text() {
+        let comment = MediaSource::from_raw(
+            "https://www.tiktok.com/@bingo83865/video/7707202086697487646?share_comment_id=7707256588990661390",
+        )
+        .unwrap();
+        let video = resolved(SourceKind::TikTok, Some("Description de la vidéo"));
+        assert_eq!(
+            source_title(
+                &comment,
+                Some(&video),
+                Some("When i accidentally step on my dogs tail at 3am")
+            )
+            .as_deref(),
+            Some("When i accidentally step on my dogs tail at 3am")
+        );
+        // Carte indisponible : repli sur la description de la vidéo.
+        assert_eq!(
+            source_title(&comment, Some(&video), None).as_deref(),
+            Some("Description de la vidéo")
+        );
+        // Une vidéo TikTok normale garde la priorité au résolveur.
+        let plain = MediaSource::from_raw("https://www.tiktok.com/@_/video/1").unwrap();
+        assert_eq!(
+            source_title(&plain, Some(&video), Some("Titre yt-dlp")).as_deref(),
+            Some("Description de la vidéo")
+        );
     }
 
     #[test]

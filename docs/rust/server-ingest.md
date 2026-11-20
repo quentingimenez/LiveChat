@@ -148,6 +148,14 @@ YouTube est extrait via `lc_discord::text::youtube_start_offset_sec` puis encod�
 dans le texte du job par `lc_discord::rich_payload::build_media_text_payload`.
 `saveToBoard` ne crée **pas** de `PlaybackJob` (retour anticipé du legacy).
 
+Un lien de partage de commentaire TikTok (URL vidéo avec `share_comment_id`, y
+compris après redirection d'un lien court) produit une **image** : la carte du
+commentaire rendue par `lc_media::tiktok_comment` (avatar, texte, images, likes,
+réponses). Le titre du média reprend le texte du commentaire, ce qui module sa
+durée d'affichage (§7). L'API tierce reste un point de défaillance : si le
+commentaire n'est pas retrouvé ou si l'API limite/échoue, le pipeline retombe
+sur la vidéo TikTok d'origine, sans échec d'ingestion.
+
 ## 4. Authentification
 
 - `Authorization: Bearer <token>` uniquement ; schéma insensible à la casse.
@@ -396,10 +404,10 @@ board (aucun `board.changed` dans ce second cas).
 
 1. durée candidate = durée explicite → durée de l'asset (médias non-image) →
    `DEFAULT_DURATION` du serveur si média → `default_media_time` de la guilde →
-   défaut serveur ; pour une carte tweet image sans durée explicite, la durée
-   est calculée à partir de la quantité de texte du tweet (5 s + 1 s par
-   tranche de 12 caractères, plafond 30 s ; un titre tronqué prend le plafond),
-   sans descendre sous le défaut de guilde ;
+   défaut serveur ; pour une carte texte image (tweet ou commentaire TikTok
+   partagé) sans durée explicite, la durée est calculée à partir de la quantité
+   de texte du titre (5 s + 1 s par tranche de 12 caractères, plafond 30 s ; un
+   titre tronqué prend le plafond), sans descendre sous le défaut de guilde ;
 2. clamp au `max_media_time` de la guilde s'il est défini ;
 3. si média non-image et offset YouTube intégré au texte : durée réduite de
    l'offset, `resume_offset_sec` = offset ;
@@ -446,6 +454,7 @@ et in-process, base SQLite temporaire `tempfile::tempdir()`, aucun réseau réel
 | `media::quotas` | 4 | éviction LRU, assets actifs protégés, budget board |
 | `media::board` | 3 | ajout+épinglage, idempotence, budget dépassé |
 | `media::jobs` | 5 | durées par défaut/guilde/explicite, image, offset riche |
+| `media::display_duration` | 9 | cartes tweet et commentaire TikTok, plafonds, défaut de guilde |
 | `media::service` | 4 | cache hit sans réseau, échec pipeline → FAILED, source absente, nettoyage fichier après échec `forceRefresh` |
 | `media::html` | 4 | sanitizer tweet allowlist : tags/attrs autorisés, blocs actifs supprimés, `href`/`src` http(s), texte conservé |
 | `media::confinement` | 2 | racine créée/canonicalisée idempotente, chemins vides/fichiers refusés |

@@ -187,6 +187,8 @@ pub struct ResolveConfig {
     pub youtube_oembed_endpoint: String,
     /// Endpoint oEmbed TikTok.
     pub tiktok_oembed_endpoint: String,
+    /// Base de l'API de commentaires TikTok (tikwm).
+    pub tiktok_comment_endpoint: String,
     /// Endpoint oEmbed Twitter/X.
     pub twitter_oembed_endpoint: String,
     /// Base du résolveur de secours X (vxtwitter).
@@ -305,6 +307,11 @@ impl MediaConfig {
                 "TIKTOK_OEMBED_ENDPOINT",
                 "https://www.tiktok.com/oembed",
             ),
+            tiktok_comment_endpoint: string_var(
+                &vars,
+                "TIKTOK_COMMENT_ENDPOINT",
+                "https://www.tikwm.com/api/comment",
+            ),
             twitter_oembed_endpoint: string_var(
                 &vars,
                 "TWITTER_OEMBED_ENDPOINT",
@@ -365,6 +372,7 @@ pub const ENV_KEYS: &[&str] = &[
     "TIKTOK_COOKIE",
     "YOUTUBE_OEMBED_ENDPOINT",
     "TIKTOK_OEMBED_ENDPOINT",
+    "TIKTOK_COMMENT_ENDPOINT",
     "TWITTER_OEMBED_ENDPOINT",
     "TWITTER_VIDEO_RESOLVER_BASE_URL",
     "TWITTER_CARD_DURATION_SEC",
@@ -534,6 +542,10 @@ mod tests {
             "https://publish.twitter.com/oembed"
         );
         assert_eq!(
+            config.resolve.tiktok_comment_endpoint,
+            "https://www.tikwm.com/api/comment"
+        );
+        assert_eq!(
             config.resolve.twitter_video_resolver_base_url,
             "https://vxtwitter.com"
         );
@@ -569,6 +581,7 @@ mod tests {
             ("YTDLP_BINARY", "C:/tools/yt-dlp.exe"),
             ("YTDLP_CONCURRENT_FRAGMENTS", "3"),
             ("TIKTOK_COOKIE", "cookie: sessionid=abc; ttwid=xyz"),
+            ("TIKTOK_COMMENT_ENDPOINT", "https://comments.example/api"),
             ("I18N", "en-US"),
         ]);
         assert_eq!(config.storage.directory, PathBuf::from("D:/media"));
@@ -594,6 +607,10 @@ mod tests {
         assert_eq!(
             config.tools.tiktok_cookie.as_deref(),
             Some("sessionid=abc; ttwid=xyz")
+        );
+        assert_eq!(
+            config.resolve.tiktok_comment_endpoint,
+            "https://comments.example/api"
         );
         assert_eq!(config.resolve.language, "en");
         assert_eq!(config.resolve.oembed_timeout, Duration::from_secs(12));

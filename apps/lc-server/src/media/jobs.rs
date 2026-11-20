@@ -22,7 +22,7 @@ use lc_domain::enums::{JobStatus, MediaKind};
 use lc_domain::ids::{GuildId, PlaybackJobId};
 use time::UtcDateTime;
 
-use crate::media::display_duration::tweet_card_duration_sec;
+use crate::media::display_duration::card_duration_sec;
 use crate::media::errors::MediaServiceResult;
 
 /// Spécification d'un job de lecture issu d'une requête d'ingestion.
@@ -125,7 +125,7 @@ fn resolve_duration(
         Some(asset) if !is_image => asset.duration_sec.unwrap_or(default_duration),
         Some(asset) => spec
             .duration_sec
-            .or_else(|| tweet_card_duration_sec(asset, guild_default))
+            .or_else(|| card_duration_sec(asset, guild_default))
             .unwrap_or(guild_default),
         None => spec.duration_sec.unwrap_or(guild_default),
     };

@@ -84,6 +84,7 @@ propre à chaque ingestion.
 | `resolve.twitter_video_resolver_base_url` | `TWITTER_VIDEO_RESOLVER_BASE_URL` | `https://vxtwitter.com` |
 | `resolve.twitter_card_duration` | `TWITTER_CARD_DURATION_SEC` | 15 s |
 | `resolve.youtube_oembed_endpoint` / `tiktok_oembed_endpoint` | — | endpoints publics |
+| `resolve.tiktok_comment_endpoint` | `TIKTOK_COMMENT_ENDPOINT` | `https://www.tikwm.com/api/comment` |
 | `resolve.language` | `I18N` (préfixe `fr`) | `fr` |
 
 Les valeurs invalides retombent sur le défaut avec un `tracing::warn` ; les minimas sont
@@ -135,7 +136,9 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
 - `MediaSource { original, canonical_url, source_hash, source_kind, start_offset_sec }`.
 - `canonicalize_source_url(raw)` : trim, supprime le fragment ; YouTube normalisé en
   `https://www.youtube.com/watch?v=<id>` (y compris `youtu.be`, `shorts`, `embed`, `live`) ;
-  TikTok `https://www.tiktok.com/@_/{video|photo}/<id>` ; `file:` et `gtts:` conservés.
+  TikTok `https://www.tiktok.com/@_/{video|photo}/<id>` ; un partage de
+  commentaire conserve `?share_comment_id=<id>` dans l'URL canonique (donc dans
+  `source_hash`, une carte par commentaire) ; `file:` et `gtts:` conservés.
 - `source_hash(url)` : SHA-256 hex minuscule (clé content-addressed).
 - `parse_youtube_start_offset(url)` : `t`/`start` en query ou fragment, formats
   `123`, `123s`, `mm:ss`, `hh:mm:ss`, `1h2m3s`.
@@ -181,8 +184,11 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
   avc1/mp4 borné à 1080p, `--max-filesize`, fusion mp4, cookies TikTok générés au format
   Netscape ; sur YouTube, un échec auth/bot rejoue avec `youtube:player_client=android` et
   un échec de format rejoue avec un sélecteur relâché.
-- `download_tiktok` : vidéo d'abord, puis carrousel photo (assemblage ffmpeg en 9:16),
-  remontée prioritaire des erreurs `FILE_TOO_LARGE` / `PRIVATE_OR_AUTH_REQUIRED`.
+- `download_tiktok` : si l'URL canonique porte `share_comment_id`, tente
+  d'abord la carte de commentaire (`tiktok_comment`) puis, en cas d'échec
+  (API indisponible, commentaire introuvable), retombe sur la vidéo ; sinon
+  vidéo d'abord, puis carrousel photo (assemblage ffmpeg en 9:16), remontée
+  prioritaire des erreurs `FILE_TOO_LARGE` / `PRIVATE_OR_AUTH_REQUIRED`.
 - `yt-dlp` imprime aussi le titre de la source (`--print after_move:%(title)s` avant
   `after_move:filepath`) : `parse_ytdlp_output` renvoie `YtdlpOutput { path, title }`
   (`NA`/vide → `None`), le titre atterrit dans `DownloadResult.title`.
@@ -223,6 +229,32 @@ des slots, H.264 `yuv420p` + `faststart`, audio du tweet conservé, durée fixé
 zone primaire (la vidéo parente). Le masque reste une image unique : `alphamerge` la
 répète puis s'arrête avec la vidéo — un masque bouclé produisait un flux infini qui
 ne terminait jamais.
+
+### Cartes commentaire TikTok (`tiktok_comment`)
+
+Un partage mobile de commentaire TikTok (`vm.tiktok.com/…` redirigé vers
+`/@auteur/video/<id>?share_comment_id=<commentaire>`) est rendu comme une carte
+PNG 1080 px, au même format sombre que la carte tweet : accent cyan/rose et
+libellé « COMMENTAIRE TIKTOK », avatar, nom, `@handle`, date relative française,
+texte du commentaire (46 px, hauteur bornée), grille d'images 1 à 4, cœur et
+compteur de « j'aime », bulle et nombre de réponses, pied « Commentaire partagé
+depuis TikTok ». La hauteur varie de 420 à 2800 px selon le texte et les images.
+
+`tiktok_comment::download_tiktok_comment(source, comment_id, config, temp_dir)`
+interroge `resolve.tiktok_comment_endpoint` (tikwm, source tierce non
+officielle) : pages de 50 commentaires triés par popularité, jusqu'à 4 pages,
+avec un intervalle de 1,2 s et un nouvel essai quand l'API répond « Free Api
+Limit ». Le commentaire partagé est retrouvé par son identifiant ; les avatars
+et images (URL CDN signées) sont téléchargés puis convertis en PNG par ffmpeg
+(`download_card_image_png`, plafond 1800 px), comme pour les photos de tweet.
+Une API indisponible ou un commentaire absent des pages consultées fait échouer
+la carte sans casser l'ingestion : `download_tiktok` reprend la vidéo normale.
+Le titre du média contient le texte du commentaire, ce qui permet au serveur de
+calculer sa durée d'affichage (`apps/lc-server/src/media/display_duration.rs`).
+
+Les primitives de rendu communes (moteur parley, corps de texte, rectangles
+arrondis, avatar, image en couverture) sont dans `card_canvas`, partagé avec
+`tweet_card`.
 
 ### Sonde (`probe`)
 
@@ -417,6 +449,11 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
   en lignes façon X (1 photo 16:9, 2 côte à côte, 3-4 en grille), images citées en PNG,
   recadrage sur le focus suggéré, et absence de casse quand l'auteur, le texte ou les
   médias de la citation manquent.
+- Cartes commentaire TikTok : 8 tests unitaires (compteurs français, dates
+  relatives, URL de page, carte texte, 0 à 4 images, texte long, RTL/emoji,
+  commentaire vide) et 2 tests `#[ignore]` — galerie de rendus écrite dans
+  `target/tiktok-comment-gallery/`, et parcours réseau réel lien court →
+  commentaire → carte.
 - `tests/offline.rs` : 7 tests sur fixtures (`tiktok_video.html`, `tiktok_photo.html`,
   `twitter_syndication.json`, `yt_dlp_dump.json`, `youtube_oembed.json`,
   `tiktok_oembed.json`).

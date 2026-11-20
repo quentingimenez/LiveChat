@@ -223,14 +223,48 @@ pub fn normalize_youtube_url(parsed: &Url) -> String {
 }
 
 /// Ramène une URL TikTok `/video/<id>` ou `/photo/<id>` à `/@_/<kind>/<id>`.
+///
+/// Un partage de commentaire (application mobile) ajoute `share_comment_id` à
+/// l'URL de la vidéo. L'identifiant est conservé dans l'URL canonique : il
+/// distingue deux partages de commentaires de la même vidéo dans le cache et
+/// permet au téléchargement de rendre la carte du commentaire.
 pub fn normalize_tiktok_url(parsed: &Url) -> String {
     let mut url = parsed.clone();
+    let comment_id = tiktok_comment_query(&url);
     if let Some(path) = tiktok_media_path(&url) {
         url.set_path(&format!("/@_/{path}"));
     }
     url.set_query(None);
+    if let Some(comment_id) = comment_id {
+        url.query_pairs_mut()
+            .append_pair("share_comment_id", &comment_id);
+    }
     url.set_fragment(None);
     url.to_string()
+}
+
+/// Identifiant du commentaire partagé d'une URL TikTok, s'il est valide.
+///
+/// L'application mobile utilise `share_comment_id` (parfois `comment_id` sur
+/// les anciennes versions). Seuls les identifiants numériques sont acceptés :
+/// ils sont recopiés tel quel dans l'URL de l'API de commentaires.
+pub fn tiktok_comment_id(raw: &str) -> Option<String> {
+    let parsed = Url::parse(raw.trim()).ok()?;
+    if !tiktok_host(&parsed) {
+        return None;
+    }
+    tiktok_comment_query(&parsed)
+}
+
+fn tiktok_comment_query(url: &Url) -> Option<String> {
+    url.query_pairs()
+        .find(|(key, _)| key == "share_comment_id" || key == "comment_id")
+        .map(|(_, value)| value.into_owned())
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 32
+                && value.chars().all(|character| character.is_ascii_digit())
+        })
 }
 
 /// URL canonique d'un tweet (`https://x.com/<handle>/status/<id>`).
@@ -252,6 +286,18 @@ pub fn is_youtube_url(raw: &str) -> bool {
 /// `true` si l'URL appartient au domaine TikTok.
 pub fn is_tiktok_url(raw: &str) -> bool {
     Url::parse(raw.trim()).is_ok_and(|parsed| tiktok_host(&parsed))
+}
+
+/// Pseudo de l'auteur d'une URL TikTok (`/@handle/video/<id>`).
+///
+/// Les URL canoniques utilisent `@_` : il n'y a alors pas d'auteur à afficher.
+pub fn tiktok_author(raw: &str) -> Option<String> {
+    let parsed = Url::parse(raw.trim()).ok()?;
+    if !tiktok_host(&parsed) {
+        return None;
+    }
+    let handle = parsed.path_segments()?.next()?.strip_prefix('@')?;
+    (!handle.is_empty() && handle != "_").then(|| handle.to_string())
 }
 
 /// `true` si l'URL est une URL courte TikTok (`vm.tiktok.com`, `vt.tiktok.com`, …).
@@ -720,6 +766,55 @@ mod tests {
         for (input, expected) in cases {
             assert_eq!(canonicalize_source_url(input), expected, "input={input}");
         }
+    }
+
+    #[test]
+    fn keeps_the_shared_comment_id_in_the_tiktok_canonical_url() {
+        let shared = "https://www.tiktok.com/@bingo83865/video/7707202086697487646?is_from_webapp=1&sender_device=pc&web_id=1&share_comment_id=7707256588990661390&share_item_id=7707202086697487646";
+        assert_eq!(
+            canonicalize_source_url(shared),
+            "https://www.tiktok.com/@bingo83865/video/7707202086697487646?share_comment_id=7707256588990661390"
+        );
+        assert_eq!(
+            tiktok_comment_id(shared).as_deref(),
+            Some("7707256588990661390")
+        );
+        // Canonicaliser une URL déjà canonique est idempotent.
+        let canonical = canonicalize_source_url(shared);
+        assert_eq!(canonicalize_source_url(&canonical), canonical);
+    }
+
+    #[test]
+    fn rejects_a_malformed_shared_comment_id() {
+        assert_eq!(tiktok_comment_id("https://www.tiktok.com/@a/video/1"), None);
+        assert_eq!(
+            tiktok_comment_id("https://www.tiktok.com/@a/video/1?share_comment_id=abc"),
+            None
+        );
+        assert_eq!(
+            tiktok_comment_id("https://example.com/@a/video/1?share_comment_id=123"),
+            None
+        );
+        assert_eq!(
+            canonicalize_source_url(
+                "https://www.tiktok.com/@a/video/1?share_comment_id=abc&keep=1"
+            ),
+            "https://www.tiktok.com/@a/video/1"
+        );
+    }
+
+    #[test]
+    fn gives_two_comment_shares_of_one_video_distinct_hashes() {
+        let first = MediaSource::from_raw(
+            "https://www.tiktok.com/@a/video/1?share_comment_id=111&share_item_id=1",
+        )
+        .expect("source");
+        let second = MediaSource::from_raw(
+            "https://www.tiktok.com/@a/video/1?share_comment_id=222&share_item_id=1",
+        )
+        .expect("source");
+        assert_eq!(first.source_kind, SourceKind::TikTok);
+        assert_ne!(first.source_hash, second.source_hash);
     }
 
     #[test]

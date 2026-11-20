@@ -83,6 +83,7 @@ pub fn media_config(config: &Config) -> MediaConfig {
         resolve: ResolveConfig {
             youtube_oembed_endpoint: defaults.resolve.youtube_oembed_endpoint,
             tiktok_oembed_endpoint: defaults.resolve.tiktok_oembed_endpoint,
+            tiktok_comment_endpoint: defaults.resolve.tiktok_comment_endpoint,
             twitter_oembed_endpoint: config.twitter_oembed_endpoint.to_string(),
             twitter_video_resolver_base_url: config.twitter_video_resolver_base_url.to_string(),
             twitter_card_duration: Duration::from_secs(config.twitter_card_duration_sec),

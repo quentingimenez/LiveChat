@@ -14,7 +14,7 @@
 //! - [`hook`] : point d'extension `on_ingested`, câblé en Phase 4b par le hub
 //!   de lecture (`lc-playback`) sans dépendance inverse vers `crate::ws` ;
 //! - [`assets`] : persistance et cycle de vie des `MediaAsset` ;
-//! - [`display_duration`] : durée d'affichage des cartes tweet selon leur texte ;
+//! - [`display_duration`] : durée d'affichage des cartes texte selon leur texte ;
 //! - [`confinement`] : canonicalisation fail-closed de la racine de stockage ;
 //! - [`purge`] : worker de purge des lignes périmées et fichiers orphelins ;
 //! - [`quotas`] : éviction du cache et budget du board média (`lc_media::cache`) ;

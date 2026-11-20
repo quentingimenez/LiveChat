@@ -438,6 +438,11 @@ const WATCH_TARGET_SELECTORS = [
   'ytd-menu-renderer #top-level-buttons-computed',
 ] as const;
 const SHORTS_TARGET_SELECTORS = [
+  // Rendu 2026 : la barre d'actions est un « view model » (web component).
+  '.ytReelPlayerOverlayViewModelActionsContainer',
+  'REEL-ACTION-BAR-VIEW-MODEL',
+  'ytd-reel-player-overlay-renderer-cow .ytReelPlayerOverlayViewModelActionsContainer',
+  // Anciens rendus, conservés en secours.
   'ytd-reel-player-overlay-renderer #actions',
   'ytd-reel-video-renderer #actions',
   'ytd-reel-video-renderer #actions-inner',
@@ -1232,7 +1237,7 @@ const clamp = (value: number, min: number, max: number): number => {
 const getShortsActionAnchorRect = (): DOMRect | null => {
   const candidates = Array.from(
     document.querySelectorAll<HTMLElement>(
-      'ytd-reel-player-overlay-renderer #actions button, ytd-reel-video-renderer #actions button, #shorts-container #actions button',
+      'ytd-reel-player-overlay-renderer #actions button, ytd-reel-video-renderer #actions button, #shorts-container #actions button, .ytReelPlayerOverlayViewModelActionsContainer button, REEL-ACTION-BAR-VIEW-MODEL button',
     ),
   );
 

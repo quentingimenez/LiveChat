@@ -506,8 +506,13 @@ const inpageStyles = `
   pointer-events: auto;
 }
 .lce-tiktok-slot.is-vertical {
-  margin-top: 10px;
-  margin-bottom: 14px;
+  margin-top: 0;
+  margin-bottom: 0;
+}
+.lce-tiktok-slot.is-vertical .lce-button-tiktok {
+  width: 40px;
+  height: 40px;
+  font-size: 10px;
 }
 .lce-tiktok-slot.is-horizontal {
   margin-top: 0;
@@ -1519,7 +1524,10 @@ const resolveActionContainer = (): HTMLElement | null => {
     while (node && node !== document.body) {
       const rect = node.getBoundingClientRect();
 
-      if (rect.width >= 40 && rect.height >= 80 && rect.width <= 480 && rect.height <= window.innerHeight) {
+      // La colonne d'actions TikTok ne fait que ~29 px de large sur les rendus
+      // récents : un seuil à 40 px écartait justement la bonne colonne et
+      // retombait sur la rangée qui l'englobe (le bouton finissait à côté).
+      if (rect.width >= 24 && rect.height >= 80 && rect.width <= 480 && rect.height <= window.innerHeight) {
         const anchorCount = getAnchorsInRoot(node).filter((candidate) => isElementVisible(candidate)).length;
 
         if (anchorCount >= 2) {
@@ -1627,16 +1635,10 @@ const upsertInlineButton = (container: HTMLElement): void => {
       horizontalHost.prepend(slot);
     }
   } else {
-    const containerChildrenWithoutSlot = Array.from(container.children).filter((child) => child !== slot);
-    const firstContainerChild = containerChildrenWithoutSlot[0] || null;
-    const insertionPoint = firstContainerChild ? firstContainerChild.nextElementSibling : container.firstElementChild;
-
-    if (slot.parentElement !== container) {
-      container.insertBefore(slot, insertionPoint);
-    } else if (firstContainerChild && slot.previousElementSibling !== firstContainerChild) {
-      container.insertBefore(slot, insertionPoint);
-    } else if (!firstContainerChild && container.firstElementChild !== slot) {
-      container.prepend(slot);
+    // Colonne verticale : le bouton rejoint la pile d'actions, à la fin, pour
+    // rester aligné avec les icônes natives (j'aime, commentaires, partage).
+    if (container.lastElementChild !== slot) {
+      container.appendChild(slot);
     }
   }
 

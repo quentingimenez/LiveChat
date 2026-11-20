@@ -10,7 +10,10 @@ export function createOverlayLegacyMediaFrameUtils() {
         const leftWidth = Math.max(0, Math.round(toSafeNumber(params.leftWidth)));
         const rightWidth = Math.max(0, Math.round(toSafeNumber(params.rightWidth)));
         const minGapPx = Math.max(0, Math.round(toSafeNumber(params.minGapPx ?? 14)));
-        const overflowPx = mediaWidth > 0 ? leftWidth + rightWidth + minGapPx - mediaWidth : 0;
+        // A media that lays out at zero width (an audio element is hidden by
+        // the user agent) leaves one single point for both headers: the
+        // shifts alone can keep the chip and the countdown apart.
+        const overflowPx = leftWidth + rightWidth + minGapPx - mediaWidth;
         if (overflowPx <= 0) {
             return {
                 leftShiftPx: 0,

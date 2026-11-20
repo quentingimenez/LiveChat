@@ -69,6 +69,8 @@ Conventions appliquées dans tout le module :
 | `http/overlay/media_upload.rs` | upload brut → dossier temporaire → tâche asynchrone | `upload_item`, `UploadTempDir` |
 | `http/overlay/media_ingestion.rs` | tâche `tokio::spawn` : pipeline, item, registre, WS | `spawn_ingestion`, `run_ingestion` |
 | `http/overlay/say.rs` | `POST /overlay/say` : synthèse vocale depuis le board (équivalent de `/dire` et `/cdire`) | `say`, `parse_request` ; tests `say_tests.rs` (Piper remplacé par `fixtures/fake-piper.*`) |
+| `http/overlay/ingest_code.rs` | codes d'appairage de l'extension et jeton du raccourci iOS | `create_ingest_code`, `create_ingest_client`, `ingest_client_kind` |
+| `http/overlay/personal_devices.rs` | appareils personnels de « Mon profil » : liste et révocation | `list_personal_devices`, `revoke_personal_overlay`, `revoke_personal_ingest` ; tests `personal_devices_tests.rs` |
 | `http/overlay/tests.rs` | 15 tests in-process + 1 test unitaire | liste §11 |
 
 ## 3. Table des routes
@@ -77,6 +79,9 @@ Conventions appliquées dans tout le module :
 |---------|--------|------|---------|--------|
 | `POST` | `/overlay/pair/consume` | code d'appairage (corps) | `pair.rs:84` | `200` JSON (§5) |
 | `POST` | `/overlay/ingest-code` | `Authorization: Bearer` (membre, droit `TriggerPlayback`) | `ingest_code.rs` | `200 {code,expiresAt,apiBaseUrl}` |
+| `GET` | `/overlay/devices` | `Authorization: Bearer` (membre) | `personal_devices.rs:list_personal_devices` | `200 {count,items}` : overlays, extensions et raccourcis iOS actifs du membre, `kind` valant `overlay`, `extension` ou `ios` |
+| `DELETE` | `/overlay/devices/overlay/{clientId}` | `Authorization: Bearer` (membre propriétaire) | `personal_devices.rs:revoke_personal_overlay` | `200 {found:true,revoked}` ; ferme la socket `4402` ; `404 device_not_found`, `409 cannot_revoke_self` |
+| `DELETE` | `/overlay/devices/ingest/{clientId}` | `Authorization: Bearer` (membre propriétaire) | `personal_devices.rs:revoke_personal_ingest` | `200 {found:true,revoked}` ; `404 device_not_found` |
 | `POST` | `/overlay/say` | `Authorization: Bearer` (droit `TriggerPlayback`, refusé en lecture seule) | `say.rs` | corps `{text, caption?, anonymous?}` : synthèse Piper de `text` (1 000 caractères au plus, comme `/dire`), `caption` affiché, `anonymous` = `/cdire` (auteur masqué) ; job de priorité 0 créé comme par la commande Discord. `200 {queued,jobId,durationSec}` ; `400 invalid_payload` / `text_too_long` (`maxChars`) ; `403 read_only_session` / `forbidden` ; `502 speech_failed` |
 | `GET` | `/overlay/media/{assetId}` | URL signée HMAC (`clientId`, `exp`, `sig`) | `media.rs:86` | `200`/`206`, binaire |
 | `GET` | `/overlay/media-board/items` | `Authorization: Bearer` | `media_board.rs:list_items` | `200 {total,limit,offset,items}` |

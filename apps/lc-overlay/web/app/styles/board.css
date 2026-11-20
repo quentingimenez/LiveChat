@@ -313,9 +313,12 @@
   transition: opacity 100ms ease;
 }
 
+/* An even icon lands on whole pixels: a 15px star in this 28px circle sat on a
+   half-pixel column and row, so the rasteriser pushed it half a pixel right and
+   down and the star read off-centre. */
 .fav svg {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
 }
 
 .card:hover .fav,

@@ -1,20 +1,21 @@
 # Raccourcis iOS LiveChat
 
-Quatre raccourcis **signés**, prêts à importer, sont fournis ici :
+Trois raccourcis **signés**, prêts à importer, sont fournis ici :
 
-- [LiveChat.shortcut](https://raw.githubusercontent.com/quentingimenez/LiveChat/main/ios/LiveChat.shortcut) : **tout-en-un**, avec un menu `Photo` / `Video` / `Lien`;
-- [LiveChat-Photo.shortcut](https://raw.githubusercontent.com/quentingimenez/LiveChat/main/ios/LiveChat-Photo.shortcut) : partage une image depuis Photos ou Fichiers;
-- [LiveChat-Video.shortcut](https://raw.githubusercontent.com/quentingimenez/LiveChat/main/ios/LiveChat-Video.shortcut) : partage une vidéo depuis Photos ou Fichiers;
+- [LiveChat-Photo.shortcut](https://raw.githubusercontent.com/quentingimenez/LiveChat/main/ios/LiveChat-Photo.shortcut) : partage une image depuis Photos.
+- [LiveChat-Video.shortcut](https://raw.githubusercontent.com/quentingimenez/LiveChat/main/ios/LiveChat-Video.shortcut) : partage une vidéo depuis Photos.
 - [LiveChat-Lien.shortcut](https://raw.githubusercontent.com/quentingimenez/LiveChat/main/ios/LiveChat-Lien.shortcut) : partage un lien YouTube, TikTok, X, Instagram, etc.
 
-`LiveChat.shortcut` est le plus simple : il apparaît pour les images, les vidéos
-et les URL, puis demande le type à envoyer. Les trois raccourcis spécialisés
-restent disponibles pour un partage direct, sans menu.
+Chaque raccourci ne reçoit qu'un seul type de média. Dans la feuille de partage,
+iOS n'affiche donc que celui qui correspond à ce que tu partages : une image
+montre **LiveChat Photo**, une vidéo montre **LiveChat Video**, et un lien montre
+**LiveChat Lien**. Il n'y a pas de menu à choisir : le type du média fait la
+sélection.
 
-Les branches photo et vidéo envoient le fichier partagé à `POST /ingest/file`.
-La branche lien envoie `{"url": "<lien partagé>"}` à `POST /ingest` : le serveur
-télécharge le média avec yt-dlp, comme pour l'extension navigateur. Tous
-utilisent le jeton d'ingestion comme `Authorization: Bearer ...`.
+Les deux premiers envoient le fichier partagé à `POST /ingest/file`. Le troisième
+envoie `{"url": "<lien partagé>"}` à `POST /ingest` : le serveur télécharge le
+média avec yt-dlp, comme pour l'extension navigateur. Tous utilisent le jeton
+d'ingestion comme `Authorization: Bearer ...`.
 
 ## Importer sur l'iPhone
 
@@ -40,17 +41,16 @@ Dans l'éditeur de chaque raccourci, remplace :
 
 Le raccourci apparaît ensuite dans le menu de partage iOS :
 
-- **LiveChat** : choisis `Photo`, `Video` ou `Lien` dans le menu;
-- **LiveChat Photo** pour une image;
-- **LiveChat Video** pour une vidéo;
+- **LiveChat Photo** pour une image ;
+- **LiveChat Video** pour une vidéo ;
 - **LiveChat Lien** pour une URL. Depuis YouTube ou TikTok, utilise
   **Partager → LiveChat Lien** (ou **Copier le lien**, puis partage le lien).
   Le média est téléchargé puis joué immédiatement sur le stream.
 
 Pour ajouter un fichier au board au lieu de le jouer, ajoute
-`&saveToBoard=true&title=Mon%20titre` à l'URL de `LiveChat`, `LiveChat Photo`
-ou `LiveChat Video`. Pour un lien, ajoute `saveToBoard` = `true` dans le corps
-JSON du raccourci, ou consulte la documentation détaillée.
+`&saveToBoard=true&title=Mon%20titre` à l'URL de `LiveChat Photo` ou
+`LiveChat Video`. Pour un lien, ajoute `saveToBoard` = `true` dans le corps JSON
+du raccourci (`LiveChat Lien`), ou consulte la documentation détaillée.
 
 ## Sécurité et signature
 
@@ -59,7 +59,7 @@ dans l'éditeur du raccourci. Ne partage pas un raccourci dans lequel tu as mis
 ton jeton ; utilise plutôt un jeton dédié, révocable depuis la console
 d'administration → **Clients d'ingestion**.
 
-Les quatre fichiers distribués ici sont signés par le service
+Les trois fichiers distribués ici sont signés par le service
 [HubSign](https://hubsign.routinehub.services/sign) de RoutineHub, qui utilise
 la signature officielle d'Apple. La signature est vérifiée par iOS à l'import.
 

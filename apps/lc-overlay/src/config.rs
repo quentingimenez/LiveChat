@@ -323,7 +323,8 @@ impl Default for OverlayConfig {
             guest_mode: false,
             show_text: true,
             media_muted: false,
-            hover_details: true,
+            // Clicking a card is the default: the hover preview is opt-in.
+            hover_details: false,
             server_url: None,
             client_token: None,
             client_id: None,
@@ -1056,14 +1057,14 @@ mod tests {
     }
 
     #[test]
-    fn default_config_matches_legacy() {
+    fn default_config_pins_the_overlay_defaults() {
         let config = OverlayConfig::default();
         assert_eq!(config.volume, 1.0);
         assert!(config.enabled);
         assert!(!config.auto_start);
         assert!(!config.guest_mode);
         assert!(config.show_text);
-        assert!(config.hover_details);
+        assert!(!config.hover_details);
         assert_eq!(config.display_id, None);
         assert_eq!(config.display_index, None);
         assert_eq!(config.display_key, None);
@@ -1091,14 +1092,14 @@ mod tests {
     }
 
     #[test]
-    fn an_old_settings_json_without_hover_details_loads_with_it_enabled() {
+    fn an_old_settings_json_without_hover_details_loads_with_it_disabled() {
         let (config, warnings) = OverlayConfig::from_json_value(&json!({
             "volume": 0.5,
             "showText": false,
             "shortcuts": { "stop": "Ctrl+Shift+S" }
         }));
         assert!(warnings.is_empty(), "warnings: {warnings:?}");
-        assert!(config.hover_details, "missing field defaults to true");
+        assert!(!config.hover_details, "missing field defaults to false");
         assert!(!config.show_text);
         assert!(
             !config.extra.contains_key("hoverDetails"),
@@ -1248,7 +1249,7 @@ mod tests {
         assert!(!config.auto_start);
         assert!(!config.guest_mode);
         assert!(config.show_text);
-        assert!(config.hover_details);
+        assert!(!config.hover_details);
         assert_eq!(config.display_id, None);
         assert_eq!(config.server_url, None);
         assert!(warnings.len() >= 5, "warnings: {warnings:?}");

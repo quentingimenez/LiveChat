@@ -40,6 +40,7 @@ import {
   parseSpeed,
   removedRanges,
   rotatedSize,
+  showsDisplaySize,
   sourceToOutputTime,
 } from '../../core/editor-helpers.js';
 import { DEFAULT_VOLUME_PERCENT, previewVolume } from '../../core/sound.js';
@@ -1038,7 +1039,11 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
             ),
           )
         : null,
-      preview ? sizePanel() : null,
+      // A sound without artwork has no picture to size; the card that stands in
+      // for it ignores the scale, so the setting would do nothing.
+      preview && showsDisplaySize({ isVideo, output: edit.output, hasArtwork: Boolean(artworkUrl) })
+        ? sizePanel()
+        : null,
       isVideo
         ? section(
             'Enregistrer en',

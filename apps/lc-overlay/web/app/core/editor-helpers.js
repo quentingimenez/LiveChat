@@ -433,6 +433,16 @@ export function displayScaleForStorage(percent) {
   return value === DEFAULT_DISPLAY_SCALE_PERCENT ? null : value;
 }
 
+// The display size only applies when the result shows a picture: the frames of
+// a video, or the artwork of a sound. An audio-only result, or a sound without
+// artwork, has nothing to scale.
+export function showsDisplaySize({ isVideo, output, hasArtwork }) {
+  if (isVideo) {
+    return output !== 'audio';
+  }
+  return Boolean(hasArtwork);
+}
+
 // Reads the numeric field: a whole percent from 10 to 1000.
 export function parseDisplayScale(raw) {
   const text = String(raw ?? '').trim();

@@ -683,6 +683,12 @@
   gap: 2px;
 }
 
+.shortcut-hint {
+  margin: -6px 0 14px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
 .shortcut-key {
   display: inline-flex;
   align-items: center;

@@ -26,6 +26,18 @@ test('acceleratorFromEvent builds a Tauri accelerator from a keydown event', () 
   assert.equal(acceleratorFromEvent(keyEvent({ ctrlKey: true, altKey: true, key: 'Escape', code: 'Escape' })), 'CommandOrControl+Alt+Escape');
 });
 
+test('acceleratorFromEvent treats right Alt / AltGr as a modifier', () => {
+  assert.equal(
+    acceleratorFromEvent(keyEvent({ key: 'AltGraph', code: 'AltRight', ctrlKey: true, altKey: true })),
+    null,
+  );
+  assert.equal(acceleratorFromEvent(keyEvent({ key: 'AltRight', code: 'AltRight', altKey: true })), null);
+  assert.equal(
+    acceleratorFromEvent(keyEvent({ key: 'æ', code: 'KeyA', ctrlKey: true, altKey: true })),
+    'CommandOrControl+Alt+A',
+  );
+});
+
 test('cancelsCapture only accepts Escape pressed alone', () => {
   assert.equal(cancelsCapture(keyEvent({ key: 'Escape', code: 'Escape' })), true);
   assert.equal(cancelsCapture(keyEvent({ shiftKey: true, key: 'Escape', code: 'Escape' })), false);

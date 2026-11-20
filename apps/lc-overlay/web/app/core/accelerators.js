@@ -2,6 +2,16 @@
 
 export const BARE_KEY_MESSAGE = 'Utilise Ctrl, Alt ou Maj avec une lettre, un chiffre, une touche F ou Échap.';
 
+// Windows only exposes "Ctrl+Alt" for AltGr in a global shortcut; right Alt is
+// reported as the AltGraph modifier. Shared by the board and the settings page
+// so both explain the same limitation.
+export const ALTGR_HINT =
+  'Alt droite (AltGr) est enregistrée comme Ctrl+Alt : Windows ne distingue pas Alt gauche et droite.';
+
+// Chromium reports the right Alt of AltGr layouts as "AltGraph" (the UI Events
+// modifier value); other platforms may expose it as "AltRight".
+const MODIFIER_KEYS = ['Control', 'Shift', 'Alt', 'Meta', 'AltGraph', 'AltRight'];
+
 // Escape pressed alone cancels a capture; with a modifier it is recorded.
 export function cancelsCapture(event) {
   return event.key === 'Escape' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
@@ -12,7 +22,7 @@ export function cancelsCapture(event) {
 // every application).
 export function acceleratorFromEvent(event) {
   const key = event.key;
-  if (['Control', 'Shift', 'Alt', 'Meta'].includes(key)) {
+  if (MODIFIER_KEYS.includes(key)) {
     return null;
   }
   const parts = [];

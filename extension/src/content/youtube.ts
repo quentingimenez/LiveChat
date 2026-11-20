@@ -438,10 +438,8 @@ const WATCH_TARGET_SELECTORS = [
   'ytd-menu-renderer #top-level-buttons-computed',
 ] as const;
 const SHORTS_TARGET_SELECTORS = [
-  // Rendu 2026 : la barre d'actions est un « view model » (web component).
-  '.ytReelPlayerOverlayViewModelActionsContainer',
+  // Rendu 2026 : la rail d'actions est un « view model » (web component).
   'REEL-ACTION-BAR-VIEW-MODEL',
-  'ytd-reel-player-overlay-renderer-cow .ytReelPlayerOverlayViewModelActionsContainer',
   // Anciens rendus, conservés en secours.
   'ytd-reel-player-overlay-renderer #actions',
   'ytd-reel-video-renderer #actions',

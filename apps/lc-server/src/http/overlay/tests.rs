@@ -820,16 +820,31 @@ async fn pair_consume_personal_pair_code_reuses_the_linked_member() {
         .set_role(first_member, GuildRole::Admin)
         .await
         .expect("rôle");
+    // The member picked their own pseudo: the same account pairing again
+    // proves it, so the Discord identity takes the profile back.
+    db.guild_members()
+        .update_profile(first_member, "Pseudo maison", None)
+        .await
+        .expect("profil");
 
     let second = pair("AGAIN2", "PC bureau").await;
     assert_eq!(second["memberId"], first["memberId"]);
     assert_eq!(second["role"], "admin");
+    assert_eq!(second["displayName"], "Discordeur");
     let members = db
         .guild_members()
         .list_by_guild(&guild())
         .await
         .expect("membres");
     assert_eq!(members.len(), 1, "same Discord account, same member");
+    let member = db
+        .guild_members()
+        .get(first_member)
+        .await
+        .expect("lecture membre")
+        .expect("membre");
+    assert_eq!(member.display_name, "Discordeur");
+    assert!(member.follows_discord());
     let devices = db
         .overlay_clients()
         .list_active_by_member(first_member)

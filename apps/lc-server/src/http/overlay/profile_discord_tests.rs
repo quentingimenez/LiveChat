@@ -19,6 +19,7 @@ async fn pair_code(
     user: &str,
     mode: PairingMode,
     grants_admin: bool,
+    author: Option<(&str, Option<&str>)>,
 ) {
     let entry = PairingCodeEntry {
         code: PairingCode::parse(code).unwrap(),
@@ -26,8 +27,8 @@ async fn pair_code(
         mode,
         grants_admin,
         created_by_discord_user_id: user.to_owned(),
-        author_name: Some("Pseudo Discord".to_owned()),
-        author_image: None,
+        author_name: author.map(|(name, _)| name.to_owned()),
+        author_image: author.and_then(|(_, image)| image.map(str::to_owned)),
         expires_at: Some(fixed_now() + Duration::minutes(10)),
         used_at: None,
         created_at: fixed_now(),
@@ -50,6 +51,7 @@ async fn a_member_links_their_discord_account_once() {
         "777",
         PairingMode::Normal,
         false,
+        Some(("Pseudo Discord", Some("https://cdn.example/discord.png"))),
     )
     .await;
 
@@ -66,9 +68,11 @@ async fn a_member_links_their_discord_account_once() {
     assert_eq!(body["promoted"], false);
     assert_eq!(body["member"]["discordLinked"], true);
     assert_eq!(body["member"]["role"], "member");
-    // The member keeps the profile they chose.
-    assert_eq!(body["member"]["displayName"], "Bob");
-    assert_eq!(body["member"]["profileSource"], "custom");
+    // Proving the account hands the profile back to Discord: the pseudo and
+    // avatar the code carries replace the typed ones.
+    assert_eq!(body["member"]["displayName"], "Pseudo Discord");
+    assert_eq!(body["member"]["avatar"], "https://cdn.example/discord.png");
+    assert_eq!(body["member"]["profileSource"], "discord");
     let linked = harness
         .db
         .guild_members()
@@ -76,7 +80,13 @@ async fn a_member_links_their_discord_account_once() {
         .await
         .unwrap()
         .expect("membre lié");
-    assert_eq!(linked.display_name, "Bob");
+    assert_eq!(linked.display_name, "Pseudo Discord");
+    assert_eq!(
+        linked.avatar.as_deref(),
+        Some("https://cdn.example/discord.png")
+    );
+    assert!(!linked.profile_custom);
+    assert_eq!(linked.discord_synced_at, Some(fixed_now()));
 
     // The code is used up.
     let (status, _) = harness
@@ -88,6 +98,51 @@ async fn a_member_links_their_discord_account_once() {
         )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_code_without_a_name_leaves_the_profile_to_the_next_connection() {
+    let harness = Harness::new().await;
+    let bob = token(
+        &harness
+            .join(&harness.server_invite(GuildRole::Member).await, "Bob")
+            .await,
+    );
+    pair_code(
+        &harness,
+        "NONM2345",
+        &harness.guild_id,
+        "778",
+        PairingMode::Normal,
+        false,
+        None,
+    )
+    .await;
+
+    let (status, body) = harness
+        .call(
+            Method::POST,
+            URI,
+            Some(&bob),
+            Some(json!({"code": "NONM2345"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["member"]["discordLinked"], true);
+    // The account is proven, but the code carries no pseudo: the profile follows
+    // Discord and is read at the next connection.
+    assert_eq!(body["member"]["displayName"], "Bob");
+    assert_eq!(body["member"]["profileSource"], "discord");
+    let linked = harness
+        .db
+        .guild_members()
+        .find_active_by_discord_user(&harness.guild_id, "778")
+        .await
+        .unwrap()
+        .expect("membre lié");
+    assert_eq!(linked.display_name, "Bob");
+    assert!(!linked.profile_custom);
+    assert_eq!(linked.discord_synced_at, None);
 }
 
 #[tokio::test]
@@ -105,6 +160,7 @@ async fn an_administrator_code_promotes_the_member() {
         "888",
         PairingMode::Normal,
         true,
+        Some(("Pseudo Discord", None)),
     )
     .await;
 
@@ -141,6 +197,7 @@ async fn refused_codes_are_not_consumed() {
         "999",
         PairingMode::Normal,
         false,
+        Some(("Pseudo Discord", None)),
     )
     .await;
     let (status, _) = harness
@@ -161,6 +218,7 @@ async fn refused_codes_are_not_consumed() {
         "999",
         PairingMode::Normal,
         false,
+        Some(("Pseudo Discord", None)),
     )
     .await;
     let (status, body) = harness
@@ -192,6 +250,7 @@ async fn refused_codes_are_not_consumed() {
         "111",
         PairingMode::InviteReadOnly,
         false,
+        Some(("Pseudo Discord", None)),
     )
     .await;
     pair_code(
@@ -201,6 +260,7 @@ async fn refused_codes_are_not_consumed() {
         "member:abc",
         PairingMode::Normal,
         false,
+        Some(("Pseudo Discord", None)),
     )
     .await;
     pair_code(
@@ -210,6 +270,7 @@ async fn refused_codes_are_not_consumed() {
         "222",
         PairingMode::Normal,
         false,
+        Some(("Pseudo Discord", None)),
     )
     .await;
     for code in ["RDNL2345", "EXTN2345", "OTHR2345", "NOPE2345"] {

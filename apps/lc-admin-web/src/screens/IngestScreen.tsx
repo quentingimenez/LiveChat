@@ -186,6 +186,15 @@ export function IngestScreen() {
         <p class="table-foot">
           Le jeton d’un client n’est affiché qu’une fois, à sa création. Depuis l’overlay, un membre
           peut aussi appairer son extension avec un code (<span class="mono">POST /overlay/ingest-code</span>).
+          Pour un raccourci iOS, importe un{' '}
+          <a
+            href="https://github.com/quentingimenez/LiveChat/tree/main/ios"
+            target="_blank"
+            rel="noreferrer"
+          >
+            raccourci signé
+          </a>{' '}
+          puis colle l’adresse du serveur et le jeton dans les questions d’import.
         </p>
       </>
     );
@@ -228,7 +237,7 @@ export function IngestScreen() {
       <Dialog
         open={createOpen}
         title="Créer un client d’ingestion"
-        subtitle="Pour une extension de navigateur ou un script."
+        subtitle="Pour une extension de navigateur, un script ou un raccourci iOS."
         onClose={() => setCreateOpen(false)}
         footer={
           <>
@@ -313,7 +322,7 @@ export function IngestScreen() {
         title="Client créé"
         subtitle="Jeton d’ingestion"
         value={token ?? ''}
-        hint="Ce jeton n’est affiché qu’une seule fois : copie-le maintenant dans l’extension."
+        hint="Ce jeton n’est affiché qu’une seule fois : copie-le maintenant dans l’extension ou le raccourci iOS."
         onClose={() => setToken(null)}
       />
 

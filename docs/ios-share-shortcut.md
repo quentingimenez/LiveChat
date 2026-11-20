@@ -21,9 +21,10 @@ d'ingestion** limité à l'envoi de médias (`Surface::Extension`,
 > [`ios/`](../ios/) : `LiveChat-Photo.shortcut`, `LiveChat-Video.shortcut` et
 > `LiveChat-Lien.shortcut`. Chacun ne reçoit qu'un seul type de média, donc iOS
 > n'affiche dans la feuille de partage que celui qui correspond au partage ; il
-> n'y a pas de menu à choisir. Ouvre-les sur l'iPhone et remplace `TON-SERVEUR`
-> et `TON_JETON` après l'import. La procédure ci-dessous reste utile pour créer
-> une variante (board, légende) ou comprendre les actions.
+> n'y a pas de menu à choisir. À l'import, iOS demande **Adresse du serveur**
+> puis **Jeton d'ingestion iOS** : colle les valeurs affichées par la board.
+> Aucune action du raccourci n'est à modifier. La procédure ci-dessous reste
+> utile pour créer une variante (board, légende) ou comprendre les actions.
 
 ## Prérequis
 
@@ -35,71 +36,43 @@ d'ingestion** limité à l'envoi de médias (`Surface::Extension`,
   média (rôle membre ou admin).
 - L'ingestion est activée sur le serveur (`/ingest` répond autre chose que
   `503 ingest_api_disabled`).
-- Un ordinateur avec le terminal PowerShell ou `curl` pour créer le jeton une
-  fois. La suite se fait sur l'iPhone.
+- Un ordinateur avec la board de l'overlay (ou la console d'administration) pour
+  créer le jeton une fois. La suite se fait sur l'iPhone.
 
 ## 1. Créer le jeton d'ingestion
 
 1. Ouvre la board de l'overlay sur le PC.
-2. Va dans **Mon profil** → section **Appareils** → carte **Extension
-   navigateur** → **Créer un code**.
-3. La board affiche l'adresse du serveur et un code à 8 caractères. Le code
-   expire au bout de **10 minutes**.
-4. Depuis le PC, échange ce code contre un jeton :
+2. Va dans **Mon profil** → section **Appareils** → carte **Raccourci iOS** →
+   **Configurer**.
+3. La board crée un client d'ingestion dédié et affiche une seule fois :
+   - l'adresse publique du serveur ;
+   - le jeton d'ingestion.
+4. Si tu préfères la console d'administration : **Clients d'ingestion** →
+   **Créer un client**, puis utilise l'URL du serveur et le jeton affiché.
 
-```powershell
-$base = "https://livechat.example.com"   # adresse affichée par la board
-$code = "ABCD-EFGH"                      # code affiché par la board
-$body = @{ code = $code; deviceName = "iPhone de Quentin" } | ConvertTo-Json
-$response = Invoke-RestMethod -Method Post -Uri "$base/ingest/pair/consume" `
-  -ContentType "application/json" -Body $body
-$response.ingestApiToken
-```
-
-Avec `curl` :
-
-```bash
-curl -sS -X POST "https://livechat.example.com/ingest/pair/consume" \
-  -H "Content-Type: application/json" \
-  -d '{"code":"ABCD-EFGH","deviceName":"iPhone de Quentin"}' \
-  | jq -r .ingestApiToken
-```
-
-La réponse contient notamment :
-
-```json
-{
-  "apiBaseUrl": "https://livechat.example.com",
-  "ingestApiToken": "…64 caractères hexadécimaux…",
-  "ingestClientId": "…",
-  "guildId": "…",
-  "deviceName": "iPhone de Quentin",
-  "authorName": "…",
-  "authorImage": null
-}
-```
-
-Garde le `ingestApiToken` : il n'est affiché qu'une fois. Utilise un
-`deviceName` unique et stable (`iPhone de Quentin`, pas `iPhone`), car
-re-appairer avec le même libellé révoque l'ancien client.
+Le client s'appelle `Raccourci iOS - <pseudo>` : le reconfigurer révoque l'ancien
+jeton et en crée un nouveau. Pour plusieurs téléphones, crée des clients séparés
+dans la console d'administration.
 
 > **Sécurité** — ce jeton permet d'envoyer des médias et d'ajouter des éléments
-> à la board. Il ne permet pas d'administrer le serveur. Ne le mets pas dans un
-> Raccourci partagé, ne le commit pas, et révoque-le depuis la console
-> d'administration → **Clients d'ingestion** si tu le perds.
+> à la board. Il ne permet pas d'administrer le serveur. Ne le partage pas, ne
+> le commit pas, et révoque-le depuis la console d'administration → **Clients
+> d'ingestion** si tu le perds.
 
-## 2. Déposer le jeton sur l'iPhone
+## 2. Importer un raccourci signé
 
-Les Raccourcis n'ont pas de trousseau (Keychain) : le jeton doit être lu dans un
-fichier. Crée un fichier texte `ingest-token.txt` contenant uniquement le jeton,
-puis dépose-le dans un dossier accessible depuis l'app **Fichiers** de
-l'iPhone — par exemple `iCloud Drive/LiveChat/ingest-token.txt`, ou un dossier
-OneDrive/Google Drive connecté à Fichiers.
+1. Depuis l'iPhone, ouvre le lien du raccourci voulu :
+   - [LiveChat-Photo.shortcut](https://raw.githubusercontent.com/quentingimenez/LiveChat/main/ios/LiveChat-Photo.shortcut)
+   - [LiveChat-Video.shortcut](https://raw.githubusercontent.com/quentingimenez/LiveChat/main/ios/LiveChat-Video.shortcut)
+   - [LiveChat-Lien.shortcut](https://raw.githubusercontent.com/quentingimenez/LiveChat/main/ios/LiveChat-Lien.shortcut)
+2. Touche le fichier téléchargé : iOS propose **Ajouter le raccourci**. Les
+   fichiers sont déjà signés ; l'option « Raccourcis non fiables » ne devrait
+   pas être nécessaire.
+3. iOS demande **Adresse du serveur** puis **Jeton d'ingestion iOS** : colle les
+   deux valeurs affichées par la board. Le raccourci est prêt, sans éditer
+   d'action.
 
-Évite de laisser le jeton dans une note synchronisée ou dans le corps du
-Raccourci : un Raccourci se partage facilement.
-
-## 3. Créer le Raccourci « Jouer sur LiveChat »
+## 3. Créer un raccourci personnalisé (facultatif)
 
 Dans l'app **Raccourcis** :
 
@@ -108,19 +81,15 @@ Dans l'app **Raccourcis** :
    Partage** → dans **Recevoir**, choisis **Images** (et **Vidéos** si proposé).
    Pour les fichiers, crée une variante du raccourci avec **Recevoir** =
    **Fichiers** ; pour les URL, voir la section 5.
-3. Ajoute **Obtenir le contenu du fichier** et sélectionne
-   `iCloud Drive/LiveChat/ingest-token.txt`. Ajoute ensuite une action de
-   nettoyage (`Rogner les espaces` / Trim) pour retirer le retour à la ligne
-   final, puis garde le résultat dans une variable `Jeton`.
-4. Récupère le nom du fichier partagé :
-   - **photo** : **Convertir l'image** (JPEG, qualité moyenne) →
-     **Enregistrer le fichier** dans un dossier temporaire → **Obtenir le
-     fichier** → **Obtenir les détails du fichier** → **Nom** ;
-   - **vidéo** : **Encoder le média** (720p) → **Enregistrer le fichier** →
-     **Obtenir le fichier** → **Obtenir les détails du fichier** → **Nom** ;
-   - **fichier** : **Obtenir les détails du fichier** → **Nom**.
+3. Ajoute deux actions **Texte** avec l'adresse du serveur et le jeton, ou
+   réutilise les questions d'import du raccourci fourni. Pour une variante,
+   **Demander une entrée** fonctionne aussi.
+4. Pour envoyer le fichier partagé, convertis-le si besoin (photo JPEG) puis
+   passe-le directement au corps **Fichier**. Le raccourci fourni utilise un nom
+   fixe (`photo.jpg` / `video.mp4`) ; l'action **Nom** n'est utile que si tu
+   veux garder le nom d'origine.
 5. Ajoute **Obtenir le contenu de l'URL** :
-   - **URL** : `https://livechat.example.com/ingest/file?filename=<Nom>`
+   - **URL** : `https://livechat.example.com/ingest/file?filename=photo.jpg`
      (ajoute `&text=<Légende>` seulement si tu as une légende)
    - **Méthode** : `POST`
    - **En-têtes** : `Authorization` = `Bearer <Jeton>` ; ajoute aussi
@@ -158,8 +127,8 @@ https://livechat.example.com/ingest/file?filename=<Nom>&saveToBoard=true&title=<
 
 Le fichier binaire ne concerne que les médias locaux. Un raccourci signé
 `LiveChat-Lien.shortcut` est fourni dans [`ios/`](../ios/) : il envoie déjà
-`{"url": <URL partagée>}` et ne demande que `TON-SERVEUR` et `TON_JETON`. Pour
-une variante (légende, ajout à la board), crée un troisième Raccourci
+`{"url": <URL partagée>}` et demande l'adresse du serveur et le jeton à
+l'import. Pour une variante (légende, ajout à la board), crée un troisième Raccourci
 (`Lien sur LiveChat`) avec **Recevoir** = **URL**, puis envoie une requête JSON à
 `/ingest` :
 
@@ -181,7 +150,7 @@ Le serveur télécharge le média avec yt-dlp, comme pour l'extension navigateur
 Une fois le jeton créé, vérifie le serveur depuis le PC :
 
 ```powershell
-$token = Get-Content .\ingest-token.txt -Raw
+$token = "…jeton affiché par la board…"
 Invoke-RestMethod -Method Post `
   -Uri "https://livechat.example.com/ingest/file?filename=photo.jpg&text=Bonjour" `
   -Headers @{ Authorization = "Bearer $($token.Trim())" } `
@@ -227,7 +196,7 @@ Réponse d'un ajout à la board :
 
 | Symptôme | Cause probable | Solution |
 | --- | --- | --- |
-| `401 unauthorized` | Jeton absent, faux ou révoqué | Recrée un code et un client, remplace le fichier du jeton |
+| `401 unauthorized` | Jeton absent, faux ou révoqué | Reconfigure le raccourci depuis **Mon profil → Raccourci iOS** et recolle le nouveau jeton |
 | `403 forbidden_role` | Le membre n'a pas le droit d'envoyer un média | Demande à un admin de vérifier le rôle |
 | `413 payload_too_large` | Fichier au-dessus de la limite serveur | Regarde `maxBytes` ; compresse la vidéo ou passe par la board du PC |
 | `422 media_ingestion_failed` | Format non reconnu ou fichier corrompu | Convertis en JPEG/MP4, réessaie |
@@ -247,9 +216,9 @@ un même fichier envoyé deux fois réutilise le cache média.
 ## Révoquer l'accès
 
 Console d'administration → **Clients d'ingestion** → sélectionne le client
-`iPhone de Quentin` → **Révoquer**. Le Raccourci recevra alors `401
-unauthorized`. Re-appairer avec le même `deviceName` révoque aussi l'ancien
-client et crée un nouveau jeton.
+`Raccourci iOS - <pseudo>` → **Révoquer**. Le Raccourci recevra alors `401
+unauthorized`. Reconfigurer depuis la board révoque aussi l'ancien client et
+crée un nouveau jeton.
 
 ## Pourquoi pas une app native ?
 

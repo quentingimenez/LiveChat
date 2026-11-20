@@ -334,6 +334,10 @@ pub fn router() -> Router<AppState> {
             "/overlay/ingest-code",
             post(ingest_code::create_ingest_code),
         )
+        .route(
+            "/overlay/ingest-client",
+            post(ingest_code::create_ingest_client),
+        )
         .route("/overlay/leave", post(guild::leave))
         .route(
             "/overlay/queue",

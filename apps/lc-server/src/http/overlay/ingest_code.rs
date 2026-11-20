@@ -22,12 +22,15 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
+use lc_domain::entities::IngestClient;
+use lc_domain::ids::IngestClientId;
 use lc_domain::rights::{Action, Surface};
 use lc_domain::{PairingCode, PairingCodeEntry, PairingMode};
 use serde_json::json;
 use time::Duration;
 
 use crate::app::AppState;
+use crate::media::tokens::{generate_ingest_token, hash_ingest_token};
 
 use super::auth::AuthedOverlayClient;
 use super::guild::{iso, random_invite_code};
@@ -131,6 +134,126 @@ pub async fn create_ingest_code(
     internal_error()
 }
 
+/// Libellé du client d'ingestion créé pour un raccourci iOS.
+const IOS_SHORTCUT_LABEL: &str = "Raccourci iOS";
+
+/// Handler `POST /overlay/ingest-client`.
+///
+/// Crée directement un client d'ingestion pour le membre courant, sans code
+/// d'appairage : la board affiche le jeton une seule fois, puis le Raccourci le
+/// demande à l'import. Le libellé inclut le pseudo pour ne pas révoquer le
+/// client d'un autre membre de la guilde.
+pub async fn create_ingest_client(
+    State(state): State<AppState>,
+    auth: AuthedOverlayClient,
+) -> Response {
+    if !state
+        .rights
+        .allowed(Surface::Extension, Action::Pair, auth.role().into())
+    {
+        return error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let Some(member) = auth.member.as_ref() else {
+        return error(StatusCode::CONFLICT, "member_required");
+    };
+    let db = match db(&state) {
+        Ok(db) => db,
+        Err(response) => return response,
+    };
+    let now = now(&state);
+    let name = member.display_name.trim();
+    let name = if name.is_empty() {
+        member.id.to_canonical()
+    } else {
+        name.to_owned()
+    };
+    let label: String = format!("{IOS_SHORTCUT_LABEL} - {name}")
+        .chars()
+        .take(200)
+        .collect();
+    let clients = db.ingest_clients();
+    match clients.list_by_guild(&member.guild_id).await {
+        Ok(existing) => {
+            for client in existing
+                .iter()
+                .filter(|client| client.is_active() && client.label == label)
+            {
+                if let Err(error) = clients.revoke(client.id, now).await {
+                    tracing::warn!(
+                        error = %error,
+                        client_id = %client.id.to_canonical(),
+                        "impossible de révoquer l'ancien client iOS"
+                    );
+                }
+            }
+        }
+        Err(error) => return db_failure("overlay_ingest_client.list", &error),
+    }
+
+    let mut raw_token = generate_ingest_token();
+    let mut client = IngestClient {
+        id: IngestClientId::new_v4(),
+        guild_id: member.guild_id.clone(),
+        label: label.clone(),
+        token_hash: hash_ingest_token(&raw_token),
+        default_author_name: member.display_name.clone(),
+        default_author_image: http_avatar(member.avatar.as_deref()),
+        created_by_discord_user_id: format!(
+            "{INGEST_CODE_CREATOR_PREFIX}{}",
+            member.id.to_canonical()
+        ),
+        last_seen_at: None,
+        created_at: now,
+        revoked_at: None,
+    };
+
+    let mut create_error: Option<lc_db::DbError> = None;
+    for attempt in 0..2_u8 {
+        match clients.create(&client).await {
+            Ok(()) => {
+                create_error = None;
+                break;
+            }
+            Err(error) => {
+                let retryable = attempt == 0 && is_conflict(&error);
+                create_error = Some(error);
+                if !retryable {
+                    break;
+                }
+                tracing::warn!(
+                    attempt,
+                    "collision de hash de token d'ingestion : nouvelle génération"
+                );
+                raw_token = generate_ingest_token();
+                client.token_hash = hash_ingest_token(&raw_token);
+            }
+        }
+    }
+    if let Some(error) = create_error {
+        return db_failure("overlay_ingest_client.create", &error);
+    }
+
+    tracing::info!(
+        client_id = %client.id.to_canonical(),
+        guild_id = %member.guild_id.as_str(),
+        device = %label,
+        "client d'ingestion iOS créé"
+    );
+
+    json_response(
+        StatusCode::OK,
+        json!({
+            "apiBaseUrl": state.config.api_url.as_str().trim_end_matches('/'),
+            "ingestApiToken": raw_token,
+            "ingestClientId": client.id.to_canonical(),
+            "guildId": member.guild_id.as_str(),
+            "deviceName": label,
+            "authorName": client.default_author_name,
+            "authorImage": client.default_author_image,
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -186,6 +309,69 @@ mod tests {
         assert_eq!(entry.expires_at, Some(fixed_now() + Duration::minutes(10)));
         assert_eq!(entry.created_at, fixed_now());
         assert_eq!(entry.used_at, None);
+    }
+
+    #[tokio::test]
+    async fn membre_cree_un_client_ios() {
+        let harness = Harness::new().await;
+        let admin = harness
+            .join(&harness.server_invite(GuildRole::Admin).await, "Alice")
+            .await;
+
+        let (status, body) = harness
+            .call(
+                Method::POST,
+                "/overlay/ingest-client",
+                Some(&token(&admin)),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["apiBaseUrl"], "http://127.0.0.1:8099");
+        assert_eq!(body["deviceName"], "Raccourci iOS - Alice");
+        assert_eq!(body["ingestApiToken"].as_str().unwrap().len(), 64);
+
+        let clients = harness
+            .db
+            .ingest_clients()
+            .list_by_guild(&harness.guild_id)
+            .await
+            .unwrap();
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].label, "Raccourci iOS - Alice");
+        assert_eq!(clients[0].default_author_name, "Alice");
+        assert!(clients[0].created_by_discord_user_id.starts_with("member:"));
+    }
+
+    #[tokio::test]
+    async fn reconfigure_le_client_ios_revoque_l_ancien() {
+        let harness = Harness::new().await;
+        let admin = harness
+            .join(&harness.server_invite(GuildRole::Admin).await, "Alice")
+            .await;
+
+        for _ in 0..2 {
+            let (status, body) = harness
+                .call(
+                    Method::POST,
+                    "/overlay/ingest-client",
+                    Some(&token(&admin)),
+                    None,
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+
+        let clients = harness
+            .db
+            .ingest_clients()
+            .list_by_guild(&harness.guild_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            clients.iter().filter(|client| client.is_active()).count(),
+            1
+        );
     }
 
     #[tokio::test]

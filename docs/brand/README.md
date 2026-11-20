@@ -120,8 +120,10 @@ Les coins du logo suivent la surface : `logo.svg` (Craie) sur la board sombre,
 Deux surfaces restent sombres dans les deux thèmes, parce qu'elles montrent ce
 qui part à l'écran : la fenêtre média de l'overlay et la carte d'identification
 des écrans. Les widgets injectés dans les pages (boutons, toasts, modales)
-suivent le thème de l'extension, et la puce « LC » de YouTube emprunte la
-couleur de la page hôte pour rester lisible sur un YouTube clair.
+suivent le thème de l'extension. Le bouton d'envoi, lui, porte le dessin
+simplifié avec des coins en `currentColor` : il emprunte la couleur de texte de
+la page hôte — Craie sur un YouTube sombre, Ardoise sur un YouTube clair — et
+garde la bulle ambre sur la pastille sombre de TikTok comme sur un X clair.
 
 ## Typographie
 
@@ -184,6 +186,11 @@ Sources (dans `logo/`) :
 | `livechat-logo-current-color.svg` | dessin complet, coins en `currentColor` (à intégrer dans une page) |
 | `livechat-app-icon.svg` | tuile + dessin complet |
 | `livechat-app-icon-small.svg` | tuile + dessin simplifié |
+
+Le bouton d'envoi injecté par l'extension n'embarque aucun de ces fichiers : un
+SVG posé dans une page hôte exigerait `web_accessible_resources` et une requête
+réseau. `extension/src/content/brand-logo.ts` reprend le dessin simplifié en
+balisage, avec les coins en `currentColor` (le bouton fait 16 px minimum).
 
 Icônes générées :
 

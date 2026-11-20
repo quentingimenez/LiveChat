@@ -1,3 +1,8 @@
+import {
+  renderButtonContent,
+  setButtonLabel,
+  type InjectedButtonState,
+} from './brand-logo';
 import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModalTwitter';
 import { initInpageTheme } from './inpage-theme';
 
@@ -428,14 +433,9 @@ const attachLongPressCompose = (() => {
   };
 })();
 
-type ButtonState = 'idle' | 'loading' | 'success' | 'error';
-
-const BUTTON_TEXT_BY_STATE: Record<ButtonState, string> = {
-  idle: 'LC',
-  loading: '...',
-  success: 'OK',
-  error: 'ER',
-};
+// Le logo remplit la pastille de 34 px sans la déborder, à la taille des icônes
+// d'action de X (~19 px) qui l'entourent.
+const BUTTON_LOGO_SIZE_PX = 22;
 
 const buttonResetTimers = new WeakMap<HTMLButtonElement, number>();
 const buttonClickTimers = new WeakMap<HTMLButtonElement, number>();
@@ -815,10 +815,14 @@ const clearButtonResetTimer = (button: HTMLButtonElement): void => {
   }
 };
 
-const setButtonState = (button: HTMLButtonElement, state: ButtonState, title?: string): void => {
+const setButtonState = (
+  button: HTMLButtonElement,
+  state: InjectedButtonState,
+  title?: string,
+): void => {
   clearButtonResetTimer(button);
   button.classList.remove('is-loading', 'is-success', 'is-error');
-  button.textContent = BUTTON_TEXT_BY_STATE[state];
+  renderButtonContent(button, state, BUTTON_LOGO_SIZE_PX);
 
   if (state === 'loading') {
     button.classList.add('is-loading');
@@ -828,7 +832,7 @@ const setButtonState = (button: HTMLButtonElement, state: ButtonState, title?: s
     button.classList.add('is-error');
   }
 
-  button.title = title || 'Envoyer ce tweet vers LiveChat';
+  setButtonLabel(button, title || 'Envoyer ce tweet vers LiveChat');
 };
 
 const resetButtonStateLater = (button: HTMLButtonElement, delayMs = 2200): void => {

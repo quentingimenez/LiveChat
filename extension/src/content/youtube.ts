@@ -1,3 +1,8 @@
+import {
+  renderButtonContent,
+  setButtonLabel,
+  type InjectedButtonState,
+} from './brand-logo';
 import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModalYoutube';
 import { initInpageTheme } from './inpage-theme';
 
@@ -449,14 +454,10 @@ const SHORTS_TARGET_SELECTORS = [
 ] as const;
 
 type ButtonVariant = 'watch' | 'shorts';
-type ButtonState = 'idle' | 'loading' | 'success' | 'error';
 
-const BUTTON_TEXT_BY_STATE: Record<ButtonState, string> = {
-  idle: 'LC',
-  loading: '...',
-  success: 'OK',
-  error: 'ER',
-};
+// Le logo remplit la puce de 42 px (48 px pour Shorts) sans la déborder, à la
+// taille des icônes d'action de YouTube qui l'entourent.
+const BUTTON_LOGO_SIZE_PX = 26;
 
 const buttonResetTimers = new WeakMap<HTMLButtonElement, number>();
 const buttonClickTimers = new WeakMap<HTMLButtonElement, number>();
@@ -944,10 +945,14 @@ const clearButtonResetTimer = (button: HTMLButtonElement): void => {
   }
 };
 
-const setButtonState = (button: HTMLButtonElement, state: ButtonState, title?: string): void => {
+const setButtonState = (
+  button: HTMLButtonElement,
+  state: InjectedButtonState,
+  title?: string,
+): void => {
   clearButtonResetTimer(button);
   button.classList.remove('is-loading', 'is-success', 'is-error');
-  button.textContent = BUTTON_TEXT_BY_STATE[state];
+  renderButtonContent(button, state, BUTTON_LOGO_SIZE_PX);
 
   if (state === 'loading') {
     button.classList.add('is-loading');
@@ -957,7 +962,7 @@ const setButtonState = (button: HTMLButtonElement, state: ButtonState, title?: s
     button.classList.add('is-error');
   }
 
-  button.title = title || DEFAULT_BUTTON_TITLE;
+  setButtonLabel(button, title || DEFAULT_BUTTON_TITLE);
 };
 
 const resetButtonStateLater = (button: HTMLButtonElement, delayMs = 2200): void => {
@@ -979,8 +984,7 @@ const createActionButton = (variant: ButtonVariant): HTMLButtonElement => {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = `lce-button-youtube ${variant === 'shorts' ? 'lce-button-youtube-shorts' : 'lce-button-youtube-watch'}`;
-  button.textContent = BUTTON_TEXT_BY_STATE.idle;
-  button.title = DEFAULT_BUTTON_TITLE;
+  setButtonState(button, 'idle');
 
   const longPressCompose = attachLongPressCompose({
     button,
@@ -1353,8 +1357,9 @@ const upsertShortsFloatingButton = (targetUrl: string, container: HTMLElement | 
   button.classList.add('lce-button-youtube-shorts-floating');
 
   if (!isStateClass(button)) {
-    button.textContent = BUTTON_TEXT_BY_STATE.idle;
-    button.title = DEFAULT_BUTTON_TITLE;
+    // Le balayage repasse à chaque frame : on rappelle le libellé sans
+    // reconstruire le logo, déjà en place à l'état repos.
+    setButtonLabel(button, DEFAULT_BUTTON_TITLE);
   }
 
   const anchorRect = getShortsActionAnchorRect();
@@ -1406,8 +1411,9 @@ const upsertInlineWatchButton = (targetUrl: string, container: HTMLElement): voi
   button.classList.remove('lce-button-youtube-watch-floating');
 
   if (!isStateClass(button)) {
-    button.textContent = BUTTON_TEXT_BY_STATE.idle;
-    button.title = DEFAULT_BUTTON_TITLE;
+    // Le balayage repasse à chaque frame : on rappelle le libellé sans
+    // reconstruire le logo, déjà en place à l'état repos.
+    setButtonLabel(button, DEFAULT_BUTTON_TITLE);
   }
 
   if (!slot.contains(button)) {

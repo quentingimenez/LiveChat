@@ -43,7 +43,7 @@ Envoie le média d'un post X, TikTok ou YouTube en un clic vers le board et l'ov
 LiveChat Extension ajoute un bouton sur les posts de X, les vidéos TikTok et les vidéos YouTube : un clic suffit pour envoyer le média au board et à l'overlay de ton serveur Discord.
 
 CE QU'ELLE FAIT
-• Un bouton « LC » sur chaque post X, chaque vidéo TikTok et chaque vidéo YouTube, y compris les Shorts.
+• Un bouton au logo LiveChat sur chaque post X, chaque vidéo TikTok et chaque vidéo YouTube, y compris les Shorts.
 • Un clic envoie le lien au serveur : l'image ou la vidéo apparaît sur l'overlay et dans le board média.
 • Un appui long (ou un double-clic) ouvre une fenêtre pour ajouter un texte, régler la durée d'affichage des images, ignorer le cache ou garder le média dans le board.
 • Menu contextuel « Envoyer vers LiveChat » sur un lien, et popup pour envoyer l'onglet courant.
@@ -68,6 +68,11 @@ CONFIDENTIALITÉ
 | `screenshot-3-tiktok.png` | Une vidéo TikTok : le bouton « LC » en bas de la colonne d'actions. |
 | `screenshot-4-shorts.png` | Un Short : le bouton « LC » au-dessus du « J'aime ». |
 | `screenshot-5-youtube-watch.png` | Une vidéo YouTube : le bouton « LC » dans la barre d'actions. |
+
+Les cinq captures datent de la version 0.2.2 et montrent encore la pastille
+« LC » : les reprendre depuis les mêmes pages (x.com, TikTok, Shorts, YouTube)
+avant la prochaine publication de la fiche, sinon l'image ne correspond plus au
+texte ci-dessus.
 
 `icon-128.png` est le logo de l'extension (le même que `extension/public/icons/icon-128.png`).
 

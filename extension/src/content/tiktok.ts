@@ -1,3 +1,8 @@
+import {
+  renderButtonContent,
+  setButtonLabel,
+  type InjectedButtonState,
+} from './brand-logo';
 import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModalTiktok';
 import { initInpageTheme } from './inpage-theme';
 
@@ -451,14 +456,10 @@ interface TikTokActiveTarget {
 let latestActionContainer: HTMLElement | null = null;
 let lastSyncedActiveTargetKey: string | null = null;
 
-type ButtonState = 'idle' | 'loading' | 'success' | 'error';
-
-const BUTTON_TEXT_BY_STATE: Record<ButtonState, string> = {
-  idle: 'LC',
-  loading: '...',
-  success: 'OK',
-  error: 'ER',
-};
+// Le logo remplit la pastille de 48 px de la colonne d'actions, à la taille des
+// icônes natives qui l'entourent ; la variante compacte de 40 px le réduit par
+// la feuille de styles.
+const BUTTON_LOGO_SIZE_PX = 26;
 
 const buttonResetTimers = new WeakMap<HTMLButtonElement, number>();
 const buttonClickTimers = new WeakMap<HTMLButtonElement, number>();
@@ -515,6 +516,10 @@ const inpageStyles = `
   height: 40px;
   font-size: 10px;
 }
+.lce-tiktok-slot.is-vertical .lce-button-tiktok .lce-logo {
+  width: 22px;
+  height: 22px;
+}
 .lce-tiktok-slot.is-horizontal {
   margin-top: 0;
   margin-bottom: 0;
@@ -523,6 +528,10 @@ const inpageStyles = `
   width: 40px;
   height: 40px;
   font-size: 10px;
+}
+.lce-tiktok-slot.is-horizontal .lce-button-tiktok .lce-logo {
+  width: 22px;
+  height: 22px;
 }
 `;
 
@@ -1291,10 +1300,14 @@ const clearButtonResetTimer = (button: HTMLButtonElement): void => {
   }
 };
 
-const setButtonState = (button: HTMLButtonElement, state: ButtonState, title?: string): void => {
+const setButtonState = (
+  button: HTMLButtonElement,
+  state: InjectedButtonState,
+  title?: string,
+): void => {
   clearButtonResetTimer(button);
   button.classList.remove('is-loading', 'is-success', 'is-error');
-  button.textContent = BUTTON_TEXT_BY_STATE[state];
+  renderButtonContent(button, state, BUTTON_LOGO_SIZE_PX);
 
   if (state === 'loading') {
     button.classList.add('is-loading');
@@ -1304,7 +1317,7 @@ const setButtonState = (button: HTMLButtonElement, state: ButtonState, title?: s
     button.classList.add('is-error');
   }
 
-  button.title = title || DEFAULT_BUTTON_TITLE;
+  setButtonLabel(button, title || DEFAULT_BUTTON_TITLE);
 };
 
 const resetButtonStateLater = (button: HTMLButtonElement, delayMs = 2200): void => {
@@ -1324,8 +1337,7 @@ const createActionButton = (): HTMLButtonElement => {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'lce-button-tiktok';
-  button.textContent = BUTTON_TEXT_BY_STATE.idle;
-  button.title = DEFAULT_BUTTON_TITLE;
+  setButtonState(button, 'idle');
 
   const longPressCompose = attachLongPressCompose({
     button,
@@ -1644,7 +1656,9 @@ const upsertInlineButton = (container: HTMLElement): void => {
     }
   }
 
-  button.title = DEFAULT_BUTTON_TITLE;
+  // Le balayage repasse sur le bouton à chaque mutation de la page : le libellé
+  // est rappelé sans retoucher le contenu, pour ne pas reconstruire le logo.
+  setButtonLabel(button, DEFAULT_BUTTON_TITLE);
 };
 
 const scanTikTokPage = async (): Promise<void> => {

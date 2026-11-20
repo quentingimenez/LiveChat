@@ -16,7 +16,7 @@
 }
 
 .say-counter.is-over {
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .dialog .stack label.say-anonymous {

@@ -1,0 +1,53 @@
+/* LiveChat — thème clair de la board.
+ *
+ * Même charte que le thème sombre (docs/brand/README.md), surfaces inversées :
+ * les composants n'ont pas de règle propre ici, seuls les tokens changent. Le
+ * thème est posé sur <html data-theme="dark|light"> par core/theme.js ; le
+ * sombre reste le défaut et ne dépend pas de ce fichier.
+ */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --slate-900: #eef1f7;
+  --slate-800: #ffffff;
+  --slate-700: #f1f4fa;
+  --slate-600: #e3e9f3;
+  --line: #d5dce8;
+  --text: #171b25;
+  --text-soft: #4f5972;
+  --text-faint: #6f7a90;
+  /* Accents : teintes de la charte, assombries juste ce qu'il faut pour tenir
+     le contraste sur blanc (≥ 4,5:1 en texte, ≥ 3:1 en trait de focus). */
+  --amber-text: #8a5a06;
+  --amber-hover: #e8ae3f;
+  --red: #b3363f;
+  --red-text: #b3363f;
+  --green: #1f7d5c;
+  --green-text: #1f7d5c;
+  --blue: #2f5bb7;
+  --blue-text: #2f5bb7;
+  --accent-ink: #ffffff;
+  --accent-hover: #24509f;
+  --badge-admin-bg: #e2e9fb;
+  --badge-admin-text: #1f3f96;
+  --badge-guest-bg: #f7eed8;
+  --badge-guest-text: #6b4d14;
+  --danger-bg: #fbe9ea;
+  /* Voiles posés sur les vignettes : clairs, texte en Ardoise par les tokens. */
+  --scrim: rgba(255, 255, 255, 0.9);
+  --scrim-soft: rgba(255, 255, 255, 0.78);
+  --shadow-detail: 0 18px 40px rgba(24, 32, 60, 0.18);
+  --shadow-bar: 0 8px 24px rgba(24, 32, 60, 0.14);
+  --shadow-menu: 0 10px 28px rgba(24, 32, 60, 0.16);
+  --shadow-toast: 0 10px 28px rgba(24, 32, 60, 0.16);
+  --shadow-art: 0 12px 40px rgba(24, 32, 60, 0.14);
+  --veil: rgba(20, 26, 40, 0.34);
+  --stage: #e9edf5;
+  --checker-a: #e4e9f2;
+  --checker-b: #dce2ee;
+}
+
+/* Le chevron des selects est une data-URI : sa couleur ne peut pas être un
+   token, elle est donc redéfinie ici (Texte doux du thème clair). */
+:root[data-theme='light'] select.field {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1.5 2 6 6.5 10.5 2' fill='none' stroke='%234f5972' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}

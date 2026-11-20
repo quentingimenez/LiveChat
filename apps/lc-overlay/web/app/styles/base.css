@@ -18,6 +18,35 @@
   --red: #ec6a70;
   --green: #5fc9a3;
   --blue: #7fa8f5;
+  /* Variantes de texte des accents : la teinte de base ne tient pas le
+     contraste sur fond clair, theme-light.css les remplace. */
+  --amber-text: #f2b544;
+  --red-text: #ec6a70;
+  --green-text: #5fc9a3;
+  --blue-text: #7fa8f5;
+  --amber-hover: #f7c466;
+  --accent-ink: #101a33;
+  --accent-hover: #9bbcf8;
+  --badge-admin-bg: #2b3a5e;
+  --badge-admin-text: #b5cbfb;
+  --badge-guest-bg: #3d3526;
+  --badge-guest-text: #e0c68d;
+  --danger-bg: #4a2c2c;
+  /* Voiles posés sur les vignettes et ombres portées : tokenisés pour que le
+     thème clair puisse les éclaircir sans toucher aux composants. */
+  --scrim: rgba(23, 27, 37, 0.92);
+  --scrim-soft: rgba(23, 27, 37, 0.78);
+  --shadow-detail: 0 18px 40px rgba(8, 10, 16, 0.55);
+  --shadow-bar: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-menu: 0 10px 28px rgba(5, 7, 12, 0.45);
+  --shadow-toast: 0 10px 28px rgba(0, 0, 0, 0.35);
+  --shadow-art: 0 12px 40px rgba(0, 0, 0, 0.45);
+  --veil: rgba(13, 16, 23, 0.72);
+  --stage: #11141c;
+  --checker-a: #2a3040;
+  --checker-b: #222736;
+  /* Aperçu du rendu à l'écran : reste sombre dans les deux thèmes. */
+  --display-preview-bg: #0b0e14;
   --radius-s: 6px;
   --radius-m: 10px;
   --rail: 68px;
@@ -117,7 +146,7 @@ textarea {
 }
 
 .btn.is-danger {
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .btn.is-air {
@@ -128,7 +157,7 @@ textarea {
 }
 
 .btn.is-air:hover {
-  background: #f7c466;
+  background: var(--amber-hover);
 }
 
 .btn.is-wide {
@@ -201,13 +230,13 @@ input[type='checkbox'] {
 }
 
 .badge.is-admin {
-  background: #2b3a5e;
-  color: #b5cbfb;
+  background: var(--badge-admin-bg);
+  color: var(--badge-admin-text);
 }
 
 .badge.is-guest {
-  background: #3d3526;
-  color: #e0c68d;
+  background: var(--badge-guest-bg);
+  color: var(--badge-guest-text);
 }
 
 .badge.is-off {

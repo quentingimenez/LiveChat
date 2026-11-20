@@ -15,7 +15,7 @@
 
 .update-notice .icon {
   flex: none;
-  color: var(--blue);
+  color: var(--blue-text);
 }
 
 .update-notice-text {
@@ -33,7 +33,7 @@
 
 .update-notice-error {
   flex: none;
-  color: var(--red);
+  color: var(--red-text);
 }
 
 /* Slimmer than the page buttons: the banner stays one quiet line. */

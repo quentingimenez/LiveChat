@@ -17,11 +17,11 @@ Le Raccourci n'a aucun droit d'administration : il utilise un **jeton
 d'ingestion** limité à l'envoi de médias (`Surface::Extension`,
 `Action::Send`). Ce jeton est révocable à tout moment.
 
-> **Fichiers prêts à importer** — Deux raccourcis signés sont fournis dans
-> [`ios/`](../ios/) : `LiveChat-Photo.shortcut` et `LiveChat-Video.shortcut`.
-> Ouvre-les sur l'iPhone et remplace `TON-SERVEUR` et `TON_JETON` après l'import.
-> La procédure ci-dessous reste utile pour créer une variante (board, lien,
-> légende) ou comprendre les actions.
+> **Fichiers prêts à importer** — Trois raccourcis signés sont fournis dans
+> [`ios/`](../ios/) : `LiveChat-Photo.shortcut`, `LiveChat-Video.shortcut` et
+> `LiveChat-Lien.shortcut` (YouTube, TikTok, X…). Ouvre-les sur l'iPhone et
+> remplace `TON-SERVEUR` et `TON_JETON` après l'import. La procédure ci-dessous
+> reste utile pour créer une variante (board, légende) ou comprendre les actions.
 
 ## Prérequis
 
@@ -154,7 +154,10 @@ https://livechat.example.com/ingest/file?filename=<Nom>&saveToBoard=true&title=<
 
 ## 5. Partager un lien YouTube, TikTok ou X
 
-Le fichier binaire ne concerne que les médias locaux. Crée un second Raccourci
+Le fichier binaire ne concerne que les médias locaux. Un raccourci signé
+`LiveChat-Lien.shortcut` est fourni dans [`ios/`](../ios/) : il envoie déjà
+`{"url": <URL partagée>}` et ne demande que `TON-SERVEUR` et `TON_JETON`. Pour
+une variante (légende, ajout à la board), crée un troisième Raccourci
 (`Lien sur LiveChat`) avec **Recevoir** = **URL**, puis envoie une requête JSON à
 `/ingest` :
 

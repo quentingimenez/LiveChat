@@ -118,8 +118,18 @@ export function createOverlayLegacyRuntimeRenderHandlersUtils() {
                 logWarning: params.logWarning,
             });
         }
+        // A scaled media is sized in pixels for the zone at render time: when
+        // the window is resized (display resolution change), replay the re-fit
+        // so it follows the new screen instead of keeping the old one.
+        function relayoutActiveMedia() {
+            if (typeof params.state.activeMediaRelayout !== 'function') {
+                return false;
+            }
+            params.state.activeMediaRelayout();
+            return true;
+        }
         async function renderMedia(payload) {
-            await params.mediaRenderUtils.renderMedia({
+            const relayout = await params.mediaRenderUtils.renderMedia({
                 payload: payload,
                 setActiveObjectUrl: (nextObjectUrl) => {
                     params.state.activeObjectUrl = nextObjectUrl;
@@ -148,6 +158,7 @@ export function createOverlayLegacyRuntimeRenderHandlersUtils() {
                 setCountdownAutoClear: params.setCountdownAutoClear,
                 logAutoplayError: params.logError,
             });
+            params.state.activeMediaRelayout = typeof relayout === 'function' ? relayout : null;
         }
         async function onPlay(payload) {
             params.state.activeVolume = typeof payload?.volume === 'number' ? payload.volume : null;
@@ -211,13 +222,16 @@ export function createOverlayLegacyRuntimeRenderHandlersUtils() {
             if (params.state.activeLayout) {
                 applyActiveLayout();
             }
-            // The zone may have moved: re-fit the header chips in it.
+            // The zone may have moved: re-fit the header chips in it, and the
+            // scaled media sized in pixels for the previous zone.
+            relayoutActiveMedia();
             params.scheduleMediaHeaderLayout();
         }
         return {
             onPlay,
             onSettings,
             ensureTwitterWidgets,
+            relayoutActiveMedia,
         };
     }
     return {

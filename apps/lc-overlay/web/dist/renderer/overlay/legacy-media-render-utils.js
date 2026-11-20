@@ -63,10 +63,14 @@ export function createOverlayLegacyMediaRenderUtils() {
         }
         return null;
     }
+    // Returns the closure that re-fits the element, or `null` for a media
+    // without a chosen scale. The runtime replays it when the window changes
+    // size (display resolution change), else the media keeps the pixel size
+    // measured for the old zone.
     function applyDisplayScale(params, element, targetContainer, mediaPayload) {
         const percent = Number(mediaPayload.displayScalePercent);
         if (!Number.isFinite(percent) || percent <= 0) {
-            return;
+            return null;
         }
         const sized = () => {
             const natural = naturalSizeOf(element);
@@ -101,16 +105,20 @@ export function createOverlayLegacyMediaRenderUtils() {
             else {
                 setTimeout(apply, 0);
             }
-            return;
+            return apply;
         }
         // A video reports its size once its metadata is known, a picture once
         // it is loaded.
         element.addEventListener(element instanceof HTMLVideoElement ? 'loadedmetadata' : 'load', apply, { once: true });
+        return apply;
     }
+    // Returns the closure that re-fits a scaled media to the current zone, so
+    // the runtime can replay it after a window resize; `null` when the media
+    // has no chosen scale.
     async function renderMedia(params) {
         const mediaPayload = params.payload?.media;
         if (!mediaPayload) {
-            return;
+            return null;
         }
         const mediaUrl = params.buildAuthorizedMediaUrl(mediaPayload.url);
         params.setActiveObjectUrl(null);
@@ -123,8 +131,9 @@ export function createOverlayLegacyMediaRenderUtils() {
         element.src = mediaUrl;
         const targetContainer = params.ensureMediaFrame() || params.mediaLayer;
         if (!(targetContainer instanceof HTMLElement)) {
-            return;
+            return null;
         }
+        let relayout = null;
         // An audio with a picture shows it while it plays. It comes first so
         // the header layout measures it as the media.
         if (mediaPayload.kind === 'audio' && typeof mediaPayload.artworkUrl === 'string' && mediaPayload.artworkUrl !== '') {
@@ -142,7 +151,7 @@ export function createOverlayLegacyMediaRenderUtils() {
             targetContainer.appendChild(artwork);
             // The artwork is what a scaled sound sizes: the audio element
             // itself stays invisible.
-            applyDisplayScale(params, artwork, targetContainer, mediaPayload);
+            relayout = applyDisplayScale(params, artwork, targetContainer, mediaPayload);
         }
         const attached = params.attachMediaElement({
             targetContainer,
@@ -151,18 +160,17 @@ export function createOverlayLegacyMediaRenderUtils() {
             onMediaReady: params.scheduleMediaHeaderLayout,
         });
         if (!attached) {
-            return;
+            return relayout;
         }
         params.scheduleMediaHeaderLayout();
         params.applyVolume();
         if (mediaPayload.kind === 'image') {
-            applyDisplayScale(params, element, targetContainer, mediaPayload);
-            return;
+            return applyDisplayScale(params, element, targetContainer, mediaPayload);
         }
         // A video takes the scale before it plays: its first frame already has
         // the size the overlay will show.
         if (mediaPayload.kind === 'video') {
-            applyDisplayScale(params, element, targetContainer, mediaPayload);
+            relayout = applyDisplayScale(params, element, targetContainer, mediaPayload);
         }
         const playableElement = element;
         params.setActivePlayableElement(playableElement);
@@ -210,6 +218,7 @@ export function createOverlayLegacyMediaRenderUtils() {
                 });
             }
         });
+        return relayout;
     }
     return {
         renderMedia,

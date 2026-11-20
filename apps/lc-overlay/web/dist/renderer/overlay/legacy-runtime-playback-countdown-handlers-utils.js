@@ -150,6 +150,7 @@ export function createOverlayLegacyRuntimePlaybackCountdownHandlersUtils() {
             clearCountdown();
             params.clearMediaHeaderLayoutRaf();
             params.state.activePlayableElement = null;
+            params.state.activeMediaRelayout = null;
             params.state.activeObjectUrl = params.overlayResetUtils.releaseObjectUrl(params.state.activeObjectUrl);
             params.resetMediaFrameState();
             params.overlayResetUtils.resetOverlayLayers({

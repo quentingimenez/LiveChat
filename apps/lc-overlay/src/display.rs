@@ -60,6 +60,62 @@ impl DisplayInfo {
     }
 }
 
+/// Géométrie physique de la fenêtre overlay : position et taille.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlayGeometry {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl OverlayGeometry {
+    pub const fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// Géométrie que l'overlay doit prendre pour couvrir `display`.
+    pub fn from_display(display: &DisplayInfo) -> Self {
+        let (x, y, width, height) = display.overlay_bounds();
+        Self::new(x, y, width, height)
+    }
+}
+
+/// Ce que la fenêtre overlay doit changer pour retrouver son écran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeometrySync {
+    /// La fenêtre est déjà à la bonne place et à la bonne taille.
+    Keep,
+    /// L'écran a bougé dans le bureau virtuel (disposition des écrans modifiée).
+    Move,
+    /// L'écran a changé de résolution.
+    Resize,
+    /// Les deux à la fois.
+    MoveAndResize,
+}
+
+/// Compare la géométrie de la fenêtre à celle de l'écran cible.
+///
+/// La garde topmost s'en sert : un changement de résolution, ou une disposition
+/// d'écrans modifiée pendant que l'overlay tourne, laisse sinon la fenêtre à son
+/// ancienne géométrie. Le média, centré dans la fenêtre, se retrouve alors
+/// décalé et peut sortir complètement de l'écran.
+pub fn geometry_sync(current: OverlayGeometry, target: OverlayGeometry) -> GeometrySync {
+    let moved = current.x != target.x || current.y != target.y;
+    let resized = current.width != target.width || current.height != target.height;
+    match (moved, resized) {
+        (true, true) => GeometrySync::MoveAndResize,
+        (true, false) => GeometrySync::Move,
+        (false, true) => GeometrySync::Resize,
+        (false, false) => GeometrySync::Keep,
+    }
+}
+
 /// `formatDisplayMenuLabel` legacy.
 pub fn format_display_menu_label(display: &DisplayInfo) -> String {
     match display.label() {
@@ -221,6 +277,43 @@ mod tests {
     fn overlay_bounds_are_full_display() {
         let (x, y, width, height) = display(1, -2560, None).overlay_bounds();
         assert_eq!((x, y, width, height), (-2560, 0, 2560, 1440));
+    }
+
+    #[test]
+    fn overlay_geometry_comes_from_the_display_bounds() {
+        assert_eq!(
+            OverlayGeometry::from_display(&display(1, -2560, None)),
+            OverlayGeometry::new(-2560, 0, 2560, 1440)
+        );
+    }
+
+    #[test]
+    fn an_overlay_already_on_its_screen_is_kept() {
+        let geometry = OverlayGeometry::new(0, 0, 2560, 1440);
+        assert_eq!(geometry_sync(geometry, geometry), GeometrySync::Keep);
+    }
+
+    #[test]
+    fn a_resolution_change_resizes_the_window() {
+        let current = OverlayGeometry::new(0, 0, 2560, 1440);
+        let target = OverlayGeometry::new(0, 0, 1920, 1080);
+        assert_eq!(geometry_sync(current, target), GeometrySync::Resize);
+    }
+
+    #[test]
+    fn a_display_moved_in_the_desktop_moves_the_window() {
+        // Primary screen resolution change shifts the secondary one: same
+        // size, new x.
+        let current = OverlayGeometry::new(-2560, 0, 2560, 1440);
+        let target = OverlayGeometry::new(-1920, 0, 2560, 1440);
+        assert_eq!(geometry_sync(current, target), GeometrySync::Move);
+    }
+
+    #[test]
+    fn a_display_moved_and_resized_does_both() {
+        let current = OverlayGeometry::new(-2560, 0, 2560, 1440);
+        let target = OverlayGeometry::new(0, 0, 1920, 1080);
+        assert_eq!(geometry_sync(current, target), GeometrySync::MoveAndResize);
     }
 
     #[test]

@@ -170,6 +170,7 @@
     window,
     applyLayout: (layout) => {
       overlayLegacyBootstrapUtils.applyOverlayLayout({ root: nodes.overlayRoot, layout });
+      renderHandlers.relayoutActiveMedia();
       mediaFrameHandlers.scheduleMediaHeaderLayout();
     },
     finishPlacement: (payload) => window.livechatOverlay.finishPlacement(payload),
@@ -217,6 +218,7 @@
         window.addEventListener('resize', handler);
       },
       scheduleMediaHeaderLayout: mediaFrameHandlers.scheduleMediaHeaderLayout,
+      relayoutActiveMedia: renderHandlers.relayoutActiveMedia,
       ensureTwitterWidgets: renderHandlers.ensureTwitterWidgets,
       rendererReady: () => {
         window.livechatOverlay.rendererReady();

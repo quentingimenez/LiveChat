@@ -11,7 +11,7 @@ use tauri::{
 };
 
 use crate::config::OverlayConfig;
-use crate::display::{self, DisplayInfo, DisplaySelection};
+use crate::display::{self, DisplayInfo, DisplaySelection, GeometrySync, OverlayGeometry};
 use crate::state::AppState;
 #[cfg(windows)]
 use crate::win32;
@@ -140,6 +140,16 @@ fn persist_display_selection(app: &AppHandle<Wry>, display: &DisplayInfo, config
     }
 }
 
+/// Applique une géométrie physique à la fenêtre overlay.
+fn apply_overlay_geometry(window: &WebviewWindow<Wry>, geometry: OverlayGeometry) {
+    if let Err(error) = window.set_size(PhysicalSize::new(geometry.width, geometry.height)) {
+        tracing::warn!(%error, "échec set_size overlay");
+    }
+    if let Err(error) = window.set_position(PhysicalPosition::new(geometry.x, geometry.y)) {
+        tracing::warn!(%error, "échec set_position overlay");
+    }
+}
+
 fn position_overlay(app: &AppHandle<Wry>, persist: bool) -> Option<DisplayInfo> {
     let Some(window) = window(app, OVERLAY_LABEL) else {
         tracing::warn!("fenêtre overlay absente");
@@ -149,13 +159,8 @@ fn position_overlay(app: &AppHandle<Wry>, persist: bool) -> Option<DisplayInfo> 
         tracing::warn!("aucun écran disponible");
         return None;
     };
-    let (x, y, width, height) = target.overlay_bounds();
-    if let Err(error) = window.set_size(PhysicalSize::new(width, height)) {
-        tracing::warn!(%error, "échec set_size overlay");
-    }
-    if let Err(error) = window.set_position(PhysicalPosition::new(x, y)) {
-        tracing::warn!(%error, "échec set_position overlay");
-    }
+    let geometry = OverlayGeometry::from_display(&target);
+    apply_overlay_geometry(&window, geometry);
     if persist {
         let config = app.state::<AppState>().config_snapshot();
         persist_display_selection(app, &target, &config);
@@ -163,10 +168,10 @@ fn position_overlay(app: &AppHandle<Wry>, persist: bool) -> Option<DisplayInfo> 
     tracing::info!(
         display_index = target.index,
         display_key = %target.key(),
-        x,
-        y,
-        width,
-        height,
+        x = geometry.x,
+        y = geometry.y,
+        width = geometry.width,
+        height = geometry.height,
         "overlay positionné sur l'écran sélectionné"
     );
     Some(target)
@@ -180,6 +185,43 @@ pub fn position_overlay_on_selected_display(app: &AppHandle<Wry>) -> Option<Disp
 /// Re-places the overlay after `settings_set` already persisted the selection.
 pub fn position_overlay_without_persisting(app: &AppHandle<Wry>) -> Option<DisplayInfo> {
     position_overlay(app, false)
+}
+
+/// Re-fits the overlay to its screen when the screen changed under it.
+///
+/// Windows leaves a running window at its old geometry when the resolution
+/// changes or the displays are rearranged. The media is centred in the window,
+/// so it then lands shifted, or completely outside the screen. The topmost
+/// guard calls this every tick: a change is followed within the interval,
+/// whether the overlay is visible or not (a reactivation must start on the
+/// right screen too).
+fn sync_overlay_geometry(app: &AppHandle<Wry>) -> bool {
+    let Some(window) = window(app, OVERLAY_LABEL) else {
+        return false;
+    };
+    let Some(target) = selected_display(app) else {
+        return false;
+    };
+    let target_geometry = OverlayGeometry::from_display(&target);
+    let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
+        return false;
+    };
+    let current = OverlayGeometry::new(position.x, position.y, size.width, size.height);
+    let action = display::geometry_sync(current, target_geometry);
+    if action == GeometrySync::Keep {
+        return false;
+    }
+    tracing::debug!(
+        ?action,
+        display_index = target.index,
+        "écran modifié pendant l'exécution : overlay repositionné"
+    );
+    apply_overlay_geometry(&window, target_geometry);
+    // A `displayKey` carries the size: keeping the old one would send the next
+    // launch back to the previous geometry.
+    let config = app.state::<AppState>().config_snapshot();
+    persist_display_selection(app, &target, &config);
+    true
 }
 
 /// Applies click-through, non-focusable, topmost and Win32 overlay policies,
@@ -326,6 +368,10 @@ pub fn spawn_topmost_guard(app: AppHandle<Wry>) {
         let Some(window) = app.get_webview_window(OVERLAY_LABEL) else {
             break;
         };
+        // A resolution change or a rearranged desktop leaves the window at its
+        // old geometry: re-fit it before the topmost work, so the next play
+        // already lands on the right screen.
+        sync_overlay_geometry(&app);
         let placing = crate::placement::is_active();
         if !overlay_should_show_now(&app) && !placing {
             // Overlay désactivé : aucune réaffirmation topmost ni lecture.

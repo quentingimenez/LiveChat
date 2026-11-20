@@ -51,6 +51,23 @@ describe('format', () => {
     expect(initials('')).toBe('');
   });
 
+  it('keeps a whole character for names starting with an astral letter', () => {
+    // Discord names can start with a mathematical bold letter (U+1D400 block).
+    // Taking `part[0]` kept half of the surrogate pair, which the browser drew
+    // as U+FFFD “�” in the avatar.
+    expect(initials('𝐒𝐢𝐦𝐨𝐧')).toBe('S');
+    expect(initials('𝒬𝓊𝑒𝓃𝓉𝒾𝓃')).toBe('Q');
+  });
+
+  it('never returns half a surrogate pair or a replacement character', () => {
+    for (const name of ['𝐒𝐢𝐦𝐨𝐧', '𝒬𝓊𝑒𝓃𝓉𝒾𝓃', '𝕊𝕦𝕡𝕖𝕣', '𐐀𐐨', '𝐒 🎮']) {
+      const value = initials(name);
+      expect(value).not.toContain('\uFFFD');
+      // encodeURIComponent throws on a lone surrogate.
+      expect(() => encodeURIComponent(value)).not.toThrow();
+    }
+  });
+
   it('compares overlay versions', () => {
     expect(versionBelow('3.1.2', '3.2.0')).toBe(true);
     expect(versionBelow('3.2', '3.2.0')).toBe(false);

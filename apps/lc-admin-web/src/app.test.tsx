@@ -23,11 +23,12 @@ function response(body: unknown, status = 200): Response {
   } as unknown as Response;
 }
 
-function mockAdminApi() {
+function mockAdminApi(userName = session.user.name) {
+  const currentSession = { ...session, user: { ...session.user, name: userName } };
   const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     const url = String(input);
     if (url === '/admin/auth/session') {
-      return response(session);
+      return response(currentSession);
     }
     if (url === '/admin/api/overview') {
       return response(overviewFixture);
@@ -72,6 +73,17 @@ describe('App', () => {
     expect((await screen.findAllByText('Les Zigotos du Dimanche')).length).toBeGreaterThan(0);
     expect(screen.getByText('Base SQLite')).toBeTruthy();
     await waitFor(() => expect(screen.getByText('Le chat qui tombe du canapé')).toBeTruthy());
+  });
+
+  it('draws one initial when the signed-in name starts with an astral letter', async () => {
+    mockAdminApi('𝐒𝐢𝐦𝐨𝐧');
+    window.scrollTo = vi.fn();
+
+    render(<App />);
+
+    const name = await screen.findByText('𝐒𝐢𝐦𝐨𝐧');
+    const avatar = name.closest('.user')?.querySelector('.avatar');
+    expect(avatar?.textContent).toBe('S');
   });
 
   it('renders every guild tab without crashing', async () => {

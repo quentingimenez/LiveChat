@@ -62,14 +62,24 @@ export function expiresIn(iso: string | null | undefined, now: number = Date.now
   return `dans ${Math.round(minutes / 1440)} j`;
 }
 
-/** Initials for the avatar stand-ins (Discord images stay optional in v2). */
+/** First Unicode code point, never half of a surrogate pair. */
+function firstCharacter(value: string): string {
+  return Array.from(value)[0] ?? '';
+}
+
+/**
+ * Initials for the avatar stand-ins (Discord images stay optional in v2).
+ * NFKC turns math-bold names (`𝐒𝐢𝐦𝐨𝐧`) into plain letters, and characters are
+ * cut by code point so the avatar never receives half a surrogate pair “�”.
+ */
 export function initials(name: string | null | undefined): string {
   const cleaned = String(name ?? '')
+    .normalize('NFKC')
     .replace(/[^\p{L}\p{N} ]/gu, '')
     .split(' ')
     .filter(Boolean)
     .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? '')
+    .map((part) => firstCharacter(part).toUpperCase())
     .join('');
   return cleaned;
 }

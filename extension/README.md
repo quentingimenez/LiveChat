@@ -105,8 +105,8 @@ Workflow: [`extension.yml`](../.github/workflows/extension.yml) (racine du monor
 
 - Sur `pull_request` et `push` sur `main` touchant `extension/`: checks + build + artifact zip.
 - Sur `push` sur `main`: mise à jour de la prerelease `extension-latest` avec le zip.
-- Sur tag `extension-v*` (ex: `extension-v0.1.0`): création automatique d’une GitHub Release avec le zip.
-- Sur tag `extension-v*` (ex: `extension-v0.1.0`): publication automatique sur Chrome Web Store (upload + publish) si les secrets sont configurés.
+- Sur tag `extension-v*` (ex: `extension-v0.1.0`): création automatique d’une GitHub Release avec le zip, puis envoi du zip au Chrome Web Store (job `publish-webstore`) pour mettre à jour les extensions installées.
+- Manuellement (`workflow_dispatch`): relancer le build, et cocher `publish_to_webstore` pour envoyer la version du dépôt sans poser de nouveau tag.
 
 Les releases de l’extension ne sont jamais marquées *Latest* (réservé à l’overlay, dont l’auto-update lit la release *Latest* du monorepo).
 
@@ -117,16 +117,19 @@ git tag extension-v0.1.0
 git push origin extension-v0.1.0
 ```
 
-## Auto-update via Chrome Web Store (basé sur GitHub)
+## Auto-update via Chrome Web Store
 
-L’auto-update des utilisateurs finaux passe par le Chrome Web Store.
-Le monorepo publie automatiquement l’extension lors d’un push de tag `extension-v*`.
+L’auto-update des utilisateurs finaux passe par le Chrome Web Store : la CI envoie
+le paquet et soumet la version à la relecture (API v2, `media:upload` puis
+`publishers.items:publish`). Une fois approuvée, Chrome met à jour l’extension
+installée sans action de l’utilisateur.
 
 ### Secrets GitHub requis
 
 Configurer ces secrets dans `Settings > Secrets and variables > Actions`:
 
-- `CWS_EXTENSION_ID`: ID de l’extension Chrome Web Store.
+- `CWS_PUBLISHER_ID`: ID éditeur (premier segment de l’URL de la console, `devconsole/<publisherId>/...`).
+- `CWS_EXTENSION_ID`: ID de l’article Chrome Web Store (32 caractères, dans l’URL de l’article).
 - `CWS_CLIENT_ID`: OAuth Client ID Google Cloud.
 - `CWS_CLIENT_SECRET`: OAuth Client Secret Google Cloud.
 - `CWS_REFRESH_TOKEN`: refresh token OAuth avec scope Chrome Web Store.
@@ -136,12 +139,13 @@ Configurer ces secrets dans `Settings > Secrets and variables > Actions`:
 1. Créer un projet Google Cloud.
 2. Activer l’API Chrome Web Store.
 3. Créer des credentials OAuth 2.0 (type Desktop ou Web).
-4. Générer un refresh token OAuth avec le scope:
-   `https://www.googleapis.com/auth/chromewebstore`
-5. Renseigner les secrets dans GitHub.
+4. Générer un refresh token OAuth avec le scope `https://www.googleapis.com/auth/chromewebstore` (le plus simple : OAuth Playground avec ses propres identifiants, ou `gcloud auth application-default` puis l’échange `grant_type=refresh_token`).
+5. Renseigner les 5 secrets dans GitHub.
 
-Ensuite, chaque tag `extension-v*` poussé sur GitHub déclenche:
-- build + zip,
-- upload GitHub Release,
-- upload vers Chrome Web Store,
-- publish de la nouvelle version.
+### Mise à jour de l’article (fiche store)
+
+L’API ne touche que le paquet : logo, captures, description, catégorie et champs de
+confidentialité se modifient à la main dans la
+[console développeur](https://chrome.google.com/webstore/devconsole). Les textes et
+visuels prêts à copier sont dans [`docs/store/`](../docs/store/).
+

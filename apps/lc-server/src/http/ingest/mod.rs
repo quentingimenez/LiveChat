@@ -17,8 +17,15 @@
 //! créés par appairage, identifiés par le hash SHA-256 de leur token, sont
 //! acceptés. Le token global n'est conservé que pour parité de configuration.
 
+// `Result<_, Response>` est le type d'erreur natif des handlers axum : le
+// boxing systématique dégraderait la lisibilité sans gain sur ces chemins I/O.
+// Le lint `result_large_err` est donc neutralisé à l'échelle du module, comme
+// pour `http::overlay`.
+#![allow(clippy::result_large_err)]
+
 pub mod auth;
 pub mod body;
+pub mod file;
 pub mod pair;
 pub mod submit;
 
@@ -42,6 +49,8 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/ingest", post(submit::submit))
         .route("/ingest/", post(submit::submit))
+        .route("/ingest/file", post(file::upload))
+        .route("/ingest/file/", post(file::upload))
         .route("/ingest/pair/consume", post(pair::consume))
         .route("/ingest/pair/consume/", post(pair::consume))
 }

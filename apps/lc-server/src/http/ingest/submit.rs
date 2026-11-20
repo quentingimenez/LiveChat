@@ -25,6 +25,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Value};
+use time::UtcDateTime;
 
 use lc_domain::entities::{GuildMember, IngestClient, MediaAsset};
 use lc_domain::ids::GuildMemberId;
@@ -56,7 +57,7 @@ const MEMBER_AUTHOR_PREFIX: &str = "member:";
 /// issued from Discord store the Discord snowflake, resolved against
 /// `guild_members.discord_user_id` (the same rule as `admin/ingest_authors.rs`
 /// uses to list known authors). A removed member resolves to `None`.
-async fn owning_member(
+pub(super) async fn owning_member(
     db: &lc_db::Db,
     client: &IngestClient,
 ) -> Result<Option<GuildMember>, lc_db::DbError> {
@@ -219,14 +220,58 @@ pub async fn submit(
         return invalid_payload(None);
     }
 
+    let outcome = IngestOutcome {
+        asset: asset.as_ref(),
+        service: service.as_ref(),
+        job_text: job_text.as_deref(),
+        title: None,
+        show_text: job_show_text,
+        author_name: job_author_name.as_str(),
+        author_image: job_author_image.as_deref(),
+        duration_sec: request.duration_sec,
+        save_to_board: request.save_to_board,
+    };
+    finish_ingest(&state, db, &client, outcome, now).await
+}
+
+/// Validated ingest result, shared by the JSON and raw-file routes.
+pub(super) struct IngestOutcome<'a> {
+    /// Ingested media, if the request carried one.
+    pub(super) asset: Option<&'a MediaAsset>,
+    /// Media service that produced `asset` (required by the board branch).
+    pub(super) service: Option<&'a MediaService>,
+    /// Text already built for playback (rich payload included).
+    pub(super) job_text: Option<&'a str>,
+    /// Board title override (raw-file uploads only).
+    pub(super) title: Option<&'a str>,
+    /// Whether the overlay displays `job_text`.
+    pub(super) show_text: bool,
+    /// Token-bound author display name.
+    pub(super) author_name: &'a str,
+    /// Token-bound author avatar.
+    pub(super) author_image: Option<&'a str>,
+    /// Requested display duration in seconds.
+    pub(super) duration_sec: Option<i64>,
+    /// Store the media on the board instead of creating a playback job.
+    pub(super) save_to_board: bool,
+}
+
+/// Persists the board item or the playback job and builds the 201 response.
+pub(super) async fn finish_ingest(
+    state: &AppState,
+    db: &lc_db::Db,
+    client: &IngestClient,
+    outcome: IngestOutcome<'_>,
+    now: UtcDateTime,
+) -> Response {
     let guild_id = client.guild_id.clone();
 
     // 8. Enregistrement sur le board média (pas de job, parité legacy).
-    if request.save_to_board {
-        let Some(asset) = asset.as_ref() else {
+    if outcome.save_to_board {
+        let Some(asset) = outcome.asset else {
             return invalid_payload(Some("saveToBoard requires media"));
         };
-        let Some(media_service) = service.as_ref() else {
+        let Some(media_service) = outcome.service else {
             return media_service_error(MediaServiceError::unavailable(
                 "service média indisponible pour saveToBoard",
             ));
@@ -240,10 +285,10 @@ pub async fn submit(
             media_service.config(),
             &guild_id,
             asset,
-            None,
+            outcome.title,
             Some(client.created_by_discord_user_id.as_str()),
-            Some(job_author_name.as_str()),
-            request.duration_sec,
+            Some(outcome.author_name),
+            outcome.duration_sec,
             now,
         )
         .await;
@@ -276,12 +321,12 @@ pub async fn submit(
     // 9. Création du job de lecture puis notification du hook temps réel.
     let spec = JobSpec {
         guild_id: guild_id.clone(),
-        media: asset.as_ref(),
-        text: job_text.as_deref(),
-        show_text: job_show_text,
-        author_name: Some(job_author_name.as_str()),
-        author_image: job_author_image.as_deref(),
-        duration_sec: request.duration_sec,
+        media: outcome.asset,
+        text: outcome.job_text,
+        show_text: outcome.show_text,
+        author_name: Some(outcome.author_name),
+        author_image: outcome.author_image,
+        duration_sec: outcome.duration_sec,
         priority: 0,
     };
 
@@ -292,8 +337,8 @@ pub async fn submit(
                 "accepted": true,
                 "jobId": job.id.to_canonical(),
                 "guildId": guild_id.as_str(),
-                "hasMedia": asset.is_some(),
-                "hasText": job_text.is_some(),
+                "hasMedia": outcome.asset.is_some(),
+                "hasText": outcome.job_text.is_some(),
             });
             (StatusCode::CREATED, Json(payload)).into_response()
         }

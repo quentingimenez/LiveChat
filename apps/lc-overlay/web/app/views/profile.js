@@ -158,7 +158,7 @@ export function openGuildDialog(guild) {
           copyButton('Copier le code', 'Code de l’extension copié.', () => extensionCodeText),
         ),
       ),
-      h('p', { class: 'profile-code-note' }, 'À saisir dans les options de l’extension. Expire dans 10 min.'),
+      h('p', { class: 'profile-code-note' }, 'À saisir dans les options de l’extension ou dans le raccourci iOS. Expire dans 10 min.'),
     );
     const makeExtensionCode = async () => {
       const body = await run(() => api('POST', '/overlay/ingest-code'));
@@ -302,7 +302,7 @@ export function openGuildDialog(guild) {
                   'div',
                   { class: 'profile-device-text' },
                   h('p', { class: 'profile-device-title' }, 'Extension navigateur'),
-                  h('p', { class: 'profile-device-desc' }, 'Envoie des médias depuis ton navigateur.'),
+                  h('p', { class: 'profile-device-desc' }, 'Envoie des médias depuis ton navigateur ou un Raccourci iOS.'),
                 ),
                 h('button', { class: 'btn', type: 'button', onClick: makeExtensionCode }, 'Créer un code'),
               ),

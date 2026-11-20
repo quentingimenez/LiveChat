@@ -70,6 +70,9 @@ CONFIDENTIALITÉ
 | `screenshot-5-youtube-watch.png` | Une vidéo YouTube : le bouton « LC » dans la barre d'actions. |
 
 `icon-128.png` est le logo de l'extension (le même que `extension/public/icons/icon-128.png`).
+Si la fiche doit passer sur un fond clair, `docs/brand/png/app-icon-light-128.png`
+(tuile claire) et `docs/brand/png/app-icon-transparent-128.png` (sans fond) sont
+les variantes prêtes ; `icon-128.png` reste celle livrée dans l'extension.
 
 ## Pratiques de confidentialité
 

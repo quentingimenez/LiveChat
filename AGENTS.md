@@ -25,17 +25,24 @@ attendu :
    minuscules`, une ligne, sans `Co-Authored-By` (commitlint, `.husky/commit-msg`).
    Committer seulement les changements de la tâche ; ne jamais committer sur
    `main`, ne jamais forcer une branche partagée.
-3. **PR en fin de tâche**, vers `main` :
+3. **Montrer le résultat et attendre la validation, avant toute PR.** Quand le
+   code et les tests locaux sont prêts, présenter le résultat dans la session :
+   fichiers touchés et diff (ou ses points clés), tests ajoutés, commandes
+   lancées avec leur résultat, et pour un changement visuel une capture
+   avant/après. La PR n'est ouverte qu'après le « go » explicite de
+   l'utilisateur ; les corrections demandées se font sur la même branche, puis
+   le résultat est représenté. **Aucune PR ne s'ouvre sans cette validation.**
+4. **PR**, vers `main` :
 
    ```bash
    git push -u origin <branche>
    gh pr create --base main --title "<titre conventional>" --body-file <fichier>
    ```
 
-   Corps en français avec `## Problème`, `## Correctif`, `## Tests` (voir les PR
-   précédentes). Ne pas ouvrir de PR brouillon sans demande : une PR signifie
-   « prêt à être vérifié et mergé ».
-4. **Vérifier la CI de la PR avant tout merge** :
+   Corps en français avec `## Problème`, `## Correctif`, `## Tests`, reprenant
+   ce qui a été présenté et validé (voir les PR précédentes). Ne pas ouvrir de
+   PR brouillon sans demande : une PR signifie « prêt à être vérifié et mergé ».
+5. **Vérifier la CI de la PR avant tout merge** :
 
    ```bash
    gh pr checks --watch
@@ -46,7 +53,7 @@ attendu :
    corriger sur la même branche, pousser, revérifier — jamais merger rouge.
    CI bloquée par l'infrastructure (runner indisponible, file d'attente) :
    rapporter et attendre, ne pas merger.
-5. **Merger soi-même** quand tout est vert :
+6. **Merger soi-même** quand tout est vert :
 
    ```bash
    gh pr merge <numéro> --merge
@@ -56,7 +63,7 @@ attendu :
    branche ensuite (`--delete-branch` au merge, ou
    `git push origin --delete <branche>`). Jamais `--admin`, jamais de merge sans
    checks verts.
-6. **Après le merge** : mettre `main` à jour en fast-forward, supprimer la
+7. **Après le merge** : mettre `main` à jour en fast-forward, supprimer la
    branche locale, et rapporter à l'utilisateur : branche, URL de la PR, checks,
    commit de merge.
 
@@ -132,7 +139,8 @@ parallèle, laisser les commandes globales au Lead quand plusieurs agents tourne
 - **Release** : suivre `.claude/skills/release/SKILL.md` ; la PR `release/*` suit
   quand même ce flux, et le « go » de release reste celui de l'utilisateur.
 - **Instruction contraire explicite** (« commit sur cette branche », « ouvre la
-  PR mais ne merge pas », plan approuvé qui attend un go) : elle l'emporte pour
-  cette tâche ; le défaut reste le flux complet.
+  PR sans attendre ma validation », « ouvre la PR mais ne merge pas », plan
+  approuvé qui attend un go) : elle l'emporte pour cette tâche ; le défaut reste
+  le flux complet.
 - **PR d'un autre agent** : ne pas la merger sans demande, ne pas réécrire sa
   branche.

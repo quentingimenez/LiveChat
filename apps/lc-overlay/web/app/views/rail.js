@@ -3,7 +3,7 @@
 import { run } from '../core/api.js';
 import { openContextMenu } from '../core/contextmenu.js';
 import { h, icon } from '../core/dom.js';
-import { initials } from '../core/format.js';
+import { guildAcronym, guildAcronymFontSize } from '../core/format.js';
 import { invoke } from '../core/ipc.js';
 import { guildLabel, state } from '../core/state.js';
 import { applyGuilds } from '../data.js';
@@ -32,9 +32,20 @@ function dotClass(guild) {
   }
 }
 
+// Icon fallback of a guild without a picture: Discord's acronym, clipped to the
+// tile when the name has many words.
+function acronymFace(label) {
+  const acronym = guildAcronym(label) || '?';
+  return h(
+    'span',
+    { class: 'guild-acronym', style: `font-size: ${guildAcronymFontSize(acronym)}px` },
+    acronym,
+  );
+}
+
 function guildFace(label, iconUrl) {
   if (!iconUrl) {
-    return initials(label);
+    return acronymFace(label);
   }
   const image = h('img', {
     class: 'guild-icon',
@@ -42,14 +53,14 @@ function guildFace(label, iconUrl) {
     alt: '',
     draggable: 'false',
     referrerpolicy: 'no-referrer',
-    // A dead icon URL falls back to the initials instead of an empty button.
+    // A dead icon URL falls back to the acronym instead of an empty button.
     onError: () => {
       const button = image.parentElement;
       if (button) {
         // Restore the plain active background: the fallback is text, not an icon.
         button.classList.remove('has-icon');
       }
-      image.replaceWith(initials(label));
+      image.replaceWith(acronymFace(label));
     },
   });
   return image;

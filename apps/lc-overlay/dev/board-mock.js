@@ -86,6 +86,9 @@
           { membership: membership('333', 'TV du salon', { muted: true, guildIconUrl: guildIconUrl('guild-333.png') }), connection: connection('disabled'), statusLabel: 'désactivé', playing: false },
           // An icon that fails to load: the rail falls back to the initials.
           { membership: membership('444', 'L’Escale 🔱', { guildIconUrl: 'https://cdn.discordapp.com/icons/0/missing.png' }), connection: connection('connected'), statusLabel: 'connecté', playing: false },
+          // No icon at all: the rail shows Discord's acronym ("Sdb"), not the
+          // initials of the first two words ("SD").
+          { membership: membership('555', 'Serveur de babz', {}), connection: connection('connected'), statusLabel: 'connecté', playing: false },
         ],
   };
 

@@ -4,7 +4,7 @@
 // the copy points to the same media file, so it is immediate.
 
 import { h } from '../core/dom.js';
-import { initials } from '../core/format.js';
+import { guildAcronym } from '../core/format.js';
 import { invoke } from '../core/ipc.js';
 import { batches, importSummary, importTargets } from '../core/selection.js';
 import { describeError, guildLabel, state } from '../core/state.js';
@@ -14,8 +14,8 @@ import { openDialog } from '../core/ui.js';
 function guildChoice(guild, chosen, onChoose) {
   const label = guildLabel(guild);
   const iconUrl = guild.membership.guildIconUrl;
-  const fallback = () => h('span', { class: 'guild-choice-icon' }, initials(label));
-  // A dead icon URL falls back to the initials, like the rail.
+  const fallback = () => h('span', { class: 'guild-choice-icon' }, guildAcronym(label) || '?');
+  // A dead icon URL falls back to the acronym, like the rail.
   const face = iconUrl
     ? h('img', { class: 'guild-choice-icon', src: iconUrl, alt: '', referrerpolicy: 'no-referrer', onError: () => face.replaceWith(fallback()) })
     : fallback();

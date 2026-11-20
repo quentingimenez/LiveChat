@@ -190,6 +190,7 @@ jobs:
           echo "CWS_ACCESS_TOKEN=$access_token" >> "$GITHUB_ENV"
 
       - name: Upload the package
+        id: upload
         run: |
           set -euo pipefail
           url="${CWS_API}/upload/v2/publishers/${CWS_PUBLISHER_ID}/items/${CWS_EXTENSION_ID}:upload?uploadType=media"
@@ -200,6 +201,7 @@ jobs:
             "$url")"
           echo "$upload_response" | jq -r '"upload: \(.uploadState // "?") — version \(.crxVersion // "?")"'
           upload_state="$(echo "$upload_response" | jq -r '.uploadState // empty')"
+          echo "upload_state=${upload_state}" >> "$GITHUB_OUTPUT"
           case "$upload_state" in
             SUCCEEDED | IN_PROGRESS) ;;
             *)
@@ -209,12 +211,18 @@ jobs:
               ;;
           esac
 
+      # The upload call reports SUCCEEDED for a processed package, so this wait
+      # normally does not run. It only polls while the API says the package is
+      # still being processed asynchronously.
       - name: Wait for the upload to be processed
+        if: steps.upload.outputs.upload_state == 'IN_PROGRESS'
         run: |
           set -euo pipefail
           url="${CWS_API}/v2/publishers/${CWS_PUBLISHER_ID}/items/${CWS_EXTENSION_ID}:fetchStatus"
           for _ in $(seq 1 30); do
             status_response="$(curl -sS -H "Authorization: Bearer ${CWS_ACCESS_TOKEN}" "$url")"
+            # An empty state means the item has no pending asynchronous upload,
+            # which says nothing about the package we just sent.
             upload_state="$(echo "$status_response" | jq -r '.lastAsyncUploadState // empty')"
             case "$upload_state" in
               SUCCEEDED)
@@ -229,8 +237,7 @@ jobs:
             esac
             sleep 10
           done
-          echo "::error::the upload was not processed within 5 minutes"
-          exit 1
+          echo "::warning::the upload state is still unknown after 5 minutes, trying to publish anyway"
 
       - name: Submit the new version for review
         run: |

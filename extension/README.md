@@ -124,6 +124,11 @@ le paquet et soumet la version à la relecture (API v2, `media:upload` puis
 `publishers.items:publish`). Une fois approuvée, Chrome met à jour l’extension
 installée sans action de l’utilisateur.
 
+L’upload répond `SUCCEEDED` dès que le paquet est accepté : l’attente de
+`lastAsyncUploadState` ne s’exécute que si l’API annonce un traitement
+asynchrone (`IN_PROGRESS`), pour ne pas bloquer la publication sur un champ que
+l’API omet.
+
 ### Secrets GitHub requis
 
 Configurer ces secrets dans `Settings > Secrets and variables > Actions`:

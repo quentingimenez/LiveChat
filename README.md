@@ -14,6 +14,7 @@ dans un overlay transparent posé sur l'écran du streamer.
 flowchart LR
   discord[Discord<br/>commandes slash] --> server
   extension[Extension navigateur] -->|POST /ingest| server
+  shortcut[Raccourci iOS] -->|POST /ingest/file| server
   board[Board de l'overlay<br/>médias, file, upload] -->|API REST| server
   server[lc-server<br/>Rust, bot Discord + API] -->|WebSocket v2| overlay[lc-overlay<br/>Tauri 2, Windows]
 ```
@@ -53,6 +54,9 @@ auteur, légende et compte à rebours ; tout le reste de l'écran reste transpar
   rôle, journal d'activité ; connexion par secret ou compte Discord.
 - **Extension Chromium** : envoi en un clic depuis YouTube, TikTok et X (bouton
   in-page, menu contextuel, popup avec texte) et appairage par code.
+- **Raccourci iOS** : envoi depuis le menu Partage de l'iPhone, pour jouer un
+  média ou l'ajouter à la board (voir
+  [`docs/ios-share-shortcut.md`](docs/ios-share-shortcut.md)).
 
 ## Installation
 
@@ -81,6 +85,12 @@ docker pull ghcr.io/quentingimenez/livechat-server:latest
 Zip attaché aux [releases](https://github.com/quentingimenez/LiveChat/releases) —
 la release `extension-latest` est recompilée en continu depuis `main` — ou
 chargement en mode développeur, voir [`extension/README.md`](extension/README.md).
+
+### Raccourci iOS
+
+Le menu Partage d'iOS peut envoyer un média à LiveChat via un Raccourci, sans
+app native ni compte Apple Developer : appairage, création du Raccourci, limites
+et révocation dans [`docs/ios-share-shortcut.md`](docs/ios-share-shortcut.md).
 
 ## Contenu du dépôt
 

@@ -48,7 +48,9 @@ et de **choisir lui-même le chiffre à incrémenter** de chaque composant.
 - Windows PowerShell 5.1 en local (pas de `&&`, `??`, `?:`). Les scripts locaux
   sont en PowerShell, compatibles 5.1.
 - Fichiers de version par composant :
-  - serveur : `[workspace.package] version` de `Cargo.toml` (+ `Cargo.lock`) ;
+  - serveur : `[workspace.package] version` de `Cargo.toml` (+ `Cargo.lock`, et
+    `fuzz/Cargo.lock` : son workspace à part répète la version des crates liées
+    par les cibles de fuzzing, testées en `--locked` par la nightly) ;
     tag `server-vX.Y.Z` ; image `ghcr.io/quentingimenez/livechat-server:X.Y.Z`.
   - overlay : `apps/lc-overlay/tauri.conf.json` `version` et
     `apps/lc-overlay/Cargo.toml` `version` (+ `Cargo.lock`) ; tag `overlay-vX.Y.Z`.

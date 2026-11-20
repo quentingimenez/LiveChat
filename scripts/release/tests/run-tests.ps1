@@ -59,7 +59,7 @@ function New-TestRepo {
     $dir = Join-Path ([IO.Path]::GetTempPath()) ("lc-release-test-" + [guid]::NewGuid().ToString('N').Substring(0, 12))
     New-Item -ItemType Directory -Path $dir | Out-Null
     [void]$script:TempDirs.Add($dir)
-    $files = @('Cargo.toml', 'Cargo.lock', 'apps/lc-overlay/tauri.conf.json',
+    $files = @('Cargo.toml', 'Cargo.lock', 'fuzz/Cargo.lock', 'apps/lc-overlay/tauri.conf.json',
         'extension/public/manifest.json', 'extension/package.json', 'extension/package-lock.json')
     $members = Get-Content -Raw (Join-Path $script:RepoRoot 'Cargo.toml')
     foreach ($m in [regex]::Matches(([regex]::Match($members, '(?s)members\s*=\s*\[(.*?)\]').Groups[1].Value), '"([^"]+)"')) {

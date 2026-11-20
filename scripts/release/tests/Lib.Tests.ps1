@@ -10,6 +10,10 @@ Test-Case 'Reads versions of the real repo' {
     Assert-Equal 1 @($server | Where-Object { $_.File -eq 'Cargo.toml' }).Count 'Cargo.toml sources'
     Assert-Equal $members.Count @($server | Where-Object { $_.File -eq 'Cargo.lock' }).Count 'Cargo.lock sources'
     Assert-True (@($server | Where-Object { $_.Label -eq 'Cargo.lock lc-server' }).Count -eq 1) 'lc-server lock label'
+    # fuzz/Cargo.lock is its own workspace: it only repeats the version of the
+    # server crates the fuzz targets link.
+    Assert-Equal 3 @($server | Where-Object { $_.File -eq 'fuzz/Cargo.lock' }).Count 'fuzz lock sources'
+    Assert-True (@($server | Where-Object { $_.Label -eq 'fuzz/Cargo.lock lc-media' }).Count -eq 1) 'lc-media fuzz lock label'
 
     Assert-Equal 3 @(Get-ComponentVersionSources -Root $script:RepoRoot -Component overlay).Count 'overlay sources'
     Assert-Equal 4 @(Get-ComponentVersionSources -Root $script:RepoRoot -Component extension).Count 'extension sources'
@@ -29,6 +33,20 @@ Test-Case 'Detects a diverging file' {
     Assert-Equal 1 $errors.Count 'errors'
     Assert-True ($errors[0] -like '*extension/package.json*') "message names the file: $($errors[0])"
     Assert-True ($errors[0] -like '*9.9.9*') "message names the version: $($errors[0])"
+}
+
+Test-Case 'Detects a stale fuzz lockfile' {
+    # fuzz/ has its own lockfile: a server bump that forgets it leaves
+    # `cargo test --manifest-path fuzz/Cargo.toml --locked` failing in the nightly.
+    $repo = New-TestRepo
+    $path = Join-Path $repo 'fuzz/Cargo.lock'
+    $text = [IO.File]::ReadAllText($path)
+    $stale = [regex]::Replace($text, '(?m)^(name = "lc-media"\r?\nversion = ")[^"]+(")', '${1}0.0.0${2}')
+    [IO.File]::WriteAllText($path, $stale)
+    $errors = @(Test-VersionConsistency -Root $repo)
+    Assert-Equal 1 $errors.Count 'errors'
+    Assert-True ($errors[0] -like '*fuzz/Cargo.lock*') "message names the file: $($errors[0])"
+    Assert-True ($errors[0] -like '*0.0.0*') "message names the version: $($errors[0])"
 }
 
 Test-Case 'Semver compares numerically' {

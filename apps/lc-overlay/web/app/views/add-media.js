@@ -19,6 +19,7 @@ import {
 import { activeGuild, can, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import { openDialog } from '../core/ui.js';
+import { defaultAction, showsPlayFields } from '../core/add-media-rules.js';
 import { openFileImageEditor } from './editor/index.js';
 import { startFileUpload, startLinkUpload } from './uploads.js';
 
@@ -32,16 +33,16 @@ export function openAddDialog(options) {
   openDialog((close) => {
     let mode = 'link';
     let chosenFiles = [];
-    // The action the chosen submit button sets: adding to the board, or
-    // playing once. A member who cannot add only gets "Jouer une fois", so it
-    // is also the Enter key's action.
+    // Two actions share the form: add the media to the board, or play it once.
+    // They do not carry the same options (a caption and a display time only
+    // exist for a play once), so the action is chosen before filling the form:
+    // the fields that do not apply are hidden and disabled, never silently
+    // dropped at submit time.
     const canAdd = can('addMedia');
     const canPlay = can('play');
-    let playOnce = !canAdd && canPlay;
-    // The text is a play caption: only a member who can play may type one,
-    // and it is sent for "Jouer une fois" only, never stored on the board
-    // item. It stays visible so nothing appears mid-dialog.
-    const showMessage = canPlay;
+    let action = defaultAction(canAdd, canPlay);
+    let playOnce = action === 'play';
+    const dualAction = canAdd && canPlay;
 
     // --- link fields ---
     const linkUrl = h('input', { class: 'field', type: 'url', placeholder: 'https://…', required: true, value: prefill });
@@ -49,10 +50,10 @@ export function openAddDialog(options) {
     const linkMessage = h('textarea', { class: 'field', rows: '2', maxlength: '500', placeholder: 'Légende affichée sur les overlays' });
     const linkMessageLabel = h(
       'label',
-      { hidden: !showMessage },
-      'Légende (facultatif)',
+      { hidden: true },
+      'Légende pour « Jouer une fois » (facultatif)',
       linkMessage,
-      h('span', { class: 'file-hint' }, 'Affichée sur les overlays pendant « Jouer une fois ».'),
+      h('span', { class: 'file-hint' }, 'Affichée pendant la lecture ; non enregistrée sur le board.'),
     );
     // The display time is the length of a play-once image; a video or an audio
     // keeps its own length, so the field only shows when the media may be an
@@ -75,7 +76,7 @@ export function openAddDialog(options) {
         placeholder: durationPlaceholder,
       });
     const durationLabel = (input) => h('label', null, 'Durée d’affichage (s)', input);
-    const durationHint = () => h('p', { class: 'file-hint' }, 'Une image reste affichée ce temps\u00a0; une vidéo ou un son garde sa durée.');
+    const durationHint = () => h('p', { class: 'file-hint' }, 'Pour « Jouer une fois » : une image reste affichée ce temps\u00a0; une vidéo ou un son garde sa durée.');
     const linkDuration = durationInput();
     const linkDurationField = h('div', { class: 'stack', hidden: !canPlay }, durationLabel(linkDuration), durationHint());
 
@@ -97,10 +98,10 @@ export function openAddDialog(options) {
     const fileMessage = h('textarea', { class: 'field', rows: '2', maxlength: '500', placeholder: 'Légende affichée sur les overlays' });
     const fileMessageLabel = h(
       'label',
-      { hidden: !showMessage },
-      'Légende (facultatif)',
+      { hidden: true },
+      'Légende pour « Jouer une fois » (facultatif)',
       fileMessage,
-      h('span', { class: 'file-hint' }, 'Affichée sur les overlays pendant « Jouer une fois ».'),
+      h('span', { class: 'file-hint' }, 'Affichée pendant la lecture ; non enregistrée sur le board.'),
     );
     const fileDuration = durationInput();
     const fileDurationField = h('div', { class: 'stack', hidden: true }, durationLabel(fileDuration), durationHint());
@@ -126,37 +127,52 @@ export function openAddDialog(options) {
 
     const linkButton = h('button', { class: 'btn mode-choice', type: 'button', 'aria-pressed': 'true', onClick: () => setMode('link') }, 'Lien');
     const fileButton = h('button', { class: 'btn mode-choice', type: 'button', 'aria-pressed': 'false', onClick: () => setMode('file') }, 'Fichier');
-    // Each submit button carries its action. A member who cannot add only
-    // gets "Jouer une fois"; a member who cannot play only adds. The DOM order
-    // matches the visual order (secondary action, then primary); Enter is
-    // handled below so it still picks the primary action.
-    const submitAdd = canAdd
-      ? h('button', { class: 'btn is-primary', type: 'submit', onClick: () => { playOnce = false; } }, 'Ajouter au board')
+    // The action is picked before the fields, not by the submit button: the
+    // caption and the display time only exist for a play once, so they must
+    // be known to be irrelevant before the user fills them.
+    const addActionButton = dualAction
+      ? h('button', { class: 'btn mode-choice', type: 'button', 'aria-pressed': String(action === 'add'), onClick: () => setAction('add') }, 'Ajouter au board')
       : null;
-    const submitOnce = canPlay
-      ? h('button', { class: 'btn', type: 'submit', onClick: () => { playOnce = true; } }, 'Jouer une fois')
+    const playActionButton = dualAction
+      ? h('button', { class: 'btn mode-choice', type: 'button', 'aria-pressed': String(action === 'play'), onClick: () => setAction('play') }, 'Jouer une fois')
       : null;
+    const actionRow = dualAction
+      ? h('div', { class: 'add-media-mode' },
+        h('span', { class: 'add-media-mode-label' }, 'Action'),
+        h('div', { class: 'add-media-modes', role: 'group', 'aria-label': 'Action' }, addActionButton, playActionButton))
+      : null;
+    const submit = h('button', { class: 'btn is-primary', type: 'submit' }, action === 'play' ? 'Jouer une fois' : 'Ajouter au board');
 
     function updateSubmit() {
-      const empty = mode === 'file' && chosenFiles.length === 0;
-      if (submitAdd) {
-        submitAdd.disabled = empty;
-      }
-      if (submitOnce) {
-        submitOnce.disabled = empty;
-      }
+      submit.disabled = mode === 'file' && chosenFiles.length === 0;
     }
 
-    // A duration field that does not apply is hidden *and* disabled: an
-    // invalid value typed before a mode switch (0, 700…) would otherwise still
-    // block the form's native validation.
-    function syncDuration() {
-      const showLink = canPlay && mode === 'link';
+    // A field that does not apply is hidden *and* disabled: an invalid value
+    // typed before a switch (0, 700…) would otherwise still block the form's
+    // native validation.
+    function syncFields() {
+      const play = showsPlayFields(action, canPlay);
+      linkMessageLabel.hidden = !play;
+      linkMessage.disabled = !play;
+      fileMessageLabel.hidden = !play;
+      fileMessage.disabled = !play;
+      const showLink = play && mode === 'link';
       linkDuration.disabled = !showLink;
-      linkDurationField.hidden = !canPlay;
-      const showFile = canPlay && mode === 'file' && chosenFiles.some(mayBeImage);
+      linkDurationField.hidden = !showLink;
+      const showFile = play && mode === 'file' && chosenFiles.some(mayBeImage);
       fileDuration.disabled = !showFile;
       fileDurationField.hidden = !showFile;
+    }
+
+    function setAction(next) {
+      action = next;
+      playOnce = action === 'play';
+      addActionButton.setAttribute('aria-pressed', String(action === 'add'));
+      playActionButton.setAttribute('aria-pressed', String(action === 'play'));
+      addActionButton.classList.toggle('is-active', action === 'add');
+      playActionButton.classList.toggle('is-active', action === 'play');
+      submit.textContent = playOnce ? 'Jouer une fois' : 'Ajouter au board';
+      syncFields();
     }
 
     function setMode(next) {
@@ -170,7 +186,7 @@ export function openAddDialog(options) {
       filePanel.hidden = isLink;
       linkUrl.disabled = !isLink;
       updateSubmit();
-      syncDuration();
+      syncFields();
     }
 
     function renderFileList() {
@@ -205,31 +221,16 @@ export function openAddDialog(options) {
       fileTitleLabel.hidden = chosenFiles.length !== 1;
       multipleHint.hidden = chosenFiles.length <= 1;
       updateSubmit();
-      syncDuration();
+      syncFields();
     }
 
     const form = h(
       'form',
       {
         class: 'stack',
-        // Enter in a single-line field submits, like the form's default
-        // behaviour, but always with the primary action. Buttons and the
-        // textarea keep their native behaviour.
-        onKeydown: (event) => {
-          if (event.key !== 'Enter' || event.target.tagName !== 'INPUT') {
-            return;
-          }
-          event.preventDefault();
-          if (submitAdd) {
-            playOnce = false;
-            form.requestSubmit(submitAdd);
-          } else if (submitOnce) {
-            playOnce = true;
-            form.requestSubmit(submitOnce);
-          }
-        },
         onSubmit: (event) => {
           event.preventDefault();
+          playOnce = action === 'play';
           const guildId = state.activeGuildId;
           if (!guildId) {
             close();
@@ -248,7 +249,7 @@ export function openAddDialog(options) {
           // for the current media is ignored, like its stale value.
           let displayDurationSec = null;
           if (playOnce) {
-            const applies = mode === 'link' ? canPlay : !fileDurationField.hidden;
+            const applies = mode === 'link' ? !linkDurationField.hidden : !fileDurationField.hidden;
             if (applies) {
               const input = mode === 'link' ? linkDuration : fileDuration;
               const parsed = parseDisplayDuration(input.value);
@@ -296,15 +297,17 @@ export function openAddDialog(options) {
           }
         },
       },
-      h('div', { class: 'add-media-modes', role: 'group', 'aria-label': 'Type d’ajout' }, linkButton, fileButton),
+      actionRow,
+      h('div', { class: 'add-media-mode' },
+        h('span', { class: 'add-media-mode-label' }, 'Source'),
+        h('div', { class: 'add-media-modes', role: 'group', 'aria-label': 'Type d’ajout' }, linkButton, fileButton)),
       linkPanel,
       filePanel,
       h(
         'div',
         { class: 'actions' },
         h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'),
-        submitOnce,
-        submitAdd,
+        submit,
       ),
     );
 

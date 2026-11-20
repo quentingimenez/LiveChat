@@ -6,6 +6,7 @@ import { h, icon } from '../core/dom.js';
 import { formatDuration, relativeTime } from '../core/format.js';
 import { invoke } from '../core/ipc.js';
 import { jobMeta, jobOriginLabel, jobOriginTitle, jobTitle } from '../core/job-format.js';
+import { queueClock } from '../core/queue-clock.js';
 import { can, describeError, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import { confirmDialog } from '../core/ui.js';
@@ -81,6 +82,29 @@ function openPendingMenu(event, job) {
 // The on-air bar is reused (only its children are replaced): bind its menu once.
 let onAirMenuBound = false;
 
+// The history is a <details> rebuilt on every queue render: remember whether the
+// user opened it (and for which guild) so a refresh does not close it.
+let historyOpenGuildId = null;
+let historyOpen = false;
+
+// One-second tick: update only the clock and the progress bar. A full
+// `renderView()` here would close an open history and drop keyboard focus.
+export function tickQueueClock(now = Date.now()) {
+  const playing = state.queue.playing;
+  if (!playing) {
+    return;
+  }
+  const clock = queueClock(playing, now);
+  const time = document.querySelector('[data-queue-clock]');
+  if (time) {
+    time.textContent = clock.text;
+  }
+  const bar = document.querySelector('[data-queue-progress]');
+  if (bar) {
+    bar.style.width = `${Math.round(clock.ratio * 100)}%`;
+  }
+}
+
 function bindOnAirMenu() {
   if (onAirMenuBound) {
     return;
@@ -97,9 +121,7 @@ export function renderQueue() {
   const { playing, pending } = state.queue;
   const blocks = [];
   if (playing) {
-    const started = playing.startedAt ? new Date(playing.startedAt).getTime() : null;
-    const elapsed = started ? Math.max(0, (Date.now() - started) / 1000) : 0;
-    const ratio = playing.durationSec > 0 ? Math.min(1, elapsed / playing.durationSec) : 0;
+    const clock = queueClock(playing);
     blocks.push(
       h(
         'div',
@@ -111,10 +133,10 @@ export function renderQueue() {
           originBadge(playing),
           playing.authorName ? h('span', { class: 'meta' }, `par ${playing.authorName}`) : null,
           h('span', { class: 'spacer' }),
-          h('span', { class: 'meta queue-time' }, `${formatDuration(Math.min(elapsed, playing.durationSec)) || '0:00'} / ${formatDuration(playing.durationSec) || '0:00'}`),
+          h('span', { class: 'meta queue-time', 'data-queue-clock': '' }, clock.text),
         ),
         jobMeta(playing) ? h('div', { class: 'sub ellipsis' }, jobMeta(playing)) : null,
-        h('div', { class: 'progress' }, h('span', { style: `width:${Math.round(ratio * 100)}%` })),
+        h('div', { class: 'progress' }, h('span', { 'data-queue-progress': '', style: `width:${Math.round(clock.ratio * 100)}%` })),
       ),
     );
   }
@@ -180,6 +202,10 @@ function renderHistory() {
   if (!can('viewQueue') || state.queueHistory.length === 0) {
     return null;
   }
+  if (state.activeGuildId !== historyOpenGuildId) {
+    historyOpenGuildId = state.activeGuildId;
+    historyOpen = false;
+  }
   const items = state.queueHistory.slice(0, 30);
   const rows = items.map((job) => {
     const failed = job.status === 'failed';
@@ -194,7 +220,15 @@ function renderHistory() {
   });
   return h(
     'details',
-    { class: 'queue-history' },
+    {
+      class: 'queue-history',
+      open: historyOpen,
+      onToggle: (event) => {
+        if (event.target === event.currentTarget) {
+          historyOpen = event.currentTarget.open;
+        }
+      },
+    },
     h('summary', null, `Historique (${items.length})`),
     h('div', { class: 'list' }, rows),
   );

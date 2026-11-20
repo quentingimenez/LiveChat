@@ -28,6 +28,7 @@ import {
   requestItemsReload,
 } from './data.js';
 import { initGuildRemovalNotices } from './views/notices.js';
+import { tickQueueClock } from './views/queue.js';
 import { renderRail } from './views/rail.js';
 import { initDeviceSettings, openSettings } from './views/settings.js';
 import { initUpdateNotice } from './views/update-notice.js';
@@ -152,7 +153,9 @@ window.addEventListener('focus', () => {
 });
 setInterval(() => {
   if (state.page === 'guild' && state.tab === 'queue' && state.queue.playing && !document.hidden) {
-    renderView();
+    // Only the clock moves: rebuilding the view here closed the history and
+    // dropped focus every second.
+    tickQueueClock();
   }
 }, 1000);
 document.addEventListener('visibilitychange', () => {

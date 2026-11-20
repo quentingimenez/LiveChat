@@ -97,6 +97,17 @@
 }
 
 /* ------------------------------------------------------ add media */
+.add-media-mode {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.add-media-mode-label {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
 .add-media-modes {
   display: flex;
   gap: 4px;

@@ -84,7 +84,7 @@
 }
 
 .settings-zone.is-live {
-  color: var(--amber);
+  color: var(--amber-text);
   font-weight: 600;
 }
 

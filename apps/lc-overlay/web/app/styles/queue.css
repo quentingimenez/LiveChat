@@ -49,11 +49,11 @@
 }
 
 .history-status.is-ok {
-  color: #7fd1a2;
+  color: var(--green-text);
 }
 
 .history-status.is-err {
-  color: #f0b4b4;
+  color: var(--red-text);
 }
 
 .now {

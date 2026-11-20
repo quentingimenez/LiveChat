@@ -1,4 +1,5 @@
 import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModalTwitter';
+import { initInpageTheme } from './inpage-theme';
 
 const STYLE_ID = 'lce-twitter-style';
 const BUTTON_ATTRIBUTE = 'data-lce-twitter-button';
@@ -1233,5 +1234,6 @@ const startObservedScanner = (scan: () => void | Promise<void>): void => {
   queueScan();
 };
 
+void initInpageTheme();
 registerToastListener();
 startObservedScanner(scanTweets);

@@ -51,4 +51,27 @@ for (const file of contentScripts) {
   }
 }
 
+// Le thème clair est posé avant le premier rendu par un script classique : le
+// miroir doit être livré et référencé par les deux pages, sinon le popup et les
+// options démarreraient en sombre malgré la préférence enregistrée.
+try {
+  await access(resolve(dist, 'theme-guard.js'));
+  console.log('✓ theme-guard.js : livré');
+} catch {
+  console.error('✗ theme-guard.js : fichier absent du build.');
+  failures += 1;
+}
+
+for (const page of ['popup.html', 'options.html']) {
+  const source = await readFile(resolve(dist, page), 'utf8').catch(() => '');
+
+  if (!source.includes('theme-guard.js')) {
+    console.error(`✗ ${page} : ne référence pas theme-guard.js.`);
+    failures += 1;
+    continue;
+  }
+
+  console.log(`✓ ${page} : référence theme-guard.js`);
+}
+
 process.exit(failures === 0 ? 0 : 1);

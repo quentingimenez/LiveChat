@@ -1,0 +1,24 @@
+/* Thème clair : mêmes composants, tokens inversés (charte : voir
+   docs/brand/README.md). Posé sur <html data-lce-theme="light"> par
+   lib/theme.ts et par le miroir theme-guard.js ; le sombre reste le défaut. */
+:root[data-lce-theme='light'] {
+  color-scheme: light;
+  --surface: #ffffff;
+  --surface-strong: #eef1f7;
+  --surface-soft: #f7f9fc;
+  --surface-raised: #e6eaf2;
+  --line: #d5dce8;
+  --text-main: #171b25;
+  --text-muted: #4f5972;
+  --text-faint: #6f7a90;
+  --accent: #171b25;
+  --accent-ink: #f4f7fc;
+  --accent-hover: #30384c;
+  --amber: #f2b544;
+  --amber-ink: #2a1d02;
+  --amber-hover: #e8ae3f;
+  --red: #ec6a70;
+  --green: #5fc9a3;
+  --blue: #7fa8f5;
+  --shadow-card: 0 12px 28px rgba(24, 32, 60, 0.14);
+}

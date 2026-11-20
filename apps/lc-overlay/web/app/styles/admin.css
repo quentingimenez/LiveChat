@@ -55,8 +55,8 @@
 }
 
 .badge.is-obsolete {
-  background: #4a2c2c;
-  color: #f0b4b4;
+  background: var(--danger-bg);
+  color: var(--red-text);
 }
 
 .device-platform {

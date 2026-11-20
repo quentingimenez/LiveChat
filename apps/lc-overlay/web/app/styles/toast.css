@@ -27,7 +27,7 @@ body:has(.onair:not([hidden])) .toasts {
   border-left: 3px solid var(--blue);
   border-radius: var(--radius-m);
   background: var(--slate-700);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-toast);
   font-size: 13px;
   pointer-events: auto;
   animation: toast-in 140ms ease-out;

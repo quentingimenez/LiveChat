@@ -64,7 +64,8 @@ surfaces ; l'ambre est réservé à ce qui passe à l'écran : quand quelque cho
 est ambre, c'est que ça passe à l'écran (lecture en cours, bouton Jouer,
 bulle du logo).
 
-| Nom | Token | Valeur | Rôle |
+Le tableau ci-dessous donne les valeurs du thème sombre, celui par défaut ; le
+thème clair ne change que la valeur des tokens (voir « Thèmes »).| Nom | Token | Valeur | Rôle |
 | --- | --- | --- | --- |
 | Ardoise | `--slate-900` | `#171B25` | fond principal, tuile des icônes |
 | Ardoise 800 | `--slate-800` | `#1E2330` | fond de la zone de contenu |
@@ -83,8 +84,44 @@ bulle du logo).
 Contrastes à respecter : texte courant en Craie ou Texte doux sur Ardoise ;
 sur l'ambre, uniquement l'Encre ambre.
 
-L'interface est sombre. Une surface claire n'apparaît que pour montrer le
-logo sur fond clair (documentation, boutique de l'extension).
+## Thèmes
+
+L'interface existe en deux thèmes, sombre et clair. Le sombre reste le défaut ;
+le clair se choisit dans Paramètres → Apparence (board) et dans la page
+d'options de l'extension. Le troisième choix, « Système », suit le thème
+clair/sombre de Windows (board) ou du navigateur (extension).
+
+Les deux thèmes partagent la même charte : seuls les tokens changent de valeur,
+les composants n'ont pas de règle propre. Côté board, le thème clair est porté
+par `apps/lc-overlay/web/app/styles/theme-light.css` sur
+`<html data-theme="light">` ; côté extension, par
+`extension/src/styles/theme-light.css` sur `<html data-lce-theme="light">`.
+
+| Nom | Token | Valeur claire | Rôle |
+| --- | --- | --- | --- |
+| Surface | `--slate-900` | `#EEF1F7` | fond principal |
+| Surface claire | `--slate-800` | `#FFFFFF` | zone de contenu, cartes |
+| Régie | `--slate-700` | `#F1F4FA` | boutons, notifications |
+| Régie claire | `--slate-600` | `#E3E9F3` | survol, badges |
+| Trait | `--line` | `#D5DCE8` | bordures, séparateurs |
+| Ardoise | `--text` | `#171B25` | texte, coins du logo sur fond clair |
+| Texte doux | `--text-soft` | `#4F5972` | texte secondaire |
+| Texte discret | `--text-faint` | `#6F7A90` | indications, placeholders |
+
+L'ambre ne change pas : il reste réservé à ce qui passe à l'écran, et sur
+l'ambre on n'écrit qu'en Encre ambre. Sur surface claire, les accents qui
+portaient du texte prennent leur variante foncée (`--amber-text`,
+`--red-text`, `--green-text`, `--blue-text`) pour tenir le contraste ; les
+aplats et les traits gardent la couleur vive de la charte.
+
+Les coins du logo suivent la surface : `logo.svg` (Craie) sur la board sombre,
+`logo-light.svg` (Ardoise) sur la board claire.
+
+Deux surfaces restent sombres dans les deux thèmes, parce qu'elles montrent ce
+qui part à l'écran : la fenêtre média de l'overlay et la carte d'identification
+des écrans. Les widgets injectés dans les pages (boutons, toasts, modales)
+suivent le thème de l'extension, et la puce « LC » de YouTube emprunte la
+couleur de la page hôte pour rester lisible sur un YouTube clair.
 
 ## Typographie
 

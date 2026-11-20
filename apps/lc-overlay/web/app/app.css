@@ -20,3 +20,6 @@
 @import url('./styles/editor.css');
 @import url('./styles/toast.css');
 @import url('./styles/contextmenu.css');
+/* Thème clair : surcharges de tokens, importé en dernier pour que ses règles
+   composants (chevron des selects) passent devant. */
+@import url('./styles/theme-light.css');

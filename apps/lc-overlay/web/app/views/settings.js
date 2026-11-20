@@ -20,6 +20,7 @@ import { avatarNode, h, resetOnDoubleClick } from '../core/dom.js';
 import { invoke, listen } from '../core/ipc.js';
 import { DEFAULT_VOLUME_PERCENT } from '../core/sound.js';
 import { guildLabel, state } from '../core/state.js';
+import { currentThemePreference, resolvedTheme, setThemePreference, subscribeTheme } from '../core/theme.js';
 import { notify } from '../core/toast.js';
 import { currentUpdateStatus, setUpdateStatus } from '../core/update-status.js';
 import { applyGuilds } from '../data.js';
@@ -48,8 +49,10 @@ const SHORTCUTS = [
 ];
 
 // Resolved from this module, so it works from web/board.html and from the
-// dev harness page alike.
+// dev harness page alike. The logo corners follow the surface: Craie on the
+// dark board, Ardoise on the light one (docs/brand/README.md).
 const LOGO_URL = new URL('../assets/logo.svg', import.meta.url).href;
+const LOGO_LIGHT_URL = new URL('../assets/logo-light.svg', import.meta.url).href;
 
 const SLIDER_DEBOUNCE_MS = 250;
 const PREVIEW_FRAME_MS = 16;
@@ -91,6 +94,21 @@ function errorMessage(error) {
   return typeof error === 'string' ? error : error.message || String(error);
 }
 
+// Logo for the current surface: the dark board needs the Craie corners, the
+// light one the Ardoise corners.
+function logoForTheme() {
+  return resolvedTheme() === 'light' ? LOGO_LIGHT_URL : LOGO_URL;
+}
+
+// Swaps the About logo when the theme changes without rebuilding the page: a
+// full render would rebuild the theme <select> under the pointer.
+function syncLogo() {
+  const logo = document.querySelector('.settings-logo');
+  if (logo) {
+    logo.src = logoForTheme();
+  }
+}
+
 // ------------------------------------------------------------------ navigation
 
 export function openSettings() {
@@ -121,6 +139,7 @@ export function initDeviceSettings() {
       openSettings();
     }
   });
+  subscribeTheme(syncLogo);
 }
 
 export async function loadDeviceSettings() {
@@ -610,6 +629,28 @@ function renderStartup(settings) {
   );
 }
 
+function renderAppearance() {
+  const theme = h(
+    'select',
+    {
+      id: 'settings-theme',
+      class: 'field',
+      onChange: (event) => {
+        setThemePreference(event.target.value);
+      },
+    },
+    h('option', { value: 'dark' }, 'Sombre'),
+    h('option', { value: 'light' }, 'Clair'),
+    h('option', { value: 'system' }, 'Système'),
+  );
+  theme.value = currentThemePreference();
+  return section(
+    'Apparence',
+    controlRow('Thème de la board', theme, 'settings-theme'),
+    h('p', { class: 'settings-hint' }, '« Système » suit le thème clair/sombre de Windows.'),
+  );
+}
+
 function renderAbout(settings) {
   const update = currentUpdateStatus() || {};
   const busy = checkingUpdates || update.state === 'checking' || update.state === 'downloading';
@@ -631,7 +672,7 @@ function renderAbout(settings) {
     h(
       'div',
       { class: 'settings-about' },
-      h('img', { class: 'settings-logo', src: LOGO_URL, alt: '', width: '64', height: '64' }),
+      h('img', { class: 'settings-logo', src: logoForTheme(), alt: '', width: '64', height: '64' }),
       h(
         'div',
         null,
@@ -682,6 +723,7 @@ export function renderSettings() {
     renderShortcuts(settings),
     renderProfile(settings),
     renderStartup(settings),
+    renderAppearance(),
     renderAbout(settings),
   );
 }

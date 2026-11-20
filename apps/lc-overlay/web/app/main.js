@@ -13,6 +13,7 @@
 
 import { installContextMenuGuard } from './core/contextmenu.js';
 import { initSound } from './core/sound.js';
+import { initTheme } from './core/theme.js';
 import { invoke, listen } from './core/ipc.js';
 import { activeGuild, state } from './core/state.js';
 import { notify } from './core/toast.js';
@@ -32,6 +33,10 @@ import { initDeviceSettings, openSettings } from './views/settings.js';
 import { initUpdateNotice } from './views/update-notice.js';
 import { initUploadIngestion } from './views/uploads.js';
 import { renderView } from './views/view.js';
+
+// Theme before the first paint: the stored preference (dark by default) is a
+// local display setting, applied on <html> and kept in step with Windows.
+initTheme();
 
 // No WebView menu (reload, print, save as): the board opens its own menus
 // on the rail, the media cards and the queue, and fields keep theirs.

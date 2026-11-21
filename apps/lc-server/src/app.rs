@@ -535,6 +535,8 @@ mod tests {
         assert_eq!(body["status"], "ok");
         assert_eq!(body["db"], "disabled");
         assert_eq!(body["discord"], "disabled");
+        assert_eq!(body["engine"], "disabled");
+        assert!(body.get("engineFailures").is_none());
         assert_eq!(body["protocolVersion"], lc_protocol::PROTOCOL_VERSION);
         assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
         assert!(body["uptimeSec"].as_i64().unwrap_or(-1) >= 0);

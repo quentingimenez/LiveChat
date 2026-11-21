@@ -9,6 +9,9 @@
 //! - la réponse est **toujours HTTP 200** : un état dégradé ne doit pas faire
 //!   redémarrer en boucle un serveur dont les clients peuvent encore jouer ;
 //! - `db` et `discord` valent `ok`, `down` ou `disabled` ;
+//! - `engine` reflète le superviseur de lecture : `disabled` tant qu'aucun
+//!   overlay n'a démarré le moteur, `down` si le dernier passage est dégradé ou
+//!   arrêté, `ok` sinon ;
 //! - `status` vaut `ok` si aucune dépendance obligatoire n'est `down`, sinon
 //!   `degraded` (une dépendance `disabled` ne dégrade pas l'état) ;
 //! - `activeJobs` reflète le nombre de jobs `PLAYING` en base (lecture unique
@@ -30,6 +33,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use lc_domain::JobStatus;
+use lc_playback::{PlaybackEngineState, PlaybackHealth};
 use serde::Serialize;
 
 use crate::app::AppState;
@@ -114,6 +118,11 @@ pub struct HealthResponse {
     pub protocol_version: u8,
     /// État SQLite.
     pub db: HealthState,
+    /// État du superviseur de lecture.
+    pub engine: HealthState,
+    /// Nombre d'échecs consécutifs du moteur, quand il a démarré.
+    #[serde(rename = "engineFailures", skip_serializing_if = "Option::is_none")]
+    pub engine_failures: Option<u32>,
     /// État Discord.
     pub discord: HealthState,
     /// Durée de fonctionnement en secondes (≥ 0).
@@ -131,13 +140,17 @@ pub fn router() -> Router<AppState> {
 
 async fn health_handler(State(state): State<AppState>) -> Response {
     let (db, active_jobs) = check_database(&state).await;
+    let (engine, engine_failures) = engine_health(state.admin_hub.playback_health().as_ref());
     let discord = state.discord.state();
-    let degraded = db == HealthState::Down || discord == HealthState::Down;
+    let degraded =
+        db == HealthState::Down || discord == HealthState::Down || engine == HealthState::Down;
     let response = HealthResponse {
         status: if degraded { "degraded" } else { "ok" },
         version: env!("CARGO_PKG_VERSION"),
         protocol_version: lc_protocol::PROTOCOL_VERSION,
         db,
+        engine,
+        engine_failures,
         discord,
         uptime_sec: (state.clock.now() - state.started_at)
             .whole_seconds()
@@ -145,6 +158,18 @@ async fn health_handler(State(state): State<AppState>) -> Response {
         active_jobs,
     };
     (StatusCode::OK, Json(response)).into_response()
+}
+
+/// Traduit l'état du superviseur en contrat `/health`.
+fn engine_health(health: Option<&PlaybackHealth>) -> (HealthState, Option<u32>) {
+    let Some(health) = health else {
+        return (HealthState::Disabled, None);
+    };
+    let state = match health.state {
+        PlaybackEngineState::Starting | PlaybackEngineState::Running => HealthState::Ok,
+        PlaybackEngineState::Degraded | PlaybackEngineState::Stopped => HealthState::Down,
+    };
+    (state, Some(health.consecutive_failures))
 }
 
 /// Interroge SQLite avec un délai de garde ; les erreurs deviennent `down`.
@@ -179,7 +204,65 @@ mod tests {
 
     use super::*;
     use crate::config::Config;
+    use crate::http::admin::AdminHub;
+    use crate::shutdown::Shutdown;
+    use lc_domain::GuildId;
+    use lc_protocol::{DeviceSettingsStatePayload, ServerMessage, SessionMode};
     use std::sync::Arc;
+    use uuid::Uuid;
+
+    struct FixedPlaybackHub(PlaybackHealth);
+
+    #[async_trait::async_trait]
+    impl AdminHub for FixedPlaybackHub {
+        fn connected_count(&self) -> usize {
+            0
+        }
+
+        fn connected_for_guild(&self, _guild_id: &GuildId) -> usize {
+            0
+        }
+
+        fn is_connected(&self, _client_id: &Uuid) -> bool {
+            false
+        }
+
+        fn close_client(&self, _client_id: &Uuid, _code: u16) -> bool {
+            false
+        }
+
+        fn close_client_with_reason(&self, _client_id: &Uuid, _code: u16, _reason: &str) -> bool {
+            false
+        }
+
+        fn playback_health(&self) -> Option<PlaybackHealth> {
+            Some(self.0.clone())
+        }
+
+        fn device_settings(&self, _client_id: &Uuid) -> Option<DeviceSettingsStatePayload> {
+            None
+        }
+
+        fn set_session_mode(&self, _client_id: &Uuid, _mode: SessionMode) -> bool {
+            false
+        }
+
+        fn broadcast_to_guild(&self, _guild_id: &GuildId, _message: ServerMessage) -> usize {
+            0
+        }
+
+        fn broadcast_all(&self, _message: ServerMessage) -> usize {
+            0
+        }
+
+        async fn broadcast_stop(&self, _guild_id: &GuildId) -> usize {
+            0
+        }
+
+        async fn broadcast_settings(&self, _guild_id: &GuildId) -> usize {
+            0
+        }
+    }
 
     fn config(values: &[(&str, &str)]) -> Config {
         Config::from_pairs(
@@ -218,5 +301,87 @@ mod tests {
         assert_eq!(Arc::new(probe).state(), HealthState::Down);
         assert_eq!(DiscordProbe::new(true).state(), HealthState::Down);
         assert_eq!(DiscordProbe::new(false).state(), HealthState::Disabled);
+    }
+
+    #[test]
+    fn engine_health_is_disabled_before_the_first_overlay() {
+        assert_eq!(
+            engine_health(None),
+            (HealthState::Disabled, None),
+            "sans hub moteur, /health ne doit pas dégrader le serveur"
+        );
+    }
+
+    #[test]
+    fn engine_health_reports_degraded_and_recovered_states() {
+        let running = PlaybackHealth {
+            state: PlaybackEngineState::Running,
+            consecutive_failures: 0,
+            last_error: None,
+        };
+        assert_eq!(
+            engine_health(Some(&running)),
+            (HealthState::Ok, Some(0)),
+            "un moteur qui vient de réussir est ok"
+        );
+
+        let degraded = PlaybackHealth {
+            state: PlaybackEngineState::Degraded,
+            consecutive_failures: 3,
+            last_error: Some("SQLite indisponible".to_owned()),
+        };
+        assert_eq!(
+            engine_health(Some(&degraded)),
+            (HealthState::Down, Some(3)),
+            "un moteur dégradé doit être visible comme down"
+        );
+
+        let stopped = PlaybackHealth {
+            state: PlaybackEngineState::Stopped,
+            consecutive_failures: 0,
+            last_error: None,
+        };
+        assert_eq!(
+            engine_health(Some(&stopped)),
+            (HealthState::Down, Some(0)),
+            "un moteur arrêté ne peut plus jouer"
+        );
+    }
+
+    async fn health_json(health: PlaybackHealth) -> serde_json::Value {
+        let state = AppState::new(
+            Arc::new(config(&[("API_URL", "http://localhost:3000")])),
+            None,
+            Shutdown::detached(),
+        )
+        .with_admin_hub(Arc::new(FixedPlaybackHub(health)));
+        let response = health_handler(State(state)).await;
+        let body = axum::body::to_bytes(response.into_body(), 1_048_576)
+            .await
+            .expect("corps /health");
+        serde_json::from_slice(&body).expect("JSON /health")
+    }
+
+    #[tokio::test]
+    async fn health_exposes_degraded_engine_and_recovery() {
+        let degraded = health_json(PlaybackHealth {
+            state: PlaybackEngineState::Degraded,
+            consecutive_failures: 2,
+            last_error: Some("SQLite indisponible".to_owned()),
+        })
+        .await;
+        assert_eq!(degraded["status"], "degraded");
+        assert_eq!(degraded["engine"], "down");
+        assert_eq!(degraded["engineFailures"], 2);
+
+        let recovered = health_json(PlaybackHealth {
+            state: PlaybackEngineState::Running,
+            consecutive_failures: 0,
+            last_error: None,
+        })
+        .await;
+        assert_eq!(recovered["status"], "ok");
+        assert_eq!(recovered["engine"], "ok");
+        assert_eq!(recovered["engineFailures"], 0);
     }
 }

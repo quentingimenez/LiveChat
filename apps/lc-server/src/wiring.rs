@@ -68,6 +68,10 @@ impl AdminHub for Hub {
         Hub::device_settings(self, client_id)
     }
 
+    fn playback_health(&self) -> Option<lc_playback::PlaybackHealth> {
+        self.engine().map(|engine| engine.health())
+    }
+
     fn set_session_mode(&self, client_id: &Uuid, mode: SessionMode) -> bool {
         Hub::set_session_mode(self, client_id, mode)
     }

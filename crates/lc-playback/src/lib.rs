@@ -71,8 +71,8 @@ mod store;
 
 pub use config::PlaybackConfig;
 pub use engine::{
-    PlaybackEndedEvent, PlaybackEngine, PlaybackStateEvent, PlaybackStateOutcome, PurgeReport,
-    ReleaseOutcome, StopOutcome, TickReport,
+    EngineHealth, PlaybackEndedEvent, PlaybackEngine, PlaybackEngineState, PlaybackHealth,
+    PlaybackStateEvent, PlaybackStateOutcome, PurgeReport, ReleaseOutcome, StopOutcome, TickReport,
 };
 pub use error::{PlaybackError, PlaybackResult};
 pub use sink::PlaybackSink;

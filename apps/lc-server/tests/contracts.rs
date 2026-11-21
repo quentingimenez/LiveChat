@@ -27,10 +27,11 @@ use lc_server::{router, AppState, Config, Shutdown};
 const ADMIN_UI_TOKEN: &str = "contract-test-admin-token";
 
 /// Exact, sorted key set of the `GET /health` JSON body.
-const HEALTH_KEYS: [&str; 7] = [
+const HEALTH_KEYS: [&str; 8] = [
     "activeJobs",
     "db",
     "discord",
+    "engine",
     "protocolVersion",
     "status",
     "uptimeSec",
@@ -158,6 +159,8 @@ async fn health_contract_with_a_database() {
     assert_eq!(body["protocolVersion"].as_i64(), Some(2));
     assert_eq!(body["db"], json!("ok"));
     assert_eq!(body["discord"], json!("disabled"));
+    assert_eq!(body["engine"], json!("disabled"));
+    assert!(body.get("engineFailures").is_none());
     let uptime_sec = body["uptimeSec"]
         .as_i64()
         .expect("uptimeSec must be an integer");
@@ -185,6 +188,7 @@ async fn health_contract_without_a_database() {
 
     assert_eq!(body["status"], json!("ok"));
     assert_eq!(body["db"], json!("disabled"));
+    assert_eq!(body["engine"], json!("disabled"));
     assert!(body["activeJobs"].is_null(), "activeJobs must be JSON null");
 }
 

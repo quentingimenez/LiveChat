@@ -5,9 +5,10 @@ import { notify } from './toast.js';
 
 // Opens a modal dialog. `build(close)` returns the dialog's children.
 //
-// The frame is shared by every dialog: a fixed close button, a scrolling body
-// and a fixed footer. To stay backward compatible, the last `.actions` child
-// returned by `build` is moved into the footer; everything else scrolls.
+// The frame is shared by every dialog: a sticky title row carrying the close
+// button, a scrolling body and a fixed footer. To stay backward compatible,
+// the last `.actions` child returned by `build` is moved into the footer;
+// everything else scrolls.
 let dialogCount = 0;
 
 export function openDialog(build, options = {}) {
@@ -57,14 +58,25 @@ export function openDialog(build, options = {}) {
     dialog.setAttribute('aria-label', options.label);
   }
 
-  dialog.append(
-    h(
-      'button',
-      { class: 'icon-btn dialog-close', type: 'button', 'aria-label': 'Fermer', title: 'Fermer', onClick: close },
-      h('span', { 'aria-hidden': 'true' }, '×'),
-    ),
-    body,
+  // Resolve the initial focus before the close button joins the body: a
+  // dialog that offers its own control must not open on « Fermer » instead.
+  const preferred = body.querySelector('[data-autofocus]') || body.querySelector('input:not([type=hidden]), textarea, select, button');
+
+  const closeButton = h(
+    'button',
+    { class: 'btn is-quiet icon-btn dialog-close', type: 'button', 'aria-label': 'Fermer', title: 'Fermer', onClick: close },
+    h('span', { 'aria-hidden': 'true' }, '×'),
   );
+  if (title && body.firstElementChild === title) {
+    // The close button lives in the sticky title row, inside the scroll
+    // container: it is positioned from the content column, so it clears the
+    // body's scrollbar instead of covering it.
+    body.prepend(h('div', { class: 'dialog-head' }, title, closeButton));
+    dialog.append(body);
+  } else {
+    // Nothing to pin the button to: keep it overlaid on the frame.
+    dialog.append(closeButton, body);
+  }
   if (actions) {
     dialog.append(h('div', { class: 'dialog-foot' }, actions));
   }
@@ -111,7 +123,6 @@ export function openDialog(build, options = {}) {
   root.replaceChildren(backdrop);
   document.addEventListener('keydown', onKeydown, true);
 
-  const preferred = body.querySelector('[data-autofocus]') || body.querySelector('input:not([type=hidden]), textarea, select, button');
   if (preferred) {
     preferred.focus();
   } else {

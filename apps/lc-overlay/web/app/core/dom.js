@@ -17,6 +17,28 @@ export function settingsControlActive() {
   );
 }
 
+// A settings field was edited, even if focus moved elsewhere since. Remote
+// updates must treat that as an edit in progress too: focus alone is not a
+// reliable "unsaved work" signal (a click on a heading blurs the field).
+export function markSettingsDirty(target) {
+  const root = target && target.closest && target.closest('.settings');
+  if (root) {
+    root.dataset.dirty = 'true';
+  }
+}
+
+export function settingsFormDirty() {
+  const root = document.querySelector('#view .settings');
+  return Boolean(root && root.dataset.dirty === 'true');
+}
+
+export function clearSettingsDirty() {
+  const root = document.querySelector('#view .settings');
+  if (root) {
+    delete root.dataset.dirty;
+  }
+}
+
 export function h(tag, props, ...children) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(props || {})) {

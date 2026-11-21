@@ -4,13 +4,14 @@
 
 import { api, run } from '../core/api.js';
 import { isObsolete, newestVersion, platformLabel, presenceLabel as devicePresenceLabel, sessionModeLabel } from '../core/device-helpers.js';
-import { avatarNode, h, icon, resetOnDoubleClick } from '../core/dom.js';
+import { avatarNode, clearSettingsDirty, h, icon, resetOnDoubleClick } from '../core/dom.js';
 import { formatCode, relativeTime } from '../core/format.js';
 import { activeGuild, can, ROLE_LABELS, state } from '../core/state.js';
 import { DEFAULT_VOLUME_PERCENT } from '../core/sound.js';
 import { notify } from '../core/toast.js';
 import { confirmDialog, copyText, openDialog } from '../core/ui.js';
 import { loadAdmin, loadGuild, loadGuildInfo } from '../data.js';
+import { showSettingsRemoteUpdate } from './settings-banner.js';
 import { renderView } from './view.js';
 
 // ------------------------------------------------------------- list states
@@ -989,15 +990,21 @@ function withSettingsVersion(payload) {
 export async function saveGuildSettings(payload, success) {
   try {
     await api('PATCH', '/overlay/admin/settings', withSettingsVersion(payload));
+    clearSettingsDirty();
     notify(success);
     await loadGuild();
     renderView();
     return true;
   } catch (error) {
     if (error.code === 'settings_conflict') {
-      notify('Réglages modifiés sur un autre appareil : rechargement des valeurs à jour.', true);
-      await loadGuildInfo({ quiet: true, force: true });
-      renderView();
+      // Do not reload yet: the typed values are still in the form, and the
+      // user must see why the save failed. Focusing the banner makes the
+      // reason visible even if the button was clicked from below the fold.
+      showSettingsRemoteUpdate({
+        focus: true,
+        conflict: true,
+        onReload: () => loadGuildInfo({ quiet: true, force: true, allowDirty: true }),
+      });
       return false;
     }
     notify(error.message, true);

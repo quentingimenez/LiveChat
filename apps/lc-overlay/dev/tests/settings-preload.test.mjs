@@ -19,7 +19,7 @@ const init = settings.slice(
 );
 const load = settings.slice(
   settings.indexOf('export async function loadDeviceSettings'),
-  settings.indexOf('export function showSettingsRemoteUpdate'),
+  settings.indexOf('export async function applyPatch'),
 );
 
 test('device settings are read once at boot, after the listeners', () => {

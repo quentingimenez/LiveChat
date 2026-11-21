@@ -12,7 +12,7 @@
 // - `views/` : rail, header, board, queue, admin, settings and dialogs.
 
 import { installContextMenuGuard } from './core/contextmenu.js';
-import { settingsControlActive } from './core/dom.js';
+import { settingsControlActive, settingsFormDirty } from './core/dom.js';
 import { initSound } from './core/sound.js';
 import { initTheme } from './core/theme.js';
 import { initSingleLineDescriptions } from './core/measure.js';
@@ -32,7 +32,8 @@ import {
 import { initGuildRemovalNotices } from './views/notices.js';
 import { tickQueueClock } from './views/queue.js';
 import { renderRail } from './views/rail.js';
-import { initDeviceSettings, openSettings, showSettingsRemoteUpdate } from './views/settings.js';
+import { initDeviceSettings, openSettings } from './views/settings.js';
+import { showSettingsRemoteUpdate } from './views/settings-banner.js';
 import { initUpdateNotice } from './views/update-notice.js';
 import { initUploadIngestion } from './views/uploads.js';
 import { renderView } from './views/view.js';
@@ -95,14 +96,22 @@ listen('overlay://rights-changed', (payload) => {
 });
 
 // Another board changed the guild's server settings. Reload the cached info;
-// while a field is focused, keep the form and offer an explicit reload, so the
-// user's next keystroke is never thrown away mid-edit.
+// while a form is dirty (even if focus moved away), keep it and offer an
+// explicit reload, so the user's unsaved values are never thrown away.
+function reloadGuildSettings() {
+  return loadGuildInfo({ quiet: true, force: true, allowDirty: true });
+}
+
 listen('overlay://guild-settings-changed', (payload) => {
   if (!payload || payload.guildId !== state.activeGuildId) {
     return;
   }
-  if (state.page === 'guild' && state.tab === 'settings' && settingsControlActive()) {
-    showSettingsRemoteUpdate();
+  if (
+    state.page === 'guild' &&
+    state.tab === 'settings' &&
+    (settingsControlActive() || settingsFormDirty())
+  ) {
+    showSettingsRemoteUpdate({ onReload: reloadGuildSettings });
     return;
   }
   loadGuildInfo({ quiet: true, force: true });

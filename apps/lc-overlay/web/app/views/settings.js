@@ -16,14 +16,14 @@
 import { run } from '../core/api.js';
 import { acceleratorFromEvent, acceleratorLabel, ALTGR_HINT, BARE_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import { resizeAvatar } from '../core/avatar.js';
-import { avatarNode, h, icon, registerIcons, resetOnDoubleClick, settingsControlActive, SLIDER_RESET_HINT } from '../core/dom.js';
+import { avatarNode, h, icon, markSettingsDirty, registerIcons, resetOnDoubleClick, settingsControlActive, SLIDER_RESET_HINT } from '../core/dom.js';
 import { invoke, listen } from '../core/ipc.js';
 import { DEFAULT_VOLUME_PERCENT } from '../core/sound.js';
 import { guildLabel, state } from '../core/state.js';
 import { currentThemePreference, resolvedTheme, setThemePreference, subscribeTheme } from '../core/theme.js';
 import { notify } from '../core/toast.js';
 import { currentUpdateStatus, setUpdateStatus } from '../core/update-status.js';
-import { applyGuilds, loadGuildInfo } from '../data.js';
+import { applyGuilds } from '../data.js';
 import { renderHeader } from './header.js';
 import { renderRail, selectGuild } from './rail.js';
 import { renderView } from './view.js';
@@ -145,6 +145,11 @@ export function initDeviceSettings() {
     }
   });
   subscribeTheme(syncLogo);
+  // Dirty-tracking is delegated: the settings view is rebuilt often, and a
+  // captured reference would go stale. Any edit marks the current form, even
+  // after focus moves to a heading or another control.
+  document.addEventListener('input', (event) => markSettingsDirty(event.target));
+  document.addEventListener('change', (event) => markSettingsDirty(event.target));
   // The shell's settings are local and cheap: read them once at startup so the
   // guild's « Réglages » tab never opens on its loading line. If the user gets
   // there first, `loading` makes this call a no-op and the tab renders when the
@@ -176,38 +181,6 @@ export async function loadDeviceSettings() {
   if (settingsShown()) {
     renderView();
   }
-}
-
-// A remote board changed the guild settings while this one shows the form.
-// Keep the form (and its unsaved values) intact; reloading now would move the
-// cursor and could make the next save overwrite the other device's change.
-export function showSettingsRemoteUpdate() {
-  const root = document.querySelector('#view .settings');
-  if (!root || root.querySelector('.settings-banner')) {
-    return;
-  }
-  const banner = h(
-    'div',
-    { class: 'settings-banner', role: 'status' },
-    h('span', null, 'Les réglages de cette guilde ont été modifiés sur un autre appareil.'),
-    h(
-      'button',
-      {
-        class: 'btn is-quiet',
-        type: 'button',
-        onClick: async () => {
-          banner.remove();
-          if (await loadGuildInfo({ quiet: true, force: true })) {
-            renderView();
-          } else {
-            showSettingsRemoteUpdate();
-          }
-        },
-      },
-      'Recharger',
-    ),
-  );
-  root.prepend(banner);
 }
 
 // ---------------------------------------------------------------- settings set

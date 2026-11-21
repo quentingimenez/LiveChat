@@ -4,7 +4,7 @@
 import { apiForGuild } from './core/api.js';
 import { readGuildCache, writeGuildCache, invalidateGuildCache, pruneGuildCache } from './core/guild-cache.js';
 import { readLayoutCache, writeLayoutCache, pruneLayoutCache } from './core/layout-cache.js';
-import { settingsControlActive } from './core/dom.js';
+import { settingsControlActive, settingsFormDirty } from './core/dom.js';
 import { pruneSelection } from './core/selection.js';
 import { mediaRefreshDelay } from './core/format.js';
 import { invoke } from './core/ipc.js';
@@ -325,21 +325,26 @@ export function loadGuildInfo(options = {}) {
   const key = options.force
     ? `guild-info:${guildId}:fresh:${++infoRequestSeq}`
     : `guild-info:${guildId}`;
-  return dedupe(key, () => loadGuildInfoForGuild(guildId, quiet));
+  return dedupe(key, () => loadGuildInfoForGuild(guildId, quiet, options.allowDirty === true));
 }
 
-async function loadGuildInfoForGuild(guildId, quiet) {
+async function loadGuildInfoForGuild(guildId, quiet, allowDirty = false) {
   const token = requestToken(`guild-info:${guildId}`);
   try {
     const info = await apiForGuild(guildId, 'GET', '/overlay/guild');
     if (!isLatest(token) || guildId !== state.activeGuildId) {
       return false;
     }
-    // A form field is being edited: applying this response would replace the
-    // form and pair the fresh `settingsVersion` with values typed before it,
-    // making the next save look current. Keep the old version so the save is
-    // refused as a conflict instead.
-    if (state.page === 'guild' && state.tab === 'settings' && settingsControlActive()) {
+    // A settings field is being edited, or was edited before focus moved away.
+    // Applying this response would replace the form and pair the fresh
+    // `settingsVersion` with stale typed values, making the next save look
+    // current. Keep the old version so the save is refused as a conflict.
+    if (
+      !allowDirty &&
+      state.page === 'guild' &&
+      state.tab === 'settings' &&
+      (settingsControlActive() || settingsFormDirty())
+    ) {
       return false;
     }
     state.info = info;

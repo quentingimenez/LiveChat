@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { guildLabel, state } from '../../web/app/core/state.js';
+import { markSettingsDirty } from '../../web/app/core/dom.js';
 
 const read = (path) => readFileSync(new URL(`../../web/app/${path}`, import.meta.url), 'utf8');
 const readServer = (path) =>
@@ -22,6 +23,7 @@ const events = readShell('events.rs');
 const ws = readShell('net/ws.rs');
 const dom = read('core/dom.js');
 const settings = read('views/settings.js');
+const banner = read('views/settings-banner.js');
 const data = read('data.js');
 const main = read('main.js');
 const adminView = read('views/admin.js');
@@ -48,25 +50,47 @@ test('the shell forwards a guild-settings event to the board window', () => {
   assert.match(ws, /emit_guild_settings_changed\(&self\.app, &self\.guild_id\)/);
 });
 
-test('an active settings field is never replaced by a background refresh', () => {
+test('an active or dirty settings field is never replaced by a background refresh', () => {
   assert.match(dom, /export function settingsControlActive\(\)/);
-  assert.match(data, /settingsControlActive\(\)/);
+  assert.match(dom, /export function settingsFormDirty\(\)/);
+  assert.match(data, /settingsControlActive\(\) \|\| settingsFormDirty\(\)/);
   assert.ok(
-    data.indexOf('settingsControlActive()') < data.indexOf('state.info = info;'),
+    data.indexOf('settingsFormDirty()') < data.indexOf('state.info = info;'),
     'the guard runs before the form state is replaced',
   );
 });
 
+test('editing marks the form dirty even after focus moves away', () => {
+  const root = { dataset: {} };
+  markSettingsDirty({ closest: (selector) => (selector === '.settings' ? root : null) });
+  assert.equal(root.dataset.dirty, 'true');
+  markSettingsDirty(null);
+
+  assert.match(settings, /markSettingsDirty\(event\.target\)/);
+  assert.match(settings, /addEventListener\('input'/);
+  assert.match(settings, /addEventListener\('change'/);
+  assert.match(main, /settingsControlActive\(\) \|\| settingsFormDirty\(\)/);
+});
+
 test('the board shows a reload banner and saves with the version it read', () => {
   assert.match(main, /overlay:\/\/guild-settings-changed/);
-  assert.match(main, /loadGuildInfo\(\{ quiet: true, force: true \}\)/);
+  assert.match(main, /showSettingsRemoteUpdate\(\{ onReload: reloadGuildSettings \}\)/);
+  assert.match(main, /allowDirty: true/);
   assert.match(data, /options\.force/);
-  assert.match(settings, /export function showSettingsRemoteUpdate\(\)/);
-  assert.match(settings, /modifiés sur un autre appareil/);
+  assert.match(data, /allowDirty/);
+  assert.match(banner, /export function showSettingsRemoteUpdate/);
+  assert.match(banner, /modifiés sur un autre appareil/);
+  assert.match(banner, /tabindex: '-1'/);
+  assert.match(banner, /banner\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(banner, /scrollIntoView/);
   assert.match(header, /loadGuildInfo\(\{ quiet: true(?:, force: true)? \}\)/);
   assert.match(adminView, /expectedSettingsVersion/);
   assert.match(adminView, /export async function saveGuildSettings/);
   assert.match(adminView, /error\.code === 'settings_conflict'/);
+  assert.match(adminView, /showSettingsRemoteUpdate\(\{/);
+  assert.match(adminView, /focus: true/);
+  assert.match(adminView, /conflict: true/);
+  assert.match(adminView, /clearSettingsDirty\(\)/);
 });
 
 test('the header name follows the live guild info, not the invite-time cache', () => {

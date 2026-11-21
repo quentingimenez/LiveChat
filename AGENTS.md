@@ -66,8 +66,24 @@ attendu :
    `git push origin --delete <branche>`. Jamais `--admin`, jamais de merge sans
    checks verts.
 7. **Après le merge** : mettre `main` à jour en fast-forward, supprimer la
-   branche locale, et rapporter à l'utilisateur : branche, URL de la PR, checks,
-   commit de merge.
+   branche locale, fermer les fenêtres de navigateur ouvertes par l'agent (voir
+   « Fermer les fenêtres ouvertes avec browse »), et rapporter à l'utilisateur :
+   branche, URL de la PR, checks, commit de merge.
+
+## Fermer les fenêtres ouvertes avec browse
+
+Les agents ouvrent le navigateur (OpenCode Browse — outil `browse`, sur Brave)
+pour vérifier un changement : captures avant/après, parcours de la board, de la
+console admin ou de la boutique. Ces onglets ne sont pas ceux de l'utilisateur :
+ils ne doivent pas lui rester ouverts.
+
+- Une fois la PR mergée — et au plus tard avant de rendre la main — l'agent
+  ferme **tous** les onglets et fenêtres qu'il a ouverts (`tabs` action `close`,
+  `page.close()`), y compris ceux ouverts par un sous-agent qu'il a lancé.
+- Il ne ferme que ses propres onglets : jamais ceux que l'utilisateur a ouverts
+  ou prêtés.
+- Si la fermeture est impossible (navigateur déconnecté, extension absente), le
+  signaler dans le rapport final plutôt que de laisser la fenêtre ouverte.
 
 ## Tests obligatoires avec chaque correctif ou fonctionnalité
 

@@ -121,6 +121,9 @@ test('the add-media dialog states only what a field cannot', () => {
   assert.equal((addMedia.match(/durationLabel\(/g) || []).length, 2);
   // The caption keeps the one fact a user cannot guess: it is not stored.
   assert.equal((addMedia.match(/Non enregistrée sur le board\./g) || []).length, 2);
+  // The action already scopes the caption, so its label does not repeat it.
+  assert.equal((addMedia.match(/'Légende \(facultatif\)'/g) || []).length, 2);
+  assert.ok(!addMedia.includes('Légende pour « Jouer une fois »'));
   // The picker keeps the accepted size.
   assert.match(addMedia, /Vidéos, images et sons : jusqu’à 2 Go par fichier\./);
 });

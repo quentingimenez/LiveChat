@@ -5,7 +5,8 @@ import { pruneSelection } from './core/selection.js';
 import { api } from './core/api.js';
 import { mediaRefreshDelay } from './core/format.js';
 import { invoke } from './core/ipc.js';
-import { activeGuild, can, state } from './core/state.js';
+import { activeGuild, can, canAdmin, state } from './core/state.js';
+import { tabAfterGuildSwitch } from './core/tabs.js';
 import { notify } from './core/toast.js';
 import { renderHeader } from './views/header.js';
 import { renderOnAir } from './views/queue.js';
@@ -146,8 +147,16 @@ export function applyGuilds(payload) {
     presenceRefreshTimer = null;
     clearQueueEndTimer();
     resetGuildData();
-    loadGuild();
-  } else if (state.activeGuildId) {
+    // The header and the view keep the previous guild until the new one's info
+    // lands: « Administration » depends on its permissions, and the « Réglages »
+    // tab reads its name. Painting now would flash a header without the tab (and
+    // without the overlay count), then repaint it once the info is read.
+    state.switchingGuild = true;
+    renderRail();
+    loadGuild({ switched: true });
+    return;
+  }
+  if (state.activeGuildId) {
     // Reconnection attempts flip the status often (connecting, error,
     // reconnecting): reloading the whole guild on each flip spent the rate
     // limit and redrew the board for nothing.
@@ -165,6 +174,12 @@ export function applyGuilds(payload) {
     }
   }
   renderRail();
+  // The shell announces one switch twice (its event, then the command's
+  // response): the second one must not paint the header with the info still
+  // loading.
+  if (state.switchingGuild) {
+    return;
+  }
   renderHeader();
   if (!state.activeGuildId || state.page === 'settings') {
     renderView();
@@ -196,9 +211,6 @@ function resetGuildData() {
   itemsRefreshTimer = null;
   itemsRefreshPending = false;
   guildInfoLoadedAt = 0;
-  if (state.tab === 'admin') {
-    state.tab = 'board';
-  }
 }
 
 export function guildInfoAge() {
@@ -228,18 +240,65 @@ export async function loadGuildInfo(options) {
       notify(error.message, true);
     }
   }
-  renderHeader();
+  // A guild switch paints the header itself, once the tab fallback is decided
+  // (see loadGuild).
+  if (!(options && options.paint === false)) {
+    renderHeader();
+  }
   return true;
 }
 
+// `switched`: the active guild changed (applyGuilds), so the header and the
+// view are painted here, once the new guild's info is known, instead of by
+// applyGuilds with the previous guild's permissions.
 export async function loadGuild(options) {
-  if (!(await loadGuildInfo(options))) {
+  const switched = Boolean(options && options.switched === true);
+  const guildId = state.activeGuildId;
+  // A switch paints once, below: loadGuildInfo would otherwise paint the header
+  // before the tab fallback (a guild where you are only a member must not paint
+  // « Administration » inactive) and before the queue badge keeps its place.
+  const quiet = Boolean(options && options.quiet === true);
+  const loaded = await loadGuildInfo({ quiet, paint: !switched });
+  if (!loaded) {
+    if (switched && guildId === state.activeGuildId) {
+      // The guild is gone, or the shell no longer has one: show the empty
+      // board instead of leaving the previous guild's header up.
+      state.switchingGuild = false;
+      if (!state.activeGuildId) {
+        // The next guild (or the join page) starts on the board: keeping
+        // « Administration » from a guild that no longer exists would land the
+        // next one on a tab chosen for another guild.
+        state.tab = 'board';
+      }
+      renderHeader();
+      renderView();
+    }
+    // Otherwise another switch owns the paint.
     return;
+  }
+  if (switched) {
+    if (guildId !== state.activeGuildId) {
+      return;
+    }
+    state.tab = tabAfterGuildSwitch(state.tab, canAdmin());
+    // Painted while `switchingGuild` is still true: the queue badge keeps the
+    // count shown before the switch until the new guild's queue is read, and
+    // the tab fallback above is already applied.
+    renderHeader();
+    state.switchingGuild = false;
+    if (state.page === 'settings' || state.tab === 'settings') {
+      // « Réglages » reads state.info directly: repaint now, with the new
+      // guild's settings. The board, queue and admin views repaint when their
+      // own lists arrive.
+      renderView();
+    }
   }
   const bindings = await invoke('media_board_get_bindings').catch(() => null);
   state.bindings = (bindings && bindings.bindings) || {};
-  renderHeader();
   await Promise.all([loadItems(options), refreshQueueAutomatically()]);
+  if (switched && state.tab === 'admin' && canAdmin()) {
+    await loadAdmin(options);
+  }
 }
 
 // `options` may be a click event (toolbar button): only `quiet === true`

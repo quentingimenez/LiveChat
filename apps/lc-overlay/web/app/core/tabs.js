@@ -35,3 +35,18 @@ export function selectTab(tabs, panels, index) {
     panel.hidden = position !== index;
   });
 }
+
+// The tab to show after switching guilds: « Administration » stays selected
+// when the newly active guild grants it too, and falls back to the board when
+// it does not (the rail switches to guilds where you are only a member).
+export function tabAfterGuildSwitch(tab, canAdmin) {
+  return tab === 'admin' && !canAdmin ? 'board' : tab;
+}
+
+// The queue badge painted in the header: while a guild switch is in flight the
+// queue already belongs to the next guild (its list was reset), so the previous
+// count stays up until the new guild's queue is read. The badge keeps its place
+// instead of vanishing and pushing the tabs on its right, then coming back.
+export function queueBadgeCount(pending, lastShown, switching) {
+  return switching ? lastShown : pending;
+}

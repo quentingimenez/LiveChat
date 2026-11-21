@@ -4,6 +4,7 @@ import { run } from '../core/api.js';
 import { openContextMenu } from '../core/contextmenu.js';
 import { h, icon } from '../core/dom.js';
 import { guildAcronym, guildAcronymFontSize } from '../core/format.js';
+import { canLoadIcon, rememberBrokenIcon } from '../core/guild-icons.js';
 import { invoke } from '../core/ipc.js';
 import { guildLabel, state } from '../core/state.js';
 import { applyGuilds } from '../data.js';
@@ -44,7 +45,9 @@ function acronymFace(label) {
 }
 
 function guildFace(label, iconUrl) {
-  if (!iconUrl) {
+  // A broken icon stays broken for the session: skip the doomed <img> so the
+  // acronym does not vanish and come back at every rail rebuild.
+  if (!canLoadIcon(iconUrl)) {
     return acronymFace(label);
   }
   const image = h('img', {
@@ -55,6 +58,7 @@ function guildFace(label, iconUrl) {
     referrerpolicy: 'no-referrer',
     // A dead icon URL falls back to the acronym instead of an empty button.
     onError: () => {
+      rememberBrokenIcon(iconUrl);
       const button = image.parentElement;
       if (button) {
         // Restore the plain active background: the fallback is text, not an icon.
@@ -92,7 +96,7 @@ export function renderRail() {
     ...state.guilds.map((guild) => {
       const label = guild.membership.guildName || 'Guilde';
       const active = guild.membership.guildId === state.activeGuildId && state.page !== 'settings';
-      const hasIcon = Boolean(guild.membership.guildIconUrl);
+      const hasIcon = canLoadIcon(guild.membership.guildIconUrl);
       // The wrapper keeps the tile's 44 px footprint so the rail rhythm does
       // not change; the menu button is a sibling, never a button in a button.
       return h(

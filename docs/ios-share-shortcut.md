@@ -56,6 +56,9 @@ jeton et en crée un nouveau. Les clients actifs apparaissent dans **Mon profil*
 d'administration. Pour plusieurs téléphones, crée des clients séparés dans la
 console d'administration.
 
+La carte affiche aussi les boutons **Photo**, **Vidéo** et **Lien** : chacun
+copie l'adresse du raccourci correspondant, à ouvrir depuis l'iPhone (section 2).
+
 > **Sécurité** — ce jeton permet d'envoyer des médias et d'ajouter des éléments
 > à la board. Il ne permet pas d'administrer le serveur. Ne le partage pas, ne
 > le commit pas, et révoque-le depuis **Mon profil** → **Mes appareils**, ou

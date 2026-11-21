@@ -24,11 +24,18 @@
   width: min(560px, calc(100vw - 32px));
 }
 
-.dialog-close {
+/* Close button. When the dialog has a title it lives in the sticky
+   `.dialog-head`, inside the body: its containing block is the content
+   column, so `right` leaves the scrollbar gutter alone. A dialog without a
+   title keeps it overlaid on the frame. */
+.dialog > .dialog-close {
   position: absolute;
   top: 10px;
   right: 10px;
   z-index: 2;
+}
+
+.dialog-close {
   color: var(--text-soft);
   font-size: 20px;
   line-height: 1;
@@ -36,6 +43,24 @@
 
 .dialog-close:hover {
   color: var(--text);
+}
+
+/* The title row scrolls with the body but stays pinned. Its negative margins
+   span the body's 24px padding, and the same padding keeps the title on the
+   content column. */
+.dialog-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0 -24px;
+  padding: 0 24px;
+  background: var(--slate-800);
+}
+
+.dialog-head .dialog-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
 }
 
 .dialog-body {
@@ -69,7 +94,13 @@
   text-wrap: balance;
 }
 
-.dialog-body > :first-child:not(h2) {
+/* The row is sticky now: the h2 only keeps the title's own spacing. Two
+   classes win over `.dialog h2` without relying on source order. */
+.dialog .dialog-head h2 {
+  position: static;
+}
+
+.dialog-body > :first-child:not(h2):not(.dialog-head) {
   margin-top: 22px;
 }
 

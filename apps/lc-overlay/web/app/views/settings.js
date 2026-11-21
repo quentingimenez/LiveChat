@@ -145,6 +145,11 @@ export function initDeviceSettings() {
     }
   });
   subscribeTheme(syncLogo);
+  // The shell's settings are local and cheap: read them once at startup so the
+  // guild's « Réglages » tab never opens on its loading line. If the user gets
+  // there first, `loading` makes this call a no-op and the tab renders when the
+  // first read lands.
+  queueMicrotask(loadDeviceSettings);
 }
 
 export async function loadDeviceSettings() {

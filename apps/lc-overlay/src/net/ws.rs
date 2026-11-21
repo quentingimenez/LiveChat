@@ -38,6 +38,7 @@ use uuid::Uuid;
 use crate::config::{Membership, OverlayConfigView};
 use crate::events::{self, OverlayEvent};
 use crate::net::tls;
+use crate::screen::PlayPresentation;
 use crate::state::{AppState, GuildRemoval, GuildRemovalReason, QueuedPlay};
 use crate::tray;
 use crate::windows;
@@ -552,25 +553,31 @@ fn purge_pairing(app: &AppHandle<Wry>, guild_id: &str, reason: GuildRemovalReaso
 /// `play` suivant en attente.
 fn release_guild_playback(app: &AppHandle<Wry>, guild_id: &str) {
     let state = app.state::<AppState>();
-    state.drop_queued(guild_id, None);
-    if state.playback_guild().as_deref() == Some(guild_id) {
-        state.clear_playback();
+    let showable = crate::windows::overlay_should_show(&state.config_snapshot());
+    let decision = state.release_guild(guild_id, showable);
+    if decision.display_cleared {
         events::stop_overlay_now(app, "disconnected");
-        advance_local_queue(app);
+    }
+    if let Some(next) = decision.next {
+        show_queued_play(app, next);
     }
 }
 
 /// Affiche le prochain `play` en attente, s'il y en a un.
 pub fn advance_local_queue(app: &AppHandle<Wry>) {
     let state = app.state::<AppState>();
-    if state.playback_job().is_some() {
-        return;
+    let showable = crate::windows::overlay_should_show(&state.config_snapshot());
+    if let Some(next) = state.advance_screen(showable) {
+        show_queued_play(app, next);
     }
-    if let Some(next) = state.dequeue_play() {
-        tracing::info!(job_id = %next.job_id, guild_id = %next.guild_id, "play en attente affiché");
-        state.set_playback(&next.guild_id, next.job_id);
-        events::deliver_or_buffer(app, state.overlay_ready(), OverlayEvent::play(next.payload));
-    }
+}
+
+/// Délivre au renderer le `play` sorti de la file locale (l'écran est déjà à
+/// lui : l'arbitre l'a décidé).
+pub(crate) fn show_queued_play(app: &AppHandle<Wry>, next: QueuedPlay) {
+    tracing::info!(job_id = %next.job_id, guild_id = %next.guild_id, "play en attente affiché");
+    let state = app.state::<AppState>();
+    events::deliver_or_buffer(app, state.overlay_ready(), OverlayEvent::play(next.payload));
 }
 
 fn close_step(code: Option<u16>, reason: &str) -> SupervisorStep {
@@ -1327,19 +1334,19 @@ impl SessionEffects for AppEffects {
         }
         let app = &self.app;
         let state = app.state::<AppState>();
-        // Un `stop` ne concerne l'écran que si cette guilde l'occupe ; sinon il
-        // annule seulement ce qu'elle faisait attendre.
-        let dropped = state.drop_queued(&self.guild_id, payload.job_id.as_deref());
-        let owner = state.playback_guild();
-        if owner.is_some() && owner.as_deref() != Some(self.guild_id.as_str()) {
+        // Un `stop` ne concerne l'écran que si cette guilde l'occupe encore
+        // pour ce job (ou sans job ciblé) ; sinon il annule seulement ce
+        // qu'elle faisait attendre. Il purge toujours sa propre file.
+        let showable = windows::overlay_should_show(&state.config_snapshot());
+        let decision = state.server_stop(&self.guild_id, payload.job_id.as_deref(), showable);
+        if !decision.display_cleared {
             tracing::info!(
                 guild_id = %self.guild_id,
-                dropped,
+                dropped = decision.dropped,
                 "stop reçu d'une guilde qui n'occupe pas l'écran"
             );
             return;
         }
-        state.clear_playback();
         match serde_json::to_value(payload) {
             Ok(value) => {
                 tracing::info!(reason = ?payload.reason, guild_id = %self.guild_id, "stop reçu");
@@ -1347,7 +1354,9 @@ impl SessionEffects for AppEffects {
             }
             Err(error) => tracing::warn!(%error, "stop non sérialisable"),
         }
-        advance_local_queue(app);
+        if let Some(next) = decision.next {
+            show_queued_play(app, next);
+        }
     }
 
     fn on_peers(&self, payload: &PeersPayload) {
@@ -1510,23 +1519,20 @@ impl AppEffects {
                 return;
             }
         };
-        let owner = state.playback_guild();
-        if owner.is_some() && owner.as_deref() != Some(self.guild_id.as_str()) {
-            tracing::info!(
-                job_id = %payload.job_id,
-                guild_id = %self.guild_id,
-                "play mis en attente : une autre guilde occupe l'écran"
-            );
-            state.enqueue_play(QueuedPlay {
-                guild_id: self.guild_id.clone(),
-                job_id: payload.job_id.clone(),
-                payload: value,
-            });
-            return;
+        let showable = windows::overlay_should_show(&config);
+        match state.present_play(&self.guild_id, &payload.job_id, value, showable) {
+            PlayPresentation::Queued => {
+                tracing::info!(
+                    job_id = %payload.job_id,
+                    guild_id = %self.guild_id,
+                    "play mis en attente : un autre média occupe l'écran"
+                );
+            }
+            PlayPresentation::Display(value) => {
+                tracing::info!(job_id = %payload.job_id, guild_id = %self.guild_id, "play reçu");
+                events::deliver_or_buffer(app, state.overlay_ready(), OverlayEvent::play(value));
+            }
         }
-        tracing::info!(job_id = %payload.job_id, guild_id = %self.guild_id, "play reçu");
-        state.set_playback(&self.guild_id, payload.job_id.clone());
-        events::deliver_or_buffer(app, state.overlay_ready(), OverlayEvent::play(value));
     }
 }
 

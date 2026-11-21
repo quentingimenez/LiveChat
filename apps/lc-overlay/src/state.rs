@@ -4,7 +4,7 @@
 //! persistée, buffer d'événements, bindings de raccourcis actifs, snapshot de
 //! connexion (statut/version/pairs) et canal de commandes vers la tâche réseau.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
@@ -16,6 +16,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::config::{ConfigStore, MediaBindings, OverlayConfig, OverlayConfigView};
 use crate::events::EventBuffer;
 use crate::net::ws::{ConnectionStatus, NetCommand, NetSnapshot};
+use crate::screen::{PlayPresentation, ReportDecision, ScreenArbiter, StopDecision};
 
 /// Cadence maximale d'envoi de `playback.state` (contrat v2 : 1 msg/s).
 const PLAYBACK_STATE_MIN_INTERVAL: Duration = Duration::from_secs(1);
@@ -46,13 +47,7 @@ pub struct GuildRemoval {
     pub reason: GuildRemovalReason,
 }
 
-/// `play` reçu d'une guilde pendant qu'une autre occupe l'écran.
-#[derive(Debug, Clone, PartialEq)]
-pub struct QueuedPlay {
-    pub guild_id: String,
-    pub job_id: String,
-    pub payload: serde_json::Value,
-}
+pub use crate::screen::QueuedPlay;
 
 /// État géré par Tauri et partagé entre les commandes et les threads.
 pub struct AppState {
@@ -65,10 +60,9 @@ pub struct AppState {
     nets: Mutex<BTreeMap<String, NetSnapshot>>,
     /// Canal de commandes du superviseur de chaque guilde.
     net_commands: Mutex<BTreeMap<String, UnboundedSender<NetCommand>>>,
-    /// Lecture à l'écran : `(guilde, job)`.
-    playback_job: Mutex<Option<(String, String)>>,
-    /// `play` des autres guildes en attente de l'écran.
-    local_queue: Mutex<VecDeque<QueuedPlay>>,
+    /// Arbitrage de l'écran unique entre les guildes : propriétaire courant,
+    /// file locale et routage des rapports de lecture.
+    screen: Mutex<ScreenArbiter>,
     last_state_sent: Mutex<Option<Instant>>,
     /// View requested by the tray before the board was loaded.
     pending_board_view: Mutex<Option<String>>,
@@ -87,8 +81,7 @@ impl AppState {
             active_bindings: Mutex::new(MediaBindings::default()),
             nets: Mutex::new(BTreeMap::new()),
             net_commands: Mutex::new(BTreeMap::new()),
-            playback_job: Mutex::new(None),
-            local_queue: Mutex::new(VecDeque::new()),
+            screen: Mutex::new(ScreenArbiter::default()),
             last_state_sent: Mutex::new(None),
             pending_board_view: Mutex::new(None),
             pending_guild_removals: Mutex::new(Vec::new()),
@@ -292,57 +285,69 @@ impl AppState {
         }
     }
 
-    pub fn set_playback(&self, guild_id: &str, job_id: String) {
-        *self.lock_playback() = Some((guild_id.to_string(), job_id));
+    /// Décide du sort d'un `play` : affichage immédiat ou mise en file locale.
+    ///
+    /// `showable` dit si l'overlay peut afficher quelque chose (activé et
+    /// appairé) : sinon le `play` attend son tour au lieu de devenir un
+    /// propriétaire fantôme que le renderer n'a jamais reçu.
+    pub fn present_play(
+        &self,
+        guild_id: &str,
+        job_id: &str,
+        payload: serde_json::Value,
+        showable: bool,
+    ) -> PlayPresentation {
+        self.lock_screen()
+            .present(guild_id, job_id, payload, showable)
     }
 
-    pub fn clear_playback(&self) {
-        *self.lock_playback() = None;
+    /// Affiche le prochain `play` en attente si l'écran est libre.
+    pub fn advance_screen(&self, showable: bool) -> Option<QueuedPlay> {
+        self.lock_screen().advance(showable)
+    }
+
+    /// `stop` reçu du serveur pour une guilde : purge sa file, et libère
+    /// l'écran seulement si elle l'occupe encore.
+    pub fn server_stop(
+        &self,
+        guild_id: &str,
+        job_id: Option<&str>,
+        showable: bool,
+    ) -> StopDecision {
+        self.lock_screen().server_stop(guild_id, job_id, showable)
+    }
+
+    /// Fin de session d'une guilde : purge sa file et libère son écran.
+    pub fn release_guild(&self, guild_id: &str, showable: bool) -> StopDecision {
+        self.lock_screen().release_guild(guild_id, showable)
+    }
+
+    /// Rapport de fin de lecture du renderer, routé vers la guilde du job.
+    pub fn report_stop(&self, job_id: Option<&str>, showable: bool) -> ReportDecision {
+        self.lock_screen().report_stop(job_id, showable)
     }
 
     /// Job à l'écran, toutes guildes confondues.
     pub fn playback_job(&self) -> Option<String> {
-        self.lock_playback().as_ref().map(|(_, job)| job.clone())
+        self.lock_screen()
+            .screen()
+            .map(|owner| owner.job_id.clone())
     }
 
     /// Guilde propriétaire du job à l'écran.
     pub fn playback_guild(&self) -> Option<String> {
-        self.lock_playback()
-            .as_ref()
-            .map(|(guild, _)| guild.clone())
+        self.lock_screen().screen_guild().map(str::to_owned)
     }
 
-    /// Met en attente le `play` d'une guilde pendant qu'une autre joue.
-    pub fn enqueue_play(&self, queued: QueuedPlay) {
-        let mut guard = self.lock_queue();
-        guard.retain(|existing| existing.job_id != queued.job_id);
-        guard.push_back(queued);
-    }
-
-    /// Prochain `play` en attente.
-    pub fn dequeue_play(&self) -> Option<QueuedPlay> {
-        self.lock_queue().pop_front()
+    /// Guilde propriétaire d'un job : l'écran, puis les derniers affichés.
+    pub fn job_owner(&self, job_id: &str) -> Option<String> {
+        self.lock_screen().owner_of(job_id).map(str::to_owned)
     }
 
     /// `(job_id, durée en ms)` des `play` d'une guilde encore en file locale,
     /// dans l'ordre d'attente.
     pub fn queued_jobs_for(&self, guild_id: &str) -> Vec<(String, u64)> {
-        self.lock_queue()
-            .iter()
-            .filter(|queued| queued.guild_id == guild_id)
-            .map(|queued| (queued.job_id.clone(), queued_duration_ms(&queued.payload)))
-            .collect()
-    }
-
-    /// Retire les `play` en attente d'une guilde (un job précis, ou tous).
-    /// Retourne le nombre d'entrées retirées.
-    pub fn drop_queued(&self, guild_id: &str, job_id: Option<&str>) -> usize {
-        let mut guard = self.lock_queue();
-        let before = guard.len();
-        guard.retain(|queued| {
-            queued.guild_id != guild_id || job_id.is_some_and(|job_id| queued.job_id != job_id)
-        });
-        before - guard.len()
+        self.lock_screen().queued_jobs_for(guild_id)
     }
 
     /// Remembers the view requested by the tray for the board (e.g. `settings`).
@@ -405,14 +410,8 @@ impl AppState {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
-    fn lock_queue(&self) -> MutexGuard<'_, VecDeque<QueuedPlay>> {
-        self.local_queue
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-    }
-
-    fn lock_playback(&self) -> MutexGuard<'_, Option<(String, String)>> {
-        self.playback_job
+    fn lock_screen(&self) -> MutexGuard<'_, ScreenArbiter> {
+        self.screen
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
     }
@@ -435,16 +434,6 @@ fn session_mode_label(session_mode: lc_protocol::SessionMode) -> &'static str {
         lc_protocol::SessionMode::Normal => "normal",
         lc_protocol::SessionMode::InviteReadOnly => "invite_read_only",
     }
-}
-
-/// Durée de lecture d'un `play` en file locale : `durationSec` en ms, 5 s par
-/// défaut si absent/invalide, plafonnée par le protocole.
-fn queued_duration_ms(payload: &serde_json::Value) -> u64 {
-    payload["durationSec"]
-        .as_u64()
-        .map(|duration_sec| duration_sec.saturating_mul(1_000))
-        .unwrap_or(5_000)
-        .min(lc_protocol::MAX_PLAYBACK_REMAINING_MS)
 }
 
 #[cfg(test)]
@@ -643,56 +632,65 @@ mod tests {
     }
 
     #[test]
-    fn playback_owner_and_local_queue() {
+    fn screen_arbitration_is_routed_through_the_state() {
         let (_dir, state) = paired_state(&["111", "222"]);
-        state.set_playback("111", "job-a".to_string());
+        assert!(state.playback_job().is_none());
+
+        let displayed =
+            state.present_play("111", "job-a", serde_json::json!({"jobId": "job-a"}), true);
+        assert!(matches!(displayed, PlayPresentation::Display(_)));
         assert_eq!(state.playback_guild().as_deref(), Some("111"));
         assert_eq!(state.playback_job().as_deref(), Some("job-a"));
 
-        let queued = |guild: &str, job: &str| QueuedPlay {
-            guild_id: guild.to_string(),
-            job_id: job.to_string(),
-            payload: serde_json::json!({"jobId": job}),
-        };
-        state.enqueue_play(queued("222", "job-b"));
-        state.enqueue_play(queued("222", "job-b"));
-        state.enqueue_play(queued("222", "job-c"));
-        state.enqueue_play(queued("111", "job-d"));
+        let queued =
+            state.present_play("222", "job-b", serde_json::json!({"jobId": "job-b"}), true);
+        assert_eq!(queued, PlayPresentation::Queued);
+        assert_eq!(state.playback_guild().as_deref(), Some("111"));
 
-        // Un `stop` ciblé ne retire que ce job ; sans job, toute la guilde.
-        assert_eq!(state.drop_queued("222", Some("job-c")), 1);
-        assert_eq!(state.drop_queued("111", None), 1);
+        // Un rapport de fin libère l'écran et affiche le play suivant.
+        let decision = state.report_stop(Some("job-a"), true);
         assert_eq!(
-            state.dequeue_play().map(|play| play.job_id).as_deref(),
+            decision.ended_for.as_ref().map(|job| job.guild_id.as_str()),
+            Some("111")
+        );
+        assert!(decision.display_cleared);
+        assert_eq!(
+            decision.next.as_ref().map(|play| play.job_id.as_str()),
             Some("job-b")
         );
-        assert!(state.dequeue_play().is_none());
-
-        state.clear_playback();
-        assert!(state.playback_guild().is_none());
+        assert_eq!(state.playback_job().as_deref(), Some("job-b"));
+        // Le job terminé reste connu pour router une trame tardive.
+        assert_eq!(state.job_owner("job-a").as_deref(), Some("111"));
     }
 
     #[test]
-    fn queued_jobs_reports_durations_per_guild() {
+    fn queued_plays_report_durations_per_guild() {
         let (_dir, state) = paired_state(&["111", "222"]);
-        let queued = |guild: &str, job: &str, duration_sec: Option<u64>| QueuedPlay {
-            guild_id: guild.to_string(),
-            job_id: job.to_string(),
-            payload: match duration_sec {
-                Some(duration_sec) => serde_json::json!({ "durationSec": duration_sec }),
-                None => serde_json::json!({}),
-            },
+        state.present_play(
+            "111",
+            "job-a",
+            serde_json::json!({ "durationSec": 9 }),
+            true,
+        );
+        let queued = |state: &AppState, job_id: &str, payload: serde_json::Value| {
+            assert_eq!(
+                state.present_play("222", job_id, payload, true),
+                PlayPresentation::Queued
+            );
         };
-        state.enqueue_play(queued("222", "job-b", Some(7)));
-        state.enqueue_play(queued("222", "job-c", None));
-        state.enqueue_play(queued("111", "job-d", Some(3)));
+        queued(&state, "job-b", serde_json::json!({ "durationSec": 7 }));
+        queued(&state, "job-c", serde_json::json!({}));
         // Durée invalide (chaîne) : repli sur 5 s ; durée démesurée : plafonnée.
-        state.enqueue_play(QueuedPlay {
-            guild_id: "222".to_string(),
-            job_id: "job-e".to_string(),
-            payload: serde_json::json!({ "durationSec": "sept" }),
-        });
-        state.enqueue_play(queued("222", "job-f", Some(1_000_000_000)));
+        queued(
+            &state,
+            "job-e",
+            serde_json::json!({ "durationSec": "sept" }),
+        );
+        queued(
+            &state,
+            "job-f",
+            serde_json::json!({ "durationSec": 1_000_000_000 }),
+        );
 
         assert_eq!(
             state.queued_jobs_for("222"),
@@ -703,10 +701,8 @@ mod tests {
                 ("job-f".to_string(), lc_protocol::MAX_PLAYBACK_REMAINING_MS),
             ]
         );
-        assert_eq!(
-            state.queued_jobs_for("111"),
-            vec![("job-d".to_string(), 3_000)]
-        );
+        // La guilde à l'écran n'a rien en file ; une guilde inconnue non plus.
+        assert!(state.queued_jobs_for("111").is_empty());
         assert!(state.queued_jobs_for("333").is_empty());
     }
 }

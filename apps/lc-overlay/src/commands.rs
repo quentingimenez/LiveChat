@@ -312,14 +312,17 @@ fn send_protocol_to(
     sent
 }
 
-/// Envoie une trame de télémétrie à la guilde dont le média est à l'écran
-/// (à défaut, la guilde active).
-fn send_playback_protocol(app: &AppHandle<Wry>, message: ClientMessage, label: &str) -> bool {
-    let state = app.state::<AppState>();
-    match state.playback_guild().or_else(|| state.active_guild()) {
-        Some(guild_id) => send_protocol_to(app, &guild_id, message, label),
-        None => false,
-    }
+/// Guilde à qui router une trame de télémétrie d'un job : la guilde
+/// propriétaire du job (à l'écran, ou dernier affiché), sinon la guilde dont
+/// le média est à l'écran, sinon la guilde active.
+///
+/// Passer par le propriétaire du job est indispensable en multi-guilde : un
+/// rapport de fin tardif ne doit pas partir vers la guilde du média suivant.
+fn playback_target(state: &AppState, job_id: &str) -> Option<String> {
+    state
+        .job_owner(job_id)
+        .or_else(|| state.playback_guild())
+        .or_else(|| state.active_guild())
 }
 
 /// Répercute un changement de guildes : raccourcis, settings renderer, tray,
@@ -812,15 +815,22 @@ pub fn overlay_report_error(
         .filter(|message| !message.trim().is_empty())
         .unwrap_or_else(|| payload.to_string());
     tracing::warn!(%code, %message, "erreur signalée par le renderer overlay");
-    send_playback_protocol(
-        &app,
-        ClientMessage::Error(lc_protocol::ClientErrorPayload {
-            job_id: parsed.job_id.unwrap_or_default(),
-            code,
-            message,
-        }),
-        "overlay_report_error",
-    );
+    let state = app.state::<AppState>();
+    let job_id = parsed
+        .job_id
+        .filter(|job_id| !job_id.trim().is_empty())
+        .unwrap_or_default();
+    let message = ClientMessage::Error(lc_protocol::ClientErrorPayload {
+        job_id: job_id.clone(),
+        code,
+        message,
+    });
+    match playback_target(&state, &job_id) {
+        Some(guild_id) => {
+            send_protocol_to(&app, &guild_id, message, "overlay_report_error");
+        }
+        None => tracing::debug!("erreur renderer non relayée : aucune guilde destinataire"),
+    }
     Ok(())
 }
 
@@ -856,15 +866,17 @@ pub fn overlay_report_playback_state(
         .remaining_ms
         .filter(|remaining| remaining.is_finite() && *remaining > 0.0)
         .map(|remaining| (remaining as u64).min(lc_protocol::MAX_PLAYBACK_REMAINING_MS));
-    send_playback_protocol(
-        &app,
-        ClientMessage::PlaybackState(PlaybackStatePayload {
-            job_id,
-            state: playback_state,
-            remaining_ms,
-        }),
-        "overlay_report_playback_state",
-    );
+    let message = ClientMessage::PlaybackState(PlaybackStatePayload {
+        job_id: job_id.clone(),
+        state: playback_state,
+        remaining_ms,
+    });
+    match playback_target(&state, &job_id) {
+        Some(guild_id) => {
+            send_protocol_to(&app, &guild_id, message, "overlay_report_playback_state");
+        }
+        None => tracing::debug!("état de lecture non relayé : aucune guilde destinataire"),
+    }
     Ok(())
 }
 
@@ -884,27 +896,30 @@ pub fn overlay_report_playback_stop(
         return Ok(());
     }
     let state = app.state::<AppState>();
-    let job_id = parsed
-        .job_id
-        .filter(|job_id| !job_id.trim().is_empty())
-        .or_else(|| state.playback_job())
-        .unwrap_or_default();
-    if job_id.is_empty() {
-        tracing::debug!("arrêt de lecture ignoré : aucun job courant");
+    let job_id = parsed.job_id.filter(|job_id| !job_id.trim().is_empty());
+    let showable = crate::windows::overlay_should_show(&state.config_snapshot());
+    let decision = state.report_stop(job_id.as_deref(), showable);
+    let Some(ended_for) = decision.ended_for else {
+        tracing::debug!(
+            job_id = ?job_id,
+            "fin de lecture ignorée : plus rien à l'écran pour ce job"
+        );
         return Ok(());
-    }
-    // La trame part avant de libérer l'écran : elle doit atteindre la guilde
-    // propriétaire du job, pas celle du `play` suivant.
-    send_playback_protocol(
+    };
+    // La trame part vers la guilde qui possédait ce job, pas vers celle du
+    // média qui a pris sa place entre-temps.
+    send_protocol_to(
         &app,
+        &ended_for.guild_id,
         ClientMessage::PlaybackEnded(PlaybackEndedPayload {
-            job_id,
+            job_id: ended_for.job_id.clone(),
             reason: ended_reason_from_label(parsed.reason.as_deref()),
         }),
         "overlay_report_playback_stop",
     );
-    state.clear_playback();
-    ws::advance_local_queue(&app);
+    if let Some(next) = decision.next {
+        ws::show_queued_play(&app, next);
+    }
     Ok(())
 }
 
@@ -1119,24 +1134,28 @@ pub fn media_board_stop(
 /// locally queued `play` (another guild) is shown.
 pub(crate) fn stop_local_playback(app: &AppHandle<Wry>) -> bool {
     let state = app.state::<AppState>();
-    let Some(job_id) = state.playback_job() else {
+    let showable = crate::windows::overlay_should_show(&state.config_snapshot());
+    let decision = state.report_stop(None, showable);
+    let Some(ended_for) = decision.ended_for else {
         tracing::debug!("arrêt local ignoré : aucun média à l'écran");
         return false;
     };
     // The frame leaves before the screen is freed: it must reach the guild
     // owning the job, not the one of the next `play`.
-    send_playback_protocol(
+    send_protocol_to(
         app,
+        &ended_for.guild_id,
         ClientMessage::PlaybackEnded(PlaybackEndedPayload {
-            job_id: job_id.clone(),
+            job_id: ended_for.job_id.clone(),
             reason: PlaybackEndedReason::Local,
         }),
         "media_board_stop_local",
     );
-    state.clear_playback();
-    let stop = events::OverlayEvent::stop(local_stop_payload(&job_id));
+    let stop = events::OverlayEvent::stop(local_stop_payload(&ended_for.job_id));
     events::deliver_or_buffer(app, state.overlay_ready(), stop);
-    ws::advance_local_queue(app);
+    if let Some(next) = decision.next {
+        ws::show_queued_play(app, next);
+    }
     true
 }
 

@@ -415,17 +415,18 @@ Les statuts sont suivis par guilde (`state.rs`, `NetSnapshot`) et exposés par `
 
 `guild_set_muted` exige `muted` (booléen) et accepte `guildId` optionnel ; sans `guildId`, la cible est la guilde active. Il met à jour `membership.muted`, appelle `ensure_supervisor` puis envoie `Reconnect`. Une guilde coupée n'ouvre aucune connexion : ses médias ne peuvent plus être reçus ni affichés. Si elle occupait l'écran, la fin de session déclenche `release_guild_playback`, qui libère l'écran.
 
-### Arbitrage d'affichage par file locale
+### Arbitrage d'affichage par écran unique
 
-Un seul média occupe l'écran, toutes guildes confondues. `AppState` conserve le couple `(guild_id, job_id)` affiché et une `VecDeque<QueuedPlay>` (`apps/lc-overlay/src/state.rs`).
+Un seul média occupe l'écran, toutes guildes confondues. L'arbitrage est centralisé dans `ScreenArbiter` (`apps/lc-overlay/src/screen.rs`), un module pur sans Tauri, protégé par un seul verrou dans `AppState` : lecture courante, file FIFO et jobs récemment affichés sont mis à jour dans la même section critique, si bien que deux `play` concurrents ne peuvent pas prendre l'écran ensemble.
 
-- `AppEffects::present_play` : si une autre guilde occupe l'écran, le `play` est mis en file (`enqueue_play`, dédoublonné par `job_id`) ; sinon il devient la lecture courante et est livré au renderer.
-- `on_stop` : retire de la file les `play` de la guilde (le job ciblé si `jobId` est fourni, sinon tous), puis, si une autre guilde occupe l'écran, s'arrête là ; sinon libère l'écran, délivre `stop` et appelle `advance_local_queue`.
-- `on_welcome` avec `current_job` : `adopt_current_job` ajoute le temps déjà écoulé à `start_offset_sec`, puis `present_play` applique le même arbitrage.
+- `present_play` : si l'overlay est masqué ou si une autre guilde occupe l'écran, le `play` est mis en file (dédoublonné par `job_id`, la position d'origine est conservée) ; sinon il devient la lecture courante et est livré au renderer.
+- `on_stop` : retire toujours de la file les `play` de la guilde (le job ciblé si `jobId` est fourni, sinon tous) ; ne libère l'écran que si le `stop` désigne le média affiché (même guilde, job égal si fourni), puis délivre `stop` et affiche le suivant.
+- `overlay_report_playback_stop` et `stop_local_playback` passent par `AppState::report_stop`. Un rapport dont le job n'est plus à l'écran ne libère rien — il ne peut donc pas effacer le média suivant — et il est routé vers la guilde propriétaire du job (`job_owner`), jamais vers la guilde dont le média occupe l'écran. Sans `jobId`, le média affiché est visé.
+- `on_welcome` avec `current_job` : `adopt_current_job` ajoute le temps déjà écoulé à `start_offset_sec`, puis `present_play` applique le même arbitrage ; un `play` réémis pour le job déjà à l'écran ne double pas la file.
 - `release_guild_playback` : à la fin d'une session, retire les `play` en attente de la guilde et, si elle occupait l'écran, libère celui-ci, émet un arrêt `disconnected` et affiche le suivant.
-- `advance_local_queue` : si rien n'est à l'écran, dépile le prochain `play` et l'affiche.
+- `advance_local_queue` : si rien n'est à l'écran et que l'overlay peut s'afficher, dépile le prochain `play` et l'affiche.
 
-La file locale est FIFO. Aucune commande ne la réordonne.
+La file locale est FIFO. Aucune commande ne la réordonne. Côté serveur, un `playback.ended` est appliqué à la guilde propriétaire du job (`handle_playback_ended`) et une erreur signalée par une autre guilde que celle du job est ignorée (`handle_error`).
 
 ### Retrait d'une adhésion sur fermeture 4401 ou 4402
 
@@ -498,4 +499,5 @@ les commandes de ce serveur, désormais destinées à la guilde indépendante.
 - Un changement de rôle ferme les sessions WebSocket du membre avec le code `1001` pour qu'elles se reconnectent et reprennent leur mode à jour.
 - Les raccourcis clavier ne valent que pour la guilde active : ils sont lus dans `config.media_bindings`, miroir de cette guilde.
 - L'URL des médias du board embarque encore le jeton en query (`board_media_url`), ce que le serveur accepte uniquement sous `/overlay/media-board/*`.
-- L'arbitrage local d'affichage n'a pas été validé contre le délai de surveillance du moteur de lecture côté serveur. Le moteur libère un job `PLAYING` au-delà de sa durée attendue plus `stale_release_grace_ms` (10 s par défaut, `crates/lc-playback/src/lib.rs`) ; l'attente d'un `play` dans la file locale n'est pas couverte par un test d'interaction.
+- L'arbitrage local d'affichage est couvert par les tests de `apps/lc-overlay/src/screen.rs` ; l'attente d'un `play` en file locale face au watchdog serveur repose sur les keep-alives `playback.state` et reste couverte par les tests du moteur (`crates/lc-playback/tests/engine_scenarios.rs`), pas par un test d'interaction de bout en bout.
+

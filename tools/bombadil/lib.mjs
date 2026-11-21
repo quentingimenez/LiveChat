@@ -22,27 +22,36 @@ function bombadilCommand() {
   return [process.execPath, join(here, 'node_modules', '@antithesishq', 'bombadil', 'bin', 'bombadil.js')];
 }
 
+/** Reads a viewport dimension, so a typo fails before Bombadil starts. */
+function dimension(name, fallback, env) {
+  const value = env[name] ?? String(fallback);
+  if (!/^[1-9][0-9]*$/.test(value)) {
+    throw new Error(`${name} must be a positive integer, got "${value}"`);
+  }
+  return value;
+}
+
 /**
- * Runs `bombadil browser test` from this folder (spec and output paths are
- * relative to it) and resolves with its exit code: 0 no violation, 1 error,
- * 2 property violated.
+ * The arguments of `bombadil browser test` (spec and output paths are relative
+ * to this folder). The environment knob `BOMBADIL_WIDTH` / `BOMBADIL_HEIGHT`
+ * (1280 × 800 by default) sets the viewport: the board is laid out for a narrow
+ * overlay, so the same page must be explored at other sizes too.
  */
-export function runBombadil({ origin, spec, output, allowUrl, cookies = [] }) {
-  const timeLimit = process.env.BOMBADIL_TIME_LIMIT ?? '3m';
+export function bombadilArgs({ origin, spec, output, allowUrl, cookies = [] }, env = process.env) {
   const args = [
     'browser',
     'test',
     '--headless',
     '--time-limit',
-    timeLimit,
+    env.BOMBADIL_TIME_LIMIT ?? '3m',
     '--exit-on-violation',
     '--output-path',
     output,
     '--output-path-overwrite',
     '--width',
-    '1280',
+    dimension('BOMBADIL_WIDTH', 1280, env),
     '--height',
-    '800',
+    dimension('BOMBADIL_HEIGHT', 800, env),
   ];
   if (allowUrl) {
     args.push('--allow-url', allowUrl);
@@ -50,11 +59,19 @@ export function runBombadil({ origin, spec, output, allowUrl, cookies = [] }) {
   for (const cookie of cookies) {
     args.push('--cookie', cookie);
   }
-  if (process.env.BOMBADIL_NO_SANDBOX === '1') {
+  if (env.BOMBADIL_NO_SANDBOX === '1') {
     args.push('--no-sandbox');
   }
   args.push(origin, spec);
+  return args;
+}
 
+/**
+ * Runs `bombadil browser test` from this folder and resolves with its exit
+ * code: 0 no violation, 1 error, 2 property violated.
+ */
+export function runBombadil({ origin, spec, output, allowUrl, cookies = [] }) {
+  const args = bombadilArgs({ origin, spec, output, allowUrl, cookies });
   const [command, ...prefix] = bombadilCommand();
   const shown = args.map((arg, index) => (args[index - 1] === '--cookie' ? '<cookie>' : arg));
   console.log(`bombadil ${shown.join(' ')}`);

@@ -13,8 +13,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use lc_media::config::{
-    DownloadConfig, LoudnormTargets, MediaConfig, ResolveConfig, StorageConfig, ToolsConfig,
-    VideoConfig, VideoEncoder,
+    sanitize_tiktok_cookie, DownloadConfig, LoudnormTargets, MediaConfig, ResolveConfig,
+    StorageConfig, ToolsConfig, VideoConfig, VideoEncoder,
 };
 
 use crate::app::AppState;
@@ -36,6 +36,11 @@ pub fn media_config_with_runtime(config: &Config, runtime: &Runtime) -> MediaCon
     media.storage.board_max_total_bytes = megabytes_to_bytes(runtime.media_board_max_total_mb());
     media.download.max_size_bytes = megabytes_to_bytes(runtime.media_max_size_mb());
     media.video.max_height = runtime.media_video_max_height();
+    // Le cookie TikTok est aussi un réglage à chaud : la console admin le
+    // persiste dans `admin_runtime.json`, et l'ingestion suivante doit
+    // l'utiliser sans redémarrage. Un cookie vidé désactive le passage de
+    // `--cookies` à yt-dlp au lieu de retomber silencieusement sur l'env.
+    media.tools.tiktok_cookie = sanitize_tiktok_cookie(&runtime.tiktok_cookie());
     media
 }
 
@@ -231,6 +236,50 @@ mod tests {
         assert_eq!(media.storage.board_max_total_bytes, 4 * 1024 * 1024);
         assert_eq!(media.download.max_size_bytes, 5 * 1024 * 1024);
         assert_eq!(media.video.max_height, 480);
+    }
+
+    #[test]
+    fn runtime_tiktok_cookie_overrides_the_environment_value() {
+        use std::sync::Arc;
+
+        use crate::runtime::{Runtime, RuntimeOverrides};
+
+        let server = config(&[
+            ("API_URL", "http://localhost:3000"),
+            ("TIKTOK_COOKIE", "session=environment"),
+        ]);
+        let runtime = Runtime::new(Arc::new(server.clone()));
+
+        runtime.apply(RuntimeOverrides {
+            tiktok_cookie: Some("session=runtime".to_owned()),
+            ..RuntimeOverrides::default()
+        });
+        let media = media_config_with_runtime(&server, &runtime);
+        assert_eq!(
+            media.tools.tiktok_cookie.as_deref(),
+            Some("session=runtime")
+        );
+
+        runtime.apply(RuntimeOverrides {
+            tiktok_cookie: Some(String::new()),
+            ..RuntimeOverrides::default()
+        });
+        let media = media_config_with_runtime(&server, &runtime);
+        assert!(media.tools.tiktok_cookie.is_none());
+
+        runtime.apply(RuntimeOverrides {
+            tiktok_cookie: Some("session=runtime\ninjected=1".to_owned()),
+            ..RuntimeOverrides::default()
+        });
+        let media = media_config_with_runtime(&server, &runtime);
+        assert!(media.tools.tiktok_cookie.is_none());
+
+        runtime.apply(RuntimeOverrides::default());
+        let media = media_config_with_runtime(&server, &runtime);
+        assert_eq!(
+            media.tools.tiktok_cookie.as_deref(),
+            Some("session=environment")
+        );
     }
 
     #[test]

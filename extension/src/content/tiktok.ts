@@ -1,5 +1,11 @@
+import {
+  renderButtonContent,
+  setButtonLabel,
+  type InjectedButtonState,
+} from './brand-logo';
 import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModalTiktok';
 import { initInpageTheme } from './inpage-theme';
+import { TIKTOK_BUTTON_LOGO_SIZE_PX, tiktokInpageStyles } from './inpage-styles';
 
 const STYLE_ID = 'lce-tiktok-style';
 const INLINE_BUTTON_ID = 'lce-tiktok-inline-button';
@@ -451,80 +457,10 @@ interface TikTokActiveTarget {
 let latestActionContainer: HTMLElement | null = null;
 let lastSyncedActiveTargetKey: string | null = null;
 
-type ButtonState = 'idle' | 'loading' | 'success' | 'error';
-
-const BUTTON_TEXT_BY_STATE: Record<ButtonState, string> = {
-  idle: 'LC',
-  loading: '...',
-  success: 'OK',
-  error: 'ER',
-};
-
 const buttonResetTimers = new WeakMap<HTMLButtonElement, number>();
 const buttonClickTimers = new WeakMap<HTMLButtonElement, number>();
 const SINGLE_CLICK_DELAY_MS = 260;
 
-const inpageStyles = `
-.lce-button-tiktok {
-  width: 48px;
-  height: 48px;
-  border: none;
-  border-radius: 999px;
-  background: #1F1F1F;
-  color: #fff;
-  font-family: "TikTokDisplayFont", "ProximaNova", "Segoe UI", sans-serif;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  cursor: pointer;
-  pointer-events: auto;
-  transition: transform 120ms ease, background-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
-}
-.lce-button-tiktok:hover {
-  background: rgba(22, 24, 35, 1);
-}
-.lce-button-tiktok:disabled {
-  opacity: 1;
-}
-.lce-button-tiktok.is-loading {
-  background: #fed54a;
-  color: #0f0f0f;
-}
-.lce-button-tiktok.is-success {
-  background: #25f4ee;
-  color: #0f0f0f;
-}
-.lce-button-tiktok.is-error {
-  background: #fe2c55;
-  color: #fff;
-}
-.lce-tiktok-slot {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
-  margin-top: 0;
-  pointer-events: auto;
-}
-.lce-tiktok-slot.is-vertical {
-  margin-top: 0;
-  margin-bottom: 0;
-}
-.lce-tiktok-slot.is-vertical .lce-button-tiktok {
-  width: 40px;
-  height: 40px;
-  font-size: 10px;
-}
-.lce-tiktok-slot.is-horizontal {
-  margin-top: 0;
-  margin-bottom: 0;
-}
-.lce-tiktok-slot.is-horizontal .lce-button-tiktok {
-  width: 40px;
-  height: 40px;
-  font-size: 10px;
-}
-`;
 
 const ensureStyles = (): void => {
   if (document.getElementById(STYLE_ID)) {
@@ -533,7 +469,7 @@ const ensureStyles = (): void => {
 
   const styleNode = document.createElement('style');
   styleNode.id = STYLE_ID;
-  styleNode.textContent = inpageStyles;
+  styleNode.textContent = tiktokInpageStyles;
   document.head.appendChild(styleNode);
 };
 
@@ -1291,10 +1227,14 @@ const clearButtonResetTimer = (button: HTMLButtonElement): void => {
   }
 };
 
-const setButtonState = (button: HTMLButtonElement, state: ButtonState, title?: string): void => {
+const setButtonState = (
+  button: HTMLButtonElement,
+  state: InjectedButtonState,
+  title?: string,
+): void => {
   clearButtonResetTimer(button);
   button.classList.remove('is-loading', 'is-success', 'is-error');
-  button.textContent = BUTTON_TEXT_BY_STATE[state];
+  renderButtonContent(button, state, TIKTOK_BUTTON_LOGO_SIZE_PX);
 
   if (state === 'loading') {
     button.classList.add('is-loading');
@@ -1304,7 +1244,7 @@ const setButtonState = (button: HTMLButtonElement, state: ButtonState, title?: s
     button.classList.add('is-error');
   }
 
-  button.title = title || DEFAULT_BUTTON_TITLE;
+  setButtonLabel(button, title || DEFAULT_BUTTON_TITLE);
 };
 
 const resetButtonStateLater = (button: HTMLButtonElement, delayMs = 2200): void => {
@@ -1324,8 +1264,7 @@ const createActionButton = (): HTMLButtonElement => {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'lce-button-tiktok';
-  button.textContent = BUTTON_TEXT_BY_STATE.idle;
-  button.title = DEFAULT_BUTTON_TITLE;
+  setButtonState(button, 'idle');
 
   const longPressCompose = attachLongPressCompose({
     button,
@@ -1625,26 +1564,35 @@ const upsertInlineButton = (container: HTMLElement): void => {
     legacyLabel.remove();
   }
 
-  const horizontalHost = container.firstElementChild instanceof HTMLDivElement ? container.firstElementChild : container;
+  const firstChild = container.firstElementChild;
+  const horizontalHost =
+    firstChild instanceof HTMLDivElement && firstChild !== slot ? firstChild : container;
   const actionLayout = detectActionLayout(container);
   slot.classList.remove('is-vertical', 'is-horizontal');
   slot.classList.add(actionLayout === 'vertical' ? 'is-vertical' : 'is-horizontal');
 
   if (actionLayout === 'horizontal') {
-    if (slot.parentElement !== horizontalHost) {
-      horizontalHost.prepend(slot);
-    } else if (horizontalHost.firstElementChild !== slot) {
+    if (slot.parentElement !== horizontalHost || horizontalHost.firstElementChild !== slot) {
       horizontalHost.prepend(slot);
     }
   } else {
-    // Colonne verticale : le bouton rejoint la pile d'actions, à la fin, pour
-    // rester aligné avec les icônes natives (j'aime, commentaires, partage).
-    if (container.lastElementChild !== slot) {
+    // Colonne verticale : le bouton se glisse entre l'avatar (première div) et
+    // la première action native (deuxième div), pour ouvrir la pile d'actions
+    // sans passer sous la pastille musicale.
+    const avatar = container.firstElementChild === slot ? slot.nextElementSibling : container.firstElementChild;
+
+    if (avatar instanceof HTMLElement) {
+      if (slot.previousElementSibling !== avatar || slot.parentElement !== container) {
+        container.insertBefore(slot, avatar.nextElementSibling);
+      }
+    } else if (slot.parentElement !== container) {
       container.appendChild(slot);
     }
   }
 
-  button.title = DEFAULT_BUTTON_TITLE;
+  // Le balayage repasse sur le bouton à chaque mutation de la page : le libellé
+  // est rappelé sans retoucher le contenu, pour ne pas reconstruire le logo.
+  setButtonLabel(button, DEFAULT_BUTTON_TITLE);
 };
 
 const scanTikTokPage = async (): Promise<void> => {

@@ -1,5 +1,11 @@
+import {
+  renderButtonContent,
+  setButtonLabel,
+  type InjectedButtonState,
+} from './brand-logo';
 import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModalTwitter';
 import { initInpageTheme } from './inpage-theme';
+import { TWITTER_BUTTON_LOGO_SIZE_PX, twitterInpageStyles } from './inpage-styles';
 
 const STYLE_ID = 'lce-twitter-style';
 const BUTTON_ATTRIBUTE = 'data-lce-twitter-button';
@@ -428,60 +434,13 @@ const attachLongPressCompose = (() => {
   };
 })();
 
-type ButtonState = 'idle' | 'loading' | 'success' | 'error';
-
-const BUTTON_TEXT_BY_STATE: Record<ButtonState, string> = {
-  idle: 'LC',
-  loading: '...',
-  success: 'OK',
-  error: 'ER',
-};
+// Le logo remplit la pastille de 34 px sans la déborder, à la taille des icônes
+// d'action de X (~19 px) qui l'entourent.
 
 const buttonResetTimers = new WeakMap<HTMLButtonElement, number>();
 const buttonClickTimers = new WeakMap<HTMLButtonElement, number>();
 const SINGLE_CLICK_DELAY_MS = 260;
 
-const inpageStyles = `
-.lce-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border: none;
-  border-radius: 999px;
-  padding: 0;
-  font-family: "Segoe UI", "Helvetica Neue", sans-serif;
-  font-size: 11px;
-  font-weight: 700;
-  cursor: pointer;
-  background: transparent;
-  color: #72767B;
-  transition: background-color 140ms ease, color 140ms ease, transform 120ms ease;
-}
-.lce-button:hover { background: rgba(29, 155, 240, 0.1); color: #1d9bf0; }
-.lce-button:disabled { opacity: 1; }
-.lce-button.is-loading {
-  background: rgba(29, 155, 240, 0.1);
-  color: #1d9bf0;
-}
-.lce-button.is-success {
-  background: #30d158;
-  color: #0f0f0f;
-}
-.lce-button.is-error {
-  background: #ff453a;
-  color: #fff;
-}
-.lce-button-floating { position: fixed; right: 20px; bottom: 24px; z-index: 2147483646; }
-.lce-twitter-action-slot {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin-left: 4px;
-  flex: 0 0 auto;
-}
-`;
 
 const ensureStyles = (): void => {
   if (document.getElementById(STYLE_ID)) {
@@ -490,7 +449,7 @@ const ensureStyles = (): void => {
 
   const styleNode = document.createElement('style');
   styleNode.id = STYLE_ID;
-  styleNode.textContent = inpageStyles;
+  styleNode.textContent = twitterInpageStyles;
   document.head.appendChild(styleNode);
 };
 
@@ -815,10 +774,14 @@ const clearButtonResetTimer = (button: HTMLButtonElement): void => {
   }
 };
 
-const setButtonState = (button: HTMLButtonElement, state: ButtonState, title?: string): void => {
+const setButtonState = (
+  button: HTMLButtonElement,
+  state: InjectedButtonState,
+  title?: string,
+): void => {
   clearButtonResetTimer(button);
   button.classList.remove('is-loading', 'is-success', 'is-error');
-  button.textContent = BUTTON_TEXT_BY_STATE[state];
+  renderButtonContent(button, state, TWITTER_BUTTON_LOGO_SIZE_PX);
 
   if (state === 'loading') {
     button.classList.add('is-loading');
@@ -828,7 +791,7 @@ const setButtonState = (button: HTMLButtonElement, state: ButtonState, title?: s
     button.classList.add('is-error');
   }
 
-  button.title = title || 'Envoyer ce tweet vers LiveChat';
+  setButtonLabel(button, title || 'Envoyer ce tweet vers LiveChat');
 };
 
 const resetButtonStateLater = (button: HTMLButtonElement, delayMs = 2200): void => {

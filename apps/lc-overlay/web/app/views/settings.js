@@ -133,7 +133,9 @@ export function initDeviceSettings() {
     setUpdateStatus(payload.update);
     loadError = null;
     // Do not rebuild the controls under the pointer while a control is edited.
-    if (settingsShown() && !settingsControlActive()) {
+    // A guild switch paints the view once the new guild's info lands: painting
+    // here would show the « Réglages » tab with the previous guild's settings.
+    if (settingsShown() && !settingsControlActive() && !state.switchingGuild) {
       renderView();
     }
   });

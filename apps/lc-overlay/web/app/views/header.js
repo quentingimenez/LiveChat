@@ -4,7 +4,7 @@ import { run } from '../core/api.js';
 import { h, icon } from '../core/dom.js';
 import { invoke } from '../core/ipc.js';
 import { allMediaMuted, guildMediaMuted, setGuildMediaMuted } from '../core/sound.js';
-import { activeGuild, can, guildLabel, ROLE_LABELS, state } from '../core/state.js';
+import { activeGuild, canAdmin, guildLabel, ROLE_LABELS, state } from '../core/state.js';
 import { applyGuilds, loadAdmin, loadQueue } from '../data.js';
 import { openGuildDialog } from './profile.js';
 import { renderView } from './view.js';
@@ -24,7 +24,7 @@ export function renderHeader() {
     ['board', 'Board', null],
     ['queue', 'File d’attente', state.queue.pending.length || null],
   ];
-  if (can('manageMembers') || can('manageInvites') || can('manageSettings')) {
+  if (canAdmin()) {
     tabs.push(['admin', 'Administration', null]);
   }
   // The visible label stays short; the accessible name says which settings.

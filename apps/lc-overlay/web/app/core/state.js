@@ -10,6 +10,9 @@ export const state = {
   tab: 'board',
   adminTab: 'members',
   info: null, // GET /overlay/guild response for the active guild
+  // `true` while the active guild changed and its info is still loading: the
+  // header and the view are painted once, when it lands.
+  switchingGuild: false,
   items: [],
   itemsLoaded: false,
   search: '',
@@ -82,6 +85,11 @@ export const ERROR_LABELS = {
 export function can(permission) {
   const permissions = state.info && state.info.permissions;
   return Boolean(permissions && permissions[permission]);
+}
+
+// Whether the active guild opens the « Administration » tab.
+export function canAdmin() {
+  return can('manageMembers') || can('manageInvites') || can('manageSettings');
 }
 
 export function activeGuild() {

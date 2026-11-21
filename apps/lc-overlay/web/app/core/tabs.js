@@ -35,3 +35,10 @@ export function selectTab(tabs, panels, index) {
     panel.hidden = position !== index;
   });
 }
+
+// The tab to show after switching guilds: « Administration » stays selected
+// when the newly active guild grants it too, and falls back to the board when
+// it does not (the rail switches to guilds where you are only a member).
+export function tabAfterGuildSwitch(tab, canAdmin) {
+  return tab === 'admin' && !canAdmin ? 'board' : tab;
+}

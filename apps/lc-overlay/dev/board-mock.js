@@ -94,6 +94,14 @@
 
   const now = Date.now();
 
+  // Overlays connected per guild: the header's count must follow the guild, not
+  // blink empty while the new guild's info loads.
+  const CONNECTED_COUNTS = { 111: 6, 222: 2, 333: 1, 444: 3, 555: 4 };
+
+  // Guild volumes differ: « Réglages de la guilde » must show the active guild's
+  // value right after one click, not the previous guild's until the next one.
+  const GUILD_VOLUMES = { 111: 0.4, 222: 0.75, 333: 0.5, 444: 1, 555: 1 };
+
   // `?update=ready|downloading` : état de l'updater au démarrage, pour prévoir
   // le bandeau de mise à jour de la board (« Plus tard » et l'erreur
   // d'installation sont testables aussi).
@@ -122,7 +130,10 @@
     selectedDisplayKey: null,
     volume: 0.8,
     guilds: Object.fromEntries(
-      guilds.guilds.map((guild) => [guild.membership.guildId, { volume: 1, muted: false, mediaMuted: false, showText: null, layout: null }]),
+      guilds.guilds.map((guild) => {
+        const guildId = guild.membership.guildId;
+        return [guildId, { volume: GUILD_VOLUMES[guildId] ?? 1, muted: false, mediaMuted: guildId === '111', showText: null, layout: null }];
+      }),
     ),
     generalMute: false,
     mediaMuted: false,
@@ -748,11 +759,18 @@
       return ok({ count: entries.length, items: entries });
     }
     if (path === '/overlay/guild') {
+      // Like the shell: the info of the *active* guild (name and overlay count
+      // change with it), not always the first one.
+      const active = guilds.guilds.find((guild) => guild.membership.guildId === guilds.activeGuildId);
+      if (!active) {
+        return { ok: false, status: 404, body: { error: 'unknown_guild' } };
+      }
+      const activeId = active.membership.guildId;
       const effectiveDefault = guildSettings.defaultMediaTime ?? 5;
       return ok({
         guild: {
-          id: '111',
-          name: guildName,
+          id: activeId,
+          name: active.membership.guildName,
           standalone: true,
           discordGuildId: null,
           guestsCanViewBoard,
@@ -764,9 +782,9 @@
           },
           mediaBoard: mediaBoardPayload(),
           playback: { done: 12, failed: 1, pending: queue.pending.length, busyUntil: null },
-          connectedCount: 6,
+          connectedCount: CONNECTED_COUNTS[activeId] || 1,
         },
-        member: { id: 'm-111', ...memberProfile, role },
+        member: { id: 'm-' + activeId, ...memberProfile, role },
         permissions,
       });
     }
@@ -1343,6 +1361,11 @@
           guilds.guilds.forEach((guild) => {
             guild.membership.active = guild.membership.guildId === payload.guildId;
           });
+          // Like the shell's `publish_guilds`: the device settings event fires
+          // first, then the guild list, before the command answers. The order
+          // matters — the settings page used to repaint before the switch.
+          emit('overlay://device-settings', settingsCopy());
+          emit('overlay://guilds', guildsCopy());
           return Promise.resolve({ ok: true, guilds: guildsCopy() });
         case 'guild_set_muted':
           guilds.guilds.forEach((guild) => {

@@ -18,6 +18,7 @@ import {
   pruneSelection,
   selectAllAction,
   selectRange,
+  sourceLink,
   toggleId,
 } from '../../web/app/core/selection.js';
 
@@ -173,6 +174,19 @@ test('deletableIds keeps the media the member may edit', () => {
   const items = [item('a', { canEdit: true }), item('b'), item('c', { canEdit: true })];
   assert.deepEqual(deletableIds(items), ['a', 'c']);
   assert.deepEqual(deletableIds([item('b')]), []);
+});
+
+test('sourceLink keeps the whole http(s) address, and nothing else', () => {
+  const link = 'https://www.youtube.com/watch?v=abc&t=12';
+  assert.equal(sourceLink(item('a', { sourceUrl: link })), link);
+  assert.equal(sourceLink(item('b', { sourceUrl: 'HTTP://example.test/B' })), 'HTTP://example.test/B');
+  // An uploaded file, a local file and a malformed source have no page.
+  assert.equal(sourceLink(item('c', { sourceUrl: 'upload:clip.mp4' })), null);
+  assert.equal(sourceLink(item('d', { sourceUrl: 'file:///tmp/d' })), null);
+  assert.equal(sourceLink(item('e', { sourceUrl: 'pas une url' })), null);
+  assert.equal(sourceLink(item('f')), null);
+  assert.equal(sourceLink({ id: 'z' }), null, 'an item without media is linkless');
+  assert.equal(sourceLink(null), null);
 });
 
 test('originLinks keeps the http(s) links, one per media, in board order', () => {

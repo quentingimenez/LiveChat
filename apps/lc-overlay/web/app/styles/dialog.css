@@ -222,7 +222,7 @@
    codes. The dialog opens in the wide frame (`openDialog(..., { width })`). */
 .profile-dialog {
   display: grid;
-  gap: 20px;
+  gap: 16px;
 }
 
 .profile-dialog .profile-head {
@@ -239,6 +239,35 @@
 .profile-dialog .profile-section {
   display: grid;
   gap: 12px;
+}
+
+/* Two tabs keep the add-device cards out of the default view: the list of
+   devices is what the dialog opens on, and the code generators live in the
+   second panel instead of stretching the page. */
+.profile-dialog .profile-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--slate-900);
+}
+
+.profile-dialog .profile-tab {
+  flex: 1;
+  justify-content: center;
+  color: var(--text-soft);
+}
+
+.profile-dialog .profile-tab[aria-selected='true'],
+.profile-dialog .profile-tab[aria-selected='true']:hover {
+  border-color: var(--line);
+  background: var(--slate-600);
+  color: var(--text);
+}
+
+.profile-dialog .profile-tabpanel[hidden] {
+  display: none;
 }
 
 .profile-dialog .profile-section-title {
@@ -394,11 +423,6 @@
   min-width: 0;
 }
 
-.profile-dialog .profile-personal-title {
-  margin: 0 0 2px;
-  font-size: 14px;
-}
-
 .profile-dialog .profile-personal-actions {
   display: flex;
   flex: none;
@@ -478,13 +502,6 @@
   margin: 0;
   color: var(--text-soft);
   font-size: 13px;
-}
-
-.profile-dialog .profile-personal-add {
-  margin: 14px 0 2px;
-  color: var(--text);
-  font-size: var(--text-base);
-  font-weight: 600;
 }
 
 .profile-dialog .profile-add-intro {

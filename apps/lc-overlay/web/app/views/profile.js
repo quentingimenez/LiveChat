@@ -13,6 +13,7 @@ import {
   personalDeviceSummary,
 } from '../core/personal-devices.js';
 import { can, describeError, guildLabel, ROLE_LABELS, state } from '../core/state.js';
+import { selectTab, tabIndexForKey } from '../core/tabs.js';
 import { notify } from '../core/toast.js';
 import { confirmDialog, copyText, openDialog } from '../core/ui.js';
 import { applyGuilds, loadGuild } from '../data.js';
@@ -30,8 +31,11 @@ export function confirmLeaveGuild(guild) {
   });
 }
 
+let profileDialogCount = 0;
+
 export function openGuildDialog(guild) {
   openDialog((close) => {
+    const tabSetId = `profile-tabs-${++profileDialogCount}`;
     const member = (state.info && state.info.member) || {};
     const initialName = member.displayName || guild.membership.displayName || '';
     const name = h('input', { class: 'field', maxlength: '40', value: initialName });
@@ -366,7 +370,6 @@ export function openGuildDialog(guild) {
         h(
           'div',
           { class: 'profile-personal-intro' },
-          h('h4', { class: 'profile-personal-title' }, 'Mes appareils'),
           h('p', { class: 'profile-device-desc' }, 'Les appareils connectés à ton profil. Révoque ceux que tu ne reconnais pas.'),
         ),
         h(
@@ -480,12 +483,25 @@ export function openGuildDialog(guild) {
         ),
       ),
     );
-    const devices = h(
-      'section',
-      { class: 'profile-section' },
-      h('h3', { class: 'profile-section-title' }, 'Appareils'),
+    const devicesPanel = h(
+      'div',
+      {
+        class: 'profile-tabpanel',
+        id: `${tabSetId}-devices`,
+        role: 'tabpanel',
+        'aria-labelledby': `${tabSetId}-devices-tab`,
+      },
       personalDevices,
-      h('h4', { class: 'profile-personal-add' }, 'Ajouter un appareil'),
+    );
+    const addPanel = h(
+      'div',
+      {
+        class: 'profile-tabpanel',
+        id: `${tabSetId}-add`,
+        role: 'tabpanel',
+        'aria-labelledby': `${tabSetId}-add-tab`,
+        hidden: true,
+      },
       h('p', { class: 'profile-device-desc profile-add-intro' }, 'Associe un autre PC, ton navigateur ou un raccourci iOS.'),
       h(
         'div',
@@ -543,6 +559,61 @@ export function openGuildDialog(guild) {
             )
           : null,
       ),
+    );
+    const tabPanels = [devicesPanel, addPanel];
+    const selectDeviceTab = (index) => selectTab(tabButtons, tabPanels, index);
+    const onDeviceTabKey = (event, index) => {
+      const next = tabIndexForKey(index, event.key, tabButtons.length);
+      if (next === null) {
+        return;
+      }
+      event.preventDefault();
+      selectDeviceTab(next);
+      tabButtons[next].focus();
+    };
+    const tabButtons = [
+      h(
+        'button',
+        {
+          class: 'btn is-quiet profile-tab',
+          type: 'button',
+          role: 'tab',
+          id: `${tabSetId}-devices-tab`,
+          'aria-controls': `${tabSetId}-devices`,
+          'aria-selected': 'true',
+          tabindex: '0',
+          onClick: () => selectDeviceTab(0),
+          onKeydown: (event) => onDeviceTabKey(event, 0),
+        },
+        'Mes appareils',
+      ),
+      h(
+        'button',
+        {
+          class: 'btn is-quiet profile-tab',
+          type: 'button',
+          role: 'tab',
+          id: `${tabSetId}-add-tab`,
+          'aria-controls': `${tabSetId}-add`,
+          'aria-selected': 'false',
+          tabindex: '-1',
+          onClick: () => selectDeviceTab(1),
+          onKeydown: (event) => onDeviceTabKey(event, 1),
+        },
+        'Ajouter un appareil',
+      ),
+    ];
+    selectDeviceTab(0);
+    const devices = h(
+      'section',
+      { class: 'profile-section' },
+      h(
+        'div',
+        { class: 'profile-tabs', role: 'tablist', 'aria-label': 'Appareils' },
+        ...tabButtons,
+      ),
+      devicesPanel,
+      addPanel,
     );
     return [
       h('h2', null, 'Mon profil'),

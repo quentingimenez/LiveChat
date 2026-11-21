@@ -250,7 +250,7 @@ async fn saying_a_text_queues_the_speech_job_of_dire() {
     assert_eq!(answer["jobId"], job.id.to_canonical());
     assert_eq!(answer["durationSec"], job.duration_sec);
     assert_eq!(job.status, JobStatus::Pending);
-    assert_eq!(job.priority, 0);
+    assert_eq!(job.source, lc_domain::enums::JobSource::Overlay);
     assert_eq!(job.resume_offset_sec, 0);
     assert_eq!(job.text.as_deref(), Some("Coucou"));
     assert!(job.show_text);

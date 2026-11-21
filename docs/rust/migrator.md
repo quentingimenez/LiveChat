@@ -186,7 +186,7 @@ l'installation.
 | `PRAGMA foreign_key_check` | 0 violation |
 | `app_metadata.schema_version` | `3.0.0` |
 | Comptes par table | identiques legacy ↔ cible (7 tables) |
-| Sommes numériques | `media_assets.size_bytes`, `media_assets.duration_sec`, `playback_jobs.duration_sec`, `playback_jobs.priority`, `playback_jobs.resume_offset_sec` (NULL legacy comptés 0), `guilds.default_media_time`, `guilds.max_media_time` |
+| Sommes numériques | `media_assets.size_bytes`, `media_assets.duration_sec`, `playback_jobs.duration_sec`, `playback_jobs.resume_offset_sec` (NULL legacy comptés 0), `guilds.default_media_time`, `guilds.max_media_time` |
 | Échantillon | 20 lignes maximum par table relues par clé primaire et comparées **champ à champ** (structs identiques) ; 13 lignes sur la fixture de test |
 | Métadonnées | `legacy_import_at`, `legacy_source_path`, `legacy_source_sha256`, `legacy_source_bytes`, `legacy_source_wal_bytes`, `legacy_snapshot_sha256`, `legacy_snapshot_bytes`, `legacy_snapshot_at`, `legacy_schema_version`, `legacy_import_tool` relues |
 | Registre sqlx | table `_sqlx_migrations` présente, exactement une ligne : `version = 1`, `description = 'init'`, `success = 1`, `checksum = SHA-384(MIGRATION_SQL)` (§10.1) |
@@ -236,9 +236,8 @@ millisecondes epoch UTC ; `Boolean` Prisma (0/1) → `INTEGER` 0/1 ; enums
 | `submissionDate`, `executionDate`, `scheduledAt` | `submission_date`, `execution_date`, `scheduled_at` | date → ms UTC |
 | `startedAt`, `finishedAt` | `started_at`, `finished_at` | date nullable → ms UTC |
 | `lastPlaybackStateAt` | `last_playback_state_at` | date nullable → ms UTC |
-| `remainingMsSnapshot` | `remaining_ms_snapshot` | INTEGER nullable |
-| `resumesAfterJobId` | `resumes_after_job_id` | texte nullable |
 | `resumeOffsetSec` | `resume_offset_sec` | `NULL` legacy → `0` + avertissement (colonne NOT NULL en 3.0) |
+| `priority`, `resumesAfterJobId`, `remainingMsSnapshot` | — | ignorés : le schéma FIFO n'a plus ces colonnes, `source` prend `'UNKNOWN'` par défaut |
 | `code` | `code` | clé primaire texte |
 | `mode` | `mode` | enum normalisée |
 | `usedAt` | `used_at` | date nullable → ms UTC |

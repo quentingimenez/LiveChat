@@ -439,7 +439,6 @@ async fn handle_media_command(
         author_name: include_author.then(|| author.username.clone()),
         author_image: include_author.then(|| author.image.clone()).flatten(),
         duration_sec,
-        priority: 0,
         resume_offset_sec,
         source: source.to_owned(),
     };
@@ -562,7 +561,6 @@ async fn handle_talk(
         author_name: (!ephemeral).then(|| author.username.clone()),
         author_image: (!ephemeral).then(|| author.image.clone()).flatten(),
         duration_sec,
-        priority: 0,
         resume_offset_sec: 0,
         source: source.to_owned(),
     };

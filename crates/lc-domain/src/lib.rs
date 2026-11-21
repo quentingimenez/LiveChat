@@ -29,7 +29,8 @@ pub use entities::{
     MediaAsset, MediaBoardItem, OverlayClient, PairingCodeEntry, PlaybackJob,
 };
 pub use enums::{
-    GuildRole, JobStatus, MediaKind, MediaStatus, OverlaySessionMode, PairingMode, Permission,
+    GuildRole, JobSource, JobStatus, MediaKind, MediaStatus, OverlaySessionMode, PairingMode,
+    Permission,
 };
 pub use error::DomainError;
 pub use ids::{

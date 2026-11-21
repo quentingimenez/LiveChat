@@ -18,7 +18,7 @@
 
 use lc_db::Db;
 use lc_domain::entities::{MediaAsset, PlaybackJob};
-use lc_domain::enums::{JobStatus, MediaKind};
+use lc_domain::enums::{JobSource, JobStatus, MediaKind};
 use lc_domain::ids::{GuildId, PlaybackJobId};
 use time::UtcDateTime;
 
@@ -42,9 +42,11 @@ pub struct JobSpec<'a> {
     pub author_image: Option<&'a str>,
     /// Durée explicite demandée par le client, en secondes.
     pub duration_sec: Option<i64>,
-    /// Priorité du job (0 par défaut ; le board média utilisera la priorité de
-    /// l'engine en Phase 4b).
-    pub priority: i64,
+    /// Origine du job (board, ingestion, overlay, Discord).
+    pub source: JobSource,
+    /// Libellé du client d'ingestion (extension, iOS…), journalisé avec le
+    /// job pour identifier la source exacte.
+    pub source_label: Option<&'a str>,
 }
 
 /// Crée et persiste un job `PENDING` pour la prochaine lecture de la guilde.
@@ -76,20 +78,21 @@ pub async fn create_for_ingest(
         duration = (duration - embedded_offset).max(1);
     }
 
+    let spec = &spec;
+    let source = spec.source;
+    let source_label = spec.source_label;
     let job = PlaybackJob {
         id: PlaybackJobId::new_v4(),
-        guild_id: spec.guild_id,
+        guild_id: spec.guild_id.clone(),
         media_asset_id: spec.media.map(|asset| asset.id),
         text: spec.text.map(str::to_owned),
         show_text: spec.show_text,
         author_name: spec.author_name.map(str::to_owned),
         author_image: spec.author_image.map(str::to_owned),
         duration_sec: duration,
-        priority: spec.priority,
+        source,
         status: JobStatus::Pending,
-        resumes_after_job_id: None,
         resume_offset_sec: embedded_offset,
-        remaining_ms_snapshot: None,
         last_playback_state_at: None,
         submission_date: now,
         execution_date: now,
@@ -100,11 +103,14 @@ pub async fn create_for_ingest(
 
     db.playback_jobs().create(&job).await?;
 
-    tracing::debug!(
+    tracing::info!(
         job_id = %job.id.to_canonical(),
-        guild_id = %job.guild_id.as_str(),
+        guild_id = job.guild_id.as_str(),
+        source = source.as_db_str(),
+        source_label = source_label.unwrap_or(""),
+        media_asset_id = job.media_asset_id.map(|id| id.to_canonical()).unwrap_or_default(),
         duration_sec = job.duration_sec,
-        "job de lecture créé par l'ingestion"
+        "job de lecture créé"
     );
 
     Ok(job)
@@ -256,7 +262,8 @@ mod tests {
                 author_name: Some("auteur"),
                 author_image: None,
                 duration_sec: None,
-                priority: 0,
+                source: JobSource::Board,
+                source_label: None,
             },
             fixture.now,
         )
@@ -286,7 +293,8 @@ mod tests {
                 author_name: None,
                 author_image: None,
                 duration_sec: None,
-                priority: 0,
+                source: JobSource::Board,
+                source_label: None,
             },
             fixture.now,
         )
@@ -323,7 +331,8 @@ mod tests {
                 author_name: None,
                 author_image: None,
                 duration_sec: explicit,
-                priority: 0,
+                source: JobSource::Board,
+                source_label: None,
             },
             fixture.now,
         )
@@ -373,7 +382,8 @@ mod tests {
                 author_name: None,
                 author_image: None,
                 duration_sec: None,
-                priority: 0,
+                source: JobSource::Board,
+                source_label: None,
             },
             fixture.now,
         )
@@ -460,7 +470,8 @@ mod tests {
                 author_name: None,
                 author_image: None,
                 duration_sec: None,
-                priority: 0,
+                source: JobSource::Board,
+                source_label: None,
             },
             fixture.now,
         )

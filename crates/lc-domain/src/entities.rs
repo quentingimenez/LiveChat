@@ -12,7 +12,9 @@
 use serde::{Deserialize, Serialize};
 use time::UtcDateTime;
 
-use crate::enums::{GuildRole, JobStatus, MediaKind, MediaStatus, OverlaySessionMode, PairingMode};
+use crate::enums::{
+    GuildRole, JobSource, JobStatus, MediaKind, MediaStatus, OverlaySessionMode, PairingMode,
+};
 use crate::ids::{
     GuildBanId, GuildId, GuildMemberId, IngestClientId, MediaAssetId, MediaBoardItemId,
     OverlayClientId, PairingCode as PairingCodeValue, PlaybackJobId,
@@ -221,21 +223,16 @@ pub struct PlaybackJob {
     pub author_image: Option<String>,
     /// Durée de lecture demandée (secondes).
     pub duration_sec: i64,
-    /// Priorité (plus grand = plus prioritaire).
-    pub priority: i64,
+    /// Origine du job (board, ingestion, overlay, Discord).
+    pub source: JobSource,
     /// État courant.
     pub status: JobStatus,
-    /// Job interrompu par celui-ci : ce job reprend après lui (legacy
-    /// `resumesAfterJobId`).
-    pub resumes_after_job_id: Option<PlaybackJobId>,
-    /// Offset de reprise en secondes (`awaiting` avant reprise).
+    /// Offset de départ en secondes (départ d'une URL YouTube, `!play`…).
     pub resume_offset_sec: i64,
-    /// Snapshot du temps restant (ms) au moment de l'interruption.
-    pub remaining_ms_snapshot: Option<i64>,
     /// Dernier `playback.state` reçu (`playing`/`paused`).
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
     pub last_playback_state_at: Option<UtcDateTime>,
-    /// Date de soumission (ordre FIFO secondaire).
+    /// Date de soumission (ordre FIFO, avec `id`).
     #[serde(with = "ms_required")]
     pub submission_date: UtcDateTime,
     /// Date d'exécution planifiée par le scheduler (legacy `executionDate`).

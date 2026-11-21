@@ -38,21 +38,19 @@ async fn liste_attente_par_guilde_ordonnee() {
     let now = common::now();
     let guild = common::guild("333333333333333333");
 
-    let mut medium = common::sample_job(&guild, now);
-    medium.priority = 1;
-    let mut high = common::sample_job(&guild, now);
-    high.priority = 3;
-    high.submission_date = now + Duration::seconds(1);
     let mut medium_older = common::sample_job(&guild, now);
-    medium_older.priority = 1;
     medium_older.submission_date = now - Duration::seconds(1);
+    let mut medium = common::sample_job(&guild, now);
+    medium.submission_date = now;
+    let mut high = common::sample_job(&guild, now);
+    high.submission_date = now + Duration::seconds(1);
     repo.create(&medium).await.unwrap();
     repo.create(&high).await.unwrap();
     repo.create(&medium_older).await.unwrap();
 
     let listed = repo.list_pending_by_guild(&guild).await.unwrap();
     let ids: Vec<_> = listed.iter().map(|job| job.id).collect();
-    assert_eq!(ids, vec![high.id, medium_older.id, medium.id]);
+    assert_eq!(ids, vec![medium_older.id, medium.id, high.id]);
 }
 
 #[tokio::test]
@@ -104,13 +102,13 @@ async fn claim_un_seul_playing_par_guilde() {
     let guild = common::guild("555555555555555555");
 
     let mut first = common::sample_job(&guild, now);
-    first.priority = 10;
+    first.submission_date = now - Duration::seconds(1);
     let second = common::sample_job(&guild, now);
     repo.create(&first).await.unwrap();
     repo.create(&second).await.unwrap();
 
     let claimed = repo.claim_next(now).await.unwrap().unwrap();
-    assert_eq!(claimed.id, first.id, "priorité la plus haute d'abord");
+    assert_eq!(claimed.id, first.id, "soumission la plus ancienne d'abord");
     assert!(
         repo.claim_next(now).await.unwrap().is_none(),
         "une guilde ne joue qu'un job à la fois"
@@ -128,38 +126,23 @@ async fn claim_un_seul_playing_par_guilde() {
 }
 
 #[tokio::test]
-async fn claim_priorite_puis_ordre_de_soumission() {
+async fn claim_par_ordre_de_soumission_entre_guildes() {
     let (db, _dir) = common::temp_db().await;
     let repo = db.playback_jobs();
     let now = common::now();
     let guild_a = common::guild("556666666666666666");
     let guild_b = common::guild("557777777777777777");
 
-    let mut low = common::sample_job(&guild_a, now);
-    low.priority = 1;
-    let mut high = common::sample_job(&guild_b, now);
-    high.priority = 9;
-    repo.create(&low).await.unwrap();
-    repo.create(&high).await.unwrap();
+    let mut first = common::sample_job(&guild_a, now);
+    first.submission_date = now - Duration::seconds(1);
+    let second = common::sample_job(&guild_b, now);
+    repo.create(&first).await.unwrap();
+    repo.create(&second).await.unwrap();
 
-    let first = repo.claim_next(now).await.unwrap().unwrap();
-    assert_eq!(first.id, high.id, "priorité supérieure d'abord");
-    let second = repo.claim_next(now).await.unwrap().unwrap();
-    assert_eq!(second.id, low.id, "autre guilde ensuite");
-
-    // À priorité égale : soumission la plus ancienne d'abord.
-    let guild_c = common::guild("558888888888888888");
-    let guild_d = common::guild("559999999999999999");
-    let mut older = common::sample_job(&guild_c, now);
-    older.submission_date = now - Duration::seconds(5);
-    let newer = common::sample_job(&guild_d, now);
-    repo.create(&newer).await.unwrap();
-    repo.create(&older).await.unwrap();
-
-    let third = repo.claim_next(now).await.unwrap().unwrap();
-    assert_eq!(third.id, older.id, "soumission la plus ancienne d'abord");
-    let fourth = repo.claim_next(now).await.unwrap().unwrap();
-    assert_eq!(fourth.id, newer.id);
+    let claimed = repo.claim_next(now).await.unwrap().unwrap();
+    assert_eq!(claimed.id, first.id, "soumission la plus ancienne d'abord");
+    let next = repo.claim_next(now).await.unwrap().unwrap();
+    assert_eq!(next.id, second.id, "autre guilde ensuite");
 }
 
 #[tokio::test]
@@ -182,49 +165,6 @@ async fn claim_respecte_busy_until() {
 
     db.guilds().set_busy_until(&guild, None).await.unwrap();
     assert!(repo.claim_next(now).await.unwrap().is_some());
-}
-
-#[tokio::test]
-async fn claim_job_de_reprise_apres_parent() {
-    let (db, _dir) = common::temp_db().await;
-    let repo = db.playback_jobs();
-    let now = common::now();
-    let guild = common::guild("561111111111111111");
-
-    let parent = common::sample_job(&guild, now);
-    repo.create(&parent).await.unwrap();
-    let mut child = common::sample_job(&guild, now);
-    child.resumes_after_job_id = Some(parent.id);
-    child.priority = 100;
-    repo.create(&child).await.unwrap();
-
-    let claimed = repo.claim_next(now).await.unwrap().unwrap();
-    assert_eq!(
-        claimed.id, parent.id,
-        "le job de reprise ne passe pas avant son parent"
-    );
-    assert!(repo.claim_next(now).await.unwrap().is_none());
-
-    repo.finish(parent.id, JobStatus::Done, now + Duration::seconds(1))
-        .await
-        .unwrap();
-    let resumed = repo
-        .claim_next(now + Duration::seconds(1))
-        .await
-        .unwrap()
-        .expect("job de reprise éligible après la fin du parent");
-    assert_eq!(resumed.id, child.id);
-
-    // Parent absent : le job de reprise est éligible.
-    let guild_orphan = common::guild("562222222222222222");
-    let mut orphan = common::sample_job(&guild_orphan, now);
-    orphan.resumes_after_job_id = Some(PlaybackJobId::new_v4());
-    repo.create(&orphan).await.unwrap();
-    assert_eq!(
-        repo.claim_next(now).await.unwrap().unwrap().id,
-        orphan.id,
-        "parent manquant = reprise éligible"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -420,16 +360,12 @@ async fn etat_de_lecture_persiste() {
     let claimed = repo.claim_next(now).await.unwrap().unwrap();
 
     let at = now + Duration::seconds(2);
-    assert!(repo
-        .set_playback_state(claimed.id, 3, Some(1_500), at)
-        .await
-        .unwrap());
+    assert!(repo.set_playback_state(claimed.id, at).await.unwrap());
     let stored = repo.get(claimed.id).await.unwrap().unwrap();
-    assert_eq!(stored.resume_offset_sec, 3);
-    assert_eq!(stored.remaining_ms_snapshot, Some(1_500));
+    assert_eq!(stored.resume_offset_sec, 0);
     assert_eq!(stored.last_playback_state_at, Some(at));
     assert!(!repo
-        .set_playback_state(PlaybackJobId::new_v4(), 0, None, now)
+        .set_playback_state(PlaybackJobId::new_v4(), now)
         .await
         .unwrap());
 }

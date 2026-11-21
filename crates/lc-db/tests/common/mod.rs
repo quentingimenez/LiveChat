@@ -11,7 +11,9 @@ use lc_db::{Db, DbConfig};
 use lc_domain::entities::{
     Guild, IngestClient, MediaAsset, MediaBoardItem, OverlayClient, PairingCodeEntry, PlaybackJob,
 };
-use lc_domain::enums::{JobStatus, MediaKind, MediaStatus, OverlaySessionMode, PairingMode};
+use lc_domain::enums::{
+    JobSource, JobStatus, MediaKind, MediaStatus, OverlaySessionMode, PairingMode,
+};
 use lc_domain::ids::{
     GuildId, IngestClientId, MediaAssetId, MediaBoardItemId, OverlayClientId,
     PairingCode as PairingCodeValue, PlaybackJobId,
@@ -91,11 +93,9 @@ pub fn sample_job(guild_id: &GuildId, now: UtcDateTime) -> PlaybackJob {
         author_name: Some("Auteur test".to_owned()),
         author_image: None,
         duration_sec: 5,
-        priority: 0,
+        source: JobSource::Board,
         status: JobStatus::Pending,
-        resumes_after_job_id: None,
         resume_offset_sec: 0,
-        remaining_ms_snapshot: None,
         last_playback_state_at: None,
         submission_date: now,
         execution_date: now,

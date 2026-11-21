@@ -413,8 +413,8 @@ board (aucun `board.changed` dans ce second cas).
 2. clamp au `max_media_time` de la guilde s'il est défini ;
 3. si média non-image et offset YouTube intégré au texte : durée réduite de
    l'offset, `resume_offset_sec` = offset ;
-4. `status = PENDING`, `submission_date`/`execution_date`/`scheduled_at` = maintenant,
-   priorité 0 ;
+4. `status = PENDING`, `source = INGEST`, `submission_date`/`execution_date`/`scheduled_at` = maintenant,
+   mis en file FIFO (aucune priorité, aucune interruption) ;
 5. persistance via `playback_jobs().create`.
 
 Puis `hook::notify_ingested(&job)` est appelé. **Contrat Phase 4b** : le hook

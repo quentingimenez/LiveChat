@@ -5,9 +5,7 @@
 mod support;
 
 use lc_domain::{datetime_to_ms, Clock, GuildId, JobStatus};
-use lc_playback::{
-    PlaybackEndedEvent, PlaybackStateEvent, PlaybackStateOutcome, MEDIA_BOARD_JOB_PRIORITY,
-};
+use lc_playback::{PlaybackEndedEvent, PlaybackStateEvent, PlaybackStateOutcome};
 use lc_protocol::{PlaybackEndedReason, PlaybackState, StopReason, StopRequestSource};
 use time::Duration as TimeDuration;
 
@@ -126,17 +124,14 @@ async fn watchdog_libere_un_job_sans_keepalive_depuis_quinze_secondes() {
 }
 
 #[tokio::test]
-async fn ordre_priorite_puis_soumission() {
+async fn ordre_de_soumission() {
     let h = harness(1).await;
     let guild = h.guild_id.clone();
     let now = h.clock.now();
 
-    let low = sample_job(guild.clone(), now);
-    let mut high = sample_job(guild.clone(), now + TimeDuration::milliseconds(5));
-    high.priority = 5;
+    let low = sample_job(guild.clone(), now - TimeDuration::milliseconds(1));
+    let mut high = sample_job(guild.clone(), now);
     high.duration_sec = 1;
-    high.execution_date = now;
-    high.scheduled_at = now;
 
     h.db.playback_jobs().create(&low).await.unwrap();
     h.db.playback_jobs().create(&high).await.unwrap();
@@ -144,12 +139,12 @@ async fn ordre_priorite_puis_soumission() {
     h.engine.tick().await.unwrap();
     let plays = h.sink.play_calls();
     assert_eq!(plays.len(), 1);
-    assert_eq!(plays[0].job_id, high.id.to_canonical());
+    assert_eq!(plays[0].job_id, low.id.to_canonical());
 
     h.engine
         .handle_playback_ended(PlaybackEndedEvent::new(
             guild.clone(),
-            high.id,
+            low.id,
             PlaybackEndedReason::Completed,
         ))
         .await
@@ -157,63 +152,46 @@ async fn ordre_priorite_puis_soumission() {
 
     let plays = h.sink.play_calls();
     assert_eq!(plays.len(), 2);
-    assert_eq!(plays[1].job_id, low.id.to_canonical());
+    assert_eq!(plays[1].job_id, high.id.to_canonical());
 }
 
 #[tokio::test]
-async fn preemption_media_du_board_puis_reprise_du_parent() {
+async fn un_media_du_board_attend_la_fin_du_job_en_cours() {
     let h = harness(1).await;
     let guild = h.guild_id.clone();
 
-    let asset = sample_media_asset(h.clock.now());
-    h.db.media_assets().insert(&asset).await.unwrap();
-
-    let parent = sample_media_job(guild.clone(), h.clock.now(), asset.id, 20);
+    let parent = sample_job(guild.clone(), h.clock.now());
     h.engine.enqueue(&parent).await.unwrap();
     assert_eq!(h.sink.play_calls().len(), 1);
-    assert_eq!(h.sink.play_calls()[0].duration_sec, 20);
 
     h.advance(5_000);
 
+    // Média du board prioritaire dans l'ancien modèle : il ne coupe plus rien,
+    // il attend son tour.
     let mut item = sample_job(guild.clone(), h.clock.now());
-    item.priority = MEDIA_BOARD_JOB_PRIORITY;
     item.duration_sec = 2;
     h.engine.enqueue(&item).await.unwrap();
 
-    let stops = h.sink.stop_calls();
-    assert_eq!(stops.len(), 1);
-    assert_eq!(stops[0].reason, StopReason::Preempt);
-    let parent_id = parent.id.to_canonical();
-    assert_eq!(stops[0].job_id.as_deref(), Some(parent_id.as_str()));
-
-    let suspended = h.stored_job(parent.id).await;
-    assert_eq!(suspended.status, JobStatus::Pending);
-    assert_eq!(suspended.resumes_after_job_id, Some(item.id));
-    assert_eq!(suspended.resume_offset_sec, 5);
-    assert_eq!(suspended.remaining_ms_snapshot, Some(15_000));
-    assert!(suspended.started_at.is_none());
-
-    assert_eq!(h.sink.play_calls().len(), 2);
-    assert_eq!(h.sink.play_calls()[1].job_id, item.id.to_canonical());
+    assert!(
+        h.sink.stop_calls().is_empty(),
+        "un média en file ne doit pas émettre de stop"
+    );
+    assert_eq!(h.sink.play_calls().len(), 1, "le job en cours continue");
+    assert_eq!(h.stored_job(parent.id).await.status, JobStatus::Playing);
 
     h.engine
         .handle_playback_ended(PlaybackEndedEvent::new(
             guild.clone(),
-            item.id,
+            parent.id,
             PlaybackEndedReason::Completed,
         ))
         .await
         .unwrap();
 
     let plays = h.sink.play_calls();
-    assert_eq!(plays.len(), 3);
-    let resumed = &plays[2];
-    assert_eq!(resumed.job_id, parent_id);
-    assert_eq!(resumed.duration_sec, 15);
-    let media = resumed.media.as_ref().unwrap();
-    assert_eq!(media.start_offset_sec, Some(5));
-    assert!(media.url.contains("startOffsetSec=5"));
-    assert!(media.url.contains("#t=5"));
+    assert_eq!(plays.len(), 2);
+    assert_eq!(plays[1].job_id, item.id.to_canonical());
+    assert!(h.sink.stop_calls().is_empty());
 }
 
 #[tokio::test]

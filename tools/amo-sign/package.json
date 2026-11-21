@@ -1,0 +1,9 @@
+{
+  "name": "livechat-amo-sign",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Outillage AMO epingle pour le job de signature de l'extension",
+  "devDependencies": {
+    "web-ext": "8.10.0"
+  }
+}

@@ -72,11 +72,12 @@ Depuis `extension/` :
 
 ```bash
 npm run build:firefox
-npx --yes web-ext@8 sign \
+npm --prefix ../tools/amo-sign ci --ignore-scripts
+WEB_EXT_API_KEY="$AMO_JWT_ISSUER" \
+WEB_EXT_API_SECRET="$AMO_JWT_SECRET" \
+../tools/amo-sign/node_modules/.bin/web-ext sign \
   --source-dir dist/firefox \
   --channel listed \
-  --api-key "$AMO_JWT_ISSUER" \
-  --api-secret "$AMO_JWT_SECRET" \
   --amo-metadata amo-metadata.json \
   --approval-timeout 0
 ```
@@ -91,8 +92,11 @@ le tag `extension-v0.3.0` existant ne contient pas encore le support Firefox.
 
 En CI, le job `publish-amo` de
 [`extension.yml`](../../.github/workflows/extension.yml) fait exactement cela à
-chaque tag `extension-v*`, ou manuellement avec `publish_to_amo`. Il ignore la
-fiche (texte, captures) : celle-ci reste éditée à la main dans le Developer Hub.
+chaque tag `extension-v*`, ou manuellement avec `publish_to_amo`. Il installe
+`tools/amo-sign` depuis son lockfile (`npm ci --ignore-scripts`) et ne donne les
+secrets qu'à l'étape de signature (`WEB_EXT_API_KEY`/`WEB_EXT_API_SECRET`). Il
+ignore la fiche (texte, captures) : celle-ci reste éditée à la main dans le
+Developer Hub.
 
 ## Mise à jour des installations
 
@@ -106,7 +110,7 @@ approbation, contrairement à une distribution auto-hébergée.
 
 ```bash
 npm run ci:check
-npx --yes web-ext@8 lint --source-dir dist/firefox
+../tools/amo-sign/node_modules/.bin/web-ext lint --source-dir dist/firefox
 ```
 
 Le linter AMO doit sortir **0 erreur**. Les warnings `UNSAFE_VAR_ASSIGNMENT`

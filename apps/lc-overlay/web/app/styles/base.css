@@ -52,6 +52,17 @@
   --checker-b: #222736;
   /* Aperçu du rendu à l'écran : reste sombre dans les deux thèmes. */
   --display-preview-bg: #0b0e14;
+  /* Frise de l'éditeur audio/vidéo : le canvas lit ces tokens (views/editor/
+     av.js), donc les deux thèmes doivent les déclarer. */
+  --tl-bg: #171b25;
+  --tl-wave: #7fa8f5;
+  --tl-removed: rgba(13, 16, 23, 0.78);
+  --tl-removed-hatch: rgba(236, 106, 112, 0.35);
+  --tl-edge: #e9ebf3;
+  --tl-edge-grip: #30384c;
+  --tl-selection: rgba(242, 181, 68, 0.22);
+  --tl-selection-edge: #f2b544;
+  --tl-head: #ffffff;
   --radius-s: 6px;
   --radius-m: 10px;
   --rail: 68px;

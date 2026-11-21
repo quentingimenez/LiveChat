@@ -48,6 +48,18 @@
   --stage: #e9edf5;
   --checker-a: #e4e9f2;
   --checker-b: #dce2ee;
+  /* Frise de l'éditeur : le canvas lit ces tokens (views/editor/av.js), sans
+     quoi la piste resterait sombre. Contrastes testés dans
+     editor-timeline.test.mjs. */
+  --tl-bg: #e3e9f3;
+  --tl-wave: #2f5bb7;
+  --tl-removed: rgba(23, 27, 37, 0.16);
+  --tl-removed-hatch: rgba(179, 54, 63, 0.38);
+  --tl-edge: #4f5972;
+  --tl-edge-grip: #ffffff;
+  --tl-selection: rgba(232, 174, 63, 0.3);
+  --tl-selection-edge: #8a5a06;
+  --tl-head: #171b25;
 }
 
 /* Le chevron des selects est une data-URI : sa couleur ne peut pas être un

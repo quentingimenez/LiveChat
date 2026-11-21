@@ -116,8 +116,10 @@ puis le résumé des changements. **Attendre « go »** (ou un numéro corrigé)
 5. Attendre la CI de la PR (`gh pr checks <n> --watch`). Rouge : corriger sur la
    branche de release. Vert : `gh pr merge <n> --merge` (sans `--delete-branch` :
    lancé depuis un worktree, il tente de basculer sur `main` et peut renvoyer une
-   erreur alors que le merge a réussi ; vérifier avec `gh pr view <n> --json state`),
-   puis `git push origin --delete release/<résumé>` et retirer le worktree.
+   erreur alors que le merge a réussi ; vérifier avec `gh pr view <n> --json state`).
+   Le dépôt a « Automatically delete head branches » activé
+   (`delete_branch_on_merge: true`) : GitHub supprime la branche distante au
+   merge, rien à pousser. Retirer ensuite le worktree.
 
 ## 5. Tags et builds (GitHub)
 

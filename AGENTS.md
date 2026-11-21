@@ -59,9 +59,11 @@ attendu :
    gh pr merge <numéro> --merge
    ```
 
-   Merge commit, comme l'historique (pas de squash ni de rebase). Supprimer la
-   branche ensuite (`--delete-branch` au merge, ou
-   `git push origin --delete <branche>`). Jamais `--admin`, jamais de merge sans
+   Merge commit, comme l'historique (pas de squash ni de rebase). Le dépôt a
+   l'option GitHub « Automatically delete head branches » activée
+   (`delete_branch_on_merge: true`) : GitHub supprime la branche distante au
+   merge, inutile de passer `--delete-branch` ou de lancer
+   `git push origin --delete <branche>`. Jamais `--admin`, jamais de merge sans
    checks verts.
 7. **Après le merge** : mettre `main` à jour en fast-forward, supprimer la
    branche locale, et rapporter à l'utilisateur : branche, URL de la PR, checks,

@@ -1318,6 +1318,12 @@ impl SessionEffects for AppEffects {
                 tracing::debug!(%error, "échec d'émission des settings vers le renderer");
             }
         }
+        // The board caches `GET /overlay/guild`; a settings broadcast (any
+        // writable field) is its cue to refresh that cache and repaint the
+        // Réglages tab. The overlay renderer above only uses playback values.
+        if let Err(error) = events::emit_guild_settings_changed(&self.app, &self.guild_id) {
+            tracing::debug!(%error, "échec d'émission des settings vers la board");
+        }
         refresh_tray_from_any_thread(&self.app);
     }
 

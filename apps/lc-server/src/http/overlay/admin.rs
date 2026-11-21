@@ -53,7 +53,7 @@ use super::auth::AuthedOverlayClient;
 use super::board_clear;
 use super::guild::{
     create_invite, invite_payload, iso, member_payload, normalize_label, remove_member, require,
-    NewInvite,
+    settings_version, NewInvite,
 };
 use super::ingest_code::INGEST_CODE_CREATOR_PREFIX;
 use super::{db, db_failure, error, internal_error, is_conflict, json_response, now};
@@ -765,6 +765,17 @@ pub async fn update_settings(
     if !payload.is_object() {
         return error(StatusCode::BAD_REQUEST, "invalid_payload");
     }
+    // Optional `If-Match`: a board that read the settings sends the version it
+    // saw, so a concurrent edit is refused instead of silently overwritten.
+    let expected_settings_version = match payload.get("expectedSettingsVersion") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(version)) if !version.is_empty() => Some(version.as_str()),
+        Some(_) => return error(StatusCode::BAD_REQUEST, "invalid_payload"),
+    };
+    // The version check and the write form a read-modify-write: without this
+    // lock two boards could both validate the same version and then overwrite
+    // each other. Settings writes are rare, so one process-wide lock is enough.
+    let _settings_write = state.settings_write.lock().await;
     let name = match payload.get("name") {
         None => None,
         Some(Value::String(raw)) => {
@@ -814,8 +825,19 @@ pub async fn update_settings(
         Err(db_error) => return db_failure("overlay_admin.settings_lookup", &db_error),
     };
 
-    let playback_changed =
-        default_media_time.is_some() || max_media_time.is_some() || display_media_full.is_some();
+    if let Some(expected) = expected_settings_version {
+        let current_guests = match db.guilds().access(guild_id).await {
+            Ok(access) => access.is_none_or(|access| access.guests_can_view_board),
+            Err(db_error) => return db_failure("overlay_admin.settings_version_access", &db_error),
+        };
+        let current_quota = match db.guilds().board_quota_mb(guild_id).await {
+            Ok(quota_mb) => quota_mb,
+            Err(db_error) => return db_failure("overlay_admin.settings_version_quota", &db_error),
+        };
+        if expected != settings_version(existing.as_ref(), current_guests, current_quota) {
+            return error(StatusCode::CONFLICT, "settings_conflict");
+        }
+    }
     let guild = Guild {
         id: guild_id.clone(),
         name: name
@@ -849,9 +871,10 @@ pub async fn update_settings(
             return db_failure("overlay_admin.settings_quota", &db_error);
         }
     }
-    if playback_changed {
-        state.admin_hub.broadcast_settings(guild_id).await;
-    }
+    // Every writable field changes the settings version, so every PATCH must
+    // wake the other boards — even a name or quota change carries no playback
+    // field but still makes their cached `state.info` stale.
+    state.admin_hub.broadcast_settings(guild_id).await;
 
     let guests_can_view_board = match db.guilds().access(guild_id).await {
         Ok(access) => access.is_none_or(|access| access.guests_can_view_board),
@@ -861,6 +884,8 @@ pub async fn update_settings(
         Ok(quota_mb) => quota_mb,
         Err(db_error) => return db_failure("overlay_admin.settings_quota_reload", &db_error),
     };
+    let settings_version_value =
+        settings_version(Some(&guild), guests_can_view_board, board_quota_mb);
     json_response(
         StatusCode::OK,
         json!({
@@ -868,6 +893,7 @@ pub async fn update_settings(
             "guild": {
                 "id": guild_id.as_str(),
                 "name": guild.name,
+                "settingsVersion": settings_version_value,
                 "guestsCanViewBoard": guests_can_view_board,
                 "settings": {
                     "defaultMediaTime": guild.default_media_time,

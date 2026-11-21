@@ -170,6 +170,10 @@ pub struct AppState {
     /// Configurable rights cache (`role_rights`), reloaded after `PUT
     /// /admin/api/rights`.
     pub rights: RightsStore,
+    /// Serializes the read-check-write of `PATCH /overlay/admin/settings`.
+    /// The settings version makes a stale save detectable, but only a lock
+    /// makes the check and the write atomic when two boards save at once.
+    pub settings_write: Arc<tokio::sync::Mutex<()>>,
     /// Version probe used by the admin health route. Tests inject a fake so no
     /// real binary is ever spawned.
     pub(crate) binary_probe: Arc<dyn BinaryProbe>,
@@ -215,6 +219,7 @@ impl AppState {
             ingestions: Arc::new(IngestionRegistry::with_events(events.clone())),
             uploads: Arc::default(),
             rights: RightsStore::new(),
+            settings_write: Arc::new(tokio::sync::Mutex::new(())),
             binary_probe: Arc::new(SystemBinaryProbe::new()),
             runtime,
             events,

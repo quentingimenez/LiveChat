@@ -4,6 +4,7 @@
 import { apiForGuild } from './core/api.js';
 import { readGuildCache, writeGuildCache, invalidateGuildCache, pruneGuildCache } from './core/guild-cache.js';
 import { readLayoutCache, writeLayoutCache, pruneLayoutCache } from './core/layout-cache.js';
+import { settingsControlActive } from './core/dom.js';
 import { pruneSelection } from './core/selection.js';
 import { mediaRefreshDelay } from './core/format.js';
 import { invoke } from './core/ipc.js';
@@ -312,13 +313,19 @@ export function prefetchGuildInfo(guildId) {
 
 // `quiet`: a background refresh keeps the last info on failure and shows no
 // toast. Each alt-tab used to show the same server error again.
+// `force`: start a new read even if one is already in flight. A server event
+// must never join a request that started before the change it announces.
+let infoRequestSeq = 0;
 export function loadGuildInfo(options = {}) {
   const guildId = options.guildId || state.activeGuildId;
   if (!guildId) {
     return Promise.resolve(false);
   }
   const quiet = options.quiet === true;
-  return dedupe(`guild-info:${guildId}`, () => loadGuildInfoForGuild(guildId, quiet));
+  const key = options.force
+    ? `guild-info:${guildId}:fresh:${++infoRequestSeq}`
+    : `guild-info:${guildId}`;
+  return dedupe(key, () => loadGuildInfoForGuild(guildId, quiet));
 }
 
 async function loadGuildInfoForGuild(guildId, quiet) {
@@ -326,6 +333,13 @@ async function loadGuildInfoForGuild(guildId, quiet) {
   try {
     const info = await apiForGuild(guildId, 'GET', '/overlay/guild');
     if (!isLatest(token) || guildId !== state.activeGuildId) {
+      return false;
+    }
+    // A form field is being edited: applying this response would replace the
+    // form and pair the fresh `settingsVersion` with values typed before it,
+    // making the next save look current. Keep the old version so the save is
+    // refused as a conflict instead.
+    if (state.page === 'guild' && state.tab === 'settings' && settingsControlActive()) {
       return false;
     }
     state.info = info;

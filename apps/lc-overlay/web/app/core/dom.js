@@ -3,6 +3,20 @@
 
 import { firstGrapheme, initials } from './format.js';
 
+// True while the user is editing a field of the settings screen. Remote updates
+// must not replace that form: the next save would silently overwrite the other
+// device's change with values read before it.
+export function settingsControlActive() {
+  const active = document.activeElement;
+  return Boolean(
+    active &&
+      active.closest &&
+      active.closest('.settings') &&
+      typeof active.matches === 'function' &&
+      active.matches('input, select, textarea'),
+  );
+}
+
 export function h(tag, props, ...children) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(props || {})) {

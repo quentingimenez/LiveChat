@@ -94,6 +94,7 @@ export const ERROR_LABELS = {
   payload_too_large: 'Fichier trop volumineux pour le serveur.',
   unsupported_media: 'Format de fichier non pris en charge.',
   timeout: 'Le serveur met trop de temps à répondre.',
+  settings_conflict: 'Ces réglages ont été modifiés sur un autre appareil. Recharge-les avant d’enregistrer.',
 };
 
 export function can(permission) {
@@ -111,7 +112,13 @@ export function activeGuild() {
 }
 
 export function guildLabel(guild) {
-  return guild.membership.guildName || (state.info && state.info.guild && state.info.guild.name) || 'Guilde';
+  // The live `/overlay/guild` name wins for the active guild: another board can
+  // rename it, and the cached membership keeps the name read at invite time.
+  const liveName =
+    guild.membership.guildId === state.activeGuildId && state.info && state.info.guild
+      ? state.info.guild.name
+      : null;
+  return liveName || guild.membership.guildName || 'Guilde';
 }
 
 export function describeError(code, fallback) {

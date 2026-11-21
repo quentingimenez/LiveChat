@@ -232,6 +232,116 @@ async fn guild_payload_exposes_board_defaults_and_playback() {
 }
 
 #[tokio::test]
+async fn stale_settings_version_is_rejected_instead_of_overwriting() {
+    let harness = Harness::new().await;
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Alice")
+        .await;
+    let admin_token = token(&admin);
+
+    let (status, body) = harness
+        .call(Method::GET, "/overlay/guild", Some(&admin_token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let version = body["guild"]["settingsVersion"]
+        .as_str()
+        .expect("settingsVersion is missing")
+        .to_string();
+    assert!(!version.is_empty());
+
+    let (status, body) = harness
+        .call(
+            Method::PATCH,
+            "/overlay/admin/settings",
+            Some(&admin_token),
+            Some(json!({
+                "name": "GG Squad",
+                "expectedSettingsVersion": version,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_ne!(body["guild"]["settingsVersion"], version);
+
+    // A second board still holding the first version must be refused.
+    let (status, body) = harness
+        .call(
+            Method::PATCH,
+            "/overlay/admin/settings",
+            Some(&admin_token),
+            Some(json!({
+                "name": "Écrasement",
+                "expectedSettingsVersion": version,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "settings_conflict");
+
+    let (status, body) = harness
+        .call(Method::GET, "/overlay/guild", Some(&admin_token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["guild"]["name"], "GG Squad");
+}
+
+#[tokio::test]
+async fn concurrent_settings_writes_cannot_both_pass_the_version_check() {
+    let harness = Harness::new().await;
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Alice")
+        .await;
+    let admin_token = token(&admin);
+
+    let (status, body) = harness
+        .call(Method::GET, "/overlay/guild", Some(&admin_token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let version = body["guild"]["settingsVersion"]
+        .as_str()
+        .expect("settingsVersion is missing")
+        .to_string();
+
+    let first = harness.call(
+        Method::PATCH,
+        "/overlay/admin/settings",
+        Some(&admin_token),
+        Some(json!({
+            "name": "Premier écrivain",
+            "expectedSettingsVersion": version,
+        })),
+    );
+    let second = harness.call(
+        Method::PATCH,
+        "/overlay/admin/settings",
+        Some(&admin_token),
+        Some(json!({
+            "name": "Second écrivain",
+            "expectedSettingsVersion": version,
+        })),
+    );
+    let ((first_status, first_body), (second_status, second_body)) = tokio::join!(first, second);
+
+    let mut statuses = [first_status, second_status];
+    statuses.sort();
+    assert_eq!(
+        statuses,
+        [StatusCode::OK, StatusCode::CONFLICT],
+        "{first_body} {second_body}"
+    );
+
+    let (status, body) = harness
+        .call(Method::GET, "/overlay/guild", Some(&admin_token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let saved = body["guild"]["name"].as_str().unwrap_or_default();
+    assert!(
+        saved == "Premier écrivain" || saved == "Second écrivain",
+        "unexpected saved name: {saved}"
+    );
+}
+
+#[tokio::test]
 async fn board_quota_is_manageable_and_bounded_by_the_server_limit() {
     let harness = Harness::new().await;
     let admin = harness

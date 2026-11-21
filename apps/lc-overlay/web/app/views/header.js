@@ -6,7 +6,7 @@ import { h, icon } from '../core/dom.js';
 import { invoke } from '../core/ipc.js';
 import { allMediaMuted, guildMediaMuted, setGuildMediaMuted } from '../core/sound.js';
 import { activeGuild, canAdmin, guildLabel, ROLE_LABELS, state } from '../core/state.js';
-import { applyGuilds, loadAdmin, loadQueue } from '../data.js';
+import { applyGuilds, loadAdmin, loadGuildInfo, loadQueue } from '../data.js';
 import { openGuildDialog } from './profile.js';
 import { renderRail } from './rail.js';
 import { renderView } from './view.js';
@@ -130,6 +130,11 @@ export function setTab(tab) {
   }
   if (tab === 'queue') {
     loadQueue();
+  }
+  // Opening the tab is the moment the user expects current server values. A
+  // field-focused refresh is dropped by `loadGuildInfo`, so typing is safe.
+  if (tab === 'settings' && state.activeGuildId) {
+    loadGuildInfo({ quiet: true, force: true });
   }
 }
 

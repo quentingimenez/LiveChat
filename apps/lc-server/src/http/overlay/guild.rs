@@ -19,13 +19,14 @@ use axum::Json;
 use lc_db::{Db, MemberChange};
 use lc_domain::rights::{Action, RightsTable, Surface};
 use lc_domain::{
-    GuildAccess, GuildId, GuildInvite, GuildMember, GuildMemberId, GuildRole, PairingCode,
+    Guild, GuildAccess, GuildId, GuildInvite, GuildMember, GuildMemberId, GuildRole, PairingCode,
     Permission,
 };
 use lc_protocol::{close_code, close_reason};
 use rand::Rng as _;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use time::{Duration, UtcDateTime};
 
 use crate::app::AppState;
@@ -48,6 +49,41 @@ const AVATAR_URL_MAX_LEN: usize = 2_048;
 const AVATAR_DATA_MAX_LEN: usize = 96_000;
 /// Durée de vie d'un code « appareil ».
 const DEVICE_CODE_TTL_MINUTES: i64 = 10;
+
+/// Version opaque des réglages de guilde, utilisée comme `If-Match` par la
+/// board : deux écrivains qui ont lu le même état doivent produire la même
+/// version, et un PATCH basé sur une version périmée est refusé.
+///
+/// Tous les champs modifiables par `PATCH /overlay/admin/settings` entrent
+/// dans l'empreinte, y compris le nom, l'accès invité et le quota du board :
+/// changer l'un d'eux doit invalider une édition concurrente.
+pub(super) fn settings_version(
+    guild: Option<&Guild>,
+    guests_can_view_board: bool,
+    board_quota_mb: Option<i64>,
+) -> String {
+    let mut hasher = Sha256::new();
+    let name = guild.and_then(|guild| guild.name.as_deref());
+    hasher.update([u8::from(name.is_some())]);
+    hasher.update((name.map_or(0, str::len) as u64).to_be_bytes());
+    hasher.update(name.unwrap_or_default().as_bytes());
+
+    let default_media_time = guild.and_then(|guild| guild.default_media_time);
+    hasher.update([u8::from(default_media_time.is_some())]);
+    hasher.update(default_media_time.unwrap_or_default().to_be_bytes());
+
+    let max_media_time = guild.and_then(|guild| guild.max_media_time);
+    hasher.update([u8::from(max_media_time.is_some())]);
+    hasher.update(max_media_time.unwrap_or_default().to_be_bytes());
+
+    hasher.update([u8::from(
+        guild.is_some_and(|guild| guild.display_media_full),
+    )]);
+    hasher.update([u8::from(guests_can_view_board)]);
+    hasher.update([u8::from(board_quota_mb.is_some())]);
+    hasher.update(board_quota_mb.unwrap_or_default().to_be_bytes());
+    format!("{:x}", hasher.finalize())
+}
 
 /// Garde de permission : `403 {"error":"forbidden"}` si le rôle ne suffit pas.
 pub(super) fn require(
@@ -378,6 +414,11 @@ pub async fn get_guild(State(state): State<AppState>, auth: AuthedOverlayClient)
     let own_default = settings.as_ref().and_then(|guild| guild.default_media_time);
     let own_max = settings.as_ref().and_then(|guild| guild.max_media_time);
     let server_default = i64::try_from(state.runtime().default_duration()).unwrap_or(5);
+    let settings_version = settings_version(
+        settings.as_ref(),
+        guests_can_view_board,
+        media_board.get("quotaMb").and_then(Value::as_i64),
+    );
 
     json_response(
         StatusCode::OK,
@@ -385,6 +426,7 @@ pub async fn get_guild(State(state): State<AppState>, auth: AuthedOverlayClient)
             "guild": {
                 "id": guild_id.as_str(),
                 "name": access.as_ref().and_then(|access| access.name.clone()),
+                "settingsVersion": settings_version,
                 "standalone": access.as_ref().is_some_and(|access| access.standalone),
                 "discordGuildId": access.as_ref().and_then(|access| access.discord_guild_id.clone()),
                 "iconUrl": access.as_ref().and_then(guild_icon_url),
@@ -705,7 +747,7 @@ mod tests {
 
     use super::{
         discord_icon_url, normalize_avatar, normalize_display_name, random_invite_code,
-        CODE_ALPHABET,
+        settings_version, Guild, GuildId, CODE_ALPHABET,
     };
 
     #[test]
@@ -771,6 +813,42 @@ mod tests {
         assert_eq!(
             discord_icon_url("42", &long_hash).as_deref(),
             Some(expected.as_str())
+        );
+    }
+
+    #[test]
+    fn settings_version_covers_every_writable_setting() {
+        let base = Guild {
+            id: GuildId::generate(),
+            name: Some("Les Sardines".to_string()),
+            busy_until: None,
+            default_media_time: Some(12),
+            max_media_time: Some(20),
+            display_media_full: false,
+        };
+        let version = settings_version(Some(&base), true, Some(32));
+        assert_eq!(
+            version,
+            settings_version(Some(&base), true, Some(32)),
+            "the version must be stable"
+        );
+
+        let renamed = Guild {
+            name: Some("GG Squad".to_string()),
+            ..base.clone()
+        };
+        assert_ne!(version, settings_version(Some(&renamed), true, Some(32)));
+
+        assert_ne!(version, settings_version(Some(&base), false, Some(32)));
+        assert_ne!(version, settings_version(Some(&base), true, None));
+
+        let longer_media = Guild {
+            default_media_time: Some(30),
+            ..base
+        };
+        assert_ne!(
+            version,
+            settings_version(Some(&longer_media), true, Some(32))
         );
     }
 

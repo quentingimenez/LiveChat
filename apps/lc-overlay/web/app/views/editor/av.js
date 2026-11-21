@@ -310,16 +310,45 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   const timeToX = (time, width) => (time / duration) * width;
   const xToTime = (x, width) => clamp((x / width) * duration, 0, duration);
 
+  // The track is a canvas: its colours are the tokens of the active theme, so
+  // the light board gets a light track instead of the dark canvas literals.
+  let palette = null;
+  let paletteTheme = null;
+  function timelinePalette(theme) {
+    if (palette && paletteTheme === theme) {
+      return palette;
+    }
+    const style = getComputedStyle(track);
+    const read = (name) => style.getPropertyValue(name).trim();
+    palette = {
+      background: read('--tl-bg'),
+      wave: read('--tl-wave'),
+      removed: read('--tl-removed'),
+      hatch: read('--tl-removed-hatch'),
+      edge: read('--tl-edge'),
+      grip: read('--tl-edge-grip'),
+      selection: read('--tl-selection'),
+      selectionEdge: read('--tl-selection-edge'),
+      head: read('--tl-head'),
+    };
+    paletteTheme = theme;
+    return palette;
+  }
+
   function paintTimeline(force) {
     const width = track.clientWidth;
     if (!width) {
       return;
     }
-    const key = [width, media.currentTime.toFixed(3), JSON.stringify(edit.segments), JSON.stringify(selection), peaks ? 1 : 0, strip ? strip.dataset.done : 0].join('|');
+    // The theme is part of the key: a theme switch changes the tokens without
+    // re-rendering the view, so the track has to repaint itself.
+    const theme = document.documentElement.dataset.theme || 'dark';
+    const key = [width, theme, media.currentTime.toFixed(3), JSON.stringify(edit.segments), JSON.stringify(selection), peaks ? 1 : 0, strip ? strip.dataset.done : 0].join('|');
     if (!force && key === lastPaintKey) {
       return;
     }
     lastPaintKey = key;
+    const colors = timelinePalette(theme);
     const ratio = Math.min(window.devicePixelRatio || 1, 2);
     if (canvas.width !== Math.round(width * ratio)) {
       canvas.width = Math.round(width * ratio);
@@ -328,7 +357,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     const context = canvas.getContext('2d');
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, width, TRACK_HEIGHT);
-    context.fillStyle = '#171b25';
+    context.fillStyle = colors.background;
     context.fillRect(0, 0, width, TRACK_HEIGHT);
 
     const waveTop = isVideo ? STRIP_HEIGHT : 0;
@@ -337,7 +366,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
       context.drawImage(strip, 0, 0, width, STRIP_HEIGHT);
     }
     const middle = waveTop + waveHeight / 2;
-    context.fillStyle = '#7fa8f5';
+    context.fillStyle = colors.wave;
     if (peaks) {
       for (let x = 0; x < width; x += 2) {
         const peak = peaks[Math.min(peaks.length - 1, Math.floor((x / width) * peaks.length))];
@@ -352,13 +381,13 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     for (const [start, end] of removedRanges(edit.segments, duration)) {
       const left = timeToX(start, width);
       const right = timeToX(end, width);
-      context.fillStyle = 'rgba(13, 16, 23, 0.78)';
+      context.fillStyle = colors.removed;
       context.fillRect(left, 0, right - left, TRACK_HEIGHT);
       context.save();
       context.beginPath();
       context.rect(left, 0, right - left, TRACK_HEIGHT);
       context.clip();
-      context.strokeStyle = 'rgba(236, 106, 112, 0.35)';
+      context.strokeStyle = colors.hatch;
       context.lineWidth = 1;
       for (let x = left - TRACK_HEIGHT; x < right; x += 9) {
         context.beginPath();
@@ -373,9 +402,9 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     for (const [start, end] of edit.segments) {
       for (const time of [start, end]) {
         const x = clamp(timeToX(time, width), 2, width - 2);
-        context.fillStyle = '#e9ebf3';
+        context.fillStyle = colors.edge;
         context.fillRect(x - 2, 0, 4, TRACK_HEIGHT);
-        context.fillStyle = '#30384c';
+        context.fillStyle = colors.grip;
         context.fillRect(x - 0.5, TRACK_HEIGHT / 2 - 9, 1, 18);
       }
     }
@@ -383,15 +412,15 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     if (selection) {
       const left = timeToX(selection[0], width);
       const right = timeToX(selection[1], width);
-      context.fillStyle = 'rgba(242, 181, 68, 0.22)';
+      context.fillStyle = colors.selection;
       context.fillRect(left, 0, right - left, TRACK_HEIGHT);
-      context.fillStyle = '#f2b544';
+      context.fillStyle = colors.selectionEdge;
       context.fillRect(left - 1, 0, 2, TRACK_HEIGHT);
       context.fillRect(right - 1, 0, 2, TRACK_HEIGHT);
     }
 
     const head = timeToX(media.currentTime, width);
-    context.fillStyle = '#ffffff';
+    context.fillStyle = colors.head;
     context.fillRect(head - 1, 0, 2, TRACK_HEIGHT);
     context.beginPath();
     context.moveTo(head - 6, 0);
@@ -982,7 +1011,13 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
       section(
         'Découper',
         h('p', { class: 'meta' }, 'Tire les bords clairs de la frise pour raccourcir. Glisse sur la frise pour sélectionner un passage, puis garde-le ou supprime-le.'),
-        h('div', { class: 'row' }, startField, h('span', { class: 'meta' }, '→'), endField),
+        h(
+          'div',
+          { class: 'editor-times' },
+          startField,
+          h('span', { class: 'editor-times-arrow', 'aria-hidden': 'true' }, '→'),
+          endField,
+        ),
         h(
           'div',
           { class: 'editor-pair' },

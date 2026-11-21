@@ -301,6 +301,20 @@
   justify-content: center;
 }
 
+/* Start/end of the selection: both fields take the panel width, like the pair
+   of buttons below, and their time stays centred. */
+.editor-times {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+}
+
+.editor-times-arrow {
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
 /* Scale presets: one aligned block instead of a ragged 3 + 2 wrap. */
 .editor-presets {
   display: grid;
@@ -691,6 +705,8 @@
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-s);
+  /* Shown before the canvas's first paint (and if it ever fails). */
+  background: var(--tl-bg);
   cursor: text;
   touch-action: none;
   user-select: none;
@@ -703,7 +719,8 @@
 }
 
 .field.tl-time {
-  width: 96px;
+  width: 100%;
+  min-width: 0;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }

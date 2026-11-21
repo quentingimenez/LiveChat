@@ -350,19 +350,33 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
                 next_started: false,
             });
         }
+        // Le job appartient à `job.guild_id`, pas forcément à la guilde qui a
+        // émis la trame : un overlay multi-guilde peut router un
+        // `playback.ended` tardif vers la session du média suivant. Terminer le
+        // job reste juste (il est bien fini), mais le verrou libéré et la file
+        // relancée doivent être ceux de la guilde propriétaire — sinon elle
+        // reste bloquée `busy_until` et ses médias attendent « en file » alors
+        // que plus rien ne joue, tandis qu'un job d'une autre guilde part.
+        if event.guild_id != job.guild_id {
+            warn!(
+                job = %event.job_id,
+                job_guild = %job.guild_id,
+                event_guild = %event.guild_id,
+                "playback.ended émis par une autre guilde : libération de la guilde propriétaire"
+            );
+        }
+        let guild_id = job.guild_id.clone();
         self.db
             .playback_jobs()
             .finish(event.job_id, JobStatus::Done, now)
             .await?;
-        self.clear_busy(&event.guild_id).await?;
+        self.clear_busy(&guild_id).await?;
         {
             let mut inner = self.inner.lock().await;
             inner.state_persisted_at.remove(&event.job_id);
-            inner
-                .just_finished
-                .insert(event.guild_id.clone(), event.job_id);
+            inner.just_finished.insert(guild_id.clone(), event.job_id);
         }
-        let run = self.process_guild(&event.guild_id).await?;
+        let run = self.process_guild(&guild_id).await?;
         Ok(ReleaseOutcome {
             released: true,
             next_started: run.started,
@@ -385,6 +399,20 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
                 next_started: false,
             });
         };
+        // Une erreur ne vaut que pour la guilde propriétaire : une trame
+        // mal routée ne doit pas faire échouer le média d'une autre guilde.
+        if job.guild_id != *guild_id {
+            warn!(
+                job = %job_id,
+                job_guild = %job.guild_id,
+                event_guild = %guild_id,
+                "erreur de lecture ignorée : le job appartient à une autre guilde"
+            );
+            return Ok(ReleaseOutcome {
+                released: false,
+                next_started: false,
+            });
+        }
         match job.status {
             JobStatus::Playing => {
                 self.db

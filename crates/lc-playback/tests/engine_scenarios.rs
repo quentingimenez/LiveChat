@@ -4,7 +4,7 @@
 
 mod support;
 
-use lc_domain::{datetime_to_ms, Clock, JobStatus};
+use lc_domain::{datetime_to_ms, Clock, GuildId, JobStatus};
 use lc_playback::{
     PlaybackEndedEvent, PlaybackStateEvent, PlaybackStateOutcome, MEDIA_BOARD_JOB_PRIORITY,
 };
@@ -664,4 +664,96 @@ async fn a_short_audio_or_image_is_not_extended() {
         h.engine.enqueue(&job).await.unwrap();
         assert_eq!(h.sink.play_calls()[0].duration_sec, 1);
     }
+}
+
+/// Overlay multi-guilde : un `playback.ended` routé vers la session d'une
+/// autre guilde termine bien le job, mais libère la guilde qui le possède.
+#[tokio::test]
+async fn playback_ended_d_une_autre_guilde_libere_la_guilde_proprietaire() {
+    let h = harness(2).await;
+    let guild_a = h.guild_id.clone();
+    let guild_b = GuildId::parse("223456789012345678").unwrap();
+    h.db.guilds()
+        .upsert(&sample_guild(guild_b.clone()))
+        .await
+        .unwrap();
+
+    let first = sample_job(guild_a.clone(), h.clock.now());
+    let second = sample_job(guild_a.clone(), h.clock.now());
+    h.engine.enqueue(&first).await.unwrap();
+    h.engine.enqueue(&second).await.unwrap();
+    assert_eq!(h.stored_job(first.id).await.status, JobStatus::Playing);
+    assert_eq!(h.stored_job(second.id).await.status, JobStatus::Pending);
+
+    let other = sample_job(guild_b.clone(), h.clock.now());
+    h.engine.enqueue(&other).await.unwrap();
+    assert_eq!(h.stored_job(other.id).await.status, JobStatus::Playing);
+    let busy_b =
+        h.db.guilds()
+            .get(&guild_b)
+            .await
+            .unwrap()
+            .unwrap()
+            .busy_until;
+
+    // La fin du média de A arrive par la session de B (trame mal routée).
+    let outcome = h
+        .engine
+        .handle_playback_ended(PlaybackEndedEvent::new(
+            guild_b.clone(),
+            first.id,
+            PlaybackEndedReason::Completed,
+        ))
+        .await
+        .unwrap();
+    assert!(outcome.released);
+
+    // A enchaîne sur son média suivant ; le verrou de B ne bouge pas.
+    assert_eq!(h.stored_job(second.id).await.status, JobStatus::Playing);
+    assert_eq!(h.stored_job(other.id).await.status, JobStatus::Playing);
+    assert_eq!(
+        h.db.guilds()
+            .get(&guild_b)
+            .await
+            .unwrap()
+            .unwrap()
+            .busy_until,
+        busy_b
+    );
+}
+
+/// Une erreur de rendu signalée par une guilde ne doit pas faire échouer le
+/// média d'une autre guilde, ni libérer son verrou de lecture.
+#[tokio::test]
+async fn erreur_d_une_autre_guilde_n_echoue_pas_le_job() {
+    let h = harness(2).await;
+    let guild_a = h.guild_id.clone();
+    let guild_b = GuildId::parse("223456789012345678").unwrap();
+    h.db.guilds()
+        .upsert(&sample_guild(guild_b.clone()))
+        .await
+        .unwrap();
+
+    let job = sample_job(guild_a.clone(), h.clock.now());
+    h.engine.enqueue(&job).await.unwrap();
+    let busy_a =
+        h.db.guilds()
+            .get(&guild_a)
+            .await
+            .unwrap()
+            .unwrap()
+            .busy_until;
+
+    let outcome = h.engine.handle_error(&guild_b, job.id).await.unwrap();
+    assert!(!outcome.released);
+    assert_eq!(h.stored_job(job.id).await.status, JobStatus::Playing);
+    assert_eq!(
+        h.db.guilds()
+            .get(&guild_a)
+            .await
+            .unwrap()
+            .unwrap()
+            .busy_until,
+        busy_a
+    );
 }

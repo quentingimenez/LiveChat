@@ -31,6 +31,7 @@ pub mod events;
 pub mod layout_preview;
 pub mod net;
 pub mod placement;
+pub mod screen;
 pub mod settings;
 pub mod shortcuts;
 pub mod state;

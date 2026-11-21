@@ -612,8 +612,9 @@ export interface RuntimeSettingsResponse {
   /* v2 payload. */
   settings?: Record<string, RuntimeSettingEntry>;
   readOnly?: Record<string, unknown>;
-  /* Legacy payload still returned by the current server. */
+  /* Legacy payload fields still accepted from older servers. */
   tiktokCookie?: string;
+  /** Presence flag for the write-only TikTok cookie. */
   hasTikTokCookie?: boolean;
 }
 

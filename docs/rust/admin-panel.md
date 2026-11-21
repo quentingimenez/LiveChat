@@ -129,8 +129,8 @@ Calculs legacy à reproduire : guilds = union (`guilds` + overlay_clients + inge
 
 ### 6.2 `GET|PATCH /admin/api/runtime-settings`
 
-- GET → 200 `{ "tiktokCookie": "...", "hasTikTokCookie": true }` (le **cookie complet** est renvoyé au client, comme en v1).
-- PATCH body `{ "tiktokCookie": "..." }` → 400 `{"error":"invalid_payload"}` si absent/non-string ; 200 `{"updated":true,"tiktokCookie":"...","hasTikTokCookie":true}`. Persistance legacy : écriture dans le fichier `.env` (`persistRuntimeTikTokCookieToEnvFile`).
+- GET → 200 `{ "hasTikTokCookie": true }` (le cookie complet n’est **jamais** renvoyé ; seul son état est exposé).
+- PATCH body `{ "tiktokCookie": "..." }` → 400 `{"error":"invalid_payload"}` si non-string ; 200 `{"updated":true,"hasTikTokCookie":true}`. Le cookie est écrit dans `admin_runtime.json` mais n’est jamais relu par le client.
 
 ### 6.3 `GET /admin/api/ingest-authors` → 200
 
@@ -278,7 +278,7 @@ Les assets statiques peuvent avoir un cache court + `ETag` (`no-cache` en dev) ;
 3. **Agrégation overview** : requêtes counts/agrégats groupés (jobs par statut, board bytes, cache READY sans board), union des guilds, tri stable ; éviter 7 requêtes + N appels Discord par poll si possible (cache court), sans changer le contrat.
 4. **Auth middleware** : reproduire l'ordre 503 → 403 → 401 (§7) ; Bearer + fallback query pour la page ; décider page publique vs protégée (E9) ; cookie+Bearer conforme au plan §10, CSRF si cookie ; comparer le token à temps constant.
 5. **Intégration WS** : registre des sockets overlay par `guildId/clientId` (pour `overlayConnectedCount` et `clients[].connected`) ; `revoke` → close `4402 revoked` (protocole v2) ; `stop` → release jobs + broadcast `stop` ; `purge` → fermeture des sockets de la guilde.
-6. **Réglages runtime** : remplacer l'écriture `.env` legacy par la config v2 (fichier/`config`), avec relecture immédiate ; exposer `hasTikTokCookie` ; décider du renvoi en clair du cookie (parité) ou masquage (sécurité) — écart à valider avec le Lead.
+6. **Réglages runtime** : remplacer l'écriture `.env` legacy par la config v2 (fichier/`config`), avec relecture immédiate ; exposer `hasTikTokCookie`, ne **jamais** renvoyer le cookie en clair ; le `PATCH` l'accepte encore pour la compatibilité et le persiste dans `admin_runtime.json`.
 7. **Noms de guildes Discord** : le serveur v2 doit démarrer sans Discord obligatoire ; l'overview doit fonctionner en mode dégradé (nom persisté sinon `Guild {id}`), sans changer le schéma de réponse.
 8. **CSP/headers** : poser la CSP cible ; option refactor CSSOM pour passer `style-src 'self'`.
 9. **CORS** : si le panel est ouvert depuis la WebView overlay (`http(s)://tauri.localhost`, §12.4), compléter CORS `/admin` ; sinon same-origin only.

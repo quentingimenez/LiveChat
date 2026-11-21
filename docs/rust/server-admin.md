@@ -366,14 +366,16 @@ Règles d'agrégation :
 ### 7.2 `GET` / `PATCH /admin/api/runtime-settings`
 
 ```json
-GET  → {"tiktokCookie": "", "hasTikTokCookie": false}
-PATCH {"tiktokCookie": "sessionid=…"} → {"updated": true, "tiktokCookie": "sessionid=…", "hasTikTokCookie": true}
+GET  → {"hasTikTokCookie": false}
+PATCH {"tiktokCookie": "sessionid=…"} → {"updated": true, "hasTikTokCookie": true}
 ```
 
 - `PATCH` : `tiktokCookie` doit être une chaîne (`invalid_payload` sinon, 400).
 - Normalisation : préfixe `cookie:`/`Cookie:`/`COOKIE:` retiré, espaces
   extérieurs trimés (`normalizeTikTokCookie` du legacy).
-- Le cookie est **stocké en clair** (parité v1) et renvoyé en entier par le GET.
+- Le cookie est **stocké en clair** (parité v1) mais n’est **jamais renvoyé** :
+  seul `hasTikTokCookie` indique sa présence. La console permet de le remplacer
+  ou de le supprimer sans jamais l’afficher.
 - Persistance : fichier JSON à côté de la base (voir §8), relecture à chaque
   GET/PATCH, rechargement au démarrage suivant.
 - Écart assumé avec le legacy, qui réécrivait `.env` : le fichier de réglages

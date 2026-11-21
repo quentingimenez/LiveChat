@@ -202,10 +202,10 @@ export function SettingsScreen() {
     }
     setDraft(next);
     setInitial({ ...next });
-    setCookieText(settings.data.tiktokCookie ?? '');
-    setCookieInitial(
-      typeof settings.data.tiktokCookie === 'string' ? settings.data.tiktokCookie : null,
-    );
+    const serverCookie =
+      typeof settings.data.tiktokCookie === 'string' ? settings.data.tiktokCookie : null;
+    setCookieText(serverCookie ?? '');
+    setCookieInitial(serverCookie);
     setDraftSource(settings.data);
   }, [settings.data]);
 
@@ -239,9 +239,14 @@ export function SettingsScreen() {
 
   const readOnlyEntries = Object.entries(settings.data?.readOnly ?? {});
   const isLegacy = !settings.data?.settings;
-  const showCookie = settings.data?.tiktokCookie !== undefined || settings.data?.hasTikTokCookie;
+  const legacyCookieConfigured =
+    typeof settings.data?.tiktokCookie === 'string' && settings.data.tiktokCookie.length > 0;
+  const cookieConfigured = settings.data?.hasTikTokCookie === true || legacyCookieConfigured;
+  const showCookie =
+    settings.data?.tiktokCookie !== undefined || settings.data?.hasTikTokCookie !== undefined;
   const changedKeys = Object.keys(draft).filter((key) => draft[key] !== initial[key]);
-  const cookieDirty = cookieInitial !== null && cookieText !== cookieInitial;
+  const cookieDirty =
+    cookieInitial !== null ? cookieText !== cookieInitial : cookieText.length > 0;
   const dirty = changedKeys.length > 0 || cookieDirty;
 
   const setValue = (key: string, value: DraftValue) => {
@@ -265,6 +270,24 @@ export function SettingsScreen() {
       }
       await patchRuntimeSettings(body);
       notify('Paramètres du serveur enregistrés.');
+      settings.reload();
+    } catch (error) {
+      setSaveError(error);
+      notify(describeError(error), 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clearCookie = async () => {
+    if (!cookieConfigured || saving) {
+      return;
+    }
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await patchRuntimeSettings({ tiktokCookie: '' });
+      notify('Cookie TikTok supprimé.');
       settings.reload();
     } catch (error) {
       setSaveError(error);
@@ -431,14 +454,33 @@ export function SettingsScreen() {
                     onInput={(event) => setCookieText(event.currentTarget.value)}
                   />
                   <p class="hint">
-                    Nécessaire pour les TikTok restreints. Appliqué immédiatement après
-                    enregistrement.
+                    {legacyCookieConfigured && settings.data?.hasTikTokCookie !== true
+                      ? 'Ancien serveur : la valeur affichée est encore renvoyée en clair pour compatibilité. Laisser vide pour la conserver, saisir une nouvelle valeur pour la remplacer. Appliqué immédiatement après enregistrement.'
+                      : 'Nécessaire pour les TikTok restreints. La valeur existante n’est jamais renvoyée : laisser vide pour la conserver, saisir une nouvelle valeur pour la remplacer. Appliqué immédiatement après enregistrement.'}
                   </p>
                   <p class="hint">
                     État :{' '}
-                    <Badge tone={cookieText ? 'ok' : 'neutral'}>
-                      {cookieText ? 'Configuré' : 'Absent'}
+                    <Badge
+                      tone={cookieDirty ? 'info' : cookieConfigured ? 'ok' : 'neutral'}
+                    >
+                      {cookieDirty
+                        ? cookieText.trim()
+                          ? 'Nouveau cookie saisi'
+                          : 'Cookie en cours de suppression'
+                        : cookieConfigured
+                          ? 'Configuré'
+                          : 'Absent'}
                     </Badge>
+                    {cookieConfigured ? (
+                      <button
+                        type="button"
+                        class="btn is-small is-quiet"
+                        disabled={saving}
+                        onClick={() => void clearCookie()}
+                      >
+                        Supprimer le cookie
+                      </button>
+                    ) : null}
                   </p>
                 </div>
               </Card>
@@ -460,9 +502,7 @@ export function SettingsScreen() {
                 disabled={!dirty || saving}
                 onClick={() => {
                   setDraft({ ...initial });
-                  if (cookieInitial !== null) {
-                    setCookieText(cookieInitial);
-                  }
+                  setCookieText(cookieInitial ?? '');
                 }}
               >
                 Annuler

@@ -36,3 +36,32 @@ for (const selector of ['.line.is-member', '.line.is-invite', '.line.is-ban']) {
     }
   });
 }
+
+// The last device action is either a narrow « Cet appareil » badge or a wider
+// « Révoquer… » button. Without a fixed slot, every row's flex line has a
+// different width and « Régler » / « Renommer… » move from row to row.
+function declarationValues(selector, property) {
+  const values = [];
+  const rule = /([^{}]+)\{([^{}]*)\}/g;
+  let match;
+  while ((match = rule.exec(css)) !== null) {
+    const selectors = match[1]
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split(',')
+      .map((part) => part.trim());
+    if (!selectors.includes(selector)) continue;
+    const declaration = new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+);`).exec(match[2]);
+    if (declaration) values.push(declaration[1].trim());
+  }
+  return values;
+}
+
+test('device actions: the last control keeps a fixed slot on every row', () => {
+  const flex = declarationValues('.line.is-device .line-actions > :last-child', 'flex');
+  assert.ok(flex.length > 0, 'the last device action has no fixed flex slot');
+  for (const value of flex) {
+    assert.match(value, /^0\s+0\s+\d+px$/, value);
+  }
+  const box = declarationValues('.line.is-device .line-actions > :last-child', 'box-sizing');
+  assert.ok(box.includes('border-box'), 'the fixed slot must include its padding');
+});

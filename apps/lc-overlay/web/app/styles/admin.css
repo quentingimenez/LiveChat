@@ -124,6 +124,15 @@
   grid-template-columns: 30px minmax(0, 1fr) 150px 140px 130px 300px;
 }
 
+/* « Cet appareil » is narrower than « Révoquer… ». A fixed slot for the last
+   action keeps « Régler » and « Renommer… » on the same x in every row. */
+.line.is-device .line-actions > :last-child {
+  box-sizing: border-box;
+  flex: 0 0 96px;
+  justify-content: center;
+  text-align: center;
+}
+
 /* Journal: date, origin, actor, action. */
 .line.is-audit,
 .list-head.is-audit {

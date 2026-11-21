@@ -47,6 +47,7 @@ import {
   selectAllAction,
   selectAllToggle,
   selectRange,
+  sourceLink,
   toggleId,
 } from '../core/selection.js';
 import { invoke, listen } from '../core/ipc.js';
@@ -83,8 +84,7 @@ export function itemTitle(item) {
 }
 
 function openCardMenu(event, item) {
-  const sourceUrl = item.media && item.media.sourceUrl;
-  const copyable = typeof sourceUrl === 'string' && /^https?:\/\//i.test(sourceUrl);
+  const link = sourceLink(item);
   openContextMenu(event, [
     { heading: itemTitle(item) },
     can('play') ? { label: 'Jouer sur les overlays', icon: 'play', onSelect: () => playItem(item) } : null,
@@ -107,7 +107,7 @@ function openCardMenu(event, item) {
           },
         }
       : null,
-    copyable ? { label: 'Copier le lien d’origine', icon: 'copy', onSelect: () => copyText(sourceUrl, 'Lien copié.') } : null,
+    link ? { label: 'Copier le lien d’origine', icon: 'copy', onSelect: () => copyText(link, 'Lien copié.') } : null,
     importTargets(state.guilds, state.activeGuildId).length > 0
       ? { label: 'Ajouter à une autre guilde…', onSelect: () => openImportDialog(menuItemIds(item), leaveSelection) }
       : null,
@@ -1786,12 +1786,7 @@ function defaultDurationHint() {
 }
 
 function infoFacts(item) {
-  let source = null;
-  try {
-    source = new URL(item.media.sourceUrl).hostname.replace(/^www\./, '');
-  } catch {
-    source = null;
-  }
+  const link = sourceLink(item);
   const size = item.media.sizeBytes ? `${(item.media.sizeBytes / 1048576).toFixed(1).replace('.', ',')} Mo` : null;
   const added = new Date(item.createdAt);
   return h(
@@ -1799,7 +1794,27 @@ function infoFacts(item) {
     { class: 'facts' },
     [h('dt', null, 'Ajouté par'), h('dd', null, item.createdByName || 'Inconnu')],
     [h('dt', null, 'Le'), h('dd', null, Number.isNaN(added.getTime()) ? '—' : added.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }))],
-    source ? [h('dt', null, 'Source'), h('dd', null, source)] : null,
+    link
+      ? [
+          h('dt', null, 'Source'),
+          h(
+            'dd',
+            { class: 'source-cell' },
+            h('span', { class: 'source-url' }, link),
+            h(
+              'button',
+              {
+                class: 'btn is-quiet icon-btn',
+                type: 'button',
+                title: 'Copier le lien d’origine',
+                'aria-label': 'Copier le lien d’origine',
+                onClick: () => copyText(link, 'Lien copié.'),
+              },
+              icon('copy'),
+            ),
+          ),
+        ]
+      : null,
     [h('dt', null, 'Format'), h('dd', null, [KIND_LABELS[item.media.kind] || item.media.kind, formatDuration(shownDuration(item)), size, item.displayScalePercent ? `affiché à ${item.displayScalePercent} %` : null].filter(Boolean).join(', '))],
   );
 }

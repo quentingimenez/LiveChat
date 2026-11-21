@@ -162,18 +162,20 @@ export function deletableIds(items) {
 }
 
 /**
+ * The origin link of one item, http(s) only, or null: an uploaded file
+ * (`upload:<name>`) has no page to copy or show.
+ */
+export function sourceLink(item) {
+  const url = item && item.media && item.media.sourceUrl;
+  return typeof url === 'string' && /^https?:\/\//i.test(url) ? url : null;
+}
+
+/**
  * Origin links of the picked items, one per media in board order, http(s)
  * only: an uploaded file has no page to paste.
  */
 export function originLinks(items) {
-  const links = [];
-  for (const item of items) {
-    const url = item.media && item.media.sourceUrl;
-    if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
-      links.push(url);
-    }
-  }
-  return links;
+  return items.map(sourceLink).filter(Boolean);
 }
 
 /** Toast text describing the outcome of playing the picked media in a row. */

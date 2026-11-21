@@ -776,6 +776,25 @@
   overflow-wrap: anywhere;
 }
 
+/* Origin link: the whole address on its value column, with its copy button.
+   The button is one text line tall so its icon centers on the first line, and
+   a long address wraps under it instead of pushing the icon down. */
+.facts .source-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.facts .source-cell .icon-btn {
+  width: 20px;
+  height: 20px;
+}
+
+.facts .source-url {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* The caption edited in place sits on the value column, like the shortcut. */
 .facts .inline-edit {
   margin: 0;

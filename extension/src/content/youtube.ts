@@ -5,6 +5,7 @@ import {
 } from './brand-logo';
 import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModalYoutube';
 import { initInpageTheme } from './inpage-theme';
+import { YOUTUBE_BUTTON_LOGO_SIZE_PX, youtubeInpageStyles } from './inpage-styles';
 
 const STYLE_ID = 'lce-youtube-style';
 const BUTTON_ATTRIBUTE = 'data-lce-youtube-button';
@@ -455,115 +456,10 @@ const SHORTS_TARGET_SELECTORS = [
 
 type ButtonVariant = 'watch' | 'shorts';
 
-// Le logo remplit la puce de 42 px (48 px pour Shorts) sans la déborder, à la
-// taille des icônes d'action de YouTube qui l'entourent.
-const BUTTON_LOGO_SIZE_PX = 26;
-
 const buttonResetTimers = new WeakMap<HTMLButtonElement, number>();
 const buttonClickTimers = new WeakMap<HTMLButtonElement, number>();
 const SINGLE_CLICK_DELAY_MS = 260;
 
-const inpageStyles = `
-.lce-button-youtube {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 42px;
-  height: 42px;
-  border: none;
-  border-radius: 999px;
-  padding: 0;
-  font-family: "Roboto", "Arial", sans-serif;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  cursor: pointer;
-  pointer-events: auto;
-  /* Puce neutre : elle emprunte la couleur du texte de la page et un fond
-     translucide, donc elle reste lisible sur YouTube clair comme sombre. */
-  background: rgba(127, 127, 127, 0.16);
-  color: inherit;
-  transition: transform 120ms ease, background-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
-}
-.lce-button-youtube:hover {
-  background: rgba(127, 127, 127, 0.28);
-}
-.lce-button-youtube:disabled {
-  opacity: 1;
-}
-.lce-button-youtube-watch {
-  margin-left: 9px;
-  margin-right: 7px;
-  flex: 0 0 auto;
-  position: relative;
-  z-index: 2;
-}
-.lce-button-youtube-shorts {
-  width: 48px;
-  height: 48px;
-}
-.lce-button-youtube-shorts-floating,
-.lce-button-youtube-watch-floating {
-  position: fixed;
-  z-index: 2147483646;
-  pointer-events: auto !important;
-  /* Posée sur le lecteur, la puce garde son fond sombre quel que soit le
-     thème de la page. */
-  background: #272727;
-  color: #fff;
-}
-.lce-button-youtube-shorts-floating:hover,
-.lce-button-youtube-watch-floating:hover {
-  background: #303030;
-}
-.lce-youtube-shorts-slot {
-  display: flex;
-  justify-content: center;
-  width: 100%;
-  margin-bottom: 12px;
-  pointer-events: auto;
-  z-index: 3;
-}
-.lce-youtube-watch-slot {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin-left: 4px;
-  margin-right: 4px;
-  flex: 0 0 auto;
-  pointer-events: auto !important;
-}
-.lce-button-youtube.is-loading {
-  background: #fed54a;
-  color: #0f0f0f;
-  animation: lce-youtube-pulse 0.95s ease-in-out infinite;
-}
-.lce-button-youtube.is-success {
-  background: #30d158;
-  color: #0f0f0f;
-  animation: lce-youtube-pulse-success 0.9s ease-in-out 2;
-}
-.lce-button-youtube.is-error {
-  background: #ff453a;
-  color: #fff;
-  animation: lce-youtube-pulse-error 0.9s ease-in-out 2;
-}
-@keyframes lce-youtube-pulse {
-  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(254, 213, 74, 0.45); }
-  70% { transform: scale(1.06); box-shadow: 0 0 0 10px rgba(254, 213, 74, 0); }
-  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(254, 213, 74, 0); }
-}
-@keyframes lce-youtube-pulse-success {
-  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(48, 209, 88, 0.45); }
-  70% { transform: scale(1.08); box-shadow: 0 0 0 12px rgba(48, 209, 88, 0); }
-  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(48, 209, 88, 0); }
-}
-@keyframes lce-youtube-pulse-error {
-  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 69, 58, 0.45); }
-  70% { transform: scale(1.08); box-shadow: 0 0 0 12px rgba(255, 69, 58, 0); }
-  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 69, 58, 0); }
-}
-`;
 
 const ensureStyles = (): void => {
   if (document.getElementById(STYLE_ID)) {
@@ -572,7 +468,7 @@ const ensureStyles = (): void => {
 
   const styleNode = document.createElement('style');
   styleNode.id = STYLE_ID;
-  styleNode.textContent = inpageStyles;
+  styleNode.textContent = youtubeInpageStyles;
   document.head.appendChild(styleNode);
 };
 
@@ -952,7 +848,7 @@ const setButtonState = (
 ): void => {
   clearButtonResetTimer(button);
   button.classList.remove('is-loading', 'is-success', 'is-error');
-  renderButtonContent(button, state, BUTTON_LOGO_SIZE_PX);
+  renderButtonContent(button, state, YOUTUBE_BUTTON_LOGO_SIZE_PX);
 
   if (state === 'loading') {
     button.classList.add('is-loading');

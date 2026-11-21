@@ -3,7 +3,7 @@
 import { api, run } from '../core/api.js';
 import { performAction } from '../core/action-ui.js';
 import { isEditable, openContextMenu } from '../core/contextmenu.js';
-import { acceleratorFromEvent, acceleratorLabel, ALTGR_HINT, BARE_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
+import { acceleratorFromEvent, ALTGR_HINT, BARE_KEY_MESSAGE, UNSUPPORTED_KEY, UNSUPPORTED_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import { ARTWORK_MESSAGES, artworkExtension, droppedArtworkLink, fetchArtwork, MAX_ARTWORK_BYTES, pickArtworkFile } from '../core/artwork.js';
 import {
   activeFilterCount,
@@ -52,6 +52,7 @@ import {
   sourceLink,
   toggleId,
 } from '../core/selection.js';
+import { capturedKeyLabel, forgetShortcutLabel, shortcutLabel, writeShortcutLabel } from '../core/shortcut-labels.js';
 import { invoke, listen } from '../core/ipc.js';
 import { activeGuild, can, describeError, KIND_LABELS, state } from '../core/state.js';
 import { previewVolume } from '../core/sound.js';
@@ -1769,7 +1770,7 @@ function shortcutControl(item, shortcut) {
     h(
       'button',
       { class: 'shortcut-key', type: 'button', title: 'Changer le raccourci', onClick: () => startCapture(item) },
-      h('kbd', null, acceleratorLabel(shortcut)),
+      h('kbd', null, shortcutLabel(shortcut)),
       icon('edit'),
     ),
     h(
@@ -1800,15 +1801,20 @@ document.addEventListener('keydown', (event) => {
   if (accelerator === null) {
     return;
   }
+  if (accelerator === UNSUPPORTED_KEY) {
+    notify(UNSUPPORTED_KEY_MESSAGE, true);
+    return;
+  }
   if (accelerator === undefined) {
     notify(BARE_KEY_MESSAGE, true);
     return;
   }
+  const keyLabel = capturedKeyLabel(event);
   state.capturing = false;
-  saveShortcut(captureItem, accelerator);
+  saveShortcut(captureItem, accelerator, keyLabel);
 });
 
-export async function saveShortcut(item, accelerator) {
+export async function saveShortcut(item, accelerator, keyLabel = null) {
   const bindings = {};
   for (const [existing, id] of Object.entries(state.bindings)) {
     if (id !== item.id && existing !== accelerator) {
@@ -1821,6 +1827,14 @@ export async function saveShortcut(item, accelerator) {
   const response = await run(() => invoke('media_board_set_bindings', { payload: { bindings } }));
   if (response) {
     state.bindings = response.bindings || {};
+    const failed = Array.isArray(response.failedAccelerators) && response.failedAccelerators.includes(accelerator);
+    if (accelerator && !failed && state.bindings[accelerator] === item.id) {
+      if (keyLabel) {
+        writeShortcutLabel(accelerator, keyLabel);
+      } else {
+        forgetShortcutLabel(accelerator);
+      }
+    }
     if (response.failedAccelerators && response.failedAccelerators.length > 0) {
       notify('Ce raccourci est déjà pris par une autre application.', true);
     }

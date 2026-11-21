@@ -209,6 +209,7 @@ Exemple (sans dépendance configurée) :
   "version": "3.0.0",
   "protocolVersion": 2,
   "db": "ok",
+  "engine": "disabled",
   "discord": "disabled",
   "uptimeSec": 0,
   "activeJobs": 0
@@ -217,18 +218,20 @@ Exemple (sans dépendance configurée) :
 
 | Champ | Valeurs | Sémantique |
 | --- | --- | --- |
-| `status` | `ok` \| `degraded` | `degraded` si `db` ou `discord` vaut `down` |
+| `status` | `ok` \| `degraded` | `degraded` si `db`, `discord` ou `engine` vaut `down` |
 | `version` | `CARGO_PKG_VERSION` (`3.0.0`) | version du serveur |
 | `protocolVersion` | `2` | `lc_protocol::PROTOCOL_VERSION` |
 | `db` | `ok` \| `down` \| `disabled` | `ok` = `SELECT` de comptage des jobs `PLAYING` réussi (< 1 s) |
+| `engine` | `ok` \| `down` \| `disabled` | état du superviseur de lecture ; `disabled` sans moteur démarré ; `down` si dégradé ou arrêté |
+| `engineFailures` | entier ≥ 0, absent si `engine=disabled` | nombre d’échecs consécutifs du moteur (compteur remis à zéro après un tick réussi) |
 | `discord` | `ok` \| `down` \| `disabled` | `disabled` sans configuration ; `down` tant que le bot n'est pas connecté (Phase 6) |
 | `uptimeSec` | entier ≥ 0 | secondes depuis le démarrage (horloge injectable) |
 | `activeJobs` | entier \| `null` | jobs au statut `PLAYING` ; absent (`null`) si base indisponible |
 
 Décision : **HTTP 200 même dégradé** (parité du legacy `/health` 200, utile aux
-load-balancers) ; la dégradation est portée par `status`/`db`/`discord`. Une
-base configurée mais impossible à ouvrir fait échouer le démarrage (code 1) au
-lieu de servir silencieusement sans données.
+load-balancers) ; la dégradation est portée par `status`/`db`/`discord`/`engine`.
+Une base configurée mais impossible à ouvrir fait échouer le démarrage (code 1)
+au lieu de servir silencieusement sans données.
 
 ### Normalisation des erreurs
 

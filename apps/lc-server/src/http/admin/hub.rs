@@ -69,6 +69,14 @@ pub trait AdminHub: Send + Sync {
         None
     }
 
+    /// Current health of the playback supervisor, when the hub owns one.
+    ///
+    /// `None` means the engine has not been started yet (no WebSocket
+    /// connection); `/health` then reports `engine: disabled`.
+    fn playback_health(&self) -> Option<lc_playback::PlaybackHealth> {
+        None
+    }
+
     /// Applies a new authoritative session mode to the live sockets of a
     /// client, before the admin sends `session.changed`.
     ///

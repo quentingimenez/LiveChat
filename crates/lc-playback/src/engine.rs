@@ -11,7 +11,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::{Arc, RwLock};
+use std::time::Duration as StdDuration;
 
 use lc_db::Db;
 use lc_domain::{
@@ -130,6 +132,126 @@ pub struct PurgeReport {
     pub pairing_codes: u64,
 }
 
+/// État du superviseur de la boucle de lecture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaybackEngineState {
+    /// Boucle créée, premier `bootstrap`/`tick` pas encore réussi.
+    Starting,
+    /// Dernier passage réussi.
+    Running,
+    /// Dernier passage en erreur ; la boucle retente avec backoff.
+    Degraded,
+    /// Boucle arrêtée (arrêt demandé ou shutdown).
+    Stopped,
+}
+
+impl PlaybackEngineState {
+    const fn as_u8(self) -> u8 {
+        match self {
+            Self::Starting => 0,
+            Self::Running => 1,
+            Self::Degraded => 2,
+            Self::Stopped => 3,
+        }
+    }
+
+    const fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Running,
+            2 => Self::Degraded,
+            3 => Self::Stopped,
+            _ => Self::Starting,
+        }
+    }
+}
+
+/// Vue publique de la santé du moteur, exposée à `/health`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlaybackHealth {
+    /// État courant.
+    pub state: PlaybackEngineState,
+    /// Nombre d'échecs consécutifs depuis le dernier passage réussi.
+    pub consecutive_failures: u32,
+    /// Dernière erreur, tronquée pour rester exploitable en logs.
+    pub last_error: Option<String>,
+}
+
+/// Compteur de santé partagé entre la boucle et `GET /health`.
+#[derive(Debug)]
+pub struct EngineHealth {
+    state: AtomicU8,
+    consecutive_failures: AtomicU32,
+    last_error: RwLock<Option<String>>,
+}
+
+impl EngineHealth {
+    fn new() -> Self {
+        Self {
+            state: AtomicU8::new(PlaybackEngineState::Starting.as_u8()),
+            consecutive_failures: AtomicU32::new(0),
+            last_error: RwLock::new(None),
+        }
+    }
+
+    fn mark_starting(&self) {
+        self.state
+            .store(PlaybackEngineState::Starting.as_u8(), Ordering::SeqCst);
+    }
+
+    fn mark_running(&self) {
+        self.state
+            .store(PlaybackEngineState::Running.as_u8(), Ordering::SeqCst);
+        self.consecutive_failures.store(0, Ordering::SeqCst);
+        if let Ok(mut error) = self.last_error.write() {
+            *error = None;
+        }
+    }
+
+    fn mark_failure(&self, error: &str) {
+        self.state
+            .store(PlaybackEngineState::Degraded.as_u8(), Ordering::SeqCst);
+        self.consecutive_failures.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut last) = self.last_error.write() {
+            *last = Some(truncate_health_error(error));
+        }
+    }
+
+    fn mark_stopped(&self) {
+        self.state
+            .store(PlaybackEngineState::Stopped.as_u8(), Ordering::SeqCst);
+    }
+
+    /// Instantané cohérent pour une réponse HTTP ou un log.
+    #[must_use]
+    pub fn snapshot(&self) -> PlaybackHealth {
+        PlaybackHealth {
+            state: PlaybackEngineState::from_u8(self.state.load(Ordering::SeqCst)),
+            consecutive_failures: self.consecutive_failures.load(Ordering::SeqCst),
+            last_error: self.last_error.read().ok().and_then(|error| error.clone()),
+        }
+    }
+}
+
+/// Tronque un message d'erreur à une taille raisonnable pour `/health`.
+fn truncate_health_error(error: &str) -> String {
+    const MAX: usize = 512;
+    let mut truncated: String = error.chars().take(MAX).collect();
+    if error.chars().count() > MAX {
+        truncated.push('…');
+    }
+    truncated
+}
+
+/// Backoff initial après une erreur du moteur.
+const ENGINE_INITIAL_BACKOFF: StdDuration = StdDuration::from_secs(1);
+/// Backoff maximal après une erreur persistante.
+const ENGINE_MAX_BACKOFF: StdDuration = StdDuration::from_secs(60);
+
+/// Double le backoff sans dépasser le plafond.
+fn next_engine_backoff(current: StdDuration) -> StdDuration {
+    current.saturating_mul(2).min(ENGINE_MAX_BACKOFF)
+}
+
 /// État interne sérialisé par le verrou du moteur.
 #[derive(Debug, Default)]
 struct Inner {
@@ -163,8 +285,11 @@ pub struct PlaybackEngine<S: PlaybackSink, C: Clock> {
     sink: S,
     clock: C,
     inner: Mutex<Inner>,
+    health: Arc<EngineHealth>,
     shutting_down: AtomicBool,
     shutdown_notify: Notify,
+    #[cfg(test)]
+    fail_next_tick: AtomicBool,
 }
 
 impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
@@ -181,9 +306,24 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
             sink,
             clock,
             inner: Mutex::new(Inner::default()),
+            health: Arc::new(EngineHealth::new()),
             shutting_down: AtomicBool::new(false),
             shutdown_notify: Notify::new(),
+            #[cfg(test)]
+            fail_next_tick: AtomicBool::new(false),
         }
+    }
+
+    /// État courant du superviseur, pour `/health`.
+    #[must_use]
+    pub fn health(&self) -> PlaybackHealth {
+        self.health.snapshot()
+    }
+
+    /// Force le prochain `tick` à échouer (tests de reprise uniquement).
+    #[cfg(test)]
+    fn fail_next_tick_for_test(&self) {
+        self.fail_next_tick.store(true, Ordering::SeqCst);
     }
 
     /// Configuration courante.
@@ -215,6 +355,12 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
 
     /// Un passage de la boucle : traite toutes les guildes ayant du travail.
     pub async fn tick(&self) -> PlaybackResult<TickReport> {
+        #[cfg(test)]
+        if self.fail_next_tick.swap(false, Ordering::SeqCst) {
+            return Err(crate::error::PlaybackError::Db(lc_db::DbError::InvalidUrl(
+                "échec de tick injecté par le test".to_owned(),
+            )));
+        }
         let bootstrapped = self.inner.lock().await.bootstrapped;
         if !bootstrapped {
             self.bootstrap().await?;
@@ -606,44 +752,80 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
     /// Boucle de fond : `bootstrap`, premier `tick`, puis un `tick` par période
     /// jusqu'à résolution de `shutdown` ou appel à [`Self::request_shutdown`].
     ///
-    /// Les erreurs de persistance interrompent la boucle et remontent à
-    /// l'appelant (le serveur décide de la politique de redémarrage).
+    /// Une erreur de persistance ne termine plus la tâche : le moteur passe en
+    /// état `Degraded`, attend un backoff borné, puis retente. Un `tick` qui
+    /// réussit le ramène en `Running` ; `/health` voit la transition.
     pub async fn run<F>(&self, shutdown: F) -> PlaybackResult<()>
     where
         F: Future<Output = ()> + Send,
     {
-        self.bootstrap().await?;
         tokio::pin!(shutdown);
-        self.tick().await?;
+        self.health.mark_starting();
+        let mut backoff = ENGINE_INITIAL_BACKOFF;
+        let mut bootstrapped = false;
         loop {
+            if self.shutting_down.load(Ordering::SeqCst) {
+                break;
+            }
+            if !bootstrapped {
+                match self.bootstrap().await {
+                    Ok(_) => {
+                        bootstrapped = true;
+                        self.health.mark_running();
+                        backoff = ENGINE_INITIAL_BACKOFF;
+                    }
+                    Err(error) => {
+                        self.health.mark_failure(&error.to_string());
+                        warn!(
+                            error = %error,
+                            retry_ms = u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX),
+                            "échec de bootstrap du moteur de lecture ; reprise prévue"
+                        );
+                        tokio::select! {
+                            _ = &mut shutdown => break,
+                            () = tokio::time::sleep(backoff) => {}
+                        }
+                        backoff = next_engine_backoff(backoff);
+                        continue;
+                    }
+                }
+            }
+            match self.tick().await {
+                Ok(_) => {
+                    self.health.mark_running();
+                    backoff = ENGINE_INITIAL_BACKOFF;
+                }
+                Err(error) => {
+                    self.health.mark_failure(&error.to_string());
+                    warn!(
+                        error = %error,
+                        retry_ms = u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX),
+                        "échec de tick du moteur de lecture ; reprise prévue"
+                    );
+                    tokio::select! {
+                        _ = &mut shutdown => break,
+                        () = tokio::time::sleep(backoff) => {}
+                    }
+                    backoff = next_engine_backoff(backoff);
+                    continue;
+                }
+            }
             if self.shutting_down.load(Ordering::SeqCst) {
                 break;
             }
             tokio::select! {
                 _ = &mut shutdown => break,
-                () = tokio::time::sleep(self.config.tick_interval) => {
-                    self.tick().await?;
-                }
+                () = tokio::time::sleep(self.config.tick_interval) => {}
             }
         }
+        self.health.mark_stopped();
         info!("ordonnanceur de lecture arrêté");
         Ok(())
     }
 
     /// Variante de [`Self::run`] pilotée par [`Self::request_shutdown`].
     pub async fn run_until_shutdown(&self) -> PlaybackResult<()> {
-        self.bootstrap().await?;
-        self.tick().await?;
-        while !self.shutting_down.load(Ordering::SeqCst) {
-            tokio::select! {
-                () = tokio::time::sleep(self.config.tick_interval) => {
-                    self.tick().await?;
-                }
-                () = self.shutdown_notify.notified() => break,
-            }
-        }
-        info!("ordonnanceur de lecture arrêté");
-        Ok(())
+        self.run(self.shutdown_notify.notified()).await
     }
 
     /// Demande l'arrêt de la boucle (idempotent).
@@ -1051,5 +1233,87 @@ fn stop_payload_job_id(
             [single] => Some(single.to_canonical()),
             _ => None,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use std::sync::Arc;
+
+    use lc_db::DbConfig;
+    use lc_domain::FixedClock;
+    use lc_protocol::{PlayPayload, StopPayload};
+    use time::UtcDateTime;
+    use tokio::sync::Notify;
+
+    use super::*;
+
+    struct NoopSink;
+
+    impl PlaybackSink for NoopSink {
+        async fn on_play(&self, _guild_id: &GuildId, _payload: PlayPayload) -> usize {
+            0
+        }
+
+        async fn on_stop(&self, _guild_id: &GuildId, _payload: StopPayload) {}
+    }
+
+    #[tokio::test]
+    async fn run_degrades_on_tick_error_then_recovers_and_stops() {
+        let db = Db::open_in_memory(&DbConfig::default())
+            .await
+            .expect("base mémoire");
+        let engine = Arc::new(PlaybackEngine::new(
+            db,
+            PlaybackConfig::default(),
+            NoopSink,
+            FixedClock::new(UtcDateTime::now()),
+        ));
+        engine.fail_next_tick_for_test();
+
+        let shutdown = Arc::new(Notify::new());
+        let run = tokio::spawn({
+            let engine = Arc::clone(&engine);
+            let shutdown = Arc::clone(&shutdown);
+            async move { engine.run(async move { shutdown.notified().await }).await }
+        });
+
+        // Le tick injecté échoue : le moteur doit être visible en dégradé.
+        tokio::time::timeout(StdDuration::from_secs(2), async {
+            loop {
+                if engine.health().state == PlaybackEngineState::Degraded {
+                    break;
+                }
+                tokio::time::sleep(StdDuration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("le moteur doit passer en dégradé");
+        assert!(engine.health().consecutive_failures >= 1);
+
+        // Le backoff de 1 s laisse le tick suivant réussir : retour en running.
+        tokio::time::timeout(StdDuration::from_secs(3), async {
+            loop {
+                let health = engine.health();
+                if health.state == PlaybackEngineState::Running && health.consecutive_failures == 0
+                {
+                    break;
+                }
+                tokio::time::sleep(StdDuration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("le moteur doit récupérer après le backoff");
+
+        engine.request_shutdown();
+        shutdown.notify_waiters();
+        tokio::time::timeout(StdDuration::from_secs(2), run)
+            .await
+            .expect("la boucle doit s'arrêter")
+            .expect("la tâche de fond ne doit pas paniquer")
+            .expect("l'arrêt demandé est un succès");
+        assert_eq!(engine.health().state, PlaybackEngineState::Stopped);
     }
 }

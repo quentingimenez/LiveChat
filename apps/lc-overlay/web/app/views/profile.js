@@ -5,6 +5,11 @@ import { api, run } from '../core/api.js';
 import { resizeAvatar } from '../core/avatar.js';
 import { avatarNode, h, icon } from '../core/dom.js';
 import { formatCode } from '../core/format.js';
+import {
+  IOS_SHORTCUTS,
+  iosShortcutCopyMessage,
+  iosShortcutUrl,
+} from '../core/ios-shortcuts.js';
 import { invoke } from '../core/ipc.js';
 import {
   canRevokePersonalDevice,
@@ -189,16 +194,17 @@ export function openGuildDialog(guild) {
     let iosTokenText = '';
     const iosUrl = h('span', { class: 'profile-value' });
     const iosToken = h('span', { class: 'profile-value' });
-    const shortcutLink = (label, file) =>
+    const shortcutButton = (shortcut) =>
       h(
-        'a',
+        'button',
         {
           class: 'btn is-quiet profile-small',
-          href: `https://raw.githubusercontent.com/quentingimenez/LiveChat/main/ios/${file}`,
-          target: '_blank',
-          rel: 'noreferrer',
+          type: 'button',
+          title: `Copier le lien du raccourci ${shortcut.label}`,
+          onClick: () => copyText(iosShortcutUrl(shortcut), iosShortcutCopyMessage(shortcut)),
         },
-        label,
+        icon('copy'),
+        shortcut.label,
       );
     const iosPanel = h(
       'div',
@@ -228,15 +234,9 @@ export function openGuildDialog(guild) {
       h(
         'p',
         { class: 'profile-code-note' },
-        'Importe un raccourci ci-dessous, puis colle ces deux valeurs quand iOS les demande. Le jeton n’est affiché qu’une fois.',
+        'Choisis le raccourci à installer : le bouton copie son adresse, à ouvrir depuis l’iPhone. Colle ensuite ces deux valeurs quand iOS les demande. Le jeton n’est affiché qu’une fois.',
       ),
-      h(
-        'div',
-        { class: 'profile-shortcuts' },
-        shortcutLink('Photo', 'LiveChat-Photo.shortcut'),
-        shortcutLink('Vidéo', 'LiveChat-Video.shortcut'),
-        shortcutLink('Lien', 'LiveChat-Lien.shortcut'),
-      ),
+      h('div', { class: 'profile-shortcuts' }, IOS_SHORTCUTS.map(shortcutButton)),
     );
     const makeIosToken = async () => {
       const body = await run(() => api('POST', '/overlay/ingest-client'));

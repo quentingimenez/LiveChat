@@ -252,11 +252,8 @@ pub struct PlaybackJob {
     pub author_name: Option<String>,
     pub author_image: Option<String>,
     pub duration_sec: i64,
-    pub priority: i64,
     pub status: String,
-    pub resumes_after_job_id: Option<String>,
     pub resume_offset_sec: i64,
-    pub remaining_ms_snapshot: Option<i64>,
     pub last_playback_state_at: Option<i64>,
     pub submission_date: i64,
     pub execution_date: i64,
@@ -282,12 +279,14 @@ impl PlaybackJob {
         "finishedAt",
     ];
     /// Requête d'insertion dans le schéma 3.0.
+    ///
+    /// La priorité et la reprise après préemption n'existent plus : la file
+    /// est FIFO et `source` prend sa valeur par défaut (`UNKNOWN`).
     pub const INSERT_SQL: &'static str = "INSERT INTO playback_jobs (\
         id, guild_id, media_asset_id, text, show_text, author_name, author_image, \
-        duration_sec, priority, status, resumes_after_job_id, resume_offset_sec, \
-        remaining_ms_snapshot, last_playback_state_at, submission_date, \
-        execution_date, scheduled_at, started_at, finished_at\
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        duration_sec, status, resume_offset_sec, last_playback_state_at, \
+        submission_date, execution_date, scheduled_at, started_at, finished_at\
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     /// Extrait une ligne legacy.
     pub fn from_legacy(row: &SqliteRow, out: &mut ReadOut) -> Result<Self, Error> {
@@ -307,11 +306,8 @@ impl PlaybackJob {
             author_name: ctx.text_opt(row, "authorName")?,
             author_image: ctx.text_opt(row, "authorImage")?,
             duration_sec: ctx.int_req(row, "durationSec")?,
-            priority: ctx.int_req(row, "priority")?,
             status: ctx.enum_req(row, "status", JOB_STATUSES)?,
-            resumes_after_job_id: ctx.text_opt(row, "resumesAfterJobId")?,
             resume_offset_sec,
-            remaining_ms_snapshot: ctx.int_opt(row, "remainingMsSnapshot")?,
             last_playback_state_at: ctx.date_opt(row, "lastPlaybackStateAt", out)?,
             submission_date: ctx.date_req(row, "submissionDate", out)?,
             execution_date: ctx.date_req(row, "executionDate", out)?,
@@ -334,11 +330,8 @@ impl PlaybackJob {
             author_name: ctx.text_opt(row, "author_name")?,
             author_image: ctx.text_opt(row, "author_image")?,
             duration_sec: ctx.int_req(row, "duration_sec")?,
-            priority: ctx.int_req(row, "priority")?,
             status: ctx.text_req(row, "status")?,
-            resumes_after_job_id: ctx.text_opt(row, "resumes_after_job_id")?,
             resume_offset_sec: ctx.int_req(row, "resume_offset_sec")?,
-            remaining_ms_snapshot: ctx.int_opt(row, "remaining_ms_snapshot")?,
             last_playback_state_at: ctx.int_opt(row, "last_playback_state_at")?,
             submission_date: ctx.int_req(row, "submission_date")?,
             execution_date: ctx.int_req(row, "execution_date")?,
@@ -359,11 +352,8 @@ impl PlaybackJob {
             .bind(self.author_name.as_deref())
             .bind(self.author_image.as_deref())
             .bind(self.duration_sec)
-            .bind(self.priority)
             .bind(&self.status)
-            .bind(self.resumes_after_job_id.as_deref())
             .bind(self.resume_offset_sec)
-            .bind(self.remaining_ms_snapshot)
             .bind(self.last_playback_state_at)
             .bind(self.submission_date)
             .bind(self.execution_date)

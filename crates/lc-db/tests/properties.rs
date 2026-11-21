@@ -156,12 +156,11 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
-    /// `claim_next` drains a guild's queue in `priority DESC,
-    /// submission_date ASC, id ASC` order: with every job at the same
-    /// priority and strictly increasing submission dates, the k-th claim
-    /// is the k-th created job. While one job is `PLAYING` the busy-guild
-    /// check hides the rest of the queue (`claim_next` returns `None`), and
-    /// finishing the job frees the slot for the next one.
+    /// `claim_next` drains the queue in `submission_date ASC, id ASC` order:
+    /// with strictly increasing submission dates, the k-th claim is the k-th
+    /// created job. While one job is `PLAYING` the busy-guild check hides the
+    /// rest of the queue (`claim_next` returns `None`), and finishing the job
+    /// frees the slot for the next one.
     #[test]
     fn claim_next_returns_the_earliest_pending_job(k in 1usize..=10) {
         let runtime = tokio::runtime::Builder::new_current_thread()

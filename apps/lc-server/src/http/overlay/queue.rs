@@ -7,8 +7,9 @@
 //! | `DELETE` | `/overlay/queue/{jobId}` | admin (`ModerateQueue`) |
 //! | `DELETE` | `/overlay/queue` | admin (`ModerateQueue`) |
 //!
-//! La file est lue dans l'ordre du scheduler (`priority DESC`,
-//! `submission_date ASC`, `id ASC`), le job `PLAYING` en tête.
+//! La file est lue dans l'ordre du scheduler (`submission_date ASC`,
+//! `id ASC`), le job `PLAYING` en tête : un média n'interrompt jamais la
+//! lecture en cours, il passe derrière elle.
 //!
 //! L'`origin` d'un job dit d'où il vient : `board` (item de board), `once`
 //! (média joué une fois ou ingéré par un client, donc sans item de board) ou
@@ -140,7 +141,7 @@ async fn load_queue(db: &Db, guild_id: &GuildId) -> Result<Vec<Value>, sqlx::Err
         "{JOB_SELECT} \
           WHERE j.guild_id = ? AND j.status IN ('PLAYING', 'PENDING') \
           ORDER BY CASE j.status WHEN 'PLAYING' THEN 0 ELSE 1 END, \
-                   j.priority DESC, j.submission_date ASC, j.id ASC \
+                   j.submission_date ASC, j.id ASC \
           LIMIT ?"
     ))
     .bind(guild_id.as_str())

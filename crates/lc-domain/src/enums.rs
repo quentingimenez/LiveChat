@@ -135,6 +135,26 @@ text_enum! {
 }
 
 text_enum! {
+    /// Origine d'un job de lecture (`playback_jobs.source`).
+    ///
+    /// Sert au diagnostic : un média diffusé peut venir du board, de
+    /// l'extension navigateur (`POST /ingest`), d'un overlay ou d'une commande
+    /// Discord.
+    JobSource {
+        /// Média déclenché depuis le board.
+        Board => ("BOARD", "board"),
+        /// Média envoyé par un client d'ingestion (extension, raccourci iOS).
+        Ingest => ("INGEST", "ingest"),
+        /// Média créé depuis un overlay (upload ou `/overlay/say`).
+        Overlay => ("OVERLAY", "overlay"),
+        /// Commande Discord (`!play`, `!dire`).
+        Discord => ("DISCORD", "discord"),
+        /// Ligne antérieure au suivi de la source (migration).
+        Unknown => ("UNKNOWN", "unknown"),
+    }
+}
+
+text_enum! {
     /// Mode de session d'un overlay (`overlay_clients.session_mode`).
     OverlaySessionMode {
         /// Contrôle complet (arrêt, board média…).

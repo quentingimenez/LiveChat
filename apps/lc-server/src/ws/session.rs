@@ -25,12 +25,10 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use lc_db::Db;
 use lc_domain::{
-    now_ms, GuildId, JobStatus, MediaBoardItemId, MediaKind, OverlayClientId, PlaybackJob,
-    PlaybackJobId,
+    now_ms, GuildId, JobSource, JobStatus, MediaBoardItemId, MediaKind, OverlayClientId,
+    PlaybackJob, PlaybackJobId,
 };
-use lc_playback::{
-    PlaybackEndedEvent, PlaybackStateEvent, PlaybackStateOutcome, MEDIA_BOARD_JOB_PRIORITY,
-};
+use lc_playback::{PlaybackEndedEvent, PlaybackStateEvent, PlaybackStateOutcome};
 use lc_protocol::{
     close_code, close_reason, is_version_below, outdated_protocol_reason, AckError, AckOutcome,
     AckPayload, ClientEnvelope, ClientMessage, HelloPayload, PlaybackEndedPayload,
@@ -956,11 +954,9 @@ async fn handle_client_message(
                 author_name,
                 author_image,
                 duration_sec,
-                priority: MEDIA_BOARD_JOB_PRIORITY,
+                source: JobSource::Board,
                 status: JobStatus::Pending,
-                resumes_after_job_id: None,
                 resume_offset_sec: 0,
-                remaining_ms_snapshot: None,
                 last_playback_state_at: None,
                 submission_date: now,
                 execution_date: now,
@@ -968,6 +964,14 @@ async fn handle_client_message(
                 started_at: None,
                 finished_at: None,
             };
+            info!(
+                guild = %context.guild_id,
+                job = %job.id,
+                source = job.source.as_db_str(),
+                media_asset_id = %media.id,
+                duration_sec = job.duration_sec,
+                "job de lecture créé"
+            );
             match engine.enqueue(&job).await {
                 Ok(()) => {
                     let mut outcome = None;

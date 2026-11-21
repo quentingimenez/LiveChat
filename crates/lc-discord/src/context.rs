@@ -175,9 +175,7 @@ pub struct PlaybackJobRequest {
     pub author_image: Option<String>,
     /// Durée effective calculée (déjà bornée par la guilde).
     pub duration_sec: i64,
-    /// Priorité (0 par défaut dans le legacy).
-    pub priority: i32,
-    /// Offset de reprise en secondes.
+    /// Offset de départ en secondes (URL YouTube, `!play`).
     pub resume_offset_sec: i64,
     /// Source du job (`discord_send_command`, `discord_talk_command`…).
     pub source: String,

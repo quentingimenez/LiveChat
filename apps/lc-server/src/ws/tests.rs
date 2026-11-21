@@ -21,9 +21,9 @@ use axum::http::{header, Request, StatusCode};
 use futures_util::{SinkExt, StreamExt};
 use lc_db::Db;
 use lc_domain::{
-    Guild, GuildId, GuildMember, GuildMemberId, GuildRole, JobStatus, MediaAsset, MediaAssetId,
-    MediaBoardItem, MediaBoardItemId, MediaKind as DomainMediaKind, MediaStatus, OverlayClient,
-    OverlayClientId, OverlaySessionMode, PlaybackJob, PlaybackJobId,
+    Guild, GuildId, GuildMember, GuildMemberId, GuildRole, JobSource, JobStatus, MediaAsset,
+    MediaAssetId, MediaBoardItem, MediaBoardItemId, MediaKind as DomainMediaKind, MediaStatus,
+    OverlayClient, OverlayClientId, OverlaySessionMode, PlaybackJob, PlaybackJobId,
 };
 use lc_playback::PlaybackStateEvent;
 use lc_protocol::{
@@ -436,11 +436,9 @@ async fn seed_job(
         author_name: Some("Auteur de test".to_owned()),
         author_image: None,
         duration_sec,
-        priority: 0,
+        source: JobSource::Board,
         status,
-        resumes_after_job_id: None,
         resume_offset_sec: 0,
-        remaining_ms_snapshot: None,
         last_playback_state_at: None,
         submission_date: now(),
         execution_date: now(),
@@ -723,11 +721,9 @@ async fn dispatched_play_carries_a_verifiable_signature() {
         author_name: Some("Auteur".to_owned()),
         author_image: None,
         duration_sec: 12,
-        priority: 0,
+        source: JobSource::Board,
         status: JobStatus::Pending,
-        resumes_after_job_id: None,
         resume_offset_sec: 0,
-        remaining_ms_snapshot: None,
         last_playback_state_at: None,
         submission_date: now,
         execution_date: now,
@@ -1276,6 +1272,7 @@ async fn media_trigger_acks_playing_with_job_id() {
         .expect("lecture du job")
         .expect("job créé");
     assert_eq!(stored.status, JobStatus::Playing);
+    assert_eq!(stored.source, JobSource::Board);
 }
 
 #[tokio::test]
@@ -1490,12 +1487,12 @@ async fn playback_state_is_persisted_for_a_corresponding_job() {
             .await
             .expect("lecture job")
             .expect("job présent");
-        if stored.remaining_ms_snapshot.is_some() {
+        if stored.last_playback_state_at.is_some() {
             persisted = true;
             break;
         }
     }
-    assert!(persisted, "playback.state doit mettre à jour le snapshot");
+    assert!(persisted, "playback.state doit mettre à jour le keep-alive");
 }
 
 // ---------------------------------------------------------------------------
@@ -1791,11 +1788,9 @@ fn text_only_job(guild_id: &GuildId, status: JobStatus) -> PlaybackJob {
         author_name: Some("Auteur".to_owned()),
         author_image: None,
         duration_sec: 5,
-        priority: 0,
+        source: JobSource::Board,
         status,
-        resumes_after_job_id: None,
         resume_offset_sec: 0,
-        remaining_ms_snapshot: None,
         last_playback_state_at: None,
         submission_date: now(),
         execution_date: now(),
@@ -2122,11 +2117,9 @@ async fn dispatch_failure_emits_non_fatal_error_frame() {
         author_name: Some("Auteur".to_owned()),
         author_image: None,
         duration_sec: 12,
-        priority: 0,
+        source: JobSource::Board,
         status: JobStatus::Pending,
-        resumes_after_job_id: None,
         resume_offset_sec: 0,
-        remaining_ms_snapshot: None,
         last_playback_state_at: None,
         submission_date: now,
         execution_date: now,

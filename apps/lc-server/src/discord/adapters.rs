@@ -18,7 +18,7 @@ use lc_discord::context::{
 use lc_discord::error::MediaLimits;
 use lc_discord::{BotConfig, BotError, Lang, MediaError, MediaErrorCode, SpeechFailure};
 use lc_domain::entities::PlaybackJob;
-use lc_domain::enums::JobStatus;
+use lc_domain::enums::{JobSource, JobStatus};
 use lc_domain::ids::PlaybackJobId;
 use lc_domain::{Clock, GuildId, MediaAsset, OverlayClient};
 use lc_media::config::MediaConfig;
@@ -225,11 +225,9 @@ impl PlaybackBackend for ServerPlaybackBackend {
             author_name: request.author_name,
             author_image: request.author_image,
             duration_sec: request.duration_sec.max(1),
-            priority: i64::from(request.priority),
+            source: JobSource::Discord,
             status: JobStatus::Pending,
-            resumes_after_job_id: None,
             resume_offset_sec: request.resume_offset_sec.max(0),
-            remaining_ms_snapshot: None,
             last_playback_state_at: None,
             submission_date: now,
             execution_date: now,
@@ -685,7 +683,6 @@ mod tests {
                 author_name: Some("john".to_owned()),
                 author_image: None,
                 duration_sec: 7,
-                priority: 0,
                 resume_offset_sec: 0,
                 source: "discord_send_command".to_owned(),
             })

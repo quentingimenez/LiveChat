@@ -99,11 +99,9 @@ fn playback_job(
         author_name: Some("Léa".to_owned()),
         author_image: None,
         duration_sec: 10,
-        priority: 0,
+        source: lc_domain::enums::JobSource::Board,
         status,
-        resumes_after_job_id: None,
         resume_offset_sec: 0,
-        remaining_ms_snapshot: None,
         last_playback_state_at: None,
         submission_date: fixed_now(),
         execution_date: fixed_now(),
@@ -699,10 +697,10 @@ async fn queue_origin_and_history_are_guild_bounded() {
         .unwrap();
 
     // Un job venu du board (média), un média joué une fois et un job direct
-    // (texte seul). La priorité fixe l'ordre de la file (`priority DESC`),
-    // indépendamment des UUID.
+    // (texte seul). La file est FIFO (`submission_date ASC`), indépendamment
+    // des UUID : les dates de soumission fixent donc l'ordre affiché.
     let mut board_job = playback_job(&harness.guild_id, JobStatus::Pending, Some(asset.id), None);
-    board_job.priority = 1;
+    board_job.submission_date = fixed_now() - Duration::seconds(1);
     seed_job(&harness, &board_job).await;
     let mut once_job = playback_job(
         &harness.guild_id,
@@ -710,7 +708,7 @@ async fn queue_origin_and_history_are_guild_bounded() {
         Some(once_asset.id),
         None,
     );
-    once_job.priority = 2;
+    once_job.submission_date = fixed_now() - Duration::seconds(2);
     seed_job(&harness, &once_job).await;
     let direct_job = playback_job(&harness.guild_id, JobStatus::Pending, None, None);
     seed_job(&harness, &direct_job).await;

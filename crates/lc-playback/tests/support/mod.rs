@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 
 use lc_db::{Db, DbConfig};
 use lc_domain::{
-    ms_to_datetime, Clock, FixedClock, Guild, GuildId, JobStatus, MediaAsset, MediaAssetId,
-    MediaKind, MediaStatus, PlaybackJob, PlaybackJobId,
+    ms_to_datetime, Clock, FixedClock, Guild, GuildId, JobSource, JobStatus, MediaAsset,
+    MediaAssetId, MediaKind, MediaStatus, PlaybackJob, PlaybackJobId,
 };
 use lc_playback::{PlaybackConfig, PlaybackEngine, PlaybackSink};
 use lc_protocol::{PlayPayload, StopPayload};
@@ -78,7 +78,7 @@ pub fn sample_media_asset(now: UtcDateTime) -> MediaAsset {
     }
 }
 
-/// Job texte seul (5 s, priorité 0).
+/// Job texte seul (5 s).
 pub fn sample_job(guild_id: GuildId, submission: UtcDateTime) -> PlaybackJob {
     PlaybackJob {
         id: PlaybackJobId::new_v4(),
@@ -89,11 +89,9 @@ pub fn sample_job(guild_id: GuildId, submission: UtcDateTime) -> PlaybackJob {
         author_name: Some("Auteur".to_owned()),
         author_image: None,
         duration_sec: 5,
-        priority: 0,
+        source: JobSource::Board,
         status: JobStatus::Pending,
-        resumes_after_job_id: None,
         resume_offset_sec: 0,
-        remaining_ms_snapshot: None,
         last_playback_state_at: None,
         submission_date: submission,
         execution_date: submission,

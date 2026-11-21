@@ -588,6 +588,55 @@ async fn pair_consume_revokes_previous_client_with_same_label() {
 }
 
 #[tokio::test]
+async fn pair_consume_personal_code_does_not_revoke_another_creators_client() {
+    let dir = TempDir::new().expect("tempdir");
+    let (app, db) = harness(dir.path()).await;
+    let mut previous = make_client(
+        &guild(),
+        "Poste salon",
+        "previous-token",
+        OverlaySessionMode::Normal,
+        Some("Alice"),
+    );
+    previous.created_by_discord_user_id = Some("9999".to_owned());
+    db.overlay_clients()
+        .create(&previous)
+        .await
+        .expect("client précédent");
+    db.pairing_codes()
+        .create(&pairing_entry(
+            "OTHERUSER",
+            &guild(),
+            PairingMode::Normal,
+            false,
+            Some("Alice"),
+            None,
+        ))
+        .await
+        .expect("code créé");
+
+    let (status, _, _) = send(
+        &app,
+        request(
+            Method::POST,
+            "/overlay/pair/consume",
+            None,
+            Some(&json!({"code": "OTHERUSER", "deviceName": "Poste salon"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let previous = db
+        .overlay_clients()
+        .get(previous.id)
+        .await
+        .expect("lecture")
+        .expect("client");
+    assert!(previous.revoked_at.is_none());
+}
+
+#[tokio::test]
 async fn pair_consume_invite_requires_a_display_name_without_consuming() {
     let dir = TempDir::new().expect("tempdir");
     let (app, db) = harness(dir.path()).await;

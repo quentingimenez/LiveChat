@@ -105,6 +105,7 @@ struct SessionContext {
 #[derive(Default)]
 struct SessionTimers {
     last_playback_state: Option<Instant>,
+    last_playback_ended: Option<Instant>,
     last_stop_request: Option<Instant>,
     last_peers_request: Option<Instant>,
 }
@@ -697,7 +698,24 @@ async fn handle_client_message(
             }
         }
         ClientMessage::PlaybackEnded(payload) => {
+            if context.session_mode == SessionMode::InviteReadOnly {
+                debug!(
+                    client = %context.client_id_str,
+                    "playback.ended ignoré en lecture seule"
+                );
+                return Ok(());
+            }
             let job_id = parse_playback_ended_job_id(&payload, close_reason::BAD_PLAYBACK_STATE)?;
+            if !throttle(
+                &mut timers.last_playback_ended,
+                Duration::from_millis(PLAYBACK_STATE_MIN_INTERVAL_MS),
+            ) {
+                debug!(
+                    client = %context.client_id_str,
+                    "playback.ended ignoré : throttle"
+                );
+                return Ok(());
+            }
             let connected = hub.connected_for_guild(&context.guild_id);
             if !playback_ended_releases_job(payload.reason, connected) {
                 debug!(

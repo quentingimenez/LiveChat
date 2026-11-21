@@ -109,8 +109,9 @@ async fn start_server_with(config: Arc<Config>) -> TestServer {
         .await
         .expect("base de test");
     let shutdown = Shutdown::new().0;
-    let state = AppState::new(Arc::clone(&config), Some(db.clone()), shutdown.clone());
     let hub = Arc::new(Hub::new());
+    let state = AppState::new(Arc::clone(&config), Some(db.clone()), shutdown.clone())
+        .with_admin_hub(Arc::clone(&hub) as Arc<dyn crate::http::admin::AdminHub>);
     let app = router_with_hub(Arc::clone(&hub)).with_state(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -202,6 +203,11 @@ struct Handshake {
 /// Le moteur de lecture peut diffuser un `play` en parallèle du handshake :
 /// la trame est capturée si elle arrive avant le `peers` final.
 async fn handshake_full(socket: &mut WsClient, token: &str) -> Handshake {
+    handshake_for_guild(socket, token, GUILD_ID).await
+}
+
+/// Handshake pour une guilde de test explicite.
+async fn handshake_for_guild(socket: &mut WsClient, token: &str, guild_id: &str) -> Handshake {
     send_hello(socket, token, APP_VERSION).await;
     let mut welcome: Option<Value> = None;
     let mut play: Option<Value> = None;
@@ -211,7 +217,7 @@ async fn handshake_full(socket: &mut WsClient, token: &str) -> Handshake {
             Some("welcome") => welcome = Some(value),
             Some("play") => play = Some(value),
             Some("peers") => {
-                assert_eq!(value["payload"]["guildId"], GUILD_ID);
+                assert_eq!(value["payload"]["guildId"], guild_id);
                 assert!(!value["payload"]["peers"]
                     .as_array()
                     .expect("peers array")
@@ -310,8 +316,13 @@ fn now() -> time::UtcDateTime {
 
 /// Crée une guilde de test.
 async fn seed_guild(db: &Db) -> GuildId {
+    seed_guild_with_id(db, guild_id()).await
+}
+
+/// Crée une guilde de test avec un identifiant explicite.
+async fn seed_guild_with_id(db: &Db, id: GuildId) -> GuildId {
     let guild = Guild {
-        id: guild_id(),
+        id,
         name: Some("Guilde de test".to_owned()),
         busy_until: None,
         default_media_time: None,
@@ -1057,6 +1068,150 @@ async fn local_stop_keeps_the_job_playing_for_the_other_overlays() {
     // The overlay still playing reports the real end: the job is released.
     send_playback_ended(&mut watching, job_id, "completed").await;
     assert_eq!(job_status(&server.db, job_id).await, JobStatus::Done);
+}
+
+#[tokio::test]
+async fn invite_read_only_cannot_end_playback() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(
+        &server.db,
+        &guild,
+        TOKEN,
+        OverlaySessionMode::InviteReadOnly,
+    )
+    .await;
+    let asset_id = seed_media_asset(&server.db, 12).await;
+    let job_id = seed_job(
+        &server.db,
+        &guild,
+        asset_id,
+        12,
+        JobStatus::Playing,
+        Some(UtcDateTime::now()),
+    )
+    .await;
+    let mut socket = connect(server.addr).await;
+    handshake(&mut socket, TOKEN).await;
+
+    send_playback_ended(&mut socket, job_id, "completed").await;
+
+    assert_eq!(job_status(&server.db, job_id).await, JobStatus::Playing);
+}
+
+#[tokio::test]
+async fn playback_ended_from_another_guild_is_refused() {
+    let server = start_server().await;
+    let job_guild = seed_guild(&server.db).await;
+    let other_guild = seed_guild_with_id(
+        &server.db,
+        GuildId::parse("223456789012345678").expect("guilde B"),
+    )
+    .await;
+    seed_overlay_client(
+        &server.db,
+        &other_guild,
+        TOKEN_B,
+        OverlaySessionMode::Normal,
+    )
+    .await;
+    let asset_id = seed_media_asset(&server.db, 12).await;
+    let job_id = seed_job(
+        &server.db,
+        &job_guild,
+        asset_id,
+        12,
+        JobStatus::Playing,
+        Some(UtcDateTime::now()),
+    )
+    .await;
+    let mut socket = connect(server.addr).await;
+    handshake_for_guild(&mut socket, TOKEN_B, "223456789012345678").await;
+
+    send_playback_ended(&mut socket, job_id, "completed").await;
+
+    assert_eq!(job_status(&server.db, job_id).await, JobStatus::Playing);
+}
+
+#[tokio::test]
+async fn leaving_member_does_not_stop_other_overlays() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    let member_a = seed_member(&server.db, &guild, "Alice", None).await;
+    let member_b = seed_member(&server.db, &guild, "Bob", None).await;
+    let client_a = seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let client_b =
+        seed_overlay_client(&server.db, &guild, TOKEN_B, OverlaySessionMode::Normal).await;
+    server
+        .db
+        .overlay_clients()
+        .set_member(client_a, member_a)
+        .await
+        .expect("membre A rattaché");
+    server
+        .db
+        .overlay_clients()
+        .set_member(client_b, member_b)
+        .await
+        .expect("membre B rattaché");
+    let asset_id = seed_media_asset(&server.db, 12).await;
+    let job_id = seed_job(
+        &server.db,
+        &guild,
+        asset_id,
+        12,
+        JobStatus::Playing,
+        Some(UtcDateTime::now()),
+    )
+    .await;
+
+    let mut socket_a = connect(server.addr).await;
+    handshake(&mut socket_a, TOKEN).await;
+    let mut socket_b = connect(server.addr).await;
+    handshake(&mut socket_b, TOKEN_B).await;
+
+    let app = crate::app::router_with_hub(server.state.clone(), Arc::clone(&server.hub));
+    let request = Request::builder()
+        .method("POST")
+        .uri("/overlay/leave")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .body(Body::empty())
+        .expect("requête leave");
+    let response = app.oneshot(request).await.expect("réponse leave");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // `peers.request` est throttlé à 2 s : attendre la fenêtre pour obtenir
+    // une trame de contrôle après le départ.
+    tokio::time::sleep(Duration::from_millis(2_100)).await;
+    send_value(
+        &mut socket_b,
+        &envelope("peers.request", "cli-peers-after-leave", json!({})),
+    )
+    .await;
+    for _ in 0..10 {
+        let value = recv_value(&mut socket_b).await;
+        let kind = value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert_ne!(
+            kind, "stop",
+            "le départ d'un membre ne doit pas stopper la guilde"
+        );
+        if kind == "peers" {
+            break;
+        }
+    }
+
+    let client_b = server
+        .db
+        .overlay_clients()
+        .get(client_b)
+        .await
+        .expect("lecture client B")
+        .expect("client B");
+    assert!(client_b.revoked_at.is_none());
+    assert_eq!(job_status(&server.db, job_id).await, JobStatus::Playing);
 }
 
 #[tokio::test]

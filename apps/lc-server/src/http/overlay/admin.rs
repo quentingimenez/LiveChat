@@ -246,7 +246,16 @@ pub(crate) async fn remove_member_payload(
 ) -> Result<Value, Response> {
     let db = db(state)?;
     let member = load_guild_member(db, guild_id, member_id_raw).await?;
-    match remove_member(state, db, &member, now(state), close_reason::MEMBER_REMOVED).await {
+    match remove_member(
+        state,
+        db,
+        &member,
+        now(state),
+        close_code::REVOKED,
+        close_reason::MEMBER_REMOVED,
+    )
+    .await
+    {
         Ok(MemberChange::Applied) => {
             tracing::info!(
                 guild_id = %member.guild_id,
@@ -315,7 +324,16 @@ pub(crate) async fn ban_member_payload(
         }
     }
     let at = now(state);
-    match remove_member(state, db, &member, at, close_reason::MEMBER_BANNED).await? {
+    match remove_member(
+        state,
+        db,
+        &member,
+        at,
+        close_code::REVOKED,
+        close_reason::MEMBER_BANNED,
+    )
+    .await?
+    {
         MemberChange::Applied => {}
         MemberChange::LastAdmin => return Err(error(StatusCode::CONFLICT, "last_admin")),
         MemberChange::NotFound => return Err(error(StatusCode::NOT_FOUND, "member_not_found")),

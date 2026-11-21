@@ -666,10 +666,11 @@ async fn a_short_audio_or_image_is_not_extended() {
     }
 }
 
-/// Overlay multi-guilde : un `playback.ended` routé vers la session d'une
-/// autre guilde termine bien le job, mais libère la guilde qui le possède.
+/// Un `playback.ended` routé vers la session d'une autre guilde est refusé :
+/// il ne termine pas le job et ne touche pas au verrou de la guilde qui le
+/// possède.
 #[tokio::test]
-async fn playback_ended_d_une_autre_guilde_libere_la_guilde_proprietaire() {
+async fn playback_ended_from_another_guild_is_ignored() {
     let h = harness(2).await;
     let guild_a = h.guild_id.clone();
     let guild_b = GuildId::parse("223456789012345678").unwrap();
@@ -706,10 +707,12 @@ async fn playback_ended_d_une_autre_guilde_libere_la_guilde_proprietaire() {
         ))
         .await
         .unwrap();
-    assert!(outcome.released);
+    assert!(!outcome.released);
 
-    // A enchaîne sur son média suivant ; le verrou de B ne bouge pas.
-    assert_eq!(h.stored_job(second.id).await.status, JobStatus::Playing);
+    // Le job de A reste en lecture, donc son média suivant reste en attente ;
+    // le verrou de B ne bouge pas.
+    assert_eq!(h.stored_job(first.id).await.status, JobStatus::Playing);
+    assert_eq!(h.stored_job(second.id).await.status, JobStatus::Pending);
     assert_eq!(h.stored_job(other.id).await.status, JobStatus::Playing);
     assert_eq!(
         h.db.guilds()

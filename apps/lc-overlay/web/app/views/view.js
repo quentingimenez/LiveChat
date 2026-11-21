@@ -2,6 +2,7 @@
 // active guild.
 
 import { h } from '../core/dom.js';
+import { fitSingleLineDescriptions } from '../core/measure.js';
 import { state } from '../core/state.js';
 import { renderAdmin } from './admin.js';
 import { renderBoard } from './board.js';
@@ -14,9 +15,7 @@ export function renderView() {
   const view = document.getElementById('view');
   if (state.page === 'settings') {
     view.replaceChildren(renderSettings());
-    return;
-  }
-  if (!state.activeGuildId) {
+  } else if (!state.activeGuildId) {
     view.replaceChildren(
       h(
         'div',
@@ -26,9 +25,7 @@ export function renderView() {
         h('button', { class: 'btn is-air', onClick: openJoinDialog }, 'Saisir un code'),
       ),
     );
-    return;
-  }
-  if (state.tab === 'queue') {
+  } else if (state.tab === 'queue') {
     view.replaceChildren(renderQueue());
   } else if (state.tab === 'admin') {
     view.replaceChildren(renderAdmin());
@@ -37,4 +34,6 @@ export function renderView() {
   } else {
     view.replaceChildren(renderBoard());
   }
+  // The 62ch measure is a fallback: the sentences that fit stay on one line.
+  fitSingleLineDescriptions(view);
 }

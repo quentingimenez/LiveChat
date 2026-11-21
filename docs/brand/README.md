@@ -167,7 +167,10 @@ consomment.
   `--leading-tight` (1,25) pour les titres, `--leading-base` (1,45) pour le
   corps.
 - Longueur de ligne : `--measure` (62 caractères) pour les descriptions et les
-  aides. Au-delà, l'œil perd le début de la ligne suivante.
+  aides. Une phrase qui tient sur une seule ligne à la largeur disponible y
+  reste, même au-delà de 62 caractères ; sinon, le plafond de 62 caractères
+  revient (au redimensionnement aussi). Au-delà, l'œil perd le début de la
+  ligne suivante.
 - Retours à la ligne : `text-wrap: balance` sur les titres,
   `text-wrap: pretty` sur les paragraphes, espaces insécables avant `: ; ! ?`
   et entre un nombre et son unité. Pas de `text-align: justify` : à 62

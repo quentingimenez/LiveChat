@@ -971,7 +971,6 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     syncPreviewToggle();
     return section(
       'Taille à l’affichage',
-      h('p', { class: 'meta' }, 'Agrandit ou réduit le média sur l’overlay, sans le réencoder.'),
       h(
         'p',
         { class: 'meta' },

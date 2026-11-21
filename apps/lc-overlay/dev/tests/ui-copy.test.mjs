@@ -17,6 +17,7 @@ const admin = read('views/admin.js');
 const settings = read('views/settings.js');
 const guildSettings = read('views/guild-settings.js');
 const profile = read('views/profile.js');
+const editorAv = read('views/editor/av.js');
 const adminCss = read('styles/admin.css');
 const settingsCss = read('styles/settings.css');
 const dialogCss = read('styles/dialog.css');
@@ -55,10 +56,12 @@ const removed = [
   'Revient à la zone et à l’alignement des Paramètres de l’appareil.',
   '« Comme sur l’appareil » suit les Paramètres.',
   'Le nom affiché dans la liste des appareils de la guilde',
+  // Editor.
+  'Agrandit ou réduit le média sur l’overlay, sans le réencoder.',
 ];
 
 test('no removed explanatory sentence comes back', () => {
-  const all = admin + settings + guildSettings + profile;
+  const all = admin + settings + guildSettings + profile + editorAv;
   for (const sentence of removed) {
     assert.ok(!all.includes(sentence), `the removed sentence is back: « ${sentence} »`);
   }

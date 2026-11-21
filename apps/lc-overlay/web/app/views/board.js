@@ -633,7 +633,6 @@ export function renderBoard() {
       'div',
       { class: 'empty' },
       h('h2', null, 'Le board est vide'),
-      h('p', null, 'Ajoute une vidéo, une image ou un son : colle un lien ou choisis un fichier.'),
       can('addMedia') ? h('button', { class: 'btn is-primary', onClick: openAddDialog }, 'Ajouter un média') : null,
     );
   } else if (items.length === 0 && uploads.length === 0) {

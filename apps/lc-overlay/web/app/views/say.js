@@ -102,6 +102,6 @@ export function openSayDialog() {
     );
 
     refresh();
-    return [h('h2', null, 'Faire lire un texte'), h('p', null, 'Une voix de synthèse lit ton texte sur les overlays de la guilde.'), form];
+    return [h('h2', null, 'Faire lire un texte'), form];
   });
 }

@@ -357,7 +357,7 @@
   min-width: 0;
 }
 
-/* Device rows: title and description left, "Créer un code" right. */
+/* Device rows: title left, « Créer un code » right. */
 .profile-dialog .profile-devices {
   display: grid;
   gap: 12px;
@@ -383,18 +383,9 @@
   min-width: 0;
 }
 
-.profile-dialog .profile-device-title,
-.profile-dialog .profile-device-desc {
-  margin: 0;
-}
-
 .profile-dialog .profile-device-title {
+  margin: 0;
   font-size: 14px;
-}
-
-.profile-dialog .profile-device-desc {
-  color: var(--text-soft);
-  font-size: 13px;
 }
 
 .profile-dialog .profile-device-row > .btn {
@@ -411,16 +402,13 @@
   border-radius: var(--radius-m);
 }
 
+/* The tab names the list; the head holds its count and refresh action. */
 .profile-dialog .profile-personal-head {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
-}
-
-.profile-dialog .profile-personal-intro {
-  min-width: 0;
 }
 
 .profile-dialog .profile-personal-actions {
@@ -502,10 +490,6 @@
   margin: 0;
   color: var(--text-soft);
   font-size: 13px;
-}
-
-.profile-dialog .profile-add-intro {
-  margin: 0 0 4px;
 }
 
 /* A created code expands under its row. */

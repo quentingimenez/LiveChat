@@ -271,15 +271,10 @@ function sectionId(title) {
     .replace(/^-+|-+$/g, '')}`;
 }
 
-// One sentence saying what the section sets, under its title.
-export function sectionDesc(text) {
-  return h('p', { class: 'settings-desc' }, text);
-}
-
-// These sections save as the control is used: they say so instead of ending
-// with a save button.
-export function immediateNote() {
-  return h('p', { class: 'settings-tag' }, 'Appliqué immédiatement');
+// The page saves as its controls are used: one line under the title says so,
+// instead of a note repeated above every section.
+export function autosaveNote() {
+  return h('p', { class: 'settings-tag' }, 'Paramètres sauvegardés automatiquement');
 }
 
 // An explanation, inside the control column of the control it belongs to.
@@ -437,8 +432,6 @@ function renderDisplay(settings) {
 
   return section(
     'Affichage',
-    sectionDesc('Où et comment les médias s’affichent sur ton stream.'),
-    immediateNote(),
     controlRow(
       'Écran',
       [
@@ -450,11 +443,9 @@ function renderDisplay(settings) {
     ),
     controlRow('Zone d’affichage', [
       ...zoneControls,
-      hint(
-        placing
-          ? 'Déplace la zone et tire ses coins sur l’écran de l’overlay, puis valide (Entrée) ou annule (Échap).'
-          : 'Les médias, leur auteur et leur légende restent dans cette zone. Place-la directement sur l’écran, comme une fenêtre.',
-      ),
+      placing
+        ? hint('Déplace la zone et tire ses coins sur l’écran de l’overlay, puis valide (Entrée) ou annule (Échap).')
+        : null,
     ]),
     controlRow('Alignement dans la zone', alignment, 'settings-align'),
     switchRow('Texte des médias', showText, 'settings-show-text'),
@@ -464,10 +455,7 @@ function renderDisplay(settings) {
       'settings-hover-details',
       'Désactivé : clique une carte pour ouvrir l’aperçu.',
     ),
-    controlRow('Média de test', [
-      testButton,
-      hint('Vérifie que les médias s’affichent et que le son sort.'),
-    ]),
+    controlRow('Média de test', [testButton]),
   );
 }
 
@@ -488,8 +476,6 @@ function renderSound(settings) {
   const guilds = Array.isArray(state.guilds) ? state.guilds : [];
   return section(
     'Son',
-    sectionDesc('Le son de tous tes overlays, guilde par guilde.'),
-    immediateNote(),
     controlRow(
       'Volume général',
       [
@@ -506,7 +492,7 @@ function renderSound(settings) {
       ],
       'settings-volume',
     ),
-    switchRow('Son coupé', mediaMute, 'settings-media-mute', 'Les médias restent affichés, sans leur son.'),
+    switchRow('Son coupé', mediaMute, 'settings-media-mute'),
     switchRow(
       'Tout mettre en pause',
       generalMute,
@@ -569,7 +555,6 @@ function renderShortcuts(settings) {
   const shortcuts = settings.shortcuts || {};
   return section(
     'Raccourcis',
-    sectionDesc('Des touches pour agir sur l’overlay sans quitter ton jeu.'),
     SHORTCUTS.map(([action, label]) => renderShortcutRow(action, label, shortcuts[action] || null)),
     hint(ALTGR_HINT),
   );
@@ -663,7 +648,6 @@ function renderProfile(settings) {
   // control column: the name lines up with every other setting.
   return section(
     'Profil',
-    sectionDesc('Ton pseudo et ton avatar par défaut, dans chaque guilde que tu rejoins.'),
     h(
       'div',
       { class: 'settings-row' },
@@ -688,14 +672,7 @@ function renderStartup(settings) {
   });
   return section(
     'Démarrage',
-    sectionDesc('LiveChat s’ouvre avec Windows, pour que tes overlays soient prêts.'),
-    immediateNote(),
-    switchRow(
-      'Lancer avec Windows',
-      autoStart,
-      'settings-auto-start',
-      'Sans avoir à lancer LiveChat toi-même après chaque redémarrage.',
-    ),
+    switchRow('Lancer avec Windows', autoStart, 'settings-auto-start'),
   );
 }
 
@@ -716,8 +693,6 @@ function renderAppearance() {
   theme.value = currentThemePreference();
   return section(
     'Apparence',
-    sectionDesc('Le thème des fenêtres LiveChat et de la board.'),
-    immediateNote(),
     controlRow('Thème', [theme, hint('« Système » suit le thème clair/sombre de Windows.')], 'settings-theme'),
   );
 }
@@ -740,7 +715,6 @@ function renderAbout(settings) {
   const message = updateError || update.message;
   return section(
     'À propos',
-    sectionDesc('La version installée et ses mises à jour.'),
     h(
       'div',
       { class: 'settings-about' },
@@ -758,7 +732,7 @@ function renderAbout(settings) {
 }
 
 // Page head, shared by the three states of the page (loaded, loading,
-// unavailable): the way back to the guild or board, then what the page is.
+// unavailable): the way back to the guild or board, then the page title.
 function renderHead() {
   return h(
     'div',
@@ -770,7 +744,7 @@ function renderHead() {
       'Retour',
     ),
     h('h2', null, 'Paramètres'),
-    h('p', { class: 'settings-intro' }, 'Réglages de cet appareil, appliqués à tous tes overlays.'),
+    autosaveNote(),
   );
 }
 

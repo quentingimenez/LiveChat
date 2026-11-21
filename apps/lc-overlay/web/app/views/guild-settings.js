@@ -30,14 +30,13 @@ import {
   deviceSettingsError,
   guildLayout,
   hint,
-  immediateNote,
+  autosaveNote,
   loadDeviceSettings,
   openSettings,
   placementStarting,
   previewLayout,
   rangeControl,
   section,
-  sectionDesc,
   selectedDisplay,
   startPlacement,
   switchRow,
@@ -114,17 +113,8 @@ function renderDisplay(settings, guildId) {
 
   return section(
     'Affichage sur cet appareil',
-    sectionDesc('Où et comment les médias de cette guilde s’affichent sur ton stream.'),
-    immediateNote(),
-    controlRow('Zone d’affichage', [
-      ...zoneControls,
-      hint(
-        hasOwnLayout
-          ? 'Cette guilde a sa propre zone et son propre alignement.'
-          : 'Sans réglage propre, la guilde suit la zone des Paramètres de l’appareil.',
-      ),
-    ]),
-    // Back to the device layout: a named action, with its one-line explanation.
+    controlRow('Zone d’affichage', zoneControls),
+    // Back to the device layout: a named action.
     hasOwnLayout && !placing
       ? h(
           'div',
@@ -134,11 +124,10 @@ function renderDisplay(settings, guildId) {
             { class: 'btn is-quiet', type: 'button', onClick: () => patchGuild(guildId, { layout: null }) },
             'Suivre l’affichage de cet appareil',
           ),
-          hint('Revient à la zone et à l’alignement des Paramètres de l’appareil.'),
         )
       : null,
     controlRow('Alignement dans la zone', alignment, 'guild-settings-align'),
-    controlRow('Texte des médias', [text, hint('« Comme sur l’appareil » suit les Paramètres.')], 'guild-settings-text'),
+    controlRow('Texte des médias', [text], 'guild-settings-text'),
   );
 }
 
@@ -160,8 +149,6 @@ function renderSound(settings, guild) {
   });
   return section(
     'Son sur cet appareil',
-    sectionDesc('Le niveau de cette guilde, appliqué par-dessus le volume général.'),
-    immediateNote(),
     controlRow(
       'Volume de la guilde',
       [
@@ -178,13 +165,8 @@ function renderSound(settings, guild) {
       ],
       'guild-settings-volume',
     ),
-    switchRow(
-      'Son coupé',
-      mediaMute,
-      'guild-settings-media-mute',
-      'Les médias de cette guilde restent affichés, sans leur son.',
-    ),
-    switchRow('Mettre en pause', mute, 'guild-settings-mute', 'Plus aucun média de cette guilde ne s’affiche sur cet appareil.'),
+    switchRow('Son coupé', mediaMute, 'guild-settings-media-mute'),
+    switchRow('Mettre en pause', mute, 'guild-settings-mute'),
   );
 }
 
@@ -256,7 +238,6 @@ function renderBoardSettings() {
   const usage = (mediaBoard && formatBoardUsage(mediaBoard, { requireMax: false })) || 'inconnue';
   return section(
     'Board de la guilde',
-    sectionDesc('Les médias partagés par la guilde, hébergés sur le serveur.'),
     // What the board holds right now, then what the quota below changes.
     h('p', { class: 'settings-hint is-summary' }, `Occupation : ${usage}.`),
     h(
@@ -387,13 +368,13 @@ export function renderGuildSettings() {
   return h(
     'div',
     { class: 'settings' },
-    // Scope first: what this device sets for the guild, then what the guild
-    // sets on the server.
+    // Order: what this device sets for the guild, then what the guild sets on
+    // the server.
     h(
       'div',
       { class: 'settings-head' },
       h('h2', null, 'Réglages de la guilde'),
-      h('p', { class: 'settings-intro' }, 'Guilde et cet appareil.'),
+      autosaveNote(),
       h(
         'button',
         { class: 'btn is-quiet settings-device-link', type: 'button', onClick: openSettings },

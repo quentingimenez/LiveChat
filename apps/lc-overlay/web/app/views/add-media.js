@@ -53,7 +53,7 @@ export function openAddDialog(options) {
       { hidden: true },
       'Légende pour « Jouer une fois » (facultatif)',
       linkMessage,
-      h('span', { class: 'file-hint' }, 'Affichée pendant la lecture ; non enregistrée sur le board.'),
+      h('span', { class: 'file-hint' }, 'Non enregistrée sur le board.'),
     );
     // The display time is the length of a play-once image; a video or an audio
     // keeps its own length, so the field only shows when the media may be an
@@ -76,9 +76,8 @@ export function openAddDialog(options) {
         placeholder: durationPlaceholder,
       });
     const durationLabel = (input) => h('label', null, 'Durée d’affichage (s)', input);
-    const durationHint = () => h('p', { class: 'file-hint' }, 'Pour « Jouer une fois » : une image reste affichée ce temps\u00a0; une vidéo ou un son garde sa durée.');
     const linkDuration = durationInput();
-    const linkDurationField = h('div', { class: 'stack', hidden: !canPlay }, durationLabel(linkDuration), durationHint());
+    const linkDurationField = h('div', { class: 'stack', hidden: !canPlay }, durationLabel(linkDuration));
 
     // --- file fields ---
     const fileInput = h('input', {
@@ -101,10 +100,10 @@ export function openAddDialog(options) {
       { hidden: true },
       'Légende pour « Jouer une fois » (facultatif)',
       fileMessage,
-      h('span', { class: 'file-hint' }, 'Affichée pendant la lecture ; non enregistrée sur le board.'),
+      h('span', { class: 'file-hint' }, 'Non enregistrée sur le board.'),
     );
     const fileDuration = durationInput();
-    const fileDurationField = h('div', { class: 'stack', hidden: true }, durationLabel(fileDuration), durationHint());
+    const fileDurationField = h('div', { class: 'stack', hidden: true }, durationLabel(fileDuration));
 
     const linkPanel = h(
       'div',
@@ -319,10 +318,6 @@ export function openAddDialog(options) {
     setMode('link');
     // The link is the first thing to type; once prefilled, the title is next.
     setTimeout(() => (prefill ? linkTitle : linkUrl).focus(), 0);
-    return [
-      h('h2', null, 'Ajouter un média'),
-      h('p', null, 'Ajoute une vidéo, une image ou un son depuis un lien ou un fichier.'),
-      form,
-    ];
+    return [h('h2', null, 'Ajouter un média'), form];
   }, { width: 'wide' });
 }

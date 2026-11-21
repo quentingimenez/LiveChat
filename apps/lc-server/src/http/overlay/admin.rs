@@ -3,13 +3,13 @@
 //! | Méthode | Chemin | Droit |
 //! |---------|--------|-------|
 //! | `GET` | `/overlay/admin/members` | `ManageMembers` |
-//! | `PATCH` | `/overlay/admin/members/{memberId}` | `ManageMembers` |
+//! | `PATCH` | `/overlay/admin/members/{memberId}` | `Admin` (rôle) |
 //! | `DELETE` | `/overlay/admin/members/{memberId}` | `ManageMembers` |
 //! | `POST` | `/overlay/admin/members/{memberId}/ban` | `ManageMembers` |
 //! | `GET` | `/overlay/admin/bans` | `ManageMembers` |
 //! | `DELETE` | `/overlay/admin/bans/{banId}` | `ManageMembers` |
 //! | `GET` | `/overlay/admin/invites` | `ManageInvites` |
-//! | `POST` | `/overlay/admin/invites` | `ManageInvites` |
+//! | `POST` | `/overlay/admin/invites` | `ManageInvites` (rôle admin) |
 //! | `POST` | `/overlay/admin/invites/{code}/revoke` | `ManageInvites` |
 //! | `GET` | `/overlay/admin/pairing-codes` | `ManageInvites` |
 //! | `POST` | `/overlay/admin/pairing-codes/{code}/revoke` | `ManageInvites` |
@@ -228,6 +228,12 @@ pub async fn update_member(
 ) -> Response {
     if let Err(response) = require(&state, &auth, Permission::ManageMembers) {
         return response;
+    }
+    // Un droit `ManageMembers` accordé à un membre ne doit pas permettre de
+    // changer les rôles : sinon il pourrait s'auto-promouvoir admin. Le rôle
+    // admin reste la seule autorité qui modifie un rôle.
+    if auth.role() != GuildRole::Admin {
+        return error(StatusCode::FORBIDDEN, "forbidden");
     }
     let Ok(Json(payload)) = payload else {
         return error(StatusCode::BAD_REQUEST, "invalid_payload");
@@ -561,6 +567,15 @@ pub async fn create_invite_handler(
     let Ok(Json(payload)) = payload else {
         return error(StatusCode::BAD_REQUEST, "invalid_payload");
     };
+    // `ManageInvites` accordé à un membre ne doit pas créer d'invitation
+    // admin : le rôle demandé est une élévation de privilège réservée admin.
+    let requested_role = payload
+        .get("role")
+        .and_then(Value::as_str)
+        .and_then(|raw| GuildRole::from_wire_str(raw).ok());
+    if requested_role == Some(GuildRole::Admin) && auth.role() != GuildRole::Admin {
+        return error(StatusCode::FORBIDDEN, "forbidden");
+    }
     match create_invite_payload(&state, auth.guild_id(), auth.member_id(), &payload).await {
         Ok(payload) => json_response(StatusCode::OK, payload),
         Err(response) => response,

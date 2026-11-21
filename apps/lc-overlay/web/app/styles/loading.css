@@ -58,13 +58,47 @@
 }
 
 .card.is-skeleton {
-  overflow: hidden;
-  background: var(--slate-800);
-  border: 1px solid var(--line);
+  cursor: default;
+  pointer-events: none;
 }
 
-.card.is-skeleton .skeleton-block {
+/* Same frame as `.thumb` in board.css: the skeleton must have the media's
+ * shape, not a rectangular block of an arbitrary height. */
+.card.is-skeleton .card-frame {
+  position: relative;
+  aspect-ratio: var(--ratio, 16 / 10);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--slate-900);
+  overflow: hidden;
+}
+
+.card.is-skeleton .card-frame .skeleton-block {
+  position: absolute;
+  inset: 0;
+  height: auto;
   border-radius: 0;
+}
+
+/* Two title bars under the frame, like the two clamped lines of `.card-title`;
+ * their height is part of the card's masonry span (core/masonry.js). */
+.card-title-skeleton {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  min-height: 2.6em;
+  margin: 6px 2px 0;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.card-title-skeleton .skeleton-block {
+  height: 10px;
+  border-radius: 4px;
+}
+
+.card-title-skeleton .skeleton-block.is-short {
+  width: 62%;
 }
 
 .line.is-skeleton {

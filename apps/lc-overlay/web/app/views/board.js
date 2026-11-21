@@ -514,22 +514,45 @@ function syncBadge(card, badge) {
   node.textContent = badge.label;
 }
 
-const SKELETON_HEIGHTS = [180, 240, 150, 210, 170, 260, 200, 230, 160, 190, 250, 175];
+// Common shapes of a board (portrait phone, landscape, square, audio wide).
+// The skeleton reuses the same masonry spans and the same thumbnail + title
+// anatomy as a real card: it is a placeholder, not a different kind of tile.
+const SKELETON_RATIOS = [
+  16 / 9,
+  1,
+  2,
+  9 / 16,
+  3 / 2,
+  9 / 16,
+  2,
+  1,
+  9 / 16,
+  2,
+  16 / 10,
+  3 / 4,
+];
 
 // First load: the grid's shape is painted immediately, so the board no longer
 // looks like an empty guild while the first request is in flight.
-function boardSkeletonCards(count = SKELETON_HEIGHTS.length) {
-  return Array.from({ length: count }, (_, index) =>
-    h(
+function boardSkeletonCards(count = SKELETON_RATIOS.length) {
+  return Array.from({ length: count }, (_, index) => {
+    const ratio = SKELETON_RATIOS[index % SKELETON_RATIOS.length];
+    return h(
       'div',
       {
         class: 'card is-skeleton',
-        style: `height:${SKELETON_HEIGHTS[index % SKELETON_HEIGHTS.length]}px`,
+        style: cardStyle(ratio),
         'aria-hidden': 'true',
       },
-      h('span', { class: 'skeleton-block' }),
-    ),
-  );
+      h('div', { class: 'card-frame' }, h('span', { class: 'skeleton-block' })),
+      h(
+        'div',
+        { class: 'card-title-skeleton' },
+        h('span', { class: 'skeleton-block' }),
+        h('span', { class: 'skeleton-block is-short' }),
+      ),
+    );
+  });
 }
 
 function retryItems() {

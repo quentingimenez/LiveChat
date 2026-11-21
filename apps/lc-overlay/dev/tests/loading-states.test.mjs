@@ -36,6 +36,18 @@ test('the board paints a skeleton before its first answer', () => {
   assert.ok(skeleton >= 0 && empty > skeleton, 'skeleton before the empty state');
 });
 
+test('board skeletons keep the real card anatomy and masonry spans', () => {
+  // A placeholder card has the media frame (same ratio and span as a real
+  // card) and two title lines, instead of a fixed-height rectangle.
+  assert.match(board, /const SKELETON_RATIOS =/);
+  assert.match(board, /style: cardStyle\(ratio\)/);
+  assert.match(board, /class: 'card-frame'/);
+  assert.match(board, /class: 'card-title-skeleton'/);
+  assert.match(css, /\.card\.is-skeleton \.card-frame/);
+  assert.match(css, /aspect-ratio: var\(--ratio/);
+  assert.match(css, /\.card-title-skeleton \{/);
+});
+
 test('a board read failure is an error with a retry, not an empty board', () => {
   assert.match(board, /state\.itemsError && state\.items\.length === 0/);
   assert.match(board, /Board indisponible/);

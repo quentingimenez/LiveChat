@@ -700,7 +700,7 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
 - `emit_settings` ne diffuse plus `clientToken` (redaction) vers les fenêtres
   overlay/board — cohérent avec §12.7 (le token board passe par `get_config`).
 - Tray : en-tête `N/M guildes connectées` (ou « aucune guilde »), case
-  « Tout mettre en pause » (cochée = `enabled == false`) qui coupe la lecture via
+  « Pause générale » (cochée = `enabled == false`) qui coupe la lecture via
   `stop_overlay_now`, et tooltip suffixé « (désactivé) ».
 - Config : écriture atomique (temp + rename) et `.bak` atomique (A6-007).
 
@@ -708,7 +708,7 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
 
 - Menu tray (ordre exact) : en-tête désactivé `LiveChat — N/M guildes
   connectées` (ou `LiveChat — aucune guilde`), séparateur, `Ouvrir la board`,
-  `Paramètres…`, séparateur, `Tout mettre en pause`, une case par guilde appairée,
+  `Paramètres…`, séparateur, `Pause générale`, une case par guilde appairée,
   séparateur, `Quitter`.
 - La décision est un modèle pur (`tray::menu_model` → `MenuEntry`) testé sans
   Tauri ; `tray::build_menu` le traduit en items. Les anciennes entrées de

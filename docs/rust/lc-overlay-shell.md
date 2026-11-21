@@ -243,7 +243,7 @@ Ordre et identifiants :
    dans `AppState::pending_board_view` (la board peut ne pas être encore
    chargée) et consommée une seule fois par `board_take_pending_view`.
 5. séparateur
-6. `tray.general_mute` — Tout mettre en pause : cochée = `enabled == false`.
+6. `tray.general_mute` — Pause générale : cochée = `enabled == false`.
    Pendant la pause générale, les cases de guilde sont grisées.
 7. `tray.guild.<id>` — une case par guilde appairée : cochée = la guilde
    diffuse (non muette), décochée = en pause. Le libellé reprend le nom de

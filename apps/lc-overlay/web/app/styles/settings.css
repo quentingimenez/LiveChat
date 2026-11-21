@@ -177,8 +177,91 @@
   font-weight: 600;
 }
 
-/* A named action under the control it belongs to, on the control column, like
-   the rows above. */
+/* --------------------------------------------------------------- affichage */
+/* Les trois contrôles de la section Affichage partagent une colonne de champ
+   et une colonne d’action de 145 px : les listes, l’encadré de zone et
+   l’alignement finissent sur la même ligne verticale. */
+.settings-display-row .settings-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 145px;
+  column-gap: 10px;
+  row-gap: 8px;
+  align-items: start;
+}
+
+/* Le hint occupe les deux colonnes, sous son contrôle. */
+.settings-display-row .settings-hint-wrap {
+  grid-column: 1 / -1;
+}
+
+/* Les listes remplissent la colonne de champ, sans le max 420 px de
+   `.is-long` ni les 256 px du champ court. */
+.settings-display-row .settings-control > .field {
+  width: 100%;
+  max-width: 100%;
+}
+
+/* Les boutons de la ligne occupent la colonne d’action et centrent leur
+   libellé, même quand le bouton est étiré par la grille. */
+.settings-display-row .btn {
+  justify-content: center;
+  text-align: center;
+}
+
+.settings-display-row .settings-control > .btn {
+  width: 100%;
+}
+
+/* Le résumé de zone devient un encadré de lecture de 32 px, à la même largeur
+   que les listes. */
+.settings-display-row .settings-zone {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  max-width: 100%;
+  height: var(--control-h);
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: color-mix(in srgb, var(--slate-800) 55%, transparent);
+}
+
+/* Les actions de la zone restent dans la colonne de 145 px ; le bouton
+   secondaire passe sous le principal quand une zone personnalisée existe. */
+.settings-zone-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-zone-actions .btn {
+  width: 100%;
+  justify-content: center;
+  white-space: normal;
+  height: auto;
+  min-height: var(--control-h);
+  padding: 4px 8px;
+  line-height: 1.2;
+}
+
+/* L’encart réunit la zone et son alignement, sans casser le rythme des lignes :
+   la marge négative compense le padding de la section, le padding interne
+   réaligne les libellés sur ceux de l’écran. */
+.settings-zone-group {
+  margin: 2px -12px 6px;
+  padding: 4px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--slate-800) 38%, transparent);
+}
+
+.settings-zone-group .settings-row {
+  padding: 6px 0;
+}
+
+/* A named action under the control it belongs to, with the sentence that
+   explains it. It starts on the control column, like the rows above. */
 .settings-action {
   display: flex;
   flex-wrap: wrap;

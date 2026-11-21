@@ -372,30 +372,37 @@ function renderDisplay(settings) {
     identifyingDisplays ? 'Identification…' : 'Identifier les écrans',
   );
 
-  const zoneControls = placing
-    ? [
-        h('span', { class: 'settings-zone is-live' }, 'Placement en cours sur l’écran de l’overlay'),
-        h('button', { class: 'btn', type: 'button', onClick: cancelPlacement }, 'Annuler le placement'),
-      ]
-    : [
-        h('span', { class: 'settings-zone' }, zoneSummary(zone, selectedDisplay(settings, displays))),
-        h(
-          'button',
-          { class: 'btn is-primary', type: 'button', disabled: startingPlacement, onClick: startPlacement },
-          startingPlacement ? 'Ouverture…' : 'Placer sur l’écran',
-        ),
-        isWholeScreen(zone)
-          ? null
-          : h(
-              'button',
-              {
-                class: 'btn is-quiet',
-                type: 'button',
-                onClick: () => applyPatch({ layout: { zone: null } }).then(() => previewLayout({})),
-              },
-              'Revenir à tout l’écran',
-            ),
-      ];
+  const zoneActions = h(
+    'div',
+    { class: 'settings-zone-actions' },
+    placing
+      ? h('button', { class: 'btn', type: 'button', onClick: cancelPlacement }, 'Annuler le placement')
+      : [
+          h(
+            'button',
+            { class: 'btn is-primary', type: 'button', disabled: startingPlacement, onClick: startPlacement },
+            startingPlacement ? 'Ouverture…' : 'Placer sur l’écran',
+          ),
+          isWholeScreen(zone)
+            ? null
+            : h(
+                'button',
+                {
+                  class: 'btn is-quiet',
+                  type: 'button',
+                  onClick: () => applyPatch({ layout: { zone: null } }).then(() => previewLayout({})),
+                },
+                'Revenir à tout l’écran',
+              ),
+        ],
+  );
+
+  const zoneControls = [
+    placing
+      ? h('span', { class: 'settings-zone is-live' }, 'Placement en cours sur l’écran de l’overlay')
+      : h('span', { class: 'settings-zone' }, zoneSummary(zone, selectedDisplay(settings, displays))),
+    zoneActions,
+  ];
 
   const alignment = h(
     'select',
@@ -432,24 +439,36 @@ function renderDisplay(settings) {
     testingMedia ? 'Lancement…' : 'Lancer un média de test',
   );
 
+  const screenRow = controlRow(
+    'Écran',
+    [
+      screen,
+      identify,
+      hint('Affiche un numéro sur chaque écran pendant quelques secondes.'),
+    ],
+    'settings-screen',
+  );
+  screenRow.classList.add('settings-display-row');
+
+  const zoneRow = controlRow('Zone d’affichage', [
+    ...zoneControls,
+    hint(
+      placing
+        ? 'Déplace la zone et tire ses coins sur l’écran de l’overlay, puis valide (Entrée) ou annule (Échap).'
+        : 'Les médias, leur auteur et leur légende restent dans cette zone. Place-la directement sur l’écran, comme une fenêtre.',
+    ),
+  ]);
+  zoneRow.classList.add('settings-display-row');
+
+  const alignmentRow = controlRow('Alignement dans la zone', alignment, 'settings-align');
+  alignmentRow.classList.add('settings-display-row');
+
   return section(
     'Affichage',
-    controlRow(
-      'Écran',
-      [
-        screen,
-        identify,
-        hint('Affiche un numéro sur chaque écran pendant quelques secondes.'),
-      ],
-      'settings-screen',
-    ),
-    controlRow('Zone d’affichage', [
-      ...zoneControls,
-      placing
-        ? hint('Déplace la zone et tire ses coins sur l’écran de l’overlay, puis valide (Entrée) ou annule (Échap).')
-        : null,
-    ]),
-    controlRow('Alignement dans la zone', alignment, 'settings-align'),
+    sectionDesc('Où et comment les médias s’affichent sur ton stream.'),
+    immediateNote(),
+    screenRow,
+    h('div', { class: 'settings-zone-group' }, zoneRow, alignmentRow),
     switchRow('Texte des médias', showText, 'settings-show-text'),
     switchRow(
       'Ouvrir l’aperçu au survol',

@@ -22,6 +22,7 @@ use tower::ServiceExt as _;
 
 use crate::app::AppState;
 use crate::config::Config;
+use crate::discord::guild_leave::DiscordGuildLeaver;
 use crate::http::admin::hub::AdminHub;
 use crate::shutdown::Shutdown;
 
@@ -191,6 +192,14 @@ impl Harness {
             guild_id,
             _media: media,
         }
+    }
+
+    /// Remplace le client de départ Discord après la construction du routeur.
+    pub(super) async fn with_leaver(leaver: Arc<dyn DiscordGuildLeaver>) -> Self {
+        let mut harness = Self::new().await;
+        harness.state = harness.state.clone().with_discord_leaver(leaver);
+        harness.app = crate::app::router(harness.state.clone());
+        harness
     }
 
     pub(super) async fn call(

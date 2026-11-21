@@ -217,6 +217,7 @@ fn permissions_payload(
         "manageMembers": can(Action::ManageMembers),
         "manageInvites": can(Action::ManageInvites),
         "manageSettings": can(Action::ManageSettings),
+        "purgeGuild": can(Action::PurgeGuild),
     })
 }
 

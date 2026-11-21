@@ -279,6 +279,8 @@ Toutes les routes authentifiées acceptent uniquement `Authorization: Bearer <to
 | `POST` | `/overlay/admin/invites` | `ManageInvites` |
 | `POST` | `/overlay/admin/invites/{code}/revoke` | `ManageInvites` |
 | `PATCH` | `/overlay/admin/settings` | `ManageSettings` |
+| `POST` | `/overlay/admin/purge` | `PurgeGuild` |
+| `POST` | `/overlay/admin/discord-leave` | `PurgeGuild` |
 
 `GET /overlay/media/{assetId}` n'utilise pas de Bearer. Elle exige `clientId`, `exp` et `sig`, vérifie la signature HMAC-SHA256 de `assetId|clientId|exp`, l'expiration, l'existence d'un client actif et d'un job de lecture de sa guilde référençant le média. Réponses : flux `200`, `206` avec `Range`, `416` pour une plage invalide ; erreurs `403 media_url_invalid`, `403 media_url_expired`, `403 forbidden` (aucun job de la guilde), `404 media_not_found`, `404 media_not_found_on_disk`, `500`, `503`.
 
@@ -308,10 +310,12 @@ Toutes les routes authentifiées acceptent uniquement `Authorization: Bearer <to
 | `POST /overlay/admin/invites` | `{"role":"…","expiresInHours":24,"maxUses":10}` | `{created:true, invite}` | `400 invalid_payload`, `400 invalid_role`, `400 invalid_expiry`, `400 invalid_max_uses`, `403 forbidden` |
 | `POST /overlay/admin/invites/{code}/revoke` | aucun | `{found:true, revoked:true ou false}` | `403 forbidden`, `404 invite_not_found` |
 | `PATCH /overlay/admin/settings` | champs partiels `name`, `defaultMediaTime`, `maxMediaTime`, `displayMediaFull`, `guestsCanViewBoard` | `{updated:true, guild}` | `400 invalid_payload`, `400 invalid_name`, `403 forbidden` |
+| `POST /overlay/admin/purge` | `{"confirmGuildId":"<guilde du jeton>"}` | même réponse que `POST /admin/api/guilds/{id}/purge` : `{purged, guildId, stop, deleted, discord}` | `400 confirm_guild_id_mismatch`, `403 forbidden`, `500`, `503` |
+| `POST /overlay/admin/discord-leave` | `{"confirmGuildId":"<guilde du jeton>"}` | `{discordLeave:{serverId,requested,outcome,error}}` | `400 confirm_guild_id_mismatch`, `403 forbidden`, `500`, `503` |
 
 `GET /overlay/devices` ne demande aucun droit de gestion : chaque membre voit ses propres overlays (`overlay_clients.member_id`), ainsi que les clients d'ingestion dont `created_by_discord_user_id` vaut `member:<memberId>` ou son identifiant Discord lié. Un overlay de la liste porte `connected`, `sessionMode`, `overlayVersion` et `platform` ; un client d'ingestion porte seulement `lastSeenAt` et un `kind` déduit du préfixe de son libellé (`Raccourci iOS` pour iOS, `extension` sinon), la table `ingest_clients` n'ayant pas de colonne de type. Un appareil d'un autre membre ou d'une autre guilde, un identifiant inconnu et un appareil déjà révoqué répondent tous `404 device_not_found`. Le dialogue « Mon profil » masque l'action de révocation pour l'appareil appelant (`isSelf`), et le serveur la refuse aussi par `409 cannot_revoke_self`.
 
-`GET /overlay/guild` renvoie `standalone: false`, `name: null` et des réglages `null` si la guilde n'a pas de ligne. `permissions` contient exactement `viewBoard`, `viewQueue`, `play`, `stop`, `addMedia`, `editAnyMedia`, `moderateQueue`, `manageMembers`, `manageInvites`, `manageSettings`.
+`GET /overlay/guild` renvoie `standalone: false`, `name: null` et des réglages `null` si la guilde n'a pas de ligne. `permissions` contient exactement `viewBoard`, `viewQueue`, `play`, `stop`, `addMedia`, `editAnyMedia`, `moderateQueue`, `manageMembers`, `manageInvites`, `manageSettings`, `purgeGuild`.
 
 `member` vaut `{id, displayName, avatar, role, createdAt, discordLinked, profileSource}` dans `GET /overlay/guild` et `PATCH /overlay/profile` : `discordLinked` dit si le membre est lié à un compte Discord ; `profileSource` vaut `discord` tant que pseudo et avatar suivent ce compte, sinon `custom`.
 
@@ -370,6 +374,8 @@ Le handler ne vérifie pas que la guilde existe : `issue_admin_code` appelle dir
 ### Purge
 
 `POST /admin/api/guilds/{guild_id}/purge` exige `confirmGuildId` égal à l'identifiant de la route (`400 confirm_guild_id_mismatch` sinon) et accepte `removeOrphanMedia` (booléen, `true` par défaut). Après avoir libéré les jobs `PLAYING` et fermé les overlays connectés, la purge supprime les clients overlay, puis les invitations, puis les membres (`delete_by_guild` sur `guild_invites` puis `guild_members`). Cet ordre respecte `overlay_clients.member_id`. La réponse détaille les compteurs dans `deleted` (`guildSettings`, `overlayClients`, `ingestClients`, `pairingCodes`, `playbackJobs`, `mediaBoardItems`, `orphanMediaAssets`, `orphanMediaFileDeleteErrors`).
+
+Les routes overlay `POST /overlay/admin/purge` et `POST /overlay/admin/discord-leave` partagent cette implémentation (`purge_guild` et `leave_discord_guild`, `http/admin/guilds.rs`) : même confirmation, mêmes réponses. Elles ne peuvent agir que sur la guilde du jeton, et la purge depuis l'overlay ne fait pas quitter Discord (`leaveDiscord: false`) — l'action « Faire quitter le bot » reste séparée.
 
 ## Overlay multi-guilde
 

@@ -45,7 +45,10 @@ mod error;
 mod events;
 mod guild_detail;
 mod guilds;
-pub(crate) use guilds::stop_guild_playback;
+pub(crate) use guilds::{
+    leave_discord_guild, purge_guild, remove_orphan_media, require_guild_confirmation,
+    stop_guild_playback,
+};
 mod ingest_authors;
 mod oauth;
 mod ops;
@@ -75,7 +78,6 @@ pub(crate) use audit::action_for as audit_action_for;
 pub(crate) use audit::guild_rows as audit_rows_for_guild;
 pub(crate) use audit::purge_old as purge_old_audit;
 pub(crate) use audit::record_overlay as record_overlay_audit;
-pub(crate) use guilds::remove_orphan_media;
 pub(crate) use ops::{BinaryProbe, SystemBinaryProbe};
 #[cfg(test)]
 pub(crate) use session::{create_secret as create_secret_session, SESSION_COOKIE_NAME};

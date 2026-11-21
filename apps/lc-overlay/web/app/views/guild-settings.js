@@ -11,8 +11,13 @@ import { formatBoardUsage, formatBytes } from '../core/format.js';
 import { activeGuild, can, state } from '../core/state.js';
 import { DEFAULT_VOLUME_PERCENT } from '../core/sound.js';
 import { notify } from '../core/toast.js';
-import { openDialog } from '../core/ui.js';
 import { loadGuild, loadGuildInfo } from '../data.js';
+import {
+  confirmDiscordLeave,
+  hasDiscordServer,
+  openPurgeGuildDialog,
+  openTypedGuildDialog,
+} from '../guild-danger.js';
 import { renderServerSettings } from './admin.js';
 import { renderView } from './view.js';
 import {
@@ -196,79 +201,19 @@ function quotaInGo(mediaBoard) {
 // « Vider le board » asks the guild name, like the server console's strong
 // confirmation. The server compares it exactly (`confirmation_mismatch`).
 function openClearBoardDialog(guildName) {
-  openDialog((close) => {
-    const field = h('input', {
-      class: 'field',
-      id: 'clear-board-name',
-      'aria-label': 'Nom de la guilde',
-      autocomplete: 'off',
-      placeholder: guildName,
-    });
-    // The name is the confirmation: the button only unlocks once it matches
-    // exactly, and Enter never submits anything else.
-    const matches = () => field.value.trim() === guildName;
-    const error = h('p', { class: 'error-text', role: 'alert', hidden: true }, 'Le nom ne correspond pas.');
-    let busy = false;
-    const confirmButton = h('button', { class: 'btn is-danger', type: 'button', disabled: true }, 'Vider le board');
-    const sync = () => {
-      confirmButton.disabled = busy || !matches();
-      if (matches()) {
-        error.hidden = true;
-      }
-    };
-    const confirm = async () => {
-      if (busy || !matches()) {
-        error.hidden = false;
-        field.focus();
-        return;
-      }
-      busy = true;
-      field.disabled = true;
-      confirmButton.disabled = true;
-      const body = await run(() => api('POST', '/overlay/admin/media-board/clear', { confirm: field.value }));
-      if (!body) {
-        // run() already reported the failure: let the user try again.
-        busy = false;
-        field.disabled = false;
-        sync();
-        return;
-      }
-      close();
+  openTypedGuildDialog({
+    guildName,
+    title: 'Vider le board ?',
+    text: 'Tous les médias sont supprimés, la lecture est arrêtée et les fichiers orphelins sont effacés. Action immédiate et définitive.',
+    confirmLabel: 'Vider le board',
+    inputId: 'clear-board-name',
+    action: (confirmation) => api('POST', '/overlay/admin/media-board/clear', { confirm: confirmation }),
+    onSuccess: async (body) => {
       const deleted = Number((body.deleted && body.deleted.mediaBoardItems) || 0);
       notify(`Board vidé : ${deleted} média${deleted === 1 ? '' : 's'} supprimé${deleted === 1 ? '' : 's'}.`);
       await loadGuild();
       renderView();
-    };
-    confirmButton.addEventListener('click', confirm);
-    field.addEventListener('input', sync);
-    field.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter') {
-        return;
-      }
-      event.preventDefault();
-      if (matches()) {
-        confirm();
-      } else {
-        error.hidden = false;
-      }
-    });
-    return [
-      h('h2', null, 'Vider le board ?'),
-      h(
-        'p',
-        null,
-        'Tous les médias sont supprimés, la lecture est arrêtée et les fichiers orphelins sont effacés. Action immédiate et définitive.',
-      ),
-      h('label', { for: 'clear-board-name' }, `Saisis « ${guildName} » pour confirmer.`),
-      field,
-      error,
-      h(
-        'div',
-        { class: 'actions' },
-        h('button', { class: 'btn is-quiet', onClick: close }, 'Annuler'),
-        confirmButton,
-      ),
-    ];
+    },
   });
 }
 
@@ -359,6 +304,68 @@ function renderBoardSettings() {
   );
 }
 
+function renderDangerZone() {
+  const guild = (state.info && state.info.guild) || {};
+  const guildName = guild.name || 'cette guilde';
+  const rows = [];
+  // A native guild always has a Discord server; a standalone one only once
+  // linked. Without a server there is nobody to make leave. The leave action
+  // needs no guild name: only the purge's typed confirmation does.
+  if (hasDiscordServer(guild)) {
+    rows.push(
+      h(
+        'div',
+        { class: 'settings-danger' },
+        h(
+          'div',
+          { class: 'settings-danger-body' },
+          h('p', { class: 'settings-danger-title' }, 'Faire quitter le bot ?'),
+          h(
+            'p',
+            { class: 'settings-hint' },
+            `Le bot quitte le serveur Discord de « ${guildName} ». Les commandes n’y fonctionneront plus ; les données restent sur le serveur LiveChat.`,
+          ),
+          h(
+            'button',
+            { class: 'btn is-danger', type: 'button', onClick: () => confirmDiscordLeave(guild) },
+            'Faire quitter le bot',
+          ),
+        ),
+      ),
+    );
+  }
+  rows.push(
+    h(
+      'div',
+      { class: 'settings-danger' },
+      h(
+        'div',
+        { class: 'settings-danger-body' },
+        h('p', { class: 'settings-danger-title' }, 'Supprimer la guilde ?'),
+        guild.name
+          ? [
+              h(
+                'p',
+                { class: 'settings-hint' },
+                'Membres, overlays, codes, file d’attente, board et réglages sont supprimés définitivement.',
+              ),
+              h(
+                'button',
+                { class: 'btn is-danger', type: 'button', onClick: () => openPurgeGuildDialog(guild) },
+                'Supprimer la guilde',
+              ),
+            ]
+          : h(
+              'p',
+              { class: 'settings-hint' },
+              'Le nom de la guilde est inconnu : la suppression demande son nom, elle est donc indisponible.',
+            ),
+      ),
+    ),
+  );
+  return section('Zone de danger', ...rows);
+}
+
 export function renderGuildSettings() {
   const guild = activeGuild();
   const settings = currentDeviceSettings();
@@ -396,5 +403,6 @@ export function renderGuildSettings() {
     deviceSections,
     can('manageSettings') ? section('Serveur de la guilde', h('p', { class: 'settings-hint is-lead' }, 'Pour toute la guilde, sur tous les appareils.'), renderServerSettings()) : null,
     can('manageSettings') ? renderBoardSettings() : null,
+    can('purgeGuild') ? renderDangerZone() : null,
   );
 }

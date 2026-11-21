@@ -40,6 +40,19 @@ pour rester lisible sur une barre des tâches ou une barre d'outils claire
 comme sombre. Marge intérieure : 36 unités pour le dessin complet, 22 pour le
 dessin simplifié.
 
+Le même dessin existe sur trois fonds :
+
+| Variante | Fond | Coins | Usage |
+| --- | --- | --- | --- |
+| `livechat-app-icon.svg` | tuile Ardoise `#171B25` | Craie `#E9EBF3` | exécutable, installeur, fenêtres, barre d'outils (défaut) |
+| `livechat-app-icon-light.svg` | tuile claire `#EEF1F7` | Ardoise `#171B25` | supports clairs : boutique, documentation, visuels |
+| `livechat-app-icon-transparent.svg` | aucun | Ardoise `#171B25` | supports qui fournissent déjà leur fond |
+
+La tuile Ardoise reste la valeur par défaut des fichiers livrés : c'est elle
+qui tient sur une barre des tâches claire comme sombre. La variante claire et
+la variante sans fond ne servent qu'aux supports qui imposent une surface
+claire ; dans ce cas les coins passent en Ardoise, comme pour le logo.
+
 L'icône du tray n'a pas de tuile : elle suit le thème de la barre des tâches
 de Windows (coins Craie sur barre sombre, Ardoise sur barre claire).
 
@@ -186,6 +199,8 @@ Sources (dans `logo/`) :
 | `livechat-logo-current-color.svg` | dessin complet, coins en `currentColor` (à intégrer dans une page) |
 | `livechat-app-icon.svg` | tuile + dessin complet |
 | `livechat-app-icon-small.svg` | tuile + dessin simplifié |
+| `livechat-app-icon-light.svg` | tuile claire + dessin complet |
+| `livechat-app-icon-transparent.svg` | dessin complet sans fond |
 
 Le bouton d'envoi injecté par l'extension n'embarque aucun de ces fichiers : un
 SVG posé dans une page hôte exigerait `web_accessible_resources` et une requête
@@ -202,10 +217,20 @@ Icônes générées :
 | `apps/lc-overlay/icons/tray-light.png` | simplifié, coins Ardoise, 32 | tray, barre des tâches claire |
 | `extension/public/icons/icon-16.png` … `icon-32.png` | tuile, simplifié | barre d'outils du navigateur |
 | `extension/public/icons/icon-48.png`, `icon-128.png` | tuile, complet | page des extensions, boutique |
+| `docs/brand/png/app-icon-light-128.png`, `-512.png` | tuile claire, complet | boutique, documentation |
+| `docs/brand/png/app-icon-transparent-128.png`, `-512.png` | sans fond, coins Ardoise | boutique, documentation |
 
 Pour régénérer les icônes après une modification des SVG (Windows, avec
 Microsoft Edge et Pillow), depuis PowerShell à la racine du dépôt :
 
 ```powershell
 python docs/brand/render_icons.py
+```
+
+Pour vérifier que chaque icône livrée est présente, à la bonne taille et avec
+le fond attendu (tuile Ardoise, tuile claire ou transparence), sans rien
+écrire :
+
+```powershell
+python docs/brand/render_icons.py --check
 ```

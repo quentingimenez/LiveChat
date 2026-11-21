@@ -149,12 +149,6 @@ const SUM_CHECKS: &[SumCheckDef] = &[
         target_sql: "SELECT SUM(duration_sec) FROM playback_jobs",
     },
     SumCheckDef {
-        label: "playback_jobs.priority",
-        legacy_table: PlaybackJob::LEGACY_TABLE,
-        legacy_sql: "SELECT SUM(priority) FROM \"PlaybackJob\"",
-        target_sql: "SELECT SUM(priority) FROM playback_jobs",
-    },
-    SumCheckDef {
         label: "playback_jobs.resume_offset_sec",
         legacy_table: PlaybackJob::LEGACY_TABLE,
         legacy_sql: "SELECT SUM(COALESCE(resumeOffsetSec, 0)) FROM \"PlaybackJob\"",

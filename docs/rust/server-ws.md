@@ -126,7 +126,7 @@ d'erreur pour un `id` inconnu. Le champ `id` est **validé** avant tout traiteme
 | `playback.ended` | `{jobId, reason: completed\|manual\|error}` | transmet `PlaybackEndedEvent` ; idempotent côté moteur ; `jobId` invalide ⇒ `1002 bad_playback_state` |
 | `error` | `{jobId, code, message}` | log seulement (le watchdog libère le job) |
 | `stop.request` | `{jobId?, source?: user\|hotkey\|admin}` | en `invite_read_only` : ack `read_only` ; throttle 1/s (ack `rate_limited`) ; sans `jobId` ⇒ tous les jobs de la guilde ; ack `ok` **puis** `engine.stop(...)` qui diffuse `stop {reason:"manual"}` |
-| `media.trigger` | `{itemId, trigger: shortcut\|ui}` | en lecture seule : ack `read_only` ; item inconnu ⇒ ack `item_not_found` ; média absent/non `READY`/expiré ⇒ ack `media_not_ready` ; ack `ok` puis job priorité 100 (`MEDIA_BOARD_JOB_PRIORITY`) et `engine.enqueue` (préemption `stop {reason:"preempt"}` + `play`) |
+| `media.trigger` | `{itemId, trigger: shortcut\|ui}` | en lecture seule : ack `read_only` ; item inconnu ⇒ ack `item_not_found` ; média absent/non `READY`/expiré ⇒ ack `media_not_ready` ; ack `ok` puis job `source = BOARD` et `engine.enqueue` (dispatch quand la file arrive à lui, **sans préemption**) |
 | `peers.request` | `{}` | throttle 2 s (excédent ignoré **sans** ack) ; ack `ok` puis broadcast `peers` |
 
 Le type legacy `meme.trigger` n'est **plus accepté** : la désérialisation échoue
@@ -312,13 +312,13 @@ Intégration (vrai serveur axum sur port éphémère + SQLite temporaire + clien
 7. `flooding_after_welcome_closes_with_4409` (21 heartbeats).
 8. `oversized_frame_closes_with_4408` (65 537 octets).
 9. `welcome_exposes_current_job_with_signed_url` (job `PLAYING`, URL signée ; `startOffsetSec`
-   null/absent quand l'offset de reprise vaut 0).
+   null/absent quand l'offset de départ vaut 0).
 10. `dispatched_play_carries_a_verifiable_signature` (signature re-vérifiée avec `media_url::verify`).
 11. `stop_request_stops_the_job_and_broadcasts_stop` (ack puis `stop {reason:"manual"}` ; DB `DONE`).
 12. `invite_read_only_refuses_media_trigger` (ack `read_only`).
 13. `heartbeat_is_accepted_and_updates_last_seen` (`last_seen_at` mis à jour en DB).
 14. `peers_request_returns_ack_then_peers`.
-15. `playback_state_is_persisted_for_a_corresponding_job` (`remaining_ms_snapshot` en DB).
+15. `playback_state_is_persisted_for_a_corresponding_job` (`last_playback_state_at` en DB).
 16. `origin_tauri_localhost_is_allowed` (Origin `http://tauri.localhost` → `welcome`).
 17. `unknown_origin_is_closed_with_1008` (Origin étrangère → close `1008 origin_not_allowed`).
 18. `too_many_sockets_per_client_are_rejected_with_4409` (3 sockets OK, 4e → `4409

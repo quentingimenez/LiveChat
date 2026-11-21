@@ -21,15 +21,11 @@
 //!
 //! 1. **Au plus un job `PLAYING` par guilde** : la sélection passe par
 //!    `PlaybackJobsRepository::claim_next` (écriture atomique) et les chemins
-//!    internes vérifient l'invariant avant de restaurer un job suspendu.
-//! 2. **Ordre de la file** : `priority DESC`, `submission_date ASC`, `id ASC`
-//!    (parité avec le scheduler legacy).
-//! 3. **Préemption** : un job `PENDING` de priorité strictement supérieure au
-//!    job actif (typiquement un média du board, [`MEDIA_BOARD_JOB_PRIORITY`] = 100)
-//!    suspend le
-//!    job actif (`PENDING` + `resumes_after_job_id` + `resume_offset_sec`) et le
-//!    reprend automatiquement quand le job prioritaire se termine.
-//! 4. **Un seul job à la fois** : toutes les opérations publiques prennent un
+//!    internes vérifient l'invariant avant de réclamer un job.
+//! 2. **Ordre de la file** : `submission_date ASC`, `id ASC` (FIFO, parité
+//!    d'arrivée). Aucun média n'interrompt celui en cours : un job déclenché
+//!    pendant une lecture attend la fin du job actif.
+//! 3. **Un seul job à la fois** : toutes les opérations publiques prennent un
 //!    verrou interne, les transitions concurrentes sont donc sérialisées.
 //!
 //! ## Intégration serveur (Phase 4)
@@ -57,8 +53,8 @@
 //!   `job.text` tel quel et `tweet_card` reste `null`.
 //! - Pas de recomputation en cascade des `execution_date`/`scheduled_at` des
 //!   jobs en attente (le legacy le faisait) : l'ordre de sélection n'en dépend
-//!   pas (`priority`, `submission_date`), seules les prévisions d'affichage
-//!   seraient décalées.
+//!   pas (`submission_date`), seules les prévisions d'affichage seraient
+//!   décalées.
 
 #![forbid(unsafe_code)]
 
@@ -77,10 +73,6 @@ pub use engine::{
 pub use error::{PlaybackError, PlaybackResult};
 pub use sink::PlaybackSink;
 
-/// Priorité d'un job déclenché depuis le board média (parité avec le scheduler
-/// legacy).
-pub const MEDIA_BOARD_JOB_PRIORITY: i64 = 100;
-
 /// Marge ajoutée au verrou `busy_until` d'une guilde (millisecondes).
 pub const PLAYBACK_LOCK_PADDING_MS: i64 = 250;
 
@@ -90,7 +82,7 @@ pub const PLAYBACK_STALE_RELEASE_GRACE_MS: i64 = 10_000;
 /// Verrou `busy_until` minimal après un `playback.state` (millisecondes).
 pub const MIN_ACTIVE_PLAYBACK_BUSY_LOCK_MS: i64 = 5_000;
 
-/// Délai maximal de validité d'un snapshot `remaining_ms` (millisecondes).
+/// Délai maximal de validité d'un keep-alive `playback.state` (millisecondes).
 pub const PLAYBACK_STATE_MAX_AGE_MS: i64 = 15_000;
 
 /// Nombre maximal d'itérations de la boucle d'une guilde (parité legacy).

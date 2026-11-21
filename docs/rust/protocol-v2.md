@@ -142,7 +142,7 @@ client                                   serveur
   |<------------------------------ play ---|  (media signé pour CE client)
   |--- playback.state -------------------->|  (≤ 1/s)
   |--- playback.ended -------------------->|  (fin locale d'un job)
-  |<------------------------------ stop ---|  (manual/preempt/revoked/purge)
+  |<------------------------------ stop ---|  (manual/revoked/purge)
   |<------------------------------ ack ----|  (réponse aux requêtes)
   |<-------------------------- error -----|  (non fatal)
 ```
@@ -283,7 +283,7 @@ déconnexion, y compris close/erreur/shutdown.
 | `playback.ended` | `PlaybackEndedPayload` | aucune |
 | `error` | `ClientErrorPayload` | aucune (log) |
 | `stop.request` | `StopRequestPayload` (`{}`) | `ack` puis `stop` (reason `manual`) |
-| `media.trigger` | `MediaTriggerPayload` | `ack` puis `stop`(preempt)+`play` si accepté |
+| `media.trigger` | `MediaTriggerPayload` | `ack` puis `play` quand la file le réclame (aucune interruption) |
 | `peers.request` | `PeersRequestPayload` (`{}`) | `ack` puis `peers` |
 
 ### 5.1 `hello`
@@ -366,11 +366,11 @@ ack `rate_limited`).
 
 Parité v1 (`index.ts:73-76`, `socketLoader.ts:277-338`). `trigger` ∈ `shortcut` | `ui`.
 Serveur : mode lecture seule → ack `read_only` ; item/média absent ou non `READY` → ack
-`item_not_found`/`media_not_ready` ; sinon crée un job priorité 100
+`item_not_found`/`media_not_ready` ; sinon crée un job `source = BOARD`
 (`text = item.message.trim().slice(0, 500)`, `showText = !!message`,
 `authorName = session.authorName || item.createdByName`, `authorImage = session.authorImage`),
-`ack {ok:true}`, puis préemption : `stop {reason:"preempt"}` du job actif puis `play` du média du board
-(v1 : `suspendPlayingJobForPreemption`, `playbackScheduler.ts:922-997`).
+`ack {ok:true}`, puis `play` du média du board quand la file de la guilde arrive à ce job.
+Aucune préemption : si un média joue déjà, celui du board attend la fin du job en cours.
 
 Compatibilité overlay 3.0.0 : supprimée. L'ancien type `meme.trigger` n'est plus
 accepté (la désérialisation échoue, comme tout type inconnu) ; seul
@@ -395,7 +395,7 @@ reconnexion (v1 : broadcast uniquement à la connexion/déconnexion, `socketLoad
 | `settings` | `SettingsPayload` | juste après `welcome`, puis à chaque changement de config/mode |
 | `peers` | `PeersPayload` | connexion/déconnexion d'un overlay, `peers.request`, gracieux |
 | `play` | `PlayPayload` | dispatch d'un job (media signé par client) |
-| `stop` | `StopPayload` | arrêt manuel, préemption, révocation, purge |
+| `stop` | `StopPayload` | arrêt manuel, révocation, purge |
 | `ack` | `AckPayload` | réponse à `stop.request`, `media.trigger`, `peers.request` |
 | `error` | `ServerErrorPayload` | erreur non fatale (dispatch, média indisponible) |
 | `media.ingestion` | `MediaIngestionPayload` | fin d'une ingestion asynchrone du board, envoyée aux sockets du client demandeur |
@@ -506,7 +506,7 @@ Exemples : `v2_play_tweet_card.json` (forme minimale) et `v2_play_tweet_card_ric
 | `reason` | Sens v1 | `jobId` |
 |---|---|---|
 | `manual` | arrêt utilisateur/commande/admin (v1 sentinelle `jobId:"manual-stop"` émise par `manualStop.ts:9-60`, consommée par `socketLoader.ts:256-275`) | id du job `PLAYING` si unique, sinon `null` |
-| `preempt` | job suspendu pour laisser passer un média du board (v1 `STOP {jobId: activeJob.id}`, `playbackScheduler.ts:922-997`) | id du job suspendu (toujours connu) |
+| `preempt` | valeur héritée v1 (job suspendu pour un média du board) ; conservée pour la compatibilité de désérialisation, **plus jamais émise** par le serveur | id du job (si émis par un ancien serveur) |
 | `revoked` | jeton révoqué (v1 : simple `socket.disconnect(true)`, `socketLoader.ts:88-104` ; admin `adminRoutes.ts:2884-2892`) | `null` ; fermeture `4402` juste après |
 | `purge` | purge admin de la guilde (v1 : arrêt manuel loggué « Admin panel purge », `adminRoutes.ts:2747,2776-2831`) | `null` |
 
@@ -561,7 +561,7 @@ maximum** (`MAX_PEERS`, dédupliqués) ; au-delà, la liste est tronquée après
   immédiatement, `"queued"` s'il attend dans la file de la guilde. Omis pour les autres `ack` et
   quand le statut du job n'a pas pu être relu.
 - `position` (optionnel) : rang **1-based** du job parmi les jobs `PENDING` de la guilde, dans
-  l'ordre du moteur (`priority DESC`, `submissionDate ASC`, `id ASC`). Présent avec
+  l'ordre du moteur (`submissionDate ASC`, `id ASC`). Présent avec
   `outcome:"queued"` lorsque le rang est connu, omis sinon.
 - `jobId` (optionnel) : identifiant canonique du job créé par un `media.trigger` accepté. Toujours
   présent quand `ok:true`, omis pour les autres requêtes et pour un échec d'enfilement.
@@ -762,8 +762,8 @@ un échec.
 
 - `play` et `welcome.currentJob` portent une URL signée **par client** : ces deux messages sont
   donc émis **socket par socket** (`clientId` du socket) et non en broadcast de room.
-- À chaque émission de `play` (y compris reprise après préemption ou reconnexion), `exp` est
-  recalculé : un job suspendu longtemps est re-signé au moment du dispatch.
+- À chaque émission de `play` (y compris dispatch après attente en file ou reconnexion), `exp` est
+  recalculé : un job resté longtemps en attente est re-signé au moment du dispatch.
 - `stop`, `peers`, `settings`, `welcome` (hors `currentJob`) ne contiennent pas d'URL et peuvent
   être diffusés à la room.
 - Un `HEAD`/`Range` doit arriver **avant `exp`**. Une pause prolongée au-delà du TTL n'est **pas**
@@ -920,7 +920,7 @@ REST conservé hors WS (rév. 2 : inventaire **22 → 21 endpoints**, `GET /over
 | `playback.ended` | `completed`/`error` → `onPlaybackEnded` ; `manual` → `onPlaybackStopped` (`playbackScheduler.ts:239-346`) |
 | `error` | log structuré uniquement (`socketLoader.ts:221-227`) |
 | `stop.request` | `{jobId?, source?}` (source défaut `user`, sans `jobId` = tous les jobs) → `executeManualStopForGuild` ciblé → `stop {reason:'manual'}` (`manualStop.ts:9-60`) |
-| `media.trigger` | validation item/média + `createPlaybackJob(priority=100)` + `preemptWithJob` → `stop{preempt}` puis `play` (`socketLoader.ts:277-338`, `playbackScheduler.ts:922-997`) |
+| `media.trigger` | validation item/média + `createPlaybackJob(source=BOARD)` + `engine.enqueue` → `play` quand la file le réclame, sans interruption du job en cours (`socketLoader.ts:277-338`, `playbackScheduler.ts:922-997`) |
 | `peers.request` | broadcast `peers` (`socketLoader.ts:76-86`) |
 | envoi `stop {reason:'revoked'}` | après `revoked_at`, **diffusion room du `stop` puis close `4402`** (ordre garanti par la file du socket) ; libération moteur sans second `stop` (`Hub::close_client`, rév. 3) |
 | purge admin | `stop {reason:'purge', jobId:null}` via `broadcast_purge` (`engine.stop_all_with_reason`) + libération de tous les jobs (rév. 3 ; v1 `adminRoutes.ts:2747,2776-2831`) |

@@ -259,8 +259,6 @@ struct Inner {
     bootstrapped: bool,
     /// Guildes avec travail en cours/en attente.
     active_guilds: BTreeSet<GuildId>,
-    /// Dernier job terminé par guilde (pour la reprise après préemption).
-    just_finished: BTreeMap<GuildId, PlaybackJobId>,
     /// Dernier checkpoint `playback.state` persisté par job (débit 1/s).
     state_persisted_at: BTreeMap<PlaybackJobId, UtcDateTime>,
 }
@@ -387,9 +385,9 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
     /// Crée un job puis tente immédiatement de le dispatcher.
     ///
     /// Utilisé par les workers (Discord, admin, médias du board) après
-    /// construction du
-    /// `PlaybackJob` ; le job peut préempter la lecture en cours s'il est de
-    /// priorité supérieure.
+    /// construction du `PlaybackJob`. Le job est mis en file : si une lecture
+    /// est déjà en cours dans la guilde, il attend son tour (aucune
+    /// interruption).
     pub async fn enqueue(&self, job: &PlaybackJob) -> PlaybackResult<()> {
         self.db.playback_jobs().create(job).await?;
         self.process_guild(&job.guild_id).await?;
@@ -459,11 +457,9 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
             if job.status != JobStatus::Playing {
                 continue;
             }
-            let remaining_snapshot =
-                remaining_ms.and_then(|remaining| i64::try_from(remaining).ok());
             self.db
                 .playback_jobs()
-                .set_playback_state(job.id, job.resume_offset_sec, remaining_snapshot, now)
+                .set_playback_state(job.id, now)
                 .await?;
             self.inner
                 .lock()
@@ -518,10 +514,16 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
             .finish(event.job_id, JobStatus::Done, now)
             .await?;
         self.clear_busy(&guild_id).await?;
+        info!(
+            guild = %guild_id,
+            job = %event.job_id,
+            source = job.source.as_db_str(),
+            reason = ?event.reason,
+            "job de lecture terminé"
+        );
         {
             let mut inner = self.inner.lock().await;
             inner.state_persisted_at.remove(&event.job_id);
-            inner.just_finished.insert(guild_id.clone(), event.job_id);
         }
         let run = self.process_guild(&guild_id).await?;
         Ok(ReleaseOutcome {
@@ -858,7 +860,6 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
 
     /// Boucle d'une guilde (parité `runGuild` legacy, bornée).
     async fn run_guild(&self, inner: &mut Inner, guild_id: &GuildId) -> PlaybackResult<GuildRun> {
-        let mut preferred = inner.just_finished.remove(guild_id);
         let mut started = false;
         for _ in 0..self.config.max_guild_iterations {
             let now = self.clock.now();
@@ -897,7 +898,6 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
                             .await?;
                         self.clear_busy(guild_id).await?;
                         inner.state_persisted_at.remove(&active.id);
-                        preferred = Some(active.id);
                         continue;
                     }
                     tracing::debug!(
@@ -905,12 +905,6 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
                         job = %active.id,
                         "watchdog suspendu : keep-alive playback.state récent (file locale)"
                     );
-                }
-                if let Some(preemptor) = self.find_preemption(guild_id, &active, now).await? {
-                    self.suspend_for_preemption(guild_id, &active, &preemptor, now)
-                        .await?;
-                    preferred = Some(preemptor.id);
-                    continue;
                 }
                 return Ok(GuildRun {
                     started,
@@ -920,10 +914,7 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
 
             self.clear_stale_busy(guild_id, now).await?;
 
-            let Some(job) = self
-                .claim_preferred(guild_id, preferred.take(), now)
-                .await?
-            else {
+            let Some(job) = self.store.claim_next_for_guild(guild_id, now).await? else {
                 return Ok(GuildRun {
                     started,
                     active: false,
@@ -942,7 +933,6 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
                     .finish(job.id, JobStatus::Failed, now)
                     .await?;
                 inner.state_persisted_at.remove(&job.id);
-                preferred = None;
                 continue;
             }
             let guild = self.db.guilds().get(guild_id).await?;
@@ -987,9 +977,16 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
                     .await?;
                 self.clear_busy(guild_id).await?;
                 inner.state_persisted_at.remove(&job.id);
-                preferred = None;
                 continue;
             }
+            info!(
+                guild = %guild_id,
+                job = %job.id,
+                source = job.source.as_db_str(),
+                duration_sec = timing.play_duration_sec,
+                start_offset_sec = timing.start_offset_sec,
+                "job de lecture dispatché"
+            );
             started = true;
             return Ok(GuildRun {
                 started,
@@ -1032,96 +1029,6 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
             inner.state_persisted_at.remove(&extra.id);
         }
         Ok(())
-    }
-
-    /// Suspend le job actif pour un job plus prioritaire et émet le `stop`.
-    async fn suspend_for_preemption(
-        &self,
-        guild_id: &GuildId,
-        active: &PlaybackJob,
-        preemptor: &PlaybackJob,
-        now: UtcDateTime,
-    ) -> PlaybackResult<()> {
-        let timing = payload::persisted_timing(active);
-        let remaining_ms = self.estimated_remaining_ms(active, now).max(0);
-        let remaining_sec = (remaining_ms + 999) / 1_000;
-        let elapsed_sec = (timing.play_duration_sec - remaining_sec).max(0);
-        let next_offset_sec = timing.start_offset_sec.saturating_add(elapsed_sec).max(0);
-        self.store
-            .suspend_playing(
-                active.id,
-                guild_id,
-                Some(preemptor.id),
-                next_offset_sec,
-                remaining_ms,
-                now,
-            )
-            .await?;
-        self.clear_busy(guild_id).await?;
-        self.sink
-            .on_stop(
-                guild_id,
-                StopPayload {
-                    reason: StopReason::Preempt,
-                    job_id: Some(active.id.to_canonical()),
-                },
-            )
-            .await;
-        Ok(())
-    }
-
-    /// Cherche un job `PENDING` de priorité strictement supérieure au job
-    /// actif (préemption d'un média du board).
-    async fn find_preemption(
-        &self,
-        guild_id: &GuildId,
-        active: &PlaybackJob,
-        now: UtcDateTime,
-    ) -> PlaybackResult<Option<PlaybackJob>> {
-        let pending = self
-            .db
-            .playback_jobs()
-            .list_pending_by_guild(guild_id)
-            .await?;
-        Ok(pending.into_iter().find(|job| {
-            job.priority > active.priority
-                && job.scheduled_at <= now
-                && job.is_claimable_at(now)
-                && job.resumes_after_job_id != Some(active.id)
-        }))
-    }
-
-    /// Claim : job préféré (reprise après préemption), puis job de reprise
-    /// suspendu après lui, puis prochain job selon l'ordre de priorité.
-    async fn claim_preferred(
-        &self,
-        guild_id: &GuildId,
-        preferred: Option<PlaybackJobId>,
-        now: UtcDateTime,
-    ) -> PlaybackResult<Option<PlaybackJob>> {
-        if let Some(preferred_id) = preferred {
-            if let Some(job) = self
-                .store
-                .claim_specific(preferred_id, guild_id, now)
-                .await?
-            {
-                return Ok(Some(job));
-            }
-            let pending = self
-                .db
-                .playback_jobs()
-                .list_pending_by_guild(guild_id)
-                .await?;
-            if let Some(resume) = pending
-                .into_iter()
-                .find(|job| job.resumes_after_job_id == Some(preferred_id))
-            {
-                if let Some(job) = self.store.claim_specific(resume.id, guild_id, now).await? {
-                    return Ok(Some(job));
-                }
-            }
-        }
-        Ok(self.store.claim_next_for_guild(guild_id, now).await?)
     }
 
     /// Charge le média associé à un job, si présent.
@@ -1185,16 +1092,9 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
         Ok(item.and_then(|item| item.display_scale_percent))
     }
 
-    /// Estime le temps restant d'un job (`playback.state` frais, sinon horloge).
+    /// Estime le temps restant d'un job à partir de son horloge de départ.
     fn estimated_remaining_ms(&self, job: &PlaybackJob, now: UtcDateTime) -> i64 {
         let now_ms = datetime_to_ms(now);
-        if let (Some(snapshot), Some(at)) = (job.remaining_ms_snapshot, job.last_playback_state_at)
-        {
-            let age_ms = (now_ms - datetime_to_ms(at)).max(0);
-            if age_ms <= self.config.state_snapshot_max_age_ms {
-                return snapshot - age_ms;
-            }
-        }
         let started_at_ms = job.started_at.map(datetime_to_ms).unwrap_or(now_ms);
         started_at_ms + job.duration_sec.max(1) * 1_000 - now_ms
     }

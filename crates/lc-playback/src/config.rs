@@ -6,8 +6,8 @@ use time::Duration as TimeDuration;
 
 use crate::{
     DEFAULT_PLAYBACK_DURATION_SEC, DEFAULT_RETENTION_HOURS, GUILD_RUN_MAX_ITERATIONS,
-    MEDIA_BOARD_JOB_PRIORITY, MIN_ACTIVE_PLAYBACK_BUSY_LOCK_MS, PLAYBACK_LOCK_PADDING_MS,
-    PLAYBACK_STALE_RELEASE_GRACE_MS, PLAYBACK_STATE_MAX_AGE_MS,
+    MIN_ACTIVE_PLAYBACK_BUSY_LOCK_MS, PLAYBACK_LOCK_PADDING_MS, PLAYBACK_STALE_RELEASE_GRACE_MS,
+    PLAYBACK_STATE_MAX_AGE_MS,
 };
 
 /// Configuration complète d'un [`PlaybackEngine`](crate::PlaybackEngine).
@@ -25,8 +25,6 @@ pub struct PlaybackConfig {
     pub default_duration_sec: i64,
     /// Rétention des jobs terminés avant purge.
     pub retention: TimeDuration,
-    /// Priorité déclenchant une préemption (média du board).
-    pub media_board_priority: i64,
     /// Base des URLs média (`{base}/overlay/media/{assetId}`).
     pub api_base_url: String,
     /// Débit minimal de persistance des checkpoints `playback.state`.
@@ -39,7 +37,7 @@ pub struct PlaybackConfig {
     pub stale_release_grace_ms: i64,
     /// Verrou minimal après un `playback.state`.
     pub min_busy_lock_ms: i64,
-    /// Âge maximal d'un snapshot `remaining_ms` avant de recalculer.
+    /// Âge maximal d'un keep-alive `playback.state` avant de le juger périmé.
     pub state_snapshot_max_age_ms: i64,
 }
 
@@ -49,7 +47,6 @@ impl Default for PlaybackConfig {
             tick_interval: Duration::from_millis(500),
             default_duration_sec: DEFAULT_PLAYBACK_DURATION_SEC,
             retention: TimeDuration::hours(DEFAULT_RETENTION_HOURS),
-            media_board_priority: MEDIA_BOARD_JOB_PRIORITY,
             api_base_url: "http://127.0.0.1:3000".to_owned(),
             state_persist_min_interval: Duration::from_secs(1),
             max_guild_iterations: GUILD_RUN_MAX_ITERATIONS,

@@ -3,7 +3,7 @@
 //! Same feature as the Discord commands `/dire` and `/cdire`: the text is
 //! synthesized by the local Piper engine ([`crate::media::tts`]), ingested as
 //! a normalized audio asset and queued as a playback job for the guild's
-//! overlays (`priority` 0, like the Discord commands and `POST /ingest`).
+//! overlays (source `OVERLAY`, label `speech`, comme le reste de l'overlay).
 //!
 //! Body:
 //!
@@ -33,6 +33,7 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use axum::Json;
 use lc_discord::{Lang, SpeechFailure};
+use lc_domain::enums::JobSource;
 use lc_domain::Permission;
 use lc_protocol::MAX_MEDIA_TEXT_CHARS;
 use serde_json::{json, Value};
@@ -171,7 +172,8 @@ pub async fn say(
         author_name: author_name.as_deref(),
         author_image: author_image.as_deref(),
         duration_sec: None,
-        priority: 0,
+        source: JobSource::Overlay,
+        source_label: Some("speech"),
     };
     match jobs::create_for_ingest(db, state.runtime().default_duration(), spec, now(&state)).await {
         Ok(job) => {

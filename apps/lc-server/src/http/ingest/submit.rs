@@ -28,6 +28,7 @@ use serde_json::{json, Value};
 use time::UtcDateTime;
 
 use lc_domain::entities::{GuildMember, IngestClient, MediaAsset};
+use lc_domain::enums::JobSource;
 use lc_domain::ids::GuildMemberId;
 use lc_domain::rights::{Action, Surface};
 use lc_protocol::{BoardChange, BoardChangedPayload, ServerMessage};
@@ -327,7 +328,8 @@ pub(super) async fn finish_ingest(
         author_name: Some(outcome.author_name),
         author_image: outcome.author_image,
         duration_sec: outcome.duration_sec,
-        priority: 0,
+        source: JobSource::Ingest,
+        source_label: Some(client.label.as_str()),
     };
 
     match jobs::create_for_ingest(db, state.runtime().default_duration(), spec, now).await {
@@ -358,6 +360,7 @@ mod tests {
     use axum::Router;
     use lc_db::{Db, DbConfig};
     use lc_domain::entities::{GuildMember, IngestClient};
+    use lc_domain::enums::JobSource;
     use lc_domain::ids::{GuildId, GuildMemberId, IngestClientId, PlaybackJobId};
     use lc_domain::GuildRole;
     use serde_json::{json, Value};
@@ -493,6 +496,7 @@ mod tests {
             .expect("lecture")
             .expect("job persisté");
         assert_eq!(job.guild_id.as_str(), GUILD);
+        assert_eq!(job.source, JobSource::Ingest);
     }
 
     #[tokio::test]

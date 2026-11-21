@@ -2,14 +2,14 @@
 //!
 //! `lc-db` expose les opérations génériques (création, `claim_next` global,
 //! `finish`, `set_playback_state`, `requeue`…) mais pas les primitives dont le
-//! scheduler a besoin : liste des jobs `PLAYING` d'une guilde, claim ciblé,
-//! suspension avec `resumes_after_job_id`, claim restreint à une guilde et
-//! libération groupée. Ces requêtes restent isolées ici pour deux raisons :
+//! scheduler a besoin : liste des jobs `PLAYING` d'une guilde, claim restreint
+//! à une guilde et libération groupée. Ces requêtes restent isolées ici pour
+//! deux raisons :
 //!
 //! 1. `lc-playback` ne doit pas modifier `lc-db` (un autre agent en est
 //!    propriétaire) ;
 //! 2. elles réutilisent exactement les critères de `claim_next`
-//!    (`crates/lc-db/src/repos/playback_jobs.rs:155-194`) afin de préserver
+//!    (`crates/lc-db/src/repos/playback_jobs.rs`) afin de préserver
 //!    l'invariant « au plus un `PLAYING` par guilde ».
 //!
 //! Écart à signaler : ces primitives mériteraient d'être promues dans
@@ -63,76 +63,10 @@ impl PlaybackStore {
         Ok(jobs)
     }
 
-    /// Claim ciblé d'un job précis (préemption/reprise), avec les mêmes gardes
-    /// que `claim_next`.
-    ///
-    /// Les verrous SQLite transitoires (`SQLITE_BUSY`/`SQLITE_LOCKED`) sont
-    /// réessayés avec un backoff court (`lc_db::with_busy_retry`) ; une course
-    /// avec un autre worker (index unique partiel
-    /// `idx_playback_jobs_single_playing`) est traduite en `None`.
-    pub(crate) async fn claim_specific(
-        &self,
-        job_id: PlaybackJobId,
-        guild_id: &GuildId,
-        now: UtcDateTime,
-    ) -> DbResult<Option<PlaybackJob>> {
-        let now_ms = datetime_to_ms(now);
-        let pool = self.db.pool().clone();
-        let job_id_raw = job_id.to_canonical();
-        let guild_raw = guild_id.as_str().to_owned();
-        let claimed: Option<String> = match lc_db::with_busy_retry(|| {
-            let pool = pool.clone();
-            let job_id_raw = job_id_raw.clone();
-            let guild_raw = guild_raw.clone();
-            async move {
-                sqlx::query_scalar::<_, String>(
-                    "UPDATE playback_jobs SET status = 'PLAYING', started_at = ? \
-                     WHERE id = ( \
-                         SELECT j.id FROM playback_jobs j \
-                         WHERE j.id = ? AND j.guild_id = ? AND j.status = 'PENDING' \
-                           AND j.finished_at IS NULL AND j.scheduled_at <= ? \
-                           AND (j.resumes_after_job_id IS NULL OR NOT EXISTS ( \
-                               SELECT 1 FROM playback_jobs p \
-                               WHERE p.id = j.resumes_after_job_id AND p.status IN ('PENDING', 'PLAYING'))) \
-                           AND NOT EXISTS ( \
-                               SELECT 1 FROM playback_jobs busy \
-                               WHERE busy.guild_id = j.guild_id AND busy.status = 'PLAYING') \
-                           AND NOT EXISTS ( \
-                               SELECT 1 FROM guilds g \
-                               WHERE g.id = j.guild_id AND g.busy_until IS NOT NULL AND g.busy_until > ?) \
-                         LIMIT 1) \
-                     AND status = 'PENDING' \
-                     RETURNING id",
-                )
-                .bind(now_ms)
-                .bind(&job_id_raw)
-                .bind(&guild_raw)
-                .bind(now_ms)
-                .bind(now_ms)
-                .fetch_optional(&pool)
-                .await
-                .map_err(DbError::from)
-            }
-        })
-        .await
-        {
-            Ok(claimed) => claimed,
-            Err(error) if error.is_unique_violation() => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        match claimed {
-            Some(raw) => {
-                let claimed_id = PlaybackJobId::parse(&raw).map_err(DbError::from)?;
-                self.db.playback_jobs().get(claimed_id).await
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// Claim du prochain job d'une guilde, avec l'ordre de priorité legacy.
+    /// Claim du prochain job d'une guilde, dans l'ordre FIFO.
     ///
     /// Mêmes retries de verrous transitoires et même traitement de course que
-    /// [`Self::claim_specific`].
+    /// `PlaybackJobsRepository::claim_next`.
     pub(crate) async fn claim_next_for_guild(
         &self,
         guild_id: &GuildId,
@@ -151,16 +85,13 @@ impl PlaybackStore {
                          SELECT j.id FROM playback_jobs j \
                          WHERE j.guild_id = ? AND j.status = 'PENDING' \
                            AND j.finished_at IS NULL AND j.scheduled_at <= ? \
-                           AND (j.resumes_after_job_id IS NULL OR NOT EXISTS ( \
-                               SELECT 1 FROM playback_jobs p \
-                               WHERE p.id = j.resumes_after_job_id AND p.status IN ('PENDING', 'PLAYING'))) \
                            AND NOT EXISTS ( \
                                SELECT 1 FROM playback_jobs busy \
                                WHERE busy.guild_id = j.guild_id AND busy.status = 'PLAYING') \
                            AND NOT EXISTS ( \
                                SELECT 1 FROM guilds g \
                                WHERE g.id = j.guild_id AND g.busy_until IS NOT NULL AND g.busy_until > ?) \
-                         ORDER BY j.priority DESC, j.submission_date ASC, j.id ASC \
+                         ORDER BY j.submission_date ASC, j.id ASC \
                          LIMIT 1) \
                      AND status = 'PENDING' \
                      RETURNING id",
@@ -200,8 +131,7 @@ impl PlaybackStore {
         let now_ms = datetime_to_ms(now);
         let result = sqlx::query(
             "UPDATE playback_jobs SET duration_sec = ?, resume_offset_sec = ?, \
-             resumes_after_job_id = NULL, execution_date = ?, scheduled_at = ?, \
-             remaining_ms_snapshot = NULL, last_playback_state_at = NULL \
+             execution_date = ?, scheduled_at = ?, last_playback_state_at = NULL \
              WHERE id = ? AND status = 'PLAYING'",
         )
         .bind(duration_sec)
@@ -209,36 +139,6 @@ impl PlaybackStore {
         .bind(now_ms)
         .bind(now_ms)
         .bind(job_id.to_canonical())
-        .execute(self.db.pool())
-        .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    /// Suspend un job `PLAYING` pour préemption (retour `PENDING` + reprise).
-    pub(crate) async fn suspend_playing(
-        &self,
-        job_id: PlaybackJobId,
-        guild_id: &GuildId,
-        preempting: Option<PlaybackJobId>,
-        resume_offset_sec: i64,
-        remaining_ms: i64,
-        now: UtcDateTime,
-    ) -> DbResult<bool> {
-        let now_ms = datetime_to_ms(now);
-        let result = sqlx::query(
-            "UPDATE playback_jobs SET status = 'PENDING', started_at = NULL, \
-             finished_at = NULL, resumes_after_job_id = ?, resume_offset_sec = ?, \
-             remaining_ms_snapshot = ?, last_playback_state_at = NULL, \
-             execution_date = ?, scheduled_at = ? \
-             WHERE id = ? AND guild_id = ? AND status = 'PLAYING'",
-        )
-        .bind(preempting.map(|job_id| job_id.to_canonical()))
-        .bind(resume_offset_sec)
-        .bind(remaining_ms)
-        .bind(now_ms)
-        .bind(now_ms)
-        .bind(job_id.to_canonical())
-        .bind(guild_id.as_str())
         .execute(self.db.pool())
         .await?;
         Ok(result.rows_affected() > 0)
@@ -283,7 +183,7 @@ impl PlaybackStore {
         for raw in &rows {
             sqlx::query(
                 "UPDATE playback_jobs SET status = 'DONE', finished_at = ?, \
-                 remaining_ms_snapshot = NULL, last_playback_state_at = NULL \
+                 last_playback_state_at = NULL \
                  WHERE id = ? AND status = 'PLAYING'",
             )
             .bind(now_ms)
@@ -305,7 +205,7 @@ mod tests {
     use std::time::Duration;
 
     use lc_db::{Db, DbConfig};
-    use lc_domain::JobStatus;
+    use lc_domain::{JobSource, JobStatus};
 
     use super::*;
 
@@ -319,11 +219,9 @@ mod tests {
             author_name: None,
             author_image: None,
             duration_sec: 5,
-            priority: 0,
+            source: JobSource::Board,
             status: JobStatus::Pending,
-            resumes_after_job_id: None,
             resume_offset_sec: 0,
-            remaining_ms_snapshot: None,
             last_playback_state_at: None,
             submission_date: now,
             execution_date: now,

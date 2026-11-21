@@ -20,6 +20,7 @@
 use std::path::PathBuf;
 
 use lc_domain::entities::{MediaAsset, PlaybackJob};
+use lc_domain::enums::JobSource;
 use lc_domain::{MediaBoardItemId, MediaKind};
 use lc_media::edit::EditRecipe;
 use lc_protocol::{
@@ -299,7 +300,8 @@ async fn complete_play_once(
         author_name: author_name.as_deref(),
         author_image: author_image.as_deref(),
         duration_sec,
-        priority: 0,
+        source: JobSource::Overlay,
+        source_label: Some("overlay"),
     };
     match jobs::create_for_ingest(db, state.runtime().default_duration(), spec, now).await {
         Ok(job) => {

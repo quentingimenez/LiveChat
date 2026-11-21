@@ -32,6 +32,7 @@ import {
 import { h, icon, registerIcons } from '../core/dom.js';
 import { formatBoardUsage, formatDuration, formatBytes, INVALID_DURATION_MESSAGE, MAX_DISPLAY_DURATION_SEC, parseDisplayDuration } from '../core/format.js';
 import { cardRatio, cardStyle } from '../core/masonry.js';
+import { badgeForItem } from '../core/queue-badges.js';
 import {
   cardClickAction,
   copiedLinksSummary,
@@ -257,26 +258,15 @@ const thumbObserver = new IntersectionObserver(
 );
 
 // --- playback badges ---
-// `state.triggers` maps jobId -> itemId. `state.triggerHints` keeps the
-// outcome returned by the click until a newer read of the queue decides.
-function queueBadgeFor(jobId) {
-  const { playing, pending } = state.queue;
-  if (playing && playing.id === jobId) {
-    return { air: true, label: 'À l’écran' };
-  }
-  const index = (pending || []).findIndex((job) => job.id === jobId);
-  if (index !== -1) {
-    return { air: false, label: `En file · ${index + 1}` };
-  }
-  return null;
-}
-
-// A job missing from a queue read newer than the click is over: forget it so
-// its badge disappears for good.
+// `state.queue` says which board item is on air or waiting; `state.triggers`
+// keeps the job returned by a click until a queue read confirms it.
 function pruneTriggers() {
   const queueAt = state.queue.at || 0;
+  const { playing, pending } = state.queue;
+  const inQueue = (jobId) =>
+    Boolean(playing && playing.id === jobId) || (pending || []).some((job) => job.id === jobId);
   for (const [jobId, hint] of state.triggerHints) {
-    if (queueAt <= hint.at || queueBadgeFor(jobId)) {
+    if (queueAt <= hint.at || inQueue(jobId)) {
       continue;
     }
     state.triggerHints.delete(jobId);
@@ -286,39 +276,8 @@ function pruneTriggers() {
 
 function triggerBadgeFor(itemId) {
   pruneTriggers();
-  let queued = null;
-  for (const [jobId, mappedItemId] of state.triggers) {
-    if (mappedItemId !== itemId) {
-      continue;
-    }
-    const inQueue = queueBadgeFor(jobId);
-    if (!inQueue) {
-      continue;
-    }
-    if (inQueue.air) {
-      return inQueue;
-    }
-    queued = queued || inQueue;
-  }
-  if (queued) {
-    return queued;
-  }
-  for (const [jobId, mappedItemId] of state.triggers) {
-    if (mappedItemId !== itemId) {
-      continue;
-    }
-    const hint = state.triggerHints.get(jobId);
-    if (!hint) {
-      continue;
-    }
-    if (hint.outcome === 'playing') {
-      return { air: true, label: 'À l’écran' };
-    }
-    if (hint.outcome === 'queued') {
-      queued = { air: false, label: hint.position ? `En file · ${hint.position}` : 'En file' };
-    }
-  }
-  return queued;
+  const item = state.items.find((candidate) => candidate.id === itemId) || null;
+  return badgeForItem(state.queue, state.triggers, state.triggerHints, item);
 }
 
 // Updates badges in place: re-rendering the whole view would reload the video

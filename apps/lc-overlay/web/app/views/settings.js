@@ -16,7 +16,7 @@
 import { run } from '../core/api.js';
 import { acceleratorFromEvent, acceleratorLabel, ALTGR_HINT, BARE_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import { resizeAvatar } from '../core/avatar.js';
-import { avatarNode, h, icon, registerIcons, resetOnDoubleClick, SLIDER_RESET_HINT } from '../core/dom.js';
+import { avatarNode, h, icon, markSettingsDirty, registerIcons, resetOnDoubleClick, settingsControlActive, SLIDER_RESET_HINT } from '../core/dom.js';
 import { invoke, listen } from '../core/ipc.js';
 import { DEFAULT_VOLUME_PERCENT } from '../core/sound.js';
 import { guildLabel, state } from '../core/state.js';
@@ -145,6 +145,16 @@ export function initDeviceSettings() {
     }
   });
   subscribeTheme(syncLogo);
+  // Dirty-tracking is delegated: the settings view is rebuilt often, and a
+  // captured reference would go stale. Any edit marks the current form, even
+  // after focus moves to a heading or another control.
+  document.addEventListener('input', (event) => markSettingsDirty(event.target));
+  document.addEventListener('change', (event) => markSettingsDirty(event.target));
+  // The shell's settings are local and cheap: read them once at startup so the
+  // guild's « Réglages » tab never opens on its loading line. If the user gets
+  // there first, `loading` makes this call a no-op and the tab renders when the
+  // first read lands.
+  queueMicrotask(loadDeviceSettings);
 }
 
 export async function loadDeviceSettings() {
@@ -171,17 +181,6 @@ export async function loadDeviceSettings() {
   if (settingsShown()) {
     renderView();
   }
-}
-
-function settingsControlActive() {
-  const active = document.activeElement;
-  return Boolean(
-    active &&
-      active.closest &&
-      active.closest('.settings') &&
-      typeof active.matches === 'function' &&
-      active.matches('input, select, textarea'),
-  );
 }
 
 // ---------------------------------------------------------------- settings set

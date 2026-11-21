@@ -18,11 +18,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
 use lc_protocol::{
-    AckPayload, BoardChangedPayload, ClientEnvelope, ClientMessage, DeviceSettingsPayload,
-    DeviceSettingsStatePayload, HeartbeatPayload, HelloPayload, MediaIngestionPayload,
-    PeersPayload, Platform, PlayPayload, PlaybackState, PlaybackStatePayload, RightsChangedPayload,
-    ServerEnvelope, ServerErrorPayload, ServerMessage, SessionChangedPayload, SessionMode,
-    SettingsPayload, StopPayload, WelcomePayload,
+    AckPayload, AdminChangedPayload, BoardChangedPayload, ClientEnvelope, ClientMessage,
+    DeviceSettingsPayload, DeviceSettingsStatePayload, HeartbeatPayload, HelloPayload,
+    MediaIngestionPayload, PeersPayload, Platform, PlayPayload, PlaybackState,
+    PlaybackStatePayload, RightsChangedPayload, ServerEnvelope, ServerErrorPayload, ServerMessage,
+    SessionChangedPayload, SessionMode, SettingsPayload, StopPayload, WelcomePayload,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Wry};
@@ -50,7 +50,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 /// Cadence du keep-alive des `play` en file locale (avant leur affichage).
 const QUEUED_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(3);
 /// Every server message type known by this client.
-const KNOWN_SERVER_MESSAGE_TYPES: [&str; 12] = [
+const KNOWN_SERVER_MESSAGE_TYPES: [&str; 13] = [
     lc_protocol::msg_type::WELCOME,
     lc_protocol::msg_type::SETTINGS,
     lc_protocol::msg_type::PEERS,
@@ -60,6 +60,7 @@ const KNOWN_SERVER_MESSAGE_TYPES: [&str; 12] = [
     lc_protocol::msg_type::ERROR,
     lc_protocol::msg_type::MEDIA_INGESTION,
     lc_protocol::msg_type::BOARD_CHANGED,
+    lc_protocol::msg_type::ADMIN_CHANGED,
     lc_protocol::msg_type::DEVICE_SETTINGS,
     lc_protocol::msg_type::SESSION_CHANGED,
     lc_protocol::msg_type::RIGHTS_CHANGED,
@@ -160,6 +161,8 @@ pub trait SessionEffects: Send + Sync {
     fn on_media_ingestion(&self, payload: &MediaIngestionPayload);
     /// The guild's media board changed.
     fn on_board_changed(&self, payload: &BoardChangedPayload);
+    /// An administration list of the guild changed elsewhere.
+    fn on_admin_changed(&self, _payload: &AdminChangedPayload) {}
     /// Applies `device.settings` (admin remote control) through the same path
     /// as the board settings page, then returns the resulting state to report.
     fn on_device_settings(
@@ -960,6 +963,9 @@ async fn run_session<E: SessionEffects>(
                                     ServerMessage::BoardChanged(payload) => {
                                         effects.on_board_changed(&payload)
                                     }
+                                    ServerMessage::AdminChanged(payload) => {
+                                        effects.on_admin_changed(&payload)
+                                    }
                                     ServerMessage::DeviceSettings(payload) => {
                                         if let Some(state) = effects.on_device_settings(&payload) {
                                             let frame =
@@ -1318,6 +1324,12 @@ impl SessionEffects for AppEffects {
                 tracing::debug!(%error, "échec d'émission des settings vers le renderer");
             }
         }
+        // The board caches `GET /overlay/guild`; a settings broadcast (any
+        // writable field) is its cue to refresh that cache and repaint the
+        // Réglages tab. The overlay renderer above only uses playback values.
+        if let Err(error) = events::emit_guild_settings_changed(&self.app, &self.guild_id) {
+            tracing::debug!(%error, "échec d'émission des settings vers la board");
+        }
         refresh_tray_from_any_thread(&self.app);
     }
 
@@ -1405,6 +1417,12 @@ impl SessionEffects for AppEffects {
     fn on_board_changed(&self, payload: &BoardChangedPayload) {
         if let Err(error) = events::emit_board_changed(&self.app, &self.guild_id, payload) {
             tracing::debug!(%error, "échec d'émission du changement de board");
+        }
+    }
+
+    fn on_admin_changed(&self, payload: &AdminChangedPayload) {
+        if let Err(error) = events::emit_admin_changed(&self.app, &self.guild_id, payload.kind) {
+            tracing::debug!(%error, "échec d'émission du changement d'administration");
         }
     }
 

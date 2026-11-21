@@ -60,6 +60,9 @@
 
   const role = new URLSearchParams(location.search).get('role') || 'admin';
   const empty = new URLSearchParams(location.search).has('empty');
+  // `?latency=1500` slows every server call (not the shell): the rail must
+  // switch at once and the board/queue show their loading state.
+  const latency = Math.max(0, Number(new URLSearchParams(location.search).get('latency')) || 0);
   const isAdmin = role === 'admin';
   const isGuest = role === 'guest';
 
@@ -1324,7 +1327,7 @@
           return Promise.resolve(guildsCopy());
         case 'guild_api':
           requests.push({ method: payload.method, path: payload.path });
-          return delay(80).then(() => api(payload));
+          return delay(latency || 80).then(() => api(payload));
         case 'board_import':
           // Like the server: the first media is already on the target board,
           // the others are copied.

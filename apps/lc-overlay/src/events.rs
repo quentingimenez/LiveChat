@@ -40,6 +40,10 @@ pub const EVENT_MEDIA_INGESTION: &str = "overlay://media-ingestion";
 pub const EVENT_BOARD_CHANGED: &str = "overlay://board-changed";
 /// The overlay's effective guild rights changed (board window only).
 pub const EVENT_RIGHTS_CHANGED: &str = "overlay://rights-changed";
+/// The guild's server settings changed (board window only).
+pub const EVENT_GUILD_SETTINGS_CHANGED: &str = "overlay://guild-settings-changed";
+/// The guild's administration lists changed (board window only).
+pub const EVENT_ADMIN_CHANGED: &str = "overlay://admin-changed";
 
 /// Délai maximal de rétention des événements avant que le renderer ne soit prêt.
 pub const READY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -255,6 +259,31 @@ pub fn emit_rights_changed(app: &AppHandle<Wry>, guild_id: &str) -> tauri::Resul
         EventTarget::labeled(BOARD_LABEL),
         EVENT_RIGHTS_CHANGED,
         serde_json::json!({ "guildId": guild_id }),
+    )
+}
+
+/// Asks the board to reload `GET /overlay/guild` after a guild setting changed
+/// on another device. The payload carries the guild so a stale event cannot
+/// make the board refresh the wrong guild.
+pub fn emit_guild_settings_changed(app: &AppHandle<Wry>, guild_id: &str) -> tauri::Result<()> {
+    app.emit_to(
+        EventTarget::labeled(BOARD_LABEL),
+        EVENT_GUILD_SETTINGS_CHANGED,
+        serde_json::json!({ "guildId": guild_id }),
+    )
+}
+
+/// Asks the board to reload the administration sub-tab it displays after an
+/// admin mutation elsewhere. The payload is only a hint.
+pub fn emit_admin_changed(
+    app: &AppHandle<Wry>,
+    guild_id: &str,
+    kind: lc_protocol::AdminChangeKind,
+) -> tauri::Result<()> {
+    app.emit_to(
+        EventTarget::labeled(BOARD_LABEL),
+        EVENT_ADMIN_CHANGED,
+        serde_json::json!({ "guildId": guild_id, "kind": kind }),
     )
 }
 
@@ -500,6 +529,11 @@ mod tests {
         assert_eq!(EVENT_MEDIA_INGESTION, "overlay://media-ingestion");
         assert_eq!(EVENT_BOARD_CHANGED, "overlay://board-changed");
         assert_eq!(EVENT_RIGHTS_CHANGED, "overlay://rights-changed");
+        assert_eq!(
+            EVENT_GUILD_SETTINGS_CHANGED,
+            "overlay://guild-settings-changed"
+        );
+        assert_eq!(EVENT_ADMIN_CHANGED, "overlay://admin-changed");
     }
 
     #[test]

@@ -6,16 +6,20 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::sync::Arc;
+
 use axum::http::{Method, StatusCode};
 use lc_domain::rights::{Action, RightsRole, Surface};
 use lc_domain::{
     GuildId, GuildRole, JobStatus, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId,
     MediaKind, MediaStatus, PlaybackJob, PlaybackJobId,
 };
+use lc_protocol::{AdminChangeKind, ServerMessage};
 use serde_json::{json, Value};
 use time::{Duration, UtcDateTime};
 
-use super::guild_tests::{fixed_now, token, Harness};
+use super::guild_tests::{fixed_now, token, Harness, RecordingAdminHub};
+use crate::http::admin::hub::AdminHub;
 
 /// Guilde de test (`MEDIA_BOARD_MAX_TOTAL_MB=64` dans le harnais).
 const SERVER_LIMIT_MB: i64 = 64;
@@ -228,6 +232,116 @@ async fn guild_payload_exposes_board_defaults_and_playback() {
     assert_eq!(
         body["guild"]["mediaBoard"]["serverMaxBytes"],
         SERVER_LIMIT_MB * MIB
+    );
+}
+
+#[tokio::test]
+async fn stale_settings_version_is_rejected_instead_of_overwriting() {
+    let harness = Harness::new().await;
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Alice")
+        .await;
+    let admin_token = token(&admin);
+
+    let (status, body) = harness
+        .call(Method::GET, "/overlay/guild", Some(&admin_token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let version = body["guild"]["settingsVersion"]
+        .as_str()
+        .expect("settingsVersion is missing")
+        .to_string();
+    assert!(!version.is_empty());
+
+    let (status, body) = harness
+        .call(
+            Method::PATCH,
+            "/overlay/admin/settings",
+            Some(&admin_token),
+            Some(json!({
+                "name": "GG Squad",
+                "expectedSettingsVersion": version,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_ne!(body["guild"]["settingsVersion"], version);
+
+    // A second board still holding the first version must be refused.
+    let (status, body) = harness
+        .call(
+            Method::PATCH,
+            "/overlay/admin/settings",
+            Some(&admin_token),
+            Some(json!({
+                "name": "Écrasement",
+                "expectedSettingsVersion": version,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "settings_conflict");
+
+    let (status, body) = harness
+        .call(Method::GET, "/overlay/guild", Some(&admin_token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["guild"]["name"], "GG Squad");
+}
+
+#[tokio::test]
+async fn concurrent_settings_writes_cannot_both_pass_the_version_check() {
+    let harness = Harness::new().await;
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Alice")
+        .await;
+    let admin_token = token(&admin);
+
+    let (status, body) = harness
+        .call(Method::GET, "/overlay/guild", Some(&admin_token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let version = body["guild"]["settingsVersion"]
+        .as_str()
+        .expect("settingsVersion is missing")
+        .to_string();
+
+    let first = harness.call(
+        Method::PATCH,
+        "/overlay/admin/settings",
+        Some(&admin_token),
+        Some(json!({
+            "name": "Premier écrivain",
+            "expectedSettingsVersion": version,
+        })),
+    );
+    let second = harness.call(
+        Method::PATCH,
+        "/overlay/admin/settings",
+        Some(&admin_token),
+        Some(json!({
+            "name": "Second écrivain",
+            "expectedSettingsVersion": version,
+        })),
+    );
+    let ((first_status, first_body), (second_status, second_body)) = tokio::join!(first, second);
+
+    let mut statuses = [first_status, second_status];
+    statuses.sort();
+    assert_eq!(
+        statuses,
+        [StatusCode::OK, StatusCode::CONFLICT],
+        "{first_body} {second_body}"
+    );
+
+    let (status, body) = harness
+        .call(Method::GET, "/overlay/guild", Some(&admin_token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let saved = body["guild"]["name"].as_str().unwrap_or_default();
+    assert!(
+        saved == "Premier écrivain" || saved == "Second écrivain",
+        "unexpected saved name: {saved}"
     );
 }
 
@@ -779,4 +893,42 @@ async fn guild_hides_board_and_playback_without_rights() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["guild"]["mediaBoard"].is_object());
     assert!(body["guild"]["playback"].is_object());
+}
+
+#[tokio::test]
+async fn clearing_the_board_broadcasts_an_admin_changed_event() {
+    let mut harness = Harness::new().await;
+    let hub = Arc::new(RecordingAdminHub::default());
+    harness.state = harness
+        .state
+        .clone()
+        .with_admin_hub(hub.clone() as Arc<dyn AdminHub>);
+    harness.app = crate::app::router(harness.state.clone());
+
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Alice")
+        .await;
+    let admin_token = token(&admin);
+    let (status, body) = harness
+        .call(
+            Method::POST,
+            "/overlay/admin/media-board/clear",
+            Some(&admin_token),
+            Some(json!({ "confirm": "Les Sardines" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let broadcasts = hub.broadcasts();
+    assert!(
+        broadcasts.iter().any(|(guild_id, message)| {
+            *guild_id == harness.guild_id
+                && matches!(
+                    message,
+                    ServerMessage::AdminChanged(payload)
+                        if payload.kind == AdminChangeKind::Audit
+                )
+        }),
+        "attendu un admin.changed(Audit) pour la guilde, reçu {broadcasts:?}"
+    );
 }

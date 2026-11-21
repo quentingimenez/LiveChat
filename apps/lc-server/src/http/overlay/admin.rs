@@ -41,7 +41,7 @@ use lc_domain::{
     Guild, GuildBan, GuildBanId, GuildMember, GuildMemberId, GuildRole, PairingCode,
     PairingCodeEntry, Permission,
 };
-use lc_protocol::{close_code, close_reason};
+use lc_protocol::{close_code, close_reason, AdminChangeKind, AdminChangedPayload, ServerMessage};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -53,7 +53,7 @@ use super::auth::AuthedOverlayClient;
 use super::board_clear;
 use super::guild::{
     create_invite, invite_payload, iso, member_payload, normalize_label, remove_member, require,
-    NewInvite,
+    settings_version, NewInvite,
 };
 use super::ingest_code::INGEST_CODE_CREATOR_PREFIX;
 use super::{db, db_failure, error, internal_error, is_conflict, json_response, now};
@@ -69,6 +69,21 @@ const GUILD_NAME_MAX_CHARS: usize = 60;
 const AUDIT_DEFAULT_LIMIT: usize = 50;
 /// Taille de page maximale du journal de la guilde.
 const AUDIT_MAX_LIMIT: usize = 200;
+
+/// Sends an `admin.changed` hint to the guild's overlay sockets.
+///
+/// The hint carries no list: each board reloads the sub-tab it displays. It is
+/// sent after the write succeeds, so a failed mutation never invalidates a
+/// client's view.
+fn broadcast_admin_changed(state: &AppState, guild_id: &lc_domain::GuildId, kind: AdminChangeKind) {
+    state.admin_hub.broadcast_to_guild(
+        guild_id,
+        ServerMessage::AdminChanged(AdminChangedPayload {
+            guild_id: guild_id.as_str().to_owned(),
+            kind,
+        }),
+    );
+}
 
 /// Loads an active member of the guild (`404 member_not_found` otherwise).
 pub(crate) async fn load_guild_member(
@@ -196,6 +211,8 @@ pub(crate) async fn update_member_payload(
         );
     }
 
+    broadcast_admin_changed(state, guild_id, AdminChangeKind::Members);
+
     Ok(json!({
         "updated": true,
         "member": {"id": member.id.to_canonical(), "role": role.as_wire_str()},
@@ -236,6 +253,7 @@ pub(crate) async fn remove_member_payload(
                 member_id = %member.id,
                 "membre exclu"
             );
+            broadcast_admin_changed(state, guild_id, AdminChangeKind::Members);
             Ok(json!({"removed": true}))
         }
         Ok(MemberChange::LastAdmin) => Err(error(StatusCode::CONFLICT, "last_admin")),
@@ -328,6 +346,7 @@ pub(crate) async fn ban_member_payload(
         discord_linked = member.discord_user_id.is_some(),
         "membre banni"
     );
+    broadcast_admin_changed(state, guild_id, AdminChangeKind::Bans);
     Ok(json!({"banned": true, "ban": ban_payload(&ban)}))
 }
 
@@ -396,6 +415,7 @@ pub(crate) async fn unban_payload(
     match db.guild_bans().delete(guild_id, ban_id).await {
         Ok(true) => {
             tracing::info!(guild_id = %guild_id, ban_id = %ban_id, "bannissement levé");
+            broadcast_admin_changed(state, guild_id, AdminChangeKind::Bans);
             Ok(json!({"unbanned": true}))
         }
         Ok(false) => Err(error(StatusCode::NOT_FOUND, "ban_not_found")),
@@ -496,10 +516,13 @@ pub(crate) async fn create_invite_payload(
         expires_at: expires_in_hours.map(|hours| now + Duration::hours(hours)),
     };
     match create_invite(db, invite, now).await {
-        Ok(Some(invite)) => Ok(json!({
-            "created": true,
-            "invite": invite_payload(&invite, now),
-        })),
+        Ok(Some(invite)) => {
+            broadcast_admin_changed(state, guild_id, AdminChangeKind::Invites);
+            Ok(json!({
+                "created": true,
+                "invite": invite_payload(&invite, now),
+            }))
+        }
         Ok(None) => Err(internal_error()),
         Err(db_error) => Err(db_failure("overlay_admin.create_invite", &db_error)),
     }
@@ -543,7 +566,12 @@ pub(crate) async fn revoke_invite_payload(
         Err(db_error) => return Err(db_failure("overlay_admin.invite_lookup", &db_error)),
     }
     match db.guild_invites().revoke(guild_id, &code, now(state)).await {
-        Ok(revoked) => Ok(json!({"found": true, "revoked": revoked})),
+        Ok(revoked) => {
+            if revoked {
+                broadcast_admin_changed(state, guild_id, AdminChangeKind::Invites);
+            }
+            Ok(json!({"found": true, "revoked": revoked}))
+        }
         Err(db_error) => Err(db_failure("overlay_admin.revoke_invite", &db_error)),
     }
 }
@@ -664,6 +692,7 @@ async fn revoke_pairing_code_payload(
             guild_id = %entry.guild_id,
             "code de pairing révoqué depuis l'overlay"
         );
+        broadcast_admin_changed(state, guild_id, AdminChangeKind::PairingCodes);
     }
     Ok(json!({"revoked": revoked > 0}))
 }
@@ -698,7 +727,12 @@ pub async fn purge_pairing_codes(
     };
     let now_ms = lc_domain::datetime_to_ms(now(&state));
     match pairing_codes::delete_expired(db, Some(auth.guild_id().as_str()), now_ms).await {
-        Ok(deleted) => json_response(StatusCode::OK, json!({"deleted": deleted})),
+        Ok(deleted) => {
+            if deleted > 0 {
+                broadcast_admin_changed(&state, auth.guild_id(), AdminChangeKind::PairingCodes);
+            }
+            json_response(StatusCode::OK, json!({"deleted": deleted}))
+        }
         Err(db_error) => db_failure("overlay_admin.purge_pairing_codes", &db_error),
     }
 }
@@ -765,6 +799,17 @@ pub async fn update_settings(
     if !payload.is_object() {
         return error(StatusCode::BAD_REQUEST, "invalid_payload");
     }
+    // Optional `If-Match`: a board that read the settings sends the version it
+    // saw, so a concurrent edit is refused instead of silently overwritten.
+    let expected_settings_version = match payload.get("expectedSettingsVersion") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(version)) if !version.is_empty() => Some(version.as_str()),
+        Some(_) => return error(StatusCode::BAD_REQUEST, "invalid_payload"),
+    };
+    // The version check and the write form a read-modify-write: without this
+    // lock two boards could both validate the same version and then overwrite
+    // each other. Settings writes are rare, so one process-wide lock is enough.
+    let _settings_write = state.settings_write.lock().await;
     let name = match payload.get("name") {
         None => None,
         Some(Value::String(raw)) => {
@@ -814,8 +859,19 @@ pub async fn update_settings(
         Err(db_error) => return db_failure("overlay_admin.settings_lookup", &db_error),
     };
 
-    let playback_changed =
-        default_media_time.is_some() || max_media_time.is_some() || display_media_full.is_some();
+    if let Some(expected) = expected_settings_version {
+        let current_guests = match db.guilds().access(guild_id).await {
+            Ok(access) => access.is_none_or(|access| access.guests_can_view_board),
+            Err(db_error) => return db_failure("overlay_admin.settings_version_access", &db_error),
+        };
+        let current_quota = match db.guilds().board_quota_mb(guild_id).await {
+            Ok(quota_mb) => quota_mb,
+            Err(db_error) => return db_failure("overlay_admin.settings_version_quota", &db_error),
+        };
+        if expected != settings_version(existing.as_ref(), current_guests, current_quota) {
+            return error(StatusCode::CONFLICT, "settings_conflict");
+        }
+    }
     let guild = Guild {
         id: guild_id.clone(),
         name: name
@@ -849,9 +905,10 @@ pub async fn update_settings(
             return db_failure("overlay_admin.settings_quota", &db_error);
         }
     }
-    if playback_changed {
-        state.admin_hub.broadcast_settings(guild_id).await;
-    }
+    // Every writable field changes the settings version, so every PATCH must
+    // wake the other boards — even a name or quota change carries no playback
+    // field but still makes their cached `state.info` stale.
+    state.admin_hub.broadcast_settings(guild_id).await;
 
     let guests_can_view_board = match db.guilds().access(guild_id).await {
         Ok(access) => access.is_none_or(|access| access.guests_can_view_board),
@@ -861,6 +918,8 @@ pub async fn update_settings(
         Ok(quota_mb) => quota_mb,
         Err(db_error) => return db_failure("overlay_admin.settings_quota_reload", &db_error),
     };
+    let settings_version_value =
+        settings_version(Some(&guild), guests_can_view_board, board_quota_mb);
     json_response(
         StatusCode::OK,
         json!({
@@ -868,6 +927,7 @@ pub async fn update_settings(
             "guild": {
                 "id": guild_id.as_str(),
                 "name": guild.name,
+                "settingsVersion": settings_version_value,
                 "guestsCanViewBoard": guests_can_view_board,
                 "settings": {
                     "defaultMediaTime": guild.default_media_time,
@@ -911,21 +971,24 @@ pub async fn clear_media_board(
         return error(StatusCode::BAD_REQUEST, "confirmation_mismatch");
     }
     match board_clear::clear_board(&state, auth.guild_id()).await {
-        Ok(report) => json_response(
-            StatusCode::OK,
-            json!({
-                "guildId": auth.guild_id().as_str(),
-                "stop": {
-                    "releasedPlayingJobs": report.released_playing_jobs,
-                    "broadcast": report.broadcast,
-                },
-                "deleted": {
-                    "mediaBoardItems": report.media_board_items,
-                    "orphanMediaAssets": report.orphan_media_assets,
-                    "orphanMediaFileDeleteErrors": report.orphan_media_file_delete_errors,
-                },
-            }),
-        ),
+        Ok(report) => {
+            broadcast_admin_changed(&state, auth.guild_id(), AdminChangeKind::Audit);
+            json_response(
+                StatusCode::OK,
+                json!({
+                    "guildId": auth.guild_id().as_str(),
+                    "stop": {
+                        "releasedPlayingJobs": report.released_playing_jobs,
+                        "broadcast": report.broadcast,
+                    },
+                    "deleted": {
+                        "mediaBoardItems": report.media_board_items,
+                        "orphanMediaAssets": report.orphan_media_assets,
+                        "orphanMediaFileDeleteErrors": report.orphan_media_file_delete_errors,
+                    },
+                }),
+            )
+        }
         Err(response) => response,
     }
 }

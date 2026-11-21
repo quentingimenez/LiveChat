@@ -1,10 +1,14 @@
 // Loading and refreshing guild data (guild info, board items, queue, admin
 // lists) and applying the shell's guild list.
 
+import { apiForGuild } from './core/api.js';
+import { readGuildCache, writeGuildCache, invalidateGuildCache, pruneGuildCache } from './core/guild-cache.js';
+import { readLayoutCache, writeLayoutCache, pruneLayoutCache } from './core/layout-cache.js';
+import { settingsControlActive, settingsFormDirty } from './core/dom.js';
 import { pruneSelection } from './core/selection.js';
-import { api } from './core/api.js';
 import { mediaRefreshDelay } from './core/format.js';
 import { invoke } from './core/ipc.js';
+import { dedupe, isLatest, requestToken } from './core/query.js';
 import { activeGuild, can, canAdmin, state } from './core/state.js';
 import { tabAfterGuildSwitch } from './core/tabs.js';
 import { notify } from './core/toast.js';
@@ -25,6 +29,13 @@ let itemsRefreshTimer = null;
 // A media URL expired while the window was hidden: reload it on the next
 // visibility/focus instead of fetching in the background.
 let itemsRefreshPending = false;
+// Guilds whose info is being prefetched (pointer over the rail).
+const prefetching = new Set();
+// Bumped by forced admin reloads so they cannot join a read that started
+// before the mutation they are refreshing.
+let adminForcedSeq = 0;
+// Token of the newest admin read. Older reads discard their late responses.
+let adminReadToken = 0;
 
 // Board changes are coalesced: nearby requests share one debounced loadItems()
 // and the same promise.
@@ -130,6 +141,11 @@ export function applyGuilds(payload) {
   state.guilds = payload.guilds || [];
   state.activeGuildId = payload.activeGuildId || null;
   state.profile = payload.profile || state.profile;
+  pruneGuildCache(state.guilds.map((guild) => guild && guild.membership && guild.membership.guildId).filter(Boolean));
+  pruneLayoutCache(state.guilds.map((guild) => guild && guild.membership && guild.membership.guildId).filter(Boolean));
+  if (state.pendingGuildId && state.pendingGuildId === state.activeGuildId) {
+    state.pendingGuildId = null;
+  }
   for (const guild of state.guilds) {
     if (!guild || !guild.membership) {
       continue;
@@ -147,13 +163,21 @@ export function applyGuilds(payload) {
     presenceRefreshTimer = null;
     clearQueueEndTimer();
     resetGuildData();
-    // The header and the view keep the previous guild until the new one's info
-    // lands: « Administration » depends on its permissions, and the « Réglages »
-    // tab reads its name. Painting now would flash a header without the tab (and
-    // without the overlay count), then repaint it once the info is read.
-    state.switchingGuild = true;
+    // Paint the new guild from its last snapshot (or a skeleton) at once. The
+    // data is revalidated in the background; the old guild's cards never stay
+    // clickable under the new guild's identity.
+    adoptGuild(state.activeGuildId);
+    state.switchingGuild = Boolean(state.activeGuildId);
+    // « Administration » depends on permissions we may not have read yet: while
+    // the info is missing, trust the role the shell already gave us.
+    const admin = state.info ? canAdmin() : Boolean(activeGuild() && activeGuild().membership.role === 'admin');
+    state.tab = tabAfterGuildSwitch(state.tab, admin);
     renderRail();
-    loadGuild({ switched: true });
+    renderHeader();
+    renderView();
+    if (state.activeGuildId) {
+      hydrateGuild(state.activeGuildId, { switched: true }).catch(() => {});
+    }
     return;
   }
   if (state.activeGuildId) {
@@ -175,11 +199,8 @@ export function applyGuilds(payload) {
   }
   renderRail();
   // The shell announces one switch twice (its event, then the command's
-  // response): the second one must not paint the header with the info still
-  // loading.
-  if (state.switchingGuild) {
-    return;
-  }
+  // response): the second one repaints the rail and the header without closing
+  // the view, so a cached board keeps its scroll and its detail panel.
   renderHeader();
   if (!state.activeGuildId || state.page === 'settings') {
     renderView();
@@ -188,11 +209,17 @@ export function applyGuilds(payload) {
 
 function resetGuildData() {
   state.info = null;
+  state.infoLoaded = false;
+  state.infoError = null;
   state.items = [];
   state.itemsLoaded = false;
+  state.itemsError = null;
+  state.boardLayout = null;
   state.selectedId = null;
   state.queue = { playing: null, pending: [], at: 0 };
   state.queueStale = false;
+  state.queueLoaded = false;
+  state.queueError = null;
   state.queueHistory = [];
   state.triggers.clear();
   state.triggerHints.clear();
@@ -202,6 +229,7 @@ function resetGuildData() {
   state.pairingCodes = [];
   state.bans = [];
   state.auditEntries = [];
+  state.bindings = {};
   state.search = '';
   state.kind = 'all';
   state.selecting = false;
@@ -213,123 +241,235 @@ function resetGuildData() {
   guildInfoLoadedAt = 0;
 }
 
+// Restores the last snapshot of `guildId` without touching the network.
+function adoptGuild(guildId) {
+  if (!guildId) {
+    return;
+  }
+  const info = readGuildCache(guildId, 'info');
+  if (info) {
+    state.info = info.value;
+    state.infoLoaded = true;
+    state.infoError = null;
+    guildInfoLoadedAt = info.at;
+  }
+  const items = readGuildCache(guildId, 'items');
+  if (items) {
+    state.items = items.value || [];
+    state.itemsLoaded = true;
+    state.itemsError = null;
+    state.boardLayout = null;
+    state.selection = pruneSelection(state.selection, state.items.map((item) => item.id));
+  } else {
+    // No cached board for this session, but the last visit may have left its
+    // shapes on disk: the skeleton can then reuse the real media dimensions.
+    const layout = readLayoutCache(guildId);
+    state.boardLayout = layout ? layout.items : null;
+  }
+  const queue = readGuildCache(guildId, 'queue');
+  if (queue) {
+    state.queue = {
+      playing: queue.value.playing || null,
+      pending: queue.value.pending || [],
+      at: queue.at,
+    };
+    state.queueLoaded = true;
+    state.queueError = null;
+  }
+  const bindings = readGuildCache(guildId, 'bindings');
+  if (bindings) {
+    state.bindings = bindings.value || {};
+  }
+  const history = readGuildCache(guildId, 'history');
+  if (history) {
+    state.queueHistory = history.value || [];
+  }
+}
+
 export function guildInfoAge() {
   return guildInfoLoadedAt ? Date.now() - guildInfoLoadedAt : Infinity;
 }
 
+// Prefetches the info of a guild hovered in the rail: the next switch paints
+// its tab set from the cache without waiting for the server.
+export function prefetchGuildInfo(guildId) {
+  if (!guildId || guildId === state.activeGuildId) {
+    return;
+  }
+  const cached = readGuildCache(guildId, 'info');
+  if (cached && cached.fresh) {
+    return;
+  }
+  if (prefetching.has(guildId)) {
+    return;
+  }
+  prefetching.add(guildId);
+  apiForGuild(guildId, 'GET', '/overlay/guild', null, { silent: true })
+    .then((info) => {
+      if (info) {
+        writeGuildCache(guildId, 'info', info);
+      }
+    })
+    .catch(() => {})
+    .finally(() => {
+      prefetching.delete(guildId);
+    });
+}
+
 // `quiet`: a background refresh keeps the last info on failure and shows no
 // toast. Each alt-tab used to show the same server error again.
-export async function loadGuildInfo(options) {
-  if (!state.activeGuildId) {
-    return false;
+// `force`: start a new read even if one is already in flight. A server event
+// must never join a request that started before the change it announces.
+let infoRequestSeq = 0;
+export function loadGuildInfo(options = {}) {
+  const guildId = options.guildId || state.activeGuildId;
+  if (!guildId) {
+    return Promise.resolve(false);
   }
-  const quiet = Boolean(options && options.quiet === true);
-  const guildId = state.activeGuildId;
+  const quiet = options.quiet === true;
+  const key = options.force
+    ? `guild-info:${guildId}:fresh:${++infoRequestSeq}`
+    : `guild-info:${guildId}`;
+  return dedupe(key, () => loadGuildInfoForGuild(guildId, quiet, options.allowDirty === true));
+}
+
+async function loadGuildInfoForGuild(guildId, quiet, allowDirty = false) {
+  const token = requestToken(`guild-info:${guildId}`);
   try {
-    const info = await api('GET', '/overlay/guild');
-    if (guildId !== state.activeGuildId) {
+    const info = await apiForGuild(guildId, 'GET', '/overlay/guild');
+    if (!isLatest(token) || guildId !== state.activeGuildId) {
+      return false;
+    }
+    // A settings field is being edited, or was edited before focus moved away.
+    // Applying this response would replace the form and pair the fresh
+    // `settingsVersion` with stale typed values, making the next save look
+    // current. Keep the old version so the save is refused as a conflict.
+    if (
+      !allowDirty &&
+      state.page === 'guild' &&
+      state.tab === 'settings' &&
+      (settingsControlActive() || settingsFormDirty())
+    ) {
       return false;
     }
     state.info = info;
+    state.infoLoaded = true;
+    state.infoError = null;
     guildInfoLoadedAt = Date.now();
+    writeGuildCache(guildId, 'info', info);
+    // The role may have changed while the guild was cached (a demotion, a
+    // revoked permission): fix the tab before painting it.
+    if (state.tab === 'admin' && !canAdmin()) {
+      state.tab = 'board';
+      renderView();
+    } else if (state.tab === 'board' && state.page === 'guild' && !can('viewBoard')) {
+      renderView();
+    } else if (state.page === 'settings' || state.tab === 'settings') {
+      renderView();
+    }
+    renderHeader();
+    return true;
   } catch (error) {
-    if (guildId !== state.activeGuildId) {
+    if (!isLatest(token) || guildId !== state.activeGuildId) {
       return false;
+    }
+    state.infoError = error.message;
+    if (error.code === 'unauthorized') {
+      invalidateGuildCache(guildId);
     }
     if (!quiet) {
       notify(error.message, true);
     }
-  }
-  // A guild switch paints the header itself, once the tab fallback is decided
-  // (see loadGuild).
-  if (!(options && options.paint === false)) {
     renderHeader();
-  }
-  return true;
-}
-
-// `switched`: the active guild changed (applyGuilds), so the header and the
-// view are painted here, once the new guild's info is known, instead of by
-// applyGuilds with the previous guild's permissions.
-export async function loadGuild(options) {
-  const switched = Boolean(options && options.switched === true);
-  const guildId = state.activeGuildId;
-  // A switch paints once, below: loadGuildInfo would otherwise paint the header
-  // before the tab fallback (a guild where you are only a member must not paint
-  // « Administration » inactive) and before the queue badge keeps its place.
-  const quiet = Boolean(options && options.quiet === true);
-  const loaded = await loadGuildInfo({ quiet, paint: !switched });
-  if (!loaded) {
-    if (switched && guildId === state.activeGuildId) {
-      // The guild is gone, or the shell no longer has one: show the empty
-      // board instead of leaving the previous guild's header up.
-      state.switchingGuild = false;
-      if (!state.activeGuildId) {
-        // The next guild (or the join page) starts on the board: keeping
-        // « Administration » from a guild that no longer exists would land the
-        // next one on a tab chosen for another guild.
-        state.tab = 'board';
-      }
-      renderHeader();
+    if (state.tab === 'admin' || state.tab === 'settings' || state.page === 'settings') {
       renderView();
     }
-    // Otherwise another switch owns the paint.
-    return;
-  }
-  if (switched) {
-    if (guildId !== state.activeGuildId) {
-      return;
-    }
-    state.tab = tabAfterGuildSwitch(state.tab, canAdmin());
-    // Painted while `switchingGuild` is still true: the queue badge keeps the
-    // count shown before the switch until the new guild's queue is read, and
-    // the tab fallback above is already applied.
-    renderHeader();
-    state.switchingGuild = false;
-    if (state.page === 'settings' || state.tab === 'settings') {
-      // « Réglages » reads state.info directly: repaint now, with the new
-      // guild's settings. The board, queue and admin views repaint when their
-      // own lists arrive.
-      renderView();
-    }
-  }
-  const bindings = await invoke('media_board_get_bindings').catch(() => null);
-  state.bindings = (bindings && bindings.bindings) || {};
-  await Promise.all([loadItems(options), refreshQueueAutomatically()]);
-  if (switched && state.tab === 'admin' && canAdmin()) {
-    await loadAdmin(options);
+    return false;
   }
 }
 
-// `options` may be a click event (toolbar button): only `quiet === true`
-// counts.
-export async function loadItems(options) {
-  if (!state.activeGuildId) {
+// Reads everything a guild view needs in parallel. Each loader paints its own
+// zone as soon as it lands; `switchingGuild` only stops once all of them are
+// settled, so the header is not painted twice for the same switch.
+export async function hydrateGuild(guildId, options = {}) {
+  if (!guildId) {
     return;
   }
-  const quiet = Boolean(options && options.quiet === true);
+  const quiet = options.quiet === true;
+  await Promise.allSettled([
+    loadGuildInfo({ guildId, quiet }),
+    loadItems({ guildId, quiet }),
+    loadQueue({ guildId, quiet }),
+    loadBindings(guildId),
+  ]);
+  if (guildId !== state.activeGuildId) {
+    return;
+  }
+  if (state.tab === 'admin' && canAdmin()) {
+    await loadAdmin({ quiet });
+  }
+  if (guildId !== state.activeGuildId) {
+    return;
+  }
+  state.switchingGuild = false;
+  renderHeader();
+}
+
+export async function loadGuild(options = {}) {
   const guildId = state.activeGuildId;
+  if (!guildId) {
+    return;
+  }
+  await hydrateGuild(guildId, options);
+}
+
+// `options` may be a click event (toolbar button): only `quiet === true` and
+// `guildId` count.
+export function loadItems(options = {}) {
+  const guildId = options.guildId || state.activeGuildId;
+  if (!guildId) {
+    return Promise.resolve();
+  }
+  const quiet = options.quiet === true;
+  return dedupe(`items:${guildId}`, () => loadItemsForGuild(guildId, quiet));
+}
+
+async function loadItemsForGuild(guildId, quiet) {
+  const token = requestToken(`items:${guildId}`);
   try {
-    const body = await api('GET', '/overlay/media-board/items?limit=200');
-    if (guildId !== state.activeGuildId) {
+    const body = await apiForGuild(guildId, 'GET', '/overlay/media-board/items?limit=200');
+    if (!isLatest(token) || guildId !== state.activeGuildId) {
       return;
     }
     state.items = body.items || [];
+    state.itemsLoaded = true;
+    state.itemsError = null;
+    state.boardLayout = null;
     state.selection = pruneSelection(state.selection, state.items.map((item) => item.id));
+    writeGuildCache(guildId, 'items', state.items);
+    // Keep the shapes of this visit for the next first paint, after a restart
+    // or once the in-memory snapshot is gone.
+    writeLayoutCache(guildId, state.items);
+    scheduleItemsRefresh();
   } catch (error) {
-    if (guildId !== state.activeGuildId) {
+    if (!isLatest(token) || guildId !== state.activeGuildId) {
       return;
     }
+    state.itemsLoaded = true;
     if (error.code === 'forbidden') {
       state.items = [];
-    } else if (!quiet) {
+      state.itemsError = null;
+      state.boardLayout = null;
+      writeGuildCache(guildId, 'items', []);
+    } else {
       // A transient failure (rate limit, server restarting) keeps the cards
       // already shown instead of emptying the board.
-      notify(error.message, true);
+      state.itemsError = error.message;
+      if (!quiet) {
+        notify(error.message, true);
+      }
     }
   }
-  state.itemsLoaded = true;
-  scheduleItemsRefresh();
   if (state.tab === 'board' && state.page === 'guild') {
     renderView();
   }
@@ -412,31 +552,58 @@ function scheduleQueueEndRefresh() {
   queueEndTimer = setTimeout(refreshQueueAutomatically, delay);
 }
 
-export async function loadQueue() {
-  if (!state.activeGuildId || document.hidden) {
-    return;
+export function loadQueue(options = {}) {
+  const guildId = options.guildId || state.activeGuildId;
+  if (!guildId) {
+    return Promise.resolve();
   }
-  const guildId = state.activeGuildId;
+  if (document.hidden) {
+    state.queueStale = true;
+    return Promise.resolve();
+  }
+  const quiet = options.quiet === true;
+  return dedupe(`queue:${guildId}`, () => loadQueueForGuild(guildId, quiet));
+}
+
+async function loadQueueForGuild(guildId, quiet) {
+  const token = requestToken(`queue:${guildId}`);
   try {
-    const body = await api('GET', '/overlay/queue');
-    if (guildId !== state.activeGuildId) {
+    const body = await apiForGuild(guildId, 'GET', '/overlay/queue');
+    if (!isLatest(token) || guildId !== state.activeGuildId) {
       return;
     }
     state.queue = { playing: body.playing || null, pending: body.pending || [], at: Date.now() };
+    state.queueLoaded = true;
+    state.queueError = null;
     state.queueStale = false;
+    writeGuildCache(guildId, 'queue', { playing: state.queue.playing, pending: state.queue.pending });
     // Board cards listen to this event to update their playback badges without
     // re-rendering the view (the detail panel may hold a playing video).
     document.dispatchEvent(new CustomEvent('livechat:queue'));
-  } catch {
+  } catch (error) {
+    if (!isLatest(token) || guildId !== state.activeGuildId) {
+      return;
+    }
+    state.queueLoaded = true;
+    state.queueError = error.message;
+    if (!quiet) {
+      notify(error.message, true);
+    }
+    renderHeader();
+    renderOnAir();
+    if (state.tab === 'queue' && state.page === 'guild') {
+      renderView();
+    }
     return;
   }
   // The history only matters on its own tab: reading it on every background
   // queue refresh would spend a request per played media.
   if (state.tab === 'queue' && state.page === 'guild' && can('viewQueue')) {
     try {
-      const body = await api('GET', '/overlay/queue/history?limit=30');
-      if (guildId === state.activeGuildId) {
+      const body = await apiForGuild(guildId, 'GET', '/overlay/queue/history?limit=30');
+      if (isLatest(token) && guildId === state.activeGuildId) {
         state.queueHistory = body.items || [];
+        writeGuildCache(guildId, 'history', state.queueHistory);
       }
     } catch {
       // A failed history read keeps the list already shown.
@@ -450,12 +617,33 @@ export async function loadQueue() {
   scheduleQueueEndRefresh();
 }
 
+async function loadBindings(guildId) {
+  return dedupe(`bindings:${guildId}`, async () => {
+    try {
+      const result = await invoke('media_board_get_bindings');
+      if (guildId !== state.activeGuildId) {
+        return;
+      }
+      state.bindings = (result && result.bindings) || {};
+      writeGuildCache(guildId, 'bindings', state.bindings);
+    } catch {
+      // A failed read keeps the bindings already shown.
+    }
+  });
+}
+
 // A failed read keeps the list already shown; `quiet` also hides the toast.
-async function readList(path, quiet) {
+async function readList(path, quiet, guildId) {
   try {
-    const body = await api('GET', path);
+    const body = await apiForGuild(guildId, 'GET', path);
+    if (guildId !== state.activeGuildId) {
+      return null;
+    }
     return body.items || [];
   } catch (error) {
+    if (guildId !== state.activeGuildId) {
+      return null;
+    }
     if (!quiet) {
       notify(error.message, true);
     }
@@ -463,23 +651,62 @@ async function readList(path, quiet) {
   }
 }
 
-export async function loadAdmin(options) {
-  const quiet = Boolean(options && options.quiet === true);
+export function loadAdmin(options = {}) {
+  const guildId = state.activeGuildId;
+  if (!guildId) {
+    return Promise.resolve();
+  }
+  const quiet = options.quiet === true;
+  const adminTab = state.adminTab;
+  // `force` bypasses the in-flight dedupe: an `admin.changed` hint must trigger
+  // a read that started after the mutation, not join one that may predate it.
+  const key = options.force
+    ? `admin:${guildId}:${adminTab}:fresh:${++adminForcedSeq}`
+    : `admin:${guildId}:${adminTab}`;
+  return dedupe(key, () => {
+    const token = ++adminReadToken;
+    return loadAdminForGuild(guildId, quiet, token);
+  });
+}
+
+async function loadAdminForGuild(guildId, quiet, token) {
+  const apply = (assign) => (items) => {
+    if (items && token === adminReadToken && guildId === state.activeGuildId) {
+      assign(items);
+    }
+  };
   // Counts of the sub-tabs are known before opening them: members, devices and
   // active codes are read together.
+  const jobs = [];
   if (can('manageMembers')) {
-    state.members = (await readList('/overlay/admin/members', quiet)) || state.members;
-    state.devices = (await readList('/overlay/admin/devices', quiet)) || state.devices;
+    jobs.push(readList('/overlay/admin/members', quiet, guildId).then(apply((items) => {
+      state.members = items;
+    })));
+    jobs.push(readList('/overlay/admin/devices', quiet, guildId).then(apply((items) => {
+      state.devices = items;
+    })));
   }
   if (can('manageInvites')) {
-    state.invites = (await readList('/overlay/admin/invites', quiet)) || state.invites;
-    state.pairingCodes = (await readList('/overlay/admin/pairing-codes', quiet)) || state.pairingCodes;
+    jobs.push(readList('/overlay/admin/invites', quiet, guildId).then(apply((items) => {
+      state.invites = items;
+    })));
+    jobs.push(readList('/overlay/admin/pairing-codes', quiet, guildId).then(apply((items) => {
+      state.pairingCodes = items;
+    })));
   }
   if (state.adminTab === 'bans' && can('manageMembers')) {
-    state.bans = (await readList('/overlay/admin/bans', quiet)) || state.bans;
+    jobs.push(readList('/overlay/admin/bans', quiet, guildId).then(apply((items) => {
+      state.bans = items;
+    })));
   }
   if (state.adminTab === 'audit' && can('manageSettings')) {
-    state.auditEntries = (await readList('/overlay/admin/audit?limit=50', quiet)) || state.auditEntries;
+    jobs.push(readList('/overlay/admin/audit?limit=50', quiet, guildId).then(apply((items) => {
+      state.auditEntries = items;
+    })));
+  }
+  await Promise.allSettled(jobs);
+  if (token !== adminReadToken || guildId !== state.activeGuildId) {
+    return;
   }
   if (state.tab === 'admin' && state.page === 'guild') {
     renderView();

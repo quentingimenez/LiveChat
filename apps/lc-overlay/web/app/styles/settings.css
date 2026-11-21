@@ -11,6 +11,50 @@
   margin: 0 auto;
 }
 
+/* Another board changed the guild settings while this form is being edited:
+   keep the form, but make the staleness explicit and offer one reload. */
+.settings-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--amber);
+  border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
+  color: var(--text);
+  font-size: var(--text-s);
+}
+
+.settings-banner .btn {
+  flex: none;
+}
+
+.settings-banner:focus {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+
+.settings-banner.is-attention {
+  animation: settings-banner-pulse 1.4s ease-out;
+}
+
+@keyframes settings-banner-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--amber) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-banner.is-attention {
+    animation: none;
+  }
+}
+
 /* ------------------------------------------------------------------ en-tête */
 .settings-head {
   margin-bottom: var(--space-5);

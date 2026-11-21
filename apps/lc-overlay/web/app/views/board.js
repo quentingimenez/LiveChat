@@ -1,6 +1,7 @@
 // Media board: grid, cards, detail panel, play, shortcuts, edit and delete.
 
 import { api, run } from '../core/api.js';
+import { performAction } from '../core/action-ui.js';
 import { isEditable, openContextMenu } from '../core/contextmenu.js';
 import { acceleratorFromEvent, acceleratorLabel, ALTGR_HINT, BARE_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import { ARTWORK_MESSAGES, artworkExtension, droppedArtworkLink, fetchArtwork, MAX_ARTWORK_BYTES, pickArtworkFile } from '../core/artwork.js';
@@ -132,17 +133,33 @@ function canFavorite() {
   return Boolean(state.info && state.info.member && state.info.member.id);
 }
 
-export async function toggleFavorite(item) {
-  const favorite = !item.favorite;
-  const body = await run(() => api('PUT', `/overlay/media-board/items/${encodeURIComponent(item.id)}/favorite`, { favorite }));
-  if (!body) {
-    return;
-  }
-  applyFavorite(item.id, favorite);
+function paintFavorite(id, favorite) {
+  applyFavorite(id, favorite);
   if (state.filters.favorites) {
     refreshGrid(false);
   }
   syncDetail();
+}
+
+export async function toggleFavorite(item, control) {
+  const previous = Boolean(item.favorite);
+  const favorite = !previous;
+  await performAction(
+    control,
+    `favorite:${item.id}`,
+    () => api('PUT', `/overlay/media-board/items/${encodeURIComponent(item.id)}/favorite`, { favorite }),
+    {
+      // The star flips at once; a refusal puts it back.
+      optimistic: () => paintFavorite(item.id, favorite),
+      rollback: () => paintFavorite(item.id, previous),
+      onSuccess: (body) => {
+        const confirmed = body && typeof body.favorite === 'boolean' ? body.favorite : favorite;
+        if (confirmed !== favorite) {
+          paintFavorite(item.id, confirmed);
+        }
+      },
+    },
+  );
 }
 
 // Applies a favorite change to the item copies, its card and the drawer.
@@ -353,9 +370,9 @@ function buildCard(entry) {
       },
       // A double click plays the media, like the Play button. It leaves the
       // drawer as it was (see selectItem).
-      onDblclick: () => {
+      onDblclick: (event) => {
         if (can('play') && !state.selecting) {
-          playItem(entry.item);
+          playItem(entry.item, event.currentTarget);
         }
       },
     },
@@ -410,7 +427,7 @@ function buildCard(entry) {
               title: 'Jouer sur les overlays',
               onClick: (event) => {
                 event.stopPropagation();
-                playItem(entry.item);
+                playItem(entry.item, event.currentTarget);
               },
             },
             icon('play'),
@@ -425,7 +442,7 @@ function buildCard(entry) {
               'aria-pressed': 'false',
               onClick: (event) => {
                 event.stopPropagation();
-                toggleFavorite(entry.item);
+                toggleFavorite(entry.item, event.currentTarget);
               },
             },
             icon('star'),
@@ -495,6 +512,75 @@ function syncBadge(card, badge) {
   }
   node.className = `card-badge${badge.air ? ' is-air' : ''}`;
   node.textContent = badge.label;
+}
+
+// Common shapes of a board (portrait phone, landscape, square, audio wide).
+// The skeleton reuses the same masonry spans and the same thumbnail + title
+// anatomy as a real card: it is a placeholder, not a different kind of tile.
+const SKELETON_RATIOS = [
+  16 / 9,
+  1,
+  2,
+  9 / 16,
+  3 / 2,
+  9 / 16,
+  2,
+  1,
+  9 / 16,
+  2,
+  16 / 10,
+  3 / 4,
+];
+
+// A last-visit layout can describe up to 60 media; only the first screenful is
+// painted, so the shimmer never animates dozens of off-screen gradients.
+const MAX_SKELETON_CARDS = 24;
+
+// The shapes of the guild's last visit when the persistent layout cache has
+// them, else the generic distribution above.
+function skeletonRatios(count) {
+  const layout = Array.isArray(state.boardLayout) ? state.boardLayout : null;
+  if (layout && layout.length > 0) {
+    return layout
+      .slice(0, MAX_SKELETON_CARDS)
+      .map((media) => cardRatio(media));
+  }
+  return Array.from(
+    { length: count },
+    (_, index) => SKELETON_RATIOS[index % SKELETON_RATIOS.length],
+  );
+}
+
+// First load: the grid's shape is painted immediately, so the board no longer
+// looks like an empty guild while the first request is in flight.
+function boardSkeletonCards(count = SKELETON_RATIOS.length) {
+  return skeletonRatios(count).map((ratio) => {
+    return h(
+      'div',
+      {
+        class: 'card is-skeleton',
+        style: cardStyle(ratio),
+        'aria-hidden': 'true',
+      },
+      h('div', { class: 'card-frame' }, h('span', { class: 'skeleton-block' })),
+      h(
+        'div',
+        { class: 'card-title-skeleton' },
+        h('span', { class: 'skeleton-block' }),
+        h('span', { class: 'skeleton-block is-short' }),
+      ),
+    );
+  });
+}
+
+function retryItems() {
+  if (!state.itemsError) {
+    return;
+  }
+  state.itemsLoaded = false;
+  state.itemsError = null;
+  renderView();
+  loadItems({ quiet: true });
 }
 
 export function renderBoard() {
@@ -583,8 +669,22 @@ export function renderBoard() {
   );
 
   let content;
-  if (!state.itemsLoaded && uploads.length === 0) {
-    content = h('p', { class: 'meta' }, 'Chargement du board…');
+  if (!state.itemsLoaded && !state.itemsError) {
+    content = h(
+      'div',
+      { class: 'grid board-skeleton', role: 'status', 'aria-busy': 'true' },
+      h('span', { class: 'sr-only' }, 'Chargement du board…'),
+      uploads.map(uploadCard),
+      boardSkeletonCards(uploads.length > 0 ? 8 : 12),
+    );
+  } else if (state.itemsError && state.items.length === 0 && uploads.length === 0) {
+    content = h(
+      'div',
+      { class: 'empty' },
+      h('h2', null, 'Board indisponible'),
+      h('p', null, state.itemsError),
+      h('button', { class: 'btn is-primary', onClick: retryItems }, 'Réessayer'),
+    );
   } else if (state.items.length === 0 && uploads.length === 0) {
     content = h(
       'div',
@@ -604,11 +704,23 @@ export function renderBoard() {
     // Provisional cards always come first, whatever the search and filter.
     content = h('div', { class: `grid${state.selecting ? ' is-selecting' : ''}`, id: 'grid' }, uploads.map(uploadCard), items.map(renderCard));
   }
+  // A refresh that failed keeps the last known board: say it is stale instead
+  // of replacing the cards or pretending they are up to date.
+  const stale =
+    state.itemsError && (state.items.length > 0 || uploads.length > 0)
+      ? h(
+          'div',
+          { class: 'board-banner is-stale', role: 'status' },
+          h('span', null, 'Impossible d’actualiser le board.'),
+          h('button', { class: 'btn is-quiet', onClick: retryItems }, 'Réessayer'),
+        )
+      : null;
   return h(
     'div',
     null,
     toolbar,
     state.filtersOpen ? renderFilters(boardUsage) : null,
+    stale,
     h('div', { class: 'board' }, content, selected ? renderDetail(selected) : null),
     state.selecting ? renderSelectionBar() : null,
   );
@@ -1256,29 +1368,30 @@ async function sendTrigger(item) {
   return response || null;
 }
 
-export async function playItem(item) {
+export async function playItem(item, control) {
   const guild = activeGuild();
   if (guild && guild.membership.muted) {
     notify('Guilde en pause : reprends-la pour jouer.', true);
     return;
   }
-  const response = await sendTrigger(item);
-  if (!response) {
-    return;
-  }
-  if (!response.ok) {
-    notify(describeError(response.reason, response.message), true);
-    return;
-  }
-  if (response.outcome === 'playing') {
-    notify(`« ${itemTitle(item)} » passe à l’écran.`);
-  } else if (response.outcome === 'queued') {
-    notify(response.position ? `« ${itemTitle(item)} » ajouté à la file (position ${response.position}).` : `« ${itemTitle(item)} » ajouté à la file.`);
-  } else {
-    notify(`« ${itemTitle(item)} » envoyé aux overlays.`);
-  }
-  refreshTriggerBadges();
-  setTimeout(refreshQueueAutomatically, 400);
+  await performAction(control, `play:${item.id}`, async () => {
+    const response = await sendTrigger(item);
+    if (!response) {
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(describeError(response.reason, response.message));
+    }
+    if (response.outcome === 'playing') {
+      notify(`« ${itemTitle(item)} » passe à l’écran.`);
+    } else if (response.outcome === 'queued') {
+      notify(response.position ? `« ${itemTitle(item)} » ajouté à la file (position ${response.position}).` : `« ${itemTitle(item)} » ajouté à la file.`);
+    } else {
+      notify(`« ${itemTitle(item)} » envoyé aux overlays.`);
+    }
+    refreshTriggerBadges();
+    setTimeout(refreshQueueAutomatically, 400);
+  });
 }
 
 export function shortcutFor(itemId) {
@@ -1562,7 +1675,7 @@ function renderDetail(item) {
                 class: `btn is-quiet fav-toggle${item.favorite ? ' is-on' : ''}`,
                 'aria-pressed': String(Boolean(item.favorite)),
                 title: item.favorite ? 'Retirer des favoris' : 'Ajouter aux favoris',
-                onClick: () => toggleFavorite(item),
+                onClick: (event) => toggleFavorite(item, event.currentTarget),
               },
               icon('star'),
             )
@@ -1589,7 +1702,7 @@ function renderDetail(item) {
     h(
       'div',
       { class: 'detail-foot' },
-      can('play') ? h('button', { class: 'btn is-air is-wide', onClick: () => playItem(item) }, icon('play'), 'Jouer sur les overlays') : null,
+      can('play') ? h('button', { class: 'btn is-air is-wide', onClick: (event) => playItem(item, event.currentTarget) }, icon('play'), 'Jouer sur les overlays') : null,
       h(
         'div',
         { class: 'detail-actions' },

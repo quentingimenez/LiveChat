@@ -4,13 +4,14 @@
 
 import { api, run } from '../core/api.js';
 import { isObsolete, newestVersion, platformLabel, presenceLabel as devicePresenceLabel, sessionModeLabel } from '../core/device-helpers.js';
-import { avatarNode, h, icon, resetOnDoubleClick } from '../core/dom.js';
+import { avatarNode, clearSettingsDirty, h, icon, resetOnDoubleClick } from '../core/dom.js';
 import { formatCode, relativeTime } from '../core/format.js';
 import { activeGuild, can, ROLE_LABELS, state } from '../core/state.js';
 import { DEFAULT_VOLUME_PERCENT } from '../core/sound.js';
 import { notify } from '../core/toast.js';
 import { confirmDialog, copyText, openDialog } from '../core/ui.js';
-import { loadAdmin, loadGuild } from '../data.js';
+import { loadAdmin, loadGuild, loadGuildInfo } from '../data.js';
+import { showSettingsRemoteUpdate } from './settings-banner.js';
 import { renderView } from './view.js';
 
 // ------------------------------------------------------------- list states
@@ -160,7 +161,14 @@ function listHead(kind, labels) {
 
 function listState(phase, tab, empty) {
   if (phase === 'loading') {
-    return h('p', { class: 'list-state is-loading', role: 'status' }, 'Chargement…');
+    return h(
+      'div',
+      { class: 'list-state is-loading', role: 'status', 'aria-busy': 'true' },
+      h('span', { class: 'sr-only' }, 'Chargement…'),
+      Array.from({ length: 4 }, () =>
+        h('div', { class: 'line is-skeleton' }, h('span', { class: 'skeleton-block' })),
+      ),
+    );
   }
   if (phase === 'error') {
     return h(
@@ -971,6 +979,39 @@ const DISCORD_COMMANDS = [
   'cdire',
 ];
 
+// The board sends the version it read with every settings write. The server
+// refuses a write based on a version that another device already replaced
+// (409 `settings_conflict`), instead of silently overwriting it.
+function withSettingsVersion(payload) {
+  const version = state.info && state.info.guild && state.info.guild.settingsVersion;
+  return version ? { ...payload, expectedSettingsVersion: version } : payload;
+}
+
+export async function saveGuildSettings(payload, success) {
+  try {
+    await api('PATCH', '/overlay/admin/settings', withSettingsVersion(payload));
+    clearSettingsDirty();
+    notify(success);
+    await loadGuild();
+    renderView();
+    return true;
+  } catch (error) {
+    if (error.code === 'settings_conflict') {
+      // Do not reload yet: the typed values are still in the form, and the
+      // user must see why the save failed. Focusing the banner makes the
+      // reason visible even if the button was clicked from below the fold.
+      showSettingsRemoteUpdate({
+        focus: true,
+        conflict: true,
+        onReload: () => loadGuildInfo({ quiet: true, force: true, allowDirty: true }),
+      });
+      return false;
+    }
+    notify(error.message, true);
+    return false;
+  }
+}
+
 export function renderServerSettings() {
   const guild = (state.info && state.info.guild) || { settings: {} };
   const effective = (guild.settings && guild.settings.effective) || {};
@@ -996,23 +1037,17 @@ export function renderServerSettings() {
   });
   const full = h('input', { type: 'checkbox', id: 'set-full', checked: Boolean(guild.settings.displayMediaFull) });
   const guests = h('input', { type: 'checkbox', id: 'set-guests', checked: guild.guestsCanViewBoard !== false });
-  const save = async () => {
-    const body = await run(
-      () =>
-        api('PATCH', '/overlay/admin/settings', {
-          name: name.value,
-          defaultMediaTime: defaultTime.value === '' ? null : Number(defaultTime.value),
-          maxMediaTime: maxTime.value === '' ? null : Number(maxTime.value),
-          displayMediaFull: full.checked,
-          guestsCanViewBoard: guests.checked,
-        }),
+  const save = () =>
+    saveGuildSettings(
+      {
+        name: name.value,
+        defaultMediaTime: defaultTime.value === '' ? null : Number(defaultTime.value),
+        maxMediaTime: maxTime.value === '' ? null : Number(maxTime.value),
+        displayMediaFull: full.checked,
+        guestsCanViewBoard: guests.checked,
+      },
       'Réglages enregistrés.',
     );
-    if (body) {
-      await loadGuild();
-      renderView();
-    }
-  };
   const discord = [
     h('h3', { class: 'section-title' }, 'Discord'),
     h(

@@ -5,20 +5,20 @@
 // its own. Its zone is placed on the overlay screen like the device one
 // (`settings_placement_start` with `guildId`), its alignment previewed live.
 
-import { api, run } from '../core/api.js';
+import { api } from '../core/api.js';
 import { h } from '../core/dom.js';
 import { formatBoardUsage, formatBytes } from '../core/format.js';
 import { activeGuild, can, state } from '../core/state.js';
 import { DEFAULT_VOLUME_PERCENT } from '../core/sound.js';
 import { notify } from '../core/toast.js';
-import { loadGuild, loadGuildInfo } from '../data.js';
+import { loadGuild } from '../data.js';
 import {
   confirmDiscordLeave,
   hasDiscordServer,
   openPurgeGuildDialog,
   openTypedGuildDialog,
 } from '../guild-danger.js';
-import { renderServerSettings } from './admin.js';
+import { renderServerSettings, saveGuildSettings } from './admin.js';
 import { renderView } from './view.js';
 import {
   ALIGNMENTS,
@@ -223,15 +223,7 @@ function renderBoardSettings() {
       return;
     }
     const boardQuotaMb = gigabytes === null ? null : Math.max(1, Math.round(gigabytes * 1024));
-    const body = await run(
-      () => api('PATCH', '/overlay/admin/settings', { boardQuotaMb }),
-      'Quota du board enregistré.',
-    );
-    if (!body) {
-      return;
-    }
-    await loadGuildInfo();
-    renderView();
+    await saveGuildSettings({ boardQuotaMb }, 'Quota du board enregistré.');
   };
   // The guild settings show what the board holds even before a quota is set:
   // the quota field right below is where that limit is chosen.

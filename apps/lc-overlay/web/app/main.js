@@ -12,6 +12,7 @@
 // - `views/` : rail, header, board, queue, admin, settings and dialogs.
 
 import { installContextMenuGuard } from './core/contextmenu.js';
+import { settingsControlActive, settingsFormDirty } from './core/dom.js';
 import { initSound } from './core/sound.js';
 import { initTheme } from './core/theme.js';
 import { initSingleLineDescriptions } from './core/measure.js';
@@ -22,6 +23,7 @@ import {
   applyGuilds,
   clearQueueEndTimer,
   guildInfoAge,
+  loadAdmin,
   loadGuildInfo,
   loadQueue,
   refreshQueueAutomatically,
@@ -32,6 +34,7 @@ import { initGuildRemovalNotices } from './views/notices.js';
 import { tickQueueClock } from './views/queue.js';
 import { renderRail } from './views/rail.js';
 import { initDeviceSettings, openSettings } from './views/settings.js';
+import { showSettingsRemoteUpdate } from './views/settings-banner.js';
 import { initUpdateNotice } from './views/update-notice.js';
 import { initUploadIngestion } from './views/uploads.js';
 import { renderView } from './views/view.js';
@@ -84,6 +87,32 @@ listen('overlay://board-changed', (payload) => {
   }
 });
 
+// A member, invite, pairing code, ban or audit entry changed on another board
+// (or from the Discord side). Reload only what the open admin sub-tab shows,
+// coalesced: several mutations produce one read. The server sends one hint per
+// mutation; 300 ms is enough to group a role change and its audit entry.
+let adminChangedTimer = null;
+listen('overlay://admin-changed', (payload) => {
+  if (!payload || payload.guildId !== state.activeGuildId) {
+    return;
+  }
+  if (state.page !== 'guild' || state.tab !== 'admin') {
+    return;
+  }
+  clearTimeout(adminChangedTimer);
+  adminChangedTimer = setTimeout(() => {
+    if (
+      state.page === 'guild' &&
+      state.tab === 'admin' &&
+      state.activeGuildId === payload.guildId
+    ) {
+      // Force: a reload already in flight may have read the lists before the
+      // mutation, so it must not swallow this hint through the request dedupe.
+      loadAdmin({ quiet: true, force: true });
+    }
+  }, 300);
+});
+
 // The server changed this overlay's session mode or effective rights: read
 // `GET /overlay/guild` again and redraw, without reconnecting the socket.
 listen('overlay://rights-changed', (payload) => {
@@ -91,6 +120,28 @@ listen('overlay://rights-changed', (payload) => {
     return;
   }
   loadGuildInfo({ quiet: true }).then(() => renderView());
+});
+
+// Another board changed the guild's server settings. Reload the cached info;
+// while a form is dirty (even if focus moved away), keep it and offer an
+// explicit reload, so the user's unsaved values are never thrown away.
+function reloadGuildSettings() {
+  return loadGuildInfo({ quiet: true, force: true, allowDirty: true });
+}
+
+listen('overlay://guild-settings-changed', (payload) => {
+  if (!payload || payload.guildId !== state.activeGuildId) {
+    return;
+  }
+  if (
+    state.page === 'guild' &&
+    state.tab === 'settings' &&
+    (settingsControlActive() || settingsFormDirty())
+  ) {
+    showSettingsRemoteUpdate({ onReload: reloadGuildSettings });
+    return;
+  }
+  loadGuildInfo({ quiet: true, force: true });
 });
 
 // Fallback: a slow refresh only while the queue is really visible and

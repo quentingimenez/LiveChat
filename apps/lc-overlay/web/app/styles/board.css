@@ -1,19 +1,28 @@
 /* -------------------------------------------------------------------- board */
-/* Two stable rows: search, type chips and filters; then usage and actions.
-   The toolbar wraps instead of squeezing the search field down to nothing. */
+/* One row: search, type chips, filters, then the actions pushed to the right.
+   The tools group wraps as a whole at narrow widths, so the actions never
+   squeeze the search field down to nothing. */
 .board-toolbar {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  align-items: center;
   margin-bottom: var(--space-4);
 }
 
-.board-tools,
-.board-actions {
+.board-tools {
   display: flex;
+  flex: 1;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+}
+
+.board-tools > .board-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
 }
 
 .board-search {
@@ -71,12 +80,9 @@
   color: var(--text);
 }
 
-.filters {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  align-items: end;
-  gap: var(--space-3) var(--space-4);
-  max-width: 720px;
+.filters.shelf {
+  display: block;
+  max-width: none;
   margin: calc(var(--space-2) * -1) 0 var(--space-4);
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--line);
@@ -84,17 +90,66 @@
   background: var(--slate-700);
 }
 
-.filters-title {
-  grid-column: 1 / -1;
-  margin: 0;
-  color: var(--text);
-  font-size: 14px;
-  font-weight: 600;
+.filters.shelf .shelf-usage {
+  display: flex;
+  align-items: center;
+  min-height: 17px;
+  margin-bottom: 6px;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
-.filters .switch {
-  align-self: end;
+.filters.shelf .shelf-usage .board-usage {
+  line-height: inherit;
+}
+
+.filters.shelf .shelf-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3) var(--space-4);
+}
+
+.filters.shelf .filter-options {
+  display: grid;
+  flex: none;
+  gap: 4px;
+}
+
+.filters.shelf .filter-caption {
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.filters.shelf .switch-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
   height: 32px;
+}
+
+.filters.shelf .switch {
+  height: 32px;
+  white-space: nowrap;
+}
+
+.filters.shelf .filter {
+  flex: 1 1 140px;
+  max-width: 200px;
+}
+
+.filters.shelf .filter-sep {
+  width: 1px;
+  align-self: stretch;
+  min-height: 32px;
+  margin: 0 2px;
+  background: var(--line);
+}
+
+.filters.shelf .filters-reset {
+  margin-left: auto;
 }
 
 .filter {
@@ -108,11 +163,6 @@
   width: 100%;
   min-width: 0;
   height: 32px;
-}
-
-.filters .filters-reset {
-  grid-column: 1 / -1;
-  justify-self: start;
 }
 
 /* Masonry, like Discord's GIF picker: cards keep one width whatever the

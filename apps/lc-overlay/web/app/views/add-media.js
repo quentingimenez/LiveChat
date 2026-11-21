@@ -51,7 +51,7 @@ export function openAddDialog(options) {
     const linkMessageLabel = h(
       'label',
       { hidden: true },
-      'Légende pour « Jouer une fois » (facultatif)',
+      'Légende (facultatif)',
       linkMessage,
       h('span', { class: 'file-hint' }, 'Non enregistrée sur le board.'),
     );
@@ -98,7 +98,7 @@ export function openAddDialog(options) {
     const fileMessageLabel = h(
       'label',
       { hidden: true },
-      'Légende pour « Jouer une fois » (facultatif)',
+      'Légende (facultatif)',
       fileMessage,
       h('span', { class: 'file-hint' }, 'Non enregistrée sur le board.'),
     );

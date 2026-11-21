@@ -321,11 +321,15 @@ pub async fn get_guild(State(state): State<AppState>, auth: AuthedOverlayClient)
         Err(response) => return response,
     };
     let guild_id = auth.guild_id();
-    let access = match db.guilds().access(guild_id).await {
+    // The two reads are independent: run them together so a slow access query
+    // does not add its latency to the settings query.
+    let guilds = db.guilds();
+    let (access, settings) = tokio::join!(guilds.access(guild_id), guilds.get(guild_id));
+    let access = match access {
         Ok(access) => access,
         Err(db_error) => return db_failure("overlay_guild.access", &db_error),
     };
-    let settings = match db.guilds().get(guild_id).await {
+    let settings = match settings {
         Ok(settings) => settings,
         Err(db_error) => return db_failure("overlay_guild.settings", &db_error),
     };
@@ -340,28 +344,35 @@ pub async fn get_guild(State(state): State<AppState>, auth: AuthedOverlayClient)
     let view_queue = can(Action::ViewQueue);
 
     // Board and playback blocks are only readable with their right: the other
-    // roles receive `null`, exactly like a forbidden list.
-    let media_board = if view_board {
-        match board_usage_payload(&state, guild_id).await {
-            Ok(payload) => payload,
-            Err(response) => return response,
+    // roles receive `null`, exactly like a forbidden list. The two payloads are
+    // independent, so they are read together.
+    let board_read = async {
+        if view_board {
+            board_usage_payload(&state, guild_id).await
+        } else {
+            Ok(Value::Null)
         }
-    } else {
-        Value::Null
     };
-    let playback = if view_queue {
-        match playback_payload(
-            &state,
-            guild_id,
-            settings.as_ref().and_then(|guild| guild.busy_until),
-        )
-        .await
-        {
-            Ok(payload) => payload,
-            Err(response) => return response,
+    let playback_read = async {
+        if view_queue {
+            playback_payload(
+                &state,
+                guild_id,
+                settings.as_ref().and_then(|guild| guild.busy_until),
+            )
+            .await
+        } else {
+            Ok(Value::Null)
         }
-    } else {
-        Value::Null
+    };
+    let (media_board, playback) = tokio::join!(board_read, playback_read);
+    let media_board = match media_board {
+        Ok(payload) => payload,
+        Err(response) => return response,
+    };
+    let playback = match playback {
+        Ok(payload) => payload,
+        Err(response) => return response,
     };
 
     let own_default = settings.as_ref().and_then(|guild| guild.default_media_time);

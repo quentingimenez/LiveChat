@@ -160,7 +160,14 @@ function listHead(kind, labels) {
 
 function listState(phase, tab, empty) {
   if (phase === 'loading') {
-    return h('p', { class: 'list-state is-loading', role: 'status' }, 'Chargement…');
+    return h(
+      'div',
+      { class: 'list-state is-loading', role: 'status', 'aria-busy': 'true' },
+      h('span', { class: 'sr-only' }, 'Chargement…'),
+      Array.from({ length: 4 }, () =>
+        h('div', { class: 'line is-skeleton' }, h('span', { class: 'skeleton-block' })),
+      ),
+    );
   }
   if (phase === 'error') {
     return h(

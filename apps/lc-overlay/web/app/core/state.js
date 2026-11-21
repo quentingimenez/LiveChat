@@ -10,11 +10,19 @@ export const state = {
   tab: 'board',
   adminTab: 'members',
   info: null, // GET /overlay/guild response for the active guild
-  // `true` while the active guild changed and its info is still loading: the
-  // header and the view are painted once, when it lands.
+  // `true` once the guild info was read (or restored from the cache): the
+  // header can then trust `permissions`.
+  infoLoaded: false,
+  infoError: null,
+  // `true` while the active guild changed and its data is still being read:
+  // the rail and the header already show the new guild, the view shows its
+  // cached snapshot or a skeleton.
   switchingGuild: false,
+  pendingGuildId: null,
   items: [],
   itemsLoaded: false,
+  itemsError: null,
+
   search: '',
   kind: 'all',
   // Board filters and sort (see core/board-filters.js).
@@ -26,6 +34,8 @@ export const state = {
   detailPinned: false,
   queue: { playing: null, pending: [], at: 0 },
   queueStale: false,
+  queueLoaded: false,
+  queueError: null,
   queueHistory: [],
   uploads: [],
   triggers: new Map(), // jobId -> itemId, for the playback badges
@@ -80,6 +90,7 @@ export const ERROR_LABELS = {
   internal_error: 'Le serveur n’a pas pu lancer ce média.',
   payload_too_large: 'Fichier trop volumineux pour le serveur.',
   unsupported_media: 'Format de fichier non pris en charge.',
+  timeout: 'Le serveur met trop de temps à répondre.',
 };
 
 export function can(permission) {

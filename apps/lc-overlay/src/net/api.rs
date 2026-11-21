@@ -5,6 +5,7 @@
 //! shell ajoute l'en-tête `Authorization`. Seules les routes `/overlay/` sont
 //! joignables, avec les méthodes du contrat REST.
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use reqwest::Method;
@@ -15,8 +16,16 @@ use url::Url;
 use crate::config::Membership;
 use crate::net::tls;
 
-/// Délai maximal d'un appel (l'ajout d'un média télécharge le fichier en ligne).
-const API_TIMEOUT: Duration = Duration::from_secs(120);
+/// Connexion TCP/TLS : un serveur muet ne doit pas immobiliser l'action.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Lecture : au-delà, la board affiche une erreur au lieu d'attendre.
+const GET_TIMEOUT: Duration = Duration::from_secs(15);
+/// Écriture : le serveur peut avoir à valider et persister l'action.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Connexions inactives gardées pour réutiliser TCP/TLS entre deux actions.
+const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// Sonde TCP des connexions gardées.
+const TCP_KEEPALIVE: Duration = Duration::from_secs(60);
 /// Longueur maximale d'un chemin (query comprise).
 const MAX_PATH_CHARS: usize = 2_048;
 /// Préfixe obligatoire des routes joignables.
@@ -68,6 +77,41 @@ pub(crate) fn build_url(server_url: &str, path: &str, allow_insecure: bool) -> R
     Ok(url)
 }
 
+/// One HTTP client per TLS mode, kept for the whole process.
+///
+/// Building a client per call threw away the connection pool: every action
+/// paid a new TCP/TLS handshake before the server even saw the request, which
+/// made a slow switch look frozen. The insecure client is separate because
+/// `danger_accept_invalid_certs` cannot be changed after construction.
+fn shared_client(insecure: bool) -> Result<&'static reqwest::Client, String> {
+    static SECURE: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    static INSECURE: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    let cached = if insecure { &INSECURE } else { &SECURE };
+    let client = cached.get_or_init(|| {
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .pool_idle_timeout(POOL_IDLE_TIMEOUT)
+            .tcp_keepalive(TCP_KEEPALIVE)
+            .user_agent(concat!("lc-overlay/", env!("CARGO_PKG_VERSION")));
+        if insecure {
+            builder = builder.danger_accept_invalid_certs(true);
+        }
+        builder
+            .build()
+            .map_err(|error| format!("client HTTP impossible : {error}"))
+    });
+    client.as_ref().map_err(|error| error.clone())
+}
+
+/// Deadline of one request: a read must fail fast, a write may take longer.
+fn timeout_for(method: &Method) -> Duration {
+    if *method == Method::GET {
+        GET_TIMEOUT
+    } else {
+        WRITE_TIMEOUT
+    }
+}
+
 /// Exécute un appel REST authentifié pour la guilde de `membership`.
 pub async fn request(
     membership: &Membership,
@@ -89,17 +133,10 @@ pub async fn request_with_headers(
     let method = parse_method(method)?;
     let insecure = tls::insecure_tls_enabled();
     let url = build_url(&membership.server_url, path, insecure)?;
-    let mut builder = reqwest::Client::builder()
-        .timeout(API_TIMEOUT)
-        .user_agent(concat!("lc-overlay/", env!("CARGO_PKG_VERSION")));
-    if insecure {
-        builder = builder.danger_accept_invalid_certs(true);
-    }
-    let client = builder
-        .build()
-        .map_err(|error| format!("client HTTP impossible : {error}"))?;
+    let client = shared_client(insecure)?;
     let mut request = client
-        .request(method, url)
+        .request(method.clone(), url)
+        .timeout(timeout_for(&method))
         .bearer_auth(&membership.client_token);
     for (name, value) in headers {
         request = request.header(*name, *value);
@@ -169,5 +206,24 @@ mod tests {
         assert!(parse_method("PUT").is_ok());
         assert!(parse_method("OPTIONS").is_err());
         assert!(parse_method("CONNECT").is_err());
+    }
+
+    #[test]
+    fn reads_fail_faster_than_writes() {
+        let read = timeout_for(&Method::GET);
+        let write = timeout_for(&Method::POST);
+        assert_eq!(read, GET_TIMEOUT);
+        assert_eq!(write, WRITE_TIMEOUT);
+        assert!(read < write);
+        assert!(CONNECT_TIMEOUT < read);
+    }
+
+    #[test]
+    fn the_client_is_reused() {
+        let first = shared_client(false).expect("client sécurisé");
+        let second = shared_client(false).expect("client sécurisé");
+        assert!(std::ptr::eq(first, second));
+        let insecure = shared_client(true).expect("client non vérifié");
+        assert!(!std::ptr::eq(first, insecure));
     }
 }

@@ -1,10 +1,9 @@
 // Switching guild from the rail while a guild tab is open (board, queue,
-// administration, settings). The header used to repaint before the new guild's
-// info arrived, so « Administration » appeared a frame late and the overlay
-// count went from a value to nothing to a value; the administration tab was
-// forced back to the board, and « Réglages » kept the previous guild's settings
-// until the next click (the shell's device-settings event painted before the
-// guild list).
+// administration, settings). The switch used to wait for `GET /overlay/guild`
+// before painting the header: the old guild stayed on screen, clickable, under
+// the new guild's identity. It now paints the rail, the header and the view at
+// once from the guild list (or its cached snapshot) and revalidates in the
+// background.
 //
 // The overlay views need a DOM and the dev harness has none: the tab rule is
 // imported, and the ordering rules are pinned on the source that encodes them.
@@ -67,30 +66,78 @@ test('a guild change no longer resets « Administration » to the board', () => 
   assert.doesNotMatch(reset, /state\.tab/);
 });
 
-test('the header waits for the switched guild info', () => {
+test('the switch paints the new guild before any data request', () => {
   const apply = section(data, 'export function applyGuilds', 'function resetGuildData');
-  const changed = section(apply, 'if (previous !== state.activeGuildId)', 'if (state.activeGuildId) {');
-  // The switch paints the rail at once, and nothing else until the info lands:
-  // rendering the header now would hide the tab and the count for a frame.
-  assert.match(changed, /state\.switchingGuild = true/);
-  assert.match(changed, /loadGuild\(\{ switched: true \}\)/);
-  assert.doesNotMatch(changed, /renderHeader|renderView/);
-  // The duplicate frame (shell event then command answer) must not repaint
-  // with the info still loading.
-  assert.match(apply, /if \(state\.switchingGuild\) \{\s+return;\s+\}\s+renderHeader\(\);/);
+  const changed = section(apply, 'if (previous !== state.activeGuildId)', '// Reconnection attempts');
+  // The last snapshot (or the empty/skeleton state) is adopted first, then the
+  // three zones are painted synchronously; hydration starts after that paint.
+  assert.match(changed, /adoptGuild\(state\.activeGuildId\)/);
+  assert.match(changed, /state\.switchingGuild = Boolean\(state\.activeGuildId\)/);
+  const rail = changed.indexOf('renderRail()');
+  const header = changed.indexOf('renderHeader()');
+  const view = changed.indexOf('renderView()');
+  const hydrate = changed.indexOf('hydrateGuild(state.activeGuildId');
+  assert.ok(rail >= 0 && header > rail, 'header painted after the rail');
+  assert.ok(view > header, 'view painted after the header');
+  assert.ok(hydrate > view, 'hydration starts after the first paint');
+  assert.doesNotMatch(changed, /\bawait\b/, 'painting must not await the server');
 });
 
-test('the switched guild repaints « Réglages » once its info is known', () => {
-  const load = section(data, 'export async function loadGuild(', 'export async function loadItems');
-  assert.match(load, /state\.tab = tabAfterGuildSwitch\(state\.tab, canAdmin\(\)\);/);
-  assert.match(load, /state\.tab === 'settings'[\s\S]{0,400}renderView\(\)/);
+test('the duplicate switch frame repaints instead of returning early', () => {
+  const apply = section(data, 'export function applyGuilds', 'function resetGuildData');
+  // The shell announces one switch twice (event, then command answer). The
+  // second pass must not bail out on `switchingGuild`, otherwise the header can
+  // stay one frame behind; it simply keeps the view (and its scroll) as is.
+  assert.doesNotMatch(apply, /if \(state\.switchingGuild\) \{\s+return;/);
+  assert.match(apply, /renderHeader\(\);\s+if \(!state\.activeGuildId \|\| state\.page === 'settings'\) \{/);
 });
 
-test('losing the guild starts the next one on the board', () => {
-  // « Administration » chosen for a removed guild must not land the next guild
-  // (joined later, possibly member-only) on the administration panel.
-  const load = section(data, 'export async function loadGuild(', 'export async function loadItems');
-  assert.match(load, /if \(!state\.activeGuildId\) \{[\s\S]{0,400}state\.tab = 'board';/);
+test('a guild switch hydrates the independent resources in parallel', () => {
+  const hydrate = section(data, 'export async function hydrateGuild', 'export async function loadGuild');
+  assert.match(hydrate, /Promise\.allSettled\(\[/);
+  for (const loader of ['loadGuildInfo', 'loadItems', 'loadQueue']) {
+    assert.match(hydrate, new RegExp(`${loader}\\(\\{`), `${loader} must be in the batch`);
+  }
+  assert.match(hydrate, /loadBindings\(guildId\)/);
+  assert.match(hydrate, /await loadAdmin\(\{ quiet \}\)/);
+  assert.match(hydrate, /state\.switchingGuild = false/);
+});
+
+test('loadGuild only delegates to hydration', () => {
+  const load = section(data, 'export async function loadGuild', 'export function loadItems');
+  assert.match(load, /hydrateGuild\(guildId, options\)/);
+  assert.doesNotMatch(load, /tabAfterGuildSwitch|renderHeader|paint: !switched/);
+});
+
+test('the tab is fixed from the real permissions once the info lands', () => {
+  const info = section(data, 'async function loadGuildInfoForGuild', 'export async function hydrateGuild');
+  assert.match(info, /state\.tab === 'admin' && !canAdmin\(\)/);
+  assert.match(info, /state\.tab = 'board'/);
+  assert.match(info, /renderHeader\(\)/);
+  assert.doesNotMatch(info, /paint: false/);
+});
+
+test('a failed board read is an error, not an empty board', () => {
+  const items = section(data, 'async function loadItemsForGuild', '// Signed media URLs expire');
+  assert.match(items, /state\.itemsLoaded = true/);
+  assert.match(items, /state\.itemsError = error\.message/);
+  // Only a forbidden board is legitimately empty and cached as such.
+  assert.match(items, /error\.code === 'forbidden'[\s\S]{0,200}writeGuildCache\(guildId, 'items', \[\]\)/);
+});
+
+test('a failed queue read is an error, not an empty queue', () => {
+  const queue = section(data, 'async function loadQueueForGuild', 'export function loadAdmin');
+  assert.match(queue, /state\.queueLoaded = true/);
+  assert.match(queue, /state\.queueError = error\.message/);
+  // A history read that lost the race must not overwrite the newer snapshot.
+  assert.match(queue, /isLatest\(token\) && guildId === state\.activeGuildId/);
+});
+
+test('losing the active guild starts on the board', () => {
+  const apply = section(data, 'export function applyGuilds', 'function resetGuildData');
+  assert.match(apply, /const admin = state\.info \? canAdmin\(\) : Boolean\(/);
+  assert.match(apply, /state\.tab = tabAfterGuildSwitch\(state\.tab, admin\)/);
+  assert.equal(tabs.tabAfterGuildSwitch('admin', false), 'board');
 });
 
 test('the device settings event does not repaint during a guild switch', () => {
@@ -101,35 +148,26 @@ test('the device settings event does not repaint during a guild switch', () => {
   assert.match(handler, /renderView\(\)/);
 });
 
-test('the queue badge keeps its count while the next guild queue is unknown', () => {
-  // The queue is reset with the guild. Painting that reset count would remove
-  // the badge for a frame: « Administration » and « Réglages » slide left, then
-  // back when the new guild's queue is read.
-  assert.equal(tabs.queueBadgeCount(0, 4, true), 4);
-  assert.equal(tabs.queueBadgeCount(0, 0, true), 0);
-});
-
-test('the queue badge follows the new guild once its queue is read', () => {
-  assert.equal(tabs.queueBadgeCount(2, 4, false), 2);
-  assert.equal(tabs.queueBadgeCount(0, 4, false), 0);
-});
-
-test('the header paints the queue badge through the switch rule', () => {
+test('the queue badge disappears until the new queue is loaded', () => {
   const header = read('views/header.js');
-  assert.match(header, /const pending = state\.queue\.pending\.length;/);
-  assert.match(header, /queueBadgeCount\(pending, lastQueueCount, state\.switchingGuild\)/);
-  assert.match(header, /lastQueueCount = pending;/);
+  assert.match(header, /const queueCount = state\.queueLoaded \? state\.queue\.pending\.length : 0;/);
+  assert.doesNotMatch(header, /queueBadgeCount|lastQueueCount/);
 });
 
-test('the switched guild paints the header after the tab fallback', () => {
-  const load = section(data, 'export async function loadGuild(', 'export async function loadItems');
-  // loadGuildInfo keeps quiet updates painting themselves, but the switch must
-  // not: the first paint has to know the fallback tab and the queue badge rule.
-  assert.match(load, /loadGuildInfo\(\{ quiet, paint: !switched \}\)/);
-  const block = section(load, 'if (switched) {', 'const bindings');
-  const fallback = block.indexOf('state.tab = tabAfterGuildSwitch');
-  const paint = block.indexOf('renderHeader()');
-  const clear = block.indexOf('state.switchingGuild = false;');
-  assert.ok(fallback >= 0, 'tab fallback missing');
-  assert.ok(paint > fallback && paint < clear, 'the header must be painted after the fallback and before the flag clears');
+test('the header trusts the role until the permissions are known', () => {
+  const header = read('views/header.js');
+  assert.match(header, /const canManage = state\.info \? canAdmin\(\) : role === 'admin';/);
+  assert.match(header, /if \(canManage\) \{/);
+});
+
+test('the rail marks the target guild before the shell answers', () => {
+  const rail = read('views/rail.js');
+  assert.match(rail, /state\.pendingGuildId = guildId;/);
+  assert.match(rail, /prefetchGuildInfo\(guildId\)/);
+  // The command runs after the first paint, and the answer is applied only if
+  // no newer click superseded it.
+  const pending = rail.indexOf('state.pendingGuildId = guildId;');
+  const invoke = rail.indexOf("invoke('guild_select'");
+  assert.ok(pending >= 0 && invoke > pending, 'the rail paints before the command');
+  assert.match(rail, /attempt === selectionAttempt/);
 });

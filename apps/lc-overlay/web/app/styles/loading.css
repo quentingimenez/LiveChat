@@ -1,0 +1,190 @@
+/* Loading and in-flight feedback shared by every view.
+ *
+ * Three signals, from the quietest to the loudest:
+ * - a 2 px activity bar while a request is in flight (after 250 ms: a fast
+ *   answer must not flash);
+ * - skeletons for the first load of a list or the board;
+ * - a pending state on the control that started an action (spinner, disabled,
+ *   and a slower ring after 5 s).
+ */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --- activity bar ------------------------------------------------------- */
+.activity-bar {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 80;
+  height: 2px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, var(--amber), transparent) no-repeat;
+  background-size: 40% 100%;
+  animation: activity-slide 1.1s ease-in-out infinite;
+}
+
+.activity-bar[hidden] {
+  display: none;
+}
+
+@keyframes activity-slide {
+  from {
+    background-position: -40% 0;
+  }
+  to {
+    background-position: 140% 0;
+  }
+}
+
+/* --- skeletons ---------------------------------------------------------- */
+.skeleton-block {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 12px;
+  border-radius: inherit;
+  background: linear-gradient(100deg, var(--slate-700) 30%, var(--slate-600) 50%, var(--slate-700) 70%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.card.is-skeleton {
+  overflow: hidden;
+  background: var(--slate-800);
+  border: 1px solid var(--line);
+}
+
+.card.is-skeleton .skeleton-block {
+  border-radius: 0;
+}
+
+.line.is-skeleton {
+  min-height: 52px;
+  padding: 14px;
+}
+
+.line.is-skeleton .skeleton-block {
+  height: 20px;
+  border-radius: var(--radius-s);
+}
+
+/* The queue rows are a 4-column grid: a single skeleton block would land in
+ * the 24 px index column. Let it span the whole row instead. */
+.line.is-queue.is-skeleton {
+  grid-template-columns: 1fr;
+  align-items: center;
+}
+
+.line.is-queue.is-skeleton .skeleton-block {
+  grid-column: 1 / -1;
+  height: 18px;
+}
+
+.list-state.is-loading .line.is-skeleton {
+  border: 0;
+  background: transparent;
+}
+
+@keyframes skeleton-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+/* --- in-flight controls ------------------------------------------------- */
+button[data-pending='true'] {
+  cursor: progress;
+}
+
+.btn[data-pending='true'] {
+  cursor: progress;
+}
+
+.btn[data-pending='true']::after {
+  content: '';
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin-left: var(--space-1);
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: pending-spin 700ms linear infinite;
+}
+
+.btn.is-slow {
+  opacity: 0.8;
+}
+
+/* Icon-only card controls cannot host the trailing spinner without covering
+ * their glyph: dim them while the action is in flight. */
+.play[data-pending='true'],
+.fav[data-pending='true'] {
+  opacity: 0.55;
+}
+
+@keyframes pending-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* The guild tile keeps its selected look while the shell commits the choice,
+ * with an amber ring that says "not yet confirmed". */
+.guild.is-pending {
+  box-shadow: 0 0 0 2px var(--amber);
+}
+
+.guild.is-pending .dot {
+  animation: pending-pulse 1s ease-in-out infinite;
+}
+
+@keyframes pending-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* --- stale data banner -------------------------------------------------- */
+.board-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  padding: 10px 14px;
+  border: 1px solid rgba(242, 181, 68, 0.32);
+  border-radius: var(--radius-m);
+  background: rgba(242, 181, 68, 0.08);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+}
+
+.board-banner .btn {
+  margin-left: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-bar,
+  .skeleton-block,
+  .btn[data-pending='true']::after,
+  .guild.is-pending .dot {
+    animation: none;
+  }
+
+  .activity-bar {
+    background: var(--amber);
+    opacity: 0.55;
+  }
+}

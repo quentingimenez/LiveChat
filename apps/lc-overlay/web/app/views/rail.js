@@ -1,13 +1,13 @@
 // Guild rail (left column).
 
-import { run } from '../core/api.js';
 import { openContextMenu } from '../core/contextmenu.js';
 import { h, icon } from '../core/dom.js';
 import { guildAcronym, guildAcronymFontSize } from '../core/format.js';
 import { canLoadIcon, rememberBrokenIcon } from '../core/guild-icons.js';
 import { invoke } from '../core/ipc.js';
-import { guildLabel, state } from '../core/state.js';
-import { applyGuilds } from '../data.js';
+import { describeError, guildLabel, state } from '../core/state.js';
+import { notify } from '../core/toast.js';
+import { applyGuilds, prefetchGuildInfo } from '../data.js';
 import { renderHeader, toggleMute } from './header.js';
 import { openJoinDialog } from './join.js';
 import { confirmLeaveGuild, openGuildDialog } from './profile.js';
@@ -94,8 +94,12 @@ export function renderRail() {
   const rail = document.getElementById('rail');
   rail.replaceChildren(
     ...state.guilds.map((guild) => {
+      const guildId = guild.membership.guildId;
       const label = guild.membership.guildName || 'Guilde';
-      const active = guild.membership.guildId === state.activeGuildId && state.page !== 'settings';
+      const pending = state.pendingGuildId === guildId;
+      // The tile highlights at once, before the shell answers: the click is
+      // acknowledged by the rail itself, not by a toast.
+      const active = (guildId === state.activeGuildId && state.page !== 'settings') || pending;
       const hasIcon = canLoadIcon(guild.membership.guildIconUrl);
       // The wrapper keeps the tile's 44 px footprint so the rail rhythm does
       // not change; the menu button is a sibling, never a button in a button.
@@ -105,11 +109,14 @@ export function renderRail() {
         h(
           'button',
           {
-            class: `guild${active ? ' is-active' : ''}${guild.membership.muted ? ' is-muted' : ''}${hasIcon ? ' has-icon' : ''}`,
-            title: `${label} — ${guild.membership.muted ? 'en pause' : guild.statusLabel}`,
+            class: `guild${active ? ' is-active' : ''}${pending ? ' is-pending' : ''}${guild.membership.muted ? ' is-muted' : ''}${hasIcon ? ' has-icon' : ''}`,
+            title: pending ? `${label} — changement…` : `${label} — ${guild.membership.muted ? 'en pause' : guild.statusLabel}`,
             'aria-label': label,
             'aria-current': active ? 'true' : null,
-            onClick: () => selectGuild(guild.membership.guildId),
+            'aria-busy': pending ? 'true' : null,
+            onClick: () => selectGuild(guildId),
+            onPointerEnter: () => prefetchGuildInfo(guildId),
+            onFocus: () => prefetchGuildInfo(guildId),
             onContextMenu: (event) => openGuildMenu(event, guild),
           },
           guildFace(label, guild.membership.guildIconUrl),
@@ -146,6 +153,10 @@ export function renderRail() {
   );
 }
 
+// The last click wins: a slow answer for a guild the user has already left
+// must not repaint the board with the wrong guild.
+let selectionAttempt = 0;
+
 export async function selectGuild(guildId) {
   if (state.page === 'settings') {
     state.page = 'guild';
@@ -153,11 +164,31 @@ export async function selectGuild(guildId) {
     renderHeader();
     renderView();
   }
-  if (guildId === state.activeGuildId) {
+  if (guildId === state.activeGuildId || guildId === state.pendingGuildId) {
     return;
   }
-  const result = await run(() => invoke('guild_select', { payload: { guildId } }));
-  if (result) {
-    applyGuilds(result.guilds);
+  // Acknowledge the click here and now: the tile switches immediately, the
+  // shell answer only commits the choice.
+  const attempt = ++selectionAttempt;
+  state.pendingGuildId = guildId;
+  renderRail();
+  try {
+    const result = await invoke('guild_select', { payload: { guildId } });
+    if (attempt === selectionAttempt && result) {
+      applyGuilds(result.guilds);
+    }
+  } catch (error) {
+    if (attempt === selectionAttempt) {
+      notify(describeError(error?.code ?? error, 'Changement de guilde impossible.'), true);
+    }
+  } finally {
+    if (
+      attempt === selectionAttempt &&
+      state.pendingGuildId === guildId &&
+      state.activeGuildId !== guildId
+    ) {
+      state.pendingGuildId = null;
+      renderRail();
+    }
   }
 }

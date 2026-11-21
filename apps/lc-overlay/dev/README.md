@@ -139,6 +139,7 @@ Options de l'URL :
 | `?removed` | Met un retrait de guilde en attente au démarrage. |
 | `?media` | Chaque carte sert un média réel distinct de `dev/fixtures/` (vidéo, images JPEG, son avec pochette) et les guildes du rail affichent leurs icônes : vignettes, éditeur de média (frise, découpe, recadrage) et captures du README rendent comme la vraie board. |
 | `?nozone` | Aucun écran connu : l'éditeur image n'a pas de zone d'affichage et son aperçu « Taille à l'affichage » retombe sur l'estimation 1920 × 1080. |
+| `?latency=1500` | Ajoute 1,5 s à chaque appel `guild_api` (les commandes du shell restent immédiates) : le rail change tout de suite, le board et la file montrent leur squelette. |
 | `?update=ready` | L'updater démarre sur `ready` (version 3.2.0 disponible) : le bandeau de mise à jour s'affiche en haut de la fenêtre, sur toutes les pages. « Plus tard » le masque pour cette version (localStorage) ; « Redémarrer et installer » échoue et montre l'erreur dans le bandeau. |
 | `?update=downloading` | L'updater démarre sur `downloading` (version 3.2.0) : le bandeau montre « Téléchargement de LiveChat 3.2.0… » sans bouton. |
 

@@ -558,29 +558,27 @@ export function renderBoard() {
         icon('filter'),
         filterCount > 0 ? `Filtres · ${filterCount}` : 'Filtres',
       ),
-    ),
-    h(
-      'div',
-      { class: 'board-actions' },
-      boardUsage ? h('span', { class: 'meta board-usage', title: 'Occupation du board de la guilde' }, boardUsage) : null,
-      h('span', { class: 'spacer' }),
-      state.items.length > 0
-        ? h(
-            'button',
-            {
-              class: 'btn is-quiet',
-              'aria-pressed': String(state.selecting),
-              onClick: () => (state.selecting ? leaveSelection() : enterSelection()),
-            },
-            state.selecting ? 'Terminer' : 'Sélectionner',
-          )
-        : null,
-      h('button', { class: 'btn is-quiet icon-btn', title: 'Actualiser', 'aria-label': 'Actualiser', onClick: loadItems }, icon('refresh')),
-      can('play') ? h('button', { class: 'btn is-quiet', title: 'Lire un texte à voix haute sur les overlays', onClick: () => openSayDialog() }, icon('sound'), 'Lire…') : null,
-      // A member who cannot add but can play still opens the dialog, with its
-      // "Jouer une fois" action only.
-      !can('addMedia') && can('play') ? h('button', { class: 'btn is-primary', onClick: openAddDialog }, icon('play'), 'Jouer') : null,
-      can('addMedia') ? h('button', { class: 'btn is-primary', onClick: openAddDialog }, icon('plus'), 'Ajouter') : null,
+      h(
+        'div',
+        { class: 'board-actions' },
+        state.items.length > 0
+          ? h(
+              'button',
+              {
+                class: 'btn is-quiet',
+                'aria-pressed': String(state.selecting),
+                onClick: () => (state.selecting ? leaveSelection() : enterSelection()),
+              },
+              state.selecting ? 'Terminer' : 'Sélectionner',
+            )
+          : null,
+        h('button', { class: 'btn is-quiet icon-btn', title: 'Actualiser', 'aria-label': 'Actualiser', onClick: loadItems }, icon('refresh')),
+        can('play') ? h('button', { class: 'btn is-quiet', title: 'Lire un texte à voix haute sur les overlays', onClick: () => openSayDialog() }, icon('sound'), 'Lire…') : null,
+        // A member who cannot add but can play still opens the dialog, with its
+        // "Jouer une fois" action only.
+        !can('addMedia') && can('play') ? h('button', { class: 'btn is-primary', onClick: openAddDialog }, icon('play'), 'Jouer') : null,
+        can('addMedia') ? h('button', { class: 'btn is-primary', onClick: openAddDialog }, icon('plus'), 'Ajouter') : null,
+      ),
     ),
   );
 
@@ -610,7 +608,7 @@ export function renderBoard() {
     'div',
     null,
     toolbar,
-    state.filtersOpen ? renderFilters() : null,
+    state.filtersOpen ? renderFilters(boardUsage) : null,
     h('div', { class: 'board' }, content, selected ? renderDetail(selected) : null),
     state.selecting ? renderSelectionBar() : null,
   );
@@ -872,14 +870,11 @@ function filterSelect(label, value, options, onChange) {
   );
 }
 
-function renderFilters() {
+function renderFilters(boardUsage) {
   const filters = state.filters;
   const authors = authorsOf(state.items);
   const hasActiveFilters = activeFilterCount(filters) > 0 || filters.sort !== DEFAULT_FILTERS.sort;
-  return h(
-    'div',
-    { class: 'filters', role: 'group', 'aria-label': 'Filtres du board' },
-    h('h2', { class: 'filters-title' }, 'Filtres'),
+  const optionSwitches = [
     canFavorite()
       ? h(
           'label',
@@ -896,18 +891,36 @@ function renderFilters() {
           'Avec raccourci',
         )
       : null,
-    filterSelect('Ajouté par', filters.author, [['', 'Tout le monde'], ...authors.map((author) => [author.id, author.name])], (author) => setFilter({ author })),
-    filterSelect('Source', filters.source, [['', 'Toutes'], ...Object.entries(SOURCE_LABELS)], (source) => setFilter({ source })),
-    filterSelect('Durée', filters.duration, [['', 'Toutes'], ...Object.entries(DURATION_LABELS)], (duration) => setFilter({ duration })),
-    filterSelect('Trier', filters.sort, Object.entries(SORT_LABELS), (sort) => setFilter({ sort })),
+  ].filter(Boolean);
+  return h(
+    'div',
+    { class: `filters shelf${boardUsage ? ' has-usage' : ''}`, role: 'group', 'aria-label': 'Filtres du board' },
+    boardUsage ? h('div', { class: 'shelf-usage' }, h('span', { class: 'meta board-usage', title: 'Occupation du board de la guilde' }, boardUsage)) : null,
     h(
-      'button',
-      {
-        class: 'btn is-quiet filters-reset',
-        disabled: !hasActiveFilters,
-        onClick: () => setFilter({ ...DEFAULT_FILTERS }),
-      },
-      'Réinitialiser',
+      'div',
+      { class: 'shelf-controls' },
+      optionSwitches.length > 0
+        ? h(
+            'div',
+            { class: 'filter-options' },
+            h('span', { class: 'filter-caption' }, 'Options'),
+            h('div', { class: 'switch-row' }, optionSwitches),
+          )
+        : null,
+      optionSwitches.length > 0 ? h('span', { class: 'filter-sep' }) : null,
+      filterSelect('Ajouté par', filters.author, [['', 'Tout le monde'], ...authors.map((author) => [author.id, author.name])], (author) => setFilter({ author })),
+      filterSelect('Source', filters.source, [['', 'Toutes'], ...Object.entries(SOURCE_LABELS)], (source) => setFilter({ source })),
+      filterSelect('Durée', filters.duration, [['', 'Toutes'], ...Object.entries(DURATION_LABELS)], (duration) => setFilter({ duration })),
+      filterSelect('Trier', filters.sort, Object.entries(SORT_LABELS), (sort) => setFilter({ sort })),
+      h(
+        'button',
+        {
+          class: 'btn is-quiet filters-reset',
+          disabled: !hasActiveFilters,
+          onClick: () => setFilter({ ...DEFAULT_FILTERS }),
+        },
+        'Réinitialiser',
+      ),
     ),
   );
 }

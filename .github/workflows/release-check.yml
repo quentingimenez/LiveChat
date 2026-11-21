@@ -3,8 +3,9 @@ name: release-check
 # Every released component (server, overlay, extension) must carry one version
 # in all its files, the release tooling's own tests must pass under pwsh 7 (the
 # tooling also runs under Windows PowerShell 5.1 on the maintainer's box), and
-# the Bombadil runners' static server must keep answering 404 instead of killing
-# its node process (tools/bombadil/static-server.test.mjs).
+# the Bombadil runners' tests must pass (tools/bombadil/*.test.mjs): the static
+# server answers 404 where a vanished file used to kill its node process, and
+# the exploration options follow BOMBADIL_WIDTH / BOMBADIL_HEIGHT.
 on:
   pull_request:
   push:
@@ -25,7 +26,8 @@ jobs:
           fetch-depth: 1
 
       - name: Test the Bombadil runners
-        run: node --test tools/bombadil/static-server.test.mjs
+        working-directory: tools/bombadil
+        run: node --test
 
       - name: Check version consistency
         run: pwsh -NoProfile -File scripts/release.ps1 check

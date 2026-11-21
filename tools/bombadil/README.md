@@ -34,7 +34,11 @@ le Chrome ou Chromium trouvé sur le `PATH`. En CI :
 - chaque nuit (et à la demande, *Run workflow* avec la durée en minutes) :
   `bombadil-nightly.yml`, 20 min par cible, le board dans cinq modes du mock
   (`admin`, `member`, `guest`, `empty`, `removed`), avec les specs `*-soak.ts`.
-  Les traces ne sont téléversées qu'en cas d'échec.
+  Les traces ne sont téléversées qu'en cas d'échec. S'y ajoutent, à 10 min :
+  les états du mock qu'aucune action du spec n'atteint (`settings`,
+  `update=ready`, `update=downloading`, `nozone`, `member-empty`,
+  `guest-removed`) et deux autres tailles de fenêtre (1920 × 1080 et
+  1024 × 768).
 
 Les specs `*-soak.ts` ajoutent `noDomNodeLeak` et `noListenerLeak`
 (`specs/leaks.ts`) : sur 2 minutes, le nombre de nœuds DOM ou d'écouteurs ne
@@ -54,13 +58,16 @@ LC_SERVER_BIN=../../target/debug/lc-server npm run admin
 npm run board
 ```
 
-`npm test` lance `static-server.test.mjs` (node:test, ni Bombadil ni
-navigateur) : `run-board.mjs` sert `apps/lc-overlay` avec `static-server.mjs`,
-qui répond 404 quand un fichier disparaît entre le `stat` et l'ouverture. Une
-erreur de flux non capturée tuait node au milieu d'une cible, laissant un Chrome
-orphelin bloquer le lanceur ; `release-check` lance ce test à chaque PR.
+`npm test` lance les tests `node:test` (ni Bombadil ni navigateur) :
+`static-server.test.mjs` protège le serveur statique de `run-board.mjs`, qui
+répond 404 quand un fichier disparaît entre le `stat` et l'ouverture (une erreur
+de flux non capturée tuait node au milieu d'une cible, laissant un Chrome
+orphelin bloquer le lanceur) ; `lib.test.mjs` protège les options passées à
+Bombadil, dont la taille de fenêtre. `release-check` les lance à chaque PR.
 
-Variables : `BOMBADIL_TIME_LIMIT` (`3m`), `BOMBADIL_NO_SANDBOX=1` (Chromium sans
+Variables : `BOMBADIL_TIME_LIMIT` (`3m`), `BOMBADIL_WIDTH` (`1280`) et
+`BOMBADIL_HEIGHT` (`800`, la taille de la fenêtre explorée : à faire varier pour
+voir le board à d'autres tailles), `BOMBADIL_NO_SANDBOX=1` (Chromium sans
 sandbox, utile en conteneur ou en CI), `BOMBADIL_CMD` (commande de Bombadil en
 tableau JSON, par exemple `["wsl.exe","-d","Ubuntu","--","bombadil"]`),
 `LC_BOMBADIL_ADMIN_PORT` (39417), `LC_BOMBADIL_BOARD_PORT` (39418),

@@ -2,10 +2,11 @@ name: bombadil-nightly
 
 # Long Bombadil explorations (tools/bombadil), off the PR path: the rust
 # workflow already runs 3 minutes per target on every change. Here each target
-# runs for longer, the board under several mock modes (each starts in other
-# code paths), and the soak specs add resource-leak properties that only make
-# sense over long runs. Traces are uploaded on failure only: a long run writes
-# hundreds of MB of screenshots.
+# runs for longer, the board in every mock state — the nightly modes, the states
+# no spec action can reach (`?settings`, `?update=…`, `?nozone`, …) and two
+# other viewport sizes — and the soak specs add resource-leak properties that
+# only make sense over long runs. Traces are uploaded on failure only: a long
+# run writes hundreds of MB of screenshots.
 on:
   schedule:
     - cron: "17 3 * * *"
@@ -24,23 +25,38 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BOMBADIL_TIME_LIMIT: ${{ github.event.inputs.minutes || '20' }}m
   BOMBADIL_NO_SANDBOX: "1"
 
 jobs:
   board:
     name: board (${{ matrix.mode.name }})
     runs-on: ubuntu-latest
+    # 20 min per board target, plus npm ci and the typecheck.
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        mode:
-          - { name: admin, query: "media" }
-          - { name: member, query: "role=member&media" }
-          - { name: guest, query: "role=guest&media" }
-          - { name: empty, query: "empty" }
-          - { name: removed, query: "removed&media" }
+        include:
+          # The modes of the previous nightly: the same page, four different
+          # starts (role, empty guild, pending removal).
+          - mode: { name: admin, query: "media" }
+          - mode: { name: member, query: "role=member&media" }
+          - mode: { name: guest, query: "role=guest&media" }
+          - mode: { name: empty, query: "empty" }
+          - mode: { name: removed, query: "removed&media" }
+          # States no spec action reaches: their screen only opens at startup
+          # (see apps/lc-overlay/dev/board-mock.js). Ten minutes each: they are
+          # single screens, the soak thresholds need only two.
+          - mode: { name: settings, query: "settings&media", minutes: 10 }
+          - mode: { name: update-ready, query: "update=ready&media", minutes: 10 }
+          - mode: { name: update-downloading, query: "update=downloading&media", minutes: 10 }
+          - mode: { name: nozone, query: "nozone&media", minutes: 10 }
+          - mode: { name: member-empty, query: "role=member&empty", minutes: 10 }
+          - mode: { name: guest-removed, query: "role=guest&removed&media", minutes: 10 }
+          # Other viewports: with a single 1280 × 800 size, a control pushed out
+          # of view or a layout that only breaks at 1024 px is never seen.
+          - mode: { name: widescreen, query: "media", width: 1920, height: 1080, minutes: 10 }
+          - mode: { name: compact, query: "media", width: 1024, height: 768, minutes: 10 }
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -55,11 +71,15 @@ jobs:
         run: |
           npm ci
           npm run typecheck
+          npm test
       - name: Explore the board
         working-directory: tools/bombadil
         env:
           LC_BOMBADIL_BOARD_QUERY: ${{ matrix.mode.query }}
           BOMBADIL_SPEC: specs/board-soak.ts
+          BOMBADIL_WIDTH: ${{ matrix.mode.width || 1280 }}
+          BOMBADIL_HEIGHT: ${{ matrix.mode.height || 800 }}
+          BOMBADIL_TIME_LIMIT: ${{ matrix.mode.minutes || github.event.inputs.minutes || '20' }}m
         run: npm run board
       - name: Upload the trace
         if: failure()
@@ -127,11 +147,13 @@ jobs:
         run: |
           npm ci
           npm run typecheck
+          npm test
       - name: Explore the admin console
         working-directory: tools/bombadil
         env:
           LC_SERVER_BIN: ${{ github.workspace }}/target/debug/lc-server
           BOMBADIL_SPEC: specs/admin-console-soak.ts
+          BOMBADIL_TIME_LIMIT: ${{ github.event.inputs.minutes || '20' }}m
         run: npm run admin
       - name: Upload the trace
         if: failure()

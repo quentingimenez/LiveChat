@@ -73,9 +73,9 @@ function openPendingMenu(event, job) {
   }
   openContextMenu(event, [
     { heading: jobTitle(job) },
-    { label: 'Retirer de la file', icon: 'close', onSelect: () => removeJob(job) },
+    { label: 'Retirer', icon: 'close', onSelect: () => removeJob(job) },
     'separator',
-    { label: 'Vider la file', icon: 'remove', danger: true, onSelect: () => clearQueue() },
+    { label: 'Vider…', icon: 'remove', danger: true, onSelect: () => clearQueue() },
   ]);
 }
 
@@ -167,7 +167,7 @@ export function renderQueue() {
                   {
                     class: 'btn is-quiet icon-btn',
                     'aria-label': `Retirer ${jobTitle(job)} de la file`,
-                    title: 'Retirer de la file',
+                    title: 'Retirer',
                     onClick: () => removeJob(job),
                   },
                   icon('close'),
@@ -188,7 +188,7 @@ export function renderQueue() {
             : `${pending.length} média${pending.length > 1 ? 's' : ''} en attente`,
         ),
         h('span', { class: 'spacer' }),
-        can('moderateQueue') ? h('button', { class: 'btn is-danger', onClick: clearQueue }, 'Vider la file…') : null,
+        can('moderateQueue') ? h('button', { class: 'btn is-danger', onClick: clearQueue }, 'Vider…') : null,
       ),
     );
   }
@@ -271,7 +271,7 @@ export async function clearQueue() {
   confirmDialog(
     'Vider la file d’attente ?',
     `Les ${count} média${plural ? 's' : ''} en attente ser${plural ? 'ont' : 'a'} retiré${plural ? 's' : ''}. Le média à l’antenne n’est pas concerné.`,
-    'Vider la file',
+    'Vider',
     async () => {
       await run(() => api('DELETE', '/overlay/queue'), 'File vidée.');
       loadQueue();

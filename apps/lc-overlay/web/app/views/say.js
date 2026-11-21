@@ -28,7 +28,7 @@ export function openSayDialog() {
     });
     const anonymous = h('input', { type: 'checkbox' });
     const error = h('p', { class: 'error-text', role: 'alert', hidden: true });
-    const submit = h('button', { class: 'btn is-primary', type: 'submit' }, 'Faire lire');
+    const submit = h('button', { class: 'btn is-primary', type: 'submit' }, 'Lire');
 
     function refresh() {
       const count = speechCounter(text.value);
@@ -88,7 +88,7 @@ export function openSayDialog() {
             // The dialog stays open with the text, so it can be fixed and resent.
             showError(sayErrorMessage(failure && failure.status, failure && failure.code, failure && failure.message));
             sending = false;
-            submit.textContent = 'Faire lire';
+            submit.textContent = 'Lire';
             refresh();
           }
         },
@@ -102,6 +102,6 @@ export function openSayDialog() {
     );
 
     refresh();
-    return [h('h2', null, 'Faire lire un texte'), form];
+    return [h('h2', null, 'Lire un texte'), form];
   });
 }

@@ -44,7 +44,7 @@ export const ALIGNMENTS = [
 const SHORTCUTS = [
   ['stop', 'Arrêter le média pour tous'],
   ['stopLocal', 'Arrêter le média chez moi'],
-  ['muteAll', 'Tout mettre en pause'],
+  ['muteAll', 'Pause générale'],
   ['openBoard', 'Ouvrir la board'],
 ];
 
@@ -429,7 +429,7 @@ function renderDisplay(settings) {
   const testButton = h(
     'button',
     { class: 'btn', type: 'button', disabled: testingMedia || placing, onClick: testMedia },
-    testingMedia ? 'Lancement…' : 'Lancer un média de test',
+    testingMedia ? 'Lancement…' : 'Afficher',
   );
 
   return section(
@@ -496,7 +496,7 @@ function renderSound(settings) {
     ),
     switchRow('Son coupé', mediaMute, 'settings-media-mute'),
     switchRow(
-      'Tout mettre en pause',
+      'Pause générale',
       generalMute,
       'settings-general-mute',
       'Ferme les connexions : plus rien n’est reçu ni affiché.',

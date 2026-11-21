@@ -180,7 +180,7 @@ fn menu_model(
         MenuEntry::Separator,
         MenuEntry::Check {
             id: ID_GENERAL_MUTE.to_string(),
-            label: "Tout mettre en pause".to_string(),
+            label: "Pause générale".to_string(),
             checked: !config.enabled,
             enabled: true,
         },
@@ -512,7 +512,7 @@ mod tests {
                 action(ID_OPEN_BOARD, "Ouvrir la board"),
                 action(ID_SETTINGS, "Paramètres…"),
                 MenuEntry::Separator,
-                check(ID_GENERAL_MUTE, "Tout mettre en pause", false, true),
+                check(ID_GENERAL_MUTE, "Pause générale", false, true),
                 check(ID_MEDIA_MUTE, "Couper le son des médias", false, true),
                 check("tray.guild.111", "Les Sardines", true, true),
                 check(
@@ -560,7 +560,7 @@ mod tests {
             None,
         );
 
-        assert!(model.contains(&check(ID_GENERAL_MUTE, "Tout mettre en pause", true, true)));
+        assert!(model.contains(&check(ID_GENERAL_MUTE, "Pause générale", true, true)));
         assert!(model.contains(&check(
             ID_MEDIA_MUTE,
             "Couper le son des médias",

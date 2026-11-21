@@ -77,7 +77,7 @@ export function renderHeader() {
             onClick: () => toggleMute(guild),
           },
           icon(guild.membership.muted ? 'mute' : 'sound'),
-          guild.membership.muted ? 'Reprendre' : 'Mettre en pause',
+          guild.membership.muted ? 'Reprendre' : 'Pause',
         ),
         guild.membership.muted
           ? null
@@ -89,7 +89,7 @@ export function renderHeader() {
                 onClick: () => toggleMediaSound(guildId, !mediaMuted),
               },
               icon(mediaMuted ? 'sound' : 'mute'),
-              mediaMuted ? 'Rétablir le son' : 'Couper le son',
+              mediaMuted ? 'Rétablir' : 'Muet',
             ),
         h('button', { class: 'btn is-quiet', onClick: () => openGuildDialog(guild) }, 'Profil'),
       ),

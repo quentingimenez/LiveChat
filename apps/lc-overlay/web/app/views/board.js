@@ -89,13 +89,13 @@ function openCardMenu(event, item) {
     { heading: itemTitle(item) },
     can('play') ? { label: 'Jouer sur les overlays', icon: 'play', onSelect: () => playItem(item) } : null,
     {
-      label: state.selectedId === item.id && state.detailPinned ? 'Masquer les détails' : 'Afficher les détails',
+      label: state.selectedId === item.id && state.detailPinned ? 'Masquer' : 'Détails',
       onSelect: () => selectItem(item.id),
     },
     canFavorite()
-      ? { label: item.favorite ? 'Retirer des favoris' : 'Ajouter aux favoris', icon: 'star', onSelect: () => toggleFavorite(item) }
+      ? { label: item.favorite ? 'Retirer' : 'Favori', icon: 'star', onSelect: () => toggleFavorite(item) }
       : null,
-    canOpenEditor(item) ? { label: 'Ouvrir dans l’éditeur…', icon: 'edit', onSelect: () => openMediaEditor(item, itemTitle(item)) } : null,
+    canOpenEditor(item) ? { label: 'Modifier', icon: 'edit', onSelect: () => openMediaEditor(item, itemTitle(item)) } : null,
     { label: 'Infos…', onSelect: () => openInfoDialog(item) },
     can('play')
       ? {
@@ -616,12 +616,12 @@ export function renderBoard() {
             state.selecting ? 'Terminer' : 'Sélectionner',
           )
         : null,
-      h('button', { class: 'btn is-quiet icon-btn', title: 'Recharger le board', 'aria-label': 'Recharger le board', onClick: loadItems }, icon('refresh')),
-      can('play') ? h('button', { class: 'btn is-quiet', title: 'Faire lire un texte à voix haute sur les overlays', onClick: () => openSayDialog() }, icon('sound'), 'Faire lire un texte') : null,
+      h('button', { class: 'btn is-quiet icon-btn', title: 'Actualiser', 'aria-label': 'Actualiser', onClick: loadItems }, icon('refresh')),
+      can('play') ? h('button', { class: 'btn is-quiet', title: 'Lire un texte à voix haute sur les overlays', onClick: () => openSayDialog() }, icon('sound'), 'Lire…') : null,
       // A member who cannot add but can play still opens the dialog, with its
       // "Jouer une fois" action only.
-      !can('addMedia') && can('play') ? h('button', { class: 'btn is-primary', onClick: openAddDialog }, icon('play'), 'Jouer un média') : null,
-      can('addMedia') ? h('button', { class: 'btn is-primary', onClick: openAddDialog }, icon('plus'), 'Ajouter un média') : null,
+      !can('addMedia') && can('play') ? h('button', { class: 'btn is-primary', onClick: openAddDialog }, icon('play'), 'Jouer') : null,
+      can('addMedia') ? h('button', { class: 'btn is-primary', onClick: openAddDialog }, icon('plus'), 'Ajouter') : null,
     ),
   );
 
@@ -633,7 +633,7 @@ export function renderBoard() {
       'div',
       { class: 'empty' },
       h('h2', null, 'Le board est vide'),
-      can('addMedia') ? h('button', { class: 'btn is-primary', onClick: openAddDialog }, 'Ajouter un média') : null,
+      can('addMedia') ? h('button', { class: 'btn is-primary', onClick: openAddDialog }, 'Ajouter') : null,
     );
   } else if (items.length === 0 && uploads.length === 0) {
     content = h(

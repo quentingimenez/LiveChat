@@ -51,6 +51,22 @@ env:
   TAURI_CLI_VERSION: "2.12.4"
 
 jobs:
+  js-tests:
+    name: tests JS de l'overlay
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+
+      - name: Run overlay JS tests
+        run: node --test apps/lc-overlay/dev/tests/*.test.mjs
+
   installer:
     name: installeur NSIS (windows)
     runs-on: windows-latest

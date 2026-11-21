@@ -18,6 +18,10 @@ const settings = read('views/settings.js');
 const guildSettings = read('views/guild-settings.js');
 const profile = read('views/profile.js');
 const editorAv = read('views/editor/av.js');
+const addMedia = read('views/add-media.js');
+const say = read('views/say.js');
+const queue = read('views/queue.js');
+const board = read('views/board.js');
 const adminCss = read('styles/admin.css');
 const settingsCss = read('styles/settings.css');
 const dialogCss = read('styles/dialog.css');
@@ -58,10 +62,17 @@ const removed = [
   'Le nom affiché dans la liste des appareils de la guilde',
   // Editor.
   'Agrandit ou réduit le média sur l’overlay, sans le réencoder.',
+  // Dialogs, empty states: the title and the controls already say it.
+  'Ajoute une vidéo, une image ou un son depuis un lien ou un fichier.',
+  'Ajoute une vidéo, une image ou un son : colle un lien ou choisis un fichier.',
+  'Une voix de synthèse lit ton texte sur les overlays de la guilde.',
+  'Les médias envoyés à la guilde apparaissent ici avant de passer à l’écran.',
+  'Affichée pendant la lecture ; non enregistrée sur le board.',
+  'Pour « Jouer une fois » : une image reste affichée ce temps',
 ];
 
 test('no removed explanatory sentence comes back', () => {
-  const all = admin + settings + guildSettings + profile + editorAv;
+  const all = admin + settings + guildSettings + profile + editorAv + addMedia + say + queue + board;
   for (const sentence of removed) {
     assert.ok(!all.includes(sentence), `the removed sentence is back: « ${sentence} »`);
   }
@@ -99,6 +110,19 @@ test('the autosave note is stated once, under the page title', () => {
   // Both pages keep it in their head, right after the title.
   assert.match(settings, /h\('h2', null, 'Paramètres'\),\s*autosaveNote\(\),/);
   assert.match(guildSettings, /h\('h2', null, 'Réglages de la guilde'\),\s*autosaveNote\(\),/);
+});
+
+test('the add-media dialog states only what a field cannot', () => {
+  // The title and the Lien / Fichier choice open the dialog; no sentence
+  // repeats them, and the display time explains itself by its label.
+  assert.match(addMedia, /return \[h\('h2', null, 'Ajouter un média'\), form\];/);
+  assert.ok(!addMedia.includes('durationHint'), 'the display-time explanation is gone');
+  // The field stays in both panels, as its label says it.
+  assert.equal((addMedia.match(/durationLabel\(/g) || []).length, 2);
+  // The caption keeps the one fact a user cannot guess: it is not stored.
+  assert.equal((addMedia.match(/Non enregistrée sur le board\./g) || []).length, 2);
+  // The picker keeps the accepted size.
+  assert.match(addMedia, /Vidéos, images et sons : jusqu’à 2 Go par fichier\./);
 });
 
 test('profile devices have no card description', () => {

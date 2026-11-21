@@ -146,7 +146,6 @@ export function renderQueue() {
         'div',
         { class: 'empty' },
         h('h2', null, playing ? 'Rien d’autre en attente' : 'La file est vide'),
-        h('p', null, 'Les médias envoyés à la guilde apparaissent ici avant de passer à l’écran.'),
       ),
     );
   } else {

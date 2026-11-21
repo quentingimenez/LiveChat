@@ -372,30 +372,37 @@ function renderDisplay(settings) {
     identifyingDisplays ? 'Identification…' : 'Identifier les écrans',
   );
 
-  const zoneControls = placing
-    ? [
-        h('span', { class: 'settings-zone is-live' }, 'Placement en cours sur l’écran de l’overlay'),
-        h('button', { class: 'btn', type: 'button', onClick: cancelPlacement }, 'Annuler le placement'),
-      ]
-    : [
-        h('span', { class: 'settings-zone' }, zoneSummary(zone, selectedDisplay(settings, displays))),
-        h(
-          'button',
-          { class: 'btn is-primary', type: 'button', disabled: startingPlacement, onClick: startPlacement },
-          startingPlacement ? 'Ouverture…' : 'Placer sur l’écran',
-        ),
-        isWholeScreen(zone)
-          ? null
-          : h(
-              'button',
-              {
-                class: 'btn is-quiet',
-                type: 'button',
-                onClick: () => applyPatch({ layout: { zone: null } }).then(() => previewLayout({})),
-              },
-              'Revenir à tout l’écran',
-            ),
-      ];
+  const zoneActions = h(
+    'div',
+    { class: 'settings-zone-actions' },
+    placing
+      ? h('button', { class: 'btn', type: 'button', onClick: cancelPlacement }, 'Annuler le placement')
+      : [
+          h(
+            'button',
+            { class: 'btn is-primary', type: 'button', disabled: startingPlacement, onClick: startPlacement },
+            startingPlacement ? 'Ouverture…' : 'Placer sur l’écran',
+          ),
+          isWholeScreen(zone)
+            ? null
+            : h(
+                'button',
+                {
+                  class: 'btn is-quiet',
+                  type: 'button',
+                  onClick: () => applyPatch({ layout: { zone: null } }).then(() => previewLayout({})),
+                },
+                'Revenir à tout l’écran',
+              ),
+        ],
+  );
+
+  const zoneControls = [
+    placing
+      ? h('span', { class: 'settings-zone is-live' }, 'Placement en cours sur l’écran de l’overlay')
+      : h('span', { class: 'settings-zone' }, zoneSummary(zone, selectedDisplay(settings, displays))),
+    zoneActions,
+  ];
 
   const alignment = h(
     'select',
@@ -432,24 +439,34 @@ function renderDisplay(settings) {
     testingMedia ? 'Lancement…' : 'Afficher',
   );
 
+  const screenRow = controlRow(
+    'Écran',
+    [
+      screen,
+      identify,
+      hint('Affiche un numéro sur chaque écran pendant quelques secondes.'),
+    ],
+    'settings-screen',
+  );
+  screenRow.classList.add('settings-display-row');
+
+  const zoneRow = controlRow('Zone d’affichage', [
+    ...zoneControls,
+    hint(
+      placing
+        ? 'Déplace la zone et tire ses coins sur l’écran de l’overlay, puis valide (Entrée) ou annule (Échap).'
+        : 'Les médias, leur auteur et leur légende restent dans cette zone. Place-la directement sur l’écran, comme une fenêtre.',
+    ),
+  ]);
+  zoneRow.classList.add('settings-display-row');
+
+  const alignmentRow = controlRow('Alignement dans la zone', alignment, 'settings-align');
+  alignmentRow.classList.add('settings-display-row');
+
   return section(
     'Affichage',
-    controlRow(
-      'Écran',
-      [
-        screen,
-        identify,
-        hint('Affiche un numéro sur chaque écran pendant quelques secondes.'),
-      ],
-      'settings-screen',
-    ),
-    controlRow('Zone d’affichage', [
-      ...zoneControls,
-      placing
-        ? hint('Déplace la zone et tire ses coins sur l’écran de l’overlay, puis valide (Entrée) ou annule (Échap).')
-        : null,
-    ]),
-    controlRow('Alignement dans la zone', alignment, 'settings-align'),
+    screenRow,
+    h('div', { class: 'settings-zone-group' }, zoneRow, alignmentRow),
     switchRow('Texte des médias', showText, 'settings-show-text'),
     switchRow(
       'Ouvrir l’aperçu au survol',
@@ -557,7 +574,11 @@ function renderShortcuts(settings) {
   const shortcuts = settings.shortcuts || {};
   return section(
     'Raccourcis',
-    SHORTCUTS.map(([action, label]) => renderShortcutRow(action, label, shortcuts[action] || null)),
+    h(
+      'div',
+      { class: 'settings-shortcuts' },
+      SHORTCUTS.map(([action, label]) => renderShortcutRow(action, label, shortcuts[action] || null)),
+    ),
     hint(ALTGR_HINT),
   );
 }
@@ -567,13 +588,24 @@ function renderShortcutRow(action, label, accelerator) {
   const key = `shortcuts.${action}`;
   const message = shortcutErrors[key];
   const value = capturing
-    ? h('span', { class: 'settings-hint is-inline' }, 'Appuie sur la combinaison… (Échap seul pour annuler)')
-    : accelerator
-      ? h('kbd', null, acceleratorLabel(accelerator))
-      : h('span', { class: 'meta' }, 'Aucun');
+    ? null
+    : h(
+        'span',
+        { class: 'settings-shortcut-value' },
+        accelerator
+          ? h('kbd', null, acceleratorLabel(accelerator))
+          : h('span', { class: 'meta' }, 'Aucun'),
+      );
+  const captureHint = capturing
+    ? h(
+        'p',
+        { class: 'settings-hint is-inline settings-shortcut-capture' },
+        'Appuie sur la combinaison… (Échap seul pour annuler)',
+      )
+    : null;
   return h(
     'div',
-    { class: 'settings-row' },
+    { class: 'settings-row settings-shortcut-row' },
     h('span', { class: 'settings-label' }, label),
     h(
       'div',
@@ -581,14 +613,25 @@ function renderShortcutRow(action, label, accelerator) {
       value,
       h(
         'button',
-        { class: 'btn', type: 'button', disabled: capturing, onClick: () => startShortcutCapture(action) },
+        {
+          class: 'btn settings-shortcut-edit',
+          type: 'button',
+          disabled: capturing,
+          onClick: () => startShortcutCapture(action),
+        },
         'Modifier',
       ),
       h(
         'button',
-        { class: 'btn is-quiet', type: 'button', disabled: capturing, onClick: () => clearShortcut(action) },
+        {
+          class: 'btn is-quiet settings-shortcut-clear',
+          type: 'button',
+          disabled: capturing,
+          onClick: () => clearShortcut(action),
+        },
         'Effacer',
       ),
+      captureHint,
       message ? h('p', { class: 'error-text' }, message) : null,
     ),
   );

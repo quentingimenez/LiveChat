@@ -465,8 +465,6 @@ function renderDisplay(settings) {
 
   return section(
     'Affichage',
-    sectionDesc('Où et comment les médias s’affichent sur ton stream.'),
-    immediateNote(),
     screenRow,
     h('div', { class: 'settings-zone-group' }, zoneRow, alignmentRow),
     switchRow('Texte des médias', showText, 'settings-show-text'),
@@ -576,7 +574,6 @@ function renderShortcuts(settings) {
   const shortcuts = settings.shortcuts || {};
   return section(
     'Raccourcis',
-    sectionDesc('Des touches pour agir sur l’overlay sans quitter ton jeu.'),
     h(
       'div',
       { class: 'settings-shortcuts' },

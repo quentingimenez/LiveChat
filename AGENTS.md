@@ -66,22 +66,33 @@ attendu :
    `git push origin --delete <branche>`. Jamais `--admin`, jamais de merge sans
    checks verts.
 7. **Après le merge** : mettre `main` à jour en fast-forward, supprimer la
-   branche locale, fermer les fenêtres de navigateur ouvertes par l'agent (voir
-   « Fermer les fenêtres ouvertes avec browse »), et rapporter à l'utilisateur :
-   branche, URL de la PR, checks, commit de merge.
+   branche locale, vérifier que les fenêtres de navigateur ouvertes par l'agent
+   sont bien fermées (elles le sont normalement dès le « go » donné et la PR
+   créée — voir « Fermer les fenêtres ouvertes avec browse »), et rapporter à
+   l'utilisateur : branche, URL de la PR, checks, commit de merge.
 
 ## Fermer les fenêtres ouvertes avec browse
 
 Les agents ouvrent le navigateur (OpenCode Browse — outil `browse`, sur Brave)
 pour vérifier un changement : captures avant/après, parcours de la board, de la
 console admin ou de la boutique. Ces onglets ne sont pas ceux de l'utilisateur :
-ils ne doivent pas lui rester ouverts.
+ils ne doivent pas lui rester ouverts indéfiniment, mais ils restent ouverts le
+temps que l'utilisateur vérifie lui-même la page.
 
-- Une fois la PR mergée — et au plus tard avant de rendre la main — l'agent
-  ferme **tous** les onglets et fenêtres qu'il a ouverts (`tabs` action `close`,
-  `page.close()`), y compris ceux ouverts par un sous-agent qu'il a lancé.
-- Il ne ferme que ses propres onglets : jamais ceux que l'utilisateur a ouverts
-  ou prêtés.
+- Quand l'agent présente le résultat et attend la validation avant la PR
+  (étape 3 du flux), il **garde ouverts** les onglets et fenêtres ouverts pour
+  la vérification et donne leurs URL dans le message de présentation :
+  l'utilisateur regarde la page de ses propres yeux avant de donner son « go ».
+- Il ne les ferme qu'**après le « go » explicite** de l'utilisateur pour ouvrir
+  la PR, une fois la PR créée — et, de fait, après le merge — avec `tabs` action
+  `close` ou `page.close()`, y compris ceux ouverts par un sous-agent qu'il a
+  lancé. Il ne ferme que ses propres onglets : jamais ceux que l'utilisateur a
+  ouverts ou prêtés.
+- Corrections demandées après la vérification : l'agent corrige sur la même
+  branche, rouvre ce qu'il faut, représente le résultat et laisse de nouveau
+  les onglets ouverts jusqu'au « go » suivant.
+- Tâche sans PR à venir (diagnostic, investigation) : les onglets sont fermés
+  avant de rendre la main, comme avant.
 - Si la fermeture est impossible (navigateur déconnecté, extension absente), le
   signaler dans le rapport final plutôt que de laisser la fenêtre ouverte.
 

@@ -6,6 +6,7 @@
   "scripts": {
     "admin": "node run-admin.mjs",
     "board": "node run-board.mjs",
+    "test": "node --test static-server.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

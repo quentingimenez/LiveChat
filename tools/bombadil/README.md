@@ -46,12 +46,19 @@ fuite qui s'emballe.
 ```sh
 npm ci
 npm run typecheck
+npm test
 # Console : construire d'abord la console puis le serveur, qui l'embarque.
 (cd ../../apps/lc-admin-web && npm ci && npm run build)
 cargo build -p lc-server
 LC_SERVER_BIN=../../target/debug/lc-server npm run admin
 npm run board
 ```
+
+`npm test` lance `static-server.test.mjs` (node:test, ni Bombadil ni
+navigateur) : `run-board.mjs` sert `apps/lc-overlay` avec `static-server.mjs`,
+qui répond 404 quand un fichier disparaît entre le `stat` et l'ouverture. Une
+erreur de flux non capturée tuait node au milieu d'une cible, laissant un Chrome
+orphelin bloquer le lanceur ; `release-check` lance ce test à chaque PR.
 
 Variables : `BOMBADIL_TIME_LIMIT` (`3m`), `BOMBADIL_NO_SANDBOX=1` (Chromium sans
 sandbox, utile en conteneur ou en CI), `BOMBADIL_CMD` (commande de Bombadil en

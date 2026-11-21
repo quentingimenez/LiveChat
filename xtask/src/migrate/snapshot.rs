@@ -331,27 +331,3 @@ fn sql_literal(path: &Path) -> String {
     let rendered = path.display().to_string().replace('\'', "''");
     format!("'{rendered}'")
 }
-
-/// Crochet de test exécuté juste après la création du snapshot, avant les
-/// lectures : permet de simuler une source modifiée en cours de migration et
-/// de vérifier que l'installation est refusée.
-#[cfg(test)]
-static AFTER_SNAPSHOT_HOOK: std::sync::Mutex<Option<fn(&Path)>> = std::sync::Mutex::new(None);
-
-/// Enregistre (ou retire) le crochet de test.
-#[cfg(test)]
-pub(crate) fn set_after_snapshot_hook(hook: Option<fn(&Path)>) {
-    if let Ok(mut slot) = AFTER_SNAPSHOT_HOOK.lock() {
-        *slot = hook;
-    }
-}
-
-/// Exécute le crochet de test s'il est enregistré.
-#[cfg(test)]
-pub(crate) fn run_after_snapshot_hook(source: &Path) {
-    if let Ok(slot) = AFTER_SNAPSHOT_HOOK.lock() {
-        if let Some(hook) = *slot {
-            hook(source);
-        }
-    }
-}

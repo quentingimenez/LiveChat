@@ -14,6 +14,7 @@
 import { installContextMenuGuard } from './core/contextmenu.js';
 import { initSound } from './core/sound.js';
 import { initTheme } from './core/theme.js';
+import { initSingleLineDescriptions } from './core/measure.js';
 import { invoke, listen } from './core/ipc.js';
 import { activeGuild, state } from './core/state.js';
 import { notify } from './core/toast.js';
@@ -43,6 +44,8 @@ initTheme();
 // on the rail, the media cards and the queue, and fields keep theirs.
 installContextMenuGuard();
 initSound();
+// The 62ch measure is a fallback: a sentence that fits stays on one line.
+initSingleLineDescriptions();
 
 listen('overlay://guilds', applyGuilds);
 

@@ -320,6 +320,15 @@
   text-wrap: pretty;
 }
 
+/* A sentence that fits on one line keeps the width it needs: the 62ch measure
+   is only the fallback for a sentence that has to wrap. core/measure.js adds
+   the class after measuring the rendered text. */
+.settings-hint.is-one-line,
+.settings-desc.is-one-line,
+.form .hint.is-one-line {
+  max-width: none;
+}
+
 .settings-hint.is-inline {
   color: var(--text-soft);
 }

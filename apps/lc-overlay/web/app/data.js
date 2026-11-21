@@ -240,7 +240,11 @@ export async function loadGuildInfo(options) {
       notify(error.message, true);
     }
   }
-  renderHeader();
+  // A guild switch paints the header itself, once the tab fallback is decided
+  // (see loadGuild).
+  if (!(options && options.paint === false)) {
+    renderHeader();
+  }
   return true;
 }
 
@@ -250,7 +254,11 @@ export async function loadGuildInfo(options) {
 export async function loadGuild(options) {
   const switched = Boolean(options && options.switched === true);
   const guildId = state.activeGuildId;
-  const loaded = await loadGuildInfo(options);
+  // A switch paints once, below: loadGuildInfo would otherwise paint the header
+  // before the tab fallback (a guild where you are only a member must not paint
+  // « Administration » inactive) and before the queue badge keeps its place.
+  const quiet = Boolean(options && options.quiet === true);
+  const loaded = await loadGuildInfo({ quiet, paint: !switched });
   if (!loaded) {
     if (switched && guildId === state.activeGuildId) {
       // The guild is gone, or the shell no longer has one: show the empty
@@ -272,8 +280,12 @@ export async function loadGuild(options) {
     if (guildId !== state.activeGuildId) {
       return;
     }
-    state.switchingGuild = false;
     state.tab = tabAfterGuildSwitch(state.tab, canAdmin());
+    // Painted while `switchingGuild` is still true: the queue badge keeps the
+    // count shown before the switch until the new guild's queue is read, and
+    // the tab fallback above is already applied.
+    renderHeader();
+    state.switchingGuild = false;
     if (state.page === 'settings' || state.tab === 'settings') {
       // « Réglages » reads state.info directly: repaint now, with the new
       // guild's settings. The board, queue and admin views repaint when their

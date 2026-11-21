@@ -100,3 +100,36 @@ test('the device settings event does not repaint during a guild switch', () => {
   // It still repaints for a device change made elsewhere.
   assert.match(handler, /renderView\(\)/);
 });
+
+test('the queue badge keeps its count while the next guild queue is unknown', () => {
+  // The queue is reset with the guild. Painting that reset count would remove
+  // the badge for a frame: « Administration » and « Réglages » slide left, then
+  // back when the new guild's queue is read.
+  assert.equal(tabs.queueBadgeCount(0, 4, true), 4);
+  assert.equal(tabs.queueBadgeCount(0, 0, true), 0);
+});
+
+test('the queue badge follows the new guild once its queue is read', () => {
+  assert.equal(tabs.queueBadgeCount(2, 4, false), 2);
+  assert.equal(tabs.queueBadgeCount(0, 4, false), 0);
+});
+
+test('the header paints the queue badge through the switch rule', () => {
+  const header = read('views/header.js');
+  assert.match(header, /const pending = state\.queue\.pending\.length;/);
+  assert.match(header, /queueBadgeCount\(pending, lastQueueCount, state\.switchingGuild\)/);
+  assert.match(header, /lastQueueCount = pending;/);
+});
+
+test('the switched guild paints the header after the tab fallback', () => {
+  const load = section(data, 'export async function loadGuild(', 'export async function loadItems');
+  // loadGuildInfo keeps quiet updates painting themselves, but the switch must
+  // not: the first paint has to know the fallback tab and the queue badge rule.
+  assert.match(load, /loadGuildInfo\(\{ quiet, paint: !switched \}\)/);
+  const block = section(load, 'if (switched) {', 'const bindings');
+  const fallback = block.indexOf('state.tab = tabAfterGuildSwitch');
+  const paint = block.indexOf('renderHeader()');
+  const clear = block.indexOf('state.switchingGuild = false;');
+  assert.ok(fallback >= 0, 'tab fallback missing');
+  assert.ok(paint > fallback && paint < clear, 'the header must be painted after the fallback and before the flag clears');
+});

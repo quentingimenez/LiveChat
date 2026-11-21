@@ -5,9 +5,15 @@ import { h, icon } from '../core/dom.js';
 import { invoke } from '../core/ipc.js';
 import { allMediaMuted, guildMediaMuted, setGuildMediaMuted } from '../core/sound.js';
 import { activeGuild, canAdmin, guildLabel, ROLE_LABELS, state } from '../core/state.js';
+import { queueBadgeCount } from '../core/tabs.js';
 import { applyGuilds, loadAdmin, loadQueue } from '../data.js';
 import { openGuildDialog } from './profile.js';
 import { renderView } from './view.js';
+
+// Last queue count painted: during a guild switch the queue has already been
+// reset for the next guild, so the badge keeps this value until the new guild's
+// queue is read (see queueBadgeCount).
+let lastQueueCount = 0;
 
 export function renderHeader() {
   const header = document.getElementById('header');
@@ -20,9 +26,14 @@ export function renderHeader() {
   header.hidden = false;
   const role = (state.info && state.info.member && state.info.member.role) || guild.membership.role;
   const connected = state.info && state.info.guild ? state.info.guild.connectedCount : null;
+  const pending = state.queue.pending.length;
+  const queueCount = queueBadgeCount(pending, lastQueueCount, state.switchingGuild);
+  if (!state.switchingGuild) {
+    lastQueueCount = pending;
+  }
   const tabs = [
     ['board', 'Board', null],
-    ['queue', 'File d’attente', state.queue.pending.length || null],
+    ['queue', 'File d’attente', queueCount || null],
   ];
   if (canAdmin()) {
     tabs.push(['admin', 'Administration', null]);

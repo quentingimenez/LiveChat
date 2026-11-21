@@ -320,8 +320,8 @@ async fn runtime_settings_expose_values_sources_and_read_only_settings() {
     assert_eq!(body["readOnly"]["adminDiscordUserIds"], 0);
     assert_eq!(body["readOnly"]["adminUiLocalOnly"], true);
     assert_eq!(body["readOnly"]["adminTrustForwardedFor"], false);
-    // Legacy TikTok behaviour is preserved.
-    assert_eq!(body["tiktokCookie"], "");
+    // The TikTok cookie value is never returned, only its presence flag.
+    assert!(body.get("tiktokCookie").is_none());
     assert_eq!(body["hasTikTokCookie"], false);
 }
 
@@ -434,6 +434,7 @@ async fn runtime_settings_never_expose_secrets() {
         ("DISCORD_CLIENT_ID", "123456789012345678"),
         ("DISCORD_CLIENT_SECRET", "oauth-secret-value"),
         ("INGEST_API_TOKEN", "ingest-secret-value"),
+        ("TIKTOK_COOKIE", "tiktok-secret-value"),
         ("ADMIN_DISCORD_USER_IDS", "1001,1002"),
     ])
     .await;
@@ -448,6 +449,7 @@ async fn runtime_settings_never_expose_secrets() {
         "bot-secret-value",
         "oauth-secret-value",
         "ingest-secret-value",
+        "tiktok-secret-value",
     ] {
         assert!(
             !serialized.contains(secret),
@@ -460,6 +462,7 @@ async fn runtime_settings_never_expose_secrets() {
     assert_eq!(body["readOnly"]["ingestApiTokenSet"], true);
     assert_eq!(body["readOnly"]["adminSecretSet"], true);
     assert_eq!(body["readOnly"]["adminDiscordUserIds"], 2);
+    assert_eq!(body["hasTikTokCookie"], true);
 }
 
 // ---------------------------------------------------------------------------

@@ -1693,7 +1693,7 @@ async fn runtime_settings_valeurs_par_defaut_puis_persistance() {
         .call(Method::GET, "/admin/api/runtime-settings")
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["tiktokCookie"], "");
+    assert!(body.get("tiktokCookie").is_none());
     assert_eq!(body["hasTikTokCookie"], false);
 
     let (status, body) = harness
@@ -1705,15 +1705,16 @@ async fn runtime_settings_valeurs_par_defaut_puis_persistance() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["updated"], true);
-    assert_eq!(body["tiktokCookie"], "abc123");
+    assert!(body.get("tiktokCookie").is_none());
     assert_eq!(body["hasTikTokCookie"], true);
 
-    // Read back: the value applied in memory is returned.
+    // Read back: only the presence flag is exposed.
     let (status, body) = harness
         .call(Method::GET, "/admin/api/runtime-settings")
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["tiktokCookie"], "abc123");
+    assert!(body.get("tiktokCookie").is_none());
+    assert_eq!(body["hasTikTokCookie"], true);
 
     let settings_file = harness.path(SETTINGS_FILE_NAME);
     assert!(settings_file.is_file(), "admin_runtime.json doit être créé");
@@ -1722,6 +1723,61 @@ async fn runtime_settings_valeurs_par_defaut_puis_persistance() {
     assert!(
         !harness.path(&format!("{SETTINGS_FILE_NAME}.tmp")).exists(),
         "aucun fichier temporaire ne doit rester"
+    );
+}
+
+#[tokio::test]
+async fn runtime_settings_never_expose_the_tiktok_cookie() {
+    let harness = Harness::with_pairs(&[("TIKTOK_COOKIE", "sessionid=environment-secret")]).await;
+
+    let (status, body) = harness
+        .call(Method::GET, "/admin/api/runtime-settings")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.get("tiktokCookie").is_none());
+    assert_eq!(body["hasTikTokCookie"], true);
+    assert!(
+        !body.to_string().contains("environment-secret"),
+        "the environment cookie leaked in the runtime settings"
+    );
+
+    let (status, body) = harness
+        .call_json(
+            Method::PATCH,
+            "/admin/api/runtime-settings",
+            &json!({ "tiktokCookie": "sessionid=runtime-secret" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.get("tiktokCookie").is_none());
+    assert_eq!(body["hasTikTokCookie"], true);
+    assert!(
+        !body.to_string().contains("runtime-secret"),
+        "the patched cookie leaked in the PATCH response"
+    );
+
+    // Clearing the override must also hide the environment cookie: the empty
+    // runtime value is authoritative, not a signal to fall back to TIKTOK_COOKIE.
+    let (status, body) = harness
+        .call_json(
+            Method::PATCH,
+            "/admin/api/runtime-settings",
+            &json!({ "tiktokCookie": "" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.get("tiktokCookie").is_none());
+    assert_eq!(body["hasTikTokCookie"], false);
+
+    let (status, body) = harness
+        .call(Method::GET, "/admin/api/runtime-settings")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.get("tiktokCookie").is_none());
+    assert_eq!(body["hasTikTokCookie"], false);
+    assert!(
+        !body.to_string().contains("environment-secret"),
+        "the environment cookie leaked after the runtime cookie was cleared"
     );
 }
 

@@ -11,8 +11,9 @@
 //! next request (overview, WebSocket handshake, ingestion, speech…) uses them
 //! without a restart.
 //!
-//! The legacy TikTok cookie stays compatible: it is still persisted in clear
-//! text in `admin_runtime.json`, returned as `tiktokCookie`, and normalised like
+//! The legacy TikTok cookie stays writable through `PATCH` and is still
+//! persisted in clear text in `admin_runtime.json`, but it is never returned:
+//! the payload only exposes `hasTikTokCookie`, and the value is normalised like
 //! the legacy `normalizeTikTokCookie`.
 //!
 //! # Persistence
@@ -152,7 +153,6 @@ fn settings_payload(state: &AppState) -> Value {
     };
 
     json!({
-        "tiktokCookie": tiktok_cookie,
         "hasTikTokCookie": !tiktok_cookie.is_empty(),
         "settings": {
             "defaultDuration": setting(

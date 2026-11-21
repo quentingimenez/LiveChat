@@ -21,16 +21,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* ------------------------------------------------------------------ intro */
-
-.list-intro {
-  max-width: var(--measure);
-  margin: 0 0 var(--space-3);
-  color: var(--text-soft);
-  font-size: var(--text-sm);
-  text-wrap: pretty;
-}
-
 /* ------------------------------------------------------ loading and errors */
 
 .list-state {

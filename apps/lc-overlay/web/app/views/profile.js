@@ -369,11 +369,6 @@ export function openGuildDialog(guild) {
         { class: 'profile-personal-head' },
         h(
           'div',
-          { class: 'profile-personal-intro' },
-          h('p', { class: 'profile-device-desc' }, 'Les appareils connectés à ton profil. Révoque ceux que tu ne reconnais pas.'),
-        ),
-        h(
-          'div',
           { class: 'profile-personal-actions' },
           personalCount,
           h('button', { class: 'btn is-quiet profile-small', type: 'button', onClick: loadPersonalDevices }, 'Actualiser'),
@@ -502,7 +497,6 @@ export function openGuildDialog(guild) {
         'aria-labelledby': `${tabSetId}-add-tab`,
         hidden: true,
       },
-      h('p', { class: 'profile-device-desc profile-add-intro' }, 'Associe un autre PC, ton navigateur ou un raccourci iOS.'),
       h(
         'div',
         { class: 'profile-devices' },
@@ -516,7 +510,6 @@ export function openGuildDialog(guild) {
               'div',
               { class: 'profile-device-text' },
               h('p', { class: 'profile-device-title' }, 'Autre appareil'),
-              h('p', { class: 'profile-device-desc' }, 'Rattache un autre PC à ton profil.'),
             ),
             h('button', { class: 'btn', type: 'button', onClick: makeDeviceCode }, 'Créer un code'),
           ),
@@ -533,7 +526,6 @@ export function openGuildDialog(guild) {
                   'div',
                   { class: 'profile-device-text' },
                   h('p', { class: 'profile-device-title' }, 'Extension navigateur'),
-                  h('p', { class: 'profile-device-desc' }, 'Envoie des médias depuis ton navigateur.'),
                 ),
                 h('button', { class: 'btn', type: 'button', onClick: makeExtensionCode }, 'Créer un code'),
               ),
@@ -551,7 +543,6 @@ export function openGuildDialog(guild) {
                   'div',
                   { class: 'profile-device-text' },
                   h('p', { class: 'profile-device-title' }, 'Raccourci iOS'),
-                  h('p', { class: 'profile-device-desc' }, 'Partage une photo, une vidéo ou un lien depuis l’app Raccourcis.'),
                 ),
                 h('button', { class: 'btn', type: 'button', onClick: makeIosToken }, 'Configurer'),
               ),

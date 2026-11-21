@@ -42,17 +42,6 @@
   font-weight: 600;
 }
 
-.settings-head p {
-  margin: 0;
-}
-
-/* What the page sets, in one sentence. */
-.settings-intro {
-  max-width: var(--measure);
-  color: var(--text-soft);
-  text-wrap: pretty;
-}
-
 /* ------------------------------------------------------------------- sections */
 .settings-section {
   margin-bottom: var(--settings-gap);
@@ -78,7 +67,7 @@
   text-wrap: pretty;
 }
 
-/* One sentence saying what the section sets, under its title. */
+/* A status line of the server-side settings (Discord link, bot commands). */
 .settings-desc {
   max-width: var(--measure);
   margin: 0 0 var(--space-3);
@@ -156,12 +145,6 @@
   flex-basis: 100%;
 }
 
-/* In an action row, the sentence stays beside its button. */
-.settings-action .settings-hint-wrap {
-  flex-basis: auto;
-  min-width: 0;
-}
-
 .settings-control .error-text {
   flex-basis: 100%;
   margin: 0;
@@ -192,8 +175,8 @@
   font-weight: 600;
 }
 
-/* A named action under the control it belongs to, with the sentence that
-   explains it. It starts on the control column, like the rows above. */
+/* A named action under the control it belongs to, on the control column, like
+   the rows above. */
 .settings-action {
   display: flex;
   flex-wrap: wrap;

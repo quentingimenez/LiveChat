@@ -134,14 +134,14 @@ function activeCodeCount() {
   );
 }
 
-// One list: the sentence that says what it holds, an optional lead panel, then
-// the column head and the rows, or one explicit state (loading, error, empty).
-function renderList({ kind, tab, status, count, intro, labels, rows, empty, lead = null }) {
+// One list: an optional lead panel, then the column head and the rows, or one
+// explicit state (loading, error, empty). The tab chips and the columns say
+// what the list holds, so no sentence introduces it.
+function renderList({ kind, tab, status, count, labels, rows, empty, lead = null }) {
   const phase = count > 0 ? 'ready' : status.failed ? 'error' : status.loading ? 'loading' : 'empty';
   return h(
     'div',
     null,
-    h('p', { class: 'list-intro' }, intro),
     lead,
     phase === 'ready' ? listHead(kind, labels) : null,
     phase === 'ready' ? h('div', { class: 'list' }, rows) : listState(phase, tab, empty),
@@ -289,7 +289,6 @@ function renderMembers(status) {
     tab: 'members',
     status,
     count: state.members.length,
-    intro: 'Les membres de la guilde, avec leur rôle et leur dernière activité. Tu peux changer un rôle, exclure un membre ou le bannir.',
     labels: ['', 'Membre', 'Vu', 'Rôle', 'Action'],
     rows,
     empty: 'Aucun membre dans cette guilde pour le moment.',
@@ -403,7 +402,6 @@ function renderBans(status) {
     tab: 'bans',
     status,
     count: state.bans.length,
-    intro: 'Les comptes bannis de la guilde. Tu peux lever un bannissement\u00a0; la personne pourra revenir avec un nouveau code.',
     labels: ['', 'Banni', 'Date', 'Banni par', 'Action'],
     rows,
     empty: 'Personne n’est banni de cette guilde.',
@@ -438,7 +436,6 @@ function renderDevices(status) {
     tab: 'devices',
     status,
     count: state.devices.length,
-    intro: 'Les overlays appairés à cette guilde, avec leur version et leur dernière activité. Tu peux régler le son, renommer ou révoquer chaque appareil.',
     labels: ['', 'Appareil', 'Version', 'Vu', 'Session', 'Action'],
     rows,
     empty: 'Aucun appareil appairé pour le moment.',
@@ -543,9 +540,7 @@ function openDeviceSettingsDialog(device) {
         h('label', null, 'Volume de la guilde', h('div', { class: 'row device-range' }, volume, output)),
         h('p', { class: 'device-hint' }, 'Multiplié par le volume général de l’appareil.'),
         h('label', { class: 'switch' }, muted, 'Couper le son des médias'),
-        h('p', { class: 'device-hint' }, 'Les médias restent affichés, sans leur son.'),
         h('label', { class: 'switch' }, paused, 'Mettre la guilde en pause'),
-        h('p', { class: 'device-hint' }, 'Plus aucun média de cette guilde ne s’affiche sur cet appareil.'),
       ),
       h(
         'div',
@@ -581,7 +576,6 @@ function openRenameDeviceDialog(device) {
     });
     return [
       h('h2', null, 'Renommer l’appareil'),
-      h('p', null, 'Le nom affiché dans la liste des appareils de la guilde (40 caractères au plus).'),
       h('div', { class: 'stack' }, h('label', null, 'Nom de l’appareil', field)),
       h(
         'div',
@@ -791,7 +785,6 @@ function renderCodes(status) {
     tab: 'codes',
     status,
     count: rows.length,
-    intro: 'Les invitations et les codes d’appairage de la guilde. Crée un code, copie-le pour l’envoyer, ou révoque-le.',
     labels: ['Code', 'Type', 'Auteur', 'Expiration', 'Utilisations', 'Action'],
     rows: rows.map(renderCodeRow),
     empty: 'Aucun code pour le moment.',
@@ -952,7 +945,6 @@ function renderAudit(status) {
     tab: 'audit',
     status,
     count: state.auditEntries.length,
-    intro: 'Les actions d’administration récentes de la guilde, depuis l’overlay ou le panneau serveur. Tu peux y suivre qui a modifié quoi.',
     labels: ['Date', 'Origine', 'Auteur', 'Action'],
     rows,
     empty: 'Aucune action d’administration enregistrée pour cette guilde.',

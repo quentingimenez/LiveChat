@@ -27,15 +27,16 @@ use serde_json::{json, Map, Value};
 
 use lc_protocol::{
     is_frame_too_large, is_version_below, media_signature_input, parse_simple_version, AckError,
-    AckOutcome, AckPayload, AuthorPayload, BoardChange, BoardChangedPayload, ClientErrorPayload,
-    ClientMessage, CurrentJobPayload, DeviceSettingsPayload, DeviceSettingsStatePayload, Envelope,
-    HeartbeatPayload, HelloPayload, MediaIngestionError, MediaIngestionPayload, MediaKind,
-    MediaPayload, MediaTrigger, MediaTriggerPayload, PeerInfo, PeersPayload, PeersRequestPayload,
-    Platform, PlayPayload, PlaybackEndedPayload, PlaybackEndedReason, PlaybackState,
-    PlaybackStatePayload, RightsChangedPayload, ServerErrorPayload, ServerMessage,
-    SessionChangedPayload, SessionMode, SettingsPayload, StopPayload, StopReason,
-    StopRequestPayload, StopRequestSource, TextPayload, TweetCardPayload, TweetCardVideo,
-    WelcomeConfig, WelcomePayload, MAX_FRAME_BYTES, PROTOCOL_VERSION,
+    AckOutcome, AckPayload, AdminChangeKind, AdminChangedPayload, AuthorPayload, BoardChange,
+    BoardChangedPayload, ClientErrorPayload, ClientMessage, CurrentJobPayload,
+    DeviceSettingsPayload, DeviceSettingsStatePayload, Envelope, HeartbeatPayload, HelloPayload,
+    MediaIngestionError, MediaIngestionPayload, MediaKind, MediaPayload, MediaTrigger,
+    MediaTriggerPayload, PeerInfo, PeersPayload, PeersRequestPayload, Platform, PlayPayload,
+    PlaybackEndedPayload, PlaybackEndedReason, PlaybackState, PlaybackStatePayload,
+    RightsChangedPayload, ServerErrorPayload, ServerMessage, SessionChangedPayload, SessionMode,
+    SettingsPayload, StopPayload, StopReason, StopRequestPayload, StopRequestSource, TextPayload,
+    TweetCardPayload, TweetCardVideo, WelcomeConfig, WelcomePayload, MAX_FRAME_BYTES,
+    PROTOCOL_VERSION,
 };
 
 // ---------------------------------------------------------------------------
@@ -539,6 +540,21 @@ fn board_changed_payload() -> impl Strategy<Value = BoardChangedPayload> {
         .prop_map(|(change, item_id)| BoardChangedPayload { change, item_id })
 }
 
+fn any_admin_change() -> impl Strategy<Value = AdminChangeKind> {
+    prop_oneof![
+        Just(AdminChangeKind::Members),
+        Just(AdminChangeKind::Invites),
+        Just(AdminChangeKind::PairingCodes),
+        Just(AdminChangeKind::Bans),
+        Just(AdminChangeKind::Audit),
+    ]
+}
+
+fn admin_changed_payload() -> impl Strategy<Value = AdminChangedPayload> {
+    (snowflake(), any_admin_change())
+        .prop_map(|(guild_id, kind)| AdminChangedPayload { guild_id, kind })
+}
+
 fn device_settings_payload() -> impl Strategy<Value = DeviceSettingsPayload> {
     (of(volume()), of(any::<bool>()), of(any::<bool>())).prop_map(
         |(volume, media_muted, paused)| DeviceSettingsPayload {
@@ -628,6 +644,7 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
             }),
         1 => media_ingestion_payload().prop_map(ServerMessage::MediaIngestion),
         1 => board_changed_payload().prop_map(ServerMessage::BoardChanged),
+        1 => admin_changed_payload().prop_map(ServerMessage::AdminChanged),
         1 => device_settings_payload().prop_map(ServerMessage::DeviceSettings),
         1 => session_changed_payload().prop_map(ServerMessage::SessionChanged),
         1 => Just(ServerMessage::RightsChanged(RightsChangedPayload {})),

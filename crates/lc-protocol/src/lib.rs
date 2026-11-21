@@ -167,6 +167,8 @@ pub mod msg_type {
     pub const MEDIA_INGESTION: &str = "media.ingestion";
     /// S→C : the guild's media board changed (item added, edited or deleted).
     pub const BOARD_CHANGED: &str = "board.changed";
+    /// The administration lists of a guild changed.
+    pub const ADMIN_CHANGED: &str = "admin.changed";
     /// S→C : the admin changes the device settings of a connected overlay.
     pub const DEVICE_SETTINGS: &str = "device.settings";
     /// S→C : the admin changed the session mode of a connected overlay.
@@ -422,6 +424,9 @@ pub enum ServerMessage {
     /// The guild's media board changed.
     #[serde(rename = "board.changed")]
     BoardChanged(BoardChangedPayload),
+    /// An administration list of the guild changed (member, invite, code…).
+    #[serde(rename = "admin.changed")]
+    AdminChanged(AdminChangedPayload),
     /// The admin changes the device settings of a connected overlay.
     #[serde(rename = "device.settings")]
     DeviceSettings(DeviceSettingsPayload),
@@ -447,6 +452,7 @@ impl ServerMessage {
             Self::Error(_) => msg_type::ERROR,
             Self::MediaIngestion(_) => msg_type::MEDIA_INGESTION,
             Self::BoardChanged(_) => msg_type::BOARD_CHANGED,
+            Self::AdminChanged(_) => msg_type::ADMIN_CHANGED,
             Self::DeviceSettings(_) => msg_type::DEVICE_SETTINGS,
             Self::SessionChanged(_) => msg_type::SESSION_CHANGED,
             Self::RightsChanged(_) => msg_type::RIGHTS_CHANGED,
@@ -1039,6 +1045,35 @@ pub struct BoardChangedPayload {
     pub change: BoardChange,
     /// Item concerned.
     pub item_id: String,
+}
+
+/// Payload of `admin.changed`, broadcast to every overlay of the guild.
+///
+/// The board treats it as an invalidation hint: it reloads the visible
+/// administration sub-tab (debounced), so several mutations produce one read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminChangedPayload {
+    /// Guild whose administration data changed.
+    pub guild_id: String,
+    /// Administrative surface that changed.
+    pub kind: AdminChangeKind,
+}
+
+/// Administrative surface touched by an `admin.changed` hint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminChangeKind {
+    /// Role, exclusion or ban of a member.
+    Members,
+    /// Invitation created or revoked.
+    Invites,
+    /// Pairing code revoked or purged.
+    PairingCodes,
+    /// A ban was lifted.
+    Bans,
+    /// Only the audit journal changed (e.g. the board was cleared).
+    Audit,
 }
 
 /// Payload of `device.settings`: only the fields changed by the admin.

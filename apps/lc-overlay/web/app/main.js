@@ -23,6 +23,7 @@ import {
   applyGuilds,
   clearQueueEndTimer,
   guildInfoAge,
+  loadAdmin,
   loadGuildInfo,
   loadQueue,
   refreshQueueAutomatically,
@@ -84,6 +85,32 @@ listen('overlay://board-changed', (payload) => {
   if (payload && payload.guildId === state.activeGuildId) {
     requestItemsReload();
   }
+});
+
+// A member, invite, pairing code, ban or audit entry changed on another board
+// (or from the Discord side). Reload only what the open admin sub-tab shows,
+// coalesced: several mutations produce one read. The server sends one hint per
+// mutation; 300 ms is enough to group a role change and its audit entry.
+let adminChangedTimer = null;
+listen('overlay://admin-changed', (payload) => {
+  if (!payload || payload.guildId !== state.activeGuildId) {
+    return;
+  }
+  if (state.page !== 'guild' || state.tab !== 'admin') {
+    return;
+  }
+  clearTimeout(adminChangedTimer);
+  adminChangedTimer = setTimeout(() => {
+    if (
+      state.page === 'guild' &&
+      state.tab === 'admin' &&
+      state.activeGuildId === payload.guildId
+    ) {
+      // Force: a reload already in flight may have read the lists before the
+      // mutation, so it must not swallow this hint through the request dedupe.
+      loadAdmin({ quiet: true, force: true });
+    }
+  }, 300);
 });
 
 // The server changed this overlay's session mode or effective rights: read

@@ -1013,6 +1013,7 @@ pub(crate) fn message_prefix(message: &ServerMessage) -> &'static str {
         ServerMessage::Error(_) => "error",
         ServerMessage::MediaIngestion(_) => "ingestion",
         ServerMessage::BoardChanged(_) => "board",
+        ServerMessage::AdminChanged(_) => "admin",
         ServerMessage::DeviceSettings(_) => "device-settings",
         ServerMessage::SessionChanged(_) => "session-changed",
         ServerMessage::RightsChanged(_) => "rights-changed",
@@ -1131,7 +1132,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-    use lc_protocol::{RightsChangedPayload, SessionChangedPayload};
+    use lc_protocol::{
+        AdminChangeKind, AdminChangedPayload, RightsChangedPayload, SessionChangedPayload,
+    };
 
     fn registered_hub() -> (Arc<Hub>, Uuid, Uuid) {
         let hub = Arc::new(Hub::new());
@@ -1180,6 +1183,47 @@ mod tests {
     }
 
     #[test]
+    fn admin_changed_is_sent_to_the_guild_room() {
+        let hub = Hub::new();
+        let guild = GuildId::parse("123456789012345678").expect("guilde");
+        let client = OverlayClientId::new_v4();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        hub.register(
+            guild.clone(),
+            client,
+            client.to_canonical(),
+            "poste".to_owned(),
+            SessionMode::Normal,
+            Some("Auteur".to_owned()),
+            None,
+            sender,
+        )
+        .expect("connexion enregistrée");
+
+        assert_eq!(
+            hub.broadcast_message(
+                &guild,
+                ServerMessage::AdminChanged(AdminChangedPayload {
+                    guild_id: guild.as_str().to_owned(),
+                    kind: AdminChangeKind::PairingCodes,
+                }),
+            ),
+            1
+        );
+        let Ok(OutFrame::Text(text)) = receiver.try_recv() else {
+            panic!("admin.changed doit être diffusé");
+        };
+        let envelope: ServerEnvelope = serde_json::from_str(&text).expect("enveloppe");
+        match envelope.message {
+            ServerMessage::AdminChanged(payload) => {
+                assert_eq!(payload.guild_id, guild.as_str());
+                assert_eq!(payload.kind, AdminChangeKind::PairingCodes);
+            }
+            other => panic!("message inattendu : {other:?}"),
+        }
+    }
+
+    #[test]
     fn new_server_messages_have_a_stable_prefix() {
         assert_eq!(
             message_prefix(&ServerMessage::DeviceSettings(Default::default())),
@@ -1194,6 +1238,13 @@ mod tests {
         assert_eq!(
             message_prefix(&ServerMessage::RightsChanged(RightsChangedPayload {})),
             "rights-changed"
+        );
+        assert_eq!(
+            message_prefix(&ServerMessage::AdminChanged(AdminChangedPayload {
+                guild_id: "g".to_owned(),
+                kind: AdminChangeKind::Members,
+            })),
+            "admin"
         );
     }
 

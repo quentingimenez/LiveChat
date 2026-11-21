@@ -13,10 +13,10 @@ use serde_json::Value;
 use lc_protocol::{
     close_code, close_reason, is_frame_too_large, is_version_below, media_signature_input,
     media_url_ttl_sec, msg_type, outdated_protocol_reason, parse_simple_version, AckOutcome,
-    AckPayload, ClientEnvelope, ClientMessage, Envelope, MediaIngestionPayload, MediaKind,
-    ServerEnvelope, ServerMessage, StopRequestSource, DEFAULT_MIN_OVERLAY_VERSION,
-    HEARTBEAT_INTERVAL_MS, HELLO_TIMEOUT_MS, HTTP_UPGRADE_REQUIRED, LEGACY_SOCKET_IO_PATH,
-    MAX_CLIENT_MESSAGES_PER_SECOND, MAX_FRAME_BYTES, MAX_MEDIA_TEXT_CHARS,
+    AckPayload, AdminChangeKind, AdminChangedPayload, ClientEnvelope, ClientMessage, Envelope,
+    MediaIngestionPayload, MediaKind, ServerEnvelope, ServerMessage, StopRequestSource,
+    DEFAULT_MIN_OVERLAY_VERSION, HEARTBEAT_INTERVAL_MS, HELLO_TIMEOUT_MS, HTTP_UPGRADE_REQUIRED,
+    LEGACY_SOCKET_IO_PATH, MAX_CLIENT_MESSAGES_PER_SECOND, MAX_FRAME_BYTES, MAX_MEDIA_TEXT_CHARS,
     MAX_PLAYBACK_REMAINING_MS, MEDIA_URL_EXPIRY_MARGIN_SEC, MEDIA_URL_TTL_MAX_SEC,
     MEDIA_URL_TTL_SEC, PEERS_REQUEST_MIN_INTERVAL_MS, PING_INTERVAL_MS,
     PLAYBACK_STATE_MIN_INTERVAL_MS, PONG_TIMEOUT_MS, PROTOCOL_VERSION, WS_PATH,
@@ -722,4 +722,19 @@ fn new_server_messages_carry_the_expected_payloads() {
         envelope.message,
         ServerMessage::RightsChanged(lc_protocol::RightsChangedPayload {})
     ));
+}
+
+#[test]
+fn admin_changed_roundtrips_with_its_wire_names() {
+    let message = ServerMessage::AdminChanged(AdminChangedPayload {
+        guild_id: "123456789012345678".to_owned(),
+        kind: AdminChangeKind::PairingCodes,
+    });
+    let value = serde_json::to_value(&message).expect("admin.changed");
+    assert_eq!(value["type"], "admin.changed");
+    assert_eq!(value["payload"]["guildId"], "123456789012345678");
+    assert_eq!(value["payload"]["kind"], "pairing_codes");
+
+    let decoded: ServerMessage = serde_json::from_value(value).expect("admin.changed");
+    assert_eq!(decoded, message);
 }

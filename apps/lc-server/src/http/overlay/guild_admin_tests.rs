@@ -6,16 +6,20 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::sync::Arc;
+
 use axum::http::{Method, StatusCode};
 use lc_domain::rights::{Action, RightsRole, Surface};
 use lc_domain::{
     GuildId, GuildRole, JobStatus, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId,
     MediaKind, MediaStatus, PlaybackJob, PlaybackJobId,
 };
+use lc_protocol::{AdminChangeKind, ServerMessage};
 use serde_json::{json, Value};
 use time::{Duration, UtcDateTime};
 
-use super::guild_tests::{fixed_now, token, Harness};
+use super::guild_tests::{fixed_now, token, Harness, RecordingAdminHub};
+use crate::http::admin::hub::AdminHub;
 
 /// Guilde de test (`MEDIA_BOARD_MAX_TOTAL_MB=64` dans le harnais).
 const SERVER_LIMIT_MB: i64 = 64;
@@ -889,4 +893,42 @@ async fn guild_hides_board_and_playback_without_rights() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["guild"]["mediaBoard"].is_object());
     assert!(body["guild"]["playback"].is_object());
+}
+
+#[tokio::test]
+async fn clearing_the_board_broadcasts_an_admin_changed_event() {
+    let mut harness = Harness::new().await;
+    let hub = Arc::new(RecordingAdminHub::default());
+    harness.state = harness
+        .state
+        .clone()
+        .with_admin_hub(hub.clone() as Arc<dyn AdminHub>);
+    harness.app = crate::app::router(harness.state.clone());
+
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Alice")
+        .await;
+    let admin_token = token(&admin);
+    let (status, body) = harness
+        .call(
+            Method::POST,
+            "/overlay/admin/media-board/clear",
+            Some(&admin_token),
+            Some(json!({ "confirm": "Les Sardines" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let broadcasts = hub.broadcasts();
+    assert!(
+        broadcasts.iter().any(|(guild_id, message)| {
+            *guild_id == harness.guild_id
+                && matches!(
+                    message,
+                    ServerMessage::AdminChanged(payload)
+                        if payload.kind == AdminChangeKind::Audit
+                )
+        }),
+        "attendu un admin.changed(Audit) pour la guilde, reçu {broadcasts:?}"
+    );
 }

@@ -55,6 +55,7 @@ fn test_config(media_dir: &Path) -> Config {
 pub(super) struct RecordingAdminHub {
     closes: Mutex<Vec<(uuid::Uuid, u16, String)>>,
     sent: Mutex<Vec<(uuid::Uuid, lc_protocol::ServerMessage)>>,
+    broadcasts: Mutex<Vec<(GuildId, lc_protocol::ServerMessage)>>,
     connected: Mutex<Vec<uuid::Uuid>>,
     device_states:
         Mutex<std::collections::HashMap<uuid::Uuid, lc_protocol::DeviceSettingsStatePayload>>,
@@ -68,6 +69,11 @@ impl RecordingAdminHub {
 
     pub(super) fn sent(&self) -> Vec<(uuid::Uuid, lc_protocol::ServerMessage)> {
         self.sent.lock().expect("verrou du hub").clone()
+    }
+
+    /// Messages broadcast to a guild room, in order.
+    pub(super) fn broadcasts(&self) -> Vec<(GuildId, lc_protocol::ServerMessage)> {
+        self.broadcasts.lock().expect("verrou du hub").clone()
     }
 
     pub(super) fn set_connected(&self, client_id: uuid::Uuid, connected: bool) {
@@ -148,6 +154,14 @@ impl AdminHub for RecordingAdminHub {
 
     fn set_session_mode(&self, client_id: &uuid::Uuid, _mode: lc_protocol::SessionMode) -> bool {
         self.is_connected(client_id)
+    }
+
+    fn broadcast_to_guild(&self, guild_id: &GuildId, message: lc_protocol::ServerMessage) -> usize {
+        self.broadcasts
+            .lock()
+            .expect("verrou du hub")
+            .push((guild_id.clone(), message));
+        1
     }
 
     async fn broadcast_stop(&self, _guild_id: &GuildId) -> usize {

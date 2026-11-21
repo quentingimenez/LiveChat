@@ -31,6 +31,11 @@ let itemsRefreshTimer = null;
 let itemsRefreshPending = false;
 // Guilds whose info is being prefetched (pointer over the rail).
 const prefetching = new Set();
+// Bumped by forced admin reloads so they cannot join a read that started
+// before the mutation they are refreshing.
+let adminForcedSeq = 0;
+// Token of the newest admin read. Older reads discard their late responses.
+let adminReadToken = 0;
 
 // Board changes are coalesced: nearby requests share one debounced loadItems()
 // and the same promise.
@@ -652,53 +657,55 @@ export function loadAdmin(options = {}) {
     return Promise.resolve();
   }
   const quiet = options.quiet === true;
-  return dedupe(`admin:${guildId}:${state.adminTab}`, () => loadAdminForGuild(guildId, quiet));
+  const adminTab = state.adminTab;
+  // `force` bypasses the in-flight dedupe: an `admin.changed` hint must trigger
+  // a read that started after the mutation, not join one that may predate it.
+  const key = options.force
+    ? `admin:${guildId}:${adminTab}:fresh:${++adminForcedSeq}`
+    : `admin:${guildId}:${adminTab}`;
+  return dedupe(key, () => {
+    const token = ++adminReadToken;
+    return loadAdminForGuild(guildId, quiet, token);
+  });
 }
 
-async function loadAdminForGuild(guildId, quiet) {
+async function loadAdminForGuild(guildId, quiet, token) {
+  const apply = (assign) => (items) => {
+    if (items && token === adminReadToken && guildId === state.activeGuildId) {
+      assign(items);
+    }
+  };
   // Counts of the sub-tabs are known before opening them: members, devices and
   // active codes are read together.
   const jobs = [];
   if (can('manageMembers')) {
-    jobs.push(readList('/overlay/admin/members', quiet, guildId).then((items) => {
-      if (items) {
-        state.members = items;
-      }
-    }));
-    jobs.push(readList('/overlay/admin/devices', quiet, guildId).then((items) => {
-      if (items) {
-        state.devices = items;
-      }
-    }));
+    jobs.push(readList('/overlay/admin/members', quiet, guildId).then(apply((items) => {
+      state.members = items;
+    })));
+    jobs.push(readList('/overlay/admin/devices', quiet, guildId).then(apply((items) => {
+      state.devices = items;
+    })));
   }
   if (can('manageInvites')) {
-    jobs.push(readList('/overlay/admin/invites', quiet, guildId).then((items) => {
-      if (items) {
-        state.invites = items;
-      }
-    }));
-    jobs.push(readList('/overlay/admin/pairing-codes', quiet, guildId).then((items) => {
-      if (items) {
-        state.pairingCodes = items;
-      }
-    }));
+    jobs.push(readList('/overlay/admin/invites', quiet, guildId).then(apply((items) => {
+      state.invites = items;
+    })));
+    jobs.push(readList('/overlay/admin/pairing-codes', quiet, guildId).then(apply((items) => {
+      state.pairingCodes = items;
+    })));
   }
   if (state.adminTab === 'bans' && can('manageMembers')) {
-    jobs.push(readList('/overlay/admin/bans', quiet, guildId).then((items) => {
-      if (items) {
-        state.bans = items;
-      }
-    }));
+    jobs.push(readList('/overlay/admin/bans', quiet, guildId).then(apply((items) => {
+      state.bans = items;
+    })));
   }
   if (state.adminTab === 'audit' && can('manageSettings')) {
-    jobs.push(readList('/overlay/admin/audit?limit=50', quiet, guildId).then((items) => {
-      if (items) {
-        state.auditEntries = items;
-      }
-    }));
+    jobs.push(readList('/overlay/admin/audit?limit=50', quiet, guildId).then(apply((items) => {
+      state.auditEntries = items;
+    })));
   }
   await Promise.allSettled(jobs);
-  if (guildId !== state.activeGuildId) {
+  if (token !== adminReadToken || guildId !== state.activeGuildId) {
     return;
   }
   if (state.tab === 'admin' && state.page === 'guild') {

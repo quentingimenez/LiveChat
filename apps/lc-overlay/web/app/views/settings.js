@@ -576,7 +576,12 @@ function renderShortcuts(settings) {
   const shortcuts = settings.shortcuts || {};
   return section(
     'Raccourcis',
-    SHORTCUTS.map(([action, label]) => renderShortcutRow(action, label, shortcuts[action] || null)),
+    sectionDesc('Des touches pour agir sur l’overlay sans quitter ton jeu.'),
+    h(
+      'div',
+      { class: 'settings-shortcuts' },
+      SHORTCUTS.map(([action, label]) => renderShortcutRow(action, label, shortcuts[action] || null)),
+    ),
     hint(ALTGR_HINT),
   );
 }
@@ -586,13 +591,24 @@ function renderShortcutRow(action, label, accelerator) {
   const key = `shortcuts.${action}`;
   const message = shortcutErrors[key];
   const value = capturing
-    ? h('span', { class: 'settings-hint is-inline' }, 'Appuie sur la combinaison… (Échap seul pour annuler)')
-    : accelerator
-      ? h('kbd', null, acceleratorLabel(accelerator))
-      : h('span', { class: 'meta' }, 'Aucun');
+    ? null
+    : h(
+        'span',
+        { class: 'settings-shortcut-value' },
+        accelerator
+          ? h('kbd', null, acceleratorLabel(accelerator))
+          : h('span', { class: 'meta' }, 'Aucun'),
+      );
+  const captureHint = capturing
+    ? h(
+        'p',
+        { class: 'settings-hint is-inline settings-shortcut-capture' },
+        'Appuie sur la combinaison… (Échap seul pour annuler)',
+      )
+    : null;
   return h(
     'div',
-    { class: 'settings-row' },
+    { class: 'settings-row settings-shortcut-row' },
     h('span', { class: 'settings-label' }, label),
     h(
       'div',
@@ -600,14 +616,25 @@ function renderShortcutRow(action, label, accelerator) {
       value,
       h(
         'button',
-        { class: 'btn', type: 'button', disabled: capturing, onClick: () => startShortcutCapture(action) },
+        {
+          class: 'btn settings-shortcut-edit',
+          type: 'button',
+          disabled: capturing,
+          onClick: () => startShortcutCapture(action),
+        },
         'Modifier',
       ),
       h(
         'button',
-        { class: 'btn is-quiet', type: 'button', disabled: capturing, onClick: () => clearShortcut(action) },
+        {
+          class: 'btn is-quiet settings-shortcut-clear',
+          type: 'button',
+          disabled: capturing,
+          onClick: () => clearShortcut(action),
+        },
         'Effacer',
       ),
+      captureHint,
       message ? h('p', { class: 'error-text' }, message) : null,
     ),
   );

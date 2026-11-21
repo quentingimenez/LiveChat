@@ -260,6 +260,46 @@
   padding: 6px 0;
 }
 
+/* --------------------------------------------------------------- raccourcis */
+/* Chaque ligne réserve la même colonne de touche : les boutons Modifier et
+   Effacer restent sur une seule verticale, qu’un raccourci soit défini ou non.
+   Une combinaison longue passe à la ligne dans sa colonne au lieu de pousser
+   les actions. */
+.settings-shortcut-row .settings-control {
+  display: grid;
+  grid-template-columns: 128px max-content max-content;
+  column-gap: 10px;
+  row-gap: 8px;
+  align-items: center;
+}
+
+.settings-shortcut-row .settings-shortcut-value {
+  grid-column: 1;
+  min-width: 0;
+}
+
+.settings-shortcut-row .settings-shortcut-value kbd {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.settings-shortcut-row .settings-shortcut-edit {
+  grid-column: 2;
+}
+
+.settings-shortcut-row .settings-shortcut-clear {
+  grid-column: 3;
+}
+
+.settings-shortcut-row .settings-shortcut-capture {
+  grid-column: 1 / -1;
+}
+
+.settings-shortcut-row .error-text {
+  grid-column: 1 / -1;
+}
+
 /* A named action under the control it belongs to, with the sentence that
    explains it. It starts on the control column, like the rows above. */
 .settings-action {

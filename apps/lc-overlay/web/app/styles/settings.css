@@ -75,10 +75,11 @@
   text-wrap: pretty;
 }
 
-/* « Appliqué immédiatement »: these sections save as the control is used, so
-   they say it instead of ending with a save button. */
+/* « Paramètres sauvegardés automatiquement »: the page saves as the controls
+   are used, so one line under the title says it instead of a save button.
+   A line of its own: the way back to the other settings page sits below it. */
 .settings-tag {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
   margin: 0 0 var(--space-3);
@@ -88,6 +89,7 @@
 
 .settings-tag::before {
   content: '';
+  flex: none;
   width: 5px;
   height: 5px;
   border-radius: 50%;

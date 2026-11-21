@@ -25,7 +25,7 @@ import {
   deviceSettingsError,
   guildLayout,
   hint,
-  immediateNote,
+  autosaveNote,
   loadDeviceSettings,
   openSettings,
   placementStarting,
@@ -108,7 +108,6 @@ function renderDisplay(settings, guildId) {
 
   return section(
     'Affichage sur cet appareil',
-    immediateNote(),
     controlRow('Zone d’affichage', zoneControls),
     // Back to the device layout: a named action.
     hasOwnLayout && !placing
@@ -145,7 +144,6 @@ function renderSound(settings, guild) {
   });
   return section(
     'Son sur cet appareil',
-    immediateNote(),
     controlRow(
       'Volume de la guilde',
       [
@@ -369,6 +367,7 @@ export function renderGuildSettings() {
       'div',
       { class: 'settings-head' },
       h('h2', null, 'Réglages de la guilde'),
+      autosaveNote(),
       h(
         'button',
         { class: 'btn is-quiet settings-device-link', type: 'button', onClick: openSettings },

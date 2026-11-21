@@ -271,10 +271,10 @@ function sectionId(title) {
     .replace(/^-+|-+$/g, '')}`;
 }
 
-// These sections save as the control is used: they say so instead of ending
-// with a save button.
-export function immediateNote() {
-  return h('p', { class: 'settings-tag' }, 'Appliqué immédiatement');
+// The page saves as its controls are used: one line under the title says so,
+// instead of a note repeated above every section.
+export function autosaveNote() {
+  return h('p', { class: 'settings-tag' }, 'Paramètres sauvegardés automatiquement');
 }
 
 // An explanation, inside the control column of the control it belongs to.
@@ -432,7 +432,6 @@ function renderDisplay(settings) {
 
   return section(
     'Affichage',
-    immediateNote(),
     controlRow(
       'Écran',
       [
@@ -477,7 +476,6 @@ function renderSound(settings) {
   const guilds = Array.isArray(state.guilds) ? state.guilds : [];
   return section(
     'Son',
-    immediateNote(),
     controlRow(
       'Volume général',
       [
@@ -674,7 +672,6 @@ function renderStartup(settings) {
   });
   return section(
     'Démarrage',
-    immediateNote(),
     switchRow('Lancer avec Windows', autoStart, 'settings-auto-start'),
   );
 }
@@ -696,7 +693,6 @@ function renderAppearance() {
   theme.value = currentThemePreference();
   return section(
     'Apparence',
-    immediateNote(),
     controlRow('Thème', [theme, hint('« Système » suit le thème clair/sombre de Windows.')], 'settings-theme'),
   );
 }
@@ -748,6 +744,7 @@ function renderHead() {
       'Retour',
     ),
     h('h2', null, 'Paramètres'),
+    autosaveNote(),
   );
 }
 

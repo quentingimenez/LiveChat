@@ -85,6 +85,19 @@ test('settings sections have no description line', () => {
   assert.match(admin, /Durée d’affichage d’une image ou d’un texte sans durée propre\./);
 });
 
+test('the autosave note is stated once, under the page title', () => {
+  // One line per page replaces the tag each section used to repeat.
+  const note = 'Paramètres sauvegardés automatiquement';
+  assert.equal(settings.split(note).length - 1, 1, 'the note text is written once');
+  // The call site is not the helper's declaration, which has no trailing comma.
+  assert.equal((settings.match(/autosaveNote\(\),/g) || []).length, 1, 'the device settings state it once');
+  assert.equal((guildSettings.match(/autosaveNote\(\),/g) || []).length, 1, 'the guild settings state it once');
+  assert.ok(!(settings + guildSettings).includes('Appliqué immédiatement'), 'the repeated tag is gone');
+  // Both pages keep it in their head, right after the title.
+  assert.match(settings, /h\('h2', null, 'Paramètres'\),\s*autosaveNote\(\),/);
+  assert.match(guildSettings, /h\('h2', null, 'Réglages de la guilde'\),\s*autosaveNote\(\),/);
+});
+
 test('profile devices have no card description', () => {
   assert.ok(!profile.includes('profile-device-desc'), 'no device description paragraph is rendered');
   assert.ok(!dialogCss.includes('.profile-device-desc'), 'the device description rule is gone');

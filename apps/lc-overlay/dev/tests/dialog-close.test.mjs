@@ -13,8 +13,10 @@
 // comportement.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 const read = (path) => readFileSync(new URL(`../../web/app/${path}`, import.meta.url), 'utf8');
 
@@ -96,4 +98,32 @@ test('un dialogue sans titre garde la croix sur le cadre', () => {
 test('le premier enfant du corps ne rajoute pas de marge sous la ligne', () => {
   const first = declarationsOf(css, '.dialog-body > :first-child:not(h2):not(.dialog-head)');
   assert.match(first, /margin-top:\s*22px/);
+});
+
+test('tout bouton icône emprunte le style des boutons', () => {
+  // Une croix réduite à `icon-btn` reprend le style natif du <button> (fond
+  // gris, bordure 2px). L'audit couvre les boutons à venir, pas seulement la
+  // croix du cadre.
+  const appDir = fileURLToPath(new URL('../../web/app/', import.meta.url));
+  const files = readdirSync(appDir, { recursive: true })
+    .filter((name) => String(name).endsWith('.js'))
+    .map((name) => join(appDir, String(name)));
+  const found = [];
+  for (const path of files) {
+    const source = readFileSync(path, 'utf8');
+    const pattern = /\bclass: '([^']*\bicon-btn\b[^']*)'/g;
+    let match;
+    while ((match = pattern.exec(source)) !== null) {
+      found.push({
+        path,
+        classes: match[1],
+        line: source.slice(0, match.index).split('\n').length,
+      });
+    }
+  }
+  assert.ok(found.length >= 6, `seulement ${found.length} bouton(s) icône trouvé(s)`);
+  for (const { path, classes, line } of found) {
+    const tokens = classes.split(/\s+/);
+    assert.ok(tokens.includes('btn'), `${basename(path)}:${line} : classe btn absente de « ${classes} »`);
+  }
 });

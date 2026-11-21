@@ -1,0 +1,15 @@
+{
+  "background": {
+    "scripts": ["assets/background.js"],
+    "type": "module"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "livechat-extension@livechat",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": ["browsingActivity", "authenticationInfo"]
+      }
+    }
+  }
+}

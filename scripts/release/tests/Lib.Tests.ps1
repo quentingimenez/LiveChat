@@ -16,7 +16,7 @@ Test-Case 'Reads versions of the real repo' {
     Assert-True (@($server | Where-Object { $_.Label -eq 'fuzz/Cargo.lock lc-media' }).Count -eq 1) 'lc-media fuzz lock label'
 
     Assert-Equal 3 @(Get-ComponentVersionSources -Root $script:RepoRoot -Component overlay).Count 'overlay sources'
-    Assert-Equal 4 @(Get-ComponentVersionSources -Root $script:RepoRoot -Component extension).Count 'extension sources'
+    Assert-Equal 3 @(Get-ComponentVersionSources -Root $script:RepoRoot -Component extension).Count 'extension sources'
 }
 
 Test-Case 'Consistent repo has no errors' {
@@ -26,12 +26,14 @@ Test-Case 'Consistent repo has no errors' {
 
 Test-Case 'Detects a diverging file' {
     $repo = New-TestRepo
-    $file = Join-Path $repo 'extension/package.json'
+    # extension/package.json is the version source, so the lockfile is the file
+    # that can diverge from it.
+    $file = Join-Path $repo 'extension/package-lock.json'
     $text = [IO.File]::ReadAllText($file)
     [IO.File]::WriteAllText($file, ([regex]'"version": "[^"]+"').Replace($text, '"version": "9.9.9"', 1))
     $errors = @(Test-VersionConsistency -Root $repo)
     Assert-Equal 1 $errors.Count 'errors'
-    Assert-True ($errors[0] -like '*extension/package.json*') "message names the file: $($errors[0])"
+    Assert-True ($errors[0] -like '*extension/package-lock.json*') "message names the file: $($errors[0])"
     Assert-True ($errors[0] -like '*9.9.9*') "message names the version: $($errors[0])"
 }
 

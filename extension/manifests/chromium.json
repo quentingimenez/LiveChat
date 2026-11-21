@@ -1,0 +1,7 @@
+{
+  "background": {
+    "service_worker": "assets/background.js",
+    "type": "module"
+  },
+  "minimum_chrome_version": "148"
+}

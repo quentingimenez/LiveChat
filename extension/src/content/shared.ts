@@ -71,7 +71,7 @@ export const registerToastListener = (): void => {
     return;
   }
 
-  chrome.runtime.onMessage.addListener((message: unknown) => {
+  browser.runtime.onMessage.addListener((message: unknown) => {
     if (!isShowToastMessage(message)) {
       return;
     }
@@ -100,7 +100,7 @@ export const sendQuickToBackground = async (url: string, source: SendSource): Pr
   };
 
   try {
-    const response = (await chrome.runtime.sendMessage(message)) as ActionResponse;
+    const response = (await browser.runtime.sendMessage(message)) as ActionResponse;
 
     if (!response || typeof response.ok !== 'boolean') {
       return {

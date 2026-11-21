@@ -1,6 +1,8 @@
-# LiveChat Extension (Chromium)
+# LiveChat Extension (Chromium + Firefox)
 
 Extension MV3 pour envoyer rapidement des liens média vers `POST /ingest` du serveur LiveChat.
+Le code source est commun ; `scripts/build.mjs` produit deux paquets, `dist/chromium/` et
+`dist/firefox/`, à partir de `manifests/base.json` et d'une surcouche par cible.
 
 Documentation projet: [`../README.md`](../README.md)
 
@@ -16,7 +18,7 @@ Documentation projet: [`../README.md`](../README.md)
   - YouTube (`watch`, `shorts`)
   - TikTok (page + feed)
   - X/Twitter (bouton sur chaque tweet détecté)
-- Menu contextuel Chromium:
+- Menu contextuel du navigateur:
   - `Envoyer rapidement vers LiveChat`
   - `Envoyer vers LiveChat avec texte`
 - Popup d’envoi avec texte (`url`, `text`, `forceRefresh`)
@@ -27,7 +29,7 @@ Documentation projet: [`../README.md`](../README.md)
   - `guildId`
   - `authorName`
   - `authorImage`
-- Permissions domaine API dynamiques (`chrome.permissions`).
+- Permissions domaine API dynamiques (`browser.permissions`).
 
 ## Pré-requis
 
@@ -42,10 +44,13 @@ Depuis `extension/`:
 npm install
 npm run typecheck
 npm run test
-npm run build
+npm run build          # les deux cibles
+npm run build:firefox  # dist/firefox seulement
 ```
 
-Les content scripts sont bundlés chacun en IIFE autonome (`scripts/build.mjs`): Chrome les exécute comme des scripts classiques, donc un `import`/`export` en tête de fichier les fait rejeter (« Cannot use import statement outside a module ») et plus aucun bouton n'est injecté. `npm run verify:dist` — inclus dans `ci:check` et `release:build` — échoue si un content script du build redevient un module ES.
+Les content scripts sont bundlés chacun en IIFE autonome (`scripts/build.mjs`): Chrome les exécute comme des scripts classiques, donc un `import`/`export` en tête de fichier les fait rejeter (« Cannot use import statement outside a module ») et plus aucun bouton n'est injecté. `npm run verify:dist` — inclus dans `ci:check` et `release:build` — vérifie les deux manifestes et échoue si un content script du build redevient un module ES.
+
+Le build Firefox n'est pas minifié : AMO exige sinon une archive de sources séparée. Chromium garde la minification par défaut de Vite.
 
 ## Build propre et package
 
@@ -55,26 +60,40 @@ npm run release:build
 
 Ce script:
 - supprime `dist` et `release`,
-- reconstruit l’extension,
-- crée `release/livechat-extension-v<version>.zip`.
+- reconstruit l’extension pour Chromium et Firefox,
+- crée `release/livechat-extension-chromium-v<version>.zip` et
+  `release/livechat-extension-firefox-v<version>.zip`.
 
-Note: le zip est généré via `python3` (`scripts/package.py`).
+Note: les zips sont générés via `python3` (`scripts/package.py`).
 
 Commandes utiles:
 - `npm run clean`
 - `npm run build:clean`
-- `npm run dev` (rebuild en continu)
+- `npm run build:chromium` / `npm run build:firefox`
+- `npm run dev` (rebuild en continu des deux cibles)
 - `npm run verify:dist`
+- `npm run lint:amo` (web-ext lint sur `dist/firefox`)
 - `npm run package`
 - `npm run ci:check`
 
 ## Charger dans Chrome/Chromium
 
-1. Exécuter `npm run build`.
+1. Exécuter `npm run build:chromium`.
 2. Ouvrir `chrome://extensions`.
 3. Activer `Mode développeur`.
 4. Cliquer `Charger l’extension non empaquetée`.
-5. Sélectionner le dossier `dist`.
+5. Sélectionner le dossier `dist/chromium`.
+
+## Charger dans Firefox
+
+1. Exécuter `npm run build:firefox`.
+2. Ouvrir `about:debugging#/runtime/this-firefox`.
+3. Cliquer `Charger un module temporaire`.
+4. Sélectionner `dist/firefox/manifest.json`.
+
+Firefox exige un add-on signé par Mozilla pour une installation permanente : le
+chargement temporaire sert au développement, la version publiée passe par AMO
+(voir [`docs/store/amo.md`](../docs/store/amo.md)).
 
 ## Configuration
 
@@ -90,23 +109,23 @@ Commandes utiles:
 
 - `POST ${API_URL}/ingest`
 - Header: `Authorization: Bearer <INGEST_API_TOKEN>`
-- Payload rapide: `{ guildId, url, authorName, authorImage? }`
-- Payload compose: `{ guildId, url, text, forceRefresh, authorName, authorImage? }`
+- Payload: `{ guildId, url, text?, forceRefresh?, saveToBoard?, durationSec? }`
+- `authorName`/`authorImage` restent dans `browser.storage.local` et ne sont pas envoyés par l’extension.
 
 ## Limites connues
 
 - Le bouton injecté dépend des structures DOM des plateformes (susceptibles d’évoluer).
-- Pas de support Firefox dans cette V1.
+- Navigateurs supportés : Chromium ≥ 148 (namespace `browser` avec promesses) et Firefox ≥ 140.
 - Certificats TLS invalides/self-signed non supportés côté extension.
 
 ## CI / Release GitHub
 
 Workflow: [`extension.yml`](../.github/workflows/extension.yml) (racine du monorepo)
 
-- Sur `pull_request` et `push` sur `main` touchant `extension/`: checks + build + artifact zip.
-- Sur `push` sur `main`: mise à jour de la prerelease `extension-latest` avec le zip.
-- Sur tag `extension-v*` (ex: `extension-v0.1.0`): création automatique d’une GitHub Release avec le zip, puis envoi du zip au Chrome Web Store (job `publish-webstore`) pour mettre à jour les extensions installées.
-- Manuellement (`workflow_dispatch`): relancer le build, et cocher `publish_to_webstore` pour envoyer la version du dépôt sans poser de nouveau tag.
+- Sur `pull_request` et `push` sur `main` touchant `extension/`: checks + build des deux cibles + artifact zip.
+- Sur `push` sur `main`: mise à jour de la prerelease `extension-latest` avec les zips.
+- Sur tag `extension-v*` (ex: `extension-v0.1.0`): création automatique d’une GitHub Release avec les zips, puis envoi du paquet Chromium au Chrome Web Store (`publish-webstore`) et du paquet Firefox à AMO (`publish-amo`).
+- Manuellement (`workflow_dispatch`): relancer le build, et cocher `publish_to_webstore` et/ou `publish_to_amo` pour envoyer la version du dépôt sans poser de nouveau tag.
 
 Les releases de l’extension ne sont jamais marquées *Latest* (réservé à l’overlay, dont l’auto-update lit la release *Latest* du monorepo).
 
@@ -117,19 +136,16 @@ git tag extension-v0.1.0
 git push origin extension-v0.1.0
 ```
 
-## Auto-update via Chrome Web Store
+## Auto-update
 
-L’auto-update des utilisateurs finaux passe par le Chrome Web Store : la CI envoie
-le paquet et soumet la version à la relecture (API v2, `media:upload` puis
-`publishers.items:publish`). Une fois approuvée, Chrome met à jour l’extension
-installée sans action de l’utilisateur.
+- **Chromium** : le Chrome Web Store met à jour l’extension installée après
+  approbation ; la CI envoie le paquet et soumet la version (API v2,
+  `media:upload` puis `publishers.items:publish`).
+- **Firefox** : AMO met à jour les installations listées après approbation ; il
+  n’y a pas d’`update_url` dans le manifeste, AMO l’interdit pour un add-on
+  hébergé par Mozilla. Le job `publish-amo` signe et soumet à chaque tag.
 
-L’upload répond `SUCCEEDED` dès que le paquet est accepté : l’attente de
-`lastAsyncUploadState` ne s’exécute que si l’API annonce un traitement
-asynchrone (`IN_PROGRESS`), pour ne pas bloquer la publication sur un champ que
-l’API omet.
-
-### Secrets GitHub requis
+### Secrets GitHub requis (Chromium)
 
 Configurer ces secrets dans `Settings > Secrets and variables > Actions`:
 
@@ -138,6 +154,15 @@ Configurer ces secrets dans `Settings > Secrets and variables > Actions`:
 - `CWS_CLIENT_ID`: OAuth Client ID Google Cloud.
 - `CWS_CLIENT_SECRET`: OAuth Client Secret Google Cloud.
 - `CWS_REFRESH_TOKEN`: refresh token OAuth avec scope Chrome Web Store.
+
+### Secrets GitHub requis (Firefox / AMO)
+
+- `AMO_JWT_ISSUER`: issuer JWT de la clé API AMO.
+- `AMO_JWT_SECRET`: secret JWT de la clé API AMO.
+
+Les générer sur <https://addons.mozilla.org/developers/addon/api/key/>. La
+procédure complète (première soumission, métadonnées, licence, revue) est dans
+[`docs/store/amo.md`](../docs/store/amo.md).
 
 ### Préparation Google Cloud / Web Store
 

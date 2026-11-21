@@ -42,8 +42,8 @@ export interface PermissionTransitionResult {
   reason?: string;
 }
 
-const getSessionStorageArea = (): chrome.storage.StorageArea => {
-  return chrome.storage.session || chrome.storage.local;
+const getSessionStorageArea = (): browser.storage.StorageArea => {
+  return browser.storage.session || browser.storage.local;
 };
 
 export const normalizeSettingsInput = (input: Partial<ExtensionSettings>): SettingsValidationResult => {
@@ -110,7 +110,7 @@ export const isSettingsComplete = (value: ExtensionSettings | null): value is Ex
 };
 
 export const getSettings = async (): Promise<ExtensionSettings | null> => {
-  const payload = await chrome.storage.local.get(SETTINGS_STORAGE_KEY);
+  const payload = await browser.storage.local.get(SETTINGS_STORAGE_KEY);
   const candidate = payload[SETTINGS_STORAGE_KEY] as Partial<ExtensionSettings> | undefined;
 
   if (!candidate) {
@@ -122,13 +122,13 @@ export const getSettings = async (): Promise<ExtensionSettings | null> => {
 };
 
 export const saveSettings = async (settings: ExtensionSettings): Promise<void> => {
-  await chrome.storage.local.set({
+  await browser.storage.local.set({
     [SETTINGS_STORAGE_KEY]: settings
   });
 };
 
 export const clearSettings = async (): Promise<void> => {
-  await chrome.storage.local.remove(SETTINGS_STORAGE_KEY);
+  await browser.storage.local.remove(SETTINGS_STORAGE_KEY);
 };
 
 export const getComposeDraft = async (): Promise<ComposeDraft | null> => {
@@ -179,7 +179,7 @@ export const clearComposeDraft = async (): Promise<void> => {
 export const hasApiHostPermission = async (apiUrl: string): Promise<boolean> => {
   const pattern = toApiOriginPattern(apiUrl);
 
-  return chrome.permissions.contains({
+  return browser.permissions.contains({
     origins: [pattern]
   });
 };
@@ -187,7 +187,7 @@ export const hasApiHostPermission = async (apiUrl: string): Promise<boolean> => 
 export const requestApiHostPermission = async (apiUrl: string): Promise<boolean> => {
   const pattern = toApiOriginPattern(apiUrl);
 
-  return chrome.permissions.request({
+  return browser.permissions.request({
     origins: [pattern]
   });
 };
@@ -195,28 +195,49 @@ export const requestApiHostPermission = async (apiUrl: string): Promise<boolean>
 export const removeApiHostPermission = async (apiUrl: string): Promise<boolean> => {
   const pattern = toApiOriginPattern(apiUrl);
 
-  return chrome.permissions.remove({
+  return browser.permissions.remove({
     origins: [pattern]
   });
 };
 
-export const ensureApiPermissionTransition = async (
+/**
+ * Retire l'ancien domaine autorisé quand l'URL de l'API change. Ne demande
+ * aucune permission : l'appelant doit déjà avoir obtenu l'accès au nouveau
+ * domaine dans le même geste utilisateur.
+ */
+export const removePreviousApiHostPermission = async (
   previousApiUrl: string | null,
   nextApiUrl: string,
-): Promise<PermissionTransitionResult> => {
+): Promise<boolean> => {
+  if (!previousApiUrl) {
+    return false;
+  }
+
+  const previousPattern = toApiOriginPattern(previousApiUrl);
   const nextPattern = toApiOriginPattern(nextApiUrl);
 
-  const alreadyGranted = await chrome.permissions.contains({
+  if (previousPattern === nextPattern) {
+    return false;
+  }
+
+  return browser.permissions.remove({
+    origins: [previousPattern]
+  });
+};
+
+/**
+ * Demande l'accès au domaine puis retire l'ancien s'il a changé.
+ *
+ * `permissions.request` est volontairement la première opération de la
+ * fonction : Firefox refuse l'appel si un `await` a consommé le geste
+ * utilisateur (« may only be called from a user input handler »).
+ */
+export const ensureApiPermissionTransition = async (nextApiUrl: string): Promise<PermissionTransitionResult> => {
+  const nextPattern = toApiOriginPattern(nextApiUrl);
+
+  const granted = await browser.permissions.request({
     origins: [nextPattern]
   });
-
-  let granted = alreadyGranted;
-
-  if (!alreadyGranted) {
-    granted = await chrome.permissions.request({
-      origins: [nextPattern]
-    });
-  }
 
   if (!granted) {
     return {
@@ -227,17 +248,9 @@ export const ensureApiPermissionTransition = async (
     };
   }
 
-  let removedPrevious = false;
+  const previousSettings = await getSettings();
 
-  if (previousApiUrl) {
-    const previousPattern = toApiOriginPattern(previousApiUrl);
-
-    if (previousPattern !== nextPattern) {
-      removedPrevious = await chrome.permissions.remove({
-        origins: [previousPattern]
-      });
-    }
-  }
+  const removedPrevious = await removePreviousApiHostPermission(previousSettings?.apiUrl || null, nextApiUrl);
 
   return {
     granted: true,

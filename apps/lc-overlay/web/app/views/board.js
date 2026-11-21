@@ -532,11 +532,29 @@ const SKELETON_RATIOS = [
   3 / 4,
 ];
 
+// A last-visit layout can describe up to 60 media; only the first screenful is
+// painted, so the shimmer never animates dozens of off-screen gradients.
+const MAX_SKELETON_CARDS = 24;
+
+// The shapes of the guild's last visit when the persistent layout cache has
+// them, else the generic distribution above.
+function skeletonRatios(count) {
+  const layout = Array.isArray(state.boardLayout) ? state.boardLayout : null;
+  if (layout && layout.length > 0) {
+    return layout
+      .slice(0, MAX_SKELETON_CARDS)
+      .map((media) => cardRatio(media));
+  }
+  return Array.from(
+    { length: count },
+    (_, index) => SKELETON_RATIOS[index % SKELETON_RATIOS.length],
+  );
+}
+
 // First load: the grid's shape is painted immediately, so the board no longer
 // looks like an empty guild while the first request is in flight.
 function boardSkeletonCards(count = SKELETON_RATIOS.length) {
-  return Array.from({ length: count }, (_, index) => {
-    const ratio = SKELETON_RATIOS[index % SKELETON_RATIOS.length];
+  return skeletonRatios(count).map((ratio) => {
     return h(
       'div',
       {

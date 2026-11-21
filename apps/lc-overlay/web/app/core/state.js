@@ -22,6 +22,9 @@ export const state = {
   items: [],
   itemsLoaded: false,
   itemsError: null,
+  // Shape only (kind + width/height) of the last board visit, restored from
+  // the persistent layout cache while the real items are unknown.
+  boardLayout: null,
 
   search: '',
   kind: 'all',

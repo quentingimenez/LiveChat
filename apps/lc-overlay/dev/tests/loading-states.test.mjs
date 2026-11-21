@@ -15,6 +15,8 @@ const board = read('views/board.js');
 const queue = read('views/queue.js');
 const admin = read('views/admin.js');
 const api = read('core/api.js');
+const data = read('data.js');
+const stateSource = read('core/state.js');
 const css = read('styles/loading.css');
 
 function section(source, from, to) {
@@ -46,6 +48,17 @@ test('board skeletons keep the real card anatomy and masonry spans', () => {
   assert.match(css, /\.card\.is-skeleton \.card-frame/);
   assert.match(css, /aspect-ratio: var\(--ratio/);
   assert.match(css, /\.card-title-skeleton \{/);
+});
+
+test('board skeletons reuse the persistent last-visit layout', () => {
+  // The in-memory snapshot is gone after a restart, but the shapes of the last
+  // visit are persisted: the skeleton uses them before the first answer.
+  assert.match(stateSource, /boardLayout: null/);
+  assert.match(data, /readLayoutCache\(guildId\)/);
+  assert.match(data, /writeLayoutCache\(guildId, state\.items\)/);
+  assert.match(data, /pruneLayoutCache\(/);
+  assert.match(board, /state\.boardLayout/);
+  assert.match(board, /cardRatio\(media\)/);
 });
 
 test('a board read failure is an error with a retry, not an empty board', () => {

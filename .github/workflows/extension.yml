@@ -114,9 +114,9 @@ jobs:
             Extension navigateur LiveChat (Chrome / Edge / Firefox).
 
             - Chrome / Edge : décompresser `livechat-extension-chromium-v${{ steps.version.outputs.value }}.zip`, ouvrir `chrome://extensions`, activer le mode développeur, puis « Charger l'extension non empaquetée » sur le dossier.
-            - Firefox : la version listée sur addons.mozilla.org se met à jour toute seule. Pour tester ce build, ouvrir `about:debugging#/runtime/this-firefox`, puis « Charger un module temporaire » sur `manifest.json` du zip `livechat-extension-firefox-v${{ steps.version.outputs.value }}.zip`.
+            - Firefox : la version listée sur addons.mozilla.org suivra dans une prochaine publication. Pour tester ce build, ouvrir `about:debugging#/runtime/this-firefox`, puis « Charger un module temporaire » sur `manifest.json` du zip `livechat-extension-firefox-v${{ steps.version.outputs.value }}.zip`.
             - Configuration : dans les options de l'extension, l'URL du serveur et le code donné par l'overlay (Mon profil → Appairer l'extension navigateur) ou par `/pair-code` sur Discord.
-            - Mise à jour : Chrome Web Store pour Chromium, addons.mozilla.org pour Firefox.
+            - Mise à jour : Chrome Web Store pour Chromium ; Firefox suivra la publication addons.mozilla.org.
 
       - name: Create/Update GitHub Release (latest build)
         if: github.ref == 'refs/heads/main'

@@ -14,10 +14,11 @@
 // one guild sets on this device.
 
 import { run } from '../core/api.js';
-import { acceleratorFromEvent, acceleratorLabel, ALTGR_HINT, BARE_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
+import { acceleratorFromEvent, ALTGR_HINT, BARE_KEY_MESSAGE, UNSUPPORTED_KEY, UNSUPPORTED_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import { resizeAvatar } from '../core/avatar.js';
 import { avatarNode, h, icon, markSettingsDirty, registerIcons, resetOnDoubleClick, settingsControlActive, SLIDER_RESET_HINT } from '../core/dom.js';
 import { invoke, listen } from '../core/ipc.js';
+import { capturedKeyLabel, forgetShortcutLabel, shortcutLabel, writeShortcutLabel } from '../core/shortcut-labels.js';
 import { DEFAULT_VOLUME_PERCENT } from '../core/sound.js';
 import { guildLabel, state } from '../core/state.js';
 import { currentThemePreference, resolvedTheme, setThemePreference, subscribeTheme } from '../core/theme.js';
@@ -592,7 +593,7 @@ function renderShortcutRow(action, label, accelerator) {
         'span',
         { class: 'settings-shortcut-value' },
         accelerator
-          ? h('kbd', null, acceleratorLabel(accelerator))
+          ? h('kbd', null, shortcutLabel(accelerator))
           : h('span', { class: 'meta' }, 'Aucun'),
       );
   const captureHint = capturing
@@ -927,13 +928,20 @@ function startShortcutCapture(action) {
   renderView();
 }
 
-async function saveShortcut(action, accelerator) {
+async function saveShortcut(action, accelerator, keyLabel = null) {
   const key = `shortcuts.${action}`;
   const response = await sendSettings({ shortcuts: { [action]: accelerator } }, { inline: true });
   if (response && response.ok === false) {
     shortcutErrors[response.field || key] = response.message || 'Raccourci refusé.';
   } else if (response && response.ok) {
     delete shortcutErrors[key];
+    if (accelerator) {
+      if (keyLabel) {
+        writeShortcutLabel(accelerator, keyLabel);
+      } else {
+        forgetShortcutLabel(accelerator);
+      }
+    }
   }
   if (state.page === 'settings' && !settingsControlActive()) {
     renderView();
@@ -1001,11 +1009,16 @@ document.addEventListener('keydown', (event) => {
   if (accelerator === null) {
     return;
   }
+  if (accelerator === UNSUPPORTED_KEY) {
+    notify(UNSUPPORTED_KEY_MESSAGE, true);
+    return;
+  }
   if (accelerator === undefined) {
     notify(BARE_KEY_MESSAGE, true);
     return;
   }
   const action = shortcutCapture;
+  const keyLabel = capturedKeyLabel(event);
   shortcutCapture = null;
-  saveShortcut(action, accelerator);
+  saveShortcut(action, accelerator, keyLabel);
 });

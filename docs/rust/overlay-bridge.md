@@ -998,7 +998,8 @@ Règles : volumes ramenés dans `[0,1]` ; `layout.align` inconnu refusé
 sien, puis la zone est normalisée), `null` pour l'écran entier, un nombre non
 numérique refusé (`layout.zone.<clé>`) ; `layout: null` remet la mise en page
 par défaut ; les autres clés de `layout` sont ignorées ; un
-accélérateur doit être analysable, ne pas entrer en collision avec l'autre
+accélérateur doit être analysable (noms de touches de `global-hotkey`, liste en
+`lc-overlay-shell.md` §9), ne pas entrer en collision avec l'autre
 raccourci global, un binding média ou le rechargement manuel, et être accepté
 par l'OS. En cas de refus OS, l'ancien raccourci est réenregistré et rien n'est
 persisté.

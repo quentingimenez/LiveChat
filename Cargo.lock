@@ -2656,7 +2656,7 @@ dependencies = [
 
 [[package]]
 name = "lc-overlay"
-version = "3.12.0"
+version = "3.13.0"
 dependencies = [
  "futures-util",
  "lc-domain",

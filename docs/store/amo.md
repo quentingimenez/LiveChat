@@ -91,12 +91,22 @@ Avant la première publication, incrémenter `version` dans
 le tag `extension-v0.3.0` existant ne contient pas encore le support Firefox.
 
 En CI, le job `publish-amo` de
-[`extension.yml`](../../.github/workflows/extension.yml) fait exactement cela à
-chaque tag `extension-v*`, ou manuellement avec `publish_to_amo`. Il installe
-`tools/amo-sign` depuis son lockfile (`npm ci --ignore-scripts`) et ne donne les
-secrets qu'à l'étape de signature (`WEB_EXT_API_KEY`/`WEB_EXT_API_SECRET`). Il
-ignore la fiche (texte, captures) : celle-ci reste éditée à la main dans le
-Developer Hub.
+[`extension.yml`](../../.github/workflows/extension.yml) fait exactement cela,
+mais il est **en pause** tant que les secrets AMO n'existent pas : il ne démarre
+que si la variable de dépôt `AMO_PUBLISH` vaut `true` (absente, il est ignoré),
+et seulement sur un tag `extension-v*` ou manuellement avec `publish_to_amo`.
+
+Pour l'activer, ajouter `AMO_JWT_ISSUER` et `AMO_JWT_SECRET` aux secrets du
+dépôt, puis :
+
+```bash
+gh variable set AMO_PUBLISH --body true
+```
+
+Le job installe `tools/amo-sign` depuis son lockfile (`npm ci --ignore-scripts`)
+et ne donne les secrets qu'à l'étape de signature
+(`WEB_EXT_API_KEY`/`WEB_EXT_API_SECRET`). Il ignore la fiche (texte, captures) :
+celle-ci reste éditée à la main dans le Developer Hub.
 
 ## Mise à jour des installations
 

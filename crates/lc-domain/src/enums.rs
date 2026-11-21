@@ -191,9 +191,11 @@ pub enum Permission {
     EditAnyMedia,
     /// Retirer, réordonner ou vider la file d'attente.
     ModerateQueue,
-    /// Changer un rôle ou exclure un membre.
+    /// Exclure un membre, le bannir ou consulter la liste. Changer un rôle
+    /// exige en plus le rôle admin (le droit ne délègue pas les rôles).
     ManageMembers,
-    /// Créer ou révoquer des invitations.
+    /// Créer ou révoquer des invitations. Une invitation `admin` exige le rôle
+    /// admin (le droit ne délègue pas les invitations admin).
     ManageInvites,
     /// Modifier les réglages de la guilde (dont la liaison Discord).
     ManageSettings,

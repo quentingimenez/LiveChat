@@ -932,3 +932,116 @@ async fn clearing_the_board_broadcasts_an_admin_changed_event() {
         "attendu un admin.changed(Audit) pour la guilde, reçu {broadcasts:?}"
     );
 }
+
+#[tokio::test]
+async fn member_with_manage_members_cannot_change_roles() {
+    let harness = Harness::new().await;
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Alice")
+        .await;
+    let admin_token = token(&admin);
+    let member = harness.invite_and_join(&admin_token, "member", "Bob").await;
+    let member_token = token(&member);
+    let member_id = member["memberId"].as_str().expect("memberId").to_owned();
+
+    // Un admin a explicitement accordé `manageMembers` au rôle member.
+    let mut rights = harness.state.rights.snapshot();
+    rights.set_override(
+        Surface::Overlay,
+        Action::ManageMembers,
+        RightsRole::Member,
+        true,
+    );
+    harness.state.rights.replace(rights);
+
+    let (status, guild) = harness
+        .call(Method::GET, "/overlay/guild", Some(&member_token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{guild}");
+    assert_eq!(guild["permissions"]["manageMembers"], true);
+
+    // Malgré ce droit, Bob ne peut pas s'auto-promouvoir admin.
+    let (status, body) = harness
+        .call(
+            Method::PATCH,
+            &format!("/overlay/admin/members/{member_id}"),
+            Some(&member_token),
+            Some(json!({ "role": "admin" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "forbidden");
+
+    let (_, guild) = harness
+        .call(Method::GET, "/overlay/guild", Some(&member_token), None)
+        .await;
+    assert_eq!(guild["member"]["role"], "member");
+
+    // L'admin, lui, garde la main : la promotion contrôlée fonctionne.
+    let (status, body) = harness
+        .call(
+            Method::PATCH,
+            &format!("/overlay/admin/members/{member_id}"),
+            Some(&admin_token),
+            Some(json!({ "role": "admin" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["member"]["role"], "admin");
+}
+
+#[tokio::test]
+async fn member_with_manage_invites_cannot_create_admin_invite() {
+    let harness = Harness::new().await;
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Alice")
+        .await;
+    let admin_token = token(&admin);
+    let member = harness.invite_and_join(&admin_token, "member", "Bob").await;
+    let member_token = token(&member);
+
+    let mut rights = harness.state.rights.snapshot();
+    rights.set_override(
+        Surface::Overlay,
+        Action::ManageInvites,
+        RightsRole::Member,
+        true,
+    );
+    harness.state.rights.replace(rights);
+
+    // Une invitation role=admin est une promotion déguisée.
+    let (status, body) = harness
+        .call(
+            Method::POST,
+            "/overlay/admin/invites",
+            Some(&member_token),
+            Some(json!({ "role": "admin" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "forbidden");
+
+    // Les invitations non privilégiées restent permises au membre.
+    let (status, body) = harness
+        .call(
+            Method::POST,
+            "/overlay/admin/invites",
+            Some(&member_token),
+            Some(json!({ "role": "member" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["invite"]["role"], "member");
+
+    // L'admin peut toujours créer une invitation admin.
+    let (status, body) = harness
+        .call(
+            Method::POST,
+            "/overlay/admin/invites",
+            Some(&admin_token),
+            Some(json!({ "role": "admin" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["invite"]["role"], "admin");
+}

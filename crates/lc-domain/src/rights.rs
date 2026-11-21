@@ -194,9 +194,11 @@ pub enum Action {
     EditAnyMedia,
     /// Remove, reorder or clear the queue.
     ModerateQueue,
-    /// Change a member role or remove a member.
+    /// Remove a member or list/ban members. Changing a role requires the admin
+    /// role in addition to this right.
     ManageMembers,
-    /// Create or revoke invites.
+    /// Create or revoke invites. Creating an `admin` invite requires the admin
+    /// role in addition to this right.
     ManageInvites,
     /// Change the guild settings.
     ManageSettings,

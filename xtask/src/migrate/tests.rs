@@ -1237,15 +1237,6 @@ fn salir_la_source(source: &Path) {
     std::fs::write(&wal, b"ecriture concurrente").expect("marqueur -wal");
 }
 
-/// Réinitialise le crochet de test même si le test panique.
-struct HookReset;
-
-impl Drop for HookReset {
-    fn drop(&mut self) {
-        super::snapshot::set_after_snapshot_hook(None);
-    }
-}
-
 /// Une modification de la source entre le snapshot et l'installation doit
 /// annuler la migration et ne laisser aucun fichier final ni temporaire.
 #[tokio::test]
@@ -1255,13 +1246,44 @@ async fn source_modifiee_avant_installation_echoue_proprement() {
     drop(legacy);
     let to = dir.path().join("v3.sqlite");
 
-    super::snapshot::set_after_snapshot_hook(Some(salir_la_source));
-    let _reset = HookReset;
-
-    let result = execute(&options(&from, &to, false, false)).await;
+    let result =
+        super::execute_with_hook(&options(&from, &to, false, false), salir_la_source).await;
     match result {
         Err(Error::SourceChanged { .. }) => {}
         other => panic!("attendu Error::SourceChanged, obtenu {other:?}"),
     }
     assert_rien_ecrit(&to);
+}
+
+/// Deux migrations concurrentes : le crochet demandé par l'une ne doit pas
+/// contaminer l'autre.
+#[tokio::test]
+async fn crochet_de_test_isole_entre_migrations_concurrentes() {
+    let dir_hooked = tempdir().expect("répertoire temporaire (crochet)");
+    let (from_hooked, legacy_hooked) = seeded_legacy(&dir_hooked).await;
+    drop(legacy_hooked);
+    let to_hooked = dir_hooked.path().join("v3.sqlite");
+
+    let dir_plain = tempdir().expect("répertoire temporaire (sans crochet)");
+    let (from_plain, legacy_plain) = seeded_legacy(&dir_plain).await;
+    drop(legacy_plain);
+    let to_plain = dir_plain.path().join("v3.sqlite");
+
+    let hooked_options = options(&from_hooked, &to_hooked, false, false);
+    let plain_options = options(&from_plain, &to_plain, false, false);
+    let (hooked, plain) = tokio::join!(
+        super::execute_with_hook(&hooked_options, salir_la_source),
+        execute(&plain_options),
+    );
+
+    match hooked {
+        Err(Error::SourceChanged { .. }) => {}
+        other => panic!("attendu SourceChanged pour la migration avec crochet, obtenu {other:?}"),
+    }
+    plain.expect("une migration concurrente sans crochet doit réussir");
+    assert_rien_ecrit(&to_hooked);
+    assert!(
+        to_plain.exists(),
+        "la migration sans crochet doit installer sa cible"
+    );
 }

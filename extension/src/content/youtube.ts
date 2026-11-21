@@ -673,13 +673,13 @@ const normalizeYoutubeUrl = (rawUrl: string): string | null => {
   return output.toString();
 };
 
-const readRuntime = (): typeof chrome.runtime | null => {
+const readRuntime = (): typeof browser.runtime | null => {
   try {
-    if (typeof chrome === 'undefined') {
+    if (typeof browser === 'undefined') {
       return null;
     }
 
-    return chrome.runtime || null;
+    return browser.runtime || null;
   } catch {
     return null;
   }

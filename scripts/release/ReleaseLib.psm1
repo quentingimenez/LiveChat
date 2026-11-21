@@ -168,8 +168,9 @@ function Get-ComponentFiles {
             )
         }
         'extension' {
+            # The extension manifest is generated per browser target, so
+            # extension/package.json is the only source of the version.
             return @(
-                @{ File = 'extension/public/manifest.json'; Locate = { param($t) Find-JsonTopVersion $t 'extension/public/manifest.json' } },
                 @{ File = 'extension/package.json'; Locate = { param($t) Find-JsonTopVersion $t 'extension/package.json' } },
                 @{ File = 'extension/package-lock.json'; Locate = {
                         param($t)

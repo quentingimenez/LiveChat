@@ -9,9 +9,10 @@
     "noEmit": true,
     "isolatedModules": true,
     "skipLibCheck": true,
+    "allowJs": true,
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
-    "types": ["chrome", "vite/client", "vitest/globals"]
+    "types": ["firefox-webext-browser", "node", "vite/client", "vitest/globals"]
   },
   "include": ["src"]
 }

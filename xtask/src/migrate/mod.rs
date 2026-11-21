@@ -206,6 +206,22 @@ pub enum Error {
 
 /// Exécute `migrate-legacy` de bout en bout.
 pub async fn execute(options: &Options) -> Result<(), Error> {
+    execute_inner(options, None).await
+}
+
+/// Variante de test : exécute `after_snapshot` juste après la création du
+/// snapshot. Le crochet est porté par l'appel et non par un état global, donc
+/// deux migrations concurrentes ne peuvent pas se contaminer.
+#[cfg(test)]
+pub(crate) async fn execute_with_hook(
+    options: &Options,
+    after_snapshot: fn(&Path),
+) -> Result<(), Error> {
+    execute_inner(options, Some(after_snapshot)).await
+}
+
+/// Cœur de la migration ; `after_snapshot` n'est renseigné que par les tests.
+async fn execute_inner(options: &Options, after_snapshot: Option<fn(&Path)>) -> Result<(), Error> {
     let started = Instant::now();
     println!(
         "migrate-legacy : {} -> {}",
@@ -245,8 +261,9 @@ pub async fn execute(options: &Options) -> Result<(), Error> {
         snapshot.meta().schema_version,
         snapshot.meta().attempts
     );
-    #[cfg(test)]
-    snapshot::run_after_snapshot_hook(&options.from);
+    if let Some(hook) = after_snapshot {
+        hook(&options.from);
+    }
 
     let legacy = Legacy::open(snapshot.path()).await?;
     let outcome = run(options, &legacy, &source, &snapshot, started).await;

@@ -1,6 +1,6 @@
 // Thème de l'extension : popup, page d'options et widgets injectés.
 //
-// La préférence vit dans `chrome.storage.local` (partagée par les trois
+// La préférence vit dans `browser.storage.local` (partagée par les trois
 // contextes) et elle est recopiée dans le localStorage de chaque page : le
 // script `theme-guard.js`, chargé en tête du popup et des options, la relit
 // avant le premier rendu pour éviter un flash sombre en thème clair.
@@ -44,9 +44,9 @@ export const systemPrefersLight = (): boolean => {
 };
 
 const readStorage = async (): Promise<unknown> => {
-  if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+  if (typeof browser !== 'undefined' && browser.storage?.local) {
     try {
-      const payload = await chrome.storage.local.get(THEME_STORAGE_KEY);
+      const payload = await browser.storage.local.get(THEME_STORAGE_KEY);
       return payload[THEME_STORAGE_KEY];
     } catch {
       // storage indisponible : on retombe sur le miroir local.
@@ -71,8 +71,8 @@ export const readThemePreference = async (): Promise<ThemePreference> => {
 export const saveThemePreference = async (preference: ThemePreference): Promise<void> => {
   const normalized = normalizeThemePreference(preference);
 
-  if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-    await chrome.storage.local.set({ [THEME_STORAGE_KEY]: normalized });
+  if (typeof browser !== 'undefined' && browser.storage?.local) {
+    await browser.storage.local.set({ [THEME_STORAGE_KEY]: normalized });
   }
 
   if (typeof window === 'undefined') {
@@ -141,8 +141,8 @@ export const initTheme = async (): Promise<ResolvedTheme> => {
 
   watchSystemTheme(() => undefined);
 
-  if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
-    chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (typeof browser !== 'undefined' && browser.storage?.onChanged) {
+    browser.storage.onChanged.addListener((changes, areaName) => {
       if (areaName !== 'local' || !(THEME_STORAGE_KEY in changes)) {
         return;
       }

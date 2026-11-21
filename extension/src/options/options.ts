@@ -4,6 +4,7 @@ import {
   getSettings,
   hasApiHostPermission,
   normalizeSettingsInput,
+  removePreviousApiHostPermission,
   requestApiHostPermission,
   saveSettings,
   type ExtensionSettings,
@@ -156,11 +157,6 @@ const resolvePairingApiUrl = (): string => {
   return normalizeApiUrl(rawApiUrl);
 };
 
-const ensureApiPermission = async (apiUrl: string): Promise<boolean> => {
-  const hasPermission = await hasApiHostPermission(apiUrl);
-  return hasPermission || (await requestApiHostPermission(apiUrl));
-};
-
 const loadExistingSettings = async (): Promise<void> => {
   const existingSettings = await getSettings();
 
@@ -228,15 +224,19 @@ pairingForm.addEventListener('submit', (event) => {
         return;
       }
 
-      const previousSettings = await getSettings();
       const apiUrl = resolvePairingApiUrl();
       const endpoint = `${apiUrl}/ingest/pair/consume`;
-      const permissionGranted = await ensureApiPermission(apiUrl);
+
+      // Firefox n'accorde `permissions.request` que dans le geste utilisateur :
+      // aucune attente ne doit précéder cet appel.
+      const permissionGranted = await requestApiHostPermission(apiUrl);
 
       if (!permissionGranted) {
         setStatus('Permission réseau refusée pour ce domaine API.', 'error');
         return;
       }
+
+      const previousSettings = await getSettings();
 
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -276,12 +276,18 @@ pairingForm.addEventListener('submit', (event) => {
         return;
       }
 
-      const permissionTransition = await ensureApiPermissionTransition(previousSettings?.apiUrl || null, normalized.value.apiUrl);
+      const normalizedPermissionGranted = await hasApiHostPermission(normalized.value.apiUrl);
 
-      if (!permissionTransition.granted) {
-        setStatus('Autorisation du domaine API refusée.', 'error');
+      if (!normalizedPermissionGranted) {
+        setApiUrlInputs(normalized.value.apiUrl);
+        setStatus(
+          'Le serveur a indiqué un autre domaine API : relance « Récupérer la configuration » pour l’autoriser.',
+          'error',
+        );
         return;
       }
+
+      await removePreviousApiHostPermission(previousSettings?.apiUrl || null, normalized.value.apiUrl);
 
       await saveSettings(normalized.value);
       applySettingsToForm(normalized.value);
@@ -304,7 +310,6 @@ manualForm.addEventListener('submit', (event) => {
     withBusyState(true, 'save');
 
     try {
-      const previousSettings = await getSettings();
       const normalized = normalizeSettingsInput(collectSettingsFromForm());
 
       if (!normalized.ok) {
@@ -312,7 +317,7 @@ manualForm.addEventListener('submit', (event) => {
         return;
       }
 
-      const permissionTransition = await ensureApiPermissionTransition(previousSettings?.apiUrl || null, normalized.value.apiUrl);
+      const permissionTransition = await ensureApiPermissionTransition(normalized.value.apiUrl);
 
       if (!permissionTransition.granted) {
         setStatus('Autorisation du domaine API refusée.', 'error');
@@ -343,7 +348,7 @@ testButton.addEventListener('click', () => {
         return;
       }
 
-      const permissionGranted = await ensureApiPermission(normalized.value.apiUrl);
+      const permissionGranted = await requestApiHostPermission(normalized.value.apiUrl);
 
       if (!permissionGranted) {
         setStatus('Permission réseau refusée pour ce domaine API.', 'error');

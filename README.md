@@ -52,7 +52,7 @@ auteur, légende et compte à rebours ; tout le reste de l'écran reste transpar
 - **Console d'administration** (servie sur `/admin/`) : santé du serveur, guildes et
   membres, appareils overlay et ingestion, codes d'appairage, cache média, droits par
   rôle, journal d'activité ; connexion par secret ou compte Discord.
-- **Extension Chromium** : envoi en un clic depuis YouTube, TikTok et X (bouton
+- **Extension navigateur** (Chromium + Firefox) : envoi en un clic depuis YouTube, TikTok et X (bouton
   in-page, menu contextuel, popup avec texte) et appairage par code.
 - **Raccourci iOS** : envoi depuis le menu Partage de l'iPhone, pour jouer un
   média ou l'ajouter à la board (voir
@@ -80,11 +80,14 @@ conteneur n'écoute que sur `127.0.0.1` : placez-le derrière un reverse proxy T
 docker pull ghcr.io/quentingimenez/livechat-server:latest
 ```
 
-### Extension Chromium
+### Extension navigateur (Chromium + Firefox)
 
-Zip attaché aux [releases](https://github.com/quentingimenez/LiveChat/releases) —
+Zips attachés aux [releases](https://github.com/quentingimenez/LiveChat/releases) —
 la release `extension-latest` est recompilée en continu depuis `main` — ou
 chargement en mode développeur, voir [`extension/README.md`](extension/README.md).
+La version Firefox est publiée comme add-on listé sur
+[addons.mozilla.org](https://addons.mozilla.org/) (elle se met à jour toute seule) ;
+la version Chromium passe par le Chrome Web Store.
 
 ### Raccourci iOS
 
@@ -101,7 +104,7 @@ raccourcis signés, limites et révocation dans
 | [`apps/lc-overlay`](apps/lc-overlay) | Overlay desktop Tauri 2 (Windows) : affichage des médias et board |
 | [`apps/lc-admin-web`](apps/lc-admin-web) | Console d'administration (Preact + TypeScript), compilée par Vite et embarquée dans le serveur, servie sur `/admin/` |
 | [`crates/`](crates) | Bibliothèques partagées : protocole (`lc-protocol`), domaine, base SQLite (`lc-db`), pipeline média yt-dlp + ffmpeg (`lc-media`), lecture (`lc-playback`), Discord (`lc-discord`) |
-| [`extension/`](extension) | Extension Chromium MV3 qui envoie des liens (YouTube, TikTok, X) vers `/ingest` |
+| [`extension/`](extension) | Extension navigateur MV3 (Chromium + Firefox) qui envoie des liens (YouTube, TikTok, X) vers `/ingest` |
 | [`deploy/`](deploy) | Dockerfile de production et Docker Compose du serveur |
 | [`docs/`](docs) | Documentation technique (`docs/rust/`) et charte graphique (`docs/brand/`) |
 | [`xtask/`](xtask) | Outillage du workspace (harnais de parité, etc.) |
@@ -163,7 +166,7 @@ composant n'a pas la même version dans tous ses fichiers.
 | --- | --- | --- |
 | Serveur | `server-v*` | Image versionnée correspondante et `:latest` sur GHCR, publiée après un smoke test du conteneur ([`server-image.yml`](.github/workflows/server-image.yml)) |
 | Overlay | `overlay-v*` (= `version` de [`apps/lc-overlay/tauri.conf.json`](apps/lc-overlay/tauri.conf.json)) | Brouillon de release avec l'installeur signé et `latest.json` ([`overlay-tauri.yml`](.github/workflows/overlay-tauri.yml)) |
-| Extension | `extension-v*` (= `version` de `extension/public/manifest.json`) | Release GitHub avec le zip, pas de Chrome Web Store pour l'instant ([`extension.yml`](.github/workflows/extension.yml)) |
+| Extension | `extension-v*` (= `version` de `extension/package.json`) | Release GitHub avec les deux zips, publication Chrome Web Store et addons.mozilla.org ([`extension.yml`](.github/workflows/extension.yml)) |
 
 L'overlay se met à jour tout seul à partir de la release marquée **Latest** : il
 vérifie à chaque ouverture de la board, télécharge la nouvelle version en arrière-plan

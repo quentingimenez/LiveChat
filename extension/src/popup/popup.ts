@@ -92,7 +92,7 @@ const loadComposeState = async (): Promise<void> => {
   clearStatus();
 
   try {
-    const state = (await chrome.runtime.sendMessage({
+    const state = (await browser.runtime.sendMessage({
       type: MESSAGE_TYPES.GET_COMPOSE_STATE,
     })) as ComposeStateResponse;
 
@@ -143,7 +143,7 @@ form.addEventListener('submit', (event) => {
     setBusy(true);
 
     try {
-      const response = (await chrome.runtime.sendMessage({
+      const response = (await browser.runtime.sendMessage({
         type: MESSAGE_TYPES.SEND_COMPOSE,
         url,
         text: textInput.value,
@@ -176,7 +176,7 @@ form.addEventListener('submit', (event) => {
 });
 
 const openOptions = (): void => {
-  void chrome.runtime.openOptionsPage();
+  void browser.runtime.openOptionsPage();
 };
 
 openOptionsButton.addEventListener('click', openOptions);

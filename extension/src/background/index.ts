@@ -52,21 +52,23 @@ const TIKTOK_CAPTURE_STORAGE_PREFIX = 'lce:tiktok:capture:';
 
 const tiktokCaptureStateCache = new Map<number, TikTokCaptureState>();
 
-const createContextMenus = (): void => {
-  chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({
-      id: MENU_ID_QUICK,
-      title: 'Envoyer rapidement vers LiveChat',
-      contexts: ['page', 'link', 'video'],
-      documentUrlPatterns: SUPPORTED_DOCUMENT_PATTERNS,
-    });
+const createContextMenus = async (): Promise<void> => {
+  // Firefox ne fournit que la variante promesse de `removeAll` : sans l'attente,
+  // les deux `create` peuvent être écrasés par le nettoyage asynchrone.
+  await browser.contextMenus.removeAll();
 
-    chrome.contextMenus.create({
-      id: MENU_ID_COMPOSE,
-      title: 'Envoyer vers LiveChat avec texte',
-      contexts: ['page', 'link', 'video'],
-      documentUrlPatterns: SUPPORTED_DOCUMENT_PATTERNS,
-    });
+  browser.contextMenus.create({
+    id: MENU_ID_QUICK,
+    title: 'Envoyer rapidement vers LiveChat',
+    contexts: ['page', 'link', 'video'],
+    documentUrlPatterns: SUPPORTED_DOCUMENT_PATTERNS,
+  });
+
+  browser.contextMenus.create({
+    id: MENU_ID_COMPOSE,
+    title: 'Envoyer vers LiveChat avec texte',
+    contexts: ['page', 'link', 'video'],
+    documentUrlPatterns: SUPPORTED_DOCUMENT_PATTERNS,
   });
 };
 
@@ -82,7 +84,7 @@ const getTikTokCaptureState = async (tabId: number): Promise<TikTokCaptureState>
   const storageKey = getTikTokCaptureStorageKey(tabId);
 
   try {
-    const stored = await chrome.storage.session.get(storageKey);
+    const stored = await browser.storage.session.get(storageKey);
     const parsed = sanitizeTikTokCaptureState(stored[storageKey]);
 
     if (parsed) {
@@ -103,7 +105,7 @@ const setTikTokCaptureState = async (tabId: number, nextState: TikTokCaptureStat
   tiktokCaptureStateCache.set(tabId, nextState);
 
   try {
-    await chrome.storage.session.set({
+    await browser.storage.session.set({
       [storageKey]: nextState,
     });
   } catch {
@@ -216,7 +218,7 @@ const resolveTikTokCapturedUrlForTab = async (
   return null;
 };
 
-const captureTikTokWebRequest = (details: chrome.webRequest.WebResponseCacheDetails): void => {
+const captureTikTokWebRequest = (details: browser.webRequest._OnCompletedDetails): void => {
   if (details.tabId < 0) {
     return;
   }
@@ -237,7 +239,7 @@ const captureTikTokWebRequest = (details: chrome.webRequest.WebResponseCacheDeta
   });
 };
 
-const captureTikTokRedirect = (details: chrome.webRequest.WebRedirectionResponseDetails): void => {
+const captureTikTokRedirect = (details: browser.webRequest._OnBeforeRedirectDetails): void => {
   if (details.tabId < 0) {
     return;
   }
@@ -287,7 +289,7 @@ const sendToastToTab = async (tabId: number | undefined, level: ToastLevel, mess
   };
 
   try {
-    await chrome.tabs.sendMessage(tabId, toastMessage);
+    await browser.tabs.sendMessage(tabId, toastMessage);
   } catch {
     // Ignore if no content script is available on the tab.
   }
@@ -347,8 +349,8 @@ const sendComposeAction = async (params: {
   return responseFromIngestResult(result);
 };
 
-const getActiveTab = async (): Promise<chrome.tabs.Tab | null> => {
-  const [activeTab] = await chrome.tabs.query({
+const getActiveTab = async (): Promise<browser.tabs.Tab | null> => {
+  const [activeTab] = await browser.tabs.query({
     active: true,
     lastFocusedWindow: true,
   });
@@ -356,7 +358,7 @@ const getActiveTab = async (): Promise<chrome.tabs.Tab | null> => {
   return activeTab || null;
 };
 
-const resolveActiveMediaUrlFromTab = async (activeTab: chrome.tabs.Tab | null): Promise<string> => {
+const resolveActiveMediaUrlFromTab = async (activeTab: browser.tabs.Tab | null): Promise<string> => {
   if (!activeTab) {
     return '';
   }
@@ -372,7 +374,7 @@ const resolveActiveMediaUrlFromTab = async (activeTab: chrome.tabs.Tab | null): 
   let contentCandidate = '';
 
   try {
-    const response = (await chrome.tabs.sendMessage(activeTab.id, {
+    const response = (await browser.tabs.sendMessage(activeTab.id, {
       type: MESSAGE_TYPES.GET_ACTIVE_MEDIA_URL,
     })) as ActiveMediaUrlResponse;
 
@@ -408,41 +410,41 @@ const getComposeState = async (): Promise<ComposeStateResponse> => {
 
 const openPopupWithFallback = async (tabId: number | undefined): Promise<void> => {
   try {
-    await chrome.action.openPopup();
+    await browser.action.openPopup();
   } catch {
     await sendToastToTab(tabId, 'info', 'Clique sur l’icône de l’extension pour ouvrir le formulaire.');
   }
 };
 
-chrome.runtime.onInstalled.addListener(() => {
-  createContextMenus();
+browser.runtime.onInstalled.addListener(() => {
+  void createContextMenus();
 });
 
-chrome.runtime.onStartup.addListener(() => {
-  createContextMenus();
+browser.runtime.onStartup.addListener(() => {
+  void createContextMenus();
 });
 
-chrome.webRequest.onCompleted.addListener(
+browser.webRequest.onCompleted.addListener(
   (details) => {
     captureTikTokWebRequest(details);
   },
   { urls: [...TIKTOK_WEB_REQUEST_PATTERNS] },
 );
 
-chrome.webRequest.onBeforeRedirect.addListener(
+browser.webRequest.onBeforeRedirect.addListener(
   (details) => {
     captureTikTokRedirect(details);
   },
   { urls: [...TIKTOK_WEB_REQUEST_PATTERNS] },
 );
 
-chrome.tabs.onRemoved.addListener((tabId) => {
+browser.tabs.onRemoved.addListener((tabId) => {
   tiktokCaptureStateCache.delete(tabId);
   const storageKey = getTikTokCaptureStorageKey(tabId);
-  void chrome.storage.session.remove(storageKey);
+  void browser.storage.session.remove(storageKey);
 });
 
-chrome.contextMenus.onClicked.addListener((info, tab) => {
+browser.contextMenus.onClicked.addListener((info, tab) => {
   void (async () => {
     const targetUrl = resolveUrlFromContextCandidates({
       linkUrl: info.linkUrl,
@@ -478,7 +480,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   })();
 });
 
-chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
+browser.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   void (async () => {
     if (isSendQuickRequest(message)) {
       if (message.source === 'tiktok') {

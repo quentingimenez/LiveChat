@@ -544,13 +544,13 @@ const isShowToastPayload = (value: unknown): value is { type: string; level?: un
   return (value as { type?: unknown }).type === 'lce/show-toast';
 };
 
-const readRuntime = (): typeof chrome.runtime | null => {
+const readRuntime = (): typeof browser.runtime | null => {
   try {
-    if (typeof chrome === 'undefined') {
+    if (typeof browser === 'undefined') {
       return null;
     }
 
-    return chrome.runtime || null;
+    return browser.runtime || null;
   } catch {
     return null;
   }

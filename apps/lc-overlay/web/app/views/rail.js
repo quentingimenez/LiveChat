@@ -5,6 +5,7 @@ import { h, icon } from '../core/dom.js';
 import { guildAcronym, guildAcronymFontSize } from '../core/format.js';
 import { canLoadIcon, rememberBrokenIcon } from '../core/guild-icons.js';
 import { invoke } from '../core/ipc.js';
+import { openGuildBoard } from '../core/rail.js';
 import { describeError, guildLabel, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import { applyGuilds, prefetchGuildInfo } from '../data.js';
@@ -90,6 +91,15 @@ function openGuildMenu(event, guild) {
   ]);
 }
 
+// A double click on a guild tile opens its board. The clicks themselves have
+// already selected the guild; this only moves the view (see core/rail.js).
+function showGuildBoard(guild) {
+  if (openGuildBoard(state, guild.membership.guildId)) {
+    renderHeader();
+    renderView();
+  }
+}
+
 export function renderRail() {
   const rail = document.getElementById('rail');
   rail.replaceChildren(
@@ -114,7 +124,8 @@ export function renderRail() {
             'aria-label': label,
             'aria-current': active ? 'true' : null,
             'aria-busy': pending ? 'true' : null,
-            onClick: () => selectGuild(guildId),
+            onClick: () => selectGuild(guild.membership.guildId),
+            onDblclick: () => showGuildBoard(guild),
             onPointerEnter: () => prefetchGuildInfo(guildId),
             onFocus: () => prefetchGuildInfo(guildId),
             onContextMenu: (event) => openGuildMenu(event, guild),

@@ -473,6 +473,10 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* Reserve the scrollbar width so the facts column keeps the same width
+     whether the body scrolls or not: the shortcut capture hint must fit on
+     one line in both states. */
+  scrollbar-gutter: stable;
   padding: var(--space-4);
   /* A discrete shadow marks the edge that still has hidden content: the two
      `local` gradients scroll with the content and cover the `scroll` shadows
@@ -809,7 +813,43 @@
 .shortcut-cell {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 6px;
+}
+
+/* The key fills the value column like the caption button above it. When a
+   shortcut is set, the whole key is the edit button: its pencil sits inside a
+   single frame, and the clear cross stays outside, to the right. */
+.shortcut-cell .shortcut-key {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.shortcut-cell .shortcut-key:has(+ .shortcut-clear) {
+  min-height: 32px;
+  padding: 4px 8px;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: color-mix(in srgb, var(--slate-800) 55%, transparent);
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+.shortcut-cell .shortcut-key:has(+ .shortcut-clear):hover {
+  border-color: var(--line);
+  background: var(--slate-700);
+}
+
+.shortcut-cell .shortcut-key:has(+ .shortcut-clear) kbd {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+}
+
+.shortcut-cell .shortcut-clear.btn {
+  position: static;
+  flex: none;
 }
 
 .shortcut-hint {
@@ -862,6 +902,10 @@
   border-color: var(--blue);
   background: color-mix(in srgb, var(--blue) 14%, transparent);
   color: var(--text);
+  white-space: nowrap;
+  font-size: 12px;
+  gap: 4px;
+  padding-inline: 4px;
   animation: shortcut-listen 1.4s ease-in-out infinite;
 }
 

@@ -393,13 +393,15 @@ pub async fn consume_pairing(
     });
 
     // Un poste ne garde qu'une session active par libellé. Pour un code legacy
-    // la règle porte sur toute la guilde (parité) ; pour une invitation elle se
-    // limite aux overlays du même membre, sinon un simple nom d'appareil
-    // suffirait à déconnecter l'overlay de quelqu'un d'autre ; et elle ne joue
-    // que pour un nom d'appareil fourni, sinon le libellé par défaut d'un
-    // second overlay révoquerait le premier.
-    let previous = if grant.created_by_discord_user_id.is_some() {
-        db.overlay_clients().list_by_guild(&grant.guild_id).await
+    // la règle porte sur toute la guilde (parité) ; pour un code personnel elle
+    // se limite aux overlays du même créateur Discord, sinon un simple nom
+    // d'appareil suffirait à déconnecter l'overlay de quelqu'un d'autre ; et
+    // elle ne joue que pour un nom d'appareil fourni, sinon le libellé par
+    // défaut d'un second overlay révoquerait le premier.
+    let previous = if let Some(creator) = grant.created_by_discord_user_id.as_deref() {
+        db.overlay_clients()
+            .list_active_by_discord_user(&grant.guild_id, creator)
+            .await
     } else if is_new_member || !explicit_label {
         Ok(Vec::new())
     } else {

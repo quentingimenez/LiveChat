@@ -662,16 +662,19 @@ pub(crate) fn member_code_authors(member: &GuildMember) -> Vec<String> {
 }
 
 /// Retire un membre : marque le départ, révoque ses overlays et ferme leurs
-/// sessions WS (`4402`), révoque ses extensions d'ingestion, ses codes en
-/// attente et les invitations qu'il a émises.
+/// sessions WS, révoque ses extensions d'ingestion, ses codes en attente et
+/// les invitations qu'il a émises.
 ///
 /// Partagé par le départ volontaire, l'exclusion et le bannissement
-/// ([`super::admin`]). The close reason is supplied by the caller.
+/// ([`super::admin`]). Le code et le motif de fermeture sont fournis par
+/// l'appelant : `4402` pour une exclusion, `1000` pour un départ volontaire
+/// (pas de diffusion de `stop` ni de libération des jobs de la guilde).
 pub(super) async fn remove_member(
     state: &AppState,
     db: &Db,
     member: &GuildMember,
     at: UtcDateTime,
+    close_code: u16,
     close_reason: &str,
 ) -> Result<MemberChange, Response> {
     let change = db
@@ -688,11 +691,9 @@ pub(super) async fn remove_member(
         .await
         .map_err(|db_error| db_failure("overlay_member.revoke_clients", &db_error))?;
     for client_id in revoked {
-        state.admin_hub.close_client_with_reason(
-            &client_id.as_uuid(),
-            close_code::REVOKED,
-            close_reason,
-        );
+        state
+            .admin_hub
+            .close_client_with_reason(&client_id.as_uuid(), close_code, close_reason);
     }
     let authors = member_code_authors(member);
     db.ingest_clients()
@@ -724,8 +725,8 @@ pub async fn leave(State(state): State<AppState>, auth: AuthedOverlayClient) -> 
             Ok(_) => {
                 state.admin_hub.close_client_with_reason(
                     &auth.client.id.as_uuid(),
-                    close_code::REVOKED,
-                    close_reason::REVOKED,
+                    close_code::NORMAL,
+                    close_reason::CLIENT_SHUTDOWN,
                 );
                 json_response(StatusCode::OK, json!({"left": true}))
             }
@@ -733,7 +734,16 @@ pub async fn leave(State(state): State<AppState>, auth: AuthedOverlayClient) -> 
         };
     };
 
-    match remove_member(&state, db, member, now, close_reason::REVOKED).await {
+    match remove_member(
+        &state,
+        db,
+        member,
+        now,
+        close_code::NORMAL,
+        close_reason::CLIENT_SHUTDOWN,
+    )
+    .await
+    {
         Ok(MemberChange::Applied) => json_response(StatusCode::OK, json!({"left": true})),
         Ok(MemberChange::LastAdmin) => error(StatusCode::CONFLICT, "last_admin"),
         Ok(MemberChange::NotFound) => error(StatusCode::NOT_FOUND, "member_not_found"),

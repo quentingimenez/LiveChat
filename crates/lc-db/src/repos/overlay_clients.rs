@@ -184,6 +184,27 @@ impl OverlayClientsRepository {
             .collect()
     }
 
+    /// Liste les overlays **actifs** d'une guilde créés par un utilisateur
+    /// Discord donné, du plus ancien au plus récent.
+    pub async fn list_active_by_discord_user(
+        &self,
+        guild_id: &GuildId,
+        discord_user_id: &str,
+    ) -> DbResult<Vec<OverlayClient>> {
+        let rows = sqlx::query_as::<_, OverlayClientRow>(
+            "SELECT * FROM overlay_clients \
+             WHERE guild_id = ? AND created_by_discord_user_id = ? AND revoked_at IS NULL \
+             ORDER BY created_at ASC, id ASC",
+        )
+        .bind(guild_id.as_str())
+        .bind(discord_user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(OverlayClientRow::into_entity)
+            .collect()
+    }
+
     /// Révoque tous les overlays actifs d'un membre (exclusion ou départ).
     ///
     /// Retourne les identifiants révoqués, pour fermer leurs sessions WS.

@@ -595,7 +595,7 @@ async fn roles_exclusion_et_dernier_admin() {
 }
 
 #[tokio::test]
-async fn member_removal_and_leave_use_distinct_close_reasons() {
+async fn member_removal_and_leave_use_distinct_close_codes() {
     let harness = Harness::new().await;
     let hub = Arc::new(RecordingAdminHub::default());
     let state = harness
@@ -650,8 +650,8 @@ async fn member_removal_and_leave_use_distinct_close_reasons() {
         calls[1],
         (
             leaver_client_id,
-            close_code::REVOKED,
-            close_reason::REVOKED.to_owned()
+            close_code::NORMAL,
+            close_reason::CLIENT_SHUTDOWN.to_owned()
         )
     );
 }

@@ -350,20 +350,21 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
                 next_started: false,
             });
         }
-        // Le job appartient à `job.guild_id`, pas forcément à la guilde qui a
-        // émis la trame : un overlay multi-guilde peut router un
-        // `playback.ended` tardif vers la session du média suivant. Terminer le
-        // job reste juste (il est bien fini), mais le verrou libéré et la file
-        // relancée doivent être ceux de la guilde propriétaire — sinon elle
-        // reste bloquée `busy_until` et ses médias attendent « en file » alors
-        // que plus rien ne joue, tandis qu'un job d'une autre guilde part.
+        // Une trame ne peut terminer qu'un job de sa propre guilde. Un overlay
+        // qui change de guilde peut router un `playback.ended` tardif vers la
+        // session suivante ; l'accepter permettrait à n'importe quel client
+        // d'arrêter la lecture d'une autre guilde avec un UUID de job.
         if event.guild_id != job.guild_id {
             warn!(
                 job = %event.job_id,
                 job_guild = %job.guild_id,
                 event_guild = %event.guild_id,
-                "playback.ended émis par une autre guilde : libération de la guilde propriétaire"
+                "playback.ended ignoré : le job appartient à une autre guilde"
             );
+            return Ok(ReleaseOutcome {
+                released: false,
+                next_started: false,
+            });
         }
         let guild_id = job.guild_id.clone();
         self.db

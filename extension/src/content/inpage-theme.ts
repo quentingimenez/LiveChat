@@ -157,8 +157,8 @@ export const initInpageTheme = (): void => {
   ensureStyles();
   void syncTheme();
 
-  if (chrome?.storage?.onChanged) {
-    chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (typeof browser !== 'undefined' && browser.storage?.onChanged) {
+    browser.storage.onChanged.addListener((changes, areaName) => {
       if (areaName !== 'local' || !(THEME_STORAGE_KEY in changes)) {
         return;
       }

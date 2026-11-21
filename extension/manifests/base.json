@@ -1,7 +1,6 @@
 {
   "manifest_version": 3,
   "name": "LiveChat Extension",
-  "version": "0.3.0",
   "description": "Envoi rapide de liens media vers LiveChat /ingest.",
   "icons": {
     "16": "icons/icon-16.png",
@@ -22,10 +21,6 @@
     "https://*.twitter.com/*"
   ],
   "optional_host_permissions": ["https://*/*", "http://*/*"],
-  "background": {
-    "service_worker": "assets/background.js",
-    "type": "module"
-  },
   "action": {
     "default_title": "LiveChat Extension",
     "default_icon": {

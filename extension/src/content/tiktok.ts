@@ -1051,17 +1051,17 @@ const resolveCurrentTikTokMediaUrl = async (): Promise<string | null> => {
   return null;
 };
 
-const readRuntime = (): typeof chrome.runtime | null => {
+const readRuntime = (): typeof browser.runtime | null => {
   if (runtimeContextInvalidated) {
     return null;
   }
 
   try {
-    if (typeof chrome === 'undefined') {
+    if (typeof browser === 'undefined') {
       return null;
     }
 
-    return chrome.runtime || null;
+    return browser.runtime || null;
   } catch (error) {
     markRuntimeContextInvalidatedIfNeeded(error);
     return null;
@@ -1637,7 +1637,7 @@ const registerActiveMediaUrlListener = (): void => {
 
   try {
     runtime.onMessage.addListener(
-      (message: unknown, _sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => {
+      (message: unknown, _sender: browser.runtime.MessageSender, sendResponse: (response?: unknown) => void) => {
         if (!isGetActiveMediaUrlMessage(message)) {
           return;
         }

@@ -5,6 +5,9 @@ Tout ce qui se copie à la main dans la
 met à jour que le paquet (`.github/workflows/extension.yml`, job
 `publish-webstore`), jamais la fiche.
 
+La fiche Firefox (addons.mozilla.org) est décrite dans [`amo.md`](amo.md) ; les
+visuels sont communs aux deux boutiques.
+
 Logo, captures et textes ci-dessous correspondent à l'extension à partir de la
 version 0.2.2 (boutons sur X, TikTok, YouTube et Shorts).
 
@@ -167,10 +170,10 @@ autorisé. Une URL sur le domaine du serveur
 - Sans nouveau tag : *Actions* → **Extension Build and Release** →
   *Run workflow* → cocher **publier sur le Chrome Web Store**.
 
-La version du manifest doit être strictement supérieure à celle publiée
-(0.2.2 est en relecture), sinon l'upload est refusé. La relecture prend en
-général quelques heures à quelques jours ; le job affiche
-`submission: PENDING_REVIEW` quand tout est accepté.
+La version de `extension/package.json` (injectée dans les deux manifestes) doit
+être strictement supérieure à celle publiée (0.2.2 est en relecture), sinon
+l'upload est refusé. La relecture prend en général quelques heures à quelques
+jours ; le job affiche `submission: PENDING_REVIEW` quand tout est accepté.
 
 Le refresh token n'expire plus : l'application OAuth `LiveChat Extension` est
 publiée en *Production*. Le scope `chromewebstore` reste classé sensible, donc

@@ -1,0 +1,11 @@
+{
+  "summary": {
+    "en-US": "Send YouTube, TikTok and X media links to your own self-hosted LiveChat server.",
+    "fr": "Envoyez des liens média YouTube, TikTok et X vers votre propre serveur LiveChat auto-hébergé."
+  },
+  "categories": ["social-communication"],
+  "version": {
+    "license": "all-rights-reserved",
+    "approval_notes": "LiveChat Extension sends the media URL the user explicitly chooses (YouTube, TikTok or X) to a LiveChat server the user configures and pairs with a one-time code. The optional text field is typed by the user and sent only to that same server. There is no vendor-operated backend, no analytics and no remote code. Host permissions are limited to the three supported sites; the API origin is an optional host permission requested at runtime from the options page, after the user enters the server URL. Settings and the pairing token are stored in browser.storage.local and sent only to that configured server as a Bearer token. Data collection declared in the manifest: browsingActivity (the page URL the user submits) and authenticationInfo (the pairing token). The Firefox build is bundled but not minified, so the submitted package is the readable source."
+  }
+}

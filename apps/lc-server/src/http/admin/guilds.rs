@@ -47,7 +47,7 @@ const GUILD_ID_ATTEMPTS: usize = 5;
 
 /// Issue d'une demande de départ Discord, sérialisée dans l'objet `discord`.
 #[derive(Debug, Clone)]
-struct DiscordDeparture {
+pub(crate) struct DiscordDeparture {
     server_id: Option<String>,
     requested: bool,
     outcome: &'static str,
@@ -66,7 +66,7 @@ impl DiscordDeparture {
     }
 
     /// Objet JSON `{"serverId", "requested", "outcome", "error"}`.
-    fn payload(&self) -> Value {
+    pub(crate) fn payload(&self) -> Value {
         json!({
             "serverId": self.server_id.as_deref(),
             "requested": self.requested,
@@ -291,13 +291,218 @@ pub(crate) async fn remove_orphan_media(
 }
 
 /// Reject a missing or mismatching `confirmGuildId`.
-fn require_guild_confirmation(payload: &Value, guild_id: &GuildId) -> Result<(), AdminError> {
+pub(crate) fn require_guild_confirmation(
+    payload: &Value,
+    guild_id: &GuildId,
+) -> Result<(), AdminError> {
     let confirmation = to_non_empty_string(payload.get("confirmGuildId"));
     if confirmation.as_deref() != Some(guild_id.as_str()) {
         return Err(AdminError::bad_request("confirm_guild_id_mismatch"));
     }
 
     Ok(())
+}
+
+/// Makes the bot leave the Discord server associated with `guild_id`.
+///
+/// Shared by the console route and the overlay route: the guild is not purged
+/// and its Discord link is kept. A guild without a Discord server yields a
+/// `skipped` departure; a Discord API failure never makes the route fail.
+pub(crate) async fn leave_discord_guild(
+    state: &AppState,
+    guild_id: &GuildId,
+) -> Result<DiscordDeparture, AdminError> {
+    let db = require_db(state)?;
+    let access = db
+        .guilds()
+        .access(guild_id)
+        .await
+        .map_err(|error| AdminError::db("lecture du rattachement de guilde", error))?;
+    let server_id = discord_server_id(guild_id, access.as_ref());
+    let discord = perform_discord_leave(state, server_id, true).await;
+    tracing::info!(
+        guild_id = guild_id.as_str(),
+        outcome = discord.outcome,
+        "départ Discord demandé"
+    );
+
+    Ok(discord)
+}
+
+/// Résultat d'une purge, sérialisé par [`PurgeReport::payload`].
+#[derive(Debug, Clone)]
+pub(crate) struct PurgeReport {
+    guild_id: GuildId,
+    stop: PlaybackStop,
+    disconnected_overlay_sockets: u64,
+    deleted_guild_settings: u64,
+    deleted_overlay_clients: u64,
+    deleted_ingest_clients: u64,
+    deleted_pairing_codes: u64,
+    deleted_playback_jobs: u64,
+    deleted_media_board_items: u64,
+    deleted_orphan_media_assets: u64,
+    orphan_media_file_delete_errors: u64,
+    discord: DiscordDeparture,
+}
+
+impl PurgeReport {
+    /// Réponse JSON du contrat (`{purged, guildId, stop, deleted, discord}`).
+    pub(crate) fn payload(&self) -> Value {
+        json!({
+            "purged": true,
+            "guildId": self.guild_id.as_str(),
+            "stop": {
+                "releasedPlayingJobs": self.stop.released_playing_jobs,
+                "disconnectedOverlaySockets": self.disconnected_overlay_sockets,
+            },
+            "deleted": {
+                "guildSettings": self.deleted_guild_settings,
+                "overlayClients": self.deleted_overlay_clients,
+                "ingestClients": self.deleted_ingest_clients,
+                "pairingCodes": self.deleted_pairing_codes,
+                "playbackJobs": self.deleted_playback_jobs,
+                "mediaBoardItems": self.deleted_media_board_items,
+                "orphanMediaAssets": self.deleted_orphan_media_assets,
+                "orphanMediaFileDeleteErrors": self.orphan_media_file_delete_errors,
+            },
+            "discord": self.discord.payload(),
+        })
+    }
+}
+
+/// Deletes every row owned by a guild, optionally removes orphaned media and
+/// makes the bot leave Discord.
+///
+/// Shared by the console and the overlay routes: each caller validates its own
+/// strong confirmation and wraps the report in its JSON envelope. The Discord
+/// departure is never blocking and is disabled unless `leave_discord` is set.
+pub(crate) async fn purge_guild(
+    state: &AppState,
+    guild_id: &GuildId,
+    remove_orphan_media_enabled: bool,
+    leave_discord: bool,
+) -> Result<PurgeReport, AdminError> {
+    let db = require_db(state)?;
+
+    // 0. Rattachement lu AVANT toute suppression : la ligne `guilds` est purgée
+    // plus bas et ne serait alors plus lisible.
+    let access = db
+        .guilds()
+        .access(guild_id)
+        .await
+        .map_err(|error| AdminError::db("lecture du rattachement de guilde", error))?;
+    let discord_server_id = discord_server_id(guild_id, access.as_ref());
+
+    // 1. Médias référencés par la guilde, calculés AVANT toute suppression.
+    let candidate_media_asset_ids = if remove_orphan_media_enabled {
+        queries::guild_media_asset_ids(db, guild_id.as_str())
+            .await
+            .map_err(|error| AdminError::db("médias référencés par la guilde", error))?
+    } else {
+        Vec::new()
+    };
+
+    // 2. Arrêt : diffusion, jobs PLAYING libérés, busyUntil effacé.
+    let stop = stop_guild_playback(state, db, guild_id, true).await?;
+    let hub = admin_hub(state);
+
+    // 3. Fermeture des overlays connectés de la guilde.
+    let guild_overlays = queries::overlay_clients(db)
+        .await
+        .map_err(|error| AdminError::db("clients overlay de la guilde", error))?;
+    let mut disconnected_overlay_sockets = 0_u64;
+    for overlay in guild_overlays
+        .iter()
+        .filter(|overlay| overlay.guild_id == guild_id.as_str())
+    {
+        let Ok(client_id) = Uuid::parse_str(&overlay.id) else {
+            continue;
+        };
+        if hub.close_client(&client_id, close_code::GUILD_DELETED) {
+            disconnected_overlay_sockets += 1;
+        }
+    }
+
+    // 4. Suppressions, dans l'ordre du legacy (les clients d'ingestion ne
+    // bloquent pas la purge en cas d'échec).
+    let deleted_ingest_clients = match queries::delete_ingest_clients_for_guild(
+        db,
+        guild_id.as_str(),
+    )
+    .await
+    {
+        Ok(count) => count,
+        Err(error) => {
+            tracing::warn!(%error, guild_id = guild_id.as_str(), "purge : suppression des clients d'ingestion impossible");
+            0
+        }
+    };
+    let deleted_overlay_clients = queries::delete_overlay_clients_for_guild(db, guild_id.as_str())
+        .await
+        .map_err(|error| AdminError::db("suppression des clients overlay", error))?;
+    // Invitations puis membres : après les overlays (clé étrangère
+    // `overlay_clients.member_id`).
+    db.guild_invites()
+        .delete_by_guild(guild_id)
+        .await
+        .map_err(|error| AdminError::db("suppression des invitations", error))?;
+    db.discord_link_codes()
+        .delete_by_guild(guild_id)
+        .await
+        .map_err(|error| AdminError::db("suppression des codes de liaison Discord", error))?;
+    db.guild_members()
+        .delete_by_guild(guild_id)
+        .await
+        .map_err(|error| AdminError::db("suppression des membres", error))?;
+    db.guild_bans()
+        .delete_by_guild(guild_id)
+        .await
+        .map_err(|error| AdminError::db("suppression des bannissements", error))?;
+    let deleted_pairing_codes = queries::delete_pairing_codes_for_guild(db, guild_id.as_str())
+        .await
+        .map_err(|error| AdminError::db("suppression des codes de pairing", error))?;
+    let deleted_playback_jobs = queries::delete_playback_jobs_for_guild(db, guild_id.as_str())
+        .await
+        .map_err(|error| AdminError::db("suppression des jobs de playback", error))?;
+    let deleted_media_board_items =
+        queries::delete_media_board_items_for_guild(db, guild_id.as_str())
+            .await
+            .map_err(|error| AdminError::db("suppression du board média", error))?;
+    let deleted_guild_settings = queries::delete_guild_settings(db, guild_id.as_str())
+        .await
+        .map_err(|error| AdminError::db("suppression des réglages de guilde", error))?;
+
+    // 5. Médias devenus orphelins : fichier puis ligne, compteurs séparés.
+    let (deleted_orphan_media_assets, orphan_media_file_delete_errors) =
+        remove_orphan_media(state, db, &candidate_media_asset_ids).await?;
+
+    // 6. Départ Discord optionnel, après les suppressions (jamais bloquant).
+    let discord = perform_discord_leave(state, discord_server_id, leave_discord).await;
+
+    tracing::info!(
+        guild_id = guild_id.as_str(),
+        released_playing_jobs = stop.released_playing_jobs,
+        disconnected_overlay_sockets,
+        broadcast = stop.broadcast,
+        outcome = discord.outcome,
+        "guilde purgée"
+    );
+
+    Ok(PurgeReport {
+        guild_id: guild_id.clone(),
+        stop,
+        disconnected_overlay_sockets,
+        deleted_guild_settings,
+        deleted_overlay_clients,
+        deleted_ingest_clients,
+        deleted_pairing_codes,
+        deleted_playback_jobs,
+        deleted_media_board_items,
+        deleted_orphan_media_assets,
+        orphan_media_file_delete_errors,
+        discord,
+    })
 }
 
 /// Handler `POST /admin/api/guilds` : crée une guilde indépendante de Discord
@@ -618,22 +823,10 @@ pub(super) async fn discord_leave(
     Path(raw_guild_id): Path<String>,
     payload: Json<Value>,
 ) -> Result<Response, AdminError> {
-    let db = require_db(&state)?;
     let guild_id = parse_guild_id(&raw_guild_id)?;
     require_guild_confirmation(&payload, &guild_id)?;
 
-    let access = db
-        .guilds()
-        .access(&guild_id)
-        .await
-        .map_err(|error| AdminError::db("lecture du rattachement de guilde", error))?;
-    let server_id = discord_server_id(&guild_id, access.as_ref());
-    let discord = perform_discord_leave(&state, server_id, true).await;
-    tracing::info!(
-        guild_id = guild_id.as_str(),
-        outcome = discord.outcome,
-        "départ Discord demandé depuis le panneau"
-    );
+    let discord = leave_discord_guild(&state, &guild_id).await?;
 
     Ok(Json(json!({ "discordLeave": discord.payload() })).into_response())
 }
@@ -649,7 +842,6 @@ pub(super) async fn purge(
     Path(raw_guild_id): Path<String>,
     payload: Json<Value>,
 ) -> Result<Response, AdminError> {
-    let db = require_db(&state)?;
     let guild_id = parse_guild_id(&raw_guild_id)?;
 
     require_guild_confirmation(&payload, &guild_id)?;
@@ -667,130 +859,15 @@ pub(super) async fn purge(
             .ok_or_else(|| AdminError::bad_request(INVALID_PAYLOAD))?,
     };
 
-    // 0. Rattachement lu AVANT toute suppression : la ligne `guilds` est purgée
-    // plus bas et ne serait alors plus lisible.
-    let access = db
-        .guilds()
-        .access(&guild_id)
-        .await
-        .map_err(|error| AdminError::db("lecture du rattachement de guilde", error))?;
-    let discord_server_id = discord_server_id(&guild_id, access.as_ref());
-
-    // 1. Médias référencés par la guilde, calculés AVANT toute suppression.
-    let candidate_media_asset_ids = if remove_orphan_media_enabled {
-        queries::guild_media_asset_ids(db, guild_id.as_str())
-            .await
-            .map_err(|error| AdminError::db("médias référencés par la guilde", error))?
-    } else {
-        Vec::new()
-    };
-
-    // 2. Arrêt : diffusion, jobs PLAYING libérés, busyUntil effacé.
-    let stop = stop_guild_playback(&state, db, &guild_id, true).await?;
-    let hub = admin_hub(&state);
-
-    // 3. Fermeture des overlays connectés de la guilde.
-    let guild_overlays = queries::overlay_clients(db)
-        .await
-        .map_err(|error| AdminError::db("clients overlay de la guilde", error))?;
-    let mut disconnected_overlay_sockets = 0_u64;
-    for overlay in guild_overlays
-        .iter()
-        .filter(|overlay| overlay.guild_id == guild_id.as_str())
-    {
-        let Ok(client_id) = Uuid::parse_str(&overlay.id) else {
-            continue;
-        };
-        if hub.close_client(&client_id, close_code::GUILD_DELETED) {
-            disconnected_overlay_sockets += 1;
-        }
-    }
-
-    // 4. Suppressions, dans l'ordre du legacy (les clients d'ingestion ne
-    // bloquent pas la purge en cas d'échec).
-    let deleted_ingest_clients = match queries::delete_ingest_clients_for_guild(
-        db,
-        guild_id.as_str(),
+    let report = purge_guild(
+        &state,
+        &guild_id,
+        remove_orphan_media_enabled,
+        leave_discord,
     )
-    .await
-    {
-        Ok(count) => count,
-        Err(error) => {
-            tracing::warn!(%error, guild_id = guild_id.as_str(), "purge : suppression des clients d'ingestion impossible");
-            0
-        }
-    };
-    let deleted_overlay_clients = queries::delete_overlay_clients_for_guild(db, guild_id.as_str())
-        .await
-        .map_err(|error| AdminError::db("suppression des clients overlay", error))?;
-    // Invitations puis membres : après les overlays (clé étrangère
-    // `overlay_clients.member_id`).
-    db.guild_invites()
-        .delete_by_guild(&guild_id)
-        .await
-        .map_err(|error| AdminError::db("suppression des invitations", error))?;
-    db.discord_link_codes()
-        .delete_by_guild(&guild_id)
-        .await
-        .map_err(|error| AdminError::db("suppression des codes de liaison Discord", error))?;
-    db.guild_members()
-        .delete_by_guild(&guild_id)
-        .await
-        .map_err(|error| AdminError::db("suppression des membres", error))?;
-    db.guild_bans()
-        .delete_by_guild(&guild_id)
-        .await
-        .map_err(|error| AdminError::db("suppression des bannissements", error))?;
-    let deleted_pairing_codes = queries::delete_pairing_codes_for_guild(db, guild_id.as_str())
-        .await
-        .map_err(|error| AdminError::db("suppression des codes de pairing", error))?;
-    let deleted_playback_jobs = queries::delete_playback_jobs_for_guild(db, guild_id.as_str())
-        .await
-        .map_err(|error| AdminError::db("suppression des jobs de playback", error))?;
-    let deleted_media_board_items =
-        queries::delete_media_board_items_for_guild(db, guild_id.as_str())
-            .await
-            .map_err(|error| AdminError::db("suppression du board média", error))?;
-    let deleted_guild_settings = queries::delete_guild_settings(db, guild_id.as_str())
-        .await
-        .map_err(|error| AdminError::db("suppression des réglages de guilde", error))?;
+    .await?;
 
-    // 5. Médias devenus orphelins : fichier puis ligne, compteurs séparés.
-    let (deleted_orphan_media_assets, orphan_media_file_delete_errors) =
-        remove_orphan_media(&state, db, &candidate_media_asset_ids).await?;
-
-    // 6. Départ Discord optionnel, après les suppressions (jamais bloquant).
-    let discord = perform_discord_leave(&state, discord_server_id, leave_discord).await;
-
-    tracing::info!(
-        guild_id = guild_id.as_str(),
-        released_playing_jobs = stop.released_playing_jobs,
-        disconnected_overlay_sockets,
-        broadcast = stop.broadcast,
-        outcome = discord.outcome,
-        "guilde purgée depuis le panneau"
-    );
-
-    Ok(Json(json!({
-        "purged": true,
-        "guildId": guild_id.as_str(),
-        "stop": {
-            "releasedPlayingJobs": stop.released_playing_jobs,
-            "disconnectedOverlaySockets": disconnected_overlay_sockets,
-        },
-        "deleted": {
-            "guildSettings": deleted_guild_settings,
-            "overlayClients": deleted_overlay_clients,
-            "ingestClients": deleted_ingest_clients,
-            "pairingCodes": deleted_pairing_codes,
-            "playbackJobs": deleted_playback_jobs,
-            "mediaBoardItems": deleted_media_board_items,
-            "orphanMediaAssets": deleted_orphan_media_assets,
-            "orphanMediaFileDeleteErrors": orphan_media_file_delete_errors,
-        },
-        "discord": discord.payload(),
-    }))
-    .into_response())
+    Ok(Json(report.payload()).into_response())
 }
 
 /// Handler `POST /admin/api/guilds/{guild_id}/revoke-clients`.

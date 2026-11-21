@@ -288,6 +288,7 @@
     manageMembers: isAdmin,
     manageInvites: isAdmin,
     manageSettings: isAdmin,
+    purgeGuild: isAdmin,
   };
 
   function svg(index) {

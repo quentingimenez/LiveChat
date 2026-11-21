@@ -83,6 +83,7 @@ mod audit;
 mod auth;
 pub(crate) mod board_clear;
 mod board_extras;
+mod danger;
 pub(crate) mod devices;
 pub(crate) mod discord_link;
 pub(crate) mod guild;
@@ -237,6 +238,8 @@ impl ActorInfo {
 mod ban_tests;
 #[cfg(test)]
 mod board_extras_tests;
+#[cfg(test)]
+mod danger_tests;
 #[cfg(test)]
 mod device_admin_tests;
 #[cfg(test)]
@@ -423,6 +426,8 @@ pub fn router() -> Router<AppState> {
             "/overlay/admin/media-board/clear",
             post(admin::clear_media_board),
         )
+        .route("/overlay/admin/purge", post(danger::purge))
+        .route("/overlay/admin/discord-leave", post(danger::discord_leave))
         .route("/overlay/admin/audit", get(admin::list_audit))
         .route(
             "/overlay/admin/discord-link-code",

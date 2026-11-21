@@ -598,6 +598,8 @@ fn overlay_admin_action(method: &str, path: &str) -> Option<&'static str> {
         ("POST", "/overlay/admin/device-codes") => return Some("overlay.device_code"),
         ("PATCH", "/overlay/admin/settings") => return Some("overlay.settings"),
         ("POST", "/overlay/admin/media-board/clear") => return Some("overlay.board_clear"),
+        ("POST", "/overlay/admin/purge") => return Some("overlay.purge"),
+        ("POST", "/overlay/admin/discord-leave") => return Some("overlay.discord_leave"),
         ("POST", "/overlay/admin/discord-link-code") => return Some("overlay.discord_link_code"),
         ("DELETE", "/overlay/admin/discord-link") => return Some("overlay.discord_unlink"),
         ("DELETE", "/overlay/admin/pairing-codes/expired") => {
@@ -761,6 +763,11 @@ mod tests {
         assert_eq!(
             action_for("POST", "/overlay/admin/media-board/clear"),
             "overlay.board_clear"
+        );
+        assert_eq!(action_for("POST", "/overlay/admin/purge"), "overlay.purge");
+        assert_eq!(
+            action_for("POST", "/overlay/admin/discord-leave"),
+            "overlay.discord_leave"
         );
         assert_eq!(
             action_for("POST", "/overlay/admin/discord-link-code"),

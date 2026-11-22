@@ -25,6 +25,7 @@ use lc_media::source::MediaSource;
 use lc_media::transcode::NormalizedCover;
 use time::{Duration as TimeDuration, UtcDateTime};
 
+use crate::media::display_duration::card_seconds;
 use crate::media::errors::{MediaServiceError, MediaServiceResult};
 
 /// Durée pendant laquelle un asset `FAILED`/`PROCESSING` abandonné est conservé
@@ -72,6 +73,20 @@ impl ReadyAsset {
     /// Extrait les champs persistables du résultat du pipeline.
     pub fn from_ingested(ingested: &IngestedMedia) -> Self {
         let normalized = &ingested.normalized;
+        // Une carte de tweet est une image : sa durée de lecture dépend du
+        // texte réellement rendu (tweet cité compris), que le pipeline a
+        // mesuré. Le titre, lui, est tronqué et ne porte que le tweet
+        // principal. Seules les cartes image sont concernées : une carte vidéo
+        // garde la durée de sa vidéo.
+        let duration_sec = normalized.duration_sec.or_else(|| {
+            if normalized.kind == MediaKind::Image
+                && lc_media::source::is_twitter_url(&ingested.source.canonical_url)
+            {
+                ingested.download.text_chars.map(card_seconds)
+            } else {
+                None
+            }
+        });
         Self {
             source_hash: ingested.source.source_hash.clone(),
             source_url: ingested.source.canonical_url.clone(),
@@ -82,7 +97,7 @@ impl ReadyAsset {
             ),
             kind: normalized.kind,
             mime: normalized.mime.clone(),
-            duration_sec: normalized.duration_sec,
+            duration_sec,
             width: normalized.width.map(i64::from),
             height: normalized.height.map(i64::from),
             is_vertical: normalized.is_vertical,
@@ -476,6 +491,7 @@ mod tests {
                 size_bytes: 1_234,
                 source_url: url.to_owned(),
                 title: None,
+                text_chars: None,
             },
             normalized: NormalizedMedia {
                 kind: MediaKind::Video,
@@ -489,6 +505,47 @@ mod tests {
                 cover: None,
             },
         }
+    }
+
+    #[test]
+    fn tweet_card_reading_duration_uses_the_rendered_text_length() {
+        let mut input = ingested(
+            "https://twitter.com/jack/status/20",
+            PathBuf::from("/tmp/tweet-card.png"),
+        );
+        input.normalized.kind = MediaKind::Image;
+        input.normalized.mime = "image/png".into();
+        input.normalized.duration_sec = None;
+        input.download.kind = Some(MediaKind::Image);
+        input.download.text_chars = Some(240);
+
+        let ready = ReadyAsset::from_ingested(&input);
+        assert_eq!(ready.kind, MediaKind::Image);
+        assert_eq!(ready.duration_sec, Some(30));
+    }
+
+    #[test]
+    fn non_card_ingests_keep_their_media_duration() {
+        let mut input = ingested(
+            "https://twitter.com/jack/status/20",
+            PathBuf::from("/tmp/tweet-card.mp4"),
+        );
+        input.download.text_chars = Some(240);
+
+        // Une carte vidéo garde la durée de sa vidéo, pas celle du texte.
+        let ready = ReadyAsset::from_ingested(&input);
+        assert_eq!(ready.kind, MediaKind::Video);
+        assert_eq!(ready.duration_sec, Some(42));
+
+        // Une image hors Twitter ne devient pas une carte texte.
+        let mut image = ingested(
+            "https://example.com/photo.png",
+            PathBuf::from("/tmp/photo.png"),
+        );
+        image.normalized.kind = MediaKind::Image;
+        image.normalized.duration_sec = None;
+        image.download.text_chars = Some(240);
+        assert_eq!(ReadyAsset::from_ingested(&image).duration_sec, None);
     }
 
     #[tokio::test]

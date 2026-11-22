@@ -320,6 +320,21 @@ pub struct RenderedCard {
     pub video_slots: Vec<CardVideoSlot>,
 }
 
+/// Nombre de caractères de texte visibles sur la carte.
+///
+/// Compte le texte du tweet et celui du tweet cité : la durée d'affichage d'une
+/// carte doit refléter l'ensemble de ce qu'elle montre, pas seulement le tweet
+/// principal. Les blancs et retours à la ligne comptent comme des caractères,
+/// comme dans le titre de source qui sert de repli à cette durée.
+pub fn card_text_chars(content: &TweetCardContent) -> usize {
+    let main = content.text.chars().count();
+    let quoted = content
+        .quoted
+        .as_ref()
+        .map_or(0, |quoted| quoted.text.chars().count());
+    main.saturating_add(quoted)
+}
+
 /// Rendu synchrone d'une carte tweet en PNG.
 ///
 /// La hauteur s'adapte au contenu entre [`CARD_MIN_HEIGHT`] et
@@ -1675,6 +1690,24 @@ mod tests {
             with_video > without_video,
             "vidéo citée non rendue : {with_video} px contre {without_video} px sans vidéo"
         );
+    }
+
+    #[test]
+    fn card_text_chars_includes_the_quoted_tweet() {
+        let mut content = TweetCardContent {
+            text: "Texte principal".into(),
+            ..TweetCardContent::default()
+        };
+        let main = content.text.chars().count();
+        assert_eq!(card_text_chars(&content), main);
+
+        content.quoted = Some(QuotedTweetContent {
+            text: "Texte cité plus long".into(),
+            ..QuotedTweetContent::default()
+        });
+        let quoted = content.quoted.as_ref().unwrap().text.chars().count();
+        assert_eq!(card_text_chars(&content), main + quoted);
+        assert!(card_text_chars(&content) > main);
     }
 
     #[test]

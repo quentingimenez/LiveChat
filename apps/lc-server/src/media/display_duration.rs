@@ -6,6 +6,12 @@
 //! `lc_media::title::TITLE_MAX_CHARS` par le pipeline) : on s'en sert pour
 //! moduler la durée.
 //!
+//! Pour les cartes de tweet, le pipeline enregistre dans `MediaAsset.duration_sec`
+//! la durée calculée sur le texte réellement rendu, tweet cité compris (et,
+//! demain, tweet parent traduit) : c'est plus juste que le titre tronqué, qui
+//! ne porte que le texte du tweet principal. Cette durée est prioritaire ; le
+//! titre reste le repli pour les assets antérieurs ou les autres cartes.
+//!
 //! Règles :
 //!
 //! - 5 s de base ;
@@ -37,11 +43,20 @@ pub fn card_duration_sec(asset: &MediaAsset, minimum_sec: i64) -> Option<i64> {
     if asset.kind != MediaKind::Image || !is_text_card_url(&asset.source_url) {
         return None;
     }
-    let chars = asset
-        .source_title
-        .as_deref()
-        .map_or(0, |title| title.chars().count());
-    Some(card_seconds(chars).max(minimum_sec))
+    let computed = match asset.duration_sec {
+        // Le pipeline a mesuré le texte rendu (tweet cité compris) : cette
+        // valeur est plus fiable que le titre, tronqué et limité au tweet
+        // principal. On la plafonne comme toute carte.
+        Some(seconds) if seconds > 0 => seconds.min(CARD_MAX_SEC),
+        _ => {
+            let chars = asset
+                .source_title
+                .as_deref()
+                .map_or(0, |title| title.chars().count());
+            card_seconds(chars)
+        }
+    };
+    Some(computed.max(minimum_sec))
 }
 
 /// Vrai pour les URL dont le pipeline produit une carte texte.
@@ -50,7 +65,7 @@ fn is_text_card_url(url: &str) -> bool {
 }
 
 /// Durée d'une carte texte pour `chars` caractères, hors minimum de guilde.
-fn card_seconds(chars: usize) -> i64 {
+pub(crate) fn card_seconds(chars: usize) -> i64 {
     // Le titre stocké est tronqué à `TITLE_MAX_CHARS` : à la limite, le texte
     // est peut-être plus long que celui conservé, donc on applique le plafond
     // plutôt qu'une durée calculée sur un texte partiel.
@@ -149,6 +164,20 @@ mod tests {
         let long = asset(MediaKind::Image, TIKTOK_COMMENT_URL, Some(&"a".repeat(120)));
         assert_eq!(card_duration_sec(&short, 5), Some(6));
         assert_eq!(card_duration_sec(&long, 5), Some(15));
+    }
+
+    #[test]
+    fn persisted_card_duration_wins_over_the_truncated_title() {
+        let mut card = asset(MediaKind::Image, TWEET_URL, Some("Bonjour"));
+        card.duration_sec = Some(23);
+        assert_eq!(card_duration_sec(&card, 5), Some(23));
+
+        card.duration_sec = Some(999);
+        assert_eq!(card_duration_sec(&card, 5), Some(CARD_MAX_SEC));
+
+        // Valeur absente ou invalide : repli sur le titre.
+        card.duration_sec = Some(0);
+        assert_eq!(card_duration_sec(&card, 5), Some(6));
     }
 
     #[test]

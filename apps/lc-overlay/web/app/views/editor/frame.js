@@ -2,6 +2,7 @@
 // title bar, undo/redo, stage, side panel, optional timeline, save actions.
 
 import { h, icon, registerIcons, resetOnDoubleClick } from '../../core/dom.js';
+import { createTitleField } from './title-field.js';
 
 registerIcons({
   undo: 'M8 8L4 12l4 4M4 12h10a5 5 0 010 10h-2',
@@ -12,6 +13,7 @@ registerIcons({
   flipV: 'M3 12h18M7 8l5-5 5 5zM7 16l5 5 5-5z',
   crop: 'M7 3v14h14M3 7h14v14',
   edit: 'M4 20l4-1L19 8l-3-3L5 16zM14 7l3 3',
+  speed: 'M4 18a8 8 0 1116 0M12 18l3.5-4.5',
 });
 registerIcons({ pause: 'M7 5h3.5v14H7zM13.5 5H17v14h-3.5z' }, { filled: true });
 
@@ -28,30 +30,22 @@ function isTyping(target) {
   return !['range', 'checkbox', 'color', 'button'].includes(target.type);
 }
 
-// The bar quotes the title. A title is free text and may already carry its own
-// guillemets: quoting it unconditionally adds a second closing one (« Bruh » »).
-// Only the missing quote is added, so the title itself is never altered.
-function titleLabel(title) {
-  const text = String(title ?? '');
-  if (!text) {
-    return 'Modifier le média';
-  }
-  const open = text.startsWith('«') ? '' : `«\u00A0`;
-  const close = text.endsWith('»') ? '' : `\u00A0»`;
-  return `Modifier ${open}${text}${close}`;
-}
-
-// Opens the frame. `title` names the media. Returns the frame's slots and
+// Opens the frame. `title` names the media, `titleValue` is its own title (the
+// empty string when the board derives one from the source) and `rename`, when
+// given, saves a new title from the bar. Returns the frame's slots and
 // controls; the editor fills them once its media is loaded.
-export function openEditorFrame({ title }) {
+export function openEditorFrame({ title, titleValue = '', rename = null }) {
   const root = document.getElementById('dialog-root');
   let editor = null; // { onKey(event, typing) -> handled, isDirty(), undo(), redo(), canUndo(), canRedo(), destroy() }
   let closed = false;
+
+  const titleField = createTitleField({ title, value: titleValue, rename });
 
   const undoButton = h('button', { class: 'btn is-quiet icon-btn', type: 'button', title: 'Annuler (Ctrl+Z)', 'aria-label': 'Annuler la dernière action', disabled: true, onClick: () => editor && editor.undo() }, icon('undo'));
   const redoButton = h('button', { class: 'btn is-quiet icon-btn', type: 'button', title: 'Rétablir (Ctrl+Y)', 'aria-label': 'Rétablir', disabled: true, onClick: () => editor && editor.redo() }, icon('redo'));
   const status = h('span', { class: 'editor-status', 'aria-live': 'polite' });
   const actions = h('div', { class: 'editor-actions' });
+  const extra = h('div', { class: 'editor-bar-extra', hidden: true });
   const stage = h('div', { class: 'editor-stage' }, h('p', { class: 'editor-loading' }, 'Chargement du média…'));
   const rail = h('div', { class: 'editor-rail', role: 'toolbar', 'aria-orientation': 'vertical', 'aria-label': 'Outils', hidden: true });
   const panel = h('aside', { class: 'editor-panel', hidden: true });
@@ -68,10 +62,10 @@ export function openEditorFrame({ title }) {
         'div',
         { class: 'editor-bar-lead' },
         h('button', { class: 'btn is-quiet icon-btn', type: 'button', 'aria-label': 'Fermer l’éditeur', title: 'Fermer l’éditeur (Échap)', onClick: requestClose }, icon('close')),
-        h('h2', { title }, h('span', { class: 'editor-bar-title ellipsis' }, titleLabel(title))),
+        titleField.node,
       ),
       h('div', { class: 'editor-history', role: 'group', 'aria-label': 'Historique des modifications' }, undoButton, redoButton),
-      h('div', { class: 'editor-bar-trail' }, status, actions),
+      h('div', { class: 'editor-bar-trail' }, extra, status, actions),
     ),
     h('div', { class: 'editor-body' }, rail, stage, panel),
     timeline,
@@ -159,6 +153,22 @@ export function openEditorFrame({ title }) {
       return;
     }
     const typing = isTyping(event.target);
+    // The title field is inside the frame, whose key handler runs first: Enter
+    // and Escape are routed to it instead of the editor.
+    if (typing && titleField.owns(event.target)) {
+      if (event.key === 'Enter' && !event.isComposing) {
+        event.preventDefault();
+        titleField.commit();
+        titleField.focus();
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        titleField.cancel();
+        titleField.focus();
+        return;
+      }
+    }
     const mod = event.ctrlKey || event.metaKey;
     if (mod && !event.altKey && event.key.toLowerCase() === 'z' && !typing) {
       event.preventDefault();
@@ -213,6 +223,12 @@ export function openEditorFrame({ title }) {
     },
     setStatus(text) {
       status.textContent = text || '';
+    },
+    // A compact control group in the top bar, before the status. The export
+    // format of the audio/video editor lives there, out of the tool panels.
+    setExtra(content) {
+      extra.replaceChildren(...(content ? [content] : []));
+      extra.hidden = !content;
     },
     // `buttons`: [{ label, title, primary, danger, disabled, onClick }]. A
     // secondary action is quiet; a danger one stays red on hover.

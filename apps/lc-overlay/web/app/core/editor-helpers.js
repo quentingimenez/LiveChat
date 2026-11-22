@@ -438,6 +438,26 @@ export function rotatedSize(width, height, quarterTurns) {
   return quarterTurns % 2 === 0 ? { width, height } : { width: height, height: width };
 }
 
+// Size of a picture after the recipe's crop, in the whole pixels ffmpeg keeps:
+// each side is truncated to an even number (`crop=w='max(2,trunc(iw*w/2)*2)'`,
+// crates/lc-media/src/edit.rs), then swapped by a quarter turn. A fractional
+// crop fraction must never leak as `198.53 px` into the editor's panel.
+export function croppedPictureSize({ width, height, crop, quarterTurns = 0 } = {}) {
+  const naturalWidth = Math.round(Number(width));
+  const naturalHeight = Math.round(Number(height));
+  if (!(naturalWidth > 0) || !(naturalHeight > 0)) {
+    return null;
+  }
+  const ratio = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.min(1, Math.max(0, number)) : 1;
+  };
+  const side = (size, fraction) => Math.max(2, 2 * Math.trunc((size * fraction) / 2));
+  const croppedWidth = crop ? side(naturalWidth, ratio(crop.width)) : naturalWidth;
+  const croppedHeight = crop ? side(naturalHeight, ratio(crop.height)) : naturalHeight;
+  return rotatedSize(croppedWidth, croppedHeight, quarterTurns);
+}
+
 // Scale bringing a picture inside `maxSide` pixels (never above 1).
 export function fitScale(width, height, maxSide) {
   const longest = Math.max(width, height);
@@ -584,11 +604,124 @@ export function displayZoneLimits({
   };
 }
 
+// --- media summary -------------------------------------------------------
+// Size of a file in the units of the system (1024-based, French suffixes):
+// `32 ko`, `1,5 Mo`. Empty when the size is unknown.
+export function formatFileSize(bytes) {
+  const value = Number(bytes);
+  if (!(value > 0)) {
+    return '';
+  }
+  const units = ['o', 'ko', 'Mo', 'Go'];
+  let size = value;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+  const digits = index === 0 || size >= 10 ? 0 : 1;
+  const text = size.toLocaleString('fr-FR', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  return `${text} ${units[index]}`;
+}
+
+// "Vidéo · MP4" from a mime type; empty when it is unknown.
+const MEDIA_TYPE_LABELS = {
+  mp4: 'MP4',
+  quicktime: 'MOV',
+  webm: 'WebM',
+  'x-matroska': 'MKV',
+  ogg: 'OGG',
+  gif: 'GIF',
+  mpeg: 'MP3',
+  'x-wav': 'WAV',
+  wav: 'WAV',
+  'x-m4a': 'M4A',
+  aac: 'AAC',
+  png: 'PNG',
+  jpeg: 'JPEG',
+  jpg: 'JPEG',
+  webp: 'WebP',
+  avif: 'AVIF',
+  bmp: 'BMP',
+  heic: 'HEIC',
+  'svg+xml': 'SVG',
+};
+
+const MEDIA_FAMILIES = { video: 'Vidéo', audio: 'Son', image: 'Image' };
+
+export function mediaTypeLabel(mime) {
+  const [family, subtype = ''] = String(mime || '').toLowerCase().split('/');
+  if (!MEDIA_FAMILIES[family]) {
+    return '';
+  }
+  const format = MEDIA_TYPE_LABELS[subtype] || subtype.toUpperCase();
+  return `${MEDIA_FAMILIES[family]}${format ? ` · ${format}` : ''}`;
+}
+
+// Facts of the editor's media summary (bottom of the panel): what the file is
+// and what the recipe makes of it. Rows without a value are dropped.
+export function mediaInfoFacts({
+  name = '',
+  mime = '',
+  bytes = 0,
+  kind = 'video',
+  duration = 0,
+  resultDuration = 0,
+  width = 0,
+  height = 0,
+  resultWidth = 0,
+  resultHeight = 0,
+  displayWidth = 0,
+  displayHeight = 0,
+  hasArtwork = false,
+  artworkWidth = 0,
+  artworkHeight = 0,
+} = {}) {
+  const rows = [];
+  const title = String(name || '').trim();
+  if (title) {
+    rows.push(['Fichier', title]);
+  }
+  const type = mediaTypeLabel(mime);
+  if (type) {
+    rows.push(['Type', type]);
+  }
+  const weight = formatFileSize(bytes);
+  if (weight) {
+    rows.push(['Poids', weight]);
+  }
+  const length = Number(duration);
+  if (length > 0) {
+    const result = Number(resultDuration) > 0 ? Number(resultDuration) : length;
+    const source = formatClock(length);
+    const shown = formatClock(result);
+    rows.push(['Durée', source === shown ? source : `${source} → ${shown}`]);
+  }
+  const pixels = (value, other) =>
+    Number(value) > 0 && Number(other) > 0 ? `${Math.round(value)} × ${Math.round(other)} px` : '';
+  if (kind === 'audio') {
+    const cover = hasArtwork ? pixels(artworkWidth, artworkHeight) : '';
+    rows.push(['Pochette', cover || 'aucune']);
+  } else {
+    const source = pixels(width, height);
+    const shown = pixels(resultWidth, resultHeight);
+    if (source) {
+      rows.push(['Image', shown && shown !== source ? `${source} → ${shown}` : source]);
+    }
+    // The picture's size on the overlay differs from its pixels only when the
+    // display tool scales it or the zone caps it: otherwise, no row.
+    const onScreen = pixels(displayWidth, displayHeight);
+    if (onScreen && onScreen !== shown) {
+      rows.push(['À l’écran', onScreen]);
+    }
+  }
+  return rows;
+}
+
 // --- naming --------------------------------------------------------------
 // A JPEG stays a JPEG (no transparency to keep); everything else is saved as
 // a PNG.
-export function exportMimeFor(sourceMime) {
-  return /^image\/jpe?g$/i.test(String(sourceMime || '')) ? 'image/jpeg' : 'image/png';
+export function exportMimeFor(sourceMime) {  return /^image\/jpe?g$/i.test(String(sourceMime || '')) ? 'image/jpeg' : 'image/png';
 }
 
 export function editedTitle(title) {

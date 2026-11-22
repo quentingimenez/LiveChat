@@ -20,6 +20,7 @@ import {
   buildRecipe,
   centeredCrop,
   clamp,
+  croppedPictureSize,
   cutRange,
   defaultAvEdit,
   displayScaleForStorage,
@@ -31,6 +32,7 @@ import {
   isWhole,
   keepRange,
   keptDuration,
+  mediaInfoFacts,
   nextKeptTime,
   normalizeDisplayScale,
   normalizeSegments,
@@ -40,7 +42,6 @@ import {
   parseSpeed,
   removedRanges,
   rotatedSize,
-  showsDisplaySize,
   sourceToOutputTime,
 } from '../../core/editor-helpers.js';
 import { DEFAULT_VOLUME_PERCENT, previewVolume } from '../../core/sound.js';
@@ -48,8 +49,9 @@ import { state } from '../../core/state.js';
 import { defaultAdjust } from './annotations.js';
 import { createCropOverlay } from './crop-overlay.js';
 import { createDisplayPreview } from './display-preview.js';
-import { choices, section, slider, toggle } from './frame.js';
+import { choices, facts, section, slider, toggle } from './frame.js';
 import { createPreviewFramePump } from './preview-frames.js';
+import { panelKeys, railGroups, toolHint } from './tools.js';
 import { createVideoAnnotations } from './video-annotations.js';
 
 registerIcons({
@@ -129,6 +131,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   let cropMode = false;
   let cropRatio = 'free';
   let cropOverlay = null;
+  let tool = isVideo ? 'select' : 'trim';
   let destroyed = false;
   let peaks = null;
   let strip = null;
@@ -190,6 +193,20 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     }
     const crop = resultCrop();
     return rotatedSize(crop.width * width, crop.height * height, resultTurns());
+  }
+
+  // Same size in the whole pixels the server keeps: the crop truncates each
+  // side to an even number, so a fractional crop never shows `198.53 px`.
+  function resultPixelSize() {
+    if (!isVideo) {
+      return resultPictureSize();
+    }
+    return croppedPictureSize({
+      width: media.videoWidth || 0,
+      height: media.videoHeight || 0,
+      crop: resultCrop(),
+      quarterTurns: resultTurns(),
+    });
   }
 
   function paintPreview(target) {
@@ -342,6 +359,8 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
       view: annotationView,
       objects: () => edit.objects,
       adjust: () => edit.adjust,
+      tool: () => tool,
+      onTool: (next) => setTool(next),
       onCommit: () => commit(),
       onPanel: () => renderPanel(),
     });
@@ -644,6 +663,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     if (onChange) {
       onChange();
     }
+    syncInfoNode();
   }
 
   function commit() {
@@ -666,6 +686,11 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
       annotations.sync();
     }
     renderPanel();
+    // Undo while the crop tool is open: the box is rebuilt on the restored
+    // crop rather than left on a frame that no longer exists.
+    if (tool === 'crop') {
+      setCropMode(true, true);
+    }
     afterChange();
   }
 
@@ -864,7 +889,8 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     // The crop box sits over the frame: the drawing steps aside while it is
     // open, and comes back with the crop applied.
     if (annotations) {
-      annotations.setEnabled(!cropMode && edit.output !== 'audio');
+      annotations.setEnabled(picture() && !cropMode);
+      annotations.setInteractive(layerInteractive());
     }
     layoutVideo();
     if (cropMode) {
@@ -897,6 +923,257 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   }
 
   // --- panel ---
+  // One tool, one panel: the rail picks the tool, the panel shows what that
+  // tool needs and nothing else. Three things stay outside the rule, and each
+  // lives outside the panel: the inspector of a selected object replaces the
+  // Sélection panel, the timeline stays whole, and the export format sits in
+  // the top bar where it is reachable whatever the panel shows.
+  const mediaType = () => (isVideo ? 'video' : 'audio');
+  const picture = () => isVideo && edit.output !== 'audio';
+  // Tools that work on the picture, and so own the pointer over the frame.
+  const LAYER_TOOLS = new Set(['select', 'draw', 'shape', 'text', 'emoji', 'blur', 'adjust']);
+  const railOptions = () => ({ allowDisplayScale: Boolean(preview), output: edit.output, hasArtwork: Boolean(artworkUrl) });
+  const layerInteractive = () => Boolean(annotations) && picture() && !cropMode && LAYER_TOOLS.has(tool);
+
+  // An update can remove the active tool (the output becomes a sound, the
+  // display preview goes away): fall back to the first tool that remains.
+  function ensureTool() {
+    const groups = railGroups(mediaType(), railOptions());
+    if (groups.some((group) => group.some((entry) => entry.id === tool))) {
+      return;
+    }
+    if (tool === 'crop') {
+      setCropMode(false, true);
+    }
+    tool = groups.some((group) => group.some((entry) => entry.id === 'select')) ? 'select' : 'trim';
+    if (annotations) {
+      annotations.refresh();
+    }
+  }
+
+  function setTool(next) {
+    if (next === tool) {
+      return;
+    }
+    if (tool === 'crop') {
+      setCropMode(false, true);
+    }
+    tool = next;
+    if (tool === 'crop') {
+      setCropMode(true, true);
+    }
+    if (annotations) {
+      annotations.refresh();
+    }
+    renderPanel();
+  }
+
+  let railKey = '';
+  function renderRail() {
+    const groups = railGroups(mediaType(), railOptions());
+    const key = `${groups.map((group) => group.map((entry) => entry.id).join(' ')).join('|')}#${tool}`;
+    if (key === railKey) {
+      return;
+    }
+    railKey = key;
+    // The rail is rebuilt when its groups change: keep the scroll position so
+    // a panel rebuilt by a change of tool does not jump.
+    const scroll = frame.rail.scrollTop;
+    const rail = [];
+    for (const group of groups) {
+      if (rail.length) {
+        rail.push(h('div', { class: 'tool-sep', role: 'separator' }));
+      }
+      rail.push(
+        ...group.map(({ id, label, glyph }) =>
+          h('button', { class: `tool${tool === id ? ' is-active' : ''}`, type: 'button', 'aria-pressed': String(tool === id), onClick: () => setTool(id) }, icon(glyph), h('span', null, label)),
+        ),
+      );
+    }
+    frame.rail.replaceChildren(...rail);
+    frame.rail.hidden = false;
+    frame.rail.scrollTop = scroll;
+  }
+
+  // --- media summary ---
+  // What is being edited, at the bottom of the panel: the file, its weight, its
+  // length and the size of its picture. It belongs to the media, not to the
+  // open tool, so it stays outside the tool sections and follows the recipe.
+  function sourceName() {
+    if (blob && blob.name) {
+      return blob.name;
+    }
+    const raw = String(src || '');
+    if (!raw || raw.startsWith('data:') || raw.startsWith('blob:')) {
+      return '';
+    }
+    try {
+      const url = new URL(raw, location.href);
+      return decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || '');
+    } catch {
+      return '';
+    }
+  }
+
+  function mediaFacts() {
+    const result = resultPixelSize();
+    return mediaInfoFacts({
+      name: sourceName(),
+      mime: blob ? blob.type : '',
+      bytes: blob && blob.size > 0 ? blob.size : 0,
+      kind: mediaType(),
+      duration,
+      resultDuration: outputDuration(edit.segments, edit.speed),
+      width: isVideo ? media.videoWidth || 0 : 0,
+      height: isVideo ? media.videoHeight || 0 : 0,
+      resultWidth: result ? result.width : 0,
+      resultHeight: result ? result.height : 0,
+      hasArtwork: Boolean(artwork && artwork.naturalWidth > 0),
+      artworkWidth: artwork ? artwork.naturalWidth : 0,
+      artworkHeight: artwork ? artwork.naturalHeight : 0,
+    });
+  }
+
+  let infoNode = null;
+
+  function syncInfoNode() {
+    if (!infoNode) {
+      return;
+    }
+    const rows = mediaFacts();
+    infoNode.hidden = rows.length === 0;
+    infoNode.replaceChildren(h('h3', null, 'Le média'), facts(rows));
+  }
+
+  function infoPanel() {
+    infoNode = h('section', { class: 'editor-info', 'aria-label': 'Le média' });
+    syncInfoNode();
+    return infoNode;
+  }
+
+  function trimSection() {
+    return section(
+      'Découper',
+      h('p', { class: 'meta' }, toolHint('trim', mediaType())),
+      h(
+        'div',
+        { class: 'editor-times' },
+        startField,
+        h('span', { class: 'editor-times-arrow', 'aria-hidden': 'true' }, '→'),
+        endField,
+      ),
+      h(
+        'div',
+        { class: 'editor-pair' },
+        h('button', { class: 'btn', type: 'button', title: 'La sélection commence à la tête de lecture (I)', onClick: () => markSelection('start') }, 'Début ici'),
+        h('button', { class: 'btn', type: 'button', title: 'La sélection finit à la tête de lecture (O)', onClick: () => markSelection('end') }, 'Fin ici'),
+      ),
+      h('div', { class: 'editor-stack' }, keepButton, cutButton),
+      resetCutButton,
+    );
+  }
+
+  function speedSection() {
+    return section(
+      'Vitesse',
+      choices(SPEEDS.map((speed) => [speed, formatSpeed(speed)]), edit.speed, setSpeed, 'Vitesse de lecture', 'is-grid-3'),
+      speedField(),
+      toggle('Lire à l’envers', edit.reverse, (reverse) => { edit.reverse = reverse; commit(); renderPanel(); }),
+      edit.reverse ? h('p', { class: 'meta' }, 'L’aperçu reste à l’endroit\u00A0; le résultat sera inversé.') : null,
+    );
+  }
+
+  function soundSection() {
+    if (!isVideo) {
+      return section(
+        'Son',
+        slider({ label: 'Volume', min: 0, max: 300, step: 5, value: Math.round(edit.volume * 100), defaultValue: DEFAULT_VOLUME_PERCENT, format: (value) => `${value}\u00A0%`, onInput: (value) => { edit.volume = value / 100; }, onCommit: commit }),
+        slider({ label: 'Fondu d’entrée', min: 0, max: 5, step: 0.1, value: edit.fadeIn, defaultValue: 0, format: (value) => `${value.toFixed(1).replace('.', ',')}\u00A0s`, onInput: (value) => { edit.fadeIn = value; }, onCommit: commit }),
+        slider({ label: 'Fondu de sortie', min: 0, max: 5, step: 0.1, value: edit.fadeOut, defaultValue: 0, format: (value) => `${value.toFixed(1).replace('.', ',')}\u00A0s`, onInput: (value) => { edit.fadeOut = value; }, onCommit: commit }),
+      );
+    }
+    // A GIF has no sound: the format drops it, so the closed panel says so.
+    if (edit.output === 'gif') {
+      return section('Son', h('p', { class: 'meta' }, 'Un GIF n’a pas de son.'));
+    }
+    return section(
+      'Son',
+      toggle('Retirer le son', edit.mute, (mute) => { edit.mute = mute; commit(); renderPanel(); }),
+      edit.mute
+        ? null
+        : [
+            slider({ label: 'Volume', min: 0, max: 300, step: 5, value: Math.round(edit.volume * 100), defaultValue: DEFAULT_VOLUME_PERCENT, format: (value) => `${value}\u00A0%`, onInput: (value) => { edit.volume = value / 100; }, onCommit: commit }),
+            slider({ label: 'Fondu d’entrée', min: 0, max: 5, step: 0.1, value: edit.fadeIn, defaultValue: 0, format: (value) => `${value.toFixed(1).replace('.', ',')}\u00A0s`, onInput: (value) => { edit.fadeIn = value; }, onCommit: commit }),
+            slider({ label: 'Fondu de sortie', min: 0, max: 5, step: 0.1, value: edit.fadeOut, defaultValue: 0, format: (value) => `${value.toFixed(1).replace('.', ',')}\u00A0s`, onInput: (value) => { edit.fadeOut = value; }, onCommit: commit }),
+          ],
+    );
+  }
+
+  function cropSection() {
+    return section(
+      'Recadrer et pivoter',
+      h('p', { class: 'meta' }, toolHint('crop', 'video')),
+      choices(CROP_RATIOS.map((entry) => [entry.id, entry.label]), cropRatio, (id) => {
+        cropRatio = id;
+        storeCrop(centeredCrop(cropAspect(), media.videoWidth, media.videoHeight));
+        commit();
+        setCropMode(true);
+      }, 'Format du recadrage', 'is-grid-3'),
+      h('button', { class: 'btn is-primary is-wide', type: 'button', onClick: () => setTool('select') }, icon('crop'), 'Terminer le recadrage'),
+      h(
+        'div',
+        { class: 'row is-wrap' },
+        h('button', { class: 'btn', type: 'button', title: 'Pivoter à gauche', 'aria-label': 'Pivoter à gauche', onClick: () => rotateView(-1) }, icon('rotateLeft')),
+        h('button', { class: 'btn', type: 'button', title: 'Pivoter à droite', 'aria-label': 'Pivoter à droite', onClick: () => rotateView(1) }, icon('rotateRight')),
+        h('button', { class: `btn${edit.flipH ? ' is-on' : ''}`, type: 'button', title: 'Miroir horizontal', 'aria-label': 'Miroir horizontal', 'aria-pressed': String(edit.flipH), onClick: () => { edit.flipH = !edit.flipH; commit(); renderPanel(); } }, icon('flipH')),
+        h('button', { class: `btn${edit.flipV ? ' is-on' : ''}`, type: 'button', title: 'Miroir vertical', 'aria-label': 'Miroir vertical', 'aria-pressed': String(edit.flipV), onClick: () => { edit.flipV = !edit.flipV; commit(); renderPanel(); } }, icon('flipV')),
+      ),
+      edit.crop
+        ? h('button', { class: 'btn is-quiet', type: 'button', onClick: () => { edit.crop = null; commit(); setCropMode(true); } }, 'Retirer le recadrage')
+        : null,
+    );
+  }
+
+  function selectSection() {
+    // The burn happens on save: saying it once something is drawn avoids the
+    // note on an untouched clip.
+    const drawn = isVideo && edit.objects.length > 0;
+    return section(
+      'Aucune sélection',
+      h('p', { class: 'editor-hint' }, toolHint('select', mediaType())),
+      drawn ? h('p', { class: 'meta' }, 'Les retouches sont gravées dans la vidéo au moment de l’enregistrement.') : null,
+    );
+  }
+
+  function coverSection() {
+    if (!isVideo || !onCover) {
+      return null;
+    }
+    return section(
+      'Miniature',
+      h('p', { class: 'meta' }, 'L’image de la carte du board\u00A0: celle que le lecteur affiche à l’instant où tu cliques.'),
+      h(
+        'button',
+        { class: 'btn is-wide', type: 'button', title: 'Prendre l’image du lecteur comme miniature', onClick: () => onCover(currentTime()) },
+        icon('image'),
+        'Définir comme miniature',
+      ),
+    );
+  }
+
+  function setOutput(next) {
+    if (edit.output === next) {
+      return;
+    }
+    edit.output = next;
+    if (next === 'audio') {
+      setCropMode(false, true);
+    }
+    commit();
+    ensureTool();
+    renderPanel();
+  }
+
   function setSpeed(speed) {
     edit.speed = speed;
     commit();
@@ -970,7 +1247,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   // Size the media takes on the overlay: natural size × scale, capped by the
   // display zone minus its header.
   function displaySizeLine() {
-    const size = resultPictureSize();
+    const size = resultPixelSize();
     if (!size || !preview) {
       return '';
     }
@@ -991,7 +1268,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   }
 
   function sizePanel() {
-    const picture = resultPictureSize() || { width: 0, height: 0 };
+    const picture = resultPixelSize() || { width: 0, height: 0 };
     const line = h('p', { class: 'meta' }, displaySizeLine());
     const value = h('span', { class: 'editor-value' }, `${displayScale}\u00A0%`);
     // Same span as the number field, so the presets never push the cursor out of range.
@@ -1084,136 +1361,48 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   // Where the playhead is, in seconds: the frame the player shows.
   const currentTime = () => Math.round(media.currentTime * 1000) / 1000;
 
+  // The format of the result is not a tool: it stays in the top bar, where it
+  // is reachable whatever the panel shows.
+  const formatSelect = h(
+    'select',
+    { class: 'field', 'aria-label': 'Format du résultat', onChange: () => setOutput(formatSelect.value) },
+    h('option', { value: 'same' }, 'Vidéo'),
+    h('option', { value: 'audio' }, 'Son'),
+    h('option', { value: 'gif' }, 'GIF'),
+  );
+  if (isVideo) {
+    frame.setExtra(h('label', { class: 'editor-format' }, h('span', null, 'Enregistrer en'), formatSelect));
+  }
+
   function renderPanel() {
-    const sound = edit.output !== 'gif';
-    const picture = isVideo && edit.output !== 'audio';
-    // The drawing tools only exist for a picture: an audio result would throw
-    // the annotations away, and the crop has its own box.
-    const annotated = picture;
-    if (annotations) {
-      annotations.setEnabled(annotated && !cropMode);
-      if (annotated) {
-        annotations.renderRail();
-      } else {
-        frame.rail.hidden = true;
-        frame.rail.replaceChildren();
-      }
+    ensureTool();
+    // Leaving the display tool leaves the overlay preview: the way back to the
+    // montage lives in that panel alone.
+    if (previewShown && tool !== 'display') {
+      setPreviewShown(false);
     }
-    const sections = [
-      section(
-        'Découper',
-        h('p', { class: 'meta' }, 'Tire les bords clairs de la frise pour raccourcir. Glisse sur la frise pour sélectionner un passage, puis garde-le ou supprime-le.'),
-        h(
-          'div',
-          { class: 'editor-times' },
-          startField,
-          h('span', { class: 'editor-times-arrow', 'aria-hidden': 'true' }, '→'),
-          endField,
-        ),
-        h(
-          'div',
-          { class: 'editor-pair' },
-          h('button', { class: 'btn', type: 'button', title: 'La sélection commence à la tête de lecture (I)', onClick: () => markSelection('start') }, 'Début ici'),
-          h('button', { class: 'btn', type: 'button', title: 'La sélection finit à la tête de lecture (O)', onClick: () => markSelection('end') }, 'Fin ici'),
-        ),
-        h('div', { class: 'editor-stack' }, keepButton, cutButton),
-        resetCutButton,
-      ),
-      section(
-        'Vitesse',
-        choices(SPEEDS.map((speed) => [speed, formatSpeed(speed)]), edit.speed, setSpeed, 'Vitesse de lecture', 'is-grid-3'),
-        speedField(),
-        toggle('Lire à l’envers', edit.reverse, (reverse) => { edit.reverse = reverse; commit(); renderPanel(); }),
-        edit.reverse ? h('p', { class: 'meta' }, 'L’aperçu reste à l’endroit ; le résultat sera inversé.') : null,
-      ),
-      sound
-        ? section(
-            'Son',
-            isVideo ? toggle('Retirer le son', edit.mute, (mute) => { edit.mute = mute; commit(); renderPanel(); }) : null,
-            edit.mute
-              ? null
-              : [
-                  slider({ label: 'Volume', min: 0, max: 300, step: 5, value: Math.round(edit.volume * 100), defaultValue: DEFAULT_VOLUME_PERCENT, format: (value) => `${value}\u00A0%`, onInput: (value) => { edit.volume = value / 100; }, onCommit: commit }),
-                  slider({ label: 'Fondu d’entrée', min: 0, max: 5, step: 0.1, value: edit.fadeIn, defaultValue: 0, format: (value) => `${value.toFixed(1).replace('.', ',')}\u00A0s`, onInput: (value) => { edit.fadeIn = value; }, onCommit: commit }),
-                  slider({ label: 'Fondu de sortie', min: 0, max: 5, step: 0.1, value: edit.fadeOut, defaultValue: 0, format: (value) => `${value.toFixed(1).replace('.', ',')}\u00A0s`, onInput: (value) => { edit.fadeOut = value; }, onCommit: commit }),
-                ],
-          )
-        : section('Son', h('p', { class: 'meta' }, 'Un GIF n’a pas de son.')),
-      picture
-        ? section(
-            'Image',
-            h(
-              'div',
-              { class: 'row is-wrap' },
-              h('button', { class: `btn${cropMode ? ' is-primary' : ''}`, type: 'button', 'aria-pressed': String(cropMode), onClick: () => setCropMode(!cropMode) }, icon('crop'), cropMode ? 'Terminer le recadrage' : 'Recadrer'),
-              edit.crop ? h('button', { class: 'btn is-quiet', type: 'button', onClick: () => { edit.crop = null; commit(); setCropMode(false); } }, 'Retirer le recadrage') : null,
-            ),
-            cropMode
-              ? choices(CROP_RATIOS.map((entry) => [entry.id, entry.label]), cropRatio, (id) => {
-                  cropRatio = id;
-                  storeCrop(centeredCrop(cropAspect(), media.videoWidth, media.videoHeight));
-                  commit();
-                  setCropMode(true);
-                }, 'Format du recadrage', 'is-grid-3')
-              : null,
-            h(
-              'div',
-              { class: 'row is-wrap' },
-              h('button', { class: 'btn', type: 'button', title: 'Pivoter à gauche', 'aria-label': 'Pivoter à gauche', onClick: () => rotateView(-1) }, icon('rotateLeft')),
-              h('button', { class: 'btn', type: 'button', title: 'Pivoter à droite', 'aria-label': 'Pivoter à droite', onClick: () => rotateView(1) }, icon('rotateRight')),
-              h('button', { class: `btn${edit.flipH ? ' is-on' : ''}`, type: 'button', title: 'Miroir horizontal', 'aria-label': 'Miroir horizontal', 'aria-pressed': String(edit.flipH), onClick: () => { edit.flipH = !edit.flipH; commit(); renderPanel(); } }, icon('flipH')),
-              h('button', { class: `btn${edit.flipV ? ' is-on' : ''}`, type: 'button', title: 'Miroir vertical', 'aria-label': 'Miroir vertical', 'aria-pressed': String(edit.flipV), onClick: () => { edit.flipV = !edit.flipV; commit(); renderPanel(); } }, icon('flipV')),
-            ),
-          )
-        : null,
-      // The drawing, the masks and the colour adjustments, as on a picture.
-      ...(annotated
-        ? [
-            section(
-              'Dessin et retouches',
-              h('p', { class: 'meta' }, 'Ces retouches sont gravées dans la vidéo au moment de l’enregistrement. Les outils sont à gauche de l’aperçu.'),
-            ),
-            ...annotations.panelSections(),
-          ]
-        : []),
-      // A sound without artwork has no picture to size; the card that stands in
-      // for it ignores the scale, so the setting would do nothing.
-      preview && showsDisplaySize({ isVideo, output: edit.output, hasArtwork: Boolean(artworkUrl) })
-        ? sizePanel()
-        : null,
-      // The picture of the video on the board: the one the user is looking at.
-      isVideo && onCover
-        ? section(
-            'Miniature',
-            h(
-              'p',
-              { class: 'meta' },
-              'L’image de la carte du board : celle que le lecteur affiche à l’instant où tu cliques.',
-            ),
-            h(
-              'button',
-              { class: 'btn is-wide', type: 'button', title: 'Prendre l’image du lecteur comme miniature', onClick: () => onCover(currentTime()) },
-              icon('image'),
-              'Définir comme miniature',
-            ),
-          )
-        : null,
-      isVideo
-        ? section(
-            'Enregistrer en',
-            choices([['same', 'Vidéo', 'video'], ['audio', 'Son', 'audio'], ['gif', 'GIF', 'image']], edit.output, (output) => {
-              edit.output = output;
-              if (output === 'audio') {
-                setCropMode(false, true);
-              }
-              commit();
-              renderPanel();
-            }, 'Format du résultat', 'is-grid-3'),
-          )
-        : null,
-    ];
-    frame.panel.replaceChildren(...sections.filter(Boolean));
+    if (annotations) {
+      annotations.setEnabled(picture() && !cropMode);
+      annotations.setInteractive(layerInteractive());
+    }
+    const hasSelection = Boolean(annotations && tool === 'select' && annotations.hasSelection());
+    const sections = panelKeys(mediaType(), tool, { hasSelection }).map((key) => {
+      switch (key) {
+        case 'trim': return trimSection();
+        case 'speed': return speedSection();
+        case 'sound': return soundSection();
+        case 'crop': return cropSection();
+        case 'select': return selectSection();
+        case 'selection': return annotations.selectionPanel(annotations.selected());
+        case 'display': return sizePanel();
+        case 'cover': return coverSection();
+        default: return annotations ? annotations.panelFor(key) : null;
+      }
+    });
+    frame.panel.replaceChildren(...sections.filter(Boolean), infoPanel());
     frame.panel.hidden = false;
+    formatSelect.value = edit.output;
+    renderRail();
     updateCutControls();
   }
 
@@ -1279,8 +1468,9 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
         return false;
       }
       // The drawing tools own Delete, Escape, Enter and the arrows while an
-      // element is selected; without one they fall through to the timeline.
-      if (annotations && !cropMode && annotations.handleKey(event)) {
+      // element is selected and the layer takes the pointer; without one they
+      // fall through to the timeline.
+      if (annotations && layerInteractive() && annotations.handleKey(event)) {
         return true;
       }
       if (event.key === ' ') {
@@ -1314,8 +1504,9 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
         return true;
       }
       if (event.key === 'Escape') {
-        if (cropMode) {
-          setCropMode(false);
+        // Escape leaves the crop tool the same way its button does.
+        if (tool === 'crop') {
+          setTool('select');
           return true;
         }
         if (selection) {

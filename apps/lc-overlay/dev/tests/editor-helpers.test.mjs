@@ -258,6 +258,9 @@ test('showsDisplaySize: seule une sortie avec image a une taille à régler', ()
 
 test('éditeur audio : la section Taille à l’affichage disparaît sans pochette', () => {
   const source = readFileSync(new URL('../../web/app/views/editor/av.js', import.meta.url), 'utf8');
-  assert.match(source, /showsDisplaySize\(\{ isVideo, output: edit\.output, hasArtwork: Boolean\(artworkUrl\) \}\)/);
+  // C’est la rail qui décide : l’éditeur lui passe l’aperçu, la sortie et la
+  // pochette, et n’ajoute pas la taille de son côté.
+  assert.match(source, /railGroups\(mediaType\(\), railOptions\(\)\)/);
+  assert.match(source, /allowDisplayScale: Boolean\(preview\), output: edit\.output, hasArtwork: Boolean\(artworkUrl\)/);
   assert.doesNotMatch(source, /preview \? sizePanel\(\) : null/);
 });

@@ -30,43 +30,23 @@ import {
   cssFilter,
 } from '../../core/editor-helpers.js';
 import { choices, section, slider, toggle } from './frame.js';
-
-export const ANNOTATION_TOOLS = [
-  ['select', 'Sélection', 'cursor'],
-  ['draw', 'Dessiner', 'edit'],
-  ['shape', 'Formes', 'shapes'],
-  ['text', 'Texte', 'text'],
-  ['emoji', 'Emoji', 'smile'],
-  ['adjust', 'Réglages', 'sliders'],
-  ['blur', 'Masquer une zone', 'pixels'],
-];
-
-// Sélection stands alone; the drawing tools share a group; masking closes it.
-const TOOL_GROUPS = [['select'], ['draw', 'shape', 'text', 'emoji', 'adjust'], ['blur']];
-
-const TOOL_HINTS = {
-  select: 'Sélectionne un élément pour le déplacer, le redimensionner ou le modifier.',
-  draw: 'Dessine directement sur la vidéo.',
-  shape: 'Trace la forme en glissant sur la vidéo.',
-  text: 'Clique sur la vidéo pour y poser un texte.',
-  emoji: 'Choisis un emoji\u00A0: il se pose au centre, déplace-le ensuite.',
-  adjust: 'Les réglages s’appliquent à toute la vidéo.',
-  blur: 'Trace un rectangle sur la zone à cacher.',
-};
+import { toolById, toolHint } from './tools.js';
 
 // Builds the drawing layer over the video. `bounds()` gives the source frame
 // size, `source()` the video element, `view()` the mapping from the stage to
 // the frame (`x`, `y` of its top-left corner in source pixels and `scale`, the
-// CSS pixels per source pixel).
-export function createVideoAnnotations({ frame, host, bounds, source, view, objects, adjust, onCommit, onPanel }) {
+// CSS pixels per source pixel). The active tool belongs to the editor's rail:
+// `tool()` reads it, `onTool(id)` asks the editor to change it.
+export function createVideoAnnotations({ frame, host, bounds, source, view, objects, adjust, tool: toolOf = () => 'select', onTool = null, onCommit, onPanel }) {
   const style = annotationStyle();
   const styleDefaults = { ...style };
-  let tool = 'select';
   let selectedId = null;
   let drag = null;
   let nextId = 1;
   let overlayCache = null;
   let paintQueued = false;
+  let visible = true;
+  let interactive = true;
 
   const tiny = makeCanvas(1, 1);
   const drawn = h('canvas', { class: 'annot-drawing' });
@@ -77,6 +57,7 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
   host.append(box, surface, selBox);
   box.append(selBox);
 
+  const current = () => toolOf();
   const list = () => objects() || [];
   const colorState = () => adjust() || { ...NEUTRAL_ADJUST };
   const selected = () => list().find((object) => object.id === selectedId) || null;
@@ -258,7 +239,7 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
 
   function placeSelection() {
     const object = selected();
-    if (!object || tool === 'draw' || tool === 'shape' || tool === 'blur' || tool === 'text') {
+    if (!visible || !interactive || !object || current() === 'draw' || current() === 'shape' || current() === 'blur' || current() === 'text') {
       selBox.hidden = true;
       return;
     }
@@ -366,23 +347,25 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
     event.preventDefault();
     frame.node.focus();
     const point = toSource(event);
-    if (tool === 'text') {
+    if (current() === 'text') {
       const { width, height } = size();
       addText('Ton texte', clamp(point.x, 0, width), clamp(point.y, 0, height));
-      setTool('select');
+      if (onTool) {
+        onTool('select');
+      }
       focusTextField();
       return;
     }
     surface.setPointerCapture(event.pointerId);
-    if (tool === 'draw') {
+    if (current() === 'draw') {
       selectedId = null;
       const object = addObject({ type: 'stroke', mode: style.drawMode, color: style.color, width: style.stroke * unit() * (style.drawMode === 'pen' ? 1 : 3), points: [point.x, point.y] });
       drag = { kind: 'create', id: object.id };
-    } else if (tool === 'shape') {
+    } else if (current() === 'shape') {
       selectedId = null;
       const object = addObject({ type: 'shape', shape: style.shape, color: style.color, width: style.stroke * unit(), fill: style.fill, x1: point.x, y1: point.y, x2: point.x, y2: point.y });
       drag = { kind: 'create', id: object.id };
-    } else if (tool === 'blur') {
+    } else if (current() === 'blur') {
       selectedId = null;
       const object = addObject({ type: 'mask', mode: style.maskMode, strength: style.maskStrength * unit(), x1: point.x, y1: point.y, x2: point.x, y2: point.y });
       drag = { kind: 'create', id: object.id };
@@ -467,8 +450,8 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
   surface.addEventListener('dblclick', (event) => {
     const hit = hitTest(toSource(event));
     if (hit && hit.type === 'text') {
-      if (tool !== 'select') {
-        setTool('select');
+      if (current() !== 'select' && onTool) {
+        onTool('select');
       }
       select(hit.id);
       focusTextField();
@@ -611,20 +594,26 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
     return section('Élément sélectionné', ...rows);
   }
 
-  function toolPanel() {
-    const hint = h('p', { class: 'meta' }, TOOL_HINTS[tool] || '');
-    if (tool === 'draw') {
+  // The panel of one tool, as the editor's rail asks for it. Null when the
+  // tool has no panel of its own (select, crop): the editor draws its own.
+  function panelFor(id) {
+    const entry = toolById(id);
+    if (!entry) {
+      return null;
+    }
+    const hint = h('p', { class: 'meta' }, toolHint(id, 'video'));
+    if (id === 'draw') {
       return section(
-        'Dessiner',
+        entry.label,
         hint,
         choices([['pen', 'Pinceau', 'edit'], ['marker', 'Surligneur', 'marker'], ['eraser', 'Gomme', 'eraser']], style.drawMode, (mode) => { style.drawMode = mode; if (onPanel) onPanel(); }, 'Outil de dessin'),
         style.drawMode === 'eraser' ? h('p', { class: 'meta' }, 'La gomme efface ce que tu as ajouté, jamais la vidéo.') : colorRow(style.color, (color) => { style.color = color; if (onPanel) onPanel(); }),
         slider({ label: 'Épaisseur', min: 1, max: 40, value: style.stroke, defaultValue: styleDefaults.stroke, onInput: (value) => { style.stroke = value; } }),
       );
     }
-    if (tool === 'shape') {
+    if (id === 'shape') {
       return section(
-        'Formes',
+        entry.label,
         hint,
         choices([['arrow', 'Flèche', 'arrow'], ['rect', 'Rectangle', 'rect'], ['ellipse', 'Ellipse', 'ellipse'], ['line', 'Trait', 'line']], style.shape, (shape) => { style.shape = shape; if (onPanel) onPanel(); }, 'Forme', 'is-grid-2'),
         colorRow(style.color, (color) => { style.color = color; if (onPanel) onPanel(); }),
@@ -632,16 +621,18 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
         style.shape === 'rect' || style.shape === 'ellipse' ? toggle('Forme pleine', style.fill, (fill) => { style.fill = fill; }) : null,
       );
     }
-    if (tool === 'text') {
+    if (id === 'text') {
       const { width, height } = size();
       const meme = (text, top) => {
         const textSize = Math.round(width / 9);
         addText(text, width / 2, top ? textSize * 0.85 : height - textSize * 0.85, { font: 'meme', color: '#ffffff', outline: true, size: textSize });
-        setTool('select');
+        if (onTool) {
+          onTool('select');
+        }
         focusTextField();
       };
       return section(
-        'Texte',
+        entry.label,
         hint,
         h(
           'div',
@@ -655,9 +646,9 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
         toggle('Contour', style.outline, (outline) => { style.outline = outline; }),
       );
     }
-    if (tool === 'emoji') {
+    if (id === 'emoji') {
       return section(
-        'Emoji',
+        entry.label,
         hint,
         h(
           'div',
@@ -679,42 +670,39 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
         ),
       );
     }
-    if (tool === 'blur') {
+    if (id === 'blur') {
       return section(
-        'Masquer une zone',
+        entry.label,
         hint,
         choices([['pixel', 'Pixels'], ['blur', 'Flou']], style.maskMode, (mode) => { style.maskMode = mode; if (onPanel) onPanel(); }, 'Type de masque', 'is-grid-2'),
         slider({ label: 'Intensité', min: 2, max: 20, value: style.maskStrength, defaultValue: styleDefaults.maskStrength, onInput: (value) => { style.maskStrength = value; } }),
       );
     }
-    if (tool === 'adjust') {
-      const current = colorState();
+    if (id === 'adjust') {
+      const state = colorState();
       const adjustSlider = (label, key, min, max) =>
         slider({
           label,
           min,
           max,
-          value: current[key],
+          value: state[key],
           defaultValue: NEUTRAL_ADJUST[key],
           format: key === 'blur' ? (value) => String(value) : (value) => `${value}\u00A0%`,
           onInput: (value) => { colorState()[key] = value; applyPreviewFilter(); },
           onCommit: commit,
         });
       return section(
-        'Réglages',
+        entry.label,
         hint,
-        choices(FILTER_PRESETS.map((preset) => [preset.id, preset.label]), current.preset, (preset) => { colorState().preset = preset; commit(); applyPreviewFilter(); if (onPanel) onPanel(); }, 'Filtre', 'is-grid-2'),
+        choices(FILTER_PRESETS.map((preset) => [preset.id, preset.label]), state.preset, (preset) => { colorState().preset = preset; commit(); applyPreviewFilter(); if (onPanel) onPanel(); }, 'Filtre', 'is-grid-2'),
         adjustSlider('Luminosité', 'brightness', 40, 160),
         adjustSlider('Contraste', 'contrast', 40, 160),
         adjustSlider('Saturation', 'saturate', 0, 200),
         adjustSlider('Flou', 'blur', 0, 10),
-        h('button', { class: 'btn', type: 'button', onClick: () => { const state = colorState(); Object.assign(state, NEUTRAL_ADJUST); commit(); applyPreviewFilter(); if (onPanel) onPanel(); } }, 'Réinitialiser les réglages'),
+        h('button', { class: 'btn', type: 'button', onClick: () => { const adjustState = colorState(); Object.assign(adjustState, NEUTRAL_ADJUST); commit(); applyPreviewFilter(); if (onPanel) onPanel(); } }, 'Réinitialiser les ajustements'),
       );
     }
-    if (selected()) {
-      return null;
-    }
-    return section('Sélection', h('p', { class: 'meta' }, 'Aucun élément sélectionné. Dessine, pose un texte ou trace un masque avec les outils de gauche.'));
+    return null;
   }
 
   // CSS filter that renders the colour adjustments at `cssScale` pixels per
@@ -739,58 +727,42 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
     layer.style.filter = filterFor(view().scale);
   }
 
-  function panelSections() {
-    if (tool !== 'select') {
-      return [toolPanel()].filter(Boolean);
-    }
-    const object = selected();
-    return [object ? selectionPanel(object) : toolPanel()].filter(Boolean);
-  }
-
-  // --- rail ---------------------------------------------------------------
-  function renderRail() {
-    const rail = [];
-    for (const group of TOOL_GROUPS) {
-      const entries = group.map((id) => ANNOTATION_TOOLS.find((entry) => entry[0] === id));
-      if (rail.length) {
-        rail.push(h('div', { class: 'tool-sep', role: 'separator' }));
-      }
-      rail.push(
-        ...entries.map(([id, label, glyph]) =>
-          h('button', { class: `tool${tool === id ? ' is-active' : ''}`, type: 'button', 'aria-pressed': String(tool === id), onClick: () => setTool(id) }, icon(glyph), h('span', null, label)),
-        ),
-      );
-    }
-    frame.rail.replaceChildren(...rail);
-    frame.rail.hidden = false;
-  }
-
-  function setTool(next) {
-    if (tool === next) {
-      return;
-    }
-    tool = next;
-    if (['draw', 'shape', 'blur', 'text'].includes(tool)) {
+  // The layer follows the tool the rail picked: the tools that create an
+  // object drop the selection, the others keep it so the inspector stays open.
+  function refresh() {
+    const active = current();
+    if (['draw', 'shape', 'blur', 'text'].includes(active)) {
       selectedId = null;
     }
-    surface.dataset.tool = tool;
-    renderRail();
+    surface.dataset.tool = active;
     placeSelection();
     paint();
-    if (onPanel) {
-      onPanel();
-    }
   }
 
-  // Hides the whole layer while the crop box is open: the two cannot be moved
-  // at the same time, and the crop previews the frame without them.
-  function setEnabled(enabled) {
-    box.hidden = !enabled;
-    surface.hidden = !enabled;
-    selBox.hidden = !enabled;
-    if (!enabled) {
+  // Hides the layer while the crop box is open, or while the tool acts
+  // elsewhere: the two cannot be moved at the same time, and the crop previews
+  // the frame without them.
+  function applyVisibility() {
+    box.hidden = !visible;
+    surface.hidden = !visible || !interactive;
+    if (!visible || !interactive) {
       selectedId = null;
     }
+    placeSelection();
+    paint();
+  }
+
+  function setEnabled(enabled) {
+    visible = Boolean(enabled);
+    applyVisibility();
+  }
+
+  // A tool that does not draw on the stage (Découper, Affichage...) keeps the
+  // layer on screen but takes the pointer away, so a click on the video cannot
+  // select an object behind the crop box.
+  function setInteractive(enabled) {
+    interactive = Boolean(enabled);
+    applyVisibility();
   }
 
   // Called after an undo, a redo or a restore: the history replaced the object
@@ -858,17 +830,18 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
     selBox.remove();
   }
 
-  renderRail();
+  surface.dataset.tool = current();
   layout();
   paint();
   applyPreviewFilter();
 
   return {
     style,
-    setTool,
-    tool: () => tool,
-    renderRail,
-    panelSections,
+    refresh,
+    panelFor,
+    selectionPanel: (object) => (object ? selectionPanel(object) : null),
+    selected,
+    interactive: () => interactive,
     layout,
     paint,
     paintMasks,
@@ -878,6 +851,7 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
     applyPreviewFilter,
     filterFor,
     setEnabled,
+    setInteractive,
     handleKey,
     hasSelection: () => Boolean(selected()),
     destroy,

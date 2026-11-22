@@ -9,8 +9,12 @@
 //
 // "Jouer une fois" also takes a display time, for an image only: a video or an
 // audio keeps its own length and the server ignores the value for it.
+//
+// The picker keeps one import in progress: choosing files again adds them to
+// the list instead of replacing it, and the cross on a row drops that file
+// before sending.
 
-import { h } from '../core/dom.js';
+import { h, icon } from '../core/dom.js';
 import {
   INVALID_DURATION_MESSAGE,
   MAX_DISPLAY_DURATION_SEC,
@@ -19,7 +23,7 @@ import {
 import { activeGuild, can, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import { openDialog } from '../core/ui.js';
-import { defaultAction, showsPlayFields } from '../core/add-media-rules.js';
+import { addPickedFiles, defaultAction, removePickedFile, showsPlayFields } from '../core/add-media-rules.js';
 import { openFileImageEditor } from './editor/index.js';
 import { startFileUpload, startLinkUpload } from './uploads.js';
 
@@ -86,10 +90,19 @@ export function openAddDialog(options) {
       accept: 'video/*,image/*,audio/*',
       hidden: true,
       onChange: () => {
-        chosenFiles = Array.from(fileInput.files || []);
+        // The picker starts empty at every pick: appending keeps the import in
+        // progress, and clearing the input lets the same file be picked again
+        // once its row was removed (an unchanged input fires no change event).
+        chosenFiles = addPickedFiles(chosenFiles, Array.from(fileInput.files || []));
+        fileInput.value = '';
         renderFileList();
       },
     });
+    const pickFilesButton = h(
+      'button',
+      { class: 'btn', type: 'button', onClick: () => fileInput.click() },
+      'Choisir des fichiers',
+    );
     const fileList = h('ul', { class: 'file-list', hidden: true });
     const fileTitle = h('input', { class: 'field', placeholder: 'Nom du fichier par défaut', maxlength: '240' });
     const fileTitleLabel = h('label', { hidden: true }, 'Titre (facultatif)', fileTitle);
@@ -120,7 +133,7 @@ export function openAddDialog(options) {
     const filePanel = h(
       'div',
       { class: 'stack', hidden: true },
-      h('div', { class: 'file-picker' }, h('button', { class: 'btn', type: 'button', onClick: () => fileInput.click() }, 'Choisir des fichiers'), fileInput),
+      h('div', { class: 'file-picker' }, pickFilesButton, fileInput),
       h('p', { class: 'file-hint' }, 'Vidéos, images et sons : jusqu’à 2 Go par fichier.'),
       fileList,
       fileTitleLabel,
@@ -200,8 +213,8 @@ export function openAddDialog(options) {
             'li',
             null,
             h('span', { class: 'file-name ellipsis', title: file.name }, file.name),
-            // The size takes the free space of the row, so the edit button that
-            // follows it sits at the right end and the size just before it.
+            // The size takes the free space of the row, so it and the buttons
+            // that follow stay grouped at the right end.
             h('span', { class: 'file-size' }, formatSize(file.size)),
             // A picture can be cropped or annotated before it is sent.
             file.type.startsWith('image/')
@@ -219,6 +232,25 @@ export function openAddDialog(options) {
                   'Modifier l’image',
                 )
               : null,
+            // The row can be dropped until the media is sent. The cross closes
+            // the line, after the edit button it belongs with.
+            h(
+              'button',
+              {
+                class: 'btn is-quiet icon-btn file-remove',
+                type: 'button',
+                'aria-label': `Retirer ${file.name}`,
+                title: `Retirer ${file.name}`,
+                onClick: () => {
+                  chosenFiles = removePickedFile(chosenFiles, index);
+                  renderFileList();
+                  // The clicked cross is gone: the picker stays a reachable
+                  // target instead of the focus falling back to the document.
+                  pickFilesButton.focus();
+                },
+              },
+              icon('close'),
+            ),
           ),
         ),
       );

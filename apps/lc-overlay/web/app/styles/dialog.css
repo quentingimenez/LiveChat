@@ -202,14 +202,24 @@
   min-width: 0;
 }
 
-/* The free space of the row is taken before the size: the size and the edit
-   button that follows it stay together at the right end, the button last. A
-   video or an audio has no button and keeps its size there. */
+/* The free space of the row is taken before the size: the size, the edit
+   button and the cross that follow stay grouped at the right end. A video or
+   an audio has no edit button and keeps its cross there. */
 .file-size {
   margin-left: auto;
   flex: none;
   color: var(--text-soft);
   font-variant-numeric: tabular-nums;
+}
+
+/* The cross drops the file from the import before it is sent: a compact icon
+   button, the height of the edit button it follows. */
+.file-list .file-remove {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  justify-content: center;
 }
 
 .dialog .file-hint {

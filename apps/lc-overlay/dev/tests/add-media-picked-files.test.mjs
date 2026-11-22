@@ -1,0 +1,104 @@
+// « Ajouter un média » garde une seule importation en cours : rouvrir
+// « Choisir des fichiers » ajoute les médias choisis à ceux déjà listés au lieu
+// de les remplacer, et la croix d'une ligne retire ce média avant l'envoi.
+//
+// Avant ce correctif, le gestionnaire de changement assignait
+// `chosenFiles = Array.from(fileInput.files || [])` : un second choix
+// remplaçait toute l'importation en cours, les médias déjà préparés étaient
+// perdus sans trace. Le sélecteur est maintenant vidé après chaque choix,
+// sinon le même fichier ne redéclencherait pas de change une fois sa ligne
+// retirée (un input inchangé n'émet pas d'événement).
+
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+import { addPickedFiles, removePickedFile } from '../../web/app/core/add-media-rules.js';
+
+const view = readFileSync(new URL('../../web/app/views/add-media.js', import.meta.url), 'utf8');
+
+const file = (name, size = 1024) => ({ name, size, type: 'image/png' });
+
+// The picker's change handler, up to the list it fills.
+function pickerHandler() {
+  const start = view.indexOf('onChange: () => {');
+  assert.notEqual(start, -1, 'le sélecteur de fichiers doit réagir à un choix');
+  const end = view.indexOf('const fileList = h(', start);
+  assert.notEqual(end, -1, 'la liste doit suivre le sélecteur');
+  return view.slice(start, end);
+}
+
+// Source of `renderFileList`, up to the form built after it.
+function fileRow() {
+  const start = view.indexOf('function renderFileList');
+  assert.notEqual(start, -1, 'renderFileList doit exister');
+  const end = view.indexOf('const form = h(', start);
+  assert.notEqual(end, -1, 'le formulaire doit suivre la liste');
+  return view.slice(start, end);
+}
+
+test('un deuxième choix s’ajoute à l’importation en cours', () => {
+  const first = [file('videoframe_1871.png')];
+  const after = addPickedFiles(first, [file('sample.mp4', 2048)]);
+
+  // Le bug : la liste ne contenait plus que le second choix.
+  assert.deepEqual(after.map((entry) => entry.name), ['videoframe_1871.png', 'sample.mp4']);
+  assert.deepEqual(first.map((entry) => entry.name), ['videoframe_1871.png'], 'la liste déjà choisie ne change pas');
+  assert.notEqual(after, first, 'la liste renvoyée est une nouvelle liste');
+});
+
+test('un choix multiple s’ajoute dans l’ordre du sélecteur', () => {
+  const after = addPickedFiles([file('a.png')], [file('b.png'), file('c.mp3', 512)]);
+  assert.deepEqual(after.map((entry) => entry.name), ['a.png', 'b.png', 'c.mp3']);
+});
+
+test('le même fichier choisi deux fois est gardé deux fois', () => {
+  // Le même média peut légitimement rejoindre le board deux fois ; la croix
+  // de la ligne en trop permet de revenir en arrière.
+  const after = addPickedFiles([file('chat.png')], [file('chat.png')]);
+  assert.equal(after.length, 2);
+});
+
+test('retirer un média ne retire que sa ligne', () => {
+  const files = [file('a.png'), file('b.png'), file('c.png')];
+  const left = removePickedFile(files, 1);
+
+  assert.deepEqual(left.map((entry) => entry.name), ['a.png', 'c.png']);
+  assert.equal(files.length, 3, 'l’importation d’origine ne doit pas être modifiée');
+});
+
+test('retirer un média édité garde le média édité voisin', () => {
+  const edited = { ...file('edited.png'), edited: true };
+  const files = [file('a.png'), file('b.png'), edited];
+  const left = removePickedFile(files, 0);
+
+  assert.equal(left.length, 2);
+  assert.equal(left[1], edited, 'le média édité reste le même objet, à sa place');
+});
+
+test('une position qui n’existe plus ne retire rien', () => {
+  const files = [file('a.png'), file('b.png')];
+  // Un rendu périmé peut déclencher un index hors liste : rien ne doit être
+  // retiré au hasard.
+  for (const index of [-1, 2, 1.5, Number.NaN]) {
+    const left = removePickedFile(files, index);
+    assert.deepEqual(left.map((entry) => entry.name), ['a.png', 'b.png']);
+    assert.notEqual(left, files, 'la liste renvoyée reste une copie');
+  }
+});
+
+test('un nouveau choix ne remplace plus la liste dans le dialogue', () => {
+  const handler = pickerHandler();
+
+  assert.match(handler, /addPickedFiles\(chosenFiles/, 'le choix doit rejoindre les fichiers déjà choisis');
+  assert.doesNotMatch(handler, /chosenFiles = Array\.from/, 'le choix ne doit plus remplacer toute l’importation');
+  assert.match(handler, /fileInput\.value = ''/, 'le sélecteur doit être vidé pour pouvoir rechoisir le même fichier');
+});
+
+test('la croix d’une ligne retire son média de l’importation', () => {
+  const row = fileRow();
+
+  assert.match(row, /file-remove/, 'la ligne doit porter une croix de retrait');
+  assert.match(row, /aria-label': `Retirer \$\{file\.name\}`/, 'la croix doit dire quel média elle retire');
+  assert.match(row, /removePickedFile\(chosenFiles, index\)/, 'la croix doit retirer le média de l’importation');
+  assert.match(row, /icon\('close'\)/, 'le bouton de retrait est une croix');
+});

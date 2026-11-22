@@ -22,9 +22,10 @@
 //! 1. **Au plus un job `PLAYING` par guilde** : la sélection passe par
 //!    `PlaybackJobsRepository::claim_next` (écriture atomique) et les chemins
 //!    internes vérifient l'invariant avant de réclamer un job.
-//! 2. **Ordre de la file** : `submission_date ASC`, `id ASC` (FIFO, parité
-//!    d'arrivée). Aucun média n'interrompt celui en cours : un job déclenché
-//!    pendant une lecture attend la fin du job actif.
+//! 2. **Ordre de la file** : `queue_position ASC`, puis `submission_date ASC`,
+//!    `id ASC` (position explicite réordonnable, départage par arrivée). Aucun
+//!    média n'interrompt celui en cours : un job déclenché pendant une lecture
+//!    attend la fin du job actif.
 //! 3. **Un seul job à la fois** : toutes les opérations publiques prennent un
 //!    verrou interne, les transitions concurrentes sont donc sérialisées.
 //!

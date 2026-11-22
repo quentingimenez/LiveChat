@@ -480,6 +480,15 @@ export interface ClearQueueResponse {
   removedCount: number;
 }
 
+export interface ReorderQueueRequest {
+  jobIds: string[];
+}
+
+export interface ReorderQueueResponse {
+  reordered: true;
+  count: number;
+}
+
 export interface PatchMemberResponse {
   updated: true;
   member: {

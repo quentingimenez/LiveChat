@@ -173,7 +173,10 @@ critères du scheduler legacy :
 2. aucun autre job `PLAYING` dans la même guilde (au plus un job en lecture par
    guilde) ;
 3. `guilds.busy_until` absents ou `<= now` (verrou anti-collision) ;
-4. ordre FIFO `submission_date ASC`, `id ASC`.
+4. ordre de la file `queue_position ASC`, `submission_date ASC`, `id ASC` ;
+   `queue_position` est attribuée à la création (`MAX + 1` par guilde) et
+   réordonnable par `POST /overlay/queue/reorder`. `submission_date` et `id` ne
+   départagent que des positions égales (lignes migrées, positions historiques).
 
 Deux workers concurrents ne peuvent pas obtenir le même job ; le perdant reçoit
 `None` (ou un autre job éligible). Si SQLite répond `SQLITE_BUSY`/`locked`
@@ -251,10 +254,10 @@ s'appliquent aux références restantes (`media_board_items` en cascade,
 - `media_board.rs` — CRUD, unicité `(guild_id, media_asset_id)` → `Conflict`, FK,
   migration `0005` (base arrêtée à `0004`, renommage, relecture via
   `Db::media_board()`) ;
-- `playback_jobs.rs` — ordre FIFO de la file, `scheduled_at`, un seul `PLAYING` par
-  guilde, `busy_until`, claims concurrents (2 tasks tokio), retry `SQLITE_BUSY` de
-  `claim_next` (verrou externe relâché), `set_status(Playing)` refusé par l'index
-  unique partiel, `finish`/purge/`requeue`/état de lecture ;
+- `playback_jobs.rs` — ordre de la file (`queue_position`), `scheduled_at`, un seul
+  `PLAYING` par guilde, `busy_until`, claims concurrents (2 tasks tokio), retry
+  `SQLITE_BUSY` de `claim_next` (verrou externe relâché), `set_status(Playing)`
+  refusé par l'index unique partiel, `finish`/purge/`requeue`/état de lecture ;
 - `guilds.rs` — upsert complet, mises à jour partielles qui créent la ligne ;
 - `clients.rs` — overlay + ingest : CRUD, auth par hash, révocation idempotente,
   unicité du hash ;

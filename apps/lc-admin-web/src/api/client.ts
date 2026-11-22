@@ -49,6 +49,7 @@ import type {
   PurgeGuildResponse,
   RemoveJobResponse,
   RemoveMemberResponse,
+  ReorderQueueResponse,
   UnbanResponse,
   RevokeClientResponse,
   RevokeClientsResponse,
@@ -377,6 +378,13 @@ export function removeQueueJob(guildId: string, jobId: string): Promise<RemoveJo
     'DELETE',
     `${API_BASE}/api/guilds/${encodeURIComponent(guildId)}/queue/${encodeURIComponent(jobId)}`,
   );
+}
+
+/** Envoie l'ordre complet des médias en attente ; le serveur refuse un ordre périmé (409). */
+export function reorderQueue(guildId: string, jobIds: string[]): Promise<ReorderQueueResponse> {
+  return json<ReorderQueueResponse>('POST', `${API_BASE}/api/guilds/${encodeURIComponent(guildId)}/queue/reorder`, {
+    jobIds,
+  });
 }
 
 export function patchMember(guildId: string, memberId: string, body: PatchMemberRequest): Promise<PatchMemberResponse> {

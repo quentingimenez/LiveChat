@@ -4,12 +4,16 @@
 //! |---------|--------|-------|
 //! | `GET` | `/overlay/queue` | tout membre (`ViewQueue`) |
 //! | `GET` | `/overlay/queue/history` | tout membre (`ViewQueue`) |
+//! | `POST` | `/overlay/queue/reorder` | admin (`ModerateQueue`) |
 //! | `DELETE` | `/overlay/queue/{jobId}` | admin (`ModerateQueue`) |
 //! | `DELETE` | `/overlay/queue` | admin (`ModerateQueue`) |
 //!
-//! La file est lue dans l'ordre du scheduler (`submission_date ASC`,
-//! `id ASC`), le job `PLAYING` en tête : un média n'interrompt jamais la
-//! lecture en cours, il passe derrière elle.
+//! La file est lue dans l'ordre explicite `queue_position ASC`, départagé par
+//! `submission_date ASC` puis `id ASC`, le job `PLAYING` en tête : un média
+//! n'interrompt jamais la lecture en cours, il passe derrière elle. Le
+//! réordonnancement ne touche que les jobs `PENDING` et exige la liste
+//! complète de la file : un client qui envoie un ordre périmé reçoit
+//! `409 stale_queue` et recharge.
 //!
 //! L'`origin` d'un job dit d'où il vient : `board` (item de board), `once`
 //! (média joué une fois ou ingéré par un client, donc sans item de board) ou
@@ -22,9 +26,11 @@
 //! (`JobStatus::can_transition_to`). Le job en cours ne se retire pas ici : il
 //! s'arrête par `stop.request` (WS), qui libère proprement la lecture.
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Response;
+use axum::Json;
 use lc_db::Db;
 use lc_domain::{GuildId, Permission, PlaybackJobId};
 use serde::Deserialize;
@@ -141,7 +147,7 @@ async fn load_queue(db: &Db, guild_id: &GuildId) -> Result<Vec<Value>, sqlx::Err
         "{JOB_SELECT} \
           WHERE j.guild_id = ? AND j.status IN ('PLAYING', 'PENDING') \
           ORDER BY CASE j.status WHEN 'PLAYING' THEN 0 ELSE 1 END, \
-                   j.submission_date ASC, j.id ASC \
+                   j.queue_position ASC, j.submission_date ASC, j.id ASC \
           LIMIT ?"
     ))
     .bind(guild_id.as_str())
@@ -171,6 +177,104 @@ pub(crate) async fn queue_payload(state: &AppState, guild_id: &GuildId) -> Resul
 /// Failure of a queue mutation, reported as the overlay route does.
 fn queue_db_failure(operation: &'static str, sqlx_error: sqlx::Error) -> Response {
     db_failure(operation, &lc_db::DbError::from(sqlx_error))
+}
+
+/// Body of `POST /overlay/queue/reorder` : la file complète, dans le nouvel
+/// ordre. Un identifiant inconnu ou une liste incomplète est refusé.
+#[derive(Debug, Deserialize)]
+pub(crate) struct ReorderRequest {
+    #[serde(rename = "jobIds")]
+    job_ids: Vec<String>,
+}
+
+/// Applique un nouvel ordre aux jobs `PENDING` de la guilde.
+///
+/// La liste doit être exactement l'ensemble des jobs en attente : si la file a
+/// changé entre la lecture du client et l'envoi (job ajouté, retiré ou lancé),
+/// rien n'est écrit et la réponse est `409 stale_queue`.
+pub(crate) async fn reorder_queue_payload(
+    state: &AppState,
+    guild_id: &GuildId,
+    raw_ids: &[String],
+) -> Result<Value, Response> {
+    let mut ordered = Vec::with_capacity(raw_ids.len());
+    for raw in raw_ids {
+        let Ok(id) = raw.trim().parse::<PlaybackJobId>() else {
+            return Err(super::error(StatusCode::BAD_REQUEST, "invalid_job_id"));
+        };
+        ordered.push(id.to_canonical());
+    }
+    let unique: std::collections::HashSet<&String> = ordered.iter().collect();
+    if unique.len() != ordered.len() {
+        return Err(super::error(StatusCode::BAD_REQUEST, "duplicate_job_id"));
+    }
+
+    let db = db(state)?;
+    let pending: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM playback_jobs WHERE guild_id = ? AND status = 'PENDING' \
+         ORDER BY queue_position ASC, submission_date ASC, id ASC",
+    )
+    .bind(guild_id.as_str())
+    .fetch_all(db.pool())
+    .await
+    .map_err(|sqlx_error| queue_db_failure("overlay_queue.reorder", sqlx_error))?;
+    if pending.len() != ordered.len() || !pending.iter().all(|id| ordered.contains(id)) {
+        return Err(super::error(StatusCode::CONFLICT, "stale_queue"));
+    }
+
+    let mut tx = db
+        .pool()
+        .begin()
+        .await
+        .map_err(|sqlx_error| queue_db_failure("overlay_queue.reorder", sqlx_error))?;
+    for (index, id) in ordered.iter().enumerate() {
+        let updated = sqlx::query(
+            "UPDATE playback_jobs SET queue_position = ? \
+             WHERE id = ? AND guild_id = ? AND status = 'PENDING'",
+        )
+        .bind(index as i64 + 1)
+        .bind(id)
+        .bind(guild_id.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(|sqlx_error| queue_db_failure("overlay_queue.reorder", sqlx_error))?;
+        if updated.rows_affected() != 1 {
+            drop(tx.rollback().await);
+            return Err(super::error(StatusCode::CONFLICT, "stale_queue"));
+        }
+    }
+    tx.commit()
+        .await
+        .map_err(|sqlx_error| queue_db_failure("overlay_queue.reorder", sqlx_error))?;
+
+    Ok(json!({"reordered": true, "count": ordered.len()}))
+}
+
+/// Handler `POST /overlay/queue/reorder` : réordonne les jobs en attente.
+pub async fn reorder_queue(
+    State(state): State<AppState>,
+    auth: AuthedOverlayClient,
+    payload: Result<Json<ReorderRequest>, JsonRejection>,
+) -> Response {
+    if let Err(response) = require(&state, &auth, Permission::ModerateQueue) {
+        return response;
+    }
+    let Ok(Json(body)) = payload else {
+        return super::error(StatusCode::BAD_REQUEST, "invalid_payload");
+    };
+    match reorder_queue_payload(&state, auth.guild_id(), &body.job_ids).await {
+        Ok(payload) => {
+            overlay_audit::record_queue_action(
+                &state,
+                &auth,
+                "overlay.queue_reorder",
+                "/overlay/queue/reorder",
+            )
+            .await;
+            json_response(StatusCode::OK, payload)
+        }
+        Err(response) => response,
+    }
 }
 
 /// Removes one pending job of the guild.

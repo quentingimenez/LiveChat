@@ -38,6 +38,8 @@ async fn liste_attente_par_guilde_ordonnee() {
     let now = common::now();
     let guild = common::guild("333333333333333333");
 
+    // La position est attribuée à la création : l'ordre de la file est
+    // l'ordre d'arrivée, même si une date de soumission a été antidatée.
     let mut medium_older = common::sample_job(&guild, now);
     medium_older.submission_date = now - Duration::seconds(1);
     let mut medium = common::sample_job(&guild, now);
@@ -50,7 +52,50 @@ async fn liste_attente_par_guilde_ordonnee() {
 
     let listed = repo.list_pending_by_guild(&guild).await.unwrap();
     let ids: Vec<_> = listed.iter().map(|job| job.id).collect();
-    assert_eq!(ids, vec![medium_older.id, medium.id, high.id]);
+    assert_eq!(ids, vec![medium.id, high.id, medium_older.id]);
+}
+
+#[tokio::test]
+async fn reordonnancement_explicite_de_la_file() {
+    let (db, _dir) = common::temp_db().await;
+    let repo = db.playback_jobs();
+    let now = common::now();
+    let guild = common::guild("333333333333333334");
+
+    let first = common::sample_job(&guild, now);
+    let second = common::sample_job(&guild, now);
+    repo.create(&first).await.unwrap();
+    repo.create(&second).await.unwrap();
+
+    // La position explicite prime sur la date de soumission : l'admin peut
+    // inverser deux jobs de la file.
+    for (id, position) in [(&first.id, 2), (&second.id, 1)] {
+        sqlx::query("UPDATE playback_jobs SET queue_position = ? WHERE id = ?")
+            .bind(position)
+            .bind(id.to_canonical())
+            .execute(db.pool())
+            .await
+            .unwrap();
+    }
+    let listed = repo.list_pending_by_guild(&guild).await.unwrap();
+    assert_eq!(
+        listed.iter().map(|job| job.id).collect::<Vec<_>>(),
+        vec![second.id, first.id]
+    );
+    let claimed = repo.claim_next(now).await.unwrap().unwrap();
+    assert_eq!(claimed.id, second.id, "le job réordonné passe en tête");
+    repo.finish(claimed.id, JobStatus::Done, now).await.unwrap();
+
+    // Un nouveau job se place derrière la file, même si sa date est plus
+    // ancienne : c'est la position qui décide.
+    let mut third = common::sample_job(&guild, now);
+    third.submission_date = now - Duration::seconds(10);
+    repo.create(&third).await.unwrap();
+    let listed = repo.list_pending_by_guild(&guild).await.unwrap();
+    assert_eq!(
+        listed.iter().map(|job| job.id).collect::<Vec<_>>(),
+        vec![first.id, third.id]
+    );
 }
 
 #[tokio::test]

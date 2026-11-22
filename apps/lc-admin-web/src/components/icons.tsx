@@ -23,6 +23,7 @@ const ICON_NAMES = [
   'logout',
   'star',
   'chevron',
+  'menu',
   'refresh',
   'trash',
   'discord',

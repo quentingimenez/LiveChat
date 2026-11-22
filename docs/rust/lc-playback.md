@@ -39,8 +39,8 @@ le module est isolé pour que la promotion soit mécanique.
 
 Le détail des requêtes réutilise les invariants de `claim_next`
 (`crates/lc-db/src/repos/playback_jobs.rs`) : les critères d'éligibilité
-(statut, `scheduled_at`, absence d'autre `PLAYING`, `busy_until`) et l'ordre FIFO
-(`submission_date ASC, id ASC`) sont identiques.
+(statut, `scheduled_at`, absence d'autre `PLAYING`, `busy_until`) et l'ordre de
+file (`queue_position ASC, submission_date ASC, id ASC`) sont identiques.
 
 ## 3. Câblage type
 
@@ -138,8 +138,9 @@ pub trait PlaybackSink: Send + Sync {
 1. **Un seul job `PLAYING` par guilde.** Garanti par les claims SQL atomiques
    (même critère `NOT EXISTS … status = 'PLAYING'` que `claim_next`) et vérifié
    par le test `dispatch_texte_puis_watchdog_passe_au_suivant`.
-2. **Ordre de sélection** : FIFO strict, `submission_date ASC, id ASC`. Aucune
-   priorité n'existe plus dans le schéma.
+2. **Ordre de sélection** : ordre de la file, `queue_position ASC`, puis
+   `submission_date ASC`, `id ASC` (départage). Aucune priorité n'existe plus dans
+   le schéma ; `POST /overlay/queue/reorder` réécrit les positions des `PENDING`.
 3. **Aucune interruption.** Un job en attente (média du board, `/ingest`, commande
    Discord, `say`) ne stoppe jamais le job en cours : il attend la fin du job actif
    (`playback.ended`, watchdog ou arrêt manuel). Aucun `stop { reason: "preempt" }`

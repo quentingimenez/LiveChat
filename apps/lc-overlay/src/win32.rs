@@ -21,8 +21,9 @@
 
 use std::sync::OnceLock;
 
-use windows::core::{w, Result as WindowsResult, PCWSTR};
+use windows::core::{w, Result as WindowsResult, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HWND};
+use windows::Win32::Graphics::Gdi::{EnumDisplayDevicesW, DISPLAY_DEVICEW};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
@@ -31,7 +32,8 @@ use windows::Win32::System::Ioctl::{
     STORAGE_DEVICE_DESCRIPTOR, STORAGE_PROPERTY_QUERY,
 };
 use windows::Win32::System::Registry::{
-    RegGetValueW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
+    RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER,
+    HKEY_LOCAL_MACHINE, KEY_READ, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
 };
 use windows::Win32::System::SystemInformation::{GetSystemFirmwareTable, RSMB};
 use windows::Win32::System::IO::DeviceIoControl;
@@ -462,6 +464,189 @@ fn read_machine_string(subkey: PCWSTR, value: PCWSTR) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
+/// Nom court du moniteur tel que Windows l'affiche (ex. « LC27G5xT »).
+///
+/// `DeviceString` ne porte le modèle que si le constructeur fournit un pilote
+/// nommé ; sinon il vaut « Generic PnP Monitor ». Le nom affiché par Windows
+/// vient de l'EDID : on relit le descripteur 0xFC du moniteur rattaché à
+/// l'adaptateur `\\.\DISPLAYn`, avec `DeviceString` en dernier recours.
+/// Purement cosmétique : jamais persisté, ni clé ni identité d'écran.
+pub fn display_short_name(device_name: &str) -> Option<String> {
+    monitor_hardware_id(device_name)
+        .and_then(|hardware_id| registry_monitor_name(&hardware_id))
+        .or_else(|| {
+            enum_display_device(device_name, 0)
+                .and_then(|device| device_string(&device.DeviceString))
+        })
+}
+
+/// Premier moniteur rattaché à l'adaptateur, tel que le rapporte GDI.
+fn enum_display_device(device_name: &str, index: u32) -> Option<DISPLAY_DEVICEW> {
+    let device_name = device_name.trim();
+    if device_name.is_empty() {
+        return None;
+    }
+    let wide: Vec<u16> = device_name
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut device = DISPLAY_DEVICEW {
+        cb: u32::try_from(std::mem::size_of::<DISPLAY_DEVICEW>()).ok()?,
+        ..Default::default()
+    };
+    // SAFETY: `wide` is NUL-terminated and outlives the call; `device` is a
+    // valid `DISPLAY_DEVICEW` whose `cb` describes its size.
+    let found =
+        unsafe { EnumDisplayDevicesW(PCWSTR::from_raw(wide.as_ptr()), index, &mut device, 0) };
+    found.as_bool().then_some(device)
+}
+
+/// Identifiant matériel du moniteur : `SAM707A` dans `MONITOR\SAM707A\{…}\0008`.
+fn monitor_hardware_id(device_name: &str) -> Option<String> {
+    enum_display_device(device_name, 0)
+        .and_then(|device| device_string(&device.DeviceID))
+        .and_then(|device_id| hardware_id_from_device_id(&device_id))
+}
+
+fn hardware_id_from_device_id(device_id: &str) -> Option<String> {
+    let mut parts = device_id.split('\\');
+    let _bus = parts.next()?;
+    let hardware_id = parts.next()?.trim();
+    (!hardware_id.is_empty()).then(|| hardware_id.to_owned())
+}
+
+/// Nom du moniteur lu dans l'EDID exposé par le registre des périphériques.
+fn registry_monitor_name(hardware_id: &str) -> Option<String> {
+    let subkey: Vec<u16> = format!("SYSTEM\\CurrentControlSet\\Enum\\DISPLAY\\{hardware_id}")
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut key = HKEY::default();
+    // SAFETY: the subkey string is NUL-terminated and outlives the call.
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR::from_raw(subkey.as_ptr()),
+            None,
+            KEY_READ,
+            &mut key,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+    let name = scan_monitor_instances(key);
+    // SAFETY: `key` was opened above and is closed exactly once.
+    let _ = unsafe { RegCloseKey(key) };
+    name
+}
+
+/// Parcourt les instances du moniteur et retient la première qui porte un EDID.
+fn scan_monitor_instances(key: HKEY) -> Option<String> {
+    let mut index = 0_u32;
+    loop {
+        let mut buffer = [0_u16; 128];
+        let mut length = u32::try_from(buffer.len()).unwrap_or_default();
+        // SAFETY: `buffer` holds `length` UTF-16 units and the API writes at
+        // most that many; `length` receives the count without the NUL.
+        let status = unsafe {
+            RegEnumKeyExW(
+                key,
+                index,
+                Some(PWSTR(buffer.as_mut_ptr())),
+                &mut length,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return None;
+        }
+        index += 1;
+        let units = usize::try_from(length)
+            .unwrap_or_default()
+            .min(buffer.len());
+        let instance = String::from_utf16_lossy(&buffer[..units]);
+        if let Some(edid) = read_monitor_edid(key, &instance) {
+            if let Some(name) = edid_monitor_name(&edid) {
+                return Some(name);
+            }
+        }
+    }
+}
+
+/// Bloc `EDID` de `…\<instance>\Device Parameters`.
+fn read_monitor_edid(key: HKEY, instance: &str) -> Option<Vec<u8>> {
+    let subkey: Vec<u16> = format!("{instance}\\Device Parameters")
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let subkey = PCWSTR::from_raw(subkey.as_ptr());
+    let mut size = 0_u32;
+    // SAFETY: a null buffer with a size pointer only asks for the byte length.
+    let status = unsafe {
+        RegGetValueW(
+            key,
+            subkey,
+            w!("EDID"),
+            RRF_RT_REG_BINARY,
+            None,
+            None,
+            Some(&mut size),
+        )
+    };
+    if status != ERROR_SUCCESS || size == 0 || size > 4096 {
+        return None;
+    }
+    let mut data = vec![0_u8; usize::try_from(size).ok()?];
+    // SAFETY: `data` is `size` bytes and the API writes at most that.
+    let status = unsafe {
+        RegGetValueW(
+            key,
+            subkey,
+            w!("EDID"),
+            RRF_RT_REG_BINARY,
+            None,
+            Some(data.as_mut_ptr().cast()),
+            Some(&mut size),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+    data.truncate(usize::try_from(size).ok()?);
+    Some(data)
+}
+
+/// Nom du moniteur dans les descripteurs EDID (tag 0xFC, 13 octets ASCII).
+fn edid_monitor_name(edid: &[u8]) -> Option<String> {
+    let descriptors = edid.get(54..)?.as_chunks::<18>().0.iter().take(4);
+    for descriptor in descriptors {
+        if descriptor[..3] != [0, 0, 0] || descriptor[3] != 0xfc {
+            continue;
+        }
+        let text: String = descriptor[5..18]
+            .iter()
+            .take_while(|byte| !matches!(**byte, 0x0a | 0x00 | 0xff))
+            .map(|byte| char::from(*byte))
+            .collect();
+        let name = text.trim();
+        if !name.is_empty() {
+            return Some(name.to_owned());
+        }
+    }
+    None
+}
+
+/// Chaîne UTF-16 terminée par NUL → texte trimé, `None` si vide.
+fn device_string(units: &[u16]) -> Option<String> {
+    let text = String::from_utf16_lossy(units);
+    let text = text.split('\0').next().unwrap_or_default().trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,6 +703,54 @@ mod tests {
         assert!(smbios_board_uuid_from_table(&smbios_table([0xff; 16])).is_none());
         assert!(smbios_board_uuid_from_table(&[]).is_none());
         assert!(smbios_board_uuid_from_table(&[0_u8; 8]).is_none());
+    }
+
+    #[test]
+    fn device_string_stops_at_the_first_nul_and_trims() {
+        let units: Vec<u16> = "  G27q-20\u{0}garbage".encode_utf16().collect();
+        assert_eq!(device_string(&units).as_deref(), Some("G27q-20"));
+        assert_eq!(device_string(&[0_u16; 4]), None);
+        assert_eq!(device_string(&[]), None);
+    }
+
+    #[test]
+    fn hardware_id_is_the_monitor_id_of_the_device_path() {
+        let device_id = "MONITOR\\SAM707A\\{4d36e96e-e325-11ce-bfc1-08002be10318}\\0008";
+        assert_eq!(
+            hardware_id_from_device_id(device_id).as_deref(),
+            Some("SAM707A")
+        );
+        assert_eq!(hardware_id_from_device_id("MONITOR"), None);
+        assert_eq!(hardware_id_from_device_id("MONITOR\\\\\\0008"), None);
+    }
+
+    #[test]
+    fn edid_monitor_name_reads_the_fc_descriptor() {
+        assert_eq!(
+            edid_monitor_name(&edid_with_name("LC27G5xT\n   ")).as_deref(),
+            Some("LC27G5xT")
+        );
+        // Un autre descripteur (0xFE) ne porte pas le nom.
+        assert_eq!(
+            edid_monitor_name(&edid_with_descriptor(0xfe, "week 12")),
+            None
+        );
+        assert_eq!(edid_monitor_name(&[]), None);
+        assert_eq!(edid_monitor_name(&[0_u8; 60]), None);
+    }
+
+    /// EDID minimale : un seul descripteur, tag 0xFC, texte de 13 octets.
+    fn edid_with_name(text: &str) -> Vec<u8> {
+        edid_with_descriptor(0xfc, text)
+    }
+
+    fn edid_with_descriptor(tag: u8, text: &str) -> Vec<u8> {
+        let mut edid = vec![0_u8; 128];
+        edid[57] = tag;
+        let bytes = text.as_bytes();
+        let len = bytes.len().min(13);
+        edid[59..59 + len].copy_from_slice(&bytes[..len]);
+        edid
     }
 
     /// Table `RawSMBIOSData` minimale avec une seule structure type 1.

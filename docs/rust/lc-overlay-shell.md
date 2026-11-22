@@ -168,9 +168,15 @@ L'aperçu en direct de la mise en page (gabarit, échéance de 4 s) vit dans
 
 Détails d'implémentation :
 
-- `overlay` est positionnée sur l'écran mémorisé (`displayKey` → `displayIndex`
-  → primaire → premier) et la sélection est réécrite dans la config si elle a
-  changé (`windows::persist_display_selection`).
+- `overlay` est positionnée sur l'écran mémorisé (`displayKey` → nom du
+  périphérique `displayLabel` → clé legacy `x,y,w,h,index` → `displayIndex` →
+  primaire → premier). La clé de géométrie est stable (`x,y,w,h`, sans l'index
+  d'énumération, qui peut changer d'un démarrage à l'autre). Seules les
+  correspondances sûres sont réécrites dans la config
+  (`windows::persist_display_selection`) : un repli (index, primaire, premier)
+  positionne l'overlay mais ne l'enregistre jamais, sinon un démarrage où
+  l'écran configuré n'est pas encore énuméré remplacerait définitivement le
+  choix de l'utilisateur (`display::SelectionSource::is_confident`).
 - Chaque tick de la garde topmost compare la géométrie réelle de `overlay`
   (`outer_position` + `inner_size`) aux bornes de l'écran sélectionné
   (`windows::sync_overlay_geometry`, décision pure dans `display::geometry_sync`).
@@ -178,6 +184,13 @@ Détails d'implémentation :
   fenêtre est replacée et redimensionnée, et la clé d'écran mémorisée réécrite
   puisqu'elle contient la taille : sans cela, l'overlay restait à l'ancienne
   géométrie physique (média décalé, ou hors écran donc plus rien d'affiché).
+  Là aussi, seul un écran retrouvé de façon sûre est réécrit.
+- Les libellés viennent de `display::format_settings_label`
+  (« Écran 1 — G27q-20 (2560 × 1440, principal) ») et de
+  `display::format_display_menu_label` (« Écran 1 - G27q-20 ») : ils préfèrent
+  le nom court du moniteur (descripteur EDID 0xFC, lu par
+  `win32::display_short_name`, repli sur le `DeviceString` du pilote), jamais
+  `displayLabel`, qui reste l'identité persistée.
 - `apply_overlay_flags` : `set_ignore_cursor_events(true)`,
   `set_focusable(false)`, `set_always_on_top(true)`, `set_skip_taskbar(true)`,
   puis `GetWindowLongPtrW(GWL_EXSTYLE)` + `SetWindowLongPtrW` pour forcer les
@@ -423,7 +436,9 @@ URLs média restant verbatim. Origine WebView : `http://tauri.localhost` (pas de
 ## 13. Écarts, risques et limites connues
 
 1. `displayId` (identifiant Electron du moniteur) n'est pas résolu : la
-   sélection utilise `displayKey`/`displayIndex`/primaire, comme décidé au POC.
+   sélection utilise `displayKey`/`displayLabel`/`displayIndex`/primaire, la
+   clé legacy `x,y,w,h,index` restant acceptée le temps de la migration ; la
+   clé de géométrie n'inclut plus l'index d'énumération.
 2. `pairing_consume` est opérationnel et la board porte l'appairage ; la
    fenêtre `pairing` a été retirée.
 3. `media_board_trigger/stop` sont branchés sur le client WebSocket v2 ;

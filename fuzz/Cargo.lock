@@ -739,7 +739,7 @@ dependencies = [
 
 [[package]]
 name = "lc-domain"
-version = "3.14.0"
+version = "3.15.0"
 dependencies = [
  "serde",
  "thiserror",
@@ -749,8 +749,9 @@ dependencies = [
 
 [[package]]
 name = "lc-media"
-version = "3.14.0"
+version = "3.15.0"
 dependencies = [
+ "base64 0.22.1",
  "lc-domain",
  "parley",
  "regex",
@@ -769,7 +770,7 @@ dependencies = [
 
 [[package]]
 name = "lc-protocol"
-version = "3.14.0"
+version = "3.15.0"
 dependencies = [
  "serde",
  "serde_json",

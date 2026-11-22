@@ -139,12 +139,27 @@ async fn fetch_and_attach(
             return;
         }
     };
+    store_cover(context, &asset, &cover, origin).await;
+}
+
+/// Records a cover that already exists for `asset` and tells the boards.
+///
+/// The background tasks above make their own picture, then record it here; the
+/// route that takes the editor's frame
+/// ([`super::super::http::overlay::media_cover`]) does the same, so both paths
+/// share the expiry alignment and the board notification.
+pub(crate) async fn store_cover(
+    context: &ThumbnailContext,
+    asset: &MediaAsset,
+    cover: &NormalizedCover,
+    origin: &'static str,
+) -> bool {
     let now = context.clock.now();
-    let cover_id = match assets::attach_cover(&context.db, &asset, &cover, now).await {
+    let cover_id = match assets::attach_cover(&context.db, asset, cover, now).await {
         Ok(cover_id) => cover_id,
         Err(error) => {
             tracing::warn!(error = %error, "image de la vidéo non enregistrée");
-            return;
+            return false;
         }
     };
     if let Err(error) = align_cover_expiry(&context.db, asset.id, cover_id).await {
@@ -156,6 +171,7 @@ async fn fetch_and_attach(
         "image de la vidéo enregistrée"
     );
     notify_boards(context, asset.id).await;
+    true
 }
 
 /// The picture published by the source's platform, when there is one.

@@ -17,6 +17,7 @@
 //! | `POST` | `/overlay/media-board/uploads/{uploadId}/complete` | `Authorization: Bearer` — **writes refused in `invite_read_only`** |
 //! | `DELETE` | `/overlay/media-board/uploads/{uploadId}` | `Authorization: Bearer` |
 //! | `POST` | `/overlay/media-board/items/{itemId}/edit` | `Authorization: Bearer` — **writes refused in `invite_read_only`** |
+//! | `POST` | `/overlay/media-board/items/{itemId}/cover` | `Authorization: Bearer` — **writes refused in `invite_read_only`** |
 //! | `POST` | `/overlay/media-board/import` | `Authorization: Bearer` (target) + `X-LiveChat-Source-Token` (source) — **writes refused in `invite_read_only`** |
 //! | `GET` | `/overlay/media-board/ingestions` | `Authorization: Bearer` |
 //! | `GET` | `/overlay/media-board/media/{assetId}` | URL signée (`clientId`, `exp`, `sig`) |
@@ -94,6 +95,7 @@ pub(crate) mod guild;
 mod ingest_code;
 mod media;
 pub(crate) mod media_board;
+pub(crate) mod media_cover;
 pub(crate) mod media_edit;
 mod media_import;
 mod media_ingestion;
@@ -254,6 +256,8 @@ mod guild_tests;
 #[cfg(test)]
 mod ingestion_tests;
 #[cfg(test)]
+mod media_cover_tests;
+#[cfg(test)]
 mod media_edit_tests;
 #[cfg(test)]
 mod media_import_tests;
@@ -319,6 +323,10 @@ pub fn router() -> Router<AppState> {
             "/overlay/media-board/items/{item_id}/edit",
             post(media_edit::edit_item)
                 .layer(DefaultBodyLimit::max(media_edit::MAX_EDIT_BODY_BYTES)),
+        )
+        .route(
+            "/overlay/media-board/items/{item_id}/cover",
+            post(media_cover::set_cover),
         )
         .route(
             "/overlay/media-board/items/{item_id}/favorite",

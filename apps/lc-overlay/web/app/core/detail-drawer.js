@@ -104,6 +104,27 @@ export function thumbnailOf(item) {
   return thumbnail && typeof thumbnail.url === 'string' && thumbnail.url ? thumbnail : null;
 }
 
+// The same signed URL with a version marker. A video's picture keeps its URL
+// when it is replaced (the editor's frame rewrites the same cover), so the
+// marker is what makes the browser fetch the new image instead of showing the
+// one it already has.
+export function withVersion(url, version) {
+  if (typeof url !== 'string' || !url || version === null || version === undefined || version === '') {
+    return url;
+  }
+  return `${url}${url.includes('?') ? '&' : '?'}v=${encodeURIComponent(version)}`;
+}
+
+// What a card compares to know whether its picture is still the same one: the
+// path (a new signature is the same picture) and its version (a rewritten
+// cover is a new picture).
+export function pictureKey(item) {
+  const picture = cardPicture(item);
+  const thumbnail = (item && item.thumbnail) || null;
+  const version = thumbnail && thumbnail.version !== null && thumbnail.version !== undefined ? thumbnail.version : '';
+  return `${picture.kind}:${mediaPath(picture.url)}:${version}`;
+}
+
 // Where a card seeks its video while the server has no picture for it: a
 // little way in, never the very first frame — many uploads open on a black
 // fade-in, and `#t=0.1` showed a black card. `null` when the video's length is
@@ -147,7 +168,7 @@ export function cardPicture(item) {
   const media = (item && item.media) || {};
   const picture = media.kind === 'audio' ? artworkOf(item) : thumbnailOf(item);
   if (picture) {
-    return { url: picture.url, kind: 'image' };
+    return { url: withVersion(picture.url, picture.version), kind: 'image' };
   }
   const mediaUrl = item && typeof item.mediaUrl === 'string' && item.mediaUrl ? item.mediaUrl : null;
   return { url: media.kind === 'audio' ? null : mediaUrl, kind: media.kind === 'video' ? 'video' : 'image' };

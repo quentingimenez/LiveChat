@@ -106,8 +106,10 @@ async function readPeaks(blob) {
 // Builds the editor inside `frame`. `src` plays the media (an object URL of
 // `blob` when its bytes could be read). `onChange()` fires after every
 // committed action. `allowDisplayScale` adds the size the media takes on the
-// overlay, with a live preview of it. Rejects when the media cannot be played.
-export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl, title, frame, onChange, allowDisplayScale = false, displayScalePercent = null, displayZone = null }) {
+// overlay, with a live preview of it. `onCover(atSec)` adds "use the frame on
+// screen as the video's thumbnail" (only a video edited on the board has one).
+// Rejects when the media cannot be played.
+export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl, title, frame, onChange, allowDisplayScale = false, displayScalePercent = null, displayZone = null, onCover = null }) {
   const isVideo = kind === 'video';
   const media = h(isVideo ? 'video' : 'audio', { src, preload: 'auto', playsinline: true });
   await loadMetadata(media);
@@ -1079,6 +1081,9 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     );
   }
 
+  // Where the playhead is, in seconds: the frame the player shows.
+  const currentTime = () => Math.round(media.currentTime * 1000) / 1000;
+
   function renderPanel() {
     const sound = edit.output !== 'gif';
     const picture = isVideo && edit.output !== 'audio';
@@ -1175,6 +1180,23 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
       // for it ignores the scale, so the setting would do nothing.
       preview && showsDisplaySize({ isVideo, output: edit.output, hasArtwork: Boolean(artworkUrl) })
         ? sizePanel()
+        : null,
+      // The picture of the video on the board: the one the user is looking at.
+      isVideo && onCover
+        ? section(
+            'Miniature',
+            h(
+              'p',
+              { class: 'meta' },
+              'L’image de la carte du board : celle que le lecteur affiche à l’instant où tu cliques.',
+            ),
+            h(
+              'button',
+              { class: 'btn is-wide', type: 'button', title: 'Prendre l’image du lecteur comme miniature', onClick: () => onCover(currentTime()) },
+              icon('image'),
+              'Définir comme miniature',
+            ),
+          )
         : null,
       isVideo
         ? section(

@@ -66,6 +66,17 @@ pub fn board_layer(visible: bool, foreground: bool, floating: bool) -> BoardLaye
     }
 }
 
+/// Nom court Windows du moniteur (affichage seul, jamais persisté).
+#[cfg(windows)]
+fn display_short_name(device: Option<&str>) -> Option<String> {
+    device.and_then(crate::win32::display_short_name)
+}
+
+#[cfg(not(windows))]
+fn display_short_name(_device: Option<&str>) -> Option<String> {
+    None
+}
+
 /// Liste les moniteurs visibles avec leur index Tauri et l'index du primaire.
 pub fn collect_displays(app: &AppHandle<Wry>) -> (Vec<DisplayInfo>, Option<usize>) {
     let monitors = match app.available_monitors() {
@@ -97,6 +108,7 @@ pub fn collect_displays(app: &AppHandle<Wry>) -> (Vec<DisplayInfo>, Option<usize
                 monitor.size().height,
                 monitor.scale_factor(),
             )
+            .with_short_name(display_short_name(monitor.name().map(String::as_str)))
         })
         .collect::<Vec<_>>();
     let primary_index = primary_geometry.and_then(|geometry| {

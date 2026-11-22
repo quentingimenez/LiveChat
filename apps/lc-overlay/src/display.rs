@@ -11,6 +11,9 @@ use crate::config::OverlayConfig;
 pub struct DisplayInfo {
     pub index: usize,
     pub name: Option<String>,
+    /// Nom court du moniteur (`DeviceString` Windows, ex. « G27q-20 ») : sert
+    /// uniquement à l'affichage, jamais d'identité persistée ni de clé.
+    pub short_name: Option<String>,
     pub x: i32,
     pub y: i32,
     pub width: u32,
@@ -31,12 +34,22 @@ impl DisplayInfo {
         Self {
             index,
             name,
+            short_name: None,
             x,
             y,
             width,
             height,
             scale_factor,
         }
+    }
+
+    /// Renseigne le nom court du moniteur (identité d'affichage seule : il ne
+    /// remplace ni `label()` ni la clé, qui restent seuls persistés).
+    pub fn with_short_name(mut self, short_name: Option<String>) -> Self {
+        self.short_name = short_name
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        self
     }
 
     pub fn label(&self) -> Option<String> {
@@ -46,6 +59,12 @@ impl DisplayInfo {
         } else {
             Some(label.to_string())
         }
+    }
+
+    /// Nom court du moniteur tel que Windows l'affiche, quand le pilote le
+    /// fournit ; `None` sinon (l'affichage retombe alors sur le nom d'appareil).
+    pub fn short_name(&self) -> Option<&str> {
+        self.short_name.as_deref()
     }
 
     /// Clé de géométrie stable : `x,y,largeur,hauteur`.
@@ -130,23 +149,37 @@ pub fn geometry_sync(current: OverlayGeometry, target: OverlayGeometry) -> Geome
     }
 }
 
-/// `formatDisplayMenuLabel` legacy.
+/// `formatDisplayMenuLabel` legacy, enrichi du nom court du moniteur.
 pub fn format_display_menu_label(display: &DisplayInfo) -> String {
+    let number = display.index + 1;
+    if let Some(name) = display.short_name() {
+        return format!("Écran {number} - {name}");
+    }
     match display.label() {
-        Some(label) => format!("Écran {} - {}", display.index + 1, label),
-        None => format!("Écran {}", display.index + 1),
+        Some(label) => format!("Écran {number} - {label}"),
+        None => format!("Écran {number}"),
     }
 }
 
 /// Label shown by the Settings display list and the identification cards.
 pub fn format_settings_label(display: &DisplayInfo, primary: bool) -> String {
-    let suffix = if primary { " (principal)" } else { "" };
-    format!(
-        "Écran {} — {} × {}{suffix}",
-        display.index + 1,
-        display.width,
-        display.height
-    )
+    let number = display.index + 1;
+    match display.short_name() {
+        Some(name) => {
+            let suffix = if primary { ", principal" } else { "" };
+            format!(
+                "Écran {number} — {name} ({} × {}{suffix})",
+                display.width, display.height
+            )
+        }
+        None => {
+            let suffix = if primary { " (principal)" } else { "" };
+            format!(
+                "Écran {number} — {} × {}{suffix}",
+                display.width, display.height
+            )
+        }
+    }
 }
 
 /// Champs de configuration à persister pour mémoriser l'écran choisi.
@@ -348,6 +381,28 @@ mod tests {
         );
         assert_eq!(
             format_settings_label(&display(1, -2560, None), false),
+            "Écran 2 — 2560 × 1440"
+        );
+    }
+
+    #[test]
+    fn menu_label_prefers_the_monitor_short_name() {
+        let named = display(0, 0, Some("DISPLAY1")).with_short_name(Some("G27q-20".to_string()));
+        assert_eq!(format_display_menu_label(&named), "Écran 1 - G27q-20");
+        let blank = display(1, -2560, Some("DISPLAY2")).with_short_name(Some("   ".to_string()));
+        assert_eq!(format_display_menu_label(&blank), "Écran 2 - DISPLAY2");
+    }
+
+    #[test]
+    fn settings_label_puts_the_short_name_before_the_dimensions() {
+        let named = display(0, 0, Some("DISPLAY1")).with_short_name(Some("G27q-20".to_string()));
+        assert_eq!(
+            format_settings_label(&named, true),
+            "Écran 1 — G27q-20 (2560 × 1440, principal)"
+        );
+        let unnamed = display(1, -2560, None);
+        assert_eq!(
+            format_settings_label(&unnamed, false),
             "Écran 2 — 2560 × 1440"
         );
     }

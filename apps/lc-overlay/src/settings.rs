@@ -1106,4 +1106,22 @@ mod tests {
         assert_eq!(value["profile"]["displayName"], json!("Quentin"));
         assert_eq!(value["update"]["state"], json!("idle"));
     }
+
+    #[test]
+    fn settings_view_shows_the_monitor_short_name() {
+        let displays = sample_displays()
+            .into_iter()
+            .enumerate()
+            .map(|(index, display)| {
+                let short_name = if index == 0 { "G27q-20" } else { "LC27G5xT" };
+                display.with_short_name(Some(short_name.to_string()))
+            })
+            .collect::<Vec<_>>();
+        let view = build_settings_view(&paired_config(), &displays, Some(0), true, idle_update());
+        assert_eq!(
+            view.displays[0].label,
+            "Écran 1 — G27q-20 (2560 × 1440, principal)"
+        );
+        assert_eq!(view.displays[1].label, "Écran 2 — LC27G5xT (1920 × 1080)");
+    }
 }

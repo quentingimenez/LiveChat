@@ -185,6 +185,12 @@ Détails d'implémentation :
   puisqu'elle contient la taille : sans cela, l'overlay restait à l'ancienne
   géométrie physique (média décalé, ou hors écran donc plus rien d'affiché).
   Là aussi, seul un écran retrouvé de façon sûre est réécrit.
+- Les libellés viennent de `display::format_settings_label`
+  (« Écran 1 — G27q-20 (2560 × 1440, principal) ») et de
+  `display::format_display_menu_label` (« Écran 1 - G27q-20 ») : ils préfèrent
+  le nom court du moniteur (descripteur EDID 0xFC, lu par
+  `win32::display_short_name`, repli sur le `DeviceString` du pilote), jamais
+  `displayLabel`, qui reste l'identité persistée.
 - `apply_overlay_flags` : `set_ignore_cursor_events(true)`,
   `set_focusable(false)`, `set_always_on_top(true)`, `set_skip_taskbar(true)`,
   puis `GetWindowLongPtrW(GWL_EXSTYLE)` + `SetWindowLongPtrW` pour forcer les
@@ -430,8 +436,9 @@ URLs média restant verbatim. Origine WebView : `http://tauri.localhost` (pas de
 ## 13. Écarts, risques et limites connues
 
 1. `displayId` (identifiant Electron du moniteur) n'est pas résolu : la
-   sélection utilise `displayKey`/`displayLabel`/`displayIndex`/primaire, comme
-   décidé au POC ; la clé de géométrie n'inclut plus l'index d'énumération.
+   sélection utilise `displayKey`/`displayLabel`/`displayIndex`/primaire, la
+   clé legacy `x,y,w,h,index` restant acceptée le temps de la migration ; la
+   clé de géométrie n'inclut plus l'index d'énumération.
 2. `pairing_consume` est opérationnel et la board porte l'appairage ; la
    fenêtre `pairing` a été retirée.
 3. `media_board_trigger/stop` sont branchés sur le client WebSocket v2 ;

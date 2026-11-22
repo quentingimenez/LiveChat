@@ -14,6 +14,7 @@ import {
   cardPicture,
   isPeeking,
   mediaPath,
+  pictureKey,
   pointerLeft,
   previewKey,
   pruneView,
@@ -21,6 +22,7 @@ import {
   sameView,
   shownId,
   thumbnailOf,
+  withVersion,
 } from '../../web/app/core/detail-drawer.js';
 
 const pinnedOn = (id) => ({ selectedId: id, pinned: true, peekId: null });
@@ -144,6 +146,33 @@ test('regression: removing, adding or replacing the picture of an audio rebuilds
 test('previewKey: the picture only matters for an audio', () => {
   const video = { id: 'v', mediaUrl: 'https://srv.test/media/v1?sig=x', media: { kind: 'video' }, artwork: null };
   assert.equal(previewKey(video), previewKey({ ...video, artwork: { url: 'https://srv.test/media/p1' } }));
+});
+
+test('regression: a picture replaced at the same URL is fetched again', () => {
+  // The editor's frame rewrites the same cover, so its signed URL does not
+  // change: without the version the card would keep showing the old image.
+  const before = { media: { kind: 'video' }, thumbnail: { url: 'https://h/m/t?sig=1', version: 13301 } };
+  const after = { ...before, thumbnail: { ...before.thumbnail, version: 20480 } };
+  assert.equal(before.thumbnail.url, after.thumbnail.url);
+  assert.notEqual(cardPicture(before).url, cardPicture(after).url);
+  assert.match(cardPicture(after).url, /[?&]v=20480$/);
+});
+
+test('regression: a card rebuilds when its picture is replaced, not when its URL is re-signed', () => {
+  // The signed URL changes every hour; the picture, only when it is rewritten.
+  const before = { media: { kind: 'video' }, thumbnail: { url: 'https://h/m/t?exp=100&sig=x', version: 13301 } };
+  const resigned = { ...before, thumbnail: { ...before.thumbnail, url: 'https://h/m/t?exp=900&sig=z' } };
+  const replaced = { ...before, thumbnail: { ...before.thumbnail, version: 20480 } };
+  assert.equal(pictureKey(before), pictureKey(resigned));
+  assert.notEqual(pictureKey(before), pictureKey(replaced));
+});
+
+test('withVersion: keeps a URL that has no version, and joins with the right separator', () => {
+  assert.equal(withVersion('https://h/m/t', null), 'https://h/m/t');
+  assert.equal(withVersion('https://h/m/t', ''), 'https://h/m/t');
+  assert.equal(withVersion(null, 12), null);
+  assert.equal(withVersion('https://h/m/t', 12), 'https://h/m/t?v=12');
+  assert.equal(withVersion('https://h/m/t?sig=1', 12), 'https://h/m/t?sig=1&v=12');
 });
 
 test('a video card shows its thumbnail, else the video itself', () => {

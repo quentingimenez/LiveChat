@@ -24,6 +24,7 @@ import {
   CLOSED_VIEW,
   drawerUsed,
   mediaPath,
+  pictureKey,
   pointerLeft,
   previewKey,
   pruneView,
@@ -31,6 +32,7 @@ import {
   sameView,
   shownId,
   thumbnailOf,
+  withVersion,
 } from '../core/detail-drawer.js';
 import { h, icon, registerIcons } from '../core/dom.js';
 import { formatBoardUsage, formatDuration, formatBytes, INVALID_DURATION_MESSAGE, MAX_DISPLAY_DURATION_SEC, parseDisplayDuration } from '../core/format.js';
@@ -236,7 +238,9 @@ function cardKey(item) {
     item.media.height ?? null,
     mediaPath(item.mediaUrl),
     mediaPath(item.artwork && item.artwork.url),
-    mediaPath(item.thumbnail && item.thumbnail.url),
+    // The picture keeps its URL when the editor replaces it: its version is
+    // what tells a new one from the cached one (see cardPicture).
+    pictureKey(item),
     can('play'),
     canFavorite(),
   ]);
@@ -1549,7 +1553,8 @@ function buildPreview(item) {
     // video takes to load.
     // The thumbnail stands in for the video until its first frame.
     const thumbnail = thumbnailOf(item);
-    const video = h('video', { src: url, preload: 'auto', playsinline: true, poster: thumbnail ? thumbnail.url : null });
+    const poster = thumbnail ? withVersion(thumbnail.url, thumbnail.version) : null;
+    const video = h('video', { src: url, preload: 'auto', playsinline: true, poster });
     video.volume = previewVolume(state.activeGuildId);
     video.addEventListener('loadedmetadata', () => adoptRatio(video.videoWidth, video.videoHeight));
     node.append(video);

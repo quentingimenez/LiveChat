@@ -202,6 +202,23 @@ async function editAudioVideo({ frame, item, title, blob, guildId }) {
     notify('Taille d’affichage enregistrée.');
   }
 
+  // The picture of the video on the board: the frame the player shows. It
+  // applies at once, outside the edit recipe, so the user keeps the editor
+  // open (the frame is read straight from the stored video).
+  async function saveCover(atSec) {
+    frame.setBusy('Enregistrement de la miniature…');
+    try {
+      await api('POST', `/overlay/media-board/items/${encodeURIComponent(item.id)}/cover`, { atSec });
+    } catch (error) {
+      frame.setBusy(null);
+      notify(error.message, true);
+      return;
+    }
+    frame.setBusy(null);
+    requestItemsReload();
+    notify('Miniature enregistrée.');
+  }
+
   // Board fields given to the saved result. A replaced item keeps its own
   // fields, only a changed scale is written. A copy takes the scale chosen here
   // and the original's message, which a job never stores itself.
@@ -276,6 +293,8 @@ async function editAudioVideo({ frame, item, title, blob, guildId }) {
       allowDisplayScale: true,
       displayScalePercent: item.displayScalePercent ?? null,
       displayZone,
+      // The picture belongs to the media, which only its editor may change.
+      onCover: kind === 'video' && item.canEdit ? saveCover : null,
     });
   } catch {
     if (objectUrl) {

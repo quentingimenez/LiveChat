@@ -23,9 +23,27 @@
 //!
 //! Bannir retire le membre comme une exclusion (fermeture `4402
 //! member_banned`) et garde son compte Discord lié hors de la guilde : plus
-//! de `/pair-code`, de code consommé ni de commande du bot. Un membre sans
-//! compte Discord lié n'est identifiable par rien d'autre : le bannissement
-//! se réduit alors à l'exclusion.
+//! de `/pair-code`, de code consommé ni de commande du bot. Le ban retient
+//! aussi les empreintes des appareils du membre (`guild_ban_devices`), actifs
+//! ou déjà révoqués : un membre sans compte Discord lié ne revient donc pas
+//! depuis le même poste avec une invitation neuve. Le ban et ses empreintes
+//! sont écrits dans la même transaction, avant l'exclusion : il n'existe pas
+//! de ban sans les appareils lus avec lui. La transaction s'ouvre en
+//! `BEGIN IMMEDIATE` et relit un ban existant du membre, y compris sans compte
+//! Discord : deux coups de ban simultanés ne créent qu'un ban, qui reçoit
+//! toutes les empreintes. Si l'exclusion est refusée parce que le membre est le
+//! dernier admin, le ban créé pour lui est annulé (la cascade retire ses
+//! empreintes) : ce chemin ne laisse jamais un membre actif et banni. Une erreur
+//! d'exclusion relit le membre : encore actif, le ban créé est annulé ; déjà
+//! retiré, il reste la vérité. Un ban préexistant (compte Discord déjà banni)
+//! n'est jamais supprimé par ce chemin. Au démarrage, le serveur complète
+//! l'exclusion des bans qu'un crash a laissés sur un membre encore actif ; il ne
+//! supprime jamais un ban, même si l'exclusion reste impossible (dernier admin) :
+//! l'authentification refuse de toute façon un membre banni. L'empreinte d'appareil
+//! est fournie par le shell et hachée côté serveur ; c'est une défense en
+//! profondeur (falsifiable, changement de matériel = autre empreinte, anciens
+//! clients non couverts), pas une authentification. Lever le ban supprime ses
+//! appareils par cascade.
 //!
 //! Changer un rôle aligne `overlay_clients.session_mode` puis ferme les
 //! sessions WS du membre (`1001`) : ses overlays se reconnectent aussitôt et
@@ -36,7 +54,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::Json;
-use lc_db::MemberChange;
+use lc_db::{BanWithDevices, MemberChange};
 use lc_domain::{
     Guild, GuildBan, GuildBanId, GuildMember, GuildMemberId, GuildRole, PairingCode,
     PairingCodeEntry, Permission,
@@ -56,7 +74,7 @@ use super::guild::{
     settings_version, NewInvite,
 };
 use super::ingest_code::INGEST_CODE_CREATOR_PREFIX;
-use super::{db, db_failure, error, internal_error, is_conflict, json_response, now};
+use super::{db, db_failure, error, internal_error, json_response, now};
 use crate::http::pairing_codes;
 
 /// Durée de vie maximale d'une invitation (un an).
@@ -330,20 +348,17 @@ pub(crate) async fn ban_member_payload(
         }
     }
     let at = now(state);
-    match remove_member(
-        state,
-        db,
-        &member,
-        at,
-        close_code::REVOKED,
-        close_reason::MEMBER_BANNED,
-    )
-    .await?
-    {
-        MemberChange::Applied => {}
-        MemberChange::LastAdmin => return Err(error(StatusCode::CONFLICT, "last_admin")),
-        MemberChange::NotFound => return Err(error(StatusCode::NOT_FOUND, "member_not_found")),
-    }
+    // Les appareils du membre sont retenus avec le ban, y compris ceux déjà
+    // révoqués : sans cela, un membre sans compte Discord lié reviendrait avec
+    // une invitation neuve depuis le même poste. La lecture précède
+    // l'exclusion, qui révoque les clients.
+    let device_hashes = match db.overlay_clients().list_by_member(member.id).await {
+        Ok(clients) => clients
+            .into_iter()
+            .filter_map(|client| client.device_hash)
+            .collect::<Vec<_>>(),
+        Err(db_error) => return Err(db_failure("overlay_admin.ban_devices", &db_error)),
+    };
     let ban = GuildBan {
         id: GuildBanId::new_v4(),
         guild_id: member.guild_id.clone(),
@@ -357,12 +372,132 @@ pub(crate) async fn ban_member_payload(
         },
         created_at: at,
     };
-    match db.guild_bans().create(&ban).await {
-        Ok(()) => {}
-        // The account was already banned (a ban lifted then a concurrent
-        // one): the member is removed, the existing ban stands.
-        Err(db_error) if is_conflict(&db_error) => {}
+    // Le ban et ses empreintes sont commités ensemble, avant l'exclusion : une
+    // panne au milieu ne laisse jamais un ban actif sans appareils. La création
+    // est sérialisée et relit un ban existant dans la même transaction : deux
+    // coups de ban simultanés du même membre (même sans compte Discord lié) ne
+    // produisent qu'un ban, qui reçoit toutes les empreintes.
+    let (stored_ban, ban_was_created) = match db
+        .guild_bans()
+        .create_with_devices(&ban, &device_hashes, at)
+        .await
+    {
+        Ok(BanWithDevices::Created(ban)) => (ban, true),
+        Ok(BanWithDevices::Existing(ban)) => (ban, false),
         Err(db_error) => return Err(db_failure("overlay_admin.create_ban", &db_error)),
+    };
+    // L'exclusion vient après. Une erreur d'exclusion relit le membre : encore
+    // actif, le ban créé est annulé avec ses empreintes ; déjà retiré, le ban
+    // reste la vérité et un nouvel appel le retrouve. Le dernier admin, lui, ne
+    // doit pas rester banni sans être exclu : le ban créé pour lui est annulé
+    // ci-dessous.
+    let change = match remove_member(
+        state,
+        db,
+        &member,
+        at,
+        close_code::REVOKED,
+        close_reason::MEMBER_BANNED,
+    )
+    .await
+    {
+        Ok(change) => change,
+        Err(response) => {
+            // Une erreur d'exclusion peut survenir après que le membre a
+            // effectivement quitté la guilde. On relit l'état réel : encore
+            // actif, le ban créé serait un « membre actif et banni », donc il
+            // est annulé avec ses empreintes ; déjà retiré, le ban reste la
+            // vérité et un nouvel appel le retrouvera.
+            let still_active = match db.guild_members().get(member.id).await {
+                Ok(Some(current)) => current.is_active(),
+                Ok(None) => false,
+                Err(db_error) => {
+                    return Err(db_failure("overlay_admin.ban_member_reload", &db_error));
+                }
+            };
+            if ban_was_created && still_active {
+                if let Err(db_error) = db
+                    .guild_bans()
+                    .delete(&member.guild_id, stored_ban.id)
+                    .await
+                {
+                    return Err(db_failure("overlay_admin.rollback_ban", &db_error));
+                }
+                tracing::warn!(
+                    guild_id = %member.guild_id,
+                    member_id = %member.id,
+                    "échec de l'exclusion : ban annulé, membre resté actif"
+                );
+            } else {
+                tracing::warn!(
+                    guild_id = %member.guild_id,
+                    member_id = %member.id,
+                    "échec de l'exclusion : ban conservé"
+                );
+            }
+            return Err(response);
+        }
+    };
+    match change {
+        MemberChange::Applied => {}
+        MemberChange::LastAdmin => {
+            if ban_was_created {
+                // Le membre n'a pas été exclu : garder son ban le laisserait
+                // actif et banni à la fois. La cascade de `delete` retire ses
+                // empreintes avec lui.
+                if let Err(db_error) = db
+                    .guild_bans()
+                    .delete(&member.guild_id, stored_ban.id)
+                    .await
+                {
+                    return Err(db_failure("overlay_admin.rollback_ban", &db_error));
+                }
+                tracing::info!(
+                    guild_id = %member.guild_id,
+                    member_id = %member.id,
+                    "ban annulé : le dernier admin ne peut pas être exclu"
+                );
+            } else {
+                // Un ban préexistant (compte Discord déjà banni) reste la
+                // vérité : seul le nouveau coup de ban est refusé.
+                tracing::warn!(
+                    guild_id = %member.guild_id,
+                    member_id = %member.id,
+                    "ban existant conservé : le dernier admin ne peut pas être exclu"
+                );
+            }
+            return Err(error(StatusCode::CONFLICT, "last_admin"));
+        }
+        MemberChange::NotFound => {
+            // Le membre a disparu entre-temps : le ban reste la vérité.
+            tracing::warn!(
+                guild_id = %member.guild_id,
+                member_id = %member.id,
+                "membre disparu avant l'exclusion : ban conservé"
+            );
+            return Err(error(StatusCode::NOT_FOUND, "member_not_found"));
+        }
+    }
+    // Relit les empreintes après l'exclusion : un appairage concurrent peut
+    // avoir créé un client entre la lecture initiale et la révocation. Le
+    // `INSERT OR IGNORE` rend l'opération idempotente ; une empreinte déjà
+    // rattachée à un autre ban de la guilde n'est pas déplacée (unicité
+    // `(guild_id, device_hash)`), elle reste bannie.
+    let late_hashes = match db.overlay_clients().list_by_member(member.id).await {
+        Ok(clients) => clients
+            .into_iter()
+            .filter_map(|client| client.device_hash)
+            .collect::<Vec<_>>(),
+        Err(db_error) => return Err(db_failure("overlay_admin.late_ban_devices", &db_error)),
+    };
+    if !late_hashes.is_empty() {
+        if let Err(db_error) = db
+            .guild_ban_devices()
+            .record(stored_ban.id, &member.guild_id, &late_hashes, at)
+            .await
+        {
+            return Err(db_failure("overlay_admin.record_ban_devices", &db_error));
+        }
     }
     tracing::info!(
         guild_id = %member.guild_id,
@@ -371,7 +506,7 @@ pub(crate) async fn ban_member_payload(
         "membre banni"
     );
     broadcast_admin_changed(state, guild_id, AdminChangeKind::Bans);
-    Ok(json!({"banned": true, "ban": ban_payload(&ban)}))
+    Ok(json!({"banned": true, "ban": ban_payload(&stored_ban)}))
 }
 
 /// Handler `POST /overlay/admin/members/{memberId}/ban`.

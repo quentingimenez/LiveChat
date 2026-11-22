@@ -28,6 +28,7 @@ pub mod config;
 pub mod device_settings;
 pub mod display;
 pub mod events;
+mod fingerprint;
 pub mod layout_preview;
 pub mod net;
 pub mod placement;

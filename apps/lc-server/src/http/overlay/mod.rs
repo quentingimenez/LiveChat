@@ -68,13 +68,15 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use lc_db::MemberChange;
 use lc_domain::rights::{Action, RightsTable, Surface};
 use lc_domain::{
     GuildId, GuildMember, GuildMemberId, GuildRole, OverlayClient, OverlayClientId, Permission,
 };
+use lc_protocol::{close_code, close_reason};
 use serde_json::Value;
 use time::UtcDateTime;
-use tracing::error;
+use tracing::{error, info, warn};
 
 use crate::app::AppState;
 
@@ -84,6 +86,7 @@ mod auth;
 pub(crate) mod board_clear;
 mod board_extras;
 mod danger;
+mod device_id;
 pub(crate) mod devices;
 pub(crate) mod discord_link;
 pub(crate) mod guild;
@@ -150,6 +153,7 @@ impl ActorInfo {
                 default_author_name: Some("Admin console".to_owned()),
                 default_author_image: None,
                 created_by_discord_user_id: None,
+                device_hash: None,
                 last_seen_at: None,
                 created_at: state.clock.now(),
                 revoked_at: None,
@@ -488,6 +492,118 @@ fn db_failure(operation: &'static str, db_error: &lc_db::DbError) -> Response {
     internal_error()
 }
 
+/// Complète au démarrage les exclusions qu'un crash a laissées inachevées.
+///
+/// Un ban peut être commité sans que le membre ait été retiré (crash entre les
+/// deux écritures). Le démarrage rejoue l'exclusion pour ces bans ; il ne
+/// supprime **jamais** le ban : une décision de sécurité ne doit pas disparaître
+/// au redémarrage. Un échec (dernier admin, erreur base) conserve le ban et le
+/// journalise ; l'authentification overlay refuse de toute façon un membre
+/// banni, même si sa ligne `guild_members` est encore active (fail-closed).
+pub(crate) async fn reconcile_member_bans(state: &AppState) {
+    let Some(db) = state.db.as_ref() else {
+        return;
+    };
+    let bans = match db.guild_bans().list_bans_of_active_members().await {
+        Ok(bans) => bans,
+        Err(error) => {
+            warn!(error = %error, "réconciliation des bans impossible");
+            return;
+        }
+    };
+    for ban in bans {
+        let Some(member_id) = ban.member_id else {
+            continue;
+        };
+        let member = match db.guild_members().get(member_id).await {
+            Ok(Some(member)) if member.is_active() => member,
+            Ok(_) => continue,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    member_id = %member_id.to_canonical(),
+                    "réconciliation d'un ban : membre illisible, ban conservé"
+                );
+                continue;
+            }
+        };
+        match guild::remove_member(
+            state,
+            db,
+            &member,
+            now(state),
+            close_code::REVOKED,
+            close_reason::MEMBER_BANNED,
+        )
+        .await
+        {
+            Ok(MemberChange::Applied) => {
+                info!(
+                    member_id = %member_id.to_canonical(),
+                    "exclusion d'un membre banni complétée au démarrage ; ban conservé"
+                );
+            }
+            Ok(MemberChange::LastAdmin) => {
+                warn!(
+                    member_id = %member_id.to_canonical(),
+                    "ban incohérent d'un dernier admin : exclusion non appliquée, ban conservé"
+                );
+            }
+            Ok(MemberChange::NotFound) => {
+                warn!(
+                    member_id = %member_id.to_canonical(),
+                    "membre disparu pendant la réconciliation : ban conservé"
+                );
+            }
+            Err(response) => {
+                warn!(
+                    member_id = %member_id.to_canonical(),
+                    status = %response.status(),
+                    "échec de l'exclusion au démarrage : ban conservé"
+                );
+            }
+        }
+    }
+}
+
+/// Vrai si ce client relève d'un membre banni ou porte un appareil banni.
+///
+/// Fail-closed, et partagé par l'authentification HTTP et WebSocket : un crash
+/// peut laisser un client actif derrière un membre déjà retiré
+/// (`remove_member` révoque désormais les clients avant la ligne membre, mais
+/// les états hérités existent). La ligne membre est donc relue **même
+/// retirée** pour retrouver `member_id` et le compte Discord lié, puis
+/// l'empreinte matérielle du client est confrontée à `guild_ban_devices`.
+pub(crate) async fn client_banned(db: &lc_db::Db, client: &OverlayClient) -> lc_db::DbResult<bool> {
+    let member = db
+        .guild_members()
+        .get_any_for_overlay_client(client.id)
+        .await?;
+    if let Some(member) = member.as_ref() {
+        if db
+            .guild_bans()
+            .is_member_banned(
+                &client.guild_id,
+                member.id,
+                member.discord_user_id.as_deref(),
+            )
+            .await?
+        {
+            return Ok(true);
+        }
+    }
+    if let Some(device_hash) = client.device_hash.as_deref() {
+        if db
+            .guild_ban_devices()
+            .is_device_banned(&client.guild_id, device_hash)
+            .await?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Conflit d'unicité quel que soit le chemin de conversion de l'erreur.
 ///
 /// `lc-db` convertit parfois `SQLITE_CONSTRAINT` en `DomainError::Conflict`
@@ -605,6 +721,7 @@ mod session_mode_tests {
             default_author_name: None,
             default_author_image: None,
             created_by_discord_user_id: None,
+            device_hash: None,
             last_seen_at: None,
             created_at: now,
             revoked_at: None,

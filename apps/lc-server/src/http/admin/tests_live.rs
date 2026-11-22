@@ -485,6 +485,7 @@ async fn insert_overlay_client(harness: &Harness) -> OverlayClient {
         default_author_name: Some("Alice".to_owned()),
         default_author_image: None,
         created_by_discord_user_id: None,
+        device_hash: None,
         last_seen_at: None,
         created_at: UtcDateTime::now(),
         revoked_at: None,

@@ -126,6 +126,26 @@ impl GuildMembersRepository {
         row.map(GuildMemberRow::into_entity).transpose()
     }
 
+    /// Membre propriétaire d'un overlay, **même retiré**.
+    ///
+    /// Les gardes fail-closed en ont besoin : un crash peut révoquer le membre
+    /// sans révoquer son client, et le ban doit rester applicable à un client
+    /// encore actif dont la ligne `guild_members` a déjà disparu.
+    pub async fn get_any_for_overlay_client(
+        &self,
+        client_id: OverlayClientId,
+    ) -> DbResult<Option<GuildMember>> {
+        let row = sqlx::query_as::<_, GuildMemberRow>(&format!(
+            "SELECT {MEMBER_COLUMNS} FROM guild_members AS m \
+             JOIN overlay_clients AS c ON c.member_id = m.id \
+             WHERE c.id = ?"
+        ))
+        .bind(client_id.to_canonical())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(GuildMemberRow::into_entity).transpose()
+    }
+
     /// Active member of a guild linked to a Discord account.
     pub async fn find_active_by_discord_user(
         &self,

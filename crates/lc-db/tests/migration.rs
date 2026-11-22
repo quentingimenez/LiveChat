@@ -31,6 +31,7 @@ async fn migration_fraiche_puis_idempotente() {
         "admin_sessions",
         "app_metadata",
         "discord_link_codes",
+        "guild_ban_devices",
         "guild_bans",
         "guild_invites",
         "guild_members",
@@ -50,7 +51,7 @@ async fn migration_fraiche_puis_idempotente() {
             "table `{expected}` absente (tables : {tables:?})"
         );
     }
-    assert_eq!(tables.len(), 17, "tables inattendues : {tables:?}");
+    assert_eq!(tables.len(), 18, "tables inattendues : {tables:?}");
 
     // L'invariant « un seul PLAYING par guilde » est porté par un index unique
     // partiel créé par la migration 0002.
@@ -279,4 +280,121 @@ async fn base_en_memoire_utilisable() {
         Some(SCHEMA_VERSION)
     );
     assert_eq!(db.config().max_connections, 1);
+}
+
+#[tokio::test]
+async fn migration_0020_vers_0021_ajoute_les_appareils_sans_perdre_les_clients() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("livechat.db");
+    let all_migrations = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let old_migrations = dir.path().join("migrations-0020");
+    std::fs::create_dir(&old_migrations).unwrap();
+    for version in 1..=20 {
+        let prefix = format!("{version:04}_");
+        let file = std::fs::read_dir(&all_migrations)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix))
+            })
+            .unwrap_or_else(|| panic!("migration {prefix}* introuvable"));
+        std::fs::copy(&file, old_migrations.join(file.file_name().unwrap())).unwrap();
+    }
+
+    // Base au schéma 0020, avec un client existant.
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&path)
+        .create_if_missing(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .unwrap();
+    sqlx::migrate::Migrator::new(old_migrations.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO overlay_clients ( \
+            id, guild_id, label, token_hash, session_mode, default_author_name, \
+            default_author_image, created_by_discord_user_id, last_seen_at, \
+            created_at, revoked_at \
+         ) VALUES ('client-avant-0021', '123456789012345678', 'PC', 'hash', \
+            'NORMAL', NULL, NULL, NULL, NULL, ?, NULL)",
+    )
+    .bind(common::NOW_MS)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let before: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('overlay_clients')")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(!before.iter().any(|name| name == "device_hash"));
+    pool.close().await;
+
+    // Ouvre la même base avec les migrations embarquées : seule 0021 manque.
+    let db = Db::open(&path, &DbConfig::default()).await.unwrap();
+
+    let device_hash: Option<String> = sqlx::query_scalar(
+        "SELECT device_hash FROM overlay_clients WHERE id = 'client-avant-0021'",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert!(
+        device_hash.is_none(),
+        "la ligne existante obtient device_hash NULL"
+    );
+
+    let strict: i64 = sqlx::query_scalar(
+        "SELECT \"strict\" FROM pragma_table_list WHERE name = 'guild_ban_devices'",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(strict, 1, "guild_ban_devices doit être STRICT");
+
+    sqlx::query(
+        "INSERT INTO guild_bans ( \
+            id, guild_id, member_id, discord_user_id, display_name, avatar, \
+            banned_by, created_at \
+         ) VALUES ('ban-0021', '123456789012345678', NULL, '777', 'Exilé', \
+            NULL, NULL, ?)",
+    )
+    .bind(common::NOW_MS)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO guild_ban_devices (ban_id, guild_id, device_hash, created_at) \
+         VALUES ('ban-0021', '123456789012345678', 'empreinte', ?)",
+    )
+    .bind(common::NOW_MS)
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    // La cascade de 0021 supprime les appareils avec leur ban.
+    sqlx::query("DELETE FROM guild_bans WHERE id = 'ban-0021'")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM guild_ban_devices")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0, "la cascade doit supprimer les appareils");
+
+    let violations = sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(db.pool())
+        .await
+        .unwrap();
+    assert!(violations.is_empty(), "PRAGMA foreign_key_check non vide");
 }

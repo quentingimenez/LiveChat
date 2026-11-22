@@ -5,6 +5,7 @@
 //! (`PlaybackJobsRepository::claim_next`, `PairingCodesRepository::consume`).
 
 mod discord_link_codes;
+mod guild_ban_devices;
 mod guild_bans;
 mod guild_invites;
 mod guild_members;
@@ -18,7 +19,8 @@ mod pairing_codes;
 mod playback_jobs;
 
 pub use discord_link_codes::{DiscordLinkCodesRepository, LinkOutcome};
-pub use guild_bans::GuildBansRepository;
+pub use guild_ban_devices::GuildBanDevicesRepository;
+pub use guild_bans::{BanWithDevices, GuildBansRepository};
 pub use guild_invites::GuildInvitesRepository;
 pub use guild_members::{GuildMembersRepository, MemberChange};
 pub use guilds::GuildsRepository;

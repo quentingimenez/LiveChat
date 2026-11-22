@@ -715,6 +715,7 @@ pub(super) fn overlay_client(
         default_author_name: Some("Alice".to_owned()),
         default_author_image: None,
         created_by_discord_user_id: Some("1001".to_owned()),
+        device_hash: None,
         last_seen_at: None,
         created_at: UtcDateTime::now(),
         revoked_at: None,

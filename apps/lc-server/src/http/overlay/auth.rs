@@ -28,6 +28,13 @@
 //! de requête ; l'extracteur est strictement équivalent ici et évite de dépendre
 //! de l'état du routeur parent (le sous-routeur `/overlay` est complété par
 //! `crate::app::router`, qui seul détient l'instance `AppState`).
+//!
+//! Un client banni est refusé (`401`) même si sa ligne `guild_members` est
+//! encore active, et même si elle a déjà été retirée : un crash entre le ban et
+//! l'exclusion ne doit pas laisser une session utilisable. Le garde partagé
+//! (`super::client_banned`) relit le membre propriétaire du client sans filtre
+//! `removed_at`, couvre un ban importé sans `member_id` via le compte Discord
+//! lié, et refuse aussi un client dont l'empreinte matérielle est bannie.
 
 use std::future::Future;
 
@@ -195,6 +202,22 @@ pub(crate) async fn authenticate_token(
         Err(error) => return Err(db_failure("overlay_auth.member_lookup", &error)),
     };
 
+    // Fail-closed ban guard, shared with the WebSocket handshake: the ban wins
+    // over the member row. `client_banned` also resolves a member whose row was
+    // already removed (crash between the revocation and the exclusion) and
+    // checks the client's device fingerprint.
+    match super::client_banned(db, &client).await {
+        Ok(true) => {
+            warn!(
+                client_id = %client.id.to_canonical(),
+                "client banni : authentification overlay refusée"
+            );
+            return Ok(None);
+        }
+        Ok(false) => {}
+        Err(error) => return Err(db_failure("overlay_auth.ban_lookup", &error)),
+    }
+
     Ok(Some(AuthedOverlayClient {
         client,
         member,
@@ -219,6 +242,7 @@ mod tests {
                 default_author_name: None,
                 default_author_image: None,
                 created_by_discord_user_id: None,
+                device_hash: None,
                 last_seen_at: None,
                 created_at: time::UtcDateTime::now(),
                 revoked_at: None,

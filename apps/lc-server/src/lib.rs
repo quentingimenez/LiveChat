@@ -191,6 +191,11 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let hub_handle: Arc<ws::Hub> = Arc::clone(&hub);
     let admin_hub: Arc<dyn crate::http::admin::hub::AdminHub> = hub_handle;
     state = state.with_admin_hub(admin_hub);
+    // A crash between the ban commit and the exclusion can leave an active
+    // member with an active ban. The startup reconciliation completes the
+    // exclusion and never lifts the ban: a security decision is not undone by
+    // a restart. Authentication refuses a banned member even while active.
+    http::overlay::reconcile_member_bans(&state).await;
     if let Some(token) = config.discord_token.as_ref() {
         state = state.with_discord_leaver(Arc::new(discord::guild_leave::SerenityLeaver::new(
             token.expose_secret(),

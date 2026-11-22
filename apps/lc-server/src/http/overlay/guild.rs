@@ -661,9 +661,16 @@ pub(crate) fn member_code_authors(member: &GuildMember) -> Vec<String> {
     authors
 }
 
-/// Retire un membre : marque le départ, révoque ses overlays et ferme leurs
-/// sessions WS, révoque ses extensions d'ingestion, ses codes en attente et
-/// les invitations qu'il a émises.
+/// Retire un membre : révoque ses overlays et ferme leurs sessions WS **avant**
+/// de marquer le départ, puis révoque ses extensions d'ingestion, ses codes en
+/// attente et les invitations qu'il a émises.
+///
+/// La révocation des clients précède la ligne membre : si elle échoue, le
+/// membre reste actif et le garde de bannissement continue de refuser ses
+/// clients ; l'ordre inverse laisserait, après un crash, un client actif
+/// derrière un membre retiré. La règle du dernier admin est évaluée avant la
+/// révocation pour ne pas fermer les sessions d'un admin que l'exclusion
+/// refuse finalement de retirer.
 ///
 /// Partagé par le départ volontaire, l'exclusion et le bannissement
 /// ([`super::admin`]). Le code et le motif de fermeture sont fournis par
@@ -677,13 +684,27 @@ pub(super) async fn remove_member(
     close_code: u16,
     close_reason: &str,
 ) -> Result<MemberChange, Response> {
-    let change = db
-        .guild_members()
-        .remove(member.id, at)
-        .await
-        .map_err(|db_error| db_failure("overlay_member.remove", &db_error))?;
-    if change != MemberChange::Applied {
-        return Ok(change);
+    // Fail-closed ordering: revoke the overlays (and close their sessions)
+    // *before* the member row disappears. If the revocation fails, nothing is
+    // removed and the ban guard keeps refusing the still-active member. The
+    // reverse order could leave an active client behind a removed member after
+    // a crash.
+    //
+    // La règle du dernier admin est évaluée avant la révocation pour ne pas
+    // couper les sessions d'un admin que l'exclusion refuse finalement de
+    // retirer (et pour ne pas consommer un ban en 409 en fermant ses clients).
+    if member.role == GuildRole::Admin {
+        match db
+            .guild_members()
+            .count_active_admins(&member.guild_id)
+            .await
+        {
+            Ok(admins) if admins <= 1 => return Ok(MemberChange::LastAdmin),
+            Ok(_) => {}
+            Err(db_error) => {
+                return Err(db_failure("overlay_member.count_admins", &db_error));
+            }
+        }
     }
     let revoked = db
         .overlay_clients()
@@ -694,6 +715,20 @@ pub(super) async fn remove_member(
         state
             .admin_hub
             .close_client_with_reason(&client_id.as_uuid(), close_code, close_reason);
+    }
+    let change = db
+        .guild_members()
+        .remove(member.id, at)
+        .await
+        .map_err(|db_error| db_failure("overlay_member.remove", &db_error))?;
+    if change != MemberChange::Applied {
+        // Course avec une rétrogradation/départ concurrent : les clients sont
+        // déjà révoqués et restent refusés, mais le membre n'est pas retiré.
+        tracing::warn!(
+            member_id = %member.id.to_canonical(),
+            "exclusion refusée après révocation des clients : membre conservé"
+        );
+        return Ok(change);
     }
     let authors = member_code_authors(member);
     db.ingest_clients()

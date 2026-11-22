@@ -221,6 +221,7 @@ pub(super) async fn insert_client(db: &Db, mode: OverlaySessionMode, token: &str
         default_author_name: Some("Alice".to_owned()),
         default_author_image: None,
         created_by_discord_user_id: None,
+        device_hash: None,
         last_seen_at: None,
         created_at: fixed_now(),
         revoked_at: None,

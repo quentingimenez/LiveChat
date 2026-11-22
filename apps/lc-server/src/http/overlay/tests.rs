@@ -155,6 +155,7 @@ fn make_client(
         default_author_name: author.map(str::to_owned),
         default_author_image: None,
         created_by_discord_user_id: Some("4242".to_owned()),
+        device_hash: None,
         last_seen_at: None,
         created_at: now,
         revoked_at: None,

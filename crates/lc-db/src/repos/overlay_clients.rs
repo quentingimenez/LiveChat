@@ -22,6 +22,7 @@ struct OverlayClientRow {
     default_author_name: Option<String>,
     default_author_image: Option<String>,
     created_by_discord_user_id: Option<String>,
+    device_hash: Option<String>,
     last_seen_at: Option<i64>,
     created_at: i64,
     revoked_at: Option<i64>,
@@ -43,6 +44,7 @@ impl OverlayClientRow {
             default_author_name: self.default_author_name,
             default_author_image: self.default_author_image,
             created_by_discord_user_id: self.created_by_discord_user_id,
+            device_hash: self.device_hash,
             last_seen_at: from_opt_ms(TABLE, "last_seen_at", self.last_seen_at)?,
             created_at: from_ms(TABLE, "created_at", self.created_at)?,
             revoked_at: from_opt_ms(TABLE, "revoked_at", self.revoked_at)?,
@@ -69,9 +71,9 @@ impl OverlayClientsRepository {
         sqlx::query(
             "INSERT INTO overlay_clients ( \
                 id, guild_id, label, token_hash, session_mode, default_author_name, \
-                default_author_image, created_by_discord_user_id, last_seen_at, created_at, \
-                revoked_at \
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                default_author_image, created_by_discord_user_id, device_hash, last_seen_at, \
+                created_at, revoked_at \
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(client.id.to_canonical())
         .bind(client.guild_id.as_str())
@@ -81,6 +83,7 @@ impl OverlayClientsRepository {
         .bind(client.default_author_name.as_deref())
         .bind(client.default_author_image.as_deref())
         .bind(client.created_by_discord_user_id.as_deref())
+        .bind(client.device_hash.as_deref())
         .bind(to_opt_ms(client.last_seen_at))
         .bind(to_ms(client.created_at))
         .bind(to_opt_ms(client.revoked_at))
@@ -165,6 +168,24 @@ impl OverlayClientsRepository {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Liste tous les overlays d'un membre, révoqués compris, du plus ancien au
+    /// plus récent.
+    ///
+    /// Un bannissement lit cette liste, pas seulement les clients actifs : un
+    /// appareil révoqué juste avant le ban doit lui aussi être retenu.
+    pub async fn list_by_member(&self, member_id: GuildMemberId) -> DbResult<Vec<OverlayClient>> {
+        let rows = sqlx::query_as::<_, OverlayClientRow>(
+            "SELECT * FROM overlay_clients WHERE member_id = ? \
+             ORDER BY created_at ASC, id ASC",
+        )
+        .bind(member_id.to_canonical())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(OverlayClientRow::into_entity)
+            .collect()
     }
 
     /// Liste les overlays **actifs** d'un membre, du plus ancien au plus récent.

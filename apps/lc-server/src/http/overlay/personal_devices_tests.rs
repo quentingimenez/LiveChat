@@ -53,6 +53,7 @@ async fn seed_overlay(
         default_author_name: None,
         default_author_image: None,
         created_by_discord_user_id: None,
+        device_hash: None,
         last_seen_at: Some(fixed_now()),
         created_at: fixed_now(),
         revoked_at: None,

@@ -1,4 +1,4 @@
-//! Migration 0020: device fingerprints attached to a guild ban.
+//! Migration 0021: device fingerprints attached to a guild ban.
 //!
 //! The table only stores server-side fingerprints; these tests pin the
 //! idempotence, the guild scope and the `ON DELETE CASCADE` that lifts a ban's

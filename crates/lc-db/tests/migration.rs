@@ -283,13 +283,13 @@ async fn base_en_memoire_utilisable() {
 }
 
 #[tokio::test]
-async fn migration_0019_vers_0020_ajoute_les_appareils_sans_perdre_les_clients() {
+async fn migration_0020_vers_0021_ajoute_les_appareils_sans_perdre_les_clients() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("livechat.db");
     let all_migrations = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    let old_migrations = dir.path().join("migrations-0019");
+    let old_migrations = dir.path().join("migrations-0020");
     std::fs::create_dir(&old_migrations).unwrap();
-    for version in 1..=19 {
+    for version in 1..=20 {
         let prefix = format!("{version:04}_");
         let file = std::fs::read_dir(&all_migrations)
             .unwrap()
@@ -304,7 +304,7 @@ async fn migration_0019_vers_0020_ajoute_les_appareils_sans_perdre_les_clients()
         std::fs::copy(&file, old_migrations.join(file.file_name().unwrap())).unwrap();
     }
 
-    // Base au schéma 0019, avec un client existant.
+    // Base au schéma 0020, avec un client existant.
     let options = sqlx::sqlite::SqliteConnectOptions::new()
         .filename(&path)
         .create_if_missing(true);
@@ -324,7 +324,7 @@ async fn migration_0019_vers_0020_ajoute_les_appareils_sans_perdre_les_clients()
             id, guild_id, label, token_hash, session_mode, default_author_name, \
             default_author_image, created_by_discord_user_id, last_seen_at, \
             created_at, revoked_at \
-         ) VALUES ('client-avant-0020', '123456789012345678', 'PC', 'hash', \
+         ) VALUES ('client-avant-0021', '123456789012345678', 'PC', 'hash', \
             'NORMAL', NULL, NULL, NULL, NULL, ?, NULL)",
     )
     .bind(common::NOW_MS)
@@ -339,11 +339,11 @@ async fn migration_0019_vers_0020_ajoute_les_appareils_sans_perdre_les_clients()
     assert!(!before.iter().any(|name| name == "device_hash"));
     pool.close().await;
 
-    // Ouvre la même base avec les migrations embarquées : seule 0020 manque.
+    // Ouvre la même base avec les migrations embarquées : seule 0021 manque.
     let db = Db::open(&path, &DbConfig::default()).await.unwrap();
 
     let device_hash: Option<String> = sqlx::query_scalar(
-        "SELECT device_hash FROM overlay_clients WHERE id = 'client-avant-0020'",
+        "SELECT device_hash FROM overlay_clients WHERE id = 'client-avant-0021'",
     )
     .fetch_one(db.pool())
     .await
@@ -365,7 +365,7 @@ async fn migration_0019_vers_0020_ajoute_les_appareils_sans_perdre_les_clients()
         "INSERT INTO guild_bans ( \
             id, guild_id, member_id, discord_user_id, display_name, avatar, \
             banned_by, created_at \
-         ) VALUES ('ban-0020', '123456789012345678', NULL, '777', 'Exilé', \
+         ) VALUES ('ban-0021', '123456789012345678', NULL, '777', 'Exilé', \
             NULL, NULL, ?)",
     )
     .bind(common::NOW_MS)
@@ -374,15 +374,15 @@ async fn migration_0019_vers_0020_ajoute_les_appareils_sans_perdre_les_clients()
     .unwrap();
     sqlx::query(
         "INSERT INTO guild_ban_devices (ban_id, guild_id, device_hash, created_at) \
-         VALUES ('ban-0020', '123456789012345678', 'empreinte', ?)",
+         VALUES ('ban-0021', '123456789012345678', 'empreinte', ?)",
     )
     .bind(common::NOW_MS)
     .execute(db.pool())
     .await
     .unwrap();
 
-    // La cascade de 0020 supprime les appareils avec leur ban.
-    sqlx::query("DELETE FROM guild_bans WHERE id = 'ban-0020'")
+    // La cascade de 0021 supprime les appareils avec leur ban.
+    sqlx::query("DELETE FROM guild_bans WHERE id = 'ban-0021'")
         .execute(db.pool())
         .await
         .unwrap();

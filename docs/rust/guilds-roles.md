@@ -158,7 +158,7 @@ Un bannissement (`POST /overlay/admin/members/{memberId}/ban`, table
 - le bot refuse toutes ses commandes sauf `/alive`, `/help` et `/info`, même
   pour un administrateur du serveur Discord.
 
-Depuis la migration 0020, le bannissement retient aussi les empreintes des
+Depuis la migration 0021, le bannissement retient aussi les empreintes des
 appareils du membre, actifs ou déjà révoqués (`guild_ban_devices`). Le client
 envoie un `deviceId` optionnel au `POST /overlay/pair/consume` : une empreinte
 matérielle brute composée, dans un ordre fixe, de l'UUID SMBIOS de la carte

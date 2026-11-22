@@ -40,6 +40,17 @@ export function canOpenEditor(item) {
   return Boolean(item && item.mediaUrl && (can('addMedia') || item.canEdit));
 }
 
+// The title typed in the editor bar is the same board field the detail drawer
+// edits: saved at once, and the board behind the editor is refreshed.
+async function renameItem(item, next) {
+  const value = String(next ?? '').trim();
+  const body = await api('PATCH', `/overlay/media-board/items/${encodeURIComponent(item.id)}`, { title: value });
+  const saved = body && body.item && 'title' in body.item ? body.item.title : value || null;
+  item.title = saved;
+  requestItemsReload();
+  return saved ?? '';
+}
+
 // Size of the active guild's display zone on this device, in physical pixels,
 // when the shell knows it. `null` hides the capping hint in the editor.
 async function displayZoneFor(guildId) {
@@ -325,7 +336,11 @@ export async function openMediaEditor(item, title) {
     return;
   }
   const guildId = state.activeGuildId;
-  const frame = openEditorFrame({ title });
+  const frame = openEditorFrame({
+    title,
+    titleValue: item.title || '',
+    rename: item.canEdit ? (next) => renameItem(item, next) : null,
+  });
   let blob = null;
   try {
     blob = await fetchBlob(item.mediaUrl);

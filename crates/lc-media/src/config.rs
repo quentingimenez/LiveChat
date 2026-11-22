@@ -70,6 +70,27 @@ pub struct DownloadConfig {
     pub user_agent: String,
 }
 
+/// Réglages de traduction des cartes de tweet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TranslateConfig {
+    /// Traduire les textes dont la langue diffère de `I18N`.
+    pub enabled: bool,
+    /// Remplace l'endpoint Google gtx (tests, staging).
+    pub endpoint: Option<String>,
+    /// Budget maximal d'une requête de traduction.
+    pub timeout: Duration,
+}
+
+impl Default for TranslateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            endpoint: None,
+            timeout: Duration::from_secs(3),
+        }
+    }
+}
+
 /// Encodeur vidéo demandé par la configuration.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum VideoEncoder {
@@ -189,7 +210,8 @@ pub struct ResolveConfig {
     pub tiktok_oembed_endpoint: String,
     /// Base de l'API de commentaires TikTok (tikwm).
     pub tiktok_comment_endpoint: String,
-    /// Endpoint oEmbed Twitter/X.
+    /// Endpoint oEmbed Twitter/X (conservé pour compatibilité ; le résolveur
+    /// ne l'appelle plus, son HTML n'étant pas utilisé).
     pub twitter_oembed_endpoint: String,
     /// Base du résolveur de secours X (vxtwitter).
     pub twitter_video_resolver_base_url: String,
@@ -214,6 +236,8 @@ pub struct MediaConfig {
     pub tools: ToolsConfig,
     /// Résolution de sources.
     pub resolve: ResolveConfig,
+    /// Traduction des cartes de tweet.
+    pub translate: TranslateConfig,
 }
 
 impl MediaConfig {
@@ -329,12 +353,22 @@ impl MediaConfig {
             language: language_from_i18n(&string_var(&vars, "I18N", "fr")),
         };
 
+        let translate = TranslateConfig {
+            enabled: bool_var(&vars, "MEDIA_TRANSLATE_ENABLED", true),
+            endpoint: value(&vars, "MEDIA_TRANSLATE_ENDPOINT").map(str::to_string),
+            timeout: Duration::from_millis(
+                u64_var(&vars, "MEDIA_TRANSLATE_TIMEOUT_MS", 3000)
+                    .clamp(MIN_TRANSLATE_TIMEOUT_MS, MAX_TRANSLATE_TIMEOUT_MS),
+            ),
+        };
+
         Self {
             storage,
             download,
             video,
             tools,
             resolve,
+            translate,
         }
     }
 }
@@ -377,6 +411,9 @@ pub const ENV_KEYS: &[&str] = &[
     "TWITTER_VIDEO_RESOLVER_BASE_URL",
     "TWITTER_CARD_DURATION_SEC",
     "I18N",
+    "MEDIA_TRANSLATE_ENABLED",
+    "MEDIA_TRANSLATE_ENDPOINT",
+    "MEDIA_TRANSLATE_TIMEOUT_MS",
 ];
 
 fn value<'a>(vars: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
@@ -443,6 +480,10 @@ fn bool_var(vars: &HashMap<String, String>, key: &str, default: bool) -> bool {
 fn clamp_oembed_timeout(download_timeout: Duration) -> Duration {
     download_timeout.clamp(Duration::from_secs(5), Duration::from_secs(12))
 }
+
+/// Bornes du timeout de traduction (assez court pour ne pas bloquer l'ingestion).
+const MIN_TRANSLATE_TIMEOUT_MS: u64 = 500;
+const MAX_TRANSLATE_TIMEOUT_MS: u64 = 10_000;
 
 fn language_from_i18n(i18n: &str) -> String {
     if i18n.trim().to_ascii_lowercase().starts_with("fr") {
@@ -558,6 +599,9 @@ mod tests {
         );
         assert_eq!(config.resolve.oembed_timeout, Duration::from_secs(12));
         assert_eq!(config.resolve.language, "fr");
+        assert!(config.translate.enabled);
+        assert_eq!(config.translate.endpoint, None);
+        assert_eq!(config.translate.timeout, Duration::from_secs(3));
     }
 
     #[test]
@@ -586,6 +630,9 @@ mod tests {
             ("TIKTOK_COOKIE", "cookie: sessionid=abc; ttwid=xyz"),
             ("TIKTOK_COMMENT_ENDPOINT", "https://comments.example/api"),
             ("I18N", "en-US"),
+            ("MEDIA_TRANSLATE_ENABLED", "false"),
+            ("MEDIA_TRANSLATE_ENDPOINT", "https://translate.example/gtx"),
+            ("MEDIA_TRANSLATE_TIMEOUT_MS", "1500"),
         ]);
         assert_eq!(config.storage.directory, PathBuf::from("D:/media"));
         assert_eq!(config.storage.cache_ttl_hours(), 6);
@@ -617,6 +664,12 @@ mod tests {
         );
         assert_eq!(config.resolve.language, "en");
         assert_eq!(config.resolve.oembed_timeout, Duration::from_secs(12));
+        assert!(!config.translate.enabled);
+        assert_eq!(
+            config.translate.endpoint.as_deref(),
+            Some("https://translate.example/gtx")
+        );
+        assert_eq!(config.translate.timeout, Duration::from_millis(1500));
     }
 
     #[test]
@@ -655,6 +708,14 @@ mod tests {
         assert_eq!(config.download.max_concurrent_ingestions, 1);
         assert_eq!(config.tools.ytdlp_concurrent_fragments, 1);
         assert_eq!(config.resolve.twitter_card_duration, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn translate_timeout_is_clamped() {
+        let short = MediaConfig::from_pairs([("MEDIA_TRANSLATE_TIMEOUT_MS", "1")]);
+        assert_eq!(short.translate.timeout, Duration::from_millis(500));
+        let long = MediaConfig::from_pairs([("MEDIA_TRANSLATE_TIMEOUT_MS", "60000")]);
+        assert_eq!(long.translate.timeout, Duration::from_secs(10));
     }
 
     #[test]

@@ -304,6 +304,7 @@ pub async fn download_tiktok_comment(
         size_bytes,
         source_url: media_source.canonical_url.clone(),
         title: Some(title),
+        text_chars: None,
     })
 }
 

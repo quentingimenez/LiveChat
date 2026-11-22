@@ -24,6 +24,7 @@ use crate::source::{
 use crate::storage::MediaStorage;
 use crate::tiktok_comment;
 use crate::transcode;
+use crate::translate;
 use crate::tweet_card::{self, CardVideoTarget};
 use crate::tweet_card_video;
 
@@ -45,6 +46,11 @@ pub struct DownloadResult {
     /// Titre de la source imprimé par `yt-dlp` pendant le téléchargement,
     /// si le téléchargement est passé par lui et qu'un titre est connu.
     pub title: Option<String>,
+    /// Nombre de caractères visibles quand le téléchargement est une carte
+    /// texte (tweet) : texte principal et tweet cité. Sert à calculer la durée
+    /// d'affichage sans dépendre du titre tronqué à
+    /// [`crate::title::TITLE_MAX_CHARS`].
+    pub text_chars: Option<usize>,
 }
 
 /// Options de lancement de `yt-dlp`.
@@ -131,11 +137,15 @@ async fn download_twitter(
     config: &MediaConfig,
     temp_dir: &Path,
 ) -> MediaResult<DownloadResult> {
-    // 1. Le résolveur ne transporte pas le payload : on le relit pour rendre la
-    //    carte du tweet (texte, photos, vidéo) et télécharger ses médias.
-    let payload = match tweet_status_id(&source.canonical_url) {
-        Some(status_id) => twitter::fetch_syndication_payload(config, &status_id).await,
-        None => None,
+    // 1. Le payload de syndication vient du résolveur : le relire ici coûtait
+    //    une requête réseau (~169 ms) à chaque tweet.
+    let resolved_payload = resolved.and_then(|resolved| resolved.syndication.clone());
+    let payload = match resolved_payload {
+        Some(value) => Some(value),
+        None => match tweet_status_id(&source.canonical_url) {
+            Some(status_id) => twitter::fetch_syndication_payload(config, &status_id).await,
+            None => None,
+        },
     };
     if let Some(value) = payload.as_ref() {
         let variants = twitter::tweet_video_variants(value);
@@ -226,6 +236,7 @@ async fn download_tweet_card(
     parent_video: Option<&DownloadResult>,
 ) -> MediaResult<DownloadResult> {
     let mut content = twitter::tweet_card_content(value);
+    translate::localize_tweet_card(config, &mut content).await;
     content.avatar = download_tweet_avatar(config, value, temp_dir).await;
     if parent_video.is_none() {
         // Aucune vidéo téléchargée : pas de zone noire dans la carte.
@@ -260,7 +271,20 @@ async fn download_tweet_card(
             }
         }
     }
+    if let Some(parent) = content.reply_parent.as_mut() {
+        for (index, image) in parent.images.iter_mut().enumerate() {
+            // Échec non bloquant : l'image est ignorée par le rendu.
+            image.data = download_tweet_photo_png(
+                config,
+                &image.source_url,
+                temp_dir,
+                &format!("tweet-reply-{index}"),
+            )
+            .await;
+        }
+    }
     let card = tweet_card::render_tweet_card_with_slots(&content)?;
+    let text_chars = Some(tweet_card::card_text_chars(&content));
     let has_parent = card
         .video_slots
         .iter()
@@ -270,7 +294,7 @@ async fn download_tweet_card(
         .iter()
         .any(|slot| slot.target == CardVideoTarget::Quoted);
     if !has_parent && !has_quoted {
-        return write_tweet_card_png(temp_dir, &card.png, canonical_url);
+        return write_tweet_card_png(temp_dir, &card.png, canonical_url, text_chars);
     }
     match tweet_card_video::compose_tweet_card_video(
         config,
@@ -290,6 +314,7 @@ async fn download_tweet_card(
                 size_bytes,
                 source_url: canonical_url.to_string(),
                 title: None,
+                text_chars,
             })
         }
         // Seule la vidéo citée manquait : la carte PNG reste valable.
@@ -299,7 +324,7 @@ async fn download_tweet_card(
                 quoted.video = None;
             }
             let card = tweet_card::render_tweet_card_with_slots(&content)?;
-            write_tweet_card_png(temp_dir, &card.png, canonical_url)
+            write_tweet_card_png(temp_dir, &card.png, canonical_url, text_chars)
         }
         Err(error) => Err(error),
     }
@@ -310,6 +335,7 @@ fn write_tweet_card_png(
     temp_dir: &Path,
     png: &[u8],
     canonical_url: &str,
+    text_chars: Option<usize>,
 ) -> MediaResult<DownloadResult> {
     let path = temp_dir.join("tweet-card.png");
     fs::write(&path, png).map_err(|error| {
@@ -326,6 +352,7 @@ fn write_tweet_card_png(
         size_bytes: png.len() as u64,
         source_url: canonical_url.to_string(),
         title: None,
+        text_chars,
     })
 }
 
@@ -521,6 +548,7 @@ async fn build_carousel_download(
         size_bytes,
         source_url,
         title,
+        text_chars: None,
     })
 }
 
@@ -810,6 +838,7 @@ pub async fn download_with_ytdlp(
         size_bytes,
         source_url: url.to_string(),
         title: parsed.title,
+        text_chars: None,
     })
 }
 
@@ -934,6 +963,7 @@ pub async fn download_http(
         size_bytes: total,
         source_url: final_url.to_string(),
         title: None,
+        text_chars: None,
     })
 }
 
@@ -1096,6 +1126,7 @@ async fn download_tiktok_carousel(
                 .clone()
                 .unwrap_or_else(|| "tiktok".to_string()),
             title: None,
+            text_chars: None,
         });
     }
     let mut audio: Option<PathBuf> = None;

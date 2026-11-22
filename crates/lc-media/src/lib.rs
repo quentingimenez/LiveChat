@@ -46,6 +46,7 @@ pub mod thumbnail;
 pub mod tiktok_comment;
 pub mod title;
 pub mod transcode;
+pub mod translate;
 pub mod tweet_card;
 pub mod tweet_card_video;
 
@@ -55,7 +56,7 @@ pub use crate::cache::{
 };
 pub use crate::config::{
     DownloadConfig, LoudnormTargets, MediaConfig, ResolveConfig, StorageConfig, ToolsConfig,
-    VideoConfig, VideoEncoder,
+    TranslateConfig, VideoConfig, VideoEncoder,
 };
 pub use crate::download::{
     build_ytdlp_args, download_http, download_source, download_tiktok, download_with_ytdlp,

@@ -55,7 +55,7 @@ propre à chaque ingestion.
 
 ### Configuration (`config`)
 
-`MediaConfig { storage, download, video, tools, resolve }`, construite par
+`MediaConfig { storage, download, video, tools, resolve, translate }`, construite par
 `MediaConfig::from_env()` (variables d'environnement), `load()` (alias) ou
 `from_pairs(iter)` (tests, sans lire l'environnement global).
 
@@ -80,7 +80,10 @@ propre à chaque ingestion.
 | `tools.ytdlp_format` | `YTDLP_FORMAT` | sélecteur avc1/mp4 ≤ 1080 |
 | `tools.ytdlp_concurrent_fragments` | `YTDLP_CONCURRENT_FRAGMENTS` | 1 |
 | `tools.tiktok_cookie` | `TIKTOK_COOKIE` | vide |
-| `resolve.twitter_oembed_endpoint` | `TWITTER_OEMBED_ENDPOINT` | `https://publish.twitter.com/oembed` |
+| `translate.enabled` | `MEDIA_TRANSLATE_ENABLED` | `true` |
+| `translate.endpoint` | `MEDIA_TRANSLATE_ENDPOINT` | gtx Google |
+| `translate.timeout` | `MEDIA_TRANSLATE_TIMEOUT_MS` | 3 s (borné 0,5–10 s) |
+| `resolve.twitter_oembed_endpoint` | `TWITTER_OEMBED_ENDPOINT` | conservé mais **plus appelé** (le HTML oEmbed n'était pas lu) |
 | `resolve.twitter_video_resolver_base_url` | `TWITTER_VIDEO_RESOLVER_BASE_URL` | `https://vxtwitter.com` |
 | `resolve.twitter_card_duration` | `TWITTER_CARD_DURATION_SEC` | 15 s |
 | `resolve.youtube_oembed_endpoint` / `tiktok_oembed_endpoint` | — | endpoints publics |
@@ -160,16 +163,20 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
   `__FRONTITY_CONNECT_STATE__`), détection des murs d'authentification, secours sur
   l'embed `/embed/v2/<id>`, extraction des carrousels photo (max 35 slides, 3 candidats
   par slide, 5 candidats audio) et des URL brutes `~tplv-photomode-image`.
-- X/Twitter : carte oEmbed (HTML assaini) + payload
-  `cdn.syndication.twimg.com/tweet-result` : variantes vidéo, photos du tweet et
-  `TweetCard { url, html, author_name, author_url }` ; repli sur les balises
-  `og:video:*` et `video.twimg.com`. Le payload nourrit aussi `tweet_card_content` :
-  auteur, texte (`note_tweet` en priorité, lien média `t.co` retiré via
-  `display_text_range`), date, photos du parent (`TweetPhoto`, max 4, avec leurs
-  `original_info.focus_rects` convertis en rectangles relatifs `QuoteImageFocus`),
-  vidéo du parent (`TweetVideo { aspect }` depuis `video_info.aspect_ratio`), et le
-  tweet cité (`quoted_tweet`) — auteur, texte, photos (max 4, avec repli sur le poster
-  d'une vidéo citée) et sa propre vidéo (`quoted_tweet_video_variants`).
+- X/Twitter : **une seule requête** sur le payload
+  `cdn.syndication.twimg.com/tweet-result` (l'ancien oEmbed n'est plus appelé,
+  son HTML n'étant jamais lu). Le payload donne les variantes vidéo, les photos
+  du tweet et l'auteur (`user.name`, repli `@handle`) ; il est conservé dans
+  `ResolvedMedia.syndication` pour que le téléchargement rende la carte sans
+  refaire la requête. Repli sur les balises `og:video:*` et `video.twimg.com`
+  uniquement quand la syndication n'a rien renvoyé. Le payload nourrit aussi
+  `tweet_card_content` : auteur, texte (`note_tweet` en priorité, lien média
+  `t.co` retiré via `display_text_range`), date, photos du parent (`TweetPhoto`,
+  max 4, avec leurs `original_info.focus_rects` convertis en rectangles relatifs
+  `QuoteImageFocus`), vidéo du parent (`TweetVideo { aspect }` depuis
+  `video_info.aspect_ratio`), et le tweet cité (`quoted_tweet`) — auteur, texte,
+  photos (max 4, avec repli sur le poster d'une vidéo citée) et sa propre vidéo
+  (`quoted_tweet_video_variants`).
 
 ### Téléchargement (`download`)
 
@@ -192,26 +199,38 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
 - `yt-dlp` imprime aussi le titre de la source (`--print after_move:%(title)s` avant
   `after_move:filepath`) : `parse_ytdlp_output` renvoie `YtdlpOutput { path, title }`
   (`NA`/vide → `None`), le titre atterrit dans `DownloadResult.title`.
-- `download_twitter` : le payload syndication pilote le rendu. Vidéo du parent →
+- `download_twitter` : le payload de syndication transporté par
+  `ResolvedMedia.syndication` pilote le rendu ; il n'est relu que si le résolveur
+  ne l'a pas fourni (source reconstruite hors pipeline). Vidéo du parent →
   téléchargée puis incrustée dans une carte vidéo MP4 (fond PNG de la carte + zone
   arrondie où la vidéo est recadrée en couverture, audio du tweet conservé, durée =
   celle de la vidéo) ; photos du parent (1 à 4) → carte tweet PNG façon X (une photo
-  en 16:9 pleine largeur, deux côte à côte, trois ou quatre en grille) ; sinon carte
-  texte. La carte est rendue par `tweet_card` (parley + swash + tiny-skia) : en-tête
-  avatar/nom/@handle, texte du parent, média, date, et bloc de citation encadré —
-  nom/@handle, texte et média du tweet cité : ses photos sont téléchargées puis
-  converties en PNG par ffmpeg (tiny-skia ne décode que le PNG), recadrées en
-  couverture sur le `focus_rects` suggéré par X, et sa vidéo est incrustée dans le
-  bloc. `CARD_MEDIA_MAX_HEIGHT` (3200 px) laisse la place aux vidéos verticales 9:16
-  sans recadrage. L'avatar, les photos et les vidéos sont facultatifs : toute erreur
-  les omet sans faire échouer le téléchargement (une carte sans vidéo parente
-  retombe sur le PNG si la composition échoue). Replis : vidéo brute puis première
-  photo du payload si le rendu de la carte échoue, puis `yt-dlp`. Le carrousel
-  Twitter a disparu : les photos passent toujours par la carte.
-  La durée d'affichage d'une carte tweet image n'est pas portée par le média :
-  le serveur la déduit de la quantité de texte stockée dans `source_title`
-  (voir `docs/rust/server-ingest.md`, §7).
-- `DownloadResult { path, kind, mime, size_bytes, source_url, title }`.
+  pleine largeur, deux côte à côte, trois ou quatre en grille) ; sinon carte texte.
+  Une réponse (`in_reply_to_status_id_str`) affiche en plus le tweet parent, déjà
+  présent dans `parent` du payload, au-dessus de l'en-tête : auteur, date, texte et
+  médias, sans requête supplémentaire ; le `quoted_tweet` du parent n'est pas
+  imbriqué. La carte est rendue par `tweet_card` (parley + swash + tiny-skia) :
+  en-tête avatar/nom/@handle, bloc parent éventuel, texte, média, date, et bloc de
+  citation encadré — nom/@handle, texte et média du tweet cité. Les photos sont
+  téléchargées puis converties en PNG par ffmpeg (tiny-skia ne décode que le PNG) ;
+  elles sont affichées **en entier** dans une cellule dont la hauteur suit le rapport
+  d'aspect (portrait borné à 4:5, paysage à 16:9), avec des marges centrées plutôt
+  qu'un recadrage : le `focus_rects` de X n'est plus appliqué. `CARD_MEDIA_MAX_HEIGHT`
+  (3200 px) laisse la place aux vidéos verticales 9:16 sans recadrage. L'avatar, les
+  photos et les vidéos sont facultatifs : toute erreur les omet sans faire échouer le
+  téléchargement (une carte sans vidéo parente retombe sur le PNG si la composition
+  échoue). Replis : vidéo brute puis première photo du payload si le rendu de la
+  carte échoue, puis `yt-dlp`. Le carrousel Twitter a disparu : les photos passent
+  toujours par la carte.
+  La traduction est appliquée avant le rendu quand `MEDIA_TRANSLATE_ENABLED` est
+  actif et que la langue du tweet diffère de `I18N` (voir `translate.rs`) : le texte
+  racine, cité et parent est traduit, et un libellé « Traduit de l'anglais » est
+  rendu sous chaque texte concerné. La durée d'affichage d'une carte image est
+  calculée au rendu (`card_text_chars`, texte racine + cité + parent) et persistée
+  dans `MediaAsset.duration_sec` ; `card_duration_sec` la plafonne à 30 s et ne
+  retombe sur `source_title` que pour les anciennes cartes (voir
+  `docs/rust/server-ingest.md`, §7).
+- `DownloadResult { path, kind, mime, size_bytes, source_url, title, text_chars }`.
 
 ### Cartes tweet (`tweet_card`, `tweet_card_video`)
 
@@ -454,13 +473,14 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
   `probe_args` protégeant un chemin en `-…`, sortie de commande plafonnée
   (`oversized_output_is_rejected`), validation du cookie TikTok (contrôle de
   caractères, taille), et sanitizer HTML allowlist (XSS, blocs actifs, `rel`/`target`).
-  Le rendu des cartes tweet couvre le média et la citation : photos du parent sous le
-  texte, zone vidéo verticale 9:16 (dims paires, carte jusqu'à `CARD_MEDIA_MAX_HEIGHT`),
-  vidéo citée placée dans le bloc de citation, masque arrondi, extraction du
-  `quoted_tweet` (auteur, texte, photos multiples et vidéo, `focus_rects`), disposition
-  en lignes façon X (1 photo 16:9, 2 côte à côte, 3-4 en grille), images citées en PNG,
-  recadrage sur le focus suggéré, et absence de casse quand l'auteur, le texte ou les
-  médias de la citation manquent.
+  Le rendu des cartes tweet couvre le média, le tweet cité et la réponse : photos du
+  parent sous le texte, zone vidéo verticale 9:16 (dims paires, carte jusqu'à
+  `CARD_MEDIA_MAX_HEIGHT`), vidéo citée placée dans le bloc de citation, masque
+  arrondi, extraction du `quoted_tweet` et du `parent` (auteur, texte, photos
+  multiples et vidéo), disposition en lignes façon X (1 photo pleine largeur, 2 côte
+  à côte, 3-4 en grille), cellules dont la hauteur suit l'aspect sans recadrage,
+  libellés de traduction, et absence de casse quand l'auteur, le texte ou les médias
+  manquent.
 - Cartes commentaire TikTok : 10 tests unitaires (compteurs français, dates
   relatives, URL de page, carte texte, 0 à 4 images, texte long, RTL/emoji,
   commentaire vide, position de la zone vidéo portrait/paysage, carte vidéo

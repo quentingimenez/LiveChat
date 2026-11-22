@@ -53,6 +53,9 @@ pub struct ResolvedMedia {
     pub kind: Option<MediaKind>,
     /// Carte oEmbed d'un tweet.
     pub tweet_card: Option<TweetCard>,
+    /// Payload de syndication déjà récupéré pour un tweet, afin que le
+    /// téléchargement ne refasse pas la requête.
+    pub syndication: Option<serde_json::Value>,
     /// URL directe à télécharger quand elle est connue.
     pub media_url: Option<String>,
     /// Type MIME annoncé pour `media_url`.
@@ -76,6 +79,7 @@ impl ResolvedMedia {
             width: None,
             height: None,
             tweet_card: None,
+            syndication: None,
             media_url: None,
             mime: None,
             thumbnail_url: None,

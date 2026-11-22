@@ -387,6 +387,22 @@ fn listed<'a>(items: &'a Value, item_id: &str) -> &'a Value {
         .expect("item listé")
 }
 
+/// Attend l'image qu'une vidéo reçoit après son ingestion.
+///
+/// L'image est extraite dans une tâche de fond : elle arrive après l'état
+/// `Ready` et son arrivée est annoncée comme une mise à jour de l'élément, ce
+/// qui rend un comptage d'événements dépendant de son délai.
+async fn wait_for_cover(db: &lc_db::Db, asset_id: &str) {
+    let id: MediaAssetId = asset_id.parse().unwrap();
+    for _ in 0..600 {
+        if db.media_assets().cover_of(id).await.unwrap().is_some() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("aucune image pour le média {asset_id}");
+}
+
 #[tokio::test]
 #[ignore = "nécessite ffmpeg/ffprobe installés"]
 async fn a_video_is_edited_as_a_copy_then_replaced_with_real_ffmpeg() {
@@ -526,7 +542,11 @@ async fn a_video_is_edited_as_a_copy_then_replaced_with_real_ffmpeg() {
         assert_eq!(entry["media"]["mime"], mime);
     }
     assert_eq!(hub.added_count(&upload::guild()), 4);
-    assert_eq!(hub.updated_count(&upload::guild()), 0);
+    // Chaque vidéo reçoit une image après coup et son arrivée met l'élément à
+    // jour : deux vidéos, deux mises à jour — aucune pour le son ni le GIF.
+    wait_for_cover(&db, &original_asset).await;
+    wait_for_cover(&db, copied["mediaAssetId"].as_str().unwrap()).await;
+    assert_eq!(hub.updated_count(&upload::guild()), 2);
 
     // --- replacing the original: twice as fast, muted.
     let (status, body) = post_edit(
@@ -542,11 +562,14 @@ async fn a_video_is_edited_as_a_copy_then_replaced_with_real_ffmpeg() {
     assert_eq!(replaced.created, Some(false));
     assert_eq!(replaced.item_id.as_deref(), Some(original_id.as_str()));
     assert_eq!(hub.added_count(&upload::guild()), 4);
-    assert_eq!(hub.updated_count(&upload::guild()), 1);
 
     let (_, items) = upload::send_json(&app, upload::items_request(upload::TOKEN)).await;
     assert_eq!(items["total"], 4);
     let entry = listed(&items, &original_id);
+    // Le remplacement met l'élément à jour, et la nouvelle vidéo annonce la
+    // sienne quand son image arrive : deux événements de plus.
+    wait_for_cover(&db, entry["mediaAssetId"].as_str().unwrap()).await;
+    assert_eq!(hub.updated_count(&upload::guild()), 4);
     assert_eq!(entry["title"], "Chat");
     assert_eq!(entry["message"], "miaou");
     assert_ne!(entry["mediaAssetId"], original_asset.as_str());

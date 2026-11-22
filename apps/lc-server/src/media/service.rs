@@ -26,7 +26,7 @@ use crate::media::assets::{self, ReadyAsset};
 use crate::media::errors::{MediaServiceError, MediaServiceResult};
 use crate::media::quotas;
 use crate::media::settings::media_config_for_state;
-use crate::media::thumbnails::{spawn_thumbnail_fetch, ThumbnailContext};
+use crate::media::thumbnails::{spawn_cover_fetch, ThumbnailContext};
 
 /// Pipeline partagé : un seul client HTTP et un seul sémaphore de concurrence
 /// par processus. La configuration serveur est immuable après le démarrage.
@@ -137,8 +137,8 @@ impl MediaService {
                     source_hash = %cached.source_hash,
                     "asset média réutilisé depuis le cache"
                 );
-                // A video cached before thumbnails existed gets one now.
-                spawn_thumbnail_fetch(&self.thumbnail_context(), &cached, source, None);
+                // A video cached before covers existed gets one now.
+                spawn_cover_fetch(&self.thumbnail_context(), &cached, Some(source), None);
                 return Ok(cached);
             }
         }
@@ -176,12 +176,12 @@ impl MediaService {
 
         let ready_asset = assets::mark_ready(&self.db, asset.id, &ready, now, ttl).await?;
         self.attach_cover(&ready_asset, &ingested).await;
-        // The platform's thumbnail never delays the media: it is fetched on
-        // its own task once the media is ready.
-        spawn_thumbnail_fetch(
+        // The cover never delays the media: the platform's thumbnail or a
+        // frame of the video is made on its own task once the media is ready.
+        spawn_cover_fetch(
             &self.thumbnail_context(),
             &ready_asset,
-            ingested.source.clone(),
+            Some(ingested.source.clone()),
             ingested.resolved.clone(),
         );
         Ok(ready_asset)
@@ -271,6 +271,9 @@ impl MediaService {
                 source_hash = %cached.source_hash,
                 "asset média téléversé réutilisé depuis le cache"
             );
+            // An upload cached before covers existed gets one now: there is
+            // no platform to ask, so the cover comes from the video itself.
+            spawn_cover_fetch(&self.thumbnail_context(), &cached, None, None);
             return Ok(cached);
         }
 
@@ -323,6 +326,9 @@ impl MediaService {
 
         let ready_asset = assets::mark_ready(&self.db, asset.id, &ready, now, ttl).await?;
         self.attach_cover(&ready_asset, &ingested).await;
+        // A video upload gets a frame of itself as its card picture: its first
+        // frame is often black.
+        spawn_cover_fetch(&self.thumbnail_context(), &ready_asset, None, None);
         Ok(ready_asset)
     }
 

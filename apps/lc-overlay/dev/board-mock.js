@@ -162,6 +162,10 @@
   // from sample.mp4, JPEG stills and audio artwork), so thumbnails, the editor
   // and the README screenshots render like the real board.
   const realMedia = new URLSearchParams(location.search).has('media');
+  // `?covers` : every video carries a cover image, as the server does once it
+  // has made one (the platform thumbnail, or a frame of the video). Its card
+  // then shows a still image instead of a `<video>` frozen on a frame.
+  const withCovers = new URLSearchParams(location.search).has('covers');
   const REAL_MEDIA = { 0: 'sample.mp4', 1: 'media-1.jpg', 2: 'sample.mp3', 3: 'seg-3.mp4', 4: 'media-4.jpg', 5: 'seg-5.mp4', 6: 'seg-6.mp4', 8: 'media-8.jpg' };
   const titles = ['Chat qui tombe', 'Bruh', 'Vine boom', 'Directed by Robert B. Weide', 'Stonks', 'Ah shit, here we go again', null, 'Fanfare de la victoire totale et définitive', 'Nope', 'Sad violin'];
   const kinds = ['video', 'image', 'audio', 'video', 'image', 'video', 'video', 'audio', 'image', 'audio'];
@@ -185,8 +189,21 @@
       ? { url: realMedia ? new URL(index === 7 ? './fixtures/art-7.jpg' : './fixtures/art-2.jpg', location.href).href : placeholder(4), width: 480, height: 480 }
       : null,
     // « Directed by… » (a YouTube link) has its platform thumbnail; with
-    // `?media` its real video (seg-3.mp4) is shown instead.
-    thumbnail: index === 3 && !realMedia ? { url: placeholder(5), width: 480, height: 360 } : null,
+    // `?media` its real video (seg-3.mp4) is shown instead, and `?covers` gives
+    // the other videos the cover they would get once the server made one.
+    thumbnail: (() => {
+      if (index === 3 && !realMedia) {
+        return { url: placeholder(5), width: 480, height: 360 };
+      }
+      if (withCovers && kinds[index] === 'video') {
+        return {
+          url: new URL('./fixtures/media-1.jpg', location.href).href,
+          width: 640,
+          height: 360,
+        };
+      }
+      return null;
+    })(),
     artworkOnOverlay: false,
     displayDurationSec: null,
     displayScalePercent: null,

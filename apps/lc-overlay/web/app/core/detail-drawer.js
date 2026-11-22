@@ -96,12 +96,47 @@ export function artworkOf(item) {
   return artwork && typeof artwork.url === 'string' && artwork.url ? artwork : null;
 }
 
-// The platform's thumbnail of a linked video (YouTube, TikTok, X), once the
-// server has fetched it.
+// The picture of a video, once the server has made it: the platform's
+// thumbnail of a link (YouTube, TikTok, X) or a frame of an uploaded video.
 export function thumbnailOf(item) {
   const media = (item && item.media) || {};
   const thumbnail = media.kind === 'video' && item.thumbnail;
   return thumbnail && typeof thumbnail.url === 'string' && thumbnail.url ? thumbnail : null;
+}
+
+// Where a card seeks its video while the server has no picture for it: a
+// little way in, never the very first frame — many uploads open on a black
+// fade-in, and `#t=0.1` showed a black card. `null` when the video's length is
+// unknown (the browser then shows its first frame).
+export function cardPreviewAt(item) {
+  const media = (item && item.media) || {};
+  if (media.kind !== 'video') {
+    return null;
+  }
+  return previewAtWithin(Number(media.durationSec));
+}
+
+// The point a tenth of the way into a video, kept inside it: a tenth at most,
+// and never its last frame. `null` when the length is unknown.
+function previewAtWithin(duration) {
+  if (!Number.isFinite(duration) || duration <= 0) {
+    return null;
+  }
+  const at = Math.min(Math.max(duration * 0.1, 0.1), duration * 0.25, Math.max(duration - 0.1, 0.05));
+  return Math.round(at * 1000) / 1000;
+}
+
+// Where a card seeks a video the browser turns out to be shorter than the
+// server announced (an outdated length, a file re-encoded after the fact): the
+// announced point would land past the end and paint a black card. `null` when
+// the announced point already falls inside the video.
+export function realignPreviewAt(previewAt, actualDuration) {
+  if (!Number.isFinite(previewAt)) {
+    return null;
+  }
+  const duration = Number(actualDuration);
+  const inside = Number.isFinite(duration) && duration > 0 && previewAt <= duration - 0.05;
+  return inside ? null : previewAtWithin(duration);
 }
 
 // What a board card shows: `{ url, kind }` with `kind` `image` or `video`

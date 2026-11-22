@@ -199,22 +199,32 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
   téléchargée puis incrustée dans une carte vidéo MP4 (fond PNG de la carte + zone
   arrondie où la vidéo est recadrée en couverture, audio du tweet conservé, durée =
   celle de la vidéo) ; photos du parent (1 à 4) → carte tweet PNG façon X (une photo
-  en 16:9 pleine largeur, deux côte à côte, trois ou quatre en grille) ; sinon carte
-  texte. La carte est rendue par `tweet_card` (parley + swash + tiny-skia) : en-tête
-  avatar/nom/@handle, texte du parent, média, date, et bloc de citation encadré —
-  nom/@handle, texte et média du tweet cité : ses photos sont téléchargées puis
-  converties en PNG par ffmpeg (tiny-skia ne décode que le PNG), recadrées en
-  couverture sur le `focus_rects` suggéré par X, et sa vidéo est incrustée dans le
-  bloc. `CARD_MEDIA_MAX_HEIGHT` (3200 px) laisse la place aux vidéos verticales 9:16
-  sans recadrage. L'avatar, les photos et les vidéos sont facultatifs : toute erreur
-  les omet sans faire échouer le téléchargement (une carte sans vidéo parente
-  retombe sur le PNG si la composition échoue). Replis : vidéo brute puis première
-  photo du payload si le rendu de la carte échoue, puis `yt-dlp`. Le carrousel
-  Twitter a disparu : les photos passent toujours par la carte.
-  La durée d'affichage d'une carte tweet image n'est pas portée par le média :
-  le serveur la déduit de la quantité de texte stockée dans `source_title`
-  (voir `docs/rust/server-ingest.md`, §7).
-- `DownloadResult { path, kind, mime, size_bytes, source_url, title }`.
+  pleine largeur, deux côte à côte, trois ou quatre en grille) ; sinon carte texte.
+  Une réponse (`in_reply_to_status_id_str`) affiche en plus le tweet parent, déjà
+  présent dans `parent` du payload, au-dessus de l'en-tête : auteur, date, texte et
+  médias, sans requête supplémentaire ; le `quoted_tweet` du parent n'est pas
+  imbriqué. La carte est rendue par `tweet_card` (parley + swash + tiny-skia) :
+  en-tête avatar/nom/@handle, bloc parent éventuel, texte, média, date, et bloc de
+  citation encadré — nom/@handle, texte et média du tweet cité. Les photos sont
+  téléchargées puis converties en PNG par ffmpeg (tiny-skia ne décode que le PNG) ;
+  elles sont affichées **en entier** dans une cellule dont la hauteur suit le rapport
+  d'aspect (portrait borné à 4:5, paysage à 16:9), avec des marges centrées plutôt
+  qu'un recadrage : le `focus_rects` de X n'est plus appliqué. `CARD_MEDIA_MAX_HEIGHT`
+  (3200 px) laisse la place aux vidéos verticales 9:16 sans recadrage. L'avatar, les
+  photos et les vidéos sont facultatifs : toute erreur les omet sans faire échouer le
+  téléchargement (une carte sans vidéo parente retombe sur le PNG si la composition
+  échoue). Replis : vidéo brute puis première photo du payload si le rendu de la
+  carte échoue, puis `yt-dlp`. Le carrousel Twitter a disparu : les photos passent
+  toujours par la carte.
+  La traduction est appliquée avant le rendu quand `MEDIA_TRANSLATE_ENABLED` est
+  actif et que la langue du tweet diffère de `I18N` (voir `translate.rs`) : le texte
+  racine, cité et parent est traduit, et un libellé « Traduit de l'anglais » est
+  rendu sous chaque texte concerné. La durée d'affichage d'une carte image est
+  calculée au rendu (`card_text_chars`, texte racine + cité + parent) et persistée
+  dans `MediaAsset.duration_sec` ; `card_duration_sec` la plafonne à 30 s et ne
+  retombe sur `source_title` que pour les anciennes cartes (voir
+  `docs/rust/server-ingest.md`, §7).
+- `DownloadResult { path, kind, mime, size_bytes, source_url, title, text_chars }`.
 
 ### Cartes tweet (`tweet_card`, `tweet_card_video`)
 
@@ -457,13 +467,14 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
   `probe_args` protégeant un chemin en `-…`, sortie de commande plafonnée
   (`oversized_output_is_rejected`), validation du cookie TikTok (contrôle de
   caractères, taille), et sanitizer HTML allowlist (XSS, blocs actifs, `rel`/`target`).
-  Le rendu des cartes tweet couvre le média et la citation : photos du parent sous le
-  texte, zone vidéo verticale 9:16 (dims paires, carte jusqu'à `CARD_MEDIA_MAX_HEIGHT`),
-  vidéo citée placée dans le bloc de citation, masque arrondi, extraction du
-  `quoted_tweet` (auteur, texte, photos multiples et vidéo, `focus_rects`), disposition
-  en lignes façon X (1 photo 16:9, 2 côte à côte, 3-4 en grille), images citées en PNG,
-  recadrage sur le focus suggéré, et absence de casse quand l'auteur, le texte ou les
-  médias de la citation manquent.
+  Le rendu des cartes tweet couvre le média, le tweet cité et la réponse : photos du
+  parent sous le texte, zone vidéo verticale 9:16 (dims paires, carte jusqu'à
+  `CARD_MEDIA_MAX_HEIGHT`), vidéo citée placée dans le bloc de citation, masque
+  arrondi, extraction du `quoted_tweet` et du `parent` (auteur, texte, photos
+  multiples et vidéo), disposition en lignes façon X (1 photo pleine largeur, 2 côte
+  à côte, 3-4 en grille), cellules dont la hauteur suit l'aspect sans recadrage,
+  libellés de traduction, et absence de casse quand l'auteur, le texte ou les médias
+  manquent.
 - Cartes commentaire TikTok : 10 tests unitaires (compteurs français, dates
   relatives, URL de page, carte texte, 0 à 4 images, texte long, RTL/emoji,
   commentaire vide, position de la zone vidéo portrait/paysage, carte vidéo

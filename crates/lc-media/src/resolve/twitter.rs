@@ -1,7 +1,6 @@
-//! Résolution X/Twitter : carte oEmbed, variantes vidéo et photos via l'API
+//! Résolution X/Twitter : texte, variantes vidéo et photos via l'API
 //! syndication, repli sur le rendu vxtwitter.
 
-use serde::Deserialize;
 use serde_json::Value;
 
 use lc_domain::MediaKind;
@@ -15,7 +14,7 @@ use crate::tweet_card::{
     QuoteImageFocus, QuotedTweetContent, TweetCardContent, TweetPhoto, TweetVideo,
 };
 
-use super::{encode_query_component, ResolvedMedia, TweetCard};
+use super::{encode_query_component, ResolvedMedia};
 
 /// Endpoint de l'API syndication de Twitter.
 pub const SYNDICATION_ENDPOINT: &str = "https://cdn.syndication.twimg.com/tweet-result";
@@ -31,18 +30,11 @@ pub struct VideoVariant {
     pub bitrate: Option<u64>,
 }
 
-/// Payload oEmbed d'un tweet.
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct TweetOEmbed {
-    /// HTML de la carte.
-    pub html: Option<String>,
-    /// Nom d'affichage de l'auteur.
-    pub author_name: Option<String>,
-    /// URL du profil de l'auteur.
-    pub author_url: Option<String>,
-}
-
 /// Construit l'URL oEmbed d'un tweet.
+///
+/// L'API oEmbed n'est plus interrogée pour rendre une carte : le payload de
+/// syndication contient déjà le texte et l'auteur. La fonction reste publique
+/// pour les outils qui construisent encore cette URL.
 pub fn build_oembed_url(endpoint: &str, tweet_url: &str, language: &str) -> String {
     let separator = if endpoint.contains('?') { '&' } else { '?' };
     format!(
@@ -74,7 +66,13 @@ pub fn sanitize_card_html(payload_html: &str) -> String {
     html::sanitize_embed_html(payload_html).trim().to_string()
 }
 
-/// Résout un tweet : carte oEmbed + média connu (vidéo, photo ou carte).
+/// Résout un tweet : texte, auteur et média connu (vidéo, photo ou carte).
+///
+/// Une seule requête réseau est faite ici, sur l'API de syndication. Son
+/// payload est conservé dans [`ResolvedMedia::syndication`] pour que le
+/// téléchargement rende la carte sans refaire la requête. L'ancien appel
+/// oEmbed (et son HTML jamais lu) a été supprimé : il ajoutait ~340 ms par
+/// tweet.
 pub async fn resolve_tweet(
     source: &MediaSource,
     config: &MediaConfig,
@@ -82,7 +80,6 @@ pub async fn resolve_tweet(
     let canonical_url = source.canonical_url.clone();
     let status_id = tweet_status_id(&canonical_url)
         .ok_or_else(|| MediaError::new(MediaErrorCode::InvalidMedia, "URL de tweet invalide"))?;
-    let card = fetch_tweet_card(&canonical_url, config).await?;
     let media = fetch_tweet_media(&status_id, &canonical_url, config).await;
     let selected = pick_variant(&media.video_variants).cloned();
     let (width, height) = match media.dimensions {
@@ -110,10 +107,13 @@ pub async fn resolve_tweet(
         // l'API de syndication a répondu) en tient lieu ; l'auteur reste
         // disponible pour le repli « Post de <auteur> ».
         title: media.text,
-        author: card.author_name.clone(),
+        author: media.author_name,
         kind: Some(kind),
         thumbnail_url,
-        tweet_card: Some(card),
+        // La carte HTML riche n'est plus utilisée par l'overlay ; le contenu
+        // de la carte vient directement du payload de syndication.
+        tweet_card: None,
+        syndication: media.payload,
         media_url,
         mime,
         ..ResolvedMedia::from_source(source)
@@ -169,37 +169,14 @@ pub fn photo_original_url(url: &str) -> String {
     parsed.to_string()
 }
 
-async fn fetch_tweet_card(canonical_url: &str, config: &MediaConfig) -> MediaResult<TweetCard> {
-    let url = build_oembed_url(
-        &config.resolve.twitter_oembed_endpoint,
-        canonical_url,
-        &config.resolve.language,
-    );
-    let payload: TweetOEmbed =
-        http::get_json(&config.download, &url, config.resolve.oembed_timeout).await?;
-    let html = payload
-        .html
-        .as_deref()
-        .map(sanitize_card_html)
-        .unwrap_or_default();
-    if html.is_empty() {
-        return Err(MediaError::new(
-            MediaErrorCode::InvalidMedia,
-            "carte oEmbed du tweet vide",
-        ));
-    }
-    Ok(TweetCard {
-        url: canonical_url.to_string(),
-        html,
-        author_name: payload.author_name,
-        author_url: payload.author_url,
-    })
-}
-
 /// Ce que la résolution d'un tweet retire du réseau (API syndication puis
 /// repli vxtwitter).
 #[derive(Clone, Debug, Default)]
 struct TweetMedia {
+    /// Payload de syndication, conservé pour le rendu de la carte.
+    payload: Option<Value>,
+    /// Nom d'affichage de l'auteur.
+    author_name: Option<String>,
     /// Variantes vidéo du tweet lui-même (jamais celles d'un tweet cité).
     video_variants: Vec<VideoVariant>,
     /// Rapport largeur/hauteur de la vidéo du tweet, si connue.
@@ -232,14 +209,12 @@ async fn fetch_tweet_media(
 ) -> TweetMedia {
     let mut media = TweetMedia::default();
     if let Some(value) = fetch_syndication_payload(config, status_id).await {
-        media.video_variants = tweet_video_variants(&value);
-        media.video_aspect = tweet_video_aspect(&value);
-        media.dimensions = extract_dimensions(&value);
-        media.poster = extract_poster(&value);
-        media.text = extract_tweet_text(&value);
-        media.photos = tweet_photos(&value);
+        absorb_syndication_payload(&mut media, value);
     }
-    if media.video_variants.is_empty() {
+    // Le repli HTML ne sert qu'à récupérer une variante vidéo quand la
+    // syndication n'a rien renvoyé. vxtwitter répond 403 aujourd'hui : ne pas
+    // l'interroger pour un tweet texte ou photo, où il ne peut rien apporter.
+    if media.payload.is_none() {
         if let Ok(page) = http::get_text(
             &config.download,
             &build_fallback_url(
@@ -258,6 +233,19 @@ async fn fetch_tweet_media(
         }
     }
     media
+}
+
+/// Remplit les métadonnées d'un tweet depuis un payload de syndication et
+/// conserve le payload pour le rendu de la carte.
+fn absorb_syndication_payload(media: &mut TweetMedia, value: Value) {
+    media.video_variants = tweet_video_variants(&value);
+    media.video_aspect = tweet_video_aspect(&value);
+    media.dimensions = extract_dimensions(&value);
+    media.poster = extract_poster(&value);
+    media.text = extract_tweet_text(&value);
+    media.photos = tweet_photos(&value);
+    media.author_name = extract_author_name(&value);
+    media.payload = Some(value);
 }
 
 /// Texte d'un tweet dans un payload de syndication (servira de titre).
@@ -1150,6 +1138,20 @@ mod tests {
             Some("2006-03-21T20:50:14.000Z")
         );
         assert_eq!(content.avatar, None);
+    }
+
+    #[test]
+    fn keeps_the_syndication_payload_for_the_download() {
+        let mut media = TweetMedia::default();
+        absorb_syndication_payload(&mut media, fixture(TEXT_FIXTURE));
+        assert_eq!(media.author_name.as_deref(), Some("jack"));
+        assert_eq!(media.text.as_deref(), Some("just setting up my twttr"));
+        let payload = media.payload.expect("payload de syndication conservé");
+        assert_eq!(
+            payload.get("user").and_then(|user| user.get("screen_name")),
+            Some(&Value::String("jack".to_string()))
+        );
+        assert!(media.video_variants.is_empty());
     }
 
     #[test]

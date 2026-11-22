@@ -210,7 +210,8 @@ pub struct ResolveConfig {
     pub tiktok_oembed_endpoint: String,
     /// Base de l'API de commentaires TikTok (tikwm).
     pub tiktok_comment_endpoint: String,
-    /// Endpoint oEmbed Twitter/X.
+    /// Endpoint oEmbed Twitter/X (conservé pour compatibilité ; le résolveur
+    /// ne l'appelle plus, son HTML n'étant pas utilisé).
     pub twitter_oembed_endpoint: String,
     /// Base du résolveur de secours X (vxtwitter).
     pub twitter_video_resolver_base_url: String,

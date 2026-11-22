@@ -137,11 +137,15 @@ async fn download_twitter(
     config: &MediaConfig,
     temp_dir: &Path,
 ) -> MediaResult<DownloadResult> {
-    // 1. Le résolveur ne transporte pas le payload : on le relit pour rendre la
-    //    carte du tweet (texte, photos, vidéo) et télécharger ses médias.
-    let payload = match tweet_status_id(&source.canonical_url) {
-        Some(status_id) => twitter::fetch_syndication_payload(config, &status_id).await,
-        None => None,
+    // 1. Le payload de syndication vient du résolveur : le relire ici coûtait
+    //    une requête réseau (~169 ms) à chaque tweet.
+    let resolved_payload = resolved.and_then(|resolved| resolved.syndication.clone());
+    let payload = match resolved_payload {
+        Some(value) => Some(value),
+        None => match tweet_status_id(&source.canonical_url) {
+            Some(status_id) => twitter::fetch_syndication_payload(config, &status_id).await,
+            None => None,
+        },
     };
     if let Some(value) = payload.as_ref() {
         let variants = twitter::tweet_video_variants(value);

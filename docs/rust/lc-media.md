@@ -83,7 +83,7 @@ propre à chaque ingestion.
 | `translate.enabled` | `MEDIA_TRANSLATE_ENABLED` | `true` |
 | `translate.endpoint` | `MEDIA_TRANSLATE_ENDPOINT` | gtx Google |
 | `translate.timeout` | `MEDIA_TRANSLATE_TIMEOUT_MS` | 3 s (borné 0,5–10 s) |
-| `resolve.twitter_oembed_endpoint` | `TWITTER_OEMBED_ENDPOINT` | `https://publish.twitter.com/oembed` |
+| `resolve.twitter_oembed_endpoint` | `TWITTER_OEMBED_ENDPOINT` | conservé mais **plus appelé** (le HTML oEmbed n'était pas lu) |
 | `resolve.twitter_video_resolver_base_url` | `TWITTER_VIDEO_RESOLVER_BASE_URL` | `https://vxtwitter.com` |
 | `resolve.twitter_card_duration` | `TWITTER_CARD_DURATION_SEC` | 15 s |
 | `resolve.youtube_oembed_endpoint` / `tiktok_oembed_endpoint` | — | endpoints publics |
@@ -163,16 +163,20 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
   `__FRONTITY_CONNECT_STATE__`), détection des murs d'authentification, secours sur
   l'embed `/embed/v2/<id>`, extraction des carrousels photo (max 35 slides, 3 candidats
   par slide, 5 candidats audio) et des URL brutes `~tplv-photomode-image`.
-- X/Twitter : carte oEmbed (HTML assaini) + payload
-  `cdn.syndication.twimg.com/tweet-result` : variantes vidéo, photos du tweet et
-  `TweetCard { url, html, author_name, author_url }` ; repli sur les balises
-  `og:video:*` et `video.twimg.com`. Le payload nourrit aussi `tweet_card_content` :
-  auteur, texte (`note_tweet` en priorité, lien média `t.co` retiré via
-  `display_text_range`), date, photos du parent (`TweetPhoto`, max 4, avec leurs
-  `original_info.focus_rects` convertis en rectangles relatifs `QuoteImageFocus`),
-  vidéo du parent (`TweetVideo { aspect }` depuis `video_info.aspect_ratio`), et le
-  tweet cité (`quoted_tweet`) — auteur, texte, photos (max 4, avec repli sur le poster
-  d'une vidéo citée) et sa propre vidéo (`quoted_tweet_video_variants`).
+- X/Twitter : **une seule requête** sur le payload
+  `cdn.syndication.twimg.com/tweet-result` (l'ancien oEmbed n'est plus appelé,
+  son HTML n'étant jamais lu). Le payload donne les variantes vidéo, les photos
+  du tweet et l'auteur (`user.name`, repli `@handle`) ; il est conservé dans
+  `ResolvedMedia.syndication` pour que le téléchargement rende la carte sans
+  refaire la requête. Repli sur les balises `og:video:*` et `video.twimg.com`
+  uniquement quand la syndication n'a rien renvoyé. Le payload nourrit aussi
+  `tweet_card_content` : auteur, texte (`note_tweet` en priorité, lien média
+  `t.co` retiré via `display_text_range`), date, photos du parent (`TweetPhoto`,
+  max 4, avec leurs `original_info.focus_rects` convertis en rectangles relatifs
+  `QuoteImageFocus`), vidéo du parent (`TweetVideo { aspect }` depuis
+  `video_info.aspect_ratio`), et le tweet cité (`quoted_tweet`) — auteur, texte,
+  photos (max 4, avec repli sur le poster d'une vidéo citée) et sa propre vidéo
+  (`quoted_tweet_video_variants`).
 
 ### Téléchargement (`download`)
 
@@ -195,7 +199,9 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
 - `yt-dlp` imprime aussi le titre de la source (`--print after_move:%(title)s` avant
   `after_move:filepath`) : `parse_ytdlp_output` renvoie `YtdlpOutput { path, title }`
   (`NA`/vide → `None`), le titre atterrit dans `DownloadResult.title`.
-- `download_twitter` : le payload syndication pilote le rendu. Vidéo du parent →
+- `download_twitter` : le payload de syndication transporté par
+  `ResolvedMedia.syndication` pilote le rendu ; il n'est relu que si le résolveur
+  ne l'a pas fourni (source reconstruite hors pipeline). Vidéo du parent →
   téléchargée puis incrustée dans une carte vidéo MP4 (fond PNG de la carte + zone
   arrondie où la vidéo est recadrée en couverture, audio du tweet conservé, durée =
   celle de la vidéo) ; photos du parent (1 à 4) → carte tweet PNG façon X (une photo

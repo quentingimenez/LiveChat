@@ -480,6 +480,7 @@ mod tests {
                 is_vertical: false,
                 kind: Some(MediaKind::Video),
                 tweet_card: None,
+                syndication: None,
                 media_url: None,
                 mime: Some("video/mp4".into()),
                 thumbnail_url: None,

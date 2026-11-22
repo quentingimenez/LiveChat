@@ -229,6 +229,40 @@ async fn downloads_a_second_public_tiktok_video_from_cdn() {
 
 #[tokio::test]
 #[ignore = "nécessite un accès réseau"]
+async fn ingests_a_tenor_page_end_to_end() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut config = MediaConfig::default();
+    config.storage.directory = temp.path().join("media");
+    let pipeline = MediaPipeline::new(config).unwrap();
+    let media = pipeline
+        .ingest_url(
+            "https://tenor.com/view/jonathan-drouin-drouin-halifax-mooseheads-nathan-mackinnon-natejo-gif-14852894162018749597",
+        )
+        .await
+        .unwrap();
+    assert_eq!(media.source.source_kind, lc_media::SourceKind::Tenor);
+    assert_eq!(
+        media.source.canonical_url,
+        "https://tenor.com/view/14852894162018749597"
+    );
+    // Le MP4 Open Graph est préféré au GIF : le média sort en vidéo.
+    assert_eq!(media.normalized.kind, MediaKind::Video);
+    assert!(media.normalized.storage_path.exists());
+    assert!(media.normalized.size_bytes > 10 * 1024);
+    let resolved = media.resolved.as_ref().unwrap();
+    assert!(
+        resolved.media_url.as_deref().unwrap().ends_with(".mp4"),
+        "le MP4 Open Graph doit être préféré au GIF : {:?}",
+        resolved.media_url
+    );
+    assert_eq!(
+        resolved.title.as_deref(),
+        Some("Jonathan Drouin Halifax Mooseheads")
+    );
+}
+
+#[tokio::test]
+#[ignore = "nécessite un accès réseau"]
 async fn downloads_tiktok_photo_post_with_audio() {
     let temp = tempfile::TempDir::new().unwrap();
     let config = MediaConfig::default();

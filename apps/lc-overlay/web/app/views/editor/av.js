@@ -32,6 +32,7 @@ import {
   isWhole,
   keepRange,
   keptDuration,
+  mediaInfoFacts,
   nextKeptTime,
   normalizeDisplayScale,
   normalizeSegments,
@@ -48,7 +49,7 @@ import { state } from '../../core/state.js';
 import { defaultAdjust } from './annotations.js';
 import { createCropOverlay } from './crop-overlay.js';
 import { createDisplayPreview } from './display-preview.js';
-import { choices, section, slider, toggle } from './frame.js';
+import { choices, facts, section, slider, toggle } from './frame.js';
 import { createPreviewFramePump } from './preview-frames.js';
 import { panelKeys, railGroups, toolHint } from './tools.js';
 import { createVideoAnnotations } from './video-annotations.js';
@@ -662,6 +663,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     if (onChange) {
       onChange();
     }
+    syncInfoNode();
   }
 
   function commit() {
@@ -991,6 +993,62 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     frame.rail.replaceChildren(...rail);
     frame.rail.hidden = false;
     frame.rail.scrollTop = scroll;
+  }
+
+  // --- media summary ---
+  // What is being edited, at the bottom of the panel: the file, its weight, its
+  // length and the size of its picture. It belongs to the media, not to the
+  // open tool, so it stays outside the tool sections and follows the recipe.
+  function sourceName() {
+    if (blob && blob.name) {
+      return blob.name;
+    }
+    const raw = String(src || '');
+    if (!raw || raw.startsWith('data:') || raw.startsWith('blob:')) {
+      return '';
+    }
+    try {
+      const url = new URL(raw, location.href);
+      return decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || '');
+    } catch {
+      return '';
+    }
+  }
+
+  function mediaFacts() {
+    const result = resultPixelSize();
+    return mediaInfoFacts({
+      name: sourceName(),
+      mime: blob ? blob.type : '',
+      bytes: blob && blob.size > 0 ? blob.size : 0,
+      kind: mediaType(),
+      duration,
+      resultDuration: outputDuration(edit.segments, edit.speed),
+      width: isVideo ? media.videoWidth || 0 : 0,
+      height: isVideo ? media.videoHeight || 0 : 0,
+      resultWidth: result ? result.width : 0,
+      resultHeight: result ? result.height : 0,
+      hasArtwork: Boolean(artwork && artwork.naturalWidth > 0),
+      artworkWidth: artwork ? artwork.naturalWidth : 0,
+      artworkHeight: artwork ? artwork.naturalHeight : 0,
+    });
+  }
+
+  let infoNode = null;
+
+  function syncInfoNode() {
+    if (!infoNode) {
+      return;
+    }
+    const rows = mediaFacts();
+    infoNode.hidden = rows.length === 0;
+    infoNode.replaceChildren(h('h3', null, 'Le média'), facts(rows));
+  }
+
+  function infoPanel() {
+    infoNode = h('section', { class: 'editor-info', 'aria-label': 'Le média' });
+    syncInfoNode();
+    return infoNode;
   }
 
   function trimSection() {
@@ -1341,7 +1399,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
         default: return annotations ? annotations.panelFor(key) : null;
       }
     });
-    frame.panel.replaceChildren(...sections.filter(Boolean));
+    frame.panel.replaceChildren(...sections.filter(Boolean), infoPanel());
     frame.panel.hidden = false;
     formatSelect.value = edit.output;
     renderRail();

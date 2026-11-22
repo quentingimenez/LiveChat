@@ -604,11 +604,106 @@ export function displayZoneLimits({
   };
 }
 
+// --- media summary -------------------------------------------------------
+// Size of a file in the units of the system (1024-based, French suffixes):
+// `32 ko`, `1,5 Mo`. Empty when the size is unknown.
+export function formatFileSize(bytes) {
+  const value = Number(bytes);
+  if (!(value > 0)) {
+    return '';
+  }
+  const units = ['o', 'ko', 'Mo', 'Go'];
+  let size = value;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+  const digits = index === 0 || size >= 10 ? 0 : 1;
+  const text = size.toLocaleString('fr-FR', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  return `${text} ${units[index]}`;
+}
+
+// "Vidéo · MP4" from a mime type; empty when it is unknown.
+const MEDIA_TYPE_LABELS = {
+  mp4: 'MP4',
+  quicktime: 'MOV',
+  webm: 'WebM',
+  'x-matroska': 'MKV',
+  ogg: 'OGG',
+  gif: 'GIF',
+  mpeg: 'MP3',
+  'x-wav': 'WAV',
+  wav: 'WAV',
+  'x-m4a': 'M4A',
+  aac: 'AAC',
+};
+
+export function mediaTypeLabel(mime) {
+  const [family, subtype = ''] = String(mime || '').toLowerCase().split('/');
+  if (family !== 'video' && family !== 'audio') {
+    return '';
+  }
+  const format = MEDIA_TYPE_LABELS[subtype] || subtype.toUpperCase();
+  return `${family === 'video' ? 'Vidéo' : 'Son'}${format ? ` · ${format}` : ''}`;
+}
+
+// Facts of the editor's media summary (bottom of the panel): what the file is
+// and what the recipe makes of it. Rows without a value are dropped.
+export function mediaInfoFacts({
+  name = '',
+  mime = '',
+  bytes = 0,
+  kind = 'video',
+  duration = 0,
+  resultDuration = 0,
+  width = 0,
+  height = 0,
+  resultWidth = 0,
+  resultHeight = 0,
+  hasArtwork = false,
+  artworkWidth = 0,
+  artworkHeight = 0,
+} = {}) {
+  const rows = [];
+  const title = String(name || '').trim();
+  if (title) {
+    rows.push(['Fichier', title]);
+  }
+  const type = mediaTypeLabel(mime);
+  if (type) {
+    rows.push(['Type', type]);
+  }
+  const weight = formatFileSize(bytes);
+  if (weight) {
+    rows.push(['Poids', weight]);
+  }
+  const length = Number(duration);
+  if (length > 0) {
+    const result = Number(resultDuration) > 0 ? Number(resultDuration) : length;
+    const source = formatClock(length);
+    const shown = formatClock(result);
+    rows.push(['Durée', source === shown ? source : `${source} → ${shown}`]);
+  }
+  const pixels = (value, other) =>
+    Number(value) > 0 && Number(other) > 0 ? `${Math.round(value)} × ${Math.round(other)} px` : '';
+  if (kind === 'audio') {
+    const cover = hasArtwork ? pixels(artworkWidth, artworkHeight) : '';
+    rows.push(['Pochette', cover || 'aucune']);
+  } else {
+    const source = pixels(width, height);
+    const shown = pixels(resultWidth, resultHeight);
+    if (source) {
+      rows.push(['Image', shown && shown !== source ? `${source} → ${shown}` : source]);
+    }
+  }
+  return rows;
+}
+
 // --- naming --------------------------------------------------------------
 // A JPEG stays a JPEG (no transparency to keep); everything else is saved as
 // a PNG.
-export function exportMimeFor(sourceMime) {
-  return /^image\/jpe?g$/i.test(String(sourceMime || '')) ? 'image/jpeg' : 'image/png';
+export function exportMimeFor(sourceMime) {  return /^image\/jpe?g$/i.test(String(sourceMime || '')) ? 'image/jpeg' : 'image/png';
 }
 
 export function editedTitle(title) {

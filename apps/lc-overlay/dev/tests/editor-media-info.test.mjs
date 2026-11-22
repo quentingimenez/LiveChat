@@ -86,12 +86,46 @@ test('mediaInfoFacts: a sound tells whether it has artwork', async () => {
   );
 });
 
+test('mediaInfoFacts: a picture shows its crop and its size on the overlay', async () => {
+  const { mediaInfoFacts } = await import('../../web/app/core/editor-helpers.js');
+  assert.deepEqual(
+    mediaInfoFacts({
+      mime: 'image/png',
+      bytes: 204_800,
+      kind: 'image',
+      width: 1200,
+      height: 1200,
+      resultWidth: 1080,
+      resultHeight: 1080,
+      displayWidth: 540,
+      displayHeight: 540,
+    }),
+    [
+      ['Type', 'Image · PNG'],
+      ['Poids', '200 ko'],
+      ['Image', '1200 × 1200 px → 1080 × 1080 px'],
+      ['À l’écran', '540 × 540 px'],
+    ],
+  );
+  // The overlay shows the picture at its own size: no separate row.
+  assert.deepEqual(
+    mediaInfoFacts({ mime: 'image/png', kind: 'image', width: 800, height: 600, resultWidth: 800, resultHeight: 600, displayWidth: 800, displayHeight: 600 }),
+    [
+      ['Type', 'Image · PNG'],
+      ['Image', '800 × 600 px'],
+    ],
+  );
+});
+
 test('mediaTypeLabel names the formats it knows and stays quiet otherwise', async () => {
   const { mediaTypeLabel } = await import('../../web/app/core/editor-helpers.js');
   assert.equal(mediaTypeLabel('video/mp4'), 'Vidéo · MP4');
   assert.equal(mediaTypeLabel('video/quicktime'), 'Vidéo · MOV');
   assert.equal(mediaTypeLabel('audio/mpeg'), 'Son · MP3');
-  assert.equal(mediaTypeLabel('image/png'), '');
+  assert.equal(mediaTypeLabel('image/png'), 'Image · PNG');
+  assert.equal(mediaTypeLabel('image/jpeg'), 'Image · JPEG');
+  assert.equal(mediaTypeLabel('image/svg+xml'), 'Image · SVG');
+  assert.equal(mediaTypeLabel('text/plain'), '');
   assert.equal(mediaTypeLabel(''), '');
 });
 
@@ -115,4 +149,21 @@ test('the panel ends with the media summary, outside the tool sections', () => {
   const css = source('styles/editor.css');
   assert.match(css, /\.editor-info \{[^}]*position: sticky/);
   assert.match(css, /\.editor-panel \{[^}]*display: flex/, 'the summary sits at the bottom of the panel');
+});
+
+test('the picture editor gets the same summary, without duration', () => {
+  const image = source('views/editor/image.js');
+  assert.match(image, /mediaInfoFacts\(\{/, 'image.js must build the summary from the shared helper');
+  assert.match(image, /kind: 'image'/);
+  // Its size comes from the picture it opened, not from the box being edited.
+  assert.match(image, /const sourceWidth = doc\.base\.width/);
+  assert.match(image, /const sourceHeight = doc\.base\.height/);
+  const render = image.slice(image.indexOf('function renderPanel'), image.indexOf('function renderPanel') + 1200);
+  assert.match(render, /infoPanel\(\)/, 'the summary must be appended to the panel');
+  // The display tool and the history change the rows without rebuilding the panel.
+  assert.match(image, /function syncInfoNode\(\)/);
+  const commit = image.slice(image.indexOf('function commit'), image.indexOf('function restore'));
+  assert.match(commit, /syncInfoNode\(\)/);
+  const scale = image.slice(image.indexOf('function setDisplayScale'), image.indexOf('function setDisplayScale') + 900);
+  assert.match(scale, /syncInfoNode\(\)/);
 });

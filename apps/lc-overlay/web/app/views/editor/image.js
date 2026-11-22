@@ -24,6 +24,7 @@ import {
   displayZoneLimits,
   displayedImageSize,
   fitScale,
+  mediaInfoFacts,
   normalizeDisplayScale,
   parseDisplayScale,
 } from '../../core/editor-helpers.js';
@@ -90,6 +91,9 @@ export async function createImageEditor({
   durationSec = null,
 }) {
   const doc = { base: await loadBase(blob), objects: [], adjust: { ...NEUTRAL_ADJUST } };
+  // Size the picture came in at: the summary shows the crop/rotation against it.
+  const sourceWidth = doc.base.width;
+  const sourceHeight = doc.base.height;
   let nextId = 1;
   let tool = 'select';
   let selectedId = null;
@@ -146,6 +150,7 @@ export async function createImageEditor({
     }
     historyIndex = history.length - 1;
     frame.refreshHistory();
+    syncInfoNode();
     if (onChange) {
       onChange();
     }
@@ -714,6 +719,7 @@ export async function createImageEditor({
     if (syncScaleFields) {
       syncScaleFields();
     }
+    syncInfoNode();
     // The preview is the point of this setting: it follows every move.
     preview.invalidate();
     repaint();
@@ -936,6 +942,46 @@ export async function createImageEditor({
     return emptySelectionPanel();
   }
 
+  // --- media summary (bottom of the panel) ---
+  // A picture has no duration: the block says what the file is and what the
+  // crop, the rotation and the display tool leave it at.
+  function mediaFacts() {
+    const onScreen = allowDisplayScale ? displayedSize() : null;
+    return mediaInfoFacts({
+      name: blob && blob.name ? blob.name : '',
+      mime: blob ? blob.type : '',
+      bytes: blob && blob.size > 0 ? blob.size : 0,
+      kind: 'image',
+      width: sourceWidth,
+      height: sourceHeight,
+      resultWidth: doc.base.width,
+      resultHeight: doc.base.height,
+      displayWidth: onScreen ? onScreen.width : 0,
+      displayHeight: onScreen ? onScreen.height : 0,
+    });
+  }
+
+  let infoNode = null;
+
+  // The block keeps its node: the display tool and the history refresh its
+  // rows without rebuilding the panel (a rebuilt panel would drop the slider).
+  function syncInfoNode() {
+    if (!infoNode) {
+      return;
+    }
+    const rows = mediaFacts();
+    infoNode.hidden = rows.length === 0;
+    infoNode.replaceChildren(h('h3', null, 'Le média'), facts(rows));
+  }
+
+  function infoPanel() {
+    if (!infoNode) {
+      infoNode = h('section', { class: 'editor-info', 'aria-label': 'Le média' });
+    }
+    syncInfoNode();
+    return infoNode;
+  }
+
   function renderPanel() {
     const object = selected();
     const sections = [];
@@ -945,7 +991,7 @@ export async function createImageEditor({
     if (object) {
       sections.push(selectionPanel(object));
     }
-    frame.panel.replaceChildren(...sections.filter(Boolean));
+    frame.panel.replaceChildren(...sections.filter(Boolean), infoPanel());
     frame.panel.hidden = false;
 
     const rail = [];

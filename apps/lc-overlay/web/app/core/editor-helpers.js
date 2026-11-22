@@ -637,15 +637,25 @@ const MEDIA_TYPE_LABELS = {
   wav: 'WAV',
   'x-m4a': 'M4A',
   aac: 'AAC',
+  png: 'PNG',
+  jpeg: 'JPEG',
+  jpg: 'JPEG',
+  webp: 'WebP',
+  avif: 'AVIF',
+  bmp: 'BMP',
+  heic: 'HEIC',
+  'svg+xml': 'SVG',
 };
+
+const MEDIA_FAMILIES = { video: 'Vidéo', audio: 'Son', image: 'Image' };
 
 export function mediaTypeLabel(mime) {
   const [family, subtype = ''] = String(mime || '').toLowerCase().split('/');
-  if (family !== 'video' && family !== 'audio') {
+  if (!MEDIA_FAMILIES[family]) {
     return '';
   }
   const format = MEDIA_TYPE_LABELS[subtype] || subtype.toUpperCase();
-  return `${family === 'video' ? 'Vidéo' : 'Son'}${format ? ` · ${format}` : ''}`;
+  return `${MEDIA_FAMILIES[family]}${format ? ` · ${format}` : ''}`;
 }
 
 // Facts of the editor's media summary (bottom of the panel): what the file is
@@ -661,6 +671,8 @@ export function mediaInfoFacts({
   height = 0,
   resultWidth = 0,
   resultHeight = 0,
+  displayWidth = 0,
+  displayHeight = 0,
   hasArtwork = false,
   artworkWidth = 0,
   artworkHeight = 0,
@@ -695,6 +707,12 @@ export function mediaInfoFacts({
     const shown = pixels(resultWidth, resultHeight);
     if (source) {
       rows.push(['Image', shown && shown !== source ? `${source} → ${shown}` : source]);
+    }
+    // The picture's size on the overlay differs from its pixels only when the
+    // display tool scales it or the zone caps it: otherwise, no row.
+    const onScreen = pixels(displayWidth, displayHeight);
+    if (onScreen && onScreen !== shown) {
+      rows.push(['À l’écran', onScreen]);
     }
   }
   return rows;

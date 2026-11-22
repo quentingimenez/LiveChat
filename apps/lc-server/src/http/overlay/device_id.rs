@@ -1,20 +1,21 @@
-//! Identifiant d'appareil stable : normalisation et empreinte serveur.
+//! Empreinte matérielle stable : normalisation et empreinte serveur.
 //!
-//! L'overlay transmet un identifiant d'appareil en clair sur la connexion TLS
-//! (`deviceId`, MachineGuid Windows). Le serveur n'en conserve qu'une empreinte
-//! SHA-256 salée par la guilde : le brut ne doit jamais être stocké ni
-//! journalisé.
+//! L'overlay transmet une empreinte matérielle brute sur la connexion TLS
+//! (`deviceId` : UUID SMBIOS de la carte mère, série du disque système, modèle
+//! du processeur). Le serveur n'en conserve qu'une empreinte SHA-256 salée par
+//! la guilde : le brut ne doit jamais être stocké ni journalisé.
 //!
-//! Ce n'est pas une authentification : l'identifiant est falsifiable, une
-//! réinstallation du système en produit un autre, et les clients antérieurs au
-//! champ `deviceId` n'en envoient pas. C'est une défense en profondeur contre le
-//! retour immédiat d'un appareil banni.
+//! Ce n'est pas une authentification : le client est falsifiable, un changement
+//! de matériel produit une autre empreinte, et les clients antérieurs au champ
+//! `deviceId` n'en envoient pas. C'est une défense en profondeur contre le
+//! retour immédiat d'un appareil banni ; elle survit à une réinstallation de
+//! Windows tant que le matériel est inchangé.
 
 use lc_domain::GuildId;
 use sha2::{Digest, Sha256};
 
 /// Préfixe de domaine de l'empreinte (versionné avec l'algorithme).
-const DEVICE_HASH_PREFIX: &str = "lc-device-v1";
+const DEVICE_HASH_PREFIX: &str = "lc-device-v2";
 
 /// Longueur maximale admise pour l'identifiant brut, en caractères.
 const MAX_DEVICE_ID_CHARS: usize = 256;
@@ -67,16 +68,16 @@ mod tests {
         assert_eq!(normalize_device_id(None).unwrap(), None);
         assert_eq!(normalize_device_id(Some("   ")).unwrap(), None);
         assert_eq!(
-            normalize_device_id(Some("  machine-guid  "))
+            normalize_device_id(Some("  board=abc;cpu=xyz  "))
                 .unwrap()
                 .as_deref(),
-            Some("machine-guid")
+            Some("board=abc;cpu=xyz")
         );
         assert!(normalize_device_id(Some(&"x".repeat(256))).is_ok());
         assert!(normalize_device_id(Some(&"x".repeat(257))).is_err());
         // Un saut de ligne est un caractère de contrôle : il n'a pas sa place
-        // dans un identifiant d'appareil.
-        assert!(normalize_device_id(Some("machine\nguid")).is_err());
+        // dans une empreinte d'appareil.
+        assert!(normalize_device_id(Some("board=abc\ncpu=xyz")).is_err());
     }
 
     #[test]
@@ -84,13 +85,16 @@ mod tests {
         let guild = GuildId::parse("123456789012345678").unwrap();
         let other_guild = GuildId::parse("987654321098765432").unwrap();
 
-        let hash = device_hash(&guild, "machine-guid");
+        let hash = device_hash(&guild, "board=abc;disk=def;cpu=ghi");
         assert_eq!(hash.len(), 64);
         assert!(hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
 
-        assert_eq!(hash, device_hash(&guild, "machine-guid"));
-        assert_ne!(hash, device_hash(&other_guild, "machine-guid"));
-        assert_ne!(hash, device_hash(&guild, "another-guid"));
-        assert!(!hash.contains("machine-guid"));
+        assert_eq!(hash, device_hash(&guild, "board=abc;disk=def;cpu=ghi"));
+        assert_ne!(
+            hash,
+            device_hash(&other_guild, "board=abc;disk=def;cpu=ghi")
+        );
+        assert_ne!(hash, device_hash(&guild, "board=abc;disk=def;cpu=jkl"));
+        assert!(!hash.contains("board=abc"));
     }
 }

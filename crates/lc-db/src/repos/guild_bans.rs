@@ -6,7 +6,7 @@ use sqlx::SqlitePool;
 use time::UtcDateTime;
 
 use crate::convert::{decode, decode_opt, from_ms, to_ms};
-use crate::error::{conflict_on_unique, is_unique_violation, DbResult};
+use crate::error::{conflict_on_unique, DbResult};
 
 const TABLE: &str = "guild_bans";
 
@@ -76,65 +76,138 @@ impl GuildBansRepository {
         .map_err(|error| conflict_on_unique(error, "discord account already banned"))?;
         Ok(())
     }
+}
 
+/// Outcome of [`GuildBansRepository::create_with_devices`].
+#[derive(Debug)]
+pub enum BanWithDevices {
+    /// The ban was inserted with its device fingerprints.
+    Created(GuildBan),
+    /// A ban already covered this member; the fingerprints were attached to it.
+    Existing(GuildBan),
+}
+
+impl GuildBansRepository {
     /// Creates a ban and attaches its device fingerprints in one transaction.
     ///
-    /// Returns `None` when the Discord account is already banned (the caller
-    /// then attaches the fingerprints to the existing ban). On any other error
-    /// nothing is committed: a ban always carries the fingerprints collected
-    /// with it, never a ban without them because the second insert failed.
+    /// The transaction opens with `BEGIN IMMEDIATE`: SQLite serializes writers
+    /// before the existing-ban lookup, so two concurrent bans of the same
+    /// member — even without a linked Discord account, where the unique index
+    /// on `discord_user_id` cannot help — produce a single ban carrying every
+    /// fingerprint. When a ban already covers the member, it is returned with
+    /// the new fingerprints attached and nothing else is inserted.
     pub async fn create_with_devices(
         &self,
         ban: &GuildBan,
         device_hashes: &[String],
         now: UtcDateTime,
-    ) -> DbResult<Option<GuildBan>> {
-        let mut transaction = self.pool.begin().await?;
-        let inserted = sqlx::query(
-            "INSERT INTO guild_bans ( \
-                id, guild_id, member_id, discord_user_id, display_name, avatar, \
-                banned_by, created_at \
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(ban.id.to_canonical())
-        .bind(ban.guild_id.as_str())
-        .bind(ban.member_id.map(GuildMemberId::to_canonical))
-        .bind(ban.discord_user_id.as_deref())
-        .bind(ban.display_name.as_str())
-        .bind(ban.avatar.as_deref())
-        .bind(ban.banned_by.as_deref())
-        .bind(to_ms(ban.created_at))
-        .execute(&mut *transaction)
-        .await;
-        if let Err(error) = inserted {
-            transaction.rollback().await?;
-            return if is_unique_violation(&error) {
-                Ok(None)
-            } else {
-                Err(error.into())
-            };
-        }
-        for device_hash in device_hashes {
-            let recorded = sqlx::query(
-                "INSERT OR IGNORE INTO guild_ban_devices \
-                    (ban_id, guild_id, device_hash, created_at) \
-                 VALUES (?, ?, ?, ?)",
-            )
-            .bind(ban.id.to_canonical())
-            .bind(ban.guild_id.as_str())
-            .bind(device_hash.as_str())
-            .bind(to_ms(now))
-            .execute(&mut *transaction)
-            .await;
-            if let Err(error) = recorded {
-                transaction.rollback().await?;
-                return Err(error.into());
+    ) -> DbResult<BanWithDevices> {
+        let mut connection = self.pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *connection)
+            .await?;
+        let outcome = create_with_devices_locked(&mut connection, ban, device_hashes, now).await;
+        match outcome {
+            Ok(outcome) => {
+                if let Err(error) = sqlx::query("COMMIT").execute(&mut *connection).await {
+                    // The connection is closing anyway: keep the commit error.
+                    drop(sqlx::query("ROLLBACK").execute(&mut *connection).await);
+                    return Err(error.into());
+                }
+                Ok(outcome)
+            }
+            Err(error) => {
+                drop(sqlx::query("ROLLBACK").execute(&mut *connection).await);
+                Err(error)
             }
         }
-        transaction.commit().await?;
-        Ok(Some(ban.clone()))
     }
+}
 
+/// Lookup + insert executed while the immediate transaction holds the writer
+/// lock.
+async fn create_with_devices_locked(
+    connection: &mut sqlx::SqliteConnection,
+    ban: &GuildBan,
+    device_hashes: &[String],
+    now: UtcDateTime,
+) -> DbResult<BanWithDevices> {
+    let existing = sqlx::query_as::<_, GuildBanRow>(
+        "SELECT * FROM guild_bans \
+         WHERE guild_id = ? \
+           AND (member_id = ? OR (? IS NOT NULL AND discord_user_id = ?)) \
+         ORDER BY created_at DESC, id ASC LIMIT 1",
+    )
+    .bind(ban.guild_id.as_str())
+    .bind(ban.member_id.map(GuildMemberId::to_canonical))
+    .bind(ban.discord_user_id.as_deref())
+    .bind(ban.discord_user_id.as_deref())
+    .fetch_optional(&mut *connection)
+    .await?;
+    if let Some(row) = existing {
+        let existing = row.into_entity()?;
+        record_devices(
+            connection,
+            existing.id,
+            ban.guild_id.as_str(),
+            device_hashes,
+            now,
+        )
+        .await?;
+        return Ok(BanWithDevices::Existing(existing));
+    }
+    sqlx::query(
+        "INSERT INTO guild_bans ( \
+            id, guild_id, member_id, discord_user_id, display_name, avatar, \
+            banned_by, created_at \
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(ban.id.to_canonical())
+    .bind(ban.guild_id.as_str())
+    .bind(ban.member_id.map(GuildMemberId::to_canonical))
+    .bind(ban.discord_user_id.as_deref())
+    .bind(ban.display_name.as_str())
+    .bind(ban.avatar.as_deref())
+    .bind(ban.banned_by.as_deref())
+    .bind(to_ms(ban.created_at))
+    .execute(&mut *connection)
+    .await
+    .map_err(|error| conflict_on_unique(error, "discord account already banned"))?;
+    record_devices(
+        connection,
+        ban.id,
+        ban.guild_id.as_str(),
+        device_hashes,
+        now,
+    )
+    .await?;
+    Ok(BanWithDevices::Created(ban.clone()))
+}
+
+async fn record_devices(
+    connection: &mut sqlx::SqliteConnection,
+    ban_id: GuildBanId,
+    guild_id: &str,
+    device_hashes: &[String],
+    now: UtcDateTime,
+) -> DbResult<()> {
+    for device_hash in device_hashes {
+        sqlx::query(
+            "INSERT OR IGNORE INTO guild_ban_devices \
+                (ban_id, guild_id, device_hash, created_at) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(ban_id.to_canonical())
+        .bind(guild_id)
+        .bind(device_hash.as_str())
+        .bind(to_ms(now))
+        .execute(&mut *connection)
+        .await?;
+    }
+    Ok(())
+}
+
+impl GuildBansRepository {
     /// Bans of a guild, most recent first.
     pub async fn list_by_guild(&self, guild_id: &GuildId) -> DbResult<Vec<GuildBan>> {
         let rows = sqlx::query_as::<_, GuildBanRow>(
@@ -223,6 +296,28 @@ impl GuildBansRepository {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Deletes bans whose member is still active in the guild.
+    ///
+    /// A crash between the ban commit and the exclusion can leave such a row
+    /// (an active member with an active ban). Startup reconciles it with this
+    /// query; deleting a ban cascades to its device fingerprints. Returns the
+    /// number of bans removed.
+    pub async fn delete_bans_of_active_members(&self) -> DbResult<u64> {
+        let result = sqlx::query(
+            "DELETE FROM guild_bans \
+             WHERE member_id IS NOT NULL \
+               AND EXISTS ( \
+                   SELECT 1 FROM guild_members \
+                   WHERE guild_members.id = guild_bans.member_id \
+                     AND guild_members.guild_id = guild_bans.guild_id \
+                     AND guild_members.removed_at IS NULL \
+               )",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     /// Deletes every ban of a guild (purge). Returns the number of rows.

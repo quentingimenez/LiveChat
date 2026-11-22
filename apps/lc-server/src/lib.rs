@@ -168,6 +168,18 @@ async fn serve(config: Config) -> anyhow::Result<()> {
                 warn!(error = %error, "nettoyage de l'audit admin impossible");
             }
         }
+        // A crash between the ban commit and the member removal can leave an
+        // active member with an active ban. Startup drops those bans and their
+        // device fingerprints (cascade) so that "banned" always means removed.
+        match db.guild_bans().delete_bans_of_active_members().await {
+            Ok(removed) if removed > 0 => {
+                info!(removed, "bans incohérents supprimés au démarrage");
+            }
+            Ok(_) => {}
+            Err(error) => {
+                warn!(error = %error, "réconciliation des bans impossible");
+            }
+        }
     }
     let database_for_shutdown = database.clone();
     let mut state = AppState::new(Arc::clone(&config), database, shutdown.clone());

@@ -159,28 +159,41 @@ Un bannissement (`POST /overlay/admin/members/{memberId}/ban`, table
   pour un administrateur du serveur Discord.
 
 Depuis la migration 0020, le bannissement retient aussi les empreintes des
-appareils des clients overlay actifs du membre (`guild_ban_devices`). Le client
-envoie un `deviceId` optionnel au `POST /overlay/pair/consume` — le MachineGuid
-Windows (toujours en build release), ou `LC_DEVICE_ID` dans les builds de debug
-(tests, CI). Le serveur
-le hache en SHA-256 avec la guilde (`lc-device-v1|<guild_id>|<brut>`) et ne
-stocke jamais la valeur brute ; une consommation qui présente une empreinte
-bannie est refusée (`403 member_banned`, code non consommé), et lever le
-bannissement supprime ses empreintes avec lui (cascade `ON DELETE CASCADE`).
+appareils du membre, actifs ou déjà révoqués (`guild_ban_devices`). Le client
+envoie un `deviceId` optionnel au `POST /overlay/pair/consume` : une empreinte
+matérielle brute composée, dans un ordre fixe, de l'UUID SMBIOS de la carte
+mère, du numéro de série du disque système quand il est lisible et du modèle du
+processeur (`apps/lc-overlay/src/fingerprint.rs`). Les composants absents ou
+restés aux valeurs d'usine (`Default string`, `To be filled by O.E.M.`, UUID
+tout-0, tout-FF ou l'UUID d'usine `03000200-0400-0500-0006-000700080009`…) sont
+ignorés ; sans aucun composant fiable, le client n'envoie rien. Le serveur hache l'empreinte en SHA-256 avec la guilde
+(`lc-device-v2|<guild_id>|<brut>`) et ne stocke jamais la valeur brute ; une
+consommation qui présente une empreinte bannie est refusée (`403 member_banned`,
+code non consommé), et lever le bannissement supprime ses empreintes avec lui
+(cascade `ON DELETE CASCADE`).
+
+Le ban et ses empreintes sont écrits dans une même transaction, ouverte en
+`BEGIN IMMEDIATE` : elle relit un ban existant du membre avant d'insérer, donc
+deux coups de ban simultanés — même sur un membre sans compte Discord lié —
+produisent un seul ban, qui reçoit toutes les empreintes. L'exclusion vient
+ensuite ; si elle échoue et que le membre est resté actif, le ban créé est
+annulé avec ses empreintes, tandis qu'un ban préexistant est conservé. Au
+démarrage, `delete_bans_of_active_members` supprime les bans qu'un crash aurait
+laissés sur un membre encore actif (cascade comprise).
 
 C'est une défense en profondeur, pas une authentification : un client modifié
-peut mentir sur son `deviceId`, une réinstallation de Windows change le GUID, et
-les anciens clients qui n'envoient rien restent hors couverture. En release, un
-client non modifié ne peut pas changer son empreinte par variable
-d'environnement (`LC_DEVICE_ID` n'est honoré qu'en debug). Un membre sans
-compte Discord lié qui revient avec un autre appareil, ou sans `deviceId`,
-n'est identifiable par rien d'autre : son bannissement se réduit alors à
-l'exclusion (il reviendrait avec une nouvelle invitation). On ne peut pas se
-bannir soi-même (`409 cannot_ban_self`) ; la règle du dernier admin s'applique :
-le bannissement est refusé (`409 last_admin`) et le ban déjà écrit pour ce
-membre est annulé avec ses empreintes (cascade), pour ne jamais laisser un
-membre actif et banni à la fois. Un ban préexistant (compte Discord déjà banni)
-n'est pas supprimé par ce refus.
+peut mentir sur son `deviceId`, un changement de matériel change l'empreinte, et
+les anciens clients qui n'envoient rien restent hors couverture. En revanche,
+une réinstallation de Windows à matériel inchangé conserve l'empreinte, et un
+client non modifié ne peut pas la changer par variable d'environnement. Un
+membre sans compte Discord lié qui revient avec un autre appareil, ou sans
+`deviceId`, n'est identifiable par rien d'autre : son bannissement se réduit
+alors à l'exclusion (il reviendrait avec une nouvelle invitation). On ne peut
+pas se bannir soi-même (`409 cannot_ban_self`) ; la règle du dernier admin
+s'applique : le bannissement est refusé (`409 last_admin`) et le ban déjà écrit
+pour ce membre est annulé avec ses empreintes (cascade), pour ne jamais laisser
+un membre actif et banni à la fois. Un ban préexistant (compte Discord déjà
+banni) n'est pas supprimé par ce refus.
 `DELETE /overlay/admin/bans/{banId}` lève le bannissement ; les anciens appareils
 restent révoqués.
 

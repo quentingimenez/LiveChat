@@ -6,7 +6,7 @@
 //!
 //! ```json
 //! { "code": "ABC123", "deviceName": "Poste salon", "appVersion": "2.0.1",
-//!   "deviceId": "<identifiant stable de l'appareil>" }
+//!   "deviceId": "<empreinte matérielle de l'appareil>" }
 //! ```
 //!
 //! - `code` : obligatoire, insensible à la casse et aux espaces de bord, puis
@@ -14,12 +14,12 @@
 //! - `deviceName` : facultatif ; repli legacy `Overlay-<authorName|User>` ;
 //! - `label` / `clientName` sont acceptés en alias de `deviceName` (anciens
 //!   clients) ;
-//! - `deviceId` : facultatif, identifiant stable de l'appareil (MachineGuid
-//!   côté shell Windows). Le serveur n'en garde qu'une empreinte SHA-256 salée
-//!   par la guilde, jamais le brut. Un appareil dont l'empreinte est bannie est
-//!   refusé `403 member_banned` **sans consommer le code** ; un client qui n'en
-//!   envoie pas reste accepté mais n'est pas couvert par le bannissement
-//!   d'appareil ;
+//! - `deviceId` : facultatif, empreinte matérielle brute de l'appareil (UUID
+//!   SMBIOS de la carte mère, série du disque système, modèle du processeur).
+//!   Le serveur n'en garde qu'une empreinte SHA-256 salée par la guilde, jamais
+//!   le brut. Un appareil dont l'empreinte est bannie est refusé
+//!   `403 member_banned` **sans consommer le code** ; un client qui n'en envoie
+//!   pas reste accepté mais n'est pas couvert par le bannissement d'appareil ;
 //! - `displayName` / `avatar` : profil du nouveau membre venu d'une invitation
 //!   (board, panel) ou d'un code `/pair-code` en mode invité ; sans pseudo la
 //!   requête est refusée `400 display_name_required` **sans consommer le
@@ -66,10 +66,10 @@
 //! révoque les invitations sans transaction commune avec cette requête.
 //!
 //! Un appareil banni (`guild_ban_devices`) est refusé de la même façon, quel que
-//! soit le code. Les empreintes retenues sont celles des appareils actifs du
-//! membre au moment du bannissement : un client antérieur au champ `deviceId`
-//! n'en fournit aucune et échappe à ce contrôle (défense en profondeur, pas une
-//! authentification).
+//! soit le code. Les empreintes retenues sont celles des appareils du membre au
+//! moment du bannissement, actifs ou déjà révoqués : un client antérieur au
+//! champ `deviceId` n'en fournit aucune et échappe à ce contrôle (défense en
+//! profondeur, pas une authentification).
 //!
 //! ## Réponse (200)
 //!

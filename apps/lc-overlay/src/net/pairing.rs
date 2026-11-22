@@ -282,9 +282,9 @@ pub async fn consume(state: &AppState, request: PairingRequest) -> PairingOutcom
         Err(message) => return failure(message),
     };
     let device_name = request.device_name();
-    // Stable fingerprint used by the server for ban defense in depth. It is
+    // Hardware fingerprint used by the server for ban defense in depth. It is
     // never logged and never leaves the TLS request as a raw value.
-    let device_id = crate::device_id::stable_device_id();
+    let device_id = crate::fingerprint::hardware_fingerprint();
     let client = match build_client(insecure_tls_enabled()) {
         Ok(client) => client,
         Err(message) => return failure(message),

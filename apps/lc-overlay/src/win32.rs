@@ -21,11 +21,20 @@
 
 use std::sync::OnceLock;
 
-use windows::core::{w, Result as WindowsResult};
-use windows::Win32::Foundation::{ERROR_SUCCESS, HWND};
+use windows::core::{w, Result as WindowsResult, PCWSTR};
+use windows::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HWND};
+use windows::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+};
+use windows::Win32::System::Ioctl::{
+    PropertyStandardQuery, StorageDeviceProperty, IOCTL_STORAGE_QUERY_PROPERTY,
+    STORAGE_DEVICE_DESCRIPTOR, STORAGE_PROPERTY_QUERY,
+};
 use windows::Win32::System::Registry::{
     RegGetValueW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
 };
+use windows::Win32::System::SystemInformation::{GetSystemFirmwareTable, RSMB};
+use windows::Win32::System::IO::DeviceIoControl;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos,
@@ -291,13 +300,142 @@ pub fn taskbar_uses_light_theme() -> bool {
     status == ERROR_SUCCESS && data != 0
 }
 
-/// Stable Windows machine GUID (`HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid`).
+/// UUID SMBIOS de la carte mère (`GetSystemFirmwareTable('RSMB', 0, …)`).
 ///
-/// It survives reboots and Windows upgrades, but it is a fingerprint, not an
-/// identity: the caller hashes it per guild and must never log the raw value.
-/// A reinstalled Windows yields a new GUID; a missing or oversized value
-/// returns `None` so pairing simply proceeds without one.
-pub fn machine_guid() -> Option<String> {
+/// L'UUID est un identifiant matériel : il survit à une réinstallation de
+/// Windows, mais pas à un changement de carte mère. C'est une empreinte, pas
+/// une identité : l'appelant la hache par guilde et ne doit jamais la
+/// journaliser. `None` quand la table est illisible ou ne porte que des valeurs
+/// d'usine.
+pub fn smbios_board_uuid() -> Option<String> {
+    // SAFETY: a null buffer with size 0 only asks for the required size.
+    let size = unsafe { GetSystemFirmwareTable(RSMB, 0, None) };
+    // A real SMBIOS table is far smaller; anything huge is a broken driver.
+    if size == 0 || size > 1_048_576 {
+        return None;
+    }
+    let mut buffer = vec![0_u8; usize::try_from(size).ok()?];
+    // SAFETY: `buffer` is `size` bytes and the API writes at most `size`.
+    let written = unsafe { GetSystemFirmwareTable(RSMB, 0, Some(&mut buffer)) };
+    if written == 0 || written > size {
+        return None;
+    }
+    buffer.truncate(usize::try_from(written).ok()?);
+    smbios_board_uuid_from_table(&buffer)
+}
+
+/// Extrait l'UUID de la structure SMBIOS type 1 (`System Information`).
+fn smbios_board_uuid_from_table(table: &[u8]) -> Option<String> {
+    let mut offset = 8_usize; // en-tête RawSMBIOSData
+    while offset + 4 <= table.len() {
+        let structure_type = table[offset];
+        let length = usize::from(table[offset + 1]);
+        if length < 4 || offset + length > table.len() {
+            return None;
+        }
+        if structure_type == 1 && length >= 0x19 {
+            let uuid: [u8; 16] = table.get(offset + 8..offset + 24)?.try_into().ok()?;
+            return uuid_hex(&uuid);
+        }
+        // Zone formatée, puis jeu de chaînes terminé par une chaîne vide.
+        let mut next = offset + length;
+        while next + 1 < table.len() {
+            if table[next] == 0 && table[next + 1] == 0 {
+                next += 2;
+                break;
+            }
+            next += 1;
+        }
+        offset = next;
+    }
+    None
+}
+
+/// 32 caractères hexadécimaux, sauf les valeurs d'usine tout-0 et tout-FF.
+fn uuid_hex(uuid: &[u8; 16]) -> Option<String> {
+    if uuid.iter().all(|byte| *byte == 0) || uuid.iter().all(|byte| *byte == 0xff) {
+        return None;
+    }
+    let hex: String = uuid.iter().map(|byte| format!("{byte:02x}")).collect();
+    (hex.len() == 32).then_some(hex)
+}
+
+/// Numéro de série du disque système (`\\.\PhysicalDrive0`).
+///
+/// Best-effort : l'accès direct au disque peut être refusé (droits, disque
+/// virtuel), auquel cas la série est simplement absente de l'empreinte. Le
+/// numéro de série n'est jamais journalisé.
+pub fn system_disk_serial() -> Option<String> {
+    // SAFETY: the path is a static wide string and no security attributes are
+    // passed; the returned handle is closed below.
+    let handle = unsafe {
+        CreateFileW(
+            w!(r"\\.\PhysicalDrive0"),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+    }
+    .ok()?;
+    let query = STORAGE_PROPERTY_QUERY {
+        PropertyId: StorageDeviceProperty,
+        QueryType: PropertyStandardQuery,
+        AdditionalParameters: [0],
+    };
+    let mut buffer = vec![0_u8; 1024];
+    let mut returned = 0_u32;
+    // SAFETY: `query` and `buffer` outlive the call and their sizes are exact;
+    // `handle` is valid until CloseHandle.
+    let result = unsafe {
+        DeviceIoControl(
+            handle,
+            IOCTL_STORAGE_QUERY_PROPERTY,
+            Some(std::ptr::from_ref(&query).cast()),
+            u32::try_from(std::mem::size_of::<STORAGE_PROPERTY_QUERY>()).ok()?,
+            Some(buffer.as_mut_ptr().cast()),
+            u32::try_from(buffer.len()).ok()?,
+            Some(&mut returned),
+            None,
+        )
+    };
+    // SAFETY: `handle` comes from CreateFileW and is closed exactly once.
+    drop(unsafe { CloseHandle(handle) });
+    result.ok()?;
+    let returned = usize::try_from(returned).ok()?.min(buffer.len());
+    if returned < std::mem::size_of::<STORAGE_DEVICE_DESCRIPTOR>() {
+        return None;
+    }
+    // SAFETY: the buffer holds at least the fixed descriptor; `read_unaligned`
+    // tolerates the byte alignment of the Vec allocation.
+    let descriptor =
+        unsafe { std::ptr::read_unaligned(buffer.as_ptr().cast::<STORAGE_DEVICE_DESCRIPTOR>()) };
+    let offset = usize::try_from(descriptor.SerialNumberOffset).ok()?;
+    if offset == 0 || offset >= returned {
+        return None;
+    }
+    let bytes = &buffer[offset..returned];
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    let serial = String::from_utf8_lossy(&bytes[..end]);
+    let serial = serial.trim();
+    (!serial.is_empty()).then(|| serial.to_owned())
+}
+
+/// Modèle du processeur (`ProcessorNameString`), stable pour une machine.
+pub fn processor_name() -> Option<String> {
+    read_machine_string(
+        w!(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"),
+        w!("ProcessorNameString"),
+    )
+}
+
+/// Lit une valeur `REG_SZ` de `HKLM` (jamais journalisée).
+fn read_machine_string(subkey: PCWSTR, value: PCWSTR) -> Option<String> {
     let mut buffer = [0_u16; 128];
     let mut size = u32::try_from(buffer.len() * 2).ok()?;
     // SAFETY: `buffer` and `size` outlive the call, `size` is the byte length
@@ -306,8 +444,8 @@ pub fn machine_guid() -> Option<String> {
     let status = unsafe {
         RegGetValueW(
             HKEY_LOCAL_MACHINE,
-            w!(r"SOFTWARE\Microsoft\Cryptography"),
-            w!("MachineGuid"),
+            subkey,
+            value,
             RRF_RT_REG_SZ,
             None,
             Some(buffer.as_mut_ptr().cast()),
@@ -360,5 +498,39 @@ mod tests {
     #[test]
     fn describe_falls_back_to_raw_hex() {
         assert_eq!(describe_ex_style(0), "0x00000000");
+    }
+
+    #[test]
+    fn smbios_parser_reads_the_board_uuid() {
+        let uuid = [
+            0x4c, 0x4c, 0x45, 0x44, 0x00, 0x31, 0x35, 0x10, 0x80, 0x43, 0xb2, 0xc0, 0x4f, 0x4d,
+            0x4e, 0x31,
+        ];
+        assert_eq!(
+            smbios_board_uuid_from_table(&smbios_table(uuid)).as_deref(),
+            Some("4c4c4544003135108043b2c04f4d4e31")
+        );
+    }
+
+    #[test]
+    fn smbios_parser_skips_unusable_uuids_and_tables() {
+        assert!(smbios_board_uuid_from_table(&smbios_table([0x00; 16])).is_none());
+        assert!(smbios_board_uuid_from_table(&smbios_table([0xff; 16])).is_none());
+        assert!(smbios_board_uuid_from_table(&[]).is_none());
+        assert!(smbios_board_uuid_from_table(&[0_u8; 8]).is_none());
+    }
+
+    /// Table `RawSMBIOSData` minimale avec une seule structure type 1.
+    fn smbios_table(uuid: [u8; 16]) -> Vec<u8> {
+        let mut table = vec![0_u8; 8];
+        // En-tête (type 1, longueur 0x19) puis les quatre indices de chaînes
+        // (`Manufacturer`, `Product`, `Version`, `Serial`).
+        table.extend_from_slice(&[1, 0x19, 0, 0, 0, 0, 0, 0]);
+        table.extend_from_slice(&uuid);
+        table.push(0); // complète la longueur 0x19
+        table.extend_from_slice(&[0, 0]);
+        let length = u32::try_from(table.len() - 8).unwrap_or_default();
+        table[4..8].copy_from_slice(&length.to_le_bytes());
+        table
     }
 }

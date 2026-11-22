@@ -64,6 +64,14 @@ OPTIONS (loadtest) :
     --duration-secs <N>     Load window in seconds (default: 60).
     --ingest-rate <N>       POSTs per second spread over /ingest (default: 20).
     --max-hello-p95-ms <N>  Hello->welcome p95 budget in milliseconds (default: 250).
+    --board-items <N>       Board items in the probe guild (default: 200; 0 disables
+                            the board/media budgets, debug only).
+    --max-board-p95-ms <N>  Signed board-page p95 budget in milliseconds (default: 250).
+    --max-media-p95-ms <N>  Signed media TTFB p95 budget in milliseconds (default: 250).
+    --media-trigger-rate <N> media.trigger frames per second (default: 10; 0 disables
+                            the trigger budget; max: 19, the server caps clients at 20/s).
+    --max-media-trigger-p95-ms <N>
+                            media.trigger ack p95 budget in milliseconds (default: 250).
     --report <PATH>         Where to write the JSON report (also printed to stdout).
 
 CODES DE SORTIE :
@@ -252,6 +260,11 @@ fn parse_loadtest(args: impl Iterator<Item = String>) -> Result<Command, CliErro
     let mut duration_secs: Option<u64> = None;
     let mut ingest_rate: Option<u64> = None;
     let mut max_hello_p95_ms: Option<u64> = None;
+    let mut board_items: Option<usize> = None;
+    let mut max_board_p95_ms: Option<u64> = None;
+    let mut max_media_p95_ms: Option<u64> = None;
+    let mut media_trigger_rate: Option<u64> = None;
+    let mut max_media_trigger_p95_ms: Option<u64> = None;
     let mut report: Option<PathBuf> = None;
     let mut args = args;
 
@@ -292,6 +305,40 @@ fn parse_loadtest(args: impl Iterator<Item = String>) -> Result<Command, CliErro
                 }
                 max_hello_p95_ms = Some(take_number("--max-hello-p95-ms", inline, &mut args)?);
             }
+            "--board-items" => {
+                if board_items.is_some() {
+                    return Err(CliError::DuplicateValue("--board-items"));
+                }
+                board_items = Some(take_number("--board-items", inline, &mut args)?);
+            }
+            "--max-board-p95-ms" => {
+                if max_board_p95_ms.is_some() {
+                    return Err(CliError::DuplicateValue("--max-board-p95-ms"));
+                }
+                max_board_p95_ms = Some(take_number("--max-board-p95-ms", inline, &mut args)?);
+            }
+            "--max-media-p95-ms" => {
+                if max_media_p95_ms.is_some() {
+                    return Err(CliError::DuplicateValue("--max-media-p95-ms"));
+                }
+                max_media_p95_ms = Some(take_number("--max-media-p95-ms", inline, &mut args)?);
+            }
+            "--media-trigger-rate" => {
+                if media_trigger_rate.is_some() {
+                    return Err(CliError::DuplicateValue("--media-trigger-rate"));
+                }
+                media_trigger_rate = Some(take_number("--media-trigger-rate", inline, &mut args)?);
+            }
+            "--max-media-trigger-p95-ms" => {
+                if max_media_trigger_p95_ms.is_some() {
+                    return Err(CliError::DuplicateValue("--max-media-trigger-p95-ms"));
+                }
+                max_media_trigger_p95_ms = Some(take_number(
+                    "--max-media-trigger-p95-ms",
+                    inline,
+                    &mut args,
+                )?);
+            }
             "--report" => {
                 if report.is_some() {
                     return Err(CliError::DuplicateValue("--report"));
@@ -317,6 +364,15 @@ fn parse_loadtest(args: impl Iterator<Item = String>) -> Result<Command, CliErro
             "at least 1".to_owned(),
         ));
     }
+    if media_trigger_rate.is_some_and(|rate| rate > loadtest::MAX_MEDIA_TRIGGER_RATE) {
+        return Err(CliError::InvalidValue(
+            "--media-trigger-rate",
+            format!(
+                "at most {} (server cap: 20 client messages/s)",
+                loadtest::MAX_MEDIA_TRIGGER_RATE
+            ),
+        ));
+    }
 
     Ok(Command::Loadtest(loadtest::Options {
         server_bin: server_bin.unwrap_or_else(default_server_bin),
@@ -324,6 +380,11 @@ fn parse_loadtest(args: impl Iterator<Item = String>) -> Result<Command, CliErro
         duration_secs: duration_secs.unwrap_or(60),
         ingest_rate: ingest_rate.unwrap_or(20),
         max_hello_p95_ms: max_hello_p95_ms.unwrap_or(250),
+        board_items: board_items.unwrap_or(200),
+        max_board_p95_ms: max_board_p95_ms.unwrap_or(250),
+        max_media_p95_ms: max_media_p95_ms.unwrap_or(250),
+        media_trigger_rate: media_trigger_rate.unwrap_or(10),
+        max_media_trigger_p95_ms: max_media_trigger_p95_ms.unwrap_or(250),
         report,
     }))
 }
@@ -530,6 +591,11 @@ mod tests {
                 duration_secs: 60,
                 ingest_rate: 20,
                 max_hello_p95_ms: 250,
+                board_items: 200,
+                max_board_p95_ms: 250,
+                max_media_p95_ms: 250,
+                media_trigger_rate: 10,
+                max_media_trigger_p95_ms: 250,
                 report: None,
             })) if server_bin == default_server_bin()
         ));
@@ -550,6 +616,16 @@ mod tests {
                 "3",
                 "--max-hello-p95-ms",
                 "120",
+                "--board-items",
+                "25",
+                "--max-board-p95-ms",
+                "180",
+                "--max-media-p95-ms",
+                "190",
+                "--media-trigger-rate",
+                "7",
+                "--max-media-trigger-p95-ms",
+                "210",
                 "--report",
                 "out.json"
             ])),
@@ -559,6 +635,11 @@ mod tests {
                 duration_secs: 9,
                 ingest_rate: 3,
                 max_hello_p95_ms: 120,
+                board_items: 25,
+                max_board_p95_ms: 180,
+                max_media_p95_ms: 190,
+                media_trigger_rate: 7,
+                max_media_trigger_p95_ms: 210,
                 report: Some(ref path),
             })) if server_bin == Path::new("bin/lc-server.exe")
                 && path.as_path() == Path::new("out.json")
@@ -602,6 +683,21 @@ mod tests {
         assert!(matches!(
             parse_args(args(&["loadtest", "--ingest-rate", "0"])),
             Err(CliError::InvalidValue("--ingest-rate", _))
+        ));
+        assert!(matches!(
+            parse_args(args(&["loadtest", "--media-trigger-rate", "20"])),
+            Err(CliError::InvalidValue("--media-trigger-rate", _))
+        ));
+        assert!(matches!(
+            parse_args(args(&["loadtest", "--media-trigger-rate", "19"])),
+            Ok(Command::Loadtest(loadtest::Options {
+                media_trigger_rate: 19,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            parse_args(args(&["loadtest", "--board-items", "0"])),
+            Ok(Command::Loadtest(loadtest::Options { board_items: 0, .. }))
         ));
     }
 

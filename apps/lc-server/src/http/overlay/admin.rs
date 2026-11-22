@@ -23,9 +23,13 @@
 //!
 //! Bannir retire le membre comme une exclusion (fermeture `4402
 //! member_banned`) et garde son compte Discord lié hors de la guilde : plus
-//! de `/pair-code`, de code consommé ni de commande du bot. Un membre sans
-//! compte Discord lié n'est identifiable par rien d'autre : le bannissement
-//! se réduit alors à l'exclusion.
+//! de `/pair-code`, de code consommé ni de commande du bot. Le ban retient
+//! aussi les empreintes des appareils actifs du membre (`guild_ban_devices`) :
+//! un membre sans compte Discord lié ne revient donc pas depuis le même poste
+//! avec une invitation neuve. L'identifiant d'appareil est fourni par le shell
+//! et haché côté serveur ; c'est une défense en profondeur (falsifiable,
+//! réinstallation = nouvel identifiant, anciens clients non couverts), pas une
+//! authentification. Lever le ban supprime ses appareils par cascade.
 //!
 //! Changer un rôle aligne `overlay_clients.session_mode` puis ferme les
 //! sessions WS du membre (`1001`) : ses overlays se reconnectent aussitôt et
@@ -330,6 +334,17 @@ pub(crate) async fn ban_member_payload(
         }
     }
     let at = now(state);
+    // Les appareils actifs du membre sont retenus avec le ban : sans cela, un
+    // membre sans compte Discord lié reviendrait avec une invitation neuve
+    // depuis le même poste. Les empreintes sont lues avant la révocation, qui
+    // rend les clients inactifs.
+    let device_hashes = match db.overlay_clients().list_active_by_member(member.id).await {
+        Ok(clients) => clients
+            .into_iter()
+            .filter_map(|client| client.device_hash)
+            .collect::<Vec<_>>(),
+        Err(db_error) => return Err(db_failure("overlay_admin.ban_devices", &db_error)),
+    };
     match remove_member(
         state,
         db,
@@ -357,12 +372,43 @@ pub(crate) async fn ban_member_payload(
         },
         created_at: at,
     };
-    match db.guild_bans().create(&ban).await {
-        Ok(()) => {}
+    let ban_id = match db.guild_bans().create(&ban).await {
+        Ok(()) => Some(ban.id),
         // The account was already banned (a ban lifted then a concurrent
-        // one): the member is removed, the existing ban stands.
-        Err(db_error) if is_conflict(&db_error) => {}
+        // one): the member is removed, the existing ban stands and carries
+        // the devices.
+        Err(db_error) if is_conflict(&db_error) => match db
+            .guild_bans()
+            .find_for_member(
+                &member.guild_id,
+                member.id,
+                member.discord_user_id.as_deref(),
+            )
+            .await
+        {
+            Ok(Some(existing)) => Some(existing.id),
+            Ok(None) => {
+                tracing::warn!(
+                    guild_id = %member.guild_id,
+                    member_id = %member.id,
+                    "ban existant introuvable après conflit : appareils non rattachés"
+                );
+                None
+            }
+            Err(db_error) => return Err(db_failure("overlay_admin.find_ban", &db_error)),
+        },
         Err(db_error) => return Err(db_failure("overlay_admin.create_ban", &db_error)),
+    };
+    if let Some(ban_id) = ban_id {
+        if !device_hashes.is_empty() {
+            if let Err(db_error) = db
+                .guild_ban_devices()
+                .record(ban_id, &member.guild_id, &device_hashes, at)
+                .await
+            {
+                return Err(db_failure("overlay_admin.record_ban_devices", &db_error));
+            }
+        }
     }
     tracing::info!(
         guild_id = %member.guild_id,

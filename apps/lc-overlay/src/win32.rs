@@ -23,7 +23,9 @@ use std::sync::OnceLock;
 
 use windows::core::{w, Result as WindowsResult};
 use windows::Win32::Foundation::{ERROR_SUCCESS, HWND};
-use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+use windows::Win32::System::Registry::{
+    RegGetValueW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
+};
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos,
@@ -287,6 +289,39 @@ pub fn taskbar_uses_light_theme() -> bool {
         )
     };
     status == ERROR_SUCCESS && data != 0
+}
+
+/// Stable Windows machine GUID (`HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid`).
+///
+/// It survives reboots and Windows upgrades, but it is a fingerprint, not an
+/// identity: the caller hashes it per guild and must never log the raw value.
+/// A reinstalled Windows yields a new GUID; a missing or oversized value
+/// returns `None` so pairing simply proceeds without one.
+pub fn machine_guid() -> Option<String> {
+    let mut buffer = [0_u16; 128];
+    let mut size = u32::try_from(buffer.len() * 2).ok()?;
+    // SAFETY: `buffer` and `size` outlive the call, `size` is the byte length
+    // of `buffer`, and `RRF_RT_REG_SZ` makes the API write a NUL-terminated
+    // UTF-16 string no longer than that.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            w!(r"SOFTWARE\Microsoft\Cryptography"),
+            w!("MachineGuid"),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buffer.as_mut_ptr().cast()),
+            Some(&mut size),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+    let units = usize::try_from(size).ok()? / std::mem::size_of::<u16>();
+    let units = units.min(buffer.len());
+    let value = String::from_utf16_lossy(&buffer[..units]);
+    let trimmed = value.trim_end_matches('\0').trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 #[cfg(test)]

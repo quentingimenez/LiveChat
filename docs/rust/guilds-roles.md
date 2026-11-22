@@ -158,11 +158,24 @@ Un bannissement (`POST /overlay/admin/members/{memberId}/ban`, table
 - le bot refuse toutes ses commandes sauf `/alive`, `/help` et `/info`, même
   pour un administrateur du serveur Discord.
 
-Un membre sans compte Discord lié n'est identifiable par rien d'autre : son
-bannissement se réduit à l'exclusion (il reviendrait avec une nouvelle
-invitation). On ne peut pas se bannir soi-même (`409 cannot_ban_self`) ; la
-règle du dernier admin s'applique. `DELETE /overlay/admin/bans/{banId}` lève
-le bannissement ; les anciens appareils restent révoqués.
+Depuis la migration 0020, le bannissement retient aussi les empreintes des
+appareils des clients overlay actifs du membre (`guild_ban_devices`). Le client
+envoie un `deviceId` optionnel au `POST /overlay/pair/consume` — le MachineGuid
+Windows, ou `LC_DEVICE_ID` pour les tests et installations portables. Le serveur
+le hache en SHA-256 avec la guilde (`lc-device-v1|<guild_id>|<brut>`) et ne
+stocke jamais la valeur brute ; une consommation qui présente une empreinte
+bannie est refusée (`403 member_banned`, code non consommé), et lever le
+bannissement supprime ses empreintes avec lui (cascade `ON DELETE CASCADE`).
+
+C'est une défense en profondeur, pas une authentification : un client modifié
+peut mentir sur son `deviceId`, une réinstallation de Windows change le GUID, et
+les anciens clients qui n'envoient rien restent hors couverture. Un membre sans
+compte Discord lié qui revient avec un autre appareil, ou sans `deviceId`,
+n'est identifiable par rien d'autre : son bannissement se réduit alors à
+l'exclusion (il reviendrait avec une nouvelle invitation). On ne peut pas se
+bannir soi-même (`409 cannot_ban_self`) ; la règle du dernier admin s'applique.
+`DELETE /overlay/admin/bans/{banId}` lève le bannissement ; les anciens appareils
+restent révoqués.
 
 ### Modification des médias (`can_edit`)
 

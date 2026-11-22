@@ -485,6 +485,13 @@ pub struct OverlayClient {
     pub default_author_image: Option<String>,
     /// Auteur Discord du pairing, si connu.
     pub created_by_discord_user_id: Option<String>,
+    /// Empreinte serveur de l'identifiant d'appareil fourni à l'appairage.
+    ///
+    /// Le brut n'est jamais stocké ni journalisé : seule cette empreinte
+    /// SHA-256, salée par la guilde, permet de refuser le retour d'un appareil
+    /// banni. Absente pour les clients antérieurs au champ `deviceId`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_hash: Option<String>,
     /// Dernier heartbeat applicatif.
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
     pub last_seen_at: Option<UtcDateTime>,

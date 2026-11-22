@@ -486,6 +486,7 @@ mod tests {
             default_author_name: Some("Overlay".to_owned()),
             default_author_image: None,
             created_by_discord_user_id: Some("424242424242424242".to_owned()),
+            device_hash: None,
             last_seen_at: Some(at),
             created_at: at,
             revoked_at: None,

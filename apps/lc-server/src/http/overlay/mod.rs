@@ -84,6 +84,7 @@ mod auth;
 pub(crate) mod board_clear;
 mod board_extras;
 mod danger;
+mod device_id;
 pub(crate) mod devices;
 pub(crate) mod discord_link;
 pub(crate) mod guild;
@@ -150,6 +151,7 @@ impl ActorInfo {
                 default_author_name: Some("Admin console".to_owned()),
                 default_author_image: None,
                 created_by_discord_user_id: None,
+                device_hash: None,
                 last_seen_at: None,
                 created_at: state.clock.now(),
                 revoked_at: None,
@@ -604,6 +606,7 @@ mod session_mode_tests {
             default_author_name: None,
             default_author_image: None,
             created_by_discord_user_id: None,
+            device_hash: None,
             last_seen_at: None,
             created_at: now,
             revoked_at: None,

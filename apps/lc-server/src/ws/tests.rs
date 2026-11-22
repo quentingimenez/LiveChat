@@ -349,6 +349,7 @@ async fn seed_overlay_client(
         default_author_name: Some("Auteur de test".to_owned()),
         default_author_image: None,
         created_by_discord_user_id: None,
+        device_hash: None,
         last_seen_at: None,
         created_at: now(),
         revoked_at: None,

@@ -5,7 +5,8 @@
 //! ## Corps de requête
 //!
 //! ```json
-//! { "code": "ABC123", "deviceName": "Poste salon", "appVersion": "2.0.1" }
+//! { "code": "ABC123", "deviceName": "Poste salon", "appVersion": "2.0.1",
+//!   "deviceId": "<identifiant stable de l'appareil>" }
 //! ```
 //!
 //! - `code` : obligatoire, insensible à la casse et aux espaces de bord, puis
@@ -13,6 +14,12 @@
 //! - `deviceName` : facultatif ; repli legacy `Overlay-<authorName|User>` ;
 //! - `label` / `clientName` sont acceptés en alias de `deviceName` (anciens
 //!   clients) ;
+//! - `deviceId` : facultatif, identifiant stable de l'appareil (MachineGuid
+//!   côté shell Windows). Le serveur n'en garde qu'une empreinte SHA-256 salée
+//!   par la guilde, jamais le brut. Un appareil dont l'empreinte est bannie est
+//!   refusé `403 member_banned` **sans consommer le code** ; un client qui n'en
+//!   envoie pas reste accepté mais n'est pas couvert par le bannissement
+//!   d'appareil ;
 //! - `displayName` / `avatar` : profil du nouveau membre venu d'une invitation
 //!   (board, panel) ou d'un code `/pair-code` en mode invité ; sans pseudo la
 //!   requête est refusée `400 display_name_required` **sans consommer le
@@ -58,6 +65,12 @@
 //! aux bans. Le contrôle est refait à la consommation, car le bannissement
 //! révoque les invitations sans transaction commune avec cette requête.
 //!
+//! Un appareil banni (`guild_ban_devices`) est refusé de la même façon, quel que
+//! soit le code. Les empreintes retenues sont celles des appareils actifs du
+//! membre au moment du bannissement : un client antérieur au champ `deviceId`
+//! n'en fournit aucune et échappe à ce contrôle (défense en profondeur, pas une
+//! authentification).
+//!
 //! ## Réponse (200)
 //!
 //! ```json
@@ -89,7 +102,7 @@
 //! | 400 | `{"error":"invalid_payload"}` (code absent) |
 //! | 400 | `{"error":"display_name_required"}` (nouveau membre sans pseudo utilisable) |
 //! | 403 | `{"error":"pairing_code_scope_mismatch"}` (code réservé à l'extension) |
-//! | 403 | `{"error":"member_banned"}` (code émis par un compte Discord banni, ou invitation nommant un membre banni) |
+//! | 403 | `{"error":"member_banned"}` (code émis par un compte Discord banni, invitation nommant un membre banni, ou appareil banni) |
 //! | 404 | `{"error":"pairing_code_invalid_or_expired"}` |
 //! | 409 | `{"error":"overlay_client_conflict"}` (collision de token, très improbable) |
 //! | 500 | `{"error":"internal_error"}` |
@@ -166,6 +179,9 @@ pub(super) struct PairConsumeRequest {
     /// Nom d'appareil demandé (nom de la fenêtre/du poste).
     #[serde(default, alias = "label", alias = "clientName")]
     device_name: Option<String>,
+    /// Identifiant stable de l'appareil, haché avant tout stockage.
+    #[serde(default)]
+    device_id: Option<String>,
     /// Pseudo du nouveau membre.
     #[serde(default)]
     display_name: Option<String>,
@@ -338,6 +354,38 @@ pub async fn consume_pairing(
             return response;
         }
     }
+
+    // Appareil banni : le refus précède la consommation du code, comme pour un
+    // membre banni. L'identifiant brut ne sort pas de cette fonction : seule
+    // l'empreinte salée par la guilde est comparée puis stockée.
+    let requested_device_hash =
+        match super::device_id::normalize_device_id(payload.device_id.as_deref()) {
+            Ok(Some(device_id)) => {
+                let guild_id = invite
+                    .as_ref()
+                    .map(|invite| &invite.guild_id)
+                    .or_else(|| pairing_entry.as_ref().map(|entry| &entry.guild_id));
+                // Au moins l'une des deux familles de codes est présente ici.
+                let Some(guild_id) = guild_id else {
+                    return error(StatusCode::NOT_FOUND, "pairing_code_invalid_or_expired");
+                };
+                let device_hash = super::device_id::device_hash(guild_id, &device_id);
+                match db
+                    .guild_ban_devices()
+                    .is_device_banned(guild_id, &device_hash)
+                    .await
+                {
+                    Ok(true) => return error(StatusCode::FORBIDDEN, "member_banned"),
+                    Ok(false) => {}
+                    Err(db_error) => {
+                        return db_failure("overlay_pair.device_ban_lookup", &db_error)
+                    }
+                }
+                Some(device_hash)
+            }
+            Ok(None) => None,
+            Err(()) => return error(StatusCode::BAD_REQUEST, "invalid_payload"),
+        };
 
     let requested_display_name = payload
         .display_name
@@ -514,6 +562,7 @@ pub async fn consume_pairing(
         default_author_name: Some(member.display_name.clone()),
         default_author_image: member.avatar.clone(),
         created_by_discord_user_id: grant.created_by_discord_user_id.clone(),
+        device_hash: requested_device_hash,
         last_seen_at: None,
         created_at: now,
         revoked_at: None,

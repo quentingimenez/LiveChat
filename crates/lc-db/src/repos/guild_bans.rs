@@ -129,6 +129,33 @@ impl GuildBansRepository {
         Ok(count > 0)
     }
 
+    /// The ban that already covers this member, by its id or its linked
+    /// Discord account.
+    ///
+    /// Used when a ban is recorded twice (the second `create` conflicts on the
+    /// account): the existing row is the one that must carry the member's
+    /// devices.
+    pub async fn find_for_member(
+        &self,
+        guild_id: &GuildId,
+        member_id: GuildMemberId,
+        discord_user_id: Option<&str>,
+    ) -> DbResult<Option<GuildBan>> {
+        let row = sqlx::query_as::<_, GuildBanRow>(
+            "SELECT * FROM guild_bans \
+             WHERE guild_id = ? \
+               AND (member_id = ? OR (? IS NOT NULL AND discord_user_id = ?)) \
+             ORDER BY created_at DESC, id ASC LIMIT 1",
+        )
+        .bind(guild_id.as_str())
+        .bind(member_id.to_canonical())
+        .bind(discord_user_id)
+        .bind(discord_user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(GuildBanRow::into_entity).transpose()
+    }
+
     /// Lifts a ban. Returns `false` when it does not exist in this guild.
     pub async fn delete(&self, guild_id: &GuildId, id: GuildBanId) -> DbResult<bool> {
         let result = sqlx::query("DELETE FROM guild_bans WHERE id = ? AND guild_id = ?")

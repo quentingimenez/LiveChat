@@ -25,6 +25,7 @@
 
 pub mod commands;
 pub mod config;
+mod device_id;
 pub mod device_settings;
 pub mod display;
 pub mod events;

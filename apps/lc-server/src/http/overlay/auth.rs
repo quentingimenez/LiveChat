@@ -219,6 +219,7 @@ mod tests {
                 default_author_name: None,
                 default_author_image: None,
                 created_by_discord_user_id: None,
+                device_hash: None,
                 last_seen_at: None,
                 created_at: time::UtcDateTime::now(),
                 revoked_at: None,

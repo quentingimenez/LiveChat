@@ -241,6 +241,28 @@ fn apply_consume_response(
     Ok(())
 }
 
+/// Corps JSON du `POST /overlay/pair/consume`. Le `deviceId` n'est ajouté que
+/// lorsqu'un identifiant stable a pu être lu : les anciens clients n'envoient
+/// rien et restent hors du contrôle par appareil (limite documentée).
+fn pairing_body(
+    code: &str,
+    device_name: &str,
+    display_name: Option<String>,
+    avatar: Option<String>,
+    device_id: Option<String>,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "code": code,
+        "deviceName": device_name,
+        "displayName": display_name,
+        "avatar": avatar,
+    });
+    if let Some(device_id) = device_id {
+        body["deviceId"] = serde_json::Value::String(device_id);
+    }
+    body
+}
+
 /// Exécute l'appairage HTTP. La persistance et les effets Tauri sont faits par
 /// l'appelant (commande `pairing_consume`) une fois le résultat connu.
 pub async fn consume(state: &AppState, request: PairingRequest) -> PairingOutcome {
@@ -260,23 +282,21 @@ pub async fn consume(state: &AppState, request: PairingRequest) -> PairingOutcom
         Err(message) => return failure(message),
     };
     let device_name = request.device_name();
+    // Stable fingerprint used by the server for ban defense in depth. It is
+    // never logged and never leaves the TLS request as a raw value.
+    let device_id = crate::device_id::stable_device_id();
     let client = match build_client(insecure_tls_enabled()) {
         Ok(client) => client,
         Err(message) => return failure(message),
     };
-    let response = match client
-        .post(endpoint)
-        .json(&serde_json::json!({
-            "code": code,
-            "deviceName": device_name,
-            "displayName": clean(request.display_name.as_deref())
-                .or_else(|| state.config_snapshot().profile_name),
-            "avatar": clean(request.avatar.as_deref())
-                .or_else(|| state.config_snapshot().profile_avatar),
-        }))
-        .send()
-        .await
-    {
+    let body = pairing_body(
+        &code,
+        &device_name,
+        clean(request.display_name.as_deref()).or_else(|| state.config_snapshot().profile_name),
+        clean(request.avatar.as_deref()).or_else(|| state.config_snapshot().profile_avatar),
+        device_id,
+    );
+    let response = match client.post(endpoint).json(&body).send().await {
         Ok(response) => response,
         Err(error) => return failure(format!("appairage impossible : {error}")),
     };
@@ -331,6 +351,25 @@ mod tests {
             display_name: None,
             avatar: None,
         }
+    }
+
+    #[test]
+    fn the_pairing_body_carries_the_device_id_only_when_known() {
+        let body = pairing_body(
+            "AB12CD34",
+            "PC",
+            Some("Léa".to_owned()),
+            None,
+            Some("machine-abc".to_owned()),
+        );
+        assert_eq!(body["code"], "AB12CD34");
+        assert_eq!(body["deviceId"], "machine-abc");
+
+        let body = pairing_body("AB12CD34", "PC", None, None, None);
+        assert!(
+            body.get("deviceId").is_none(),
+            "un client sans identifiant ne doit pas envoyer de champ vide"
+        );
     }
 
     #[test]

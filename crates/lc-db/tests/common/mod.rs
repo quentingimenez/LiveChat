@@ -150,6 +150,7 @@ pub fn sample_overlay(guild_id: &GuildId, token_hash: &str, now: UtcDateTime) ->
         default_author_name: Some("Overlay".to_owned()),
         default_author_image: None,
         created_by_discord_user_id: Some("42".to_owned()),
+        device_hash: None,
         last_seen_at: None,
         created_at: now,
         revoked_at: None,

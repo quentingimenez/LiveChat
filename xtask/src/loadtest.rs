@@ -11,7 +11,27 @@
 //! - `ws_errors == 0`, `disconnects == 0`,
 //! - `ingest_errors == 0`, `ingest_rate_limited == 0`,
 //! - `server_alive == true`,
+//! - `board_list_p95_ms <= --max-board-p95-ms` when `--board-items > 0`
+//!   (signed board page at `limit=<board-items>`, 200 by default, one probe
+//!   per second),
+//! - `media_ttfb_p95_ms <= --max-media-p95-ms` when `--board-items > 0`
+//!   (time-to-first-byte of the first signed media URL of that page),
+//! - `media_trigger_p95_ms <= --max-media-trigger-p95-ms` when
+//!   `--media-trigger-rate > 0` and `--board-items > 0` (one in-flight
+//!   `media.trigger`, ack latency),
 //! - Linux only: `fd_end <= fd_start + 10`.
+//!
+//! The board/media probes use a dedicated probe guild (`BASE_GUILD_ID + 1000`)
+//! seeded with `--board-items` ready image assets sharing one small file, so
+//! the signed media GET measures the board route and file serving without
+//! building a real media pipeline. The trigger probe targets the first probe
+//! item and requires every trigger to be acked with `ok: true` at a rate below
+//! the server's 20-message/s client cap.
+//!
+//! Still not covered by this harness (documented gaps in
+//! `docs/rust/verification.md`): outbound WS queue depth, SQLite pool wait,
+//! admin SSE, and extension CPU — none of them is observable without product
+//! instrumentation or an authenticated admin/browser context.
 //!
 //! fd sampling: `fd_start` is taken 5 s after the LAST welcome (falling
 //! back to the last HELLO when no welcome ever arrives, and to the window
@@ -38,9 +58,10 @@ use std::{
     time::Duration,
 };
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, Stream, StreamExt};
 use lc_domain::{
     now_ms, Guild, GuildId, GuildMember, GuildMemberId, GuildRole, IngestClient, IngestClientId,
+    MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, MediaKind, MediaStatus,
     OverlayClient, OverlayClientId, OverlaySessionMode,
 };
 use lc_protocol::{HEARTBEAT_INTERVAL_MS, PROTOCOL_VERSION};
@@ -48,7 +69,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use time::UtcDateTime;
+use time::{Duration as TimeDuration, UtcDateTime};
 use tokio::{
     net::TcpListener,
     sync::mpsc,
@@ -82,6 +103,27 @@ const FD_GROWTH_BUDGET: u64 = 10;
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Probe guild for the board/media/trigger budgets: kept separate from the
+/// shard guilds so the 200-item board never mixes with the client load.
+const PROBE_GUILD_ID: u64 = BASE_GUILD_ID + 1000;
+/// Pairing token of the single overlay client in the probe guild.
+const PROBE_OVERLAY_TOKEN: &str = "load-overlay-probe";
+/// Throwaway secret enabling signed board/media URLs for the probe guild.
+const PROBE_MEDIA_URL_SECRET: &str = "loadtest-media-url-secret-0123456789abcdef";
+/// Size of the media file shared by every probe asset (enough for a real GET).
+const PROBE_MEDIA_BYTES: usize = 32 * 1024;
+/// Board/media probe cadence.
+const PROBE_INTERVAL: Duration = Duration::from_secs(1);
+/// Timeout of one board or media HTTP probe.
+const HTTP_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// The server caps client messages at 20/s; keep one slot of headroom.
+/// Upper bound for `--media-trigger-rate`: the server rate-limits a socket at
+/// `lc_protocol::MAX_CLIENT_MESSAGES_PER_SECOND` (20/s), so 19 leaves one slot
+/// for heartbeats and other client frames.
+pub const MAX_MEDIA_TRIGGER_RATE: u64 = 19;
+/// Timeout waiting for one `media.trigger` ack.
+const TRIGGER_ACK_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Parsed options of `xtask loadtest`.
 #[derive(Debug)]
 pub struct Options {
@@ -95,6 +137,17 @@ pub struct Options {
     pub ingest_rate: u64,
     /// Budget for the hello→welcome p95 latency, in milliseconds.
     pub max_hello_p95_ms: u64,
+    /// Board items seeded in the probe guild; 0 disables the board/media
+    /// budgets (debug only).
+    pub board_items: usize,
+    /// Budget for the signed board-page p95 latency, in milliseconds.
+    pub max_board_p95_ms: u64,
+    /// Budget for the signed media time-to-first-byte p95, in milliseconds.
+    pub max_media_p95_ms: u64,
+    /// `media.trigger` frames per second; 0 disables the trigger budget.
+    pub media_trigger_rate: u64,
+    /// Budget for the `media.trigger` ack p95 latency, in milliseconds.
+    pub max_media_trigger_p95_ms: u64,
     /// Where to write the JSON report (always printed to stdout too).
     pub report: Option<PathBuf>,
 }
@@ -131,6 +184,7 @@ pub(crate) async fn run(options: &Options) -> Result<u8, LoadtestError> {
     let db_path = tmp.path().join("livechat.sqlite");
     let media_dir = tmp.path().join("media");
     seed_database(&db_path, options.clients).await?;
+    let probe_seed = seed_probe_board(&db_path, &media_dir, options.board_items).await?;
 
     let port = reserve_port().await?;
     // The config example uses forward slashes in `file:` URLs
@@ -210,6 +264,24 @@ pub(crate) async fn run(options: &Options) -> Result<u8, LoadtestError> {
         options.ingest_rate,
         end,
     ));
+    let http_probe_handle = probe_seed.as_ref().map(|_| {
+        tokio::spawn(run_http_probes(
+            format!("http://127.0.0.1:{port}"),
+            PROBE_OVERLAY_TOKEN.to_owned(),
+            options.board_items,
+            end,
+        ))
+    });
+    let trigger_handle = match (&probe_seed, options.media_trigger_rate) {
+        (Some(seed), rate) if rate > 0 => Some(tokio::spawn(run_media_trigger(
+            ws_url.clone(),
+            PROBE_OVERLAY_TOKEN.to_owned(),
+            seed.item_id.clone(),
+            rate,
+            end,
+        ))),
+        _ => None,
+    };
 
     let fd_sampling = cfg!(target_os = "linux");
     let mut tally = Tally::default();
@@ -290,10 +362,38 @@ pub(crate) async fn run(options: &Options) -> Result<u8, LoadtestError> {
             errors: 1,
         },
     };
+    let http_stats = match http_probe_handle {
+        Some(handle) => match handle.await {
+            Ok(stats) => stats,
+            Err(_panic_or_abort) => HttpProbeStats {
+                board_errors: 1,
+                media_errors: 1,
+                ..HttpProbeStats::default()
+            },
+        },
+        None => HttpProbeStats::default(),
+    };
+    let trigger_stats = match trigger_handle {
+        Some(handle) => match handle.await {
+            Ok(stats) => stats,
+            Err(_panic_or_abort) => TriggerStats {
+                errors: 1,
+                ..TriggerStats::default()
+            },
+        },
+        None => TriggerStats::default(),
+    };
 
     let server_alive = matches!(guard.try_wait(), Ok(None));
     // Never leave the server running: kill it in every path from here on.
     guard.shutdown();
+
+    let mut trigger_ms = trigger_stats.latencies_ms.clone();
+    trigger_ms.sort_unstable();
+    let mut board_ms = http_stats.board_ms.clone();
+    board_ms.sort_unstable();
+    let mut media_ms = http_stats.media_ms.clone();
+    media_ms.sort_unstable();
 
     let mut sorted = tally.hello_ms.clone();
     sorted.sort_unstable();
@@ -310,6 +410,16 @@ pub(crate) async fn run(options: &Options) -> Result<u8, LoadtestError> {
         ingest_rate_limited: stats.rate_limited,
         ingest_errors: stats.errors,
         server_alive,
+        board_p95_ms: (!board_ms.is_empty()).then(|| percentile(&board_ms, 95.0)),
+        board_samples: board_ms.len() as u64,
+        board_errors: http_stats.board_errors,
+        media_p95_ms: (!media_ms.is_empty()).then(|| percentile(&media_ms, 95.0)),
+        media_samples: media_ms.len() as u64,
+        media_errors: http_stats.media_errors,
+        media_trigger_p95_ms: (!trigger_ms.is_empty()).then(|| percentile(&trigger_ms, 95.0)),
+        media_trigger_sent: trigger_stats.sent,
+        media_trigger_acked: trigger_stats.acked,
+        media_trigger_errors: trigger_stats.errors,
         fd_start,
         fd_end,
     };
@@ -403,7 +513,7 @@ fn budget_lines(
     welcomes: usize,
     fd_sampling: bool,
 ) -> Vec<BudgetLine> {
-    let mut lines = Vec::with_capacity(if fd_sampling { 8 } else { 7 });
+    let mut lines = Vec::with_capacity(if fd_sampling { 11 } else { 10 });
     lines.push(BudgetLine {
         name: "hello_p95_ms",
         passed: report.hello_p95_ms <= options.max_hello_p95_ms,
@@ -455,6 +565,59 @@ fn budget_lines(
             "exited during the run".to_owned()
         },
     });
+
+    if options.board_items > 0 {
+        lines.push(BudgetLine {
+            name: "board_list_p95_ms",
+            passed: report.board_samples > 0
+                && report.board_errors == 0
+                && report
+                    .board_p95_ms
+                    .is_some_and(|ms| ms <= options.max_board_p95_ms),
+            detail: format!(
+                "{} <= {} ms over {} samples, {} errors",
+                p95_label(report.board_p95_ms),
+                options.max_board_p95_ms,
+                report.board_samples,
+                report.board_errors
+            ),
+        });
+        lines.push(BudgetLine {
+            name: "media_ttfb_p95_ms",
+            passed: report.media_samples > 0
+                && report.media_errors == 0
+                && report
+                    .media_p95_ms
+                    .is_some_and(|ms| ms <= options.max_media_p95_ms),
+            detail: format!(
+                "{} <= {} ms over {} samples, {} errors",
+                p95_label(report.media_p95_ms),
+                options.max_media_p95_ms,
+                report.media_samples,
+                report.media_errors
+            ),
+        });
+    }
+
+    if options.media_trigger_rate > 0 && options.board_items > 0 {
+        lines.push(BudgetLine {
+            name: "media_trigger_p95_ms",
+            passed: report.media_trigger_sent > 0
+                && report.media_trigger_acked == report.media_trigger_sent
+                && report.media_trigger_errors == 0
+                && report
+                    .media_trigger_p95_ms
+                    .is_some_and(|ms| ms <= options.max_media_trigger_p95_ms),
+            detail: format!(
+                "{} <= {} ms over {}/{} acked, {} errors",
+                p95_label(report.media_trigger_p95_ms),
+                options.max_media_trigger_p95_ms,
+                report.media_trigger_acked,
+                report.media_trigger_sent,
+                report.media_trigger_errors
+            ),
+        });
+    }
 
     if fd_sampling {
         let (passed, detail) = match (report.fd_start, report.fd_end) {
@@ -763,6 +926,264 @@ impl IngestStats {
     }
 }
 
+/// Time-to-first-byte of one board page and of the first signed media URL.
+#[derive(Debug, Default)]
+struct HttpProbeStats {
+    board_ms: Vec<u64>,
+    media_ms: Vec<u64>,
+    board_errors: u64,
+    media_errors: u64,
+}
+
+/// Milliseconds elapsed since `started`, saturating instead of wrapping.
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Board/media probe: once per second, fetches the signed board page at
+/// `limit` and then the signed media URL of its first item.
+///
+/// The board latency is sampled before the response body is read (TTFB); the
+/// media latency is sampled the same way on the returned absolute URL.
+async fn run_http_probes(
+    base_url: String,
+    token: String,
+    limit: usize,
+    end: Instant,
+) -> HttpProbeStats {
+    let client = reqwest::Client::new();
+    let mut ticker = interval(PROBE_INTERVAL);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    ticker.tick().await; // the first tick completes immediately: skip it
+    let mut stats = HttpProbeStats::default();
+    let board_url = format!("{base_url}/overlay/media-board/items?limit={limit}");
+
+    loop {
+        if window_has_ended(Instant::now(), end) {
+            break;
+        }
+        tokio::select! {
+            _ = ticker.tick() => {}
+            _ = sleep_until(end) => break,
+        }
+        if window_has_ended(Instant::now(), end) {
+            break;
+        }
+
+        let started = Instant::now();
+        let response = match client
+            .get(&board_url)
+            .bearer_auth(&token)
+            .timeout(HTTP_PROBE_TIMEOUT)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(_) => {
+                stats.board_errors += 1;
+                continue;
+            }
+        };
+        if !response.status().is_success() {
+            stats.board_errors += 1;
+            continue;
+        }
+        stats.board_ms.push(elapsed_ms(started));
+        let body: Value = match response.json().await {
+            Ok(body) => body,
+            Err(_) => {
+                stats.board_errors += 1;
+                continue;
+            }
+        };
+        let Some(media_url) = body.pointer("/items/0/mediaUrl").and_then(Value::as_str) else {
+            stats.media_errors += 1;
+            continue;
+        };
+
+        let started = Instant::now();
+        let response = match client
+            .get(media_url)
+            .timeout(HTTP_PROBE_TIMEOUT)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(_) => {
+                stats.media_errors += 1;
+                continue;
+            }
+        };
+        if !response.status().is_success() {
+            stats.media_errors += 1;
+            continue;
+        }
+        stats.media_ms.push(elapsed_ms(started));
+        // Drain the body so the connection returns to the pool cleanly.
+        drop(response.bytes().await);
+    }
+    stats
+}
+
+/// Tallies of the `media.trigger` probe.
+#[derive(Debug, Default)]
+struct TriggerStats {
+    sent: u64,
+    acked: u64,
+    errors: u64,
+    latencies_ms: Vec<u64>,
+}
+
+/// `media.trigger` envelope for one board item.
+fn media_trigger_envelope(sequence: u64, item_id: &str) -> Value {
+    json!({
+        "v": PROTOCOL_VERSION,
+        "type": "media.trigger",
+        "id": format!("load-trigger-{sequence}"),
+        "ts": now_ms(),
+        "payload": {
+            "itemId": item_id,
+            "trigger": "shortcut",
+        }
+    })
+}
+
+/// Extracts `(ref, ok)` from an `ack` frame; `None` for any other frame.
+fn parse_ack(text: &str) -> Option<(String, bool)> {
+    let frame: Value = serde_json::from_str(text).ok()?;
+    if frame.get("type").and_then(Value::as_str) != Some("ack") {
+        return None;
+    }
+    let ref_id = frame.pointer("/payload/ref")?.as_str()?.to_owned();
+    let ok = frame.pointer("/payload/ok")?.as_bool()?;
+    Some((ref_id, ok))
+}
+
+/// Reads frames until the ack matching `ref_id` arrives. `None` on a closed
+/// socket, a non-text transport error, or a close frame.
+async fn wait_for_ack<S, E>(stream: &mut S, ref_id: &str) -> Option<bool>
+where
+    S: Stream<Item = Result<Message, E>> + Unpin,
+{
+    while let Some(frame) = stream.next().await {
+        let message = frame.ok()?;
+        match message {
+            Message::Text(text) => {
+                if let Some((ack_ref, ok)) = parse_ack(text.as_str()) {
+                    if ack_ref == ref_id {
+                        return Some(ok);
+                    }
+                }
+            }
+            Message::Close(_) => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Trigger probe: connects one overlay client to the probe guild, then sends
+/// one `media.trigger` at a time and waits for its ack. A trigger that is not
+/// acked within [`TRIGGER_ACK_TIMEOUT`] counts as one error; the next trigger
+/// is still sent, so a single lost ack does not zero the sample.
+async fn run_media_trigger(
+    url: String,
+    token: String,
+    item_id: String,
+    rate_per_sec: u64,
+    end: Instant,
+) -> TriggerStats {
+    let mut stats = TriggerStats::default();
+    let (mut sink, mut stream) = match connect_async(url).await {
+        Ok((socket, _response)) => socket.split(),
+        Err(_) => {
+            stats.errors = 1;
+            return stats;
+        }
+    };
+    if sink
+        .send(Message::Text(hello_envelope(0, &token).to_string().into()))
+        .await
+        .is_err()
+    {
+        stats.errors = 1;
+        return stats;
+    }
+
+    // Wait for the welcome before triggering: the server rejects triggers
+    // from a socket that has not completed its HELLO.
+    let mut welcomed = false;
+    let deadline = Instant::now() + HTTP_PROBE_TIMEOUT;
+    while !welcomed {
+        let frame = tokio::select! {
+            frame = stream.next() => frame,
+            _ = sleep_until(deadline) => break,
+        };
+        match frame {
+            Some(Ok(Message::Text(text))) => {
+                let Ok(frame) = serde_json::from_str::<Value>(text.as_str()) else {
+                    stats.errors += 1;
+                    continue;
+                };
+                if frame.get("type").and_then(Value::as_str) == Some("welcome") {
+                    welcomed = true;
+                }
+            }
+            Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+            Some(Ok(Message::Close(_))) | None => break,
+            Some(Err(_)) => break,
+            _ => {}
+        }
+    }
+    if !welcomed {
+        stats.errors += 1;
+        return stats;
+    }
+
+    let mut ticker = interval(Duration::from_secs_f64(1.0 / rate_per_sec as f64));
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    ticker.tick().await; // skip the immediate first tick
+    let mut sequence = 0u64;
+
+    loop {
+        if window_has_ended(Instant::now(), end) {
+            break;
+        }
+        tokio::select! {
+            _ = ticker.tick() => {}
+            _ = sleep_until(end) => break,
+        }
+        if window_has_ended(Instant::now(), end) {
+            break;
+        }
+
+        sequence += 1;
+        let envelope = media_trigger_envelope(sequence, &item_id);
+        let ref_id = format!("load-trigger-{sequence}");
+        let started = Instant::now();
+        if sink
+            .send(Message::Text(envelope.to_string().into()))
+            .await
+            .is_err()
+        {
+            stats.errors += 1;
+            break;
+        }
+        stats.sent += 1;
+        match tokio::time::timeout(TRIGGER_ACK_TIMEOUT, wait_for_ack(&mut stream, &ref_id)).await {
+            Ok(Some(ok)) => {
+                stats.acked += 1;
+                stats.latencies_ms.push(elapsed_ms(started));
+                if !ok {
+                    stats.errors += 1;
+                }
+            }
+            Ok(None) | Err(_) => stats.errors += 1,
+        }
+    }
+    stats
+}
+
 /// The JSON report written to `--report` and printed to stdout.
 #[derive(Serialize)]
 struct Report {
@@ -778,6 +1199,16 @@ struct Report {
     ingest_rate_limited: u64,
     ingest_errors: u64,
     server_alive: bool,
+    board_p95_ms: Option<u64>,
+    board_samples: u64,
+    board_errors: u64,
+    media_p95_ms: Option<u64>,
+    media_samples: u64,
+    media_errors: u64,
+    media_trigger_p95_ms: Option<u64>,
+    media_trigger_sent: u64,
+    media_trigger_acked: u64,
+    media_trigger_errors: u64,
     fd_start: Option<u64>,
     fd_end: Option<u64>,
 }
@@ -786,6 +1217,11 @@ struct Report {
 fn budget_line(name: &str, passed: bool, detail: String) -> String {
     let label = if passed { "PASS" } else { "FAIL" };
     format!("{label} {name} ({detail})")
+}
+
+/// Renders a p95 for a budget detail: `n/a` when the probe collected nothing.
+fn p95_label(value: Option<u64>) -> String {
+    value.map_or_else(|| "n/a".to_owned(), |ms| format!("{ms} ms"))
 }
 
 /// Nearest-rank percentile of a slice already sorted in ascending order.
@@ -896,6 +1332,117 @@ async fn seed_database(db_path: &Path, clients: usize) -> Result<(), LoadtestErr
     Ok(())
 }
 
+/// Probe guild seeded for the board/media/trigger budgets.
+struct ProbeSeed {
+    /// Canonical id of the first board item (the trigger target).
+    item_id: String,
+}
+
+/// Seeds the dedicated probe guild: one overlay client, `items` ready image
+/// assets sharing a small file under `media_dir`, and one board item per
+/// asset. Returns `None` when the board budgets are disabled (`items == 0`).
+async fn seed_probe_board(
+    db_path: &Path,
+    media_dir: &Path,
+    items: usize,
+) -> Result<Option<ProbeSeed>, LoadtestError> {
+    if items == 0 {
+        return Ok(None);
+    }
+    std::fs::create_dir_all(media_dir)?;
+    let media_file = media_dir.join("loadtest-board-media.png");
+    std::fs::write(&media_file, vec![0x89u8; PROBE_MEDIA_BYTES])?;
+
+    let db = lc_db::Db::open(db_path, &lc_db::DbConfig::default())
+        .await
+        .map_err(|err| LoadtestError::Seed(err.to_string()))?;
+    let now = UtcDateTime::now();
+    let guild_id = GuildId::parse(&PROBE_GUILD_ID.to_string())
+        .map_err(|err| LoadtestError::Seed(err.to_string()))?;
+    db.guilds()
+        .upsert(&Guild {
+            id: guild_id.clone(),
+            name: Some("Load Probe".to_owned()),
+            busy_until: None,
+            default_media_time: None,
+            max_media_time: None,
+            display_media_full: false,
+        })
+        .await
+        .map_err(|err| LoadtestError::Seed(err.to_string()))?;
+    db.overlay_clients()
+        .create(&OverlayClient {
+            id: OverlayClientId::new_v4(),
+            guild_id: guild_id.clone(),
+            label: "load-probe".to_owned(),
+            token_hash: hash_token(PROBE_OVERLAY_TOKEN),
+            session_mode: OverlaySessionMode::Normal,
+            default_author_name: Some("Load".to_owned()),
+            default_author_image: None,
+            created_by_discord_user_id: None,
+            device_hash: None,
+            last_seen_at: None,
+            created_at: now,
+            revoked_at: None,
+        })
+        .await
+        .map_err(|err| LoadtestError::Seed(err.to_string()))?;
+
+    let storage_path = media_file.to_string_lossy().into_owned();
+    let mut first_item_id = None;
+    for index in 0..items {
+        let asset_id = MediaAssetId::new_v4();
+        let asset = MediaAsset {
+            id: asset_id,
+            source_hash: format!("{:064x}", index + 1),
+            source_url: format!("https://loadtest.invalid/media/{index}"),
+            source_title: Some(format!("Load media {index}")),
+            kind: MediaKind::Image,
+            mime: "image/png".to_owned(),
+            duration_sec: None,
+            width: Some(64),
+            height: Some(64),
+            is_vertical: false,
+            storage_path: storage_path.clone(),
+            size_bytes: PROBE_MEDIA_BYTES as i64,
+            status: MediaStatus::Ready,
+            error: None,
+            last_accessed_at: now,
+            expires_at: now + TimeDuration::hours(1),
+            created_at: now,
+        };
+        db.media_assets()
+            .insert(&asset)
+            .await
+            .map_err(|err| LoadtestError::Seed(err.to_string()))?;
+        let item = MediaBoardItem {
+            id: MediaBoardItemId::new_v4(),
+            guild_id: guild_id.clone(),
+            media_asset_id: asset_id,
+            title: Some(format!("Load item {index}")),
+            message: None,
+            created_by_discord_user_id: Some("42".to_owned()),
+            created_by_name: Some("Load".to_owned()),
+            created_at: now,
+            artwork_asset_id: None,
+            artwork_on_overlay: false,
+            display_duration_sec: None,
+            display_scale_percent: None,
+        };
+        db.media_board()
+            .create(&item)
+            .await
+            .map_err(|err| LoadtestError::Seed(err.to_string()))?;
+        first_item_id.get_or_insert_with(|| item.id.to_canonical());
+    }
+    db.close().await;
+
+    Ok(Some(ProbeSeed {
+        item_id: first_item_id
+            .ok_or_else(|| LoadtestError::Seed("no board item seeded".to_owned()))?,
+    }))
+}
+
 /// SHA-256 hex digest of a pairing token, matching the server's
 /// `ws/hub.rs::hash_token` and `media/tokens.rs::hash_ingest_token`
 /// (lowercase hex; no `hex` crate in xtask).
@@ -950,6 +1497,7 @@ fn spawn_server(
         .env("API_URL", format!("http://127.0.0.1:{port}"))
         .env("DATABASE_URL", database_url)
         .env("MEDIA_STORAGE_DIR", media_dir)
+        .env("MEDIA_URL_SECRET", PROBE_MEDIA_URL_SECRET)
         .env("NODE_ENV", "development")
         .env("RUST_LOG", "warn")
         .stdout(Stdio::null())
@@ -1469,6 +2017,11 @@ mod tests {
             duration_secs: 10,
             ingest_rate: 10,
             max_hello_p95_ms: 250,
+            board_items: 200,
+            max_board_p95_ms: 250,
+            max_media_p95_ms: 250,
+            media_trigger_rate: 10,
+            max_media_trigger_p95_ms: 250,
             report: None,
         }
     }
@@ -1487,6 +2040,16 @@ mod tests {
             ingest_rate_limited: 0,
             ingest_errors: 0,
             server_alive: true,
+            board_p95_ms: Some(100),
+            board_samples: 10,
+            board_errors: 0,
+            media_p95_ms: Some(80),
+            media_samples: 9,
+            media_errors: 0,
+            media_trigger_p95_ms: Some(90),
+            media_trigger_sent: 100,
+            media_trigger_acked: 100,
+            media_trigger_errors: 0,
             fd_start: Some(10),
             fd_end: Some(20),
         }
@@ -1689,6 +2252,9 @@ mod tests {
                 "ingest_errors",
                 "ingest_rate_limited",
                 "server_alive",
+                "board_list_p95_ms",
+                "media_ttfb_p95_ms",
+                "media_trigger_p95_ms",
                 "fd_growth",
             ]
         );
@@ -1697,14 +2263,219 @@ mod tests {
         assert_eq!(exit_code(count_failures(&with_fd)), 0);
 
         let without_fd = budget_lines(&report, &options, options.clients, false);
-        assert_eq!(without_fd.len(), 7, "no fd budget off Linux");
+        assert_eq!(
+            without_fd.len(),
+            10,
+            "ten budgets off Linux (fd_growth is Linux-only)"
+        );
         assert_eq!(
             line_names(&without_fd),
-            &line_names(&with_fd)[..7],
+            &line_names(&with_fd)[..10],
             "the fd budget is always evaluated last"
         );
         assert!(without_fd.iter().all(|line| line.passed), "{without_fd:?}");
         assert_eq!(count_failures(&without_fd), 0);
+    }
+
+    #[test]
+    fn budget_lines_skip_disabled_probes() {
+        let report = green_report();
+        let mut options = test_options(PathBuf::from("target/debug/lc-server"));
+        options.board_items = 0;
+        let lines = budget_lines(&report, &options, options.clients, false);
+        assert_eq!(
+            line_names(&lines),
+            vec![
+                "hello_p95_ms",
+                "welcomed_clients",
+                "ws_errors",
+                "disconnects",
+                "ingest_errors",
+                "ingest_rate_limited",
+                "server_alive",
+            ],
+            "without the probe guild, neither probe budget is rendered"
+        );
+
+        options.board_items = 200;
+        options.media_trigger_rate = 0;
+        let lines = budget_lines(&report, &options, options.clients, false);
+        assert_eq!(
+            line_names(&lines),
+            vec![
+                "hello_p95_ms",
+                "welcomed_clients",
+                "ws_errors",
+                "disconnects",
+                "ingest_errors",
+                "ingest_rate_limited",
+                "server_alive",
+                "board_list_p95_ms",
+                "media_ttfb_p95_ms",
+            ],
+            "without a trigger rate, the board/media budgets remain"
+        );
+    }
+
+    #[tokio::test]
+    async fn seed_probe_board_seeds_ready_assets_items_and_one_media_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("livechat.sqlite");
+        let media_dir = tmp.path().join("media");
+        let seed = seed_probe_board(&db_path, &media_dir, 3)
+            .await
+            .unwrap()
+            .expect("3 items seed a probe guild");
+
+        let media_file = media_dir.join("loadtest-board-media.png");
+        assert_eq!(
+            std::fs::metadata(&media_file).unwrap().len(),
+            PROBE_MEDIA_BYTES as u64
+        );
+        assert!(MediaBoardItemId::parse(&seed.item_id).is_ok());
+
+        let db = lc_db::Db::open(&db_path, &lc_db::DbConfig::default())
+            .await
+            .unwrap();
+        let assets: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM media_assets WHERE status = 'READY'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(assets, 3);
+        let items: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM media_board_items")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(items, 3);
+        let probe_guild: String =
+            sqlx::query_scalar("SELECT guild_id FROM overlay_clients WHERE label = 'load-probe'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(probe_guild, PROBE_GUILD_ID.to_string());
+        let stored_path: String =
+            sqlx::query_scalar("SELECT storage_path FROM media_assets LIMIT 1")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(stored_path, media_file.to_string_lossy());
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn seed_probe_board_is_a_noop_when_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("livechat.sqlite");
+        let media_dir = tmp.path().join("media");
+        assert!(seed_probe_board(&db_path, &media_dir, 0)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(!db_path.exists(), "the disabled probe opens no database");
+        assert!(
+            !media_dir.exists(),
+            "the disabled probe writes no media file"
+        );
+    }
+
+    #[test]
+    fn media_trigger_envelope_and_ack_parser_match_the_wire_format() {
+        let envelope = media_trigger_envelope(7, "item-1");
+        assert_eq!(envelope["v"], PROTOCOL_VERSION);
+        assert_eq!(envelope["type"], "media.trigger");
+        assert_eq!(envelope["id"], "load-trigger-7");
+        assert_eq!(envelope["payload"]["itemId"], "item-1");
+        assert_eq!(envelope["payload"]["trigger"], "shortcut");
+
+        let ack = json!({
+            "v": PROTOCOL_VERSION,
+            "type": "ack",
+            "id": "srv-ack-1",
+            "ts": 1,
+            "payload": { "ref": "load-trigger-7", "ok": true }
+        });
+        assert_eq!(
+            parse_ack(&ack.to_string()),
+            Some(("load-trigger-7".to_owned(), true))
+        );
+        let refused = json!({
+            "type": "ack",
+            "payload": { "ref": "load-trigger-7", "ok": false }
+        });
+        assert_eq!(
+            parse_ack(&refused.to_string()),
+            Some(("load-trigger-7".to_owned(), false))
+        );
+        assert_eq!(parse_ack(r#"{"type":"play","payload":{}}"#), None);
+        assert_eq!(parse_ack("not json"), None);
+    }
+
+    /// Minimal HTTP server for the board/media probe: `/overlay/media-board/items`
+    /// returns a one-item page whose `mediaUrl` points back at `/media`.
+    fn spawn_board_probe_server() -> String {
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let base_url = format!("http://{address}");
+        let media_url = format!("{base_url}/media");
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let request = read_http_request(&mut stream);
+                let first_line = String::from_utf8_lossy(&request);
+                if first_line.starts_with("GET /overlay/media-board/items") {
+                    let body = json!({
+                        "total": 1,
+                        "limit": 200,
+                        "offset": 0,
+                        "items": [{ "mediaUrl": media_url }],
+                    })
+                    .to_string();
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                    .ok();
+                } else {
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 4\r\nConnection: close\r\n\r\nPNG!"
+                    )
+                    .ok();
+                }
+                stream.flush().ok();
+            }
+        });
+        base_url
+    }
+
+    #[tokio::test]
+    async fn http_probes_measure_the_board_page_then_its_first_media_url() {
+        let base_url = spawn_board_probe_server();
+        let stats = run_http_probes(
+            base_url,
+            PROBE_OVERLAY_TOKEN.to_owned(),
+            200,
+            Instant::now() + Duration::from_secs(2),
+        )
+        .await;
+        assert_eq!(stats.board_errors, 0);
+        assert_eq!(stats.media_errors, 0);
+        assert!(!stats.board_ms.is_empty(), "at least one board sample");
+        assert!(!stats.media_ms.is_empty(), "at least one media sample");
+        assert!(stats.board_ms[0] < 5_000);
+        assert!(stats.media_ms[0] < 5_000);
+    }
+
+    #[test]
+    fn p95_label_renders_a_value_or_n_a() {
+        assert_eq!(p95_label(Some(42)), "42 ms");
+        assert_eq!(p95_label(None), "n/a");
     }
 
     #[test]
@@ -1739,6 +2510,44 @@ mod tests {
         let mut report = green_report();
         report.server_alive = false;
         cases.push(("server_alive", report, clients));
+
+        let mut report = green_report();
+        report.board_p95_ms = Some(options.max_board_p95_ms + 1);
+        cases.push(("board_list_p95_ms", report, clients));
+
+        let mut report = green_report();
+        report.board_errors = 1;
+        cases.push(("board_list_p95_ms", report, clients));
+
+        let mut report = green_report();
+        report.board_samples = 0;
+        report.board_p95_ms = None;
+        cases.push(("board_list_p95_ms", report, clients));
+
+        let mut report = green_report();
+        report.media_p95_ms = Some(options.max_media_p95_ms + 1);
+        cases.push(("media_ttfb_p95_ms", report, clients));
+
+        let mut report = green_report();
+        report.media_errors = 1;
+        cases.push(("media_ttfb_p95_ms", report, clients));
+
+        let mut report = green_report();
+        report.media_samples = 0;
+        report.media_p95_ms = None;
+        cases.push(("media_ttfb_p95_ms", report, clients));
+
+        let mut report = green_report();
+        report.media_trigger_p95_ms = Some(options.max_media_trigger_p95_ms + 1);
+        cases.push(("media_trigger_p95_ms", report, clients));
+
+        let mut report = green_report();
+        report.media_trigger_acked = report.media_trigger_sent - 1;
+        cases.push(("media_trigger_p95_ms", report, clients));
+
+        let mut report = green_report();
+        report.media_trigger_errors = 1;
+        cases.push(("media_trigger_p95_ms", report, clients));
 
         for (name, report, welcomes) in cases {
             for fd_sampling in [true, false] {

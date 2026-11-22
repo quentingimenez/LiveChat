@@ -65,6 +65,7 @@
 // module (cf. décision dans `docs/rust/server-overlay.md` §2).
 #![allow(clippy::result_large_err)]
 
+use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -320,7 +321,8 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/overlay/media-board/items/{item_id}/edit",
-            post(media_edit::edit_item),
+            post(media_edit::edit_item)
+                .layer(DefaultBodyLimit::max(media_edit::MAX_EDIT_BODY_BYTES)),
         )
         .route(
             "/overlay/media-board/items/{item_id}/cover",

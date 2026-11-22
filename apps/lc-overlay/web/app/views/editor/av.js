@@ -45,10 +45,12 @@ import {
 } from '../../core/editor-helpers.js';
 import { DEFAULT_VOLUME_PERCENT, previewVolume } from '../../core/sound.js';
 import { state } from '../../core/state.js';
+import { defaultAdjust } from './annotations.js';
 import { createCropOverlay } from './crop-overlay.js';
 import { createDisplayPreview } from './display-preview.js';
 import { choices, section, slider, toggle } from './frame.js';
 import { createPreviewFramePump } from './preview-frames.js';
+import { createVideoAnnotations } from './video-annotations.js';
 
 registerIcons({
   scissors: 'M8.5 8.5L20 20M8.5 15.5L20 4M9 6.5a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0zM9 17.5a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z',
@@ -117,6 +119,10 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   }
 
   let edit = defaultAvEdit(duration);
+  // The drawing and the colour adjustments belong to the edit: the history
+  // snapshots carry them, and the recipe sends them to the server.
+  edit.objects = [];
+  edit.adjust = defaultAdjust();
   let history = [JSON.stringify(edit)];
   let historyIndex = 0;
   let selection = null; // [start, end] in source seconds
@@ -190,6 +196,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     const context = target.getContext('2d');
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.clearRect(0, 0, target.width, target.height);
+    target.style.filter = '';
     if (!isVideo) {
       if (artwork && artwork.naturalWidth > 0) {
         context.drawImage(artwork, 0, 0, target.width, target.height);
@@ -222,7 +229,19 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
       sourceWidth * scale,
       sourceHeight * scale,
     );
+    // Source-space transform for the retouches: one unit is one frame pixel,
+    // with the frame's top-left corner at the origin.
+    context.translate(-(sourceWidth * scale) / 2, -(sourceHeight * scale) / 2);
+    context.scale(scale, scale);
+    context.translate(-crop.x * media.videoWidth, -crop.y * media.videoHeight);
+    if (annotations) {
+      annotations.paintInto(context);
+    }
     context.restore();
+    // The buffer holds the result at one buffer pixel per source pixel when the
+    // crop is smaller than the preview, so the filter follows that ratio.
+    const cssScale = target.clientWidth > 0 ? target.clientWidth / target.width : 1;
+    target.style.filter = annotations ? annotations.filterFor(cssScale) : '';
   }
 
   const preview = allowDisplayScale
@@ -260,6 +279,22 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     }
   }
 
+  // --- drawing layer ---
+  // The annotations live in the source frame's pixels: the layer is laid over
+  // the whole frame inside `.av-inner`, so the CSS crop, rotation and flips
+  // carry it exactly like the video. The scale comes from `layoutVideo`.
+  let layoutScale = 0;
+  let annotations = null;
+
+  // Where the frame starts in source pixels and how big a source pixel is on
+  // the stage. The tools map the pointer through it.
+  function annotationView() {
+    const videoWidth = media.videoWidth || 16;
+    const videoHeight = media.videoHeight || 9;
+    const crop = !cropMode && edit.crop ? edit.crop : { x: 0, y: 0, width: 1, height: 1 };
+    return { x: crop.x * videoWidth, y: crop.y * videoHeight, scale: layoutScale || 1 };
+  }
+
   function layoutVideo() {
     if (!isVideo) {
       return;
@@ -288,7 +323,36 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     media.style.height = `${videoHeight * scale}px`;
     media.style.left = `${-crop.x * videoWidth * scale}px`;
     media.style.top = `${-crop.y * videoHeight * scale}px`;
+    layoutScale = scale;
+    if (annotations) {
+      annotations.layout();
+      annotations.applyPreviewFilter();
+    }
   }
+
+  // Built after the first layout: the layer needs the stage's scale to place
+  // its pixels. It is absent for a sound, which has nothing to annotate.
+  if (isVideo) {
+    layoutVideo();
+    annotations = createVideoAnnotations({
+      frame,
+      host: inner,
+      bounds: () => ({ width: media.videoWidth || 16, height: media.videoHeight || 9 }),
+      source: () => media,
+      view: annotationView,
+      objects: () => edit.objects,
+      adjust: () => edit.adjust,
+      onCommit: () => commit(),
+      onPanel: () => renderPanel(),
+    });
+  }
+
+  // A seek shows another frame: a pixel mask has to take its blocks from it.
+  media.addEventListener('seeked', () => {
+    if (annotations) {
+      annotations.paintMasks();
+    }
+  });
 
   // --- timeline ---
   const canvas = h('canvas', { class: 'tl-canvas' });
@@ -553,6 +617,10 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     if (isVideo && preview && previewShown && !media.paused && !previewFrames.supported) {
       preview.requestPaint();
     }
+    // A pixel mask takes its colours from the frame on screen.
+    if (annotations && !media.paused) {
+      annotations.paintMasks();
+    }
     applyGain();
     updateClock();
     paintTimeline();
@@ -594,6 +662,9 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     edit = JSON.parse(history[index]);
     selection = null;
     setCropMode(false, true);
+    if (annotations) {
+      annotations.sync();
+    }
     renderPanel();
     afterChange();
   }
@@ -789,6 +860,11 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     if (cropOverlay) {
       cropOverlay.remove();
       cropOverlay = null;
+    }
+    // The crop box sits over the frame: the drawing steps aside while it is
+    // open, and comes back with the crop applied.
+    if (annotations) {
+      annotations.setEnabled(!cropMode && edit.output !== 'audio');
     }
     layoutVideo();
     if (cropMode) {
@@ -1011,6 +1087,18 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   function renderPanel() {
     const sound = edit.output !== 'gif';
     const picture = isVideo && edit.output !== 'audio';
+    // The drawing tools only exist for a picture: an audio result would throw
+    // the annotations away, and the crop has its own box.
+    const annotated = picture;
+    if (annotations) {
+      annotations.setEnabled(annotated && !cropMode);
+      if (annotated) {
+        annotations.renderRail();
+      } else {
+        frame.rail.hidden = true;
+        frame.rail.replaceChildren();
+      }
+    }
     const sections = [
       section(
         'Découper',
@@ -1078,6 +1166,16 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
             ),
           )
         : null,
+      // The drawing, the masks and the colour adjustments, as on a picture.
+      ...(annotated
+        ? [
+            section(
+              'Dessin et retouches',
+              h('p', { class: 'meta' }, 'Ces retouches sont gravées dans la vidéo au moment de l’enregistrement. Les outils sont à gauche de l’aperçu.'),
+            ),
+            ...annotations.panelSections(),
+          ]
+        : []),
       // A sound without artwork has no picture to size; the card that stands in
       // for it ignores the scale, so the setting would do nothing.
       preview && showsDisplaySize({ isVideo, output: edit.output, hasArtwork: Boolean(artworkUrl) })
@@ -1157,12 +1255,33 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     pixelsDirty: () => history[historyIndex] !== history[0],
     scaleDirty: () => displayScale !== initialScale,
     displayScalePercent: () => displayScaleForStorage(displayScale),
-    recipe: () => buildRecipe(edit, duration),
+    recipe: () => {
+      // The drawing goes to the server as masks (fractions of the frame) and
+      // as one PNG of the strokes, shapes, texts and emojis. A sound keeps
+      // none of it: the picture is dropped with the annotations.
+      if (annotations && edit.output !== 'audio') {
+        return buildRecipe(edit, duration, {
+          width: media.videoWidth,
+          height: media.videoHeight,
+          overlay: annotations.overlay(),
+        });
+      }
+      const recipe = buildRecipe(edit, duration);
+      delete recipe.masks;
+      delete recipe.overlay;
+      delete recipe.adjust;
+      return recipe;
+    },
     problem: () => avEditProblem(edit, duration),
     output: () => edit.output,
     onKey(event, typing) {
       if (typing) {
         return false;
+      }
+      // The drawing tools own Delete, Escape, Enter and the arrows while an
+      // element is selected; without one they fall through to the timeline.
+      if (annotations && !cropMode && annotations.handleKey(event)) {
+        return true;
       }
       if (event.key === ' ') {
         // A focused button keeps its own Space.
@@ -1209,6 +1328,9 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     destroy() {
       destroyed = true;
       resizeObserver.disconnect();
+      if (annotations) {
+        annotations.destroy();
+      }
       if (preview) {
         previewFrames.stop();
         preview.destroy();

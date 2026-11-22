@@ -642,6 +642,71 @@
   max-width: none;
 }
 
+/* ------------------------------------------------- annotations de la vidéo */
+/* The drawing lives over the whole source frame inside `.av-inner`: the crop,
+   the rotation and the mirrors of the inner box carry it like the video. */
+.annot-box {
+  position: absolute;
+  pointer-events: none;
+}
+
+.annot-box[hidden],
+.annot-surface[hidden] {
+  display: none;
+}
+
+.annot-drawing {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  pointer-events: none;
+}
+
+.annot-masks {
+  position: absolute;
+  inset: 0;
+}
+
+.annot-mask {
+  position: absolute;
+  overflow: hidden;
+}
+
+.annot-mask-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
+
+/* The blur is painted in the canvas itself, at the frame's scale. */
+.annot-mask-canvas.is-blur {
+  image-rendering: auto;
+}
+
+/* Captures the pointer over the visible frame: the drawing outside the crop
+   would not be seen, so it is not drawn there either. */
+.annot-surface {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+}
+
+.annot-surface[data-tool='draw'],
+.annot-surface[data-tool='shape'],
+.annot-surface[data-tool='blur'] {
+  cursor: crosshair;
+}
+
+.annot-surface[data-tool='text'] {
+  cursor: text;
+}
+
+.annot-surface[data-tool='select'] {
+  cursor: default;
+}
+
 .av-audio {
   display: grid;
   justify-items: center;
@@ -784,3 +849,4 @@
   padding: 0 8px;
   font-size: 12px;
 }
+

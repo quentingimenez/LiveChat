@@ -7,6 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
 use lc_media::probe::{probe, ProbeInfo, PROBE_TIMEOUT};
 use lc_media::{EditRecipe, MediaConfig, MediaKind, MediaPipeline, VideoEncoder};
 
@@ -402,6 +404,148 @@ fn brightness(config: &MediaConfig, path: &Path, time: &str) -> f64 {
     assert_eq!(output.stdout.len(), 32 * 24);
     let sum: u64 = output.stdout.iter().map(|value| u64::from(*value)).sum();
     sum as f64 / output.stdout.len() as f64
+}
+
+/// Pixels of the first decoded frame at `time`, as RGB triples.
+fn frame_pixels(config: &MediaConfig, path: &Path, time: &str, width: u32, height: u32) -> Vec<u8> {
+    let output = std::process::Command::new(&config.tools.ffmpeg)
+        .args(["-hide_banner", "-v", "error", "-ss", time, "-i"])
+        .arg(path)
+        .args(["-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"])
+        .output()
+        .expect("ffmpeg lancé");
+    assert!(output.status.success(), "image de {path:?} à {time}");
+    assert_eq!(output.stdout.len(), (width * height * 3) as usize);
+    output.stdout
+}
+
+fn pixel(frame: &[u8], width: u32, x: u32, y: u32) -> [i32; 3] {
+    let start = ((y * width + x) * 3) as usize;
+    [
+        i32::from(frame[start]),
+        i32::from(frame[start + 1]),
+        i32::from(frame[start + 2]),
+    ]
+}
+
+/// Variance of the luminance over a grid of samples of the frame.
+fn luminance_variance(frame: &[u8], width: u32, x_range: (u32, u32), y_range: (u32, u32)) -> f64 {
+    let mut values = Vec::new();
+    for y in (y_range.0..y_range.1).step_by(4) {
+        for x in (x_range.0..x_range.1).step_by(4) {
+            let [red, green, blue] = pixel(frame, width, x, y);
+            values
+                .push(f64::from(red) * 0.299 + f64::from(green) * 0.587 + f64::from(blue) * 0.114);
+        }
+    }
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    values
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
+        / values.len() as f64
+}
+
+#[tokio::test]
+#[ignore = "nécessite ffmpeg/ffprobe installés"]
+async fn annotations_are_burnt_in_before_the_picture_edits() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let config = config(directory.path());
+    let pipeline = MediaPipeline::new(config.clone()).unwrap();
+    let video = sample_video(&config, directory.path());
+
+    // A transparent overlay with an opaque red square at (32, 32).
+    let overlay = directory.path().join("annotations.png");
+    ffmpeg(
+        &config,
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black@0.0:s=320x240:r=1,format=rgba",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red@1:s=64x64:r=1,format=rgba",
+            "-filter_complex",
+            "[0][1]overlay=32:32:format=auto",
+            "-frames:v",
+            "1",
+            overlay.to_str().unwrap(),
+        ],
+    );
+    let png = STANDARD.encode(std::fs::read(&overlay).unwrap());
+
+    // A pixelated mask over the top-left quarter: the red and cyan bars that
+    // meet around x=50 and x=60 end up in the same block, so they become one
+    // colour.
+    let recipe = serde_json::json!({
+        "masks": [{"x": 0, "y": 0, "width": 0.25, "height": 0.25, "strength": 0.05}]
+    })
+    .to_string();
+    let (probed, path, rendered) = render(&pipeline, &video, MediaKind::Video, &recipe).await;
+    assert_eq!((probed.width, probed.height), (Some(320), Some(240)));
+    assert_duration(&probed, 6.0);
+    let plan = &rendered.plan;
+    assert_eq!(
+        plan.masks,
+        vec![lc_media::edit::MaskPlan {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 60,
+            mode: lc_media::edit::MaskMode::Pixel,
+            strength: 16.0,
+        }]
+    );
+    let source = frame_pixels(&config, &video, "1", 320, 240);
+    let masked = frame_pixels(&config, &path, "1", 320, 240);
+    let left = pixel(&masked, 320, 50, 30);
+    let right = pixel(&masked, 320, 60, 30);
+    for channel in 0..3 {
+        assert!(
+            (left[channel] - right[channel]).abs() <= 2,
+            "le masque pixels devrait aplatir x=50 et x=60 : {left:?} / {right:?}"
+        );
+    }
+    let source_left = pixel(&source, 320, 50, 30);
+    assert!(
+        (left[0] - source_left[0]).abs() > 60,
+        "le masque pixels ne change pas x=50 : {left:?} au lieu de {source_left:?}"
+    );
+
+    // Overlay + blurred mask + brightness: the square is painted before the
+    // adjustments, and the blurred half loses its detail.
+    let recipe = serde_json::json!({
+        "overlay": {"png": png, "width": 320, "height": 240},
+        "masks": [{"x": 0.5, "y": 0.5, "width": 0.5, "height": 0.5, "mode": "blur", "strength": 0.2}],
+        "adjust": {"brightness": 120}
+    })
+    .to_string();
+    let (probed, path, rendered) = render(&pipeline, &video, MediaKind::Video, &recipe).await;
+    assert!(rendered.plan.overlay && !rendered.plan.adjust.is_neutral());
+    assert_eq!((probed.width, probed.height), (Some(320), Some(240)));
+    assert_duration(&probed, 6.0);
+
+    let annotated = frame_pixels(&config, &path, "2", 320, 240);
+    let red = pixel(&annotated, 320, 64, 64);
+    assert!(
+        red[0] > 200 && red[1] < 90 && red[2] < 90,
+        "le carré rouge de l'overlay manque à (64, 64) : {red:?}"
+    );
+    let plain = brightness(&config, &video, "2");
+    let adjusted = brightness(&config, &path, "2");
+    assert!(
+        adjusted > plain + 5.0,
+        "l'éclaircissement ne s'applique pas : {adjusted:.1} au lieu de {plain:.1}"
+    );
+    let source = frame_pixels(&config, &video, "2", 320, 240);
+    let blurred = luminance_variance(&annotated, 320, (200, 300), (150, 230));
+    let detailed = luminance_variance(&source, 320, (200, 300), (150, 230));
+    assert!(
+        blurred * 4.0 < detailed,
+        "la zone floutée garde son détail : variance {blurred:.1} contre {detailed:.1}"
+    );
 }
 
 #[tokio::test]

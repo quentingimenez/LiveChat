@@ -84,6 +84,7 @@ fn content(aspect: f32) -> TweetCardContent {
         photos: Vec::new(),
         video: Some(TweetVideo { aspect }),
         quoted: None,
+        reply_parent: None,
     }
 }
 

@@ -59,6 +59,8 @@ const QUOTE_CORNER_RADIUS: f32 = 20.0;
 const QUOTE_BORDER_WIDTH: f32 = 2.0;
 /// Espace entre le texte du tweet et le bloc de citation.
 const QUOTE_GAP: f32 = 28.0;
+/// Espace entre le bloc du tweet parent et l'en-tête de la réponse.
+const REPLY_GAP: f32 = 28.0;
 /// Espace vertical entre les éléments du bloc de citation.
 const QUOTE_INNER_GAP: f32 = 16.0;
 /// Espace entre le nom et l'identifiant de l'auteur cité.
@@ -182,6 +184,9 @@ pub struct QuotedTweetContent {
     pub author_handle: String,
     /// Texte du tweet cité.
     pub text: String,
+    /// Date ISO 8601 du tweet cité, affichée seulement quand le bloc rend le
+    /// tweet parent d'une réponse.
+    pub created_at: Option<String>,
     /// Photos jointes au tweet cité (ou poster d'une vidéo citée), déjà
     /// téléchargées et converties en PNG par l'appelant.
     pub images: Vec<TweetPhoto>,
@@ -208,6 +213,8 @@ pub struct TweetCardContent {
     pub video: Option<TweetVideo>,
     /// Tweet cité par la publication, si elle en cite un.
     pub quoted: Option<QuotedTweetContent>,
+    /// Tweet auquel la publication répond, rendu au-dessus de l'en-tête.
+    pub reply_parent: Option<QuotedTweetContent>,
 }
 
 /// En-tête « nom @identifiant » de l'auteur cité.
@@ -219,6 +226,11 @@ struct QuoteHeader {
     /// Identifiant (`@handle`) de l'auteur cité, absent quand le nom prend
     /// toute la largeur.
     handle: Option<CardLayout>,
+    /// Abscisse de la date depuis le bord gauche du contenu, quand le bloc
+    /// affiche la date de son tweet.
+    date_x: f32,
+    /// Date de publication, affichée seulement pour le tweet parent.
+    date: Option<CardLayout>,
     /// Hauteur de la ligne d'en-tête.
     height: f32,
 }
@@ -342,7 +354,11 @@ pub fn card_text_chars(content: &TweetCardContent) -> usize {
         .quoted
         .as_ref()
         .map_or(0, |quoted| quoted.text.chars().count());
-    main.saturating_add(quoted)
+    let reply_parent = content
+        .reply_parent
+        .as_ref()
+        .map_or(0, |parent| parent.text.chars().count());
+    main.saturating_add(quoted).saturating_add(reply_parent)
 }
 
 /// Rendu synchrone d'une carte tweet en PNG.
@@ -395,15 +411,23 @@ fn render_with_engine(
     } else {
         0.0
     };
-    let body_top = PADDING + AVATAR_SIZE + HEADER_GAP;
     let text_width = CARD_WIDTH as f32 - 2.0 * PADDING;
+    // Le tweet parent est rendu au-dessus de l'en-tête, façon X : son bloc
+    // pousse tout le reste vers le bas.
+    let reply = content
+        .reply_parent
+        .as_ref()
+        .map(|parent| layout_quote(engine, parent, text_width, true));
+    let reply_height = reply.as_ref().map_or(0.0, |reply| reply.height + REPLY_GAP);
+    let header_top = PADDING + reply_height;
+    let body_top = header_top + AVATAR_SIZE + HEADER_GAP;
     // Le média et le bloc de citation sont disposés avant le corps : leur
     // hauteur réduit celle qui reste au texte du tweet parent.
     let media = layout_card_media(&content.photos, content.video, text_width);
     let quote = content
         .quoted
         .as_ref()
-        .map(|quoted| layout_quote(engine, quoted, text_width));
+        .map(|quoted| layout_quote(engine, quoted, text_width, false));
     let text = normalized_text(&content.text);
     let media_gap = if media.height > 0.0 && !text.is_empty() {
         MEDIA_GAP
@@ -412,8 +436,12 @@ fn render_with_engine(
     };
     let quote_height = quote.as_ref().map_or(0.0, |quote| QUOTE_GAP + quote.height);
     // Une carte qui porte un média peut dépasser la hauteur d'une carte de
-    // texte : une vidéo verticale occupe presque toute la largeur.
-    let max_card_height = if media.height > 0.0 {
+    // texte : une vidéo verticale occupe presque toute la largeur. Les images
+    // du tweet parent comptent comme un média.
+    let reply_has_media = reply
+        .as_ref()
+        .is_some_and(|reply| !reply.rows.is_empty() || reply.video.is_some());
+    let max_card_height = if media.height > 0.0 || reply_has_media {
         CARD_MEDIA_MAX_HEIGHT
     } else {
         CARD_MAX_HEIGHT
@@ -470,10 +498,13 @@ fn render_with_engine(
     );
     let header_height = AVATAR_SIZE.max(NAME_LINE_HEIGHT + SECONDARY_LINE_HEIGHT);
     let header_text_top =
-        PADDING + (header_height - NAME_LINE_HEIGHT - SECONDARY_LINE_HEIGHT) / 2.0;
+        header_top + (header_height - NAME_LINE_HEIGHT - SECONDARY_LINE_HEIGHT) / 2.0;
     let header_x = PADDING + AVATAR_SIZE + HEADER_TEXT_GAP;
 
-    draw_avatar(&mut pixmap, content, engine);
+    if let Some(reply) = reply.as_ref() {
+        draw_quote(&mut pixmap, reply, engine, (PADDING, PADDING), text_width);
+    }
+    draw_avatar(&mut pixmap, content, engine, header_top);
     draw_text(
         &mut pixmap,
         &name_layout,
@@ -571,8 +602,15 @@ fn display_handle(content: &TweetCardContent) -> String {
 ///
 /// La hauteur du bloc est calculée avant le texte du parent : elle sert à
 /// réserver la place, et le texte cité est tronqué à
-/// [`QUOTE_MAX_TEXT_LINES`] lignes pour garder une carte lisible.
-fn layout_quote(engine: &mut TextEngine, quoted: &QuotedTweetContent, width: f32) -> QuoteLayout {
+/// [`QUOTE_MAX_TEXT_LINES`] lignes pour garder une carte lisible. `show_date`
+/// n'est vrai que pour le tweet parent d'une réponse : la citation existante
+/// garde exactement son rendu.
+fn layout_quote(
+    engine: &mut TextEngine,
+    quoted: &QuotedTweetContent,
+    width: f32,
+    show_date: bool,
+) -> QuoteLayout {
     let inner_width = (width - 2.0 * (QUOTE_BORDER_WIDTH + QUOTE_PADDING)).max(1.0);
     let name = quoted.author_name.trim().to_string();
     let handle = {
@@ -589,38 +627,66 @@ fn layout_quote(engine: &mut TextEngine, quoted: &QuotedTweetContent, width: f32
         bold: true,
         align: Alignment::Left,
     };
+    let handle_style = TextStyleSpec {
+        size: QUOTE_HANDLE_SIZE,
+        line_height: QUOTE_HANDLE_LINE_HEIGHT,
+        bold: false,
+        align: Alignment::Left,
+    };
+    let date_text = if show_date {
+        quoted.created_at.as_deref().and_then(format_tweet_date)
+    } else {
+        None
+    };
     let header = if name.is_empty() && handle.is_empty() {
         None
-    } else if name.is_empty() {
-        // Sans nom, l'identifiant tient lieu d'en-tête.
-        let layout = single_line_layout(engine, &handle, name_style, inner_width);
-        Some(QuoteHeader {
-            name_width: layout.width(),
-            name: layout,
-            handle: None,
-            height: QUOTE_NAME_LINE_HEIGHT,
-        })
     } else {
-        let name_layout = single_line_layout(engine, &name, name_style, inner_width);
-        let name_width = name_layout.width();
-        let remaining = inner_width - name_width - QUOTE_HANDLE_GAP;
-        let handle_layout = (!handle.is_empty() && remaining > 48.0).then(|| {
-            single_line_layout(
-                engine,
-                &handle,
-                TextStyleSpec {
-                    size: QUOTE_HANDLE_SIZE,
-                    line_height: QUOTE_HANDLE_LINE_HEIGHT,
-                    bold: false,
-                    align: Alignment::Left,
-                },
-                remaining,
-            )
+        // Sans nom, l'identifiant tient lieu d'en-tête.
+        let (lead, lead_style) = if name.is_empty() {
+            (handle.clone(), name_style)
+        } else {
+            (name.clone(), name_style)
+        };
+        let lead_layout = single_line_layout(engine, &lead, lead_style, inner_width);
+        let name_width = lead_layout.width();
+        let mut cursor = name_width;
+        let handle_layout = (!name.is_empty() && !handle.is_empty())
+            .then(|| {
+                let remaining = inner_width - cursor - QUOTE_HANDLE_GAP;
+                (remaining > 48.0).then(|| {
+                    let layout = single_line_layout(engine, &handle, handle_style, remaining);
+                    cursor += QUOTE_HANDLE_GAP + layout.width();
+                    layout
+                })
+            })
+            .flatten();
+        let date_layout = date_text.and_then(|date| {
+            let remaining = inner_width - cursor - QUOTE_HANDLE_GAP;
+            (remaining > 64.0).then(|| {
+                single_line_layout(
+                    engine,
+                    &date,
+                    TextStyleSpec {
+                        size: QUOTE_HANDLE_SIZE,
+                        line_height: QUOTE_HANDLE_LINE_HEIGHT,
+                        bold: false,
+                        align: Alignment::Left,
+                    },
+                    remaining,
+                )
+            })
         });
+        let date_x = if date_layout.is_some() {
+            cursor + QUOTE_HANDLE_GAP
+        } else {
+            0.0
+        };
         Some(QuoteHeader {
-            name: name_layout,
+            name: lead_layout,
             name_width,
             handle: handle_layout,
+            date_x,
+            date: date_layout,
             height: QUOTE_NAME_LINE_HEIGHT,
         })
     };
@@ -1037,6 +1103,15 @@ fn draw_quote(
                 SECONDARY_COLOR,
             );
         }
+        if let Some(date) = &header.date {
+            draw_text(
+                pixmap,
+                date,
+                engine,
+                (content_x + header.date_x, top),
+                SECONDARY_COLOR,
+            );
+        }
         top += header.height;
     }
     if !quote.text.paragraphs.is_empty() {
@@ -1127,9 +1202,10 @@ fn draw_background(pixmap: &mut Pixmap, height: u32) -> MediaResult<()> {
     Ok(())
 }
 
-/// Peint l'avatar circulaire, ou l'initiale sur un cercle coloré.
-fn draw_avatar(pixmap: &mut Pixmap, content: &TweetCardContent, engine: &mut TextEngine) {
-    let Some(rect) = Rect::from_xywh(PADDING, PADDING, AVATAR_SIZE, AVATAR_SIZE) else {
+/// Peint l'avatar circulaire, ou l'initiale sur un cercle coloré, à l'ordonnée
+/// `top` (le bloc du tweet parent décale l'en-tête).
+fn draw_avatar(pixmap: &mut Pixmap, content: &TweetCardContent, engine: &mut TextEngine, top: f32) {
+    let Some(rect) = Rect::from_xywh(PADDING, top, AVATAR_SIZE, AVATAR_SIZE) else {
         return;
     };
     crate::card_canvas::draw_avatar(
@@ -1159,6 +1235,7 @@ mod tests {
     const TEXT_FIXTURE: &str = include_str!("../tests/fixtures/twitter_syndication_text.json");
     const PHOTO_FIXTURE: &str = include_str!("../tests/fixtures/twitter_syndication_photo.json");
     const QUOTE_FIXTURE: &str = include_str!("../tests/fixtures/twitter_syndication_quote.json");
+    const REPLY_FIXTURE: &str = include_str!("../tests/fixtures/twitter_syndication_reply.json");
     const PREVIEW_PATH: &str = r"C:\Users\SUPERK~1\AppData\Local\Temp\claude\68a8acc7ef5015a3\60808cc6-e051-4c46-99bd-bf2036662783\scratchpad\tweet-card-preview.png";
 
     fn content_from(raw: &str) -> TweetCardContent {
@@ -1206,6 +1283,7 @@ mod tests {
             photos: Vec::new(),
             video: None,
             quoted: None,
+            reply_parent: None,
         };
         let png = render_tweet_card(&content).unwrap();
         assert_valid_card(&png);
@@ -1228,6 +1306,7 @@ mod tests {
             photos: Vec::new(),
             video: None,
             quoted: None,
+            reply_parent: None,
         };
         let png = render_tweet_card(&content).unwrap();
         let card = Pixmap::decode_png(&png).unwrap();
@@ -1283,6 +1362,7 @@ mod tests {
             photos: Vec::new(),
             video: None,
             quoted: None,
+            reply_parent: None,
         };
         let png = render_tweet_card(&content).unwrap();
         let (_, height) = assert_valid_card(&png);
@@ -1300,6 +1380,7 @@ mod tests {
             photos: Vec::new(),
             video: None,
             quoted: None,
+            reply_parent: None,
         };
         let png = render_tweet_card(&content).unwrap();
         assert_valid_card(&png);
@@ -1501,12 +1582,102 @@ mod tests {
                 author_name: String::new(),
                 author_handle: String::new(),
                 text: String::new(),
+                created_at: None,
                 images: vec![quoted_image(solid_png(200, 120))],
                 video: None,
             }),
+            reply_parent: None,
         };
         let png = render_tweet_card(&content).unwrap();
         assert_valid_card(&png);
+    }
+
+    #[test]
+    fn renders_the_reply_card_with_its_parent_block() {
+        let mut content = content_from(REPLY_FIXTURE);
+        assert!(content.reply_parent.is_some());
+        let png = render_tweet_card(&content).unwrap();
+        let (_, with_parent) = assert_valid_card(&png);
+
+        content.reply_parent = None;
+        let (_, without_parent) = png_dimensions(&render_tweet_card(&content).unwrap());
+        assert!(
+            with_parent > without_parent + 100,
+            "bloc du parent absent de la carte : {with_parent} px contre \
+             {without_parent} px sans parent"
+        );
+    }
+
+    #[test]
+    fn places_the_reply_parent_above_the_reply_header() {
+        let mut content = content_from(REPLY_FIXTURE);
+        let with_parent = Pixmap::decode_png(&render_tweet_card(&content).unwrap()).unwrap();
+        content.reply_parent = None;
+        let without = Pixmap::decode_png(&render_tweet_card(&content).unwrap()).unwrap();
+
+        // Le haut de la carte est occupé par le bloc du parent : à l'endroit
+        // où l'avatar de la réponse se trouve sans parent, on lit le fond du
+        // bloc. Si l'en-tête n'était pas poussé, l'avatar le recouvrirait.
+        let x = PADDING as u32 + 30;
+        let y = PADDING as u32 + 30;
+        let inside_block = with_parent.pixel(x, y).unwrap();
+        assert_eq!(
+            (
+                inside_block.red(),
+                inside_block.green(),
+                inside_block.blue()
+            ),
+            QUOTE_BACKGROUND,
+            "le bloc du parent n'occupe pas le haut de la carte"
+        );
+        let outside_block = without.pixel(x, y).unwrap();
+        assert_ne!(
+            (
+                outside_block.red(),
+                outside_block.green(),
+                outside_block.blue()
+            ),
+            QUOTE_BACKGROUND,
+            "le pixel de contrôle est déjà dans un bloc sans parent"
+        );
+
+        // Et l'avatar de la réponse a bien descendu sous le bloc : son cercle
+        // n'occupe plus l'ancienne position, alors qu'il y est sans parent.
+        let avatar_center = (
+            (PADDING + AVATAR_SIZE / 2.0) as u32,
+            (PADDING + AVATAR_SIZE / 2.0) as u32,
+        );
+        let moved = with_parent.pixel(avatar_center.0, avatar_center.1).unwrap();
+        let stayed = without.pixel(avatar_center.0, avatar_center.1).unwrap();
+        assert_ne!(
+            (moved.red(), moved.green(), moved.blue()),
+            (stayed.red(), stayed.green(), stayed.blue()),
+            "l'avatar n'a pas été décalé sous le bloc du parent"
+        );
+    }
+
+    #[test]
+    fn clamps_a_card_with_a_tall_reply_parent_block() {
+        let mut content = content_from(REPLY_FIXTURE);
+        content.text = "un tweet interminable ".repeat(400);
+        let parent = content.reply_parent.as_mut().unwrap();
+        parent.text = "le parent interminable ".repeat(400);
+        parent.images = (0..4).map(|_| quoted_image(solid_png(400, 400))).collect();
+        let png = render_tweet_card(&content).unwrap();
+        let (_, height) = assert_valid_card(&png);
+        assert_eq!(height, CARD_MEDIA_MAX_HEIGHT);
+    }
+
+    #[test]
+    fn keeps_the_quoted_tweet_render_unchanged_by_its_date() {
+        let mut content = content_from(QUOTE_FIXTURE);
+        let reference = render_tweet_card(&content).unwrap();
+        // La citation n'affiche jamais de date : changer la sienne ne doit pas
+        // modifier un seul pixel de la carte.
+        if let Some(quoted) = content.quoted.as_mut() {
+            quoted.created_at = Some("1999-12-31T23:59:59.000Z".to_string());
+        }
+        assert_eq!(render_tweet_card(&content).unwrap(), reference);
     }
 
     #[test]
@@ -1844,6 +2015,28 @@ mod tests {
         let quoted = content.quoted.as_ref().unwrap().text.chars().count();
         assert_eq!(card_text_chars(&content), main + quoted);
         assert!(card_text_chars(&content) > main);
+    }
+
+    #[test]
+    fn card_text_chars_includes_the_reply_parent() {
+        let mut content = TweetCardContent {
+            text: "Texte principal".into(),
+            ..TweetCardContent::default()
+        };
+        let main = content.text.chars().count();
+        content.reply_parent = Some(QuotedTweetContent {
+            text: "Texte du parent plus long".into(),
+            ..QuotedTweetContent::default()
+        });
+        let parent = content.reply_parent.as_ref().unwrap().text.chars().count();
+        assert_eq!(card_text_chars(&content), main + parent);
+
+        content.quoted = Some(QuotedTweetContent {
+            text: "citation".into(),
+            ..QuotedTweetContent::default()
+        });
+        let quoted = content.quoted.as_ref().unwrap().text.chars().count();
+        assert_eq!(card_text_chars(&content), main + parent + quoted);
     }
 
     #[test]

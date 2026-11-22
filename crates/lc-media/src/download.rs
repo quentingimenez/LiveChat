@@ -265,6 +265,18 @@ async fn download_tweet_card(
             }
         }
     }
+    if let Some(parent) = content.reply_parent.as_mut() {
+        for (index, image) in parent.images.iter_mut().enumerate() {
+            // Échec non bloquant : l'image est ignorée par le rendu.
+            image.data = download_tweet_photo_png(
+                config,
+                &image.source_url,
+                temp_dir,
+                &format!("tweet-reply-{index}"),
+            )
+            .await;
+        }
+    }
     let card = tweet_card::render_tweet_card_with_slots(&content)?;
     let text_chars = Some(tweet_card::card_text_chars(&content));
     let has_parent = card

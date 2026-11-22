@@ -213,8 +213,19 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     } else {
         info!("worker de purge média désactivé (aucune base configurée)");
     }
+    // A concurrent re-ingestion of the same link could shorten a board asset's
+    // expiry after its pin: re-pin the board before serving, so restarting the
+    // server heals a board whose cards point at an asset the cache considers
+    // expired.
+    if let Some(db) = state.db.as_ref() {
+        match media::repin_board_assets(db, state.clock.now()).await {
+            Ok(0) => {}
+            Ok(repaired) => info!(repaired, "échéances de board réparées au démarrage"),
+            Err(error) => warn!(error = %error, "réparation des échéances de board impossible"),
+        }
+    }
     // Board videos without a picture get their cover (platform thumbnail, else
-    // one of their own frames).
+    // one of their own frames), including a cover row whose file disappeared.
     media::spawn_cover_backfill(&state);
 
     // Runtime Discord facultatif : `Disabled` (token absent) et l'absence de base

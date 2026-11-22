@@ -227,10 +227,23 @@ impl MediaStorage {
     /// Appelée **après** la publication atomique de la nouvelle variante : les
     /// anciennes extensions d'un même `source_hash` ne doivent jamais être
     /// effacées avant que le remplaçant soit sur disque (AUD-A4-007).
+    ///
+    /// Les images compagnes (`<hash>.cover.jpg|png`, miniatures de plateforme et
+    /// pochettes) ne sont pas des variantes du média : elles sont conservées.
+    /// Sans cela, une nouvelle ingestion du même lien efface la seule image que
+    /// le board affiche encore.
     pub fn remove_other_variants(&self, source_hash: &str, keep: &Path) -> MediaResult<usize> {
         let keep = std::fs::canonicalize(keep).unwrap_or_else(|_| keep.to_path_buf());
+        let cover_prefix = format!("{}.cover.", sanitize_hash(source_hash));
         let mut removed = 0;
         for path in self.variant_paths(source_hash)? {
+            let is_cover = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&cover_prefix));
+            if is_cover {
+                continue;
+            }
             let candidate = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
             if candidate == keep {
                 continue;
@@ -628,6 +641,30 @@ mod tests {
         assert_eq!(storage.remove_other_variants("hash", &keep).unwrap(), 1);
         assert!(keep.exists());
         assert!(!stale.exists());
+    }
+
+    /// A cover is not a stale variant of the media: re-ingesting the same link
+    /// publishes a new media file and must leave the picture alone (the board
+    /// still points at it).
+    #[test]
+    fn remove_other_variants_keeps_the_cover_image() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let storage = MediaStorage::from_root(directory.path().join("media"));
+        storage.ensure().unwrap();
+        let keep = storage.variant_path("hash", "mp4");
+        let stale = storage.variant_path("hash", "mp3");
+        let cover = storage.variant_path("hash", "cover.jpg");
+        fs::write(&keep, b"video").unwrap();
+        fs::write(&stale, b"audio").unwrap();
+        fs::write(&cover, b"image").unwrap();
+
+        assert_eq!(storage.remove_other_variants("hash", &keep).unwrap(), 1);
+        assert!(keep.exists());
+        assert!(!stale.exists());
+        assert!(
+            cover.exists(),
+            "la miniature doit survivre à la ré-ingestion"
+        );
     }
 
     #[cfg(windows)]

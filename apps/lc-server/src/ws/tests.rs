@@ -786,6 +786,118 @@ async fn dispatched_play_carries_a_verifiable_signature() {
 }
 
 #[tokio::test]
+async fn play_during_runtime_init_is_signed_and_never_fails_the_job() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    let asset_id = seed_media_asset(&server.db, 12).await;
+    let job_id = seed_job(&server.db, &guild, asset_id, 12, JobStatus::Pending, None).await;
+
+    // Une socket est déjà dans la room pendant qu'un autre `hello` initialise
+    // le moteur : c'est la fenêtre d'AUD-A1-009.
+    let client_id = OverlayClientId::new_v4();
+    let (sender, mut frames) = tokio::sync::mpsc::unbounded_channel();
+    server
+        .hub
+        .register(
+            guild.clone(),
+            client_id,
+            client_id.to_canonical(),
+            "poste".to_owned(),
+            lc_protocol::SessionMode::Normal,
+            Some("Auteur".to_owned()),
+            None,
+            sender,
+        )
+        .expect("enregistrement de la socket de test");
+
+    // Point d'observation déterministe : le moteur est construit mais ses
+    // tâches ne sont pas encore lancées. Tout ce qu'un `play` peut lire ici a
+    // donc été publié avant que le moteur puisse s'exécuter.
+    let (reached, release) = server.hub.arm_init_hook();
+    let hub = Arc::clone(&server.hub);
+    let state = server.state.clone();
+    let init = tokio::spawn(async move { hub.ensure_runtime(&state).await });
+    timeout(Duration::from_secs(5), reached)
+        .await
+        .expect("initialisation bloquée au point d'observation")
+        .expect("point d'observation atteint");
+
+    assert!(
+        server.hub.db().is_some(),
+        "la base du hub doit être publiée avant le spawn du moteur"
+    );
+    let play = lc_protocol::PlayPayload {
+        job_id: PlaybackJobId::new_v4().to_canonical(),
+        media: Some(lc_protocol::MediaPayload {
+            asset_id: asset_id.to_canonical(),
+            url: "http://127.0.0.1:3000/overlay/media/asset".to_owned(),
+            mime: "video/mp4".to_owned(),
+            kind: ProtocolMediaKind::Video,
+            duration_sec: Some(12),
+            is_vertical: false,
+            start_offset_sec: None,
+            artwork_asset_id: None,
+            artwork_url: None,
+            display_scale_percent: None,
+        }),
+        duration_sec: 12,
+        ..lc_protocol::PlayPayload::default()
+    };
+    assert_eq!(
+        server.hub.unicast_play(&guild, &play),
+        1,
+        "un play pendant l'init doit voir la config et être signé (sinon job FAILED)"
+    );
+    let frame = frames.try_recv().expect("trame play envoyée");
+    let hub::OutFrame::Text(text) = frame else {
+        panic!("trame texte attendue");
+    };
+    let envelope: lc_protocol::ServerEnvelope =
+        serde_json::from_str(&text).expect("trame serveur JSON");
+    let lc_protocol::ServerMessage::Play(payload) = envelope.message else {
+        panic!("message play attendu");
+    };
+    let url = payload.media.expect("média du play").url;
+    assert!(url.contains("sig="), "URL signée par la config du hub");
+
+    release.send(()).expect("libération de l'initialisation");
+    timeout(Duration::from_secs(5), init)
+        .await
+        .expect("initialisation terminée")
+        .expect("tâche d'initialisation")
+        .expect("moteur construit");
+
+    // Le moteur dispatche le job en attente : la trame doit arriver à la
+    // socket et le job doit être PLAYING, jamais FAILED.
+    let dispatched = timeout(Duration::from_secs(5), frames.recv())
+        .await
+        .expect("dispatch du job par le moteur")
+        .expect("socket de test vivante");
+    let hub::OutFrame::Text(text) = dispatched else {
+        panic!("trame texte attendue");
+    };
+    let envelope: lc_protocol::ServerEnvelope =
+        serde_json::from_str(&text).expect("trame serveur JSON");
+    let lc_protocol::ServerMessage::Play(payload) = envelope.message else {
+        panic!("message play attendu");
+    };
+    assert_eq!(payload.job_id, job_id.to_canonical());
+
+    let job = server
+        .db
+        .playback_jobs()
+        .get(job_id)
+        .await
+        .expect("lecture du job")
+        .expect("job de test");
+    assert_eq!(
+        job.status,
+        JobStatus::Playing,
+        "job dispatché pendant l'init, jamais FAILED"
+    );
+}
+
+#[tokio::test]
 async fn hello_stores_version_and_platform_and_device_state_is_kept() {
     let server = start_server().await;
     let guild_id = seed_guild(&server.db).await;

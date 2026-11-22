@@ -44,6 +44,7 @@ pub mod thumbnails;
 pub mod tokens;
 pub mod tts;
 
+pub use assets::repin_board_assets;
 pub use confinement::ensure_storage_root;
 pub use errors::{MediaServiceError, MediaServiceResult};
 pub use hook::{install_ingest_hook, notify_ingested, IngestHook};

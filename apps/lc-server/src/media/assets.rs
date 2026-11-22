@@ -156,7 +156,9 @@ pub async fn find_reusable(
 /// Crée (ou réarme) la ligne `PROCESSING` d'une ingestion.
 ///
 /// L'identifiant est conservé si une ligne existe déjà pour la même empreinte de
-/// source ; la ligne est remise en `PROCESSING` avec une nouvelle expiration.
+/// source ; la ligne est remise en `PROCESSING`. L'échéance n'est jamais
+/// raccourcie : une ré-ingestion concurrente ne doit pas retirer l'épinglage
+/// d'un média présent au board.
 pub async fn begin_processing(
     db: &Db,
     source: &MediaSource,
@@ -170,7 +172,7 @@ pub async fn begin_processing(
         sqlx::query(
             "UPDATE media_assets \
                 SET source_url = ?, status = 'PROCESSING', error = NULL, \
-                    last_accessed_at = ?, expires_at = ? \
+                    last_accessed_at = ?, expires_at = MAX(expires_at, ?) \
               WHERE id = ?",
         )
         .bind(source.canonical_url.as_str())
@@ -223,6 +225,10 @@ pub async fn begin_processing(
 }
 
 /// Passe un asset en `READY` avec les métadonnées du fichier normalisé.
+///
+/// L'échéance ne remplace que si elle est plus lointaine (`MAX`) : le `now`
+/// d'une ingestion qui a démarré avant l'épinglage du board ne doit pas écraser
+/// l'échéance à 100 ans posée entre-temps.
 pub async fn mark_ready(
     db: &Db,
     asset_id: MediaAssetId,
@@ -235,7 +241,7 @@ pub async fn mark_ready(
             SET source_hash = ?, source_url = ?, source_title = ?, kind = ?, mime = ?, \
                 duration_sec = ?, width = ?, height = ?, is_vertical = ?, storage_path = ?, \
                 size_bytes = ?, status = 'READY', error = NULL, last_accessed_at = ?, \
-                expires_at = ? \
+                expires_at = MAX(expires_at, ?) \
           WHERE id = ?",
     )
     .bind(ready.source_hash.as_str())
@@ -299,6 +305,40 @@ pub async fn pin(
             asset_id.to_string(),
         )))
     })
+}
+
+/// Repins everything a board shows: its media, their embedded covers and the
+/// artworks set on their cards.
+///
+/// A board pin is a 100-year expiry. Before [`mark_ready`] kept the later
+/// deadline, an ingestion that started before the pin could overwrite it with
+/// the cache TTL: the media stayed on the board but became unreadable once the
+/// TTL elapsed. This start-up pass repairs those rows.
+pub async fn repin_board_assets(db: &Db, now: UtcDateTime) -> MediaServiceResult<usize> {
+    let expiry = pinned_expiry(now);
+    // The covers are pinned through the (media or artwork) asset they belong to,
+    // exactly like [`pin`] does for one asset.
+    let result = sqlx::query(
+        "UPDATE media_assets \
+            SET last_accessed_at = ?, expires_at = ? \
+          WHERE status = 'READY' AND expires_at < ? \
+            AND (id IN (SELECT media_asset_id FROM media_board_items) \
+              OR id IN (SELECT artwork_asset_id FROM media_board_items \
+                         WHERE artwork_asset_id IS NOT NULL) \
+              OR id IN (SELECT cover_asset_id FROM media_assets \
+                         WHERE id IN (SELECT media_asset_id FROM media_board_items \
+                                       UNION \
+                                      SELECT artwork_asset_id FROM media_board_items \
+                                       WHERE artwork_asset_id IS NOT NULL)))",
+    )
+    .bind(datetime_to_ms(now))
+    .bind(datetime_to_ms(expiry))
+    .bind(datetime_to_ms(expiry))
+    .execute(db.pool())
+    .await
+    .map_err(lc_db::DbError::from)?;
+
+    Ok(usize::try_from(result.rows_affected()).unwrap_or(usize::MAX))
 }
 
 /// Stores the embedded cover of an audio file as its own `READY` image asset
@@ -431,7 +471,8 @@ mod tests {
     use std::path::PathBuf;
 
     use lc_db::DbConfig;
-    use lc_domain::ids::MediaAssetId;
+    use lc_domain::entities::MediaBoardItem;
+    use lc_domain::ids::{GuildId, MediaAssetId, MediaBoardItemId};
     use lc_media::download::DownloadResult;
     use lc_media::error::MediaErrorCode;
     use lc_media::resolve::ResolvedMedia;
@@ -598,6 +639,168 @@ mod tests {
         assert_eq!(first.id, second.id);
         assert_eq!(second.status, MediaStatus::Processing);
         assert_eq!(second.expires_at, now + TimeDuration::hours(2));
+    }
+
+    /// The cache TTL of a re-ingestion must never shorten a board pin: the card
+    /// would stay listed but the media would answer 404 once the TTL elapsed.
+    #[tokio::test]
+    async fn mark_ready_never_shortens_a_pinned_expiry() {
+        let (_dir, db) = database().await;
+        let now = test_now();
+        let source = source("https://example.com/pinned.mp4");
+        let ready = ReadyAsset::from_ingested(&ingested(
+            "https://example.com/pinned.mp4",
+            PathBuf::from("/tmp/pinned.mp4"),
+        ));
+        let processing = begin_processing(&db, &source, now, cache_ttl(&config()))
+            .await
+            .expect("ligne");
+        mark_ready(&db, processing.id, &ready, now, cache_ttl(&config()))
+            .await
+            .expect("READY");
+        let pinned = pin(&db, processing.id, now).await.expect("épinglage");
+        assert_eq!(pinned.expires_at, pinned_expiry(now));
+
+        // Une ré-ingestion qui a démarré avant l'épinglage termine après lui.
+        let later = now + TimeDuration::hours(6);
+        let after = mark_ready(&db, processing.id, &ready, later, cache_ttl(&config()))
+            .await
+            .expect("seconde ingestion");
+        assert_eq!(
+            after.expires_at,
+            pinned_expiry(now),
+            "l'échéance épinglée doit survivre à la ré-ingestion"
+        );
+    }
+
+    /// Same invariant on the way in: rearming the row `PROCESSING` keeps the
+    /// later deadline.
+    #[tokio::test]
+    async fn begin_processing_never_shortens_a_pinned_expiry() {
+        let (_dir, db) = database().await;
+        let now = test_now();
+        let source = source("https://example.com/rearmed.mp4");
+        let ready = ReadyAsset::from_ingested(&ingested(
+            "https://example.com/rearmed.mp4",
+            PathBuf::from("/tmp/rearmed.mp4"),
+        ));
+        let processing = begin_processing(&db, &source, now, cache_ttl(&config()))
+            .await
+            .expect("ligne");
+        mark_ready(&db, processing.id, &ready, now, cache_ttl(&config()))
+            .await
+            .expect("READY");
+        pin(&db, processing.id, now).await.expect("épinglage");
+
+        begin_processing(
+            &db,
+            &source,
+            now + TimeDuration::hours(6),
+            cache_ttl(&config()),
+        )
+        .await
+        .expect("réarme");
+        let stored = db
+            .media_assets()
+            .get(processing.id)
+            .await
+            .expect("lecture")
+            .expect("asset présent");
+        assert_eq!(stored.expires_at, pinned_expiry(now));
+    }
+
+    /// A start-up pass repairs the board rows an older build left with a short
+    /// expiry (the media stayed on the board but was refused once expired).
+    #[tokio::test]
+    async fn repin_board_assets_restores_a_pin_lost_to_a_concurrent_ingestion() {
+        let (_dir, db) = database().await;
+        let now = test_now();
+        let assets = db.media_assets();
+        let source = source("https://example.com/board.mp4");
+        let processing = begin_processing(&db, &source, now, cache_ttl(&config()))
+            .await
+            .expect("ligne");
+        let ready = ReadyAsset::from_ingested(&ingested(
+            "https://example.com/board.mp4",
+            PathBuf::from("/tmp/board.mp4"),
+        ));
+        let video = mark_ready(&db, processing.id, &ready, now, cache_ttl(&config()))
+            .await
+            .expect("READY");
+
+        let cover = MediaAsset {
+            id: MediaAssetId::new_v4(),
+            source_hash: format!("{}#cover", video.source_hash),
+            source_url: format!("{}#cover", video.source_url),
+            source_title: None,
+            kind: MediaKind::Image,
+            mime: "image/jpeg".to_owned(),
+            duration_sec: None,
+            width: Some(320),
+            height: Some(240),
+            is_vertical: false,
+            storage_path: "/tmp/board.cover.jpg".to_owned(),
+            size_bytes: 12,
+            status: MediaStatus::Ready,
+            error: None,
+            last_accessed_at: now,
+            expires_at: now + TimeDuration::hours(1),
+            created_at: now,
+        };
+        assets.insert(&cover).await.expect("image");
+        assets
+            .set_cover(video.id, Some(cover.id))
+            .await
+            .expect("liaison");
+
+        db.media_board()
+            .create(&MediaBoardItem {
+                id: MediaBoardItemId::new_v4(),
+                guild_id: GuildId::parse("123456789012345678").expect("guilde"),
+                media_asset_id: video.id,
+                title: None,
+                message: None,
+                created_by_discord_user_id: None,
+                created_by_name: None,
+                created_at: now,
+                artwork_asset_id: None,
+                artwork_on_overlay: false,
+                display_duration_sec: None,
+                display_scale_percent: None,
+            })
+            .await
+            .expect("élément de board");
+
+        // État laissé par la course : la vidéo et son image ont le TTL de cache.
+        for id in [video.id, cover.id] {
+            sqlx::query("UPDATE media_assets SET expires_at = ? WHERE id = ?")
+                .bind(datetime_to_ms(now + TimeDuration::hours(12)))
+                .bind(id.to_canonical())
+                .execute(db.pool())
+                .await
+                .expect("échéance courte");
+        }
+
+        let repaired = repin_board_assets(&db, now).await.expect("réparation");
+        assert_eq!(repaired, 2, "la vidéo et son image sont réépinglées");
+        assert_eq!(
+            assets
+                .get(video.id)
+                .await
+                .expect("lecture")
+                .expect("vidéo")
+                .expires_at,
+            pinned_expiry(now)
+        );
+        assert_eq!(
+            assets
+                .get(cover.id)
+                .await
+                .expect("lecture")
+                .expect("image")
+                .expires_at,
+            pinned_expiry(now)
+        );
     }
 
     #[tokio::test]

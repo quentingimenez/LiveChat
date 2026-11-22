@@ -89,21 +89,44 @@ pub async fn get_media(
     method: Method,
     headers: HeaderMap,
 ) -> Response {
+    // Chaque refus ci-dessous est muet côté client : l'overlay n'affiche qu'un
+    // glyphe, le lecteur reste gris. La trace serveur est donc le seul moyen de
+    // savoir pourquoi une carte de board reste vide, d'où un `warn!` par motif.
     let (client_id_raw, exp_raw, sig) = match (query.client_id, query.exp, query.sig) {
         (Some(client_id), Some(exp), Some(sig)) => (client_id, exp, sig),
-        _ => return media_url_invalid(),
+        _ => {
+            warn!(
+                asset_id = asset_id_raw,
+                "média signé demandé sans signature : refus"
+            );
+            return media_url_invalid();
+        }
     };
 
     let Ok(asset_id) = MediaAssetId::parse(asset_id_raw.trim()) else {
+        warn!(
+            asset_id = asset_id_raw,
+            "identifiant de média illisible : refus"
+        );
         return media_not_found();
     };
     let Ok(client_id) = OverlayClientId::parse(client_id_raw.trim()) else {
+        warn!(
+            client_id = client_id_raw,
+            "client overlay illisible : média refusé"
+        );
         return media_url_invalid();
     };
     let Ok(exp_sec) = exp_raw.trim().parse::<u64>() else {
+        warn!(exp = exp_raw, "expiration illisible : média refusé");
         return media_url_invalid();
     };
     if sig.len() != 64 || !sig.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        warn!(
+            asset_id = %asset_id.to_canonical(),
+            sig_len = sig.len(),
+            "signature mal formée : média refusé"
+        );
         return media_url_invalid();
     }
 
@@ -115,6 +138,12 @@ pub async fn get_media(
     let asset_key = asset_id.to_canonical();
     let client_key = client_id.to_canonical();
     if !media_url::verify(secret.as_bytes(), &asset_key, &client_key, exp_sec, &sig) {
+        warn!(
+            asset_id = %asset_key,
+            client_id = %client_key,
+            exp_sec,
+            "signature d'URL média invalide : refus"
+        );
         return media_url_invalid();
     }
 
@@ -133,6 +162,13 @@ pub async fn get_media(
         return media_url_invalid();
     }
     if media_url::is_expired(exp_sec, now_sec) {
+        warn!(
+            asset_id = %asset_key,
+            client_id = %client_key,
+            exp_sec,
+            now_sec,
+            "URL média expirée : refus"
+        );
         return media_url_expired();
     }
 
@@ -142,10 +178,14 @@ pub async fn get_media(
     };
     let client = match db.overlay_clients().get(client_id).await {
         Ok(Some(client)) => client,
-        Ok(None) => return media_url_invalid(),
+        Ok(None) => {
+            warn!(client_id = %client_key, "client overlay inconnu : média refusé");
+            return media_url_invalid();
+        }
         Err(db_error) => return db_failure("overlay_media.client_lookup", &db_error),
     };
     if !client.is_active() {
+        warn!(client_id = %client_key, "client overlay inactif : média refusé");
         return media_url_invalid();
     }
 
@@ -155,16 +195,33 @@ pub async fn get_media(
     // autre guilde ; le legacy répond `403 forbidden` dans ce cas.
     let asset = match db.media_assets().get(asset_id).await {
         Ok(Some(asset)) => asset,
-        Ok(None) => return media_not_found(),
+        Ok(None) => {
+            warn!(asset_id = %asset_key, "média inconnu : refus");
+            return media_not_found();
+        }
         Err(db_error) => return db_failure("overlay_media.asset_lookup", &db_error),
     };
     if !asset.is_ready() || asset.is_expired_at(timestamp) {
+        warn!(
+            asset_id = %asset_key,
+            status = ?asset.status,
+            expires_at = ?asset.expires_at,
+            "média indisponible ou expiré : refus"
+        );
         return media_not_found();
     }
 
     match playback_access_exists(db, asset_id, &client.guild_id).await {
         Ok(true) => {}
-        Ok(false) => return forbidden(),
+        Ok(false) => {
+            warn!(
+                asset_id = %asset_key,
+                client_id = %client_key,
+                guild_id = client.guild_id.as_str(),
+                "aucun job de la guilde ne référence ce média : refus"
+            );
+            return forbidden();
+        }
         Err(db_error) => return db_failure("overlay_media.playback_binding", &db_error),
     }
 

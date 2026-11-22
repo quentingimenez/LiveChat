@@ -470,13 +470,16 @@ const MAX_TIKTOK_COOKIE_CHARS: usize = 4096;
 /// La valeur est écrite dans un fichier de cookies pour yt-dlp : un caractère
 /// de contrôle (CR, LF, TAB…) ou une valeur démesurée est refusé plutôt
 /// qu'échappé silencieusement (AUD-A4-013). La valeur n'est jamais loguée.
-fn sanitize_tiktok_cookie(raw: &str) -> Option<String> {
+///
+/// Utilisé pour la valeur d'environnement comme pour l'override runtime de la
+/// console admin, afin que les deux chemins appliquent la même validation.
+pub fn sanitize_tiktok_cookie(raw: &str) -> Option<String> {
     let cookie = strip_cookie_prefix(raw);
     if cookie.is_empty() || cookie.chars().count() > MAX_TIKTOK_COOKIE_CHARS {
         return None;
     }
     if cookie.chars().any(char::is_control) {
-        tracing::warn!("TIKTOK_COOKIE ignoré : caractères de contrôle interdits dans la valeur");
+        tracing::warn!("Cookie TikTok ignoré : caractères de contrôle interdits dans la valeur");
         return None;
     }
     Some(cookie)

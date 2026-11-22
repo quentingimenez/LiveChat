@@ -624,4 +624,88 @@ mod tests {
             .expect("image enregistrée");
         assert_eq!(cover.kind, MediaKind::Image);
     }
+
+    /// A video imported from a link, whose platform has no picture to give
+    /// (here a plain `.mp4` URL): its card must still show the video itself
+    /// rather than the fallback glyph.
+    #[tokio::test]
+    #[ignore = "nécessite ffmpeg installé"]
+    async fn une_video_importee_par_un_lien_recoit_une_frame() {
+        let fixture = fixture().await;
+        let input = fixture.storage.root().join("lien.mp4");
+        black_intro(&fixture.config, &input);
+        let source =
+            MediaSource::from_raw("https://cdn.example.test/clip.mp4").expect("source du lien");
+        let mut video = uploaded_video(&source.source_hash, &input, fixture.now);
+        video.source_url = source.canonical_url.clone();
+        fixture
+            .db
+            .media_assets()
+            .insert(&video)
+            .await
+            .expect("vidéo");
+        let context = ThumbnailContext {
+            config: Arc::new(fixture.config.clone()),
+            storage: fixture.storage.clone(),
+            db: fixture.db.clone(),
+            clock: Arc::new(SystemClock),
+            hub: None,
+        };
+
+        spawn_cover_fetch(&context, &video, Some(source), None);
+        let cover_id = wait_for_cover(&fixture.db, video.id).await;
+
+        let cover = fixture
+            .db
+            .media_assets()
+            .get(cover_id)
+            .await
+            .expect("lecture")
+            .expect("image enregistrée");
+        assert_eq!(cover.kind, MediaKind::Image);
+        assert_eq!(cover.mime, "image/jpeg");
+        assert_eq!((cover.width, cover.height), (Some(320), Some(240)));
+        assert!(Path::new(&cover.storage_path).is_file(), "fichier présent");
+    }
+
+    /// A platform link whose thumbnail cannot be obtained (no resolution to
+    /// read one from, and nothing to scrape): the frame of the stored video is
+    /// the fallback, and asking for it must not require the platform.
+    #[tokio::test]
+    #[ignore = "nécessite ffmpeg installé"]
+    async fn une_video_de_plateforme_sans_vignette_recoit_une_frame() {
+        let fixture = fixture().await;
+        let input = fixture.storage.root().join("plateforme.mp4");
+        black_intro(&fixture.config, &input);
+        let source =
+            MediaSource::from_raw("https://x.com/quelqu_un/status/1234567890").expect("lien");
+        let mut video = uploaded_video(&source.source_hash, &input, fixture.now);
+        video.source_url = source.canonical_url.clone();
+        fixture
+            .db
+            .media_assets()
+            .insert(&video)
+            .await
+            .expect("vidéo");
+        let context = ThumbnailContext {
+            config: Arc::new(fixture.config.clone()),
+            storage: fixture.storage.clone(),
+            db: fixture.db.clone(),
+            clock: Arc::new(SystemClock),
+            hub: None,
+        };
+
+        spawn_cover_fetch(&context, &video, Some(source), None);
+        let cover_id = wait_for_cover(&fixture.db, video.id).await;
+
+        let cover = fixture
+            .db
+            .media_assets()
+            .get(cover_id)
+            .await
+            .expect("lecture")
+            .expect("image enregistrée");
+        assert_eq!(cover.kind, MediaKind::Image);
+        assert_eq!(cover.mime, "image/jpeg");
+    }
 }

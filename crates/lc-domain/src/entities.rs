@@ -490,7 +490,9 @@ pub struct OverlayClient {
     /// Le brut n'est jamais stocké ni journalisé : seule cette empreinte
     /// SHA-256, salée par la guilde, permet de refuser le retour d'un appareil
     /// banni. Absente pour les clients antérieurs au champ `deviceId`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// Toujours omise des réponses : aucune API ne doit exposer `deviceHash`.
+    #[serde(default, skip_serializing)]
     pub device_hash: Option<String>,
     /// Dernier heartbeat applicatif.
     #[serde(with = "ms_optional", default, skip_serializing_if = "Option::is_none")]
@@ -600,9 +602,9 @@ impl PairingCodeEntry {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{MediaAsset, PairingCodeEntry};
-    use crate::enums::{MediaKind, MediaStatus, PairingMode};
-    use crate::ids::{GuildId, MediaAssetId, PairingCode as PairingCodeId};
+    use super::{MediaAsset, OverlayClient, PairingCodeEntry};
+    use crate::enums::{MediaKind, MediaStatus, OverlaySessionMode, PairingMode};
+    use crate::ids::{GuildId, MediaAssetId, OverlayClientId, PairingCode as PairingCodeId};
     use crate::time::ms_to_datetime;
 
     fn date(ms: i64) -> time::UtcDateTime {
@@ -653,6 +655,34 @@ mod tests {
         assert!(asset.is_ready());
         assert!(!asset.is_expired_at(date(1_700_000_599_999)));
         assert!(asset.is_expired_at(date(1_700_000_600_000)));
+    }
+
+    #[test]
+    fn overlay_client_never_serializes_its_device_fingerprint() {
+        let client = OverlayClient {
+            id: OverlayClientId::new_v4(),
+            guild_id: GuildId::parse("123456789012345678").unwrap(),
+            label: "PC".to_owned(),
+            token_hash: "hash".to_owned(),
+            session_mode: OverlaySessionMode::Normal,
+            default_author_name: None,
+            default_author_image: None,
+            created_by_discord_user_id: None,
+            device_hash: Some("f".repeat(64)),
+            last_seen_at: None,
+            created_at: date(1_700_000_000_000),
+            revoked_at: None,
+        };
+
+        let json = serde_json::to_value(&client).unwrap();
+        assert!(
+            json.get("deviceHash").is_none(),
+            "aucune réponse ne doit exposer deviceHash : {json}"
+        );
+
+        // Un JSON sans le champ (client antérieur au `deviceId`) se relit.
+        let decoded: OverlayClient = serde_json::from_value(json).unwrap();
+        assert!(decoded.device_hash.is_none());
     }
 
     #[test]

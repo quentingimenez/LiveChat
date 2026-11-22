@@ -68,6 +68,58 @@ async fn devices_are_recorded_idempotently_and_lifted_with_the_ban() {
 }
 
 #[tokio::test]
+async fn create_with_devices_commits_both_and_reports_a_conflict() {
+    let (db, _dir) = common::temp_db().await;
+    let guild = common::guild("111");
+    let now = common::now();
+
+    let mut first = ban("111", "Léa");
+    first.discord_user_id = Some("777".to_owned());
+    let hashes = vec!["hash-a".to_owned(), "hash-b".to_owned()];
+    let stored = db
+        .guild_bans()
+        .create_with_devices(&first, &hashes, now)
+        .await
+        .unwrap();
+    assert_eq!(stored.as_ref().map(|entry| entry.id), Some(first.id));
+    assert_eq!(
+        db.guild_ban_devices().count_by_ban(first.id).await.unwrap(),
+        2
+    );
+    assert_eq!(
+        db.guild_bans().list_by_guild(&guild).await.unwrap().len(),
+        1
+    );
+
+    // The same Discord account: the ban insert conflicts, no ban is added and
+    // the caller gets `None` (it then attaches devices to the existing ban).
+    let mut second = ban("111", "Léa bis");
+    second.discord_user_id = Some("777".to_owned());
+    let rejected = db
+        .guild_bans()
+        .create_with_devices(&second, &["hash-c".to_owned()], now)
+        .await
+        .unwrap();
+    assert!(rejected.is_none());
+    assert_eq!(
+        db.guild_bans().list_by_guild(&guild).await.unwrap().len(),
+        1
+    );
+    assert_eq!(
+        db.guild_ban_devices()
+            .count_by_ban(second.id)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(!db
+        .guild_ban_devices()
+        .is_device_banned(&guild, "hash-c")
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
 async fn deleting_a_guild_cascades_through_its_bans_to_their_devices() {
     let (db, _dir) = common::temp_db().await;
     let guild = common::guild("111");

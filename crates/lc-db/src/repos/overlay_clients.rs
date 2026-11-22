@@ -170,6 +170,24 @@ impl OverlayClientsRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Liste tous les overlays d'un membre, révoqués compris, du plus ancien au
+    /// plus récent.
+    ///
+    /// Un bannissement lit cette liste, pas seulement les clients actifs : un
+    /// appareil révoqué juste avant le ban doit lui aussi être retenu.
+    pub async fn list_by_member(&self, member_id: GuildMemberId) -> DbResult<Vec<OverlayClient>> {
+        let rows = sqlx::query_as::<_, OverlayClientRow>(
+            "SELECT * FROM overlay_clients WHERE member_id = ? \
+             ORDER BY created_at ASC, id ASC",
+        )
+        .bind(member_id.to_canonical())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(OverlayClientRow::into_entity)
+            .collect()
+    }
+
     /// Liste les overlays **actifs** d'un membre, du plus ancien au plus récent.
     pub async fn list_active_by_member(
         &self,

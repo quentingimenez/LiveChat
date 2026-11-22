@@ -3,9 +3,10 @@
 use lc_domain::entities::GuildBan;
 use lc_domain::ids::{GuildBanId, GuildId, GuildMemberId};
 use sqlx::SqlitePool;
+use time::UtcDateTime;
 
 use crate::convert::{decode, decode_opt, from_ms, to_ms};
-use crate::error::{conflict_on_unique, DbResult};
+use crate::error::{conflict_on_unique, is_unique_violation, DbResult};
 
 const TABLE: &str = "guild_bans";
 
@@ -74,6 +75,64 @@ impl GuildBansRepository {
         .await
         .map_err(|error| conflict_on_unique(error, "discord account already banned"))?;
         Ok(())
+    }
+
+    /// Creates a ban and attaches its device fingerprints in one transaction.
+    ///
+    /// Returns `None` when the Discord account is already banned (the caller
+    /// then attaches the fingerprints to the existing ban). On any other error
+    /// nothing is committed: a ban always carries the fingerprints collected
+    /// with it, never a ban without them because the second insert failed.
+    pub async fn create_with_devices(
+        &self,
+        ban: &GuildBan,
+        device_hashes: &[String],
+        now: UtcDateTime,
+    ) -> DbResult<Option<GuildBan>> {
+        let mut transaction = self.pool.begin().await?;
+        let inserted = sqlx::query(
+            "INSERT INTO guild_bans ( \
+                id, guild_id, member_id, discord_user_id, display_name, avatar, \
+                banned_by, created_at \
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(ban.id.to_canonical())
+        .bind(ban.guild_id.as_str())
+        .bind(ban.member_id.map(GuildMemberId::to_canonical))
+        .bind(ban.discord_user_id.as_deref())
+        .bind(ban.display_name.as_str())
+        .bind(ban.avatar.as_deref())
+        .bind(ban.banned_by.as_deref())
+        .bind(to_ms(ban.created_at))
+        .execute(&mut *transaction)
+        .await;
+        if let Err(error) = inserted {
+            transaction.rollback().await?;
+            return if is_unique_violation(&error) {
+                Ok(None)
+            } else {
+                Err(error.into())
+            };
+        }
+        for device_hash in device_hashes {
+            let recorded = sqlx::query(
+                "INSERT OR IGNORE INTO guild_ban_devices \
+                    (ban_id, guild_id, device_hash, created_at) \
+                 VALUES (?, ?, ?, ?)",
+            )
+            .bind(ban.id.to_canonical())
+            .bind(ban.guild_id.as_str())
+            .bind(device_hash.as_str())
+            .bind(to_ms(now))
+            .execute(&mut *transaction)
+            .await;
+            if let Err(error) = recorded {
+                transaction.rollback().await?;
+                return Err(error.into());
+            }
+        }
+        transaction.commit().await?;
+        Ok(Some(ban.clone()))
     }
 
     /// Bans of a guild, most recent first.

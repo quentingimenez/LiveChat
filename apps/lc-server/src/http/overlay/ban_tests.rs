@@ -8,7 +8,7 @@ use std::sync::Arc;
 use axum::http::{Method, StatusCode};
 use lc_domain::{
     GuildBan, GuildBanId, GuildId, GuildInvite, GuildMemberId, GuildRole, IngestClient,
-    IngestClientId, PairingCode, PairingCodeEntry, PairingMode,
+    IngestClientId, OverlayClientId, PairingCode, PairingCodeEntry, PairingMode,
 };
 use lc_protocol::close_code;
 use serde_json::json;
@@ -692,6 +692,25 @@ async fn a_ban_records_the_devices_of_the_member_and_unban_lifts_them() {
         Some(fingerprint.as_str())
     );
 
+    // The devices screen never leaks the fingerprint.
+    let (status, devices) = harness
+        .call(
+            Method::GET,
+            "/overlay/admin/devices",
+            Some(&admin_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{devices}");
+    assert!(
+        !devices.to_string().contains("deviceHash"),
+        "deviceHash exposé : {devices}"
+    );
+    assert!(
+        !devices.to_string().contains(fingerprint.as_str()),
+        "empreinte exposée : {devices}"
+    );
+
     let ban_id = ban_and_get_id(&harness, &admin_token, lea_id.to_canonical().as_str()).await;
     assert!(harness
         .db
@@ -747,11 +766,51 @@ async fn a_banned_device_cannot_redeem_an_invite_or_a_pairing_code() {
 
     // Léa's machine is refused on an open invitation before the invitation is
     // spent, while another machine still joins normally.
+    let members_before = harness
+        .db
+        .guild_members()
+        .list_by_guild(&harness.guild_id)
+        .await
+        .unwrap()
+        .len();
+    let clients_before = harness
+        .db
+        .overlay_clients()
+        .list_by_guild(&harness.guild_id)
+        .await
+        .unwrap()
+        .len();
     let invite = stored_invite(&harness, None, None).await;
     let (status, body) =
         join_with_device(&harness, invite.code.as_str(), "Léa", "lea-machine-guid").await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(body["error"], "member_banned");
+    assert!(
+        body.get("clientToken").is_none(),
+        "un refus ne doit pas émettre de jeton : {body}"
+    );
+    assert_eq!(
+        harness
+            .db
+            .guild_members()
+            .list_by_guild(&harness.guild_id)
+            .await
+            .unwrap()
+            .len(),
+        members_before,
+        "un refus ne doit créer aucun membre"
+    );
+    assert_eq!(
+        harness
+            .db
+            .overlay_clients()
+            .list_by_guild(&harness.guild_id)
+            .await
+            .unwrap()
+            .len(),
+        clients_before,
+        "un refus ne doit créer aucun client overlay"
+    );
     let stored = harness
         .db
         .guild_invites()
@@ -768,10 +827,48 @@ async fn a_banned_device_cannot_redeem_an_invite_or_a_pairing_code() {
 
     // The same fingerprint is also refused on a Discord pairing code, without
     // consuming the code.
+    let members_before = harness
+        .db
+        .guild_members()
+        .list_by_guild(&harness.guild_id)
+        .await
+        .unwrap()
+        .len();
+    let clients_before = harness
+        .db
+        .overlay_clients()
+        .list_by_guild(&harness.guild_id)
+        .await
+        .unwrap()
+        .len();
     discord_code(&harness, "DEVI2345", &harness.guild_id, DISCORD_USER).await;
     let (status, body) = join_with_device(&harness, "DEVI2345", "Léa", "lea-machine-guid").await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(body["error"], "member_banned");
+    assert!(
+        body.get("clientToken").is_none(),
+        "un refus ne doit pas émettre de jeton : {body}"
+    );
+    assert_eq!(
+        harness
+            .db
+            .guild_members()
+            .list_by_guild(&harness.guild_id)
+            .await
+            .unwrap()
+            .len(),
+        members_before
+    );
+    assert_eq!(
+        harness
+            .db
+            .overlay_clients()
+            .list_by_guild(&harness.guild_id)
+            .await
+            .unwrap()
+            .len(),
+        clients_before
+    );
     let kept = harness
         .db
         .pairing_codes()
@@ -832,4 +929,104 @@ async fn an_invalid_device_id_is_rejected_before_the_invite_is_used() {
     let (status, body) =
         join_with_device(&harness, invite.code.as_str(), "Léa", "lea-machine-guid").await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn a_ban_records_the_device_of_a_client_revoked_just_before() {
+    let harness = Harness::new().await;
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Quentin")
+        .await;
+    let admin_token = token(&admin);
+    let code = harness.server_invite(GuildRole::Member).await;
+    let (status, lea) = join_with_device(&harness, &code, "Léa", "lea-revoked-guid").await;
+    assert_eq!(status, StatusCode::OK, "{lea}");
+    let lea_id: GuildMemberId = lea["memberId"].as_str().unwrap().parse().unwrap();
+    let client_id: OverlayClientId = lea["clientId"].as_str().unwrap().parse().unwrap();
+
+    // A device revoked just before the ban must still be retained: it was the
+    // member's machine even though it is no longer active.
+    assert!(harness
+        .db
+        .overlay_clients()
+        .revoke(client_id, fixed_now())
+        .await
+        .unwrap());
+
+    ban_and_get_id(&harness, &admin_token, lea_id.to_canonical().as_str()).await;
+
+    let fingerprint = device_hash(&harness.guild_id, "lea-revoked-guid");
+    assert!(
+        harness
+            .db
+            .guild_ban_devices()
+            .is_device_banned(&harness.guild_id, &fingerprint)
+            .await
+            .unwrap(),
+        "l'appareil d'un client révoqué juste avant le ban doit être retenu"
+    );
+}
+
+#[tokio::test]
+async fn a_second_ban_keeps_the_existing_ban_and_attaches_its_devices() {
+    let harness = Harness::new().await;
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Quentin")
+        .await;
+    let admin_token = token(&admin);
+    let code = harness.server_invite(GuildRole::Member).await;
+    let (status, lea) = join_with_device(&harness, &code, "Léa", "lea-conflict-guid").await;
+    assert_eq!(status, StatusCode::OK, "{lea}");
+    let lea_id: GuildMemberId = lea["memberId"].as_str().unwrap().parse().unwrap();
+
+    // Un ban importé couvre déjà le compte Discord lié, sans `member_id` : le
+    // ban du membre entre en conflit et doit réutiliser cette ligne, pas
+    // renvoyer l'identifiant d'un ban jamais inséré.
+    harness
+        .db
+        .guild_members()
+        .link_discord(lea_id, DISCORD_USER)
+        .await
+        .unwrap();
+    let existing = GuildBan {
+        id: GuildBanId::new_v4(),
+        guild_id: harness.guild_id.clone(),
+        member_id: None,
+        discord_user_id: Some(DISCORD_USER.to_owned()),
+        display_name: "Exilé".to_owned(),
+        avatar: None,
+        banned_by: None,
+        created_at: fixed_now(),
+    };
+    harness.db.guild_bans().create(&existing).await.unwrap();
+
+    let (status, body) = harness
+        .call(
+            Method::POST,
+            &format!(
+                "/overlay/admin/members/{}/ban",
+                lea_id.to_canonical().as_str()
+            ),
+            Some(&admin_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["ban"]["id"], existing.id.to_canonical());
+    assert_eq!(
+        harness
+            .db
+            .guild_ban_devices()
+            .count_by_ban(existing.id)
+            .await
+            .unwrap(),
+        1
+    );
+    let fingerprint = device_hash(&harness.guild_id, "lea-conflict-guid");
+    assert!(harness
+        .db
+        .guild_ban_devices()
+        .is_device_banned(&harness.guild_id, &fingerprint)
+        .await
+        .unwrap());
 }

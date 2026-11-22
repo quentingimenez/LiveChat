@@ -14,7 +14,9 @@
 //! (`updated`) so its open overlays reload the card.
 //!
 //! At startup, [`spawn_cover_backfill`] gives the same picture to board videos
-//! that have none.
+//! that have none, and makes it again when the cover row survived but its file
+//! did not (an older re-ingestion could delete the file, and the row then
+//! pointed at nothing).
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -102,17 +104,39 @@ async fn fetch_and_attach(
     resolved: Option<&ResolvedMedia>,
 ) {
     let assets_repo = context.db.media_assets();
-    let asset = match (
+    let (asset, existing_cover) = match (
         assets_repo.get(asset_id).await,
         assets_repo.cover_of(asset_id).await,
     ) {
-        (Ok(Some(asset)), Ok(None)) if asset.is_ready() => asset,
+        (Ok(Some(asset)), Ok(cover)) if asset.is_ready() => (asset, cover),
         (Ok(_), Ok(_)) => return,
         (Err(error), _) | (_, Err(error)) => {
             tracing::warn!(error = %error, "lecture de la vidéo impossible");
             return;
         }
     };
+    // A cover row without its file is a broken card (an older build deleted the
+    // file, or a storage restore lost it): make the picture again instead of
+    // trusting the row.
+    if let Some(cover_id) = existing_cover {
+        match assets_repo.get(cover_id).await {
+            Ok(Some(cover))
+                if cover_file_present(context, cover.is_ready(), Some(&cover.storage_path)) =>
+            {
+                return;
+            }
+            Ok(_) => {
+                tracing::info!(
+                    asset_id = %asset.id.to_canonical(),
+                    "image de la vidéo absente du stockage : nouvelle tentative"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "lecture de l'image de la vidéo impossible");
+                return;
+            }
+        }
+    }
     let (cover, origin) = match platform_cover(context, &asset, source, resolved).await {
         Some(cover) => (cover, "platform"),
         None => match poster_cover(context, &asset).await {
@@ -295,14 +319,37 @@ async fn notify_boards(context: &ThumbnailContext, asset_id: MediaAssetId) {
     }
 }
 
-/// Board videos that have no picture yet, with the source they came from.
+/// `true` when a cover row, when there is one, still points at a stored file.
+///
+/// The row alone proves nothing: a re-ingestion of an older build deleted
+/// `<hash>.cover.*` while keeping the row, so the card asks for a file that is
+/// no longer there.
+fn cover_file_present(
+    context: &ThumbnailContext,
+    cover_ready: bool,
+    cover_path: Option<&str>,
+) -> bool {
+    if !cover_ready {
+        return false;
+    }
+    let Some(path) = cover_path.filter(|path| !path.trim().is_empty()) else {
+        return false;
+    };
+    context.storage.resolve_reference(Path::new(path)).is_file()
+}
+
+/// Board videos that need a picture, with the source they came from: no cover
+/// row yet, or a cover row whose file is gone.
 async fn videos_without_cover(
     db: &Db,
-) -> Result<Vec<(MediaAssetId, String, String)>, lc_db::DbError> {
+) -> Result<Vec<(MediaAssetId, String, String, bool, Option<String>)>, lc_db::DbError> {
     let rows = sqlx::query(
-        "SELECT DISTINCT a.id, a.source_url, a.source_hash FROM media_assets a \
+        "SELECT DISTINCT a.id, a.source_url, a.source_hash, \
+                COALESCE(c.status = 'READY', 0) AS cover_ready, c.storage_path AS cover_path \
+           FROM media_assets a \
            JOIN media_board_items b ON b.media_asset_id = a.id \
-          WHERE a.kind = 'VIDEO' AND a.status = 'READY' AND a.cover_asset_id IS NULL \
+           LEFT JOIN media_assets c ON c.id = a.cover_asset_id \
+          WHERE a.kind = 'VIDEO' AND a.status = 'READY' \
           LIMIT ?",
     )
     .bind(BACKFILL_LIMIT)
@@ -314,8 +361,10 @@ async fn videos_without_cover(
         let id: String = row.try_get("id").map_err(lc_db::DbError::from)?;
         let source_url: String = row.try_get("source_url").map_err(lc_db::DbError::from)?;
         let source_hash: String = row.try_get("source_hash").map_err(lc_db::DbError::from)?;
+        let cover_ready: i64 = row.try_get("cover_ready").map_err(lc_db::DbError::from)?;
+        let cover_path: Option<String> = row.try_get("cover_path").map_err(lc_db::DbError::from)?;
         if let Ok(id) = id.parse::<MediaAssetId>() {
-            videos.push((id, source_url, source_hash));
+            videos.push((id, source_url, source_hash, cover_ready != 0, cover_path));
         }
     }
     Ok(videos)
@@ -347,9 +396,12 @@ pub fn spawn_cover_backfill(state: &AppState) {
     });
 }
 
-/// One backfill pass over the board videos that have no picture. An upload is
+/// One backfill pass over the board videos that need a picture. An upload is
 /// covered like a link: there is no platform to ask, so its own frames are
 /// used.
+///
+/// The pass does not go through `first_attempt`: it is the repair path, and a
+/// source tried earlier by an ingestion may still have no file on disk.
 pub(crate) async fn backfill_covers(context: &ThumbnailContext) {
     let videos = match videos_without_cover(&context.db).await {
         Ok(videos) => videos,
@@ -358,8 +410,8 @@ pub(crate) async fn backfill_covers(context: &ThumbnailContext) {
             return;
         }
     };
-    for (asset_id, source_url, source_hash) in videos {
-        if !first_attempt(&source_hash) {
+    for (asset_id, source_url, _source_hash, cover_ready, cover_path) in videos {
+        if cover_file_present(context, cover_ready, cover_path.as_deref()) {
             continue;
         }
         let source = MediaSource::from_raw(&source_url);
@@ -478,6 +530,17 @@ mod tests {
         assert!(!wants_cover(&image));
     }
 
+    /// The context a background task would get, without the admin hub.
+    fn context(fixture: &Fixture) -> ThumbnailContext {
+        ThumbnailContext {
+            config: Arc::new(fixture.config.clone()),
+            storage: fixture.storage.clone(),
+            db: fixture.db.clone(),
+            clock: Arc::new(SystemClock),
+            hub: None,
+        }
+    }
+
     #[tokio::test]
     async fn une_video_televersee_sans_image_est_reprise_par_le_rattrapage() {
         let fixture = fixture().await;
@@ -496,9 +559,27 @@ mod tests {
         assert_eq!(picked.len(), 1, "la vidéo téléversée doit être reprise");
         assert_eq!(picked[0].0, video.id);
         assert_eq!(picked[0].2, "upload:sha256:clip");
+        assert!(!picked[0].3, "aucune image enregistrée pour l'instant");
+    }
 
-        // Once it has a cover, the backfill leaves it alone.
-        let cover = uploaded_video("upload:sha256:clip#cover", &file, fixture.now);
+    #[tokio::test]
+    async fn une_video_dont_l_image_a_disparu_est_reprise_par_le_rattrapage() {
+        // The row survived but its file did not: the card asks for a picture
+        // that is not there. The backfill must see the video again instead of
+        // trusting the row.
+        let fixture = fixture().await;
+        let file = fixture.storage.root().join("clip.mp4");
+        std::fs::write(&file, b"video").expect("fichier");
+        let video = uploaded_video("upload:sha256:clip", &file, fixture.now);
+        fixture
+            .db
+            .media_assets()
+            .insert(&video)
+            .await
+            .expect("vidéo");
+        on_board(&fixture, &video).await;
+        let missing = fixture.storage.root().join("disparue.cover.jpg");
+        let cover = uploaded_video("upload:sha256:clip#cover", &missing, fixture.now);
         fixture
             .db
             .media_assets()
@@ -511,10 +592,15 @@ mod tests {
             .set_cover(video.id, Some(cover.id))
             .await
             .expect("liaison");
-        assert!(videos_without_cover(&fixture.db)
-            .await
-            .expect("requête")
-            .is_empty());
+
+        let picked = videos_without_cover(&fixture.db).await.expect("requête");
+        assert_eq!(picked.len(), 1, "la vidéo doit être examinée de nouveau");
+        assert!(picked[0].3, "l'image est bien enregistrée en base");
+        let context = context(&fixture);
+        assert!(
+            !cover_file_present(&context, picked[0].3, picked[0].4.as_deref()),
+            "mais son fichier a disparu du stockage"
+        );
     }
 
     /// A video that opens on a black frame, like many uploads.
@@ -639,6 +725,63 @@ mod tests {
             .expect("lecture")
             .expect("image enregistrée");
         assert_eq!(cover.kind, MediaKind::Image);
+    }
+
+    #[tokio::test]
+    #[ignore = "nécessite ffmpeg installé"]
+    async fn le_rattrapage_regenere_une_image_disparue() {
+        // An older build deleted `<hash>.cover.jpg` when the same link was
+        // ingested again, but kept the cover row. The backfill is the only
+        // place that can notice and make the picture again.
+        let fixture = fixture().await;
+        let input = fixture.storage.root().join("regeneration.mp4");
+        black_intro(&fixture.config, &input);
+        let video = uploaded_video("upload:sha256:regeneration", &input, fixture.now);
+        fixture
+            .db
+            .media_assets()
+            .insert(&video)
+            .await
+            .expect("vidéo");
+        on_board(&fixture, &video).await;
+        let missing = fixture.storage.root().join("disparue.cover.jpg");
+        let cover = uploaded_video("upload:sha256:regeneration#cover", &missing, fixture.now);
+        fixture
+            .db
+            .media_assets()
+            .insert(&cover)
+            .await
+            .expect("image");
+        fixture
+            .db
+            .media_assets()
+            .set_cover(video.id, Some(cover.id))
+            .await
+            .expect("liaison");
+        let context = context(&fixture);
+        assert!(
+            !cover_file_present(&context, true, Some(&cover.storage_path)),
+            "le fichier de l'image a bien disparu"
+        );
+
+        backfill_covers(&context).await;
+
+        let repaired = fixture
+            .db
+            .media_assets()
+            .get(cover.id)
+            .await
+            .expect("lecture")
+            .expect("la ligne d'image est réutilisée");
+        assert_eq!(repaired.id, cover.id, "pas de nouvelle ligne d'image");
+        assert!(
+            Path::new(&repaired.storage_path).is_file(),
+            "le fichier de l'image est recréé"
+        );
+        assert_ne!(
+            repaired.storage_path, cover.storage_path,
+            "l'image pointe désormais sur le fichier recréé"
+        );
     }
 
     /// A video imported from a link, whose platform has no picture to give

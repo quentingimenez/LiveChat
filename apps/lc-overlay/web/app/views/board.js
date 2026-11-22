@@ -254,8 +254,15 @@ const thumbObserver = new IntersectionObserver(
       }
       const media =
         kind === 'video'
-          ? h('video', { src: `${mediaUrl}#t=0.1`, preload: 'metadata', muted: true, playsinline: true, tabindex: '-1' })
-          : h('img', { src: mediaUrl, alt: '', loading: 'lazy' });
+          ? h('video', {
+              src: `${mediaUrl}#t=0.1`,
+              preload: 'metadata',
+              muted: true,
+              playsinline: true,
+              tabindex: '-1',
+              draggable: 'false',
+            })
+          : h('img', { src: mediaUrl, alt: '', loading: 'lazy', draggable: 'false' });
       // The fallback glyph goes away as soon as the thumbnail can be shown.
       const glyph = entry.target.querySelector('.glyph');
       media.addEventListener('error', () => media.remove());
@@ -362,9 +369,16 @@ function buildCard(entry) {
       'data-item-id': item.id,
       'aria-label': `Détails de ${itemTitle(item)}`,
       onClick: (event) => {
-        const action = cardClickAction({ selecting: state.selecting, shiftKey: event.shiftKey });
+        const action = cardClickAction({
+          selecting: state.selecting,
+          shiftKey: event.shiftKey,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+        });
         if (action === 'details') {
           selectItem(entry.item.id, event.detail);
+        } else if (action === 'pick') {
+          pickCard(entry.item.id);
         } else {
           pickItem(entry.item.id, action === 'range');
         }
@@ -401,9 +415,16 @@ function buildCard(entry) {
         if (event.target.closest('button')) {
           return;
         }
-        const action = cardClickAction({ selecting: state.selecting, shiftKey: event.shiftKey });
+        const action = cardClickAction({
+          selecting: state.selecting,
+          shiftKey: event.shiftKey,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+        });
         if (action === 'details') {
           selectItem(entry.item.id, event.detail);
+        } else if (action === 'pick') {
+          pickCard(entry.item.id);
         } else {
           pickItem(entry.item.id, action === 'range');
         }
@@ -844,6 +865,9 @@ function deleteSelection(items) {
 
 export function enterSelection() {
   clearDrawerTimers();
+  // A pending single click must not open the drawer after the mode started.
+  clearTimeout(clickTimer);
+  clickTimer = null;
   applyView(CLOSED_VIEW);
   state.capturing = false;
   state.selecting = true;
@@ -885,6 +909,17 @@ function pickItem(id, range) {
     : toggleId(state.selection, id);
   state.selectionAnchor = id;
   syncSelection();
+}
+
+// Ctrl+click (or Cmd+click) picks a card's media even outside the selection
+// mode: the first one enters the mode, the next ones toggle the media.
+function pickCard(id) {
+  clearTimeout(clickTimer);
+  clickTimer = null;
+  if (!state.selecting) {
+    enterSelection();
+  }
+  pickItem(id, false);
 }
 
 function pickAllVisible() {
@@ -1298,9 +1333,12 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-// In the selection mode, Ctrl+A picks every visible card (like the « Tout
-// sélectionner » button); a field being edited keeps its own text selection.
+// On the board, Ctrl+A picks every visible card (like the « Tout sélectionner
+// » button) and opens the selection mode if needed; elsewhere, or in a field
+// being edited, it keeps its normal effect.
 document.addEventListener('keydown', (event) => {
+  const boardTab = state.page === 'guild' && state.tab === 'board' && Boolean(state.activeGuildId);
+  const selectAllKey = (event.ctrlKey || event.metaKey) && (event.key === 'a' || event.key === 'A');
   const action = selectAllAction({
     key: event.key,
     ctrl: event.ctrlKey,
@@ -1310,11 +1348,14 @@ document.addEventListener('keydown', (event) => {
     handled: event.defaultPrevented,
     capturing: state.capturing,
     dialogOpen: Boolean(document.getElementById('dialog-root').firstElementChild),
-    selecting: state.selecting,
     editableTarget: isEditable(event.target),
+    canSelectAll: selectAllKey && boardTab && visibleItems().length > 0,
   });
   if (action === 'selectAll') {
     event.preventDefault();
+    if (!state.selecting) {
+      enterSelection();
+    }
     pickAllVisible();
   }
 });
@@ -2206,19 +2247,17 @@ document.addEventListener('livechat:uploads', () => {
 let dropVeil = null;
 let dropDismissed = false;
 
-// A drag started inside the board (a thumbnail, selected text) is not an
-// import.
-let internalDrag = false;
-document.addEventListener('dragstart', () => {
-  internalDrag = true;
-});
-document.addEventListener('dragend', () => {
-  internalDrag = false;
+// The window behaves like an application: a drag started inside it (a
+// thumbnail, a field's selected text) never leaves as a native ghost copy.
+// Files and links dropped from outside do not fire dragstart here: only they
+// are still imports.
+document.addEventListener('dragstart', (event) => {
+  event.preventDefault();
 });
 
 function transfersFiles(event) {
   const transfer = event.dataTransfer;
-  if (!transfer || internalDrag) {
+  if (!transfer) {
     return false;
   }
   const types = Array.from(transfer.types || []);

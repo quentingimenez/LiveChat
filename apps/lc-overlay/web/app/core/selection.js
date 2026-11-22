@@ -120,8 +120,14 @@ export function escapeAction({ key, handled, capturing, dialogOpen, drawerOpen, 
   return selecting ? 'leaveSelection' : null;
 }
 
-/** What a click on a card's thumbnail does: `toggle`, `range` or `details`. */
-export function cardClickAction({ selecting, shiftKey }) {
+/**
+ * What a click on a card's thumbnail does: `pick` (Ctrl/Cmd+click outside the
+ * selection mode), `toggle`, `range` or `details`.
+ */
+export function cardClickAction({ selecting, shiftKey, ctrlKey = false, metaKey = false }) {
+  if (ctrlKey || metaKey) {
+    return selecting ? 'toggle' : 'pick';
+  }
   if (!selecting) {
     return 'details';
   }
@@ -243,12 +249,14 @@ export function selectAllToggle({ orderedIds, selection }) {
 }
 
 /**
- * Whether the key press picks every visible card: Ctrl+A (or Cmd+A) in the
- * selection mode only. A key a context menu already handled, an open dialog,
- * a shortcut capture or a field being edited keeps its normal effect.
+ * Whether the key press picks every visible card: Ctrl+A (or Cmd+A) on the
+ * board, outside as well as inside the selection mode. `canSelectAll` says
+ * whether this window is the board with at least one visible card. A key a
+ * context menu already handled, an open dialog, a shortcut capture or a field
+ * being edited keeps its normal effect.
  */
-export function selectAllAction({ key, ctrl, meta, handled, capturing, dialogOpen, selecting, editableTarget }) {
-  if (!selecting || !(ctrl || meta) || handled || capturing || dialogOpen || editableTarget) {
+export function selectAllAction({ key, ctrl, meta, handled, capturing, dialogOpen, editableTarget, canSelectAll }) {
+  if (!canSelectAll || !(ctrl || meta) || handled || capturing || dialogOpen || editableTarget) {
     return null;
   }
   return key === 'a' || key === 'A' ? 'selectAll' : null;

@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use axum::body::to_bytes;
 use axum::http::{Method, StatusCode};
 use lc_domain::{
     GuildBan, GuildBanId, GuildId, GuildInvite, GuildMemberId, GuildRole, IngestClient,
@@ -14,6 +15,7 @@ use lc_protocol::close_code;
 use serde_json::json;
 use time::Duration;
 
+use super::admin::{ban_member_payload, BanActor};
 use super::device_id::device_hash;
 use super::guild::{create_invite, NewInvite};
 use super::guild_tests::{call_app, fixed_now, token, Harness, RecordingAdminHub};
@@ -1029,4 +1031,101 @@ async fn a_second_ban_keeps_the_existing_ban_and_attaches_its_devices() {
         .is_device_banned(&harness.guild_id, &fingerprint)
         .await
         .unwrap());
+}
+
+/// The last admin cannot be excluded: the ban created for them must be rolled
+/// back with its devices, otherwise the member stays active and banned at once.
+#[tokio::test]
+async fn a_last_admin_ban_is_rolled_back_with_its_devices() {
+    let harness = Harness::new().await;
+    let (status, admin) = join_with_device(
+        &harness,
+        &harness.server_invite(GuildRole::Admin).await,
+        "Quentin",
+        "admin-machine-guid",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admin}");
+    let admin_id = admin["memberId"].as_str().unwrap().to_owned();
+    let member_id: GuildMemberId = admin_id.parse().unwrap();
+    let fingerprint = device_hash(&harness.guild_id, "admin-machine-guid");
+
+    // The operator is not a member, so nothing rejects the attempt before
+    // `remove_member`, which refuses the last admin.
+    let response = ban_member_payload(
+        &harness.state,
+        &harness.guild_id,
+        &admin_id,
+        BanActor::Operator,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["error"], "last_admin");
+
+    // Nothing is left: no ban, no fingerprint, the member is still an active
+    // admin.
+    assert!(harness
+        .db
+        .guild_bans()
+        .list_by_guild(&harness.guild_id)
+        .await
+        .unwrap()
+        .is_empty());
+    let devices: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM guild_ban_devices WHERE guild_id = ?")
+            .bind(harness.guild_id.as_str())
+            .fetch_one(harness.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        devices, 0,
+        "la cascade doit retirer les empreintes du ban annulé"
+    );
+    assert!(!harness
+        .db
+        .guild_ban_devices()
+        .is_device_banned(&harness.guild_id, &fingerprint)
+        .await
+        .unwrap());
+    let member = harness
+        .db
+        .guild_members()
+        .get(member_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(member.is_active());
+    assert_eq!(member.role, GuildRole::Admin);
+
+    // Regression: with another admin present, a normal ban is kept.
+    let (status, second) = join_with_device(
+        &harness,
+        &harness.server_invite(GuildRole::Admin).await,
+        "Alice",
+        "alice-machine-guid",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    let (status, body) = harness
+        .call(
+            Method::POST,
+            &format!("/overlay/admin/members/{admin_id}/ban"),
+            Some(&token(&second)),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        harness
+            .db
+            .guild_bans()
+            .list_by_guild(&harness.guild_id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 }

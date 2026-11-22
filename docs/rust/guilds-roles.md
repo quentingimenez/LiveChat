@@ -176,7 +176,11 @@ d'environnement (`LC_DEVICE_ID` n'est honoré qu'en debug). Un membre sans
 compte Discord lié qui revient avec un autre appareil, ou sans `deviceId`,
 n'est identifiable par rien d'autre : son bannissement se réduit alors à
 l'exclusion (il reviendrait avec une nouvelle invitation). On ne peut pas se
-bannir soi-même (`409 cannot_ban_self`) ; la règle du dernier admin s'applique.
+bannir soi-même (`409 cannot_ban_self`) ; la règle du dernier admin s'applique :
+le bannissement est refusé (`409 last_admin`) et le ban déjà écrit pour ce
+membre est annulé avec ses empreintes (cascade), pour ne jamais laisser un
+membre actif et banni à la fois. Un ban préexistant (compte Discord déjà banni)
+n'est pas supprimé par ce refus.
 `DELETE /overlay/admin/bans/{banId}` lève le bannissement ; les anciens appareils
 restent révoqués.
 

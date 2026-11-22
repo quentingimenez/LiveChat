@@ -28,9 +28,12 @@
 //! ou déjà révoqués : un membre sans compte Discord lié ne revient donc pas
 //! depuis le même poste avec une invitation neuve. Le ban et ses empreintes
 //! sont écrits dans la même transaction, avant l'exclusion : il n'existe pas
-//! de ban sans les appareils lus avec lui. Si l'exclusion échoue ensuite
-//! (dernier admin, course), le ban reste posé et l'appelant renvoie l'erreur ;
-//! un nouvel appel rattache les appareils au ban existant. L'identifiant
+//! de ban sans les appareils lus avec lui. Si l'exclusion est refusée parce
+//! que le membre est le dernier admin, le ban créé pour lui est annulé (la
+//! cascade retire ses empreintes) : un membre ne reste jamais actif et banni
+//! à la fois. Si l'exclusion échoue sur une course ou un membre déjà disparu,
+//! le ban reste la vérité ; un ban préexistant (compte Discord déjà banni)
+//! n'est jamais supprimé par ce chemin. L'identifiant
 //! d'appareil est fourni par le shell et haché côté serveur ; c'est une
 //! défense en profondeur (falsifiable, réinstallation = nouvel identifiant,
 //! anciens clients non couverts), pas une authentification. Lever le ban
@@ -367,12 +370,12 @@ pub(crate) async fn ban_member_payload(
     // panne au milieu ne laisse jamais un ban actif sans appareils. Un conflit
     // signifie qu'un ban couvre déjà ce membre : c'est lui qui porte les
     // empreintes et que la réponse renvoie.
-    let stored_ban = match db
+    let (stored_ban, ban_was_created) = match db
         .guild_bans()
         .create_with_devices(&ban, &device_hashes, at)
         .await
     {
-        Ok(Some(ban)) => ban,
+        Ok(Some(ban)) => (ban, true),
         Ok(None) => {
             let existing = match db
                 .guild_bans()
@@ -403,13 +406,15 @@ pub(crate) async fn ban_member_payload(
                     return Err(db_failure("overlay_admin.record_ban_devices", &db_error));
                 }
             }
-            existing
+            (existing, false)
         }
         Err(db_error) => return Err(db_failure("overlay_admin.create_ban", &db_error)),
     };
-    // L'exclusion vient après : si elle échoue (dernier admin, course), le ban
-    // et ses appareils restent posés et l'appelant reçoit l'erreur ; un nouvel
-    // appel retrouve ce ban et y rattache les appareils.
+    // L'exclusion vient après : si elle échoue sur autre chose que le dernier
+    // admin (course, membre disparu), le ban et ses appareils restent posés et
+    // l'appelant reçoit l'erreur ; un nouvel appel retrouve ce ban et y
+    // rattache les appareils. Le dernier admin, lui, ne doit pas rester banni
+    // sans être exclu : le ban créé pour lui est annulé ci-dessous.
     match remove_member(
         state,
         db,
@@ -422,18 +427,39 @@ pub(crate) async fn ban_member_payload(
     {
         MemberChange::Applied => {}
         MemberChange::LastAdmin => {
-            tracing::warn!(
-                guild_id = %member.guild_id,
-                member_id = %member.id,
-                "ban posé mais exclusion refusée : dernier admin"
-            );
+            if ban_was_created {
+                // Le membre n'a pas été exclu : garder son ban le laisserait
+                // actif et banni à la fois. La cascade de `delete` retire ses
+                // empreintes avec lui.
+                if let Err(db_error) = db
+                    .guild_bans()
+                    .delete(&member.guild_id, stored_ban.id)
+                    .await
+                {
+                    return Err(db_failure("overlay_admin.rollback_ban", &db_error));
+                }
+                tracing::info!(
+                    guild_id = %member.guild_id,
+                    member_id = %member.id,
+                    "ban annulé : le dernier admin ne peut pas être exclu"
+                );
+            } else {
+                // Un ban préexistant (compte Discord déjà banni) reste la
+                // vérité : seul le nouveau coup de ban est refusé.
+                tracing::warn!(
+                    guild_id = %member.guild_id,
+                    member_id = %member.id,
+                    "ban existant conservé : le dernier admin ne peut pas être exclu"
+                );
+            }
             return Err(error(StatusCode::CONFLICT, "last_admin"));
         }
         MemberChange::NotFound => {
+            // Le membre a disparu entre-temps : le ban reste la vérité.
             tracing::warn!(
                 guild_id = %member.guild_id,
                 member_id = %member.id,
-                "ban posé mais membre disparu avant l'exclusion"
+                "membre disparu avant l'exclusion : ban conservé"
             );
             return Err(error(StatusCode::NOT_FOUND, "member_not_found"));
         }

@@ -17,7 +17,7 @@
 | Pré-prod | Propriétés (proptest) | idem — `crates/{lc-protocol,lc-media,lc-db}/tests/properties.rs` | incluse dans la batterie |
 | Pré-prod | Fuzz | `cargo test --manifest-path fuzz/Cargo.toml --no-default-features --lib --locked --offline` (seeds + golden sur stable) ; nightly : `cargo fuzz run` 45 s par cible | seeds + golden verts ; nightly advisory |
 | Pré-prod | Mutation | `cargo xtask verify --offline --mutants` (lignes du diff, kill-or-justify) ; nightly : 3 scopes notés contre [`scripts/mutants-baseline.json`](../../scripts/mutants-baseline.json) | local : 0 manqué **non justifié** en `crates/` et `apps/` (le manqué justifié du scope nightly `lc-db-queue`, `playback_jobs.rs:211`, est hors diff local) ; nightly : score ≥ baseline |
-| Test | Charge | `cargo xtask loadtest --clients 20 --duration-secs 20` (budgets : p95 HELLO ≤ 250 ms, 0 erreur WS/ingest, 0 déconnexion, accueils = clients, pas de fuite fd sous Linux) ; nightly : 50 clients / 60 s | exit 0 local ; nightly advisory |
+| Test | Charge | `cargo xtask loadtest --clients 20 --duration-secs 20` (budgets : p95 HELLO ≤ 250 ms, 0 erreur WS/ingest, 0 déconnexion, accueils = clients, pas de fuite fd sous Linux, p95 board signé ≤ 250 ms à 200 items, p95 média signé ≤ 250 ms, p95 ack `media.trigger` ≤ 250 ms à 10/s) ; nightly : 50 clients / 60 s avec les mêmes budgets | exit 0 local ; nightly advisory |
 | Test | Chaos | idem batterie — `apps/lc-server/tests/kill_recover.rs` (kill brutal en pleine ingestion → WAL → reprise : chaque ligne confirmée retrouvée, `PRAGMA integrity_check` ok) | incluse dans la batterie |
 | Déploiement | Canary | `powershell -NoProfile -File scripts/release.ps1 deploy-server X.Y.Z -Canary` — conteneur `LiveChat-canary` sur `127.0.0.1:3001`, copie de la sauvegarde vérifiée, bot Discord de TEST (env file hôte, jamais lu ni affiché), santé + Discord avant de toucher au principal ; harnais `scripts/release/tests/Canary.Tests.ps1` | GO explicite de l'utilisateur, jamais automatique |
 | Transverse | Revue adversariale | hors commande : second agent indépendant relit le diff (tests invincibles, sabotages harnais vs produit, périmètre, générateurs aveugles) | cadence du plan : Review A (mi-pipeline), Review B (fin) |
@@ -37,7 +37,12 @@
 
 - **`fuzz`** : matrix des 3 cibles (`protocol_frame`, `media_url`, `html_parsers`), corpus semé depuis les fixtures, `-max_total_time=45` par cible, seeds+golden (jamais un merge gate) ; artefacts uploadés si échec.
 - **`mutants`** : 3 scopes (`lc-protocol`, `lc-media --file guard.rs`, `lc-db --file playback_jobs.rs`), score `floor(100·caught/(caught+missed+timeout))` comparé à la baseline ; garde d'entiers jq, échec sur toute outcome `Failure`, rc admis 0/2, `rm -rf target/mutants` (rust-cache peut restaurer de vieux outcomes), outils épinglés `cargo-mutants@27.1.0` / `nextest@0.9.151`.
-- **`load`** : ubuntu-latest, build release (`LC_ADMIN_WEB_BUILD=0`), 50 clients / 60 s, artefact uploadé dans tous les cas.
+- **`load`** : ubuntu-latest, build release (`LC_ADMIN_WEB_BUILD=0`), 50 clients / 60 s,
+  budgets §4.1 explicites (`--board-items 200 --max-board-p95-ms 250
+  --max-media-p95-ms 250 --media-trigger-rate 10 --max-media-trigger-p95-ms 250`),
+  artefact uploadé dans tous les cas. Les budgets board/média/trigger ont été ajoutés
+  après la dernière mesure de mutation : le run nightly `load` est leur seule preuve,
+  pas le stage `--mutants` du 20/11 (§5).
 - Déclencheurs : `cron '30 3 * * *'`, `workflow_dispatch`, `pull_request` limité à ses propres fichiers + `fuzz/**` + la baseline. **Jamais un merge gate** — un nightly rouge est un signal, pas un blocus.
 
 ## 4. Usage local
@@ -49,6 +54,69 @@ cargo xtask loadtest --clients 20 --duration-secs 20                      # harn
 powershell -NoProfile -File scripts/release/tests/run-tests.ps1            # harnais PowerShell de release (Canary inclus)
 cargo test --manifest-path fuzz/Cargo.toml --no-default-features --lib --locked --offline  # seeds + golden fuzz
 ```
+
+## 4.1 Budgets de charge du harnais
+
+Le harnais `cargo xtask loadtest` crée une guilde de sonde séparée des guildes de
+charge, y sème `--board-items` assets `READY` (200 par défaut, un fichier de 32 Kio
+sous `MEDIA_STORAGE_DIR`) et autant d'items de board, puis mesure trois budgets
+supplémentaires en plus des budgets historiques (HELLO, erreurs WS/ingest,
+déconnexions, fd). Tous sont des lignes `PASS`/`FAIL` ; le processus sort en 1 dès
+qu'une ligne échoue.
+
+| Métrique | Budget | Comment c'est mesuré | Statut |
+|---|---|---|---|
+| TTFB liste board (B-03) | p95 ≤ 250 ms | 1 GET/s de `/overlay/media-board/items?limit=200` avec le Bearer de sonde, temps jusqu'aux en-têtes | **exécutable** (`--board-items 200 --max-board-p95-ms 250`) |
+| TTFB média signé | p95 ≤ 250 ms | GET de `items[0].mediaUrl` (URL HMAC renvoyée par la liste), temps jusqu'aux en-têtes, corps vidé | **exécutable** (`--max-media-p95-ms 250`) |
+| Coût `MediaTrigger` (B-02) | p95 ack ≤ 250 ms à 10/s, et tous les triggers envoyés acquittés `ok` | un client WS de sonde envoie `media.trigger` à 10/s (max 19, plafond serveur 20/s) et attend l'ack correspondant par `payload.ref` ; nécessite `--board-items > 0` | **exécutable** (`--media-trigger-rate 10 --max-media-trigger-p95-ms 250`) — latence de bout en bout, pas le nombre de SQL |
+| Profondeur de la file WS sortante (B-01) | proposition : p95 ≤ 64 frames, max ≤ 256 frames | aucun compteur produit n'existe dans `apps/lc-server/src/ws/session.rs` (canal `mpsc::unbounded_channel`) | **non exécutable** — gap assumé, plan ci-dessous |
+| Attente du pool SQLite | proposition : p95 ≤ 25 ms, max ≤ 100 ms | aucune instrumentation sqlx (`before_acquire`) ; le TTFB board/média n'est qu'un proxy de bout en bout | **non exécutable** — gap assumé |
+| SSE admin | proposition : p95 de rafraîchissement ≤ 250 ms avec 10 consoles, 0 déconnexion sur 60 s | `GET /admin/api/events` exige une session admin que le harnais ne sait pas créer | **non exécutable** — gap assumé |
+| CPU extension | proposition : moyenne ≤ 5 % d'un cœur et p95 frame ≤ 16,7 ms sur 60 s de scan | l'extension tourne dans le navigateur, hors du processus `lc-server` | **non exécutable** — gap assumé |
+
+Justification des seuils exécutables : 250 ms est le budget HELLO déjà accepté et
+la recommandation de l'audit perf pour la liste board à 200 items ; les budgets
+média et trigger s'alignent dessus pour rester sous la même enveloppe perceptible.
+10/s est la moitié du plafond serveur de 20 messages client/s, ce qui laisse la
+marge de heartbeats et rend le budget sensible à une régression du handler sans le
+pousser dans la zone de rate-limit. Les quatre budgets de gap sont des
+**propositions chiffrées à valider après instrumentation**, pas des mesures : ils
+ne doivent pas être présentés comme verts tant que le compteur n'existe pas.
+
+Commandes :
+
+```powershell
+# budgets historiques + board/média/trigger (nightly et local)
+cargo xtask loadtest --clients 20 --duration-secs 20 `
+  --board-items 200 --max-board-p95-ms 250 `
+  --max-media-p95-ms 250 `
+  --media-trigger-rate 10 --max-media-trigger-p95-ms 250
+
+# désactiver les nouvelles sondes (comparaison avec l'ancien harnais uniquement)
+cargo xtask loadtest --clients 20 --duration-secs 20 --board-items 0 --media-trigger-rate 0
+```
+
+Le rapport JSON expose `board_p95_ms`, `board_samples`, `board_errors`,
+`media_p95_ms`, `media_samples`, `media_errors`, `media_trigger_p95_ms`,
+`media_trigger_sent`, `media_trigger_acked`, `media_trigger_errors` : une ligne
+`PASS` n'est jamais rendue sans échantillon (`n/a` et `FAIL` si `samples == 0`).
+
+### Plan des gaps (non implémentés ici, pas de code produit modifié)
+
+- **B-01 file WS** : ajouter un compteur de profondeur autour du canal de
+  `apps/lc-server/src/ws/session.rs` (ou passer à un canal borné), exposer
+  p95/max dans le rapport de charge, puis scénariser un client qui cesse de lire
+  et vérifier la fermeture `4408`. Le harnais actuel ne peut pas distinguer une
+  file applicative d'un tampon noyau : ne pas déduire un PASS de l'absence de
+  déconnexion.
+- **Pool SQLite** : instrumenter `before_acquire`/`after_acquire` dans
+  `crates/lc-db`, agréger p95/max par run ; le TTFB board actuel inclut les
+  requêtes et la signature, pas l'attente de connexion seule.
+- **SSE admin** : créer une session admin de test (ou un jeton de charge dédié)
+  puis mesurer 10 connexions `GET /admin/api/events` et la latence de diffusion ;
+  aujourd'hui l'authentification admin n'est pas dans le harnais.
+- **CPU extension** : profil Playwright/Chrome sur l'extension réelle (scan board
+  + scroll) avec `Performance.getMetrics` ; hors périmètre du binaire serveur.
 
 ## 5. Le stage mutants : kill-or-justify, zéro survivant
 

@@ -597,12 +597,23 @@ pub(crate) async fn complete_board_item(
     now: UtcDateTime,
 ) -> Result<CompletedBoardItem, IngestionFailure> {
     // Dédoublonnage board : (guilde, asset) déjà épinglé → `created:false`.
+    // Le média est tout de même ré-épinglé : une ré-ingestion concurrente a pu
+    // écraser son échéance avec le TTL de cache entre-temps, et le média doit
+    // rester lisible tant que la carte est affichée.
     match db
         .media_board()
         .get_by_guild_and_asset(auth.guild_id(), asset.id)
         .await
     {
         Ok(Some(existing_item)) => {
+            if let Err(service_error) = assets::pin(db, asset.id, now).await {
+                return Err(match service_error {
+                    MediaServiceError::Database(db_error) => {
+                        completion_db_failure("overlay_media_board.repin_board_asset", &db_error)
+                    }
+                    other => media_service_failure(&other),
+                });
+            }
             return Ok(CompletedBoardItem {
                 created: false,
                 replaced: false,

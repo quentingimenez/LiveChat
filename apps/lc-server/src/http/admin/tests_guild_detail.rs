@@ -618,6 +618,63 @@ async fn guild_board_quota_is_enforced_when_adding_media() {
     assert!(completed.created);
 }
 
+#[tokio::test]
+async fn an_item_already_on_the_board_pins_its_asset_again() {
+    // A concurrent re-ingestion of the same link can overwrite the asset's
+    // expiry with the cache TTL after the item was created. Asking the board
+    // again must pin the asset even when the item already exists, otherwise
+    // the card stays `created:false` and the media expires on the board.
+    let harness = Harness::new().await;
+    let db = harness.db();
+    let guild_id = guild_id();
+    db.guilds().upsert(&guild(GUILD)).await.unwrap();
+    let asset = media_asset(1024, &harness.path("clip.png"));
+    db.media_assets().insert(&asset).await.unwrap();
+    let now = harness.state().clock.now();
+    let actor = ActorInfo::operator(harness.state(), &guild_id);
+    let authed = actor.to_authed(now);
+
+    let first = complete_board_item(
+        harness.state(),
+        &authed,
+        db,
+        asset.clone(),
+        ItemTitle::Requested(None),
+        None,
+        now,
+    )
+    .await
+    .expect("the board accepts the asset");
+    assert!(first.created);
+
+    // What the second ingestion does to the row: back to the cache TTL.
+    sqlx::query("UPDATE media_assets SET expires_at = ? WHERE id = ?")
+        .bind(lc_domain::datetime_to_ms(now) + 3_600_000)
+        .bind(asset.id.to_canonical())
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    let again = complete_board_item(
+        harness.state(),
+        &authed,
+        db,
+        asset.clone(),
+        ItemTitle::Requested(None),
+        None,
+        now,
+    )
+    .await
+    .expect("the existing item is still accepted");
+    assert!(!again.created, "the item already existed");
+    let stored = db.media_assets().get(asset.id).await.unwrap().unwrap();
+    assert!(
+        stored.expires_at > now + time::Duration::hours(24),
+        "the asset is pinned again instead of staying on the cache TTL: {}",
+        stored.expires_at
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Discord leave
 // ---------------------------------------------------------------------------

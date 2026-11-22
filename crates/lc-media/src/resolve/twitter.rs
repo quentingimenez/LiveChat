@@ -1,7 +1,6 @@
-//! Résolution X/Twitter : carte oEmbed, variantes vidéo et photos via l'API
+//! Résolution X/Twitter : texte, variantes vidéo et photos via l'API
 //! syndication, repli sur le rendu vxtwitter.
 
-use serde::Deserialize;
 use serde_json::Value;
 
 use lc_domain::MediaKind;
@@ -15,7 +14,7 @@ use crate::tweet_card::{
     QuoteImageFocus, QuotedTweetContent, TweetCardContent, TweetPhoto, TweetVideo,
 };
 
-use super::{encode_query_component, ResolvedMedia, TweetCard};
+use super::{encode_query_component, ResolvedMedia};
 
 /// Endpoint de l'API syndication de Twitter.
 pub const SYNDICATION_ENDPOINT: &str = "https://cdn.syndication.twimg.com/tweet-result";
@@ -31,18 +30,11 @@ pub struct VideoVariant {
     pub bitrate: Option<u64>,
 }
 
-/// Payload oEmbed d'un tweet.
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct TweetOEmbed {
-    /// HTML de la carte.
-    pub html: Option<String>,
-    /// Nom d'affichage de l'auteur.
-    pub author_name: Option<String>,
-    /// URL du profil de l'auteur.
-    pub author_url: Option<String>,
-}
-
 /// Construit l'URL oEmbed d'un tweet.
+///
+/// L'API oEmbed n'est plus interrogée pour rendre une carte : le payload de
+/// syndication contient déjà le texte et l'auteur. La fonction reste publique
+/// pour les outils qui construisent encore cette URL.
 pub fn build_oembed_url(endpoint: &str, tweet_url: &str, language: &str) -> String {
     let separator = if endpoint.contains('?') { '&' } else { '?' };
     format!(
@@ -74,7 +66,13 @@ pub fn sanitize_card_html(payload_html: &str) -> String {
     html::sanitize_embed_html(payload_html).trim().to_string()
 }
 
-/// Résout un tweet : carte oEmbed + média connu (vidéo, photo ou carte).
+/// Résout un tweet : texte, auteur et média connu (vidéo, photo ou carte).
+///
+/// Une seule requête réseau est faite ici, sur l'API de syndication. Son
+/// payload est conservé dans [`ResolvedMedia::syndication`] pour que le
+/// téléchargement rende la carte sans refaire la requête. L'ancien appel
+/// oEmbed (et son HTML jamais lu) a été supprimé : il ajoutait ~340 ms par
+/// tweet.
 pub async fn resolve_tweet(
     source: &MediaSource,
     config: &MediaConfig,
@@ -82,7 +80,6 @@ pub async fn resolve_tweet(
     let canonical_url = source.canonical_url.clone();
     let status_id = tweet_status_id(&canonical_url)
         .ok_or_else(|| MediaError::new(MediaErrorCode::InvalidMedia, "URL de tweet invalide"))?;
-    let card = fetch_tweet_card(&canonical_url, config).await?;
     let media = fetch_tweet_media(&status_id, &canonical_url, config).await;
     let selected = pick_variant(&media.video_variants).cloned();
     let (width, height) = match media.dimensions {
@@ -110,10 +107,13 @@ pub async fn resolve_tweet(
         // l'API de syndication a répondu) en tient lieu ; l'auteur reste
         // disponible pour le repli « Post de <auteur> ».
         title: media.text,
-        author: card.author_name.clone(),
+        author: media.author_name,
         kind: Some(kind),
         thumbnail_url,
-        tweet_card: Some(card),
+        // La carte HTML riche n'est plus utilisée par l'overlay ; le contenu
+        // de la carte vient directement du payload de syndication.
+        tweet_card: None,
+        syndication: media.payload,
         media_url,
         mime,
         ..ResolvedMedia::from_source(source)
@@ -169,37 +169,14 @@ pub fn photo_original_url(url: &str) -> String {
     parsed.to_string()
 }
 
-async fn fetch_tweet_card(canonical_url: &str, config: &MediaConfig) -> MediaResult<TweetCard> {
-    let url = build_oembed_url(
-        &config.resolve.twitter_oembed_endpoint,
-        canonical_url,
-        &config.resolve.language,
-    );
-    let payload: TweetOEmbed =
-        http::get_json(&config.download, &url, config.resolve.oembed_timeout).await?;
-    let html = payload
-        .html
-        .as_deref()
-        .map(sanitize_card_html)
-        .unwrap_or_default();
-    if html.is_empty() {
-        return Err(MediaError::new(
-            MediaErrorCode::InvalidMedia,
-            "carte oEmbed du tweet vide",
-        ));
-    }
-    Ok(TweetCard {
-        url: canonical_url.to_string(),
-        html,
-        author_name: payload.author_name,
-        author_url: payload.author_url,
-    })
-}
-
 /// Ce que la résolution d'un tweet retire du réseau (API syndication puis
 /// repli vxtwitter).
 #[derive(Clone, Debug, Default)]
 struct TweetMedia {
+    /// Payload de syndication, conservé pour le rendu de la carte.
+    payload: Option<Value>,
+    /// Nom d'affichage de l'auteur.
+    author_name: Option<String>,
     /// Variantes vidéo du tweet lui-même (jamais celles d'un tweet cité).
     video_variants: Vec<VideoVariant>,
     /// Rapport largeur/hauteur de la vidéo du tweet, si connue.
@@ -232,14 +209,12 @@ async fn fetch_tweet_media(
 ) -> TweetMedia {
     let mut media = TweetMedia::default();
     if let Some(value) = fetch_syndication_payload(config, status_id).await {
-        media.video_variants = tweet_video_variants(&value);
-        media.video_aspect = tweet_video_aspect(&value);
-        media.dimensions = extract_dimensions(&value);
-        media.poster = extract_poster(&value);
-        media.text = extract_tweet_text(&value);
-        media.photos = tweet_photos(&value);
+        absorb_syndication_payload(&mut media, value);
     }
-    if media.video_variants.is_empty() {
+    // Le repli HTML ne sert qu'à récupérer une variante vidéo quand la
+    // syndication n'a rien renvoyé. vxtwitter répond 403 aujourd'hui : ne pas
+    // l'interroger pour un tweet texte ou photo, où il ne peut rien apporter.
+    if media.payload.is_none() {
         if let Ok(page) = http::get_text(
             &config.download,
             &build_fallback_url(
@@ -258,6 +233,19 @@ async fn fetch_tweet_media(
         }
     }
     media
+}
+
+/// Remplit les métadonnées d'un tweet depuis un payload de syndication et
+/// conserve le payload pour le rendu de la carte.
+fn absorb_syndication_payload(media: &mut TweetMedia, value: Value) {
+    media.video_variants = tweet_video_variants(&value);
+    media.video_aspect = tweet_video_aspect(&value);
+    media.dimensions = extract_dimensions(&value);
+    media.poster = extract_poster(&value);
+    media.text = extract_tweet_text(&value);
+    media.photos = tweet_photos(&value);
+    media.author_name = extract_author_name(&value);
+    media.payload = Some(value);
 }
 
 /// Texte d'un tweet dans un payload de syndication (servira de titre).
@@ -283,7 +271,9 @@ pub fn extract_full_tweet_text(value: &Value) -> Option<String> {
     if note.is_some() {
         return note;
     }
-    extract_tweet_text(value).map(|text| trim_trailing_media_link(value, text))
+    extract_tweet_text(value)
+        .map(|text| trim_trailing_media_link(value, text))
+        .filter(|text| !text.is_empty())
 }
 
 /// Coupe le texte au `display_text_range` du payload.
@@ -300,7 +290,12 @@ fn trim_trailing_media_link(value: &Value, text: String) -> String {
         return text;
     };
     let end = usize::try_from(end).unwrap_or(usize::MAX);
-    if end == 0 || text.chars().count() <= end {
+    if end == 0 {
+        // `[0, 0]` : le texte n'est que le lien `t.co` vers le média, X
+        // n'affiche rien.
+        return String::new();
+    }
+    if text.chars().count() <= end {
         return text;
     }
     text.chars()
@@ -323,6 +318,11 @@ pub fn extract_author_handle(value: &Value) -> Option<String> {
 /// Date de publication ISO 8601 annoncée par l'API de syndication.
 pub fn extract_created_at(value: &Value) -> Option<String> {
     non_empty_str(value.get("created_at"))
+}
+
+/// Langue déclarée d'un tweet (`lang`), normalisée en minuscules.
+pub fn extract_language(value: &Value) -> Option<String> {
+    non_empty_str(value.get("lang")).map(|language| language.to_ascii_lowercase())
 }
 
 /// URL de l'avatar de l'auteur, en 400×400 quand Twitter utilise `_normal.`.
@@ -457,11 +457,14 @@ pub fn tweet_card_content(value: &Value) -> TweetCardContent {
         author_name: extract_author_name(value).unwrap_or_default(),
         author_handle: extract_author_handle(value).unwrap_or_default(),
         text: extract_full_tweet_text(value).unwrap_or_default(),
+        source_language: extract_language(value),
+        translation_label: None,
         created_at: extract_created_at(value),
         avatar: None,
         photos: tweet_photos(value),
         video: tweet_video_aspect(value).map(|aspect| TweetVideo { aspect }),
         quoted: quoted_tweet_content(value),
+        reply_parent: reply_parent_content(value),
     }
 }
 
@@ -494,8 +497,49 @@ pub fn quoted_tweet_content(value: &Value) -> Option<QuotedTweetContent> {
         author_name,
         author_handle,
         text,
+        source_language: extract_language(quoted),
+        translation_label: None,
+        created_at: extract_created_at(quoted),
         images,
         video,
+    })
+}
+
+/// Contenu du tweet auquel répond `value`, lu dans son objet `parent`.
+///
+/// L'API de syndication joint le parent au payload d'une réponse : aucune
+/// requête supplémentaire n'est nécessaire. `None` quand le payload n'est pas
+/// une réponse, quand le parent n'est plus disponible (supprimé, protégé) ou
+/// quand il ne porte ni auteur, ni texte, ni média.
+pub fn reply_parent_content(value: &Value) -> Option<QuotedTweetContent> {
+    let parent = value.get("parent")?;
+    let author_name = extract_author_name(parent).unwrap_or_default();
+    let author_handle = extract_author_handle(parent).unwrap_or_default();
+    let text = extract_full_tweet_text(parent).unwrap_or_default();
+    // Le bloc du parent n'a pas de zone vidéo : une vidéo y est représentée
+    // par son poster, comme le repli d'une citation vidéo.
+    let mut images = tweet_photos(parent);
+    if images.is_empty() {
+        if let Some(poster) = extract_poster(parent) {
+            images.push(TweetPhoto {
+                source_url: poster,
+                data: None,
+                focus: Vec::new(),
+            });
+        }
+    }
+    if author_name.is_empty() && author_handle.is_empty() && text.is_empty() && images.is_empty() {
+        return None;
+    }
+    Some(QuotedTweetContent {
+        author_name,
+        author_handle,
+        text,
+        source_language: extract_language(parent),
+        translation_label: None,
+        created_at: extract_created_at(parent),
+        images,
+        video: None,
     })
 }
 
@@ -854,6 +898,16 @@ mod tests {
     }
 
     #[test]
+    fn extracts_and_normalizes_the_declared_language() {
+        let value: Value = serde_json::from_str(r#"{"lang":"FR"}"#).unwrap();
+        assert_eq!(extract_language(&value).as_deref(), Some("fr"));
+        let blank: Value = serde_json::from_str(r#"{"lang":"  "}"#).unwrap();
+        assert_eq!(extract_language(&blank), None);
+        let missing: Value = serde_json::from_str(r#"{"id_str":"1"}"#).unwrap();
+        assert_eq!(extract_language(&missing), None);
+    }
+
+    #[test]
     fn collects_and_dedupes_variants() {
         let payload: Value = serde_json::from_str(
             r#"{
@@ -968,6 +1022,11 @@ mod tests {
     const TEXT_FIXTURE: &str = include_str!("../../tests/fixtures/twitter_syndication_text.json");
     const VIDEO_FIXTURE: &str = include_str!("../../tests/fixtures/twitter_syndication_video.json");
     const QUOTE_FIXTURE: &str = include_str!("../../tests/fixtures/twitter_syndication_quote.json");
+    const REPLY_FIXTURE: &str = include_str!("../../tests/fixtures/twitter_syndication_reply.json");
+    const REPLY_TEXT_FIXTURE: &str =
+        include_str!("../../tests/fixtures/twitter_syndication_reply_text.json");
+    const REPLY_THREAD_FIXTURE: &str =
+        include_str!("../../tests/fixtures/twitter_syndication_reply_thread.json");
 
     fn fixture(raw: &str) -> Value {
         serde_json::from_str(raw).unwrap()
@@ -1082,6 +1141,20 @@ mod tests {
     }
 
     #[test]
+    fn keeps_the_syndication_payload_for_the_download() {
+        let mut media = TweetMedia::default();
+        absorb_syndication_payload(&mut media, fixture(TEXT_FIXTURE));
+        assert_eq!(media.author_name.as_deref(), Some("jack"));
+        assert_eq!(media.text.as_deref(), Some("just setting up my twttr"));
+        let payload = media.payload.expect("payload de syndication conservé");
+        assert_eq!(
+            payload.get("user").and_then(|user| user.get("screen_name")),
+            Some(&Value::String("jack".to_string()))
+        );
+        assert!(media.video_variants.is_empty());
+    }
+
+    #[test]
     fn prefers_the_note_tweet_text() {
         let payload = serde_json::json!({
             "text": "Début…",
@@ -1187,6 +1260,182 @@ mod tests {
             ]
         );
         assert_eq!(quoted.images[1].focus.len(), 5);
+    }
+
+    #[test]
+    fn extracts_the_reply_parent() {
+        let content = tweet_card_content(&fixture(REPLY_FIXTURE));
+        let parent = content.reply_parent.as_ref().unwrap();
+        assert_eq!(parent.author_name, "Tate News");
+        assert_eq!(parent.author_handle, "TateNews_");
+        // Le lien `t.co` qui pointe vers la photo est coupé, comme pour un
+        // tweet : le bloc montre le texte, pas l'URL du média.
+        assert_eq!(parent.text, "I don’t sleep with vaccinated women");
+        assert_eq!(
+            parent.created_at.as_deref(),
+            Some("2024-01-07T14:15:03.000Z")
+        );
+        assert_eq!(parent.images.len(), 1);
+        assert_eq!(
+            parent.images[0].source_url,
+            "https://pbs.twimg.com/media/GDPuebrXwAA80zX.jpg"
+        );
+        assert_eq!(parent.images[0].focus.len(), 5);
+        // Pas de zone vidéo dans le bloc du parent : une vidéo y serait un
+        // poster, comme une photo.
+        assert!(parent.video.is_none());
+        // La réponse elle-même n'a aucun média, ni citation.
+        assert!(content.photos.is_empty());
+        assert!(content.video.is_none());
+        assert!(content.quoted.is_none());
+    }
+
+    #[test]
+    fn extracts_the_reply_parent_without_media() {
+        let content = tweet_card_content(&fixture(REPLY_TEXT_FIXTURE));
+        let parent = content.reply_parent.as_ref().unwrap();
+        assert_eq!(parent.author_name, "Tal Oran");
+        assert_eq!(parent.author_handle, "travelingclatt");
+        assert_eq!(
+            parent.text,
+            "Name a Palestinian invention.\nGenuinely, name one."
+        );
+        assert!(parent.images.is_empty());
+        assert!(parent.video.is_none());
+        assert!(content.photos.is_empty());
+    }
+
+    #[test]
+    fn extracts_the_parent_of_a_self_reply() {
+        let content = tweet_card_content(&fixture(REPLY_THREAD_FIXTURE));
+        let parent = content.reply_parent.as_ref().unwrap();
+        assert_eq!(parent.author_name, "Paul Graham");
+        assert_eq!(parent.author_handle, "paulg");
+        assert!(parent.text.starts_with("It's remarkable how many people"));
+        assert!(parent.images.is_empty());
+    }
+
+    #[test]
+    fn ignores_a_payload_without_reply_parent() {
+        assert!(tweet_card_content(&fixture(TEXT_FIXTURE))
+            .reply_parent
+            .is_none());
+        assert!(tweet_card_content(&fixture(QUOTE_FIXTURE))
+            .reply_parent
+            .is_none());
+        assert!(tweet_card_content(&fixture(VIDEO_FIXTURE))
+            .reply_parent
+            .is_none());
+    }
+
+    #[test]
+    fn ignores_an_empty_reply_parent() {
+        for payload in [
+            serde_json::json!({"parent": {}}),
+            serde_json::json!({"parent": null}),
+            serde_json::json!({"parent": "pas un objet"}),
+            // Parent réduit à son identifiant : rien à afficher.
+            serde_json::json!({"parent": {"id_str": "42"}}),
+        ] {
+            assert_eq!(reply_parent_content(&payload), None);
+        }
+    }
+
+    #[test]
+    fn keeps_the_reply_parent_apart_from_the_quoted_tweet() {
+        let mut reply = fixture(REPLY_FIXTURE);
+        // Le parent cite lui-même un tweet : ce nid n'est pas remonté.
+        reply["parent"]["quoted_tweet"] = serde_json::json!({
+            "id_str": "42",
+            "text": "citation imbriquée",
+            "user": {"name": "Citation", "screen_name": "quote"},
+            "mediaDetails": [{
+                "type": "photo",
+                "media_url_https": "https://pbs.twimg.com/media/nested.jpg"
+            }]
+        });
+        let content = tweet_card_content(&reply);
+        assert!(content.quoted.is_none());
+        let parent = content.reply_parent.as_ref().unwrap();
+        assert_eq!(parent.text, "I don’t sleep with vaccinated women");
+        assert_eq!(parent.images.len(), 1);
+        assert_eq!(
+            parent.images[0].source_url,
+            "https://pbs.twimg.com/media/GDPuebrXwAA80zX.jpg"
+        );
+
+        // Une réponse qui cite aussi un tweet garde les deux blocs, chacun son
+        // contenu.
+        reply["quoted_tweet"] = fixture(QUOTE_FIXTURE)["quoted_tweet"].clone();
+        let content = tweet_card_content(&reply);
+        assert!(content.reply_parent.is_some());
+        let quoted = content.quoted.as_ref().unwrap();
+        assert_eq!(quoted.author_handle, "inconnu95267");
+        assert_eq!(quoted.text, "Allez wAllah");
+        assert_eq!(quoted.images.len(), 2);
+    }
+
+    #[test]
+    fn falls_back_to_the_parent_video_poster() {
+        let video = fixture(VIDEO_FIXTURE);
+        let payload = serde_json::json!({
+            "parent": {
+                "id_str": "42",
+                "text": "Une vidéo",
+                "created_at": "2022-10-26T23:11:33.000Z",
+                "user": {"name": "Elon Musk", "screen_name": "elonmusk"},
+                "mediaDetails": video["mediaDetails"].clone(),
+            }
+        });
+        let parent = reply_parent_content(&payload).unwrap();
+        assert!(parent.video.is_none());
+        assert_eq!(
+            parent
+                .images
+                .iter()
+                .map(|image| image.source_url.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "https://pbs.twimg.com/ext_tw_video_thumb/1585341912877146112/pu/img/DwJ7wlGIe9iryk6N.jpg"
+            ]
+        );
+    }
+
+    #[test]
+    fn empties_the_text_of_a_media_only_tweet() {
+        // `display_text_range: [0, 0]` : le texte n'est que le lien vers le
+        // média. X n'affiche rien, la carte non plus.
+        let media_only = serde_json::json!({
+            "text": "https://t.co/Q9OjlJhi7f",
+            "display_text_range": [0, 0]
+        });
+        assert_eq!(extract_full_tweet_text(&media_only), None);
+
+        let payload = serde_json::json!({
+            "parent": {
+                "id_str": "42",
+                "text": "https://t.co/pic",
+                "display_text_range": [0, 0],
+                "user": {"name": "Someone", "screen_name": "someone"},
+                "mediaDetails": [{
+                    "type": "photo",
+                    "media_url_https": "https://pbs.twimg.com/media/pic.jpg"
+                }]
+            }
+        });
+        let parent = reply_parent_content(&payload).unwrap();
+        assert!(parent.text.is_empty());
+        assert_eq!(parent.images.len(), 1);
+
+        // Un tweet avec du texte et un média garde son texte, sans le lien.
+        let with_text = serde_json::json!({
+            "text": "Photo https://t.co/abc",
+            "display_text_range": [0, 6]
+        });
+        assert_eq!(
+            extract_full_tweet_text(&with_text).as_deref(),
+            Some("Photo")
+        );
     }
 
     #[test]

@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use lc_media::config::{
     sanitize_tiktok_cookie, DownloadConfig, LoudnormTargets, MediaConfig, ResolveConfig,
-    StorageConfig, ToolsConfig, VideoConfig, VideoEncoder,
+    StorageConfig, ToolsConfig, TranslateConfig, VideoConfig, VideoEncoder,
 };
 
 use crate::app::AppState;
@@ -63,6 +63,11 @@ pub fn media_config(config: &Config) -> MediaConfig {
                 .unwrap_or(usize::MAX)
                 .max(1),
             user_agent: defaults.download.user_agent,
+        },
+        translate: TranslateConfig {
+            enabled: config.media_translate_enabled,
+            endpoint: config.media_translate_endpoint.clone(),
+            timeout: Duration::from_millis(config.media_translate_timeout_ms),
         },
         video: VideoConfig {
             max_height: config.media_video_max_height,
@@ -169,6 +174,24 @@ mod tests {
         assert_eq!(media.download.timeout, Duration::from_millis(4200));
         assert_eq!(media.download.max_size_bytes, 7 * 1024 * 1024);
         assert_eq!(media.download.max_concurrent_ingestions, 3);
+    }
+
+    #[test]
+    fn maps_translation_settings() {
+        let server = config(&[
+            ("API_URL", "http://localhost:3000"),
+            ("MEDIA_TRANSLATE_ENABLED", "false"),
+            ("MEDIA_TRANSLATE_ENDPOINT", "https://translate.example/gtx"),
+            ("MEDIA_TRANSLATE_TIMEOUT_MS", "4200"),
+        ]);
+        let media = media_config(&server);
+
+        assert!(!media.translate.enabled);
+        assert_eq!(
+            media.translate.endpoint.as_deref(),
+            Some("https://translate.example/gtx")
+        );
+        assert_eq!(media.translate.timeout, Duration::from_millis(4200));
     }
 
     #[test]

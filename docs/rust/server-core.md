@@ -146,6 +146,9 @@ global) : c'est elle qu'utilisent les tests.
 | `MEDIA_CACHE_MAX_TOTAL_MB` | `5120` | |
 | `MEDIA_BOARD_MAX_TOTAL_MB` | `15360` | |
 | `MEDIA_DOWNLOAD_TIMEOUT_MS` | `180000` | |
+| `MEDIA_TRANSLATE_ENABLED` | `true` | traduction des cartes de tweet vers `I18N` |
+| `MEDIA_TRANSLATE_ENDPOINT` | gtx Google | facultatif |
+| `MEDIA_TRANSLATE_TIMEOUT_MS` | `3000` | |
 | `MEDIA_MAX_SIZE_MB` | `2048` | |
 | `MEDIA_VIDEO_MAX_HEIGHT` | `1080` | |
 | `MEDIA_VIDEO_ENCODER` | `auto` | `auto` `libx264` `h264_nvenc` |

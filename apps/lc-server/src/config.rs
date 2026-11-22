@@ -273,6 +273,12 @@ pub struct Config {
     pub media_board_max_total_mb: u64,
     /// `MEDIA_DOWNLOAD_TIMEOUT_MS` (défaut `180000`).
     pub media_download_timeout_ms: u64,
+    /// `MEDIA_TRANSLATE_ENABLED` (défaut `true`).
+    pub media_translate_enabled: bool,
+    /// `MEDIA_TRANSLATE_ENDPOINT` (facultatif).
+    pub media_translate_endpoint: Option<String>,
+    /// `MEDIA_TRANSLATE_TIMEOUT_MS` (défaut `3000`).
+    pub media_translate_timeout_ms: u64,
     /// `MEDIA_MAX_SIZE_MB` (défaut `2048`).
     pub media_max_size_mb: u64,
     /// `MEDIA_VIDEO_MAX_HEIGHT` (défaut `1080`).
@@ -444,6 +450,15 @@ impl Config {
             "entier positif",
             parse_u64,
         )?;
+        let media_translate_enabled =
+            env.parsed("MEDIA_TRANSLATE_ENABLED", true, "true ou false", parse_bool)?;
+        let media_translate_endpoint = env.optional_string("MEDIA_TRANSLATE_ENDPOINT");
+        let media_translate_timeout_ms = env.parsed(
+            "MEDIA_TRANSLATE_TIMEOUT_MS",
+            3_000,
+            "entier positif",
+            parse_u64,
+        )?;
         let media_max_size_mb =
             env.parsed("MEDIA_MAX_SIZE_MB", 2048, "entier positif", parse_u64)?;
         let media_video_max_height =
@@ -554,6 +569,9 @@ impl Config {
             media_cache_max_total_mb,
             media_board_max_total_mb,
             media_download_timeout_ms,
+            media_translate_enabled,
+            media_translate_endpoint,
+            media_translate_timeout_ms,
             media_max_size_mb,
             media_video_max_height,
             media_video_encoder,
@@ -856,6 +874,9 @@ mod tests {
         assert_eq!(config.media_cache_max_total_mb, 5120);
         assert_eq!(config.media_board_max_total_mb, 15360);
         assert_eq!(config.media_download_timeout_ms, 180_000);
+        assert!(config.media_translate_enabled);
+        assert_eq!(config.media_translate_endpoint, None);
+        assert_eq!(config.media_translate_timeout_ms, 3_000);
         assert_eq!(config.media_max_size_mb, 2048);
         assert_eq!(config.media_video_max_height, 1080);
         assert_eq!(config.media_video_encoder, VideoEncoder::Auto);
@@ -916,6 +937,9 @@ mod tests {
             ("MEDIA_CACHE_MAX_TOTAL_MB", "1024"),
             ("MEDIA_BOARD_MAX_TOTAL_MB", "2048"),
             ("MEDIA_DOWNLOAD_TIMEOUT_MS", "60000"),
+            ("MEDIA_TRANSLATE_ENABLED", "false"),
+            ("MEDIA_TRANSLATE_ENDPOINT", "https://translate.example/gtx"),
+            ("MEDIA_TRANSLATE_TIMEOUT_MS", "4200"),
             ("MEDIA_MAX_SIZE_MB", "512"),
             ("MEDIA_VIDEO_MAX_HEIGHT", "720"),
             ("MEDIA_VIDEO_ENCODER", "h264_nvenc"),
@@ -1001,6 +1025,12 @@ mod tests {
         assert_eq!(config.media_cache_max_total_mb, 1024);
         assert_eq!(config.media_board_max_total_mb, 2048);
         assert_eq!(config.media_download_timeout_ms, 60_000);
+        assert!(!config.media_translate_enabled);
+        assert_eq!(
+            config.media_translate_endpoint.as_deref(),
+            Some("https://translate.example/gtx")
+        );
+        assert_eq!(config.media_translate_timeout_ms, 4200);
         assert_eq!(config.media_max_size_mb, 512);
         assert_eq!(config.media_video_max_height, 720);
         assert_eq!(config.media_video_encoder, VideoEncoder::H264Nvenc);

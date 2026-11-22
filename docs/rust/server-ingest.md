@@ -407,9 +407,11 @@ board (aucun `board.changed` dans ce second cas).
 1. durée candidate = durée explicite → durée de l'asset (médias non-image) →
    `DEFAULT_DURATION` du serveur si média → `default_media_time` de la guilde →
    défaut serveur ; pour une carte texte image (tweet ou commentaire TikTok
-   partagé) sans durée explicite, la durée est calculée à partir de la quantité
-   de texte du titre (5 s + 1 s par tranche de 12 caractères, plafond 30 s ; un
-   titre tronqué prend le plafond), sans descendre sous le défaut de guilde ;
+   partagé) sans durée explicite, la durée persistée dans `MediaAsset.duration_sec`
+   au rendu (nombre de caractères visibles : racine + citation + tweet parent) est
+   utilisée, plafonnée à 30 s ; à défaut, repli sur la quantité de texte du titre
+   (5 s + 1 s par tranche de 12 caractères, plafond 30 s ; un titre tronqué prend
+   le plafond), sans descendre sous le défaut de guilde ;
 2. clamp au `max_media_time` de la guilde s'il est défini ;
 3. si média non-image et offset YouTube intégré au texte : durée réduite de
    l'offset, `resume_offset_sec` = offset ;
@@ -456,7 +458,7 @@ et in-process, base SQLite temporaire `tempfile::tempdir()`, aucun réseau réel
 | `media::quotas` | 4 | éviction LRU, assets actifs protégés, budget board |
 | `media::board` | 3 | ajout+épinglage, idempotence, budget dépassé |
 | `media::jobs` | 5 | durées par défaut/guilde/explicite, image, offset riche |
-| `media::display_duration` | 9 | cartes tweet et commentaire TikTok, plafonds, défaut de guilde |
+| `media::display_duration` | 12 | cartes tweet et commentaire TikTok, durée persistée, plafonds, défaut de guilde |
 | `media::service` | 4 | cache hit sans réseau, échec pipeline → FAILED, source absente, nettoyage fichier après échec `forceRefresh` |
 | `media::html` | 4 | sanitizer tweet allowlist : tags/attrs autorisés, blocs actifs supprimés, `href`/`src` http(s), texte conservé |
 | `media::confinement` | 2 | racine créée/canonicalisée idempotente, chemins vides/fichiers refusés |
@@ -469,7 +471,7 @@ et in-process, base SQLite temporaire `tempfile::tempdir()`, aucun réseau réel
 
 Vérifications de la lane (task-49) : `cargo fmt -p lc-media -p lc-server -- --check`,
 `cargo clippy -p lc-media -p lc-server --all-targets -- -D warnings`,
-`cargo test -p lc-media` (130 unit + 12 intégration + 1 doctest, 4 réseau `#[ignore]`),
+`cargo test -p lc-media` (293 unit + 30 intégration + 1 doctest, 30 réseau/ffmpeg `#[ignore]`),
 `cargo test -p lc-server --lib`.
 
 ## 10. Écarts et décisions vs legacy

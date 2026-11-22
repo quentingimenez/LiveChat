@@ -49,6 +49,22 @@ pub async fn send_guarded(
     timeout: Duration,
     headers: &[(&str, &str)],
 ) -> MediaResult<(Response, Url)> {
+    send_guarded_with(config, method, raw_url, timeout, headers, None).await
+}
+
+/// Variante de [`send_guarded`] avec un corps optionnel.
+///
+/// Un corps n'est jamais renvoyé à travers une redirection : une réponse 3xx
+/// sur une requête avec corps est refusée pour ne pas rejouer un formulaire
+/// vers un hôte inconnu.
+async fn send_guarded_with(
+    config: &DownloadConfig,
+    method: Method,
+    raw_url: &str,
+    timeout: Duration,
+    headers: &[(&str, &str)],
+    body: Option<&[u8]>,
+) -> MediaResult<(Response, Url)> {
     let initial = guard::validate_target(raw_url).await?;
     let original_host = initial.host.clone();
     let mut next = initial.url.clone();
@@ -63,6 +79,9 @@ pub async fn send_guarded(
         let mut request = client
             .request(method.clone(), target.url.clone())
             .timeout(timeout);
+        if let Some(body) = body {
+            request = request.body(body.to_vec());
+        }
         for (name, value) in headers {
             if same_host
                 || CROSS_HOST_HEADERS
@@ -74,6 +93,12 @@ pub async fn send_guarded(
         }
         let response = request.send().await.map_err(request_error)?;
         if response.status().is_redirection() {
+            if body.is_some() {
+                return Err(MediaError::new(
+                    MediaErrorCode::DownloadFailed,
+                    "redirection HTTP inattendue pour une requête avec corps",
+                ));
+            }
             if hop == guard::MAX_REDIRECTS {
                 return Err(MediaError::new(
                     MediaErrorCode::DownloadFailed,
@@ -116,6 +141,47 @@ pub async fn get_text(
 ) -> MediaResult<HttpText> {
     let (response, final_url) =
         send_guarded(config, Method::GET, raw_url, timeout, headers).await?;
+    let status = response.status();
+    let captured_headers = response.headers().clone();
+    if !status.is_success() {
+        let body = read_body_bounded(response, MAX_ERROR_BODY_BYTES, false).await?;
+        return Err(MediaError::with_raw(
+            code_from_http_status(status.as_u16()),
+            format!("la source a répondu HTTP {} ({final_url})", status.as_u16()),
+            String::from_utf8_lossy(&body).into_owned(),
+        ));
+    }
+    let body = read_body_bounded(response, MAX_TEXT_RESPONSE_BYTES, true).await?;
+    Ok(HttpText {
+        body: String::from_utf8_lossy(&body).into_owned(),
+        final_url: final_url.to_string(),
+        headers: captured_headers,
+    })
+}
+
+/// Récupère une page texte via un formulaire POST gardé.
+///
+/// Utilisé par la traduction : le texte d'une note longue dépasse la taille
+/// raisonnable d'une URL, le formulaire garde la requête bornée.
+pub(crate) async fn post_form_text(
+    config: &DownloadConfig,
+    raw_url: &str,
+    timeout: Duration,
+    form: &[(&str, &str)],
+) -> MediaResult<HttpText> {
+    let body = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(form)
+        .finish();
+    let headers = [("content-type", "application/x-www-form-urlencoded")];
+    let (response, final_url) = send_guarded_with(
+        config,
+        Method::POST,
+        raw_url,
+        timeout,
+        &headers,
+        Some(body.as_bytes()),
+    )
+    .await?;
     let status = response.status();
     let captured_headers = response.headers().clone();
     if !status.is_success() {

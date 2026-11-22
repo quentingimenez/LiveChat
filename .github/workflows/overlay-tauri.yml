@@ -4,14 +4,17 @@ name: overlay-tauri
 #
 # - push / PR touchant l'overlay : build release + installeur NSIS, smoke test
 #   d'installation silencieuse, installeur publié en artefact du run ;
-# - tag `overlay-v*` : même chose avec l'installeur signé pour l'updater
-#   (secrets `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD`), puis brouillon de release
-#   GitHub avec l'installeur, son SHA-256 et `latest.json` (publication à valider
-#   à la main : les overlays installés ne voient la version qu'une fois la
-#   release marquée Latest).
+# - tag `overlay-v*` : même build sans clé, puis signature de l'installeur
+#   (`cargo tauri signer sign`) dans une étape dédiée qui seule voit
+#   `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD`, puis brouillon de release GitHub
+#   avec l'installeur, son SHA-256 et `latest.json` (publication à valider à la
+#   main : les overlays installés ne voient la version qu'une fois la release
+#   marquée Latest).
 #
-# Hors tag, le build se fait sans artefacts updater (`tauri.unsigned.conf.json`) :
-# pas besoin de la clé privée. Voir docs/rust/overlay-release.md §6. Actions
+# Le build ne voit jamais la clé privée : il utilise toujours
+# `tauri.unsigned.conf.json`. La signature updater est produite après coup sur
+# l'installeur de `dist/`, ce qui empêche un build script de lire les secrets.
+# Voir docs/rust/overlay-release.md §6. Actions
 # épinglées par SHA (audit A7-003).
 on:
   push:
@@ -104,20 +107,8 @@ jobs:
           }
 
       - name: Build installer (unsigned for the updater)
-        if: ${{ !startsWith(github.ref, 'refs/tags/overlay-v') }}
         working-directory: apps/lc-overlay
         run: cargo tauri build --ci --config tauri.unsigned.conf.json
-
-      - name: Build installer (signed for the updater)
-        if: startsWith(github.ref, 'refs/tags/overlay-v')
-        working-directory: apps/lc-overlay
-        shell: pwsh
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { Write-Error "secret TAURI_SIGNING_PRIVATE_KEY absent"; exit 1 }
-          cargo tauri build --ci
 
       - name: Collect installer
         id: collect
@@ -135,6 +126,20 @@ jobs:
           if ($installer.Length -gt 20MB) { Write-Error "installeur > 20 Mo (budget Phase 0)"; exit 1 }
           "installer-name=$($installer.Name)" >> $env:GITHUB_OUTPUT
 
+      - name: Sign updater artifact
+        if: startsWith(github.ref, 'refs/tags/overlay-v')
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { Write-Error "secret TAURI_SIGNING_PRIVATE_KEY absent"; exit 1 }
+          $installer = Get-ChildItem dist/*-setup.exe | Select-Object -First 1
+          if (-not $installer) { Write-Error "installeur absent de dist"; exit 1 }
+          $config = Get-Content apps/lc-overlay/tauri.conf.json -Raw | ConvertFrom-Json
+          cargo tauri signer sign --app-version "$($config.version)" $installer.FullName
+          if (-not (Test-Path "$($installer.FullName).sig")) { Write-Error "signature updater absente : $($installer.Name).sig"; exit 1 }
+
       - name: Write latest.json
         if: startsWith(github.ref, 'refs/tags/overlay-v')
         shell: pwsh
@@ -142,7 +147,7 @@ jobs:
           # The updater downloads the installer from the release and checks it
           # against this signature before running it.
           $installer = Get-ChildItem dist/*-setup.exe | Select-Object -First 1
-          $sig = Get-Item "target/release/bundle/nsis/$($installer.Name).sig" -ErrorAction SilentlyContinue
+          $sig = Get-Item "dist/$($installer.Name).sig" -ErrorAction SilentlyContinue
           if (-not $sig) { Write-Error "signature updater absente : $($installer.Name).sig"; exit 1 }
           $config = Get-Content apps/lc-overlay/tauri.conf.json -Raw | ConvertFrom-Json
           $manifest = [ordered]@{

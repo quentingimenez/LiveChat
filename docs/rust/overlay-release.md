@@ -265,9 +265,12 @@ actions épinglées par SHA) :
 - se déclenche sur push/PR touchant `apps/lc-overlay/**`, `crates/lc-protocol/**`,
   `crates/lc-domain/**`, `Cargo.*` ou le workflow lui-même, sur tag `overlay-v*`
   et à la demande ;
-- installe `tauri-cli` 2.12.4 puis lance `cargo tauri build --ci` : hors tag avec
-  `--config tauri.unsigned.conf.json` (pas de clé, pas de `.sig`), sur tag avec les
-  secrets de signature (échec explicite s'ils manquent) ;
+- installe `tauri-cli` 2.12.4 puis lance
+  `cargo tauri build --ci --config tauri.unsigned.conf.json` dans tous les cas :
+  le build ne reçoit jamais de clé de signature et ne produit pas de `.sig` ;
+- sur tag `overlay-v*`, une étape dédiée signe ensuite l'installeur de `dist/`
+  avec `cargo tauri signer sign --app-version <version>` ; elle seule reçoit
+  `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD` (échec explicite s'ils manquent) ;
 - vérifie le budget de 20 Mo, calcule le SHA-256, puis fait un **smoke test** :
   installation silencieuse (`/S`) dans `%LOCALAPPDATA%\LiveChat`, lancement 8 s
   avec une config isolée (`LIVECHAT_CONFIG_PATH`), désinstallation silencieuse ;

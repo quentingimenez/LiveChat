@@ -3,7 +3,7 @@
 import { api, run } from '../core/api.js';
 import { performAction } from '../core/action-ui.js';
 import { isEditable, openContextMenu } from '../core/contextmenu.js';
-import { acceleratorFromEvent, acceleratorLabel, ALTGR_HINT, BARE_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
+import { acceleratorFromEvent, ALTGR_HINT, BARE_KEY_MESSAGE, UNSUPPORTED_KEY, UNSUPPORTED_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import { ARTWORK_MESSAGES, artworkExtension, droppedArtworkLink, fetchArtwork, MAX_ARTWORK_BYTES, pickArtworkFile } from '../core/artwork.js';
 import {
   activeFilterCount,
@@ -52,6 +52,7 @@ import {
   sourceLink,
   toggleId,
 } from '../core/selection.js';
+import { capturedKeyLabel, forgetShortcutLabel, shortcutLabel, writeShortcutLabel } from '../core/shortcut-labels.js';
 import { invoke, listen } from '../core/ipc.js';
 import { activeGuild, can, describeError, KIND_LABELS, state } from '../core/state.js';
 import { previewVolume } from '../core/sound.js';
@@ -253,8 +254,15 @@ const thumbObserver = new IntersectionObserver(
       }
       const media =
         kind === 'video'
-          ? h('video', { src: `${mediaUrl}#t=0.1`, preload: 'metadata', muted: true, playsinline: true, tabindex: '-1' })
-          : h('img', { src: mediaUrl, alt: '', loading: 'lazy' });
+          ? h('video', {
+              src: `${mediaUrl}#t=0.1`,
+              preload: 'metadata',
+              muted: true,
+              playsinline: true,
+              tabindex: '-1',
+              draggable: 'false',
+            })
+          : h('img', { src: mediaUrl, alt: '', loading: 'lazy', draggable: 'false' });
       // The fallback glyph goes away as soon as the thumbnail can be shown.
       const glyph = entry.target.querySelector('.glyph');
       media.addEventListener('error', () => media.remove());
@@ -361,9 +369,16 @@ function buildCard(entry) {
       'data-item-id': item.id,
       'aria-label': `Détails de ${itemTitle(item)}`,
       onClick: (event) => {
-        const action = cardClickAction({ selecting: state.selecting, shiftKey: event.shiftKey });
+        const action = cardClickAction({
+          selecting: state.selecting,
+          shiftKey: event.shiftKey,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+        });
         if (action === 'details') {
           selectItem(entry.item.id, event.detail);
+        } else if (action === 'pick') {
+          pickCard(entry.item.id);
         } else {
           pickItem(entry.item.id, action === 'range');
         }
@@ -400,9 +415,16 @@ function buildCard(entry) {
         if (event.target.closest('button')) {
           return;
         }
-        const action = cardClickAction({ selecting: state.selecting, shiftKey: event.shiftKey });
+        const action = cardClickAction({
+          selecting: state.selecting,
+          shiftKey: event.shiftKey,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+        });
         if (action === 'details') {
           selectItem(entry.item.id, event.detail);
+        } else if (action === 'pick') {
+          pickCard(entry.item.id);
         } else {
           pickItem(entry.item.id, action === 'range');
         }
@@ -843,6 +865,9 @@ function deleteSelection(items) {
 
 export function enterSelection() {
   clearDrawerTimers();
+  // A pending single click must not open the drawer after the mode started.
+  clearTimeout(clickTimer);
+  clickTimer = null;
   applyView(CLOSED_VIEW);
   state.capturing = false;
   state.selecting = true;
@@ -884,6 +909,17 @@ function pickItem(id, range) {
     : toggleId(state.selection, id);
   state.selectionAnchor = id;
   syncSelection();
+}
+
+// Ctrl+click (or Cmd+click) picks a card's media even outside the selection
+// mode: the first one enters the mode, the next ones toggle the media.
+function pickCard(id) {
+  clearTimeout(clickTimer);
+  clickTimer = null;
+  if (!state.selecting) {
+    enterSelection();
+  }
+  pickItem(id, false);
 }
 
 function pickAllVisible() {
@@ -1297,9 +1333,12 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-// In the selection mode, Ctrl+A picks every visible card (like the « Tout
-// sélectionner » button); a field being edited keeps its own text selection.
+// On the board, Ctrl+A picks every visible card (like the « Tout sélectionner
+// » button) and opens the selection mode if needed; elsewhere, or in a field
+// being edited, it keeps its normal effect.
 document.addEventListener('keydown', (event) => {
+  const boardTab = state.page === 'guild' && state.tab === 'board' && Boolean(state.activeGuildId);
+  const selectAllKey = (event.ctrlKey || event.metaKey) && (event.key === 'a' || event.key === 'A');
   const action = selectAllAction({
     key: event.key,
     ctrl: event.ctrlKey,
@@ -1309,11 +1348,14 @@ document.addEventListener('keydown', (event) => {
     handled: event.defaultPrevented,
     capturing: state.capturing,
     dialogOpen: Boolean(document.getElementById('dialog-root').firstElementChild),
-    selecting: state.selecting,
     editableTarget: isEditable(event.target),
+    canSelectAll: selectAllKey && boardTab && visibleItems().length > 0,
   });
   if (action === 'selectAll') {
     event.preventDefault();
+    if (!state.selecting) {
+      enterSelection();
+    }
     pickAllVisible();
   }
 });
@@ -1769,7 +1811,7 @@ function shortcutControl(item, shortcut) {
     h(
       'button',
       { class: 'shortcut-key', type: 'button', title: 'Changer le raccourci', onClick: () => startCapture(item) },
-      h('kbd', null, acceleratorLabel(shortcut)),
+      h('kbd', null, shortcutLabel(shortcut)),
       icon('edit'),
     ),
     h(
@@ -1800,15 +1842,20 @@ document.addEventListener('keydown', (event) => {
   if (accelerator === null) {
     return;
   }
+  if (accelerator === UNSUPPORTED_KEY) {
+    notify(UNSUPPORTED_KEY_MESSAGE, true);
+    return;
+  }
   if (accelerator === undefined) {
     notify(BARE_KEY_MESSAGE, true);
     return;
   }
+  const keyLabel = capturedKeyLabel(event);
   state.capturing = false;
-  saveShortcut(captureItem, accelerator);
+  saveShortcut(captureItem, accelerator, keyLabel);
 });
 
-export async function saveShortcut(item, accelerator) {
+export async function saveShortcut(item, accelerator, keyLabel = null) {
   const bindings = {};
   for (const [existing, id] of Object.entries(state.bindings)) {
     if (id !== item.id && existing !== accelerator) {
@@ -1821,6 +1868,14 @@ export async function saveShortcut(item, accelerator) {
   const response = await run(() => invoke('media_board_set_bindings', { payload: { bindings } }));
   if (response) {
     state.bindings = response.bindings || {};
+    const failed = Array.isArray(response.failedAccelerators) && response.failedAccelerators.includes(accelerator);
+    if (accelerator && !failed && state.bindings[accelerator] === item.id) {
+      if (keyLabel) {
+        writeShortcutLabel(accelerator, keyLabel);
+      } else {
+        forgetShortcutLabel(accelerator);
+      }
+    }
     if (response.failedAccelerators && response.failedAccelerators.length > 0) {
       notify('Ce raccourci est déjà pris par une autre application.', true);
     }
@@ -2192,19 +2247,20 @@ document.addEventListener('livechat:uploads', () => {
 let dropVeil = null;
 let dropDismissed = false;
 
-// A drag started inside the board (a thumbnail, selected text) is not an
-// import.
-let internalDrag = false;
-document.addEventListener('dragstart', () => {
-  internalDrag = true;
-});
-document.addEventListener('dragend', () => {
-  internalDrag = false;
+// The window behaves like an application: a drag started inside it (a
+// thumbnail, a link, a field's selected text) never leaves as a native ghost
+// copy. Queue rows are the one deliberate native drag: queue.js reorders them.
+// Files and links dropped from outside do not fire dragstart here: only they
+// are still imports.
+document.addEventListener('dragstart', (event) => {
+  if (!event.target.closest?.('.line.is-queue')) {
+    event.preventDefault();
+  }
 });
 
 function transfersFiles(event) {
   const transfer = event.dataTransfer;
-  if (!transfer || internalDrag) {
+  if (!transfer) {
     return false;
   }
   const types = Array.from(transfer.types || []);

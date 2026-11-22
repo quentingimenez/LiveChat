@@ -105,6 +105,27 @@ body {
   margin: 0;
   background: var(--slate-900);
   overflow: hidden;
+  /* Cette fenêtre est une application, pas un document : le balayage de la
+     souris ne sélectionne pas l'interface. Seuls les champs de saisie gardent
+     la sélection native (souris, Ctrl+flèches, copier-coller). */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea,
+select,
+[contenteditable=''],
+[contenteditable='true'] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Une vignette est un contrôle, pas une image à faire glisser en copie
+   fantôme. */
+img,
+video {
+  -webkit-user-drag: none;
 }
 
 button,

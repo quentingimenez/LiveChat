@@ -309,6 +309,23 @@ la board. L'infobulle reste `tray_tooltip`.
   générale exactement comme le tray ; `openBoard` affiche la board et lui donne
   le focus, comme l'entrée de tray « Ouvrir la board » (sans la masquer si elle
   est déjà visible). En cas de refus OS, les anciens raccourcis sont restaurés.
+- La capture des raccourcis suit la disposition de l'OS : le renderer déduit la
+  touche du code de touche virtuelle Windows (`KeyboardEvent.keyCode`, posé par
+  WebView2) et non de `event.code`, qui décrit la position physique US. Sur un
+  clavier AZERTY, la touche M (position US « ; ») produit donc bien
+  `CommandOrControl+M` au lieu d'être refusée, et les touches de ponctuation
+  sont acceptées. Le libellé affiché conserve le caractère réellement tapé (par
+  exemple `Ctrl + :` pour `CommandOrControl+Period`) via un cache
+  `localStorage` (`livechat.shortcut-labels.v1`) propre à ce poste et à sa
+  disposition ; l'accélérateur persisté reste le nom global-hotkey, sans
+  libellé.
+- Touches acceptées : lettres, chiffres, pavé numérique (y compris ses
+  opérateurs), F1–F24, Échap (avec modificateur), Espace, Entrée, Tabulation,
+  Retour arrière, Suppr,
+  Inser, Début, Fin, Page préc./suiv., les quatre flèches, Impr. écran, Pause,
+  Verr. maj./num., Arr. défilé et les touches multimédias. Les touches mortes et
+  les symboles que `global-hotkey` ne sait pas nommer (touche française
+  `!`/`§`, `VK_OEM_8`) sont refusés avec un message dédié.
 - Alt droite : sur un clavier qui la mappe en AltGr (français), la webview la
   reçoit comme `AltGraph` (Ctrl+Alt). La capture la traite comme modificateur et
   enregistre `CommandOrControl+Alt+<touche>` ; l'API Windows `RegisterHotKey`

@@ -366,6 +366,7 @@ pub fn router() -> Router<AppState> {
             get(queue::get_queue).delete(queue::clear_queue),
         )
         .route("/overlay/queue/history", get(queue::get_history))
+        .route("/overlay/queue/reorder", post(queue::reorder_queue))
         .route(
             "/overlay/queue/{job_id}",
             axum::routing::delete(queue::remove_job),

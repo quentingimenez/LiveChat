@@ -696,12 +696,9 @@ async fn queue_origin_and_history_are_guild_bounded() {
         .await
         .unwrap();
 
-    // Un job venu du board (média), un média joué une fois et un job direct
-    // (texte seul). La file est FIFO (`submission_date ASC`), indépendamment
-    // des UUID : les dates de soumission fixent donc l'ordre affiché.
-    let mut board_job = playback_job(&harness.guild_id, JobStatus::Pending, Some(asset.id), None);
-    board_job.submission_date = fixed_now() - Duration::seconds(1);
-    seed_job(&harness, &board_job).await;
+    // Un média joué une fois, un média du board et un job direct (texte seul) :
+    // l'ordre affiché est celui de la file (`queue_position`, attribuée à la
+    // création), pas celui des dates de soumission.
     let mut once_job = playback_job(
         &harness.guild_id,
         JobStatus::Pending,
@@ -710,6 +707,9 @@ async fn queue_origin_and_history_are_guild_bounded() {
     );
     once_job.submission_date = fixed_now() - Duration::seconds(2);
     seed_job(&harness, &once_job).await;
+    let mut board_job = playback_job(&harness.guild_id, JobStatus::Pending, Some(asset.id), None);
+    board_job.submission_date = fixed_now() - Duration::seconds(1);
+    seed_job(&harness, &board_job).await;
     let direct_job = playback_job(&harness.guild_id, JobStatus::Pending, None, None);
     seed_job(&harness, &direct_job).await;
 
@@ -848,6 +848,127 @@ async fn queue_origin_and_history_are_guild_bounded() {
         assert_eq!(status, StatusCode::FORBIDDEN, "{uri} → {body}");
         assert_eq!(body["error"], "forbidden");
     }
+}
+
+#[tokio::test]
+async fn guild_reorders_pending_queue() {
+    let harness = Harness::new().await;
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Alice")
+        .await;
+    let admin_token = token(&admin);
+    let first = playback_job(&harness.guild_id, JobStatus::Pending, None, None);
+    let mut second = playback_job(&harness.guild_id, JobStatus::Pending, None, None);
+    second.submission_date = fixed_now() + Duration::seconds(1);
+    seed_job(&harness, &first).await;
+    seed_job(&harness, &second).await;
+
+    let queue_ids = |body: &Value| -> Vec<String> {
+        body["pending"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|job| job["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let (status, body) = harness
+        .call(Method::GET, "/overlay/queue", Some(&admin_token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        queue_ids(&body),
+        vec![first.id.to_canonical(), second.id.to_canonical()]
+    );
+
+    // L'ordre envoyé remplace l'ordre d'arrivée.
+    let (status, body) = harness
+        .call(
+            Method::POST,
+            "/overlay/queue/reorder",
+            Some(&admin_token),
+            Some(json!({"jobIds": [second.id.to_canonical(), first.id.to_canonical()]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["reordered"], true);
+    assert_eq!(body["count"], 2);
+
+    let (_, body) = harness
+        .call(Method::GET, "/overlay/queue", Some(&admin_token), None)
+        .await;
+    assert_eq!(
+        queue_ids(&body),
+        vec![second.id.to_canonical(), first.id.to_canonical()]
+    );
+
+    // File modifiée depuis la lecture : une liste incomplète est refusée.
+    let (status, body) = harness
+        .call(
+            Method::POST,
+            "/overlay/queue/reorder",
+            Some(&admin_token),
+            Some(json!({"jobIds": [first.id.to_canonical()]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "stale_queue");
+
+    // Un job retiré entre-temps est refusé de la même façon.
+    let (status, body) = harness
+        .call(
+            Method::POST,
+            "/overlay/queue/reorder",
+            Some(&admin_token),
+            Some(json!({"jobIds": [
+                PlaybackJobId::new_v4().to_canonical(),
+                first.id.to_canonical(),
+            ]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "stale_queue");
+
+    // Un identifiant syntaxiquement invalide est une erreur de requête.
+    let (status, body) = harness
+        .call(
+            Method::POST,
+            "/overlay/queue/reorder",
+            Some(&admin_token),
+            Some(json!({"jobIds": ["pas-un-uuid"]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_job_id");
+
+    // Sans `moderateQueue`, la route est fermée.
+    let guest = harness.invite_and_join(&admin_token, "guest", "Max").await;
+    let mut rights = harness.state.rights.snapshot();
+    rights.set_override(
+        Surface::Overlay,
+        Action::ModerateQueue,
+        RightsRole::Guest,
+        false,
+    );
+    harness.state.rights.replace(rights);
+    let (status, body) = harness
+        .call(
+            Method::POST,
+            "/overlay/queue/reorder",
+            Some(&token(&guest)),
+            Some(json!({"jobIds": [first.id.to_canonical(), second.id.to_canonical()]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "forbidden");
+
+    // Aucun refus n'a modifié l'ordre.
+    let (_, body) = harness
+        .call(Method::GET, "/overlay/queue", Some(&admin_token), None)
+        .await;
+    assert_eq!(
+        queue_ids(&body),
+        vec![second.id.to_canonical(), first.id.to_canonical()]
+    );
 }
 
 #[tokio::test]

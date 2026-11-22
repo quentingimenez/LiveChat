@@ -470,6 +470,16 @@ async fn admin_console_mutation_fixtures() {
         .await,
     );
     record(
+        "reorder-queue",
+        &mutate(
+            &harness,
+            Method::POST,
+            &format!("{base}/queue/reorder"),
+            Some(json!({ "jobIds": [job.clone()] })),
+        )
+        .await,
+    );
+    record(
         "remove-queue-job",
         &mutate(
             &harness,

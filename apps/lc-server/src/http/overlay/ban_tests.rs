@@ -19,6 +19,7 @@ use super::admin::{ban_member_payload, BanActor};
 use super::device_id::device_hash;
 use super::guild::{create_invite, NewInvite};
 use super::guild_tests::{call_app, fixed_now, token, Harness, RecordingAdminHub};
+use super::reconcile_member_bans;
 use crate::http::admin::hub::AdminHub;
 
 const DISCORD_USER: &str = "777";
@@ -1128,4 +1129,189 @@ async fn a_last_admin_ban_is_rolled_back_with_its_devices() {
             .len(),
         1
     );
+}
+
+/// A crash can commit the ban without the exclusion. Startup must complete the
+/// exclusion (member removed) and keep the ban and its fingerprints: a restart
+/// never lifts a security decision.
+#[tokio::test]
+async fn startup_reconciliation_completes_the_exclusion_and_keeps_the_ban() {
+    let harness = Harness::new().await;
+    let code = harness.server_invite(GuildRole::Member).await;
+    let (status, lea) = join_with_device(&harness, &code, "Léa", "lea-crash-guid").await;
+    assert_eq!(status, StatusCode::OK, "{lea}");
+    let lea_id: GuildMemberId = lea["memberId"].as_str().unwrap().parse().unwrap();
+    let fingerprint = device_hash(&harness.guild_id, "lea-crash-guid");
+
+    // Crash window: the ban and its device are committed, the member is still
+    // active because `remove_member` never ran.
+    let ban = GuildBan {
+        id: GuildBanId::new_v4(),
+        guild_id: harness.guild_id.clone(),
+        member_id: Some(lea_id),
+        discord_user_id: None,
+        display_name: "Léa".to_owned(),
+        avatar: None,
+        banned_by: Some("Quentin".to_owned()),
+        created_at: fixed_now(),
+    };
+    harness
+        .db
+        .guild_bans()
+        .create_with_devices(&ban, std::slice::from_ref(&fingerprint), fixed_now())
+        .await
+        .unwrap();
+    assert!(harness
+        .db
+        .guild_members()
+        .get(lea_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .is_active());
+
+    reconcile_member_bans(&harness.state).await;
+
+    // The exclusion is completed; the ban and its fingerprint were not lifted.
+    assert!(!harness
+        .db
+        .guild_members()
+        .get(lea_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .is_active());
+    assert_eq!(
+        harness
+            .db
+            .guild_bans()
+            .list_by_guild(&harness.guild_id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(harness
+        .db
+        .guild_ban_devices()
+        .is_device_banned(&harness.guild_id, &fingerprint)
+        .await
+        .unwrap());
+}
+
+/// The ban wins over a still-active member row: a crash must not leave a usable
+/// session, so authentication refuses the member before the next restart.
+#[tokio::test]
+async fn a_banned_member_is_refused_even_while_still_active() {
+    let harness = Harness::new().await;
+    let code = harness.server_invite(GuildRole::Member).await;
+    let (status, lea) = join_with_device(&harness, &code, "Léa", "lea-active-guid").await;
+    assert_eq!(status, StatusCode::OK, "{lea}");
+    let lea_id: GuildMemberId = lea["memberId"].as_str().unwrap().parse().unwrap();
+    let lea_token = token(&lea);
+
+    let ban = GuildBan {
+        id: GuildBanId::new_v4(),
+        guild_id: harness.guild_id.clone(),
+        member_id: Some(lea_id),
+        discord_user_id: None,
+        display_name: "Léa".to_owned(),
+        avatar: None,
+        banned_by: None,
+        created_at: fixed_now(),
+    };
+    harness.db.guild_bans().create(&ban).await.unwrap();
+    assert!(harness
+        .db
+        .guild_members()
+        .get(lea_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .is_active());
+
+    let (status, body) = harness
+        .call(
+            Method::GET,
+            "/overlay/media-board/items",
+            Some(&lea_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["error"], "unauthorized");
+}
+
+/// A ban of the last admin cannot be applied (the guild would lose its admin).
+/// It is kept anyway — never deleted — and authentication stays fail-closed.
+#[tokio::test]
+async fn a_last_admin_ban_is_kept_when_the_exclusion_cannot_apply() {
+    let harness = Harness::new().await;
+    let (status, admin) = join_with_device(
+        &harness,
+        &harness.server_invite(GuildRole::Admin).await,
+        "Quentin",
+        "admin-last-guid",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admin}");
+    let admin_id: GuildMemberId = admin["memberId"].as_str().unwrap().parse().unwrap();
+    let admin_token = token(&admin);
+    let fingerprint = device_hash(&harness.guild_id, "admin-last-guid");
+
+    let ban = GuildBan {
+        id: GuildBanId::new_v4(),
+        guild_id: harness.guild_id.clone(),
+        member_id: Some(admin_id),
+        discord_user_id: None,
+        display_name: "Quentin".to_owned(),
+        avatar: None,
+        banned_by: None,
+        created_at: fixed_now(),
+    };
+    harness
+        .db
+        .guild_bans()
+        .create_with_devices(&ban, std::slice::from_ref(&fingerprint), fixed_now())
+        .await
+        .unwrap();
+
+    reconcile_member_bans(&harness.state).await;
+
+    // `remove_member` refuses the last admin: the row stays active, the ban and
+    // its fingerprint are kept, and no request is served for that member.
+    assert!(harness
+        .db
+        .guild_members()
+        .get(admin_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .is_active());
+    assert_eq!(
+        harness
+            .db
+            .guild_bans()
+            .list_by_guild(&harness.guild_id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(harness
+        .db
+        .guild_ban_devices()
+        .is_device_banned(&harness.guild_id, &fingerprint)
+        .await
+        .unwrap());
+    let (status, body) = harness
+        .call(
+            Method::GET,
+            "/overlay/media-board/items",
+            Some(&admin_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["error"], "unauthorized");
 }

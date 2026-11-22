@@ -298,26 +298,24 @@ impl GuildBansRepository {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Deletes bans whose member is still active in the guild.
+    /// Lists bans whose member is still active in the guild.
     ///
     /// A crash between the ban commit and the exclusion can leave such a row
-    /// (an active member with an active ban). Startup reconciles it with this
-    /// query; deleting a ban cascades to its device fingerprints. Returns the
-    /// number of bans removed.
-    pub async fn delete_bans_of_active_members(&self) -> DbResult<u64> {
-        let result = sqlx::query(
-            "DELETE FROM guild_bans \
-             WHERE member_id IS NOT NULL \
-               AND EXISTS ( \
-                   SELECT 1 FROM guild_members \
-                   WHERE guild_members.id = guild_bans.member_id \
-                     AND guild_members.guild_id = guild_bans.guild_id \
-                     AND guild_members.removed_at IS NULL \
-               )",
+    /// (an active member with an active ban). Startup completes the exclusion
+    /// for these bans; it never deletes them, so a security decision is never
+    /// silently undone.
+    pub async fn list_bans_of_active_members(&self) -> DbResult<Vec<GuildBan>> {
+        let rows = sqlx::query_as::<_, GuildBanRow>(
+            "SELECT bans.* FROM guild_bans bans \
+             JOIN guild_members members \
+               ON members.id = bans.member_id \
+              AND members.guild_id = bans.guild_id \
+             WHERE members.removed_at IS NULL \
+             ORDER BY bans.created_at ASC, bans.id ASC",
         )
-        .execute(&self.pool)
+        .fetch_all(&self.pool)
         .await?;
-        Ok(result.rows_affected())
+        rows.into_iter().map(GuildBanRow::into_entity).collect()
     }
 
     /// Deletes every ban of a guild (purge). Returns the number of rows.

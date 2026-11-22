@@ -68,13 +68,15 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use lc_db::MemberChange;
 use lc_domain::rights::{Action, RightsTable, Surface};
 use lc_domain::{
     GuildId, GuildMember, GuildMemberId, GuildRole, OverlayClient, OverlayClientId, Permission,
 };
+use lc_protocol::{close_code, close_reason};
 use serde_json::Value;
 use time::UtcDateTime;
-use tracing::error;
+use tracing::{error, info, warn};
 
 use crate::app::AppState;
 
@@ -487,6 +489,80 @@ fn database_unavailable() -> Response {
 fn db_failure(operation: &'static str, db_error: &lc_db::DbError) -> Response {
     error!(operation, error = %db_error, "échec d'accès base sur une route overlay");
     internal_error()
+}
+
+/// Complète au démarrage les exclusions qu'un crash a laissées inachevées.
+///
+/// Un ban peut être commité sans que le membre ait été retiré (crash entre les
+/// deux écritures). Le démarrage rejoue l'exclusion pour ces bans ; il ne
+/// supprime **jamais** le ban : une décision de sécurité ne doit pas disparaître
+/// au redémarrage. Un échec (dernier admin, erreur base) conserve le ban et le
+/// journalise ; l'authentification overlay refuse de toute façon un membre
+/// banni, même si sa ligne `guild_members` est encore active (fail-closed).
+pub(crate) async fn reconcile_member_bans(state: &AppState) {
+    let Some(db) = state.db.as_ref() else {
+        return;
+    };
+    let bans = match db.guild_bans().list_bans_of_active_members().await {
+        Ok(bans) => bans,
+        Err(error) => {
+            warn!(error = %error, "réconciliation des bans impossible");
+            return;
+        }
+    };
+    for ban in bans {
+        let Some(member_id) = ban.member_id else {
+            continue;
+        };
+        let member = match db.guild_members().get(member_id).await {
+            Ok(Some(member)) if member.is_active() => member,
+            Ok(_) => continue,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    member_id = %member_id.to_canonical(),
+                    "réconciliation d'un ban : membre illisible, ban conservé"
+                );
+                continue;
+            }
+        };
+        match guild::remove_member(
+            state,
+            db,
+            &member,
+            now(state),
+            close_code::REVOKED,
+            close_reason::MEMBER_BANNED,
+        )
+        .await
+        {
+            Ok(MemberChange::Applied) => {
+                info!(
+                    member_id = %member_id.to_canonical(),
+                    "exclusion d'un membre banni complétée au démarrage ; ban conservé"
+                );
+            }
+            Ok(MemberChange::LastAdmin) => {
+                warn!(
+                    member_id = %member_id.to_canonical(),
+                    "ban incohérent d'un dernier admin : exclusion non appliquée, ban conservé"
+                );
+            }
+            Ok(MemberChange::NotFound) => {
+                warn!(
+                    member_id = %member_id.to_canonical(),
+                    "membre disparu pendant la réconciliation : ban conservé"
+                );
+            }
+            Err(response) => {
+                warn!(
+                    member_id = %member_id.to_canonical(),
+                    status = %response.status(),
+                    "échec de l'exclusion au démarrage : ban conservé"
+                );
+            }
+        }
+    }
 }
 
 /// Conflit d'unicité quel que soit le chemin de conversion de l'erreur.

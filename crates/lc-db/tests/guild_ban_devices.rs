@@ -231,7 +231,7 @@ async fn deleting_a_guild_cascades_through_its_bans_to_their_devices() {
 }
 
 #[tokio::test]
-async fn startup_reconciliation_drops_bans_left_on_active_members() {
+async fn bans_of_active_members_are_listed_without_being_deleted() {
     let (db, _dir) = common::temp_db().await;
     let guild = common::guild("111");
     let now = common::now();
@@ -247,7 +247,7 @@ async fn startup_reconciliation_drops_bans_left_on_active_members() {
     broken.member_id = Some(active.id);
     let mut healthy = ban("111", "Retiré");
     healthy.member_id = Some(removed.id);
-    // An imported Discord ban has no member: reconciliation must keep it.
+    // An imported Discord ban has no member: the list must ignore it.
     let mut imported = ban("111", "Discord");
     imported.member_id = None;
     imported.discord_user_id = Some("777".to_owned());
@@ -263,21 +263,27 @@ async fn startup_reconciliation_drops_bans_left_on_active_members() {
         .await
         .unwrap();
 
+    let listed = db.guild_bans().list_bans_of_active_members().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, broken.id);
+    // Reading is idempotent: startup may restart before the exclusion runs.
     assert_eq!(
         db.guild_bans()
-            .delete_bans_of_active_members()
+            .list_bans_of_active_members()
             .await
-            .unwrap(),
+            .unwrap()
+            .len(),
         1
     );
+
+    // Listing them leaves every ban and its fingerprints in place: startup
+    // completes the exclusion, it never lifts a security decision.
     let bans = db.guild_bans().list_by_guild(&guild).await.unwrap();
-    assert_eq!(bans.len(), 2);
-    assert!(!bans.iter().any(|entry| entry.id == broken.id));
+    assert_eq!(bans.len(), 3);
+    assert!(bans.iter().any(|entry| entry.id == broken.id));
     assert!(bans.iter().any(|entry| entry.id == healthy.id));
     assert!(bans.iter().any(|entry| entry.id == imported.id));
-
-    // The removed ban's devices survive; the inconsistent one went with its ban.
-    assert!(!db
+    assert!(db
         .guild_ban_devices()
         .is_device_banned(&guild, "hash-a")
         .await

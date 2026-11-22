@@ -33,11 +33,13 @@
 //! Discord : deux coups de ban simultanés ne créent qu'un ban, qui reçoit
 //! toutes les empreintes. Si l'exclusion est refusée parce que le membre est le
 //! dernier admin, le ban créé pour lui est annulé (la cascade retire ses
-//! empreintes) : un membre ne reste jamais actif et banni à la fois. Une erreur
+//! empreintes) : ce chemin ne laisse jamais un membre actif et banni. Une erreur
 //! d'exclusion relit le membre : encore actif, le ban créé est annulé ; déjà
 //! retiré, il reste la vérité. Un ban préexistant (compte Discord déjà banni)
-//! n'est jamais supprimé par ce chemin. Au démarrage, le serveur supprime les
-//! bans dont le membre est resté actif après un crash. L'empreinte d'appareil
+//! n'est jamais supprimé par ce chemin. Au démarrage, le serveur complète
+//! l'exclusion des bans qu'un crash a laissés sur un membre encore actif ; il ne
+//! supprime jamais un ban, même si l'exclusion reste impossible (dernier admin) :
+//! l'authentification refuse de toute façon un membre banni. L'empreinte d'appareil
 //! est fournie par le shell et hachée côté serveur ; c'est une défense en
 //! profondeur (falsifiable, changement de matériel = autre empreinte, anciens
 //! clients non couverts), pas une authentification. Lever le ban supprime ses

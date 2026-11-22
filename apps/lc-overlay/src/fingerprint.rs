@@ -7,9 +7,11 @@
 //! changement de matériel change l'empreinte. Le serveur la hache par guilde et
 //! ne stocke jamais la valeur brute ; ce module ne doit jamais la journaliser.
 //!
-//! Quand aucun composant fiable n'est lisible (ou seulement des valeurs
-//! d'usine), `None` est renvoyé : les anciens clients restent hors du contrôle
-//! par appareil, comme documenté dans `docs/rust/guilds-roles.md`.
+//! Quand aucun composant fort n'est lisible (ou seulement des valeurs d'usine),
+//! `None` est renvoyé : les anciens clients restent hors du contrôle par
+//! appareil, comme documenté dans `docs/rust/guilds-roles.md`. Le modèle du
+//! processeur n'est jamais un composant fort : il est partagé par des machines
+//! identiques et ne distinguerait aucun poste.
 
 /// Longueur maximale d'un composant avant concaténation.
 const MAX_COMPONENT_CHARS: usize = 96;
@@ -71,26 +73,32 @@ fn machine_processor() -> Option<String> {
 }
 
 /// Construit l'empreinte, dans un ordre fixe et sans composant absent.
+///
+/// Il faut au moins un composant fort — l'UUID SMBIOS de la carte mère ou le
+/// numéro de série du disque système. Le modèle du processeur n'est qu'un
+/// complément : il ne distingue pas deux machines identiques, donc une empreinte
+/// qui ne porterait que lui serait partagée par tout un parc.
 fn fingerprint(
     board_uuid: Option<&str>,
     disk_serial: Option<&str>,
     processor: Option<&str>,
 ) -> Option<String> {
+    let board = normalize_board_uuid(board_uuid);
+    let disk = normalize_component(disk_serial);
+    if board.is_none() && disk.is_none() {
+        return None;
+    }
     let mut components = Vec::new();
-    if let Some(uuid) = normalize_board_uuid(board_uuid) {
+    if let Some(uuid) = board {
         components.push(format!("board={uuid}"));
     }
-    if let Some(serial) = normalize_component(disk_serial) {
+    if let Some(serial) = disk {
         components.push(format!("disk={serial}"));
     }
     if let Some(model) = normalize_component(processor) {
         components.push(format!("cpu={model}"));
     }
-    if components.is_empty() {
-        None
-    } else {
-        Some(components.join(";"))
-    }
+    Some(components.join(";"))
 }
 
 /// Normalise une valeur d'usine (`None`, vide, placeholder) en `None`.
@@ -158,11 +166,11 @@ mod tests {
     fn fingerprint_omits_missing_and_placeholder_components() {
         assert_eq!(
             fingerprint(
-                Some("   "),
+                Some("4c4c4544-0031-3510-8043-b2c04f4d4e31"),
                 Some("To be filled by O.E.M."),
                 Some(" Ryzen 7 ")
             ),
-            Some("cpu=Ryzen 7".to_string())
+            Some("board=4c4c4544003135108043b2c04f4d4e31;cpu=Ryzen 7".to_string())
         );
         assert_eq!(
             fingerprint(None, None, Some("Default string")),
@@ -170,6 +178,35 @@ mod tests {
             "an all-placeholder machine carries no usable fingerprint"
         );
         assert_eq!(fingerprint(None, None, None), None);
+    }
+
+    #[test]
+    fn fingerprint_requires_a_strong_component() {
+        // The CPU model is shared by identical machines: on its own it must not
+        // ban a whole fleet.
+        assert_eq!(
+            fingerprint(None, None, Some("Intel(R) Core(TM) i7-9700K")),
+            None
+        );
+        // A strong component makes the CPU a useful extra discriminator.
+        assert_eq!(
+            fingerprint(
+                None,
+                Some("WD-WCC4N1234567"),
+                Some("Intel(R) Core(TM) i7-9700K")
+            ),
+            Some("disk=WD-WCC4N1234567;cpu=Intel(R) Core(TM) i7-9700K".to_string())
+        );
+        assert_eq!(
+            fingerprint(
+                Some("4c4c4544-0031-3510-8043-b2c04f4d4e31"),
+                None,
+                Some("Intel(R) Core(TM) i7-9700K")
+            ),
+            Some(
+                "board=4c4c4544003135108043b2c04f4d4e31;cpu=Intel(R) Core(TM) i7-9700K".to_string()
+            )
+        );
     }
 
     #[test]

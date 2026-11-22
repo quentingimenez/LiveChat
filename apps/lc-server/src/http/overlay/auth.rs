@@ -28,6 +28,11 @@
 //! de requête ; l'extracteur est strictement équivalent ici et évite de dépendre
 //! de l'état du routeur parent (le sous-routeur `/overlay` est complété par
 //! `crate::app::router`, qui seul détient l'instance `AppState`).
+//!
+//! Un membre banni est refusé (`401`) même si sa ligne `guild_members` est
+//! encore active : un crash entre le commit du ban et l'exclusion ne doit pas
+//! laisser une session utilisable. Le ban est la vérité, la ligne de membre ne
+//! peut que retarder sa suppression.
 
 use std::future::Future;
 
@@ -194,6 +199,31 @@ pub(crate) async fn authenticate_token(
         Ok(member) => member,
         Err(error) => return Err(db_failure("overlay_auth.member_lookup", &error)),
     };
+
+    // Fail-closed ban guard: a crash can leave an active member row with an
+    // active ban. The ban wins over the row, otherwise that member would keep
+    // using their overlay until the next restart.
+    if let Some(member) = member.as_ref() {
+        match db
+            .guild_bans()
+            .is_member_banned(
+                &client.guild_id,
+                member.id,
+                member.discord_user_id.as_deref(),
+            )
+            .await
+        {
+            Ok(true) => {
+                warn!(
+                    member_id = %member.id.to_canonical(),
+                    "membre banni : authentification overlay refusée"
+                );
+                return Ok(None);
+            }
+            Ok(false) => {}
+            Err(error) => return Err(db_failure("overlay_auth.ban_lookup", &error)),
+        }
+    }
 
     Ok(Some(AuthedOverlayClient {
         client,

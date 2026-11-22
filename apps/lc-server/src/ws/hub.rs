@@ -102,6 +102,15 @@ struct HubInner {
     device_settings: HashMap<Uuid, DeviceSettingsStatePayload>,
 }
 
+/// Test-only checkpoint inside `ensure_runtime`, right after the engine is
+/// built and before its background tasks start.
+#[cfg(test)]
+#[derive(Default)]
+struct InitHook {
+    reached: Option<tokio::sync::oneshot::Sender<()>>,
+    release: Option<tokio::sync::oneshot::Receiver<()>>,
+}
+
 /// Hub WebSocket v2 : registre des overlays, diffusion et API admin.
 pub struct Hub {
     inner: Mutex<HubInner>,
@@ -111,6 +120,8 @@ pub struct Hub {
     events: OnceCell<AdminEvents>,
     runtime: OnceCell<Arc<Runtime>>,
     ids: AtomicU64,
+    #[cfg(test)]
+    init_hook: Mutex<Option<InitHook>>,
 }
 
 impl Default for Hub {
@@ -131,6 +142,53 @@ impl Hub {
             events: OnceCell::new(),
             runtime: OnceCell::new(),
             ids: AtomicU64::new(0),
+            #[cfg(test)]
+            init_hook: Mutex::new(None),
+        }
+    }
+
+    /// Arms a checkpoint reached by the next `ensure_runtime`, once the engine
+    /// is built but before its background tasks are spawned.
+    ///
+    /// Returns the receiver that fires when the checkpoint is reached and the
+    /// sender that releases `ensure_runtime`. Test-only: it lets a regression
+    /// test observe exactly what a concurrent `play` sees during the startup
+    /// window.
+    #[cfg(test)]
+    pub(crate) fn arm_init_hook(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        *self
+            .init_hook
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(InitHook {
+            reached: Some(reached_tx),
+            release: Some(release_rx),
+        });
+        (reached_rx, release_tx)
+    }
+
+    /// Blocks the runtime initializer at the armed checkpoint until the test
+    /// releases it. A no-op when no checkpoint is armed.
+    #[cfg(test)]
+    async fn pass_init_hook(&self) {
+        let hook = self
+            .init_hook
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(mut hook) = hook {
+            if let Some(reached) = hook.reached.take() {
+                let _ = reached.send(());
+            }
+            if let Some(release) = hook.release.take() {
+                let _ = release.await;
+            }
         }
     }
 
@@ -569,10 +627,24 @@ impl Hub {
         }
         let db = state.db.clone().ok_or(HubError::DatabaseUnavailable)?;
         let config = Arc::clone(&state.config);
+        // AUD-A1-009: publish the hub's database and configuration *before*
+        // the engine exists (`get_or_try_init` makes it visible to concurrent
+        // sessions as soon as it returns), and therefore before its `run`
+        // task can dispatch a `play`. Otherwise a session that arrives in
+        // that window takes the early return above and a media `play` finds
+        // `config` unset, delivering zero frames and failing the job.
+        //
+        // Both setters run before the fallible initialization; on error the
+        // cells keep these immutable handles (same `AppState`, idempotent
+        // `set`), so a retry is safe and publishes nothing partial.
+        drop(self.db.set(db.clone()));
+        drop(self.config.set(Arc::clone(&config)));
         let shutdown = state.shutdown.clone();
         let weak_hub = Arc::downgrade(self);
         let engine_db = db.clone();
         let engine_config = Arc::clone(&config);
+        #[cfg(test)]
+        let hook_hub = Arc::clone(self);
         // The engine config is frozen at creation, so seed it with the current
         // hot value. Jobs created afterwards carry their own resolved duration.
         let default_duration = self
@@ -605,6 +677,12 @@ impl Hub {
                     HubSink::new(weak_hub),
                     SystemClock,
                 ));
+
+                // Deterministic observation point for the startup-window
+                // regression test: the runtime is built, its tasks are not
+                // spawned yet, so nothing else can be observed here.
+                #[cfg(test)]
+                hook_hub.pass_init_hook().await;
 
                 let run_engine = Arc::clone(&engine);
                 let run_shutdown = shutdown.subscribe();
@@ -644,8 +722,6 @@ impl Hub {
             })
             .await?
             .clone();
-        drop(self.db.set(db));
-        drop(self.config.set(config));
         info!("moteur de lecture initialisé par le hub WebSocket");
         Ok(engine)
     }

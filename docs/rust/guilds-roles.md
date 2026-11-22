@@ -262,6 +262,7 @@ Toutes les routes authentifiées acceptent uniquement `Authorization: Bearer <to
 | `DELETE` | `/overlay/devices/ingest/{clientId}` | tout membre (son propre client d'ingestion) |
 | `POST` | `/overlay/leave` | tout overlay authentifié |
 | `GET` | `/overlay/queue` | `ViewQueue` (tous les rôles) |
+| `POST` | `/overlay/queue/reorder` | `ModerateQueue` (admin) |
 | `DELETE` | `/overlay/queue/{jobId}` | `ModerateQueue` (admin) |
 | `DELETE` | `/overlay/queue` | `ModerateQueue` (admin) |
 | `GET` | `/overlay/media-board/items` | `ViewBoard` (invité selon `guests_can_view_board`) |
@@ -296,6 +297,7 @@ Toutes les routes authentifiées acceptent uniquement `Authorization: Bearer <to
 | `DELETE /overlay/devices/ingest/{clientId}` | aucun | `{found:true, revoked}` | `404 device_not_found`, `500`, `503` |
 | `POST /overlay/leave` | aucun | `{left:true}` | `409 last_admin`, `404 member_not_found` |
 | `GET /overlay/queue` | aucun | `{playing, pending, serverTime}` | aucun (les trois rôles ont `ViewQueue`) |
+| `POST /overlay/queue/reorder` | `{"jobIds":["…"]}` : la liste **complète** des `PENDING` dans le nouvel ordre | `{reordered:true, count:n}` | `400 invalid_payload`, `400 invalid_job_id`, `400 duplicate_job_id`, `403 forbidden`, `409 stale_queue` |
 | `DELETE /overlay/queue/{jobId}` | aucun | `{removed:true ou false}` | `403 forbidden` (non-admin) |
 | `DELETE /overlay/queue` | aucun | `{removedCount:n}` | `403 forbidden` (non-admin) |
 | `GET /overlay/media-board/items?q=&limit=&offset=` | aucun | `{total,limit,offset,items}` | `403 forbidden` (`guildId` différent ou board masqué aux invités) |
@@ -323,7 +325,7 @@ Toutes les routes authentifiées acceptent uniquement `Authorization: Bearer <to
 
 `POST /overlay/profile/discord-link` consomme le code, lie le compte et remet le profil à suivre Discord avec le pseudo et l'avatar que porte le code, puis répond `{linked, promoted, member}`. Un code sans nom d'auteur remet seulement le profil à suivre Discord, lu à la prochaine connexion. `POST /overlay/leave` sans membre révoque seulement l'overlay courant et ferme sa session avec `4402` (`{left:true}`). Avec un membre, il applique la règle du dernier admin, marque `removed_at`, révoque les overlays actifs du membre et ferme leurs sessions WebSocket avec `4402` (`close_code::REVOKED`).
 
-`GET /overlay/queue` lit au plus 200 jobs (`QUEUE_LIMIT`) et trie `PLAYING` d'abord, puis `submission_date ASC`, `id ASC` ; `playing` est le premier job en lecture ou `null`, `pending` contient les autres, `serverTime` est une date ISO 8601 UTC en millisecondes. `DELETE /overlay/queue/{jobId}` passe un job `PENDING` de la guilde à `FAILED` avec `finished_at` ; un identifiant invalide, un job d'une autre guilde ou un job `PLAYING` renvoie `{removed:false}`. `DELETE /overlay/queue` passe tous les `PENDING` à `FAILED` et renvoie le nombre modifié. Le job en cours n'est pas retiré. `GET /overlay/queue/history?limit=` renvoie `{count, items}` avec les jobs `DONE` ou `FAILED` de la guilde, du plus récent au plus ancien (`finishedAt`), bornés à `1..=100` (30 par défaut).
+`GET /overlay/queue` lit au plus 200 jobs (`QUEUE_LIMIT`) et trie `PLAYING` d'abord, puis `queue_position ASC`, `submission_date ASC`, `id ASC` ; `playing` est le premier job en lecture ou `null`, `pending` contient les autres, `serverTime` est une date ISO 8601 UTC en millisecondes. `POST /overlay/queue/reorder` reçoit la liste complète des `PENDING` dans le nouvel ordre (`{"jobIds":[…]}`), vérifie qu'elle correspond exactement à la file lue (sinon `409 stale_queue` — un autre overlay a retiré ou réordonné un job), puis réécrit `queue_position` dans une transaction et répond `{reordered:true, count:n}` ; un identifiant inconnu de la guilde ou un doublon est refusé (`400 invalid_job_id`/`duplicate_job_id`). `DELETE /overlay/queue/{jobId}` passe un job `PENDING` de la guilde à `FAILED` avec `finished_at` ; un identifiant invalide, un job d'une autre guilde ou un job `PLAYING` renvoie `{removed:false}`. `DELETE /overlay/queue` passe tous les `PENDING` à `FAILED` et renvoie le nombre modifié. Le job en cours n'est pas retiré. `GET /overlay/queue/history?limit=` renvoie `{count, items}` avec les jobs `DONE` ou `FAILED` de la guilde, du plus récent au plus ancien (`finishedAt`), bornés à `1..=100` (30 par défaut).
 
 Chaque job de la file et de l'historique expose `title`, `sourceTitle`, `media` et `origin`. `title` vient de l'item de board quand le média y est épinglé, sinon `null` ; `sourceTitle` est le titre lu à l'ingestion (yt-dlp, YouTube, tweet) et `media` reprend la forme du board — `id`, `kind`, `mime`, `durationSec`, `width`, `height`, `isVertical`, `sizeBytes`, `sourceUrl` — ou `null` pour un job texte. `origin` vaut `board` (média épinglé), `once` (média joué une fois ou envoyé par un client ingest sans item de board) ou `direct` (texte seul) : `mediaAssetId` seul ne distingue pas un média du board d'un média hors board.
 
@@ -494,7 +496,7 @@ les commandes de ce serveur, désormais destinées à la guilde indépendante.
 ## Limites connues
 
 - Aucun message WebSocket ne transporte la file d'attente : l'interface interroge `GET /overlay/queue`.
-- La file d'attente n'a pas de réordonnancement : les routes se limitent à la lecture et à la suppression.
+- La file se réordonne par `POST /overlay/queue/reorder` (glisser-déposer dans l'overlay et la console admin) ; les autres routes se limitent à la lecture et à la suppression.
 - Un job retiré de la file passe à l'état `FAILED` ; la route ne retire pas le job `PLAYING`.
 - Un changement de rôle ferme les sessions WebSocket du membre avec le code `1001` pour qu'elles se reconnectent et reprennent leur mode à jour.
 - Les raccourcis clavier ne valent que pour la guilde active : ils sont lus dans `config.media_bindings`, miroir de cette guilde.

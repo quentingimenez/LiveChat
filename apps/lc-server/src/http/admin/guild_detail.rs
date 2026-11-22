@@ -360,6 +360,30 @@ pub(super) async fn remove_queue_job(
     to_admin_response(overlay_queue::remove_job_payload(&state, &guild_id, &job_id_raw).await)
 }
 
+/// Handler `POST /admin/api/guilds/{id}/queue/reorder`.
+pub(super) async fn reorder_queue(
+    State(state): State<AppState>,
+    _access: AdminAccess,
+    Path(raw_guild_id): Path<String>,
+    payload: Result<Json<Value>, JsonRejection>,
+) -> Result<Response, AdminError> {
+    let guild_id = parse_guild_id(&raw_guild_id)?;
+    let Ok(Json(body)) = payload else {
+        return Err(AdminError::bad_request("invalid_payload"));
+    };
+    let Some(ids) = body.get("jobIds").and_then(Value::as_array) else {
+        return Err(AdminError::bad_request("invalid_payload"));
+    };
+    let mut job_ids = Vec::with_capacity(ids.len());
+    for id in ids {
+        let Some(id) = id.as_str() else {
+            return Err(AdminError::bad_request("invalid_payload"));
+        };
+        job_ids.push(id.to_owned());
+    }
+    to_admin_response(overlay_queue::reorder_queue_payload(&state, &guild_id, &job_ids).await)
+}
+
 /// Handler `PATCH /admin/api/guilds/{id}/media-board/items/{itemId}`.
 ///
 /// A body carrying an edit `recipe` (or `replace`) is handed to the overlay
@@ -424,6 +448,10 @@ pub(super) fn routes() -> Router<AppState> {
             post(device_code),
         )
         .route("/admin/api/guilds/{guild_id}/queue", delete(clear_queue))
+        .route(
+            "/admin/api/guilds/{guild_id}/queue/reorder",
+            post(reorder_queue),
+        )
         .route(
             "/admin/api/guilds/{guild_id}/queue/{job_id}",
             delete(remove_queue_job),

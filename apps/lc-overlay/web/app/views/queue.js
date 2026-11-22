@@ -8,6 +8,7 @@ import { formatDuration, relativeTime } from '../core/format.js';
 import { invoke } from '../core/ipc.js';
 import { jobMeta, jobOriginLabel, jobOriginTitle, jobTitle } from '../core/job-format.js';
 import { queueClock } from '../core/queue-clock.js';
+import { moveInQueue, moveToQueue, queueJobIds } from '../core/queue-order.js';
 import { can, describeError, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import { confirmDialog } from '../core/ui.js';
@@ -92,12 +93,17 @@ function openPendingMenu(event, job) {
     openContextMenu(event, []);
     return;
   }
+  const index = state.queue.pending.findIndex((entry) => entry.id === job.id);
+  const last = state.queue.pending.length - 1;
   openContextMenu(event, [
     { heading: jobTitle(job) },
+    index > 0 ? { label: 'Monter', icon: 'up', onSelect: () => moveJob(job, -1) } : null,
+    index >= 0 && index < last ? { label: 'Descendre', icon: 'down', onSelect: () => moveJob(job, 1) } : null,
+    'separator',
     { label: 'Retirer', icon: 'close', onSelect: () => removeJob(job) },
     'separator',
     { label: 'Vider…', icon: 'remove', danger: true, onSelect: () => clearQueue() },
-  ]);
+  ].filter(Boolean));
 }
 
 // The on-air bar is reused (only its children are replaced): bind its menu once.
@@ -107,6 +113,12 @@ let onAirMenuBound = false;
 // user opened it (and for which guild) so a refresh does not close it.
 let historyOpenGuildId = null;
 let historyOpen = false;
+
+// Drag-and-drop of a pending row: the source id and the row currently under
+// the pointer. Classes are toggled in place so a re-render never cancels the
+// native drag; the queue is only re-rendered once the drop is accepted.
+let draggedQueueJobId = null;
+let overQueueJobId = null;
 
 // One-second tick: update only the clock and the progress bar. A full
 // `renderView()` here would close an open history and drop keyboard focus.
@@ -157,6 +169,45 @@ function retryQueue() {
   state.queueError = null;
   renderView();
   loadQueue();
+}
+
+function clearQueueDropMarkers() {
+  for (const element of document.querySelectorAll('.line.is-queue.is-drop-target')) {
+    element.classList.remove('is-drop-target');
+  }
+  for (const element of document.querySelectorAll('.line.is-queue.is-dragging')) {
+    element.classList.remove('is-dragging');
+  }
+  overQueueJobId = null;
+}
+
+async function movePendingTo(fromId, targetId) {
+  const before = state.queue.pending.slice();
+  const after = moveToQueue(before, fromId, targetId);
+  if (after.every((entry, index) => entry.id === before[index].id)) {
+    return;
+  }
+  const jobIds = queueJobIds(after);
+  state.queue.pending = after;
+  paintQueue();
+  await performAction(null, `queue-reorder:${fromId}:${targetId}`, () => api('POST', '/overlay/queue/reorder', { jobIds }), {
+    rollback: () => {
+      state.queue.pending = before;
+      paintQueue();
+    },
+    onError: () => loadQueue(),
+    onSuccess: () => loadQueue(),
+  });
+}
+
+async function dropPendingOn(target) {
+  const fromId = draggedQueueJobId;
+  draggedQueueJobId = null;
+  clearQueueDropMarkers();
+  if (!fromId || fromId === target.id) {
+    return;
+  }
+  await movePendingTo(fromId, target.id);
 }
 
 export function renderQueue() {
@@ -213,20 +264,93 @@ export function renderQueue() {
         pending.map((job, index) =>
           h(
             'div',
-            { class: 'line is-queue', onContextMenu: (event) => openPendingMenu(event, job) },
-            h('span', { class: 'meta' }, index + 1),
+            {
+              class: 'line is-queue',
+              draggable: can('moderateQueue'),
+              onContextMenu: (event) => openPendingMenu(event, job),
+              onDragStart: (event) => {
+                if (!can('moderateQueue') || !event.dataTransfer) {
+                  return;
+                }
+                draggedQueueJobId = job.id;
+                // Fond appliqué tout de suite pour que l'image glissée soit opaque.
+                const line = event.currentTarget;
+                line.classList.add('is-dragging');
+                void line.offsetWidth;
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', job.id);
+                event.dataTransfer.setDragImage(line, 16, 16);
+              },
+              onDragEnd: () => {
+                draggedQueueJobId = null;
+                clearQueueDropMarkers();
+              },
+              onDragOver: (event) => {
+                if (!draggedQueueJobId || draggedQueueJobId === job.id) {
+                  return;
+                }
+                event.preventDefault();
+                if (event.dataTransfer) {
+                  event.dataTransfer.dropEffect = 'move';
+                }
+                if (overQueueJobId !== job.id) {
+                  for (const element of document.querySelectorAll('.line.is-queue.is-drop-target')) {
+                    element.classList.remove('is-drop-target');
+                  }
+                  event.currentTarget.classList.add('is-drop-target');
+                  overQueueJobId = job.id;
+                }
+              },
+              onDragLeave: (event) => {
+                if (overQueueJobId === job.id && !event.currentTarget.contains(event.relatedTarget)) {
+                  event.currentTarget.classList.remove('is-drop-target');
+                  overQueueJobId = null;
+                }
+              },
+              onDrop: (event) => {
+                event.preventDefault();
+                void dropPendingOn(job);
+              },
+            },
+            h(
+              'span',
+              { class: 'queue-grip-wrap' },
+              can('moderateQueue')
+                ? h(
+                    'button',
+                    {
+                      class: 'queue-grip',
+                      type: 'button',
+                      title: 'Glisser pour réordonner',
+                      'aria-label': `Réordonner ${jobTitle(job)}`,
+                      onKeyDown: (event) => {
+                        if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+                          event.preventDefault();
+                          void moveJob(job, event.key === 'ArrowUp' ? -1 : 1, event.currentTarget);
+                        }
+                      },
+                    },
+                    icon('menu'),
+                  )
+                : null,
+              h('span', { class: 'meta' }, index + 1),
+            ),
             jobWhat(job, job.authorName),
             h('span', { class: 'meta' }, formatDuration(job.durationSec) || ''),
             can('moderateQueue')
               ? h(
-                  'button',
-                  {
-                    class: 'btn is-quiet icon-btn',
-                    'aria-label': `Retirer ${jobTitle(job)} de la file`,
-                    title: 'Retirer',
-                    onClick: (event) => removeJob(job, event.currentTarget),
-                  },
-                  icon('close'),
+                  'span',
+                  { class: 'queue-row-actions' },
+                  h(
+                    'button',
+                    {
+                      class: 'btn is-quiet icon-btn',
+                      'aria-label': `Retirer ${jobTitle(job)} de la file`,
+                      title: 'Retirer',
+                      onClick: (event) => removeJob(job, event.currentTarget),
+                    },
+                    icon('close'),
+                  ),
                 )
               : h('span'),
           ),
@@ -331,6 +455,29 @@ function paintQueue() {
   renderHeader();
   renderOnAir();
   renderView();
+}
+
+// Moves a pending media one step and sends the whole order: the server refuses
+// a list that no longer matches its queue (another device reordered, removed or
+// started a job meanwhile), so the optimistic move is rolled back and the queue
+// is reloaded from the server.
+export async function moveJob(job, delta, control) {
+  const before = state.queue.pending.slice();
+  const after = moveInQueue(before, job.id, delta);
+  if (after.every((entry, index) => entry.id === before[index].id)) {
+    return;
+  }
+  const jobIds = queueJobIds(after);
+  state.queue.pending = after;
+  paintQueue();
+  await performAction(control, `queue-move:${job.id}:${delta}`, () => api('POST', '/overlay/queue/reorder', { jobIds }), {
+    rollback: () => {
+      state.queue.pending = before;
+      paintQueue();
+    },
+    onError: () => loadQueue(),
+    onSuccess: () => loadQueue(),
+  });
 }
 
 export async function removeJob(job, control) {

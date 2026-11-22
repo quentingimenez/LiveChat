@@ -371,6 +371,64 @@ async fn admin_queue_remove_and_clear() {
     assert_eq!(body["removedCount"], 1);
 }
 
+#[tokio::test]
+async fn admin_queue_reorders_pending_jobs() {
+    let harness = Harness::new().await;
+    let db = harness.db();
+    let guild_id = guild_id();
+    let first = playback_job(&guild_id, JobStatus::Pending);
+    let second = playback_job(&guild_id, JobStatus::Pending);
+    db.playback_jobs().create(&first).await.unwrap();
+    db.playback_jobs().create(&second).await.unwrap();
+
+    let queue_ids = |body: &Value| -> Vec<String> {
+        body["queue"]["pending"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|job| job["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let (status, body) = harness
+        .call(Method::GET, &format!("/admin/api/guilds/{GUILD}"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        queue_ids(&body),
+        vec![first.id.to_canonical(), second.id.to_canonical()]
+    );
+
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            &format!("/admin/api/guilds/{GUILD}/queue/reorder"),
+            &json!({"jobIds": [second.id.to_canonical(), first.id.to_canonical()]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["reordered"], true);
+
+    let (_, body) = harness
+        .call(Method::GET, &format!("/admin/api/guilds/{GUILD}"))
+        .await;
+    assert_eq!(
+        queue_ids(&body),
+        vec![second.id.to_canonical(), first.id.to_canonical()]
+    );
+
+    // Ordre périmé : la console recharge la file au lieu d'écrire un ordre
+    // partiel.
+    let (status, body) = harness
+        .call_json(
+            Method::POST,
+            &format!("/admin/api/guilds/{GUILD}/queue/reorder"),
+            &json!({"jobIds": [first.id.to_canonical()]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "stale_queue");
+}
+
 // ---------------------------------------------------------------------------
 // Transposed media-board item routes
 // ---------------------------------------------------------------------------
@@ -653,6 +711,11 @@ fn mutations() -> Vec<(Method, String, Value)> {
             Method::DELETE,
             format!("/admin/api/guilds/{GUILD}/queue/{job}"),
             Value::Null,
+        ),
+        (
+            Method::POST,
+            format!("/admin/api/guilds/{GUILD}/queue/reorder"),
+            json!({"jobIds": []}),
         ),
         (
             Method::PATCH,

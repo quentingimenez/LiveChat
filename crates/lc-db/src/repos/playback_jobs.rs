@@ -86,13 +86,26 @@ impl PlaybackJobsRepository {
     }
 
     /// Insère un job dans la file.
+    ///
+    /// Le job reçoit la position `MAX(queue_position) + 1` de sa guilde : il
+    /// passe derrière les jobs déjà en file, y compris après un
+    /// réordonnancement. Deux créations concurrentes peuvent obtenir la même
+    /// position ; l'ordre retombe alors sur `submission_date` puis `id`.
     pub async fn create(&self, job: &PlaybackJob) -> DbResult<()> {
+        let next_position = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(MAX(queue_position), 0) + 1 FROM playback_jobs \
+             WHERE guild_id = ?",
+        )
+        .bind(job.guild_id.as_str())
+        .fetch_one(&self.pool)
+        .await?;
         sqlx::query(
             "INSERT INTO playback_jobs ( \
                 id, guild_id, media_asset_id, text, show_text, author_name, author_image, \
                 duration_sec, source, status, resume_offset_sec, last_playback_state_at, \
-                submission_date, execution_date, scheduled_at, started_at, finished_at \
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                submission_date, execution_date, scheduled_at, started_at, finished_at, \
+                queue_position \
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(job.id.to_canonical())
         .bind(job.guild_id.as_str())
@@ -111,6 +124,7 @@ impl PlaybackJobsRepository {
         .bind(to_ms(job.scheduled_at))
         .bind(to_opt_ms(job.started_at))
         .bind(to_opt_ms(job.finished_at))
+        .bind(next_position)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -133,7 +147,8 @@ impl PlaybackJobsRepository {
     /// - aucun autre job `PLAYING` pour la même guilde (invariant « au plus un
     ///   job en lecture par guilde ») ;
     /// - `guilds.busy_until` absent ou `<= now` (verrou anti-collision legacy) ;
-    /// - ordre FIFO `submission_date ASC`, `id ASC`.
+    /// - ordre de la file `queue_position ASC`, puis `submission_date ASC`,
+    ///   `id ASC` (départage).
     ///
     /// Retourne `None` si aucun job n'est éligible. Sûr en concurrence : la
     /// sélection et la mise à jour `PENDING → PLAYING` sont la même écriture
@@ -169,7 +184,7 @@ impl PlaybackJobsRepository {
                                  AND g.busy_until IS NOT NULL \
                                  AND g.busy_until > ? \
                            ) \
-                         ORDER BY j.submission_date ASC, j.id ASC \
+                         ORDER BY j.queue_position ASC, j.submission_date ASC, j.id ASC \
                          LIMIT 1 \
                      ) \
                      AND status = 'PENDING' \
@@ -247,12 +262,12 @@ impl PlaybackJobsRepository {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Liste les jobs en attente d'une guilde, dans l'ordre FIFO
-    /// (`submission_date ASC`, `id ASC`).
+    /// Liste les jobs en attente d'une guilde, dans l'ordre de la file
+    /// (`queue_position ASC`, puis `submission_date ASC`, `id ASC`).
     pub async fn list_pending_by_guild(&self, guild_id: &GuildId) -> DbResult<Vec<PlaybackJob>> {
         let rows = sqlx::query_as::<_, PlaybackJobRow>(
             "SELECT * FROM playback_jobs WHERE guild_id = ? AND status = 'PENDING' \
-             ORDER BY submission_date ASC, id ASC",
+             ORDER BY queue_position ASC, submission_date ASC, id ASC",
         )
         .bind(guild_id.as_str())
         .fetch_all(&self.pool)

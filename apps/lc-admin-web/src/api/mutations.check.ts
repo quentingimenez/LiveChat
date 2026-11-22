@@ -23,6 +23,7 @@ import type {
   PurgeGuildResponse,
   RemoveJobResponse,
   RemoveMemberResponse,
+  ReorderQueueResponse,
   UnbanResponse,
   RevokeClientResponse,
   RevokeClientsResponse,
@@ -55,6 +56,7 @@ import mutationRemoveMember from './fixtures/mutation-remove-member.json';
 import mutationBanMember from './fixtures/mutation-ban-member.json';
 import mutationUnban from './fixtures/mutation-unban.json';
 import mutationRemoveQueueJob from './fixtures/mutation-remove-queue-job.json';
+import mutationReorderQueue from './fixtures/mutation-reorder-queue.json';
 import mutationRevokeGuildClients from './fixtures/mutation-revoke-guild-clients.json';
 import mutationRevokeIngestClient from './fixtures/mutation-revoke-ingest-client.json';
 import mutationRevokeInvite from './fixtures/mutation-revoke-invite.json';
@@ -97,6 +99,7 @@ export const recordedMutationResponses = {
   banMember: mutationBanMember satisfies Widen<BanMemberResponse>,
   unbanMember: mutationUnban satisfies Widen<UnbanResponse>,
   removeQueueJob: mutationRemoveQueueJob satisfies Widen<RemoveJobResponse>,
+  reorderQueue: mutationReorderQueue satisfies Widen<ReorderQueueResponse>,
   revokeGuildClients: mutationRevokeGuildClients satisfies Widen<RevokeClientsResponse>,
   revokeIngestClient: mutationRevokeIngestClient satisfies Widen<RevokeClientResponse>,
   revokeInvite: mutationRevokeInvite satisfies Widen<RevokeInviteResponse>,

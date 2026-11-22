@@ -1316,36 +1316,23 @@ async fn a_last_admin_ban_is_kept_when_the_exclusion_cannot_apply() {
     assert_eq!(body["error"], "unauthorized");
 }
 
-/// A crash between the ban and the exclusion can leave a removed member with an
-/// active client. The HTTP guard and the WebSocket handshake must both resolve
-/// the member even when it is removed, and refuse the client.
+/// A crash or a pairing race can leave a removed member with an active client,
+/// even when no ban covers it. The HTTP guard and the WebSocket handshake must
+/// both resolve the member even when it is removed, and refuse the client. The
+/// client deliberately carries no banned device: only the removed-member check
+/// can refuse it, so replacing `get_any_for_overlay_client` with an active-only
+/// lookup makes this test fail.
 #[tokio::test]
-async fn a_removed_member_with_an_active_client_and_ban_is_refused() {
+async fn a_removed_member_with_an_active_client_is_refused_without_a_ban() {
     let harness = Harness::new().await;
     let code = harness.server_invite(GuildRole::Member).await;
     let (status, lea) = join_with_device(&harness, &code, "Léa", "lea-orphan-guid").await;
     assert_eq!(status, StatusCode::OK, "{lea}");
     let lea_id: GuildMemberId = lea["memberId"].as_str().unwrap().parse().unwrap();
     let lea_token = token(&lea);
-    let fingerprint = device_hash(&harness.guild_id, "lea-orphan-guid");
 
-    let ban = GuildBan {
-        id: GuildBanId::new_v4(),
-        guild_id: harness.guild_id.clone(),
-        member_id: Some(lea_id),
-        discord_user_id: None,
-        display_name: "Léa".to_owned(),
-        avatar: None,
-        banned_by: None,
-        created_at: fixed_now(),
-    };
-    harness
-        .db
-        .guild_bans()
-        .create_with_devices(&ban, std::slice::from_ref(&fingerprint), fixed_now())
-        .await
-        .unwrap();
-    // Crash window: the member row is gone, its client was never revoked.
+    // Crash/race window: the member row is gone, its client was never revoked,
+    // and no ban exists to catch it.
     harness
         .db
         .guild_members()
@@ -1480,4 +1467,95 @@ async fn a_banned_device_is_refused_for_an_unbanned_member() {
         crate::ws::authenticate(&harness.db, &bob_token).await,
         Err(crate::ws::AuthError::Revoked)
     ));
+}
+
+/// `UNIQUE (guild_id, device_hash)` gives a shared device to the first ban that
+/// records it. This test pins the documented limitation so a future schema
+/// change (allowing the same device under several bans) is deliberate: lifting
+/// the first ban releases the device even though another ban remains.
+#[tokio::test]
+async fn a_shared_device_stays_attached_to_the_first_ban() {
+    let harness = Harness::new().await;
+    let device = "shared-device-hash";
+    let first = GuildBan {
+        id: GuildBanId::new_v4(),
+        guild_id: harness.guild_id.clone(),
+        member_id: Some(GuildMemberId::new_v4()),
+        discord_user_id: None,
+        display_name: "Premier".to_owned(),
+        avatar: None,
+        banned_by: None,
+        created_at: fixed_now(),
+    };
+    let second = GuildBan {
+        id: GuildBanId::new_v4(),
+        guild_id: harness.guild_id.clone(),
+        member_id: Some(GuildMemberId::new_v4()),
+        discord_user_id: None,
+        display_name: "Second".to_owned(),
+        avatar: None,
+        banned_by: None,
+        created_at: fixed_now(),
+    };
+    harness.db.guild_bans().create(&first).await.unwrap();
+    harness.db.guild_bans().create(&second).await.unwrap();
+    harness
+        .db
+        .guild_ban_devices()
+        .record(
+            first.id,
+            &harness.guild_id,
+            &[device.to_owned()],
+            fixed_now(),
+        )
+        .await
+        .unwrap();
+    let attached = harness
+        .db
+        .guild_ban_devices()
+        .record(
+            second.id,
+            &harness.guild_id,
+            &[device.to_owned()],
+            fixed_now(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(attached, 0, "le second ban ne vole pas l'empreinte");
+    assert_eq!(
+        harness
+            .db
+            .guild_ban_devices()
+            .count_by_ban(second.id)
+            .await
+            .unwrap(),
+        0
+    );
+
+    harness
+        .db
+        .guild_bans()
+        .delete(&harness.guild_id, first.id)
+        .await
+        .unwrap();
+    assert!(
+        !harness
+            .db
+            .guild_ban_devices()
+            .is_device_banned(&harness.guild_id, device)
+            .await
+            .unwrap(),
+        "limite assumée : le second ban ne reprend pas l'empreinte"
+    );
+    assert!(
+        harness
+            .db
+            .guild_bans()
+            .list_by_guild(&harness.guild_id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|ban| ban.id == second.id),
+        "le second ban reste actif"
+    );
 }

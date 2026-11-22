@@ -569,17 +569,21 @@ pub(crate) async fn reconcile_member_bans(state: &AppState) {
 /// Vrai si ce client relève d'un membre banni ou porte un appareil banni.
 ///
 /// Fail-closed, et partagé par l'authentification HTTP et WebSocket : un crash
-/// peut laisser un client actif derrière un membre déjà retiré
-/// (`remove_member` révoque désormais les clients avant la ligne membre, mais
+/// ou une course d'appairage peut laisser un client actif derrière un membre
+/// déjà retiré (`remove_member` révoque les clients avant la ligne membre, mais
 /// les états hérités existent). La ligne membre est donc relue **même
-/// retirée** pour retrouver `member_id` et le compte Discord lié, puis
-/// l'empreinte matérielle du client est confrontée à `guild_ban_devices`.
+/// retirée** ; un membre retiré rend le client invalide même sans ban, et son
+/// `member_id`/compte Discord lié est confronté à `guild_bans`, puis l'empreinte
+/// matérielle du client à `guild_ban_devices`.
 pub(crate) async fn client_banned(db: &lc_db::Db, client: &OverlayClient) -> lc_db::DbResult<bool> {
     let member = db
         .guild_members()
         .get_any_for_overlay_client(client.id)
         .await?;
     if let Some(member) = member.as_ref() {
+        if !member.is_active() {
+            return Ok(true);
+        }
         if db
             .guild_bans()
             .is_member_banned(

@@ -960,6 +960,10 @@ impl AuthError {
 /// `lc-db`. En cas d'échec, un SELECT ciblé distingue « inconnu » de
 /// « révoqué » pour émettre respectivement `4401 invalid_token` et
 /// `4402 revoked` (cf. `docs/rust/protocol-v2.md`).
+///
+/// Un client banni est refusé comme révoqué (`4402`) : la garde partagée avec
+/// HTTP relit le membre même retiré et vérifie l'empreinte matérielle, si bien
+/// qu'un crash entre le ban et l'exclusion ne laisse pas de socket utilisable.
 pub(crate) async fn authenticate(db: &Db, token: &str) -> Result<OverlayClient, AuthError> {
     let token = token.trim();
     if token.is_empty() {
@@ -967,7 +971,17 @@ pub(crate) async fn authenticate(db: &Db, token: &str) -> Result<OverlayClient, 
     }
     let token_hash = hash_token(token);
     match db.overlay_clients().get_by_token_hash(&token_hash).await {
-        Ok(Some(client)) => Ok(client),
+        Ok(Some(client)) => match crate::http::overlay::client_banned(db, &client).await {
+            Ok(true) => {
+                warn!(
+                    client_id = %client.id.to_canonical(),
+                    "client banni : authentification WebSocket refusée"
+                );
+                Err(AuthError::Revoked)
+            }
+            Ok(false) => Ok(client),
+            Err(error) => Err(AuthError::Internal(error.to_string())),
+        },
         Ok(None) => {
             let row: Option<(Option<i64>,)> =
                 sqlx::query_as("SELECT revoked_at FROM overlay_clients WHERE token_hash = ?")

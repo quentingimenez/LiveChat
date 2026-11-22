@@ -51,6 +51,8 @@ mod session;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub(crate) use hub::{authenticate, AuthError};
 pub use hub::{Hub, HubEngine, HubError, HubSink};
 
 use std::sync::Arc;

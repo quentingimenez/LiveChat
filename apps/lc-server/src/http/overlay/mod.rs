@@ -565,6 +565,44 @@ pub(crate) async fn reconcile_member_bans(state: &AppState) {
     }
 }
 
+/// Vrai si ce client relève d'un membre banni ou porte un appareil banni.
+///
+/// Fail-closed, et partagé par l'authentification HTTP et WebSocket : un crash
+/// peut laisser un client actif derrière un membre déjà retiré
+/// (`remove_member` révoque désormais les clients avant la ligne membre, mais
+/// les états hérités existent). La ligne membre est donc relue **même
+/// retirée** pour retrouver `member_id` et le compte Discord lié, puis
+/// l'empreinte matérielle du client est confrontée à `guild_ban_devices`.
+pub(crate) async fn client_banned(db: &lc_db::Db, client: &OverlayClient) -> lc_db::DbResult<bool> {
+    let member = db
+        .guild_members()
+        .get_any_for_overlay_client(client.id)
+        .await?;
+    if let Some(member) = member.as_ref() {
+        if db
+            .guild_bans()
+            .is_member_banned(
+                &client.guild_id,
+                member.id,
+                member.discord_user_id.as_deref(),
+            )
+            .await?
+        {
+            return Ok(true);
+        }
+    }
+    if let Some(device_hash) = client.device_hash.as_deref() {
+        if db
+            .guild_ban_devices()
+            .is_device_banned(&client.guild_id, device_hash)
+            .await?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Conflit d'unicité quel que soit le chemin de conversion de l'erreur.
 ///
 /// `lc-db` convertit parfois `SQLITE_CONSTRAINT` en `DomainError::Conflict`

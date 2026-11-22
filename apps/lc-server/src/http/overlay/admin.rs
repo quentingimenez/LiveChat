@@ -478,6 +478,27 @@ pub(crate) async fn ban_member_payload(
             return Err(error(StatusCode::NOT_FOUND, "member_not_found"));
         }
     }
+    // Relit les empreintes après l'exclusion : un appairage concurrent peut
+    // avoir créé un client entre la lecture initiale et la révocation. Le
+    // `INSERT OR IGNORE` rend l'opération idempotente ; une empreinte déjà
+    // rattachée à un autre ban de la guilde n'est pas déplacée (unicité
+    // `(guild_id, device_hash)`), elle reste bannie.
+    let late_hashes = match db.overlay_clients().list_by_member(member.id).await {
+        Ok(clients) => clients
+            .into_iter()
+            .filter_map(|client| client.device_hash)
+            .collect::<Vec<_>>(),
+        Err(db_error) => return Err(db_failure("overlay_admin.late_ban_devices", &db_error)),
+    };
+    if !late_hashes.is_empty() {
+        if let Err(db_error) = db
+            .guild_ban_devices()
+            .record(stored_ban.id, &member.guild_id, &late_hashes, at)
+            .await
+        {
+            return Err(db_failure("overlay_admin.record_ban_devices", &db_error));
+        }
+    }
     tracing::info!(
         guild_id = %member.guild_id,
         member_id = %member.id,

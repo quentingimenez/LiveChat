@@ -29,10 +29,12 @@
 //! de l'état du routeur parent (le sous-routeur `/overlay` est complété par
 //! `crate::app::router`, qui seul détient l'instance `AppState`).
 //!
-//! Un membre banni est refusé (`401`) même si sa ligne `guild_members` est
-//! encore active : un crash entre le commit du ban et l'exclusion ne doit pas
-//! laisser une session utilisable. Le ban est la vérité, la ligne de membre ne
-//! peut que retarder sa suppression.
+//! Un client banni est refusé (`401`) même si sa ligne `guild_members` est
+//! encore active, et même si elle a déjà été retirée : un crash entre le ban et
+//! l'exclusion ne doit pas laisser une session utilisable. Le garde partagé
+//! (`super::client_banned`) relit le membre propriétaire du client sans filtre
+//! `removed_at`, couvre un ban importé sans `member_id` via le compte Discord
+//! lié, et refuse aussi un client dont l'empreinte matérielle est bannie.
 
 use std::future::Future;
 
@@ -200,29 +202,20 @@ pub(crate) async fn authenticate_token(
         Err(error) => return Err(db_failure("overlay_auth.member_lookup", &error)),
     };
 
-    // Fail-closed ban guard: a crash can leave an active member row with an
-    // active ban. The ban wins over the row, otherwise that member would keep
-    // using their overlay until the next restart.
-    if let Some(member) = member.as_ref() {
-        match db
-            .guild_bans()
-            .is_member_banned(
-                &client.guild_id,
-                member.id,
-                member.discord_user_id.as_deref(),
-            )
-            .await
-        {
-            Ok(true) => {
-                warn!(
-                    member_id = %member.id.to_canonical(),
-                    "membre banni : authentification overlay refusée"
-                );
-                return Ok(None);
-            }
-            Ok(false) => {}
-            Err(error) => return Err(db_failure("overlay_auth.ban_lookup", &error)),
+    // Fail-closed ban guard, shared with the WebSocket handshake: the ban wins
+    // over the member row. `client_banned` also resolves a member whose row was
+    // already removed (crash between the revocation and the exclusion) and
+    // checks the client's device fingerprint.
+    match super::client_banned(db, &client).await {
+        Ok(true) => {
+            warn!(
+                client_id = %client.id.to_canonical(),
+                "client banni : authentification overlay refusée"
+            );
+            return Ok(None);
         }
+        Ok(false) => {}
+        Err(error) => return Err(db_failure("overlay_auth.ban_lookup", &error)),
     }
 
     Ok(Some(AuthedOverlayClient {

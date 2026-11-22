@@ -1315,3 +1315,169 @@ async fn a_last_admin_ban_is_kept_when_the_exclusion_cannot_apply() {
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
     assert_eq!(body["error"], "unauthorized");
 }
+
+/// A crash between the ban and the exclusion can leave a removed member with an
+/// active client. The HTTP guard and the WebSocket handshake must both resolve
+/// the member even when it is removed, and refuse the client.
+#[tokio::test]
+async fn a_removed_member_with_an_active_client_and_ban_is_refused() {
+    let harness = Harness::new().await;
+    let code = harness.server_invite(GuildRole::Member).await;
+    let (status, lea) = join_with_device(&harness, &code, "Léa", "lea-orphan-guid").await;
+    assert_eq!(status, StatusCode::OK, "{lea}");
+    let lea_id: GuildMemberId = lea["memberId"].as_str().unwrap().parse().unwrap();
+    let lea_token = token(&lea);
+    let fingerprint = device_hash(&harness.guild_id, "lea-orphan-guid");
+
+    let ban = GuildBan {
+        id: GuildBanId::new_v4(),
+        guild_id: harness.guild_id.clone(),
+        member_id: Some(lea_id),
+        discord_user_id: None,
+        display_name: "Léa".to_owned(),
+        avatar: None,
+        banned_by: None,
+        created_at: fixed_now(),
+    };
+    harness
+        .db
+        .guild_bans()
+        .create_with_devices(&ban, std::slice::from_ref(&fingerprint), fixed_now())
+        .await
+        .unwrap();
+    // Crash window: the member row is gone, its client was never revoked.
+    harness
+        .db
+        .guild_members()
+        .remove(lea_id, fixed_now())
+        .await
+        .unwrap();
+    assert_eq!(
+        harness
+            .db
+            .overlay_clients()
+            .list_active_by_member(lea_id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let (status, body) = harness
+        .call(
+            Method::GET,
+            "/overlay/media-board/items",
+            Some(&lea_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["error"], "unauthorized");
+    assert!(matches!(
+        crate::ws::authenticate(&harness.db, &lea_token).await,
+        Err(crate::ws::AuthError::Revoked)
+    ));
+}
+
+/// An imported Discord ban carries no `member_id`; it must still match the
+/// member's linked account after the member row was removed.
+#[tokio::test]
+async fn an_imported_ban_refuses_a_removed_member_through_the_linked_account() {
+    let harness = Harness::new().await;
+    let code = harness.server_invite(GuildRole::Member).await;
+    let (status, lea) = join_with_device(&harness, &code, "Léa", "lea-imported-guid").await;
+    assert_eq!(status, StatusCode::OK, "{lea}");
+    let lea_id: GuildMemberId = lea["memberId"].as_str().unwrap().parse().unwrap();
+    let lea_token = token(&lea);
+    harness
+        .db
+        .guild_members()
+        .link_discord(lea_id, DISCORD_USER)
+        .await
+        .unwrap();
+
+    let ban = GuildBan {
+        id: GuildBanId::new_v4(),
+        guild_id: harness.guild_id.clone(),
+        member_id: None,
+        discord_user_id: Some(DISCORD_USER.to_owned()),
+        display_name: "Léa".to_owned(),
+        avatar: None,
+        banned_by: None,
+        created_at: fixed_now(),
+    };
+    harness.db.guild_bans().create(&ban).await.unwrap();
+    harness
+        .db
+        .guild_members()
+        .remove(lea_id, fixed_now())
+        .await
+        .unwrap();
+
+    let (status, body) = harness
+        .call(
+            Method::GET,
+            "/overlay/media-board/items",
+            Some(&lea_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["error"], "unauthorized");
+    assert!(matches!(
+        crate::ws::authenticate(&harness.db, &lea_token).await,
+        Err(crate::ws::AuthError::Revoked)
+    ));
+}
+
+/// The device fingerprint is a second guard: an unbanned member whose client
+/// presents a banned device is refused on HTTP and on the WebSocket handshake.
+#[tokio::test]
+async fn a_banned_device_is_refused_for_an_unbanned_member() {
+    let harness = Harness::new().await;
+    let lea_code = harness.server_invite(GuildRole::Member).await;
+    let (status, lea) = join_with_device(&harness, &lea_code, "Léa", "shared-guid").await;
+    assert_eq!(status, StatusCode::OK, "{lea}");
+    let lea_id: GuildMemberId = lea["memberId"].as_str().unwrap().parse().unwrap();
+    let bob_code = harness.server_invite(GuildRole::Member).await;
+    let (status, bob) = join_with_device(&harness, &bob_code, "Bob", "shared-guid").await;
+    assert_eq!(status, StatusCode::OK, "{bob}");
+    let bob_token = token(&bob);
+    assert!(crate::ws::authenticate(&harness.db, &bob_token)
+        .await
+        .is_ok());
+
+    let fingerprint = device_hash(&harness.guild_id, "shared-guid");
+    let ban = GuildBan {
+        id: GuildBanId::new_v4(),
+        guild_id: harness.guild_id.clone(),
+        member_id: Some(lea_id),
+        discord_user_id: None,
+        display_name: "Léa".to_owned(),
+        avatar: None,
+        banned_by: None,
+        created_at: fixed_now(),
+    };
+    harness
+        .db
+        .guild_bans()
+        .create_with_devices(&ban, std::slice::from_ref(&fingerprint), fixed_now())
+        .await
+        .unwrap();
+
+    // Bob's member is not banned, only the device he presents is.
+    let (status, body) = harness
+        .call(
+            Method::GET,
+            "/overlay/media-board/items",
+            Some(&bob_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["error"], "unauthorized");
+    assert!(matches!(
+        crate::ws::authenticate(&harness.db, &bob_token).await,
+        Err(crate::ws::AuthError::Revoked)
+    ));
+}

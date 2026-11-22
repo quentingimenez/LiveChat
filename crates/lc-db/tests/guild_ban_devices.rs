@@ -294,3 +294,50 @@ async fn bans_of_active_members_are_listed_without_being_deleted() {
         .await
         .unwrap());
 }
+
+/// `UNIQUE (guild_id, device_hash)` keeps a fingerprint attached to the first
+/// ban that recorded it: a later ban for another member cannot steal it, and
+/// the device stays banned.
+#[tokio::test]
+async fn a_device_fingerprint_stays_attached_to_the_first_ban() {
+    let (db, _dir) = common::temp_db().await;
+    let guild = common::guild("111");
+    let now = common::now();
+    let first = ban("111", "Léa");
+    let second = ban("111", "Bob");
+    db.guild_bans().create(&first).await.unwrap();
+    db.guild_bans().create(&second).await.unwrap();
+
+    assert_eq!(
+        db.guild_ban_devices()
+            .record(first.id, &guild, &["hash-a".to_owned()], now)
+            .await
+            .unwrap(),
+        1
+    );
+    // The second ban sees the same fingerprint: the insert is ignored, never an
+    // error, and the device remains banned through the first ban.
+    assert_eq!(
+        db.guild_ban_devices()
+            .record(second.id, &guild, &["hash-a".to_owned()], now)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.guild_ban_devices().count_by_ban(first.id).await.unwrap(),
+        1
+    );
+    assert_eq!(
+        db.guild_ban_devices()
+            .count_by_ban(second.id)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(db
+        .guild_ban_devices()
+        .is_device_banned(&guild, "hash-a")
+        .await
+        .unwrap());
+}

@@ -179,15 +179,25 @@ Le ban et ses empreintes sont écrits dans une même transaction, ouverte en
 `BEGIN IMMEDIATE` : elle relit un ban existant du membre avant d'insérer, donc
 deux coups de ban simultanés — même sur un membre sans compte Discord lié —
 produisent un seul ban, qui reçoit toutes les empreintes. L'exclusion vient
-ensuite ; si elle échoue et que le membre est resté actif, le ban créé est
-annulé avec ses empreintes, tandis qu'un ban préexistant est conservé. Au
-démarrage, `list_bans_of_active_members` relève les bans qu'un crash aurait
+ensuite : elle révoque et ferme les clients overlay **avant** de marquer le
+départ, pour qu'un crash entre les deux écritures ne laisse pas un client actif
+derrière un membre retiré ; si la révocation échoue, le membre reste actif et
+le garde de bannissement continue de s'appliquer. Si l'exclusion échoue et que
+le membre est resté actif, le ban créé est annulé avec ses empreintes, tandis
+qu'un ban préexistant est conservé. Après l'exclusion, le serveur relit les
+empreintes des clients du membre pour rattacher un appairage concurrent
+(insertion idempotente ; l'unicité `(guild_id, device_hash)` laisse une
+empreinte déjà connue sur le premier ban qui l'a enregistrée).
+Au démarrage, `list_bans_of_active_members` relève les bans qu'un crash aurait
 laissés sur un membre encore actif : le serveur **complète l'exclusion**
 (`remove_member`) au lieu de supprimer le ban. Si l'exclusion ne peut pas
 s'appliquer (dernier admin) ou échoue, le ban et ses empreintes sont conservés
-et l'incident est journalisé. L'authentification overlay refuse de toute façon
-un membre banni, même si sa ligne `guild_members` est encore active : le
-bannissement est fail-closed et ne dépend pas du succès de l'exclusion.
+et l'incident est journalisé. L'authentification overlay — HTTP et WebSocket —
+refuse de toute façon un client banni, même si sa ligne `guild_members` est
+encore active ou a déjà été retirée : le garde relit le membre propriétaire du
+client sans filtre `removed_at`, couvre un ban importé sans `member_id` via le
+compte Discord lié, et confronte l'empreinte du client à `guild_ban_devices`.
+Le bannissement est donc fail-closed et ne dépend pas du succès de l'exclusion.
 
 C'est une défense en profondeur, pas une authentification : un client modifié
 peut mentir sur son `deviceId`, un changement de matériel change l'empreinte, et

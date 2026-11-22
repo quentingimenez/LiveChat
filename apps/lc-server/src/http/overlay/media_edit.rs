@@ -38,6 +38,13 @@
 //! 6. `400 invalid_payload` + `message` when the recipe does not fit the media
 //!    (an image is refused: images are edited on the board itself);
 //! 7. `429 too_many_ingestions`.
+//!
+//! ## Body size
+//!
+//! The annotations of a video travel as a base64 PNG, so this route accepts
+//! [`MAX_EDIT_BODY_BYTES`] (8 MiB) instead of the global 1 MiB
+//! ([`crate::app::MAX_REQUEST_BODY_BYTES`]). The overlay itself is limited to
+//! 4 MiB once decoded by [`lc_media::edit`].
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
@@ -60,6 +67,9 @@ use super::{audit as overlay_audit, db, db_failure, error, json_response, now, A
 
 /// Longest title of a board item.
 const TITLE_MAX_CHARS: usize = 240;
+/// Largest body accepted on this route: an annotation overlay is a base64 PNG
+/// of at most 4 MiB once decoded, and base64 adds a third on top of it.
+pub const MAX_EDIT_BODY_BYTES: usize = 8 * 1024 * 1024;
 /// Longest name given to the edited file (it is only displayed).
 const FILENAME_STEM_MAX_CHARS: usize = 120;
 /// Suffix of the default title of an edited copy.
@@ -125,6 +135,7 @@ pub(crate) async fn start_edit(
     };
     // The stored duration is rounded up to a second and nothing is known of
     // the streams yet: the task checks the recipe again on the probed file.
+    // The stored picture size is enough to validate the annotations early.
     let source = EditSource {
         kind: asset.kind,
         duration_sec: asset
@@ -132,6 +143,8 @@ pub(crate) async fn start_edit(
             .filter(|duration| *duration > 0)
             .map_or(UNKNOWN_DURATION_SEC, |duration| duration as f64),
         has_audio: true,
+        width: asset.width.and_then(|width| u32::try_from(width).ok()),
+        height: asset.height.and_then(|height| u32::try_from(height).ok()),
     };
     let plan = match request.recipe.plan(&source) {
         Ok(plan) => plan,

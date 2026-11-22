@@ -2637,6 +2637,7 @@ dependencies = [
 name = "lc-media"
 version = "3.14.0"
 dependencies = [
+ "base64 0.22.1",
  "lc-domain",
  "parley",
  "proptest",

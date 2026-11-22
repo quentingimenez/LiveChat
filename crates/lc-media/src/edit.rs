@@ -6,8 +6,10 @@
 //! the source and returns an [`EditPlan`], the only input of the pure argument
 //! builder [`build_edit_args`]. [`apply_edit`] runs the result.
 //!
-//! Order of the picture operations: crop (on the source frame), rotation, then
-//! the two flips (in the rotated frame).
+//! Order of the picture operations: masks, annotations and colour adjustments
+//! (on the source frame), crop (still on the source frame), rotation, then the
+//! two flips (in the rotated frame). The board draws annotations in the same
+//! order, so the editor preview matches the render.
 //!
 //! ffmpeg's `reverse` keeps every decoded frame of its input in memory, so a
 //! video longer than [`REVERSE_PIECE_SEC`] is reversed piece by piece: each
@@ -19,6 +21,8 @@
 
 use std::path::Path;
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
 use lc_domain::MediaKind;
 use serde::Deserialize;
 
@@ -55,6 +59,24 @@ const MIN_SEGMENT_SEC: f64 = 0.01;
 const GIF_FPS: u32 = 12;
 /// Widest exported GIF, in pixels.
 const GIF_MAX_WIDTH: u32 = 480;
+/// Most masks accepted in one recipe.
+pub const MAX_MASKS: usize = 20;
+/// Smallest mask side, as a fraction of the frame.
+pub const MIN_MASK_FRACTION: f64 = 0.005;
+/// Largest blur radius or pixel block, as a fraction of the frame width.
+pub const MAX_MASK_STRENGTH: f64 = 0.25;
+/// Smallest blur radius or pixel block, in source pixels.
+pub const MIN_MASK_STRENGTH_PX: f64 = 2.0;
+/// Largest annotation overlay accepted, in PNG bytes.
+pub const MAX_OVERLAY_BYTES: usize = 4 * 1024 * 1024;
+/// Largest accepted side of an annotation overlay, in pixels.
+pub const MAX_OVERLAY_SIDE: u32 = 4096;
+/// Largest accepted brightness, contrast or saturation, in percent.
+pub const MAX_ADJUST_PERCENT: f64 = 400.0;
+/// Largest accepted colour-adjustment blur, in board slider units.
+pub const MAX_ADJUST_BLUR: f64 = 50.0;
+/// Side the board's colour-adjustment blur radius is measured against.
+const ADJUST_BLUR_UNIT_SIDE: f64 = 400.0;
 
 /// What an edit produces.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -81,6 +103,106 @@ pub struct CropRect {
     pub width: f64,
     /// Height (0..1).
     pub height: f64,
+}
+
+/// Rectangles hidden on the picture, as fractions of the source frame.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaskRect {
+    /// Left edge (0..1).
+    pub x: f64,
+    /// Top edge (0..1).
+    pub y: f64,
+    /// Width (0..1).
+    pub width: f64,
+    /// Height (0..1).
+    pub height: f64,
+    /// How the area is hidden.
+    #[serde(default)]
+    pub mode: MaskMode,
+    /// Blur radius or pixel block, as a fraction of the frame width.
+    pub strength: f64,
+}
+
+/// How a [`MaskRect`] hides its area.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MaskMode {
+    /// Blocks of the given size.
+    #[default]
+    Pixel,
+    /// Blurred area.
+    Blur,
+}
+
+/// Colour adjustments, as percentages where 100 keeps the colour unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EditAdjust {
+    /// Brightness, in percent.
+    pub brightness: f64,
+    /// Contrast, in percent.
+    pub contrast: f64,
+    /// Saturation, in percent.
+    pub saturate: f64,
+    /// Blur radius, in the board's slider units (0..=10).
+    pub blur: f64,
+    /// Colour preset, applied after the sliders.
+    pub preset: FilterPreset,
+}
+
+impl Default for EditAdjust {
+    fn default() -> Self {
+        Self {
+            brightness: 100.0,
+            contrast: 100.0,
+            saturate: 100.0,
+            blur: 0.0,
+            preset: FilterPreset::None,
+        }
+    }
+}
+
+impl EditAdjust {
+    /// `true` when the adjustments change nothing.
+    pub fn is_neutral(&self) -> bool {
+        (self.brightness - 100.0).abs() < 1e-6
+            && (self.contrast - 100.0).abs() < 1e-6
+            && (self.saturate - 100.0).abs() < 1e-6
+            && self.blur.abs() < 1e-6
+            && self.preset == FilterPreset::None
+    }
+}
+
+/// Colour preset of the `Réglages` tool, like the board's CSS filters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FilterPreset {
+    /// No preset.
+    #[default]
+    None,
+    /// Grey levels.
+    Mono,
+    /// Sepia tones.
+    Sepia,
+    /// Stronger colours.
+    Vivid,
+    /// Saturated and contrasted.
+    Fried,
+    /// Negative.
+    Invert,
+}
+
+/// Annotations drawn on the frame by the board, as a transparent PNG.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnnotationOverlay {
+    /// Standard base64 of a PNG with an alpha channel.
+    pub png: String,
+    /// Declared width, in pixels of the drawing.
+    pub width: u32,
+    /// Declared height, in pixels of the drawing.
+    pub height: u32,
 }
 
 /// Edit requested by the board. Every field is optional; unknown fields are
@@ -111,6 +233,12 @@ pub struct EditRecipe {
     pub flip_h: bool,
     /// Video only: mirror vertically (after the rotation).
     pub flip_v: bool,
+    /// Video only: areas hidden on the source frame, before the crop.
+    pub masks: Vec<MaskRect>,
+    /// Video only: annotations drawn on the source frame, before the crop.
+    pub overlay: Option<AnnotationOverlay>,
+    /// Video only: colour adjustments, after the masks and the annotations.
+    pub adjust: EditAdjust,
     /// What to produce.
     pub output: EditOutput,
 }
@@ -129,6 +257,9 @@ impl Default for EditRecipe {
             rotate: 0,
             flip_h: false,
             flip_v: false,
+            masks: Vec::new(),
+            overlay: None,
+            adjust: EditAdjust::default(),
             output: EditOutput::Same,
         }
     }
@@ -143,6 +274,27 @@ pub struct EditSource {
     pub duration_sec: f64,
     /// `true` when the file has an audio stream.
     pub has_audio: bool,
+    /// Width of the picture, when known.
+    pub width: Option<u32>,
+    /// Height of the picture, when known.
+    pub height: Option<u32>,
+}
+
+/// A mask placed on the source frame, in source pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MaskPlan {
+    /// Left edge, in pixels.
+    pub x: u32,
+    /// Top edge, in pixels.
+    pub y: u32,
+    /// Width, in pixels (even, at least two).
+    pub width: u32,
+    /// Height, in pixels (even, at least two).
+    pub height: u32,
+    /// How the area is hidden.
+    pub mode: MaskMode,
+    /// Blur sigma or pixel block, in source pixels.
+    pub strength: f64,
 }
 
 /// A validated edit, ready for [`build_edit_args`].
@@ -168,6 +320,14 @@ pub struct EditPlan {
     pub flip_h: bool,
     /// Mirror vertically.
     pub flip_v: bool,
+    /// Masks, in source pixels, drawn before the crop.
+    pub masks: Vec<MaskPlan>,
+    /// `true` when an annotation overlay is drawn before the crop.
+    pub overlay: bool,
+    /// Colour adjustments, after the masks and the overlay.
+    pub adjust: EditAdjust,
+    /// Size of the source frame, when an annotation needs it.
+    pub frame_size: Option<(u32, u32)>,
     /// What is produced.
     pub output: EditOutput,
     /// `true` when the output has a picture (MP4 or GIF).
@@ -223,6 +383,12 @@ impl EditPlan {
             rotate: 0,
             flip_h: false,
             flip_v: false,
+            // Masks, annotations and colour adjustments were burnt into the
+            // pieces: applying them again would hide the picture twice.
+            masks: Vec::new(),
+            overlay: false,
+            adjust: EditAdjust::default(),
+            frame_size: None,
             ..self.clone()
         }
     }
@@ -324,6 +490,11 @@ impl EditRecipe {
         } else {
             None
         };
+        let (masks, overlay, adjust, frame_size) = if with_video {
+            plan_annotations(&self.masks, self.overlay.as_ref(), &self.adjust, source)?
+        } else {
+            (Vec::new(), false, EditAdjust::default(), None)
+        };
         Ok(EditPlan {
             segments,
             speed,
@@ -339,6 +510,10 @@ impl EditRecipe {
             },
             flip_h: with_video && self.flip_h,
             flip_v: with_video && self.flip_v,
+            masks,
+            overlay,
+            adjust,
+            frame_size,
             output: self.output,
             with_video,
             with_audio,
@@ -433,6 +608,152 @@ fn plan_crop(crop: Option<&CropRect>) -> Result<Option<CropRect>, String> {
         width,
         height,
     }))
+}
+
+/// What the annotations bring to a plan once validated: the masks in source
+/// pixels, whether an overlay is burnt in, the colour adjustments and the size
+/// of the source frame.
+type PlannedAnnotations = (Vec<MaskPlan>, bool, EditAdjust, Option<(u32, u32)>);
+
+/// Validates the annotations: masks, overlay and colour adjustments. They need
+/// the size of the source frame; a recipe without annotation keeps its frame
+/// size unknown.
+fn plan_annotations(
+    raw_masks: &[MaskRect],
+    overlay: Option<&AnnotationOverlay>,
+    adjust: &EditAdjust,
+    source: &EditSource,
+) -> Result<PlannedAnnotations, String> {
+    if raw_masks.is_empty() && overlay.is_none() && adjust.is_neutral() {
+        return Ok((Vec::new(), false, EditAdjust::default(), None));
+    }
+    let (Some(width), Some(height)) = (source.width, source.height) else {
+        return Err("the frame size is unknown".to_string());
+    };
+    if width < 2 || height < 2 {
+        return Err("the frame is too small to be annotated".to_string());
+    }
+    Ok((
+        plan_masks(raw_masks, width, height)?,
+        plan_overlay(overlay, width, height)?,
+        plan_adjust(*adjust)?,
+        Some((width, height)),
+    ))
+}
+
+/// Validates the masks and turns their fractions into source pixels.
+fn plan_masks(raw: &[MaskRect], width: u32, height: u32) -> Result<Vec<MaskPlan>, String> {
+    if raw.len() > MAX_MASKS {
+        return Err(format!("at most {MAX_MASKS} masks are accepted"));
+    }
+    let frame_width = f64::from(width);
+    let frame_height = f64::from(height);
+    let mut masks = Vec::with_capacity(raw.len());
+    for (index, mask) in raw.iter().enumerate() {
+        let number = index + 1;
+        let values = [mask.x, mask.y, mask.width, mask.height, mask.strength];
+        if values.iter().any(|value| !value.is_finite()) {
+            return Err(format!("mask {number} must be made of numbers"));
+        }
+        const EPSILON: f64 = 1e-6;
+        if mask.x < -EPSILON
+            || mask.y < -EPSILON
+            || mask.x + mask.width > 1.0 + EPSILON
+            || mask.y + mask.height > 1.0 + EPSILON
+        {
+            return Err(format!("mask {number} must stay inside the frame"));
+        }
+        if mask.width < MIN_MASK_FRACTION || mask.height < MIN_MASK_FRACTION {
+            return Err(format!(
+                "mask {number} must keep at least {:.1}% of each side",
+                MIN_MASK_FRACTION * 100.0
+            ));
+        }
+        if mask.strength < 0.0 || mask.strength > MAX_MASK_STRENGTH {
+            return Err(format!(
+                "mask {number} strength must be between 0 and {MAX_MASK_STRENGTH}"
+            ));
+        }
+        // Fractions become pixels: the far edges are rounded too, so a mask
+        // never grows by a pixel to catch a floating-point artefact.
+        let x = (mask.x.max(0.0) * frame_width).round() as u32;
+        let y = (mask.y.max(0.0) * frame_height).round() as u32;
+        let right = ((mask.x + mask.width).min(1.0) * frame_width).round() as u32;
+        let bottom = ((mask.y + mask.height).min(1.0) * frame_height).round() as u32;
+        let x = x.min(width - 2);
+        let y = y.min(height - 2);
+        let mask_width = right.saturating_sub(x).clamp(2, width - x);
+        let mask_height = bottom.saturating_sub(y).clamp(2, height - y);
+        masks.push(MaskPlan {
+            x,
+            y,
+            width: mask_width,
+            height: mask_height,
+            mode: mask.mode,
+            strength: (mask.strength * frame_width).max(MIN_MASK_STRENGTH_PX),
+        });
+    }
+    Ok(masks)
+}
+
+/// Validates the colour adjustments and returns them normalised.
+fn plan_adjust(adjust: EditAdjust) -> Result<EditAdjust, String> {
+    Ok(EditAdjust {
+        brightness: in_range("brightness", adjust.brightness, 0.0, MAX_ADJUST_PERCENT)?,
+        contrast: in_range("contrast", adjust.contrast, 0.0, MAX_ADJUST_PERCENT)?,
+        saturate: in_range("saturate", adjust.saturate, 0.0, MAX_ADJUST_PERCENT)?,
+        blur: in_range("blur", adjust.blur, 0.0, MAX_ADJUST_BLUR)?,
+        preset: adjust.preset,
+    })
+}
+
+/// Validates the annotation overlay: a PNG of the declared size, as base64.
+fn plan_overlay(
+    overlay: Option<&AnnotationOverlay>,
+    width: u32,
+    height: u32,
+) -> Result<bool, String> {
+    let Some(overlay) = overlay else {
+        return Ok(false);
+    };
+    if overlay.width != width || overlay.height != height {
+        return Err("the annotation overlay must be the size of the frame".to_string());
+    }
+    if overlay.width > MAX_OVERLAY_SIDE || overlay.height > MAX_OVERLAY_SIDE {
+        return Err(format!(
+            "the annotation overlay is limited to {MAX_OVERLAY_SIDE} px a side"
+        ));
+    }
+    let bytes = decode_overlay(&overlay.png)?;
+    if bytes.len() > MAX_OVERLAY_BYTES {
+        return Err(format!(
+            "the annotation overlay is limited to {} MiB",
+            MAX_OVERLAY_BYTES / (1024 * 1024)
+        ));
+    }
+    let (png_width, png_height) = png_size(&bytes)?;
+    if png_width != overlay.width || png_height != overlay.height {
+        return Err("the annotation overlay size does not match its picture".to_string());
+    }
+    Ok(true)
+}
+
+/// Decodes the base64 PNG of an annotation overlay.
+pub(crate) fn decode_overlay(png: &str) -> Result<Vec<u8>, String> {
+    STANDARD
+        .decode(png)
+        .map_err(|_| "the annotation overlay is not valid base64".to_string())
+}
+
+/// Size declared by the `IHDR` chunk of a PNG, without decoding the picture.
+fn png_size(bytes: &[u8]) -> Result<(u32, u32), String> {
+    const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    if bytes.len() < 24 || bytes[..8] != SIGNATURE || &bytes[12..16] != b"IHDR" {
+        return Err("the annotation overlay is not a PNG".to_string());
+    }
+    let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+    let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    Ok((width, height))
 }
 
 /// Formats a number for a filter graph: at most four decimals, no trailing
@@ -555,6 +876,126 @@ fn audio_filters(plan: &EditPlan) -> Vec<String> {
     filters
 }
 
+/// `crop` filter of a mask rectangle, in source pixels.
+fn crop_filter(mask: &MaskPlan) -> String {
+    format!(
+        "crop=w={}:h={}:x={}:y={}",
+        mask.width, mask.height, mask.x, mask.y
+    )
+}
+
+/// Pixel mask: the frame is pixelized by blocks aligned on its top-left corner,
+/// then cropped to the mask. `pixelize` averages every plane, so the blocks
+/// keep their colours; a `scale` round trip drops the chroma of the smallest
+/// sizes and turns the blocks grey.
+fn pixelated_region(mask: &MaskPlan) -> String {
+    let block = mask.strength.round().clamp(1.0, 1024.0) as u32;
+    format!("pixelize=w={block}:h={block},{}", crop_filter(mask))
+}
+
+/// Statements drawing the masks, the annotations and the colour adjustments on
+/// the source frame, and the label of their output. Input 1 is the annotation
+/// overlay, when the plan has one.
+fn annotation_stage(plan: &EditPlan, video_in: &str) -> (Vec<String>, String) {
+    let mut statements: Vec<String> = Vec::new();
+    let mut chain = video_in.to_string();
+
+    if !plan.masks.is_empty() {
+        let copies: String = (0..plan.masks.len())
+            .map(|index| format!("[mc{index}]"))
+            .collect();
+        let outputs = plan.masks.len() + 1;
+        statements.push(format!("[{chain}]split={outputs}{copies}[mbase]"));
+        chain = "mbase".to_string();
+        for (index, mask) in plan.masks.iter().enumerate() {
+            // The region is read from its own copy, so it is not blurred or
+            // pixelated twice by the masks that came before.
+            let region = match mask.mode {
+                MaskMode::Pixel => pixelated_region(mask),
+                MaskMode::Blur => {
+                    format!("gblur=sigma={},{}", num(mask.strength), crop_filter(mask))
+                }
+            };
+            statements.push(format!("[mc{index}]{region}[mr{index}]"));
+            statements.push(format!(
+                "[{chain}][mr{index}]overlay={}:{}[mn{index}]",
+                mask.x, mask.y
+            ));
+            chain = format!("mn{index}");
+        }
+    }
+
+    if plan.overlay {
+        if let Some((width, height)) = plan.frame_size {
+            statements.push(format!(
+                "[1:v]scale=w={width}:h={height}:flags=lanczos,format=rgba,setsar=1[ov]"
+            ));
+            statements.push(format!("[{chain}][ov]overlay=0:0[annotated]"));
+            chain = "annotated".to_string();
+        }
+    }
+
+    if !plan.adjust.is_neutral() {
+        let filters = adjust_filters(&plan.adjust, plan.frame_size);
+        if !filters.is_empty() {
+            statements.push(format!("[{chain}]{filters}[adjusted]"));
+            chain = "adjusted".to_string();
+        }
+    }
+
+    (statements, chain)
+}
+
+/// Coefficients of `sepia(0.9)`, the preset of the board (identity blended at
+/// 10 % with the usual sepia matrix).
+const SEPIA_COEFFICIENTS: &str =
+    "rr=0.4537:rg=0.6921:rb=0.1701:gr=0.3141:gg=0.7174:gb=0.1512:br=0.2448:bg=0.4806:bb=0.2179";
+
+/// Filters applying the colour adjustments of the board, in its order: the
+/// sliders, then the preset, then the blur.
+fn adjust_filters(adjust: &EditAdjust, frame: Option<(u32, u32)>) -> String {
+    let mut brightness = adjust.brightness / 100.0;
+    let mut contrast = adjust.contrast / 100.0;
+    let mut saturation = adjust.saturate / 100.0;
+    match adjust.preset {
+        FilterPreset::Vivid => {
+            saturation *= 1.6;
+            contrast *= 1.1;
+        }
+        FilterPreset::Fried => {
+            saturation *= 3.0;
+            contrast *= 1.8;
+            brightness *= 1.1;
+        }
+        FilterPreset::None | FilterPreset::Mono | FilterPreset::Sepia | FilterPreset::Invert => {}
+    }
+    let mut filters: Vec<String> = Vec::new();
+    if (brightness - 1.0).abs() > 1e-6
+        || (contrast - 1.0).abs() > 1e-6
+        || (saturation - 1.0).abs() > 1e-6
+    {
+        filters.push(format!(
+            "eq=brightness={}:contrast={}:saturation={}",
+            num((brightness - 1.0).clamp(-1.0, 1.0)),
+            num(contrast),
+            num(saturation)
+        ));
+    }
+    match adjust.preset {
+        FilterPreset::Mono => filters.push("hue=s=0".to_string()),
+        FilterPreset::Sepia => filters.push(format!("colorchannelmixer={SEPIA_COEFFICIENTS}")),
+        FilterPreset::Invert => filters.push("negate".to_string()),
+        FilterPreset::None | FilterPreset::Vivid | FilterPreset::Fried => {}
+    }
+    if let Some((width, height)) = frame {
+        let sigma = adjust.blur * f64::from(width.max(height)) / ADJUST_BLUR_UNIT_SIDE;
+        if sigma > 0.0 {
+            filters.push(format!("gblur=sigma={}", num(sigma)));
+        }
+    }
+    filters.join(",")
+}
+
 /// The `-filter_complex` graph of a plan. Its outputs are `[v]` (picture, when
 /// the plan has one) and `[a]` (sound, when the plan has one).
 pub fn build_filter_graph(plan: &EditPlan, max_height: u32) -> String {
@@ -626,6 +1067,8 @@ pub fn build_filter_graph(plan: &EditPlan, max_height: u32) -> String {
     }
 
     if plan.with_video {
+        let (statements, video_in) = annotation_stage(plan, &video_in);
+        graph.extend(statements);
         let filters = video_filters(plan, max_height).join(",");
         if plan.output == EditOutput::Gif {
             graph.push(format!("[{video_in}]{filters},split[g0][g1]"));
@@ -643,23 +1086,26 @@ pub fn build_filter_graph(plan: &EditPlan, max_height: u32) -> String {
 
 /// ffmpeg arguments applying `plan` to `input`.
 ///
-/// `encoder` and `preset` are only used for a video output (see
-/// [`resolve_video_encoder`]).
+/// `overlay` is the PNG of the annotations, when the plan draws some: it is
+/// read as a second input whose single frame `overlay` repeats. `encoder` and
+/// `preset` are only used for a video output (see [`resolve_video_encoder`]).
 pub fn build_edit_args(
     input: &Path,
+    overlay: Option<&Path>,
     output: &Path,
     plan: &EditPlan,
     config: &MediaConfig,
     encoder: &str,
     preset: &str,
 ) -> Vec<String> {
-    edit_args(&[], input, output, plan, config, encoder, preset)
+    edit_args(&[], input, overlay, output, plan, config, encoder, preset)
 }
 
 /// [`build_edit_args`] with options placed before `-i` (an input format).
 fn edit_args(
     input_options: &[&str],
     input: &Path,
+    overlay: Option<&Path>,
     output: &Path,
     plan: &EditPlan,
     config: &MediaConfig,
@@ -671,9 +1117,13 @@ fn edit_args(
         .chain(input_options)
         .map(|arg| (*arg).to_string())
         .collect();
+    args.extend(["-i".to_string(), input.display().to_string()]);
+    if let Some(overlay) = overlay {
+        // A single frame: `overlay` repeats it, and looping the image would
+        // keep ffmpeg reading forever (`-loop 1` never reaches EOF).
+        args.extend(["-i".to_string(), overlay.display().to_string()]);
+    }
     args.extend([
-        "-i".to_string(),
-        input.display().to_string(),
         "-filter_complex".to_string(),
         build_filter_graph(plan, config.video.max_height),
     ]);
@@ -750,6 +1200,7 @@ pub fn reverse_pieces(ranges: &[(f64, f64)], piece_sec: f64) -> Vec<Vec<(f64, f6
 /// a near-lossless quality and PCM sound, so the join adds no gap.
 pub fn build_reverse_piece_args(
     input: &Path,
+    overlay: Option<&Path>,
     output: &Path,
     plan: &EditPlan,
     piece: &[(f64, f64)],
@@ -771,6 +1222,11 @@ pub fn build_reverse_piece_args(
         num(until - seek),
         "-i".to_string(),
         input.display().to_string(),
+    ]);
+    if let Some(overlay) = overlay {
+        args.extend(["-i".to_string(), overlay.display().to_string()]);
+    }
+    args.extend([
         "-filter_complex".to_string(),
         build_filter_graph(&piece_plan, max_height),
         "-map".to_string(),
@@ -808,12 +1264,13 @@ fn reverse_concat_list(names: &[String]) -> String {
 /// are removed afterwards.
 pub async fn apply_edit(
     input: &Path,
+    overlay: Option<&Path>,
     output: &Path,
     plan: &EditPlan,
     config: &MediaConfig,
 ) -> MediaResult<()> {
     if !plan.reverses_in_pieces() {
-        return encode_edit(&[], input, output, plan, config).await;
+        return encode_edit(&[], input, overlay, output, plan, config).await;
     }
     let directory = output.parent().unwrap_or_else(|| Path::new("."));
     let pieces = reverse_pieces(&plan.kept_ranges(), REVERSE_PIECE_SEC);
@@ -825,6 +1282,7 @@ pub async fn apply_edit(
         for (piece, name) in pieces.iter().zip(&names) {
             let args = build_reverse_piece_args(
                 input,
+                overlay,
                 &directory.join(name),
                 plan,
                 piece,
@@ -848,6 +1306,7 @@ pub async fn apply_edit(
         encode_edit(
             &["-f", "concat", "-safe", "0"],
             &list_path,
+            None,
             output,
             &plan.after_reversed_pieces(),
             config,
@@ -873,6 +1332,7 @@ pub async fn apply_edit(
 async fn encode_edit(
     input_options: &[&str],
     input: &Path,
+    overlay: Option<&Path>,
     output: &Path,
     plan: &EditPlan,
     config: &MediaConfig,
@@ -889,6 +1349,7 @@ async fn encode_edit(
     let args = edit_args(
         input_options,
         input,
+        overlay,
         output,
         plan,
         config,
@@ -913,6 +1374,7 @@ async fn encode_edit(
     let args = edit_args(
         input_options,
         input,
+        overlay,
         output,
         plan,
         config,
@@ -945,6 +1407,8 @@ mod tests {
             kind: MediaKind::Video,
             duration_sec: duration,
             has_audio: true,
+            width: Some(320),
+            height: Some(240),
         }
     }
 
@@ -953,6 +1417,8 @@ mod tests {
             kind: MediaKind::Audio,
             duration_sec: duration,
             has_audio: true,
+            width: None,
+            height: None,
         }
     }
 
@@ -963,6 +1429,7 @@ mod tests {
     fn args_for(plan: &EditPlan) -> Vec<String> {
         build_edit_args(
             &PathBuf::from("in.mp4"),
+            None,
             &PathBuf::from(format!("out.{}", plan.output_extension())),
             plan,
             &MediaConfig::default(),
@@ -1014,6 +1481,8 @@ mod tests {
             kind: MediaKind::Image,
             duration_sec: 0.0,
             has_audio: false,
+            width: Some(320),
+            height: Some(240),
         };
         assert_eq!(
             recipe("{}").plan(&image).unwrap_err(),
@@ -1342,6 +1811,7 @@ mod tests {
         assert_eq!(pieces[2], vec![(6.25, 7.0), (8.0, 11.5)]);
         let args = build_reverse_piece_args(
             &PathBuf::from("in.mp4"),
+            None,
             &PathBuf::from("piece.mkv"),
             &plan,
             &pieces[2],
@@ -1363,6 +1833,7 @@ mod tests {
         let args = edit_args(
             &["-f", "concat", "-safe", "0"],
             &PathBuf::from("pieces.ffconcat"),
+            None,
             &PathBuf::from("out.mp4"),
             &rest,
             &MediaConfig::default(),
@@ -1392,5 +1863,275 @@ mod tests {
         assert_eq!(num(12.34567), "12.3457");
         assert_eq!(num(0.0), "0");
         assert_eq!(num(10.0), "10");
+    }
+
+    /// Base64 of a PNG header declaring `width` and `height`: enough for the
+    /// recipe check, which never decodes the picture.
+    fn overlay_png(width: u32, height: u32) -> String {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+
+        let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        bytes.extend_from_slice(&13_u32.to_be_bytes());
+        bytes.extend_from_slice(b"IHDR");
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        STANDARD.encode(bytes)
+    }
+
+    fn annotated(json: &str) -> EditPlan {
+        recipe(json).plan(&video(10.0)).unwrap()
+    }
+
+    #[test]
+    fn mask_fractions_become_source_pixels() {
+        let plan = annotated(
+            r#"{"masks":[{"x":0.1,"y":0.2,"width":0.5,"height":0.25,
+                "mode":"pixel","strength":0.05}]}"#,
+        );
+        assert_eq!(plan.frame_size, Some((320, 240)));
+        assert_eq!(plan.masks.len(), 1);
+        let mask = plan.masks[0];
+        assert_eq!((mask.x, mask.y), (32, 48));
+        assert_eq!((mask.width, mask.height), (160, 60));
+        assert!((mask.strength - 16.0).abs() < 1e-9);
+        assert_eq!(mask.mode, MaskMode::Pixel);
+        // The mode is optional and defaults to pixel blocks.
+        let default =
+            annotated(r#"{"masks":[{"x":0,"y":0,"width":0.5,"height":0.5,"strength":0.01}]}"#);
+        assert_eq!(default.masks[0].mode, MaskMode::Pixel);
+        // A blur mask keeps its sigma, never smaller than two pixels.
+        let blur = annotated(
+            r#"{"masks":[{"x":0,"y":0,"width":0.5,"height":0.5,"mode":"blur","strength":0.001}]}"#,
+        );
+        assert_eq!(blur.masks[0].mode, MaskMode::Blur);
+        assert!((blur.masks[0].strength - MIN_MASK_STRENGTH_PX).abs() < 1e-9);
+        // A mask ending on the frame edge stays inside it, two pixels wide.
+        let corner = annotated(
+            r#"{"masks":[{"x":0.995,"y":0.995,"width":0.005,"height":0.005,"strength":0.1}]}"#,
+        );
+        let mask = corner.masks[0];
+        assert_eq!((mask.x, mask.y), (318, 238));
+        assert_eq!((mask.width, mask.height), (2, 2));
+    }
+
+    #[test]
+    fn masks_are_checked() {
+        for json in [
+            // Outside the frame.
+            r#"{"masks":[{"x":0.6,"y":0,"width":0.5,"height":1,"strength":0.1}]}"#,
+            // Smaller than half a percent of a side.
+            r#"{"masks":[{"x":0,"y":0,"width":0.001,"height":0.5,"strength":0.1}]}"#,
+            // Stronger than a quarter of the frame width.
+            r#"{"masks":[{"x":0,"y":0,"width":0.5,"height":0.5,"strength":0.5}]}"#,
+        ] {
+            assert!(recipe(json).plan(&video(10.0)).is_err(), "{json}");
+        }
+        // An unknown hiding mode is refused before the recipe exists.
+        assert!(serde_json::from_str::<EditRecipe>(
+            r#"{"masks":[{"x":0,"y":0,"width":0.5,"height":0.5,"strength":0.1,"mode":"black"}]}"#
+        )
+        .is_err());
+        let mut mask_recipe =
+            recipe(r#"{"masks":[{"x":0,"y":0,"width":0.5,"height":0.5,"strength":0.1}]}"#);
+        mask_recipe.masks[0].strength = f64::NAN;
+        assert_eq!(
+            mask_recipe.plan(&video(10.0)).unwrap_err(),
+            "mask 1 must be made of numbers"
+        );
+        let too_many = format!(
+            r#"{{"masks":[{}]}}"#,
+            (0..=MAX_MASKS)
+                .map(|_| r#"{"x":0,"y":0,"width":0.1,"height":0.1,"strength":0.1}"#)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert_eq!(
+            recipe(&too_many).plan(&video(10.0)).unwrap_err(),
+            format!("at most {MAX_MASKS} masks are accepted")
+        );
+        // A video whose picture size is unknown cannot be annotated.
+        let unknown = EditSource {
+            width: None,
+            height: None,
+            ..video(10.0)
+        };
+        assert_eq!(
+            recipe(r#"{"adjust":{"brightness":120}}"#)
+                .plan(&unknown)
+                .unwrap_err(),
+            "the frame size is unknown"
+        );
+        // An audio edit ignores them entirely.
+        let sound = recipe(
+            r#"{"output":"audio","masks":[{"x":0,"y":0,"width":0.5,"height":0.5,"strength":0.1}]}"#,
+        )
+        .plan(&video(10.0))
+        .unwrap();
+        assert!(sound.masks.is_empty() && sound.frame_size.is_none());
+    }
+
+    #[test]
+    fn overlay_must_be_a_png_of_the_frame_size() {
+        let overlay = |png: String, width: u32, height: u32| {
+            format!(r#"{{"overlay":{{"png":"{png}","width":{width},"height":{height}}}}}"#)
+        };
+        let plan = annotated(&overlay(overlay_png(320, 240), 320, 240));
+        assert!(plan.overlay);
+        assert_eq!(plan.frame_size, Some((320, 240)));
+        assert_eq!(
+            recipe(&overlay(overlay_png(320, 240), 640, 480))
+                .plan(&video(10.0))
+                .unwrap_err(),
+            "the annotation overlay must be the size of the frame"
+        );
+        assert_eq!(
+            recipe(&overlay(overlay_png(160, 240), 320, 240))
+                .plan(&video(10.0))
+                .unwrap_err(),
+            "the annotation overlay size does not match its picture"
+        );
+        assert_eq!(
+            recipe(&overlay("bm90IGEgcG5n".to_string(), 320, 240))
+                .plan(&video(10.0))
+                .unwrap_err(),
+            "the annotation overlay is not a PNG"
+        );
+        assert_eq!(
+            recipe(&overlay("é".to_string(), 320, 240))
+                .plan(&video(10.0))
+                .unwrap_err(),
+            "the annotation overlay is not valid base64"
+        );
+    }
+
+    #[test]
+    fn colour_adjustments_are_validated_and_ordered() {
+        let plan = annotated(r#"{"adjust":{"brightness":120,"contrast":150,"saturate":80}}"#);
+        assert!(!plan.adjust.is_neutral());
+        let args = args_for(&plan);
+        let graph = graph_of(&args);
+        assert!(
+            graph.contains("[0:v:0]eq=brightness=0.2:contrast=1.5:saturation=0.8[adjusted]"),
+            "{graph}"
+        );
+        // The board's presets are folded exactly like its CSS filters.
+        let vivid = graph_of(&args_for(&annotated(r#"{"adjust":{"preset":"vivid"}}"#))).to_owned();
+        assert!(
+            vivid.contains("eq=brightness=0:contrast=1.1:saturation=1.6"),
+            "{vivid}"
+        );
+        let mono = graph_of(&args_for(&annotated(r#"{"adjust":{"preset":"mono"}}"#))).to_owned();
+        assert!(mono.contains("hue=s=0"), "{mono}");
+        let sepia = graph_of(&args_for(&annotated(r#"{"adjust":{"preset":"sepia"}}"#))).to_owned();
+        assert!(
+            sepia.contains("colorchannelmixer=rr=0.4537:rg=0.6921:rb=0.1701"),
+            "{sepia}"
+        );
+        let invert =
+            graph_of(&args_for(&annotated(r#"{"adjust":{"preset":"invert"}}"#))).to_owned();
+        assert!(invert.contains("negate"), "{invert}");
+        // The blur radius follows the frame size, like the board's slider.
+        let blurred = graph_of(&args_for(&annotated(r#"{"adjust":{"blur":2}}"#))).to_owned();
+        assert!(blurred.contains("gblur=sigma=1.6"), "{blurred}");
+        for json in [
+            r#"{"adjust":{"brightness":500}}"#,
+            r#"{"adjust":{"contrast":-1}}"#,
+            r#"{"adjust":{"saturate":401}}"#,
+            r#"{"adjust":{"blur":51}}"#,
+        ] {
+            assert!(recipe(json).plan(&video(10.0)).is_err(), "{json}");
+        }
+        // An unknown preset is refused before the recipe exists.
+        assert!(serde_json::from_str::<EditRecipe>(r#"{"adjust":{"preset":"vintage"}}"#).is_err());
+        // A neutral adjustment is not an annotation: it needs no frame size.
+        let neutral = EditSource {
+            width: None,
+            height: None,
+            ..video(10.0)
+        };
+        assert!(recipe(r#"{"adjust":{"brightness":100}}"#)
+            .plan(&neutral)
+            .is_ok());
+    }
+
+    #[test]
+    fn masks_and_overlay_are_drawn_before_the_crop() {
+        let overlay = overlay_png(320, 240);
+        let plan = annotated(&format!(
+            r#"{{"masks":[{{"x":0.1,"y":0.2,"width":0.5,"height":0.25,"strength":0.05}},
+                {{"x":0.6,"y":0.1,"width":0.2,"height":0.2,"mode":"blur","strength":0.02}}],
+                "overlay":{{"png":"{overlay}","width":320,"height":240}},
+                "adjust":{{"brightness":120}},
+                "crop":{{"x":0.1,"y":0,"width":0.5,"height":1}},
+                "rotate":90}}"#
+        ));
+        let args = build_edit_args(
+            &PathBuf::from("in.mp4"),
+            Some(Path::new("out.png")),
+            &PathBuf::from("out.mp4"),
+            &plan,
+            &MediaConfig::default(),
+            "libx264",
+            "ultrafast",
+        );
+        let graph = graph_of(&args);
+        // One copy of the frame per mask, then one overlay per mask, in order.
+        assert!(graph.contains("[0:v:0]split=3[mc0][mc1][mbase]"), "{graph}");
+        assert!(
+            graph.contains("[mc0]pixelize=w=16:h=16,crop=w=160:h=60:x=32:y=48[mr0]"),
+            "{graph}"
+        );
+        assert!(
+            graph.contains("[mc1]gblur=sigma=6.4,crop=w=64:h=48:x=192:y=24[mr1]"),
+            "{graph}"
+        );
+        assert!(graph.contains("[mbase][mr0]overlay=32:48[mn0]"), "{graph}");
+        assert!(graph.contains("[mn0][mr1]overlay=192:24[mn1]"), "{graph}");
+        assert!(graph.contains("[mn1][ov]overlay=0:0[annotated]"), "{graph}");
+        assert!(graph.contains("[1:v]scale=w=320:h=240"), "{graph}");
+        assert!(graph.contains("[annotated]eq="), "{graph}");
+        // The geometry comes after the annotations: crop, rotation, flips.
+        let annotations_at = graph.find("gblur").unwrap();
+        let crop_at = graph.find("crop=w='max(2").unwrap();
+        let rotate_at = graph.find("transpose=1").unwrap();
+        assert!(annotations_at < crop_at && crop_at < rotate_at, "{graph}");
+        // The overlay is a second input, a single frame repeated by `overlay`.
+        let joined = args.join(" ");
+        assert!(joined.contains("-i in.mp4 -i out.png"), "{joined}");
+    }
+
+    #[test]
+    fn reversed_pieces_burn_the_annotations_once() {
+        let plan = annotated(
+            r#"{"reverse":true,"masks":[{"x":0.5,"y":0.5,"width":0.25,"height":0.25,"strength":0.05}],
+                "adjust":{"preset":"mono"}}"#,
+        );
+        assert!(plan.reverses_in_pieces());
+        let pieces = reverse_pieces(&plan.kept_ranges(), REVERSE_PIECE_SEC);
+        let piece_args = build_reverse_piece_args(
+            &PathBuf::from("in.mp4"),
+            Some(Path::new("annotations.png")),
+            &PathBuf::from("piece.mkv"),
+            &plan,
+            &pieces[0],
+            1080,
+        );
+        let piece_graph = graph_of(&piece_args);
+        assert!(piece_graph.contains("overlay=160:120"), "{piece_graph}");
+        assert!(piece_graph.contains("hue=s=0"), "{piece_graph}");
+        assert!(piece_args.join(" ").contains("-i annotations.png"));
+        // The join pass must not draw them a second time.
+        let rest = plan.after_reversed_pieces();
+        assert!(rest.masks.is_empty() && !rest.overlay && rest.adjust.is_neutral());
+        assert!(rest.frame_size.is_none());
+        let join_args = args_for(&rest);
+        let join_graph = graph_of(&join_args);
+        assert!(
+            !join_graph.contains("gblur") && !join_graph.contains("hue"),
+            "{join_graph}"
+        );
+        assert!(!join_args.join(" ").contains("-loop 1"));
     }
 }

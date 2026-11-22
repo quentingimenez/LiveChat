@@ -16,6 +16,9 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+# Annotations : PNG en base64 dans la recette d'édition
+base64 = { workspace = true }
+
 # Async / runtime (process pour ffmpeg/ffprobe/yt-dlp, io-util pour stdout/stderr)
 tokio = { workspace = true, features = ["process", "io-util"] }
 

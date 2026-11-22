@@ -159,6 +159,27 @@ async fn a_malformed_body_is_refused_before_the_item_is_looked_up() {
 }
 
 #[tokio::test]
+async fn an_annotated_recipe_larger_than_a_megabyte_is_read() {
+    let harness = Harness::new().await;
+    let member = member_token(&harness, GuildRole::Member, "Bob").await;
+    let video = asset(&harness, "a.mp4", MediaKind::Video, "video/mp4").await;
+    let entry = item(&harness, &video).await;
+    // 1.3 MB of base64: more than the global 1 MiB body limit, which is lifted
+    // for this route because the annotations of a video travel as a PNG.
+    let png = "A".repeat(1_300_000);
+    let (status, response) = edit(
+        &harness,
+        &member,
+        &entry.id.to_canonical(),
+        json!({"recipe": {"overlay": {"png": png, "width": 480, "height": 360}}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+    assert_eq!(response["error"], "invalid_payload");
+    assert_eq!(response["message"], "the annotation overlay is not a PNG");
+}
+
+#[tokio::test]
 async fn an_item_outside_the_guild_board_is_not_found() {
     let harness = Harness::new().await;
     let member = member_token(&harness, GuildRole::Member, "Bob").await;

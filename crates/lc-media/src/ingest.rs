@@ -325,6 +325,8 @@ impl MediaPipeline {
             kind,
             duration_sec: probed.duration_sec.unwrap_or(0.0),
             has_audio: probed.has_audio,
+            width: probed.width,
+            height: probed.height,
         };
         let plan = recipe.plan(&source).map_err(edit::recipe_error)?;
         let directory = tempfile::TempDir::new().map_err(|error| {
@@ -334,10 +336,25 @@ impl MediaPipeline {
                 &error,
             )
         })?;
+        let overlay = match recipe.overlay.as_ref().filter(|_| plan.overlay) {
+            Some(annotation) => {
+                let bytes = edit::decode_overlay(&annotation.png).map_err(edit::recipe_error)?;
+                let overlay = directory.path().join("annotations.png");
+                tokio::fs::write(&overlay, bytes).await.map_err(|error| {
+                    MediaError::from_io(
+                        MediaErrorCode::TranscodeFailed,
+                        "écriture des annotations de l'édition",
+                        &error,
+                    )
+                })?;
+                Some(overlay)
+            }
+            None => None,
+        };
         let path = directory
             .path()
             .join(format!("edit.{}", plan.output_extension()));
-        edit::apply_edit(input, &path, &plan, &self.config).await?;
+        edit::apply_edit(input, overlay.as_deref(), &path, &plan, &self.config).await?;
         drop(permit);
         let size_bytes = local_file_size(&path).await?;
         if size_bytes > self.config.download.max_size_bytes {

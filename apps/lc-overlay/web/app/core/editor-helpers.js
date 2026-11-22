@@ -175,9 +175,73 @@ function cropIsFull(crop) {
   return !crop || (crop.x <= 0.001 && crop.y <= 0.001 && crop.width >= 0.999 && crop.height >= 0.999);
 }
 
+// --- annotations ---------------------------------------------------------
+// Server limits of the annotation recipe (`crates/lc-media/src/edit.rs`): the
+// client clamps to them instead of letting an edit fail.
+export const MAX_RECIPE_MASKS = 20;
+export const MAX_MASK_STRENGTH = 0.25;
+export const MIN_MASK_FRACTION = 0.005;
+
+function roundFraction(value) {
+  return Math.round(value * 10000) / 10000;
+}
+
+// Masks of the drawing, as fractions of the source frame: the server turns
+// them back into pixels once it knows the frame size.
+export function masksForRecipe(objects, width, height) {
+  if (!(width > 0) || !(height > 0)) {
+    return [];
+  }
+  const masks = [];
+  for (const object of objects || []) {
+    if (object.type !== 'mask') {
+      continue;
+    }
+    const left = clamp(Math.min(object.x1, object.x2), 0, width);
+    const top = clamp(Math.min(object.y1, object.y2), 0, height);
+    const right = clamp(Math.max(object.x1, object.x2), 0, width);
+    const bottom = clamp(Math.max(object.y1, object.y2), 0, height);
+    const x = roundFraction(left / width);
+    const y = roundFraction(top / height);
+    const w = roundFraction((right - left) / width);
+    const h = roundFraction((bottom - top) / height);
+    if (w < MIN_MASK_FRACTION || h < MIN_MASK_FRACTION) {
+      continue;
+    }
+    masks.push({
+      x,
+      y,
+      width: w,
+      height: h,
+      mode: object.mode === 'blur' ? 'blur' : 'pixel',
+      // Strength is a length in source pixels: a pixel block or a blur radius.
+      strength: roundFraction(clamp(object.strength / width, MIN_MASK_FRACTION, MAX_MASK_STRENGTH)),
+    });
+    if (masks.length >= MAX_RECIPE_MASKS) {
+      break;
+    }
+  }
+  return masks;
+}
+
+// The colour adjustments of the recipe, or null when they change nothing.
+export function adjustForRecipe(adjust) {
+  if (!adjust || adjustIsNeutral(adjust)) {
+    return null;
+  }
+  return {
+    brightness: Math.round(adjust.brightness),
+    contrast: Math.round(adjust.contrast),
+    saturate: Math.round(adjust.saturate),
+    blur: Math.round(adjust.blur * 10) / 10,
+    preset: adjust.preset || 'none',
+  };
+}
+
 // Recipe sent to `POST /overlay/media-board/items/{id}/edit`: only what
-// differs from the source.
-export function buildRecipe(edit, duration) {
+// differs from the source. `extras` carries the drawing: `{ width, height }`
+// of the source frame and `overlay`, the PNG of the drawing as a data URL.
+export function buildRecipe(edit, duration, extras = {}) {
   const recipe = {};
   const segments = normalizeSegments(edit.segments, duration);
   if (!isWhole(segments, duration)) {
@@ -219,6 +283,17 @@ export function buildRecipe(edit, duration) {
   }
   if (edit.output && edit.output !== 'same') {
     recipe.output = edit.output;
+  }
+  const masks = masksForRecipe(edit.objects, extras.width, extras.height);
+  if (masks.length > 0) {
+    recipe.masks = masks;
+  }
+  if (extras.overlay && extras.width > 0 && extras.height > 0) {
+    recipe.overlay = { png: extras.overlay, width: extras.width, height: extras.height };
+  }
+  const adjust = adjustForRecipe(edit.adjust);
+  if (adjust) {
+    recipe.adjust = adjust;
   }
   return recipe;
 }

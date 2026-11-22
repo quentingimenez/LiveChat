@@ -135,6 +135,14 @@ test('cardClickAction picks in selection mode and opens details otherwise', () =
   assert.equal(cardClickAction({ selecting: true, shiftKey: false }), 'toggle');
   assert.equal(cardClickAction({ selecting: true, shiftKey: true }), 'range');
   assert.equal(cardClickAction({ selecting: false, shiftKey: true }), 'details');
+  assert.equal(cardClickAction({ selecting: false, shiftKey: false }), 'details');
+});
+
+test('cardClickAction picks with Ctrl/Cmd even outside the selection mode', () => {
+  assert.equal(cardClickAction({ selecting: false, shiftKey: false, ctrlKey: true }), 'pick');
+  assert.equal(cardClickAction({ selecting: false, shiftKey: false, metaKey: true }), 'pick');
+  assert.equal(cardClickAction({ selecting: true, shiftKey: false, ctrlKey: true }), 'toggle');
+  assert.equal(cardClickAction({ selecting: true, shiftKey: false, metaKey: true }), 'toggle');
 });
 
 test('menuTargetIds acts on the whole selection only from a picked card', () => {
@@ -245,19 +253,19 @@ const selectAllState = (overrides = {}) => ({
   handled: false,
   capturing: false,
   dialogOpen: false,
-  selecting: true,
   editableTarget: false,
+  canSelectAll: true,
   ...overrides,
 });
 
-test('selectAllAction picks every visible card on Ctrl+A while selecting', () => {
+test('selectAllAction picks every visible card on Ctrl+A on the board', () => {
   assert.equal(selectAllAction(selectAllState()), 'selectAll');
   assert.equal(selectAllAction(selectAllState({ key: 'A' })), 'selectAll');
   assert.equal(selectAllAction(selectAllState({ ctrl: false, meta: true })), 'selectAll');
 });
 
-test('selectAllAction leaves other keys, modes and modifiers alone', () => {
-  assert.equal(selectAllAction(selectAllState({ selecting: false })), null);
+test('selectAllAction leaves other keys, pages and modifiers alone', () => {
+  assert.equal(selectAllAction(selectAllState({ canSelectAll: false })), null);
   assert.equal(selectAllAction(selectAllState({ key: 'z' })), null);
   assert.equal(selectAllAction(selectAllState({ ctrl: false, meta: false })), null);
 });

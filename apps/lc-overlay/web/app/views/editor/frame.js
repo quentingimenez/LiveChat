@@ -12,6 +12,7 @@ registerIcons({
   flipV: 'M3 12h18M7 8l5-5 5 5zM7 16l5 5 5-5z',
   crop: 'M7 3v14h14M3 7h14v14',
   edit: 'M4 20l4-1L19 8l-3-3L5 16zM14 7l3 3',
+  speed: 'M4 18a8 8 0 1116 0M12 18l3.5-4.5',
 });
 registerIcons({ pause: 'M7 5h3.5v14H7zM13.5 5H17v14h-3.5z' }, { filled: true });
 
@@ -52,6 +53,7 @@ export function openEditorFrame({ title }) {
   const redoButton = h('button', { class: 'btn is-quiet icon-btn', type: 'button', title: 'Rétablir (Ctrl+Y)', 'aria-label': 'Rétablir', disabled: true, onClick: () => editor && editor.redo() }, icon('redo'));
   const status = h('span', { class: 'editor-status', 'aria-live': 'polite' });
   const actions = h('div', { class: 'editor-actions' });
+  const extra = h('div', { class: 'editor-bar-extra', hidden: true });
   const stage = h('div', { class: 'editor-stage' }, h('p', { class: 'editor-loading' }, 'Chargement du média…'));
   const rail = h('div', { class: 'editor-rail', role: 'toolbar', 'aria-orientation': 'vertical', 'aria-label': 'Outils', hidden: true });
   const panel = h('aside', { class: 'editor-panel', hidden: true });
@@ -71,7 +73,7 @@ export function openEditorFrame({ title }) {
         h('h2', { title }, h('span', { class: 'editor-bar-title ellipsis' }, titleLabel(title))),
       ),
       h('div', { class: 'editor-history', role: 'group', 'aria-label': 'Historique des modifications' }, undoButton, redoButton),
-      h('div', { class: 'editor-bar-trail' }, status, actions),
+      h('div', { class: 'editor-bar-trail' }, extra, status, actions),
     ),
     h('div', { class: 'editor-body' }, rail, stage, panel),
     timeline,
@@ -213,6 +215,12 @@ export function openEditorFrame({ title }) {
     },
     setStatus(text) {
       status.textContent = text || '';
+    },
+    // A compact control group in the top bar, before the status. The export
+    // format of the audio/video editor lives there, out of the tool panels.
+    setExtra(content) {
+      extra.replaceChildren(...(content ? [content] : []));
+      extra.hidden = !content;
     },
     // `buttons`: [{ label, title, primary, danger, disabled, onClick }]. A
     // secondary action is quiet; a danger one stays red on hover.

@@ -46,41 +46,11 @@ import {
   translated,
 } from './annotations.js';
 import { choices, facts, section, slider, toggle } from './frame.js';
+import { railGroups, toolHint } from './tools.js';
 
 // Largest side kept while editing: a bigger picture is scaled down once.
 const MAX_SIDE = 4096;
 const HISTORY_LIMIT = 40;
-const TOOLS = [
-  ['select', 'Sélection', 'cursor'],
-  ['crop', 'Recadrer', 'crop'],
-  ['draw', 'Dessiner', 'edit'],
-  ['shape', 'Formes', 'shapes'],
-  ['text', 'Texte', 'text'],
-  ['emoji', 'Emoji', 'smile'],
-  ['blur', 'Masquer une zone', 'pixels'],
-  ['adjust', 'Réglages', 'sliders'],
-  ['display', 'Taille à l’affichage', 'display'],
-];
-const TOOL_HINTS = {
-  select: 'Sélectionne un élément pour le déplacer, le redimensionner ou le modifier.',
-  crop: 'Déplace les poignées, puis applique. Entrée valide.',
-  draw: 'Dessine directement sur l’image.',
-  shape: 'Trace la forme en glissant sur l’image.',
-  text: 'Clique sur l’image pour y poser un texte.',
-  emoji: 'Choisis un emoji\u00A0: il se pose au centre, déplace-le ensuite.',
-  blur: 'Trace un rectangle sur la zone à cacher.',
-  adjust: 'Les réglages s’appliquent à toute l’image.',
-  display: 'Choisis la taille sur l’overlay\u00A0: l’aperçu se met à jour pendant le réglage.',
-};
-
-// The rail reads in three groups: what transforms the picture, what decorates
-// it, what masks it, then the size it takes on the overlay.
-const TOOL_GROUPS = [
-  ['select', 'crop'],
-  ['draw', 'shape', 'text', 'emoji', 'adjust'],
-  ['blur'],
-  ['display'],
-];
 
 // Decodes the picture into a canvas (scaled down above MAX_SIDE).
 async function loadBase(blob) {
@@ -809,7 +779,7 @@ export async function createImageEditor({
       h('button', { class: 'btn', type: 'button', onClick: () => setDisplayScale(percent) }, label);
     return section(
       'Taille à l’affichage',
-      h('p', { class: 'meta' }, TOOL_HINTS.display),
+      h('p', { class: 'meta' }, toolHint('display', 'image')),
       h(
         'p',
         { class: 'meta' },
@@ -842,13 +812,13 @@ export async function createImageEditor({
     const duration = Number(durationSec);
     return section(
       'Aucune sélection',
-      h('p', { class: 'editor-hint' }, TOOL_HINTS.select),
+      h('p', { class: 'editor-hint' }, toolHint('select', 'image')),
       Number.isFinite(duration) && duration > 0 ? facts([['Durée', formatDuration(duration)]]) : null,
     );
   }
 
   function toolPanel() {
-    const hint = h('p', { class: 'meta' }, TOOL_HINTS[tool]);
+    const hint = h('p', { class: 'meta' }, toolHint(tool, 'image'));
     if (tool === 'crop') {
       return section(
         'Recadrer et pivoter',
@@ -953,14 +923,14 @@ export async function createImageEditor({
           onCommit: commit,
         });
       return section(
-        'Réglages',
+        'Lumière et couleurs',
         hint,
         choices(FILTER_PRESETS.map((preset) => [preset.id, preset.label]), doc.adjust.preset, (preset) => { doc.adjust.preset = preset; commit(); repaint(); renderPanel(); }, 'Filtre', 'is-grid-2'),
         adjustSlider('Luminosité', 'brightness', 40, 160),
         adjustSlider('Contraste', 'contrast', 40, 160),
         adjustSlider('Saturation', 'saturate', 0, 200),
         adjustSlider('Flou', 'blur', 0, 10),
-        h('button', { class: 'btn', type: 'button', onClick: () => { doc.adjust = { ...NEUTRAL_ADJUST }; commit(); repaint(); renderPanel(); } }, 'Réinitialiser les réglages'),
+        h('button', { class: 'btn', type: 'button', onClick: () => { doc.adjust = { ...NEUTRAL_ADJUST }; commit(); repaint(); renderPanel(); } }, 'Réinitialiser les ajustements'),
       );
     }
     return emptySelectionPanel();
@@ -978,18 +948,13 @@ export async function createImageEditor({
     frame.panel.replaceChildren(...sections.filter(Boolean));
     frame.panel.hidden = false;
 
-    const available = new Map(TOOLS.filter(([id]) => id !== 'display' || allowDisplayScale).map((entry) => [entry[0], entry]));
     const rail = [];
-    for (const group of TOOL_GROUPS) {
-      const entries = group.map((id) => available.get(id)).filter(Boolean);
-      if (!entries.length) {
-        continue;
-      }
+    for (const group of railGroups('image', { allowDisplayScale: Boolean(allowDisplayScale) })) {
       if (rail.length) {
         rail.push(h('div', { class: 'tool-sep', role: 'separator' }));
       }
       rail.push(
-        ...entries.map(([id, label, glyph]) =>
+        ...group.map(({ id, label, glyph }) =>
           h('button', { class: `tool${tool === id ? ' is-active' : ''}`, type: 'button', 'aria-pressed': String(tool === id), onClick: () => setTool(id) }, icon(glyph), h('span', null, label)),
         ),
       );

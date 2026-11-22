@@ -143,7 +143,8 @@ Une guilde conserve donc au moins un admin actif ; la vérification est faite da
 
 Retirer un membre (exclusion, départ, bannissement : `remove_member`,
 `apps/lc-server/src/http/overlay/guild.rs`) marque `removed_at`, révoque ses
-overlays et ferme leurs sessions (`4402`), révoque ses extensions d'ingestion
+overlays et ferme leurs sessions (`4402` pour une exclusion ou un bannissement,
+`1000`/`CLIENT_SHUTDOWN` pour un départ volontaire), révoque ses extensions d'ingestion
 et ses codes `pairing_codes` non utilisés (auteur `member:<id>` ou son compte
 Discord lié) ainsi que les invitations qu'il a émises ou qui le visent.
 
@@ -184,7 +185,11 @@ départ, pour qu'un crash entre les deux écritures ne laisse pas un client acti
 derrière un membre retiré ; si la révocation échoue, le membre reste actif et
 le garde de bannissement continue de s'appliquer. Si l'exclusion échoue et que
 le membre est resté actif, le ban créé est annulé avec ses empreintes, tandis
-qu'un ban préexistant est conservé. Après l'exclusion, le serveur relit les
+qu'un ban préexistant est conservé. Une course entre la vérification du dernier
+admin et une rétrogradation concurrente peut fermer les sessions avant que le
+retrait soit refusé : le membre reste actif, sans session ; il peut se
+réappairer. C'est une fenêtre étroite, sans effet sur le ban ni sur les autres
+membres. Après l'exclusion, le serveur relit les
 empreintes des clients du membre pour rattacher un appairage concurrent
 (insertion idempotente ; l'unicité `(guild_id, device_hash)` laisse une
 empreinte déjà connue sur le premier ban qui l'a enregistrée).
@@ -195,8 +200,10 @@ s'appliquer (dernier admin) ou échoue, le ban et ses empreintes sont conservés
 et l'incident est journalisé. L'authentification overlay — HTTP et WebSocket —
 refuse de toute façon un client banni, même si sa ligne `guild_members` est
 encore active ou a déjà été retirée : le garde relit le membre propriétaire du
-client sans filtre `removed_at`, couvre un ban importé sans `member_id` via le
-compte Discord lié, et confronte l'empreinte du client à `guild_ban_devices`.
+client sans filtre `removed_at`, refuse aussi un client dont le membre est
+retiré **sans ban** (course d'appairage ou crash), couvre un ban importé sans
+`member_id` via le compte Discord lié, et confronte l'empreinte du client à
+`guild_ban_devices`.
 Le bannissement est donc fail-closed et ne dépend pas du succès de l'exclusion.
 
 C'est une défense en profondeur, pas une authentification : un client modifié
@@ -374,7 +381,7 @@ Toutes les routes authentifiées acceptent uniquement `Authorization: Bearer <to
 
 `PATCH /overlay/profile` exige un membre rattaché. Un pseudo vide après normalisation donne `invalid_display_name` ; un avatar non `http(s)` et non `data:image/{png,jpeg,webp,gif};base64,` est ignoré (`None`) plutôt que refusé. Le nom et l'avatar sont recopiés sur les overlays actifs du membre (`update_author_by_member`) et le profil cesse de suivre Discord (`profile_custom = 1`). Avec `useDiscord`, un membre lié suit de nouveau son compte Discord et son profil y est lu tout de suite. `synced: false` signale que Discord n'a pas pu être lu (bot non configuré, API en échec, compte hors du serveur) : le profil reste celui d'avant jusqu'à la prochaine lecture. Un membre non lié reçoit `409 discord_not_linked`.
 
-`POST /overlay/profile/discord-link` consomme le code, lie le compte et remet le profil à suivre Discord avec le pseudo et l'avatar que porte le code, puis répond `{linked, promoted, member}`. Un code sans nom d'auteur remet seulement le profil à suivre Discord, lu à la prochaine connexion. `POST /overlay/leave` sans membre révoque seulement l'overlay courant et ferme sa session avec `4402` (`{left:true}`). Avec un membre, il applique la règle du dernier admin, marque `removed_at`, révoque les overlays actifs du membre et ferme leurs sessions WebSocket avec `4402` (`close_code::REVOKED`).
+`POST /overlay/profile/discord-link` consomme le code, lie le compte et remet le profil à suivre Discord avec le pseudo et l'avatar que porte le code, puis répond `{linked, promoted, member}`. Un code sans nom d'auteur remet seulement le profil à suivre Discord, lu à la prochaine connexion. `POST /overlay/leave` sans membre révoque seulement l'overlay courant et ferme sa session avec `4402` (`{left:true}`). Avec un membre, il applique la règle du dernier admin, marque `removed_at`, révoque les overlays actifs du membre et ferme leurs sessions WebSocket avec `1000` (`close_code::NORMAL`, `close_reason::CLIENT_SHUTDOWN`) : un départ volontaire n'arrête pas la lecture des autres overlay de la guilde. Une exclusion ou un bannissement administratif utilise `4402` (`close_code::REVOKED`).
 
 `GET /overlay/queue` lit au plus 200 jobs (`QUEUE_LIMIT`) et trie `PLAYING` d'abord, puis `queue_position ASC`, `submission_date ASC`, `id ASC` ; `playing` est le premier job en lecture ou `null`, `pending` contient les autres, `serverTime` est une date ISO 8601 UTC en millisecondes. `POST /overlay/queue/reorder` reçoit la liste complète des `PENDING` dans le nouvel ordre (`{"jobIds":[…]}`), vérifie qu'elle correspond exactement à la file lue (sinon `409 stale_queue` — un autre overlay a retiré ou réordonné un job), puis réécrit `queue_position` dans une transaction et répond `{reordered:true, count:n}` ; un identifiant inconnu de la guilde ou un doublon est refusé (`400 invalid_job_id`/`duplicate_job_id`). `DELETE /overlay/queue/{jobId}` passe un job `PENDING` de la guilde à `FAILED` avec `finished_at` ; un identifiant invalide, un job d'une autre guilde ou un job `PLAYING` renvoie `{removed:false}`. `DELETE /overlay/queue` passe tous les `PENDING` à `FAILED` et renvoie le nombre modifié. Le job en cours n'est pas retiré. `GET /overlay/queue/history?limit=` renvoie `{count, items}` avec les jobs `DONE` ou `FAILED` de la guilde, du plus récent au plus ancien (`finishedAt`), bornés à `1..=100` (30 par défaut).
 

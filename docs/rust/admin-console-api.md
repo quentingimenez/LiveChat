@@ -105,6 +105,7 @@ Transposées de l'overlay (même corps, même réponse, mêmes codes d'erreur) :
 | `POST /admin/api/guilds/{id}/device-code` | `POST /overlay/device-code` (corps `{"memberId"}` en plus : l'appareil est rattaché à ce membre) |
 | `DELETE /admin/api/guilds/{id}/queue` | `DELETE /overlay/queue` |
 | `DELETE /admin/api/guilds/{id}/queue/{jobId}` | `DELETE /overlay/queue/{jobId}` |
+| `POST /admin/api/guilds/{id}/queue/reorder` | `POST /overlay/queue/reorder` (`{"jobIds":[…]}` complet → `{"reordered":true,"count":n}` ; `409 stale_queue` si la file a changé, `400 invalid_job_id`/`duplicate_job_id`) |
 | `PATCH /admin/api/guilds/{id}/media-board/items/{itemId}` | sans `recipe` : mise à jour de l'item de l'overlay (`title`, `message`, `artworkOnOverlay`) → `{"updated","item"}` ; avec `recipe`/`replace` : éditeur de `media_edit.rs` (découpe : `{"replace":true,"recipe":{"segments":[[début,fin]]}}`) → `202 {"ingestionId"}`. Pas de favori : il est propre à chaque membre et la console n'en est pas un |
 | `DELETE /admin/api/guilds/{id}/media-board/items/{itemId}` | `DELETE /overlay/media-board/items/{id}` |
 

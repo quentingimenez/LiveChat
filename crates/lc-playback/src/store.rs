@@ -63,7 +63,8 @@ impl PlaybackStore {
         Ok(jobs)
     }
 
-    /// Claim du prochain job d'une guilde, dans l'ordre FIFO.
+    /// Claim du prochain job d'une guilde, dans l'ordre de la file
+    /// (`queue_position`, puis `submission_date`, `id`).
     ///
     /// Mêmes retries de verrous transitoires et même traitement de course que
     /// `PlaybackJobsRepository::claim_next`.
@@ -91,7 +92,7 @@ impl PlaybackStore {
                            AND NOT EXISTS ( \
                                SELECT 1 FROM guilds g \
                                WHERE g.id = j.guild_id AND g.busy_until IS NOT NULL AND g.busy_until > ?) \
-                         ORDER BY j.submission_date ASC, j.id ASC \
+                         ORDER BY j.queue_position ASC, j.submission_date ASC, j.id ASC \
                          LIMIT 1) \
                      AND status = 'PENDING' \
                      RETURNING id",

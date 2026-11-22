@@ -3,6 +3,7 @@ import {
   clearQueue,
   isUnavailable,
   removeQueueJob,
+  reorderQueue,
   stopGuild,
 } from '../../api/client';
 import type { QueueJob } from '../../api/types';
@@ -19,6 +20,7 @@ import {
 } from '../../components/ui';
 import { describeError } from '../../errors';
 import { bytes, duration, plural } from '../../format';
+import { moveTo } from '../../queue-order';
 import type { GuildTabProps } from './types';
 
 const KIND_LABELS: Record<string, string> = {
@@ -98,7 +100,12 @@ function jobDetails(job: QueueJob): string | null {
 export function QueueTab({ guild, detail, detailUnavailable, refresh, notify }: GuildTabProps) {
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearBusy, setClearBusy] = useState(false);
+  const [reorderBusy, setReorderBusy] = useState(false);
   const [actionError, setActionError] = useState<unknown>(null);
+  // Glisser-déposer : la ligne en cours de glissement (`dragJobId`) et la ligne
+  // survolée (`overJobId`). Le serveur reçoit toujours la file entière.
+  const [dragJobId, setDragJobId] = useState<string | null>(null);
+  const [overJobId, setOverJobId] = useState<string | null>(null);
 
   const queue = detail?.queue;
   const playing = queue?.playing ?? null;
@@ -125,6 +132,61 @@ export function QueueTab({ guild, detail, detailUnavailable, refresh, notify }: 
       setActionError(error);
       notify(describeError(error), 'error');
     }
+  };
+
+  // Envoie l'ordre complet de la file puis recharge l'état serveur. Une file
+  // modifiée entre-temps est refusée (409) : l'erreur est affichée et la console
+  // garde l'ordre qu'elle montre, que le prochain rafraîchissement corrige.
+  const sendOrder = async (ordered: QueueJob[]) => {
+    if (reorderBusy) {
+      return;
+    }
+    setReorderBusy(true);
+    setActionError(null);
+    try {
+      await reorderQueue(guild.id, ordered.map((entry) => entry.id));
+      await refresh();
+    } catch (error) {
+      setActionError(error);
+      notify(describeError(error), 'error');
+      // La file a pu changer pendant le glissement (un média est passé en
+      // lecture, un autre appareil a réordonné) : on se recale sur le serveur.
+      await refresh().catch(() => {});
+    } finally {
+      setReorderBusy(false);
+    }
+  };
+
+  const resetDrag = () => {
+    setDragJobId(null);
+    setOverJobId(null);
+  };
+
+  // Déplacement clavier (flèches haut/bas sur la poignée) : un cran.
+  const move = async (job: QueueJob, delta: number) => {
+    const index = pending.findIndex((entry) => entry.id === job.id);
+    const target = index + delta;
+    if (index < 0 || target < 0 || target >= pending.length) {
+      return;
+    }
+    const ordered = [...pending];
+    const [moved] = ordered.splice(index, 1);
+    if (!moved) {
+      return;
+    }
+    ordered.splice(target, 0, moved);
+    await sendOrder(ordered);
+  };
+
+  // Dépôt sur une ligne : le média prend la place de la cible, les autres
+  // glissent autour. L'index de la cible est calculé avant le retrait.
+  const dropOn = async (target: QueueJob) => {
+    const fromId = dragJobId;
+    resetDrag();
+    if (!fromId || fromId === target.id) {
+      return;
+    }
+    await sendOrder(moveTo(pending, fromId, target.id));
   };
 
   const clear = async () => {
@@ -165,7 +227,7 @@ export function QueueTab({ guild, detail, detailUnavailable, refresh, notify }: 
       <Table>
         <thead>
           <tr>
-            <th class="is-num">#</th>
+            <th class="is-num queue-grip-head">#</th>
             <th>Média</th>
             <th>Type</th>
             <th class="is-num">Durée</th>
@@ -179,8 +241,72 @@ export function QueueTab({ guild, detail, detailUnavailable, refresh, notify }: 
         </thead>
         <tbody>
           {rows.map((job, index) => (
-            <tr class={job.status === 'playing' ? 'is-air' : ''} key={job.id}>
-              <td class="is-num soft">{index + 1}</td>
+            <tr
+              class={[
+                job.status === 'playing' ? 'is-air' : '',
+                dragJobId === job.id ? 'is-dragging' : '',
+                overJobId === job.id ? 'is-drop-target' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+              key={job.id}
+              draggable={!reorderBusy && job.status !== 'playing'}
+              onDragStart={(event) => {
+                if (job.status === 'playing' || !event.dataTransfer) {
+                  return;
+                }
+                setDragJobId(job.id);
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', job.id);
+                // Fond appliqué tout de suite pour que l'image glissée soit opaque.
+                const row = event.currentTarget;
+                row.classList.add('is-dragging');
+                void row.offsetWidth;
+                event.dataTransfer.setDragImage(row, 16, 16);
+              }}
+              onDragEnd={resetDrag}
+              onDragOver={(event) => {
+                if (!dragJobId || dragJobId === job.id || job.status === 'playing') {
+                  return;
+                }
+                event.preventDefault();
+                if (event.dataTransfer) {
+                  event.dataTransfer.dropEffect = 'move';
+                }
+                setOverJobId(job.id);
+              }}
+              onDragLeave={(event) => {
+                if (overJobId === job.id && !event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                  setOverJobId(null);
+                }
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                void dropOn(job);
+              }}
+            >
+              <td class="is-num queue-grip-cell">
+                {job.status === 'playing' ? (
+                  <span class="queue-grip-spacer" aria-hidden="true" />
+                ) : (
+                  <button
+                    class="queue-grip"
+                    type="button"
+                    title="Glisser pour réordonner"
+                    aria-label={`Réordonner ${jobName(job)}`}
+                    disabled={reorderBusy}
+                    onKeyDown={(event) => {
+                      if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+                        event.preventDefault();
+                        void move(job, event.key === 'ArrowUp' ? -1 : 1);
+                      }
+                    }}
+                  >
+                    <Icon name="menu" />
+                  </button>
+                )}
+                <span class="soft">{index + 1}</span>
+              </td>
               <td class="primary">
                 {jobName(job)}
                 {jobDetails(job) ? <div class="soft">{jobDetails(job)}</div> : null}
@@ -200,13 +326,11 @@ export function QueueTab({ guild, detail, detailUnavailable, refresh, notify }: 
               </td>
               <td class="is-actions">
                 {job.status === 'playing' ? null : (
-                  <button
-                    class="btn is-small is-quiet is-danger"
-                    type="button"
-                    onClick={() => void remove(job)}
-                  >
-                    Retirer
-                  </button>
+                  <span class="queue-actions">
+                    <button class="btn is-small is-quiet is-danger" type="button" onClick={() => void remove(job)}>
+                      Retirer
+                    </button>
+                  </span>
                 )}
               </td>
             </tr>

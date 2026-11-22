@@ -283,6 +283,18 @@
 .editor-panel input[type='number'] {
   font-variant-numeric: tabular-nums;
   text-align: right;
+  /* The size fields are driven by the slider beside them and by typing: the
+     browser's spin buttons only appear on hover, over the last digit. Give
+     them no room at all rather than a gutter that shifts the value. */
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.editor-panel input[type='number']::-webkit-inner-spin-button,
+.editor-panel input[type='number']::-webkit-outer-spin-button {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 .editor-choices {

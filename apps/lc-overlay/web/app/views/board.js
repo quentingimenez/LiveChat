@@ -2248,11 +2248,14 @@ let dropVeil = null;
 let dropDismissed = false;
 
 // The window behaves like an application: a drag started inside it (a
-// thumbnail, a field's selected text) never leaves as a native ghost copy.
+// thumbnail, a link, a field's selected text) never leaves as a native ghost
+// copy. Queue rows are the one deliberate native drag: queue.js reorders them.
 // Files and links dropped from outside do not fire dragstart here: only they
 // are still imports.
 document.addEventListener('dragstart', (event) => {
-  event.preventDefault();
+  if (!event.target.closest?.('.line.is-queue')) {
+    event.preventDefault();
+  }
 });
 
 function transfersFiles(event) {

@@ -54,13 +54,13 @@ test('les vignettes ne sont ni sélectionnables ni draggables', () => {
   assert.match(media.declarations, /-webkit-user-drag:\s*none/);
 });
 
-test('un glisser interne ne produit plus de copie fantôme', () => {
+test('un glisser interne ne produit plus de copie fantôme, sauf la file', () => {
   const board = read('views/board.js');
 
   assert.match(
     board,
-    /addEventListener\('dragstart',\s*\(event\)\s*=>\s*\{[\s\S]{0,200}?event\.preventDefault\(\);/,
-    'dragstart doit être annulé',
+    /addEventListener\('dragstart',\s*\(event\)\s*=>\s*\{[\s\S]{0,200}?closest\?\.\('\.line\.is-queue'\)[\s\S]{0,100}?event\.preventDefault\(\);/,
+    'dragstart doit être annulé sauf pour une ligne de file',
   );
   assert.doesNotMatch(board, /internalDrag/, 'le drapeau de drag interne ne doit plus exister');
 });

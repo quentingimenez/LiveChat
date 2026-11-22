@@ -37,6 +37,7 @@ pub mod guard;
 pub mod html;
 pub mod http;
 pub mod ingest;
+pub mod poster;
 pub mod probe;
 pub mod process;
 pub mod resolve;

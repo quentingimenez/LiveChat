@@ -1,16 +1,23 @@
-//! Thumbnails of linked videos (YouTube, TikTok, X), fetched in the background.
+//! Cover of a video (YouTube, TikTok, X, or an upload), made in the background.
 //!
-//! An ingestion never waits for its thumbnail: once the video is `READY`,
-//! [`spawn_thumbnail_fetch`] downloads the platform's picture on its own task
-//! and records it as the asset's cover (`media_assets.cover_asset_id`, see
-//! [`assets::attach_cover`]). The board then shows it on the video's card, and
-//! every guild with that video on its board gets a `board_changed` (`updated`)
-//! so its open overlays reload the card.
+//! An ingestion never waits for its cover: once the video is `READY`,
+//! [`spawn_cover_fetch`] works on its own task. It tries the platform's
+//! thumbnail first ([`platform_cover`]), then a frame of the video itself
+//! (`lc_media::poster`) when the source has none — an upload, a direct link, a
+//! platform that answers without a picture. Many uploads open on a black frame
+//! (fade-in, title card, encoder warm-up): taking the first frame is what made
+//! black cards, so the frame is chosen among several moments of the video.
 //!
-//! At startup, [`spawn_thumbnail_backfill`] gives the same picture to board
-//! videos imported before this existed.
+//! The picture is recorded as the asset's cover (`media_assets.cover_asset_id`,
+//! see [`assets::attach_cover`]). The board then shows it on the video's card,
+//! and every guild with that video on its board gets a `board_changed`
+//! (`updated`) so its open overlays reload the card.
+//!
+//! At startup, [`spawn_cover_backfill`] gives the same picture to board videos
+//! that have none.
 
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use lc_db::Db;
@@ -18,10 +25,12 @@ use lc_domain::entities::MediaAsset;
 use lc_domain::ids::MediaAssetId;
 use lc_domain::{Clock, GuildId, MediaKind};
 use lc_media::config::MediaConfig;
+use lc_media::poster::{extract_poster, PosterSource};
 use lc_media::resolve::ResolvedMedia;
 use lc_media::source::{MediaSource, SourceKind};
 use lc_media::storage::MediaStorage;
 use lc_media::thumbnail::{discover_thumbnail_candidates, fetch_thumbnail};
+use lc_media::transcode::NormalizedCover;
 use lc_protocol::{BoardChange, BoardChangedPayload, ServerMessage};
 use sqlx::Row;
 
@@ -30,10 +39,10 @@ use crate::http::admin::hub::AdminHub;
 use crate::media::assets;
 use crate::media::settings::media_config_for_state;
 
-/// Most board videos given a thumbnail by one startup backfill.
+/// Most board videos given a cover by one startup backfill.
 const BACKFILL_LIMIT: i64 = 500;
 
-/// What a thumbnail task needs, cheap to clone.
+/// What a cover task needs, cheap to clone.
 #[derive(Clone)]
 pub struct ThumbnailContext {
     pub config: Arc<MediaConfig>,
@@ -43,8 +52,8 @@ pub struct ThumbnailContext {
     pub hub: Option<Arc<dyn AdminHub>>,
 }
 
-/// Sources fetched (or being fetched) by this process: a video reused from
-/// the cache many times, or whose platform has no picture, is tried once.
+/// Sources worked on (or being worked on) by this process: a video reused from
+/// the cache many times, or whose source has no picture, is tried once.
 fn attempted() -> &'static Mutex<HashSet<String>> {
     static ATTEMPTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     ATTEMPTED.get_or_init(|| Mutex::new(HashSet::new()))
@@ -57,65 +66,68 @@ fn first_attempt(source_hash: &str) -> bool {
     }
 }
 
-/// `true` when a video of this source gets a platform thumbnail.
-pub fn wants_thumbnail(asset: &MediaAsset, source: &MediaSource) -> bool {
+/// `true` when an asset gets a cover: every video, from its platform when it
+/// has one, else from its own frames.
+pub fn wants_cover(asset: &MediaAsset) -> bool {
     asset.kind == MediaKind::Video
-        && matches!(
-            source.source_kind,
-            SourceKind::YouTube | SourceKind::TikTok | SourceKind::Twitter
-        )
 }
 
-/// Starts fetching the thumbnail of a `READY` video, unless it already has a
+/// Starts working on the cover of a `READY` video, unless it already has a
 /// picture or was tried before. Returns at once.
-pub fn spawn_thumbnail_fetch(
+///
+/// `source` is `None` for an upload: there is no platform to ask, only the
+/// video's own frames.
+pub fn spawn_cover_fetch(
     context: &ThumbnailContext,
     asset: &MediaAsset,
-    source: MediaSource,
+    source: Option<MediaSource>,
     resolved: Option<ResolvedMedia>,
 ) {
-    if !wants_thumbnail(asset, &source) || !first_attempt(&asset.source_hash) {
+    if !wants_cover(asset) || !first_attempt(&asset.source_hash) {
         return;
     }
     let context = context.clone();
     let asset_id = asset.id;
     tokio::spawn(async move {
-        fetch_and_attach(&context, asset_id, &source, resolved.as_ref()).await;
+        fetch_and_attach(&context, asset_id, source.as_ref(), resolved.as_ref()).await;
     });
 }
 
-/// Downloads the thumbnail and records it. Best effort: failures are logged.
+/// Makes the cover of the video and records it. Best effort: failures are
+/// logged, the card keeps its glyph.
 async fn fetch_and_attach(
     context: &ThumbnailContext,
     asset_id: MediaAssetId,
-    source: &MediaSource,
+    source: Option<&MediaSource>,
     resolved: Option<&ResolvedMedia>,
 ) {
     let assets_repo = context.db.media_assets();
-    let source_hash = match (
+    let asset = match (
         assets_repo.get(asset_id).await,
         assets_repo.cover_of(asset_id).await,
     ) {
-        (Ok(Some(asset)), Ok(None)) if asset.is_ready() => asset.source_hash,
+        (Ok(Some(asset)), Ok(None)) if asset.is_ready() => asset,
         (Ok(_), Ok(_)) => return,
         (Err(error), _) | (_, Err(error)) => {
-            tracing::warn!(error = %error, "lecture de la miniature d'une vidéo impossible");
+            tracing::warn!(error = %error, "lecture de la vidéo impossible");
             return;
         }
     };
-    let candidates = discover_thumbnail_candidates(&context.config, source, resolved).await;
-    if candidates.is_empty() {
-        return;
-    }
-    // Stored next to the video file (`<hash>.cover.<ext>`).
-    let Some(cover) =
-        fetch_thumbnail(&context.config, &context.storage, &source_hash, &candidates).await
-    else {
-        tracing::debug!(source = %source.canonical_url, "aucune miniature récupérée");
-        return;
+    let (cover, origin) = match platform_cover(context, &asset, source, resolved).await {
+        Some(cover) => (cover, "platform"),
+        None => match poster_cover(context, &asset).await {
+            Some(cover) => (cover, "frame"),
+            None => {
+                tracing::debug!(
+                    asset_id = %asset.id.to_canonical(),
+                    "aucune image pour la vidéo"
+                );
+                return;
+            }
+        },
     };
     // Read again: the video may have been pinned to a board (longer expiry)
-    // or removed while the picture was downloading.
+    // or removed while the picture was being made.
     let asset = match context.db.media_assets().get(asset_id).await {
         Ok(Some(asset)) if asset.is_ready() => asset,
         Ok(_) => {
@@ -131,23 +143,85 @@ async fn fetch_and_attach(
     let cover_id = match assets::attach_cover(&context.db, &asset, &cover, now).await {
         Ok(cover_id) => cover_id,
         Err(error) => {
-            tracing::warn!(error = %error, "miniature de la vidéo non enregistrée");
+            tracing::warn!(error = %error, "image de la vidéo non enregistrée");
             return;
         }
     };
     if let Err(error) = align_cover_expiry(&context.db, asset.id, cover_id).await {
-        tracing::warn!(error = %error, "échéance de la miniature non alignée");
+        tracing::warn!(error = %error, "échéance de l'image non alignée");
     }
     tracing::info!(
         asset_id = %asset.id.to_canonical(),
-        source_kind = ?source.source_kind,
-        "miniature de la vidéo enregistrée"
+        origin,
+        "image de la vidéo enregistrée"
     );
     notify_boards(context, asset.id).await;
 }
 
+/// The picture published by the source's platform, when there is one.
+///
+/// X needs the resolved media to find its poster; without it the platform has
+/// no candidate and the video's own frames are used instead.
+async fn platform_cover(
+    context: &ThumbnailContext,
+    asset: &MediaAsset,
+    source: Option<&MediaSource>,
+    resolved: Option<&ResolvedMedia>,
+) -> Option<NormalizedCover> {
+    let source = source?;
+    if !matches!(
+        source.source_kind,
+        SourceKind::YouTube | SourceKind::TikTok | SourceKind::Twitter
+    ) {
+        return None;
+    }
+    let candidates = discover_thumbnail_candidates(&context.config, source, resolved).await;
+    if candidates.is_empty() {
+        return None;
+    }
+    fetch_thumbnail(
+        &context.config,
+        &context.storage,
+        &asset.source_hash,
+        &candidates,
+    )
+    .await
+}
+
+/// A frame of the video itself, chosen among several moments: the first frame
+/// of an upload is often black.
+async fn poster_cover(context: &ThumbnailContext, asset: &MediaAsset) -> Option<NormalizedCover> {
+    if asset.storage_path.trim().is_empty() {
+        return None;
+    }
+    let input = context
+        .storage
+        .resolve_reference(Path::new(&asset.storage_path));
+    if !input.is_file() {
+        return None;
+    }
+    let source = PosterSource {
+        input: &input,
+        width: optional_side(asset.width),
+        height: optional_side(asset.height),
+        duration_sec: asset.duration_sec.map(|seconds| seconds as f64),
+    };
+    extract_poster(
+        context.config.as_ref(),
+        &context.storage,
+        &asset.source_hash,
+        &source,
+    )
+    .await
+}
+
+/// An asset dimension as the poster sampler expects it.
+fn optional_side(value: Option<i64>) -> Option<u32> {
+    value.and_then(|value| u32::try_from(value).ok())
+}
+
 /// Gives the cover the expiry of its video when the video got a later one
-/// (pinned to a board) while the picture was downloading.
+/// (pinned to a board) while the picture was being made.
 async fn align_cover_expiry(
     db: &Db,
     asset_id: MediaAssetId,
@@ -205,10 +279,12 @@ async fn notify_boards(context: &ThumbnailContext, asset_id: MediaAssetId) {
     }
 }
 
-/// Board videos from a platform that have no picture yet.
-async fn videos_without_thumbnail(db: &Db) -> Result<Vec<(MediaAssetId, String)>, lc_db::DbError> {
+/// Board videos that have no picture yet, with the source they came from.
+async fn videos_without_cover(
+    db: &Db,
+) -> Result<Vec<(MediaAssetId, String, String)>, lc_db::DbError> {
     let rows = sqlx::query(
-        "SELECT DISTINCT a.id, a.source_url FROM media_assets a \
+        "SELECT DISTINCT a.id, a.source_url, a.source_hash FROM media_assets a \
            JOIN media_board_items b ON b.media_asset_id = a.id \
           WHERE a.kind = 'VIDEO' AND a.status = 'READY' AND a.cover_asset_id IS NULL \
           LIMIT ?",
@@ -221,14 +297,15 @@ async fn videos_without_thumbnail(db: &Db) -> Result<Vec<(MediaAssetId, String)>
     for row in rows {
         let id: String = row.try_get("id").map_err(lc_db::DbError::from)?;
         let source_url: String = row.try_get("source_url").map_err(lc_db::DbError::from)?;
+        let source_hash: String = row.try_get("source_hash").map_err(lc_db::DbError::from)?;
         if let Ok(id) = id.parse::<MediaAssetId>() {
-            videos.push((id, source_url));
+            videos.push((id, source_url, source_hash));
         }
     }
     Ok(videos)
 }
 
-/// Builds the context of the thumbnail tasks from the application state.
+/// Builds the context of the cover tasks from the application state.
 pub fn context_for_state(state: &AppState) -> Option<ThumbnailContext> {
     let db = state.db.clone()?;
     let config = media_config_for_state(state);
@@ -242,31 +319,309 @@ pub fn context_for_state(state: &AppState) -> Option<ThumbnailContext> {
     })
 }
 
-/// Gives a thumbnail to the board videos that have none, one after the other,
-/// on a background task. YouTube and TikTok only: an X post needs its full
-/// resolution to find its poster.
-pub fn spawn_thumbnail_backfill(state: &AppState) {
+/// Gives a cover to the board videos that have none, one after the other, on a
+/// background task: the platform's picture when there is one, else a frame of
+/// the video.
+pub fn spawn_cover_backfill(state: &AppState) {
     let Some(context) = context_for_state(state) else {
         return;
     };
     tokio::spawn(async move {
-        let videos = match videos_without_thumbnail(&context.db).await {
-            Ok(videos) => videos,
-            Err(error) => {
-                tracing::warn!(error = %error, "vidéos sans miniature illisibles");
-                return;
-            }
-        };
-        for (asset_id, source_url) in videos {
-            let Some(source) = MediaSource::from_raw(&source_url) else {
-                continue;
-            };
-            if !matches!(source.source_kind, SourceKind::YouTube | SourceKind::TikTok)
-                || !first_attempt(&source.source_hash)
-            {
-                continue;
-            }
-            fetch_and_attach(&context, asset_id, &source, None).await;
-        }
+        backfill_covers(&context).await;
     });
+}
+
+/// One backfill pass over the board videos that have no picture. An upload is
+/// covered like a link: there is no platform to ask, so its own frames are
+/// used.
+pub(crate) async fn backfill_covers(context: &ThumbnailContext) {
+    let videos = match videos_without_cover(&context.db).await {
+        Ok(videos) => videos,
+        Err(error) => {
+            tracing::warn!(error = %error, "vidéos sans image illisibles");
+            return;
+        }
+    };
+    for (asset_id, source_url, source_hash) in videos {
+        if !first_attempt(&source_hash) {
+            continue;
+        }
+        let source = MediaSource::from_raw(&source_url);
+        fetch_and_attach(context, asset_id, source.as_ref(), None).await;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use std::path::Path as StdPath;
+
+    use lc_db::DbConfig;
+    use lc_domain::clock::SystemClock;
+    use lc_domain::entities::MediaBoardItem;
+    use lc_domain::enums::MediaStatus;
+    use lc_domain::ids::{GuildId, MediaBoardItemId};
+    use time::{Duration as TimeDuration, UtcDateTime};
+
+    use super::*;
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        config: MediaConfig,
+        storage: MediaStorage,
+        db: Db,
+        now: UtcDateTime,
+    }
+
+    async fn fixture() -> Fixture {
+        let dir = tempfile::tempdir().expect("dossier temporaire");
+        let db = Db::open(dir.path().join("test.db"), &DbConfig::default())
+            .await
+            .expect("base de test");
+        let mut config = MediaConfig::default();
+        config.storage.directory = dir.path().join("media");
+        let storage = MediaStorage::new(&config.storage);
+        storage.ensure().expect("racine de stockage");
+        Fixture {
+            _dir: dir,
+            config,
+            storage,
+            db,
+            now: UtcDateTime::now(),
+        }
+    }
+
+    /// A `READY` video as `ingest_local` leaves it: the upload's source has no
+    /// platform, only the file itself.
+    fn uploaded_video(source_hash: &str, storage_path: &StdPath, now: UtcDateTime) -> MediaAsset {
+        MediaAsset {
+            id: MediaAssetId::new_v4(),
+            source_hash: source_hash.to_owned(),
+            source_url: "clip.mp4".to_owned(),
+            source_title: None,
+            kind: MediaKind::Video,
+            mime: "video/mp4".into(),
+            duration_sec: Some(4),
+            width: Some(320),
+            height: Some(240),
+            is_vertical: false,
+            storage_path: storage_path.to_string_lossy().into_owned(),
+            size_bytes: 4,
+            status: MediaStatus::Ready,
+            error: None,
+            last_accessed_at: now,
+            expires_at: now + TimeDuration::hours(1),
+            created_at: now,
+        }
+    }
+
+    async fn on_board(fixture: &Fixture, asset: &MediaAsset) {
+        let item = MediaBoardItem {
+            id: MediaBoardItemId::new_v4(),
+            guild_id: GuildId::parse("123456789012345678").expect("guilde"),
+            media_asset_id: asset.id,
+            title: None,
+            message: None,
+            created_by_discord_user_id: None,
+            created_by_name: None,
+            created_at: fixture.now,
+            artwork_asset_id: None,
+            artwork_on_overlay: false,
+            display_duration_sec: None,
+            display_scale_percent: None,
+        };
+        fixture
+            .db
+            .media_board()
+            .create(&item)
+            .await
+            .expect("item board");
+    }
+
+    #[test]
+    fn une_video_televersee_recoit_une_image() {
+        // An upload has no platform to ask: its cover can only come from its
+        // own frames. Requiring a platform source is what left every upload
+        // with the black first frame as its card.
+        let asset = uploaded_video(
+            "upload:sha256:clip",
+            Path::new("clip.mp4"),
+            UtcDateTime::now(),
+        );
+        assert!(wants_cover(&asset));
+    }
+
+    #[test]
+    fn une_image_et_un_son_ne_recoivent_pas_d_image_de_video() {
+        let now = UtcDateTime::now();
+        let mut audio = uploaded_video("upload:sha256:song", Path::new("song.mp3"), now);
+        audio.kind = MediaKind::Audio;
+        assert!(!wants_cover(&audio));
+        let mut image = uploaded_video("upload:sha256:photo", Path::new("photo.jpg"), now);
+        image.kind = MediaKind::Image;
+        assert!(!wants_cover(&image));
+    }
+
+    #[tokio::test]
+    async fn une_video_televersee_sans_image_est_reprise_par_le_rattrapage() {
+        let fixture = fixture().await;
+        let file = fixture.storage.root().join("clip.mp4");
+        std::fs::write(&file, b"video").expect("fichier");
+        let video = uploaded_video("upload:sha256:clip", &file, fixture.now);
+        fixture
+            .db
+            .media_assets()
+            .insert(&video)
+            .await
+            .expect("vidéo");
+        on_board(&fixture, &video).await;
+
+        let picked = videos_without_cover(&fixture.db).await.expect("requête");
+        assert_eq!(picked.len(), 1, "la vidéo téléversée doit être reprise");
+        assert_eq!(picked[0].0, video.id);
+        assert_eq!(picked[0].2, "upload:sha256:clip");
+
+        // Once it has a cover, the backfill leaves it alone.
+        let cover = uploaded_video("upload:sha256:clip#cover", &file, fixture.now);
+        fixture
+            .db
+            .media_assets()
+            .insert(&cover)
+            .await
+            .expect("image");
+        fixture
+            .db
+            .media_assets()
+            .set_cover(video.id, Some(cover.id))
+            .await
+            .expect("liaison");
+        assert!(videos_without_cover(&fixture.db)
+            .await
+            .expect("requête")
+            .is_empty());
+    }
+
+    /// A video that opens on a black frame, like many uploads.
+    fn black_intro(config: &MediaConfig, path: &StdPath) {
+        let status = std::process::Command::new(&config.tools.ffmpeg)
+            .args([
+                "-y",
+                "-hide_banner",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=black:s=320x240:d=1.5",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=2.5:size=320x240:rate=30",
+                "-filter_complex",
+                "[0:v][1:v]concat=n=2:v=1:a=0[v]",
+                "-map",
+                "[v]",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .arg(path)
+            .status()
+            .expect("ffmpeg démarré");
+        assert!(status.success(), "échantillon vidéo non produit");
+    }
+
+    async fn wait_for_cover(db: &Db, asset_id: MediaAssetId) -> MediaAssetId {
+        for _ in 0..400 {
+            if let Some(cover_id) = db.media_assets().cover_of(asset_id).await.expect("lecture") {
+                return cover_id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("aucune image produite pour la vidéo");
+    }
+
+    #[tokio::test]
+    #[ignore = "nécessite ffmpeg installé"]
+    async fn une_video_televersee_recoit_une_frame_de_elle_meme() {
+        let fixture = fixture().await;
+        let input = fixture.storage.root().join("upload.mp4");
+        black_intro(&fixture.config, &input);
+        let video = uploaded_video("upload:sha256:frame", &input, fixture.now);
+        fixture
+            .db
+            .media_assets()
+            .insert(&video)
+            .await
+            .expect("vidéo");
+        let context = ThumbnailContext {
+            config: Arc::new(fixture.config.clone()),
+            storage: fixture.storage.clone(),
+            db: fixture.db.clone(),
+            clock: Arc::new(SystemClock),
+            hub: None,
+        };
+
+        spawn_cover_fetch(&context, &video, None, None);
+        let cover_id = wait_for_cover(&fixture.db, video.id).await;
+
+        let cover = fixture
+            .db
+            .media_assets()
+            .get(cover_id)
+            .await
+            .expect("lecture")
+            .expect("image enregistrée");
+        assert_eq!(cover.kind, MediaKind::Image);
+        assert_eq!(cover.mime, "image/jpeg");
+        assert_eq!((cover.width, cover.height), (Some(320), Some(240)));
+        assert!(
+            Path::new(&cover.storage_path).is_file(),
+            "le fichier de l'image existe"
+        );
+        assert!(cover.source_hash.starts_with("upload:sha256:frame#cover"));
+    }
+
+    #[tokio::test]
+    #[ignore = "nécessite ffmpeg installé"]
+    async fn le_rattrapage_donne_une_image_a_une_video_televersee() {
+        let fixture = fixture().await;
+        let input = fixture.storage.root().join("rattrapage.mp4");
+        black_intro(&fixture.config, &input);
+        let video = uploaded_video("upload:sha256:backfill", &input, fixture.now);
+        fixture
+            .db
+            .media_assets()
+            .insert(&video)
+            .await
+            .expect("vidéo");
+        on_board(&fixture, &video).await;
+        let context = ThumbnailContext {
+            config: Arc::new(fixture.config.clone()),
+            storage: fixture.storage.clone(),
+            db: fixture.db.clone(),
+            clock: Arc::new(SystemClock),
+            hub: None,
+        };
+
+        // One pass covers the upload: no platform filter keeps it out.
+        backfill_covers(&context).await;
+
+        let cover_id = fixture
+            .db
+            .media_assets()
+            .cover_of(video.id)
+            .await
+            .expect("lecture")
+            .expect("image du rattrapage");
+        let cover = fixture
+            .db
+            .media_assets()
+            .get(cover_id)
+            .await
+            .expect("lecture")
+            .expect("image enregistrée");
+        assert_eq!(cover.kind, MediaKind::Image);
+    }
 }

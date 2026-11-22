@@ -19,6 +19,7 @@ import {
   artworkOf,
   cardClicked,
   cardPicture,
+  cardPreviewAt,
   cardHovered,
   CLOSED_VIEW,
   drawerUsed,
@@ -26,6 +27,7 @@ import {
   pointerLeft,
   previewKey,
   pruneView,
+  realignPreviewAt,
   sameView,
   shownId,
   thumbnailOf,
@@ -248,14 +250,17 @@ const thumbObserver = new IntersectionObserver(
         continue;
       }
       thumbObserver.unobserve(entry.target);
-      const { mediaUrl, kind, itemId } = entry.target.dataset;
+      const { mediaUrl, kind, itemId, previewAt } = entry.target.dataset;
       if (!mediaUrl) {
         continue;
       }
+      // A video without a picture of its own is seeked a little way in: its
+      // first frame is often black (a fade-in), so `#t=0` showed a black card.
+      const seek = Number.parseFloat(previewAt);
       const media =
         kind === 'video'
           ? h('video', {
-              src: `${mediaUrl}#t=0.1`,
+              src: Number.isFinite(seek) ? `${mediaUrl}#t=${seek}` : mediaUrl,
               preload: 'metadata',
               muted: true,
               playsinline: true,
@@ -266,6 +271,16 @@ const thumbObserver = new IntersectionObserver(
       // The fallback glyph goes away as soon as the thumbnail can be shown.
       const glyph = entry.target.querySelector('.glyph');
       media.addEventListener('error', () => media.remove());
+      if (kind === 'video' && Number.isFinite(seek)) {
+        // The announced length can be stale: seeking past the real end paints
+        // a black card, so the seek moves back inside the video once known.
+        media.addEventListener('loadedmetadata', () => {
+          const at = realignPreviewAt(seek, media.duration);
+          if (at !== null) {
+            media.currentTime = at;
+          }
+        });
+      }
       media.addEventListener(kind === 'video' ? 'loadeddata' : 'load', () => {
         if (glyph) {
           glyph.remove();
@@ -360,12 +375,14 @@ function buildCard(entry) {
   const artwork = kind === 'audio' ? artworkOf(item) : null;
   // A video with a thumbnail shows that image instead of loading the video.
   const picture = cardPicture(item);
+  const previewAt = picture.kind === 'video' ? cardPreviewAt(item) : null;
   const thumb = h(
     'button',
     {
       class: `thumb${artwork ? ' has-artwork' : ''}`,
       'data-media-url': picture.url,
       'data-kind': picture.kind,
+      'data-preview-at': previewAt === null ? '' : String(previewAt),
       'data-item-id': item.id,
       'aria-label': `Détails de ${itemTitle(item)}`,
       onClick: (event) => {
@@ -496,6 +513,10 @@ function renderCard(item) {
     const picture = cardPicture(item);
     if (thumb && !thumb.querySelector('img, video') && picture.url) {
       thumb.dataset.mediaUrl = picture.url;
+      // The length may arrive with this payload (an import in progress), and
+      // it is where the card seeks its video.
+      const previewAt = picture.kind === 'video' ? cardPreviewAt(item) : null;
+      thumb.dataset.previewAt = previewAt === null ? '' : String(previewAt);
     }
   }
   entry.node.classList.toggle('is-selected', state.selectedId === item.id);

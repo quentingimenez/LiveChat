@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   cardClicked,
   cardHovered,
+  cardPreviewAt,
   CLOSED_VIEW,
   drawerUsed,
   artworkOf,
@@ -16,6 +17,7 @@ import {
   pointerLeft,
   previewKey,
   pruneView,
+  realignPreviewAt,
   sameView,
   shownId,
   thumbnailOf,
@@ -165,4 +167,41 @@ test('an image card shows the image', () => {
   const image = { media: { kind: 'image' }, mediaUrl: 'https://h/m/i?sig=1' };
   assert.deepEqual(cardPicture(image), { url: 'https://h/m/i?sig=1', kind: 'image' });
   assert.deepEqual(cardPicture({ media: { kind: 'image' } }), { url: null, kind: 'image' });
+});
+
+test('regression: a card seeks its video past the black first frame', () => {
+  // Many uploads open on a black fade-in: seeking to 0.1 s showed a black card.
+  const clip = { media: { kind: 'video', durationSec: 30 }, mediaUrl: 'https://h/m/v?sig=1' };
+  const at = cardPreviewAt(clip);
+  assert.ok(at > 0.1, `une vidéo de 30 s se cherche après 0,1 s : ${at}`);
+  assert.ok(at < 30, `et avant sa fin : ${at}`);
+});
+
+test('the seek point stays inside a short video', () => {
+  const short = cardPreviewAt({ media: { kind: 'video', durationSec: 1 } });
+  assert.ok(short > 0 && short < 1, `point de lecture dans la vidéo : ${short}`);
+});
+
+test('no seek point for a video of unknown length, an image or an audio', () => {
+  assert.equal(cardPreviewAt({ media: { kind: 'video' } }), null);
+  assert.equal(cardPreviewAt({ media: { kind: 'video', durationSec: 0 } }), null);
+  assert.equal(cardPreviewAt({ media: { kind: 'video', durationSec: Number.NaN } }), null);
+  assert.equal(cardPreviewAt({ media: { kind: 'image', durationSec: 30 } }), null);
+  assert.equal(cardPreviewAt({ media: { kind: 'audio', durationSec: 30 } }), null);
+  assert.equal(cardPreviewAt(null), null);
+});
+
+test('regression: a video shorter than announced is seeked inside itself', () => {
+  // A stale length sends the seek past the real end, where the browser paints
+  // a black frame: the announced 3 s of a 1.5 s video.
+  const at = realignPreviewAt(3, 1.5);
+  assert.ok(at !== null && at > 0 && at < 1.5, `point ramené dans la vidéo : ${at}`);
+});
+
+test('a seek point already inside the video is kept', () => {
+  assert.equal(realignPreviewAt(3, 30), null);
+  assert.equal(realignPreviewAt(0.3, 0.35), null);
+  assert.equal(realignPreviewAt(null, 30), null);
+  assert.equal(realignPreviewAt(3, Number.POSITIVE_INFINITY), null);
+  assert.equal(realignPreviewAt(3, 0), null);
 });

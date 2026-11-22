@@ -914,20 +914,46 @@ pub async fn get_media(
     method: axum::http::Method,
     headers: HeaderMap,
 ) -> Response {
+    // Mêmes avertissements que la route de lecture : un refus ici laisse une
+    // carte de board sans image, sans que le client puisse le distinguer d'un
+    // média encore en cours de chargement.
     let (client_id_raw, exp_raw, sig) = match (query.client_id, query.exp, query.sig) {
         (Some(client_id), Some(exp), Some(sig)) => (client_id, exp, sig),
-        _ => return super::media::media_url_invalid(),
+        _ => {
+            tracing::warn!(
+                asset_id = asset_id_raw,
+                "média du board demandé sans signature : refus"
+            );
+            return super::media::media_url_invalid();
+        }
     };
     let Ok(asset_id) = MediaAssetId::parse(asset_id_raw.trim()) else {
+        tracing::warn!(
+            asset_id = asset_id_raw,
+            "identifiant de média du board illisible : refus"
+        );
         return super::media::media_not_found();
     };
     let Ok(client_id) = OverlayClientId::parse(client_id_raw.trim()) else {
+        tracing::warn!(
+            client_id = client_id_raw,
+            "client overlay illisible : média du board refusé"
+        );
         return super::media::media_url_invalid();
     };
     let Ok(exp_sec) = exp_raw.trim().parse::<u64>() else {
+        tracing::warn!(
+            exp = exp_raw,
+            "expiration illisible : média du board refusé"
+        );
         return super::media::media_url_invalid();
     };
     if sig.len() != 64 || !sig.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        tracing::warn!(
+            asset_id = %asset_id.to_canonical(),
+            sig_len = sig.len(),
+            "signature mal formée : média du board refusé"
+        );
         return super::media::media_url_invalid();
     }
 
@@ -939,6 +965,12 @@ pub async fn get_media(
     let asset_key = asset_id.to_canonical();
     let client_key = client_id.to_canonical();
     if !crate::media_url::verify_board(secret.as_bytes(), &asset_key, &client_key, exp_sec, &sig) {
+        tracing::warn!(
+            asset_id = %asset_key,
+            client_id = %client_key,
+            exp_sec,
+            "signature d'URL de média du board invalide : refus"
+        );
         return super::media::media_url_invalid();
     }
 
@@ -955,6 +987,13 @@ pub async fn get_media(
         return super::media::media_url_invalid();
     }
     if crate::media_url::is_expired(exp_sec, now_sec) {
+        tracing::warn!(
+            asset_id = %asset_key,
+            client_id = %client_key,
+            exp_sec,
+            now_sec,
+            "URL de média du board expirée : refus"
+        );
         return super::media::media_url_expired();
     }
 
@@ -964,10 +1003,17 @@ pub async fn get_media(
     };
     let client = match db.overlay_clients().get(client_id).await {
         Ok(Some(client)) => client,
-        Ok(None) => return super::media::media_url_invalid(),
+        Ok(None) => {
+            tracing::warn!(client_id = %client_key, "client overlay inconnu : média du board refusé");
+            return super::media::media_url_invalid();
+        }
         Err(db_error) => return db_failure("overlay_media_board.media_client", &db_error),
     };
     if !client.is_active() {
+        tracing::warn!(
+            client_id = %client_key,
+            "client overlay inactif : média du board refusé"
+        );
         return super::media::media_url_invalid();
     }
 
@@ -989,15 +1035,31 @@ pub async fn get_media(
         .await
     {
         Ok(true) => {}
-        Ok(false) => return super::media::media_not_found(),
+        Ok(false) => {
+            tracing::warn!(
+                asset_id = %asset_key,
+                guild_id = client.guild_id.as_str(),
+                "média absent du board de la guilde : refus"
+            );
+            return super::media::media_not_found();
+        }
         Err(db_error) => return db_failure("overlay_media_board.media_binding", &db_error),
     }
     let asset = match db.media_assets().get(asset_id).await {
         Ok(Some(asset)) => asset,
-        Ok(None) => return super::media::media_not_found(),
+        Ok(None) => {
+            tracing::warn!(asset_id = %asset_key, "média du board inconnu : refus");
+            return super::media::media_not_found();
+        }
         Err(db_error) => return db_failure("overlay_media_board.media_asset", &db_error),
     };
     if !asset.is_ready() || asset.is_expired_at(timestamp) {
+        tracing::warn!(
+            asset_id = %asset_key,
+            status = ?asset.status,
+            expires_at = ?asset.expires_at,
+            "média du board indisponible ou expiré : refus"
+        );
         return super::media::media_not_found();
     }
     let file_path = match super::media::resolve_media_file(&state, &asset).await {

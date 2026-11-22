@@ -213,8 +213,9 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     } else {
         info!("worker de purge média désactivé (aucune base configurée)");
     }
-    // Board videos imported before platform thumbnails existed get theirs.
-    media::spawn_thumbnail_backfill(&state);
+    // Board videos without a picture get their cover (platform thumbnail, else
+    // one of their own frames).
+    media::spawn_cover_backfill(&state);
 
     // Runtime Discord facultatif : `Disabled` (token absent) et l'absence de base
     // ne bloquent jamais le démarrage. La sonde `/health` est branchée avant la

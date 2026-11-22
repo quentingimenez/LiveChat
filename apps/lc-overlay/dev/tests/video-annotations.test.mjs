@@ -6,6 +6,7 @@
 // same as before when nothing was drawn.
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import {
@@ -154,4 +155,27 @@ function neutralEdit() {
     flipV: false,
     output: 'same',
   };
+}
+
+// A blurred mask used to be a `backdrop-filter` element: inside the transformed
+// and colour-filtered `.av-inner`, the filtered backdrop leaked over the whole
+// frame on some machines and washed its colours out. Both mask modes are now
+// painted in a canvas of their own, like the server burns them.
+test('the mask blur is painted in a canvas, never with a backdrop filter', () => {
+  const css = read('styles/editor.css');
+  assert.equal(css.includes('backdrop-filter'), false);
+  assert.match(ruleOf(css, '.annot-mask-canvas.is-blur'), /image-rendering:\s*auto/);
+  const source = read('views/editor/video-annotations.js');
+  assert.match(source, /context\.filter = `blur\(/);
+  assert.equal(/backdropFilter\s*=/.test(source), false);
+});
+
+function read(path) {
+  return readFileSync(new URL(`../../web/app/${path}`, import.meta.url), 'utf8');
+}
+
+function ruleOf(css, selector) {
+  const start = css.indexOf(`${selector} {`);
+  assert.ok(start >= 0, `missing rule ${selector}`);
+  return css.slice(start, css.indexOf('}', start) + 1);
 }

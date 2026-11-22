@@ -115,18 +115,30 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
     placeSelection();
   }
 
-  // Pixel masks follow the video: they are redrawn for every frame it shows.
-  // Blur masks are plain DOM: `backdrop-filter` blurs the video behind them.
+  // The masks follow the video: they are redrawn for every frame it shows.
+  // Both modes paint into a canvas of their own rather than blurring the stage
+  // with `backdrop-filter`: a filtered backdrop inside the transformed and
+  // filtered `.av-inner` leaked over the whole frame on some machines, and a
+  // canvas keeps the preview equal to what the server burns in.
   function paintMasks() {
     const video = source();
     if (!video || video.readyState < 2) {
       return;
     }
+    const { width, height } = size();
     for (const view of maskViews) {
+      const { x, y, w, h } = view.rect;
+      const context = view.context;
+      ensureSize(view.canvas, Math.max(1, Math.round(w)), Math.max(1, Math.round(h)));
+      context.clearRect(0, 0, view.canvas.width, view.canvas.height);
       if (view.object.mode === 'blur') {
+        // Drawn at the rectangle's offset so the blur samples the pixels around
+        // it, then clipped by the canvas itself.
+        context.filter = `blur(${Math.max(1, view.object.strength).toFixed(1)}px)`;
+        context.drawImage(video, -x, -y, width, height);
+        context.filter = 'none';
         continue;
       }
-      const { x, y, w, h } = view.rect;
       const block = Math.max(2, view.object.strength);
       const columns = Math.max(1, Math.round(w / block));
       const rows = Math.max(1, Math.round(h / block));
@@ -134,8 +146,6 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
       const small = tiny.getContext('2d');
       small.clearRect(0, 0, columns, rows);
       small.drawImage(video, x, y, w, h, 0, 0, columns, rows);
-      const context = view.context;
-      context.clearRect(0, 0, view.canvas.width, view.canvas.height);
       context.imageSmoothingEnabled = false;
       context.drawImage(tiny, 0, 0, columns, rows, 0, 0, view.canvas.width, view.canvas.height);
     }
@@ -205,7 +215,7 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
     box.style.height = `${cssHeight}px`;
     drawn.style.width = `${cssWidth}px`;
     drawn.style.height = `${cssHeight}px`;
-    syncMasks(mapping);
+    syncMasks();
     placeSelection();
   }
 
@@ -218,9 +228,9 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
     return { x, y, w: right - x, h: bottom - y };
   }
 
-  // Rebuilds the mask elements: a blurred rectangle, or a canvas repainted from
-  // the video for every frame.
-  function syncMasks(mapping) {
+  // Rebuilds the mask elements: a canvas repainted from the video for every
+  // frame, pixelized or blurred, laid over the frame at its source rectangle.
+  function syncMasks() {
     maskViews = [];
     const { width, height } = size();
     const wanted = list().filter((object) => object.type === 'mask');
@@ -230,23 +240,16 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
       if (rect.w < 1 || rect.h < 1) {
         continue;
       }
-      const element = h('div', { class: `annot-mask is-${object.mode === 'blur' ? 'blur' : 'pixel'}` });
+      const blur = object.mode === 'blur';
+      const element = h('div', { class: `annot-mask is-${blur ? 'blur' : 'pixel'}` });
       element.style.left = `${(rect.x / width) * 100}%`;
       element.style.top = `${(rect.y / height) * 100}%`;
       element.style.width = `${(rect.w / width) * 100}%`;
       element.style.height = `${(rect.h / height) * 100}%`;
-      let canvas = null;
-      let context = null;
-      if (object.mode === 'blur') {
-        // The server blurs with a gaussian of `strength` source pixels: the
-        // preview uses the same radius, scaled to the stage.
-        element.style.setProperty('--mask-blur', `${Math.max(1, object.strength * mapping.scale).toFixed(1)}px`);
-      } else {
-        canvas = makeCanvas(rect.w, rect.h);
-        context = canvas.getContext('2d');
-        canvas.className = 'annot-mask-canvas';
-        element.append(canvas);
-      }
+      const canvas = makeCanvas(Math.max(1, Math.round(rect.w)), Math.max(1, Math.round(rect.h)));
+      const context = canvas.getContext('2d');
+      canvas.className = `annot-mask-canvas${blur ? ' is-blur' : ''}`;
+      element.append(canvas);
       masks.append(element);
       maskViews.push({ object, element, canvas, context, rect });
     }
@@ -416,18 +419,18 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
         object.x2 = point.x;
         object.y2 = point.y;
       }
-      syncMasks(view());
+      syncMasks();
       paint();
     } else if (drag.kind === 'move') {
       drag.moved = true;
       replaceObject(translated(drag.origin, point.x - drag.start.x, point.y - drag.start.y));
-      syncMasks(view());
+      syncMasks();
       paint();
     } else {
       drag.moved = true;
       const factor = clamp(Math.hypot(point.x - drag.anchor.x, point.y - drag.anchor.y) / Math.max(1, drag.reach), 0.05, 40);
       replaceObject(scaled(drag.origin, drag.anchor, factor));
-      syncMasks(view());
+      syncMasks();
       paint();
     }
   });
@@ -591,7 +594,7 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
           max: 20,
           value: clamp(Math.round(object.strength / unit()), 2, 20),
           defaultValue: styleDefaults.maskStrength,
-          onInput: (value) => { object.strength = value * unit(); syncMasks(view()); paint(); },
+          onInput: (value) => { object.strength = value * unit(); syncMasks(); paint(); },
           onCommit: commit,
         }),
       );

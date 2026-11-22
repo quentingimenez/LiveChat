@@ -103,6 +103,32 @@ impl GuildBansRepository {
         Ok(count > 0)
     }
 
+    /// `true` when this member — by its id or by the Discord account linked to
+    /// it — is banned from the guild.
+    ///
+    /// A ban recorded from the overlay carries both identities; a ban imported
+    /// from Discord may carry the account alone (no member row), so checking
+    /// the id alone would miss it.
+    pub async fn is_member_banned(
+        &self,
+        guild_id: &GuildId,
+        member_id: GuildMemberId,
+        discord_user_id: Option<&str>,
+    ) -> DbResult<bool> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM guild_bans \
+             WHERE guild_id = ? \
+               AND (member_id = ? OR (? IS NOT NULL AND discord_user_id = ?))",
+        )
+        .bind(guild_id.as_str())
+        .bind(member_id.to_canonical())
+        .bind(discord_user_id)
+        .bind(discord_user_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count > 0)
+    }
+
     /// Lifts a ban. Returns `false` when it does not exist in this guild.
     pub async fn delete(&self, guild_id: &GuildId, id: GuildBanId) -> DbResult<bool> {
         let result = sqlx::query("DELETE FROM guild_bans WHERE id = ? AND guild_id = ?")

@@ -50,6 +50,14 @@
 //! membre, ou le membre existant visé par un code « appareil »
 //! (`guild_invites.member_id`).
 //!
+//! Un bannissement (`guild_bans`) ferme aussi les invitations : une invitation
+//! qui nomme un membre banni — le membre rattaché d'un code « appareil » ou son
+//! émetteur — est refusée `403 member_banned` **sans être consommée**. La
+//! personne qui consomme une invitation ouverte n'a aucune identité dans la
+//! requête : seuls les membres nommés par l'invitation peuvent être confrontés
+//! aux bans. Le contrôle est refait à la consommation, car le bannissement
+//! révoque les invitations sans transaction commune avec cette requête.
+//!
 //! ## Réponse (200)
 //!
 //! ```json
@@ -81,7 +89,7 @@
 //! | 400 | `{"error":"invalid_payload"}` (code absent) |
 //! | 400 | `{"error":"display_name_required"}` (nouveau membre sans pseudo utilisable) |
 //! | 403 | `{"error":"pairing_code_scope_mismatch"}` (code réservé à l'extension) |
-//! | 403 | `{"error":"member_banned"}` (code émis par un compte Discord banni de la guilde) |
+//! | 403 | `{"error":"member_banned"}` (code émis par un compte Discord banni, ou invitation nommant un membre banni) |
 //! | 404 | `{"error":"pairing_code_invalid_or_expired"}` |
 //! | 409 | `{"error":"overlay_client_conflict"}` (collision de token, très improbable) |
 //! | 500 | `{"error":"internal_error"}` |
@@ -93,8 +101,8 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use axum::Json;
 use lc_domain::{
-    GuildId, GuildMember, GuildMemberId, GuildRole, OverlayClient, OverlayClientId, PairingCode,
-    PairingCodeEntry, PairingMode,
+    GuildId, GuildInvite, GuildMember, GuildMemberId, GuildRole, OverlayClient, OverlayClientId,
+    PairingCode, PairingCodeEntry, PairingMode,
 };
 use time::UtcDateTime;
 
@@ -176,6 +184,64 @@ pub(super) struct PairConsumeRequest {
 
 /// Longueur maximale d'un libellé de client (garde-fou base/affichage).
 const MAX_LABEL_LEN: usize = 200;
+
+/// Refuse une invitation qui nomme un membre banni de la guilde.
+///
+/// Le porteur d'une invitation ouverte n'a aucune identité dans la requête :
+/// seuls le membre rattaché (code « appareil ») et, pour une invitation créée
+/// depuis l'overlay, son émetteur peuvent être confrontés aux bans. Un
+/// membre nommé mais introuvable ou retiré (hors ban) rend l'invitation
+/// inexploitable, sans la consommer.
+///
+/// Le contrôle de l'émetteur est une défense en profondeur assumée : bannir ou
+/// retirer un membre révoque déjà les invitations qu'il a émises
+/// (`guild::remove_member` → `guild_invites().revoke_by_member`), mais une
+/// ligne qui a survécu (course entre les deux requêtes, révocation manquée) ne
+/// doit pas rouvrir la guilde.
+async fn ensure_invite_members_allowed(
+    db: &lc_db::Db,
+    invite: &GuildInvite,
+) -> Result<(), Response> {
+    let mut named = [invite.member_id, invite.created_by_member_id];
+    // Le même membre peut être cible et émetteur : ne le lire qu'une fois.
+    if named[0] == named[1] {
+        named[1] = None;
+    }
+    for member_id in named.into_iter().flatten() {
+        let member = match db.guild_members().get(member_id).await {
+            Ok(Some(member)) if member.guild_id == invite.guild_id => member,
+            Ok(_) => {
+                return Err(error(
+                    StatusCode::NOT_FOUND,
+                    "pairing_code_invalid_or_expired",
+                ))
+            }
+            Err(db_error) => return Err(db_failure("overlay_pair.invite_member", &db_error)),
+        };
+        // Un banni est aussi `removed` : tester le ban d'abord, pour renvoyer
+        // `member_banned` plutôt qu'un 404 indistinguable.
+        match db
+            .guild_bans()
+            .is_member_banned(
+                &invite.guild_id,
+                member.id,
+                member.discord_user_id.as_deref(),
+            )
+            .await
+        {
+            Ok(true) => return Err(error(StatusCode::FORBIDDEN, "member_banned")),
+            Ok(false) => {}
+            Err(db_error) => return Err(db_failure("overlay_pair.ban_lookup", &db_error)),
+        }
+        if !member.is_active() {
+            return Err(error(
+                StatusCode::NOT_FOUND,
+                "pairing_code_invalid_or_expired",
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// Handler `POST /overlay/pair/consume`.
 pub async fn consume_pairing(
@@ -263,6 +329,14 @@ pub async fn consume_pairing(
     };
     if invite.is_none() && pairing_entry.is_none() {
         return error(StatusCode::NOT_FOUND, "pairing_code_invalid_or_expired");
+    }
+
+    // Une invitation ne doit jamais rouvrir la guilde à un membre banni :
+    // contrôle avant la consommation et avant tout rattachement.
+    if let Some(invite) = &invite {
+        if let Err(response) = ensure_invite_members_allowed(db, invite).await {
+            return response;
+        }
     }
 
     let requested_display_name = payload

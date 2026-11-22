@@ -14,6 +14,7 @@ use crate::error::{MediaError, MediaErrorCode, MediaResult};
 use crate::guard;
 use crate::http;
 use crate::process;
+use crate::resolve::tenor;
 use crate::resolve::tiktok;
 use crate::resolve::twitter;
 use crate::source::{
@@ -86,6 +87,7 @@ pub async fn download_source(
         SourceKind::YouTube => download_youtube(config, &source.canonical_url, temp_dir).await,
         SourceKind::TikTok => download_tiktok(source, config, temp_dir).await,
         SourceKind::Twitter => download_twitter(source, resolved, config, temp_dir).await,
+        SourceKind::Tenor => download_tenor(source, resolved, config, temp_dir).await,
         SourceKind::LocalFile => Err(MediaError::new(
             MediaErrorCode::UnsupportedSource,
             "les sources locales (file:) sont refusées par la politique média",
@@ -118,6 +120,7 @@ async fn ensure_download_allowed(source: &MediaSource) -> MediaResult<()> {
         SourceKind::YouTube
         | SourceKind::TikTok
         | SourceKind::Twitter
+        | SourceKind::Tenor
         | SourceKind::DirectMedia => {
             guard::validate_target(&source.canonical_url).await?;
             Ok(())
@@ -203,6 +206,60 @@ async fn download_twitter(
     );
     let options = YtdlpOptions::default();
     download_with_ytdlp(config, &source.canonical_url, temp_dir, &options).await
+}
+
+/// Télécharge le média d'une page Tenor : le MP4 annoncé par la page, puis le
+/// GIF quand le MP4 est absent ou inaccessible.
+///
+/// Le résolveur a déjà lu la page ; si son URL a échoué (CDN, expiration), la
+/// page est relue une fois pour récupérer les URLs courantes.
+async fn download_tenor(
+    source: &MediaSource,
+    resolved: Option<&crate::resolve::ResolvedMedia>,
+    config: &MediaConfig,
+    temp_dir: &Path,
+) -> MediaResult<DownloadResult> {
+    let mut tried: Vec<String> = Vec::new();
+    let mut primary_error: Option<MediaError> = None;
+    if let Some(media_url) = resolved.and_then(|resolved| resolved.media_url.as_deref()) {
+        tried.push(media_url.to_string());
+        match download_http(config, media_url, temp_dir, &[]).await {
+            Ok(download) => return Ok(download),
+            Err(error) => {
+                tracing::debug!(
+                    url = media_url,
+                    "média Tenor annoncé inaccessible : {error}"
+                );
+                primary_error = Some(error);
+            }
+        }
+    }
+    let page = match tenor::fetch_tenor_page(config, &source.canonical_url).await {
+        Ok(page) => page,
+        // L'échec du média annoncé explique mieux le problème qu'une relecture
+        // de page qui échoue pour la même raison réseau.
+        Err(error) => return Err(primary_error.unwrap_or(error)),
+    };
+    for media_url in page.media_urls() {
+        if tried.iter().any(|candidate| candidate == media_url) {
+            continue;
+        }
+        match download_http(config, media_url, temp_dir, &[]).await {
+            Ok(download) => return Ok(download),
+            Err(error) => {
+                tracing::debug!(url = media_url, "média Tenor inaccessible : {error}");
+                if primary_error.is_none() {
+                    primary_error = Some(error);
+                }
+            }
+        }
+    }
+    Err(primary_error.unwrap_or_else(|| {
+        MediaError::new(
+            MediaErrorCode::MediaNotFound,
+            "la page Tenor ne contient aucun média téléchargeable",
+        )
+    }))
 }
 
 /// Télécharge une photo de tweet en taille originale, repli sur l'URL nue.

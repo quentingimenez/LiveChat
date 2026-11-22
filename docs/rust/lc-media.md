@@ -134,14 +134,16 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
 
 ### Sources (`source`)
 
-- `SourceKind` : `YouTube`, `TikTok`, `Twitter`, `DirectMedia`, `LocalFile`, `Gtts`,
-  `Unknown`.
+- `SourceKind` : `YouTube`, `TikTok`, `Twitter`, `Tenor`, `DirectMedia`, `LocalFile`,
+  `Gtts`, `Unknown`.
 - `MediaSource { original, canonical_url, source_hash, source_kind, start_offset_sec }`.
 - `canonicalize_source_url(raw)` : trim, supprime le fragment ; YouTube normalisé en
   `https://www.youtube.com/watch?v=<id>` (y compris `youtu.be`, `shorts`, `embed`, `live`) ;
   TikTok `https://www.tiktok.com/@_/{video|photo}/<id>` ; un partage de
   commentaire conserve `?share_comment_id=<id>` dans l'URL canonique (donc dans
-  `source_hash`, une carte par commentaire) ; `file:` et `gtts:` conservés.
+  `source_hash`, une carte par commentaire) ; Tenor `https://tenor.com/view/<id>` depuis
+  `/view/<slug>-gif-<id>`, `/embed/<id>`, la locale et la query (partage) ; `file:` et
+  `gtts:` conservés.
 - `source_hash(url)` : SHA-256 hex minuscule (clé content-addressed).
 - `parse_youtube_start_offset(url)` : `t`/`start` en query ou fragment, formats
   `123`, `123s`, `mm:ss`, `hh:mm:ss`, `1h2m3s`.
@@ -159,6 +161,11 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
 `resolve_media(config, source) -> MediaResult<ResolvedMedia>`.
 
 - YouTube : oEmbed (titre/auteur/dimensions) puis repli `yt-dlp --dump-json`.
+- Tenor : lecture de la page `/view/<id>` et de ses balises Open Graph — MP4
+  (`og:video:secure_url`, `og:video`, `twitter:player:stream`), GIF
+  (`og:image`/`twitter:image`), dimensions (`og:video:*` puis `og:image:*`) et titre
+  (`og:title`, suffixe « GIF - … » retiré). Le MP4 est préféré au GIF ; sans lui, le GIF
+  est téléchargé et normalisé en vidéo par le transcodage.
 - TikTok : oEmbed puis scraping de la page (`__UNIVERSAL_DATA_FOR_REHYDRATION__`,
   `__FRONTITY_CONNECT_STATE__`), détection des murs d'authentification, secours sur
   l'embed `/embed/v2/<id>`, extraction des carrousels photo (max 35 slides, 3 candidats
@@ -181,7 +188,7 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
 ### Téléchargement (`download`)
 
 - `download_source(source, resolved, config, temp_dir)` : dispatch par type de source
-  (YouTube, TikTok, Twitter, HTTP direct) après validation de la cible ; les sources
+  (YouTube, TikTok, Twitter, Tenor, HTTP direct) après validation de la cible ; les sources
   `file:`/`gtts:` sont **refusées** (`UNSUPPORTED_SOURCE`) — l'ancien `download_local`
   a été supprimé avec la garde LFI.
 - HTTP streaming : `reqwest` rustls via `http::send_guarded` (garde SSRF, redirections
@@ -191,6 +198,9 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
   avc1/mp4 borné à 1080p, `--max-filesize`, fusion mp4, cookies TikTok générés au format
   Netscape ; sur YouTube, un échec auth/bot rejoue avec `youtube:player_client=android` et
   un échec de format rejoue avec un sélecteur relâché.
+- `download_tenor` : télécharge `ResolvedMedia.media_url` (MP4) puis, en cas d'échec ou
+  d'absence, relit la page et essaie la vidéo et le GIF non encore tentés ; l'erreur
+  primaire (taille, accès) est conservée quand tous les candidats échouent.
 - `download_tiktok` : si l'URL canonique porte `share_comment_id`, tente
   d'abord la carte de commentaire (`tiktok_comment`) puis, en cas d'échec
   (API indisponible, commentaire introuvable), retombe sur la vidéo ; sinon
@@ -463,8 +473,9 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
 
 ## Tests
 
-- 232 tests unitaires dans la crate (URL/hash, résolution offline sur fixtures, parsing
-  HTML/JSON, arguments ffmpeg, décisions de copie, éviction LRU, configuration, erreurs,
+- 320 tests unitaires dans la crate (URL/hash, résolution offline sur fixtures, parsing
+  HTML/JSON — dont l'extraction Open Graph Tenor et le repli vidéo → GIF —, arguments
+  ffmpeg, décisions de copie, éviction LRU, configuration, erreurs,
   garde SSRF : schémas/UNC, plages IPv4/IPv6, redirections ; stockage : racine
   canonicalisée fail-closed, chemins de transit, publication atomique, purge ciblée des
   variantes, confinement des suppressions — chemins hors racine refusés, liens
@@ -487,9 +498,10 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
   avec quatre images sous la limite) et 4 tests `#[ignore]` — galerie de rendus
   écrite dans `target/tiktok-comment-gallery/`, lien court réel → carte vidéo,
   commentaire partagé réel, et carrousel photo TikTok avec diaporama et audio.
-- `tests/offline.rs` : 7 tests sur fixtures (`tiktok_video.html`, `tiktok_photo.html`,
+- `tests/offline.rs` : 8 tests sur fixtures (`tiktok_video.html`, `tiktok_photo.html`,
   `twitter_syndication.json`, `yt_dlp_dump.json`, `youtube_oembed.json`,
-  `tiktok_oembed.json`).
+  `tiktok_oembed.json`) et sur la classification/canonicalisation Tenor (lien partagé
+  `/fr/view/…-gif-<id>`, `/embed/<id>`, recherche et CDN inchangés).
 - `tests/ssrf_guard.rs` : 5 tests d'intégration sans réseau — refus loopback **avant toute
   connexion** (sentinelle `TcpListener` + `accept()`/`WouldBlock`), schémas/UNC refusés,
   redirection interne refusée, IP publique littérale acceptée sans DNS, plages
@@ -497,7 +509,8 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
 - `tests/tweet_card_ffmpeg.rs` : 2 tests `#[ignore]` de composition réelle — vidéo 16:9
   et vidéo verticale 9:16 incrustées dans la carte (durée conservée, largeur de carte
   1080, H.264) ; nécessitent `ffmpeg`.
-- `tests/network.rs` : 11 tests marqués `#[ignore]` (YouTube e2e, TikTok en ligne,
+- `tests/network.rs` : 12 tests marqués `#[ignore]` (YouTube e2e, Tenor e2e — page
+  partagée → MP4, `source_kind` et titre —, TikTok en ligne,
   cartes tweet — texte, photo, tweet cité, vidéo —, échantillon `testsrc` ffmpeg) ;
   ils nécessitent réseau + `ffmpeg`/`yt-dlp`.
 - Doctest de la crate : 1.

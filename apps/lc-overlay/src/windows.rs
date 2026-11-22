@@ -11,7 +11,9 @@ use tauri::{
 };
 
 use crate::config::OverlayConfig;
-use crate::display::{self, DisplayInfo, DisplaySelection, GeometrySync, OverlayGeometry};
+use crate::display::{
+    self, DisplayInfo, DisplaySelection, GeometrySync, OverlayGeometry, SelectionSource,
+};
 use crate::state::AppState;
 #[cfg(windows)]
 use crate::win32;
@@ -110,20 +112,42 @@ pub fn collect_displays(app: &AppHandle<Wry>) -> (Vec<DisplayInfo>, Option<usize
     (displays, primary_index)
 }
 
-/// Écran cible d'après la configuration persistée.
-pub fn selected_display(app: &AppHandle<Wry>) -> Option<DisplayInfo> {
+/// Écran cible d'après la configuration persistée, avec la source du choix.
+pub fn selected_display(app: &AppHandle<Wry>) -> Option<(DisplayInfo, SelectionSource)> {
     let (displays, primary_index) = collect_displays(app);
     if displays.is_empty() {
         return None;
     }
     let config = app.state::<AppState>().config_snapshot();
-    display::select_display(&config, &displays, primary_index)
-        .and_then(|index| displays.into_iter().nth(index))
+    let selected = display::resolve_display(&config, &displays, primary_index)?;
+    let display = displays.into_iter().nth(selected.index)?;
+    Some((display, selected.source))
 }
 
 /// Mémoire de sélection à écrire dans la configuration (uniquement si changé).
-fn persist_display_selection(app: &AppHandle<Wry>, display: &DisplayInfo, config: &OverlayConfig) {
-    let selection = DisplaySelection::from_display(display);
+///
+/// Seule une sélection sûre est enregistrée ([`SelectionSource::is_confident`]) :
+/// un repli (index, primaire, premier) positionne l'overlay mais ne doit jamais
+/// remplacer l'écran configuré. L'écran peut simplement ne pas être encore
+/// énuméré au démarrage (écran virtuel qui s'attache, moniteur en veille) ;
+/// persister le repli écrasait définitivement le choix de l'utilisateur.
+fn persist_display_selection(
+    app: &AppHandle<Wry>,
+    target: &DisplayInfo,
+    source: SelectionSource,
+    config: &OverlayConfig,
+) {
+    let target_key = target.key();
+    if !source.is_confident() {
+        tracing::warn!(
+            configured_key = ?config.display_key,
+            %target_key,
+            ?source,
+            "écran configuré introuvable : positionnement de secours, sélection non enregistrée"
+        );
+        return;
+    }
+    let selection = DisplaySelection::from_display(target);
     let already_saved = config.display_index == selection.display_index
         && config.display_key == selection.display_key
         && config.display_label == selection.display_label;
@@ -155,7 +179,7 @@ fn position_overlay(app: &AppHandle<Wry>, persist: bool) -> Option<DisplayInfo> 
         tracing::warn!("fenêtre overlay absente");
         return None;
     };
-    let Some(target) = selected_display(app) else {
+    let Some((target, source)) = selected_display(app) else {
         tracing::warn!("aucun écran disponible");
         return None;
     };
@@ -163,11 +187,12 @@ fn position_overlay(app: &AppHandle<Wry>, persist: bool) -> Option<DisplayInfo> 
     apply_overlay_geometry(&window, geometry);
     if persist {
         let config = app.state::<AppState>().config_snapshot();
-        persist_display_selection(app, &target, &config);
+        persist_display_selection(app, &target, source, &config);
     }
     tracing::info!(
         display_index = target.index,
         display_key = %target.key(),
+        ?source,
         x = geometry.x,
         y = geometry.y,
         width = geometry.width,
@@ -199,7 +224,7 @@ fn sync_overlay_geometry(app: &AppHandle<Wry>) -> bool {
     let Some(window) = window(app, OVERLAY_LABEL) else {
         return false;
     };
-    let Some(target) = selected_display(app) else {
+    let Some((target, source)) = selected_display(app) else {
         return false;
     };
     let target_geometry = OverlayGeometry::from_display(&target);
@@ -218,9 +243,10 @@ fn sync_overlay_geometry(app: &AppHandle<Wry>) -> bool {
     );
     apply_overlay_geometry(&window, target_geometry);
     // A `displayKey` carries the size: keeping the old one would send the next
-    // launch back to the previous geometry.
+    // launch back to the previous geometry. `persist_display_selection` only
+    // rewrites a confident selection, never a fallback.
     let config = app.state::<AppState>().config_snapshot();
-    persist_display_selection(app, &target, &config);
+    persist_display_selection(app, &target, source, &config);
     true
 }
 

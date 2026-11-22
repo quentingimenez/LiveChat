@@ -519,7 +519,13 @@ fn apply_display_patch(
         }
         Value::String(key) => {
             let key = key.trim();
-            let Some(display) = displays.iter().find(|display| display.key() == key) else {
+            // A legacy key (`x,y,w,h,index`) can still arrive from a board page
+            // rendered before the update: it names the same screen, and the
+            // selection stored below migrates it to the stable key.
+            let Some(display) = displays
+                .iter()
+                .find(|display| display.key() == key || display.legacy_key() == key)
+            else {
                 return Err(SettingsError::new("selectedDisplayKey", "écran inconnu"));
             };
             let selection = crate::display::DisplaySelection::from_display(display);
@@ -989,6 +995,38 @@ mod tests {
         )
         .expect_err("unknown display");
         assert_eq!(error.field, "selectedDisplayKey");
+    }
+
+    #[test]
+    fn display_key_without_the_enumeration_index_is_applied() {
+        // La clé publiée par l'interface n'inclut plus l'index d'énumération :
+        // elle doit correspondre à l'écran même quand l'ordre a changé.
+        let displays = sample_displays();
+        let stable_key = "-1920,0,1920,1080";
+        let patched = apply_settings_patch(
+            &paired_config(),
+            &json!({ "selectedDisplayKey": stable_key }),
+            &displays,
+        )
+        .expect("stable display key");
+        assert_eq!(patched.display_index, Some(1));
+        assert_eq!(patched.display_key.as_deref(), Some(stable_key));
+    }
+
+    #[test]
+    fn a_legacy_display_key_is_still_applied() {
+        // Clé « x,y,w,h,index » d'une page de réglages antérieure : elle
+        // désigne le même écran et la frappe suivante la migre.
+        let displays = sample_displays();
+        let legacy_key = "-1920,0,1920,1080,1";
+        let patched = apply_settings_patch(
+            &paired_config(),
+            &json!({ "selectedDisplayKey": legacy_key }),
+            &displays,
+        )
+        .expect("legacy display key");
+        assert_eq!(patched.display_index, Some(1));
+        assert_eq!(patched.display_key.as_deref(), Some("-1920,0,1920,1080"));
     }
 
     #[test]

@@ -34,6 +34,36 @@ Test-Case 'AMO signing step receives the credentials and uses the pinned binary'
     Assert-True ($workflow -match '\.\./tools/amo-sign/node_modules/\.bin/web-ext sign') 'workflow must call the local pinned web-ext binary'
 }
 
+Test-Case 'Overlay workflow keeps signing secrets out of the build step' {
+    $overlay = Get-Content -Raw (Join-Path $script:RepoRoot '.github/workflows/overlay-tauri.yml')
+    $build = [regex]::Match($overlay, '(?ms)- name: Build installer \(unsigned for the updater\)\s*\r?\n(.*?)(?=\r?\n      - name:|\z)').Groups[1].Value
+    Assert-True ($build.Length -gt 0) 'overlay build step not found'
+    Assert-True ($build -match 'tauri\.unsigned\.conf\.json') 'overlay build must use the unsigned config'
+    Assert-True ($build -notmatch 'TAURI_SIGNING_PRIVATE_KEY') 'the build step must not see the signing key'
+    Assert-True ($build -notmatch 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD') 'the build step must not see the signing password'
+    Assert-Equal 1 ([regex]::Matches($overlay, 'cargo tauri build --ci').Count) 'the workflow must have a single unsigned build step'
+
+    Assert-Equal 1 ([regex]::Matches($overlay, 'secrets\.TAURI_SIGNING_PRIVATE_KEY\s*\}\}').Count) 'the key must be referenced exactly once in the workflow'
+    Assert-Equal 1 ([regex]::Matches($overlay, 'secrets\.TAURI_SIGNING_PRIVATE_KEY_PASSWORD\s*\}\}').Count) 'the password must be referenced exactly once in the workflow'
+}
+
+Test-Case 'Overlay signing step signs the collected installer' {
+    $overlay = Get-Content -Raw (Join-Path $script:RepoRoot '.github/workflows/overlay-tauri.yml')
+    $sign = [regex]::Match($overlay, '(?ms)- name: Sign updater artifact\s*\r?\n(.*?)(?=\r?\n      - name:|\z)').Groups[1].Value
+    Assert-True ($sign.Length -gt 0) 'overlay signing step not found'
+    Assert-True ($sign -match '(?m)^        env:\s*$') 'signing step must define a step-level env block'
+    Assert-True ($sign -match 'TAURI_SIGNING_PRIVATE_KEY:') 'signing step must map the private key'
+    Assert-True ($sign -match 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD:') 'signing step must map the password'
+    Assert-True ($sign -match 'cargo tauri signer sign') 'signing step must call tauri signer'
+    Assert-True ($sign -match '--app-version') 'signing step must bind the signature to the app version'
+    Assert-True ($sign -match 'dist/\*') 'signing step must sign the installer collected in dist'
+    Assert-True ($sign -notmatch 'cargo tauri build') 'signing step must not run a build'
+    Assert-True ($sign -notmatch '--password') 'the password must come from the environment, not argv'
+
+    $latest = [regex]::Match($overlay, '(?ms)- name: Write latest\.json\s*\r?\n(.*?)(?=\r?\n      - name:|\z)').Groups[1].Value
+    Assert-True ($latest -match 'dist/\$\(\$installer\.Name\)\.sig') 'latest.json must read the signature next to the collected installer'
+}
+
 Test-Case 'AMO signing tool is pinned with a lockfile integrity' {
     $package = Get-Content -Raw (Join-Path $script:RepoRoot 'tools/amo-sign/package.json') | ConvertFrom-Json
     $pin = $package.devDependencies.PSObject.Properties['web-ext'].Value

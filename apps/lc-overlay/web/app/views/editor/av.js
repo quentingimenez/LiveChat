@@ -20,6 +20,7 @@ import {
   buildRecipe,
   centeredCrop,
   clamp,
+  croppedPictureSize,
   cutRange,
   defaultAvEdit,
   displayScaleForStorage,
@@ -191,6 +192,20 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     }
     const crop = resultCrop();
     return rotatedSize(crop.width * width, crop.height * height, resultTurns());
+  }
+
+  // Same size in the whole pixels the server keeps: the crop truncates each
+  // side to an even number, so a fractional crop never shows `198.53 px`.
+  function resultPixelSize() {
+    if (!isVideo) {
+      return resultPictureSize();
+    }
+    return croppedPictureSize({
+      width: media.videoWidth || 0,
+      height: media.videoHeight || 0,
+      crop: resultCrop(),
+      quarterTurns: resultTurns(),
+    });
   }
 
   function paintPreview(target) {
@@ -1174,7 +1189,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   // Size the media takes on the overlay: natural size × scale, capped by the
   // display zone minus its header.
   function displaySizeLine() {
-    const size = resultPictureSize();
+    const size = resultPixelSize();
     if (!size || !preview) {
       return '';
     }
@@ -1195,7 +1210,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   }
 
   function sizePanel() {
-    const picture = resultPictureSize() || { width: 0, height: 0 };
+    const picture = resultPixelSize() || { width: 0, height: 0 };
     const line = h('p', { class: 'meta' }, displaySizeLine());
     const value = h('span', { class: 'editor-value' }, `${displayScale}\u00A0%`);
     // Same span as the number field, so the presets never push the cursor out of range.

@@ -438,6 +438,26 @@ export function rotatedSize(width, height, quarterTurns) {
   return quarterTurns % 2 === 0 ? { width, height } : { width: height, height: width };
 }
 
+// Size of a picture after the recipe's crop, in the whole pixels ffmpeg keeps:
+// each side is truncated to an even number (`crop=w='max(2,trunc(iw*w/2)*2)'`,
+// crates/lc-media/src/edit.rs), then swapped by a quarter turn. A fractional
+// crop fraction must never leak as `198.53 px` into the editor's panel.
+export function croppedPictureSize({ width, height, crop, quarterTurns = 0 } = {}) {
+  const naturalWidth = Math.round(Number(width));
+  const naturalHeight = Math.round(Number(height));
+  if (!(naturalWidth > 0) || !(naturalHeight > 0)) {
+    return null;
+  }
+  const ratio = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.min(1, Math.max(0, number)) : 1;
+  };
+  const side = (size, fraction) => Math.max(2, 2 * Math.trunc((size * fraction) / 2));
+  const croppedWidth = crop ? side(naturalWidth, ratio(crop.width)) : naturalWidth;
+  const croppedHeight = crop ? side(naturalHeight, ratio(crop.height)) : naturalHeight;
+  return rotatedSize(croppedWidth, croppedHeight, quarterTurns);
+}
+
 // Scale bringing a picture inside `maxSide` pixels (never above 1).
 export function fitScale(width, height, maxSide) {
   const longest = Math.max(width, height);

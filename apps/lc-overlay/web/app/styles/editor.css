@@ -205,6 +205,9 @@
 
 .editor-section {
   display: grid;
+  /* A single column that never grows past the 288px panel: a long number used
+   * to widen the track and push the section past the page edge. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   padding: 14px 0;
   border-bottom: 1px solid var(--line);
@@ -228,6 +231,7 @@
   max-width: var(--measure);
   margin: 0;
   line-height: 1.45;
+  overflow-wrap: anywhere;
   text-wrap: pretty;
 }
 

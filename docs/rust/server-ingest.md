@@ -471,7 +471,7 @@ et in-process, base SQLite temporaire `tempfile::tempdir()`, aucun réseau réel
 
 Vérifications de la lane (task-49) : `cargo fmt -p lc-media -p lc-server -- --check`,
 `cargo clippy -p lc-media -p lc-server --all-targets -- -D warnings`,
-`cargo test -p lc-media` (292 unit + 30 intégration + 1 doctest, 30 réseau/ffmpeg `#[ignore]`),
+`cargo test -p lc-media` (293 unit + 30 intégration + 1 doctest, 30 réseau/ffmpeg `#[ignore]`),
 `cargo test -p lc-server --lib`.
 
 ## 10. Écarts et décisions vs legacy

@@ -74,8 +74,6 @@ const QUOTE_TEXT_SIZE: f32 = 34.0;
 const QUOTE_TEXT_LINE_HEIGHT: f32 = QUOTE_TEXT_SIZE * 1.35;
 /// Nombre maximal de lignes du texte cité.
 const QUOTE_MAX_TEXT_LINES: usize = 6;
-/// Rapport largeur/hauteur du cadre d'une image citée seule (façon X).
-const QUOTE_IMAGE_ASPECT: f32 = 16.0 / 9.0;
 /// Bornes du rapport d'une image citée dans une paire : une photo portrait
 /// n'est pas étirée au-delà, une photo paysage n'est pas écrasée en dessous.
 const QUOTE_IMAGE_MIN_ASPECT: f32 = 0.7;
@@ -89,6 +87,18 @@ const MEDIA_GAP: f32 = 28.0;
 const MEDIA_IMAGE_GAP: f32 = 12.0;
 /// Rayon des coins des photos et des vidéos du tweet parent.
 const MEDIA_IMAGE_RADIUS: f32 = 18.0;
+/// Rapport minimal d'une photo seule : 4:5.
+///
+/// La cellule d'une photo pleine largeur épouse le rapport de la photo, borné
+/// entre cette valeur et [`MEDIA_PHOTO_MAX_ASPECT`]. Une photo verticale
+/// (9:16) n'est donc plus recadrée : elle est affichée entière, centrée dans
+/// une cellule 4:5, plutôt que de faire une carte de plus de 2400 px de haut.
+const MEDIA_PHOTO_MIN_ASPECT: f32 = 0.8;
+/// Rapport maximal d'une photo seule : 16:9, le format le plus courant.
+///
+/// Une photo 16:9 remplit exactement sa cellule ; une photo plus large est
+/// affichée entière, avec deux marges verticales.
+const MEDIA_PHOTO_MAX_ASPECT: f32 = 16.0 / 9.0;
 /// Bornes du rapport largeur/hauteur d'une vidéo : 9:16 (vertical) à 16:9.
 const MEDIA_VIDEO_MIN_ASPECT: f32 = 9.0 / 16.0;
 const MEDIA_VIDEO_MAX_ASPECT: f32 = 16.0 / 9.0;
@@ -223,7 +233,7 @@ struct QuoteImage {
     /// Échelle appliquée à l'image source.
     scale_x: f32,
     scale_y: f32,
-    /// Décalage de l'image dans le cadre (recadrage centré).
+    /// Décalage de l'image dans le cadre (marges centrées).
     offset_x: f32,
     offset_y: f32,
     /// Rayon des coins du cadre.
@@ -694,13 +704,12 @@ struct DecodedQuoteImage {
     pixmap: Pixmap,
     width: f32,
     height: f32,
-    focus: Vec<QuoteImageFocus>,
 }
 
 /// Dispose les photos en lignes façon X : une image seule occupe toute la
-/// largeur au rapport [`QUOTE_IMAGE_ASPECT`] ; à partir de deux, elles vont par
-/// paires côte à côte (trois photos : une large puis deux, quatre : deux lignes
-/// de deux).
+/// largeur, dans une cellule au rapport de la photo ; à partir de deux, elles
+/// vont par paires côte à côte (trois photos : une large puis deux, quatre :
+/// deux lignes de deux). Aucune photo n'est recadrée.
 fn layout_photo_rows(
     images: &[TweetPhoto],
     inner_width: f32,
@@ -723,7 +732,6 @@ fn layout_photo_rows(
             pixmap,
             width,
             height,
-            focus: image.focus.clone(),
         });
     }
     let mut rows = Vec::new();
@@ -751,11 +759,16 @@ fn rows_height(rows: &[QuoteImageRow], gap: f32) -> f32 {
     rows.iter().map(|row| row.height).sum::<f32>() + gap * rows.len().saturating_sub(1) as f32
 }
 
-/// Ligne d'une image pleine largeur, au rapport [`QUOTE_IMAGE_ASPECT`].
+/// Ligne d'une image pleine largeur : la cellule épouse le rapport de la photo,
+/// borné entre [`MEDIA_PHOTO_MIN_ASPECT`] et [`MEDIA_PHOTO_MAX_ASPECT`].
+///
+/// Une photo verticale n'est donc plus recadrée en 16:9 : la cellule s'arrête
+/// à 4:5 et la photo y tient entière, centrée.
 fn full_width_row(image: &DecodedQuoteImage, inner_width: f32, radius: f32) -> QuoteImageRow {
-    let box_height = inner_width / QUOTE_IMAGE_ASPECT;
+    let aspect = (image.width / image.height).clamp(MEDIA_PHOTO_MIN_ASPECT, MEDIA_PHOTO_MAX_ASPECT);
+    let box_height = inner_width / aspect;
     QuoteImageRow {
-        images: vec![cover_quote_image(image, inner_width, box_height, radius)],
+        images: vec![fit_quote_image(image, inner_width, box_height, radius)],
         height: box_height,
     }
 }
@@ -775,95 +788,40 @@ fn paired_row(
     QuoteImageRow {
         images: images
             .iter()
-            .map(|image| cover_quote_image(image, cell_width, cell_height, radius))
+            .map(|image| fit_quote_image(image, cell_width, cell_height, radius))
             .collect(),
         height: cell_height,
     }
 }
 
-/// Met une image à l'échelle de sa cellule (couverture) et la recadre autour du
-/// rectangle de `focus_rects` le plus proche du rapport de la cellule, pour ne
-/// pas couper le sujet.
+/// Met une image à l'échelle de sa cellule sans la recadrer : l'image entière
+/// tient dans le cadre, centrée.
 ///
-/// Une vignette plus petite que la moitié de la cellule garde sa taille (pas
-/// d'agrandissement d'une image de mauvaise qualité).
-fn cover_quote_image(
+/// L'échelle est le plus petit des deux rapports (`min`) ; les marges laissées
+/// par un rapport différent restent transparentes et laissent voir le fond de
+/// la carte. Le recadrage « couverture » d'avant (`max`) coupait le surplus et
+/// n'affichait par exemple qu'un tiers d'une photo verticale.
+fn fit_quote_image(
     image: &DecodedQuoteImage,
     box_width: f32,
     box_height: f32,
     radius: f32,
 ) -> QuoteImage {
-    let tiny = image.width < box_width * 0.5 && image.height < box_height * 0.5;
-    if tiny {
-        return QuoteImage {
-            pixmap: image.pixmap.clone(),
-            width: (image.width.round() as u32).max(1),
-            height: (image.height.round() as u32).max(1),
-            scale_x: 1.0,
-            scale_y: 1.0,
-            offset_x: 0.0,
-            offset_y: 0.0,
-            radius,
-        };
-    }
-    // Couverture : l'image remplit la cellule et le surplus est recadré.
-    let scale = (box_width / image.width).max(box_height / image.height);
+    let scale = (box_width / image.width).min(box_height / image.height);
     let scaled_width = image.width * scale;
     let scaled_height = image.height * scale;
-    let mut offset_x = (box_width - scaled_width) / 2.0;
-    let mut offset_y = (box_height - scaled_height) / 2.0;
-    if let Some(focus) = closest_focus_rect(
-        &image.focus,
-        image.width,
-        image.height,
-        box_width / box_height,
-    ) {
-        let center_x = (focus.x + focus.width / 2.0) * image.width;
-        let center_y = (focus.y + focus.height / 2.0) * image.height;
-        // En mode couverture, `scaled_width` et `scaled_height` sont au moins
-        // égaux à la cellule, mais leur arrondi f32 peut les placer un ULP
-        // au-dessus : `box_width - scaled_width` vaut alors +6,1e-5 au lieu de
-        // 0.0, et `f32::clamp` panique quand sa borne basse dépasse sa borne
-        // haute (« min > max, or either was NaN »).
-        let min_x = (box_width - scaled_width).min(0.0);
-        let min_y = (box_height - scaled_height).min(0.0);
-        offset_x = (box_width / 2.0 - center_x * scale).clamp(min_x, 0.0);
-        offset_y = (box_height / 2.0 - center_y * scale).clamp(min_y, 0.0);
-    }
     QuoteImage {
         pixmap: image.pixmap.clone(),
         width: (box_width.round() as u32).max(1),
         height: (box_height.round() as u32).max(1),
         scale_x: scale,
         scale_y: scale,
-        offset_x,
-        offset_y,
+        // `min` garantit une image au plus égale à sa cellule ; `max(0.0)`
+        // absorbe l'arrondi f32 qui peut la dépasser d'un ULP.
+        offset_x: (box_width - scaled_width).max(0.0) / 2.0,
+        offset_y: (box_height - scaled_height).max(0.0) / 2.0,
         radius,
     }
-}
-
-/// Retourne le recadrage suggéré dont le rapport largeur/hauteur est le plus
-/// proche de celui de la cellule de citation.
-fn closest_focus_rect(
-    focus_rects: &[QuoteImageFocus],
-    image_width: f32,
-    image_height: f32,
-    target_aspect: f32,
-) -> Option<QuoteImageFocus> {
-    let target = target_aspect.ln();
-    focus_rects
-        .iter()
-        .filter(|focus| focus.width > 0.0 && focus.height > 0.0)
-        .min_by(|left, right| {
-            let ratio = |focus: &QuoteImageFocus| {
-                (focus.width * image_width / (focus.height * image_height)).ln() - target
-            };
-            ratio(left)
-                .abs()
-                .partial_cmp(&ratio(right).abs())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .copied()
 }
 
 /// Dispose le média du tweet parent : ses photos en lignes façon X, ou sa
@@ -1136,7 +1094,14 @@ fn draw_quote_image(pixmap: &mut Pixmap, image: &QuoteImage, left: f32, top: f32
         None,
     );
     if let Some(mut mask) = Mask::new(image.width, image.height) {
-        if let Some(rect) = Rect::from_xywh(0.0, 0.0, image.width as f32, image.height as f32) {
+        // Le masque suit l'image dessinée, pas la cellule : une image aux
+        // marges centrées garde ses coins arrondis au lieu de flotter à coins
+        // carrés sur le fond de la carte.
+        let drawn_width = image.pixmap.width() as f32 * scale_x;
+        let drawn_height = image.pixmap.height() as f32 * scale_y;
+        if let Some(rect) =
+            Rect::from_xywh(image.offset_x, image.offset_y, drawn_width, drawn_height)
+        {
             if let Some(path) = rounded_rect_path(rect, image.radius) {
                 mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
                 layer.apply_mask(&mask);
@@ -1545,15 +1510,19 @@ mod tests {
     }
 
     #[test]
-    fn crops_the_quoted_image_on_the_suggested_focus() {
+    fn keeps_the_whole_focused_quoted_image_visible() {
+        // Le cadrage suggéré par X (`focus_rects`) n'est plus appliqué : la
+        // photo est affichée entière, donc les deux moitiés restent visibles à
+        // parts égales (avant, le recadrage « couverture » ne gardait que le
+        // bas de l'image).
         let mut content = content_from(QUOTE_FIXTURE);
+        content.avatar = Some(solid_color_png(96, 96, (0x50, 0x50, 0x50)));
         {
             let quoted = content.quoted.as_mut().unwrap();
+            quoted.text = String::new();
             quoted.images = vec![TweetPhoto {
                 source_url: "https://pbs.twimg.com/media/focus.jpg".to_string(),
                 data: Some(split_png(400, 400)),
-                // X suggère de cadrer le bas de la photo : le recadrage doit
-                // suivre cette suggestion plutôt que le centre de l'image.
                 focus: vec![QuoteImageFocus {
                     x: 0.0,
                     y: 0.5,
@@ -1566,8 +1535,13 @@ mod tests {
         assert_valid_card(&png);
         let (red, green) = tone_counts(&png);
         assert!(
-            green > red * 3,
-            "recadrage non aligné sur le focus : {green} pixels verts contre {red} rouges"
+            red > 1000 && green > 1000,
+            "photo citée partiellement rendue : {red} pixels rouges, {green} verts"
+        );
+        let ratio = red.max(green) as f32 / red.min(green).max(1) as f32;
+        assert!(
+            ratio < 1.2,
+            "photo citée recadrée : {red} pixels rouges contre {green} verts"
         );
     }
 
@@ -1612,12 +1586,13 @@ mod tests {
 
     #[test]
     fn places_a_photo_one_ulp_wider_than_its_cell_without_panicking() {
-        // Régression : une photo de 1675×1800 (petite photo agrandie à 1800 px
-        // par l'ancien filtre ffmpeg `scale=1800:1800:force_original_aspect_
-        // ratio=decrease`) dans une cellule de 984 × 553,5 px : `1675,0 * scale`
-        // vaut 983,99994, la borne basse du recadrage valait +6,1e-5 au lieu
-        // d'être négative et `f32::clamp(min, 0.0)` paniquait
-        // (« min > max, or either was NaN »), faisant échouer toute l'ingestion.
+        // Régression historique : une photo de 1675×1800 (petite photo agrandie
+        // à 1800 px par l'ancien filtre ffmpeg `scale=1800:1800:
+        // force_original_aspect_ratio=decrease`) faisait paniquer le recadrage
+        // (`f32::clamp(min, 0.0)` avec « min > max, or either was NaN »),
+        // faisant échouer toute l'ingestion. Avec le fit « contain », l'arrondi
+        // f32 peut encore dépasser la cellule d'un ULP : le calcul des marges
+        // doit le tolérer.
         let mut content = content_from(PHOTO_FIXTURE);
         content.photos = vec![TweetPhoto {
             source_url: "https://pbs.twimg.com/media/une-pixel-de-trop.jpg".to_string(),
@@ -1631,6 +1606,167 @@ mod tests {
         }];
         let png = render_tweet_card(&content).unwrap();
         assert_valid_card(&png);
+    }
+
+    /// Photo décodée prête pour le calcul de disposition, depuis un PNG.
+    fn decoded_photo(png: Vec<u8>) -> DecodedQuoteImage {
+        let pixmap = Pixmap::decode_png(&png).unwrap();
+        DecodedQuoteImage {
+            width: pixmap.width() as f32,
+            height: pixmap.height() as f32,
+            pixmap,
+        }
+    }
+
+    /// Rapport de la plus grande moitié à la plus petite : proche de 1 quand
+    /// une photo coupée en deux est rendue entièrement.
+    fn tone_ratio(png: &[u8]) -> f32 {
+        let (red, green) = tone_counts(png);
+        assert!(
+            red > 1000 && green > 1000,
+            "photo partiellement rendue : {red} pixels rouges, {green} verts"
+        );
+        red.max(green) as f32 / red.min(green).max(1) as f32
+    }
+
+    #[test]
+    fn a_portrait_photo_is_shown_whole_in_a_4_5_cell() {
+        // 9:16 : la cellule s'arrête à 4:5 et la photo y tient entière, au lieu
+        // du recadrage 16:9 qui n'en montrait que 31,6 % de la hauteur.
+        let image = decoded_photo(solid_png(1080, 1920));
+        let row = full_width_row(&image, 984.0, MEDIA_IMAGE_RADIUS);
+        assert!(
+            (row.height - 984.0 / MEDIA_PHOTO_MIN_ASPECT).abs() < 0.01,
+            "cellule de {} px de haut au lieu d'une cellule 4:5",
+            row.height
+        );
+        let cell = &row.images[0];
+        assert_eq!((cell.width, cell.height), (984, 1230));
+        // `min` : c'est la hauteur qui contraint, la photo entière passe.
+        assert!((1920.0 * cell.scale_y - 1230.0).abs() < 0.5);
+        assert!(1080.0 * cell.scale_x <= 984.0);
+        assert!(cell.offset_x > 100.0, "photo verticale non centrée");
+        assert!(cell.offset_y < 0.5);
+    }
+
+    #[test]
+    fn a_4_5_photo_fills_its_cell_exactly() {
+        // Une photo 4:5 épouse la cellule : aucune marge, aucune coupe.
+        let image = decoded_photo(solid_png(1080, 1350));
+        let row = full_width_row(&image, 984.0, MEDIA_IMAGE_RADIUS);
+        assert!((row.height - 1230.0).abs() < 0.01);
+        let cell = &row.images[0];
+        assert!(cell.offset_x.abs() < 0.5 && cell.offset_y.abs() < 0.5);
+    }
+
+    #[test]
+    fn a_wide_photo_fills_a_16_9_cell() {
+        // Une photo 16:9 remplit exactement sa cellule, sans marge : c'est le
+        // format le plus courant et le comportement d'avant.
+        let image = decoded_photo(solid_png(1920, 1080));
+        let row = full_width_row(&image, 984.0, MEDIA_IMAGE_RADIUS);
+        assert!((row.height - 984.0 / MEDIA_PHOTO_MAX_ASPECT).abs() < 0.01);
+        let cell = &row.images[0];
+        assert_eq!(cell.width, 984);
+        assert!(cell.offset_x.abs() < 0.5);
+        assert!(cell.offset_y.abs() < 0.5);
+    }
+
+    #[test]
+    fn a_very_wide_photo_gets_vertical_margins() {
+        // Au-delà de 16:9, la cellule garde toute la largeur et la photo est
+        // affichée entière, avec des marges verticales au lieu d'être coupée.
+        let image = decoded_photo(solid_png(2400, 1000));
+        let row = full_width_row(&image, 984.0, MEDIA_IMAGE_RADIUS);
+        assert!((row.height - 984.0 / MEDIA_PHOTO_MAX_ASPECT).abs() < 0.01);
+        let cell = &row.images[0];
+        assert_eq!(cell.width, 984);
+        assert!(cell.offset_x.abs() < 0.5);
+        assert!(
+            cell.offset_y > 70.0 && cell.offset_y < 73.0,
+            "marges inattendues : {} px",
+            cell.offset_y
+        );
+    }
+
+    #[test]
+    fn a_square_pair_row_keeps_its_cells() {
+        // Deux photos carrées : la disposition n'a pas changé (cellule 486,
+        // rapport 1:1 dans les bornes de paire).
+        let images = vec![
+            decoded_photo(solid_png(400, 400)),
+            decoded_photo(solid_png(400, 400)),
+        ];
+        let row = paired_row(&images, 984.0, MEDIA_IMAGE_GAP, MEDIA_IMAGE_RADIUS);
+        assert!((row.height - 486.0).abs() < 0.01);
+        assert!(row
+            .images
+            .iter()
+            .all(|cell| (cell.width, cell.height) == (486, 486)));
+        assert!((row.images[0].scale_x - 1.215).abs() < 0.001);
+    }
+
+    #[test]
+    fn a_portrait_photo_under_the_text_is_shown_whole() {
+        let mut content = content_from(PHOTO_FIXTURE);
+        content.avatar = Some(solid_color_png(96, 96, (0x50, 0x50, 0x50)));
+        content.photos = vec![TweetPhoto {
+            source_url: "https://pbs.twimg.com/media/portrait.jpg".to_string(),
+            data: Some(split_png(1080, 1920)),
+            focus: Vec::new(),
+        }];
+        let png = render_tweet_card(&content).unwrap();
+        let (_, height) = assert_valid_card(&png);
+        // La cellule 4:5 de la photo tient entière dans la carte.
+        let body_top = PADDING + AVATAR_SIZE + HEADER_GAP;
+        assert!(
+            height as f32 >= body_top + 1230.0 + PADDING,
+            "carte de {height} px trop courte pour une cellule 4:5 de 1230 px"
+        );
+        assert!(
+            tone_ratio(&png) < 1.2,
+            "photo verticale recadrée sous le texte"
+        );
+    }
+
+    #[test]
+    fn a_quoted_portrait_photo_is_shown_whole() {
+        // Le tweet cité suit la même règle : sa largeur intérieure est plus
+        // étroite (928 px) et sa cellule 4:5 fait 1160 px de haut.
+        let mut content = content_from(QUOTE_FIXTURE);
+        content.avatar = Some(solid_color_png(96, 96, (0x50, 0x50, 0x50)));
+        {
+            let quoted = content.quoted.as_mut().unwrap();
+            quoted.text = String::new();
+            quoted.images = vec![quoted_image(split_png(1080, 1920))];
+        }
+        let png = render_tweet_card(&content).unwrap();
+        assert_valid_card(&png);
+        assert!(
+            tone_ratio(&png) < 1.2,
+            "photo citée verticale recadrée dans son bloc"
+        );
+    }
+
+    #[test]
+    fn a_very_long_text_with_a_portrait_photo_stays_bounded() {
+        // La borne de hauteur est respectée même avec une cellule 4:5 : le
+        // texte est tronqué, pas la photo.
+        let mut content = content_from(PHOTO_FIXTURE);
+        content.text = "un tweet interminable ".repeat(200);
+        content.avatar = Some(solid_color_png(96, 96, (0x50, 0x50, 0x50)));
+        content.photos = vec![TweetPhoto {
+            source_url: "https://pbs.twimg.com/media/portrait.jpg".to_string(),
+            data: Some(split_png(1080, 1920)),
+            focus: Vec::new(),
+        }];
+        let png = render_tweet_card(&content).unwrap();
+        let (_, height) = assert_valid_card(&png);
+        assert_eq!(height, CARD_MEDIA_MAX_HEIGHT);
+        assert!(
+            tone_ratio(&png) < 1.25,
+            "photo verticale coupée par la borne"
+        );
     }
 
     #[test]

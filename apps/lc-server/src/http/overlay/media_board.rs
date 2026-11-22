@@ -12,6 +12,7 @@
 //! | `POST` | `/overlay/media-board/items` | Bearer | `202 {ingestionId}` |
 //! | `POST` | `/overlay/media-board/uploads` (+ `PUT …/{uploadId}/parts`, `POST …/{uploadId}/complete`) | Bearer | `202 {ingestionId}` on completion (see `media_upload`) |
 //! | `POST` | `/overlay/media-board/items/{itemId}/edit` | Bearer | `202 {ingestionId}` (see [`super::media_edit`]) |
+//! | `POST` | `/overlay/media-board/items/{itemId}/cover` | Bearer | `200 {cover:{width,height,mime}}` (see [`super::media_cover`]) |
 //! | `POST` | `/overlay/media-board/import` | Bearer + `X-LiveChat-Source-Token` | `{results:[...]}` (see [`super::media_import`]) |
 //! | `GET` | `/overlay/media-board/ingestions` | Bearer | `{items:[...]}` |
 //! | `GET` | `/overlay/media-board/media/{assetId}?clientId=&exp=&sig=` | URL signée | flux binaire (`Range` supporté) |
@@ -305,6 +306,11 @@ pub(crate) async fn list_items_payload(
                         "url": url,
                         "width": picture.width,
                         "height": picture.height,
+                        // A video's picture keeps its URL when it is replaced
+                        // (the editor's frame rewrites the same cover): the
+                        // size of its bytes tells the client when to fetch it
+                        // again instead of showing the cached one.
+                        "version": picture.size_bytes,
                     })),
                     Err(error) => {
                         tracing::warn!(%error, "signature de la miniature d'une vidéo impossible");

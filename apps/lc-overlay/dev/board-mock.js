@@ -605,6 +605,32 @@
         return ok({ itemId: entry.id });
       }
     }
+    const coverPath = /^\/overlay\/media-board\/items\/([^/?]+)\/cover$/.exec(path);
+    if (coverPath && method === 'POST') {
+      const itemId = decodeURIComponent(coverPath[1]);
+      const entry = items.find((candidate) => candidate.id === itemId);
+      if (!entry) {
+        return { ok: false, status: 404, body: { error: 'item_not_found' } };
+      }
+      if (entry.media.kind !== 'video') {
+        return {
+          ok: false,
+          status: 400,
+          body: { error: 'invalid_payload', message: 'only a video can take its picture from a frame' },
+        };
+      }
+      // The server rewrites the same picture: its version is what changes, so
+      // the card fetches the image again.
+      const picture = entry.thumbnail || {
+        url: new URL('./fixtures/media-1.jpg', location.href).href,
+        width: 640,
+        height: 360,
+      };
+      entry.thumbnail = { ...picture, version: (Number(picture.version) || 0) + 1 };
+      requests.push({ method: 'POST', path: `/overlay/media-board/items/${itemId}/cover`, payload });
+      boardChanged(payload.guildId, 'updated', itemId);
+      return ok({ cover: { width: entry.thumbnail.width, height: entry.thumbnail.height, mime: 'image/jpeg' } });
+    }
     const itemPath = /^\/overlay\/media-board\/items\/([^/?]+)$/.exec(path);
     if (itemPath && (method === 'PATCH' || method === 'DELETE')) {
       const itemId = decodeURIComponent(itemPath[1]);

@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use lc_media::poster::{extract_poster, PosterSource};
+use lc_media::poster::{extract_poster, extract_poster_at, PosterSource};
 use lc_media::{MediaConfig, MediaStorage};
 
 fn config(directory: &Path) -> MediaConfig {
@@ -132,6 +132,84 @@ async fn une_intro_noire_ne_donne_pas_une_image_noire() {
     assert!(
         poster_luma > 60.0,
         "image encore sombre malgré une vidéo lumineuse : {poster_luma}"
+    );
+}
+
+/// Une vidéo sombre pendant 2 s puis lumineuse pendant 2 s : l'image d'un
+/// instant donné se reconnaît à sa luminosité.
+fn dark_then_light_video(config: &MediaConfig, directory: &Path) -> PathBuf {
+    let path = directory.join("dark-then-light.mp4");
+    let status = std::process::Command::new(&config.tools.ffmpeg)
+        .args([
+            "-y",
+            "-hide_banner",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=2:size=320x240:rate=30,eq=brightness=-0.4",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=2:size=320x240:rate=30",
+            "-filter_complex",
+            "[0:v][1:v]concat=n=2:v=1:a=0[v]",
+            "-map",
+            "[v]",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+        ])
+        .arg(&path)
+        .status()
+        .expect("ffmpeg démarré");
+    assert!(status.success(), "échantillon vidéo non produit");
+    path
+}
+
+#[tokio::test]
+#[ignore = "nécessite ffmpeg installé"]
+async fn l_image_choisie_dans_l_editeur_est_celle_de_l_instant_demande() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let config = config(directory.path());
+    let input = dark_then_light_video(&config, directory.path());
+    let storage = MediaStorage::from_root(&config.storage.directory);
+    storage.ensure().unwrap();
+    let source = PosterSource {
+        input: &input,
+        width: Some(320),
+        height: Some(240),
+        duration_sec: Some(4.0),
+    };
+
+    // L'image de la première moitié est sombre, celle de la seconde lumineuse :
+    // c'est bien l'instant demandé qui est encodé, pas une frame choisie.
+    let start = extract_poster_at(&config, &storage, "instant", &source, 0.5)
+        .await
+        .expect("une image pour le début");
+    let start_luma = mean_luma(&config, &start.storage_path, None);
+    let end = extract_poster_at(&config, &storage, "instant", &source, 3.0)
+        .await
+        .expect("une image pour la fin");
+    let end_luma = mean_luma(&config, &end.storage_path, None);
+
+    assert_eq!(start.mime, "image/jpeg");
+    assert_eq!((start.width, start.height), (Some(320), Some(240)));
+    assert!(
+        end_luma > start_luma + 40.0,
+        "même image aux deux instants : début {start_luma}, fin {end_luma}"
+    );
+
+    // Demander l'image au-delà de la fin rend la dernière image de la vidéo.
+    let clamped = extract_poster_at(&config, &storage, "instant", &source, 12.0)
+        .await
+        .expect("une image bornée à la vidéo");
+    let clamped_luma = mean_luma(&config, &clamped.storage_path, None);
+    assert!(
+        clamped_luma > start_luma + 40.0,
+        "image bornée non prise dans la vidéo : {clamped_luma}"
     );
 }
 

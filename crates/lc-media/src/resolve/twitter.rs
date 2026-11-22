@@ -332,6 +332,11 @@ pub fn extract_created_at(value: &Value) -> Option<String> {
     non_empty_str(value.get("created_at"))
 }
 
+/// Langue déclarée d'un tweet (`lang`), normalisée en minuscules.
+pub fn extract_language(value: &Value) -> Option<String> {
+    non_empty_str(value.get("lang")).map(|language| language.to_ascii_lowercase())
+}
+
 /// URL de l'avatar de l'auteur, en 400×400 quand Twitter utilise `_normal.`.
 pub fn extract_avatar_url(value: &Value) -> Option<String> {
     let url = value
@@ -464,6 +469,8 @@ pub fn tweet_card_content(value: &Value) -> TweetCardContent {
         author_name: extract_author_name(value).unwrap_or_default(),
         author_handle: extract_author_handle(value).unwrap_or_default(),
         text: extract_full_tweet_text(value).unwrap_or_default(),
+        source_language: extract_language(value),
+        translation_label: None,
         created_at: extract_created_at(value),
         avatar: None,
         photos: tweet_photos(value),
@@ -502,6 +509,8 @@ pub fn quoted_tweet_content(value: &Value) -> Option<QuotedTweetContent> {
         author_name,
         author_handle,
         text,
+        source_language: extract_language(quoted),
+        translation_label: None,
         created_at: extract_created_at(quoted),
         images,
         video,
@@ -538,6 +547,8 @@ pub fn reply_parent_content(value: &Value) -> Option<QuotedTweetContent> {
         author_name,
         author_handle,
         text,
+        source_language: extract_language(parent),
+        translation_label: None,
         created_at: extract_created_at(parent),
         images,
         video: None,
@@ -896,6 +907,16 @@ mod tests {
             build_fallback_url("https://vxtwitter.com", "https://x.com/a/status/1?s=20"),
             "https://vxtwitter.com/a/status/1"
         );
+    }
+
+    #[test]
+    fn extracts_and_normalizes_the_declared_language() {
+        let value: Value = serde_json::from_str(r#"{"lang":"FR"}"#).unwrap();
+        assert_eq!(extract_language(&value).as_deref(), Some("fr"));
+        let blank: Value = serde_json::from_str(r#"{"lang":"  "}"#).unwrap();
+        assert_eq!(extract_language(&blank), None);
+        let missing: Value = serde_json::from_str(r#"{"id_str":"1"}"#).unwrap();
+        assert_eq!(extract_language(&missing), None);
     }
 
     #[test]

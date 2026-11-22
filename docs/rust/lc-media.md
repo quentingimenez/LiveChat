@@ -55,7 +55,7 @@ propre à chaque ingestion.
 
 ### Configuration (`config`)
 
-`MediaConfig { storage, download, video, tools, resolve }`, construite par
+`MediaConfig { storage, download, video, tools, resolve, translate }`, construite par
 `MediaConfig::from_env()` (variables d'environnement), `load()` (alias) ou
 `from_pairs(iter)` (tests, sans lire l'environnement global).
 
@@ -80,6 +80,9 @@ propre à chaque ingestion.
 | `tools.ytdlp_format` | `YTDLP_FORMAT` | sélecteur avc1/mp4 ≤ 1080 |
 | `tools.ytdlp_concurrent_fragments` | `YTDLP_CONCURRENT_FRAGMENTS` | 1 |
 | `tools.tiktok_cookie` | `TIKTOK_COOKIE` | vide |
+| `translate.enabled` | `MEDIA_TRANSLATE_ENABLED` | `true` |
+| `translate.endpoint` | `MEDIA_TRANSLATE_ENDPOINT` | gtx Google |
+| `translate.timeout` | `MEDIA_TRANSLATE_TIMEOUT_MS` | 3 s (borné 0,5–10 s) |
 | `resolve.twitter_oembed_endpoint` | `TWITTER_OEMBED_ENDPOINT` | `https://publish.twitter.com/oembed` |
 | `resolve.twitter_video_resolver_base_url` | `TWITTER_VIDEO_RESOLVER_BASE_URL` | `https://vxtwitter.com` |
 | `resolve.twitter_card_duration` | `TWITTER_CARD_DURATION_SEC` | 15 s |

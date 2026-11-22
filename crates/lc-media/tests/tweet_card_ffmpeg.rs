@@ -85,6 +85,7 @@ fn content(aspect: f32) -> TweetCardContent {
         video: Some(TweetVideo { aspect }),
         quoted: None,
         reply_parent: None,
+        ..Default::default()
     }
 }
 

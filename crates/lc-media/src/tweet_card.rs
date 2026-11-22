@@ -50,6 +50,10 @@ const SECONDARY_LINE_HEIGHT: f32 = 40.0;
 /// Taille du texte du tweet (interligne 1,35).
 const TEXT_SIZE: f32 = 40.0;
 const TEXT_LINE_HEIGHT: f32 = TEXT_SIZE * 1.35;
+/// Libellé « Traduit de l'anglais » sous le texte.
+const TRANSLATION_LABEL_SIZE: f32 = 26.0;
+const TRANSLATION_LABEL_LINE_HEIGHT: f32 = 34.0;
+const TRANSLATION_LABEL_GAP: f32 = 10.0;
 
 /// Marge intérieure du bloc de citation.
 const QUOTE_PADDING: f32 = 26.0;
@@ -74,6 +78,10 @@ const QUOTE_HANDLE_LINE_HEIGHT: f32 = 38.0;
 /// Taille du texte cité (interligne 1,35).
 const QUOTE_TEXT_SIZE: f32 = 34.0;
 const QUOTE_TEXT_LINE_HEIGHT: f32 = QUOTE_TEXT_SIZE * 1.35;
+/// Libellé de traduction dans un bloc cité, un peu plus discret.
+const QUOTE_TRANSLATION_LABEL_SIZE: f32 = 24.0;
+const QUOTE_TRANSLATION_LABEL_LINE_HEIGHT: f32 = 32.0;
+const QUOTE_TRANSLATION_LABEL_GAP: f32 = 8.0;
 /// Nombre maximal de lignes du texte cité.
 const QUOTE_MAX_TEXT_LINES: usize = 6;
 /// Bornes du rapport d'une image citée dans une paire : une photo portrait
@@ -184,6 +192,10 @@ pub struct QuotedTweetContent {
     pub author_handle: String,
     /// Texte du tweet cité.
     pub text: String,
+    /// Langue déclarée du tweet cité (`lang`), utilisée pour la traduction.
+    pub source_language: Option<String>,
+    /// Libellé « Traduit de l'anglais » quand le texte cité a été traduit.
+    pub translation_label: Option<String>,
     /// Date ISO 8601 du tweet cité, affichée seulement quand le bloc rend le
     /// tweet parent d'une réponse.
     pub created_at: Option<String>,
@@ -203,6 +215,10 @@ pub struct TweetCardContent {
     pub author_handle: String,
     /// Texte complet de la publication.
     pub text: String,
+    /// Langue déclarée du tweet (`lang`), utilisée pour la traduction.
+    pub source_language: Option<String>,
+    /// Libellé « Traduit de l'anglais » quand le texte a été traduit.
+    pub translation_label: Option<String>,
     /// Date ISO 8601 de publication, si connue.
     pub created_at: Option<String>,
     /// Octets bruts d'un avatar PNG 192×192, si disponible.
@@ -277,6 +293,8 @@ struct QuoteLayout {
     header: Option<QuoteHeader>,
     /// Texte cité, vide si la citation n'a pas de texte.
     text: BodyLayout,
+    /// Libellé de traduction affiché sous le texte cité.
+    translation_label: Option<CardLayout>,
     /// Photos citées, disposées en lignes façon X.
     rows: Vec<QuoteImageRow>,
     /// Vidéo citée, absente si la citation n'en porte pas ou si elle a échoué.
@@ -429,6 +447,11 @@ fn render_with_engine(
         .as_ref()
         .map(|quoted| layout_quote(engine, quoted, text_width, false));
     let text = normalized_text(&content.text);
+    let translation_height = if content.translation_label.is_some() {
+        TRANSLATION_LABEL_GAP + TRANSLATION_LABEL_LINE_HEIGHT
+    } else {
+        0.0
+    };
     let media_gap = if media.height > 0.0 && !text.is_empty() {
         MEDIA_GAP
     } else {
@@ -447,8 +470,13 @@ fn render_with_engine(
         CARD_MAX_HEIGHT
     };
     let reserved_height = media_gap + media.height + quote_height;
-    let max_text_height =
-        (max_card_height as f32 - body_top - footer_height - PADDING - reserved_height).max(0.0);
+    let max_text_height = (max_card_height as f32
+        - body_top
+        - footer_height
+        - PADDING
+        - reserved_height
+        - translation_height)
+        .max(0.0);
     let body_style = TextStyleSpec {
         size: TEXT_SIZE,
         line_height: TEXT_LINE_HEIGHT,
@@ -457,9 +485,23 @@ fn render_with_engine(
         align: Alignment::Start,
     };
     let body = layout_body(engine, &text, body_style, text_width, max_text_height);
-    let media_top = body_top + body.height + media_gap;
+    let translation_label = content.translation_label.as_deref().map(|label| {
+        single_line_layout(
+            engine,
+            label,
+            TextStyleSpec {
+                size: TRANSLATION_LABEL_SIZE,
+                line_height: TRANSLATION_LABEL_LINE_HEIGHT,
+                bold: false,
+                align: Alignment::Left,
+            },
+            text_width,
+        )
+    });
+    let media_top = body_top + body.height + translation_height + media_gap;
     let quote_top = media_top + media.height + QUOTE_GAP;
-    let content_height = body_top + body.height + reserved_height + footer_height + PADDING;
+    let content_height =
+        body_top + body.height + translation_height + reserved_height + footer_height + PADDING;
     let height = if body.clamped {
         max_card_height
     } else {
@@ -520,6 +562,15 @@ fn render_with_engine(
         SECONDARY_COLOR,
     );
     draw_body(&mut pixmap, &body, engine, (PADDING, body_top), TEXT_COLOR);
+    if let Some(label) = &translation_label {
+        draw_text(
+            &mut pixmap,
+            label,
+            engine,
+            (PADDING, body_top + body.height + TRANSLATION_LABEL_GAP),
+            SECONDARY_COLOR,
+        );
+    }
     if media.height > 0.0 {
         draw_card_media(&mut pixmap, &media, (PADDING, media_top));
     }
@@ -711,6 +762,19 @@ fn layout_quote(
             QUOTE_MAX_TEXT_LINES as f32 * QUOTE_TEXT_LINE_HEIGHT,
         )
     };
+    let translation_label = quoted.translation_label.as_deref().map(|label| {
+        single_line_layout(
+            engine,
+            label,
+            TextStyleSpec {
+                size: QUOTE_TRANSLATION_LABEL_SIZE,
+                line_height: QUOTE_TRANSLATION_LABEL_LINE_HEIGHT,
+                bold: false,
+                align: Alignment::Left,
+            },
+            inner_width,
+        )
+    });
     // Une vidéo citée remplace les photos : le poster n'est qu'un repli quand
     // la vidéo n'a pas pu être téléchargée.
     let video_dims = quoted
@@ -737,6 +801,12 @@ fn layout_quote(
         }
         height += text_layout.height;
     }
+    if translation_label.is_some() {
+        if header.is_some() || has_text {
+            height += QUOTE_TRANSLATION_LABEL_GAP;
+        }
+        height += QUOTE_TRANSLATION_LABEL_LINE_HEIGHT;
+    }
     let mut video = None;
     if let Some((video_width, video_height)) = video_dims {
         if header.is_some() || has_text {
@@ -758,6 +828,7 @@ fn layout_quote(
     QuoteLayout {
         header,
         text: text_layout,
+        translation_label,
         rows,
         video,
         height,
@@ -1121,6 +1192,13 @@ fn draw_quote(
         draw_body(pixmap, &quote.text, engine, (content_x, top), TEXT_COLOR);
         top += quote.text.height;
     }
+    if let Some(label) = &quote.translation_label {
+        if quote.header.is_some() || !quote.text.paragraphs.is_empty() {
+            top += QUOTE_TRANSLATION_LABEL_GAP;
+        }
+        draw_text(pixmap, label, engine, (content_x, top), SECONDARY_COLOR);
+        top += QUOTE_TRANSLATION_LABEL_LINE_HEIGHT;
+    }
     if let Some(video) = &quote.video {
         draw_video_area(
             pixmap,
@@ -1273,6 +1351,32 @@ mod tests {
     }
 
     #[test]
+    fn renders_the_root_translation_label_under_the_text() {
+        let mut content = content_from(TEXT_FIXTURE);
+        content.text = "Une ligne de texte.\n".repeat(6);
+        let without = png_dimensions(&render_tweet_card(&content).unwrap()).1;
+        content.translation_label = Some("Traduit de l'anglais".to_string());
+        let (_, with) = png_dimensions(&render_tweet_card(&content).unwrap());
+        assert!(
+            with >= without + 40,
+            "libellé absent de la carte : {with} px contre {without} px sans libellé"
+        );
+    }
+
+    #[test]
+    fn renders_the_quoted_translation_label_inside_the_quote_block() {
+        let mut content = content_from(QUOTE_FIXTURE);
+        let without = png_dimensions(&render_tweet_card(&content).unwrap()).1;
+        content.quoted.as_mut().unwrap().translation_label =
+            Some("Traduit de l'anglais".to_string());
+        let (_, with) = png_dimensions(&render_tweet_card(&content).unwrap());
+        assert!(
+            with >= without + 40,
+            "libellé cité absent : {with} px contre {without} px sans libellé"
+        );
+    }
+
+    #[test]
     fn renders_arabic_emoji_and_newlines() {
         let content = TweetCardContent {
             author_name: "منى".to_string(),
@@ -1284,6 +1388,7 @@ mod tests {
             video: None,
             quoted: None,
             reply_parent: None,
+            ..Default::default()
         };
         let png = render_tweet_card(&content).unwrap();
         assert_valid_card(&png);
@@ -1307,6 +1412,7 @@ mod tests {
             video: None,
             quoted: None,
             reply_parent: None,
+            ..Default::default()
         };
         let png = render_tweet_card(&content).unwrap();
         let card = Pixmap::decode_png(&png).unwrap();
@@ -1363,6 +1469,7 @@ mod tests {
             video: None,
             quoted: None,
             reply_parent: None,
+            ..Default::default()
         };
         let png = render_tweet_card(&content).unwrap();
         let (_, height) = assert_valid_card(&png);
@@ -1381,6 +1488,7 @@ mod tests {
             video: None,
             quoted: None,
             reply_parent: None,
+            ..Default::default()
         };
         let png = render_tweet_card(&content).unwrap();
         assert_valid_card(&png);
@@ -1585,8 +1693,10 @@ mod tests {
                 created_at: None,
                 images: vec![quoted_image(solid_png(200, 120))],
                 video: None,
+                ..Default::default()
             }),
             reply_parent: None,
+            ..Default::default()
         };
         let png = render_tweet_card(&content).unwrap();
         assert_valid_card(&png);

@@ -24,6 +24,7 @@ use crate::source::{
 use crate::storage::MediaStorage;
 use crate::tiktok_comment;
 use crate::transcode;
+use crate::translate;
 use crate::tweet_card::{self, CardVideoTarget};
 use crate::tweet_card_video;
 
@@ -231,6 +232,7 @@ async fn download_tweet_card(
     parent_video: Option<&DownloadResult>,
 ) -> MediaResult<DownloadResult> {
     let mut content = twitter::tweet_card_content(value);
+    translate::localize_tweet_card(config, &mut content).await;
     content.avatar = download_tweet_avatar(config, value, temp_dir).await;
     if parent_video.is_none() {
         // Aucune vidéo téléchargée : pas de zone noire dans la carte.

@@ -39,6 +39,7 @@ use sqlx::Row;
 use crate::app::AppState;
 use crate::http::admin::hub::AdminHub;
 use crate::media::assets;
+use crate::media::errors::MediaServiceResult;
 use crate::media::settings::media_config_for_state;
 
 /// Most board videos given a cover by one startup backfill.
@@ -370,6 +371,56 @@ async fn videos_without_cover(
     Ok(videos)
 }
 
+/// Drops the audio covers whose picture file is gone.
+///
+/// An audio's picture is the cover embedded in the uploaded file; unlike a
+/// video's frame it cannot be made again from the stored media. Keeping the row
+/// only makes the overlay ask for a file the server cannot serve (the card
+/// falls back to its audio mark), so the row is removed: the audio and its card
+/// stop advertising a picture they lost. The audio's own file must still be
+/// there: an unreachable storage root must not empty the board's pictures.
+pub(crate) async fn drop_lost_audio_covers(
+    context: &ThumbnailContext,
+) -> MediaServiceResult<usize> {
+    let rows = sqlx::query(
+        "SELECT c.id AS cover_id, c.storage_path AS cover_path, c.status AS cover_status, \
+                p.storage_path AS audio_path \
+           FROM media_assets c \
+           JOIN media_assets p ON p.cover_asset_id = c.id \
+           JOIN media_board_items b ON b.media_asset_id = p.id \
+          WHERE p.kind = 'AUDIO' AND p.status = 'READY'",
+    )
+    .fetch_all(context.db.pool())
+    .await
+    .map_err(lc_db::DbError::from)?;
+
+    let mut dropped = 0;
+    for row in rows {
+        let cover_id: String = row.try_get("cover_id").map_err(lc_db::DbError::from)?;
+        let cover_path: String = row.try_get("cover_path").map_err(lc_db::DbError::from)?;
+        let cover_status: String = row.try_get("cover_status").map_err(lc_db::DbError::from)?;
+        let audio_path: String = row.try_get("audio_path").map_err(lc_db::DbError::from)?;
+        let audio_present = context
+            .storage
+            .resolve_reference(Path::new(&audio_path))
+            .is_file();
+        if !audio_present || cover_file_present(context, cover_status == "READY", Some(&cover_path))
+        {
+            continue;
+        }
+        let result = sqlx::query(
+            "DELETE FROM media_assets \
+              WHERE id = ? AND id NOT IN (SELECT media_asset_id FROM media_board_items)",
+        )
+        .bind(&cover_id)
+        .execute(context.db.pool())
+        .await
+        .map_err(lc_db::DbError::from)?;
+        dropped += usize::try_from(result.rows_affected()).unwrap_or(usize::MAX);
+    }
+    Ok(dropped)
+}
+
 /// Builds the context of the cover tasks from the application state.
 pub fn context_for_state(state: &AppState) -> Option<ThumbnailContext> {
     let db = state.db.clone()?;
@@ -386,12 +437,21 @@ pub fn context_for_state(state: &AppState) -> Option<ThumbnailContext> {
 
 /// Gives a cover to the board videos that have none, one after the other, on a
 /// background task: the platform's picture when there is one, else a frame of
-/// the video.
+/// the video. Audio covers whose file is gone are dropped first.
 pub fn spawn_cover_backfill(state: &AppState) {
     let Some(context) = context_for_state(state) else {
         return;
     };
     tokio::spawn(async move {
+        match drop_lost_audio_covers(&context).await {
+            Ok(0) => {}
+            Ok(dropped) => {
+                tracing::info!(dropped, "pochettes audio absentes du stockage détachées")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "nettoyage des pochettes audio impossible");
+            }
+        }
         backfill_covers(&context).await;
     });
 }
@@ -484,6 +544,15 @@ mod tests {
     }
 
     async fn on_board(fixture: &Fixture, asset: &MediaAsset) {
+        on_board_with_artwork(fixture, asset, None).await;
+    }
+
+    /// Puts a media on the board, with the artwork its card shows.
+    async fn on_board_with_artwork(
+        fixture: &Fixture,
+        asset: &MediaAsset,
+        artwork: Option<MediaAssetId>,
+    ) -> MediaBoardItem {
         let item = MediaBoardItem {
             id: MediaBoardItemId::new_v4(),
             guild_id: GuildId::parse("123456789012345678").expect("guilde"),
@@ -493,7 +562,7 @@ mod tests {
             created_by_discord_user_id: None,
             created_by_name: None,
             created_at: fixture.now,
-            artwork_asset_id: None,
+            artwork_asset_id: artwork,
             artwork_on_overlay: false,
             display_duration_sec: None,
             display_scale_percent: None,
@@ -504,6 +573,7 @@ mod tests {
             .create(&item)
             .await
             .expect("item board");
+        item
     }
 
     #[test]
@@ -600,6 +670,167 @@ mod tests {
         assert!(
             !cover_file_present(&context, picked[0].3, picked[0].4.as_deref()),
             "mais son fichier a disparu du stockage"
+        );
+    }
+
+    /// An audio as `ingest_local` leaves it: its picture is the cover embedded
+    /// in the uploaded file, which no stored frame can replace.
+    fn uploaded_audio(source_hash: &str, storage_path: &StdPath, now: UtcDateTime) -> MediaAsset {
+        let mut asset = uploaded_video(source_hash, storage_path, now);
+        asset.kind = MediaKind::Audio;
+        asset.mime = "audio/mpeg".into();
+        asset.duration_sec = Some(12);
+        asset.width = None;
+        asset.height = None;
+        asset
+    }
+
+    /// The `IMAGE` row `attach_cover` writes for an audio.
+    fn uploaded_cover(source_hash: &str, storage_path: &StdPath, now: UtcDateTime) -> MediaAsset {
+        let mut asset = uploaded_video(source_hash, storage_path, now);
+        asset.kind = MediaKind::Image;
+        asset.mime = "image/jpeg".into();
+        asset.duration_sec = None;
+        asset
+    }
+
+    /// An audio on the board whose card shows a cover file that is, or is not,
+    /// on disk: what a lost picture looks like after a re-ingestion.
+    async fn audio_with_cover(
+        fixture: &Fixture,
+        cover_on_disk: bool,
+    ) -> (MediaAsset, MediaAsset, MediaBoardItem) {
+        let audio_file = fixture.storage.root().join("song.mp3");
+        std::fs::write(&audio_file, b"audio").expect("fichier audio");
+        let audio = uploaded_audio("upload:sha256:song", &audio_file, fixture.now);
+        fixture
+            .db
+            .media_assets()
+            .insert(&audio)
+            .await
+            .expect("audio");
+        let cover_path = fixture.storage.root().join("song.cover.jpg");
+        if cover_on_disk {
+            std::fs::write(&cover_path, b"image").expect("fichier pochette");
+        }
+        let cover = uploaded_cover("upload:sha256:song#cover", &cover_path, fixture.now);
+        fixture
+            .db
+            .media_assets()
+            .insert(&cover)
+            .await
+            .expect("pochette");
+        fixture
+            .db
+            .media_assets()
+            .set_cover(audio.id, Some(cover.id))
+            .await
+            .expect("liaison");
+        let item = on_board_with_artwork(fixture, &audio, Some(cover.id)).await;
+        (audio, cover, item)
+    }
+
+    #[tokio::test]
+    async fn une_pochette_audio_disparue_est_detachee_du_board() {
+        // The row survived a re-ingestion but its file did not: the card asks
+        // for a picture the server cannot serve, and an audio has no stored
+        // frame to remake it from. The dead reference is dropped so the card
+        // shows its audio mark instead.
+        let fixture = fixture().await;
+        let (audio, cover, item) = audio_with_cover(&fixture, false).await;
+
+        let dropped = drop_lost_audio_covers(&context(&fixture))
+            .await
+            .expect("nettoyage");
+
+        assert_eq!(dropped, 1, "la pochette introuvable est retirée");
+        assert_eq!(
+            fixture
+                .db
+                .media_assets()
+                .get(cover.id)
+                .await
+                .expect("lecture"),
+            None
+        );
+        assert_eq!(
+            fixture
+                .db
+                .media_assets()
+                .cover_of(audio.id)
+                .await
+                .expect("lecture"),
+            None
+        );
+        let stored = fixture
+            .db
+            .media_board()
+            .get(item.id)
+            .await
+            .expect("lecture")
+            .expect("item");
+        assert_eq!(
+            stored.artwork_asset_id, None,
+            "la carte n'annonce plus une image absente"
+        );
+    }
+
+    #[tokio::test]
+    async fn une_pochette_audio_presente_est_gardee() {
+        let fixture = fixture().await;
+        let (audio, cover, item) = audio_with_cover(&fixture, true).await;
+
+        let dropped = drop_lost_audio_covers(&context(&fixture))
+            .await
+            .expect("nettoyage");
+
+        assert_eq!(dropped, 0, "une pochette servie reste en place");
+        assert!(fixture
+            .db
+            .media_assets()
+            .get(cover.id)
+            .await
+            .expect("lecture")
+            .is_some());
+        assert_eq!(
+            fixture
+                .db
+                .media_assets()
+                .cover_of(audio.id)
+                .await
+                .expect("lecture"),
+            Some(cover.id)
+        );
+        let stored = fixture
+            .db
+            .media_board()
+            .get(item.id)
+            .await
+            .expect("lecture")
+            .expect("item");
+        assert_eq!(stored.artwork_asset_id, Some(cover.id));
+    }
+
+    #[tokio::test]
+    async fn un_stockage_absent_ne_detache_pas_les_pochettes() {
+        // The audio's own file is gone too: the storage root is probably not
+        // mounted, and the covers must not be deleted on that basis.
+        let fixture = fixture().await;
+        let (audio, cover, _item) = audio_with_cover(&fixture, false).await;
+        std::fs::remove_file(fixture.storage.root().join("song.mp3")).expect("retrait");
+        let context = context(&fixture);
+
+        let dropped = drop_lost_audio_covers(&context).await.expect("nettoyage");
+
+        assert_eq!(dropped, 0);
+        assert_eq!(
+            fixture
+                .db
+                .media_assets()
+                .cover_of(audio.id)
+                .await
+                .expect("lecture"),
+            Some(cover.id)
         );
     }
 

@@ -200,6 +200,9 @@ export function openAddDialog(options) {
             'li',
             null,
             h('span', { class: 'file-name ellipsis', title: file.name }, file.name),
+            // The size takes the free space of the row, so the edit button that
+            // follows it sits at the right end and the size just before it.
+            h('span', { class: 'file-size' }, formatSize(file.size)),
             // A picture can be cropped or annotated before it is sent.
             file.type.startsWith('image/')
               ? h(
@@ -216,7 +219,6 @@ export function openAddDialog(options) {
                   'Modifier l’image',
                 )
               : null,
-            h('span', { class: 'file-size' }, formatSize(file.size)),
           ),
         ),
       );

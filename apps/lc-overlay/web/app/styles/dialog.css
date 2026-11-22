@@ -186,7 +186,10 @@
 .file-list li {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  /* A grid item cannot shrink below its content by default: a long name would
+     widen the row past the list and push the size and the button out of view.
+     The name yields instead, and `.ellipsis` truncates it. */
+  min-width: 0;
   gap: 10px;
   padding: 6px 8px;
   border: 1px solid var(--line);
@@ -199,7 +202,11 @@
   min-width: 0;
 }
 
+/* The free space of the row is taken before the size: the size and the edit
+   button that follows it stay together at the right end, the button last. A
+   video or an audio has no button and keeps its size there. */
 .file-size {
+  margin-left: auto;
   flex: none;
   color: var(--text-soft);
   font-variant-numeric: tabular-nums;

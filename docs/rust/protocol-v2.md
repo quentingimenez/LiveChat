@@ -222,7 +222,7 @@ Règles générales :
 | **4402** | `REVOKED` | token révoqué (`revoked_at` non nul), exclusion ou bannissement d'un membre, départ volontaire | `revoked`, `member_removed`, `member_banned` | non (re-pairing requis) |
 | **4403** | `OUTDATED_PROTOCOL` | `v` ≠ 2, `hello` v1, `appVersion` < `MIN_OVERLAY_VERSION` | JSON `{"minVersion":"x.y.z"}` (§1.6) | non (mise à jour overlay) |
 | **4404** | `GUILD_DELETED` | guilde supprimée par le panneau d'administration | `guild_deleted` | non (guilde supprimée) |
-| 4408 | `FRAME_TOO_LARGE` | trame > 64 Kio | `frame_too_large` | oui, bug à corriger |
+| **4408** | `FRAME_TOO_LARGE` | trame > 64 Kio, ou client trop lent à vider la file sortante bornée de sa connexion | `frame_too_large`, `slow_client` | oui (backoff) |
 | 4409 | `RATE_LIMITED` | > 20 trames C→S dans la seconde glissante | `rate_limited` | oui (backoff) |
 
 Les codes 4401/4402/4403/1011 sont exigés par le plan (`docs/rust/migration-plan.md:68`).
@@ -240,7 +240,9 @@ Le client mappe :
 - `4404` → état terminal « guilde supprimée » (pas de retry) ;
 - `1008` → état terminal « origine non autorisée » (pas de retry ; l'origine doit être ajoutée côté
   serveur — `WS_ALLOWED_ORIGINS` ou `ADDITIONAL_CORS_ORIGINS`) ;
-- `1001`/`1011`/`4409`/`1002` → état `reconnecting` avec backoff §10.
+- `1001`/`1011`/`4409`/`1002`/`4408` → état `reconnecting` avec backoff §10. Pour `4408`, la
+  `reason` distingue `frame_too_large` (bug client à corriger) de `slow_client` (le client ne
+  vidait plus sa file sortante ; la reconnexion est sûre une fois le client remis à jour).
 
 ---
 
@@ -250,6 +252,8 @@ Le client mappe :
 |---|---|---|
 | Taille de trame | **64 Kio (65 536 octets)** | C→S et S→C ; dépassement C→S → close `4408` |
 | Borne de transport d'upgrade | **1 Mio (`MAX_TRANSPORT_MESSAGE_BYTES`)** | 64 Kio..1 Mio → `4408` applicatif ; > 1 Mio → close transport `1006`/`1009` (pas de code applicatif garanti) |
+| File sortante par connexion | **256 trames** (`OUTBOUND_QUEUE_CAPACITY`) | production non bloquante (`try_send`) ; file pleine → close `4408` reason `slow_client` de **cette connexion seule**, les autres sockets ne sont pas affectées |
+| Écriture socket du writer | **5 s** (`WRITER_SEND_TIMEOUT`) | un `sink.send` (trame ou close) qui ne progresse pas pendant 5 s → close `4408` reason `slow_client` et fin propre de la tâche writer |
 | Débit C→S | **20 messages/s** fenêtre glissante 1 s | dépassement → close `4409` |
 | Délai `hello` | **5 s** après l'ouverture | sinon close `4401` (`auth_timeout`) |
 | `playback.state` | **≤ 1 msg/s** par connexion | excédent ignoré (pas de close), v1 : `socketLoader.ts:229-254` + plan |
@@ -270,6 +274,15 @@ Le serveur ne ferme pas pour un `heartbeat` en retard tant que le transport rép
 timeout de 45 s ferme. Les plafonds de sockets sont vérifiés **sous le verrou du registre** (client
 puis guilde) après authentification et avant l'envoi de `welcome` ; les compteurs sont libérés à la
 déconnexion, y compris close/erreur/shutdown.
+
+La file sortante est **par connexion** et bornée à 256 trames : un producteur (broadcast de guilde,
+`play`, `stop`, `settings`, ack) ne bloque jamais le hub ni les autres sockets, il obtient
+`Full`/`Closed` de `try_send`. Un client qui ne lit plus sature donc sa propre file, reçoit un close
+`4408 slow_client` et est désenregistré ; ses voisins continuent de recevoir les diffusions. Le
+writer borne chaque `sink.send` à 5 s : une socket qui accepte les octets applicatifs mais ne les
+consomme plus ne peut pas immobiliser indéfiniment la tâche de session. Le verrou du hub n'est
+jamais tenu pendant une écriture socket : la fermeture est publiée hors file (canal `watch`) et
+consommée par la boucle de la session.
 
 ---
 

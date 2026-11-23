@@ -40,7 +40,7 @@ use lc_protocol::{
 };
 use time::UtcDateTime;
 use tokio::sync::mpsc;
-use tokio::time::{interval, sleep, MissedTickBehavior};
+use tokio::time::{interval, sleep, timeout, MissedTickBehavior};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -75,6 +75,42 @@ const POLICY_VIOLATION: u16 = 1008;
 
 /// Raison de fermeture quand l'origine WebSocket n'est pas autorisée.
 const ORIGIN_NOT_ALLOWED_REASON: &str = "origin_not_allowed";
+
+/// Délai maximal accordé à une écriture sur le socket (B-01).
+///
+/// Un client qui cesse de lire peut bloquer `SinkExt::send` indéfiniment :
+/// la session ne lirait plus ses messages, ne verrait plus la demande de
+/// fermeture du hub et ne pourrait plus s'arrêter. Passé ce délai, la
+/// connexion est fermée `4408 slow_client` et la tâche se termine.
+const WRITER_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Résultat d'une écriture socket bornée par [`WRITER_SEND_TIMEOUT`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundedSend {
+    /// Trame écrite.
+    Sent,
+    /// Le socket a refusé l'écriture (fermé ou erreur de transport).
+    Failed,
+    /// Le délai est écoulé : le client ne draine plus.
+    TimedOut,
+}
+
+/// Écrit une trame en bornant l'attente du socket.
+///
+/// `limit` est un paramètre pour que le test du timeout n'attende pas les 5 s
+/// de production. La session mappe `TimedOut` sur une fermeture
+/// `4408 slow_client` ; `Failed` garde le comportement existant (sortie sans
+/// close explicite).
+async fn send_bounded<S>(sink: &mut S, message: Message, limit: Duration) -> BoundedSend
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    match timeout(limit, sink.send(message)).await {
+        Ok(Ok(())) => BoundedSend::Sent,
+        Ok(Err(_)) => BoundedSend::Failed,
+        Err(_) => BoundedSend::TimedOut,
+    }
+}
 
 /// Variable d'environnement d'allowlist d'origines WebSocket (séparées par `,`).
 const WS_ALLOWED_ORIGINS_ENV: &str = "WS_ALLOWED_ORIGINS";
@@ -275,8 +311,8 @@ async fn handle_socket(
         session_mode,
     };
 
-    let (sender, mut receiver) = mpsc::unbounded_channel::<OutFrame>();
-    let connection_id = match hub.register(
+    let (sender, mut receiver) = mpsc::channel::<OutFrame>(hub::OUTBOUND_QUEUE_CAPACITY);
+    let (connection_id, mut close_rx) = match hub.register(
         guild_id.clone(),
         client.id,
         client_id_str,
@@ -288,7 +324,7 @@ async fn handle_socket(
         client.default_author_image.clone(),
         sender,
     ) {
-        Ok(connection_id) => connection_id,
+        Ok(registered) => registered,
         Err(error) => {
             debug!(
                 ?error,
@@ -411,8 +447,26 @@ async fn handle_socket(
             maybe_frame = receiver.recv() => {
                 match maybe_frame {
                     Some(OutFrame::Text(text)) => {
-                        if sink.send(Message::Text(text.into())).await.is_err() {
-                            break;
+                        match send_bounded(
+                            &mut sink,
+                            Message::Text(text.into()),
+                            WRITER_SEND_TIMEOUT,
+                        )
+                        .await
+                        {
+                            BoundedSend::Sent => {}
+                            BoundedSend::Failed => break,
+                            BoundedSend::TimedOut => {
+                                warn!(
+                                    client = %context.client_id_str,
+                                    "écriture WebSocket bloquée : client lent, fermeture 4408"
+                                );
+                                close_info = Some(CloseInfo::new(
+                                    hub::SLOW_CLIENT_CLOSE_CODE,
+                                    hub::SLOW_CLIENT_REASON,
+                                ));
+                                break;
+                            }
                         }
                     }
                     Some(OutFrame::Close(code, reason)) => {
@@ -422,6 +476,14 @@ async fn handle_socket(
                     None => break,
                 }
             }
+            changed = close_rx.changed() => {
+                if changed.is_ok() {
+                    if let Some(close) = close_rx.borrow_and_update().clone() {
+                        close_info = Some(CloseInfo::new(close.code, close.reason.as_str()));
+                    }
+                }
+                break;
+            }
             _ = ping_interval.tick() => {
                 if liveness.is_expired() {
                     close_info = Some(CloseInfo::new(
@@ -430,8 +492,26 @@ async fn handle_socket(
                     ));
                     break;
                 }
-                if sink.send(Message::Ping(Default::default())).await.is_err() {
-                    break;
+                match send_bounded(
+                    &mut sink,
+                    Message::Ping(Default::default()),
+                    WRITER_SEND_TIMEOUT,
+                )
+                .await
+                {
+                    BoundedSend::Sent => {}
+                    BoundedSend::Failed => break,
+                    BoundedSend::TimedOut => {
+                        warn!(
+                            client = %context.client_id_str,
+                            "ping WebSocket bloqué : client lent, fermeture 4408"
+                        );
+                        close_info = Some(CloseInfo::new(
+                            hub::SLOW_CLIENT_CLOSE_CODE,
+                            hub::SLOW_CLIENT_REASON,
+                        ));
+                        break;
+                    }
                 }
             }
             _ = state.shutdown.subscribe().wait() => {
@@ -659,16 +739,22 @@ async fn send_server_message(
             return true;
         }
     };
-    sink.send(Message::Text(text.into())).await.is_ok()
+    match send_bounded(sink, Message::Text(text.into()), WRITER_SEND_TIMEOUT).await {
+        BoundedSend::Sent => true,
+        BoundedSend::Failed | BoundedSend::TimedOut => false,
+    }
 }
 
 /// Envoie une trame de fermeture en ignorant les erreurs d'écriture.
+///
+/// L'écriture est bornée : même une fermeture vers un client qui ne lit plus
+/// ne peut pas retenir la tâche indéfiniment.
 async fn close_sink(sink: &mut SplitSink<WebSocket, Message>, info: &CloseInfo) {
     let frame = CloseFrame {
         code: info.code,
         reason: info.reason.clone().into(),
     };
-    drop(sink.send(Message::Close(Some(frame))).await);
+    let _ = send_bounded(sink, Message::Close(Some(frame)), WRITER_SEND_TIMEOUT).await;
 }
 
 /// Traite un message client authentifié.
@@ -1401,6 +1487,58 @@ mod tests {
         assert!(
             !guard.coalesce(item, accepted + Duration::from_millis(2_151)),
             "une demande après la fenêtre doit repasser"
+        );
+    }
+
+    /// Sink qui ne devient jamais prêt : simule un pair qui ne lit plus, sans
+    /// attendre les 5 s de production.
+    struct StalledSink;
+
+    impl futures_util::Sink<Message> for StalledSink {
+        type Error = ();
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Pending
+        }
+
+        fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Pending
+        }
+
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    /// B-01 : l'écriture socket est bornée par un timeout, même si le sink ne
+    /// devient jamais prêt. La session mappe ce résultat sur `4408 slow_client`.
+    #[tokio::test]
+    async fn writer_send_is_bounded_even_when_the_socket_stalls() {
+        let mut sink = StalledSink;
+        let started = Instant::now();
+        let outcome = send_bounded(
+            &mut sink,
+            Message::Text("trame".to_owned().into()),
+            Duration::from_millis(50),
+        )
+        .await;
+        assert_eq!(outcome, BoundedSend::TimedOut);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "le writer doit rendre la main au timeout, pas rester bloqué"
         );
     }
 }

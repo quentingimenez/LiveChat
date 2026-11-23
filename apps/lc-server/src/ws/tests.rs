@@ -28,7 +28,8 @@ use lc_domain::{
 use lc_playback::PlaybackStateEvent;
 use lc_protocol::{
     close_code, close_reason, media_signature_input, MediaKind as ProtocolMediaKind, PlaybackState,
-    PlaybackStatePayload, StopReason, StopRequestPayload, StopRequestSource,
+    PlaybackStatePayload, RightsChangedPayload, ServerMessage, StopReason, StopRequestPayload,
+    StopRequestSource,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -44,7 +45,10 @@ use crate::app::AppState;
 use crate::config::Config;
 use crate::shutdown::Shutdown;
 
-use super::hub::{self, Hub, MAX_PEERS, MAX_SOCKETS_PER_CLIENT, MAX_SOCKETS_PER_GUILD};
+use super::hub::{
+    self, Hub, MAX_PEERS, MAX_SOCKETS_PER_CLIENT, MAX_SOCKETS_PER_GUILD, OUTBOUND_QUEUE_CAPACITY,
+    SLOW_CLIENT_REASON,
+};
 use super::router_with_hub;
 
 /// Client WebSocket de test.
@@ -795,8 +799,8 @@ async fn play_during_runtime_init_is_signed_and_never_fails_the_job() {
     // Une socket est déjà dans la room pendant qu'un autre `hello` initialise
     // le moteur : c'est la fenêtre d'AUD-A1-009.
     let client_id = OverlayClientId::new_v4();
-    let (sender, mut frames) = tokio::sync::mpsc::unbounded_channel();
-    server
+    let (sender, mut frames) = tokio::sync::mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
+    let (_connection_id, _close_rx) = server
         .hub
         .register(
             guild.clone(),
@@ -2009,7 +2013,7 @@ async fn socket_caps_are_enforced_unit() {
     let guild = guild_id();
     let client = OverlayClientId::new_v4();
     for _ in 0..MAX_SOCKETS_PER_CLIENT {
-        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
         hub.register(
             guild.clone(),
             client,
@@ -2022,7 +2026,7 @@ async fn socket_caps_are_enforced_unit() {
         )
         .expect("sous le plafond client");
     }
-    let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let (sender, _receiver) = tokio::sync::mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
     assert_eq!(
         hub.register(
             guild,
@@ -2033,13 +2037,14 @@ async fn socket_caps_are_enforced_unit() {
             None,
             None,
             sender,
-        ),
-        Err(hub::RegisterError::ClientLimit)
+        )
+        .expect_err("plafond client atteint"),
+        hub::RegisterError::ClientLimit
     );
 
     let other_guild = GuildId::parse("123456789012345679").expect("guilde de test");
     for _ in 0..MAX_SOCKETS_PER_GUILD {
-        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
         hub.register(
             other_guild.clone(),
             OverlayClientId::new_v4(),
@@ -2052,7 +2057,7 @@ async fn socket_caps_are_enforced_unit() {
         )
         .expect("sous le plafond guilde");
     }
-    let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let (sender, _receiver) = tokio::sync::mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
     assert_eq!(
         hub.register(
             other_guild,
@@ -2063,8 +2068,202 @@ async fn socket_caps_are_enforced_unit() {
             None,
             None,
             sender,
+        )
+        .expect_err("plafond guilde atteint"),
+        hub::RegisterError::GuildLimit
+    );
+}
+
+/// B-01 : la file est bornée à 256 trames, un producteur synchrone ne bloque
+/// jamais, et le dépassement demande la fermeture `4408 slow_client`.
+#[test]
+fn outbound_queue_is_bounded_and_full_producers_do_not_block() {
+    let hub = Hub::new();
+    let guild = guild_id();
+    let client = OverlayClientId::new_v4();
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
+    let (connection_id, close_rx) = hub
+        .register(
+            guild,
+            client,
+            client.to_canonical(),
+            "board".to_owned(),
+            lc_protocol::SessionMode::Normal,
+            None,
+            None,
+            sender,
+        )
+        .expect("connexion enregistrée");
+
+    assert_eq!(
+        OUTBOUND_QUEUE_CAPACITY, 256,
+        "budget T-00-02 : borne dure de 256 trames par connexion"
+    );
+    for _ in 0..OUTBOUND_QUEUE_CAPACITY {
+        assert!(
+            hub.send(connection_id, hub::OutFrame::Text("trame".to_owned())),
+            "la file doit accepter exactement sa capacité"
+        );
+    }
+    assert_eq!(
+        hub.outbound_queue_depth(connection_id),
+        Some(OUTBOUND_QUEUE_CAPACITY),
+        "la profondeur ne dépasse jamais la capacité"
+    );
+
+    // Producteur synchrone : de toute façon `hub.send` n'a pas de `.await`,
+    // donc ce test ne peut pas rester bloqué sur une file pleine.
+    assert!(!hub.send(connection_id, hub::OutFrame::Text("débordement".to_owned())));
+    assert_eq!(
+        hub.outbound_queue_depth(connection_id),
+        Some(OUTBOUND_QUEUE_CAPACITY),
+        "la trame refusée n'agrandit pas la file"
+    );
+    assert_eq!(
+        (*close_rx.borrow()).clone(),
+        Some(hub::OutboundClose {
+            code: close_code::FRAME_TOO_LARGE,
+            reason: SLOW_CLIENT_REASON.to_owned(),
+        }),
+        "le client lent doit être fermé 4408 slow_client"
+    );
+
+    let mut drained = 0;
+    while receiver.try_recv().is_ok() {
+        drained += 1;
+    }
+    assert_eq!(
+        drained, OUTBOUND_QUEUE_CAPACITY,
+        "aucune trame au-delà de la capacité"
+    );
+    // Une fois la connexion marquée fermante, les productions suivantes sont
+    // ignorées sans nouvelle notification ni log.
+    assert!(!hub.send(connection_id, hub::OutFrame::Text("encore".to_owned())));
+}
+
+/// B-01 : une fermeture ciblée (révocation, arrêt admin) ne se perd pas
+/// derrière une file pleine : elle est publiée hors file avec son propre code.
+#[test]
+fn close_frame_that_does_not_fit_is_routed_out_of_band() {
+    let hub = Hub::new();
+    let guild = guild_id();
+    let client = OverlayClientId::new_v4();
+    let (sender, _receiver) = tokio::sync::mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
+    let (connection_id, close_rx) = hub
+        .register(
+            guild,
+            client,
+            client.to_canonical(),
+            "board".to_owned(),
+            lc_protocol::SessionMode::Normal,
+            None,
+            None,
+            sender,
+        )
+        .expect("connexion enregistrée");
+    for _ in 0..OUTBOUND_QUEUE_CAPACITY {
+        assert!(hub.send(connection_id, hub::OutFrame::Text("trame".to_owned())));
+    }
+
+    assert!(
+        hub.send(
+            connection_id,
+            hub::OutFrame::Close(close_code::REVOKED, "revoked".to_owned())
         ),
-        Err(hub::RegisterError::GuildLimit)
+        "la fermeture d'une connexion existante doit être honorée hors file"
+    );
+    assert_eq!(
+        (*close_rx.borrow()).clone(),
+        Some(hub::OutboundClose {
+            code: close_code::REVOKED,
+            reason: "revoked".to_owned(),
+        })
+    );
+}
+
+/// B-01 bout-en-bout : une socket qui ne draine plus sa file est fermée
+/// `4408 slow_client` ; l'autre client continue de recevoir et la lecture
+/// n'est pas arrêtée pour tout le monde.
+#[tokio::test]
+async fn slow_client_is_closed_with_4408_and_healthy_client_keeps_receiving() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    let slow_client =
+        seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    seed_overlay_client(&server.db, &guild, TOKEN_B, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 120).await;
+    let job_id = seed_job(
+        &server.db,
+        &guild,
+        asset_id,
+        120,
+        JobStatus::Playing,
+        Some(UtcDateTime::now()),
+    )
+    .await;
+
+    let mut slow = connect(server.addr).await;
+    handshake(&mut slow, TOKEN).await;
+    let mut healthy = connect(server.addr).await;
+    handshake(&mut healthy, TOKEN_B).await;
+
+    // 300 > 256 : le runtime de `#[tokio::test]` est mono-thread, donc cette
+    // boucle synchrone ne laisse aucune tâche session vider la file. Le client
+    // sain n'est pas ciblé : seule la file du client lent doit déborder.
+    for _ in 0..300 {
+        let _ = server.hub.send_to_client(
+            &slow_client.as_uuid(),
+            ServerMessage::RightsChanged(RightsChangedPayload {}),
+        );
+    }
+
+    expect_close_with_reason(&mut slow, close_code::FRAME_TOO_LARGE, SLOW_CLIENT_REASON).await;
+
+    // La session ferme puis se désenregistre ; on attend le nettoyage d'état.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while server.hub.is_connected(&slow_client.as_uuid()) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "la connexion lente doit être désenregistrée"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // Un broadcast de room continue d'être servi : seule la socket saine reste.
+    assert_eq!(
+        server.hub.broadcast_message(
+            &guild,
+            ServerMessage::RightsChanged(RightsChangedPayload {})
+        ),
+        1,
+        "seul le client sain doit encore recevoir"
+    );
+
+    let mut saw_rights = false;
+    let mut saw_stop = false;
+    for _ in 0..20 {
+        let value = recv_value(&mut healthy).await;
+        match value.get("type").and_then(Value::as_str) {
+            Some("rights.changed") => {
+                saw_rights = true;
+                break;
+            }
+            Some("stop") => saw_stop = true,
+            _ => {}
+        }
+    }
+    assert!(
+        saw_rights,
+        "le client sain doit continuer à recevoir les broadcasts de la room"
+    );
+    assert!(
+        !saw_stop,
+        "fermer un client lent ne doit pas diffuser de stop global"
+    );
+    assert_eq!(
+        job_status(&server.db, job_id).await,
+        JobStatus::Playing,
+        "le job en cours ne doit pas être libéré par la fermeture d'un client lent"
     );
 }
 

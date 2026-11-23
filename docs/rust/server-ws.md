@@ -90,9 +90,13 @@ overlay (Tauri) ──WS /ws──> session.rs (1 tâche par socket)
 5. **Welcome** : envoi de `welcome` (avec `currentJob` re-signé pour ce socket si un job `PLAYING`
    existe), puis `settings` (modes `normal`/`invite_read_only`), puis broadcast `peers` à la room.
 6. **Boucle** : trames client (parsing `ClientEnvelope`, `v == 2`, `id` non vide et ≤ 64 caractères,
-   sinon `1002 protocol_error`), file sortante, ping toutes les 15 s (timeout 45 s sans `Pong`),
-   arrêt gracieux sur `state.shutdown`.
-7. **Fermeture** : close frame si possible, désenregistrement du registre, broadcast `peers`.
+   sinon `1002 protocol_error`), file sortante **bornée par connexion** (256 trames,
+   `OUTBOUND_QUEUE_CAPACITY`, production `try_send` non bloquante), chaque écriture socket bornée à
+   **5 s** (`WRITER_SEND_TIMEOUT`), ping toutes les 15 s (timeout 45 s sans `Pong`), arrêt gracieux sur
+   `state.shutdown`.
+7. **Fermeture** : close frame si possible, désenregistrement du registre, broadcast `peers`. Un
+   client lent (file pleine ou écriture socket > 5 s) est fermé seul en `4408 slow_client`, sans
+   arrêter les autres sockets ni les jobs de la guilde.
 
 Codes de fermeture émis par le serveur (cf. SSOT §3) :
 
@@ -107,7 +111,7 @@ Codes de fermeture émis par le serveur (cf. SSOT §3) :
 | `4401` | `auth_timeout`, `missing_token`, `invalid_token` | hello absent/tardif, jeton vide/inconnu, `clientId` incohérent |
 | `4402` | `revoked` | client révoqué (y compris fermeture admin) |
 | `4403` | `outdated_protocol` | `v != 2` ou `appVersion` < minimum (raison JSON) |
-| `4408` | `frame_too_large` | trame texte > 64 Kio (lue jusqu'à la borne de transport de 1 Mio) |
+| `4408` | `frame_too_large`, `slow_client` | trame texte > 64 Kio (lue jusqu'à la borne de transport de 1 Mio), ou client trop lent (file sortante pleine, écriture socket > 5 s) |
 | `4409` | `rate_limited` | > 20 trames C→S/s |
 
 ## 4. Messages C→S
@@ -185,6 +189,8 @@ scheduler, §15.3 de la SSOT) ; si plusieurs sont détectés, le plus récent pa
 | --- | --- | --- |
 | trame client | 64 Kio (`MAX_FRAME_BYTES`) | close `4408` |
 | borne de transport d'upgrade | 1 Mio (`MAX_TRANSPORT_MESSAGE_BYTES`) | 64 Kio..1 Mio → `4408` applicatif ; > 1 Mio → close transport `1006`/`1009` |
+| file sortante | **256 trames par connexion** (`OUTBOUND_QUEUE_CAPACITY`) | `try_send` non bloquant ; pleine → close `4408 slow_client` de cette connexion seule |
+| écriture socket | **5 s** (`WRITER_SEND_TIMEOUT`) | `sink.send` bloqué → close `4408 slow_client`, tâche writer terminée |
 | `id` de trame C→S | non vide (espaces refusés), ≤ 64 caractères (`MAX_REQUEST_ID_CHARS`) | close `1002 protocol_error` avant traitement |
 | messages C→S | 20/s glissant sur 1 s, par connexion | close `4409` |
 | `playback.state` | 1/s | excédent ignoré silencieusement |
@@ -201,6 +207,21 @@ scheduler, §15.3 de la SSOT) ; si plusieurs sont détectés, le plus récent pa
 Le rate limiter est un simple `VecDeque<Instant>` par connexion (fenêtre glissante de 1 s) : sans
 allocation par message, et suffisant pour un client overlay. Toute trame texte est comptée, y
 compris les messages rejetés ensuite ; les Pong et les trames de contrôle ne sont pas comptés.
+
+La file sortante est créée par `handle_socket` (`tokio::sync::mpsc::channel(OUTBOUND_QUEUE_CAPACITY)`)
+et son `Sender` est enregistré dans `Hub::Connection`. Tous les producteurs (broadcasts, `play`,
+`stop`, `settings`, acks) passent par `Connection::enqueue_text`, donc par `try_send` : jamais
+d'attente du hub sur une socket. Une file pleine marque la connexion `closing`, loggue une fois
+(client, guilde, code, raison, capacité — pas de secret) et publie la fermeture dans un
+`watch::channel` propre à la connexion ; la boucle de session la lit et répond `4408 slow_client`
+sans tenir le verrou du hub. La profondeur est observable en test via
+`outbound_queue_depth`/`queue_depth` (`max_capacity() - capacity()`).
+
+Le writer borne chaque `sink.send` (texte, ping, close) avec `timeout(WRITER_SEND_TIMEOUT, ...)`.
+Un dépassement ferme le client en `4408 slow_client` et termine la tâche de session par le chemin
+habituel (`unregister`, `broadcast_peers`). Limite connue : si le timeout survient au milieu d'une
+grande trame, le close peut être illisible côté client (trame tronquée) ; le client verra alors une
+fermeture de transport sans code applicatif.
 
 Les plafonds de sockets (3/client, 16/guilde) sont vérifiés **sous le verrou du registre** au moment
 de `Hub::register`, après authentification et avant l'envoi de `welcome` : un client refusé ne reçoit
@@ -308,8 +329,8 @@ pub async fn broadcast_settings(&self, guild_id: &GuildId) -> usize;
 
 ## 10. Tests
 
-`apps/lc-server/src/ws/tests.rs` (**34 tests** filtrés par `cargo test -p lc-server ws::` — 27
-d'intégration, 7 unitaires dont 2 dans `session.rs`) :
+`apps/lc-server/src/ws/tests.rs` — `cargo test -p lc-server ws::` exécute **70 tests**
+(2026-11-23, `hub.rs` et `session.rs` inclus) ; liste non exhaustive des cas structurants :
 
 Intégration (vrai serveur axum sur port éphémère + SQLite temporaire + client `tokio-tungstenite`) :
 
@@ -347,12 +368,18 @@ Intégration (vrai serveur axum sur port éphémère + SQLite temporaire + clien
 27. `dispatch_failure_emits_non_fatal_error_frame` (serveur sans `MEDIA_URL_SECRET` : le `play`
     média ne peut être signé → trame `error` `dispatch_failed` avec `jobId`, puis `peers.request`
     acquitté et connexion toujours ouverte).
+28. `slow_client_is_closed_with_4408_and_healthy_client_keeps_receiving` (client qui ne lit pas sa
+    socket : 300 `rights.changed` ciblés saturent sa file de 256 → close `4408 slow_client`, aucun
+    `stop`, job toujours `PLAYING`, le second client de la guilde reçoit encore la diffusion).
 
 Unitaires : `max_peers_is_frozen`, `sha256_token_hash_matches_the_reference_vector`,
 `close_reason_mapping_is_stable`, `signed_play_uses_the_adaptive_media_ttl`,
-`playback_state_event_and_stop_payload_shapes_match_the_protocol`, et dans `session.rs` :
+`playback_state_event_and_stop_payload_shapes_match_the_protocol` ; dans `tests.rs` :
+`outbound_queue_is_bounded_and_full_producers_do_not_block`,
+`close_frame_that_does_not_fit_is_routed_out_of_band` ; dans `session.rs` :
 `request_id_validation_accepts_64_chars_and_rejects_others`,
-`pong_liveness_is_not_refreshed_by_application_heartbeats`.
+`pong_liveness_is_not_refreshed_by_application_heartbeats`,
+`writer_send_is_bounded_even_when_the_socket_stalls`.
 
 Commandes de vérification (PowerShell) :
 
@@ -386,6 +413,17 @@ cargo test -p lc-server
 - execution de la ligne de commande ci-dessus relancée après stabilisation des lanes parallèles ;
   le `cargo fmt --all -- --check` global reste à la charge de l'intégration (fichiers d'autres
   lanes en cours d'écriture).
+
+Vérification B-01 (2026-11-23, branche `fix/ws-outbound-queue`) :
+
+- `cargo test -p lc-server ws::` : **70 passed / 0 failed / 0 ignored** (3,04 s) ;
+- `cargo test -p lc-server` : **716 passed / 0 failed / 11 ignored** (lib) + `contracts` 3 passed +
+  `kill_recover` 1 passed + doctest 1 passed / 1 ignored ;
+- `cargo clippy -p lc-server --all-targets -- -D warnings` : OK (exit 0) ;
+- `cargo fmt --all -- --check` : OK (exit 0) ;
+- morsure : `OUTBOUND_QUEUE_CAPACITY` temporairement portée à 512 →
+  `slow_client_is_closed_with_4408_and_healthy_client_keeps_receiving` échoue
+  (`tests.rs:267`, timeout d'attente de la fermeture) ; capacité restaurée à 256 → passe.
 
 ## 11. Écarts et décisions
 

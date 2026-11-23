@@ -587,6 +587,10 @@ pub(crate) struct IngestionFailure {
 /// HTTP response: the same function serves the asynchronous task (which maps it
 /// to `media.ingestion`) and keeps the error vocabulary shared with the REST
 /// helpers below.
+///
+/// The quota is read and enforced inside the same `BEGIN IMMEDIATE` transaction
+/// as the insertion and the pin, so two concurrent ingestions cannot both pass
+/// the limit check.
 pub(crate) async fn complete_board_item(
     state: &AppState,
     auth: &AuthedOverlayClient,
@@ -605,20 +609,8 @@ pub(crate) async fn complete_board_item(
         .get_by_guild_and_asset(auth.guild_id(), asset.id)
         .await
     {
-        Ok(Some(existing_item)) => {
-            if let Err(service_error) = assets::pin(db, asset.id, now).await {
-                return Err(match service_error {
-                    MediaServiceError::Database(db_error) => {
-                        completion_db_failure("overlay_media_board.repin_board_asset", &db_error)
-                    }
-                    other => media_service_failure(&other),
-                });
-            }
-            return Ok(CompletedBoardItem {
-                created: false,
-                replaced: false,
-                item: existing_item,
-            });
+        Ok(Some(_)) => {
+            return repin_existing_board_item(db, auth.guild_id(), &asset, now).await;
         }
         Ok(None) => {}
         Err(db_error) => {
@@ -628,44 +620,6 @@ pub(crate) async fn complete_board_item(
             ));
         }
     }
-
-    // Quota de stockage de la board (legacy `ensureGuildBoardHasCapacity`).
-    let used = match board_total_bytes(db, auth.guild_id()).await {
-        Ok(used) => used,
-        Err(db_error) => {
-            return Err(completion_db_failure(
-                "overlay_media_board.board_usage",
-                &db_error,
-            ));
-        }
-    };
-    let limit_bytes = match board_limit_bytes(state, db, auth.guild_id()).await {
-        Ok(limit) => limit,
-        Err(db_error) => {
-            return Err(completion_db_failure(
-                "overlay_media_board.board_limit",
-                &db_error,
-            ));
-        }
-    };
-    if used.saturating_add(asset.size_bytes) > limit_bytes {
-        return Err(board_full_failure(limit_bytes));
-    }
-
-    // AUD-A2-007 : le service a persisté l'asset avec le TTL de cache ; le
-    // board l'épingle pour 100 ans (`ensurePinnedExpiry` legacy), après
-    // validation de la capacité et pour les deux cas d'usage (asset neuf ou
-    // déjà en cache).
-    let asset = match assets::pin(db, asset.id, now).await {
-        Ok(pinned) => pinned,
-        Err(MediaServiceError::Database(db_error)) => {
-            return Err(completion_db_failure(
-                "overlay_media_board.pin_board_asset",
-                &db_error,
-            ));
-        }
-        Err(service_error) => return Err(media_service_failure(&service_error)),
-    };
 
     let item = MediaBoardItem {
         id: MediaBoardItemId::new_v4(),
@@ -685,8 +639,21 @@ pub(crate) async fn complete_board_item(
         display_duration_sec: None,
         display_scale_percent: None,
     };
-    match db.media_board().create(&item).await {
-        Ok(()) => {
+
+    let mut transaction = begin_board_write_transaction(db).await?;
+    match create_board_item_locked(
+        state,
+        db,
+        &mut transaction,
+        auth.guild_id(),
+        &item,
+        asset.size_bytes,
+        now,
+    )
+    .await
+    {
+        Ok(LockedCreate::Created) => {
+            commit_board_write_transaction(transaction).await?;
             // L'auteur sert au droit « modifier ses propres médias ». The item is
             // already visible, so an author-recording failure is logged but does
             // not turn a successful ingestion into a failure.
@@ -709,30 +676,106 @@ pub(crate) async fn complete_board_item(
                 item,
             })
         }
-        Err(db_error) if is_conflict(&db_error) => match db
-            .media_board()
-            .get_by_guild_and_asset(auth.guild_id(), asset.id)
-            .await
-        {
-            Ok(Some(existing_item)) => Ok(CompletedBoardItem {
-                created: false,
-                replaced: false,
-                item: existing_item,
-            }),
-            Ok(None) => {
-                tracing::error!("item du board introuvable après un conflit d'insertion");
-                Err(internal_failure())
+        Ok(LockedCreate::Existing) => {
+            rollback_board_write_transaction(transaction).await;
+            repin_existing_board_item(db, auth.guild_id(), &asset, now).await
+        }
+        Err(failure) => {
+            rollback_board_write_transaction(transaction).await;
+            Err(failure)
+        }
+    }
+}
+
+/// Ré-épingle et relit l'item d'un asset déjà présent sur la board.
+async fn repin_existing_board_item(
+    db: &Db,
+    guild_id: &GuildId,
+    asset: &MediaAsset,
+    now: UtcDateTime,
+) -> Result<CompletedBoardItem, IngestionFailure> {
+    if let Err(service_error) = assets::pin(db, asset.id, now).await {
+        return Err(match service_error {
+            MediaServiceError::Database(db_error) => {
+                completion_db_failure("overlay_media_board.repin_board_asset", &db_error)
             }
-            Err(db_error) => Err(completion_db_failure(
-                "overlay_media_board.reload_item",
-                &db_error,
-            )),
-        },
+            other => media_service_failure(&other),
+        });
+    }
+    match db
+        .media_board()
+        .get_by_guild_and_asset(guild_id, asset.id)
+        .await
+    {
+        Ok(Some(existing_item)) => Ok(CompletedBoardItem {
+            created: false,
+            replaced: false,
+            item: existing_item,
+        }),
+        Ok(None) => {
+            tracing::error!("item du board introuvable après une ingestion concurrente");
+            Err(internal_failure())
+        }
         Err(db_error) => Err(completion_db_failure(
-            "overlay_media_board.insert_item",
+            "overlay_media_board.reload_item",
             &db_error,
         )),
     }
+}
+
+/// Résultat de l'insertion tentée dans la transaction d'écriture du board.
+enum LockedCreate {
+    /// Item inséré (et asset épinglé) dans la transaction.
+    Created,
+    /// L'asset a été inséré par une ingestion concurrente : l'appelant relit
+    /// l'item après le rollback et le ré-épingle.
+    Existing,
+}
+
+/// Insère l'item dans la transaction, après avoir relu le quota sur la même
+/// connexion : la vérification et l'écriture ne peuvent plus s'intercaler.
+async fn create_board_item_locked(
+    state: &AppState,
+    db: &Db,
+    connection: &mut sqlx::SqliteConnection,
+    guild_id: &GuildId,
+    item: &MediaBoardItem,
+    requested_bytes: i64,
+    now: UtcDateTime,
+) -> Result<LockedCreate, IngestionFailure> {
+    let existing: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM media_board_items WHERE guild_id = ? AND media_asset_id = ?",
+    )
+    .bind(guild_id.as_str())
+    .bind(item.media_asset_id.to_canonical())
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|error| {
+        completion_db_failure(
+            "overlay_media_board.board_lookup_tx",
+            &lc_db::DbError::from(error),
+        )
+    })?;
+    if existing.is_some() {
+        return Ok(LockedCreate::Existing);
+    }
+    ensure_board_capacity_locked(state, connection, guild_id, 0, requested_bytes).await?;
+    match db.media_board().create_on(connection, item).await {
+        Ok(()) => {}
+        Err(db_error) if is_conflict(&db_error) => return Ok(LockedCreate::Existing),
+        Err(db_error) => {
+            return Err(completion_db_failure(
+                "overlay_media_board.insert_item",
+                &db_error,
+            ));
+        }
+    }
+    assets::pin_on(connection, item.media_asset_id, now)
+        .await
+        .map_err(|db_error| {
+            completion_db_failure("overlay_media_board.pin_board_asset", &db_error)
+        })?;
+    Ok(LockedCreate::Created)
 }
 
 /// Replaces the media of an existing board item with an ingested asset.
@@ -740,9 +783,10 @@ pub(crate) async fn complete_board_item(
 /// The item keeps its id, title, message, author, date, favorites and
 /// picture. The new asset must be of the same kind as the previous one and
 /// must not already be on the guild's board. The storage quota is checked on
-/// the size difference; the new asset is pinned and the previous one is
-/// released when no item shows it any more.
-pub(super) async fn replace_board_item_media(
+/// the size difference inside the same transaction as the replacement, so a
+/// concurrent replacement cannot exceed the limit; the new asset is pinned and
+/// the previous one is released when no item shows it any more.
+pub(crate) async fn replace_board_item_media(
     state: &AppState,
     auth: &AuthedOverlayClient,
     db: &Db,
@@ -803,70 +847,130 @@ pub(super) async fn replace_board_item_media(
         }
     }
 
-    let used = match board_total_bytes(db, auth.guild_id()).await {
-        Ok(used) => used,
-        Err(db_error) => {
-            return Err(completion_db_failure(
-                "overlay_media_board.replace_board_usage",
-                &db_error,
-            ));
-        }
-    };
-    let previous_bytes = previous.as_ref().map_or(0, |previous| previous.size_bytes);
-    let limit_bytes = match board_limit_bytes(state, db, auth.guild_id()).await {
-        Ok(limit) => limit,
-        Err(db_error) => {
-            return Err(completion_db_failure(
-                "overlay_media_board.replace_board_limit",
-                &db_error,
-            ));
-        }
-    };
-    if used
-        .saturating_sub(previous_bytes)
-        .saturating_add(asset.size_bytes)
-        > limit_bytes
-    {
-        return Err(board_full_failure(limit_bytes));
-    }
-
-    let asset = match assets::pin(db, asset.id, now).await {
-        Ok(pinned) => pinned,
-        Err(MediaServiceError::Database(db_error)) => {
-            return Err(completion_db_failure(
-                "overlay_media_board.replace_pin_asset",
-                &db_error,
-            ));
-        }
-        Err(service_error) => return Err(media_service_failure(&service_error)),
-    };
-
     let release_seconds = i64::try_from(state.runtime().media_cache_ttl_hours())
         .unwrap_or(i64::MAX / 3_600)
         .saturating_mul(3_600);
     let released_expiry = now + time::Duration::seconds(release_seconds);
-    match db
-        .media_board()
-        .replace_media(item_id, auth.guild_id(), asset.id, now, released_expiry)
-        .await
+
+    let mut transaction = begin_board_write_transaction(db).await?;
+    match replace_board_item_media_locked(
+        state,
+        db,
+        &mut transaction,
+        auth.guild_id(),
+        item_id,
+        &asset,
+        now,
+        released_expiry,
+    )
+    .await
     {
-        Ok(Some(_previous)) => Ok(CompletedBoardItem {
-            created: false,
-            replaced: true,
-            item: MediaBoardItem {
-                media_asset_id: asset.id,
-                ..item
-            },
-        }),
-        Ok(None) => Err(replace_failure(
-            "le média à remplacer n'est plus sur le board",
-        )),
-        Err(db_error) if is_conflict(&db_error) => Err(replace_failure(ALREADY_ON_BOARD)),
-        Err(db_error) => Err(completion_db_failure(
-            "overlay_media_board.replace_media",
-            &db_error,
-        )),
+        Ok(previous_media_asset_id) => {
+            commit_board_write_transaction(transaction).await?;
+            Ok(CompletedBoardItem {
+                created: false,
+                replaced: previous_media_asset_id != asset.id,
+                item: MediaBoardItem {
+                    media_asset_id: asset.id,
+                    ..item
+                },
+            })
+        }
+        Err(failure) => {
+            rollback_board_write_transaction(transaction).await;
+            Err(failure)
+        }
     }
+}
+
+/// Replacement performed inside the board write transaction: re-reads the
+/// item's previous size, checks the quota on the same connection, replaces and
+/// pins.
+async fn replace_board_item_media_locked(
+    state: &AppState,
+    db: &Db,
+    connection: &mut sqlx::SqliteConnection,
+    guild_id: &GuildId,
+    item_id: MediaBoardItemId,
+    asset: &MediaAsset,
+    now: UtcDateTime,
+    released_expiry: UtcDateTime,
+) -> Result<MediaAssetId, IngestionFailure> {
+    let previous_bytes: Option<i64> = sqlx::query_scalar(
+        "SELECT a.size_bytes FROM media_board_items b \
+           JOIN media_assets a ON a.id = b.media_asset_id \
+          WHERE b.id = ? AND b.guild_id = ?",
+    )
+    .bind(item_id.to_canonical())
+    .bind(guild_id.as_str())
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|error| {
+        completion_db_failure(
+            "overlay_media_board.replace_board_usage",
+            &lc_db::DbError::from(error),
+        )
+    })?;
+    let Some(previous_bytes) = previous_bytes else {
+        return Err(replace_failure(
+            "le média à remplacer n'est plus sur le board",
+        ));
+    };
+    let taken: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM media_board_items \
+          WHERE guild_id = ? AND media_asset_id = ? AND id <> ?",
+    )
+    .bind(guild_id.as_str())
+    .bind(asset.id.to_canonical())
+    .bind(item_id.to_canonical())
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|error| {
+        completion_db_failure(
+            "overlay_media_board.replace_board_lookup",
+            &lc_db::DbError::from(error),
+        )
+    })?;
+    if taken.is_some() {
+        return Err(replace_failure(ALREADY_ON_BOARD));
+    }
+    ensure_board_capacity_locked(
+        state,
+        connection,
+        guild_id,
+        previous_bytes,
+        asset.size_bytes,
+    )
+    .await?;
+    let previous = db
+        .media_board()
+        .replace_media_on(
+            connection,
+            item_id,
+            guild_id,
+            asset.id,
+            now,
+            released_expiry,
+        )
+        .await
+        .map_err(|db_error| {
+            if is_conflict(&db_error) {
+                replace_failure(ALREADY_ON_BOARD)
+            } else {
+                completion_db_failure("overlay_media_board.replace_media", &db_error)
+            }
+        })?;
+    let Some(previous) = previous else {
+        return Err(replace_failure(
+            "le média à remplacer n'est plus sur le board",
+        ));
+    };
+    assets::pin_on(connection, asset.id, now)
+        .await
+        .map_err(|db_error| {
+            completion_db_failure("overlay_media_board.replace_pin_asset", &db_error)
+        })?;
+    Ok(previous)
 }
 
 /// Sentence shown when the result of a replacement is already on the board.
@@ -880,17 +984,112 @@ fn replace_failure(message: &str) -> IngestionFailure {
     }
 }
 
-/// Storage limit of a guild's board, in bytes.
+/// Opens the board write transaction.
+///
+/// `BEGIN IMMEDIATE` takes the SQLite write lock before the quota is read, so
+/// two concurrent additions or replacements are serialized: the second one
+/// re-reads the committed total and cannot both pass the limit check.
+///
+/// This uses sqlx's tracked [`Transaction`](sqlx::Transaction) rather than raw
+/// SQL: sqlx starts a rollback when the guard is dropped without a commit
+/// (including during a panic), so a failed path cannot leave the connection
+/// holding the SQLite write lock.
+async fn begin_board_write_transaction(
+    db: &Db,
+) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, IngestionFailure> {
+    db.pool()
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|error| {
+            completion_db_failure("overlay_media_board.begin", &lc_db::DbError::from(error))
+        })
+}
+
+/// Commits the board write transaction; sqlx starts a rollback by itself when
+/// the commit fails.
+async fn commit_board_write_transaction(
+    transaction: sqlx::Transaction<'static, sqlx::Sqlite>,
+) -> Result<(), IngestionFailure> {
+    transaction.commit().await.map_err(|error| {
+        completion_db_failure("overlay_media_board.commit", &lc_db::DbError::from(error))
+    })
+}
+
+/// Rolls back the board write transaction; the caller is already on a failure
+/// path, so a rollback error is only logged.
+async fn rollback_board_write_transaction(transaction: sqlx::Transaction<'static, sqlx::Sqlite>) {
+    if let Err(error) = transaction.rollback().await {
+        tracing::warn!(error = %error, "rollback de la transaction board impossible");
+    }
+}
+
+/// Storage limit of a guild's board, in bytes, read on the transaction's
+/// connection.
 ///
 /// The per-guild `board_quota_mb` column (migration 0011) overrides
 /// `MEDIA_BOARD_MAX_TOTAL_MB` when it is set. A guild without a settings row
-/// keeps the server-wide limit.
-async fn board_limit_bytes(state: &AppState, db: &Db, guild_id: &GuildId) -> lc_db::DbResult<i64> {
-    let megabytes = match db.guilds().board_quota_mb(guild_id).await? {
+/// keeps the server-wide limit. The query mirrors
+/// `GuildsRepository::board_quota_mb` but runs on the transaction's connection:
+/// reading it through the pool would deadlock a one-connection test pool and,
+/// more importantly, would not be part of the write transaction.
+async fn board_limit_bytes(
+    state: &AppState,
+    connection: &mut sqlx::SqliteConnection,
+    guild_id: &GuildId,
+) -> Result<i64, IngestionFailure> {
+    let quota: Option<i64> = sqlx::query_scalar("SELECT board_quota_mb FROM guilds WHERE id = ?")
+        .bind(guild_id.as_str())
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(|error| {
+            completion_db_failure(
+                "overlay_media_board.board_limit",
+                &lc_db::DbError::from(error),
+            )
+        })?
+        .flatten();
+    let megabytes = match quota {
         Some(quota) => u64::try_from(quota).unwrap_or(1).max(1),
         None => state.runtime().media_board_max_total_mb().max(1),
     };
     Ok(i64::try_from(megabytes.saturating_mul(MIB)).unwrap_or(i64::MAX))
+}
+
+/// Re-checks the guild's board capacity on the transaction's connection.
+///
+/// `freed_bytes` is the size the write removes (0 for an addition, the replaced
+/// asset's size for a replacement).
+async fn ensure_board_capacity_locked(
+    state: &AppState,
+    connection: &mut sqlx::SqliteConnection,
+    guild_id: &GuildId,
+    freed_bytes: i64,
+    requested_bytes: i64,
+) -> Result<(), IngestionFailure> {
+    let used: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(a.size_bytes), 0) \
+           FROM media_board_items b \
+           JOIN media_assets a ON a.id = b.media_asset_id \
+          WHERE b.guild_id = ?",
+    )
+    .bind(guild_id.as_str())
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(|error| {
+        completion_db_failure(
+            "overlay_media_board.board_usage",
+            &lc_db::DbError::from(error),
+        )
+    })?;
+    let limit_bytes = board_limit_bytes(state, connection, guild_id).await?;
+    if used
+        .saturating_sub(freed_bytes.max(0))
+        .saturating_add(requested_bytes)
+        > limit_bytes
+    {
+        return Err(board_full_failure(limit_bytes));
+    }
+    Ok(())
 }
 
 /// Failure sent when a media would not fit in the guild's board.
@@ -1781,21 +1980,6 @@ fn corrupt_row(detail: String) -> lc_db::DbError {
         table: "media_board_items",
         detail,
     }
-}
-
-/// Somme des tailles des médias actuellement référencés par une board.
-async fn board_total_bytes(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<i64> {
-    let total = sqlx::query_scalar::<_, i64>(
-        "SELECT COALESCE(SUM(a.size_bytes), 0) \
-           FROM media_board_items b \
-           JOIN media_assets a ON a.id = b.media_asset_id \
-          WHERE b.guild_id = ?",
-    )
-    .bind(guild_id.as_str())
-    .fetch_one(db.pool())
-    .await
-    .map_err(lc_db::DbError::from)?;
-    Ok(total)
 }
 
 /// Supprime un item de board et libère l'expiration épinglée si l'asset n'est

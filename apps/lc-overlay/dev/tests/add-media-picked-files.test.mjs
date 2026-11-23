@@ -10,7 +10,9 @@
 // sinon le même fichier ne redéclencherait pas de change une fois sa ligne
 // retirée (un input inchangé n'émet pas d'événement). Un fichier déjà listé
 // est ignoré — un média qui apparaîtrait deux fois dans l'importation serait
-// envoyé deux fois au board — et le dialogue le dit sous le sélecteur.
+// envoyé deux fois au board — et le dialogue le dit sous le sélecteur. Un
+// fichier déposé sur le dialogue ouvert (core/media-drop.js) suit la même règle
+// qu'un choix : il rejoint l'importation sans y entrer deux fois.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -36,6 +38,15 @@ function fileRow() {
   assert.notEqual(start, -1, 'renderFileList doit exister');
   const end = view.indexOf('const form = h(', start);
   assert.notEqual(end, -1, 'le formulaire doit suivre la liste');
+  return view.slice(start, end);
+}
+
+// The drop surface filled once the form is built, up to the link branch.
+function dropHandler() {
+  const start = view.indexOf('drop: (transfer) => {');
+  assert.notEqual(start, -1, 'le dialogue ouvert doit prendre les dépôts');
+  const end = view.indexOf('linkUrl.value = media.link', start);
+  assert.notEqual(end, -1, 'le dépôt doit distinguer les fichiers du lien');
   return view.slice(start, end);
 }
 
@@ -132,6 +143,17 @@ test('un choix sans nouveauté le dit sous le sélecteur', () => {
   assert.match(handler, /duplicatePickMessage\(ignored\)/, 'le message compte les médias ignorés');
   assert.equal(duplicatePickMessage(1), 'Média déjà dans l’importation.');
   assert.equal(duplicatePickMessage(2), '2 médias déjà dans l’importation.');
+});
+
+test('un fichier déposé suit la même règle qu’un choix', () => {
+  const drop = dropHandler();
+
+  // Le formulaire prend aussi un dépôt (core/media-drop.js) : un fichier
+  // déposé rejoint l'importation en cours et ne doit pas y entrer deux fois.
+  assert.match(drop, /addPickedFiles\(chosenFiles, media\.files\)/, 'le dépôt doit rejoindre les fichiers déjà choisis');
+  assert.doesNotMatch(drop, /chosenFiles = chosenFiles\.concat\(/, 'le dépôt ne doit pas ajouter un média déjà listé');
+  assert.match(drop, /duplicatePickMessage\(ignored\)/, 'le dépôt dit aussi quand le média est déjà listé');
+  assert.match(drop, /setMode\('file'\)/, 'un fichier déposé ouvre le formulaire fichier');
 });
 
 test('la croix d’une ligne retire son média de l’importation', () => {

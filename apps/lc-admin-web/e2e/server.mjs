@@ -35,7 +35,7 @@ const child = spawn(binary, [], {
     DATABASE_URL: `sqlite://${databasePath}`,
     MEDIA_STORAGE_DIR: join(dir, 'media'),
     MEDIA_URL_SECRET: 'e2e-media-url-secret',
-    ADMIN_UI_TOKEN: process.env.LC_E2E_SECRET ?? 'e2e-admin-secret',
+    ADMIN_UI_TOKEN: process.env.LC_E2E_SECRET ?? 'e2e-admin-secret-0123456789abcdef',
     ADMIN_UI_LOCAL_ONLY: 'true',
     INGEST_API_TOKEN: 'e2e-ingest-token',
     DISCORD_TOKEN: '',

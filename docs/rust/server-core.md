@@ -132,7 +132,7 @@ global) : c'est elle qu'utilisent les tests.
 | `PORT` | `3000` | `0` accepté (port éphémère, utile aux tests) |
 | `I18N` | `fr` | parité legacy |
 | `API_URL` | **requis** | URL absolue http(s) ; son origine sert au CORS |
-| `ADMIN_UI_TOKEN` | `""` | secret masqué dans les logs |
+| `ADMIN_UI_TOKEN` | `""` | vide = login secret désactivé ; sinon ≥ 32 caractères, ≥ 8 distincts, sans motif répété (refus au démarrage — changement cassant ; `openssl rand -base64 32`) ; secret masqué dans les logs |
 | `ADMIN_UI_LOCAL_ONLY` | `true` | booléen strict |
 | `DISCORD_TOKEN` | — | optionnel ; avec `DISCORD_CLIENT_ID` ou aucun des deux |
 | `DISCORD_CLIENT_ID` | — | optionnel ; les deux ou aucun (sinon erreur) |

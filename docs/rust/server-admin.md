@@ -736,7 +736,7 @@ lock actuel : les dépendances Tauri 2 exigent ≥ 1.90 (`tauri-utils 2.10.2`,
 
 ### Démarrer le panneau
 
-1. Définir `ADMIN_UI_TOKEN` (non vide) — sinon *toute* l'API répond 503.
+1. Définir `ADMIN_UI_TOKEN` : vide = connexion par secret désactivée (endpoints admin en 503) ; non vide, il doit contenir au moins 32 caractères, au moins 8 caractères distincts et ne pas répéter un motif plus court, sinon le serveur refuse de démarrer. Changement cassant : un token existant plus court ou trop répétitif bloque le démarrage ; générer un secret avec `openssl rand -base64 32` (voir `deploy/.env.example`).
 2. Vérifier que le serveur écoute bien sur la machine administrée
    (`ADMIN_UI_LOCAL_ONLY=true` par défaut, donc accès local uniquement ; en
    conteneur, voir `docs/rust/packaging.md` §10.4).

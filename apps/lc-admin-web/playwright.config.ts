@@ -10,7 +10,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 export const E2E_PORT = Number(process.env.LC_E2E_PORT ?? 39_317);
-export const E2E_SECRET = 'e2e-admin-secret';
+export const E2E_SECRET = 'e2e-admin-secret-0123456789abcdef';
 
 export default defineConfig({
   testDir: './e2e',

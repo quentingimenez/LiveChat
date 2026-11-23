@@ -113,7 +113,7 @@ Défauts posés **dans l'image** (surchargeables par `docker run -e` ou l'orches
 | `RUST_LOG` | `info` | non | prioritaire sur `LOG` |
 | `ADMIN_UI_LOCAL_ONLY` | `true` | non | AUD-COR-10 : l'API admin n'accepte que le loopback (défaut serveur). Dans un conteneur bridge, le serveur voit l'IP de la passerelle : passer à `false` pour utiliser le panneau (protégé par le bind et `ADMIN_UI_TOKEN`) — §10.4 |
 | `MIN_OVERLAY_VERSION` | `3.0.0` | non | contrat 426 `/socket.io` |
-| `ADMIN_UI_TOKEN` | `""` | **prod : oui** | secret ; vide ⇒ endpoints admin `503 admin_ui_disabled` |
+| `ADMIN_UI_TOKEN` | `""` | **prod : oui** | secret ; vide ⇒ endpoints admin `503 admin_ui_disabled` ; non vide : ≥ 32 caractères, ≥ 8 distincts, sans motif répété (refus au démarrage — changement cassant ; `openssl rand -base64 32`) |
 | `INGEST_API_TOKEN` | `""` | **prod : oui** | secret d'ingestion |
 | `MEDIA_URL_SECRET` | `""` | **prod : oui** | clé HMAC des URL médias signées |
 | `DISCORD_TOKEN`/`DISCORD_CLIENT_ID` | — | non | optionnels, mais fournis **ensemble** ; absents ⇒ `discord=disabled` |

@@ -11,12 +11,15 @@ use crate::error::DbResult;
 
 const TABLE: &str = "media_assets";
 
-/// `purge_expired` : supprime les assets expirés que rien ne référence.
+/// `purge_expired` : supprime les assets expirés que rien ne référence
+/// (média ou artwork d'un item de board, pochette d'une vidéo du board, job
+/// actif).
 ///
 /// Constante pour que le test de plan (`tests` en fin de module) exécute
 /// exactement la requête du repository. Les index de 0022 évitent le scan de
-/// `media_board_items` (`artwork_asset_id`) et celui de `media_assets` déclenché
-/// par l'action `ON DELETE SET NULL` des deux colonnes de référence.
+/// `media_board_items` (`artwork_asset_id`), de `media_assets` par la
+/// sous-requête des pochettes et celui déclenché par l'action
+/// `ON DELETE SET NULL` des deux colonnes de référence.
 const PURGE_EXPIRED_SQL: &str = "\
     DELETE FROM media_assets \
      WHERE expires_at <= ? \
@@ -24,6 +27,12 @@ const PURGE_EXPIRED_SQL: &str = "\
            SELECT 1 FROM media_board_items \
            WHERE media_board_items.media_asset_id = media_assets.id \
               OR media_board_items.artwork_asset_id = media_assets.id \
+       ) \
+       AND NOT EXISTS ( \
+           SELECT 1 FROM media_assets AS cover_owner \
+             JOIN media_board_items \
+               ON media_board_items.media_asset_id = cover_owner.id \
+            WHERE cover_owner.cover_asset_id = media_assets.id \
        ) \
        AND NOT EXISTS ( \
            SELECT 1 FROM playback_jobs \
@@ -489,8 +498,9 @@ mod tests {
     }
 
     /// La purge ne scanne ni `media_board_items` (artwork) ni `media_assets`
-    /// (action de FK `cover_asset_id`) : les index de 0022 sont utilisés. Seule
-    /// l'action de FK de `playback_jobs` parcourt cette table.
+    /// (sous-requête des pochettes et action de FK `cover_asset_id`) : les index
+    /// de 0022 sont utilisés. Seule l'action de FK de `playback_jobs` parcourt
+    /// cette table.
     #[tokio::test]
     async fn purge_expired_ne_scanne_pas_les_tables_de_references() {
         let db = Db::open_in_memory(&DbConfig::default())
@@ -512,11 +522,12 @@ mod tests {
     }
 
     /// Suit la régression qui a motivé le helper : un plan peut nommer l'alias
-    /// (`SCAN b`) au lieu de la table, et doit être rejeté quand même.
+    /// (`SCAN a`, alias de `media_assets`) au lieu de la table, et doit être
+    /// rejeté quand même ; l'ancien garde-fou ne testait que `SCAN b`.
     #[test]
-    #[should_panic(expected = "scanne `b`")]
+    #[should_panic(expected = "scanne `a`")]
     fn le_garde_fou_rejette_un_scan_par_alias() {
-        let lignes = vec!["SCAN b".to_owned()];
+        let lignes = vec!["SCAN a".to_owned()];
         assert_aucun_scan_hors("une requête de purge", &lignes, &["playback_jobs"]);
     }
 

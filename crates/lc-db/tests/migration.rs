@@ -108,8 +108,8 @@ async fn migration_fraiche_puis_idempotente() {
     );
 
     // La migration 0022 est déjà appliquée par des bases existantes : son
-    // checksum SQLx est figé pour qu'une réécriture provoque un
-    // `VersionMismatch(22)` en CI plutôt qu'en production.
+    // checksum SQLx est épinglé ici pour qu'une réécriture échoue dès les
+    // tests, sans attendre un `VersionMismatch(22)` sur une base existante.
     let checksum: Vec<u8> =
         sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = 22")
             .fetch_one(db.pool())
@@ -158,12 +158,9 @@ async fn migration_fraiche_puis_idempotente() {
     );
 }
 
-/// Le contrôle de définition rejette un index homonyme incorrect, comme le
-/// permettrait `IF NOT EXISTS` si un index de même nom préexistait.
-#[tokio::test]
-#[should_panic(expected = "colonnes de `idx_media_assets_cover_asset`")]
-async fn index_homonyme_incorrect_est_detecte() {
-    // Une seule connexion : le DROP et le CREATE doivent voir le même schéma.
+/// Remplace l'index de couverture de 0022 par `create` sur une base migrée.
+/// Une seule connexion : le DROP et le CREATE doivent voir le même schéma.
+async fn base_avec_index_redefini(create: &str) -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("livechat.db");
     let db = Db::open(&path, &DbConfig::default().with_max_connections(1))
@@ -173,10 +170,56 @@ async fn index_homonyme_incorrect_est_detecte() {
         .execute(db.pool())
         .await
         .unwrap();
-    sqlx::query("CREATE INDEX idx_media_assets_cover_asset ON media_assets (mime)")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    sqlx::query(create).execute(db.pool()).await.unwrap();
+    (dir, db)
+}
+
+/// Le contrôle de définition rejette un homonyme aux mauvaises colonnes, comme
+/// le permettrait `IF NOT EXISTS` si un index de même nom préexistait.
+#[tokio::test]
+#[should_panic(expected = "colonnes de `idx_media_assets_cover_asset`")]
+async fn index_homonyme_incorrect_est_detecte() {
+    let (_dir, db) = base_avec_index_redefini(
+        "CREATE INDEX idx_media_assets_cover_asset ON media_assets (mime)",
+    )
+    .await;
+
+    assert_index_definition(
+        &db,
+        "media_assets",
+        "idx_media_assets_cover_asset",
+        &["cover_asset_id"],
+    )
+    .await;
+}
+
+/// Un index homonyme `UNIQUE` est rejeté même si ses colonnes sont bonnes.
+#[tokio::test]
+#[should_panic(expected = "`idx_media_assets_cover_asset` ne doit pas être unique")]
+async fn index_homonyme_unique_est_detecte() {
+    let (_dir, db) = base_avec_index_redefini(
+        "CREATE UNIQUE INDEX idx_media_assets_cover_asset ON media_assets (cover_asset_id)",
+    )
+    .await;
+
+    assert_index_definition(
+        &db,
+        "media_assets",
+        "idx_media_assets_cover_asset",
+        &["cover_asset_id"],
+    )
+    .await;
+}
+
+/// Un index homonyme partiel est rejeté même si ses colonnes sont bonnes.
+#[tokio::test]
+#[should_panic(expected = "`idx_media_assets_cover_asset` ne doit pas être partiel")]
+async fn index_homonyme_partiel_est_detecte() {
+    let (_dir, db) = base_avec_index_redefini(
+        "CREATE INDEX idx_media_assets_cover_asset ON media_assets (cover_asset_id) \
+         WHERE cover_asset_id IS NOT NULL",
+    )
+    .await;
 
     assert_index_definition(
         &db,

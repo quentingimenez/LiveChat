@@ -22,7 +22,7 @@ Ce document est la référence d'API pour la Phase 3 (serveur) et la Phase 4
 | Énumérations | Texte **MAJUSCULE** (`IMAGE`, `PLAYING`, `INVITE_READ_ONLY`), conversions dans `lc-domain::enums`. |
 | Identifiants | UUID v4 stockés en `TEXT` canonique `8-4-4-4-12` ; `GuildId`/`PairingCode` = chaînes externes validées. |
 | Migrations | Appliquées automatiquement à l'ouverture (`sqlx::migrate!("./migrations")`), idempotentes (`_sqlx_migrations`). Une cible migrée depuis le legacy reçoit `0002`..`0005` au **premier démarrage** du serveur : le registre sqlx du migrateur ne couvre que `0001` (voir `docs/rust/migrator.md` §10.1). |
-| Index de références média | `media_assets.cover_asset_id` et `media_board_items.artwork_asset_id` sont indexés par la migration `0022` (`idx_media_assets_cover_asset`, `idx_media_board_items_artwork_asset`). `guild_references_asset`, le comptage des références de `replace_media` et `purge_expired` — y compris les actions FK `ON DELETE SET NULL` qu'il déclenche — ne scannent plus `media_assets`/`media_board_items` ; les plans sont épinglés par `EXPLAIN QUERY PLAN` dans les tests de module. |
+| Index de références média | `media_assets.cover_asset_id` et `media_board_items.artwork_asset_id` sont indexés par la migration `0022` (`idx_media_assets_cover_asset`, `idx_media_board_items_artwork_asset`). `guild_references_asset`, le comptage des références de `replace_media` et `purge_expired` — y compris sa sous-requête de pochette et les actions FK `ON DELETE SET NULL` qu'il déclenche — ne scannent plus `media_assets`/`media_board_items` ; les plans sont épinglés par `EXPLAIN QUERY PLAN` dans les tests de module. |
 
 Pragmas posés sur **chaque connexion** du pool (`after_connect` implicite de
 `SqliteConnectOptions`) :
@@ -225,7 +225,7 @@ besoin.
 
 | Méthode | Requête | Legacy |
 | --- | --- | --- |
-| `media_assets().purge_expired(now)` | `DELETE … WHERE expires_at <= now AND NOT EXISTS (item de board) AND NOT EXISTS (job PENDING/PLAYING) RETURNING *` | purge du cache média |
+| `media_assets().purge_expired(now)` | `DELETE … WHERE expires_at <= now AND NOT EXISTS (item de board) AND NOT EXISTS (pochette de board) AND NOT EXISTS (job PENDING/PLAYING) RETURNING *` | purge du cache média |
 | `media_assets().list_stale_purge_candidates(status, cutoff)` | `SELECT id, source_hash, storage_path … WHERE status = ? AND last_accessed_at <= ?` + exclusions board/cover/jobs actifs | purge runtime `FAILED`/`PROCESSING` |
 | `media_assets().list_expired_ready_purge_candidates(now)` | même sélection avec `status = 'READY' AND expires_at <= ?` | purge runtime du cache expiré |
 | `media_assets().delete_purge_candidate(id)` / `delete_expired_ready_candidate(id, now)` | `DELETE … WHERE id = ?` (ou `id = ? AND status = 'READY' AND expires_at <= ?`) | suppression ciblée après sélection |
@@ -233,8 +233,9 @@ besoin.
 | `pairing_codes().delete_expired(now)` | `DELETE … WHERE used_at IS NOT NULL OR (expires_at IS NOT NULL AND expires_at <= now)` | `purgeStalePairingCodes` |
 
 La purge des médias est **protectrice** : un asset expiré encore épinglé au
-board média ou référencé par un job `PENDING`/`PLAYING` n'est jamais supprimé
-(aucune cascade silencieuse d'items de board). Elle retourne les lignes
+board média, utilisé comme pochette d'une vidéo du board, ou référencé par un job
+`PENDING`/`PLAYING` n'est jamais supprimé (aucune cascade silencieuse d'items de
+board ni de pochette). Elle retourne les lignes
 effectivement supprimées (`Vec<MediaAsset>`) : l'appelant (worker de purge) y
 lit `storage_path` pour effacer les fichiers, puis les FK du contrat
 s'appliquent aux références restantes (`media_board_items` en cascade,
@@ -266,8 +267,9 @@ tous les chemins). Les plans des deux sélections, des deux suppressions et de
   même guilde normalise les doublons (le plus récent est conservé, les autres
   repassent `PENDING`), recrée l'index, puis `set_status(Playing)` échoue ;
 - `media_assets.rs` — CRUD, `source_hash` unique, listes/limites, touche, purge
-  protectrice (board épinglé et jobs actifs conservés, lignes supprimées
-  retournées), aller-retour ms (0, 2023, 2100), date hors plage → `Corrupt` ;
+  protectrice (board épinglé, pochette et jobs actifs conservés, lignes
+  supprimées retournées), aller-retour ms (0, 2023, 2100), date hors plage →
+  `Corrupt` ;
 - `media_board.rs` — CRUD, unicité `(guild_id, media_asset_id)` → `Conflict`, FK,
   migration `0005` (base arrêtée à `0004`, renommage, relecture via
   `Db::media_board()`) ;
@@ -334,8 +336,9 @@ migrations comprises) et n'utilise pas de base partagée.
    `with_busy_retry` (borné) au lieu de remonter une erreur qui tuait le
    scheduler.
 3. **Purge média protectrice** : `purge_expired` ne supprime plus les assets
-   épinglés au board ou référencés par un job actif, et retourne les lignes
-   supprimées pour que l'appelant efface les fichiers.
+   épinglés au board, utilisés comme pochette d'une vidéo du board, ou référencés
+   par un job actif, et retourne les lignes supprimées pour que l'appelant efface
+   les fichiers.
 4. **`mode=ro`** : `?mode=ro` est un mode lecture seule strict (pas de création,
    pas de migration, pas de WAL).
 5. **Migrateur** : récupération explicite d'un `<to>.old` orphelin au démarrage

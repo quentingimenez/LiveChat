@@ -5,7 +5,7 @@
 mod common;
 
 use lc_db::DbError;
-use lc_domain::{JobStatus, MediaAssetId, MediaStatus};
+use lc_domain::{JobStatus, MediaAssetId, MediaKind, MediaStatus};
 use time::Duration;
 
 #[tokio::test]
@@ -103,27 +103,37 @@ async fn touche_et_listes_par_statut() {
 }
 
 #[tokio::test]
-async fn purge_expired_protege_board_et_jobs_actifs() {
+async fn purge_expired_protege_board_pochette_et_jobs_actifs() {
     let (db, _dir) = common::temp_db().await;
     let now = common::now();
     let guild = common::guild("123456789012345678");
 
-    // Quatre assets expirés : épinglé au board, référencé par un job PENDING,
-    // orphelin, et référencé par un job terminé (DONE).
+    // Cinq assets expirés : épinglé au board, pochette de cet item, référencé
+    // par un job PENDING, orphelin, et référencé par un job terminé (DONE).
     let mut pinned = common::sample_asset("pin", now);
+    pinned.kind = MediaKind::Audio;
+    pinned.mime = "audio/mpeg".to_owned();
     pinned.expires_at = common::date(common::NOW_MS - 1_000);
+    let mut cover = common::sample_asset("pochette", now);
+    cover.kind = MediaKind::Image;
+    cover.mime = "image/jpeg".to_owned();
+    cover.expires_at = common::date(common::NOW_MS - 1_000);
     let mut active = common::sample_asset("actif", now);
     active.expires_at = common::date(common::NOW_MS - 1_000);
     let mut orphan = common::sample_asset("orphelin", now);
     orphan.expires_at = common::date(common::NOW_MS - 1_000);
     let mut done = common::sample_asset("termine", now);
     done.expires_at = common::date(common::NOW_MS - 1_000);
-    for asset in [&pinned, &active, &orphan, &done] {
+    for asset in [&pinned, &cover, &active, &orphan, &done] {
         db.media_assets().insert(asset).await.unwrap();
     }
 
     let item = common::sample_board_item(&guild, pinned.id, now);
     db.media_board().create(&item).await.unwrap();
+    db.media_assets()
+        .set_cover(pinned.id, Some(cover.id))
+        .await
+        .unwrap();
 
     let mut pending_job = common::sample_job(&guild, now);
     pending_job.media_asset_id = Some(active.id);
@@ -136,13 +146,13 @@ async fn purge_expired_protege_board_et_jobs_actifs() {
     db.playback_jobs().create(&done_job).await.unwrap();
 
     let listed = db.media_assets().list_expired(now).await.unwrap();
-    assert_eq!(listed.len(), 4, "les quatre assets sont expirés");
+    assert_eq!(listed.len(), 5, "les cinq assets sont expirés");
 
     let purged = db.media_assets().purge_expired(now).await.unwrap();
     assert_eq!(
         purged.len(),
         2,
-        "seuls les assets sans référence active ou terminée sont purgés"
+        "seuls les assets sans référence au board, en pochette ou dans un job actif sont purgés"
     );
     let purged_ids: Vec<_> = purged.iter().map(|asset| asset.id).collect();
     assert!(purged_ids.contains(&orphan.id), "asset orphelin purgé");
@@ -154,6 +164,12 @@ async fn purge_expired_protege_board_et_jobs_actifs() {
 
     // Les références protégées sont intactes.
     assert!(db.media_assets().get(pinned.id).await.unwrap().is_some());
+    assert!(db.media_assets().get(cover.id).await.unwrap().is_some());
+    assert_eq!(
+        db.media_assets().cover_of(pinned.id).await.unwrap(),
+        Some(cover.id),
+        "la pochette de l'item de board reste référencée"
+    );
     assert!(db.media_assets().get(active.id).await.unwrap().is_some());
     assert!(db.media_board().get(item.id).await.unwrap().is_some());
     let stored_pending = db
@@ -176,6 +192,7 @@ async fn purge_expired_protege_board_et_jobs_actifs() {
         "aucun autre asset purgeable : {second:?}"
     );
     assert!(db.media_assets().get(pinned.id).await.unwrap().is_some());
+    assert!(db.media_assets().get(cover.id).await.unwrap().is_some());
     assert!(db.media_assets().get(active.id).await.unwrap().is_some());
 }
 

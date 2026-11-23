@@ -263,6 +263,65 @@ async fn ingests_a_tenor_page_end_to_end() {
 
 #[tokio::test]
 #[ignore = "nécessite un accès réseau"]
+async fn ingests_a_giphy_page_end_to_end() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut config = MediaConfig::default();
+    config.storage.directory = temp.path().join("media");
+    let pipeline = MediaPipeline::new(config).unwrap();
+    let media = pipeline
+        .ingest_url("https://giphy.com/gifs/will-smith-men-in-black-R7m04yMaGWVeE")
+        .await
+        .unwrap();
+    // La page Giphy est du HTML : le média vient de son `og:video`.
+    assert_eq!(media.source.source_kind, lc_media::SourceKind::DirectMedia);
+    assert_eq!(media.normalized.kind, MediaKind::Video);
+    assert!(media.normalized.storage_path.exists());
+    assert_eq!(
+        media.download.title.as_deref(),
+        Some("Will Smith Mib"),
+        "le titre Open Graph doit être nettoyé"
+    );
+}
+
+#[tokio::test]
+#[ignore = "nécessite un accès réseau"]
+async fn ingests_an_imgur_page_end_to_end() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut config = MediaConfig::default();
+    config.storage.directory = temp.path().join("media");
+    let pipeline = MediaPipeline::new(config).unwrap();
+    let media = pipeline
+        .ingest_url("https://imgur.com/gallery/V9O1C74")
+        .await
+        .unwrap();
+    // Imgur n'expose pas de `og:title` mais un `twitter:title`, et son
+    // `og:video` est un MP4 direct.
+    assert_eq!(media.normalized.kind, MediaKind::Video);
+    assert!(media.normalized.storage_path.exists());
+    assert!(media.download.title.is_some());
+}
+
+#[tokio::test]
+#[ignore = "nécessite un accès réseau + yt-dlp"]
+async fn ingests_a_page_without_open_graph_through_the_ytdlp_fallback() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut config = MediaConfig::default();
+    config.storage.directory = temp.path().join("media");
+    let pipeline = MediaPipeline::new(config).unwrap();
+    let media = pipeline
+        .ingest_url("https://www.dailymotion.com/video/xbyyybi")
+        .await
+        .unwrap();
+    // Dailymotion ne publie aucune balise Open Graph : le média ne peut venir
+    // que du repli `yt-dlp`.
+    assert_eq!(media.normalized.kind, MediaKind::Video);
+    assert!(media.normalized.storage_path.exists());
+    assert_eq!(media.source.source_kind, lc_media::SourceKind::DirectMedia);
+    assert!(media.download.title.is_some());
+}
+
+#[tokio::test]
+#[ignore = "nécessite un accès réseau"]
 async fn downloads_tiktok_photo_post_with_audio() {
     let temp = tempfile::TempDir::new().unwrap();
     let config = MediaConfig::default();

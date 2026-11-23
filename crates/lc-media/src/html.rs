@@ -94,7 +94,19 @@ pub fn attribute(tag: &str, name: &str) -> Option<String> {
 
 /// Contenu d'une balise `<meta property|name="…" content="…">`.
 pub fn meta_content(html: &str, key: &str) -> Option<String> {
+    meta_contents(html, key).into_iter().next()
+}
+
+/// Contenus de toutes les balises `<meta property|name="…" content="…">`, dans
+/// l'ordre du document.
+///
+/// Une page peut publier plusieurs valeurs pour la même clé : Giphy décrit tour
+/// à tour son WebP puis son GIF avec deux `og:image`, Tenor son MP4 puis son
+/// WebM avec deux `og:video`. La première valeur seule ne suffit donc pas à
+/// choisir un média.
+pub fn meta_contents(html: &str, key: &str) -> Vec<String> {
     let key = key.to_ascii_lowercase();
+    let mut contents = Vec::new();
     let mut from = 0;
     while let Some(position) = find_ci(html, "<meta", from) {
         let tag_start = position;
@@ -109,12 +121,12 @@ pub fn meta_content(html: &str, key: &str) -> Option<String> {
         });
         if matches_key {
             if let Some((_, content)) = attributes.iter().find(|(name, _)| name == "content") {
-                return Some(content.clone());
+                contents.push(content.clone());
             }
         }
         from = tag_end + 1;
     }
-    None
+    contents
 }
 
 /// Contenu d'un `<script id="…" type="application/json">…</script>`.
@@ -537,6 +549,34 @@ mod tests {
             Some("https://video.twimg.com/b.mp4")
         );
         assert_eq!(meta_content(html, "og:missing"), None);
+    }
+
+    #[test]
+    fn meta_contents_keeps_every_value_in_document_order() {
+        let html = r#"<html><head>
+            <meta property="og:image" content="https://media.example/a.webp">
+            <meta property="og:image" content="https://media.example/a.gif">
+            <meta name="twitter:image" content="https://media.example/a_s.gif">
+            <meta property="og:image:type" content="image/gif">
+        </head></html>"#;
+        assert_eq!(
+            meta_contents(html, "og:image"),
+            vec![
+                "https://media.example/a.webp",
+                "https://media.example/a.gif",
+            ]
+        );
+        assert_eq!(
+            meta_contents(html, "OG:IMAGE").len(),
+            2,
+            "la clé reste insensible à la casse"
+        );
+        assert_eq!(
+            meta_content(html, "og:image").as_deref(),
+            Some("https://media.example/a.webp"),
+            "meta_content garde la première valeur"
+        );
+        assert!(meta_contents(html, "og:missing").is_empty());
     }
 
     #[test]

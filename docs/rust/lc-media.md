@@ -22,7 +22,7 @@ MediaSource
    │  resolve::resolve_media            (oEmbed / yt-dlp --dump-json / syndication X / HTML TikTok)
    ▼
 ResolvedMedia  (titre, auteur, dimensions, kind, carte tweet, URL média directe)
-   │  download::download_source         (HTTP streaming borné + garde SSRF, ou yt-dlp)
+   │  download::download_source         (HTTP streaming borné + garde SSRF, Open Graph, ou yt-dlp)
    ▼
 DownloadResult (fichier temporaire + kind/mime devinés)
    │  transcode::normalize_downloaded_media (probe ffprobe → copie ou transcodage ffmpeg)
@@ -132,6 +132,18 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
   ce qui n'est pas autorisé disparaît. Le pendant « carte tweet » côté serveur
   est `apps/lc-server/src/media/html.rs::sanitize_tweet_embed` (Phase 6b).
 
+### Page web (`web`)
+
+- `parse_page(html) -> WebPage { title, width, height, media: Vec<WebMedia> }` : lecture
+  générique des balises Open Graph d'une page HTML, partagée par Tenor et par le
+  téléchargement des URL inconnues. `WebMedia { url, mime, kind }`.
+- Ordre des candidats : vidéos (`og:video:secure_url`, `og:video`, `og:video:url`,
+  `twitter:player:stream`) puis images (`og:image`, `twitter:image`), dédupliquées ;
+  une image de page vidéo n'est gardée que si le page expose un GIF animé (sinon c'est
+  une vignette), un `og:video` de type `text/html` est écarté.
+- `allows_ytdlp_fallback(url)` : liste explicite d'hôtes de médias (`YTDLP_FALLBACK_HOSTS`)
+  et de leurs sous-domaines ; une URL hors liste n'est jamais passée à `yt-dlp`.
+
 ### Sources (`source`)
 
 - `SourceKind` : `YouTube`, `TikTok`, `Twitter`, `Tenor`, `DirectMedia`, `LocalFile`,
@@ -188,12 +200,29 @@ Garde centrale (P0-1, audits AUD-A2/A4/A7/V) appliquée à **toute** requête r�
 ### Téléchargement (`download`)
 
 - `download_source(source, resolved, config, temp_dir)` : dispatch par type de source
-  (YouTube, TikTok, Twitter, Tenor, HTTP direct) après validation de la cible ; les sources
+  (YouTube, TikTok, Twitter, Tenor, page web) après validation de la cible ; les sources
   `file:`/`gtts:` sont **refusées** (`UNSUPPORTED_SOURCE`) — l'ancien `download_local`
   a été supprimé avec la garde LFI.
 - HTTP streaming : `reqwest` rustls via `http::send_guarded` (garde SSRF, redirections
   manuelles max 3, corps borné), timeout global, plafond 2 Gio compté au fil de l'eau,
-  sniffing des 32 premiers octets, rejet des réponses HTML (`UNSUPPORTED_SOURCE`).
+  sniffing des 32 premiers octets. Une réponse HTML est refusée pour un média résolu
+  (`DOWNLOAD_FAILED`), mais la première requête d'une page web est lue via
+  `http::read_text` (4 Mio) pour en extraire les balises Open Graph sans seconde requête.
+- `download_web` (URL `DirectMedia`/`Unknown`) essaie dans l'ordre : le fichier direct
+  s'il répond un média ; les candidats Open Graph de la page (`web::parse_page`) — vidéo
+  avant image, GIF animé préféré à une vignette WebP/JPEG — chacun via `download_http`
+  (garde SSRF, plafond, sniffing) ; puis `yt-dlp` si l'hôte figure dans
+  `web::YTDLP_FALLBACK_HOSTS` (Giphy, Imgur, Dailymotion, Vimeo, Streamable, Reddit,
+  Twitch, Instagram, Facebook, Kick, Medal, Tumblr, Bilibili…). Une erreur
+  `FILE_TOO_LARGE` interrompt la chaîne ; quand tout échoue, l'échec de `yt-dlp` est
+  remonté de préférence au message « page HTML », plus utile pour diagnostiquer le
+  repli.
+- `web::parse_page` lit toutes les balises (`html::meta_contents`), pas seulement la
+  première : titre `og:title`/`twitter:title` (suffixe « GIF - … » retiré), dimensions,
+  vidéos `og:video:secure_url`/`og:video`/`og:video:url`/`twitter:player:stream`,
+  images `og:image`/`twitter:image`. Un `og:video` de type `text/html` (lecteur Vimeo)
+  est ignoré, une image de page vidéo n'est retenue que si c'est un GIF animé (sinon
+  vignette), et les URL media doivent être `http(s)`.
 - `yt-dlp` : la cible est validée (schéma + hôte + IP) avant tout lancement ; format
   avc1/mp4 borné à 1080p, `--max-filesize`, fusion mp4, cookies TikTok générés au format
   Netscape ; sur YouTube, un échec auth/bot rejoue avec `youtube:player_client=android` et
@@ -473,8 +502,10 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
 
 ## Tests
 
-- 320 tests unitaires dans la crate (URL/hash, résolution offline sur fixtures, parsing
-  HTML/JSON — dont l'extraction Open Graph Tenor et le repli vidéo → GIF —, arguments
+- 329 tests unitaires dans la crate (URL/hash, résolution offline sur fixtures, parsing
+  HTML/JSON — dont l'extraction Open Graph générique (`web::parse_page`) et Tenor, le
+  repli vidéo → GIF, la liste d'hôtes du repli `yt-dlp` et la priorité d'erreur de
+  `download_web` —, arguments
   ffmpeg, décisions de copie, éviction LRU, configuration, erreurs,
   garde SSRF : schémas/UNC, plages IPv4/IPv6, redirections ; stockage : racine
   canonicalisée fail-closed, chemins de transit, publication atomique, purge ciblée des
@@ -509,8 +540,9 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
 - `tests/tweet_card_ffmpeg.rs` : 2 tests `#[ignore]` de composition réelle — vidéo 16:9
   et vidéo verticale 9:16 incrustées dans la carte (durée conservée, largeur de carte
   1080, H.264) ; nécessitent `ffmpeg`.
-- `tests/network.rs` : 12 tests marqués `#[ignore]` (YouTube e2e, Tenor e2e — page
-  partagée → MP4, `source_kind` et titre —, TikTok en ligne,
+- `tests/network.rs` : 15 tests marqués `#[ignore]` (YouTube e2e, Tenor e2e — page
+  partagée → MP4, `source_kind` et titre —, Giphy et Imgur e2e via Open Graph,
+  Dailymotion e2e via le repli `yt-dlp`, TikTok en ligne,
   cartes tweet — texte, photo, tweet cité, vidéo —, échantillon `testsrc` ffmpeg) ;
   ils nécessitent réseau + `ffmpeg`/`yt-dlp`.
 - Doctest de la crate : 1.

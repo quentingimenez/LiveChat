@@ -36,7 +36,7 @@
 ## 3. Nightly ([`verification-nightly.yml`](../../.github/workflows/verification-nightly.yml))
 
 - **`fuzz`** : matrix des 3 cibles (`protocol_frame`, `media_url`, `html_parsers`), corpus semé depuis les fixtures, `-max_total_time=45` par cible, seeds+golden (jamais un merge gate) ; artefacts uploadés si échec.
-- **`mutants`** : une jambe de matrix par scope, six scopes **mesurés** — `lc-protocol`, `lc-media --file guard.rs`, `lc-db --file playback_jobs.rs`, et les trois ajoutés par Q-T4 (`lc-playback --file payload.rs`, `lc-db --file db.rs`, `lc-media --file storage.rs`), mesurés sur `ubuntu-latest` avec la commande ci-dessous (run [45234358272](https://github.com/quentingimenez/LiveChat/actions/runs/45234358272), 23/11 : 57, 81 et 79). Score `floor(100·caught/(caught+missed+timeout))` comparé à la baseline ; garde d'entiers jq, échec sur toute outcome `Failure`, rc admis 0/2, `rm -rf target/mutants` (rust-cache peut restaurer de vieux outcomes), outils épinglés `cargo-mutants@27.1.0` / `nextest@0.9.151`. Chaque jambe garde `timeout-minutes: 60` et `fail-fast: false` ; une matrix par scope évite de dépasser le budget de 55 min de `ci-gate` sur une PR.
+- **`mutants`** : une jambe de matrix par scope, six scopes **mesurés** — `lc-protocol`, `lc-media --file guard.rs`, `lc-db --file playback_jobs.rs`, et les trois ajoutés par Q-T4 (`lc-playback --file payload.rs`, `lc-db --file db.rs`, `lc-media --file storage.rs`), d'abord mesurés sur `ubuntu-latest` avec la commande ci-dessous (run [45234358272](https://github.com/quentingimenez/LiveChat/actions/runs/45234358272), 23/11 : 57, 81 et 79), puis remesurés localement sur Windows le 24/11 après le round kill-or-justify (97, 100 et 100, valeurs de la baseline courante, à confirmer par le prochain nightly sur `ubuntu-latest`). Score `floor(100·caught/(caught+missed+timeout))` comparé à la baseline ; garde d'entiers jq, échec sur toute outcome `Failure`, rc admis 0/2, `rm -rf target/mutants` (rust-cache peut restaurer de vieux outcomes), outils épinglés `cargo-mutants@27.1.0` / `nextest@0.9.151`. Chaque jambe garde `timeout-minutes: 60` et `fail-fast: false` ; une matrix par scope évite de dépasser le budget de 55 min de `ci-gate` sur une PR.
 - Aucun scope n'est provisoire aujourd'hui : les six `caught_pct` sont numériques et comparés à la baseline. Le garde-fou provisoire reste dans le workflow et dans la baseline pour un scope ajouté avant sa première mesure (`caught_pct: null`, `status: "provisional"`) : sa jambe est sautée sur `pull_request` (`if: github.event_name != 'pull_request' || matrix.provisional != true`) pour ne pas rendre `ci-gate` rouge sans mesure ; le nightly planifié l'exécute, uploade `outcomes.json` (artefact `mutants-report-<scope>`), puis échoue explicitement en indiquant le score observé et les deux champs à passer à `measured` / `provisional: false`. Le garde [`MutantsNightly.Tests.ps1`](../../scripts/release/tests/MutantsNightly.Tests.ps1) vérifie cette cohérence.
 - **`load`** : ubuntu-latest, build release (`LC_ADMIN_WEB_BUILD=0`), 50 clients / 60 s,
   budgets §4.1 explicites (`--board-items 200 --max-board-p95-ms 250
@@ -275,7 +275,7 @@ stage local est vert (`59 mutants tested in 8m: 52 caught, 7 unviable`,
     classification de `remove_path` est extraite dans `classify_removal`
     (`storage.rs:439-448`, mutants devenus `442`), testée sur `Ok`, `NotFound` et
     `PermissionDenied` au lieu d'être justifiée comme race-only ; `349:39` par
-    `list_variants_ignores_directories` ; `443:5` (trois) par
+    `list_variants_ignores_directories` ; `443:5` (trois, devenus `452:5`) par
     `now_ms_is_a_current_epoch_timestamp` (fenêtre autour de `SystemTime::now`).
 - Le seul survivant restant est **équivalent** : `payload.rs:141:9`
   (`tweet_card: None` supprimé de `build_play_payload`). `PlayPayload::default()`
@@ -382,11 +382,15 @@ n'est pas un scope nightly).
 **Q-T4** (élargissement mutation, lot L1) : le job nightly `mutants` passe d'un run
 monolithique de 3 scopes à une matrix de 6 jambes indépendantes ; les trois fichiers
 critiques ajoutés (`lc-playback/src/payload.rs`, `lc-db/src/db.rs`,
-`lc-media/src/storage.rs`) ont été mesurés sur `ubuntu-latest` avec la commande du
-workflow (run [45234358272](https://github.com/quentingimenez/LiveChat/actions/runs/45234358272),
-23/11) : **57, 81 et 79** de `caught_pct`, `min_mutants` 44/77/118. Ils sont
-`status: "measured"` et `provisional: false` ; les six jambes tournent sur
-`pull_request` comme sur le nightly. Le garde
+`lc-media/src/storage.rs`) ont d'abord été mesurés sur `ubuntu-latest` avec la
+commande du workflow (run [45234358272](https://github.com/quentingimenez/LiveChat/actions/runs/45234358272),
+23/11) : **57, 81 et 79** de `caught_pct`, `min_mutants` 44/77/118. Cette mesure est
+**historique** : après le round kill-or-justify Q-T4b du 24/11, les valeurs
+courantes sont **97, 100 et 100**, `min_mutants` 44/77/125, remesurées localement
+sur Windows et enregistrées dans la baseline ; le prochain nightly doit les
+confirmer sur `ubuntu-latest`. Les six scopes sont `status: "measured"` et
+`provisional: false` ; les six jambes tournent sur `pull_request` comme sur le
+nightly. Le garde
 [`MutantsNightly.Tests.ps1`](../../scripts/release/tests/MutantsNightly.Tests.ps1)
 exige la cohérence matrix/baseline et couvre encore le scénario provisoire comme
 garde-fou pour un futur scope.

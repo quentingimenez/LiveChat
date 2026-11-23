@@ -23,6 +23,39 @@ describe('message guards', () => {
     ).toBe(true);
   });
 
+  it('rejette un message quick sans source ou avec une source inconnue', () => {
+    expect(
+      isSendQuickRequest({
+        type: MESSAGE_TYPES.SEND_QUICK,
+        url: 'https://www.youtube.com/watch?v=abc',
+      }),
+    ).toBe(false);
+    expect(
+      isSendQuickRequest({
+        type: MESSAGE_TYPES.SEND_QUICK,
+        url: 'https://www.youtube.com/watch?v=abc',
+        source: 'evil',
+      }),
+    ).toBe(false);
+  });
+
+  it('accepte une source de plateforme sur un message compose', () => {
+    expect(
+      isSendComposeRequest({
+        type: MESSAGE_TYPES.SEND_COMPOSE,
+        url: 'https://x.com/livechat/status/123',
+        source: 'twitter',
+      }),
+    ).toBe(true);
+    expect(
+      isSendComposeRequest({
+        type: MESSAGE_TYPES.SEND_COMPOSE,
+        url: 'https://x.com/livechat/status/123',
+        source: 'evil',
+      }),
+    ).toBe(false);
+  });
+
   it('valide un message compose', () => {
     expect(
       isSendComposeRequest({

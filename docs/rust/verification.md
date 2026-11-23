@@ -44,6 +44,22 @@
   artefact uploadé dans tous les cas. Les budgets board/média/trigger ont été ajoutés
   après la dernière mesure de mutation : le run nightly `load` est leur seule preuve,
   pas le stage `--mutants` du 20/11 (§5).
+- **`ignored`** : ubuntu-latest, `cargo nextest run -p lc-media -p lc-server -p xtask
+  --all-features --locked --run-ignored only --no-fail-fast -E "$NEXTEST_FILTER"`
+  (FFmpeg et yt-dlp installés par apt). `NEXTEST_FILTER` est posé par le step `Select`
+  depuis [`scripts/release/ignored-nightly-tests.json`](../../scripts/release/ignored-nightly-tests.json),
+  qui inventorie et classe les 52 tests ignorés : 33 déterministes exécutés chaque nuit,
+  19 qui exigent un service externe ou des credentials (tikwm/TikTok, CDN TikTok, X,
+  Tenor, Giphy, Imgur, YouTube, Dailymotion, images Brave, gateway Discord). Le run
+  automatique applique `not (...)` construit depuis `network_filter` ; les 19 tests
+  réseau ne s'exécutent qu'à la demande, par `workflow_dispatch` avec
+  `network_tests = true`, ou localement (voir §4). Le test Discord, seul test à
+  credentials, échoue explicitement sans `DISCORD_TOKEN`/`DISCORD_CLIENT_ID` et
+  vérifie le jeton auprès de l'API, au lieu de passer vide. La garde
+  [`IgnoredNightly.Tests.ps1`](../../scripts/release/tests/IgnoredNightly.Tests.ps1)
+  confronte le manifeste aux `#[ignore]` réels et épingle les catégories : ajouter,
+  retirer ou reclasser un test sans mettre le manifeste à jour fait échouer
+  `release-check`.
 - Déclencheurs : `cron '30 3 * * *'`, `workflow_dispatch`, `pull_request` limité à ses propres fichiers + `fuzz/**` + la baseline. **Jamais un merge gate** — un nightly rouge est un signal, pas un blocus.
 
 ## 4. Usage local
@@ -53,7 +69,10 @@ cargo xtask verify --offline                                              # fmt,
 cargo xtask verify --offline --mutants                                    # + mutation du diff (kill-or-justify, §5)
 cargo xtask loadtest --clients 20 --duration-secs 20                      # harnais de charge + budgets
 powershell -NoProfile -File scripts/release/tests/run-tests.ps1            # harnais PowerShell de release (Canary inclus)
+powershell -NoProfile -File scripts/release/tests/run-tests.ps1 -Filter ignored  # garde de l'inventaire du nightly `ignored`
 cargo test --manifest-path fuzz/Cargo.toml --no-default-features --lib --locked --offline  # seeds + golden fuzz
+# tests ignorés réseau (nightly manuel) — Internet + DISCORD_TOKEN + yt-dlp/ffmpeg requis
+cargo nextest run -p lc-media -p lc-server -p xtask --all-features --run-ignored only -E 'all()'
 ```
 
 ## 4.1 Budgets de charge du harnais

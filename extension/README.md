@@ -34,7 +34,7 @@ Documentation projet: [`../README.md`](../README.md)
 ## Pré-requis
 
 - Serveur LiveChat lancé avec `/ingest` activé (`INGEST_API_TOKEN` non vide).
-- `API_URL` joignable en `https://` (ou `http://` en local).
+- `API_URL` joignable en `https://` (le jeton n'est jamais envoyé en clair).
 
 ## Développement
 

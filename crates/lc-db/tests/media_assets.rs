@@ -291,7 +291,11 @@ async fn suppressions_conditionnelles_ne_suppriment_pas_un_asset_epingle_entre_t
     ] {
         assert!(
             !repo
-                .delete_purge_candidate(&id.to_canonical())
+                .delete_purge_candidate(
+                    &id.to_canonical(),
+                    MediaStatus::Failed,
+                    now + Duration::seconds(1),
+                )
                 .await
                 .unwrap(),
             "un asset devenu {label} entre la sélection et le DELETE ne doit pas être supprimé"

@@ -46,8 +46,8 @@ const PURGE_EXPIRED_SQL: &str = "\
 /// Les sélections de candidats et les suppressions ciblées partagent ces trois
 /// `NOT EXISTS` ; `purge_expired` porte la même condition (avec `RETURNING *`)
 /// dans sa propre constante, couverte par un test dédié. Un asset épinglé au
-/// board, utilisé comme pochette ou référencé par un job actif **entre** la
-/// sélection et le DELETE n'est donc pas supprimé (TOCTOU).
+/// board (média ou artwork), utilisé comme pochette ou référencé par un job
+/// actif **entre** la sélection et le DELETE n'est donc pas supprimé (TOCTOU).
 ///
 /// L'index `media_asset_id` du board vient de la migration 0005 ; ceux de 0022
 /// couvrent `artwork_asset_id` du board et `cover_asset_id`. Ensemble, ils
@@ -95,9 +95,15 @@ const PURGE_EXPIRED_READY_CANDIDATES_SQL: &str = purge_sql!(
     "status = 'READY' AND expires_at <= ?"
 );
 
-/// Supprime une ligne candidate par identifiant, seulement si elle n'a pas été
-/// épinglée (board, pochette, job actif) entre la sélection et la suppression.
-const PURGE_DELETE_CANDIDATE_SQL: &str = purge_sql!("DELETE FROM media_assets WHERE ", "id = ?");
+/// Supprime une ligne candidate terminale par identifiant, seulement si elle
+/// n'a pas été épinglée (média ou artwork du board, pochette, job actif) et si
+/// son état est toujours celui observé à la sélection : un statut ré-armé ou un
+/// `last_accessed_at` plus récent entre la sélection et la suppression annule
+/// le DELETE.
+const PURGE_DELETE_CANDIDATE_SQL: &str = purge_sql!(
+    "DELETE FROM media_assets WHERE ",
+    "id = ? AND status = ? AND last_accessed_at <= ?"
+);
 
 /// Supprime une ligne candidate `READY` si elle est encore expirée et toujours
 /// non épinglée : une ingestion concurrente peut avoir réarmé `expires_at`, et
@@ -332,7 +338,8 @@ impl MediaAssetsRepository {
     /// Supprime les médias expirés **non référencés**.
     ///
     /// Un média expiré est conservé (et donc non retourné) s'il est encore
-    /// épinglé sur le board média ou référencé par un job `PENDING`/`PLAYING` :
+    /// épinglé comme média ou artwork d'un item de board, utilisé comme pochette,
+    /// ou référencé par un job `PENDING`/`PLAYING` :
     /// la purge ne doit jamais casser un média visible ou une lecture en cours.
     /// Les autres sont supprimés ; les jobs terminés qui le référençaient
     /// passent `media_asset_id` à `NULL` (`ON DELETE SET NULL`).
@@ -373,7 +380,8 @@ impl MediaAssetsRepository {
             .collect())
     }
 
-    /// Liste les assets `READY` expirés à `now`, hors board et jobs actifs.
+    /// Liste les assets `READY` expirés à `now`, hors board média/artwork,
+    /// pochette et jobs actifs.
     pub async fn list_expired_ready_purge_candidates(
         &self,
         now: UtcDateTime,
@@ -388,15 +396,24 @@ impl MediaAssetsRepository {
             .collect())
     }
 
-    /// Supprime une ligne candidate par identifiant brut, tel que lu en base.
+    /// Supprime une ligne candidate terminale par identifiant brut, tel que lu
+    /// en base.
     ///
     /// Retourne `false` si la ligne a déjà disparu (course avec une autre
-    /// passe ou une ingestion) ou si elle a été épinglée entre la sélection et
-    /// la suppression : les exclusions board/pochette/job actif sont rejouées
-    /// dans le DELETE.
-    pub async fn delete_purge_candidate(&self, id: &str) -> DbResult<bool> {
+    /// passe ou une ingestion), si elle a été épinglée entre la sélection et la
+    /// suppression (exclusions média/artwork du board, pochette et job actif
+    /// rejouées dans le DELETE), ou si son `status`/`last_accessed_at` a été
+    /// ré-armé depuis la sélection.
+    pub async fn delete_purge_candidate(
+        &self,
+        id: &str,
+        status: MediaStatus,
+        stale_before: UtcDateTime,
+    ) -> DbResult<bool> {
         let result = sqlx::query(PURGE_DELETE_CANDIDATE_SQL)
             .bind(id)
+            .bind(status.as_db_str())
+            .bind(to_ms(stale_before))
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
@@ -406,8 +423,9 @@ impl MediaAssetsRepository {
     /// expirée à `now` et toujours non épinglée.
     ///
     /// Retourne `false` si une ingestion concurrente a réarmé `expires_at`, si
-    /// un item de board/pochette/job actif l'a épinglée entre-temps, ou si la
-    /// ligne a disparu : le fichier ne doit alors pas être touché.
+    /// un item de board (média ou artwork), une pochette ou un job actif l'a
+    /// épinglée entre-temps, ou si la ligne a disparu : le fichier ne doit
+    /// alors pas être touché.
     pub async fn delete_expired_ready_candidate(
         &self,
         id: &str,
@@ -686,13 +704,22 @@ mod tests {
     }
 
     /// La suppression d'un candidat passe par la clé primaire ; les exclusions
-    /// rejouées (board, pochette, job actif) et les actions de FK
-    /// (`cover_asset_id`, `artwork_asset_id`, board média) restent des `SEARCH`.
+    /// rejouées (média ou artwork du board, pochette, job actif) et les actions
+    /// de FK (`cover_asset_id`, `artwork_asset_id`, board média) restent des `SEARCH`.
     #[tokio::test]
     async fn suppression_d_un_candidat_ne_scanne_pas_les_tables_de_references() {
         let db = memory_db().await;
         let asset = MediaAssetId::new_v4().to_canonical();
-        let lines = plan(&db, PURGE_DELETE_CANDIDATE_SQL, &[Param::Text(&asset)]).await;
+        let lines = plan(
+            &db,
+            PURGE_DELETE_CANDIDATE_SQL,
+            &[
+                Param::Text(&asset),
+                Param::Text(MediaStatus::Failed.as_db_str()),
+                Param::Int(0),
+            ],
+        )
+        .await;
 
         assert_aucun_scan_hors("la suppression d'un candidat", &lines, &["playback_jobs"]);
         assert!(
@@ -765,6 +792,58 @@ mod tests {
         );
     }
 
+    /// Une ré-ingestion qui ré-arme le statut ou `last_accessed_at` entre la
+    /// sélection stale et le DELETE ne doit pas être supprimée.
+    #[tokio::test]
+    async fn suppression_stale_ne_supprime_pas_une_ligne_rearmee() {
+        let db = memory_db().await;
+        let now = UtcDateTime::now();
+        let stale_before = now - Duration::seconds(10);
+        let mut status_rearmed = sample_asset(now);
+        status_rearmed.status = MediaStatus::Failed;
+        status_rearmed.last_accessed_at = stale_before - Duration::minutes(1);
+        let mut touched = sample_asset(now + Duration::minutes(1));
+        touched.status = MediaStatus::Failed;
+        touched.last_accessed_at = stale_before - Duration::minutes(1);
+        for asset in [&status_rearmed, &touched] {
+            db.media_assets().insert(asset).await.expect("insertion");
+        }
+
+        let candidates = db
+            .media_assets()
+            .list_stale_purge_candidates(MediaStatus::Failed, stale_before)
+            .await
+            .expect("candidats");
+        assert_eq!(candidates.len(), 2, "candidats : {candidates:?}");
+
+        // Ré-armement entre la sélection et le DELETE.
+        db.media_assets()
+            .update_status(status_rearmed.id, MediaStatus::Processing, None)
+            .await
+            .expect("statut ré-armé");
+        db.media_assets()
+            .touch_last_accessed(touched.id, now, now + Duration::hours(1))
+            .await
+            .expect("last_accessed_at ré-armé");
+
+        for (label, id) in [
+            ("statut ré-armé", &status_rearmed.id),
+            ("last_accessed_at ré-armé", &touched.id),
+        ] {
+            assert!(
+                !db.media_assets()
+                    .delete_purge_candidate(&id.to_canonical(), MediaStatus::Failed, stale_before)
+                    .await
+                    .expect("suppression"),
+                "un asset dont le {label} entre la sélection et le DELETE ne doit pas être supprimé"
+            );
+            assert!(
+                db.media_assets().get(*id).await.expect("lecture").is_some(),
+                "l'asset dont le {label} reste en base"
+            );
+        }
+    }
+
     /// La purge supprime l'identifiant tel qu'il est stocké : une ligne hors
     /// contrat (UUID majuscule, identifiant legacy non UUID) doit rester
     /// supprimable, comme avant le refactor.
@@ -772,8 +851,13 @@ mod tests {
     async fn la_purge_supprime_l_identifiant_brut_hors_contrat() {
         let db = memory_db().await;
         let now = UtcDateTime::now();
-        let uppercase = sample_asset(now);
-        let legacy = sample_asset(now + Duration::minutes(1));
+        let stale_before = now + Duration::hours(2);
+        let mut uppercase = sample_asset(now);
+        uppercase.status = MediaStatus::Failed;
+        uppercase.last_accessed_at = now - Duration::minutes(5);
+        let mut legacy = sample_asset(now + Duration::minutes(1));
+        legacy.status = MediaStatus::Failed;
+        legacy.last_accessed_at = now - Duration::minutes(5);
         for asset in [&uppercase, &legacy] {
             db.media_assets().insert(asset).await.expect("insertion");
         }
@@ -794,7 +878,7 @@ mod tests {
 
         let candidates = db
             .media_assets()
-            .list_expired_ready_purge_candidates(now + Duration::hours(2))
+            .list_stale_purge_candidates(MediaStatus::Failed, stale_before)
             .await
             .expect("candidats");
         assert_eq!(candidates.len(), 2, "candidats : {candidates:?}");
@@ -811,7 +895,7 @@ mod tests {
         for candidate in &candidates {
             assert!(
                 db.media_assets()
-                    .delete_purge_candidate(&candidate.id)
+                    .delete_purge_candidate(&candidate.id, MediaStatus::Failed, stale_before)
                     .await
                     .expect("suppression"),
                 "l'identifiant brut `{}` doit être supprimé",

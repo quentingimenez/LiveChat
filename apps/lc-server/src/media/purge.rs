@@ -183,12 +183,13 @@ fn remove_reference_if_last(
 }
 
 /// Supprime les lignes d'un statut terminal dont `last_accessed_at` est antérieur
-/// à `stale_before`, en excluant le board épinglé, la pochette et les jobs actifs.
+/// à `stale_before`, en excluant le board épinglé (média ou artwork), la
+/// pochette et les jobs actifs.
 ///
 /// La sélection et la suppression vivent dans `lc-db` : le worker ne connaît
 /// plus le SQL des exclusions, testé par plan dans le repository. Le DELETE
-/// rejoue les exclusions board/pochette/job actif : un asset épinglé après la
-/// sélection n'est pas supprimé (`affected == false`).
+/// rejoue les exclusions board média/artwork, pochette et job actif : un asset
+/// épinglé après la sélection n'est pas supprimé (`affected == false`).
 async fn purge_stale_status(
     db: &Db,
     root: &Path,
@@ -205,7 +206,7 @@ async fn purge_stale_status(
     for candidate in candidates {
         let affected = db
             .media_assets()
-            .delete_purge_candidate(&candidate.id)
+            .delete_purge_candidate(&candidate.id, status, stale_before)
             .await?;
         if !affected {
             continue;

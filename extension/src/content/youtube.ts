@@ -6,6 +6,12 @@ import {
 import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModalYoutube';
 import { initInpageTheme } from './inpage-theme';
 import { YOUTUBE_BUTTON_LOGO_SIZE_PX, youtubeInpageStyles } from './inpage-styles';
+import {
+  onTrustedPageEvent,
+  rememberActionTarget,
+  resolveActionButtonTarget,
+  resolveAllowedActionTarget,
+} from './shared';
 
 const STYLE_ID = 'lce-youtube-style';
 const BUTTON_ATTRIBUTE = 'data-lce-youtube-button';
@@ -281,19 +287,19 @@ const attachLongPressCompose = (() => {
       })();
     };
 
-    cancelButton.addEventListener('click', (event) => {
+    onTrustedPageEvent<MouseEvent>(cancelButton, 'click', (event) => {
       event.preventDefault();
       event.stopPropagation();
       close();
     });
 
-    submitButton.addEventListener('click', (event) => {
+    onTrustedPageEvent<MouseEvent>(submitButton, 'click', (event) => {
       event.preventDefault();
       event.stopPropagation();
       submit();
     });
 
-    textarea.addEventListener('keydown', (event) => {
+    onTrustedPageEvent<KeyboardEvent>(textarea, 'keydown', (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
         event.preventDefault();
         submit();
@@ -354,7 +360,7 @@ const attachLongPressCompose = (() => {
       clearPressTimer();
     };
 
-    options.button.addEventListener('pointerdown', (event) => {
+    onTrustedPageEvent<PointerEvent>(options.button, 'pointerdown', (event) => {
       if (event.pointerType === 'mouse' && event.button !== 0) {
         return;
       }
@@ -740,6 +746,15 @@ const hasExtensionAuth = async (): Promise<boolean> => {
 };
 
 const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }> => {
+  const targetUrl = resolveAllowedActionTarget('youtube', url, window.location.href);
+
+  if (!targetUrl) {
+    return {
+      ok: false,
+      message: 'URL YouTube invalide.',
+    };
+  }
+
   const runtime = readRuntime();
 
   if (!runtime || typeof runtime.sendMessage !== 'function') {
@@ -752,7 +767,7 @@ const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }>
   try {
     const response = (await runtime.sendMessage({
       type: 'lce/send-quick',
-      url,
+      url: targetUrl,
       source: 'youtube',
     })) as { ok?: unknown; message?: unknown };
 
@@ -776,6 +791,15 @@ const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }>
 };
 
 const sendCompose = async (payload: ComposeSubmitPayload): Promise<ComposeSubmitResult> => {
+  const targetUrl = resolveAllowedActionTarget('youtube', payload.url, window.location.href);
+
+  if (!targetUrl) {
+    return {
+      ok: false,
+      message: 'URL YouTube invalide.',
+    };
+  }
+
   const runtime = readRuntime();
 
   if (!runtime || typeof runtime.sendMessage !== 'function') {
@@ -788,7 +812,8 @@ const sendCompose = async (payload: ComposeSubmitPayload): Promise<ComposeSubmit
   try {
     const response = (await runtime.sendMessage({
       type: 'lce/send-compose',
-      url: payload.url,
+      url: targetUrl,
+      source: 'youtube',
       text: payload.text,
       forceRefresh: payload.forceRefresh,
       saveToBoard: payload.saveToBoard,
@@ -874,6 +899,9 @@ const resetButtonStateLater = (button: HTMLButtonElement, delayMs = 2200): void 
 
 const getCurrentYoutubeUrl = (): string | null => normalizeYoutubeUrl(window.location.href);
 
+const resolveButtonTargetUrl = (button: HTMLButtonElement): string | null =>
+  resolveActionButtonTarget(button, 'youtube', getCurrentYoutubeUrl(), window.location.href);
+
 const createActionButton = (variant: ButtonVariant): HTMLButtonElement => {
   ensureStyles();
 
@@ -895,7 +923,7 @@ const createActionButton = (variant: ButtonVariant): HTMLButtonElement => {
       setButtonState(button, 'loading', 'Envoi en cours...');
 
       try {
-        const targetUrl = button.dataset.targetUrl || getCurrentYoutubeUrl();
+        const targetUrl = resolveButtonTargetUrl(button);
 
         if (!targetUrl) {
           const message = 'Impossible de détecter l’URL YouTube courante.';
@@ -929,7 +957,7 @@ const createActionButton = (variant: ButtonVariant): HTMLButtonElement => {
     },
   });
 
-  button.addEventListener('click', (event) => {
+  onTrustedPageEvent<MouseEvent>(button, 'click', (event) => {
     event.preventDefault();
     event.stopPropagation();
 
@@ -953,7 +981,7 @@ const createActionButton = (variant: ButtonVariant): HTMLButtonElement => {
         setButtonState(button, 'loading', 'Envoi en cours...');
 
         try {
-          const targetUrl = button.dataset.targetUrl || getCurrentYoutubeUrl();
+          const targetUrl = resolveButtonTargetUrl(button);
 
           if (!targetUrl) {
             const message = 'Impossible de détecter l’URL YouTube courante.';
@@ -978,7 +1006,7 @@ const createActionButton = (variant: ButtonVariant): HTMLButtonElement => {
     });
   });
 
-  button.addEventListener('dblclick', (event) => {
+  onTrustedPageEvent<MouseEvent>(button, 'dblclick', (event) => {
     event.preventDefault();
     event.stopPropagation();
     clearButtonClickTimer(button);
@@ -987,7 +1015,7 @@ const createActionButton = (variant: ButtonVariant): HTMLButtonElement => {
       return;
     }
 
-    const targetUrl = button.dataset.targetUrl || getCurrentYoutubeUrl();
+    const targetUrl = resolveButtonTargetUrl(button);
 
     if (!targetUrl) {
       const message = 'Impossible de détecter l’URL YouTube courante.';
@@ -1248,7 +1276,7 @@ const upsertShortsFloatingButton = (targetUrl: string, container: HTMLElement | 
     document.body.appendChild(button);
   }
 
-  button.dataset.targetUrl = targetUrl;
+  rememberActionTarget(button, targetUrl);
   applyVariantClass(button, 'shorts');
   button.classList.add('lce-button-youtube-shorts-floating');
 
@@ -1302,7 +1330,7 @@ const upsertInlineWatchButton = (targetUrl: string, container: HTMLElement): voi
   }
 
   button.removeAttribute('id');
-  button.dataset.targetUrl = targetUrl;
+  rememberActionTarget(button, targetUrl);
   applyVariantClass(button, 'watch');
   button.classList.remove('lce-button-youtube-watch-floating');
 

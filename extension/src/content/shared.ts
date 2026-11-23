@@ -6,11 +6,98 @@ import {
   type SendSource,
   type ToastLevel,
 } from '../lib/messages';
-import { resolveIngestTargetUrl } from '../lib/url';
+import {
+  normalizeTikTokVideoUrl,
+  normalizeTwitterStatusUrl,
+  normalizeYoutubeUrl,
+  resolveIngestTargetUrl,
+} from '../lib/url';
 import { inpageStyles } from '../styles/inpage.css';
 
 const STYLE_ID = 'lce-inpage-style';
 const TOAST_CONTAINER_ID = 'lce-toast-container';
+
+/**
+ * Cibles d'envoi associées aux boutons injectés. La page hôte peut réécrire
+ * `button.dataset`, pas cette map : la cible reste celle calculée par
+ * l'extension au moment du scan.
+ */
+const actionTargets = new WeakMap<HTMLButtonElement, string>();
+
+export const rememberActionTarget = (button: HTMLButtonElement, targetUrl: string): void => {
+  actionTargets.set(button, targetUrl);
+};
+
+export const readActionTarget = (button: HTMLButtonElement): string | null =>
+  actionTargets.get(button) ?? null;
+
+export type ActionTargetPlatform = 'youtube' | 'twitter' | 'tiktok';
+
+/**
+ * Normalise une URL cible vers l'hôte de la plateforme. Une URL d'une autre
+ * origine (ou non reconnue) est refusée : la page ne peut pas faire envoyer
+ * une URL arbitraire à l'API LiveChat.
+ */
+export const resolveAllowedActionTarget = (
+  platform: ActionTargetPlatform,
+  rawUrl: string,
+  base?: string,
+): string | null => {
+  const candidate = rawUrl.trim();
+
+  if (!candidate) {
+    return null;
+  }
+
+  switch (platform) {
+    case 'youtube':
+      return normalizeYoutubeUrl(candidate, base);
+    case 'twitter':
+      return normalizeTwitterStatusUrl(candidate, base);
+    case 'tiktok':
+      return normalizeTikTokVideoUrl(candidate, base);
+  }
+};
+
+/**
+ * Résout la cible d'un bouton : registre de l'extension d'abord, puis repli
+ * calculé par l'appelant. `dataset.targetUrl` n'est jamais lu, car la page
+ * peut le réécrire.
+ */
+export const resolveActionButtonTarget = (
+  button: HTMLButtonElement,
+  platform: ActionTargetPlatform,
+  fallbackUrl: string | null,
+  base?: string,
+): string | null => {
+  const targetUrl = readActionTarget(button) || fallbackUrl;
+  return targetUrl ? resolveAllowedActionTarget(platform, targetUrl, base) : null;
+};
+
+export const isTrustedPageEvent = (event: Event): boolean => event.isTrusted === true;
+
+/**
+ * Branche un écouteur réservé aux événements réellement émis par
+ * l'utilisateur. Un `dispatchEvent` de la page produit un événement non
+ * `isTrusted` : il est ignoré avant tout envoi.
+ *
+ * Limite assumée : `isTrusted` ne protège pas du clickjacking. La page peut
+ * superposer un élément au-dessus du bouton et obtenir un clic réel ; ce
+ * vecteur (position, `pointer-events`, z-index) n'est pas traité ici.
+ */
+export const onTrustedPageEvent = <E extends Event>(
+  target: EventTarget,
+  type: string,
+  handler: (event: E) => void,
+): void => {
+  target.addEventListener(type, (event) => {
+    if (!isTrustedPageEvent(event)) {
+      return;
+    }
+
+    handler(event as E);
+  });
+};
 
 let toastHideTimeout: number | null = null;
 let toastListenerRegistered = false;
@@ -141,7 +228,7 @@ export const createActionButton = (params: CreateActionButtonParams): HTMLButton
   button.textContent = params.label;
   button.title = params.title;
 
-  button.addEventListener('click', async (event) => {
+  onTrustedPageEvent<MouseEvent>(button, 'click', async (event) => {
     event.preventDefault();
     event.stopPropagation();
 

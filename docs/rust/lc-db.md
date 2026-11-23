@@ -118,7 +118,7 @@ Accesseurs de repositories (chacun `Clone`) :
 | Méthode `Db` | Repository | Opérations |
 | --- | --- | --- |
 | `metadata()` | `MetadataRepository` | `get(key)`, `set(key, value)` (upsert) |
-| `media_assets()` | `MediaAssetsRepository` | `insert`, `get`, `get_by_source_hash`, `update_status`, `touch_last_accessed`, `list_expired`, `purge_expired`, `list_by_status` |
+| `media_assets()` | `MediaAssetsRepository` | `insert`, `get`, `get_by_source_hash`, `update_status`, `touch_last_accessed`, `list_expired`, `list_stale_purge_candidates`, `list_expired_ready_purge_candidates`, `delete_purge_candidate`, `delete_expired_ready_candidate`, `storage_paths`, `purge_expired`, `list_by_status` |
 | `media_board()` | `MediaBoardRepository` | `create`, `get`, `get_by_guild_and_asset`, `list_by_guild`, `update(title, message)`, `delete` |
 | `playback_jobs()` | `PlaybackJobsRepository` | `create`, `get`, `claim_next`, `set_status`, `finish`, `list_pending_by_guild`, `count_by_status`, `purge_done_before`, `set_playback_state`, `requeue` |
 | `guilds()` | `GuildsRepository` | `upsert`, `get`, `set_busy_until`, `update_settings`, `list` |
@@ -226,6 +226,9 @@ besoin.
 | Méthode | Requête | Legacy |
 | --- | --- | --- |
 | `media_assets().purge_expired(now)` | `DELETE … WHERE expires_at <= now AND NOT EXISTS (item de board) AND NOT EXISTS (job PENDING/PLAYING) RETURNING *` | purge du cache média |
+| `media_assets().list_stale_purge_candidates(status, cutoff)` | `SELECT id, source_hash, storage_path … WHERE status = ? AND last_accessed_at <= ?` + exclusions board/cover/jobs actifs | purge runtime `FAILED`/`PROCESSING` |
+| `media_assets().list_expired_ready_purge_candidates(now)` | même sélection avec `status = 'READY' AND expires_at <= ?` | purge runtime du cache expiré |
+| `media_assets().delete_purge_candidate(id)` / `delete_expired_ready_candidate(id, now)` | `DELETE … WHERE id = ?` (ou `id = ? AND status = 'READY' AND expires_at <= ?`) | suppression ciblée après sélection |
 | `playback_jobs().purge_done_before(cutoff)` | `DELETE … WHERE status IN ('DONE','FAILED') AND finished_at IS NOT NULL AND finished_at <= cutoff` | `purgeOldPlaybackJobs` |
 | `pairing_codes().delete_expired(now)` | `DELETE … WHERE used_at IS NOT NULL OR (expires_at IS NOT NULL AND expires_at <= now)` | `purgeStalePairingCodes` |
 
@@ -236,6 +239,16 @@ effectivement supprimées (`Vec<MediaAsset>`) : l'appelant (worker de purge) y
 lit `storage_path` pour effacer les fichiers, puis les FK du contrat
 s'appliquent aux références restantes (`media_board_items` en cascade,
 `playback_jobs.media_asset_id` à `NULL` pour les jobs terminés).
+
+Le worker de purge runtime (`apps/lc-server/src/media/purge.rs`) ne duplique
+plus ce SQL : il sélectionne les candidats via
+`list_stale_purge_candidates` / `list_expired_ready_purge_candidates`, les
+supprime avec `delete_purge_candidate` / `delete_expired_ready_candidate`, puis
+efface le fichier si c'était la dernière référence. `storage_paths()` fournit
+l'ensemble des chemins connus pour compter ces références ; c'est une lecture
+séquentielle volontaire de `media_assets` (aucun index ne peut éviter de lire
+tous les chemins). Les plans des deux sélections, des deux suppressions et de
+`storage_paths` sont couverts par les tests `EXPLAIN QUERY PLAN` ci-dessous.
 
 ## 5. Tests
 
@@ -256,10 +269,13 @@ s'appliquent aux références restantes (`media_board_items` en cascade,
   migration `0005` (base arrêtée à `0004`, renommage, relecture via
   `Db::media_board()`) ;
 - tests de module `src/repos/media_board.rs` et `src/repos/media_assets.rs` —
-  plans `EXPLAIN QUERY PLAN` : `guild_references_asset` et `purge_expired` sans
-  `SCAN media_assets`, comptage des références et purge sans
-  `SCAN media_board_items`, via `idx_media_assets_cover_asset` et
-  `idx_media_board_items_artwork_asset` (migration `0022`) ; garde-fou, pas
+  plans `EXPLAIN QUERY PLAN` : `guild_references_asset`, `purge_expired`,
+  `list_stale_purge_candidates`, `list_expired_ready_purge_candidates`,
+  `delete_purge_candidate` et `delete_expired_ready_candidate` sans
+  `SCAN media_assets` ni `SCAN media_board_items`, via
+  `idx_media_assets_cover_asset` et `idx_media_board_items_artwork_asset`
+  (migration `0022`) ; `storage_paths` vérifie au contraire l'unique
+  `SCAN media_assets` volontaire (lecture de tous les chemins) ; garde-fou, pas
   contrat de plan SQLite (le message d'échec imprime le plan réel) ;
 - `playback_jobs.rs` — ordre de la file (`queue_position`), `scheduled_at`, un seul
   `PLAYING` par guilde, `busy_until`, claims concurrents (2 tasks tokio), retry

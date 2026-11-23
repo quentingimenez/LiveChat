@@ -32,6 +32,61 @@ const PURGE_EXPIRED_SQL: &str = "\
        ) \
      RETURNING *";
 
+/// Exclusions communes aux candidats de purge runtime.
+///
+/// Une seule source pour les trois `NOT EXISTS` : le worker `lc-server` ne
+/// connaît plus le SQL de sélection, et les index de 0022 (`media_asset_id` et
+/// `artwork_asset_id` du board, `cover_asset_id`) gardent le plan sur des
+/// `SEARCH` — un `NOT IN` non corrélé forçait un scan d'index de
+/// `media_board_items`.
+macro_rules! purge_candidates_sql {
+    ($filter:literal) => {
+        concat!(
+            "SELECT id, source_hash, storage_path FROM media_assets WHERE ",
+            $filter,
+            " \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM media_board_items b \
+                   WHERE b.media_asset_id = media_assets.id \
+                      OR b.artwork_asset_id = media_assets.id \
+               ) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM media_assets a \
+                     JOIN media_board_items b ON b.media_asset_id = a.id \
+                    WHERE a.cover_asset_id = media_assets.id \
+               ) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM playback_jobs j \
+                    WHERE j.media_asset_id = media_assets.id \
+                      AND j.status IN ('PENDING', 'PLAYING') \
+               )",
+        )
+    };
+}
+
+/// Candidats de purge d'un statut terminal (`FAILED`/`PROCESSING`), périmés
+/// selon `last_accessed_at`.
+const PURGE_STALE_STATUS_CANDIDATES_SQL: &str =
+    purge_candidates_sql!("status = ? AND last_accessed_at <= ?");
+
+/// Candidats `READY` expirés (`expires_at <= ?`).
+const PURGE_EXPIRED_READY_CANDIDATES_SQL: &str =
+    purge_candidates_sql!("status = 'READY' AND expires_at <= ?");
+
+/// Supprime une ligne candidate par identifiant.
+const PURGE_DELETE_CANDIDATE_SQL: &str = "DELETE FROM media_assets WHERE id = ?";
+
+/// Supprime une ligne candidate `READY` si elle est encore expirée : une
+/// ingestion concurrente peut avoir réarmé `expires_at` entre la sélection et
+/// la suppression.
+const PURGE_DELETE_EXPIRED_READY_SQL: &str = "\
+    DELETE FROM media_assets \
+     WHERE id = ? AND status = 'READY' AND expires_at <= ?";
+
+/// Chemins persistés non vides, utilisés pour compter les références de
+/// fichiers de la purge runtime.
+const STORAGE_PATHS_SQL: &str = "SELECT storage_path FROM media_assets WHERE storage_path != ''";
+
 /// Ligne SQLite de `media_assets` (dates en ms, booléens en 0/1).
 #[derive(Debug, sqlx::FromRow)]
 struct MediaAssetRow {
@@ -74,6 +129,40 @@ impl MediaAssetRow {
             last_accessed_at: from_ms(TABLE, "last_accessed_at", self.last_accessed_at)?,
             expires_at: from_ms(TABLE, "expires_at", self.expires_at)?,
             created_at: from_ms(TABLE, "created_at", self.created_at)?,
+        })
+    }
+}
+
+/// Ligne candidate à la purge runtime.
+///
+/// Seuls les champs nécessaires au worker sont exposés : l'identifiant pour
+/// supprimer la ligne, l'empreinte pour sérialiser avec une ingestion
+/// concurrente, et le chemin pour supprimer le fichier si c'était sa dernière
+/// référence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PurgeCandidate {
+    /// Ligne à supprimer.
+    pub id: MediaAssetId,
+    /// Empreinte de contenu (verrou `lock_source_hash`).
+    pub source_hash: String,
+    /// Variante persistée, vide si la ligne ne référence aucun fichier.
+    pub storage_path: String,
+}
+
+/// Ligne SQLite d'un candidat de purge.
+#[derive(Debug, sqlx::FromRow)]
+struct PurgeCandidateRow {
+    id: String,
+    source_hash: String,
+    storage_path: String,
+}
+
+impl PurgeCandidateRow {
+    fn into_candidate(self) -> DbResult<PurgeCandidate> {
+        Ok(PurgeCandidate {
+            id: decode(TABLE, "id", &self.id, MediaAssetId::parse)?,
+            source_hash: self.source_hash,
+            storage_path: self.storage_path,
         })
     }
 }
@@ -234,6 +323,84 @@ impl MediaAssetsRepository {
         rows.into_iter().map(MediaAssetRow::into_entity).collect()
     }
 
+    /// Liste les candidats de purge d'un statut terminal (`FAILED` ou
+    /// `PROCESSING`) dont `last_accessed_at <= stale_before`.
+    ///
+    /// Un asset épinglé sur le board (média, artwork ou pochette) ou référencé
+    /// par un job `PENDING`/`PLAYING` n'est jamais candidat : la purge runtime
+    /// ne doit pas casser un média visible ni une lecture en cours.
+    pub async fn list_stale_purge_candidates(
+        &self,
+        status: MediaStatus,
+        stale_before: UtcDateTime,
+    ) -> DbResult<Vec<PurgeCandidate>> {
+        let rows = sqlx::query_as::<_, PurgeCandidateRow>(PURGE_STALE_STATUS_CANDIDATES_SQL)
+            .bind(status.as_db_str())
+            .bind(to_ms(stale_before))
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(PurgeCandidateRow::into_candidate)
+            .collect()
+    }
+
+    /// Liste les assets `READY` expirés à `now`, hors board et jobs actifs.
+    pub async fn list_expired_ready_purge_candidates(
+        &self,
+        now: UtcDateTime,
+    ) -> DbResult<Vec<PurgeCandidate>> {
+        let rows = sqlx::query_as::<_, PurgeCandidateRow>(PURGE_EXPIRED_READY_CANDIDATES_SQL)
+            .bind(to_ms(now))
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(PurgeCandidateRow::into_candidate)
+            .collect()
+    }
+
+    /// Supprime une ligne candidate par identifiant.
+    ///
+    /// Retourne `false` si la ligne a déjà disparu (course avec une autre
+    /// passe ou une ingestion).
+    pub async fn delete_purge_candidate(&self, id: MediaAssetId) -> DbResult<bool> {
+        let result = sqlx::query(PURGE_DELETE_CANDIDATE_SQL)
+            .bind(id.to_canonical())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Supprime une ligne candidate `READY` seulement si elle est encore
+    /// expirée à `now`.
+    ///
+    /// Retourne `false` si une ingestion concurrente a réarmé `expires_at` ou
+    /// supprimé la ligne : le fichier ne doit alors pas être touché.
+    pub async fn delete_expired_ready_candidate(
+        &self,
+        id: MediaAssetId,
+        now: UtcDateTime,
+    ) -> DbResult<bool> {
+        let result = sqlx::query(PURGE_DELETE_EXPIRED_READY_SQL)
+            .bind(id.to_canonical())
+            .bind(to_ms(now))
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Chemins de stockage non vides de tous les assets.
+    ///
+    /// La purge s'en sert pour compter les références de fichiers : deux lignes
+    /// peuvent partager la même variante (AUD-V2-S-004). La lecture porte
+    /// volontairement sur toute la colonne, aucun index ne peut restreindre
+    /// l'ensemble des fichiers encore référencés.
+    pub async fn storage_paths(&self) -> DbResult<Vec<String>> {
+        let paths = sqlx::query_scalar(STORAGE_PATHS_SQL)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(paths)
+    }
+
     /// Liste les médias d'un état donné, les plus anciens d'abord.
     ///
     /// `limit <= 0` signifie « sans limite ».
@@ -351,6 +518,209 @@ mod tests {
             plan.iter()
                 .any(|line| line.contains("idx_media_board_items_artwork_asset")),
             "la FK artwork_asset_id doit passer par idx_media_board_items_artwork_asset : {plan:?}"
+        );
+    }
+
+    /// Paramètre lié d'un plan : les requêtes de purge mêlent texte (statut,
+    /// identifiant) et entier (échéance en ms).
+    enum Param<'a> {
+        Text(&'a str),
+        Int(i64),
+    }
+
+    async fn memory_db() -> Db {
+        Db::open_in_memory(&DbConfig::default())
+            .await
+            .expect("base mémoire")
+    }
+
+    /// Plan SQLite de `sql`, une ligne par étape, avec ses paramètres liés.
+    async fn plan(db: &Db, sql: &str, params: &[Param<'_>]) -> Vec<String> {
+        let statement = format!("EXPLAIN QUERY PLAN {sql}");
+        let mut query = sqlx::query(&statement);
+        for param in params {
+            query = match param {
+                Param::Text(value) => query.bind(*value),
+                Param::Int(value) => query.bind(*value),
+            };
+        }
+        let rows = query
+            .fetch_all(db.pool())
+            .await
+            .expect("EXPLAIN QUERY PLAN");
+        rows.iter()
+            .map(|row| sqlx::Row::get::<String, _>(row, "detail"))
+            .collect()
+    }
+
+    /// Aucune étape ne parcourt entièrement `media_assets` ni
+    /// `media_board_items` : les index de 0022 doivent porter les exclusions.
+    fn assert_sans_scan_des_references(context: &str, lines: &[String]) {
+        assert!(
+            !lines.iter().any(|line| line.contains("SCAN media_assets")),
+            "{context} scanne media_assets (migration 0022 absente ?) : {lines:?}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("SCAN media_board_items") || line.starts_with("SCAN b")),
+            "{context} scanne media_board_items (index de 0022 absents ?) : {lines:?}"
+        );
+    }
+
+    /// Les candidats `FAILED`/`PROCESSING` passent par l'index de statut et par
+    /// les deux index du board : aucun `NOT IN` ne doit revenir dans le SQL.
+    #[tokio::test]
+    async fn purge_stale_candidates_ne_scannent_pas_les_tables_de_references() {
+        let db = memory_db().await;
+        let lines = plan(
+            &db,
+            PURGE_STALE_STATUS_CANDIDATES_SQL,
+            &[Param::Text(MediaStatus::Failed.as_db_str()), Param::Int(0)],
+        )
+        .await;
+
+        assert_sans_scan_des_references("les candidats FAILED", &lines);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("idx_media_assets_status")),
+            "le statut doit être cherché par idx_media_assets_status : {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("idx_media_board_items_media_asset")),
+            "le board média doit passer par idx_media_board_items_media_asset : {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("idx_media_board_items_artwork_asset")),
+            "l'artwork doit passer par idx_media_board_items_artwork_asset : {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("idx_media_assets_cover_asset")),
+            "la pochette doit passer par idx_media_assets_cover_asset : {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("idx_playback_jobs_status_finished")),
+            "les jobs actifs doivent passer par idx_playback_jobs_status_finished : {lines:?}"
+        );
+    }
+
+    /// Même garantie pour les `READY` expirés : le filtre `expires_at` reste
+    /// un `SEARCH`, jamais un scan de `media_assets`.
+    #[tokio::test]
+    async fn purge_expired_ready_candidates_ne_scannent_pas_les_tables_de_references() {
+        let db = memory_db().await;
+        let lines = plan(&db, PURGE_EXPIRED_READY_CANDIDATES_SQL, &[Param::Int(0)]).await;
+
+        assert_sans_scan_des_references("les candidats READY expirés", &lines);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("idx_media_board_items_media_asset")),
+            "le board média doit passer par idx_media_board_items_media_asset : {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("idx_media_board_items_artwork_asset")),
+            "l'artwork doit passer par idx_media_board_items_artwork_asset : {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("idx_media_assets_cover_asset")),
+            "la pochette doit passer par idx_media_assets_cover_asset : {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("idx_playback_jobs_status_finished")),
+            "les jobs actifs doivent passer par idx_playback_jobs_status_finished : {lines:?}"
+        );
+    }
+
+    /// La suppression d'un candidat passe par la clé primaire ; les actions de
+    /// FK (`cover_asset_id`, `artwork_asset_id`, board média) restent des
+    /// `SEARCH`, y compris pour l'action `ON DELETE SET NULL`.
+    #[tokio::test]
+    async fn suppression_d_un_candidat_ne_scanne_pas_les_tables_de_references() {
+        let db = memory_db().await;
+        let asset = MediaAssetId::new_v4().to_canonical();
+        let lines = plan(&db, PURGE_DELETE_CANDIDATE_SQL, &[Param::Text(&asset)]).await;
+
+        assert_sans_scan_des_references("la suppression d'un candidat", &lines);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("sqlite_autoindex_media_assets_1")),
+            "la ligne doit être supprimée par la clé primaire : {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("idx_media_board_items_artwork_asset")),
+            "l'action FK artwork doit passer par idx_media_board_items_artwork_asset : {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("idx_media_assets_cover_asset")),
+            "l'action FK cover doit passer par idx_media_assets_cover_asset : {lines:?}"
+        );
+    }
+
+    /// La suppression conditionnelle des `READY` expirés suit le même plan que
+    /// la suppression simple : clé primaire + index de FK.
+    #[tokio::test]
+    async fn suppression_d_un_ready_expire_ne_scanne_pas_les_tables_de_references() {
+        let db = memory_db().await;
+        let asset = MediaAssetId::new_v4().to_canonical();
+        let lines = plan(
+            &db,
+            PURGE_DELETE_EXPIRED_READY_SQL,
+            &[Param::Text(&asset), Param::Int(0)],
+        )
+        .await;
+
+        assert_sans_scan_des_references("la suppression d'un READY expiré", &lines);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("sqlite_autoindex_media_assets_1")),
+            "la ligne doit être supprimée par la clé primaire : {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("idx_media_board_items_artwork_asset")),
+            "l'action FK artwork doit passer par idx_media_board_items_artwork_asset : {lines:?}"
+        );
+    }
+
+    /// La purge lit tous les chemins de `media_assets` pour compter les
+    /// références de fichiers : c'est la seule lecture séquentielle attendue,
+    /// et elle ne touche aucune table de références.
+    #[tokio::test]
+    async fn storage_paths_ne_lit_que_media_assets() {
+        let db = memory_db().await;
+        let lines = plan(&db, STORAGE_PATHS_SQL, &[]).await;
+
+        assert_eq!(
+            lines.len(),
+            1,
+            "la lecture des chemins doit rester une seule étape : {lines:?}"
+        );
+        assert!(
+            lines[0].starts_with("SCAN media_assets"),
+            "les chemins sont lus séquentiellement dans media_assets : {lines:?}"
         );
     }
 

@@ -16,10 +16,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use lc_db::Db;
+use lc_domain::enums::MediaStatus;
 use lc_domain::time::datetime_to_ms;
 use lc_media::ingest::lock_source_hash;
 use lc_media::storage::{is_staged_file_name, MediaStorage};
-use sqlx::Row as _;
 use time::{Duration as TimeDuration, UtcDateTime};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -99,8 +99,8 @@ pub async fn purge_once(
         db,
         &root,
         &mut references,
-        "FAILED",
-        datetime_to_ms(now - assets::FAILED_TTL),
+        MediaStatus::Failed,
+        now - assets::FAILED_TTL,
     )
     .await?;
 
@@ -109,14 +109,13 @@ pub async fn purge_once(
         db,
         &root,
         &mut references,
-        "PROCESSING",
-        datetime_to_ms(now - assets::STALE_PROCESSING_TTL),
+        MediaStatus::Processing,
+        now - assets::STALE_PROCESSING_TTL,
     )
     .await?;
 
     // 3. Assets `READY` expirés (hors épinglage et hors lecture active).
-    let expired_evicted =
-        purge_expired_ready(db, &root, &mut references, datetime_to_ms(now)).await?;
+    let expired_evicted = purge_expired_ready(db, &root, &mut references, now).await?;
 
     // 4. Fichiers du stockage : transit périmé puis orphelins.
     let (staged_files_removed, orphan_files_removed) =
@@ -140,13 +139,9 @@ fn reference_key(root: &Path, reference: &Path) -> PathBuf {
 
 /// Compte les références de chaque fichier du stockage avant la passe.
 async fn reference_counts(db: &Db, root: &Path) -> MediaServiceResult<HashMap<PathBuf, usize>> {
-    let rows = sqlx::query("SELECT storage_path FROM media_assets WHERE storage_path != ''")
-        .fetch_all(db.pool())
-        .await
-        .map_err(lc_db::DbError::from)?;
-    let mut counts: HashMap<PathBuf, usize> = HashMap::with_capacity(rows.len());
-    for row in rows {
-        let storage_path: String = row.try_get("storage_path").map_err(lc_db::DbError::from)?;
+    let storage_paths = db.media_assets().storage_paths().await?;
+    let mut counts: HashMap<PathBuf, usize> = HashMap::with_capacity(storage_paths.len());
+    for storage_path in storage_paths {
         if storage_path.trim().is_empty() {
             continue;
         }
@@ -188,51 +183,36 @@ fn remove_reference_if_last(
 }
 
 /// Supprime les lignes d'un statut terminal dont `last_accessed_at` est antérieur
-/// à `cutoff_ms`, en excluant le board épinglé et les jobs actifs.
+/// à `stale_before`, en excluant le board épinglé et les jobs actifs.
+///
+/// La sélection et la suppression vivent dans `lc-db` : le worker ne connaît
+/// plus le SQL des exclusions, testé par plan dans le repository.
 async fn purge_stale_status(
     db: &Db,
     root: &Path,
     references: &mut HashMap<PathBuf, usize>,
-    status: &str,
-    cutoff_ms: i64,
+    status: MediaStatus,
+    stale_before: UtcDateTime,
 ) -> MediaServiceResult<usize> {
-    let rows = sqlx::query(
-        "SELECT id, storage_path FROM media_assets \
-          WHERE status = ? AND last_accessed_at <= ? \
-            AND id NOT IN (SELECT media_asset_id FROM media_board_items \
-                            WHERE media_asset_id IS NOT NULL) \
-            AND id NOT IN (SELECT artwork_asset_id FROM media_board_items \
-                            WHERE artwork_asset_id IS NOT NULL) \
-            AND id NOT IN (SELECT a.cover_asset_id FROM media_assets a \
-                             JOIN media_board_items b ON b.media_asset_id = a.id \
-                            WHERE a.cover_asset_id IS NOT NULL) \
-            AND id NOT IN (SELECT media_asset_id FROM playback_jobs \
-                            WHERE media_asset_id IS NOT NULL \
-                              AND status IN ('PENDING', 'PLAYING'))",
-    )
-    .bind(status)
-    .bind(cutoff_ms)
-    .fetch_all(db.pool())
-    .await
-    .map_err(lc_db::DbError::from)?;
+    let candidates = db
+        .media_assets()
+        .list_stale_purge_candidates(status, stale_before)
+        .await?;
 
     let mut removed = 0;
-    for row in rows {
-        let id: String = row.try_get("id").map_err(lc_db::DbError::from)?;
-        let storage_path: String = row.try_get("storage_path").map_err(lc_db::DbError::from)?;
-        let affected = sqlx::query("DELETE FROM media_assets WHERE id = ?")
-            .bind(&id)
-            .execute(db.pool())
-            .await
-            .map_err(lc_db::DbError::from)?
-            .rows_affected();
-        if affected == 0 {
+    for candidate in candidates {
+        let affected = db
+            .media_assets()
+            .delete_purge_candidate(candidate.id)
+            .await?;
+        if !affected {
             continue;
         }
-        if !storage_path.trim().is_empty() {
+        if !candidate.storage_path.trim().is_empty() {
             // Fichier supprimé seulement si la ligne était sa dernière
             // référence, et uniquement sous la racine média.
-            let _deleted = remove_reference_if_last(root, references, Path::new(&storage_path));
+            let _deleted =
+                remove_reference_if_last(root, references, Path::new(&candidate.storage_path));
         }
         removed += 1;
     }
@@ -246,59 +226,36 @@ async fn purge_expired_ready(
     db: &Db,
     root: &Path,
     references: &mut HashMap<PathBuf, usize>,
-    now_ms: i64,
+    now: UtcDateTime,
 ) -> MediaServiceResult<usize> {
-    let rows = sqlx::query(
-        "SELECT id, source_hash, storage_path FROM media_assets \
-          WHERE status = 'READY' AND expires_at <= ? \
-            AND id NOT IN (SELECT media_asset_id FROM media_board_items \
-                            WHERE media_asset_id IS NOT NULL) \
-            AND id NOT IN (SELECT artwork_asset_id FROM media_board_items \
-                            WHERE artwork_asset_id IS NOT NULL) \
-            AND id NOT IN (SELECT a.cover_asset_id FROM media_assets a \
-                             JOIN media_board_items b ON b.media_asset_id = a.id \
-                            WHERE a.cover_asset_id IS NOT NULL) \
-            AND id NOT IN (SELECT media_asset_id FROM playback_jobs \
-                            WHERE media_asset_id IS NOT NULL \
-                              AND status IN ('PENDING', 'PLAYING'))",
-    )
-    .bind(now_ms)
-    .fetch_all(db.pool())
-    .await
-    .map_err(lc_db::DbError::from)?;
+    let candidates = db
+        .media_assets()
+        .list_expired_ready_purge_candidates(now)
+        .await?;
 
     let mut removed = 0;
-    for row in rows {
-        let id: String = row.try_get("id").map_err(lc_db::DbError::from)?;
-        let source_hash: String = row.try_get("source_hash").map_err(lc_db::DbError::from)?;
-        let storage_path: String = row.try_get("storage_path").map_err(lc_db::DbError::from)?;
-
+    for candidate in candidates {
         // Sérialise avec une ingestion concurrente du même média : sans ce
         // verrou, une ingestion pourrait publier des fichiers entre le DELETE
         // et la suppression du fichier (AUD-V2-S-004).
-        let _source_lock = lock_source_hash(&source_hash).await;
+        let _source_lock = lock_source_hash(&candidate.source_hash).await;
 
         // Course possible avec une ingestion qui vient de réarmer la ligne :
         // le DELETE conditionnel ne supprime que l'état expiré observé.
-        let affected = sqlx::query(
-            "DELETE FROM media_assets \
-              WHERE id = ? AND status = 'READY' AND expires_at <= ?",
-        )
-        .bind(&id)
-        .bind(now_ms)
-        .execute(db.pool())
-        .await
-        .map_err(lc_db::DbError::from)?
-        .rows_affected();
-        if affected == 0 {
+        let affected = db
+            .media_assets()
+            .delete_expired_ready_candidate(candidate.id, now)
+            .await?;
+        if !affected {
             continue;
         }
 
         // Ne jamais supprimer les variantes du hash par principe : une autre
         // ligne peut référencer le même fichier. On ne retire que le fichier
         // de cette ligne, s'il était la dernière référence.
-        if !storage_path.trim().is_empty() {
-            let _deleted = remove_reference_if_last(root, references, Path::new(&storage_path));
+        if !candidate.storage_path.trim().is_empty() {
+            let _deleted =
+                remove_reference_if_last(root, references, Path::new(&candidate.storage_path));
         }
         removed += 1;
     }
@@ -313,13 +270,9 @@ async fn purge_storage_files(
     root: &Path,
     now: UtcDateTime,
 ) -> MediaServiceResult<(usize, usize)> {
-    let known_rows = sqlx::query("SELECT storage_path FROM media_assets WHERE storage_path != ''")
-        .fetch_all(db.pool())
-        .await
-        .map_err(lc_db::DbError::from)?;
-    let mut known: HashSet<PathBuf> = HashSet::with_capacity(known_rows.len());
-    for row in &known_rows {
-        let storage_path: String = row.try_get("storage_path").map_err(lc_db::DbError::from)?;
+    let storage_paths = db.media_assets().storage_paths().await?;
+    let mut known: HashSet<PathBuf> = HashSet::with_capacity(storage_paths.len());
+    for storage_path in storage_paths {
         if storage_path.trim().is_empty() {
             continue;
         }
@@ -432,9 +385,9 @@ mod tests {
     use std::path::Path as StdPath;
 
     use lc_db::DbConfig;
-    use lc_domain::entities::{MediaAsset, MediaBoardItem};
-    use lc_domain::enums::{MediaKind, MediaStatus};
-    use lc_domain::ids::{GuildId, MediaAssetId, MediaBoardItemId};
+    use lc_domain::entities::{MediaAsset, MediaBoardItem, PlaybackJob};
+    use lc_domain::enums::{JobSource, JobStatus, MediaKind, MediaStatus};
+    use lc_domain::ids::{GuildId, MediaAssetId, MediaBoardItemId, PlaybackJobId};
     use lc_media::config::MediaConfig;
     use lc_media::storage::MediaStorage;
     use time::{Duration as TimeDuration, UtcDateTime};
@@ -707,6 +660,113 @@ mod tests {
             .expect("lecture")
             .expect("item");
         assert_eq!(stored.artwork_asset_id, None);
+    }
+
+    /// Un asset expiré utilisé comme artwork d'un élément du board, ou lu par
+    /// un job actif, ne doit jamais être évincé : les exclusions board,
+    /// artwork, pochette et job sont désormais portées par `lc-db`.
+    #[tokio::test]
+    async fn keeps_board_artwork_and_active_job_assets() {
+        let fixture = fixture().await;
+        let board_file = fixture.storage.root().join("board.mp4");
+        let artwork_file = fixture.storage.root().join("artwork.jpg");
+        let job_file = fixture.storage.root().join("job.mp4");
+        std::fs::write(&board_file, b"board").expect("fichier");
+        std::fs::write(&artwork_file, b"artwork").expect("fichier");
+        std::fs::write(&job_file, b"job").expect("fichier");
+
+        let stale = fixture.now - TimeDuration::days(30);
+        let expired = fixture.now - TimeDuration::hours(1);
+        let board = asset(
+            MediaStatus::Ready,
+            "board-hash",
+            &board_file,
+            stale,
+            fixture.now + TimeDuration::days(30),
+            stale,
+        );
+        let artwork = MediaAsset {
+            kind: MediaKind::Image,
+            mime: "image/jpeg".into(),
+            duration_sec: None,
+            ..asset(
+                MediaStatus::Ready,
+                "artwork-hash",
+                &artwork_file,
+                stale,
+                expired,
+                stale,
+            )
+        };
+        let playing = asset(
+            MediaStatus::Ready,
+            "playing-hash",
+            &job_file,
+            stale,
+            expired,
+            stale,
+        );
+        let assets = fixture.db.media_assets();
+        for row in [&board, &artwork, &playing] {
+            assets.insert(row).await.expect("asset");
+        }
+
+        let item = MediaBoardItem {
+            id: MediaBoardItemId::new_v4(),
+            guild_id: GuildId::parse("123456789012345678").expect("guilde"),
+            media_asset_id: board.id,
+            title: None,
+            message: None,
+            created_by_discord_user_id: None,
+            created_by_name: None,
+            created_at: fixture.now,
+            artwork_asset_id: Some(artwork.id),
+            artwork_on_overlay: true,
+            display_duration_sec: None,
+            display_scale_percent: None,
+        };
+        fixture
+            .db
+            .media_board()
+            .create(&item)
+            .await
+            .expect("item board");
+
+        let job = PlaybackJob {
+            id: PlaybackJobId::new_v4(),
+            guild_id: GuildId::parse("123456789012345678").expect("guilde"),
+            media_asset_id: Some(playing.id),
+            text: None,
+            show_text: false,
+            author_name: None,
+            author_image: None,
+            duration_sec: 10,
+            source: JobSource::Board,
+            status: JobStatus::Playing,
+            resume_offset_sec: 0,
+            last_playback_state_at: None,
+            submission_date: fixture.now,
+            execution_date: fixture.now,
+            scheduled_at: fixture.now,
+            started_at: Some(fixture.now),
+            finished_at: None,
+        };
+        fixture
+            .db
+            .playback_jobs()
+            .create(&job)
+            .await
+            .expect("job actif");
+
+        let report = purge_once(&fixture.db, &fixture.storage, fixture.now)
+            .await
+            .expect("purge");
+
+        assert_eq!(report.expired_evicted, 0);
+        assert!(artwork_file.exists());
+        assert!(job_file.exists());
+        assert!(assets.get(artwork.id).await.expect("lecture").is_some());
+        assert!(assets.get(playing.id).await.expect("lecture").is_some());
     }
 
     #[tokio::test]

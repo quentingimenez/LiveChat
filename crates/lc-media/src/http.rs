@@ -159,6 +159,17 @@ pub async fn get_text(
     })
 }
 
+/// Lit comme texte borné le corps d'une réponse déjà obtenue par le client
+/// gardé.
+///
+/// Utilisé quand l'appelant doit inspecter le `Content-Type` avant de décider
+/// de lire la page : relire l'URL avec [`get_text`] coûterait une seconde
+/// requête réseau.
+pub(crate) async fn read_text(response: Response) -> MediaResult<String> {
+    let body = read_body_bounded(response, MAX_TEXT_RESPONSE_BYTES, true).await?;
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
 /// Récupère une page texte via un formulaire POST gardé.
 ///
 /// Utilisé par la traduction : le texte d'une note longue dépasse la taille

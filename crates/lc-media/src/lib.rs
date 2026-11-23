@@ -50,6 +50,7 @@ pub mod transcode;
 pub mod translate;
 pub mod tweet_card;
 pub mod tweet_card_video;
+pub mod web;
 
 pub use crate::cache::{
     board_total_bytes, cache_total_bytes, plan_board_eviction, plan_cache_eviction,

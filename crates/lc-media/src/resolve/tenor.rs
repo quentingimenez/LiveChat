@@ -3,18 +3,19 @@
 //! dimensions, puis `download_tenor` télécharge la vidéo et retombe sur l'image
 //! quand le MP4 est absent ou inaccessible.
 
-use url::Url;
-
 use lc_domain::MediaKind;
 
 use crate::config::MediaConfig;
 use crate::error::{MediaError, MediaErrorCode, MediaResult};
-use crate::html;
 use crate::http;
 use crate::source::{MediaSource, SourceKind};
-use crate::title;
+use crate::web;
+use crate::web::WebPage;
 
 use super::ResolvedMedia;
+
+/// Retire le suffixe de référencement d'un titre de page de GIF.
+pub use crate::web::clean_title;
 
 /// Métadonnées extraites d'une page Tenor.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -58,53 +59,29 @@ impl TenorPage {
 
 /// Extrait les métadonnées Open Graph d'une page Tenor.
 pub fn parse_page_html(page: &str) -> TenorPage {
-    let video_url = first_http_url(&[
-        html::meta_content(page, "og:video:secure_url"),
-        html::meta_content(page, "og:video"),
-        html::meta_content(page, "twitter:player:stream"),
-    ]);
-    let video_mime = html::meta_content(page, "og:video:type")
-        .or_else(|| html::meta_content(page, "twitter:player:stream:content_type"))
-        .filter(|mime| mime.to_ascii_lowercase().starts_with("video/"));
-    let image_url = first_http_url(&[
-        html::meta_content(page, "og:image"),
-        html::meta_content(page, "twitter:image"),
-    ]);
-    let image_mime = html::meta_content(page, "og:image:type")
-        .filter(|mime| mime.to_ascii_lowercase().starts_with("image/"))
-        .or_else(|| {
-            image_url
-                .as_deref()
-                .and_then(kind_from_image_url)
-                .map(|mime| mime.to_string())
-        });
-    let width = dimension(page, "og:video:width").or_else(|| dimension(page, "og:image:width"));
-    let height = dimension(page, "og:video:height").or_else(|| dimension(page, "og:image:height"));
+    let WebPage {
+        title,
+        width,
+        height,
+        media,
+    } = web::parse_page(page);
+    let video = media
+        .iter()
+        .find(|media| media.kind == MediaKind::Video)
+        .map(|media| (media.url.clone(), media.mime.clone()));
+    let image = media
+        .iter()
+        .find(|media| media.kind == MediaKind::Image)
+        .map(|media| (media.url.clone(), media.mime.clone()));
     TenorPage {
-        title: html::meta_content(page, "og:title")
-            .or_else(|| html::meta_content(page, "twitter:title"))
-            .and_then(|title| clean_title(&title)),
-        video_url,
-        video_mime,
-        image_url,
-        image_mime,
+        title,
+        video_url: video.as_ref().map(|(url, _)| url.clone()),
+        video_mime: video.and_then(|(_, mime)| mime),
+        image_url: image.as_ref().map(|(url, _)| url.clone()),
+        image_mime: image.and_then(|(_, mime)| mime),
         width,
         height,
     }
-}
-
-/// Retire le suffixe de référencement Tenor (« GIF - … ») d'un titre.
-///
-/// `Jonathan Drouin Halifax Mooseheads GIF - Jonathan drouin … - Discover &
-/// Share GIFs` devient `Jonathan Drouin Halifax Mooseheads`.
-pub fn clean_title(raw: &str) -> Option<String> {
-    let decoded = html::decode_html_entities(raw);
-    let headline = decoded
-        .split_once(" GIF - ")
-        .map_or(decoded.as_str(), |(headline, _)| headline)
-        .trim();
-    let headline = headline.strip_suffix(" GIF").unwrap_or(headline);
-    title::normalize_title(headline).or_else(|| title::normalize_title(&decoded))
 }
 
 /// Récupère et analyse la page Tenor d'une source.
@@ -157,38 +134,6 @@ pub async fn resolve_tenor(
         ..ResolvedMedia::from_source(source)
     };
     Ok(resolved.with_dimensions(page.width, page.height))
-}
-
-fn first_http_url(candidates: &[Option<String>]) -> Option<String> {
-    candidates.iter().flatten().find_map(|candidate| {
-        let parsed = Url::parse(candidate.trim()).ok()?;
-        (matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some())
-            .then(|| candidate.trim().to_string())
-    })
-}
-
-fn dimension(page: &str, key: &str) -> Option<u32> {
-    html::meta_content(page, key)?
-        .trim()
-        .parse::<u32>()
-        .ok()
-        .filter(|value| *value > 0)
-}
-
-fn kind_from_image_url(url: &str) -> Option<&'static str> {
-    let parsed = Url::parse(url.trim()).ok()?;
-    let extension = parsed
-        .path_segments()?
-        .next_back()?
-        .rsplit_once('.')
-        .map(|(_, extension)| extension.to_ascii_lowercase())?;
-    match extension.as_str() {
-        "gif" => Some("image/gif"),
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "webp" => Some("image/webp"),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

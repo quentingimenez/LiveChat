@@ -8,9 +8,11 @@
 //!
 //! 1. le titre résolu par la plateforme (oEmbed, page TikTok, syndication
 //!    Twitter) — pour un tweet sans texte, « Post de <auteur> » ;
-//! 2. le titre imprimé par `yt-dlp` pendant le téléchargement (sources que
-//!    seul yt-dlp sait décrire : Instagram, Reddit, clips Twitch, Vimeo…) ;
-//! 3. pour une URL de fichier directe, le nom du fichier dans l'URL.
+//! 2. le titre annoncé pendant le téléchargement : Open Graph de la page pour
+//!    une URL web, sortie `yt-dlp` pour les sources qu'il sait décrire
+//!    (Instagram, Reddit, clips Twitch, Vimeo…) ;
+//! 3. pour une URL de fichier directe sans titre de page, le nom du fichier
+//!    dans l'URL.
 //!
 //! Tout candidat est normalisé : trim, espaces collapseés, entités HTML
 //! décodées, tronqué à [`TITLE_MAX_CHARS`] caractères.
@@ -26,35 +28,39 @@ pub const TITLE_MAX_CHARS: usize = 240;
 
 /// Titre source d'un média ingéré, de la meilleure source disponible.
 ///
-/// `ytdlp_title` est le titre extrait de la sortie `--print` de yt-dlp pendant
-/// le téléchargement, s'il y en a un. Renvoie `None` quand rien n'est connu :
-/// le board garde alors son repli actuel (nom d'hôte du lien).
+/// `download_title` est le titre annoncé pendant le téléchargement (Open Graph
+/// d'une page web ou sortie `--print` de yt-dlp), s'il y en a un. Renvoie `None`
+/// quand rien n'est connu : le board garde alors son repli actuel (nom d'hôte
+/// du lien).
 pub fn source_title(
     source: &MediaSource,
     resolved: Option<&ResolvedMedia>,
-    ytdlp_title: Option<&str>,
+    download_title: Option<&str>,
 ) -> Option<String> {
     match source.source_kind {
         // Une carte de commentaire porte le texte du commentaire dans le titre
         // du téléchargement : il prime sur la description de la vidéo.
         SourceKind::TikTok if crate::source::tiktok_comment_id(&source.canonical_url).is_some() => {
-            normalized(ytdlp_title)
+            normalized(download_title)
                 .or_else(|| normalized(resolved.and_then(|resolved| resolved.title.as_deref())))
         }
         // Le résolveur de la plateforme a déjà le titre (oEmbed YouTube,
         // page TikTok) ; sinon le téléchargement yt-dlp l'a peut-être imprimé.
         SourceKind::YouTube | SourceKind::TikTok => {
             normalized(resolved.and_then(|resolved| resolved.title.as_deref()))
-                .or_else(|| normalized(ytdlp_title))
+                .or_else(|| normalized(download_title))
         }
         // Tenor n'a que le titre Open Graph lu par le résolveur.
         SourceKind::Tenor => normalized(resolved.and_then(|resolved| resolved.title.as_deref())),
         // Un tweet n'a pas de titre : le début de son texte, sinon l'auteur.
         SourceKind::Twitter => resolved
             .and_then(tweet_title)
-            .or_else(|| normalized(ytdlp_title)),
-        // Fichier direct : le nom du fichier dans l'URL.
-        SourceKind::DirectMedia => direct_media_title(&source.canonical_url),
+            .or_else(|| normalized(download_title)),
+        // Page web inconnue : le titre Open Graph ou yt-dlp, sinon le nom de
+        // fichier de l'URL (téléchargement direct sans page).
+        SourceKind::DirectMedia => {
+            normalized(download_title).or_else(|| direct_media_title(&source.canonical_url))
+        }
         // Téléversements (le nom de fichier est déjà le titre demandé),
         // synthèse vocale et sources refusées : aucun titre source.
         SourceKind::LocalFile | SourceKind::Gtts | SourceKind::Unknown => None,
@@ -329,8 +335,12 @@ mod tests {
             Some("Jonathan Drouin Halifax Mooseheads")
         );
 
-        // Média direct : nom de fichier de l'URL.
+        // Média direct : titre Open Graph s'il existe, sinon nom de fichier.
         let direct = MediaSource::from_raw("https://cdn.test/Chat%20qui_tombe.mp4").unwrap();
+        assert_eq!(
+            source_title(&direct, None, Some("Will Smith Mib")).as_deref(),
+            Some("Will Smith Mib")
+        );
         assert_eq!(
             source_title(&direct, None, None).as_deref(),
             Some("Chat qui tombe")

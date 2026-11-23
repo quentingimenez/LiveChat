@@ -738,3 +738,88 @@ async fn erreur_d_une_autre_guilde_n_echoue_pas_le_job() {
         busy_a
     );
 }
+
+/// Une pause partagée fige le job PLAYING : le watchdog ne le libère plus et
+/// le job suivant reste en attente.
+#[tokio::test]
+async fn pause_suspend_le_watchdog_et_le_dispatch() {
+    let h = harness(1).await;
+    let guild = h.guild_id.clone();
+
+    let first = sample_job(guild.clone(), h.clock.now());
+    h.engine.enqueue(&first).await.unwrap();
+    h.advance(2_000);
+
+    let pause = h.engine.pause(&guild, None).await.unwrap().unwrap();
+    assert_eq!(pause.job_id, Some(first.id));
+    assert_eq!(pause.remaining_ms, 3_000);
+    assert_eq!(h.stored_job(first.id).await.status, JobStatus::Playing);
+
+    // Sans pause, le watchdog aurait libéré le job après 5,25 s + 10 s.
+    h.advance(60_000);
+    h.engine.tick().await.unwrap();
+    assert_eq!(h.stored_job(first.id).await.status, JobStatus::Playing);
+    assert!(h.sink.stop_calls().is_empty());
+
+    let second = sample_job(guild.clone(), h.clock.now());
+    h.engine.enqueue(&second).await.unwrap();
+    assert_eq!(h.stored_job(second.id).await.status, JobStatus::Pending);
+    assert_eq!(h.sink.play_calls().len(), 1);
+}
+
+/// La reprise exclut le temps passé en pause du temps restant : un overlay qui
+/// rejoint après la reprise ne doit pas recevoir un remaining amputé.
+#[tokio::test]
+async fn la_reprise_exclut_le_temps_de_pause_du_temps_restant() {
+    let h = harness(1).await;
+    let guild = h.guild_id.clone();
+
+    let job = sample_job(guild.clone(), h.clock.now());
+    h.engine.enqueue(&job).await.unwrap();
+    h.advance(2_000);
+    let pause = h.engine.pause(&guild, None).await.unwrap().unwrap();
+    assert_eq!(pause.remaining_ms, 3_000);
+
+    h.advance(10_000);
+    let resumed = h.engine.resume(&guild).await.unwrap().unwrap();
+    assert_eq!(resumed.remaining_ms, 3_000);
+
+    let stored = h.stored_job(job.id).await;
+    assert_eq!(
+        stored.started_at.map(datetime_to_ms),
+        Some(NOW_MS + 10_000),
+        "started_at doit être décalé du temps de pause"
+    );
+    let current = h.engine.current_job(&guild).await.unwrap().unwrap();
+    assert_eq!(current.remaining_ms, 3_000);
+}
+
+/// Un arrêt libère le job et efface la pause : la file repart normalement.
+#[tokio::test]
+async fn un_arret_efface_la_pause() {
+    let h = harness(1).await;
+    let guild = h.guild_id.clone();
+
+    let first = sample_job(guild.clone(), h.clock.now());
+    h.engine.enqueue(&first).await.unwrap();
+    h.advance(1_000);
+    h.engine.pause(&guild, None).await.unwrap();
+
+    h.engine
+        .stop(&guild, None, StopRequestSource::User)
+        .await
+        .unwrap();
+    assert!(h.engine.paused_state(&guild).await.is_none());
+
+    let second = sample_job(guild.clone(), h.clock.now());
+    h.engine.enqueue(&second).await.unwrap();
+    assert_eq!(h.stored_job(second.id).await.status, JobStatus::Playing);
+}
+
+/// Sans job en cours, la pause et la reprise sont sans effet.
+#[tokio::test]
+async fn pause_et_reprise_sans_job_sont_sans_effet() {
+    let h = harness(1).await;
+    assert!(h.engine.pause(&h.guild_id, None).await.unwrap().is_none());
+    assert!(h.engine.resume(&h.guild_id).await.unwrap().is_none());
+}

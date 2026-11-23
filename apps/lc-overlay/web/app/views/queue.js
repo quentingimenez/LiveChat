@@ -9,7 +9,7 @@ import { invoke } from '../core/ipc.js';
 import { jobMeta, jobOriginLabel, jobOriginTitle, jobTitle } from '../core/job-format.js';
 import { queueClock } from '../core/queue-clock.js';
 import { moveInQueue, moveToQueue, queueJobIds } from '../core/queue-order.js';
-import { can, describeError, state } from '../core/state.js';
+import { can, describeError, state, activeGuild } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import { confirmDialog } from '../core/ui.js';
 import { loadQueue, refreshQueueAutomatically } from '../data.js';
@@ -78,6 +78,56 @@ function stopButtons() {
       action.label,
     ),
   );
+}
+
+// Shared pause: the server freezes the guild's playback on every overlay.
+// Local cuts keep their own control in the header.
+function pauseButton() {
+  if (!can('stop')) {
+    return null;
+  }
+  const paused = sharedPaused();
+  return h(
+    'button',
+    {
+      class: `btn is-quiet queue-pause${paused ? ' is-active' : ''}`,
+      title: paused
+        ? 'Reprendre la lecture pour tous les appareils de la guilde'
+        : 'Mettre la lecture en pause pour tous les appareils de la guilde',
+      'aria-label': paused ? 'Reprendre la lecture pour la guilde' : 'Mettre la lecture en pause pour la guilde',
+      onClick: (event) => toggleGuildPause(event.currentTarget, paused),
+    },
+    icon(paused ? 'play' : 'pause'),
+    paused ? 'Reprendre pour tous' : 'Pause pour tous',
+  );
+}
+
+function sharedPaused() {
+  const guild = activeGuild();
+  return Boolean(guild && guild.connection && guild.connection.paused);
+}
+
+// The guild is cut on this device: no media is received, so neither the
+// on-air bar nor the queue is shown (their stop controls would fail).
+function locallyCut() {
+  const guild = activeGuild();
+  return Boolean(guild && guild.membership && guild.membership.muted);
+}
+
+async function toggleGuildPause(control, paused) {
+  await performAction(control, 'queue-pause', async () => {
+    const response = await invoke('media_board_pause', {
+      payload: { guildId: state.activeGuildId, paused: !paused },
+    });
+    if (response && !response.ok) {
+      throw new Error(describeError(response.reason));
+    }
+    renderOnAir();
+    setTimeout(() => {
+      loadQueue();
+      renderOnAir();
+    }, 300);
+  });
 }
 
 function openStopMenu(event) {
@@ -212,6 +262,20 @@ async function dropPendingOn(target) {
 
 export function renderQueue() {
   const { playing, pending } = state.queue;
+  // A guild cut on this device receives nothing: hide its queue instead of
+  // offering stop controls that cannot reach a closed session.
+  if (locallyCut()) {
+    return h(
+      'div',
+      { class: 'empty' },
+      h('h2', null, 'Guilde coupée ici'),
+      h(
+        'p',
+        null,
+        'Cet appareil ne reçoit plus les médias de cette guilde. Utilisez « Réactiver ici » dans l’en-tête pour les revoir.',
+      ),
+    );
+  }
   // Before the first read, a queue is not empty: it is unknown.
   if (!state.queueLoaded && !state.queueError) {
     return h('div', null, queueSkeleton(), renderHistory());
@@ -529,15 +593,17 @@ export function renderOnAir() {
   bindOnAirMenu();
   const bar = document.getElementById('onair');
   const playing = state.queue.playing;
-  if (!playing || !state.activeGuildId) {
+  if (!playing || !state.activeGuildId || locallyCut()) {
     bar.hidden = true;
     return;
   }
   bar.hidden = false;
+  const paused = sharedPaused();
   // replaceChildren() would render a null child as the text "null": filter first.
   const children = [
     h('span', { class: 'pulse' }),
     h('span', { class: 'title ellipsis', title: jobTitle(playing) }, jobTitle(playing)),
+    paused ? h('span', { class: 'badge is-off' }, 'En pause') : null,
     playing.authorName ? h('span', { class: 'meta onair-author' }, `par ${playing.authorName}`) : null,
     h('span', { class: 'spacer' }),
     state.queue.pending.length
@@ -547,7 +613,21 @@ export function renderOnAir() {
           `${state.queue.pending.length} média${state.queue.pending.length > 1 ? 's' : ''} en attente`,
         )
       : null,
+    pauseButton(),
     ...stopButtons(),
   ];
   bar.replaceChildren(...children.filter(Boolean));
 }
+
+document.addEventListener('livechat:guilds-updated', () => {
+  // A shared pause/resume arrives as a guilds update (connection.paused): the
+  // on-air bar and its button must follow without waiting for a queue reload.
+  renderOnAir();
+});
+
+document.addEventListener('livechat:guild-mute-changed', () => {
+  renderOnAir();
+  if (state.page === 'guild' && state.tab === 'queue') {
+    renderView();
+  }
+});

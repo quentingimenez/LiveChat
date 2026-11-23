@@ -156,7 +156,7 @@ fn tooltip_text(config: &OverlayConfig, statuses: &BTreeMap<String, ConnectionSt
     if config.enabled {
         connection_summary(config, statuses)
     } else {
-        "LiveChat — en pause".to_string()
+        "LiveChat — médias coupés ici".to_string()
     }
 }
 
@@ -180,7 +180,7 @@ fn menu_model(
         MenuEntry::Separator,
         MenuEntry::Check {
             id: ID_GENERAL_MUTE.to_string(),
-            label: "Pause générale".to_string(),
+            label: "Couper tous les médias ici".to_string(),
             checked: !config.enabled,
             enabled: true,
         },
@@ -357,7 +357,7 @@ pub(crate) fn toggle_general_mute(app: &AppHandle<Wry>) {
         Ok(config) => {
             tracing::info!(
                 enabled = config.enabled,
-                "pause générale modifiée depuis le tray"
+                "coupe locale modifiée depuis le tray"
             );
             apply_general_mute_effect(app, config.enabled);
             device_settings::publish_settings(app);
@@ -390,15 +390,15 @@ pub(crate) fn toggle_media_mute(app: &AppHandle<Wry>) {
 fn toggle_guild_mute(app: &AppHandle<Wry>, guild_id: &str) {
     let state = app.state::<AppState>();
     let Some(membership) = state.config_snapshot().membership(guild_id).cloned() else {
-        tracing::warn!(guild_id, "guilde inconnue pour la pause du tray");
+        tracing::warn!(guild_id, "guilde inconnue pour la coupe locale du tray");
         refresh_tray(app);
         return;
     };
     match crate::commands::set_guild_muted(app, guild_id, !membership.muted) {
         // `publish_guilds` already rebuilt the menu.
         Ok(true) => return,
-        Ok(false) => tracing::warn!(guild_id, "guilde inconnue pour la pause du tray"),
-        Err(error) => tracing::warn!(%error, guild_id, "échec de la mise en pause de la guilde"),
+        Ok(false) => tracing::warn!(guild_id, "guilde inconnue pour la coupe locale du tray"),
+        Err(error) => tracing::warn!(%error, guild_id, "échec de la coupe de la guilde"),
     }
     refresh_tray(app);
 }
@@ -512,7 +512,7 @@ mod tests {
                 action(ID_OPEN_BOARD, "Ouvrir la board"),
                 action(ID_SETTINGS, "Paramètres…"),
                 MenuEntry::Separator,
-                check(ID_GENERAL_MUTE, "Pause générale", false, true),
+                check(ID_GENERAL_MUTE, "Couper tous les médias ici", false, true),
                 check(ID_MEDIA_MUTE, "Couper le son des médias", false, true),
                 check("tray.guild.111", "Les Sardines", true, true),
                 check(
@@ -560,7 +560,12 @@ mod tests {
             None,
         );
 
-        assert!(model.contains(&check(ID_GENERAL_MUTE, "Pause générale", true, true)));
+        assert!(model.contains(&check(
+            ID_GENERAL_MUTE,
+            "Couper tous les médias ici",
+            true,
+            true
+        )));
         assert!(model.contains(&check(
             ID_MEDIA_MUTE,
             "Couper le son des médias",
@@ -628,7 +633,7 @@ mod tests {
         );
         assert_eq!(
             tooltip_text(&config_with(guilds, false), &live),
-            "LiveChat — en pause"
+            "LiveChat — médias coupés ici"
         );
         assert_eq!(
             tooltip_text(&config_with(Vec::new(), true), &statuses(&[])),

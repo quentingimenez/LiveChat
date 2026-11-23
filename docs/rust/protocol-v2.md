@@ -1,6 +1,6 @@
 # Protocole v2 LiveChat — spécification GELÉE
 
-> **FROZEN rev. 4 pour l'implémentation** — 2026-11-10 — owner : `protocole-v2` — statut : gelé (Phase 0)
+> **FROZEN rev. 5 pour l'implémentation** — 2026-11-23 — owner : `protocole-v2` — statut : gelé (Phase 0)
 >
 > Révision 2 (2026-11-09, décisions Lead sur les 5 points ouverts) : TTL média adaptatif (§8.1),
 > `stop.request` avec `jobId`/`source` (§5.6), invariant « un seul job `PLAYING` » (§6.1.1),
@@ -13,7 +13,10 @@
 > (2026-11-10, task-48/P2-A) : borne de transport d'upgrade **1 Mio** interprétée en `4408`
 > (§2, §4), validation stricte de `id` (non vide, ≤ 64 → `1002`, §2), `error` S→C effectivement
 > émis pour les échecs non fatals (§6.7), clés inconnues de `play`/`tweetCard` conservées via
-> `extra` (§2, §7.9, §16). Révision 1 (2026-11-09) : version initiale gelée.
+> `extra` (§2, §7.9, §16). Révision 5 (2026-11-23, feat/media-pause) : pause partagée de guilde
+> avec `pause.request` C→S (§5.9), `pause` S→C (§6.10) et `welcome.paused` (§6.1), sans
+> changement de `protocolVersion` (les champs sont optionnels et rétrocompatibles).
+> Révision 1 (2026-11-09) : version initiale gelée.
 >
 > Toute modification de ce document est une rupture de contrat : elle exige l'accord du Lead,
 > une mise à jour simultanée des fixtures golden (`crates/lc-protocol/tests/fixtures/`) et des
@@ -299,6 +302,7 @@ consommée par la boucle de la session.
 | `playback.ended` | `PlaybackEndedPayload` | aucune |
 | `error` | `ClientErrorPayload` | aucune (log) |
 | `stop.request` | `StopRequestPayload` (`{}`) | `ack` puis `stop` (reason `manual`) |
+| `pause.request` | `PauseRequestPayload` | `ack` puis `pause` (état partagé de la guilde) |
 | `media.trigger` | `MediaTriggerPayload` | `ack` puis `play` quand la file le réclame (aucune interruption) |
 | `peers.request` | `PeersRequestPayload` (`{}`) | `ack` puis `peers` |
 
@@ -410,6 +414,26 @@ accepté (la désérialisation échoue, comme tout type inconnu) ; seul
 Force un rafraîchissement : `ack {ok:true}` puis `peers` à la room. Utile au tray overlay et après
 reconnexion (v1 : broadcast uniquement à la connexion/déconnexion, `socketLoader.ts:76-86`).
 
+### 5.9 `pause.request`
+
+```json
+{"v":2,"type":"pause.request","id":"cli-pause-request-0001","ts":1794182400000,"payload":{"paused":true,"remainingMs":84000}}
+```
+
+Payload (rév. 5) : `{ "paused": boolean, "remainingMs"?: number }`. `paused:true` met la lecture de
+la guilde en pause pour **tous** ses overlays ; `paused:false` la reprend. `remainingMs` est
+facultatif : position demandée, bornée au restant réel du job (un board peut ainsi figer le compte à
+rebours sur la même valeur que les autres appareils).
+
+Serveur : `ack {ok:true}` puis `pause` (§6.10) à la room de guilde. Sans job `PLAYING` :
+`ack {ok:false, error:{code:"nothing_playing"}}` sans diffusion. Mode lecture seule → `read_only`.
+Une demande par seconde maximum (excédent → `rate_limited`), comme `stop.request`.
+
+Une pause **n'arrête pas** le job : il reste `PLAYING` en base, le watchdog ne le libère pas et aucun
+`stop` n'est émis. Seule une reprise (`paused:false`) ou un arrêt explicite en sortent. À la reprise,
+le temps passé en pause est exclu : `started_at` est décalé d'autant pour que le `remainingMs` d'un
+client qui rejoint ensuite reste cohérent avec la position réelle du média.
+
 ---
 
 ## 6. Messages serveur → client (S→C)
@@ -421,7 +445,8 @@ reconnexion (v1 : broadcast uniquement à la connexion/déconnexion, `socketLoad
 | `peers` | `PeersPayload` | connexion/déconnexion d'un overlay, `peers.request`, gracieux |
 | `play` | `PlayPayload` | dispatch d'un job (media signé par client) |
 | `stop` | `StopPayload` | arrêt manuel, révocation, purge |
-| `ack` | `AckPayload` | réponse à `stop.request`, `media.trigger`, `peers.request` |
+| `pause` | `PausePayload` | pause/reprise partagée de la guilde |
+| `ack` | `AckPayload` | réponse à `stop.request`, `pause.request`, `media.trigger`, `peers.request` |
 | `error` | `ServerErrorPayload` | erreur non fatale (dispatch, média indisponible) |
 | `media.ingestion` | `MediaIngestionPayload` | fin d'une ingestion asynchrone du board, envoyée aux sockets du client demandeur |
 | `board.changed` | `BoardChangedPayload` | ajout/modification/suppression d'un item du board, diffusé à la guilde |
@@ -450,6 +475,9 @@ reconnexion (v1 : broadcast uniquement à la connexion/déconnexion, `socketLoad
 - `currentJob` : **présent uniquement s'il y a un job `PLAYING`** au moment du welcome
   (reconnexion, §10). Absent sinon (ne pas émettre `null`). Voir §6.1.1. Invariant serveur : au
   plus **un** job `PLAYING` par guilde (§6.1.1).
+- `paused` (rév. 5) : `true` quand la guilde est en pause partagée. Un client qui rejoint pendant la
+  pause reçoit `currentJob.remainingMs` **figé** à la valeur de la pause et ne doit pas démarrer la
+  lecture. Champ **omis** quand il vaut `false` (compatibilité des welcomes existants).
 
 #### 6.1.1 `currentJob` (reprise après reconnexion)
 
@@ -593,10 +621,10 @@ maximum** (`MAX_PEERS`, dédupliqués) ; au-delà, la liste est tronquée après
 - Les trois champs sont **omis** (`skip_serializing_if`) quand ils sont absents ; un client qui ne
   les connaît pas reste compatible.
 - Codes d'erreur d'ack : `read_only`, `item_not_found`, `media_not_ready`, `invalid_payload`,
-  `rate_limited`, `internal_error`.
+  `rate_limited`, `nothing_playing`, `internal_error`.
 - Les messages de flux (`playback.state`, `playback.ended`, `heartbeat`, `error`) ne sont
   **jamais** acquittés (économie de trames) ; seules les requêtes (`stop.request`,
-  `media.trigger`, `peers.request`) le sont.
+  `pause.request`, `media.trigger`, `peers.request`) le sont.
 
 ### 6.7 `error` (S→C)
 
@@ -649,6 +677,26 @@ supplémentaire. `media_unavailable` reste réservé aux hooks média Phase 5.
 - Pour une ingestion asynchrone, `added` n'est émis que si `created:true` ; un média
   déjà épinglé ne produit pas de second `board.changed`.
 
+### 6.10 `pause`
+
+```json
+{"v":2,"type":"pause","id":"srv-pause-0001","ts":1794182400000,"payload":{"paused":true,"jobId":"clx7q2x0b0001abcd1234efgh","remainingMs":84000}}
+```
+
+```json
+{"v":2,"type":"pause","id":"srv-pause-0002","ts":1794182400000,"payload":{"paused":false,"jobId":"clx7q2x0b0001abcd1234efgh"}}
+```
+
+- Émis à toute la room de guilde après un `pause.request` accepté (§5.9), y compris à
+  l'appareil demandeur : l'état partagé est la seule source de vérité, chaque renderer applique la
+  pause/résumé sans renvoyer de nouvelle demande.
+- `paused` : `true` = lecture figée pour tous les appareils. `jobId` : job concerné, omis si la
+  reprise ne vise plus de job. `remainingMs` : présent à la pause et omis à la reprise.
+- Un overlay qui rejoint pendant la pause reçoit aussi `welcome.paused:true` et un `currentJob` au
+  `remainingMs` figé (§6.1) ; il rend le média sans le lancer.
+- La pause n'est pas un `stop` : aucun `playback.ended`, aucune libération du job. À la reprise, le
+  job repart de `startedAt` comme si le temps ne s'était pas écoulé.
+
 ---
 
 ## 7. Structures de payload — référence
@@ -677,10 +725,13 @@ Notation : `T?` = champ optionnel omis si absent ; `T|null` = toujours émis, `n
 ### 7.5 `ClientErrorPayload`
 `{ jobId: string, code: string, message: string }` (`index.ts:61-65`).
 
-### 7.6 `StopRequestPayload` / `PeersRequestPayload`
+### 7.6 `StopRequestPayload` / `PauseRequestPayload` / `PeersRequestPayload`
 `StopRequestPayload = { jobId?: string, source?: "user"|"hotkey"|"admin" }` (rév. 2) : `jobId`
 absent/null = tous les jobs de la guilde ; `source` informatif, défaut serveur `user`.
 `v2_stop_request.json` = `{}` ; `v2_stop_request_user.json` = `{jobId, source:"user"}`.
+`PauseRequestPayload = { paused: boolean, remainingMs?: number }` (rév. 5) : `paused:false` =
+reprise ; `remainingMs` borné au restant réel du job. `v2_pause_request.json` /
+`v2_resume_request.json`.
 `PeersRequestPayload = {}` (objet vide obligatoire).
 
 ### 7.7 `MediaTriggerPayload`
@@ -689,11 +740,13 @@ absent/null = tous les jobs de la guilde ; `source` informatif, défaut serveur 
 
 ### 7.8 `WelcomePayload`
 `{ protocolVersion: 2, guildId: string, clientId: string, sessionMode: SessionMode,
-serverVersion: string, serverTime: number, config: WelcomeConfig, currentJob?: CurrentJob }`
+serverVersion: string, serverTime: number, config: WelcomeConfig, paused?: boolean,
+currentJob?: CurrentJob }`
 `WelcomeConfig = { showTextDefault: boolean, defaultMediaTime: number, maxMediaTime: number|null }`
 `CurrentJob = PlayPayload & { startedAt: number, remainingMs: number }`
 `serverVersion` (rév. 2) : semver simple du serveur, toujours émis ; `currentJob` : au plus un job
-`PLAYING` par guilde (§6.1.1). (v1 config : `overlayRoutes.ts:293-315`, endpoint supprimé §15.4.)
+`PLAYING` par guilde (§6.1.1) ; `paused` (rév. 5) : pause partagée en cours, omis quand `false`.
+(v1 config : `overlayRoutes.ts:293-315`, endpoint supprimé §15.4.)
 
 ### 7.9 `PlayPayload`
 ```
@@ -729,8 +782,10 @@ TweetCardVideo = { url: string, mime: string|null, isVertical: boolean|null,
 l'identique lors de la sérialisation (une map vide n'émet aucune clé). Ce round-trip fidèle est
 vérifié par un test dédié des fixtures golden.
 
-### 7.10 `StopPayload`
-`{ reason: "manual"|"preempt"|"revoked"|"purge", jobId: string|null }`.
+### 7.10 `StopPayload` / `PausePayload`
+`StopPayload = { reason: "manual"|"preempt"|"revoked"|"purge", jobId: string|null }`.
+`PausePayload = { paused: boolean, jobId?: string, remainingMs?: number }` (rév. 5) : `remainingMs`
+présent à la pause, omis à la reprise ; `jobId` omis quand aucun job n'est visé.
 
 ### 7.11 `PeersPayload`
 `{ guildId: string, peers: { clientId: string, label: string }[] }` (`index.ts:78-86`).

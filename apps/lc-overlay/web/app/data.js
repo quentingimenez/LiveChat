@@ -194,6 +194,9 @@ export function applyGuilds(payload) {
       peersKey(guild) !== previousPeers ||
       muted !== previousMuted
     ) {
+      if (muted !== previousMuted) {
+        document.dispatchEvent(new CustomEvent('livechat:guild-mute-changed'));
+      }
       schedulePresenceRefresh();
     }
   }

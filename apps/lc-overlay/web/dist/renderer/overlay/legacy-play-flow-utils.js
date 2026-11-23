@@ -61,8 +61,17 @@ export function createOverlayLegacyPlayFlowUtils() {
         }
         if (params.payload?.durationSec) {
             params.startCountdown(params.payload.durationSec, { autoClear: autoClearByTimer });
+            if (params.payload?.paused === true) {
+                params.pauseCountdown();
+                return;
+            }
             if (autoClearByTimer) {
                 const resetTimer = params.setTimeout(() => {
+                    // The shared pause freezes the countdown: the media must not
+                    // disappear because the wall clock reached the duration.
+                    if (typeof params.isCountdownPaused === 'function' && params.isCountdownPaused()) {
+                        return;
+                    }
                     params.clearOverlay();
                 }, Number(params.payload.durationSec) * 1000 + 100);
                 params.setResetTimer(resetTimer);

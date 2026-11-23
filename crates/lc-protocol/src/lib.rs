@@ -145,6 +145,8 @@ pub mod msg_type {
     pub const ERROR: &str = "error";
     /// C→S : demande d'arrêt manuel de la lecture.
     pub const STOP_REQUEST: &str = "stop.request";
+    /// C→S : demande de pause ou de reprise de la guilde.
+    pub const PAUSE_REQUEST: &str = "pause.request";
     /// C→S : déclenchement d'un média.
     pub const MEDIA_TRIGGER: &str = "media.trigger";
     /// C→S : demande de la liste des pairs.
@@ -161,6 +163,8 @@ pub mod msg_type {
     pub const PLAY: &str = "play";
     /// S→C : arrêt de lecture (manuel, préemption, révocation, purge).
     pub const STOP: &str = "stop";
+    /// S→C : la guilde est mise en pause ou en reprise pour tous ses overlays.
+    pub const PAUSE: &str = "pause";
     /// S→C : acquittement d'un `stop.request` ou `media.trigger`.
     pub const ACK: &str = "ack";
     /// S→C : result of a media ingestion requested by this overlay client.
@@ -181,6 +185,12 @@ pub mod msg_type {
 #[must_use]
 pub fn is_frame_too_large(len: usize) -> bool {
     len > MAX_FRAME_BYTES
+}
+
+/// Sérialise `false` en l'omettant (compatibilité des welcomes existants).
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Construit l'entrée signée HMAC-SHA256 d'une URL média : `assetId|clientId|exp`.
@@ -364,6 +374,9 @@ pub enum ClientMessage {
     /// Demande d'arrêt manuel.
     #[serde(rename = "stop.request")]
     StopRequest(StopRequestPayload),
+    /// Demande de pause ou de reprise de la guilde.
+    #[serde(rename = "pause.request")]
+    PauseRequest(PauseRequestPayload),
     /// Déclenchement d'un média.
     #[serde(rename = "media.trigger")]
     MediaTrigger(MediaTriggerPayload),
@@ -386,6 +399,7 @@ impl ClientMessage {
             Self::PlaybackEnded(_) => msg_type::PLAYBACK_ENDED,
             Self::Error(_) => msg_type::ERROR,
             Self::StopRequest(_) => msg_type::STOP_REQUEST,
+            Self::PauseRequest(_) => msg_type::PAUSE_REQUEST,
             Self::MediaTrigger(_) => msg_type::MEDIA_TRIGGER,
             Self::PeersRequest(_) => msg_type::PEERS_REQUEST,
             Self::DeviceSettingsState(_) => msg_type::DEVICE_SETTINGS_STATE,
@@ -412,6 +426,9 @@ pub enum ServerMessage {
     /// Arrêt de lecture.
     #[serde(rename = "stop")]
     Stop(StopPayload),
+    /// Pause ou reprise de la guilde.
+    #[serde(rename = "pause")]
+    Pause(PausePayload),
     /// Acquittement.
     #[serde(rename = "ack")]
     Ack(AckPayload),
@@ -448,6 +465,7 @@ impl ServerMessage {
             Self::Peers(_) => msg_type::PEERS,
             Self::Play(_) => msg_type::PLAY,
             Self::Stop(_) => msg_type::STOP,
+            Self::Pause(_) => msg_type::PAUSE,
             Self::Ack(_) => msg_type::ACK,
             Self::Error(_) => msg_type::ERROR,
             Self::MediaIngestion(_) => msg_type::MEDIA_INGESTION,
@@ -662,6 +680,21 @@ pub struct StopRequestPayload {
     pub source: Option<StopRequestSource>,
 }
 
+/// Payload de `pause.request`.
+///
+/// Une seule commande porte la pause et la reprise : `paused: false` reprend la
+/// lecture de la guilde. `remainingMs` est une estimation facultative fournie
+/// par l'appareil qui met en pause ; le serveur la borne au temps restant du job.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PauseRequestPayload {
+    /// `true` pour mettre la guilde en pause, `false` pour la reprendre.
+    pub paused: bool,
+    /// Temps restant estimé du job au moment de la pause, en millisecondes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_ms: Option<u64>,
+}
+
 /// Payload de `media.trigger`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -685,7 +718,7 @@ pub struct DeviceSettingsStatePayload {
     pub volume: f64,
     /// The guild's media play without sound.
     pub media_muted: bool,
-    /// The guild is paused (its media are not shown).
+    /// The guild is cut on this device (no media is shown).
     pub paused: bool,
 }
 
@@ -733,6 +766,9 @@ pub struct WelcomePayload {
     pub server_time: i64,
     /// Configuration par défaut de la guilde.
     pub config: WelcomeConfig,
+    /// La guilde est-elle en pause partagée ?
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub paused: bool,
     /// Job éventuellement en cours lors d'une reconnexion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_job: Option<CurrentJobPayload>,
@@ -935,6 +971,23 @@ impl Default for PlayPayload {
     }
 }
 
+/// Payload de `pause`.
+///
+/// Diffusé à tous les overlays de la guilde : la lecture en cours doit être
+/// suspendue (`paused: true`) ou reprise (`paused: false`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PausePayload {
+    /// `true` : pause partagée ; `false` : reprise partagée.
+    pub paused: bool,
+    /// Job concerné par la pause, si la guilde lisait un média.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    /// Temps restant du job au moment de la pause, en millisecondes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_ms: Option<u64>,
+}
+
 /// Payload de `stop`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1089,7 +1142,7 @@ pub struct DeviceSettingsPayload {
     /// The guild's media play without sound.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media_muted: Option<bool>,
-    /// The guild is paused (its media are not shown).
+    /// The guild is cut on this device (no media is shown).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused: Option<bool>,
 }

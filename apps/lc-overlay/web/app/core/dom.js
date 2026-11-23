@@ -93,6 +93,7 @@ export function resetOnDoubleClick(input, defaultValue) {
 
 const ICONS = {
   play: 'M7 4.5v15l12-7.5z',
+  pause: 'M7 5h3.5v14H7zM13.5 5H17v14h-3.5z',
   stop: 'M6 6h12v12H6z',
   plus: 'M12 5v14M5 12h14',
   close: 'M6 6l12 12M18 6L6 18',

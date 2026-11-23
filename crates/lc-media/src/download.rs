@@ -28,6 +28,7 @@ use crate::transcode;
 use crate::translate;
 use crate::tweet_card::{self, CardVideoTarget};
 use crate::tweet_card_video;
+use crate::web;
 
 static DOWNLOAD_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -44,8 +45,8 @@ pub struct DownloadResult {
     pub size_bytes: u64,
     /// URL source effectivement téléchargée.
     pub source_url: String,
-    /// Titre de la source imprimé par `yt-dlp` pendant le téléchargement,
-    /// si le téléchargement est passé par lui et qu'un titre est connu.
+    /// Titre de la source annoncé pendant le téléchargement : page Open Graph
+    /// pour une page web, sortie `yt-dlp` pour les sources qu'il extrait.
     pub title: Option<String>,
     /// Nombre de caractères visibles quand le téléchargement est une carte
     /// texte (tweet) : texte principal et tweet cité. Sert à calculer la durée
@@ -97,7 +98,7 @@ pub async fn download_source(
             "la source gtts n'est pas prise en charge par lc-media (Phase 5b)",
         )),
         SourceKind::DirectMedia | SourceKind::Unknown => {
-            download_http(config, &source.canonical_url, temp_dir, &[]).await
+            download_web(source, config, temp_dir).await
         }
     }
 }
@@ -125,6 +126,73 @@ async fn ensure_download_allowed(source: &MediaSource) -> MediaResult<()> {
             guard::validate_target(&source.canonical_url).await?;
             Ok(())
         }
+    }
+}
+
+/// Choisit l'erreur à remonter quand la page HTML n'a livré aucun média et que
+/// `yt-dlp` a échoué : à priorité égale, l'échec de `yt-dlp` est plus utile que
+/// « page HTML », car il explique pourquoi le repli n'a rien produit.
+fn web_fallback_error(page_error: MediaError, ytdlp_error: MediaError) -> MediaError {
+    ytdlp_error.most_relevant(page_error)
+}
+
+/// Télécharge une URL web inconnue : fichier direct, média Open Graph, puis
+/// `yt-dlp` pour les hôtes de médias connus.
+///
+/// La première requête sert à la fois à télécharger un fichier direct et à lire
+/// la page quand elle répond du HTML : une page Giphy coûte une requête, pas
+/// deux. Les candidats Open Graph sont ensuite essayés dans l'ordre du parseur
+/// (vidéo avant image), et `yt-dlp` ne prend le relais que si aucun ne donne un
+/// fichier — c'est le cas des lecteurs HTML comme Vimeo.
+async fn download_web(
+    source: &MediaSource,
+    config: &MediaConfig,
+    temp_dir: &Path,
+) -> MediaResult<DownloadResult> {
+    let page_url = source.canonical_url.as_str();
+    let (body, status) = match download_http_response(config, page_url, temp_dir, &[]).await? {
+        DirectResponse::Media(download) => return Ok(download),
+        DirectResponse::Html { body, status, .. } => (body, status),
+    };
+    let page = web::parse_page(&body);
+    let mut last_error: Option<MediaError> = None;
+    for candidate in &page.media {
+        match download_http(config, &candidate.url, temp_dir, &[]).await {
+            Ok(mut download) => {
+                if download.title.is_none() {
+                    download.title = page.title.clone();
+                }
+                return Ok(download);
+            }
+            Err(error) => {
+                if error.is(MediaErrorCode::FileTooLarge) {
+                    return Err(error);
+                }
+                last_error = Some(match last_error {
+                    Some(previous) => previous.most_relevant(error),
+                    None => error,
+                });
+            }
+        }
+    }
+
+    let page_error = match last_error {
+        Some(error) => error.most_relevant(html_page_error(status)),
+        None => html_page_error(status),
+    };
+    if !web::allows_ytdlp_fallback(page_url) {
+        return Err(page_error);
+    }
+    match download_with_ytdlp(config, page_url, temp_dir, &YtdlpOptions::default()).await {
+        Ok(mut download) => {
+            if download.title.is_none() {
+                download.title = page.title.clone();
+            }
+            Ok(download)
+        }
+        // À priorité égale, l'échec de `yt-dlp` est plus utile que « page HTML » :
+        // c'est lui qui explique pourquoi le repli n'a pas produit de média.
+        Err(error) => Err(web_fallback_error(page_error, error)),
     }
 }
 
@@ -899,6 +967,13 @@ pub async fn download_with_ytdlp(
     })
 }
 
+/// Réponse d'une URL directe : un média enregistré, ou la page HTML qui le
+/// décrit.
+enum DirectResponse {
+    Media(DownloadResult),
+    Html { body: String, status: u16 },
+}
+
 /// Télécharge une URL directe en streaming, avec plafond de taille.
 pub async fn download_http(
     config: &MediaConfig,
@@ -906,6 +981,20 @@ pub async fn download_http(
     temp_dir: &Path,
     headers: &[(&str, &str)],
 ) -> MediaResult<DownloadResult> {
+    match download_http_response(config, url, temp_dir, headers).await? {
+        DirectResponse::Media(download) => Ok(download),
+        DirectResponse::Html { status, .. } => Err(html_page_error(status)),
+    }
+}
+
+/// Requête directe : un non-HTML est enregistré comme média, un HTML est lu
+/// comme page (borné) pour que l'appelant en extraie les balises Open Graph.
+async fn download_http_response(
+    config: &MediaConfig,
+    url: &str,
+    temp_dir: &Path,
+    headers: &[(&str, &str)],
+) -> MediaResult<DirectResponse> {
     let (response, final_url) = http::send_guarded(
         &config.download,
         reqwest::Method::GET,
@@ -923,17 +1012,12 @@ pub async fn download_http(
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
-    if content_type
-        .as_deref()
-        .is_some_and(|content_type| content_type.to_ascii_lowercase().contains("text/html"))
-    {
-        return Err(MediaError::new(
-            MediaErrorCode::DownloadFailed,
-            format!(
-                "la source a renvoyé une page HTML au lieu d'un média (HTTP {})",
-                status.as_u16()
-            ),
-        ));
+    if is_html_content_type(content_type.as_deref()) {
+        let body = http::read_text(response).await?;
+        return Ok(DirectResponse::Html {
+            body,
+            status: status.as_u16(),
+        });
     }
     let extension = content_type
         .as_deref()
@@ -1013,7 +1097,7 @@ pub async fn download_http(
     let mime = content_type
         .clone()
         .or_else(|| kind.map(|kind| default_mime(kind).to_string()));
-    Ok(DownloadResult {
+    Ok(DirectResponse::Media(DownloadResult {
         path,
         kind,
         mime,
@@ -1021,7 +1105,23 @@ pub async fn download_http(
         source_url: final_url.to_string(),
         title: None,
         text_chars: None,
+    }))
+}
+
+/// Une page est du HTML si son type l'annonce ; `application/xhtml+xml` est du
+/// HTML servi sous un autre nom MIME.
+fn is_html_content_type(content_type: Option<&str>) -> bool {
+    content_type.is_some_and(|content_type| {
+        let content_type = content_type.to_ascii_lowercase();
+        content_type.contains("text/html") || content_type.contains("application/xhtml+xml")
     })
+}
+
+fn html_page_error(status: u16) -> MediaError {
+    MediaError::new(
+        MediaErrorCode::DownloadFailed,
+        format!("la source a renvoyé une page HTML au lieu d'un média (HTTP {status})"),
+    )
 }
 
 /// Télécharge une publication TikTok (vidéo, image ou carrousel assemblé).
@@ -1563,6 +1663,31 @@ mod tests {
             "ERROR: [tiktok] 123: Private video. Sign in if you've been granted access",
         );
         assert_eq!(classify_public_tiktok_failure(private.clone()), private);
+    }
+
+    #[test]
+    fn keeps_the_ytdlp_failure_visible_when_the_page_has_no_media() {
+        let page = html_page_error(200);
+        let ytdlp = MediaError::new(
+            MediaErrorCode::DownloadFailed,
+            "impossible de lancer yt-dlp : programme introuvable",
+        );
+        let selected = web_fallback_error(page, ytdlp.clone());
+        assert_eq!(selected.message(), ytdlp.message());
+
+        // Une erreur de page plus prioritaire (fichier trop gros) reste remontée.
+        let page = MediaError::new(MediaErrorCode::FileTooLarge, "trop gros");
+        let selected = web_fallback_error(page.clone(), ytdlp);
+        assert_eq!(selected, page);
+    }
+
+    #[test]
+    fn recognizes_html_content_types_only() {
+        assert!(is_html_content_type(Some("text/html; charset=utf-8")));
+        assert!(is_html_content_type(Some("application/xhtml+xml")));
+        assert!(!is_html_content_type(Some("image/jpeg")));
+        assert!(!is_html_content_type(Some("video/mp4")));
+        assert!(!is_html_content_type(None));
     }
 
     #[test]

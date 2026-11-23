@@ -149,8 +149,27 @@ export function createOverlayLegacyRuntimePlaybackCountdownHandlersUtils() {
             clearTimer();
             clearCountdown();
             params.clearMediaHeaderLayoutRaf();
+            // A stop removes the media from the view; pausing and dropping the
+            // source first keeps the audio (and the Windows media session) from
+            // outliving the overlay. The flag tells the renderer's `pause`
+            // listener that this is not a user pause to share with the guild.
+            params.state.releasingMedia = true;
+            try {
+                if (typeof params.overlayResetUtils.releaseMediaElement === 'function') {
+                    params.overlayResetUtils.releaseMediaElement(params.state.activePlayableElement);
+                }
+                if (typeof params.overlayResetUtils.releaseMediaElements === 'function') {
+                    params.overlayResetUtils.releaseMediaElements(params.nodes.mediaLayer);
+                }
+            }
+            finally {
+                params.state.releasingMedia = false;
+            }
             params.state.activePlayableElement = null;
             params.state.activeMediaRelayout = null;
+            params.state.guildPaused = false;
+            params.state.suppressPauseBroadcast = false;
+            params.state.suppressPlayBroadcast = false;
             params.state.activeObjectUrl = params.overlayResetUtils.releaseObjectUrl(params.state.activeObjectUrl);
             params.resetMediaFrameState();
             params.overlayResetUtils.resetOverlayLayers({

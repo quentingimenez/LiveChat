@@ -448,6 +448,7 @@ fn welcome_payload() -> impl Strategy<Value = WelcomePayload> {
                     server_version,
                     server_time,
                     config,
+                    paused: false,
                     current_job,
                 }
             },

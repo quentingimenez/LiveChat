@@ -152,7 +152,10 @@ test('un éditeur ouvert par-dessus la fenêtre prend le dépôt pour lui', () =
 });
 
 test('un dépôt de fichiers remplit la sélection sans la remplacer', () => {
-  assert.match(addMedia, /chosenFiles = chosenFiles\.concat\(media\.files\)/);
+  // Le dépôt suit la même règle qu'un choix : il rejoint l'importation en
+  // cours, sans y faire entrer deux fois un média déjà listé.
+  assert.match(addMedia, /addPickedFiles\(chosenFiles, media\.files\)/);
+  assert.match(addMedia, /duplicatePickMessage\(ignored\)/);
   assert.match(addMedia, /setMode\('file'\);\s*\n\s*renderFileList\(\);/);
 });
 

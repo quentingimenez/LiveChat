@@ -159,7 +159,8 @@ pub trait PlaybackSink: Send + Sync {
    ou un `ended` perdu.
 8. **`current_job`** : au plus un `PLAYING` (anomalie → le plus récent par
    `started_at` est retenu et un `warn` est émis) ; `remaining_ms` =
-   `started_at + duration_sec*1000 - now`.
+   `started_at + duration_sec*1000 - now`. Une pause partagée décale `started_at`
+   d'autant à la reprise : le temps de pause n'entame pas ce restant.
 
 **Keep-alive de file locale.** Un overlay multi-guilde qui reçoit un `play` pendant
 qu'une autre guilde occupe l'écran garde ce job en file locale et envoie toutes les
@@ -175,9 +176,12 @@ keep-alive, la libération survient au plus 15 s après le dernier.
 3. **Fin** (`playback.ended`) : `DONE` + verrou libéré + job suivant.
 4. **Arrêt** (`stop.request`) : libération ciblée ou totale, `stop { reason:
    "manual", jobId: … }` broadcast (`jobId` = cible, ou unique job libéré, sinon `null`).
-5. **Watchdog / stale** : libération des jobs expirés (pause prolongée non couverte),
+5. **Pause partagée** (`pause.request`) : le job reste `PLAYING`, le watchdog et
+   le dispatch sont suspendus pour la guilde ; `pause` est diffusé. La reprise
+   réarme `busy_until`, décale `started_at` du temps de pause et relance la file.
+6. **Watchdog / stale** : libération des jobs expirés (hors pause partagée),
    démarrage du suivant.
-6. **Purge** : à appeler périodiquement (tick serveur) : jobs terminés > rétention,
+7. **Purge** : à appeler périodiquement (tick serveur) : jobs terminés > rétention,
    codes de pairing expirés.
 
 Équivalences legacy les plus sensibles (fichier de référence

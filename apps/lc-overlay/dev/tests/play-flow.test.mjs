@@ -65,3 +65,15 @@ test('a held card shows a frozen countdown and never clears itself', async () =>
   assert.equal(names.includes('setTimeout'), false);
   assert.equal(names.includes('setResetTimer'), false);
 });
+
+test('a shared pause freezes the countdown before the auto-clear timer', async () => {
+  const { calls, params } = recorder({ durationSec: 12, paused: true, media: image });
+  await runPlayFlow(params);
+  assert.deepEqual(
+    calls.find(([name]) => name === 'startCountdown'),
+    ['startCountdown', 12, { autoClear: true }],
+  );
+  assert.deepEqual(calls.find(([name]) => name === 'pauseCountdown'), ['pauseCountdown']);
+  assert.equal(calls.some(([name]) => name === 'setTimeout'), false);
+  assert.equal(calls.some(([name]) => name === 'setResetTimer'), false);
+});

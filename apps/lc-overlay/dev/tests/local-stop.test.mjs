@@ -6,13 +6,14 @@ import test from 'node:test';
 
 import { createOverlayLegacyPlaybackSessionUtils } from '../../web/dist/renderer/overlay/legacy-playback-session-utils.js';
 import { createOverlayLegacyPlaybackUtils } from '../../web/dist/renderer/overlay/legacy-playback-utils.js';
+import { createOverlayLegacyOverlayResetUtils } from '../../web/dist/renderer/overlay/legacy-overlay-reset-utils.js';
 import { createOverlayLegacyRuntimePlaybackCountdownHandlersUtils } from '../../web/dist/renderer/overlay/legacy-runtime-playback-countdown-handlers-utils.js';
 
 const playbackUtils = createOverlayLegacyPlaybackUtils();
 const playbackSessionUtils = createOverlayLegacyPlaybackSessionUtils();
 
 // The real handlers, with the DOM-facing collaborators stubbed.
-function handlers() {
+function handlers(options = {}) {
   const reports = [];
   const state = {
     resetTimer: null,
@@ -23,13 +24,13 @@ function handlers() {
     activeObjectUrl: null,
   };
   const created = createOverlayLegacyRuntimePlaybackCountdownHandlersUtils().createRuntimePlaybackCountdownHandlers({
-    nodes: {},
+    nodes: options.nodes || {},
     state,
     utils: {},
     countdownUtils: { getRemainingCountdownMs: () => null, clearCountdown: () => {} },
     playbackUtils,
     playbackSessionUtils,
-    overlayResetUtils: { releaseObjectUrl: () => null, resetOverlayLayers: () => {} },
+    overlayResetUtils: options.overlayResetUtils || { releaseObjectUrl: () => null, resetOverlayLayers: () => {} },
     clearMediaHeaderLayoutRaf: () => {},
     resetMediaFrameState: () => {},
     scheduleMediaHeaderLayout: () => {},
@@ -70,4 +71,29 @@ test('every other end of playback is reported without a reason', () => {
   startPlaybackSession('job-2');
   clearOverlay({ reason: playbackUtils.stopReportReason({ reason: 'manual' }) });
   assert.deepEqual(reports, [{ jobId: 'job-1' }, { jobId: 'job-2' }]);
+});
+
+test('a stop pauses and releases the media element before clearing the view', () => {
+  const calls = [];
+  const element = {
+    pause: () => calls.push('pause'),
+    removeAttribute: (name) => calls.push(`remove:${name}`),
+    load: () => calls.push('load'),
+  };
+  const resetUtils = createOverlayLegacyOverlayResetUtils();
+  const { startPlaybackSession, clearOverlay, state } = handlers({
+    overlayResetUtils: {
+      releaseMediaElement: resetUtils.releaseMediaElement,
+      releaseMediaElements: resetUtils.releaseMediaElements,
+      releaseObjectUrl: () => null,
+      resetOverlayLayers: () => {},
+    },
+  });
+  state.activePlayableElement = element;
+  startPlaybackSession('job-1');
+
+  clearOverlay();
+
+  assert.deepEqual(calls, ['pause', 'remove:src', 'load']);
+  assert.equal(state.activePlayableElement, null);
 });

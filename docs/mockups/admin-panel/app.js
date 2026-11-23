@@ -783,7 +783,7 @@
     const presence = device.connected
       ? '<span class="badge is-ok"><span class="dot is-ok"></span>En ligne</span>'
       : device.paused
-        ? '<span class="badge">En pause</span>'
+        ? '<span class="badge">Coupée ici</span>'
         : `<span class="soft">${ago(device.lastSeen)}</span>`;
     return `<tr class="${device.connected ? '' : 'is-off'}">
       <td><span class="primary">${esc(device.label)}</span><span class="under mono">${device.id.slice(0, 13)}…</span></td>
@@ -1191,7 +1191,7 @@
         <div class="form is-compact">
           <label for="dev-volume">Volume de la guilde</label><div class="row"><input class="range" id="dev-volume" type="range" min="0" max="100" step="5" value="${device.volume}"><output class="num" for="dev-volume" id="dev-volume-out">${device.volume} %</output></div>
           <span class="lbl">Son des médias</span><div><label class="switch"><input type="checkbox" id="dev-media-mute"${device.mediaMuted ? ' checked' : ''}>Couper le son</label><p class="hint">Les médias restent affichés, sans leur son.</p></div>
-          <span class="lbl">Pause</span><div><label class="switch"><input type="checkbox" id="dev-pause"${device.paused ? ' checked' : ''}>Mettre la guilde en pause</label><p class="hint">Plus aucun média de cette guilde ne s’affiche sur cet appareil.</p></div>
+          <span class="lbl">Coupe locale</span><div><label class="switch"><input type="checkbox" id="dev-pause"${device.paused ? ' checked' : ''}>Couper cette guilde sur cet appareil</label><p class="hint">Plus aucun média de cette guilde ne s’affiche sur cet appareil.</p></div>
         </div>
         <p class="hint">La zone d’affichage se place depuis l’appareil lui-même (« Placer sur l’écran »).</p></div>
       <div class="dlg-section"><h3>Droits effectifs de cet appareil</h3><div id="dev-perms">${permissionList(member.role, device.sessionMode, guild.settings.guestsCanViewBoard)}</div>

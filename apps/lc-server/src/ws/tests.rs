@@ -1044,6 +1044,109 @@ async fn stop_request_stops_the_job_and_broadcasts_stop() {
 }
 
 #[tokio::test]
+async fn pause_request_pauses_the_guild_and_a_late_join_sees_the_pause() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    seed_overlay_client(&server.db, &guild, TOKEN_B, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 30).await;
+    let job_id = seed_job(
+        &server.db,
+        &guild,
+        asset_id,
+        30,
+        JobStatus::Playing,
+        Some(UtcDateTime::now()),
+    )
+    .await;
+    let mut socket = connect(server.addr).await;
+    handshake(&mut socket, TOKEN).await;
+
+    send_value(
+        &mut socket,
+        &envelope(
+            "pause.request",
+            "cli-pause-request-0001",
+            json!({ "paused": true }),
+        ),
+    )
+    .await;
+    let ack = recv_until_type(&mut socket, "ack").await;
+    assert_eq!(ack["payload"]["ref"], "cli-pause-request-0001");
+    assert_eq!(ack["payload"]["ok"], true);
+    let pause = recv_until_type(&mut socket, "pause").await;
+    assert_eq!(pause["payload"]["paused"], true);
+    assert_eq!(pause["payload"]["jobId"], job_id.to_canonical());
+    let remaining = pause["payload"]["remainingMs"]
+        .as_u64()
+        .expect("temps restant de la pause");
+    assert!(remaining > 0 && remaining <= 30_000);
+
+    // Le job reste PLAYING : la pause n'est ni un arrêt ni une fin.
+    let stored = server
+        .db
+        .playback_jobs()
+        .get(job_id)
+        .await
+        .expect("lecture du job")
+        .expect("job présent");
+    assert_eq!(stored.status, JobStatus::Playing);
+
+    // Un appareil qui rejoint pendant la pause ne doit pas repartir en lecture.
+    let mut late = connect(server.addr).await;
+    let welcome = handshake(&mut late, TOKEN_B).await;
+    assert_eq!(welcome["payload"]["paused"], true);
+    assert_eq!(
+        welcome["payload"]["currentJob"]["jobId"],
+        job_id.to_canonical()
+    );
+    assert_eq!(
+        welcome["payload"]["currentJob"]["remainingMs"],
+        Value::from(remaining)
+    );
+
+    // Le throttle pause.request est d'une seconde : la reprise doit attendre.
+    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    send_value(
+        &mut socket,
+        &envelope(
+            "pause.request",
+            "cli-pause-request-0002",
+            json!({ "paused": false }),
+        ),
+    )
+    .await;
+    let ack = recv_until_type(&mut socket, "ack").await;
+    assert_eq!(ack["payload"]["ref"], "cli-pause-request-0002");
+    assert_eq!(ack["payload"]["ok"], true);
+    let resume = recv_until_type(&mut socket, "pause").await;
+    assert_eq!(resume["payload"]["paused"], false);
+    assert!(resume["payload"].get("remainingMs").is_none());
+}
+
+#[tokio::test]
+async fn pause_request_without_a_playing_job_is_rejected() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let mut socket = connect(server.addr).await;
+    handshake(&mut socket, TOKEN).await;
+
+    send_value(
+        &mut socket,
+        &envelope(
+            "pause.request",
+            "cli-pause-empty-0001",
+            json!({ "paused": true }),
+        ),
+    )
+    .await;
+    let ack = recv_until_type(&mut socket, "ack").await;
+    assert_eq!(ack["payload"]["ok"], false);
+    assert_eq!(ack["payload"]["error"]["code"], "nothing_playing");
+}
+
+#[tokio::test]
 async fn stop_for_everyone_is_journalled_as_an_overlay_action() {
     let server = start_server().await;
     let guild = seed_guild(&server.db).await;

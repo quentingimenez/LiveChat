@@ -413,7 +413,16 @@ depuis le LAN**, et le reverse proxy est le seul point d'entrée public.
   `127.0.0.1`, laisser un reverse proxy sur l'hôte (Caddy, nginx, Traefik)
   écouter sur l'IP publique et relayer vers `http://127.0.0.1:3000`. Le serveur
   reste en HTTP (limite assumée, §8) et `API_URL` doit être l'URL **publique
-  https**. Exemple Caddy : `livechat.example.com { reverse_proxy 127.0.0.1:3000 }`
+  https**. Exemple Caddy (le proxy doit écraser `X-Real-IP` avec l'adresse du
+  pair, jamais recopier l'en-tête client) :
+
+  ```caddy
+  livechat.example.com {
+    reverse_proxy 127.0.0.1:3000 {
+      header_up X-Real-IP {remote_host}
+    }
+  }
+  ```
   (certificat automatique).
 - **Accès au panneau admin via le proxy** : réserver `/admin*` au réseau
   d'administration (règle réseau, basic auth ou mTLS du proxy), puis passer
@@ -433,9 +442,12 @@ depuis le LAN**, et le reverse proxy est le seul point d'entrée public.
   Le 13 novembre 2026, l'ancien budget unique de 100 a été épuisé par un usage
   normal du board, et l'overlay ne pouvait plus rouvrir sa WebSocket.
   Plusieurs overlays derrière la même IP (NAT) partagent ces budgets ;
-  derrière un reverse proxy, activer `TRUST_PROXY_HEADERS=true` pour compter
-  par client réel. Le compteur est en mémoire : un redémarrage du serveur le
-  remet à zéro.
+  derrière un reverse proxy, déclarer son adresse exacte dans `TRUSTED_PROXIES`
+  puis activer `TRUST_PROXY_HEADERS=true` pour compter par client réel ; le
+  proxy doit **écraser** `X-Real-IP` (ou supprimer l'en-tête et laisser le
+  serveur utiliser le dernier saut `X-Forwarded-For`), jamais le recopier.
+  Sans proxy déclaré, les en-têtes sont ignorés. Le compteur est en mémoire : un
+  redémarrage du serveur le remet à zéro.
 - **Accès admin depuis l'hôte, sans proxy** : dans un conteneur bridge, le
   serveur voit l'IP de la passerelle Docker et non `127.0.0.1` ; avec
   `ADMIN_UI_LOCAL_ONLY=true`, l'API admin répond `403 admin_local_only`. Deux

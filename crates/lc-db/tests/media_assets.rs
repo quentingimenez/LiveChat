@@ -5,7 +5,7 @@
 mod common;
 
 use lc_db::DbError;
-use lc_domain::{JobStatus, MediaAssetId, MediaStatus};
+use lc_domain::{JobStatus, MediaAssetId, MediaKind, MediaStatus};
 use time::Duration;
 
 #[tokio::test]
@@ -103,27 +103,44 @@ async fn touche_et_listes_par_statut() {
 }
 
 #[tokio::test]
-async fn purge_expired_protege_board_et_jobs_actifs() {
+async fn purge_expired_protege_board_pochette_et_jobs_actifs() {
     let (db, _dir) = common::temp_db().await;
     let now = common::now();
     let guild = common::guild("123456789012345678");
 
-    // Quatre assets expirés : épinglé au board, référencé par un job PENDING,
-    // orphelin, et référencé par un job terminé (DONE).
+    // Six assets expirés : épinglé au board, pochette de cet item, artwork du
+    // même item, référencé par un job PENDING, orphelin, et référencé par un
+    // job terminé (DONE).
     let mut pinned = common::sample_asset("pin", now);
+    pinned.kind = MediaKind::Audio;
+    pinned.mime = "audio/mpeg".to_owned();
     pinned.expires_at = common::date(common::NOW_MS - 1_000);
+    let mut cover = common::sample_asset("pochette", now);
+    cover.kind = MediaKind::Image;
+    cover.mime = "image/jpeg".to_owned();
+    cover.expires_at = common::date(common::NOW_MS - 1_000);
+    let mut artwork = common::sample_asset("artwork", now);
+    artwork.kind = MediaKind::Image;
+    artwork.mime = "image/png".to_owned();
+    artwork.expires_at = common::date(common::NOW_MS - 1_000);
     let mut active = common::sample_asset("actif", now);
     active.expires_at = common::date(common::NOW_MS - 1_000);
     let mut orphan = common::sample_asset("orphelin", now);
     orphan.expires_at = common::date(common::NOW_MS - 1_000);
     let mut done = common::sample_asset("termine", now);
     done.expires_at = common::date(common::NOW_MS - 1_000);
-    for asset in [&pinned, &active, &orphan, &done] {
+    for asset in [&pinned, &cover, &artwork, &active, &orphan, &done] {
         db.media_assets().insert(asset).await.unwrap();
     }
 
-    let item = common::sample_board_item(&guild, pinned.id, now);
+    let mut item = common::sample_board_item(&guild, pinned.id, now);
+    item.artwork_asset_id = Some(artwork.id);
+    item.artwork_on_overlay = true;
     db.media_board().create(&item).await.unwrap();
+    db.media_assets()
+        .set_cover(pinned.id, Some(cover.id))
+        .await
+        .unwrap();
 
     let mut pending_job = common::sample_job(&guild, now);
     pending_job.media_asset_id = Some(active.id);
@@ -136,13 +153,13 @@ async fn purge_expired_protege_board_et_jobs_actifs() {
     db.playback_jobs().create(&done_job).await.unwrap();
 
     let listed = db.media_assets().list_expired(now).await.unwrap();
-    assert_eq!(listed.len(), 4, "les quatre assets sont expirés");
+    assert_eq!(listed.len(), 6, "les six assets sont expirés");
 
     let purged = db.media_assets().purge_expired(now).await.unwrap();
     assert_eq!(
         purged.len(),
         2,
-        "seuls les assets sans référence active ou terminée sont purgés"
+        "seuls les assets sans référence au board, en pochette ou dans un job actif sont purgés"
     );
     let purged_ids: Vec<_> = purged.iter().map(|asset| asset.id).collect();
     assert!(purged_ids.contains(&orphan.id), "asset orphelin purgé");
@@ -154,8 +171,23 @@ async fn purge_expired_protege_board_et_jobs_actifs() {
 
     // Les références protégées sont intactes.
     assert!(db.media_assets().get(pinned.id).await.unwrap().is_some());
+    assert!(db.media_assets().get(cover.id).await.unwrap().is_some());
+    assert_eq!(
+        db.media_assets().cover_of(pinned.id).await.unwrap(),
+        Some(cover.id),
+        "la pochette de l'item de board reste référencée"
+    );
+    assert!(
+        db.media_assets().get(artwork.id).await.unwrap().is_some(),
+        "l'artwork de l'item de board reste référencé"
+    );
+    let stored_board = db.media_board().get(item.id).await.unwrap().unwrap();
+    assert_eq!(
+        stored_board.artwork_asset_id,
+        Some(artwork.id),
+        "la référence artwork de l'item de board est conservée"
+    );
     assert!(db.media_assets().get(active.id).await.unwrap().is_some());
-    assert!(db.media_board().get(item.id).await.unwrap().is_some());
     let stored_pending = db
         .playback_jobs()
         .get(pending_job.id)
@@ -176,7 +208,115 @@ async fn purge_expired_protege_board_et_jobs_actifs() {
         "aucun autre asset purgeable : {second:?}"
     );
     assert!(db.media_assets().get(pinned.id).await.unwrap().is_some());
+    assert!(db.media_assets().get(cover.id).await.unwrap().is_some());
+    assert!(db.media_assets().get(artwork.id).await.unwrap().is_some());
     assert!(db.media_assets().get(active.id).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn suppressions_conditionnelles_ne_suppriment_pas_un_asset_epingle_entre_temps() {
+    let (db, _dir) = common::temp_db().await;
+    let now = common::now();
+    let guild = common::guild("123456789012345678");
+    let stale_since = common::date(common::NOW_MS - 10_000);
+    let expired = common::date(common::NOW_MS - 1_000);
+    let repo = db.media_assets();
+
+    // Trois candidats FAILED, sélectionnés avant tout épinglage.
+    let mut board_pinned = common::sample_asset("board-pin", now);
+    board_pinned.status = MediaStatus::Failed;
+    board_pinned.last_accessed_at = stale_since;
+    let mut cover_pinned = common::sample_asset("cover-pin", now);
+    cover_pinned.status = MediaStatus::Failed;
+    cover_pinned.last_accessed_at = stale_since;
+    let mut job_pinned = common::sample_asset("job-pin", now);
+    job_pinned.status = MediaStatus::Failed;
+    job_pinned.last_accessed_at = stale_since;
+
+    // Supports non expirés des références créées après la sélection.
+    let mut cover_owner = common::sample_asset("cover-owner", now);
+    cover_owner.expires_at = now + Duration::hours(1);
+    let mut artwork_owner = common::sample_asset("artwork-owner", now);
+    artwork_owner.expires_at = now + Duration::hours(1);
+    let mut ready_artwork = common::sample_asset("ready-artwork", now);
+    ready_artwork.expires_at = expired;
+
+    for asset in [
+        &board_pinned,
+        &cover_pinned,
+        &job_pinned,
+        &cover_owner,
+        &artwork_owner,
+        &ready_artwork,
+    ] {
+        repo.insert(asset).await.unwrap();
+    }
+
+    let stale = repo
+        .list_stale_purge_candidates(MediaStatus::Failed, now + Duration::seconds(1))
+        .await
+        .unwrap();
+    assert_eq!(stale.len(), 3, "trois candidats FAILED : {stale:?}");
+    let ready = repo.list_expired_ready_purge_candidates(now).await.unwrap();
+    assert!(
+        ready
+            .iter()
+            .any(|candidate| candidate.id == ready_artwork.id.to_canonical()),
+        "l'artwork expiré est candidat avant épinglage : {ready:?}"
+    );
+
+    // Épinglage survenu entre la sélection et la suppression.
+    let board_item = common::sample_board_item(&guild, board_pinned.id, now);
+    db.media_board().create(&board_item).await.unwrap();
+
+    let cover_item = common::sample_board_item(&guild, cover_owner.id, now);
+    db.media_board().create(&cover_item).await.unwrap();
+    repo.set_cover(cover_owner.id, Some(cover_pinned.id))
+        .await
+        .unwrap();
+
+    let mut pending_job = common::sample_job(&guild, now);
+    pending_job.media_asset_id = Some(job_pinned.id);
+    db.playback_jobs().create(&pending_job).await.unwrap();
+
+    let mut artwork_item = common::sample_board_item(&guild, artwork_owner.id, now);
+    artwork_item.artwork_asset_id = Some(ready_artwork.id);
+    artwork_item.artwork_on_overlay = true;
+    db.media_board().create(&artwork_item).await.unwrap();
+
+    for (label, id) in [
+        ("média du board", board_pinned.id),
+        ("pochette d'un item", cover_pinned.id),
+        ("job actif", job_pinned.id),
+    ] {
+        assert!(
+            !repo
+                .delete_purge_candidate(
+                    &id.to_canonical(),
+                    MediaStatus::Failed,
+                    now + Duration::seconds(1),
+                )
+                .await
+                .unwrap(),
+            "un asset devenu {label} entre la sélection et le DELETE ne doit pas être supprimé"
+        );
+        assert!(
+            repo.get(id).await.unwrap().is_some(),
+            "l'asset {label} reste en base"
+        );
+    }
+
+    assert!(
+        !repo
+            .delete_expired_ready_candidate(&ready_artwork.id.to_canonical(), now)
+            .await
+            .unwrap(),
+        "un artwork épinglé entre la sélection et le DELETE ne doit pas être supprimé"
+    );
+    assert!(
+        repo.get(ready_artwork.id).await.unwrap().is_some(),
+        "l'artwork épinglé reste en base"
+    );
 }
 
 #[tokio::test]

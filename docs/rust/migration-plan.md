@@ -147,7 +147,7 @@ Commands message : `hidesend`, `hidetalk`, `talk`, `stop`.
 ## Annexe C — Variables d'environnement
 
 Noms v1 conservés (`PORT`, `API_URL`, `ADMIN_UI_TOKEN`, `ADMIN_UI_LOCAL_ONLY`, `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`, `INGEST_API_TOKEN`, `DATABASE_URL`, `LOG`, `I18N`, `HIDE_COMMANDS_DISABLED`, `DEFAULT_DURATION`, `PLAYBACK_JOB_RETENTION_HOURS`, `MEDIA_*`, `TWITTER_*`, `PAIRING_CODE_TTL_MINUTES`, `YTDLP_*`, `TIKTOK_COOKIE`, `FFMPEG_BINARY`, `FFPROBE_BINARY`, `ADDITIONAL_CORS_ORIGINS`).
-Ajouts : `RUST_LOG`, `MEDIA_MAX_CONCURRENT_INGESTIONS=2`, `MEDIA_URL_TTL_SEC=300`, `MEDIA_URL_SECRET`, `TRUST_PROXY_HEADERS=false`, `WS_HEARTBEAT_TIMEOUT_SEC=45`.
+Ajouts : `RUST_LOG`, `MEDIA_MAX_CONCURRENT_INGESTIONS=2`, `MEDIA_URL_TTL_SEC=300`, `MEDIA_URL_SECRET`, `TRUST_PROXY_HEADERS=false`, `TRUSTED_PROXIES=` (adresses exactes, vide = en-têtes proxy ignorés), `ADMIN_TRUST_FORWARDED_FOR=false`, `WS_HEARTBEAT_TIMEOUT_SEC=45`.
 
 ## Annexe D — Devenir des fichiers
 
@@ -238,7 +238,7 @@ Toutes les lanes serveur sont livrées et vertes (`fmt`, `clippy -D warnings`, `
 - `serve()` démarre le runtime Discord **avant** la construction du routeur (`state.with_discord_probe(handle.probe())`, token absent ⇒ `Disabled` non bloquant, base absente ⇒ `DatabaseUnavailable` journalisé) et l'arrête **avant** la fermeture SQLite. Le drain du serveur reste inchangé.
 - Vérifications : `cargo fmt -p lc-server -- --check` = 0, `cargo clippy -p lc-server --all-targets -D warnings` = 0, tests ci-dessus ; le hub partagé est couvert par 3 tests unitaires `wiring::`.
 
-Points de déploiement complémentaires traités : `deploy/.env.example` (conversion des 46 variables legacy + ajouts Rust `MEDIA_URL_SECRET`, `MEDIA_URL_TTL_SEC`, `MIN_OVERLAY_VERSION`, `WS_HEARTBEAT_TIMEOUT_SEC`, `MEDIA_MAX_CONCURRENT_INGESTIONS`, `TRUST_PROXY_HEADERS`), `deploy/.gitignore` (`.env`, `data/`), et versionnement de `apps/lc-overlay/web/dist/renderer/**` (80 modules JS chargés par les 3 pages, sinon un clone propre ne peut pas builder l'overlay).
+Points de déploiement complémentaires traités : `deploy/.env.example` (conversion des 46 variables legacy + ajouts Rust `MEDIA_URL_SECRET`, `MEDIA_URL_TTL_SEC`, `MIN_OVERLAY_VERSION`, `WS_HEARTBEAT_TIMEOUT_SEC`, `MEDIA_MAX_CONCURRENT_INGESTIONS`, `TRUST_PROXY_HEADERS`, `TRUSTED_PROXIES`, `ADMIN_TRUST_FORWARDED_FOR`), `deploy/.gitignore` (`.env`, `data/`), et versionnement de `apps/lc-overlay/web/dist/renderer/**` (80 modules JS chargés par les 3 pages, sinon un clone propre ne peut pas builder l'overlay).
 
 Reste pour clore la Phase 9 : rapport de release overlay (task-26), capture des goldens de parité legacy (opérateur, avant suppression), tag `legacy-ts-2.0.2`, cutover production 3.0.0.
 

@@ -151,6 +151,24 @@ leur résultat ; aucun `## Tests` vide. Changement réellement non testable (doc
 commentaire, config de CI) : l'écrire (`Non applicable : …`) au lieu de laisser
 croire qu'il est couvert.
 
+## Limites connues : corriger, pas accepter
+
+Une limite **connue et corrigeable** n'est pas une option à présenter ou à merger.
+Avant de rendre une tâche ou d'ouvrir une PR :
+
+- si le défaut est un test manquant, une couverture incomplète, une CI rouge
+  volontaire, une baseline non mesurée, une duplication de logique, un P3
+  fixable ou tout autre écart réparable, **le corriger dans la même tâche** ;
+- si la correction est indépendante ou demande un autre périmètre, **lancer un
+  agent dédié immédiatement**, sur la même branche ou un worktree dédié, sans
+  attendre un lot suivant ;
+- ne pas présenter une PR en disant « P3 accepté » quand le correctif est
+  faisable ; une limite acceptée doit être une **limitation technique ou de
+  configuration réelle** (OS, matériel, API externe, choix produit explicite),
+  documentée avec sa preuve, son impact et son suivi ;
+- une nightly rouge « par conception », un score non mesuré ou une couverture
+  non exercée sont des défauts, pas des limites acceptables.
+
 ## Tests locaux avant d'ouvrir la PR
 
 Lancer ce qui couvre le changement et le dire dans `## Tests` :

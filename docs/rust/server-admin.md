@@ -212,29 +212,39 @@ profondeur. Tests : `csrf_mutation_sans_origine_refusee`,
 Sont acceptés : `127.0.0.0/8` (`Ipv4Addr::is_loopback`), `::1`, et les adresses
 IPv4-mappées (`::ffff:127.x.x.x` via `to_ipv4_mapped`). La confiance dans
 `ConnectInfo` repose sur `axum::serve(... into_make_service_with_connect_info)`
-utilisé par `lib.rs` (`X-Forwarded-For` n'est **pas** consulté ; le legacy suivait
-`trustProxyHeaders` mais l'admin reste réservé au loopback).
+utilisé par `lib.rs`. Par défaut (`ADMIN_TRUST_FORWARDED_FOR=false`),
+`X-Real-IP` et `X-Forwarded-For` ne sont pas consultés pour l'admin : le legacy
+suivait `trustProxyHeaders`, mais l'admin reste réservé au loopback sauf
+configuration explicite ci-dessous.
 
 Conséquence **derrière un reverse proxy** (AUD-COR-14/A3-011) : le serveur voit
 l'IP du proxy (ex. la passerelle bridge Docker), pas celle de l'administrateur.
 `ADMIN_UI_LOCAL_ONLY=true` répond alors `403 admin_local_only` même depuis la
-machine administrée. Deux options, documentées ici parce que la configuration
-config n'offre pas encore de réglage dédié :
+machine administrée. Trois options :
 
 1. **recommandé** : garder le serveur lié à `127.0.0.1` (compose par défaut) et
    accéder à `/admin/` en local ; le token Bearer reste la seule barrière,
-2. si un reverse proxy est indispensable : `ADMIN_UI_LOCAL_ONLY=false` **et**
-   exposer l'admin uniquement derrière une authentification proxy/TLS, sur un
-   bind réseau restreint (`docs/rust/packaging.md` §10.4).
+2. **proxy local de confiance** : déclarer l'adresse exacte du proxy dans
+   `TRUSTED_PROXIES` (liste d'IP séparées par des virgules, pas de CIDR) et
+   activer `ADMIN_TRUST_FORWARDED_FOR=true`. Le contrôle `ADMIN_UI_LOCAL_ONLY`
+   lit alors l'IP annoncée par le proxy au lieu du socket brut ; un client dont
+   le pair direct n'est **pas** dans la liste reste jugé sur sa propre adresse,
+   même s'il forge un `X-Real-IP: 127.0.0.1` (fail-closed, aucune confiance par
+   défaut). Le proxy doit **écraser** `X-Real-IP` / `X-Forwarded-For`, pas
+   recopier l'en-tête reçu du client,
+3. si un reverse proxy est indispensable sans proxy déclaré :
+   `ADMIN_UI_LOCAL_ONLY=false` **et** exposer l'admin uniquement derrière une
+   authentification proxy/TLS, sur un bind réseau restreint
+   (`docs/rust/packaging.md` §10.4).
 
-`TRUST_PROXY_HEADERS` (défaut `false`) n'affecte que le rate-limit. Pour
-l'admin, l'option dédiée `ADMIN_TRUST_FORWARDED_FOR` (défaut `false`,
-AUD-COR-14) est **implémentée** : quand elle vaut `true`, le contrôle
-`ADMIN_UI_LOCAL_ONLY` lit l'IP annoncée par le proxy au lieu du socket brut.
-Les deux options lisent `X-Real-IP`, puis le **dernier** saut de
-`X-Forwarded-For` (`http/proxy.rs`) : le premier saut est écrit par le client,
-un `X-Forwarded-For: 127.0.0.1` forgé ne passe donc pas pour local. À n'activer
-que derrière un reverse proxy de confiance qui pose ces en-têtes.
+`TRUST_PROXY_HEADERS` (défaut `false`) n'affecte que le rate-limit et obéit à la
+même liste. Pour l'admin, l'option dédiée `ADMIN_TRUST_FORWARDED_FOR` (défaut
+`false`, AUD-COR-14) est **implémentée** : elle ne prend effet que si le pair
+direct figure dans `TRUSTED_PROXIES` ; sans liste, les en-têtes sont ignorés et
+un avertissement est journalisé au démarrage. Les deux options lisent
+`X-Real-IP`, puis le **dernier** saut de `X-Forwarded-For` (`http/proxy.rs`) :
+le premier saut est écrit par le client, un `X-Forwarded-For: 127.0.0.1` forgé
+ne passe donc pas pour local.
 
 ## 5. Assets statiques
 
@@ -749,7 +759,7 @@ lock actuel : les dépendances Tauri 2 exigent ≥ 1.90 (`tauri-utils 2.10.2`,
 | Symptôme | Cause probable | Action |
 |---|---|---|
 | 503 `admin_ui_disabled` | `ADMIN_UI_TOKEN` vide | définir la variable puis redémarrer |
-| 403 `admin_local_only` | accès depuis une IP non loopback (ou via proxy : le serveur voit l'IP du proxy) | accéder en local ; derrière un proxy, voir §4 « IP loopback » (`ADMIN_UI_LOCAL_ONLY=false` + exposition restreinte uniquement) |
+| 403 `admin_local_only` | accès depuis une IP non loopback (ou via proxy : le serveur voit l'IP du proxy) | accéder en local ; derrière un proxy, voir §4 « IP loopback » : déclarer le proxy dans `TRUSTED_PROXIES` + `ADMIN_TRUST_FORWARDED_FOR=true`, ou `ADMIN_UI_LOCAL_ONLY=false` + exposition restreinte |
 | 403 `invalid_origin` | mutation sans `Origin`/`Referer`, origine `null` ou étrangère (AUD-COR-14) | envoyer `Origin: <hôte du panneau>` ou `Referer` de même origine ; ne pas appeler l'API depuis un autre site |
 | 401 `unauthorized` | token absent/faux | vérifier l'en-tête `Authorization: Bearer` (le `?token=` n'est plus accepté, AUD-COR-05) |
 | 429 `request_error` | plus de 100 requêtes / 15 min / IP sur `/admin*` et la consommation des codes d'appairage (budget « auth », AUD-COR-10) | patienter `Retry-After`, ou augmenter la fenêtre si usage légitime |
@@ -768,7 +778,8 @@ lock actuel : les dépendances Tauri 2 exigent ≥ 1.90 (`tauri-utils 2.10.2`,
 - `security.rs` pose COOP `same-origin` sur toutes les réponses et HSTS
   uniquement quand le navigateur voit du HTTPS (`X-Forwarded-Proto: https`).
 - `TRUST_PROXY_HEADERS` ne concerne que le rate-limit ; l'admin lit le socket
-  brut, sauf `ADMIN_TRUST_FORWARDED_FOR=true` (proxy de confiance, voir §4).
+  brut, sauf `ADMIN_TRUST_FORWARDED_FOR=true` **et** pair direct déclaré dans
+  `TRUSTED_PROXIES` (proxy de confiance, voir §4).
 - Le token d'ingestion n'est affiché qu'une seule fois (réponse de création),
   seul son hash est en base.
 - La purge est **destructive par défaut** (point E14) et exige

@@ -33,6 +33,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use thiserror::Error;
@@ -252,8 +253,9 @@ pub struct Config {
     /// `ADMIN_UI_LOCAL_ONLY` (défaut `true`).
     pub admin_ui_local_only: bool,
     /// `ADMIN_TRUST_FORWARDED_FOR` (défaut `false`) : lit l'IP annoncée par le
-    /// proxy de confiance (`X-Real-IP`, puis dernier `X-Forwarded-For`) pour le
-    /// contrôle local-only admin.
+    /// proxy (`X-Real-IP`, puis dernier `X-Forwarded-For`) pour le contrôle
+    /// local-only admin, uniquement si le pair direct figure dans
+    /// `TRUSTED_PROXIES`.
     pub admin_trust_forwarded_for: bool,
     /// `ADMIN_DISCORD_USER_IDS` : identifiants Discord autorisés à ouvrir une
     /// session admin (liste séparée par des virgules, défaut vide).
@@ -348,8 +350,13 @@ pub struct Config {
     /// `MIN_OVERLAY_VERSION` (défaut `3.0.0`).
     pub min_overlay_version: String,
     /// `TRUST_PROXY_HEADERS` (défaut `false`) : le rate limit lit `X-Real-IP`,
-    /// puis le dernier `X-Forwarded-For` (voir `http::proxy`).
+    /// puis le dernier `X-Forwarded-For` (voir `http::proxy`), uniquement si le
+    /// pair direct figure dans `TRUSTED_PROXIES`.
     pub trust_proxy_headers: bool,
+    /// `TRUSTED_PROXIES` : adresses des reverse proxies de confiance, séparées
+    /// par des virgules (défaut vide = aucun en-tête proxy n'est cru). Gate
+    /// `TRUST_PROXY_HEADERS` et `ADMIN_TRUST_FORWARDED_FOR`.
+    pub trusted_proxies: Vec<IpAddr>,
     /// `WS_HEARTBEAT_TIMEOUT_SEC` (défaut `45`, utilisé en Phase 4).
     pub ws_heartbeat_timeout_sec: u64,
 }
@@ -559,6 +566,7 @@ impl Config {
         }
         let trust_proxy_headers =
             env.parsed("TRUST_PROXY_HEADERS", false, "true ou false", parse_bool)?;
+        let trusted_proxies = env.ip_list("TRUSTED_PROXIES")?;
         let ws_heartbeat_timeout_sec =
             env.parsed("WS_HEARTBEAT_TIMEOUT_SEC", 45, "entier positif", parse_u64)?;
 
@@ -618,6 +626,7 @@ impl Config {
             additional_cors_origins,
             min_overlay_version,
             trust_proxy_headers,
+            trusted_proxies,
             ws_heartbeat_timeout_sec,
         })
     }
@@ -762,6 +771,25 @@ impl EnvReader {
             .map(str::trim)
             .filter(|origin| !origin.is_empty())
             .map(|origin| parse_origin(name, origin))
+            .collect()
+    }
+
+    /// Comma-separated IP addresses (IPv4 or IPv6), trimmed, empty entries
+    /// dropped. No CIDR: a reverse proxy is declared by its exact address.
+    fn ip_list(&self, name: &'static str) -> Result<Vec<IpAddr>, ConfigError> {
+        let Some(raw) = self.opt_raw(name) else {
+            return Ok(Vec::new());
+        };
+        raw.split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| {
+                entry.parse::<IpAddr>().map_err(|_| ConfigError::Invalid {
+                    name,
+                    value: entry.to_owned(),
+                    expected: "adresses IP séparées par des virgules",
+                })
+            })
             .collect()
     }
 }
@@ -981,6 +1009,7 @@ mod tests {
         assert!(config.additional_cors_origins.is_empty());
         assert_eq!(config.min_overlay_version, "3.0.0");
         assert!(!config.trust_proxy_headers);
+        assert!(config.trusted_proxies.is_empty());
         assert_eq!(config.ws_heartbeat_timeout_sec, 45);
     }
 
@@ -1040,6 +1069,10 @@ mod tests {
                 "https://a.example, https://b.example:8443 ,",
             ),
             ("MIN_OVERLAY_VERSION", "3.1.0"),
+            (
+                "TRUSTED_PROXIES",
+                "127.0.0.1, ::1 , 192.0.2.10 ,, 2001:db8::1",
+            ),
             ("TRUST_PROXY_HEADERS", "true"),
             ("WS_HEARTBEAT_TIMEOUT_SEC", "30"),
         ]))
@@ -1143,6 +1176,11 @@ mod tests {
         );
         assert_eq!(config.min_overlay_version, "3.1.0");
         assert!(config.trust_proxy_headers);
+        let expected_proxies: Vec<IpAddr> = ["127.0.0.1", "::1", "192.0.2.10", "2001:db8::1"]
+            .iter()
+            .map(|ip| ip.parse().expect("adresse de test valide"))
+            .collect();
+        assert_eq!(config.trusted_proxies, expected_proxies);
         assert_eq!(config.ws_heartbeat_timeout_sec, 30);
     }
 
@@ -1201,6 +1239,29 @@ mod tests {
             assert!(
                 matches!(error, ConfigError::Invalid { name: reported, .. } if reported == name),
                 "variable {name} : erreur inattendue {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_trusted_proxies_are_reported() {
+        // Exact addresses only: a CIDR range is refused rather than silently
+        // trusted (no CIDR dependency in the workspace).
+        for value in ["127.0.0.1, nope", "10.0.0.0/8"] {
+            let error = Config::from_pairs(pairs(&[
+                ("API_URL", "http://localhost:3000"),
+                ("TRUSTED_PROXIES", value),
+            ]))
+            .expect_err("adresse de proxy invalide");
+            assert!(
+                matches!(
+                    error,
+                    ConfigError::Invalid {
+                        name: "TRUSTED_PROXIES",
+                        ..
+                    }
+                ),
+                "valeur {value} : erreur inattendue {error:?}"
             );
         }
     }

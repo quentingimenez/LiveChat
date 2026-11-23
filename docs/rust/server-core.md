@@ -134,6 +134,7 @@ global) : c'est elle qu'utilisent les tests.
 | `API_URL` | **requis** | URL absolue http(s) ; son origine sert au CORS |
 | `ADMIN_UI_TOKEN` | `""` | vide = login secret désactivé ; sinon ≥ 32 caractères, ≥ 8 distincts, sans motif répété (refus au démarrage — changement cassant ; `openssl rand -base64 32`) ; secret masqué dans les logs |
 | `ADMIN_UI_LOCAL_ONLY` | `true` | booléen strict |
+| `ADMIN_TRUST_FORWARDED_FOR` | `false` | lit `X-Real-IP` puis le dernier `X-Forwarded-For` pour le contrôle local-only admin, **seulement** si le pair direct figure dans `TRUSTED_PROXIES` |
 | `DISCORD_TOKEN` | — | optionnel ; avec `DISCORD_CLIENT_ID` ou aucun des deux |
 | `DISCORD_CLIENT_ID` | — | optionnel ; les deux ou aucun (sinon erreur) |
 | `INGEST_API_TOKEN` | `""` | secret masqué |
@@ -173,7 +174,8 @@ global) : c'est elle qu'utilisent les tests.
 | `FFPROBE_BINARY` | `ffprobe` | |
 | `ADDITIONAL_CORS_ORIGINS` | `""` | origines séparées par des virgules |
 | `MIN_OVERLAY_VERSION` | `3.0.0` | doit ressembler à `x.y.z` (contrat 426) |
-| `TRUST_PROXY_HEADERS` | `false` | si `true`, `X-Real-IP` puis le dernier `X-Forwarded-For` font foi pour l'IP |
+| `TRUSTED_PROXIES` | `""` | adresses IP exactes des reverse proxies de confiance, séparées par des virgules (vide = aucun en-tête proxy n'est cru) |
+| `TRUST_PROXY_HEADERS` | `false` | si `true` **et** que le pair direct est dans `TRUSTED_PROXIES`, `X-Real-IP` puis le dernier `X-Forwarded-For` font foi pour l'IP |
 | `WS_HEARTBEAT_TIMEOUT_SEC` | `45` | réservé Phase 4 |
 
 ### Règles de validation
@@ -182,6 +184,8 @@ global) : c'est elle qu'utilisent les tests.
   est une erreur explicite ;
 - `API_URL`, `TWITTER_*` : URL http(s) absolues (validation `url`) ;
 - `ADDITIONAL_CORS_ORIGINS` : origines pures (schéma + hôte + port, sans chemin) ;
+- `TRUSTED_PROXIES` : adresses IP exactes (IPv4 ou IPv6, pas de CIDR), séparées
+  par des virgules ; une entrée invalide fait échouer le démarrage ;
 - `MIN_OVERLAY_VERSION` : `majeure.mineure.correctif` (comparaison legacy
   inchangée, voir `lc-protocol`) ;
 - Discord : token et client id ensemble ou aucun (erreur `PartialDiscord`
@@ -300,8 +304,10 @@ contrairement au legacy qui combinait les deux). Préflight mis en cache 600 s.
   Le 13 novembre 2026, l'ancien budget unique de 100 a été épuisé par un usage
   normal du board, et l'overlay ne pouvait plus rouvrir sa WebSocket ;
 - IP lue depuis la connexion (`ConnectInfo`), ou, **seulement si**
-  `TRUST_PROXY_HEADERS=true`, `X-Real-IP` puis le dernier `X-Forwarded-For`
-  (le premier est écrit par le client, `http/proxy.rs`) ; les IPv4 encapsulées en IPv6
+  `TRUST_PROXY_HEADERS=true` **et** que le pair direct figure dans
+  `TRUSTED_PROXIES`, `X-Real-IP` puis le dernier `X-Forwarded-For`
+  (le premier est écrit par le client, `http/proxy.rs`) ; sinon les en-têtes
+  sont ignorés et le pair direct sert de clé. Les IPv4 encapsulées en IPv6
   (`::ffff:a.b.c.d`) sont normalisées ;
 - seule exemption : les adresses loopback en `development` (l'exemption
   `/admin` du legacy est supprimée, AUD-COR-10) ;
@@ -448,10 +454,12 @@ L'état partagé est `AppState` (cloneable) : `config`, `db`, `clock`,
    médias (ServeFile, 206/`Range`) ne doivent pas être compressées, sinon le
    client reçoit un flux invalide. À exclure explicitement lors de l'ajout des
    routes médias (Phase 3b/7).
-3. **Rate limit et IP réelle** : `TRUST_PROXY_HEADERS=true` fait confiance à
+3. **Rate limit et IP réelle** : `TRUST_PROXY_HEADERS=true` ne fait confiance à
    `X-Real-IP`, puis au dernier saut de `X-Forwarded-For` (celui ajouté par le
-   proxy) ; ne l'activer que derrière un proxy de confiance qui pose ces
-   en-têtes, sinon l'IP est falsifiable.
+   proxy), que si le pair direct est déclaré dans `TRUSTED_PROXIES` ; sans cette
+   liste, les en-têtes sont ignorés (fail-closed). Ne l'activer que derrière un
+   proxy de confiance qui écrase ces en-têtes, sinon l'IP reste falsifiable par
+   le proxy lui-même.
 4. **`/health` `discord=down`** tant que la Phase 6 n'injecte pas l'état réel :
    un overlay qui attend `ok` verra `down` si Discord est configuré. À
    connecter au bot en Phase 6.

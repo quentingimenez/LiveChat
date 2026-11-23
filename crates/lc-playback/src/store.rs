@@ -63,6 +63,27 @@ impl PlaybackStore {
         Ok(jobs)
     }
 
+    /// Décale `started_at` d'un job `PLAYING` de `delta_ms` millisecondes.
+    ///
+    /// Utilisé à la reprise d'une pause partagée : le temps passé en pause est
+    /// exclu du temps de lecture, donc le début de lecture est repoussé d'autant
+    /// pour que `current_job` et le watchdog gardent le même temps restant.
+    pub(crate) async fn shift_started_at(
+        &self,
+        job_id: PlaybackJobId,
+        delta_ms: i64,
+    ) -> DbResult<bool> {
+        let result = sqlx::query(
+            "UPDATE playback_jobs SET started_at = started_at + ? \
+             WHERE id = ? AND status = 'PLAYING' AND started_at IS NOT NULL",
+        )
+        .bind(delta_ms)
+        .bind(job_id.to_canonical())
+        .execute(self.db.pool())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Claim du prochain job d'une guilde, dans l'ordre de la file
     /// (`queue_position`, puis `submission_date`, `id`).
     ///

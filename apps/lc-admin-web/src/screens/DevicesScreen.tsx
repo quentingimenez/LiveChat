@@ -83,7 +83,7 @@ function deviceState(client: OverlayClient, guildSettings: OverlayGuildSettings 
     );
   }
   if (guildSettings?.paused) {
-    return <Badge>En pause</Badge>;
+    return <Badge>Coupe locale</Badge>;
   }
   return <span class="soft">{ago(client.lastSeenAt)}</span>;
 }
@@ -631,11 +631,11 @@ export function DeviceDialog({
                 label="Couper le son"
                 hint="Les médias restent affichés, sans leur son."
               />
-              <span class="lbl">Pause</span>
+              <span class="lbl">Coupe locale</span>
               <Switch
                 checked={paused}
                 onChange={setPaused}
-                label="Mettre la guilde en pause"
+                label="Couper cette guilde sur cet appareil"
                 hint="Plus aucun média de cette guilde ne s’affiche sur cet appareil."
               />
             </div>

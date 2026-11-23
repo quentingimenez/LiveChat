@@ -1099,6 +1099,7 @@ pub(crate) fn message_prefix(message: &ServerMessage) -> &'static str {
         ServerMessage::Peers(_) => "peers",
         ServerMessage::Play(_) => "play",
         ServerMessage::Stop(_) => "stop",
+        ServerMessage::Pause(_) => "pause",
         ServerMessage::Ack(_) => "ack",
         ServerMessage::Error(_) => "error",
         ServerMessage::MediaIngestion(_) => "ingestion",

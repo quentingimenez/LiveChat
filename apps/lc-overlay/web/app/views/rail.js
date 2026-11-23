@@ -83,8 +83,8 @@ function openGuildMenu(event, guild) {
           onSelect: () => selectGuild(guild.membership.guildId),
         },
     guild.membership.muted
-      ? { label: 'Reprendre', icon: 'sound', onSelect: () => toggleMute(guild) }
-      : { label: 'Mettre en pause', icon: 'mute', onSelect: () => toggleMute(guild) },
+      ? { label: 'Réactiver ici', icon: 'sound', onSelect: () => toggleMute(guild) }
+      : { label: 'Couper ici', icon: 'mute', onSelect: () => toggleMute(guild) },
     active ? { label: 'Mon profil…', onSelect: () => openGuildDialog(guild) } : null,
     'separator',
     { label: 'Quitter la guilde…', icon: 'remove', danger: true, onSelect: () => confirmLeaveGuild(guild) },
@@ -120,7 +120,7 @@ export function renderRail() {
           'button',
           {
             class: `guild${active ? ' is-active' : ''}${pending ? ' is-pending' : ''}${guild.membership.muted ? ' is-muted' : ''}${hasIcon ? ' has-icon' : ''}`,
-            title: pending ? `${label} — changement…` : `${label} — ${guild.membership.muted ? 'en pause' : guild.statusLabel}`,
+            title: pending ? `${label} — changement…` : `${label} — ${guild.membership.muted ? 'coupée ici' : guild.statusLabel}`,
             'aria-label': label,
             'aria-current': active ? 'true' : null,
             'aria-busy': pending ? 'true' : null,

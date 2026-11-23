@@ -68,13 +68,13 @@ test('lastSeenLabel words how long ago a device was seen', () => {
   assert.equal(lastSeenLabel(minutes(2 * 1440), now), 'Vu il y a 2 j');
 });
 
-test('presenceLabel prefers the live state, then pause, then last seen', () => {
+test('presenceLabel prefers the live state, then the local cut, then last seen', () => {
   const now = Date.parse('2026-11-10T12:00:00.000Z');
   const lastSeenAt = new Date(now - 3 * 3600_000).toISOString();
   assert.equal(presenceLabel({ connected: true, lastSeenAt }, now), 'En ligne');
   assert.equal(
     presenceLabel({ connected: false, lastSeenAt, guildSettings: { paused: true } }, now),
-    'En pause',
+    'Appareil coupé',
   );
   assert.equal(presenceLabel({ connected: false, lastSeenAt }, now), 'Vu il y a 3 h');
   assert.equal(presenceLabel(null, now), '—');

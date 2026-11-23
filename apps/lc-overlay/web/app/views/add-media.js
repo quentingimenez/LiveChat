@@ -333,7 +333,7 @@ export function openAddDialog(options) {
           if (playOnce) {
             const guild = activeGuild();
             if (guild && guild.membership.muted) {
-              notify('Guilde en pause : reprends-la pour jouer.', true);
+              notify('Guilde coupée ici : réactive-la pour jouer.', true);
               return;
             }
           }

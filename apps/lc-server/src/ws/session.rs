@@ -31,7 +31,7 @@ use lc_domain::{
 use lc_playback::{PlaybackEndedEvent, PlaybackStateEvent, PlaybackStateOutcome};
 use lc_protocol::{
     close_code, close_reason, is_version_below, outdated_protocol_reason, AckError, AckOutcome,
-    AckPayload, ClientEnvelope, ClientMessage, HelloPayload, PlaybackEndedPayload,
+    AckPayload, ClientEnvelope, ClientMessage, HelloPayload, PausePayload, PlaybackEndedPayload,
     PlaybackEndedReason, PlaybackStatePayload, ServerEnvelope, ServerErrorPayload, ServerMessage,
     SessionMode, SettingsPayload, StopRequestSource, WelcomeConfig, WelcomePayload,
     HELLO_TIMEOUT_MS, MAX_CLIENT_MESSAGES_PER_SECOND, MAX_FRAME_BYTES, MAX_MEDIA_TEXT_CHARS,
@@ -113,6 +113,7 @@ struct SessionTimers {
     last_playback_state: Option<Instant>,
     last_playback_ended: Option<Instant>,
     last_stop_request: Option<Instant>,
+    last_pause_request: Option<Instant>,
     last_peers_request: Option<Instant>,
     /// Dernier `media.trigger` accepté, pour l'idempotence des répétitions.
     last_media_trigger: Option<MediaTriggerGuard>,
@@ -601,8 +602,14 @@ async fn send_welcome(
             None
         }
     };
+    let paused = engine.paused_state(&context.guild_id).await;
     let current_job = match engine.current_job(&context.guild_id).await {
-        Ok(Some(current_job)) => {
+        Ok(Some(mut current_job)) => {
+            // Pendant une pause, le temps restant est figé : un overlay qui
+            // rejoint voit le média à la bonne position, mais arrêté.
+            if let Some(pause) = &paused {
+                current_job.remaining_ms = pause.remaining_ms;
+            }
             let now_sec = u64::try_from(UtcDateTime::now().unix_timestamp()).unwrap_or(0);
             hub.signed_current_job(&current_job, &context.client_id_str, now_sec)
         }
@@ -626,6 +633,7 @@ async fn send_welcome(
             default_media_time,
             max_media_time,
         },
+        paused: paused.is_some(),
         current_job,
     };
     if !send_server_message(sink, hub, ServerMessage::Welcome(welcome)).await {
@@ -862,6 +870,112 @@ async fn handle_client_message(
                         "échec de l'arrêt demandé",
                         job_id.map(|job_id| job_id.to_canonical()),
                     );
+                }
+            }
+        }
+        ClientMessage::PauseRequest(payload) => {
+            if session_mode == SessionMode::InviteReadOnly {
+                send_ack(
+                    hub,
+                    connection_id,
+                    request_id.as_str(),
+                    false,
+                    Some(ack_error("read_only", "pause refusée en lecture seule")),
+                );
+                return Ok(());
+            }
+            if !throttle(
+                &mut timers.last_pause_request,
+                Duration::from_millis(PLAYBACK_STATE_MIN_INTERVAL_MS),
+            ) {
+                send_ack(
+                    hub,
+                    connection_id,
+                    request_id.as_str(),
+                    false,
+                    Some(ack_error("rate_limited", "trop de pause.request")),
+                );
+                return Ok(());
+            }
+            if payload.paused {
+                match engine
+                    .pause(
+                        &context.guild_id,
+                        payload
+                            .remaining_ms
+                            .map(|remaining| remaining.min(MAX_PLAYBACK_REMAINING_MS)),
+                    )
+                    .await
+                {
+                    Ok(Some(pause)) => {
+                        let pause_payload = PausePayload {
+                            paused: true,
+                            job_id: pause.job_id.map(|job_id| job_id.to_canonical()),
+                            remaining_ms: Some(pause.remaining_ms),
+                        };
+                        send_ack(hub, connection_id, request_id.as_str(), true, None);
+                        hub.broadcast_message(
+                            &context.guild_id,
+                            ServerMessage::Pause(pause_payload),
+                        );
+                        state.events.overview_changed();
+                        debug!(
+                            guild = %context.guild_id,
+                            job = ?pause.job_id,
+                            remaining_ms = pause.remaining_ms,
+                            "pause partagée posée"
+                        );
+                    }
+                    Ok(None) => {
+                        send_ack(
+                            hub,
+                            connection_id,
+                            request_id.as_str(),
+                            false,
+                            Some(ack_error(
+                                "nothing_playing",
+                                "aucun média à mettre en pause",
+                            )),
+                        );
+                    }
+                    Err(error) => {
+                        warn!(error = %error, "échec de pause.request");
+                        send_ack(
+                            hub,
+                            connection_id,
+                            request_id.as_str(),
+                            false,
+                            Some(ack_error("internal_error", "échec de la pause demandée")),
+                        );
+                    }
+                }
+            } else {
+                match engine.resume(&context.guild_id).await {
+                    Ok(paused) => {
+                        let pause_payload = PausePayload {
+                            paused: false,
+                            job_id: paused
+                                .and_then(|pause| pause.job_id.map(|id| id.to_canonical())),
+                            remaining_ms: None,
+                        };
+                        send_ack(hub, connection_id, request_id.as_str(), true, None);
+                        hub.broadcast_message(
+                            &context.guild_id,
+                            ServerMessage::Pause(pause_payload),
+                        );
+                        state.events.overview_changed();
+                        debug!(guild = %context.guild_id, "pause partagée levée");
+                    }
+                    Err(error) => {
+                        warn!(error = %error, "échec de la reprise après pause");
+                        send_ack(
+                            hub,
+                            connection_id,
+                            request_id.as_str(),
+                            false,
+                            Some(ack_error("internal_error", "échec de la reprise demandée")),
+                        );
+                    }
                 }
             }
         }

@@ -157,6 +157,8 @@ export function createOverlayLegacyRuntimeRenderHandlersUtils() {
                 getRemainingCountdownMs: params.getRemainingCountdownMs,
                 setCountdownAutoClear: params.setCountdownAutoClear,
                 logAutoplayError: params.logError,
+                state: params.state,
+                requestGuildPause: params.requestGuildPause,
             });
             params.state.activeMediaRelayout = typeof relayout === 'function' ? relayout : null;
         }
@@ -189,6 +191,7 @@ export function createOverlayLegacyRuntimeRenderHandlersUtils() {
                 },
                 setTimeout: params.setTimeout,
                 clearCountdown: params.clearCountdown,
+                isCountdownPaused: params.isCountdownPaused,
             });
         }
         function onSettings(nextSettings) {

@@ -166,7 +166,7 @@ export function DevicesTab({ guild, detail, detailUnavailable, refresh, notify }
                         <Dot tone="ok" /> En ligne
                       </Badge>
                     ) : client.guildSettings?.paused ? (
-                      <Badge>En pause</Badge>
+                      <Badge>Coupe locale</Badge>
                     ) : (
                       <span class="soft">{ago(client.lastSeenAt)}</span>
                     )}

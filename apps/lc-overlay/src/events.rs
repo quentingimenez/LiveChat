@@ -1,12 +1,12 @@
-//! Événements `overlay://play`, `overlay://stop`, `overlay://settings`,
-//! `overlay://media-ingestion`, `overlay://board-changed` et bufferisation
-//! tout-ou-rien tant que le renderer overlay n'est pas prêt
+//! Événements `overlay://play`, `overlay://stop`, `overlay://pause`,
+//! `overlay://settings`, `overlay://media-ingestion`, `overlay://board-changed`
+//! et bufferisation tout-ou-rien tant que le renderer overlay n'est pas prêt
 //! (docs/rust/overlay-bridge.md §5.3 et §8.1).
 //!
-//! La fenêtre overlay peut être masquée : on garde au plus le dernier `play`
-//! et le dernier `stop`, puis on rejoue dans l'ordre reçu dès que le renderer
-//! signale qu'il est prêt. Passé [`READY_TIMEOUT`], les événements en attente
-//! sont perdus (même comportement que le legacy Electron).
+//! La fenêtre overlay peut être masquée : on garde au plus le dernier `play`,
+//! le dernier `stop` et la dernière `pause`, puis on rejoue dans l'ordre reçu
+//! dès que le renderer signale qu'il est prêt. Passé [`READY_TIMEOUT`], les
+//! événements en attente sont perdus (même comportement que le legacy Electron).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
@@ -23,6 +23,7 @@ use crate::windows::{overlay_should_show, BOARD_LABEL, OVERLAY_LABEL};
 
 pub const EVENT_PLAY: &str = "overlay://play";
 pub const EVENT_STOP: &str = "overlay://stop";
+pub const EVENT_PAUSE: &str = "overlay://pause";
 pub const EVENT_SETTINGS: &str = "overlay://settings";
 /// Full device settings sent to the board whenever they change.
 pub const EVENT_DEVICE_SETTINGS: &str = "overlay://device-settings";
@@ -48,8 +49,8 @@ pub const EVENT_ADMIN_CHANGED: &str = "overlay://admin-changed";
 /// Délai maximal de rétention des événements avant que le renderer ne soit prêt.
 pub const READY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Nombre maximal d'événements bufferisés (deux types : play, stop).
-pub const MAX_PENDING: usize = 2;
+/// Nombre maximal d'événements bufferisés (trois types : play, stop, pause).
+pub const MAX_PENDING: usize = 3;
 
 /// Événement en attente de livraison à la fenêtre overlay.
 #[derive(Debug, Clone, Serialize)]
@@ -57,6 +58,7 @@ pub const MAX_PENDING: usize = 2;
 pub enum OverlayEvent {
     Play { payload: Value },
     Stop { payload: Value },
+    Pause { payload: Value },
 }
 
 impl OverlayEvent {
@@ -68,28 +70,36 @@ impl OverlayEvent {
         Self::Stop { payload }
     }
 
+    pub fn pause(payload: Value) -> Self {
+        Self::Pause { payload }
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             Self::Play { .. } => EVENT_PLAY,
             Self::Stop { .. } => EVENT_STOP,
+            Self::Pause { .. } => EVENT_PAUSE,
         }
     }
 
     pub fn payload(&self) -> &Value {
         match self {
-            Self::Play { payload } | Self::Stop { payload } => payload,
+            Self::Play { payload } | Self::Stop { payload } | Self::Pause { payload } => payload,
         }
     }
 
     fn is_same_kind(&self, other: &Self) -> bool {
         matches!(
             (self, other),
-            (Self::Play { .. }, Self::Play { .. }) | (Self::Stop { .. }, Self::Stop { .. })
+            (Self::Play { .. }, Self::Play { .. })
+                | (Self::Stop { .. }, Self::Stop { .. })
+                | (Self::Pause { .. }, Self::Pause { .. })
         )
     }
 }
 
-/// Buffer borné conservant le dernier `play` et le dernier `stop`.
+/// Buffer borné conservant le dernier `play`, le dernier `stop` et la dernière
+/// `pause`.
 #[derive(Debug, Default)]
 pub struct EventBuffer {
     events: Mutex<Vec<OverlayEvent>>,
@@ -155,6 +165,11 @@ pub fn emit_to_overlay(app: &AppHandle<Wry>, event: &OverlayEvent) -> tauri::Res
         event.name(),
         event.payload().clone(),
     )
+}
+
+/// Émet `overlay://pause` vers la seule fenêtre overlay.
+pub fn emit_pause(app: &AppHandle<Wry>, payload: Value) -> tauri::Result<()> {
+    app.emit_to(EventTarget::labeled(OVERLAY_LABEL), EVENT_PAUSE, payload)
 }
 
 /// Emits `overlay://settings` to the overlay window only.
@@ -421,6 +436,22 @@ mod tests {
     }
 
     #[test]
+    fn buffer_keeps_the_last_pause_with_the_play_and_stop() {
+        let buffer = EventBuffer::new();
+        buffer.enqueue(OverlayEvent::play(json!({"jobId": "a"})));
+        buffer.enqueue(OverlayEvent::pause(json!({"paused": true})));
+        buffer.enqueue(OverlayEvent::stop(json!({"jobId": "a"})));
+        buffer.enqueue(OverlayEvent::play(json!({"jobId": "b"})));
+        let pending = buffer.drain();
+        assert_eq!(
+            pending.iter().map(OverlayEvent::name).collect::<Vec<_>>(),
+            vec![EVENT_PAUSE, EVENT_STOP, EVENT_PLAY]
+        );
+        assert_eq!(pending[0].payload(), &json!({"paused": true}));
+        assert_eq!(buffer.len(), 0);
+    }
+
+    #[test]
     fn timeout_can_only_be_armed_once_until_disarmed() {
         let buffer = EventBuffer::new();
         assert!(buffer.arm_timeout());
@@ -433,6 +464,7 @@ mod tests {
     fn event_names_match_bridge_contract() {
         assert_eq!(OverlayEvent::play(json!({})).name(), "overlay://play");
         assert_eq!(OverlayEvent::stop(json!({})).name(), "overlay://stop");
+        assert_eq!(OverlayEvent::pause(json!({})).name(), "overlay://pause");
         assert_eq!(EVENT_SETTINGS, "overlay://settings");
         assert_eq!(EVENT_DEVICE_SETTINGS, "overlay://device-settings");
         assert_eq!(EVENT_NAVIGATE, "overlay://navigate");

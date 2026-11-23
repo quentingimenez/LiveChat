@@ -467,13 +467,15 @@ Les champs historiques de premier niveau (`serverUrl`, `clientToken`, `clientId`
 
 `ws::start` démarre un superviseur pour chaque adhésion au lancement. `ensure_supervisor` ne crée rien si la guilde en a déjà un ; il ouvre un canal de commandes par guilde et lance `supervise`. `request_reconnect` envoie `Reconnect` aux superviseurs existants et démarre ceux qui manquent ; un superviseur dont l'adhésion a disparu s'arrête de lui-même.
 
-`supervise` relit la configuration à chaque tour : adhésion absente, le superviseur s'arrête ; `config.enabled = false` donne le statut `disabled` avec la raison « overlay désactivé », sans connexion, en attente d'une commande ; `membership.muted = true` donne le statut `disabled` avec « guilde en pause », sans connexion ; sinon il construit l'URL `ws(s)://…/ws`, envoie `hello` avec le jeton de l'adhésion et le mode de session, puis un heartbeat toutes les 15 s.
+`supervise` relit la configuration à chaque tour : adhésion absente, le superviseur s'arrête ; `config.enabled = false` donne le statut `disabled` avec la raison « overlay désactivé », sans connexion, en attente d'une commande ; `membership.muted = true` donne le statut `disabled` avec « guilde coupée ici », sans connexion ; sinon il construit l'URL `ws(s)://…/ws`, envoie `hello` avec le jeton de l'adhésion et le mode de session, puis un heartbeat toutes les 15 s.
 
 Les statuts sont suivis par guilde (`state.rs`, `NetSnapshot`) et exposés par `guilds_payload`. Les codes de fermeture sont interprétés par `close_step` : `4401` et `4402` retirent l'adhésion ; `4403` marque l'overlay obsolète sans retrait ; `4409` et `4408` réessaient ; `1000` et `1003` s'arrêtent en erreur ; les autres codes et l'absence de code réessaient avec un backoff de 1 s, 2 s, puis 3 s (`4409` : 1 s, 2 s, 4 s, 8 s, 16 s, puis 30 s au plus).
 
-### Mise en pause
+### Coupe locale
 
 `guild_set_muted` exige `muted` (booléen) et accepte `guildId` optionnel ; sans `guildId`, la cible est la guilde active. Il met à jour `membership.muted`, appelle `ensure_supervisor` puis envoie `Reconnect`. Une guilde coupée n'ouvre aucune connexion : ses médias ne peuvent plus être reçus ni affichés. Si elle occupait l'écran, la fin de session déclenche `release_guild_playback`, qui libère l'écran.
+
+Cette coupe est **locale à l'appareil** : elle ne stoppe ni ne met en pause la lecture des autres appareils de la guilde. La pause partagée est distincte : `pause.request` sur le WebSocket (§ protocole v2, `pause.request`/`pause`) fige le job `PLAYING` pour tous les overlays de la guilde sans libérer le job ; le board l'expose par `media_board_pause`.
 
 ### Arbitrage d'affichage par écran unique
 
@@ -501,7 +503,7 @@ Sur `4401` (jeton invalide) ou `4402` (appareil révoqué), `close_step` renvoie
 |----------|--------------|-------|
 | `guilds_list` | aucune | Renvoie `{activeGuildId, enabled, profile:{displayName,avatar}, guilds:[{membership,connection,statusLabel,playing}]}` ; aucun jeton |
 | `guild_select` | `{guildId}` | Rend la guilde active ; `invalid_guild_id` ou `unknown_guild` sinon ; réapplique raccourcis, settings, tray et événement `overlay://guilds` |
-| `guild_set_muted` | `{guildId?, muted}` | Met à jour la mise en pause ; `invalid_payload` si `muted` manque, `unknown_guild` si inconnue |
+| `guild_set_muted` | `{guildId?, muted}` | Met à jour la coupe locale ; `invalid_payload` si `muted` manque, `unknown_guild` si inconnue |
 | `guild_leave` | `{guildId}` | Appelle `POST /overlay/leave` ; `invalid_guild_id` si absent, `unknown_guild` si inconnue ; sur `409`, conserve l'adhésion et renvoie le code d'erreur ; sur toute autre réponse ou erreur réseau, retire l'adhésion localement |
 | `guild_api` | `{guildId?, method?, path?, body?}` | Appel REST authentifié vers `/overlay/…` ; méthodes `GET`, `POST`, `PATCH`, `DELETE` ; renvoie `{ok,status,body}` |
 | `guild_media_url` | `{guildId?, assetId}` | URL `/overlay/media-board/media/{assetId}?token=…` pour `<img>`/`<video>` |
@@ -512,7 +514,7 @@ Sur `4401` (jeton invalide) ou `4402` (appareil révoqué), `close_step` renvoie
 | Fenêtre | Commandes autorisées |
 |---------|----------------------|
 | `overlay` | `overlay_get_config`, `overlay_renderer_ready`, `overlay_report_error`, `overlay_report_playback_state`, `overlay_report_playback_stop` |
-| `board` | `overlay_get_config`, `overlay_report_error`, `media_board_get_bindings`, `media_board_set_bindings`, `media_board_trigger`, `media_board_stop`, `media_board_stop_local`, `overlay_check_updates`, `overlay_install_update`, `pairing_consume`, `guilds_list`, `guild_select`, `guild_set_muted`, `guild_leave`, `guild_api`, `guild_media_url` |
+| `board` | `overlay_get_config`, `overlay_report_error`, `media_board_get_bindings`, `media_board_set_bindings`, `media_board_trigger`, `media_board_stop`, `media_board_stop_local`, `media_board_pause`, `overlay_check_updates`, `overlay_install_update`, `pairing_consume`, `guilds_list`, `guild_select`, `guild_set_muted`, `guild_leave`, `guild_api`, `guild_media_url` |
 | `pairing` | `overlay_get_config`, `overlay_report_error`, `pairing_consume` |
 
 Toute autre fenêtre, y compris un libellé vide ou inconnu, n'a aucune commande autorisée.

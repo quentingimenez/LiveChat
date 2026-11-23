@@ -43,9 +43,11 @@
 //! L'adresse IP est lue depuis `ConnectInfo<SocketAddr>` (jamais fourni par le
 //! client). Derrière un reverse proxy, `TRUST_PROXY_HEADERS=true` active la
 //! lecture de `X-Real-IP` puis du dernier `X-Forwarded-For` (voir
-//! [`super::proxy`] ; le premier est écrit par le client) — configuration explicite exigée par le
-//! point S6 du plan de migration : le serveur ne fait jamais confiance à cet
-//! en-tête par défaut.
+//! [`super::proxy`] ; le premier est écrit par le client) **uniquement si le
+//! pair direct figure dans `TRUSTED_PROXIES`**. Sans proxy déclaré, les
+//! en-têtes sont ignorés et le pair direct sert de clé : configuration
+//! explicite exigée par le point S6 du plan de migration, le serveur ne fait
+//! jamais confiance à ces en-têtes par défaut.
 //!
 //! Les réponses portent `x-ratelimit-limit`, `x-ratelimit-remaining` et
 //! `x-ratelimit-reset`, et les 429 un `Retry-After`, comme le faisait Fastify.
@@ -62,6 +64,7 @@ use axum::response::Response;
 
 use crate::config::Config;
 use crate::http::error::{json_error, REQUEST_ERROR};
+use crate::http::proxy::{canonical_ip, is_trusted_proxy, proxied_client_ip};
 
 /// General budget per window and per client (overlay API, `/ws`, ingestion).
 pub const RATE_LIMIT_MAX: u32 = 1000;
@@ -224,6 +227,7 @@ pub struct RateLimitState {
     legacy: RateLimiter,
     development: bool,
     trust_proxy_headers: bool,
+    trusted_proxies: Vec<IpAddr>,
 }
 
 impl RateLimitState {
@@ -236,6 +240,7 @@ impl RateLimitState {
             legacy: RateLimiter::new(LEGACY_RATE_LIMIT_MAX, RATE_LIMIT_WINDOW),
             development: config.is_development(),
             trust_proxy_headers: config.trust_proxy_headers,
+            trusted_proxies: config.trusted_proxies.clone(),
         }
     }
 
@@ -350,31 +355,19 @@ fn is_exempt(state: &RateLimitState, ip: Option<IpAddr>) -> bool {
 }
 
 fn client_ip(state: &RateLimitState, request: &Request) -> Option<IpAddr> {
-    if state.trust_proxy_headers {
-        if let Some(ip) = super::proxy::proxied_client_ip(request.headers()) {
-            return Some(canonical_ip(ip));
-        }
-    }
-    request
+    let peer_ip = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|info| canonical_ip(info.0.ip()))
-}
-
-/// Normalise une IPv4 encapsulée en IPv6 (`::ffff:a.b.c.d`).
-///
-/// Une socket d'écoute dual-stack présente les clients IPv4 sous cette forme.
-/// Sans normalisation, ces clients ne seraient pas reconnus comme loopback en
-/// mode développement (l'exemption ne s'appliquerait pas) et seraient comptés
-/// séparément de leur adresse IPv4 réelle.
-fn canonical_ip(ip: IpAddr) -> IpAddr {
-    match ip {
-        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
-            Some(v4) => IpAddr::V4(v4),
-            None => IpAddr::V6(v6),
-        },
-        IpAddr::V4(v4) => IpAddr::V4(v4),
+        .map(|info| canonical_ip(info.0.ip()));
+    // Never read the headers unless the operator declared this exact peer as a
+    // reverse proxy: any direct client could otherwise rotate `X-Real-IP` and
+    // reset its own budget.
+    if state.trust_proxy_headers && is_trusted_proxy(peer_ip, &state.trusted_proxies) {
+        if let Some(ip) = proxied_client_ip(request.headers()) {
+            return Some(ip);
+        }
     }
+    peer_ip
 }
 
 fn insert_rate_limit_headers(response: &mut Response, decision: Decision) {
@@ -570,38 +563,91 @@ mod tests {
     }
 
     #[test]
-    fn forwarded_ip_is_used_only_when_enabled() {
-        let request = HttpRequest::builder()
-            .uri("/health")
-            // First hop forged by the client, last one appended by the proxy.
-            .header("x-forwarded-for", "127.0.0.1, 203.0.113.7")
-            .body(axum::body::Body::empty())
-            .unwrap();
+    fn proxy_headers_are_used_only_for_a_declared_trusted_peer() {
+        fn request() -> HttpRequest<axum::body::Body> {
+            HttpRequest::builder()
+                .uri("/health")
+                // First hop forged by the client, last one appended by the proxy.
+                .header("x-forwarded-for", "127.0.0.1, 203.0.113.7")
+                .body(axum::body::Body::empty())
+                .unwrap()
+        }
 
-        let untrusted =
+        fn from_peer(
+            request: HttpRequest<axum::body::Body>,
+            peer: IpAddr,
+        ) -> HttpRequest<axum::body::Body> {
+            let mut request = request;
+            request
+                .extensions_mut()
+                .insert(ConnectInfo(SocketAddr::new(peer, 40_000)));
+            request
+        }
+
+        let proxy = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let remote = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
+        let forwarded = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
+
+        // Flag off: the peer wins, the headers are ignored.
+        let disabled =
             RateLimitState::from_config(&config(&[("API_URL", "http://localhost:3000")]));
-        assert_eq!(client_ip(&untrusted, &request), None);
+        assert_eq!(
+            client_ip(&disabled, &from_peer(request(), proxy)),
+            Some(proxy)
+        );
 
-        let trusted = RateLimitState::from_config(&config(&[
+        // Flag on without any declared proxy: fail closed, headers ignored.
+        let no_list = RateLimitState::from_config(&config(&[
             ("API_URL", "http://localhost:3000"),
             ("TRUST_PROXY_HEADERS", "true"),
         ]));
         assert_eq!(
-            client_ip(&trusted, &request),
-            Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)))
+            client_ip(&no_list, &from_peer(request(), proxy)),
+            Some(proxy)
         );
-    }
 
-    #[test]
-    fn dual_stack_mapped_ipv4_is_canonicalized() {
-        let mapped: IpAddr = "::ffff:127.0.0.1".parse().expect("adresse valide");
-        assert_eq!(canonical_ip(mapped), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        // Flag on, but this peer is not the declared proxy: headers ignored.
+        let other_proxy = RateLimitState::from_config(&config(&[
+            ("API_URL", "http://localhost:3000"),
+            ("TRUST_PROXY_HEADERS", "true"),
+            ("TRUSTED_PROXIES", "192.0.2.1"),
+        ]));
+        assert_eq!(
+            client_ip(&other_proxy, &from_peer(request(), remote)),
+            Some(remote)
+        );
 
-        let ipv4: IpAddr = "192.0.2.10".parse().expect("adresse valide");
-        assert_eq!(canonical_ip(ipv4), ipv4);
+        // Declared proxy: the last forwarded hop wins.
+        let trusted = RateLimitState::from_config(&config(&[
+            ("API_URL", "http://localhost:3000"),
+            ("TRUST_PROXY_HEADERS", "true"),
+            ("TRUSTED_PROXIES", "127.0.0.1"),
+        ]));
+        assert_eq!(
+            client_ip(&trusted, &from_peer(request(), proxy)),
+            Some(forwarded)
+        );
 
-        let ipv6: IpAddr = "2001:db8::1".parse().expect("adresse valide");
-        assert_eq!(canonical_ip(ipv6), ipv6);
+        // A dual-stack socket presents the IPv4 peer in mapped form: it must
+        // match the IPv4 declaration.
+        let mapped_peer: IpAddr = "::ffff:127.0.0.1".parse().expect("adresse valide");
+        assert_eq!(
+            client_ip(&trusted, &from_peer(request(), mapped_peer)),
+            Some(forwarded)
+        );
+
+        // Declared proxy without a usable header: fall back to the peer.
+        let without_header = HttpRequest::builder()
+            .uri("/health")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            client_ip(&trusted, &from_peer(without_header, proxy)),
+            Some(proxy)
+        );
+
+        // No direct peer (no ConnectInfo): never trust the headers.
+        assert_eq!(client_ip(&trusted, &request()), None);
     }
 
     #[test]

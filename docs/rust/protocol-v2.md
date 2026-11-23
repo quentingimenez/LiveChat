@@ -76,7 +76,8 @@ Conventions :
 - Le client se connecte à `{API_URL}` avec `API_URL` tel qu'obtenu du pairing
   (`apiBaseUrl`, `server/src/components/overlay/overlayRoutes.ts:202-291`).
 - `TRUST_PROXY_HEADERS=true` indique au serveur de lire l'IP réelle derrière un reverse proxy
-  (utile au rate limit ; variable listée `docs/rust/migration-plan.md:150`).
+  (utile au rate limit ; variable listée `docs/rust/migration-plan.md:150`), uniquement si le pair
+  direct figure dans `TRUSTED_PROXIES` ; sinon les en-têtes sont ignorés.
 
 ### 1.2 Séquence de handshake applicatif
 

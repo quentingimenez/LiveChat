@@ -813,6 +813,7 @@ const sendCompose = async (payload: ComposeSubmitPayload): Promise<ComposeSubmit
     const response = (await runtime.sendMessage({
       type: 'lce/send-compose',
       url: targetUrl,
+      source: 'youtube',
       text: payload.text,
       forceRefresh: payload.forceRefresh,
       saveToBoard: payload.saveToBoard,

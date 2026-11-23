@@ -80,6 +80,10 @@ export const isTrustedPageEvent = (event: Event): boolean => event.isTrusted ===
  * Branche un écouteur réservé aux événements réellement émis par
  * l'utilisateur. Un `dispatchEvent` de la page produit un événement non
  * `isTrusted` : il est ignoré avant tout envoi.
+ *
+ * Limite assumée : `isTrusted` ne protège pas du clickjacking. La page peut
+ * superposer un élément au-dessus du bouton et obtenir un clic réel ; ce
+ * vecteur (position, `pointer-events`, z-index) n'est pas traité ici.
  */
 export const onTrustedPageEvent = <E extends Event>(
   target: EventTarget,

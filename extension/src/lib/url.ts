@@ -149,21 +149,42 @@ export const normalizeTikTokVideoUrl = (rawUrl: string, base?: string): string |
 export const normalizeTwitterStatusUrl = (rawUrl: string, base?: string): string | null => {
   const parsed = toUrl(rawUrl.trim(), base);
 
-  if (!parsed || !TWITTER_HOSTS.has(parsed.hostname.toLowerCase())) {
+  if (
+    !parsed ||
+    !TWITTER_HOSTS.has(parsed.hostname.toLowerCase()) ||
+    parsed.protocol !== 'https:' ||
+    parsed.username ||
+    parsed.password ||
+    (parsed.port !== '' && parsed.port !== '443')
+  ) {
     return null;
   }
 
-  const userStatusMatch = parsed.pathname.match(/^\/([^/]+)\/status\/(\d+)/i);
+  const userStatusMatch = parsed.pathname.match(/^\/([^/]+)\/status\/(\d+)(?:\/|$)/i);
   if (userStatusMatch) {
-    return `${parsed.origin}/${userStatusMatch[1]}/status/${userStatusMatch[2]}`;
+    return `https://x.com/${userStatusMatch[1]}/status/${userStatusMatch[2]}`;
   }
 
-  const webStatusMatch = parsed.pathname.match(/^\/i\/web\/status\/(\d+)/i);
+  const webStatusMatch = parsed.pathname.match(/^\/i\/web\/status\/(\d+)(?:\/|$)/i);
   if (webStatusMatch) {
-    return `${parsed.origin}/i/web/status/${webStatusMatch[1]}`;
+    return `https://x.com/i/web/status/${webStatusMatch[1]}`;
   }
 
   return null;
+};
+
+export const isIngestTargetAllowedForSource = (source: string | undefined, rawUrl: string): boolean => {
+  switch (source) {
+    case 'youtube':
+      return normalizeYoutubeUrl(rawUrl) !== null;
+    case 'tiktok':
+      return normalizeTikTokVideoUrl(rawUrl) !== null;
+    case 'twitter':
+      return normalizeTwitterStatusUrl(rawUrl) !== null;
+    default:
+      // Menu contextuel et popup : l'URL saisie reste générique.
+      return true;
+  }
 };
 
 export const resolveIngestTargetUrl = (rawUrl: string, base?: string): string | null => {

@@ -23,6 +23,7 @@ export interface SendQuickRequestMessage {
 export interface SendComposeRequestMessage {
   type: (typeof MESSAGE_TYPES)['SEND_COMPOSE'];
   url: string;
+  source?: SendSource;
   text?: string;
   forceRefresh?: boolean;
   saveToBoard?: boolean;
@@ -99,12 +100,22 @@ const asNullableTrimmedString = (value: unknown): string | null => {
   return toNonEmptyString(value);
 };
 
+const isValidSendSource = (value: unknown): value is SendSource => {
+  return (
+    value === 'youtube' ||
+    value === 'tiktok' ||
+    value === 'twitter' ||
+    value === 'context-menu' ||
+    value === 'popup'
+  );
+};
+
 export const isSendQuickRequest = (value: unknown): value is SendQuickRequestMessage => {
   if (!isRecord(value) || value.type !== MESSAGE_TYPES.SEND_QUICK) {
     return false;
   }
 
-  return !!toNonEmptyString(value.url);
+  return !!toNonEmptyString(value.url) && isValidSendSource(value.source);
 };
 
 export const isSendComposeRequest = (value: unknown): value is SendComposeRequestMessage => {
@@ -113,6 +124,10 @@ export const isSendComposeRequest = (value: unknown): value is SendComposeReques
   }
 
   if (!toNonEmptyString(value.url)) {
+    return false;
+  }
+
+  if (value.source !== undefined && !isValidSendSource(value.source)) {
     return false;
   }
 

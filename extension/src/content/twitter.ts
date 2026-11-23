@@ -6,6 +6,7 @@ import {
 import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModalTwitter';
 import { initInpageTheme } from './inpage-theme';
 import { TWITTER_BUTTON_LOGO_SIZE_PX, twitterInpageStyles } from './inpage-styles';
+import { normalizeTwitterStatusUrl } from '../lib/url';
 import {
   onTrustedPageEvent,
   rememberActionTarget,
@@ -648,36 +649,6 @@ const registerToastListener = (): void => {
   }
 };
 
-const normalizeTwitterStatusUrl = (rawUrl: string, base?: string): string | null => {
-  let parsed: URL;
-
-  try {
-    parsed = new URL(rawUrl, base);
-  } catch {
-    return null;
-  }
-
-  const host = parsed.hostname.toLowerCase();
-
-  if (!['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com'].includes(host)) {
-    return null;
-  }
-
-  const userStatusMatch = parsed.pathname.match(/^\/([^/]+)\/status\/(\d+)/i);
-
-  if (userStatusMatch) {
-    return `${parsed.origin}/${userStatusMatch[1]}/status/${userStatusMatch[2]}`;
-  }
-
-  const webStatusMatch = parsed.pathname.match(/^\/i\/web\/status\/(\d+)/i);
-
-  if (webStatusMatch) {
-    return `${parsed.origin}/i/web/status/${webStatusMatch[1]}`;
-  }
-
-  return null;
-};
-
 const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }> => {
   const targetUrl = resolveAllowedActionTarget('twitter', url, window.location.origin);
 
@@ -746,6 +717,7 @@ const sendCompose = async (payload: ComposeSubmitPayload): Promise<ComposeSubmit
     const response = (await runtime.sendMessage({
       type: 'lce/send-compose',
       url: targetUrl,
+      source: 'twitter',
       text: payload.text,
       forceRefresh: payload.forceRefresh,
       saveToBoard: payload.saveToBoard,

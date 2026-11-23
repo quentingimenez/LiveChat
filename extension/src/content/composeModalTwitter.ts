@@ -1,5 +1,5 @@
 import { INVALID_DURATION_MESSAGE, parseDisplayDuration } from '../lib/duration';
-import { isTrustedPageEvent } from './shared';
+import { onTrustedPageEvent } from './shared';
 
 const MODAL_STYLE_ID = 'lce-compose-modal-style';
 const MODAL_OVERLAY_ID = 'lce-compose-modal-overlay';
@@ -390,7 +390,7 @@ const ensureModal = (): ComposeModalRefs => {
       <button type="button" class="lce-compose-modal-button lce-compose-modal-button-cancel" data-lce-compose-cancel>
         Annuler
       </button>
-      <button type="submit" class="lce-compose-modal-button lce-compose-modal-button-submit" data-lce-compose-submit>
+      <button type="button" class="lce-compose-modal-button lce-compose-modal-button-submit" data-lce-compose-submit>
         Envoyer
       </button>
     </div>
@@ -445,13 +445,37 @@ const ensureModal = (): ComposeModalRefs => {
     closeModal();
   });
 
+  // `requestSubmit()` et un clic synthétique sur un bouton submit produisent
+  // un `submit` que le navigateur considère comme trusted. Le formulaire ne
+  // doit donc plus être un chemin d'envoi : il est toujours neutralisé, et
+  // l'envoi passe uniquement par des événements trusted sur le bouton ou les
+  // champs.
   form.addEventListener('submit', (event) => {
     event.preventDefault();
+  });
 
-    if (!isTrustedPageEvent(event)) {
+  const submitOnEnter = (event: KeyboardEvent): void => {
+    if (event.key !== 'Enter' || event.shiftKey) {
       return;
     }
 
+    event.preventDefault();
+    onSubmit();
+  };
+
+  onTrustedPageEvent<MouseEvent>(submitButton, 'click', (event) => {
+    event.preventDefault();
+    onSubmit();
+  });
+
+  onTrustedPageEvent<KeyboardEvent>(urlInput, 'keydown', submitOnEnter);
+  onTrustedPageEvent<KeyboardEvent>(durationInput, 'keydown', submitOnEnter);
+  onTrustedPageEvent<KeyboardEvent>(textInput, 'keydown', (event) => {
+    if (event.key !== 'Enter' || (!event.ctrlKey && !event.metaKey)) {
+      return;
+    }
+
+    event.preventDefault();
     onSubmit();
   });
 

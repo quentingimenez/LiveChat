@@ -35,7 +35,7 @@ Variables d'environnement (dans `Config`) :
 
 | Variable | Rôle |
 |---|---|
-| `ADMIN_UI_TOKEN` (existante) | secret d'administration de secours ; vide = connexion par secret désactivée ; non vide : au moins 32 caractères, 8 caractères distincts, sans motif répété (sinon refus au démarrage) |
+| `ADMIN_UI_TOKEN` (existante) | secret d'administration de secours ; vide = connexion par secret désactivée ; non vide : au moins 32 caractères, 8 caractères distincts, sans motif répété (sinon refus au démarrage — changement cassant ; générer avec `openssl rand -base64 32`) |
 | `DISCORD_CLIENT_ID` (existante) | application OAuth2 |
 | `DISCORD_CLIENT_SECRET` (nouvelle, secret) | échange du code OAuth2 |
 | `ADMIN_DISCORD_USER_IDS` (nouvelle) | identifiants Discord autorisés, séparés par des virgules |

@@ -1407,12 +1407,24 @@ mod tests {
             // check on the whole suffix catches it.
             "password1password1password1passw",
             "abcdefghijabcdefghijabcdefghijabc",
+            // Exactly 32 characters but only 7 distinct ones, and not
+            // periodic: the distinct threshold must stand on its own.
+            "abcdefgaagfedcbaabcdefgaagfedcbb",
+            // Length boundary: 31 characters refused (the strong test accepts
+            // the 32-character counterpart).
+            "abcdefghijklmnopqrstuvwxyz01234",
+            // Same 31 characters but 32 bytes in UTF-8: the limit counts
+            // characters, not bytes.
+            "ébcdefghijklmnopqrstuvwxyz01234",
         ] {
-            let error = Config::from_pairs(pairs(&[
+            let result = Config::from_pairs(pairs(&[
                 ("API_URL", "http://localhost:3000"),
                 ("ADMIN_UI_TOKEN", value),
-            ]))
-            .expect_err("jeton faible refusé au démarrage");
+            ]));
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("jeton faible {value:?} accepté au démarrage"),
+            };
             assert!(
                 matches!(
                     &error,
@@ -1446,6 +1458,28 @@ mod tests {
             ("ADMIN_UI_TOKEN", "a7Qm2vXp9Rz4Lw8Tn6Hs3Jd5Fg1Bc0Ya"),
         ]);
         assert!(border.admin_secret_login_enabled());
+
+        // Exactly 32 characters and exactly 8 distinct: both thresholds are
+        // inclusive.
+        let eight_distinct = config_with(&[
+            ("API_URL", "http://localhost:3000"),
+            ("ADMIN_UI_TOKEN", "abcdefghhgfedcbaabcdefghhgfedcbb"),
+        ]);
+        assert!(eight_distinct.admin_secret_login_enabled());
+
+        // 32-character counterparts of the 31-character values refused above:
+        // ASCII, then Unicode (32 characters, 33 bytes in UTF-8).
+        for token in [
+            "abcdefghijklmnopqrstuvwxyz012345",
+            "ébcdefghijklmnopqrstuvwxyz012345",
+        ] {
+            let config = config_with(&[
+                ("API_URL", "http://localhost:3000"),
+                ("ADMIN_UI_TOKEN", token),
+            ]);
+            assert_eq!(config.admin_ui_token.expose_secret(), token);
+            assert!(config.admin_secret_login_enabled());
+        }
 
         let blank = config_with(&[
             ("API_URL", "http://localhost:3000"),

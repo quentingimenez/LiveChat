@@ -234,10 +234,10 @@ machine administrée. Trois options :
    dont le pair direct n'est **pas** dans la liste reste jugé sur sa propre
    adresse, même s'il forge un `X-Real-IP: 127.0.0.1` (fail-closed, aucune
    confiance par défaut). Le proxy doit **écraser** `X-Real-IP` et **ajouter**
-   (pas recopier) `X-Forwarded-For`. Avec `ADMIN_UI_LOCAL_ONLY=true`, un proxy
-   loopback déclaré rend l'accès admin local impossible (échec fermé, voir le
-   cas ambigu plus bas) : pour administrer à travers un proxy, utiliser
-   l'option 3,
+   (pas recopier) `X-Forwarded-For`. Avec `ADMIN_UI_LOCAL_ONLY=true`, si
+   l'adresse cliente résolue est elle-même une adresse de proxy déclarée
+   (typiquement `127.0.0.1`), l'accès admin échoue fermé (voir le cas ambigu
+   plus bas) : pour administrer à travers un proxy, utiliser l'option 3,
 3. si un reverse proxy est indispensable sans proxy déclaré :
    `ADMIN_UI_LOCAL_ONLY=false` **et** exposer l'admin uniquement derrière une
    authentification proxy/TLS, sur un bind réseau restreint

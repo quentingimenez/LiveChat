@@ -50,21 +50,23 @@ pub fn forwarded_client_ip(
         return None;
     }
 
-    // Lazy walk: values and comma-separated entries are read from the right,
-    // and the scan stops as soon as a client is found. A malformed entry is
+    // Lazy walk: values and comma-separated entries are read from the right as
+    // bytes, and the scan stops as soon as a client is found. Splitting bytes
+    // before UTF-8 validation keeps an opaque byte on the left from hiding the
+    // client a proxy appended after it in the same header. A malformed entry is
     // only fatal while it is still unknown whether the hop is a proxy; entries
     // further left are attacker-controlled noise and are never parsed.
     let mut saw_hop = false;
     for value in headers.get_all("x-forwarded-for").iter().rev() {
-        let Ok(value) = value.to_str() else {
-            return None;
-        };
-        for hop in value.split(',').rev() {
-            let hop = hop.trim();
+        for hop in value.as_bytes().split(|byte| *byte == b',').rev() {
+            let hop = hop.trim_ascii();
             if hop.is_empty() {
                 continue;
             }
             saw_hop = true;
+            let Ok(hop) = std::str::from_utf8(hop) else {
+                return None;
+            };
             let Ok(ip) = hop.parse::<IpAddr>() else {
                 return None;
             };
@@ -246,8 +248,8 @@ mod tests {
             ),
             None
         );
-        // Non-UTF-8 bytes are ignored by `to_str`; treat them as invalid when
-        // they are met before the client.
+        // Non-UTF-8 bytes are treated as invalid when they are met before the
+        // client, whether they share the client's header or not.
         let mut map = HeaderMap::new();
         map.append(
             "x-forwarded-for",
@@ -267,6 +269,27 @@ mod tests {
         assert_eq!(
             forwarded_client_ip(peer("127.0.0.1"), &map, &trusted(&["127.0.0.1"])),
             v4("198.51.100.7")
+        );
+        // Same header: the proxy appended `, 198.51.100.7` after the opaque
+        // bytes a client supplied; the client is still on the right.
+        let mut map = HeaderMap::new();
+        map.append(
+            "x-forwarded-for",
+            HeaderValue::from_bytes(b"\xff, 198.51.100.7").expect("valeur opaque acceptée"),
+        );
+        assert_eq!(
+            forwarded_client_ip(peer("127.0.0.1"), &map, &trusted(&["127.0.0.1"])),
+            v4("198.51.100.7")
+        );
+        // Opaque bytes to the right of the client still fail closed.
+        let mut map = HeaderMap::new();
+        map.append(
+            "x-forwarded-for",
+            HeaderValue::from_bytes(b"198.51.100.7, \xff").expect("valeur opaque acceptée"),
+        );
+        assert_eq!(
+            forwarded_client_ip(peer("127.0.0.1"), &map, &trusted(&["127.0.0.1"])),
+            None
         );
     }
 
@@ -315,6 +338,16 @@ mod tests {
         let map = headers(&[
             ("x-forwarded-for", "10.0.0.9"),
             ("x-forwarded-for", "198.51.100.4"),
+        ]);
+        assert_eq!(
+            forwarded_client_ip(peer("10.0.0.2"), &map, &trusted(&["10.0.0.2", "10.0.0.9"])),
+            v4("198.51.100.4")
+        );
+        // Symmetric orientation: the client header comes first, the declared
+        // proxy hop second; the reader must still return the client.
+        let map = headers(&[
+            ("x-forwarded-for", "198.51.100.4"),
+            ("x-forwarded-for", "10.0.0.9"),
         ]);
         assert_eq!(
             forwarded_client_ip(peer("10.0.0.2"), &map, &trusted(&["10.0.0.2", "10.0.0.9"])),

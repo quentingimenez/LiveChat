@@ -448,7 +448,16 @@ async fn a_video_is_edited_as_a_copy_then_replaced_with_real_ffmpeg() {
         .as_str()
         .unwrap()
         .to_owned();
-    assert_eq!(listed(&items, &original_id)["media"]["durationSec"], 6);
+    // `durationSec` is the ceiling of the muxed duration: the AAC padding makes
+    // ffmpeg 6.1 write 6.008 s for the 6 s sample (reported as 7 s), where
+    // ffmpeg 9 writes 6.000 s (reported as 6 s). Pin the second, not the build.
+    let duration = listed(&items, &original_id)["media"]["durationSec"]
+        .as_i64()
+        .expect("durationSec");
+    assert!(
+        (6..=7).contains(&duration),
+        "durationSec {duration}, attendu 6 ou 7 s"
+    );
 
     // The upload text is not a board message; write one by hand, like the
     // board's inline field, so the edited copy can be checked against it.
@@ -499,7 +508,16 @@ async fn a_video_is_edited_as_a_copy_then_replaced_with_real_ffmpeg() {
     assert_eq!(copied["message"], "miaou");
     assert_eq!(copied["media"]["kind"], "video");
     assert_eq!(copied["media"]["mime"], "video/mp4");
-    assert_eq!(copied["media"]["durationSec"], 2);
+    // The copy re-encodes the AAC track: codec padding can push the muxed
+    // duration just over 2 s, so `durationSec` reports 2 s or 3 s (same ffmpeg
+    // 6.1 padding as the video edit above).
+    let duration = copied["media"]["durationSec"]
+        .as_i64()
+        .expect("durationSec");
+    assert!(
+        (2..=3).contains(&duration),
+        "durationSec {duration}, attendu 2 ou 3 s"
+    );
     assert_eq!(copied["media"]["width"], 240);
     assert_eq!(copied["media"]["height"], 160);
     assert_eq!(copied["media"]["sourceUrl"], "upload:Chat (édité).mp4");
@@ -642,7 +660,13 @@ async fn an_audio_keeps_its_edited_volume_with_real_ffmpeg() {
     let entry = listed(&items, &item_id);
     assert_eq!(entry["title"], "bip");
     assert_eq!(entry["media"]["kind"], "audio");
-    assert_eq!(entry["media"]["durationSec"], 2);
+    // 4 s at speed 2 = 2 s; the AAC padding can push the muxed duration just
+    // over 2 s, so `durationSec` reports 2 s or 3 s (see the video edit above).
+    let duration = entry["media"]["durationSec"].as_i64().expect("durationSec");
+    assert!(
+        (2..=3).contains(&duration),
+        "durationSec {duration}, attendu 2 ou 3 s"
+    );
 
     // The quiet edit stayed quiet: a second loudnorm pass would have brought
     // it back to the target loudness.

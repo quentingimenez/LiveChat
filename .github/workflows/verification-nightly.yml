@@ -6,6 +6,11 @@ on:
   schedule:
     - cron: '30 3 * * *'
   workflow_dispatch:
+    inputs:
+      network_tests:
+        description: "Also run the ignored tests that need external network or credentials (tikwm/TikTok, X, Tenor, Giphy, Imgur, YouTube, Dailymotion, Brave, Discord gateway): they fail when a third party is down."
+        type: boolean
+        default: false
   pull_request:
     paths:
       - ".github/workflows/verification-nightly.yml"
@@ -308,6 +313,7 @@ jobs:
             | select(.value.ignored)
             | "\($crate)::\(.key)"
           ' target/ignored-tests.json | sort > target/ignored-tests.txt
+          network=$(jq -r '[.tests[] | select(.category == "network")] | length' scripts/release/ignored-nightly-tests.json)
           {
             echo '### Ignored tests (nightly)'
             echo
@@ -319,18 +325,42 @@ jobs:
               echo "| $crate | $count |"
               total=$((total + count))
             done
+            if [ "${{ inputs.network_tests }}" = "true" ]; then
+              run_label="run in this job (network included)"
+              run_count=$total
+            else
+              run_label="run without network"
+              run_count=$((total - network))
+            fi
             echo "| **total** | **$total** |"
+            echo "| of which network (manual dispatch) | $network |"
+            echo "| **$run_label** | **$run_count** |"
             echo
             echo '```'
             cat target/ignored-tests.txt
             echo '```'
           } | tee target/ignored-tests.md >> "$GITHUB_STEP_SUMMARY"
-      # Keep going after a failure so one flaky network test does not hide the
-      # state of the other two crates; the step still fails at the end.
+      # The automatic run covers the ignored tests that do not depend on a
+      # third party service or real credentials. `network` tests stay in the
+      # inventory and in the report above; they only run when a human dispatches
+      # this workflow with `network_tests=true` (or with the documented local
+      # command). The filter is derived from the manifest so a new network test
+      # cannot be forgotten.
+      - name: Select the ignored tests to run
+        run: |
+          if [ "${{ inputs.network_tests }}" = "true" ]; then
+            filter='all()'
+          else
+            filter="not ($(jq -r '.network_filter' scripts/release/ignored-nightly-tests.json))"
+          fi
+          echo "NEXTEST_FILTER=$filter" >> "$GITHUB_ENV"
+      # Keep going after a failure so one failing test does not hide the state
+      # of the other two crates; the step still fails at the end.
       - name: Run the ignored tests
         run: |
           cargo nextest run -p lc-media -p lc-server -p xtask \
-            --all-features --locked --run-ignored only --no-fail-fast
+            --all-features --locked --run-ignored only --no-fail-fast \
+            -E "$NEXTEST_FILTER"
       - name: Upload the ignored test report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

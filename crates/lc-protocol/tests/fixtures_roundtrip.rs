@@ -31,7 +31,7 @@ enum Direction {
     Server,
 }
 
-/// Table de référence des 33 fixtures golden : (fichier, sens, type attendu).
+/// Table de référence des fixtures golden : (fichier, sens, type attendu).
 const FIXTURES: &[(&str, Direction, &str)] = &[
     // ---- C→S ----
     ("v2_hello_normal.json", Direction::Client, msg_type::HELLO),
@@ -68,6 +68,16 @@ const FIXTURES: &[(&str, Direction, &str)] = &[
         msg_type::STOP_REQUEST,
     ),
     (
+        "v2_pause_request.json",
+        Direction::Client,
+        msg_type::PAUSE_REQUEST,
+    ),
+    (
+        "v2_resume_request.json",
+        Direction::Client,
+        msg_type::PAUSE_REQUEST,
+    ),
+    (
         "v2_peers_request.json",
         Direction::Client,
         msg_type::PEERS_REQUEST,
@@ -94,6 +104,11 @@ const FIXTURES: &[(&str, Direction, &str)] = &[
         msg_type::WELCOME,
     ),
     (
+        "v2_welcome_paused_current_job.json",
+        Direction::Server,
+        msg_type::WELCOME,
+    ),
+    (
         "v2_play_media_resume.json",
         Direction::Server,
         msg_type::PLAY,
@@ -113,6 +128,8 @@ const FIXTURES: &[(&str, Direction, &str)] = &[
     ("v2_stop_preempt.json", Direction::Server, msg_type::STOP),
     ("v2_stop_revoked.json", Direction::Server, msg_type::STOP),
     ("v2_stop_purge.json", Direction::Server, msg_type::STOP),
+    ("v2_pause.json", Direction::Server, msg_type::PAUSE),
+    ("v2_resume.json", Direction::Server, msg_type::PAUSE),
     ("v2_peers.json", Direction::Server, msg_type::PEERS),
     ("v2_peers_empty.json", Direction::Server, msg_type::PEERS),
     (
@@ -310,6 +327,8 @@ fn protocol_constants_are_frozen() {
     assert_eq!(msg_type::MEDIA_TRIGGER, "media.trigger");
     assert_eq!(msg_type::MEDIA_INGESTION, "media.ingestion");
     assert_eq!(msg_type::BOARD_CHANGED, "board.changed");
+    assert_eq!(msg_type::PAUSE_REQUEST, "pause.request");
+    assert_eq!(msg_type::PAUSE, "pause");
 }
 
 #[test]
@@ -389,6 +408,10 @@ fn welcome_initial_omits_current_job() {
         serialized.get("currentJob").is_none(),
         "currentJob ne doit pas être émis quand aucun job n'est en cours"
     );
+    assert!(!serialized
+        .as_object()
+        .expect("enveloppe welcome")
+        .contains_key("paused"));
     assert!(!serialized
         .as_object()
         .expect("enveloppe welcome")
@@ -489,6 +512,7 @@ fn envelope_direction_is_enforced() {
         "v2_play_media_resume.json",
         "v2_stop_manual.json",
         "v2_settings_normal.json",
+        "v2_pause.json",
     ] {
         let value = read_fixture(fixture);
         assert!(
@@ -501,6 +525,7 @@ fn envelope_direction_is_enforced() {
         "v2_heartbeat.json",
         "v2_media_trigger.json",
         "v2_stop_request.json",
+        "v2_pause_request.json",
     ] {
         let value = read_fixture(fixture);
         assert!(
@@ -589,6 +614,76 @@ fn stop_request_carries_optional_job_and_source() {
     ))
     .expect("re-sérialisation stop.request vide");
     assert_eq!(serialized.get("payload"), Some(&serde_json::json!({})));
+}
+
+/// Rév. 5 : `pause.request` porte la pause et la reprise dans un seul message.
+#[test]
+fn pause_request_carries_the_shared_state_and_optional_remaining() {
+    let value = read_fixture("v2_pause_request.json");
+    let envelope: ClientEnvelope = serde_json::from_value(value).expect("pause.request");
+    let ClientMessage::PauseRequest(request) = envelope.message else {
+        panic!("la fixture doit être un pause.request");
+    };
+    assert!(request.paused);
+    assert_eq!(request.remaining_ms, Some(84_000));
+
+    let value = read_fixture("v2_resume_request.json");
+    let envelope: ClientEnvelope = serde_json::from_value(value).expect("pause.request reprise");
+    let ClientMessage::PauseRequest(request) = envelope.message else {
+        panic!("la fixture doit être un pause.request");
+    };
+    assert!(!request.paused);
+    assert!(request.remaining_ms.is_none());
+    let serialized = serde_json::to_value(Envelope::new(
+        "cli-pause-0003",
+        1_794_182_400_000,
+        ClientMessage::PauseRequest(Default::default()),
+    ))
+    .expect("re-sérialisation pause.request");
+    assert_eq!(
+        serialized.get("payload"),
+        Some(&serde_json::json!({ "paused": false }))
+    );
+}
+
+/// Rév. 5 : le serveur diffuse l'état partagé avec le job visé.
+#[test]
+fn pause_broadcast_carries_the_job_and_optional_remaining() {
+    let value = read_fixture("v2_pause.json");
+    let envelope: ServerEnvelope = serde_json::from_value(value).expect("pause");
+    let ServerMessage::Pause(payload) = envelope.message else {
+        panic!("la fixture doit être un pause");
+    };
+    assert!(payload.paused);
+    assert_eq!(payload.job_id.as_deref(), Some("clx7q2x0b0001abcd1234efgh"));
+    assert_eq!(payload.remaining_ms, Some(84_000));
+
+    let value = read_fixture("v2_resume.json");
+    let envelope: ServerEnvelope = serde_json::from_value(value).expect("pause reprise");
+    let ServerMessage::Pause(payload) = envelope.message else {
+        panic!("la fixture doit être un pause");
+    };
+    assert!(!payload.paused);
+    assert_eq!(payload.job_id.as_deref(), Some("clx7q2x0b0001abcd1234efgh"));
+    assert!(payload.remaining_ms.is_none());
+    let serialized = serde_json::to_value(ServerMessage::Pause(payload)).expect("pause");
+    assert!(!serialized["payload"]
+        .as_object()
+        .unwrap()
+        .contains_key("remainingMs"));
+}
+
+/// Rév. 5 : un welcome pendant la pause garde le média figé au temps restant.
+#[test]
+fn welcome_paused_keeps_the_shared_pause() {
+    let value = read_fixture("v2_welcome_paused_current_job.json");
+    let envelope: ServerEnvelope = serde_json::from_value(value).expect("welcome pausé");
+    let ServerMessage::Welcome(welcome) = envelope.message else {
+        panic!("la fixture doit être un welcome");
+    };
+    assert!(welcome.paused);
+    let job = welcome.current_job.expect("currentJob attendu");
+    assert_eq!(job.remaining_ms, 84_000);
 }
 
 /// Rév. 2, §6.1 / §15.5 : `welcome.serverVersion` est toujours émis.

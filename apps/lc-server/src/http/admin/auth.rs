@@ -142,8 +142,9 @@ pub async fn current_session(
 /// `TRUSTED_PROXIES`, the `X-Forwarded-For` chain decides instead: declared
 /// proxy hops are skipped from right to left and the first other hop is the
 /// client. Any other peer is judged on its own address, never on headers it can
-/// forge. A chain with no client hop (missing header, invalid entry, or only
-/// declared proxies) fails closed, as does a missing peer address.
+/// forge. A chain with no client hop (missing header, invalid entry met before
+/// the client, or only declared proxies) fails closed, as does a missing peer
+/// address.
 #[allow(clippy::result_large_err)]
 pub fn check_local_only(
     state: &AppState,

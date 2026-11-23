@@ -15,15 +15,15 @@
 //! last entry is then the outer proxy, and every client behind it shares one
 //! rate-limit bucket. [`forwarded_client_ip`] therefore walks the chain from
 //! right to left, continues while the current hop is itself a declared proxy,
-//! and returns the first hop that is not one. An invalid or non-UTF-8 entry
-//! stops the walk (fail closed): nothing to its left can be attributed to a
-//! declared proxy, and an attacker could otherwise hide a forged hop behind a
-//! malformed value.
+//! and returns the first hop that is not one. A malformed or non-UTF-8 entry
+//! met before that client stops the walk (fail closed): it is then unknown
+//! whether the hop is a proxy. Entries further left are never parsed, so a
+//! client may prepend garbage without hiding the client the proxy appended.
 //!
-//! `X-Real-IP` is only a single-proxy fallback, used when `X-Forwarded-For` has
-//! no usable entry. When both are present the chain wins; otherwise the nearest
-//! proxy could hide the real client (or an outer proxy) behind a header that
-//! does not describe the whole chain.
+//! `X-Real-IP` is only a single-proxy fallback, used when `X-Forwarded-For` is
+//! absent or has no non-empty entry. When both are present the chain wins;
+//! otherwise the nearest proxy could hide the real client (or an outer proxy)
+//! behind a header that does not describe the whole chain.
 //!
 //! The proxy must overwrite (not forward unchanged) `X-Real-IP` and append to
 //! `X-Forwarded-For`: an honest proxy that forwards the client values unchanged
@@ -36,8 +36,10 @@ use axum::http::HeaderMap;
 /// Client address resolved from the proxy chain, or `None`.
 ///
 /// Returns `None` when the direct peer is not declared in `trusted_proxies`,
-/// when no non-proxy hop exists, or when an entry is invalid (fail closed).
-/// `X-Real-IP` is only read when `X-Forwarded-For` carries no hop at all.
+/// when a malformed entry is met before any client, or when every hop is a
+/// declared proxy. Entries to the left of the first client are never parsed:
+/// the walk stops at the client. `X-Real-IP` is only read when
+/// `X-Forwarded-For` carries no non-empty entry.
 /// Returned addresses are canonicalized.
 pub fn forwarded_client_ip(
     peer_ip: Option<IpAddr>,
@@ -48,37 +50,39 @@ pub fn forwarded_client_ip(
         return None;
     }
 
-    let mut hops = Vec::new();
-    for value in headers.get_all("x-forwarded-for") {
+    // Lazy walk: values and comma-separated entries are read from the right,
+    // and the scan stops as soon as a client is found. A malformed entry is
+    // only fatal while it is still unknown whether the hop is a proxy; entries
+    // further left are attacker-controlled noise and are never parsed.
+    let mut saw_hop = false;
+    for value in headers.get_all("x-forwarded-for").iter().rev() {
         let Ok(value) = value.to_str() else {
             return None;
         };
-        for hop in value.split(',') {
+        for hop in value.split(',').rev() {
             let hop = hop.trim();
             if hop.is_empty() {
                 continue;
             }
-            match hop.parse::<IpAddr>() {
-                Ok(ip) => hops.push(canonical_ip(ip)),
-                Err(_) => return None,
+            saw_hop = true;
+            let Ok(ip) = hop.parse::<IpAddr>() else {
+                return None;
+            };
+            let ip = canonical_ip(ip);
+            if !is_trusted_proxy(Some(ip), trusted_proxies) {
+                return Some(ip);
             }
         }
     }
 
-    if hops.is_empty() {
-        return headers
-            .get("x-real-ip")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.trim().parse::<IpAddr>().ok())
-            .map(canonical_ip);
+    if saw_hop {
+        return None;
     }
-
-    for hop in hops.iter().rev() {
-        if !is_trusted_proxy(Some(*hop), trusted_proxies) {
-            return Some(*hop);
-        }
-    }
-    None
+    headers
+        .get("x-real-ip")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<IpAddr>().ok())
+        .map(canonical_ip)
 }
 
 /// Address to journal for a request.
@@ -221,7 +225,18 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_hop_fails_closed() {
+    fn only_a_malformed_hop_before_the_client_fails_closed() {
+        // A client may prepend garbage: the proxy appended the real client to
+        // its right, so the walk returns the client before reading the noise.
+        assert_eq!(
+            forwarded_client_ip(
+                peer("127.0.0.1"),
+                &headers(&[("x-forwarded-for", "garbage, 198.51.100.7")]),
+                &trusted(&["127.0.0.1"])
+            ),
+            v4("198.51.100.7")
+        );
+
         // The rightmost entry is not an IP: the chain cannot be walked.
         assert_eq!(
             forwarded_client_ip(
@@ -231,7 +246,8 @@ mod tests {
             ),
             None
         );
-        // Non-UTF-8 bytes are ignored by `to_str`; treat them as invalid.
+        // Non-UTF-8 bytes are ignored by `to_str`; treat them as invalid when
+        // they are met before the client.
         let mut map = HeaderMap::new();
         map.append(
             "x-forwarded-for",
@@ -240,6 +256,17 @@ mod tests {
         assert_eq!(
             forwarded_client_ip(peer("127.0.0.1"), &map, &trusted(&["127.0.0.1"])),
             None
+        );
+        // To the left of the client, the opaque value is never read.
+        let mut map = HeaderMap::new();
+        map.append(
+            "x-forwarded-for",
+            HeaderValue::from_bytes(b"\xff").expect("valeur opaque acceptée"),
+        );
+        map.append("x-forwarded-for", HeaderValue::from_static("198.51.100.7"));
+        assert_eq!(
+            forwarded_client_ip(peer("127.0.0.1"), &map, &trusted(&["127.0.0.1"])),
+            v4("198.51.100.7")
         );
     }
 
@@ -261,13 +288,33 @@ mod tests {
             forwarded_client_ip(peer("10.0.0.2"), &map, &trusted(&["10.0.0.2", "10.0.0.9"])),
             v4("198.51.100.4")
         );
+
+        // A chain also wins over a forged loopback `X-Real-IP`: the admin
+        // local-only check must not accept it.
+        let map = headers(&[
+            ("x-forwarded-for", "198.51.100.4, 10.0.0.9"),
+            ("x-real-ip", "127.0.0.1"),
+        ]);
+        assert_eq!(
+            forwarded_client_ip(peer("10.0.0.2"), &map, &trusted(&["10.0.0.2", "10.0.0.9"])),
+            v4("198.51.100.4")
+        );
+
+        // Present but empty `X-Forwarded-For` behaves as absent.
+        let map = headers(&[("x-forwarded-for", " , "), ("x-real-ip", "198.51.100.4")]);
+        assert_eq!(
+            forwarded_client_ip(peer("127.0.0.1"), &map, &trusted(&["127.0.0.1"])),
+            v4("198.51.100.4")
+        );
     }
 
     #[test]
     fn multiple_forwarded_for_headers_are_concatenated() {
+        // The proxy appended a second header: reading only the first one
+        // (which names the inner proxy) must not win.
         let map = headers(&[
-            ("x-forwarded-for", "198.51.100.4"),
             ("x-forwarded-for", "10.0.0.9"),
+            ("x-forwarded-for", "198.51.100.4"),
         ]);
         assert_eq!(
             forwarded_client_ip(peer("10.0.0.2"), &map, &trusted(&["10.0.0.2", "10.0.0.9"])),

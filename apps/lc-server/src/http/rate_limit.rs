@@ -47,7 +47,8 @@
 //! `TRUSTED_PROXIES`**. La chaîne est parcourue de droite à gauche en sautant
 //! les proxys déclarés, donc deux clients derrière le même proxy gardent des
 //! budgets distincts et une chaîne de deux proxys résout le client d'origine.
-//! `X-Real-IP` ne sert que de repli quand `X-Forwarded-For` est absent. Sans
+//! `X-Real-IP` ne sert que de repli quand `X-Forwarded-For` est absent ou sans
+//! saut non vide. Sans
 //! proxy déclaré, les en-têtes sont ignorés et le pair direct sert de clé :
 //! configuration explicite exigée par le point S6 du plan de migration, le
 //! serveur ne fait jamais confiance à ces en-têtes par défaut.

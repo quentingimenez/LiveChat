@@ -47,7 +47,8 @@ Si aucune méthode n'est disponible : toutes les routes `/admin/api/**` et
 `ADMIN_TRUST_FORWARDED_FOR` restent appliqués à toutes ces routes : avec le
 second actif et un pair déclaré dans `TRUSTED_PROXIES`, la chaîne
 `X-Forwarded-For` est parcourue de droite à gauche en sautant les proxys
-déclarés (`X-Real-IP` en repli quand la chaîne est absente).
+déclarés (`X-Real-IP` en repli quand la chaîne est absente ou sans saut non
+vide).
 
 | Route | Effet |
 |---|---|

@@ -449,8 +449,12 @@ depuis le LAN**, et le reverse proxy est le seul point d'entrée public.
   à gauche en sautant les proxys déclarés, donc deux proxys chaînés résolvent le
   client d'origine au lieu du dernier saut. Le proxy doit **ajouter** son pair à
   `X-Forwarded-For` et **écraser** `X-Real-IP` (repli seulement quand la chaîne
-  est absente), jamais recopier l'en-tête reçu du client. Sans proxy déclaré,
-  les en-têtes sont ignorés. Le compteur est en mémoire : un
+  est absente), jamais recopier l'en-tête reçu du client. Depuis H-02c,
+  `X-Forwarded-For` **prime** sur `X-Real-IP` : un proxy qui ne pose que
+  `X-Real-IP` en laissant passer un `X-Forwarded-For` client est non conforme et
+  dangereux (le client choisit son IP d'audit et de rate-limit) ; il doit
+  ajouter son pair à la chaîne ou remplacer/supprimer la chaîne reçue. Sans
+  proxy déclaré, les en-têtes sont ignorés. Le compteur est en mémoire : un
   redémarrage du serveur le remet à zéro.
 - **Accès admin depuis l'hôte, sans proxy** : dans un conteneur bridge, le
   serveur voit l'IP de la passerelle Docker et non `127.0.0.1` ; avec

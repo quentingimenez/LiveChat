@@ -308,7 +308,8 @@ contrairement au legacy qui combinait les deux). Préflight mis en cache 600 s.
   `TRUSTED_PROXIES`, la chaîne `X-Forwarded-For` parcourue de droite à gauche :
   les sauts qui sont eux-mêmes des proxys déclarés sont sautés, le premier
   autre saut est le client ; `X-Real-IP` ne sert que de repli quand la chaîne
-  est absente (le premier saut XFF est écrit par le client, `http/proxy.rs`).
+  est absente ou sans saut non vide (le premier saut XFF est écrit par le
+  client, `http/proxy.rs`).
   Sinon les en-têtes sont ignorés et le pair direct sert de clé. Les IPv4
   encapsulées en IPv6 (`::ffff:a.b.c.d`) sont normalisées ;
 - seule exemption : les adresses loopback en `development` (l'exemption

@@ -175,9 +175,19 @@ export function createOverlayLegacyMediaRenderUtils() {
         const playableElement = element;
         params.setActivePlayableElement(playableElement);
         params.applyMediaStartOffset(playableElement, params.resolveStartOffsetSec(mediaPayload));
+        const requestGuildPause = typeof params.requestGuildPause === 'function' ? params.requestGuildPause : null;
+        const state = params.state && typeof params.state === 'object' ? params.state : {};
         playableElement.addEventListener('playing', () => {
             params.resumeCountdown();
             params.setPlaybackState('playing');
+            if (state.suppressPlayBroadcast === true) {
+                state.suppressPlayBroadcast = false;
+                return;
+            }
+            if (state.guildPaused === true && requestGuildPause) {
+                state.guildPaused = false;
+                requestGuildPause(false);
+            }
         });
         playableElement.addEventListener('pause', () => {
             if (playableElement.ended) {
@@ -185,14 +195,36 @@ export function createOverlayLegacyMediaRenderUtils() {
             }
             params.pauseCountdown();
             params.setPlaybackState('paused');
+            if (state.suppressPauseBroadcast === true) {
+                state.suppressPauseBroadcast = false;
+                return;
+            }
+            // A stop released the element: do not turn the stop into a guild pause.
+            if (state.releasingMedia === true || state.activePlayableElement !== playableElement) {
+                return;
+            }
+            if (state.guildPaused === true) {
+                return;
+            }
+            if (requestGuildPause) {
+                requestGuildPause(true);
+            }
         });
-        try {
-            await playableElement.play();
-        }
-        catch (error) {
-            params.logAutoplayError('Autoplay failed:', error);
+        const startPaused = params.payload?.paused === true || state.guildPaused === true;
+        if (startPaused) {
+            state.guildPaused = true;
             params.pauseCountdown();
             params.setPlaybackState('paused');
+        }
+        else {
+            try {
+                await playableElement.play();
+            }
+            catch (error) {
+                params.logAutoplayError('Autoplay failed:', error);
+                params.pauseCountdown();
+                params.setPlaybackState('paused');
+            }
         }
         // A job outlasting its video (very short clip, or a longer duration
         // chosen by the sender) keeps it on screen until the job's countdown

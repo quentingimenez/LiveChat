@@ -196,7 +196,7 @@ function presenceLabel(member, selfMuted) {
     return 'En ligne';
   }
   if (member.isSelf && selfMuted) {
-    return 'En pause';
+    return 'Guilde coupée ici';
   }
   return relativeTime(member.lastSeenAt);
 }
@@ -548,7 +548,7 @@ function openDeviceSettingsDialog(device) {
         h('label', null, 'Volume de la guilde', h('div', { class: 'row device-range' }, volume, output)),
         h('p', { class: 'device-hint' }, 'Multiplié par le volume général de l’appareil.'),
         h('label', { class: 'switch' }, muted, 'Couper le son des médias'),
-        h('label', { class: 'switch' }, paused, 'Mettre la guilde en pause'),
+        h('label', { class: 'switch' }, paused, 'Couper cette guilde sur cet appareil'),
       ),
       h(
         'div',

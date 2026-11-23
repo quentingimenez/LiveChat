@@ -813,7 +813,7 @@ const SELECTION_ACTIONS = [
 async function playSelection(items) {
   const guild = activeGuild();
   if (guild && guild.membership.muted) {
-    notify('Guilde en pause : reprends-la pour jouer.', true);
+    notify('Guilde coupée ici : réactive-la pour jouer.', true);
     return;
   }
   let sent = 0;
@@ -1438,7 +1438,7 @@ async function sendTrigger(item) {
 export async function playItem(item, control) {
   const guild = activeGuild();
   if (guild && guild.membership.muted) {
-    notify('Guilde en pause : reprends-la pour jouer.', true);
+    notify('Guilde coupée ici : réactive-la pour jouer.', true);
     return;
   }
   await performAction(control, `play:${item.id}`, async () => {

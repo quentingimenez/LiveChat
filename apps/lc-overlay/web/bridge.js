@@ -42,6 +42,7 @@
     reportError: 'overlay_report_error',
     reportPlaybackState: 'overlay_report_playback_state',
     reportPlaybackStop: 'overlay_report_playback_stop',
+    requestGuildPause: 'overlay_request_guild_pause',
     consumePairing: 'pairing_consume',
     getMediaBindings: 'media_board_get_bindings',
     setMediaBindings: 'media_board_set_bindings',
@@ -53,11 +54,12 @@
   const EVENTS = Object.freeze({
     play: 'overlay://play',
     stop: 'overlay://stop',
+    pause: 'overlay://pause',
     settings: 'overlay://settings',
     placement: 'overlay://placement'
   });
 
-  const EVENT_LIST = [EVENTS.play, EVENTS.stop, EVENTS.settings, EVENTS.placement];
+  const EVENT_LIST = [EVENTS.play, EVENTS.stop, EVENTS.pause, EVENTS.settings, EVENTS.placement];
 
   // ---------------------------------------------------------------------------
   // Détection Tauri 2.
@@ -485,6 +487,10 @@
         result = undefined;
         break;
 
+      case COMMANDS.requestGuildPause:
+        result = { ok: true };
+        break;
+
       case COMMANDS.consumePairing:
         result = { ok: true };
         console.info(LOG_PREFIX + ' [mock] consumePairing simulé (aucune requête réseau) :', sanitizeForLog(payload, 0));
@@ -600,12 +606,15 @@
     const aliases = {
       play: EVENTS.play,
       stop: EVENTS.stop,
+      pause: EVENTS.pause,
       settings: EVENTS.settings,
       'overlay:play': EVENTS.play,
       'overlay:stop': EVENTS.stop,
+      'overlay:pause': EVENTS.pause,
       'overlay:settings': EVENTS.settings,
       'overlay://play': EVENTS.play,
       'overlay://stop': EVENTS.stop,
+      'overlay://pause': EVENTS.pause,
       'overlay://settings': EVENTS.settings,
       placement: EVENTS.placement,
       'overlay:placement': EVENTS.placement,
@@ -619,7 +628,7 @@
     const eventName = normalizeEventName(rawEventName);
 
     if (!eventName) {
-      console.warn(LOG_PREFIX + ' __bridgeMockEmit : événement inconnu « ' + rawEventName + ' » (attendu : play, stop, settings, placement).');
+      console.warn(LOG_PREFIX + ' __bridgeMockEmit : événement inconnu « ' + rawEventName + ' » (attendu : play, stop, pause, settings, placement).');
       return 0;
     }
 
@@ -697,6 +706,10 @@
       return subscribeEvent('onStop', EVENTS.stop, callback);
     },
 
+    onPause: function (callback) {
+      return subscribeEvent('onPause', EVENTS.pause, callback);
+    },
+
     onSettings: function (callback) {
       return subscribeEvent('onSettings', EVENTS.settings, callback);
     },
@@ -726,6 +739,12 @@
 
     reportPlaybackStop: function (payload) {
       return sendCommand('reportPlaybackStop', COMMANDS.reportPlaybackStop, asPayloadArg(payload));
+    },
+
+    // The renderer asks the guild to pause/resume a playback started by the OS
+    // media keys; the shell forwards a `pause.request` to the server.
+    requestGuildPause: function (payload) {
+      return sendCommand('requestGuildPause', COMMANDS.requestGuildPause, asPayloadArg(payload));
     },
 
     consumePairing: function (payload) {
@@ -785,7 +804,7 @@
         LOG_PREFIX +
           ' v' +
           VERSION +
-          ' — mode MOCK (Tauri absent) : commandes simulées, événements via window.__bridgeMockEmit("play"|"stop"|"settings", payload).'
+          ' — mode MOCK (Tauri absent) : commandes simulées, événements via window.__bridgeMockEmit("play"|"stop"|"pause"|"settings", payload).'
       );
     }
   }

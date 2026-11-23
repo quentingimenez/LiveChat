@@ -16,7 +16,7 @@ Statut : shell compilé, testé et vérifié le 2026-11-10 (Windows 11, rustc/ca
 | Projet Tauri 2 complet (`cargo`, `build.rs`, `tauri.conf.json`, `tauri.beta.conf.json`) | Client WebSocket `tokio-tungstenite 0.29` + protocole v2 |
 | Config legacy 16 champs, chemin forcé `%APPDATA%\LiveChat\config.json`, `.bak`, migration | Appairage HTTP réel (`pairing_consume`) |
 | 2 fenêtres (overlay/board), click-through, topmost 2 s, styles Win32 | Renderer définitif (copie `overlay/renderer/**`, overlay.html/board.html) |
-| Tray compact (board, paramètres, pause générale/par guilde, quitter) | Hotkeys de médias actifs (émission socket) |
+| Tray compact (board, paramètres, coupe locale/tous les médias, quitter) | Hotkeys de médias actifs (émission socket) |
 | Single-instance, autostart, squelette global-shortcuts | Updater signé (clé minisign réelle), vérification au démarrage |
 | 10 commandes + 3 événements du contrat bridge (buffer 5 s) | Statut de connexion dynamique dans le tray |
 | Updater plugin (stub), capabilities, CSP | Broadcast d'état playback/erreurs vers le board |
@@ -256,8 +256,8 @@ Ordre et identifiants :
    dans `AppState::pending_board_view` (la board peut ne pas être encore
    chargée) et consommée une seule fois par `board_take_pending_view`.
 5. séparateur
-6. `tray.general_mute` — Pause générale : cochée = `enabled == false`.
-   Pendant la pause générale, les cases de guilde sont grisées.
+6. `tray.general_mute` — Couper tous les médias ici : cochée = `enabled == false`.
+   Pendant cette coupe locale, les cases de guilde sont grisées.
 7. `tray.guild.<id>` — une case par guilde appairée : cochée = la guilde
    diffuse (non muette), décochée = en pause. Le libellé reprend le nom de
    la guilde (repli `Guilde <id>`, troncature à 48 caractères) et ajoute

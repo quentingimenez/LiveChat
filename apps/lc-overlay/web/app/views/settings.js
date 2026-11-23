@@ -45,7 +45,7 @@ export const ALIGNMENTS = [
 const SHORTCUTS = [
   ['stop', 'Arrêter le média pour tous'],
   ['stopLocal', 'Arrêter le média chez moi'],
-  ['muteAll', 'Pause générale'],
+  ['muteAll', 'Couper tous les médias ici'],
   ['openBoard', 'Ouvrir la board'],
 ];
 
@@ -513,7 +513,7 @@ function renderSound(settings) {
     ),
     switchRow('Son coupé', mediaMute, 'settings-media-mute'),
     switchRow(
-      'Pause générale',
+      'Couper tous les médias ici',
       generalMute,
       'settings-general-mute',
       'Ferme les connexions : plus rien n’est reçu ni affiché.',
@@ -540,7 +540,7 @@ function renderGuildVolume(guild, settings) {
   });
   const mute = h('input', {
     type: 'checkbox',
-    'aria-label': `Mettre ${label} en pause`,
+    'aria-label': `Couper ${label} sur cet appareil`,
     checked: Boolean(guild.membership.muted),
     onChange: (event) => toggleGuildMute(guild, event.target.checked),
   });
@@ -564,7 +564,7 @@ function renderGuildVolume(guild, settings) {
         onInput: (value) =>
           debounce(`guildVolume:${guildId}`, () => applyPatch({ guilds: { [guildId]: { volume: value / 100 } } })),
       }),
-      h('label', { class: 'switch settings-guild-mute' }, mute, 'En pause'),
+      h('label', { class: 'switch settings-guild-mute' }, mute, 'Coupée ici'),
       h('label', { class: 'switch settings-guild-mute' }, mediaMute, 'Son coupé'),
     ),
   );

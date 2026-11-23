@@ -44,7 +44,7 @@
 // (un hors ligne, un obsolète), avec renommage, réglages et révocation en
 // mémoire ; l'appareil « toi » refuse sa propre révocation.
 // Les médias ont des formats variés (portrait, carré, paysage) pour la
-// mosaïque ; « Nope » est une image portrait (1080 × 1920). La mise en pause ferme la
+// mosaïque ; « Nope » est une image portrait (1080 × 1920). La coupe locale ferme la
 // connexion comme le shell (disabled, puis connecting → connected au retour)
 // et le membre « toi » passe hors ligne. `__mock.requests` liste les appels
 // guild_api ({ method, path }).

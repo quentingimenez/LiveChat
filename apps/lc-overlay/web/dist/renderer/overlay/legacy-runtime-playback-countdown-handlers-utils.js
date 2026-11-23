@@ -167,6 +167,9 @@ export function createOverlayLegacyRuntimePlaybackCountdownHandlersUtils() {
             }
             params.state.activePlayableElement = null;
             params.state.activeMediaRelayout = null;
+            params.state.guildPaused = false;
+            params.state.suppressPauseBroadcast = false;
+            params.state.suppressPlayBroadcast = false;
             params.state.activeObjectUrl = params.overlayResetUtils.releaseObjectUrl(params.state.activeObjectUrl);
             params.resetMediaFrameState();
             params.overlayResetUtils.resetOverlayLayers({

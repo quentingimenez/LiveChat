@@ -91,6 +91,9 @@ export function createOverlayLegacyBootstrapUtils() {
         params.registerOnPlay(params.onPlay);
         params.registerOnStop(params.onStop);
         params.registerOnSettings(params.onSettings);
+        if (typeof params.registerOnPause === 'function') {
+            params.registerOnPause(params.onPause);
+        }
         params.addWindowResizeListener(() => {
             // The shell re-fits the window to the screen (display resolution
             // change): the scaled media and the header chips follow the new

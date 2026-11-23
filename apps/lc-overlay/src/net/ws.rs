@@ -20,7 +20,7 @@ use futures_util::{SinkExt, StreamExt};
 use lc_protocol::{
     AckPayload, AdminChangedPayload, BoardChangedPayload, ClientEnvelope, ClientMessage,
     DeviceSettingsPayload, DeviceSettingsStatePayload, HeartbeatPayload, HelloPayload,
-    MediaIngestionPayload, PeersPayload, Platform, PlayPayload, PlaybackState,
+    MediaIngestionPayload, PausePayload, PeersPayload, Platform, PlayPayload, PlaybackState,
     PlaybackStatePayload, RightsChangedPayload, ServerEnvelope, ServerErrorPayload, ServerMessage,
     SessionChangedPayload, SessionMode, SettingsPayload, StopPayload, WelcomePayload,
 };
@@ -108,6 +108,8 @@ pub struct NetSnapshot {
     pub session_mode: Option<String>,
     pub peers: Vec<String>,
     pub last_error: Option<String>,
+    /// La guilde est-elle en pause partagée (tous les appareils) ?
+    pub paused: bool,
 }
 
 impl Default for NetSnapshot {
@@ -122,6 +124,7 @@ impl Default for NetSnapshot {
             session_mode: None,
             peers: Vec::new(),
             last_error: None,
+            paused: false,
         }
     }
 }
@@ -154,6 +157,7 @@ pub trait SessionEffects: Send + Sync {
     fn on_settings(&self, payload: &SettingsPayload);
     fn on_play(&self, payload: &PlayPayload);
     fn on_stop(&self, payload: &StopPayload);
+    fn on_pause(&self, payload: &PausePayload);
     fn on_peers(&self, payload: &PeersPayload);
     fn on_ack(&self, payload: &AckPayload);
     fn on_server_error(&self, payload: &ServerErrorPayload);
@@ -379,7 +383,7 @@ async fn supervise(
                 &app,
                 &guild_id,
                 ConnectionStatus::Disabled,
-                Some("guilde en pause".to_string()),
+                Some("guilde coupée ici".to_string()),
             );
             if !wait_for_command(&mut commands, &app).await {
                 return;
@@ -943,6 +947,7 @@ async fn run_session<E: SessionEffects>(
                                     ServerMessage::Settings(payload) => effects.on_settings(&payload),
                                     ServerMessage::Play(payload) => effects.on_play(&payload),
                                     ServerMessage::Stop(payload) => effects.on_stop(&payload),
+                                    ServerMessage::Pause(payload) => effects.on_pause(&payload),
                                     ServerMessage::Peers(payload) => effects.on_peers(&payload),
                                     ServerMessage::Ack(payload) => {
                                         match pending_acks.remove(&payload.ref_id) {
@@ -1371,6 +1376,29 @@ impl SessionEffects for AppEffects {
         }
     }
 
+    fn on_pause(&self, payload: &PausePayload) {
+        let state = self.app.state::<AppState>();
+        state.set_net_pause(&self.guild_id, payload.paused);
+        if let Err(error) = events::emit_guilds_changed(&self.app) {
+            tracing::debug!(%error, "échec d'émission de l'état de pause vers la board");
+        }
+        let mut value = serde_json::to_value(payload).unwrap_or_default();
+        if let serde_json::Value::Object(map) = &mut value {
+            map.insert(
+                "guildId".to_string(),
+                serde_json::Value::String(self.guild_id.clone()),
+            );
+        }
+        tracing::info!(
+            guild_id = %self.guild_id,
+            paused = payload.paused,
+            job_id = ?payload.job_id,
+            "pause partagée reçue"
+        );
+        events::deliver_or_buffer(&self.app, state.overlay_ready(), OverlayEvent::pause(value));
+        refresh_tray_from_any_thread(&self.app);
+    }
+
     fn on_peers(&self, payload: &PeersPayload) {
         let state = self.app.state::<AppState>();
         let labels = payload
@@ -1531,7 +1559,17 @@ impl AppEffects {
         let state = app.state::<AppState>();
         let config = state.config_snapshot();
         let value = match renderer_play_payload(payload, &config, &self.guild_id) {
-            Ok(value) => value,
+            Ok(mut value) => {
+                // Un média qui revient pendant une pause partagée reste figé
+                // dès son rendu (welcome/rattrapage), au lieu de repartir.
+                if let serde_json::Value::Object(map) = &mut value {
+                    map.insert(
+                        "paused".to_string(),
+                        serde_json::Value::Bool(state.net_snapshot_for(&self.guild_id).paused),
+                    );
+                }
+                value
+            }
             Err(error) => {
                 tracing::warn!(%error, "play non sérialisable");
                 return;
@@ -1578,11 +1616,14 @@ mod tests {
         MediaTrigger, MediaTriggerPayload,
     };
 
+    type PauseRecord = (bool, Option<String>, Option<u64>);
+
     #[derive(Default)]
     struct RecordingEffects {
         welcome: StdMutex<u32>,
         plays: StdMutex<Vec<String>>,
         stops: StdMutex<u32>,
+        pauses: StdMutex<Vec<PauseRecord>>,
         peers: StdMutex<u32>,
         settings: StdMutex<u32>,
         acks: StdMutex<u32>,
@@ -1617,6 +1658,12 @@ mod tests {
         fn on_stop(&self, _payload: &StopPayload) {
             if let Ok(mut counter) = self.stops.lock() {
                 *counter += 1;
+            }
+        }
+
+        fn on_pause(&self, payload: &PausePayload) {
+            if let Ok(mut pauses) = self.pauses.lock() {
+                pauses.push((payload.paused, payload.job_id.clone(), payload.remaining_ms));
             }
         }
 
@@ -1695,6 +1742,7 @@ mod tests {
                 default_media_time: 10,
                 max_media_time: None,
             },
+            paused: false,
             current_job: None,
         }
     }

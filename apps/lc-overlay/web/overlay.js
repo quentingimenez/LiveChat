@@ -93,9 +93,21 @@
     setPlaybackState: playbackCountdownHandlers.setPlaybackState,
     getRemainingCountdownMs: playbackCountdownHandlers.getRemainingCountdownMs,
     setCountdownAutoClear: playbackCountdownHandlers.setCountdownAutoClear,
+    isCountdownPaused: () => state.countdownState.paused === true,
     playbackUtils: overlayLegacyPlaybackUtils,
     setTimeout: (callback, delayMs) => setTimeout(() => callback(), delayMs),
     reportError: window.livechatOverlay?.reportError || null,
+    requestGuildPause: (paused) => {
+      const payload = { paused };
+      if (typeof state.activeGuildId === 'string') {
+        payload.guildId = state.activeGuildId;
+      }
+      const remainingMs = playbackCountdownHandlers.getRemainingCountdownMs();
+      if (typeof remainingMs === 'number' && Number.isFinite(remainingMs)) {
+        payload.remainingMs = Math.max(0, Math.round(remainingMs));
+      }
+      return window.livechatOverlay?.requestGuildPause?.(payload);
+    },
     logWarning: (message, error) => {
       console.warn(message, error?.message || error);
     },
@@ -181,6 +193,43 @@
     placementEditor.syncLayout(state.overlayConfig?.layout);
   };
 
+  // Shared pause/resume: the server sends the same state to every overlay of
+  // the guild. The media element is paused/resumed without echoing the event
+  // back as a new pause request (see the suppress flags in the media render).
+  const onPause = (payload) => {
+    const paused = payload?.paused === true;
+    const guildId = typeof payload?.guildId === 'string' ? payload.guildId : null;
+    if (guildId && typeof state.activeGuildId === 'string' && guildId !== state.activeGuildId) {
+      return;
+    }
+    state.guildPaused = paused;
+    if (paused) {
+      playbackCountdownHandlers.pauseCountdown();
+      playbackCountdownHandlers.setPlaybackState('paused');
+      const element = state.activePlayableElement;
+      if (element && element.paused !== true && typeof element.pause === 'function') {
+        state.suppressPauseBroadcast = true;
+        try {
+          element.pause();
+        } catch (error) {
+          state.suppressPauseBroadcast = false;
+          console.warn('Overlay pause failed:', error);
+        }
+      }
+      return;
+    }
+    playbackCountdownHandlers.resumeCountdown();
+    playbackCountdownHandlers.setPlaybackState('playing');
+    const element = state.activePlayableElement;
+    if (element && typeof element.play === 'function') {
+      state.suppressPlayBroadcast = true;
+      Promise.resolve(element.play()).catch((error) => {
+        state.suppressPlayBroadcast = false;
+        console.warn('Overlay resume failed:', error);
+      });
+    }
+  };
+
   const onPlacement = (payload) => {
     if (payload && payload.active === true) {
       placementEditor.start(payload.layout || state.overlayConfig?.layout);
@@ -208,12 +257,25 @@
       registerOnSettings: (handler) => {
         window.livechatOverlay.onSettings(handler);
       },
-      onPlay: renderHandlers.onPlay,
+      registerOnPause: (handler) => {
+        window.livechatOverlay.onPause(handler);
+      },
+      onPlay: async (payload) => {
+        await renderHandlers.onPlay(payload);
+        // A welcome (or a queued play) while the guild is paused renders the
+        // media but keeps it frozen until the resume reaches this overlay.
+        if (payload?.paused === true || state.guildPaused === true) {
+          state.guildPaused = true;
+          playbackCountdownHandlers.pauseCountdown();
+          playbackCountdownHandlers.setPlaybackState('paused');
+        }
+      },
       onStop: (payload) =>
         playbackCountdownHandlers.clearOverlay({
           reason: overlayLegacyPlaybackUtils.stopReportReason(payload),
         }),
       onSettings,
+      onPause,
       addWindowResizeListener: (handler) => {
         window.addEventListener('resize', handler);
       },

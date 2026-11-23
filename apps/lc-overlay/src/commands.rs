@@ -11,9 +11,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use lc_protocol::{
-    AckOutcome, AckPayload, ClientMessage, MediaTrigger, MediaTriggerPayload, PlaybackEndedPayload,
-    PlaybackEndedReason, PlaybackState as ProtocolPlaybackState, PlaybackStatePayload,
-    StopRequestPayload, StopRequestSource,
+    AckOutcome, AckPayload, ClientMessage, MediaTrigger, MediaTriggerPayload, PauseRequestPayload,
+    PlaybackEndedPayload, PlaybackEndedReason, PlaybackState as ProtocolPlaybackState,
+    PlaybackStatePayload, StopRequestPayload, StopRequestSource,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -59,6 +59,7 @@ const COMMAND_MATRIX: &[(&str, &[&str])] = &[
             "overlay_report_error",
             "overlay_report_playback_state",
             "overlay_report_playback_stop",
+            "overlay_request_guild_pause",
             "overlay_placement_finish",
         ],
     ),
@@ -72,6 +73,7 @@ const COMMAND_MATRIX: &[(&str, &[&str])] = &[
             "media_board_trigger",
             "media_board_stop",
             "media_board_stop_local",
+            "media_board_pause",
             "overlay_check_updates",
             "overlay_install_update",
             "pairing_consume",
@@ -236,6 +238,20 @@ struct GuildRequest {
     path: Option<String>,
     #[serde(default)]
     body: Option<Value>,
+}
+
+/// Payload de `media_board_pause` / `overlay_request_guild_pause`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GuildPauseRequest {
+    /// Guilde visée ; par défaut la guilde active.
+    #[serde(default)]
+    guild_id: Option<String>,
+    #[serde(default)]
+    paused: bool,
+    /// Temps restant connu du demandeur, en millisecondes.
+    #[serde(default)]
+    remaining_ms: Option<u64>,
 }
 
 /// Paramètres of `media_upload_start`.
@@ -408,6 +424,13 @@ fn trigger_failure(reason: &str) -> MediaBoardTriggerResponse {
         outcome: None,
         position: None,
         job_id: None,
+    }
+}
+
+fn action_failure(reason: &str) -> MediaBoardActionResponse {
+    MediaBoardActionResponse {
+        ok: false,
+        reason: Some(reason.to_string()),
     }
 }
 
@@ -588,7 +611,7 @@ pub fn settings_set(
     if base.enabled != saved.enabled {
         tray::apply_general_mute_effect(&app, saved.enabled);
         if let Err(error) = events::emit_guilds_changed(&app) {
-            tracing::debug!(%error, "échec d'émission de l'état des guildes après mise en pause");
+            tracing::debug!(%error, "échec d'émission de l'état des guildes après coupe locale");
         }
     }
     tray::refresh_tray(&app);
@@ -1183,6 +1206,83 @@ pub fn media_board_stop_local(
     })
 }
 
+/// `media_board_pause` — pauses or resumes the guild playback for every
+/// overlay of the guild (`pause.request`, acknowledged by the server).
+#[tauri::command]
+pub async fn media_board_pause(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+    payload: Option<Value>,
+) -> Result<MediaBoardActionResponse, String> {
+    ensure_allowed(&window, "media_board_pause")?;
+    let parsed = payload
+        .map(|payload| serde_json::from_value::<GuildPauseRequest>(payload).unwrap_or_default())
+        .unwrap_or_default();
+    let guild_id = {
+        let state = app.state::<AppState>();
+        target_guild(&state, parsed.guild_id.as_deref())
+    };
+    let Some(guild_id) = guild_id else {
+        return Ok(action_failure("no_active_guild"));
+    };
+    let (reply, receiver) = oneshot::channel();
+    let sent = ws::send_command_to(
+        &app,
+        &guild_id,
+        NetCommand::SendWithAck {
+            message: ClientMessage::PauseRequest(PauseRequestPayload {
+                paused: parsed.paused,
+                remaining_ms: parsed.remaining_ms,
+            }),
+            reply,
+        },
+    );
+    if !sent {
+        return Ok(action_failure("socket_unavailable"));
+    }
+    match tokio::time::timeout(TRIGGER_ACK_TIMEOUT, receiver).await {
+        Ok(Ok(ack)) => Ok(MediaBoardActionResponse {
+            ok: ack.ok,
+            reason: ack.error.map(|error| error.code),
+        }),
+        Ok(Err(_)) => Ok(action_failure("socket_unavailable")),
+        Err(_) => Ok(action_failure("ack_timeout")),
+    }
+}
+
+/// `overlay_request_guild_pause` — the renderer forwards a pause/resume
+/// requested by the OS media keys (or by the overlay itself) to the guild.
+#[tauri::command]
+pub fn overlay_request_guild_pause(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+    payload: Option<Value>,
+) -> Result<(), String> {
+    ensure_allowed(&window, "overlay_request_guild_pause")?;
+    let parsed = payload
+        .map(|payload| serde_json::from_value::<GuildPauseRequest>(payload).unwrap_or_default())
+        .unwrap_or_default();
+    let guild_id = {
+        let state = app.state::<AppState>();
+        target_guild(&state, parsed.guild_id.as_deref())
+    }
+    .ok_or_else(|| "no_active_guild".to_string())?;
+    let sent = send_protocol_to(
+        &app,
+        &guild_id,
+        ClientMessage::PauseRequest(PauseRequestPayload {
+            paused: parsed.paused,
+            remaining_ms: parsed.remaining_ms,
+        }),
+        "overlay_request_guild_pause",
+    );
+    if sent {
+        Ok(())
+    } else {
+        Err("socket_unavailable".to_string())
+    }
+}
+
 /// `guilds_list` — guildes rejointes et état de connexion (sans jeton).
 #[tauri::command]
 pub fn guilds_list(
@@ -1698,6 +1798,14 @@ mod tests {
     fn local_stop_is_a_board_command_only() {
         assert!(command_allowed("board", "media_board_stop_local"));
         assert!(!command_allowed("overlay", "media_board_stop_local"));
+    }
+
+    #[test]
+    fn shared_pause_is_split_between_the_board_and_the_renderer() {
+        assert!(command_allowed("board", "media_board_pause"));
+        assert!(!command_allowed("overlay", "media_board_pause"));
+        assert!(command_allowed("overlay", "overlay_request_guild_pause"));
+        assert!(!command_allowed("board", "overlay_request_guild_pause"));
     }
 
     #[test]

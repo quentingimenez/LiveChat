@@ -313,6 +313,10 @@ Convention retenue et implémentée dans `apps/lc-overlay/web/bridge.js` (`COMMA
 | `setMediaBindings` | `meme-board:set-bindings` | `media_board_set_bindings` | `{ payload: MediaBoardSetBindingsRequest }` | `MediaBoardSetBindingsResponse` |
 | `triggerMedia` | `meme-board:trigger` | `media_board_trigger` | `{ payload: MediaBoardTriggerRequest }` | `MediaBoardTriggerResponse` (voir §13.1) |
 | `stopMediaPlayback` | `meme-board:stop` | `media_board_stop` | `{}` | `MediaBoardActionResponse` |
+| `requestGuildPause` | — (nouveau) | `overlay_request_guild_pause` | `{ payload: { paused, guildId?, remainingMs? } }` | `()` |
+
+Côté board, la pause partagée passe par `media_board_pause` (`{ payload: { guildId?, paused, remainingMs? } }`,
+réponse `MediaBoardActionResponse`), comme `media_board_stop`.
 
 Signatures Rust recommandées (payloads `serde` avec `rename_all = "camelCase"`, erreurs en `Result<_, String>` pour rester
 compatible avec `error.message` du renderer) :
@@ -356,6 +360,7 @@ Notes de contrat :
 | --- | --- | --- | --- | --- |
 | `onPlay` | `overlay:play` | `overlay://play` | `OverlayPlayPayload` | fenêtre `overlay` uniquement |
 | `onStop` | `overlay:stop` | `overlay://stop` | `OverlayStopPayload` | fenêtre `overlay` uniquement |
+| `onPause` | — (nouveau) | `overlay://pause` | `{ paused, guildId?, jobId?, remainingMs? }` | fenêtre `overlay` uniquement |
 | `onSettings` | `overlay:settings` | `overlay://settings` | `OverlaySettingsPayload` | fenêtre `overlay` uniquement |
 | — | — | `overlay://device-settings` | `SettingsView` complet (voir §14) | fenêtre `board` uniquement |
 | — | — | `overlay://guild-removed` | `GuildRemoval` (voir §13.2) | fenêtre `board` uniquement |
@@ -366,7 +371,7 @@ Recommandations Rust :
 
 - Préférer un emit **par fenêtre** (`WebviewWindow::emit`) pour conserver les cibles actuelles ; `app.emit(...)` diffuse à
   toutes les webviews (le pairing n'écoutant pas, ce serait inoffensif mais moins fidèle).
-- Les noms `overlay://play|stop|settings` sont **conservés** (décision Lead §8.5) : Tauri 2 accepte `a-zA-Z0-9`, `-`, `_`,
+- Les noms `overlay://play|stop|pause|settings` sont **conservés** (décision Lead §8.5) : Tauri 2 accepte `a-zA-Z0-9`, `-`, `_`,
   `:`, `/`. Émission/réception réelle **vérifiée par le POC Tauri en cours** ; repli `overlay:play`/`overlay:stop`/
   `overlay:settings` **uniquement si le POC l'exige**, avec le même mapping applicatif (la table `EVENTS` de
   `bridge.js:52-58` est le point unique de changement, le renderer ne voit pas la différence).
@@ -421,13 +426,16 @@ await window.livechatOverlay.consumePairing({ serverUrl: 'https://livechat.examp
 Arbitrages du Lead sur les points ouverts de la Phase 0. Ils font foi pour la Phase 8 et **remplacent les mitigations
 provisoires** du §7 pour les risques concernés. Aucun changement de `apps/lc-overlay/web/bridge.js` n'est requis.
 
-### 8.1 Bufferisation play/stop (risque #2)
+### 8.1 Bufferisation play/stop/pause (risque #2)
 
-**Décision : bufferiser côté Rust.** L'adaptateur Tauri garde une **file bornée par fenêtre** ; si `overlay://play` ou
-`overlay://stop` arrive avant que la commande `overlay_renderer_ready` soit reçue pour la fenêtre `overlay` :
+**Décision : bufferiser côté Rust.** L'adaptateur Tauri garde une **file bornée par fenêtre** ; si `overlay://play`,
+`overlay://stop` ou `overlay://pause` arrive avant que la commande `overlay_renderer_ready` soit reçue pour la fenêtre
+`overlay` :
 
-- conserver le **dernier play** et le **dernier stop** (pas d'accumulation illimitée) ;
-- les rejouer **dans l'ordre d'arrivée** dès `overlay_renderer_ready` ;
+- conserver le **dernier play**, le **dernier stop** et la **dernière pause** (pas d'accumulation illimitée ;
+  `MAX_PENDING = 3`) ;
+- les rejouer **dans l'ordre d'arrivée** dès `overlay_renderer_ready` ; un `play` suivi d'une `pause` doit arriver dans
+  cet ordre pour que le média soit rendu figé, pas lancé puis rattrapé ;
 - si le handshake n'arrive pas dans les **5 s**, vider la file avec un `warn` et ne pas rejouer.
 
 C'est la **correction d'une course de la v1 Electron**, pas une mesure de compatibilité : le main Electron n'a jamais eu
@@ -700,7 +708,7 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
 - `emit_settings` ne diffuse plus `clientToken` (redaction) vers les fenêtres
   overlay/board — cohérent avec §12.7 (le token board passe par `get_config`).
 - Tray : en-tête `N/M guildes connectées` (ou « aucune guilde »), case
-  « Pause générale » (cochée = `enabled == false`) qui coupe la lecture via
+  « Couper tous les médias ici » (cochée = `enabled == false`) qui coupe la lecture via
   `stop_overlay_now`, et tooltip suffixé « (désactivé) ».
 - Config : écriture atomique (temp + rename) et `.bak` atomique (A6-007).
 
@@ -708,7 +716,7 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
 
 - Menu tray (ordre exact) : en-tête désactivé `LiveChat — N/M guildes
   connectées` (ou `LiveChat — aucune guilde`), séparateur, `Ouvrir la board`,
-  `Paramètres…`, séparateur, `Pause générale`, une case par guilde appairée,
+  `Paramètres…`, séparateur, `Couper tous les médias ici`, une case par guilde appairée,
   séparateur, `Quitter`.
 - La décision est un modèle pur (`tray::menu_model` → `MenuEntry`) testé sans
   Tauri ; `tray::build_menu` le traduit en items. Les anciennes entrées de
@@ -896,7 +904,7 @@ Resynchronisation des conversions :
   autre état et qu'elle a des entrées `converting`, le board lit une fois
   `GET /overlay/media-board/ingestions` via `guild_api` ;
 - tant qu'une guilde a des entrées `converting` **et** qu'elle n'a pas de
-  WebSocket connecté (guilde en pause ou hors ligne), le même GET est
+  WebSocket connecté (guilde coupée ici ou hors ligne), le même GET est
   répété toutes les 15 s, uniquement pour cette guilde, et s'arrête dès
   qu'elle n'a plus d'entrée `converting` ou redevient connectée ;
 - pour chaque entrée : `ready` → succès, `failed` → échec,
@@ -1006,11 +1014,11 @@ persisté.
 
 Effets immédiats : persistance atomique, replacement de l'overlay sur l'écran
 choisi, réenregistrement des raccourcis, activation/désactivation de
-l'autostart, connexion/déconnexion de la pause générale comme le tray,
+l'autostart, connexion/déconnexion de la coupe locale de tous les médias comme le tray,
 rafraîchissement du tray, envoi de `overlay://settings` à l'overlay et de
 `overlay://device-settings` au board.
 
-`overlay://device-settings` est aussi émis quand la pause générale change
+`overlay://device-settings` est aussi émis quand la coupe locale de tous les médias change
 depuis le tray ou quand une guilde est rejointe/quittée (donc quand
 `guildVolumes` change).
 

@@ -226,8 +226,14 @@ impl AppState {
             net.guild_id = Some(payload.guild_id.clone());
             net.client_id = Some(payload.client_id.clone());
             net.session_mode = Some(session_mode_label(payload.session_mode).to_string());
+            net.paused = payload.paused;
             net.peers.clear();
         });
+    }
+
+    /// Applique un `pause` partagé reçu du serveur.
+    pub fn set_net_pause(&self, guild_id: &str, paused: bool) {
+        self.with_net(guild_id, |net| net.paused = paused);
     }
 
     pub fn set_net_peers(&self, guild_id: &str, labels: Vec<String>) {

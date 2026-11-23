@@ -166,7 +166,7 @@ function renderSound(settings, guild) {
       'guild-settings-volume',
     ),
     switchRow('Son coupé', mediaMute, 'guild-settings-media-mute'),
-    switchRow('Mettre en pause', mute, 'guild-settings-mute'),
+    switchRow('Couper cette guilde sur cet appareil', mute, 'guild-settings-mute'),
   );
 }
 

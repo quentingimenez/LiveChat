@@ -51,7 +51,7 @@ export function renderHeader() {
         { class: 'header-title' },
         h('h1', { class: 'guild-name' }, guildLabel(guild)),
         role ? h('span', { class: `badge is-${role}` }, ROLE_LABELS[role] || role) : null,
-        guild.membership.muted ? h('span', { class: 'badge is-off' }, 'En pause') : null,
+        guild.membership.muted ? h('span', { class: 'badge is-off' }, 'Coupée ici') : null,
         !guild.membership.muted && (mediaMuted || allMediaMuted())
           ? h(
               'span',
@@ -79,7 +79,7 @@ export function renderHeader() {
             onClick: (event) => toggleMute(guild, event.currentTarget),
           },
           icon(guild.membership.muted ? 'mute' : 'sound'),
-          guild.membership.muted ? 'Reprendre' : 'Pause',
+          guild.membership.muted ? 'Réactiver ici' : 'Couper ici',
         ),
         guild.membership.muted
           ? null

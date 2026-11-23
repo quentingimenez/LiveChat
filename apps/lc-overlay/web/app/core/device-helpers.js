@@ -107,7 +107,7 @@ export function presenceLabel(device, now = Date.now()) {
     return 'En ligne';
   }
   if (device.guildSettings && device.guildSettings.paused) {
-    return 'En pause';
+    return 'Appareil coupé';
   }
   return lastSeenLabel(device.lastSeenAt, now);
 }

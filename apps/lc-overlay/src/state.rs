@@ -63,6 +63,10 @@ pub struct AppState {
     /// Arbitrage de l'écran unique entre les guildes : propriétaire courant,
     /// file locale et routage des rapports de lecture.
     screen: Mutex<ScreenArbiter>,
+    /// `true` quand le propriétaire de l'écran a changé depuis la dernière
+    /// publication : le board n'apprend `playing` (pastille « à l'antenne » du
+    /// rail) que par `overlay://guilds`, il faut donc le republier.
+    screen_owner_changed: AtomicBool,
     last_state_sent: Mutex<Option<Instant>>,
     /// View requested by the tray before the board was loaded.
     pending_board_view: Mutex<Option<String>>,
@@ -82,6 +86,7 @@ impl AppState {
             nets: Mutex::new(BTreeMap::new()),
             net_commands: Mutex::new(BTreeMap::new()),
             screen: Mutex::new(ScreenArbiter::default()),
+            screen_owner_changed: AtomicBool::new(false),
             last_state_sent: Mutex::new(None),
             pending_board_view: Mutex::new(None),
             pending_guild_removals: Mutex::new(Vec::new()),
@@ -285,6 +290,24 @@ impl AppState {
         }
     }
 
+    /// Note le changement de propriétaire de l'écran provoqué par une
+    /// transition. La pastille « à l'antenne » du rail ne vient que du champ
+    /// `playing` d'`overlay://guilds` : le board doit être republié dès que
+    /// l'écran change de main, sans attendre qu'il redemande l'état.
+    fn note_screen_owner(&self, before: Option<String>, after: Option<&str>) {
+        if before.as_deref() != after {
+            self.screen_owner_changed.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Consomme le drapeau de changement de propriétaire de l'écran.
+    ///
+    /// `true` quand une transition a changé la guilde à l'antenne depuis la
+    /// dernière publication : l'appelant doit émettre `overlay://guilds`.
+    pub fn take_screen_owner_change(&self) -> bool {
+        self.screen_owner_changed.swap(false, Ordering::SeqCst)
+    }
+
     /// Décide du sort d'un `play` : affichage immédiat ou mise en file locale.
     ///
     /// `showable` dit si l'overlay peut afficher quelque chose (activé et
@@ -297,13 +320,20 @@ impl AppState {
         payload: serde_json::Value,
         showable: bool,
     ) -> PlayPresentation {
-        self.lock_screen()
-            .present(guild_id, job_id, payload, showable)
+        let mut screen = self.lock_screen();
+        let before = screen.screen_guild().map(str::to_owned);
+        let presentation = screen.present(guild_id, job_id, payload, showable);
+        self.note_screen_owner(before, screen.screen_guild());
+        presentation
     }
 
     /// Affiche le prochain `play` en attente si l'écran est libre.
     pub fn advance_screen(&self, showable: bool) -> Option<QueuedPlay> {
-        self.lock_screen().advance(showable)
+        let mut screen = self.lock_screen();
+        let before = screen.screen_guild().map(str::to_owned);
+        let next = screen.advance(showable);
+        self.note_screen_owner(before, screen.screen_guild());
+        next
     }
 
     /// `stop` reçu du serveur pour une guilde : purge sa file, et libère
@@ -314,17 +344,29 @@ impl AppState {
         job_id: Option<&str>,
         showable: bool,
     ) -> StopDecision {
-        self.lock_screen().server_stop(guild_id, job_id, showable)
+        let mut screen = self.lock_screen();
+        let before = screen.screen_guild().map(str::to_owned);
+        let decision = screen.server_stop(guild_id, job_id, showable);
+        self.note_screen_owner(before, screen.screen_guild());
+        decision
     }
 
     /// Fin de session d'une guilde : purge sa file et libère son écran.
     pub fn release_guild(&self, guild_id: &str, showable: bool) -> StopDecision {
-        self.lock_screen().release_guild(guild_id, showable)
+        let mut screen = self.lock_screen();
+        let before = screen.screen_guild().map(str::to_owned);
+        let decision = screen.release_guild(guild_id, showable);
+        self.note_screen_owner(before, screen.screen_guild());
+        decision
     }
 
     /// Rapport de fin de lecture du renderer, routé vers la guilde du job.
     pub fn report_stop(&self, job_id: Option<&str>, showable: bool) -> ReportDecision {
-        self.lock_screen().report_stop(job_id, showable)
+        let mut screen = self.lock_screen();
+        let before = screen.screen_guild().map(str::to_owned);
+        let decision = screen.report_stop(job_id, showable);
+        self.note_screen_owner(before, screen.screen_guild());
+        decision
     }
 
     /// Job à l'écran, toutes guildes confondues.
@@ -661,6 +703,76 @@ mod tests {
         assert_eq!(state.playback_job().as_deref(), Some("job-b"));
         // Le job terminé reste connu pour router une trame tardive.
         assert_eq!(state.job_owner("job-a").as_deref(), Some("111"));
+    }
+
+    #[test]
+    fn screen_owner_changes_are_flagged_for_the_board() {
+        let (_dir, state) = paired_state(&["111", "222"]);
+        // Rien à republier tant que l'écran n'a pas changé de main.
+        assert!(!state.take_screen_owner_change());
+
+        // Le board n'apprend `playing` (pastille « à l'antenne » du rail) que
+        // par `overlay://guilds` : afficher un média doit le faire republier,
+        // sinon la pastille reste éteinte jusqu'au prochain changement de
+        // guilde.
+        let displayed =
+            state.present_play("111", "job-a", serde_json::json!({"jobId": "job-a"}), true);
+        assert!(matches!(displayed, PlayPresentation::Display(_)));
+        assert!(state.take_screen_owner_change());
+        // Le drapeau se consomme : aucune republication en boucle.
+        assert!(!state.take_screen_owner_change());
+
+        // Un `stop` d'une guilde qui n'occupe pas l'écran non plus.
+        assert!(!state.server_stop("222", None, true).display_cleared);
+        assert!(!state.take_screen_owner_change());
+
+        // Un `play` mis en file ne change rien à l'antenne.
+        assert_eq!(
+            state.present_play("222", "job-b", serde_json::json!({"jobId": "job-b"}), true),
+            PlayPresentation::Queued
+        );
+        assert!(!state.take_screen_owner_change());
+
+        // La fin de lecture libère l'écran et affiche le média suivant :
+        // l'antenne change de guilde, le board doit le savoir.
+        let decision = state.report_stop(Some("job-a"), true);
+        assert_eq!(
+            decision.next.as_ref().map(|next| next.job_id.as_str()),
+            Some("job-b")
+        );
+        assert!(state.take_screen_owner_change());
+
+        // Un rapport tardif pour un job déjà terminé ne touche pas l'écran.
+        assert!(!state.report_stop(Some("job-a"), true).display_cleared);
+        assert!(!state.take_screen_owner_change());
+
+        // Fin du média affiché sans suivant : l'écran redevient libre, la
+        // pastille doit s'éteindre.
+        let cleared = state.report_stop(Some("job-b"), true);
+        assert!(cleared.display_cleared);
+        assert!(cleared.next.is_none());
+        assert!(state.take_screen_owner_change());
+    }
+
+    #[test]
+    fn guilds_payload_marks_the_guild_on_air() {
+        let (_dir, state) = paired_state(&["111", "222"]);
+        let playing = |state: &AppState, guild_id: &str| {
+            let payload = state.guilds_payload();
+            let guilds = payload["guilds"].as_array().cloned().unwrap_or_default();
+            guilds
+                .into_iter()
+                .find(|guild| guild["membership"]["guildId"] == serde_json::json!(guild_id))
+                .map(|guild| guild["playing"].clone())
+                .unwrap_or(serde_json::Value::Null)
+        };
+        assert_eq!(playing(&state, "111"), serde_json::json!(false));
+        state.present_play("111", "job-a", serde_json::json!({"jobId": "job-a"}), true);
+        assert_eq!(playing(&state, "111"), serde_json::json!(true));
+        // Une seule guilde est à l'antenne, toutes guildes confondues.
+        assert_eq!(playing(&state, "222"), serde_json::json!(false));
+        state.report_stop(Some("job-a"), true);
+        assert_eq!(playing(&state, "111"), serde_json::json!(false));
     }
 
     #[test]

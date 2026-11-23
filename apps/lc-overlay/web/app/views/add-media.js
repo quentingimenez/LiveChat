@@ -23,7 +23,7 @@ import {
 import { activeGuild, can, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import { openDialog } from '../core/ui.js';
-import { addPickedFiles, defaultAction, removePickedFile, showsPlayFields } from '../core/add-media-rules.js';
+import { addPickedFiles, defaultAction, duplicatePickMessage, removePickedFile, showsPlayFields } from '../core/add-media-rules.js';
 import { openFileImageEditor } from './editor/index.js';
 import { startFileUpload, startLinkUpload } from './uploads.js';
 
@@ -84,6 +84,9 @@ export function openAddDialog(options) {
     const linkDurationField = h('div', { class: 'stack', hidden: !canPlay }, durationLabel(linkDuration));
 
     // --- file fields ---
+    // A pick that only brings files already listed adds nothing: the line says
+    // so under the selector rather than leaving the button looking inert.
+    const duplicateHint = h('p', { class: 'file-hint', role: 'status', hidden: true });
     const fileInput = h('input', {
       type: 'file',
       multiple: true,
@@ -93,8 +96,16 @@ export function openAddDialog(options) {
         // The picker starts empty at every pick: appending keeps the import in
         // progress, and clearing the input lets the same file be picked again
         // once its row was removed (an unchanged input fires no change event).
-        chosenFiles = addPickedFiles(chosenFiles, Array.from(fileInput.files || []));
+        // A media already listed is ignored, and the dialog says so below.
+        const picked = Array.from(fileInput.files || []);
+        const next = addPickedFiles(chosenFiles, picked);
+        const ignored = picked.length - (next.length - chosenFiles.length);
+        chosenFiles = next;
         fileInput.value = '';
+        duplicateHint.hidden = ignored === 0;
+        if (ignored > 0) {
+          duplicateHint.textContent = duplicatePickMessage(ignored);
+        }
         renderFileList();
       },
     });
@@ -136,6 +147,7 @@ export function openAddDialog(options) {
       h('div', { class: 'file-picker' }, pickFilesButton, fileInput),
       h('p', { class: 'file-hint' }, 'Vidéos, images et sons : jusqu’à 2 Go par fichier.'),
       fileList,
+      duplicateHint,
       fileTitleLabel,
       multipleHint,
       fileMessageLabel,
@@ -244,6 +256,9 @@ export function openAddDialog(options) {
                 onClick: () => {
                   chosenFiles = removePickedFile(chosenFiles, index);
                   renderFileList();
+                  // The removed media is pickable again: the duplicate message
+                  // no longer describes the import.
+                  duplicateHint.hidden = true;
                   // The clicked cross is gone: the picker stays a reachable
                   // target instead of the focus falling back to the document.
                   pickFilesButton.focus();

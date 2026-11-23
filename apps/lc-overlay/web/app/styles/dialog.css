@@ -180,6 +180,9 @@
   margin: 0;
   padding: 0;
   overflow: auto;
+  /* The scrollbar's room is always kept: with more files than fit, its
+     appearance must not shift the rows and their cross under the pointer. */
+  scrollbar-gutter: stable;
   list-style: none;
 }
 

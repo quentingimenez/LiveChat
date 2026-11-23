@@ -1,18 +1,21 @@
 // « Ajouter un média » garde une seule importation en cours : rouvrir
 // « Choisir des fichiers » ajoute les médias choisis à ceux déjà listés au lieu
-// de les remplacer, et la croix d'une ligne retire ce média avant l'envoi.
+// de les remplacer, sans jamais ajouter deux fois le même média, et la croix
+// d'une ligne retire ce média avant l'envoi.
 //
 // Avant ce correctif, le gestionnaire de changement assignait
 // `chosenFiles = Array.from(fileInput.files || [])` : un second choix
 // remplaçait toute l'importation en cours, les médias déjà préparés étaient
 // perdus sans trace. Le sélecteur est maintenant vidé après chaque choix,
 // sinon le même fichier ne redéclencherait pas de change une fois sa ligne
-// retirée (un input inchangé n'émet pas d'événement).
+// retirée (un input inchangé n'émet pas d'événement). Un fichier déjà listé
+// est ignoré — un média qui apparaîtrait deux fois dans l'importation serait
+// envoyé deux fois au board — et le dialogue le dit sous le sélecteur.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { addPickedFiles, removePickedFile } from '../../web/app/core/add-media-rules.js';
+import { addPickedFiles, duplicatePickMessage, removePickedFile, samePickedFile } from '../../web/app/core/add-media-rules.js';
 
 const view = readFileSync(new URL('../../web/app/views/add-media.js', import.meta.url), 'utf8');
 
@@ -51,11 +54,34 @@ test('un choix multiple s’ajoute dans l’ordre du sélecteur', () => {
   assert.deepEqual(after.map((entry) => entry.name), ['a.png', 'b.png', 'c.mp3']);
 });
 
-test('le même fichier choisi deux fois est gardé deux fois', () => {
-  // Le même média peut légitimement rejoindre le board deux fois ; la croix
-  // de la ligne en trop permet de revenir en arrière.
-  const after = addPickedFiles([file('chat.png')], [file('chat.png')]);
-  assert.equal(after.length, 2);
+test('un média déjà choisi n’est pas ajouté une seconde fois', () => {
+  const chat = file('chat.png');
+  const after = addPickedFiles([chat], [file('chat.png')]);
+
+  assert.equal(after.length, 1, 'le même média ne peut pas entrer deux fois dans l’importation');
+  assert.equal(after[0], chat, 'la ligne gardée est celle déjà préparée, à sa place');
+});
+
+test('le même média répété dans un seul choix n’entre qu’une fois', () => {
+  const after = addPickedFiles([], [file('chat.png'), file('chat.png')]);
+  assert.equal(after.length, 1);
+});
+
+test('deux fichiers de même nom mais de contenus différents sont deux médias', () => {
+  // Deux dossiers, deux fichiers : le nom seul ne dit pas que c'est le même.
+  const after = addPickedFiles([file('chat.png', 1024)], [file('chat.png', 2048)]);
+  assert.equal(after.length, 2, 'un fichier de même nom mais d’autre taille reste un autre média');
+});
+
+test('un média se reconnaît à son nom, sa taille, son type et sa date', () => {
+  const chat = { name: 'chat.png', size: 1024, type: 'image/png', lastModified: 1_700_000_000_000 };
+  const copy = { name: 'chat.png', size: 1024, type: 'image/png', lastModified: 1_700_000_000_000 };
+
+  assert.ok(samePickedFile(chat, copy), 'le même fichier choisi deux fois doit être reconnu');
+  assert.ok(!samePickedFile(chat, { ...copy, size: 1025 }), 'une autre taille : autre fichier');
+  assert.ok(!samePickedFile(chat, { ...copy, type: 'video/mp4' }), 'un autre type : autre fichier');
+  assert.ok(!samePickedFile(chat, { ...copy, lastModified: 1 }), 'une autre date : autre fichier');
+  assert.ok(!samePickedFile(chat, { ...copy, name: 'chien.png' }), 'un autre nom : autre fichier');
 });
 
 test('retirer un média ne retire que sa ligne', () => {
@@ -94,6 +120,20 @@ test('un nouveau choix ne remplace plus la liste dans le dialogue', () => {
   assert.match(handler, /fileInput\.value = ''/, 'le sélecteur doit être vidé pour pouvoir rechoisir le même fichier');
 });
 
+test('un choix sans nouveauté le dit sous le sélecteur', () => {
+  const handler = pickerHandler();
+  const panel = view.slice(view.indexOf('const filePanel = h('), view.indexOf('const linkButton'));
+  const hint = view.slice(view.indexOf('const duplicateHint = h('), view.indexOf('const fileMessage'));
+
+  assert.match(panel, /fileList,\s*duplicateHint,/, 'la liste doit s’accompagner d’un message pour les doublons');
+  assert.match(hint, /role: 'status'/, 'le message est annoncé et lu, pas seulement affiché');
+  assert.match(hint, /hidden: true/, 'le message reste muet tant qu’aucun doublon n’est choisi');
+  assert.match(handler, /duplicateHint\.hidden = ignored === 0/, 'le message ne reste pas quand le choix apporte un média');
+  assert.match(handler, /duplicatePickMessage\(ignored\)/, 'le message compte les médias ignorés');
+  assert.equal(duplicatePickMessage(1), 'Média déjà dans l’importation.');
+  assert.equal(duplicatePickMessage(2), '2 médias déjà dans l’importation.');
+});
+
 test('la croix d’une ligne retire son média de l’importation', () => {
   const row = fileRow();
 
@@ -101,4 +141,5 @@ test('la croix d’une ligne retire son média de l’importation', () => {
   assert.match(row, /aria-label': `Retirer \$\{file\.name\}`/, 'la croix doit dire quel média elle retire');
   assert.match(row, /removePickedFile\(chosenFiles, index\)/, 'la croix doit retirer le média de l’importation');
   assert.match(row, /icon\('close'\)/, 'le bouton de retrait est une croix');
+  assert.match(row, /duplicateHint\.hidden = true/, 'le média retiré redevient choisissable : le message de doublon tombe');
 });

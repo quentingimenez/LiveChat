@@ -85,6 +85,17 @@ test('l’espace libre de la ligne est pris avant la taille', () => {
   assert.match(size, /flex:\s*none/, 'la taille ne doit ni grandir ni rétrécir');
 });
 
+test('la liste réserve la place de sa barre de défilement', () => {
+  const list = ruleOf(read('styles/dialog.css'), '.file-list');
+
+  assert.ok(list, 'la règle de la liste doit exister');
+  assert.match(list, /overflow:\s*auto/, 'une longue importation défile dans la liste');
+  // Sans gouttière réservée, la barre apparaît avec le quatrième média et
+  // décale d'un coup toutes les lignes, croix comprise, sous le pointeur.
+  assert.match(list, /scrollbar-gutter:\s*stable/, 'la barre de défilement ne doit pas décaler les lignes');
+  assert.match(list, /max-height:\s*\d+px/, 'la liste garde sa hauteur bornée');
+});
+
 test('la croix de retrait tient dans la ligne comme le bouton de modification', () => {
   const remove = ruleOf(read('styles/dialog.css'), '.file-list .file-remove');
   const edit = ruleOf(read('styles/editor.css'), '.file-list .file-edit');

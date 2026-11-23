@@ -2124,6 +2124,7 @@ fn outbound_queue_is_bounded_and_full_producers_do_not_block() {
         Some(hub::OutboundClose {
             code: close_code::FRAME_TOO_LARGE,
             reason: SLOW_CLIENT_REASON.to_owned(),
+            explicit: false,
         }),
         "le client lent doit être fermé 4408 slow_client"
     );
@@ -2177,8 +2178,63 @@ fn close_frame_that_does_not_fit_is_routed_out_of_band() {
         Some(hub::OutboundClose {
             code: close_code::REVOKED,
             reason: "revoked".to_owned(),
+            explicit: true,
         })
     );
+}
+
+/// B-01 (P2-1) : un close explicite gagne sur le `4408 slow_client` demandé
+/// par la diffusion `stop` quand celle-ci sature la file. L'état précédent est
+/// `OPEN` (255/256) ou `SLOW` (256/256), dans les deux cas le code explicite
+/// doit être celui publié.
+fn explicit_close_wins_over_slow_close_at(queue_len: usize) {
+    let hub = Hub::new();
+    let guild = guild_id();
+    let client = OverlayClientId::new_v4();
+    let (sender, _receiver) = tokio::sync::mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
+    let (connection_id, close_rx) = hub
+        .register(
+            guild,
+            client,
+            client.to_canonical(),
+            "board".to_owned(),
+            lc_protocol::SessionMode::Normal,
+            None,
+            None,
+            sender,
+        )
+        .expect("connexion enregistrée");
+    for _ in 0..queue_len {
+        assert!(hub.send(connection_id, hub::OutFrame::Text("trame".to_owned())));
+    }
+
+    // `close_client_with_reason(REVOKED)` diffuse d'abord le stop : à 255/256
+    // il remplit la file, à 256/256 il la déborde et déclenche `slow_client`.
+    // Le close explicite qui suit doit conserver son code dans les deux cas.
+    assert!(hub.close_client_with_reason(&client.as_uuid(), close_code::REVOKED, "revoked"));
+    assert_eq!(
+        (*close_rx.borrow()).clone(),
+        Some(hub::OutboundClose {
+            code: close_code::REVOKED,
+            reason: "revoked".to_owned(),
+            explicit: true,
+        }),
+        "le close explicite doit remplacer le 4408 slow_client (file {queue_len}/256)"
+    );
+}
+
+/// B-01 (P2-1) : le `stop` de la révocation remplit la 256e place ; le close
+/// explicite part alors hors file, mais garde `4402 revoked`.
+#[test]
+fn explicit_close_wins_over_slow_close_when_stop_fills_the_queue() {
+    explicit_close_wins_over_slow_close_at(OUTBOUND_QUEUE_CAPACITY - 1);
+}
+
+/// B-01 (P2-1) : file déjà pleine ; le `stop` déclenche `4408 slow_client`,
+/// puis le close explicite remplace ce code par `4402 revoked`.
+#[test]
+fn explicit_close_wins_over_slow_close_when_the_queue_is_full() {
+    explicit_close_wins_over_slow_close_at(OUTBOUND_QUEUE_CAPACITY);
 }
 
 /// B-01 bout-en-bout : une socket qui ne draine plus sa file est fermée

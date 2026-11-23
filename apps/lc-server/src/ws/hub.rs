@@ -10,7 +10,7 @@
 //! - il expose l'API d'administration consommée par `http::admin::hub`.
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
@@ -56,8 +56,10 @@ pub(crate) const TOO_MANY_CONNECTIONS_REASON: &str = "too_many_connections";
 /// Le budget du harnais de charge est p95 ≤ 64 et max ≤ 256 trames : la borne
 /// dure est donc fixée au maximum autorisé. Une valeur plus petite fermerait
 /// des overlays légitimes sur une rafale de `board.changed` (chaque message est
-/// une trame) ; 256 plafonne aussi la mémoire d'une socket à 256 trames, et une
-/// socket qui n'absorbe plus est fermée `4408 slow_client` au-delà.
+/// une trame) ; 256 est une borne en **nombre de trames**, pas en octets : au
+/// pire 256 × 64 Kio ≈ 16 Mio de texte par socket, ce n'est pas un budget
+/// mémoire mesuré. Une socket qui n'absorbe plus est fermée `4408 slow_client`
+/// au-delà.
 pub(crate) const OUTBOUND_QUEUE_CAPACITY: usize = 256;
 
 /// Code de fermeture d'un client qui ne draine plus sa file sortante.
@@ -69,6 +71,13 @@ pub(crate) const SLOW_CLIENT_CLOSE_CODE: u16 = close_code::FRAME_TOO_LARGE;
 
 /// Raison de fermeture d'un client dont la file sortante est pleine.
 pub(crate) const SLOW_CLIENT_REASON: &str = "slow_client";
+
+/// Aucune fermeture demandée : la connexion accepte encore des trames.
+const CLOSE_STATE_OPEN: u8 = 0;
+/// Fermeture `4408 slow_client` demandée : le client ne draine plus sa file.
+const CLOSE_STATE_SLOW: u8 = 1;
+/// Fermeture explicite demandée (révocation, arrêt admin, fermeture client).
+const CLOSE_STATE_EXPLICIT: u8 = 2;
 
 /// Période de la purge de rétention exécutée par le hub.
 const PURGE_INTERVAL: Duration = Duration::from_secs(3_600);
@@ -113,6 +122,9 @@ pub(crate) struct OutboundClose {
     pub(crate) code: u16,
     /// Raison de fermeture (ASCII, sans secret).
     pub(crate) reason: String,
+    /// `true` pour une fermeture explicite (révocation, arrêt admin) : elle
+    /// garde son code même si un `4408 slow_client` était déjà demandé.
+    pub(crate) explicit: bool,
 }
 
 /// Connexion WebSocket authentifiée et enregistrée dans le hub.
@@ -127,54 +139,72 @@ struct Connection {
     /// Fermeture hors file, publiée quand la file ou une fermeture FIFO ne
     /// peut plus être déposée.
     close_tx: watch::Sender<Option<OutboundClose>>,
-    /// Vrai dès qu'une fermeture hors file est demandée : plus aucune trame
-    /// n'est acceptée pour cette connexion.
-    closing: AtomicBool,
+    /// État de fermeture ([`CLOSE_STATE_OPEN`], [`CLOSE_STATE_SLOW`] ou
+    /// [`CLOSE_STATE_EXPLICIT`]). Dès qu'il n'est plus ouvert, plus aucune
+    /// trame n'est acceptée pour cette connexion.
+    close_state: AtomicU8,
+    /// Une fermeture explicite est en cours de préparation (avant la
+    /// diffusion `stop`) : un débordement pendant cette fenêtre ne doit pas
+    /// publier de `4408` qui ferait fermer la socket avant le code explicite.
+    explicit_requested: AtomicBool,
 }
 
 impl Connection {
+    // Toutes ces méthodes sont appelées sous le verrou de `Hub::inner`, qui
+    // sérialise les transitions d'état entre producteurs concurrents.
+    //
     /// Dépose un texte sans jamais bloquer.
     ///
     /// Retourne `true` si la trame est dans la file. Si elle est pleine, la
     /// connexion est marquée fermante et une fermeture `4408 slow_client` est
     /// publiée : c'est la seule connexion concernée qui est fermée.
     fn enqueue_text(&self, text: String) -> bool {
-        if self.closing.load(Ordering::Relaxed) {
+        if self.close_state.load(Ordering::Relaxed) != CLOSE_STATE_OPEN {
             return false;
         }
         match self.sender.try_send(OutFrame::Text(text)) {
             Ok(()) => true,
             Err(mpsc::error::TrySendError::Full(_)) => {
-                self.request_close(SLOW_CLIENT_CLOSE_CODE, SLOW_CLIENT_REASON);
+                self.request_slow_close();
                 false
             }
             Err(mpsc::error::TrySendError::Closed(_)) => false,
         }
     }
 
-    /// Demande la fermeture d'une connexion.
+    /// Annonce qu'une fermeture explicite va suivre (avant le `stop` diffusé).
     ///
-    /// La fermeture emprunte la file quand elle a de la place, pour conserver
-    /// l'ordre FIFO avec les trames déjà déposées (une révocation envoie
-    /// `stop` puis close). Si la file est pleine, elle est publiée hors file
-    /// avec son propre code : elle n'attend pas derrière un client lent.
+    /// Tant que la fermeture n'est pas déposée, les textes restent acceptés
+    /// pour laisser passer le `stop` ; mais un débordement de file ne publie
+    /// plus `4408`, ce qui garantit que la session verra le close explicite.
+    fn begin_explicit_close(&self) {
+        self.explicit_requested.store(true, Ordering::Relaxed);
+    }
+
+    /// Demande la fermeture explicite d'une connexion.
+    ///
+    /// Une fermeture explicite (révocation, arrêt admin) gagne toujours sur la
+    /// fermeture `4408 slow_client` : elle remplace une demande lente déjà
+    /// publiée, et la première fermeture explicite garde son code si plusieurs
+    /// arrivent. Elle emprunte la file quand elle a de la place, pour conserver
+    /// l'ordre avec les trames déjà déposées ; si la file est pleine ou déjà
+    /// marquée lente, elle est publiée hors file.
     fn enqueue_close(&self, code: u16, reason: String) -> bool {
-        if self.closing.load(Ordering::Relaxed) {
-            // Déjà fermante (client lent ou close précédent) : la socket va
-            // disparaître, la fermeture demandée est donc honorée même si le
-            // code publié n'est pas remplacé.
+        let Some(previous) = self.claim_explicit_close() else {
+            // Une fermeture explicite est déjà en cours : la première gagne et
+            // la socket va disparaître.
+            return true;
+        };
+        if previous == CLOSE_STATE_SLOW {
+            // Un `4408 slow_client` est déjà publié : l'explicite le remplace
+            // hors file, sans dépendre d'une place dans la file saturée.
+            self.publish_close(code, reason, true);
             return true;
         }
         match self.sender.try_send(OutFrame::Close(code, reason)) {
-            Ok(()) => {
-                // La fermeture est dans la file : plus aucune trame ne doit
-                // s'ajouter derrière elle, sinon une rafale pourrait la faire
-                // déborder et remplacer son code par `4408 slow_client`.
-                self.closing.store(true, Ordering::Relaxed);
-                true
-            }
+            Ok(()) => true,
             Err(mpsc::error::TrySendError::Full(OutFrame::Close(code, reason))) => {
-                self.request_close(code, reason.as_str());
+                self.publish_close(code, reason, true);
                 true
             }
             Err(mpsc::error::TrySendError::Full(OutFrame::Text(_))) => false,
@@ -182,26 +212,75 @@ impl Connection {
         }
     }
 
-    /// Marque la connexion fermante et publie la demande de fermeture.
+    /// Revendique la première fermeture explicite.
     ///
-    /// Le log est émis une seule fois par connexion (pas de spam si la room
-    /// continue de diffuser) et ne contient aucun secret : identifiant client
-    /// public, code, raison et capacité.
-    fn request_close(&self, code: u16, reason: &str) {
-        if self.closing.swap(true, Ordering::Relaxed) {
+    /// Retourne l'état précédent pour l'appelant qui gagne, ou `None` si une
+    /// fermeture explicite est déjà en cours. Le `compare_exchange` sérialise
+    /// l'arbitrage avec [`Self::request_slow_close`].
+    fn claim_explicit_close(&self) -> Option<u8> {
+        let mut current = self.close_state.load(Ordering::Relaxed);
+        loop {
+            match current {
+                CLOSE_STATE_EXPLICIT => return None,
+                CLOSE_STATE_OPEN | CLOSE_STATE_SLOW => {
+                    match self.close_state.compare_exchange_weak(
+                        current,
+                        CLOSE_STATE_EXPLICIT,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => return Some(current),
+                        Err(actual) => current = actual,
+                    }
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// Marque la connexion fermante à cause d'un client lent.
+    ///
+    /// N'a d'effet que si aucune fermeture n'a encore été demandée : une
+    /// fermeture explicite ne doit jamais être remplacée par `4408`. Le log est
+    /// émis une seule fois par connexion (pas de spam si la room continue de
+    /// diffuser) et ne contient aucun secret.
+    fn request_slow_close(&self) {
+        // Une fermeture explicite prépare son `stop` puis son close : publier
+        // `4408` ici laisserait la session fermer la socket avant le code
+        // explicite. L'explicite publiera son propre close juste après.
+        if self.explicit_requested.load(Ordering::Relaxed) {
+            return;
+        }
+        if self
+            .close_state
+            .compare_exchange(
+                CLOSE_STATE_OPEN,
+                CLOSE_STATE_SLOW,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_err()
+        {
             return;
         }
         warn!(
             client = %self.client_id_str,
             guild = %self.guild_id,
-            code,
-            reason = %reason,
+            code = SLOW_CLIENT_CLOSE_CODE,
+            reason = %SLOW_CLIENT_REASON,
             capacity = self.sender.max_capacity(),
             "file sortante pleine : fermeture de la connexion"
         );
+        self.publish_close(SLOW_CLIENT_CLOSE_CODE, SLOW_CLIENT_REASON.to_owned(), false);
+    }
+
+    /// Publie une fermeture hors file, en remplaçant une éventuelle demande
+    /// précédente (une fermeture explicite remplace le `4408 slow_client`).
+    fn publish_close(&self, code: u16, reason: String, explicit: bool) {
         drop(self.close_tx.send_replace(Some(OutboundClose {
             code,
-            reason: reason.to_owned(),
+            reason,
+            explicit,
         })));
     }
 
@@ -391,7 +470,8 @@ impl Hub {
             session_mode,
             sender,
             close_tx,
-            closing: AtomicBool::new(false),
+            close_state: AtomicU8::new(CLOSE_STATE_OPEN),
+            explicit_requested: AtomicBool::new(false),
         };
         // `_author_image` n'est pas stocké : il est déjà utilisé par la session
         // pour construire les jobs `media.trigger` (le hub n'en a pas besoin).
@@ -943,7 +1023,10 @@ impl Hub {
     ///
     /// Pour une révocation (`4402`), le hub diffuse d'abord
     /// `stop {reason:"revoked", jobId:null}` (protocole §6.3/§10) puis envoie
-    /// les close — l'ordre est garanti par le canal FIFO de chaque connexion.
+    /// les close. L'ordre `stop` puis close est garanti quand la file a encore
+    /// de la place ; si le `stop` sature la file, le close explicite part hors
+    /// file, gagne sur un éventuel `4408 slow_client`, mais l'ordre n'est plus
+    /// garanti (le stop est best-effort).
     /// Retourne `true` si au moins un socket a été ciblé.
     pub fn close_client(&self, client_id: &Uuid, code: u16) -> bool {
         self.close_client_with_reason(client_id, code, close_reason_for_code(code))
@@ -964,6 +1047,7 @@ impl Hub {
             let mut guilds = BTreeSet::new();
             for (connection_id, connection) in &inner.connections {
                 if connection.client_uuid == *client_id {
+                    connection.begin_explicit_close();
                     connection_ids.push(*connection_id);
                     guilds.insert(connection.guild_id.clone());
                 }

@@ -69,7 +69,7 @@ qu'une ligne échoue.
 | TTFB liste board (B-03) | p95 ≤ 250 ms | 1 GET/s de `/overlay/media-board/items?limit=200` avec le Bearer de sonde, temps jusqu'aux en-têtes | **exécutable** (`--board-items 200 --max-board-p95-ms 250`) |
 | TTFB média signé | p95 ≤ 250 ms | GET de `items[0].mediaUrl` (URL HMAC renvoyée par la liste), temps jusqu'aux en-têtes, corps vidé | **exécutable** (`--max-media-p95-ms 250`) |
 | Coût `MediaTrigger` (B-02) | p95 ack ≤ 250 ms à 10/s, et tous les triggers envoyés acquittés `ok` | un client WS de sonde envoie `media.trigger` à 10/s (max 19, plafond serveur 20/s) et attend l'ack correspondant par `payload.ref` ; nécessite `--board-items > 0` | **exécutable** (`--media-trigger-rate 10 --max-media-trigger-p95-ms 250`) — latence de bout en bout, pas le nombre de SQL |
-| Profondeur de la file WS sortante (B-01) | p95 ≤ 64 frames, max ≤ 256 frames | file bornée `OUTBOUND_QUEUE_CAPACITY = 256` par connexion ; profondeur exposée par `Hub::outbound_queue_depth` et testée (unitaire + intégration avec client qui cesse de lire → close `4408 slow_client`) | **partiellement exécutable** — borne max 256 testée, p95 sous charge non mesuré (pas encore exposé par `cargo xtask loadtest`) |
+| Profondeur de la file WS sortante (B-01) | p95 ≤ 64 frames, max ≤ 256 frames | file bornée `OUTBOUND_QUEUE_CAPACITY = 256` **trames** par connexion (pas une borne d'octets : ~16 Mio de texte au pire par socket) ; profondeur exposée par `Hub::outbound_queue_depth` et testée (unitaire + intégration avec client qui cesse de lire → close `4408 slow_client`, close explicite prioritaire) | **partiellement exécutable** — borne max 256 testée, p95 sous charge non mesuré (pas encore exposé par `cargo xtask loadtest`) |
 | Attente du pool SQLite | proposition : p95 ≤ 25 ms, max ≤ 100 ms | aucune instrumentation sqlx (`before_acquire`) ; le TTFB board/média n'est qu'un proxy de bout en bout | **non exécutable** — gap assumé |
 | SSE admin | proposition : p95 de rafraîchissement ≤ 250 ms avec 10 consoles, 0 déconnexion sur 60 s | `GET /admin/api/events` exige une session admin que le harnais ne sait pas créer | **non exécutable** — gap assumé |
 | CPU extension | proposition : moyenne ≤ 5 % d'un cœur et p95 frame ≤ 16,7 ms sur 60 s de scan | l'extension tourne dans le navigateur, hors du processus `lc-server` | **non exécutable** — gap assumé |
@@ -82,9 +82,10 @@ marge de heartbeats et rend le budget sensible à une régression du handler san
 pousser dans la zone de rate-limit. Les trois budgets de gap restants (pool
 SQLite, SSE admin, CPU extension) sont des **propositions chiffrées à valider
 après instrumentation**, pas des mesures : ils ne doivent pas être présentés
-comme verts tant que le compteur n'existe pas. Pour B-01, la borne 256 et la
-fermeture `4408 slow_client` sont désormais testées, mais le p95 sous charge
-demande encore un compteur dans le rapport de charge.
+comme verts tant que le compteur n'existe pas. Pour B-01, la borne 256 trames,
+la fermeture `4408 slow_client` et la priorité du close explicite sont désormais
+testées, mais le p95 sous charge demande encore un compteur dans le rapport de
+charge.
 
 Commandes :
 
@@ -107,13 +108,16 @@ Le rapport JSON expose `board_p95_ms`, `board_samples`, `board_errors`,
 ### Plan des gaps
 
 - **B-01 file WS** : implémenté dans `apps/lc-server/src/ws` — canal borné à
-  **256 trames par connexion** (`OUTBOUND_QUEUE_CAPACITY`), production `try_send`
-  non bloquante, close `4408 slow_client` de la seule connexion saturée, timeout
-  de `sink.send` à 5 s (`WRITER_SEND_TIMEOUT`) ; profondeur exposée en test par
-  `Hub::outbound_queue_depth`. Reste pour la charge : exposer p95/max dans le
-  rapport de `cargo xtask loadtest` et y scénariser un client qui cesse de lire.
-  Le harnais actuel ne peut pas distinguer une file applicative d'un tampon
-  noyau : ne pas déduire un PASS de l'absence de déconnexion.
+  **256 trames par connexion** (`OUTBOUND_QUEUE_CAPACITY`, borne en messages et
+  non en octets), production `try_send` non bloquante, close `4408 slow_client`
+  de la seule connexion saturée, close explicite (`4402`/admin) toujours
+  prioritaire même quand la file est pleine, timeout de `sink.send` à 5 s
+  (`WRITER_SEND_TIMEOUT`) ; profondeur exposée en test par
+  `Hub::outbound_queue_depth`. En saturation, le close explicite est garanti mais
+  le `stop` qui le précède est best-effort. Reste pour la charge : exposer
+  p95/max dans le rapport de `cargo xtask loadtest` et y scénariser un client qui
+  cesse de lire. Le harnais actuel ne peut pas distinguer une file applicative
+  d'un tampon noyau : ne pas déduire un PASS de l'absence de déconnexion.
 - **Pool SQLite** : instrumenter `before_acquire`/`after_acquire` dans
   `crates/lc-db`, agréger p95/max par run ; le TTFB board actuel inclut les
   requêtes et la signature, pas l'attente de connexion seule.

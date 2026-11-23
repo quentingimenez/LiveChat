@@ -243,6 +243,9 @@ Le client mappe :
 - `1001`/`1011`/`4409`/`1002`/`4408` → état `reconnecting` avec backoff §10. Pour `4408`, la
   `reason` distingue `frame_too_large` (bug client à corriger) de `slow_client` (le client ne
   vidait plus sa file sortante ; la reconnexion est sûre une fois le client remis à jour).
+- Un close **explicite** (révocation `4402`, arrêt admin) déjà demandé n'est jamais remplacé par
+  `4408 slow_client` : il part hors file si la file est saturée et conserve son code. Dans ce cas
+  l'ordre `stop` puis close n'est plus garanti (`stop` best-effort).
 
 ---
 
@@ -253,7 +256,7 @@ Le client mappe :
 | Taille de trame | **64 Kio (65 536 octets)** | C→S et S→C ; dépassement C→S → close `4408` |
 | Borne de transport d'upgrade | **1 Mio (`MAX_TRANSPORT_MESSAGE_BYTES`)** | 64 Kio..1 Mio → `4408` applicatif ; > 1 Mio → close transport `1006`/`1009` (pas de code applicatif garanti) |
 | File sortante par connexion | **256 trames** (`OUTBOUND_QUEUE_CAPACITY`) | production non bloquante (`try_send`) ; file pleine → close `4408` reason `slow_client` de **cette connexion seule**, les autres sockets ne sont pas affectées |
-| Écriture socket du writer | **5 s** (`WRITER_SEND_TIMEOUT`) | un `sink.send` (trame ou close) qui ne progresse pas pendant 5 s → close `4408` reason `slow_client` et fin propre de la tâche writer |
+| Écriture socket du writer | **5 s** (`WRITER_SEND_TIMEOUT`) | un `sink.send` de trame ou de ping qui ne progresse pas pendant 5 s → fermeture de la connexion (`4408` reason `slow_client`, sauf close explicite déjà en attente qui garde son code) et fin propre de la tâche ; l'écriture du close final est aussi bornée à 5 s mais abandonnée si elle expire (pas de second close) |
 | Débit C→S | **20 messages/s** fenêtre glissante 1 s | dépassement → close `4409` |
 | Délai `hello` | **5 s** après l'ouverture | sinon close `4401` (`auth_timeout`) |
 | `playback.state` | **≤ 1 msg/s** par connexion | excédent ignoré (pas de close), v1 : `socketLoader.ts:229-254` + plan |

@@ -1,0 +1,317 @@
+{
+    "network_filter":  "test(=discord::runtime::tests::gateway_reel_configure_par_environnement) or test(=tiktok_comment::tests::renders_a_carousel_comment) or test(=tiktok_comment::tests::renders_the_shared_comment_from_the_user_link) or test(=tiktok_comment::tests::resolves_the_short_link_to_a_comment_card) or test(=downloads_a_second_public_tiktok_video_from_cdn) or test(=downloads_public_tiktok_video_from_cdn) or test(=downloads_tiktok_photo_post_with_audio) or test(=ingests_a_direct_image_without_a_file_extension) or test(=ingests_a_giphy_page_end_to_end) or test(=ingests_a_page_without_open_graph_through_the_ytdlp_fallback) or test(=ingests_a_quoted_tweet_as_a_card_image) or test(=ingests_a_tenor_page_end_to_end) or test(=ingests_a_video_tweet_as_a_card_video) or test(=ingests_an_imgur_page_end_to_end) or test(=ingests_photo_tweet_as_a_card_image) or test(=ingests_text_tweet_as_a_card_image) or test(=ingests_youtube_source_end_to_end) or test(=resolves_tiktok_page_online) or test(=resolves_tweet_card)",
+    "tests":  [
+                  {
+                      "file":  "apps/lc-server/src/discord/runtime.rs",
+                      "function":  "gateway_reel_configure_par_environnement",
+                      "filter":  "discord::runtime::tests::gateway_reel_configure_par_environnement",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "apps/lc-server/src/http/overlay/media_cover_tests.rs",
+                      "function":  "the_frame_the_editor_shows_becomes_the_picture",
+                      "filter":  "http::overlay::media_cover_tests::the_frame_the_editor_shows_becomes_the_picture",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "apps/lc-server/src/http/overlay/media_edit_tests.rs",
+                      "function":  "a_video_is_edited_as_a_copy_then_replaced_with_real_ffmpeg",
+                      "filter":  "http::overlay::media_edit_tests::a_video_is_edited_as_a_copy_then_replaced_with_real_ffmpeg",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "apps/lc-server/src/http/overlay/media_edit_tests.rs",
+                      "function":  "an_audio_keeps_its_edited_volume_with_real_ffmpeg",
+                      "filter":  "http::overlay::media_edit_tests::an_audio_keeps_its_edited_volume_with_real_ffmpeg",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "apps/lc-server/src/http/overlay/say_tests.rs",
+                      "function":  "an_anonymous_text_hides_the_author_like_cdire",
+                      "filter":  "http::overlay::say_tests::an_anonymous_text_hides_the_author_like_cdire",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "apps/lc-server/src/http/overlay/say_tests.rs",
+                      "function":  "saying_a_text_queues_the_speech_job_of_dire",
+                      "filter":  "http::overlay::say_tests::saying_a_text_queues_the_speech_job_of_dire",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "apps/lc-server/src/media/thumbnails.rs",
+                      "function":  "le_rattrapage_donne_une_image_a_une_video_televersee",
+                      "filter":  "media::thumbnails::tests::le_rattrapage_donne_une_image_a_une_video_televersee",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "apps/lc-server/src/media/thumbnails.rs",
+                      "function":  "le_rattrapage_regenere_une_image_disparue",
+                      "filter":  "media::thumbnails::tests::le_rattrapage_regenere_une_image_disparue",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "apps/lc-server/src/media/thumbnails.rs",
+                      "function":  "une_video_de_plateforme_sans_vignette_recoit_une_frame",
+                      "filter":  "media::thumbnails::tests::une_video_de_plateforme_sans_vignette_recoit_une_frame",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "apps/lc-server/src/media/thumbnails.rs",
+                      "function":  "une_video_importee_par_un_lien_recoit_une_frame",
+                      "filter":  "media::thumbnails::tests::une_video_importee_par_un_lien_recoit_une_frame",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "apps/lc-server/src/media/thumbnails.rs",
+                      "function":  "une_video_televersee_recoit_une_frame_de_elle_meme",
+                      "filter":  "media::thumbnails::tests::une_video_televersee_recoit_une_frame_de_elle_meme",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/src/tiktok_comment.rs",
+                      "function":  "renders_a_carousel_comment",
+                      "filter":  "tiktok_comment::tests::renders_a_carousel_comment",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "crates/lc-media/src/tiktok_comment.rs",
+                      "function":  "renders_the_shared_comment_from_the_user_link",
+                      "filter":  "tiktok_comment::tests::renders_the_shared_comment_from_the_user_link",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "crates/lc-media/src/tiktok_comment.rs",
+                      "function":  "resolves_the_short_link_to_a_comment_card",
+                      "filter":  "tiktok_comment::tests::resolves_the_short_link_to_a_comment_card",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "crates/lc-media/src/tiktok_comment.rs",
+                      "function":  "writes_a_comment_card_gallery",
+                      "filter":  "tiktok_comment::tests::writes_a_comment_card_gallery",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/src/tweet_card.rs",
+                      "function":  "writes_tweet_card_preview",
+                      "filter":  "tweet_card::tests::writes_tweet_card_preview",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/edit_ffmpeg.rs",
+                      "function":  "a_long_video_is_reversed_in_pieces",
+                      "filter":  "a_long_video_is_reversed_in_pieces",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/edit_ffmpeg.rs",
+                      "function":  "annotations_are_burnt_in_before_the_picture_edits",
+                      "filter":  "annotations_are_burnt_in_before_the_picture_edits",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/edit_ffmpeg.rs",
+                      "function":  "edited_files_are_ingested_without_a_second_encode",
+                      "filter":  "edited_files_are_ingested_without_a_second_encode",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/edit_ffmpeg.rs",
+                      "function":  "silent_video_and_audio_edits_run_with_real_ffmpeg",
+                      "filter":  "silent_video_and_audio_edits_run_with_real_ffmpeg",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/edit_ffmpeg.rs",
+                      "function":  "video_edits_run_with_real_ffmpeg",
+                      "filter":  "video_edits_run_with_real_ffmpeg",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/network.rs",
+                      "function":  "downloads_a_second_public_tiktok_video_from_cdn",
+                      "filter":  "downloads_a_second_public_tiktok_video_from_cdn",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/network.rs",
+                      "function":  "downloads_public_tiktok_video_from_cdn",
+                      "filter":  "downloads_public_tiktok_video_from_cdn",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/network.rs",
+                      "function":  "downloads_tiktok_photo_post_with_audio",
+                      "filter":  "downloads_tiktok_photo_post_with_audio",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/network.rs",
+                      "function":  "ingests_a_direct_image_without_a_file_extension",
+                      "filter":  "ingests_a_direct_image_without_a_file_extension",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/network.rs",
+                      "function":  "ingests_a_giphy_page_end_to_end",
+                      "filter":  "ingests_a_giphy_page_end_to_end",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/network.rs",
+                      "function":  "ingests_a_page_without_open_graph_through_the_ytdlp_fallback",
+                      "filter":  "ingests_a_page_without_open_graph_through_the_ytdlp_fallback",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/network.rs",
+                      "function":  "ingests_a_quoted_tweet_as_a_card_image",
+                      "filter":  "ingests_a_quoted_tweet_as_a_card_image",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/network.rs",
+                      "function":  "ingests_a_tenor_page_end_to_end",
+                      "filter":  "ingests_a_tenor_page_end_to_end",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/network.rs",
+                      "function":  "ingests_a_video_tweet_as_a_card_video",
+                      "filter":  "ingests_a_video_tweet_as_a_card_video",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/network.rs",
+                      "function":  "ingests_an_imgur_page_end_to_end",
+                      "filter":  "ingests_an_imgur_page_end_to_end",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/network.rs",
+                      "function":  "ingests_photo_tweet_as_a_card_image",
+                      "filter":  "ingests_photo_tweet_as_a_card_image",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/network.rs",
+                      "function":  "ingests_text_tweet_as_a_card_image",
+                      "filter":  "ingests_text_tweet_as_a_card_image",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/network.rs",
+                      "function":  "ingests_youtube_source_end_to_end",
+                      "filter":  "ingests_youtube_source_end_to_end",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/network.rs",
+                      "function":  "normalizes_generated_sample_with_ffmpeg",
+                      "filter":  "normalizes_generated_sample_with_ffmpeg",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/network.rs",
+                      "function":  "resolves_tiktok_page_online",
+                      "filter":  "resolves_tiktok_page_online",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/network.rs",
+                      "function":  "resolves_tweet_card",
+                      "filter":  "resolves_tweet_card",
+                      "category":  "network"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/normalize_ffmpeg.rs",
+                      "function":  "a_refused_stream_copy_falls_back_to_the_transcode",
+                      "filter":  "a_refused_stream_copy_falls_back_to_the_transcode",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/normalize_ffmpeg.rs",
+                      "function":  "builds_single_photo_carousel_with_audio",
+                      "filter":  "builds_single_photo_carousel_with_audio",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/normalize_ffmpeg.rs",
+                      "function":  "h264_aac_in_matroska_is_only_remuxed_without_loudnorm",
+                      "filter":  "h264_aac_in_matroska_is_only_remuxed_without_loudnorm",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/normalize_ffmpeg.rs",
+                      "function":  "h264_in_matroska_keeps_its_video_stream",
+                      "filter":  "h264_in_matroska_keeps_its_video_stream",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/normalize_ffmpeg.rs",
+                      "function":  "mp4_with_an_mp3_track_only_converts_the_audio",
+                      "filter":  "mp4_with_an_mp3_track_only_converts_the_audio",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/normalize_ffmpeg.rs",
+                      "function":  "normalized_mp4_keeps_its_video_and_normalizes_its_audio",
+                      "filter":  "normalized_mp4_keeps_its_video_and_normalizes_its_audio",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/normalize_ffmpeg.rs",
+                      "function":  "silent_h264_in_matroska_stays_silent",
+                      "filter":  "silent_h264_in_matroska_stays_silent",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/normalize_ffmpeg.rs",
+                      "function":  "vp9_is_transcoded_to_h264_with_48_khz_audio",
+                      "filter":  "vp9_is_transcoded_to_h264_with_48_khz_audio",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/poster_ffmpeg.rs",
+                      "function":  "l_image_choisie_dans_l_editeur_est_celle_de_l_instant_demande",
+                      "filter":  "l_image_choisie_dans_l_editeur_est_celle_de_l_instant_demande",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/poster_ffmpeg.rs",
+                      "function":  "une_intro_noire_ne_donne_pas_une_image_noire",
+                      "filter":  "une_intro_noire_ne_donne_pas_une_image_noire",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/poster_ffmpeg.rs",
+                      "function":  "une_video_entierement_noire_n_a_pas_d_image",
+                      "filter":  "une_video_entierement_noire_n_a_pas_d_image",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/tweet_card_ffmpeg.rs",
+                      "function":  "composes_a_tweet_video_into_the_card",
+                      "filter":  "composes_a_tweet_video_into_the_card",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "crates/lc-media/tests/tweet_card_ffmpeg.rs",
+                      "function":  "composes_a_vertical_tweet_video_without_cropping",
+                      "filter":  "composes_a_vertical_tweet_video_without_cropping",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "xtask/src/loadtest.rs",
+                      "function":  "loadtest_guard_helper",
+                      "filter":  "loadtest::tests::loadtest_guard_helper",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "xtask/src/migrate/tests.rs",
+                      "function":  "benchmark_volume",
+                      "filter":  "migrate::tests::benchmark_volume",
+                      "category":  "local"
+                  }
+              ]
+}

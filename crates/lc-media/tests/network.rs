@@ -1,7 +1,10 @@
 //! Tests d'intégration réseau et binaires externes (`yt-dlp`, `ffmpeg`).
 //!
 //! Tous les tests sont `#[ignore]` : ils nécessitent un accès Internet et/ou
-//! les binaires installés sur la machine. Lancer avec :
+//! les binaires installés sur la machine. Le nightly automatique n'exécute que
+//! `normalizes_generated_sample_with_ffmpeg` ; les 15 autres dépendent d'un
+//! service externe (YouTube, TikTok, X, Tenor, Giphy, Imgur) et se lancent à la
+//! demande, via `workflow_dispatch` avec `network_tests = true` ou avec :
 //! `cargo test -p lc-media --test network -- --ignored --nocapture`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

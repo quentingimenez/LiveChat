@@ -124,6 +124,44 @@ fn is_faststart(path: &Path) -> bool {
     }
 }
 
+/// Duration of the container as ffprobe measures it, in seconds. Muxing adds
+/// codec padding (AAC/Opus frames), so the result can exceed the 4 s generated
+/// source by a few milliseconds depending on the ffmpeg build.
+fn raw_duration(config: &MediaConfig, path: &Path) -> f64 {
+    run(
+        &config.tools.ffprobe,
+        &[
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+            path.to_str().unwrap(),
+        ],
+    )
+    .parse()
+    .expect("ffprobe duration")
+}
+
+/// The reported duration is the ceiling of the muxed duration, never the
+/// nominal source length: pin that contract instead of `Some(4)`, which only
+/// holds when the ffmpeg build writes a container of exactly 4.000 s (ffmpeg 6
+/// on Ubuntu writes 4.008 s, reported as 5 s).
+fn assert_muxed_duration(config: &MediaConfig, input: &Path, output: &Path, reported: Option<i64>) {
+    let source = raw_duration(config, input);
+    let muxed = raw_duration(config, output);
+    assert!(
+        (muxed - source).abs() <= 0.1,
+        "normalized duration {muxed:.3}s, source {source:.3}s"
+    );
+    let reported = reported.expect("duration reported");
+    assert!(
+        muxed - 0.001 <= reported as f64 && (reported as f64) < muxed + 1.0,
+        "reported duration {reported}s must be the ceiling of the muxed {muxed:.3}s"
+    );
+}
+
 async fn normalize(config: &MediaConfig, directory: &Path, input: &Path) -> PathBuf {
     let normalized = normalize_local_media(input, None, &directory.join("media/out"), config)
         .await
@@ -132,7 +170,12 @@ async fn normalize(config: &MediaConfig, directory: &Path, input: &Path) -> Path
     assert_eq!(normalized.mime, "video/mp4");
     assert_eq!(normalized.width, Some(320));
     assert_eq!(normalized.height, Some(240));
-    assert_eq!(normalized.duration_sec, Some(4));
+    assert_muxed_duration(
+        config,
+        input,
+        &normalized.storage_path,
+        normalized.duration_sec,
+    );
     assert!(is_faststart(&normalized.storage_path));
     assert_eq!(
         stream(config, &normalized.storage_path, "v", "codec_name,pix_fmt"),
@@ -249,7 +292,12 @@ async fn normalized_mp4_keeps_its_video_and_normalizes_its_audio() {
         "44100"
     );
     assert_at_target(&config, &normalized.storage_path);
-    assert_eq!(normalized.duration_sec, Some(4));
+    assert_muxed_duration(
+        &config,
+        &input,
+        &normalized.storage_path,
+        normalized.duration_sec,
+    );
     assert_eq!(normalized.width, Some(320));
     assert_eq!(normalized.height, Some(240));
 

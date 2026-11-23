@@ -9,6 +9,28 @@ use crate::error::{conflict_on_unique, DbResult};
 
 const TABLE: &str = "media_board_items";
 
+/// `guild_references_asset` : une guilde montre-t-elle cet asset comme média,
+/// image ou pochette de l'un de ses items ?
+///
+/// Constante pour que le test de plan (`tests` en fin de module) exécute
+/// exactement la requête du repository : l'index `cover_asset_id` de la
+/// migration 0022 est ce qui évite le scan de `media_assets`.
+const GUILD_REFERENCES_ASSET_SQL: &str = "\
+    SELECT 1 FROM media_board_items \
+     WHERE guild_id = ? AND (media_asset_id = ? OR artwork_asset_id = ? \
+           OR media_asset_id IN (SELECT id FROM media_assets WHERE cover_asset_id = ?)) \
+     LIMIT 1";
+
+/// Items du board qui référencent encore un asset (média ou image), après le
+/// remplacement du média d'un item.
+///
+/// Constante pour le test de plan : les deux termes du `OR` doivent passer par
+/// `idx_media_board_items_media_asset` et
+/// `idx_media_board_items_artwork_asset`.
+const ASSET_REFERENCE_COUNT_SQL: &str = "\
+    SELECT COUNT(*) FROM media_board_items \
+     WHERE media_asset_id = ? OR artwork_asset_id = ?";
+
 /// Ligne SQLite de `media_board_items`.
 #[derive(Debug, sqlx::FromRow)]
 struct MediaBoardItemRow {
@@ -324,14 +346,11 @@ impl MediaBoardRepository {
                     ),
                 )
             })?;
-        let remaining: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM media_board_items \
-              WHERE media_asset_id = ? OR artwork_asset_id = ?",
-        )
-        .bind(previous.to_canonical())
-        .bind(previous.to_canonical())
-        .fetch_one(&mut *connection)
-        .await?;
+        let remaining: i64 = sqlx::query_scalar(ASSET_REFERENCE_COUNT_SQL)
+            .bind(previous.to_canonical())
+            .bind(previous.to_canonical())
+            .fetch_one(&mut *connection)
+            .await?;
         if remaining == 0 {
             sqlx::query(
                 "UPDATE media_assets SET last_accessed_at = ?, expires_at = ? WHERE id = ?",
@@ -415,18 +434,13 @@ impl MediaBoardRepository {
         guild_id: &GuildId,
         asset_id: MediaAssetId,
     ) -> DbResult<bool> {
-        let found: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM media_board_items \
-              WHERE guild_id = ? AND (media_asset_id = ? OR artwork_asset_id = ? \
-                    OR media_asset_id IN (SELECT id FROM media_assets WHERE cover_asset_id = ?)) \
-              LIMIT 1",
-        )
-        .bind(guild_id.as_str())
-        .bind(asset_id.to_canonical())
-        .bind(asset_id.to_canonical())
-        .bind(asset_id.to_canonical())
-        .fetch_optional(&self.pool)
-        .await?;
+        let found: Option<i64> = sqlx::query_scalar(GUILD_REFERENCES_ASSET_SQL)
+            .bind(guild_id.as_str())
+            .bind(asset_id.to_canonical())
+            .bind(asset_id.to_canonical())
+            .bind(asset_id.to_canonical())
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(found.is_some())
     }
 
@@ -507,5 +521,84 @@ impl MediaBoardRepository {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use sqlx::Row;
+
+    use super::{ASSET_REFERENCE_COUNT_SQL, GUILD_REFERENCES_ASSET_SQL};
+    use crate::{Db, DbConfig};
+
+    /// Asset de test (UUID canonique) et guilde Discord valide.
+    const ASSET: &str = "00000000-0000-4000-8000-000000000001";
+    const GUILD: &str = "123456789012345678";
+
+    async fn memory_db() -> Db {
+        Db::open_in_memory(&DbConfig::default())
+            .await
+            .expect("base mémoire")
+    }
+
+    /// Plan SQLite de `sql`, une ligne par étape, avec ses paramètres liés.
+    async fn plan(db: &Db, sql: &str, params: &[&str]) -> Vec<String> {
+        let statement = format!("EXPLAIN QUERY PLAN {sql}");
+        let mut query = sqlx::query(&statement);
+        for param in params {
+            query = query.bind(*param);
+        }
+        let rows = query
+            .fetch_all(db.pool())
+            .await
+            .expect("EXPLAIN QUERY PLAN");
+        rows.iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect()
+    }
+
+    /// La sous-requête de `guild_references_asset` doit chercher
+    /// `cover_asset_id` par l'index de 0022, pas scanner `media_assets`.
+    #[tokio::test]
+    async fn guild_references_asset_ne_scanne_pas_media_assets() {
+        let db = memory_db().await;
+        let lines = plan(
+            &db,
+            GUILD_REFERENCES_ASSET_SQL,
+            &[GUILD, ASSET, ASSET, ASSET],
+        )
+        .await;
+        assert!(
+            !lines.iter().any(|line| line.contains("SCAN media_assets")),
+            "guild_references_asset scanne media_assets (migration 0022 absente ?) : {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("idx_media_assets_cover_asset")),
+            "la pochette doit être cherchée par idx_media_assets_cover_asset : {lines:?}"
+        );
+    }
+
+    /// Le comptage de `replace_media` doit utiliser les deux index du board :
+    /// un scan de `media_board_items` signifierait que l'index `artwork_asset_id`
+    /// manque.
+    #[tokio::test]
+    async fn comptage_des_references_utilise_l_index_artwork() {
+        let db = memory_db().await;
+        let lines = plan(&db, ASSET_REFERENCE_COUNT_SQL, &[ASSET, ASSET]).await;
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("SCAN media_board_items")),
+            "le comptage scanne media_board_items (index artwork_asset_id absent ?) : {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("idx_media_board_items_artwork_asset")),
+            "le second terme du OR doit passer par idx_media_board_items_artwork_asset : {lines:?}"
+        );
     }
 }

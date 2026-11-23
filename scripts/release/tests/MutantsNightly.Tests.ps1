@@ -5,13 +5,15 @@
 # measured, or a mismatch between the matrix's `provisional` flag and the
 # baseline's `status` all fail here.
 #
-# The three Q-T4 scopes are provisional until the first nightly has produced
-# their outcomes.json. Their `caught_pct` is null on purpose: the run step is
-# skipped on pull_request and the nightly fails explicitly after uploading the
-# report, instead of inventing a score. When a score is measured, update the
-# baseline and the matrix flag in the same change, then update the pinned
-# expectations below (they are deliberately exact so a silent recalibration
-# cannot pass).
+# The three Q-T4 scopes were measured on ubuntu-latest with the workflow command
+# (run 45234358272, 2026-11-23); their scores are recorded in the baseline and
+# no matrix leg is provisional today. The provisional escape hatch stays for a
+# scope added before its first measured run: its `caught_pct` stays null, its
+# run step is skipped on pull_request, and the nightly fails explicitly after
+# uploading the report instead of inventing a score. When a score is measured,
+# update the baseline and the matrix flag in the same change, then update the
+# pinned expectations below (they are deliberately exact so a silent
+# recalibration cannot pass).
 
 function ConvertFrom-MutantsScalar {
     param([string]$Raw)
@@ -138,9 +140,9 @@ $expected = @(
     [pscustomobject]@{ scope = 'lc-protocol'; package = 'lc-protocol'; file = ''; filter = ''; provisional = $false; caught = 99; min = 47; status = 'measured' }
     [pscustomobject]@{ scope = 'lc-media-guard'; package = 'lc-media'; file = 'crates/lc-media/src/guard.rs'; filter = 'kind(lib) | binary(ssrf_guard) | binary(properties)'; provisional = $false; caught = 99; min = 86; status = 'measured' }
     [pscustomobject]@{ scope = 'lc-db-queue'; package = 'lc-db'; file = 'crates/lc-db/src/repos/playback_jobs.rs'; filter = ''; provisional = $false; caught = 93; min = 92; status = 'measured' }
-    [pscustomobject]@{ scope = 'lc-playback-payload'; package = 'lc-playback'; file = 'crates/lc-playback/src/payload.rs'; filter = 'kind(lib) | binary(engine_scenarios)'; provisional = $true; caught = $null; min = 44; status = 'provisional' }
-    [pscustomobject]@{ scope = 'lc-db-core'; package = 'lc-db'; file = 'crates/lc-db/src/db.rs'; filter = ''; provisional = $true; caught = $null; min = 77; status = 'provisional' }
-    [pscustomobject]@{ scope = 'lc-media-storage'; package = 'lc-media'; file = 'crates/lc-media/src/storage.rs'; filter = 'kind(lib) | binary(properties)'; provisional = $true; caught = $null; min = 118; status = 'provisional' }
+    [pscustomobject]@{ scope = 'lc-playback-payload'; package = 'lc-playback'; file = 'crates/lc-playback/src/payload.rs'; filter = 'kind(lib) | binary(engine_scenarios)'; provisional = $false; caught = 57; min = 44; status = 'measured' }
+    [pscustomobject]@{ scope = 'lc-db-core'; package = 'lc-db'; file = 'crates/lc-db/src/db.rs'; filter = ''; provisional = $false; caught = 81; min = 77; status = 'measured' }
+    [pscustomobject]@{ scope = 'lc-media-storage'; package = 'lc-media'; file = 'crates/lc-media/src/storage.rs'; filter = 'kind(lib) | binary(properties)'; provisional = $false; caught = 79; min = 118; status = 'measured' }
 )
 
 Test-Case 'mutation matrix covers the six critical scopes' {
@@ -257,21 +259,25 @@ Test-Case 'baseline and workflow incoherence is rejected' {
     $orphan | Add-Member -NotePropertyName 'lc-db-orphan' -NotePropertyValue ([pscustomobject]@{ caught_pct = 99; min_mutants = 1; status = 'measured' })
     Assert-Throws { Assert-MutantsCoherence $matrix $orphan } 'not in the workflow matrix'
 
+    # No scope is provisional today: a baseline row flipped to provisional no
+    # longer matches its measured matrix leg.
     $mismatch = $baseline | ConvertTo-Json -Depth 5 | ConvertFrom-Json
-    $mismatch.'lc-db-core'.status = 'measured'
+    $mismatch.'lc-db-core'.status = 'provisional'
     Assert-Throws { Assert-MutantsCoherence $matrix $mismatch } 'matrix provisional flag and baseline status disagree'
 
-    $unmeasured = $matrix | ForEach-Object {
-        [pscustomobject]@{ scope = $_.scope; package = $_.package; file = $_.file; filter = $_.filter; provisional = $_.provisional }
-    }
-    ($unmeasured | Where-Object { $_.scope -eq 'lc-playback-payload' }).provisional = $false
+    # A measured scope without a numeric score must fail instead of comparing null.
     $measuredNull = $baseline | ConvertTo-Json -Depth 5 | ConvertFrom-Json
-    $measuredNull.'lc-playback-payload'.status = 'measured'
-    Assert-Throws { Assert-MutantsCoherence $unmeasured $measuredNull } 'caught_pct must be an integer'
+    $measuredNull.'lc-playback-payload'.caught_pct = $null
+    Assert-Throws { Assert-MutantsCoherence $matrix $measuredNull } 'caught_pct must be an integer'
 
+    # The provisional escape hatch stays fail-closed: a provisional row with a
+    # numeric score is rejected, even though no real scope uses it today.
+    $provisionalMatrix = $matrix | ForEach-Object {
+        [pscustomobject]@{ scope = $_.scope; package = $_.package; file = $_.file; filter = $_.filter; provisional = ($_.scope -eq 'lc-media-storage') }
+    }
     $numericProvisional = $baseline | ConvertTo-Json -Depth 5 | ConvertFrom-Json
-    $numericProvisional.'lc-media-storage'.caught_pct = 100
-    Assert-Throws { Assert-MutantsCoherence $matrix $numericProvisional } 'must keep caught_pct null'
+    $numericProvisional.'lc-media-storage'.status = 'provisional'
+    Assert-Throws { Assert-MutantsCoherence $provisionalMatrix $numericProvisional } 'must keep caught_pct null'
 }
 
 Test-Case 'mutation reports are uploaded per scope even when a leg fails' {

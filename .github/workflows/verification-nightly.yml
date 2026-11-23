@@ -93,6 +93,10 @@ jobs:
   # A red nightly is not a merge gate: this job is advisory. It fails when a
   # mutation score drops below the baseline, and deliberately when a scope is
   # still provisional (after uploading its report) instead of passing unmeasured.
+  # No scope is provisional today: the three Q-T4 scopes were measured on
+  # ubuntu-latest with the command below (run 45234358272) and are recorded in
+  # scripts/mutants-baseline.json. The provisional escape hatch stays for a
+  # scope added before its first measured run.
   # One matrix leg per scope keeps each runner under the 60-minute timeout (the
   # monolithic job was already close to it with 3 scopes) and keeps ci-gate's
   # 55-minute budget reachable on pull_request.
@@ -120,28 +124,28 @@ jobs:
             file: crates/lc-db/src/repos/playback_jobs.rs
             filter: ''
             provisional: false
-          # Q-T4: representative critical files beyond the original three.
-          # They have no measured score yet (status=provisional in
-          # scripts/mutants-baseline.json): the run step is skipped on
-          # pull_request so an unmeasured leg cannot turn ci-gate red, and the
-          # nightly runs them, uploads outcomes.json, then fails explicitly
-          # until the score is recorded. Flip provisional to false and status
-          # to measured in the same change that records caught_pct.
+          # Q-T4: representative critical files beyond the original three,
+          # measured on ubuntu-latest with the same command as the legs above
+          # (run 45234358272, 2026-11-23): lc-playback-payload 57, lc-db-core
+          # 81, lc-media-storage 79. They are measured now; the `provisional`
+          # flag and the `status: "provisional"` escape hatch stay for a scope
+          # added before its first measured run (skipped on pull_request,
+          # explicit failure on the nightly after uploading its report).
           - scope: lc-playback-payload
             package: lc-playback
             file: crates/lc-playback/src/payload.rs
             filter: 'kind(lib) | binary(engine_scenarios)'
-            provisional: true
+            provisional: false
           - scope: lc-db-core
             package: lc-db
             file: crates/lc-db/src/db.rs
             filter: ''
-            provisional: true
+            provisional: false
           - scope: lc-media-storage
             package: lc-media
             file: crates/lc-media/src/storage.rs
             filter: 'kind(lib) | binary(properties)'
-            provisional: true
+            provisional: false
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

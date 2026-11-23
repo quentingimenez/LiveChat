@@ -580,6 +580,15 @@ mod tests {
     }
 
     #[test]
+    fn meta_contents_accepts_content_before_the_key() {
+        let html = r#"<meta content="https://media.example/a.mp4" property="og:video">"#;
+        assert_eq!(
+            meta_contents(html, "og:video"),
+            vec!["https://media.example/a.mp4"]
+        );
+    }
+
+    #[test]
     fn script_payload_returns_body_and_json() {
         let html = r#"<html><body>
             <script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">{"a":1}</script>

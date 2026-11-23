@@ -214,6 +214,9 @@ pub fn allows_ytdlp_fallback(raw_url: &str) -> bool {
     let Ok(parsed) = Url::parse(raw_url) else {
         return false;
     };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return false;
+    }
     let Some(host) = parsed.host_str() else {
         return false;
     };
@@ -444,14 +447,74 @@ mod tests {
     }
 
     #[test]
+    fn keeps_the_secure_video_url_first() {
+        let page = parse_page(
+            r#"<meta property="og:type" content="video.other">
+               <meta property="og:video" content="http://cdn.example/clip.mp4">
+               <meta property="og:video:secure_url" content="https://cdn.example/clip.mp4">
+               <meta property="og:video:type" content="video/mp4">"#,
+        );
+        assert_eq!(
+            page.media_urls().first().copied(),
+            Some("https://cdn.example/clip.mp4")
+        );
+        assert_eq!(page.media[0].mime.as_deref(), Some("video/mp4"));
+    }
+
+    #[test]
+    fn orders_webp_before_jpeg_on_an_image_page() {
+        let page = parse_page(
+            r#"<meta property="og:type" content="image.other">
+               <meta property="og:image" content="https://cdn.example/photo.jpg">
+               <meta property="og:image" content="https://cdn.example/photo.webp">
+               <meta property="og:image:type" content="image/jpeg">
+               <meta property="og:image:type" content="image/webp">"#,
+        );
+        assert_eq!(
+            page.media_urls(),
+            vec![
+                "https://cdn.example/photo.webp",
+                "https://cdn.example/photo.jpg",
+            ],
+            "le WebP est préféré au JPEG, quel que soit l'ordre du document"
+        );
+    }
+
+    #[test]
+    fn accepts_a_gif_page_without_og_type() {
+        let page = parse_page(
+            r#"<meta property="og:image" content="https://cdn.example/still.webp">
+               <meta property="og:image:type" content="image/webp">
+               <meta property="og:image" content="https://cdn.example/anim.gif">
+               <meta property="og:image:type" content="image/gif">"#,
+        );
+        assert_eq!(page.media_urls(), vec!["https://cdn.example/anim.gif"]);
+        assert_eq!(page.media[0].kind, MediaKind::Image);
+    }
+
+    #[test]
+    fn drops_a_manifest_by_extension_even_with_a_video_mime() {
+        let page = parse_page(
+            r#"<meta property="og:type" content="video.other">
+               <meta property="og:video" content="https://cdn.example/live/master.m3u8">
+               <meta property="og:video:type" content="video/mp4">"#,
+        );
+        assert!(page.is_empty());
+    }
+
+    #[test]
     fn ytdlp_fallback_is_limited_to_known_media_hosts() {
         assert!(allows_ytdlp_fallback("https://vimeo.com/76979871"));
         assert!(allows_ytdlp_fallback("https://player.vimeo.com/video/1"));
         assert!(allows_ytdlp_fallback("https://WWW.Reddit.com/r/aww/"));
         assert!(allows_ytdlp_fallback("https://www.medal.tv/games/1"));
+        assert!(allows_ytdlp_fallback("https://vimeo.com./76979871"));
         assert!(!allows_ytdlp_fallback("https://notvimeo.com/video/1"));
         assert!(!allows_ytdlp_fallback("https://vimeo.com.evil.example/1"));
+        assert!(!allows_ytdlp_fallback("https://vimeo.com@evil.example/1"));
+        assert!(!allows_ytdlp_fallback("https://127.0.0.1/video"));
         assert!(!allows_ytdlp_fallback("https://example.com/article"));
+        assert!(!allows_ytdlp_fallback("ftp://vimeo.com/76979871"));
         assert!(!allows_ytdlp_fallback("file:///C:/clip.mp4"));
     }
 

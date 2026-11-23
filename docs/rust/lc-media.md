@@ -502,10 +502,10 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
 
 ## Tests
 
-- 329 tests unitaires dans la crate (URL/hash, résolution offline sur fixtures, parsing
+- 335 tests unitaires dans la crate (URL/hash, résolution offline sur fixtures, parsing
   HTML/JSON — dont l'extraction Open Graph générique (`web::parse_page`) et Tenor, le
-  repli vidéo → GIF, la liste d'hôtes du repli `yt-dlp` et la priorité d'erreur de
-  `download_web` —, arguments
+  repli vidéo → GIF, la liste d'hôtes du repli `yt-dlp`, la priorité d'erreur de
+  `download_web` et la détection des types HTML —, arguments
   ffmpeg, décisions de copie, éviction LRU, configuration, erreurs,
   garde SSRF : schémas/UNC, plages IPv4/IPv6, redirections ; stockage : racine
   canonicalisée fail-closed, chemins de transit, publication atomique, purge ciblée des
@@ -540,9 +540,10 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
 - `tests/tweet_card_ffmpeg.rs` : 2 tests `#[ignore]` de composition réelle — vidéo 16:9
   et vidéo verticale 9:16 incrustées dans la carte (durée conservée, largeur de carte
   1080, H.264) ; nécessitent `ffmpeg`.
-- `tests/network.rs` : 15 tests marqués `#[ignore]` (YouTube e2e, Tenor e2e — page
+- `tests/network.rs` : 16 tests marqués `#[ignore]` (YouTube e2e, Tenor e2e — page
   partagée → MP4, `source_kind` et titre —, Giphy et Imgur e2e via Open Graph,
-  Dailymotion e2e via le repli `yt-dlp`, TikTok en ligne,
+  image directe Brave sans extension de fichier, Dailymotion e2e via le repli `yt-dlp`,
+  TikTok en ligne,
   cartes tweet — texte, photo, tweet cité, vidéo —, échantillon `testsrc` ffmpeg) ;
   ils nécessitent réseau + `ffmpeg`/`yt-dlp`.
 - Doctest de la crate : 1.

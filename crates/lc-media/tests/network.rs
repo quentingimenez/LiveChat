@@ -302,6 +302,36 @@ async fn ingests_an_imgur_page_end_to_end() {
 }
 
 #[tokio::test]
+#[ignore = "nécessite un accès réseau"]
+async fn ingests_a_direct_image_without_a_file_extension() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut config = MediaConfig::default();
+    config.storage.directory = temp.path().join("media");
+    let pipeline = MediaPipeline::new(config).unwrap();
+    let media = pipeline
+        .ingest_url(
+            "https://imgs.search.brave.com/Yhv2vfS8HbFKXPdkOfZxw4jSu0MMkYGqLKymxhx3p1Q/rs:fit:860:0:0:0/g:ce/aHR0cHM6Ly9pLnBp/bmltZy5jb20vb3Jp/Z2luYWxzLzE2LzU2/LzhhLzE2NTY4YTVl/Mzg1YjYyNmMzNDg4/ZTVmNmYzNGU2NmRh/LmpwZw",
+        )
+        .await
+        .unwrap();
+    // L'URL de proxy Brave n'a pas d'extension : le média doit être reconnu
+    // d'après le `Content-Type` de la réponse, pas d'après le chemin.
+    println!(
+        "Brave image: kind={:?}, mime={:?}, size={} octets, dimensions={}x{}",
+        media.normalized.kind,
+        media.download.mime,
+        media.download.size_bytes,
+        media.normalized.width.unwrap_or(0),
+        media.normalized.height.unwrap_or(0)
+    );
+    assert_eq!(media.source.source_kind, lc_media::SourceKind::DirectMedia);
+    assert_eq!(media.normalized.kind, MediaKind::Image);
+    assert_eq!(media.download.mime.as_deref(), Some("image/jpeg"));
+    assert!(media.download.size_bytes > 0);
+    assert!(media.normalized.storage_path.exists());
+}
+
+#[tokio::test]
 #[ignore = "nécessite un accès réseau + yt-dlp"]
 async fn ingests_a_page_without_open_graph_through_the_ytdlp_fallback() {
     let temp = tempfile::TempDir::new().unwrap();

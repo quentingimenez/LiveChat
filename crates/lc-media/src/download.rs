@@ -1682,6 +1682,15 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_html_content_types_only() {
+        assert!(is_html_content_type(Some("text/html; charset=utf-8")));
+        assert!(is_html_content_type(Some("application/xhtml+xml")));
+        assert!(!is_html_content_type(Some("image/jpeg")));
+        assert!(!is_html_content_type(Some("video/mp4")));
+        assert!(!is_html_content_type(None));
+    }
+
+    #[test]
     fn classifies_helpers() {
         assert_eq!(
             classify("https://www.youtube.com/watch?v=abc"),

@@ -360,10 +360,43 @@ mod tests {
     #[tokio::test]
     #[ignore = "gateway réel : exige DISCORD_TOKEN/DISCORD_CLIENT_ID et un réseau"]
     async fn gateway_reel_configure_par_environnement() {
-        let Ok(token) = std::env::var("DISCORD_TOKEN") else {
-            return;
-        };
+        // Ce test est classé `network` : sans identifiants il ne doit pas
+        // « passer vide » lors d'un dispatch `network_tests=true` sans secrets.
+        let token = std::env::var("DISCORD_TOKEN").expect(
+            "DISCORD_TOKEN absent : ce test réseau manuel exige un vrai jeton \
+             (workflow_dispatch `network_tests=true` avec les secrets Discord)",
+        );
+        let client_id = std::env::var("DISCORD_CLIENT_ID").expect(
+            "DISCORD_CLIENT_ID absent : ce test réseau manuel exige l'identifiant \
+             d'application Discord",
+        );
         assert!(!token.is_empty(), "DISCORD_TOKEN fourni mais vide");
+        assert!(!client_id.is_empty(), "DISCORD_CLIENT_ID fourni mais vide");
+
+        // Vérifie réellement le réseau et les identifiants : sans cet appel, le
+        // test resterait une simple lecture d'environnement.
+        let response = reqwest::Client::new()
+            .get("https://discord.com/api/v10/users/@me")
+            .header(reqwest::header::AUTHORIZATION, format!("Bot {token}"))
+            .send()
+            .await
+            .expect(
+                "appel Discord impossible : ce test réseau manuel exige Internet \
+                 (l'API discord.com doit être joignable)",
+            );
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::OK,
+            "l'API Discord refuse les identifiants fournis (DISCORD_TOKEN/DISCORD_CLIENT_ID)"
+        );
+        let identity: serde_json::Value = response
+            .json()
+            .await
+            .expect("réponse Discord illisible : identité du bot attendue");
+        assert!(
+            identity["id"].is_string(),
+            "réponse Discord inattendue : identité du bot sans id"
+        );
     }
 
     #[test]

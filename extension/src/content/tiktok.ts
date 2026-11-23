@@ -6,6 +6,7 @@ import {
 import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModalTiktok';
 import { initInpageTheme } from './inpage-theme';
 import { TIKTOK_BUTTON_LOGO_SIZE_PX, tiktokInpageStyles } from './inpage-styles';
+import { onTrustedPageEvent, resolveAllowedActionTarget } from './shared';
 
 const STYLE_ID = 'lce-tiktok-style';
 const INLINE_BUTTON_ID = 'lce-tiktok-inline-button';
@@ -281,19 +282,19 @@ const attachLongPressCompose = (() => {
       })();
     };
 
-    cancelButton.addEventListener('click', (event) => {
+    onTrustedPageEvent<MouseEvent>(cancelButton, 'click', (event) => {
       event.preventDefault();
       event.stopPropagation();
       close();
     });
 
-    submitButton.addEventListener('click', (event) => {
+    onTrustedPageEvent<MouseEvent>(submitButton, 'click', (event) => {
       event.preventDefault();
       event.stopPropagation();
       submit();
     });
 
-    textarea.addEventListener('keydown', (event) => {
+    onTrustedPageEvent<KeyboardEvent>(textarea, 'keydown', (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
         event.preventDefault();
         submit();
@@ -354,7 +355,7 @@ const attachLongPressCompose = (() => {
       clearPressTimer();
     };
 
-    options.button.addEventListener('pointerdown', (event) => {
+    onTrustedPageEvent<PointerEvent>(options.button, 'pointerdown', (event) => {
       if (event.pointerType === 'mouse' && event.button !== 0) {
         return;
       }
@@ -1124,6 +1125,15 @@ const hasExtensionAuth = async (): Promise<boolean> => {
 };
 
 const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }> => {
+  const targetUrl = resolveAllowedActionTarget('tiktok', url, window.location.href);
+
+  if (!targetUrl) {
+    return {
+      ok: false,
+      message: 'URL TikTok invalide.',
+    };
+  }
+
   const runtime = readRuntime();
 
   if (!runtime || typeof runtime.sendMessage !== 'function') {
@@ -1136,7 +1146,7 @@ const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }>
   try {
     const response = (await runtime.sendMessage({
       type: 'lce/send-quick',
-      url,
+      url: targetUrl,
       source: 'tiktok',
     })) as { ok?: unknown; message?: unknown };
 
@@ -1161,6 +1171,15 @@ const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }>
 };
 
 const sendCompose = async (payload: ComposeSubmitPayload): Promise<ComposeSubmitResult> => {
+  const targetUrl = resolveAllowedActionTarget('tiktok', payload.url, window.location.href);
+
+  if (!targetUrl) {
+    return {
+      ok: false,
+      message: 'URL TikTok invalide.',
+    };
+  }
+
   const runtime = readRuntime();
 
   if (!runtime || typeof runtime.sendMessage !== 'function') {
@@ -1173,7 +1192,8 @@ const sendCompose = async (payload: ComposeSubmitPayload): Promise<ComposeSubmit
   try {
     const response = (await runtime.sendMessage({
       type: 'lce/send-compose',
-      url: payload.url,
+      url: targetUrl,
+      source: 'tiktok',
       text: payload.text,
       forceRefresh: payload.forceRefresh,
       saveToBoard: payload.saveToBoard,
@@ -1313,7 +1333,7 @@ const createActionButton = (): HTMLButtonElement => {
     },
   });
 
-  button.addEventListener('click', (event) => {
+  onTrustedPageEvent<MouseEvent>(button, 'click', (event) => {
     event.preventDefault();
     event.stopPropagation();
 
@@ -1362,7 +1382,7 @@ const createActionButton = (): HTMLButtonElement => {
     });
   });
 
-  button.addEventListener('dblclick', (event) => {
+  onTrustedPageEvent<MouseEvent>(button, 'dblclick', (event) => {
     event.preventDefault();
     event.stopPropagation();
     clearButtonClickTimer(button);

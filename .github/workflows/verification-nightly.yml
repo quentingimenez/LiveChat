@@ -340,3 +340,4 @@ jobs:
             target/ignored-tests.json
             target/ignored-tests.md
             target/ignored-tests.txt
+          if-no-files-found: error

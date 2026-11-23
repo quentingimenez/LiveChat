@@ -320,7 +320,7 @@ jobs:
           docker run --detach --name lc-server-ci \
             --publish 127.0.0.1:3000:3000 \
             --env API_URL=http://127.0.0.1:3000 \
-            --env ADMIN_UI_TOKEN=ci-admin-secret \
+            --env ADMIN_UI_TOKEN=ci-admin-secret-0123456789abcdef \
             livechat-server:ci
           for attempt in $(seq 1 60); do
             if curl -fsS --max-time 2 http://127.0.0.1:3000/health > /tmp/health.json 2>/dev/null; then

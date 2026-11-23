@@ -31,7 +31,7 @@
 //! volontairement parsés et validés dès maintenant : ils constituent la
 //! configuration de référence que les Phases 3b à 6 consommeront.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -49,6 +49,16 @@ pub const DEFAULT_PORT: u16 = 3000;
 
 /// Chemin de stockage média par défaut (relatif au répertoire de travail).
 pub const DEFAULT_MEDIA_STORAGE_DIR: &str = "./data/media";
+
+/// Longueur minimale d'un `ADMIN_UI_TOKEN` non vide.
+///
+/// Empty remains valid: it disables the fallback secret login (`503
+/// admin_ui_disabled`). Any non-empty token is a password guarded only by the
+/// rate limit, so it must resist an offline guess.
+pub const ADMIN_UI_TOKEN_MIN_CHARS: usize = 32;
+
+/// Nombre minimal de caractères distincts d'un `ADMIN_UI_TOKEN`.
+const ADMIN_UI_TOKEN_MIN_DISTINCT_CHARS: usize = 8;
 
 /// Format `yt-dlp` par défaut (parité legacy, H.264/AAC ≤ 1080p).
 pub const DEFAULT_YTDLP_FORMAT: &str = "bv*[vcodec^=avc1][ext=mp4][height<=1080]+ba[ext=m4a]/b[vcodec^=avc1][ext=mp4][height<=1080]/bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best";
@@ -199,6 +209,15 @@ pub enum ConfigError {
         reason: String,
     },
 
+    /// Secret trop faible : la valeur n'est jamais recopiée dans le message.
+    #[error("valeur trop faible pour {name} : {reason}")]
+    WeakSecret {
+        /// Nom de la variable.
+        name: &'static str,
+        /// Raison du refus, sans la valeur.
+        reason: String,
+    },
+
     /// `DISCORD_TOKEN` et `DISCORD_CLIENT_ID` sont indissociables pour le bot,
     /// sauf si l'identifiant ne sert qu'à la connexion admin Discord.
     #[error(
@@ -227,7 +246,8 @@ pub struct Config {
     pub i18n: String,
     /// `API_URL` (obligatoire) : origine utilisée pour le CORS et les liens publics.
     pub api_url: Url,
-    /// `ADMIN_UI_TOKEN` (défaut vide).
+    /// `ADMIN_UI_TOKEN` (défaut vide = login secret désactivé ; non vide :
+    /// au moins 32 caractères, variés et sans motif répété).
     pub admin_ui_token: Secret,
     /// `ADMIN_UI_LOCAL_ONLY` (défaut `true`).
     pub admin_ui_local_only: bool,
@@ -371,6 +391,7 @@ impl Config {
         let i18n = env.string("I18N", "fr");
         let api_url = env.required_url("API_URL")?;
         let admin_ui_token = env.secret("ADMIN_UI_TOKEN");
+        validate_admin_ui_token(&admin_ui_token)?;
         let admin_ui_local_only =
             env.parsed("ADMIN_UI_LOCAL_ONLY", true, "true ou false", parse_bool)?;
         let admin_trust_forwarded_for = env.parsed(
@@ -814,6 +835,47 @@ fn parse_origin(name: &'static str, raw: &str) -> Result<Url, ConfigError> {
     Ok(url)
 }
 
+/// Refuses weak `ADMIN_UI_TOKEN` values before the server starts.
+///
+/// An absent or blank token is valid: the secret login is then disabled. A
+/// configured token must be long enough and varied enough to resist guessing;
+/// surrounding whitespace is ignored because the login comparison trims the
+/// expected value. The rejected value is never included in [`ConfigError`].
+fn validate_admin_ui_token(token: &Secret) -> Result<(), ConfigError> {
+    let value = token.expose_secret().trim();
+    if value.is_empty() {
+        return Ok(());
+    }
+
+    let characters: Vec<char> = value.chars().collect();
+    let reason = if characters.len() < ADMIN_UI_TOKEN_MIN_CHARS {
+        format!("il doit contenir au moins {ADMIN_UI_TOKEN_MIN_CHARS} caractères")
+    } else if characters.iter().copied().collect::<HashSet<_>>().len()
+        < ADMIN_UI_TOKEN_MIN_DISTINCT_CHARS
+    {
+        format!(
+            "il doit contenir au moins {ADMIN_UI_TOKEN_MIN_DISTINCT_CHARS} caractères distincts"
+        )
+    } else if is_repetition_of_a_shorter_pattern(&characters) {
+        "il ne doit pas être la répétition d'un motif plus court".to_owned()
+    } else {
+        return Ok(());
+    };
+
+    Err(ConfigError::WeakSecret {
+        name: "ADMIN_UI_TOKEN",
+        reason,
+    })
+}
+
+/// `true` when `characters` is a whole repetition of a shorter block.
+fn is_repetition_of_a_shorter_pattern(characters: &[char]) -> bool {
+    let length = characters.len();
+    (1..length)
+        .filter(|period| length.is_multiple_of(*period))
+        .any(|period| (0..length).all(|index| characters[index] == characters[index % period]))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -838,6 +900,9 @@ mod tests {
     fn config_with(values: &[(&str, &str)]) -> Config {
         Config::from_pairs(pairs(values)).expect("configuration de test valide")
     }
+
+    /// Jeton de test fort : 32 caractères tous distincts, sans motif répété.
+    const STRONG_ADMIN_TOKEN: &str = "k7Qm2vXp9Rz4Lw8Tn6Hs3Jd5Fg1Bc0Ya";
 
     #[test]
     fn minimal_config_applies_legacy_defaults() {
@@ -920,7 +985,7 @@ mod tests {
             ("PORT", "39123"),
             ("I18N", "en"),
             ("API_URL", "https://livechat.example.com/app"),
-            ("ADMIN_UI_TOKEN", "admin-secret"),
+            ("ADMIN_UI_TOKEN", STRONG_ADMIN_TOKEN),
             ("ADMIN_UI_LOCAL_ONLY", "false"),
             ("ADMIN_DISCORD_USER_IDS", " 1001, 1002 ,, 1003 "),
             ("DISCORD_TOKEN", "discord-secret"),
@@ -982,7 +1047,7 @@ mod tests {
         assert_eq!(config.port, 39123);
         assert_eq!(config.i18n, "en");
         assert_eq!(config.api_origin(), "https://livechat.example.com");
-        assert_eq!(config.admin_ui_token.expose_secret(), "admin-secret");
+        assert_eq!(config.admin_ui_token.expose_secret(), STRONG_ADMIN_TOKEN);
         assert!(!config.admin_ui_local_only);
         assert_eq!(
             config.admin_discord_user_ids,
@@ -1320,10 +1385,61 @@ mod tests {
     }
 
     #[test]
+    fn weak_admin_tokens_are_refused_at_startup() {
+        for value in [
+            // Too short (12 and 30 characters).
+            "admin-secret",
+            "jeton-de-test-trop-court-01234",
+            // Long enough but trivial: one repeated character, or a repeated
+            // block, which reduces the effective entropy.
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "admin123admin123admin123admin123",
+            "0123456789abcdef0123456789abcdef",
+        ] {
+            let error = Config::from_pairs(pairs(&[
+                ("API_URL", "http://localhost:3000"),
+                ("ADMIN_UI_TOKEN", value),
+            ]))
+            .expect_err("jeton faible refusé au démarrage");
+            assert!(
+                matches!(
+                    &error,
+                    ConfigError::WeakSecret {
+                        name: "ADMIN_UI_TOKEN",
+                        ..
+                    }
+                ),
+                "jeton {value:?} : erreur inattendue {error:?}"
+            );
+            assert!(
+                !error.to_string().contains(value),
+                "le message ne doit pas recopier le secret : {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn strong_admin_token_is_accepted_and_blank_disables_the_secret_login() {
+        let config = config_with(&[
+            ("API_URL", "http://localhost:3000"),
+            ("ADMIN_UI_TOKEN", STRONG_ADMIN_TOKEN),
+        ]);
+        assert_eq!(config.admin_ui_token.expose_secret(), STRONG_ADMIN_TOKEN);
+        assert!(config.admin_secret_login_enabled());
+
+        let blank = config_with(&[
+            ("API_URL", "http://localhost:3000"),
+            ("ADMIN_UI_TOKEN", "   "),
+        ]);
+        assert!(blank.admin_ui_token.is_empty());
+        assert!(!blank.admin_secret_login_enabled());
+    }
+
+    #[test]
     fn admin_login_settings_enable_the_expected_methods() {
         let secret_only = config_with(&[
             ("API_URL", "http://localhost:3000"),
-            ("ADMIN_UI_TOKEN", "admin-secret"),
+            ("ADMIN_UI_TOKEN", STRONG_ADMIN_TOKEN),
         ]);
         assert!(secret_only.admin_secret_login_enabled());
         assert!(!secret_only.admin_discord_login_enabled());
@@ -1397,12 +1513,12 @@ mod tests {
 
         let config = config_with(&[
             ("API_URL", "http://localhost:3000"),
-            ("ADMIN_UI_TOKEN", "admin-secret"),
+            ("ADMIN_UI_TOKEN", "admin-secret-0123456789abcdefghij"),
             ("DISCORD_CLIENT_SECRET", "oauth-client-secret"),
             ("DATABASE_URL", "file:./data/livechat.db"),
         ]);
         let debug = format!("{config:?}");
-        assert!(!debug.contains("admin-secret"));
+        assert!(!debug.contains("admin-secret-0123456789abcdefghij"));
         assert!(!debug.contains("oauth-client-secret"));
         assert!(debug.contains("Secret(<redacted>)"));
     }

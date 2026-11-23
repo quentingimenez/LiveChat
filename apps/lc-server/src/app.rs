@@ -757,6 +757,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rate_limit_caps_the_admin_console_page_with_the_general_budget() {
+        let app = router(state());
+        let client = [203, 0, 113, 12];
+        // The page, its assets and the JSON API share the general budget: the
+        // console redirect itself is already counted.
+        let (status, _, _) = send(&app, from_client(request(Method::GET, "/admin"), client)).await;
+        assert_eq!(status, StatusCode::PERMANENT_REDIRECT);
+        for index in 1..RATE_LIMIT_MAX {
+            let (status, _, _) =
+                send(&app, from_client(request(Method::GET, "/admin/"), client)).await;
+            assert_ne!(
+                status,
+                StatusCode::TOO_MANY_REQUESTS,
+                "requête {index} acceptée"
+            );
+        }
+
+        // The next request is refused with the general budget, not the strict
+        // login budget.
+        let (status, headers, body) =
+            send(&app, from_client(request(Method::GET, "/admin/"), client)).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(body, serde_json::json!({ "error": "request_error" }));
+        assert_eq!(
+            *headers.get("x-ratelimit-limit").unwrap(),
+            RATE_LIMIT_MAX.to_string()
+        );
+        assert_eq!(headers.get("x-ratelimit-remaining").unwrap(), "0");
+        assert!(headers.get(header::RETRY_AFTER).is_some());
+    }
+
+    #[tokio::test]
     async fn rate_limit_compte_les_sondes_socket_io_a_part() {
         let app = router(state());
         let client = [203, 0, 113, 30];

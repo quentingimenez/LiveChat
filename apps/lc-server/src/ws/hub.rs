@@ -155,9 +155,10 @@ impl Connection {
     //
     /// Dépose un texte sans jamais bloquer.
     ///
-    /// Retourne `true` si la trame est dans la file. Si elle est pleine, la
-    /// connexion est marquée fermante et une fermeture `4408 slow_client` est
-    /// publiée : c'est la seule connexion concernée qui est fermée.
+    /// Retourne `true` si la trame est dans la file. Si elle est pleine, une
+    /// fermeture `4408 slow_client` est demandée pour cette connexion seule ;
+    /// aucune publication n'a lieu si une fermeture explicite est déjà annoncée
+    /// (`explicit_requested`), car elle doit garder son code.
     fn enqueue_text(&self, text: String) -> bool {
         if self.close_state.load(Ordering::Relaxed) != CLOSE_STATE_OPEN {
             return false;
@@ -183,12 +184,13 @@ impl Connection {
 
     /// Demande la fermeture explicite d'une connexion.
     ///
-    /// Une fermeture explicite (révocation, arrêt admin) gagne toujours sur la
-    /// fermeture `4408 slow_client` : elle remplace une demande lente déjà
-    /// publiée, et la première fermeture explicite garde son code si plusieurs
-    /// arrivent. Elle emprunte la file quand elle a de la place, pour conserver
-    /// l'ordre avec les trames déjà déposées ; si la file est pleine ou déjà
-    /// marquée lente, elle est publiée hors file.
+    /// Une fermeture explicite (révocation, arrêt admin) remplace une demande
+    /// `4408 slow_client` déjà publiée par le hub, et la première fermeture
+    /// explicite garde son code si plusieurs arrivent. Elle ne peut pas annuler
+    /// un `4408` que la session aurait déjà lu et commencé à fermer. Elle
+    /// emprunte la file quand elle a de la place, pour conserver l'ordre avec
+    /// les trames déjà déposées ; si la file est pleine ou déjà marquée lente,
+    /// elle est publiée hors file.
     fn enqueue_close(&self, code: u16, reason: String) -> bool {
         let Some(previous) = self.claim_explicit_close() else {
             // Une fermeture explicite est déjà en cours : la première gagne et
@@ -539,6 +541,20 @@ impl Hub {
             .connections
             .get(&connection_id)
             .map(Connection::queue_depth)
+    }
+
+    /// Annonce une fermeture explicite sans encore déposer le close.
+    ///
+    /// Réservé aux tests B-01 : permet de vérifier qu'un débordement survenu
+    /// pendant la fenêtre `stop` ne publie pas de `4408`.
+    #[cfg(test)]
+    pub(crate) fn prepare_explicit_close(&self, connection_id: Uuid) -> bool {
+        let inner = self.lock_inner();
+        let Some(connection) = inner.connections.get(&connection_id) else {
+            return false;
+        };
+        connection.begin_explicit_close();
+        true
     }
 
     /// Sends one protocol message to every socket of an overlay client.

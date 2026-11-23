@@ -339,9 +339,7 @@ async fn handle_socket(
     if !send_welcome(&mut sink, &hub, &engine, &db, &context).await {
         // Le client n'a pas lu son `welcome`/`settings` : même repli borné que
         // dans la boucle, en conservant une éventuelle fermeture explicite.
-        let info = pending_explicit_close(&mut close_rx, &mut receiver).unwrap_or_else(|| {
-            CloseInfo::new(hub::SLOW_CLIENT_CLOSE_CODE, hub::SLOW_CLIENT_REASON)
-        });
+        let info = timeout_close_info(&mut close_rx, &mut receiver);
         close_sink(&mut sink, &info).await;
         hub.unregister(connection_id);
         return;
@@ -528,11 +526,7 @@ async fn handle_socket(
     if writer_timed_out {
         // Un close explicite peut avoir été demandé pendant que l'écriture
         // bloquait : il garde son code, le `4408` n'est que le repli.
-        close_info = Some(
-            pending_explicit_close(&mut close_rx, &mut receiver).unwrap_or_else(|| {
-                CloseInfo::new(hub::SLOW_CLIENT_CLOSE_CODE, hub::SLOW_CLIENT_REASON)
-            }),
-        );
+        close_info = Some(timeout_close_info(&mut close_rx, &mut receiver));
     }
 
     if let Some(info) = close_info {
@@ -778,10 +772,8 @@ fn pending_explicit_close(
     close_rx: &mut watch::Receiver<Option<hub::OutboundClose>>,
     receiver: &mut mpsc::Receiver<OutFrame>,
 ) -> Option<CloseInfo> {
-    if let Some(close) = close_rx.borrow_and_update().clone() {
-        if close.explicit {
-            return Some(CloseInfo::new(close.code, close.reason.as_str()));
-        }
+    if let Some(info) = explicit_close_from_watch(close_rx) {
+        return Some(info);
     }
     while let Ok(frame) = receiver.try_recv() {
         if let OutFrame::Close(code, reason) = frame {
@@ -790,7 +782,31 @@ fn pending_explicit_close(
             return Some(CloseInfo { code, reason });
         }
     }
-    None
+    // Une fermeture explicite a pu être publiée pendant le drainage : on relit
+    // le watch avant de retomber sur le repli `4408`.
+    explicit_close_from_watch(close_rx)
+}
+
+/// Lit une fermeture explicite déjà publiée sur le canal `watch`.
+fn explicit_close_from_watch(
+    close_rx: &mut watch::Receiver<Option<hub::OutboundClose>>,
+) -> Option<CloseInfo> {
+    let close = close_rx.borrow_and_update().clone()?;
+    close
+        .explicit
+        .then(|| CloseInfo::new(close.code, close.reason.as_str()))
+}
+
+/// Code de fermeture à utiliser après l'expiration d'une écriture.
+///
+/// Un close explicite en attente (watch ou file) garde son code ; sinon la
+/// connexion est fermée comme client lent (`4408 slow_client`).
+fn timeout_close_info(
+    close_rx: &mut watch::Receiver<Option<hub::OutboundClose>>,
+    receiver: &mut mpsc::Receiver<OutFrame>,
+) -> CloseInfo {
+    pending_explicit_close(close_rx, receiver)
+        .unwrap_or_else(|| CloseInfo::new(hub::SLOW_CLIENT_CLOSE_CODE, hub::SLOW_CLIENT_REASON))
 }
 
 /// Traite un message client authentifié.
@@ -1600,10 +1616,25 @@ mod tests {
         }));
         let (_frame_tx, mut frame_rx) = mpsc::channel(1);
 
-        let info = pending_explicit_close(&mut close_rx, &mut frame_rx)
-            .expect("le close explicite en attente doit être conservé");
+        let info = timeout_close_info(&mut close_rx, &mut frame_rx);
         assert_eq!(info, CloseInfo::new(close_code::REVOKED, "revoked"));
         drop(close_tx);
+    }
+
+    /// B-01 (P3-2) : sans close explicite, le call site du timeout retombe sur
+    /// `4408 slow_client`.
+    #[test]
+    fn writer_timeout_falls_back_to_the_slow_client_close() {
+        let (_close_tx, mut close_rx) = watch::channel(Some(hub::OutboundClose {
+            code: hub::SLOW_CLIENT_CLOSE_CODE,
+            reason: hub::SLOW_CLIENT_REASON.to_owned(),
+            explicit: false,
+        }));
+        let (_frame_tx, mut frame_rx) = mpsc::channel(1);
+        assert_eq!(
+            timeout_close_info(&mut close_rx, &mut frame_rx),
+            CloseInfo::new(hub::SLOW_CLIENT_CLOSE_CODE, hub::SLOW_CLIENT_REASON)
+        );
     }
 
     /// B-01 (P2-2) : un close explicite déposé dans la file est retrouvé même

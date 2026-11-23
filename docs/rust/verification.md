@@ -113,8 +113,9 @@ Le rapport JSON expose `board_p95_ms`, `board_samples`, `board_errors`,
   de la seule connexion saturée, close explicite (`4402`/admin) toujours
   prioritaire même quand la file est pleine, timeout de `sink.send` à 5 s
   (`WRITER_SEND_TIMEOUT`) ; profondeur exposée en test par
-  `Hub::outbound_queue_depth`. En saturation, le close explicite est garanti mais
-  le `stop` qui le précède est best-effort. Reste pour la charge : exposer
+  `Hub::outbound_queue_depth`. En saturation, le close explicite reste prioritaire
+  sauf si la session a déjà lu un `4408` publié avant son annonce ; le `stop` qui
+  le précède est best-effort. Reste pour la charge : exposer
   p95/max dans le rapport de `cargo xtask loadtest` et y scénariser un client qui
   cesse de lire. Le harnais actuel ne peut pas distinguer une file applicative
   d'un tampon noyau : ne pas déduire un PASS de l'absence de déconnexion.

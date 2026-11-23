@@ -2237,6 +2237,167 @@ fn explicit_close_wins_over_slow_close_when_the_queue_is_full() {
     explicit_close_wins_over_slow_close_at(OUTBOUND_QUEUE_CAPACITY);
 }
 
+/// B-01 (P3-1) : un `4408 slow_client` déjà publié est remplacé par le close
+/// explicite, y compris quand la file est saturée (`previous == SLOW`).
+#[test]
+fn explicit_close_replaces_an_already_published_slow_close() {
+    let hub = Hub::new();
+    let guild = guild_id();
+    let client = OverlayClientId::new_v4();
+    let (sender, _receiver) = tokio::sync::mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
+    let (connection_id, close_rx) = hub
+        .register(
+            guild,
+            client,
+            client.to_canonical(),
+            "board".to_owned(),
+            lc_protocol::SessionMode::Normal,
+            None,
+            None,
+            sender,
+        )
+        .expect("connexion enregistrée");
+    for _ in 0..OUTBOUND_QUEUE_CAPACITY {
+        assert!(hub.send(connection_id, hub::OutFrame::Text("trame".to_owned())));
+    }
+    assert_eq!(
+        (*close_rx.borrow()).clone(),
+        None,
+        "la file est pleine mais pas encore débordée"
+    );
+    assert!(!hub.send(connection_id, hub::OutFrame::Text("débordement".to_owned())));
+    assert_eq!(
+        (*close_rx.borrow()).clone(),
+        Some(hub::OutboundClose {
+            code: hub::SLOW_CLIENT_CLOSE_CODE,
+            reason: SLOW_CLIENT_REASON.to_owned(),
+            explicit: false,
+        }),
+        "le débordement initial publie bien le close lent"
+    );
+
+    assert!(hub.close_client_with_reason(&client.as_uuid(), close_code::REVOKED, "revoked"));
+    assert_eq!(
+        (*close_rx.borrow()).clone(),
+        Some(hub::OutboundClose {
+            code: close_code::REVOKED,
+            reason: "revoked".to_owned(),
+            explicit: true,
+        }),
+        "l'explicite remplace le 4408 déjà publié"
+    );
+}
+
+/// B-01 (P3-1) : dès que l'explicite est annoncé, un débordement survenu
+/// pendant le `stop` ne publie aucun `4408` ; le close explicite part ensuite.
+#[test]
+fn explicit_close_announcement_suppresses_slow_close_during_stop() {
+    let hub = Hub::new();
+    let guild = guild_id();
+    let client = OverlayClientId::new_v4();
+    let (sender, _receiver) = tokio::sync::mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
+    let (connection_id, close_rx) = hub
+        .register(
+            guild,
+            client,
+            client.to_canonical(),
+            "board".to_owned(),
+            lc_protocol::SessionMode::Normal,
+            None,
+            None,
+            sender,
+        )
+        .expect("connexion enregistrée");
+    for _ in 0..OUTBOUND_QUEUE_CAPACITY {
+        assert!(hub.send(connection_id, hub::OutFrame::Text("trame".to_owned())));
+    }
+    assert!(hub.prepare_explicit_close(connection_id));
+
+    // 257e trame (file 256/256) : c'est le débordement que produirait le
+    // `stop` diffusé.
+    assert!(!hub.send(connection_id, hub::OutFrame::Text("stop".to_owned())));
+    assert_eq!(
+        (*close_rx.borrow()).clone(),
+        None,
+        "aucun 4408 ne doit être publié pendant la fenêtre stop"
+    );
+
+    assert!(hub.close_client_with_reason(&client.as_uuid(), close_code::REVOKED, "revoked"));
+    assert_eq!(
+        (*close_rx.borrow()).clone(),
+        Some(hub::OutboundClose {
+            code: close_code::REVOKED,
+            reason: "revoked".to_owned(),
+            explicit: true,
+        })
+    );
+}
+
+/// B-01 (P3-3) : la première fermeture explicite garde son code.
+fn first_explicit_close_wins(first: u16, first_reason: &str, second: u16, second_reason: &str) {
+    let hub = Hub::new();
+    let guild = guild_id();
+    let client = OverlayClientId::new_v4();
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
+    let (connection_id, _close_rx) = hub
+        .register(
+            guild,
+            client,
+            client.to_canonical(),
+            "board".to_owned(),
+            lc_protocol::SessionMode::Normal,
+            None,
+            None,
+            sender,
+        )
+        .expect("connexion enregistrée");
+
+    assert!(hub.send(
+        connection_id,
+        hub::OutFrame::Close(first, first_reason.to_owned())
+    ));
+    assert!(hub.send(
+        connection_id,
+        hub::OutFrame::Close(second, second_reason.to_owned())
+    ));
+    match receiver
+        .try_recv()
+        .expect("un close explicite dans la file")
+    {
+        hub::OutFrame::Close(code, reason) => {
+            assert_eq!(code, first);
+            assert_eq!(reason, first_reason);
+        }
+        hub::OutFrame::Text(text) => panic!("trame inattendue : {text}"),
+    }
+    assert!(
+        receiver.try_recv().is_err(),
+        "le second close explicite ne doit pas être déposé"
+    );
+}
+
+/// B-01 (P3-3) : `4402 revoked` puis `4409 rate_limited` → `4402` conservé.
+#[test]
+fn first_explicit_close_wins_over_line_revocation_then_rate_limit() {
+    first_explicit_close_wins(
+        close_code::REVOKED,
+        "revoked",
+        close_code::RATE_LIMITED,
+        "rate_limited",
+    );
+}
+
+/// B-01 (P3-3) : ordre inverse → `4409` conservé.
+#[test]
+fn first_explicit_close_wins_over_rate_limit_then_revocation() {
+    first_explicit_close_wins(
+        close_code::RATE_LIMITED,
+        "rate_limited",
+        close_code::REVOKED,
+        "revoked",
+    );
+}
+
 /// B-01 bout-en-bout : une socket qui ne draine plus sa file est fermée
 /// `4408 slow_client` ; l'autre client continue de recevoir et la lecture
 /// n'est pas arrêtée pour tout le monde.

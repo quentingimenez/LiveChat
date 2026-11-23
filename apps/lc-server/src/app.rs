@@ -362,6 +362,19 @@ pub fn router(state: AppState) -> Router {
 /// (`/ws`), l'adaptateur `AdminHub` et le hook d'ingestion média.
 pub fn router_with_hub(state: AppState, hub: Arc<crate::ws::Hub>) -> Router {
     let config = Arc::clone(&state.config);
+    if config.trusted_proxies.is_empty() {
+        // Fail closed: the flags alone no longer make the headers trusted.
+        if config.trust_proxy_headers {
+            tracing::warn!(
+                "TRUST_PROXY_HEADERS=true sans TRUSTED_PROXIES : en-têtes de proxy ignorés"
+            );
+        }
+        if config.admin_trust_forwarded_for {
+            tracing::warn!(
+                "ADMIN_TRUST_FORWARDED_FOR=true sans TRUSTED_PROXIES : en-têtes de proxy ignorés"
+            );
+        }
+    }
     let rate_limit = RateLimitState::from_config(&config);
     let cors = http::cors::layer(&config);
     // The WebSocket hub signals overlay connections and board/queue changes to
@@ -732,6 +745,61 @@ mod tests {
                 RATE_LIMIT_MAX.to_string(),
                 "{path}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn spoofed_proxy_headers_do_not_reset_the_rate_limit() {
+        // Trust is enabled but no proxy is declared: the headers must be
+        // ignored, so rotating `X-Real-IP` cannot buy a fresh budget.
+        let app = router(state_with(&[
+            ("API_URL", "http://localhost:3000"),
+            ("TRUST_PROXY_HEADERS", "true"),
+        ]));
+        let client = [203, 0, 113, 60];
+        for index in 0..AUTH_RATE_LIMIT_MAX {
+            let mut request = from_client(request(Method::POST, "/admin/auth/secret"), client);
+            request.headers_mut().insert(
+                "x-real-ip",
+                header::HeaderValue::from_str(&format!("198.51.100.{index}"))
+                    .expect("adresse de test valide"),
+            );
+            let (status, _, _) = send(&app, request).await;
+            assert_ne!(
+                status,
+                StatusCode::TOO_MANY_REQUESTS,
+                "request {index} accepted"
+            );
+        }
+
+        let mut forged = from_client(request(Method::POST, "/admin/auth/secret"), client);
+        forged.headers_mut().insert(
+            "x-real-ip",
+            header::HeaderValue::from_static("198.51.100.250"),
+        );
+        let (status, _, _) = send(&app, forged).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn declared_trusted_proxy_headers_are_used_for_the_rate_limit() {
+        let app = router(state_with(&[
+            ("API_URL", "http://localhost:3000"),
+            ("TRUST_PROXY_HEADERS", "true"),
+            ("TRUSTED_PROXIES", "127.0.0.1"),
+        ]));
+        // The proxy is local; each request announces a different client, so no
+        // budget is consumed twice.
+        for index in 0..=AUTH_RATE_LIMIT_MAX {
+            let mut request =
+                from_client(request(Method::POST, "/admin/auth/secret"), [127, 0, 0, 1]);
+            request.headers_mut().insert(
+                "x-real-ip",
+                header::HeaderValue::from_str(&format!("198.51.100.{index}"))
+                    .expect("adresse de test valide"),
+            );
+            let (status, _, _) = send(&app, request).await;
+            assert_ne!(status, StatusCode::TOO_MANY_REQUESTS, "request {index}");
         }
     }
 

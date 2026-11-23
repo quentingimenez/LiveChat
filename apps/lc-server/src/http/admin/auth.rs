@@ -137,16 +137,23 @@ pub async fn current_session(
 
 /// Applies `ADMIN_UI_LOCAL_ONLY` to auth and API routes.
 ///
-/// `peer_ip` is the direct connection address (`ConnectInfo`); when
-/// `ADMIN_TRUST_FORWARDED_FOR` is enabled the trusted proxy headers decide
-/// instead. A missing peer address is treated as a remote client.
+/// `peer_ip` is the direct connection address (`ConnectInfo`). When
+/// `ADMIN_TRUST_FORWARDED_FOR` is enabled **and** that peer is listed in
+/// `TRUSTED_PROXIES`, the proxy headers decide instead; any other peer is
+/// judged on its own address, never on headers it can forge. A missing peer
+/// address is treated as a remote client.
 #[allow(clippy::result_large_err)]
 pub fn check_local_only(
     state: &AppState,
     headers: &HeaderMap,
     peer_ip: Option<IpAddr>,
 ) -> Result<(), Response> {
-    let loopback = if state.config.admin_trust_forwarded_for {
+    let peer_ip = peer_ip.map(crate::http::proxy::canonical_ip);
+    let loopback = if state.config.admin_trust_forwarded_for
+        && crate::http::proxy::is_trusted_proxy(peer_ip, &state.config.trusted_proxies)
+    {
+        // The declared proxy speaks for the client. If it forwards no usable
+        // address, fail closed instead of judging the proxy itself.
         crate::http::proxy::proxied_client_ip(headers).is_some_and(is_loopback)
     } else {
         peer_ip.is_some_and(is_loopback)

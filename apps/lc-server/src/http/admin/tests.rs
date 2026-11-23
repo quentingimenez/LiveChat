@@ -1429,7 +1429,11 @@ async fn failed_discord_callbacks_are_journaled_without_an_actor() {
 
 #[tokio::test]
 async fn trusted_proxy_ignores_a_forged_first_forwarded_hop() {
-    let harness = Harness::with_pairs(&[("ADMIN_TRUST_FORWARDED_FOR", "true")]).await;
+    let harness = Harness::with_pairs(&[
+        ("ADMIN_TRUST_FORWARDED_FOR", "true"),
+        ("TRUSTED_PROXIES", "127.0.0.1"),
+    ])
+    .await;
     let proxy = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 
     // The client forges `127.0.0.1`; the proxy appends the real address.
@@ -1453,6 +1457,21 @@ async fn trusted_proxy_ignores_a_forged_first_forwarded_hop() {
         .insert("x-real-ip", header::HeaderValue::from_static("127.0.0.1"));
     let (status, _, _) = harness.send(local).await;
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn forged_real_ip_from_an_undeclared_proxy_is_not_local() {
+    let harness = Harness::with_pairs(&[("ADMIN_TRUST_FORWARDED_FOR", "true")]).await;
+    let remote = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
+    let mut request = harness.request_from(Method::GET, "/admin/api/overview", remote);
+    request
+        .headers_mut()
+        .insert("x-real-ip", header::HeaderValue::from_static("127.0.0.1"));
+
+    let (status, _, bytes) = harness.send(request).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(json_or_null(&bytes)["error"], "admin_local_only");
 }
 
 #[tokio::test]

@@ -218,7 +218,7 @@ Points de sécurité hérités, à traiter en v2 :
 - token en `localStorage` : exposable en cas de XSS (atténué par `escapeHtml` systématique et CSP) ;
 - `GET /admin/api/runtime-settings` renvoie le cookie TikTok complet (secret) au navigateur ;
 - hypothèse cible du plan (§10 ligne 127) : **cookie de session + Bearer** ; recommander cookie `HttpOnly; SameSite=Strict; Secure` (ou `localhost` sans Secure) + jeton CSRF pour les mutations, ou conserver Bearer pur avec page sans token en URL ;
-- `ADMIN_UI_LOCAL_ONLY` est un filtre d'IP applicatif : en Rust, s'appuyer sur `ConnectInfo<SocketAddr>` (et non sur des en-têtes non fiables) sauf `TRUST_PROXY_HEADERS=true` explicite.
+- `ADMIN_UI_LOCAL_ONLY` est un filtre d'IP applicatif : en Rust, s'appuyer sur `ConnectInfo<SocketAddr>` (et non sur des en-têtes non fiables) ; seul `ADMIN_TRUST_FORWARDED_FOR=true` avec le pair direct déclaré dans `TRUSTED_PROXIES` autorise la lecture des en-têtes.
 
 ## 8. CSP et en-têtes recommandés
 

@@ -90,18 +90,66 @@ jobs:
           name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}/
 
-  # A red nightly is not a merge gate: this job is advisory and only fails
-  # when a mutation score drops below the baseline.
+  # A red nightly is not a merge gate: this job is advisory. It fails when a
+  # mutation score drops below the baseline, and deliberately when a scope is
+  # still provisional (after uploading its report) instead of passing unmeasured.
+  # One matrix leg per scope keeps each runner under the 60-minute timeout (the
+  # monolithic job was already close to it with 3 scopes) and keeps ci-gate's
+  # 55-minute budget reachable on pull_request.
   mutants:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Measured scopes: run on pull_request too (this workflow is in the
+          # PR's changed paths), each leg compares against its baseline.
+          - scope: lc-protocol
+            package: lc-protocol
+            file: ''
+            filter: ''
+            provisional: false
+          - scope: lc-media-guard
+            package: lc-media
+            file: crates/lc-media/src/guard.rs
+            filter: 'kind(lib) | binary(ssrf_guard) | binary(properties)'
+            provisional: false
+          - scope: lc-db-queue
+            package: lc-db
+            file: crates/lc-db/src/repos/playback_jobs.rs
+            filter: ''
+            provisional: false
+          # Q-T4: representative critical files beyond the original three.
+          # They have no measured score yet (status=provisional in
+          # scripts/mutants-baseline.json): the run step is skipped on
+          # pull_request so an unmeasured leg cannot turn ci-gate red, and the
+          # nightly runs them, uploads outcomes.json, then fails explicitly
+          # until the score is recorded. Flip provisional to false and status
+          # to measured in the same change that records caught_pct.
+          - scope: lc-playback-payload
+            package: lc-playback
+            file: crates/lc-playback/src/payload.rs
+            filter: 'kind(lib) | binary(engine_scenarios)'
+            provisional: true
+          - scope: lc-db-core
+            package: lc-db
+            file: crates/lc-db/src/db.rs
+            filter: ''
+            provisional: true
+          - scope: lc-media-storage
+            package: lc-media
+            file: crates/lc-media/src/storage.rs
+            filter: 'kind(lib) | binary(properties)'
+            provisional: true
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # lc-media depends on parley (Cargo.toml) whose yeslogic-fontconfig-sys
-      # build script needs the system fontconfig headers on Linux; the
-      # lc-media-guard scope builds lc-media.
+      # build script needs the system fontconfig headers on Linux; only the
+      # lc-media legs need it.
       - name: Install Linux fontconfig
+        if: matrix.package == 'lc-media'
         run: |
           sudo apt-get update
           DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev
@@ -118,93 +166,108 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0,nextest@0.9.151
       # cargo-mutants does not create the output parent directory itself.
-      - name: Run the mutation scopes and compare with the baseline
+      - name: Run the ${{ matrix.scope }} mutation scope
+        # Provisional scopes have no score to compare yet. Running them on a
+        # PR would either fail without a baseline (blocking ci-gate) or pass
+        # without measuring anything; they first run on the nightly schedule,
+        # which uploads outcomes.json and fails until the score is recorded.
+        if: github.event_name != 'pull_request' || matrix.provisional != true
+        env:
+          SCOPE: ${{ matrix.scope }}
+          PACKAGE: ${{ matrix.package }}
+          MUTATION_FILE: ${{ matrix.file }}
+          TEST_FILTER: ${{ matrix.filter }}
         run: |
-          # rust-cache can restore stale outcomes from target/mutants:
-          # every nightly starts from a clean slate.
-          rm -rf target/mutants
-          mkdir -p target/mutants
+          # rust-cache can restore stale outcomes from target/mutants: every
+          # mutation run starts from a clean slate for its scope.
+          set -euo pipefail
           FAILED=0
-          # 0 = all mutants caught; 2 = FoundProblems (missed mutants).
-          # Both proceed to the score comparison. Any other exit code is a
-          # broken run (1 usage, 3 timeout, 4 baseline failed, 5/6 filter
-          # diff, 70 internal): outcomes.json is written incrementally, so
-          # a partial file must never score as a green run.
-          run_scope() {
-            local scope="$1"
-            local rc
-            shift
-            set +e
-            cargo mutants --output "target/mutants/$scope" "$@"
-            rc=$?
-            set -e
-            if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
-              echo "::error::cargo mutants for $scope exited $rc (expected 0 or 2)"
-              FAILED=1
-            fi
-          }
-          run_scope lc-protocol -p lc-protocol --test-tool nextest -j 2
-          run_scope lc-media-guard -p lc-media --file crates/lc-media/src/guard.rs --test-tool nextest -j 2 -- -E 'kind(lib) | binary(ssrf_guard) | binary(properties)'
-          run_scope lc-db-queue -p lc-db --file crates/lc-db/src/repos/playback_jobs.rs --test-tool nextest -j 2
+          output="target/mutants/$SCOPE"
+          rm -rf "$output"
+          mkdir -p "$output"
+          args=(cargo mutants --output "$output" -p "$PACKAGE")
+          if [ -n "$MUTATION_FILE" ]; then
+            args+=(--file "$MUTATION_FILE")
+          fi
+          args+=(--test-tool nextest -j 2)
+          if [ -n "$TEST_FILTER" ]; then
+            args+=(-- -E "$TEST_FILTER")
+          fi
+          # 0 = all mutants caught; 2 = FoundProblems (missed mutants). Both
+          # proceed to the score comparison. Any other exit code is a broken
+          # run (1 usage, 3 timeout, 4 baseline failed, 5/6 filter diff, 70
+          # internal): outcomes.json is written incrementally, so a partial
+          # file must never score as a green run.
+          set +e
+          "${args[@]}"
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+            echo "::error::cargo mutants for $SCOPE exited $rc (expected 0 or 2)"
+            FAILED=1
+          fi
           # A scope that produced nothing must fail the job instead of
           # silently passing with an empty score.
-          compare() {
-            scope="$1"
-            outcomes="target/mutants/$scope/mutants.out/outcomes.json"
-            if [ ! -f "$outcomes" ]; then
-              echo "::error::$scope produced no outcomes.json (run interrupted?)"
+          scope="$SCOPE"
+          outcomes="target/mutants/$scope/mutants.out/outcomes.json"
+          if [ ! -f "$outcomes" ]; then
+            echo "::error::$scope produced no outcomes.json (run interrupted?)"
+            exit 1
+          fi
+          # cargo-mutants 27.1.0 summary values are Success, CaughtMutant,
+          # MissedMutant, Timeout, Unviable, Failure. Timeout outcomes count
+          # as missed in the denominator; Failure is an unclassified broken
+          # run and fails the job below.
+          actual=$(jq -r '[.outcomes[].summary] | (map(select(. == "CaughtMutant")) | length) as $c | (map(select(. == "MissedMutant")) | length) as $m | (map(select(. == "Timeout")) | length) as $t | (if ($c + $m + $t) > 0 then ((100 * $c) / ($c + $m + $t) | floor) else 0 end)' "$outcomes")
+          total=$(jq -r '.outcomes | length' "$outcomes")
+          failures=$(jq -r '[.outcomes[].summary] | map(select(. == "Failure")) | length' "$outcomes")
+          status=$(jq -r --arg s "$scope" '.[$s].status // "measured"' scripts/mutants-baseline.json)
+          if [ "$status" = "provisional" ]; then
+            echo "::error::$scope baseline is provisional (caught_pct=$actual, mutants=$total): no measured score yet; read target/mutants/$scope/mutants.out/outcomes.json (artifact mutants-report-$scope), then set caught_pct and status=measured in scripts/mutants-baseline.json and provisional=false in the matrix"
+            FAILED=1
+            exit "$FAILED"
+          fi
+          if [ "$status" != "measured" ]; then
+            echo "::error::$scope baseline status '$status' is not 'measured' or 'provisional'"
+            FAILED=1
+            exit "$FAILED"
+          fi
+          baseline=$(jq -r --arg s "$scope" '.[$s].caught_pct' scripts/mutants-baseline.json)
+          min_mutants=$(jq -r --arg s "$scope" '.[$s].min_mutants' scripts/mutants-baseline.json)
+          # A missing baseline key makes jq print "null"; comparing it would
+          # error out and silently pass. Require plain integers.
+          for value in "$actual" "$baseline" "$min_mutants" "$total" "$failures"; do
+            if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+              echo "::error::$scope produced a non-integer value where a number was expected: '$value'"
               FAILED=1
-              return
+              exit "$FAILED"
             fi
-            # cargo-mutants 27.1.0 summary values are Success, CaughtMutant,
-            # MissedMutant, Timeout, Unviable, Failure. Timeout outcomes
-            # count as missed in the denominator; Failure is an unclassified
-            # broken run and fails the job below.
-            actual=$(jq -r '[.outcomes[].summary] | (map(select(. == "CaughtMutant")) | length) as $c | (map(select(. == "MissedMutant")) | length) as $m | (map(select(. == "Timeout")) | length) as $t | (if ($c + $m + $t) > 0 then ((100 * $c) / ($c + $m + $t) | floor) else 0 end)' "$outcomes")
-            baseline=$(jq -r --arg s "$scope" '.[$s].caught_pct' scripts/mutants-baseline.json)
-            min_mutants=$(jq -r --arg s "$scope" '.[$s].min_mutants' scripts/mutants-baseline.json)
-            total=$(jq -r '.outcomes | length' "$outcomes")
-            failures=$(jq -r '[.outcomes[].summary] | map(select(. == "Failure")) | length' "$outcomes")
-            # A missing baseline key makes jq print "null"; comparing it
-            # would error out and silently pass. Require plain integers.
-            for value in "$actual" "$baseline" "$min_mutants" "$total" "$failures"; do
-              if ! [[ "$value" =~ ^[0-9]+$ ]]; then
-                echo "::error::$scope produced a non-integer value where a number was expected: '$value'"
-                FAILED=1
-                return
-              fi
-            done
-            echo "$scope: caught_pct=$actual, baseline=$baseline, mutants=$total"
-            # cargo-mutants does NOT change its exit code for Failure
-            # outcomes (outcome.rs exit_code() looks only at baseline,
-            # timeout and missed): this check is the only guard against
-            # unclassified broken runs passing as green.
-            if [ "$failures" -gt 0 ]; then
-              echo "::error::$scope recorded $failures unclassified Failure outcome(s)"
-              FAILED=1
-            fi
-            if [ "$total" -lt "$min_mutants" ]; then
-              echo "::error::$scope measured only $total mutants (expected at least $min_mutants)"
-              FAILED=1
-            fi
-            if [ "$actual" -lt "$baseline" ]; then
-              echo "::error::$scope mutation score $actual dropped below the baseline $baseline"
-              FAILED=1
-            fi
-          }
-          compare lc-protocol
-          compare lc-media-guard
-          compare lc-db-queue
+          done
+          echo "$scope: caught_pct=$actual, baseline=$baseline, mutants=$total"
+          # cargo-mutants does NOT change its exit code for Failure outcomes
+          # (outcome.rs exit_code() looks only at baseline, timeout and
+          # missed): this check is the only guard against unclassified broken
+          # runs passing as green.
+          if [ "$failures" -gt 0 ]; then
+            echo "::error::$scope recorded $failures unclassified Failure outcome(s)"
+            FAILED=1
+          fi
+          if [ "$total" -lt "$min_mutants" ]; then
+            echo "::error::$scope measured only $total mutants (expected at least $min_mutants)"
+            FAILED=1
+          fi
+          if [ "$actual" -lt "$baseline" ]; then
+            echo "::error::$scope mutation score $actual dropped below the baseline $baseline"
+            FAILED=1
+          fi
           exit "$FAILED"
-      - name: Upload mutation reports
-        if: always()
+      - name: Upload the ${{ matrix.scope }} mutation report
+        if: always() && (github.event_name != 'pull_request' || matrix.provisional != true)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: mutants-reports
-          path: |
-            target/mutants/lc-protocol/mutants.out
-            target/mutants/lc-media-guard/mutants.out
-            target/mutants/lc-db-queue/mutants.out
+          name: mutants-report-${{ matrix.scope }}
+          path: target/mutants/${{ matrix.scope }}/mutants.out
+          if-no-files-found: warn
 
   # WebSocket load harness: boots a real lc-server against a fresh seeded
   # database, drives 50 overlay clients plus an ingest poster for 60 s, and

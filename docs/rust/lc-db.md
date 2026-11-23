@@ -22,6 +22,7 @@ Ce document est la référence d'API pour la Phase 3 (serveur) et la Phase 4
 | Énumérations | Texte **MAJUSCULE** (`IMAGE`, `PLAYING`, `INVITE_READ_ONLY`), conversions dans `lc-domain::enums`. |
 | Identifiants | UUID v4 stockés en `TEXT` canonique `8-4-4-4-12` ; `GuildId`/`PairingCode` = chaînes externes validées. |
 | Migrations | Appliquées automatiquement à l'ouverture (`sqlx::migrate!("./migrations")`), idempotentes (`_sqlx_migrations`). Une cible migrée depuis le legacy reçoit `0002`..`0005` au **premier démarrage** du serveur : le registre sqlx du migrateur ne couvre que `0001` (voir `docs/rust/migrator.md` §10.1). |
+| Index de références média | `media_assets.cover_asset_id` et `media_board_items.artwork_asset_id` sont indexés par la migration `0022` (`idx_media_assets_cover_asset`, `idx_media_board_items_artwork_asset`). `guild_references_asset`, le comptage des références de `replace_media` et `purge_expired` — y compris les actions FK `ON DELETE SET NULL` qu'il déclenche — ne scannent plus `media_assets`/`media_board_items` ; les plans sont épinglés par `EXPLAIN QUERY PLAN` dans les tests de module. |
 
 Pragmas posés sur **chaque connexion** du pool (`after_connect` implicite de
 `SqliteConnectOptions`) :
@@ -254,6 +255,12 @@ s'appliquent aux références restantes (`media_board_items` en cascade,
 - `media_board.rs` — CRUD, unicité `(guild_id, media_asset_id)` → `Conflict`, FK,
   migration `0005` (base arrêtée à `0004`, renommage, relecture via
   `Db::media_board()`) ;
+- tests de module `src/repos/media_board.rs` et `src/repos/media_assets.rs` —
+  plans `EXPLAIN QUERY PLAN` : `guild_references_asset` et `purge_expired` sans
+  `SCAN media_assets`, comptage des références et purge sans
+  `SCAN media_board_items`, via `idx_media_assets_cover_asset` et
+  `idx_media_board_items_artwork_asset` (migration `0022`) ; garde-fou, pas
+  contrat de plan SQLite (le message d'échec imprime le plan réel) ;
 - `playback_jobs.rs` — ordre de la file (`queue_position`), `scheduled_at`, un seul
   `PLAYING` par guilde, `busy_until`, claims concurrents (2 tasks tokio), retry
   `SQLITE_BUSY` de `claim_next` (verrou externe relâché), `set_status(Playing)`
@@ -330,8 +337,9 @@ migrations comprises) et n'utilise pas de base partagée.
    valide que le format (MAJUSCULES alphanumériques, ≤ 32).
 5. **Compteurs/statistiques admin** : `count_by_status` couvre le besoin
    immédiat ; si l'admin Phase 3 demande des agrégats par guilde/période,
-   ajouter des index ou des requêtes dédiées (le contrat de schéma fige les
-   index existants).
+   ajouter des index ou des requêtes dédiées (les index de performance
+   s'ajoutent par une migration dédiée, comme `0022`, et restent hors du contrat
+   gelé `docs/rust/schema-v3.sql`).
 6. **Guildes sans FK** : le contrat ne déclare pas de FK `guild_id → guilds.id`
    (comme le legacy) ; ne pas s'appuyer sur une erreur FK pour détecter une
    guilde inconnue, utiliser `GuildsRepository::get`.

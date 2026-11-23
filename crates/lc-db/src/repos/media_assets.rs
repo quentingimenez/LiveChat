@@ -11,6 +11,27 @@ use crate::error::DbResult;
 
 const TABLE: &str = "media_assets";
 
+/// `purge_expired` : supprime les assets expirés que rien ne référence.
+///
+/// Constante pour que le test de plan (`tests` en fin de module) exécute
+/// exactement la requête du repository. Les index de 0022 évitent le scan de
+/// `media_board_items` (`artwork_asset_id`) et celui de `media_assets` déclenché
+/// par l'action `ON DELETE SET NULL` des deux colonnes de référence.
+const PURGE_EXPIRED_SQL: &str = "\
+    DELETE FROM media_assets \
+     WHERE expires_at <= ? \
+       AND NOT EXISTS ( \
+           SELECT 1 FROM media_board_items b \
+           WHERE b.media_asset_id = media_assets.id \
+              OR b.artwork_asset_id = media_assets.id \
+       ) \
+       AND NOT EXISTS ( \
+           SELECT 1 FROM playback_jobs j \
+           WHERE j.media_asset_id = media_assets.id \
+             AND j.status IN ('PENDING', 'PLAYING') \
+       ) \
+     RETURNING *";
+
 /// Ligne SQLite de `media_assets` (dates en ms, booléens en 0/1).
 #[derive(Debug, sqlx::FromRow)]
 struct MediaAssetRow {
@@ -206,24 +227,10 @@ impl MediaAssetsRepository {
     /// AUD-A5-007 : l'ancienne version `DELETE … WHERE expires_at <= ?` pouvait
     /// supprimer en cascade des `media_board_items` épinglés.
     pub async fn purge_expired(&self, now: UtcDateTime) -> DbResult<Vec<MediaAsset>> {
-        let rows = sqlx::query_as::<_, MediaAssetRow>(
-            "DELETE FROM media_assets \
-             WHERE expires_at <= ? \
-               AND NOT EXISTS ( \
-                   SELECT 1 FROM media_board_items b \
-                   WHERE b.media_asset_id = media_assets.id \
-                      OR b.artwork_asset_id = media_assets.id \
-               ) \
-               AND NOT EXISTS ( \
-                   SELECT 1 FROM playback_jobs j \
-                   WHERE j.media_asset_id = media_assets.id \
-                     AND j.status IN ('PENDING', 'PLAYING') \
-               ) \
-             RETURNING *",
-        )
-        .bind(to_ms(now))
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query_as::<_, MediaAssetRow>(PURGE_EXPIRED_SQL)
+            .bind(to_ms(now))
+            .fetch_all(&self.pool)
+            .await?;
         rows.into_iter().map(MediaAssetRow::into_entity).collect()
     }
 
@@ -305,6 +312,46 @@ mod tests {
             .expect("lecture")
             .expect("asset présent");
         assert_eq!(stored.source_title, None);
+    }
+
+    /// La purge ne scanne ni `media_board_items` (artwork) ni `media_assets`
+    /// (action de FK `cover_asset_id`) : les index de 0022 sont utilisés.
+    #[tokio::test]
+    async fn purge_expired_ne_scanne_pas_les_tables_de_references() {
+        let db = Db::open_in_memory(&DbConfig::default())
+            .await
+            .expect("base mémoire");
+        let statement = format!("EXPLAIN QUERY PLAN {PURGE_EXPIRED_SQL}");
+        let rows = sqlx::query(&statement)
+            .bind(0_i64)
+            .fetch_all(db.pool())
+            .await
+            .expect("EXPLAIN QUERY PLAN");
+        let plan: Vec<String> = rows
+            .iter()
+            .map(|row| sqlx::Row::get::<String, _>(row, "detail"))
+            .collect();
+
+        assert!(
+            !plan.iter().any(|line| line.contains("SCAN media_assets")),
+            "purge_expired scanne media_assets (migration 0022 absente ?) : {plan:?}"
+        );
+        assert!(
+            !plan
+                .iter()
+                .any(|line| line.starts_with("SCAN b") || line.contains("SCAN media_board_items")),
+            "purge_expired scanne media_board_items (index artwork_asset_id absent ?) : {plan:?}"
+        );
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("idx_media_assets_cover_asset")),
+            "la FK cover_asset_id doit passer par idx_media_assets_cover_asset : {plan:?}"
+        );
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("idx_media_board_items_artwork_asset")),
+            "la FK artwork_asset_id doit passer par idx_media_board_items_artwork_asset : {plan:?}"
+        );
     }
 
     fn sample_asset(now: UtcDateTime) -> MediaAsset {

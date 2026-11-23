@@ -1,0 +1,69 @@
+name: ci-gate
+
+# Un seul check requis pour toutes les PR : il ne passe que lorsque tous les
+# check runs réellement créés pour le commit de tête sont terminés et verts.
+# Les workflows rust/overlay/extension sont filtrés par chemins : les exiger
+# directement bloquerait les PR qui ne touchent pas ces chemins. Ce workflow,
+# lui, tourne toujours, et l'auto-merge peut exiger `ci-gate`.
+#
+# Les scripts viennent de la branche de base (pas du head) : la logique de
+# décision exécutée est celle de `main`, pas celle de la PR. Le workflow
+# lui-même est un fichier de la PR et doit donc être relu comme tout changement
+# CI. Le fallback « PR head » ne sert qu'à la PR qui introduit ce workflow,
+# avant que `scripts/ci` n'existe sur main.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  checks: read
+
+concurrency:
+  group: ci-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    # Ce nom est le contexte requis dans la protection de `main` : le changer
+    # ici sans changer la protection bloquerait toutes les PR.
+    name: ci-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout gate scripts (base)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+
+      # Bootstrap de la première PR : la branche de base n'a pas encore
+      # scripts/ci. Après le merge, l'étape est ignorée.
+      - name: Checkout gate scripts (PR head, bootstrap)
+        if: hashFiles('scripts/ci/gate.mjs') == ''
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+
+      - name: Test the gate
+        run: node --test scripts/ci/tests/*.test.mjs
+
+      - name: Wait for all PR check runs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GATE_CHECK_NAME: "ci-gate"
+          GATE_TIMEOUT_SECONDS: "3300"
+          GATE_POLL_SECONDS: "15"
+          GATE_STABILITY_SECONDS: "60"
+        run: node scripts/ci/gate.mjs

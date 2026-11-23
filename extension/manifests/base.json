@@ -20,7 +20,7 @@
     "https://twitter.com/*",
     "https://*.twitter.com/*"
   ],
-  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "optional_host_permissions": ["https://*/*"],
   "action": {
     "default_title": "LiveChat Extension",
     "default_icon": {

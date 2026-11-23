@@ -20,11 +20,41 @@ import { activeGuild, can, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import { openDialog } from '../core/ui.js';
 import { defaultAction, showsPlayFields } from '../core/add-media-rules.js';
+import { droppedMedia } from '../core/media-drop.js';
 import { openFileImageEditor } from './editor/index.js';
 import { startFileUpload, startLinkUpload } from './uploads.js';
 
 function formatSize(bytes) {
   return `${((bytes || 0) / 1048576).toFixed(1).replace('.', ',')} Mo`;
+}
+
+// The open dialog takes drops: a file or a link dragged onto it fills the form
+// instead of importing behind it. Only one dialog is open at a time, and the
+// board owns where a drag lands (core/media-drop.js), so it hands the transfer
+// over: the surface below exists while the dialog does.
+let dropSurface = null;
+
+// Whether « Ajouter un média » may take a drop. A media editor opened over the
+// dialog (a cropped picture) is the top layer: the drop is not for the form.
+export function addDialogOpen() {
+  return Boolean(dropSurface && dropSurface.isOpen() && !document.querySelector('#dialog-root > .editor'));
+}
+
+// Fills the open dialog from a drop; does nothing when it is closed.
+export function dropOnAddDialog(transfer) {
+  if (addDialogOpen()) {
+    dropSurface.drop(transfer);
+  }
+}
+
+// The fade behind the dialog takes the veil's own dim while a drop targets it:
+// the board darkens like it does under a drop on the board, and the form stays
+// crisp above it. The veil only draws its frame and sentence.
+export function highlightAddDialog(active) {
+  const backdrop = document.querySelector('#dialog-root .backdrop');
+  if (backdrop) {
+    backdrop.classList.toggle('is-drop-target', Boolean(active));
+  }
 }
 
 // `options.url` prefills the link (a link dropped on the board).
@@ -316,8 +346,29 @@ export function openAddDialog(options) {
     );
 
     setMode('link');
+    // A drop fills the dialog where it is: files join the chosen ones, a link
+    // fills the link field. The dialog covers the window while it is open, so
+    // the drop lands anywhere on it.
+    dropSurface = {
+      isOpen: () => form.isConnected,
+      drop: (transfer) => {
+        const media = droppedMedia(transfer);
+        if (!media) {
+          return;
+        }
+        if (media.files.length > 0) {
+          chosenFiles = chosenFiles.concat(media.files);
+          setMode('file');
+          renderFileList();
+          return;
+        }
+        linkUrl.value = media.link;
+        setMode('link');
+        linkUrl.focus();
+      },
+    };
     // The link is the first thing to type; once prefilled, the title is next.
     setTimeout(() => (prefill ? linkTitle : linkUrl).focus(), 0);
     return [h('h2', null, 'Ajouter un média'), form];
-  }, { width: 'wide' });
+  }, { width: 'wide', onClose: () => { dropSurface = null; } });
 }

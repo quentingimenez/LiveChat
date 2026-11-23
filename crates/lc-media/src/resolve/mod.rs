@@ -1,10 +1,11 @@
 //! Résolution des métadonnées d'une source média.
 //!
 //! Chaque plateforme a son propre résolveur : YouTube (oEmbed puis yt-dlp),
-//! TikTok (oEmbed + extraction HTML pour les carrousels) et X/Twitter
-//! (syndication, carte oEmbed, repli vxtwitter). Les résolveurs ne téléchargent
+//! TikTok (oEmbed + extraction HTML pour les carrousels), Tenor (Open Graph de
+//! la page) et X/Twitter (syndication, carte oEmbed, repli vxtwitter). Les résolveurs ne téléchargent
 //! pas le média : ils décrivent la source pour l'étape suivante.
 
+pub mod tenor;
 pub mod tiktok;
 pub mod twitter;
 pub mod youtube;
@@ -104,6 +105,7 @@ pub async fn resolve_media(
         SourceKind::YouTube => youtube::resolve_youtube(source, config).await,
         SourceKind::TikTok => tiktok::resolve_tiktok(source, config).await,
         SourceKind::Twitter => twitter::resolve_tweet(source, config).await,
+        SourceKind::Tenor => tenor::resolve_tenor(source, config).await,
         _ => Ok(ResolvedMedia::from_source(source)),
     }
 }

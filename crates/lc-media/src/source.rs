@@ -2,8 +2,9 @@
 //!
 //! La canonicalisation reproduit les règles de l'ancien serveur : YouTube est
 //! ramené à `https://www.youtube.com/watch?v=<id>`, TikTok à
-//! `https://www.tiktok.com/@_/<video|photo>/<id>`, les autres URL voient leur
-//! fragment retiré. Le hash SHA-256 de cette URL canonique sert de clé de cache
+//! `https://www.tiktok.com/@_/<video|photo>/<id>`, une page Tenor à
+//! `https://tenor.com/view/<id>`, les autres URL voient leur fragment retiré.
+//! Le hash SHA-256 de cette URL canonique sert de clé de cache
 //! content-addressed.
 
 use sha2::{Digest, Sha256};
@@ -33,6 +34,9 @@ pub const TWITTER_HOSTS: &[&str] = &[
     "mobile.twitter.com",
 ];
 
+/// Hôtes des pages Tenor reconnues (le CDN `media.tenor.com` reste direct).
+pub const TENOR_HOSTS: &[&str] = &["tenor.com", "www.tenor.com"];
+
 /// Nature d'une source média.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SourceKind {
@@ -42,6 +46,8 @@ pub enum SourceKind {
     TikTok,
     /// Tweet X/Twitter (syndication + carte).
     Twitter,
+    /// Page Tenor (métadonnées Open Graph, GIF ou MP4).
+    Tenor,
     /// Fichier média accessible en HTTP direct.
     DirectMedia,
     /// Fichier local (`file:`).
@@ -59,6 +65,7 @@ impl SourceKind {
             Self::YouTube => "youtube",
             Self::TikTok => "tiktok",
             Self::Twitter => "twitter",
+            Self::Tenor => "tenor",
             Self::DirectMedia => "direct",
             Self::LocalFile => "file",
             Self::Gtts => "gtts",
@@ -167,6 +174,8 @@ pub fn canonicalize_source_url(raw: &str) -> String {
         normalize_youtube_url(&parsed)
     } else if tiktok_host(&parsed) {
         normalize_tiktok_url(&parsed)
+    } else if let Some(tenor_id) = tenor_page_id(&parsed) {
+        format!("https://tenor.com/view/{tenor_id}")
     } else {
         let mut canonical = parsed;
         canonical.set_fragment(None);
@@ -313,6 +322,19 @@ pub fn is_twitter_url(raw: &str) -> bool {
     tweet_status_id(raw).is_some()
 }
 
+/// Identifiant numérique d'une page Tenor (`/view/…`, `/embed/…`).
+///
+/// Accepte le préfixe de langue (`tenor.com/fr/view/…`), le slug complet
+/// (`…-gif-<id>`) et la forme courte (`/view/<id>`). Une page de recherche ou
+/// un fichier du CDN `media.tenor.com` ne donnent aucun identifiant.
+pub fn tenor_view_id(raw: &str) -> Option<String> {
+    let parsed = Url::parse(raw.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    tenor_page_id(&parsed)
+}
+
 /// Classe une URL canonique en [`SourceKind`].
 pub fn classify_source(canonical_url: &str) -> SourceKind {
     let trimmed = canonical_url.trim();
@@ -330,6 +352,9 @@ pub fn classify_source(canonical_url: &str) -> SourceKind {
     }
     if tiktok_host(&parsed) {
         return SourceKind::TikTok;
+    }
+    if tenor_page_id(&parsed).is_some() {
+        return SourceKind::Tenor;
     }
     if tweet_path_parts(trimmed).is_some() {
         return SourceKind::Twitter;
@@ -397,6 +422,7 @@ pub async fn validate_ingest_source(raw: &str) -> MediaResult<MediaSource> {
         SourceKind::YouTube
         | SourceKind::TikTok
         | SourceKind::Twitter
+        | SourceKind::Tenor
         | SourceKind::DirectMedia => {}
     }
     guard::validate_target(&canonical_url).await?;
@@ -557,6 +583,57 @@ fn tiktok_host(parsed: &Url) -> bool {
             host == "tiktok.com" || host.ends_with(".tiktok.com")
         })
         .unwrap_or(false)
+}
+
+fn tenor_host(parsed: &Url) -> bool {
+    parsed
+        .host_str()
+        .map(|host| TENOR_HOSTS.contains(&host.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+/// Identifiant d'une page Tenor, à partir d'une URL déjà analysée.
+fn tenor_page_id(url: &Url) -> Option<String> {
+    if !tenor_host(url) {
+        return None;
+    }
+    let segments: Vec<&str> = url
+        .path()
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let kind_index = match segments.first().copied() {
+        Some("view") | Some("embed") => 0,
+        Some(locale) if is_tenor_locale(locale) => match segments.get(1).copied() {
+            Some("view") | Some("embed") => 1,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    if segments.len() != kind_index + 2 {
+        return None;
+    }
+    tenor_id_from_slug(segments[kind_index + 1])
+}
+
+fn is_tenor_locale(segment: &str) -> bool {
+    segment.len() == 2
+        && segment
+            .chars()
+            .all(|character| character.is_ascii_alphabetic())
+}
+
+/// Extrait l'identifiant qui termine un slug Tenor (`…-gif-<id>` ou `<id>`).
+fn tenor_id_from_slug(slug: &str) -> Option<String> {
+    let identifier = slug
+        .rsplit_once('-')
+        .map_or(slug, |(_, identifier)| identifier);
+    (!identifier.is_empty()
+        && identifier.len() <= 32
+        && identifier
+            .chars()
+            .all(|character| character.is_ascii_digit()))
+    .then(|| identifier.to_string())
 }
 
 fn tiktok_media_path(url: &Url) -> Option<String> {

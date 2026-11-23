@@ -3,7 +3,8 @@
 import { h } from './dom.js';
 import { notify } from './toast.js';
 
-// Opens a modal dialog. `build(close)` returns the dialog's children.
+// Opens a modal dialog. `build(close)` returns the dialog's children;
+// `options.onClose`, when given, runs once as the dialog closes.
 //
 // The frame is shared by every dialog: a sticky title row carrying the close
 // button, a scrolling body and a fixed footer. To stay backward compatible,
@@ -25,6 +26,9 @@ export function openDialog(build, options = {}) {
     root.replaceChildren();
     if (previousFocus && typeof previousFocus.focus === 'function' && previousFocus.isConnected) {
       previousFocus.focus();
+    }
+    if (typeof options.onClose === 'function') {
+      options.onClose();
     }
   };
 

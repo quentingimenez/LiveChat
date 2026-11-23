@@ -6,6 +6,7 @@
 
 use lc_media::config::MediaConfig;
 use lc_media::resolve::{tiktok, twitter, youtube};
+use lc_media::source::{canonicalize_source_url, classify_source};
 use lc_media::{MediaError, MediaErrorCode};
 
 const TIKTOK_VIDEO: &str = include_str!("fixtures/tiktok_video.html");
@@ -114,6 +115,45 @@ fn youtube_oembed_and_ytdlp_dump_fixtures() {
     );
     assert!(oembed_url.contains("format=json"));
     assert!(oembed_url.contains("url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Dabc"));
+}
+
+// A shared Tenor link is a web page, not the GIF: before the fix it was
+// classified as direct media, downloaded as HTML and refused by
+// `download_http` ("la source a renvoyé une page HTML au lieu d'un média").
+#[test]
+fn tenor_view_urls_are_canonicalized_and_classified() {
+    let shared = "https://tenor.com/fr/view/jonathan-drouin-drouin-halifax-mooseheads-nathan-mackinnon-natejo-gif-14852894162018749597?utm_source=share";
+    assert_eq!(
+        canonicalize_source_url(shared),
+        "https://tenor.com/view/14852894162018749597"
+    );
+    assert_eq!(
+        classify_source(&canonicalize_source_url(shared)).as_str(),
+        "tenor"
+    );
+
+    // The short forms point at the same page and share its cache key.
+    for raw in [
+        "https://www.tenor.com/view/14852894162018749597",
+        "https://tenor.com/embed/14852894162018749597",
+    ] {
+        assert_eq!(
+            canonicalize_source_url(raw),
+            "https://tenor.com/view/14852894162018749597",
+            "{raw}"
+        );
+    }
+
+    // Search pages and direct CDN files keep their behaviour.
+    assert_eq!(
+        classify_source("https://tenor.com/search/drouin-gifs").as_str(),
+        "direct"
+    );
+    assert_eq!(
+        classify_source("https://media.tenor.com/ziAUi92ZzJ0AAAPo/jonathan-drouin-drouin.mp4")
+            .as_str(),
+        "direct"
+    );
 }
 
 #[test]

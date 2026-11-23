@@ -1230,6 +1230,15 @@ async fn job_status(db: &Db, job_id: PlaybackJobId) -> JobStatus {
         .status
 }
 
+/// Nombre de jobs de lecture d'une guilde (tous statuts confondus).
+async fn job_count(db: &Db, guild_id: &GuildId) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM playback_jobs WHERE guild_id = ?")
+        .bind(guild_id.as_str())
+        .fetch_one(db.pool())
+        .await
+        .expect("comptage des jobs")
+}
+
 #[tokio::test]
 async fn local_stop_of_the_only_overlay_releases_the_job() {
     let server = start_server().await;
@@ -1568,6 +1577,12 @@ async fn second_media_trigger_acks_queued_at_position_one() {
     seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
     let asset_id = seed_media_asset(&server.db, 120).await;
     let item_id = seed_ready_board_item(&server.db, &guild, asset_id).await;
+    // Un second item : depuis B-02, la répétition du *même* item dans la
+    // fenêtre est coalescée (voir
+    // `burst_of_identical_media_triggers_creates_a_single_job`) ; un vrai
+    // changement de média doit toujours être mis en file.
+    let other_asset_id = seed_media_asset(&server.db, 120).await;
+    let other_item_id = seed_ready_board_item(&server.db, &guild, other_asset_id).await;
     let mut socket = connect(server.addr).await;
     handshake(&mut socket, TOKEN).await;
 
@@ -1592,7 +1607,7 @@ async fn second_media_trigger_acks_queued_at_position_one() {
         &envelope(
             "media.trigger",
             "cli-media-trigger-second",
-            json!({ "itemId": item_id.to_canonical(), "trigger": "shortcut" }),
+            json!({ "itemId": other_item_id.to_canonical(), "trigger": "shortcut" }),
         ),
     )
     .await;
@@ -1604,6 +1619,173 @@ async fn second_media_trigger_acks_queued_at_position_one() {
         second["payload"]["jobId"].as_str(),
         Some(first_job_id.as_str())
     );
+    assert_eq!(
+        job_count(&server.db, &guild).await,
+        2,
+        "deux médias distincts doivent créer deux jobs"
+    );
+}
+
+/// B-02 : une rafale de `media.trigger` identiques ne crée qu'un job et
+/// n'exécute les lectures qu'une fois. Chaque trame est tout de même acquittée
+/// (`ok:true`, même jobId) : un client ou le loadtest ne reste pas en attente.
+#[tokio::test]
+async fn burst_of_identical_media_triggers_creates_a_single_job() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 120).await;
+    let item_id = seed_ready_board_item(&server.db, &guild, asset_id).await;
+    let mut socket = connect(server.addr).await;
+    handshake(&mut socket, TOKEN).await;
+
+    for index in 0..5 {
+        send_value(
+            &mut socket,
+            &envelope(
+                "media.trigger",
+                &format!("cli-media-burst-{index:04}"),
+                json!({ "itemId": item_id.to_canonical(), "trigger": "shortcut" }),
+            ),
+        )
+        .await;
+    }
+
+    let mut job_ids = Vec::new();
+    for _ in 0..5 {
+        let ack = recv_until_type(&mut socket, "ack").await;
+        assert_eq!(ack["payload"]["ok"], true, "{ack}");
+        assert_eq!(ack["payload"]["outcome"], "playing", "{ack}");
+        job_ids.push(
+            ack["payload"]["jobId"]
+                .as_str()
+                .expect("jobId de l'ack")
+                .to_owned(),
+        );
+    }
+    assert!(
+        job_ids.iter().all(|job_id| job_id == &job_ids[0]),
+        "les trames coalescées doivent ré-acquitter le même job : {job_ids:?}"
+    );
+    assert_eq!(
+        job_count(&server.db, &guild).await,
+        1,
+        "une rafale identique ne doit créer qu'un seul job"
+    );
+}
+
+/// B-02 : la fenêtre n'est pas un blocage définitif — le même média peut être
+/// redéclenché une fois la fenêtre écoulée.
+#[tokio::test]
+async fn same_media_can_be_triggered_again_after_the_window() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 120).await;
+    let item_id = seed_ready_board_item(&server.db, &guild, asset_id).await;
+    let mut socket = connect(server.addr).await;
+    handshake(&mut socket, TOKEN).await;
+
+    send_value(
+        &mut socket,
+        &envelope(
+            "media.trigger",
+            "cli-media-window-first",
+            json!({ "itemId": item_id.to_canonical(), "trigger": "shortcut" }),
+        ),
+    )
+    .await;
+    let first = recv_until_type(&mut socket, "ack").await;
+    assert_eq!(first["payload"]["outcome"], "playing", "{first}");
+    let first_job_id = first["payload"]["jobId"]
+        .as_str()
+        .expect("jobId du premier ack")
+        .to_owned();
+
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+
+    send_value(
+        &mut socket,
+        &envelope(
+            "media.trigger",
+            "cli-media-window-second",
+            json!({ "itemId": item_id.to_canonical(), "trigger": "shortcut" }),
+        ),
+    )
+    .await;
+    let second = recv_until_type(&mut socket, "ack").await;
+    assert_eq!(second["payload"]["ok"], true, "{second}");
+    assert_eq!(second["payload"]["outcome"], "queued", "{second}");
+    assert_ne!(
+        second["payload"]["jobId"].as_str(),
+        Some(first_job_id.as_str()),
+        "passé la fenêtre, le même média crée un nouveau job"
+    );
+    assert_eq!(job_count(&server.db, &guild).await, 2);
+}
+
+/// B-02 : la garde vit dans la session — deux guildes (donc deux sessions)
+/// restent indépendantes.
+#[tokio::test]
+async fn media_trigger_windows_are_independent_across_guilds() {
+    let server = start_server().await;
+    let guild_a = seed_guild(&server.db).await;
+    let guild_b = seed_guild_with_id(
+        &server.db,
+        GuildId::parse("223456789012345678").expect("guilde B"),
+    )
+    .await;
+    seed_overlay_client(&server.db, &guild_a, TOKEN, OverlaySessionMode::Normal).await;
+    seed_overlay_client(&server.db, &guild_b, TOKEN_B, OverlaySessionMode::Normal).await;
+    let item_a = seed_ready_board_item(
+        &server.db,
+        &guild_a,
+        seed_media_asset(&server.db, 120).await,
+    )
+    .await;
+    let item_b = seed_ready_board_item(
+        &server.db,
+        &guild_b,
+        seed_media_asset(&server.db, 120).await,
+    )
+    .await;
+
+    let mut socket_a = connect(server.addr).await;
+    handshake(&mut socket_a, TOKEN).await;
+    let mut socket_b = connect(server.addr).await;
+    handshake_for_guild(&mut socket_b, TOKEN_B, "223456789012345678").await;
+
+    send_value(
+        &mut socket_a,
+        &envelope(
+            "media.trigger",
+            "cli-media-guild-a",
+            json!({ "itemId": item_a.to_canonical(), "trigger": "shortcut" }),
+        ),
+    )
+    .await;
+    let ack_a = recv_until_type(&mut socket_a, "ack").await;
+    assert_eq!(ack_a["payload"]["ok"], true, "{ack_a}");
+
+    send_value(
+        &mut socket_b,
+        &envelope(
+            "media.trigger",
+            "cli-media-guild-b",
+            json!({ "itemId": item_b.to_canonical(), "trigger": "shortcut" }),
+        ),
+    )
+    .await;
+    let ack_b = recv_until_type(&mut socket_b, "ack").await;
+    assert_eq!(ack_b["payload"]["ok"], true, "{ack_b}");
+
+    assert_ne!(
+        ack_a["payload"]["jobId"].as_str(),
+        ack_b["payload"]["jobId"].as_str(),
+        "chaque guilde crée son propre job"
+    );
+    assert_eq!(job_count(&server.db, &guild_a).await, 1);
+    assert_eq!(job_count(&server.db, &guild_b).await, 1);
 }
 
 #[tokio::test]

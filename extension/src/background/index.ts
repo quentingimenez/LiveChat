@@ -10,6 +10,7 @@ import {
   type ActiveMediaUrlResponse,
   type ActionResponse,
   type ComposeStateResponse,
+  type SendSource,
   type ShowToastMessage,
   type ToastLevel,
 } from '../lib/messages';
@@ -34,7 +35,11 @@ import {
   type TikTokCaptureRecord,
   type TikTokCaptureState,
 } from '../lib/tiktok-capture';
-import { resolveIngestTargetUrl, resolveUrlFromContextCandidates } from '../lib/url';
+import {
+  isIngestTargetAllowedForSource,
+  resolveIngestTargetUrl,
+  resolveUrlFromContextCandidates,
+} from '../lib/url';
 
 const MENU_ID_QUICK = 'lce-context-send-quick';
 const MENU_ID_COMPOSE = 'lce-context-send-compose';
@@ -295,7 +300,16 @@ const sendToastToTab = async (tabId: number | undefined, level: ToastLevel, mess
   }
 };
 
-const sendQuickAction = async (url: string): Promise<ActionResponse> => {
+const sendQuickAction = async (url: string, source?: SendSource): Promise<ActionResponse> => {
+  if (!isIngestTargetAllowedForSource(source, url)) {
+    return {
+      ok: false,
+      jobId: null,
+      message: 'URL invalide ou non supportée.',
+      errorCode: 'INVALID_PAYLOAD',
+    };
+  }
+
   const normalizedUrl = resolveIngestTargetUrl(url);
 
   if (!normalizedUrl) {
@@ -317,11 +331,21 @@ const sendQuickAction = async (url: string): Promise<ActionResponse> => {
 
 const sendComposeAction = async (params: {
   url: string;
+  source?: SendSource;
   text?: string;
   forceRefresh?: boolean;
   saveToBoard?: boolean;
   durationSec?: number;
 }): Promise<ActionResponse> => {
+  if (!isIngestTargetAllowedForSource(params.source, params.url)) {
+    return {
+      ok: false,
+      jobId: null,
+      message: 'URL invalide ou non supportée.',
+      errorCode: 'INVALID_PAYLOAD',
+    };
+  }
+
   const normalizedUrl = resolveIngestTargetUrl(params.url);
 
   if (!normalizedUrl) {
@@ -487,7 +511,7 @@ browser.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =
         const normalizedTikTokPageUrl = normalizeTikTokPageUrl(message.url);
 
         if (normalizedTikTokPageUrl) {
-          sendResponse(await sendQuickAction(normalizedTikTokPageUrl));
+          sendResponse(await sendQuickAction(normalizedTikTokPageUrl, message.source));
           return;
         }
 
@@ -500,7 +524,7 @@ browser.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =
         return;
       }
 
-      sendResponse(await sendQuickAction(message.url));
+      sendResponse(await sendQuickAction(message.url, message.source));
       return;
     }
 
@@ -508,6 +532,7 @@ browser.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =
       sendResponse(
         await sendComposeAction({
           url: message.url,
+          source: message.source,
           text: message.text,
           forceRefresh: message.forceRefresh,
           saveToBoard: message.saveToBoard,

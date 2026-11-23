@@ -163,3 +163,255 @@ fn protocol_media_kind(kind: DomainMediaKind) -> ProtocolMediaKind {
         DomainMediaKind::Video => ProtocolMediaKind::Video,
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use lc_domain::{
+        ms_to_datetime, GuildId, JobSource, JobStatus, MediaAssetId, MediaStatus, PlaybackJobId,
+    };
+
+    const TEST_NOW_MS: i64 = 1_700_000_000_000;
+
+    fn test_now() -> time::UtcDateTime {
+        ms_to_datetime(TEST_NOW_MS).expect("horodatage de test valide")
+    }
+
+    fn playback_job(duration_sec: i64, resume_offset_sec: i64) -> PlaybackJob {
+        PlaybackJob {
+            id: PlaybackJobId::new_v4(),
+            guild_id: GuildId::parse("123456789012345678").expect("snowflake de test"),
+            media_asset_id: None,
+            text: Some("bonjour".to_owned()),
+            show_text: true,
+            author_name: Some("Auteur".to_owned()),
+            author_image: Some("https://example.test/avatar.png".to_owned()),
+            duration_sec,
+            source: JobSource::Board,
+            status: JobStatus::Pending,
+            resume_offset_sec,
+            last_playback_state_at: None,
+            submission_date: test_now(),
+            execution_date: test_now(),
+            scheduled_at: test_now(),
+            started_at: None,
+            finished_at: None,
+        }
+    }
+
+    fn media_asset(kind: DomainMediaKind, duration_sec: Option<i64>) -> MediaAsset {
+        let mime = match kind {
+            DomainMediaKind::Image => "image/png",
+            DomainMediaKind::Audio => "audio/mpeg",
+            DomainMediaKind::Video => "video/mp4",
+        };
+        MediaAsset {
+            id: MediaAssetId::new_v4(),
+            source_hash: "hash-payload-test".to_owned(),
+            source_url: "https://example.test/media".to_owned(),
+            source_title: None,
+            kind,
+            mime: mime.to_owned(),
+            duration_sec,
+            width: None,
+            height: None,
+            is_vertical: false,
+            storage_path: "hash.bin".to_owned(),
+            size_bytes: 1,
+            status: MediaStatus::Ready,
+            error: None,
+            last_accessed_at: test_now(),
+            expires_at: test_now(),
+            created_at: test_now(),
+        }
+    }
+
+    fn guild_with_max(max_media_time: Option<i64>) -> Guild {
+        Guild {
+            id: GuildId::parse("123456789012345678").expect("snowflake de test"),
+            name: Some("Guilde de test".to_owned()),
+            busy_until: None,
+            default_media_time: None,
+            max_media_time,
+            display_media_full: false,
+        }
+    }
+
+    fn playback_timing(
+        total_duration_sec: i64,
+        start_offset_sec: i64,
+        play_duration_sec: i64,
+    ) -> PlaybackTiming {
+        PlaybackTiming {
+            total_duration_sec,
+            start_offset_sec,
+            play_duration_sec,
+        }
+    }
+
+    #[test]
+    fn dispatch_timing_ignores_a_zero_media_duration() {
+        let config = PlaybackConfig::default();
+        let job = playback_job(0, 0);
+        let zero_duration_video = media_asset(DomainMediaKind::Video, Some(0));
+
+        assert_eq!(
+            dispatch_timing(&job, Some(&zero_duration_video), None, &config),
+            playback_timing(30, 0, 30),
+            "une durée média nulle ne doit pas remplacer la durée par défaut"
+        );
+    }
+
+    #[test]
+    fn dispatch_timing_stretches_only_videos_shorter_than_the_minimum() {
+        let config = PlaybackConfig::default();
+        let job = playback_job(1, 0);
+        let short_video = media_asset(DomainMediaKind::Video, Some(2));
+        let boundary_video = media_asset(DomainMediaKind::Video, Some(MIN_SHORT_VIDEO_DISPLAY_SEC));
+
+        assert_eq!(
+            dispatch_timing(&job, Some(&short_video), None, &config),
+            playback_timing(MIN_SHORT_VIDEO_DISPLAY_SEC, 0, MIN_SHORT_VIDEO_DISPLAY_SEC)
+        );
+        assert_eq!(
+            dispatch_timing(&job, Some(&boundary_video), None, &config),
+            playback_timing(1, 0, 1),
+            "un média de la durée minimale n'est pas « court » (borne stricte)"
+        );
+    }
+
+    #[test]
+    fn dispatch_timing_ignores_a_non_positive_max_media_time() {
+        let config = PlaybackConfig::default();
+        let job = playback_job(30, 0);
+
+        assert_eq!(
+            dispatch_timing(&job, None, Some(&guild_with_max(Some(0))), &config),
+            playback_timing(30, 0, 30),
+            "un max_media_time nul ne borne pas la lecture"
+        );
+        assert_eq!(
+            dispatch_timing(&job, None, Some(&guild_with_max(Some(10))), &config),
+            playback_timing(10, 0, 10)
+        );
+    }
+
+    #[test]
+    fn dispatch_timing_applies_the_resume_offset_to_the_remaining_duration() {
+        let config = PlaybackConfig::default();
+        let resumed = playback_job(30, 10);
+        let at_the_end = playback_job(30, 100);
+
+        assert_eq!(
+            dispatch_timing(&resumed, None, None, &config),
+            playback_timing(30, 10, 20)
+        );
+        assert_eq!(
+            dispatch_timing(&at_the_end, None, None, &config),
+            playback_timing(30, 29, 1),
+            "l'offset de reprise est borné à la seconde qui précède la fin"
+        );
+    }
+
+    #[test]
+    fn build_play_payload_pins_the_protocol_fields() {
+        let job = playback_job(10, 0);
+        let audio = media_asset(DomainMediaKind::Audio, Some(12));
+        let artwork = media_asset(DomainMediaKind::Image, None);
+        let config = PlaybackConfig::default().with_api_base_url("http://127.0.0.1:3000/");
+
+        let payload = build_play_payload(
+            &job,
+            Some(&audio),
+            Some(&artwork),
+            Some(75),
+            playback_timing(10, 0, 10),
+            &config,
+        );
+
+        assert_eq!(payload.job_id, job.id.to_canonical());
+        assert_eq!(payload.duration_sec, 10);
+        assert_eq!(payload.text.value, "bonjour");
+        assert!(payload.text.enabled);
+        assert_eq!(payload.author.name, "Auteur");
+        assert_eq!(
+            payload.author.image.as_deref(),
+            Some("https://example.test/avatar.png")
+        );
+        assert!(payload.author.enabled);
+        assert!(payload.tweet_card.is_none());
+        assert!(payload.extra.is_empty());
+
+        let media_payload = payload.media.expect("média présent");
+        assert_eq!(media_payload.asset_id, audio.id.to_canonical());
+        assert_eq!(
+            media_payload.url,
+            format!(
+                "http://127.0.0.1:3000/overlay/media/{}",
+                audio.id.to_canonical()
+            )
+        );
+        assert_eq!(media_payload.mime, "audio/mpeg");
+        assert_eq!(media_payload.kind, ProtocolMediaKind::Audio);
+        assert_eq!(media_payload.duration_sec, Some(12));
+        assert_eq!(media_payload.start_offset_sec, None);
+        assert_eq!(
+            media_payload.artwork_asset_id,
+            Some(artwork.id.to_canonical())
+        );
+        assert_eq!(media_payload.artwork_url, None);
+        assert_eq!(media_payload.display_scale_percent, Some(75));
+    }
+
+    #[test]
+    fn build_play_payload_omits_a_non_positive_media_duration() {
+        let job = playback_job(0, 0);
+        let audio = media_asset(DomainMediaKind::Audio, Some(0));
+
+        let payload = build_play_payload(
+            &job,
+            Some(&audio),
+            None,
+            None,
+            playback_timing(30, 0, 30),
+            &PlaybackConfig::default(),
+        );
+
+        let media_payload = payload.media.expect("média présent");
+        assert_eq!(media_payload.duration_sec, None);
+    }
+
+    #[test]
+    fn build_play_payload_emits_the_offset_only_for_seekable_media() {
+        let job = playback_job(20, 5);
+        let audio = media_asset(DomainMediaKind::Audio, Some(20));
+        let image = media_asset(DomainMediaKind::Image, None);
+        let config = PlaybackConfig::default();
+        let timing = playback_timing(20, 5, 15);
+
+        let audio_payload = build_play_payload(&job, Some(&audio), None, None, timing, &config)
+            .media
+            .expect("média audio présent");
+        assert_eq!(audio_payload.start_offset_sec, Some(5));
+        assert_eq!(
+            audio_payload.url,
+            format!(
+                "http://127.0.0.1:3000/overlay/media/{}?startOffsetSec=5#t=5",
+                audio.id.to_canonical()
+            )
+        );
+
+        let image_payload = build_play_payload(&job, Some(&image), None, None, timing, &config)
+            .media
+            .expect("média image présent");
+        assert_eq!(image_payload.start_offset_sec, None);
+        assert_eq!(
+            image_payload.url,
+            format!(
+                "http://127.0.0.1:3000/overlay/media/{}",
+                image.id.to_canonical()
+            )
+        );
+    }
+}

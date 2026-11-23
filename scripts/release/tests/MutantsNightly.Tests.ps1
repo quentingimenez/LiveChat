@@ -140,9 +140,9 @@ $expected = @(
     [pscustomobject]@{ scope = 'lc-protocol'; package = 'lc-protocol'; file = ''; filter = ''; provisional = $false; caught = 99; min = 47; status = 'measured' }
     [pscustomobject]@{ scope = 'lc-media-guard'; package = 'lc-media'; file = 'crates/lc-media/src/guard.rs'; filter = 'kind(lib) | binary(ssrf_guard) | binary(properties)'; provisional = $false; caught = 99; min = 86; status = 'measured' }
     [pscustomobject]@{ scope = 'lc-db-queue'; package = 'lc-db'; file = 'crates/lc-db/src/repos/playback_jobs.rs'; filter = ''; provisional = $false; caught = 93; min = 92; status = 'measured' }
-    [pscustomobject]@{ scope = 'lc-playback-payload'; package = 'lc-playback'; file = 'crates/lc-playback/src/payload.rs'; filter = 'kind(lib) | binary(engine_scenarios)'; provisional = $false; caught = 57; min = 44; status = 'measured' }
-    [pscustomobject]@{ scope = 'lc-db-core'; package = 'lc-db'; file = 'crates/lc-db/src/db.rs'; filter = ''; provisional = $false; caught = 81; min = 77; status = 'measured' }
-    [pscustomobject]@{ scope = 'lc-media-storage'; package = 'lc-media'; file = 'crates/lc-media/src/storage.rs'; filter = 'kind(lib) | binary(properties)'; provisional = $false; caught = 79; min = 118; status = 'measured' }
+    [pscustomobject]@{ scope = 'lc-playback-payload'; package = 'lc-playback'; file = 'crates/lc-playback/src/payload.rs'; filter = 'kind(lib) | binary(engine_scenarios)'; provisional = $false; caught = 97; min = 44; status = 'measured' }
+    [pscustomobject]@{ scope = 'lc-db-core'; package = 'lc-db'; file = 'crates/lc-db/src/db.rs'; filter = ''; provisional = $false; caught = 100; min = 77; status = 'measured' }
+    [pscustomobject]@{ scope = 'lc-media-storage'; package = 'lc-media'; file = 'crates/lc-media/src/storage.rs'; filter = 'kind(lib) | binary(properties)'; provisional = $false; caught = 100; min = 125; status = 'measured' }
 )
 
 Test-Case 'mutation matrix covers the six critical scopes' {

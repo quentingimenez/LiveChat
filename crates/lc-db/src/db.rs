@@ -385,7 +385,7 @@ fn requests_read_only(url: &str) -> bool {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{parse_connection_url, DbConfig, SCHEMA_VERSION};
+    use super::{parse_connection_url, requests_read_only, Db, DbConfig, SCHEMA_VERSION};
     use crate::error::DbError;
 
     #[test]
@@ -424,6 +424,41 @@ mod tests {
     fn url_mode_inconnu_rejete() {
         let error = parse_connection_url("file:./db.sqlite?mode=bidon").unwrap_err();
         assert!(matches!(error, DbError::InvalidUrl(_)));
+    }
+
+    #[test]
+    fn sqlite_url_without_mode_ro_is_writable() {
+        let parsed = parse_connection_url("sqlite://./db.sqlite").unwrap();
+        assert!(!parsed.read_only);
+
+        let parsed = parse_connection_url("sqlite://./db.sqlite?mode=rw").unwrap();
+        assert!(!parsed.read_only);
+    }
+
+    #[test]
+    fn requests_read_only_requires_both_mode_and_ro() {
+        assert!(requests_read_only("sqlite://./db.sqlite?mode=ro"));
+        assert!(requests_read_only("sqlite://./db.sqlite?MODE=RO"));
+        assert!(requests_read_only(
+            "sqlite://./db.sqlite?cache=shared&mode=ro"
+        ));
+        assert!(!requests_read_only("sqlite://./db.sqlite"));
+        assert!(!requests_read_only("sqlite://./db.sqlite?mode=rw"));
+        assert!(!requests_read_only("sqlite://./db.sqlite?advice=ro"));
+    }
+
+    #[tokio::test]
+    async fn close_closes_the_shared_pool() {
+        let db = Db::open_in_memory(&DbConfig::default())
+            .await
+            .expect("base mémoire ouverte");
+        let pool = db.pool().clone();
+        db.close().await;
+
+        assert!(
+            pool.acquire().await.is_err(),
+            "Db::close doit fermer le pool partagé"
+        );
     }
 
     #[test]

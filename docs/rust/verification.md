@@ -222,21 +222,27 @@ stage local est vert (`59 mutants tested in 8m: 52 caught, 7 unviable`,
   - `lc-protocol {caught_pct: 99, min_mutants: 47}`,
     `lc-media-guard {caught_pct: 99, min_mutants: 86}`,
     `lc-db-queue {caught_pct: 93, min_mutants: 92}` — mesuré 100/100/94, baseline = mesure − 1 ;
-  - Q-T4, mesurés sur `ubuntu-latest` avec la commande du nightly (run
-    [45234358272](https://github.com/quentingimenez/LiveChat/actions/runs/45234358272), 23/11) :
-    `lc-playback-payload {caught_pct: 57, min_mutants: 44}`
-    (`crates/lc-playback/src/payload.rs`), `lc-db-core {caught_pct: 81,
-    min_mutants: 77}` (`crates/lc-db/src/db.rs`), `lc-media-storage {caught_pct:
-    79, min_mutants: 118}` (`crates/lc-media/src/storage.rs`). Les scores sont
-    enregistrés **bruts** (`floor(100·caught/(caught+missed+timeout))` = 23/40,
-    13/16 et 39/49), pas en mesure − 1 : le dénominateur viable est petit
-    (40/16/49) et une marge d'un point ne protégerait pas d'un reclassement
-    caught/unviable ; un seul mutant basculé vaut 2 à 6 points, la baseline
-    doit donc rester le score observé, pas une marge fictive.
+  - Q-T4, remesurés après kill-or-justify le 24/11 en local (Windows
+    `x86_64-pc-windows-msvc`, cargo-mutants 27.1.0, nextest 0.9.151, commande du
+    nightly) :
+    `lc-playback-payload {caught_pct: 97, min_mutants: 44}`
+    (`crates/lc-playback/src/payload.rs`, 39 caught / 1 manqué justifié / 3
+    unviable), `lc-db-core {caught_pct: 100, min_mutants: 77}`
+    (`crates/lc-db/src/db.rs`, 16 / 0 / 60), `lc-media-storage {caught_pct: 100,
+    min_mutants: 125}` (`crates/lc-media/src/storage.rs`, 49 / 0 / 75). Les 30
+    survivants du run
+    [45274080193](https://github.com/quentingimenez/LiveChat/actions/runs/45274080193)
+    sont tués par les tests du même changement, sauf l'équivalent ci-dessous. Les
+    scores restent enregistrés **bruts**
+    (`floor(100·caught/(caught+missed+timeout))` = 39/40, 16/16 et 49/49), pas en
+    mesure − 1 : le dénominateur viable est petit et un seul mutant reclassé vaut
+    2 à 6 points. `min_mutants` = total `--list` + 1 outcome de baseline :
+    43 + 1, 76 + 1 et 124 + 1 (les 7 mutants de la fonction extraite
+    `classify_removal`, tous unviable, expliquent le passage de 117 à 124).
 - Les `min_mutants` Q-T4 viennent de `cargo mutants --list -p <crate> --file <fichier> --test-tool nextest -j 2` au commit de base
   (`32686b6`) : 43, 76 et 117 mutants, **+ 1** pour l'outcome `Success` de la baseline, comme les scopes existants (85 → 86,
-  91 → 92) ; les runs de mesure ont confirmé les totaux 44/77/118. Ce sont des **planchers** : un total observé inférieur échoue ;
-  un total supérieur reste accepté.
+  91 → 92) ; après l'extraction de `classify_removal`, `lc-media-storage` liste 124 mutants et les runs de mesure ont confirmé
+  les totaux 44/77/125. Ce sont des **planchers** : un total observé inférieur échoue ; un total supérieur reste accepté.
 - Le provisoire reste un **garde-fou inutilisé** pour un futur scope ajouté avant sa première mesure (`caught_pct: null`,
   `status: "provisional"`). Pour lever ce provisoire :
   1. lire `outcomes.json` de l'artefact `mutants-report-<scope>` et calculer
@@ -244,12 +250,53 @@ stage local est vert (`59 mutants tested in 8m: 52 caught, 7 unviable`,
   2. écrire ce score dans `caught_pct` et passer `status` à `"measured"` dans la baseline ;
   3. passer `provisional: false` pour ce scope dans la matrix de `verification-nightly.yml` ;
   4. mettre à jour les valeurs épinglées de `scripts/release/tests/MutantsNightly.Tests.ps1` dans le même changement.
-- Mutants manqués connus : `crates/lc-db/src/repos/playback_jobs.rs:211` reste le seul
-  manqué **justifié** (bras unique-violation, race-only, sqlite mémoire mono-connexion ;
-  justification aussi en doc du test `raw_db_errors_are_not_silenced_nor_mistranslated`).
-  Les scopes Q-T4 comptent leurs manqués dans leur score (17/3/10 mutants, listés dans
-  `missed.txt` du run 45234358272) : ils abaissent `caught_pct` sans justification ligne
-  par ligne, le seuil baseline étant la mesure complète et non un kill-or-justify par mutant.
+- Survivants Q-T4 du run 45274080193, tués par les tests ajoutés (tous dans le
+  `#[cfg(test)] mod tests` du fichier muté, donc exécutés par le filtre des
+  jambes) :
+  - `crates/lc-playback/src/payload.rs` (17) : `45:38`, `55:59`, `61:28` par les
+    trois `dispatch_timing_*` de bornes ; `66:80` (`-`→`+` et `-`→`/`), `70:48`
+    par `dispatch_timing_applies_the_resume_offset_to_the_remaining_duration` ;
+    `114:46` par `build_play_payload_omits_a_non_positive_media_duration` ;
+    `116:43`, `116:70` (trois) par
+    `build_play_payload_emits_the_offset_only_for_seekable_media` et
+    `build_play_payload_pins_the_protocol_fields` ; `149:5` (deux) et `151:19`
+    (trois) par `build_play_payload_pins_the_protocol_fields` et
+    `..._emits_the_offset_only_for_seekable_media` (URL exacte, offset 0 et 5,
+    audio vs image).
+  - `crates/lc-db/src/db.rs` (3) : `198:9` par `close_closes_the_shared_pool`
+    (pool cloné, `acquire` en erreur après `close`) ; `374:5` par
+    `sqlite_url_without_mode_ro_is_writable` et
+    `requests_read_only_requires_both_mode_and_ro` ; `380:46` par le second
+    (`?advice=ro` ne doit pas activer la lecture seule, `?mode=ro` si).
+  - `crates/lc-media/src/storage.rs` (10) : `119:27` et `326:27` par
+    `storage_root_that_is_a_file_surfaces_the_error` ; `180:27` par
+    `confined_path_surfaces_invalid_os_paths` ; `265:27` (deux) et `265:40` par
+    `removal_classifies_missing_files_and_surfaces_other_errors` — la
+    classification de `remove_path` est extraite dans `classify_removal`
+    (`storage.rs:439-448`, mutants devenus `442`), testée sur `Ok`, `NotFound` et
+    `PermissionDenied` au lieu d'être justifiée comme race-only ; `349:39` par
+    `list_variants_ignores_directories` ; `443:5` (trois) par
+    `now_ms_is_a_current_epoch_timestamp` (fenêtre autour de `SystemTime::now`).
+- Le seul survivant restant est **équivalent** : `payload.rs:141:9`
+  (`tweet_card: None` supprimé de `build_play_payload`). `PlayPayload::default()`
+  affecte déjà `tweet_card: None` (`crates/lc-protocol/src/lib.rs:953-972`, ligne
+  967) et le littéral finit par `..Default::default()` : la suppression ne change
+  pas la valeur construite, aucun test ne peut distinguer le mutant. Le champ
+  explicite est conservé et `build_play_payload_pins_the_protocol_fields` y épingle
+  `tweet_card.is_none()`.
+- Limites de mesure Q-T4 : la remesure ci-dessus est locale sur Windows, pas sur
+  `ubuntu-latest` ; le prochain nightly (ou un run manuel) doit confirmer les trois
+  scores. Un premier run local de `lc-playback-payload` a marqué `116:70`
+  (`>`→`<`) unviable sur un `LNK1104` transitoire du linker Windows ; relancé, il
+  donne 39/1/3, cohérent avec les 3 unviable du CI. Le total `lc-media-storage`
+  passe de 117 à 124 à cause de `classify_removal` (7 mutants de remplacement de
+  fonction, tous unviable), d'où `min_mutants: 125`.
+- Mutants manqués connus : `crates/lc-db/src/repos/playback_jobs.rs:211` et
+  `crates/lc-playback/src/payload.rs:141:9` sont les deux manqués **justifiés**
+  (le premier race-only, bras unique-violation, sqlite mémoire mono-connexion,
+  justification aussi en doc du test
+  `raw_db_errors_are_not_silenced_nor_mistranslated` ; le second équivalent,
+  preuve ci-dessus).
 - `min_mutants` (total exact d'outcomes, incl. baseline + unviable) est **fragile** :
   un changement de version cargo-mutants ou d'échantillonnage peut décaler le total —
   recaler baselines et min_mutants ensemble si cela arrive.
@@ -257,8 +304,9 @@ stage local est vert (`59 mutants tested in 8m: 52 caught, 7 unviable`,
   2 scopes du plan initial, ajoutés dans `db74f49` (correctifs Review A) sur
   directive utilisateur du 19/11.
 - Addendum Q-T4 : les trois scopes ajoutent les fichiers critiques de `lc-playback`, `lc-db` et `lc-media` au-delà de `guard.rs` ; chaque
-  jambe est un runner séparé pour rester sous 60 min. Ils sont mesurés (57/81/79, run 45234358272) ; le garde
-  `MutantsNightly.Tests.ps1` fait échouer toute incohérence matrix/baseline et conserve le scénario provisoire comme garde-fou.
+  jambe est un runner séparé pour rester sous 60 min. Ils sont remesurés après kill-or-justify le 24/11 en local (97/100/100) ; le run
+  45274080193 (PR #187) reste la référence des survivants. Le garde `MutantsNightly.Tests.ps1` fait échouer toute incohérence
+  matrix/baseline et conserve le scénario provisoire comme garde-fou.
 
 ## 7. Pièges locaux connus (Windows, PowerShell 5.1)
 

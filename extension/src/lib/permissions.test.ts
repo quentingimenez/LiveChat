@@ -78,9 +78,9 @@ beforeEach(() => {
 
 describe('ensureApiPermissionTransition', () => {
   it('demande la permission avant toute lecture du stockage', async () => {
-    const result = await ensureApiPermissionTransition('http://localhost:3000');
+    const result = await ensureApiPermissionTransition('https://localhost:3000');
 
-    expect(result).toMatchObject({ granted: true, pattern: 'http://localhost:3000/*' });
+    expect(result).toMatchObject({ granted: true, pattern: 'https://localhost:3000/*' });
     expect(calls[0]).toBe('permissions.request');
     expect(calls.indexOf('permissions.request')).toBeLessThan(calls.indexOf('storage.local.get'));
   });
@@ -91,7 +91,7 @@ describe('ensureApiPermissionTransition', () => {
       return false;
     });
 
-    const result = await ensureApiPermissionTransition('http://localhost:3000');
+    const result = await ensureApiPermissionTransition('https://localhost:3000');
 
     expect(result).toMatchObject({ granted: false, reason: 'permission_denied' });
     expect(calls).toEqual(['permissions.request']);
@@ -102,7 +102,7 @@ describe('ensureApiPermissionTransition', () => {
       calls.push('storage.local.get');
       return {
         'lce.settings.v1': {
-          apiUrl: 'http://ancien.example:3000',
+          apiUrl: 'https://ancien.example:3000',
           ingestToken: 'token',
           guildId: 'guild',
           authorName: 'Auteur',
@@ -110,10 +110,10 @@ describe('ensureApiPermissionTransition', () => {
       };
     });
 
-    const result = await ensureApiPermissionTransition('http://nouveau.example:3000');
+    const result = await ensureApiPermissionTransition('https://nouveau.example:3000');
 
     expect(result).toMatchObject({ granted: true, removedPrevious: true });
-    expect(permissionsRemove).toHaveBeenCalledWith({ origins: ['http://ancien.example:3000/*'] });
+    expect(permissionsRemove).toHaveBeenCalledWith({ origins: ['https://ancien.example:3000/*'] });
   });
 
   it('ne retire rien quand le domaine est inchangé', async () => {
@@ -121,7 +121,7 @@ describe('ensureApiPermissionTransition', () => {
       calls.push('storage.local.get');
       return {
         'lce.settings.v1': {
-          apiUrl: 'http://localhost:3000',
+          apiUrl: 'https://localhost:3000',
           ingestToken: 'token',
           guildId: 'guild',
           authorName: 'Auteur',
@@ -129,7 +129,7 @@ describe('ensureApiPermissionTransition', () => {
       };
     });
 
-    const result = await ensureApiPermissionTransition('http://localhost:3000');
+    const result = await ensureApiPermissionTransition('https://localhost:3000');
 
     expect(result).toMatchObject({ granted: true, removedPrevious: false });
     expect(permissionsRemove).not.toHaveBeenCalled();
@@ -138,13 +138,13 @@ describe('ensureApiPermissionTransition', () => {
 
 describe('removePreviousApiHostPermission', () => {
   it('ne fait rien sans ancienne URL', async () => {
-    await expect(removePreviousApiHostPermission(null, 'http://localhost:3000')).resolves.toBe(false);
+    await expect(removePreviousApiHostPermission(null, 'https://localhost:3000')).resolves.toBe(false);
     expect(permissionsRemove).not.toHaveBeenCalled();
   });
 
   it('ne fait rien quand les deux URLs partagent la même origine', async () => {
     await expect(
-      removePreviousApiHostPermission('http://localhost:3000/ancien', 'http://localhost:3000/nouveau'),
+      removePreviousApiHostPermission('https://localhost:3000/ancien', 'https://localhost:3000/nouveau'),
     ).resolves.toBe(false);
     expect(permissionsRemove).not.toHaveBeenCalled();
   });

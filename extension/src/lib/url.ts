@@ -47,8 +47,8 @@ export const normalizeApiUrl = (rawUrl: string): string => {
   const candidate = trimAndNormalize(rawUrl);
   const parsed = toUrl(candidate);
 
-  if (!parsed || !HTTP_PROTOCOLS.has(parsed.protocol)) {
-    throw new Error('URL API invalide. Utilise http:// ou https://.');
+  if (!parsed || parsed.protocol !== 'https:') {
+    throw new Error('URL API invalide. Utilise https://.');
   }
 
   parsed.hash = '';

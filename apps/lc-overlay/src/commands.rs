@@ -1332,8 +1332,8 @@ pub fn set_guild_muted(app: &AppHandle<Wry>, guild_id: &str, muted: bool) -> Res
     if !known {
         return Ok(false);
     }
-    // Report the new `paused` value before a pause closes the session; an
-    // unpause reports itself again after the next `welcome`.
+    // Report the new `paused` value before a local cut closes the session; an
+    // uncut reports itself again after the next `welcome`.
     ws::publish_device_state(app, guild_id);
     ws::ensure_supervisor(app, guild_id);
     ws::send_command_to(app, guild_id, NetCommand::Reconnect);

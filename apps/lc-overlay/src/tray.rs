@@ -390,14 +390,14 @@ pub(crate) fn toggle_media_mute(app: &AppHandle<Wry>) {
 fn toggle_guild_mute(app: &AppHandle<Wry>, guild_id: &str) {
     let state = app.state::<AppState>();
     let Some(membership) = state.config_snapshot().membership(guild_id).cloned() else {
-        tracing::warn!(guild_id, "guilde inconnue pour la pause du tray");
+        tracing::warn!(guild_id, "guilde inconnue pour la coupe locale du tray");
         refresh_tray(app);
         return;
     };
     match crate::commands::set_guild_muted(app, guild_id, !membership.muted) {
         // `publish_guilds` already rebuilt the menu.
         Ok(true) => return,
-        Ok(false) => tracing::warn!(guild_id, "guilde inconnue pour la pause du tray"),
+        Ok(false) => tracing::warn!(guild_id, "guilde inconnue pour la coupe locale du tray"),
         Err(error) => tracing::warn!(%error, guild_id, "échec de la coupe de la guilde"),
     }
     refresh_tray(app);

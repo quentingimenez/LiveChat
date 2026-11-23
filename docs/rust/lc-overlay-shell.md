@@ -259,7 +259,7 @@ Ordre et identifiants :
 6. `tray.general_mute` — Couper tous les médias ici : cochée = `enabled == false`.
    Pendant cette coupe locale, les cases de guilde sont grisées.
 7. `tray.guild.<id>` — une case par guilde appairée : cochée = la guilde
-   diffuse (non muette), décochée = en pause. Le libellé reprend le nom de
+   diffuse (non muette), décochée = coupée ici. Le libellé reprend le nom de
    la guilde (repli `Guilde <id>`, troncature à 48 caractères) et ajoute
    ` — <statut>` si elle n'est pas connectée. Le clic passe par
    `commands::set_guild_muted`, partagé avec la commande `guild_set_muted`.

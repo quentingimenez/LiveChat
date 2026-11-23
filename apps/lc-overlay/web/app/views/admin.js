@@ -498,7 +498,7 @@ function renderDevice(device, newest) {
 }
 
 // Same semantics as the server console's device dialog: guild volume (0–100 %
-// on top of a 0..1 value), media sound and pause, pushed to the device.
+// on top of a 0..1 value), media sound and local cut, pushed to the device.
 function openDeviceSettingsDialog(device) {
   openDialog((close) => {
     const current = device.guildSettings || { volume: 1, mediaMuted: false, paused: false };

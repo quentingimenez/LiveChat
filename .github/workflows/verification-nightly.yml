@@ -250,3 +250,94 @@ jobs:
         with:
           name: load-report
           path: target/load-report.json
+
+  # The `#[ignore]` tests need ffmpeg, yt-dlp or the real network, so the PR
+  # `test` job cannot run them. This job runs them on the nightly schedule and
+  # on manual dispatch only: the workflow-level `pull_request` trigger exists
+  # to check this file and the fuzz paths, and these tests must never gate a PR.
+  ignored:
+    name: ignored tests
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      LC_ADMIN_WEB_BUILD: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # lc-media depends on parley (Cargo.toml) whose yeslogic-fontconfig-sys
+      # build script needs the system fontconfig headers on Linux; lc-server
+      # pulls lc-media in.
+      - name: Install Linux fontconfig
+        run: |
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev
+      # Many ignored tests shell out to the real binaries instead of linking
+      # them: ffmpeg/ffprobe for the media tests, yt-dlp for the downloads.
+      - name: Install ffmpeg and yt-dlp
+        run: |
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends ffmpeg yt-dlp
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      # Same pinned nextest as the mutants job, so the listing format and the
+      # filters used below cannot drift with a nextest upgrade.
+      - name: Install nextest
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: nextest@0.9.151
+      # Measure the ignored tests before running them. The counts are read from
+      # nextest instead of hardcoded: the 2026-11-21 audit (31 lc-media /
+      # 7 lc-server / 2 xtask) predates the cover and poster tests added on
+      # 2026-11-22, and a renamed target must show up in the report rather than
+      # silently shrink the nightly suite.
+      - name: Report the ignored tests per crate
+        run: |
+          set -euo pipefail
+          mkdir -p target
+          cargo nextest list -p lc-media -p lc-server -p xtask \
+            --all-features --locked --run-ignored only \
+            --message-format json > target/ignored-tests.json
+          jq -r '
+            .["rust-suites"][]
+            | .["package-name"] as $crate
+            | .testcases
+            | to_entries[]
+            | select(.value.ignored)
+            | "\($crate)::\(.key)"
+          ' target/ignored-tests.json | sort > target/ignored-tests.txt
+          {
+            echo '### Ignored tests (nightly)'
+            echo
+            echo '| crate | ignored tests |'
+            echo '| --- | ---: |'
+            total=0
+            for crate in lc-media lc-server xtask; do
+              count=$(grep -c "^${crate}::" target/ignored-tests.txt || true)
+              echo "| $crate | $count |"
+              total=$((total + count))
+            done
+            echo "| **total** | **$total** |"
+            echo
+            echo '```'
+            cat target/ignored-tests.txt
+            echo '```'
+          } | tee target/ignored-tests.md >> "$GITHUB_STEP_SUMMARY"
+      # Keep going after a failure so one flaky network test does not hide the
+      # state of the other two crates; the step still fails at the end.
+      - name: Run the ignored tests
+        run: |
+          cargo nextest run -p lc-media -p lc-server -p xtask \
+            --all-features --locked --run-ignored only --no-fail-fast
+      - name: Upload the ignored test report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ignored-tests-report
+          path: |
+            target/ignored-tests.json
+            target/ignored-tests.md
+            target/ignored-tests.txt
+          if-no-files-found: error

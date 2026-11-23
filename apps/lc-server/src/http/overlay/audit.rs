@@ -32,7 +32,9 @@ use super::ActorInfo;
 ///
 /// The Bearer token is resolved before the handler runs, both to name the actor
 /// and to hand the authenticated client to the handler's extractor. A request
-/// that ends in 401/403/404/409/5xx leaves no row.
+/// that ends in 401/403/404/409/5xx leaves no row. The journal records the
+/// client resolved from a declared proxy chain, never the proxy address; an
+/// unresolvable chain gives `NULL`.
 pub(crate) async fn overlay_admin_audit(mut request: Request, next: Next) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
@@ -45,10 +47,15 @@ pub(crate) async fn overlay_admin_audit(mut request: Request, next: Next) -> Res
     let Some(state) = request.extensions().get::<AppState>().cloned() else {
         return next.run(request).await;
     };
-    let client_ip = request
+    let peer_ip = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|info| info.0.ip());
+    let client_ip = crate::http::proxy::audit_client_ip(
+        peer_ip,
+        request.headers(),
+        &state.config.trusted_proxies,
+    );
 
     let authed = match auth::bearer_token(request.headers()) {
         Some(token) => match state.db.as_ref() {

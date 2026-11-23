@@ -33,8 +33,11 @@
 //!
 //! Cette couche journalise aussi un **audit minimal** des mutations
 //! administratives (AUD-COR-10) : méthode, chemin seul, statut HTTP et adresse
-//! du client. Ni la query string ni les en-têtes ne sont journalisés (un
-//! `?token=` ou un `Authorization` finirait en clair dans les journaux).
+//! du client. Derrière un proxy déclaré, l'adresse journalisée est celle
+//! résolue par la chaîne `X-Forwarded-For`, jamais celle du proxy ; une chaîne
+//! non résoluble donne `NULL`. Ni la query string ni les en-têtes ne sont
+//! journalisés (un `?token=` ou un `Authorization` finirait en clair dans les
+//! journaux).
 
 mod audit;
 mod auth;
@@ -206,10 +209,21 @@ async fn admin_headers(request: axum::extract::Request, next: middleware::Next) 
     // `app::router_with_hub`: the admin router itself is built before the state
     // is applied, so this middleware cannot take a typed `State` extractor.
     let state = request.extensions().get::<AppState>().cloned();
-    let client_ip = request
+    let peer_ip = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|info| info.0.ip());
+    // The journal records the client, not the proxy that forwarded the
+    // request. Only a peer declared in `TRUSTED_PROXIES` is translated through
+    // the forwarded chain; an unresolvable chain journals `NULL` rather than
+    // mislabelling the proxy address as the client.
+    let client_ip = state.as_ref().map_or(peer_ip, |state| {
+        crate::http::proxy::audit_client_ip(
+            peer_ip,
+            request.headers(),
+            &state.config.trusted_proxies,
+        )
+    });
     // `x-request-id` est posé par la couche la plus externe (AUD-COR-10/A3-012) :
     // il corrèle la ligne d'audit avec les logs HTTP et la réponse.
     let request_id = request
@@ -266,6 +280,7 @@ async fn admin_headers(request: axum::extract::Request, next: middleware::Next) 
             path = %path,
             status = response.status().as_u16(),
             client_ip = ?client_ip,
+            peer_ip = ?peer_ip,
             request_id = ?request_id,
             "mutation administrative"
         );

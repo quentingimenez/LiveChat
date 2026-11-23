@@ -42,12 +42,16 @@
 //!
 //! L'adresse IP est lue depuis `ConnectInfo<SocketAddr>` (jamais fourni par le
 //! client). Derrière un reverse proxy, `TRUST_PROXY_HEADERS=true` active la
-//! lecture de `X-Real-IP` puis du dernier `X-Forwarded-For` (voir
-//! [`super::proxy`] ; le premier est écrit par le client) **uniquement si le
-//! pair direct figure dans `TRUSTED_PROXIES`**. Sans proxy déclaré, les
-//! en-têtes sont ignorés et le pair direct sert de clé : configuration
-//! explicite exigée par le point S6 du plan de migration, le serveur ne fait
-//! jamais confiance à ces en-têtes par défaut.
+//! lecture de `X-Forwarded-For` (voir [`super::proxy`] ; ses premiers sauts
+//! sont écrits par le client) **uniquement si le pair direct figure dans
+//! `TRUSTED_PROXIES`**. La chaîne est parcourue de droite à gauche en sautant
+//! les proxys déclarés, donc deux clients derrière le même proxy gardent des
+//! budgets distincts et une chaîne de deux proxys résout le client d'origine.
+//! `X-Real-IP` ne sert que de repli quand `X-Forwarded-For` est absent ou sans
+//! saut non vide. Sans
+//! proxy déclaré, les en-têtes sont ignorés et le pair direct sert de clé :
+//! configuration explicite exigée par le point S6 du plan de migration, le
+//! serveur ne fait jamais confiance à ces en-têtes par défaut.
 //!
 //! Les réponses portent `x-ratelimit-limit`, `x-ratelimit-remaining` et
 //! `x-ratelimit-reset`, et les 429 un `Retry-After`, comme le faisait Fastify.
@@ -64,7 +68,7 @@ use axum::response::Response;
 
 use crate::config::Config;
 use crate::http::error::{json_error, REQUEST_ERROR};
-use crate::http::proxy::{canonical_ip, is_trusted_proxy, proxied_client_ip};
+use crate::http::proxy::{canonical_ip, forwarded_client_ip};
 
 /// General budget per window and per client (overlay API, `/ws`, ingestion).
 pub const RATE_LIMIT_MAX: u32 = 1000;
@@ -361,9 +365,9 @@ fn client_ip(state: &RateLimitState, request: &Request) -> Option<IpAddr> {
         .map(|info| canonical_ip(info.0.ip()));
     // Never read the headers unless the operator declared this exact peer as a
     // reverse proxy: any direct client could otherwise rotate `X-Real-IP` and
-    // reset its own budget.
-    if state.trust_proxy_headers && is_trusted_proxy(peer_ip, &state.trusted_proxies) {
-        if let Some(ip) = proxied_client_ip(request.headers()) {
+    // reset its own budget. `forwarded_client_ip` performs that peer check.
+    if state.trust_proxy_headers {
+        if let Some(ip) = forwarded_client_ip(peer_ip, request.headers(), &state.trusted_proxies) {
             return Some(ip);
         }
     }
@@ -617,7 +621,7 @@ mod tests {
             Some(remote)
         );
 
-        // Declared proxy: the last forwarded hop wins.
+        // Declared proxy: the first hop that is not itself a proxy wins.
         let trusted = RateLimitState::from_config(&config(&[
             ("API_URL", "http://localhost:3000"),
             ("TRUST_PROXY_HEADERS", "true"),
@@ -648,6 +652,61 @@ mod tests {
 
         // No direct peer (no ConnectInfo): never trust the headers.
         assert_eq!(client_ip(&trusted, &request()), None);
+    }
+
+    #[test]
+    fn two_clients_behind_a_chain_get_distinct_buckets() {
+        fn request(xff: &'static str) -> HttpRequest<axum::body::Body> {
+            HttpRequest::builder()
+                .uri("/health")
+                .header("x-forwarded-for", xff)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        }
+
+        fn from_peer(
+            request: HttpRequest<axum::body::Body>,
+            peer: IpAddr,
+        ) -> HttpRequest<axum::body::Body> {
+            let mut request = request;
+            request
+                .extensions_mut()
+                .insert(ConnectInfo(SocketAddr::new(peer, 40_000)));
+            request
+        }
+
+        let inner = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let chained = RateLimitState::from_config(&config(&[
+            ("API_URL", "http://localhost:3000"),
+            ("TRUST_PROXY_HEADERS", "true"),
+            ("TRUSTED_PROXIES", "127.0.0.1, 10.0.0.9"),
+        ]));
+
+        // server <- 127.0.0.1 (inner proxy) <- 10.0.0.9 (outer proxy) <- client.
+        let first = client_ip(
+            &chained,
+            &from_peer(request("198.51.100.7, 10.0.0.9"), inner),
+        );
+        let second = client_ip(
+            &chained,
+            &from_peer(request("198.51.100.8, 10.0.0.9"), inner),
+        );
+        assert_eq!(first, Some("198.51.100.7".parse().unwrap()));
+        assert_eq!(second, Some("198.51.100.8".parse().unwrap()));
+        assert_ne!(client_key(first), client_key(second));
+
+        // A single declared proxy: the two clients must not collapse onto the
+        // proxy address either (the bug this test protects against).
+        let single = RateLimitState::from_config(&config(&[
+            ("API_URL", "http://localhost:3000"),
+            ("TRUST_PROXY_HEADERS", "true"),
+            ("TRUSTED_PROXIES", "127.0.0.1"),
+        ]));
+        let first = client_ip(&single, &from_peer(request("198.51.100.7"), inner));
+        let second = client_ip(&single, &from_peer(request("198.51.100.8"), inner));
+        assert_ne!(first, Some(inner));
+        assert_ne!(second, Some(inner));
+        assert_ne!(client_key(first), client_key(second));
     }
 
     #[test]

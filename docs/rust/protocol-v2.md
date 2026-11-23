@@ -75,9 +75,10 @@ Conventions :
 - Trames **texte UTF-8 JSON uniquement**. Une trame binaire → fermeture `1003`.
 - Le client se connecte à `{API_URL}` avec `API_URL` tel qu'obtenu du pairing
   (`apiBaseUrl`, `server/src/components/overlay/overlayRoutes.ts:202-291`).
-- `TRUST_PROXY_HEADERS=true` indique au serveur de lire l'IP réelle derrière un reverse proxy
+- `TRUST_PROXY_HEADERS=true` indique au serveur de résoudre l'IP réelle derrière un reverse proxy
   (utile au rate limit ; variable listée `docs/rust/migration-plan.md:150`), uniquement si le pair
-  direct figure dans `TRUSTED_PROXIES` ; sinon les en-têtes sont ignorés.
+  direct figure dans `TRUSTED_PROXIES` ; la chaîne `X-Forwarded-For` est parcourue de droite à gauche
+  en sautant les proxys déclarés (`X-Real-IP` en repli), sinon les en-têtes sont ignorés.
 
 ### 1.2 Séquence de handshake applicatif
 

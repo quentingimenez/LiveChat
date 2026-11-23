@@ -25,6 +25,12 @@ jobs:
         with:
           fetch-depth: 1
 
+      # Le gate tourne depuis la branche de base (script de confiance) ; ce
+      # step teste la version du head, pour qu'une PR qui modifie le gate ou
+      # ses tests soit vérifiée dans sa propre PR.
+      - name: Test the CI gate
+        run: node --test scripts/ci/tests/*.test.mjs
+
       - name: Test the Bombadil runners
         working-directory: tools/bombadil
         run: node --test

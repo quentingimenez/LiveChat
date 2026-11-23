@@ -59,6 +59,14 @@ const MAX_REQUEST_ID_CHARS: usize = 64;
 /// Fenêtre glissante du rate limiter client.
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(1);
 
+/// Fenêtre de coalescence d'un `media.trigger` identique (par session).
+///
+/// Une rafale de raccourcis identiques (répétition de touche, double clic,
+/// client qui rejoue sa file) déclenchait un job et une quinzaine de requêtes
+/// SQL par trame. La garde est indexée sur l'item : un vrai changement de média
+/// passe immédiatement, seule la répétition de la même demande est absorbée.
+const MEDIA_TRIGGER_MIN_INTERVAL: Duration = Duration::from_millis(1_000);
+
 /// Code close `1008` (policy violation) pour une origine refusée.
 ///
 /// Le close est utilisé plutôt qu'une réponse HTTP 403 car la requête est déjà
@@ -99,13 +107,48 @@ struct SessionContext {
     session_mode: SessionMode,
 }
 
-/// Horodatages des derniers messages soumis à throttle (par connexion).
+/// Horodatages et gardes des derniers messages soumis à throttle (par connexion).
 #[derive(Default)]
 struct SessionTimers {
     last_playback_state: Option<Instant>,
     last_playback_ended: Option<Instant>,
     last_stop_request: Option<Instant>,
     last_peers_request: Option<Instant>,
+    /// Dernier `media.trigger` accepté, pour l'idempotence des répétitions.
+    last_media_trigger: Option<MediaTriggerGuard>,
+}
+
+/// Garde d'idempotence du dernier `media.trigger` accepté sur la session.
+///
+/// Une session traite ses trames séquentiellement : au plus une exécution de
+/// `media.trigger` est en vol. Cette garde couvre la répétition une fois la
+/// première terminée — une demande identique reçue dans la fenêtre ré-acquitte
+/// le job déjà créé, sans relire la base ni créer un job. Les erreurs ne sont
+/// pas mémorisées : un item devenu prêt entre deux trames repasse donc.
+struct MediaTriggerGuard {
+    item_id: MediaBoardItemId,
+    job_id: Option<String>,
+    outcome: Option<AckOutcome>,
+    position: Option<u32>,
+    /// Instant du dernier trigger accepté ou coalescé (fenêtre glissante).
+    accepted_at: Instant,
+}
+
+impl MediaTriggerGuard {
+    /// La demande est-elle une répétition identique dans la fenêtre ?
+    ///
+    /// Un item différent passe toujours. Une répétition dans la fenêtre la
+    /// prolonge, pour absorber la rafale entière et pas seulement sa première
+    /// trame.
+    fn coalesce(&mut self, item_id: MediaBoardItemId, now: Instant) -> bool {
+        if self.item_id != item_id
+            || now.duration_since(self.accepted_at) >= MEDIA_TRIGGER_MIN_INTERVAL
+        {
+            return false;
+        }
+        self.accepted_at = now;
+        true
+    }
 }
 
 /// Handler axum de `GET /ws`.
@@ -846,6 +889,29 @@ async fn handle_client_message(
                     return Ok(());
                 }
             };
+            // Idempotence : une session traite ses trames séquentiellement, donc
+            // au plus une exécution de trigger est en vol. Une répétition de la
+            // même demande dans la fenêtre ré-acquitte le job déjà créé sans
+            // relire la base ni créer un second job ; un autre item passe.
+            if let Some(guard) = timers.last_media_trigger.as_mut() {
+                if guard.coalesce(item_id, Instant::now()) {
+                    debug!(
+                        item = %payload.item_id,
+                        job = guard.job_id.as_deref().unwrap_or_default(),
+                        "media.trigger identique coalescé",
+                    );
+                    send_trigger_ack(
+                        hub,
+                        connection_id,
+                        request_id.as_str(),
+                        None,
+                        guard.outcome,
+                        guard.position,
+                        guard.job_id.clone(),
+                    );
+                    return Ok(());
+                }
+            }
             let item = match db.media_board().get(item_id).await {
                 Ok(Some(item)) => item,
                 Ok(None) => {
@@ -1010,6 +1076,14 @@ async fn handle_client_message(
                             "relecture du job impossible après enfilement"
                         ),
                     }
+                    let job_id = job.id.to_canonical();
+                    timers.last_media_trigger = Some(MediaTriggerGuard {
+                        item_id,
+                        job_id: Some(job_id.clone()),
+                        outcome,
+                        position,
+                        accepted_at: Instant::now(),
+                    });
                     send_trigger_ack(
                         hub,
                         connection_id,
@@ -1017,7 +1091,7 @@ async fn handle_client_message(
                         None,
                         outcome,
                         position,
-                        Some(job.id.to_canonical()),
+                        Some(job_id),
                     );
                     // The playback queue changed: refresh the admin overview.
                     state.events.overview_changed();
@@ -1296,5 +1370,37 @@ mod tests {
         assert!(liveness.is_expired());
         liveness.on_pong();
         assert!(!liveness.is_expired(), "un Pong reçu rafraîchit la fenêtre");
+    }
+
+    /// La garde coalesce les répétitions identiques dans la fenêtre, la
+    /// prolonge à chaque répétition, et laisse passer un autre item ou une
+    /// demande plus tardive.
+    #[test]
+    fn media_trigger_guard_coalesces_identical_repeats_inside_the_window() {
+        let item = MediaBoardItemId::new_v4();
+        let other = MediaBoardItemId::new_v4();
+        let accepted = Instant::now();
+        let mut guard = MediaTriggerGuard {
+            item_id: item,
+            job_id: Some("job".to_owned()),
+            outcome: Some(AckOutcome::Playing),
+            position: None,
+            accepted_at: accepted,
+        };
+
+        assert!(guard.coalesce(item, accepted + Duration::from_millis(250)));
+        assert_eq!(guard.job_id.as_deref(), Some("job"));
+        assert_eq!(guard.outcome, Some(AckOutcome::Playing));
+        // Fenêtre glissante : 900 ms après la répétition précédente, encore
+        // dans la fenêtre.
+        assert!(guard.coalesce(item, accepted + Duration::from_millis(1_150)));
+        assert!(
+            !guard.coalesce(other, accepted + Duration::from_millis(1_200)),
+            "un autre item doit toujours passer"
+        );
+        assert!(
+            !guard.coalesce(item, accepted + Duration::from_millis(2_151)),
+            "une demande après la fenêtre doit repasser"
+        );
     }
 }

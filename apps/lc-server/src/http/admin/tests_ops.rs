@@ -5,9 +5,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
-use axum::http::{Method, StatusCode};
+use axum::http::{header, Method, StatusCode};
 use lc_domain::{GuildId, JobStatus};
 use serde_json::Value;
 use time::{Duration, UtcDateTime};
@@ -429,6 +430,54 @@ async fn audit_row_is_written_for_a_mutation_with_the_actor_but_not_for_a_get() 
     assert_eq!(path, "/admin/api/guilds/42/stop");
     assert_eq!(*status, 200);
     assert_eq!(guild.as_deref(), Some("42"));
+}
+
+#[tokio::test]
+async fn audit_journals_the_client_resolved_behind_two_declared_proxies() {
+    let harness = Harness::with_pairs(&[("TRUSTED_PROXIES", "127.0.0.1, 10.0.0.9")]).await;
+    let mut request = harness.request_from(
+        Method::POST,
+        "/admin/api/guilds/42/stop",
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+    );
+    // server <- 127.0.0.1 (direct peer) <- 10.0.0.9 (outer proxy) <- client.
+    request.headers_mut().insert(
+        "x-forwarded-for",
+        header::HeaderValue::from_static("198.51.100.7, 10.0.0.9"),
+    );
+
+    let (status, _, _) = harness.send(request).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let client_ip: Option<String> =
+        sqlx::query_scalar("SELECT client_ip FROM admin_audit ORDER BY id DESC LIMIT 1")
+            .fetch_one(harness.db().pool())
+            .await
+            .expect("audit row");
+
+    assert_eq!(client_ip.as_deref(), Some("198.51.100.7"));
+}
+
+#[tokio::test]
+async fn audit_does_not_label_a_declared_proxy_as_the_client() {
+    let harness = Harness::with_pairs(&[("TRUSTED_PROXIES", "127.0.0.1")]).await;
+    let request = harness.request_from(
+        Method::POST,
+        "/admin/api/guilds/42/stop",
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+    );
+
+    let (status, _, _) = harness.send(request).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let client_ip: Option<String> =
+        sqlx::query_scalar("SELECT client_ip FROM admin_audit ORDER BY id DESC LIMIT 1")
+            .fetch_one(harness.db().pool())
+            .await
+            .expect("audit row");
+
+    // The proxy forwarded no client address: journal NULL, never the proxy.
+    assert_eq!(client_ip, None);
 }
 
 async fn insert_audit(

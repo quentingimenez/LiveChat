@@ -414,7 +414,8 @@ depuis le LAN**, et le reverse proxy est le seul point d'entrée public.
   écouter sur l'IP publique et relayer vers `http://127.0.0.1:3000`. Le serveur
   reste en HTTP (limite assumée, §8) et `API_URL` doit être l'URL **publique
   https**. Exemple Caddy (le proxy doit écraser `X-Real-IP` avec l'adresse du
-  pair, jamais recopier l'en-tête client) :
+  pair, jamais recopier l'en-tête client, et **ajouter** son pair à
+  `X-Forwarded-For`, jamais recopier la chaîne reçue) :
 
   ```caddy
   livechat.example.com {
@@ -442,11 +443,14 @@ depuis le LAN**, et le reverse proxy est le seul point d'entrée public.
   Le 13 novembre 2026, l'ancien budget unique de 100 a été épuisé par un usage
   normal du board, et l'overlay ne pouvait plus rouvrir sa WebSocket.
   Plusieurs overlays derrière la même IP (NAT) partagent ces budgets ;
-  derrière un reverse proxy, déclarer son adresse exacte dans `TRUSTED_PROXIES`
-  puis activer `TRUST_PROXY_HEADERS=true` pour compter par client réel ; le
-  proxy doit **écraser** `X-Real-IP` (ou supprimer l'en-tête et laisser le
-  serveur utiliser le dernier saut `X-Forwarded-For`), jamais le recopier.
-  Sans proxy déclaré, les en-têtes sont ignorés. Le compteur est en mémoire : un
+  derrière un reverse proxy, déclarer l'adresse exacte de **chaque** proxy de la
+  chaîne dans `TRUSTED_PROXIES` puis activer `TRUST_PROXY_HEADERS=true` pour
+  compter par client réel : la chaîne `X-Forwarded-For` est parcourue de droite
+  à gauche en sautant les proxys déclarés, donc deux proxys chaînés résolvent le
+  client d'origine au lieu du dernier saut. Le proxy doit **ajouter** son pair à
+  `X-Forwarded-For` et **écraser** `X-Real-IP` (repli seulement quand la chaîne
+  est absente), jamais recopier l'en-tête reçu du client. Sans proxy déclaré,
+  les en-têtes sont ignorés. Le compteur est en mémoire : un
   redémarrage du serveur le remet à zéro.
 - **Accès admin depuis l'hôte, sans proxy** : dans un conteneur bridge, le
   serveur voit l'IP de la passerelle Docker et non `127.0.0.1` ; avec

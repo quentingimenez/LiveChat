@@ -134,7 +134,7 @@ global) : c'est elle qu'utilisent les tests.
 | `API_URL` | **requis** | URL absolue http(s) ; son origine sert au CORS |
 | `ADMIN_UI_TOKEN` | `""` | vide = login secret désactivé ; sinon ≥ 32 caractères, ≥ 8 distincts, sans motif répété (refus au démarrage — changement cassant ; `openssl rand -base64 32`) ; secret masqué dans les logs |
 | `ADMIN_UI_LOCAL_ONLY` | `true` | booléen strict |
-| `ADMIN_TRUST_FORWARDED_FOR` | `false` | lit `X-Real-IP` puis le dernier `X-Forwarded-For` pour le contrôle local-only admin, **seulement** si le pair direct figure dans `TRUSTED_PROXIES` |
+| `ADMIN_TRUST_FORWARDED_FOR` | `false` | résout le client dans la chaîne `X-Forwarded-For` (droite → gauche, proxys déclarés sautés ; `X-Real-IP` en repli) pour le contrôle local-only admin, **seulement** si le pair direct figure dans `TRUSTED_PROXIES` |
 | `DISCORD_TOKEN` | — | optionnel ; avec `DISCORD_CLIENT_ID` ou aucun des deux |
 | `DISCORD_CLIENT_ID` | — | optionnel ; les deux ou aucun (sinon erreur) |
 | `INGEST_API_TOKEN` | `""` | secret masqué |
@@ -175,7 +175,7 @@ global) : c'est elle qu'utilisent les tests.
 | `ADDITIONAL_CORS_ORIGINS` | `""` | origines séparées par des virgules |
 | `MIN_OVERLAY_VERSION` | `3.0.0` | doit ressembler à `x.y.z` (contrat 426) |
 | `TRUSTED_PROXIES` | `""` | adresses IP exactes des reverse proxies de confiance, séparées par des virgules (vide = aucun en-tête proxy n'est cru) |
-| `TRUST_PROXY_HEADERS` | `false` | si `true` **et** que le pair direct est dans `TRUSTED_PROXIES`, `X-Real-IP` puis le dernier `X-Forwarded-For` font foi pour l'IP |
+| `TRUST_PROXY_HEADERS` | `false` | si `true` **et** que le pair direct est dans `TRUSTED_PROXIES`, la chaîne `X-Forwarded-For` (droite → gauche, proxys déclarés sautés ; `X-Real-IP` en repli) fait foi pour l'IP |
 | `WS_HEARTBEAT_TIMEOUT_SEC` | `45` | réservé Phase 4 |
 
 ### Règles de validation
@@ -305,10 +305,12 @@ contrairement au legacy qui combinait les deux). Préflight mis en cache 600 s.
   normal du board, et l'overlay ne pouvait plus rouvrir sa WebSocket ;
 - IP lue depuis la connexion (`ConnectInfo`), ou, **seulement si**
   `TRUST_PROXY_HEADERS=true` **et** que le pair direct figure dans
-  `TRUSTED_PROXIES`, `X-Real-IP` puis le dernier `X-Forwarded-For`
-  (le premier est écrit par le client, `http/proxy.rs`) ; sinon les en-têtes
-  sont ignorés et le pair direct sert de clé. Les IPv4 encapsulées en IPv6
-  (`::ffff:a.b.c.d`) sont normalisées ;
+  `TRUSTED_PROXIES`, la chaîne `X-Forwarded-For` parcourue de droite à gauche :
+  les sauts qui sont eux-mêmes des proxys déclarés sont sautés, le premier
+  autre saut est le client ; `X-Real-IP` ne sert que de repli quand la chaîne
+  est absente (le premier saut XFF est écrit par le client, `http/proxy.rs`).
+  Sinon les en-têtes sont ignorés et le pair direct sert de clé. Les IPv4
+  encapsulées en IPv6 (`::ffff:a.b.c.d`) sont normalisées ;
 - seule exemption : les adresses loopback en `development` (l'exemption
   `/admin` du legacy est supprimée, AUD-COR-10) ;
 - réponse `429 {"error":"request_error"}` avec `x-ratelimit-limit`,
@@ -455,11 +457,13 @@ L'état partagé est `AppState` (cloneable) : `config`, `db`, `clock`,
    client reçoit un flux invalide. À exclure explicitement lors de l'ajout des
    routes médias (Phase 3b/7).
 3. **Rate limit et IP réelle** : `TRUST_PROXY_HEADERS=true` ne fait confiance à
-   `X-Real-IP`, puis au dernier saut de `X-Forwarded-For` (celui ajouté par le
-   proxy), que si le pair direct est déclaré dans `TRUSTED_PROXIES` ; sans cette
-   liste, les en-têtes sont ignorés (fail-closed). Ne l'activer que derrière un
-   proxy de confiance qui écrase ces en-têtes, sinon l'IP reste falsifiable par
-   le proxy lui-même.
+   la chaîne `X-Forwarded-For` (parcourue de droite à gauche en sautant les
+   proxys déclarés ; `X-Real-IP` en repli) que si le pair direct est déclaré
+   dans `TRUSTED_PROXIES` ; sans cette liste, les en-têtes sont ignorés
+   (fail-closed). Tous les proxys d'une chaîne doivent être déclarés, sinon le
+   premier non déclaré est pris pour le client. Ne l'activer que derrière un
+   proxy de confiance qui ajoute `X-Forwarded-For` et écrase `X-Real-IP`, sinon
+   l'IP reste falsifiable par le proxy lui-même.
 4. **`/health` `discord=down`** tant que la Phase 6 n'injecte pas l'état réel :
    un overlay qui attend `ok` verra `down` si Discord est configuré. À
    connecter au bot en Phase 6.

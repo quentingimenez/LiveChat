@@ -372,6 +372,15 @@ Serveur : mode lecture seule → ack `read_only` ; item/média absent ou non `RE
 `ack {ok:true}`, puis `play` du média du board quand la file de la guilde arrive à ce job.
 Aucune préemption : si un média joue déjà, celui du board attend la fin du job en cours.
 
+**Coalescence (B-02).** Une session ne garde qu'une exécution de `media.trigger` en vol. Une
+répétition du **même `itemId`** dans une fenêtre glissante de 1 s est idempotente : le serveur
+ré-acquitte le job déjà créé (`ack {ok:true, jobId, outcome, position}` identiques) **sans**
+nouvelle requête SQL ni nouveau job ; la fenêtre glisse à chaque répétition. Un `itemId` différent
+passe immédiatement (un vrai changement de média n'est jamais perdu), et le même `itemId` repasse
+une fois la fenêtre écoulée. Limites : la garde est **par connexion**, pas globale à la guilde
+(deux sockets ou deux overlays de la même guilde peuvent ré-acquitter chacun leur job), et un job
+arrêté ou terminé pendant la fenêtre peut être ré-acquitté tel quel.
+
 Compatibilité overlay 3.0.0 : supprimée. L'ancien type `meme.trigger` n'est plus
 accepté (la désérialisation échoue, comme tout type inconnu) ; seul
 `media.trigger` est valide.

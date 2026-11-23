@@ -38,6 +38,8 @@ import {
 import { h, icon, registerIcons } from '../core/dom.js';
 import { formatBoardUsage, formatDuration, formatBytes, INVALID_DURATION_MESSAGE, MAX_DISPLAY_DURATION_SEC, parseDisplayDuration } from '../core/format.js';
 import { cardRatio, cardStyle } from '../core/masonry.js';
+import { DROP_VEIL_TEXT, dropTarget } from '../core/media-drop.js';
+import { pastedMediaFiles } from '../core/media-files.js';
 import { badgeForItem } from '../core/queue-badges.js';
 import {
   cardClickAction,
@@ -64,7 +66,7 @@ import { previewVolume } from '../core/sound.js';
 import { notify } from '../core/toast.js';
 import { confirmDialog, copyText, openDialog } from '../core/ui.js';
 import { loadItems, refreshQueueAutomatically } from '../data.js';
-import { openAddDialog } from './add-media.js';
+import { addDialogOpen, dropOnAddDialog, highlightAddDialog, openAddDialog } from './add-media.js';
 import { openImportDialog } from './import-media.js';
 import { openSayDialog } from './say.js';
 import { canOpenEditor, openMediaEditor } from './editor/index.js';
@@ -2296,6 +2298,9 @@ document.addEventListener('livechat:uploads', () => {
 });
 
 // --- dropping local files on the board ---
+// A drop lands on the open « Ajouter un média » dialog when there is one (it
+// covers the board, so its form is what the user is looking at), and on the
+// board's main area otherwise. The veil names the destination.
 let dropVeil = null;
 let dropDismissed = false;
 
@@ -2325,8 +2330,18 @@ function droppedFiles(event) {
   return event.dataTransfer && event.dataTransfer.files ? Array.from(event.dataTransfer.files) : [];
 }
 
+function boardIsActive() {
+  return Boolean(state.activeGuildId) && state.page === 'guild' && state.tab === 'board';
+}
+
 function canDropFiles() {
-  return Boolean(state.activeGuildId) && state.page === 'guild' && state.tab === 'board' && can('addMedia');
+  return boardIsActive() && can('addMedia');
+}
+
+// A paste opens the dialog, which also offers "Jouer une fois": playback is
+// enough, unlike a drop, which uploads straight to the board.
+function canPasteFiles() {
+  return boardIsActive() && (can('addMedia') || can('play'));
 }
 
 function inMainArea(target) {
@@ -2334,25 +2349,46 @@ function inMainArea(target) {
   return Boolean(main && target instanceof Node && main.contains(target));
 }
 
+// Where this drop lands, if anything takes it. The dialog comes first: its
+// backdrop is outside the main area, so a drop on it used to be refused and
+// nothing happened.
+function dropDestination(target) {
+  return dropTarget({ dialogOpen: addDialogOpen(), onBoard: canDropFiles() && inMainArea(target) });
+}
+
 function ensureDropVeil() {
   if (!dropVeil) {
     dropVeil = h(
       'div',
       { class: 'drop-veil', hidden: true, 'aria-hidden': 'true' },
-      h('div', { class: 'drop-veil-inner' }, icon('plus'), h('p', null, 'Dépose un fichier ou un lien pour l’ajouter au board')),
+      h('div', { class: 'drop-veil-inner' }, icon('plus'), h('p', null, DROP_VEIL_TEXT.board)),
     );
     document.body.append(dropVeil);
   }
   return dropVeil;
 }
 
-function showDropVeil() {
-  if (!dropDismissed) {
-    ensureDropVeil().hidden = false;
+// The veil is the same element for both destinations: over the dialog it takes
+// `is-modal` (the whole window, above the dialog's backdrop) and the sentence
+// of what it fills. `dropLanding` remembers it for the dragleave below.
+let dropLanding = null;
+
+function showDropVeil(destination) {
+  if (dropDismissed) {
+    return;
   }
+  const veil = ensureDropVeil();
+  veil.classList.toggle('is-modal', destination === 'dialog');
+  veil.querySelector('p').textContent = DROP_VEIL_TEXT[destination];
+  // The fade behind the dialog takes the veil's dim; the veil itself is only
+  // its frame and sentence over it.
+  highlightAddDialog(destination === 'dialog');
+  dropLanding = destination;
+  veil.hidden = false;
 }
 
 function hideDropVeil() {
+  highlightAddDialog(false);
   if (dropVeil) {
     dropVeil.hidden = true;
   }
@@ -2360,6 +2396,7 @@ function hideDropVeil() {
 
 function resetDropVeil() {
   dropDismissed = false;
+  dropLanding = null;
   hideDropVeil();
 }
 
@@ -2369,9 +2406,10 @@ document.addEventListener('dragover', (event) => {
     return;
   }
   event.preventDefault();
-  if (canDropFiles() && inMainArea(event.target)) {
+  const destination = dropDestination(event.target);
+  if (destination) {
     event.dataTransfer.dropEffect = 'copy';
-    showDropVeil();
+    showDropVeil(destination);
   }
 });
 
@@ -2380,19 +2418,24 @@ document.addEventListener('dragenter', (event) => {
     return;
   }
   event.preventDefault();
-  if (canDropFiles() && inMainArea(event.target)) {
-    showDropVeil();
+  const destination = dropDestination(event.target);
+  if (destination) {
+    showDropVeil(destination);
   }
 });
 
-// Only a real exit hides the veil: dragleave fired when moving between the
-// board's children has a relatedTarget still inside the main area.
+// Only a real exit hides the veil: moving between the children of the surface
+// the veil covers keeps a relatedTarget inside it. Over the dialog the surface
+// is the whole window, so only a drag that leaves the window exits it.
 document.addEventListener('dragleave', (event) => {
   if (!transfersFiles(event)) {
     return;
   }
   const related = event.relatedTarget;
-  if (!(related instanceof Node) || !inMainArea(related)) {
+  const inside = dropLanding === 'dialog'
+    ? related instanceof Node
+    : related instanceof Node && inMainArea(related);
+  if (!inside) {
     resetDropVeil();
   }
 });
@@ -2402,12 +2445,18 @@ document.addEventListener('drop', (event) => {
     return;
   }
   event.preventDefault();
-  const files = droppedFiles(event);
-  const accepted = canDropFiles() && inMainArea(event.target);
+  const destination = dropDestination(event.target);
   resetDropVeil();
-  if (!accepted) {
+  if (!destination) {
     return;
   }
+  // The dialog fills itself from the transfer: files are added to the ones
+  // already chosen there, a link fills the link field.
+  if (destination === 'dialog') {
+    dropOnAddDialog(event.dataTransfer);
+    return;
+  }
+  const files = droppedFiles(event);
   if (files.length === 0) {
     const transfer = event.dataTransfer;
     const text = transfer.getData('text/uri-list') || transfer.getData('text/plain');
@@ -2420,6 +2469,31 @@ document.addEventListener('drop', (event) => {
   for (const file of files) {
     startFileUpload({ guildId, file, title: '', message: '' });
   }
+});
+
+// --- pasting media on the board ---
+
+// A media copied in the Windows file explorer (or an image copied from a page)
+// arrives as a file: Ctrl+V opens the add-media dialog with it, like a link
+// dropped on the board opens it with the link. Text keeps its native paste
+// meaning, and a field or another dialog keeps its own paste.
+document.addEventListener('paste', (event) => {
+  if (event.defaultPrevented || isEditable(event.target)) {
+    return;
+  }
+  const dialogRoot = document.getElementById('dialog-root');
+  if (dialogRoot && dialogRoot.firstElementChild) {
+    return;
+  }
+  if (!canPasteFiles()) {
+    return;
+  }
+  const files = pastedMediaFiles(event.clipboardData);
+  if (files.length === 0) {
+    return;
+  }
+  event.preventDefault();
+  openAddDialog({ files });
 });
 
 document.addEventListener('dragend', resetDropVeil);

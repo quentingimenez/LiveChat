@@ -16,7 +16,7 @@ use super::tests::{
     board_item, create_linked_standalone, guild, guild_invite, guild_member, media_asset,
     overlay_client, playback_job, FakeLeaveResult, FakeLeaver, Harness,
 };
-use crate::http::overlay::media_board::{complete_board_item, ItemTitle};
+use crate::http::overlay::media_board::{complete_board_item, replace_board_item_media, ItemTitle};
 use crate::http::overlay::ActorInfo;
 
 const GUILD: &str = "123456789012345678";
@@ -673,6 +673,135 @@ async fn an_item_already_on_the_board_pins_its_asset_again() {
         "the asset is pinned again instead of staying on the cache TTL: {}",
         stored.expires_at
     );
+}
+
+#[tokio::test]
+async fn media_board_concurrent_additions_never_exceed_the_guild_quota() {
+    // Two ingestions at the same instant used to check the quota outside the
+    // insertion transaction: both saw 0 used and both inserted, overshooting
+    // `board_quota_mb`. The check now shares the insertion transaction.
+    let harness = Harness::new().await;
+    let db = harness.db();
+    let guild_id = guild_id();
+    db.guilds().upsert(&guild(GUILD)).await.unwrap();
+    db.guilds()
+        .set_board_quota_mb(&guild_id, Some(3))
+        .await
+        .unwrap();
+    let now = harness.state().clock.now();
+    let actor = ActorInfo::operator(harness.state(), &guild_id);
+    let authed = actor.to_authed(now);
+
+    let first = media_asset(2 * 1024 * 1024, &harness.path("race-a.png"));
+    let second = media_asset(2 * 1024 * 1024, &harness.path("race-b.png"));
+    db.media_assets().insert(&first).await.unwrap();
+    db.media_assets().insert(&second).await.unwrap();
+
+    let (first_result, second_result) = tokio::join!(
+        complete_board_item(
+            harness.state(),
+            &authed,
+            db,
+            first,
+            ItemTitle::Requested(None),
+            None,
+            now,
+        ),
+        complete_board_item(
+            harness.state(),
+            &authed,
+            db,
+            second,
+            ItemTitle::Requested(None),
+            None,
+            now,
+        ),
+    );
+
+    let successes = usize::from(first_result.is_ok()) + usize::from(second_result.is_ok());
+    assert_eq!(successes, 1, "{first_result:?} / {second_result:?}");
+    let failure = first_result
+        .err()
+        .or_else(|| second_result.err())
+        .expect("one of the two ingestions is refused");
+    assert_eq!(failure.code, "media_ingestion_failed");
+    assert!(
+        failure
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("3 Mo")),
+        "{failure:?}"
+    );
+
+    let items = db.media_board().list_by_guild(&guild_id).await.unwrap();
+    assert_eq!(items.len(), 1);
+    let board_bytes: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(a.size_bytes), 0) \
+           FROM media_board_items b \
+           JOIN media_assets a ON a.id = b.media_asset_id \
+          WHERE b.guild_id = ?",
+    )
+    .bind(guild_id.as_str())
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert!(
+        board_bytes <= 3 * 1024 * 1024,
+        "the board holds {board_bytes} bytes for a 3 MiB quota"
+    );
+}
+
+#[tokio::test]
+async fn media_board_replace_media_is_refused_when_it_exceeds_the_guild_quota() {
+    // Replacing checks `used - previous + new`: outside the transaction, two
+    // concurrent replacements each freed the same previous asset and both
+    // passed. A single too-large replacement must already be refused, and a
+    // fitting one must still be accepted on the size difference.
+    let harness = Harness::new().await;
+    let db = harness.db();
+    let guild_id = guild_id();
+    db.guilds().upsert(&guild(GUILD)).await.unwrap();
+    db.guilds()
+        .set_board_quota_mb(&guild_id, Some(2))
+        .await
+        .unwrap();
+    let now = harness.state().clock.now();
+    let actor = ActorInfo::operator(harness.state(), &guild_id);
+    let authed = actor.to_authed(now);
+
+    let original = media_asset(2 * 1024 * 1024, &harness.path("original.png"));
+    db.media_assets().insert(&original).await.unwrap();
+    let item = board_item(&guild_id, original.id);
+    db.media_board().create(&item).await.unwrap();
+
+    let bigger = media_asset(3 * 1024 * 1024, &harness.path("bigger.png"));
+    db.media_assets().insert(&bigger).await.unwrap();
+    let failure = replace_board_item_media(harness.state(), &authed, db, item.id, bigger, now)
+        .await
+        .expect_err("the replacement would exceed the guild quota");
+    assert_eq!(failure.code, "media_ingestion_failed");
+    assert!(
+        failure
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("2 Mo")),
+        "{failure:?}"
+    );
+    let stored = db.media_board().get(item.id).await.unwrap().unwrap();
+    assert_eq!(
+        stored.media_asset_id, original.id,
+        "the refused replacement leaves the item untouched"
+    );
+
+    let smaller = media_asset(1024 * 1024, &harness.path("smaller.png"));
+    let smaller_id = smaller.id;
+    db.media_assets().insert(&smaller).await.unwrap();
+    let completed = replace_board_item_media(harness.state(), &authed, db, item.id, smaller, now)
+        .await
+        .expect("the smaller replacement fits the quota");
+    assert!(!completed.created);
+    assert!(completed.replaced);
+    assert_eq!(completed.item.media_asset_id, smaller_id);
 }
 
 // ---------------------------------------------------------------------------

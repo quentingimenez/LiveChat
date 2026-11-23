@@ -19,7 +19,7 @@ import {
 import { activeGuild, can, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import { openDialog } from '../core/ui.js';
-import { defaultAction, showsPlayFields } from '../core/add-media-rules.js';
+import { defaultAction, initialSource, showsPlayFields } from '../core/add-media-rules.js';
 import { droppedMedia } from '../core/media-drop.js';
 import { openFileImageEditor } from './editor/index.js';
 import { startFileUpload, startLinkUpload } from './uploads.js';
@@ -57,12 +57,14 @@ export function highlightAddDialog(active) {
   }
 }
 
-// `options.url` prefills the link (a link dropped on the board).
+// `options.url` prefills the link (a link dropped on the board); `options.files`
+// prefills the file list (media pasted from the clipboard).
 export function openAddDialog(options) {
   const prefill = options && typeof options.url === 'string' ? options.url : '';
+  const prefillFiles = options && Array.isArray(options.files) ? options.files : [];
   openDialog((close) => {
     let mode = 'link';
-    let chosenFiles = [];
+    let chosenFiles = prefillFiles.slice();
     // Two actions share the form: add the media to the board, or play it once.
     // They do not carry the same options (a caption and a display time only
     // exist for a play once), so the action is chosen before filling the form:
@@ -345,7 +347,6 @@ export function openAddDialog(options) {
       ),
     );
 
-    setMode('link');
     // A drop fills the dialog where it is: files join the chosen ones, a link
     // fills the link field. The dialog covers the window while it is open, so
     // the drop lands anywhere on it.
@@ -367,8 +368,21 @@ export function openAddDialog(options) {
         linkUrl.focus();
       },
     };
-    // The link is the first thing to type; once prefilled, the title is next.
-    setTimeout(() => (prefill ? linkTitle : linkUrl).focus(), 0);
+    // Files pasted from the clipboard open the dialog on their list; a dropped
+    // link still opens on the link. The link is the first thing to type; once
+    // prefilled, the title is next. Several files have no title to fill: the
+    // submit button is the next step.
+    setMode(initialSource(chosenFiles));
+    renderFileList();
+    setTimeout(() => {
+      if (chosenFiles.length > 1) {
+        submit.focus();
+      } else if (chosenFiles.length === 1) {
+        fileTitle.focus();
+      } else {
+        (prefill ? linkTitle : linkUrl).focus();
+      }
+    }, 0);
     return [h('h2', null, 'Ajouter un média'), form];
   }, { width: 'wide', onClose: () => { dropSurface = null; } });
 }

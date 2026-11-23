@@ -39,6 +39,7 @@ import { h, icon, registerIcons } from '../core/dom.js';
 import { formatBoardUsage, formatDuration, formatBytes, INVALID_DURATION_MESSAGE, MAX_DISPLAY_DURATION_SEC, parseDisplayDuration } from '../core/format.js';
 import { cardRatio, cardStyle } from '../core/masonry.js';
 import { DROP_VEIL_TEXT, dropTarget } from '../core/media-drop.js';
+import { pastedMediaFiles } from '../core/media-files.js';
 import { badgeForItem } from '../core/queue-badges.js';
 import {
   cardClickAction,
@@ -2329,8 +2330,18 @@ function droppedFiles(event) {
   return event.dataTransfer && event.dataTransfer.files ? Array.from(event.dataTransfer.files) : [];
 }
 
+function boardIsActive() {
+  return Boolean(state.activeGuildId) && state.page === 'guild' && state.tab === 'board';
+}
+
 function canDropFiles() {
-  return Boolean(state.activeGuildId) && state.page === 'guild' && state.tab === 'board' && can('addMedia');
+  return boardIsActive() && can('addMedia');
+}
+
+// A paste opens the dialog, which also offers "Jouer une fois": playback is
+// enough, unlike a drop, which uploads straight to the board.
+function canPasteFiles() {
+  return boardIsActive() && (can('addMedia') || can('play'));
 }
 
 function inMainArea(target) {
@@ -2458,6 +2469,31 @@ document.addEventListener('drop', (event) => {
   for (const file of files) {
     startFileUpload({ guildId, file, title: '', message: '' });
   }
+});
+
+// --- pasting media on the board ---
+
+// A media copied in the Windows file explorer (or an image copied from a page)
+// arrives as a file: Ctrl+V opens the add-media dialog with it, like a link
+// dropped on the board opens it with the link. Text keeps its native paste
+// meaning, and a field or another dialog keeps its own paste.
+document.addEventListener('paste', (event) => {
+  if (event.defaultPrevented || isEditable(event.target)) {
+    return;
+  }
+  const dialogRoot = document.getElementById('dialog-root');
+  if (dialogRoot && dialogRoot.firstElementChild) {
+    return;
+  }
+  if (!canPasteFiles()) {
+    return;
+  }
+  const files = pastedMediaFiles(event.clipboardData);
+  if (files.length === 0) {
+    return;
+  }
+  event.preventDefault();
+  openAddDialog({ files });
 });
 
 document.addEventListener('dragend', resetDropVeil);

@@ -10,6 +10,12 @@ export function defaultAction(canAdd, canPlay) {
   return canPlay ? 'play' : 'add';
 }
 
+// A link dropped on the board starts on the link source; files pasted from the
+// clipboard start on the file source with their list already filled.
+export function initialSource(files) {
+  return files && files.length > 0 ? 'file' : 'link';
+}
+
 export function showsPlayFields(action, canPlay) {
   return Boolean(canPlay) && action === 'play';
 }

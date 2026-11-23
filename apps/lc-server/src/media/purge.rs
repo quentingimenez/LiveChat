@@ -183,10 +183,12 @@ fn remove_reference_if_last(
 }
 
 /// Supprime les lignes d'un statut terminal dont `last_accessed_at` est antérieur
-/// à `stale_before`, en excluant le board épinglé et les jobs actifs.
+/// à `stale_before`, en excluant le board épinglé, la pochette et les jobs actifs.
 ///
 /// La sélection et la suppression vivent dans `lc-db` : le worker ne connaît
-/// plus le SQL des exclusions, testé par plan dans le repository.
+/// plus le SQL des exclusions, testé par plan dans le repository. Le DELETE
+/// rejoue les exclusions board/pochette/job actif : un asset épinglé après la
+/// sélection n'est pas supprimé (`affected == false`).
 async fn purge_stale_status(
     db: &Db,
     root: &Path,
@@ -240,8 +242,9 @@ async fn purge_expired_ready(
         // et la suppression du fichier (AUD-V2-S-004).
         let _source_lock = lock_source_hash(&candidate.source_hash).await;
 
-        // Course possible avec une ingestion qui vient de réarmer la ligne :
-        // le DELETE conditionnel ne supprime que l'état expiré observé.
+        // Course possible avec une ingestion qui vient de réarmer la ligne ou
+        // un item de board qui vient de l'épingler : le DELETE conditionnel ne
+        // supprime que l'état expiré et non référencé observé.
         let affected = db
             .media_assets()
             .delete_expired_ready_candidate(&candidate.id, now)

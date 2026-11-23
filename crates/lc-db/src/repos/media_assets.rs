@@ -12,8 +12,8 @@ use crate::error::DbResult;
 const TABLE: &str = "media_assets";
 
 /// `purge_expired` : supprime les assets expirés que rien ne référence
-/// (média ou artwork d'un item de board, pochette d'une vidéo du board, job
-/// actif).
+/// (média ou artwork d'un item de board, pochette d'un audio/média du board,
+/// job actif).
 ///
 /// Constante pour que le test de plan (`tests` en fin de module) exécute
 /// exactement la requête du repository. Les index de 0022 évitent le scan de
@@ -41,17 +41,25 @@ const PURGE_EXPIRED_SQL: &str = "\
        ) \
      RETURNING *";
 
-/// Exclusions communes aux candidats de purge runtime.
+/// Exclusions communes à la sélection des candidats et aux suppressions.
 ///
-/// Une seule source pour les trois `NOT EXISTS` : le worker `lc-server` ne
-/// connaît plus le SQL de sélection. L'index `media_asset_id` du board vient de
-/// la migration 0005 ; ceux de 0022 couvrent `artwork_asset_id` du board et
-/// `cover_asset_id`. Ensemble, ils gardent le plan sur des `SEARCH` — un
-/// `NOT IN` non corrélé forçait un scan d'index de `media_board_items`.
-macro_rules! purge_candidates_sql {
-    ($filter:literal) => {
+/// Les sélections de candidats et les suppressions ciblées partagent ces trois
+/// `NOT EXISTS` ; `purge_expired` porte la même condition (avec `RETURNING *`)
+/// dans sa propre constante, couverte par un test dédié. Un asset épinglé au
+/// board, utilisé comme pochette ou référencé par un job actif **entre** la
+/// sélection et le DELETE n'est donc pas supprimé (TOCTOU).
+///
+/// L'index `media_asset_id` du board vient de la migration 0005 ; ceux de 0022
+/// couvrent `artwork_asset_id` du board et `cover_asset_id`. Ensemble, ils
+/// gardent le plan sur des `SEARCH` — un `NOT IN` non corrélé forçait un scan
+/// d'index de `media_board_items`.
+///
+/// `$prefix` porte le verbe et le début du `WHERE`, `$filter` la condition
+/// propre à l'appelant : `concat!` exige des littéraux.
+macro_rules! purge_sql {
+    ($prefix:literal, $filter:literal) => {
         concat!(
-            "SELECT id, source_hash, storage_path FROM media_assets WHERE ",
+            $prefix,
             $filter,
             " \
                AND NOT EXISTS ( \
@@ -60,10 +68,10 @@ macro_rules! purge_candidates_sql {
                       OR media_board_items.artwork_asset_id = media_assets.id \
                ) \
                AND NOT EXISTS ( \
-                   SELECT 1 FROM media_assets a \
+                   SELECT 1 FROM media_assets AS cover_owner \
                      JOIN media_board_items \
-                       ON media_board_items.media_asset_id = a.id \
-                    WHERE a.cover_asset_id = media_assets.id \
+                       ON media_board_items.media_asset_id = cover_owner.id \
+                    WHERE cover_owner.cover_asset_id = media_assets.id \
                ) \
                AND NOT EXISTS ( \
                    SELECT 1 FROM playback_jobs \
@@ -76,22 +84,28 @@ macro_rules! purge_candidates_sql {
 
 /// Candidats de purge d'un statut terminal (`FAILED`/`PROCESSING`), périmés
 /// selon `last_accessed_at`.
-const PURGE_STALE_STATUS_CANDIDATES_SQL: &str =
-    purge_candidates_sql!("status = ? AND last_accessed_at <= ?");
+const PURGE_STALE_STATUS_CANDIDATES_SQL: &str = purge_sql!(
+    "SELECT id, source_hash, storage_path FROM media_assets WHERE ",
+    "status = ? AND last_accessed_at <= ?"
+);
 
 /// Candidats `READY` expirés (`expires_at <= ?`).
-const PURGE_EXPIRED_READY_CANDIDATES_SQL: &str =
-    purge_candidates_sql!("status = 'READY' AND expires_at <= ?");
+const PURGE_EXPIRED_READY_CANDIDATES_SQL: &str = purge_sql!(
+    "SELECT id, source_hash, storage_path FROM media_assets WHERE ",
+    "status = 'READY' AND expires_at <= ?"
+);
 
-/// Supprime une ligne candidate par identifiant.
-const PURGE_DELETE_CANDIDATE_SQL: &str = "DELETE FROM media_assets WHERE id = ?";
+/// Supprime une ligne candidate par identifiant, seulement si elle n'a pas été
+/// épinglée (board, pochette, job actif) entre la sélection et la suppression.
+const PURGE_DELETE_CANDIDATE_SQL: &str = purge_sql!("DELETE FROM media_assets WHERE ", "id = ?");
 
-/// Supprime une ligne candidate `READY` si elle est encore expirée : une
-/// ingestion concurrente peut avoir réarmé `expires_at` entre la sélection et
-/// la suppression.
-const PURGE_DELETE_EXPIRED_READY_SQL: &str = "\
-    DELETE FROM media_assets \
-     WHERE id = ? AND status = 'READY' AND expires_at <= ?";
+/// Supprime une ligne candidate `READY` si elle est encore expirée et toujours
+/// non épinglée : une ingestion concurrente peut avoir réarmé `expires_at`, et
+/// un item de board peut avoir été créé, entre la sélection et la suppression.
+const PURGE_DELETE_EXPIRED_READY_SQL: &str = purge_sql!(
+    "DELETE FROM media_assets WHERE ",
+    "id = ? AND status = 'READY' AND expires_at <= ?"
+);
 
 /// Chemins persistés non vides, utilisés pour compter les références de
 /// fichiers de la purge runtime.
@@ -377,7 +391,9 @@ impl MediaAssetsRepository {
     /// Supprime une ligne candidate par identifiant brut, tel que lu en base.
     ///
     /// Retourne `false` si la ligne a déjà disparu (course avec une autre
-    /// passe ou une ingestion).
+    /// passe ou une ingestion) ou si elle a été épinglée entre la sélection et
+    /// la suppression : les exclusions board/pochette/job actif sont rejouées
+    /// dans le DELETE.
     pub async fn delete_purge_candidate(&self, id: &str) -> DbResult<bool> {
         let result = sqlx::query(PURGE_DELETE_CANDIDATE_SQL)
             .bind(id)
@@ -387,10 +403,11 @@ impl MediaAssetsRepository {
     }
 
     /// Supprime une ligne candidate `READY` seulement si elle est encore
-    /// expirée à `now`.
+    /// expirée à `now` et toujours non épinglée.
     ///
-    /// Retourne `false` si une ingestion concurrente a réarmé `expires_at` ou
-    /// supprimé la ligne : le fichier ne doit alors pas être touché.
+    /// Retourne `false` si une ingestion concurrente a réarmé `expires_at`, si
+    /// un item de board/pochette/job actif l'a épinglée entre-temps, ou si la
+    /// ligne a disparu : le fichier ne doit alors pas être touché.
     pub async fn delete_expired_ready_candidate(
         &self,
         id: &str,
@@ -523,7 +540,7 @@ mod tests {
 
     /// Suit la régression qui a motivé le helper : un plan peut nommer l'alias
     /// (`SCAN a`, alias de `media_assets`) au lieu de la table, et doit être
-    /// rejeté quand même ; l'ancien garde-fou ne testait que `SCAN b`.
+    /// rejeté quand même ; l'ancien garde-fou ne testait que l'alias `b`.
     #[test]
     #[should_panic(expected = "scanne `a`")]
     fn le_garde_fou_rejette_un_scan_par_alias() {
@@ -571,7 +588,7 @@ mod tests {
 
     /// Rejette toute lecture séquentielle non explicitement autorisée.
     ///
-    /// SQLite affiche tantôt le nom de la table, tantôt son alias (`SCAN b`) :
+    /// SQLite affiche tantôt le nom de la table, tantôt son alias (`SCAN a`) :
     /// l'autorisation porte donc sur la cible telle qu'affichée, et un alias
     /// inconnu est rejeté. Les seules exceptions admises sont `playback_jobs`
     /// (action de FK `ON DELETE SET NULL` des suppressions) et l'énumération
@@ -668,9 +685,9 @@ mod tests {
         );
     }
 
-    /// La suppression d'un candidat passe par la clé primaire ; les actions de
-    /// FK (`cover_asset_id`, `artwork_asset_id`, board média) restent des
-    /// `SEARCH`, y compris pour l'action `ON DELETE SET NULL`.
+    /// La suppression d'un candidat passe par la clé primaire ; les exclusions
+    /// rejouées (board, pochette, job actif) et les actions de FK
+    /// (`cover_asset_id`, `artwork_asset_id`, board média) restent des `SEARCH`.
     #[tokio::test]
     async fn suppression_d_un_candidat_ne_scanne_pas_les_tables_de_references() {
         let db = memory_db().await;
@@ -687,19 +704,25 @@ mod tests {
         assert!(
             lines
                 .iter()
+                .any(|line| line.contains("idx_media_board_items_media_asset")),
+            "l'exclusion/FK board doit passer par idx_media_board_items_media_asset : {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
                 .any(|line| line.contains("idx_media_board_items_artwork_asset")),
-            "l'action FK artwork doit passer par idx_media_board_items_artwork_asset : {lines:?}"
+            "l'exclusion/FK artwork doit passer par idx_media_board_items_artwork_asset : {lines:?}"
         );
         assert!(
             lines
                 .iter()
                 .any(|line| line.contains("idx_media_assets_cover_asset")),
-            "l'action FK cover doit passer par idx_media_assets_cover_asset : {lines:?}"
+            "l'exclusion/FK cover doit passer par idx_media_assets_cover_asset : {lines:?}"
         );
     }
 
     /// La suppression conditionnelle des `READY` expirés suit le même plan que
-    /// la suppression simple : clé primaire + index de FK.
+    /// la suppression simple : clé primaire, exclusions rejouées et index de FK.
     #[tokio::test]
     async fn suppression_d_un_ready_expire_ne_scanne_pas_les_tables_de_references() {
         let db = memory_db().await;
@@ -725,8 +748,20 @@ mod tests {
         assert!(
             lines
                 .iter()
+                .any(|line| line.contains("idx_media_board_items_media_asset")),
+            "l'exclusion/FK board doit passer par idx_media_board_items_media_asset : {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
                 .any(|line| line.contains("idx_media_board_items_artwork_asset")),
-            "l'action FK artwork doit passer par idx_media_board_items_artwork_asset : {lines:?}"
+            "l'exclusion/FK artwork doit passer par idx_media_board_items_artwork_asset : {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("idx_media_assets_cover_asset")),
+            "l'exclusion/FK cover doit passer par idx_media_assets_cover_asset : {lines:?}"
         );
     }
 

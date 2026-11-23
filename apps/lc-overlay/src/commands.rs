@@ -922,6 +922,7 @@ pub fn overlay_report_playback_stop(
     let job_id = parsed.job_id.filter(|job_id| !job_id.trim().is_empty());
     let showable = crate::windows::overlay_should_show(&state.config_snapshot());
     let decision = state.report_stop(job_id.as_deref(), showable);
+    ws::publish_screen_owner(&app);
     let Some(ended_for) = decision.ended_for else {
         tracing::debug!(
             job_id = ?job_id,
@@ -1159,6 +1160,7 @@ pub(crate) fn stop_local_playback(app: &AppHandle<Wry>) -> bool {
     let state = app.state::<AppState>();
     let showable = crate::windows::overlay_should_show(&state.config_snapshot());
     let decision = state.report_stop(None, showable);
+    ws::publish_screen_owner(app);
     let Some(ended_for) = decision.ended_for else {
         tracing::debug!("arrêt local ignoré : aucun média à l'écran");
         return false;

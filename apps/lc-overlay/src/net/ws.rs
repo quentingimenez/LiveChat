@@ -354,6 +354,23 @@ pub fn refresh_tray_from_any_thread(app: &AppHandle<Wry>) {
     }
 }
 
+/// Republie `overlay://guilds` quand l'écran a changé de guilde.
+///
+/// Le board ne connaît la pastille « à l'antenne » du rail que par le champ
+/// `playing` de ce payload : une transition d'écran qui ne le republie pas
+/// laisse la pastille figée jusqu'à la prochaine sélection de guilde.
+pub(crate) fn publish_screen_owner(app: &AppHandle<Wry>) {
+    if !app.state::<AppState>().take_screen_owner_change() {
+        return;
+    }
+    if let Err(error) = events::emit_guilds_changed(app) {
+        tracing::debug!(
+            %error,
+            "échec d'émission de l'état des guildes après changement d'écran"
+        );
+    }
+}
+
 async fn supervise(
     app: AppHandle<Wry>,
     guild_id: String,
@@ -562,6 +579,7 @@ fn release_guild_playback(app: &AppHandle<Wry>, guild_id: &str) {
     let state = app.state::<AppState>();
     let showable = crate::windows::overlay_should_show(&state.config_snapshot());
     let decision = state.release_guild(guild_id, showable);
+    publish_screen_owner(app);
     if decision.display_cleared {
         events::stop_overlay_now(app, "disconnected");
     }
@@ -574,7 +592,9 @@ fn release_guild_playback(app: &AppHandle<Wry>, guild_id: &str) {
 pub fn advance_local_queue(app: &AppHandle<Wry>) {
     let state = app.state::<AppState>();
     let showable = crate::windows::overlay_should_show(&state.config_snapshot());
-    if let Some(next) = state.advance_screen(showable) {
+    let next = state.advance_screen(showable);
+    publish_screen_owner(app);
+    if let Some(next) = next {
         show_queued_play(app, next);
     }
 }
@@ -1356,6 +1376,7 @@ impl SessionEffects for AppEffects {
         // qu'elle faisait attendre. Il purge toujours sa propre file.
         let showable = windows::overlay_should_show(&state.config_snapshot());
         let decision = state.server_stop(&self.guild_id, payload.job_id.as_deref(), showable);
+        publish_screen_owner(app);
         if !decision.display_cleared {
             tracing::info!(
                 guild_id = %self.guild_id,
@@ -1576,7 +1597,9 @@ impl AppEffects {
             }
         };
         let showable = windows::overlay_should_show(&config);
-        match state.present_play(&self.guild_id, &payload.job_id, value, showable) {
+        let presentation = state.present_play(&self.guild_id, &payload.job_id, value, showable);
+        publish_screen_owner(app);
+        match presentation {
             PlayPresentation::Queued => {
                 tracing::info!(
                     job_id = %payload.job_id,

@@ -487,6 +487,7 @@ Un seul média occupe l'écran, toutes guildes confondues. L'arbitrage est centr
 - `on_welcome` avec `current_job` : `adopt_current_job` ajoute le temps déjà écoulé à `start_offset_sec`, puis `present_play` applique le même arbitrage ; un `play` réémis pour le job déjà à l'écran ne double pas la file.
 - `release_guild_playback` : à la fin d'une session, retire les `play` en attente de la guilde et, si elle occupait l'écran, libère celui-ci, émet un arrêt `disconnected` et affiche le suivant.
 - `advance_local_queue` : si rien n'est à l'écran et que l'overlay peut s'afficher, dépile le prochain `play` et l'affiche.
+- Pastille « à l'antenne » du rail : le board ne connaît le champ `playing` (de `guilds_list` comme d'`overlay://guilds`) que par ces publications. Chacune des cinq transitions d'écran lève donc `AppState::take_screen_owner_change` quand le propriétaire change, et `ws::publish_screen_owner` republie `overlay://guilds` aux six points où l'écran peut changer de main (`present_play`, `on_stop`, `release_guild_playback`, `advance_local_queue`, `overlay_report_playback_stop`, `stop_local_playback`). Sans cette republication, la pastille ne suivait le play et le stop qu'au changement de guilde suivant.
 
 La file locale est FIFO. Aucune commande ne la réordonne. Côté serveur, un `playback.ended` est appliqué à la guilde propriétaire du job (`handle_playback_ended`) et une erreur signalée par une autre guilde que celle du job est ignorée (`handle_error`).
 

@@ -133,6 +133,16 @@ Le type legacy `meme.trigger` n'est **plus accepté** : la désérialisation éc
 comme pour tout type inconnu (close `1002`). Les clients envoient uniquement
 `media.trigger`.
 
+**Coalescence (B-02).** Une session ne garde qu'une exécution de `media.trigger` en vol. Une
+répétition du **même `itemId`** dans une fenêtre glissante de 1 s est idempotente : le serveur
+ré-acquitte le job déjà créé (`ack {ok:true}` avec le même `jobId`, `outcome` et `position`)
+**sans** nouvelle requête SQL ni nouveau job, et la fenêtre glisse à chaque répétition. Un
+`itemId` différent passe immédiatement (un vrai changement de média n'est jamais perdu) ; le même
+`itemId` repasse une fois la fenêtre écoulée. Limites : la garde est **par connexion**, pas
+globale à la guilde — deux sockets (ou deux overlays) de la même guilde ont chacun leur fenêtre
+et peuvent créer chacun un job ; un job arrêté ou terminé pendant la fenêtre peut être ré-acquitté
+tel quel.
+
 Codes d'ack (`error.code`) : `read_only`, `item_not_found`, `media_not_ready`, `invalid_payload`,
 `rate_limited`, `internal_error`.
 

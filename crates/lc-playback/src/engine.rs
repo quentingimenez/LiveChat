@@ -252,6 +252,21 @@ fn next_engine_backoff(current: StdDuration) -> StdDuration {
     current.saturating_mul(2).min(ENGINE_MAX_BACKOFF)
 }
 
+/// Pause partagée d'une guilde, conservée par le moteur.
+///
+/// Le job reste `PLAYING` : les overlays figent leur média et le watchdog est
+/// suspendu tant que la pause est active. Le temps restant est figé au moment
+/// de la demande pour que la reprise puisse repositionner le verrou de guilde.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PauseState {
+    /// Job suspendu, si la guilde lisait un média.
+    pub job_id: Option<PlaybackJobId>,
+    /// Temps restant du job au moment de la pause, en millisecondes.
+    pub remaining_ms: u64,
+    /// Instant de la demande de pause, pour exclure la pause du temps restant.
+    pub paused_at: UtcDateTime,
+}
+
 /// État interne sérialisé par le verrou du moteur.
 #[derive(Debug, Default)]
 struct Inner {
@@ -261,6 +276,8 @@ struct Inner {
     active_guilds: BTreeSet<GuildId>,
     /// Dernier checkpoint `playback.state` persisté par job (débit 1/s).
     state_persisted_at: BTreeMap<PlaybackJobId, UtcDateTime>,
+    /// Pauses partagées par guilde (job figé, pas encore terminé).
+    paused: BTreeMap<GuildId, PauseState>,
 }
 
 /// Bilan interne d'un passage sur une guilde.
@@ -524,6 +541,14 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
         {
             let mut inner = self.inner.lock().await;
             inner.state_persisted_at.remove(&event.job_id);
+            if inner
+                .paused
+                .get(&guild_id)
+                .and_then(|pause| pause.job_id.as_ref())
+                == Some(&event.job_id)
+            {
+                inner.paused.remove(&guild_id);
+            }
         }
         let run = self.process_guild(&guild_id).await?;
         Ok(ReleaseOutcome {
@@ -583,12 +608,119 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
                 });
             }
         }
-        self.inner.lock().await.state_persisted_at.remove(&job_id);
+        {
+            let mut inner = self.inner.lock().await;
+            inner.state_persisted_at.remove(&job_id);
+            if inner
+                .paused
+                .get(guild_id)
+                .and_then(|pause| pause.job_id.as_ref())
+                == Some(&job_id)
+            {
+                inner.paused.remove(guild_id);
+            }
+        }
         let run = self.process_guild(guild_id).await?;
         Ok(ReleaseOutcome {
             released: true,
             next_started: run.started,
         })
+    }
+
+    /// Met la lecture de la guilde en pause partagée.
+    ///
+    /// Le job `PLAYING` reste actif : [`Self::run_guild`] cesse de le surveiller
+    /// et ne dispatche rien tant que la pause est posée. Sans job en cours, la
+    /// demande est sans effet (`None`) ; une pause déjà posée est renvoyée telle
+    /// quelle (idempotence).
+    pub async fn pause(
+        &self,
+        guild_id: &GuildId,
+        remaining_ms: Option<u64>,
+    ) -> PlaybackResult<Option<PauseState>> {
+        let now = self.clock.now();
+        let mut playing = self.store.playing_jobs(guild_id).await?;
+        // Même sélection que `current_job` : le job le plus récent.
+        let Some(job) = playing.pop() else {
+            return Ok(None);
+        };
+        let mut inner = self.inner.lock().await;
+        if let Some(existing) = inner.paused.get(guild_id) {
+            return Ok(Some(existing.clone()));
+        }
+        let estimated = self.estimated_remaining_ms(&job, now).max(0);
+        let estimated_ms = u64::try_from(estimated).unwrap_or_default();
+        let pause = PauseState {
+            job_id: Some(job.id),
+            remaining_ms: remaining_ms.unwrap_or(estimated_ms).min(estimated_ms),
+            paused_at: now,
+        };
+        inner.paused.insert(guild_id.clone(), pause.clone());
+        Ok(Some(pause))
+    }
+
+    /// Reprend la lecture de la guilde après une pause partagée.
+    ///
+    /// Retourne la pause retirée (utile pour le payload diffusé). Le verrou de
+    /// guilde est repoussé du temps restant figé et le job est considéré comme
+    /// récemment confirmé, afin que le watchdog ne le libère pas pendant que
+    /// les overlays redémarrent leur média.
+    ///
+    /// `started_at` est aussi décalé du temps passé en pause : le temps de
+    /// lecture actif doit rester identique pour un overlay qui rejoint après la
+    /// reprise (`current_job`) comme pour le watchdog.
+    pub async fn resume(&self, guild_id: &GuildId) -> PlaybackResult<Option<PauseState>> {
+        let paused = self.inner.lock().await.paused.remove(guild_id);
+        let Some(pause) = paused else {
+            self.process_guild(guild_id).await?;
+            return Ok(None);
+        };
+        let now = self.clock.now();
+        let remaining_ms = pause.remaining_ms.min(MAX_PLAYBACK_REMAINING_MS);
+        let busy_for_ms = i64::try_from(remaining_ms)
+            .unwrap_or(i64::MAX)
+            .saturating_add(self.config.lock_padding_ms);
+        if let Err(error) = self
+            .db
+            .guilds()
+            .set_busy_until(
+                guild_id,
+                Some(now + TimeDuration::milliseconds(busy_for_ms)),
+            )
+            .await
+        {
+            self.inner
+                .lock()
+                .await
+                .paused
+                .insert(guild_id.clone(), pause);
+            return Err(error.into());
+        }
+        if let Some(job_id) = pause.job_id {
+            let paused_for_ms = datetime_to_ms(now).saturating_sub(datetime_to_ms(pause.paused_at));
+            if paused_for_ms > 0 {
+                if let Err(error) = self.store.shift_started_at(job_id, paused_for_ms).await {
+                    self.inner
+                        .lock()
+                        .await
+                        .paused
+                        .insert(guild_id.clone(), pause);
+                    return Err(error.into());
+                }
+            }
+            self.inner
+                .lock()
+                .await
+                .state_persisted_at
+                .insert(job_id, now);
+        }
+        self.process_guild(guild_id).await?;
+        Ok(Some(pause))
+    }
+
+    /// Pause active d'une guilde, pour le `welcome` et les messages de session.
+    pub async fn paused_state(&self, guild_id: &GuildId) -> Option<PauseState> {
+        self.inner.lock().await.paused.get(guild_id).cloned()
     }
 
     /// Traite une demande d'arrêt utilisateur (`stop.request`, source
@@ -688,6 +820,13 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
             let mut inner = self.inner.lock().await;
             for released_id in &released {
                 inner.state_persisted_at.remove(released_id);
+            }
+            let clears_pause = inner
+                .paused
+                .get(guild_id)
+                .is_some_and(|pause| job_id.is_none() || pause.job_id.as_ref() == job_id.as_ref());
+            if clears_pause {
+                inner.paused.remove(guild_id);
             }
         }
         Ok(released)
@@ -864,6 +1003,23 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
         for _ in 0..self.config.max_guild_iterations {
             let now = self.clock.now();
             let playing = self.store.playing_jobs(guild_id).await?;
+            // Une pause partagée fige le job PLAYING : ni watchdog, ni
+            // dispatch du job suivant tant que la reprise n'est pas demandée.
+            if let Some(pause) = inner.paused.get(guild_id) {
+                let still_playing = pause
+                    .job_id
+                    .as_ref()
+                    .is_some_and(|job_id| playing.iter().any(|job| &job.id == job_id));
+                if still_playing {
+                    return Ok(GuildRun {
+                        started,
+                        active: true,
+                    });
+                }
+                // Le job pausé a disparu (arrêt ou fin concurrente) : la pause
+                // est obsolète, on reprend l'ordonnancement normal.
+                inner.paused.remove(guild_id);
+            }
             if let Some(active) = playing.first().cloned() {
                 self.handle_multi_playing(inner, guild_id, &playing, now)
                     .await?;

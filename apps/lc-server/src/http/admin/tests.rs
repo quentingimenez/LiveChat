@@ -46,7 +46,7 @@ use crate::discord::guild_leave::{DiscordGuildLeaver, LeaveError, LeaveOutcome};
 use crate::http::security::{CONTENT_SECURITY_POLICY, PERMISSIONS_POLICY};
 use crate::shutdown::Shutdown;
 
-pub(super) const TOKEN: &str = "jeton-admin-de-test";
+pub(super) const TOKEN: &str = "jeton-admin-de-test-0123456789abcdef";
 /// `Host` envoyé par les requêtes du harnais (origine du panneau en test).
 pub(super) const TEST_HOST: &str = "127.0.0.1:40000";
 /// Origine correspondant à `TEST_HOST`, utilisée pour les mutations (CSRF).

@@ -24,7 +24,7 @@ use lc_server::{router, AppState, Config, Shutdown};
 /// 503 `admin_ui_disabled` before any session check runs (see
 /// `auth_503_when_no_method_is_configured` in the admin unit tests), so the
 /// anonymous-401 contract needs a configured method to be reachable.
-const ADMIN_UI_TOKEN: &str = "contract-test-admin-token";
+const ADMIN_UI_TOKEN: &str = "contract-test-admin-token-0123456789abcdef";
 
 /// Exact, sorted key set of the `GET /health` JSON body.
 const HEALTH_KEYS: [&str; 8] = [

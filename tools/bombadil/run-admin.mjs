@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { here, runBombadil, waitForHttp } from './lib.mjs';
 
 const port = process.env.LC_BOMBADIL_ADMIN_PORT ?? '39417';
-const secret = 'bombadil-admin-secret';
+const secret = 'bombadil-admin-secret-0123456789abcdef';
 const base = `http://127.0.0.1:${port}`;
 
 const server = spawn(process.execPath, [join(here, '..', '..', 'apps', 'lc-admin-web', 'e2e', 'server.mjs')], {

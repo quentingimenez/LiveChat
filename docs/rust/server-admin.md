@@ -222,16 +222,22 @@ l'IP du proxy (ex. la passerelle bridge Docker), pas celle de l'administrateur.
 `ADMIN_UI_LOCAL_ONLY=true` répond alors `403 admin_local_only` même depuis la
 machine administrée. Trois options :
 
-1. **recommandé** : garder le serveur lié à `127.0.0.1` (compose par défaut) et
-   accéder à `/admin/` en local ; le token Bearer reste la seule barrière,
-2. **proxy local de confiance** : déclarer l'adresse exacte du proxy dans
-   `TRUSTED_PROXIES` (liste d'IP séparées par des virgules, pas de CIDR) et
-   activer `ADMIN_TRUST_FORWARDED_FOR=true`. Le contrôle `ADMIN_UI_LOCAL_ONLY`
-   lit alors l'IP annoncée par le proxy au lieu du socket brut ; un client dont
-   le pair direct n'est **pas** dans la liste reste jugé sur sa propre adresse,
-   même s'il forge un `X-Real-IP: 127.0.0.1` (fail-closed, aucune confiance par
-   défaut). Le proxy doit **écraser** `X-Real-IP` / `X-Forwarded-For`, pas
-   recopier l'en-tête reçu du client,
+1. **recommandé** : garder le serveur lié à `127.0.0.1` (compose par défaut),
+   accéder à `/admin/` en local et **ne pas** déclarer `127.0.0.1` dans
+   `TRUSTED_PROXIES` (sinon une requête directe sans chaîne échoue fermé) ; le
+   token Bearer reste la seule barrière,
+2. **proxy local de confiance** : déclarer l'adresse exacte de chaque proxy de
+   la chaîne dans `TRUSTED_PROXIES` (liste d'IP séparées par des virgules, pas
+   de CIDR) et activer `ADMIN_TRUST_FORWARDED_FOR=true`. `X-Forwarded-For` est
+   alors parcouru de droite à gauche : les sauts qui sont eux-mêmes des proxys
+   déclarés sont sautés, le premier saut non déclaré est le client. Un client
+   dont le pair direct n'est **pas** dans la liste reste jugé sur sa propre
+   adresse, même s'il forge un `X-Real-IP: 127.0.0.1` (fail-closed, aucune
+   confiance par défaut). Le proxy doit **écraser** `X-Real-IP` et **ajouter**
+   (pas recopier) `X-Forwarded-For`. Avec `ADMIN_UI_LOCAL_ONLY=true`, si
+   l'adresse cliente résolue est elle-même une adresse de proxy déclarée
+   (typiquement `127.0.0.1`), l'accès admin échoue fermé (voir le cas ambigu
+   plus bas) : pour administrer à travers un proxy, utiliser l'option 3,
 3. si un reverse proxy est indispensable sans proxy déclaré :
    `ADMIN_UI_LOCAL_ONLY=false` **et** exposer l'admin uniquement derrière une
    authentification proxy/TLS, sur un bind réseau restreint
@@ -241,10 +247,45 @@ machine administrée. Trois options :
 même liste. Pour l'admin, l'option dédiée `ADMIN_TRUST_FORWARDED_FOR` (défaut
 `false`, AUD-COR-14) est **implémentée** : elle ne prend effet que si le pair
 direct figure dans `TRUSTED_PROXIES` ; sans liste, les en-têtes sont ignorés et
-un avertissement est journalisé au démarrage. Les deux options lisent
-`X-Real-IP`, puis le **dernier** saut de `X-Forwarded-For` (`http/proxy.rs`) :
-le premier saut est écrit par le client, un `X-Forwarded-For: 127.0.0.1` forgé
-ne passe donc pas pour local.
+un avertissement est journalisé au démarrage. Les deux options résolvent la
+**chaîne** `X-Forwarded-For` (`http/proxy.rs`) : `X-Real-IP` ne sert que de repli
+quand l'en-tête de chaîne est absent ou ne contient aucun saut non vide (proxy
+unique qui l'écrase). Le premier saut étant écrit par le client, un
+`X-Forwarded-For: 127.0.0.1` forgé ne passe donc pas pour local.
+
+**Précédence (migration)** : `X-Forwarded-For` prime désormais sur
+`X-Real-IP`. Un proxy qui ne pose que `X-Real-IP` en laissant passer un
+`X-Forwarded-For` fourni par le client est **non conforme et dangereux** : le
+client choisit alors son IP d'audit et de rate-limit, car la chaîne est lue en
+premier. Un proxy doit garantir que le saut le plus à droite de
+`X-Forwarded-For` est l'adresse de son pair : soit il ajoute son pair à la
+chaîne reçue (les sauts forgés à gauche sont alors ignorés), soit il remplace ou
+supprime la chaîne reçue ; `X-Real-IP` seul ne suffit plus.
+
+Chaîne absente ou sans saut non vide : repli `X-Real-IP` (validé strictement).
+Saut invalide ou non UTF-8 rencontré **avant** le client (donc à sa droite), ou
+chaîne entièrement composée de proxys déclarés : échec fermé, aucune IP client
+n'est retenue. Un saut invalide situé à gauche du client n'est jamais lu.
+
+Deux proxys chaînés (par exemple NPM puis un second reverse proxy) doivent tous
+deux figurer dans `TRUSTED_PROXIES` ; sinon le saut le plus à droite est pris
+pour le client et tous les clients derrière lui partagent le même bucket de
+rate-limit. L'IP journalisée dans l'audit suit la même résolution : l'adresse du
+proxy déclaré n'est jamais enregistrée comme client, une chaîne non résoluble
+laisse `clientIp` à `NULL` (voir `docs/rust/admin-console-api.md`).
+
+Cas ambigu et configuration du loopback : avec `127.0.0.1` déclaré dans
+`TRUSTED_PROXIES` et `ADMIN_TRUST_FORWARDED_FOR=true`, toute requête dont le
+pair direct est ce proxy est jugée sur la chaîne. Une requête **directe** depuis
+`127.0.0.1` (sans chaîne) échoue donc fermé, et un client résolu en `127.0.0.1`
+aussi (ce saut est lui-même un proxy déclaré) : l'accès direct ne contourne pas
+ce cas. Ne pas laisser non plus un proxy loopback **non déclaré** devant
+l'admin : son pair `127.0.0.1` serait pris pour un client local, donc tous ses
+clients passeraient. Configurations recommandées : soit aucun proxy devant
+l'admin, accès direct, et `127.0.0.1` absent de `TRUSTED_PROXIES` ; soit proxy
+déclaré avec `ADMIN_UI_LOCAL_ONLY=false`, authentification proxy/TLS et bind
+restreint (`docs/rust/packaging.md` §10.4). `ADMIN_TRUST_FORWARDED_FOR=false` ne
+change rien au cas d'un proxy loopback non déclaré.
 
 ## 5. Assets statiques
 
@@ -759,7 +800,7 @@ lock actuel : les dépendances Tauri 2 exigent ≥ 1.90 (`tauri-utils 2.10.2`,
 | Symptôme | Cause probable | Action |
 |---|---|---|
 | 503 `admin_ui_disabled` | `ADMIN_UI_TOKEN` vide | définir la variable puis redémarrer |
-| 403 `admin_local_only` | accès depuis une IP non loopback (ou via proxy : le serveur voit l'IP du proxy) | accéder en local ; derrière un proxy, voir §4 « IP loopback » : déclarer le proxy dans `TRUSTED_PROXIES` + `ADMIN_TRUST_FORWARDED_FOR=true`, ou `ADMIN_UI_LOCAL_ONLY=false` + exposition restreinte |
+| 403 `admin_local_only` | accès depuis une IP non loopback ; ou pair direct déclaré (`127.0.0.1`) sans chaîne exploitable ; ou client résolu loopback mais lui-même déclaré proxy (échec fermé) | accéder en direct au serveur **sans** proxy devant l'admin et sans déclarer `127.0.0.1` ; ou proxy déclaré + `ADMIN_UI_LOCAL_ONLY=false` + authentification proxy/TLS (§4 « IP loopback ») |
 | 403 `invalid_origin` | mutation sans `Origin`/`Referer`, origine `null` ou étrangère (AUD-COR-14) | envoyer `Origin: <hôte du panneau>` ou `Referer` de même origine ; ne pas appeler l'API depuis un autre site |
 | 401 `unauthorized` | token absent/faux | vérifier l'en-tête `Authorization: Bearer` (le `?token=` n'est plus accepté, AUD-COR-05) |
 | 429 `request_error` | plus de 100 requêtes / 15 min / IP sur `/admin*` et la consommation des codes d'appairage (budget « auth », AUD-COR-10) | patienter `Retry-After`, ou augmenter la fenêtre si usage légitime |
@@ -779,7 +820,9 @@ lock actuel : les dépendances Tauri 2 exigent ≥ 1.90 (`tauri-utils 2.10.2`,
   uniquement quand le navigateur voit du HTTPS (`X-Forwarded-Proto: https`).
 - `TRUST_PROXY_HEADERS` ne concerne que le rate-limit ; l'admin lit le socket
   brut, sauf `ADMIN_TRUST_FORWARDED_FOR=true` **et** pair direct déclaré dans
-  `TRUSTED_PROXIES` (proxy de confiance, voir §4).
+  `TRUSTED_PROXIES` : la chaîne `X-Forwarded-For` est alors parcourue de droite
+  à gauche en sautant les proxys déclarés (§4). L'audit journalise cette même
+  IP résolue, jamais celle du proxy.
 - Le token d'ingestion n'est affiché qu'une seule fois (réponse de création),
   seul son hash est en base.
 - La purge est **destructive par défaut** (point E14) et exige

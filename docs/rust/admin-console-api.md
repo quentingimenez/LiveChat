@@ -44,7 +44,11 @@ La connexion Discord est disponible si les trois dernières sont renseignées.
 Si aucune méthode n'est disponible : toutes les routes `/admin/api/**` et
 `/admin/auth/*` (sauf `GET /admin/auth/session`) répondent
 `503 admin_ui_disabled`. Les contrôles `ADMIN_UI_LOCAL_ONLY` et
-`ADMIN_TRUST_FORWARDED_FOR` restent appliqués à toutes ces routes.
+`ADMIN_TRUST_FORWARDED_FOR` restent appliqués à toutes ces routes : avec le
+second actif et un pair déclaré dans `TRUSTED_PROXIES`, la chaîne
+`X-Forwarded-For` est parcourue de droite à gauche en sautant les proxys
+déclarés (`X-Real-IP` en repli quand la chaîne est absente ou sans saut non
+vide).
 
 | Route | Effet |
 |---|---|
@@ -88,6 +92,12 @@ CSP : `style-src 'self'` (plus de `'unsafe-inline'`).
 | `GET /admin/api/audit/export` | même contenu en CSV (`text/csv`, pièce jointe) |
 | `GET /admin/api/rights` | § 5 |
 | `GET /admin/api/runtime-settings` | existant, étendu § 7 |
+
+`clientIp` est l'adresse cliente résolue : le pair direct quand il n'est pas
+déclaré, sinon le premier saut non-proxy de `X-Forwarded-For` (droite → gauche,
+proxys déclarés sautés ; `X-Real-IP` en repli). `null` signifie que le pair
+direct est un proxy déclaré mais que la chaîne ne résout aucun client : l'IP du
+proxy n'est jamais journalisée comme adresse cliente.
 
 ## 4. Mutations
 

@@ -139,9 +139,12 @@ pub async fn current_session(
 ///
 /// `peer_ip` is the direct connection address (`ConnectInfo`). When
 /// `ADMIN_TRUST_FORWARDED_FOR` is enabled **and** that peer is listed in
-/// `TRUSTED_PROXIES`, the proxy headers decide instead; any other peer is
-/// judged on its own address, never on headers it can forge. A missing peer
-/// address is treated as a remote client.
+/// `TRUSTED_PROXIES`, the `X-Forwarded-For` chain decides instead: declared
+/// proxy hops are skipped from right to left and the first other hop is the
+/// client. Any other peer is judged on its own address, never on headers it can
+/// forge. A chain with no client hop (missing header, invalid entry met before
+/// the client, or only declared proxies) fails closed, as does a missing peer
+/// address.
 #[allow(clippy::result_large_err)]
 pub fn check_local_only(
     state: &AppState,
@@ -154,7 +157,8 @@ pub fn check_local_only(
     {
         // The declared proxy speaks for the client. If it forwards no usable
         // address, fail closed instead of judging the proxy itself.
-        crate::http::proxy::proxied_client_ip(headers).is_some_and(is_loopback)
+        crate::http::proxy::forwarded_client_ip(peer_ip, headers, &state.config.trusted_proxies)
+            .is_some_and(is_loopback)
     } else {
         peer_ip.is_some_and(is_loopback)
     };

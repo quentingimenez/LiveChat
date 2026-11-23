@@ -1446,12 +1446,8 @@ async fn trusted_proxy_ignores_a_forged_first_forwarded_hop() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(json_or_null(&bytes)["error"], "admin_local_only");
 
-    // `X-Real-IP` set by the proxy decides when present.
+    // Without a forwarded chain, `X-Real-IP` set by the proxy decides.
     let mut local = harness.request_from(Method::GET, "/admin/api/overview", proxy);
-    local.headers_mut().insert(
-        "x-forwarded-for",
-        header::HeaderValue::from_static("203.0.113.9, 127.0.0.1"),
-    );
     local
         .headers_mut()
         .insert("x-real-ip", header::HeaderValue::from_static("127.0.0.1"));
@@ -1460,12 +1456,38 @@ async fn trusted_proxy_ignores_a_forged_first_forwarded_hop() {
 }
 
 #[tokio::test]
+async fn a_chain_of_declared_proxies_resolves_the_client_on_the_left() {
+    // server <- 10.0.0.9 (declared, direct peer) <- 127.0.0.1 (declared outer
+    // proxy) <- 198.51.100.7. Reading only the last hop made the outer loopback
+    // proxy look like a local client.
+    let harness = Harness::with_pairs(&[
+        ("ADMIN_TRUST_FORWARDED_FOR", "true"),
+        ("TRUSTED_PROXIES", "10.0.0.9, 127.0.0.1"),
+    ])
+    .await;
+
+    let mut request = harness.request_from(
+        Method::GET,
+        "/admin/api/overview",
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9)),
+    );
+    request.headers_mut().insert(
+        "x-forwarded-for",
+        header::HeaderValue::from_static("198.51.100.7, 127.0.0.1"),
+    );
+
+    let (status, _, bytes) = harness.send(request).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(json_or_null(&bytes)["error"], "admin_local_only");
+}
+
+#[tokio::test]
 async fn forged_real_ip_from_an_undeclared_proxy_is_not_local() {
     let harness = Harness::with_pairs(&[("ADMIN_TRUST_FORWARDED_FOR", "true")]).await;
     let remote = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
 
-    // `X-Real-IP` alone, then the last `X-Forwarded-For` hop: neither header
-    // is readable from a peer that is not declared in `TRUSTED_PROXIES`.
+    // `X-Real-IP` alone, then a forwarded chain: neither header is readable
+    // from a peer that is not declared in `TRUSTED_PROXIES`.
     for (name, value) in [
         ("x-real-ip", "127.0.0.1"),
         ("x-forwarded-for", "203.0.113.9, 127.0.0.1"),
@@ -1518,6 +1540,21 @@ async fn declared_proxy_without_a_forwarded_address_fails_closed() {
             status,
             StatusCode::FORBIDDEN,
             "{path} depuis le proxy déclaré avec un en-tête inexploitable"
+        );
+        assert_eq!(json_or_null(&bytes)["error"], "admin_local_only");
+
+        // A single hop equal to a declared proxy is not a client: the chain is
+        // fully trusted, so the check fails closed (documented ambiguity).
+        let mut request = harness.request_from(Method::GET, path, proxy);
+        request.headers_mut().insert(
+            "x-forwarded-for",
+            header::HeaderValue::from_static("127.0.0.1"),
+        );
+        let (status, _, bytes) = harness.send(request).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{path} avec une chaîne entièrement composée de proxys déclarés"
         );
         assert_eq!(json_or_null(&bytes)["error"], "admin_local_only");
     }

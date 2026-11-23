@@ -253,9 +253,9 @@ pub struct Config {
     /// `ADMIN_UI_LOCAL_ONLY` (défaut `true`).
     pub admin_ui_local_only: bool,
     /// `ADMIN_TRUST_FORWARDED_FOR` (défaut `false`) : lit l'IP annoncée par le
-    /// proxy (`X-Real-IP`, puis dernier `X-Forwarded-For`) pour le contrôle
-    /// local-only admin, uniquement si le pair direct figure dans
-    /// `TRUSTED_PROXIES`.
+    /// proxy (`X-Forwarded-For`, chaîne parcourue de droite à gauche en sautant
+    /// les proxys déclarés ; `X-Real-IP` en repli) pour le contrôle local-only
+    /// admin, uniquement si le pair direct figure dans `TRUSTED_PROXIES`.
     pub admin_trust_forwarded_for: bool,
     /// `ADMIN_DISCORD_USER_IDS` : identifiants Discord autorisés à ouvrir une
     /// session admin (liste séparée par des virgules, défaut vide).
@@ -349,13 +349,16 @@ pub struct Config {
     pub additional_cors_origins: Vec<Url>,
     /// `MIN_OVERLAY_VERSION` (défaut `3.0.0`).
     pub min_overlay_version: String,
-    /// `TRUST_PROXY_HEADERS` (défaut `false`) : le rate limit lit `X-Real-IP`,
-    /// puis le dernier `X-Forwarded-For` (voir `http::proxy`), uniquement si le
-    /// pair direct figure dans `TRUSTED_PROXIES`.
+    /// `TRUST_PROXY_HEADERS` (défaut `false`) : le rate limit résout le client
+    /// dans `X-Forwarded-For` (chaîne parcourue de droite à gauche en sautant
+    /// les proxys déclarés, `X-Real-IP` en repli ; voir `http::proxy`),
+    /// uniquement si le pair direct figure dans `TRUSTED_PROXIES`.
     pub trust_proxy_headers: bool,
     /// `TRUSTED_PROXIES` : adresses des reverse proxies de confiance, séparées
     /// par des virgules (défaut vide = aucun en-tête proxy n'est cru). Gate
-    /// `TRUST_PROXY_HEADERS` et `ADMIN_TRUST_FORWARDED_FOR`.
+    /// `TRUST_PROXY_HEADERS`, `ADMIN_TRUST_FORWARDED_FOR` et la résolution de
+    /// l'IP journalisée. Déclarer tous les proxys d'une chaîne : un saut
+    /// déclaré est sauté vers la gauche, un saut non déclaré est le client.
     pub trusted_proxies: Vec<IpAddr>,
     /// `WS_HEARTBEAT_TIMEOUT_SEC` (défaut `45`, utilisé en Phase 4).
     pub ws_heartbeat_timeout_sec: u64,

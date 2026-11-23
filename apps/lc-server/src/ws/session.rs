@@ -39,8 +39,8 @@ use lc_protocol::{
     PLAYBACK_STATE_MIN_INTERVAL_MS, PROTOCOL_VERSION,
 };
 use time::UtcDateTime;
-use tokio::sync::mpsc;
-use tokio::time::{interval, sleep, MissedTickBehavior};
+use tokio::sync::{mpsc, watch};
+use tokio::time::{interval, sleep, timeout, MissedTickBehavior};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -75,6 +75,42 @@ const POLICY_VIOLATION: u16 = 1008;
 
 /// Raison de fermeture quand l'origine WebSocket n'est pas autorisée.
 const ORIGIN_NOT_ALLOWED_REASON: &str = "origin_not_allowed";
+
+/// Délai maximal accordé à une écriture sur le socket (B-01).
+///
+/// Un client qui cesse de lire peut bloquer `SinkExt::send` indéfiniment :
+/// la session ne lirait plus ses messages, ne verrait plus la demande de
+/// fermeture du hub et ne pourrait plus s'arrêter. Passé ce délai, la
+/// connexion est fermée `4408 slow_client` et la tâche se termine.
+const WRITER_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Résultat d'une écriture socket bornée par [`WRITER_SEND_TIMEOUT`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundedSend {
+    /// Trame écrite.
+    Sent,
+    /// Le socket a refusé l'écriture (fermé ou erreur de transport).
+    Failed,
+    /// Le délai est écoulé : le client ne draine plus.
+    TimedOut,
+}
+
+/// Écrit une trame en bornant l'attente du socket.
+///
+/// `limit` est un paramètre pour que le test du timeout n'attende pas les 5 s
+/// de production. La session mappe `TimedOut` sur une fermeture
+/// `4408 slow_client` ; `Failed` garde le comportement existant (sortie sans
+/// close explicite).
+async fn send_bounded<S>(sink: &mut S, message: Message, limit: Duration) -> BoundedSend
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    match timeout(limit, sink.send(message)).await {
+        Ok(Ok(())) => BoundedSend::Sent,
+        Ok(Err(_)) => BoundedSend::Failed,
+        Err(_) => BoundedSend::TimedOut,
+    }
+}
 
 /// Variable d'environnement d'allowlist d'origines WebSocket (séparées par `,`).
 const WS_ALLOWED_ORIGINS_ENV: &str = "WS_ALLOWED_ORIGINS";
@@ -276,8 +312,8 @@ async fn handle_socket(
         session_mode,
     };
 
-    let (sender, mut receiver) = mpsc::unbounded_channel::<OutFrame>();
-    let connection_id = match hub.register(
+    let (sender, mut receiver) = mpsc::channel::<OutFrame>(hub::OUTBOUND_QUEUE_CAPACITY);
+    let (connection_id, mut close_rx) = match hub.register(
         guild_id.clone(),
         client.id,
         client_id_str,
@@ -289,7 +325,7 @@ async fn handle_socket(
         client.default_author_image.clone(),
         sender,
     ) {
-        Ok(connection_id) => connection_id,
+        Ok(registered) => registered,
         Err(error) => {
             debug!(
                 ?error,
@@ -302,6 +338,10 @@ async fn handle_socket(
     };
 
     if !send_welcome(&mut sink, &hub, &engine, &db, &context).await {
+        // Le client n'a pas lu son `welcome`/`settings` : même repli borné que
+        // dans la boucle, en conservant une éventuelle fermeture explicite.
+        let info = timeout_close_info(&mut close_rx, &mut receiver);
+        close_sink(&mut sink, &info).await;
         hub.unregister(connection_id);
         return;
     }
@@ -322,6 +362,7 @@ async fn handle_socket(
     ping_interval.tick().await;
 
     let mut close_info: Option<CloseInfo> = None;
+    let mut writer_timed_out = false;
     loop {
         tokio::select! {
             maybe_message = stream.next() => {
@@ -412,8 +453,23 @@ async fn handle_socket(
             maybe_frame = receiver.recv() => {
                 match maybe_frame {
                     Some(OutFrame::Text(text)) => {
-                        if sink.send(Message::Text(text.into())).await.is_err() {
-                            break;
+                        match send_bounded(
+                            &mut sink,
+                            Message::Text(text.into()),
+                            WRITER_SEND_TIMEOUT,
+                        )
+                        .await
+                        {
+                            BoundedSend::Sent => {}
+                            BoundedSend::Failed => break,
+                            BoundedSend::TimedOut => {
+                                warn!(
+                                    client = %context.client_id_str,
+                                    "écriture WebSocket bloquée : client lent, fermeture de la connexion"
+                                );
+                                writer_timed_out = true;
+                                break;
+                            }
                         }
                     }
                     Some(OutFrame::Close(code, reason)) => {
@@ -423,6 +479,14 @@ async fn handle_socket(
                     None => break,
                 }
             }
+            changed = close_rx.changed() => {
+                if changed.is_ok() {
+                    if let Some(close) = close_rx.borrow_and_update().clone() {
+                        close_info = Some(CloseInfo::new(close.code, close.reason.as_str()));
+                    }
+                }
+                break;
+            }
             _ = ping_interval.tick() => {
                 if liveness.is_expired() {
                     close_info = Some(CloseInfo::new(
@@ -431,8 +495,23 @@ async fn handle_socket(
                     ));
                     break;
                 }
-                if sink.send(Message::Ping(Default::default())).await.is_err() {
-                    break;
+                match send_bounded(
+                    &mut sink,
+                    Message::Ping(Default::default()),
+                    WRITER_SEND_TIMEOUT,
+                )
+                .await
+                {
+                    BoundedSend::Sent => {}
+                    BoundedSend::Failed => break,
+                    BoundedSend::TimedOut => {
+                        warn!(
+                            client = %context.client_id_str,
+                            "ping WebSocket bloqué : client lent, fermeture de la connexion"
+                        );
+                        writer_timed_out = true;
+                        break;
+                    }
                 }
             }
             _ = state.shutdown.subscribe().wait() => {
@@ -443,6 +522,12 @@ async fn handle_socket(
                 break;
             }
         }
+    }
+
+    if writer_timed_out {
+        // Un close explicite peut avoir été demandé pendant que l'écriture
+        // bloquait : il garde son code, le `4408` n'est que le repli.
+        close_info = Some(timeout_close_info(&mut close_rx, &mut receiver));
     }
 
     if let Some(info) = close_info {
@@ -667,16 +752,69 @@ async fn send_server_message(
             return true;
         }
     };
-    sink.send(Message::Text(text.into())).await.is_ok()
+    match send_bounded(sink, Message::Text(text.into()), WRITER_SEND_TIMEOUT).await {
+        BoundedSend::Sent => true,
+        BoundedSend::Failed | BoundedSend::TimedOut => false,
+    }
 }
 
 /// Envoie une trame de fermeture en ignorant les erreurs d'écriture.
+///
+/// L'écriture est bornée : même une fermeture vers un client qui ne lit plus
+/// ne peut pas retenir la tâche indéfiniment.
 async fn close_sink(sink: &mut SplitSink<WebSocket, Message>, info: &CloseInfo) {
     let frame = CloseFrame {
         code: info.code,
         reason: info.reason.clone().into(),
     };
-    drop(sink.send(Message::Close(Some(frame))).await);
+    let _ = send_bounded(sink, Message::Close(Some(frame)), WRITER_SEND_TIMEOUT).await;
+}
+
+/// Fermeture explicite déjà demandée, prioritaire sur un timeout writer.
+///
+/// Un close explicite (révocation, arrêt admin) publié hors file ou déposé dans
+/// la file garde son code même si l'écriture expire au même moment : le timeout
+/// ne doit pas le remplacer par `4408 slow_client`. Les textes en attente sont
+/// jetés, la connexion se ferme de toute façon.
+fn pending_explicit_close(
+    close_rx: &mut watch::Receiver<Option<hub::OutboundClose>>,
+    receiver: &mut mpsc::Receiver<OutFrame>,
+) -> Option<CloseInfo> {
+    if let Some(info) = explicit_close_from_watch(close_rx) {
+        return Some(info);
+    }
+    while let Ok(frame) = receiver.try_recv() {
+        if let OutFrame::Close(code, reason) = frame {
+            // La file ne reçoit que les closes explicites ; le `4408` lent
+            // passe exclusivement par le canal `watch`.
+            return Some(CloseInfo { code, reason });
+        }
+    }
+    // Une fermeture explicite a pu être publiée pendant le drainage : on relit
+    // le watch avant de retomber sur le repli `4408`.
+    explicit_close_from_watch(close_rx)
+}
+
+/// Lit une fermeture explicite déjà publiée sur le canal `watch`.
+fn explicit_close_from_watch(
+    close_rx: &mut watch::Receiver<Option<hub::OutboundClose>>,
+) -> Option<CloseInfo> {
+    let close = close_rx.borrow_and_update().clone()?;
+    close
+        .explicit
+        .then(|| CloseInfo::new(close.code, close.reason.as_str()))
+}
+
+/// Code de fermeture à utiliser après l'expiration d'une écriture.
+///
+/// Un close explicite en attente (watch ou file) garde son code ; sinon la
+/// connexion est fermée comme client lent (`4408 slow_client`).
+fn timeout_close_info(
+    close_rx: &mut watch::Receiver<Option<hub::OutboundClose>>,
+    receiver: &mut mpsc::Receiver<OutFrame>,
+) -> CloseInfo {
+    pending_explicit_close(close_rx, receiver)
+        .unwrap_or_else(|| CloseInfo::new(hub::SLOW_CLIENT_CLOSE_CODE, hub::SLOW_CLIENT_REASON))
 }
 
 /// Traite un message client authentifié.
@@ -1516,5 +1654,141 @@ mod tests {
             !guard.coalesce(item, accepted + Duration::from_millis(2_151)),
             "une demande après la fenêtre doit repasser"
         );
+    }
+
+    /// Sink qui ne devient jamais prêt : simule un pair qui ne lit plus, sans
+    /// attendre les 5 s de production.
+    struct StalledSink;
+
+    impl futures_util::Sink<Message> for StalledSink {
+        type Error = ();
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Pending
+        }
+
+        fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Pending
+        }
+
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    /// B-01 : l'écriture socket est bornée par un timeout, même si le sink ne
+    /// devient jamais prêt. La session mappe ce résultat sur `4408 slow_client`.
+    #[tokio::test]
+    async fn writer_send_is_bounded_even_when_the_socket_stalls() {
+        let mut sink = StalledSink;
+        let started = Instant::now();
+        let outcome = send_bounded(
+            &mut sink,
+            Message::Text("trame".to_owned().into()),
+            Duration::from_millis(50),
+        )
+        .await;
+        assert_eq!(outcome, BoundedSend::TimedOut);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "le writer doit rendre la main au timeout, pas rester bloqué"
+        );
+    }
+
+    /// B-01 (P2-2) : quand l'écriture expire, un close explicite déjà publié
+    /// conserve son code ; le timeout ne le remplace pas par `4408`.
+    #[allow(clippy::expect_used)]
+    #[tokio::test]
+    async fn writer_timeout_keeps_a_pending_explicit_close() {
+        let mut sink = StalledSink;
+        assert_eq!(
+            send_bounded(
+                &mut sink,
+                Message::Text("trame".to_owned().into()),
+                Duration::from_millis(50),
+            )
+            .await,
+            BoundedSend::TimedOut
+        );
+        let (close_tx, mut close_rx) = watch::channel(Some(hub::OutboundClose {
+            code: close_code::REVOKED,
+            reason: "revoked".to_owned(),
+            explicit: true,
+        }));
+        let (_frame_tx, mut frame_rx) = mpsc::channel(1);
+
+        let info = timeout_close_info(&mut close_rx, &mut frame_rx);
+        assert_eq!(info, CloseInfo::new(close_code::REVOKED, "revoked"));
+        drop(close_tx);
+    }
+
+    /// B-01 (P3-2) : sans close explicite, le call site du timeout retombe sur
+    /// `4408 slow_client`.
+    #[test]
+    fn writer_timeout_falls_back_to_the_slow_client_close() {
+        let (_close_tx, mut close_rx) = watch::channel(Some(hub::OutboundClose {
+            code: hub::SLOW_CLIENT_CLOSE_CODE,
+            reason: hub::SLOW_CLIENT_REASON.to_owned(),
+            explicit: false,
+        }));
+        let (_frame_tx, mut frame_rx) = mpsc::channel(1);
+        assert_eq!(
+            timeout_close_info(&mut close_rx, &mut frame_rx),
+            CloseInfo::new(hub::SLOW_CLIENT_CLOSE_CODE, hub::SLOW_CLIENT_REASON)
+        );
+    }
+
+    /// B-01 (P2-2) : un close explicite déposé dans la file est retrouvé même
+    /// derrière des textes en attente ; les textes sont jetés à la fermeture.
+    #[allow(clippy::expect_used)]
+    #[test]
+    fn pending_explicit_close_scans_the_queue_behind_text_frames() {
+        let (close_tx, mut close_rx) = watch::channel(Some(hub::OutboundClose {
+            code: hub::SLOW_CLIENT_CLOSE_CODE,
+            reason: hub::SLOW_CLIENT_REASON.to_owned(),
+            explicit: false,
+        }));
+        let (frame_tx, mut frame_rx) = mpsc::channel(3);
+        frame_tx
+            .try_send(OutFrame::Text("en attente".to_owned()))
+            .expect("place pour le texte");
+        frame_tx
+            .try_send(OutFrame::Close(close_code::REVOKED, "revoked".to_owned()))
+            .expect("place pour le close");
+
+        let info = pending_explicit_close(&mut close_rx, &mut frame_rx)
+            .expect("le close explicite de la file doit gagner");
+        assert_eq!(info, CloseInfo::new(close_code::REVOKED, "revoked"));
+        assert!(
+            frame_rx.try_recv().is_err(),
+            "le texte en attente devant le close est jeté"
+        );
+        drop(close_tx);
+    }
+
+    /// B-01 (P2-2) : sans close explicite, le timeout retombe bien sur
+    /// `4408 slow_client`.
+    #[test]
+    fn pending_explicit_close_is_none_when_only_the_slow_request_is_pending() {
+        let (_close_tx, mut close_rx) = watch::channel(Some(hub::OutboundClose {
+            code: hub::SLOW_CLIENT_CLOSE_CODE,
+            reason: hub::SLOW_CLIENT_REASON.to_owned(),
+            explicit: false,
+        }));
+        let (_frame_tx, mut frame_rx) = mpsc::channel(1);
+        assert!(pending_explicit_close(&mut close_rx, &mut frame_rx).is_none());
     }
 }

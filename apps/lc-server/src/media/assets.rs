@@ -281,6 +281,31 @@ pub async fn pin(
     asset_id: MediaAssetId,
     now: UtcDateTime,
 ) -> MediaServiceResult<MediaAsset> {
+    let mut connection = db.pool().acquire().await.map_err(lc_db::DbError::from)?;
+    pin_on(&mut connection, asset_id, now).await?;
+    // Release the connection before reading through the pool: a test pool has
+    // one connection, and `get` would otherwise wait for it forever.
+    drop(connection);
+
+    let assets = db.media_assets();
+    assets.get(asset_id).await?.ok_or_else(|| {
+        MediaServiceError::Database(lc_db::DbError::Domain(lc_domain::DomainError::not_found(
+            "media_assets",
+            asset_id.to_string(),
+        )))
+    })
+}
+
+/// Same pin on the connection of an already open transaction.
+///
+/// The caller owns that transaction: pinning on the same connection as the
+/// board write keeps a refused ingestion from pinning its asset, and a pin
+/// failure rolls the write back.
+pub(crate) async fn pin_on(
+    connection: &mut sqlx::SqliteConnection,
+    asset_id: MediaAssetId,
+    now: UtcDateTime,
+) -> lc_db::DbResult<()> {
     let expiry = pinned_expiry(now);
     // The embedded cover (album art) is shown with the audio: pinned with it.
     sqlx::query(
@@ -294,17 +319,10 @@ pub async fn pin(
     .bind(asset_id.to_canonical())
     .bind(asset_id.to_canonical())
     .bind(datetime_to_ms(expiry))
-    .execute(db.pool())
+    .execute(&mut *connection)
     .await
     .map_err(lc_db::DbError::from)?;
-
-    let assets = db.media_assets();
-    assets.get(asset_id).await?.ok_or_else(|| {
-        MediaServiceError::Database(lc_db::DbError::Domain(lc_domain::DomainError::not_found(
-            "media_assets",
-            asset_id.to_string(),
-        )))
-    })
+    Ok(())
 }
 
 /// Repins everything a board shows: its media, their embedded covers and the

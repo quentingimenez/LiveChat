@@ -640,11 +640,11 @@ pub(crate) async fn complete_board_item(
         display_scale_percent: None,
     };
 
-    let mut connection = begin_board_write_transaction(db).await?;
+    let mut transaction = begin_board_write_transaction(db).await?;
     match create_board_item_locked(
         state,
         db,
-        &mut connection,
+        &mut transaction,
         auth.guild_id(),
         &item,
         asset.size_bytes,
@@ -653,11 +653,7 @@ pub(crate) async fn complete_board_item(
     .await
     {
         Ok(LockedCreate::Created) => {
-            commit_board_write_transaction(&mut connection).await?;
-            // Release the write connection before touching the pool again: a
-            // test pool has one connection, and `set_creator_member` would
-            // otherwise wait for it forever.
-            drop(connection);
+            commit_board_write_transaction(transaction).await?;
             // L'auteur sert au droit « modifier ses propres médias ». The item is
             // already visible, so an author-recording failure is logged but does
             // not turn a successful ingestion into a failure.
@@ -681,12 +677,11 @@ pub(crate) async fn complete_board_item(
             })
         }
         Ok(LockedCreate::Existing) => {
-            rollback_board_write_transaction(&mut connection).await;
-            drop(connection);
+            rollback_board_write_transaction(transaction).await;
             repin_existing_board_item(db, auth.guild_id(), &asset, now).await
         }
         Err(failure) => {
-            rollback_board_write_transaction(&mut connection).await;
+            rollback_board_write_transaction(transaction).await;
             Err(failure)
         }
     }
@@ -857,11 +852,11 @@ pub(crate) async fn replace_board_item_media(
         .saturating_mul(3_600);
     let released_expiry = now + time::Duration::seconds(release_seconds);
 
-    let mut connection = begin_board_write_transaction(db).await?;
+    let mut transaction = begin_board_write_transaction(db).await?;
     match replace_board_item_media_locked(
         state,
         db,
-        &mut connection,
+        &mut transaction,
         auth.guild_id(),
         item_id,
         &asset,
@@ -871,7 +866,7 @@ pub(crate) async fn replace_board_item_media(
     .await
     {
         Ok(previous_media_asset_id) => {
-            commit_board_write_transaction(&mut connection).await?;
+            commit_board_write_transaction(transaction).await?;
             Ok(CompletedBoardItem {
                 created: false,
                 replaced: previous_media_asset_id != asset.id,
@@ -882,7 +877,7 @@ pub(crate) async fn replace_board_item_media(
             })
         }
         Err(failure) => {
-            rollback_board_write_transaction(&mut connection).await;
+            rollback_board_write_transaction(transaction).await;
             Err(failure)
         }
     }
@@ -994,39 +989,38 @@ fn replace_failure(message: &str) -> IngestionFailure {
 /// `BEGIN IMMEDIATE` takes the SQLite write lock before the quota is read, so
 /// two concurrent additions or replacements are serialized: the second one
 /// re-reads the committed total and cannot both pass the limit check.
+///
+/// This uses sqlx's tracked [`Transaction`](sqlx::Transaction) rather than raw
+/// SQL: sqlx starts a rollback when the guard is dropped without a commit
+/// (including during a panic), so a failed path cannot leave the connection
+/// holding the SQLite write lock.
 async fn begin_board_write_transaction(
     db: &Db,
-) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, IngestionFailure> {
-    let mut connection = db.pool().acquire().await.map_err(|error| {
-        completion_db_failure("overlay_media_board.begin", &lc_db::DbError::from(error))
-    })?;
-    sqlx::query("BEGIN IMMEDIATE")
-        .execute(&mut *connection)
+) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, IngestionFailure> {
+    db.pool()
+        .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|error| {
             completion_db_failure("overlay_media_board.begin", &lc_db::DbError::from(error))
-        })?;
-    Ok(connection)
+        })
 }
 
-/// Commits the board write transaction, rolling it back when the commit fails.
+/// Commits the board write transaction; sqlx starts a rollback by itself when
+/// the commit fails.
 async fn commit_board_write_transaction(
-    connection: &mut sqlx::SqliteConnection,
+    transaction: sqlx::Transaction<'static, sqlx::Sqlite>,
 ) -> Result<(), IngestionFailure> {
-    if let Err(error) = sqlx::query("COMMIT").execute(&mut *connection).await {
-        drop(sqlx::query("ROLLBACK").execute(&mut *connection).await);
-        return Err(completion_db_failure(
-            "overlay_media_board.commit",
-            &lc_db::DbError::from(error),
-        ));
-    }
-    Ok(())
+    transaction.commit().await.map_err(|error| {
+        completion_db_failure("overlay_media_board.commit", &lc_db::DbError::from(error))
+    })
 }
 
-/// Rolls back the board write transaction, ignoring the rollback outcome: the
-/// caller is already on the failure path.
-async fn rollback_board_write_transaction(connection: &mut sqlx::SqliteConnection) {
-    drop(sqlx::query("ROLLBACK").execute(&mut *connection).await);
+/// Rolls back the board write transaction; the caller is already on a failure
+/// path, so a rollback error is only logged.
+async fn rollback_board_write_transaction(transaction: sqlx::Transaction<'static, sqlx::Sqlite>) {
+    if let Err(error) = transaction.rollback().await {
+        tracing::warn!(error = %error, "rollback de la transaction board impossible");
+    }
 }
 
 /// Storage limit of a guild's board, in bytes, read on the transaction's

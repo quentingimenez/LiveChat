@@ -1,16 +1,19 @@
 //! Integration tests for the guild detail and transposed admin routes.
 //!
 //! They reuse the harness of [`super::tests`] (full `crate::app::router`, one
-//! in-memory database and one session per harness) and assert the contract of
+//! isolated database and one session per harness) and assert the contract of
 //! `docs/rust/admin-console-api.md` sections 3 and 4.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::sync::Arc;
 
 use axum::http::{header, HeaderValue, Method, StatusCode};
 use lc_domain::{
     GuildId, GuildMemberId, GuildRole, JobStatus, MediaBoardItemId, OverlaySessionMode,
 };
 use serde_json::{json, Value};
+use tokio::sync::Barrier;
 
 use super::tests::{
     board_item, create_linked_standalone, guild, guild_invite, guild_member, media_asset,
@@ -677,10 +680,11 @@ async fn an_item_already_on_the_board_pins_its_asset_again() {
 
 #[tokio::test]
 async fn media_board_concurrent_additions_never_exceed_the_guild_quota() {
-    // Two ingestions at the same instant used to check the quota outside the
-    // insertion transaction: both saw 0 used and both inserted, overshooting
-    // `board_quota_mb`. The check now shares the insertion transaction.
-    let harness = Harness::new().await;
+    // File-backed database with two real connections: the in-memory harness is
+    // forced to one connection, so it could only prove pool serialization. The
+    // barrier releases both writers together; without `BEGIN IMMEDIATE` they
+    // both read the initial usage and both insert, overshooting the quota.
+    let harness = Harness::with_file_db(2).await;
     let db = harness.db();
     let guild_id = guild_id();
     db.guilds().upsert(&guild(GUILD)).await.unwrap();
@@ -697,25 +701,36 @@ async fn media_board_concurrent_additions_never_exceed_the_guild_quota() {
     db.media_assets().insert(&first).await.unwrap();
     db.media_assets().insert(&second).await.unwrap();
 
+    let barrier = Arc::new(Barrier::new(2));
+    let first_barrier = Arc::clone(&barrier);
+    let second_barrier = Arc::clone(&barrier);
     let (first_result, second_result) = tokio::join!(
-        complete_board_item(
-            harness.state(),
-            &authed,
-            db,
-            first,
-            ItemTitle::Requested(None),
-            None,
-            now,
-        ),
-        complete_board_item(
-            harness.state(),
-            &authed,
-            db,
-            second,
-            ItemTitle::Requested(None),
-            None,
-            now,
-        ),
+        async {
+            first_barrier.wait().await;
+            complete_board_item(
+                harness.state(),
+                &authed,
+                db,
+                first,
+                ItemTitle::Requested(None),
+                None,
+                now,
+            )
+            .await
+        },
+        async {
+            second_barrier.wait().await;
+            complete_board_item(
+                harness.state(),
+                &authed,
+                db,
+                second,
+                ItemTitle::Requested(None),
+                None,
+                now,
+            )
+            .await
+        },
     );
 
     let successes = usize::from(first_result.is_ok()) + usize::from(second_result.is_ok());
@@ -753,10 +768,137 @@ async fn media_board_concurrent_additions_never_exceed_the_guild_quota() {
 
 #[tokio::test]
 async fn media_board_replace_media_is_refused_when_it_exceeds_the_guild_quota() {
-    // Replacing checks `used - previous + new`: outside the transaction, two
-    // concurrent replacements each freed the same previous asset and both
-    // passed. A single too-large replacement must already be refused, and a
-    // fitting one must still be accepted on the size difference.
+    // Two simultaneous replacements: each alone fits (`used - previous + new`
+    // stays within the 4 MiB quota), but together they would overshoot it. The
+    // file-backed database and the barrier make both transactions really
+    // concurrent; without `BEGIN IMMEDIATE` both free the same bytes and both
+    // commit.
+    let harness = Harness::with_file_db(2).await;
+    let db = harness.db();
+    let guild_id = guild_id();
+    db.guilds().upsert(&guild(GUILD)).await.unwrap();
+    db.guilds()
+        .set_board_quota_mb(&guild_id, Some(4))
+        .await
+        .unwrap();
+    let now = harness.state().clock.now();
+    let actor = ActorInfo::operator(harness.state(), &guild_id);
+    let authed = actor.to_authed(now);
+
+    let original_a = media_asset(2 * 1024 * 1024, &harness.path("original-a.png"));
+    let original_b = media_asset(1024 * 1024, &harness.path("original-b.png"));
+    let original_a_id = original_a.id;
+    let original_b_id = original_b.id;
+    db.media_assets().insert(&original_a).await.unwrap();
+    db.media_assets().insert(&original_b).await.unwrap();
+    let item_a = board_item(&guild_id, original_a.id);
+    let item_b = board_item(&guild_id, original_b.id);
+    db.media_board().create(&item_a).await.unwrap();
+    db.media_board().create(&item_b).await.unwrap();
+
+    let replacement_a = media_asset(3 * 1024 * 1024, &harness.path("replacement-a.png"));
+    let replacement_b = media_asset(2 * 1024 * 1024, &harness.path("replacement-b.png"));
+    let replacement_a_id = replacement_a.id;
+    let replacement_b_id = replacement_b.id;
+    db.media_assets().insert(&replacement_a).await.unwrap();
+    db.media_assets().insert(&replacement_b).await.unwrap();
+
+    let barrier = Arc::new(Barrier::new(2));
+    let first_barrier = Arc::clone(&barrier);
+    let second_barrier = Arc::clone(&barrier);
+    let (first_result, second_result) = tokio::join!(
+        async {
+            first_barrier.wait().await;
+            replace_board_item_media(harness.state(), &authed, db, item_a.id, replacement_a, now)
+                .await
+        },
+        async {
+            second_barrier.wait().await;
+            replace_board_item_media(harness.state(), &authed, db, item_b.id, replacement_b, now)
+                .await
+        },
+    );
+
+    let successes = usize::from(first_result.is_ok()) + usize::from(second_result.is_ok());
+    assert_eq!(successes, 1, "{first_result:?} / {second_result:?}");
+    let failure = first_result
+        .as_ref()
+        .err()
+        .or_else(|| second_result.as_ref().err())
+        .expect("one of the two replacements is refused");
+    assert_eq!(failure.code, "media_ingestion_failed");
+    assert!(
+        failure
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("4 Mo")),
+        "{failure:?}"
+    );
+
+    let stored_a = db.media_board().get(item_a.id).await.unwrap().unwrap();
+    let stored_b = db.media_board().get(item_b.id).await.unwrap().unwrap();
+    match (&first_result, &second_result) {
+        (Ok(_), Err(_)) => {
+            assert_eq!(stored_a.media_asset_id, replacement_a_id);
+            assert_eq!(
+                stored_b.media_asset_id, original_b_id,
+                "the refused replacement leaves its item untouched"
+            );
+        }
+        (Err(_), Ok(_)) => {
+            assert_eq!(
+                stored_a.media_asset_id, original_a_id,
+                "the refused replacement leaves its item untouched"
+            );
+            assert_eq!(stored_b.media_asset_id, replacement_b_id);
+        }
+        _ => panic!("exactly one replacement must succeed: {first_result:?} / {second_result:?}"),
+    }
+    let board_bytes: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(a.size_bytes), 0) \
+           FROM media_board_items b \
+           JOIN media_assets a ON a.id = b.media_asset_id \
+          WHERE b.guild_id = ?",
+    )
+    .bind(guild_id.as_str())
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert!(
+        board_bytes <= 4 * 1024 * 1024,
+        "the board holds {board_bytes} bytes for a 4 MiB quota"
+    );
+
+    // A replacement that fits on the size difference is still accepted.
+    let (updated_item_id, updated_asset_id) = if first_result.is_ok() {
+        (item_a.id, replacement_a_id)
+    } else {
+        (item_b.id, replacement_b_id)
+    };
+    let smaller = media_asset(1024 * 1024, &harness.path("smaller.png"));
+    let smaller_id = smaller.id;
+    db.media_assets().insert(&smaller).await.unwrap();
+    let completed =
+        replace_board_item_media(harness.state(), &authed, db, updated_item_id, smaller, now)
+            .await
+            .expect("the smaller replacement fits the quota");
+    assert!(!completed.created);
+    assert!(completed.replaced);
+    assert_eq!(completed.item.media_asset_id, smaller_id);
+    assert_ne!(updated_asset_id, smaller_id);
+    let stored = db
+        .media_board()
+        .get(updated_item_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.media_asset_id, smaller_id);
+}
+
+#[tokio::test]
+async fn media_board_accepts_an_addition_that_fills_the_quota_exactly() {
+    // Boundary: `used + requested == limit` is accepted, one byte more is
+    // refused with the limit in the message.
     let harness = Harness::new().await;
     let db = harness.db();
     let guild_id = guild_id();
@@ -769,16 +911,53 @@ async fn media_board_replace_media_is_refused_when_it_exceeds_the_guild_quota() 
     let actor = ActorInfo::operator(harness.state(), &guild_id);
     let authed = actor.to_authed(now);
 
-    let original = media_asset(2 * 1024 * 1024, &harness.path("original.png"));
-    db.media_assets().insert(&original).await.unwrap();
-    let item = board_item(&guild_id, original.id);
-    db.media_board().create(&item).await.unwrap();
-
-    let bigger = media_asset(3 * 1024 * 1024, &harness.path("bigger.png"));
-    db.media_assets().insert(&bigger).await.unwrap();
-    let failure = replace_board_item_media(harness.state(), &authed, db, item.id, bigger, now)
+    let existing = media_asset(1024 * 1024, &harness.path("existing.png"));
+    db.media_assets().insert(&existing).await.unwrap();
+    db.media_board()
+        .create(&board_item(&guild_id, existing.id))
         .await
-        .expect_err("the replacement would exceed the guild quota");
+        .unwrap();
+
+    let exact = media_asset(1024 * 1024, &harness.path("exact.png"));
+    db.media_assets().insert(&exact).await.unwrap();
+    let completed = complete_board_item(
+        harness.state(),
+        &authed,
+        db,
+        exact,
+        ItemTitle::Requested(None),
+        None,
+        now,
+    )
+    .await
+    .expect("a fill that reaches the quota exactly is accepted");
+    assert!(completed.created);
+
+    let board_bytes: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(a.size_bytes), 0) \
+           FROM media_board_items b \
+           JOIN media_assets a ON a.id = b.media_asset_id \
+          WHERE b.guild_id = ?",
+    )
+    .bind(guild_id.as_str())
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(board_bytes, 2 * 1024 * 1024);
+
+    let overflow = media_asset(1, &harness.path("one-byte.png"));
+    db.media_assets().insert(&overflow).await.unwrap();
+    let failure = complete_board_item(
+        harness.state(),
+        &authed,
+        db,
+        overflow,
+        ItemTitle::Requested(None),
+        None,
+        now,
+    )
+    .await
+    .expect_err("one byte over the quota is refused");
     assert_eq!(failure.code, "media_ingestion_failed");
     assert!(
         failure
@@ -787,21 +966,6 @@ async fn media_board_replace_media_is_refused_when_it_exceeds_the_guild_quota() 
             .is_some_and(|message| message.contains("2 Mo")),
         "{failure:?}"
     );
-    let stored = db.media_board().get(item.id).await.unwrap().unwrap();
-    assert_eq!(
-        stored.media_asset_id, original.id,
-        "the refused replacement leaves the item untouched"
-    );
-
-    let smaller = media_asset(1024 * 1024, &harness.path("smaller.png"));
-    let smaller_id = smaller.id;
-    db.media_assets().insert(&smaller).await.unwrap();
-    let completed = replace_board_item_media(harness.state(), &authed, db, item.id, smaller, now)
-        .await
-        .expect("the smaller replacement fits the quota");
-    assert!(!completed.created);
-    assert!(completed.replaced);
-    assert_eq!(completed.item.media_asset_id, smaller_id);
 }
 
 // ---------------------------------------------------------------------------

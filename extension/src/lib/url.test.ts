@@ -15,6 +15,55 @@ describe('url helpers', () => {
     expect(normalizeApiUrl('https://livechat.exemple.com/')).toBe('https://livechat.exemple.com');
   });
 
+  it('accepte https avec espace, casse et port en conservant le chemin', () => {
+    expect(normalizeApiUrl('  HTTPS://LiveChat.Exemple.com:8443/api/  ')).toBe(
+      'https://livechat.exemple.com:8443/api',
+    );
+  });
+
+  it('refuse une URL API http', () => {
+    expect(() => normalizeApiUrl('http://livechat.exemple.com')).toThrow(
+      'URL API invalide. Utilise https://.',
+    );
+    expect(() => normalizeApiUrl('http://livechat.exemple.com:8080/api')).toThrow(
+      'URL API invalide. Utilise https://.',
+    );
+    expect(() => toApiOriginPattern('http://livechat.exemple.com')).toThrow(
+      'URL API invalide. Utilise https://.',
+    );
+  });
+
+  it('refuse http même sur la boucle locale', () => {
+    expect(() => normalizeApiUrl('http://localhost:3000/')).toThrow(
+      'URL API invalide. Utilise https://.',
+    );
+    expect(() => normalizeApiUrl('http://127.0.0.1:3000')).toThrow(
+      'URL API invalide. Utilise https://.',
+    );
+    expect(() => normalizeApiUrl('http://[::1]:3000')).toThrow(
+      'URL API invalide. Utilise https://.',
+    );
+  });
+
+  it('refuse une URL http quel que soit l’hôte', () => {
+    expect(() => normalizeApiUrl('http://localhost.exemple.com')).toThrow(
+      'URL API invalide. Utilise https://.',
+    );
+    expect(() => normalizeApiUrl('http://localhost.evil.com:3000')).toThrow(
+      'URL API invalide. Utilise https://.',
+    );
+    expect(() => normalizeApiUrl('http://127.0.0.1.evil.com')).toThrow(
+      'URL API invalide. Utilise https://.',
+    );
+  });
+
+  it('refuse une URL API malformée ou de schéma non http', () => {
+    expect(() => normalizeApiUrl('')).toThrow();
+    expect(() => normalizeApiUrl('livechat.exemple.com')).toThrow();
+    expect(() => normalizeApiUrl('ftp://livechat.exemple.com')).toThrow();
+    expect(() => normalizeApiUrl('javascript:alert(1)')).toThrow();
+  });
+
   it('calcule un pattern d’origine pour permissions', () => {
     expect(toApiOriginPattern('https://livechat.exemple.com/api')).toBe('https://livechat.exemple.com/*');
   });

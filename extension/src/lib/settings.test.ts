@@ -38,6 +38,34 @@ describe('settings validation', () => {
     }
   });
 
+  it('échoue sur une API_URL http', () => {
+    const result = normalizeSettingsInput({
+      apiUrl: 'http://livechat.example.com',
+      ingestToken: 'token',
+      guildId: '123',
+    });
+
+    expect(result.ok).toBe(false);
+
+    if (!result.ok) {
+      expect(result.message).toBe('URL API invalide. Utilise https://.');
+    }
+  });
+
+  it('refuse une API_URL http même localhost', () => {
+    const result = normalizeSettingsInput({
+      apiUrl: 'http://localhost:3000',
+      ingestToken: 'token',
+      guildId: '123',
+    });
+
+    expect(result.ok).toBe(false);
+
+    if (!result.ok) {
+      expect(result.message).toBe('URL API invalide. Utilise https://.');
+    }
+  });
+
   it('échoue sans token', () => {
     const result = normalizeSettingsInput({
       apiUrl: 'https://livechat.example.com',

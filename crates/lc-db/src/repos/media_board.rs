@@ -91,6 +91,20 @@ impl MediaBoardRepository {
     /// (an MP3's album art), when there is one. A video's cover is its
     /// thumbnail, shown from the asset itself, never a picture of the item.
     pub async fn create(&self, item: &MediaBoardItem) -> DbResult<()> {
+        let mut connection = self.pool.acquire().await?;
+        self.create_on(&mut connection, item).await
+    }
+
+    /// Inserts an item on the connection of an already open transaction.
+    ///
+    /// The caller owns the transaction: keeping the quota check and this
+    /// insertion on the same connection is what makes a concurrent board
+    /// addition unable to slip past the storage limit.
+    pub async fn create_on(
+        &self,
+        connection: &mut sqlx::SqliteConnection,
+        item: &MediaBoardItem,
+    ) -> DbResult<()> {
         sqlx::query(
             "INSERT INTO media_board_items ( \
                 id, guild_id, media_asset_id, title, message, \
@@ -113,7 +127,7 @@ impl MediaBoardRepository {
         .bind(to_bool(item.artwork_on_overlay))
         .bind(item.display_duration_sec)
         .bind(item.display_scale_percent)
-        .execute(&self.pool)
+        .execute(&mut *connection)
         .await
         .map_err(|error| {
             conflict_on_unique(
@@ -246,12 +260,49 @@ impl MediaBoardRepository {
         released_expiry: time::UtcDateTime,
     ) -> DbResult<Option<MediaAssetId>> {
         let mut transaction = self.pool.begin().await?;
+        match self
+            .replace_media_on(
+                &mut transaction,
+                id,
+                guild_id,
+                media_asset_id,
+                now,
+                released_expiry,
+            )
+            .await
+        {
+            Ok(previous) => {
+                transaction.commit().await?;
+                Ok(previous)
+            }
+            Err(error) => {
+                transaction.rollback().await?;
+                Err(error)
+            }
+        }
+    }
+
+    /// Replaces the media of an item on the connection of an already open
+    /// transaction; the caller owns that transaction and must roll it back
+    /// when this returns an error.
+    ///
+    /// Keeping this write and the caller's quota check on one connection is
+    /// what makes a concurrent replacement unable to exceed the board limit.
+    pub async fn replace_media_on(
+        &self,
+        connection: &mut sqlx::SqliteConnection,
+        id: MediaBoardItemId,
+        guild_id: &GuildId,
+        media_asset_id: MediaAssetId,
+        now: time::UtcDateTime,
+        released_expiry: time::UtcDateTime,
+    ) -> DbResult<Option<MediaAssetId>> {
         let previous_raw: Option<String> = sqlx::query_scalar(
             "SELECT media_asset_id FROM media_board_items WHERE id = ? AND guild_id = ?",
         )
         .bind(id.to_canonical())
         .bind(guild_id.as_str())
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(&mut *connection)
         .await?;
         let Some(previous_raw) = previous_raw else {
             return Ok(None);
@@ -260,30 +311,26 @@ impl MediaBoardRepository {
         if previous == media_asset_id {
             return Ok(Some(previous));
         }
-        let updated = sqlx::query("UPDATE media_board_items SET media_asset_id = ? WHERE id = ?")
+        sqlx::query("UPDATE media_board_items SET media_asset_id = ? WHERE id = ?")
             .bind(media_asset_id.to_canonical())
             .bind(id.to_canonical())
-            .execute(&mut *transaction)
-            .await;
-        if let Err(error) = updated {
-            // Roll back now: a dropped transaction is only rolled back once its
-            // connection is reused, and until then it keeps the write lock, so
-            // the next write could fail with "database is locked".
-            transaction.rollback().await?;
-            return Err(conflict_on_unique(
-                error,
-                format!(
-                    "le média {media_asset_id} est déjà présent sur le board de la guilde {guild_id}"
-                ),
-            ));
-        }
+            .execute(&mut *connection)
+            .await
+            .map_err(|error| {
+                conflict_on_unique(
+                    error,
+                    format!(
+                        "le média {media_asset_id} est déjà présent sur le board de la guilde {guild_id}"
+                    ),
+                )
+            })?;
         let remaining: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM media_board_items \
               WHERE media_asset_id = ? OR artwork_asset_id = ?",
         )
         .bind(previous.to_canonical())
         .bind(previous.to_canonical())
-        .fetch_one(&mut *transaction)
+        .fetch_one(&mut *connection)
         .await?;
         if remaining == 0 {
             sqlx::query(
@@ -292,10 +339,9 @@ impl MediaBoardRepository {
             .bind(to_ms(now))
             .bind(to_ms(released_expiry))
             .bind(previous.to_canonical())
-            .execute(&mut *transaction)
+            .execute(&mut *connection)
             .await?;
         }
-        transaction.commit().await?;
         Ok(Some(previous))
     }
 

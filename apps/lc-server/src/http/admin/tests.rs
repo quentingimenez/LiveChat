@@ -5,9 +5,10 @@
 //! globales (en-têtes de sécurité, limite de corps, rate limit, normalisation
 //! des erreurs) et la cohabitation des CSP admin/globale.
 //!
-//! Chaque test crée sa propre base SQLite en mémoire et son propre dossier
-//! temporaire (URL `DATABASE_URL` pointant dans ce dossier) : les réglages
-//! runtime (`admin_runtime.json`) sont ainsi isolés du dépôt.
+//! Chaque test crée sa propre base SQLite (en mémoire par défaut, sur fichier
+//! pour les tests de concurrence qui ont besoin de plusieurs connexions) et son
+//! propre dossier temporaire (URL `DATABASE_URL` pointant dans ce dossier) : les
+//! réglages runtime (`admin_runtime.json`) sont ainsi isolés du dépôt.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -277,6 +278,15 @@ impl Harness {
         Self::build_with_hub(&[], None, None, Some(hub)).await
     }
 
+    /// Harness on a file-backed database with several real SQLite connections.
+    ///
+    /// Concurrency tests need writers that can hold their transactions at the
+    /// same time: an in-memory database is forced to a single connection, so it
+    /// can only prove pool serialization.
+    pub(super) async fn with_file_db(max_connections: u32) -> Self {
+        Self::build_with_hub_and_db(&[], None, None, None, Some(max_connections)).await
+    }
+
     pub(super) async fn with_pairs_and_leaver(
         extra: &[(&str, &str)],
         leaver: Option<Arc<dyn DiscordGuildLeaver>>,
@@ -305,6 +315,16 @@ impl Harness {
         oauth: Option<Arc<dyn AdminOAuth>>,
         hub: Option<Arc<dyn AdminHub>>,
     ) -> Self {
+        Self::build_with_hub_and_db(extra, leaver, oauth, hub, None).await
+    }
+
+    async fn build_with_hub_and_db(
+        extra: &[(&str, &str)],
+        leaver: Option<Arc<dyn DiscordGuildLeaver>>,
+        oauth: Option<Arc<dyn AdminOAuth>>,
+        hub: Option<Arc<dyn AdminHub>>,
+        file_db_connections: Option<u32>,
+    ) -> Self {
         let dir = tempfile::tempdir().expect("dossier temporaire");
         let database_path = dir.path().join("livechat.sqlite3");
         // Racine média confinée dans le dossier du harnais : la purge admin
@@ -328,9 +348,17 @@ impl Harness {
         }
 
         let config = Config::from_pairs(pairs).expect("configuration de test valide");
-        let db = Db::open_in_memory(&DbConfig::default())
+        let db = match file_db_connections {
+            Some(max_connections) => Db::open(
+                &database_path,
+                &DbConfig::default().with_max_connections(max_connections),
+            )
             .await
-            .expect("base de test en mémoire");
+            .expect("base de test fichier"),
+            None => Db::open_in_memory(&DbConfig::default())
+                .await
+                .expect("base de test en mémoire"),
+        };
         // Log in once like the browser would: the raw token is kept by the
         // harness and every request carries it as a cookie. Tests that verify
         // the 401 path build requests without it explicitly.

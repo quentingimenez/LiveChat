@@ -5,8 +5,9 @@ s'appliquent à tout agent qui travaille ici — session DSH, sous-agent, worktr
 pour toute correction, ajout ou modification demandée par l'utilisateur. Une
 instruction explicite de la demande en cours l'emporte (voir « Cas particuliers »).
 
-`main` n'a pas de protection GitHub : le respect de ce flux est la seule barrière
-avant un merge direct.
+`main` est protégée par GitHub : `ci-gate` et `versions & release tooling` sont
+requis, en mode strict. Le respect de ce flux reste la barrière avant un merge
+direct.
 
 ## Règle par défaut : branche → PR → CI verte → merge
 

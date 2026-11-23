@@ -16,7 +16,7 @@
 | Pré-prod | Contrats HTTP + WS | idem — `apps/lc-server/tests/contracts.rs` (clés `/health` exactes, 401 admin anonyme), matrice HELLO des versions dans `apps/lc-server/src/ws/tests.rs` | incluse dans la batterie |
 | Pré-prod | Propriétés (proptest) | idem — `crates/{lc-protocol,lc-media,lc-db}/tests/properties.rs` | incluse dans la batterie |
 | Pré-prod | Fuzz | `cargo test --manifest-path fuzz/Cargo.toml --no-default-features --lib --locked --offline` (seeds + golden sur stable) ; nightly : `cargo fuzz run` 45 s par cible | seeds + golden verts ; nightly advisory |
-| Pré-prod | Mutation | `cargo xtask verify --offline --mutants` (lignes du diff, kill-or-justify) ; nightly : 3 scopes notés contre [`scripts/mutants-baseline.json`](../../scripts/mutants-baseline.json) | local : 0 manqué **non justifié** en `crates/` et `apps/` (le manqué justifié du scope nightly `lc-db-queue`, `playback_jobs.rs:211`, est hors diff local) ; nightly : score ≥ baseline |
+| Pré-prod | Mutation | `cargo xtask verify --offline --mutants` (lignes du diff, kill-or-justify) ; nightly : 6 scopes mesurés notés contre [`scripts/mutants-baseline.json`](../../scripts/mutants-baseline.json) | local : 0 manqué **non justifié** en `crates/` et `apps/` (le manqué justifié du scope nightly `lc-db-queue`, `playback_jobs.rs:211`, est hors diff local) ; nightly : score ≥ baseline et total ≥ `min_mutants` ; un scope encore provisoire échoue explicitement au lieu de passer sans mesure (garde-fou inutilisé aujourd'hui) |
 | Test | Charge | `cargo xtask loadtest --clients 20 --duration-secs 20` (budgets : p95 HELLO ≤ 250 ms, 0 erreur WS/ingest, 0 déconnexion, accueils = clients, pas de fuite fd sous Linux, p95 board signé ≤ 250 ms à 200 items, p95 média signé ≤ 250 ms, p95 ack `media.trigger` ≤ 250 ms à 10/s) ; nightly : 50 clients / 60 s avec les mêmes budgets | exit 0 local ; nightly advisory |
 | Test | Chaos | idem batterie — `apps/lc-server/tests/kill_recover.rs` (kill brutal en pleine ingestion → WAL → reprise : chaque ligne confirmée retrouvée, `PRAGMA integrity_check` ok) | incluse dans la batterie |
 | Déploiement | Canary | `powershell -NoProfile -File scripts/release.ps1 deploy-server X.Y.Z -Canary` — conteneur `LiveChat-canary` sur `127.0.0.1:3001`, copie de la sauvegarde vérifiée, bot Discord de TEST (env file hôte, jamais lu ni affiché), santé + Discord avant de toucher au principal ; harnais `scripts/release/tests/Canary.Tests.ps1` | GO explicite de l'utilisateur, jamais automatique |
@@ -36,7 +36,8 @@
 ## 3. Nightly ([`verification-nightly.yml`](../../.github/workflows/verification-nightly.yml))
 
 - **`fuzz`** : matrix des 3 cibles (`protocol_frame`, `media_url`, `html_parsers`), corpus semé depuis les fixtures, `-max_total_time=45` par cible, seeds+golden (jamais un merge gate) ; artefacts uploadés si échec.
-- **`mutants`** : 3 scopes (`lc-protocol`, `lc-media --file guard.rs`, `lc-db --file playback_jobs.rs`), score `floor(100·caught/(caught+missed+timeout))` comparé à la baseline ; garde d'entiers jq, échec sur toute outcome `Failure`, rc admis 0/2, `rm -rf target/mutants` (rust-cache peut restaurer de vieux outcomes), outils épinglés `cargo-mutants@27.1.0` / `nextest@0.9.151`.
+- **`mutants`** : une jambe de matrix par scope, six scopes **mesurés** — `lc-protocol`, `lc-media --file guard.rs`, `lc-db --file playback_jobs.rs`, et les trois ajoutés par Q-T4 (`lc-playback --file payload.rs`, `lc-db --file db.rs`, `lc-media --file storage.rs`), mesurés sur `ubuntu-latest` avec la commande ci-dessous (run [45234358272](https://github.com/quentingimenez/LiveChat/actions/runs/45234358272), 23/11 : 57, 81 et 79). Score `floor(100·caught/(caught+missed+timeout))` comparé à la baseline ; garde d'entiers jq, échec sur toute outcome `Failure`, rc admis 0/2, `rm -rf target/mutants` (rust-cache peut restaurer de vieux outcomes), outils épinglés `cargo-mutants@27.1.0` / `nextest@0.9.151`. Chaque jambe garde `timeout-minutes: 60` et `fail-fast: false` ; une matrix par scope évite de dépasser le budget de 55 min de `ci-gate` sur une PR.
+- Aucun scope n'est provisoire aujourd'hui : les six `caught_pct` sont numériques et comparés à la baseline. Le garde-fou provisoire reste dans le workflow et dans la baseline pour un scope ajouté avant sa première mesure (`caught_pct: null`, `status: "provisional"`) : sa jambe est sautée sur `pull_request` (`if: github.event_name != 'pull_request' || matrix.provisional != true`) pour ne pas rendre `ci-gate` rouge sans mesure ; le nightly planifié l'exécute, uploade `outcomes.json` (artefact `mutants-report-<scope>`), puis échoue explicitement en indiquant le score observé et les deux champs à passer à `measured` / `provisional: false`. Le garde [`MutantsNightly.Tests.ps1`](../../scripts/release/tests/MutantsNightly.Tests.ps1) vérifie cette cohérence.
 - **`load`** : ubuntu-latest, build release (`LC_ADMIN_WEB_BUILD=0`), 50 clients / 60 s,
   budgets §4.1 explicites (`--board-items 200 --max-board-p95-ms 250
   --max-media-p95-ms 250 --media-trigger-rate 10 --max-media-trigger-p95-ms 250`),
@@ -217,19 +218,47 @@ stage local est vert (`59 mutants tested in 8m: 52 caught, 7 unviable`,
 
 ## 6. Nightly mutants : baselines et fragilité
 
-- [`scripts/mutants-baseline.json`](../../scripts/mutants-baseline.json) :
-  `lc-protocol {caught_pct: 99, min_mutants: 47}`,
-  `lc-media-guard {caught_pct: 99, min_mutants: 86}`,
-  `lc-db-queue {caught_pct: 93, min_mutants: 92}` — mesuré 100/100/94, baseline = mesure − 1.
-- Seul mutant manqué restant, **justifié** : `crates/lc-db/src/repos/playback_jobs.rs:211`
-  (bras unique-violation, race-only, sqlite mémoire mono-connexion ; justification aussi
-  en doc du test `raw_db_errors_are_not_silenced_nor_mistranslated`).
+- [`scripts/mutants-baseline.json`](../../scripts/mutants-baseline.json), six scopes, tous mesurés :
+  - `lc-protocol {caught_pct: 99, min_mutants: 47}`,
+    `lc-media-guard {caught_pct: 99, min_mutants: 86}`,
+    `lc-db-queue {caught_pct: 93, min_mutants: 92}` — mesuré 100/100/94, baseline = mesure − 1 ;
+  - Q-T4, mesurés sur `ubuntu-latest` avec la commande du nightly (run
+    [45234358272](https://github.com/quentingimenez/LiveChat/actions/runs/45234358272), 23/11) :
+    `lc-playback-payload {caught_pct: 57, min_mutants: 44}`
+    (`crates/lc-playback/src/payload.rs`), `lc-db-core {caught_pct: 81,
+    min_mutants: 77}` (`crates/lc-db/src/db.rs`), `lc-media-storage {caught_pct:
+    79, min_mutants: 118}` (`crates/lc-media/src/storage.rs`). Les scores sont
+    enregistrés **bruts** (`floor(100·caught/(caught+missed+timeout))` = 23/40,
+    13/16 et 39/49), pas en mesure − 1 : le dénominateur viable est petit
+    (40/16/49) et une marge d'un point ne protégerait pas d'un reclassement
+    caught/unviable ; un seul mutant basculé vaut 2 à 6 points, la baseline
+    doit donc rester le score observé, pas une marge fictive.
+- Les `min_mutants` Q-T4 viennent de `cargo mutants --list -p <crate> --file <fichier> --test-tool nextest -j 2` au commit de base
+  (`32686b6`) : 43, 76 et 117 mutants, **+ 1** pour l'outcome `Success` de la baseline, comme les scopes existants (85 → 86,
+  91 → 92) ; les runs de mesure ont confirmé les totaux 44/77/118. Ce sont des **planchers** : un total observé inférieur échoue ;
+  un total supérieur reste accepté.
+- Le provisoire reste un **garde-fou inutilisé** pour un futur scope ajouté avant sa première mesure (`caught_pct: null`,
+  `status: "provisional"`). Pour lever ce provisoire :
+  1. lire `outcomes.json` de l'artefact `mutants-report-<scope>` et calculer
+     `floor(100·caught/(caught+missed+timeout))` ;
+  2. écrire ce score dans `caught_pct` et passer `status` à `"measured"` dans la baseline ;
+  3. passer `provisional: false` pour ce scope dans la matrix de `verification-nightly.yml` ;
+  4. mettre à jour les valeurs épinglées de `scripts/release/tests/MutantsNightly.Tests.ps1` dans le même changement.
+- Mutants manqués connus : `crates/lc-db/src/repos/playback_jobs.rs:211` reste le seul
+  manqué **justifié** (bras unique-violation, race-only, sqlite mémoire mono-connexion ;
+  justification aussi en doc du test `raw_db_errors_are_not_silenced_nor_mistranslated`).
+  Les scopes Q-T4 comptent leurs manqués dans leur score (17/3/10 mutants, listés dans
+  `missed.txt` du run 45234358272) : ils abaissent `caught_pct` sans justification ligne
+  par ligne, le seuil baseline étant la mesure complète et non un kill-or-justify par mutant.
 - `min_mutants` (total exact d'outcomes, incl. baseline + unviable) est **fragile** :
   un changement de version cargo-mutants ou d'échantillonnage peut décaler le total —
   recaler baselines et min_mutants ensemble si cela arrive.
 - Addendum Task 5 : le 3ᵉ scope `lc-db-queue` et les `min_mutants` étendent les
   2 scopes du plan initial, ajoutés dans `db74f49` (correctifs Review A) sur
   directive utilisateur du 19/11.
+- Addendum Q-T4 : les trois scopes ajoutent les fichiers critiques de `lc-playback`, `lc-db` et `lc-media` au-delà de `guard.rs` ; chaque
+  jambe est un runner séparé pour rester sous 60 min. Ils sont mesurés (57/81/79, run 45234358272) ; le garde
+  `MutantsNightly.Tests.ps1` fait échouer toute incohérence matrix/baseline et conserve le scénario provisoire comme garde-fou.
 
 ## 7. Pièges locaux connus (Windows, PowerShell 5.1)
 
@@ -301,6 +330,18 @@ injectables (§5) — mesures copy-mode `loadtest.rs` 93 / `verify.rs` 36 /
 **vert** pour la première fois (`59 mutants, 52 caught, 7 unviable`,
 `verify: 6 passed, 0 failed`) ; `scripts/mutants-baseline.json` inchangé (`xtask`
 n'est pas un scope nightly).
+
+**Q-T4** (élargissement mutation, lot L1) : le job nightly `mutants` passe d'un run
+monolithique de 3 scopes à une matrix de 6 jambes indépendantes ; les trois fichiers
+critiques ajoutés (`lc-playback/src/payload.rs`, `lc-db/src/db.rs`,
+`lc-media/src/storage.rs`) ont été mesurés sur `ubuntu-latest` avec la commande du
+workflow (run [45234358272](https://github.com/quentingimenez/LiveChat/actions/runs/45234358272),
+23/11) : **57, 81 et 79** de `caught_pct`, `min_mutants` 44/77/118. Ils sont
+`status: "measured"` et `provisional: false` ; les six jambes tournent sur
+`pull_request` comme sur le nightly. Le garde
+[`MutantsNightly.Tests.ps1`](../../scripts/release/tests/MutantsNightly.Tests.ps1)
+exige la cohérence matrix/baseline et couvre encore le scénario provisoire comme
+garde-fou pour un futur scope.
 
 ## 9. Skill agent
 

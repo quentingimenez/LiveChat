@@ -1,5 +1,8 @@
 {
-  "lc-protocol": { "caught_pct": 99, "min_mutants": 47 },
-  "lc-media-guard": { "caught_pct": 99, "min_mutants": 86 },
-  "lc-db-queue": { "caught_pct": 93, "min_mutants": 92 }
+  "lc-protocol": { "caught_pct": 99, "min_mutants": 47, "status": "measured" },
+  "lc-media-guard": { "caught_pct": 99, "min_mutants": 86, "status": "measured" },
+  "lc-db-queue": { "caught_pct": 93, "min_mutants": 92, "status": "measured" },
+  "lc-playback-payload": { "caught_pct": 57, "min_mutants": 44, "status": "measured" },
+  "lc-db-core": { "caught_pct": 81, "min_mutants": 77, "status": "measured" },
+  "lc-media-storage": { "caught_pct": 79, "min_mutants": 118, "status": "measured" }
 }

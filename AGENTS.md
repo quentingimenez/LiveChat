@@ -137,9 +137,11 @@ Pour un changement Rust de fond, la batterie complète reste le gate :
   code ; un test désactivé exige une justification `fichier:ligne` dans la PR.
 - Assertions recopiées de l'implémentation (le test refait le calcul), tests qui
   ne peuvent pas échouer, harnais testé à la place du produit.
-- Un test ajouté que la CI ne lance pas sans le dire : à ce jour la CI ne lance
-  pas les tests JS de l'overlay (`apps/lc-overlay/dev/tests/*.mjs`) — les lancer
-  à la main et le mentionner.
+- Un test ajouté que la CI ne lance pas sans le dire. Les jobs de
+  `.github/workflows/` : overlay JS = `tests JS de l'overlay`
+  (`overlay-tauri.yml`), console admin = `admin-web` (`rust.yml`), extension =
+  workflow `extension` (`extension.yml`). Un test hors de ces jobs se lance à la
+  main et se mentionne comme tel dans la PR.
 
 ### Dans la PR
 
@@ -156,7 +158,7 @@ Lancer ce qui couvre le changement et le dire dans `## Tests` :
 | --- | --- |
 | Rust | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings` |
 | Rust ciblé (préféré) | `cargo test -p <crate>` ou `cargo nextest run -p <crate>` |
-| Overlay (JS) | `node --test apps/lc-overlay/dev/tests/*.mjs` |
+| Overlay (JS) | `node --test apps/lc-overlay/dev/tests/*.test.mjs` (la commande du job `tests JS de l'overlay`) |
 | Extension | `npm --prefix extension run ci:check` |
 | Console admin | `npm test` dans `apps/lc-admin-web` |
 

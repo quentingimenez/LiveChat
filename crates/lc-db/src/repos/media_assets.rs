@@ -21,24 +21,24 @@ const PURGE_EXPIRED_SQL: &str = "\
     DELETE FROM media_assets \
      WHERE expires_at <= ? \
        AND NOT EXISTS ( \
-           SELECT 1 FROM media_board_items b \
-           WHERE b.media_asset_id = media_assets.id \
-              OR b.artwork_asset_id = media_assets.id \
+           SELECT 1 FROM media_board_items \
+           WHERE media_board_items.media_asset_id = media_assets.id \
+              OR media_board_items.artwork_asset_id = media_assets.id \
        ) \
        AND NOT EXISTS ( \
-           SELECT 1 FROM playback_jobs j \
-           WHERE j.media_asset_id = media_assets.id \
-             AND j.status IN ('PENDING', 'PLAYING') \
+           SELECT 1 FROM playback_jobs \
+           WHERE playback_jobs.media_asset_id = media_assets.id \
+             AND playback_jobs.status IN ('PENDING', 'PLAYING') \
        ) \
      RETURNING *";
 
 /// Exclusions communes aux candidats de purge runtime.
 ///
 /// Une seule source pour les trois `NOT EXISTS` : le worker `lc-server` ne
-/// connaît plus le SQL de sélection, et les index de 0022 (`media_asset_id` et
-/// `artwork_asset_id` du board, `cover_asset_id`) gardent le plan sur des
-/// `SEARCH` — un `NOT IN` non corrélé forçait un scan d'index de
-/// `media_board_items`.
+/// connaît plus le SQL de sélection. L'index `media_asset_id` du board vient de
+/// la migration 0005 ; ceux de 0022 couvrent `artwork_asset_id` du board et
+/// `cover_asset_id`. Ensemble, ils gardent le plan sur des `SEARCH` — un
+/// `NOT IN` non corrélé forçait un scan d'index de `media_board_items`.
 macro_rules! purge_candidates_sql {
     ($filter:literal) => {
         concat!(
@@ -46,19 +46,20 @@ macro_rules! purge_candidates_sql {
             $filter,
             " \
                AND NOT EXISTS ( \
-                   SELECT 1 FROM media_board_items b \
-                   WHERE b.media_asset_id = media_assets.id \
-                      OR b.artwork_asset_id = media_assets.id \
+                   SELECT 1 FROM media_board_items \
+                   WHERE media_board_items.media_asset_id = media_assets.id \
+                      OR media_board_items.artwork_asset_id = media_assets.id \
                ) \
                AND NOT EXISTS ( \
                    SELECT 1 FROM media_assets a \
-                     JOIN media_board_items b ON b.media_asset_id = a.id \
+                     JOIN media_board_items \
+                       ON media_board_items.media_asset_id = a.id \
                     WHERE a.cover_asset_id = media_assets.id \
                ) \
                AND NOT EXISTS ( \
-                   SELECT 1 FROM playback_jobs j \
-                    WHERE j.media_asset_id = media_assets.id \
-                      AND j.status IN ('PENDING', 'PLAYING') \
+                   SELECT 1 FROM playback_jobs \
+                    WHERE playback_jobs.media_asset_id = media_assets.id \
+                      AND playback_jobs.status IN ('PENDING', 'PLAYING') \
                )",
         )
     };
@@ -141,8 +142,12 @@ impl MediaAssetRow {
 /// référence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PurgeCandidate {
-    /// Ligne à supprimer.
-    pub id: MediaAssetId,
+    /// Ligne à supprimer, identifiant **brut** tel que stocké en base.
+    ///
+    /// L'identifiant n'est ni reparsé ni canonicalisé : la purge doit pouvoir
+    /// supprimer les lignes hors contrat (UUID non canonique, identifiant
+    /// legacy) comme le faisait le worker historique, et non échouer sur elles.
+    pub id: String,
     /// Empreinte de contenu (verrou `lock_source_hash`).
     pub source_hash: String,
     /// Variante persistée, vide si la ligne ne référence aucun fichier.
@@ -158,12 +163,12 @@ struct PurgeCandidateRow {
 }
 
 impl PurgeCandidateRow {
-    fn into_candidate(self) -> DbResult<PurgeCandidate> {
-        Ok(PurgeCandidate {
-            id: decode(TABLE, "id", &self.id, MediaAssetId::parse)?,
+    fn into_candidate(self) -> PurgeCandidate {
+        PurgeCandidate {
+            id: self.id,
             source_hash: self.source_hash,
             storage_path: self.storage_path,
-        })
+        }
     }
 }
 
@@ -339,9 +344,10 @@ impl MediaAssetsRepository {
             .bind(to_ms(stale_before))
             .fetch_all(&self.pool)
             .await?;
-        rows.into_iter()
+        Ok(rows
+            .into_iter()
             .map(PurgeCandidateRow::into_candidate)
-            .collect()
+            .collect())
     }
 
     /// Liste les assets `READY` expirés à `now`, hors board et jobs actifs.
@@ -353,18 +359,19 @@ impl MediaAssetsRepository {
             .bind(to_ms(now))
             .fetch_all(&self.pool)
             .await?;
-        rows.into_iter()
+        Ok(rows
+            .into_iter()
             .map(PurgeCandidateRow::into_candidate)
-            .collect()
+            .collect())
     }
 
-    /// Supprime une ligne candidate par identifiant.
+    /// Supprime une ligne candidate par identifiant brut, tel que lu en base.
     ///
     /// Retourne `false` si la ligne a déjà disparu (course avec une autre
     /// passe ou une ingestion).
-    pub async fn delete_purge_candidate(&self, id: MediaAssetId) -> DbResult<bool> {
+    pub async fn delete_purge_candidate(&self, id: &str) -> DbResult<bool> {
         let result = sqlx::query(PURGE_DELETE_CANDIDATE_SQL)
-            .bind(id.to_canonical())
+            .bind(id)
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
@@ -377,11 +384,11 @@ impl MediaAssetsRepository {
     /// supprimé la ligne : le fichier ne doit alors pas être touché.
     pub async fn delete_expired_ready_candidate(
         &self,
-        id: MediaAssetId,
+        id: &str,
         now: UtcDateTime,
     ) -> DbResult<bool> {
         let result = sqlx::query(PURGE_DELETE_EXPIRED_READY_SQL)
-            .bind(id.to_canonical())
+            .bind(id)
             .bind(to_ms(now))
             .execute(&self.pool)
             .await?;
@@ -482,33 +489,16 @@ mod tests {
     }
 
     /// La purge ne scanne ni `media_board_items` (artwork) ni `media_assets`
-    /// (action de FK `cover_asset_id`) : les index de 0022 sont utilisés.
+    /// (action de FK `cover_asset_id`) : les index de 0022 sont utilisés. Seule
+    /// l'action de FK de `playback_jobs` parcourt cette table.
     #[tokio::test]
     async fn purge_expired_ne_scanne_pas_les_tables_de_references() {
         let db = Db::open_in_memory(&DbConfig::default())
             .await
             .expect("base mémoire");
-        let statement = format!("EXPLAIN QUERY PLAN {PURGE_EXPIRED_SQL}");
-        let rows = sqlx::query(&statement)
-            .bind(0_i64)
-            .fetch_all(db.pool())
-            .await
-            .expect("EXPLAIN QUERY PLAN");
-        let plan: Vec<String> = rows
-            .iter()
-            .map(|row| sqlx::Row::get::<String, _>(row, "detail"))
-            .collect();
+        let plan = plan(&db, PURGE_EXPIRED_SQL, &[Param::Int(0)]).await;
 
-        assert!(
-            !plan.iter().any(|line| line.contains("SCAN media_assets")),
-            "purge_expired scanne media_assets (migration 0022 absente ?) : {plan:?}"
-        );
-        assert!(
-            !plan
-                .iter()
-                .any(|line| line.starts_with("SCAN b") || line.contains("SCAN media_board_items")),
-            "purge_expired scanne media_board_items (index artwork_asset_id absent ?) : {plan:?}"
-        );
+        assert_aucun_scan_hors("purge_expired", &plan, &["playback_jobs"]);
         assert!(
             plan.iter()
                 .any(|line| line.contains("idx_media_assets_cover_asset")),
@@ -519,6 +509,15 @@ mod tests {
                 .any(|line| line.contains("idx_media_board_items_artwork_asset")),
             "la FK artwork_asset_id doit passer par idx_media_board_items_artwork_asset : {plan:?}"
         );
+    }
+
+    /// Suit la régression qui a motivé le helper : un plan peut nommer l'alias
+    /// (`SCAN b`) au lieu de la table, et doit être rejeté quand même.
+    #[test]
+    #[should_panic(expected = "scanne `b`")]
+    fn le_garde_fou_rejette_un_scan_par_alias() {
+        let lignes = vec!["SCAN b".to_owned()];
+        assert_aucun_scan_hors("une requête de purge", &lignes, &["playback_jobs"]);
     }
 
     /// Paramètre lié d'un plan : les requêtes de purge mêlent texte (statut,
@@ -553,19 +552,30 @@ mod tests {
             .collect()
     }
 
-    /// Aucune étape ne parcourt entièrement `media_assets` ni
-    /// `media_board_items` : les index de 0022 doivent porter les exclusions.
-    fn assert_sans_scan_des_references(context: &str, lines: &[String]) {
-        assert!(
-            !lines.iter().any(|line| line.contains("SCAN media_assets")),
-            "{context} scanne media_assets (migration 0022 absente ?) : {lines:?}"
-        );
-        assert!(
-            !lines
-                .iter()
-                .any(|line| line.contains("SCAN media_board_items") || line.starts_with("SCAN b")),
-            "{context} scanne media_board_items (index de 0022 absents ?) : {lines:?}"
-        );
+    /// Table parcourue par une étape `SCAN`, `None` pour les `SEARCH`.
+    fn table_scannee(line: &str) -> Option<&str> {
+        line.strip_prefix("SCAN ")
+            .and_then(|reste| reste.split_whitespace().next())
+    }
+
+    /// Rejette toute lecture séquentielle non explicitement autorisée.
+    ///
+    /// SQLite affiche tantôt le nom de la table, tantôt son alias (`SCAN b`) :
+    /// l'autorisation porte donc sur la cible telle qu'affichée, et un alias
+    /// inconnu est rejeté. Les seules exceptions admises sont `playback_jobs`
+    /// (action de FK `ON DELETE SET NULL` des suppressions) et l'énumération
+    /// volontaire de `storage_paths` dans `media_assets`.
+    fn assert_aucun_scan_hors(context: &str, lines: &[String], autorisees: &[&str]) {
+        for line in lines {
+            let Some(table) = table_scannee(line) else {
+                continue;
+            };
+            assert!(
+                autorisees.contains(&table),
+                "{context} scanne `{table}` : seuls les scans de {autorisees:?} sont autorisés ; \
+                 plan : {lines:?}"
+            );
+        }
     }
 
     /// Les candidats `FAILED`/`PROCESSING` passent par l'index de statut et par
@@ -580,7 +590,7 @@ mod tests {
         )
         .await;
 
-        assert_sans_scan_des_references("les candidats FAILED", &lines);
+        assert_aucun_scan_hors("les candidats FAILED", &lines, &[]);
         assert!(
             lines
                 .iter()
@@ -620,7 +630,7 @@ mod tests {
         let db = memory_db().await;
         let lines = plan(&db, PURGE_EXPIRED_READY_CANDIDATES_SQL, &[Param::Int(0)]).await;
 
-        assert_sans_scan_des_references("les candidats READY expirés", &lines);
+        assert_aucun_scan_hors("les candidats READY expirés", &lines, &[]);
         assert!(
             lines
                 .iter()
@@ -656,7 +666,7 @@ mod tests {
         let asset = MediaAssetId::new_v4().to_canonical();
         let lines = plan(&db, PURGE_DELETE_CANDIDATE_SQL, &[Param::Text(&asset)]).await;
 
-        assert_sans_scan_des_references("la suppression d'un candidat", &lines);
+        assert_aucun_scan_hors("la suppression d'un candidat", &lines, &["playback_jobs"]);
         assert!(
             lines
                 .iter()
@@ -690,7 +700,11 @@ mod tests {
         )
         .await;
 
-        assert_sans_scan_des_references("la suppression d'un READY expiré", &lines);
+        assert_aucun_scan_hors(
+            "la suppression d'un READY expiré",
+            &lines,
+            &["playback_jobs"],
+        );
         assert!(
             lines
                 .iter()
@@ -703,6 +717,66 @@ mod tests {
                 .any(|line| line.contains("idx_media_board_items_artwork_asset")),
             "l'action FK artwork doit passer par idx_media_board_items_artwork_asset : {lines:?}"
         );
+    }
+
+    /// La purge supprime l'identifiant tel qu'il est stocké : une ligne hors
+    /// contrat (UUID majuscule, identifiant legacy non UUID) doit rester
+    /// supprimable, comme avant le refactor.
+    #[tokio::test]
+    async fn la_purge_supprime_l_identifiant_brut_hors_contrat() {
+        let db = memory_db().await;
+        let now = UtcDateTime::now();
+        let uppercase = sample_asset(now);
+        let legacy = sample_asset(now + Duration::minutes(1));
+        for asset in [&uppercase, &legacy] {
+            db.media_assets().insert(asset).await.expect("insertion");
+        }
+
+        let uppercase_raw = uppercase.id.to_string().to_uppercase();
+        let legacy_raw = "legacy-media-id".to_owned();
+        for (raw_id, canonical_id) in [
+            (&uppercase_raw, uppercase.id.to_canonical().to_owned()),
+            (&legacy_raw, legacy.id.to_canonical().to_owned()),
+        ] {
+            sqlx::query("UPDATE media_assets SET id = ? WHERE id = ?")
+                .bind(raw_id)
+                .bind(&canonical_id)
+                .execute(db.pool())
+                .await
+                .expect("identifiant hors contrat");
+        }
+
+        let candidates = db
+            .media_assets()
+            .list_expired_ready_purge_candidates(now + Duration::hours(2))
+            .await
+            .expect("candidats");
+        assert_eq!(candidates.len(), 2, "candidats : {candidates:?}");
+        let ids: Vec<&str> = candidates.iter().map(|c| c.id.as_str()).collect();
+        assert!(
+            ids.contains(&uppercase_raw.as_str()),
+            "l'UUID majuscule doit être candidat : {ids:?}"
+        );
+        assert!(
+            ids.contains(&legacy_raw.as_str()),
+            "l'identifiant legacy doit être candidat : {ids:?}"
+        );
+
+        for candidate in &candidates {
+            assert!(
+                db.media_assets()
+                    .delete_purge_candidate(&candidate.id)
+                    .await
+                    .expect("suppression"),
+                "l'identifiant brut `{}` doit être supprimé",
+                candidate.id
+            );
+        }
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM media_assets")
+            .fetch_one(db.pool())
+            .await
+            .expect("comptage");
+        assert_eq!(remaining, 0, "les deux lignes hors contrat sont supprimées");
     }
 
     /// La purge lit tous les chemins de `media_assets` pour compter les

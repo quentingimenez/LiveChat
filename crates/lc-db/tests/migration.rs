@@ -7,6 +7,46 @@ mod common;
 
 use lc_db::{Db, DbConfig, DbError, SCHEMA_VERSION};
 use lc_domain::{MediaAssetId, MediaBoardItemId};
+use sqlx::Row;
+
+/// Vérifie qu'un index existe sur `table`, non unique, non partiel, avec
+/// exactement `columns` dans l'ordre. Un homonyme incorrect fait échouer.
+async fn assert_index_definition(db: &Db, table: &str, index: &str, columns: &[&str]) {
+    let entries = sqlx::query(&format!("PRAGMA index_list('{table}')"))
+        .fetch_all(db.pool())
+        .await
+        .unwrap();
+    let entry = entries
+        .iter()
+        .find(|row| row.get::<String, _>("name") == index)
+        .unwrap_or_else(|| panic!("index `{index}` absent de `{table}`"));
+    assert_eq!(
+        entry.get::<i64, _>("unique"),
+        0,
+        "`{index}` ne doit pas être unique"
+    );
+    assert_eq!(
+        entry.get::<i64, _>("partial"),
+        0,
+        "`{index}` ne doit pas être partiel"
+    );
+    assert_eq!(
+        entry.get::<String, _>("origin"),
+        "c",
+        "`{index}` doit être créé par un CREATE INDEX"
+    );
+
+    let infos = sqlx::query(&format!("PRAGMA index_info('{index}')"))
+        .fetch_all(db.pool())
+        .await
+        .unwrap();
+    let actual: Vec<String> = infos
+        .iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    let expected: Vec<String> = columns.iter().map(|column| (*column).to_owned()).collect();
+    assert_eq!(actual, expected, "colonnes de `{index}`");
+}
 
 #[tokio::test]
 async fn migration_fraiche_puis_idempotente() {
@@ -67,6 +107,37 @@ async fn migration_fraiche_puis_idempotente() {
         "la migration 0002 doit créer l'index unique partiel de l'invariant PLAYING"
     );
 
+    // La migration 0022 est déjà appliquée par des bases existantes : son
+    // checksum SQLx est figé pour qu'une réécriture provoque un
+    // `VersionMismatch(22)` en CI plutôt qu'en production.
+    let checksum: Vec<u8> =
+        sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = 22")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    let checksum: String = checksum.iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(
+        checksum, "bac7d91e4f6e4bc9eda46b3217a204af2ae85ee88b3057a6af57a42e5a450c0a4137e7a13ceebb16dbb046e045296d9f",
+        "la migration 0022 ne doit jamais être réécrite"
+    );
+
+    // Les deux index de 0022 doivent avoir la définition attendue : un index
+    // homonyme incorrect (mauvaises colonnes, unique ou partiel) est rejeté.
+    assert_index_definition(
+        &db,
+        "media_assets",
+        "idx_media_assets_cover_asset",
+        &["cover_asset_id"],
+    )
+    .await;
+    assert_index_definition(
+        &db,
+        "media_board_items",
+        "idx_media_board_items_artwork_asset",
+        &["artwork_asset_id"],
+    )
+    .await;
+
     // Relancer les migrations ne rejoue rien et ne casse rien.
     db.migrate().await.unwrap();
     db.migrate().await.unwrap();
@@ -85,6 +156,35 @@ async fn migration_fraiche_puis_idempotente() {
             .as_deref(),
         Some(SCHEMA_VERSION)
     );
+}
+
+/// Le contrôle de définition rejette un index homonyme incorrect, comme le
+/// permettrait `IF NOT EXISTS` si un index de même nom préexistait.
+#[tokio::test]
+#[should_panic(expected = "colonnes de `idx_media_assets_cover_asset`")]
+async fn index_homonyme_incorrect_est_detecte() {
+    // Une seule connexion : le DROP et le CREATE doivent voir le même schéma.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("livechat.db");
+    let db = Db::open(&path, &DbConfig::default().with_max_connections(1))
+        .await
+        .unwrap();
+    sqlx::query("DROP INDEX idx_media_assets_cover_asset")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    sqlx::query("CREATE INDEX idx_media_assets_cover_asset ON media_assets (mime)")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    assert_index_definition(
+        &db,
+        "media_assets",
+        "idx_media_assets_cover_asset",
+        &["cover_asset_id"],
+    )
+    .await;
 }
 
 #[tokio::test]

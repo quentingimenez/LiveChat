@@ -244,7 +244,10 @@ Le worker de purge runtime (`apps/lc-server/src/media/purge.rs`) ne duplique
 plus ce SQL : il sélectionne les candidats via
 `list_stale_purge_candidates` / `list_expired_ready_purge_candidates`, les
 supprime avec `delete_purge_candidate` / `delete_expired_ready_candidate`, puis
-efface le fichier si c'était la dernière référence. `storage_paths()` fournit
+efface le fichier si c'était la dernière référence. L'identifiant rendu par la
+sélection est conservé **brut** et lié tel quel à la suppression, sans reparse
+ni canonicalisation : une ligne hors contrat (UUID non canonique, identifiant
+legacy) reste supprimable comme avant le refactor. `storage_paths()` fournit
 l'ensemble des chemins connus pour compter ces références ; c'est une lecture
 séquentielle volontaire de `media_assets` (aucun index ne peut éviter de lire
 tous les chemins). Les plans des deux sélections, des deux suppressions et de
@@ -271,12 +274,14 @@ tous les chemins). Les plans des deux sélections, des deux suppressions et de
 - tests de module `src/repos/media_board.rs` et `src/repos/media_assets.rs` —
   plans `EXPLAIN QUERY PLAN` : `guild_references_asset`, `purge_expired`,
   `list_stale_purge_candidates`, `list_expired_ready_purge_candidates`,
-  `delete_purge_candidate` et `delete_expired_ready_candidate` sans
-  `SCAN media_assets` ni `SCAN media_board_items`, via
-  `idx_media_assets_cover_asset` et `idx_media_board_items_artwork_asset`
-  (migration `0022`) ; `storage_paths` vérifie au contraire l'unique
-  `SCAN media_assets` volontaire (lecture de tous les chemins) ; garde-fou, pas
-  contrat de plan SQLite (le message d'échec imprime le plan réel) ;
+  `delete_purge_candidate` et `delete_expired_ready_candidate` sans aucune
+  lecture séquentielle en dehors de `playback_jobs` explicitement autorisée
+  (action de FK) ; le garde-fou rejette aussi un `SCAN` qui nomme un alias
+  (`SCAN b`), via `idx_media_assets_cover_asset` et
+  `idx_media_board_items_artwork_asset` (migration `0022`) ;
+  `storage_paths` vérifie au contraire l'unique `SCAN media_assets` volontaire
+  (lecture de tous les chemins) ; garde-fou, pas contrat de plan SQLite (le
+  message d'échec imprime le plan réel) ;
 - `playback_jobs.rs` — ordre de la file (`queue_position`), `scheduled_at`, un seul
   `PLAYING` par guilde, `busy_until`, claims concurrents (2 tasks tokio), retry
   `SQLITE_BUSY` de `claim_next` (verrou externe relâché), `set_status(Playing)`

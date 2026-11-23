@@ -203,7 +203,7 @@ async fn purge_stale_status(
     for candidate in candidates {
         let affected = db
             .media_assets()
-            .delete_purge_candidate(candidate.id)
+            .delete_purge_candidate(&candidate.id)
             .await?;
         if !affected {
             continue;
@@ -244,7 +244,7 @@ async fn purge_expired_ready(
         // le DELETE conditionnel ne supprime que l'état expiré observé.
         let affected = db
             .media_assets()
-            .delete_expired_ready_candidate(candidate.id, now)
+            .delete_expired_ready_candidate(&candidate.id, now)
             .await?;
         if !affected {
             continue;
@@ -662,17 +662,19 @@ mod tests {
         assert_eq!(stored.artwork_asset_id, None);
     }
 
-    /// Un asset expiré utilisé comme artwork d'un élément du board, ou lu par
-    /// un job actif, ne doit jamais être évincé : les exclusions board,
+    /// Un asset expiré épinglé comme média du board, artwork, pochette, ou lu
+    /// par un job actif, ne doit jamais être évincé : les exclusions board,
     /// artwork, pochette et job sont désormais portées par `lc-db`.
     #[tokio::test]
-    async fn keeps_board_artwork_and_active_job_assets() {
+    async fn keeps_board_artwork_cover_and_active_job_assets() {
         let fixture = fixture().await;
         let board_file = fixture.storage.root().join("board.mp4");
         let artwork_file = fixture.storage.root().join("artwork.jpg");
+        let cover_file = fixture.storage.root().join("board.cover.jpg");
         let job_file = fixture.storage.root().join("job.mp4");
         std::fs::write(&board_file, b"board").expect("fichier");
         std::fs::write(&artwork_file, b"artwork").expect("fichier");
+        std::fs::write(&cover_file, b"cover").expect("fichier");
         std::fs::write(&job_file, b"job").expect("fichier");
 
         let stale = fixture.now - TimeDuration::days(30);
@@ -698,6 +700,19 @@ mod tests {
                 stale,
             )
         };
+        let cover = MediaAsset {
+            kind: MediaKind::Image,
+            mime: "image/jpeg".into(),
+            duration_sec: None,
+            ..asset(
+                MediaStatus::Ready,
+                "cover-hash",
+                &cover_file,
+                stale,
+                expired,
+                stale,
+            )
+        };
         let playing = asset(
             MediaStatus::Ready,
             "playing-hash",
@@ -707,7 +722,7 @@ mod tests {
             stale,
         );
         let assets = fixture.db.media_assets();
-        for row in [&board, &artwork, &playing] {
+        for row in [&board, &artwork, &cover, &playing] {
             assets.insert(row).await.expect("asset");
         }
 
@@ -731,6 +746,10 @@ mod tests {
             .create(&item)
             .await
             .expect("item board");
+        assets
+            .set_cover(board.id, Some(cover.id))
+            .await
+            .expect("pochette du board");
 
         let job = PlaybackJob {
             id: PlaybackJobId::new_v4(),
@@ -764,8 +783,10 @@ mod tests {
 
         assert_eq!(report.expired_evicted, 0);
         assert!(artwork_file.exists());
+        assert!(cover_file.exists());
         assert!(job_file.exists());
         assert!(assets.get(artwork.id).await.expect("lecture").is_some());
+        assert!(assets.get(cover.id).await.expect("lecture").is_some());
         assert!(assets.get(playing.id).await.expect("lecture").is_some());
     }
 

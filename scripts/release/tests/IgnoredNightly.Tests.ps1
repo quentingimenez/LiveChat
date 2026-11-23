@@ -2,18 +2,26 @@
 # Protected here: verification-nightly.yml keeps its nightly schedule and manual
 # dispatch, the `ignored` job is gated by the exact two-event expression and is
 # unreachable from a pull_request. Its run step executes the exact nextest
-# command, with no shell escape hatch, and publishes the per-crate report. A
+# command with the filter selected from scripts/release/ignored-nightly-tests.json,
+# with no shell escape hatch, and publishes the per-crate report. A
 # commented-out command, a trailing `#`, an extra `;`/`&&`/`||`/`!`, a widened
-# `if:`, or an ignored test outside the three crates all fail here.
+# `if:`, a filter inlined in the run step, or an ignored test outside the three
+# crates all fail here.
 #
-# Any new `#[ignore]` suite must be added to the job's `-p` list and to the
-# counts below; the nightly report is the only place those tests run.
+# The manifest classifies every `#[ignore]` test as `local` (runs automatically)
+# or `network` (needs a third party service or real credentials, manual dispatch
+# only). It must
+# match the real inventory: a new, renamed or removed ignored test fails here
+# until the manifest and the documented total (39+11+2=52) are updated. Network
+# tests are not deleted: they stay listed in the report and run with
+# workflow_dispatch `network_tests=true`.
 
 $workflowPath = Join-Path $script:RepoRoot '.github/workflows/verification-nightly.yml'
 $workflow = Get-Content -Raw $workflowPath
 $job = [regex]::Match($workflow, '(?ms)^  ignored:[ \t]*\r?\n(.*?)(?=^  [A-Za-z_][A-Za-z0-9_-]*:[ \t]*(?:#.*)?\r?$|\z)').Groups[1].Value
 $runStep = [regex]::Match($job, '(?ms)^      - name: Run the ignored tests[ \t]*\r?\n(.*?)(?=^      - name:|\z)').Groups[1].Value
 $runScalar = [regex]::Match($runStep, '(?ms)^        run: \|[ \t]*\r?\n(.*)\z').Groups[1].Value
+$selectStep = [regex]::Match($job, '(?ms)^      - name: Select the ignored tests to run[ \t]*\r?\n(.*?)(?=^      - name:|\z)').Groups[1].Value
 $reportStep = [regex]::Match($job, '(?ms)^      - name: Report the ignored tests per crate[ \t]*\r?\n(.*?)(?=^      - name:|\z)').Groups[1].Value
 $uploadStep = [regex]::Match($job, '(?ms)^      - name: Upload the ignored test report[ \t]*\r?\n(.*?)(?=^      - name:|\z)').Groups[1].Value
 
@@ -47,11 +55,61 @@ $onBlock = [regex]::Match($workflow, '(?ms)^on:[ \t]*\r?\n(.*?)(?=^[A-Za-z_][^\r
 $onNoComments = Remove-Comments $onBlock
 $jobNoComments = Remove-Comments $job
 $runNoComments = Remove-Comments $runStep
+$selectNoComments = Remove-Comments $selectStep
 $reportNoComments = Remove-Comments $reportStep
 $uploadNoComments = Remove-Comments $uploadStep
+$manifestPath = Join-Path $script:RepoRoot 'scripts/release/ignored-nightly-tests.json'
+$manifest = $null
+$manifestError = 'file is missing'
+if (Test-Path $manifestPath) {
+    try {
+        $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json
+        $manifestError = $null
+    } catch {
+        $manifestError = $_.Exception.Message
+    }
+}
 $ifKeyPattern = '(?m)^[ \t]*["'']?if["'']?\s*:'
 $expectedGate = "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
-$expectedCommand = 'cargo nextest run -p lc-media -p lc-server -p xtask --all-features --locked --run-ignored only --no-fail-fast'
+$expectedCommand = 'cargo nextest run -p lc-media -p lc-server -p xtask --all-features --locked --run-ignored only --no-fail-fast -E "$NEXTEST_FILTER"'
+
+# The manifest classifies tests by source file, so the guard maps a path back to
+# the crate whose ignored tests the nightly job runs.
+function Get-NightlyCrate {
+    param([string]$Path)
+    if ($Path -like 'crates/lc-media/*') { return 'lc-media' }
+    if ($Path -like 'apps/lc-server/*') { return 'lc-server' }
+    if ($Path -like 'xtask/*') { return 'xtask' }
+    return ''
+}
+
+# Every `#[ignore]` in the tree, with the function it decorates. The attribute
+# is the last one before the test, but scan a few lines so a stacked attribute
+# cannot hide the function name.
+function Get-IgnoredSourceTests {
+    $result = @()
+    $lines = @(& git -C $script:RepoRoot grep -nE '^[[:space:]]*#\[ignore[[:space:]]*(\]|=)' -- '*.rs' 2>$null)
+    Assert-True ($lines.Count -gt 0) 'git grep found no #[ignore] attributes'
+    foreach ($line in $lines) {
+        $match = [regex]::Match($line, '^([^:]+):(\d+):')
+        if (-not $match.Success) { continue }
+        $file = $match.Groups[1].Value
+        $lineNumber = [int]$match.Groups[2].Value
+        $fileLines = [IO.File]::ReadAllLines((Join-Path $script:RepoRoot $file))
+        $function = $null
+        for ($index = $lineNumber; $index -lt [Math]::Min($lineNumber + 5, $fileLines.Count); $index++) {
+            $trimmed = $fileLines[$index].Trim()
+            if ($trimmed -match '^(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)') {
+                $function = $Matches[1]
+                break
+            }
+            if ($trimmed -notmatch '^(?:#\[|//|$)') { break }
+        }
+        Assert-True ($null -ne $function) "no fn after #[ignore] at ${file}:$lineNumber"
+        $result += [pscustomobject]@{ File = $file; Function = $function }
+    }
+    return $result
+}
 
 Test-Case 'ignored job keeps the nightly schedule and manual dispatch trigger' {
     Assert-True ($onNoComments.Length -gt 0) 'the workflow on: block not found'
@@ -105,28 +163,124 @@ Test-Case 'ignored job publishes a per-crate report with the real inventory' {
     Assert-True ($reportNoComments -match '(?m)^[ \t]*for crate in lc-media lc-server xtask; do[ \t]*\r?$') 'the report must count each of the three crates'
     Assert-True ($reportNoComments -match 'total=\$\(\(total \+ count\)\)') 'the report must sum the per-crate counts'
     Assert-True ($reportNoComments -match '\| \*\*total\*\* \| \*\*\$total\*\* \|') 'the report must publish its total'
+    Assert-True ($reportNoComments -match 'ignored-nightly-tests\.json') 'the report must read the network count from the manifest'
+    Assert-True ($reportNoComments -match 'inputs\.network_tests') 'the report must follow the manual dispatch input'
+    Assert-True ($reportNoComments -match 'run_count=\$total') 'the report must count every test when network_tests=true'
+    Assert-True ($reportNoComments -match 'run_count=\$\(\(total - network\)\)') 'the report must subtract the network tests on the nightly schedule'
+    Assert-True ($reportNoComments -match 'run_label="run without network"') 'the report must label the scheduled run'
+    Assert-True ($reportNoComments -match 'run_label="run in this job \(network included\)"') 'the report must label the network dispatch run'
+    Assert-True ($reportNoComments -match '\| \*\*\$run_label\*\* \| \*\*\$run_count\*\* \|') 'the report must publish the count actually run, not a fixed 34'
     foreach ($crate in @('lc-media', 'lc-server', 'xtask')) {
         Assert-True ($reportNoComments -match "(?m)\s-p\s+$([regex]::Escape($crate))\b") "the report list must select $crate"
     }
+}
+
+Test-Case 'ignored tests are classified in the manifest and match the real inventory' {
+    Assert-True ($null -ne $manifest) ("the ignored-test manifest is missing or invalid: " + $manifestError)
+    $entries = @($manifest.tests)
+    Assert-Equal 52 $entries.Count 'the manifest must list every ignored test (39+11+2)'
 
     $counts = @{ 'lc-media' = 0; 'lc-server' = 0; 'xtask' = 0 }
     $outside = @()
-    $ignoredLines = @(& git -C $script:RepoRoot grep -nE '^[[:space:]]*(#\[[^]]*\][[:space:]]*)*#\[ignore[[:space:]]*(\]|=)' -- '*.rs' 2>$null)
-    Assert-True ($ignoredLines.Count -gt 0) 'git grep found no #[ignore] attributes'
-    foreach ($line in $ignoredLines) {
-        $path = ($line -split ':', 2)[0]
-        if ($path -like 'crates/lc-media/*') { $counts['lc-media'] = $counts['lc-media'] + 1 }
-        elseif ($path -like 'apps/lc-server/*') { $counts['lc-server'] = $counts['lc-server'] + 1 }
-        elseif ($path -like 'xtask/*') { $counts['xtask'] = $counts['xtask'] + 1 }
-        else { $outside += $path }
+    foreach ($entry in $entries) {
+        $crate = Get-NightlyCrate $entry.file
+        if ($crate) { $counts[$crate] = $counts[$crate] + 1 } else { $outside += $entry.file }
+        Assert-True (-not [string]::IsNullOrWhiteSpace($entry.function)) "manifest entry without function: $($entry.file)"
+        if ($entry.file -match '/tests/') {
+            Assert-Equal $entry.function $entry.filter "an integration test filter is its test name: $($entry.file)"
+            continue
+        }
+        # A unit test filter is `<module path>::tests::<fn>` (inline `mod tests`)
+        # or `<module path>::<fn>` (a `*_tests.rs` module declared from its
+        # parent). Check the module path against the file itself: checking only
+        # the `::<fn>` suffix let a wrong module prefix slip through.
+        $relative = $entry.file -replace '^(crates/[^/]+|apps/[^/]+|xtask)/src/', ''
+        $segments = @($relative -replace '\.rs$', '' -split '/')
+        if ($segments[-1] -in @('lib', 'main', 'mod')) {
+            $segments = @($segments | Select-Object -First ($segments.Count - 1))
+        }
+        $modulePath = $segments -join '::'
+        if ([string]::IsNullOrEmpty($modulePath)) {
+            $rest = $entry.filter
+        } else {
+            Assert-True ($entry.filter.StartsWith("$modulePath::")) "a unit test filter must start with the module path of its file ($modulePath): $($entry.file)"
+            $rest = $entry.filter.Substring($modulePath.Length + 2)
+        }
+        $nested = '^tests(::[A-Za-z0-9_]+)*::' + [regex]::Escape($entry.function) + '$'
+        Assert-True ($rest -eq $entry.function -or $rest -match $nested) "a unit test filter must be <module>::tests::<fn> (or <module>::<fn> for a tests module): $($entry.file)::$($entry.function)"
     }
     Assert-Equal 0 $outside.Count ("ignored tests outside the three nightly crates: " + (($outside | Select-Object -Unique) -join ', '))
-    Assert-Equal 39 $counts['lc-media'] 'lc-media ignored-test inventory changed; update the documented counts'
-    Assert-Equal 11 $counts['lc-server'] 'lc-server ignored-test inventory changed; update the documented counts'
-    Assert-Equal 2 $counts['xtask'] 'xtask ignored-test inventory changed; update the documented counts'
-    $total = ($counts.Values | Measure-Object -Sum).Sum
-    Assert-Equal $ignoredLines.Count $total 'every #[ignore] line must be counted by one of the three crates'
-    Assert-Equal 52 $total 'the report total must be 52 (39+11+2), not just a table'
+    Assert-Equal 39 $counts['lc-media'] 'lc-media ignored-test inventory changed; update the manifest and documented counts'
+    Assert-Equal 11 $counts['lc-server'] 'lc-server ignored-test inventory changed; update the manifest and documented counts'
+    Assert-Equal 2 $counts['xtask'] 'xtask ignored-test inventory changed; update the manifest and documented counts'
+
+    $source = @(Get-IgnoredSourceTests)
+    $sourcePairs = @($source | ForEach-Object { "$($_.File)|$($_.Function)" } | Sort-Object)
+    $manifestPairs = @($entries | ForEach-Object { "$($_.file)|$($_.function)" } | Sort-Object)
+    $missing = @($sourcePairs | Where-Object { $manifestPairs -notcontains $_ })
+    $extra = @($manifestPairs | Where-Object { $sourcePairs -notcontains $_ })
+    Assert-Equal 0 $missing.Count ("ignored tests missing from the manifest: " + ($missing -join ', '))
+    Assert-Equal 0 $extra.Count ("manifest entries that are not #[ignore] tests: " + ($extra -join ', '))
+    Assert-Equal $source.Count $entries.Count 'the manifest and the source inventory must have the same size'
+
+    $filters = @($entries | ForEach-Object { $_.filter })
+    Assert-Equal $filters.Count (@($filters | Select-Object -Unique)).Count 'two manifest entries must not share a nextest filter'
+
+    $network = @($entries | Where-Object { $_.category -eq 'network' })
+    $local = @($entries | Where-Object { $_.category -eq 'local' })
+    Assert-Equal 19 $network.Count 'the network category must pin the 19 external-service or credential tests'
+    Assert-Equal 33 $local.Count 'every other ignored test must stay in the automatic run'
+    Assert-Equal 52 ($network.Count + $local.Count) 'each manifest entry must be local or network; no unclassified test'
+    $tiktokNetwork = @('renders_a_carousel_comment', 'renders_the_shared_comment_from_the_user_link', 'resolves_the_short_link_to_a_comment_card')
+    foreach ($entry in $entries) {
+        if ($entry.file -eq 'crates/lc-media/tests/network.rs') {
+            $expected = if ($entry.function -eq 'normalizes_generated_sample_with_ffmpeg') { 'local' } else { 'network' }
+            Assert-Equal $expected $entry.category "$($entry.file)::$($entry.function) must stay $expected"
+        } elseif ($entry.file -eq 'crates/lc-media/src/tiktok_comment.rs' -and $tiktokNetwork -contains $entry.function) {
+            Assert-Equal 'network' $entry.category "the real-network TikTok comment test must stay network: $($entry.function)"
+        } elseif ($entry.file -eq 'apps/lc-server/src/discord/runtime.rs' -and $entry.function -eq 'gateway_reel_configure_par_environnement') {
+            Assert-Equal 'network' $entry.category 'the Discord gateway test needs real credentials: keep it network'
+        } else {
+            Assert-Equal 'local' $entry.category "only the network suites may be classified network: $($entry.file)::$($entry.function)"
+        }
+    }
+
+    # A `network` test that returns when credentials are absent would give a
+    # green manual dispatch without covering anything: pin its real behaviour.
+    $discordPath = Join-Path $script:RepoRoot 'apps/lc-server/src/discord/runtime.rs'
+    $discordSource = Get-Content -Raw $discordPath
+    Assert-True ($discordSource -notmatch 'let Ok\(token\) = std::env::var\("DISCORD_TOKEN"\)') 'the Discord gateway test must fail without DISCORD_TOKEN, not return silently'
+    Assert-True ($discordSource -match 'DISCORD_TOKEN absent') 'the Discord gateway test must explain why it cannot run without credentials'
+    Assert-True ($discordSource -match 'discord\.com/api/v10/users/@me') 'the Discord gateway test must actually call the Discord API'
+
+    Assert-True (-not [string]::IsNullOrWhiteSpace($manifest.network_filter)) 'the manifest must publish its network filter'
+    Assert-True ($manifest.network_filter -notmatch '^\s*not\b') 'network_filter lists the network tests positively; the workflow applies the negation'
+    $clauses = @($manifest.network_filter -split ' or ' | ForEach-Object { $_.Trim() })
+    Assert-Equal $network.Count $clauses.Count 'the network filter must contain exactly one clause per network test'
+    Assert-Equal $clauses.Count (@($clauses | Select-Object -Unique)).Count 'the network filter must not repeat a clause'
+    foreach ($clause in $clauses) {
+        Assert-True ($clause -match '^test\(=[A-Za-z0-9_:]+\)$') "unexpected network filter clause: $clause"
+    }
+    foreach ($entry in $network) {
+        Assert-True ($clauses -contains "test(=$($entry.filter))") "the network filter misses $($entry.filter)"
+    }
+}
+
+Test-Case 'ignored job selects the filter from the manifest and keeps network tests manual' {
+    Assert-True ($selectStep.Length -gt 0) 'Select the ignored tests to run step not found'
+    Assert-True ($selectNoComments -match 'network_tests') 'the select step must read the manual dispatch input'
+    Assert-True ($selectNoComments -match "jq -r '\.network_filter'") 'the filter must come from the manifest, not a copy in the YAML'
+    Assert-True ($selectNoComments -match 'not \(\$\(jq -r') 'the automatic run must exclude the network tests, not run them alone'
+    Assert-True ($selectNoComments -match 'ignored-nightly-tests\.json') 'the select step must read the classification manifest'
+    Assert-True ($selectNoComments -match 'all\(\)') 'the manual dispatch must be able to run every ignored test'
+    Assert-True ($selectNoComments -match '\$GITHUB_ENV') 'the select step must export the filter to the next step'
+    Assert-True ($selectNoComments -match 'NEXTEST_FILTER') 'the select step must name the exported filter'
+    Assert-True ($runNoComments -match '-E\s+"\$NEXTEST_FILTER"') 'the run step must apply the selected filter'
+    Assert-True ($runNoComments -notmatch 'test\(') 'the network filter must not be inlined in the run step'
+
+    Assert-True ($onNoComments -match '(?m)^      network_tests:[ \t]*\r?$') 'workflow_dispatch must declare the network_tests input'
+    Assert-True ($onNoComments -match '(?m)^        type:\s*boolean[ \t]*\r?$') 'network_tests must be a boolean input'
+    Assert-True ($onNoComments -match '(?m)^        default:\s*false[ \t]*\r?$') 'network_tests must default to false so the scheduled run stays green'
 }
 
 Test-Case 'ignored job uploads the report even when a test fails' {

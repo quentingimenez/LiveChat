@@ -171,6 +171,7 @@ impl MediaPipeline {
             SourceKind::YouTube
             | SourceKind::TikTok
             | SourceKind::Twitter
+            | SourceKind::Tenor
             | SourceKind::DirectMedia => {
                 guard::validate_target(&source.canonical_url).await?;
             }

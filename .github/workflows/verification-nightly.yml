@@ -208,7 +208,8 @@ jobs:
 
   # WebSocket load harness: boots a real lc-server against a fresh seeded
   # database, drives 50 overlay clients plus an ingest poster for 60 s, and
-  # fails when any latency/socket/ingest budget fails.
+  # fails when any latency/socket/ingest budget fails. The board/media/trigger
+  # budgets probe a separate seeded guild (200 READY assets and board items).
   load:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -228,14 +229,21 @@ jobs:
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      # The loadtest only exercises the WebSocket and ingest paths: skip
-      # the admin web UI build.
+      # The loadtest only exercises the WebSocket, ingest, board and signed
+      # media paths: skip the admin web UI build.
       - name: Build lc-server
         run: cargo build -p lc-server --release --locked
         env:
           LC_ADMIN_WEB_BUILD: "0"
       - name: Run the WebSocket load harness
-        run: cargo run -p xtask --release --locked -- loadtest --server-bin target/release/lc-server --clients 50 --duration-secs 60 --report target/load-report.json
+        run: |
+          cargo run -p xtask --release --locked -- loadtest \
+            --server-bin target/release/lc-server \
+            --clients 50 --duration-secs 60 \
+            --board-items 200 --max-board-p95-ms 250 \
+            --max-media-p95-ms 250 \
+            --media-trigger-rate 10 --max-media-trigger-p95-ms 250 \
+            --report target/load-report.json
       - name: Upload load report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

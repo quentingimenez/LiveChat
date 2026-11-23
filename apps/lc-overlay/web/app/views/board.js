@@ -3,6 +3,7 @@
 import { api, run } from '../core/api.js';
 import { performAction } from '../core/action-ui.js';
 import { isEditable, openContextMenu } from '../core/contextmenu.js';
+import { findAction } from '../core/find-shortcut.js';
 import { acceleratorFromEvent, ALTGR_HINT, BARE_KEY_MESSAGE, UNSUPPORTED_KEY, UNSUPPORTED_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import { ARTWORK_MESSAGES, artworkExtension, droppedArtworkLink, fetchArtwork, MAX_ARTWORK_BYTES, pickArtworkFile } from '../core/artwork.js';
 import {
@@ -1383,6 +1384,31 @@ document.addEventListener('keydown', (event) => {
       enterSelection();
     }
     pickAllVisible();
+  }
+});
+
+// Ctrl+F focuses the media search field, like a find shortcut. The board claims
+// the key even without a search field (another tab, no guild), because WebView2
+// would otherwise open its « Find on page » bar on the app window.
+document.addEventListener('keydown', (event) => {
+  const action = findAction({
+    key: event.key,
+    ctrl: event.ctrlKey,
+    meta: event.metaKey,
+    altKey: event.altKey,
+    handled: event.defaultPrevented,
+    capturing: state.capturing,
+    dialogOpen: Boolean(document.getElementById('dialog-root').firstElementChild),
+    searchAvailable: Boolean(document.querySelector('.board-search')),
+  });
+  if (action === null) {
+    return;
+  }
+  event.preventDefault();
+  if (action === 'focusSearch') {
+    const field = document.querySelector('.board-search');
+    field.focus();
+    field.select();
   }
 });
 

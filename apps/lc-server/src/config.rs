@@ -868,12 +868,20 @@ fn validate_admin_ui_token(token: &Secret) -> Result<(), ConfigError> {
     })
 }
 
-/// `true` when `characters` is a whole repetition of a shorter block.
+/// `true` when the token follows a shorter prefix pattern from start to end.
+///
+/// Every period is considered, not only the ones dividing the length, so
+/// `password1` repeated three times then `passw` is caught. The period is
+/// capped at half the length: a longer one cannot repeat a block twice, and
+/// testing it would reject random tokens whose last character equals their
+/// first one. This is a cheap entropy heuristic, not a measure of real
+/// entropy: a randomly generated token of at least 32 characters remains the
+/// recommended choice.
 fn is_repetition_of_a_shorter_pattern(characters: &[char]) -> bool {
     let length = characters.len();
-    (1..length)
-        .filter(|period| length.is_multiple_of(*period))
-        .any(|period| (0..length).all(|index| characters[index] == characters[index % period]))
+    let max_period = length / 2;
+    (1..=max_period)
+        .any(|period| (period..length).all(|index| characters[index] == characters[index - period]))
 }
 
 #[cfg(test)]
@@ -1395,6 +1403,10 @@ mod tests {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "admin123admin123admin123admin123",
             "0123456789abcdef0123456789abcdef",
+            // The repeated block does not divide the length: only a period
+            // check on the whole suffix catches it.
+            "password1password1password1passw",
+            "abcdefghijabcdefghijabcdefghijabc",
         ] {
             let error = Config::from_pairs(pairs(&[
                 ("API_URL", "http://localhost:3000"),
@@ -1426,6 +1438,14 @@ mod tests {
         ]);
         assert_eq!(config.admin_ui_token.expose_secret(), STRONG_ADMIN_TOKEN);
         assert!(config.admin_secret_login_enabled());
+
+        // Un token aléatoire peut commencer et finir par le même caractère :
+        // ce n'est pas la répétition d'un motif.
+        let border = config_with(&[
+            ("API_URL", "http://localhost:3000"),
+            ("ADMIN_UI_TOKEN", "a7Qm2vXp9Rz4Lw8Tn6Hs3Jd5Fg1Bc0Ya"),
+        ]);
+        assert!(border.admin_secret_login_enabled());
 
         let blank = config_with(&[
             ("API_URL", "http://localhost:3000"),
@@ -1558,7 +1578,12 @@ mod tests {
         // n'est pas contrôlable de façon fiable sur toutes les plateformes).
         let result = Config::from_env();
         if let Err(error) = result {
-            assert!(matches!(error, ConfigError::Missing { .. }));
+            // Un POSTE peut exporter un `ADMIN_UI_TOKEN` faible : c'est alors
+            // une erreur typée de démarrage, pas un panic du test.
+            assert!(matches!(
+                error,
+                ConfigError::Missing { .. } | ConfigError::WeakSecret { .. }
+            ));
         }
     }
 }

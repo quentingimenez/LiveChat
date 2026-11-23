@@ -47,6 +47,8 @@ pub fn source_title(
             normalized(resolved.and_then(|resolved| resolved.title.as_deref()))
                 .or_else(|| normalized(ytdlp_title))
         }
+        // Tenor n'a que le titre Open Graph lu par le résolveur.
+        SourceKind::Tenor => normalized(resolved.and_then(|resolved| resolved.title.as_deref())),
         // Un tweet n'a pas de titre : le début de son texte, sinon l'auteur.
         SourceKind::Twitter => resolved
             .and_then(tweet_title)
@@ -258,6 +260,7 @@ mod tests {
         let raw = match kind {
             SourceKind::YouTube => "https://www.youtube.com/watch?v=abc",
             SourceKind::TikTok => "https://www.tiktok.com/@_/video/1",
+            SourceKind::Tenor => "https://tenor.com/view/1",
             _ => "https://x.com/a/status/1",
         };
         let source = MediaSource::from_raw(raw).unwrap();
@@ -313,6 +316,17 @@ mod tests {
         assert_eq!(
             source_title(&source, Some(&youtube), None).as_deref(),
             Some("Titre oEmbed")
+        );
+
+        // Tenor : le titre Open Graph du résolveur, sans repli yt-dlp.
+        let tenor = MediaSource::from_raw("https://tenor.com/view/1").unwrap();
+        let tenor_media = resolved(
+            SourceKind::Tenor,
+            Some("Jonathan Drouin Halifax Mooseheads"),
+        );
+        assert_eq!(
+            source_title(&tenor, Some(&tenor_media), Some("Titre yt-dlp")).as_deref(),
+            Some("Jonathan Drouin Halifax Mooseheads")
         );
 
         // Média direct : nom de fichier de l'URL.

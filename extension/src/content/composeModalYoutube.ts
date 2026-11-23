@@ -1,4 +1,5 @@
 import { INVALID_DURATION_MESSAGE, parseDisplayDuration } from '../lib/duration';
+import { isTrustedPageEvent } from './shared';
 
 const MODAL_STYLE_ID = 'lce-compose-modal-style';
 const MODAL_OVERLAY_ID = 'lce-compose-modal-overlay';
@@ -446,6 +447,11 @@ const ensureModal = (): ComposeModalRefs => {
 
   form.addEventListener('submit', (event) => {
     event.preventDefault();
+
+    if (!isTrustedPageEvent(event)) {
+      return;
+    }
+
     onSubmit();
   });
 

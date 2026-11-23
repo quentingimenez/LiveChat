@@ -6,6 +6,12 @@ import {
 import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModalTwitter';
 import { initInpageTheme } from './inpage-theme';
 import { TWITTER_BUTTON_LOGO_SIZE_PX, twitterInpageStyles } from './inpage-styles';
+import {
+  onTrustedPageEvent,
+  rememberActionTarget,
+  resolveActionButtonTarget,
+  resolveAllowedActionTarget,
+} from './shared';
 
 const STYLE_ID = 'lce-twitter-style';
 const BUTTON_ATTRIBUTE = 'data-lce-twitter-button';
@@ -278,19 +284,19 @@ const attachLongPressCompose = (() => {
       })();
     };
 
-    cancelButton.addEventListener('click', (event) => {
+    onTrustedPageEvent<MouseEvent>(cancelButton, 'click', (event) => {
       event.preventDefault();
       event.stopPropagation();
       close();
     });
 
-    submitButton.addEventListener('click', (event) => {
+    onTrustedPageEvent<MouseEvent>(submitButton, 'click', (event) => {
       event.preventDefault();
       event.stopPropagation();
       submit();
     });
 
-    textarea.addEventListener('keydown', (event) => {
+    onTrustedPageEvent<KeyboardEvent>(textarea, 'keydown', (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
         event.preventDefault();
         submit();
@@ -351,7 +357,7 @@ const attachLongPressCompose = (() => {
       clearPressTimer();
     };
 
-    options.button.addEventListener('pointerdown', (event) => {
+    onTrustedPageEvent<PointerEvent>(options.button, 'pointerdown', (event) => {
       if (event.pointerType === 'mouse' && event.button !== 0) {
         return;
       }
@@ -673,6 +679,15 @@ const normalizeTwitterStatusUrl = (rawUrl: string, base?: string): string | null
 };
 
 const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }> => {
+  const targetUrl = resolveAllowedActionTarget('twitter', url, window.location.origin);
+
+  if (!targetUrl) {
+    return {
+      ok: false,
+      message: 'URL X / Twitter invalide.',
+    };
+  }
+
   const runtime = readRuntime();
 
   if (!runtime || typeof runtime.sendMessage !== 'function') {
@@ -685,7 +700,7 @@ const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }>
   try {
     const response = (await runtime.sendMessage({
       type: 'lce/send-quick',
-      url,
+      url: targetUrl,
       source: 'twitter',
     })) as { ok?: unknown; message?: unknown };
 
@@ -709,6 +724,15 @@ const sendQuick = async (url: string): Promise<{ ok: boolean; message: string }>
 };
 
 const sendCompose = async (payload: ComposeSubmitPayload): Promise<ComposeSubmitResult> => {
+  const targetUrl = resolveAllowedActionTarget('twitter', payload.url, window.location.origin);
+
+  if (!targetUrl) {
+    return {
+      ok: false,
+      message: 'URL X / Twitter invalide.',
+    };
+  }
+
   const runtime = readRuntime();
 
   if (!runtime || typeof runtime.sendMessage !== 'function') {
@@ -721,7 +745,7 @@ const sendCompose = async (payload: ComposeSubmitPayload): Promise<ComposeSubmit
   try {
     const response = (await runtime.sendMessage({
       type: 'lce/send-compose',
-      url: payload.url,
+      url: targetUrl,
       text: payload.text,
       forceRefresh: payload.forceRefresh,
       saveToBoard: payload.saveToBoard,
@@ -896,6 +920,9 @@ const createActionButton = (article: HTMLElement): HTMLButtonElement => {
   button.className = 'lce-button';
   setButtonState(button, 'idle');
 
+  const resolveTargetUrl = (): string | null =>
+    resolveActionButtonTarget(button, 'twitter', resolveTweetStatusUrl(article), window.location.origin);
+
   const longPressCompose = attachLongPressCompose({
     button,
     title: 'Envoyer vers LiveChat avec texte',
@@ -909,7 +936,7 @@ const createActionButton = (article: HTMLElement): HTMLButtonElement => {
       setButtonState(button, 'loading', 'Envoi en cours...');
 
       try {
-        const targetUrl = button.dataset.targetUrl || resolveTweetStatusUrl(article);
+        const targetUrl = resolveTargetUrl();
 
         if (!targetUrl) {
           const message = 'Impossible de détecter l’URL du tweet.';
@@ -943,7 +970,7 @@ const createActionButton = (article: HTMLElement): HTMLButtonElement => {
     },
   });
 
-  button.addEventListener('click', (event) => {
+  onTrustedPageEvent<MouseEvent>(button, 'click', (event) => {
     event.preventDefault();
     event.stopPropagation();
 
@@ -958,15 +985,15 @@ const createActionButton = (article: HTMLElement): HTMLButtonElement => {
     longPressCompose.closePopover();
 
     scheduleSingleClickAction(button, () => {
-      void runQuickAction(button, () => button.dataset.targetUrl || resolveTweetStatusUrl(article));
+      void runQuickAction(button, resolveTargetUrl);
     });
   });
 
-  button.addEventListener('dblclick', (event) => {
+  onTrustedPageEvent<MouseEvent>(button, 'dblclick', (event) => {
     event.preventDefault();
     event.stopPropagation();
     clearButtonClickTimer(button);
-    openComposeForButton(button, () => button.dataset.targetUrl || resolveTweetStatusUrl(article), 'X / Twitter');
+    openComposeForButton(button, resolveTargetUrl, 'X / Twitter');
   });
 
   return button;
@@ -980,6 +1007,14 @@ const createFloatingButton = (): HTMLButtonElement => {
   button.className = 'lce-button lce-button-floating';
   setButtonState(button, 'idle');
 
+  const resolveTargetUrl = (): string | null =>
+    resolveActionButtonTarget(
+      button,
+      'twitter',
+      normalizeTwitterStatusUrl(window.location.href, window.location.origin),
+      window.location.origin,
+    );
+
   const longPressCompose = attachLongPressCompose({
     button,
     title: 'Envoyer vers LiveChat avec texte',
@@ -993,7 +1028,7 @@ const createFloatingButton = (): HTMLButtonElement => {
       setButtonState(button, 'loading', 'Envoi en cours...');
 
       try {
-        const targetUrl = button.dataset.targetUrl || normalizeTwitterStatusUrl(window.location.href, window.location.origin);
+        const targetUrl = resolveTargetUrl();
 
         if (!targetUrl) {
           const message = 'Impossible de détecter l’URL du tweet.';
@@ -1027,7 +1062,7 @@ const createFloatingButton = (): HTMLButtonElement => {
     },
   });
 
-  button.addEventListener('click', (event) => {
+  onTrustedPageEvent<MouseEvent>(button, 'click', (event) => {
     event.preventDefault();
     event.stopPropagation();
 
@@ -1042,19 +1077,15 @@ const createFloatingButton = (): HTMLButtonElement => {
     longPressCompose.closePopover();
 
     scheduleSingleClickAction(button, () => {
-      void runQuickAction(button, () => button.dataset.targetUrl || normalizeTwitterStatusUrl(window.location.href, window.location.origin));
+      void runQuickAction(button, resolveTargetUrl);
     });
   });
 
-  button.addEventListener('dblclick', (event) => {
+  onTrustedPageEvent<MouseEvent>(button, 'dblclick', (event) => {
     event.preventDefault();
     event.stopPropagation();
     clearButtonClickTimer(button);
-    openComposeForButton(
-      button,
-      () => button.dataset.targetUrl || normalizeTwitterStatusUrl(window.location.href, window.location.origin),
-      'X / Twitter',
-    );
+    openComposeForButton(button, resolveTargetUrl, 'X / Twitter');
   });
 
   return button;
@@ -1095,7 +1126,7 @@ const upsertTweetButton = (article: HTMLElement): boolean => {
     actionGroup.appendChild(slot);
   }
 
-  button.dataset.targetUrl = statusUrl;
+  rememberActionTarget(button, statusUrl);
   return true;
 };
 
@@ -1108,7 +1139,7 @@ const upsertFloatingButton = (targetUrl: string): void => {
     document.body.appendChild(floatingButton);
   }
 
-  floatingButton.dataset.targetUrl = targetUrl;
+  rememberActionTarget(floatingButton, targetUrl);
 };
 
 const removeAllTwitterButtons = (): void => {

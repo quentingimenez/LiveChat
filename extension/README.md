@@ -160,6 +160,57 @@ les options de l'extension pour obtenir un nouveau jeton. Le jeton reste stocké
 en clair dans le profil comme décrit ci-dessus ; cette limite d'inactivité
 s'applique côté serveur et ne modifie pas ce mode de stockage.
 
+### Permissions d'hôte optionnelles — décision C-05
+
+`manifests/base.json` déclare `optional_host_permissions: ["https://*/*"]`. Ce
+motif paraît large, mais c'est le **motif déclaratif minimal** pour cette
+extension, et il ne dit pas ce qui est effectivement accordé à l'exécution.
+
+**Pourquoi `https://*/*` et pas plus étroit.** Le serveur LiveChat est
+auto-hébergé : l'administrateur choisit une origine HTTPS arbitraire pour
+`API_URL`, inconnue au moment de la compilation de l'extension. En MV3,
+`permissions.request({ origins: [...] })` ne peut accorder que des motifs
+**déjà déclarés** dans le manifeste (les `host_permissions` statiques sont
+accordées à l'installation, ce qui donnerait accès à l'API sans geste
+utilisateur, et les hôtes média listés plus haut ne sont pas l'API). Le motif
+`https://*/*` est donc la plus petite déclaration adéquate : il couvre toutes
+les origines HTTPS, **jamais** `http:`. Un motif déclaratif plus étroit
+(`<all_urls>`, `*://*/*`) serait au contraire un élargissement ; il est interdit
+par les tests d'invariant (`src/manifests.test.ts`).
+
+**Ce qui est réellement demandé.** La demande est toujours rétrécie à l'origine
+configurée, au moment du geste utilisateur : `requestApiHostPermission` et
+`ensureApiPermissionTransition` (`src/lib/settings.ts`) appellent
+`browser.permissions.request({ origins: [toApiOriginPattern(apiUrl)] })`.
+`toApiOriginPattern` (`src/lib/url.ts`) n'utilise que l'origine de l'URL via
+`normalizeApiUrl`, donc chemin, query et slash final sont ignorés : par exemple
+`https://board.example.com/ingest` demande uniquement
+`https://board.example.com/*`. Lors d'un changement d'API,
+`ensureApiPermissionTransition` demande la **nouvelle** origine en premier
+(Firefox exige le geste utilisateur), puis retire l'ancienne uniquement si la
+demande a été accordée.
+
+**`http:` est refusé.** `normalizeApiUrl` lève `URL API invalide. Utilise
+https://.` pour toute URL `http:` ; la validation de la configuration et
+`toApiOriginPattern` héritent de ce refus. Aucune permission `http:` n'est donc
+jamais demandée, y compris pour `localhost`.
+
+**Ce que voit l'utilisateur.** Au moment où il sauvegarde la configuration, le
+navigateur affiche une invite d'autorisation ciblant uniquement l'origine de
+l'`API_URL` (pas « tous les sites »). L'utilisateur peut refuser : la
+configuration n'est alors pas sauvegardée et l'extension n'obtient aucun accès
+supplémentaire. La page d'options affiche l'état réel via
+`hasApiHostPermission` (`Accordée` / `Manquante` pour cette origine). Aucune
+autorisation n'est demandée au chargement de l'extension ni pendant la navigation
+sur les sites média : les permissions de ces derniers sont statiques et
+déclarées dans `host_permissions`.
+
+**Garde-fous.** `src/manifests.test.ts` épingle les listes exactes des
+permissions, hôtes et motif optionnel, et rejette tout motif large dans les
+trois manifestes ; `src/lib/settings.test.ts` vérifie que la demande ne contient
+que l'origine configurée. Élargir les permissions d'hôte exige une revue de
+sécurité et la mise à jour de ces tests.
+
 ## CI / Release GitHub
 
 Workflow: [`extension.yml`](../.github/workflows/extension.yml) (racine du monorepo)

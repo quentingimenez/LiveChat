@@ -872,11 +872,16 @@ async fn auth_403_pour_un_client_non_loopback() {
 #[tokio::test]
 async fn auth_401_without_session_and_bearer_ignored() {
     let harness = Harness::new().await;
-    let (status, _, bytes) = harness
+    let (status, headers, bytes) = harness
         .send(harness.request_without_session(Method::GET, "/admin/api/overview"))
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(json_or_null(&bytes)["error"], "unauthorized");
+    assert!(
+        set_cookie_headers(&headers, session::SESSION_COOKIE_NAME).is_empty(),
+        "un 401 sans cookie ne doit pas en effacer un ; reçu: {:?}",
+        set_cookie_headers(&headers, session::SESSION_COOKIE_NAME)
+    );
 
     // The legacy Bearer token is gone entirely.
     let mut request = harness.request_without_session(Method::GET, "/admin/api/overview");
@@ -884,18 +889,26 @@ async fn auth_401_without_session_and_bearer_ignored() {
         header::AUTHORIZATION,
         header::HeaderValue::from_str(&format!("Bearer {TOKEN}")).expect("en-tête valide"),
     );
-    let (status, _, bytes) = harness.send(request).await;
+    let (status, headers, bytes) = harness.send(request).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(json_or_null(&bytes)["error"], "unauthorized");
+    assert!(
+        set_cookie_headers(&headers, session::SESSION_COOKIE_NAME).is_empty(),
+        "un jeton Bearer ignoré ne doit pas non plus effacer de cookie"
+    );
 
     // The session endpoint reports the configured methods.
-    let (status, _, bytes) = harness
+    let (status, headers, bytes) = harness
         .send(harness.request_without_session(Method::GET, "/admin/auth/session"))
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let body = json_or_null(&bytes);
     assert_eq!(body["error"], "unauthorized");
     assert_eq!(body["methods"], json!({ "discord": false, "secret": true }));
+    assert!(
+        set_cookie_headers(&headers, session::SESSION_COOKIE_NAME).is_empty(),
+        "GET /admin/auth/session sans cookie ne doit rien effacer"
+    );
 }
 
 #[tokio::test]

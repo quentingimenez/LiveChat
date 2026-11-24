@@ -1808,24 +1808,64 @@ fn joined_asset(
     }))
 }
 
-/// B-03: build the shared `WHERE` for the filter. `q` uses `instr(lower(...), ?)`
-/// to keep the exact legacy substring semantics (`%`/`_` are literals).
+/// B-03 (chef review) : `lower()` de SQLite ne replie que l'ASCII, alors que le
+/// needle est déjà passé par `to_lowercase()` (Unicode) côté Rust. Quand le
+/// needle contient des non-ASCII, on replie explicitement les majuscules
+/// correspondantes avec `replace()` ; sinon on garde `lower(col)` tel quel.
+fn folded_search_expr(column: &str, folds: &[(char, char)]) -> String {
+    let mut expr = format!("lower({column})");
+    for &(upper, lower) in folds {
+        // Les littéraux insérés dans le SQL échappent `'` en le doublant.
+        let upper_literal = upper.to_string().replace('\'', "''");
+        let lower_literal = lower.to_string().replace('\'', "''");
+        expr = format!("replace({expr}, '{upper_literal}', '{lower_literal}')");
+    }
+    expr
+}
+
+/// B-03: build the shared `WHERE` for the filter. `q` uses `instr(folded(col), ?)`
+/// to keep the exact legacy substring semantics (`%`/`_` are literals), with
+/// Unicode case folding matching Rust's `to_lowercase()` on the stored text.
 fn board_filter_clause(search: Option<&str>) -> (String, Vec<String>) {
     let mut clause = String::from("b.guild_id = ?1");
     let mut binds: Vec<String> = Vec::new();
     if let Some(needle) = search {
+        // Une seule passe sur le needle, bornée par ses caractères non-ASCII
+        // distincts (pas par l'alphabet). Les uppercases multi-char sont
+        // ignorés : c'est le seul cas exotique toléré par la spec B-03.
+        let mut folds: Vec<(char, char)> = Vec::new();
+        if !needle.is_ascii() {
+            for lower in needle.chars().filter(|c| !c.is_ascii()) {
+                let mut uppercase = lower.to_uppercase();
+                let upper = match (uppercase.next(), uppercase.next()) {
+                    (Some(upper), None) if upper != lower => upper,
+                    _ => continue,
+                };
+                if !folds.iter().any(|(known, _)| *known == upper) {
+                    folds.push((upper, lower));
+                }
+            }
+        }
+        let folded = |column: &str| folded_search_expr(column, &folds);
         // `created_by_name` is the name copied at creation time; the active
         // member display name is matched through the two author paths used
         // by `BoardAuthors::resolve` (legacy `row_matches` matches the
         // resolved author name).
-        clause.push_str(
-            " AND (instr(lower(b.title), ?2) > 0 \
-                  OR instr(lower(b.message), ?2) > 0 \
-                  OR instr(lower(b.created_by_name), ?2) > 0 \
-                  OR instr(lower(COALESCE(author_member.display_name, \
-                                          author_discord.display_name, b.created_by_name)), ?2) > 0 \
-                  OR instr(lower(a.source_url), ?2) > 0)",
-        );
+        clause.push_str(&format!(
+            " AND (instr({title}, ?2) > 0 \
+                  OR instr({message}, ?2) > 0 \
+                  OR instr({by_name}, ?2) > 0 \
+                  OR instr({author}, ?2) > 0 \
+                  OR instr({url}, ?2) > 0)",
+            title = folded("b.title"),
+            message = folded("b.message"),
+            by_name = folded("b.created_by_name"),
+            author = folded(
+                "COALESCE(author_member.display_name, \
+                           author_discord.display_name, b.created_by_name)"
+            ),
+            url = folded("a.source_url"),
+        ));
         binds.push(needle.to_owned());
     }
     (clause, binds)
@@ -2832,6 +2872,123 @@ mod tests {
                 ids[0].to_canonical()
             ]
         );
+    }
+
+    /// B-03 (chef review) : `lower()` de SQLite ne replie que l'ASCII. Le
+    /// legacy comparait `to_lowercase().contains()` (Unicode) : une majuscule
+    /// accentuée stockée doit donc être repliée quand le needle est accentué.
+    #[tokio::test]
+    async fn board_list_folds_accented_case_in_sql_filter() {
+        let dir = TempDir::new().expect("tempdir");
+        let (state, db, client) = harness(dir.path()).await;
+        let a = insert_asset(&db, dir.path(), "acc-a.mp4", MediaKind::Video).await;
+        let b = insert_asset(&db, dir.path(), "acc-b.mp4", MediaKind::Video).await;
+        let c = insert_asset(&db, dir.path(), "acc-c.mp4", MediaKind::Video).await;
+        let t0 = fixed_now() - TimeDuration::minutes(3);
+        insert_item(
+            &db,
+            &a,
+            Some("ÉLODIE"),
+            Some("100% CAFÉ"),
+            Some("Alpha"),
+            t0,
+        )
+        .await;
+        insert_item(
+            &db,
+            &b,
+            Some("élodie"),
+            Some("autre message"),
+            Some("Beta"),
+            t0 + TimeDuration::minutes(1),
+        )
+        .await;
+        insert_item(
+            &db,
+            &c,
+            Some("CAFÉ 100%"),
+            Some("gamma"),
+            Some("Gamma"),
+            t0 + TimeDuration::minutes(2),
+        )
+        .await;
+
+        // Needle accentué : la majuscule accentuée stockée doit être repliée.
+        let body = list(&state, &client, None, query(Some("élodie"), None, None)).await;
+        assert_eq!(body["total"], 2, "élodie doit trouver ÉLODIE et élodie");
+        assert_eq!(
+            titles(&body),
+            vec!["élodie".to_owned(), "ÉLODIE".to_owned()],
+            "le titre ÉLODIE doit correspondre à élodie"
+        );
+
+        // Le needle est lowercasé côté Rust avant le SQL : la même recherche
+        // écrite en majuscules accentuées doit donner exactement le même lot.
+        let body = list(&state, &client, None, query(Some("ÉLODIE"), None, None)).await;
+        assert_eq!(
+            titles(&body),
+            vec!["élodie".to_owned(), "ÉLODIE".to_owned()],
+            "ÉLODIE doit être replié en élodie côté Rust"
+        );
+
+        // CAFÉ dans un message et dans un titre, avec un needle accentué.
+        let body = list(&state, &client, None, query(Some("café"), None, None)).await;
+        assert_eq!(body["total"], 2, "message CAFÉ et titre CAFÉ 100%");
+        assert_eq!(
+            titles(&body),
+            vec!["CAFÉ 100%".to_owned(), "ÉLODIE".to_owned()]
+        );
+
+        // Parité ASCII conservée : 'elodie'/'cafe' ne doivent PAS trouver les
+        // formes accentuées (le legacy to_lowercase().contains() non plus).
+        for needle in ["elodie", "cafe"] {
+            let body = list(&state, &client, None, query(Some(needle), None, None)).await;
+            assert_eq!(body["total"], 0, "{needle} (ASCII) ne doit pas replier É");
+            assert!(titles(&body).is_empty(), "{needle} (ASCII)");
+        }
+
+        // `%` et `_` restent littéraux dans le chemin replié (pas de LIKE).
+        let body = list(&state, &client, None, query(Some("café 100%"), None, None)).await;
+        assert_eq!(titles(&body), vec!["CAFÉ 100%".to_owned()], "% littéral");
+        let body = list(&state, &client, None, query(Some("café _00%"), None, None)).await;
+        assert!(titles(&body).is_empty(), "_ littéral dans le chemin replié");
+    }
+
+    /// Le filtre replié doit garder la pagination SQL (limit/offset/total).
+    #[tokio::test]
+    async fn board_list_unicode_filter_keeps_pagination() {
+        let dir = TempDir::new().expect("tempdir");
+        let (state, db, client) = harness(dir.path()).await;
+        for (index, title) in ["ÉLODIE", "élodie", "CAFÉ"].iter().enumerate() {
+            let asset = insert_asset(
+                &db,
+                dir.path(),
+                &format!("page-{index}.mp4"),
+                MediaKind::Video,
+            )
+            .await;
+            insert_item(
+                &db,
+                &asset,
+                Some(title),
+                None,
+                Some("ÉCRIVAIN"),
+                fixed_now() - TimeDuration::minutes(3 - i64::try_from(index).expect("index i64")),
+            )
+            .await;
+        }
+
+        let body = list(
+            &state,
+            &client,
+            None,
+            query(Some("écrivain"), Some("1"), Some("1")),
+        )
+        .await;
+        assert_eq!(body["total"], 3, "total du filtre replié");
+        assert_eq!(body["limit"], 1);
+        assert_eq!(body["offset"], 1);
+        assert_eq!(titles(&body), vec!["élodie".to_owned()], "2e item accentué");
     }
 
     /// Enrichissements batch (auteur membre, favori, artwork, miniature) =

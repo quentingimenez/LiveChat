@@ -11,7 +11,20 @@
 const SCAN_MIN_INTERVAL_MS = 150;
 const URL_POLL_MS = 700;
 
-/** Déclencheur additionnel (YouTube : plein écran et redimensionnement). */
+// Horloge monotone : `Date.now()` peut reculer (correction NTP, changement
+// manuel d'heure) et ferait alors dériver la fenêtre de budget, au point de
+// retarder — voire perdre — le scan final d'une rafale. `performance.now()`
+// ne recule pas ; le repli n'existe que pour les moteurs sans `performance`.
+const monotonicNow = (): number =>
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+
+/**
+ * Déclencheur additionnel (YouTube : plein écran et redimensionnement).
+ * Il passe par le même budget que les mutations : il est donc appliqué au plus
+ * tard `SCAN_MIN_INTERVAL_MS` plus tard qu'avec un scan immédiat.
+ */
 export type ScannerTrigger = { target: EventTarget; event: string };
 
 /**
@@ -39,7 +52,7 @@ export const startObservedScanner = (
         return;
       }
 
-      lastScanAt = Date.now();
+      lastScanAt = monotonicNow();
       try {
         void Promise.resolve(scan()).catch(() => {
           // Ignore scanner errors to keep observer alive.
@@ -56,7 +69,7 @@ export const startObservedScanner = (
     }
 
     const wait =
-      lastScanAt === null ? 0 : SCAN_MIN_INTERVAL_MS - (Date.now() - lastScanAt);
+      lastScanAt === null ? 0 : SCAN_MIN_INTERVAL_MS - (monotonicNow() - lastScanAt);
     if (wait <= 0) {
       // La fenêtre est écoulée : une seule frame suffit, elle lira l'état
       // courant du DOM même si plusieurs mutations se sont empilées.
@@ -73,7 +86,7 @@ export const startObservedScanner = (
     budgetTimer = window.setTimeout(() => {
       budgetTimer = null;
       const remaining =
-        lastScanAt === null ? 0 : SCAN_MIN_INTERVAL_MS - (Date.now() - lastScanAt);
+        lastScanAt === null ? 0 : SCAN_MIN_INTERVAL_MS - (monotonicNow() - lastScanAt);
       if (remaining <= 0) {
         scheduleFrame();
       } else {

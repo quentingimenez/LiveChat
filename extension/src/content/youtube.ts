@@ -1422,6 +1422,8 @@ const scanYoutubeTargets = async (): Promise<void> => {
 
 void initInpageTheme();
 registerToastListener();
+// Plein écran et redimensionnement passent par le même budget que les
+// mutations : le rescan arrive au plus tard ~150 ms après l'événement.
 startObservedScanner(scanYoutubeTargets, [
   { target: document, event: 'fullscreenchange' },
   { target: window, event: 'resize' },

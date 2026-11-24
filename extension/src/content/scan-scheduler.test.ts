@@ -215,6 +215,32 @@ describe('planificateur de scan observé', () => {
     stop();
   });
 
+  it('garde la fenêtre de budget quand l’horloge système recule', () => {
+    const env = installEnvironment();
+    const scan = vi.fn();
+    const stop = startObservedScanner(scan);
+    env.raf.flush();
+    scan.mockClear();
+
+    // Un scan a lieu (fenêtre écoulée) : la mutation suivante tombe donc dans
+    // la fenêtre de budget.
+    vi.advanceTimersByTime(BUDGET_MS);
+    env.emitMutations(1);
+    env.raf.flush();
+    expect(scan).toHaveBeenCalledTimes(1);
+
+    // Deuxième mutation dans la fenêtre, puis l'heure système recule de 5 s
+    // (correction NTP). Le scan final doit arriver dans la fenêtre, pas 5 s
+    // plus tard : la fenêtre s'appuie sur une horloge monotone.
+    env.emitMutations(1);
+    vi.setSystemTime(new Date(Date.now() - 5000));
+    vi.advanceTimersByTime(BUDGET_MS);
+    env.raf.flush();
+
+    expect(scan).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
   it('scanne le dernier état du DOM après une rafale tombée dans la fenêtre', () => {
     const env = installEnvironment();
     const seen: string[] = [];

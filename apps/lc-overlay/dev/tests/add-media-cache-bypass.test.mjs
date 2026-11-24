@@ -59,12 +59,8 @@ const linkEntry = balancedBlock(
 const sendLink = balancedBlock(uploads, 'async function sendLink', '{', '}');
 
 test('le dialogue offre le contournement dans le panneau du lien', () => {
-  assert.match(dialog, /class: 'cache-option'/);
   assert.match(dialog, /class: 'switch cache-switch'/);
   assert.match(dialog, /'Ignorer le cache serveur'/);
-  assert.match(dialog, /id: 'add-media-force-refresh-hint'/);
-  assert.match(dialog, /'aria-describedby': 'add-media-force-refresh-hint'/);
-  assert.match(dialog, /'Retélécharge le lien même si le serveur a déjà ce média.'/);
   assert.match(linkPanel, /forceRefreshOption/);
   assert.doesNotMatch(filePanel, /forceRefreshOption/);
 });

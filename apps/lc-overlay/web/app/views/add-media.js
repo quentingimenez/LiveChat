@@ -98,21 +98,15 @@ export function openAddDialog(options) {
     const forceRefreshInput = h('input', {
       type: 'checkbox',
       id: 'add-media-force-refresh',
-      'aria-describedby': 'add-media-force-refresh-hint',
     });
     const forceRefreshOption = h(
       'div',
-      { class: 'cache-option', hidden: true },
+      { hidden: true },
       h(
         'label',
         { class: 'switch cache-switch' },
         forceRefreshInput,
         h('span', null, 'Ignorer le cache serveur'),
-      ),
-      h(
-        'p',
-        { class: 'file-hint', id: 'add-media-force-refresh-hint' },
-        'Retélécharge le lien même si le serveur a déjà ce média.',
       ),
     );
     const linkMessage = h('textarea', { class: 'field', rows: '2', maxlength: '500', placeholder: 'Légende affichée sur les overlays' });

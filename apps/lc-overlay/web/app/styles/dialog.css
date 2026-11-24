@@ -231,23 +231,13 @@
   font-size: 12px;
 }
 
-/* « Ignorer le cache serveur » : un interrupteur sous les champs du lien, la
-   conséquence du choix à la ligne suivante. La grille de libellé du dialogue
-   empilerait le rail au-dessus de son texte : l'interrupteur garde sa ligne. */
-.dialog .stack .cache-option {
-  display: grid;
-  gap: 4px;
-}
-
+/* « Ignorer le cache serveur » : la grille de libellé du dialogue empilerait
+   le rail au-dessus de son texte ; l'interrupteur garde sa ligne. */
 .dialog .stack label.cache-switch {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   cursor: pointer;
-}
-
-.cache-option .file-hint {
-  padding-left: 44px;
 }
 
 .dialog .actions {

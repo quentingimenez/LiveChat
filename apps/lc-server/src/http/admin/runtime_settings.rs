@@ -11,10 +11,10 @@
 //! next request (overview, WebSocket handshake, ingestion, speech…) uses them
 //! without a restart.
 //!
-//! The legacy TikTok cookie stays writable through `PATCH` and is still
-//! persisted in clear text in `admin_runtime.json`, but it is never returned:
-//! the payload only exposes `hasTikTokCookie`, and the value is normalised like
-//! the legacy `normalizeTikTokCookie`.
+//! The source cookies (TikTok and YouTube) stay writable through `PATCH` and are
+//! still persisted in clear text in `admin_runtime.json`, but they are never
+//! returned: the payload only exposes `hasTikTokCookie` and `hasYouTubeCookie`,
+//! and the values are normalised like the legacy `normalizeTikTokCookie`.
 //!
 //! # Persistence
 //!
@@ -30,7 +30,7 @@ use serde_json::{json, Value};
 use super::auth::AdminAccess;
 use super::AdminError;
 use crate::app::AppState;
-use crate::runtime::normalize_tiktok_cookie;
+use crate::runtime::{normalize_tiktok_cookie, normalize_youtube_cookie};
 
 /// Name of the runtime settings file, kept here for the admin tests.
 #[cfg(test)]
@@ -61,6 +61,10 @@ pub(super) async fn patch(
             "tiktokCookie" => {
                 let cookie = value.as_str().ok_or_else(invalid_payload)?;
                 overrides.tiktok_cookie = Some(normalize_tiktok_cookie(cookie));
+            }
+            "youtubeCookie" => {
+                let cookie = value.as_str().ok_or_else(invalid_payload)?;
+                overrides.youtube_cookie = Some(normalize_youtube_cookie(cookie));
             }
             "defaultDuration" => overrides.default_duration = nullable_u64(value)?,
             "mediaCacheTtlHours" => overrides.media_cache_ttl_hours = nullable_u64(value)?,
@@ -143,6 +147,7 @@ fn settings_payload(state: &AppState) -> Value {
     let overrides = state.runtime().snapshot();
     let config = &state.config;
     let tiktok_cookie = state.runtime().tiktok_cookie();
+    let youtube_cookie = state.runtime().youtube_cookie();
 
     let setting = |value: Value, runtime: bool, default: Value| {
         json!({
@@ -154,6 +159,7 @@ fn settings_payload(state: &AppState) -> Value {
 
     json!({
         "hasTikTokCookie": !tiktok_cookie.is_empty(),
+        "hasYouTubeCookie": !youtube_cookie.is_empty(),
         "settings": {
             "defaultDuration": setting(
                 json!(state.runtime().default_duration()),

@@ -64,6 +64,9 @@ pub struct YtdlpOptions {
     pub format_override: Option<String>,
     /// Client YouTube forcé (`android`, …).
     pub youtube_player_client: Option<String>,
+    /// Ajoute le cookie YouTube configuré (repli après un échec
+    /// d'authentification uniquement).
+    pub use_youtube_cookie: bool,
     /// Fusionner la sortie en MP4.
     pub merge: bool,
 }
@@ -73,6 +76,7 @@ impl Default for YtdlpOptions {
         Self {
             format_override: None,
             youtube_player_client: None,
+            use_youtube_cookie: false,
             merge: true,
         }
     }
@@ -708,6 +712,19 @@ pub async fn download_youtube(
             Ok(download) => return Ok(download),
             Err(error) => tracing::debug!("repli YouTube android échoué : {error}"),
         }
+        // Dernier repli d'authentification : le cookie YouTube configuré.
+        // Il n'est jamais envoyé pour une vidéo publique, seulement après un
+        // échec classé « connexion requise ».
+        if config.tools.youtube_cookie.is_some() {
+            let with_cookie = YtdlpOptions {
+                use_youtube_cookie: true,
+                ..YtdlpOptions::default()
+            };
+            match download_with_ytdlp(config, canonical_url, temp_dir, &with_cookie).await {
+                Ok(download) => return Ok(download),
+                Err(error) => tracing::debug!("repli YouTube cookie échoué : {error}"),
+            }
+        }
     }
     let format_error = first_error.is(MediaErrorCode::DownloadFailed)
         || lowered.contains("requested format")
@@ -906,7 +923,58 @@ pub fn find_downloaded_file(dir: &Path) -> MediaResult<Option<PathBuf>> {
     Ok(candidates.pop().map(|(_, path)| path))
 }
 
-/// Télécharge via `yt-dlp` (cookies TikTok inclus si configurés).
+/// Sélectionne le cookie à envoyer à `yt-dlp` et son domaine Netscape.
+///
+/// TikTok est le seul site dont le cookie part dès la première tentative. Le
+/// cookie YouTube n'est ajouté que si l'appelant l'a demandé (`options`), donc
+/// jamais pour une vidéo qui se télécharge sans authentification. Aucun cookie
+/// n'est envoyé à un site tiers.
+fn cookie_for_url<'a>(
+    config: &'a MediaConfig,
+    url: &str,
+    options: &YtdlpOptions,
+) -> Option<(&'a str, &'static str)> {
+    if is_tiktok_url(url) {
+        config
+            .tools
+            .tiktok_cookie
+            .as_deref()
+            .map(|cookie| (cookie, ".tiktok.com"))
+    } else if options.use_youtube_cookie && is_youtube_url(url) {
+        config
+            .tools
+            .youtube_cookie
+            .as_deref()
+            .map(|cookie| (cookie, ".youtube.com"))
+    } else {
+        None
+    }
+}
+
+/// Ajoute `--cookies <fichier>` aux arguments quand la source a un cookie
+/// configuré et autorisé pour cette tentative.
+fn add_source_cookie_args(
+    args: &mut Vec<String>,
+    config: &MediaConfig,
+    url: &str,
+    temp_dir: &Path,
+    options: &YtdlpOptions,
+) -> MediaResult<()> {
+    let Some((cookie, domain)) = cookie_for_url(config, url, options) else {
+        return Ok(());
+    };
+    if cookie.trim().is_empty() {
+        return Ok(());
+    }
+    let cookie_path = write_cookie_file(temp_dir, cookie, domain)?;
+    if let Some(index) = args.iter().position(|argument| argument == "-o") {
+        args.insert(index, cookie_path.display().to_string());
+        args.insert(index, "--cookies".to_string());
+    }
+    Ok(())
+}
+
+/// Télécharge via `yt-dlp` (cookies de la source inclus si configurés).
 pub async fn download_with_ytdlp(
     config: &MediaConfig,
     url: &str,
@@ -914,17 +982,7 @@ pub async fn download_with_ytdlp(
     options: &YtdlpOptions,
 ) -> MediaResult<DownloadResult> {
     let mut args = build_ytdlp_args(config, url, temp_dir, options);
-    if is_tiktok_url(url) {
-        if let Some(cookie) = &config.tools.tiktok_cookie {
-            if !cookie.trim().is_empty() {
-                let cookie_path = write_cookie_file(temp_dir, cookie)?;
-                if let Some(index) = args.iter().position(|argument| argument == "-o") {
-                    args.insert(index, cookie_path.display().to_string());
-                    args.insert(index, "--cookies".to_string());
-                }
-            }
-        }
-    }
+    add_source_cookie_args(&mut args, config, url, temp_dir, options)?;
     let output = crate::process::run_command(
         &config.tools.ytdlp,
         &args,
@@ -1444,8 +1502,13 @@ async fn download_tiktok_carousel(
     .await
 }
 
-/// Écrit un fichier de cookies Netscape pour `yt-dlp` à partir d'un en-tête Cookie.
-pub fn write_cookie_file(temp_dir: &Path, cookie_header: &str) -> MediaResult<PathBuf> {
+/// Écrit un fichier de cookies Netscape pour `yt-dlp` à partir d'un en-tête
+/// Cookie et du domaine de la source (`.tiktok.com`, `.youtube.com`).
+pub fn write_cookie_file(
+    temp_dir: &Path,
+    cookie_header: &str,
+    domain: &str,
+) -> MediaResult<PathBuf> {
     let path = temp_dir.join("cookies.txt");
     let mut lines = vec!["# Netscape HTTP Cookie File".to_string()];
     for (name, value) in parse_cookie_pairs(cookie_header) {
@@ -1453,7 +1516,7 @@ pub fn write_cookie_file(temp_dir: &Path, cookie_header: &str) -> MediaResult<Pa
         // avec le reste du fichier : on l'omet plutôt que d'écrire `name\t`.
         if !value.is_empty() {
             lines.push(format!(
-                ".tiktok.com\tTRUE\t/\tTRUE\t2147483647\t{name}\t{value}"
+                "{domain}\tTRUE\t/\tTRUE\t2147483647\t{name}\t{value}"
             ));
         }
     }
@@ -1771,8 +1834,12 @@ mod tests {
             ]
         );
         let directory = tempfile::TempDir::new().unwrap();
-        let path =
-            write_cookie_file(directory.path(), "sessionid=abc; sid_tt=def; ttwid=").unwrap();
+        let path = write_cookie_file(
+            directory.path(),
+            "sessionid=abc; sid_tt=def; ttwid=",
+            ".tiktok.com",
+        )
+        .unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains(".tiktok.com\tTRUE\t/\tTRUE\t2147483647\tsessionid\tabc"));
         assert!(content.contains("sid_tt\tdef"));
@@ -1911,6 +1978,126 @@ mod tests {
             "aucun repli vidéo sans limite de hauteur : {format}"
         );
         assert!(tiktok_ytdlp_options(false).format_override.is_none());
+    }
+
+    #[test]
+    fn youtube_cookie_file_uses_the_youtube_domain() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path =
+            write_cookie_file(directory.path(), "SAPISID=abc; SID=def", ".youtube.com").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains(".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSAPISID\tabc"));
+        assert!(content.contains("SID\tdef"));
+        assert!(!content.contains(".tiktok.com"));
+    }
+
+    #[test]
+    fn cookie_selection_is_site_scoped_and_youtube_is_opt_in() {
+        let config = MediaConfig::from_pairs([
+            ("TIKTOK_COOKIE", "sessionid=tiktok"),
+            ("YOUTUBE_COOKIE", "SAPISID=youtube"),
+        ]);
+        let default = YtdlpOptions::default();
+
+        assert_eq!(
+            cookie_for_url(&config, "https://www.tiktok.com/@a/video/1", &default),
+            Some(("sessionid=tiktok", ".tiktok.com"))
+        );
+        // Le cookie YouTube n'est jamais envoyé sans le drapeau de repli.
+        assert_eq!(
+            cookie_for_url(&config, "https://www.youtube.com/watch?v=abc", &default),
+            None
+        );
+        let with_cookie = YtdlpOptions {
+            use_youtube_cookie: true,
+            ..YtdlpOptions::default()
+        };
+        assert_eq!(
+            cookie_for_url(&config, "https://www.youtube.com/watch?v=abc", &with_cookie),
+            Some(("SAPISID=youtube", ".youtube.com"))
+        );
+        assert_eq!(
+            cookie_for_url(&config, "https://youtu.be/abc", &with_cookie),
+            Some(("SAPISID=youtube", ".youtube.com"))
+        );
+        // Aucun cookie de source connue n'est envoyé à un autre site.
+        assert_eq!(
+            cookie_for_url(&config, "https://example.com/video", &with_cookie),
+            None
+        );
+        // Un cookie TikTok ne part pas vers YouTube, et inversement.
+        let youtube_only = MediaConfig::from_pairs([("YOUTUBE_COOKIE", "SAPISID=youtube")]);
+        assert_eq!(
+            cookie_for_url(
+                &youtube_only,
+                "https://www.tiktok.com/@a/video/1",
+                &with_cookie
+            ),
+            None
+        );
+        let tiktok_only = MediaConfig::from_pairs([("TIKTOK_COOKIE", "sessionid=tiktok")]);
+        assert_eq!(
+            cookie_for_url(
+                &tiktok_only,
+                "https://www.youtube.com/watch?v=abc",
+                &with_cookie
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn cookie_args_are_inserted_before_the_output() {
+        let config = MediaConfig::from_pairs([
+            ("TIKTOK_COOKIE", "sessionid=tiktok"),
+            ("YOUTUBE_COOKIE", "SAPISID=youtube"),
+        ]);
+        let directory = tempfile::TempDir::new().unwrap();
+        let url = "https://www.youtube.com/watch?v=abc";
+        let default = YtdlpOptions::default();
+        let mut args = build_ytdlp_args(&config, url, directory.path(), &default);
+        add_source_cookie_args(&mut args, &config, url, directory.path(), &default).unwrap();
+        assert!(
+            !args.contains(&"--cookies".to_string()),
+            "aucun cookie sans repli d'authentification : {args:?}"
+        );
+
+        let with_cookie = YtdlpOptions {
+            use_youtube_cookie: true,
+            ..YtdlpOptions::default()
+        };
+        add_source_cookie_args(&mut args, &config, url, directory.path(), &with_cookie).unwrap();
+        let cookie_index = args
+            .iter()
+            .position(|argument| argument == "--cookies")
+            .expect("--cookies ajouté");
+        let output_index = args
+            .iter()
+            .position(|argument| argument == "-o")
+            .expect("-o présent");
+        assert!(cookie_index < output_index, "cookie avant -o : {args:?}");
+        assert_eq!(
+            args[cookie_index + 1],
+            directory.path().join("cookies.txt").display().to_string()
+        );
+        let content = std::fs::read_to_string(directory.path().join("cookies.txt")).unwrap();
+        assert!(content.contains(".youtube.com"));
+        assert!(!content.contains(".tiktok.com"));
+
+        let tiktok_url = "https://www.tiktok.com/@a/video/1";
+        let mut tiktok_args = build_ytdlp_args(&config, tiktok_url, directory.path(), &default);
+        add_source_cookie_args(
+            &mut tiktok_args,
+            &config,
+            tiktok_url,
+            directory.path(),
+            &default,
+        )
+        .unwrap();
+        assert!(tiktok_args.contains(&"--cookies".to_string()));
+        let content = std::fs::read_to_string(directory.path().join("cookies.txt")).unwrap();
+        assert!(content.contains(".tiktok.com"));
+        assert!(!content.contains(".youtube.com"));
     }
 
     #[test]

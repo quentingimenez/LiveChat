@@ -178,7 +178,8 @@ async fn secret_login(
     }
 }
 
-/// `GET /admin/auth/discord`: redirect to Discord with a `state` cookie.
+/// `GET /admin/auth/discord`: redirect to Discord with a `state` cookie,
+/// reusing the one already pinned in this browser.
 async fn discord_login(
     State(state): State<AppState>,
     peer: PeerIp,
@@ -194,7 +195,16 @@ async fn discord_login(
         return auth::method_disabled_response();
     };
 
-    let state_token = session::generate_token();
+    // A `state` already pinned in this browser is reused instead of rotated:
+    // two clicks, two tabs, or a double click whose two responses interleave
+    // then share one `state`, so the callback of the authorize page already
+    // open stays verifiable. Rotating it invalidated that page: the return
+    // carried a `state` the cookie no longer had, and the login failed with
+    // "OAuth state invalid or expired" while the Discord code was valid. The
+    // cookie is reissued either way, which refreshes its 10 minute window.
+    let state_token = session::cookie_value(&headers, session::OAUTH_STATE_COOKIE_NAME)
+        .filter(|token| session::is_token(token))
+        .unwrap_or_else(session::generate_token);
     let Ok(mut authorize) = Url::parse(oauth::AUTHORIZE_URL) else {
         return auth::internal_error_response();
     };
@@ -242,6 +252,17 @@ async fn discord_callback(
         _ => false,
     };
     if !state_matches {
+        // Both causes of `oauth_state` share one user-facing message, and only
+        // these fields tell them apart: no state cookie at all (another
+        // browser, a cookie the browser dropped, the 10 minute window missed)
+        // versus a cookie that does not carry the `state` of the authorize page
+        // (a flow started elsewhere, or a stale page). The values are never
+        // logged.
+        tracing::warn!(
+            state_cookie_present = cookie_state.is_some(),
+            query_state_present = query.state.is_some(),
+            "admin Discord login refused: OAuth2 state does not match the browser cookie"
+        );
         return login_error(&state, "oauth_state", StatusCode::BAD_REQUEST);
     }
 

@@ -61,6 +61,22 @@ pub fn generate_token() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
+/// Length of a [`generate_token`] value: 32 bytes, base64url, no padding.
+const TOKEN_LEN: usize = 43;
+
+/// Whether `value` has the shape of a [`generate_token`] value.
+///
+/// Routes that reuse a token they issued earlier (the OAuth2 `state`, pinned in
+/// a cookie) check this first: a value of any other shape comes from a foreign
+/// or damaged cookie and is replaced instead of being reflected back into the
+/// authorization URL.
+pub fn is_token(value: &str) -> bool {
+    value.len() == TOKEN_LEN
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
 /// SHA-256 hexadecimal digest stored in `admin_sessions.token_hash`.
 pub fn hash_token(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
@@ -314,6 +330,7 @@ mod tests {
         let second = generate_token();
 
         assert_eq!(first.len(), 43, "32 bytes without padding");
+        assert!(is_token(&first), "base64url alphabet: {first}");
         assert!(
             first
                 .chars()
@@ -323,6 +340,12 @@ mod tests {
             "base64url alphabet: {first}"
         );
         assert_ne!(first, second);
+
+        // Anything else is a cookie value the server never issued.
+        assert!(!is_token(""), "vide");
+        assert!(!is_token(&first[..42]), "tronqué");
+        assert!(!is_token(&format!("{first}=")), "avec remplissage");
+        assert!(!is_token("state-1"), "valeur étrangère");
 
         assert_eq!(hash_token("abc").len(), 64);
         assert!(hash_token("abc").chars().all(|c| c.is_ascii_hexdigit()));

@@ -625,6 +625,9 @@ export interface RuntimeSettingsResponse {
   tiktokCookie?: string;
   /** Presence flag for the write-only TikTok cookie. */
   hasTikTokCookie?: boolean;
+  youtubeCookie?: string;
+  /** Presence flag for the write-only YouTube cookie. */
+  hasYouTubeCookie?: boolean;
 }
 
 export interface PurgeCacheResponse {

@@ -157,6 +157,62 @@ body {
   margin-top: 4px;
 }
 
+.actions-row .btn-air {
+  flex: 2;
+}
+
+/* Options d'envoi repliées : le formulaire reste court, les réglages avancés
+   (durée, cache, board) restent à un clic. */
+.details-panel {
+  margin-top: 2px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.details-panel > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.details-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.details-panel > summary::after {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-right: 3px;
+  border-right: 2px solid var(--text-faint);
+  border-bottom: 2px solid var(--text-faint);
+  transform: rotate(45deg);
+  transition: transform 120ms ease;
+}
+
+.details-panel[open] > summary::after {
+  transform: rotate(-135deg);
+}
+
+.details-panel > summary:hover {
+  color: var(--text-main);
+}
+
+.details-body {
+  display: grid;
+  gap: 8px;
+  padding: 2px 12px 12px;
+}
+
 .btn {
   flex: 1;
   min-height: 34px;

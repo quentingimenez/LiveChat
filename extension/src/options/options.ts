@@ -1,5 +1,4 @@
 import {
-  DEFAULT_AUTHOR_NAME,
   ensureApiPermissionTransition,
   getSettings,
   hasApiHostPermission,
@@ -26,8 +25,6 @@ interface PairingConsumeSuccessResponse {
   apiBaseUrl?: unknown;
   ingestApiToken?: unknown;
   guildId?: unknown;
-  authorName?: unknown;
-  authorImage?: unknown;
 }
 
 interface PairingConsumeErrorResponse {
@@ -42,11 +39,8 @@ const manualForm = document.getElementById('options-form') as HTMLFormElement;
 const pairingCodeInput = document.getElementById('pairing-code') as HTMLInputElement;
 const pairButton = document.getElementById('pair-button') as HTMLButtonElement;
 const apiUrlInput = document.getElementById('api-url') as HTMLInputElement;
-const manualApiUrlInput = document.getElementById('api-url-manual') as HTMLInputElement;
 const ingestTokenInput = document.getElementById('ingest-token') as HTMLInputElement;
 const guildIdInput = document.getElementById('guild-id') as HTMLInputElement;
-const authorNameInput = document.getElementById('author-name') as HTMLInputElement;
-const authorImageInput = document.getElementById('author-image') as HTMLInputElement;
 const permissionStateNode = document.getElementById('permission-state') as HTMLParagraphElement;
 const saveButton = document.getElementById('save-button') as HTMLButtonElement;
 const testButton = document.getElementById('test-button') as HTMLButtonElement;
@@ -89,47 +83,34 @@ const withBusyState = (busy: boolean, action: 'save' | 'test' | 'pair' = 'save')
   saveButton.disabled = busy;
   testButton.disabled = busy;
   pairButton.disabled = busy;
-  saveButton.textContent = busy && action === 'save' ? 'Sauvegarde...' : 'Sauvegarder';
-  testButton.textContent = busy && action === 'test' ? 'Test...' : 'Tester la config';
-  pairButton.textContent = busy && action === 'pair' ? 'Appairage...' : 'Récupérer la configuration';
+  saveButton.textContent = busy && action === 'save' ? 'Enregistrement...' : 'Enregistrer';
+  testButton.textContent = busy && action === 'test' ? 'Test...' : 'Tester';
+  pairButton.textContent = busy && action === 'pair' ? 'Connexion...' : 'Connecter';
 };
 
-const getApiUrlFromInputs = (preferred: 'pairing' | 'manual'): string => {
-  if (preferred === 'pairing') {
-    return toNonEmptyString(apiUrlInput.value) || toNonEmptyString(manualApiUrlInput.value) || '';
-  }
-
-  return toNonEmptyString(manualApiUrlInput.value) || toNonEmptyString(apiUrlInput.value) || '';
-};
-
-const setApiUrlInputs = (value: string): void => {
-  apiUrlInput.value = value;
-  manualApiUrlInput.value = value;
-};
+const readApiUrl = (): string => toNonEmptyString(apiUrlInput.value) || '';
 
 const applySettingsToForm = (settings: ExtensionSettings): void => {
-  setApiUrlInputs(settings.apiUrl);
+  apiUrlInput.value = settings.apiUrl;
   ingestTokenInput.value = settings.ingestToken;
   guildIdInput.value = settings.guildId;
-  authorNameInput.value = settings.authorName;
-  authorImageInput.value = settings.authorImage || '';
 };
 
 const collectSettingsFromForm = (): Partial<ExtensionSettings> => {
   return {
-    apiUrl: getApiUrlFromInputs('manual'),
+    apiUrl: readApiUrl(),
     ingestToken: ingestTokenInput.value,
     guildId: guildIdInput.value,
-    authorName: authorNameInput.value,
-    authorImage: authorImageInput.value,
   };
 };
 
 const refreshPermissionState = async (): Promise<void> => {
-  const rawApiUrl = getApiUrlFromInputs('pairing').trim();
+  const rawApiUrl = readApiUrl();
+
+  permissionStateNode.classList.remove('is-granted', 'is-missing');
 
   if (!rawApiUrl) {
-    permissionStateNode.textContent = 'Autorisation domaine: non configuré.';
+    permissionStateNode.textContent = 'Autorisation de l’adresse : non configurée.';
     return;
   }
 
@@ -138,21 +119,24 @@ const refreshPermissionState = async (): Promise<void> => {
   try {
     normalizedApiUrl = normalizeApiUrl(rawApiUrl);
   } catch {
-    permissionStateNode.textContent = 'Autorisation domaine: URL invalide.';
+    permissionStateNode.textContent = 'Autorisation de l’adresse : URL invalide.';
     return;
   }
 
   const hasPermission = await hasApiHostPermission(normalizedApiUrl);
+  const origin = new URL(normalizedApiUrl).origin;
+
   permissionStateNode.textContent = hasPermission
-    ? `Autorisation domaine: accordée (${new URL(normalizedApiUrl).origin})`
-    : `Autorisation domaine: manquante (${new URL(normalizedApiUrl).origin})`;
+    ? `Autorisation de l’adresse : accordée (${origin})`
+    : `Autorisation de l’adresse : manquante (${origin})`;
+  permissionStateNode.classList.add(hasPermission ? 'is-granted' : 'is-missing');
 };
 
 const resolvePairingApiUrl = (): string => {
-  const rawApiUrl = toNonEmptyString(getApiUrlFromInputs('pairing'));
+  const rawApiUrl = readApiUrl();
 
   if (!rawApiUrl) {
-    throw new Error('API_URL obligatoire avant appairage (URL racine du serveur).');
+    throw new Error('L’adresse du serveur est obligatoire avant l’appairage (racine, sans /overlay ni /ingest).');
   }
 
   return normalizeApiUrl(rawApiUrl);
@@ -162,7 +146,6 @@ const loadExistingSettings = async (): Promise<void> => {
   const existingSettings = await getSettings();
 
   if (!existingSettings) {
-    authorNameInput.value = DEFAULT_AUTHOR_NAME;
     await refreshPermissionState();
     return;
   }
@@ -188,11 +171,11 @@ const getPairingFailureMessage = (params: {
   }
 
   if (status === 404) {
-    return `Endpoint introuvable (${endpoint}). Vérifie que le serveur est à jour et que API_URL est la racine (sans /overlay ni /ingest).`;
+    return `Endpoint introuvable (${endpoint}). Vérifie que le serveur est à jour et que l’adresse est la racine (sans /overlay ni /ingest).`;
   }
 
   if (status === 403) {
-    return `Échec appairage (403): requête refusée avant le serveur ou par un proxy. Vérifie API_URL racine et autorise POST ${endpoint}.`;
+    return `Échec appairage (403): requête refusée avant le serveur ou par un proxy. Vérifie que l’adresse est la racine et autorise POST ${endpoint}.`;
   }
 
   if (status === 401) {
@@ -268,8 +251,6 @@ pairingForm.addEventListener('submit', (event) => {
         apiUrl: toNonEmptyString(body?.apiBaseUrl) || apiUrl,
         ingestToken: toNonEmptyString(body?.ingestApiToken) || '',
         guildId: toNonEmptyString(body?.guildId) || '',
-        authorName: toNonEmptyString(body?.authorName) || DEFAULT_AUTHOR_NAME,
-        authorImage: toNonEmptyString(body?.authorImage) || '',
       });
 
       if (!normalized.ok) {
@@ -280,9 +261,9 @@ pairingForm.addEventListener('submit', (event) => {
       const normalizedPermissionGranted = await hasApiHostPermission(normalized.value.apiUrl);
 
       if (!normalizedPermissionGranted) {
-        setApiUrlInputs(normalized.value.apiUrl);
+        apiUrlInput.value = normalized.value.apiUrl;
         setStatus(
-          'Le serveur a indiqué un autre domaine API : relance « Récupérer la configuration » pour l’autoriser.',
+          'Le serveur a indiqué un autre domaine API : relance « Connecter » pour l’autoriser.',
           'error',
         );
         return;
@@ -406,12 +387,6 @@ testButton.addEventListener('click', () => {
 });
 
 apiUrlInput.addEventListener('input', () => {
-  manualApiUrlInput.value = apiUrlInput.value;
-  void refreshPermissionState();
-});
-
-manualApiUrlInput.addEventListener('input', () => {
-  apiUrlInput.value = manualApiUrlInput.value;
   void refreshPermissionState();
 });
 

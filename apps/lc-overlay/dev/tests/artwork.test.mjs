@@ -8,6 +8,8 @@ import {
   ARTWORK_MESSAGES,
   artworkExtension,
   artworkFileName,
+  artworkLinkError,
+  bytesFromBase64,
   droppedArtworkLink,
   fetchArtwork,
   httpErrorMessage,
@@ -156,4 +158,110 @@ test('fetchArtwork reports an HTTP error and an empty image', async () => {
   assert.deepEqual(await fetchArtwork('https://cdn.test/a.png', respond('gone', { status: 404 })), { error: httpErrorMessage(404) });
   assert.match(httpErrorMessage(404), /404/);
   assert.deepEqual(await fetchArtwork('https://cdn.test/a.png', respond(new Uint8Array(0))), { error: ARTWORK_MESSAGES.empty });
+});
+
+// --- a link the WebView cannot read (no CORS header): the shell downloads it ---
+const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01, 0x02]);
+const encoded = Buffer.from(pngBytes).toString('base64');
+const blocked = async () => {
+  throw new TypeError('Failed to fetch');
+};
+
+test('bytesFromBase64: the bytes of the shell, and an invalid base64 throws', () => {
+  assert.deepEqual(new Uint8Array(bytesFromBase64(encoded)), pngBytes);
+  assert.equal(bytesFromBase64('').length, 0);
+  assert.equal(bytesFromBase64(null).length, 0);
+  // ASCII whitespace is ignored by design, an unknown character is not.
+  assert.equal(bytesFromBase64(' YWJj ').length, 3);
+  assert.throws(() => bytesFromBase64('YWJj%%%'));
+});
+
+test('artworkLinkError: the shell codes reuse the board messages', () => {
+  assert.equal(artworkLinkError('invalid_link'), ARTWORK_MESSAGES.invalidLink);
+  assert.equal(artworkLinkError('not_image'), ARTWORK_MESSAGES.notImageLink);
+  assert.equal(artworkLinkError('too_large'), ARTWORK_MESSAGES.tooLarge);
+  assert.equal(artworkLinkError('empty'), ARTWORK_MESSAGES.empty);
+  assert.equal(artworkLinkError('unreachable'), ARTWORK_MESSAGES.unreachable);
+  assert.equal(artworkLinkError('too_many_redirects'), ARTWORK_MESSAGES.tooManyRedirects);
+  assert.equal(artworkLinkError('http_404'), httpErrorMessage(404));
+  // An unknown message (a refused command) is shown as-is, not hidden.
+  assert.equal(artworkLinkError("commande 'media_artwork_link' non autorisée"), "commande 'media_artwork_link' non autorisée");
+  assert.equal(artworkLinkError(new Error('message brut du shell')), 'message brut du shell');
+  assert.equal(artworkLinkError(''), ARTWORK_MESSAGES.unreachable);
+});
+
+test('fetchArtwork: a site without CORS is downloaded by the shell', async () => {
+  const fetched = [];
+  const downloads = [];
+  const fetchImpl = async (url) => {
+    fetched.push(url);
+    throw new TypeError('Failed to fetch');
+  };
+  const downloadImpl = async (url) => {
+    downloads.push(url);
+    return { contentType: 'image/png; charset=binary', dataBase64: encoded };
+  };
+  const { file, error } = await fetchArtwork('https://valorantinfo.test/img/chamber.webp', fetchImpl, downloadImpl);
+  assert.equal(error, undefined);
+  assert.ok(file instanceof File);
+  assert.equal(file.name, 'chamber.webp');
+  assert.equal(file.type, 'image/png');
+  assert.equal(file.size, pngBytes.length);
+  assert.deepEqual(new Uint8Array(await file.arrayBuffer()), pngBytes);
+  assert.deepEqual(fetched, ['https://valorantinfo.test/img/chamber.webp']);
+  assert.deepEqual(downloads, fetched);
+});
+
+test('fetchArtwork: a direct download never goes through the shell', async () => {
+  let downloads = 0;
+  const { file } = await fetchArtwork('https://cdn.test/a.png', respond(new Uint8Array([1])), async () => {
+    downloads += 1;
+    return { contentType: 'image/png', dataBase64: '' };
+  });
+  assert.equal(file.size, 1);
+  assert.equal(downloads, 0);
+});
+
+test('fetchArtwork: the shell only runs when the fetch itself failed', async () => {
+  let downloads = 0;
+  const download = async () => {
+    downloads += 1;
+    return { contentType: 'image/png', dataBase64: encoded };
+  };
+  // An HTTP error is the site's answer: the shell would get the same one.
+  assert.deepEqual(await fetchArtwork('https://cdn.test/a.png', respond('gone', { status: 404 }), download), {
+    error: httpErrorMessage(404),
+  });
+  assert.equal(downloads, 0);
+});
+
+test('fetchArtwork: a shell error becomes the board message', async () => {
+  for (const [code, message] of [
+    ['invalid_link', ARTWORK_MESSAGES.invalidLink],
+    ['not_image', ARTWORK_MESSAGES.notImageLink],
+    ['too_large', ARTWORK_MESSAGES.tooLarge],
+    ['empty', ARTWORK_MESSAGES.empty],
+    ['http_404', httpErrorMessage(404)],
+    ['too_many_redirects', ARTWORK_MESSAGES.tooManyRedirects],
+    ["commande 'media_artwork_link' non autorisée", "commande 'media_artwork_link' non autorisée"],
+  ]) {
+    const result = await fetchArtwork('https://cdn.test/a.png', blocked, async () => {
+      throw code;
+    });
+    assert.deepEqual(result, { error: message }, code);
+  }
+});
+
+test('fetchArtwork: the shell answer must be a non-empty image under the limit', async () => {
+  const at = (payload) =>
+    fetchArtwork('https://cdn.test/a.png', blocked, async () => payload);
+  assert.deepEqual(await at({ contentType: 'text/html', dataBase64: encoded }), {
+    error: ARTWORK_MESSAGES.notImageLink,
+  });
+  assert.deepEqual(await at({ contentType: 'image/png', dataBase64: '' }), { error: ARTWORK_MESSAGES.empty });
+  assert.deepEqual(await at({ contentType: 'image/png', dataBase64: 'YWJj%%%' }), {
+    error: ARTWORK_MESSAGES.unreachable,
+  });
+  const huge = Buffer.alloc(MAX_ARTWORK_BYTES + 1, 1).toString('base64');
+  assert.deepEqual(await at({ contentType: 'image/png', dataBase64: huge }), { error: ARTWORK_MESSAGES.tooLarge });
 });

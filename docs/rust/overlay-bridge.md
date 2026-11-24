@@ -847,6 +847,21 @@ board en parties brutes qui se terminent avec le morceau atteignant 64 Mio
 Séquence : `start` → `chunk` (répété) → `finish`, ou `cancel` à tout moment.
 Chaque requête a un délai de 30 min et un délai de connexion de 15 s.
 
+#### Pochette d'un item : `media_artwork_upload` / `media_artwork_link`
+
+- `invoke('media_artwork_upload', <Uint8Array>, { headers: { 'x-guild-id', 'x-item-id', 'x-filename', 'x-content-type' } })`
+  → `ApiResponse` : envoie l'image de la pochette d'un item (`PUT
+  /overlay/media-board/items/{id}/artwork`). Corps vide → `"image vide"` ;
+  plus de 10 Mio → `"image trop volumineuse (10 Mo au plus)"`.
+- `invoke('media_artwork_link', { payload: { url } })` →
+  `{ "contentType": "image/png", "dataBase64": "…" }` : télécharge l'image
+  côté shell, pour un site qui n'envoie pas d'en-tête CORS et que le WebView ne
+  peut donc pas `fetch`. Mêmes limites que le chemin WebView : HTTP(S) sans
+  identifiants, 3 redirections, 20 s, 10 Mio, type `image/*` (déclaré, sinon
+  reconnu dans les octets PNG/JPEG/GIF/WebP). Les échecs sont des codes que
+  `core/artwork.js` traduit en message : `invalid_link`, `unreachable`,
+  `too_many_redirects`, `http_<statut>`, `not_image`, `too_large`, `empty`.
+
 ### 13.4 Ingestion asynchrone et rafraîchissement du board
 
 Les routes d'ajout de média répondent désormais **`202 {"ingestionId": "<uuid>"}`**

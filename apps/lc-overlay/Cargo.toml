@@ -37,6 +37,8 @@ native-tls = "0.2"
 futures-util = { workspace = true }
 reqwest = { workspace = true, features = ["stream"] }
 url = { workspace = true }
+# Image d'un lien sans CORS : le shell la télécharge et la renvoie en base64.
+base64 = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

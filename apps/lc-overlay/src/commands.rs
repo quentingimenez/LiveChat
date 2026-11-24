@@ -10,6 +10,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use base64::Engine as _;
 use lc_protocol::{
     AckOutcome, AckPayload, ClientMessage, MediaTrigger, MediaTriggerPayload, PauseRequestPayload,
     PlaybackEndedPayload, PlaybackEndedReason, PlaybackState as ProtocolPlaybackState,
@@ -25,6 +26,7 @@ use crate::config::{LayoutZone, MediaBindings, Membership, OverlayConfigView};
 use crate::events;
 use crate::layout_preview;
 use crate::net::api;
+use crate::net::artwork;
 use crate::net::pairing::{self, PairingRequest};
 use crate::net::upload::{self, UploadEntry, UploadRegistry};
 use crate::net::ws::{self, NetCommand};
@@ -97,6 +99,7 @@ const COMMAND_MATRIX: &[(&str, &[&str])] = &[
             "media_upload_finish",
             "media_upload_cancel",
             "media_artwork_upload",
+            "media_artwork_link",
         ],
     ),
 ];
@@ -1701,6 +1704,41 @@ pub async fn media_artwork_upload(
     Ok(response)
 }
 
+/// Réponse de `media_artwork_link` : l'image téléchargée par le shell, prête à
+/// être prévisualisée puis envoyée par `media_artwork_upload`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtworkLinkResponse {
+    pub content_type: String,
+    pub data_base64: String,
+}
+
+/// `media_artwork_link` — downloads the picture of a link for the board.
+///
+/// The webview cannot fetch a site that sends no CORS header: the shell does it
+/// here and returns the bytes, base64-encoded, so the board previews them and
+/// uploads them like a local file.
+#[tauri::command]
+pub async fn media_artwork_link(
+    window: WebviewWindow<Wry>,
+    payload: Value,
+) -> Result<ArtworkLinkResponse, String> {
+    ensure_allowed(&window, "media_artwork_link")?;
+    let link = payload
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|link| !link.is_empty())
+        .ok_or_else(|| artwork::LinkError::Invalid.code())?;
+    let picture = artwork::download(link)
+        .await
+        .map_err(|error| error.code())?;
+    Ok(ArtworkLinkResponse {
+        content_type: picture.content_type,
+        data_base64: base64::engine::general_purpose::STANDARD.encode(picture.bytes),
+    })
+}
+
 /// `media_upload_cancel` — aborts an in-flight upload (`true` if it existed).
 #[tauri::command]
 pub fn media_upload_cancel(
@@ -1861,6 +1899,7 @@ mod tests {
         assert!(command_allowed("board", "media_upload_start"));
         assert!(command_allowed("board", "media_upload_chunk"));
         assert!(command_allowed("board", "media_artwork_upload"));
+        assert!(command_allowed("board", "media_artwork_link"));
         assert!(command_allowed("board", "media_upload_finish"));
         assert!(command_allowed("board", "media_upload_cancel"));
         assert!(!command_allowed("board", "overlay_renderer_ready"));
@@ -1884,6 +1923,7 @@ mod tests {
             "media_upload_finish",
             "media_upload_cancel",
             "media_artwork_upload",
+            "media_artwork_link",
         ] {
             assert!(!command_allowed("overlay", command), "{command}");
         }

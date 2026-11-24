@@ -2659,6 +2659,7 @@ dependencies = [
 name = "lc-overlay"
 version = "3.17.0"
 dependencies = [
+ "base64 0.22.1",
  "futures-util",
  "lc-domain",
  "lc-protocol",

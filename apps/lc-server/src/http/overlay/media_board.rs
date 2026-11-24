@@ -200,14 +200,18 @@ pub(crate) async fn list_items_payload(
         .map(|value| truncate_chars(value.trim(), TITLE_MAX_CHARS).to_lowercase())
         .filter(|value| !value.is_empty());
 
-    // AUD-A2-013 : une seule requête pour lire les lignes de la board, au lieu
-    // de `list_by_guild` suivi d'un `media_assets().get` par item (N+1 non
-    // borné). La recherche et la pagination restent en Rust (board de quelques
-    // centaines d'items) ; seuls les assets de la page (≤ 200) sont rechargés.
-    let mut rows = load_board_rows(db, actor.guild_id())
+    // B-03 : filtre, tri, comptage et pagination poussés en SQL. Une requête
+    // pour la page (avec toutes ses jointures), une pour le total, une pour
+    // les membres actifs, une pour les favoris : nombre constant, indépendant
+    // de la taille de la board. `instr(lower(...), ?)` garde la sémantique Rust
+    // d'avant : sous-chaîne insensible à la casse, `%` et `_` littéraux.
+    let page = load_board_page(db, actor.guild_id(), search.as_deref(), limit, offset)
         .await
         .map_err(|db_error| db_failure("overlay_media_board.list_items", &db_error))?;
-    // L'auteur est résolu une fois pour toute la board : le filtre « Ajouté par »
+    let total = count_board_rows(db, actor.guild_id(), search.as_deref())
+        .await
+        .map_err(|db_error| db_failure("overlay_media_board.list_total", &db_error))?;
+    // L'auteur est résolu une fois pour toute la page : le filtre « Ajouté par »
     // regroupe les médias d'un même membre, même renommé ou lié à Discord.
     let members = db
         .guild_members()
@@ -215,19 +219,6 @@ pub(crate) async fn list_items_payload(
         .await
         .map_err(|db_error| db_failure("overlay_media_board.list_members", &db_error))?;
     let authors = BoardAuthors::new(&members);
-    for row in &mut rows {
-        row.author = authors.resolve(row);
-    }
-    let filtered = rows
-        .into_iter()
-        .filter(|row| {
-            search
-                .as_deref()
-                .map(|needle| row_matches(row, needle))
-                .unwrap_or(true)
-        })
-        .collect::<Vec<_>>();
-    let total = filtered.len();
     let favorites: std::collections::HashSet<MediaBoardItemId> = match actor.member_id() {
         Some(member_id) => db
             .media_board()
@@ -247,14 +238,12 @@ pub(crate) async fn list_items_payload(
             expires_at_sec,
         )
     };
-    let mut page = Vec::new();
-    for row in filtered.into_iter().skip(offset).take(limit) {
-        let asset = match db.media_assets().get(row.media_asset_id()).await {
-            Ok(Some(asset)) => asset,
-            Ok(None) => continue,
-            Err(db_error) => {
-                return Err(db_failure("overlay_media_board.list_item_asset", &db_error));
-            }
+    let mut items = Vec::with_capacity(page.len());
+    for mut row in page {
+        row.author = authors.resolve(&row);
+        let asset = match row.asset.take() {
+            Some(asset) => asset,
+            None => continue,
         };
         let asset_id = asset.id.to_canonical();
         let media_url = match sign(&asset_id) {
@@ -264,9 +253,9 @@ pub(crate) async fn list_items_payload(
                 return Err(super::internal_error());
             }
         };
-        let artwork = match row.item.artwork_asset_id {
-            Some(artwork_id) => match db.media_assets().get(artwork_id).await {
-                Ok(Some(artwork)) if artwork.is_ready() => match sign(&artwork.id.to_canonical()) {
+        let artwork = match (&row.item.artwork_asset_id, &row.artwork) {
+            (Some(_), Some(artwork)) if artwork.is_ready() => {
+                match sign(&artwork.id.to_canonical()) {
                     Ok(url) => Some(serde_json::json!({
                         "url": url,
                         "width": artwork.width,
@@ -276,56 +265,30 @@ pub(crate) async fn list_items_payload(
                         tracing::warn!(%error, "signature de l'image d'un média impossible");
                         None
                     }
-                },
-                Ok(_) => None,
-                Err(db_error) => {
-                    return Err(db_failure(
-                        "overlay_media_board.list_item_artwork",
-                        &db_error,
-                    ));
                 }
-            },
-            None => None,
+            }
+            _ => None,
         };
         // A video's thumbnail: the platform's picture of a link, fetched in
         // the background after the import (see `media::thumbnails`).
-        let thumbnail_id = if asset.kind == lc_domain::MediaKind::Video {
-            db.media_assets()
-                .cover_of(asset.id)
-                .await
-                .map_err(|db_error| {
-                    db_failure("overlay_media_board.list_item_thumbnail", &db_error)
-                })?
-        } else {
-            None
-        };
-        let thumbnail = match thumbnail_id {
-            Some(thumbnail_id) => match db.media_assets().get(thumbnail_id).await {
-                Ok(Some(picture)) if picture.is_ready() => match sign(&picture.id.to_canonical()) {
-                    Ok(url) => Some(serde_json::json!({
-                        "url": url,
-                        "width": picture.width,
-                        "height": picture.height,
-                        // A video's picture keeps its URL when it is replaced
-                        // (the editor's frame rewrites the same cover): the
-                        // size of its bytes tells the client when to fetch it
-                        // again instead of showing the cached one.
-                        "version": picture.size_bytes,
-                    })),
-                    Err(error) => {
-                        tracing::warn!(%error, "signature de la miniature d'une vidéo impossible");
-                        None
-                    }
-                },
-                Ok(_) => None,
-                Err(db_error) => {
-                    return Err(db_failure(
-                        "overlay_media_board.list_item_thumbnail",
-                        &db_error,
-                    ));
+        let thumbnail = match (asset.kind == lc_domain::MediaKind::Video, &row.thumbnail) {
+            (true, Some(picture)) if picture.is_ready() => match sign(&picture.id.to_canonical()) {
+                Ok(url) => Some(serde_json::json!({
+                    "url": url,
+                    "width": picture.width,
+                    "height": picture.height,
+                    // A video's picture keeps its URL when it is replaced
+                    // (the editor's frame rewrites the same cover): the
+                    // size of its bytes tells the client when to fetch it
+                    // again instead of showing the cached one.
+                    "version": picture.size_bytes,
+                })),
+                Err(error) => {
+                    tracing::warn!(%error, "signature de la miniature d'une vidéo impossible");
+                    None
                 }
             },
-            None => None,
+            _ => None,
         };
         let mut payload = item_payload(&row.item, &asset);
         if let Some(object) = payload.as_object_mut() {
@@ -366,14 +329,14 @@ pub(crate) async fn list_items_payload(
                 serde_json::json!(favorites.contains(&row.item.id)),
             );
         }
-        page.push(payload);
+        items.push(payload);
     }
 
     Ok(serde_json::json!({
         "total": total,
         "limit": limit,
         "offset": offset,
-        "items": page,
+        "items": items,
     }))
 }
 
@@ -1782,39 +1745,265 @@ fn normalize_offset(raw: Option<&str>) -> usize {
         .unwrap_or(0)
 }
 
-/// Ligne de board lue en une seule requête (item + URL source de l'asset).
+/// B-03: map a joined `media_assets` row to a domain asset.
+fn joined_asset(
+    raw: &sqlx::sqlite::SqliteRow,
+    prefix: &str,
+) -> lc_db::DbResult<Option<MediaAsset>> {
+    use sqlx::Row as _;
+
+    let id_raw: Option<String> =
+        raw.try_get::<Option<String>, _>(format!("{prefix}_id").as_str())?;
+    let Some(id_raw) = id_raw else {
+        return Ok(None);
+    };
+    let created_at_ms: i64 = raw.try_get::<i64, _>(format!("{prefix}_created_at").as_str())?;
+    let expires_at_ms: i64 = raw.try_get::<i64, _>(format!("{prefix}_expires_at").as_str())?;
+    let last_accessed_at_ms: i64 =
+        raw.try_get::<i64, _>(format!("{prefix}_last_accessed_at").as_str())?;
+    let duration_sec: Option<i64> = raw.try_get(format!("{prefix}_duration_sec").as_str())?;
+    let width: Option<i64> = raw.try_get(format!("{prefix}_width").as_str())?;
+    let height: Option<i64> = raw.try_get(format!("{prefix}_height").as_str())?;
+    let size_bytes: i64 = raw.try_get::<i64, _>(format!("{prefix}_size_bytes").as_str())?;
+    let is_vertical: i64 = raw.try_get::<i64, _>(format!("{prefix}_is_vertical").as_str())?;
+    let kind_raw: String = raw.try_get(format!("{prefix}_kind").as_str())?;
+    let status_raw: String = raw.try_get(format!("{prefix}_status").as_str())?;
+    let parse_error = |detail: String| corrupt_row(detail);
+
+    let id = MediaAssetId::parse(&id_raw)
+        .map_err(|error| parse_error(format!("{prefix}_id invalide ({id_raw}): {error}")))?;
+    let kind = lc_domain::enums::MediaKind::from_db_str(&kind_raw)
+        .map_err(|_| parse_error(format!("{prefix}_kind invalide ({kind_raw})")))?;
+    let status = lc_domain::enums::MediaStatus::from_db_str(&status_raw)
+        .map_err(|_| parse_error(format!("{prefix}_status invalide ({status_raw})")))?;
+    let created_at = lc_domain::time::ms_to_datetime(created_at_ms)
+        .ok_or_else(|| parse_error(format!("{prefix}_created_at invalide ({created_at_ms})")))?;
+    let expires_at = lc_domain::time::ms_to_datetime(expires_at_ms)
+        .ok_or_else(|| parse_error(format!("{prefix}_expires_at invalide ({expires_at_ms})")))?;
+    let last_accessed_at =
+        lc_domain::time::ms_to_datetime(last_accessed_at_ms).ok_or_else(|| {
+            parse_error(format!(
+                "{prefix}_last_accessed_at invalide ({last_accessed_at_ms})"
+            ))
+        })?;
+
+    Ok(Some(MediaAsset {
+        id,
+        source_hash: raw.try_get(format!("{prefix}_source_hash").as_str())?,
+        source_url: raw.try_get(format!("{prefix}_source_url").as_str())?,
+        source_title: raw.try_get(format!("{prefix}_source_title").as_str())?,
+        kind,
+        mime: raw.try_get(format!("{prefix}_mime").as_str())?,
+        duration_sec,
+        width,
+        height,
+        is_vertical: is_vertical != 0,
+        storage_path: raw.try_get(format!("{prefix}_storage_path").as_str())?,
+        size_bytes,
+        status,
+        error: raw.try_get(format!("{prefix}_error").as_str())?,
+        last_accessed_at,
+        expires_at,
+        created_at,
+    }))
+}
+
+/// B-03: build the shared `WHERE` for the filter. `q` uses `instr(lower(...), ?)`
+/// to keep the exact legacy substring semantics (`%`/`_` are literals).
+fn board_filter_clause(search: Option<&str>) -> (String, Vec<String>) {
+    let mut clause = String::from("b.guild_id = ?1");
+    let mut binds: Vec<String> = Vec::new();
+    if let Some(needle) = search {
+        // `created_by_name` is the name copied at creation time; the active
+        // member display name is matched through the two author paths used
+        // by `BoardAuthors::resolve` (legacy `row_matches` matches the
+        // resolved author name).
+        clause.push_str(
+            " AND (instr(lower(b.title), ?2) > 0 \
+                  OR instr(lower(b.message), ?2) > 0 \
+                  OR instr(lower(b.created_by_name), ?2) > 0 \
+                  OR instr(lower(COALESCE(author_member.display_name, \
+                                          author_discord.display_name, b.created_by_name)), ?2) > 0 \
+                  OR instr(lower(a.source_url), ?2) > 0)",
+        );
+        binds.push(needle.to_owned());
+    }
+    (clause, binds)
+}
+
+/// B-03: all page rows, with every joined asset in the same query.
+///
+/// `LEFT JOIN` on artwork/cover keeps rows whose extra assets are missing or
+/// not ready — the payload then omits that field, exactly as before. The main
+/// asset uses an inner join (legacy skipped rows with no asset), and `total`
+/// is computed by [`count_board_rows`] with the same filter.
+async fn load_board_page(
+    db: &Db,
+    guild_id: &GuildId,
+    search: Option<&str>,
+    limit: usize,
+    offset: usize,
+) -> lc_db::DbResult<Vec<BoardRow>> {
+    use sqlx::Row as _;
+
+    let (filter, binds) = board_filter_clause(search);
+    let (limit_ph, offset_ph) = if search.is_some() {
+        ("?3", "?4")
+    } else {
+        ("?2", "?3")
+    };
+    let sql = format!(
+        "SELECT b.id, b.guild_id, b.media_asset_id, b.title, b.message, \
+                b.created_by_discord_user_id, b.created_by_name, b.created_at, b.created_by_member_id, \
+                b.artwork_asset_id, b.artwork_on_overlay, b.display_duration_sec, b.display_scale_percent, \
+                a.id AS asset_id, a.source_hash AS asset_source_hash, a.source_url AS asset_source_url, \
+                a.source_title AS asset_source_title, a.kind AS asset_kind, a.mime AS asset_mime, \
+                a.duration_sec AS asset_duration_sec, a.width AS asset_width, a.height AS asset_height, \
+                a.is_vertical AS asset_is_vertical, a.storage_path AS asset_storage_path, \
+                a.size_bytes AS asset_size_bytes, a.status AS asset_status, a.error AS asset_error, \
+                a.last_accessed_at AS asset_last_accessed_at, a.expires_at AS asset_expires_at, \
+                a.created_at AS asset_created_at, \
+                art.id AS art_id, art.source_hash AS art_source_hash, art.source_url AS art_source_url, \
+                art.source_title AS art_source_title, art.kind AS art_kind, art.mime AS art_mime, \
+                art.duration_sec AS art_duration_sec, art.width AS art_width, art.height AS art_height, \
+                art.is_vertical AS art_is_vertical, art.storage_path AS art_storage_path, \
+                art.size_bytes AS art_size_bytes, art.status AS art_status, art.error AS art_error, \
+                art.last_accessed_at AS art_last_accessed_at, art.expires_at AS art_expires_at, \
+                art.created_at AS art_created_at, \
+                thumb.id AS thumb_id, thumb.source_hash AS thumb_source_hash, \
+                thumb.source_url AS thumb_source_url, thumb.source_title AS thumb_source_title, \
+                thumb.kind AS thumb_kind, thumb.mime AS thumb_mime, \
+                thumb.duration_sec AS thumb_duration_sec, thumb.width AS thumb_width, \
+                thumb.height AS thumb_height, thumb.is_vertical AS thumb_is_vertical, \
+                thumb.storage_path AS thumb_storage_path, thumb.size_bytes AS thumb_size_bytes, \
+                thumb.status AS thumb_status, thumb.error AS thumb_error, \
+                thumb.last_accessed_at AS thumb_last_accessed_at, thumb.expires_at AS thumb_expires_at, \
+                thumb.created_at AS thumb_created_at \
+           FROM media_board_items b \
+           JOIN media_assets a ON a.id = b.media_asset_id \
+           LEFT JOIN guild_members author_member \
+                  ON author_member.id = b.created_by_member_id \
+                 AND author_member.removed_at IS NULL \
+           LEFT JOIN guild_members author_discord \
+                  ON author_discord.discord_user_id = b.created_by_discord_user_id \
+                 AND author_discord.removed_at IS NULL \
+           LEFT JOIN media_assets art \
+                  ON art.id = b.artwork_asset_id AND art.status = 'READY' \
+           LEFT JOIN media_assets cover ON cover.id = a.cover_asset_id \
+           LEFT JOIN media_assets thumb \
+                  ON thumb.id = cover.id AND thumb.status = 'READY' AND thumb.kind = 'IMAGE' \
+          WHERE {filter} \
+          ORDER BY b.created_at DESC, b.id ASC \
+          LIMIT {limit_ph} OFFSET {offset_ph}"
+    );
+    let mut query = sqlx::query(&sql).bind(guild_id.as_str());
+    for value in &binds {
+        query = query.bind(value.as_str());
+    }
+    let raw_rows = query
+        .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+        .bind(i64::try_from(offset).unwrap_or(i64::MAX))
+        .fetch_all(db.pool())
+        .await
+        .map_err(lc_db::DbError::from)?;
+
+    let mut rows = Vec::with_capacity(raw_rows.len());
+    for raw in raw_rows {
+        let item_id_raw: String = raw.try_get("id")?;
+        let guild_raw: String = raw.try_get("guild_id")?;
+        let asset_id_raw: String = raw.try_get("media_asset_id")?;
+        let created_at_ms: i64 = raw.try_get("created_at")?;
+        let artwork_raw: Option<String> = raw.try_get("artwork_asset_id")?;
+        let artwork_on_overlay: i64 = raw.try_get("artwork_on_overlay")?;
+        let item = MediaBoardItem {
+            id: MediaBoardItemId::parse(&item_id_raw)
+                .map_err(|error| corrupt_row(format!("id invalide ({item_id_raw}): {error}")))?,
+            guild_id: GuildId::parse(&guild_raw).map_err(|error| {
+                corrupt_row(format!("guild_id invalide ({guild_raw}): {error}"))
+            })?,
+            media_asset_id: MediaAssetId::parse(&asset_id_raw).map_err(|error| {
+                corrupt_row(format!("media_asset_id invalide ({asset_id_raw}): {error}"))
+            })?,
+            title: raw.try_get("title")?,
+            message: raw.try_get("message")?,
+            created_by_discord_user_id: raw.try_get("created_by_discord_user_id")?,
+            created_by_name: raw.try_get("created_by_name")?,
+            created_at: lc_domain::time::ms_to_datetime(created_at_ms)
+                .ok_or_else(|| corrupt_row(format!("created_at invalide ({created_at_ms})")))?,
+            artwork_asset_id: artwork_raw
+                .as_deref()
+                .map(MediaAssetId::parse)
+                .transpose()
+                .map_err(|error| corrupt_row(format!("artwork_asset_id invalide: {error}")))?,
+            artwork_on_overlay: artwork_on_overlay != 0,
+            display_duration_sec: raw.try_get("display_duration_sec")?,
+            display_scale_percent: raw.try_get("display_scale_percent")?,
+        };
+        rows.push(BoardRow {
+            item,
+            asset: joined_asset(&raw, "asset")?,
+            artwork: joined_asset(&raw, "art")?,
+            thumbnail: joined_asset(&raw, "thumb")?,
+            created_by_member_id: raw.try_get("created_by_member_id")?,
+            author: None,
+        });
+    }
+    Ok(rows)
+}
+
+/// B-03: count matching rows with the exact same filter as the page query.
+async fn count_board_rows(
+    db: &Db,
+    guild_id: &GuildId,
+    search: Option<&str>,
+) -> lc_db::DbResult<usize> {
+    use sqlx::Row as _;
+
+    let (filter, binds) = board_filter_clause(search);
+    let sql = format!(
+        "SELECT COUNT(*) AS total FROM media_board_items b \
+                JOIN media_assets a ON a.id = b.media_asset_id \
+                LEFT JOIN guild_members author_member \
+                       ON author_member.id = b.created_by_member_id \
+                      AND author_member.removed_at IS NULL \
+                LEFT JOIN guild_members author_discord \
+                       ON author_discord.discord_user_id = b.created_by_discord_user_id \
+                      AND author_discord.removed_at IS NULL \
+          WHERE {filter}"
+    );
+    let mut query = sqlx::query(&sql).bind(guild_id.as_str());
+    for value in &binds {
+        query = query.bind(value.as_str());
+    }
+    let total: i64 = query
+        .fetch_one(db.pool())
+        .await
+        .map_err(lc_db::DbError::from)?
+        .try_get("total")?;
+    Ok(usize::try_from(total).unwrap_or(0))
+}
+/// Ligne de board paginée en SQL : item et assets joints en une seule requête.
 struct BoardRow {
     item: MediaBoardItem,
-    source_url: String,
+    /// Asset principal (joint en SQL), absent si la ligne est orpheline.
+    asset: Option<MediaAsset>,
+    /// Illustration prête, si elle existe.
+    artwork: Option<MediaAsset>,
+    /// Miniature de la vidéo (couverture prête), si elle existe.
+    thumbnail: Option<MediaAsset>,
     /// Membre auteur (`media_board_items.created_by_member_id`), s'il est connu.
     created_by_member_id: Option<String>,
-    /// Auteur résolu pour l'affichage et le filtre (voir [`BoardAuthors`]).
+    /// Auteur résolu pour l'affichage (voir [`BoardAuthors`]).
     author: Option<BoardAuthor>,
 }
 
-impl BoardRow {
-    /// Identifiant de l'asset média référencé (rechargé seulement pour la page).
-    fn media_asset_id(&self) -> MediaAssetId {
-        self.item.media_asset_id
-    }
-}
-
 /// Auteur canonique d'un média du board.
-///
-/// Le nom recopié à l'ajout (`created_by_name`) ne sert que de repli : dès que
-/// le média peut être rattaché à un membre, c'est son identité et son nom
-/// courant qui comptent. Un membre qui reprend son profil Discord (ou ajoute
-/// des médias depuis Discord) ne forme donc qu'une seule entrée dans le filtre
-/// « Ajouté par », au lieu d'une par pseudo rencontré.
 struct BoardAuthor {
-    /// Identité stable : `member:<uuid>`, `discord:<snowflake>` ou `name:<nom>`.
     key: String,
-    /// Nom affiché.
     name: String,
 }
 
-/// Index des membres actifs de la guilde, pour attribuer chaque média à son
-/// auteur.
+/// Index des membres actifs de la guilde, pour attribuer chaque média à son auteur.
 struct BoardAuthors<'a> {
     by_member_id: HashMap<String, &'a GuildMember>,
     by_discord_user_id: HashMap<String, &'a GuildMember>,
@@ -1836,8 +2025,6 @@ impl<'a> BoardAuthors<'a> {
         }
     }
 
-    /// Auteur d'une ligne : le membre créateur, sinon le membre actif lié au
-    /// compte Discord auteur, sinon l'identité recopiée à l'ajout.
     fn resolve(&self, row: &BoardRow) -> Option<BoardAuthor> {
         let member = row
             .created_by_member_id
@@ -1869,111 +2056,6 @@ impl<'a> BoardAuthors<'a> {
         Some(BoardAuthor { key, name })
     }
 }
-
-/// Filtre `q` (insensible à la casse) sur les champs exposés par le legacy.
-fn row_matches(row: &BoardRow, search: &str) -> bool {
-    let fields = [
-        row.item.title.as_deref(),
-        row.item.message.as_deref(),
-        row.item.created_by_name.as_deref(),
-        row.author.as_ref().map(|author| author.name.as_str()),
-        Some(row.source_url.as_str()),
-    ];
-    fields
-        .into_iter()
-        .flatten()
-        .any(|value| value.to_lowercase().contains(search))
-}
-
-/// Charge la board d'une guilde en une requête (même ordre que `list_by_guild`).
-async fn load_board_rows(db: &Db, guild_id: &GuildId) -> lc_db::DbResult<Vec<BoardRow>> {
-    use sqlx::Row as _;
-
-    let raw_rows = sqlx::query(
-        "SELECT b.id, b.guild_id, b.media_asset_id, b.title, b.message, \
-                b.created_by_discord_user_id, b.created_by_name, b.created_at, b.created_by_member_id, \
-                b.artwork_asset_id, b.artwork_on_overlay, b.display_duration_sec, b.display_scale_percent, a.source_url \
-           FROM media_board_items b \
-           JOIN media_assets a ON a.id = b.media_asset_id \
-          WHERE b.guild_id = ? \
-          ORDER BY b.created_at DESC, b.id ASC",
-    )
-    .bind(guild_id.as_str())
-    .fetch_all(db.pool())
-    .await
-    .map_err(lc_db::DbError::from)?;
-
-    let mut rows = Vec::with_capacity(raw_rows.len());
-    for raw in raw_rows {
-        let item_id_raw: String = raw.try_get("id").map_err(lc_db::DbError::from)?;
-        let guild_raw: String = raw.try_get("guild_id").map_err(lc_db::DbError::from)?;
-        let asset_id_raw: String = raw
-            .try_get("media_asset_id")
-            .map_err(lc_db::DbError::from)?;
-        let created_at_ms: i64 = raw.try_get("created_at").map_err(lc_db::DbError::from)?;
-        let title: Option<String> = raw.try_get("title").map_err(lc_db::DbError::from)?;
-        let message: Option<String> = raw.try_get("message").map_err(lc_db::DbError::from)?;
-        let created_by_discord_user_id: Option<String> = raw
-            .try_get("created_by_discord_user_id")
-            .map_err(lc_db::DbError::from)?;
-        let created_by_name: Option<String> = raw
-            .try_get("created_by_name")
-            .map_err(lc_db::DbError::from)?;
-        let source_url: String = raw.try_get("source_url").map_err(lc_db::DbError::from)?;
-        let created_by_member_id: Option<String> = raw
-            .try_get("created_by_member_id")
-            .map_err(lc_db::DbError::from)?;
-        let artwork_raw: Option<String> = raw
-            .try_get("artwork_asset_id")
-            .map_err(lc_db::DbError::from)?;
-        let artwork_on_overlay: i64 = raw
-            .try_get("artwork_on_overlay")
-            .map_err(lc_db::DbError::from)?;
-        let display_duration_sec: Option<i64> = raw
-            .try_get("display_duration_sec")
-            .map_err(lc_db::DbError::from)?;
-        let display_scale_percent: Option<i64> = raw
-            .try_get("display_scale_percent")
-            .map_err(lc_db::DbError::from)?;
-        let artwork_asset_id = artwork_raw
-            .as_deref()
-            .map(MediaAssetId::parse)
-            .transpose()
-            .map_err(|error| corrupt_row(format!("artwork_asset_id invalide: {error}")))?;
-
-        let item_id = MediaBoardItemId::parse(&item_id_raw)
-            .map_err(|error| corrupt_row(format!("id invalide ({item_id_raw}): {error}")))?;
-        let item_guild = GuildId::parse(&guild_raw)
-            .map_err(|error| corrupt_row(format!("guild_id invalide ({guild_raw}): {error}")))?;
-        let media_asset_id = MediaAssetId::parse(&asset_id_raw).map_err(|error| {
-            corrupt_row(format!("media_asset_id invalide ({asset_id_raw}): {error}"))
-        })?;
-        let created_at = lc_domain::time::ms_to_datetime(created_at_ms)
-            .ok_or_else(|| corrupt_row(format!("created_at invalide ({created_at_ms})")))?;
-
-        rows.push(BoardRow {
-            item: MediaBoardItem {
-                id: item_id,
-                guild_id: item_guild,
-                media_asset_id,
-                title,
-                message,
-                created_by_discord_user_id,
-                created_by_name,
-                created_at,
-                artwork_asset_id,
-                artwork_on_overlay: artwork_on_overlay != 0,
-                display_duration_sec,
-                display_scale_percent,
-            },
-            source_url,
-            created_by_member_id,
-            author: None,
-        });
-    }
-    Ok(rows)
-}
-
 /// Erreur `Corrupt` ciblée pour une ligne de board illisible.
 fn corrupt_row(detail: String) -> lc_db::DbError {
     lc_db::DbError::Corrupt {
@@ -2201,8 +2283,275 @@ fn coerce_flag(value: Option<&serde_json::Value>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{coerce_flag, ItemTitle};
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use std::sync::{
+        atomic::{self, AtomicBool},
+        Arc, Mutex, OnceLock,
+    };
+
+    use lc_domain::{
+        FixedClock, Guild, GuildId, GuildMember, GuildMemberId, GuildRole, MediaAsset,
+        MediaAssetId, MediaBoardItem, MediaBoardItemId, MediaKind, MediaStatus, OverlayClient,
+        OverlayClientId, OverlaySessionMode,
+    };
     use serde_json::json;
+    use tempfile::TempDir;
+    use time::{Duration as TimeDuration, UtcDateTime};
+    use tracing::dispatcher::Dispatch;
+    use tracing::Level;
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+    use tracing_subscriber::Layer;
+
+    /// sqlx-sqlite émet ses événements SQL sur les threads de ses connexions.
+    /// On compte les événements dont le champ `db.statement` est précisément
+    /// `SELECT * FROM media_assets WHERE id = ?` : c'est la requête du N+1
+    /// legacy (2 fois par item), absente de la liste paginée. Le filtrage par
+    /// requête rend le test insensible au SQL des autres tests parallèles.
+    struct AssetGetCounter {
+        count: Arc<Mutex<usize>>,
+        total: Arc<Mutex<usize>>,
+        active: Arc<AtomicBool>,
+    }
+
+    impl<S: tracing::Subscriber> Layer<S> for AssetGetCounter {
+        fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+            if !self.active.load(atomic::Ordering::Acquire)
+                || event.metadata().target() != "sqlx::query"
+                || *event.metadata().level() != Level::DEBUG
+            {
+                return;
+            }
+            // Total brut : prouve que l'instrumentation capte bien le SQL
+            // pendant la fenêtre armée (un compteur à zéro est suspect).
+            *self.total.lock().expect("compteur SQL total") += 1;
+            struct StatementVisitor(bool);
+            impl tracing::field::Visit for StatementVisitor {
+                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                    if field.name() == "db.statement" {
+                        self.0 = value.trim().contains("FROM media_assets WHERE id = ?");
+                    }
+                }
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "db.statement" {
+                        let text = format!("{value:?}");
+                        self.0 = text.contains("FROM media_assets WHERE id = ?");
+                    }
+                }
+            }
+            let mut visitor = StatementVisitor(false);
+            event.record(&mut visitor);
+            if visitor.0 {
+                *self.count.lock().expect("compteur SQL") += 1;
+            }
+        }
+    }
+
+    /// Compteur global ciblé : (lookups asset, total SQL, fenêtre armée).
+    type AssetCounter = (Arc<Mutex<usize>>, Arc<Mutex<usize>>, Arc<AtomicBool>);
+
+    /// Installé une seule fois avec un filtre DEBUG pour rendre les événements
+    /// sqlx visibles.
+    fn asset_get_counter() -> AssetCounter {
+        static COUNTER: OnceLock<AssetCounter> = OnceLock::new();
+        COUNTER
+            .get_or_init(|| {
+                let count = Arc::new(Mutex::new(0usize));
+                let total = Arc::new(Mutex::new(0usize));
+                let active = Arc::new(AtomicBool::new(false));
+                let subscriber = tracing_subscriber::registry()
+                    .with(AssetGetCounter {
+                        count: count.clone(),
+                        total: total.clone(),
+                        active: active.clone(),
+                    })
+                    .with(tracing_subscriber::filter::LevelFilter::DEBUG);
+                tracing::dispatcher::set_global_default(Dispatch::new(subscriber))
+                    .expect("subscriber SQL global");
+                (count, total, active)
+            })
+            .clone()
+    }
+
+    use super::super::auth::{hash_token, AuthedOverlayClient};
+    use super::{
+        coerce_flag, list_items_payload, normalize_limit, normalize_offset, ItemTitle, ListQuery,
+    };
+    use crate::app::AppState;
+    use crate::config::Config;
+    use crate::http::overlay::ActorInfo;
+    use crate::shutdown::Shutdown;
+
+    fn fixed_now() -> UtcDateTime {
+        time::macros::utc_datetime!(2026-11-10 12:00:00)
+    }
+
+    fn guild() -> GuildId {
+        GuildId::parse("123456789012345678").expect("guild id valide")
+    }
+
+    fn test_config(media_dir: &std::path::Path) -> Config {
+        let pairs: Vec<(String, String)> = vec![
+            ("API_URL".to_owned(), "http://127.0.0.1:8099".to_owned()),
+            (
+                "MEDIA_URL_SECRET".to_owned(),
+                "secret-de-test-overlay".to_owned(),
+            ),
+            (
+                "MEDIA_STORAGE_DIR".to_owned(),
+                media_dir.to_string_lossy().into_owned(),
+            ),
+        ];
+        Config::from_pairs(pairs).expect("configuration de test valide")
+    }
+
+    fn overlay_client(token: &str) -> OverlayClient {
+        OverlayClient {
+            id: OverlayClientId::new_v4(),
+            guild_id: guild(),
+            label: "Poste".to_owned(),
+            token_hash: hash_token(token),
+            session_mode: OverlaySessionMode::Normal,
+            default_author_name: None,
+            default_author_image: None,
+            created_by_discord_user_id: None,
+            device_hash: None,
+            last_seen_at: None,
+            created_at: fixed_now(),
+            revoked_at: None,
+        }
+    }
+
+    fn member(discord_user_id: Option<&str>) -> GuildMember {
+        GuildMember {
+            id: GuildMemberId::new_v4(),
+            guild_id: guild(),
+            display_name: "Alice".to_owned(),
+            avatar: None,
+            role: GuildRole::Member,
+            created_at: fixed_now() - TimeDuration::minutes(1),
+            removed_at: None,
+            discord_user_id: discord_user_id.map(str::to_owned),
+            profile_custom: false,
+            discord_synced_at: None,
+        }
+    }
+
+    async fn insert_asset(
+        db: &lc_db::Db,
+        media_dir: &std::path::Path,
+        name: &str,
+        kind: MediaKind,
+    ) -> MediaAsset {
+        let path = media_dir.join(name);
+        tokio::fs::write(&path, b"asset")
+            .await
+            .expect("écriture média");
+        let asset = MediaAsset {
+            id: MediaAssetId::new_v4(),
+            source_hash: format!("hash-{name}"),
+            source_url: format!("https://example.test/{name}"),
+            source_title: Some(format!("Source {name}")),
+            kind,
+            mime: "video/mp4".to_owned(),
+            duration_sec: Some(30),
+            width: None,
+            height: None,
+            is_vertical: false,
+            storage_path: path.to_string_lossy().into_owned(),
+            size_bytes: 5,
+            status: MediaStatus::Ready,
+            error: None,
+            last_accessed_at: fixed_now(),
+            expires_at: fixed_now() + TimeDuration::hours(1),
+            created_at: fixed_now(),
+        };
+        db.media_assets()
+            .insert(&asset)
+            .await
+            .expect("insertion média");
+        asset
+    }
+
+    async fn insert_item(
+        db: &lc_db::Db,
+        asset: &MediaAsset,
+        title: Option<&str>,
+        message: Option<&str>,
+        author_name: Option<&str>,
+        created_at: UtcDateTime,
+    ) -> MediaBoardItemId {
+        let item = MediaBoardItem {
+            id: MediaBoardItemId::new_v4(),
+            guild_id: guild(),
+            media_asset_id: asset.id,
+            title: title.map(str::to_owned),
+            message: message.map(str::to_owned),
+            created_by_discord_user_id: None,
+            created_by_name: author_name.map(str::to_owned),
+            created_at,
+            artwork_asset_id: None,
+            artwork_on_overlay: false,
+            display_duration_sec: None,
+            display_scale_percent: None,
+        };
+        db.media_board()
+            .create(&item)
+            .await
+            .expect("insertion item");
+        item.id
+    }
+
+    async fn harness(media_dir: &std::path::Path) -> (AppState, lc_db::Db, OverlayClient) {
+        let db = lc_db::Db::open_in_memory(&lc_db::DbConfig::default())
+            .await
+            .expect("base en mémoire");
+        db.guilds()
+            .upsert(&Guild {
+                id: guild(),
+                name: Some("Test".to_owned()),
+                busy_until: None,
+                default_media_time: None,
+                max_media_time: None,
+                display_media_full: false,
+            })
+            .await
+            .expect("guild");
+        let client = overlay_client("token-de-test");
+        db.overlay_clients().create(&client).await.expect("client");
+        let clock: Arc<dyn lc_domain::Clock> = Arc::new(FixedClock::new(fixed_now()));
+        let state = AppState::new(
+            Arc::new(test_config(media_dir)),
+            Some(db.clone()),
+            Shutdown::detached(),
+        )
+        .with_clock(clock);
+        (state, db, client)
+    }
+
+    fn auth(client: &OverlayClient, member: Option<GuildMember>) -> AuthedOverlayClient {
+        AuthedOverlayClient {
+            client: client.clone(),
+            member,
+            authenticated_at: fixed_now(),
+        }
+    }
+
+    async fn list(
+        state: &AppState,
+        client: &OverlayClient,
+        member: Option<GuildMember>,
+        query: ListQuery,
+    ) -> serde_json::Value {
+        let actor = ActorInfo::from_auth(state, &auth(client, member));
+        list_items_payload(state, &actor, &query)
+            .await
+            .expect("liste du board")
+    }
 
     #[test]
     fn a_requested_title_falls_back_to_the_source_title_when_empty() {
@@ -2258,5 +2607,415 @@ mod tests {
             assert!(!coerce_flag(Some(&value)), "valeur refusee : {value}");
         }
         assert!(!coerce_flag(None));
+    }
+
+    async fn seeded_board(
+        media_dir: &std::path::Path,
+    ) -> (AppState, lc_db::Db, OverlayClient, Vec<MediaBoardItemId>) {
+        let (state, db, client) = harness(media_dir).await;
+        let a = insert_asset(&db, media_dir, "alpha.mp4", MediaKind::Video).await;
+        let b = insert_asset(&db, media_dir, "beta.mp4", MediaKind::Video).await;
+        let c = insert_asset(&db, media_dir, "gamma.mp4", MediaKind::Video).await;
+        let t0 = fixed_now() - TimeDuration::minutes(3);
+        let mut ids = Vec::new();
+        ids.push(
+            insert_item(
+                &db,
+                &a,
+                Some("100% Alpha"),
+                Some("note _ brute"),
+                Some("Alice"),
+                t0,
+            )
+            .await,
+        );
+        ids.push(
+            insert_item(
+                &db,
+                &b,
+                Some("Beta"),
+                Some("note normale"),
+                Some("Bob"),
+                t0 + TimeDuration::minutes(1),
+            )
+            .await,
+        );
+        ids.push(
+            insert_item(
+                &db,
+                &c,
+                Some("Gamma"),
+                None,
+                Some("Alice"),
+                t0 + TimeDuration::minutes(2),
+            )
+            .await,
+        );
+        (state, db, client, ids)
+    }
+
+    fn query(q: Option<&str>, limit: Option<&str>, offset: Option<&str>) -> ListQuery {
+        ListQuery {
+            q: q.map(str::to_owned),
+            limit: limit.map(str::to_owned),
+            offset: offset.map(str::to_owned),
+            guild_id: None,
+        }
+    }
+
+    fn titles(body: &serde_json::Value) -> Vec<String> {
+        body["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .map(|item| item["title"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    /// `q` / `limit` / `offset` must keep the exact legacy semantics: substring
+    /// matching (with literal `%`/`_` and case insensitivity), stable order,
+    /// clamped limits, and empty pages past the end of the board.
+    #[tokio::test]
+    async fn board_list_keeps_legacy_filter_pagination_and_order() {
+        let dir = TempDir::new().expect("tempdir");
+        let (state, _db, client, ids) = seeded_board(dir.path()).await;
+        let expected_all = vec![
+            "Gamma".to_owned(),
+            "Beta".to_owned(),
+            "100% Alpha".to_owned(),
+        ];
+
+        for (label, q, limit, offset, want_total, want_limit, want_offset, want_titles) in [
+            ("défaut", None, None, None, 3, 50, 0, expected_all.clone()),
+            (
+                "q vide",
+                Some(""),
+                None,
+                None,
+                3,
+                50,
+                0,
+                expected_all.clone(),
+            ),
+            ("q inconnu", Some("zzz"), None, None, 0, 50, 0, Vec::new()),
+            (
+                "q insensible à la casse",
+                Some("alPhA"),
+                None,
+                None,
+                1,
+                50,
+                0,
+                vec!["100% Alpha".to_owned()],
+            ),
+            (
+                "q avec % littéral",
+                Some("100%"),
+                None,
+                None,
+                1,
+                50,
+                0,
+                vec!["100% Alpha".to_owned()],
+            ),
+            (
+                "q avec _ littéral",
+                Some("note _ brute"),
+                None,
+                None,
+                1,
+                50,
+                0,
+                vec!["100% Alpha".to_owned()],
+            ),
+            (
+                "q sur message",
+                Some("note normale"),
+                None,
+                None,
+                1,
+                50,
+                0,
+                vec!["Beta".to_owned()],
+            ),
+            (
+                "q sur auteur",
+                Some("ALICE"),
+                None,
+                None,
+                2,
+                50,
+                0,
+                vec!["Gamma".to_owned(), "100% Alpha".to_owned()],
+            ),
+            (
+                "q sur URL source",
+                Some("beta.mp4"),
+                None,
+                None,
+                1,
+                50,
+                0,
+                vec!["Beta".to_owned()],
+            ),
+            (
+                "limite legacy 0",
+                None,
+                Some("0"),
+                None,
+                3,
+                1,
+                0,
+                vec!["Gamma".to_owned()],
+            ),
+            (
+                "limite legacy 999",
+                None,
+                Some("999"),
+                None,
+                3,
+                200,
+                0,
+                expected_all.clone(),
+            ),
+            (
+                "page",
+                None,
+                Some("2"),
+                Some("1"),
+                3,
+                2,
+                1,
+                vec!["Beta".to_owned(), "100% Alpha".to_owned()],
+            ),
+            (
+                "offset > total",
+                None,
+                Some("2"),
+                Some("99"),
+                3,
+                2,
+                99,
+                Vec::new(),
+            ),
+            (
+                "offset négatif",
+                None,
+                Some("2"),
+                Some("-4"),
+                3,
+                2,
+                0,
+                vec!["Gamma".to_owned(), "Beta".to_owned()],
+            ),
+        ] {
+            let body = list(&state, &client, None, query(q, limit, offset)).await;
+            assert_eq!(body["total"], want_total, "{label}");
+            assert_eq!(body["limit"], want_limit, "{label}");
+            assert_eq!(body["offset"], want_offset, "{label}");
+            assert_eq!(titles(&body), want_titles, "{label}");
+        }
+
+        // Les identifiants et l'ordre restent stables pour la page par défaut.
+        let body = list(&state, &client, None, query(None, None, None)).await;
+        let got_ids: Vec<String> = body["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .map(|item| item["id"].as_str().unwrap_or_default().to_owned())
+            .collect();
+        assert_eq!(
+            got_ids,
+            vec![
+                ids[2].to_canonical(),
+                ids[1].to_canonical(),
+                ids[0].to_canonical()
+            ]
+        );
+    }
+
+    /// Enrichissements batch (auteur membre, favori, artwork, miniature) =
+    /// mêmes champs que l'ancien chemin N+1, pour chaque item de la page.
+    #[tokio::test]
+    async fn board_list_keeps_author_favorite_artwork_and_thumbnail_fields() {
+        let dir = TempDir::new().expect("tempdir");
+        let (state, db, client, ids) = seeded_board(dir.path()).await;
+        let author = member(Some("4242"));
+        let member_id = author.id;
+        db.guild_members().create(&author).await.expect("membre");
+        db.media_board()
+            .set_creator_member(ids[0], member_id)
+            .await
+            .expect("auteur");
+        db.media_board()
+            .set_favorite(member_id, ids[0], true, fixed_now())
+            .await
+            .expect("favori");
+
+        let cover = insert_asset(&db, dir.path(), "cover.png", MediaKind::Image).await;
+        db.media_assets()
+            .set_cover(
+                /* vidéo alpha = ids[0] */
+                {
+                    let body = list(&state, &client, None, query(None, None, None)).await;
+                    let asset = body["items"][2]["media"]["id"].as_str().expect("media id");
+                    MediaAssetId::parse(asset).expect("asset id")
+                },
+                Some(cover.id),
+            )
+            .await
+            .expect("pochette");
+        // L'artwork doit être prêt ; la pochette non prête doit être ignorée.
+        db.media_assets()
+            .update_status(cover.id, MediaStatus::Ready, None)
+            .await
+            .expect("cover ready");
+
+        let body = list(
+            &state,
+            &client,
+            Some(author.clone()),
+            query(None, None, None),
+        )
+        .await;
+        let alpha = &body["items"][2];
+        assert_eq!(alpha["createdByName"], "Alice");
+        assert_eq!(alpha["createdByMemberId"], json!(member_id.to_canonical()));
+        assert_eq!(
+            alpha["createdByAuthorId"],
+            json!(format!("member:{}", member_id.to_canonical()))
+        );
+        assert_eq!(alpha["canEdit"], json!(true));
+        assert_eq!(alpha["favorite"], json!(true));
+        assert!(alpha["thumbnail"].is_object(), "{alpha}");
+        assert_eq!(alpha["thumbnail"]["width"], json!(cover.width));
+        assert_eq!(body["items"][1]["favorite"], json!(false));
+        assert!(body["items"][1]["thumbnail"].is_null());
+    }
+
+    /// Insert 200 assets/items en une seule écriture groupée : le montage ne
+    /// doit pas dominer les mesures de perf ou de nombre de requêtes.
+    async fn seed_200(db: &lc_db::Db, _media_dir: &std::path::Path) {
+        const ITEMS: usize = 200;
+        let mut assets = String::from("INSERT INTO media_assets (id, source_hash, source_url, source_title, kind, mime, duration_sec, width, height, is_vertical, storage_path, size_bytes, status, error, last_accessed_at, expires_at, created_at) VALUES ");
+        let mut items = String::from("INSERT INTO media_board_items (id, guild_id, media_asset_id, title, message, created_by_discord_user_id, created_by_name, created_at, created_by_member_id, artwork_asset_id, artwork_on_overlay, display_duration_sec, display_scale_percent) VALUES ");
+        let now_ms = lc_domain::time::datetime_to_ms(fixed_now());
+        for index in 0..ITEMS {
+            if index > 0 {
+                assets.push_str(", ");
+                items.push_str(", ");
+            }
+            let asset_id = MediaAssetId::new_v4().to_canonical();
+            assets.push_str(&format!(
+                "('{asset_id}', 'hash-{index}', 'https://example.test/media-{index}', 'Source {index}', 'VIDEO', 'video/mp4', 30, 64, 64, 0, 'media-{index}', 5, 'READY', NULL, {now_ms}, {now_ms}, {now_ms})"
+            ));
+            items.push_str(&format!(
+                "('{}', '{}', '{asset_id}', 'Item {index}', 'message {index}', NULL, 'Auteur', {}, NULL, NULL, 0, NULL, NULL)",
+                MediaBoardItemId::new_v4().to_canonical(),
+                guild().as_str(),
+                now_ms - i64::try_from(index).expect("index i64"),
+            ));
+        }
+        let mut connection = db.pool().acquire().await.expect("connexion");
+        sqlx::query(&assets)
+            .execute(&mut *connection)
+            .await
+            .expect("insertion assets");
+        sqlx::query(&items)
+            .execute(&mut *connection)
+            .await
+            .expect("insertion items");
+    }
+
+    /// B-03 : une page de 200 items ne doit déclencher aucune recherche
+    /// d'asset par item (le N+1 du code legacy : ~2 `get(asset_id)`/item).
+    #[tokio::test]
+    async fn board_list_page_of_200_uses_a_constant_number_of_queries() {
+        // Une page de 2 items et une page de 200 items doivent provoquer le
+        // même nombre de `get(asset_id)` : le legacy en faisait ~2 par item,
+        // soit +396 lookups entre les deux pages. Mesurer le DELTA annule le
+        // bruit des autres tests parallèles, qui émettent du SQL dans la même
+        // fenêtre (le compteur sqlx est global par construction).
+        const MAX_DELTA: usize = 16;
+        const ITEMS: usize = 200;
+        let (counter, total, active) = asset_get_counter();
+
+        let dir = TempDir::new().expect("tempdir");
+        let (state, db, client) = harness(dir.path()).await;
+        seed_200(&db, dir.path()).await;
+
+        *counter.lock().expect("compteur SQL") = 0;
+        *total.lock().expect("compteur SQL total") = 0;
+        active.store(true, atomic::Ordering::Release);
+        let small = list(&state, &client, None, query(None, Some("2"), None)).await;
+        active.store(false, atomic::Ordering::Release);
+        let small_lookups = *counter.lock().expect("compteur SQL");
+
+        *counter.lock().expect("compteur SQL") = 0;
+        active.store(true, atomic::Ordering::Release);
+        let big = list(&state, &client, None, query(None, Some("200"), None)).await;
+        active.store(false, atomic::Ordering::Release);
+        let big_lookups = *counter.lock().expect("compteur SQL");
+        let total_events = *total.lock().expect("compteur SQL total");
+        let delta = big_lookups.saturating_sub(small_lookups);
+        eprintln!(
+            "board asset lookups: 2 items = {small_lookups}, 200 items = {big_lookups}, delta = {delta} (SQL events = {total_events})"
+        );
+        assert!(
+            total_events > 0,
+            "le compteur SQL n'a rien compté (instrumentation cassée)"
+        );
+        assert_eq!(small["total"], ITEMS);
+        assert_eq!(small["items"].as_array().expect("items").len(), 2);
+        assert_eq!(big["total"], ITEMS);
+        assert_eq!(big["items"].as_array().expect("items").len(), ITEMS);
+        assert!(
+            delta <= MAX_DELTA,
+            "board page200 added {delta} per-item asset lookups vs 2 items (> {MAX_DELTA}: N+1)"
+        );
+    }
+
+    /// Budget B-03 : p95 ≤ 250 ms sur une page de 200 items. Le test échoue
+    /// dès que le budget est dépassé (assert explicite, pas un simple log).
+    #[tokio::test]
+    async fn board_list_page_of_200_stays_under_250ms_p95() {
+        const ITEMS: usize = 200;
+        const RUNS: usize = 20;
+        const BUDGET_MS: u128 = 250;
+        let dir = TempDir::new().expect("tempdir");
+        let (state, db, client) = harness(dir.path()).await;
+
+        seed_200(&db, dir.path()).await;
+
+        // Échauffement : la première requête paie la préparation du plan.
+        drop(list(&state, &client, None, query(None, Some("200"), None)).await);
+
+        let mut samples = Vec::with_capacity(RUNS);
+        for _ in 0..RUNS {
+            let started = std::time::Instant::now();
+            let body = list(&state, &client, None, query(None, Some("200"), None)).await;
+            samples.push(started.elapsed().as_millis());
+            assert_eq!(body["total"], ITEMS);
+            assert_eq!(body["items"].as_array().expect("items").len(), ITEMS);
+        }
+        samples.sort_unstable();
+        // nearest-rank, même convention que `xtask/src/loadtest.rs:percentile`.
+        let rank = (samples.len() * 95).div_ceil(100);
+        let p95 = samples[rank - 1];
+        eprintln!("board page200 p95 = {p95} ms (samples: {samples:?})");
+        assert!(
+            p95 <= BUDGET_MS,
+            "board p95 {p95} ms > {BUDGET_MS} ms (samples: {samples:?})"
+        );
+    }
+
+    #[test]
+    fn page_limits_are_normalized_like_legacy() {
+        assert_eq!(normalize_limit(None), 50);
+        assert_eq!(normalize_limit(Some("0")), 1);
+        assert_eq!(normalize_limit(Some("999")), 200);
+        assert_eq!(normalize_limit(Some("abc")), 50);
+        assert_eq!(normalize_offset(None), 0);
+        assert_eq!(normalize_offset(Some("-4")), 0);
     }
 }

@@ -99,8 +99,9 @@ forcés (1 h de TTL, 1 Mo, 1 ms, 1 ingestion, 1 fragment). `TIKTOK_COOKIE` et
 refus des valeurs vides ou contenant un caractère de contrôle (`\r`, `\n`, `\t`…),
 plafond 4096 caractères ; la valeur n'est **jamais** journalisée (remplacement par
 défaut + `warn` sans le contenu). Chaque cookie reste lié à son site : le cookie
-YouTube n'est envoyé qu'après un échec d'authentification, jamais pour une vidéo
-publique, et aucun cookie n'est envoyé vers un autre hôte.
+TikTok est envoyé à chaque URL TikTok, le cookie YouTube n'est envoyé qu'après un
+échec d'authentification (jamais pour une vidéo publique), et aucun cookie n'est
+envoyé vers un autre hôte.
 
 ### Garde SSRF/LFI (`guard`)
 

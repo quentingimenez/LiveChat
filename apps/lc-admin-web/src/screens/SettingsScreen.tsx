@@ -496,7 +496,7 @@ export function SettingsScreen() {
                   <p class="hint">
                     {legacyCookieConfigured && settings.data?.hasTikTokCookie !== true
                       ? 'Ancien serveur : la valeur affichée est encore renvoyée en clair pour compatibilité. Laisser vide pour la conserver, saisir une nouvelle valeur pour la remplacer. Appliqué immédiatement après enregistrement.'
-                      : 'Nécessaire pour les TikTok restreints. La valeur existante n’est jamais renvoyée : laisser vide pour la conserver, saisir une nouvelle valeur pour la remplacer. Appliqué immédiatement après enregistrement.'}
+                      : 'Cookie de session TikTok, envoyé uniquement aux URLs TikTok (utile pour les contenus restreints). La valeur existante n’est jamais renvoyée : laisser vide pour la conserver, saisir une nouvelle valeur pour la remplacer. Appliqué immédiatement après enregistrement.'}
                   </p>
                   <p class="hint">
                     État :{' '}

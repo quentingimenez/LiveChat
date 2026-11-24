@@ -6,6 +6,7 @@ import {
   defaultTitle,
   formatSizeLimit,
   ingestionErrorMessage,
+  linkUploadBody,
   uploadErrorMessage,
   uploadStatusLabel,
 } from '../../web/app/core/upload-helpers.js';
@@ -168,4 +169,42 @@ test('ingestionErrorMessage: unknown code falls back to the server message', () 
 test('ingestionErrorMessage: unknown code without a message', () => {
   assert.equal(ingestionErrorMessage({ code: 'something_new' }, LABELS), 'La conversion a échoué.');
   assert.equal(ingestionErrorMessage(null, LABELS), 'La conversion a échoué.');
+});
+
+test('linkUploadBody: un ajout simple ne porte pas forceRefresh', () => {
+  const body = linkUploadBody({ url: 'https://example.test/clip', title: 'Clip' });
+
+  assert.deepEqual(body, { url: 'https://example.test/clip', title: 'Clip' });
+  assert.equal('forceRefresh' in body, false);
+});
+
+test('linkUploadBody: le contournement du cache est transmis au board', () => {
+  const body = linkUploadBody({ url: 'https://example.test/clip', title: 'Clip', forceRefresh: true });
+
+  assert.equal(body.forceRefresh, true);
+});
+
+test('linkUploadBody: une case décochée ou un fichier ne fait pas partir le drapeau', () => {
+  assert.equal('forceRefresh' in linkUploadBody({ url: 'https://example.test/clip', title: 'Clip', forceRefresh: false }), false);
+  assert.equal('forceRefresh' in linkUploadBody({ url: 'https://example.test/clip', title: 'Clip' }), false);
+});
+
+test('linkUploadBody: un jouer une fois garde sa légende, sa durée et le contournement', () => {
+  const body = linkUploadBody({
+    url: 'https://example.test/clip',
+    title: 'Clip',
+    playOnce: true,
+    message: 'Légende',
+    displayDurationSec: 12,
+    forceRefresh: true,
+  });
+
+  assert.deepEqual(body, {
+    url: 'https://example.test/clip',
+    title: 'Clip',
+    playOnce: true,
+    message: 'Légende',
+    displayDurationSec: 12,
+    forceRefresh: true,
+  });
 });

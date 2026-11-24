@@ -21,6 +21,18 @@ export function showsPlayFields(action, canPlay) {
   return Boolean(canPlay) && action === 'play';
 }
 
+// The server cache bypass (`forceRefresh`) belongs to a link ingestion: the
+// server can download a link again even when it already holds the media. An
+// uploaded file has no such cache (it is keyed by its content), so the option
+// never applies to the file source.
+export function canBypassServerCache(mode) {
+  return mode === 'link';
+}
+
+export function forceRefreshFor(mode, checked) {
+  return canBypassServerCache(mode) && checked === true;
+}
+
 // Two picks of the same file hand back two File objects: it is one media, and
 // the import must not list it twice. Name, size, type and last modified date
 // are what the picker gives to tell one file from another.

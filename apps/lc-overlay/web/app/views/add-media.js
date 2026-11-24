@@ -25,8 +25,10 @@ import { notify } from '../core/toast.js';
 import { openDialog } from '../core/ui.js';
 import {
   addPickedFiles,
+  canBypassServerCache,
   defaultAction,
   duplicatePickMessage,
+  forceRefreshFor,
   initialSource,
   removePickedFile,
   showsPlayFields,
@@ -90,6 +92,29 @@ export function openAddDialog(options) {
     // --- link fields ---
     const linkUrl = h('input', { class: 'field', type: 'url', placeholder: 'https://…', required: true, value: prefill });
     const linkTitle = h('input', { class: 'field', placeholder: 'Titre du média', maxlength: '240' });
+    // The server can download the link again instead of reusing its cached
+    // copy. The option belongs to a link ingestion: the file source hides and
+    // disables it, and `forceRefreshFor` keeps a stale choice out of the body.
+    const forceRefreshInput = h('input', {
+      type: 'checkbox',
+      id: 'add-media-force-refresh',
+      'aria-describedby': 'add-media-force-refresh-hint',
+    });
+    const forceRefreshOption = h(
+      'div',
+      { class: 'cache-option', hidden: true },
+      h(
+        'label',
+        { class: 'switch cache-switch' },
+        forceRefreshInput,
+        h('span', null, 'Ignorer le cache serveur'),
+      ),
+      h(
+        'p',
+        { class: 'file-hint', id: 'add-media-force-refresh-hint' },
+        'Retélécharge le lien même si le serveur a déjà ce média.',
+      ),
+    );
     const linkMessage = h('textarea', { class: 'field', rows: '2', maxlength: '500', placeholder: 'Légende affichée sur les overlays' });
     const linkMessageLabel = h(
       'label',
@@ -173,6 +198,7 @@ export function openAddDialog(options) {
       { class: 'stack' },
       h('label', null, 'Lien du média', linkUrl),
       h('label', null, 'Titre (facultatif)', linkTitle),
+      forceRefreshOption,
       linkMessageLabel,
       linkDurationField,
     );
@@ -230,6 +256,9 @@ export function openAddDialog(options) {
       const showFile = play && mode === 'file' && chosenFiles.some(mayBeImage);
       fileDuration.disabled = !showFile;
       fileDurationField.hidden = !showFile;
+      const bypassCache = canBypassServerCache(mode);
+      forceRefreshOption.hidden = !bypassCache;
+      forceRefreshInput.disabled = !bypassCache;
     }
 
     function setAction(next) {
@@ -366,6 +395,7 @@ export function openAddDialog(options) {
               message: playOnce ? linkMessage.value : '',
               playOnce,
               displayDurationSec,
+              forceRefresh: forceRefreshFor(mode, forceRefreshInput.checked),
             };
             close();
             startLinkUpload(payload);

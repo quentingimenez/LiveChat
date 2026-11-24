@@ -4,7 +4,13 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultAction, initialSource, showsPlayFields } from '../../web/app/core/add-media-rules.js';
+import {
+  canBypassServerCache,
+  defaultAction,
+  forceRefreshFor,
+  initialSource,
+  showsPlayFields,
+} from '../../web/app/core/add-media-rules.js';
 
 test('l’ajout au board est l’action par défaut quand on en a le droit', () => {
   assert.equal(defaultAction(true, true), 'add');
@@ -29,4 +35,18 @@ test('la légende et la durée ne s’affichent que pour « Jouer une fois »', 
 test('des fichiers collés ouvrent la source Fichier, sinon la source Lien', () => {
   assert.equal(initialSource([]), 'link');
   assert.equal(initialSource([{ name: 'photo.jpg', type: 'image/jpeg', size: 11748 }]), 'file');
+});
+
+test('le cache serveur ne se contourne que pour un lien', () => {
+  assert.equal(canBypassServerCache('link'), true);
+  assert.equal(canBypassServerCache('file'), false);
+  assert.equal(canBypassServerCache(''), false);
+});
+
+test('un fichier ne demande jamais le contournement, même si la case reste cochée', () => {
+  assert.equal(forceRefreshFor('link', true), true);
+  assert.equal(forceRefreshFor('link', false), false);
+  assert.equal(forceRefreshFor('file', true), false);
+  assert.equal(forceRefreshFor('file', false), false);
+  assert.equal(forceRefreshFor(undefined, true), false);
 });

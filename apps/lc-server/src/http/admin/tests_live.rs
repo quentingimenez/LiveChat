@@ -148,7 +148,7 @@ async fn events_require_a_session() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(
         serde_json::from_slice::<Value>(&bytes).expect("JSON body"),
-        json!({ "error": "unauthorized" })
+        json!({ "error": "unauthorized", "message": "Authentification requise." })
     );
 }
 

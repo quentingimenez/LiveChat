@@ -2,11 +2,10 @@
 //!
 //! Le protocole v1 (Socket.IO) a été remplacé par le protocole v2 (WebSocket
 //! natif sur `/ws`, Phase 4). Tout client qui tente encore `/socket.io/` reçoit
-//! un `426 Upgrade Required` dont le corps est le contrat exact spécifié dans
-//! `docs/rust/protocol-v2.md` :
+//! un `426 Upgrade Required` produit par le contrat d'erreur central :
 //!
 //! ```json
-//! {"error":"overlay_outdated","protocolVersion":2,"minOverlayVersion":"3.0.0"}
+//! {"error":"overlay_outdated","message":"L'overlay doit être mis à jour.","protocolVersion":2,"minOverlayVersion":"3.0.0"}
 //! ```
 //!
 //! `minOverlayVersion` provient de la configuration (`MIN_OVERLAY_VERSION`,
@@ -17,23 +16,10 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::any;
-use axum::{Json, Router};
-use serde::Serialize;
+use axum::Router;
 
 use crate::app::AppState;
-
-/// Corps de la réponse 426.
-#[derive(Debug, Serialize)]
-struct OverlayOutdatedResponse {
-    /// Code machine stable attendu par le client legacy.
-    error: &'static str,
-    /// Version du protocole supportée par ce serveur.
-    #[serde(rename = "protocolVersion")]
-    protocol_version: u8,
-    /// Version minimale d'overlay configurée.
-    #[serde(rename = "minOverlayVersion")]
-    min_overlay_version: String,
-}
+use crate::http::error::ApiError;
 
 /// Sous-routeur `/socket.io` (avec ou sans slash final, quelque soit la méthode).
 pub fn router() -> Router<AppState> {
@@ -49,12 +35,8 @@ async fn socket_io_handler(State(state): State<AppState>) -> impl IntoResponse {
         min_overlay_version = %min_overlay_version,
         "tentative d'accès au protocole v1 (/socket.io) : 426 overlay_outdated"
     );
-    (
-        StatusCode::UPGRADE_REQUIRED,
-        Json(OverlayOutdatedResponse {
-            error: "overlay_outdated",
-            protocol_version: lc_protocol::PROTOCOL_VERSION,
-            min_overlay_version,
-        }),
-    )
+    ApiError::new(StatusCode::UPGRADE_REQUIRED, "overlay_outdated")
+        .detail("protocolVersion", lc_protocol::PROTOCOL_VERSION)
+        .detail("minOverlayVersion", min_overlay_version)
+        .into_response()
 }

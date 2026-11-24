@@ -2146,7 +2146,7 @@ async fn media_board_create_rejects_missing_url_without_network() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let body = body_json(&bytes);
     assert_eq!(body["error"], "invalid_payload");
-    assert_eq!(body["message"], "url is required");
+    assert_eq!(body["message"], "L’URL du média est requise.");
 
     // URL uniquement blanche → même erreur, aucun appel réseau.
     let (status, _, _) = send(

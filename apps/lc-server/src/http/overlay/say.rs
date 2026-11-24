@@ -30,7 +30,7 @@
 use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::Response;
+use axum::response::{IntoResponse as _, Response};
 use axum::Json;
 use lc_discord::{Lang, SpeechFailure};
 use lc_domain::enums::JobSource;
@@ -39,6 +39,7 @@ use lc_protocol::MAX_MEDIA_TEXT_CHARS;
 use serde_json::{json, Value};
 
 use crate::app::AppState;
+use crate::http::error::ApiError;
 use crate::media::jobs::{self, JobSpec};
 use crate::media::tts::{self, MAX_SPEECH_CHARS};
 use crate::media::{errors::MediaServiceError, hook};
@@ -50,10 +51,9 @@ use super::{db, db_failure, error, internal_error, json_response, now};
 
 /// `400 invalid_payload` with a short explanation.
 fn invalid(message: &'static str) -> Response {
-    json_response(
-        StatusCode::BAD_REQUEST,
-        json!({"error": "invalid_payload", "message": message}),
-    )
+    ApiError::invalid_payload()
+        .with_message(message)
+        .into_response()
 }
 
 /// Validated request.
@@ -76,14 +76,14 @@ enum SayRejection {
 
 fn parse_request(body: &Value) -> Result<SayRequest, SayRejection> {
     let Some(object) = body.as_object() else {
-        return Err(SayRejection::Invalid("a JSON object is required"));
+        return Err(SayRejection::Invalid("Un objet JSON est requis."));
     };
     let speech = match object.get("text") {
         Some(Value::String(text)) => tts::collapse_speech(text),
-        _ => return Err(SayRejection::Invalid("text is required")),
+        _ => return Err(SayRejection::Invalid("Le texte à dire est requis.")),
     };
     if speech.is_empty() {
-        return Err(SayRejection::Invalid("text is required"));
+        return Err(SayRejection::Invalid("Le texte à dire est requis."));
     }
     if speech.chars().count() > MAX_SPEECH_CHARS {
         return Err(SayRejection::TooLong);
@@ -93,12 +93,20 @@ fn parse_request(body: &Value) -> Result<SayRequest, SayRejection> {
         Some(Value::String(caption)) => Some(caption.trim())
             .filter(|caption| !caption.is_empty())
             .map(|caption| caption.chars().take(MAX_MEDIA_TEXT_CHARS).collect()),
-        Some(_) => return Err(SayRejection::Invalid("caption must be a string")),
+        Some(_) => {
+            return Err(SayRejection::Invalid(
+                "La légende doit être une chaîne de caractères.",
+            ));
+        }
     };
     let anonymous = match object.get("anonymous") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(anonymous)) => *anonymous,
-        Some(_) => return Err(SayRejection::Invalid("anonymous must be a boolean")),
+        Some(_) => {
+            return Err(SayRejection::Invalid(
+                "Le paramètre anonymous doit être un booléen.",
+            ));
+        }
     };
     Ok(SayRequest {
         speech,
@@ -140,10 +148,9 @@ pub async fn say(
         Ok(request) => request,
         Err(SayRejection::Invalid(message)) => return invalid(message),
         Err(SayRejection::TooLong) => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({"error": "text_too_long", "maxChars": MAX_SPEECH_CHARS}),
-            );
+            return ApiError::new(StatusCode::BAD_REQUEST, "text_too_long")
+                .detail("maxChars", MAX_SPEECH_CHARS)
+                .into_response();
         }
     };
     let db = match db(&state) {
@@ -154,7 +161,7 @@ pub async fn say(
     let lang = Lang::parse(&state.config.i18n);
     let asset = match tts::ingest_speech(&state, lang, &request.speech).await {
         Ok(asset) => asset,
-        Err(SpeechFailure::EmptyText) => return invalid("text is required"),
+        Err(SpeechFailure::EmptyText) => return invalid("Le texte à dire est requis."),
         // The cause is already logged by the speech module.
         Err(_) => return error(StatusCode::BAD_GATEWAY, "speech_failed"),
     };

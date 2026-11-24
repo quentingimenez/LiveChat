@@ -429,17 +429,17 @@ impl EditRecipe {
     /// The error is a sentence for the caller (`400 invalid_payload`).
     pub fn plan(&self, source: &EditSource) -> Result<EditPlan, String> {
         if source.kind == MediaKind::Image {
-            return Err("images are edited on the board".to_string());
+            return Err("Les images se modifient directement sur le board.".to_string());
         }
         let is_video = source.kind == MediaKind::Video;
         if !is_video && self.output != EditOutput::Same {
-            return Err("this output is only available for a video".to_string());
+            return Err("Ce format de sortie n’est disponible que pour une vidéo.".to_string());
         }
         if !is_video && self.mute {
-            return Err("mute only applies to a video".to_string());
+            return Err("Le mode muet ne s’applique qu’à une vidéo.".to_string());
         }
         if self.output == EditOutput::Audio && self.mute {
-            return Err("a muted video has no audio to extract".to_string());
+            return Err("Une vidéo mise en sourdine n’a pas d’audio à extraire.".to_string());
         }
         let with_video = is_video && self.output != EditOutput::Audio;
         let wants_audio = match self.output {
@@ -448,7 +448,7 @@ impl EditRecipe {
             EditOutput::Same => !self.mute,
         };
         if !with_video && !source.has_audio {
-            return Err("the media has no audio track".to_string());
+            return Err("Ce média n’a pas de piste audio.".to_string());
         }
         let with_audio = wants_audio && source.has_audio;
 
@@ -457,12 +457,12 @@ impl EditRecipe {
         let fade_in = in_range("fadeInSec", self.fade_in_sec, 0.0, MAX_FADE_SEC)?;
         let fade_out = in_range("fadeOutSec", self.fade_out_sec, 0.0, MAX_FADE_SEC)?;
         if !matches!(self.rotate, 0 | 90 | 180 | 270) {
-            return Err("rotate must be 0, 90, 180 or 270".to_string());
+            return Err("La rotation doit être 0, 90, 180 ou 270 degrés.".to_string());
         }
 
         let duration = source.duration_sec;
         if !duration.is_finite() || duration <= 0.0 {
-            return Err("the media has no known duration".to_string());
+            return Err("La durée de ce média est inconnue.".to_string());
         }
         let segments = plan_segments(&self.segments, duration)?;
         let kept = if segments.is_empty() {
@@ -471,11 +471,13 @@ impl EditRecipe {
             segments.iter().map(|(start, end)| end - start).sum()
         };
         if kept < MIN_KEPT_SEC {
-            return Err(format!("at least {MIN_KEPT_SEC} s must be kept"));
+            return Err(format!(
+                "La sélection doit conserver au moins {MIN_KEPT_SEC} s."
+            ));
         }
         let output_duration = kept / speed;
         if self.output == EditOutput::Gif && output_duration > MAX_GIF_SEC {
-            return Err(format!("a GIF is limited to {MAX_GIF_SEC} s"));
+            return Err(format!("Un GIF est limité à {MAX_GIF_SEC} s."));
         }
         // Fades longer than the output share it.
         let (fade_in, fade_out) = if fade_in + fade_out > output_duration {
@@ -526,7 +528,9 @@ impl EditRecipe {
 /// Checks a finite number against an inclusive range.
 fn in_range(name: &str, value: f64, min: f64, max: f64) -> Result<f64, String> {
     if !value.is_finite() || value < min || value > max {
-        return Err(format!("{name} must be between {min} and {max}"));
+        return Err(format!(
+            "La valeur de {name} doit être comprise entre {min} et {max}."
+        ));
     }
     Ok(value)
 }
@@ -535,24 +539,30 @@ fn in_range(name: &str, value: f64, min: f64, max: f64) -> Result<f64, String> {
 /// media gives an empty list.
 fn plan_segments(raw: &[[f64; 2]], duration: f64) -> Result<Vec<(f64, f64)>, String> {
     if raw.len() > MAX_SEGMENTS {
-        return Err(format!("at most {MAX_SEGMENTS} segments are accepted"));
+        return Err(format!("Au plus {MAX_SEGMENTS} segments sont acceptés."));
     }
     let mut segments: Vec<(f64, f64)> = Vec::with_capacity(raw.len());
     let mut previous_end = 0.0_f64;
     for (index, [start, end]) in raw.iter().copied().enumerate() {
         let number = index + 1;
         if !start.is_finite() || !end.is_finite() {
-            return Err(format!("segment {number} is not a pair of numbers"));
+            return Err(format!(
+                "Le segment {number} doit être une paire de nombres."
+            ));
         }
         if start < 0.0 || end <= start {
-            return Err(format!("segment {number} must end after it starts"));
+            return Err(format!(
+                "Le segment {number} doit se terminer après son début."
+            ));
         }
         if start < previous_end {
-            return Err("segments must be ascending and must not overlap".to_string());
+            return Err(
+                "Les segments doivent être croissants et ne pas se chevaucher.".to_string(),
+            );
         }
         if start >= duration || end > duration + DURATION_TOLERANCE_SEC {
             return Err(format!(
-                "segment {number} is outside the media ({duration:.2} s)"
+                "Le segment {number} dépasse la durée du média ({duration:.2} s)."
             ));
         }
         let end = end.min(duration);
@@ -565,7 +575,9 @@ fn plan_segments(raw: &[[f64; 2]], duration: f64) -> Result<Vec<(f64, f64)>, Str
         return Ok(segments);
     }
     if segments.is_empty() {
-        return Err(format!("at least {MIN_KEPT_SEC} s must be kept"));
+        return Err(format!(
+            "La sélection doit conserver au moins {MIN_KEPT_SEC} s."
+        ));
     }
     if let [(start, end)] = segments.as_slice() {
         if *start <= MIN_SEGMENT_SEC && *end >= duration - MIN_SEGMENT_SEC {
@@ -582,7 +594,7 @@ fn plan_crop(crop: Option<&CropRect>) -> Result<Option<CropRect>, String> {
     };
     let values = [crop.x, crop.y, crop.width, crop.height];
     if values.iter().any(|value| !value.is_finite()) {
-        return Err("crop must be made of numbers".to_string());
+        return Err("Le cadrage doit être composé de nombres.".to_string());
     }
     const EPSILON: f64 = 1e-6;
     if crop.x < -EPSILON
@@ -590,10 +602,10 @@ fn plan_crop(crop: Option<&CropRect>) -> Result<Option<CropRect>, String> {
         || crop.x + crop.width > 1.0 + EPSILON
         || crop.y + crop.height > 1.0 + EPSILON
     {
-        return Err("crop must stay inside the frame".to_string());
+        return Err("Le cadrage doit rester dans l’image.".to_string());
     }
     if crop.width < MIN_CROP_FRACTION || crop.height < MIN_CROP_FRACTION {
-        return Err("crop must keep at least 2% of each side".to_string());
+        return Err("Le cadrage doit conserver au moins 2 % de chaque côté.".to_string());
     }
     let x = crop.x.clamp(0.0, 1.0);
     let y = crop.y.clamp(0.0, 1.0);
@@ -628,10 +640,10 @@ fn plan_annotations(
         return Ok((Vec::new(), false, EditAdjust::default(), None));
     }
     let (Some(width), Some(height)) = (source.width, source.height) else {
-        return Err("the frame size is unknown".to_string());
+        return Err("La taille de l’image est inconnue.".to_string());
     };
     if width < 2 || height < 2 {
-        return Err("the frame is too small to be annotated".to_string());
+        return Err("L’image est trop petite pour être annotée.".to_string());
     }
     Ok((
         plan_masks(raw_masks, width, height)?,
@@ -644,7 +656,7 @@ fn plan_annotations(
 /// Validates the masks and turns their fractions into source pixels.
 fn plan_masks(raw: &[MaskRect], width: u32, height: u32) -> Result<Vec<MaskPlan>, String> {
     if raw.len() > MAX_MASKS {
-        return Err(format!("at most {MAX_MASKS} masks are accepted"));
+        return Err(format!("Au plus {MAX_MASKS} masques sont acceptés."));
     }
     let frame_width = f64::from(width);
     let frame_height = f64::from(height);
@@ -653,7 +665,7 @@ fn plan_masks(raw: &[MaskRect], width: u32, height: u32) -> Result<Vec<MaskPlan>
         let number = index + 1;
         let values = [mask.x, mask.y, mask.width, mask.height, mask.strength];
         if values.iter().any(|value| !value.is_finite()) {
-            return Err(format!("mask {number} must be made of numbers"));
+            return Err(format!("Le masque {number} doit être composé de nombres."));
         }
         const EPSILON: f64 = 1e-6;
         if mask.x < -EPSILON
@@ -661,17 +673,17 @@ fn plan_masks(raw: &[MaskRect], width: u32, height: u32) -> Result<Vec<MaskPlan>
             || mask.x + mask.width > 1.0 + EPSILON
             || mask.y + mask.height > 1.0 + EPSILON
         {
-            return Err(format!("mask {number} must stay inside the frame"));
+            return Err(format!("Le masque {number} doit rester dans l’image."));
         }
         if mask.width < MIN_MASK_FRACTION || mask.height < MIN_MASK_FRACTION {
             return Err(format!(
-                "mask {number} must keep at least {:.1}% of each side",
+                "Le masque {number} doit conserver au moins {:.1} % de chaque côté.",
                 MIN_MASK_FRACTION * 100.0
             ));
         }
         if mask.strength < 0.0 || mask.strength > MAX_MASK_STRENGTH {
             return Err(format!(
-                "mask {number} strength must be between 0 and {MAX_MASK_STRENGTH}"
+                "L’intensité du masque {number} doit être comprise entre 0 et {MAX_MASK_STRENGTH}."
             ));
         }
         // Fractions become pixels: the far edges are rounded too, so a mask
@@ -717,23 +729,26 @@ fn plan_overlay(
         return Ok(false);
     };
     if overlay.width != width || overlay.height != height {
-        return Err("the annotation overlay must be the size of the frame".to_string());
+        return Err("La couche d’annotation doit avoir la taille de l’image.".to_string());
     }
     if overlay.width > MAX_OVERLAY_SIDE || overlay.height > MAX_OVERLAY_SIDE {
         return Err(format!(
-            "the annotation overlay is limited to {MAX_OVERLAY_SIDE} px a side"
+            "La couche d’annotation est limitée à {MAX_OVERLAY_SIDE} px de côté."
         ));
     }
     let bytes = decode_overlay(&overlay.png)?;
     if bytes.len() > MAX_OVERLAY_BYTES {
         return Err(format!(
-            "the annotation overlay is limited to {} MiB",
+            "La couche d’annotation est limitée à {} Mio.",
             MAX_OVERLAY_BYTES / (1024 * 1024)
         ));
     }
     let (png_width, png_height) = png_size(&bytes)?;
     if png_width != overlay.width || png_height != overlay.height {
-        return Err("the annotation overlay size does not match its picture".to_string());
+        return Err(
+            "La taille déclarée de la couche d’annotation ne correspond pas à son image."
+                .to_string(),
+        );
     }
     Ok(true)
 }
@@ -742,14 +757,14 @@ fn plan_overlay(
 pub(crate) fn decode_overlay(png: &str) -> Result<Vec<u8>, String> {
     STANDARD
         .decode(png)
-        .map_err(|_| "the annotation overlay is not valid base64".to_string())
+        .map_err(|_| "La couche d’annotation n’est pas un base64 valide.".to_string())
 }
 
 /// Size declared by the `IHDR` chunk of a PNG, without decoding the picture.
 fn png_size(bytes: &[u8]) -> Result<(u32, u32), String> {
     const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
     if bytes.len() < 24 || bytes[..8] != SIGNATURE || &bytes[12..16] != b"IHDR" {
-        return Err("the annotation overlay is not a PNG".to_string());
+        return Err("La couche d’annotation n’est pas un PNG.".to_string());
     }
     let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
     let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
@@ -1486,7 +1501,7 @@ mod tests {
         };
         assert_eq!(
             recipe("{}").plan(&image).unwrap_err(),
-            "images are edited on the board"
+            "Les images se modifient directement sur le board."
         );
         assert!(recipe(r#"{"output":"gif"}"#).plan(&audio(10.0)).is_err());
         assert!(recipe(r#"{"output":"audio"}"#).plan(&audio(10.0)).is_err());
@@ -1938,7 +1953,7 @@ mod tests {
         mask_recipe.masks[0].strength = f64::NAN;
         assert_eq!(
             mask_recipe.plan(&video(10.0)).unwrap_err(),
-            "mask 1 must be made of numbers"
+            "Le masque 1 doit être composé de nombres."
         );
         let too_many = format!(
             r#"{{"masks":[{}]}}"#,
@@ -1949,7 +1964,7 @@ mod tests {
         );
         assert_eq!(
             recipe(&too_many).plan(&video(10.0)).unwrap_err(),
-            format!("at most {MAX_MASKS} masks are accepted")
+            format!("Au plus {MAX_MASKS} masques sont acceptés.")
         );
         // A video whose picture size is unknown cannot be annotated.
         let unknown = EditSource {
@@ -1961,7 +1976,7 @@ mod tests {
             recipe(r#"{"adjust":{"brightness":120}}"#)
                 .plan(&unknown)
                 .unwrap_err(),
-            "the frame size is unknown"
+            "La taille de l’image est inconnue."
         );
         // An audio edit ignores them entirely.
         let sound = recipe(
@@ -1984,25 +1999,25 @@ mod tests {
             recipe(&overlay(overlay_png(320, 240), 640, 480))
                 .plan(&video(10.0))
                 .unwrap_err(),
-            "the annotation overlay must be the size of the frame"
+            "La couche d’annotation doit avoir la taille de l’image."
         );
         assert_eq!(
             recipe(&overlay(overlay_png(160, 240), 320, 240))
                 .plan(&video(10.0))
                 .unwrap_err(),
-            "the annotation overlay size does not match its picture"
+            "La taille déclarée de la couche d’annotation ne correspond pas à son image."
         );
         assert_eq!(
             recipe(&overlay("bm90IGEgcG5n".to_string(), 320, 240))
                 .plan(&video(10.0))
                 .unwrap_err(),
-            "the annotation overlay is not a PNG"
+            "La couche d’annotation n’est pas un PNG."
         );
         assert_eq!(
             recipe(&overlay("é".to_string(), 320, 240))
                 .plan(&video(10.0))
                 .unwrap_err(),
-            "the annotation overlay is not valid base64"
+            "La couche d’annotation n’est pas un base64 valide."
         );
     }
 

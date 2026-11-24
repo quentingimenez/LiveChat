@@ -29,6 +29,7 @@ use serde_json::{json, Value};
 use url::Url;
 
 use crate::app::AppState;
+use crate::http::error::ApiError;
 
 use super::audit::{AuditActor, AuditStatus};
 use super::auth::{self, AuthMethods};
@@ -369,13 +370,9 @@ fn guard_route(state: &AppState, headers: &HeaderMap, peer: PeerIp) -> Result<()
 
 /// `401` body of `GET /admin/auth/session`.
 fn unauthorized_session(methods: AuthMethods) -> Response {
-    auth::json_status(
-        StatusCode::UNAUTHORIZED,
-        json!({
-            "error": "unauthorized",
-            "methods": methods.payload(),
-        }),
-    )
+    ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized")
+        .detail("methods", methods.payload())
+        .into_response()
 }
 
 /// Redirects to the console login page with the given error code.

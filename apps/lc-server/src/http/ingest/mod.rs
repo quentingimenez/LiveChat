@@ -32,10 +32,10 @@ pub mod submit;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use axum::{Json, Router};
-use serde_json::{json, Value};
+use axum::Router;
 
 use crate::app::AppState;
+use crate::http::error::ApiError;
 use crate::media::errors::MediaServiceError;
 
 /// Nom d'auteur par défaut des clients d'ingestion (legacy).
@@ -55,41 +55,34 @@ pub fn router() -> Router<AppState> {
         .route("/ingest/pair/consume/", post(pair::consume))
 }
 
-/// Réponse JSON d'erreur applicative avec un statut donné.
-pub(crate) fn error_response(status: StatusCode, payload: Value) -> Response {
-    (status, Json(payload)).into_response()
-}
-
-/// `{"error": code}` sans message libre.
-pub(crate) fn simple_error(status: StatusCode, code: &str) -> Response {
-    error_response(status, json!({ "error": code }))
+/// Réponse d'erreur applicative avec un statut et un code donnés.
+pub(crate) fn simple_error(status: StatusCode, code: &'static str) -> Response {
+    ApiError::new(status, code).into_response()
 }
 
 /// Jeton d'ingestion inactif depuis trop longtemps : 401 distinct du 503
 /// « ingestion désactivée ». Le message invite à ré-appairer depuis la board,
 /// sans promettre qu'un ancien jeton puisse être réutilisé.
 pub(crate) fn expired_token_error() -> Response {
-    error_response(
-        StatusCode::UNAUTHORIZED,
-        json!({
-            "error": "ingest_token_expired",
-            "message": "Ce jeton d'ingestion a expiré après 180 jours sans activité. Ré-appairez l'appareil depuis la board pour obtenir un nouveau jeton ; l'ancien jeton n'est plus valable sur l'ancien appareil."
-        }),
-    )
+    ApiError::new(StatusCode::UNAUTHORIZED, "ingest_token_expired").into_response()
 }
 
-/// `{"error":"invalid_payload","message":...}` (message optionnel).
-pub(crate) fn invalid_payload(message: Option<&str>) -> Response {
-    let payload = match message {
-        Some(message) => json!({ "error": "invalid_payload", "message": message }),
-        None => json!({ "error": "invalid_payload" }),
-    };
-    error_response(StatusCode::BAD_REQUEST, payload)
+/// `400 invalid_payload` avec une précision humaine statique optionnelle.
+///
+/// Le message doit être une constante française : jamais une rejection d'axum,
+/// un message de parseur ni une donnée de la requête.
+pub(crate) fn invalid_payload(message: Option<&'static str>) -> Response {
+    let error = ApiError::invalid_payload();
+    match message {
+        Some(message) => error.with_message(message),
+        None => error,
+    }
+    .into_response()
 }
 
 /// Erreur interne normalisée du legacy.
 pub(crate) fn internal_error() -> Response {
-    simple_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+    ApiError::internal().into_response()
 }
 
 /// Conflit d'unicité quel que soit le chemin de conversion de l'erreur.
@@ -106,28 +99,30 @@ pub(crate) fn is_conflict(db_error: &lc_db::DbError) -> bool {
         )
 }
 
-/// Erreur d'ingestion média : 422 `media_ingestion_failed` avec code legacy,
-/// 500 pour une erreur inattendue, 503 si le service est indisponible.
+/// Erreur d'ingestion média : 422 `media_ingestion_failed` avec code legacy et
+/// message utilisateur du code, 500 pour une erreur inattendue, 503 si le
+/// service est indisponible.
+///
+/// La sortie brute de l'outil (`yt-dlp`, `ffmpeg`…) reste dans les journaux :
+/// elle ne doit jamais atteindre `message` (cf. [`crate::http::error`]).
 pub(crate) fn media_service_error(error: MediaServiceError) -> Response {
     if let Some(media_error) = error.media_error() {
+        let code = media_error.code();
         tracing::warn!(
-            code = media_error.code().as_str(),
-            message = media_error.message(),
+            code = code.as_str(),
+            detail = media_error.message(),
+            raw = media_error.raw_message().unwrap_or(""),
             "ingestion média en échec"
         );
-        return error_response(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            json!({
-                "error": "media_ingestion_failed",
-                "code": media_error.code().as_str(),
-                "message": media_error.message(),
-            }),
-        );
+        return ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "media_ingestion_failed")
+            .with_message(code.user_message_fr())
+            .detail("code", code.as_str())
+            .into_response();
     }
 
     match error {
         MediaServiceError::Unavailable(message) => {
-            tracing::error!(message, "service d'ingestion indisponible");
+            tracing::error!(detail = message, "service d'ingestion indisponible");
             simple_error(StatusCode::SERVICE_UNAVAILABLE, "ingest_unavailable")
         }
         other => {
@@ -180,5 +175,37 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
             assert_eq!(body["error"], "invalid_payload", "{uri}");
         }
+    }
+
+    /// Régression : le toast de l'extension affichait le stderr brut de `yt-dlp`
+    /// (« Sign in to confirm your age… Use --cookies-from-browser… »). Le corps
+    /// 422 doit porter la phrase utilisateur du code, jamais la sortie d'outil.
+    #[tokio::test]
+    async fn media_failure_never_leaks_the_raw_tool_output() {
+        const RAW: &str = "ERROR: [youtube] 6GvU1WyGMok: Sign in to confirm your age. \
+This video may be inappropriate for some users. Use --cookies-from-browser or --cookies \
+for the authentication. See https://github.com/yt-dlp/yt-dlp/wiki/FAQ";
+        let error = lc_media::MediaError::from_command_failure(
+            "yt-dlp",
+            "",
+            RAW,
+            lc_media::MediaErrorCode::DownloadFailed,
+        );
+
+        let response = media_service_error(MediaServiceError::Media(error));
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(body["error"], "media_ingestion_failed");
+        assert_eq!(body["code"], "PRIVATE_OR_AUTH_REQUIRED");
+        assert_eq!(
+            body["message"],
+            "Ce média est privé ou demande une connexion."
+        );
+        let message = body["message"].as_str().unwrap();
+        assert!(!message.contains("ERROR:"));
+        assert!(!message.contains("yt-dlp"));
+        assert!(!message.contains("cookies-from-browser"));
     }
 }

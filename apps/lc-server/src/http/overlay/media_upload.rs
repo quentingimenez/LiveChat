@@ -52,6 +52,7 @@ use tokio::io::AsyncWriteExt as _;
 use uuid::Uuid;
 
 use crate::app::AppState;
+use crate::http::error::ApiError;
 use crate::ingestions::StartIngestionError;
 use crate::media::assets;
 use crate::media::errors::MediaServiceError;
@@ -278,7 +279,9 @@ fn upload_source_hash(value: Option<&str>) -> Result<Option<String>, Response> {
         Some(raw) if raw.len() == 64 && raw.bytes().all(|byte| byte.is_ascii_hexdigit()) => {
             Ok(Some(format!("upload:sha256:{}", raw.to_ascii_lowercase())))
         }
-        Some(_) => Err(invalid_payload("sha256 must be 64 hexadecimal characters")),
+        Some(_) => Err(invalid_payload(
+            "Le sha256 doit contenir 64 caractères hexadécimaux.",
+        )),
     }
 }
 
@@ -330,7 +333,7 @@ pub async fn create_upload(
                 error = %rejection.body_text(),
                 "corps invalide sur POST /overlay/media-board/uploads"
             );
-            return invalid_payload("invalid upload description");
+            return invalid_payload("La description de l’upload est invalide.");
         }
     };
     // « Jouer une fois » déclenche une lecture au lieu d'ajouter au board :
@@ -344,7 +347,9 @@ pub async fn create_upload(
     // The display time only belongs to a play once. The file kind is decided
     // by the ingestion, so only the bounds are checked here.
     if !body.play_once && body.display_duration_sec.is_some() {
-        return invalid_payload("displayDurationSec is only allowed for a play once");
+        return invalid_payload(
+            "La durée d’affichage n’est autorisée que pour une lecture unique.",
+        );
     }
     let display_duration_sec =
         match super::media_board::play_once_display_duration(body.display_duration_sec.as_ref()) {
@@ -356,9 +361,9 @@ pub async fn create_upload(
         Err(response) => return response,
     };
     let size = match body.size {
-        Some(0) => return invalid_payload("file is empty"),
+        Some(0) => return invalid_payload("Le fichier est vide."),
         Some(size) => size,
-        None => return invalid_payload("size is required"),
+        None => return invalid_payload("La taille du fichier est requise."),
     };
     let sha256 = match upload_source_hash(body.sha256.as_deref()) {
         Ok(sha256) => sha256,
@@ -386,7 +391,7 @@ pub async fn create_upload(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     if body.play_once && replace_item_id.is_some() {
-        return invalid_payload("playOnce cannot replace a board item");
+        return invalid_payload("Une lecture unique ne peut pas remplacer un item du board.");
     }
     // A replacement is checked before any byte is sent: the item must belong
     // to the guild (404) and the caller must be allowed to edit it (403).
@@ -499,10 +504,7 @@ pub async fn create_upload(
             .uploads
             .insert(auth.guild_id().clone(), auth.client.id.as_uuid(), session)
     else {
-        return json_response(
-            StatusCode::TOO_MANY_REQUESTS,
-            serde_json::json!({ "error": "too_many_uploads" }),
-        );
+        return ApiError::new(StatusCode::TOO_MANY_REQUESTS, "too_many_uploads").into_response();
     };
     json_response(
         StatusCode::CREATED,
@@ -539,12 +541,12 @@ pub async fn lookup_upload(
                 error = %rejection.body_text(),
                 "corps invalide sur POST /overlay/media-board/uploads/lookup"
             );
-            return invalid_payload("invalid upload lookup");
+            return invalid_payload("La recherche d’upload est invalide.");
         }
     };
     let source_hash = match upload_source_hash(body.sha256.as_deref()) {
         Ok(Some(source_hash)) => source_hash,
-        Ok(None) => return invalid_payload("sha256 is required"),
+        Ok(None) => return invalid_payload("Le sha256 est requis."),
         Err(response) => return response,
     };
     let db = match db(&state) {
@@ -585,7 +587,7 @@ pub async fn put_part(
         return response;
     }
     let Some(offset) = query.ok().and_then(|Query(query)| query.offset) else {
-        return invalid_payload("offset is required");
+        return invalid_payload("L’offset est requis.");
     };
     let Some((upload_id, slot)) = session_slot(&state, &auth, &upload_id) else {
         return upload_not_found();
@@ -623,18 +625,21 @@ async fn receive_part(session: &mut UploadSession, body: Body) -> Result<(), Res
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| {
             tracing::debug!(error = %error, "partie d'upload interrompue");
-            invalid_payload("request body could not be read")
+            invalid_payload("Le corps de la requête n’a pas pu être lu.")
         })?;
         let length = chunk.len() as u64;
         part_bytes = part_bytes.saturating_add(length);
         if part_bytes > MAX_PART_BYTES {
-            return Err(json_response(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                serde_json::json!({ "error": "part_too_large", "maxBytes": MAX_PART_BYTES }),
-            ));
+            return Err(
+                ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "part_too_large")
+                    .detail("maxBytes", MAX_PART_BYTES)
+                    .into_response(),
+            );
         }
         if session.received.saturating_add(length) > session.size {
-            return Err(invalid_payload("more bytes than the declared size"));
+            return Err(invalid_payload(
+                "La requête contient plus d’octets que la taille déclarée.",
+            ));
         }
         session.file.write_all(&chunk).await.map_err(|error| {
             tracing::error!(error = %error, "écriture du fichier temporaire d'upload impossible");
@@ -669,7 +674,7 @@ pub async fn complete_upload(
     };
     state.uploads.remove(upload_id);
     if session.received != session.size {
-        return invalid_payload("the file was not fully received");
+        return invalid_payload("Le fichier n’a pas été reçu en totalité.");
     }
     let UploadSession {
         target,
@@ -754,21 +759,23 @@ fn non_blank(value: Option<&str>) -> Option<String> {
 /// Validates the original filename without ever using it as a path.
 fn validate_filename(raw: Option<&str>) -> Result<String, Response> {
     let Some(raw) = raw else {
-        return Err(invalid_payload("filename is required"));
+        return Err(invalid_payload("Le nom du fichier est requis."));
     };
     let filename = raw.trim();
     if filename.is_empty() {
-        return Err(invalid_payload("filename is required"));
+        return Err(invalid_payload("Le nom du fichier est requis."));
     }
     if filename.chars().count() > MAX_FILENAME_CHARS {
-        return Err(invalid_payload("filename is too long (max 255 characters)"));
+        return Err(invalid_payload(
+            "Le nom du fichier est trop long (255 caractères au maximum).",
+        ));
     }
     if filename.contains('/')
         || filename.contains('\\')
         || filename.contains("..")
         || filename.chars().any(char::is_control)
     {
-        return Err(invalid_payload("filename is invalid"));
+        return Err(invalid_payload("Le nom du fichier est invalide."));
     }
     Ok(filename.to_owned())
 }
@@ -800,35 +807,30 @@ pub(super) fn upload_service_failure(service_error: &MediaServiceError) -> Inges
 
 /// `400 invalid_payload` with a message.
 fn invalid_payload(message: &'static str) -> Response {
-    json_response(
-        StatusCode::BAD_REQUEST,
-        serde_json::json!({"error": "invalid_payload", "message": message}),
-    )
+    ApiError::invalid_payload()
+        .with_message(message)
+        .into_response()
 }
 
 /// `413 payload_too_large` with the server's limit.
 fn payload_too_large(max_bytes: u64) -> Response {
-    json_response(
-        StatusCode::PAYLOAD_TOO_LARGE,
-        serde_json::json!({"error": "payload_too_large", "maxBytes": max_bytes}),
-    )
+    ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large")
+        .detail("maxBytes", max_bytes)
+        .into_response()
 }
 
 /// `404 upload_not_found`.
 fn upload_not_found() -> Response {
-    json_response(
-        StatusCode::NOT_FOUND,
-        serde_json::json!({"error": "upload_not_found"}),
-    )
+    ApiError::new(StatusCode::NOT_FOUND, "upload_not_found").into_response()
 }
 
 /// `409` with the bytes already received when known.
 fn upload_conflict(code: &'static str, received: Option<u64>) -> Response {
-    let body = match received {
-        Some(received) => serde_json::json!({ "error": code, "received": received }),
-        None => serde_json::json!({ "error": code }),
-    };
-    json_response(StatusCode::CONFLICT, body)
+    let error = ApiError::new(StatusCode::CONFLICT, code);
+    match received {
+        Some(received) => error.detail("received", received).into_response(),
+        None => error.into_response(),
+    }
 }
 
 /// Temporary upload directory, removed on drop.

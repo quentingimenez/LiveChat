@@ -20,7 +20,6 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Extension, State};
 use axum::http::{header::ORIGIN, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use lc_db::Db;
@@ -45,6 +44,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::hub::{self, AuthError, Hub, HubEngine, OutFrame, TOO_MANY_CONNECTIONS_REASON};
+use crate::http::error::ApiError;
 use crate::http::overlay::guild::guild_icon_url;
 use crate::media::display_duration::card_duration_sec;
 
@@ -206,11 +206,7 @@ pub(crate) async fn ws_handler(
             .on_upgrade(move |socket| handle_socket(socket, state, hub, origin)),
         Err(_rejection) => {
             debug!("upgrade WebSocket refusé : 426 websocket_required");
-            (
-                StatusCode::UPGRADE_REQUIRED,
-                Json(serde_json::json!({ "error": "websocket_required" })),
-            )
-                .into_response()
+            ApiError::new(StatusCode::UPGRADE_REQUIRED, "websocket_required").into_response()
         }
     }
 }

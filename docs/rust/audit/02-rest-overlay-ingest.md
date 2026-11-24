@@ -40,8 +40,8 @@
 - **Confinement média effectif quand le répertoire existe** (asset hors `MEDIA_STORAGE_DIR` → 404 `media_not_found_on_disk`, probe A).
 - **Range/HEAD/206/416 conformes** : 206 `content-range`/`content-length`, 416 `content-range: bytes */size`, `accept-ranges: bytes`, `cache-control: no-store`, `content-type: asset.mime` (fallback octet-stream).
 - **Meme board** : dédoublonnage `(guilde, asset)`, quota board 422 `BOARD_STORAGE_LIMIT_REACHED`, épinglage +100 ans, `guildId` query ≠ Bearer → 403, PATCH partiel conservant les champs absents, DELETE idempotent, pagination bornée 1..=200 (tests).
-- **Ingestion** : auth avant corps, body limit global **1 MiB** (`413` confirmé), statuts 201/400/401/403/422/503 conformes, `saveToBoard` sans source refusé (400), erreurs média normalisées `{error: media_ingestion_failed, code, message}`, conversion de flags legacy (`boolean_flag` accepte `on`), `showText` booléen strict, durée > 0 arrondie au supérieur.
-- **Erreurs non-JSON normalisées** (`normalize_errors`) : pas de fuite de stack/HTML, status conservés, `Internal` → `{"error":"internal_error"}`.
+- **Ingestion** : auth avant corps, body limit global **1 MiB** (`413` confirmé), statuts 201/400/401/403/422/503 conformes, `saveToBoard` sans source refusé (400), erreurs média normalisées `{error: media_ingestion_failed, message: phrase utilisateur, code legacy}` (la sortie brute de l'outil reste dans les journaux), conversion de flags legacy (`boolean_flag` accepte `on`), `showText` booléen strict, durée > 0 arrondie au supérieur.
+- **Erreurs non-JSON normalisées** (`normalize_errors`) : pas de fuite de stack/HTML, statut et en-têtes conservés, code déduit du statut + `message` canonique ; les corps JSON qui n'ont que `error` sont complétés.
 - **Pas d'injection de commande** via URL : `run_command` passe des `args` vectorisés (pas de shell) ; yt-dlp/ffprobe reçoivent l'URL en argument.
 
 ---

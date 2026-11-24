@@ -52,7 +52,7 @@ apps/lc-server/
         ├── security.rs  # CSP + en-têtes de sécurité
         ├── cors.rs      # origines explicites, tauri.localhost, loopback dev
         ├── rate_limit.rs# 4 budgets / 15 min par IP, exemption loopback dev
-        └── error.rs     # normalisation JSON des erreurs, repli 404
+        └── error.rs     # contrat d'erreur central ({error, message}), repli 404
 ```
 
 La découpe bibliothèque/binaire est une exigence d'intégration : les lanes
@@ -72,8 +72,10 @@ De l'intérieur vers l'extérieur (voir `app::router`) :
 7. `TraceLayer` — span `http_request` corrélé par `x-request-id` ;
 8. propagation puis génération de `x-request-id`.
 
-Toute réponse d'erreur qui traverse les couches est donc déjà du JSON
-`{"error": …}`.
+Toute réponse d'erreur qui traverse les couches respecte le contrat
+`{"error": <code>, "message": <phrase française>}` : les handlers construisent
+leurs erreurs avec `http::error::ApiError` (table `message_for`), et le
+middleware complète les corps JSON qui n'auraient que `error`.
 
 ### API publique (`lc_server`)
 
@@ -202,8 +204,8 @@ global) : c'est elle qu'utilisent les tests.
 | --- | --- | --- |
 | `GET` | `/` | `200 {"service":"livechat-server","status":"ok"}` (identité legacy) |
 | `GET` | `/health` | `200` JSON enrichi (voir ci-dessous) |
-| *toute* | `/socket.io`, `/socket.io/`, `/socket.io/*` | `426 {"error":"overlay_outdated","protocolVersion":2,"minOverlayVersion":"3.0.0"}` |
-| *toute* | autre | `404 {"error":"request_error"}` |
+| *toute* | `/socket.io`, `/socket.io/`, `/socket.io/*` | `426 {"error":"overlay_outdated","message":"…","protocolVersion":2,"minOverlayVersion":"3.0.0"}` |
+| *toute* | autre | `404 {"error":"request_error","message":"Ressource introuvable."}` |
 
 Toutes les réponses portent `x-request-id` (généré si absent, propagé sinon).
 Le corps des requêtes est limité à **1 Mio** (`413` normalisé JSON).
@@ -242,14 +244,29 @@ load-balancers) ; la dégradation est portée par `status`/`db`/`discord`/`engin
 Une base configurée mais impossible à ouvrir fait échouer le démarrage (code 1)
 au lieu de servir silencieusement sans données.
 
-### Normalisation des erreurs
+### Contrat et normalisation des erreurs
 
-- réponses `4xx/5xx` déjà en JSON : inchangées (assets/headers conservés) ;
-- réponses d'erreur non JSON (extracteurs axum, `405`, `413`, `415`…) :
-  remplacées par `{"error":"request_error"}` (4xx) ou
-  `{"error":"internal_error"}` (5xx), **statut et en-têtes conservés** ;
+Toute erreur HTTP est construite avec `ApiError` (`apps/lc-server/src/http/error.rs`)
+et sérialisée en `{"error": <code>, "message": <phrase française>, …détails}` :
+
+- `message_for(code)` est la table unique des phrases affichables ; un code
+  inconnu reçoit un repli par statut (`fallback_message`), jamais un détail
+  technique ;
+- les sorties brutes d'outils (`yt-dlp`, `ffmpeg`, serde…) ne vont que dans les
+  journaux (`tracing`), jamais dans `message` ;
+- les détails additifs (`maxBytes`, `maxChars`, `received`, `code` média…) sont
+  aplatis à côté de `error`/`message` et ne peuvent pas les écraser.
+
+Filet du middleware `normalize_errors` :
+
+- un objet JSON `4xx/5xx` qui porte un `error` string mais pas de `message`
+  non vide reçoit la phrase canonique (corps ≤ 1 Mio, en-têtes recalculés) ;
+- un `message` déjà présent n'est jamais réécrit ;
+- une réponse d'erreur non JSON (extracteurs axum, `405`, `413`, `415`…) est
+  remplacée par le code déduit du statut (`code_for_status`) et sa phrase,
+  **statut et en-têtes conservés** ;
 - chaque erreur est journalisée dans le span `http_request` (request id) :
-  `error!` pour 5xx, `warn!` pour 4xx.
+  `error!` pour 5xx, `warn!` pour 4xx, avec le code mais sans corps brut.
 
 ---
 
@@ -316,9 +333,9 @@ contrairement au legacy qui combinait les deux). Préflight mis en cache 600 s.
   encapsulées en IPv6 (`::ffff:a.b.c.d`) sont normalisées ;
 - seule exemption : les adresses loopback en `development` (l'exemption
   `/admin` du legacy est supprimée, AUD-COR-10) ;
-- réponse `429 {"error":"request_error"}` avec `x-ratelimit-limit`,
-  `x-ratelimit-remaining`, `x-ratelimit-reset` et `Retry-After` ; même
-  informations sur les réponses acceptées.
+- réponse `429 {"error":"too_many_requests","message":"…"}` avec
+  `x-ratelimit-limit`, `x-ratelimit-remaining`, `x-ratelimit-reset` et
+  `Retry-After` ; même informations sur les réponses acceptées.
 
 Limite connue : compteur par processus (pas de partage multi-instance) —
 suffisant pour un serveur local mono-processus ; à revoir si un déploiement
@@ -359,7 +376,7 @@ Suites vertes : `cargo fmt -p lc-server -- --check`,
 | `app` | 16 | contrat HTTP complet via `tower::ServiceExt::oneshot` : `/`, 404, 405, `/health` (disabled/db ok/dégradé/uptime), 426 exact, CSP, request id, CORS tauri, rate limit (100 puis 429, admin, loopback dev), body limit 413, ouverture SQLite optionnelle |
 | `http::cors` | 8 | tauri http(s), API_URL, origines additionnelles, inconnue/null refusées, loopback dev, absence de credentials |
 | `http::rate_limit` | 8 | limite puis refus, clients séparés, reset de fenêtre, purge, seau inconnu, exemptions, XFF fiable seulement si activé, normalisation IPv4-mapped |
-| `http::error` | 4 | normalisation 4xx/5xx, JSON intact, 2xx intact |
+| `http::error` | 10 | table de messages, sérialisation `ApiError`, repli par statut, complétion des corps JSON sans `message`, corps trop volumineux remplacé sans perdre les en-têtes, JSON et 2xx intacts |
 | `http::health` | 3 | sérialisation lowercase, DiscordProbe disabled/down |
 | `http::security` | 2 | en-têtes présents, CSP sans inline script |
 | `shutdown` | 5 | trigger/wait, idempotence, abonné tardif, sender disparu, arrêt du serveur HTTP |
@@ -440,7 +457,7 @@ L'état partagé est `AppState` (cloneable) : `config`, `db`, `clock`,
 | CSP script | `'self' 'unsafe-inline'` | `'self'` sans inline | correctif S4 |
 | `/health` | `{"status":"ok"}` | enrichi (`db`, `discord`, `uptimeSec`, `activeJobs`, version, protocole) ; 200 même dégradé | observabilité |
 | Rate limit | plugin `@fastify/rate-limit` (100/15 min, allowList `/admin` + loopback dev) | compteur maison en mémoire, quatre budgets (auth 100, média 1 000, legacy 100, général 1 000), plus d'exemption `/admin`, en-têtes `x-ratelimit-*` + `Retry-After` | moins de dépendances, tests déterministes |
-| Erreurs | handler Fastify (`internal_error`/`request_error`) | normalisation de toute réponse non JSON, mêmes corps | cohérence avec les réponses axum |
+| Erreurs | handler Fastify (`internal_error`/`request_error`) | contrat central `ApiError` (`{"error","message"}`), normalisation des corps JSON incomplets, phrases françaises, aucune sortie d'outil exposée | cohérence avec les clients (extension, overlay, admin) et non-fuite des détails |
 | `.env` | `dotenv` | environnement du processus uniquement | le lanceur fournit l'environnement ; pas de dépendance |
 | `HIDE_COMMANDS_DISABLED` | chaîne `"false"` interprétée par le code Discord | booléen strict `false` | typage |
 | Écoute | `::` dual-stack | `0.0.0.0` IPv4 | démarrage garanti si IPv6 absent (voir risques) |

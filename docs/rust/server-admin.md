@@ -50,7 +50,7 @@ n'a été modifié) :
 | `clients.rs` | révocation des clients overlay et ingest |
 | `pairings.rs` | liste / purge des expirés / révocation des codes de pairing |
 | `queries.rs` | requêtes SQL brutes que les repositories de `lc-db` ne couvrent pas |
-| `error.rs` | `AdminError` → réponses `{"error": code}` |
+| `error.rs` | `AdminError` → `ApiError` (`{"error": code, "message": phrase}`) |
 | `tests.rs` | 52 tests d'intégration via `crate::app::router()` |
 
 Les routes sont montées par `admin::router()` appelé sans argument depuis
@@ -158,14 +158,16 @@ qu'un futur endpoint ne peut pas oublier l'authentification.
 ### Ordre de vérification (identique au legacy)
 
 1. `ADMIN_UI_TOKEN` vide/espaces → **503**
-   `{"error":"admin_ui_disabled","message":"ADMIN_UI_TOKEN is not configured"}`
+   `{"error":"admin_ui_disabled","message":"La console d'administration est désactivée sur ce serveur."}`
 2. `ADMIN_UI_LOCAL_ONLY=true` et IP non loopback → **403**
-   `{"error":"admin_local_only"}`
+   `{"error":"admin_local_only","message":"La console d'administration est accessible uniquement depuis le réseau local."}`
    - connect info absent (ex. test unitaire sans `ConnectInfo`) ⇒ considéré non
      loopback, donc **refus**.
-3. Token absent ou différent → **401** `{"error":"unauthorized"}`.
+3. Token absent ou différent → **401**
+   `{"error":"unauthorized","message":"Authentification requise."}`.
 4. **Mutations uniquement** (`POST`/`PATCH`/`PUT`/`DELETE`) : origine absente,
-   opaque (`null`) ou étrangère → **403** `{"error":"invalid_origin"}`
+   opaque (`null`) ou étrangère → **403**
+   `{"error":"invalid_origin","message":"Origine de requête non autorisée."}`
    (AUD-COR-14, voir « Défense CSRF » ci-dessous).
 5. Sinon le handler s'exécute.
 
@@ -349,7 +351,7 @@ pub trait AdminHub: Send + Sync {
 Tous les corps sont en JSON, en `camelCase`, dates ISO 8601 UTC
 (`to_rfc3339_opts(SecondsFormat::Millis, true)`, suffixe `Z`). Tous exigent
 l'authentification (§4). Toute erreur de validation renvoie
-`{"error":"<code>"}` avec le statut indiqué.
+`{"error":"<code>","message":"<phrase française>"}` avec le statut indiqué.
 
 ### 7.1 `GET /admin/api/overview`
 
@@ -803,7 +805,7 @@ lock actuel : les dépendances Tauri 2 exigent ≥ 1.90 (`tauri-utils 2.10.2`,
 | 403 `admin_local_only` | accès depuis une IP non loopback ; ou pair direct déclaré (`127.0.0.1`) sans chaîne exploitable ; ou client résolu loopback mais lui-même déclaré proxy (échec fermé) | accéder en direct au serveur **sans** proxy devant l'admin et sans déclarer `127.0.0.1` ; ou proxy déclaré + `ADMIN_UI_LOCAL_ONLY=false` + authentification proxy/TLS (§4 « IP loopback ») |
 | 403 `invalid_origin` | mutation sans `Origin`/`Referer`, origine `null` ou étrangère (AUD-COR-14) | envoyer `Origin: <hôte du panneau>` ou `Referer` de même origine ; ne pas appeler l'API depuis un autre site |
 | 401 `unauthorized` | token absent/faux | vérifier l'en-tête `Authorization: Bearer` (le `?token=` n'est plus accepté, AUD-COR-05) |
-| 429 `request_error` | plus de 100 requêtes / 15 min / IP sur `/admin*` et la consommation des codes d'appairage (budget « auth », AUD-COR-10) | patienter `Retry-After`, ou augmenter la fenêtre si usage légitime |
+| 429 `too_many_requests` | plus de 100 requêtes / 15 min / IP sur `/admin*` et la consommation des codes d'appairage (budget « auth », AUD-COR-10) | patienter `Retry-After`, ou augmenter la fenêtre si usage légitime |
 | 404 `overlay_client_not_found` | identifiant non UUID | le legacy répondait 404 pour un id invalide ; conservé |
 | `admin_runtime.json` absent | jamais de PATCH | fichier créé au premier PATCH (défaut = `TIKTOK_COOKIE`) |
 | Pas de nom de guilde Discord | pas de résolution Discord en v2 | divergence §9 (nom persisté ou `Guild {id}`) |

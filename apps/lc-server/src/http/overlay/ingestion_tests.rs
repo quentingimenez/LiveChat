@@ -465,7 +465,13 @@ async fn processing_limit_answers_429() {
     )
     .await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(body, json!({ "error": "too_many_ingestions" }));
+    assert_eq!(
+        body,
+        json!({
+            "error": "too_many_ingestions",
+            "message": "Trop d'ingestions simultanées. Réessayez dans un instant.",
+        })
+    );
 }
 
 #[tokio::test]
@@ -786,7 +792,8 @@ async fn play_once_link_refuses_an_out_of_bounds_display_time() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{seconds} : {body}");
         assert_eq!(body["error"], "invalid_payload", "{seconds} : {body}");
         assert_eq!(
-            body["message"], "displayDurationSec must be an integer between 1 and 600, or null",
+            body["message"],
+            "La durée d’affichage doit être un entier entre 1 et 600 secondes, ou null.",
             "{seconds} : {body}"
         );
     }
@@ -824,7 +831,7 @@ async fn display_time_is_refused_without_a_play_once() {
     assert_eq!(body["error"], "invalid_payload");
     assert_eq!(
         body["message"],
-        "displayDurationSec is only allowed for a play once"
+        "La durée d’affichage n’est autorisée que pour une lecture unique."
     );
 }
 

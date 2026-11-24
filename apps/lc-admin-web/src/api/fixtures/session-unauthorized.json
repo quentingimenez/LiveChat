@@ -1,5 +1,6 @@
 {
   "error": "unauthorized",
+  "message": "Authentification requise.",
   "methods": {
     "discord": false,
     "secret": true

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { parseIngestErrorBody, mapHttpFailure, mapNetworkFailure } from './errors';
 
+const RAW_YTDLP =
+  'ERROR: [youtube] 6GvU1WyGMok: Sign in to confirm your age. This video may be ' +
+  'inappropriate for some users. Use --cookies-from-browser or --cookies for the ' +
+  'authentication. See https://github.com/yt-dlp/yt-dlp/wiki/FAQ';
+
 describe('parseIngestErrorBody', () => {
   it('returns empty object for non-record values', () => {
     expect(parseIngestErrorBody(null)).toEqual({});
@@ -10,40 +15,40 @@ describe('parseIngestErrorBody', () => {
     expect(parseIngestErrorBody([])).toEqual({});
   });
 
-  it('extracts error, code and message from a valid body', () => {
+  it('extracts only the machine fields, never the server message', () => {
     const result = parseIngestErrorBody({
-      error: 'invalid_payload',
-      code: 'ERR_001',
-      message: 'Something went wrong',
+      error: 'media_ingestion_failed',
+      code: 'PRIVATE_OR_AUTH_REQUIRED',
+      message: RAW_YTDLP
     });
 
-    expect(result.error).toBe('invalid_payload');
-    expect(result.code).toBe('ERR_001');
-    expect(result.message).toBe('Something went wrong');
+    expect(result).toEqual({
+      error: 'media_ingestion_failed',
+      code: 'PRIVATE_OR_AUTH_REQUIRED'
+    });
+    expect(result).not.toHaveProperty('message');
   });
 
   it('returns undefined for empty or whitespace-only fields', () => {
     const result = parseIngestErrorBody({
       error: '',
       code: '   ',
-      message: null,
+      message: null
     });
 
     expect(result.error).toBeUndefined();
     expect(result.code).toBeUndefined();
-    expect(result.message).toBeUndefined();
   });
 
   it('ignores non-string field values', () => {
     const result = parseIngestErrorBody({
       error: 123,
       code: true,
-      message: {},
+      message: {}
     });
 
     expect(result.error).toBeUndefined();
     expect(result.code).toBeUndefined();
-    expect(result.message).toBeUndefined();
   });
 });
 
@@ -64,20 +69,51 @@ describe('mapHttpFailure', () => {
     expect(result.code).toBe('UNAUTHORIZED');
   });
 
-  it('maps unauthorized error label to UNAUTHORIZED', () => {
-    const result = mapHttpFailure(200, { error: 'unauthorized' });
+  it('maps an expired ingest token to a re-pairing message', () => {
+    const result = mapHttpFailure(401, { error: 'ingest_token_expired' });
     expect(result.code).toBe('UNAUTHORIZED');
+    expect(result.message).toContain('Ré-appairez');
   });
 
-  it('maps 422 to MEDIA_INGESTION_FAILED', () => {
-    const result = mapHttpFailure(422, { message: 'video too large' });
+  it('maps 422 to a local message for the legacy media code', () => {
+    const result = mapHttpFailure(422, {
+      error: 'media_ingestion_failed',
+      code: 'PRIVATE_OR_AUTH_REQUIRED',
+      message: RAW_YTDLP
+    });
+
     expect(result.code).toBe('MEDIA_INGESTION_FAILED');
-    expect(result.message).toBe('video too large');
+    expect(result.message).toBe('Ce média est privé ou demande une connexion.');
+    expect(result.details).toBe('PRIVATE_OR_AUTH_REQUIRED');
   });
 
-  it('maps 503 to INGEST_DISABLED', () => {
-    const result = mapHttpFailure(503, {});
+  it('never surfaces the raw server message, even with an unknown media code', () => {
+    const result = mapHttpFailure(422, {
+      error: 'media_ingestion_failed',
+      code: 'SOMETHING_NEW',
+      message: RAW_YTDLP
+    });
+
+    expect(result.message).toBe('Le média n’a pas pu être ingéré par le serveur.');
+    expect(result.message).not.toContain('ERROR:');
+    expect(result.message).not.toContain('yt-dlp');
+    expect(result.message).not.toContain('cookies-from-browser');
+  });
+
+  it('maps ingest_api_disabled to INGEST_DISABLED', () => {
+    const result = mapHttpFailure(503, { error: 'ingest_api_disabled' });
     expect(result.code).toBe('INGEST_DISABLED');
+  });
+
+  it('maps ingest_unavailable to SERVER_ERROR with a temporary message', () => {
+    const result = mapHttpFailure(503, { error: 'ingest_unavailable' });
+    expect(result.code).toBe('SERVER_ERROR');
+    expect(result.message).toContain('momentanément indisponible');
+  });
+
+  it('maps guild_mismatch to INVALID_CONFIG', () => {
+    const result = mapHttpFailure(403, { error: 'guild_mismatch' });
+    expect(result.code).toBe('INVALID_CONFIG');
   });
 
   it('maps 500+ to SERVER_ERROR', () => {
@@ -85,13 +121,20 @@ describe('mapHttpFailure', () => {
     expect(result.code).toBe('SERVER_ERROR');
   });
 
-  it('maps unrecognized status to UNKNOWN', () => {
-    const result = mapHttpFailure(418, { message: 'I am a teapot' });
+  it('maps 429 to UNKNOWN with a rate-limit message', () => {
+    const result = mapHttpFailure(429, {});
     expect(result.code).toBe('UNKNOWN');
-    expect(result.message).toBe('I am a teapot');
+    expect(result.message).toContain('Trop d’envois');
   });
 
-  it('uses fallback message for unrecognized status without body message', () => {
+  it('maps an unrecognized status to UNKNOWN without echoing the body', () => {
+    const result = mapHttpFailure(418, { message: 'I am a teapot' });
+    expect(result.code).toBe('UNKNOWN');
+    expect(result.message).toBe('Erreur serveur inattendue (418).');
+    expect(result.message).not.toContain('teapot');
+  });
+
+  it('uses a status-based fallback for an unrecognized status without body', () => {
     const result = mapHttpFailure(418, {});
     expect(result.code).toBe('UNKNOWN');
     expect(result.message).toContain('418');

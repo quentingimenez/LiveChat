@@ -27,7 +27,7 @@ use std::net::IpAddr;
 
 use axum::extract::{FromRequest, Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
-use axum::response::Response;
+use axum::response::{IntoResponse as _, Response};
 use axum::Json;
 use lc_db::Db;
 use lc_domain::rights::{Action, RightsRole, Surface};
@@ -36,6 +36,7 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::app::AppState;
+use crate::http::error::ApiError;
 use crate::media::assets;
 
 use super::auth::AuthedOverlayClient;
@@ -83,10 +84,9 @@ pub async fn lookup_cache(
         }
     };
     let Some(source) = payload.url.as_deref().and_then(lookup_source) else {
-        return json_response(
-            StatusCode::BAD_REQUEST,
-            serde_json::json!({"error": "invalid_payload", "message": "url is invalid"}),
-        );
+        return ApiError::invalid_payload()
+            .with_message("L’URL du média est invalide.")
+            .into_response();
     };
 
     let cached = match assets::is_cached(db, &source.source_hash, now(&state)).await {

@@ -1,22 +1,26 @@
 //! Erreurs JSON du panneau d'administration.
 //!
 //! Le contrat des handlers est uniforme : une erreur applicative est un corps
-//! `{"error":"<code_stable>"}` avec le statut HTTP correspondant. Le détail
+//! `{"error":"<code_stable>","message":"<phrase française>"}` avec le statut
+//! HTTP correspondant. Le message vient de la table centrale
+//! [`crate::http::error::message_for`], jamais du code local. Le détail
 //! (erreur SQLite, chemin disque…) n'est jamais exposé au client : il part dans
 //! les logs `tracing` via [`AdminError::db`] et le client reçoit
-//! `500 {"error":"internal_error"}`, exactement comme le middleware global
-//! `normalize_errors`.
+//! `500 {"error":"internal_error","message":"Une erreur interne est survenue…"}`,
+//! exactement comme le middleware global `normalize_errors`.
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
-use serde_json::json;
+
+use crate::http::error::ApiError;
 
 /// Erreur d'API admin : statut + code d'erreur stable du contrat legacy.
 #[derive(Debug)]
 pub enum AdminError {
     /// 400 avec un code métier (`invalid_guild_id`, `invalid_payload`…).
     BadRequest(&'static str),
+    /// 403 avec un code métier (`forbidden`…).
+    Forbidden(&'static str),
     /// 404 avec un code métier (`overlay_client_not_found`…).
     NotFound(&'static str),
     /// 409 avec un code métier (`native_guild_unlink`…).
@@ -34,6 +38,11 @@ impl AdminError {
     /// Construit un 404 avec le code métier fourni.
     pub fn not_found(code: &'static str) -> Self {
         Self::NotFound(code)
+    }
+
+    /// Construit un 403 avec le code métier fourni.
+    pub fn forbidden(code: &'static str) -> Self {
+        Self::Forbidden(code)
     }
 
     /// Construit un 409 avec le code métier fourni.
@@ -57,12 +66,13 @@ impl IntoResponse for AdminError {
     fn into_response(self) -> Response {
         let (status, code): (StatusCode, &'static str) = match self {
             Self::BadRequest(code) => (StatusCode::BAD_REQUEST, code),
+            Self::Forbidden(code) => (StatusCode::FORBIDDEN, code),
             Self::NotFound(code) => (StatusCode::NOT_FOUND, code),
             Self::Conflict(code) => (StatusCode::CONFLICT, code),
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
 
-        (status, Json(json!({ "error": code }))).into_response()
+        ApiError::new(status, code).into_response()
     }
 }
 
@@ -83,19 +93,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn erreur_metier_renvoie_statut_et_code() {
+    async fn erreur_metier_renvoie_statut_code_et_message() {
         let response = AdminError::bad_request("invalid_payload").into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
             body_json(response).await,
-            json!({ "error": "invalid_payload" })
+            serde_json::json!({
+                "error": "invalid_payload",
+                "message": "Les données envoyées sont invalides.",
+            })
         );
 
         let response = AdminError::not_found("overlay_client_not_found").into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert_eq!(
             body_json(response).await,
-            json!({ "error": "overlay_client_not_found" })
+            serde_json::json!({
+                "error": "overlay_client_not_found",
+                "message": "Client d'overlay introuvable.",
+            })
         );
     }
 
@@ -103,9 +119,12 @@ mod tests {
     async fn erreur_interne_ne_fuite_aucun_detail() {
         let response = AdminError::db("test", "détail secret").into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = body_json(response).await;
+        assert_eq!(body["error"], "internal_error");
         assert_eq!(
-            body_json(response).await,
-            json!({ "error": "internal_error" })
+            body["message"],
+            "Une erreur interne est survenue. Réessayez dans un instant."
         );
+        assert!(!body.to_string().contains("détail secret"));
     }
 }

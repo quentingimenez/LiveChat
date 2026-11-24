@@ -550,52 +550,47 @@ Vérification B-01 (2026-11-23, branche `fix/ws-outbound-queue`) :
     (admin, board JSON, config, pairing, health) reçoit `408 request_timeout` à 30 s. Le rate-limit
     appliqué au streaming (`Range`)/uploads est un nit séparé, hors de cette lane : à traiter par
     l'owner du rate limiter.
+18. **Budget `/ingest` propre (remplace l'exemption du point 17)** : `/ingest` et `/ingest/*` ne
+    sont plus exemptées du timeout global ; elles reçoivent `TimeoutPolicy::ingest =
+    MEDIA_INGEST_TIMEOUT_MS + INGEST_TIMEOUT_GRACE` (60 s de marge, **300 s** par défaut) et
+    répondent `504 ingest_timeout` au-delà. Les exemptions restantes sont `/ws`, les préfixes
+    `/overlay/media/` et `/overlay/media-board/media/`, et `PUT
+    /overlay/media-board/uploads/<id>/parts` ; tout le reste garde `408 request_timeout` à 30 s.
+    Le timeout couvre la lecture du corps, donc une ingestion bloquée (résolution DNS sans borne,
+    hook de lecture sur un verrou du moteur) ne peut plus laisser la requête ouverte
+    indéfiniment. Bornes d'appui : `lc_media::guard::DNS_TIMEOUT` (5 s) pour la résolution DNS et
+    `media::hook::NOTIFY_TIMEOUT` (5 s) pour la notification de lecture — au-delà, le job reste
+    `PENDING` et sera joué au tick suivant au lieu de retarder la réponse HTTP.
 
 ## 12. Points d'intégration restants (hors propriétaire)
 
 - **Lead / `app.rs`** : intégré — `ws::router_with_hub(Arc<Hub>)` + admin hub
-  injecté dans `AppState` (`with_admin_hub`), plus de `OnceLock` ; le
-  **TimeoutLayer** (COR-06) est en place avec exemptions resserrées (`/ws` et
-  `/ingest` exacts, préfixes `/overlay/media/` et `/overlay/media-board/media/`),
-  plus de chemin legacy, `408 request_timeout` 30 s ailleurs).
+  injecté dans `AppState` (`with_admin_hub`), plus de `OnceLock` ; le timeout
+  (COR-06) est en place sous forme de middleware `enforce_timeout` paramétré par
+  `app::TimeoutPolicy`, avec exemptions resserrées (`/ws` et préfixes média) et
+  un budget propre pour `/ingest` (`MEDIA_INGEST_TIMEOUT_MS + 60 s`) qui répond
+  `504 ingest_timeout` ; `408 request_timeout` 30 s ailleurs, plus de chemin legacy.
+  Extrait de la forme actuelle (`apps/lc-server/src/app.rs`) :
   ```rust
-  // apps/lc-server/Cargo.toml : tower-http features += "timeout"
-  use std::time::Duration;
-  use axum::extract::Request;
-  use axum::middleware::{self, Next};
-  use axum::response::{IntoResponse, Response};
-  use axum::Json;
-  use axum::http::StatusCode;
-
-  async fn enforce_timeout(
-      axum::extract::State(timeout): axum::extract::State<Duration>,
-      request: Request,
-      next: Next,
-  ) -> Response {
-      // Streaming média (Range/206), previews board, uploads ingest et WebSocket :
-      // jamais de timeout global sur ces routes ; seules les routes réellement
-      // streaming sont exemptées (nit V2 : exemptions exactes/par préfixe ciblé).
-      let path = request.uri().path();
+  fn timeout_scope(method: &Method, path: &str) -> Option<TimeoutScope> {
       if path == "/ws"
-          || path == "/ingest"
           || path.starts_with("/overlay/media/")
           || path.starts_with("/overlay/media-board/media/")
       {
-          return next.run(request).await;
+          return None; // streaming : aucune borne globale
       }
-      match tokio::time::timeout(timeout, next.run(request)).await {
-          Ok(response) => response,
-          Err(_) => (
-              StatusCode::REQUEST_TIMEOUT,
-              Json(serde_json::json!({ "error": "request_timeout" })),
-          )
-              .into_response(),
+      if method == Method::PUT && path.ends_with("/parts") {
+          return None; // fragment d'upload du board
       }
+      if path == "/ingest" || path.starts_with("/ingest/") {
+          return Some(TimeoutScope::Ingest); // 300 s par défaut, 504 ingest_timeout
+      }
+      Some(TimeoutScope::Request) // 30 s, 408 request_timeout
   }
 
   // dans router_with_hub, après normalize_errors / avant compression :
   .layer(middleware::from_fn_with_state(
-      Duration::from_secs(30),
+      TimeoutPolicy::from_config(&config),
       enforce_timeout,
   ))
   ```

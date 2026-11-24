@@ -82,54 +82,119 @@ pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 ///
 /// - `/ws` : WebSocket de longue durée (liveness bornée par le hub) ;
 /// - `/overlay/media/` : streaming média `Range`/`206` ;
-/// - `/overlay/media-board/` : réception d'un upload brut et aperçus ;
-/// - `/ingest` : ingestion média synchrone bornée par `MEDIA_INGEST_TIMEOUT_MS`
-///   (chaque étape garde son propre budget, `MEDIA_DOWNLOAD_TIMEOUT_MS`).
+/// - `/overlay/media-board/media/` : réception d'un upload brut et aperçus ;
+/// - `PUT /overlay/media-board/uploads/<id>/parts` : un fragment d'upload.
+///
+/// Les routes `/ingest` ne sont **pas** exemptées : elles reçoivent leur propre
+/// budget, dérivé de `MEDIA_INGEST_TIMEOUT_MS` (voir [`TimeoutPolicy`]).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Indique si une route est exemptée du timeout global de requête.
+/// Marge ajoutée au budget média pour borner une requête `/ingest` complète.
 ///
-/// Les exemptions sont resserrées au strict nécessaire (AUD-COR-06) : les autres
-/// routes de l'API admin / board JSON / config / pairing / health restent
-/// soumises à [`REQUEST_TIMEOUT`] et reçoivent `408 request_timeout` si elles la
-/// dépassent.
-fn is_timeout_exempt(method: &Method, path: &str) -> bool {
+/// `MEDIA_INGEST_TIMEOUT_MS` (240 s par défaut) borne le téléchargement et le
+/// transcodage ; la marge couvre ce qui les entoure et n'a pas de budget
+/// propre : résolution du lien court (8 s), validation de la source, cache
+/// d'assets, quotas, création du job et notification de lecture.
+///
+/// Avant cette borne, `/ingest` n'était soumise à aucun timeout : une étape
+/// lente ou bloquée (résolution DNS, hook de lecture) laissait la requête
+/// ouverte indéfiniment, sans réponse et donc sans ligne « finished processing
+/// request » dans les journaux.
+pub const INGEST_TIMEOUT_GRACE: Duration = Duration::from_secs(60);
+
+/// Portée d'une requête pour le choix du budget de temps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TimeoutScope {
+    /// Route JSON ordinaire : [`REQUEST_TIMEOUT`].
+    Request,
+    /// Route d'ingestion synchrone : [`TimeoutPolicy::ingest`].
+    Ingest,
+}
+
+impl TimeoutScope {
+    /// Erreur renvoyée quand le budget de cette portée est dépassé.
+    fn error(self) -> ApiError {
+        match self {
+            // `408` historique des routes JSON.
+            Self::Request => ApiError::new(StatusCode::REQUEST_TIMEOUT, "request_timeout"),
+            // `504` : le serveur a abandonné sa propre ingestion (média trop
+            // lent, source muette), distinct d'un refus d'authentification.
+            Self::Ingest => ApiError::new(StatusCode::GATEWAY_TIMEOUT, "ingest_timeout"),
+        }
+    }
+}
+
+/// Budgets de temps appliqués par [`enforce_timeout`].
+#[derive(Clone, Copy, Debug)]
+pub struct TimeoutPolicy {
+    /// Budget des routes ordinaires, lecture du corps comprise.
+    pub request: Duration,
+    /// Budget d'une requête d'ingestion complète (`/ingest`, `/ingest/*`).
+    pub ingest: Duration,
+}
+
+impl TimeoutPolicy {
+    /// Budgets nominaux : [`REQUEST_TIMEOUT`] pour les routes ordinaires,
+    /// `MEDIA_INGEST_TIMEOUT_MS` + [`INGEST_TIMEOUT_GRACE`] pour l'ingestion.
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            request: REQUEST_TIMEOUT,
+            ingest: Duration::from_millis(config.media_ingest_timeout_ms) + INGEST_TIMEOUT_GRACE,
+        }
+    }
+}
+
+/// Portée de timeout d'une requête ; `None` quand aucune borne ne s'applique.
+///
+/// Les exemptions restent resserrées au strict nécessaire (AUD-COR-06) : les
+/// autres routes de l'API admin / board JSON / config / pairing / health
+/// restent soumises à [`REQUEST_TIMEOUT`].
+fn timeout_scope(method: &Method, path: &str) -> Option<TimeoutScope> {
     // WebSocket de longue durée.
     if path == "/ws" {
-        return true;
-    }
-    // Ingestion média synchrone (bornée par `MEDIA_INGEST_TIMEOUT_MS`).
-    if path == "/ingest" || path.starts_with("/ingest/") {
-        return true;
+        return None;
     }
     // Streaming média signé (`Range`/`206`) et aperçus du board.
     if path.starts_with("/overlay/media/") || path.starts_with("/overlay/media-board/media/") {
-        return true;
+        return None;
     }
     // A board upload part streams up to 90 MiB before answering. Opening and
     // completing an upload, or adding a link, keep the ordinary timeout.
-    method == Method::PUT
+    if method == Method::PUT
         && path
             .strip_prefix("/overlay/media-board/uploads/")
             .is_some_and(|rest| rest.ends_with("/parts"))
+    {
+        return None;
+    }
+    // Ingestion média synchrone : son propre budget, jamais l'infini. Le test
+    // du segment évite de traiter `/ingestion-log` comme une ingestion.
+    if path == "/ingest" || path.starts_with("/ingest/") {
+        return Some(TimeoutScope::Ingest);
+    }
+    Some(TimeoutScope::Request)
 }
 
 /// Middleware de timeout de requête (jamais appliqué aux routes exemptées).
 ///
 /// Le timeout couvre aussi la lecture du corps : les extracteurs s'exécutent
 /// dans le futur du handler, donc un client lent (slowloris applicatif) est
-/// interrompu au bout de [`REQUEST_TIMEOUT`].
+/// interrompu au bout du budget de sa portée.
 async fn enforce_timeout(
-    State(timeout): State<Duration>,
+    State(policy): State<TimeoutPolicy>,
     request: Request,
     next: Next,
 ) -> Response {
-    if is_timeout_exempt(request.method(), request.uri().path()) {
+    let Some(scope) = timeout_scope(request.method(), request.uri().path()) else {
         return next.run(request).await;
-    }
-    match tokio::time::timeout(timeout, next.run(request)).await {
+    };
+    let budget = match scope {
+        TimeoutScope::Request => policy.request,
+        TimeoutScope::Ingest => policy.ingest,
+    };
+    match tokio::time::timeout(budget, next.run(request)).await {
         Ok(response) => response,
-        Err(_) => ApiError::new(StatusCode::REQUEST_TIMEOUT, "request_timeout").into_response(),
+        Err(_) => scope.error().into_response(),
     }
 }
 
@@ -399,7 +464,7 @@ pub fn router_with_hub(state: AppState, hub: Arc<crate::ws::Hub>) -> Router {
             http::rate_limit::enforce,
         ))
         .layer(middleware::from_fn_with_state(
-            REQUEST_TIMEOUT,
+            TimeoutPolicy::from_config(&config),
             enforce_timeout,
         ))
         .layer(middleware::from_fn(http::error::normalize_errors))
@@ -957,9 +1022,11 @@ mod tests {
                 "/overlay/media-board/uploads/abc/parts",
                 axum::routing::put(slow),
             )
-            .route("/ingest", axum::routing::post(slow))
             .layer(middleware::from_fn_with_state(
-                std::time::Duration::from_millis(20),
+                TimeoutPolicy {
+                    request: std::time::Duration::from_millis(20),
+                    ingest: std::time::Duration::from_millis(20),
+                },
                 enforce_timeout,
             ));
 
@@ -989,11 +1056,125 @@ mod tests {
             (Method::GET, "/overlay/media/abc"),
             (Method::GET, "/overlay/media-board/media/abc"),
             (Method::PUT, "/overlay/media-board/uploads/abc/parts"),
-            (Method::POST, "/ingest"),
         ] {
             let (status, _, _) = send(&app, request(method, path)).await;
             assert_eq!(status, StatusCode::OK, "route exemptée {path}");
         }
+    }
+
+    #[tokio::test]
+    async fn ingest_routes_keep_their_own_budget_instead_of_the_request_timeout() {
+        async fn slow_ingest() -> &'static str {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            "ok"
+        }
+        let app = Router::new()
+            .route("/ingest", axum::routing::post(slow_ingest))
+            .route("/ingest/", axum::routing::post(slow_ingest))
+            .route("/ingest/file", axum::routing::post(slow_ingest))
+            .route("/ingest/whoami", axum::routing::get(slow_ingest))
+            .route("/slow", axum::routing::get(slow_ingest))
+            .layer(middleware::from_fn_with_state(
+                TimeoutPolicy {
+                    request: std::time::Duration::from_millis(20),
+                    ingest: std::time::Duration::from_secs(5),
+                },
+                enforce_timeout,
+            ));
+
+        // Une ingestion dépasse le budget court des routes ordinaires mais
+        // reste dans son propre budget : elle aboutit au lieu d'être coupée.
+        for (method, path) in [
+            (Method::POST, "/ingest"),
+            (Method::POST, "/ingest/"),
+            (Method::POST, "/ingest/file"),
+            (Method::GET, "/ingest/whoami"),
+        ] {
+            let (status, _, _) = send(&app, request(method, path)).await;
+            assert_eq!(status, StatusCode::OK, "route {path}");
+        }
+
+        // La même lenteur sur une route ordinaire reste coupée : le test ne
+        // passe pas parce que le timeout aurait été désactivé partout.
+        let (status, _, _) = send(&app, request(Method::GET, "/slow")).await;
+        assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn ingest_over_its_budget_returns_504_ingest_timeout() {
+        async fn stuck() -> &'static str {
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+            "ok"
+        }
+        let app = Router::new()
+            .route("/ingest", axum::routing::post(stuck))
+            .layer(middleware::from_fn_with_state(
+                TimeoutPolicy {
+                    request: std::time::Duration::from_secs(5),
+                    ingest: std::time::Duration::from_millis(20),
+                },
+                enforce_timeout,
+            ));
+
+        let (status, _, body) = send(&app, request(Method::POST, "/ingest")).await;
+        assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(body["error"], "ingest_timeout");
+        assert_eq!(
+            body["message"],
+            crate::http::error::message_for("ingest_timeout").expect("message du contrat")
+        );
+    }
+
+    #[test]
+    fn timeout_scope_routes_ingest_to_its_own_budget() {
+        for path in ["/ingest", "/ingest/", "/ingest/file", "/ingest/whoami"] {
+            assert_eq!(
+                timeout_scope(&Method::POST, path),
+                Some(TimeoutScope::Ingest),
+                "route {path}"
+            );
+        }
+        // Un chemin seulement préfixé par « ingest » n'est pas une ingestion.
+        assert_eq!(
+            timeout_scope(&Method::GET, "/ingestion-log"),
+            Some(TimeoutScope::Request)
+        );
+        assert_eq!(timeout_scope(&Method::GET, "/ws"), None);
+        assert_eq!(timeout_scope(&Method::GET, "/overlay/media/abc"), None);
+        assert_eq!(
+            timeout_scope(&Method::GET, "/overlay/media-board/media/abc"),
+            None
+        );
+        assert_eq!(
+            timeout_scope(&Method::PUT, "/overlay/media-board/uploads/abc/parts"),
+            None
+        );
+        // Seul le fragment d'upload est exempté, pas la fin d'upload.
+        assert_eq!(
+            timeout_scope(&Method::POST, "/overlay/media-board/uploads/abc/parts"),
+            Some(TimeoutScope::Request)
+        );
+        assert_eq!(
+            timeout_scope(&Method::GET, "/admin/api/overview"),
+            Some(TimeoutScope::Request)
+        );
+    }
+
+    #[test]
+    fn ingest_budget_adds_its_grace_to_the_media_timeout() {
+        let policy = TimeoutPolicy::from_config(&config(&[
+            ("API_URL", "http://localhost:3000"),
+            ("MEDIA_INGEST_TIMEOUT_MS", "90000"),
+        ]));
+        assert_eq!(policy.request, REQUEST_TIMEOUT);
+        assert_eq!(
+            policy.ingest,
+            std::time::Duration::from_millis(90_000) + INGEST_TIMEOUT_GRACE
+        );
+
+        // Valeur par défaut du serveur : 240 s de média + la marge.
+        let policy = TimeoutPolicy::from_config(&state().config);
+        assert_eq!(policy.ingest, std::time::Duration::from_secs(300));
     }
 
     #[tokio::test]

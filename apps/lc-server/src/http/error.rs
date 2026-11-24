@@ -114,6 +114,8 @@ pub fn message_for(code: &str) -> Option<&'static str> {
             "Le service d'ingestion est momentanément indisponible. Réessayez dans un instant.",
         "ingest_token_expired" => "Ce jeton d'ingestion a expiré après 180 jours sans activité. Ré-appairez l'appareil depuis la board pour obtenir un nouveau jeton ; l'ancien jeton n'est plus valable sur l'ancien appareil.",
         "media_ingestion_failed" => "Le média n'a pas pu être ingéré.",
+        "ingest_timeout" =>
+            "Le média n'a pas pu être ingéré dans le temps imparti. Réessayez avec un lien direct.",
         "unsupported_media" => "Ce média n'est pas pris en charge par cette route.",
         "media_url_invalid" => "L'adresse du média est invalide.",
         "media_url_expired" => "Le lien du média a expiré.",

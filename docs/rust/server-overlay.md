@@ -555,7 +555,7 @@ client a au plus 8 sessions ouvertes. Le répertoire temporaire passe dans la
 tâche asynchrone à la complétion et est supprimé à sa fin, succès ou échec
 (garde RAII). La limite globale `DefaultBodyLimit` de 1 Mio ne s'applique pas
 aux parties (`Body`, pas `Bytes`) ; seules les parties sont exemptées du
-timeout global (`app::is_timeout_exempt`).
+timeout global (`app::timeout_scope`).
 
 Limites et erreurs synchrones :
 

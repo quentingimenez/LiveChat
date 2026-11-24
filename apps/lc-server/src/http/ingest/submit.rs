@@ -45,12 +45,9 @@ use crate::media::hook;
 use crate::media::jobs::{self, JobSpec};
 use crate::media::MediaService;
 
-use super::auth::{self, IngestAuth};
+use super::auth;
 use super::body::NormalizedIngest;
-use super::{
-    expired_token_error, invalid_payload, media_service_error, simple_error,
-    DEFAULT_INGEST_AUTHOR_NAME,
-};
+use super::{invalid_payload, media_service_error, simple_error, DEFAULT_INGEST_AUTHOR_NAME};
 
 /// Author prefix of an ingest client paired from the overlay (`member:<id>`).
 ///
@@ -137,16 +134,9 @@ pub async fn submit(
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
     // 1. Authentification — toujours avant la validation du corps.
-    let client = match auth::resolve(&state, &headers).await {
-        Ok(IngestAuth::Client(client)) => client,
-        Ok(IngestAuth::Expired) => return expired_token_error(),
-        Ok(IngestAuth::Missing { enabled: true }) => {
-            return simple_error(StatusCode::UNAUTHORIZED, "unauthorized");
-        }
-        Ok(IngestAuth::Missing { enabled: false }) => {
-            return simple_error(StatusCode::SERVICE_UNAVAILABLE, "ingest_api_disabled");
-        }
-        Err(error) => return media_service_error(error),
+    let client = match auth::require_client(&state, &headers).await {
+        Ok(client) => client,
+        Err(response) => return response,
     };
 
     // 1b. The extension surface re-reads the member owning the ingest client at

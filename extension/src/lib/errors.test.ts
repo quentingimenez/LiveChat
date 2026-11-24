@@ -121,6 +121,13 @@ describe('mapHttpFailure', () => {
     expect(result.code).toBe('SERVER_ERROR');
   });
 
+  it('maps a 504 ingest timeout to a time-budget message, not an internal error', () => {
+    const result = mapHttpFailure(504, { error: 'ingest_timeout' });
+    expect(result.code).toBe('SERVER_ERROR');
+    expect(result.message).toContain('à temps');
+    expect(result.message).not.toContain('erreur interne');
+  });
+
   it('maps 429 to UNKNOWN with a rate-limit message', () => {
     const result = mapHttpFailure(429, {});
     expect(result.code).toBe('UNKNOWN');

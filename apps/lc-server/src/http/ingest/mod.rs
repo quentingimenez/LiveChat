@@ -5,7 +5,9 @@
 //! - `POST /ingest/pair/consume` : consommation d'un code d'appairage « invité »
 //!   (`INVITE_READ_ONLY` côté overlay) et création d'un client d'ingestion ;
 //! - `POST /ingest` : soumission d'une URL/média/texte, avec authentification
-//!   par token de client (`Authorization: Bearer <token>`).
+//!   par token de client (`Authorization: Bearer <token>`) ;
+//! - `GET /ingest/whoami` : vérification d'un token seul, sans ingestion
+//!   (diagnostic des raccourcis qui ne regardent pas le statut de `POST`).
 //!
 //! Sous-routeur monté par [`crate::app::router`] ; il porte lui-même le préfixe
 //! `/ingest` (les sous-routeurs sont fusionnés sans préfixe dans l'application).
@@ -28,10 +30,11 @@ pub mod body;
 pub mod file;
 pub mod pair;
 pub mod submit;
+pub mod whoami;
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::Router;
 
 use crate::app::AppState;
@@ -53,6 +56,8 @@ pub fn router() -> Router<AppState> {
         .route("/ingest/file/", post(file::upload))
         .route("/ingest/pair/consume", post(pair::consume))
         .route("/ingest/pair/consume/", post(pair::consume))
+        .route("/ingest/whoami", get(whoami::whoami))
+        .route("/ingest/whoami/", get(whoami::whoami))
 }
 
 /// Réponse d'erreur applicative avec un statut et un code donnés.

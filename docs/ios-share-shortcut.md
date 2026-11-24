@@ -150,9 +150,62 @@ l'import. Pour une variante (légende, ajout à la board), crée un troisième R
 
 Le serveur télécharge le média avec yt-dlp, comme pour l'extension navigateur.
 
+**Contrôle du statut, indispensable.** L'action « Obtenir le contenu de l'URL »
+réussit même quand le serveur répond `401` : le Raccourci affiche alors « Lien
+envoyé » alors que rien n'est arrivé. Ajoute donc après l'envoi :
+
+1. **Obtenir les détails des URL** sur la sortie de la requête, puis **Code de
+   statut** ;
+2. **Si** le code de statut **n'est pas** `200`, **Afficher une alerte** avec le
+   corps de la réponse (`{"error":"unauthorized"}`…) ;
+3. sinon seulement, **Afficher une notification** « Lien envoyé à LiveChat ».
+
+Sans cette vérification, une erreur d'authentification, de droits (`403`) ou de
+budget (`504 ingest_timeout`) est totalement silencieuse côté téléphone.
+
 ## Tester sans Raccourci
 
-Une fois le jeton créé, vérifie le serveur depuis le PC. Saisis-le **sans
+Commence par le contrôle le moins coûteux : `GET /ingest/whoami` vérifie le
+jeton seul — il ne télécharge rien, n'écrit aucun job et répond exactement les
+mêmes statuts que `POST /ingest` (`401 unauthorized` si le jeton est inconnu,
+`401 ingest_token_expired` s'il a expiré, `503 ingest_api_disabled` si
+l'ingestion est coupée, `200` avec le libellé de l'appareil s'il est valide).
+
+```bash
+read -rsp "Jeton d'ingestion : " TOKEN && echo
+curl -sS "https://livechat.example.com/ingest/whoami" \
+  -H "Authorization: Bearer $TOKEN"
+unset TOKEN
+```
+
+```powershell
+$secure = Read-Host "Jeton d'ingestion" -AsSecureString
+$token = [Net.NetworkCredential]::new('', $secure).Password
+try {
+  Invoke-RestMethod -Method Get `
+    -Uri "https://livechat.example.com/ingest/whoami" `
+    -Headers @{ Authorization = "Bearer $token" }
+} finally {
+  Remove-Variable token, secure -ErrorAction SilentlyContinue
+}
+```
+
+Réponse d'un jeton valide :
+
+```json
+{
+  "ok": true,
+  "clientId": "…",
+  "label": "Extension-…",
+  "guildId": "…"
+}
+```
+
+`label` et `guildId` confirment **quel** appairage le jeton utilise : deux
+appareils du même profil portent des libellés différents, et un `guildId`
+inattendu signifie que le raccourci pointe vers une autre board.
+
+Une fois le jeton vérifié, teste le serveur depuis le PC. Saisis-le **sans
 écho** : ne le recopie jamais dans une ligne de commande (PowerShell et bash
 conservent l'historique, et la valeur serait visible dans la liste des
 processus). Sous PowerShell 5.1, `Read-Host -AsSecureString` évite l'écho et
@@ -235,7 +288,9 @@ Réponse d'un ajout à la board :
 | `422 media_ingestion_failed` | Format non reconnu ou fichier corrompu | Convertis en JPEG/MP4, réessaie |
 | `503 ingest_api_disabled` | Ingestion désactivée sur le serveur | Active l'ingestion côté serveur |
 | `400 invalid_payload` | `filename` invalide, corps vide, `durationSec` hors 1–600 | Corrige la query ou le fichier |
-| Le Raccourci reste bloqué | Fichier trop gros ou réseau lent | Réduis la vidéo (1080p), réessaie sur un réseau stable |
+| `504 ingest_timeout` | Le média n'a pas été ingéré dans le budget du serveur (300 s par défaut : source muette, lien protégé, réseau très lent) | Réessaie avec un lien direct ou un fichier plus léger ; vérifie le lien dans un navigateur |
+| Le Raccourci affiche « Lien envoyé » mais rien n'arrive | Le Raccourci n'inspecte pas le code de statut : un `401`/`403`/`504` passe inaperçu | Vérifie le jeton avec `GET /ingest/whoami` (§ Tester sans Raccourci), puis ajoute le contrôle de statut (§5) |
+| Le Raccourci reste bloqué | Envoi d'un gros fichier sur un réseau lent | Réduis la vidéo (1080p), réessaie sur un réseau stable ; le serveur abandonne de son côté au bout du budget `/ingest` (`504 ingest_timeout`) |
 
 La limite effective est la plus basse entre :
 

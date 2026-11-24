@@ -139,6 +139,15 @@ export const mapHttpFailure = (status: number, body: unknown): IngestFailure => 
     };
   }
 
+  if (status === 504 || errorLabel === 'ingest_timeout') {
+    return {
+      code: 'SERVER_ERROR',
+      status,
+      message:
+        'Le serveur a interrompu l’envoi : le média n’a pas pu être ingéré à temps. Réessayez avec un lien direct.'
+    };
+  }
+
   if (status >= 500) {
     return {
       code: 'SERVER_ERROR',

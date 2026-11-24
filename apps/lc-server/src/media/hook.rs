@@ -19,12 +19,24 @@
 //!
 //! Sans hook installé (Phase 3c seule), le job reste en file `PENDING` et sera
 //! joué au prochain `bootstrap`/`tick` du moteur : aucune perte de donnée.
+//!
+//! ## Borne de la notification
+//!
+//! `notify_ingested` est attendu par la requête `/ingest` **avant** sa réponse
+//! `201`. Un moteur de lecture bloqué (verrou interne, sink muet) laissait donc
+//! le client sans réponse alors que le job était déjà persisté. L'appel est
+//! borné par [`NOTIFY_TIMEOUT`] : à l'échéance, la requête répond et le job
+//! reste en file `PENDING`, joué au prochain tick — rien n'est perdu.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use lc_domain::entities::PlaybackJob;
+
+/// Budget accordé au hook de lecture pour réagir à un job créé.
+pub const NOTIFY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Réaction du serveur à la création d'un job issu d'une ingestion.
 pub trait IngestHook: Send + Sync {
@@ -51,14 +63,38 @@ pub fn install_ingest_hook(hook: Arc<dyn IngestHook>) {
 }
 
 /// Notifie le hook installé du job créé, s'il existe.
+///
+/// Borné par [`NOTIFY_TIMEOUT`] : un hook muet ne doit pas retenir la réponse
+/// d'ingestion.
 pub async fn notify_ingested(job: &PlaybackJob) {
+    notify_within(job, NOTIFY_TIMEOUT).await;
+}
+
+/// Variante de [`notify_ingested`] avec un budget explicite (tests).
+///
+/// Le budget est une durée d'observation, pas une garantie que le hook a
+/// terminé : à l'échéance, son futur est annulé et le job reste en file
+/// `PENDING`.
+async fn notify_within(job: &PlaybackJob, budget: Duration) {
     let hook = match HOOK.read() {
         Ok(slot) => slot.clone(),
         Err(poisoned) => poisoned.into_inner().clone(),
     };
 
-    if let Some(hook) = hook {
-        hook.on_ingested(job).await;
+    let Some(hook) = hook else {
+        return;
+    };
+
+    if tokio::time::timeout(budget, hook.on_ingested(job))
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            guild_id = %job.guild_id.as_str(),
+            job_id = %job.id.to_canonical(),
+            timeout_ms = budget.as_millis(),
+            "hook d'ingestion sans réponse : le job reste en file et sera joué au prochain tick"
+        );
     }
 }
 
@@ -168,5 +204,28 @@ mod tests {
 
         clear_ingest_hook();
         notify_ingested(&created).await;
+
+        // Un hook qui ne rend pas la main est coupé par le budget : la
+        // requête d'ingestion ne doit pas attendre un moteur bloqué.
+        struct StuckHook;
+
+        impl IngestHook for StuckHook {
+            fn on_ingested<'a>(
+                &'a self,
+                _job: &'a PlaybackJob,
+            ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+                Box::pin(std::future::pending::<()>())
+            }
+        }
+
+        install_ingest_hook(Arc::new(StuckHook));
+        let started = std::time::Instant::now();
+        notify_within(&created, Duration::from_millis(20)).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "la notification doit être coupée (mesuré {:?})",
+            started.elapsed()
+        );
+        clear_ingest_hook();
     }
 }

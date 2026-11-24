@@ -26,7 +26,7 @@ use uuid::Uuid;
 use crate::app::AppState;
 use crate::config::Config;
 use crate::http::admin::hub::AdminHub;
-use crate::ingestions::{IngestionEntry, IngestionStatus};
+use crate::ingestions::{IngestionEntry, IngestionSource, IngestionStatus};
 use crate::shutdown::Shutdown;
 
 use super::auth;
@@ -385,12 +385,22 @@ async fn get_ingestions_only_lists_the_authenticated_client_entries() {
     let own_id = harness
         .state
         .ingestions
-        .start(guild(), client.id.as_uuid(), fixed_now())
+        .start(
+            guild(),
+            client.id.as_uuid(),
+            IngestionSource::link("https://example.invalid/own.mp4"),
+            fixed_now(),
+        )
         .unwrap();
     harness
         .state
         .ingestions
-        .start(guild(), other.id.as_uuid(), fixed_now())
+        .start(
+            guild(),
+            other.id.as_uuid(),
+            IngestionSource::link("https://example.invalid/other.mp4"),
+            fixed_now(),
+        )
         .unwrap();
 
     let (status, body) = send_json(
@@ -450,7 +460,12 @@ async fn processing_limit_answers_429() {
         harness
             .state
             .ingestions
-            .start(guild(), client.id.as_uuid(), fixed_now())
+            .start(
+                guild(),
+                client.id.as_uuid(),
+                IngestionSource::link("https://example.invalid/media.mp4"),
+                fixed_now(),
+            )
             .unwrap();
     }
 
@@ -483,7 +498,12 @@ async fn finished_ingestions_are_purged_after_one_hour() {
     let ingestion_id = harness
         .state
         .ingestions
-        .start(guild(), client.id.as_uuid(), fixed_now())
+        .start(
+            guild(),
+            client.id.as_uuid(),
+            IngestionSource::link("https://example.invalid/media.mp4"),
+            fixed_now(),
+        )
         .unwrap();
     harness.state.ingestions.complete_success(
         &ingestion_id,

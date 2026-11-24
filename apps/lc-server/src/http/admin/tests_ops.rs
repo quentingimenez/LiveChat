@@ -16,6 +16,7 @@ use time::{Duration, UtcDateTime};
 use super::ops::{BinaryProbe, BinaryProbeResult};
 use super::tests::{board_item, media_asset, playback_job, Harness};
 use crate::app::router;
+use crate::ingestions::IngestionSource;
 
 /// Fake probe: returns a fixed version unless the binary is marked failed.
 struct FakeProbe {
@@ -112,7 +113,12 @@ async fn health_warns_after_more_than_three_ingestion_failures() {
     let now = harness.state.clock.now();
     for _ in 0..4 {
         let id = registry
-            .start(guild_id("42"), uuid::Uuid::new_v4(), now)
+            .start(
+                guild_id("42"),
+                uuid::Uuid::new_v4(),
+                IngestionSource::link("https://example.invalid/media.png"),
+                now,
+            )
             .expect("ingestion start");
         registry.complete_failure(
             &id,
@@ -131,7 +137,7 @@ async fn health_warns_after_more_than_three_ingestion_failures() {
 }
 
 #[tokio::test]
-async fn ingestions_history_is_newest_first_and_limited() {
+async fn ingestions_history_keeps_the_source_of_play_once_and_failed_rows() {
     let harness = Harness::new().await;
     let registry = Arc::clone(&harness.state.ingestions);
     let guild = guild_id("42");
@@ -142,30 +148,21 @@ async fn ingestions_history_is_newest_first_and_limited() {
         .await
         .expect("guild");
 
-    let source_file = harness.path("ingest-source.png");
-    std::fs::write(&source_file, b"source").expect("source file");
-    let asset = media_asset(6, &source_file);
-    harness
-        .db()
-        .media_assets()
-        .insert(&asset)
-        .await
-        .expect("asset");
-    let item = board_item(&guild, asset.id);
-    harness
-        .db()
-        .media_board()
-        .create(&item)
-        .await
-        .expect("board item");
-
     let base = time::macros::utc_datetime!(2026-11-10 12:00:00);
     let client = uuid::Uuid::new_v4();
     let mut ids = Vec::new();
-    for index in 0..3 {
-        let started = base + Duration::seconds(index);
+    // A failed download, a play once (which creates no board item) and an
+    // upload: none of them leaves a board item the history could join, so the
+    // source has to come from the registry itself.
+    let sources = [
+        IngestionSource::link("https://example.invalid/media.png"),
+        IngestionSource::link("https://example.invalid/clip.mp4"),
+        IngestionSource::upload("clip.mp4"),
+    ];
+    for (index, source) in sources.into_iter().enumerate() {
+        let started = base + Duration::seconds(i64::try_from(index).unwrap());
         let id = registry
-            .start(guild.clone(), client, started)
+            .start(guild.clone(), client, source, started)
             .expect("ingestion start");
         let finished = started + Duration::seconds(5);
         if index == 0 {
@@ -178,7 +175,7 @@ async fn ingestions_history_is_newest_first_and_limited() {
                 finished,
             );
         } else {
-            registry.complete_success(&id, true, item.id.to_canonical(), finished);
+            registry.complete_job(&id, format!("job-{index}"), finished);
         }
         ids.push(id);
     }
@@ -194,12 +191,30 @@ async fn ingestions_history_is_newest_first_and_limited() {
     assert_eq!(items[0]["status"], "done");
     assert_eq!(items[0]["guildId"], "42");
     assert_eq!(items[0]["guildName"], "Guilde 42");
-    assert_eq!(items[0]["url"], "https://example.invalid/media.png");
-    assert_eq!(items[0]["source"], "link");
+    assert_eq!(items[0]["url"], "upload:clip.mp4");
+    assert_eq!(items[0]["source"], "upload");
     assert_eq!(items[0]["durationMs"], 5000);
     assert!(items[0]["finishedAt"]
         .as_str()
         .is_some_and(|value| value.ends_with('Z')));
+
+    let (_, body) = harness
+        .call(Method::GET, "/admin/api/ingestions?limit=50")
+        .await;
+    let items = body["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[1]["id"], ids[1]);
+    assert_eq!(items[1]["status"], "done");
+    assert_eq!(
+        items[1]["url"], "https://example.invalid/clip.mp4",
+        "a play once has no board item to resolve the source from"
+    );
+    assert_eq!(items[1]["source"], "link");
+    assert_eq!(items[2]["id"], ids[0]);
+    assert_eq!(items[2]["status"], "failed");
+    assert_eq!(items[2]["url"], "https://example.invalid/media.png");
+    assert_eq!(items[2]["source"], "link");
+    assert_eq!(items[2]["error"], "download failed");
 
     let (_, body) = harness
         .call(Method::GET, "/admin/api/ingestions?limit=1")

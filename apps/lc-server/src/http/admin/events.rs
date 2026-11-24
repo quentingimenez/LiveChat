@@ -27,6 +27,7 @@ use axum::response::{IntoResponse as _, Response};
 use axum::routing::get;
 use axum::Router;
 use futures_util::stream::{self, Stream};
+use lc_domain::GuildId;
 use serde_json::Value;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
@@ -155,6 +156,41 @@ struct StreamState {
     dirty: bool,
 }
 
+/// Completes an `ingestion` event with the fields the registry cannot know.
+///
+/// The registry only has the guild ID; the console shows its name, resolved
+/// here when a database is configured. A missing database or unknown guild
+/// leaves the payload untouched: forwarding an event never fails on this
+/// lookup.
+async fn enrich_ingestion(state: &AppState, mut entry: Value) -> Value {
+    let Some(db) = state.db.as_ref() else {
+        return entry;
+    };
+    let Some(guild_id) = entry
+        .get("guildId")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        return entry;
+    };
+    let Ok(guild_id) = GuildId::parse(&guild_id) else {
+        return entry;
+    };
+    match db.guilds().get(&guild_id).await {
+        Ok(Some(guild)) => {
+            if let Some(object) = entry.as_object_mut() {
+                object.insert(
+                    "guildName".to_owned(),
+                    guild.name.map_or(Value::Null, Value::String),
+                );
+            }
+        }
+        Ok(None) => {}
+        Err(error) => tracing::warn!(%error, "admin SSE guild name lookup failed"),
+    }
+    entry
+}
+
 /// Builds the SSE stream.
 fn sse_stream(
     state: AppState,
@@ -206,6 +242,7 @@ fn sse_stream(
                                 stream_state.pending.push_back(named_event("audit", entry));
                             }
                             Ok(AdminEvent::Ingestion(entry)) => {
+                                let entry = enrich_ingestion(&stream_state.state, entry).await;
                                 stream_state.pending.push_back(named_event("ingestion", entry));
                             }
                             Err(RecvError::Lagged(count)) => {
@@ -224,6 +261,7 @@ fn sse_stream(
                         return Some((Ok(named_event("audit", entry)), stream_state));
                     }
                     Ok(AdminEvent::Ingestion(entry)) => {
+                        let entry = enrich_ingestion(&stream_state.state, entry).await;
                         return Some((Ok(named_event("ingestion", entry)), stream_state));
                     }
                     Err(RecvError::Lagged(count)) => {

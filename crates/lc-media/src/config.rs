@@ -19,6 +19,10 @@ pub const DEFAULT_STORAGE_DIR: &str = "./data/media";
 /// Format `yt-dlp` compatible H.264/AAC (sélecteur legacy historique).
 pub const DEFAULT_YTDLP_FORMAT: &str = "bv*[vcodec^=avc1][ext=mp4][height<=1080]+ba[ext=m4a]/b[vcodec^=avc1][ext=mp4][height<=1080]/bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b[height<=1080]/best";
 
+/// Format `yt-dlp` exigeant une piste vidéo pour une publication TikTok
+/// visuelle : aucune alternative ne peut se réduire à l'audio seul.
+pub const TIKTOK_VISUAL_YTDLP_FORMAT: &str = "bv*[vcodec^=avc1][ext=mp4][height<=1080]+ba[ext=m4a]/bv*[vcodec^=avc1][ext=mp4][height<=1080]/bv*[ext=mp4][height<=1080]+ba[ext=m4a]/bv*[height<=1080]+ba/bv*[height<=1080]/bv*";
+
 /// Format `yt-dlp` relâché utilisé pour les nouvelles tentatives YouTube.
 pub const YOUTUBE_RELAXED_YTDLP_FORMAT: &str = "b/bv*+ba/best";
 

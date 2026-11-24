@@ -715,6 +715,7 @@ export function renderBoard() {
               'button',
               {
                 class: 'btn is-quiet',
+                id: 'select-toggle',
                 'aria-pressed': String(state.selecting),
                 onClick: () => (state.selecting ? leaveSelection() : enterSelection()),
               },
@@ -914,7 +915,13 @@ export function enterSelection() {
   state.selecting = true;
   state.selection = new Set();
   state.selectionAnchor = null;
-  renderView();
+  // Paints the mode in place: the grid is not rebuilt, so the scroll position
+  // the viewer was reading cannot move. Rebuilding the whole view here is what
+  // sent the board back to the top when the mode started.
+  syncDetail();
+  syncSelection();
+  syncSelectionToggle();
+  document.getElementById('grid')?.classList.add('is-selecting');
 }
 
 export function leaveSelection() {
@@ -924,9 +931,10 @@ export function leaveSelection() {
   state.selecting = false;
   state.selection = new Set();
   state.selectionAnchor = null;
-  if (state.tab === 'board' && state.page === 'guild') {
-    renderView();
-  }
+  // Same in-place swap as entering: the cards stay, only the mode chrome goes.
+  syncSelection();
+  document.getElementById('grid')?.classList.remove('is-selecting');
+  syncSelectionToggle();
 }
 
 // Picked media in board order (a filtered-out media stays picked).
@@ -978,15 +986,40 @@ function toggleAllVisible() {
   syncSelection();
 }
 
-// Updates the cards and the bar in place (no re-render: videos keep playing).
+// Updates the cards and the bar in place (no re-render: videos keep playing
+// and the scroll position survives).
 function syncSelection() {
   for (const [id, entry] of cards) {
     entry.node.classList.toggle('is-picked', state.selection.has(id));
   }
+  syncSelectionBar();
+}
+
+// The bar is created when the mode starts, then replaced in place on every
+// pick; the toolbar above it and the grid are left alone.
+function syncSelectionBar() {
   const bar = document.getElementById('selection-bar');
-  if (bar) {
-    bar.replaceWith(renderSelectionBar());
+  if (!state.selecting) {
+    bar?.remove();
+    return;
   }
+  const next = renderSelectionBar();
+  if (bar) {
+    bar.replaceWith(next);
+  } else {
+    document.querySelector('.view .board')?.after(next);
+  }
+}
+
+// The toolbar button flips between « Sélectionner » and « Terminer » in place:
+// rebuilding the toolbar would take the search field and the scroll with it.
+function syncSelectionToggle() {
+  const toggle = document.getElementById('select-toggle');
+  if (!toggle) {
+    return;
+  }
+  toggle.setAttribute('aria-pressed', String(state.selecting));
+  toggle.textContent = state.selecting ? 'Terminer' : 'Sélectionner';
 }
 
 function renderSelectionBar() {

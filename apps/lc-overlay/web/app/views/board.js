@@ -1951,6 +1951,12 @@ export async function saveShortcut(item, accelerator, keyLabel = null) {
 }
 
 // --- edit and delete ---
+// The shell downloads a picture link the WebView cannot read: a site without a
+// CORS header refuses a cross-origin fetch, while the shell has no origin.
+function downloadArtworkLink(url) {
+  return invoke('media_artwork_link', { payload: { url } });
+}
+
 async function uploadArtwork(item, file) {
   if (file.size > MAX_ARTWORK_BYTES) {
     notify(ARTWORK_MESSAGES.tooLarge, true);
@@ -2093,7 +2099,8 @@ export function openInfoDialog(item) {
       }
       return true;
     };
-    // A link is downloaded here, in the WebView, then sent like a file.
+    // A link is downloaded here, in the WebView, then sent like a file; the
+    // shell downloads it when the site refuses a cross-origin fetch.
     const importLink = async (link) => {
       if (importing) {
         return;
@@ -2103,7 +2110,7 @@ export function openInfoDialog(item) {
       artworkName.textContent = 'Téléchargement de l’image…';
       importButton.disabled = true;
       submit.disabled = true;
-      const result = await fetchArtwork(link);
+      const result = await fetchArtwork(link, globalThis.fetch, downloadArtworkLink);
       importing = false;
       importButton.disabled = false;
       submit.disabled = false;

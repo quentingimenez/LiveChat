@@ -1,5 +1,6 @@
 // Picture of an audio media: what can be used as one (a chosen, dropped or
-// pasted image file, or the link of an image downloaded in the WebView).
+// pasted image file, or the link of an image downloaded in the WebView, or by
+// the shell when the site sends no CORS header).
 
 import { droppedLink } from './board-filters.js';
 
@@ -7,6 +8,7 @@ export const MAX_ARTWORK_BYTES = 10 * 1024 * 1024;
 
 export const ARTWORK_MESSAGES = {
   tooLarge: 'Image trop volumineuse (10 Mo au plus).',
+  tooManyRedirects: 'Le lien redirige trop de fois.',
   notImageFile: 'Ce fichier n’est pas une image.',
   notImageLink: 'Ce lien ne renvoie pas une image.',
   invalidLink: 'Ce lien n’est pas une adresse http(s) valide.',
@@ -29,6 +31,49 @@ export function baseType(type) {
 
 export function isImageType(type) {
   return baseType(type).startsWith('image/');
+}
+
+// Bytes of the base64 a shell command returns (`atob` gives one character per
+// byte); an invalid input throws, and the caller falls back to its message.
+export function bytesFromBase64(text) {
+  if (typeof text !== 'string' || text.length === 0) {
+    return new Uint8Array(0);
+  }
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+// Message for a failure of the shell download (`media_artwork_link`), which
+// answers with a code; an unknown text (a refused command) is shown as it came.
+export function artworkLinkError(code) {
+  const text = (typeof code === 'string' ? code : code instanceof Error ? code.message : '').trim();
+  const http = /^http_(\d{3})$/.exec(text);
+  if (http) {
+    return httpErrorMessage(Number(http[1]));
+  }
+  if (text === 'invalid_link') {
+    return ARTWORK_MESSAGES.invalidLink;
+  }
+  if (text === 'too_many_redirects') {
+    return ARTWORK_MESSAGES.tooManyRedirects;
+  }
+  if (text === 'too_large') {
+    return ARTWORK_MESSAGES.tooLarge;
+  }
+  if (text === 'not_image') {
+    return ARTWORK_MESSAGES.notImageLink;
+  }
+  if (text === 'empty') {
+    return ARTWORK_MESSAGES.empty;
+  }
+  if (text === 'unreachable') {
+    return ARTWORK_MESSAGES.unreachable;
+  }
+  return text || ARTWORK_MESSAGES.unreachable;
 }
 
 // Extension sent with the picture: the one of the file name, else the one of
@@ -121,9 +166,39 @@ async function readCapped(response, limit) {
   }
 }
 
+// Turns the answer of the shell download (`{ contentType, dataBase64 }`) into
+// the File of the upload path, or the message to show.
+async function artworkFromDownload(url, downloadImpl) {
+  let payload;
+  try {
+    payload = await downloadImpl(url);
+  } catch (error) {
+    return { error: artworkLinkError(error) };
+  }
+  const type = baseType(payload && payload.contentType);
+  if (!isImageType(type)) {
+    return { error: ARTWORK_MESSAGES.notImageLink };
+  }
+  let bytes;
+  try {
+    bytes = bytesFromBase64(payload.dataBase64);
+  } catch {
+    return { error: ARTWORK_MESSAGES.unreachable };
+  }
+  if (bytes.byteLength > MAX_ARTWORK_BYTES) {
+    return { error: ARTWORK_MESSAGES.tooLarge };
+  }
+  if (bytes.byteLength === 0) {
+    return { error: ARTWORK_MESSAGES.empty };
+  }
+  return { file: new File([bytes], artworkFileName(url, type), { type }) };
+}
+
 // Downloads the image behind a link. Returns `{ file }` (a File ready for the
-// upload path) or `{ error }` with a message for the user.
-export async function fetchArtwork(link, fetchImpl = globalThis.fetch) {
+// upload path) or `{ error }` with a message for the user. The site may refuse
+// a cross-origin fetch for lack of a CORS header: `downloadImpl` then
+// downloads the same link from the shell, which has no origin.
+export async function fetchArtwork(link, fetchImpl = globalThis.fetch, downloadImpl = null) {
   const url = droppedLink(typeof link === 'string' ? link : '');
   if (!url) {
     return { error: ARTWORK_MESSAGES.invalidLink };
@@ -131,7 +206,12 @@ export async function fetchArtwork(link, fetchImpl = globalThis.fetch) {
   let response;
   try {
     response = await fetchImpl(url, { credentials: 'omit', referrerPolicy: 'no-referrer' });
-  } catch {
+  } catch (error) {
+    // Only a fetch that could not run (CORS, network) is worth a second try: an
+    // HTTP error below is the site's own answer, and the shell would get it too.
+    if (downloadImpl && error instanceof TypeError) {
+      return artworkFromDownload(url, downloadImpl);
+    }
     return { error: ARTWORK_MESSAGES.unreachable };
   }
   if (!response.ok) {

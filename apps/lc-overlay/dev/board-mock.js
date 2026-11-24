@@ -1435,6 +1435,11 @@
           boardChanged(headers['x-guild-id'], 'updated', entry.id);
           return delay(200, { ok: true, status: 200, body: { itemId: entry.id } });
         }
+        case 'media_artwork_link': {
+          // The shell downloads the link; the mock answers with a picture.
+          const picture = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="640" height="360" fill="#7c5cff"/></svg>';
+          return delay(300, { contentType: 'image/svg+xml', dataBase64: btoa(picture) });
+        }
         case 'board_take_guild_removals':
           return Promise.resolve(removals.splice(0));
         case 'board_take_pending_view': {

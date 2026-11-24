@@ -181,6 +181,45 @@ export function scaled(object, anchor, factor) {
   return copy;
 }
 
+// Moves the bottom-right corner of a mask without touching the top-left one: a
+// mask is a rectangle, both sides are free. `anchor` is its top-left corner in
+// source pixels, `min` the smallest side kept (source pixels).
+export function resizedMask(object, anchor, point, min = 0) {
+  const copy = structuredClone(object);
+  copy.x1 = anchor.x;
+  copy.y1 = anchor.y;
+  copy.x2 = Math.max(anchor.x + min, point.x);
+  copy.y2 = Math.max(anchor.y + min, point.y);
+  return copy;
+}
+
+// Resizes a selected object from its bottom-right corner: a mask follows the
+// pointer on both axes, everything else keeps its own ratio (`scaled`).
+export function resized(object, anchor, point, factor, min = 0) {
+  return object.type === 'mask' ? resizedMask(object, anchor, point, min) : scaled(object, anchor, factor);
+}
+
+// Keeps both corners of a mask inside the frame. The video preview is clipped,
+// so a corner dragged past the picture would hide the handle that resizes it.
+export function clampedMask(object, width, height) {
+  const copy = structuredClone(object);
+  copy.x1 = Math.min(Math.max(copy.x1, 0), width);
+  copy.y1 = Math.min(Math.max(copy.y1, 0), height);
+  copy.x2 = Math.min(Math.max(copy.x2, 0), width);
+  copy.y2 = Math.min(Math.max(copy.y2, 0), height);
+  return copy;
+}
+
+// Translation that keeps a whole box inside the frame: a mask dragged against
+// an edge stops there instead of sliding past it.
+export function clampedDelta(box, width, height, dx, dy) {
+  const minX = Math.min(0, -box.x);
+  const maxX = Math.max(minX, width - box.x - box.w);
+  const minY = Math.min(0, -box.y);
+  const maxY = Math.max(minY, height - box.y - box.h);
+  return { dx: Math.min(Math.max(dx, minX), maxX) || 0, dy: Math.min(Math.max(dy, minY), maxY) || 0 };
+}
+
 export function paintObject(context, object) {
   context.save();
   context.lineCap = 'round';

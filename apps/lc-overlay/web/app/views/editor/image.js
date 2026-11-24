@@ -44,7 +44,7 @@ import {
   linesOf,
   makeCanvas,
   paintObject,
-  scaled,
+  resized,
   translated,
 } from './annotations.js';
 import { choices, facts, section, slider, toggle } from './frame.js';
@@ -478,7 +478,7 @@ export async function createImageEditor({
     } else {
       drag.moved = true;
       const factor = clamp(Math.hypot(point.x - drag.anchor.x, point.y - drag.anchor.y) / Math.max(1, drag.reach), 0.05, 40);
-      replaceObject(scaled(drag.origin, drag.anchor, factor));
+      replaceObject(resized(drag.origin, drag.anchor, point, factor, 8 * point.per));
     }
     repaint();
   });

@@ -1,4 +1,30 @@
 /* -------------------------------------------------------------------- board */
+/* The toolbar and the open filters panel form one head that sticks to the top
+   of the view: scrolling the cards keeps the search, the types, the filters
+   and the actions reachable. A column flex box paints its background under its
+   children's margins too, so no card shows through the gaps between them. */
+.board-head {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  background: var(--slate-800);
+}
+
+/* The view's top padding scrolls with the cards: once the head is stuck, a card
+   would show through the 20 px strip above it. Paint that strip the view's
+   colour — it is empty before scrolling, so nothing changes then. */
+.board-head::before {
+  content: '';
+  position: absolute;
+  top: -20px;
+  right: 0;
+  left: 0;
+  height: 20px;
+  background: var(--slate-800);
+}
+
 /* One row: search, type chips, filters, then the actions pushed to the right.
    The tools group wraps as a whole at narrow widths, so the actions never
    squeeze the search field down to nothing. */

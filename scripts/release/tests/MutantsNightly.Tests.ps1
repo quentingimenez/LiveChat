@@ -5,11 +5,13 @@
 # measured, or a mismatch between the matrix's `provisional` flag and the
 # baseline's `status` all fail here.
 #
-# The three Q-T4 scopes were measured on ubuntu-latest with the workflow command
-# (run 45234358272, 2026-11-23); their scores are recorded in the baseline and
-# no matrix leg is provisional today. The provisional escape hatch stays for a
-# scope added before its first measured run: its `caught_pct` stays null, its
-# run step is skipped on pull_request, and the nightly fails explicitly after
+# The three Q-T4 scopes were first measured on ubuntu-latest with the workflow
+# command (run 45234358272, 2026-11-23: 57/81/79), then remeasured locally on
+# Windows after the kill-or-justify round (2026-11-24: 97/100/100). Those latter
+# scores are recorded in the baseline; the next nightly confirms them on
+# ubuntu-latest. No matrix leg is provisional today. The provisional escape
+# hatch stays for a scope added before its first measured run: its `caught_pct`
+# stays null, its run step is skipped on pull_request, and the nightly fails explicitly after
 # uploading the report instead of inventing a score. When a score is measured,
 # update the baseline and the matrix flag in the same change, then update the
 # pinned expectations below (they are deliberately exact so a silent
@@ -140,9 +142,9 @@ $expected = @(
     [pscustomobject]@{ scope = 'lc-protocol'; package = 'lc-protocol'; file = ''; filter = ''; provisional = $false; caught = 99; min = 47; status = 'measured' }
     [pscustomobject]@{ scope = 'lc-media-guard'; package = 'lc-media'; file = 'crates/lc-media/src/guard.rs'; filter = 'kind(lib) | binary(ssrf_guard) | binary(properties)'; provisional = $false; caught = 99; min = 86; status = 'measured' }
     [pscustomobject]@{ scope = 'lc-db-queue'; package = 'lc-db'; file = 'crates/lc-db/src/repos/playback_jobs.rs'; filter = ''; provisional = $false; caught = 93; min = 92; status = 'measured' }
-    [pscustomobject]@{ scope = 'lc-playback-payload'; package = 'lc-playback'; file = 'crates/lc-playback/src/payload.rs'; filter = 'kind(lib) | binary(engine_scenarios)'; provisional = $false; caught = 57; min = 44; status = 'measured' }
-    [pscustomobject]@{ scope = 'lc-db-core'; package = 'lc-db'; file = 'crates/lc-db/src/db.rs'; filter = ''; provisional = $false; caught = 81; min = 77; status = 'measured' }
-    [pscustomobject]@{ scope = 'lc-media-storage'; package = 'lc-media'; file = 'crates/lc-media/src/storage.rs'; filter = 'kind(lib) | binary(properties)'; provisional = $false; caught = 79; min = 118; status = 'measured' }
+    [pscustomobject]@{ scope = 'lc-playback-payload'; package = 'lc-playback'; file = 'crates/lc-playback/src/payload.rs'; filter = 'kind(lib) | binary(engine_scenarios)'; provisional = $false; caught = 97; min = 44; status = 'measured' }
+    [pscustomobject]@{ scope = 'lc-db-core'; package = 'lc-db'; file = 'crates/lc-db/src/db.rs'; filter = ''; provisional = $false; caught = 100; min = 77; status = 'measured' }
+    [pscustomobject]@{ scope = 'lc-media-storage'; package = 'lc-media'; file = 'crates/lc-media/src/storage.rs'; filter = 'kind(lib) | binary(properties)'; provisional = $false; caught = 100; min = 125; status = 'measured' }
 )
 
 Test-Case 'mutation matrix covers the six critical scopes' {

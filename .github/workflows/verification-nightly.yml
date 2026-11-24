@@ -98,10 +98,12 @@ jobs:
   # A red nightly is not a merge gate: this job is advisory. It fails when a
   # mutation score drops below the baseline, and deliberately when a scope is
   # still provisional (after uploading its report) instead of passing unmeasured.
-  # No scope is provisional today: the three Q-T4 scopes were measured on
-  # ubuntu-latest with the command below (run 45234358272) and are recorded in
-  # scripts/mutants-baseline.json. The provisional escape hatch stays for a
-  # scope added before its first measured run.
+  # No scope is provisional today. The three Q-T4 scopes were first measured on
+  # ubuntu-latest with the command below (run 45234358272: 57/81/79); after the
+  # kill-or-justify round they were remeasured locally on Windows on 2026-11-24
+  # (97/100/100), and those scores are recorded in scripts/mutants-baseline.json.
+  # The next nightly must confirm them on ubuntu-latest. The provisional escape
+  # hatch stays for a scope added before its first measured run.
   # One matrix leg per scope keeps each runner under the 60-minute timeout (the
   # monolithic job was already close to it with 3 scopes) and keeps ci-gate's
   # 55-minute budget reachable on pull_request.
@@ -130,12 +132,15 @@ jobs:
             filter: ''
             provisional: false
           # Q-T4: representative critical files beyond the original three,
-          # measured on ubuntu-latest with the same command as the legs above
-          # (run 45234358272, 2026-11-23): lc-playback-payload 57, lc-db-core
-          # 81, lc-media-storage 79. They are measured now; the `provisional`
-          # flag and the `status: "provisional"` escape hatch stay for a scope
-          # added before its first measured run (skipped on pull_request,
-          # explicit failure on the nightly after uploading its report).
+          # first measured on ubuntu-latest with the same command as the legs
+          # above (run 45234358272, 2026-11-23): lc-playback-payload 57,
+          # lc-db-core 81, lc-media-storage 79. Remeasured locally on Windows
+          # after the kill-or-justify round (2026-11-24): 97, 100 and 100, the
+          # scores now recorded in the baseline; the next nightly confirms them
+          # on ubuntu-latest. The `provisional` flag and the
+          # `status: "provisional"` escape hatch stay for a scope added before
+          # its first measured run (skipped on pull_request, explicit failure on
+          # the nightly after uploading its report).
           - scope: lc-playback-payload
             package: lc-playback
             file: crates/lc-playback/src/payload.rs

@@ -260,15 +260,7 @@ impl MediaStorage {
         let Some(confined) = self.confined_path(path)? else {
             return Ok(false);
         };
-        match fs::remove_file(&confined) {
-            Ok(()) => Ok(true),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(MediaError::from_io(
-                MediaErrorCode::DownloadFailed,
-                "suppression d'un fichier média",
-                &error,
-            )),
-        }
+        classify_removal(fs::remove_file(&confined))
     }
 
     /// Publie atomiquement `staged` sous `final_path` (rename même volume).
@@ -436,6 +428,23 @@ pub fn sanitize_hash(hash: &str) -> String {
         "unknown".to_string()
     } else {
         sanitized
+    }
+}
+
+/// Classe le résultat d'un `remove_file` sous confinement.
+///
+/// Un fichier disparu entre [`MediaStorage::confined_path`] et l'appel est un
+/// succès idempotent (`false`) : un autre worker a déjà fait la suppression.
+/// Tout autre échec est remonté (permission, chemin invalide…).
+fn classify_removal(result: std::io::Result<()>) -> MediaResult<bool> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(MediaError::from_io(
+            MediaErrorCode::DownloadFailed,
+            "suppression d'un fichier média",
+            &error,
+        )),
     }
 }
 
@@ -739,5 +748,71 @@ mod tests {
         );
         let absolute = std::env::temp_dir().join("hash.mp4");
         assert_eq!(storage.resolve_reference(&absolute), absolute);
+    }
+
+    #[test]
+    fn storage_root_that_is_a_file_surfaces_the_error() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let root = directory.path().join("media");
+        fs::write(&root, b"pas un dossier").unwrap();
+        let storage = MediaStorage::from_root(&root);
+
+        // Seule une racine absente est un stockage vide ; une racine invalide
+        // doit faire échouer la lecture au lieu de masquer le problème.
+        assert!(storage.variant_paths("hash").is_err());
+        assert!(storage.list_variants().is_err());
+    }
+
+    #[test]
+    fn confined_path_surfaces_invalid_os_paths() {
+        // Un chemin OS invalide (NUL) produit `InvalidInput`, pas `NotFound` :
+        // il ne doit pas être traité comme un fichier déjà absent.
+        let storage = MediaStorage::from_root("invalid\0root");
+
+        assert!(storage.remove_path(Path::new("hash.mp4")).is_err());
+    }
+
+    #[test]
+    fn removal_classifies_missing_files_and_surfaces_other_errors() {
+        assert!(classify_removal(Ok(())).unwrap());
+        assert!(
+            !classify_removal(Err(std::io::Error::from(std::io::ErrorKind::NotFound))).unwrap(),
+            "un fichier disparu entre l'inspection et la suppression est déjà supprimé"
+        );
+
+        let denied = classify_removal(Err(std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        )))
+        .unwrap_err();
+        assert_eq!(denied.code(), MediaErrorCode::DownloadFailed);
+        assert!(denied.message().contains("suppression d'un fichier média"));
+    }
+
+    #[test]
+    fn list_variants_ignores_directories() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let storage = MediaStorage::from_root(directory.path().join("media"));
+        storage.ensure().unwrap();
+        let file = storage.root().join("hash.mp4");
+        fs::write(&file, b"video").unwrap();
+        fs::create_dir(storage.root().join("nested")).unwrap();
+
+        let listed = storage.list_variants().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].path, file);
+    }
+
+    #[test]
+    fn now_ms_is_a_current_epoch_timestamp() {
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let value = now_ms();
+
+        assert!(
+            value >= before && value <= before + 1_000,
+            "now_ms doit rendre l'instant courant en millisecondes epoch, pas {value}"
+        );
     }
 }

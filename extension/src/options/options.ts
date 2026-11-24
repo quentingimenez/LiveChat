@@ -9,6 +9,7 @@ import {
   saveSettings,
   type ExtensionSettings,
 } from '../lib/settings';
+import { redactSecrets } from '../lib/redact';
 import { normalizeApiUrl } from '../lib/url';
 import {
   applyThemePreference,
@@ -339,6 +340,7 @@ testButton.addEventListener('click', () => {
   void (async () => {
     clearStatus();
     withBusyState(true, 'test');
+    let testedToken = '';
 
     try {
       const normalized = normalizeSettingsInput(collectSettingsFromForm());
@@ -348,6 +350,7 @@ testButton.addEventListener('click', () => {
         return;
       }
 
+      testedToken = normalized.value.ingestToken;
       const permissionGranted = await requestApiHostPermission(normalized.value.apiUrl);
 
       if (!permissionGranted) {
@@ -388,7 +391,14 @@ testButton.addEventListener('click', () => {
       setStatus(`Serveur joignable, réponse inattendue (${response.status}).`, 'warning');
       await refreshPermissionState();
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Échec du test réseau.', 'error');
+      // Une erreur fetch peut contenir l'URL et le header Bearer : masquer le jeton.
+      setStatus(
+        redactSecrets(
+          error instanceof Error ? error.message : 'Échec du test réseau.',
+          [testedToken],
+        ),
+        'error',
+      );
     } finally {
       withBusyState(false);
     }

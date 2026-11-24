@@ -1,4 +1,5 @@
 import { mapHttpFailure, mapNetworkFailure, type IngestFailure } from './errors';
+import { redactSecrets } from './redact';
 import { getSettings, isSettingsComplete, type ExtensionSettings } from './settings';
 import { resolveIngestTargetUrl } from './url';
 
@@ -178,9 +179,15 @@ export const sendToIngest = async (
       message: jobId ? `Envoyé (job: ${jobId.slice(0, 8)}...)` : 'Envoyé vers LiveChat.'
     };
   } catch (error) {
+    // Le message brut d'une erreur fetch peut inclure l'URL et le header Bearer :
+    // on masque le jeton avant de construire le message d'erreur renvoyé.
+    const message = error instanceof Error ? error.message : '';
+    const safeError = message
+      ? new Error(redactSecrets(message, [resolvedSettings.ingestToken]))
+      : error;
     return {
       ok: false,
-      error: mapNetworkFailure(error)
+      error: mapNetworkFailure(safeError)
     };
   } finally {
     clearTimeout(timeoutId);
